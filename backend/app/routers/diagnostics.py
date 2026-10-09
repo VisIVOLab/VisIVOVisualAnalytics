@@ -11,7 +11,7 @@ next call.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 
 from ..auth import verify_token
@@ -43,13 +43,20 @@ class DiagnosticsEventsResponse(BaseModel):
 @router.get("/v1/diagnostics/events", response_model=DiagnosticsEventsResponse,
             tags=["diagnostics"])
 async def diagnostics_events(
-    _: None = _auth,
+    token: str = _auth,
     since: int = Query(default=0, ge=0,
-                       description="Watermark — return entries with id > since."),
+                       description="Watermark, return entries with id > since."),
     limit: int = Query(default=500, ge=1, le=2000,
                        description="Max entries per response."),
 ) -> DiagnosticsEventsResponse:
-    """Return diagnostics entries newer than ``since`` (in insertion order)."""
+    """Return diagnostics entries newer than ``since`` (in insertion order).
+
+    The buffer is server-wide (it mixes every user's activity), so once per-user
+    tokens are configured only the operator (primary token) may read it.
+    """
+    from ..auth import is_admin_token
+    if not is_admin_token(token):
+        raise HTTPException(status_code=403, detail="Operator token required.")
     items = DIAGNOSTICS_BUFFER.snapshot_since(since=int(since), limit=int(limit))
     return DiagnosticsEventsResponse(
         valid=True,

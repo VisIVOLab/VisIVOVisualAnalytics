@@ -1,11 +1,13 @@
 #include "VisivoTheme.h"
 
 #include <QApplication>
+#include <QEvent>
 #include <QDebug>
 #include <QFile>
 #include <QFileInfo>
 #include <QFont>
 #include <QFontDatabase>
+#include <QFontMetrics>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -276,7 +278,27 @@ QString sidebarToolButtonStyleSheet()
             "QToolButton:hover { background-color: rgba(4,138,191,0.12);"
             "                    border: 1px solid rgba(4,138,191,0.25); }"
             "QToolButton:checked { background-color: rgba(4,138,191,0.20);"
-            "                      border: 1px solid rgba(4,138,191,0.40); }");
+            "                      border: 1px solid rgba(4,138,191,0.40); }"
+            // A disabled button has to LOOK disabled. Measured before adding
+            // this: the mean luminance of an enabled and a disabled button under
+            // this sheet was identical to 0.1, so a tool correctly greyed out in
+            // the Tools menu appeared perfectly normal in the sidebars built
+            // from the same QAction. The application stylesheet gives
+            // QToolButton an explicit colour, and an explicit colour applies in
+            // every state until a more specific rule says otherwise — the menu
+            // escaped because that sheet does carry a QMenu::item:disabled rule
+            // and this one carried no equivalent.
+            "QToolButton:disabled { color: %1;"
+            // Background and border reset too, not just the text. A checkable
+            // tool can be disabled while still checked, and the :checked fill
+            // would otherwise keep it looking armed.
+            "                       background-color: transparent;"
+            "                       border: 1px solid transparent; }"
+            // And it must not light up under the pointer — hover feedback on
+            // something that cannot be pressed says the opposite.
+            "QToolButton:disabled:hover { background-color: transparent;"
+            "                             border: 1px solid transparent; }")
+            .arg(QLatin1StringView(kSecondary()));
 }
 
 namespace {
@@ -367,7 +389,7 @@ QToolButton *makeTagButton(const QString &text, bool accent, QWidget *parent)
 } // namespace
 
 QPixmap renderThemeIcon(const QString &resourcePath, int size,
-                        const QColor *colorOverride)
+                        const QColor *colorOverride, double dpr)
 {
     // Load the SVG text from the Qt resource bundle, swap `currentColor`
     // tokens for the active theme's hex, then render via QSvgRenderer. We
@@ -387,7 +409,11 @@ QPixmap renderThemeIcon(const QString &resourcePath, int size,
     QSvgRenderer renderer(svg);
     if (!renderer.isValid()) return {};
 
-    QPixmap pm(size, size);
+    // DPR-correct: back the pixmap with size×dpr physical pixels and tag it, so it
+    // stays crisp on a retina panel while still measuring `size` logical px (§3.0c).
+    const double d = dpr > 0. ? dpr : 1.;
+    QPixmap pm(static_cast<int>(std::lround(size * d)), static_cast<int>(std::lround(size * d)));
+    pm.setDevicePixelRatio(d);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
@@ -414,11 +440,36 @@ QLabel *makeBreadcrumbTag(const QString &text, QWidget *parent)
     return lbl;
 }
 
+namespace {
+
+// A compact square glyph button (▼ switcher, ◐ theme toggle) matching the
+// toolbar's neutral chrome.
+QToolButton *makeGlyphButton(const QString &glyph, QWidget *parent)
+{
+    auto *btn = new QToolButton(parent);
+    btn->setText(glyph);
+    btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setStyleSheet(
+            QStringLiteral(
+                    "QToolButton {"
+                    "  background-color: %1; color: %2;"
+                    "  border: 1px solid %3; border-radius: 6px;"
+                    "  padding: 3px 7px; font-size: 11px; font-weight: 600;"
+                    "}"
+                    "QToolButton:hover { border-color: %4; color: %4; }"
+                    "QToolButton::menu-indicator { image: none; width: 0; }")
+                    .arg(QLatin1StringView(kSurfaceContainerHigh()),
+                         QLatin1StringView(kOnSurfaceVariant()),
+                         QLatin1StringView(kOutline()),
+                         QLatin1StringView(kPrimary())));
+    return btn;
+}
+
+} // namespace
+
 QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
-                           QToolButton **findButton,
-                           QToolButton **commandButton,
-                           QToolButton **exportButton,
-                           QToolButton **primaryTagButton,
+                           ViewerToolbarWidgets *out,
                            QWidget *parent)
 {
     auto *bar = new QFrame(parent);
@@ -437,6 +488,23 @@ QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
     auto *hbox = new QHBoxLayout(bar);
     hbox->setContentsMargins(10, 6, 10, 6);
     hbox->setSpacing(8);
+
+    // ── VisIVO app mark: the brand logo + divider ───────────────────────
+    //
+    // The same mark the Data Hub and the startup dialog show, so the app is
+    // identified one way throughout rather than by an accent square and a
+    // typeset word here and the logo everywhere else. 18 px keeps it inside the
+    // bar's 6 px vertical margins without enlarging the row.
+    {
+        if (auto *logo = createVisivoLogoLabel(18, bar))
+            hbox->addWidget(logo, 0, Qt::AlignVCenter);
+        auto *divider = new QFrame(bar);
+        divider->setFrameShape(QFrame::VLine);
+        divider->setFixedWidth(1);
+        divider->setStyleSheet(QStringLiteral("color: %1; background: %1; border: none;")
+                                       .arg(QLatin1StringView(kOutline())));
+        hbox->addWidget(divider);
+    }
 
     // ── Path-pill: home glyph + dim parent path + bright file name ───────────
     auto *pill = new QFrame(bar);
@@ -471,13 +539,35 @@ QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
     const QString fileText = fi.fileName();
 
     if (!dirText.isEmpty()) {
-        auto *dir = new QLabel(dirText, pill);
+        // Long paths are elided in the middle, and the label is given a hard
+        // maximum width. A file opened from a deep working directory used to
+        // push the search field and the backend chip off the right-hand edge of
+        // the window — the bar has a fixed set of controls and the path is the
+        // only part of it that can be any length.
+        //
+        // Elision is by WIDTH, not by counting characters: a path of three
+        // components can still be 300 characters wide, and cutting on
+        // separators mangles a Windows root ("C:/…") or a UNC prefix. Qt's own
+        // elision leaves whatever fits and puts the ellipsis in the middle,
+        // whatever the separators are.
+        constexpr int kMaxPathWidth = 340;
+        auto *dir = new QLabel(pill);
+        dir->setMaximumWidth(kMaxPathWidth);
+        dir->setToolTip(spec.filePath);
         dir->setStyleSheet(
                 QStringLiteral(
                         "color: %1; font-family: 'JetBrains Mono', 'SF Mono', monospace; "
                         "font-size: 11px;")
                         .arg(QLatin1StringView(kOnSurfaceVariant())));
         dir->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        // Elided with the label's OWN metrics, and only after the stylesheet
+        // has been applied and polished: the font that ends up in use is
+        // whichever of the CSS family list this machine actually has, and
+        // measuring a font constructed by name here would elide against a
+        // different one — cutting the path early on a machine without
+        // JetBrains Mono, or overshooting the width on one with it.
+        dir->ensurePolished();
+        dir->setText(dir->fontMetrics().elidedText(dirText, Qt::ElideMiddle, kMaxPathWidth));
         pillLayout->addWidget(dir);
     }
 
@@ -492,37 +582,64 @@ QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
 
     hbox->addWidget(pill);
 
+    // ── Dataset switcher (▼): opens a recent-datasets menu ───────────────────
+    auto *switchBtn = makeGlyphButton(QStringLiteral("▼"), bar);
+    switchBtn->setToolTip(QStringLiteral("Switch dataset"));
+    switchBtn->setPopupMode(QToolButton::InstantPopup);
+    hbox->addWidget(switchBtn);
+    if (out) out->datasetSwitch = switchBtn;
+
     // ── Tag chips (primary cyan-tinted clickable, secondary neutral) ─────────
     if (!spec.primaryTag.isEmpty()) {
         auto *primaryBtn = makeTagButton(spec.primaryTag, /*accent=*/true, bar);
         primaryBtn->setToolTip(QStringLiteral("Show FITS header"));
         hbox->addWidget(primaryBtn);
-        if (primaryTagButton) *primaryTagButton = primaryBtn;
+        if (out) out->primaryTag = primaryBtn;
     }
     if (!spec.secondaryTag.isEmpty())
         hbox->addWidget(makeTagChip(spec.secondaryTag, /*accent=*/false, bar));
 
     hbox->addStretch(1);
 
-    // ── Action buttons (Find / Command / Export) ────────────────────────────
-    auto *findBtn = makeToolbarButton(QStringLiteral("Find"), false, bar);
-    hbox->addWidget(findBtn);
-    if (findButton) *findButton = findBtn;
+    // ── Centred search field: opens the ⌘K command palette ───────────────────
+    // Rendered as a button styled like a search input with a trailing key-cap.
+    {
+        auto *search = new QToolButton(bar);
+        search->setCursor(Qt::PointingHandCursor);
+        search->setText(QStringLiteral("⌕   Search datasets, tools, products…        ⌘K"));
+        search->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        search->setFixedWidth(420);
+        search->setStyleSheet(
+                QStringLiteral(
+                        "QToolButton {"
+                        "  text-align: left; background-color: %1; color: %2;"
+                        "  border: 1px solid %3; border-radius: 7px;"
+                        "  padding: 5px 12px; font-size: 12px;"
+                        "}"
+                        "QToolButton:hover { border-color: %4; }")
+                        .arg(QLatin1StringView(kSurfaceContainerHigh()),
+                             QLatin1StringView(kOnSurfaceVariant()),
+                             QLatin1StringView(kOutline()),
+                             QLatin1StringView(kPrimary())));
+        hbox->addWidget(search);
+        // Reuse the "command" slot so WorkspaceChrome wires it to openCommandPalette.
+        if (out) out->command = search;
+    }
 
-    auto *cmdBtn = makeToolbarButton(QStringLiteral("Command  ⌘K"), true, bar);
-    hbox->addWidget(cmdBtn);
-    if (commandButton) *commandButton = cmdBtn;
+    hbox->addStretch(1);
 
-    // Subtle vertical pipe separator before destructive/export action.
-    auto *pipe = new QLabel(QStringLiteral("·"), bar);
-    pipe->setStyleSheet(
-            QStringLiteral("color: %1; font-size: 14px;")
-                    .arg(QLatin1StringView(kSecondary())));
-    hbox->addWidget(pipe);
+    // ── Live remote/health chip ("● host · N running") ───────────────────────
+    auto *remoteChip = makeTagChip(QStringLiteral("remote"), /*accent=*/false, bar);
+    remoteChip->setToolTip(QStringLiteral("Backend host and running-task count"));
+    hbox->addWidget(remoteChip);
+    if (out) out->remoteChip = remoteChip;
 
-    auto *expBtn = makeToolbarButton(QStringLiteral("Export"), false, bar);
-    hbox->addWidget(expBtn);
-    if (exportButton) *exportButton = expBtn;
+    // ── Theme toggle (◐) ─────────────────────────────────────────────────────
+    // No dark/light toggle here. Flipping the theme at run time only restyles
+    // the widgets that subscribe to ThemeManager::themeChanged; the many that
+    // bake theme tokens into their stylesheet at construction keep the old
+    // palette, so the window ended up half in one theme and half in the other.
+    // The choice lives in Settings → Theme, which takes effect on restart.
 
     return bar;
 }
@@ -611,6 +728,20 @@ QString darkStyleSheet()
             "  height: 1px;"
             "  background-color: rgba(4, 138, 191, 0.20);"
             "  margin: 4px 8px;"
+            "}"
+            // Submenu arrow. Qt draws the default indicator scaled to the item
+            // rect, and this sheet's 8 px vertical item padding makes that rect
+            // tall — so a "Show in ▸" arrow came out as a large chevron next to
+            // 12 px text. An explicit image with an explicit size caps it; the
+            // tree's square-viewBox chevron is reused (see its own note on why a
+            // square box is what keeps a QSS image from growing to fill).
+            "QMenu::right-arrow {"
+            "  image: url(:/icons/tree_chevron_right.svg);"
+            "  width: 9px;"
+            "  height: 9px;"
+            "  subcontrol-position: right center;"
+            "  subcontrol-origin: padding;"
+            "  right: 10px;"
             "}"
 
             // ── Toolbar ────────────────────────────────────────────────────
@@ -800,6 +931,10 @@ QString darkStyleSheet()
             "  subcontrol-origin: padding;"
             "  subcontrol-position: center right;"
             "}"
+            "QComboBox::down-arrow {"   // themed chevron, not the system arrow (§3.0c)
+            "  image: url(:/icons/chevron_down.svg);"
+            "  width: 10px; height: 7px;"
+            "}"
             "QComboBox QAbstractItemView {"
             "  background-color: #11181F;"
             "  color: #F1F4F6;"
@@ -829,6 +964,26 @@ QString darkStyleSheet()
             "QListWidget::item:hover:!selected, QTreeWidget::item:hover:!selected {"
             "  background-color: rgba(18, 51, 79, 0.65);"
             "}"
+
+            // Disclosure arrow for EVERY tree. Qt draws the platform
+            // indicator in a near-black triangle, which is invisible on a
+            // dark row: the catalogue table's band-merged groups looked like
+            // rows with nothing to expand. SessionDataTree had already fixed
+            // this in its own widget stylesheet, so the fix only reached that
+            // one tree; it belongs here, where every QTreeView gets it.
+            //
+            // Qt draws a ::branch image at the SVG's intrinsic size and
+            // ignores width/height on the sub-control, hence the dedicated
+            // 9x6 tree_chevron pair rather than the heavier combo-box glyph.
+            "QTreeView::branch:has-children:!has-siblings:closed,"
+            "QTreeView::branch:closed:has-children:has-siblings {"
+            "  image: url(:/icons/tree_chevron_right.svg);"
+            "}"
+            "QTreeView::branch:open:has-children:!has-siblings,"
+            "QTreeView::branch:open:has-children:has-siblings {"
+            "  image: url(:/icons/tree_chevron_down.svg);"
+            "}"
+
 
             // ── Table view ─────────────────────────────────────────────────
             "QTableView {"
@@ -911,20 +1066,48 @@ QString darkStyleSheet()
             "QSplitter::handle:vertical   { height: 1px; }"
 
             // ── Radio / check box ──────────────────────────────────────────
+            // padding + min-height: three radios stacked in a group box came out
+            // as one block of text with dots. The row also becomes a comfortable
+            // click target — the label is part of it, and it was 16 px tall.
             "QRadioButton, QCheckBox {"
-            "  color: #F1F4F6; spacing: 8px; background-color: transparent;"
+            "  color: #F1F4F6; spacing: 10px; background-color: transparent;"
+            "  padding: 3px 0; min-height: 20px;"
             "}"
+            // A radio has to read as a RING, and as a ring with a dot when it is
+            // on. The old rule put an 8 px radius on a 16 px box with a 2 px
+            // border — 20 px painted — so it came out a rounded square, and the
+            // checked state filled it solid, which is what a checkbox does.
             "QRadioButton::indicator {"
-            "  width: 16px; height: 16px; border-radius: 8px;"
-            "  border: 2px solid #2B343C; background-color: #11181F;"
+            "  width: 14px; height: 14px; border-radius: 9px;"
+            "  border: 2px solid #4A5257; background-color: transparent;"
             "}"
             "QCheckBox::indicator {"
             "  width: 16px; height: 16px; border-radius: 3px;"
-            "  border: 2px solid #2B343C; background-color: #11181F;"
+            "  border: 1px solid #4A5257; background-color: transparent;"
             "}"
-            "QRadioButton::indicator:checked, QCheckBox::indicator:checked {"
+            "QRadioButton::indicator:checked {"
+            "  border-color: #048ABF; background-color: #048ABF;"
+            "  image: url(:/icons/radio_dot.svg);"
+            "}"
+            "QCheckBox::indicator:checked {"
             "  background-color: #048ABF; border-color: #048ABF;"
+            "  image: url(:/icons/check.svg);"
             "}"
+            // An item view's check box is the SAME control as a QCheckBox and has
+            // to look like one: without these rules the list fell back to the
+            // platform style, so a visible layer showed a filled square while the
+            // band filter next to it showed a tick. The explicit box also fixes
+            // the vertical placement - the indicator was drawn at the top of a
+            // 36 px row while the label sat centred.
+            "QAbstractItemView::indicator {"
+            "  width: 16px; height: 16px; border-radius: 3px;"
+            "  border: 1px solid #4A5257; background-color: transparent;"
+            "}"
+            "QAbstractItemView::indicator:checked {"
+            "  background-color: #048ABF; border-color: #048ABF;"
+            "  image: url(:/icons/check.svg);"
+            "}"
+            "QAbstractItemView::indicator:hover { border-color: #048ABF; }"
             "QRadioButton::indicator:hover, QCheckBox::indicator:hover {"
             "  border-color: #048ABF;"
             "}"
@@ -963,10 +1146,23 @@ QLabel *createVisivoLogoLabel(int height, QWidget *parent)
         const int w = (svgSize.height() > 0)
                 ? qRound(svgSize.width() * static_cast<double>(height) / svgSize.height())
                 : height * 2;
-        QPixmap pm(w, height);
+        // Rasterise at the device pixel ratio, not at logical size: a w x height
+        // bitmap gets scaled up on a Retina display and the mark goes soft,
+        // which defeats starting from an SVG at all.
+        const qreal dpr = parent ? parent->devicePixelRatioF()
+                                 : qApp->devicePixelRatio();
+        QPixmap pm(qRound(w * dpr), qRound(height * dpr));
+        pm.setDevicePixelRatio(dpr);
         pm.fill(Qt::transparent);
         QPainter painter(&pm);
-        renderer.render(&painter);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        // Explicit LOGICAL bounds. render(painter) with no rect falls back to
+        // the paint device's own size, which is in device pixels, while the
+        // painter already carries the DPR scale — so at DPR 2 the mark comes
+        // out twice too big and clipped to its top-left quarter. Measured: with
+        // the rect, the DPR-2 raster matches the DPR-1 geometry; without it,
+        // nothing like it.
+        renderer.render(&painter, QRectF(0, 0, w, height));
         painter.end();
 
         auto *lbl = new QLabel(parent);
@@ -993,12 +1189,85 @@ QLabel *createVisivoLogoLabel(int height, QWidget *parent)
     return nullptr;
 }
 
+
+// ── Tooltip style guard ──────────────────────────────────────────────────────
+//
+// The application stylesheet styles QToolTip, and for most tooltips that is
+// enough. It is not enough for a tooltip shown from a widget that carries its
+// own stylesheet written WITHOUT a selector — `w->setStyleSheet("background:
+// transparent;")` — because in Qt a widget's own sheet outranks the
+// application's, and it applies to that widget's tooltip as well. The tooltip
+// then keeps the theme's border and loses its background: light text on
+// nothing, which is unreadable, and which is what the Data Hub's recent-dataset
+// rows showed.
+//
+// Measured, not assumed: with an anchor widget styled that way the tip label
+// renders with an unpainted background; with the same declarations scoped to an
+// id selector it renders correctly.
+//
+// Fixing all ~150 unscoped stylesheets one by one would leave the next one to
+// be written broken again. This is the backstop: the tip label is given its own
+// stylesheet the moment it is shown, and nothing outranks a widget's own sheet.
+// The scoped-stylesheet hygiene is still worth doing — this only guarantees the
+// tooltip.
+namespace {
+
+class ToolTipStyleGuard : public QObject
+{
+public:
+    explicit ToolTipStyleGuard(QObject *parent) : QObject(parent) { }
+
+    void setCss(const QString &css) { m_css = css; }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        // QTipLabel is private to Qt, so it is matched by class name. Polish as
+        // well as Show: a reused tip label is polished again before it is shown
+        // with new text, and a style set only on Show can be undone by that.
+        if ((event->type() == QEvent::Show || event->type() == QEvent::Polish)
+            && !m_css.isEmpty()
+            && qstrcmp(watched->metaObject()->className(), "QTipLabel") == 0) {
+            if (auto *w = qobject_cast<QWidget *>(watched)) {
+                if (w->styleSheet() != m_css)
+                    w->setStyleSheet(m_css);   // guarded: setStyleSheet repolishes
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    QString m_css;
+};
+
+/// Install once per application; later calls only refresh the colours.
+void installToolTipGuard(QApplication *app, const QString &css)
+{
+    if (!app)
+        return;
+    static ToolTipStyleGuard *guard = nullptr;
+    if (!guard) {
+        guard = new ToolTipStyleGuard(app);
+        app->installEventFilter(guard);
+    }
+    guard->setCss(css);
+}
+
+}   // namespace
+
 void applyDarkTo(QApplication *app)
 {
     // Mark the active theme so factory functions / inline accessors return the
     // dark palette. Must be set BEFORE building the QPalette below, because the
     // accessors are conditional on currentMode().
     setMode(Mode::Dark);
+
+    // Declaration-only on purpose: this is applied to the tip label itself, so
+    // a selector would not match it.
+    installToolTipGuard(app, QStringLiteral(
+            "background-color: #11181F; color: #F1F4F6;"
+            "border: 1px solid rgba(4, 138, 191, 0.35); border-radius: 4px;"
+            "padding: 6px 10px; font-size: 12px;"));
 
     // ── 1. Register bundled fonts first ───────────────────────────────────────
     // Must happen before any QFont or QSS that references "Lato".
@@ -1138,6 +1407,20 @@ QString lightStyleSheet()
             "  height: 1px;"
             "  background-color: rgba(3, 103, 166, 0.15);"
             "  margin: 4px 8px;"
+            "}"
+            // Submenu arrow. Qt draws the default indicator scaled to the item
+            // rect, and this sheet's 8 px vertical item padding makes that rect
+            // tall — so a "Show in ▸" arrow came out as a large chevron next to
+            // 12 px text. An explicit image with an explicit size caps it; the
+            // tree's square-viewBox chevron is reused (see its own note on why a
+            // square box is what keeps a QSS image from growing to fill).
+            "QMenu::right-arrow {"
+            "  image: url(:/icons/tree_chevron_right_light.svg);"
+            "  width: 9px;"
+            "  height: 9px;"
+            "  subcontrol-position: right center;"
+            "  subcontrol-origin: padding;"
+            "  right: 10px;"
             "}"
 
             // ── Toolbar ────────────────────────────────────────────────────────
@@ -1324,6 +1607,10 @@ QString lightStyleSheet()
             "  subcontrol-origin: padding;"
             "  subcontrol-position: center right;"
             "}"
+            "QComboBox::down-arrow {"   // themed chevron, not the system arrow (§3.0c)
+            "  image: url(:/icons/chevron_down.svg);"
+            "  width: 10px; height: 7px;"
+            "}"
             "QComboBox QAbstractItemView {"
             "  background-color: #FFFFFF;"
             "  color: #1C2734;"
@@ -1353,6 +1640,26 @@ QString lightStyleSheet()
             "QListWidget::item:hover:!selected, QTreeWidget::item:hover:!selected {"
             "  background-color: rgba(213, 230, 242, 0.65);"
             "}"
+
+            // Disclosure arrow for EVERY tree. Qt draws the platform
+            // indicator in a near-black triangle, which is invisible on a
+            // light row: the catalogue table's band-merged groups looked like
+            // rows with nothing to expand. SessionDataTree had already fixed
+            // this in its own widget stylesheet, so the fix only reached that
+            // one tree; it belongs here, where every QTreeView gets it.
+            //
+            // Qt draws a ::branch image at the SVG's intrinsic size and
+            // ignores width/height on the sub-control, hence the dedicated
+            // 9x6 tree_chevron pair rather than the heavier combo-box glyph.
+            "QTreeView::branch:has-children:!has-siblings:closed,"
+            "QTreeView::branch:closed:has-children:has-siblings {"
+            "  image: url(:/icons/tree_chevron_right_light.svg);"
+            "}"
+            "QTreeView::branch:open:has-children:!has-siblings,"
+            "QTreeView::branch:open:has-children:has-siblings {"
+            "  image: url(:/icons/tree_chevron_down_light.svg);"
+            "}"
+
 
             // ── Table view ─────────────────────────────────────────────────────
             "QTableView {"
@@ -1435,19 +1742,28 @@ QString lightStyleSheet()
             "QSplitter::handle:vertical   { height: 1px; }"
 
             // ── Radio / check box ──────────────────────────────────────────────
+            // See the dark sheet: room between stacked radios, and a row tall
+            // enough to click.
             "QRadioButton, QCheckBox {"
-            "  color: #1C2734; spacing: 8px; background-color: transparent;"
+            "  color: #1C2734; spacing: 10px; background-color: transparent;"
+            "  padding: 3px 0; min-height: 20px;"
             "}"
+            // See the dark sheet: a ring, not a rounded square.
             "QRadioButton::indicator {"
-            "  width: 16px; height: 16px; border-radius: 8px;"
-            "  border: 2px solid #D8DEE7; background-color: #FFFFFF;"
+            "  width: 14px; height: 14px; border-radius: 9px;"
+            "  border: 2px solid #B7C0CC; background-color: #FFFFFF;"
             "}"
             "QCheckBox::indicator {"
             "  width: 16px; height: 16px; border-radius: 3px;"
-            "  border: 2px solid #D8DEE7; background-color: #FFFFFF;"
+            "  border: 1px solid #B7C0CC; background-color: transparent;"
             "}"
-            "QRadioButton::indicator:checked, QCheckBox::indicator:checked {"
+            "QRadioButton::indicator:checked {"
+            "  border-color: #005574; background-color: #005574;"
+            "  image: url(:/icons/radio_dot.svg);"
+            "}"
+            "QCheckBox::indicator:checked {"
             "  background-color: #005574; border-color: #005574;"
+            "  image: url(:/icons/check.svg);"
             "}"
             "QRadioButton::indicator:hover, QCheckBox::indicator:hover {"
             "  border-color: #005574;"
@@ -1476,6 +1792,11 @@ void applyLightTo(QApplication *app)
     // Mark the active theme so factory functions / inline accessors return the
     // light palette. Must be set BEFORE building widgets through any factory.
     setMode(Mode::Light);
+
+    installToolTipGuard(app, QStringLiteral(
+            "background-color: #FFFFFF; color: #1C2734;"
+            "border: 1px solid rgba(3, 103, 166, 0.30); border-radius: 4px;"
+            "padding: 6px 10px; font-size: 12px;"));
 
     // ── 1. Register bundled fonts (idempotent) ────────────────────────────────
     loadBundledFonts();

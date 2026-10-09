@@ -5,6 +5,8 @@
 
 #include <QElapsedTimer>
 #include <QFutureWatcher>
+
+#include "BackendUrl.h"
 #include <QObject>
 #include <QProcess>
 #include <QTimer>
@@ -34,6 +36,10 @@ public:
     explicit BackendLauncher(QObject *parent = nullptr);
     ~BackendLauncher() override;
 
+    /// Stop the backend and everything it spawned, giving it @p graceMs to go
+    /// quietly before the whole process group is killed.
+    void stopBackendProcess(int graceMs = 3000);
+
     /**
      * Begin the startup sequence asynchronously.
      *
@@ -46,8 +52,17 @@ public:
      * @param backendUrl   e.g. "http://127.0.0.1:8000"
      * @param pythonExe    absolute path to the python3 interpreter
      * @param noAutostart  skip launch; only connect to an existing backend
+     * @param backendToken the configured token, for a backend we did not start.
+     *        /v1/health is authenticated like everything else, and with no
+     *        token BackendClient falls back to ~/.visivo_token — this machine's
+     *        own. A healthy remote backend therefore answered 401 and was
+     *        reported as unreachable, which no amount of fixing the server
+     *        could cure. Empty is fine for a local backend: BackendClient
+     *        prefers the file there anyway, because the backend rewrites it at
+     *        every start.
      */
-    void startAsync(const QString &backendUrl, const QString &pythonExe, bool noAutostart);
+    void startAsync(const QString &backendUrl, const QString &pythonExe, bool noAutostart,
+                    const QString &backendToken = QString());
 
     /** Stop polling and mark cancelled.  Does not kill a running backend. */
     void cancel();
@@ -72,8 +87,16 @@ signals:
     void failed(const QString &error);
 
 private:
+    /// First-run setup: create the backend's virtual environment and install
+    /// its requirements, reporting progress through messageChanged(). Returns
+    /// false after emitting failed(). Only called when a supported interpreter
+    /// was found but cannot import the backend's dependencies.
+    bool bootstrapEnvironment(const QString &backendDir, const QString &pythonExe);
+
     void doInitialHealthCheck();
     void onInitialHealthDone();
+    /// Emit the "this is not our machine to start" refusal.
+    void refuseRemoteAutostart();
     void launchProcess();
     void startPolling();
     void onPollTick();
@@ -83,6 +106,7 @@ private:
     void appendLog(const QString &text);
 
     QString m_backendUrl;
+    QString m_backendToken;
     QString m_pythonExe;
     bool m_noAutostart{ false };
     bool m_cancelled{ false };
@@ -95,6 +119,14 @@ private:
     QElapsedTimer m_elapsed;
     QFutureWatcher<BackendHealthResult> m_initialHealthWatcher;
     QFutureWatcher<BackendHealthResult> m_pollHealthWatcher;
+    /// What the initial health check said, so a refusal can quote it.
+    QString m_healthError;
+
+    /// The host uvicorn was told to bind, for a failure message that names it,
+    /// and what we concluded about it — only an unrecognised name deserves the
+    /// "that may be another machine" hint.
+    QString m_launchHost;
+    BackendUrl::Locality m_launchLocality{ BackendUrl::Locality::ThisMachine };
     QString m_capturedLogs;
 
     static constexpr int kMaxWaitMs      = 30'000;

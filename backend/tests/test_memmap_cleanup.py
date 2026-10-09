@@ -269,12 +269,21 @@ def test_fd_count_does_not_grow_after_close(tmp_path):
 def _make_stale_registry(ttl: int = 1) -> SessionRegistry:
     """Return a registry with an extremely short TTL so tests can mark sessions
     stale by advancing ``last_accessed`` directly, without sleeping."""
-    return SessionRegistry(ttl_seconds=ttl)
+    # No background eviction thread: these tests flush explicitly and the
+    # daemon would race them (flaky 'flushed == 0').
+    return SessionRegistry(ttl_seconds=ttl, start_eviction=False)
 
 
 def _force_stale(session: Session) -> None:
-    """Push ``last_accessed`` into the past so ``idle_seconds() > TTL``."""
-    session.last_accessed = 0.0  # epoch — guaranteed older than any TTL
+    """Push ``last_accessed`` into the past so ``idle_seconds() > TTL``.
+
+    Must be RELATIVE to the current monotonic clock: ``time.monotonic()`` has an
+    arbitrary reference point (often boot/process start), so the old ``= 0.0``
+    only worked where ``monotonic()`` already exceeded the TTL. On a freshly
+    booted CI runner ``monotonic() < TTL`` and the flush never triggered.
+    """
+    import time as _time  # noqa: PLC0415
+    session.last_accessed = _time.monotonic() - 1.0e9
 
 
 def test_anon_flush_releases_vbt_memmap(tmp_path):

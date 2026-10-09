@@ -21,9 +21,12 @@
 #include <vtkTextActor.h>
 
 #include <QFutureWatcher>
+#include <QJsonObject>
+#include <QList>
 #include <QMainWindow>
 #include <QPointer>
 
+class AssistantPanel;
 class QAction;
 class QCheckBox;
 class QComboBox;
@@ -32,7 +35,6 @@ class QFrame;
 class QLabel;
 class QListWidget;
 class QPushButton;
-class SidebarPanel;
 class QScrollArea;
 class QSlider;
 class QStackedWidget;
@@ -47,6 +49,8 @@ struct VbtFilterTaskResult
     QString statusMsg;
     int totalRows{ 0 }; // backend-reported total (before limit/offset)
 };
+
+class WorkspaceChrome;
 
 class vtkWindowVbt : public QMainWindow
 {
@@ -78,6 +82,15 @@ private:
     void applyBoxActorColors(bool darkBackground);
     void resetView();
     void updateRenderMode();
+
+    /// Apply scientific-copilot visualisation directives to this VBT view.
+    /// A point/volume table supports colormap and camera control: set_colormap
+    /// (recolour by the named map) and reset_camera. Other directives (threshold,
+    /// render/blend mode — cube-only) are ignored. State is snapshotted first so
+    /// undoCopilotActions() can revert it.
+    void applyCopilotActions(const QList<QJsonObject> &actions);
+    void undoCopilotActions();
+
     QString activeColorFieldName() const;
     QString activeColormapName() const;
     void setScalarRange(double minValue, double maxValue);
@@ -91,6 +104,20 @@ private:
     const QString backendToken;
     QString sessionId;
     const QString m_headerPath;   ///< original .head file path; used for session-expiry reopen
+    WorkspaceChrome *m_workspaceChrome{ nullptr };
+    /// The three control pages, mounted in the two docks by setupWorkspaceDocks:
+    /// display in the LEFT column beside the dataset, filters and info in the
+    /// RIGHT Inspector — the arrangement every other viewer uses.
+    QPointer<QWidget> m_pageDisplay;
+    QPointer<QWidget> m_pageFilters;
+    QPointer<QWidget> m_pageInfo;
+    QPointer<QAction> m_actionSessionPanel;
+    QPointer<QLabel> m_propSession;   ///< Inspector row; replaced on recovery
+    void setupWorkspaceDocks();
+    /// The command bar and status rail shared with the other viewers.
+    void setupViewerChrome();
+    /// What the kind tag opens — the VBT's own header: fields, rows, type.
+    void showVbtHeaderDialog();
 
     QPointer<QVTKOpenGLNativeWidget> vtkWidget;
     QPointer<QComboBox> comboRenderMode;
@@ -150,9 +177,24 @@ private:
     QString m_lastColorField;
 
     // ── Sidebar ──────────────────────────────────────────────────────────────
-    SidebarPanel *m_sidebar{ nullptr };
     QPointer<QAction> actionShowControlsSidebar;
     void setupSidebarUi();
+
+    // ── Scientific copilot ────────────────────────────────────────────────────
+    AssistantPanel *m_copilot{ nullptr };
+    /// State captured before the copilot's last change, so Undo can restore it.
+    struct CopilotUndo
+    {
+        bool cameraCaptured{ false };
+        double position[3]{ 0, 0, 0 };
+        double focalPoint[3]{ 0, 0, 0 };
+        double viewUp[3]{ 0, 0, 1 };
+        double parallelScale{ 1.0 };
+        bool colormapCaptured{ false };
+        QString colormapName;
+        bool colorFieldCaptured{ false };
+        int colorFieldIndex{ -1 };   // restore by index (a field may be named like the sentinel)
+    } m_copilotUndo;
     double activeScalarMin{ 0.0 };
     double activeScalarMax{ 1.0 };
     double dataScalarMin{ 0.0 };

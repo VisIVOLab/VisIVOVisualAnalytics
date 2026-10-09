@@ -111,6 +111,26 @@ void LayerListModel::setLogScale(int index, bool flag)
     emit this->dataChanged(this->index(index), this->index(index));
 }
 
+LutScale::Mode LayerListModel::scaleMode(int index) const
+{
+    return this->layerSet->scaleMode(index);
+}
+
+double LayerListModel::scaleGamma(int index) const
+{
+    return this->layerSet->scaleGamma(index);
+}
+
+void LayerListModel::setScaleMode(int index, LutScale::Mode mode, double gamma)
+{
+    if (index < 0 || index >= this->rowCount()) {
+        return;
+    }
+
+    this->layerSet->setScaleMode(index, mode, gamma);
+    emit this->dataChanged(this->index(index), this->index(index));
+}
+
 std::string LayerListModel::getColorMapName(int index) const
 {
     return this->layerSet->colorMapName(index);
@@ -269,11 +289,34 @@ bool LayerListModel::dropMimeData(const QMimeData *data, Qt::DropAction action, 
         return false;
     }
 
-    this->beginResetModel();
+    // A move, announced as a move. This used to reset the model, which had two
+    // costs: a reset emits neither dataChanged nor rowsMoved, so the view that
+    // renders on dataChanged never repainted — the new stacking order only
+    // appeared when something else provoked a render, such as clicking on the
+    // VTK widget — and a reset invalidates every persistent index, so the
+    // selection fell back to the first layer and the Layer Settings panel
+    // stopped describing the layer the user had just dragged.
+    //
+    // beginMoveRows' destination is an insert-before position, which is exactly
+    // what dropMimeData is handed, so the two conventions agree. It rejects a
+    // move onto the row's own position; ImageLayerSet::moveLayer rejects the
+    // same case, and the check here keeps the two from disagreeing.
+    if (destinationRow >= sourceRow && destinationRow <= sourceRow + 1) {
+        return false;
+    }
+    if (!this->beginMoveRows(QModelIndex(), sourceRow, sourceRow, QModelIndex(),
+                             destinationRow)) {
+        return false;
+    }
     const bool moved = this->layerSet->moveLayer(sourceRow, destinationRow);
-    this->endResetModel();
+    this->endMoveRows();
 
     if (!moved) {
+        // Unreachable unless the two validations drift apart. If they ever do,
+        // the view has been told about a move that did not happen, and a stale
+        // view is worse than a slow one: resynchronise it from scratch.
+        this->beginResetModel();
+        this->endResetModel();
         return false;
     }
 

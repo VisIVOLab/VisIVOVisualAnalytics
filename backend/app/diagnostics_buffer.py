@@ -82,6 +82,10 @@ class _DiagnosticsBuffer:
     def add(self, *, level: str, category: str, source: str, message: str,
             dataset_id: str = "", session_id: str = "",
             operation_tag: str = "") -> int:
+        # Scrub bearer-like ids here — the single choke point for every producer
+        # (logging handler, publish_event(), direct callers).
+        message = _scrub_secrets(message)
+        session_id = _scrub_secrets(session_id) if session_id else session_id
         with self._lock:
             entry = {
                 "id": self._next_id,
@@ -133,6 +137,26 @@ class _DiagnosticsBuffer:
 DIAGNOSTICS_BUFFER = _DiagnosticsBuffer()
 
 
+import re as _re
+
+# Session ids (and other long opaque handles) are bearer-like: holding one grants
+# access to that session's datasets. The diagnostics buffer is readable over the
+# API, so scrub anything that looks like a UUID / long hex-or-urlsafe handle down
+# to a short prefix before it is stored — this covers existing AND future log
+# statements without having to redact each call site.
+_SECRET_RE = _re.compile(
+    r"(?<![A-Za-z0-9_-])("
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"  # UUID
+    r"|[0-9a-fA-F]{32,}"                                                            # long hex
+    r"|[A-Za-z0-9_-]{32,}"                                                          # long urlsafe (matches the >=32 session-id rule)
+    r")(?![A-Za-z0-9_-])"
+)
+
+
+def _scrub_secrets(message: str) -> str:
+    return _SECRET_RE.sub(lambda m: m.group(1)[:8] + "…", message)
+
+
 class _DiagnosticsLoggingHandler(logging.Handler):
     """``logging.Handler`` that mirrors every emitted record into the ring.
 
@@ -155,7 +179,8 @@ class _DiagnosticsLoggingHandler(logging.Handler):
                 level=_level_to_str(record.levelno),
                 category=_logger_to_category(record.name),
                 source=record.name,
-                message=self.format(record) if self.formatter else record.getMessage(),
+                message=_scrub_secrets(
+                    self.format(record) if self.formatter else record.getMessage()),
             )
         except Exception:                                  # noqa: BLE001
             # Logging handlers must never raise back into the logger call.

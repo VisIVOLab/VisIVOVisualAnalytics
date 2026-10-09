@@ -57,6 +57,9 @@ protected:
     void refreshRecentDatasets();
 
 signals:
+    /// The single *Open…*: the file is chosen first, and what it is decides
+    /// which viewer receives it.
+    void openAnythingRequested();
     void openDataRequested();
     void openCatalogueRequested();
     void openVbtRequested();
@@ -134,6 +137,7 @@ QFrame *makeActionCard(const QString &iconKind, const QString &title,
 
     // Recent datasets — manager pointer (not owned), layout for dynamic items.
     RecentDatasetsManager *recentMgr{ nullptr };
+    QPointer<QPushButton> m_clearRecentsButton;
     QPointer<QVBoxLayout>  recentItemsLayout;
 
     // Workspace Exports — populated by refreshWorkspaceExports().

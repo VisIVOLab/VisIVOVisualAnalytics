@@ -2,7 +2,7 @@
 <!-- Simple downward chevron used as the QComboBox drop-down arrow indicator
      across the app. currentColor + viewBox in arbitrary units so the icon
      scales cleanly to whatever pixel size Qt asks for in QSS. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 8" fill="none"
+<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8" viewBox="0 0 12 8" fill="none"
      stroke="#D0DEFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
   <polyline points="1,1 6,6 11,1"/>
 </svg>

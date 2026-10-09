@@ -6,6 +6,8 @@
 
 #include <string>
 
+#include "LutScale.h"
+
 struct ImageLayerLoadResult;
 
 class vtkFITSReader;
@@ -90,6 +92,24 @@ public:
     void setLogScale(bool flag);
 
     /**
+   * @return the colour-scale stretch currently applied to this layer's LUT
+   */
+    LutScale::Mode scaleMode() const;
+
+    /**
+   * @return the Power-stretch exponent (γ) tracked for this layer
+   */
+    double scaleGamma() const;
+
+    /**
+   * Apply a colour-scale stretch (Linear / Log / Sqrt / Square / Power) to this
+   * layer's LUT and remember it so it survives reloads and colormap changes.
+   * @param mode stretch mode
+   * @param gamma exponent used by the Power mode (ignored otherwise)
+   */
+    void setScaleMode(LutScale::Mode mode, double gamma = 2.0);
+
+    /**
    * @return Color map used by vtkLookupTable
    */
     std::string getColorMapName() const;
@@ -129,6 +149,8 @@ private:
 
     bool readerBacked;
     bool previewModeActive{ false };
+    LutScale::Mode m_scaleMode{ LutScale::Mode::Linear };
+    double m_gamma{ 2.0 };
     double scalarRange[2];
     std::string filepath;
     vtkSmartPointer<vtkImageData> imageData;

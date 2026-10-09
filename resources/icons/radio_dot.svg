@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 14" fill="#FFFFFF">
+  <!-- The centre dot of a checked radio button. A radio has to read as a ring
+       with a dot: filling the whole indicator instead made it look like a
+       checkbox that had lost its tick. -->
+  <circle cx="7" cy="7" r="3.2"/>
+</svg>

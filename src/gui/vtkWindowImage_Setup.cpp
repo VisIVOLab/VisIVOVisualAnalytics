@@ -1,0 +1,2392 @@
+#include "vtkWindowImage.h"
+#include "ui_vtkWindowImage.h"
+#include "CubeViewportGeometry.h"
+
+#include "app/BackendClient.h"
+#include "app/DiagnosticsManager.h"
+#include "app/ThemeManager.h"
+#include "CatalogueTableModel.h"
+#include "ColorMaps.h"
+#include "CatalogueOverlayUtils.h"
+#include "DiagnosticsWindow.h"
+#include "ImageLayerController.h"
+#include "FitsHeaderEditorDialog.h"
+#include "ImageLayerImportService.h"
+#include "ImageLayerLoadTask.h"
+#include "LUTCustomizerDialog.h"
+#include "LayerListModel.h"
+#include "ProfileWidget.h"
+#include "RemoteFileBrowserDialog.h"
+#include "qcustomplot.h"
+#include "SidebarPanel.h"
+#include "ViewerModeState.h"
+#include "theme/SegmentedToggle.h"
+#include "app/ThumbnailCache.h"
+#include "theme/VisivoTheme.h"
+#include "WorkspaceChrome.h"
+#include "AssistantPanel.h"
+#include "CopilotActionRouter.h"
+#include "InspectorPanel.h"
+#include "ToolResultDialog.h"
+#include "vtkInteractorStyleProfile.h"
+#include "vtkLegendScaleActorWCS.h"
+#include "wcs.h"
+
+#include <vtkCamera.h>
+#include <vtkAxisActor2D.h>
+#include <vtkContourTriangulator.h>
+#include <vtkCoordinate.h>
+#include <vtkGenericOpenGLRenderWindow.h>
+#include <vtkImageData.h>
+#include <vtkImageSlice.h>
+#include <vtkImageStack.h>
+#include <vtkInteractorStyleImage.h>
+#include <vtkInteractorStyleUser.h>
+#include <vtkLineSource.h>
+#include <vtkLookupTable.h>
+#include <vtkMath.h>
+#include <vtkNew.h>
+#include <vtkPoints.h>
+#include <vtkCellArray.h>
+#include <vtkPolyData.h>
+#include "vtkFITSReader.h"
+#include <vtkContourFilter.h>
+#include <vtkFlyingEdges2D.h>
+#include <vtkPolyDataMapper.h>
+#include <vtkProperty.h>
+#include <vtkProperty2D.h>
+#include <vtkRegularPolygonSource.h>
+#include <vtkRenderer.h>
+#include <vtkRendererCollection.h>
+#include <vtkScalarBarActor.h>
+#include <vtkTextActor.h>
+#include <vtkTextProperty.h>
+
+#include <QAbstractItemView>
+#include <QAction>
+#include <QActionGroup>
+#include <QApplication>
+#include <QButtonGroup>
+#include <QCheckBox>
+#include <QDebug>
+#include <QKeySequence>
+#include <QIcon>
+#include <QImage>
+#include <QPixmap>
+#include <QDockWidget>
+#include <QElapsedTimer>
+#include <QFile>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QDoubleValidator>
+#include <QFormLayout>
+#include <QSpinBox>
+#include <QFrame>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QComboBox>
+#include <QDialogButtonBox>
+#include <QInputDialog>
+#include <QPushButton>
+#include <QTableWidget>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QItemSelectionModel>
+#include <QLabel>
+#include <QMetaObject>
+#include <QMessageBox>
+#include <QSignalBlocker>
+#include <QPlainTextEdit>
+#include <QDialog>
+#include <QSlider>
+#include <QStringList>
+#include <QToolBar>
+#include <QToolButton>
+#include <QTableView>
+#include <QVBoxLayout>
+#include <QtConcurrentRun>
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <sstream>
+
+using namespace Qt::StringLiterals;
+using namespace CubeGeom;  // shared viewport-geometry helpers (deduplicated)
+
+// ── Setup: renderer, toolbar, sidebar, LUT customizer, FITS header ───────────
+// Extracted verbatim from vtkWindowImage.cpp. One-time UI/renderer construction
+// helpers invoked from the constructor (which stays in the main TU).
+
+namespace {
+QString compactDirPath(const QString &fullPath)
+{
+    const QStringList parts = fullPath.split(u'/', Qt::SkipEmptyParts);
+    if (parts.size() <= 2) {
+        return fullPath;
+    }
+    return QStringLiteral("\u2026/%1/%2").arg(parts[parts.size() - 2], parts.last());
+}
+}  // namespace
+
+void vtkWindowImage::showLUTCustomizer()
+{
+    const int index = this->currentLayerIndex();
+    if (!this->layers || index < 0 || index >= this->layers->rowCount()) {
+        return;
+    }
+    qDebug().noquote() << QStringLiteral("[lut] open request index=%1 existing=%2")
+                                  .arg(index)
+                                  .arg(this->lutCustomizer != nullptr);
+    if (!this->lutCustomizer) {
+        this->lutCustomizer = new LUTCustomizerDialog(this);
+        QObject::connect(this->lutCustomizer, &LUTCustomizerDialog::lutUpdated, this,
+                         [this]() {
+                             // Persist the chosen stretch on the active layer so it
+                             // survives reloads / colormap swaps.
+                             const int idx = this->currentLayerIndex();
+                             if (this->layers && idx >= 0 && this->lutCustomizer) {
+                                 this->layers->setScaleMode(idx, this->lutCustomizer->scaleMode(),
+                                                            this->lutCustomizer->scaleGamma());
+                             }
+                             this->markDisplayStateAdjusted("lut editor");
+                             this->showCurrentLayerSettings();
+                         });
+    }
+    this->lutCustomizer->show();
+    this->lutCustomizer->raise();
+    this->lutCustomizer->activateWindow();
+    qDebug().noquote() << QStringLiteral("[lut] dialog shown/raised");
+    if (this->suspendLutEditorUpdates) {
+        return;
+    }
+    QPointer<LUTCustomizerDialog> dialog = this->lutCustomizer;
+    auto *dataset = this->layers->getImageData(index);
+    auto *lut = this->layers->getLookupTable(index);
+    const LutScale::Mode mode = this->layers->scaleMode(index);
+    const double gamma = this->layers->scaleGamma(index);
+    QTimer::singleShot(0, this, [this, dialog, dataset, lut, mode, gamma]() {
+        if (!dialog || this->suspendLutEditorUpdates || !dataset || !lut) {
+            return;
+        }
+        qDebug().noquote() << QStringLiteral("[lut] deferred init started");
+        dialog->init(dataset, lut, mode, gamma);
+    });
+}
+
+void vtkWindowImage::updateLUTCustomizer()
+{
+    if (this->lutCustomizer && !this->suspendLutEditorUpdates) {
+        const int index = this->currentLayerIndex();
+        this->lutCustomizer->init(this->layers->getImageData(index),
+                                  this->layers->getLookupTable(index),
+                                  this->layers->scaleMode(index),
+                                  this->layers->scaleGamma(index));
+    }
+}
+
+void vtkWindowImage::setupRenderer()
+{
+    this->wcsOverlayInitialized = false;
+    vtkNew<vtkRenderer> ren;
+    ren->SetBackground(0.21, 0.23, 0.25);
+    ren->GetActiveCamera()->ParallelProjectionOn();
+
+    vtkNew<vtkGenericOpenGLRenderWindow> win;
+    win->AddRenderer(ren);
+    ui->vtk->setRenderWindow(win);
+    ui->vtk->setEnableTouchEventProcessing(false);
+
+    vtkNew<vtkInteractorStyleImage> style;
+    win->GetInteractor()->SetInteractorStyle(style);
+    win->GetInteractor()->AddObserver(vtkCommand::MouseMoveEvent, this,
+                                      &vtkWindowImage::mouseCallback);
+    win->GetInteractor()->AddObserver(vtkCommand::LeftButtonPressEvent, this,
+                                      &vtkWindowImage::beginImageInteraction);
+    win->GetInteractor()->AddObserver(vtkCommand::LeftButtonPressEvent, this,
+                                      &vtkWindowImage::toggleProbeFreeze);
+    win->GetInteractor()->AddObserver(vtkCommand::LeftButtonReleaseEvent, this,
+                                      &vtkWindowImage::endImageInteraction);
+    win->GetInteractor()->AddObserver(vtkCommand::LeftButtonReleaseEvent, this,
+                                      &vtkWindowImage::finishRegionInteraction);
+    win->GetInteractor()->AddObserver(vtkCommand::RightButtonPressEvent, this,
+                                      &vtkWindowImage::finishRegionInteraction);
+    win->GetInteractor()->AddObserver(vtkCommand::LeftButtonDoubleClickEvent, this,
+                                      &vtkWindowImage::finishRegionInteraction);
+    // Double-click on a catalogue source zooms to it, the same gesture the table
+    // already had. A single click selects and highlights it (that already
+    // worked); this is the other half of "point at it, look closer".
+    win->GetInteractor()->AddObserver(vtkCommand::LeftButtonDoubleClickEvent, this,
+                                      &vtkWindowImage::zoomToCatalogueSourceUnderCursor);
+    // Viewport-driven LOD: when a camera interaction (pan / zoom) ends, re-arm a
+    // short debounce; if the view settled on a different region/zoom we stream
+    // the visible tiles at the appropriate pyramid level.
+    win->GetInteractor()->AddObserver(vtkCommand::EndInteractionEvent, this,
+                                      &vtkWindowImage::onImageInteractionSettled);
+    this->m_lodSettleTimer = new QTimer(this);
+    this->m_lodSettleTimer->setSingleShot(true);
+    this->m_lodSettleTimer->setInterval(150);
+    QObject::connect(this->m_lodSettleTimer, &QTimer::timeout, this,
+                     &vtkWindowImage::maybeStreamViewportLod);
+
+    this->coordinate->SetCoordinateSystemToDisplay();
+    this->coordinate->SetViewport(ren);
+
+    // Stack
+    this->stack->AddImage(this->layers->getMasterLayerActor());
+    this->stack->SetActiveLayer(0);
+    ren->AddViewProp(this->stack);
+
+    // Color bar
+    this->colorbar->SetMaximumWidthInPixels(120);
+    this->colorbar->SetPosition(0.9, 0.1);
+    this->colorbar->SetLookupTable(this->layers->getLookupTable(this->layers->getMasterIndex()));
+    ren->AddViewProp(this->colorbar);
+
+    this->layerController =
+            std::make_unique<ImageLayerController>(*(this->layers), this->stack, this->colorbar);
+
+    // Legend: local AstroUtils-based legend not used in backend mode; remote WCS overlay actors are used instead.
+    ren->AddViewProp(this->overlayXAxis);
+    ren->AddViewProp(this->overlayYAxis);
+    ren->AddViewProp(this->overlayXTitleActor);
+    ren->AddViewProp(this->overlayYTitleActor);
+    vtkNew<vtkPolyDataMapper> probeHorizontalMapper;
+    probeHorizontalMapper->SetInputConnection(this->probeHorizontalLine->GetOutputPort());
+    this->probeHorizontalActor->SetMapper(probeHorizontalMapper);
+    this->probeHorizontalActor->GetProperty()->SetColor(1.0, 0.85, 0.1);
+    this->probeHorizontalActor->GetProperty()->SetLineWidth(1.5);
+    this->probeHorizontalActor->VisibilityOff();
+    ren->AddActor(this->probeHorizontalActor);
+    vtkNew<vtkPolyDataMapper> probeVerticalMapper;
+    probeVerticalMapper->SetInputConnection(this->probeVerticalLine->GetOutputPort());
+    this->probeVerticalActor->SetMapper(probeVerticalMapper);
+    this->probeVerticalActor->GetProperty()->SetColor(1.0, 0.85, 0.1);
+    this->probeVerticalActor->GetProperty()->SetLineWidth(1.5);
+    this->probeVerticalActor->VisibilityOff();
+    ren->AddActor(this->probeVerticalActor);
+    // ── Measurement actors ─────────────────────────────────────────────────
+    {
+        const auto configureMeasActor = [&ren](vtkLineSource *line, vtkActor *actor) {
+            vtkNew<vtkPolyDataMapper> mapper;
+            mapper->SetInputConnection(line->GetOutputPort());
+            actor->SetMapper(mapper);
+            actor->GetProperty()->SetColor(1.0, 0.65, 0.0);
+            actor->GetProperty()->SetLineWidth(2.0);
+            actor->GetProperty()->SetLineStipplePattern(0xF0F0);
+            actor->VisibilityOff();
+            ren->AddActor(actor);
+        };
+        configureMeasActor(this->m_measLine1, this->m_measLineActor1);
+        configureMeasActor(this->m_measLine2, this->m_measLineActor2);
+
+        this->m_measLabelActor = vtkSmartPointer<vtkTextActor>::New();
+        this->m_measLabelActor->GetTextProperty()->SetColor(1.0, 0.85, 0.1);
+        this->m_measLabelActor->GetTextProperty()->SetFontSize(14);
+        this->m_measLabelActor->GetTextProperty()->SetBold(true);
+        this->m_measLabelActor->GetTextProperty()->SetShadow(true);
+        this->m_measLabelActor->VisibilityOff();
+        ren->AddViewProp(this->m_measLabelActor);
+    }
+
+    // ── Polarization vector overlay actor ─────────────────────────────────
+    {
+        vtkNew<vtkPolyDataMapper> mapper;
+        mapper->SetInputData(this->m_polVecData);
+        this->m_polVecActor->SetMapper(mapper);
+        this->m_polVecActor->GetProperty()->SetColor(0.95, 0.95, 0.25);
+        this->m_polVecActor->GetProperty()->SetLineWidth(1.2);
+        this->m_polVecActor->VisibilityOff();
+        ren->AddActor(this->m_polVecActor);
+    }
+
+    // ── Annotation placement preview actor ────────────────────────────────
+    {
+        vtkNew<vtkPolyDataMapper> mapper;
+        mapper->SetInputData(this->m_annotPreviewData);
+        this->m_annotPreviewActor->SetMapper(mapper);
+        this->m_annotPreviewActor->GetProperty()->SetColor(1.0, 1.0, 0.3);
+        this->m_annotPreviewActor->GetProperty()->SetLineWidth(2.0);
+        this->m_annotPreviewActor->GetProperty()->SetOpacity(0.7);
+        this->m_annotPreviewActor->VisibilityOff();
+        ren->AddActor(this->m_annotPreviewActor);
+    }
+
+    vtkRenderer *renderer = ren;
+    const auto configureRegionLineActor = [renderer](vtkLineSource *line, vtkActor *actor) {
+        vtkNew<vtkPolyDataMapper> mapper;
+        mapper->SetInputConnection(line->GetOutputPort());
+        actor->SetMapper(mapper);
+        actor->GetProperty()->SetColor(0.2, 0.9, 1.0);
+        actor->GetProperty()->SetLineWidth(2.0);
+        actor->VisibilityOff();
+        renderer->AddActor(actor);
+    };
+    configureRegionLineActor(this->regionTopLine, this->regionTopActor);
+    configureRegionLineActor(this->regionBottomLine, this->regionBottomActor);
+    configureRegionLineActor(this->regionLeftLine, this->regionLeftActor);
+    configureRegionLineActor(this->regionRightLine, this->regionRightActor);
+    this->regionCircleSource->SetNumberOfSides(96);
+    this->regionCircleSource->GeneratePolygonOff();
+    vtkNew<vtkPolyDataMapper> regionCircleMapper;
+    regionCircleMapper->SetInputConnection(this->regionCircleSource->GetOutputPort());
+    this->regionCircleActor->SetMapper(regionCircleMapper);
+    this->regionCircleActor->GetProperty()->SetColor(0.2, 0.9, 1.0);
+    this->regionCircleActor->GetProperty()->SetLineWidth(2.0);
+    this->regionCircleActor->VisibilityOff();
+    ren->AddActor(this->regionCircleActor);
+    this->regionAnnulusOuterSource->SetNumberOfSides(96);
+    this->regionAnnulusOuterSource->GeneratePolygonOff();
+    vtkNew<vtkPolyDataMapper> regionAnnulusOuterMapper;
+    regionAnnulusOuterMapper->SetInputConnection(this->regionAnnulusOuterSource->GetOutputPort());
+    this->regionAnnulusOuterActor->SetMapper(regionAnnulusOuterMapper);
+    this->regionAnnulusOuterActor->GetProperty()->SetColor(0.2, 0.9, 1.0);
+    this->regionAnnulusOuterActor->GetProperty()->SetLineWidth(2.0);
+    this->regionAnnulusOuterActor->GetProperty()->SetRepresentationToWireframe();
+    this->regionAnnulusOuterActor->VisibilityOff();
+    ren->AddActor(this->regionAnnulusOuterActor);
+    this->regionAnnulusInnerSource->SetNumberOfSides(96);
+    this->regionAnnulusInnerSource->GeneratePolygonOff();
+    vtkNew<vtkPolyDataMapper> regionAnnulusInnerMapper;
+    regionAnnulusInnerMapper->SetInputConnection(this->regionAnnulusInnerSource->GetOutputPort());
+    this->regionAnnulusInnerActor->SetMapper(regionAnnulusInnerMapper);
+    this->regionAnnulusInnerActor->GetProperty()->SetColor(0.2, 0.9, 1.0);
+    this->regionAnnulusInnerActor->GetProperty()->SetLineWidth(1.5);
+    this->regionAnnulusInnerActor->GetProperty()->SetRepresentationToWireframe();
+    this->regionAnnulusInnerActor->VisibilityOff();
+    ren->AddActor(this->regionAnnulusInnerActor);
+    vtkNew<vtkPolyDataMapper> regionAnnulusFillMapper;
+    regionAnnulusFillMapper->SetInputData(this->regionAnnulusFillData);
+    this->regionAnnulusFillActor->SetMapper(regionAnnulusFillMapper);
+    this->regionAnnulusFillActor->GetProperty()->SetColor(0.2, 0.9, 1.0);
+    this->regionAnnulusFillActor->GetProperty()->SetOpacity(0.18);
+    this->regionAnnulusFillActor->GetProperty()->SetRepresentationToSurface();
+    this->regionAnnulusFillActor->VisibilityOff();
+    ren->AddActor(this->regionAnnulusFillActor);
+    this->regionPolygonTriangulator->SetInputData(this->regionPolygonFillData);
+    vtkNew<vtkPolyDataMapper> regionPolygonMapper;
+    regionPolygonMapper->SetInputData(this->regionPolygonData);
+    this->regionPolygonActor->SetMapper(regionPolygonMapper);
+    this->regionPolygonActor->GetProperty()->SetColor(0.2, 0.9, 1.0);
+    this->regionPolygonActor->GetProperty()->SetLineWidth(2.0);
+    this->regionPolygonActor->VisibilityOff();
+    ren->AddActor(this->regionPolygonActor);
+    vtkNew<vtkPolyDataMapper> regionPolygonFillMapper;
+    regionPolygonFillMapper->SetInputConnection(this->regionPolygonTriangulator->GetOutputPort());
+    this->regionPolygonFillActor->SetMapper(regionPolygonFillMapper);
+    this->regionPolygonFillActor->GetProperty()->SetColor(0.2, 0.9, 1.0);
+    this->regionPolygonFillActor->GetProperty()->SetOpacity(0.18);
+    this->regionPolygonFillActor->VisibilityOff();
+    ren->AddActor(this->regionPolygonFillActor);
+    this->catalogueOverlayData->SetPoints(this->catalogueOverlayPoints);
+    this->catalogueOverlayData->SetLines(this->catalogueOverlayCells);
+    vtkNew<vtkPolyDataMapper> catalogueOverlayMapper;
+    catalogueOverlayMapper->SetInputData(this->catalogueOverlayData);
+    this->catalogueOverlayActor->SetMapper(catalogueOverlayMapper);
+    this->catalogueOverlayActor->GetProperty()->SetColor(1.0, 0.45, 0.15);
+    this->catalogueOverlayActor->GetProperty()->SetLineWidth(1.5);
+    this->catalogueOverlayActor->VisibilityOff();
+    ren->AddActor(this->catalogueOverlayActor);
+    this->catalogueHoverOverlayData->SetPoints(this->catalogueHoverOverlayPoints);
+    this->catalogueHoverOverlayData->SetLines(this->catalogueHoverOverlayCells);
+    vtkNew<vtkPolyDataMapper> catalogueHoverMapper;
+    catalogueHoverMapper->SetInputData(this->catalogueHoverOverlayData);
+    this->catalogueHoverOverlayActor->SetMapper(catalogueHoverMapper);
+    this->catalogueHoverOverlayActor->GetProperty()->SetColor(1.0, 0.95, 0.45);
+    this->catalogueHoverOverlayActor->GetProperty()->SetLineWidth(2.5);
+    this->catalogueHoverOverlayActor->VisibilityOff();
+    ren->AddActor(this->catalogueHoverOverlayActor);
+    this->catalogueSelectionOverlayData->SetPoints(this->catalogueSelectionOverlayPoints);
+    this->catalogueSelectionOverlayData->SetLines(this->catalogueSelectionOverlayCells);
+    vtkNew<vtkPolyDataMapper> catalogueSelectionMapper;
+    catalogueSelectionMapper->SetInputData(this->catalogueSelectionOverlayData);
+    this->catalogueSelectionOverlayActor->SetMapper(catalogueSelectionMapper);
+    this->catalogueSelectionOverlayActor->GetProperty()->SetColor(0.15, 0.95, 1.0);
+    this->catalogueSelectionOverlayActor->GetProperty()->SetLineWidth(3.2);
+    this->catalogueSelectionOverlayActor->VisibilityOff();
+    ren->AddActor(this->catalogueSelectionOverlayActor);
+    this->overlayXAxis->GetTitleTextProperty()->SetFontSize(16);
+    this->overlayXAxis->GetTitleTextProperty()->SetBold(false);
+    this->overlayYAxis->GetTitleTextProperty()->SetFontSize(16);
+    this->overlayYAxis->GetTitleTextProperty()->SetOrientation(90.);
+    this->overlayYAxis->GetTitleTextProperty()->SetBold(false);
+    this->overlayXTitleActor->GetTextProperty()->SetColor(1., 1., 1.);
+    this->overlayXTitleActor->GetTextProperty()->SetFontSize(14);
+    this->overlayXTitleActor->GetTextProperty()->SetJustificationToCentered();
+    this->overlayXTitleActor->GetTextProperty()->SetVerticalJustificationToCentered();
+    this->overlayYTitleActor->GetTextProperty()->SetColor(1., 1., 1.);
+    this->overlayYTitleActor->GetTextProperty()->SetFontSize(14);
+    this->overlayYTitleActor->GetTextProperty()->SetOrientation(90.);
+    this->overlayYTitleActor->GetTextProperty()->SetJustificationToCentered();
+    this->overlayYTitleActor->GetTextProperty()->SetVerticalJustificationToCentered();
+    this->ensureOverlayTickActors(ren);
+    this->wcsOverlayInitialized = true;
+    this->setWcsOverlayVisible(this->showWcsAxes);
+    win->AddObserver(vtkCommand::EndEvent, this, &vtkWindowImage::updateWcsOverlay);
+    win->AddObserver(vtkCommand::EndEvent, this, &vtkWindowImage::updateCatalogueOverlayLabels);
+
+    // Loading placeholder — visible until first image data arrives.
+    {
+        auto *prop = this->m_loadingActor->GetTextProperty();
+        prop->SetFontSize(16);
+        double r, g, b;
+        ThemeManager::instance().vtkTextColor(r, g, b);
+        prop->SetColor(r, g, b);
+        prop->SetJustificationToCentered();
+        prop->SetVerticalJustificationToCentered();
+        prop->BoldOff();
+        prop->ShadowOff();
+        this->m_loadingActor->SetInput("Loading image\xe2\x80\xa6");
+        this->m_loadingActor->GetPositionCoordinate()
+                ->SetCoordinateSystemToNormalizedViewport();
+        this->m_loadingActor->SetPosition(0.5, 0.5);
+        this->m_loadingActor->VisibilityOn();
+        ren->AddActor2D(this->m_loadingActor);
+
+        // Track runtime theme changes so the loading text stays readable.
+        QObject::connect(&ThemeManager::instance(), &ThemeManager::themeChanged,
+                         this, [this](EffectiveTheme) {
+                             double tr, tg, tb;
+                             ThemeManager::instance().vtkTextColor(tr, tg, tb);
+                             this->m_loadingActor->GetTextProperty()->SetColor(tr, tg, tb);
+                         });
+    }
+
+    ren->ResetCamera();
+    win->Render();
+}
+
+void vtkWindowImage::showFitsHeaderDialog()
+{
+    BackendClient client(this->remoteBackendUrl, this->remoteBackendToken);
+    const auto result = client.fileHeader(this->filepath);
+
+    auto *dlg = new QDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowModality(Qt::NonModal);
+    dlg->setWindowTitle(u"FITS Header - %1"_s.arg(QFileInfo(this->filepath).fileName()));
+    dlg->resize(620, 480);
+
+    auto *vbox = new QVBoxLayout(dlg);
+    vbox->setContentsMargins(0, 0, 0, 0);
+    vbox->setSpacing(0);
+
+    auto *header = new QFrame(dlg);
+    header->setStyleSheet(
+            QStringLiteral(
+                    "QFrame {"
+                    "  background-color: %1;"
+                    "  border-bottom: 1px solid %2;"
+                    "}"
+                    "QFrame QLabel { background: transparent; }")
+                    .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerLow()),
+                         QLatin1StringView(VisivoTheme::kOutline())));
+    auto *headerLayout = new QVBoxLayout(header);
+    headerLayout->setContentsMargins(16, 12, 16, 12);
+    headerLayout->setSpacing(2);
+    auto *title = new QLabel(u"FITS Header"_s, header);
+    title->setStyleSheet(
+            QStringLiteral("color: %1; font-size: 14px; font-weight: 700;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
+    headerLayout->addWidget(title);
+    auto *sub = new QLabel(this->filepath, header);
+    sub->setStyleSheet(
+            QStringLiteral("color: %1; font-size: 11px; "
+                            "font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    sub->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    headerLayout->addWidget(sub);
+    vbox->addWidget(header);
+
+    auto *body = new QPlainTextEdit(dlg);
+    body->setReadOnly(true);
+    body->setLineWrapMode(QPlainTextEdit::NoWrap);
+    body->setStyleSheet(
+            QStringLiteral(
+                    "QPlainTextEdit {"
+                    "  background-color: %1; color: %2;"
+                    "  font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;"
+                    "  font-size: 11px;"
+                    "  border: none;"
+                    "  padding: 12px 14px;"
+                    "}")
+                    .arg(QLatin1StringView(VisivoTheme::kSurface()),
+                         QLatin1StringView(VisivoTheme::kOnSurface())));
+    if (result.valid && !result.cards.isEmpty()) {
+        body->setPlainText(result.cards.join(u"\n"_s));
+    } else if (!result.valid) {
+        body->setPlainText(
+                QStringLiteral("Could not load FITS header.\n\n%1")
+                        .arg(result.error.isEmpty() ? u"Unknown error."_s : result.error));
+    } else {
+        body->setPlainText(u"(empty header)"_s);
+    }
+    vbox->addWidget(body, 1);
+
+    // The header was read-only, which is where the legacy's separate "header
+    // modifier" dialog came from — a second window, reachable only when a file
+    // failed to open. Editing belongs where the header already is.
+    auto *actions = new QHBoxLayout;
+    actions->setContentsMargins(12, 8, 12, 12);
+    actions->addStretch(1);
+    auto *edit = new QPushButton(u"Edit…"_s, dlg);
+    edit->setEnabled(result.valid && !result.cards.isEmpty());
+    edit->setToolTip(u"Correct keywords and save the result as a new FITS file "
+                     u"in the Workspace. This file is not modified."_s);
+    const QStringList cards = result.cards;
+    QPointer<vtkWindowImage> self(this);
+    QObject::connect(edit, &QPushButton::clicked, dlg, [this, self, dlg, cards]() {
+        if (!self)
+            return;
+        auto *editor = new FitsHeaderEditorDialog(this->filepath, cards,
+                                                  this->remoteBackendUrl,
+                                                  this->remoteBackendToken, self);
+        editor->setAttribute(Qt::WA_DeleteOnClose);
+        QObject::connect(editor, &FitsHeaderEditorDialog::saved, self,
+                         [self](const QString &path) {
+                             if (!self)
+                                 return;
+                             // A repaired copy of THIS image: same sky, so it
+                             // goes on as a layer.
+                             self->addLayerFromBackendPath(path, QFileInfo(path).fileName());
+                         });
+        editor->open();
+        dlg->close();
+    });
+    actions->addWidget(edit);
+    vbox->addLayout(actions);
+
+    dlg->show();
+}
+
+void vtkWindowImage::setupViewerToolbar()
+{
+    VisivoTheme::ViewerToolbarSpec spec;
+    spec.filePath = this->filepath;
+    spec.primaryTag = QStringLiteral("IMAGE");
+    spec.secondaryTag = QStringLiteral("remote · full-res");
+
+    VisivoTheme::ViewerToolbarWidgets w;
+    QWidget *bar = VisivoTheme::makeViewerToolbar(spec, &w, this);
+
+    if (w.primaryTag) {
+        QObject::connect(w.primaryTag, &QToolButton::clicked, this, [this]() {
+            this->showFitsHeaderDialog();
+        });
+    }
+
+    auto *qtBar = new QToolBar(this);
+    qtBar->setObjectName(u"viewerToolbarHost"_s);
+    qtBar->setMovable(false);
+    qtBar->setFloatable(false);
+    qtBar->setContextMenuPolicy(Qt::PreventContextMenu);
+    qtBar->setStyleSheet(
+            QStringLiteral(
+                    "QToolBar#viewerToolbarHost {"
+                    "  background-color: transparent;"
+                    "  border: none;"
+                    "  padding: 6px 10px 4px 10px;"
+                    "  spacing: 0px;"
+                    "}"));
+    qtBar->addWidget(bar);
+    this->addToolBar(Qt::TopToolBarArea, qtBar);
+
+    // Shared chrome wiring (⌘K, dataset switcher, theme toggle, live health
+    // chip). installStatusRail()/start() run later from the constructor, after
+    // the window's own permanent status labels are added.
+    m_workspaceChrome = new WorkspaceChrome(
+            this, this->remoteBackendUrl, this->remoteBackendToken,
+            this->remoteSessionId, this);
+    m_workspaceChrome->attachCommandBar(w);
+}
+
+// ── The mode strip ───────────────────────────────────────────────────────────
+//
+// Pan, Probe, Region, Ruler and Annotate are mutually exclusive — arming one
+// disarms the others, and the code has always known that. What it never showed
+// was WHICH one is on: they were entered from the Tools menu, whose checkmarks
+// are invisible until the menu is open, so the way to find out was to click on
+// the image and see what happened. The redesign calls this "the missing
+// affordance"; this row is it.
+//
+// The strip holds no state of its own. `currentViewerMode()` reads the modes
+// themselves, so the strip cannot drift out of step with them — which matters
+// because a mode can also be armed from the menu, the palette, or by another
+// mode disarming it.
+
+void vtkWindowImage::setupModeStrip()
+{
+    auto *row = new QWidget(this);
+    auto *layout = new QHBoxLayout(row);
+    layout->setContentsMargins(10, 0, 10, 6);
+    layout->setSpacing(10);
+
+    auto *label = new QLabel(u"Mode"_s, row);
+    label->setStyleSheet(
+            QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    layout->addWidget(label);
+
+    m_modeStrip = new SegmentedToggle(row);
+    m_modeStrip->addItem(u"Pan"_s, u"Pan and zoom; no tool armed."_s);
+    m_modeStrip->addItem(u"Probe"_s, u"Read pixel values and the profile under the cursor."_s);
+    m_modeStrip->addItem(u"Region"_s, u"Drag a region and measure inside it."_s);
+    m_modeStrip->addItem(u"Ruler"_s, u"Measure a distance on the sky."_s);
+    m_modeStrip->addItem(u"Annotate"_s, u"Place a text annotation on the image."_s);
+    m_modeStrip->setCurrentIndex(0);
+    layout->addWidget(m_modeStrip);
+
+    m_regionShapeStrip = new SegmentedToggle(row);
+    m_regionShapeStrip->addItem(u"Box"_s, u"Rectangular region."_s);
+    m_regionShapeStrip->addItem(u"Circle"_s, u"Circular region."_s);
+    m_regionShapeStrip->addItem(u"Poly"_s, u"Polygon region: click the vertices."_s);
+    m_regionShapeStrip->addItem(u"Annulus"_s, u"Annular region: inner and outer radius."_s);
+    m_regionShapeStrip->setCurrentIndex(0);
+    // Only meaningful while Region is armed — a shape picker for a mode you are
+    // not in is a control that does nothing.
+    m_regionShapeStrip->setVisible(false);
+    layout->addWidget(m_regionShapeStrip);
+
+    m_modeHint = new QLabel(QString(), row);
+    m_modeHint->setStyleSheet(
+            QStringLiteral("color:%1; font-family:'JetBrains Mono','SF Mono',monospace;"
+                           "font-size:10px;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    layout->addWidget(m_modeHint, 1);
+
+    QObject::connect(m_modeStrip, &SegmentedToggle::currentIndexChanged, this,
+                     [this](int index) {
+                         if (m_syncingModeStrip)
+                             return;
+                         this->applyViewerMode(static_cast<ViewerMode>(index));
+                     });
+    QObject::connect(m_regionShapeStrip, &SegmentedToggle::currentIndexChanged, this,
+                     [this](int index) {
+                         if (m_syncingModeStrip)
+                             return;
+                         static const RegionMode shapes[] = {
+                             RegionMode::Box, RegionMode::Circle,
+                             RegionMode::Polygon, RegionMode::Annulus,
+                         };
+                         if (index < 0 || index >= 4)
+                             return;
+                         m_lastRegionShape = shapes[index];
+                         this->applyViewerMode(ViewerMode::Region);
+                     });
+
+    auto *host = new QToolBar(this);
+    host->setObjectName(u"modeStripHost"_s);
+    host->setMovable(false);
+    host->setFloatable(false);
+    host->setContextMenuPolicy(Qt::PreventContextMenu);
+    host->setStyleSheet(
+            QStringLiteral("QToolBar#modeStripHost { background: transparent; border: none;"
+                           " padding: 0px; spacing: 0px; }"));
+    host->addWidget(row);
+    this->addToolBarBreak(Qt::TopToolBarArea);
+    this->addToolBar(Qt::TopToolBarArea, host);
+
+    this->syncModeStrip();
+}
+
+vtkWindowImage::ViewerMode vtkWindowImage::currentViewerMode() const
+{
+    // The precedence lives in ViewerModeState.h, where it can be tested without
+    // a window: what to show when the four flags somehow disagree is exactly
+    // the part that goes wrong silently.
+    const auto kind = visivo::viewerModeFor(
+            this->regionMode != RegionMode::None,
+            this->m_measMode != MeasurementMode::None,
+            this->m_annotPlaceMode != AnnotPlaceMode::None,
+            this->probeModeActive);
+    return static_cast<ViewerMode>(static_cast<int>(kind));
+}
+
+void vtkWindowImage::applyViewerMode(ViewerMode mode)
+{
+    // Everything goes through the existing actions rather than through the
+    // setters: the actions carry the checked state the menu draws, and the
+    // setters are what they call. Driving the actions keeps both surfaces in
+    // agreement for free.
+    const auto uncheck = [](QAction *action) {
+        if (action && action->isChecked())
+            action->setChecked(false);
+    };
+
+    if (mode != ViewerMode::Region) {
+        uncheck(this->actionBoxRegion);
+        uncheck(this->actionCircleRegion);
+        uncheck(this->actionPolygonRegion);
+        uncheck(this->actionAnnulusRegion);
+    }
+    if (mode != ViewerMode::Ruler) {
+        uncheck(this->m_actRuler);
+        uncheck(this->m_actAngle);
+    }
+    if (mode != ViewerMode::Probe)
+        uncheck(ui->actionProfile);
+    if (mode != ViewerMode::Annotate && this->m_annotPlaceMode != AnnotPlaceMode::None) {
+        // An annotation waiting to be placed is armed state like any other: it
+        // holds the next click. Leaving it pending means the strip says Pan
+        // while the image is still waiting to receive text.
+        this->cancelAnnotationPlacement();
+    }
+
+    switch (mode) {
+    case ViewerMode::Pan:
+        break;
+    case ViewerMode::Probe:
+        if (ui->actionProfile)
+            ui->actionProfile->setChecked(true);
+        break;
+    case ViewerMode::Region: {
+        QAction *shape = nullptr;
+        switch (m_lastRegionShape) {
+        case RegionMode::Circle:  shape = this->actionCircleRegion;  break;
+        case RegionMode::Polygon: shape = this->actionPolygonRegion; break;
+        case RegionMode::Annulus: shape = this->actionAnnulusRegion; break;
+        case RegionMode::Box:
+        case RegionMode::None:    shape = this->actionBoxRegion;     break;
+        }
+        if (shape && !shape->isChecked())
+            shape->setChecked(true);
+        break;
+    }
+    case ViewerMode::Ruler:
+        if (m_actRuler && !m_actRuler->isChecked())
+            m_actRuler->setChecked(true);
+        break;
+    case ViewerMode::Annotate:
+        // Placing an annotation needs its text first, so this opens the same
+        // dialog the menu entry does; the mode begins when it is accepted.
+        this->addTextAnnotation();
+        break;
+    }
+
+    this->syncModeStrip();
+}
+
+void vtkWindowImage::syncModeStrip()
+{
+    if (!m_modeStrip)
+        return;
+    const ViewerMode mode = this->currentViewerMode();
+
+    m_syncingModeStrip = true;
+    m_modeStrip->setCurrentIndex(static_cast<int>(mode));
+    if (m_regionShapeStrip) {
+        m_regionShapeStrip->setVisible(mode == ViewerMode::Region);
+        int shapeIndex = 0;
+        switch (this->regionMode) {
+        case RegionMode::Circle:  shapeIndex = 1; break;
+        case RegionMode::Polygon: shapeIndex = 2; break;
+        case RegionMode::Annulus: shapeIndex = 3; break;
+        case RegionMode::Box:
+        case RegionMode::None:    shapeIndex = 0; break;
+        }
+        if (this->regionMode != RegionMode::None) {
+            m_lastRegionShape = this->regionMode;
+            m_regionShapeStrip->setCurrentIndex(shapeIndex);
+        }
+    }
+    m_syncingModeStrip = false;
+
+    if (!m_modeHint)
+        return;
+    switch (mode) {
+    case ViewerMode::Pan:
+        m_modeHint->setText(u"drag to pan · wheel to zoom"_s);
+        break;
+    case ViewerMode::Probe:
+        m_modeHint->setText(u"move over the image · click to freeze"_s);
+        break;
+    case ViewerMode::Region:
+        m_modeHint->setText(this->regionMode == RegionMode::Polygon
+                                    ? u"click each vertex · double-click to close"_s
+                                    : u"drag on the image"_s);
+        break;
+    case ViewerMode::Ruler:
+        m_modeHint->setText(u"click the two ends"_s);
+        break;
+    case ViewerMode::Annotate:
+        m_modeHint->setText(u"click to place"_s);
+        break;
+    }
+}
+
+
+// ── The overlays block ───────────────────────────────────────────────────────
+//
+// Four things can be drawn on top of the image, and each was switched somewhere
+// else: catalogue sources and their labels in Tools, polarisation vectors in
+// Tools, the WCS grid in View, and annotations nowhere — they could be added and
+// cleared, never hidden. None of the four said how many objects were up there,
+// so "is that everything?" had no answer short of exporting the catalogue.
+//
+// The rows are checkboxes over the SAME QActions, not a second set of state:
+// toggling from the menu moves the row and vice versa, and the counts come from
+// the window's own vectors.
+
+void vtkWindowImage::setupOverlaysBlock()
+{
+    auto *block = new QWidget(this);
+    auto *layout = new QVBoxLayout(block);
+    layout->setContentsMargins(0, 8, 0, 0);
+    layout->setSpacing(4);
+
+    auto *header = new QLabel(u"OVERLAYS"_s, block);
+    header->setStyleSheet(
+            QStringLiteral("color:%1; font-size:10px; font-weight:700; letter-spacing:0.14em;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    layout->addWidget(header);
+
+    // Each row is a checkbox plus a right-aligned count. The count is the part
+    // that did not exist anywhere before.
+    const auto addRow = [this, block, layout](const QString &text,
+                                              const QString &toolTip) -> QCheckBox * {
+        auto *row = new QWidget(block);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(8);
+        auto *box = new QCheckBox(text, row);
+        box->setToolTip(toolTip);
+        rowLayout->addWidget(box, 1);
+        auto *count = new QLabel(QString(), row);
+        count->setStyleSheet(
+                QStringLiteral("color:%1; font-family:'JetBrains Mono','SF Mono',monospace;"
+                               "font-size:10px;")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        rowLayout->addWidget(count, 0);
+        layout->addWidget(row);
+        m_overlayCounts.insert(box, count);
+        return box;
+    };
+
+    m_overlayCatalogue = addRow(u"Catalogue sources"_s,
+                                u"The loaded catalogue overlay."_s);
+    m_overlayLabels = addRow(u"Source labels"_s,
+                             u"Names beside the catalogue sources."_s);
+    m_overlayPolVectors = addRow(u"Polarisation vectors"_s,
+                                 u"Vectors computed from the Stokes companions."_s);
+    m_overlayWcsGrid = addRow(u"WCS axes"_s, u"Coordinate ticks around the image."_s);
+    m_overlayAnnotations = addRow(u"Annotations"_s, u"Text and arrows you placed."_s);
+
+    // Each checkbox drives the action that already owns the behaviour; the
+    // action's own toggled() brings the row back in step, whichever surface
+    // started it. m_syncingOverlays keeps the two from echoing.
+    const auto bind = [this](QCheckBox *box, QAction *action) {
+        if (!box || !action)
+            return;
+        QObject::connect(box, &QCheckBox::toggled, this, [this, action](bool on) {
+            if (m_syncingOverlays)
+                return;
+            if (action->isChecked() != on)
+                action->setChecked(on);
+        });
+        QObject::connect(action, &QAction::toggled, this,
+                         [this]() { this->refreshOverlaysBlock(); });
+        QObject::connect(action, &QAction::changed, this,
+                         [this]() { this->refreshOverlaysBlock(); });
+    };
+    bind(m_overlayCatalogue, this->actionShowCatalogueOverlay);
+    bind(m_overlayLabels, this->actionShowCatalogueLabels);
+    bind(m_overlayPolVectors, this->m_actTogglePolVecs);
+    bind(m_overlayWcsGrid, this->actionShowWcsAxes);
+
+    // Annotations had no visibility toggle at all — this is the one place it
+    // exists, so the checkbox owns it rather than mirroring an action.
+    QObject::connect(m_overlayAnnotations, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_syncingOverlays)
+            return;
+        this->setAnnotationsVisible(on);
+    });
+
+    m_overlaysBlock = block;
+    this->refreshOverlaysBlock();
+}
+
+void vtkWindowImage::refreshOverlaysBlock()
+{
+    if (!m_overlaysBlock)
+        return;
+    m_syncingOverlays = true;
+
+    const auto sync = [this](QCheckBox *box, QAction *action, int count) {
+        if (!box)
+            return;
+        if (action) {
+            box->setChecked(action->isChecked());
+            // An overlay that has nothing loaded cannot be switched on, and the
+            // row says so rather than failing silently when clicked.
+            box->setEnabled(action->isEnabled());
+        }
+        if (QLabel *label = m_overlayCounts.value(box))
+            label->setText(count >= 0 ? QString::number(count) : QString());
+    };
+
+    const int sources = static_cast<int>(this->catalogueOverlayEntries.size());
+    sync(m_overlayCatalogue, this->actionShowCatalogueOverlay, sources);
+    // No count on the labels row: there is one label per source, so repeating
+    // the number says nothing the row above did not already say.
+    sync(m_overlayLabels, this->actionShowCatalogueLabels, -1);
+    sync(m_overlayPolVectors, this->m_actTogglePolVecs,
+         static_cast<int>(m_polVecCells->GetNumberOfCells()));
+    sync(m_overlayWcsGrid, this->actionShowWcsAxes, -1);
+
+    if (m_overlayAnnotations) {
+        m_overlayAnnotations->setChecked(m_annotationsVisible);
+        m_overlayAnnotations->setEnabled(!m_annotations.empty());
+        if (QLabel *label = m_overlayCounts.value(m_overlayAnnotations))
+            label->setText(QString::number(m_annotations.size()));
+    }
+
+    m_syncingOverlays = false;
+}
+
+void vtkWindowImage::setAnnotationsVisible(bool visible)
+{
+    m_annotationsVisible = visible;
+    for (auto &actor : m_annotTextActors) {
+        if (actor)
+            actor->SetVisibility(visible ? 1 : 0);
+    }
+    for (auto &actor : m_annotArrowActors) {
+        if (actor)
+            actor->SetVisibility(visible ? 1 : 0);
+    }
+    if (ui->vtk && ui->vtk->renderWindow())
+        ui->vtk->renderWindow()->Render();
+    this->refreshOverlaysBlock();
+}
+
+
+void vtkWindowImage::setupInspector()
+{
+    if (!this->m_workspaceChrome)
+        return;
+    InspectorPanel *panel = this->m_workspaceChrome->installInspectorDock();
+    if (!panel)
+        return;
+
+    panel->setProperties({
+            { u"Dataset"_s, QFileInfo(this->filepath).fileName() },
+            { u"Type"_s, u"IMAGE"_s },
+            { u"Path"_s, this->filepath },
+            { u"Session"_s, this->remoteSessionId },
+            { u"Backend"_s, this->remoteBackendUrl },
+    });
+    // Migrate the former rail pages (layers, catalogue, info/stats) here.
+    // Design #1d: layer/catalogue (view) controls live in the LEFT column's
+    // LAYERS block; only info/stats stays in the Inspector Properties.
+    // The overlays go under the layer list, in the same column: what is drawn
+    // over the image belongs next to what the image is made of.
+    this->setupOverlaysBlock();
+    if (m_overlaysBlock && ui->pageLayer && ui->pageLayer->layout())
+        ui->pageLayer->layout()->addWidget(m_overlaysBlock);
+    if (this->m_inspectorPageLayer)     this->m_workspaceChrome->addSessionLayers(this->m_inspectorPageLayer);
+    // No catalogue block in the left column any more: its two buttons were tools
+    // and moved to the tool table. The page stays parked with the others.
+    if (this->m_inspectorPageCatalogue) {
+        this->m_inspectorPageCatalogue->setParent(panel);
+        this->m_inspectorPageCatalogue->hide();
+    }
+    // Contour settings are a TOOL's parameters, not a permanent view control:
+    // they are built here, parked hidden, and mounted in the Inspector's
+    // Parameters tab while the tool is on (setContoursVisible). One place for
+    // every tool's settings, instead of a block that sits in the dock whether or
+    // not anything is using it.
+    m_contourSettingsBlock = this->buildContourControlsBlock();
+    if (m_contourSettingsBlock) {
+        m_contourSettingsBlock->setParent(panel);
+        m_contourSettingsBlock->hide();
+    }
+    m_polVecSettingsBlock = this->buildPolVectorSettingsBlock();
+    if (m_polVecSettingsBlock) {
+        m_polVecSettingsBlock->setParent(panel);
+        m_polVecSettingsBlock->hide();
+    }
+    if (this->m_inspectorPageInfo)      panel->addPropertiesSection(this->m_inspectorPageInfo);
+    // Re-home the kept-alive Tools page as a HIDDEN child of the inspector (not a
+    // free child of the QMainWindow, where it could paint over the left dock).
+    if (this->m_orphanToolsPage) {
+        this->m_orphanToolsPage->setParent(panel);
+        this->m_orphanToolsPage->hide();
+    }
+
+    // Scientific-copilot tab, wired so its visualisation actions reach this image
+    // viewer (only for a remote/server-backed dataset).
+    if (!this->remoteBackendUrl.isEmpty()) {
+        AssistantPanel *copilot = this->m_workspaceChrome->installCopilot(
+                this->remoteBackendUrl, this->remoteBackendToken, this->remoteDatasetId);
+        if (copilot) {
+            CopilotActionRouter::instance()->registerTarget(
+                    this->remoteDatasetId, this,
+                    [this](const QList<QJsonObject> &acts) { this->applyCopilotActions(acts); },
+                    [this]() { this->undoCopilotActions(); });
+            copilot->setSuggestions({
+                    u"What are the image statistics?"_s,
+                    u"Measure the flux at RA 10.0 Dec 20.0"_s,
+                    u"Fit the source at RA 10.0 Dec 20.0"_s,
+                    u"Show it in log scale"_s });
+        }
+    }
+
+    // View → "Inspector Panel" expands/collapses the dock (never setVisible, which
+    // would hide the rail to 0 px and bypass the collapse state — §4.1).
+    if (this->actionShowControlsSidebar && this->m_workspaceChrome) {
+        QObject::connect(this->actionShowControlsSidebar, &QAction::toggled, this,
+                         [this](bool checked) {
+                             if (this->m_workspaceChrome)
+                                 this->m_workspaceChrome->setInspectorCollapsed(!checked);
+                         });
+        QObject::connect(this->m_workspaceChrome, &WorkspaceChrome::dockCollapseChanged, this,
+                         [this]() {
+                             if (!this->m_workspaceChrome)
+                                 return;
+                             QSignalBlocker b(this->actionShowControlsSidebar);
+                             this->actionShowControlsSidebar->setChecked(
+                                     !this->m_workspaceChrome->inspectorCollapsed());
+                         });
+        QSignalBlocker b(this->actionShowControlsSidebar);
+        this->actionShowControlsSidebar->setChecked(
+                !this->m_workspaceChrome->inspectorCollapsed());
+    }
+
+    // Two tools that used to live only in the Data Hub's Science menu, where
+    // they ran against whatever dataset had been opened last. They take a
+    // single 2-D map, which is exactly what this window shows, so they belong
+    // here and the host resolves them against THIS window's dataset.
+    // Both surfaces, like every other tool in this window: the Tools menu is
+    // where the user guide sends people, and the Inspector list is where they
+    // browse. Adding them only to the Inspector made the documented menu route
+    // a dead end.
+    if (!this->m_actPublicationFigure) {
+        this->m_actPublicationFigure = ui->menuTools->addAction(u"Publication Figure…"_s);
+        this->m_actPublicationFigure->setToolTip(
+                u"Render this map as a publication-ready PNG (WCS grid, colorbar, "
+                u"stretch and colormap of your choice)."_s);
+        QObject::connect(this->m_actPublicationFigure, &QAction::triggered, this,
+                         [this]() { emit this->publicationFigureRequested(); });
+    }
+    if (!this->m_actImageQuality) {
+        this->m_actImageQuality = ui->menuTools->addAction(u"Image Quality / Artifacts"_s);
+        this->m_actImageQuality->setToolTip(
+                u"Report blanked fraction, dynamic range, noise and artefact "
+                u"indicators for this map."_s);
+        QObject::connect(this->m_actImageQuality, &QAction::triggered, this,
+                         [this]() { emit this->imageQualityRequested(); });
+    }
+
+    // Every tool, from the one table, on both surfaces — the same treatment the
+    // cube viewer got and for the same reason: this list held eleven entries
+    // chosen by hand out of thirty-four, so two thirds of the window's tools
+    // existed only in the Tools menu, which was itself one flat run of
+    // thirty-four items.
+    const auto add = [panel](const QString &grp, const QString &label, QAction *a) {
+        if (a) panel->addTool(grp, label, a);
+    };
+    for (const ImageTool &t : imageTools())
+        add(t.group, t.action->text().remove(u'&'), t.action);
+
+    // …and the menu itself, regrouped from that table.
+    regroupImageToolsMenu();
+
+
+    // Single-view window: no pane grid / Linked (those live in the cube's centre
+    // toolbar, not the image viewer).
+
+    // Belt-and-suspenders: neutralise any stray direct-child widget painting at (0,0).
+    this->parkOrphanDirectChildren();
+}
+
+void vtkWindowImage::claimToolSettings(const QString &toolName, QWidget *settings)
+{
+    if (!settings)
+        return;
+    releaseToolSettings(toolName);              // no duplicate entries
+    m_activeToolSettings.append({ toolName, QPointer<QWidget>(settings) });
+    refreshToolSettingsPanel(/*reveal=*/true);
+}
+
+void vtkWindowImage::releaseToolSettings(const QString &toolName)
+{
+    for (int i = m_activeToolSettings.size() - 1; i >= 0; --i) {
+        if (m_activeToolSettings.at(i).first == toolName)
+            m_activeToolSettings.removeAt(i);
+    }
+}
+
+void vtkWindowImage::refreshToolSettingsPanel(bool reveal)
+{
+    if (!m_workspaceChrome)
+        return;
+    auto *panel = m_workspaceChrome->inspectorPanel();
+    if (!panel)
+        return;
+    // The most recent tool still on wins; with none on the section goes away.
+    while (!m_activeToolSettings.isEmpty() && !m_activeToolSettings.last().second)
+        m_activeToolSettings.removeLast();
+    if (m_activeToolSettings.isEmpty()) {
+        panel->clearToolSettings();
+        return;
+    }
+    const auto &entry = m_activeToolSettings.last();
+    panel->setToolSettings(entry.first, entry.second);
+    if (reveal)
+        m_workspaceChrome->revealParametersTab();
+}
+
+QWidget *vtkWindowImage::buildPolVectorSettingsBlock()
+{
+    auto *page = new QWidget;
+    auto *form = new QFormLayout(page);
+    form->setContentsMargins(0, 0, 0, 0);
+    form->setHorizontalSpacing(8);
+    form->setVerticalSpacing(4);
+
+    auto *gridSpin = new QSpinBox(page);
+    gridSpin->setRange(2, 200);
+    gridSpin->setValue(m_polVecGridStep);
+    gridSpin->setToolTip(u"One vector every N pixels."_s);
+    form->addRow(u"Grid step (px)"_s, gridSpin);
+    QObject::connect(gridSpin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int v) {
+        m_polVecGridStep = v;
+        if (m_polVecsVisible)
+            rebuildPolarizationVectors();
+        if (ui->vtk->renderWindow())
+            ui->vtk->renderWindow()->Render();
+    });
+
+    auto *snrEdit = new QLineEdit(QString::number(m_polVecSnrMin, 'f', 1), page);
+    snrEdit->setValidator(new QDoubleValidator(0.0, 100.0, 2, page));
+    snrEdit->setToolTip(u"Draw a vector only where P exceeds this many σ (MAD)."_s);
+    form->addRow(u"SNR threshold"_s, snrEdit);
+    QObject::connect(snrEdit, &QLineEdit::editingFinished, this, [this, snrEdit]() {
+        m_polVecSnrMin = snrEdit->text().toDouble();
+        if (m_polVecsVisible)
+            rebuildPolarizationVectors();
+        if (ui->vtk->renderWindow())
+            ui->vtk->renderWindow()->Render();
+    });
+
+    auto *scaleSlider = new QSlider(Qt::Horizontal, page);
+    scaleSlider->setRange(10, 300);
+    scaleSlider->setValue(static_cast<int>(m_polVecScale * 100.0));
+    scaleSlider->setToolTip(u"Length of the drawn vectors (display only)."_s);
+    form->addRow(u"Length scale"_s, scaleSlider);
+    QObject::connect(scaleSlider, &QSlider::valueChanged, this, [this](int v) {
+        m_polVecScale = v / 100.0;
+        if (m_polVecsVisible)
+            rebuildPolarizationVectors();
+        if (ui->vtk->renderWindow())
+            ui->vtk->renderWindow()->Render();
+    });
+    return page;
+}
+
+QWidget *vtkWindowImage::buildContourControlsBlock()
+{
+    if (!m_contourLevelSpin || !m_contourLowerEdit || !m_contourUpperEdit)
+        return nullptr;
+
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(6);
+    // No header of its own: the Parameters tab captions the section with the
+    // tool's name, so a second "CONTOURS" title would just be noise.
+
+    auto *card = new QFrame(page);
+    card->setStyleSheet(VisivoTheme::sidebarCardStyleSheet());
+    auto *cardLayout = new QVBoxLayout(card);
+    cardLayout->setContentsMargins(8, 8, 8, 8);
+    cardLayout->setSpacing(6);
+
+    // The checkbox and Tools > Show Contours are the same state, each following
+    // the other. Blocked on the way back, or they would drive each other.
+    m_contourShowCheck = new QCheckBox(u"Show contours"_s, card);
+    m_contourShowCheck->setChecked(m_contoursVisible);
+    cardLayout->addWidget(m_contourShowCheck);
+    if (m_actToggleContours) {
+        QObject::connect(m_contourShowCheck, &QCheckBox::toggled, m_actToggleContours,
+                         &QAction::setChecked);
+        QObject::connect(m_actToggleContours, &QAction::toggled, m_contourShowCheck,
+                         [this](bool on) {
+                             if (!m_contourShowCheck)
+                                 return;
+                             const QSignalBlocker b(m_contourShowCheck);
+                             m_contourShowCheck->setChecked(on);
+                         });
+    }
+
+    // Re-home the widgets that setupSidebar() already built and wired, rather
+    // than building a second set: two Level spin boxes writing the same
+    // m_contourLevel would disagree the moment either is used.
+    auto *form = new QFormLayout();
+    form->setHorizontalSpacing(8);
+    form->setVerticalSpacing(4);
+    form->addRow(u"Level"_s, m_contourLevelSpin.data());
+    form->addRow(u"Lower"_s, m_contourLowerEdit.data());
+    form->addRow(u"Upper"_s, m_contourUpperEdit.data());
+    cardLayout->addLayout(form);
+
+    layout->addWidget(card);
+    return page;
+}
+
+QVector<vtkWindowImage::ImageTool> vtkWindowImage::imageTools() const
+{
+    // Grouped by what the astronomer is trying to DO. Same shape, and the same
+    // reasoning, as vtkWindowCube::cubeTools(): one table feeds the Tools menu
+    // and Inspector ▸ Analysis, so a tool cannot exist on one surface and not
+    // the other. No labels here — each QAction carries its own text.
+    const auto *self = this;
+    QVector<ImageTool> t;
+    const auto add = [&t](const QString &g, QAction *a) {
+        if (a)
+            t.append({ g, a });
+    };
+
+    add(u"Spectral"_s, self->actionExtractSpectrum);
+
+    add(u"Regions"_s, self->actionBoxRegion);
+    add(u"Regions"_s, self->actionCircleRegion);
+    add(u"Regions"_s, self->actionPolygonRegion);
+    add(u"Regions"_s, self->actionAnnulusRegion);
+    add(u"Regions"_s, self->m_actExportRegions);
+
+    add(u"Catalogue"_s, self->actionLoadCatalogueOverlay);
+    add(u"Catalogue"_s, self->actionCrossmatch);
+    add(u"Catalogue"_s, self->actionShowCatalogueOverlay);
+    add(u"Catalogue"_s, self->actionShowCatalogueLabels);
+    add(u"Catalogue"_s, self->actionClearCatalogueOverlay);
+    add(u"Catalogue"_s, self->m_actVlkbSources);
+    add(u"Catalogue"_s, self->m_actVlkbFilaments);
+    add(u"Catalogue"_s, self->m_actVlkbBubbles);
+    add(u"Catalogue"_s, self->m_actVlkbQuery);
+    add(u"Catalogue"_s, self->m_actExportCatalogue);
+
+    add(u"Contours"_s, self->m_actToggleContours);
+    add(u"Contours"_s, self->m_actLoadExternalContour);
+    add(u"Contours"_s, self->m_actClearAllContours);
+
+    // The pixel probe / profile crosshair. It was on neither surface after the
+    // regroup - only on the Tools page the Analysis tab superseded, which is
+    // never shown - so the tool existed with no way to reach it.
+    add(u"Measure"_s, self->ui->actionProfile);
+    add(u"Measure"_s, self->m_actRuler);
+    add(u"Measure"_s, self->m_actAngle);
+    add(u"Measure"_s, self->m_actClearMeas);
+
+    add(u"Statistics"_s, self->m_actHistogram);
+
+    add(u"Annotations"_s, self->m_actAddText);
+    add(u"Annotations"_s, self->m_actAddArrow);
+    add(u"Annotations"_s, self->m_actClearAnnot);
+    add(u"Annotations"_s, self->m_actSaveAnnot);
+    add(u"Annotations"_s, self->m_actLoadAnnot);
+
+    add(u"Polarisation"_s, self->m_actLoadStokesCompanions);
+    add(u"Polarisation"_s, self->m_actComputeStokesP);
+    add(u"Polarisation"_s, self->m_actComputeStokesPA);
+    add(u"Polarisation"_s, self->m_actComputeStokesFrac);
+    add(u"Polarisation"_s, self->m_actComputeStokesPdebiased);
+    add(u"Polarisation"_s, self->m_actComputeSpectralIndex);
+    add(u"Polarisation"_s, self->m_actComputeFaradayRM);
+    add(u"Polarisation"_s, self->m_actTogglePolVecs);
+
+    add(u"Products"_s, self->m_actPublicationFigure);
+    add(u"Products"_s, self->m_actImageQuality);
+
+    add(u"Export"_s, self->m_actFilterFits);
+    add(u"Export"_s, self->m_actExportToWorkspace);
+    return t;
+}
+
+void vtkWindowImage::regroupImageToolsMenu()
+{
+    if (!ui->menuTools)
+        return;
+    // Rebuild, never QMenu::clear(): most of these were created by
+    // menu->addAction("text"), which parents them to the MENU, and clear()
+    // deletes what it owns. Reparent first, then detach one by one. (The cube
+    // viewer learned this the same way — see regroupToolsMenu() there.)
+    const auto tools = imageTools();
+    const auto existing = ui->menuTools->actions();
+    for (QAction *a : existing) {
+        if (!a)
+            continue;
+        if (a->parent() == ui->menuTools)
+            a->setParent(this);
+        ui->menuTools->removeAction(a);
+    }
+
+    ui->menuTools->setToolTipsVisible(true);
+    QString current;
+    QMenu *sub = nullptr;
+    for (const ImageTool &t : tools) {
+        if (!t.action)
+            continue;
+        if (t.group != current) {
+            current = t.group;
+            sub = ui->menuTools->addMenu(current);
+            if (sub)
+                sub->setToolTipsVisible(true);   // not inherited from the parent
+        }
+        if (sub)
+            sub->addAction(t.action);
+    }
+}
+
+void vtkWindowImage::parkOrphanDirectChildren()
+{
+    if (!this->m_hiddenPageHolder)
+        return;
+    const auto children = this->findChildren<QWidget *>(Qt::FindDirectChildrenOnly);
+    for (QWidget *w : children) {
+        if (w == this->centralWidget() || w == this->m_hiddenPageHolder
+            || w == this->menuBar() || w == this->statusBar()
+            || qobject_cast<QDockWidget *>(w) || qobject_cast<QToolBar *>(w)
+            || w->isWindow())
+            continue;
+        qWarning().noquote() << QStringLiteral("[workspace] parking orphan direct child: %1 (%2)")
+                                        .arg(w->objectName(),
+                                             QString::fromLatin1(w->metaObject()->className()));
+        w->setParent(this->m_hiddenPageHolder);
+        w->hide();
+    }
+}
+
+void vtkWindowImage::setupSidebar()
+{
+    // Remove the UI-file sidebar container and replace it with SidebarPanel.
+    auto *mainLayout = qobject_cast<QHBoxLayout *>(ui->centralwidget->layout());
+    mainLayout->removeWidget(ui->sidebarContainer);
+    ui->sidebarContainer->hide();
+
+    // ── Shared style constants (same palette as VBT / catalogue viewers) ──────
+    const QString hdrStyle     = VisivoTheme::sidebarHeaderStyleSheet();
+    const QString cardStyle    = VisivoTheme::sidebarCardStyleSheet();
+    const QString subHdrStyle  = VisivoTheme::sidebarSubHeaderStyleSheet();
+    const QString keyStyle     = VisivoTheme::infoKeyStyleSheet();
+    const QString valStyle     = VisivoTheme::infoValueStyleSheet();
+    const QString toolBtnStyle = VisivoTheme::sidebarToolButtonStyleSheet();
+
+    // ── Page 0: Layer Settings (from UI file) ──────────────────────────────────
+    // Apply styles to existing UI-file page widgets (page3D is hidden; not styled)
+    for (QLabel *lbl : { ui->labelLayerHdr, ui->labelCatalogueHdr }) {
+        lbl->setStyleSheet(hdrStyle);
+    }
+    for (QLabel *lbl : { ui->labelLayerListHdr }) {
+        lbl->setStyleSheet(subHdrStyle);
+    }
+    for (QFrame *f : { ui->frameLayerControls, ui->frameCatalogueActions }) {
+        f->setStyleSheet(cardStyle);
+    }
+
+    // ── Page 1: Tools ─────────────────────────────────────────────────────────
+    auto *pageTools = new QWidget;
+    auto *toolsLayout = new QVBoxLayout(pageTools);
+    toolsLayout->setContentsMargins(8, 8, 8, 8);
+    toolsLayout->setSpacing(8);
+
+    {
+        auto *hdr = new QLabel(u"TOOLS"_s, pageTools);
+        hdr->setStyleSheet(hdrStyle);
+        toolsLayout->addWidget(hdr);
+    }
+
+    // Helper: create a full-width tool button bound to an action
+    const auto makeToolBtn = [&toolBtnStyle](QAction *action, QWidget *parent) -> QToolButton * {
+        auto *btn = new QToolButton(parent);
+        btn->setDefaultAction(action);
+        btn->setStyleSheet(toolBtnStyle);
+        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        return btn;
+    };
+
+    // Card: Analysis Tools (probe + region stats)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Analysis Tools"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(ui->actionProfile,          card));
+        cl->addWidget(makeToolBtn(this->actionBoxRegion,      card));
+        cl->addWidget(makeToolBtn(this->actionCircleRegion,   card));
+        cl->addWidget(makeToolBtn(this->actionPolygonRegion,  card));
+        cl->addWidget(makeToolBtn(this->actionAnnulusRegion,  card));
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: Catalogue Overlay
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Catalogue Overlay"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(this->actionLoadCatalogueOverlay,  card));
+        cl->addWidget(makeToolBtn(this->actionShowCatalogueOverlay,  card));
+        cl->addWidget(makeToolBtn(this->actionShowCatalogueLabels,   card));
+        cl->addWidget(makeToolBtn(this->actionClearCatalogueOverlay, card));
+        toolsLayout->addWidget(card);
+        m_dynspecHiddenCards.append(QPointer<QFrame>(card));
+    }
+
+    // Card: Measurement Tools (Ruler / Angle)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Measurement"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actRuler,     card));
+        cl->addWidget(makeToolBtn(m_actAngle,     card));
+        cl->addWidget(makeToolBtn(m_actClearMeas, card));
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: Contours (same Level / Lower / Upper as the cube viewer)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
+
+        auto *cardHdr = new QLabel(u"Contours"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actToggleContours, card));
+
+        auto *formLayout = new QFormLayout();
+        formLayout->setHorizontalSpacing(8);
+        formLayout->setVerticalSpacing(4);
+
+        m_contourLevelSpin = new QSpinBox(card);
+        m_contourLevelSpin->setRange(1, 100);
+        m_contourLevelSpin->setValue(m_contourLevel);
+        formLayout->addRow(u"Level"_s, m_contourLevelSpin);
+
+        m_contourLowerEdit = new QLineEdit(QString::number(m_contourLower, 'g', 6), card);
+        m_contourLowerEdit->setValidator(new QDoubleValidator(card));
+        formLayout->addRow(u"Lower"_s, m_contourLowerEdit);
+
+        m_contourUpperEdit = new QLineEdit(QString::number(m_contourUpper, 'g', 6), card);
+        m_contourUpperEdit->setValidator(new QDoubleValidator(card));
+        formLayout->addRow(u"Upper"_s, m_contourUpperEdit);
+        QSpinBox  *levelSpin = m_contourLevelSpin;
+        QLineEdit *lowerEdit = m_contourLowerEdit;
+        QLineEdit *upperEdit = m_contourUpperEdit;
+
+        cl->addLayout(formLayout);
+        toolsLayout->addWidget(card);
+
+        QObject::connect(levelSpin, qOverload<int>(&QSpinBox::valueChanged), this,
+                         [this](int v) { m_contourLevel = v; updateContours(); });
+        QObject::connect(lowerEdit, &QLineEdit::editingFinished, this,
+                         [this, lowerEdit]() {
+                             commitContourBounds(lowerEdit->text().toDouble(), m_contourUpper);
+                         });
+        QObject::connect(upperEdit, &QLineEdit::editingFinished, this,
+                         [this, upperEdit]() {
+                             commitContourBounds(m_contourLower, upperEdit->text().toDouble());
+                         });
+
+        // External contour overlay actions (mirror the Tools menu)
+        cl->addWidget(makeToolBtn(m_actLoadExternalContour, card));
+        cl->addWidget(makeToolBtn(m_actClearAllContours,    card));
+    }
+
+    // Card: I/O — Export to Workspace (mirror the Tools menu)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"I/O"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actExportToWorkspace, card));
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: WCS Display — toggle button for axes + SegmentedToggle for
+    // format (Sexagesimal / Decimal) and frame (Galactic / FK5 / Ecliptic),
+    // consistent with the cube viewer's mode selectors.
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
+
+        auto *cardHdr = new QLabel(u"WCS Display"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(this->actionShowWcsAxes, card));
+
+        const QString secStyle =
+                QStringLiteral("QLabel { color: %1; font-size: 9px; margin-top: 4px; }")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
+
+        // Coordinate format: Sexagesimal | Decimal
+        auto *fmtHdr = new QLabel(u"Coordinate format"_s, card);
+        fmtHdr->setStyleSheet(secStyle);
+        cl->addWidget(fmtHdr);
+        auto *fmtToggle = new SegmentedToggle(card);
+        fmtToggle->addItem(u"Sexagesimal"_s, u"HMS / DMS"_s);
+        fmtToggle->addItem(u"Decimal"_s,     u"Decimal degrees"_s);
+        fmtToggle->setCurrentIndex(
+                this->actionWcsDecimal->isChecked() ? 1 : 0);
+        cl->addWidget(fmtToggle);
+        QObject::connect(fmtToggle, &SegmentedToggle::currentIndexChanged, this,
+                         [this](int idx) {
+                             if (idx == 0 && !this->actionWcsSexagesimal->isChecked())
+                                 this->actionWcsSexagesimal->trigger();
+                             else if (idx == 1 && !this->actionWcsDecimal->isChecked())
+                                 this->actionWcsDecimal->trigger();
+                         });
+
+        // Coordinate frame: Galactic | FK5 | Ecliptic
+        auto *frameHdr = new QLabel(u"Coordinate frame"_s, card);
+        frameHdr->setStyleSheet(secStyle);
+        cl->addWidget(frameHdr);
+        auto *frameToggle = new SegmentedToggle(card);
+        frameToggle->addItem(u"Galactic"_s, u"Galactic l, b"_s);
+        frameToggle->addItem(u"FK5"_s,      u"RA, Dec (J2000)"_s);
+        frameToggle->addItem(u"Ecliptic"_s, u"Ecliptic λ, β"_s);
+        if (ui->actionGalactic->isChecked())       frameToggle->setCurrentIndex(0);
+        else if (ui->actionFK5->isChecked())       frameToggle->setCurrentIndex(1);
+        else if (ui->actionEcliptic->isChecked())  frameToggle->setCurrentIndex(2);
+        cl->addWidget(frameToggle);
+        QObject::connect(frameToggle, &SegmentedToggle::currentIndexChanged, this,
+                         [this](int idx) {
+                             QAction *targets[] = { ui->actionGalactic,
+                                                    ui->actionFK5,
+                                                    ui->actionEcliptic };
+                             if (idx >= 0 && idx < 3 && !targets[idx]->isChecked())
+                                 targets[idx]->trigger();
+                         });
+
+        toolsLayout->addWidget(card);
+        m_dynspecHiddenCards.append(QPointer<QFrame>(card));
+    }
+
+    // Card: Histogram
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Histogram"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        auto *btn = new QToolButton(card);
+        btn->setText(u"Pixel Histogram…"_s);
+        btn->setStyleSheet(toolBtnStyle);
+        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btn, &QToolButton::clicked, this, &vtkWindowImage::showHistogramPanel);
+        cl->addWidget(btn);
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: Annotations
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Annotations"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        auto *btnText = new QToolButton(card);
+        btnText->setText(u"Add Text…"_s);
+        btnText->setStyleSheet(toolBtnStyle);
+        btnText->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnText->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnText, &QToolButton::clicked, this, &vtkWindowImage::addTextAnnotation);
+        cl->addWidget(btnText);
+
+        auto *btnArrow = new QToolButton(card);
+        btnArrow->setText(u"Add Arrow…"_s);
+        btnArrow->setStyleSheet(toolBtnStyle);
+        btnArrow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnArrow->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnArrow, &QToolButton::clicked, this, &vtkWindowImage::addArrowAnnotation);
+        cl->addWidget(btnArrow);
+
+        auto *btnClear = new QToolButton(card);
+        btnClear->setText(u"Clear All"_s);
+        btnClear->setStyleSheet(toolBtnStyle);
+        btnClear->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnClear->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnClear, &QToolButton::clicked, this, &vtkWindowImage::clearAnnotations);
+        cl->addWidget(btnClear);
+
+        auto *rowIO = new QHBoxLayout;
+        rowIO->setSpacing(4);
+        auto *btnSave = new QToolButton(card);
+        btnSave->setText(u"Save"_s);
+        btnSave->setStyleSheet(toolBtnStyle);
+        btnSave->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnSave->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnSave, &QToolButton::clicked, this, &vtkWindowImage::saveAnnotationsJson);
+        rowIO->addWidget(btnSave);
+
+        auto *btnLoad = new QToolButton(card);
+        btnLoad->setText(u"Load"_s);
+        btnLoad->setStyleSheet(toolBtnStyle);
+        btnLoad->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnLoad->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnLoad, &QToolButton::clicked, this, &vtkWindowImage::loadAnnotationsJson);
+        rowIO->addWidget(btnLoad);
+
+        cl->addLayout(rowIO);
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: Blink / Compare
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Blink / Compare"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actBlink, card));
+
+        auto *speedLbl = new QLabel(u"Speed"_s, card);
+        speedLbl->setStyleSheet(
+                QStringLiteral("QLabel { color: %1; font-size: 9px; "
+                               "font-weight: 600; margin-top: 2px; }")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        cl->addWidget(speedLbl);
+
+        auto *speedSlider = new QSlider(Qt::Horizontal, card);
+        speedSlider->setRange(50, 1000);
+        speedSlider->setValue(m_blinkIntervalMs);
+        speedSlider->setToolTip(u"Blink interval in ms (50–1000)"_s);
+        cl->addWidget(speedSlider);
+        QObject::connect(speedSlider, &QSlider::valueChanged, this,
+                         [this](int val) {
+                             m_blinkIntervalMs = val;
+                             if (m_blinkTimer.isActive())
+                                 m_blinkTimer.setInterval(val);
+                         });
+
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: Stokes Analysis (radio polarimetry workflow)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Stokes Analysis"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actLoadStokesCompanions, card));
+        cl->addWidget(makeToolBtn(m_actComputeStokesP, card));
+        cl->addWidget(makeToolBtn(m_actComputeStokesPdebiased, card));
+        cl->addWidget(makeToolBtn(m_actComputeStokesPA, card));
+        cl->addWidget(makeToolBtn(m_actComputeStokesFrac, card));
+        cl->addWidget(makeToolBtn(m_actComputeSpectralIndex, card));
+        cl->addWidget(makeToolBtn(m_actComputeFaradayRM, card));
+        cl->addWidget(makeToolBtn(m_actTogglePolVecs, card));
+
+        // The vector parameters are NOT here: they are the tool's settings and
+        // live in the Inspector's Parameters tab while the overlay is on
+        // (buildPolVectorSettingsBlock). On this page - which the Analysis tab
+        // superseded and which is never shown - they were unreachable.
+        toolsLayout->addWidget(card);
+        m_dynspecHiddenCards.append(QPointer<QFrame>(card));
+    }
+
+    // Card: Measurement Tools (Ruler / Angle)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Measurement"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actRuler,     card));
+        cl->addWidget(makeToolBtn(m_actAngle,     card));
+        cl->addWidget(makeToolBtn(m_actClearMeas, card));
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: Contours (same Level / Lower / Upper as the cube viewer)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
+
+        auto *cardHdr = new QLabel(u"Contours"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actToggleContours, card));
+
+        auto *formLayout = new QFormLayout();
+        formLayout->setHorizontalSpacing(8);
+        formLayout->setVerticalSpacing(4);
+
+        m_contourLevelSpin = new QSpinBox(card);
+        m_contourLevelSpin->setRange(1, 100);
+        m_contourLevelSpin->setValue(m_contourLevel);
+        formLayout->addRow(u"Level"_s, m_contourLevelSpin);
+
+        m_contourLowerEdit = new QLineEdit(QString::number(m_contourLower, 'g', 6), card);
+        m_contourLowerEdit->setValidator(new QDoubleValidator(card));
+        formLayout->addRow(u"Lower"_s, m_contourLowerEdit);
+
+        m_contourUpperEdit = new QLineEdit(QString::number(m_contourUpper, 'g', 6), card);
+        m_contourUpperEdit->setValidator(new QDoubleValidator(card));
+        formLayout->addRow(u"Upper"_s, m_contourUpperEdit);
+        QSpinBox  *levelSpin = m_contourLevelSpin;
+        QLineEdit *lowerEdit = m_contourLowerEdit;
+        QLineEdit *upperEdit = m_contourUpperEdit;
+
+        cl->addLayout(formLayout);
+        toolsLayout->addWidget(card);
+
+        QObject::connect(levelSpin, qOverload<int>(&QSpinBox::valueChanged), this,
+                         [this](int v) { m_contourLevel = v; updateContours(); });
+        QObject::connect(lowerEdit, &QLineEdit::editingFinished, this,
+                         [this, lowerEdit]() {
+                             commitContourBounds(lowerEdit->text().toDouble(), m_contourUpper);
+                         });
+        QObject::connect(upperEdit, &QLineEdit::editingFinished, this,
+                         [this, upperEdit]() {
+                             commitContourBounds(m_contourLower, upperEdit->text().toDouble());
+                         });
+
+        // External contour overlay actions (mirror the Tools menu)
+        cl->addWidget(makeToolBtn(m_actLoadExternalContour, card));
+        cl->addWidget(makeToolBtn(m_actClearAllContours,    card));
+    }
+
+    // Card: I/O — Export to Workspace (mirror the Tools menu)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"I/O"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actExportToWorkspace, card));
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: WCS Display — toggle button for axes + SegmentedToggle for
+    // format (Sexagesimal / Decimal) and frame (Galactic / FK5 / Ecliptic),
+    // consistent with the cube viewer's mode selectors.
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
+
+        auto *cardHdr = new QLabel(u"WCS Display"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(this->actionShowWcsAxes, card));
+
+        const QString secStyle =
+                QStringLiteral("QLabel { color: %1; font-size: 9px; margin-top: 4px; }")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
+
+        // Coordinate format: Sexagesimal | Decimal
+        auto *fmtHdr = new QLabel(u"Coordinate format"_s, card);
+        fmtHdr->setStyleSheet(secStyle);
+        cl->addWidget(fmtHdr);
+        auto *fmtToggle = new SegmentedToggle(card);
+        fmtToggle->addItem(u"Sexagesimal"_s, u"HMS / DMS"_s);
+        fmtToggle->addItem(u"Decimal"_s,     u"Decimal degrees"_s);
+        fmtToggle->setCurrentIndex(
+                this->actionWcsDecimal->isChecked() ? 1 : 0);
+        cl->addWidget(fmtToggle);
+        QObject::connect(fmtToggle, &SegmentedToggle::currentIndexChanged, this,
+                         [this](int idx) {
+                             if (idx == 0 && !this->actionWcsSexagesimal->isChecked())
+                                 this->actionWcsSexagesimal->trigger();
+                             else if (idx == 1 && !this->actionWcsDecimal->isChecked())
+                                 this->actionWcsDecimal->trigger();
+                         });
+
+        // Coordinate frame: Galactic | FK5 | Ecliptic
+        auto *frameHdr = new QLabel(u"Coordinate frame"_s, card);
+        frameHdr->setStyleSheet(secStyle);
+        cl->addWidget(frameHdr);
+        auto *frameToggle = new SegmentedToggle(card);
+        frameToggle->addItem(u"Galactic"_s, u"Galactic l, b"_s);
+        frameToggle->addItem(u"FK5"_s,      u"RA, Dec (J2000)"_s);
+        frameToggle->addItem(u"Ecliptic"_s, u"Ecliptic λ, β"_s);
+        if (ui->actionGalactic->isChecked())       frameToggle->setCurrentIndex(0);
+        else if (ui->actionFK5->isChecked())       frameToggle->setCurrentIndex(1);
+        else if (ui->actionEcliptic->isChecked())  frameToggle->setCurrentIndex(2);
+        cl->addWidget(frameToggle);
+        QObject::connect(frameToggle, &SegmentedToggle::currentIndexChanged, this,
+                         [this](int idx) {
+                             QAction *targets[] = { ui->actionGalactic,
+                                                    ui->actionFK5,
+                                                    ui->actionEcliptic };
+                             if (idx >= 0 && idx < 3 && !targets[idx]->isChecked())
+                                 targets[idx]->trigger();
+                         });
+
+        toolsLayout->addWidget(card);
+        m_dynspecHiddenCards.append(QPointer<QFrame>(card));
+    }
+
+    // Card: Histogram
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Histogram"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        auto *btn = new QToolButton(card);
+        btn->setText(u"Pixel Histogram…"_s);
+        btn->setStyleSheet(toolBtnStyle);
+        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btn, &QToolButton::clicked, this, &vtkWindowImage::showHistogramPanel);
+        cl->addWidget(btn);
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: Annotations
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Annotations"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        auto *btnText = new QToolButton(card);
+        btnText->setText(u"Add Text…"_s);
+        btnText->setStyleSheet(toolBtnStyle);
+        btnText->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnText->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnText, &QToolButton::clicked, this, &vtkWindowImage::addTextAnnotation);
+        cl->addWidget(btnText);
+
+        auto *btnArrow = new QToolButton(card);
+        btnArrow->setText(u"Add Arrow…"_s);
+        btnArrow->setStyleSheet(toolBtnStyle);
+        btnArrow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnArrow->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnArrow, &QToolButton::clicked, this, &vtkWindowImage::addArrowAnnotation);
+        cl->addWidget(btnArrow);
+
+        auto *btnClear = new QToolButton(card);
+        btnClear->setText(u"Clear All"_s);
+        btnClear->setStyleSheet(toolBtnStyle);
+        btnClear->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnClear->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnClear, &QToolButton::clicked, this, &vtkWindowImage::clearAnnotations);
+        cl->addWidget(btnClear);
+
+        auto *rowIO = new QHBoxLayout;
+        rowIO->setSpacing(4);
+        auto *btnSave = new QToolButton(card);
+        btnSave->setText(u"Save"_s);
+        btnSave->setStyleSheet(toolBtnStyle);
+        btnSave->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnSave->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnSave, &QToolButton::clicked, this, &vtkWindowImage::saveAnnotationsJson);
+        rowIO->addWidget(btnSave);
+
+        auto *btnLoad = new QToolButton(card);
+        btnLoad->setText(u"Load"_s);
+        btnLoad->setStyleSheet(toolBtnStyle);
+        btnLoad->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnLoad->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnLoad, &QToolButton::clicked, this, &vtkWindowImage::loadAnnotationsJson);
+        rowIO->addWidget(btnLoad);
+
+        cl->addLayout(rowIO);
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: Blink / Compare
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Blink / Compare"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actBlink, card));
+
+        auto *speedLbl = new QLabel(u"Speed"_s, card);
+        speedLbl->setStyleSheet(
+                QStringLiteral("QLabel { color: %1; font-size: 9px; "
+                               "font-weight: 600; margin-top: 2px; }")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        cl->addWidget(speedLbl);
+
+        auto *speedSlider = new QSlider(Qt::Horizontal, card);
+        speedSlider->setRange(50, 1000);
+        speedSlider->setValue(m_blinkIntervalMs);
+        speedSlider->setToolTip(u"Blink interval in ms (50–1000)"_s);
+        cl->addWidget(speedSlider);
+        QObject::connect(speedSlider, &QSlider::valueChanged, this,
+                         [this](int val) {
+                             m_blinkIntervalMs = val;
+                             if (m_blinkTimer.isActive())
+                                 m_blinkTimer.setInterval(val);
+                         });
+
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: Stokes Analysis (radio polarimetry workflow)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Stokes Analysis"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actLoadStokesCompanions, card));
+        cl->addWidget(makeToolBtn(m_actComputeStokesP, card));
+        cl->addWidget(makeToolBtn(m_actComputeStokesPdebiased, card));
+        cl->addWidget(makeToolBtn(m_actComputeStokesPA, card));
+        cl->addWidget(makeToolBtn(m_actComputeStokesFrac, card));
+        cl->addWidget(makeToolBtn(m_actComputeSpectralIndex, card));
+        cl->addWidget(makeToolBtn(m_actComputeFaradayRM, card));
+        cl->addWidget(makeToolBtn(m_actTogglePolVecs, card));
+
+        // Pol-vector parameters
+        const QString secStyle =
+                QStringLiteral("QLabel { color: %1; font-size: 9px; "
+                               "font-weight: 600; margin-top: 4px; }")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
+
+        auto *gridLbl = new QLabel(u"Vector grid step (px)"_s, card);
+        gridLbl->setStyleSheet(secStyle);
+        cl->addWidget(gridLbl);
+        auto *gridSpin = new QSpinBox(card);
+        gridSpin->setRange(2, 200);
+        gridSpin->setValue(m_polVecGridStep);
+        cl->addWidget(gridSpin);
+        QObject::connect(gridSpin, qOverload<int>(&QSpinBox::valueChanged),
+                         this, [this](int v) {
+            m_polVecGridStep = v;
+            if (m_polVecsVisible) rebuildPolarizationVectors();
+            if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
+        });
+
+        auto *snrLbl = new QLabel(u"SNR threshold (σ_MAD multiples)"_s, card);
+        snrLbl->setStyleSheet(secStyle);
+        cl->addWidget(snrLbl);
+        auto *snrEdit = new QLineEdit(QString::number(m_polVecSnrMin, 'f', 1), card);
+        snrEdit->setValidator(new QDoubleValidator(0.0, 100.0, 2, card));
+        cl->addWidget(snrEdit);
+        QObject::connect(snrEdit, &QLineEdit::editingFinished,
+                         this, [this, snrEdit]() {
+            m_polVecSnrMin = snrEdit->text().toDouble();
+            if (m_polVecsVisible) rebuildPolarizationVectors();
+            if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
+        });
+
+        auto *scaleLbl = new QLabel(u"Vector length scale"_s, card);
+        scaleLbl->setStyleSheet(secStyle);
+        cl->addWidget(scaleLbl);
+        auto *scaleSlider = new QSlider(Qt::Horizontal, card);
+        scaleSlider->setRange(10, 300);
+        scaleSlider->setValue(static_cast<int>(m_polVecScale * 100.0));
+        cl->addWidget(scaleSlider);
+        QObject::connect(scaleSlider, &QSlider::valueChanged,
+                         this, [this](int v) {
+            m_polVecScale = v / 100.0;
+            if (m_polVecsVisible) rebuildPolarizationVectors();
+            if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
+        });
+
+        toolsLayout->addWidget(card);
+        m_dynspecHiddenCards.append(QPointer<QFrame>(card));
+    }
+
+    // Card: Time-Series Tools (only visible in dynamic-spectrum mode)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
+
+        auto *cardHdr = new QLabel(u"Time-Series Tools"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        const QString miniHdrStyle =
+                QStringLiteral("QLabel { color: %1; font-size: 9px; "
+                               "font-weight: 600; margin-top: 4px; }")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
+
+        // ── Incoherent Dedispersion ────────────────────────────────────
+        cl->addWidget(([&]() {
+            auto *l = new QLabel(u"Dedispersion (DM, pc cm⁻³)"_s, card);
+            l->setStyleSheet(miniHdrStyle);
+            return l;
+        })());
+        auto *dmEdit = new QLineEdit(u"0.0"_s, card);
+        dmEdit->setValidator(new QDoubleValidator(0.0, 1e6, 4, card));
+        dmEdit->setObjectName(u"dynspecDmEdit"_s);
+        cl->addWidget(dmEdit);
+        auto *dedispBtn = new QToolButton(card);
+        dedispBtn->setText(u"Compute Dedispersion"_s);
+        dedispBtn->setStyleSheet(toolBtnStyle);
+        dedispBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        dedispBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(dedispBtn, &QToolButton::clicked, this,
+                         &vtkWindowImage::runDynspecDedispersion);
+        cl->addWidget(dedispBtn);
+
+        // ── Pulse profile folding ──────────────────────────────────────
+        cl->addWidget(([&]() {
+            auto *l = new QLabel(u"Pulse profile (period, s)"_s, card);
+            l->setStyleSheet(miniHdrStyle);
+            return l;
+        })());
+        auto *periodEdit = new QLineEdit(u"1.0"_s, card);
+        periodEdit->setValidator(new QDoubleValidator(1e-9, 1e6, 9, card));
+        periodEdit->setObjectName(u"dynspecPeriodEdit"_s);
+        cl->addWidget(periodEdit);
+        auto *foldBtn = new QToolButton(card);
+        foldBtn->setText(u"Compute Pulse Profile"_s);
+        foldBtn->setStyleSheet(toolBtnStyle);
+        foldBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        foldBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(foldBtn, &QToolButton::clicked, this,
+                         &vtkWindowImage::runDynspecPulseProfile);
+        cl->addWidget(foldBtn);
+
+        // ── RFI flagging mask ──────────────────────────────────────────
+        cl->addWidget(([&]() {
+            auto *l = new QLabel(u"RFI mask (σ-clip, σ-MAD multiple)"_s, card);
+            l->setStyleSheet(miniHdrStyle);
+            return l;
+        })());
+        auto *sigmaEdit = new QLineEdit(u"5.0"_s, card);
+        sigmaEdit->setValidator(new QDoubleValidator(0.5, 50.0, 2, card));
+        sigmaEdit->setObjectName(u"dynspecSigmaEdit"_s);
+        cl->addWidget(sigmaEdit);
+        auto *rfiBtn = new QToolButton(card);
+        rfiBtn->setText(u"Compute RFI Mask"_s);
+        rfiBtn->setStyleSheet(toolBtnStyle);
+        rfiBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        rfiBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(rfiBtn, &QToolButton::clicked, this,
+                         &vtkWindowImage::runDynspecRfiMask);
+        cl->addWidget(rfiBtn);
+
+        toolsLayout->addWidget(card);
+        card->setVisible(false);  // shown only when setDynamicSpectrumMode(true)
+        m_dynspecToolsCard = card;
+    }
+
+    toolsLayout->addStretch(1);
+
+    // ── Page 2: Info / Stats ─────────────────────────────────────────────────
+    auto *pageInfo = new QWidget;
+    auto *infoLayout = new QVBoxLayout(pageInfo);
+    infoLayout->setContentsMargins(8, 6, 8, 6);
+    infoLayout->setSpacing(4);
+
+    {
+        auto *hdr = new QLabel(u"INFO / STATS"_s, pageInfo);
+        hdr->setStyleSheet(hdrStyle);
+        infoLayout->addWidget(hdr);
+    }
+
+    // Field-name style: small, muted, uppercase feel
+    const QString fnHdrStyle =
+            QStringLiteral("QLabel { color: %1; font-size: 9px; font-weight: 600; }")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
+    // Field-value style: readable, proportional (not monospace — avoids extra width)
+    const QString fnValStyle =
+            QStringLiteral("QLabel { color: %1; font-size: 10px; }")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurface()));
+
+    // ── Card 1: Dataset (stacked label-over-value — no two-column layout) ─────
+    // Each field is a small header label stacked above its value label.
+    // Every value is full-card-width, word-wrapped where needed.
+    // This eliminates all horizontal overflow regardless of filename length.
+    {
+        auto *card = new QFrame(pageInfo);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(10, 8, 10, 8);
+        cl->setSpacing(0);
+
+        // Helper: add one stacked field (header + value) with optional word-wrap/tooltip
+        const auto addField = [&](const QString &header, const QString &value,
+                                  const QString &tip = {}, bool wrap = false) {
+            auto *hdrLbl = new QLabel(header);
+            hdrLbl->setStyleSheet(fnHdrStyle);
+            cl->addWidget(hdrLbl);
+
+            auto *valLbl = new QLabel(value);
+            valLbl->setStyleSheet(fnValStyle);
+            valLbl->setWordWrap(wrap);
+            valLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            if (!tip.isEmpty())
+                valLbl->setToolTip(tip);
+            cl->addWidget(valLbl);
+        };
+
+        const QFileInfo fi(this->filepath);
+        const int nLayers = this->layers ? this->layers->rowCount() : 1;
+
+        addField(u"Active Layer"_s, fi.fileName(), fi.absoluteFilePath(), /*wrap=*/true);
+        cl->addSpacing(5);
+        addField(u"Layers"_s, QString::number(nLayers));
+        cl->addSpacing(5);
+        addField(u"Directory"_s, compactDirPath(fi.absolutePath()), fi.absolutePath(), /*wrap=*/true);
+        cl->addSpacing(5);
+        addField(u"WCS"_s, this->remoteWcsStatus);
+
+        infoLayout->addWidget(card);
+    }
+
+    // ── Card 2: Axes (compact grid: Ax# | Type [unit] | Δ) ───────────────────
+    // Axis type names are always short — a 3-column grid stays within sidebar width.
+    {
+        bool hasAnyAxis = false;
+        for (int ax = 0; ax < 3 && !hasAnyAxis; ++ax)
+            hasAnyAxis = !this->remoteDatasetCtype[ax].isEmpty();
+
+        if (hasAnyAxis) {
+            auto *card = new QFrame(pageInfo);
+            card->setStyleSheet(cardStyle);
+            auto *gl = new QGridLayout(card);
+            gl->setContentsMargins(10, 6, 10, 6);
+            gl->setSpacing(2);
+            gl->setColumnStretch(1, 1); // type column absorbs available width
+
+            // Tiny column headers
+            const auto gridHdr = [&fnHdrStyle](const QString &t,
+                                               Qt::Alignment align = Qt::AlignLeft) -> QLabel * {
+                auto *l = new QLabel(t);
+                l->setStyleSheet(fnHdrStyle);
+                l->setAlignment(align);
+                return l;
+            };
+            gl->addWidget(gridHdr(u"Ax"_s),                     0, 0);
+            gl->addWidget(gridHdr(u"Type [unit]"_s),            0, 1);
+            gl->addWidget(gridHdr(u"\u0394"_s, Qt::AlignRight), 0, 2);
+
+            auto *sep = new QFrame;
+            sep->setFrameShape(QFrame::HLine);
+            sep->setStyleSheet(
+                    u"QFrame { border: none; border-top: 1px solid rgba(4,138,191,0.14);"
+                    u"         margin-bottom: 1px; }"_s);
+            gl->addWidget(sep, 1, 0, 1, 3);
+
+            int gridRow = 2;
+            for (int ax = 0; ax < 3; ++ax) {
+                const QString &ctype = this->remoteDatasetCtype[ax];
+                if (ctype.isEmpty())
+                    continue;
+                const QString &cunit = this->remoteDatasetCunit[ax];
+                const QString typeStr = cunit.isEmpty()
+                        ? ctype
+                        : QStringLiteral("%1 [%2]").arg(ctype, cunit);
+                const QString deltaStr =
+                        QStringLiteral("%1").arg(this->remoteDatasetCdelt[ax], 0, 'g', 5);
+
+                auto *axLbl = new QLabel(QString::number(ax + 1));
+                axLbl->setStyleSheet(fnHdrStyle);
+
+                auto *typeLbl = new QLabel(typeStr);
+                typeLbl->setStyleSheet(fnValStyle);
+                typeLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+                auto *deltaLbl = new QLabel(deltaStr);
+                deltaLbl->setStyleSheet(fnValStyle);
+                deltaLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+                deltaLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+                gl->addWidget(axLbl,    gridRow, 0);
+                gl->addWidget(typeLbl,  gridRow, 1);
+                gl->addWidget(deltaLbl, gridRow, 2);
+                ++gridRow;
+            }
+
+            infoLayout->addWidget(card);
+        }
+    }
+
+    // ── WCS Warning card (amber, only when present) ───────────────────────────
+    if (!this->remoteWcsWarningMessage.isEmpty()) {
+        auto *warnCard = new QFrame(pageInfo);
+        warnCard->setStyleSheet(cardStyle);
+        auto *wl = new QHBoxLayout(warnCard);
+        wl->setContentsMargins(10, 6, 10, 6);
+        wl->setSpacing(6);
+        auto *warnIcon = new QLabel(u"\u26A0"_s); // ⚠
+        warnIcon->setStyleSheet(u"QLabel { color: #CC8800; font-size: 12px; }"_s);
+        warnIcon->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+        auto *warnMsg = new QLabel(this->remoteWcsWarningMessage);
+        warnMsg->setStyleSheet(u"QLabel { color: #BB9900; font-size: 9px; }"_s);
+        warnMsg->setWordWrap(true);
+        wl->addWidget(warnIcon);
+        wl->addWidget(warnMsg, 1);
+        infoLayout->addWidget(warnCard);
+    }
+
+    infoLayout->addStretch(1);
+
+    // VLKB catalogue overlays: compact sources / filaments over the image
+    // footprint. They are TOOLS - they query the Hi-GAL / VLKB catalogues and
+    // produce an overlay, a source table and a product - so they belong with
+    // the other tools (Tools menu + Inspector ▸ Analysis, from imageTools()),
+    // not as two loose buttons in the left column, which answers "how is this
+    // view drawn". As buttons they were also reachable from ONE surface only,
+    // the same way Profile was.
+    {
+        const bool celestial = this->remoteHasCelestialAxes();
+        const QString noWcs = u"This image has no celestial WCS, so there is no sky "
+                              u"position to query the catalogue over."_s;
+        m_actVlkbSources = ui->menuTools->addAction(u"Overlay VLKB Compact Sources"_s);
+        m_actVlkbSources->setEnabled(celestial);
+        m_actVlkbSources->setToolTip(
+                celestial ? u"Overlay the VLKB compact sources that fall inside this "
+                            u"image's footprint."_s
+                          : noWcs);
+        QObject::connect(m_actVlkbSources, &QAction::triggered, this,
+                         &vtkWindowImage::overlayVlkbSources);
+
+        m_actExportCatalogue = ui->menuTools->addAction(u"Export Catalogue…"_s);
+        m_actExportCatalogue->setToolTip(
+                u"Write the loaded catalogue overlay to CSV: names, positions in "
+                u"the overlay's own sky frame, pixel coordinates and shapes."_s);
+        QObject::connect(m_actExportCatalogue, &QAction::triggered, this,
+                         &vtkWindowImage::exportCatalogueOverlay);
+
+        m_actVlkbFilaments = ui->menuTools->addAction(u"Overlay VLKB Filaments"_s);
+        m_actVlkbFilaments->setEnabled(celestial);
+        m_actVlkbFilaments->setToolTip(
+                celestial ? u"Overlay the VLKB filaments that cross this image's footprint."_s
+                          : noWcs);
+        QObject::connect(m_actVlkbFilaments, &QAction::triggered, this,
+                         &vtkWindowImage::overlayVlkbFilaments);
+
+        m_actVlkbBubbles = ui->menuTools->addAction(u"Overlay VLKB Bubbles"_s);
+        m_actVlkbBubbles->setEnabled(celestial);
+        m_actVlkbBubbles->setToolTip(
+                celestial ? u"Overlay the VLKB bubbles whose rim falls inside this "
+                            u"image's footprint."_s
+                          : noWcs);
+        QObject::connect(m_actVlkbBubbles, &QAction::triggered, this,
+                         &vtkWindowImage::overlayVlkbBubbles);
+
+        m_actVlkbQuery = ui->menuTools->addAction(u"VLKB Catalogue Query…"_s);
+        m_actVlkbQuery->setToolTip(
+                u"Run any of the VLKB catalogue queries over a Galactic box — or your "
+                u"own ADQL — and save the result as a catalogue."_s);
+        QObject::connect(m_actVlkbQuery, &QAction::triggered, this,
+                         &vtkWindowImage::openVlkbQueryComposer);
+    }
+    QObject::connect(&this->m_vlkbCatWatcher, &QFutureWatcher<VlkbCatalogueRaw>::finished, this,
+                     &vtkWindowImage::onVlkbCatalogueReady);
+
+    // Design #1d: no rail in the central widget. Stash the setting pages for the
+    // Inspector's Properties tab (setupInspector()); the Tools page is superseded
+    // by the Inspector's Analysis tab (kept alive, hidden). Parent + hide until
+    // setupInspector() reparents them so they don't flash as top-level windows.
+    // Bug-class fix (see vtkWindowCube_Setup.cpp): park ALL assembler pages in one
+    // hidden holder so none is a free child of the QMainWindow painting at (0,0)
+    // over the left dock. setupInspector() reparents the shown ones out of it.
+    auto *holder = new QWidget(this);
+    holder->setObjectName(u"hiddenSidebarPageHolder"_s);
+    holder->hide();
+    auto *holderLayout = new QVBoxLayout(holder);
+    holderLayout->setContentsMargins(0, 0, 0, 0);
+    for (QWidget *p : { ui->pageLayer, ui->pageCatalogue, pageTools, pageInfo })
+        holderLayout->addWidget(p);
+    this->m_hiddenPageHolder       = holder;
+    this->m_inspectorPageLayer     = ui->pageLayer;
+    this->m_inspectorPageCatalogue = ui->pageCatalogue;
+    this->m_inspectorPageInfo      = pageInfo;
+    this->m_orphanToolsPage        = pageTools;
+
+    this->actionShowControlsSidebar = new QAction(u"Inspector Panel"_s, this);
+    this->actionShowControlsSidebar->setCheckable(true);
+    this->actionShowControlsSidebar->setChecked(true);
+    ui->menuView->addAction(this->actionShowControlsSidebar);
+}

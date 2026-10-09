@@ -21,8 +21,14 @@ NoiseRegionDialog::NoiseRegionDialog(int width, int height, int depth, QWidget *
     , m_height(height)
     , m_depth(depth)
 {
-    setWindowTitle(u"Noise Estimation — Select Region"_s);
-    setModal(true);
+    setWindowTitle(u"Noise Estimation, Select Region"_s);
+    // NOT modal. This window now stays open across the estimate and past it, and
+    // an application-modal settings window blocks the very result window it
+    // produces: ToolResultDialog is a non-modal sibling parented to the cube, so
+    // the numbers appeared behind a window the user could not dismiss without
+    // losing them (reproduced in a Qt harness). The progress sheet
+    // supplies the blocking that the run itself needs, and only while it runs.
+    setModal(false);
     // Shared input theme — see ToolDialogStyle.
     setStyleSheet(ToolDialogStyle::inputCss());
 
@@ -63,12 +69,19 @@ NoiseRegionDialog::NoiseRegionDialog(int width, int height, int depth, QWidget *
     root->addWidget(ToolDialogStyle::makeBreadcrumb(this, u"Estimate Noise"_s));
 
     auto *intro = new QLabel(
-            u"Pick a region of the cube where the signal is line-free — the "
+            u"Pick a region of the cube where the signal is line-free - the "
             u"backend computes a robust noise estimate over it. Defaults to "
             u"the full cube extent."_s, this);
     intro->setStyleSheet(ToolDialogStyle::helperCss());
     intro->setWordWrap(true);
     root->addWidget(intro);
+
+    // Hidden until setRegion() restores a previously-saved region for this cube.
+    m_restoredHint = new QLabel(u"↺ Restored from your last session for this cube."_s, this);
+    m_restoredHint->setStyleSheet(QStringLiteral("color: %1; font-style: italic;").arg(tMuted));
+    m_restoredHint->setWordWrap(true);
+    m_restoredHint->hide();
+    root->addWidget(m_restoredHint);
 
     // ── SPATIAL REGION ───────────────────────────────────────────────────
     auto *spatialForm = ToolDialogStyle::addSection(root, u"Spatial region (pixels)"_s, this);
@@ -129,7 +142,10 @@ NoiseRegionDialog::NoiseRegionDialog(int width, int height, int depth, QWidget *
     btnRow->addWidget(m_okBtn);
     root->addLayout(btnRow);
 
-    QObject::connect(m_okBtn,   &QPushButton::clicked, this, &QDialog::accept);
+    // Estimate does NOT accept: the window stays open across the compute, carries
+    // the progress sheet and is ready for the next region, like every other tool
+    // dialog. The controller listens for this.
+    QObject::connect(m_okBtn,   &QPushButton::clicked, this, &NoiseRegionDialog::estimateRequested);
     QObject::connect(closeBtn,  &QPushButton::clicked, this, &QDialog::reject);
     QObject::connect(resetBtn,  &QPushButton::clicked, this, &NoiseRegionDialog::resetToFullExtent);
 
@@ -167,7 +183,8 @@ void NoiseRegionDialog::validate()
     const int y0 = m_y0Spin->value(), y1 = m_y1Spin->value();
     const int c0 = m_chStartSpin->value(), c1 = m_chEndSpin->value();
     const bool xOk = (x0 <= x1), yOk = (y0 <= y1), cOk = (c0 <= c1);
-    m_okBtn->setEnabled(xOk && yOk && cOk);
+    // Never available while an estimate is in flight, whatever the bounds say.
+    m_okBtn->setEnabled(xOk && yOk && cOk && !m_busy);
 
     // Spatial hint: pixel count + "ratio of footprint" + range warning.
     if (m_spatialHint) {
@@ -183,7 +200,7 @@ void NoiseRegionDialog::validate()
                             ? static_cast<int>((100 * nPx) / totalPx) : 0;
             m_spatialHint->setText(
                     u"%1 × %2 pixels (%3 total, %4% of the cube footprint). "
-                    u"Pick an off-source area inside the data footprint — "
+                    u"Pick an off-source area inside the data footprint - "
                     u"avoid blanked borders or the result is mostly zero."_s
                             .arg(wPx).arg(hPx)
                             .arg(QLocale::system().toString(nPx)).arg(pct));
@@ -222,3 +239,29 @@ int NoiseRegionDialog::y0()          const { return m_y0Spin->value(); }
 int NoiseRegionDialog::y1()          const { return m_y1Spin->value(); }
 int NoiseRegionDialog::channelStart() const { return m_chStartSpin->value(); }
 int NoiseRegionDialog::channelEnd()   const { return m_chEndSpin->value(); }
+
+void NoiseRegionDialog::setRegion(int x0, int x1, int y0, int y1, int chStart, int chEnd)
+{
+    // The spinboxes clamp out-of-range values to the cube extent. Setting them
+    // fires the valueChanged connections → validate() + emitRegion() run, so the
+    // OK-enabled state and the live preview reflect the restored region.
+    m_x0Spin->setValue(x0);
+    m_x1Spin->setValue(x1);
+    m_y0Spin->setValue(y0);
+    m_y1Spin->setValue(y1);
+    m_chStartSpin->setValue(chStart);
+    m_chEndSpin->setValue(chEnd);
+    if (m_restoredHint) {
+        m_restoredHint->show();   // called only when restoring a saved region
+    }
+}
+
+void NoiseRegionDialog::setBusy(bool busy)
+{
+    // Estimate is available only when NOT busy AND the region is valid. Setting
+    // it straight from `busy` made completion re-enable the button over invalid
+    // bounds, and validate() firing during a run re-enabled it mid-compute
+    //. The two conditions live in one place: validate().
+    m_busy = busy;
+    validate();
+}

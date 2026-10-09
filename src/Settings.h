@@ -1,11 +1,36 @@
 #ifndef Settings_h
 #define Settings_h
 
+#include <QList>
 #include <QObject>
 #include <QPointer>
+#include <QString>
 #include <QVariant>
 
 class QSettings;
+
+/// One entry in the desktop's known-backends registry.
+///
+/// In the distributed-backend architecture (see
+/// docs/distributed-backend-design.md), each SKA Regional Centre or
+/// data centre runs a VisIVO backend co-located with its dataset
+/// filesystem. The desktop holds a list of all such backends; SKAVA's
+/// DataLink response tells it which backend serves a given dataset.
+///
+/// The ``id == "local"`` entry is auto-managed by Settings and is the
+/// default fallback whenever SKAVA does not declare a remote backend
+/// for a dataset (preserving the legacy single-backend behaviour).
+struct BackendNode
+{
+    QString id;       ///< Stable identifier, e.g. "local", "src-it-inaf"
+    QString name;     ///< Human-readable name shown in UI
+    QString url;      ///< Base URL (no trailing slash)
+    QString token;    ///< Bearer token; empty for unauthenticated backends
+    QString srcCode;  ///< Optional SKAVA Node code (matches the
+                       ///< visivo-backend service descriptor's node_code)
+    bool    isLocal{ false };    ///< True for the built-in local backend
+    bool    isBuiltin{ false };  ///< Auto-managed entry; cannot be deleted
+};
 
 /**
  * Application-level Settings class
@@ -49,6 +74,13 @@ public:
    */
     void setPlotTheme(int theme);
 
+    // Cube-open pipeline tuning (Phase 3.6) — see Settings.cpp for the
+    // QSettings keys + default values.
+    int  getPreviewTargetMb() const;
+    void setPreviewTargetMb(int mb);
+    int  getLocalFullThresholdMb() const;
+    void setLocalFullThresholdMb(int mb);
+
     /**
    * @return Python absolute path
    */
@@ -70,6 +102,13 @@ public:
    * @param url Panoramic View URL
    */
     void setPanoramicView(const QString &url);
+
+    /**
+     * Zoom level the panoramic view opens at (OpenLayers level, 0 = whole sky).
+     * @return the stored level, or the default when unset.
+     */
+    int getPanoramicZoom() const;
+    void setPanoramicZoom(int zoom);
 
     /**
    * @return Maximum number of glyphs to visualize in vtkWindowSources
@@ -130,6 +169,73 @@ public:
    */
     void setBackendToken(const QString &token);
 
+    // ── SKAVA discovery service ───────────────────────────────────────────────
+
+    /**
+   * @return The SKAVA discovery service base URL
+   * (e.g. "http://localhost:8000"). Empty when not configured.
+   */
+    QString getSkavaUrl() const;
+
+    /**
+   * Persist the SKAVA discovery base URL.
+   * @param url base URL without trailing slash
+   */
+    void setSkavaUrl(const QString &url);
+
+    /**
+   * @return The bearer token used to authenticate against SKAVA
+   * (SKAVA_ACCESS_TOKENS). Empty when SKAVA does not require auth.
+   */
+    QString getSkavaToken() const;
+
+    /**
+   * Persist the SKAVA bearer token.
+   * @param token Bearer token string
+   */
+    void setSkavaToken(const QString &token);
+
+    // ── Scientific copilot (LLM provider) ────────────────────────────────────
+    // Persisted so the user configures the provider once. providerChoice mirrors
+    // the panel/dialog combo: 0=Claude, 1=ChatGPT, 2=Your server, 3=None.
+    int getCopilotProvider() const;
+    void setCopilotProvider(int choice);
+    QString getCopilotKey() const;        ///< the single key (cloud key or self-hosted key)
+    void setCopilotKey(const QString &key);
+    QString getCopilotUrl() const;        ///< self-hosted OpenAI-compatible base URL
+    void setCopilotUrl(const QString &url);
+    QString getCopilotModel() const;
+    void setCopilotModel(const QString &model);
+
+    // ── Multi-backend registry (distributed VisIVO backend) ──────────────────
+    //
+    // See docs/distributed-backend-design.md. The desktop holds a list of
+    // known VisIVO backends keyed by ``id``. The ``"local"`` entry is
+    // auto-managed and always present — it backs the legacy single-backend
+    // getBackendUrl() / getBackendToken() accessors. Additional entries are
+    // user-supplied (or, in the future, harvested via SKAVA's
+    // visivo-backend service descriptors).
+
+    /// All registered backends, including the auto-managed ``local`` entry.
+    QList<BackendNode> getBackendNodes() const;
+    /// Replace the entire registry. The ``local`` entry is preserved /
+    /// reinserted if the caller omits it.
+    void setBackendNodes(const QList<BackendNode> &nodes);
+    /// Lookup by ``id``. Returns an entry with empty fields when missing.
+    BackendNode getBackendNode(const QString &id) const;
+    /// Convenience for the auto-managed ``local`` entry. Always returns a
+    /// usable BackendNode (URL falls back to getBackendUrl() if storage is
+    /// blank, e.g. on first launch).
+    BackendNode getLocalBackend() const;
+    /// Identifier of the backend the desktop uses when no SKAVA hint
+    /// applies. Defaults to ``"local"``.
+    QString getDefaultBackendId() const;
+    void    setDefaultBackendId(const QString &id);
+    /// Insert if absent (matched by ``id``); replace if present.
+    void upsertBackendNode(const BackendNode &node);
+    /// Remove an entry. The ``local`` entry cannot be removed.
+    void removeBackendNode(const QString &id);
+
 public slots:
     /**
    * Reload settings from file
@@ -158,6 +264,7 @@ private:
     // Platform independent
     static const std::pair<QString, QVariant> ColorScheme;
     static const std::pair<QString, QVariant> PanoramicView;
+    static const std::pair<QString, QVariant> PanoramicZoom;
     static const std::pair<QString, QVariant> MaxGlyphs;
     static const std::pair<QString, QVariant> VLKBUrl;
     static const std::pair<QString, QVariant> VLKBSearch;
@@ -166,8 +273,43 @@ private:
     static const std::pair<QString, QVariant> BackendUrl;
     static const std::pair<QString, QVariant> BackendToken;
 
+    // SKAVA discovery service
+    static const std::pair<QString, QVariant> SkavaUrl;
+    static const std::pair<QString, QVariant> SkavaToken;
+
+    // Scientific copilot (LLM provider)
+    static const std::pair<QString, QVariant> CopilotProvider;
+    static const std::pair<QString, QVariant> CopilotKey;
+    static const std::pair<QString, QVariant> CopilotUrl;
+    static const std::pair<QString, QVariant> CopilotModel;
+
+    // Multi-backend registry (Backends/nodes is a JSON array of objects,
+    // Backends/default is the chosen default backend id).
+    static const std::pair<QString, QVariant> BackendNodes;
+    static const std::pair<QString, QVariant> DefaultBackendId;
+    /// Build the canonical ``local`` BackendNode from the legacy
+    /// Backend/url + Backend/token settings. Always returns a usable entry.
+    BackendNode buildLocalBackend() const;
+
     // Plot theme
     static const std::pair<QString, QVariant> PlotTheme;
+
+    // Cube-open pipeline tuning (Phase 3.6).
+    //
+    // PreviewTargetMb:
+    //   Target size in MB for the always-downloaded 3D preview. The
+    //   client computes the downsample factor from this — small cubes
+    //   come down at factor 1 (full data), big ones at higher factors.
+    //   Lower on slow connections.
+    //
+    // LocalFullThresholdMb:
+    //   Cube full-resolution size in MB at which the client stops
+    //   auto-loading the full data locally and switches to remote
+    //   WebRTC rendering. Above this the preview cube is kept as the
+    //   instant placeholder and full quality comes from the V100
+    //   stream. User can still override via the View menu.
+    static const std::pair<QString, QVariant> PreviewTargetMb;
+    static const std::pair<QString, QVariant> LocalFullThresholdMb;
 };
 
 #endif

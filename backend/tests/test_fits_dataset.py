@@ -68,6 +68,30 @@ def freq_cube(tmp_path_factory) -> Path:
 
 
 @pytest.fixture(scope="module")
+def restfrq_cube(tmp_path_factory) -> Path:
+    """Cube carrying the FITS-standard RESTFRQ card (HI 21 cm)."""
+    p = tmp_path_factory.mktemp("ds") / "restfrq_cube.fits"
+    rng = np.random.default_rng(7)
+    data = rng.standard_normal((32, 64, 64)).astype(np.float32)
+    h = _base_cube_header()
+    h["RESTFRQ"] = 1.420405751786e9
+    _write_fits(p, data, h)
+    return p
+
+
+@pytest.fixture(scope="module")
+def restfreq_cube(tmp_path_factory) -> Path:
+    """Same, spelled the older AIPS way (RESTFREQ)."""
+    p = tmp_path_factory.mktemp("ds") / "restfreq_cube.fits"
+    rng = np.random.default_rng(8)
+    data = rng.standard_normal((32, 64, 64)).astype(np.float32)
+    h = _base_cube_header()
+    h["RESTFREQ"] = 1.420405751786e9
+    _write_fits(p, data, h)
+    return p
+
+
+@pytest.fixture(scope="module")
 def pc_cube(tmp_path_factory) -> Path:
     """Cube with a PC rotation matrix (off-diagonal terms)."""
     p = tmp_path_factory.mktemp("ds") / "pc_cube.fits"
@@ -303,6 +327,12 @@ class TestFreqCubeBaseline:
         meta = ds.spectral_axis_metadata(0, 31)
         assert meta["axis_unit"] in ("Hz", "Hz")
 
+    def test_rest_freq_absent_is_none(self, freq_cube):
+        # No RESTFRQ card → None, never 0.0: a client must be able to tell
+        # "no rest frequency" from a rest frequency it would divide by.
+        ds = _load(freq_cube)
+        assert ds.geometry_metadata()["rest_freq_hz"] is None
+
     def test_no_beam(self, freq_cube):
         ds = _load(freq_cube)
         assert ds.beam.major is None
@@ -516,3 +546,147 @@ class TestSpectralChannelClamping:
         full = ds.spectral_axis_metadata(0, 31)["coordinates"]
         ch5 = ds.spectral_axis_metadata(5, 5)["coordinates"][0]
         np.testing.assert_allclose(full[5], ch5, rtol=1e-9)
+
+
+# ── Rest frequency (needed to place a line list on a velocity axis) ──────────
+
+
+class TestRestFrequency:
+    def test_restfrq_card_is_reported(self, restfrq_cube):
+        ds = _load(restfrq_cube)
+        assert ds.geometry_metadata()["rest_freq_hz"] == pytest.approx(1.420405751786e9)
+
+    def test_older_restfreq_spelling_is_reported(self, restfreq_cube):
+        # Both spellings are in the wild; a client cannot be asked to care.
+        ds = _load(restfreq_cube)
+        assert ds.geometry_metadata()["rest_freq_hz"] == pytest.approx(1.420405751786e9)
+
+
+# ── CD matrix in place of CDELT ──────────────────────────────────────────────
+
+
+@pytest.fixture
+def glimpse_cd_image(tmp_path) -> Path:
+    """A GLIMPSE mosaic cutout: CD matrix, no CDELT, CRPIX far outside the data.
+
+    These are the real numbers from GLM_03900+0000 cut to l=40, b=0, r=0.3 —
+    the shape every VLKB cutout of a GLIMPSE mosaic has. CRPIX1 = 3901.5 sits
+    2100 pixels beyond a 1801-pixel image, which is legitimate: the cutout keeps
+    the parent mosaic's reference point instead of recomputing one.
+    """
+    h = fits.Header()
+    h["NAXIS"] = 2
+    h["NAXIS1"], h["NAXIS2"] = 1801, 1802
+    h["CTYPE1"], h["CTYPE2"] = "GLON-CAR", "GLAT-CAR"
+    h["CRVAL1"], h["CRVAL2"] = 39.0, 0.0
+    h["CRPIX1"], h["CRPIX2"] = 3901.5, 901.5
+    h["CD1_1"], h["CD1_2"] = -3.3333333e-4, 0.0
+    h["CD2_1"], h["CD2_2"] = 0.0, 3.3333333e-4
+    h["BUNIT"] = "MJy/sr"
+    path = tmp_path / "glimpse_cd.fits"
+    fits.writeto(path, np.zeros((1802, 1801), dtype=np.float32), h, overwrite=True)
+    return path
+
+
+class TestCdMatrixWithoutCdelt:
+    """CDELT is optional; the geometry must come from CD when it is absent.
+
+    Reading only CDELT gave these images 1.0 **degree** per pixel. The damage
+    was not subtle: the viewer's axes read -3861 to -2061 instead of 40.30 to
+    39.70, and the catalogue overlay built its VLKB query from those same
+    corners, so a field dense with Hi-GAL compact sources returned none. One
+    defect, two complaints.
+    """
+
+    def test_spacing_comes_from_the_cd_matrix(self, glimpse_cd_image):
+        geo = _load(glimpse_cd_image).geometry_metadata()
+        assert geo["spacing"][0] == pytest.approx(-3.3333333e-4)
+        assert geo["spacing"][1] == pytest.approx(3.3333333e-4)
+
+    def test_the_longitude_axis_keeps_its_negative_sign(self, glimpse_cd_image):
+        # Sign is orientation, not decoration: drop it and the image is mirrored
+        # in longitude while still looking entirely plausible.
+        assert _load(glimpse_cd_image).geometry_metadata()["spacing"][0] < 0.0
+
+    def test_the_corners_are_the_sky_the_cutout_covers(self, glimpse_cd_image):
+        geo = _load(glimpse_cd_image).geometry_metadata()
+        lon0 = geo["origin"][0]
+        lon1 = lon0 + geo["spacing"][0] * (geo["width"] - 1)
+        lat0 = geo["origin"][1]
+        lat1 = lat0 + geo["spacing"][1] * (geo["height"] - 1)
+        # The request was l=40, b=0, r=0.3.
+        assert lon0 == pytest.approx(40.30, abs=0.01)
+        assert lon1 == pytest.approx(39.70, abs=0.01)
+        assert lat0 == pytest.approx(-0.30, abs=0.01)
+        assert lat1 == pytest.approx(0.30, abs=0.01)
+
+    def test_pixel_scale_matches_the_matrix(self, glimpse_cd_image):
+        ds = _load(glimpse_cd_image)
+        assert ds.spatial_pixel_scale_arcsec() == pytest.approx(1.2, rel=1e-3)
+
+    def test_a_rotated_field_has_a_scale_on_both_axes(self, tmp_path):
+        """The diagonal is zero at 90°, the pixels are still square."""
+        h = fits.Header()
+        h["NAXIS"], h["NAXIS1"], h["NAXIS2"] = 2, 16, 16
+        h["CTYPE1"], h["CTYPE2"] = "RA---TAN", "DEC--TAN"
+        h["CRVAL1"], h["CRVAL2"] = 10.0, 20.0
+        h["CRPIX1"], h["CRPIX2"] = 8.0, 8.0
+        h["CD1_1"], h["CD1_2"] = 0.0, -2.0e-3
+        h["CD2_1"], h["CD2_2"] = 2.0e-3, 0.0
+        path = tmp_path / "rot.fits"
+        fits.writeto(path, np.zeros((16, 16), dtype=np.float32), h, overwrite=True)
+        spacing = _load(path).geometry_metadata()["spacing"]
+        assert abs(spacing[0]) == pytest.approx(2.0e-3)
+        assert abs(spacing[1]) == pytest.approx(2.0e-3)
+
+    def test_cdelt_still_wins_when_it_is_written(self, freq_cube):
+        # The common case must be untouched: a header that states CDELT is
+        # answered from CDELT, not re-derived.
+        geo = _load(freq_cube).geometry_metadata()
+        assert geo["spacing"][0] == pytest.approx(-2.777e-4)
+        assert geo["spacing"][2] == pytest.approx(-0.5e6)
+
+    def test_the_cd_matrix_wins_when_a_header_writes_both(self, tmp_path):
+        """A malformed-but-real header: CD and a stale CDELT side by side.
+
+        astropy reads such a file from CD and ignores CDELT, so reading CDELT
+        here would put the geometry and the WCS object in the same class at odds
+        — the axes drawn from one and the sky positions from the other.
+        """
+        h = fits.Header()
+        h["NAXIS"], h["NAXIS1"], h["NAXIS2"] = 2, 16, 16
+        h["CTYPE1"], h["CTYPE2"] = "RA---TAN", "DEC--TAN"
+        h["CRVAL1"], h["CRVAL2"] = 10.0, 20.0
+        h["CRPIX1"], h["CRPIX2"] = 8.0, 8.0
+        h["CDELT1"], h["CDELT2"] = -1.0, 1.0          # stale, and absurd
+        h["CD1_1"], h["CD1_2"] = -2.0e-3, 0.0
+        h["CD2_1"], h["CD2_2"] = 0.0, 2.0e-3
+        path = tmp_path / "both.fits"
+        fits.writeto(path, np.zeros((16, 16), dtype=np.float32), h, overwrite=True)
+        ds = _load(path)
+        assert ds.geometry_metadata()["spacing"][0] == pytest.approx(-2.0e-3)
+        # …and it agrees with what astropy makes of the same file. Note the
+        # comparison is against the *pixel scale*, not effective_cdelt: that one
+        # is the step in longitude, which a TAN projection inflates by 1/cos(dec)
+        # and which is therefore 2.13e-3 here. Two different quantities that
+        # happen to coincide for the plate-carrée images this bug came from.
+        from astropy.wcs.utils import proj_plane_pixel_scales
+        scales = proj_plane_pixel_scales(ds.wcs.celestial)
+        assert abs(ds.geometry_metadata()["spacing"][0]) == pytest.approx(
+            float(scales[0]), rel=1e-6)
+
+    def test_a_sky_cd_matrix_leaves_the_spectral_cdelt_alone(self, tmp_path):
+        """CD for the sky axes plus CDELT3 for frequency is a common pairing."""
+        h = fits.Header()
+        h["NAXIS"], h["NAXIS1"], h["NAXIS2"], h["NAXIS3"] = 3, 8, 8, 4
+        h["CTYPE1"], h["CTYPE2"], h["CTYPE3"] = "RA---TAN", "DEC--TAN", "FREQ"
+        h["CRVAL1"], h["CRVAL2"], h["CRVAL3"] = 10.0, 20.0, 1.4e9
+        h["CRPIX1"], h["CRPIX2"], h["CRPIX3"] = 4.0, 4.0, 1.0
+        h["CD1_1"], h["CD2_2"] = -2.0e-3, 2.0e-3
+        h["CDELT3"] = 1.0e6
+        h["CUNIT3"] = "Hz"
+        path = tmp_path / "mixed.fits"
+        fits.writeto(path, np.zeros((4, 8, 8), dtype=np.float32), h, overwrite=True)
+        spacing = _load(path).geometry_metadata()["spacing"]
+        assert spacing[0] == pytest.approx(-2.0e-3)
+        assert spacing[2] == pytest.approx(1.0e6)

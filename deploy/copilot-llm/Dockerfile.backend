@@ -1,0 +1,33 @@
+# VisIVO compute backend (FastAPI) — CPU image for the full self-hosted stack.
+#
+# Serves the analysis API + the scientific copilot. Server-side *rendering* (EGL)
+# is NOT enabled here (that needs a GPU/EGL build); it mounts lazily and simply
+# reports unavailable, so moments / spectral / photometry / copilot all work on
+# CPU while the GPU is left to the LLM container.
+#
+# Build context = repository root (see docker-compose.full.yml).
+FROM python:3.11-slim
+
+# System libs the scientific wheels need at import time (VTK → libGL/glib,
+# numba/OpenMP → libgomp) plus curl for the healthcheck.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 libglib2.0-0 libgomp1 curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app/backend
+
+# Dependencies first (better layer caching). Include the OpenAI SDK so the
+# copilot's self-hosted / ChatGPT providers work out of the box; anthropic is
+# optional (add it here if you also want the Claude provider available).
+COPY backend/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir "openai>=1.40"
+
+# Application code.
+COPY backend/ /app/backend/
+
+ENV PYTHONUNBUFFERED=1 \
+    VISIVO_WORKERS=4
+
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

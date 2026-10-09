@@ -50,12 +50,32 @@ echo "🛰  Mirror: $MIRROR_REPO_URL  (branch: $MIRROR_BRANCH)"
 echo "💾 Workdir: $WORKDIR"
 
 # ── Clone or refresh the mirror clone ───────────────────────────────────────
-if [[ -d "$WORKDIR/.git" ]]; then
+# The clone lives under $TMPDIR, which macOS prunes by age: it will happily
+# delete .git/config out of an otherwise intact repository, leaving a clone
+# with no `origin` and a fetch that fails with "'origin' does not appear to be
+# a git repository". So the existing clone is checked for being usable, not
+# merely for having a .git directory, and anything unusable is re-cloned —
+# there is nothing in there to lose, it is rebuilt from the source tree below.
+reusable_clone() {
+    [[ -d "$WORKDIR/.git" ]] || return 1
+    git -C "$WORKDIR" rev-parse --git-dir >/dev/null 2>&1 || return 1
+    local url
+    url="$(git -C "$WORKDIR" remote get-url origin 2>/dev/null)" || return 1
+    [[ -n "$url" ]] || return 1
+    # A workdir left over from a different mirror URL must not be pushed to.
+    [[ "$url" == "$MIRROR_REPO_URL" ]] || return 1
+    git -C "$WORKDIR" fetch origin "$MIRROR_BRANCH" >/dev/null 2>&1 || return 1
+    return 0
+}
+
+if reusable_clone; then
     echo "↺  Refreshing existing clone…"
-    git -C "$WORKDIR" fetch origin "$MIRROR_BRANCH"
     git -C "$WORKDIR" checkout "$MIRROR_BRANCH"
     git -C "$WORKDIR" reset --hard "origin/$MIRROR_BRANCH"
 else
+    if [[ -e "$WORKDIR" ]]; then
+        echo "⚠️  Existing workdir is not a usable clone of $MIRROR_REPO_URL — re-cloning."
+    fi
     rm -rf "$WORKDIR"
     echo "↓  Cloning mirror…"
     git clone --depth 1 --branch "$MIRROR_BRANCH" "$MIRROR_REPO_URL" "$WORKDIR"

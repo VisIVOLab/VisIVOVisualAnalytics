@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Bundle Info.plist for VisIVO Visual Analytics.
+
+  This is Qt's generated template plus the FITS document association, which is
+  the whole reason for keeping our own copy: without CFBundleDocumentTypes a
+  double-click in Finder cannot reach the app at all, and Qt's default template
+  has no place to add one.
+
+  Note LSHandlerRank = Alternate, deliberately. "Owner" would make VisIVO the
+  default FITS application on every machine it is installed on, taking the
+  association away from DS9 / CARTA / QFitsView, which is not ours to decide.
+  Alternate puts VisIVO in "Open With" and lets LaunchServices choose it when
+  nothing else claims the type; a user who wants it always can set it once with
+  Get Info ▸ Open With ▸ Change All.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleAllowMixedLocalizations</key>
+	<true/>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
+	<key>CFBundleIconFile</key>
+	<string>${MACOSX_BUNDLE_ICON_FILE}</string>
+	<key>CFBundleIdentifier</key>
+	<string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
+	<key>CFBundleVersion</key>
+	<string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>${MACOSX_BUNDLE_COPYRIGHT}</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+
+	<!-- ── Open a FITS file by double-clicking it ───────────────────────── -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>FITS image or spectral cube</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>${MACOSX_BUNDLE_ICON_FILE}</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.fits.image</string>
+			</array>
+			<!-- Extensions as well as the UTI: a FITS file written by an
+			     instrument pipeline usually has no extended attributes, so
+			     LaunchServices matches it by extension. `.fz` is fpack. -->
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>fits</string>
+				<string>fit</string>
+				<string>fts</string>
+				<string>fz</string>
+			</array>
+		</dict>
+	</array>
+
+	<!-- FITS has no Apple-provided UTI and is not ours to own, so it is
+	     IMPORTED (declared for our use) rather than exported. -->
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>org.fits.image</string>
+			<key>UTTypeDescription</key>
+			<string>FITS image or spectral cube</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>fits</string>
+					<string>fit</string>
+					<string>fts</string>
+					<string>fz</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>image/fits</string>
+					<string>application/fits</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+</dict>
+</plist>

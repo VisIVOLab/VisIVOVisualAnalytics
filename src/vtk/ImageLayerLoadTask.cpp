@@ -6,6 +6,9 @@
 #include "wcs.h"
 
 #include <QDebug>
+#include <QFile>
+
+#include <vtkErrorCode.h>
 #include <QElapsedTimer>
 
 #include <vtkImageData.h>
@@ -26,6 +29,14 @@ ImageLayerLoadResult loadImageLayer(const ImageLayerLoadRequest &request)
         return result;
     }
 
+    // The reader reports nothing on a missing or unreadable file, so check here:
+    // callers (the Stokes companion queue in particular) rely on `valid` being
+    // false to stop and tell the user, instead of adding an empty layer.
+    if (!QFile::exists(QString::fromStdString(request.layerFilepath))) {
+        result.errorMessage = "File not found: " + request.layerFilepath;
+        return result;
+    }
+
     vtkNew<vtkFITSReader> reader;
     reader->SetFileName(request.layerFilepath.c_str());
     QElapsedTimer readTimer;
@@ -42,10 +53,44 @@ ImageLayerLoadResult loadImageLayer(const ImageLayerLoadRequest &request)
             << QStringLiteral("[perf][layer] DeepCopy: %1 ms").arg(deepCopyTimer.elapsed());
     result.scalarRange = { reader->GetMin(), reader->GetMax() };
 
+    // The reader allocates its output before reading pixels, so a truncated or
+    // corrupt file still comes back with plausible dimensions - only ErrorCode
+    // says the read itself failed.
+    int dims[3] = { 0, 0, 0 };
+    result.imageData->GetDimensions(dims);
+    if (reader->GetErrorCode() != vtkErrorCode::NoError) {
+        result.imageData = nullptr;
+        result.errorMessage = "Could not read FITS file (" + request.layerFilepath + "): "
+                + vtkErrorCode::GetStringFromErrorCode(reader->GetErrorCode());
+        return result;
+    }
+    if (dims[0] <= 0 || dims[1] <= 0 || result.imageData->GetNumberOfPoints() <= 0) {
+        result.imageData = nullptr;
+        result.errorMessage = "Not a readable 2-D FITS image: " + request.layerFilepath;
+        return result;
+    }
+
     QElapsedTimer payloadTimer;
     payloadTimer.start();
     AstroUtils astroMaster(request.masterFilepath);
     AstroUtils astroNewLayer(request.layerFilepath);
+
+    // A layer that covers none of the master's sky is not a layer. Aligning it
+    // anyway succeeds — the WCS puts it where it belongs, off the edge of the
+    // image — so the load reports success and nothing appears on screen.
+    if (astroMaster.isSimulation() || astroNewLayer.isSimulation()) {
+        result.imageData = nullptr;
+        result.errorMessage = "One of these images has no celestial solution in its header (pixel "
+                              "coordinates only), so there is no way to line the two up.";
+        return result;
+    }
+    if (!request.ignoreOverlap && !astroMaster.overlap(astroNewLayer)) {
+        result.imageData = nullptr;
+        result.noOverlap = true;
+        result.errorMessage = "This image covers none of the sky the current image covers, "
+                              "so it cannot be layered on top of it.";
+        return result;
+    }
 
     const double scalingFactor = astroNewLayer.getSecPix() / astroMaster.getSecPix();
     result.spacing = { scalingFactor, scalingFactor, 1. };
@@ -60,8 +105,18 @@ ImageLayerLoadResult loadImageLayer(const ImageLayerLoadRequest &request)
     pix[1] = 100.;
     astroNewLayer.xy2sky(pix, posNewLayer, WCS_J2000);
     astroMaster.sky2xy(posNewLayer, pix, WCS_J2000);
-    const double m = std::abs((pix[1] - result.origin[1]) / (pix[0] - result.origin[0]));
-    result.rotationDegrees = 90. - std::atan(m) * 180. / vtkMath::Pi();
+    // Angle of the layer's +Y axis measured in the master's frame, SIGNED.
+    // The old form, 90 - atan(|dy/dx|), is the same number in the first quadrant
+    // (90 - atan(b/a) == atan(a/b)) but throws the sign away: a layer rotated
+    // -30 deg was drawn at +30, and 180 deg came out as 0.
+    const double dx = pix[0] - result.origin[0];
+    const double dy = pix[1] - result.origin[1];
+    // VTK's RotateWXYZ(theta, 0,0,1) maps the layer's +Y to (-sin theta, cos theta),
+    // so reaching the master-space direction (dx, dy) needs theta = atan2(-dx, dy).
+    // atan2(dx, dy) has the right magnitude and the WRONG SIGN: a layer rotated
+    // -30 deg was drawn at +30. (The formula it replaced, 90 - atan|dy/dx|, had
+    // no sign at all, so this was never right - it is now.)
+    result.rotationDegrees = std::atan2(-dx, dy) * 180. / vtkMath::Pi();
     qDebug().noquote() << QStringLiteral("[perf][layer] payload preparation: %1 ms").arg(
             payloadTimer.elapsed());
 

@@ -1,4 +1,5 @@
 #include "ToolResultDialog.h"
+#include "ToolResultRecord.h"
 #include "theme/VisivoTheme.h"
 
 #include <QDialogButtonBox>
@@ -221,4 +222,21 @@ void ToolResultDialog::addSection(const QString &sectionTitle,
     }
 
     m_bodyLayout->insertWidget(insertIdx, box);
+}
+
+QVariantMap ToolResultDialog::makeRecord(
+        const QString &title, const QString &subtitle,
+        const QList<QPair<QString, QList<QPair<QString, QString>>>> &sections)
+{
+    return visivo::encodeResultRecord(title, subtitle, sections);
+}
+
+void ToolResultDialog::applyRecord(const QVariantMap &record)
+{
+    setTitle(visivo::recordTitle(record));
+    const QString subtitle = visivo::recordSubtitle(record);
+    if (!subtitle.isEmpty())
+        setSubtitle(subtitle);
+    for (const visivo::ResultSection &section : visivo::decodeResultSections(record))
+        addSection(section.first, section.second);
 }

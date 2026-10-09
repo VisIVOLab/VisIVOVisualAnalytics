@@ -1,5 +1,7 @@
 #include "SourceFindDialog.h"
 
+#include "ToolProgressSheet.h"
+
 #include "BackendClient.h"
 #include "theme/ToolDialogStyle.h"
 #include "theme/VisivoTheme.h"
@@ -11,6 +13,8 @@
 #include <QFutureWatcher>
 #include <QHeaderView>
 #include <QLabel>
+#include "ToolDialogClose.h"
+
 #include <QMessageBox>
 #include <QProgressDialog>
 #include <QPushButton>
@@ -24,11 +28,11 @@ using namespace Qt::StringLiterals;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-SourceFindDialog::SourceFindDialog(BackendClient *client,
+SourceFindDialog::SourceFindDialog(std::shared_ptr<BackendClient> client,
                                    const QString &datasetId,
                                    QWidget *parent)
     : QDialog(parent)
-    , m_client(client)
+    , m_client(std::move(client))
     , m_datasetId(datasetId)
 {
     setWindowTitle(u"SoFiA-2 Source Finding"_s);
@@ -94,13 +98,23 @@ SourceFindDialog::SourceFindDialog(BackendClient *client,
     auto *btnRow = new QHBoxLayout();
     btnRow->addStretch();
     auto *closeBtn = VisivoTheme::makeSecondaryButton(u"Close"_s, this);
+    m_openMaskBtn  = VisivoTheme::makeSecondaryButton(u"Open mask in 3D"_s, this);
+    m_openMaskBtn->setEnabled(false);
+    m_openMaskBtn->setToolTip(
+            u"Open the SoFiA-2 binary mask cube in the 3D viewer to inspect "
+            u"the detections in 3D. Run SoFiA-2 first."_s);
     m_runBtn       = VisivoTheme::makePrimaryButton(u"Run SoFiA-2"_s, this);
     btnRow->addWidget(closeBtn);
+    btnRow->addWidget(m_openMaskBtn);
     btnRow->addWidget(m_runBtn);
     mainLayout->addLayout(btnRow);
 
     connect(m_runBtn,  &QPushButton::clicked, this, &SourceFindDialog::onRun);
     connect(closeBtn,  &QPushButton::clicked, this, &QDialog::reject);
+    connect(m_openMaskBtn, &QPushButton::clicked, this, [this]() {
+        if (!m_maskPath.isEmpty())
+            emit openMaskCubeRequested(m_maskPath);
+    });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -117,13 +131,9 @@ void SourceFindDialog::onRun()
     const QString datasetId = m_datasetId;
     setUiBusy(true);
 
-    m_progress = new QProgressDialog(u"Running SoFiA-2 source finder…"_s,
-                                     QString(), 0, 0, this);
-    m_progress->setWindowModality(Qt::WindowModal);
-    m_progress->setMinimumDuration(400);
-    m_progress->show();
+    m_progress = visivo::showToolProgressSheet(this, u"Running the SoFiA-2 source finder"_s);
 
-    BackendClient *client = m_client;
+    std::shared_ptr<BackendClient> client = m_client;   // shared with the worker
 
     auto *watcher = new QFutureWatcher<BackendSourceFindResult>(this);
     QPointer<SourceFindDialog> self(this);
@@ -136,10 +146,7 @@ void SourceFindDialog::onRun()
         if (!self) {
             return;
         }
-        if (self->m_progress) {
-            self->m_progress->close();
-            self->m_progress->deleteLater();
-        }
+        visivo::closeToolProgressSheet(self->m_progress);
         self->setUiBusy(false);
 
         if (!result.valid) {
@@ -162,6 +169,11 @@ void SourceFindDialog::onRun()
             }
             return;
         }
+
+        // Offer the 3D mask overlay when SoFiA wrote a mask cube.
+        self->m_maskPath = result.maskPath;
+        if (self->m_openMaskBtn)
+            self->m_openMaskBtn->setEnabled(!result.maskPath.isEmpty());
 
         if (result.nSources == 0) {
             QMessageBox::information(self, u"Source Finding"_s,
@@ -239,8 +251,20 @@ void SourceFindDialog::populateTable(const QVector<QVariantMap> &rows)
     m_table->resizeColumnsToContents();
 }
 
+void SourceFindDialog::closeEvent(QCloseEvent *event)
+{
+    // See ToolDialogClose.h: a compute in flight cannot be cancelled, so the
+    // choice is between waiting and discarding the result — said out loud.
+    if (m_busy && !visivo::confirmAbandonRunningCompute(this, u"Source Finder"_s, u"The SoFiA-2 source finder"_s)) {
+        event->ignore();
+        return;
+    }
+    event->accept();
+}
+
 void SourceFindDialog::setUiBusy(bool busy)
 {
+    m_busy = busy;
     m_thresholdSpin->setEnabled(!busy);
     m_kernelXSpin->setEnabled(!busy);
     m_kernelYSpin->setEnabled(!busy);

@@ -1,0 +1,938 @@
+#include "vtkWindowVectorField.h"
+
+#include "Catalogue3DParser.h"
+#include "RemoteFileBrowserDialog.h"
+#include "app/BackendClient.h"
+#include "qcustomplot.h"
+
+#include <vtkActor.h>
+#include <vtkArrowSource.h>
+#include <vtkCellArray.h>
+#include <vtkCoordinate.h>
+#include <vtkDataArray.h>
+#include <vtkDataSet.h>
+#include <vtkFloatArray.h>
+#include <vtkFlyingEdges3D.h>
+#include <vtkGlyph3DMapper.h>
+#include <vtkImageData.h>
+#include <vtkImageGaussianSmooth.h>
+#include <vtkLookupTable.h>
+#include <vtkMapper.h>
+#include <vtkNew.h>
+#include <vtkPointData.h>
+#include <vtkPoints.h>
+#include <vtkPolyData.h>
+#include <vtkPolyDataMapper.h>
+#include <vtkProbeFilter.h>
+#include <vtkProperty.h>
+#include <vtkRenderWindow.h>
+#include <vtkRenderer.h>
+#include <vtkScalarBarActor.h>
+
+#include <QComboBox>
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+
+#include <QApplication>
+#include <QCheckBox>
+#include <QDoubleSpinBox>
+#include <QFileInfo>
+#include <QLabel>
+#include <QMessageBox>
+#include <QDialog>
+#include <QPushButton>
+#include <QSignalBlocker>
+#include <QSlider>
+#include <QStatusBar>
+#include <QVBoxLayout>
+#include <QVector>
+#include <QtConcurrent>
+
+using namespace Qt::StringLiterals;
+
+// ── CosmicFlows combo: overlay a galaxy catalogue in the velocity-field frame ──
+// The velocity viewer already holds a live backend session; this reuses the
+// catalogue open/query/parse path (same as vtkWindowCatalogue3D) to pull the
+// XYZ positions and draws them as a plain GPU point cloud in the SAME renderer,
+// so galaxies appear inside the flow. Only Cartesian (X/Y/Z Mpc) catalogues
+// share this frame; sky catalogues are parsed to positions too but won't align.
+
+namespace {
+QString catalogueFormatForPath(const QString &path)
+{
+    const QString suffix = QFileInfo(path).suffix().trimmed().toLower();
+    if (suffix == u"csv"_s)
+        return u"csv"_s;
+    if (suffix == u"vot"_s || suffix == u"votable"_s || suffix == u"xml"_s)
+        return u"votable"_s;
+    if (suffix == u"fits"_s || suffix == u"fit"_s)
+        return u"fits"_s;
+    if (suffix == u"speck"_s)
+        return u"speck"_s;
+    if (suffix == u"tbl"_s)
+        return u"ipac"_s;
+    return u"csv"_s;
+}
+
+// Bulk flow |⟨v⟩| in spheres of growing radius about the origin (the observer):
+// for each radius, the magnitude of the mean velocity vector over the points
+// within it. Works for both the galaxy cloud and the field grid (any vtkDataSet
+// with a 3-component "velocity" point array).
+QVector<double> bulkFlowVsRadius(vtkDataSet *ds, vtkDataArray *vel,
+                                 const QVector<double> &radii)
+{
+    QVector<double> out(radii.size(), 0.0);
+    const vtkIdType n = ds->GetNumberOfPoints();
+    for (int k = 0; k < radii.size(); ++k) {
+        const double r2 = radii[k] * radii[k];
+        double sx = 0.0, sy = 0.0, sz = 0.0;
+        vtkIdType c = 0;
+        for (vtkIdType i = 0; i < n; ++i) {
+            double p[3];
+            ds->GetPoint(i, p);
+            if (p[0] * p[0] + p[1] * p[1] + p[2] * p[2] <= r2) {
+                double v[3];
+                vel->GetTuple(i, v);
+                sx += v[0];
+                sy += v[1];
+                sz += v[2];
+                ++c;
+            }
+        }
+        out[k] = c ? std::sqrt(sx * sx + sy * sy + sz * sz) / static_cast<double>(c) : 0.0;
+    }
+    return out;
+}
+
+// Off-GUI-thread worker: open + query + parse a catalogue into plain data. Takes
+// value copies only (never touches the widget) so it's safe to run detached; VTK
+// objects are built later on the GUI thread from the returned entries/schema.
+CatalogueOverlayData fetchCatalogueOverlay(QString backendUrl, QString backendToken,
+                                           QString sessionId, QString path, QString format,
+                                           QString name)
+{
+    CatalogueOverlayData out;
+    out.name = name;
+
+    // Never let an exception escape the worker — QFutureWatcher::result() would
+    // rethrow it on the GUI thread. Surface it as a normal failure instead.
+    try {
+        BackendClient client(backendUrl, backendToken);
+        if (!sessionId.isEmpty())
+            client.setSessionId(sessionId);
+
+        const auto opened = client.openCatalogue(path, format);
+        if (!opened.valid) {
+            out.error = opened.error.isEmpty() ? u"unknown error"_s : opened.error;
+            return out;
+        }
+
+        Catalogue3DSchema schema;
+        schema.raFieldName = opened.raField;
+        schema.decFieldName = opened.decField;
+        schema.xFieldName = opened.xField;
+        schema.yFieldName = opened.yField;
+        schema.zFieldName = opened.zField;
+        schema.fields.reserve(opened.fields.size());
+        for (const auto &f : opened.fields) {
+            schema.fields.push_back({ f.name, f.type });
+            schema.headers.append(f.name);
+        }
+        // Prefer physical Cartesian X/Y/Z when present (see overlayCatalogue notes).
+        const bool haveXYZ = !schema.xFieldName.isEmpty() && !schema.yFieldName.isEmpty()
+                && !schema.zFieldName.isEmpty();
+        if (haveXYZ) {
+            schema.raFieldName.clear();
+            schema.decFieldName.clear();
+        }
+
+        BackendTabularQueryRequest qreq;
+        qreq.datasetId = opened.datasetId;   // limit defaults to 100k — plenty for context
+        const auto subset = client.queryTabularCatalogue(qreq);
+        const auto parsed = Catalogue3DParser::parseBackendSubset(schema, subset.rows);
+        if (!subset.valid || !parsed.valid) {
+            out.error = !subset.valid ? subset.error : parsed.errorMessage;
+            return out;
+        }
+
+        out.ok = true;
+        out.totalRows = subset.totalRows;
+        out.cartesian = schema.isCartesian();
+        out.schema = schema;
+        out.entries = parsed.entries;
+    } catch (const std::exception &e) {
+        out.ok = false;
+        out.error = QString::fromUtf8(e.what());
+    } catch (...) {
+        out.ok = false;
+        out.error = u"unknown error during catalogue fetch"_s;
+    }
+    return out;
+}
+}  // namespace
+
+void vtkWindowVectorField::overlayCatalogue()
+{
+    if (this->m_catalogueWatcher.isRunning())
+        return;   // one overlay fetch at a time
+
+    // The field is only in physical Mpc once a box size is set; until then it is
+    // in grid units and catalogue Mpc positions won't align. Warn up front.
+    if (this->m_boxMpc <= 0.0) {
+        const auto btn = QMessageBox::warning(
+                this, u"Overlay Catalogue"_s,
+                u"This velocity field is shown in grid units (Box size (Mpc) = 0), but a "
+                u"galaxy catalogue is in physical Mpc - the two will not align until you set "
+                u"“Box size (Mpc)” to the field's physical box.\n\nOverlay anyway?"_s,
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (btn != QMessageBox::Yes)
+            return;
+    }
+
+    RemoteFileBrowserDialog dialog(this->m_backendUrl, this->m_backendToken, this);
+    dialog.setExtensionFilter(
+            { u".csv"_s, u".vot"_s, u".votable"_s, u".xml"_s, u".fits"_s, u".fit"_s,
+              u".speck"_s, u".tbl"_s },
+            u"Galaxy catalogues"_s);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    const QString path = dialog.selectedFilePath();
+    if (path.isEmpty())
+        return;
+
+    // Fetch + parse off the GUI thread so a large catalogue doesn't freeze the UI.
+    // The worker captures only value copies (never `this`); the VTK actor is built
+    // in onCatalogueOverlayReady() on the GUI thread.
+    if (this->btnOverlayCatalogue)
+        this->btnOverlayCatalogue->setEnabled(false);
+    this->statusBar()->showMessage(u"Overlaying catalogue…"_s);
+
+    const QString backendUrl = this->m_backendUrl;
+    const QString backendToken = this->m_backendToken;
+    const QString sessionId = this->m_sessionId;
+    const QString format = catalogueFormatForPath(path);
+    const QString name = QFileInfo(path).fileName();
+    this->m_catalogueWatcher.setFuture(QtConcurrent::run(
+            [backendUrl, backendToken, sessionId, path, format, name]() {
+                return fetchCatalogueOverlay(backendUrl, backendToken, sessionId, path, format,
+                                             name);
+            }));
+}
+
+void vtkWindowVectorField::onCatalogueOverlayReady()
+{
+    if (this->btnOverlayCatalogue)
+        this->btnOverlayCatalogue->setEnabled(true);
+
+    const CatalogueOverlayData data = this->m_catalogueWatcher.result();
+    if (!data.ok) {
+        this->statusBar()->clearMessage();
+        QMessageBox::warning(this, u"Overlay Catalogue"_s,
+                             u"Load failed: %1"_s.arg(data.error.isEmpty() ? u"unknown error"_s
+                                                                           : data.error));
+        return;
+    }
+
+    const Catalogue3DSchema &schema = data.schema;
+    double meanAgreement = 0.0;   // mean field-agreement over in-box galaxies
+    double meanResidual = 0.0;    // mean |v_galaxy − v_field| (typical mismatch, km/s)
+    double bulkAmp = 0.0;         // |mean v_galaxy| — coherent bulk flow (km/s)
+    bool haveAgreement = false;
+    bool haveResidual = false;    // a "residual" vector array was built (for arrows)
+
+    // Point cloud from the parsed scene positions (Cartesian = the X/Y/Z fields).
+    const vtkIdType nPts = static_cast<vtkIdType>(data.entries.size());
+    vtkNew<vtkPoints> points;
+    points->SetNumberOfPoints(nPts);
+    vtkNew<vtkCellArray> verts;
+    verts->AllocateEstimate(nPts, 1);
+    for (vtkIdType i = 0; i < nPts; ++i) {
+        const auto &e = data.entries[static_cast<std::size_t>(i)];
+        points->SetPoint(i, e.sceneX, e.sceneY, e.sceneZ);
+        verts->InsertNextCell(1, &i);
+    }
+    vtkNew<vtkPolyData> poly;
+    poly->SetPoints(points);
+    poly->SetVerts(verts);
+
+    // Attach a named scalar array per numeric column so the galaxies can be
+    // coloured by any attribute without re-fetching. Field lookups reuse the
+    // parser accessor (name → index via schema), so precision matches the viewer.
+    QStringList colourKeys;
+    for (const auto &field : schema.fields) {
+        const QString type = field.type.toLower();
+        const bool numeric = type.contains(u"float"_s) || type.contains(u"double"_s)
+                || type.contains(u"int"_s) || type.contains(u"real"_s);
+        if (!numeric)
+            continue;
+        vtkNew<vtkFloatArray> arr;
+        arr->SetName(field.name.toUtf8().constData());
+        arr->SetNumberOfTuples(nPts);
+        for (vtkIdType i = 0; i < nPts; ++i) {
+            const double v = Catalogue3DParser::detail::fieldDouble(
+                    data.entries[static_cast<std::size_t>(i)], schema, field.name);
+            arr->SetValue(i, static_cast<float>(v));
+        }
+        poly->GetPointData()->AddArray(arr);
+        colourKeys << field.name;
+    }
+
+    // Speed |v| from vx/vy/vz when present — the cosmic-flow attribute.
+    int vxi = -1, vyi = -1, vzi = -1;
+    for (int c = 0; c < schema.headers.size(); ++c) {
+        const QString h = schema.headers.at(c).trimmed().toLower();
+        if (h == u"vx"_s) vxi = c;
+        else if (h == u"vy"_s) vyi = c;
+        else if (h == u"vz"_s) vzi = c;
+    }
+    this->m_catalogueHasVelocity = (vxi >= 0 && vyi >= 0 && vzi >= 0);
+    if (this->m_catalogueHasVelocity) {
+        // Read a component defensively — a null/NaN entry must not poison the
+        // array range (unlike fieldDouble, raw toDouble() doesn't finite-check).
+        const auto comp = [](const Catalogue3DEntry &e, int idx) -> double {
+            if (idx < 0 || idx >= e.fields.size())
+                return 0.0;
+            bool ok = false;
+            const double v = e.fields.at(idx).toDouble(&ok);
+            return (ok && std::isfinite(v)) ? v : 0.0;
+        };
+        // 3-component "velocity" vector → the arrow glyphs orient/scale by it.
+        vtkNew<vtkFloatArray> vel;
+        vel->SetName("velocity");
+        vel->SetNumberOfComponents(3);
+        vel->SetNumberOfTuples(nPts);
+        // Scalar "Speed |v|" for colouring (skip if a real column already owns it).
+        const bool addSpeed = !colourKeys.contains(u"Speed |v|"_s);
+        vtkNew<vtkFloatArray> speed;
+        if (addSpeed) {
+            speed->SetName("Speed |v|");
+            speed->SetNumberOfTuples(nPts);
+        }
+        for (vtkIdType i = 0; i < nPts; ++i) {
+            const auto &e = data.entries[static_cast<std::size_t>(i)];
+            const double vx = comp(e, vxi), vy = comp(e, vyi), vz = comp(e, vzi);
+            vel->SetTuple3(i, vx, vy, vz);
+            if (addSpeed)
+                speed->SetValue(i, static_cast<float>(std::sqrt(vx * vx + vy * vy + vz * vz)));
+        }
+        poly->GetPointData()->AddArray(vel);
+        if (addSpeed) {
+            poly->GetPointData()->AddArray(speed);
+            colourKeys << u"Speed |v|"_s;
+        }
+
+        // Field agreement: cos(angle) between each galaxy's peculiar velocity and
+        // the reconstructed field at its location — the CosmicFlows "do galaxies
+        // flow with the reconstruction?" diagnostic. Sample the field grid with a
+        // probe filter (galaxies outside the box / zero-velocity → 0).
+        if (this->imageData) {
+            vtkNew<vtkProbeFilter> probe;
+            probe->SetInputData(poly);            // galaxies
+            probe->SetSourceData(this->imageData);  // field grid ("velocity" vectors)
+            // Don't pass the galaxies' own arrays through — the input already has
+            // a "velocity" array, so passthrough would shadow the interpolated
+            // field "velocity" and make the agreement identically 1.
+            probe->PassPointArraysOff();
+            probe->Update();
+            auto *probed = vtkPolyData::SafeDownCast(probe->GetOutput());
+            auto *fieldV = probed ? vtkFloatArray::SafeDownCast(
+                                   probed->GetPointData()->GetArray("velocity"))
+                                  : nullptr;
+            vtkDataArray *mask = probed
+                    ? probed->GetPointData()->GetArray("vtkValidPointMask")
+                    : nullptr;
+            if (fieldV) {
+                vtkNew<vtkFloatArray> agree;
+                agree->SetName("Field agreement");
+                agree->SetNumberOfTuples(nPts);
+                // |v_galaxy − v_field| per galaxy — the local residual: the part
+                // of the observed motion the reconstruction does not explain.
+                // (Assumes the field and catalogue share velocity units, km/s.)
+                vtkNew<vtkFloatArray> resid;
+                resid->SetName("Residual |v|");
+                resid->SetNumberOfTuples(nPts);
+                // 3-component residual vector → "Residual arrows" glyph mode.
+                vtkNew<vtkFloatArray> residVec;
+                residVec->SetName("residual");
+                residVec->SetNumberOfComponents(3);
+                residVec->SetNumberOfTuples(nPts);
+                // Field velocity sampled AT each galaxy → the reconstruction's
+                // bulk flow over the SAME selection as the galaxies (WFH-style).
+                vtkNew<vtkFloatArray> fieldVel;
+                fieldVel->SetName("field_velocity");
+                fieldVel->SetNumberOfComponents(3);
+                fieldVel->SetNumberOfTuples(nPts);
+                double sum = 0.0, resSum = 0.0, bulk[3] = { 0.0, 0.0, 0.0 };
+                vtkIdType counted = 0;
+                for (vtkIdType i = 0; i < nPts; ++i) {
+                    double g[3], fv[3];
+                    vel->GetTuple(i, g);
+                    fieldV->GetTuple(i, fv);
+                    const bool valid = !mask || mask->GetComponent(i, 0) != 0.0;
+                    const double gm = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+                    const double fm = std::sqrt(fv[0] * fv[0] + fv[1] * fv[1] + fv[2] * fv[2]);
+                    double a = 0.0, rmag = 0.0, rx = 0.0, ry = 0.0, rz = 0.0;
+                    const bool usable = valid && gm > 1e-9 && fm > 1e-9;
+                    if (usable) {
+                        a = (g[0] * fv[0] + g[1] * fv[1] + g[2] * fv[2]) / (gm * fm);
+                        rx = g[0] - fv[0];
+                        ry = g[1] - fv[1];
+                        rz = g[2] - fv[2];
+                        rmag = std::sqrt(rx * rx + ry * ry + rz * rz);
+                        resSum += rmag;
+                        bulk[0] += g[0];
+                        bulk[1] += g[1];
+                        bulk[2] += g[2];
+                        sum += a;
+                        ++counted;
+                    }
+                    a = std::max(-1.0, std::min(1.0, a));   // guard fp roundoff
+                    agree->SetValue(i, static_cast<float>(a));
+                    resid->SetValue(i, static_cast<float>(rmag));
+                    residVec->SetTuple3(i, rx, ry, rz);
+                    if (usable)
+                        fieldVel->SetTuple3(i, fv[0], fv[1], fv[2]);
+                    else
+                        fieldVel->SetTuple3(i, 0.0, 0.0, 0.0);
+                }
+                poly->GetPointData()->AddArray(agree);
+                poly->GetPointData()->AddArray(resid);
+                poly->GetPointData()->AddArray(residVec);
+                poly->GetPointData()->AddArray(fieldVel);
+                haveResidual = true;
+                colourKeys << u"Field agreement"_s << u"Residual |v|"_s;
+                if (counted > 0) {
+                    const double inv = 1.0 / static_cast<double>(counted);
+                    meanAgreement = sum * inv;
+                    meanResidual = resSum * inv;
+                    bulkAmp = std::sqrt(bulk[0] * bulk[0] + bulk[1] * bulk[1] + bulk[2] * bulk[2]) * inv;
+                    haveAgreement = true;
+                }
+            }
+        }
+    }
+
+    // Keep the poly + both mappers as members so shape/colour can switch with no
+    // re-fetch: a plain points mapper, and a GPU-instanced arrow-glyph mapper
+    // oriented/scaled by each galaxy's peculiar velocity.
+    this->cataloguePoly = poly;
+
+    this->cataloguePointsMapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+    this->cataloguePointsMapper->SetInputData(poly);
+    this->cataloguePointsMapper->ScalarVisibilityOff();   // uniform gold by default
+
+    // The glyph mapper's orientation/scale array (velocity vs residual) + scale
+    // factor are (re)configured per shape in setCatalogueShape; here we only set
+    // its input. The actor starts on the points mapper, so no arrows show yet.
+    this->catalogueGlyphMapper = vtkSmartPointer<vtkGlyph3DMapper>::New();
+    this->catalogueGlyphMapper->SetInputData(poly);
+    this->catalogueGlyphMapper->ScalarVisibilityOff();
+
+    const bool firstOverlay = !this->catalogueActor;
+    if (this->catalogueActor)
+        this->renderer->RemoveActor(this->catalogueActor);
+    this->catalogueActor = vtkSmartPointer<vtkActor>::New();
+    this->catalogueActor->SetMapper(this->cataloguePointsMapper);   // Points by default
+    this->catalogueActor->GetProperty()->SetColor(0.95, 0.85, 0.30);  // warm gold
+    this->catalogueActor->GetProperty()->SetPointSize(
+            this->spinCataloguePointSize ? this->spinCataloguePointSize->value() : 3.0);
+    this->renderer->AddActor(this->catalogueActor);
+
+    this->m_catalogueName = data.name;
+    this->m_catalogueCount = static_cast<int>(data.entries.size());
+
+    if (this->chkShowCatalogue) {
+        QSignalBlocker blk(this->chkShowCatalogue);
+        this->chkShowCatalogue->setChecked(true);
+        this->chkShowCatalogue->setEnabled(true);
+    }
+    if (this->btnRemoveCatalogue)
+        this->btnRemoveCatalogue->setEnabled(true);
+    if (this->btnBulkFlow)
+        this->btnBulkFlow->setEnabled(this->m_catalogueHasVelocity);
+    if (this->spinCataloguePointSize)
+        this->spinCataloguePointSize->setEnabled(true);
+    if (this->comboGalaxyColor) {
+        // Repopulate to Uniform + this catalogue's numeric attributes. Blocked so
+        // it doesn't fire recolour — the actor already starts Uniform.
+        QSignalBlocker blk(this->comboGalaxyColor);
+        this->comboGalaxyColor->clear();
+        this->comboGalaxyColor->addItem(u"Uniform"_s);
+        this->comboGalaxyColor->addItems(colourKeys);
+        this->comboGalaxyColor->setCurrentIndex(0);
+        this->comboGalaxyColor->setEnabled(true);
+    }
+    if (this->comboGalaxyShape) {
+        // Points always; Velocity arrows only when vx/vy/vz were present. Reset
+        // to Points (the actor already uses the points mapper) — blocked so it
+        // doesn't fire setCatalogueShape.
+        QSignalBlocker blk(this->comboGalaxyShape);
+        this->comboGalaxyShape->clear();
+        this->comboGalaxyShape->addItem(u"Points"_s);
+        if (this->m_catalogueHasVelocity)
+            this->comboGalaxyShape->addItem(u"Velocity arrows"_s);
+        if (haveResidual)
+            this->comboGalaxyShape->addItem(u"Residual arrows"_s);
+        this->comboGalaxyShape->setCurrentIndex(0);
+        this->comboGalaxyShape->setEnabled(true);
+    }
+    // New actor starts Uniform — drop any legend left from a previous overlay.
+    if (this->catalogueScalarBar)
+        this->catalogueScalarBar->VisibilityOff();
+
+    // Invalidate any density field from a previous overlay; rebuilt lazily when
+    // the user turns it on for this catalogue.
+    this->catalogueDensityGrid = nullptr;
+    this->m_catalogueDensityMax = 0.0;
+    if (this->catalogueDensityActor) {
+        this->renderer->RemoveActor(this->catalogueDensityActor);
+        this->catalogueDensityActor = nullptr;
+    }
+    if (this->chkGalaxyDensity) {
+        QSignalBlocker blk(this->chkGalaxyDensity);
+        this->chkGalaxyDensity->setChecked(false);
+        this->chkGalaxyDensity->setEnabled(true);
+    }
+    if (this->sliderDensityLevel)
+        this->sliderDensityLevel->setEnabled(true);
+
+    // Reframe on the FIRST overlay so the galaxies are visible — if the catalogue
+    // shares the field's frame they sit inside it; if not, the zoom-out makes the
+    // mismatch obvious. Later re-overlays keep the user's current view.
+    if (firstOverlay)
+        this->renderer->ResetCamera();
+    this->renderWindow->Render();
+
+    const bool capped = data.totalRows > this->m_catalogueCount;
+    QString msg = u"Overlaid %1 galaxies from %2"_s.arg(this->m_catalogueCount)
+                          .arg(this->m_catalogueName);
+    if (capped)
+        msg += u" (of %1; capped)"_s.arg(data.totalRows);
+    if (!data.cartesian)
+        msg += u" - note: not a Cartesian catalogue, positions may not match the field frame"_s;
+    if (haveAgreement)
+        msg += u" · agreement %1 · residual %2 · bulk %3 (km/s)"_s
+                       .arg(meanAgreement, 0, 'f', 2)
+                       .arg(meanResidual, 0, 'f', 0)
+                       .arg(bulkAmp, 0, 'f', 0);
+    this->statusBar()->showMessage(msg, 15000);
+    if (this->summaryLabel) {
+        if (this->m_summaryBase.isEmpty())
+            this->m_summaryBase = this->summaryLabel->text();
+        this->summaryLabel->setText(this->m_summaryBase
+                                    + u" · %1 galaxies"_s.arg(this->m_catalogueCount));
+    }
+}
+
+void vtkWindowVectorField::setCatalogueVisible(bool on)
+{
+    if (!this->catalogueActor)
+        return;
+    this->catalogueActor->SetVisibility(on);
+    // The attribute legend only makes sense while the (attribute-coloured)
+    // galaxies are shown.
+    if (this->catalogueScalarBar) {
+        vtkMapper *mapper = this->catalogueActor->GetMapper();
+        const bool coloured = mapper && mapper->GetScalarVisibility();
+        this->catalogueScalarBar->SetVisibility(on && coloured);
+    }
+    this->renderWindow->Render();
+}
+
+void vtkWindowVectorField::buildCatalogueDensity()
+{
+    if (!this->cataloguePoly)
+        return;
+    vtkPoints *pts = this->cataloguePoly->GetPoints();
+    const vtkIdType n = pts ? pts->GetNumberOfPoints() : 0;
+    if (n == 0)
+        return;
+
+    // Accumulate each galaxy at its nearest point of a coarse grid over the
+    // catalogue bounds (a point-sampled density field, not cell counts).
+    constexpr int N = 48;
+    double b[6];
+    this->cataloguePoly->GetBounds(b);
+    double ext[3] = { b[1] - b[0], b[3] - b[2], b[5] - b[4] };
+    for (double &e : ext)
+        if (e <= 0.0)
+            e = 1.0;   // guard a flat axis
+    const double sp[3] = { ext[0] / (N - 1), ext[1] / (N - 1), ext[2] / (N - 1) };
+
+    vtkNew<vtkImageData> grid;
+    grid->SetDimensions(N, N, N);
+    grid->SetOrigin(b[0], b[2], b[4]);
+    grid->SetSpacing(sp[0], sp[1], sp[2]);
+    const vtkIdType nCells = static_cast<vtkIdType>(N) * N * N;
+    vtkNew<vtkFloatArray> dens;
+    dens->SetName("density");
+    dens->SetNumberOfTuples(nCells);
+    float *d = static_cast<float *>(dens->GetVoidPointer(0));
+    std::memset(d, 0, sizeof(float) * static_cast<std::size_t>(nCells));
+    const auto clampIdx = [](double t) {
+        const int i = static_cast<int>(t + 0.5);
+        return i < 0 ? 0 : (i > N - 1 ? N - 1 : i);
+    };
+    for (vtkIdType i = 0; i < n; ++i) {
+        double p[3];
+        pts->GetPoint(i, p);
+        const int ix = clampIdx((p[0] - b[0]) / sp[0]);
+        const int iy = clampIdx((p[1] - b[2]) / sp[1]);
+        const int iz = clampIdx((p[2] - b[4]) / sp[2]);
+        d[ix + N * (iy + N * iz)] += 1.0f;   // vtkImageData point id = x + N·(y + N·z)
+    }
+    grid->GetPointData()->SetScalars(dens);
+
+    // Smooth the counts into a continuous density field for clean isosurfaces.
+    vtkNew<vtkImageGaussianSmooth> smooth;
+    smooth->SetInputData(grid);
+    smooth->SetStandardDeviations(1.2, 1.2, 1.2);
+    smooth->SetRadiusFactors(2.0, 2.0, 2.0);
+    smooth->Update();
+    this->catalogueDensityGrid = smooth->GetOutput();
+
+    double r[2] = { 0.0, 0.0 };
+    if (auto *scal = this->catalogueDensityGrid->GetPointData()->GetScalars())
+        scal->GetRange(r);
+    this->m_catalogueDensityMax = r[1];
+}
+
+void vtkWindowVectorField::updateCatalogueDensityContour()
+{
+    if (!this->catalogueDensityGrid || this->m_catalogueDensityMax <= 0.0)
+        return;
+    const double frac = (this->sliderDensityLevel ? this->sliderDensityLevel->value() : 30) / 100.0;
+    const double level = frac * this->m_catalogueDensityMax;
+
+    vtkNew<vtkFlyingEdges3D> surf;
+    surf->SetInputData(this->catalogueDensityGrid);
+    surf->SetValue(0, level);
+    surf->ComputeNormalsOn();
+
+    vtkNew<vtkPolyDataMapper> mapper;
+    mapper->SetInputConnection(surf->GetOutputPort());
+    mapper->ScalarVisibilityOff();
+
+    if (this->catalogueDensityActor)
+        this->renderer->RemoveActor(this->catalogueDensityActor);
+    this->catalogueDensityActor = vtkSmartPointer<vtkActor>::New();
+    this->catalogueDensityActor->SetMapper(mapper);
+    this->catalogueDensityActor->GetProperty()->SetColor(0.55, 0.85, 1.0);  // pale cyan
+    this->catalogueDensityActor->GetProperty()->SetOpacity(0.25);   // see the flow through it
+    this->renderer->AddActor(this->catalogueDensityActor);
+    this->renderWindow->Render();
+}
+
+void vtkWindowVectorField::showCatalogueDensity(bool on)
+{
+    if (!on) {
+        if (this->catalogueDensityActor)
+            this->catalogueDensityActor->VisibilityOff();
+        this->renderWindow->Render();
+        return;
+    }
+    if (!this->cataloguePoly)
+        return;
+    if (!this->catalogueDensityGrid)
+        this->buildCatalogueDensity();   // lazy — only when first requested
+    this->updateCatalogueDensityContour();
+    if (this->catalogueDensityActor)
+        this->catalogueDensityActor->VisibilityOn();
+}
+
+void vtkWindowVectorField::clearCatalogueOverlay()
+{
+    // Drop every overlay actor and cached artefact, then reset the controls to
+    // their pre-overlay (disabled) state so the panel reads clean.
+    if (this->catalogueActor)
+        this->renderer->RemoveActor(this->catalogueActor);
+    if (this->catalogueDensityActor)
+        this->renderer->RemoveActor(this->catalogueDensityActor);
+    if (this->catalogueScalarBar)
+        this->catalogueScalarBar->VisibilityOff();
+    this->catalogueActor = nullptr;
+    this->cataloguePoly = nullptr;
+    this->cataloguePointsMapper = nullptr;
+    this->catalogueGlyphMapper = nullptr;
+    this->catalogueDensityActor = nullptr;
+    this->catalogueDensityGrid = nullptr;
+    this->m_catalogueHasVelocity = false;
+    this->m_catalogueDensityMax = 0.0;
+    this->m_catalogueCount = 0;
+    this->m_catalogueName.clear();
+
+    const auto disable = [](QWidget *w) { if (w) w->setEnabled(false); };
+    if (this->chkShowCatalogue) {
+        QSignalBlocker blk(this->chkShowCatalogue);
+        this->chkShowCatalogue->setChecked(true);   // default state for next overlay
+    }
+    disable(this->chkShowCatalogue);
+    disable(this->spinCataloguePointSize);
+    if (this->comboGalaxyColor) {
+        QSignalBlocker blk(this->comboGalaxyColor);
+        this->comboGalaxyColor->setCurrentIndex(0);   // Uniform
+    }
+    if (this->comboGalaxyShape) {
+        QSignalBlocker blk(this->comboGalaxyShape);
+        this->comboGalaxyShape->setCurrentIndex(0);    // Points
+    }
+    disable(this->comboGalaxyColor);
+    disable(this->comboGalaxyShape);
+    if (this->chkGalaxyDensity) {
+        QSignalBlocker blk(this->chkGalaxyDensity);
+        this->chkGalaxyDensity->setChecked(false);
+    }
+    disable(this->chkGalaxyDensity);
+    disable(this->sliderDensityLevel);
+    disable(this->btnRemoveCatalogue);
+    disable(this->btnBulkFlow);
+
+    if (this->summaryLabel && !this->m_summaryBase.isEmpty())
+        this->summaryLabel->setText(this->m_summaryBase);   // drop the "· N galaxies" suffix
+    this->statusBar()->showMessage(u"Overlay removed."_s, 4000);
+    this->renderWindow->Render();
+}
+
+void vtkWindowVectorField::showBulkFlowProfile()
+{
+    if (!this->cataloguePoly)
+        return;
+    vtkPoints *pts = this->cataloguePoly->GetPoints();
+    auto *galV = vtkFloatArray::SafeDownCast(
+            this->cataloguePoly->GetPointData()->GetArray("velocity"));
+    if (!pts || !galV)
+        return;
+    const vtkIdType nG = pts->GetNumberOfPoints();
+    if (nG == 0)
+        return;
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    // Radii out to the farthest galaxy from the origin (observer).
+    double rmax = 0.0;
+    for (vtkIdType i = 0; i < nG; ++i) {
+        double p[3];
+        pts->GetPoint(i, p);
+        rmax = std::max(rmax, std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]));
+    }
+    if (rmax <= 0.0) {
+        QApplication::restoreOverrideCursor();
+        this->statusBar()->showMessage(u"Bulk flow: galaxies have no radial extent."_s, 5000);
+        return;
+    }
+    constexpr int NB = 30;
+    QVector<double> radii(NB);
+    for (int k = 0; k < NB; ++k)
+        radii[k] = rmax * (k + 1) / NB;
+
+    const QVector<double> galBulk = bulkFlowVsRadius(this->cataloguePoly, galV, radii);
+    // Reconstruction curve from the field velocity sampled AT the galaxies
+    // ("field_velocity", built during the overlay probe) — same selection window
+    // as the galaxies, so the two curves are a like-for-like WFH comparison.
+    QVector<double> fldBulk;
+    bool haveField = false;
+    if (auto *fgV = vtkFloatArray::SafeDownCast(
+                this->cataloguePoly->GetPointData()->GetArray("field_velocity"))) {
+        fldBulk = bulkFlowVsRadius(this->cataloguePoly, fgV, radii);
+        haveField = true;
+    }
+    QApplication::restoreOverrideCursor();
+
+    // Non-modal plot window (galaxies vs the reconstruction).
+    auto *dlg = new QDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowTitle(u"Bulk flow vs radius - %1"_s.arg(this->m_catalogueName));
+    auto *lay = new QVBoxLayout(dlg);
+    auto *plot = new QCustomPlot(dlg);
+    plot->addGraph();
+    plot->graph(0)->setData(radii, galBulk);
+    plot->graph(0)->setName(u"Galaxies"_s);
+    plot->graph(0)->setPen(QPen(QColor(230, 150, 40), 2));
+    if (haveField) {
+        plot->addGraph();
+        plot->graph(1)->setData(radii, fldBulk);
+        plot->graph(1)->setName(u"Reconstruction (at galaxies)"_s);
+        QPen pen(QColor(80, 160, 230), 2);
+        pen.setStyle(Qt::DashLine);
+        plot->graph(1)->setPen(pen);
+    }
+    // The positions are physical Mpc only when a box size is set; otherwise the
+    // field (and hence the radius) is in grid units.
+    plot->xAxis->setLabel(this->m_boxMpc > 0.0 ? u"Radius (Mpc)"_s
+                                               : u"Radius (grid units)"_s);
+    plot->yAxis->setLabel(u"Bulk flow |⟨v⟩| (km/s)"_s);
+    plot->legend->setVisible(true);
+    plot->rescaleAxes();
+    plot->replot();
+    lay->addWidget(plot);
+    dlg->resize(560, 400);
+    dlg->show();
+}
+
+void vtkWindowVectorField::showFieldBulkFlow()
+{
+    if (!this->imageData)
+        return;
+    auto *vel = vtkFloatArray::SafeDownCast(
+            this->imageData->GetPointData()->GetArray("velocity"));
+    if (!vel)
+        return;
+
+    // Farthest grid corner from the origin (observer) sets the radius range.
+    double b[6];
+    this->imageData->GetBounds(b);
+    const double rx = std::max(std::abs(b[0]), std::abs(b[1]));
+    const double ry = std::max(std::abs(b[2]), std::abs(b[3]));
+    const double rz = std::max(std::abs(b[4]), std::abs(b[5]));
+    const double rmax = std::sqrt(rx * rx + ry * ry + rz * rz);
+    if (rmax <= 0.0)
+        return;
+    constexpr int NB = 30;
+    QVector<double> radii(NB);
+    for (int k = 0; k < NB; ++k)
+        radii[k] = rmax * (k + 1) / NB;
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const QVector<double> bulk = bulkFlowVsRadius(this->imageData, vel, radii);
+    QApplication::restoreOverrideCursor();
+
+    // Non-modal plot: the reconstruction's own (volume-weighted) bulk flow.
+    auto *dlg = new QDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowTitle(u"Field bulk flow vs radius"_s);
+    auto *lay = new QVBoxLayout(dlg);
+    auto *plot = new QCustomPlot(dlg);
+    plot->addGraph();
+    plot->graph(0)->setData(radii, bulk);
+    plot->graph(0)->setName(u"Reconstruction"_s);
+    plot->graph(0)->setPen(QPen(QColor(80, 160, 230), 2));
+    plot->xAxis->setLabel(this->m_boxMpc > 0.0 ? u"Radius (Mpc)"_s
+                                               : u"Radius (grid units)"_s);
+    plot->yAxis->setLabel(u"Bulk flow |⟨v⟩| (km/s)"_s);
+    plot->legend->setVisible(true);
+    plot->rescaleAxes();
+    plot->replot();
+    lay->addWidget(plot);
+    dlg->resize(560, 400);
+    dlg->show();
+}
+
+void vtkWindowVectorField::setCatalogueShape(const QString &mode)
+{
+    if (!this->catalogueActor)
+        return;
+
+    // Which per-point vector drives the arrow glyphs: peculiar velocity, or the
+    // residual (galaxy − field). Points mode uses the plain points mapper.
+    const char *vecArray = (mode == u"Velocity arrows"_s)   ? "velocity"
+                         : (mode == u"Residual arrows"_s)    ? "residual"
+                                                             : nullptr;
+    vtkDataArray *arr = (vecArray && this->cataloguePoly)
+            ? this->cataloguePoly->GetPointData()->GetArray(vecArray)
+            : nullptr;
+    const bool arrows = vecArray && arr && this->catalogueGlyphMapper;
+
+    if (arrows) {
+        if (!this->catalogueArrow)
+            this->catalogueArrow = vtkSmartPointer<vtkArrowSource>::New();
+        this->catalogueGlyphMapper->SetSourceConnection(this->catalogueArrow->GetOutputPort());
+        this->catalogueGlyphMapper->SetOrientationArray(vecArray);
+        this->catalogueGlyphMapper->SetOrientationModeToDirection();
+        this->catalogueGlyphMapper->OrientOn();
+        this->catalogueGlyphMapper->SetScaleArray(vecArray);
+        this->catalogueGlyphMapper->SetScaleModeToScaleByMagnitude();
+        // Scale BOTH arrow modes on the same physical scale — the peculiar-velocity
+        // magnitude — so the largest velocity arrow spans ~4% of the data diagonal
+        // and residual arrows stay directly comparable (a small residual → a short
+        // arrow, not a spurious full-length one from normalising to its own max).
+        double b[6];
+        this->cataloguePoly->GetBounds(b);
+        const double diag = std::sqrt((b[1] - b[0]) * (b[1] - b[0])
+                                      + (b[3] - b[2]) * (b[3] - b[2])
+                                      + (b[5] - b[4]) * (b[5] - b[4]));
+        vtkDataArray *velArr = this->cataloguePoly->GetPointData()->GetArray("velocity");
+        double range[2] = { 0.0, 1.0 };
+        if (velArr)
+            velArr->GetRange(range, -1);   // -1 = vector magnitude
+        const double maxSpeed = range[1];
+        this->catalogueGlyphMapper->SetScaleFactor(
+                (maxSpeed > 1e-12 && diag > 0.0) ? 0.04 * diag / maxSpeed : 1.0);
+        this->catalogueActor->SetMapper(this->catalogueGlyphMapper);
+    } else {
+        this->catalogueActor->SetMapper(this->cataloguePointsMapper);
+    }
+
+    // Galaxy size is a point-size — it doesn't apply to arrows (their scale is
+    // fixed from the data extent), so disable it in arrow mode to avoid confusion.
+    if (this->spinCataloguePointSize)
+        this->spinCataloguePointSize->setEnabled(!arrows);
+    // Re-apply the current colour to the now-active mapper (also re-renders).
+    this->recolourCatalogue(this->comboGalaxyColor ? this->comboGalaxyColor->currentText()
+                                                   : u"Uniform"_s);
+}
+
+void vtkWindowVectorField::recolourCatalogue(const QString &key)
+{
+    if (!this->catalogueActor)
+        return;
+    vtkMapper *mapper = this->catalogueActor->GetMapper();   // points or glyph mapper
+    if (!mapper)
+        return;
+
+    if (key.isEmpty() || key == u"Uniform"_s) {
+        mapper->ScalarVisibilityOff();   // back to the flat gold colour
+        if (this->catalogueScalarBar)
+            this->catalogueScalarBar->VisibilityOff();
+        this->renderWindow->Render();
+        return;
+    }
+
+    vtkPolyData *poly = this->cataloguePoly;
+    vtkDataArray *arr = poly ? poly->GetPointData()->GetArray(key.toUtf8().constData()) : nullptr;
+    if (!arr) {
+        mapper->ScalarVisibilityOff();
+        if (this->catalogueScalarBar)
+            this->catalogueScalarBar->VisibilityOff();
+        this->renderWindow->Render();
+        return;
+    }
+
+    if (!this->catalogueLut) {
+        // Blue → red ramp, distinct from the field's speed colormap.
+        this->catalogueLut = vtkSmartPointer<vtkLookupTable>::New();
+        this->catalogueLut->SetHueRange(0.667, 0.0);
+        this->catalogueLut->SetNumberOfTableValues(256);
+        this->catalogueLut->Build();
+    }
+    double range[2];
+    arr->GetRange(range);
+    if (!(range[0] < range[1]))
+        range[1] = range[0] + 1.0;   // degenerate range → keep the LUT valid
+    this->catalogueLut->SetTableRange(range);
+
+    mapper->SetLookupTable(this->catalogueLut);
+    mapper->SetScalarModeToUsePointFieldData();
+    mapper->SelectColorArray(key.toUtf8().constData());
+    mapper->SetScalarRange(range);
+    mapper->ScalarVisibilityOn();
+
+    // Legend for the galaxy attribute, on the LEFT so it doesn't collide with the
+    // field's speed bar (right). Built once, then just retitled/reshown.
+    if (!this->catalogueScalarBar) {
+        this->catalogueScalarBar = vtkSmartPointer<vtkScalarBarActor>::New();
+        this->catalogueScalarBar->SetLookupTable(this->catalogueLut);
+        this->catalogueScalarBar->SetMaximumWidthInPixels(90);
+        this->catalogueScalarBar->GetPositionCoordinate()
+                ->SetCoordinateSystemToNormalizedViewport();
+        // y = 0.20 keeps it clear of the orientation-axes marker (0,0)–(0.14,0.14).
+        this->catalogueScalarBar->GetPositionCoordinate()->SetValue(0.02, 0.20);
+        this->catalogueScalarBar->SetWidth(0.10);
+        this->catalogueScalarBar->SetHeight(0.4);
+        this->renderer->AddActor2D(this->catalogueScalarBar);
+    }
+    this->catalogueScalarBar->SetTitle(key.toUtf8().constData());
+    this->catalogueScalarBar->SetVisibility(
+            this->catalogueActor->GetVisibility() ? 1 : 0);
+    this->renderWindow->Render();
+}

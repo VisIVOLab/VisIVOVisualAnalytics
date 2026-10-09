@@ -131,6 +131,51 @@ class TestHigherOrderMoments:
         nan_frac = float(np.isnan(result).sum()) / result.size
         assert nan_frac < 0.05, f"Order {order}: {nan_frac:.1%} NaN pixels"
 
+    def test_r06_higher_order_streams_via_dask_when_big(self, monkeypatch):
+        """R-06: when the subset exceeds the stream threshold, order 6 must route
+        through the out-of-core Dask backend and match the in-memory result."""
+        import base64
+        import app.compute.moment as _m
+        from app.compute import worker_moment
+
+        # In-memory reference (huge threshold → never streams).
+        monkeypatch.setattr(_m, "_MOMENT_STREAM_BYTES", 1 << 62)
+        ref = worker_moment(self.cube_path, 6, 0, 31, False, 0.0)
+        # Force the streaming/OOC branch (threshold 0 → any subset is "big").
+        monkeypatch.setattr(_m, "_MOMENT_STREAM_BYTES", 0)
+        ooc = worker_moment(self.cube_path, 6, 0, 31, False, 0.0)
+        a = np.frombuffer(base64.b64decode(ref["data_base64"]), dtype=np.float32)
+        b = np.frombuffer(base64.b64decode(ooc["data_base64"]), dtype=np.float32)
+        m = np.isfinite(a) & np.isfinite(b)
+        assert m.any()
+        np.testing.assert_allclose(a[m], b[m], rtol=1e-4, atol=1e-4)
+
+    @pytest.mark.parametrize("order", [0, 1, 2])
+    def test_r04_backend_parity_streaming_inmemory_dask(self, order, tmp_path, monkeypatch):
+        """R-04 guard: the streaming, in-memory (Numba/numpy) and Dask backends
+        must agree on M0/M1/M2 — a future edit to one weighting path can't
+        silently diverge. Uses nz>64 so the in-memory path is the Numba kernel."""
+        import base64
+        import app.compute.moment as _m
+        from app.compute import worker_moment, _moment_map_dask
+
+        path = str(tmp_path / "parity_cube.fits")
+        _write_gaussian_cube(path, nz=80, ny=6, nx=6, sigma_chan=6.0)
+
+        monkeypatch.setattr(_m, "_MOMENT_STREAM_BYTES", 1 << 62)      # in-memory
+        mem = worker_moment(path, order, 0, 79, False, 0.0)
+        monkeypatch.setattr(_m, "_MOMENT_STREAM_BYTES", 0)            # streaming
+        stream = worker_moment(path, order, 0, 79, False, 0.0)
+        dask = _moment_map_dask(path, order, 0, 79, 0.0, False)      # dask path
+
+        def arr(res):
+            return np.frombuffer(base64.b64decode(res["data_base64"]), dtype=np.float32)
+        a, b, c = arr(mem), arr(stream), arr(dask)
+        m = np.isfinite(a) & np.isfinite(b) & np.isfinite(c)
+        assert m.any()
+        np.testing.assert_allclose(a[m], b[m], rtol=1e-4, atol=1e-4)  # in-memory ≈ streaming
+        np.testing.assert_allclose(a[m], c[m], rtol=1e-4, atol=1e-4)  # in-memory ≈ dask
+
     def test_unsupported_order_raises(self):
         from app.compute import _moment_map_from_array
         with fits.open(self.cube_path) as h:
@@ -228,8 +273,10 @@ class TestLinewidthWorker:
         self.sigma_chan = 3.0
         _write_gaussian_cube(path, nz=32, ny=4, nx=4, sigma_chan=self.sigma_chan)
         self.cube_path = path
-        # astropy converts CDELT3=1.0 km/s to SI (m/s) → 1000 m/s per channel
-        self.expected_fwhm = 2.3548 * self.sigma_chan * 1000.0  # m/s
+        # Spectral metadata is reported in the header-native unit (km/s here),
+        # with WCS coordinates converted into it. With CDELT3=1.0 km/s the
+        # per-channel step is 1 km/s, so FWHM = 2.3548 * sigma_chan km/s.
+        self.expected_fwhm = 2.3548 * self.sigma_chan  # km/s
 
     def test_fwhm_accuracy(self):
         """FWHM recovered by Gaussian fit should match the injected σ within 10 %."""
@@ -265,6 +312,75 @@ class TestLinewidthWorker:
         # astropy converts km/s → SI (m/s); the unit string reflects that
         assert "s" in result["fwhm_unit"]   # e.g. "m.s**-1" or "km/s"
         assert "s" in result["ew_unit"]
+
+    def test_r07_fast_fwhm_matches_gaussian(self):
+        """R-07: the vectorised (moment-dispersion) fast FWHM should agree with
+        the per-pixel Gaussian-fit FWHM on a clean Gaussian line (within 15%)."""
+        from app.compute import worker_linewidth
+        slow = worker_linewidth(self.cube_path, 0, 31, False, 0.0)
+        fast = worker_linewidth(self.cube_path, 0, 31, False, 0.0, fast=True)
+        fs = _decode_f32(slow["fwhm_base64"], (slow["height"], slow["width"]))
+        ff = _decode_f32(fast["fwhm_base64"], (fast["height"], fast["width"]))
+        ms = float(np.median(fs[np.isfinite(fs)]))
+        mf = float(np.median(ff[np.isfinite(ff)]))
+        assert mf > 0
+        assert abs(mf - ms) / ms < 0.15
+        # Both recover ~ the injected FWHM.
+        assert abs(mf - self.expected_fwhm) / self.expected_fwhm < 0.20
+
+
+class TestLinewidthFrequencyConversion:
+    """R-02: a FREQ cube must report widths in Hz unless a rest frequency is
+    supplied, in which case the widths convert to km/s (|Δv| = c·|Δν|/ν₀)."""
+
+    @staticmethod
+    def _write_freq_cube(path, nz=32, ny=4, nx=4, sigma_chan=3.0, dnu_hz=1.0e4,
+                         restfrq=1.4204e9, put_restfrq=False):
+        rng = np.random.default_rng(1)
+        chans = np.arange(nz, dtype=np.float32)
+        gauss = np.exp(-0.5 * ((chans - nz / 2.0) / sigma_chan) ** 2)
+        data = (gauss[:, None, None] * 10.0
+                + rng.standard_normal((nz, ny, nx)).astype(np.float32) * 0.05)
+        hdu = fits.PrimaryHDU(data.astype(np.float32))
+        h = hdu.header
+        h["NAXIS"] = 3; h["NAXIS1"] = nx; h["NAXIS2"] = ny; h["NAXIS3"] = nz
+        h["CTYPE3"] = "FREQ"; h["CRVAL3"] = restfrq; h["CRPIX3"] = nz / 2.0
+        h["CDELT3"] = dnu_hz; h["CUNIT3"] = "Hz"
+        h["BUNIT"] = "Jy/beam"
+        if put_restfrq:
+            h["RESTFRQ"] = restfrq
+        hdu.writeto(path, overwrite=True)
+        return restfrq, dnu_hz
+
+    def test_freq_cube_reports_hz_without_rest_freq(self, tmp_path):
+        from app.compute import worker_linewidth
+        path = str(tmp_path / "freq.fits")
+        self._write_freq_cube(path, put_restfrq=False)
+        result = worker_linewidth(path, 0, 31, False, 0.0, rest_freq_hz=None)
+        # No rest frequency anywhere → widths stay in the native frequency unit.
+        assert result["fwhm_unit"].lower() in ("hz", "")
+        assert result["fwhm_unit"].lower() != "km/s"
+
+    def test_rest_freq_param_converts_to_kms(self, tmp_path):
+        from app.compute import worker_linewidth
+        path = str(tmp_path / "freq2.fits")
+        restfrq, dnu = self._write_freq_cube(path, put_restfrq=False)
+        r_hz = worker_linewidth(path, 0, 31, False, 0.0, rest_freq_hz=None)
+        r_kms = worker_linewidth(path, 0, 31, False, 0.0, rest_freq_hz=restfrq)
+        assert r_kms["fwhm_unit"] == "km/s"
+        fwhm_hz = _decode_f32(r_hz["fwhm_base64"], (r_hz["height"], r_hz["width"]))
+        fwhm_kms = _decode_f32(r_kms["fwhm_base64"], (r_kms["height"], r_kms["width"]))
+        factor = 299792.458 / restfrq
+        m_hz = np.nanmedian(fwhm_hz[np.isfinite(fwhm_hz)])
+        m_kms = np.nanmedian(fwhm_kms[np.isfinite(fwhm_kms)])
+        assert abs(m_kms - m_hz * factor) / (m_hz * factor) < 1e-4
+
+    def test_header_rest_freq_used_when_param_absent(self, tmp_path):
+        from app.compute import worker_linewidth
+        path = str(tmp_path / "freq3.fits")
+        self._write_freq_cube(path, put_restfrq=True)
+        result = worker_linewidth(path, 0, 31, False, 0.0, rest_freq_hz=None)
+        assert result["fwhm_unit"] == "km/s"
 
 
 # ── S-03: Polynomial baseline ──────────────────────────────────────────────────
@@ -314,6 +430,363 @@ class TestBaselineWorker:
         assert result["height"] == 6
         assert result["depth"] == 32
         assert result["poly_order"] == 1
+
+    def test_flagged_channel_in_line_free_range(self):
+        """A fully flagged channel inside the line-free selection must not blank
+        the whole cube.
+
+        np.linalg.lstsq has no notion of a masked sample, so any column carrying
+        a non-finite value comes back with NaN coefficients. A fully flagged
+        channel puts a NaN in EVERY column, so baseline subtraction failed on
+        the entire cube ("no finite voxels") whenever one channel was flagged —
+        routine in real radio data. The samples are now masked per pixel.
+        """
+        from app.compute import worker_baseline
+        flagged_path = str(self.tmp_path / "baseline_flagged.fits")
+        with fits.open(self.cube_path) as h:
+            data = np.array(h[0].data, dtype=np.float32)
+        data[5, :, :] = np.nan           # channel 5 fully flagged, inside [0, 10]
+        _write_simple_cube(flagged_path, data)
+
+        out_path = str(self.tmp_path / "baseline_flagged_out.fits")
+        result = worker_baseline(flagged_path, out_path, 0, 31, 1, self._LF_32)
+        with fits.open(out_path) as h:
+            residual = h[0].data
+        finite = np.isfinite(residual)
+        # Only the flagged channel is blank; every other voxel is fitted.
+        assert finite.sum() == residual.size - residual[0].size
+        assert not np.isfinite(residual[5]).any()
+        assert float(np.nanstd(residual)) < 0.1
+        assert result["rms_after"] < result["rms_before"]
+
+    def test_every_fit_path_recovers_the_same_polynomial(self):
+        """The three paths (all-finite, per-channel gaps, per-pixel gaps) must all
+        reproduce a polynomial the data follow exactly."""
+        from app.compute.spectral import _fit_poly_baseline
+        x_all = np.arange(24.0)
+        truth = np.array([[1.0, -2.0, 0.3], [0.5, 0.1, -0.2], [-0.01, 0.02, 0.004]])
+        model = np.vander(x_all, N=3, increasing=True) @ truth
+
+        # (a) all finite
+        got = _fit_poly_baseline(x_all, x_all, model, 2)
+        np.testing.assert_allclose(got, model, atol=1e-8)
+        # (b) per-channel: one row flagged for every pixel (the WALLABY case)
+        holed = model.copy()
+        holed[9, :] = np.nan
+        np.testing.assert_allclose(_fit_poly_baseline(x_all, x_all, holed, 2), model, atol=1e-8)
+        # (c) per-pixel: a different sample missing in each column
+        ragged = model.copy()
+        ragged[3, 0] = ragged[11, 1] = ragged[20, 2] = np.nan
+        np.testing.assert_allclose(_fit_poly_baseline(x_all, x_all, ragged, 2), model, atol=1e-8)
+
+    def test_starved_column_is_blank_not_fabricated(self):
+        """A column with fewer than deg+2 finite samples gets NaN, not a guess."""
+        from app.compute.spectral import _fit_poly_baseline
+        x_all = np.arange(12.0)
+        truth = np.array([[3.0, 4.0, 5.0], [1.0, 1.0, 1.0]])
+        model = np.vander(x_all, N=2, increasing=True) @ truth
+        block = model.copy()
+        block[2:, 1] = np.nan           # column 1 keeps only 2 samples (< deg+2 = 3)
+        block[7, 2] = np.nan            # column 2 keeps plenty
+        got = _fit_poly_baseline(x_all, x_all, block, 1)
+        assert np.isnan(got[:, 1]).all()
+        np.testing.assert_allclose(got[:, [0, 2]], model[:, [0, 2]], atol=1e-9)
+
+    def test_high_degree_fit_stays_conditioned(self):
+        """A degree-10 fit over a thousand channels: in absolute channel index the
+        Vandermonde spans ~1e30 and the fit is meaningless, so the basis is
+        centred and scaled before any of the algebra."""
+        from app.compute.spectral import _fit_poly_baseline
+        x_all = np.arange(1000.0)
+        rng = np.random.default_rng(3)
+        model = np.repeat((3.0 + 0.002 * x_all - 1e-6 * x_all ** 2)[:, None], 4, axis=1)
+        block = model + rng.normal(0.0, 1e-9, model.shape)
+        got = _fit_poly_baseline(x_all, x_all, block, 10)
+        assert np.isfinite(got).all()
+        assert np.abs(got - model).max() < 1e-3
+
+        # …and again with the fit restricted to one end of the axis and a
+        # neighbouring pixel flagged, so the grouped path is the one measured.
+        # Normalising by the FULL axis would leave this fit on half of [-1, 1].
+        x_fit = np.arange(400.0)
+        block2 = block[:400].copy()
+        block2[17, 1] = np.nan
+        got2 = _fit_poly_baseline(x_fit, x_all, block2, 10)
+        assert np.isfinite(got2).all()
+        assert np.abs(got2[:400] - model[:400]).max() < 1e-3
+
+    def test_a_blanked_footprint_still_takes_the_single_solve_path(self):
+        """A blanked footprint must not force every pixel down the batched path.
+
+        Pixels outside an interferometric primary beam are NaN in EVERY channel,
+        so they put a NaN in every row: classify the flagging pattern before
+        setting them aside and a cube with a blanked edge — i.e. most real ones
+        — never looks per-channel, and the whole cube goes through the batched
+        per-pixel solve. Measured on WALLABY that was 4x slower than the single
+        reduced SVD it should be taking.
+        """
+        from unittest.mock import patch
+        from app.compute import spectral as spectral_mod
+        x_all = np.arange(20.0)
+        model = np.repeat((2.0 + 0.5 * x_all)[:, None], 6, axis=1)
+        block = model.copy()
+        block[7, :] = np.nan       # one fully flagged channel
+        block[:, 3] = np.nan       # one dead pixel (blanked footprint)
+
+        # Exactly ONE solve for the whole cube: the grouped path would need one
+        # per distinct flagging pattern. (Counting calls, not patching the old
+        # batched primitive out — that only proved the primitive was absent.)
+        # One solve for the whole cube AND no grouping work: a single surviving
+        # mask would also yield one solve THROUGH the grouped path, so the
+        # call count alone does not distinguish them — np.unique is the
+        # grouped path's own step.
+        real = spectral_mod.np.linalg.lstsq
+        calls = []
+        def counted(a, b, **kw):
+            calls.append(a.shape)
+            return real(a, b, **kw)
+        with patch.object(spectral_mod.np.linalg, "lstsq", counted), \
+             patch.object(spectral_mod.np, "unique",
+                          side_effect=AssertionError("took the grouped path")):
+            got = spectral_mod._fit_poly_baseline(x_all, x_all, block, 1)
+        assert len(calls) == 1, f"expected one reduced solve, got {calls}"
+        assert calls[0][0] == 19, "the flagged channel should have been dropped"
+
+        assert np.isnan(got[:, 3]).all()                     # dead pixel stays blank
+        live = [0, 1, 2, 4, 5]
+        np.testing.assert_allclose(got[:, live], model[:, live], atol=1e-9)
+
+    def test_an_all_blank_block_is_all_blank(self):
+        from app.compute.spectral import _fit_poly_baseline
+        x_all = np.arange(10.0)
+        got = _fit_poly_baseline(x_all, x_all, np.full((10, 4), np.nan), 1)
+        assert np.isnan(got).all()
+
+    def test_per_pixel_path_solves_once_per_pattern(self):
+        """Ragged per-pixel flagging: one solve per distinct pattern, not per
+        pixel, and every column still recovers the polynomial exactly."""
+        from unittest.mock import patch
+        from app.compute import spectral as spectral_mod
+        x_all = np.arange(12.0)
+        model = np.repeat((1.0 + 0.5 * x_all)[:, None], 240, axis=1)
+        block = model.copy()
+        # 12 distinct patterns shared by 20 pixels each.
+        block[np.arange(240) % 12, np.arange(240)] = np.nan
+
+        real = spectral_mod.np.linalg.lstsq
+        calls = []
+        def counted(a, b, **kw):
+            calls.append(a.shape)
+            return real(a, b, **kw)
+        with patch.object(spectral_mod.np.linalg, "lstsq", counted):
+            got = spectral_mod._fit_poly_baseline(x_all, x_all, block, 1)
+        assert len(calls) == 12, f"expected one solve per pattern, got {len(calls)}"
+        np.testing.assert_allclose(got, model, atol=1e-9)
+
+    def test_a_flagged_pixel_cannot_change_another_pixels_fit(self):
+        """A fully finite pixel must get the same baseline whatever its NEIGHBOURS
+        are missing.
+
+        Forming the normal equations (VᵀWV)c = VᵀWy to vectorise across pixels
+        squares the condition number, and the pseudo-inverse then silently
+        truncates the lost rank: at degree 10 over a half-axis fit range, a
+        fully finite pixel came out with a 9.1e-2 baseline error — against
+        1.7e-8 from the direct solve — purely because ANOTHER pixel had one
+        flagged sample.
+        """
+        from app.compute.spectral import _fit_poly_baseline
+        x_all = np.arange(1000.0)
+        x_fit = np.arange(500.0)                    # line-free: first half only
+        clean = np.full((len(x_fit), 2), 3.0)
+        holed = clean.copy()
+        holed[20, 1] = np.nan                       # the OTHER pixel is flagged
+
+        alone = _fit_poly_baseline(x_fit, x_all, clean, 10)
+        beside = _fit_poly_baseline(x_fit, x_all, holed, 10)
+        assert np.abs(alone[:, 0] - 3.0).max() < 1e-6
+        np.testing.assert_allclose(beside[:, 0], alone[:, 0], atol=1e-9)
+        # …and the flagged pixel itself is fitted, not blanked.
+        assert np.abs(beside[:, 1] - 3.0).max() < 1e-6
+
+    def test_a_poorly_constrained_baseline_is_reported(self):
+        """A polynomial pinned at one end and subtracted across the whole cube is
+        unconstrained where it was not fitted, and can inject a large false
+        signal. Nothing in the algebra prevents it — it is the model that was
+        asked for — so it must be REPORTED.
+        """
+        from app.compute import worker_baseline
+        rng = np.random.default_rng(0)
+        path = str(self.tmp_path / "conditioning.fits")
+        _write_simple_cube(path, (10.0 + rng.normal(0, 0.02, (999, 4, 4))
+                                  ).astype(np.float32))
+
+        # Degree 4 over the first half measurably degrades the far channels
+        # (residual ~15x the input noise); degree 3 on the same geometry does
+        # not. The boundary is the point of the leverage measure — a
+        # monomial-growth proxy put both on the same side of it.
+        bad = worker_baseline(path, str(self.tmp_path / "d4.fits"),
+                              0, 998, 4, [[0, 499]])
+        assert "more uncertain than where it was fitted" in bad["warning"]
+        assert "degree-4" in bad["warning"]
+
+        ok = worker_baseline(path, str(self.tmp_path / "d3.fits"),
+                             0, 998, 3, [[0, 499]])
+        assert ok["warning"] == ""
+        assert ok["rms_after"] < 10 * bad["rms_after"]
+
+    def test_an_entirely_flagged_sideband_does_not_count_as_a_constraint(self):
+        """A selection that LOOKS two-sided but whose far sideband is fully
+        flagged is a one-sided fit, and must warn like one."""
+        from app.compute import worker_baseline
+        rng = np.random.default_rng(1)
+        data = (10.0 + rng.normal(0, 0.02, (1000, 4, 4))).astype(np.float32)
+        data[900:, :, :] = np.nan          # the far sideband constrains nothing
+        path = str(self.tmp_path / "flagged_sideband.fits")
+        _write_simple_cube(path, data)
+        r = worker_baseline(path, str(self.tmp_path / "fsb.fits"),
+                            0, 999, 5, [[0, 499], [900, 999]])
+        assert "0-499" in r["warning"], r["warning"]
+
+    def test_an_interpolating_selection_carries_no_warning(self):
+        """Line-free ranges at both ends, at a sane order: nothing to say."""
+        from app.compute import worker_baseline
+        rng = np.random.default_rng(2)
+        path = str(self.tmp_path / "spanning.fits")
+        _write_simple_cube(path, (10.0 + rng.normal(0, 0.02, (1000, 4, 4))
+                                  ).astype(np.float32))
+        r = worker_baseline(path, str(self.tmp_path / "span.fits"),
+                            0, 999, 2, [[0, 99], [900, 999]])
+        assert r["warning"] == ""
+        assert r["rms_after"] < r["rms_before"]
+
+    def test_a_residual_worse_than_the_input_is_reported(self):
+        """Deterministic case: the line occupies most of the band, so removing a
+        genuine continuum RAISES the RMS. That is legitimate, and the message
+        says so — but it is still surfaced, because it is also what an
+        over-fitted baseline looks like.
+        """
+        from app.compute import worker_baseline
+        # Continuum 10 with deep absorption to 0 across 80 % of the channels:
+        # RMS 4.47 before, 8.94 after a CORRECT subtraction of 10.
+        data = np.full((100, 4, 4), 10.0, dtype=np.float32)
+        data[20:100, :, :] = 0.0
+        path = str(self.tmp_path / "absorption.fits")
+        _write_simple_cube(path, data)
+        r = worker_baseline(path, str(self.tmp_path / "abs_out.fits"),
+                            0, 99, 0, [[0, 19]])
+        assert r["rms_after"] > r["rms_before"]
+        assert "came out HIGHER" in r["warning"]
+        # Stated as an observation, not as "this added signal" — subtracting a
+        # real continuum from a mostly-absorbed band does exactly this.
+        assert "expected when the subtracted continuum was large" in r["warning"]
+
+    def test_a_sane_baseline_carries_no_warning(self):
+        """The fixture cube (line-free sidebands, degree 1) must stay quiet —
+        a warning that fires on ordinary runs is a warning nobody reads."""
+        from app.compute import worker_baseline
+        r = worker_baseline(self.cube_path, str(self.tmp_path / "quiet.fits"),
+                            0, 31, 1, self._LF_32)
+        assert r["warning"] == ""
+
+    def test_output_header_describes_the_output(self):
+        """A 4-D input with a degenerate Stokes axis yields a 3-D cube, so the
+        fourth axis's WCS must not survive in the header.
+
+        astropy rewrites NAXIS/NAXIS1..3 from the data but nothing else, so the
+        output said NAXIS = 3 while still carrying CRPIX4/CDELT4/CRVAL4/
+        CTYPE4='STOKES' and WCSAXES=4: readers that trust NAXIS ignore the axis,
+        readers that scan CTYPEn find a Stokes axis in a 3-D cube, and astropy
+        warns about the dimensionality mismatch (user report).
+        """
+        from astropy.wcs import WCS
+        from app.compute import worker_baseline
+        path = str(self.tmp_path / "four_d.fits")
+        data = np.zeros((1, 32, 6, 6), dtype=np.float32)
+        data[0] = np.arange(32, dtype=np.float32)[:, None, None] * 0.05
+        hdr = fits.Header()
+        hdr["CTYPE1"], hdr["CTYPE2"] = "RA---SIN", "DEC--SIN"
+        hdr["CTYPE3"], hdr["CTYPE4"] = "VELO-HEL", "STOKES"
+        for axis, (crval, cdelt) in enumerate(
+                [(150.0, -0.001), (2.0, 0.001), (1000.0, 10.0), (1.0, 1.0)], start=1):
+            hdr[f"CRPIX{axis}"] = 1.0
+            hdr[f"CRVAL{axis}"] = crval
+            hdr[f"CDELT{axis}"] = cdelt
+        hdr["CUNIT1"] = hdr["CUNIT2"] = "deg"
+        hdr["WCSAXES"] = 4
+        hdr["PC004004"] = 1.0        # the legacy fixed-width matrix form
+        hdr["PC003003"] = 1.0
+        hdr["PV2_1"] = 0.5           # axis 2: must be KEPT
+        hdr["BLANK"] = -1            # undefined for float data
+        hdr["DATAMIN"], hdr["DATAMAX"] = -99.0, 99.0
+        fits.PrimaryHDU(data, hdr).writeto(path, output_verify="ignore")
+
+        out_path = str(self.tmp_path / "four_d_out.fits")
+        worker_baseline(path, out_path, 0, 31, 1, self._LF_32)
+        with fits.open(out_path) as h:
+            out = h[0].header
+            assert h[0].data.ndim == 3
+
+        assert out["NAXIS"] == 3
+        for key in ("CTYPE4", "CRVAL4", "CDELT4", "CRPIX4", "NAXIS4", "PC004004"):
+            assert key not in out, f"{key} describes an axis the output does not have"
+        assert out["WCSAXES"] == 3
+        # Axes that DO exist keep their description.
+        assert out["CTYPE3"] == "VELO-HEL"
+        assert out["PC003003"] == 1.0
+        assert out["PV2_1"] == 0.5
+        # BLANK is integer-only; the extrema are the input's, not the output's.
+        assert "BLANK" not in out
+        assert "DATAMIN" not in out and "DATAMAX" not in out
+        # And the whole point: a WCS library can read it.
+        assert WCS(out).naxis == 3
+
+    def test_malformed_celestial_units_are_repaired_in_the_output(self):
+        """The reader repairs a celestial CUNIT that is not an angular unit so it
+        can build a WCS at all, but products copied the ORIGINAL header, so the
+        output was unreadable: astropy raises InvalidTransformError on
+        CUNIT1='km/s' over an RA axis (reproduced on fornax.fits).
+        """
+        from astropy.wcs import WCS
+        from app.compute import worker_baseline
+        path = str(self.tmp_path / "bad_units.fits")
+        data = (np.arange(32, dtype=np.float32)[:, None, None] * 0.05).repeat(6, 1).repeat(6, 2)
+        hdr = fits.Header()
+        hdr["CTYPE1"], hdr["CTYPE2"], hdr["CTYPE3"] = "RA---NCP", "DEC--NCP", "VELO-HEL"
+        for axis, (crval, cdelt) in enumerate([(54.6, -0.0055), (-35.4, 0.0055), (166450.0, 6590.0)], start=1):
+            hdr[f"CRPIX{axis}"] = 1.0
+            hdr[f"CRVAL{axis}"] = crval
+            hdr[f"CDELT{axis}"] = cdelt
+        hdr["CUNIT1"] = hdr["CUNIT2"] = "km/s"       # the real file's own bug
+        fits.PrimaryHDU(data, hdr).writeto(path, output_verify="ignore")
+
+        out_path = str(self.tmp_path / "bad_units_out.fits")
+        worker_baseline(path, out_path, 0, 31, 1, self._LF_32)
+        with fits.open(out_path) as h:
+            out = h[0].header
+        assert out["CUNIT1"] == "deg" and out["CUNIT2"] == "deg"
+        assert any("CUNIT1" in str(line) for line in out.get("HISTORY", [])), \
+            "the correction must be recorded in HISTORY, not applied silently"
+        assert WCS(out).naxis == 3        # would raise InvalidTransformError before
+
+    def test_a_cropped_output_shifts_the_miriad_axis_description_too(self):
+        """Miriad writes its own spectral-axis description next to the FITS one.
+        Cropping shifted CRPIX3 and left LSTART describing the uncropped cube."""
+        from app.compute import worker_baseline
+        path = str(self.tmp_path / "miriad.fits")
+        data = (np.arange(32, dtype=np.float32)[:, None, None] * 0.05).repeat(6, 1).repeat(6, 2)
+        hdr = fits.Header()
+        hdr["CTYPE3"] = "VELO-HEL"
+        hdr["CRPIX3"], hdr["CRVAL3"], hdr["CDELT3"] = 1.0, 166450.0, 6590.0
+        hdr["LTYPE"] = "velocity"
+        hdr["LSTART"], hdr["LSTEP"] = 166.45, 6.59
+        fits.PrimaryHDU(data, hdr).writeto(path, output_verify="ignore")
+
+        out_path = str(self.tmp_path / "miriad_out.fits")
+        worker_baseline(path, out_path, 4, 31, 1, [[0, 6], [20, 27]])
+        with fits.open(out_path) as h:
+            out = h[0].header
+        assert out["CRPIX3"] == pytest.approx(1.0 - 4)
+        assert out["LSTART"] == pytest.approx(166.45 + 4 * 6.59)
 
     def test_line_free_channels(self):
         """Fitting on selected channels should still work."""
@@ -709,6 +1182,67 @@ class TestStackWorker:
             worker_stack([], "mean", None)
 
 
+# ── S-03 at the HTTP layer: the warning must survive the response model ──────
+
+@pytest.mark.asyncio
+class TestBaselineWarningReachesTheClient:
+    """The caveat is computed in the worker but consumed by the GUI.
+
+    Every worker-level test of it passed while the field was silently dropped:
+    BaselineResponse had no `warning` and the route's key whitelist omitted it,
+    so the message the user needed never left the backend. These tests
+    cross the response boundary on purpose.
+    """
+
+    async def _open(self, client, headers, path) -> tuple[str, str, dict]:
+        resp = await client.post("/v1/datasets/open", json={"path": str(path)},
+                                 headers=headers)
+        data = resp.json()
+        assert data["valid"], data.get("error")
+        session_id = data["session_id"]
+        return (data["dataset_id"], session_id,
+                {**headers, "X-Visivo-Session": session_id})
+
+    async def test_the_warning_survives_the_response(
+        self, client, auth_headers, tmp_path
+    ):
+        rng = np.random.default_rng(0)
+        cube = tmp_path / "warned_cube.fits"
+        _write_simple_cube(str(cube),
+                           (10.0 + rng.normal(0, 0.02, (300, 4, 4))).astype(np.float32))
+        dataset_id, session_id, headers = await self._open(client, auth_headers, cube)
+        resp = await client.post(
+            f"/v1/spectral/baseline/{session_id}/{dataset_id}",
+            json={"session_id": session_id, "dataset_id": dataset_id,
+                  "channel_start": 0, "channel_end": 299, "poly_order": 6,
+                  "method": "polynomial", "line_free_channels": [[0, 99]]},
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["valid"], body.get("error")
+        assert "warning" in body, "the response model dropped the field"
+        assert "more uncertain than where it was fitted" in body["warning"]
+
+    async def test_a_sane_run_reports_an_empty_warning(
+        self, client, auth_headers, tmp_path
+    ):
+        rng = np.random.default_rng(1)
+        cube = tmp_path / "quiet_cube.fits"
+        _write_simple_cube(str(cube),
+                           (10.0 + rng.normal(0, 0.02, (300, 4, 4))).astype(np.float32))
+        dataset_id, session_id, headers = await self._open(client, auth_headers, cube)
+        resp = await client.post(
+            f"/v1/spectral/baseline/{session_id}/{dataset_id}",
+            json={"session_id": session_id, "dataset_id": dataset_id,
+                  "channel_start": 0, "channel_end": 299, "poly_order": 1,
+                  "method": "polynomial", "line_free_channels": [[0, 49], [250, 299]]},
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["warning"] == ""
+
+
 # ── S-05: SoFiA-2 wrapper (HTTP layer) ────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -838,6 +1372,16 @@ class TestSpectralBinaryEndpoints:
         ew_arr, _ = _parse_binary_frame(raw, off)
         assert fwhm_arr.shape == (4, 4)
         assert ew_arr.shape == (4, 4)
+        # The binary path carries the map units out-of-band as response headers, so the
+        # client can label the FWHM/EW products (they share the spectral-axis unit).
+        assert "X-Fwhm-Unit" in resp.headers
+        assert "X-Ew-Unit" in resp.headers
+        # The fixture cube sets CUNIT3 = "km/s"; both maps carry that spectral-axis unit (so the
+        # assertion also rejects an empty/dropped unit).
+        assert resp.headers["X-Fwhm-Unit"] == "km/s"
+        assert resp.headers["X-Ew-Unit"] == "km/s"
+        # Two-frame body → no ambiguous single X-Map-Unit.
+        assert "X-Map-Unit" not in resp.headers
 
     async def test_stack_binary_single_frame(
         self, client, auth_headers, tmp_path

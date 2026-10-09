@@ -559,5 +559,453 @@ class TestStokesEndpoint(unittest.TestCase):
         np.testing.assert_allclose(arr, 2.0, atol=1e-4)
 
 
+# ============================================================================
+# One file per Stokes plane — the MGCLS / POSSUM / Obit MFImage layout
+#
+# Every case below was taken from the real MeerKAT MGCLS release
+# (doi:10.48479/f2a2-qw16), whose per-field cubes are FIELD_I/Q/U/V.fits.gz,
+# 7500 x 7500 x 16 x 1, each with a degenerate STOKES axis.
+# ============================================================================
+
+def _make_single_plane_fits(
+    stokes_value: int,
+    value: float,
+    ny: int = 8,
+    nx: int = 8,
+    n_freq: int = 4,
+    freq_start_hz: float = 1.2838e9,
+    freq_delta_hz: float = 5.755108e7,
+    ctype3: str = "SPECLNMF",
+    cunit3: str | None = None,
+    rm_rad_m2: float | None = None,
+    quadrature: bool = False,
+) -> str:
+    """One MGCLS-shaped file: (stokes=1, freq, dec, ra), STOKES axis length 1.
+
+    `stokes_value` is written verbatim to CRVAL4, so a test can reproduce the
+    mislabelled V cube. With `rm_rad_m2` the plane carries a Faraday-rotated
+    signal instead of a constant: Q = cos(2 phi lambda^2), U = sin(...) when
+    `quadrature`.
+    """
+    from astropy.io import fits
+
+    c = 2.99792458e8
+    freqs = freq_start_hz + np.arange(n_freq) * freq_delta_hz
+    data = np.zeros((1, n_freq, ny, nx), dtype=np.float32)
+    if rm_rad_m2 is None:
+        data[...] = value
+    else:
+        lam2 = (c / freqs) ** 2
+        angle = 2.0 * rm_rad_m2 * lam2
+        wave = np.sin(angle) if quadrature else np.cos(angle)
+        data[0] = wave[:, None, None].astype(np.float32) * value
+
+    hdu = fits.PrimaryHDU(data)
+    h = hdu.header
+    h["CTYPE1"] = "GLON-SIN"; h["CRPIX1"] = nx / 2; h["CRVAL1"] = 0.0; h["CDELT1"] = -4.166667e-4
+    h["CTYPE2"] = "GLAT-SIN"; h["CRPIX2"] = ny / 2; h["CRVAL2"] = 2.5; h["CDELT2"] = 4.166667e-4
+    h["CTYPE3"] = ctype3;     h["CRPIX3"] = 1.0;    h["CRVAL3"] = freq_start_hz
+    h["CDELT3"] = freq_delta_hz
+    if cunit3:
+        h["CUNIT3"] = cunit3
+    h["CTYPE4"] = "STOKES";   h["CRPIX4"] = 1.0;    h["CRVAL4"] = float(stokes_value)
+    h["CDELT4"] = 1.0
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".fits", delete=False)
+    fits.HDUList([hdu]).writeto(tmp.name, overwrite=True)
+    tmp.close()
+    return tmp.name
+
+
+class TestPerFileStokes(unittest.TestCase):
+    """Q and U supplied as separate files alongside an I-only primary."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.i_path = _make_single_plane_fits(stokes_value=1, value=10.0)
+        cls.q_path = _make_single_plane_fits(stokes_value=2, value=3.0)
+        cls.u_path = _make_single_plane_fits(stokes_value=3, value=4.0)
+        # The MGCLS V cube really does carry CRVAL4 = 1 (i.e. "I").
+        cls.v_mislabelled = _make_single_plane_fits(stokes_value=1, value=7.0)
+
+    @classmethod
+    def tearDownClass(cls):
+        for p in (cls.i_path, cls.q_path, cls.u_path, cls.v_mislabelled):
+            os.unlink(p)
+
+    def test_plane_from_companion_file(self):
+        from app.compute import worker_stokes_plane
+        r = worker_stokes_plane(self.i_path, "Q", None, {"Q": self.q_path})
+        img = _b64_to_f32(r["data_base64"], (r["height"], r["width"]))
+        np.testing.assert_allclose(img, 3.0, atol=1e-5)
+
+    def test_primary_plane_still_wins(self):
+        """I is in the primary, so no companion is consulted for it."""
+        from app.compute import worker_stokes_plane
+        r = worker_stokes_plane(self.i_path, "I", None, {"I": self.q_path})
+        img = _b64_to_f32(r["data_base64"], (r["height"], r["width"]))
+        np.testing.assert_allclose(img, 10.0, atol=1e-5)
+
+    def test_mislabelled_single_plane_companion_is_trusted(self):
+        """The caller said this file is V; its header says I. The caller wins."""
+        from app.compute import worker_stokes_plane
+        r = worker_stokes_plane(self.i_path, "V", None, {"V": self.v_mislabelled})
+        img = _b64_to_f32(r["data_base64"], (r["height"], r["width"]))
+        np.testing.assert_allclose(img, 7.0, atol=1e-5)
+
+    def test_missing_companion_names_the_plane(self):
+        from app.compute import worker_polarisation_pi_pa
+        with self.assertRaises(ValueError) as ctx:
+            worker_polarisation_pi_pa(self.i_path, 0, None, {"Q": self.q_path})
+        self.assertIn("U", str(ctx.exception))
+
+    def test_pi_pa_across_files(self):
+        from app.compute import worker_polarisation_pi_pa
+        r = worker_polarisation_pi_pa(self.i_path, 0, None,
+                                      {"Q": self.q_path, "U": self.u_path})
+        pi = _b64_to_f32(r["pi_base64"], (r["height"], r["width"]))
+        pa = _b64_to_f32(r["pa_base64"], (r["height"], r["width"]))
+        np.testing.assert_allclose(pi, 5.0, atol=1e-4)          # 3-4-5
+        np.testing.assert_allclose(pa, 0.5 * np.degrees(np.arctan2(4.0, 3.0)), atol=1e-3)
+
+
+class TestPerFileRmSynthesis(unittest.TestCase):
+    """RM synthesis with Q and U in separate files, MGCLS-style."""
+
+    RM = 25.0
+
+    @classmethod
+    def setUpClass(cls):
+        # A primary whose frequency grid DIFFERS from Q/U, as in MGCLS where the
+        # I cube starts at 1.3426 GHz and Q/U at 1.2838 GHz.
+        cls.i_path = _make_single_plane_fits(stokes_value=1, value=1.0,
+                                             freq_start_hz=1.3426e9, n_freq=16)
+        cls.q_path = _make_single_plane_fits(stokes_value=2, value=1.0, n_freq=16,
+                                             rm_rad_m2=cls.RM)
+        cls.u_path = _make_single_plane_fits(stokes_value=3, value=1.0, n_freq=16,
+                                             rm_rad_m2=cls.RM, quadrature=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        for p in (cls.i_path, cls.q_path, cls.u_path):
+            os.unlink(p)
+
+    def _companions(self):
+        return {"Q": self.q_path, "U": self.u_path}
+
+    def test_peak_is_at_the_injected_rm(self):
+        """lambda^2 must come from the Q file, not from the primary.
+
+        Using the primary's grid shifts the recovered peak; this is the test
+        that would have caught that.
+        """
+        from app.compute import worker_rm_synthesis
+        r = worker_rm_synthesis(self.i_path, -100.0, 100.0, 1.0, self._companions())
+        fdf = _b64_to_f32(r["data_base64"], (r["n_phi"], r["height"], r["width"]))
+        phi = np.asarray(r["phi_grid"])
+        peak_phi = phi[int(np.argmax(fdf[:, 0, 0]))]
+        self.assertAlmostEqual(peak_phi, self.RM, delta=2.0)
+
+    def test_reduce_peak_returns_two_maps(self):
+        from app.compute import worker_rm_synthesis
+        r = worker_rm_synthesis(self.i_path, -100.0, 100.0, 1.0, self._companions(),
+                                reduce="peak")
+        self.assertEqual(r["reduce"], "peak")
+        peak = _b64_to_f32(r["data_base64"], (r["height"], r["width"]))
+        phi_map = _b64_to_f32(r["phi_peak_base64"], (r["height"], r["width"]))
+        self.assertEqual(peak.shape, (r["height"], r["width"]))
+        np.testing.assert_allclose(phi_map, self.RM, atol=2.0)
+
+    def test_region_crops(self):
+        from app.compute import worker_rm_synthesis
+        r = worker_rm_synthesis(self.i_path, -50.0, 50.0, 2.0, self._companions(),
+                                reduce="peak", region=(2, 1, 3, 4))
+        self.assertEqual((r["height"], r["width"]), (4, 3))
+
+    def test_oversized_cube_is_refused_with_a_way_out(self):
+        from app.compute import worker_rm_synthesis
+        with self.assertRaises(ValueError) as ctx:
+            worker_rm_synthesis(self.i_path, -1e5, 1e5, 1e-2, self._companions())
+        message = str(ctx.exception)
+        self.assertIn("MiB", message)
+        self.assertIn("peak", message)          # says how to get an answer anyway
+
+    def test_mismatched_frequency_grids_are_refused(self):
+        """Q and U from files measured at different frequencies must not combine."""
+        from app.compute import worker_rm_synthesis
+        other_u = _make_single_plane_fits(stokes_value=3, value=1.0, n_freq=16,
+                                          freq_start_hz=1.5e9, rm_rad_m2=self.RM,
+                                          quadrature=True)
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                worker_rm_synthesis(self.i_path, -50.0, 50.0, 1.0,
+                                    {"Q": self.q_path, "U": other_u})
+            self.assertIn("frequency grids", str(ctx.exception))
+        finally:
+            os.unlink(other_u)
+
+
+class TestSpectralAxisUnits(unittest.TestCase):
+    """SPECLNMF, and the unit inference that has to go with a missing CUNIT."""
+
+    def test_speclnmf_is_recognised_as_spectral(self):
+        from app.fits_dataset import ScientificFitsDataset
+        path = _make_single_plane_fits(stokes_value=2, value=1.0, ctype3="SPECLNMF")
+        try:
+            ds = ScientificFitsDataset(path)
+            self.assertEqual(
+                str(ds.header[f"CTYPE{ds.cube_numpy_spectral_fits_axis()}"]).strip(),
+                "SPECLNMF")
+        finally:
+            os.unlink(path)
+
+    def test_ghz_header_is_rejected_not_silently_scaled(self):
+        """A GHz axis read as Hz would scale lambda^2 by 1e18."""
+        from app.compute.polarisation import _frequencies_hz
+        from app.fits_dataset import ScientificFitsDataset
+        path = _make_single_plane_fits(stokes_value=2, value=1.0,
+                                       freq_start_hz=1.28, freq_delta_hz=0.0575,
+                                       cunit3=None)
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                _frequencies_hz(ScientificFitsDataset(path), 4)
+            self.assertIn("plausible frequencies", str(ctx.exception))
+        finally:
+            os.unlink(path)
+
+    def test_declared_ghz_is_converted(self):
+        from app.compute.polarisation import _frequencies_hz
+        from app.fits_dataset import ScientificFitsDataset
+        path = _make_single_plane_fits(stokes_value=2, value=1.0,
+                                       freq_start_hz=1.28, freq_delta_hz=0.0575,
+                                       cunit3="GHz")
+        try:
+            freq = _frequencies_hz(ScientificFitsDataset(path), 4)
+            self.assertAlmostEqual(freq[0], 1.28e9, delta=1e3)
+        finally:
+            os.unlink(path)
+
+
+# ============================================================================
+# The Obit MFImage plane layout, and the other ways a header can mislead
+# ============================================================================
+
+def _make_mfimage_fits(
+    stokes_value: int,
+    rm_rad_m2: float,
+    quadrature: bool = False,
+    n_term: int = 2,
+    freqs_hz: list[float] | None = None,
+    ny: int = 6,
+    nx: int = 6,
+    wcs_freq0: float = 1.283791015625e9,
+    wcs_dfreq: float = 5.755108e7,
+) -> str:
+    """An MGCLS-shaped MFImage cube: NTERM fitted planes, then NSPEC sub-bands.
+
+    The WCS spectral axis is deliberately WRONG, exactly as in the real files:
+    it describes a linear grid from `wcs_freq0` that has nothing to do with the
+    FREQnnnn keywords. A worker that believes CRVAL3/CDELT3 gets the wrong
+    lambda^2 and includes the two fitted planes as if they were sub-bands.
+    """
+    from astropy.io import fits
+
+    c = 2.99792458e8
+    if freqs_hz is None:
+        # The real G000.0+2.5 sub-band centres: 908.037 MHz + k * 57.55108 MHz.
+        freqs_hz = [9.080371093750e8 + k * 5.755108e7 for k in range(14)]
+    n_spec = len(freqs_hz)
+    n_planes = n_term + n_spec
+
+    lam2 = (c / np.asarray(freqs_hz)) ** 2
+    angle = 2.0 * rm_rad_m2 * lam2
+    wave = (np.sin(angle) if quadrature else np.cos(angle)).astype(np.float32)
+
+    data = np.zeros((1, n_planes, ny, nx), dtype=np.float32)
+    # The fitted planes carry something loud and unrelated, so a worker that
+    # mistakes them for sub-bands cannot accidentally still get the right answer.
+    data[0, :n_term] = 100.0
+    data[0, n_term:] = wave[:, None, None]
+
+    hdu = fits.PrimaryHDU(data)
+    h = hdu.header
+    h["CTYPE1"] = "GLON-SIN"; h["CRPIX1"] = nx / 2; h["CRVAL1"] = 0.0; h["CDELT1"] = -4.166667e-4
+    h["CTYPE2"] = "GLAT-SIN"; h["CRPIX2"] = ny / 2; h["CRVAL2"] = 2.5; h["CDELT2"] = 4.166667e-4
+    h["CTYPE3"] = "SPECLNMF"; h["CRPIX3"] = 1.0;    h["CRVAL3"] = wcs_freq0
+    h["CDELT3"] = wcs_dfreq
+    h["CTYPE4"] = "STOKES";   h["CRPIX4"] = 1.0;    h["CRVAL4"] = float(stokes_value)
+    h["CDELT4"] = 1.0
+    h["NTERM"] = n_term
+    h["NSPEC"] = n_spec
+    for i, f in enumerate(freqs_hz, start=1):
+        h[f"FREQ{i:04d}"] = float(f)
+    h["BUNIT"] = "JY/BEAM"
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".fits", delete=False)
+    fits.HDUList([hdu]).writeto(tmp.name, overwrite=True)
+    tmp.close()
+    return tmp.name
+
+
+class TestMfImagePlaneLayout(unittest.TestCase):
+    """NTERM fitted planes + NSPEC sub-bands with their own FREQnnnn keywords."""
+
+    RM = 40.0
+
+    @classmethod
+    def setUpClass(cls):
+        cls.q = _make_mfimage_fits(stokes_value=2, rm_rad_m2=cls.RM)
+        cls.u = _make_mfimage_fits(stokes_value=3, rm_rad_m2=cls.RM, quadrature=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        for p in (cls.q, cls.u):
+            os.unlink(p)
+
+    def test_layout_is_detected(self):
+        from app.compute.polarisation import _mfimage_subbands
+        from app.fits_dataset import ScientificFitsDataset
+        offset, freqs = _mfimage_subbands(ScientificFitsDataset(self.q))
+        self.assertEqual(offset, 2)              # the two fitted planes are skipped
+        self.assertEqual(len(freqs), 14)
+        self.assertAlmostEqual(freqs[0], 9.080371093750e8, delta=1.0)
+
+    def test_rm_is_recovered_from_the_freq_keywords(self):
+        """The WCS axis would give the wrong lambda^2 AND two bogus planes."""
+        from app.compute import worker_rm_synthesis
+        r = worker_rm_synthesis(self.q, -200.0, 200.0, 1.0, {"U": self.u}, reduce="peak")
+        self.assertEqual(r["n_freq"], 14)        # not 16: the fitted planes are out
+        phi = _b64_to_f32(r["phi_peak_base64"], (r["height"], r["width"]))
+        np.testing.assert_allclose(phi, self.RM, atol=2.0)
+
+    def test_inconsistent_keywords_fall_back_to_the_wcs(self):
+        """NTERM + NSPEC that do not fill the axis means the keywords are not trustworthy."""
+        from app.compute.polarisation import _mfimage_subbands
+        from app.fits_dataset import ScientificFitsDataset
+        path = _make_mfimage_fits(stokes_value=2, rm_rad_m2=self.RM, n_term=5)
+        try:
+            from astropy.io import fits
+            with fits.open(path, mode="update") as hdul:
+                hdul[0].header["NSPEC"] = 3      # 5 + 3 != 19 planes
+            self.assertIsNone(_mfimage_subbands(ScientificFitsDataset(path)))
+        finally:
+            os.unlink(path)
+
+    def test_reading_the_wcs_axis_instead_would_be_off_by_a_factor(self):
+        """Pins the number quoted in the paper: 25 rad/m^2 read as 63.
+
+        Not a test of the worker — the worker gets it right, which is the point
+        — but of the claim that getting it wrong is expensive. The grids are
+        the real MGCLS ones: FREQnnnn spans 908-1656 MHz over 14 sub-band
+        planes, the WCS axis 1284-2147 MHz over all 16, so reading the axis
+        also drags the two fitted planes into the transform. If this number
+        ever moves, the sentence in the paper has to move with it.
+        """
+        c = 2.99792458e8
+        true_rm = 25.0
+        keywords = 9.080371093750e8 + np.arange(14) * 5.755108e7
+        wcs_axis = 1.283791015625e9 + np.arange(16) * 5.755108e7
+        phi = np.arange(-200.0, 200.0, 0.5)
+
+        signal = np.exp(2j * true_rm * (c / keywords) ** 2)
+        correct = phi[np.argmax(np.abs(
+            np.exp(-2j * np.outer(phi, (c / keywords) ** 2)) @ signal))]
+        # As a WCS reader would see it: wrong frequencies, and two fitted
+        # planes prepended where sub-bands are expected.
+        with_fitted = np.concatenate([[signal[0], signal[0]], signal])
+        naive = phi[np.argmax(np.abs(
+            np.exp(-2j * np.outer(phi, (c / wcs_axis) ** 2)) @ with_fitted))]
+
+        self.assertAlmostEqual(correct, true_rm, delta=0.5)
+        self.assertAlmostEqual(naive, 63.0, delta=1.0)
+
+    def test_q_mfimage_with_plain_u_is_refused(self):
+        """Same sky grid, same plane count — only the sub-band keywords differ."""
+        from app.compute import worker_rm_synthesis
+        plain_u = _make_single_plane_fits(stokes_value=3, value=1.0, n_freq=16,
+                                          ny=6, nx=6)
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                worker_rm_synthesis(self.q, -50.0, 50.0, 1.0, {"U": plain_u})
+            self.assertIn("do not correspond", str(ctx.exception))
+        finally:
+            os.unlink(plain_u)
+
+
+class TestGridAndNaNGuards(unittest.TestCase):
+
+    def test_same_shape_different_sky_is_refused(self):
+        """Two 8x8 cutouts centred elsewhere are not a Q/U pair."""
+        from app.compute import worker_polarisation_pi_pa
+        q = _make_single_plane_fits(stokes_value=2, value=3.0)
+        u = _make_single_plane_fits(stokes_value=3, value=4.0)
+        from astropy.io import fits
+        with fits.open(u, mode="update") as hdul:
+            hdul[0].header["CRVAL1"] = 12.5          # a different patch of sky
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                worker_polarisation_pi_pa(q, 0, None, {"U": u})
+            self.assertIn("same sky grid", str(ctx.exception))
+        finally:
+            os.unlink(q)
+            os.unlink(u)
+
+    def test_all_nan_pixel_gets_no_rotation_measure(self):
+        """argmax on an all-NaN spectrum answers 0; phi_min is not a measurement."""
+        from app.compute import worker_rm_synthesis
+        from astropy.io import fits
+        q = _make_single_plane_fits(stokes_value=2, value=1.0, n_freq=8, rm_rad_m2=20.0)
+        u = _make_single_plane_fits(stokes_value=3, value=1.0, n_freq=8, rm_rad_m2=20.0,
+                                    quadrature=True)
+        with fits.open(q, mode="update") as hdul:
+            hdul[0].data[0, :, 0, 0] = np.nan        # one pixel, every channel
+        try:
+            r = worker_rm_synthesis(q, -100.0, 100.0, 1.0, {"U": u}, reduce="peak")
+            phi = _b64_to_f32(r["phi_peak_base64"], (r["height"], r["width"]))
+            self.assertTrue(np.isnan(phi[0, 0]), "the dead pixel must not carry an RM")
+            self.assertAlmostEqual(float(phi[1, 1]), 20.0, delta=2.0)
+        finally:
+            os.unlink(q)
+            os.unlink(u)
+
+    def test_one_row_image_keeps_its_shape(self):
+        """A (nfreq, 1, nx) cube must not squeeze into an nfreq-row image."""
+        from app.compute.polarisation import _read_stokes_cube
+        from app.fits_dataset import ScientificFitsDataset
+        path = _make_single_plane_fits(stokes_value=2, value=5.0, ny=1, nx=12, n_freq=4)
+        try:
+            cube = _read_stokes_cube(ScientificFitsDataset(path), "Q", authoritative=True)
+            self.assertEqual(cube.shape, (4, 1, 12))
+        finally:
+            os.unlink(path)
+
+    def test_peak_mode_does_not_build_the_whole_cube(self):
+        """The guard peak mode skips would be pointless if it allocated it anyway."""
+        from app.compute import worker_rm_synthesis
+        q = _make_single_plane_fits(stokes_value=2, value=1.0, n_freq=4, rm_rad_m2=10.0)
+        u = _make_single_plane_fits(stokes_value=3, value=1.0, n_freq=4, rm_rad_m2=10.0,
+                                    quadrature=True)
+        try:
+            # 400k phi samples over 8x8: the cube would be 97 MiB, the blocks are small.
+            r = worker_rm_synthesis(q, -10000.0, 10000.0, 0.05, {"U": u}, reduce="peak")
+            self.assertEqual(r["n_phi"], 400000)
+            phi = _b64_to_f32(r["phi_peak_base64"], (r["height"], r["width"]))
+            np.testing.assert_allclose(phi, 10.0, atol=1.0)
+        finally:
+            os.unlink(q)
+            os.unlink(u)
+
+    def test_unit_inference_requires_a_frequency_ctype(self):
+        from app.compute.polarisation import _frequencies_hz
+        from app.fits_dataset import ScientificFitsDataset
+        path = _make_single_plane_fits(stokes_value=2, value=1.0, ctype3="LINEAR")
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                _frequencies_hz(ScientificFitsDataset(path), 4)
+            self.assertIn("does not name a frequency", str(ctx.exception))
+        finally:
+            os.unlink(path)
+
+
 if __name__ == "__main__":
     unittest.main()

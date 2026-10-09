@@ -14,6 +14,7 @@ static constexpr char kId[]        = "id";
 static constexpr char kName[]      = "displayName";
 static constexpr char kType[]      = "type";
 static constexpr char kSource[]    = "source";
+static constexpr char kObsId[]     = "obsId";
 static constexpr char kOpened[]    = "lastOpened";
 
 // ---------------------------------------------------------------------------
@@ -37,7 +38,8 @@ QList<RecentDataset> RecentDatasetsManager::datasets() const
 void RecentDatasetsManager::record(const QString &id,
                                    const QString &displayName,
                                    const QString &type,
-                                   const QString &source)
+                                   const QString &source,
+                                   const QString &obsId)
 {
     if (id.isEmpty()) {
         return;
@@ -57,6 +59,7 @@ void RecentDatasetsManager::record(const QString &id,
     entry.displayName = displayName.isEmpty() ? id : displayName;
     entry.type        = type;
     entry.source      = source.isEmpty() ? u"remote"_s : source;
+    entry.obsId       = obsId;
     entry.lastOpened  = QDateTime::currentDateTime();
     m_datasets.prepend(entry);
 
@@ -107,6 +110,10 @@ void RecentDatasetsManager::load()
         e.displayName = s.value(QLatin1StringView(kName)).toString();
         e.type        = s.value(QLatin1StringView(kType)).toString();
         e.source      = s.value(QLatin1StringView(kSource), u"remote"_s).toString();
+        // ``obsId`` is new in the SKAVA-routing patch; old entries don't
+        // have it and load as an empty string, which makes ``reopenDataset``
+        // fall back to path-based reopen unchanged.
+        e.obsId       = s.value(QLatin1StringView(kObsId)).toString();
         e.lastOpened  = s.value(QLatin1StringView(kOpened)).toDateTime();
         s.endGroup();
         if (!e.id.isEmpty()) {
@@ -130,6 +137,9 @@ void RecentDatasetsManager::save() const
         s.setValue(QLatin1StringView(kName),   e.displayName);
         s.setValue(QLatin1StringView(kType),   e.type);
         s.setValue(QLatin1StringView(kSource), e.source);
+        if (!e.obsId.isEmpty()) {
+            s.setValue(QLatin1StringView(kObsId), e.obsId);
+        }
         s.setValue(QLatin1StringView(kOpened), e.lastOpened);
         s.endGroup();
     }

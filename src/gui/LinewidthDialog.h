@@ -7,6 +7,7 @@ class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
+class QProgressDialog;
 class QPushButton;
 class QSpinBox;
 
@@ -64,6 +65,14 @@ public:
         Unknown,     ///< Channels or unrecognised — rest-freq shown but optional.
     };
 
+Q_SIGNALS:
+    /// Emitted when the line-width map is computed, so the caller promotes it to a first-class
+    /// PANE product (#5) instead of a standalone window. Payload = the raw float map + geometry.
+    void mapReady(const QByteArray &floatData, int width, int height, float rangeMin,
+                  float rangeMax, const QString &label, const QString &unit);
+
+public:
+
     /**
      * @param backendUrl            Backend base URL, e.g. "http://host:8000".
      * @param backendToken          Auth token (may be empty — BackendClient reads ~/.visivo_token).
@@ -116,6 +125,10 @@ private:
 
     // Re-entrancy guard and stale-result fence.
     bool     m_busy{ false };
+    /// The shared window-modal progress sheet (ToolProgressSheet.h). The dialog's
+    /// own status bar is not enough on its own: a compute that takes minutes
+    /// needs something that says "working" without the user hunting for it.
+    QPointer<QProgressDialog> m_progressSheet;
     int      m_currentRequestId{ 0 };
 
     // Form widgets.

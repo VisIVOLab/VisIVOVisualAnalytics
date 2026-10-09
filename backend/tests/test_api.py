@@ -299,6 +299,169 @@ async def test_cube_subvolume(client: AsyncClient, opened_cube: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_cube_mask_registers_new_dataset(client: AsyncClient, opened_cube: dict) -> None:
+    resp = await client.post(
+        "/v1/cube/mask",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "x0": 10, "x1": 20, "y0": 10, "y1": 20, "z0": 5, "z1": 10,
+            "mode": "blank_outside",
+        },
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["valid"] is True
+    assert data["new_dataset_id"].startswith("ds_")
+    # Masking keeps full cube dimensions (unlike subvolume which crops).
+    assert (data["width"], data["height"], data["depth"]) == (64, 64, 32)
+
+
+@pytest.mark.asyncio
+async def test_cube_mask_bad_mode_422(client: AsyncClient, opened_cube: dict) -> None:
+    resp = await client.post(
+        "/v1/cube/mask",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "x0": 0, "x1": 5, "y0": 0, "y1": 5, "z0": 0, "z1": 5, "mode": "nope",
+        },
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_cube_kinematic_select_bin(client: AsyncClient, opened_cube: dict) -> None:
+    resp = await client.post(
+        "/v1/cube/kinematic_select_bin",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "seed_z": 16, "seed_y": 32, "seed_x": 32,
+            "reach": 8.0, "lambda_v": 1.0, "roi_radius": 20,
+        },
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 200, resp.text
+    # Payload is the ROI (bounding box of the selection), not the full cube.
+    rw = int(resp.headers["X-Visivo-Width"])
+    rh = int(resp.headers["X-Visivo-Height"])
+    rd = int(resp.headers["X-Visivo-Depth"])
+    assert len(resp.content) == rw * rh * rd * 4          # float32 ROI mask
+    assert resp.headers["X-Visivo-Full-Shape"] == "64,64,32"
+    assert len(resp.headers["X-Visivo-Origin"].split(",")) == 3
+    count = int(resp.headers["X-Visivo-Selected-Count"])
+    assert count >= 1                                     # at least the seed
+    assert len(resp.headers["X-Visivo-Bbox"].split(",")) == 6
+
+
+@pytest.mark.asyncio
+async def test_cube_kinematic_select_bin_seed_outside_is_422(
+    client: AsyncClient, opened_cube: dict
+) -> None:
+    # A seed outside the cube is bad user input, not a server error → 422, not 500.
+    resp = await client.post(
+        "/v1/cube/kinematic_select_bin",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "seed_z": 999, "seed_y": 32, "seed_x": 32,
+            "reach": 8.0, "lambda_v": 1.0, "roi_radius": 20,
+        },
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_cube_kinematic_select_bin_multi_seed(
+    client: AsyncClient, opened_cube: dict
+) -> None:
+    # ⇧-click add-seed + ⌥-click sub-seed round-trip through the API.
+    resp = await client.post(
+        "/v1/cube/kinematic_select_bin",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "seed_z": 16, "seed_y": 32, "seed_x": 32,
+            "add_seeds": [[16, 30, 30]],
+            "sub_seeds": [[16, 40, 40]],
+            "reach": 8.0, "lambda_v": 1.0, "roi_radius": 20,
+        },
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 200, resp.text
+    assert int(resp.headers["X-Visivo-Selected-Count"]) >= 1
+
+
+@pytest.mark.asyncio
+async def test_cube_mask_selection_registers_new_dataset(client: AsyncClient, opened_cube: dict) -> None:
+    resp = await client.post(
+        "/v1/cube/mask_selection",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "seed_z": 16, "seed_y": 32, "seed_x": 32,
+            "reach": 8.0, "lambda_v": 1.0, "roi_radius": 20,
+            "mode": "blank_outside",
+        },
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["valid"] is True
+    assert data["new_dataset_id"].startswith("ds_")
+    assert (data["width"], data["height"], data["depth"]) == (64, 64, 32)  # full dims
+
+
+@pytest.mark.asyncio
+async def test_cube_mask_apply_bin_explicit_mask(client: AsyncClient, opened_cube: dict) -> None:
+    # Apply an explicit ROI mask (float32 0/1, x-fastest) — no re-grow from seeds.
+    import numpy as np
+    rw, rh, rd = 5, 4, 3
+    m = np.zeros((rd, rh, rw), dtype="<f4")
+    m[1, 1:3, 1:3] = 1.0                       # a few selected voxels
+    resp = await client.post(
+        "/v1/cube/mask_apply_bin",
+        params={
+            "dataset_id": opened_cube["dataset_id"],
+            "origin_x": 20, "origin_y": 24, "origin_z": 8,
+            "width": rw, "height": rh, "depth": rd,
+            "mode": "blank_outside",
+        },
+        content=m.tobytes(),
+        headers={**opened_cube["headers"], "Content-Type": "application/octet-stream"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["valid"] is True
+    assert data["new_dataset_id"].startswith("ds_")
+    assert (data["width"], data["height"], data["depth"]) == (64, 64, 32)  # full dims kept
+
+    # The EXACT mask must have been applied verbatim (not re-grown): for blank_outside
+    # ONLY the selected ROI voxels stay finite, everything else is NaN.
+    from astropy.io import fits
+    out = np.squeeze(fits.getdata(data["output_path"]))
+    assert out.shape == (32, 64, 64)                       # (z, y, x)
+    finite = np.isfinite(out)
+    assert int(finite.sum()) == int((m > 0.5).sum())       # == selected-voxel count
+    sub = finite[8:8 + rd, 24:24 + rh, 20:20 + rw]         # the ROI region (oz,oy,ox)
+    assert np.array_equal(sub, (m > 0.5))                  # finite exactly where the mask is
+
+
+@pytest.mark.asyncio
+async def test_cube_mask_apply_bin_bad_size_422(client: AsyncClient, opened_cube: dict) -> None:
+    resp = await client.post(
+        "/v1/cube/mask_apply_bin",
+        params={
+            "dataset_id": opened_cube["dataset_id"],
+            "origin_x": 0, "origin_y": 0, "origin_z": 0,
+            "width": 4, "height": 4, "depth": 4,   # expects 256 bytes
+            "mode": "blank_inside",
+        },
+        content=b"\x00\x00\x00\x00",              # 4 bytes → mismatch
+        headers={**opened_cube["headers"], "Content-Type": "application/octet-stream"},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
 async def test_cube_preview(client: AsyncClient, opened_cube: dict) -> None:
     resp = await client.post(
         "/v1/cube/preview",
@@ -851,12 +1014,18 @@ async def test_cancel_completed_task_returns_409(client: AsyncClient, opened_cub
     assert create_resp.status_code == 200
     task_id = create_resp.json()["task_id"]
 
-    # Wait for completion
-    for _ in range(30):
+    # Wait for completion. The first moment task in a test run pays the
+    # ProcessPoolExecutor cold-start cost (fork + import numpy/astropy in the
+    # subprocess), which can exceed a couple of seconds — poll generously so the
+    # task reliably reaches its terminal state before we assert on the 409.
+    status = ""
+    for _ in range(150):
         s = await client.get(f"/v1/tasks/{task_id}", headers=opened_cube["headers"])
-        if s.json()["status"] == "completed":
+        status = s.json()["status"]
+        if status in ("completed", "failed", "cancelled"):
             break
         await asyncio.sleep(0.1)
+    assert status == "completed", f"Task did not complete in time (status={status})"
 
     del_resp = await client.delete(f"/v1/tasks/{task_id}", headers=opened_cube["headers"])
     assert del_resp.status_code == 409
@@ -890,3 +1059,50 @@ def _vtk_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+# ── Image tiling (out-of-core 2-D pyramid) ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_image_tile_endpoint(client: AsyncClient, opened_image: dict) -> None:
+    resp = await client.post(
+        "/v1/image/tile",
+        json={"dataset_id": opened_image["dataset_id"],
+              "level": 0, "tile_x": 0, "tile_y": 0, "tile_size": 32},
+        headers=opened_image["headers"],
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["valid"], data.get("error")
+    assert (data["full_width"], data["full_height"]) == (64, 64)
+    assert (data["width"], data["height"]) == (32, 32)
+    assert data["level"] == 0
+    assert data["num_levels"] >= 2      # 64px / 32px tile → 2 levels
+    assert data["data_base64"]
+
+
+@pytest.mark.asyncio
+async def test_image_tile_out_of_range_returns_422(
+    client: AsyncClient, opened_image: dict
+) -> None:
+    resp = await client.post(
+        "/v1/image/tile",
+        json={"dataset_id": opened_image["dataset_id"],
+              "level": 0, "tile_x": 99, "tile_y": 0, "tile_size": 32},
+        headers=opened_image["headers"],
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_image_tile_on_cube_returns_422(
+    client: AsyncClient, opened_cube: dict
+) -> None:
+    resp = await client.post(
+        "/v1/image/tile",
+        json={"dataset_id": opened_cube["dataset_id"], "level": 0,
+              "tile_x": 0, "tile_y": 0, "tile_size": 32},
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 422

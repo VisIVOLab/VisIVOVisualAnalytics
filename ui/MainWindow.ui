@@ -26,6 +26,9 @@
       <property name="orientation">
        <enum>Qt::Orientation::Horizontal</enum>
       </property>
+      <property name="handleWidth">
+       <number>10</number>
+      </property>
       <property name="childrenCollapsible">
        <bool>false</bool>
       </property>
@@ -47,7 +50,28 @@
        </property>
       </widget>
       <widget class="QWidget" name="layoutWidget">
+       <property name="minimumSize">
+        <size>
+         <width>260</width>
+         <height>0</height>
+        </size>
+       </property>
        <layout class="QVBoxLayout" name="verticalLayout_2">
+        <property name="leftMargin">
+         <number>18</number>
+        </property>
+        <property name="topMargin">
+         <number>14</number>
+        </property>
+        <property name="rightMargin">
+         <number>14</number>
+        </property>
+        <property name="bottomMargin">
+         <number>14</number>
+        </property>
+        <property name="spacing">
+         <number>14</number>
+        </property>
         <item>
          <widget class="QLabel" name="labelVlkbTitle">
           <property name="text">
@@ -74,6 +98,21 @@
            <string>Selection</string>
           </property>
           <layout class="QVBoxLayout" name="verticalLayout">
+           <property name="leftMargin">
+            <number>14</number>
+           </property>
+           <property name="topMargin">
+            <number>10</number>
+           </property>
+           <property name="rightMargin">
+            <number>14</number>
+           </property>
+           <property name="bottomMargin">
+            <number>14</number>
+           </property>
+           <property name="spacing">
+            <number>12</number>
+           </property>
            <item>
             <widget class="QRadioButton" name="radioSelNone">
              <property name="text">
@@ -107,6 +146,24 @@
            <string>Coordinates (center of selection)</string>
           </property>
           <layout class="QGridLayout" name="gridLayout">
+           <property name="leftMargin">
+            <number>14</number>
+           </property>
+           <property name="topMargin">
+            <number>8</number>
+           </property>
+           <property name="rightMargin">
+            <number>14</number>
+           </property>
+           <property name="bottomMargin">
+            <number>12</number>
+           </property>
+           <property name="horizontalSpacing">
+            <number>10</number>
+           </property>
+           <property name="verticalSpacing">
+            <number>6</number>
+           </property>
            <item row="0" column="0">
             <widget class="QLabel" name="label">
              <property name="text">
@@ -215,8 +272,6 @@
      <string>File</string>
     </property>
     <addaction name="actionOpenFile"/>
-    <addaction name="actionOpenVbt"/>
-    <addaction name="actionOpenCatalogue3D"/>
     <addaction name="separator"/>
     <addaction name="actionExit"/>
    </widget>
@@ -250,7 +305,10 @@
   </action>
   <action name="actionOpenFile">
    <property name="text">
-    <string>Open File...</string>
+    <string>Open…</string>
+   </property>
+   <property name="toolTip">
+    <string>Open any supported file — the backend identifies it and picks the viewer.</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+O</string>

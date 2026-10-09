@@ -37,7 +37,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 
 from ..auth import verify_token
-from ..dependencies import _run_heavy, _require_dataset, _run_heavy_with_limit
+from ..dependencies import (_run_heavy, _require_dataset, _run_heavy_with_limit,
+                            acquire_task_slot, task_slot_busy_error)
 from ..product_cache import PRODUCT_CACHE
 from ..sessions import Session, get_session
 
@@ -56,6 +57,9 @@ class LinewidthRequest(BaseModel):
     threshold_value: float = 0.0
     method: str | None = None       # None=both (binary); "fwhm" | "ew" selects one
     rest_freq_hz: float | None = None
+    # R-07: fast vectorised (moment-dispersion) FWHM instead of a per-pixel
+    # Gaussian fit — orders of magnitude faster on dense bright cubes.
+    fast: bool = False
 
 
 class LinewidthResponse(BaseModel):
@@ -101,6 +105,10 @@ class BaselineResponse(BaseModel):
     rms_before: float = 0.0
     rms_after: float = 0.0
     output_path: str = ""
+    # Non-fatal caveats about a fit that SUCCEEDED (an extrapolated baseline, a
+    # residual larger than the input). The client shows these; a field missing
+    # HERE is a warning the user never sees, however carefully it is computed.
+    warning: str = ""
 
 
 class StackRequest(BaseModel):
@@ -137,6 +145,39 @@ def _array_to_binary(rows: int, cols: int, arr: np.ndarray) -> bytes:
     return header + body
 
 
+def _linewidth_unit_headers(
+    result: dict[str, Any], method: str | None = None
+) -> dict[str, str]:
+    """HTTP headers carrying the line-width map units.
+
+    The binary line-width endpoints return raw float frames with no in-band
+    metadata, so the physical unit (e.g. ``km/s``) is lost unless we surface it
+    out-of-band. The JSON variant already returns ``fwhm_unit``/``ew_unit``; here
+    the same values ride along as response headers so the client can label the
+    map. HTTP header values are latin-1, so units are sanitised to that encoding.
+
+    ``X-Fwhm-Unit`` / ``X-Ew-Unit`` are always set; ``X-Map-Unit`` mirrors the
+    single frame the caller asked for (``method`` ``fwhm``/``ew``), so the
+    single-map GET/POST paths need read only one header.
+    """
+    def _safe(unit: str) -> str:
+        # HTTP header values are latin-1. Canonicalise the common non-latin-1 unit char (Greek mu
+        # / micro sign, e.g. "μm") to ASCII "u" first so a wavelength unit survives readably
+        # instead of becoming "?m".
+        u = (unit or "").replace("μ", "u").replace("µ", "u")
+        return u.encode("latin-1", "replace").decode("latin-1")
+
+    fwhm_u = _safe(str(result.get("fwhm_unit", "")))
+    ew_u = _safe(str(result.get("ew_unit", "")))
+    headers = {"X-Fwhm-Unit": fwhm_u, "X-Ew-Unit": ew_u}
+    # X-Map-Unit is a convenience for the SINGLE-frame variants only — the two-frame default body
+    # carries both maps, so an aliased single unit there would be ambiguous.
+    m = (method or "").lower()
+    if m in ("fwhm", "ew"):
+        headers["X-Map-Unit"] = ew_u if m == "ew" else fwhm_u
+    return headers
+
+
 # Default SNR cutoff for skipping background pixels. Tunable via env in case a
 # specific dataset needs a different threshold; 3σ is the standard radio-astro
 # noise-rejection level and matches the value used in similar VLKB tools.
@@ -153,6 +194,11 @@ _LINEWIDTH_SNR_THRESHOLD = float(os.environ.get("VISIVO_LINEWIDTH_SNR", "3.0"))
 #
 # Override with ``VISIVO_LINEWIDTH_CHUNKS=N`` if you want to constrain the
 # chunk count independently from the heavy-task semaphore.
+# Wall-clock ceiling for a SoFiA-2 run, mirroring VISIVO_HEAVY_TIMEOUT_S in
+# spirit: the child process is killed and the caller gets a clear error rather
+# than a thread wedged for the lifetime of the server. 0 disables it.
+_SOFIA_TIMEOUT_S = float(os.environ.get("VISIVO_SOFIA_TIMEOUT_S", "900")) or None
+
 _LINEWIDTH_PARALLEL_CHUNKS = max(
     1,
     int(os.environ.get(
@@ -212,7 +258,9 @@ def _combine_linewidth_chunks(chunks: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _linewidth_cache_key(path: str, channel_start: int, channel_end: int,
-                          mask_enabled: bool, threshold_value: float) -> tuple[str, str]:
+                          mask_enabled: bool, threshold_value: float,
+                          rest_freq_hz: float | None = None,
+                          fast: bool = False) -> tuple[str, str]:
     """Stable cache key for a linewidth computation."""
     return PRODUCT_CACHE.make_key(path, "linewidth", {
         "channel_start": int(channel_start),
@@ -220,6 +268,11 @@ def _linewidth_cache_key(path: str, channel_start: int, channel_end: int,
         "mask_enabled": bool(mask_enabled),
         "threshold_value": float(threshold_value),
         "snr_threshold": _LINEWIDTH_SNR_THRESHOLD,
+        # Part of the key: a different rest frequency yields km/s maps scaled
+        # differently (or Hz when absent), so cached frames must not be shared.
+        "rest_freq_hz": float(rest_freq_hz) if rest_freq_hz else None,
+        # Fast (moment dispersion) vs Gaussian-fit FWHM are different products.
+        "fast": bool(fast),
     })
 
 
@@ -231,6 +284,8 @@ async def _compute_linewidth(
     mask_enabled: bool,
     threshold_value: float,
     cube_height: int,
+    rest_freq_hz: float | None = None,
+    fast: bool = False,
 ) -> dict[str, Any]:
     """Compute (or retrieve cached) linewidth maps for a cube.
 
@@ -248,17 +303,18 @@ async def _compute_linewidth(
        result, which is then stored in the cache.
     """
     cache_key, param_hash = _linewidth_cache_key(
-        path, channel_start, channel_end, mask_enabled, threshold_value
+        path, channel_start, channel_end, mask_enabled, threshold_value, rest_freq_hz, fast
     )
     cached = PRODUCT_CACHE.get(cache_key)
     if cached is not None:
         return dict(cached.payload)
 
-    if not session.try_acquire_task_slot():
-        raise HTTPException(
-            status_code=429,
-            detail="Too many concurrent compute tasks for this session.",
-        )
+    # The shared bounded wait, not an instant refusal: this endpoint held the
+    # only fail-fast path left, so a line-width request was refused within
+    # milliseconds while every other compute waited 15 s for a slot — and the
+    # client's retry budget (~7.5 s of backoff) could not bridge that either.
+    if not await acquire_task_slot(session):
+        raise task_slot_busy_error()
     try:
         from ..compute import worker_linewidth  # noqa: PLC0415
 
@@ -285,6 +341,7 @@ async def _compute_linewidth(
                 path, int(channel_start), int(channel_end),
                 bool(mask_enabled), float(threshold_value),
                 _LINEWIDTH_SNR_THRESHOLD, int(y0), int(y1),
+                rest_freq_hz, fast,
             )
             for (y0, y1) in ranges
         ]
@@ -342,6 +399,8 @@ async def spectral_linewidth(
             request.channel_start, request.channel_end,
             request.mask_enabled, request.threshold_value,
             cube_height=int(entry.get("height") or 0),
+            rest_freq_hz=request.rest_freq_hz,
+            fast=request.fast,
         )
     except HTTPException:
         raise
@@ -376,6 +435,8 @@ async def spectral_linewidth_binary(
             request.channel_start, request.channel_end,
             request.mask_enabled, request.threshold_value,
             cube_height=int(entry.get("height") or 0),
+            rest_freq_hz=request.rest_freq_hz,
+            fast=request.fast,
         )
     except HTTPException:
         raise
@@ -392,7 +453,11 @@ async def spectral_linewidth_binary(
         content = _array_to_binary(h, w, fwhm)
     else:
         content = _array_to_binary(h, w, fwhm) + _array_to_binary(h, w, ew)
-    return Response(content=content, media_type="application/octet-stream")
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers=_linewidth_unit_headers(result, method),
+    )
 
 
 @router.get("/v1/spectral/linewidth/{dataset_id}")
@@ -402,6 +467,7 @@ async def spectral_linewidth_get(
     session: Session = Depends(get_session),
     method: str = Query(default="fwhm", description='"fwhm" or "ew"'),
     rest_freq_hz: float | None = Query(default=None),
+    fast: bool = Query(default=False),
     channel_start: int = Query(default=0),
     channel_end: int = Query(default=0),
 ) -> Response:
@@ -418,6 +484,8 @@ async def spectral_linewidth_get(
             session, entry["path"],
             channel_start, channel_end, False, 0.0,
             cube_height=int(entry.get("height") or 0),
+            rest_freq_hz=rest_freq_hz,
+            fast=fast,
         )
     except HTTPException:
         raise
@@ -432,7 +500,8 @@ async def spectral_linewidth_get(
         arr = np.frombuffer(base64.b64decode(result["fwhm_base64"]),
                             dtype=np.float32).reshape(h, w)
     return Response(content=_array_to_binary(h, w, arr),
-                    media_type="application/octet-stream")
+                    media_type="application/octet-stream",
+                    headers=_linewidth_unit_headers(result, method))
 
 
 # ── S-03: Polynomial / median baseline subtraction ──────────────────────────
@@ -495,7 +564,7 @@ async def spectral_baseline(
     return BaselineResponse(valid=True, new_dataset_id=new_id, **{
         k: result[k] for k in ("width", "height", "depth", "range_min", "range_max",
                                 "poly_order", "method", "fit_channels",
-                                "rms_before", "rms_after", "output_path")
+                                "rms_before", "rms_after", "output_path", "warning")
     })
 
 
@@ -574,3 +643,129 @@ async def spectral_stack_binary(
         content=_array_to_binary(rows, cols, arr),
         media_type="application/octet-stream",
     )
+
+
+# ── S-05: SoFiA-2 source finding ───────────────────────────────────────────────
+
+class SourceFindRequest(BaseModel):
+    dataset_id: str = ""
+    sofia_params: dict = {}
+
+
+@router.post("/v1/sourcefind/{dataset_id}", tags=["spectral"])
+async def sourcefind(
+    dataset_id: str,
+    request: SourceFindRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+):
+    """Run SoFiA-2 on a node-local cube. Returns the detection catalogue and the
+    path to the binary mask cube (for the desktop's 3D isosurface overlay)."""
+    import shutil as _shutil  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    entry = _require_dataset(session, dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "Source finding requires a spectral cube dataset.")
+    from ..compute import resolve_sofia_bin, worker_sofia  # noqa: PLC0415
+    if not resolve_sofia_bin():
+        raise HTTPException(
+            503,
+            "SoFiA-2 not found on the server PATH (looked for 'sofia2' and "
+            "'sofia'; set VISIVO_SOFIA_BIN to override).")
+
+    out_dir = tempfile.mkdtemp(prefix="sofia_")
+    try:
+        # A ceiling, which this endpoint had none of: worker_sofia already
+        # supports one (and carries the message for it), but the call left it at
+        # None, so an abandoned or pathological SoFiA-2 run held a thread for
+        # ever while the client gave up after its own timeout (audit).
+        return await asyncio.to_thread(
+            worker_sofia, entry["path"], out_dir, request.sofia_params,
+            _SOFIA_TIMEOUT_S)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("[sourcefind] failed dataset_id=%s error=%s", dataset_id, exc)
+        return {"valid": False, "error": str(exc), "n_sources": 0, "sources": []}
+
+
+# ── Spectral probe / aperture (interactive profiler on remote/large cubes) ─────
+
+class SpectralProbeRequest(BaseModel):
+    dataset_id: str
+    x: float
+    y: float
+
+
+class SpectralApertureRequest(BaseModel):
+    dataset_id: str
+    x: float
+    y: float
+    radius: float = 3.0
+
+
+@router.post("/v1/spectral/probe", tags=["spectral"])
+async def spectral_probe(
+    request: SpectralProbeRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+):
+    """Extract the spectrum at a single pixel — computed on the node so the
+    profiler scales to multi-GB remote cubes."""
+    entry = _require_dataset(session, request.dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "Spectral probe requires a spectral cube dataset.")
+    from ..compute import worker_spectral_probe  # noqa: PLC0415
+    try:
+        return await asyncio.to_thread(
+            worker_spectral_probe, entry["path"], request.x, request.y)
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/v1/spectral/aperture", tags=["spectral"])
+async def spectral_aperture(
+    request: SpectralApertureRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+):
+    """Mean spectrum over a circular aperture (radius in pixels), node-side."""
+    entry = _require_dataset(session, request.dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "Spectral aperture requires a spectral cube dataset.")
+    from ..compute import worker_spectral_aperture  # noqa: PLC0415
+    try:
+        return await asyncio.to_thread(
+            worker_spectral_aperture, entry["path"], request.x, request.y, request.radius)
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+class LineFitRequest(BaseModel):
+    values: list[float]
+    axis: list[float]
+    with_baseline: bool = True
+
+
+@router.post("/v1/spectral/linefit", tags=["spectral"])
+async def spectral_linefit(request: LineFitRequest, _: None = _auth):
+    """Fit a Gaussian (+ optional linear baseline) to an extracted 1-D spectrum.
+
+    Stateless: the caller supplies the spectrum ``values`` and ``axis`` (e.g.
+    from the spectral profiler), so the same fit serves cube probes, aperture
+    spectra, or any externally-extracted profile. Returns peak/center/σ/FWHM in
+    the axis units, integrated flux, baseline, continuum, equivalent width and
+    residual RMS.
+    """
+    if len(request.values) != len(request.axis):
+        raise HTTPException(422, "values and axis must have the same length.")
+    from ..compute import worker_line_fit  # noqa: PLC0415
+    try:
+        result = await asyncio.to_thread(
+            worker_line_fit, request.values, request.axis, request.with_baseline)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, str(exc)) from exc
+    return {"valid": True, "error": "", **result}

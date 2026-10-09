@@ -64,7 +64,13 @@ vtkSmartPointer<vtkImageData> buildPreviewImage(vtkImageData *sourceImage)
     const double *spacing = sourceImage->GetSpacing();
     const double xFactor = static_cast<double>(dims[0]) / static_cast<double>(previewWidth);
     const double yFactor = static_cast<double>(dims[1]) / static_cast<double>(previewHeight);
-    preview->SetOrigin(origin[0], origin[1], origin[2]);
+    // Same sampler as the backend's preview (floor((i+0.5)*factor)), so the same
+    // mapping: the first display cell's CENTRE is half a cell in, not at the
+    // input's origin. Copying the origin unchanged drew every feature offset by
+    // half a cell from where the probe, the region statistics and the catalogue
+    // overlay - which all read the UNDERLYING image - say it is.
+    preview->SetOrigin(origin[0] + (xFactor - 1.0) / 2.0 * spacing[0],
+                       origin[1] + (yFactor - 1.0) / 2.0 * spacing[1], origin[2]);
     preview->SetSpacing(spacing[0] * xFactor, spacing[1] * yFactor, spacing[2]);
 
     auto *sourceScalars = sourceImage->GetPointData() ? sourceImage->GetPointData()->GetScalars()
@@ -268,17 +274,32 @@ bool ImageLayer::usingLogScale() const
 
 void ImageLayer::setLogScale(bool flag)
 {
+    this->setScaleMode(flag ? LutScale::Mode::Log : LutScale::Mode::Linear, this->m_gamma);
+}
+
+LutScale::Mode ImageLayer::scaleMode() const
+{
+    return this->m_scaleMode;
+}
+
+double ImageLayer::scaleGamma() const
+{
+    return this->m_gamma;
+}
+
+void ImageLayer::setScaleMode(LutScale::Mode mode, double gamma)
+{
+    this->m_scaleMode = mode;
+    this->m_gamma = gamma;
     double range[] = { this->lut->GetTableRange()[0], this->lut->GetTableRange()[1] };
-    if (flag) {
+    if (mode == LutScale::Mode::Log) {
         range[1] = std::max(range[1], logScaleEpsilon(range[1]));
         range[0] = std::max(range[0], logScaleEpsilon(range[1]));
-        this->lut->SetTableRange(range[0], range[1]);
-        this->lut->SetScaleToLog10();
-    } else {
-        this->lut->SetScaleToLinear();
-        this->lut->SetTableRange(range[0], range[1]);
     }
-    this->lut->Build();
+    // build() forces a fresh linear fill before stretching, so re-applying a
+    // Sqrt/Square/Power stretch on an already-stretched table cannot compound it.
+    const std::string name = this->lut->GetObjectName();
+    LutScale::build(this->lut, name, mode, range[0], range[1], gamma);
 }
 
 std::string ImageLayer::getColorMapName() const
@@ -288,8 +309,11 @@ std::string ImageLayer::getColorMapName() const
 
 void ImageLayer::setColorMap(const std::string &name)
 {
-    ColorMaps::SetColorMap(this->lut, name);
-    this->lut->Build();
+    // build() fills the colormap AND re-applies the active stretch, so a
+    // Sqrt/Square/Power resample is preserved across colormap swaps.
+    const double rangeMin = this->lut->GetTableRange()[0];
+    const double rangeMax = this->lut->GetTableRange()[1];
+    LutScale::build(this->lut, name, this->m_scaleMode, rangeMin, rangeMax, this->m_gamma);
 }
 
 void ImageLayer::setOrigin(const double *origin)
@@ -329,7 +353,6 @@ void ImageLayer::applyLoadResult(const ImageLayerLoadResult &result)
     const double previousRangeMax = this->lut->GetTableRange()[1];
     const bool preserveScale = previousRangeMax > previousRangeMin && std::isfinite(previousRangeMin)
             && std::isfinite(previousRangeMax);
-    const bool logScale = this->lut->UsingLogScale();
     const double opacity = this->actor->GetProperty()->GetOpacity();
     const std::string colorMapName = this->lut->GetObjectName();
 
@@ -347,9 +370,6 @@ void ImageLayer::applyLoadResult(const ImageLayerLoadResult &result)
     this->updateDisplaySource();
     this->updateImageTransform(result.rotationDegrees);
 
-    if (!colorMapName.empty()) {
-        ColorMaps::SetColorMap(this->lut, colorMapName);
-    }
     this->actor->GetProperty()->SetOpacity(opacity);
 
     double minValue = preserveScale ? previousRangeMin : this->scalarRange[0];
@@ -358,15 +378,15 @@ void ImageLayer::applyLoadResult(const ImageLayerLoadResult &result)
         minValue = this->scalarRange[0];
         maxValue = this->scalarRange[1];
     }
-    if (logScale) {
+    if (this->m_scaleMode == LutScale::Mode::Log) {
         maxValue = std::max(maxValue, logScaleEpsilon(maxValue));
         minValue = std::max(minValue, logScaleEpsilon(maxValue));
-        this->lut->SetScaleToLog10();
-    } else {
-        this->lut->SetScaleToLinear();
     }
-    this->lut->SetTableRange(minValue, maxValue);
-    this->lut->Build();
+    // build() refills the colormap AND re-applies the stored stretch
+    // (Linear/Log/Sqrt/Square/Power) so it survives a remote preview→full swap
+    // or a reload.
+    const std::string activeName = colorMapName.empty() ? this->lut->GetObjectName() : colorMapName;
+    LutScale::build(this->lut, activeName, this->m_scaleMode, minValue, maxValue, this->m_gamma);
 }
 
 bool ImageLayer::isPreviewActive() const

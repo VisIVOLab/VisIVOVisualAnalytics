@@ -40,7 +40,7 @@ MomentResult MomentProcessingService::computeMomentRemote(const MomentRequest &r
     const auto taskStatus = client.waitForTaskCompletion(
             client.createMomentTask(datasetId, request.order, request.channelStart,
                                     request.channelEnd, request.maskEnabled,
-                                    request.thresholdValue),
+                                    request.thresholdValue, request.thresholdAuto),
             QStringLiteral("[moment][task]"));
     if (taskStatus.status == QStringLiteral("completed")) {
         response = BackendClient::parseMomentResultObject(taskStatus.resultObject);
@@ -59,7 +59,7 @@ MomentResult MomentProcessingService::computeMomentRemote(const MomentRequest &r
         }
         response = client.requestMoment(datasetId, request.order, request.channelStart,
                                         request.channelEnd, request.maskEnabled,
-                                        request.thresholdValue);
+                                        request.thresholdValue, request.thresholdAuto);
         if (!taskStatus.taskId.isEmpty()) {
             qDebug().noquote() << QStringLiteral("[moment][task] sync fallback completed valid=%1")
                                           .arg(response.valid ? QStringLiteral("true")

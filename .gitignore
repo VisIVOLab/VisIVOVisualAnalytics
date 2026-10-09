@@ -354,10 +354,23 @@ xcuserdata/
 .claude/
 /legacy
 /dist-dmg
+# Local distributable builds: a Release tree and the staged .app that becomes
+# the DMG. Both are ~1-2 GB and entirely reproducible from the sources.
+/build-release
+/dist-mac
 VisIVOVisualAnalytics.dmg
 /backend/app/routers/__pycache__
 /backend/app/routers/__pycache__
 /backend/app/routers/__pycache__
 /backend/app/routers/__pycache__
+/backend/app/compute/__pycache__
+/backend/app/render_session/__pycache__
 /docs/_build
 /docs/context-chat.md
+/.qt
+/backend/.venv
+/backend/scripts/__pycache__
+
+# Python bytecode — general patterns so stray __pycache__ never gets tracked again
+__pycache__/
+*.pyc

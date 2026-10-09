@@ -30,6 +30,8 @@ struct RecentDataset
 {
     // Unique key AND the path/URI needed to reopen the dataset.
     // For backend-opened files this is the backend-visible path string.
+    // For SKAVA-opened datasets this is ``skava:<obs_id>`` so two opens of
+    // the same file via different routes don't collide in the recents list.
     QString id;
 
     // Short human-readable name shown in the Recent Datasets panel.
@@ -38,8 +40,17 @@ struct RecentDataset
     // Dataset kind: "cube" | "image" | "catalogue" | "vbt" | "vbt-volume" | "hips"
     QString type;
 
-    // Origin: "remote" (all currently supported kinds use the backend)
+    // Origin tag, used by the DataHub UI for a visual badge and by
+    // ``MainWindow::reopenDataset`` to pick a re-routing path:
+    //   * "remote"  — opened via the local backend with an absolute path
+    //   * "skava"   — opened via the SKAVA discovery + visivo-backend routing.
+    //                 ``obsId`` carries the discovery identifier so we can
+    //                 re-query SKAVA on reopen rather than dead-linking
+    //                 against a stale local path.
     QString source;
+
+    // SKAVA obs_id (non-empty only when ``source == "skava"``).
+    QString obsId;
 
     QDateTime lastOpened;
 };
@@ -68,7 +79,8 @@ public:
     void record(const QString &id,
                 const QString &displayName,
                 const QString &type,
-                const QString &source = QStringLiteral("remote"));
+                const QString &source = QStringLiteral("remote"),
+                const QString &obsId = QString());
 
     // Removes the entry with the given id (no-op if not found).
     void remove(const QString &id);

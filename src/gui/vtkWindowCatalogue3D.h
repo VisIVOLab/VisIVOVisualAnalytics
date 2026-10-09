@@ -9,7 +9,10 @@
 #include <vtkSmartPointer.h>
 
 #include <QDockWidget>
+#include <QElapsedTimer>
 #include <QFutureWatcher>
+#include <QJsonObject>
+#include <QList>
 #include <QMainWindow>
 #include <QMap>
 #include <QPointer>
@@ -18,6 +21,8 @@
 
 #include <vector>
 
+class WorkspaceChrome;
+
 // VTK forward declarations
 class vtkActor;
 class vtkBillboardTextActor3D;
@@ -25,9 +30,10 @@ class vtkCubeAxesActor;
 class vtkCubeSource;
 class vtkGenericOpenGLRenderWindow;
 class vtkFloatArray;
-class vtkGlyph3D;
+class vtkGlyph3DMapper;
 class vtkIntArray;
 class vtkLookupTable;
+class vtkMaskPoints;
 class vtkOrientationMarkerWidget;
 class vtkPoints;
 class vtkPolyData;
@@ -35,17 +41,20 @@ class vtkPolyDataAlgorithm;
 class vtkPolyDataMapper;
 class vtkRenderer;
 class vtkSphereSource;
+class vtkArrowSource;
 class vtkAppendPolyData;
 class QAction;
 class QCheckBox;
 class QComboBox;
+class QDoubleSpinBox;
 class QListWidget;
 class QPushButton;
 class QLabel;
+class QToolButton;
 class QTextEdit;
 class QTableView;
-class SidebarPanel;
 class Catalogue3DTableModel;
+class AssistantPanel;
 QT_BEGIN_NAMESPACE
 namespace Ui {
 class vtkWindowCatalogue3D;
@@ -86,8 +95,13 @@ class vtkWindowCatalogue3D : public QMainWindow
     Q_OBJECT
 
 public:
+    // `paths` (optional) opens several catalogue files of the same format as ONE
+    // concatenated catalogue; `filepath` is the primary/label path. Empty or
+    // single-element `paths` behaves as a normal single-file open.
     explicit vtkWindowCatalogue3D(const QString &filepath, const QString &backendUrl,
-                                  const QString &backendToken, QWidget *parent = nullptr);
+                                  const QString &backendToken,
+                                  const QStringList &paths = QStringList(),
+                                  QWidget *parent = nullptr);
     ~vtkWindowCatalogue3D() override;
 
 private slots:
@@ -102,11 +116,24 @@ private slots:
     void toggleShells(bool checked);
     void syncTableSelection(int index);
 
+    /// Apply scientific-copilot visualisation directives to this catalogue view.
+    /// Only camera control (reset_camera) applies to a point cloud; other
+    /// directives (colormap/threshold/render mode — cube/image only) are ignored.
+    /// The camera is snapshotted first so undoCopilotActions() can restore it.
+    void applyCopilotActions(const QList<QJsonObject> &actions);
+    void undoCopilotActions();   ///< revert the last copilot camera change
+
 signals:
     void sourceSelectionChanged(int index);
     /// Emitted when a session-expiry error is detected and the user requests
     /// that the dataset be reopened.  Connect to MainWindow::doOpenCataloguePath.
-    void reopenRequested(const QString &filepath);
+    void reopenRequested(const QString &filepath, const QStringList &paths = QStringList());
+
+protected:
+    // Refuse to close (and self-delete via WA_DeleteOnClose) while a large scene
+    // build is pumping the event loop — that would delete the window under
+    // buildScene() and use-after-free its members.
+    void closeEvent(QCloseEvent *event) override;
 
 private:
     enum class GeometryMode
@@ -115,6 +142,7 @@ private:
         Sphere,
         Point,
         Cross,
+        Velocity,   // arrows oriented by vx/vy/vz, scaled by speed
     };
 
     enum class SizeMode
@@ -125,10 +153,61 @@ private:
         Flux,
     };
 
-    // ── Sidebar ───────────────────────────────────────────────────────────────
-    SidebarPanel *m_sidebar{ nullptr };
-    QPointer<QAction> actionShowControlsSidebar;
-    void setupSidebar();
+    // ── Control pages ─────────────────────────────────────────────────────────
+    // Built once, then mounted in the two docks the image and cube viewers use:
+    // the view controls in the LEFT column under Session Data (design #1d — the
+    // rendering controls live beside what is being rendered), the source info
+    // and the filters in the RIGHT Inspector. They used to live in a rail of
+    // their own that existed nowhere else in the application.
+    QPointer<QWidget> m_pageViz;
+    QPointer<QWidget> m_pageFilters;
+    QPointer<QAction> actionShowControlsSidebar;   ///< "Inspector Panel"
+    QPointer<QAction> m_actionSessionPanel;        ///< "Session Data Panel"
+    void buildControlPages();
+
+    // ── Shared viewer chrome ──────────────────────────────────────────────────
+    // The command bar (path · kind tag · ⌘K · backend chip) and the status rail
+    // the image and cube viewers have always had. This window is a viewer too.
+    WorkspaceChrome *m_workspaceChrome{ nullptr };
+    void setupViewerChrome();
+    /// Session Data on the left, Inspector on the right — the same two docks as
+    /// the image and cube viewers, with this window's pages mounted in them.
+    void setupWorkspaceDocks();
+    /// Re-word the command bar's kind tag and the cosmology status line from the
+    /// CURRENT state. Both were written once at startup, so a filter or another
+    /// page of sources left the bar claiming the number the window opened with.
+    void refreshViewerChrome();
+    QPointer<QToolButton> m_kindTag;
+    /// The two Inspector rows that do not stay put: the count changes with a
+    /// filter or another page of sources, and the session changes when an
+    /// expired one is recovered. Held as widgets because re-running
+    /// setProperties() would delete the Source Info section mounted under them.
+    QPointer<QLabel> m_propSources;
+    QPointer<QLabel> m_propSession;
+    /// What the kind tag opens: the catalogue's columns and which of them the
+    /// backend recognised as coordinates — this window's answer to the image
+    /// viewer's FITS header.
+    void showCatalogueFieldsDialog();
+    /// Under the cosmology controls: which model the positions on screen were
+    /// computed with, and how many sources it moved.
+    QPointer<QLabel> m_cosmologyStatus;
+
+    // ── Scientific copilot ────────────────────────────────────────────────────
+    AssistantPanel *m_copilot{ nullptr };
+    /// State captured before the copilot's last batch of changes, so Undo can
+    /// restore exactly that batch. Each ``*Captured`` flag guards its own field.
+    struct CopilotUndo
+    {
+        bool cameraCaptured{ false };
+        double position[3]{ 0, 0, 0 };
+        double focalPoint[3]{ 0, 0, 0 };
+        double viewUp[3]{ 0, 0, 1 };
+        double parallelScale{ 1.0 };
+        bool scaleCaptured{ false };
+        QString scaleText;
+        bool colorFieldCaptured{ false };
+        QString colorFieldText;
+    } m_copilotUndo;
 
     // ── Setup ──────────────────────────────────────────────────────────────
     void setupRenderer();
@@ -173,7 +252,7 @@ private:
                                double radiusFactor);
 
     // ── Coordinate frame ────────────────────────────────────────────────────
-    enum class CoordFrame { FK5_J2000, Galactic };
+    enum class CoordFrame { FK5_J2000, Galactic, Supergalactic };
     CoordFrame activeFrame{ CoordFrame::FK5_J2000 };
     // Recompute sceneX/Y/Z for all current entries using activeFrame.
     // FK5_J2000: no-op (parser already computes in this frame).
@@ -186,10 +265,15 @@ private:
     // the local computation), otherwise calls the backend batch endpoint.
     void triggerCosmologyUpdate();
     void onCosmologyFinished();
+    // Recompute every source's scene position from entryDistanceMpc() (which now
+    // honours schema.distanceMode) and rebuild the scene/labels. Does NOT touch the
+    // per-entry distanceMpc overrides — callers clear those first when they must.
+    void recomputeScenePositionsAndRebuild();
 
     // ── Data ────────────────────────────────────────────────────────────────
     Ui::vtkWindowCatalogue3D *ui;
     QString filepath;
+    QStringList m_cataloguePaths;   // multi-file open (>1 → concatenated); else empty/single
     QString backendUrl;
     QString backendToken;
     QString remoteDatasetId;
@@ -198,6 +282,12 @@ private:
     Catalogue3DSchema schema;
     QStringList rawHeaders;
     std::vector<int> numericRawFieldIndices;
+    // Column indices of vx/vy/vz when the catalogue carries velocity components
+    // (-1 if absent) → enables the "Speed |v|" colour mapping (peculiar-velocity
+    // magnitude), the cosmic-flow quantity. Recomputed from rawHeaders whenever
+    // the column set changes (BEFORE any buildScene/updateColorMapping).
+    int m_velocityColIdx[3]{ -1, -1, -1 };
+    void detectVelocityColumns();
     std::vector<std::array<double, 3>> mappedPositions;
     // Ordered list of unique morphology names (determines LUT index).
     QStringList morphologyNames;
@@ -215,16 +305,32 @@ private:
     vtkNew<vtkGenericOpenGLRenderWindow> renderWindow;
     vtkNew<vtkRenderer> renderer;
 
-    // Main source cloud (vtkGlyph3D batch)
+    // Main source cloud — GPU-instanced glyphs (vtkGlyph3DMapper) so large
+    // catalogues render fast without materialising per-point geometry on the CPU.
     vtkNew<vtkPoints> sourcePoints;
-    vtkNew<vtkIntArray> morphScalars; // one int per source → LUT index
+    // One scalar per source feeding the active colour LUT. Float (not int) so
+    // continuous colour modes (raw columns, "Speed |v|") aren't truncated;
+    // morphology stores integer class indices, which float holds exactly.
+    vtkNew<vtkFloatArray> morphScalars;
     vtkNew<vtkFloatArray> glyphScaleVectors;
+    vtkNew<vtkFloatArray> velocityVectors;   // vx/vy/vz per source (named "VelocityVector")
     vtkNew<vtkPolyData> sourcesPolyData;
     vtkNew<vtkSphereSource> sphereSource;
+    vtkNew<vtkArrowSource> arrowSource;       // glyph source for the Velocity mode
     vtkNew<vtkCubeSource> pointCubeSource;
     vtkNew<vtkAppendPolyData> crossSource;
-    vtkNew<vtkGlyph3D> glyphs;
-    vtkNew<vtkPolyDataMapper> glyphMapper;
+    // Render LOD: when the catalogue exceeds m_renderBudget points, the mappers
+    // are fed a deterministic stride subsample of about this many points (full
+    // data is kept for picking / stats / camera framing). 0 = unlimited.
+    vtkNew<vtkMaskPoints> renderDecimator;
+    int m_renderBudget{ 1000000 };
+    bool m_renderDecimated{ false };
+    void applyRenderBudget();
+    /// Status text when the GPU point budget is thinning the cloud (empty when
+    /// the full cloud is drawn). Reassures that picking/stats use every source.
+    QString renderBudgetStatusText() const;
+
+    vtkNew<vtkGlyph3DMapper> glyphMapper;
     vtkNew<vtkActor> glyphActor;
     vtkNew<vtkLookupTable> morphologyLut;
     vtkNew<vtkLookupTable> valueLut;
@@ -243,6 +349,12 @@ private:
 
     // Billboard text labels (world-space, camera-facing)
     std::vector<vtkSmartPointer<vtkBillboardTextActor3D>> labelActors;
+    bool m_labelsSkippedDueToScale{ false };  // per-point labels not built (too many sources)
+    bool m_sceneBuilding{ false };            // a large buildScene() is in progress
+    bool m_cosmologyFinishDeferred{ false };  // a cosmology result arrived mid-build → apply after
+    /// During a large buildScene(), pump the event loop + show progress every
+    /// few hundred-k points so the UI stays responsive (no OS "not responding").
+    void pumpSceneBuild(int processed);
 
     // Orientation axes corner widget
     vtkNew<vtkOrientationMarkerWidget> axesWidget;
@@ -257,10 +369,14 @@ private:
     QPointer<QComboBox> comboMapZ;
     QPointer<QComboBox> comboMapSize;
     QPointer<QComboBox> comboMapColor;
+    QPointer<QComboBox> comboColorScale;       // Linear / Log / Sqrt / Square / Power
+    QPointer<QDoubleSpinBox> spinColorGamma;   // exponent for the Power mode
     QPointer<QComboBox> comboGeometry;
+    QPointer<QComboBox> comboRenderBudget;     // GPU point budget (render LOD)
     QPointer<QComboBox> comboSizeMode;
     QPointer<QComboBox> comboFrame;
     QPointer<QComboBox> comboCosmology;
+    QPointer<QComboBox> comboDistanceMode;     // R-14: real-space vs redshift-space
     QPointer<QCheckBox> chkShowAxes;
     QPointer<QCheckBox> chkShowBoundingBox;
     QPointer<QCheckBox> chkShowShells;
@@ -280,8 +396,10 @@ private:
     int m_totalCount{ -1 };
     bool m_loadingMore{ false };
     QPointer<QPushButton> btnLoadMore;
+    QPointer<QPushButton> btnLoadAll;
     QFutureWatcher<Catalogue3DFilterTaskResult> m_loadMoreWatcher;
     void loadMoreEntries();
+    void loadAllEntries();   // load every remaining row in one query (no paging)
     // ── Session-expiry auto-recovery ──────────────────────────────────────────
     QFutureWatcher<BackendCatalogueInfo> m_reopenWatcher;
     void autoReopenThenLoadMore();
@@ -299,6 +417,7 @@ private:
     // Interaction state
     int hoveredIndex{ -1 };
     int selectedIndex{ -1 };
+    QElapsedTimer m_hoverThrottle;   // rate-limits hover picking during motion
     // Left-button drag tracking (to distinguish click from camera rotate)
     bool leftButtonDown{ false };
     bool leftClickCandidate{ false };

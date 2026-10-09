@@ -1,4 +1,10 @@
 #include "BackendClient.h"
+
+#include <optional>
+
+#include <QDateTime>
+#include <QThread>
+#include "BackendHeaders.h"
 #include "DiagnosticsManager.h"
 
 #include <QByteArray>
@@ -15,11 +21,16 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcessEnvironment>
+#include <QSet>
 #include <QThreadStorage>
 #include <QDebug>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QtConcurrent/QtConcurrent>
+#include <QFuture>
+#include <QFutureSynchronizer>
 #include <QUrl>
+#include <QRegularExpression>
 #include <QUrlQuery>
 
 #include <limits>
@@ -27,6 +38,37 @@
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 namespace {
+
+// Names whose absence in a binary-endpoint response means the client/server
+// contract has drifted (not merely an optional field): the geometry that sizes
+// the receive buffers, and the scientific units the client displays. When one
+// of these is entirely absent the client used to read it back as 0/"" silently;
+// visivoHeader() now logs it so the drift is visible (see E-02 / test_contract).
+bool isRequiredVisivoHeader(const char *name)
+{
+    static const QSet<QByteArray> kRequired = {
+        QByteArray(VisivoHeaders::WIDTH),
+        QByteArray(VisivoHeaders::HEIGHT),
+        QByteArray(VisivoHeaders::DEPTH),
+        QByteArray(VisivoHeaders::BUNIT),
+        QByteArray(VisivoHeaders::SPECTRAL_AXIS_UNIT),
+    };
+    return kRequired.contains(QByteArray(name));
+}
+
+// Read a response header by its canonical name (use the VisivoHeaders::*
+// constants so a backend rename tracked by the contract snapshot propagates
+// here automatically). Warns when a *required* header is missing.
+QByteArray visivoHeader(const QMap<QByteArray, QByteArray> &headers, const char *name)
+{
+    const QByteArray value = headers.value(QByteArray(name).toLower());
+    if (value.isNull() && isRequiredVisivoHeader(name)) {
+        qWarning().noquote()
+                << "[BackendClient] backend response missing required header" << name
+                << "- client/server contract drift? Regenerate contract snapshots.";
+    }
+    return value;
+}
 
 QByteArray decodeCompressedPayload(const QByteArray &encoded, const QString &compression,
                                    QString &error)
@@ -128,10 +170,17 @@ void BackendClient::setSessionId(const QString &sessionId)
 QString BackendClient::readTokenFile()
 {
     // Priority 1: environment variable (set by launch script or user shell).
+    //
+    // Trimmed BEFORE the emptiness test, not after. A VISIVO_TOKEN of " " used
+    // to be accepted here and returned as an empty token, so the file was never
+    // consulted — while BackendLauncher, which trims first, treated the same
+    // value as absent and pinned a real token in the child. The two disagreed
+    // and every request came back 401.
     const QString envToken =
-            QProcessEnvironment::systemEnvironment().value(QStringLiteral("VISIVO_TOKEN"));
+            QProcessEnvironment::systemEnvironment()
+                    .value(QStringLiteral("VISIVO_TOKEN")).trimmed();
     if (!envToken.isEmpty()) {
-        return envToken.trimmed();
+        return envToken;
     }
 
     // Priority 2: ~/.visivo_token written by the Python backend at startup.
@@ -150,8 +199,29 @@ QString BackendClient::readTokenFile()
 
 // ── Request builder ───────────────────────────────────────────────────────────
 
+/// Paths that may go out before this client has a backend session: the mint
+/// route itself, and readiness polling (both stateless). Everything else is
+/// held back while the session is unresolved — see the guard in perform*().
+static bool _isSessionExemptPath(const QString &path)
+{
+    return path.endsWith(QStringLiteral("/v1/sessions/new"))
+            || path.endsWith(QStringLiteral("/v1/health"))
+            || path.endsWith(QStringLiteral("/v1/version"));
+}
+
+/// Mint outcome of the request buildRequest() built most recently on THIS
+/// thread. The hand-rolled binary paths build and send on the same thread, so
+/// this lets performBinaryPost() refuse to put state under an unresolved
+/// session without each of its eight callers repeating the check.
+static thread_local BackendClient::SessionMint t_lastMint = BackendClient::SessionMint::Ready;
+
+
 QNetworkRequest BackendClient::buildRequest(const QUrl &url) const
 {
+    // Mint before any header is set: the mint may refresh m_token, and the auth
+    // header and the session id must come from the SAME identity.
+    t_lastMint = this->ensureSessionMinted();
+
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 
@@ -160,12 +230,205 @@ QNetworkRequest BackendClient::buildRequest(const QUrl &url) const
         request.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), m_token.toUtf8());
     }
 
-    // R3: Session isolation header.
-    if (!m_sessionId.isEmpty()) {
-        request.setRawHeader(QByteArrayLiteral("X-Visivo-Session"), m_sessionId.toUtf8());
+    // R3: Session isolation header. Prefer this client's own session id; fall back
+    // to the process-wide default so every request from this desktop lands in the
+    // same private session (multi-desktop isolation).
+    QString session = m_sessionId;
+    if (session.isEmpty()) {
+        QMutexLocker lock(&s_sessionMutex);
+        session = s_minted.value(mintKey(m_baseUrl, resolvedToken(m_baseUrl, m_token)),
+                                 s_defaultSessionId);
+    }
+    if (!session.isEmpty()) {
+        request.setRawHeader(QByteArrayLiteral("X-Visivo-Session"), session.toUtf8());
     }
 
     return request;
+}
+
+QString BackendClient::s_defaultSessionId;
+QHash<QString, QString> BackendClient::s_minted;
+QSet<QString> BackendClient::s_mintPinnedToDefault;
+QSet<QString> BackendClient::s_mintUnsupportedBase;
+QHash<QString, QString> BackendClient::s_tokenAlias;
+QMutex BackendClient::s_sessionMutex;
+QMutex BackendClient::s_mintMutex;
+
+/// Set while THIS thread is performing the mint request itself, so the request
+/// re-entering buildRequest() does not try to mint again (and cannot deadlock on
+/// s_mintMutex). Thread-local because the mint runs on whichever thread asked.
+static thread_local bool t_mintInFlight = false;
+
+/// Minted sessions are per (backend, token) — see the header.
+QString BackendClient::mintKey(const QString &baseUrl, const QString &token)
+{
+    return baseUrl + QLatin1Char('\n') + token;
+}
+
+QString BackendClient::resolvedToken(const QString &baseUrl, const QString &token)
+{
+    // Alias chains are one hop in practice (old token → refreshed token); the
+    // bound just keeps a pathological rotation loop from spinning here.
+    QString t = token;
+    for (int hops = 0; hops < 4; ++hops) {
+        const auto it = s_tokenAlias.constFind(mintKey(baseUrl, t));
+        if (it == s_tokenAlias.constEnd() || *it == t)
+            break;
+        t = *it;
+    }
+    return t;
+}
+
+QString BackendClient::sessionIdForUrl(const QString &baseUrl, const QString &token)
+{
+    QMutexLocker lock(&s_sessionMutex);
+    return s_minted.value(mintKey(baseUrl, resolvedToken(baseUrl, token)), s_defaultSessionId);
+}
+
+bool BackendClient::sessionResolvedForUrl(const QString &baseUrl, const QString &token)
+{
+    QMutexLocker lock(&s_sessionMutex);
+    const QString key = mintKey(baseUrl, resolvedToken(baseUrl, token));
+    return s_minted.contains(key) || s_mintPinnedToDefault.contains(key)
+            || s_mintUnsupportedBase.contains(baseUrl);
+}
+
+BackendClient::SessionMint BackendClient::ensureSessionFor(const QString &baseUrl,
+                                                           const QString &token,
+                                                           QString *effectiveToken,
+                                                           QString *sessionId)
+{
+    BackendClient client(baseUrl, token);
+    const SessionMint outcome = client.ensureSessionMinted();
+    // The mint may have adopted a refreshed token; hand both back so a caller
+    // building its own request puts the matching pair on the wire.
+    // performPost() reassigns m_token when it had to fall back to a refreshed
+    // one, so token() is now the identity that actually authenticated.
+    if (effectiveToken)
+        *effectiveToken = client.token();
+    if (sessionId)
+        *sessionId = sessionIdForUrl(baseUrl, client.token());
+    return outcome;
+}
+
+BackendClient::SessionMint BackendClient::ensureSessionMinted() const
+{
+    if (m_baseUrl.isEmpty())
+        return SessionMint::Deferred;
+    if (t_mintInFlight)
+        return SessionMint::Deferred;   // our own mint request needs no session
+
+    auto cached = [this]() -> std::optional<SessionMint> {
+        QMutexLocker lock(&s_sessionMutex);
+        const QString eff = resolvedToken(m_baseUrl, m_token);
+        if (eff != m_token) {
+            // A previous mint learned our token had been rotated. Adopt the
+            // effective one HERE, before any header is built, so the auth token
+            // and the session id on the wire are the same identity — and so the
+            // token-candidate list in perform*() starts from the live token
+            // instead of burning an attempt on a 401.
+            const_cast<BackendClient *>(this)->m_token = eff;
+        }
+        const QString key = mintKey(m_baseUrl, eff);
+        if (s_minted.contains(key))
+            return SessionMint::Ready;
+        if (s_mintPinnedToDefault.contains(key) || s_mintUnsupportedBase.contains(m_baseUrl))
+            return SessionMint::Unsupported;
+        return std::nullopt;
+    };
+    if (const auto hit = cached())
+        return *hit;
+
+    // One mint at a time: a concurrent caller blocks here and then finds the
+    // cached id below. The wait is bounded by the client's request timeout.
+    QMutexLocker mintLock(&s_mintMutex);
+    if (const auto hit = cached())
+        return *hit;
+
+    QString error;
+    int status = 0;
+    const QString startToken = m_token;   // performPost() may adopt a refreshed one
+    t_mintInFlight = true;
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/sessions/new")), QJsonDocument(QJsonObject{}),
+            error, nullptr, &status);
+    t_mintInFlight = false;
+
+    const QString minted = error.isEmpty()
+            ? QJsonDocument::fromJson(payload).object()
+                      .value(QStringLiteral("session_id")).toString()
+            : QString();
+
+    QMutexLocker lock(&s_sessionMutex);
+    // Record the rotation so callers still holding the old token hit the cache
+    // instead of minting a spare session on every request.
+    if (m_token != startToken)
+        s_tokenAlias.insert(mintKey(m_baseUrl, startToken), m_token);
+    if (!minted.isEmpty()) {
+        // performPost() adopts a refreshed token when the first is rejected, so
+        // m_token is now the identity that actually authenticated — file the
+        // session under THAT key. Never REPLACE an id already in use for that
+        // identity: another caller may already be storing datasets under it.
+        const QString effKey = mintKey(m_baseUrl, m_token);
+        if (!s_minted.contains(effKey))
+            s_minted.insert(effKey, minted);
+        return SessionMint::Ready;
+    }
+    if (status == 0) {
+        // The backend never answered (still starting, network down). Nothing was
+        // stored anywhere, so a later retry is safe — do NOT pin.
+        return SessionMint::Deferred;
+    }
+    // It answered but gave us no session. Either way we pin to the locally
+    // generated default id for the rest of the run: retrying could hand us a
+    // session id later and split the datasets between the two. A strict backend
+    // rejects the default with a clear "Session not found" rather than failing
+    // silently. Scope matters, though:
+    if (status == 404 || status == 405) {
+        // The route does not exist — a property of the SERVER, so base-wide.
+        s_mintUnsupportedBase.insert(m_baseUrl);
+    } else {
+        // 401 / 429 / 5xx are about this caller or this moment; pinning them
+        // base-wide would disable minting for every other token on the backend.
+        s_mintPinnedToDefault.insert(mintKey(m_baseUrl, m_token));
+    }
+    return SessionMint::Unsupported;
+}
+
+QString BackendClient::effectiveToken(const QString &baseUrl, const QString &token)
+{
+    QMutexLocker lock(&s_sessionMutex);
+    return resolvedToken(baseUrl, token);
+}
+
+void BackendClient::applySessionHeaders(QNetworkRequest &request, const QString &baseUrl,
+                                        const QString &token, const QString &sessionOverride)
+{
+    QString identity = token;
+    {
+        QMutexLocker lock(&s_sessionMutex);
+        identity = resolvedToken(baseUrl, token);
+    }
+    if (!identity.isEmpty())
+        request.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), identity.toUtf8());
+    // Non-blocking on purpose: these callers run on the GUI thread. By the time a
+    // viewer opens, the dataset load has already minted the session; if it has
+    // not, we send the process-wide default exactly as buildRequest() would.
+    const QString session = !sessionOverride.isEmpty()
+            ? sessionOverride
+            : sessionIdForUrl(baseUrl, identity);
+    if (!session.isEmpty())
+        request.setRawHeader(QByteArrayLiteral("X-Visivo-Session"), session.toUtf8());
+}
+
+void BackendClient::setDefaultSessionId(const QString &sessionId)
+{
+    s_defaultSessionId = sessionId;
+}
+
+QString BackendClient::defaultSessionId()
+{
+    return s_defaultSessionId;
 }
 
 // ── API calls ─────────────────────────────────────────────────────────────────
@@ -240,6 +503,30 @@ BackendListFilesResult BackendClient::listFiles(const QString &path) const
                                    e.value(QStringLiteral("modified_time")).toString(),
                                    e.value(QStringLiteral("is_fits")).toBool(false) });
     }
+    return result;
+}
+
+BackendClassifyResult BackendClient::classifyFile(const QString &path) const
+{
+    BackendClassifyResult result;
+    QString error;
+    QJsonObject body;
+    body.insert(QStringLiteral("path"), path);
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/files/classify")), QJsonDocument(body), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.path = object.value(QStringLiteral("path")).toString();
+    result.openPath = object.value(QStringLiteral("open_path")).toString();
+    result.kind = object.value(QStringLiteral("kind")).toString();
+    result.opener = object.value(QStringLiteral("opener")).toString();
+    result.confident = object.value(QStringLiteral("confident")).toBool(false);
+    result.detail = object.value(QStringLiteral("detail")).toString();
     return result;
 }
 
@@ -332,6 +619,85 @@ BackendDiagnosticsEventsResult BackendClient::pollBackendDiagnostics(qint64 sinc
     return result;
 }
 
+BackendAssistantResult BackendClient::assistantQuery(const QString &question,
+                                                     const QString &datasetId,
+                                                     const QJsonArray &history)
+{
+    BackendAssistantResult result;
+    QString error;
+    QJsonObject bodyObj{ { QStringLiteral("question"), question } };
+    if (!datasetId.isEmpty())
+        bodyObj.insert(QStringLiteral("dataset_id"), datasetId);
+    if (!history.isEmpty())
+        bodyObj.insert(QStringLiteral("history"), history);
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/assistant/query")), QJsonDocument(bodyObj), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    return parseAssistantResult(QJsonDocument::fromJson(payload).object());
+}
+
+BackendAssistantResult BackendClient::parseAssistantResult(const QJsonObject &o)
+{
+    BackendAssistantResult result;
+    result.answer = o.value(QStringLiteral("answer")).toString();
+    result.provider = o.value(QStringLiteral("provider")).toString();
+    result.configured = o.value(QStringLiteral("configured")).toBool(false);
+    result.toolCallsRecorded = o.value(QStringLiteral("tool_calls_recorded")).toBool(false);
+    result.reproducibilityScript = o.value(QStringLiteral("reproducibility_script")).toString();
+    for (const QJsonValue &v : o.value(QStringLiteral("tool_calls")).toArray()) {
+        const QJsonObject c = v.toObject();
+        BackendAssistantToolCall call;
+        call.name = c.value(QStringLiteral("name")).toString();
+        call.argumentsJson = QString::fromUtf8(
+                QJsonDocument(c.value(QStringLiteral("arguments")).toObject()).toJson(QJsonDocument::Compact));
+        if (c.value(QStringLiteral("result")).isObject())
+            call.resultJson = QString::fromUtf8(
+                    QJsonDocument(c.value(QStringLiteral("result")).toObject()).toJson(QJsonDocument::Compact));
+        call.error = c.value(QStringLiteral("error")).toString();
+        result.toolCalls.push_back(call);
+    }
+    for (const QJsonValue &v : o.value(QStringLiteral("actions")).toArray()) {
+        const QJsonObject a = v.toObject();
+        if (!a.value(QStringLiteral("type")).toString().isEmpty())
+            result.actions.push_back(a);
+    }
+    result.valid = !result.answer.isEmpty();
+    return result;
+}
+
+BackendAssistantConfigResult BackendClient::setAssistantConfig(
+        const QString &provider, const QString &anthropicKey, const QString &openaiKey,
+        const QString &baseUrl, const QString &baseUrlKey, const QString &model)
+{
+    BackendAssistantConfigResult result;
+    QString error;
+    QJsonObject body;
+    // Every field is sent (empty string == "clear" server-side) so switching
+    // provider fully resets stale state, including the model. The caller
+    // (AssistantPanel) sets exactly the fields relevant to the chosen provider.
+    if (!provider.isEmpty())
+        body.insert(QStringLiteral("provider"), provider);
+    body.insert(QStringLiteral("anthropic_key"), anthropicKey);
+    body.insert(QStringLiteral("openai_key"), openaiKey);
+    body.insert(QStringLiteral("base_url"), baseUrl);
+    body.insert(QStringLiteral("base_url_key"), baseUrlKey);
+    body.insert(QStringLiteral("model"), model);
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/assistant/config")), QJsonDocument(body), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject o = QJsonDocument::fromJson(payload).object();
+    result.valid = o.value(QStringLiteral("valid")).toBool(false);
+    result.configured = o.value(QStringLiteral("configured")).toBool(false);
+    result.provider = o.value(QStringLiteral("provider")).toString();
+    return result;
+}
+
 BackendFileHeaderResult BackendClient::fileHeader(const QString &path) const
 {
     BackendFileHeaderResult result;
@@ -354,6 +720,125 @@ BackendFileHeaderResult BackendClient::fileHeader(const QString &path) const
     return result;
 }
 
+namespace {
+
+/// Shared parser for the OpenDatasetResponse JSON shape produced by both
+/// /v1/datasets/open and /v1/datasets/open_url. Factored out so the two
+/// endpoints don't drift apart.
+static BackendOpenDatasetResult parseOpenDatasetObject(const QJsonObject &object,
+                                                        QString &outSessionId)
+{
+    BackendOpenDatasetResult result;
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.datasetId = object.value(QStringLiteral("dataset_id")).toString();
+    result.sessionId = object.value(QStringLiteral("session_id")).toString();
+    outSessionId = result.sessionId;
+    result.kind = object.value(QStringLiteral("kind")).toString();
+    result.activeAxes = object.value(QStringLiteral("active_axes")).toInt();
+    result.width = object.value(QStringLiteral("width")).toInt();
+    result.height = object.value(QStringLiteral("height")).toInt();
+    result.depth = object.value(QStringLiteral("depth")).toInt();
+    result.degenerateAxesSummary =
+            object.value(QStringLiteral("degenerate_axes_summary")).toString();
+    result.wcsStatus = object.value(QStringLiteral("wcs_status")).toString(QStringLiteral("ok"));
+    result.wcsWarningMessage = object.value(QStringLiteral("wcs_warning_message")).toString();
+    const QJsonArray wcsSanitizedAxes = object.value(QStringLiteral("wcs_sanitized_axes")).toArray();
+    result.wcsSanitizedAxes.clear();
+    result.wcsSanitizedAxes.reserve(wcsSanitizedAxes.size());
+    for (const QJsonValue &value : wcsSanitizedAxes) {
+        result.wcsSanitizedAxes.push_back(value.toInt());
+    }
+    result.spectralAxisType = object.value(QStringLiteral("spectral_axis_type")).toString();
+    result.spectralAxisUnit = object.value(QStringLiteral("spectral_axis_unit")).toString();
+    // null (absent header card) → 0.0, which every consumer reads as "unknown".
+    result.restFreqHz = object.value(QStringLiteral("rest_freq_hz")).toDouble(0.0);
+    // ABSENT means "a backend older than this field", and that one may well be
+    // able to render: default to capable so it keeps the option. Present-and-
+    // false is an explicit no.
+    {
+        const QJsonValue ssr = object.value(QStringLiteral("server_side_rendering_available"));
+        result.serverSideRenderingAvailable =
+                (ssr.isUndefined() || ssr.isNull()) ? true : ssr.toBool(false);
+    }
+    result.bunit = object.value(QStringLiteral("bunit")).toString();
+
+    const QJsonArray spacing = object.value(QStringLiteral("spacing")).toArray();
+    const QJsonArray origin = object.value(QStringLiteral("origin")).toArray();
+    const QJsonArray ctype = object.value(QStringLiteral("ctype")).toArray();
+    const QJsonArray cunit = object.value(QStringLiteral("cunit")).toArray();
+    const QJsonArray crval = object.value(QStringLiteral("crval")).toArray();
+    const QJsonArray crpix = object.value(QStringLiteral("crpix")).toArray();
+    const QJsonArray cdelt = object.value(QStringLiteral("cdelt")).toArray();
+    for (int i = 0; i < 3; ++i) {
+        if (i < spacing.size())
+            result.spacing[static_cast<std::size_t>(i)] = spacing.at(i).toDouble(1.0);
+        if (i < origin.size())
+            result.origin[static_cast<std::size_t>(i)] = origin.at(i).toDouble(0.0);
+        if (i < ctype.size())
+            result.ctype[static_cast<std::size_t>(i)] = ctype.at(i).toString();
+        if (i < cunit.size())
+            result.cunit[static_cast<std::size_t>(i)] = cunit.at(i).toString();
+        if (i < crval.size())
+            result.crval[static_cast<std::size_t>(i)] = crval.at(i).toDouble(0.0);
+        if (i < crpix.size())
+            result.crpix[static_cast<std::size_t>(i)] = crpix.at(i).toDouble(1.0);
+        if (i < cdelt.size())
+            result.cdelt[static_cast<std::size_t>(i)] = cdelt.at(i).toDouble(1.0);
+    }
+    result.pixelScaleArcsec =
+            object.value(QStringLiteral("pixel_scale_arcsec")).toDouble(0.0);
+    const QJsonValue effCdelt = object.value(QStringLiteral("effective_cdelt"));
+    if (effCdelt.isArray()) {
+        const QJsonArray ea = effCdelt.toArray();
+        if (ea.size() >= 2) {
+            result.effectiveCdelt[0] = ea.at(0).toDouble(1.0);
+            result.effectiveCdelt[1] = ea.at(1).toDouble(1.0);
+            result.effectiveCdelt[2] = ea.size() >= 3 ? ea.at(2).toDouble(1.0) : 1.0;
+            result.effectiveCdeltValid = true;
+        }
+    }
+    const QJsonValue ref00 = object.value(QStringLiteral("wcs_ref_sky_00"));
+    if (ref00.isArray() && ref00.toArray().size() >= 2) {
+        result.wcsRefSky00[0] = ref00.toArray().at(0).toDouble();
+        result.wcsRefSky00[1] = ref00.toArray().at(1).toDouble();
+        result.wcsRefSkyValid = true;
+    }
+    const QJsonValue ref0100 = object.value(QStringLiteral("wcs_ref_sky_0100"));
+    if (ref0100.isArray() && ref0100.toArray().size() >= 2) {
+        result.wcsRefSky0100[0] = ref0100.toArray().at(0).toDouble();
+        result.wcsRefSky0100[1] = ref0100.toArray().at(1).toDouble();
+    }
+    const QJsonValue bmaj = object.value(QStringLiteral("beam_major"));
+    const QJsonValue bmin = object.value(QStringLiteral("beam_minor"));
+    const QJsonValue bpa  = object.value(QStringLiteral("beam_pa"));
+    if (!bmaj.isNull()) result.beamMajorDeg = bmaj.toDouble();
+    if (!bmin.isNull()) result.beamMinorDeg = bmin.toDouble();
+    if (!bpa.isNull())  result.beamPaDeg    = bpa.toDouble();
+
+    // Size-aware loading policy (Pattern B). Defaults preserve legacy
+    // auto-full behaviour for backends that don't return these fields.
+    const QJsonValue fileSize = object.value(QStringLiteral("file_size_bytes"));
+    if (!fileSize.isUndefined() && !fileSize.isNull()) {
+        result.fileSizeBytes = static_cast<qint64>(fileSize.toDouble(0.0));
+    }
+    const QJsonValue thresh = object.value(QStringLiteral("full_res_threshold_bytes"));
+    if (!thresh.isUndefined() && !thresh.isNull()) {
+        result.fullResThresholdBytes =
+                static_cast<qint64>(thresh.toDouble(double(qint64(4) << 30)));
+    }
+    const QJsonValue mode = object.value(QStringLiteral("recommended_load_mode"));
+    if (mode.isString()) {
+        const QString s = mode.toString();
+        if (s == QLatin1String("preview_only") || s == QLatin1String("auto_full")) {
+            result.recommendedLoadMode = s;
+        }
+    }
+    return result;
+}
+
+} // namespace
+
 BackendOpenDatasetResult BackendClient::openDataset(const QString &path)
 {
     BackendOpenDatasetResult result;
@@ -366,6 +851,70 @@ BackendOpenDatasetResult BackendClient::openDataset(const QString &path)
         return result;
     }
     const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    QString sessionId;
+    result = parseOpenDatasetObject(object, sessionId);
+
+    // R3: Persist the session_id so subsequent requests use the same session.
+    if (result.valid && !sessionId.isEmpty()) {
+        m_sessionId = sessionId;
+    }
+    return result;
+}
+
+BackendOpenDatasetResult BackendClient::openDatasetFromUrl(
+        const QString &url,
+        const QString &obsId,
+        const QString &remoteBearerToken)
+{
+    BackendOpenDatasetResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("url"), url },
+            { QStringLiteral("obs_id"), obsId },
+            { QStringLiteral("bearer_token"), remoteBearerToken } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/datasets/open_url")),
+                        body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    QString sessionId;
+    result = parseOpenDatasetObject(object, sessionId);
+    if (result.valid && !sessionId.isEmpty()) {
+        m_sessionId = sessionId;
+    }
+    return result;
+}
+
+BackendOpenDatasetResult BackendClient::openSkavaDataset(const QString &obsId,
+                                                            const QString &accessUrl)
+{
+    BackendOpenDatasetResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("obs_id"), obsId },
+            { QStringLiteral("access_url"), accessUrl } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/datasets/open_skava")),
+                        body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    QString sessionId;
+    result = parseOpenDatasetObject(object, sessionId);
+    if (result.valid && !sessionId.isEmpty()) {
+        m_sessionId = sessionId;
+    }
+    return result;
+}
+
+#if 0  // ── legacy inline parsing replaced by parseOpenDatasetObject ─────────
+{
+    BackendOpenDatasetResult result;
     result.valid = object.value(QStringLiteral("valid")).toBool(false);
     result.error = object.value(QStringLiteral("error")).toString();
     result.datasetId = object.value(QStringLiteral("dataset_id")).toString();
@@ -393,6 +942,17 @@ BackendOpenDatasetResult BackendClient::openDataset(const QString &path)
     }
     result.spectralAxisType = object.value(QStringLiteral("spectral_axis_type")).toString();
     result.spectralAxisUnit = object.value(QStringLiteral("spectral_axis_unit")).toString();
+    // null (absent header card) → 0.0, which every consumer reads as "unknown".
+    result.restFreqHz = object.value(QStringLiteral("rest_freq_hz")).toDouble(0.0);
+    // ABSENT means "a backend older than this field", and that one may well be
+    // able to render: default to capable so it keeps the option. Present-and-
+    // false is an explicit no.
+    {
+        const QJsonValue ssr = object.value(QStringLiteral("server_side_rendering_available"));
+        result.serverSideRenderingAvailable =
+                (ssr.isUndefined() || ssr.isNull()) ? true : ssr.toBool(false);
+    }
+    result.bunit = object.value(QStringLiteral("bunit")).toString();
 
     const QJsonArray spacing = object.value(QStringLiteral("spacing")).toArray();
     const QJsonArray origin = object.value(QStringLiteral("origin")).toArray();
@@ -456,15 +1016,44 @@ BackendOpenDatasetResult BackendClient::openDataset(const QString &path)
     if (!bmaj.isNull()) result.beamMajorDeg = bmaj.toDouble();
     if (!bmin.isNull()) result.beamMinorDeg = bmin.toDouble();
     if (!bpa.isNull())  result.beamPaDeg    = bpa.toDouble();
+
+    // Size-aware loading policy (Pattern B). Defaults preserve legacy
+    // auto-full behaviour for backends that don't return these fields.
+    const QJsonValue fileSize = object.value(QStringLiteral("file_size_bytes"));
+    if (!fileSize.isUndefined() && !fileSize.isNull()) {
+        result.fileSizeBytes = static_cast<qint64>(fileSize.toDouble(0.0));
+    }
+    const QJsonValue thresh = object.value(QStringLiteral("full_res_threshold_bytes"));
+    if (!thresh.isUndefined() && !thresh.isNull()) {
+        result.fullResThresholdBytes =
+                static_cast<qint64>(thresh.toDouble(double(qint64(4) << 30)));
+    }
+    const QJsonValue mode = object.value(QStringLiteral("recommended_load_mode"));
+    if (mode.isString()) {
+        const QString s = mode.toString();
+        if (s == QLatin1String("preview_only") || s == QLatin1String("auto_full")) {
+            result.recommendedLoadMode = s;
+        }
+    }
     return result;
 }
+#endif  // ── end legacy inline parsing block ─────────────────────────────
 
 BackendCatalogueInfo BackendClient::openCatalogue(const QString &path, const QString &format)
 {
+    return openCatalogue(QStringList{ path }, format);
+}
+
+BackendCatalogueInfo BackendClient::openCatalogue(const QStringList &paths, const QString &format)
+{
     BackendCatalogueInfo result;
     QString error;
-    const QJsonDocument body(QJsonObject{ { QStringLiteral("path"), path },
-                                          { QStringLiteral("format"), format } });
+    QJsonArray pathsArr;
+    for (const QString &p : paths)
+        pathsArr.append(p);
+    const QJsonDocument body(QJsonObject{ { QStringLiteral("path"), paths.value(0) },
+                                          { QStringLiteral("format"), format },
+                                          { QStringLiteral("paths"), pathsArr } });
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/catalogue/open")), body, error);
     if (!error.isEmpty()) {
@@ -483,6 +1072,10 @@ BackendCatalogueInfo BackendClient::openCatalogue(const QString &path, const QSt
     const QJsonObject coord = object.value(QStringLiteral("coordinate_fields")).toObject();
     result.raField = coord.value(QStringLiteral("ra")).toString();
     result.decField = coord.value(QStringLiteral("dec")).toString();
+    result.xField = coord.value(QStringLiteral("x")).toString();
+    result.yField = coord.value(QStringLiteral("y")).toString();
+    result.zField = coord.value(QStringLiteral("z")).toString();
+    result.coordSystem = coord.value(QStringLiteral("system")).toString(QStringLiteral("sky"));
     const QJsonArray fields = object.value(QStringLiteral("fields")).toArray();
     result.fields.reserve(fields.size());
     for (const QJsonValue &fieldValue : fields) {
@@ -663,12 +1256,74 @@ BackendCubeSliceResult BackendClient::requestSlice(const QString &datasetId, con
     return result;
 }
 
+// Synchronous POST that captures status code + response headers + raw body.
+// Mirrors performPost's token retry but exposes more of the reply because
+// the binary subvolume endpoint puts metadata in X-Visivo-* response
+// headers instead of a JSON envelope.
+// Returns the body; ``statusOut`` is the HTTP status code (0 on transport
+// error), ``headersOut`` is a snapshot of the response headers (lowercased
+// names → raw values), ``error`` is set on transport/timeout failures.
+/// POST a binary body and return the raw reply. Refuses to send when the
+/// session is still unresolved because the backend never answered — putting
+/// state under the fallback id would let a later successful mint split this
+/// client's datasets across two sessions (see performPost()).
+static QByteArray performBinaryPost(QNetworkAccessManager *nam,
+                                    const QNetworkRequest &reqTemplate,
+                                    const QByteArray &bodyBytes,
+                                    int timeoutMs,
+                                    int &statusOut,
+                                    QMap<QByteArray, QByteArray> &headersOut,
+                                    QString &error)
+{
+    statusOut = 0;
+    headersOut.clear();
+    if (t_lastMint == BackendClient::SessionMint::Deferred
+        && !_isSessionExemptPath(reqTemplate.url().path())) {
+        error = QStringLiteral("Backend session not established yet: %1 is unreachable.")
+                        .arg(reqTemplate.url().host());
+        return {};
+    }
+    QNetworkRequest request = reqTemplate;
+    // Default to JSON, but preserve a content type the caller already set (e.g.
+    // application/octet-stream for a raw binary body like the mask-apply payload).
+    if (!request.hasRawHeader("Content-Type"))
+        request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    QEventLoop loop;
+    QNetworkReply *reply = nam->post(request, bodyBytes);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    QTimer timeoutTimer;
+    timeoutTimer.setSingleShot(true);
+    bool timedOut = false;
+    QObject::connect(&timeoutTimer, &QTimer::timeout, &loop, [&]() {
+        timedOut = true;
+        reply->abort();
+        loop.quit();
+    });
+    timeoutTimer.start(timeoutMs);
+    loop.exec();
+    timeoutTimer.stop();
+
+    const QByteArray body = reply->readAll();
+    statusOut = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    for (const auto &header : reply->rawHeaderPairs()) {
+        headersOut.insert(header.first.toLower(), header.second);
+    }
+    if (timedOut) {
+        error = QStringLiteral("Backend binary request timed out after %1 ms").arg(timeoutMs);
+    } else if (reply->error() != QNetworkReply::NoError && statusOut < 400) {
+        error = reply->errorString();
+    }
+    reply->deleteLater();
+    return body;
+}
+
+
 BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datasetId, int x0,
                                                            int x1, int y0, int y1, int z0,
                                                            int z1) const
 {
     BackendCubeSubvolumeResult result;
-    QString error;
     const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
                                           { QStringLiteral("x0"), x0 },
                                           { QStringLiteral("x1"), x1 },
@@ -676,6 +1331,237 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
                                           { QStringLiteral("y1"), y1 },
                                           { QStringLiteral("z0"), z0 },
                                           { QStringLiteral("z1"), z1 } });
+    const QByteArray bodyBytes = body.toJson(QJsonDocument::Compact);
+
+    // ── 1) Binary endpoint with parallel Z-slab fetches ────────────────
+    // /v1/cube/subvolume_bin returns raw little-endian float32 with
+    // metadata in X-Visivo-* headers. To saturate the SSH tunnel we
+    // split the Z range into N=4 slabs and fire 4 POSTs concurrently
+    // through 4 distinct thread-local QNetworkAccessManagers — each
+    // POST is its own TCP stream multiplexed over the tunnel, so
+    // throughput stacks roughly linearly until the tunnel's outer TCP
+    // saturates.
+    //
+    // Fallback to the JSON endpoint on:
+    //   - 404 on any slab (older backend without the binary route)
+    //   - any transport error  — keep the legacy path as a safety net.
+    {
+        struct SlabResult {
+            bool ok{ false };
+            int status{ 0 };
+            int width{ 0 }, height{ 0 }, depth{ 0 };
+            double rangeMin{ 0.0 }, rangeMax{ 0.0 };
+            QString scalarType, spectralAxisType, spectralAxisUnit, bunit;
+            QByteArray data;
+            QString error;
+        };
+
+        const QUrl binUrl(m_baseUrl + QStringLiteral("/v1/cube/subvolume_bin"));
+        const int timeoutMs =
+                static_cast<int>(this->requestTimeoutFor(binUrl).count());
+        // Resolve exactly like buildRequest(): own id → this backend's minted id
+        // → the process-wide default. Sending nothing here would put these slab
+        // requests in a different session than the rest of the client's traffic.
+        // The mint may adopt a refreshed token, so capture the token AFTER it:
+        // the auth header and the session id must come from the same identity.
+        const SessionMint mint = this->ensureSessionMinted();
+        const QString token = this->m_token;
+        const QString sessionId = !this->m_sessionId.isEmpty()
+                ? this->m_sessionId
+                : BackendClient::sessionIdForUrl(this->m_baseUrl, token);
+        const QString baseUrl = m_baseUrl;
+
+        // Split [z0, z1] in N slabs. Sub-Z-axis chunks are concatenated
+        // back along the spectral axis. We use 4 by default — empirically
+        // saturates the SSH tunnel without thrashing it; raise via env
+        // ``VISIVO_SUBVOLUME_PARALLEL`` for hosts with more headroom.
+        int nSlabs = 4;
+        if (const QByteArray ev = qgetenv("VISIVO_SUBVOLUME_PARALLEL"); !ev.isEmpty()) {
+            const int n = ev.toInt();
+            if (n >= 1 && n <= 16) nSlabs = n;
+        }
+        const int zSize = z1 - z0 + 1;
+        if (zSize < nSlabs) {
+            // Tiny Z range — fall through to single fetch by setting nSlabs=1.
+            nSlabs = qMax(1, zSize);
+        }
+
+        // Build slab ranges along Z. Distribute remainder so all slabs
+        // differ by at most one channel.
+        QList<QPair<int, int>> slabRanges;
+        slabRanges.reserve(nSlabs);
+        const int baseSize = zSize / nSlabs;
+        const int remainder = zSize % nSlabs;
+        int cur = z0;
+        for (int i = 0; i < nSlabs; ++i) {
+            const int sz = baseSize + (i < remainder ? 1 : 0);
+            slabRanges.append({ cur, cur + sz - 1 });
+            cur += sz;
+        }
+
+        // Worker lambda: fetch a single slab through its own thread-local
+        // QNAM. Captures by value the small POD-ish state it needs so the
+        // lambda is safely runnable from a worker thread.
+        auto fetchSlab = [baseUrl, token, sessionId, timeoutMs, datasetId, mint,
+                          x0, x1, y0, y1](int sz0, int sz1) -> SlabResult {
+            SlabResult r;
+            // performBinaryPost() reads t_lastMint, which buildRequest() would
+            // have set — but we build the request by hand on a worker thread,
+            // where that thread_local is still at its default. Carry the
+            // parent's verdict across so the guard applies here too.
+            t_lastMint = mint;
+            const QJsonDocument body(QJsonObject{
+                    { QStringLiteral("dataset_id"), datasetId },
+                    { QStringLiteral("x0"), x0 }, { QStringLiteral("x1"), x1 },
+                    { QStringLiteral("y0"), y0 }, { QStringLiteral("y1"), y1 },
+                    { QStringLiteral("z0"), sz0 }, { QStringLiteral("z1"), sz1 } });
+            const QByteArray bytes = body.toJson(QJsonDocument::Compact);
+
+            // Inline buildRequest() — we can't call the member from a
+            // worker thread without capturing ``this``, and capturing
+            // ``this`` would tie the worker's lifetime to the
+            // BackendClient instance for no benefit (the synchronous
+            // QFuture::waitForFinished() guarantees the instance
+            // outlives every dispatched thread).
+            QNetworkAccessManager *nam = getThreadLocalNam();
+            const QUrl url(baseUrl + QStringLiteral("/v1/cube/subvolume_bin"));
+            QNetworkRequest req(url);
+            req.setHeader(QNetworkRequest::ContentTypeHeader,
+                          QStringLiteral("application/json"));
+            if (!token.isEmpty()) {
+                req.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), token.toUtf8());
+            }
+            if (!sessionId.isEmpty()) {
+                req.setRawHeader(QByteArrayLiteral("X-Visivo-Session"), sessionId.toUtf8());
+            }
+            QMap<QByteArray, QByteArray> headers;
+            QString err;
+            const QByteArray slabBody =
+                    performBinaryPost(nam, req, bytes, timeoutMs, r.status, headers, err);
+            if (r.status != 200) {
+                r.error = err.isEmpty()
+                                ? QStringLiteral("HTTP %1 on subvolume_bin").arg(r.status)
+                                : err;
+                return r;
+            }
+            const auto hget = [&](const char *name) -> QByteArray {
+                return visivoHeader(headers, name);
+            };
+            r.width  = hget(VisivoHeaders::WIDTH).toInt();
+            r.height = hget(VisivoHeaders::HEIGHT).toInt();
+            r.depth  = hget(VisivoHeaders::DEPTH).toInt();
+            r.scalarType        = QString::fromUtf8(hget(VisivoHeaders::SCALAR_TYPE));
+            r.rangeMin          = hget(VisivoHeaders::RANGE_MIN).toDouble();
+            r.rangeMax          = hget(VisivoHeaders::RANGE_MAX).toDouble();
+            r.spectralAxisType  = QString::fromUtf8(hget(VisivoHeaders::SPECTRAL_AXIS_TYPE));
+            r.spectralAxisUnit  = QString::fromUtf8(hget(VisivoHeaders::SPECTRAL_AXIS_UNIT));
+            r.bunit             = QString::fromUtf8(hget(VisivoHeaders::BUNIT));
+            const qint64 expected =
+                    qint64(r.width) * qint64(r.height) * qint64(r.depth)
+                    * qint64(sizeof(float));
+            if (r.width <= 0 || r.height <= 0 || r.depth <= 0
+                || expected != slabBody.size()) {
+                r.error = QStringLiteral(
+                                  "subvolume_bin slab size mismatch: got %1, expected %2 "
+                                  "(w=%3 h=%4 d=%5)")
+                                  .arg(slabBody.size())
+                                  .arg(expected)
+                                  .arg(r.width).arg(r.height).arg(r.depth);
+                return r;
+            }
+            r.data = slabBody;
+            r.ok = true;
+            return r;
+        };
+
+        // Fire all slabs concurrently.
+        QElapsedTimer subvolTimer;
+        subvolTimer.start();
+        QList<QFuture<SlabResult>> futures;
+        futures.reserve(slabRanges.size());
+        for (const auto &range : slabRanges) {
+            futures.append(QtConcurrent::run(fetchSlab, range.first, range.second));
+        }
+
+        // Collect, in submission order so the Z concatenation is stable.
+        QList<SlabResult> slabs;
+        slabs.reserve(futures.size());
+        bool anyFailed = false;
+        QString firstError;
+        for (auto &f : futures) {
+            f.waitForFinished();
+            const SlabResult sr = f.result();
+            if (!sr.ok && !anyFailed) {
+                firstError = sr.error;
+            }
+            if (!sr.ok) {
+                anyFailed = true;
+            }
+            slabs.append(sr);
+        }
+
+        const qint64 fetchElapsedMs = subvolTimer.elapsed();
+        if (!anyFailed && !slabs.isEmpty()) {
+            // Stitch the float32 buffers in Z order. Width/height match
+            // across slabs by construction.
+            qint64 totalBytes = 0;
+            int totalZ = 0;
+            for (const auto &s : slabs) {
+                totalBytes += s.data.size();
+                totalZ += s.depth;
+            }
+            QElapsedTimer stitchTimer;
+            stitchTimer.start();
+            QByteArray stitched;
+            stitched.reserve(int(totalBytes));
+            for (const auto &s : slabs) {
+                stitched.append(s.data);
+            }
+            const qint64 stitchElapsedMs = stitchTimer.elapsed();
+            qDebug().noquote() << QStringLiteral(
+                "[subvolume-client-timing] N=%1 totalMB=%2 "
+                "fetch_all=%3ms stitch=%4ms")
+                    .arg(slabs.size())
+                    .arg(double(totalBytes) / 1e6, 0, 'f', 1)
+                    .arg(fetchElapsedMs)
+                    .arg(stitchElapsedMs);
+            double globalMin = std::numeric_limits<double>::infinity();
+            double globalMax = -std::numeric_limits<double>::infinity();
+            for (const auto &s : slabs) {
+                if (std::isfinite(s.rangeMin) && s.rangeMin < globalMin)
+                    globalMin = s.rangeMin;
+                if (std::isfinite(s.rangeMax) && s.rangeMax > globalMax)
+                    globalMax = s.rangeMax;
+            }
+            if (!std::isfinite(globalMin)) globalMin = 0.0;
+            if (!std::isfinite(globalMax)) globalMax = 0.0;
+            result.valid             = true;
+            result.error             = QString();
+            result.width             = slabs[0].width;
+            result.height            = slabs[0].height;
+            result.depth             = totalZ;
+            result.scalarType        = slabs[0].scalarType;
+            result.rangeMin          = globalMin;
+            result.rangeMax          = globalMax;
+            result.spectralAxisType  = slabs[0].spectralAxisType;
+            result.spectralAxisUnit  = slabs[0].spectralAxisUnit;
+            result.bunit             = slabs[0].bunit;
+            result.data              = stitched;
+            return result;
+        }
+
+        if (!firstError.isEmpty()) {
+            qWarning().noquote()
+                    << QStringLiteral("subvolume_bin parallel fetch failed: %1. "
+                                      "Falling back to JSON endpoint.")
+                               .arg(firstError);
+        }
+        // Reset partial state before fallback.
+        result = BackendCubeSubvolumeResult{};
+    }
+
+    // ── 2) JSON fallback (legacy path) ─────────────────────────────────
+    QString error;
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/subvolume")), body, error);
     if (!error.isEmpty()) {
@@ -702,6 +1588,531 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
     return result;
 }
 
+// ── Velocity (cosmic-flow) field — F1 ─────────────────────────────────────────
+
+BackendVelocityOpenResult BackendClient::openVelocityField(const QString &path, double boxMpc)
+{
+    BackendVelocityOpenResult result;
+    QJsonObject bodyObj{ { QStringLiteral("path"), path } };
+    if (boxMpc > 0.0) {
+        bodyObj.insert(QStringLiteral("box_mpc"), boxMpc);
+    }
+    QString error;
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/velocity/open")), QJsonDocument(bodyObj), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+    result.valid     = obj.value(QStringLiteral("valid")).toBool();
+    result.error     = obj.value(QStringLiteral("error")).toString();
+    result.datasetId = obj.value(QStringLiteral("dataset_id")).toString();
+    result.sessionId = obj.value(QStringLiteral("session_id")).toString();
+    const QJsonObject s = obj.value(QStringLiteral("summary")).toObject();
+    const QJsonArray shape = s.value(QStringLiteral("shape")).toArray();  // [nz, ny, nx]
+    if (shape.size() == 3) {
+        result.nz = shape.at(0).toInt();
+        result.ny = shape.at(1).toInt();
+        result.nx = shape.at(2).toInt();
+    }
+    result.speedMin = s.value(QStringLiteral("speed_min")).toDouble();
+    result.speedMax = s.value(QStringLiteral("speed_max")).toDouble();
+    result.unit     = s.value(QStringLiteral("unit")).toString();
+    result.frame    = s.value(QStringLiteral("frame")).toString();
+    result.boxKnown = s.value(QStringLiteral("box_known")).toBool();
+    // Persist the session so the follow-up grid fetch hits the same backend
+    // session that just registered the dataset.
+    if (result.valid && !result.sessionId.isEmpty()) {
+        m_sessionId = result.sessionId;
+    }
+    return result;
+}
+
+BackendVelocityGridResult BackendClient::fetchVelocityGrid(const QString &datasetId,
+                                                           int maxDim) const
+{
+    BackendVelocityGridResult r;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("max_dim"), maxDim } });
+    QNetworkRequest req = buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/velocity/grid_bin")));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    const QByteArray data = performBinaryPost(
+            nam, req, body.toJson(QJsonDocument::Compact), 120000, status, headers, err);
+    if (status != 200) {
+        r.error = err.isEmpty() ? QStringLiteral("HTTP %1 on velocity/grid_bin").arg(status) : err;
+        return r;
+    }
+    const auto hget = [&](const char *name) -> QByteArray {
+        return visivoHeader(headers, name);
+    };
+    const auto parse3 = [](const QByteArray &b, double &a, double &c, double &d) {
+        const QStringList p = QString::fromUtf8(b).split(QLatin1Char(','));
+        if (p.size() == 3) { a = p[0].toDouble(); c = p[1].toDouble(); d = p[2].toDouble(); }
+    };
+    r.nx = hget(VisivoHeaders::WIDTH).toInt();
+    r.ny = hget(VisivoHeaders::HEIGHT).toInt();
+    r.nz = hget(VisivoHeaders::DEPTH).toInt();
+    parse3(hget(VisivoHeaders::SPACING), r.sx, r.sy, r.sz);
+    parse3(hget(VisivoHeaders::ORIGIN), r.ox, r.oy, r.oz);
+    r.speedMin = hget(VisivoHeaders::SPEED_MIN).toDouble();
+    r.speedMax = hget(VisivoHeaders::SPEED_MAX).toDouble();
+    {
+        const QByteArray fmin = hget(VisivoHeaders::FULL_SPEED_MIN);
+        const QByteArray fmax = hget(VisivoHeaders::FULL_SPEED_MAX);
+        r.fullSpeedMin = fmin.isEmpty() ? r.speedMin : fmin.toDouble();
+        r.fullSpeedMax = fmax.isEmpty() ? r.speedMax : fmax.toDouble();
+    }
+    r.unit  = QString::fromUtf8(hget(VisivoHeaders::UNIT));
+    r.frame = QString::fromUtf8(hget(VisivoHeaders::FRAME));
+    r.downsampleFactor = std::max(1, hget(VisivoHeaders::DOWNSAMPLE_FACTOR).toInt());
+    {
+        const QStringList fs = QString::fromUtf8(hget(VisivoHeaders::FULL_SHAPE)).split(QLatin1Char(','));
+        if (fs.size() == 3) { r.fullNz = fs[0].toInt(); r.fullNy = fs[1].toInt(); r.fullNx = fs[2].toInt(); }
+    }
+    const qint64 expected =
+            qint64(r.nx) * qint64(r.ny) * qint64(r.nz) * 3 * qint64(sizeof(float));
+    if (r.nx <= 0 || r.ny <= 0 || r.nz <= 0 || expected != data.size()) {
+        r.error = QStringLiteral("bad velocity grid payload: got %1 bytes, expected %2")
+                          .arg(data.size()).arg(expected);
+        return r;
+    }
+    r.vectors = data;
+    r.valid = true;
+    return r;
+}
+
+BackendKinematicModelResult BackendClient::requestKinematicModel(
+        const QString &datasetId, double x0, double y0, double paDeg, double inclDeg,
+        double vsys, double vrot, double rmaxPix, double sigma,
+        const QVector<std::array<double, 4>> &rings) const
+{
+    BackendKinematicModelResult r;
+    QJsonObject bodyObj{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("x0"), x0 }, { QStringLiteral("y0"), y0 },
+            { QStringLiteral("pa_deg"), paDeg }, { QStringLiteral("incl_deg"), inclDeg },
+            { QStringLiteral("vsys"), vsys }, { QStringLiteral("vrot"), vrot },
+            { QStringLiteral("rmax_pix"), rmaxPix }, { QStringLiteral("sigma"), sigma } };
+    if (!rings.isEmpty()) {
+        QJsonArray ringArr;
+        for (const auto &ring : rings) {
+            ringArr.append(QJsonObject{
+                    { QStringLiteral("r_pix"), ring[0] }, { QStringLiteral("pa_deg"), ring[1] },
+                    { QStringLiteral("incl_deg"), ring[2] }, { QStringLiteral("vrot"), ring[3] } });
+        }
+        bodyObj.insert(QStringLiteral("rings"), ringArr);
+    }
+    const QJsonDocument body(bodyObj);
+    QNetworkRequest req =
+            buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/cube/kinematic_model_bin")));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    const QByteArray data = performBinaryPost(
+            nam, req, body.toJson(QJsonDocument::Compact), 120000, status, headers, err);
+    if (status != 200) {
+        // Body carries a plain-text reason for 413 (too large) / 500.
+        const QString reason = !data.isEmpty() ? QString::fromUtf8(data)
+                             : (err.isEmpty() ? QString() : err);
+        r.error = reason.isEmpty()
+                          ? QStringLiteral("HTTP %1 on kinematic_model_bin").arg(status)
+                          : QStringLiteral("HTTP %1: %2").arg(status).arg(reason);
+        return r;
+    }
+    const auto hget = [&](const char *name) -> QByteArray {
+        return visivoHeader(headers, name);
+    };
+    r.width  = hget(VisivoHeaders::WIDTH).toInt();
+    r.height = hget(VisivoHeaders::HEIGHT).toInt();
+    r.depth  = hget(VisivoHeaders::DEPTH).toInt();
+    r.peak   = hget(VisivoHeaders::PEAK).toDouble();
+    r.spectralAxisUnit = QString::fromUtf8(hget(VisivoHeaders::SPECTRAL_AXIS_UNIT));
+    r.spectralMode     = QString::fromUtf8(hget(VisivoHeaders::SPECTRAL_MODE));
+    const qint64 expected =
+            qint64(r.width) * qint64(r.height) * qint64(r.depth) * qint64(sizeof(float));
+    if (r.width <= 0 || r.height <= 0 || r.depth <= 0 || expected != data.size()) {
+        r.error = QStringLiteral("bad kinematic model payload: got %1 bytes, expected %2")
+                          .arg(data.size()).arg(expected);
+        return r;
+    }
+    r.data = data;
+    r.valid = true;
+    return r;
+}
+
+// Build a JSON array of [z,y,x] seed triples.
+static QJsonArray seedsToJson(const QVector<std::array<int, 3>> &seeds)
+{
+    QJsonArray arr;
+    for (const auto &s : seeds) {
+        arr.append(QJsonArray{ s[0], s[1], s[2] });
+    }
+    return arr;
+}
+
+BackendKinematicLevelsResult BackendClient::kinematicLevels(
+        const QString &datasetId, int seedZ, int seedY, int seedX,
+        double reachMax, double lambdaV, double sigma, double nsigma, int roiRadius,
+        const QVector<std::array<int, 3>> &addSeeds,
+        const QVector<std::array<int, 3>> &subSeeds) const
+{
+    BackendKinematicLevelsResult r;
+    QJsonObject bodyObj{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("seed_z"), seedZ }, { QStringLiteral("seed_y"), seedY },
+            { QStringLiteral("seed_x"), seedX },
+            { QStringLiteral("reach"), reachMax }, { QStringLiteral("reach_max"), reachMax },
+            { QStringLiteral("lambda_v"), lambdaV },
+            { QStringLiteral("sigma"), sigma }, { QStringLiteral("nsigma"), nsigma },
+            { QStringLiteral("roi_radius"), roiRadius } };
+    if (!addSeeds.isEmpty()) bodyObj.insert(QStringLiteral("add_seeds"), seedsToJson(addSeeds));
+    if (!subSeeds.isEmpty()) bodyObj.insert(QStringLiteral("sub_seeds"), seedsToJson(subSeeds));
+    const QJsonDocument body(bodyObj);
+    QNetworkRequest req =
+            buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/cube/kinematic_levels_bin")));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    const QByteArray data = performBinaryPost(
+            nam, req, body.toJson(QJsonDocument::Compact), 120000, status, headers, err);
+    if (status != 200) {
+        const QString reason = !data.isEmpty() ? QString::fromUtf8(data)
+                             : (err.isEmpty() ? QString() : err);
+        r.error = reason.isEmpty()
+                          ? QStringLiteral("HTTP %1 on kinematic_levels_bin").arg(status)
+                          : QStringLiteral("HTTP %1: %2").arg(status).arg(reason);
+        return r;
+    }
+    const auto hget = [&](const char *name) -> QByteArray {
+        return visivoHeader(headers, name);
+    };
+    r.roiWidth  = hget(VisivoHeaders::WIDTH).toInt();
+    r.roiHeight = hget(VisivoHeaders::HEIGHT).toInt();
+    r.roiDepth  = hget(VisivoHeaders::DEPTH).toInt();
+    r.reachMax  = hget(VisivoHeaders::RANGE_MAX).toInt();
+    const int sentinel = hget(VisivoHeaders::PEAK).toInt();
+    if (sentinel > 0 && sentinel <= 255) r.unreachable = sentinel;
+    const auto origin = hget(VisivoHeaders::ORIGIN).split(',');
+    if (origin.size() == 3) {
+        r.originX = origin[0].toInt();
+        r.originY = origin[1].toInt();
+        r.originZ = origin[2].toInt();
+    }
+    const auto full = hget(VisivoHeaders::FULL_SHAPE).split(',');
+    if (full.size() == 3) {
+        r.fullWidth  = full[0].toInt();
+        r.fullHeight = full[1].toInt();
+        r.fullDepth  = full[2].toInt();
+    }
+    // Two uint8 fields of identical geometry, add first — reject anything else
+    // rather than indexing past the end while thresholding.
+    // Dimensions come from response headers, so bound each side BEFORE the
+    // multiply: three values near INT_MAX overflow the qint64 product and the
+    // size check below would then pass on a nonsense payload.
+    constexpr int kMaxRoiSide = 1 << 20;
+    if (r.roiWidth <= 0 || r.roiHeight <= 0 || r.roiDepth <= 0
+        || r.roiWidth > kMaxRoiSide || r.roiHeight > kMaxRoiSide || r.roiDepth > kMaxRoiSide) {
+        r.error = QStringLiteral("kinematic level ROI dimension out of range: %1x%2x%3")
+                          .arg(r.roiWidth).arg(r.roiHeight).arg(r.roiDepth);
+        return r;
+    }
+    const qint64 one = qint64(r.roiWidth) * qint64(r.roiHeight) * qint64(r.roiDepth);
+    if (data.size() != 2 * one) {
+        r.error = QStringLiteral("bad kinematic level payload: got %1 bytes, expected %2")
+                          .arg(data.size()).arg(2 * one);
+        return r;
+    }
+    // The split below and the float32 mask the caller builds from these fields are
+    // both int-indexed; refuse an oversized ROI here rather than truncating it into
+    // a short buffer downstream. A single field this large is >2 GB — a backend
+    // bug or a hostile response, not a real selection.
+    if (one > qint64(std::numeric_limits<int>::max()) / qint64(sizeof(float))) {
+        r.error = QStringLiteral("kinematic level ROI too large: %1 voxels").arg(one);
+        return r;
+    }
+    r.addLevels = data.left(qsizetype(one));
+    r.subLevels = data.mid(qsizetype(one));
+    r.valid = true;
+    return r;
+}
+
+BackendKinematicSelectResult BackendClient::kinematicSelect(
+        const QString &datasetId, int seedZ, int seedY, int seedX,
+        double reach, double lambdaV, double sigma, double nsigma, int roiRadius,
+        const QVector<std::array<int, 3>> &addSeeds,
+        const QVector<std::array<int, 3>> &subSeeds) const
+{
+    BackendKinematicSelectResult r;
+    QJsonObject bodyObj{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("seed_z"), seedZ }, { QStringLiteral("seed_y"), seedY },
+            { QStringLiteral("seed_x"), seedX },
+            { QStringLiteral("reach"), reach }, { QStringLiteral("lambda_v"), lambdaV },
+            { QStringLiteral("sigma"), sigma }, { QStringLiteral("nsigma"), nsigma },
+            { QStringLiteral("roi_radius"), roiRadius } };
+    if (!addSeeds.isEmpty()) bodyObj.insert(QStringLiteral("add_seeds"), seedsToJson(addSeeds));
+    if (!subSeeds.isEmpty()) bodyObj.insert(QStringLiteral("sub_seeds"), seedsToJson(subSeeds));
+    const QJsonDocument body(bodyObj);
+    QNetworkRequest req =
+            buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/cube/kinematic_select_bin")));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    const QByteArray data = performBinaryPost(
+            nam, req, body.toJson(QJsonDocument::Compact), 120000, status, headers, err);
+    if (status != 200) {
+        const QString reason = !data.isEmpty() ? QString::fromUtf8(data)
+                             : (err.isEmpty() ? QString() : err);
+        r.error = reason.isEmpty()
+                          ? QStringLiteral("HTTP %1 on kinematic_select_bin").arg(status)
+                          : QStringLiteral("HTTP %1: %2").arg(status).arg(reason);
+        return r;
+    }
+    const auto hget = [&](const char *name) -> QByteArray {
+        return visivoHeader(headers, name);
+    };
+    r.roiWidth  = hget(VisivoHeaders::WIDTH).toInt();
+    r.roiHeight = hget(VisivoHeaders::HEIGHT).toInt();
+    r.roiDepth  = hget(VisivoHeaders::DEPTH).toInt();
+    r.count     = hget(VisivoHeaders::SELECTED_COUNT).toInt();
+    const auto origin = hget(VisivoHeaders::ORIGIN).split(',');
+    if (origin.size() == 3) {
+        r.originX = origin[0].toInt();
+        r.originY = origin[1].toInt();
+        r.originZ = origin[2].toInt();
+    }
+    const auto full = hget(VisivoHeaders::FULL_SHAPE).split(',');
+    if (full.size() == 3) {
+        r.fullWidth  = full[0].toInt();
+        r.fullHeight = full[1].toInt();
+        r.fullDepth  = full[2].toInt();
+    }
+    const auto bb = hget(VisivoHeaders::BBOX).split(',');
+    for (int i = 0; i < 6 && i < bb.size(); ++i) {
+        r.bbox[i] = bb[i].toInt();
+    }
+    const qint64 expected =
+            qint64(r.roiWidth) * qint64(r.roiHeight) * qint64(r.roiDepth) * qint64(sizeof(float));
+    if (r.roiWidth <= 0 || r.roiHeight <= 0 || r.roiDepth <= 0 || expected != data.size()) {
+        r.error = QStringLiteral("bad kinematic selection payload: got %1 bytes, expected %2")
+                          .arg(data.size()).arg(expected);
+        return r;
+    }
+    r.data = data;
+    r.valid = true;
+    return r;
+}
+
+BackendSaveSubregionResult BackendClient::maskCubeSelection(
+        const QString &datasetId, int seedZ, int seedY, int seedX,
+        const QVector<std::array<int, 3>> &addSeeds, const QVector<std::array<int, 3>> &subSeeds,
+        double reach, double lambdaV, const QString &mode,
+        double sigma, double nsigma, int roiRadius, const QString &outputBasename) const
+{
+    BackendSaveSubregionResult result;
+    QJsonObject bodyObj{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("seed_z"), seedZ }, { QStringLiteral("seed_y"), seedY },
+            { QStringLiteral("seed_x"), seedX },
+            { QStringLiteral("reach"), reach }, { QStringLiteral("lambda_v"), lambdaV },
+            { QStringLiteral("sigma"), sigma }, { QStringLiteral("nsigma"), nsigma },
+            { QStringLiteral("roi_radius"), roiRadius },
+            { QStringLiteral("mode"), mode },
+            { QStringLiteral("output_basename"), outputBasename } };
+    if (!addSeeds.isEmpty()) bodyObj.insert(QStringLiteral("add_seeds"), seedsToJson(addSeeds));
+    if (!subSeeds.isEmpty()) bodyObj.insert(QStringLiteral("sub_seeds"), seedsToJson(subSeeds));
+    QString error;
+    const QByteArray raw = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/cube/mask_selection")), QJsonDocument(bodyObj), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    return parseSaveSubregionObject(QJsonDocument::fromJson(raw).object());
+}
+
+BackendSaveSubregionResult BackendClient::applyCubeMask(
+        const QString &datasetId, const QByteArray &maskBytes,
+        int originX, int originY, int originZ,
+        int width, int height, int depth,
+        const QString &mode, const QString &outputBasename) const
+{
+    BackendSaveSubregionResult result;
+    QUrl url(m_baseUrl + QStringLiteral("/v1/cube/mask_apply_bin"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("dataset_id"), datasetId);
+    q.addQueryItem(QStringLiteral("origin_x"), QString::number(originX));
+    q.addQueryItem(QStringLiteral("origin_y"), QString::number(originY));
+    q.addQueryItem(QStringLiteral("origin_z"), QString::number(originZ));
+    q.addQueryItem(QStringLiteral("width"), QString::number(width));
+    q.addQueryItem(QStringLiteral("height"), QString::number(height));
+    q.addQueryItem(QStringLiteral("depth"), QString::number(depth));
+    q.addQueryItem(QStringLiteral("mode"), mode);
+    if (!outputBasename.isEmpty())
+        q.addQueryItem(QStringLiteral("output_basename"), outputBasename);
+    url.setQuery(q);
+
+    QNetworkRequest req = buildRequest(url);
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/octet-stream"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    const QByteArray raw =
+            performBinaryPost(nam, req, maskBytes, 120000, status, headers, err);
+    if (status != 200) {
+        const QString reason = !raw.isEmpty() ? QString::fromUtf8(raw)
+                             : (err.isEmpty() ? QString() : err);
+        result.error = reason.isEmpty()
+                ? QStringLiteral("HTTP %1 on mask_apply_bin").arg(status)
+                : QStringLiteral("HTTP %1: %2").arg(status).arg(reason);
+        return result;
+    }
+    return parseSaveSubregionObject(QJsonDocument::fromJson(raw).object());
+}
+
+BackendVelocityGridResult BackendClient::fetchVelocitySubgrid(const QString &datasetId,
+                                                              int x0, int x1, int y0, int y1,
+                                                              int z0, int z1) const
+{
+    BackendVelocityGridResult r;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("x0"), x0 }, { QStringLiteral("x1"), x1 },
+            { QStringLiteral("y0"), y0 }, { QStringLiteral("y1"), y1 },
+            { QStringLiteral("z0"), z0 }, { QStringLiteral("z1"), z1 } });
+    QNetworkRequest req = buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/velocity/subgrid_bin")));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    const QByteArray data = performBinaryPost(
+            nam, req, body.toJson(QJsonDocument::Compact), 120000, status, headers, err);
+    if (status != 200) {
+        r.error = err.isEmpty() ? QStringLiteral("HTTP %1 on velocity/subgrid_bin").arg(status) : err;
+        return r;
+    }
+    const auto hget = [&](const char *name) -> QByteArray {
+        return visivoHeader(headers, name);
+    };
+    r.nx = hget(VisivoHeaders::WIDTH).toInt();
+    r.ny = hget(VisivoHeaders::HEIGHT).toInt();
+    r.nz = hget(VisivoHeaders::DEPTH).toInt();
+    r.roiX0 = hget(VisivoHeaders::ROI_X0).toInt();
+    r.roiY0 = hget(VisivoHeaders::ROI_Y0).toInt();
+    r.roiZ0 = hget(VisivoHeaders::ROI_Z0).toInt();
+    r.speedMin = hget(VisivoHeaders::SPEED_MIN).toDouble();
+    r.speedMax = hget(VisivoHeaders::SPEED_MAX).toDouble();
+    r.downsampleFactor = 1;
+    const qint64 expected =
+            qint64(r.nx) * qint64(r.ny) * qint64(r.nz) * 3 * qint64(sizeof(float));
+    if (r.nx <= 0 || r.ny <= 0 || r.nz <= 0 || expected != data.size()) {
+        r.error = QStringLiteral("bad velocity subgrid payload: got %1 bytes, expected %2")
+                          .arg(data.size()).arg(expected);
+        return r;
+    }
+    r.vectors = data;
+    r.valid = true;
+    return r;
+}
+
+BackendVelocityBasinsResult BackendClient::fetchVelocityBasins(const QString &datasetId,
+                                                               int basinMaxDim, int direction) const
+{
+    BackendVelocityBasinsResult r;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("basin_max_dim"), basinMaxDim },
+            { QStringLiteral("direction"), direction } });
+    QNetworkRequest req = buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/velocity/basins_bin")));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    const QByteArray data = performBinaryPost(
+            nam, req, body.toJson(QJsonDocument::Compact), 300000, status, headers, err);
+    if (status != 200) {
+        r.error = err.isEmpty() ? QStringLiteral("HTTP %1 on velocity/basins_bin").arg(status) : err;
+        return r;
+    }
+    const auto hget = [&](const char *name) -> QByteArray {
+        return visivoHeader(headers, name);
+    };
+    r.nx = hget(VisivoHeaders::WIDTH).toInt();
+    r.ny = hget(VisivoHeaders::HEIGHT).toInt();
+    r.nz = hget(VisivoHeaders::DEPTH).toInt();
+    r.nBasins = hget(VisivoHeaders::N_BASINS).toInt();
+    const qint64 expected = qint64(r.nx) * qint64(r.ny) * qint64(r.nz) * qint64(sizeof(qint32));
+    if (r.nx <= 0 || r.ny <= 0 || r.nz <= 0 || expected != data.size()) {
+        r.error = QStringLiteral("bad basins payload: got %1 bytes, expected %2")
+                          .arg(data.size()).arg(expected);
+        return r;
+    }
+    r.labels = data;
+    r.valid = true;
+    return r;
+}
+
+BackendVelocityDensityResult BackendClient::fetchVelocityDensity(const QString &datasetId,
+                                                                 int maxDim) const
+{
+    BackendVelocityDensityResult r;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("max_dim"), maxDim } });
+    QNetworkRequest req = buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/velocity/density_bin")));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    const QByteArray data = performBinaryPost(
+            nam, req, body.toJson(QJsonDocument::Compact), 300000, status, headers, err);
+    if (status != 200) {
+        r.error = err.isEmpty() ? QStringLiteral("HTTP %1 on velocity/density_bin").arg(status) : err;
+        return r;
+    }
+    const auto hget = [&](const char *name) -> QByteArray {
+        return visivoHeader(headers, name);
+    };
+    r.nx = hget(VisivoHeaders::WIDTH).toInt();
+    r.ny = hget(VisivoHeaders::HEIGHT).toInt();
+    r.nz = hget(VisivoHeaders::DEPTH).toInt();
+    r.divMin = hget(VisivoHeaders::DIV_MIN).toDouble();
+    r.divMax = hget(VisivoHeaders::DIV_MAX).toDouble();
+    r.unit = QString::fromUtf8(hget(VisivoHeaders::UNIT));
+    const auto parse3 = [&](const char *name, double out[3]) {
+        const QList<QByteArray> parts = hget(name).split(',');
+        for (int i = 0; i < 3 && i < parts.size(); ++i)
+            out[i] = parts[i].trimmed().toDouble();
+    };
+    parse3(VisivoHeaders::SPACING, r.spacing);
+    parse3(VisivoHeaders::ORIGIN, r.origin);
+    const qint64 expected = qint64(r.nx) * qint64(r.ny) * qint64(r.nz) * qint64(sizeof(float));
+    if (r.nx <= 0 || r.ny <= 0 || r.nz <= 0 || expected != data.size()) {
+        r.error = QStringLiteral("bad density payload: got %1 bytes, expected %2")
+                          .arg(data.size()).arg(expected);
+        return r;
+    }
+    r.divergence = data;
+    r.valid = true;
+    return r;
+}
+
 BackendCubePvResult BackendClient::requestPv(const QString &datasetId,
                                              const std::vector<std::array<int, 2>> &vertices,
                                              int widthPixels) const
@@ -715,7 +2126,7 @@ BackendCubePvResult BackendClient::requestPv(const QString &datasetId,
                                           { QStringLiteral("vertices"), vertexArray },
                                           { QStringLiteral("width_pixels"), widthPixels } });
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/pv")), body, error);
+            performPostRetryingBackpressure(QUrl(m_baseUrl + QStringLiteral("/v1/cube/pv")), body, error);
     if (!error.isEmpty()) {
         BackendCubePvResult result;
         result.error = error;
@@ -738,7 +2149,8 @@ BackendCubeNoiseResult BackendClient::requestNoise(const QString &datasetId, int
                                           { QStringLiteral("channel_start"), channelStart },
                                           { QStringLiteral("channel_end"), channelEnd } });
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/noise")), body, error);
+            performPostRetryingBackpressure(QUrl(m_baseUrl + QStringLiteral("/v1/cube/noise")),
+                                            body, error);
     if (!error.isEmpty()) {
         result.error = error;
         return result;
@@ -1020,6 +2432,56 @@ BackendImageResult BackendClient::requestImagePreview(const QString &datasetId,
     return result;
 }
 
+BackendImageTileResult BackendClient::requestImageTile(const QString &datasetId, int level,
+                                                       int tileX, int tileY, int tileSize) const
+{
+    BackendImageTileResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("level"), level },
+            { QStringLiteral("tile_x"), tileX },
+            { QStringLiteral("tile_y"), tileY },
+            { QStringLiteral("tile_size"), tileSize } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/image/tile")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result = parseImageTileObject(object);
+    if (result.tileSize <= 0) {
+        result.tileSize = tileSize;
+    }
+    result.data = decodePayload(object, QStringLiteral("data_base64"),
+                                QStringLiteral("compression"), result.error);
+    if (!result.error.isEmpty()) {
+        result.valid = false;
+    }
+    return result;
+}
+
+BackendImageTileResult BackendClient::parseImageTileObject(const QJsonObject &object)
+{
+    BackendImageTileResult result;
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.width = object.value(QStringLiteral("width")).toInt();
+    result.height = object.value(QStringLiteral("height")).toInt();
+    result.fullWidth = object.value(QStringLiteral("full_width")).toInt(result.width);
+    result.fullHeight = object.value(QStringLiteral("full_height")).toInt(result.height);
+    result.level = object.value(QStringLiteral("level")).toInt();
+    result.numLevels = object.value(QStringLiteral("num_levels")).toInt(1);
+    result.tileX = object.value(QStringLiteral("tile_x")).toInt();
+    result.tileY = object.value(QStringLiteral("tile_y")).toInt();
+    result.tileSize = object.value(QStringLiteral("tile_size")).toInt();
+    result.scalarType = object.value(QStringLiteral("scalar_type")).toString();
+    result.rangeMin = object.value(QStringLiteral("range_min")).toDouble();
+    result.rangeMax = object.value(QStringLiteral("range_max")).toDouble();
+    return result;
+}
+
 BackendIsosurfaceResult BackendClient::requestIsosurface(const QString &datasetId,
                                                          double threshold) const
 {
@@ -1028,7 +2490,8 @@ BackendIsosurfaceResult BackendClient::requestIsosurface(const QString &datasetI
     const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
                                           { QStringLiteral("threshold"), threshold } });
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/isosurface")), body, error);
+            performPostRetryingBackpressure(
+                    QUrl(m_baseUrl + QStringLiteral("/v1/products/isosurface")), body, error);
     if (!error.isEmpty()) {
         result.error = error;
         return result;
@@ -1052,7 +2515,8 @@ BackendIsosurfaceResult BackendClient::requestIsosurface(const QString &datasetI
 
 BackendMomentResult BackendClient::requestMoment(const QString &datasetId, int order,
                                                  int channelStart, int channelEnd,
-                                                 bool maskEnabled, double thresholdValue) const
+                                                 bool maskEnabled, double thresholdValue,
+                                                 bool thresholdAuto) const
 {
     QString error;
     const QJsonDocument body(
@@ -1061,9 +2525,11 @@ BackendMomentResult BackendClient::requestMoment(const QString &datasetId, int o
                          { QStringLiteral("channel_start"), channelStart },
                          { QStringLiteral("channel_end"), channelEnd },
                          { QStringLiteral("mask_enabled"), maskEnabled },
-                         { QStringLiteral("threshold_value"), thresholdValue } });
+                         { QStringLiteral("threshold_value"), thresholdValue },
+                         { QStringLiteral("threshold_auto"), thresholdAuto } });
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/moment")), body, error);
+            performPostRetryingBackpressure(
+                    QUrl(m_baseUrl + QStringLiteral("/v1/products/moment")), body, error);
     if (!error.isEmpty()) {
         BackendMomentResult result;
         result.error = error;
@@ -1076,7 +2542,8 @@ BinaryArrayResult BackendClient::fetchMomentBinary(const QString &datasetId,
                                                     int order,
                                                     int channelStart, int channelEnd,
                                                     bool maskEnabled, float threshold,
-                                                    const QString &sessionId)
+                                                    const QString &sessionId,
+                                                    bool thresholdAuto)
 {
     BinaryArrayResult result;
     const QString prevSession = m_sessionId;
@@ -1090,7 +2557,8 @@ BinaryArrayResult BackendClient::fetchMomentBinary(const QString &datasetId,
                          { QStringLiteral("channel_start"), channelStart },
                          { QStringLiteral("channel_end"), channelEnd },
                          { QStringLiteral("mask_enabled"), maskEnabled },
-                         { QStringLiteral("threshold_value"), static_cast<double>(threshold) } });
+                         { QStringLiteral("threshold_value"), static_cast<double>(threshold) },
+                         { QStringLiteral("threshold_auto"), thresholdAuto } });
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/moment/result/binary")), body, error);
     m_sessionId = prevSession;
@@ -1180,651 +2648,101 @@ bool BackendClient::parseBinaryFrame(const QByteArray &payload, int &offset,
 
 // ── S-02: Line-width maps ─────────────────────────────────────────────────────
 
-BackendLinewidthResult BackendClient::fetchLinewidthBinary(const QString &datasetId,
-                                                            int channelStart, int channelEnd,
-                                                            bool maskEnabled, float threshold,
-                                                            double restFreqHz)
-{
-    BackendLinewidthResult result;
-    QString error;
-    QJsonObject bodyObj{
-            { QStringLiteral("dataset_id"),      datasetId },
-            { QStringLiteral("channel_start"),   channelStart },
-            { QStringLiteral("channel_end"),     channelEnd },
-            { QStringLiteral("mask_enabled"),    maskEnabled },
-            { QStringLiteral("threshold_value"), static_cast<double>(threshold) } };
-    // Only include rest_freq_hz when the caller provides a meaningful value.
-    // Velocity-axis cubes must omit it; frequency/wavelength axes supply it.
-    if (restFreqHz > 0.0) {
-        bodyObj.insert(QStringLiteral("rest_freq_hz"), restFreqHz);
-    }
-    const QJsonDocument body(bodyObj);
-    const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/spectral/linewidth/binary")),
-                        body, error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    // Parse the two concatenated binary frames (FWHM then EW).
-    int offset = 0;
-    BinaryArrayResult fwhm, ew;
-    if (!parseBinaryFrame(payload, offset, fwhm)) {
-        result.error = fwhm.error;
-        return result;
-    }
-    if (!parseBinaryFrame(payload, offset, ew)) {
-        result.error = ew.error;
-        return result;
-    }
-    result.valid  = true;
-    result.width  = fwhm.cols;
-    result.height = fwhm.rows;
-    result.binaryPayload = payload;
-    return result;
-}
 
 // ── S-03: Baseline subtraction ────────────────────────────────────────────────
 
-BackendBaselineResult BackendClient::requestBaseline(const QString &datasetId,
-                                                      int channelStart, int channelEnd,
-                                                      int polyOrder,
-                                                      const QString &method,
-                                                      const QVector<QPair<int,int>> &lineFreeRanges)
-{
-    BackendBaselineResult result;
-    QString error;
-    // Encode line-free ranges as [[start,end],...] pairs
-    QJsonArray lfcArray;
-    for (const auto &range : lineFreeRanges) {
-        QJsonArray pair;
-        pair.append(range.first);
-        pair.append(range.second);
-        lfcArray.append(pair);
-    }
-    const QJsonDocument body(QJsonObject{
-            { QStringLiteral("session_id"),         m_sessionId },
-            { QStringLiteral("dataset_id"),         datasetId },
-            { QStringLiteral("channel_start"),      channelStart },
-            { QStringLiteral("channel_end"),        channelEnd },
-            { QStringLiteral("poly_order"),         polyOrder },
-            { QStringLiteral("method"),             method },
-            { QStringLiteral("line_free_channels"), lfcArray } });
-    const QByteArray raw =
-            performPost(QUrl(m_baseUrl
-                             + QStringLiteral("/v1/spectral/baseline/")
-                             + m_sessionId + QStringLiteral("/") + datasetId),
-                        body, error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid         = obj.value(QStringLiteral("valid")).toBool();
-    result.error         = obj.value(QStringLiteral("error")).toString();
-    result.newDatasetId  = obj.value(QStringLiteral("new_dataset_id")).toString();
-    result.width         = obj.value(QStringLiteral("width")).toInt();
-    result.height        = obj.value(QStringLiteral("height")).toInt();
-    result.depth         = obj.value(QStringLiteral("depth")).toInt();
-    result.rangeMin      = obj.value(QStringLiteral("range_min")).toDouble();
-    result.rangeMax      = obj.value(QStringLiteral("range_max")).toDouble();
-    result.polyOrder     = obj.value(QStringLiteral("poly_order")).toInt();
-    result.fitChannels   = obj.value(QStringLiteral("fit_channels")).toInt();
-    result.outputPath    = obj.value(QStringLiteral("output_path")).toString();
-    result.rmsBefore     = obj.value(QStringLiteral("rms_before")).toDouble();
-    result.rmsAfter      = obj.value(QStringLiteral("rms_after")).toDouble();
-    result.method        = obj.value(QStringLiteral("method")).toString(method);
-    return result;
-}
 
 // ── Sub-cube extraction (crop ROI → Workspace Exports) ─────────────────────
 
-BackendSaveSubregionResult BackendClient::saveCubeSubregion(
-        const QString &datasetId,
-        int x0, int x1, int y0, int y1, int z0, int z1,
-        const QString &outputBasename)
-{
-    BackendSaveSubregionResult result;
-    QString error;
-    const QJsonDocument body(QJsonObject{
-            { QStringLiteral("dataset_id"), datasetId },
-            { QStringLiteral("x0"), x0 }, { QStringLiteral("x1"), x1 },
-            { QStringLiteral("y0"), y0 }, { QStringLiteral("y1"), y1 },
-            { QStringLiteral("z0"), z0 }, { QStringLiteral("z1"), z1 },
-            { QStringLiteral("output_basename"), outputBasename } });
-    const QByteArray raw =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/save_subregion")),
-                        body, error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    return parseSaveSubregionObject(QJsonDocument::fromJson(raw).object());
-}
 
 // ── Cube channel → 2-D FITS export ─────────────────────────────────────────
 
-BackendSaveChannel2dResult BackendClient::saveCubeChannelAs2dFits(
-        const QString &datasetId,
-        int channel,
-        const QString &outputBasename)
-{
-    BackendSaveChannel2dResult result;
-    QString error;
-    const QJsonDocument body(QJsonObject{
-            { QStringLiteral("dataset_id"),      datasetId },
-            { QStringLiteral("channel"),         channel },
-            { QStringLiteral("output_basename"), outputBasename } });
-    const QByteArray raw =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/save_channel_2d")),
-                        body, error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    return parseSaveChannel2dObject(QJsonDocument::fromJson(raw).object());
-}
 
 // ── Dynamic-spectrum analysis ──────────────────────────────────────────────
 
-BackendDynspecDedisperseResult BackendClient::dedisperseDynspec(
-        const QString &datasetId,
-        double dmPcCm3,
-        double refFreqMhz,
-        const QString &outputBasename)
-{
-    BackendDynspecDedisperseResult result;
-    QString error;
-    const QJsonDocument body(QJsonObject{
-            { QStringLiteral("dataset_id"),      datasetId },
-            { QStringLiteral("dm_pc_cm3"),       dmPcCm3 },
-            { QStringLiteral("ref_freq_mhz"),    refFreqMhz },
-            { QStringLiteral("output_basename"), outputBasename } });
-    const QByteArray raw =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/dynspec/dedisperse")),
-                        body, error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid             = obj.value(QStringLiteral("valid")).toBool(false);
-    result.error             = obj.value(QStringLiteral("error")).toString();
-    result.newDatasetId      = obj.value(QStringLiteral("new_dataset_id")).toString();
-    result.outputPath        = obj.value(QStringLiteral("output_path")).toString();
-    result.workspaceFilename = obj.value(QStringLiteral("workspace_filename")).toString();
-    result.width             = obj.value(QStringLiteral("width")).toInt();
-    result.height            = obj.value(QStringLiteral("height")).toInt();
-    result.rangeMin          = obj.value(QStringLiteral("range_min")).toDouble();
-    result.rangeMax          = obj.value(QStringLiteral("range_max")).toDouble();
-    result.dmPcCm3           = obj.value(QStringLiteral("dm_pc_cm3")).toDouble();
-    result.refFreqMhz        = obj.value(QStringLiteral("ref_freq_mhz")).toDouble();
-    result.maxShiftSamples   = obj.value(QStringLiteral("max_shift_samples")).toInt();
-    return result;
-}
 
-BackendDynspecPulseProfileResult BackendClient::pulseProfile(
-        const QString &datasetId,
-        double periodS,
-        int nBins,
-        double dmPcCm3,
-        double freqStartMhz,
-        double freqEndMhz)
-{
-    BackendDynspecPulseProfileResult result;
-    QString error;
-    const QJsonDocument body(QJsonObject{
-            { QStringLiteral("dataset_id"),     datasetId },
-            { QStringLiteral("period_s"),       periodS },
-            { QStringLiteral("n_bins"),         nBins },
-            { QStringLiteral("dm_pc_cm3"),      dmPcCm3 },
-            { QStringLiteral("freq_start_mhz"), freqStartMhz },
-            { QStringLiteral("freq_end_mhz"),   freqEndMhz } });
-    const QByteArray raw =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/dynspec/pulse_profile")),
-                        body, error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid    = obj.value(QStringLiteral("valid")).toBool(false);
-    result.error    = obj.value(QStringLiteral("error")).toString();
-    const QJsonArray phaseArr = obj.value(QStringLiteral("phase")).toArray();
-    const QJsonArray profArr  = obj.value(QStringLiteral("profile")).toArray();
-    const QJsonArray cntArr   = obj.value(QStringLiteral("counts")).toArray();
-    result.phase.reserve(phaseArr.size());
-    result.profile.reserve(profArr.size());
-    result.counts.reserve(cntArr.size());
-    for (const auto &v : phaseArr) result.phase.append(v.toDouble());
-    for (const auto &v : profArr)  result.profile.append(v.toDouble());
-    for (const auto &v : cntArr)   result.counts.append(v.toInt());
-    result.peak      = obj.value(QStringLiteral("peak")).toDouble();
-    result.sigmaMad  = obj.value(QStringLiteral("sigma_mad")).toDouble();
-    result.snrPeak   = obj.value(QStringLiteral("snr_peak")).toDouble();
-    result.periodS   = obj.value(QStringLiteral("period_s")).toDouble();
-    result.dmPcCm3   = obj.value(QStringLiteral("dm_pc_cm3")).toDouble();
-    result.nBins     = obj.value(QStringLiteral("n_bins")).toInt();
-    result.nSamples  = obj.value(QStringLiteral("n_samples")).toInt();
-    return result;
-}
 
-BackendDynspecRfiMaskResult BackendClient::rfiMask(
-        const QString &datasetId,
-        double nSigma,
-        const QString &axis,
-        const QString &outputBasename)
-{
-    BackendDynspecRfiMaskResult result;
-    QString error;
-    const QJsonDocument body(QJsonObject{
-            { QStringLiteral("dataset_id"),      datasetId },
-            { QStringLiteral("n_sigma"),         nSigma },
-            { QStringLiteral("axis"),            axis },
-            { QStringLiteral("output_basename"), outputBasename } });
-    const QByteArray raw =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/dynspec/rfi_mask")),
-                        body, error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid             = obj.value(QStringLiteral("valid")).toBool(false);
-    result.error             = obj.value(QStringLiteral("error")).toString();
-    result.newDatasetId      = obj.value(QStringLiteral("new_dataset_id")).toString();
-    result.outputPath        = obj.value(QStringLiteral("output_path")).toString();
-    result.workspaceFilename = obj.value(QStringLiteral("workspace_filename")).toString();
-    result.width             = obj.value(QStringLiteral("width")).toInt();
-    result.height            = obj.value(QStringLiteral("height")).toInt();
-    result.flaggedFraction   = obj.value(QStringLiteral("flagged_fraction")).toDouble();
-    result.nSigma            = obj.value(QStringLiteral("n_sigma")).toDouble();
-    result.axis              = obj.value(QStringLiteral("axis")).toString();
-    return result;
-}
 
 // ── Moment map → Workspace Exports ─────────────────────────────────────────
 
-BackendSaveMomentFitsResult BackendClient::saveMomentFits(
-        const QString &datasetId,
-        int order,
-        int channelStart, int channelEnd,
-        bool maskEnabled,
-        double thresholdValue,
-        const QString &outputBasename)
-{
-    BackendSaveMomentFitsResult result;
-    QString error;
-    const QJsonDocument body(QJsonObject{
-            { QStringLiteral("dataset_id"),       datasetId },
-            { QStringLiteral("moment_order"),     order },
-            { QStringLiteral("channel_start"),    channelStart },
-            { QStringLiteral("channel_end"),      channelEnd },
-            { QStringLiteral("mask_enabled"),     maskEnabled },
-            { QStringLiteral("threshold_value"),  thresholdValue },
-            { QStringLiteral("output_basename"),  outputBasename } });
-    const QByteArray raw =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/moment_fits")),
-                        body, error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    return parseSaveMomentFitsObject(QJsonDocument::fromJson(raw).object());
-}
 
 // ── Workspace Exports management ───────────────────────────────────────────
 
-BackendWorkspaceDeleteResult BackendClient::copyDatasetToWorkspace(
-        const QString &datasetId, const QString &basename)
-{
-    BackendWorkspaceDeleteResult result;
-    QString error;
-    const QJsonDocument body(QJsonObject{
-            { QStringLiteral("dataset_id"),      datasetId },
-            { QStringLiteral("output_basename"), basename } });
-    const QByteArray raw =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/exports/copy_dataset")),
-                        body, error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid           = obj.value(QStringLiteral("valid")).toBool();
-    result.error           = obj.value(QStringLiteral("error")).toString();
-    result.deletedFilename = obj.value(QStringLiteral("workspace_filename")).toString();
-    return result;
-}
 
-BackendWorkspaceExportsList BackendClient::listExports()
-{
-    BackendWorkspaceExportsList result;
-    QString error;
-    const QByteArray raw = performGet(
-            QUrl(m_baseUrl + QStringLiteral("/v1/exports/list")), error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    return parseExportsListObject(QJsonDocument::fromJson(raw).object());
-}
 
-BackendWorkspaceDeleteResult BackendClient::deleteExport(const QString &filename)
-{
-    BackendWorkspaceDeleteResult result;
-    QString error;
-    // Filename is path-segment-escaped to keep slashes out of the URL — the
-    // backend rejects multi-segment filenames anyway, but pre-escaping
-    // avoids accidentally hitting a different route.
-    const QString safeSeg = QString::fromUtf8(
-            QUrl::toPercentEncoding(filename, "", "/"));
-    QNetworkRequest req(QUrl(m_baseUrl
-                             + QStringLiteral("/v1/exports/") + safeSeg));
-    req.setRawHeader("X-Visivo-Token", m_token.toUtf8());
-    auto *nam = getThreadLocalNam();
-    auto *reply = nam->sendCustomRequest(req, "DELETE");
-    QEventLoop loop;
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec();
-    if (reply->error() != QNetworkReply::NoError) {
-        result.error = reply->errorString();
-        reply->deleteLater();
-        return result;
-    }
-    const QByteArray raw = reply->readAll();
-    reply->deleteLater();
-    return parseExportsDeleteObject(QJsonDocument::fromJson(raw).object());
-}
 
-bool BackendClient::downloadExport(const QString &filename,
-                                   const QString &localPath,
-                                   QString &error)
-{
-    QUrl url(m_baseUrl + QStringLiteral("/v1/exports/download"));
-    // Manually percent-encode the filename instead of using QUrlQuery: Qt's
-    // QUrlQuery leaves '+' raw because RFC 3986 considers it a sub-delim, but
-    // FastAPI / Starlette decode query strings using the
-    // application/x-www-form-urlencoded convention where '+' means a space.
-    // That collision broke filenames like "G000.0+8.5_RM_ch0001.fits" (the
-    // server received "G000.0 8.5_…" and returned 404). Force '+' (and any
-    // other reserved chars) to be percent-encoded so the filename round-trips.
-    const QByteArray encodedFilename = QUrl::toPercentEncoding(filename);
-    url.setQuery(QStringLiteral("filename=") + QString::fromUtf8(encodedFilename));
-    const QByteArray payload = performGet(url, error);
-    if (!error.isEmpty()) return false;
-    QFile out(localPath);
-    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        error = QStringLiteral("Could not open '%1' for writing: %2")
-                .arg(localPath, out.errorString());
-        return false;
-    }
-    const qint64 written = out.write(payload);
-    out.close();
-    if (written != static_cast<qint64>(payload.size())) {
-        error = QStringLiteral("Short write to '%1' (%2 / %3 bytes)")
-                .arg(localPath).arg(written).arg(payload.size());
-        return false;
-    }
-    return true;
-}
 
 // ── S-04: Spectral stacking ───────────────────────────────────────────────────
 
-BackendStackResult BackendClient::fetchStackBinary(const QStringList &datasetIds,
-                                                    const QString &method,
-                                                    const QVector<double> &weights,
-                                                    const QString &weightBy)
-{
-    BackendStackResult result;
-    QString error;
-    QJsonArray idsArray;
-    for (const QString &id : datasetIds)
-        idsArray.append(id);
-    QJsonArray wArray;
-    for (double w : weights)
-        wArray.append(w);
-    const QJsonDocument body(QJsonObject{
-            { QStringLiteral("dataset_ids"), idsArray },
-            { QStringLiteral("method"),      method },
-            { QStringLiteral("weights"),     wArray },
-            { QStringLiteral("weight_by"),   weightBy } });
-    const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/spectral/stack/binary")),
-                        body, error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    int offset = 0;
-    BinaryArrayResult frame;
-    if (!parseBinaryFrame(payload, offset, frame)) {
-        result.error = frame.error;
-        return result;
-    }
-    result.valid    = true;
-    result.spectrum = frame;
-    result.method   = method;
-    result.nCubes   = datasetIds.size();
-    return result;
-}
 
 // ── S-05: SoFiA-2 source finding ──────────────────────────────────────────────
 
-BackendSourceFindResult BackendClient::runSourceFind(const QString &datasetId,
-                                                      const QVariantMap &sofiaParams)
-{
-    BackendSourceFindResult result;
-    QString error;
-    QJsonObject paramsObj;
-    for (auto it = sofiaParams.constBegin(); it != sofiaParams.constEnd(); ++it)
-        paramsObj.insert(it.key(), QJsonValue::fromVariant(it.value()));
-    const QJsonDocument body(QJsonObject{
-            { QStringLiteral("dataset_id"),   datasetId },
-            { QStringLiteral("sofia_params"), paramsObj } });
-    const QByteArray raw =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/sourcefind/") + datasetId),
-                        body, error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid    = obj.value(QStringLiteral("valid")).toBool();
-    result.error    = obj.value(QStringLiteral("error")).toString();
-    result.nSources = obj.value(QStringLiteral("n_sources")).toInt();
-    const QJsonArray sources = obj.value(QStringLiteral("sources")).toArray();
-    for (const QJsonValue &v : sources) {
-        BackendSourceFindSource src;
-        const QJsonObject so = v.toObject();
-        for (const QString &key : so.keys())
-            src.fields.insert(key, so.value(key).toVariant());
-        result.sources.append(src);
-    }
-    return result;
-}
 
-BackendTaskCreateResult BackendClient::createMomentTask(const QString &datasetId, int order,
-                                                        int channelStart, int channelEnd,
-                                                        bool maskEnabled,
-                                                        double thresholdValue) const
-{
-    BackendTaskCreateResult result;
-    QString error;
-    const QJsonDocument body(
-            QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
-                         { QStringLiteral("moment_order"), order },
-                         { QStringLiteral("channel_start"), channelStart },
-                         { QStringLiteral("channel_end"), channelEnd },
-                         { QStringLiteral("mask_enabled"), maskEnabled },
-                         { QStringLiteral("threshold_value"), thresholdValue } });
-    const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/moment")), body, error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    const QJsonObject object = QJsonDocument::fromJson(payload).object();
-    result.valid = object.value(QStringLiteral("valid")).toBool(false);
-    result.error = object.value(QStringLiteral("error")).toString();
-    result.taskId = object.value(QStringLiteral("task_id")).toString();
-    result.status = object.value(QStringLiteral("status")).toString();
-    result.cacheHit = object.value(QStringLiteral("cache_hit")).toBool(false);
-    return result;
-}
 
-BackendTaskCreateResult BackendClient::createPvTask(const QString &datasetId,
-                                                    const std::vector<std::array<int, 2>> &vertices,
-                                                    int widthPixels) const
-{
-    BackendTaskCreateResult result;
-    QString error;
-    QJsonArray vertexArray;
-    for (const auto &v : vertices) {
-        vertexArray.append(QJsonArray{ v[0], v[1] });
-    }
-    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
-                                          { QStringLiteral("vertices"), vertexArray },
-                                          { QStringLiteral("width_pixels"), widthPixels } });
-    const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/pv")), body, error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    const QJsonObject object = QJsonDocument::fromJson(payload).object();
-    result.valid = object.value(QStringLiteral("valid")).toBool(false);
-    result.error = object.value(QStringLiteral("error")).toString();
-    result.taskId = object.value(QStringLiteral("task_id")).toString();
-    result.status = object.value(QStringLiteral("status")).toString();
-    result.cacheHit = object.value(QStringLiteral("cache_hit")).toBool(false);
-    return result;
-}
 
-BackendTaskStatusResult BackendClient::requestTaskStatus(const QString &taskId) const
-{
-    BackendTaskStatusResult result;
-    QString error;
-    const QByteArray payload =
-            performGet(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/") + taskId), error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    const QJsonObject object = QJsonDocument::fromJson(payload).object();
-    result.valid = object.value(QStringLiteral("valid")).toBool(false);
-    result.error = object.value(QStringLiteral("error")).toString();
-    result.taskId = object.value(QStringLiteral("task_id")).toString();
-    result.operation = object.value(QStringLiteral("operation")).toString();
-    result.status = object.value(QStringLiteral("status")).toString();
-    result.progress = object.value(QStringLiteral("progress")).toDouble();
-    result.cacheHit = object.value(QStringLiteral("cache_hit")).toBool(false);
-    result.resultObject = object.value(QStringLiteral("result")).toObject();
-    return result;
-}
 
-BackendTaskStatusResult BackendClient::waitForTaskCompletion(const BackendTaskCreateResult &createResult,
-                                                             const QString &logTag,
-                                                             int maxPollAttempts,
-                                                             int pollIntervalMs) const
-{
-    BackendTaskStatusResult terminal;
-    terminal.taskId = createResult.taskId;
-    QString operationTag;
-    if (logTag.contains(QStringLiteral("moment"), Qt::CaseInsensitive)) {
-        operationTag = QStringLiteral("moment");
-    } else if (logTag.contains(QStringLiteral("pv"), Qt::CaseInsensitive)) {
-        operationTag = QStringLiteral("pv");
-    }
-    if (!createResult.valid || createResult.taskId.isEmpty()) {
-        terminal.error = createResult.error.isEmpty()
-                ? QStringLiteral("Task creation failed.")
-                : createResult.error;
-        qWarning().noquote()
-                << QStringLiteral("%1 create failed error=%2").arg(logTag, terminal.error);
-        DiagnosticsManager::instance()->publish(
-                DiagnosticsLevel::Warning, DiagnosticsCategory::Task,
-                QStringLiteral("BackendClient"),
-                QStringLiteral("Task creation failed: %1").arg(terminal.error), {}, this->m_sessionId,
-                operationTag);
-        return terminal;
-    }
 
-    qDebug().noquote()
-            << QStringLiteral("%1 created task_id=%2 status=%3 cache_hit=%4")
-                       .arg(logTag, createResult.taskId, createResult.status)
-                       .arg(createResult.cacheHit ? QStringLiteral("true")
-                                                 : QStringLiteral("false"));
-    DiagnosticsManager::instance()->publish(
-            DiagnosticsLevel::Info, DiagnosticsCategory::Task, QStringLiteral("BackendClient"),
-            QStringLiteral("Task created (%1)%2.")
-                    .arg(createResult.taskId,
-                         createResult.cacheHit ? QStringLiteral(", cache hit")
-                                               : QString()),
-            {}, this->m_sessionId, operationTag);
-    DiagnosticsManager::instance()->publish(
-            DiagnosticsLevel::Info, DiagnosticsCategory::Task, QStringLiteral("BackendClient"),
-            QStringLiteral("Polling task status."), {}, this->m_sessionId, operationTag);
 
-    for (int attempt = 0; attempt < maxPollAttempts; ++attempt) {
-        // Use a local QEventLoop driven by a single-shot QTimer instead of
-        // QThread::msleep so the thread can process queued Qt events while
-        // waiting. This prevents the thread pool slot from being locked in an
-        // unconditional sleep system call during long-running polls.
-        {
-            QEventLoop waitLoop;
-            QTimer::singleShot(pollIntervalMs, &waitLoop, &QEventLoop::quit);
-            waitLoop.exec();
-        }
-        const auto taskStatus = this->requestTaskStatus(createResult.taskId);
-        if (!taskStatus.valid && !taskStatus.status.isEmpty()
-            && taskStatus.status != QStringLiteral("failed")) {
-            qWarning().noquote()
-                    << QStringLiteral("%1 polling invalid task_id=%2 error=%3")
-                               .arg(logTag, createResult.taskId, taskStatus.error);
-            DiagnosticsManager::instance()->publish(
-                    DiagnosticsLevel::Warning, DiagnosticsCategory::Task,
-                    QStringLiteral("BackendClient"),
-                    QStringLiteral("Task polling failed: %1").arg(taskStatus.error), {},
-                    this->m_sessionId, operationTag);
-            return taskStatus;
-        }
-        qDebug().noquote()
-                << QStringLiteral("%1 poll task_id=%2 status=%3 progress=%4")
-                           .arg(logTag, createResult.taskId, taskStatus.status)
-                           .arg(taskStatus.progress, 0, 'f', 2);
-        if (taskStatus.status == QStringLiteral("completed")) {
-            qDebug().noquote()
-                    << QStringLiteral("%1 completed task_id=%2 cache_hit=%3")
-                               .arg(logTag, createResult.taskId)
-                               .arg(taskStatus.cacheHit ? QStringLiteral("true")
-                                                        : QStringLiteral("false"));
-            DiagnosticsManager::instance()->publish(
-                    DiagnosticsLevel::Info, DiagnosticsCategory::Task,
-                    QStringLiteral("BackendClient"),
-                    QStringLiteral("Task completed (%1)%2.")
-                            .arg(createResult.taskId,
-                                 taskStatus.cacheHit ? QStringLiteral(", cache hit")
-                                                     : QString()),
-                    {}, this->m_sessionId, operationTag);
-            return taskStatus;
-        }
-        if (taskStatus.status == QStringLiteral("failed")) {
-            qWarning().noquote()
-                    << QStringLiteral("%1 failed task_id=%2 error=%3")
-                               .arg(logTag, createResult.taskId, taskStatus.error);
-            DiagnosticsManager::instance()->publish(
-                    DiagnosticsLevel::Error, DiagnosticsCategory::Task,
-                    QStringLiteral("BackendClient"),
-                    QStringLiteral("Task failed (%1): %2")
-                            .arg(createResult.taskId, taskStatus.error),
-                    {}, this->m_sessionId, operationTag);
-            return taskStatus;
-        }
-    }
 
-    terminal.error = QStringLiteral("Task polling timed out.");
-    qWarning().noquote()
-            << QStringLiteral("%1 polling timed out task_id=%2").arg(logTag, createResult.taskId);
-    DiagnosticsManager::instance()->publish(
-            DiagnosticsLevel::Warning, DiagnosticsCategory::Task, QStringLiteral("BackendClient"),
-            QStringLiteral("Task polling timed out (%1).").arg(createResult.taskId), {},
-            this->m_sessionId, operationTag);
-    return terminal;
-}
 
 // ── Low-level HTTP ────────────────────────────────────────────────────────────
+
+namespace {
+/// Endpoints that go through the backend's heavy-task machinery. One list, two
+/// consumers: the long client timeout (see requestTimeoutFor) and the in-flight
+/// counter the status bar shows.
+const QStringList &heavyComputePaths()
+{
+    static const QStringList paths{
+        QStringLiteral("/spectral/linewidth"), QStringLiteral("/spectral/stack"),
+        QStringLiteral("/spectral/baseline"),  QStringLiteral("/products/isosurface"),
+        QStringLiteral("/products/moment"),    QStringLiteral("/products/map_math"),
+        QStringLiteral("/products/mosaic"),    QStringLiteral("/products/publication_figure"),
+        QStringLiteral("/products/image_quality"), QStringLiteral("/cube/pv"),
+        QStringLiteral("/cube/noise"),         QStringLiteral("/cube/mask"),
+        QStringLiteral("/velocity/"),          QStringLiteral("/kinematic"),
+        // Resampling an AREPO window is minutes of yt, not seconds: on the
+        // interactive timeout the client called a running job failed.
+        QStringLiteral("/simulations/arepo/extract"),
+        // Downloading and unpacking a batch of cutouts is minutes of
+        // archive time, not an interactive request.
+        QStringLiteral("/vlkb/mcutout/fetch"),
+    };
+    return paths;
+}
+
+bool isHeavyComputePath(const QString &path)
+{
+    for (const QString &fragment : heavyComputePaths())
+        if (path.contains(fragment))
+            return true;
+    return false;
+}
+
+/// Atomic: requests run from worker threads (each with its own QNAM).
+std::atomic<int> g_heavyInFlight{ 0 };
+
+/// RAII counter, so an early return or an exception cannot leak a count.
+struct HeavyRequestScope
+{
+    const bool counted;
+    explicit HeavyRequestScope(const QString &path) : counted(isHeavyComputePath(path))
+    {
+        if (counted)
+            ++g_heavyInFlight;
+    }
+    ~HeavyRequestScope()
+    {
+        if (counted)
+            --g_heavyInFlight;
+    }
+};
+}   // namespace
+
+int BackendClient::heavyRequestsInFlight()
+{
+    return g_heavyInFlight.load();
+}
 
 std::chrono::milliseconds BackendClient::requestTimeoutFor(const QUrl &url) const
 {
@@ -1843,9 +2761,58 @@ std::chrono::milliseconds BackendClient::requestTimeoutFor(const QUrl &url) cons
     if (path.endsWith(QStringLiteral("/cube/slice")) || path.endsWith(QStringLiteral("/image/preview"))) {
         return std::chrono::milliseconds(30000);
     }
-    if (path.endsWith(QStringLiteral("/vlkb/fetch_cutout"))) {
-        return std::chrono::milliseconds(300000); // FITS downloads can be large
+    // Server-side downloads: both of these stream a remote FITS through an
+    // urlopen(timeout=600) on the backend, so 300 s here had the client abort
+    // while the server was still allowed five more minutes — the same mismatch
+    // that broke the line-width map, in two more places (audit).
+    if (path.endsWith(QStringLiteral("/vlkb/fetch_cutout"))
+        || path.endsWith(QStringLiteral("/datasets/open_url"))) {
+        return std::chrono::milliseconds(660000); // 11 min > server 600 s
     }
+    // Source finding runs SoFiA-2 as a child process on the backend; on a
+    // multi-GB cube that is minutes. It fell through to the generic 120 s below,
+    // and the server had NO ceiling at all until this audit gave it one
+    // (VISIVO_SOFIA_TIMEOUT_S, 900 s) — so the client stays above that.
+    if (path.startsWith(QStringLiteral("/v1/sourcefind/"))) {
+        return std::chrono::milliseconds(960000); // 16 min > server 900 s
+    }
+    // Cube preview + subvolume can transfer multi-GB float32 payloads on
+    // SKA-scale datasets (10+ GB cubes, ROI crops up to a few GB). Even
+    // with backend-side zlib compression a 1.5 GB subvolume through an
+    // SSH tunnel can take 60-90 s steady-state. Bump these endpoints to
+    // 10 min so the operator doesn't see a spurious timeout while the
+    // tunnel is still streaming. Real performance work happens server-
+    // side (chunked dask reads, binary streaming) — this timeout is a
+    // safety net, not the optimisation.
+    if (path.endsWith(QStringLiteral("/cube/preview"))
+        || path.endsWith(QStringLiteral("/cube/subvolume"))
+        || path.endsWith(QStringLiteral("/cube/subvolume_bin"))
+        // Whole-cube stats stream the FULL-res cube once out-of-core server-side; on an
+        // SKA-scale cube that single pass can take minutes on slow storage / a tunnel.
+        || path.contains(QStringLiteral("/analysis/cube-stats"))) {
+        return std::chrono::milliseconds(600000); // 10 min
+    }
+    // Copilot query: the server enforces its own wall-clock budget
+    // (VISIVO_ASSISTANT_TIMEOUT_S, default 120 s) and returns a graceful 504.
+    // Keep the client timeout comfortably ABOVE it so the server's helpful
+    // message wins the race instead of a raw client abort.
+    if (path.contains(QStringLiteral("/assistant/query"))) {
+        return std::chrono::milliseconds(180000); // 3 min > server 120 s budget
+    }
+    // ── Heavy scientific compute ─────────────────────────────────────────────
+    // Same rule as the copilot endpoint above, which was the only place that
+    // followed it: the client timeout must sit ABOVE the server's own ceiling,
+    // so the server's answer (a result, or its graceful 504) wins the race.
+    //
+    // These endpoints go through the backend's `_run_heavy*`, bounded by
+    // VISIVO_HEAVY_TIMEOUT_S — 900 s by default. The generic 120 s below meant
+    // the client aborted a line-width map on a 1.5 GB cube after two minutes
+    // while the backend went on computing for up to fifteen, holding a session
+    // compute slot the whole time (which is then one of the three that answer
+    // 429 to the next tool). Measured on a 1046×952×398 cube: the client gave
+    // up, the work did not.
+    if (isHeavyComputePath(path))
+        return std::chrono::milliseconds(960000);   // 16 min > server 900 s
     return std::chrono::milliseconds(120000);
 }
 
@@ -2020,14 +2987,93 @@ BackendWorkspaceDeleteResult BackendClient::parseExportsDeleteObject(const QJson
 // Suppress publish-on-success for paths we don't want to flood the diagnostics
 // table with: the diagnostics poll itself (would loop), and the DataHub
 // health heartbeat (every few seconds). Failures are always logged.
+/// Short operation tag for the Diagnostics "Operation" column, derived from the
+/// path rather than from a table: "/v1/spectral/linewidth/binary" →
+/// "spectral/linewidth". Until now the column was filled ONLY by the async task
+/// poller, so it was blank for every synchronous compute — which is most of them
+/// (user report).
+QString BackendClient::operationTagForPath(const QString &path)
+{
+    QString p = path;
+    if (p.startsWith(QStringLiteral("/v1/")))
+        p = p.mid(4);
+    // Transport suffixes are not operations.
+    for (const QString &suffix : { QStringLiteral("/binary"), QStringLiteral("/bin"),
+                                   QStringLiteral("_bin") })
+        if (p.endsWith(suffix))
+            p.chop(suffix.size());
+    const QStringList parts = p.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    if (parts.isEmpty())
+        return {};
+    // Two segments read best ("products/isosurface"); a trailing id is noise, so
+    // a segment that is not a word is dropped.
+    QStringList keep;
+    for (const QString &seg : parts) {
+        static const QRegularExpression word(QStringLiteral("^[a-z][a-z0-9_\\-]*$"));
+        if (!word.match(seg).hasMatch())
+            break;
+        keep << seg;
+        if (keep.size() == 2)
+            break;
+    }
+    return keep.join(QLatin1Char('/'));
+}
+
+/// The dataset a request is about, for the "Context" column: from the JSON body
+/// of a POST, or the query string of a GET. Every call site passed an empty
+/// datasetId, so Context showed nothing but the session id.
+static QString _datasetIdForRequest(const QJsonDocument &body, const QUrl &url)
+{
+    if (body.isObject()) {
+        const QString id = body.object().value(QStringLiteral("dataset_id")).toString();
+        if (!id.isEmpty())
+            return id;
+    }
+    const QUrlQuery query(url);
+    return query.queryItemValue(QStringLiteral("dataset_id"));
+}
+
 static bool _isDiagnosticsQuietPath(const QString &path)
 {
+    // Anything the UI POLLS on a timer. One line per poll per window drowns the
+    // Diagnostics log in traffic nobody asked about: with the Data Hub open,
+    // /v1/exports/list alone is every 4 s, and during a multi-minute compute
+    // that was the only thing on screen — the compute's own two lines scrolled
+    // out of sight (user report). The requests still happen and still show up
+    // in the qWarning stream on failure; they just stop narrating success.
     return path.startsWith(QStringLiteral("/v1/diagnostics/"))
-        || path == QStringLiteral("/v1/health");
+        || path == QStringLiteral("/v1/health")
+        || path == QStringLiteral("/v1/exports/list");
 }
 
 QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
 {
+    // Counted while it runs (RAII), so the status bar can say "N running" for a
+    // synchronous compute — and announced when it STARTS, not only when it ends:
+    // the log used to be silent for the whole of a multi-minute job (user report).
+    const HeavyRequestScope heavyScope(url.path());
+    if (heavyScope.counted) {
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Info, DiagnosticsCategory::Backend,
+                QStringLiteral("BackendClient"),
+                QStringLiteral("%1 %2 started - this can take minutes on a large cube")
+                        .arg(QStringLiteral("GET"), url.path()),
+                _datasetIdForRequest(QJsonDocument(), url),
+                this->m_sessionId, BackendClient::operationTagForPath(url.path()));
+    }
+
+    // R3 consistency: when the backend never answered the mint we have no
+    // session, and sending state-bearing traffic under the fallback id would let
+    // a later successful mint split this client's datasets across two sessions.
+    // Such a request would almost certainly fail anyway (the backend is
+    // unreachable), so refuse it here and let the caller retry once minting
+    // works. Readiness polling stays exempt so callers can wait for the backend.
+    if (!m_baseUrl.isEmpty() && !_isSessionExemptPath(url.path())
+        && ensureSessionMinted() == SessionMint::Deferred) {
+        error = QStringLiteral("Backend session not established yet: %1 is unreachable.")
+                        .arg(m_baseUrl);
+        return {};
+    }
     QElapsedTimer perfTimer;
     perfTimer.start();
     QNetworkAccessManager *nam = getThreadLocalNam();
@@ -2065,7 +3111,9 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
             qWarning().noquote() << attemptError;
             DiagnosticsManager::instance()->publish(
                     DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
-                    QStringLiteral("BackendClient"), attemptError, {}, this->m_sessionId);
+                    QStringLiteral("BackendClient"), attemptError,
+                    _datasetIdForRequest(QJsonDocument(), url), this->m_sessionId,
+                    BackendClient::operationTagForPath(url.path()));
             reply->abort();
             loop.quit();
         });
@@ -2105,7 +3153,8 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
                                 .arg(status > 0 ? status : 200)
                                 .arg(perfTimer.elapsed())
                                 .arg(data.size()),
-                        {}, this->m_sessionId);
+                        _datasetIdForRequest(QJsonDocument(), url), this->m_sessionId,
+                        BackendClient::operationTagForPath(url.path()));
             }
             return data;
         }
@@ -2135,9 +3184,78 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
     return finalData;
 }
 
-QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body,
-                                      QString &error) const
+QByteArray BackendClient::performPostRetryingBackpressure(const QUrl &url,
+                                                          const QJsonDocument &body,
+                                                          QString &error,
+                                                          QMap<QString, QString> *responseHeaders,
+                                                          int attempts, int firstDelayMs) const
 {
+    int delay = std::max(50, firstDelayMs);
+    for (int attempt = 1;; ++attempt) {
+        int status = 0;
+        error.clear();
+        const QByteArray data = performPost(url, body, error, responseHeaders, &status,
+                                            /*announceStart=*/attempt == 1);
+        if (status != 429)
+            return data;   // success, or a failure that retrying cannot fix
+        if (attempt >= std::max(1, attempts)) {
+            // Out of attempts: say what happened in words, not as the server's
+            // JSON body — this is what the user reads.
+            error = QStringLiteral(
+                            "The backend is busy: every compute slot for this session is in "
+                            "use, and %1 was still refused after %2 attempts. Wait for the "
+                            "running computation to finish and try again.")
+                            .arg(url.path())
+                            .arg(attempt);
+            qWarning().noquote() << QStringLiteral("[backpressure] %1 gave up after %2 attempts")
+                                            .arg(url.path())
+                                            .arg(attempt);
+            return data;
+        }
+        qWarning().noquote()
+                << QStringLiteral("[backpressure] %1 → 429, retry %2/%3 in %4 ms")
+                           .arg(url.path())
+                           .arg(attempt + 1)
+                           .arg(attempts)
+                           .arg(delay);
+        QThread::msleep(static_cast<unsigned long>(delay));
+        delay = std::min(delay * 2, 4000);
+    }
+}
+
+QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body,
+                                      QString &error,
+                                      QMap<QString, QString> *responseHeaders,
+                                      int *statusOut, bool announceStart) const
+{
+    // Counted while it runs (RAII), so the status bar can say "N running" for a
+    // synchronous compute — and announced when it STARTS, not only when it ends:
+    // the log used to be silent for the whole of a multi-minute job (user report).
+    const HeavyRequestScope heavyScope(url.path());
+    if (heavyScope.counted && announceStart) {
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Info, DiagnosticsCategory::Backend,
+                QStringLiteral("BackendClient"),
+                QStringLiteral("%1 %2 started - this can take minutes on a large cube")
+                        .arg(QStringLiteral("POST"), url.path()),
+                _datasetIdForRequest(body, url),
+                this->m_sessionId, BackendClient::operationTagForPath(url.path()));
+    }
+
+    if (statusOut)
+        *statusOut = 0;
+    // R3 consistency: when the backend never answered the mint we have no
+    // session, and sending state-bearing traffic under the fallback id would let
+    // a later successful mint split this client's datasets across two sessions.
+    // Such a request would almost certainly fail anyway (the backend is
+    // unreachable), so refuse it here and let the caller retry once minting
+    // works. Readiness polling stays exempt so callers can wait for the backend.
+    if (!m_baseUrl.isEmpty() && !_isSessionExemptPath(url.path())
+        && ensureSessionMinted() == SessionMint::Deferred) {
+        error = QStringLiteral("Backend session not established yet: %1 is unreachable.")
+                        .arg(m_baseUrl);
+        return {};
+    }
     QElapsedTimer perfTimer;
     perfTimer.start();
     QNetworkAccessManager *nam = getThreadLocalNam();
@@ -2166,6 +3284,7 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
 
         QEventLoop loop;
         QNetworkReply *reply = nam->post(request, bodyBytes);
+        const bool wantHeaders = (responseHeaders != nullptr);
         QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
         QTimer timeoutTimer;
         timeoutTimer.setSingleShot(true);
@@ -2176,7 +3295,9 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
             qWarning().noquote() << attemptError;
             DiagnosticsManager::instance()->publish(
                     DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
-                    QStringLiteral("BackendClient"), attemptError, {}, this->m_sessionId);
+                    QStringLiteral("BackendClient"), attemptError,
+                    _datasetIdForRequest(body, url), this->m_sessionId,
+                    BackendClient::operationTagForPath(url.path()));
             reply->abort();
             loop.quit();
         });
@@ -2185,7 +3306,18 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
         timeoutTimer.stop();
 
         const QByteArray data = reply->readAll();
+        // Capture response headers (lower-cased keys) before the reply is deleted, so a caller
+        // that asked for them (line-width binary path reading X-*-Unit) can read them on success.
+        QMap<QString, QString> capturedHeaders;
+        if (wantHeaders) {
+            const auto pairs = reply->rawHeaderPairs();
+            for (const auto &hp : pairs)
+                capturedHeaders.insert(QString::fromLatin1(hp.first).toLower(),
+                                       QString::fromLatin1(hp.second));
+        }
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (statusOut)
+            *statusOut = status;   // 0 = transport failure
         if (attemptError.isEmpty() && reply->error() != QNetworkReply::NoError) {
             attemptError = reply->errorString();
         } else if (attemptError.isEmpty() && status >= 400) {
@@ -2216,8 +3348,11 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
                                 .arg(status > 0 ? status : 200)
                                 .arg(perfTimer.elapsed())
                                 .arg(data.size()),
-                        {}, this->m_sessionId);
+                        _datasetIdForRequest(body, url), this->m_sessionId,
+                        BackendClient::operationTagForPath(url.path()));
             }
+            if (responseHeaders)
+                *responseHeaders = capturedHeaders;
             return data;
         }
 
@@ -2255,713 +3390,65 @@ QByteArray BackendClient::decodePayload(const QJsonObject &object, const QString
 
 // ── HiPS ──────────────────────────────────────────────────────────────────────
 
-BackendHiPSSurveyInfo BackendClient::openHiPS(const QString &url)
-{
-    BackendHiPSSurveyInfo result;
-    const QJsonDocument body(QJsonObject{ { QStringLiteral("url"), url } });
-    QString error;
-    const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/hips/open")), body, error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
-    result.valid     = obj.value(QStringLiteral("valid")).toBool(false);
-    result.error     = obj.value(QStringLiteral("error")).toString();
-    result.surveyId  = obj.value(QStringLiteral("survey_id")).toString();
-    result.sessionId = obj.value(QStringLiteral("session_id")).toString();
-    result.baseUrl   = obj.value(QStringLiteral("base_url")).toString();
-    result.title     = obj.value(QStringLiteral("title")).toString();
-    result.frame     = obj.value(QStringLiteral("frame")).toString();
-    result.maxOrder  = obj.value(QStringLiteral("max_order")).toInt(9);
-    result.minOrder  = obj.value(QStringLiteral("min_order")).toInt(0);
-    result.tileWidth = obj.value(QStringLiteral("tile_width")).toInt(512);
-    for (const QJsonValue &v : obj.value(QStringLiteral("tile_formats")).toArray()) {
-        result.tileFormats.append(v.toString());
-    }
-    if (result.valid) {
-        // Echo the session id for subsequent calls on this client instance.
-        m_sessionId = result.sessionId;
-    }
-    return result;
-}
 
-QByteArray BackendClient::requestHiPSAllsky(const QString &surveyId, int order) const
-{
-    QUrl url(m_baseUrl + QStringLiteral("/v1/hips/") + surveyId
-             + QStringLiteral("/allsky"));
-    QUrlQuery q;
-    q.addQueryItem(QStringLiteral("order"), QString::number(order));
-    url.setQuery(q);
-    QString error;
-    const QByteArray data = performGet(url, error);
-    // Returns raw image bytes; caller checks for empty/error.
-    return data;
-}
 
-QByteArray BackendClient::requestHiPSTile(const QString &surveyId, int order, int pix) const
-{
-    const QUrl url(m_baseUrl + QStringLiteral("/v1/hips/") + surveyId
-                   + QStringLiteral("/tile/") + QString::number(order)
-                   + QStringLiteral("/") + QString::number(pix));
-    QString error;
-    return performGet(url, error);
-}
 
-BackendHiPSViewResponse BackendClient::requestHiPSTilesForView(const QString &surveyId,
-                                                               double raDeg, double decDeg,
-                                                               double fovDeg, int order) const
-{
-    BackendHiPSViewResponse result;
-    const QUrl url(m_baseUrl + QStringLiteral("/v1/hips/") + surveyId
-                   + QStringLiteral("/query_tiles"));
-    const QJsonDocument body(QJsonObject{
-            { QStringLiteral("survey_id"), surveyId },
-            { QStringLiteral("ra_center"),  raDeg   },
-            { QStringLiteral("dec_center"), decDeg  },
-            { QStringLiteral("fov_deg"),    fovDeg  },
-            { QStringLiteral("order"),      order   },
-    });
-    QString error;
-    const QByteArray payload = performPost(url, body, error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
-    result.valid = obj.value(QStringLiteral("valid")).toBool(false);
-    result.error = obj.value(QStringLiteral("error")).toString();
-    for (const QJsonValue &v : obj.value(QStringLiteral("tiles")).toArray()) {
-        const QJsonObject t = v.toObject();
-        BackendHiPSTileInfo info;
-        info.pix          = t.value(QStringLiteral("pix")).toInt();
-        info.order        = t.value(QStringLiteral("order")).toInt();
-        info.raCenterDeg  = t.value(QStringLiteral("ra_center")).toDouble();
-        info.decCenterDeg = t.value(QStringLiteral("dec_center")).toDouble();
-        const QJsonArray cra  = t.value(QStringLiteral("corners_ra")).toArray();
-        const QJsonArray cdec = t.value(QStringLiteral("corners_dec")).toArray();
-        for (int i = 0; i < 4; ++i) {
-            info.cornersRaDeg[i]  = cra.at(i).toDouble();
-            info.cornersDecDeg[i] = cdec.at(i).toDouble();
-        }
-        result.tiles.push_back(std::move(info));
-    }
-    return result;
-}
 
 // ── Milestone 2 ───────────────────────────────────────────────────────────────
 
-BackendCosmologyBatchResult BackendClient::requestCosmologyDistanceBatch(
-        const QVector<double> &redshifts, const QString &model) const
-{
-    BackendCosmologyBatchResult result;
-    const QUrl url(m_baseUrl + QStringLiteral("/v1/cosmology/distance/batch"));
-    QJsonArray zArr;
-    for (double z : redshifts)
-        zArr.append(z);
-    const QJsonDocument body(QJsonObject{
-            { QStringLiteral("redshifts"), zArr   },
-            { QStringLiteral("model"),     model  },
-    });
-    QString error;
-    const QByteArray payload = performPost(url, body, error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
-    result.valid = obj.value(QStringLiteral("valid")).toBool();
-    result.error = obj.value(QStringLiteral("error")).toString();
-    result.model = obj.value(QStringLiteral("model")).toString();
-    for (const QJsonValue &v : obj.value(QStringLiteral("distances_Mpc")).toArray())
-        result.distancesMpc.append(v.toDouble());
-    return result;
-}
 
-BackendTargetResolveResult BackendClient::resolveTarget(const QString &name) const
-{
-    BackendTargetResolveResult result;
-    const QUrl url(m_baseUrl + QStringLiteral("/v1/resolve/target"));
-    const QJsonDocument body(QJsonObject{
-            { QStringLiteral("name"), name },
-    });
-    QString error;
-    const QByteArray payload = performPost(url, body, error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
-    result.valid        = obj.value(QStringLiteral("valid")).toBool();
-    result.error        = obj.value(QStringLiteral("error")).toString();
-    result.raDeg        = obj.value(QStringLiteral("ra_deg")).toDouble();
-    result.decDeg       = obj.value(QStringLiteral("dec_deg")).toDouble();
-    result.resolvedName = obj.value(QStringLiteral("resolved_name")).toString();
-    result.source       = obj.value(QStringLiteral("source")).toString();
-    return result;
-}
 
-BackendHiPSCatalogueOverlayResult BackendClient::requestHiPSCatalogueOverlay(
-        const QString &cataloguePath, double raDeg, double decDeg, double fovDeg,
-        const QString &raField, const QString &decField, int maxSources) const
-{
-    BackendHiPSCatalogueOverlayResult result;
-    const QUrl url(m_baseUrl + QStringLiteral("/v1/hips/catalogue_overlay"));
-    QJsonObject bodyObj{
-            { QStringLiteral("catalogue_path"), cataloguePath },
-            { QStringLiteral("ra_center"),      raDeg         },
-            { QStringLiteral("dec_center"),     decDeg        },
-            { QStringLiteral("fov_deg"),        fovDeg        },
-            { QStringLiteral("max_sources"),    maxSources    },
-    };
-    if (!raField.isEmpty())  bodyObj[QStringLiteral("ra_field")]  = raField;
-    if (!decField.isEmpty()) bodyObj[QStringLiteral("dec_field")] = decField;
-    QString error;
-    const QByteArray payload = performPost(url, QJsonDocument(bodyObj), error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
-    result.valid       = obj.value(QStringLiteral("valid")).toBool();
-    result.error       = obj.value(QStringLiteral("error")).toString();
-    result.totalInView = obj.value(QStringLiteral("total_in_view")).toInt();
-    result.truncated   = obj.value(QStringLiteral("truncated")).toBool();
-    for (const QJsonValue &v : obj.value(QStringLiteral("sources")).toArray()) {
-        const QJsonObject s = v.toObject();
-        BackendHiPSCatalogueSource src;
-        src.raDeg  = s.value(QStringLiteral("ra")).toDouble();
-        src.decDeg = s.value(QStringLiteral("dec")).toDouble();
-        result.sources.append(src);
-    }
-    return result;
-}
 
 // ── VLKB ──────────────────────────────────────────────────────────────────────
 
-BackendVlkbFetchResult BackendClient::vlkbFetchCutout(const QString &sodaUrl,
-                                                        const QString &vlkbBearer) const
-{
-    BackendVlkbFetchResult result;
-    const QUrl url(m_baseUrl + QStringLiteral("/v1/vlkb/fetch_cutout"));
-    QJsonObject bodyObj{{ QStringLiteral("soda_url"), sodaUrl }};
-    if (!vlkbBearer.isEmpty())
-        bodyObj[QStringLiteral("vlkb_bearer")] = vlkbBearer;
-    QString error;
-    const QByteArray payload = performPost(url, QJsonDocument(bodyObj), error);
-    if (!error.isEmpty()) {
-        result.error = error;
-        return result;
-    }
-    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
-    result.valid = obj.value(QStringLiteral("valid")).toBool();
-    result.error = obj.value(QStringLiteral("error")).toString();
-    result.path  = obj.value(QStringLiteral("path")).toString();
-    return result;
-}
+
+// ── Region interchange (CRTF / DS9) ───────────────────────────────────────────
+
+
+
+
+
+
+// ── Advanced 2-D products (UC 3.2 / 3.3 / 1.3 / 4.2) ───────────────────────────
+
+
+
+
+
 
 // ── A-01: Aperture photometry ─────────────────────────────────────────────────
 
-BackendAperturePhotometryResult BackendClient::requestAperturePhotometry(
-        const QString &datasetId,
-        double raDeg, double decDeg,
-        double apertureArcsec,
-        double annulusInnerArcsec,
-        double annulusOuterArcsec,
-        int channel)
-{
-    BackendAperturePhotometryResult result;
-    QString error;
-    QJsonObject bodyObj{
-        { QStringLiteral("dataset_id"),           datasetId },
-        { QStringLiteral("ra_deg"),               raDeg },
-        { QStringLiteral("dec_deg"),              decDeg },
-        { QStringLiteral("aperture_arcsec"),      apertureArcsec },
-        { QStringLiteral("annulus_inner_arcsec"), annulusInnerArcsec },
-        { QStringLiteral("annulus_outer_arcsec"), annulusOuterArcsec },
-    };
-    if (channel >= 0)
-        bodyObj[QStringLiteral("channel")] = channel;
-    const QByteArray raw =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/photometry/aperture/") + datasetId),
-                        QJsonDocument(bodyObj), error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid               = obj.value(QStringLiteral("valid")).toBool();
-    result.error               = obj.value(QStringLiteral("error")).toString();
-    result.fluxJy              = obj.value(QStringLiteral("flux_jy")).toDouble();
-    result.fluxErrJy           = obj.value(QStringLiteral("flux_err_jy")).toDouble();
-    result.backgroundJyPerPix  = obj.value(QStringLiteral("background_jy_per_pix")).toDouble();
-    result.nPixAperture        = obj.value(QStringLiteral("n_pix_aperture")).toInt();
-    result.channel             = obj.value(QStringLiteral("channel")).toInt(-1);
-    result.pixX                = obj.value(QStringLiteral("pix_x")).toDouble();
-    result.pixY                = obj.value(QStringLiteral("pix_y")).toDouble();
-    result.pixelScaleArcsec    = obj.value(QStringLiteral("pixel_scale_arcsec")).toDouble();
-    return result;
-}
 
 // ── A-02: 2-D Gaussian source fitting ────────────────────────────────────────
 
-BackendGaussFit2DResult BackendClient::requestGaussFit2D(
-        const QString &datasetId,
-        double raDeg, double decDeg,
-        double boxArcsec,
-        int channel)
-{
-    BackendGaussFit2DResult result;
-    QString error;
-    QJsonObject bodyObj{
-        { QStringLiteral("dataset_id"), datasetId },
-        { QStringLiteral("ra_deg"),     raDeg },
-        { QStringLiteral("dec_deg"),    decDeg },
-        { QStringLiteral("box_arcsec"), boxArcsec },
-    };
-    if (channel >= 0)
-        bodyObj[QStringLiteral("channel")] = channel;
-    const QByteArray raw =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/photometry/gaussfit/") + datasetId),
-                        QJsonDocument(bodyObj), error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid               = obj.value(QStringLiteral("valid")).toBool();
-    result.error               = obj.value(QStringLiteral("error")).toString();
-    result.peakJyBeam          = obj.value(QStringLiteral("peak_jy_beam")).toDouble();
-    result.integratedFluxJy    = obj.value(QStringLiteral("integrated_flux_jy")).toDouble();
-    result.majorArcsec         = obj.value(QStringLiteral("major_arcsec")).toDouble();
-    result.minorArcsec         = obj.value(QStringLiteral("minor_arcsec")).toDouble();
-    result.paDeg               = obj.value(QStringLiteral("pa_deg")).toDouble();
-    result.fitRms              = obj.value(QStringLiteral("fit_rms")).toDouble();
-    result.centerPixX          = obj.value(QStringLiteral("center_pix_x")).toDouble();
-    result.centerPixY          = obj.value(QStringLiteral("center_pix_y")).toDouble();
-    result.background          = obj.value(QStringLiteral("background")).toDouble();
-    const QJsonValue dmaj = obj.value(QStringLiteral("deconvolved_major_arcsec"));
-    const QJsonValue dmin = obj.value(QStringLiteral("deconvolved_minor_arcsec"));
-    result.deconvolvedMajorArcsec = dmaj.isNull() ? std::numeric_limits<double>::quiet_NaN()
-                                                   : dmaj.toDouble();
-    result.deconvolvedMinorArcsec = dmin.isNull() ? std::numeric_limits<double>::quiet_NaN()
-                                                   : dmin.toDouble();
-    return result;
-}
 
 // ── A-03: WCS reprojection ────────────────────────────────────────────────────
 
-BackendReprojectResult BackendClient::requestReproject(
-        const QString &datasetId,
-        const QVariantMap &targetWcs,
-        int targetNy, int targetNx,
-        int order)
-{
-    BackendReprojectResult result;
-    QString error;
-    QJsonObject wcsObj;
-    for (auto it = targetWcs.constBegin(); it != targetWcs.constEnd(); ++it)
-        wcsObj.insert(it.key(), QJsonValue::fromVariant(it.value()));
-    const QJsonDocument body(QJsonObject{
-        { QStringLiteral("dataset_id"),   datasetId },
-        { QStringLiteral("target_wcs"),   wcsObj },
-        { QStringLiteral("target_shape"), QJsonArray{ targetNy, targetNx } },
-        { QStringLiteral("order"),        order },
-    });
-    const QByteArray raw =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/astrometry/reproject/") + datasetId),
-                        body, error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid         = obj.value(QStringLiteral("valid")).toBool();
-    result.error         = obj.value(QStringLiteral("error")).toString();
-    result.newDatasetId  = obj.value(QStringLiteral("new_dataset_id")).toString();
-    result.width         = obj.value(QStringLiteral("width")).toInt();
-    result.height        = obj.value(QStringLiteral("height")).toInt();
-    result.rangeMin      = obj.value(QStringLiteral("range_min")).toDouble();
-    result.rangeMax      = obj.value(QStringLiteral("range_max")).toDouble();
-    result.outputPath    = obj.value(QStringLiteral("output_path")).toString();
-    result.order         = obj.value(QStringLiteral("order")).toInt();
-    return result;
-}
 
 // ── A-04: Catalogue cross-match ───────────────────────────────────────────────
 
-BackendCrossmatchResult BackendClient::requestCrossmatch(
-        const QString &datasetId,
-        double radiusArcsec,
-        const QString &catalogue)
-{
-    BackendCrossmatchResult result;
-    QString error;
-    const QUrl url(m_baseUrl
-                   + QStringLiteral("/v1/astrometry/crossmatch/") + datasetId
-                   + QStringLiteral("?radius_arcsec=") + QString::number(radiusArcsec)
-                   + QStringLiteral("&catalogue=") + catalogue);
-    const QByteArray raw = performGet(url, error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid           = obj.value(QStringLiteral("valid")).toBool();
-    result.error           = obj.value(QStringLiteral("error")).toString();
-    result.nSources        = obj.value(QStringLiteral("n_sources")).toInt();
-    result.truncated       = obj.value(QStringLiteral("truncated")).toBool();
-    result.centreRaDeg     = obj.value(QStringLiteral("centre_ra_deg")).toDouble();
-    result.centreDecDeg    = obj.value(QStringLiteral("centre_dec_deg")).toDouble();
-    result.searchRadiusDeg = obj.value(QStringLiteral("search_radius_deg")).toDouble();
-    const QJsonArray srcArr = obj.value(QStringLiteral("sources")).toArray();
-    result.sources.reserve(srcArr.size());
-    for (const QJsonValue &v : srcArr) {
-        const QJsonObject so = v.toObject();
-        BackendCrossmatchSource src;
-        src.raDeg            = so.value(QStringLiteral("ra_deg")).toDouble();
-        src.decDeg           = so.value(QStringLiteral("dec_deg")).toDouble();
-        src.name             = so.value(QStringLiteral("name")).toString();
-        src.catalogueId      = so.value(QStringLiteral("catalogue_id")).toString();
-        src.separationArcsec = so.value(QStringLiteral("separation_arcsec")).toDouble();
-        result.sources.append(src);
-    }
-    return result;
-}
 
 // ── P-01: Stokes plane extraction ─────────────────────────────────────────────
 
-BackendStokesPlaneResult BackendClient::requestStokesPlane(
-        const QString &datasetId,
-        const QString &plane,
-        int channel)
-{
-    BackendStokesPlaneResult result;
-    QString error;
-    const QUrl url(m_baseUrl
-                   + QStringLiteral("/v1/stokes/") + datasetId
-                   + QStringLiteral("/binary?plane=") + plane
-                   + QStringLiteral("&channel=") + QString::number(channel));
-    const QByteArray raw = performGet(url, error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-
-    BinaryArrayResult frame;
-    int offset = 0;
-    if (!parseBinaryFrame(raw, offset, frame)) {
-        result.error = QStringLiteral("Failed to parse Stokes binary frame");
-        return result;
-    }
-    result.valid   = true;
-    result.plane   = plane;
-    result.channel = channel;
-    result.width   = frame.cols;
-    result.height  = frame.rows;
-    result.data    = frame.data;   // QByteArray of raw float32 LE bytes
-    // Compute range from float32 payload
-    if (!frame.data.isEmpty()) {
-        const int nFloats = frame.data.size() / static_cast<int>(sizeof(float));
-        const float *ptr = reinterpret_cast<const float *>(frame.data.constData());
-        result.rangeMin = *std::min_element(ptr, ptr + nFloats);
-        result.rangeMax = *std::max_element(ptr, ptr + nFloats);
-    }
-    return result;
-}
 
 // ── P-02: Polarised intensity and angle ───────────────────────────────────────
 
-BackendPolarisationPiResult BackendClient::requestPolarisationPi(
-        const QString &datasetId,
-        int channel,
-        const QVector<int> &lineFreeChannels)
-{
-    BackendPolarisationPiResult result;
-    QString error;
-
-    // Step 1: register PI+PA maps via JSON endpoint to get dataset IDs
-    QJsonArray lfcArr;
-    for (int ch : lineFreeChannels) lfcArr.append(ch);
-    const QJsonDocument regBody(QJsonObject{
-        { QStringLiteral("dataset_id"),       datasetId },
-        { QStringLiteral("channel"),          channel },
-        { QStringLiteral("line_free_channels"), lfcArr },
-    });
-    const QByteArray regRaw = performPost(
-            QUrl(m_baseUrl + QStringLiteral("/v1/polarisation/pi/") + datasetId),
-            regBody, error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-    const QJsonObject regObj = QJsonDocument::fromJson(regRaw).object();
-    if (!regObj.value(QStringLiteral("valid")).toBool()) {
-        result.error = regObj.value(QStringLiteral("error")).toString();
-        return result;
-    }
-    result.width        = regObj.value(QStringLiteral("width")).toInt();
-    result.height       = regObj.value(QStringLiteral("height")).toInt();
-    result.channel      = regObj.value(QStringLiteral("channel")).toInt();
-    result.sigmaQu2     = regObj.value(QStringLiteral("sigma_qu2")).toDouble();
-    result.piRangeMin   = static_cast<float>(regObj.value(QStringLiteral("pi_range_min")).toDouble());
-    result.piRangeMax   = static_cast<float>(regObj.value(QStringLiteral("pi_range_max")).toDouble());
-    result.paRangeMin   = static_cast<float>(regObj.value(QStringLiteral("pa_range_min")).toDouble());
-    result.paRangeMax   = static_cast<float>(regObj.value(QStringLiteral("pa_range_max")).toDouble());
-    result.piDatasetId  = regObj.value(QStringLiteral("pi_dataset_id")).toString();
-    result.paDatasetId  = regObj.value(QStringLiteral("pa_dataset_id")).toString();
-
-    // Step 2: fetch binary data (two concatenated frames: PI then PA)
-    const QJsonDocument binBody(QJsonObject{
-        { QStringLiteral("dataset_id"),       datasetId },
-        { QStringLiteral("channel"),          channel },
-        { QStringLiteral("line_free_channels"), lfcArr },
-    });
-    const QByteArray binRaw = performPost(
-            QUrl(m_baseUrl + QStringLiteral("/v1/polarisation/pi/result/binary")),
-            binBody, error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-
-    int offset = 0;
-    BinaryArrayResult piFrame, paFrame;
-    if (!parseBinaryFrame(binRaw, offset, piFrame)) {
-        result.error = QStringLiteral("Failed to parse PI binary frame");
-        return result;
-    }
-    if (!parseBinaryFrame(binRaw, offset, paFrame)) {
-        result.error = QStringLiteral("Failed to parse PA binary frame");
-        return result;
-    }
-    result.piData = QByteArray(reinterpret_cast<const char *>(piFrame.data.data()),
-                               static_cast<qsizetype>(piFrame.data.size() * sizeof(float)));
-    result.paData = QByteArray(reinterpret_cast<const char *>(paFrame.data.data()),
-                               static_cast<qsizetype>(paFrame.data.size() * sizeof(float)));
-    result.valid = true;
-    return result;
-}
 
 // ── P-03: Rotation Measure synthesis ──────────────────────────────────────────
 
-BackendRmSynthesisResult BackendClient::requestRmSynthesis(
-        const QString &datasetId,
-        double phiMin,
-        double phiMax,
-        double dPhi)
-{
-    BackendRmSynthesisResult result;
-    QString error;
-
-    // Step 1: get metadata (phi_grid, rmsf, shape) via JSON endpoint
-    const QJsonDocument metaBody(QJsonObject{
-        { QStringLiteral("dataset_id"),      datasetId },
-        { QStringLiteral("phi_range_rad_m2"), QJsonArray{ phiMin, phiMax } },
-        { QStringLiteral("dphi_rad_m2"),     dPhi },
-    });
-    const QByteArray metaRaw = performPost(
-            QUrl(m_baseUrl + QStringLiteral("/v1/polarisation/rmsynthesis/") + datasetId),
-            metaBody, error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-    const QJsonObject metaObj = QJsonDocument::fromJson(metaRaw).object();
-    if (!metaObj.value(QStringLiteral("valid")).toBool()) {
-        result.error = metaObj.value(QStringLiteral("error")).toString();
-        return result;
-    }
-    result.nPhi   = metaObj.value(QStringLiteral("n_phi")).toInt();
-    result.nFreq  = metaObj.value(QStringLiteral("n_freq")).toInt();
-    result.width  = metaObj.value(QStringLiteral("width")).toInt();
-    result.height = metaObj.value(QStringLiteral("height")).toInt();
-    result.phiMin = metaObj.value(QStringLiteral("phi_min")).toDouble();
-    result.phiMax = metaObj.value(QStringLiteral("phi_max")).toDouble();
-    result.dPhi   = metaObj.value(QStringLiteral("d_phi")).toDouble();
-    result.rangeMin = static_cast<float>(metaObj.value(QStringLiteral("range_min")).toDouble());
-    result.rangeMax = static_cast<float>(metaObj.value(QStringLiteral("range_max")).toDouble());
-    for (const QJsonValue &v : metaObj.value(QStringLiteral("phi_grid")).toArray())
-        result.phiGrid.append(v.toDouble());
-    for (const QJsonValue &v : metaObj.value(QStringLiteral("rmsf")).toArray())
-        result.rmsf.append(v.toDouble());
-
-    // Step 2: fetch binary FDF cube (nPhi*height rows × width cols float32)
-    const QJsonDocument binBody(QJsonObject{
-        { QStringLiteral("dataset_id"),      datasetId },
-        { QStringLiteral("phi_range_rad_m2"), QJsonArray{ phiMin, phiMax } },
-        { QStringLiteral("dphi_rad_m2"),     dPhi },
-    });
-    const QByteArray binRaw = performPost(
-            QUrl(m_baseUrl + QStringLiteral("/v1/polarisation/rmsynthesis/") + datasetId
-                 + QStringLiteral("/binary")),
-            binBody, error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-
-    int offset = 0;
-    BinaryArrayResult fdfFrame;
-    if (!parseBinaryFrame(binRaw, offset, fdfFrame)) {
-        result.error = QStringLiteral("Failed to parse FDF binary frame");
-        return result;
-    }
-    result.fdfData = QByteArray(reinterpret_cast<const char *>(fdfFrame.data.data()),
-                                static_cast<qsizetype>(fdfFrame.data.size() * sizeof(float)));
-    result.valid = true;
-    return result;
-}
 
 // ── C-01: Angular power spectrum ───────────────────────────────────────────────
 
-BackendAngularPowerResult BackendClient::requestAngularPower(
-        const QString &datasetId,
-        int channel,
-        int nBins)
-{
-    BackendAngularPowerResult result;
-    QString error;
-    const QJsonDocument body(QJsonObject{
-        { QStringLiteral("channel"), channel },
-        { QStringLiteral("n_bins"),  nBins },
-    });
-    const QByteArray raw =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cosmology/angular_power/") + datasetId),
-                        body, error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid      = obj.value(QStringLiteral("valid")).toBool();
-    result.error      = obj.value(QStringLiteral("error")).toString();
-    result.channel    = obj.value(QStringLiteral("channel")).toInt();
-    result.width      = obj.value(QStringLiteral("width")).toInt();
-    result.height     = obj.value(QStringLiteral("height")).toInt();
-    result.nBins      = obj.value(QStringLiteral("n_bins")).toInt();
-    result.kUnit      = obj.value(QStringLiteral("k_unit")).toString();
-    result.powerUnit  = obj.value(QStringLiteral("power_unit")).toString();
-    for (const QJsonValue &v : obj.value(QStringLiteral("k_bins")).toArray())
-        result.kBins.append(v.toDouble());
-    for (const QJsonValue &v : obj.value(QStringLiteral("power")).toArray())
-        result.power.append(v.toDouble());
-    return result;
-}
 
 // ── C-03: Skeleton / void detection ────────────────────────────────────────────
 
-BackendSkeletonResult BackendClient::requestSkeleton(
-        const QString &datasetId,
-        int channel,
-        double *threshold,
-        const QString &mode)
-{
-    BackendSkeletonResult result;
-    QString error;
-    QJsonObject reqObj;
-    reqObj.insert(QStringLiteral("channel"), channel);
-    reqObj.insert(QStringLiteral("mode"), mode);
-    if (threshold)
-        reqObj.insert(QStringLiteral("threshold"), *threshold);
-    else
-        reqObj.insert(QStringLiteral("threshold"), QJsonValue::Null);
-    const QJsonDocument body(reqObj);
-    const QByteArray raw =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/analysis/skeleton/") + datasetId
-                             + QStringLiteral("/binary")),
-                        body, error);
-    if (!error.isEmpty()) { result.error = error; return result; }
 
-    // Try binary parse; if it fails parse as JSON (503 error response)
-    if (raw.size() > 12) {
-        int offset = 0;
-        BinaryArrayResult frame;
-        if (parseBinaryFrame(raw, offset, frame)) {
-            result.valid          = true;
-            result.channel        = channel;
-            result.width          = frame.cols;
-            result.height         = frame.rows;
-            result.mode           = mode;
-            {
-                const int nFloats = frame.data.size() / static_cast<int>(sizeof(float));
-                const float *ptr = reinterpret_cast<const float *>(frame.data.constData());
-                result.nSkeletonPixels = static_cast<int>(
-                    std::count_if(ptr, ptr + nFloats, [](float v) { return v > 0.f; }));
-            }
-            result.data = frame.data;   // QByteArray of raw float32 LE bytes
-            return result;
-        }
-    }
-    // Fall back to JSON error
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.error   = obj.value(QStringLiteral("error")).toString();
-    result.install = obj.value(QStringLiteral("install")).toString();
-    result.feature = obj.value(QStringLiteral("feature")).toString();
-    return result;
-}
-
-// ── R-01: CARTA script export ──────────────────────────────────────────────────
-
-BackendCartaExportResult BackendClient::requestCartaExport(const QStringList &datasetIds)
-{
-    BackendCartaExportResult result;
-    QString error;
-    QJsonArray idsArr;
-    for (const QString &id : datasetIds) idsArr.append(id);
-    const QJsonDocument body(QJsonObject{
-        { QStringLiteral("dataset_ids"), idsArr },
-    });
-    const QByteArray raw =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/reproducibility/carta_script")),
-                        body, error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid      = obj.value(QStringLiteral("valid")).toBool();
-    result.error      = obj.value(QStringLiteral("error")).toString();
-    result.script     = obj.value(QStringLiteral("script")).toString();
-    result.nDatasets  = obj.value(QStringLiteral("n_datasets")).toInt();
-    return result;
-}
+// ── R-01: CARTA script export — RETIRED (feature removed; no backend route). ──
 
 // ── R-02: PROV-JSON provenance ─────────────────────────────────────────────────
 
-BackendProvJsonResult BackendClient::requestProvJson()
-{
-    BackendProvJsonResult result;
-    QString error;
-    const QByteArray raw = performGet(
-            QUrl(m_baseUrl + QStringLiteral("/v1/reproducibility/provenance")), error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid = obj.value(QStringLiteral("valid")).toBool();
-    result.error = obj.value(QStringLiteral("error")).toString();
-    result.prov  = obj.value(QStringLiteral("prov")).toObject();
-    return result;
-}
 
 // ── R-03: Parameter snapshots ──────────────────────────────────────────────────
 
-static BackendSnapshotListResult _parseSnapshotList(const QByteArray &raw)
-{
-    BackendSnapshotListResult result;
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid    = obj.value(QStringLiteral("valid")).toBool();
-    result.error    = obj.value(QStringLiteral("error")).toString();
-    result.nEntries = obj.value(QStringLiteral("n_entries")).toInt();
-    for (const QJsonValue &v : obj.value(QStringLiteral("history")).toArray()) {
-        const QJsonObject e = v.toObject();
-        BackendSnapshotEntry entry;
-        entry.operation = e.value(QStringLiteral("operation")).toString();
-        entry.datasetId = e.value(QStringLiteral("dataset_id")).toString();
-        entry.timestamp = e.value(QStringLiteral("timestamp")).toString();
-        const QJsonObject paramsObj = e.value(QStringLiteral("params")).toObject();
-        for (auto it = paramsObj.constBegin(); it != paramsObj.constEnd(); ++it)
-            entry.params.insert(it.key(), it.value().toVariant());
-        result.history.append(entry);
-    }
-    return result;
-}
 
-BackendSnapshotListResult BackendClient::listSnapshots()
-{
-    BackendSnapshotListResult result;
-    QString error;
-    const QByteArray raw = performGet(
-            QUrl(m_baseUrl + QStringLiteral("/v1/reproducibility/snapshots")), error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-    return _parseSnapshotList(raw);
-}
 
-BackendSnapshotListResult BackendClient::recordSnapshot(
-        const QString &operation,
-        const QString &datasetId,
-        const QVariantMap &params)
-{
-    BackendSnapshotListResult result;
-    QString error;
-    QJsonObject paramsObj;
-    for (auto it = params.constBegin(); it != params.constEnd(); ++it)
-        paramsObj.insert(it.key(), QJsonValue::fromVariant(it.value()));
-    const QJsonDocument body(QJsonObject{
-        { QStringLiteral("operation"),  operation },
-        { QStringLiteral("dataset_id"), datasetId },
-        { QStringLiteral("params"),     paramsObj },
-    });
-    const QByteArray raw = performPost(
-            QUrl(m_baseUrl + QStringLiteral("/v1/reproducibility/snapshots")),
-            body, error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-    return _parseSnapshotList(raw);
-}

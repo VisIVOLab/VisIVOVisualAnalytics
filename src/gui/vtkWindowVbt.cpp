@@ -1,9 +1,15 @@
 #include "vtkWindowVbt.h"
 
+#include "ColormapIcon.h"
 #include "app/DiagnosticsManager.h"
 #include "app/ThemeManager.h"
 #include "DiagnosticsWindow.h"
 #include "theme/VisivoTheme.h"
+#include <QDockWidget>
+#include <QHeaderView>
+#include <QTableWidget>
+#include "WorkspaceChrome.h"
+#include "InspectorPanel.h"
 
 #include <QApplication>
 #include <QKeySequence>
@@ -52,7 +58,9 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
-#include "SidebarPanel.h"
+#include "AssistantPanel.h"
+#include "CopilotActionRouter.h"
+#include <vtkCamera.h>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStackedWidget>
@@ -69,27 +77,7 @@
 
 using namespace Qt::StringLiterals;
 
-/// Build a gradient QIcon that previews a named colormap (80×14 px).
-static QIcon makeColormapIcon(const std::string &name, int iconW = 80, int iconH = 14)
-{
-    vtkNew<vtkLookupTable> lut;
-    lut->SetNumberOfTableValues(256);
-    lut->SetTableRange(0.0, 1.0);
-    ColorMaps::SetColorMap(lut.Get(), name);
-    lut->Build();
-    QImage img(iconW, iconH, QImage::Format_RGB32);
-    for (int x = 0; x < iconW; ++x) {
-        const int tableIdx = static_cast<int>(x * 255.0 / std::max(1, iconW - 1));
-        double rgba[4];
-        lut->GetTableValue(tableIdx, rgba);
-        const QRgb c = qRgb(static_cast<int>(rgba[0] * 255.0),
-                            static_cast<int>(rgba[1] * 255.0),
-                            static_cast<int>(rgba[2] * 255.0));
-        for (int y = 0; y < iconH; ++y)
-            img.setPixel(x, y, c);
-    }
-    return QIcon(QPixmap::fromImage(img));
-}
+// makeColormapIcon now lives in the shared ColormapIcon.{h,cpp}.
 
 /// Returns true when @p errorText looks like a backend session-expiry error.
 static bool isSessionExpiryError(const QString &errorText)
@@ -185,6 +173,7 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
     this->yFieldName = findCoordField(this->openResult.fields, u"y"_s);
     this->zFieldName = findCoordField(this->openResult.fields, u"z"_s);
     this->setupUi();
+    this->setupViewerChrome();
     this->setupRenderer();
     this->buildPointCloud();
     this->updateColorMapping();
@@ -363,6 +352,26 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
                          // Session recovered — update IDs and retry load-more.
                          this->openResult.datasetId = result.datasetId;
                          this->sessionId            = result.sessionId;
+                         if (this->m_copilot) {
+                             this->m_copilot->setDatasetId(this->openResult.datasetId);
+                             // And the ROUTER has to learn the new id too, or the
+                             // copilot's own directives — colour, camera — are
+                             // addressed to a dataset nothing answers for and are
+                             // dropped without a word.
+                             CopilotActionRouter::instance()->registerTarget(
+                                     this->openResult.datasetId, this,
+                                     [this](const QList<QJsonObject> &acts) {
+                                         this->applyCopilotActions(acts);
+                                     },
+                                     [this]() { this->undoCopilotActions(); });
+                         }
+                         // The status rail and the Inspector named the expired
+                         // session until the window was closed.
+                         if (this->m_workspaceChrome)
+                             this->m_workspaceChrome->setSessionId(this->sessionId);
+                         if (this->m_propSession)
+                             InspectorPanel::applyValueStyle(this->m_propSession,
+                                                             this->sessionId);
                          if (this->filterStatusLabel)
                              this->filterStatusLabel->setText({});
                          this->loadMoreEntries();
@@ -372,7 +381,7 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
 void vtkWindowVbt::setupUi()
 {
     this->setAttribute(Qt::WA_DeleteOnClose);
-    this->setWindowTitle(QStringLiteral("VBT Point Viewer — %1 rows, %2 fields")
+    this->setWindowTitle(QStringLiteral("VBT Point Viewer - %1 rows, %2 fields")
                                  .arg(this->openResult.numRows)
                                  .arg(this->openResult.fields.size()));
     this->resize(1280, 800);
@@ -385,7 +394,6 @@ void vtkWindowVbt::setupUi()
     rootLayout->setContentsMargins(0, 0, 0, 0);
 
     this->setupSidebarUi();
-    rootLayout->addWidget(this->m_sidebar);
 
     this->vtkWidget = new QVTKOpenGLNativeWidget(central);
     rootLayout->addWidget(this->vtkWidget, 1);
@@ -536,9 +544,23 @@ void vtkWindowVbt::setupUi()
 
     // ── View menu ─────────────────────────────────────────────────────────────
     auto *viewMenu = this->menuBar()->addMenu(u"View"_s);
-    this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
-            u"Controls Sidebar"_s, this);
+    this->m_actionSessionPanel = new QAction(u"Session Data Panel"_s, this);
+    this->m_actionSessionPanel->setCheckable(true);
+    this->m_actionSessionPanel->setChecked(true);
+    viewMenu->addAction(this->m_actionSessionPanel);
+    QObject::connect(this->m_actionSessionPanel, &QAction::toggled, this, [this](bool checked) {
+        if (this->m_workspaceChrome)
+            this->m_workspaceChrome->setSessionCollapsed(!checked);
+    });
+    this->actionShowControlsSidebar = new QAction(u"Inspector Panel"_s, this);
+    this->actionShowControlsSidebar->setCheckable(true);
+    this->actionShowControlsSidebar->setChecked(true);
     viewMenu->addAction(this->actionShowControlsSidebar);
+    QObject::connect(this->actionShowControlsSidebar, &QAction::toggled, this,
+                     [this](bool checked) {
+                         if (this->m_workspaceChrome)
+                             this->m_workspaceChrome->setInspectorCollapsed(!checked);
+                     });
 
     // ── Diagnostics + Command Palette (replicated across windows) ────────────
     viewMenu->addSeparator();
@@ -592,7 +614,7 @@ void vtkWindowVbt::setupSidebarUi()
 
     // makeValueLabel: right-aligned, selectable, monospace value label.
     const auto makeValLabel = [&valStyle](QWidget *parent = nullptr) -> QLabel* {
-        auto *lbl = new QLabel(u"—"_s, parent);
+        auto *lbl = new QLabel(u"-"_s, parent);
         lbl->setStyleSheet(valStyle);
         lbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         lbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -840,7 +862,7 @@ void vtkWindowVbt::setupSidebarUi()
 
         // Static rows (set once at construction)
         const QString fileName = this->m_headerPath.isEmpty()
-                ? u"—"_s : QFileInfo(this->m_headerPath).fileName();
+                ? u"-"_s : QFileInfo(this->m_headerPath).fileName();
         auto *fileVal = new QLabel(fileName, inner);
         fileVal->setStyleSheet(valStyle);
         fileVal->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -984,12 +1006,19 @@ void vtkWindowVbt::setupSidebarUi()
     pageInfoLayout->addWidget(this->metadataLabel);
     pageInfoLayout->addStretch(1);
 
-    // ── Wire pages into SidebarPanel ──────────────────────────────────────────
-    this->m_sidebar = new SidebarPanel(320, this);
-    this->m_sidebar->addPage(u":/icons/rail_display.svg"_s, u"Display"_s,    pageDisplay);
-    this->m_sidebar->addPage(u":/icons/rail_filter.svg"_s,  u"Filters"_s,   pageFilters);
-    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s,   u"Info / Stats"_s, pageInfo);
-    this->m_sidebar->finalize(0);
+    // ── Scientific copilot page ───────────────────────────────────────────────
+    // Grounded Q&A over the loaded VBT (vbt_summary tool) plus reversible colormap
+    // and camera control. The dataset id is known at construction.
+    // The copilot is the Inspector's own tab (installCopilot), and the pages go
+    // into the two docks — see setupWorkspaceDocks(), called from the
+    // constructor right after this.
+    this->m_pageDisplay = pageDisplay;
+    this->m_pageFilters = pageFilters;
+    this->m_pageInfo = pageInfo;
+    for (QWidget *page : { pageDisplay, pageFilters, pageInfo }) {
+        page->setParent(this);
+        page->hide();
+    }
 }
 
 void vtkWindowVbt::applyFilter()
@@ -1064,7 +1093,7 @@ void vtkWindowVbt::applyFilter()
                                 ? QStringLiteral("Loaded %1 of %2 rows.")
                                           .arg(queryResult.returnedRows)
                                           .arg(queryResult.totalRows)
-                                : QStringLiteral("%1 filter(s) active — %2 of %3 rows.")
+                                : QStringLiteral("%1 filter(s) active, %2 of %3 rows.")
                                           .arg(nFilters)
                                           .arg(queryResult.returnedRows)
                                           .arg(queryResult.totalRows);
@@ -1138,7 +1167,7 @@ void vtkWindowVbt::loadMoreEntries()
 void vtkWindowVbt::autoReopenThenLoadMore()
 {
     if (this->filterStatusLabel)
-        this->filterStatusLabel->setText(u"Session expired — reconnecting\u2026"_s);
+        this->filterStatusLabel->setText(u"Session expired, reconnecting\u2026"_s);
     if (this->btnLoadMore) {
         this->btnLoadMore->setEnabled(false);
         this->btnLoadMore->setText(u"Reconnecting\u2026"_s);
@@ -1625,6 +1654,121 @@ void vtkWindowVbt::resetView()
     this->renderWindow->Render();
 }
 
+void vtkWindowVbt::applyCopilotActions(const QList<QJsonObject> &actions)
+{
+    // Which directives can this point/volume view act on?
+    // (colormap + colour field + camera.)
+    bool batchSetsColormap = false;
+    bool batchSetsColorField = false;
+    bool batchResetsCamera = false;
+    for (const QJsonObject &a : actions) {
+        const QString t = a.value(u"type"_s).toString();
+        if (t == u"set_colormap"_s)
+            batchSetsColormap = true;
+        else if (t == u"set_color_field"_s)
+            batchSetsColorField = true;
+        else if (t == u"reset_camera"_s)
+            batchResetsCamera = true;
+    }
+    if (!batchSetsColormap && !batchSetsColorField && !batchResetsCamera)
+        return;   // nothing applicable — leave any prior Undo point untouched
+
+    // Fresh snapshot of the affected state BEFORE this batch, so "Undo latest
+    // change" reverts exactly this batch (matching the cube/image model). Only
+    // capture what the batch actually touches, so undo can't clobber the user's
+    // own camera/colormap moves made between two copilot batches.
+    vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
+    this->m_copilotUndo = CopilotUndo{};
+    if (batchSetsColormap && this->comboColormap) {
+        this->m_copilotUndo.colormapName = this->comboColormap->currentText();
+        this->m_copilotUndo.colormapCaptured = true;
+    }
+    if (batchSetsColorField && this->comboColorField) {
+        this->m_copilotUndo.colorFieldIndex = this->comboColorField->currentIndex();
+        this->m_copilotUndo.colorFieldCaptured = true;
+    }
+    if (batchResetsCamera && camera) {
+        camera->GetPosition(this->m_copilotUndo.position);
+        camera->GetFocalPoint(this->m_copilotUndo.focalPoint);
+        camera->GetViewUp(this->m_copilotUndo.viewUp);
+        this->m_copilotUndo.parallelScale = camera->GetParallelScale();
+        this->m_copilotUndo.cameraCaptured = true;
+    }
+
+    for (const QJsonObject &a : actions) {
+        const QString type = a.value(u"type"_s).toString();
+        if (type == u"set_colormap"_s && this->comboColormap) {
+            const QString name = a.value(u"name"_s).toString().trimmed();
+            if (name.isEmpty())
+                continue;
+            // Case-insensitive match against the available colour maps; ignore an
+            // unknown name rather than blanking the current map.
+            int idx = -1;
+            for (int i = 0; i < this->comboColormap->count(); ++i) {
+                if (this->comboColormap->itemText(i).compare(name, Qt::CaseInsensitive) == 0) {
+                    idx = i;
+                    break;
+                }
+            }
+            if (idx >= 0)
+                this->comboColormap->setCurrentIndex(idx);   // triggers updateColorMapping()
+        } else if (type == u"set_color_field"_s && this->comboColorField) {
+            const QString field = a.value(u"field"_s).toString().trimmed();
+            if (field.isEmpty())
+                continue;
+            // Prefer a real field (item data = field name, non-empty) so a field
+            // named like the "Solid color" sentinel still resolves to the column;
+            // fall back to the display text. Ignore an unknown field.
+            int idx = -1;
+            for (int i = 0; i < this->comboColorField->count(); ++i) {
+                const QString data = this->comboColorField->itemData(i).toString();
+                if (!data.isEmpty() && data.compare(field, Qt::CaseInsensitive) == 0) {
+                    idx = i;
+                    break;
+                }
+            }
+            if (idx < 0) {
+                for (int i = 0; i < this->comboColorField->count(); ++i) {
+                    if (this->comboColorField->itemText(i).compare(field, Qt::CaseInsensitive) == 0) {
+                        idx = i;
+                        break;
+                    }
+                }
+            }
+            if (idx >= 0)
+                this->comboColorField->setCurrentIndex(idx);   // triggers recolour
+        } else if (type == u"reset_camera"_s && camera) {
+            this->resetView();
+        }
+    }
+}
+
+void vtkWindowVbt::undoCopilotActions()
+{
+    if (this->m_copilotUndo.colormapCaptured && this->comboColormap) {
+        const int idx = this->comboColormap->findText(this->m_copilotUndo.colormapName);
+        if (idx >= 0)
+            this->comboColormap->setCurrentIndex(idx);   // triggers updateColorMapping()
+        this->m_copilotUndo.colormapCaptured = false;
+    }
+    if (this->m_copilotUndo.colorFieldCaptured && this->comboColorField) {
+        const int idx = this->m_copilotUndo.colorFieldIndex;
+        if (idx >= 0 && idx < this->comboColorField->count())
+            this->comboColorField->setCurrentIndex(idx);   // triggers recolour
+        this->m_copilotUndo.colorFieldCaptured = false;
+    }
+    vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
+    if (this->m_copilotUndo.cameraCaptured && camera) {
+        camera->SetPosition(this->m_copilotUndo.position);
+        camera->SetFocalPoint(this->m_copilotUndo.focalPoint);
+        camera->SetViewUp(this->m_copilotUndo.viewUp);
+        camera->SetParallelScale(this->m_copilotUndo.parallelScale);
+        this->m_copilotUndo.cameraCaptured = false;
+        this->renderer->ResetCameraClippingRange();
+        this->renderWindow->Render();
+    }
+}
+
 void vtkWindowVbt::updateSummary()
 {
     // ── Display page: compact status line ────────────────────────────────────
@@ -1649,28 +1793,182 @@ void vtkWindowVbt::updateSummary()
 
     // ── Info page: Card 2 — Mapping ───────────────────────────────────────────
     const auto fieldOrNone = [](const QString &s) {
-        return s.isEmpty() ? QStringLiteral("—") : s;
+        return s.isEmpty() ? QStringLiteral("-") : s;
     };
     if (this->m_infoXVal)      this->m_infoXVal->setText(fieldOrNone(this->xFieldName));
     if (this->m_infoYVal)      this->m_infoYVal->setText(fieldOrNone(this->yFieldName));
     if (this->m_infoZVal)      this->m_infoZVal->setText(fieldOrNone(this->zFieldName));
     if (this->m_infoScalarVal) this->m_infoScalarVal->setText(
-            colorTxt == u"solid"_s ? u"—"_s : colorTxt);
+            colorTxt == u"solid"_s ? u"-"_s : colorTxt);
 
     // ── Info page: Card 3 — Data Range / Stats ────────────────────────────────
     const bool hasData = (this->dataScalarMin < this->dataScalarMax
                           || this->subsetResult.numRows > 0);
     if (this->m_infoDataMinVal)
         this->m_infoDataMinVal->setText(
-                hasData ? QString::number(this->dataScalarMin, 'g', 7) : u"—"_s);
+                hasData ? QString::number(this->dataScalarMin, 'g', 7) : u"-"_s);
     if (this->m_infoDataMaxVal)
         this->m_infoDataMaxVal->setText(
-                hasData ? QString::number(this->dataScalarMax, 'g', 7) : u"—"_s);
+                hasData ? QString::number(this->dataScalarMax, 'g', 7) : u"-"_s);
     if (this->m_infoMeanVal)
         this->m_infoMeanVal->setText(
-                hasData ? QString::number(this->dataScalarMean, 'g', 7) : u"—"_s);
+                hasData ? QString::number(this->dataScalarMean, 'g', 7) : u"-"_s);
     if (this->m_infoRangeMinVal)
         this->m_infoRangeMinVal->setText(QString::number(this->activeScalarMin, 'g', 7));
     if (this->m_infoRangeMaxVal)
         this->m_infoRangeMaxVal->setText(QString::number(this->activeScalarMax, 'g', 7));
+}
+
+
+// ── Shared viewer chrome ─────────────────────────────────────────────────────
+//
+// The same command bar and status rail as the image, cube and volume viewers.
+
+void vtkWindowVbt::setupViewerChrome()
+{
+    VisivoTheme::ViewerToolbarSpec spec;
+    spec.filePath = this->m_headerPath;
+    spec.primaryTag = QStringLiteral("VBT · %1 rows").arg(this->openResult.numRows);
+    spec.secondaryTag = QStringLiteral("remote · %1 fields").arg(this->openResult.fields.size());
+
+    VisivoTheme::ViewerToolbarWidgets widgets;
+    this->m_workspaceChrome = WorkspaceChrome::installCommandBar(
+            this, spec, this->backendUrl, this->backendToken, this->sessionId, &widgets);
+    if (!this->m_workspaceChrome)
+        return;
+    if (widgets.primaryTag) {
+        widgets.primaryTag->setToolTip(QStringLiteral("The VBT header: fields, rows, type."));
+        QObject::connect(widgets.primaryTag, &QToolButton::clicked, this,
+                         [this]() { this->showVbtHeaderDialog(); });
+    }
+    this->m_workspaceChrome->installStatusRail();
+    this->setupWorkspaceDocks();
+    this->m_workspaceChrome->start();
+}
+
+void vtkWindowVbt::setupWorkspaceDocks()
+{
+    WorkspaceChrome *chrome = this->m_workspaceChrome;
+    if (!chrome)
+        return;
+    const QFileInfo info(this->m_headerPath);
+    chrome->installSessionDock(this->m_headerPath, info.fileName(), u"vbt"_s);
+    if (this->m_pageDisplay) {
+        this->m_pageDisplay->show();
+        chrome->addSessionLayers(this->m_pageDisplay);
+    }
+
+    InspectorPanel *panel = chrome->installInspectorDock();
+    if (!panel)
+        return;
+    panel->clearProperties();
+    panel->addPropertyRow(u"Dataset"_s, info.fileName());
+    panel->addPropertyRow(u"Type"_s, u"VBT POINTS"_s);
+    panel->addPropertyRow(u"Rows"_s, QString::number(this->openResult.numRows));
+    panel->addPropertyRow(u"Fields"_s, QString::number(this->openResult.fields.size()));
+    panel->addPropertyRow(u"Scalar type"_s, this->openResult.scalarType);
+    panel->addPropertyRow(u"Path"_s, this->m_headerPath);
+    // Held, because recovery from an expired session replaces it.
+    this->m_propSession = new QLabel;
+    InspectorPanel::applyValueStyle(this->m_propSession, this->sessionId);
+    panel->addPropertyRow(u"Session"_s, this->m_propSession);
+    panel->addPropertyRow(u"Backend"_s, this->backendUrl);
+    if (this->m_pageInfo) {
+        this->m_pageInfo->show();
+        panel->addPropertiesSection(this->m_pageInfo);
+    }
+    // Filtering the table is an analysis of it, not a view setting.
+    if (this->m_pageFilters) {
+        this->m_pageFilters->show();
+        panel->addAnalysisSection(this->m_pageFilters);
+    }
+
+    if (!this->backendUrl.isEmpty()) {
+        this->m_copilot = chrome->installCopilot(this->backendUrl, this->backendToken,
+                                                 this->openResult.datasetId);
+        if (this->m_copilot) {
+            this->m_copilot->setSuggestions({
+                    u"How many points and what fields does this table have?"_s,
+                    u"Colour it by the density field"_s });
+            CopilotActionRouter::instance()->registerTarget(
+                    this->openResult.datasetId, this,
+                    [this](const QList<QJsonObject> &acts) { this->applyCopilotActions(acts); },
+                    [this]() { this->undoCopilotActions(); });
+        }
+    }
+
+    if (this->m_actionSessionPanel) {
+        QSignalBlocker block(this->m_actionSessionPanel);
+        this->m_actionSessionPanel->setChecked(!chrome->sessionCollapsed());
+    }
+    if (this->actionShowControlsSidebar) {
+        QSignalBlocker block(this->actionShowControlsSidebar);
+        this->actionShowControlsSidebar->setChecked(!chrome->inspectorCollapsed());
+    }
+    QObject::connect(chrome, &WorkspaceChrome::dockCollapseChanged, this, [this]() {
+        if (!this->m_workspaceChrome)
+            return;
+        if (this->m_actionSessionPanel) {
+            QSignalBlocker block(this->m_actionSessionPanel);
+            this->m_actionSessionPanel->setChecked(!this->m_workspaceChrome->sessionCollapsed());
+        }
+        if (this->actionShowControlsSidebar) {
+            QSignalBlocker block(this->actionShowControlsSidebar);
+            this->actionShowControlsSidebar->setChecked(
+                    !this->m_workspaceChrome->inspectorCollapsed());
+        }
+    });
+}
+
+void vtkWindowVbt::showVbtHeaderDialog()
+{
+    auto *dlg = new QDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowModality(Qt::NonModal);
+    dlg->setWindowTitle(QStringLiteral("VBT Header - %1")
+                                .arg(QFileInfo(this->m_headerPath).fileName()));
+    dlg->resize(520, 460);
+
+    auto *layout = new QVBoxLayout(dlg);
+    layout->setContentsMargins(16, 14, 16, 14);
+    layout->setSpacing(10);
+
+    auto *header = new QLabel(QStringLiteral("VBT Header"), dlg);
+    header->setStyleSheet(VisivoTheme::sidebarHeaderStyleSheet());
+    layout->addWidget(header);
+
+    // Which fields are the POSITIONS decides where every point is drawn, the
+    // same way the coordinate columns do in a catalogue, so they are named
+    // rather than left for the reader to spot in the list.
+    auto *summary = new QLabel(
+            QStringLiteral("%1 rows · %2 fields · %3\nPositions: %4 / %5 / %6")
+                    .arg(this->openResult.numRows)
+                    .arg(this->openResult.fields.size())
+                    .arg(this->openResult.scalarType)
+                    .arg(this->xFieldName.isEmpty() ? QStringLiteral("—") : this->xFieldName,
+                         this->yFieldName.isEmpty() ? QStringLiteral("—") : this->yFieldName,
+                         this->zFieldName.isEmpty() ? QStringLiteral("—") : this->zFieldName),
+            dlg);
+    summary->setStyleSheet(VisivoTheme::infoValueStyleSheet());
+    layout->addWidget(summary);
+
+    auto *table = new QTableWidget(static_cast<int>(this->openResult.fields.size()), 1, dlg);
+    table->setHorizontalHeaderLabels({ QStringLiteral("Field") });
+    table->verticalHeader()->setVisible(false);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->horizontalHeader()->setStretchLastSection(true);
+    for (int row = 0; row < static_cast<int>(this->openResult.fields.size()); ++row)
+        table->setItem(row, 0, new QTableWidgetItem(this->openResult.fields[row].name));
+    layout->addWidget(table, 1);
+
+    auto *path = new QLabel(this->m_headerPath, dlg);
+    path->setStyleSheet(VisivoTheme::infoKeyStyleSheet());
+    path->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    path->setWordWrap(true);
+    layout->addWidget(path);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dlg);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
+    layout->addWidget(buttons);
+    dlg->show();
 }

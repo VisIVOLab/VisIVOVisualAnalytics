@@ -13,6 +13,9 @@
 #include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QLabel>
+#include "ToolDialogClose.h"
+#include "ToolProgressSheet.h"
+
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSpinBox>
@@ -129,8 +132,24 @@ LinewidthDialog::LinewidthDialog(const QString &backendUrl,
 
     // ── Method ───────────────────────────────────────────────────────────────
     m_methodCombo = new QComboBox(central);
-    m_methodCombo->addItem(u"FWHM"_s,             u"fwhm"_s);
-    m_methodCombo->addItem(u"Equivalent Width"_s, u"ew"_s);
+    // Three methods, because the cost differs by orders of magnitude and the
+    // dialog used to hide that: the Gaussian fit runs one scipy curve_fit PER
+    // PIXEL (~10⁶ on a 1046×952 cube — minutes), while both other entries are
+    // vectorised over the whole chunk (seconds). The equivalent width never
+    // needed a fit at all: it is M0/peak, computed the same way on both paths,
+    // so asking for it used to pay for a million fits whose result was then
+    // discarded by this very dialog (audit).
+    m_methodCombo->addItem(u"FWHM, Gaussian fit (slow, exact)"_s, u"fwhm"_s);
+    m_methodCombo->addItem(u"FWHM, moment-2 dispersion (fast)"_s, u"fwhm_fast"_s);
+    m_methodCombo->addItem(u"Equivalent width (fast, no fit)"_s,   u"ew"_s);
+    m_methodCombo->setToolTip(
+            u"FWHM (Gaussian fit): 2.3548·σ from a per-pixel Gaussian + baseline fit. "
+            u"Exact for Gaussian-like emission, and the only one that costs a fit per "
+            u"pixel.\n\n"
+            u"FWHM (moment-2): 2.3548·√M2, the intensity-weighted velocity dispersion. "
+            u"Vectorised, so seconds instead of minutes; it differs from the fit where "
+            u"the profile is non-Gaussian (double-horned, self-absorbed, blended).\n\n"
+            u"Equivalent width: M0/peak, a model-free width. Needs no fit either way."_s);
     form->addRow(u"Method"_s, m_methodCombo);
 
     // ── Rest frequency ────────────────────────────────────────────────────────
@@ -194,9 +213,14 @@ LinewidthDialog::LinewidthDialog(const QString &backendUrl,
 
 void LinewidthDialog::closeEvent(QCloseEvent *event)
 {
-    // Accept immediately.  If a worker is in-flight it completes on the thread
-    // pool, but the finished() handler checks QPointer<LinewidthDialog> and
-    // returns without touching any UI once this object is gone.
+    // A worker in flight completes on the thread pool and its finished() handler
+    // discards the result (the QPointer to this dialog is null by then). That is
+    // correct but used to be silent — see ToolDialogClose.h for what the user is
+    // now told, and why "cancel" is not among the options.
+    if (m_busy && !visivo::confirmAbandonRunningCompute(this, u"Line-Width Map"_s, u"The line-width map"_s)) {
+        event->ignore();
+        return;
+    }
     event->accept();
 }
 
@@ -246,12 +270,25 @@ void LinewidthDialog::onCompute()
     const QString datasetId    = m_datasetId;
     const bool    maskEnabled  = m_maskCheck->isChecked();
     const float   threshold    = static_cast<float>(m_thresholdSpin->value());
-    const QString method       = m_methodCombo->currentData().toString();
+    const QString methodData   = m_methodCombo->currentData().toString();
+    // "fwhm_fast" and "ew" both take the backend's vectorised path; only the
+    // exact Gaussian fit pays per pixel.
+    const bool    fastPath     = (methodData != u"fwhm"_s);
+    // Which of the two returned frames to show: FWHM for both fwhm variants.
+    const QString method       = methodData.startsWith(u"fwhm"_s) ? u"fwhm"_s : u"ew"_s;
 
     m_busy = true;
     const int requestId = ++m_currentRequestId;
     setUiBusy(true);
-    statusBar()->showMessage(u"Computing line-width map…"_s);
+    statusBar()->showMessage(
+            fastPath ? u"Computing line-width map (vectorised)…"_s
+                     : u"Computing line-width map, one Gaussian fit per pixel, this takes "
+                       u"minutes on a large cube…"_s);
+    // …and the house progress sheet on top, so the work is visible without
+    // reading the dialog's status bar (ToolProgressSheet.h).
+    m_progressSheet = visivo::showToolProgressSheet(
+            this, fastPath ? u"Computing the line-width map"_s
+                           : u"Computing the line-width map, one Gaussian fit per pixel"_s);
 
     // ── Watcher: no parent so its lifetime is controlled by deleteLater() ─────
     auto *watcher = new QFutureWatcher<BackendLinewidthResult>();
@@ -267,6 +304,7 @@ void LinewidthDialog::onCompute()
         if (!self) {
             return;
         }
+        visivo::closeToolProgressSheet(self->m_progressSheet);
 
         // ── Newer request superseded this one — discard stale result ──────────
         if (requestId != self->m_currentRequestId) {
@@ -323,7 +361,7 @@ void LinewidthDialog::onCompute()
         // ── Guard against empty result ────────────────────────────────────────
         if (result.width == 0 || result.height == 0) {
             const QString emptyMsg =
-                    u"Result is empty — all pixels failed to fit.\n"
+                    u"Result is empty, all pixels failed to fit.\n"
                     u"Try widening the channel range or lowering the threshold."_s;
             QMessageBox::warning(self, u"Line-Width Map"_s, emptyMsg);
             DiagnosticsManager::instance()->publish(
@@ -363,31 +401,27 @@ void LinewidthDialog::onCompute()
                 ? u"FWHM"_s + (unit.isEmpty() ? QString() : u" ["_s + unit + u"]"_s)
                 : u"EW"_s   + (unit.isEmpty() ? QString() : u" ["_s + unit + u"]"_s);
 
-        auto *win = new ScienceMapWindow(label,
-                                         frame.data,
-                                         result.width,
-                                         result.height,
-                                         rangeMin,
-                                         rangeMax,
-                                         /* parent */ nullptr);
-        win->show();
+        // #5: the map is a first-class PANE product now, not a standalone window — hand the
+        // raw float map to the caller (vtkWindowCube), which caches + registers + mounts it.
+        emit self->mapReady(frame.data, result.width, result.height, rangeMin, rangeMax, label,
+                            unit);
 
         self->statusBar()->showMessage(
-                u"Done — %1 map: %2 × %3 px"_s.arg(label).arg(result.width).arg(result.height),
+                u"Done, %1 map: %2 × %3 px"_s.arg(label).arg(result.width).arg(result.height),
                 8000);
     });
 
     // ── Worker: creates its own BackendClient, captures only value types ──────
     // No raw pointers, no `this`, no `[&]`, no shared mutable state.
     watcher->setFuture(QtConcurrent::run(
-            [backendUrl, backendToken, sessionId, datasetId,
-             chanStart, chanEnd, maskEnabled, threshold, restFreqHz]() -> BackendLinewidthResult {
+            [backendUrl, backendToken, sessionId, datasetId, chanStart, chanEnd, maskEnabled,
+             threshold, restFreqHz, fastPath]() -> BackendLinewidthResult {
                 BackendClient localClient(backendUrl, backendToken);
                 localClient.setSessionId(sessionId);
                 return localClient.fetchLinewidthBinary(datasetId,
                                                         chanStart, chanEnd,
                                                         maskEnabled, threshold,
-                                                        restFreqHz);
+                                                        restFreqHz, fastPath);
             }));
 }
 

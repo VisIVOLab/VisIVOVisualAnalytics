@@ -221,7 +221,7 @@ void PvDiagramWidget::buildHeaderUi()
         auto *keyLbl = new QLabel(key + u":"_s);
         keyLbl->setStyleSheet(
                 u"color: %1; font-size: 11px; background: transparent;"_s.arg(tKey()));
-        labelOut = new QLabel(u"—"_s);
+        labelOut = new QLabel(u"-"_s);
         // Mono value font + selectable, same as ToolResultDialog values.
         labelOut->setStyleSheet(
                 u"color: %1; font-size: 11px; background: transparent; "
@@ -252,9 +252,9 @@ void PvDiagramWidget::buildHeaderUi()
 void PvDiagramWidget::updateHeaderUi(const PvPathInfo &info)
 {
     if (m_lblStart)    m_lblStart->setText(info.startPoint.isEmpty()
-                                          ? u"—"_s : info.startPoint);
+                                          ? u"-"_s : info.startPoint);
     if (m_lblEnd)      m_lblEnd->setText(info.endPoint.isEmpty()
-                                        ? u"—"_s : info.endPoint);
+                                        ? u"-"_s : info.endPoint);
     if (m_lblVertices) m_lblVertices->setText(QString::number(info.vertexCount));
     if (m_lblLength)   m_lblLength->setText(
                                QString::number(info.lengthPixels, 'f', 2) + u" px"_s);
@@ -263,7 +263,7 @@ void PvDiagramWidget::updateHeaderUi(const PvPathInfo &info)
                                QString::number(info.widthPixels) + u" px"_s);
     if (m_lblSpectral) m_lblSpectral->setText(
                                info.spectralAxisLabel.isEmpty()
-                               ? u"—"_s : info.spectralAxisLabel);
+                               ? u"-"_s : info.spectralAxisLabel);
     if (m_lblSpatial)  m_lblSpatial->setText(
                                info.spatialUnit.isEmpty()
                                ? u"pixels"_s : info.spatialUnit);
@@ -273,7 +273,7 @@ void PvDiagramWidget::updateHeaderUi(const PvPathInfo &info)
                     QString::number(info.pixelScaleArcsecPerPixel, 'g', 6)
                     + u" arcsec/px"_s);
         else
-            m_lblScale->setText(u"—"_s);
+            m_lblScale->setText(u"-"_s);
     }
 }
 

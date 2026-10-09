@@ -33,10 +33,13 @@
 #include "MomentMapComputeTask.h"
 
 #include <QObject>
+#include <QPointer>
 
 #include <functional>
 
 class QWidget;
+class QProgressDialog;
+class QDialog;
 
 class MomentMapController : public QObject
 {
@@ -50,8 +53,11 @@ public:
         int order{ 0 };
         int channelStart{ 0 };
         int channelEnd{ 0 };
-        bool maskEnabled{ false };
+        // Mask ON with an auto (~3·σ) threshold by default: M1/M2 need masking
+        // to be physically clean, and CASA/SoFiA mask by default too.
+        bool maskEnabled{ true };
         double thresholdValue{ 0.0 };
+        bool thresholdAuto{ true };
     };
 
     // onRunFinished – called when the watcher transitions busy state:
@@ -92,16 +98,37 @@ public:
     // Empty if the last computation succeeded or none has run yet.
     const QString &lastError() const { return m_lastError; }
 
+    // Stateless provenance-string formatters (used by the Inspector › Provenance
+    // params too, so exposed publicly — §3.0b).
+    static QString describeMomentOrder(int order);
+    static QString describeMomentScope();
+
+signals:
+    /// A computation has actually STARTED (Compute pressed and validated), with
+    /// the accepted config. The settings window is non-modal now, so the caller
+    /// cannot learn this by checking isBusy() right after opening it — which is
+    /// what requestMomentMode() and setMomentOrder() used to do, and why the
+    /// Computing card and the start diagnostics stopped happening.
+    void computationStarted(const MomentMapController::Config &config);
+
 public slots:
     // Opens the dialog with defaultOrder pre-selected; if accepted, dispatches
     // the async computation.  Re-entrancy-safe: no-op if already running.
     void startComputation(int defaultOrder);
 
-private:
-    bool configureMomentDialog(int defaultOrder, Config &config);
+    // Compute + display a moment map WITHOUT the dialog, from an explicit Config
+    // (the scientific copilot's compute_moment action). Channels are clamped to
+    // the cube depth; an empty range means the full cube. Same worker + product
+    // registration path as the interactive flow.
+    void startComputationHeadless(Config config);
 
-    static QString describeMomentOrder(int order);
-    static QString describeMomentScope();
+private:
+    void dispatch(const Config &config);   ///< async compute for a resolved Config (shared)
+    /// Open (or raise) the persistent Moment Map Settings window. Compute runs
+    /// from inside it: the window stays open across the run, carries its own
+    /// progress sheet and is ready for the next set of parameters, which is how
+    /// every other tool dialog behaves.
+    void openMomentDialog(int defaultOrder, Config config, bool restoredFromLastSession);
     static QString formatMomentChannelRange(const Config &config);
 
     const QString m_filepath;
@@ -120,6 +147,12 @@ private:
     Config m_currentConfig;
     int m_currentRequestId{ 0 };
     bool m_busy{ false };
+    /// The window-modal progress sheet for the INTERACTIVE path only (the
+    /// copilot's headless dispatch leaves it null). See ToolProgressSheet.h.
+    QPointer<QProgressDialog> m_progressSheet;
+    /// The settings window, kept alive between runs (WA_DeleteOnClose clears
+    /// this QPointer when the user closes it).
+    QPointer<QDialog> m_configDialog;
     QString m_lastError;
 };
 

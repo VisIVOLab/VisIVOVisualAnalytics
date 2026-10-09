@@ -10,8 +10,9 @@ From: python:3.12-slim
     Apptainer/Singularity image for the VisIVO backend (FastAPI + astropy + VTK).
 
     ── Quick start ──────────────────────────────────────────────────────────────
-    # Build
-    apptainer build backend.sif apptainer/backend.def
+    # Build (RUN FROM REPO ROOT — paths in %files are relative to cwd)
+    cd VisIVO-next
+    apptainer build --fakeroot backend.sif apptainer/backend.def
 
     # Run (token auto-generated and printed to stdout)
     apptainer run --bind /path/to/data:/data backend.sif
@@ -29,44 +30,209 @@ From: python:3.12-slim
 %environment
     export LC_ALL=C.UTF-8
     export LANG=C.UTF-8
-    # Worker processes for CPU-bound FITS/VTK operations (default: nproc)
-    export VISIVO_WORKERS=${VISIVO_WORKERS:-0}
+    # Worker processes for CPU-bound FITS/VTK operations. We deliberately
+    # do NOT export a default here — the backend's ``app/dependencies.py``
+    # uses ``int(os.environ.get('VISIVO_WORKERS', '4'))`` and would
+    # crash on ``ProcessPoolExecutor(max_workers=0)`` if we set 0 here.
+    # Users can still override at runtime with VISIVO_WORKERS=<N>.
     # Session idle-timeout in seconds (default 30 min)
     export VISIVO_SESSION_TTL=${VISIVO_SESSION_TTL:-1800}
+
+    # ─── Compute-next-to-data path jail ────────────────────────────────
+    # When set, the /v1/datasets/open_skava endpoint refuses to open
+    # files outside this directory tree. The desktop client supplies
+    # the file:// URL it got from SKAVA; this jail is the second line
+    # of defence against client-side path traversal.
+    #
+    # Strongly recommended in production:
+    #   APPTAINERENV_VISIVO_DATA_ROOT=/data \\
+    #   apptainer run --bind /data:/data backend.sif
 
 %post
     set -e
 
     # ── System deps ──────────────────────────────────────────────────────────
+    # Build-time toolchain for any scientific package that ships only an
+    # sdist for ppc64le (numba, healpy, photutils' C extensions, scipy).
+    # On x86_64 most wheels are pre-built so these are unused; on ppc64le
+    # they save the build from failing on missing compilers / BLAS / HDF5.
     apt-get update -qq
     apt-get install -y --no-install-recommends \
+        build-essential \
         gcc \
+        g++ \
+        gfortran \
+        make \
+        automake \
+        autoconf \
+        libtool \
+        cmake \
         libffi-dev \
         libssl-dev \
+        libhdf5-dev \
+        libopenblas-dev \
+        liblapack-dev \
+        libfftw3-dev \
+        libcfitsio-dev \
+        pkg-config \
         && rm -rf /var/lib/apt/lists/*
 
     # ── Python deps ──────────────────────────────────────────────────────────
     pip install --no-cache-dir --upgrade pip
 
-    # Install backend requirements from the embedded copy (see %files).
-    pip install --no-cache-dir \
-        "fastapi>=0.115" \
-        "uvicorn[standard]>=0.30" \
-        "astropy>=6.1" \
-        "numpy>=2.0" \
-        "vtk>=9.4"
+    # ─── Locate the requirements file ─────────────────────────────────────
+    # Apptainer's %files block normally places ``backend`` into
+    # ``/srv/backend_src``, but the exact resulting layout depends on
+    # how the source was specified (with or without trailing slash) and
+    # whether the destination existed beforehand. Be defensive: find the
+    # ``requirements.txt`` wherever Apptainer ended up putting it, then
+    # use its parent directory as the source root.
+    REQS=$(find /srv/backend_src -name requirements.txt -print -quit 2>/dev/null)
+    if [ -z "$REQS" ]; then
+        echo "ERROR: requirements.txt not found anywhere under /srv/backend_src"
+        echo "Listing /srv/backend_src contents (depth 3):"
+        ls -la /srv/backend_src/ || true
+        find /srv/backend_src -maxdepth 3 -type f | head -40 || true
+        exit 1
+    fi
+    SRC_DIR=$(dirname "$REQS")
+    echo "[backend.def] Source root resolved to: $SRC_DIR"
+
+    # ─── Architecture-aware install ───────────────────────────────────────
+    # Two packages in requirements.txt have no usable installation path
+    # on ppc64le from PyPI and we strip them here:
+    #
+    #   * vtk      — no ppc64le wheel; building from source would take
+    #                ~1 h. The backend uses VTK only inside
+    #                worker_isosurface() with a lazy import, so the
+    #                /v1/cube/isosurface endpoint surfaces a clear "VTK
+    #                not installed" error; every other endpoint works.
+    #
+    #   * numba / llvmlite — llvmlite is strict 1:1 with LLVM major and
+    #                Debian trixie ships LLVM 19, but no llvmlite release
+    #                supports 19 (0.42-0.44 want 14-17, 0.45+ wants 20).
+    #                Backend code in app/compute.py already wraps numba
+    #                imports in try/except: when missing, @njit becomes a
+    #                no-op and prange becomes range, so moment kernels
+    #                run in pure Python (slower but correct). With
+    #                ENABLE_CUPY=1 below, those kernels are bypassed
+    #                entirely in favor of the GPU path.
+    #
+    # If a Power9 deployment needs the JIT-compiled numpy path
+    # specifically, build the backend-conda.def variant instead — it
+    # uses conda-forge which has prebuilt llvmlite/numba for ppc64le.
+    REQS_FILTERED=/srv/requirements-ppc64le.txt
+    grep -vE '^(vtk|numba|llvmlite)' "$REQS" > "$REQS_FILTERED"
+    echo "[backend.def] Installing from filtered requirements:"
+    cat "$REQS_FILTERED"
+
+    pip install --no-cache-dir -r "$REQS_FILTERED"
+
+    # ─── Optional: dask[distributed] for cross-node parallelism ───────────
+    # Always installed — Power9 SRC testbed scenarios use it to spread
+    # heavy compute across N nodes via VISIVO_DASK_SCHEDULER. Pure Python,
+    # zero cost when unused.
+    pip install --no-cache-dir "dask[distributed]>=2024.1.0"
+
+    # ─── Optional: cupy (NVIDIA GPU) ──────────────────────────────────────
+    # Set ENABLE_CUPY=1 in the build environment to install cupy. Power9
+    # + V100/A100 via NVLink is the flagship use case and gives 10-50×
+    # speedups for moment maps / channel maps on multi-GB cubes. cupy has
+    # no wheel on PyPI for ppc64le, but conda-forge does — we use the
+    # pre-built ppc64le wheel from rapids.ai's nightly index. Requires
+    # CUDA runtime libraries on the host (the container links against
+    # libcudart at runtime via --nv flag of apptainer).
+    if [ "${ENABLE_CUPY:-0}" = "1" ]; then
+        echo "[backend.def] ENABLE_CUPY=1 → installing cupy-cuda12x for ppc64le"
+        pip install --no-cache-dir \
+            --extra-index-url https://pypi.anaconda.org/rapidsai-wheels-nightly/simple \
+            cupy-cuda12x || \
+        echo "[backend.def] WARN: cupy install failed — GPU acceleration disabled"
+    else
+        echo "[backend.def] ENABLE_CUPY not set → skipping GPU acceleration"
+    fi
 
     # ── Copy application source ───────────────────────────────────────────────
     mkdir -p /app
-    cp -r /tmp/backend_src/* /app/
+    cp -r "$SRC_DIR"/* /app/
 
     # ── Sanity check ─────────────────────────────────────────────────────────
     python -c "import fastapi, astropy, numpy; print('Import OK')"
 
-%files
-    # Copy the backend source into the build context.
-    # Apptainer resolves paths relative to the definition file directory.
-    ../backend /tmp/backend_src
+%setup
+    # %setup runs on the HOST (not inside the container being built) with
+    # direct access to the host filesystem via ${PWD} and to the
+    # in-progress container rootfs via ${APPTAINER_ROOTFS} (or
+    # ${SINGULARITY_ROOTFS} on older versions).
+    #
+    # Using %setup instead of %files avoids the path-resolution problems
+    # we've seen with Apptainer 1.x not finding relative sources from
+    # the %files block when the cp is invoked from inside the build
+    # sandbox.
+    #
+    # Sources are resolved in this order:
+    #   1. $VISIVO_BACKEND_SRC env var (highest priority — set this
+    #      to an absolute path before ``apptainer build`` if the
+    #      auto-detection below ever fails)
+    #   2. ${PWD}/backend  (build launched from repo root — recommended)
+    #   3. ${PWD}/../backend (build launched from apptainer/ subdir)
+    #
+    # Recommended invocation:
+    #   cd VisIVO-next                 # repo root
+    #   apptainer build --fakeroot backend.sif apptainer/backend.def
+    #
+    # If %setup isn't honored (some Apptainer security profiles disallow
+    # host-side scripts), the fallback is to pre-stage manually:
+    #   sudo cp -r backend /tmp/visivo_backend_src
+    # and set VISIVO_BACKEND_SRC=/tmp/visivo_backend_src.
+    set -ex
+    ROOTFS="${APPTAINER_ROOTFS:-${SINGULARITY_ROOTFS:-}}"
+    if [ -z "$ROOTFS" ]; then
+        echo "########## ERROR ##########"
+        echo "Neither APPTAINER_ROOTFS nor SINGULARITY_ROOTFS is set."
+        echo "Your Apptainer version may have disabled %setup; try:"
+        echo "  apptainer build --fakeroot --no-mount tmp backend.sif apptainer/backend.def"
+        echo "or downgrade to a release that supports host-side %setup."
+        echo "###########################"
+        exit 1
+    fi
+    SRC="${VISIVO_BACKEND_SRC:-}"
+    if [ -z "$SRC" ] || [ ! -d "$SRC" ]; then
+        if [ -d "${PWD}/backend" ]; then
+            SRC="${PWD}/backend"
+        elif [ -d "${PWD}/../backend" ]; then
+            SRC="${PWD}/../backend"
+        else
+            echo "########## ERROR ##########"
+            echo "backend/ source directory not found."
+            echo "Tried (in order):"
+            echo "  \$VISIVO_BACKEND_SRC = '${VISIVO_BACKEND_SRC:-(unset)}'"
+            echo "  ${PWD}/backend"
+            echo "  ${PWD}/../backend"
+            echo ""
+            echo "Fix: cd to the repo root before running apptainer build,"
+            echo "or export VISIVO_BACKEND_SRC=/absolute/path/to/backend."
+            echo "###########################"
+            exit 1
+        fi
+    fi
+    echo "[%setup] PWD=${PWD}"
+    echo "[%setup] Staging backend source from: $SRC"
+    echo "[%setup] Target rootfs: $ROOTFS"
+    mkdir -p "$ROOTFS/srv/backend_src"
+    cp -r "$SRC"/. "$ROOTFS/srv/backend_src/"
+    echo "[%setup] Top-level files staged:"
+    ls -la "$ROOTFS/srv/backend_src/" | head -20
+    if [ ! -f "$ROOTFS/srv/backend_src/requirements.txt" ]; then
+        echo "########## ERROR ##########"
+        echo "requirements.txt NOT FOUND after copy. cp may have failed silently."
+        echo "Source was: $SRC"
+        echo "Source listing:"
+        ls -la "$SRC" | head -20
+        echo "###########################"
+        exit 1
+    fi
+    echo "[%setup] OK — requirements.txt present, %post can proceed."
 
 %runscript
     #!/bin/bash
@@ -85,11 +251,24 @@ From: python:3.12-slim
 
 %test
     python -c "
-import sys
+import sys, platform
 sys.path.insert(0, '/app')
 from app.auth import TOKEN
 from app.sessions import REGISTRY
+print(f'[test] Architecture: {platform.machine()}')
 print(f'[test] Auth module OK. Token length: {len(TOKEN)}')
 print(f'[test] Sessions module OK.')
+# Smoke test the scientific stack
+import numpy, scipy, astropy, healpy
+print(f'[test] numpy {numpy.__version__}, scipy {scipy.__version__}, '
+      f'astropy {astropy.__version__}, healpy {healpy.__version__}')
+# VTK is optional on this build (no ppc64le wheel) — the isosurface
+# endpoint is the only consumer and surfaces a clear error if called.
+try:
+    import vtk
+    print(f'[test] vtk {vtk.vtkVersion.GetVTKVersion()} available')
+except ImportError:
+    print('[test] vtk not installed — isosurface endpoint disabled, '
+          'every other endpoint works normally.')
 print('[test] All checks passed.')
 "

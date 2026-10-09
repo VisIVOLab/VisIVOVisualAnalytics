@@ -92,18 +92,11 @@ QToolButton *CubeUiAssembler::makeSidebarButton(const QString &label)
     return makeSidebarToolButton(label);
 }
 
-static const QString kInfoCardStyle =
-        u"QFrame {"
-        u"  background: rgba(255,255,255,0.04);"
-        u"  border: 1px solid rgba(4,138,191,0.18);"
-        u"  border-radius: 4px;"
-        u"}"_s;
-
 // ── Inspector (sidebar "Inspector" page) — visual tokens matching the
 // ── Observatory Console design: flat sections separated by 1px dividers,
 // ── KV rows with muted label / monospace value, optional file badge header.
 // ──
-// ── See docs/architecture-note.md "Cube viewer — interactive extras" for the
+// ── See docs/architecture-note.md "Cube viewer (`vtkWindowCube`) — interactive extras" for the
 // ── higher-level rationale.
 
 /// Section divider: a `QFrame` with a single bottom hairline border.
@@ -181,9 +174,6 @@ static QString kInspectorBadgeStyle()
             "  border-radius: 3px;"
             "}");
 }
-
-static const QString kInfoRoStyle =
-        u"QLineEdit[readOnly='true'] { color: #7AAABB; }"_s;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Construction
@@ -461,6 +451,8 @@ QWidget *CubeUiAssembler::build2dViewPage()
         const auto names = ColorMaps::GetColorMapNames();
         for (const auto &stdName : names) {
             const QString qName = QString::fromStdString(stdName);
+            if (qName == u"MinMax"_s)
+                continue;   // MinMax is a range mode, not a colormap (§5.4b)
             m_comboSliceLut->addItem(QIcon(buildLutPreview(qName, 48, 12)), qName);
         }
         const QString defaultName = QString::fromStdString(ColorMaps::DefaultColorMap);
@@ -544,7 +536,8 @@ QWidget *CubeUiAssembler::build2dViewPage()
         auto *info = new QLabel(
                 u"No moment map available.\nOpen Compute \u2192 Moment Map\nto generate one."_s);
         info->setWordWrap(true);
-        info->setStyleSheet(u"QLabel { color: #7AAABB; font-size: 9px; }"_s);
+        info->setStyleSheet(u"QLabel { color: %1; font-size: 9px; }"_s
+            .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         cl->addWidget(info);
         m_momentInfoLabel = info;
 
@@ -570,6 +563,8 @@ QWidget *CubeUiAssembler::build2dViewPage()
         const auto names2 = ColorMaps::GetColorMapNames();
         for (const auto &stdName : names2) {
             const QString qName = QString::fromStdString(stdName);
+            if (qName == u"MinMax"_s)
+                continue;   // MinMax is a range mode, not a colormap (§5.4b)
             m_comboMomentLut->addItem(QIcon(buildLutPreview(qName, 48, 12)), qName);
         }
         const QString defaultName2 = QString::fromStdString(ColorMaps::DefaultColorMap);
@@ -655,7 +650,7 @@ QWidget *CubeUiAssembler::buildToolsPage()
         m_btnMomentMap     = makeSidebarToolButton(u"Moment Map\u2026"_s);
         m_btnLineWidth     = makeSidebarToolButton(u"Line-width Map\u2026"_s);
         m_btnBaselineSub   = makeSidebarToolButton(u"Baseline Subtraction\u2026"_s);
-        m_btnStackCubes    = makeSidebarToolButton(u"Stack Spectral Cubes\u2026"_s);
+        m_btnStackCubes    = makeSidebarToolButton(u"Stack Cubes to a Spectrum\u2026"_s);
         m_btnPvDiagram     = makeSidebarToolButton(u"PV Diagram"_s);
         m_btnChannelMaps   = makeSidebarToolButton(u"Channel Maps\u2026"_s);
         cl->addWidget(m_btnEstimateNoise);
@@ -795,7 +790,7 @@ QWidget *CubeUiAssembler::buildInfoStatsPage(const InfoStatsInput &info)
         m_infoDsLoadState = makeVal(u"Preview"_s);
         m_infoRenderMode  = makeVal(u"Isosurface"_s);
         m_info2dMode      = makeVal(u"Slice"_s);
-        m_infoMomentState = makeVal(u"\u2014"_s);
+        m_infoMomentState = makeVal(u"-"_s);
 
         m_infoDsLoadState->setToolTip(u"Preview, loading full resolution, or full resolution."_s);
         m_infoRenderMode->setToolTip(u"Current 3D rendering mode (Isosurface or Volume Rendering)."_s);
@@ -1033,9 +1028,9 @@ void CubeUiAssembler::updateMomentCard(const MomentCardData &data)
     if (!lbl)
         return;
 
-    static const QString infoColor  = u"color: #7AAABB;"_s;
-    static const QString busyColor  = u"color: #E8A840;"_s;
-    static const QString errorColor = u"color: #CC6060;"_s;
+    const QString infoColor  = u"color: %1;"_s.arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
+    const QString busyColor  = u"color: %1;"_s.arg(QLatin1StringView(VisivoTheme::kWarning()));
+    const QString errorColor = u"color: %1;"_s.arg(QLatin1StringView(VisivoTheme::kError()));
 
     switch (data.state) {
     case MomentCardData::State::NoMoment:

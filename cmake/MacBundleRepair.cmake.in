@@ -1,0 +1,378 @@
+# Repair the installed macOS bundle, then sign it.
+#
+# Runs as the last install step (see the install(SCRIPT) that pulls this in).
+# Without it the installed .app does not start at all. Two separate faults,
+# both measured on a `cmake --install` staging tree:
+#
+#   1. Qt's plugins are copied verbatim from the Qt SDK, keeping the SDK's own
+#      rpath `@loader_path/../../lib`. Inside the bundle that resolves to
+#      Contents/lib, which does not exist — the frameworks are in
+#      Contents/Frameworks. libqcocoa.dylib therefore cannot load QtGui, and
+#      the app dies with "Could not load the Qt platform plugin cocoa ...
+#      even though it was found". Adding the bundle-relative rpath fixes every
+#      plugin at once; the SDK rpath is left in place, because a candidate that
+#      resolves to nothing costs one failed stat and nothing else.
+#
+#   2. fixup_bundle rewrites load commands *after* Qt's deploy step has signed
+#      the bundle, which invalidates that signature. On Apple Silicon an
+#      invalid signature is fatal: the process is killed on exec (exit 137,
+#      "Killed: 9") with no diagnostic at all. Signing again is therefore the
+#      last thing the install may do.
+#
+# `codesign --deep` is enough for an ad-hoc build handed to testers, and that
+# is all this is for. It is NOT a foundation for Developer ID: notarisation
+# needs the hardened runtime and per-object entitlements — Qt WebEngine's
+# helper especially — so switching VISIVO_CODESIGN_ID to a real identity is a
+# starting point for that work, not the whole of it.
+
+# ${CMAKE_INSTALL_PREFIX} unsubstituted on purpose: configure_file would
+# freeze it to whatever the prefix was at configure time, so a later
+# `cmake --install --prefix ...` would repair a directory it never wrote.
+# The install script defines it, and DESTDIR, at install time.
+set(_prefix "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}")
+set(_app "${_prefix}/@PROJECT_NAME@.app")
+
+if (NOT IS_DIRECTORY "${_app}")
+    message(FATAL_ERROR
+            "no bundle at ${_app} to repair. If this was `cmake --install "
+            "--component ...`, note that the app, the backend and Qt's deploy "
+            "step are all in the default component: repairing and signing on "
+            "their own cannot produce a working bundle.")
+endif ()
+
+# ── 1. The plugin rpath ──────────────────────────────────────────────────────
+#
+# Every failure here is fatal. An earlier revision passed ERROR_QUIET and
+# ignored the result, on the grounds that install_name_tool refuses a duplicate
+# rpath when the install is re-run over the same prefix. That also swallowed a
+# missing install_name_tool, a non-Mach-O file, and a binary with no room left
+# for another load command — and since codesign does not check rpaths, the
+# install would then sign the still-broken bundle and report success. Asking
+# first, and treating an actual failure as fatal, distinguishes the two.
+
+file(GLOB_RECURSE _plugins "${_app}/Contents/PlugIns/*.dylib")
+list(LENGTH _plugins _n_plugins)
+
+# Named explicitly rather than counting: a partial deploy that lands the image
+# formats but not platforms/ passes any count check, repairs cleanly, signs,
+# verifies — and then cannot open a window. The one plugin without which
+# nothing starts is worth asserting by name.
+if (NOT EXISTS "${_app}/Contents/PlugIns/platforms/libqcocoa.dylib")
+    message(FATAL_ERROR
+            "${_app} has no platforms/libqcocoa.dylib (${_n_plugins} plugin(s) "
+            "present). Qt's deploy step did not run, or ran partially. Without "
+            "the cocoa platform plugin the app cannot start, so signing it "
+            "would only hide that.")
+endif ()
+
+set(_bundle_rpath "@loader_path/../../Frameworks")
+set(_n_repaired 0)
+
+foreach (_plugin IN LISTS _plugins)
+    execute_process(
+            COMMAND otool -l "${_plugin}"
+            OUTPUT_VARIABLE _load_commands
+            ERROR_VARIABLE _otool_err
+            RESULT_VARIABLE _otool_rc)
+    if (NOT _otool_rc EQUAL 0)
+        message(FATAL_ERROR "otool could not read ${_plugin}: ${_otool_err}")
+    endif ()
+
+    # Per slice, not per file. otool prints the load commands of every
+    # architecture in a fat binary, so a plain substring test cannot tell
+    # "both slices already have it" from "only one does" — and the second is
+    # unfixable by -add_rpath, which refuses as soon as ANY slice carries the
+    # path. Counting the matches against the slice count separates the three
+    # cases, and the mixed one is reported rather than skipped.
+    execute_process(
+            COMMAND lipo -archs "${_plugin}"
+            OUTPUT_VARIABLE _archs
+            ERROR_VARIABLE _lipo_err
+            RESULT_VARIABLE _lipo_rc)
+    if (NOT _lipo_rc EQUAL 0)
+        message(FATAL_ERROR "lipo could not read ${_plugin}: ${_lipo_err}")
+    endif ()
+    string(STRIP "${_archs}" _archs)
+    separate_arguments(_archs)
+    list(LENGTH _archs _n_slices)
+
+    # otool's exact spelling: `path <rpath> (offset N)`. Anchoring on the
+    # trailing " (offset" keeps a longer path that merely starts the same way
+    # from matching.
+    string(REGEX MATCHALL
+           "path @loader_path/\\.\\./\\.\\./Frameworks \\(offset"
+           _hits "${_load_commands}")
+    list(LENGTH _hits _n_hits)
+
+    if (_n_hits EQUAL _n_slices)
+        continue ()          # already correct, in every slice
+    elseif (NOT _n_hits EQUAL 0)
+        message(FATAL_ERROR
+                "${_plugin} carries the bundle rpath in ${_n_hits} of "
+                "${_n_slices} slice(s). install_name_tool cannot repair a "
+                "partially patched fat binary; delete the bundle and install "
+                "again.")
+    endif ()
+
+    execute_process(
+            COMMAND install_name_tool -add_rpath "${_bundle_rpath}" "${_plugin}"
+            ERROR_VARIABLE _int_err
+            RESULT_VARIABLE _int_rc)
+    if (NOT _int_rc EQUAL 0)
+        message(FATAL_ERROR
+                "could not add the bundle rpath to ${_plugin}: ${_int_err}")
+    endif ()
+    math(EXPR _n_repaired "${_n_repaired} + 1")
+endforeach ()
+
+message(STATUS
+        "Bundle repair: ${_n_repaired} of ${_n_plugins} Qt plugin(s) needed the "
+        "bundle rpath")
+
+# ── 1b. Make @executable_path work for the QtWebEngine helper too ───────────
+#
+# fixup_bundle rewrites every Mach-O in the bundle to
+# `@executable_path/../Frameworks/<X>.framework/Versions/A/<X>`. dyld resolves
+# @executable_path against the RUNNING executable — and this bundle has two of
+# them at different depths:
+#
+#   Contents/MacOS/VisIVOVisualAnalytics                            <- ../Frameworks ✓
+#   Contents/Frameworks/QtWebEngineCore.framework/Versions/A/
+#       Helpers/QtWebEngineProcess.app/Contents/MacOS/QtWebEngineProcess   ✗
+#
+# For the helper that path lands inside its own nested .app, where nothing
+# exists, so it dies at launch with "Library not loaded" and every
+# QWebEngineView in the application is a black rectangle — silently, because the
+# failure is in a child process that never gets far enough to report it. It is
+# how the VLKB panoramic view came up blank in the first distributable build
+# while working perfectly in the development tree.
+#
+# Rewriting the helper's own load commands is not enough: the frameworks IT
+# loads carry the same @executable_path convention, and they are resolved
+# against the helper as well — fixing QtWebEngineCore only uncovered QtQuick,
+# then QtPositioning, then QtCore. The fix that covers the whole transitive
+# closure at once is a symlink, so that `@executable_path/../Frameworks` names
+# the real Frameworks directory from the helper too:
+#
+#   <helper>.app/Contents/Frameworks -> ../../../../../..   (the app's Frameworks)
+#
+# Qt's own macdeployqt solves this with @rpath instead; that is not available
+# here because fixup_bundle has already replaced the rpath references.
+set(_helper_app
+    "${_app}/Contents/Frameworks/QtWebEngineCore.framework/Versions/A/Helpers/QtWebEngineProcess.app")
+set(_helper "${_helper_app}/Contents/MacOS/QtWebEngineProcess")
+if (EXISTS "${_helper}")
+    set(_helper_fw "${_helper_app}/Contents/Frameworks")
+    if (NOT EXISTS "${_helper_fw}")
+        execute_process(
+                COMMAND ${CMAKE_COMMAND} -E create_symlink "../../../../../.." "${_helper_fw}"
+                RESULT_VARIABLE _link_rc ERROR_VARIABLE _link_err)
+        if (NOT _link_rc EQUAL 0)
+            message(FATAL_ERROR
+                    "could not link the bundle's Frameworks into the QtWebEngine "
+                    "helper: ${_link_err}")
+        endif ()
+        message(STATUS
+                "Bundle repair: linked Contents/Frameworks into QtWebEngineProcess.app")
+    endif ()
+
+    # Prove it rather than assume it: resolve every @executable_path reference
+    # the helper carries, from the helper's own directory, and require the file
+    # to exist. Without this the build cannot tell a working web view from a
+    # black one.
+    execute_process(COMMAND otool -L "${_helper}"
+            OUTPUT_VARIABLE _helper_otool ERROR_VARIABLE _helper_err
+            RESULT_VARIABLE _helper_rc OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if (NOT _helper_rc EQUAL 0)
+        message(FATAL_ERROR "otool could not read the QtWebEngine helper: ${_helper_err}")
+    endif ()
+    string(REGEX MATCHALL "@executable_path/[^ ]+" _helper_refs "${_helper_otool}")
+    get_filename_component(_helper_dir "${_helper}" DIRECTORY)
+    foreach (_ref IN LISTS _helper_refs)
+        string(REPLACE "@executable_path" "${_helper_dir}" _abs "${_ref}")
+        if (NOT EXISTS "${_abs}")
+            message(FATAL_ERROR
+                    "QtWebEngineProcess references ${_ref}, which resolves to ${_abs} "
+                    "and does not exist. Every web view in the application would be "
+                    "blank.")
+        endif ()
+    endforeach ()
+endif ()
+
+# ── 1c. Nothing outside the bundle ──────────────────────────────────────────
+#
+# fixup_bundle copies the dependencies in but does not always finish the job on
+# the main executable, and what it leaves behind is invisible on the machine
+# that built it:
+#
+#   * the executable asked for @rpath/QtConcurrent.framework/…,
+#     @rpath/libvtkCommonCore-….dylib and @rpath/libdatachannel.0.dylib while
+#     carrying NO bundle-relative rpath — only /opt/Qt/6.11.1/macos/lib,
+#     /opt/VTK/…/lib, /opt/homebrew/lib and the libdatachannel build directory.
+#     dyld found them there, so the app started here and nowhere else: on a
+#     colleague's Mac it died with "Library not loaded: @rpath/QtConcurrent…",
+#     naming paths that exist only on the developer's machine.
+#
+#   * four Homebrew libraries (cfitsio, and three from ffmpeg) were still
+#     referenced by absolute path although their copies were sitting in
+#     Contents/Frameworks.
+#
+# Both are repaired here, and then the whole bundle is VERIFIED: a single
+# remaining external reference fails the install. Nothing checked before, which
+# is how three releases shipped that only ran on one Mac.
+
+# The external dependencies of one Mach-O file, or an empty list.
+#
+# Two things must not be mistaken for leaks. The FIRST line of `otool -L` is the
+# file's own install name, not a dependency. And the staging tree itself lives
+# under a developer path — /Users/…/dist-mac/… — so every in-bundle reference
+# matches an "outside" pattern unless the bundle's own prefix is excluded
+# first. Both caught this check out on its first run.
+function (visivo_external_deps _out _file)
+    set(${_out} "" PARENT_SCOPE)
+    execute_process(COMMAND otool -L "${_file}"
+            OUTPUT_VARIABLE _deps ERROR_QUIET RESULT_VARIABLE _rc)
+    if (NOT _rc EQUAL 0)
+        return ()          # not Mach-O
+    endif ()
+    string(REPLACE "\n" ";" _lines "${_deps}")
+    set(_found "")
+    set(_index 0)
+    foreach (_line IN LISTS _lines)
+        math(EXPR _index "${_index} + 1")
+        if (_index LESS_EQUAL 2)
+            continue ()    # "<path>:" header, then the install name
+        endif ()
+        string(REGEX MATCH "^\t(/opt/[^ ]+|/usr/local/[^ ]+|/Users/[^ ]+)" _m "${_line}")
+        if (NOT _m)
+            continue ()
+        endif ()
+        set(_dep "${CMAKE_MATCH_1}")
+        string(FIND "${_dep}" "${_app}" _inside)
+        if (_inside EQUAL 0)
+            continue ()    # already points into the bundle
+        endif ()
+        list(APPEND _found "${_dep}")
+    endforeach ()
+    set(${_out} "${_found}" PARENT_SCOPE)
+endfunction ()
+
+set(_exe "${_app}/Contents/MacOS/@PROJECT_NAME@")
+set(_frameworks "${_app}/Contents/Frameworks")
+
+# Every Mach-O in the bundle, so the repair and the verification cover the same
+# set. `file(GLOB_RECURSE)` would also list scripts and data; the loop filters
+# by asking otool, which fails on anything that is not Mach-O.
+file(GLOB_RECURSE _all_files "${_app}/*")
+
+# ── the bundle-relative rpath the executable was missing ────────────────────
+execute_process(COMMAND otool -l "${_exe}" OUTPUT_VARIABLE _exe_lc)
+if (NOT _exe_lc MATCHES "path @executable_path/\\.\\./Frameworks \\(offset")
+    execute_process(
+            COMMAND install_name_tool -add_rpath "@executable_path/../Frameworks" "${_exe}"
+            RESULT_VARIABLE _rc ERROR_VARIABLE _err)
+    if (NOT _rc EQUAL 0)
+        message(FATAL_ERROR "could not add the bundle rpath to the executable: ${_err}")
+    endif ()
+    message(STATUS "Bundle repair: added @executable_path/../Frameworks to the executable")
+endif ()
+
+# ── absolute references → the copy already in Contents/Frameworks ───────────
+set(_rewritten 0)
+foreach (_file IN LISTS _all_files)
+    if (IS_DIRECTORY "${_file}" OR IS_SYMLINK "${_file}")
+        continue ()
+    endif ()
+    visivo_external_deps(_externals "${_file}")
+    foreach (_dep IN LISTS _externals)
+        get_filename_component(_name "${_dep}" NAME)
+        if (NOT EXISTS "${_frameworks}/${_name}")
+            message(FATAL_ERROR
+                    "${_file} depends on ${_dep}, which is outside the bundle and has no copy "
+                    "in Contents/Frameworks. The app would not start on a machine without it.")
+        endif ()
+        execute_process(
+                COMMAND install_name_tool -change "${_dep}"
+                        "@executable_path/../Frameworks/${_name}" "${_file}"
+                RESULT_VARIABLE _rc ERROR_VARIABLE _err)
+        if (NOT _rc EQUAL 0)
+            message(FATAL_ERROR "could not rewrite ${_dep} in ${_file}: ${_err}")
+        endif ()
+        math(EXPR _rewritten "${_rewritten} + 1")
+    endforeach ()
+endforeach ()
+message(STATUS "Bundle repair: rewrote ${_rewritten} absolute dependency reference(s)")
+
+# ── rpaths that point outside the bundle ────────────────────────────────────
+#
+# Deleted rather than left harmless: they are what let the missing
+# bundle-relative rpath go unnoticed, because dyld kept finding the libraries
+# in the developer's own directories.
+set(_dropped 0)
+foreach (_file IN LISTS _all_files)
+    if (IS_DIRECTORY "${_file}" OR IS_SYMLINK "${_file}")
+        continue ()
+    endif ()
+    execute_process(COMMAND otool -l "${_file}"
+            OUTPUT_VARIABLE _lc ERROR_QUIET RESULT_VARIABLE _rc)
+    if (NOT _rc EQUAL 0)
+        continue ()
+    endif ()
+    string(REGEX MATCHALL "path (/opt/[^ ]+|/usr/local/[^ ]+|/Users/[^ ]+) \\(offset"
+           _bad_rpaths "${_lc}")
+    foreach (_entry IN LISTS _bad_rpaths)
+        string(REGEX REPLACE "^path (.*) \\(offset$" "\\1" _rp "${_entry}")
+        execute_process(
+                COMMAND install_name_tool -delete_rpath "${_rp}" "${_file}"
+                RESULT_VARIABLE _rc ERROR_VARIABLE _err)
+        if (NOT _rc EQUAL 0)
+            message(FATAL_ERROR "could not drop the external rpath ${_rp} from ${_file}: ${_err}")
+        endif ()
+        math(EXPR _dropped "${_dropped} + 1")
+    endforeach ()
+endforeach ()
+message(STATUS "Bundle repair: dropped ${_dropped} rpath(s) pointing outside the bundle")
+
+# ── verification: one external reference is a failed install ────────────────
+set(_leaks "")
+foreach (_file IN LISTS _all_files)
+    if (IS_DIRECTORY "${_file}" OR IS_SYMLINK "${_file}")
+        continue ()
+    endif ()
+    # The Python runtime ships third-party wheels whose own rpaths name the
+    # machines they were built on (Pillow, SciPy). Those are inert — the
+    # libraries resolve through @loader_path — so only LOAD commands count.
+    visivo_external_deps(_externals "${_file}")
+    foreach (_dep IN LISTS _externals)
+        string(APPEND _leaks "\n    ${_file}\n      -> ${_dep}")
+    endforeach ()
+endforeach ()
+if (NOT _leaks STREQUAL "")
+    message(FATAL_ERROR
+            "the bundle still depends on files outside itself, so it would only run on "
+            "this machine:${_leaks}")
+endif ()
+message(STATUS "Bundle repair: no dependency outside the bundle")
+
+# ── 2. The signature ─────────────────────────────────────────────────────────
+
+execute_process(
+        COMMAND codesign --force --deep --sign "@VISIVO_CODESIGN_ID@" "${_app}"
+        ERROR_VARIABLE _sign_err
+        RESULT_VARIABLE _sign_rc)
+if (NOT _sign_rc EQUAL 0)
+    message(FATAL_ERROR
+            "codesign failed: ${_sign_err}\n"
+            "An unsigned or half-signed bundle is killed on launch, so this "
+            "install is not reported as successful.")
+endif ()
+
+execute_process(
+        COMMAND codesign --verify --deep "${_app}"
+        ERROR_VARIABLE _verify_err
+        RESULT_VARIABLE _verify_rc)
+if (NOT _verify_rc EQUAL 0)
+    message(FATAL_ERROR "the re-signed bundle does not verify: ${_verify_err}")
+endif ()
+
+message(STATUS "Bundle repair: ${_app} signed and verified")

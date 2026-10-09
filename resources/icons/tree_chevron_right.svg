@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Branch indicator for the Session Data tree.
+     SQUARE viewBox on purpose. Qt scales a QSS `image:` to fit the ::branch
+     rect preserving aspect ratio, and that rect is indentation-wide but
+     row-tall (14 x ~34). A narrow, tall glyph therefore grew to the full row
+     height, which is how the collapsed chevron ended up twice the size of the
+     expanded one. With a square box both are capped by the 14 px width and the
+     two states match. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12" fill="none"
+     stroke="#9FA6AC" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+  <polyline points="4.5,2.5 8,6 4.5,9.5"/>
+</svg>

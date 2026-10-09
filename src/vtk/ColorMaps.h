@@ -51,6 +51,7 @@ private:
     static void SetMagma(vtkLookupTable *lut);
     static void SetPlasma(vtkLookupTable *lut);
     static void SetCividis(vtkLookupTable *lut);
+    static void SetCoolWarm(vtkLookupTable *lut);   ///< diverging (velocity fields, §3.2)
     static void SetGray(vtkLookupTable *lut);
     static void SetDefault(vtkLookupTable *lut);
     static void SetDefaultStep(vtkLookupTable *lut);

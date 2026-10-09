@@ -9,6 +9,11 @@ C-03: Skeleton / void detection – morphological thinning via scikit-image.
 """
 from __future__ import annotations
 
+# The cosmology angular-power-spectrum and filament-skeleton endpoints — and
+# their spec aliases /v1/cosmology/powerspectrum and /v1/cosmology/skeleton —
+# were dropped by a router refactor and have been restored (see routers
+# cosmology.py / analysis.py). This module is live again.
+
 import base64
 import os
 import tempfile

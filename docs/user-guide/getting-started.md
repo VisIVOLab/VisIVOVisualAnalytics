@@ -11,7 +11,7 @@ about five minutes.
 | **Compiler** | Apple Clang 15+, GCC 11+, or MSVC 2022. C++17. |
 | **Qt** | 6.5 or newer (Core, Gui, Widgets, OpenGL, OpenGLWidgets, Concurrent, Network, NetworkAuth, Svg, PrintSupport). |
 | **VTK** | 9.5 or newer, built with Qt 6 support. |
-| **Python** | 3.12+ for the backend (FastAPI, NumPy, Astropy, SciPy). |
+| **Python** | **3.11 or newer** for the backend. The client checks this and says so if the interpreter it finds is older — note that macOS ships 3.9 and several Linux distributions ship 3.9 or 3.10, so a system `python3` is often not enough. |
 | **GPU** | Any Apple-Silicon GPU or a modern desktop GPU. Volume rendering uses `vtkGPUVolumeRayCastMapper`. |
 
 For full build flags and dependency notes see the repository
@@ -25,9 +25,33 @@ queries, …). The desktop client always talks to a backend instance —
 either one it starts itself (the default), or one you started by hand
 on the same machine or on a remote node.
 
+### Letting the client do it
+
+If you have Python 3.11 or newer, you do not have to do anything: start the
+client and it will find the backend that ships with it, create a virtual
+environment on first run, install the dependencies, and launch the server. The
+startup window reports progress.
+
+That first run downloads several hundred megabytes and takes a few minutes.
+Afterwards it is instant, because the environment is reused.
+
+```{note}
+The client needs to *find* a suitable interpreter. It looks, in order, at
+`VISIVO_BACKEND_PYTHON`, an active virtual environment, the project's own
+`.venv`, a Python shipped next to the application, and finally your `PATH`. If
+your 3.11+ is installed somewhere unusual, point at it explicitly:
+
+    export VISIVO_BACKEND_PYTHON=/opt/python3.12/bin/python3
+```
+
+### Doing it by hand
+
+Useful when the backend runs on another machine, or when you want to watch its
+log:
+
 ```bash
 cd backend
-python -m venv .venv && source .venv/bin/activate
+python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
@@ -45,9 +69,9 @@ You don't normally need to copy it: the desktop client reads
 either keep the file or set the env var.
 
 :::{tip}
-You can skip the manual backend launch entirely. When the client starts and
-no backend is reachable on the configured URL, it auto-spawns one for you
-(see `BackendLauncher` and the *Settings* dialog).
+A backend you started by hand always wins: the client probes the configured URL
+first and connects to whatever is already listening, rather than starting a
+second one (see `BackendLauncher` and the *Settings* dialog).
 :::
 
 ## Launching the client
@@ -78,19 +102,89 @@ Click **Continue** to enter the main window.
 The **Data Hub** is the landing tab of the main window. Use it to browse
 the backend-side filesystem:
 
-- **Open Remote Dataset…** opens a remote file browser rooted at the
-  backend's working directory. Select a `.fits` file. The client classifies
-  it server-side and decides whether it's a 2-D image or 3-D spectral cube,
-  then opens the appropriate viewer:
+- **Open…** (⌘O, also *File ▸ Open…*) opens a remote file browser rooted at the
+  backend's working directory. Pick any supported file: the backend identifies
+  it from its contents and the matching viewer opens.
   - 2-D FITS image → [Image viewer](image-viewer)
   - 3-D spectral cube → [Spectral cube viewer](cube-viewer)
-- **Open 3-D Catalogue…** (CSV / VOTable) launches the
-  [3-D catalogue viewer](catalogues-hips).
-- **HiPS Viewer…** opens the all-sky [HiPS viewer](catalogues-hips).
-- **VLKB Inventory** browses VLKB-served sources behind the OIDC flow.
+  - FITS with time and frequency axes, or HDF5 → the dynamic-spectrum viewer
+  - CSV / VOTable / IPAC / speck → [3-D catalogue viewer](catalogues-hips)
+  - VisIVO Binary Table (`.bin` + `.head`) → [VBT viewer](vbt-viewer)
+
+  You are asked only when the file itself is ambiguous. A FITS **table** is the
+  usual case: it can be a source catalogue or a table to overlay on an image,
+  and nothing in the file says which — so the client asks instead of guessing.
+
+Under **Archives**:
+
+- **HiPS Viewer** opens the all-sky [HiPS viewer](catalogues-hips).
+- **VLKB Inventory** goes to the [VLKB archive](vlkb-archive) tab.
+
+Beside it sits the **VLKB** tab, which queries the ViaLactea Knowledge Base over
+a region of the Galactic plane and cuts out the images and cubes that cover it —
+see [VLKB archive](vlkb-archive).
 
 You can also drag-and-drop a local FITS file onto the Data Hub — it will
 be staged on the backend automatically.
+
+### From the desktop: double-click a file
+
+VisIVO registers itself as a FITS viewer, so a `.fits` (`.fit`, `.fts`, `.fz`)
+file can be opened from the file manager or the command line — and so can
+anything else the application opens: a catalogue (CSV, VOTable, IPAC `.tbl`,
+`.speck`) or a VisIVO Binary Table.
+
+```bash
+VisIVOVisualAnalytics /data/WALLABY.fits      # also works with several paths
+VisIVOVisualAnalytics /data/snapshot.tbl      # catalogue → 3-D catalogue viewer
+VisIVOVisualAnalytics /data/volume.bin        # VBT → point or volume viewer
+open -a "VisIVO Visual Analytics" cube.fits    # macOS
+```
+
+Whatever the file is, it goes through the same single decision as *File ▸
+Open…*: the backend classifies it and the right viewer opens. When the content
+is genuinely ambiguous — a FITS table can be either — you are asked which viewer
+to use rather than guessed at.
+
+If VisIVO is not running the startup sequence happens first — backend, then
+authentication — and the file opens as soon as the main window appears. If it is
+already running the file opens **in that same instance**, in a new viewer
+window: on macOS the double-click reaches the running app directly, and on
+Linux / Windows (where the desktop starts a new process for every double-click)
+the new process hands the file over and exits. A launch with no file always
+starts its own instance, so running two VisIVOs against two backends is still
+possible. Several files opened at once are opened one after another, never on
+top of each other's dialogs.
+
+```{note}
+**macOS**: the bundle claims FITS with handler rank *Alternate*, on purpose.
+It appears in *Open With* and macOS will pick it when nothing else claims the
+type, but it does not take the association away from DS9 / CARTA / QFitsView on
+a machine where one of those is installed. To make it the default: select a FITS
+file, ⌘I, *Open With* ▸ *VisIVO Visual Analytics* ▸ *Change All…*. After
+installing a new build, launch it once so LaunchServices re-reads the bundle
+(or run `lsregister -f /Applications/VisIVOVisualAnalytics.app`).
+
+**Linux**: install the association from `deploy/linux/`:
+
+```bash
+xdg-mime install --novendor visivo-fits-mime.xml
+xdg-desktop-menu install --novendor visivo-visual-analytics.desktop
+update-mime-database ~/.local/share/mime
+```
+
+The `.desktop` file expects `VisIVOVisualAnalytics` on `PATH`; edit its `Exec=`
+line if the binary lives elsewhere.
+```
+
+```{caution}
+The file is opened **by path, through the backend** — the same route as *Open
+Remote Dataset*, and the classification happens there too, so with the backend
+down you are told that rather than asked to choose a viewer. A double-clicked
+file therefore has to be readable by the backend process: with a local auto-started backend that is anything you can
+read, but with a remote backend the path must exist *there*. Use the Data Hub's
+drag-and-drop instead, which stages the file server-side.
+```
 
 ## The ⌘K Command Palette
 
@@ -102,8 +196,9 @@ hunting through menus. It works from inside the viewer windows too.
 
 Searchable groups:
 
-- **File** — Open Remote Dataset, Open 3D Catalogue, Open VBT, HiPS
-  Viewer, VLKB Inventory.
+- **File** — Open…, Open 3D Catalogue, Open VBT, HiPS Viewer, VLKB
+  Inventory. (**Open…** takes any supported file; the two named entries are
+  there for when you would rather say which opener to use.)
 - **Recent datasets** — last six datasets opened in this session
   (refreshed each time the palette is opened).
 - **Application** — Open Settings (⌘,), About, Quit VisIVO Visual

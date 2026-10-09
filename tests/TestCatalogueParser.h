@@ -41,4 +41,17 @@ private slots:
     void entryDist_distanceMpcOverride_takesPriority();
     void entryDist_negativeDistanceField_fallsBackToRedshift();
     void entryDist_zeroRedshift_fallsBackTo300();
+
+    // ── distance-type (comoving / luminosity / angular-diameter) ──────────────
+    void distanceKind_DL_isLuminosity();
+    void distanceKind_DA_isAngularDiameter();
+    void distanceKind_generic_isComoving();
+    void entryDist_luminosityConvertedToComoving();
+    void entryDist_angularDiameterConvertedToComoving();
+    void entryDist_luminosityWithoutRedshift_usedAsIs();
+
+    // ── R-14 redshift-space distance mode (naive cz/H0) ───────────────────────
+    void redshiftSpaceMode_usesHubbleDistance();
+    void redshiftSpaceMode_bypassesDistanceOverride();
+    void redshiftSpaceMode_noRedshift_fallsBackToRealSpace();
 };

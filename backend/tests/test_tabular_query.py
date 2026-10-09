@@ -29,12 +29,12 @@ import pandas as pd
 
 
 def _fn():
-    from app.main import _apply_tabular_query
+    from app.dependencies import _apply_tabular_query
     return _apply_tabular_query
 
 
 def _models():
-    from app.main import TabularFilter, TabularSortSpec
+    from app.schemas import TabularFilter, TabularSortSpec
     return TabularFilter, TabularSortSpec
 
 

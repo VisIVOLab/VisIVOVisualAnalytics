@@ -1,0 +1,37 @@
+# Common radio / mm spectral lines — bundled reference list.
+#
+# Rest frequencies, in GHz, of the transitions a radio and mm-wave observer
+# reaches for most often. This is a CONVENIENCE list, not a catalogue: it is
+# short on purpose, rounded to the kHz, and taken from the public CDMS / JPL
+# values as distributed through Splatalogue. For a line identification that
+# goes into a paper, export the transition from CDMS / JPL / Splatalogue
+# yourself and load that file — the loader reads a catalogue export directly.
+#
+# Format: the loader parses this like any user file (same code path).
+# unit = GHz
+Species,Chemical Name,Freq-GHz(rest),Resolved QNs
+HI,Neutral hydrogen,1.420406,21 cm
+OH,Hydroxyl,1.612231,F=1-2
+OH,Hydroxyl,1.665402,F=1-1
+OH,Hydroxyl,1.667359,F=2-2
+OH,Hydroxyl,1.720530,F=2-1
+CH3OH,Methanol (class II maser),6.668519,5(1)-6(0) A+
+H2O,Water (maser),22.235080,6(1;6)-5(2;3)
+NH3,Ammonia,23.694495,(1;1) inversion
+NH3,Ammonia,23.722633,(2;2) inversion
+NH3,Ammonia,23.870129,(3;3) inversion
+HCN,Hydrogen cyanide,88.631602,1-0
+HCO+,Formylium,89.188525,1-0
+HNC,Hydrogen isocyanide,90.663564,1-0
+N2H+,Diazenylium,93.173400,1-0
+CS,Carbon monosulfide,97.980953,2-1
+C18O,Carbon monoxide (18O),109.782176,1-0
+13CO,Carbon monoxide (13C),110.201354,1-0
+CO,Carbon monoxide,115.271202,1-0
+H2CO,Formaldehyde,218.222192,3(0;3)-2(0;2)
+C18O,Carbon monoxide (18O),219.560354,2-1
+13CO,Carbon monoxide (13C),220.398684,2-1
+CO,Carbon monoxide,230.538000,2-1
+13CO,Carbon monoxide (13C),330.587965,3-2
+CO,Carbon monoxide,345.795990,3-2
+CI,Atomic carbon,492.160651,3P1-3P0

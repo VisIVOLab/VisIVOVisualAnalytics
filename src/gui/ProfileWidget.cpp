@@ -6,10 +6,17 @@
 
 #include <vtkImageData.h>
 
+#include "AnalysisParamStore.h"
+#include "SpectralUnitConvert.h"
+
 #include <QApplication>
 #include <QColor>
 #include <QComboBox>
+#include <QDialog>
 #include <QDialogButtonBox>
+#include <QDoubleValidator>
+#include <QFormLayout>
+#include <QLineEdit>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
@@ -22,11 +29,16 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QScopeGuard>
+#include <QSet>
 #include <QTimer>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QtConcurrentRun>
+#include <QFutureWatcher>
+
+#include "app/BackendClient.h"
 
 #include <algorithm>
 #include <cmath>
@@ -59,9 +71,11 @@ QString tLive()       { return QStringLiteral("#5DA87A"); }   // live badge
 /// The footer is appended to @p widget's existing QVBoxLayout (installed by
 /// setupUi), and the plot rows are given stretch=1 so the footer stays compact.
 static void buildSaveFooter(QWidget *widget, QPushButton *&btn1Out,
-                            QPushButton *&btn2Out, QPushButton *&btnCsvOut)
+                            QPushButton *&btn2Out, QPushButton *&btnCsvOut,
+                            QFrame *&footerOut)
 {
     auto *footer = new QFrame(widget);
+    footerOut = footer;
     footer->setObjectName(u"profileFooter"_s);
     footer->setStyleSheet(
             u"QFrame#profileFooter {"
@@ -107,7 +121,7 @@ ProfileWidget::ProfileWidget(vtkInteractorStyleProfile *style, vtkImageData *dat
     this->setWindowFlag(Qt::Window);
     this->setStyleSheet(u"ProfileWidget { background: %1; }"_s.arg(tBg()));
 
-    buildSaveFooter(this, m_btnSavePlot1, m_btnSavePlot2, m_btnSaveCsv);
+    buildSaveFooter(this, m_btnSavePlot1, m_btnSavePlot2, m_btnSaveCsv, m_specFooter);
     QObject::connect(m_btnSavePlot1, &QPushButton::clicked, this, &ProfileWidget::savePlot1Png);
     QObject::connect(m_btnSavePlot2, &QPushButton::clicked, this, &ProfileWidget::savePlot2Png);
     QObject::connect(m_btnSaveCsv,   &QPushButton::clicked, this, &ProfileWidget::saveSpectrumCsv);
@@ -145,7 +159,7 @@ ProfileWidget::ProfileWidget(QWidget *parent)
     this->setWindowFlag(Qt::Window);
     this->setStyleSheet(u"ProfileWidget { background: %1; }"_s.arg(tBg()));
 
-    buildSaveFooter(this, m_btnSavePlot1, m_btnSavePlot2, m_btnSaveCsv);
+    buildSaveFooter(this, m_btnSavePlot1, m_btnSavePlot2, m_btnSaveCsv, m_specFooter);
     QObject::connect(m_btnSavePlot1, &QPushButton::clicked, this, &ProfileWidget::savePlot1Png);
     QObject::connect(m_btnSavePlot2, &QPushButton::clicked, this, &ProfileWidget::savePlot2Png);
     QObject::connect(m_btnSaveCsv,   &QPushButton::clicked, this, &ProfileWidget::saveSpectrumCsv);
@@ -222,6 +236,7 @@ void ProfileWidget::setupImagePlots(const QString &xLabel, const QString &yLabel
     this->applyUsageModeUi();
     ui->plot1->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     ui->plot2->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    this->clearFitOverlay();   // drop fit refs before clearGraphs() frees them
     ui->plot1->clearGraphs();
     ui->plot2->clearGraphs();
     ui->plot1->addGraph();
@@ -300,7 +315,10 @@ void ProfileWidget::setupSpectrumPlot(const QString &xLabel, const QString &yLab
     this->buildSpectrumHeader();
 
     ui->plot1->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    this->clearFitOverlay();   // drop fit refs before clearGraphs() frees them
     ui->plot1->clearGraphs();
+    m_pinnedGraphs.clear();    // clearGraphs() just freed the pinned graph pointers
+    refreshPinButtons();
     ui->plot1->addGraph();
     ui->plot1->legend->setVisible(false);
     // Allow both axes to drag/zoom — astronomers regularly need to zoom
@@ -363,7 +381,7 @@ void ProfileWidget::buildSpectrumHeader()
 
     // Row 2: meta info — filename, pixel coords, optional WCS, hint about
     // the click-to-pin interaction so users discover it without docs.
-    m_specMetaLabel = new QLabel(u"—"_s);
+    m_specMetaLabel = new QLabel(u"-"_s);
     m_specMetaLabel->setStyleSheet(
             u"font-size: 11px; color: %1; background: transparent; "
             u"font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;"_s.arg(tKey()));
@@ -423,8 +441,41 @@ void ProfileWidget::buildSpectrumHeader()
     auto *clearLinesBtn = new QPushButton(u"Clear Lines"_s);
     clearLinesBtn->setStyleSheet(pillCss);
     clearLinesBtn->setCursor(Qt::PointingHandCursor);
+    m_btnFit = new QPushButton(u"Fit Gaussian"_s);
+    m_btnFit->setStyleSheet(pillCss);
+    m_btnFit->setCursor(Qt::PointingHandCursor);
+    m_btnFit->setToolTip(
+            u"Fit a single Gaussian (+ linear baseline) to the current spectrum\n"
+            u"via the backend; overlays the fitted curve and reports peak, centre,\n"
+            u"FWHM and integrated flux in the axis units. Enabled once connected."_s);
+    m_btnFit->setEnabled(!m_backendUrl.isEmpty());
+    // Pin / Clear-pins: overlay several regions' spectra for comparison.
+    // "Compare", NOT "Pin Spectrum": the cube viewer's Tools list has a Pin
+    // Spectrum of its own that SAVES the curve as a product in Session Data.
+    // Two buttons with one label doing two different things had the user pin a
+    // spectrum expecting to find it in Session Data and get a coloured overlay.
+    m_btnPin = new QPushButton(u"Compare"_s);
+    m_btnPin->setStyleSheet(pillCss);
+    m_btnPin->setCursor(Qt::PointingHandCursor);
+    m_btnPin->setToolTip(
+            u"Keep the current spectrum on the plot as a comparison curve. Draw another\n"
+            u"region (or move the probe) and its spectrum overlays on top, so several\n"
+            u"can be compared on the same axes. Each gets its own colour.\n\n"
+            u"Display only - this does NOT save a product. Use Tools ▸ Pin Spectrum for that."_s);
+    m_btnClearPins = new QPushButton(u"Clear Overlays"_s);
+    m_btnClearPins->setStyleSheet(pillCss);
+    m_btnClearPins->setCursor(Qt::PointingHandCursor);
+    m_btnClearPins->setToolTip(u"Remove all pinned comparison spectra."_s);
     toolRow->addWidget(loadLinesBtn);
     toolRow->addWidget(clearLinesBtn);
+    toolRow->addWidget(m_btnFit);
+    auto *clearFitBtn = new QPushButton(u"Clear Fit"_s);
+    clearFitBtn->setStyleSheet(pillCss);
+    clearFitBtn->setCursor(Qt::PointingHandCursor);
+    clearFitBtn->setToolTip(u"Remove the fitted Gaussian overlay and its summary."_s);
+    toolRow->addWidget(clearFitBtn);
+    toolRow->addWidget(m_btnPin);
+    toolRow->addWidget(m_btnClearPins);
     col->addLayout(toolRow);
 
     QObject::connect(m_smoothCombo, qOverload<int>(&QComboBox::currentIndexChanged),
@@ -433,6 +484,15 @@ void ProfileWidget::buildSpectrumHeader()
                      this, &ProfileWidget::loadLineIdFile);
     QObject::connect(clearLinesBtn, &QPushButton::clicked,
                      this, &ProfileWidget::clearLineIdOverlay);
+    QObject::connect(m_btnFit,      &QPushButton::clicked,
+                     this, &ProfileWidget::requestLineFit);
+    QObject::connect(clearFitBtn,   &QPushButton::clicked,
+                     this, &ProfileWidget::clearFitNow);
+    QObject::connect(m_btnPin,      &QPushButton::clicked,
+                     this, [this]() { this->pinCurrentSpectrum(); });
+    QObject::connect(m_btnClearPins, &QPushButton::clicked,
+                     this, &ProfileWidget::clearPinnedSpectra);
+    refreshPinButtons();
 
     // Insert the header at the very top of the widget's outer layout.
     auto *vLayout = qobject_cast<QVBoxLayout *>(this->layout());
@@ -449,7 +509,7 @@ void ProfileWidget::buildSpectrumHeader()
     auto *statsLayout = new QHBoxLayout(m_specStatsBar);
     statsLayout->setContentsMargins(14, 6, 14, 6);
 
-    m_specStatsLabel = new QLabel(u"—"_s);
+    m_specStatsLabel = new QLabel(u"-"_s);
     m_specStatsLabel->setStyleSheet(
             u"font-size: 11px; color: %1; background: transparent; "
             u"font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;"_s.arg(tValue()));
@@ -559,22 +619,7 @@ void ProfileWidget::applySmoothAndReplot()
     if (m_lastSpectrumKey.isEmpty() || m_lastSpectrumValues.isEmpty()) return;
     if (!m_smoothCombo) return;
 
-    const int mode = m_smoothCombo->currentData().toInt();
-    QVector<double> smoothed = m_lastSpectrumValues;
-
-    if (mode == 1) {
-        // Hanning (3-tap)
-        smoothed = convolve1D(m_lastSpectrumValues, { 0.25, 0.5, 0.25 });
-    } else if (mode >= 3 && mode < 10) {
-        // Boxcar of width N
-        const int w = mode;
-        QVector<double> k(w, 1.0);
-        smoothed = convolve1D(m_lastSpectrumValues, k);
-    } else if (mode == 10) {
-        smoothed = convolve1D(m_lastSpectrumValues, gaussianKernel(1.0));
-    } else if (mode == 20) {
-        smoothed = convolve1D(m_lastSpectrumValues, gaussianKernel(2.0));
-    }
+    const QVector<double> smoothed = displayedSpectrumValues();
 
     // Replot with smoothed data; keep the original in m_lastSpectrum* for
     // the next smooth-change and for CSV export.
@@ -584,6 +629,21 @@ void ProfileWidget::applySmoothAndReplot()
         ui->plot1->replot();
     }
     refreshSpectrumStats(m_lastSpectrumKey, smoothed);
+}
+
+QVector<double> ProfileWidget::displayedSpectrumValues() const
+{
+    const int mode = m_smoothCombo ? m_smoothCombo->currentData().toInt() : 0;
+    if (mode == 1) {                       // Hanning (3-tap)
+        return convolve1D(m_lastSpectrumValues, { 0.25, 0.5, 0.25 });
+    } else if (mode >= 3 && mode < 10) {   // Boxcar of width N
+        return convolve1D(m_lastSpectrumValues, QVector<double>(mode, 1.0));
+    } else if (mode == 10) {
+        return convolve1D(m_lastSpectrumValues, gaussianKernel(1.0));
+    } else if (mode == 20) {
+        return convolve1D(m_lastSpectrumValues, gaussianKernel(2.0));
+    }
+    return m_lastSpectrumValues;           // "None" — raw
 }
 
 void ProfileWidget::setRegionContext(const QString &shapeLabel,
@@ -603,11 +663,116 @@ void ProfileWidget::setRegionContext(const QString &shapeLabel,
     refreshSpectrumHeader();
 }
 
+void ProfileWidget::setSpectrumMeta(const QString &metaLine, const QString &extraLine)
+{
+    // Generic (non-region) header line for a 1-D product mounted in a pane (Stack, Pin, …) —
+    // replaces the region-pixel semantics of setRegionContext so a reused slot's ProfileWidget
+    // does not keep showing "Region spectrum" / a prior product's description.
+    if (m_dialogInProgress) return;
+    m_regionMetaLine  = metaLine;
+    m_regionExtraLine = extraLine;
+    refreshSpectrumHeader();
+}
+
+void ProfileWidget::setSpectrumAxisLabels(const QString &xLabel, const QString &yLabel)
+{
+    // Refresh the spectrum axis titles WITHOUT re-running setupSpectrumPlot (which insertRow(0)s
+    // a title element and would accumulate rows). Lets a slot reused for a different product
+    // (e.g. a channel-axis stack after a velocity-axis pin) show correct labels.
+    if (!ui->plot1) return;
+    // A CHANGED spectral axis invalidates the line-ID overlay: its markers are
+    // stored as coordinates ON THAT AXIS (rest frequency + redshift + unit have
+    // already been folded in), so a slot reused for a channel-axis product would
+    // keep drawing them at meaningless positions. Drop them rather than lie.
+    const QString prevX = ui->plot1->xAxis->label();
+    const QString newX = xLabel.isEmpty() ? u"Spectral axis"_s : xLabel;
+    if (!prevX.isEmpty() && prevX != newX) {
+        clearLineIdOverlay();
+        // …and the axis CONTEXT with them. Keeping the cube's CTYPE / unit /
+        // RESTFRQ after the pane moved to a product on another axis (a stacked
+        // spectrum in channels, say) made a fresh Load Lines convert to the
+        // cube's velocity numbers and draw them as channel indices. The
+        // owner re-supplies the context when it applies; until then the loader
+        // refuses rather than inventing positions.
+        m_axisCtype.clear();
+        m_axisUnit.clear();
+        m_axisRestFreqHz = 0.0;
+    }
+    ui->plot1->xAxis->setLabel(newX);
+    ui->plot1->yAxis->setLabel(yLabel.isEmpty() ? u"Intensity"_s : yLabel);
+    // Mirror setupSpectrumPlot's CSV-header cache so a reused slot exports the CURRENT product's
+    // axis names, not the first product's.
+    m_lastSpectrumXLabel = xLabel.isEmpty() ? u"spectral_axis"_s : xLabel;
+    m_lastSpectrumYLabel = yLabel.isEmpty() ? u"intensity"_s     : yLabel;
+    ui->plot1->replot();
+}
+
+// ── Pane migration: hide inline chrome + public action wrappers ───────────────
+
+void ProfileWidget::setPaneChromeHidden(bool hidden)
+{
+    // Embedded pane products drive their controls from Inspector › Analysis, so hide the inline
+    // header toolbar, stats bar and save footer, leaving just the plot. Standalone windows keep
+    // them. Built lazily by setupSpectrumPlot() — guard each pointer.
+    if (m_specHeader)   m_specHeader->setVisible(!hidden);
+    if (m_specStatsBar) m_specStatsBar->setVisible(!hidden);
+    if (m_specFooter)   m_specFooter->setVisible(!hidden);
+}
+
+void ProfileWidget::applySmoothingCode(int code)
+{
+    if (!m_smoothCombo) return;
+    const int idx = m_smoothCombo->findData(code);
+    if (idx >= 0)
+        m_smoothCombo->setCurrentIndex(idx);   // → currentIndexChanged → applySmoothAndReplot
+}
+
+int ProfileWidget::smoothingCode() const
+{
+    return m_smoothCombo ? m_smoothCombo->currentData().toInt() : 0;
+}
+
+void ProfileWidget::fitGaussianNow()        { this->requestLineFit(); }
+void ProfileWidget::clearFitNow()
+{
+    // A fit is an interpretation laid over the data, so it must be removable —
+    // it used to survive until the spectrum itself changed, which for a pinned
+    // product is never.
+    //
+    // No early return when there is no overlay yet, and the generation bump goes
+    // FIRST: the pending reply's only staleness test is that counter, so a fit
+    // still in flight would otherwise land after the clear and put the curve
+    // straight back.
+    ++m_spectrumGeneration;
+    this->clearFitOverlay();
+    // The stats bar currently holds the FIT's summary (overlayLineFit wrote it
+    // there, with the correlated-channel caveat as its tooltip). Leaving it would
+    // republish the fit's numbers to the Inspector through spectrumChanged()
+    // while hasFit() already says there is none.
+    if (m_specStatsLabel)
+        m_specStatsLabel->setToolTip(QString());
+    if (!m_lastSpectrumKey.isEmpty() && !m_lastSpectrumValues.isEmpty() && m_smoothCombo)
+        this->applySmoothAndReplot();   // the spectrum's own statistics, and a replot
+    else if (ui->plot1)
+        ui->plot1->replot();
+    emit spectrumChanged();   // the Inspector's Clear Fit greys itself out again
+}
+void ProfileWidget::loadLinesFromFile()     { this->loadLineIdFile(); }
+void ProfileWidget::clearLines()            { this->clearLineIdOverlay(); }
+void ProfileWidget::saveSpectrumCsvNow()    { this->saveSpectrumCsv(); }
+void ProfileWidget::saveSpectrumPngNow()    { this->savePlot1Png(); }
+
+QString ProfileWidget::statsText() const
+{
+    return m_specStatsLabel ? m_specStatsLabel->text() : QString();
+}
+
 void ProfileWidget::refreshSpectrumStats(const QVector<double> &spectralKey,
                                          const QVector<double> &values)
 {
     if (!m_specStatsLabel || values.isEmpty()) {
-        if (m_specStatsLabel) m_specStatsLabel->setText(u"—"_s);
+        if (m_specStatsLabel) m_specStatsLabel->setText(u"-"_s);
+        emit spectrumChanged();
         return;
     }
 
@@ -627,6 +792,7 @@ void ProfileWidget::refreshSpectrumStats(const QVector<double> &spectralKey,
     }
     if (n == 0) {
         m_specStatsLabel->setText(u"N=0 (all NaN)"_s);
+        emit spectrumChanged();
         return;
     }
     const double mean = sum / n;
@@ -665,6 +831,7 @@ void ProfileWidget::refreshSpectrumStats(const QVector<double> &spectralKey,
         text += u"   ∫=%1"_s.arg(fmt(integral));
     }
     m_specStatsLabel->setText(text);
+    emit spectrumChanged();
 }
 
 void ProfileWidget::setSpectrumContext(const QString &fileLabel,
@@ -714,6 +881,151 @@ void ProfileWidget::setSpectrumCurrentChannel(double spectralValueAtChannel)
     ui->plot1->replot();
 }
 
+// ── Gaussian line fit (backend /v1/spectral/linefit) ─────────────────────────
+
+void ProfileWidget::setBackend(const QString &url, const QString &token)
+{
+    m_backendUrl = url;
+    m_backendToken = token;
+    if (m_btnFit && !m_fitInProgress) m_btnFit->setEnabled(!url.isEmpty());
+}
+
+void ProfileWidget::clearFitOverlay()
+{
+    if (!ui->plot1) return;
+    if (m_fitGraph) { ui->plot1->removeGraph(m_fitGraph); m_fitGraph = nullptr; }
+    if (m_fitLabel) { ui->plot1->removeItem(m_fitLabel);  m_fitLabel = nullptr; }
+}
+
+void ProfileWidget::requestLineFit()
+{
+    if (m_backendUrl.isEmpty()) {
+        QMessageBox::information(this, u"Line Fit"_s, u"Not connected to a backend."_s);
+        return;
+    }
+    // Keep only finite (key,value) pairs: region spectra contain NaN channels,
+    // and Qt serialises non-finite doubles to JSON null, which the backend
+    // cannot fit. Filtering here guarantees a clean, equal-length payload.
+    QVector<double> key, values;
+    const int n = std::min(m_lastSpectrumKey.size(), m_lastSpectrumValues.size());
+    key.reserve(n);
+    values.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        const double k = m_lastSpectrumKey.at(i), v = m_lastSpectrumValues.at(i);
+        if (std::isfinite(k) && std::isfinite(v)) { key.append(k); values.append(v); }
+    }
+    if (key.size() < 4) {
+        QMessageBox::information(this, u"Line Fit"_s,
+                u"Need at least 4 finite spectral channels to fit a Gaussian."_s);
+        return;
+    }
+    const QString url = m_backendUrl, token = m_backendToken;
+    const int gen = m_spectrumGeneration;
+    m_fitInProgress = true;
+    if (m_btnFit) m_btnFit->setEnabled(false);
+    emit spectrumChanged();   // Inspector disables its Fit button while the fit runs
+    QPointer<ProfileWidget> self(this);
+    auto *watcher = new QFutureWatcher<BackendLineFitResult>(this);
+    QObject::connect(watcher, &QFutureWatcher<BackendLineFitResult>::finished, this, [self, watcher, gen]() {
+        const BackendLineFitResult fit = watcher->result();
+        watcher->deleteLater();
+        if (!self) return;
+        self->m_fitInProgress = false;
+        if (self->m_btnFit) self->m_btnFit->setEnabled(!self->m_backendUrl.isEmpty());
+        emit self->spectrumChanged();   // re-enable the Inspector Fit button
+        if (self->m_spectrumGeneration != gen) return;  // spectrum changed → stale fit
+        if (!fit.valid) {
+            QMessageBox::warning(self, u"Line Fit"_s, u"Fit failed:\n%1"_s.arg(fit.error));
+            return;
+        }
+        self->overlayLineFit(fit);
+    });
+    watcher->setFuture(QtConcurrent::run([url, token, key, values]() -> BackendLineFitResult {
+        BackendClient c(url, token);
+        return c.fitSpectralLine(values, key, /*withBaseline=*/true);
+    }));
+}
+
+void ProfileWidget::overlayLineFit(const BackendLineFitResult &fit)
+{
+    if (!ui->plot1 || m_lastSpectrumKey.isEmpty()) return;
+    this->clearFitOverlay();
+
+    // Sample the fitted model (linear baseline + Gaussian) across the spectrum.
+    double xmin = std::numeric_limits<double>::infinity();
+    double xmax = -std::numeric_limits<double>::infinity();
+    for (double k : m_lastSpectrumKey) {
+        if (!std::isfinite(k)) continue;
+        xmin = std::min(xmin, k);
+        xmax = std::max(xmax, k);
+    }
+    if (!std::isfinite(xmin) || !std::isfinite(xmax) || xmax <= xmin) return;
+    const int n = 300;
+    double sig = std::abs(fit.sigma);
+    if (!std::isfinite(sig) || sig < 1e-12) sig = (xmax > xmin) ? (xmax - xmin) / 100.0 : 1.0;
+    QVector<double> fx(n), fy(n);
+    for (int i = 0; i < n; ++i) {
+        const double x = xmin + (xmax - xmin) * static_cast<double>(i) / (n - 1);
+        const double g = fit.peak * std::exp(-((x - fit.center) * (x - fit.center)) / (2.0 * sig * sig));
+        fx[i] = x;
+        fy[i] = fit.baselineIntercept + fit.baselineSlope * x + g;
+    }
+    m_fitGraph = ui->plot1->addGraph();
+    m_fitGraph->setPen(QPen(QColor(255, 140, 0), 1.6, Qt::DashLine));
+    m_fitGraph->setData(fx, fy);
+    m_fitGraph->removeFromLegend();
+
+    // Show the 1-sigma uncertainties the backend computes. Without them a fitted
+    // FWHM reads as exact, which it never is; a negative value means the backend
+    // could not determine one, and then no "±" is printed rather than a fake 0.
+    const auto pm = [](double value, double err, int prec) {
+        return err >= 0.0 ? u"%1 ± %2"_s.arg(value, 0, 'g', prec).arg(err, 0, 'g', 2)
+                          : QString::number(value, 'g', prec);
+    };
+    QString summary =
+            u"Gaussian fit · peak %1 · centre %2 · FWHM %3 · ∫ %4 · rms %5"_s
+                    .arg(pm(fit.peak, fit.peakErr, 4))
+                    .arg(pm(fit.center, fit.centerErr, 6))
+                    .arg(pm(fit.fwhm, fit.fwhmErr, 4))
+                    .arg(pm(fit.integratedFlux, fit.integratedFluxErr, 4))
+                    .arg(fit.rms, 0, 'g', 3);
+    QString caveat = fit.spectralCorrelationNote;
+    // Gate on the DISPLAYED inflation, not on F: √1.01 rounds to 1.0, so a factor
+    // just above the old threshold printed "errors ×1.0", which says nothing.
+    const double inflation = fit.spectralCorrelationFactor > 0.0
+            ? std::sqrt(fit.spectralCorrelationFactor)
+            : 0.0;
+    if (inflation >= 1.05) {
+        summary += u" · errors ×%1 for correlated channels"_s.arg(inflation, 0, 'f', 1);
+    } else if (fit.spectralCorrelationFactor <= 0.0 && fit.fwhmErr >= 0.0) {
+        // Errors but no factor: an older backend. Say the uncertainties are
+        // uncorrected rather than let them read as fully accounted for.
+        summary += u" · uncorrected"_s;
+        caveat = u"This backend does not report a spectral-correlation factor, so "
+                 u"the uncertainties are not corrected for correlated channels and "
+                 u"may be optimistic on spectrally smoothed data."_s;
+    }
+    if (m_specStatsLabel) {
+        m_specStatsLabel->setText(summary);
+        // The caveat is long and only sometimes present — a tooltip keeps it out
+        // of the status line without hiding it.
+        m_specStatsLabel->setToolTip(caveat);
+    }
+
+    m_fitLabel = new QCPItemText(ui->plot1);
+    m_fitLabel->setPositionAlignment(Qt::AlignTop | Qt::AlignRight);
+    m_fitLabel->position->setType(QCPItemPosition::ptAxisRectRatio);
+    m_fitLabel->position->setCoords(0.98, 0.04);
+    m_fitLabel->setColor(QColor(255, 140, 0));
+    m_fitLabel->setTextAlignment(Qt::AlignRight);
+    m_fitLabel->setText(u"FWHM %1\ncentre %2"_s
+                                .arg(pm(fit.fwhm, fit.fwhmErr, 4))
+                                .arg(pm(fit.center, fit.centerErr, 6)));
+
+    ui->plot1->replot();
+    emit spectrumChanged();   // push the fit summary into the Inspector's stats readout
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 void ProfileWidget::plotProfile(double x, double y, bool live)
@@ -757,6 +1069,8 @@ void ProfileWidget::plotSpectrum(double x, double y, bool live)
 {
     Q_UNUSED(live);
     if (m_dialogInProgress) return;   // suppress live updates while saving
+    this->clearFitOverlay();          // a new spectrum invalidates any prior fit
+    ++this->m_spectrumGeneration;
     const long pixX = std::lround(x);
     const long pixY = std::lround(y);
 
@@ -774,7 +1088,13 @@ void ProfileWidget::plotSpectrum(double x, double y, bool live)
         key[k] = initSpectral + k * axesInc[2];
         values[k] = this->ScalarPointer[idx];
     }
-    ui->plot1->graph()->setData(key, values);
+    if (ui->plot1->graphCount() == 0) ui->plot1->addGraph();
+    ui->plot1->graph(0)->setData(key, values);   // graph(0) is always the live series
+    if (!m_pinnedGraphs.isEmpty()) {
+        ui->plot1->graph(0)->setName(u"Current"_s);
+        ui->plot1->legend->setVisible(true);
+        applyPinnedLegendTheme();
+    }
     ui->plot1->rescaleAxes();
     // The pixel coords drive the header meta row — refresh through the
     // public path so the title bar and stats stay in sync.
@@ -782,6 +1102,7 @@ void ProfileWidget::plotSpectrum(double x, double y, bool live)
     m_pixelY = static_cast<int>(pixY);
     m_lastSpectrumKey    = key;     // cached for CSV export
     m_lastSpectrumValues = values;
+    refreshPinButtons();
     refreshSpectrumHeader();
     // If a smoothing kernel is active, apply it to the display; otherwise
     // show raw data. Stats are computed on the (possibly smoothed) data.
@@ -799,24 +1120,38 @@ void ProfileWidget::updateSpectrumPlot(const QVector<double> &key, const QVector
                                        const QString &title, bool live)
 {
     if (m_dialogInProgress) return;   // suppress live updates while saving
+    this->clearFitOverlay();          // a new spectrum invalidates any prior fit
+    ++this->m_spectrumGeneration;
+    m_lastSpectrumTitle = title;
     if (ui->plot1->graphCount() == 0) {
         ui->plot1->addGraph();
     }
-    while (ui->plot1->graphCount() > 1) {
-        ui->plot1->removeGraph(ui->plot1->graphCount() - 1);
+    // Keep graph(0) (live) and the pinned comparison curves; drop only any
+    // other leftover graph (e.g. a secondary series from a prior two-series
+    // update). Pinned curves must survive so several regions can be compared.
+    for (int i = ui->plot1->graphCount() - 1; i >= 1; --i) {
+        QCPGraph *g = ui->plot1->graph(i);
+        if (!m_pinnedGraphs.contains(g)) {
+            ui->plot1->removeGraph(g);
+        }
     }
-    ui->plot1->legend->setVisible(false);
 
     Q_UNUSED(live);
 
-    ui->plot1->graph()->setPen(QPen(QColor(0, 170, 255), 1.5));
-    ui->plot1->graph()->setData(key, values);
+    const bool havePins = !m_pinnedGraphs.isEmpty();
+    QCPGraph *live0 = ui->plot1->graph(0);
+    live0->setPen(QPen(QColor(0, 170, 255), 1.5));
+    live0->setData(key, values);
+    live0->setName(havePins ? u"Current"_s : QString());
+    ui->plot1->legend->setVisible(havePins);
+    if (havePins) applyPinnedLegendTheme();
     ui->plot1->rescaleAxes();
     if (auto *titleElement = qobject_cast<QCPTextElement *>(ui->plot1->plotLayout()->element(0, 0))) {
         titleElement->setText(title);
     }
     m_lastSpectrumKey    = key;     // cached for CSV export
     m_lastSpectrumValues = values;
+    refreshPinButtons();
     refreshSpectrumHeader();
     if (m_smoothCombo && m_smoothCombo->currentData().toInt() != 0) {
         applySmoothAndReplot();
@@ -835,6 +1170,14 @@ void ProfileWidget::updateSpectrumPlotSeries(const QVector<double> &key,
                                              const QString &title, bool live)
 {
     if (m_dialogInProgress) return;   // suppress live updates while saving
+    this->clearFitOverlay();          // a new spectrum invalidates any prior fit
+    // Pinned comparison curves are single-series; a two-series update owns
+    // graph(0)+graph(1), so drop any pins first to avoid clobbering them.
+    this->clearPinnedSpectra();
+    ++this->m_spectrumGeneration;
+    // Cache the primary series so a Gaussian fit uses it (not stale data).
+    m_lastSpectrumKey = key;
+    m_lastSpectrumValues = primaryValues;
     while (ui->plot1->graphCount() < 2) {
         ui->plot1->addGraph();
     }
@@ -870,6 +1213,133 @@ void ProfileWidget::updateSpectrumPlotSeries(const QVector<double> &key,
     showAndRaiseFirstTime();
 }
 
+// ── Multi-region comparison: pinned spectra ─────────────────────────────────
+
+QColor ProfileWidget::pinColour(int index)
+{
+    static const QColor palette[] = {
+        QColor(255, 158,  32),   // orange
+        QColor( 53, 196, 106),   // green
+        QColor(226,  86, 200),   // magenta
+        QColor(229, 208,  32),   // yellow
+        QColor( 64, 208, 208),   // cyan
+        QColor(229,  80,  60),   // red
+        QColor(150, 130, 255),   // violet
+        QColor(120, 200, 120),   // lime
+    };
+    const int n = static_cast<int>(sizeof(palette) / sizeof(palette[0]));
+    return palette[((index % n) + n) % n];
+}
+
+void ProfileWidget::applyPinnedLegendTheme()
+{
+    if (m_darkTheme) {
+        ui->plot1->legend->setBrush(QColor(tHeaderBg()));
+        ui->plot1->legend->setBorderPen(QPen(QColor(tBorder())));
+        ui->plot1->legend->setTextColor(QColor(tValue()));
+    } else {
+        ui->plot1->legend->setBrush(Qt::white);
+        ui->plot1->legend->setBorderPen(QPen(Qt::black));
+        ui->plot1->legend->setTextColor(Qt::black);
+    }
+}
+
+void ProfileWidget::pinCurrentSpectrum(const QString &label)
+{
+    if (m_dialogInProgress) return;
+    if (m_lastSpectrumKey.isEmpty() || m_lastSpectrumValues.isEmpty()) return;   // nothing to pin
+
+    const int idx = static_cast<int>(m_pinnedGraphs.size());
+    QString name = label.isEmpty() ? m_lastSpectrumTitle : label;
+    if (name.isEmpty()) name = u"Spectrum"_s;
+    name = u"%1. %2"_s.arg(idx + 1).arg(name);
+
+    auto *g = ui->plot1->addGraph();
+    g->setData(m_lastSpectrumKey, displayedSpectrumValues());   // match what's on screen
+    QPen pen(pinColour(idx));
+    pen.setWidthF(1.5);
+    g->setPen(pen);
+    g->setName(name);
+    m_pinnedGraphs.push_back(g);
+
+    // With at least one pin the legend becomes meaningful; label the live curve.
+    if (ui->plot1->graphCount() > 0) ui->plot1->graph(0)->setName(u"Current"_s);
+    ui->plot1->legend->setVisible(true);
+    applyPinnedLegendTheme();
+    ui->plot1->replot();
+    refreshPinButtons();
+}
+
+void ProfileWidget::clearPinnedSpectra()
+{
+    if (m_pinnedGraphs.isEmpty()) { refreshPinButtons(); return; }
+    for (QCPGraph *g : m_pinnedGraphs) {
+        ui->plot1->removeGraph(g);
+    }
+    m_pinnedGraphs.clear();
+    ui->plot1->legend->setVisible(false);
+    if (ui->plot1->graphCount() > 0) ui->plot1->graph(0)->setName(QString());
+    ui->plot1->replot();
+    refreshPinButtons();
+}
+
+void ProfileWidget::refreshPinButtons()
+{
+    if (m_btnPin) m_btnPin->setEnabled(!m_lastSpectrumKey.isEmpty());
+    if (m_btnClearPins) {
+        const bool any = !m_pinnedGraphs.isEmpty();
+        m_btnClearPins->setEnabled(any);
+        m_btnClearPins->setText(any ? u"Clear Overlays (%1)"_s.arg(m_pinnedGraphs.size())
+                                    : u"Clear Overlays"_s);
+    }
+    emit spectrumChanged();   // Inspector's Spectrum panel mirrors pin count / enabled state
+}
+
+// X-axis (coordinate) range from the actual key values, with a small margin.
+static QCPRange coordinateRange(const QVector<double> &key)
+{
+    if (key.isEmpty()) {
+        return QCPRange(-1.0, 1.0);
+    }
+    const double lo = std::min(key.first(), key.last());
+    const double hi = std::max(key.first(), key.last());
+    const double pad = std::max(1.0, (hi - lo) * 0.01);
+    return QCPRange(lo - pad, hi + pad);
+}
+
+// Robust value-axis range: clip to the [loPct, hiPct] percentiles of the finite
+// values so a few bright point sources don't squash the whole profile against
+// zero (same idea as the image LUT's percentile clip). NaN/blank samples ignored.
+static QCPRange robustValueRange(const QVector<double> &values, double loPct = 1.0,
+                                 double hiPct = 99.5)
+{
+    QVector<double> finite;
+    finite.reserve(values.size());
+    for (const double v : values) {
+        if (std::isfinite(v)) {
+            finite.append(v);
+        }
+    }
+    if (finite.isEmpty()) {
+        return QCPRange(-1.0, 1.0);
+    }
+    std::sort(finite.begin(), finite.end());
+    const auto pct = [&](double p) {
+        const double frac = std::clamp(p / 100.0, 0.0, 1.0);
+        const int idx = static_cast<int>(std::lround(frac * (finite.size() - 1)));
+        return finite[std::clamp(idx, 0, static_cast<int>(finite.size()) - 1)];
+    };
+    double lo = pct(loPct);
+    double hi = pct(hiPct);
+    if (!(hi > lo)) {  // flat profile → give it a tiny visible span
+        const double eps = std::max(1e-9, std::abs(hi) * 1e-3);
+        lo -= eps;
+        hi += eps;
+    }
+    const double pad = (hi - lo) * 0.08;  // headroom so peaks aren't flush to the edge
+    return QCPRange(lo - pad, hi + pad);
+}
+
 void ProfileWidget::updateImageProfiles(const QVector<double> &keyX, const QVector<double> &valuesX,
                                         const QVector<double> &keyY, const QVector<double> &valuesY,
                                         double probeX, double probeY, bool live)
@@ -881,8 +1351,8 @@ void ProfileWidget::updateImageProfiles(const QVector<double> &keyX, const QVect
     }
 
     ui->plot1->graph()->setData(keyX, valuesX);
-    ui->plot1->rescaleAxes();
-    ui->plot1->xAxis->setRange(-1., keyX.size() + 1.);
+    ui->plot1->xAxis->setRange(coordinateRange(keyX));
+    ui->plot1->yAxis->setRange(robustValueRange(valuesX));
     if (this->refLineX) {
         this->refLineX->start->setCoords(probeX, ui->plot1->yAxis->range().lower);
         this->refLineX->end->setCoords(probeX, ui->plot1->yAxis->range().upper);
@@ -893,8 +1363,8 @@ void ProfileWidget::updateImageProfiles(const QVector<double> &keyX, const QVect
     ui->plot1->replot();
 
     ui->plot2->graph()->setData(keyY, valuesY);
-    ui->plot2->rescaleAxes();
-    ui->plot2->xAxis->setRange(-1., keyY.size() + 1.);
+    ui->plot2->xAxis->setRange(coordinateRange(keyY));
+    ui->plot2->yAxis->setRange(robustValueRange(valuesY));
     if (this->refLineY) {
         this->refLineY->start->setCoords(probeY, ui->plot2->yAxis->range().lower);
         this->refLineY->end->setCoords(probeY, ui->plot2->yAxis->range().upper);
@@ -1079,7 +1549,7 @@ void ProfileWidget::saveSpectrumCsv()
 
     if (key.isEmpty() || values.isEmpty() || key.size() != values.size()) {
         QMessageBox::information(this, u"Save spectrum as CSV"_s,
-                                 u"No spectrum to export yet — pick a pixel on the slice first."_s);
+                                 u"No spectrum to export yet. Pick a pixel on the slice first."_s);
         return;
     }
 
@@ -1178,46 +1648,585 @@ void ProfileWidget::saveSpectrumCsv()
 
 // ── Line identification overlay ──────────────────────────────────────────────
 
-void ProfileWidget::loadLineIdFile()
+void ProfileWidget::setSpectralAxisContext(const QString &ctype, const QString &unit,
+                                           double restFreqHz)
 {
-    const QString path = QFileDialog::getOpenFileName(
-            this, u"Load spectral line list"_s, QString(),
-            u"CSV files (*.csv *.txt);;All files (*)"_s);
-    if (path.isEmpty()) return;
+    m_axisCtype = ctype;
+    m_axisUnit = unit;
+    m_axisRestFreqHz = restFreqHz > 0.0 ? restFreqHz : 0.0;
+}
 
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, u"Load Lines"_s,
-                u"Could not open:\n%1"_s.arg(path));
-        return;
+namespace {
+
+/// A frequency unit named inside a column header or a comment ("Freq-GHz",
+/// "# unit = MHz"). Empty when the text names none.
+QString unitHintIn(const QString &text)
+{
+    const QString t = text.toLower();
+    // Longest first: "ghz" contains "hz".
+    for (const auto &u : { QStringLiteral("ghz"), QStringLiteral("mhz"), QStringLiteral("khz"),
+                           QStringLiteral("km/s"), QStringLiteral("m/s"), QStringLiteral("hz") })
+        if (t.contains(u))
+            return u;
+    return QString();
+}
+
+/// Split on the separator the file actually uses. Catalogue exports are comma-
+/// or colon-separated (Splatalogue offers both), hand-made lists tab-separated.
+/// Split one row on @p sep, honouring double quotes ("" inside a quoted field is
+/// a literal quote) and dropping the quotes from the result. A catalogue export
+/// quotes any field that contains the separator — a chemical name with a comma
+/// in it — and splitting blindly shifts every later column, which silently
+/// discarded the row.
+QStringList splitRow(const QString &row, QChar sep, bool *malformed = nullptr)
+{
+    QStringList out;
+    QString field;
+    bool inQuotes = false;
+    if (malformed)
+        *malformed = false;
+    for (int i = 0; i < row.size(); ++i) {
+        const QChar c = row.at(i);
+        if (inQuotes) {
+            if (c == QLatin1Char('"')) {
+                if (i + 1 < row.size() && row.at(i + 1) == QLatin1Char('"')) {
+                    field.append(QLatin1Char('"'));
+                    ++i;
+                } else {
+                    inQuotes = false;
+                }
+            } else {
+                field.append(c);
+            }
+        } else if (c == QLatin1Char('"')) {
+            inQuotes = true;
+        } else if (c == sep) {
+            out << field.trimmed();
+            field.clear();
+        } else {
+            field.append(c);
+        }
+    }
+    out << field.trimmed();
+    // An unterminated quote means the row is not the CSV it claims to be. Say so
+    // instead of returning a field that happens to parse.
+    if (inQuotes && malformed)
+        *malformed = true;
+    return out;
+}
+
+/// The separator of the WHOLE file, decided once from its first data row and
+/// looked for OUTSIDE quotes. Deciding per row let a tab-separated catalogue
+/// switch to commas on any row whose quantum numbers contained one.
+QChar detectSeparator(const QString &row)
+{
+    bool inQuotes = false;
+    QSet<QChar> seen;
+    for (const QChar c : row) {
+        if (c == QLatin1Char('"'))
+            inQuotes = !inQuotes;
+        else if (!inQuotes)
+            seen.insert(c);
+    }
+    for (const QChar sep : { QLatin1Char(','), QLatin1Char('\t'), QLatin1Char(';'),
+                             QLatin1Char(':') })
+        if (seen.contains(sep))
+            return sep;
+    return QLatin1Char(',');   // single-column file: any separator does
+}
+
+}   // namespace
+
+QVector<ProfileWidget::RestLine> ProfileWidget::parseLineListFile(const QString &text,
+                                                                 QString &unitHint,
+                                                                 QString &formatNote,
+                                                                 bool allowHeader,
+                                                                 bool *retryAsTwoColumn)
+{
+    QVector<RestLine> out;
+    unitHint.clear();
+    formatNote.clear();
+    if (retryAsTwoColumn)
+        *retryAsTwoColumn = false;
+    QStringList rows = text.split(QLatin1Char('\n'));
+    // Comments can declare the unit ("# unit = GHz"), which spares the user a
+    // guess in the dialog.
+    QStringList data;
+    for (const QString &raw : rows) {
+        const QString row = raw.trimmed();
+        if (row.isEmpty())
+            continue;
+        if (row.startsWith(QLatin1Char('#')) || row.startsWith(QLatin1Char('!'))) {
+            if (unitHint.isEmpty() && row.contains(QStringLiteral("unit"), Qt::CaseInsensitive))
+                unitHint = unitHintIn(row);
+            continue;
+        }
+        data << row;
+    }
+    if (data.isEmpty())
+        return out;
+
+    // Header row? A catalogue export starts with column names, a hand-made list
+    // with a number. That single test is what lets one code path read both.
+    const QChar sep = detectSeparator(data.first());
+    bool firstMalformed = false;
+    const QStringList first = splitRow(data.first(), sep, &firstMalformed);
+    bool firstIsNumber = false;
+    if (!first.isEmpty())
+        first.first().trimmed().toDouble(&firstIsNumber);
+    if (firstMalformed) {
+        // Its columns cannot be trusted, and guessing them mis-selected the
+        // frequency column for every row that followed.
+        formatNote = QStringLiteral("the first row is malformed (unterminated quote)");
+        return out;
+    }
+    // Is the first row a header? Two rules that took three attempts to get right
+    //, because both a header and a data row can begin with a number and
+    // either can contain the word "frequency":
+    //
+    //  (a) a field NAMES a value column ("Freq-GHz", "Velocity") and is not
+    //      itself a number — a hypothesis, which is then VERIFIED against the
+    //      next row: the same column there must parse as a number. That keeps
+    //      `Index,Species,Freq-GHz` a header while leaving the data row
+    //      `115.271,CO frequency reference` alone, whose column 1 is a label in
+    //      every row.
+    //  (b) failing that, no numeric first field — the classic "all names" row.
+    int nameValueCol = -1;
+    for (int i = 0; i < first.size(); ++i) {
+        const QString f = first.at(i).trimmed();
+        const QString n = f.toLower();
+        if (!(n.contains(QStringLiteral("freq")) || n.contains(QStringLiteral("velocity"))))
+            continue;
+        if (n.contains(QStringLiteral("err")))
+            continue;   // an uncertainty column is not the value
+        bool numeric = false;
+        f.toDouble(&numeric);
+        if (!numeric) {
+            nameValueCol = i;
+            break;
+        }
+    }
+    bool namesValueColumn = false;
+    if (nameValueCol >= 0 && data.size() >= 2) {
+        const QStringList second = splitRow(data.at(1), sep);
+        if (second.size() > nameValueCol) {
+            bool numeric = false;
+            second.at(nameValueCol).trimmed().toDouble(&numeric);
+            namesValueColumn = numeric;
+        }
+    }
+    int valueCol = 0, labelCol = 1, qnCol = -1;
+    int startRow = 0;
+    if (allowHeader && (namesValueColumn || !firstIsNumber) && first.size() >= 2) {
+        startRow = 1;
+        valueCol = -1;
+        labelCol = -1;
+        for (int i = 0; i < first.size(); ++i) {
+            const QString name = first.at(i).trimmed().toLower();
+            // The value: a frequency column, but never an uncertainty one
+            // ("Freq Err"). Splatalogue ships both a computed and a measured
+            // frequency; either does, so the first wins.
+            if (valueCol < 0 && name.contains(QStringLiteral("freq"))
+                && !name.contains(QStringLiteral("err")))
+                valueCol = i;
+            // …or a velocity column, for a list already in the observed frame —
+            // and with the SAME uncertainty exclusion. Without it
+            // `Species,Velocity Err,Velocity` selected the error column and
+            // imported the uncertainties as the line positions.
+            if (valueCol < 0 && !name.contains(QStringLiteral("err"))
+                && (name.contains(QStringLiteral("velocity")) || name == QStringLiteral("v")))
+                valueCol = i;
+            if (labelCol < 0
+                && (name.contains(QStringLiteral("species"))
+                    || name.contains(QStringLiteral("chemical"))
+                    || name.contains(QStringLiteral("molecule"))
+                    || name == QStringLiteral("name")
+                    || name == QStringLiteral("line")))
+                labelCol = i;
+            // Quantum numbers make the label useful ("CO 2-1"), so they are
+            // appended to the species when the export carries them.
+            if (qnCol < 0
+                && (name.contains(QStringLiteral("qn")) || name.contains(QStringLiteral("quantum"))
+                    || name.contains(QStringLiteral("transition"))))
+                qnCol = i;
+        }
+        if (valueCol >= 0 && unitHint.isEmpty())
+            unitHint = unitHintIn(first.at(valueCol));
+        if (valueCol < 0) {
+            formatNote = QStringLiteral(
+                    "the header row names no frequency or velocity column");
+            return out;
+        }
+        formatNote = QStringLiteral("catalogue export: value from “%1”")
+                             .arg(first.at(valueCol).trimmed());
+    } else {
+        formatNote = QStringLiteral("two-column list (value, label)");
     }
 
-    clearLineIdOverlay();
-
-    QTextStream in(&file);
-    while (!in.atEnd()) {
-        const QString line = in.readLine().trimmed();
-        if (line.isEmpty() || line.startsWith(u'#')) continue;
-        // Expected format: frequency,label (or frequency<tab>label)
-        const QStringList parts = line.contains(u',')
-                ? line.split(u',') : line.split(u'\t');
-        if (parts.size() < 2) continue;
+    int malformedRows = 0;   // the first row is handled above, never counted twice
+    for (int r = startRow; r < data.size(); ++r) {
+        bool malformed = false;
+        const QStringList parts = splitRow(data.at(r), sep, &malformed);
+        if (malformed) {
+            ++malformedRows;
+            continue;
+        }
+        if (parts.size() <= valueCol)
+            continue;
         bool ok = false;
-        const double freq = parts[0].trimmed().toDouble(&ok);
-        if (!ok || !std::isfinite(freq)) continue;
-        m_lineIds.append({ freq, parts[1].trimmed() });
+        const double value = parts.at(valueCol).trimmed().toDouble(&ok);
+        if (!ok || !std::isfinite(value))
+            continue;
+        QString label;
+        if (labelCol >= 0 && parts.size() > labelCol)
+            label = parts.at(labelCol).trimmed();
+        if (qnCol >= 0 && parts.size() > qnCol && !parts.at(qnCol).trimmed().isEmpty())
+            label = label.isEmpty() ? parts.at(qnCol).trimmed()
+                                    : label + QLatin1Char(' ') + parts.at(qnCol).trimmed();
+        if (label.isEmpty())
+            label = QString::number(value, 'g', 8);
+        out.append({ value, label });
+    }
+    // Worth a two-column re-read only when the file's ONE row was taken for a
+    // header: a header with no data rows under it is not a header at all. With
+    // real data rows present the rejection stands.
+    if (retryAsTwoColumn && out.isEmpty() && startRow == 1 && data.size() == 1)
+        *retryAsTwoColumn = true;
+    if (malformedRows > 0)
+        formatNote += QStringLiteral("; %1 malformed row%2 skipped (unterminated quote)")
+                              .arg(malformedRows)
+                              .arg(malformedRows == 1 ? "" : "s");
+    return out;
+}
+
+void ProfileWidget::loadLineIdFile()
+{
+    using namespace Qt::StringLiterals;
+    // ── One dialog for the whole thing ───────────────────────────────────────
+    // Where the lines come from, plus the two things no line list can tell us:
+    // the unit its numbers are in, and the source's redshift (a list is in the
+    // REST frame — drawn unshifted every marker is in the wrong place).
+    const spectral::SpectralUnit axisUnit = spectral::parseSpectralUnit(m_axisUnit);
+    QVector<RestLine> lines;
+    QString unitHint, formatNote;
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(u"Spectral Lines"_s);
+    auto *form = new QFormLayout(&dlg);
+
+    auto *sourceCombo = new QComboBox(&dlg);
+    sourceCombo->addItem(u"Common radio / mm lines (bundled)"_s, 0);
+    sourceCombo->addItem(u"File…"_s, 1);
+    auto *browse = new QPushButton(u"Choose file…"_s, &dlg);
+    browse->setVisible(false);
+    form->addRow(u"Lines from:"_s, sourceCombo);
+    form->addRow(QString(), browse);
+
+    auto *intro = new QLabel(&dlg);
+    intro->setWordWrap(true);
+    form->addRow(intro);
+
+    // What was used last time for THIS cube (the other parameter dialogs all
+    // restore themselves; this one asked for the systemic velocity again on
+    // every single use).
+    const QVariantMap saved = m_datasetPersistKey.isEmpty()
+            ? QVariantMap()
+            : AnalysisParamStore().load(m_datasetPersistKey, u"spectral_lines"_s);
+
+    auto *unitCombo = new QComboBox(&dlg);
+    unitCombo->addItems({ u"GHz"_s, u"MHz"_s, u"kHz"_s, u"Hz"_s, u"km/s"_s, u"m/s"_s });
+    if (saved.contains(u"unit"_s)) {
+        const int idx = unitCombo->findText(saved.value(u"unit"_s).toString(),
+                                            Qt::MatchFixedString);
+        if (idx >= 0)
+            unitCombo->setCurrentIndex(idx);
+    }
+    form->addRow(u"Values are in:"_s, unitCombo);
+
+    auto *shiftCombo = new QComboBox(&dlg);
+    shiftCombo->addItem(u"Systemic velocity (km/s, optical)"_s, 0);
+    shiftCombo->addItem(u"Redshift z"_s, 1);
+    shiftCombo->addItem(u"Already in the observed frame"_s, 2);
+    if (saved.contains(u"shiftMode"_s)) {
+        const int i = shiftCombo->findData(saved.value(u"shiftMode"_s).toInt());
+        if (i >= 0)
+            shiftCombo->setCurrentIndex(i);
+    }
+    auto *shiftValue = new QLineEdit(saved.contains(u"shiftValue"_s)
+                                             ? saved.value(u"shiftValue"_s).toString()
+                                             : u"0"_s,
+                                     &dlg);
+    shiftValue->setValidator(new QDoubleValidator(&dlg));
+    form->addRow(u"Rest frame → observed:"_s, shiftCombo);
+    form->addRow(u"Value:"_s, shiftValue);
+    QObject::connect(shiftCombo, qOverload<int>(&QComboBox::currentIndexChanged), &dlg,
+                     [shiftValue](int i) { shiftValue->setEnabled(i != 2); });
+
+    // What the conversion has to work with, stated rather than assumed.
+    QString axisNote = u"This axis: %1"_s.arg(m_axisCtype.isEmpty() ? u"unknown"_s : m_axisCtype);
+    if (!m_axisUnit.isEmpty())
+        axisNote += u" in %1"_s.arg(m_axisUnit);
+    axisNote += m_axisRestFreqHz > 0.0
+            ? u"  ·  cube rest frequency %1 MHz"_s.arg(m_axisRestFreqHz / 1.0e6, 0, 'f', 4)
+            : u"  ·  no RESTFRQ in the header"_s;
+    auto *axisLabel = new QLabel(axisNote, &dlg);
+    axisLabel->setWordWrap(true);
+    form->addRow(axisLabel);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    form->addRow(buttons);
+
+    // Load a source into `lines` and reflect it in the dialog. The bundled list
+    // is parsed by the SAME parser as a user file, so there is one format to
+    // maintain and the bundled path exercises it.
+    auto load = [&](const QString &text, const QString &origin) {
+        bool retryAsTwoColumn = false;
+        lines = parseLineListFile(text, unitHint, formatNote, /*allowHeader=*/true,
+                                  &retryAsTwoColumn);
+        // A single-row file whose row was taken for a header is a two-column list
+        // whose only entry happened to contain a column-ish word. Re-read it as
+        // data; a real catalogue header with unusable rows stays rejected.
+        if (retryAsTwoColumn) {
+            QString unit2, note2;
+            const QVector<RestLine> retry =
+                    parseLineListFile(text, unit2, note2, /*allowHeader=*/false);
+            if (!retry.isEmpty()) {
+                lines = retry;
+                unitHint = unit2;
+                formatNote = note2;
+            }
+        }
+        if (!unitHint.isEmpty()) {
+            const int idx = unitCombo->findText(unitHint, Qt::MatchFixedString);
+            if (idx >= 0)
+                unitCombo->setCurrentIndex(idx);
+        }
+        intro->setText(lines.isEmpty()
+                               ? u"No usable lines in %1%2.\n\nAccepted: a two-column list "
+                                 u"“value,label” (# for comments), or a catalogue export "
+                                 u"(Splatalogue / CDMS style) whose header row names a "
+                                 u"frequency column."_s
+                                         .arg(origin)
+                                         .arg(formatNote.isEmpty() ? QString()
+                                                                   : u" - %1"_s.arg(formatNote))
+                               : u"%1: %2 line%3 (%4)."_s.arg(origin)
+                                         .arg(lines.size())
+                                         .arg(lines.size() == 1 ? u""_s : u"s"_s)
+                                         .arg(formatNote));
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(!lines.isEmpty());
+    };
+    auto loadBundled = [&]() {
+        QFile f(u":/spectral_lines/common_lines.csv"_s);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            intro->setText(u"The bundled line list is missing from this build."_s);
+            buttons->button(QDialogButtonBox::Ok)->setEnabled(false);
+            lines.clear();
+            return;
+        }
+        load(QString::fromUtf8(f.readAll()),
+             u"Bundled list (rounded to kHz, verify against CDMS / JPL before publishing)"_s);
+    };
+    auto loadFromFile = [&]() {
+        const QString path = QFileDialog::getOpenFileName(
+                &dlg, u"Load spectral line list"_s, QString(),
+                u"Line lists (*.csv *.txt *.tsv);;All files (*)"_s);
+        if (path.isEmpty())
+            return;
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            intro->setText(u"Could not open %1."_s.arg(path));
+            buttons->button(QDialogButtonBox::Ok)->setEnabled(false);
+            lines.clear();
+            return;
+        }
+        load(QString::fromUtf8(f.readAll()), QFileInfo(path).fileName());
+    };
+    QObject::connect(sourceCombo, qOverload<int>(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int i) {
+                         browse->setVisible(i == 1);
+                         if (i == 0) {
+                             loadBundled();
+                         } else {
+                             lines.clear();
+                             intro->setText(u"Choose a line list file."_s);
+                             buttons->button(QDialogButtonBox::Ok)->setEnabled(false);
+                             loadFromFile();
+                         }
+                     });
+    QObject::connect(browse, &QPushButton::clicked, &dlg, [&]() { loadFromFile(); });
+    loadBundled();   // the offline default, so the dialog opens with something usable
+
+    if (dlg.exec() != QDialog::Accepted || lines.isEmpty())
+        return;
+    if (!axisUnit.ok) {
+        QMessageBox::warning(this, u"Load Lines"_s,
+                             u"Cannot place lines on this axis: its unit (“%1”) is not "
+                             u"one this build can convert."_s.arg(m_axisUnit));
+        return;
+    }
+    // The validator accepts the SYSTEM locale's decimal separator ("0,01" on an
+    // Italian desktop) while QString::toDouble() only parses C-locale syntax —
+    // and its success flag was ignored, so a perfectly valid entry silently
+    // became a zero redshift. Try the system locale first, then C.
+    const int mode = shiftCombo->currentData().toInt();
+    double shift = 0.0;
+    if (mode != 2) {
+        bool ok = false;
+        shift = QLocale::system().toDouble(shiftValue->text(), &ok);
+        if (!ok)
+            shift = QLocale::c().toDouble(shiftValue->text(), &ok);
+        if (!ok) {
+            QMessageBox::warning(this, u"Load Lines"_s,
+                                 u"“%1” is not a number - give the systemic velocity in "
+                                 u"km/s, or the redshift z."_s.arg(shiftValue->text()));
+            return;
+        }
+    }
+    if (!m_datasetPersistKey.isEmpty()) {
+        AnalysisParamStore().save(m_datasetPersistKey, u"spectral_lines"_s,
+                                  { { u"unit"_s, unitCombo->currentText() },
+                                    { u"shiftMode"_s, mode },
+                                    { u"shiftValue"_s, shiftValue->text() } });
+    }
+    applyLineList(lines, unitCombo->currentText(), mode, shift);
+}
+
+void ProfileWidget::applyLineList(const QVector<RestLine> &lines, const QString &unitText,
+                                  int mode, double shift)
+{
+    using namespace Qt::StringLiterals;
+    const spectral::AxisKind axisKind = spectral::axisKindFromCtype(m_axisCtype);
+    const spectral::SpectralUnit axisUnit = spectral::parseSpectralUnit(m_axisUnit);
+    const spectral::SpectralUnit fileUnit = spectral::parseSpectralUnit(unitText);
+    if (!fileUnit.ok || !axisUnit.ok) {
+        QMessageBox::warning(this, u"Load Lines"_s,
+                             u"Cannot place lines on this axis: its unit (“%1”) is not "
+                             u"one this build can convert."_s.arg(m_axisUnit));
+        return;
+    }
+    double z = 0.0;
+    if (mode == 0)
+        z = spectral::redshiftFromOpticalVelocity(shift * 1.0e3);
+    else if (mode == 1)
+        z = shift;
+
+    clearLineIdOverlay();
+    int skipped = 0;
+    QString skipReason;
+    for (const RestLine &rl : lines) {
+        const double si = rl.value * fileUnit.siFactor;
+        double axisSi = 0.0;
+        bool ok = false;
+        if (fileUnit.quantity == 2) {   // a frequency list
+            const double fObs = (mode == 2) ? si : spectral::observedFrequencyHz(si, z);
+            if (axisUnit.quantity == 2) {
+                axisSi = fObs;
+                ok = true;
+            } else {
+                ok = spectral::axisValueForFrequency(fObs, axisKind, m_axisRestFreqHz, axisSi);
+                if (!ok && skipReason.isEmpty())
+                    skipReason = m_axisRestFreqHz > 0.0
+                            ? u"the axis type (%1) is not one lines can be placed on"_s
+                                      .arg(m_axisCtype.isEmpty() ? u"unknown"_s : m_axisCtype)
+                            : u"this cube's header has no RESTFRQ, so a frequency list cannot "
+                              u"be converted to its velocity axis"_s;
+            }
+        } else {   // a velocity list
+            if (axisUnit.quantity != 1) {
+                if (skipReason.isEmpty())
+                    skipReason = u"the axis is a frequency axis, load the list in "
+                                 u"Hz / MHz / GHz"_s;
+            } else if (mode == 2) {
+                // Already observed: the value IS the axis coordinate.
+                axisSi = si;
+                ok = true;
+            } else {
+                // A shift is a REDSHIFT, and a redshift acts on frequency. Take
+                // the velocity back to a frequency in this axis's own convention,
+                // redshift it there, and convert forward again — adding z·c to a
+                // velocity is only right for the optical convention, and wrong by
+                // ~v²/c on a VRAD or VELO axis.
+                // Three different reasons a shift can fail, and the user needs the
+                // right one: no rest frequency, an axis convention we cannot
+                // invert, or a value/redshift outside the physical domain
+                // (|v| ≥ c, z ≤ −1). Reporting "unsupported axis" for a valid
+                // VRAD axis fed a superluminal value sends the user to fix the
+                // wrong thing.
+                if (!(m_axisRestFreqHz > 0.0)) {
+                    if (skipReason.isEmpty())
+                        skipReason = u"this cube's header has no RESTFRQ, so a velocity list "
+                                     u"cannot be redshifted in this axis's convention, load it "
+                                     u"already in the observed frame"_s;
+                } else if (axisKind == spectral::AxisKind::Unknown) {
+                    if (skipReason.isEmpty())
+                        skipReason = u"the axis type (%1) is not one a shifted velocity list can "
+                                     u"be placed on"_s
+                                             .arg(m_axisCtype.isEmpty() ? u"unknown"_s
+                                                                        : m_axisCtype);
+                } else {
+                    double fRest = 0.0;
+                    if (spectral::frequencyForAxisValue(si, axisKind, m_axisRestFreqHz, fRest))
+                        ok = spectral::axisValueForFrequency(
+                                spectral::observedFrequencyHz(fRest, z), axisKind,
+                                m_axisRestFreqHz, axisSi);
+                    if (!ok && skipReason.isEmpty())
+                        skipReason = u"a velocity at or beyond the speed of light (or a redshift "
+                                     u"z ≤ −1) has no observed frequency, check the values and "
+                                     u"the shift"_s;
+                }
+            }
+        }
+        if (!ok) {
+            ++skipped;
+            continue;
+        }
+        m_lineIds.append({ axisSi / axisUnit.siFactor, rl.label });
     }
 
     if (m_lineIds.isEmpty()) {
-        QMessageBox::information(this, u"Load Lines"_s,
-                u"No valid lines found in the file.\n\n"
-                u"Expected format: frequency,label (one per line).\n"
-                u"Lines starting with # are ignored."_s);
+        QMessageBox::warning(this, u"Load Lines"_s,
+                             u"None of the %1 lines could be placed on this axis: %2."_s
+                                     .arg(lines.size())
+                                     .arg(skipReason.isEmpty() ? u"unknown reason"_s : skipReason));
         return;
     }
 
+    // In range? A list in the wrong unit or at the wrong redshift converts
+    // perfectly well and lands entirely off-plot, where the user sees nothing at
+    // all and concludes the feature is broken. Say it instead.
+    int inRange = 0;
+    if (ui->plot1) {
+        const QCPRange xr = ui->plot1->xAxis->range();
+        for (const SpectralLine &sl : m_lineIds)
+            if (sl.frequency >= xr.lower && sl.frequency <= xr.upper)
+                ++inRange;
+    }
     drawLineIdOverlay();
     if (ui->plot1) ui->plot1->replot();
+    if (inRange == 0) {
+        const QCPRange xr = ui->plot1 ? ui->plot1->xAxis->range() : QCPRange();
+        QMessageBox::information(
+                this, u"Load Lines"_s,
+                u"%1 line%2 placed, but none falls inside the plotted range "
+                u"(%3 – %4 %5).\n\nCheck the unit and the systemic velocity / "
+                u"redshift: a rest-frame list drawn unshifted lands outside the band."_s
+                        .arg(m_lineIds.size())
+                        .arg(m_lineIds.size() == 1 ? u""_s : u"s"_s)
+                        .arg(xr.lower, 0, 'g', 6)
+                        .arg(xr.upper, 0, 'g', 6)
+                        .arg(m_axisUnit));
+    } else if (skipped > 0) {
+        QMessageBox::information(this, u"Load Lines"_s,
+                                 u"%1 of %2 lines placed (%3 in the plotted range); %4 skipped: %5."_s
+                                         .arg(m_lineIds.size())
+                                         .arg(lines.size())
+                                         .arg(inRange)
+                                         .arg(skipped)
+                                         .arg(skipReason.isEmpty() ? u"unconvertible"_s
+                                                                   : skipReason));
+    }
 }
 
 void ProfileWidget::drawLineIdOverlay()

@@ -7,6 +7,10 @@ R-03: Parameter snapshots.
 """
 from __future__ import annotations
 
+# The reproducibility subsystem (provenance, snapshots, HMAC-signed snapshots)
+# has been rebuilt in app/routers/reproducibility.py. The CARTA-script export
+# (R-01) was intentionally retired and its tests removed. Module is live.
+
 import os
 import tempfile
 import unittest
@@ -61,81 +65,10 @@ class ReproducibilityTestBase(unittest.TestCase):
 
 
 # ============================================================================
-# R-01: CARTA script export
+# R-01: CARTA script export — RETIRED. The carta_script feature was
+# intentionally removed (see ROADMAP retrospective); no endpoint exists and the
+# desktop client no longer offers it. Tests for it were deleted on purpose.
 # ============================================================================
-
-class TestCartaExport(ReproducibilityTestBase):
-    """POST /v1/reproducibility/carta_script returns a CARTA Python script."""
-
-    def test_returns_200(self):
-        r = self.client.post("/v1/reproducibility/carta_script",
-                             json={}, headers=self._headers())
-        self.assertEqual(r.status_code, 200)
-
-    def test_response_valid(self):
-        r = self.client.post("/v1/reproducibility/carta_script",
-                             json={}, headers=self._headers())
-        data = r.json()
-        self.assertTrue(data["valid"])
-
-    def test_script_contains_import(self):
-        """Script must import the carta module."""
-        r = self.client.post("/v1/reproducibility/carta_script",
-                             json={}, headers=self._headers())
-        script = r.json()["script"]
-        self.assertIn("import carta", script)
-
-    def test_script_contains_open_file(self):
-        """Script must call cc.open_file for the opened dataset."""
-        r = self.client.post("/v1/reproducibility/carta_script",
-                             json={}, headers=self._headers())
-        script = r.json()["script"]
-        self.assertIn("open_file", script)
-        self.assertIn(self.fits_path, script)
-
-    def test_script_n_datasets(self):
-        r = self.client.post("/v1/reproducibility/carta_script",
-                             json={}, headers=self._headers())
-        data = r.json()
-        self.assertGreaterEqual(data["n_datasets"], 1)
-
-    def test_explicit_dataset_ids(self):
-        """Passing an explicit list should only export those datasets."""
-        r = self.client.post("/v1/reproducibility/carta_script",
-                             json={"dataset_ids": [self.dataset_id]},
-                             headers=self._headers())
-        data = r.json()
-        self.assertTrue(data["valid"])
-        self.assertEqual(data["n_datasets"], 1)
-
-    def test_unknown_dataset_id_ignored(self):
-        """Unknown dataset_ids should be silently skipped (n_datasets=0)."""
-        r = self.client.post("/v1/reproducibility/carta_script",
-                             json={"dataset_ids": ["nonexistent_id"]},
-                             headers=self._headers())
-        data = r.json()
-        self.assertTrue(data["valid"])
-        self.assertEqual(data["n_datasets"], 0)
-
-    def test_script_is_string(self):
-        r = self.client.post("/v1/reproducibility/carta_script",
-                             json={}, headers=self._headers())
-        self.assertIsInstance(r.json()["script"], str)
-
-    def test_get_returns_plain_text(self):
-        """GET /v1/reproducibility/carta_script must return text/plain."""
-        r = self.client.get("/v1/reproducibility/carta_script",
-                            headers=self._headers())
-        self.assertEqual(r.status_code, 200)
-        self.assertIn("text/plain", r.headers.get("content-type", ""))
-
-    def test_get_has_content_disposition(self):
-        """GET endpoint must include Content-Disposition attachment header."""
-        r = self.client.get("/v1/reproducibility/carta_script",
-                            headers=self._headers())
-        disp = r.headers.get("content-disposition", "")
-        self.assertIn("attachment", disp)
-        self.assertIn(".carta.py", disp)
 
 
 # ============================================================================
@@ -591,3 +524,20 @@ class TestCosmologyDistances(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_record_history_appends():
+    """E-06: record_history appends a provenance entry (best-effort, no raise)."""
+    from app.dependencies import record_history
+    from app.sessions import Session
+
+    s = Session("prov-test")
+    assert s.history == []
+    record_history(s, operation="cube-stats", dataset_id="ds1",
+                   endpoint="/v1/analysis/cube-stats", params={"k": 1})
+    assert len(s.history) == 1
+    e = s.history[0]
+    assert e["operation"] == "cube-stats"
+    assert e["dataset_id"] == "ds1"
+    assert e["params"] == {"k": 1}
+    assert e["timestamp"]

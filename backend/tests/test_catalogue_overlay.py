@@ -30,12 +30,12 @@ import pytest
 
 
 def _sync():
-    from app.main import _catalogue_overlay_sync
+    from app.dependencies import _catalogue_overlay_sync
     return _catalogue_overlay_sync
 
 
 def _cache_clear():
-    from app.main import _load_overlay_csv
+    from app.dependencies import _load_overlay_csv
     _load_overlay_csv.cache_clear()
 
 

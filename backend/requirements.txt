@@ -1,10 +1,16 @@
 fastapi>=0.115
 uvicorn[standard]>=0.30
 astropy>=6.1
+pyvo>=1.6          # provides pyvo.samp (astropy.samp deprecated in astropy 8.0)
 numpy>=2.0
 vtk>=9.4
 pandas>=2.0
-healpy>=0.3
+# No Windows wheels exist for healpy, and building it there needs a Fortran
+# toolchain, so the marker keeps `pip install -r` from failing on Windows for
+# a dependency the backend already treats as optional: without it only the
+# HiPS tile-query endpoints are unavailable (see the guarded import in
+# app/dependencies.py), everything else runs.
+healpy>=0.3; platform_system != "Windows"
 scipy>=1.10
 numba>=0.59.0
 dask[array]>=2024.1.0
@@ -23,3 +29,13 @@ h5py>=3.10            # LOFAR / generic beamformed HDF5 dynamic-spectrum reader
 # To enable multi-node distributed scaling for CPU-bound tasks,
 # uncomment the line below and set VISIVO_DASK_SCHEDULER environment variable.
 #dask[distributed]>=2024.1.0
+
+# -- Optional: AI copilot (R-22) --
+# The scientific copilot's LLM provider is user-selectable. Install the SDK for
+# whichever back-end(s) you want to enable; without them the copilot falls back
+# to a null provider (the deterministic tools still work). Uncomment as needed:
+#   * Claude:                    anthropic
+#   * ChatGPT / OpenAI cloud:    openai
+#   * Your own server (vLLM/Ollama, OpenAI-compatible): also the `openai` SDK
+# anthropic>=0.40
+openai>=1.40

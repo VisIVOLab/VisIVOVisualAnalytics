@@ -1,0 +1,329 @@
+Bootstrap: docker
+From: condaforge/mambaforge:latest
+
+%labels
+    Maintainer VisIVOLab <visivo@inaf.it>
+    Version    1.0.0-conda
+    Description VisIVO Backend (conda-forge variant) — full scientific stack incl. numba/vtk on ppc64le
+
+%help
+    Apptainer image for the VisIVO backend, built on top of
+    condaforge/mambaforge. This variant uses conda-forge channels
+    instead of PyPI, which provides pre-built binary packages for
+    ppc64le (and x86_64/aarch64) for the full scientific stack —
+    including the ones with no PyPI wheels on Power9:
+
+        * llvmlite + numba   (LLVM JIT, no LLVM version juggling)
+        * vtk                (rendering bindings, full)
+        * scipy / healpy     (BLAS-linked builds)
+        * cupy (optional)    (NVIDIA GPU, no manual CUDA install needed)
+
+    The image is larger (~1.5 GB vs ~600 MB for backend.def) but the
+    build is much faster (~5 min vs ~30 min) and includes everything,
+    so prefer this variant for SRC node deployments unless you need
+    the smaller image footprint.
+
+    ── Quick start ──────────────────────────────────────────────────────
+    # Build (RUN FROM REPO ROOT — paths in %setup are relative to cwd)
+    cd VisIVO-next
+    apptainer build --fakeroot backend.sif apptainer/backend-conda.def
+
+    # Default uses ``conda install --no-lock`` (libmamba solver, no
+    # lockfile contention — safest on Power9 shared filesystems).
+    # For maximum speed on a single-host build, switch to mamba. Note
+    # the APPTAINERENV_ prefix: Apptainer scrubs unprefixed env vars
+    # in the %post section, so a plain ``CONDA_INSTALLER=mamba``
+    # would be ignored.
+    APPTAINERENV_CONDA_INSTALLER=mamba \
+        apptainer build --fakeroot backend.sif apptainer/backend-conda.def
+
+    # Build with NVIDIA GPU support (cupy)
+    ENABLE_CUPY=1 apptainer build --fakeroot backend.sif apptainer/backend-conda.def
+
+    # Run
+    apptainer run --bind /path/to/data:/data backend.sif
+
+    # Run with GPU passthrough
+    apptainer run --nv --bind /path/to/data:/data backend.sif
+
+    # Run on a non-standard port
+    PORT=9000 apptainer run backend.sif
+
+    ── HPC / SLURM ──────────────────────────────────────────────────────
+    To run inside a SLURM cluster (e.g. the Power9 testbed where the
+    login node is pleiadi-gpu.oact.inaf.it and you should NOT keep a
+    long-lived backend on the frontend), use the SLURM submission
+    helper:
+
+        # On the frontend, after building backend-gpu.sif on the cluster:
+        bash scripts/launch_backend_slurm.sh \\
+            --partition gpu --gres gpu:1 \\
+            --data-root /data \\
+            --sif ~/VisIVO-next/backend-gpu.sif
+
+    Or, drive it remotely from your laptop in a single command:
+
+        # On your Mac/Linux desktop:
+        bash scripts/visivo_slurm_tunnel.sh \\
+            --frontend pleiadi-gpu.oact.inaf.it --user fvitello \\
+            --partition gpu --gres gpu:1 --data-root /data \\
+            --sif ~/VisIVO-next/backend-gpu.sif
+
+    The latter submits the job, opens the SSH tunnel, and prints the
+    Remote Backend settings ready to paste into VisIVO desktop.
+
+%environment
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    # Ensure the conda environment's binaries take precedence — mambaforge
+    # puts python, uvicorn, etc. under /opt/conda/bin.
+    export PATH=/opt/conda/bin:${PATH}
+    # Worker processes for CPU-bound FITS/VTK operations. We deliberately
+    # do NOT export a default here — the backend's ``app/dependencies.py``
+    # uses ``int(os.environ.get('VISIVO_WORKERS', '4'))`` and would
+    # crash on ``ProcessPoolExecutor(max_workers=0)`` if we set 0 here.
+    # Users can still override at runtime with VISIVO_WORKERS=<N>.
+    # Session idle-timeout in seconds (default 30 min)
+    export VISIVO_SESSION_TTL=${VISIVO_SESSION_TTL:-1800}
+
+    # ─── Compute-next-to-data path jail ────────────────────────────────
+    # When set, the /v1/datasets/open_skava endpoint refuses to open
+    # files outside this directory tree. The desktop client supplies
+    # the file:// URL it got from SKAVA; this jail is the second line
+    # of defence against client-side path traversal.
+    #
+    # Example:
+    #   APPTAINERENV_VISIVO_DATA_ROOT=/data \\
+    #       apptainer run --bind /data:/data backend.sif
+
+%post
+    set -e
+
+    # ── Source the conda activate hook ─────────────────────────────────────
+    . /opt/conda/etc/profile.d/conda.sh
+    conda activate base
+
+    # ── Solver selection ───────────────────────────────────────────────────
+    # On some Power9 testbeds mamba's internal lock contends with the
+    # shared filesystem and stalls. ``conda install --no-lock`` (a
+    # libmamba-solver flag) bypasses the transactional database lock and
+    # is the known-good pattern in that environment.
+    #
+    # Default to ``conda --no-lock`` for portability; override to mamba
+    # for maximum speed on a single-host build. Apptainer scrubs the
+    # host environment in %post, so the variable MUST use the
+    # APPTAINERENV_ prefix to propagate through:
+    #     APPTAINERENV_CONDA_INSTALLER=mamba apptainer build ...
+    # (Plain ``CONDA_INSTALLER=mamba apptainer build`` is silently
+    # ignored — Apptainer never passes the unprefixed variable in.)
+    #
+    # The two installers are otherwise interchangeable, but on ppc64le
+    # mamba native is dramatically faster: stages that take 20+ min
+    # with ``conda install --no-lock`` complete in ~30s with mamba.
+    CONDA_INSTALLER="${CONDA_INSTALLER:-conda}"
+    case "$CONDA_INSTALLER" in
+        mamba)
+            INSTALL_CMD="mamba install -y"
+            ;;
+        conda)
+            INSTALL_CMD="conda install -y --no-lock"
+            ;;
+        *)
+            echo "ERROR: CONDA_INSTALLER must be 'mamba' or 'conda', got '$CONDA_INSTALLER'"
+            exit 1
+            ;;
+    esac
+    echo "[backend-conda.def] Using installer: $INSTALL_CMD"
+
+    # ── Locate the requirements file (same logic as the slim variant) ──────
+    REQS=$(find /srv/backend_src -name requirements.txt -print -quit 2>/dev/null)
+    if [ -z "$REQS" ]; then
+        echo "ERROR: requirements.txt not found anywhere under /srv/backend_src"
+        ls -la /srv/backend_src/ || true
+        exit 1
+    fi
+    SRC_DIR=$(dirname "$REQS")
+    echo "[backend-conda.def] Source root resolved to: $SRC_DIR"
+
+    # ── Scientific stack from conda-forge — STAGED install ─────────────────
+    # Why not pip? conda-forge has pre-built binary packages for every
+    # architecture it supports (incl. ppc64le), so we skip every
+    # ~from-source build that bites us on the slim variant: vtk, numba,
+    # llvmlite, scipy's OpenBLAS link, healpy + libsharp, h5py + HDF5.
+    #
+    # Why staged? Conda's libsolv segfaults on ppc64le when the
+    # solver graph gets too large (observed: ~22 top-level packages
+    # crashes during "Solving environment"). Splitting the install
+    # into 4 smaller groups keeps each solve under that threshold —
+    # once stage N is solved, those packages and all their transitive
+    # deps are pinned for stage N+1, so the next solve sees a much
+    # smaller search space.
+    #
+    # Some pkgs have slightly different names on conda-forge:
+    #   pip name              → conda name
+    #   ─────────────────────────────────────
+    #   uvicorn[standard]     → uvicorn-standard
+    #   dask[array]           → dask + distributed
+    #
+    # healpy <1.19 imports ``from scipy.integrate import trapz`` which
+    # scipy 1.14+ removed (renamed to ``trapezoid``). On conda-forge
+    # ppc64le the healpy >=1.19 binary isn't always available, so
+    # pinning healpy alone is unreliable. Pin scipy<1.14 instead —
+    # keeps ``trapz`` available for any healpy version the solver
+    # picks, and stays well within ``scipy>=1.10`` from requirements.txt.
+
+    echo "[backend-conda.def] Stage 1/4 — foundation (python, numpy, scipy<1.14, astropy, pandas, healpy)"
+    $INSTALL_CMD -n base -c conda-forge \
+        python=3.12 \
+        numpy \
+        "scipy<1.14" \
+        astropy \
+        pandas \
+        healpy \
+        pyerfa \
+        pillow \
+        pip
+
+    echo "[backend-conda.def] Stage 2/4 — VTK + HDF5 (rendering / I/O)"
+    $INSTALL_CMD -n base -c conda-forge \
+        vtk \
+        h5py
+
+    echo "[backend-conda.def] Stage 3/4 — Numba JIT"
+    $INSTALL_CMD -n base -c conda-forge \
+        numba \
+        llvmlite
+
+    # Stage 4 is split into sub-stages because astroquery pulls a huge
+    # chain (keyring/cryptography/requests/bs4/html5lib/...) that on
+    # ppc64le with the conda solver can take 25+ min and 5+ GB RAM if
+    # combined with photutils/scikit-image's own dep tree. Splitting
+    # keeps each solve fast and memory-bounded.
+    echo "[backend-conda.def] Stage 4a — Web framework"
+    $INSTALL_CMD -n base -c conda-forge \
+        fastapi \
+        uvicorn-standard
+
+    echo "[backend-conda.def] Stage 4b — Astronomy analysis"
+    $INSTALL_CMD -n base -c conda-forge \
+        photutils \
+        reproject \
+        scikit-image
+
+    echo "[backend-conda.def] Stage 4b-bis — Source finding (SoFiA-2)"
+    # conda-forge ships SoFiA-2 (feedstock 'sofia-2'); the binary is installed
+    # as 'sofia'. The backend's resolve_sofia_bin() accepts 'sofia' or 'sofia2',
+    # but we add a 'sofia2' alias too for tools/scripts that expect that name.
+    # If the conda package is ever unavailable on a target arch, fall back to a
+    # source build:  git clone https://github.com/SoFiA-Admin/SoFiA-2 && \
+    #                cd SoFiA-2 && ./compile.sh -fopenmp && cp sofia /opt/conda/bin/
+    $INSTALL_CMD -n base -c conda-forge sofia-2
+    if [ -x /opt/conda/bin/sofia ] && [ ! -e /opt/conda/bin/sofia2 ]; then
+        ln -s /opt/conda/bin/sofia /opt/conda/bin/sofia2
+    fi
+
+    echo "[backend-conda.def] Stage 4c — Astroquery (heavy dep tree)"
+    $INSTALL_CMD -n base -c conda-forge \
+        astroquery
+
+    echo "[backend-conda.def] Stage 4d — Distributed compute"
+    $INSTALL_CMD -n base -c conda-forge \
+        dask \
+        distributed
+
+    # ── Optional: cupy (NVIDIA GPU) ────────────────────────────────────────
+    # Set ENABLE_CUPY=1 in the build environment. Unlike the slim variant
+    # which had to fight with apt-mirrored wheels, conda-forge's cupy
+    # package bundles its own CUDA runtime — no host CUDA toolkit needed.
+    # Apptainer --nv at runtime exposes the NVIDIA driver into the
+    # container so cupy can talk to the GPU.
+    if [ "${ENABLE_CUPY:-0}" = "1" ]; then
+        echo "[backend-conda.def] ENABLE_CUPY=1 → installing cupy from conda-forge"
+        $INSTALL_CMD -n base -c conda-forge cupy
+    else
+        echo "[backend-conda.def] ENABLE_CUPY not set → skipping GPU acceleration"
+    fi
+
+    # ── Cleanup caches to shrink the final image ──────────────────────────
+    conda clean --all --yes
+
+    # ── Copy application source ────────────────────────────────────────────
+    mkdir -p /app
+    cp -r "$SRC_DIR"/* /app/
+
+    # ── Sanity check ───────────────────────────────────────────────────────
+    python -c "
+import fastapi, astropy, numpy, scipy, healpy, numba, vtk
+print(f'[sanity] fastapi {fastapi.__version__}')
+print(f'[sanity] astropy {astropy.__version__}')
+print(f'[sanity] numpy   {numpy.__version__}')
+print(f'[sanity] scipy   {scipy.__version__}')
+print(f'[sanity] healpy  {healpy.__version__}')
+print(f'[sanity] numba   {numba.__version__}')
+print(f'[sanity] vtk     {vtk.vtkVersion.GetVTKVersion()}')
+print('[sanity] Full conda stack OK')
+"
+
+%setup
+    # Same %setup as backend.def — stage ${PWD}/backend → /srv/backend_src
+    # inside the in-progress rootfs, so %post can find requirements.txt
+    # and the application source.
+    set -ex
+    ROOTFS="${APPTAINER_ROOTFS:-${SINGULARITY_ROOTFS:-}}"
+    if [ -z "$ROOTFS" ]; then
+        echo "ERROR: Neither APPTAINER_ROOTFS nor SINGULARITY_ROOTFS is set."
+        exit 1
+    fi
+    SRC="${VISIVO_BACKEND_SRC:-}"
+    if [ -z "$SRC" ] || [ ! -d "$SRC" ]; then
+        if [ -d "${PWD}/backend" ]; then
+            SRC="${PWD}/backend"
+        elif [ -d "${PWD}/../backend" ]; then
+            SRC="${PWD}/../backend"
+        else
+            echo "ERROR: backend/ source directory not found."
+            echo "Tried: \$VISIVO_BACKEND_SRC, \${PWD}/backend, \${PWD}/../backend"
+            exit 1
+        fi
+    fi
+    echo "[%setup] Staging backend source from: $SRC → $ROOTFS/srv/backend_src"
+    mkdir -p "$ROOTFS/srv/backend_src"
+    cp -r "$SRC"/. "$ROOTFS/srv/backend_src/"
+    if [ ! -f "$ROOTFS/srv/backend_src/requirements.txt" ]; then
+        echo "ERROR: requirements.txt NOT present after copy from $SRC"
+        exit 1
+    fi
+    echo "[%setup] OK — backend/ staged into rootfs, %post can proceed."
+
+%runscript
+    #!/bin/bash
+    HOST="${VISIVO_HOST:-0.0.0.0}"
+    PORT="${PORT:-8000}"
+    WORKERS="${VISIVO_WORKERS:-$(nproc)}"
+
+    echo "[VisIVO/conda] Starting backend on ${HOST}:${PORT} with ${WORKERS} worker(s)"
+
+    exec uvicorn app.main:app \
+        --host "${HOST}" \
+        --port "${PORT}" \
+        --workers 1 \
+        --log-level info \
+        --app-dir /app
+
+%test
+    python -c "
+import sys, platform
+sys.path.insert(0, '/app')
+from app.auth import TOKEN
+from app.sessions import REGISTRY
+print(f'[test] Architecture: {platform.machine()}')
+print(f'[test] Python: {sys.version.split()[0]}')
+print(f'[test] Auth module OK. Token length: {len(TOKEN)}')
+print(f'[test] Sessions module OK.')
+import numpy, scipy, astropy, healpy, numba, vtk
+print(f'[test] numpy {numpy.__version__}, scipy {scipy.__version__}, '
+      f'astropy {astropy.__version__}, healpy {healpy.__version__}')
+print(f'[test] numba {numba.__version__} (JIT available), '
+      f'vtk {vtk.vtkVersion.GetVTKVersion()} (isosurface available)')
+print('[test] Full conda-forge stack verified.')
+"

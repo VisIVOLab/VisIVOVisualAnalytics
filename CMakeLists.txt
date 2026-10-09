@@ -1,7 +1,31 @@
 cmake_minimum_required(VERSION 3.22)
 
+# ── Oldest macOS this build will run on ──────────────────────────────────────
+#
+# MUST be set before project(): CMake reads it while probing the compiler, and
+# setting it afterwards leaves the already-probed flags alone.
+#
+# Left unset, CMake stamps the binary with the version of the machine that
+# COMPILED it, and macOS refuses to launch it on anything older — "you can't
+# open this application with this version of macOS", with no hint that the
+# cause is the builder's OS rather than the user's. A build made on a machine
+# that had just been upgraded therefore stopped working for every colleague who
+# had not upgraded, which is exactly what happened.
+#
+# 13.0 is Qt 6.11's own floor (its frameworks are stamped minos 13.0), so
+# asking for less would not buy anything: the app would still refuse to load Qt.
+# NOT DEFINED is not enough: an existing build directory carries the variable as
+# an EMPTY cache entry, which is defined. FORCE is safe under this condition,
+# which is precisely "nobody asked for a target"; -DCMAKE_OSX_DEPLOYMENT_TARGET
+# on the command line makes it false and is left alone.
+if (APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING
+        "Oldest macOS supported by this build (Qt 6.11's floor)" FORCE)
+endif ()
+
+
 project(VisIVOVisualAnalytics
-        VERSION 0.0.2
+        VERSION 1.0.0
         LANGUAGES CXX C
 )
 
@@ -19,6 +43,7 @@ set(qt_components
         NetworkAuth
         PrintSupport
         WebEngineWidgets
+        WebSockets
         Xml
 )
 foreach (module IN LISTS qt_components)
@@ -46,10 +71,13 @@ endif ()
 
 find_package(VTK 9.5.0 CONFIG REQUIRED COMPONENTS
         CommonColor
+        FiltersFlowPaths
         FiltersModeling
         FiltersStatistics
         GUISupportQt
+        ImagingGeneral
         InteractionStyle
+        InteractionWidgets
         RenderingAnnotation
         RenderingImage
         RenderingVolumeOpenGL2
@@ -88,13 +116,199 @@ else ()
     endif ()
 endif ()
 
-get_target_property(cfitsio_include_dirs CFITSIO::cfitsio INTERFACE_INCLUDE_DIRECTORIES)
-if (cfitsio_include_dirs)
-    list(FILTER cfitsio_include_dirs EXCLUDE REGEX
-            "^/Library/Developer/CommandLineTools/SDKs/.*/usr/include$")
-    set_target_properties(CFITSIO::cfitsio PROPERTIES
-            INTERFACE_INCLUDE_DIRECTORIES "${cfitsio_include_dirs}"
-    )
+# An SDK's own /usr/include must never be handed to the compiler as an include
+# directory: the C <math.h> found that way defines isfinite/isnan as MACROS
+# after <cmath> has undefined them, and every std::isfinite in the codebase
+# stops compiling ("expected unqualified-id") in headers nobody has touched.
+#
+# This used to be a one-target, one-path workaround (cfitsio, Command Line
+# Tools). An Xcode upgrade showed both halves were too narrow: the path moved to
+# /Applications/Xcode.app/.../SDKs/MacOSX.sdk/usr/include, and the target that
+# carried it was Qt6::PrintSupport (it wants the SDK's CUPS headers, and pins
+# the SDK it was built against). Strip it wherever it appears: the sysroot
+# already provides those headers through the proper mechanism.
+function(visivo_strip_sdk_usr_include target)
+    if (NOT TARGET ${target})
+        return()
+    endif ()
+    get_target_property(_inc ${target} INTERFACE_INCLUDE_DIRECTORIES)
+    if (NOT _inc)
+        return()
+    endif ()
+    set(_kept "${_inc}")
+    list(FILTER _kept EXCLUDE REGEX "/SDKs/[^/]*\\.sdk/usr/include$")
+    if (NOT "${_kept}" STREQUAL "${_inc}")
+        set_target_properties(${target} PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${_kept}")
+        message(STATUS "Stripped an SDK /usr/include from ${target}")
+    endif ()
+endfunction()
+
+visivo_strip_sdk_usr_include(CFITSIO::cfitsio)
+# Cups::Cups is where it hides on macOS: Qt6::PrintSupport links it, and its
+# headers live in the SDK's /usr/include, so the whole directory came along.
+visivo_strip_sdk_usr_include(Cups::Cups)
+foreach (_qt_comp IN LISTS qt_components)
+    visivo_strip_sdk_usr_include(Qt6::${_qt_comp})
+endforeach ()
+
+# ── Phase 3 SSR transport: H.265 / WebRTC via libdatachannel ────────────────
+#
+# When VISIVO_ENABLE_WEBRTC is ON (default), build the
+# ``RemoteRenderWidget`` with the WebRTC transport in addition to the
+# legacy JPEG-over-WebSocket path. Requires:
+#
+#   * libdatachannel  — WebRTC peer connection + DataChannel (C++17,
+#                       MIT, ~150 KB). On Linux: ``apt install
+#                       libdatachannel-dev``. On macOS: ``brew install
+#                       libdatachannel``. On Windows: vcpkg port
+#                       ``datachannel``.
+#   * FFmpeg dev libs — libavcodec + libavutil + libswscale for the
+#                       H.264 decode path. Same provenance pattern as
+#                       libdatachannel above (system / brew / vcpkg).
+#
+# Both find_package paths are gated by the option so a developer who
+# only needs the JPEG transport (e.g. a Windows lab without FFmpeg
+# headers) can disable the feature at configure time without touching
+# the source.
+option(VISIVO_ENABLE_WEBRTC
+    "Enable H.265 WebRTC transport in RemoteRenderWidget (requires libdatachannel + FFmpeg)"
+    ON)
+if (VISIVO_ENABLE_WEBRTC)
+    # Apple Silicon Homebrew installs to /opt/homebrew, which CMake
+    # does NOT search by default. Add brew's prefix to the search path
+    # so find_package sees the formula's CMake configs (libdatachannel,
+    # plus its OpenSSL/SRTP/usrsctp deps the config transitively links).
+    # Mirror the same treatment for legacy Intel /usr/local. Linux/CI
+    # and vcpkg are unaffected — they already register their prefixes.
+    if (APPLE)
+        foreach (_brew_prefix /opt/homebrew /usr/local)
+            if (EXISTS "${_brew_prefix}/lib/cmake")
+                list(APPEND CMAKE_PREFIX_PATH "${_brew_prefix}")
+            endif ()
+        endforeach ()
+        message(STATUS "CMAKE_PREFIX_PATH augmented for brew lookup: "
+                "${CMAKE_PREFIX_PATH}")
+    endif ()
+
+    # libdatachannel is NOT in Homebrew core and only some vcpkg
+    # ports ship it. To keep developer setup zero-friction across
+    # macOS/Windows/Linux we ALWAYS try find_package first (catches
+    # the rare case it's pre-installed) and fall back to FetchContent
+    # — CMake clones the repo and builds it as part of our configure
+    # step. First configure is ~5-10 min slower; subsequent ones use
+    # the FetchContent cache.
+    # OpenSSL hint — libdatachannel's DTLS-SRTP needs real OpenSSL.
+    # macOS system OpenSSL is actually LibreSSL with a reduced API
+    # which fails libdatachannel's compile. Point find_package(OpenSSL)
+    # at brew's openssl@3 install if present.
+    if (APPLE AND NOT OPENSSL_ROOT_DIR)
+        foreach (_ssl_root
+                "/opt/homebrew/opt/openssl@3"
+                "/usr/local/opt/openssl@3"
+        )
+            if (EXISTS "${_ssl_root}/include/openssl/ssl.h")
+                set(OPENSSL_ROOT_DIR "${_ssl_root}")
+                message(STATUS "OpenSSL hint: OPENSSL_ROOT_DIR=${_ssl_root}")
+                break ()
+            endif ()
+        endforeach ()
+        if (NOT OPENSSL_ROOT_DIR)
+            message(WARNING
+                "VISIVO_ENABLE_WEBRTC=ON on macOS but no OpenSSL found "
+                "at /opt/homebrew/opt/openssl@3 or /usr/local/opt/openssl@3. "
+                "Install with: brew install openssl@3. "
+                "WebRTC build will likely fail until that's resolved.")
+        endif ()
+    endif ()
+
+    find_package(LibDataChannel CONFIG QUIET)
+    if (TARGET LibDataChannel::LibDataChannel)
+        set(_visivo_webrtc_lib LibDataChannel::LibDataChannel)
+        message(STATUS "Using libdatachannel from CMAKE_PREFIX_PATH "
+                "(target: LibDataChannel::LibDataChannel)")
+    else ()
+        message(STATUS "libdatachannel not installed system-wide — "
+                "fetching from upstream via FetchContent")
+        include(FetchContent)
+        # Trim libdatachannel's own build: we only need the C++ core
+        # for our peer connection / track / data channel use; their
+        # tests, examples, GnuTLS adapter, etc. add ~3 min and are
+        # useless for a library consumer.
+        set(NO_TESTS    ON CACHE BOOL "")
+        set(NO_EXAMPLES ON CACHE BOOL "")
+        set(NO_MEDIA    OFF CACHE BOOL "")    # we DO need media (RTP) for the H.264 track
+        set(NO_WEBSOCKET ON CACHE BOOL "")    # we already have QWebSocket for the JPEG path
+        set(USE_GNUTLS  OFF CACHE BOOL "")    # OpenSSL is universal across our platforms
+        set(USE_NICE    OFF CACHE BOOL "")    # libnice is a Linux-only ICE library; not needed
+        # Force ALL deps to come from libdatachannel's bundled
+        # submodules (plog, libjuice, libsrtp, usrsctp). On the
+        # initial attempt PREFER_SYSTEM_LIB=ON made libdatachannel
+        # call find_package(plog) which fails on macOS — plog isn't
+        # in Homebrew. The submodules are already in the libdatachannel
+        # repo we just cloned, so bundling them is the path of least
+        # resistance.
+        set(USE_SYSTEM_PLOG     OFF CACHE BOOL "" FORCE)
+        set(USE_SYSTEM_JUICE    OFF CACHE BOOL "" FORCE)
+        set(USE_SYSTEM_SRTP     OFF CACHE BOOL "" FORCE)
+        set(USE_SYSTEM_USRSCTP  OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(libdatachannel
+            GIT_REPOSITORY https://github.com/paullouisageneau/libdatachannel.git
+            GIT_TAG        v0.21.2     # last release tested 2025-12, stable WebRTC support
+            # NB: NO GIT_SHALLOW here. Shallow clones don't pull
+            # submodules cleanly across CMake/git versions; the
+            # full clone is ~80 MB extra but guarantees deps/* are
+            # populated.
+            GIT_SUBMODULES_RECURSE TRUE
+        )
+        # libdatachannel v0.21.2 bundles plog, whose CMakeLists still declares
+        # cmake_minimum_required(VERSION 3.2). CMake 4 REMOVED compatibility with
+        # anything below 3.5 and errors out, which is what broke the macOS CI
+        # runners the day they moved to CMake 4 while Linux and Windows were
+        # still on 3.x. Scoped to this dependency and restored immediately after,
+        # rather than passed as -DCMAKE_POLICY_VERSION_MINIMUM on the whole
+        # configure: our own code should keep being held to current policies.
+        set(_visivo_saved_policy_min "${CMAKE_POLICY_VERSION_MINIMUM}")
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+        FetchContent_MakeAvailable(libdatachannel)
+        set(CMAKE_POLICY_VERSION_MINIMUM "${_visivo_saved_policy_min}")
+        unset(_visivo_saved_policy_min)
+        if (TARGET LibDataChannel::LibDataChannel)
+            set(_visivo_webrtc_lib LibDataChannel::LibDataChannel)
+        elseif (TARGET datachannel)
+            set(_visivo_webrtc_lib datachannel)
+        endif ()
+        if (_visivo_webrtc_lib)
+            message(STATUS "Using libdatachannel from FetchContent "
+                    "(target: ${_visivo_webrtc_lib})")
+        else ()
+            message(WARNING "FetchContent of libdatachannel ran but no "
+                    "expected target was created — check upstream layout.")
+        endif ()
+    endif ()
+
+    # FFmpeg via pkg-config — the most portable path across Linux/macOS
+    # and vcpkg+Windows (vcpkg ships ``.pc`` files in its install root).
+    find_package(PkgConfig QUIET)
+    if (PkgConfig_FOUND)
+        pkg_check_modules(VISIVO_FFMPEG IMPORTED_TARGET
+                libavcodec libavutil libswscale)
+    endif ()
+
+    if (_visivo_webrtc_lib AND VISIVO_FFMPEG_FOUND)
+        message(STATUS "Using FFmpeg via pkg-config: "
+                "libavcodec ${VISIVO_FFMPEG_libavcodec_VERSION}, "
+                "libswscale ${VISIVO_FFMPEG_libswscale_VERSION}")
+        set(VISIVO_HAS_WEBRTC ON)
+    else ()
+        message(WARNING "VISIVO_ENABLE_WEBRTC=ON but dependencies missing: "
+                "LibDataChannel=${_visivo_webrtc_lib}, "
+                "FFmpeg=${VISIVO_FFMPEG_FOUND}. "
+                "Building WITHOUT the WebRTC transport.")
+        set(VISIVO_HAS_WEBRTC OFF)
+    endif ()
+else ()
+    set(VISIVO_HAS_WEBRTC OFF)
+    message(STATUS "VISIVO_ENABLE_WEBRTC=OFF — WebRTC transport not built.")
 endif ()
 
 qt_standard_project_setup()
@@ -106,6 +320,8 @@ set(PROJECT_SOURCES
         src/LayerListModel.cpp
         src/LayerListModel.h
         src/main.cpp
+        src/AnalysisParamStore.cpp
+        src/AnalysisParamStore.h
         src/Settings.cpp
         src/Settings.h
         src/WebViewProcess.cpp
@@ -121,6 +337,8 @@ set(PROJECT_SOURCES
         src/auth/VisIVOUrlSchemeHandler.h
         src/app/BackendLauncher.cpp
         src/app/BackendLauncher.h
+        src/app/BackendUrl.cpp
+        src/app/BackendUrl.h
         src/app/DiagnosticsManager.cpp
         src/app/DiagnosticsManager.h
         src/app/ThemeManager.cpp
@@ -141,16 +359,47 @@ set(PROJECT_SOURCES
         src/gui/AboutDialog.h
         src/gui/CommandPalette.cpp
         src/gui/CommandPalette.h
+        src/gui/WorkspaceChrome.cpp
+        src/gui/WorkspaceChrome.h
+        src/gui/SessionDataTree.cpp
+        src/gui/SessionDataTree.h
+        src/gui/InspectorPanel.cpp
+        src/gui/InspectorPanel.h
+        src/gui/AssistantPanel.cpp
+        src/gui/AssistantPanel.h
+        src/gui/CopilotActionRouter.cpp
+        src/gui/CopilotActionRouter.h
+        src/gui/DockRail.cpp
+        src/gui/DockRail.h
+        src/app/ProductRegistry.cpp
+        src/app/ProductRegistry.h
         src/app/ThumbnailCache.cpp
         src/app/ThumbnailCache.h
         src/gui/CatalogueTableModel.cpp
         src/gui/CatalogueTableModel.h
         src/gui/DataHubWidget.cpp
+        src/gui/DataHubWidget_Recent.cpp
+        src/gui/DataHubWidget_Exports.cpp
+        src/gui/DataHubWidget_Status.cpp
         src/gui/DataHubWidget.h
+        src/gui/CardClickFilter.h
+        src/gui/ColormapIcon.cpp
+        src/gui/ColormapIcon.h
+        src/gui/vtkWindowVectorField.cpp
+        src/gui/vtkWindowVectorField_Catalogue.cpp
+        src/gui/vtkWindowVectorField.h
         src/gui/VLKBInventoryTree.cpp
         src/gui/VLKBInventoryTree.h
         src/vlkb/VlkbQueryService.cpp
         src/vlkb/VlkbQueryService.h
+        src/skava/SkavaClient.cpp
+        src/skava/SkavaClient.h
+        src/skava/BackendRouting.cpp
+        src/skava/BackendRouting.h
+        src/gui/SkavaSearchPanel.cpp
+        src/gui/SkavaSearchPanel.h
+        src/gui/RemoteRenderWidget.cpp
+        src/gui/RemoteRenderWidget.h
         src/gui/theme/VisivoTheme.cpp
         src/gui/theme/VisivoTheme.h
         src/gui/theme/SegmentedToggle.cpp
@@ -168,6 +417,11 @@ set(PROJECT_SOURCES
         src/gui/LUTCustomizerDialog.cpp
         src/gui/LUTCustomizerDialog.h
         src/gui/MainWindow.cpp
+        src/gui/MainWindow_Menus.cpp
+        src/gui/MainWindow_Open.cpp
+        src/gui/MainWindow_Science.cpp
+        src/gui/MainWindow_Samp.cpp
+        src/gui/MainWindow_Sky.cpp
         src/gui/MainWindow.h
         src/gui/ProfileWidget.cpp
         src/gui/ProfileWidget.h
@@ -179,8 +433,12 @@ set(PROJECT_SOURCES
         src/gui/PvDiagramWidget.h
         src/gui/SettingsDialog.cpp
         src/gui/SettingsDialog.h
+        src/gui/BackendsSettingsWidget.cpp
+        src/gui/BackendsSettingsWidget.h
         src/gui/HiPSViewportWidget.cpp
         src/gui/HiPSViewportWidget.h
+        src/gui/HiPSCatalogueDialog.cpp
+        src/gui/HiPSSurveyBrowserDialog.cpp
         src/gui/HiPSWindow.cpp
         src/gui/HiPSWindow.h
         src/gui/CubeUiAssembler.cpp
@@ -209,11 +467,69 @@ set(PROJECT_SOURCES
         src/gui/SidebarPanel.cpp
         src/gui/SidebarPanel.h
         src/gui/vtkWindowCatalogue3D.cpp
+        src/gui/vtkWindowCatalogue3D_Setup.cpp
+        src/gui/vtkWindowCatalogue3D_Scene.cpp
+        src/gui/vtkWindowCatalogue3D_Interaction.cpp
+        src/gui/vtkWindowCatalogue3D_Data.cpp
         src/gui/vtkWindowCatalogue3D.h
         src/gui/vtkWindowCube.cpp
         src/gui/vtkWindowCube.h
+        src/gui/vtkWindowCube_Catalogue.cpp
+        src/gui/vtkWindowCube_RemoteRender.cpp
+        src/gui/vtkWindowCube_Wcs.cpp
+        src/gui/vtkWindowCube_RemoteSlice.cpp
+        src/gui/vtkWindowCube_Probe.cpp
+        src/gui/vtkWindowCube_Polarisation.cpp
+        src/gui/vtkWindowCube_Region.cpp
+        src/gui/vtkWindowCube_Setup.cpp
+        src/gui/vtkWindowCube_Kinematic.cpp
+        src/gui/vtkWindowCube_Lasso.cpp
+        src/gui/vtkWindowCube_Movie.cpp
+        src/gui/vtkWindowCube_Link.cpp
+        src/gui/vtkWindowCube_RegionIO.cpp
+        src/gui/Pane2DView.cpp
+        src/gui/Pane2DView.h
+        src/gui/CubeViewportGeometry.cpp
+        src/gui/CubeViewportGeometry.h
+        src/gui/CubeStatsUtil.cpp
+        src/gui/CubeStatsUtil.h
+        src/gui/CubeWcsUtil.cpp
+        src/gui/CubeWcsUtil.h
+        src/gui/CubeRegionGeom.cpp
+        src/gui/CubeRegionGeom.h
         src/gui/vtkWindowImage.cpp
         src/gui/vtkWindowImage.h
+        src/gui/vtkWindowImage_Catalogue.cpp
+        src/gui/ArepoExtractDialog.cpp
+        src/gui/FilterFitsDialog.cpp
+        src/gui/LayerCardDelegate.cpp
+        src/gui/LayerCardDelegate.h
+        src/gui/Hips2FitsDialog.cpp
+        src/gui/VlkbQueryComposer.cpp
+        src/gui/VlkbQueryComposer.h
+        src/gui/Hips2FitsDialog.h
+        src/gui/ConeSearchWindow.cpp
+        src/gui/ConeSearchWindow.h
+        src/gui/FitsHeaderEditorDialog.cpp
+        src/gui/FitsHeaderEditorDialog.h
+        src/gui/FitsHeaderCard.h
+        src/gui/FilterFitsDialog.h
+        src/gui/McutoutJobDialog.cpp
+        src/gui/McutoutJobDialog.h
+        src/gui/ArepoExtractDialog.h
+        src/gui/SedWindow.cpp
+        src/gui/SedWindow.h
+        src/gui/SedBuilder.h
+        src/gui/vtkWindowImage_Wcs.cpp
+        src/gui/vtkWindowImage_Polarisation.cpp
+        src/gui/vtkWindowImage_Probe.cpp
+        src/gui/vtkWindowImage_Dynspec.cpp
+        src/gui/vtkWindowImage_Measurement.cpp
+        src/gui/vtkWindowImage_Contours.cpp
+        src/gui/vtkWindowImage_Annotations.cpp
+        src/gui/vtkWindowImage_Products.cpp
+        src/gui/vtkWindowImage_Region.cpp
+        src/gui/vtkWindowImage_Setup.cpp
         src/gui/vtkWindowVbt.cpp
         src/gui/vtkWindowVbt.h
         src/gui/vtkWindowVbtVolume.cpp
@@ -272,6 +588,16 @@ qt_add_resources(${PROJECT_NAME} assets
         FILES ${PROJECT_ASSETS}
 )
 
+# Bundled reference list of common radio / mm spectral lines, compiled in so
+# "Load Lines…" has something to offer offline (a compute node usually has no
+# outbound internet). Accessible as :/spectral_lines/common_lines.csv.
+qt_add_resources(${PROJECT_NAME} bundled_spectral_lines
+        PREFIX "/spectral_lines"
+        BASE "resources/spectral_lines"
+        FILES
+            resources/spectral_lines/common_lines.csv
+)
+
 # Compile bundled Lato fonts into the binary so they load on all platforms
 # without requiring system font installation.
 # Accessible at runtime as :/fonts/Lato-Regular.ttf etc.
@@ -308,8 +634,21 @@ qt_add_resources(${PROJECT_NAME} rail_icons
         resources/icons/rail_display.svg
         resources/icons/rail_filter.svg
         resources/icons/rail_metadata.svg
+        resources/icons/rail_copilot.svg
+        resources/icons/radio_dot.svg
         resources/icons/chevron_down.svg
         resources/icons/chevron_up.svg
+        resources/icons/chevron_right.svg
+        resources/icons/tree_chevron_down.svg
+        resources/icons/tree_chevron_right.svg
+        resources/icons/tree_chevron_down_light.svg
+        resources/icons/tree_chevron_right_light.svg
+        resources/icons/pane_1.svg
+        resources/icons/pane_2.svg
+        resources/icons/pane_2_rows.svg
+        resources/icons/pane_4.svg
+        resources/icons/check.svg
+        resources/icons/rail_provenance.svg
 )
 
 add_subdirectory(src/libwcs)
@@ -425,6 +764,24 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         QCustomPlot
 )
 
+if (VISIVO_HAS_WEBRTC)
+    # Compile-time toggle picked up by RemoteRenderWidget to gate the
+    # WebRTC code paths. Other VisIVO modules don't need to know about
+    # the transport; everything is encapsulated in RemoteRenderWidget.
+    target_compile_definitions(${PROJECT_NAME} PRIVATE VISIVO_HAS_WEBRTC=1)
+    # The WebRTC client (libdatachannel + FFmpeg includes) only compiles
+    # when those libs are present, so we add it to the target ONLY in
+    # this branch. ``target_sources`` lets us add files post-creation.
+    target_sources(${PROJECT_NAME} PRIVATE
+            src/gui/RemoteRenderWebRTCClient.cpp
+            src/gui/RemoteRenderWebRTCClient.h
+    )
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+            ${_visivo_webrtc_lib}
+            PkgConfig::VISIVO_FFMPEG
+    )
+endif ()
+
 if (APPLE)
     target_link_options(${PROJECT_NAME} PRIVATE
             "LINKER:-no_warn_duplicate_libraries"
@@ -441,6 +798,63 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
         MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
         MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
         MACOSX_BUNDLE TRUE
+        # Our own Info.plist template: Qt's generated one has nowhere to declare
+        # CFBundleDocumentTypes, and without that Finder cannot hand a
+        # double-clicked FITS file to the app at all. The template is Qt's plus
+        # the FITS association (see deploy/macos/Info.plist.in for why the
+        # handler rank is Alternate).
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/deploy/macos/Info.plist.in"
+)
+
+# ── Standalone tool: SSR/RemoteRenderWidget test harness ────────────────────
+# Talks to a backend over WebSocket, no full VisIVO UI involved. Built
+# as a separate executable so it can be iterated quickly while the
+# main app is also under development. Not bundled into the .dmg.
+qt_add_executable(test_remote_render
+        tools/test_remote_render.cpp
+        src/gui/RemoteRenderWidget.cpp
+        src/gui/RemoteRenderWidget.h
+        # RemoteRenderWidget and the WebRTC client stamp the backend session
+        # headers on the requests they build by hand, so this harness needs
+        # BackendClient. Same minimal set the unit-test support library links
+        # (tests/CMakeLists.txt) — keep the two in step.
+        src/app/BackendClient.cpp
+        src/app/DiagnosticsManager.cpp
+        src/AnalysisParamStore.cpp
+        src/Settings.cpp
+        src/skava/BackendRouting.cpp
+        src/vtk/ImageLod.cpp
+)
+target_include_directories(test_remote_render PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/gui
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/skava
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/vtk
+        ${PROJECT_BINARY_DIR}
+)
+target_link_libraries(test_remote_render PRIVATE
+        Qt::Widgets
+        Qt::Network
+        Qt::WebSockets
+)
+if (VISIVO_HAS_WEBRTC)
+    # Same gate as the main app — the test harness uses the WebRTC
+    # path too, so it must see the libdatachannel + FFmpeg symbols
+    # AND link the RemoteRenderWebRTCClient TU (its symbols are
+    # referenced from RemoteRenderWidget.cpp under VISIVO_HAS_WEBRTC).
+    target_compile_definitions(test_remote_render PRIVATE VISIVO_HAS_WEBRTC=1)
+    target_sources(test_remote_render PRIVATE
+            src/gui/RemoteRenderWebRTCClient.cpp
+            src/gui/RemoteRenderWebRTCClient.h
+    )
+    target_link_libraries(test_remote_render PRIVATE
+            ${_visivo_webrtc_lib}
+            PkgConfig::VISIVO_FFMPEG
+    )
+endif ()
+set_target_properties(test_remote_render PROPERTIES
+        MACOSX_BUNDLE FALSE   # plain command-line binary
 )
 
 install(TARGETS ${PROJECT_NAME}
@@ -448,12 +862,155 @@ install(TARGETS ${PROJECT_NAME}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
+# ── Ship the backend with the application ───────────────────────────────────
+#
+# BackendLauncher looks for a directory containing app/main.py, and its FIRST
+# candidate on macOS is <app>.app/Contents/Resources/backend. Nothing used to
+# put it there, so an installed application could not start a backend at all:
+# it only ever worked when a developer had already started uvicorn by hand and
+# the launcher found the running instance.
+#
+# The .venv and the caches are excluded deliberately — a virtual environment is
+# not relocatable, and this one is 1.3 GB. The launcher creates or finds an
+# interpreter at run time instead.
+if (APPLE)
+    set(_visivo_backend_dest "${PROJECT_NAME}.app/Contents/Resources")
+else()
+    set(_visivo_backend_dest "${CMAKE_INSTALL_BINDIR}")
+endif()
+
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/backend/"
+        DESTINATION "${_visivo_backend_dest}/backend"
+        USE_SOURCE_PERMISSIONS
+        PATTERN ".venv"        EXCLUDE
+        PATTERN "__pycache__"  EXCLUDE
+        PATTERN ".pytest_cache" EXCLUDE
+        PATTERN "tests"        EXCLUDE
+        PATTERN "*.pyc"        EXCLUDE
+)
+
+# The same directory, next to the build output, so the launcher's dev-tree
+# candidates resolve when running straight from the build directory. A symlink
+# on Unix keeps it live; Windows copies.
+if (WIN32)
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_CURRENT_SOURCE_DIR}/backend/app"
+                    "$<TARGET_FILE_DIR:${PROJECT_NAME}>/backend/app"
+            COMMENT "Copying backend next to the executable")
+else()
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E create_symlink
+                    "${CMAKE_CURRENT_SOURCE_DIR}/backend"
+                    "${CMAKE_BINARY_DIR}/backend"
+            COMMENT "Linking backend/ into the build tree for the launcher")
+endif()
+
 qt_generate_deploy_app_script(
         TARGET ${PROJECT_NAME}
         OUTPUT_SCRIPT deploy_script
 )
 
 install(SCRIPT ${deploy_script})
+
+# ── macOS: bundle libdatachannel + FFmpeg into the .app ─────────────────────
+#
+# ``macdeployqt`` (invoked by qt_generate_deploy_app_script above)
+# only bundles Qt frameworks; non-Qt dynamic libraries that the binary
+# is linked against — libdatachannel, libavcodec, libavutil,
+# libswscale, plus their transitives (OpenSSL, libsrtp, usrsctp) —
+# need an explicit deploy step. Without it the .app links to the
+# developer's Homebrew install at /opt/homebrew/lib/, which fails the
+# moment another user double-clicks the .dmg without that exact brew
+# layout.
+#
+# We use BundleUtilities — CMake's stock macro for bundling .dylibs +
+# fixing install names — which walks the binary's load commands,
+# copies every external dylib into ``Contents/Frameworks/``, and
+# rewrites the load paths to ``@executable_path/../Frameworks/...``.
+# Robust across Apple Silicon + Intel and across brew install
+# locations.
+if (APPLE AND VISIVO_HAS_WEBRTC)
+    # Search dirs for fixup_bundle. We need three groups:
+    #
+    #   1. Qt's library prefix — without this, frameworks like
+    #      ``@rpath/QtConcurrent.framework/...`` (Qt's own self-
+    #      references) don't resolve and fixup_bundle aborts mid-run.
+    #   2. libdatachannel's FetchContent BUILD dir — we don't install
+    #      it system-wide, the .dylib lives in build/_deps/.
+    #   3. Homebrew prefixes for FFmpeg and OpenSSL on both Apple
+    #      Silicon (/opt/homebrew) and Intel (/usr/local) layouts.
+    #
+    # Order matters: search Qt + libdatachannel first so the right
+    # build artifacts win over any older system-installed copies.
+    get_target_property(_qt_core_loc Qt::Core LOCATION)
+    get_filename_component(_qt_lib_dir "${_qt_core_loc}" DIRECTORY)
+    # QtCore is a framework; LOCATION points inside the .framework, so
+    # we strip back to the lib/ dir that holds Qt*.framework siblings.
+    get_filename_component(_qt_lib_dir "${_qt_lib_dir}" DIRECTORY)
+    get_filename_component(_qt_lib_dir "${_qt_lib_dir}" DIRECTORY)
+    get_filename_component(_qt_lib_dir "${_qt_lib_dir}" DIRECTORY)
+
+    # VTK lib dir — derived from one of the imported VTK targets the
+    # same way. Some VTK 9.x packages put libs under ``lib`` directly,
+    # others under ``lib64`` / ``Frameworks``; LOCATION is the most
+    # portable handle.
+    set(_vtk_lib_dir "")
+    if (TARGET VTK::CommonCore)
+        get_target_property(_vtk_loc VTK::CommonCore LOCATION)
+        if (_vtk_loc)
+            get_filename_component(_vtk_lib_dir "${_vtk_loc}" DIRECTORY)
+        endif ()
+    endif ()
+
+    set(_visivo_macos_dirs
+            "${_qt_lib_dir}"
+            "${_vtk_lib_dir}"
+            "${CMAKE_BINARY_DIR}/_deps/libdatachannel-build"
+            "/opt/homebrew/lib"
+            "/opt/homebrew/opt/ffmpeg/lib"
+            "/opt/homebrew/opt/openssl@3/lib"
+            "/usr/local/lib"
+            "/usr/local/opt/ffmpeg/lib"
+    )
+    # $ENV{DESTDIR} because this runs on the installed tree directly rather
+    # than through install(TARGETS), which prepends it for us. Without it a
+    # `DESTDIR=/tmp/stage cmake --install` bundles the wrong directory.
+    install(CODE "
+        include(BundleUtilities)
+        set(BU_CHMOD_BUNDLE_ITEMS ON)
+        fixup_bundle(
+            \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${PROJECT_NAME}.app\"
+            \"\"
+            \"${_visivo_macos_dirs}\"
+        )
+    ")
+    message(STATUS
+        "Mac bundling: fixup_bundle search dirs = ${_visivo_macos_dirs}"
+    )
+endif ()
+
+# ── macOS: repair the plugins, then re-sign the whole bundle ─────────────
+#
+# The installed .app does not start at all without this — two faults, both
+# measured on a staging tree. The reasoning lives next to the code, in
+# cmake/MacBundleRepair.cmake.in, which is a separate file because it is real
+# logic (it probes each plugin and fails loudly) rather than the two-liner an
+# install(CODE) string can carry legibly.
+#
+# No COMPONENT, deliberately: install(TARGETS) above, the backend, and Qt's
+# deploy script are all in the default component, so putting the repair in
+# `Runtime` would let `--component Runtime` try to sign a bundle that the same
+# invocation never installed.
+if (APPLE)
+    set(VISIVO_CODESIGN_ID "-" CACHE STRING
+            "Identity for the post-install codesign pass ('-' = ad hoc)")
+    configure_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MacBundleRepair.cmake.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/MacBundleRepair.cmake"
+            @ONLY)
+    install(SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/MacBundleRepair.cmake")
+endif ()
 
 # ── Windows runtime DLL deployment ───────────────────────────────────────────
 #

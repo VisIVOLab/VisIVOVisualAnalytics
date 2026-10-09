@@ -11,8 +11,11 @@
 #include <QElapsedTimer>
 #include <QFutureWatcher>
 #include <QHash>
+#include "vtk/LutScale.h"
+
 #include <QMainWindow>
 #include <QPointer>
+#include <QSet>
 #include <QStringList>
 #include <QTimer>
 
@@ -21,23 +24,32 @@
 #include <memory>
 #include <vector>
 
+class WorkspaceChrome;
 class ImageLayerController;
 class ImageLayerImportService;
+class QMessageBox;
 class LayerListModel;
 class LUTCustomizerDialog;
 class ProfileWidget;
 class CatalogueTableModel;
 class QAction;
+class QJsonObject;
+class QJsonArray;
 class QCheckBox;
 class QDockWidget;
+class QProgressDialog;
 class QFrame;
 class QLabel;
 class ToolResultDialog;
 class QTableView;
+class QTreeView;
+class SegmentedToggle;
 class SidebarPanel;
 class vtkActor;
 class vtkAxisActor2D;
 class vtkCoordinate;
+class vtkActor2D;
+class vtkInteractorObserver;
 class QLineEdit;
 class QSpinBox;
 class vtkFlyingEdges2D;
@@ -65,13 +77,19 @@ class vtkWindowImage : public QMainWindow
     Q_OBJECT
 
 public:
+    /// Record what the host computed for THIS window, as products of this
+    /// window. Public because MainWindow does the work and calls back.
+    void recordPublicationFigure(const QString &outputPath);
+    void recordImageQuality(const QVariantMap &metrics);
+
     // A dataset must always be opened via the backend (datasetId is required).
     vtkWindowImage(const QString &filepath, const QString &backendUrl, const QString &datasetId,
                    const std::array<QString, 3> &remoteCtype,
                    const std::array<QString, 3> &remoteCunit,
                    const std::array<double, 3> &remoteCrval,
                    const std::array<double, 3> &remoteCrpix,
-                   const std::array<double, 3> &remoteCdelt, const QString &remoteDegenerateAxesSummary,
+                   const std::array<double, 3> &remoteCdelt, const QString &remoteBunit,
+                   const QString &remoteDegenerateAxesSummary,
                    const QString &remoteWcsStatus = QStringLiteral("ok"),
                    const QString &remoteWcsWarningMessage = QString(),
                    const QString &remoteSessionId = QString(),
@@ -117,7 +135,9 @@ private slots:
     void showLUTCustomizer();
     void updateLUTCustomizer();
 
-    void addLocalFile();
+    /// File -> Add New Layer: pick a FITS from the BACKEND's filesystem (the name
+    /// said "local" back when that was the same thing) and add it as a layer.
+    void addLayerFromBrowser();
 
     void vtkRender();
     void changeLegendWCS();
@@ -132,13 +152,36 @@ private slots:
     void setInteractorStyleRegion();
     void toggleProbeFreeze();
     void finishRegionInteraction();
+    /// Double-click on the image: if a catalogue source is under the cursor,
+    /// select it and zoom to it (the table's double-click already did this).
+    void zoomToCatalogueSourceUnderCursor();
+    /// Write the loaded overlay to CSV: what is on screen, with the sky frame
+    /// named in the header rather than implied.
+    void exportCatalogueOverlay();
+    /// Open the SED of the catalogue source at @p entryIndex. For a band-merged
+    /// catalogue the whole group of per-band detections becomes one SED; for a
+    /// flat one the row's own flux columns do.
+    void showCatalogueSourceSed(int entryIndex);
     void setProbeModeActive(bool active);
     void beginImageInteraction();
     void endImageInteraction();
     void syncCatalogueTableSelection(int index);
 
 signals:
+    /// Asks the host to render a publication figure / measure image quality for
+    /// THIS window's dataset. The host captured this viewer's backend context
+    /// when it created the window, so the tool acts on the image in front of
+    /// the user instead of on "the last dataset opened" (the Data Hub's Science
+    /// menu did the latter, and targeted the wrong one with two images open).
+    void publicationFigureRequested();
+    void imageQualityRequested();
+
     void catalogueSourceSelectionChanged(int index);
+
+    /// Open this file in a window of its own — a layer that covers none of this
+    /// image's sky, or the catalogue a VLKB query just saved. Only the host can
+    /// open a dataset, and what the file is decides which viewer gets it.
+    void openInOwnWindowRequested(const QString &path);
 
 public:
     enum class RegionMode
@@ -157,8 +200,42 @@ public:
         Angle,
     };
 
+    // Apply the scientific copilot's visualisation directives to this image
+    // viewer (colour map, camera). Display-only and reversible via Undo; cube-only
+    // directive types are ignored. See docs/copilot-backend.md.
+    void applyCopilotActions(const QList<QJsonObject> &actions);
+    void undoCopilotActions();
+
 private:
+    struct CopilotSnapshot
+    {
+        bool valid{ false };
+        bool colormapCaptured{ false };
+        QString colormap;
+        int layerIndex{ 0 };   // the layer whose colormap/scale was captured (multi-layer)
+        bool cameraCaptured{ false };
+        double camPos[3]{ 0, 0, 0 };
+        double camFoc[3]{ 0, 0, 0 };
+        double camUp[3]{ 0, 0, 0 };
+        double camScale{ 1.0 };
+        bool scaleCaptured{ false };
+        LutScale::Mode scaleMode{ LutScale::Mode::Linear };   // full stretch before the batch
+        double scaleGamma{ 1.0 };
+        double lutRange[2]{ 0.0, 1.0 };   // LUT table range before the batch (log clamps it)
+    };
+    CopilotSnapshot m_copilotUndo;
+
     Ui::vtkWindowImage *ui;
+    WorkspaceChrome *m_workspaceChrome = nullptr;   ///< shared command-bar + status-rail chrome
+    QString m_windowScope;   ///< per-window product scope so this tree ignores sibling windows'
+                             ///< products in the session-wide registry (see SessionDataTree).
+    // Former SidebarPanel pages, migrated into the Inspector's Properties tab
+    // (design #1d). Built in setupSidebar(), reparented in setupInspector().
+    QPointer<QWidget> m_hiddenPageHolder;  ///< hidden container so no page is a free child of the window
+    QPointer<QWidget> m_inspectorPageLayer;
+    QPointer<QWidget> m_inspectorPageCatalogue;
+    QPointer<QWidget> m_inspectorPageInfo;
+    QPointer<QWidget> m_orphanToolsPage;   ///< kept alive, not shown (Analysis tab supersedes it)
     const QString filepath;
     const QString remoteBackendUrl;
     const QString remoteDatasetId;
@@ -169,6 +246,7 @@ private:
     const std::array<double, 3> remoteDatasetCrval;
     const std::array<double, 3> remoteDatasetCrpix;
     const std::array<double, 3> remoteDatasetCdelt;
+    const QString remoteDatasetBunit;   ///< raw BUNIT from the FITS header (physical value unit)
     const QString remoteDegenerateAxesSummary;
     const QString remoteWcsStatus;
     const QString remoteWcsWarningMessage;
@@ -201,7 +279,7 @@ private:
     QPointer<QLabel> wcsStatusLabel;
     QPointer<QLabel> catalogueInfoLabel;
     QPointer<QDockWidget> catalogueDock;
-    QPointer<QTableView> catalogueTableView;
+    QPointer<QTreeView> catalogueTableView;
     QPointer<CatalogueTableModel> catalogueTableModel;
     bool syncingCatalogueSelection{ false };
     QPointer<QAction> actionWcsSexagesimal;
@@ -212,6 +290,7 @@ private:
     QPointer<QAction> actionPolygonRegion;
     QPointer<QAction> actionAnnulusRegion;
     QPointer<QAction> actionLoadCatalogueOverlay;
+    QPointer<QAction> actionCrossmatch;
     QPointer<QAction> actionShowCatalogueOverlay;
     QPointer<QAction> actionShowCatalogueLabels;
     QPointer<QAction> actionClearCatalogueOverlay;
@@ -219,6 +298,26 @@ private:
     QFutureWatcher<ImageLayerLoadResult> layerLoadWatcher;
     QFutureWatcher<ImageLayerLoadResult> remoteImageWatcher;
     QFutureWatcher<ImageLayerLoadResult> remoteFullImageWatcher;
+
+    // ── Viewport-driven LOD (tile streaming) ────────────────────────────────
+    // When the remote image has a multi-level pyramid, re-assemble only the
+    // visible region at the zoom-appropriate level when the camera settles, so
+    // zooming in reveals more detail than the bounded whole-image assembly.
+    bool m_viewportLodEnabled{ false };   ///< true once a multi-level tiled image is loaded
+    int  m_lodFullWidth{ 0 };
+    int  m_lodFullHeight{ 0 };
+    int  m_lodNumLevels{ 1 };
+    int  m_lodTileSize{ 512 };
+    int  m_lodGeneration{ 0 };            ///< bumped per request; stale replies discarded
+    int  m_lodConsecutiveFailures{ 0 };   ///< bounds retry-on-failure so a dead backend isn't polled forever
+    std::array<int, 5> m_lodApplied{ { -1, -1, -1, -1, -1 } };  ///< last {level,txMin,txMax,tyMin,tyMax}
+    std::array<int, 5> m_lodPending{ { -1, -1, -1, -1, -1 } };  ///< signature of the in-flight request
+    QTimer *m_lodSettleTimer{ nullptr };  ///< debounce camera-settle bursts
+    QFutureWatcher<ImageLayerLoadResult> m_viewportLodWatcher;
+    void onImageInteractionSettled();     ///< EndInteractionEvent → (re)arm the debounce
+    void maybeStreamViewportLod();        ///< compute visible region + level, fetch if changed
+    void onViewportLodReady();            ///< apply a viewport tile assembly (camera preserved)
+    QFutureWatcher<CatalogueOverlayParseResult> m_crossmatchWatcher;  // async cross-match
     /// Set by addLayerFromBackendPath before calling addLayerImage so that the
     /// layerLoadWatcher completion slot can rename the new layer to the VLKB label.
     QString m_pendingVlkbDisplayName;
@@ -235,6 +334,81 @@ private:
 
     // Layout B-style top toolbar: path-pill + tag chips + Find/Command/Export.
     void setupViewerToolbar();
+
+    // ── The mode strip ───────────────────────────────────────────────────────
+    // Pan, Probe, Region, Ruler and Annotate are mutually exclusive modes, and
+    // until now they were armed from the Tools menu with nothing on screen to
+    // say which one was on — you found out by clicking and seeing what happened.
+    // The strip is that missing state, and it is two-way: arming a mode from the
+    // menu moves the strip, and moving the strip arms the mode.
+    enum class ViewerMode
+    {
+        Pan = 0,
+        Probe,
+        Region,
+        Ruler,
+        Annotate,
+    };
+    /// Build the strip row under the viewer toolbar.
+    void setupModeStrip();
+
+    // ── The overlays block ───────────────────────────────────────────────────
+    // What is drawn ON TOP of the image — catalogue sources, polarisation
+    // vectors, the WCS grid, annotations — was switched from four places: two
+    // entries in Tools, one in View, and one that did not exist at all
+    // (annotations could be added and cleared, never hidden). None of them said
+    // how much was up there. Four rows, four counts, one place.
+    /// The live Σ / μ box in the corner of the viewport, shown while a region is
+    /// being dragged. Until now the numbers arrived only when the drag ended, in
+    /// a dialog — so the region was chosen blind and adjusted by repetition.
+    void updateRegionReadout();
+    void hideRegionReadout();
+    QPointer<QLabel> m_regionReadout;
+
+    void setupOverlaysBlock();
+    /// Re-read the toggles and the counts from the window's own state. Called
+    /// whenever an overlay is loaded, cleared or toggled from anywhere.
+    void refreshOverlaysBlock();
+    /// Show or hide the annotation actors (the toggle that was missing).
+    void setAnnotationsVisible(bool visible);
+
+    QPointer<QWidget> m_overlaysBlock;
+    QPointer<QCheckBox> m_overlayCatalogue;
+    QPointer<QCheckBox> m_overlayLabels;
+    QPointer<QCheckBox> m_overlayPolVectors;
+    QPointer<QCheckBox> m_overlayWcsGrid;
+    QPointer<QCheckBox> m_overlayAnnotations;
+    /// The count beside each row. QPointer, not a raw pointer: the rows are
+    /// children of the block, and a refresh can be triggered while the window is
+    /// coming down.
+    QHash<QCheckBox *, QPointer<QLabel>> m_overlayCounts;
+    bool m_annotationsVisible{ true };
+    bool m_syncingOverlays{ false };
+    /// Arm the mode the user picked on the strip.
+    void applyViewerMode(ViewerMode mode);
+    /// Move the strip to whatever the window is actually doing. Called from
+    /// every place that changes a mode, whichever surface started it.
+    void syncModeStrip();
+    /// The mode the window is in right now, read from the modes themselves —
+    /// there is no separate copy of this state to fall out of step.
+    ViewerMode currentViewerMode() const;
+
+    QPointer<SegmentedToggle> m_modeStrip;
+    /// Box / Circle / Polygon / Annulus — shown only while Region is armed.
+    QPointer<SegmentedToggle> m_regionShapeStrip;
+    QPointer<QLabel> m_modeHint;
+    /// The shape to arm when Region is chosen on the strip: whichever was used
+    /// last, so the choice survives leaving the mode and coming back.
+    RegionMode m_lastRegionShape{ RegionMode::Box };
+    /// Guard against the strip and the actions driving each other in circles.
+    bool m_syncingModeStrip{ false };
+
+    /// Populate the right Inspector shell (Properties/Analysis). The image is a
+    /// single-view window, so pane-layout and Linked are disabled.
+    void setupInspector();
+    /// Reparent any stray direct-child widget of the window (not central/dock/
+    /// toolbar/menu/status) into the hidden holder so it can't paint at (0,0).
+    void parkOrphanDirectChildren();
 
     // Opens a non-modal dialog showing the FITS header cards for `filepath`.
     // Triggered by the primary tag chip in the viewer toolbar.
@@ -261,7 +435,9 @@ private:
     QPointer<QAction> m_actToggleContours;
     QPointer<QAction> m_actLoadExternalContour;
     QPointer<QAction> m_actClearAllContours;
+    QPointer<QAction> m_actFilterFits;
     QPointer<QAction> m_actExportToWorkspace;
+    QPointer<QAction> m_actExportRegions;
     vtkSmartPointer<vtkFlyingEdges2D> m_contourFilter;
     vtkSmartPointer<vtkActor>         m_contourActor;
     bool                     m_contoursVisible{ false };
@@ -274,9 +450,41 @@ private:
     int                      m_contourLevel{ 15 };
     double                   m_contourLower{ 0.0 };
     double                   m_contourUpper{ 1.0 };
+    /// True once the user has typed a bound. Until then the bounds follow the
+    /// image's scalar range on every pipeline rebuild (there is one after each
+    /// preview -> full swap); afterwards the user's numbers are kept.
+    bool                     m_contourBoundsUserSet{ false };
     void setupContourPipeline();
     void updateContours();
     void setContoursVisible(bool vis);
+    /// Accept a pair of contour bounds if it is usable, otherwise keep the last
+    /// accepted pair and put it back in the fields.
+    void commitContourBounds(double lower, double upper);
+    /// Write the accepted bounds into the Lower / Upper fields (signal-blocked).
+    void syncContourBoundFields();
+    /// The CONTOURS block in the left dock: re-homes the already-wired Level /
+    /// Lower / Upper widgets, which otherwise live only in the Tools page that
+    /// the Inspector's Analysis tab superseded (and which is never shown).
+    QWidget *buildContourControlsBlock();
+    /// Built once, parked hidden, mounted in the Inspector's Parameters tab for
+    /// as long as the contour tool is on.
+    QPointer<QWidget> m_contourSettingsBlock;
+    /// Same for the polarisation-vector overlay: grid step, SNR threshold and
+    /// length scale, shown while the vectors are on.
+    QWidget *buildPolVectorSettingsBlock();
+    QPointer<QWidget> m_polVecSettingsBlock;
+    /// Band filter of the catalogue overlay, rebuilt whenever the band set
+    /// changes and mounted as that tool's settings.
+    QPointer<QWidget> m_vlkbBandContent;
+    /// Tools whose settings are currently claimable, most recently switched on
+    /// LAST. Turning one off must hand the panel back to whichever is still on,
+    /// not blank it: contours on, vectors on, vectors off used to leave the
+    /// contours running with no way to change their levels.
+    QList<QPair<QString, QPointer<QWidget>>> m_activeToolSettings;
+    void claimToolSettings(const QString &toolName, QWidget *settings);
+    void releaseToolSettings(const QString &toolName);
+    void refreshToolSettingsPanel(bool reveal);
+    QPointer<QCheckBox> m_contourShowCheck;
     QPointer<QLineEdit> m_contourLowerEdit;
     QPointer<QLineEdit> m_contourUpperEdit;
     QPointer<QSpinBox>  m_contourLevelSpin;
@@ -302,6 +510,10 @@ private:
     bool suspendHeavyOverlayUpdates{ false };
     bool ignoreNextPolygonRelease{ false };
     std::array<int, 2> probeVoxel{ -1, -1 };
+    // Full-resolution pixel coordinate of the probe (== displayed voxel × spacing);
+    // drives the readout + change-detection so coordinates update at full-res
+    // granularity even when the displayed image is decimated (LOD).
+    std::array<int, 2> m_probeFullPixel{ -1, -1 };
     std::array<int, 2> regionAnchorVoxel{ -1, -1 };
     std::array<int, 2> regionCurrentVoxel{ -1, -1 };
     std::vector<std::array<int, 2>> regionPolygonVertices;
@@ -309,11 +521,24 @@ private:
     std::vector<CatalogueOverlayEntry> catalogueOverlayEntries;
     std::vector<std::array<double, 2>> catalogueOverlayPixels;
     std::vector<std::vector<std::array<double, 2>>> catalogueOverlayPolylines;
+    std::vector<std::array<unsigned char, 3>> catalogueOverlayPolylineColors;  ///< per-polyline RGB
+    std::vector<QString> catalogueOverlayPolylineBand;   ///< per-polyline group tag (VLKB band)
+    QSet<QString> m_vlkbHiddenBands;                      ///< bands toggled off
+    void toggleVlkbBand(const QString &band, bool visible);   ///< show/hide a band's sources
+    void ensureVlkbBandPanel();                          ///< dock with a checkbox per present band
     std::vector<int> catalogueOverlaySourceFirstPolyline;
     std::vector<int> catalogueOverlaySourcePolylineCount;
     std::vector<int> catalogueOverlayLabelIndices;
     QStringList catalogueOverlayLabels;
     QString catalogueOverlaySummary;
+    /// Sky frame of the loaded overlay ("Galactic", "ICRS", …): the table's two
+    /// sky columns are captioned from it.
+    QString catalogueOverlayFrameLabel;
+    /// The loaded catalogue's own field names, in file order.
+    QStringList catalogueOverlayExtraFields;
+    /// True while a selection change originated in the table, so the sync back
+    /// does not scroll the view the user is clicking in.
+    bool m_catalogueSelectionFromTable{ false };
     int hoveredCatalogueSourceIndex{ -1 };
     int selectedCatalogueSourceIndex{ -1 };
     double regionAnnulusInnerRadius{ 0.0 };
@@ -389,9 +614,16 @@ private:
     void refreshRegionOverlay();
     void clearRegion();
     void analyzeCurrentRegion();
+    // Region export (CRTF / DS9) — save the active drawn ROI. Loading region
+    // files (incl. CRTF) is handled by loadCatalogueOverlay (single loader).
+    QJsonObject currentRegionToJson() const;            ///< active drawn ROI → canonical dict (1-based px)
+    void exportRegionsToFile();
     bool finalizePolygonRegion();
     void updateLargeImageMode(vtkImageData *imageData, const char *context);
     void loadCatalogueOverlay();
+    void crossmatchCatalogue();          // query an external catalogue over the image footprint
+    void onCrossmatchReady();            // display the async cross-match result as an overlay
+    void applyCatalogueOverlayResult(const CatalogueOverlayParseResult &parsed);
     void clearCatalogueOverlay();
     void setCatalogueOverlayVisible(bool visible);
     void rebuildCatalogueOverlay();
@@ -410,12 +642,81 @@ private:
     bool catalogueWorldToPixel(double raDeg, double decDeg, std::array<double, 2> &pixel) const;
     QString selectedFrameAxisTitle(int axis) const;
 
+    // ── VLKB catalogue overlays (compact sources / filaments over the footprint) ──
+    void overlayVlkbSources();     ///< btnSources — band-merged compact sources (+ band picker)
+    void overlayVlkbFilaments();   ///< btnFilaments — filament outlines as polylines
+    void overlayVlkbBubbles();     ///< bubble outlines as closed polylines
+    /// Tools ▸ VLKB Catalogue Query… — the legacy's query composer, prefilled
+    /// with this image's own Galactic footprint.
+    void openVlkbQueryComposer();
+    void onVlkbCatalogueReady();   ///< project the raw Galactic result → overlay
+    /// Project a Galactic (glon,glat) position to full-res image pixels via the
+    /// window's WCS (handles a non-Galactic native frame by converting first).
+    bool galacticToImagePixel(double glon, double glat, std::array<double, 2> &pixel) const;
+    /// Galactic bounding box (deg) of the current image footprint, for the query.
+public:
+    /// Outline the sky polygon of an inventory dataset on this image.
+    ///
+    /// `skyCorners` are native-frame (Galactic, for VLKB) degrees. Projected
+    /// with the same call the catalogue overlay uses, so the outline lands in
+    /// the same place its sources do — which matters because Hi-GAL cutouts are
+    /// CAR and a gnomonic projection would put it somewhere else.
+    void showInventoryFootprint(const QVector<QPointF> &skyCorners);
+    /// Remove it (a branch row selected, or the inventory closed).
+    void clearInventoryFootprint();
+
+protected:
+    bool imageGalacticFootprint(double &glonMin, double &glonMax,
+                                double &glatMin, double &glatMax) const;
+    QFutureWatcher<VlkbCatalogueRaw> m_vlkbCatWatcher;
+    /// Progress affordance for the VLKB query. A status-bar line at the very
+    /// bottom of a full-screen window is not feedback: the query takes
+    /// seconds, nothing moves, and the overlay looks like it did nothing.
+    QPointer<QProgressDialog> m_vlkbProgressSheet;
+    /// Which VLKB catalogue the pending query is for. Sources are ellipses;
+    /// filaments and bubbles are both contours, and differ only in the table
+    /// they come from and in whether the contour closes.
+    enum class VlkbOverlayKind
+    {
+        Sources,
+        Filaments,
+        Bubbles,
+    };
+    VlkbOverlayKind m_vlkbCatKind{ VlkbOverlayKind::Sources };
+    /// True for the two contour catalogues — the shape the pending result carries.
+    bool vlkbCatIsContour() const { return m_vlkbCatKind != VlkbOverlayKind::Sources; }
+    static QString vlkbCatalogueNoun(VlkbOverlayKind kind);
+    // Rubber-band region select: drag a rectangle to query only that area (like the
+    // legacy client); a click without a drag falls back to the whole image footprint.
+    void beginVlkbRegionSelect(VlkbOverlayKind kind);
+    void endVlkbRegionSelect();
+    void onVlkbSelectPress();
+    void onVlkbSelectMove();
+    void onVlkbSelectRelease();
+    void runVlkbCatalogueQuery(double glonMin, double glonMax, double glatMin, double glatMax);
+    void runVlkbCatalogueQueryWholeImage(VlkbOverlayKind kind);   ///< click-without-drag fallback
+    bool m_vlkbSelectActive{ false };
+    bool m_vlkbSelectDragging{ false };
+    QString m_vlkbBand{ QStringLiteral("250") };
+    int m_vlkbSelStart[2]{ 0, 0 };
+    int m_vlkbSelEnd[2]{ 0, 0 };
+    unsigned long m_vlkbPressTag{ 0 };
+    unsigned long m_vlkbMoveTag{ 0 };
+    unsigned long m_vlkbReleaseTag{ 0 };
+    vtkSmartPointer<vtkActor2D> m_vlkbRubberActor;
+    /// Outline of the inventory row the user last clicked, drawn over the image
+    /// so you can see WHERE a dataset falls before downloading it.
+    vtkSmartPointer<vtkActor2D> m_inventoryFootprintActor;
+    vtkSmartPointer<vtkInteractorObserver> m_vlkbPrevStyle;   ///< restored after selection
+
     // Stack
     vtkNew<vtkImageStack> stack;
     LayerListModel *layers;
     std::unique_ptr<ImageLayerController> layerController;
     void applyLoadedLayer(const ImageLayerLoadResult &result);
-    void applyRemoteMasterLayer(const ImageLayerLoadResult &result);
+    // preserveView: keep the current camera + large-image mode (viewport-LOD
+    // reload of a sub-region); default resets the camera to fit (initial load).
+    void applyRemoteMasterLayer(const ImageLayerLoadResult &result, bool preserveView = false);
     void startRemoteFullResolutionLoad();
     void markDisplayStateAdjusted(const char *reason);
     bool isBusy() const;
@@ -423,7 +724,27 @@ private:
     void clearPersistentStatusMessage();
     void setLayerImportEnabled(bool enabled);
     int currentLayerIndex() const;
-    void addLayerImage(const std::string &filepath);
+    /// Re-elide the LAYER SETTINGS caption for the width and font it has NOW.
+    void elideLayerSettingsHeader();
+    bool eventFilter(QObject *watched, QEvent *event) override;
+    /// Tools ▸ Smooth / Regrid… — the legacy's *Filter FITS*, acting on this
+    /// window's image and returning the result as a layer over it.
+    void openFilterFitsDialog();
+
+    /// Tell the user why a layer was not added — non-modally, so no nested
+    /// event loop runs while the pending-load queue is being put right. When
+    /// the file simply belongs elsewhere, this is also where the choice between
+    /// a window of its own and adding it anyway is offered.
+    /// @param displayName  the label this load carried, so "Add Anyway" can put
+    ///                      it back rather than adding an unnamed layer
+    /// @param partOfSet     whether it belonged to an all-or-nothing set
+    void showLayerLoadFailure(const ImageLayerLoadResult &result, const QString &displayName,
+                              bool partOfSet);
+
+    /// @param ignoreOverlap add the layer even if it covers none of this
+    ///        image's sky — the user's answer to the refusal, since the sky
+    ///        bounds behind it are a bounding box and can be too narrow.
+    void addLayerImage(const std::string &filepath, bool ignoreOverlap = false);
     bool remoteHasWcsAxis(int axis) const;
     double remoteVoxelToWcs(int axis, double voxelIndex, bool *ok = nullptr) const;
     QString remoteFormatAxisCoordinate(int axis, double voxelIndex) const;
@@ -446,6 +767,78 @@ private:
     vtkNew<vtkActor> m_measLineActor2;
     vtkSmartPointer<vtkTextActor> m_measLabelActor;
     QPointer<QAction> m_actRuler;
+    /// Moved off the Data Hub's Science menu: single-map tools, resolved by the
+    /// host against this window's own dataset.
+    /// Members only so imageTools() can list them: they were locals, which is why
+    /// they existed in the Tools menu and in no other surface.
+    /// One row per tool: the group it belongs to and the action that runs it.
+    /// The Tools menu and Inspector ▸ Analysis are both built from this, so a
+    /// tool cannot appear on one surface and be missing from the other.
+    struct ImageTool
+    {
+        QString group;
+        QAction *action{ nullptr };
+    };
+    /// Register what a tool just produced, so it survives the window it was
+    /// shown in. See vtkWindowImage_Products.cpp for the three kinds.
+    /// @p layerIndex >= 0 binds the product to a layer of this window.
+    QString registerAnalysisProduct(const QString &kind, const QString &label,
+                                    const QVariantMap &params,
+                                    const QString &stableId,
+                                    const QVariantMap &resultView = {},
+                                    int layerIndex = -1,
+                                    const QVariantMap &origin = {});
+    /// Redraw the region a product was measured on. Returns false when the
+    /// product carries no geometry.
+    bool restoreProductOrigin(const QVariantMap &origin);
+    /// The mapping displayed-voxel -> world for the master layer as it is shown
+    /// right now (world = pos + voxel * scale). Recorded with a region so the
+    /// overlay can be put back on a different LOD. False if there is no image.
+    bool currentVoxelFrame(double scale[2], double pos[2]) const;
+    /// Product id scoped to this file AND this window, so two windows on the
+    /// same image do not collide.
+    QString scopedProductId(const QString &stem) const;
+    /// Put a product back on screen: select its layer, open its file, or replay
+    /// its recorded result window.
+    void openProduct(const QString &productId);
+    void showSessionRowContextMenu(const QString &viewTag, const QString &productId,
+                                   const QPoint &globalPos);
+
+    QVector<ImageTool> imageTools() const;
+    /// Rebuild the Tools menu from imageTools(), grouped into submenus.
+    void regroupImageToolsMenu();
+
+    /// productId → the layer it produced, for the products that are layers.
+    /// The cross-match request that produced the pending result: the finished
+    /// handler is generic, so its product would otherwise have no parameters.
+    QString m_crossmatchCatalogue;
+    double  m_crossmatchRadiusArcsec{ 0.0 };
+    int     m_crossmatchRunCount{ 0 };
+    void recordCrossmatch(int matches);
+
+    /// Collapse the time axis of a dynamic spectrum into a spectrum. Only
+    /// meaningful in dynspec mode; a sky image has no spectral axis.
+    void extractSpectrum2D();
+    int m_extractedSpectrumCount{ 0 };
+    /// The curve behind each extracted-spectrum product, so reopening its row
+    /// replots it instead of showing only the summary.
+    QHash<QString, QPair<QVector<double>, QVector<double>>> m_extractedSpectra;
+
+    QHash<QString, int> m_productLayer;
+    /// Layer display name per product: the row index above is not an identity,
+    /// the layer list can be reordered by drag and drop.
+    QHash<QString, QString> m_productLayerName;
+    /// Current row of the layer a product produced, or -1. Resolves by name and
+    /// falls back to the recorded row.
+    int productLayerRow(const QString &productId) const;
+    QPointer<QAction> m_actHistogram;
+    QPointer<QAction> m_actAddText;
+    QPointer<QAction> m_actAddArrow;
+    QPointer<QAction> m_actClearAnnot;
+    QPointer<QAction> m_actSaveAnnot;
+    QPointer<QAction> m_actLoadAnnot;
+    QPointer<QAction> m_actPublicationFigure;
+    QPointer<QAction> m_actImageQuality;
     QPointer<QAction> m_actAngle;
     QPointer<QAction> m_actClearMeas;
     void setMeasurementMode(MeasurementMode mode);
@@ -499,6 +892,15 @@ private:
 
     // ── Stokes / Radio polarimetry analysis ──────────────────────────────────
 public:
+    /// Result of the companion directory listing, which runs OFF the GUI thread:
+    /// BackendClient is synchronous, and a remote backend that is slow to answer
+    /// would otherwise freeze the window inside a nested event loop.
+    struct StokesListing
+    {
+        QSet<QString> names;
+        QString error;
+    };
+
     enum class StokesRole {
         None, I, Q, U, V,
         DerivedP,     ///< Linear pol intensity √(Q²+U²)
@@ -525,6 +927,11 @@ private:
     double m_polVecScale{ 1.0 };
     double m_polVecSnrMin{ 3.0 };
 
+    QPointer<QAction> m_actExportCatalogue;
+    QPointer<QAction> m_actVlkbSources;
+    QPointer<QAction> m_actVlkbFilaments;
+    QPointer<QAction> m_actVlkbBubbles;
+    QPointer<QAction> m_actVlkbQuery;
     QPointer<QAction> m_actLoadStokesCompanions;
     QPointer<QAction> m_actComputeStokesP;
     QPointer<QAction> m_actComputeStokesPA;
@@ -535,7 +942,46 @@ private:
     QPointer<QAction> m_actTogglePolVecs;
 
     void detectAndLoadStokesCompanions();
-    QString findStokesCompanionPath(const QString &iPath, const QString &role) const;
+    QFutureWatcher<StokesListing> m_stokesListingWatcher;
+    void onStokesListingReady(const StokesListing &listing);
+    /// Queue of (path, "Stokes Q"-style label) waiting for the single layer
+    /// loader. Loading is asynchronous through one watcher, so companions have
+    /// to go in one at a time or all but the last are silently dropped.
+    /// One layer waiting for the single layer-load pipeline.
+    struct PendingLayerLoad
+    {
+        QString path;
+        QString displayName;
+        /// True for a member of an all-or-nothing set (the Stokes companions):
+        /// if one fails the rest are abandoned, because half a Stokes set is
+        /// worse than none and the user cannot see which half they got. False
+        /// for independent layers — six VLKB cutouts are six answers, and one
+        /// failing is no reason to drop the other five.
+        bool partOfSet{ false };
+        /// Set by the "Add Anyway" answer to a refused layer: the queue is the
+        /// only way back in when another load started while the dialog was up.
+        bool ignoreOverlap{ false };
+    };
+    /// Used by the Stokes companion sequence and by a multi-dataset VLKB
+    /// download, which would otherwise drop every layer after the first — the
+    /// viewer loads one at a time, and "busy" used to mean "discarded".
+    QList<PendingLayerLoad> m_pendingLayerLoads;
+    /// The failure message currently on screen. A batch of cutouts can fail one
+    /// after another, and one dialog per failure buries the window.
+    QPointer<QMessageBox> m_layerFailureDialog;
+    /// Failures not shown because that dialog was already up.
+    int m_suppressedLayerFailures{ 0 };
+    /// Whether the load currently running belongs to such a set.
+    bool m_currentLoadPartOfSet{ false };
+    /// True while the companion search is inside a nested event loop (backend
+    /// listing, file chooser), which leaves the menu action clickable.
+    bool m_stokesDiscoveryActive{ false };
+    void startNextQueuedLayerLoad();
+    /// Start the next queued layer IF nothing is loading. Called wherever the
+    /// viewer stops being busy — the layer loader, the preview and full-res
+    /// image loads, the Stokes listing — because a cutout that arrived during
+    /// any of those was queued and then waited for a pump that never came.
+    void pumpLayerQueue();
     int findLayerByStokesRole(StokesRole role) const;
     void computeStokesP();
     void computeStokesPA();
@@ -547,7 +993,9 @@ private:
                          const QString &name, StokesRole role,
                          const QString &colorMap,
                          double rangeMin, double rangeMax);
-    void rebuildPolarizationVectors();
+    /// False when there is nothing valid to draw (missing or mismatched Q/U):
+    /// the caller must then not switch the overlay on.
+    bool rebuildPolarizationVectors();
     void setPolVectorsVisible(bool vis);
     double beamAreaPixels() const;
     bool hasBeamInfo() const;

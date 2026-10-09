@@ -1,0 +1,82 @@
+name: tests
+
+# Runs the automated test suites on every push and pull request so a regression
+# is caught here instead of at a release tag. The release workflow builds and
+# bundles but runs no tests; this workflow is the gate.
+on:
+  push:
+    branches: ["**"]
+    # A documentation-only push cannot break a test, and the run still costs
+    # runner minutes. Both jobs are Linux (billed 1x, against 10x for macOS),
+    # so this is a small saving — but a free one.
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - ".readthedocs.yaml"
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run pytest
+        working-directory: backend
+        run: python -m pytest -q -p no:cacheprovider
+
+  cpp:
+    name: C++ unit tests (ctest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # GitHub's Ubuntu images ship third-party apt sources (Google Chrome,
+      # Microsoft) that nothing here installs from. When one of them serves a
+      # stale index, every `apt-get update` on the runner fails with "Hash Sum
+      # mismatch" — including the one inside install-qt-action — and takes this
+      # job down for a reason that has nothing to do with the repository. Drop
+      # those lists first so only the Ubuntu archive is consulted.
+      - name: Drop unused third-party apt sources
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*google-chrome* \
+                     /etc/apt/sources.list.d/*microsoft* \
+                     /etc/apt/sources.list.d/*azure-cli* || true
+
+      # The unit suite links only Qt Core/Network/Test (no VTK, no Widgets, no
+      # WebRTC), so it configures standalone from tests/ and needs only a base
+      # Qt6. This deliberately avoids the heavy full-app configure.
+      - name: Install Qt6 (base)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.7.*"
+          cache: true
+
+      - name: Configure (standalone tests project)
+        run: cmake -S tests -B build-tests -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build-tests -j
+
+      - name: Test
+        run: ctest --test-dir build-tests --output-on-failure

@@ -1,14 +1,19 @@
 #include "vtkWindowImage.h"
 #include "ui_vtkWindowImage.h"
+#include "CubeWcsUtil.h"
+#include "CubeViewportGeometry.h"
 
 #include "app/BackendClient.h"
 #include "app/DiagnosticsManager.h"
 #include "app/ThemeManager.h"
 #include "CatalogueTableModel.h"
 #include "ColorMaps.h"
+#include "ColormapIcon.h"
 #include "CatalogueOverlayUtils.h"
 #include "DiagnosticsWindow.h"
 #include "ImageLayerController.h"
+#include "FilterFitsDialog.h"
+#include "LayerCardDelegate.h"
 #include "ImageLayerImportService.h"
 #include "ImageLayerLoadTask.h"
 #include "LUTCustomizerDialog.h"
@@ -20,6 +25,9 @@
 #include "theme/SegmentedToggle.h"
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
+#include "InspectorPanel.h"
+#include "WorkspaceChrome.h"
+#include "ProductRegistry.h"
 #include "ToolResultDialog.h"
 #include "vtkInteractorStyleProfile.h"
 #include "vtkLegendScaleActorWCS.h"
@@ -71,6 +79,8 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFontMetrics>
+#include <QUrl>
 #include <QDoubleValidator>
 #include <QFormLayout>
 #include <QSpinBox>
@@ -88,7 +98,9 @@
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QMetaObject>
+#include <QAbstractButton>
 #include <QMessageBox>
+#include <QPointer>
 #include <QSignalBlocker>
 #include <QPlainTextEdit>
 #include <QDialog>
@@ -98,70 +110,34 @@
 #include <QToolButton>
 #include <QTableView>
 #include <QVBoxLayout>
+#include <QThreadPool>
 #include <QtConcurrentRun>
+
+#include "AstroUtils.h"
+#include "vtk/ImageLod.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <sstream>
+#include <QCoreApplication>
+#include <QRandomGenerator>
 
 using namespace Qt::StringLiterals;
+using namespace CubeWcs;
+using namespace CubeGeom;  // shared viewport-geometry helpers (deduplicated)
 
 namespace {
-
-static QIcon makeColormapIcon(const std::string &name, int iconW = 80, int iconH = 14)
-{
-    vtkNew<vtkLookupTable> lut;
-    lut->SetNumberOfTableValues(256);
-    lut->SetTableRange(0.0, 1.0);
-    ColorMaps::SetColorMap(lut.Get(), name);
-    lut->Build();
-    QImage img(iconW, iconH, QImage::Format_RGB32);
-    for (int x = 0; x < iconW; ++x) {
-        const int tableIdx = static_cast<int>(x * 255.0 / std::max(1, iconW - 1));
-        double rgba[4];
-        lut->GetTableValue(tableIdx, rgba);
-        const QRgb c = qRgb(static_cast<int>(rgba[0] * 255.0),
-                            static_cast<int>(rgba[1] * 255.0),
-                            static_cast<int>(rgba[2] * 255.0));
-        for (int y = 0; y < iconH; ++y)
-            img.setPixel(x, y, c);
-    }
-    return QIcon(QPixmap::fromImage(img));
-}
 
 /// Returns at most the last two path segments of @p fullPath, preceded by "…/".
 /// E.g. "/home/user/data/fits" → "…/data/fits".  Paths with ≤ 2 segments are
 /// returned unchanged.
-static QString compactDirPath(const QString &fullPath)
-{
-    const QStringList parts = fullPath.split(u'/', Qt::SkipEmptyParts);
-    if (parts.size() <= 2) {
-        return fullPath;
-    }
-    return QStringLiteral("\u2026/%1/%2").arg(parts[parts.size() - 2], parts.last());
-}
 
-constexpr int overlayTickCount = 5;
-constexpr double polygonClosureTolerance = 3.0;
-constexpr double catalogueMarkerHalfSize = 3.0;
-constexpr int maxCatalogueLabelCount = 200;
-constexpr int smartCatalogueLabelMaxVisible = 24;
-constexpr double smartCatalogueLabelMinPixelsPerUnit = 2.5;
-constexpr double catalogueHoverDisplayThresholdPx = 10.0;
 constexpr qint64 largeImagePixelThreshold = 25000000;
 constexpr int initialAutoscaleTargetSamples = 250000;
 constexpr double initialAutoscaleLowPercent = 1.0;
 constexpr double initialAutoscaleHighPercent = 99.5;
 
-struct VisibleImageBounds2D
-{
-    bool valid{ false };
-    double xmin{ 0. };
-    double xmax{ 0. };
-    double ymin{ 0. };
-    double ymax{ 0. };
-};
 
 bool isImageExtentUsable(vtkImageData *imageData)
 {
@@ -236,44 +212,9 @@ double sampledPositiveFloor(vtkImageData *imageData, qint64 targetSamples = 2500
     return std::max(1e-12, percentileFromSorted(positives, 1.0));
 }
 
-std::vector<std::array<double, 2>> buildEllipsePolyline(double centerX, double centerY, double radiusX,
-                                                        double radiusY, double angleDeg, int samples = 96)
-{
-    std::vector<std::array<double, 2>> polyline;
-    if (radiusX <= 0.0 || radiusY <= 0.0 || samples < 8) {
-        return polyline;
-    }
-    polyline.reserve(static_cast<std::size_t>(samples + 1));
-    const double angleRad = angleDeg * vtkMath::Pi() / 180.0;
-    const double cosA = std::cos(angleRad);
-    const double sinA = std::sin(angleRad);
-    for (int i = 0; i <= samples; ++i) {
-        const double t = (2.0 * vtkMath::Pi() * static_cast<double>(i)) / static_cast<double>(samples);
-        const double ex = radiusX * std::cos(t);
-        const double ey = radiusY * std::sin(t);
-        polyline.push_back(
-                { centerX + ex * cosA - ey * sinA, centerY + ex * sinA + ey * cosA });
-    }
-    return polyline;
-}
 
-bool pointInVisibleBounds(const std::array<double, 2> &point, const VisibleImageBounds2D &visible)
-{
-    return visible.valid && point[0] >= visible.xmin && point[0] <= visible.xmax && point[1] >= visible.ymin
-            && point[1] <= visible.ymax;
-}
 
-QString catalogueFrameName(CatalogueOverlayEntry::Frame frame)
-{
-    return frame == CatalogueOverlayEntry::Frame::Image ? QStringLiteral("image")
-                                                        : QStringLiteral("sky");
-}
 
-QString catalogueShapeName(CatalogueOverlayEntry::Shape shape)
-{
-    return shape == CatalogueOverlayEntry::Shape::Ellipse ? QStringLiteral("ellipse")
-                                                          : QStringLiteral("marker");
-}
 
 void hideCustomWcsOverlay(vtkAxisActor2D *xAxis, vtkAxisActor2D *yAxis, vtkTextActor *xTitle,
                           vtkTextActor *yTitle,
@@ -304,20 +245,6 @@ void hideCustomWcsOverlay(vtkAxisActor2D *xAxis, vtkAxisActor2D *yAxis, vtkTextA
     }
 }
 
-struct RegionStatistics
-{
-    int totalCount{ 0 };
-    int validCount{ 0 };
-    int blankedCount{ 0 };
-    double minValue{ 0. };
-    double maxValue{ 0. };
-    double mean{ 0. };
-    double median{ 0. };
-    double stddev{ 0. };
-    double sum{ 0. };       ///< Sum of valid pixels (for Jy = sum / Ω_beam_px)
-    double madSigma{ 0. };  ///< 1.4826 × MAD — robust σ estimate
-    bool valid{ false };
-};
 
 enum class SanityLevel
 {
@@ -333,52 +260,7 @@ struct SanityReport
     QString details;
 };
 
-double distance2d(const std::array<int, 2> &a, const std::array<int, 2> &b)
-{
-    const double dx = static_cast<double>(a[0] - b[0]);
-    const double dy = static_cast<double>(a[1] - b[1]);
-    return std::sqrt(dx * dx + dy * dy);
-}
 
-void buildAnnulusFill(vtkPoints *points, vtkCellArray *cells, vtkPolyData *polyData,
-                      const std::array<int, 2> &center, double innerRadius, double outerRadius,
-                      int sides = 96)
-{
-    points->Reset();
-    cells->Reset();
-    if (!polyData || !points || !cells || outerRadius <= 0.0 || innerRadius < 0.0
-        || innerRadius >= outerRadius) {
-        if (polyData) {
-            polyData->Modified();
-        }
-        return;
-    }
-
-    const double cx = static_cast<double>(center[0]);
-    const double cy = static_cast<double>(center[1]);
-    const double twoPi = 2.0 * std::acos(-1.0);
-    for (int i = 0; i < sides; ++i) {
-        const double theta = twoPi * static_cast<double>(i) / static_cast<double>(sides);
-        const double cosTheta = std::cos(theta);
-        const double sinTheta = std::sin(theta);
-        points->InsertNextPoint(cx + outerRadius * cosTheta, cy + outerRadius * sinTheta, 0.0);
-        points->InsertNextPoint(cx + innerRadius * cosTheta, cy + innerRadius * sinTheta, 0.0);
-    }
-
-    cells->InsertNextCell(static_cast<vtkIdType>(2 * (sides + 1)));
-    for (int i = 0; i <= sides; ++i) {
-        const int wrapped = i % sides;
-        const vtkIdType outer = static_cast<vtkIdType>(2 * wrapped);
-        const vtkIdType inner = outer + 1;
-        cells->InsertCellPoint(outer);
-        cells->InsertCellPoint(inner);
-    }
-
-    polyData->SetPoints(points);
-    polyData->SetPolys(nullptr);
-    polyData->SetStrips(cells);
-    polyData->Modified();
-}
 
 double computeBlankFraction(vtkImageData *imageData)
 {
@@ -424,305 +306,21 @@ double computeBlankFraction(vtkImageData *imageData)
     return static_cast<double>(blanked) / static_cast<double>(sampled);
 }
 
-bool axisHasAnyMetadata(const QString &ctype, const QString &cunit, double crval, double crpix, double cdelt)
-{
-    return !ctype.trimmed().isEmpty() || !cunit.trimmed().isEmpty() || std::isfinite(crval)
-            || std::isfinite(crpix) || std::isfinite(cdelt);
-}
 
-bool axisHasLinearWcs(const QString &ctype, double crval, double crpix, double cdelt)
-{
-    return !ctype.trimmed().isEmpty() && std::isfinite(crval) && std::isfinite(crpix)
-            && std::isfinite(cdelt) && std::abs(cdelt) > 1e-12;
-}
 
-bool isCelestialLikeAxis(const QString &ctypeRaw)
-{
-    const QString ctype = ctypeRaw.trimmed().toUpper();
-    return ctype.startsWith(u"RA"_s) || ctype.startsWith(u"DEC"_s) || ctype.startsWith(u"GLON"_s)
-            || ctype.startsWith(u"GLAT"_s) || ctype.startsWith(u"ELON"_s)
-            || ctype.startsWith(u"ELAT"_s);
-}
 
-bool pointInBox(const std::array<int, 2> &anchor, const std::array<int, 2> &current, int x, int y)
-{
-    const int xmin = std::min(anchor[0], current[0]);
-    const int xmax = std::max(anchor[0], current[0]);
-    const int ymin = std::min(anchor[1], current[1]);
-    const int ymax = std::max(anchor[1], current[1]);
-    return x >= xmin && x <= xmax && y >= ymin && y <= ymax;
-}
 
-bool pointInCircle(const std::array<int, 2> &anchor, const std::array<int, 2> &current, int x, int y)
-{
-    const double dx = static_cast<double>(current[0] - anchor[0]);
-    const double dy = static_cast<double>(current[1] - anchor[1]);
-    const double radius = std::sqrt(dx * dx + dy * dy);
-    if (radius <= 0.0) {
-        return x == anchor[0] && y == anchor[1];
-    }
-    const double px = static_cast<double>(x - anchor[0]);
-    const double py = static_cast<double>(y - anchor[1]);
-    return (px * px + py * py) <= radius * radius;
-}
 
-bool pointInPolygon(const std::vector<std::array<int, 2>> &vertices, int x, int y)
-{
-    if (vertices.size() < 3) {
-        return false;
-    }
 
-    bool inside = false;
-    const double px = static_cast<double>(x) + 0.5;
-    const double py = static_cast<double>(y) + 0.5;
-    for (std::size_t i = 0, j = vertices.size() - 1; i < vertices.size(); j = i++) {
-        const double xi = static_cast<double>(vertices[i][0]) + 0.5;
-        const double yi = static_cast<double>(vertices[i][1]) + 0.5;
-        const double xj = static_cast<double>(vertices[j][0]) + 0.5;
-        const double yj = static_cast<double>(vertices[j][1]) + 0.5;
-        const bool intersects = ((yi > py) != (yj > py))
-                && (px < (xj - xi) * (py - yi) / ((yj - yi) == 0.0 ? 1e-12 : (yj - yi)) + xi);
-        if (intersects) {
-            inside = !inside;
-        }
-    }
-    return inside;
-}
 
-bool pointInAnnulus(const std::array<int, 2> &center, const std::array<int, 2> &outerPoint,
-                    double innerRadius, int x, int y)
-{
-    const double outerDx = static_cast<double>(outerPoint[0] - center[0]);
-    const double outerDy = static_cast<double>(outerPoint[1] - center[1]);
-    const double outerRadius = std::sqrt(outerDx * outerDx + outerDy * outerDy);
-    if (outerRadius <= 0.0) {
-        return false;
-    }
 
-    const double px = static_cast<double>(x - center[0]);
-    const double py = static_cast<double>(y - center[1]);
-    const double radius = std::sqrt(px * px + py * py);
-    return radius >= std::max(0.0, innerRadius) && radius <= outerRadius;
-}
 
-std::array<int, 4> regionBounds2D(vtkWindowImage::RegionMode mode, const std::array<int, 2> &anchor,
-                                  const std::array<int, 2> &current,
-                                  const std::vector<std::array<int, 2>> &polygonVertices)
-{
-    if (mode == vtkWindowImage::RegionMode::Polygon && !polygonVertices.empty()) {
-        int xmin = polygonVertices.front()[0];
-        int xmax = polygonVertices.front()[0];
-        int ymin = polygonVertices.front()[1];
-        int ymax = polygonVertices.front()[1];
-        for (const auto &vertex : polygonVertices) {
-            xmin = std::min(xmin, vertex[0]);
-            xmax = std::max(xmax, vertex[0]);
-            ymin = std::min(ymin, vertex[1]);
-            ymax = std::max(ymax, vertex[1]);
-        }
-        xmin = std::min(xmin, current[0]);
-        xmax = std::max(xmax, current[0]);
-        ymin = std::min(ymin, current[1]);
-        ymax = std::max(ymax, current[1]);
-        return { xmin, xmax, ymin, ymax };
-    }
 
-    const int xmin = std::min(anchor[0], current[0]);
-    const int xmax = std::max(anchor[0], current[0]);
-    const int ymin = std::min(anchor[1], current[1]);
-    const int ymax = std::max(anchor[1], current[1]);
-    return { xmin, xmax, ymin, ymax };
-}
 
-bool pointInRegion(vtkWindowImage::RegionMode mode, const std::array<int, 2> &anchor,
-                   const std::array<int, 2> &current,
-                   const std::vector<std::array<int, 2>> &polygonVertices, double annulusInnerRadius,
-                   int x, int y)
-{
-    switch (mode) {
-    case vtkWindowImage::RegionMode::Box:
-        return pointInBox(anchor, current, x, y);
-    case vtkWindowImage::RegionMode::Circle:
-        return pointInCircle(anchor, current, x, y);
-    case vtkWindowImage::RegionMode::Polygon:
-        return pointInPolygon(polygonVertices, x, y);
-    case vtkWindowImage::RegionMode::Annulus:
-        return pointInAnnulus(anchor, current, annulusInnerRadius, x, y);
-    case vtkWindowImage::RegionMode::None:
-    default:
-        return false;
-    }
-}
 
-QString regionModeLabel(vtkWindowImage::RegionMode mode)
-{
-    switch (mode) {
-    case vtkWindowImage::RegionMode::Box:
-        return u"Box"_s;
-    case vtkWindowImage::RegionMode::Circle:
-        return u"Circle"_s;
-    case vtkWindowImage::RegionMode::Polygon:
-        return u"Polygon"_s;
-    case vtkWindowImage::RegionMode::Annulus:
-        return u"Annulus"_s;
-    case vtkWindowImage::RegionMode::None:
-    default:
-        return u"Region"_s;
-    }
-}
 
-RegionStatistics computeRegionStatistics2D(vtkImageData *imageData, vtkWindowImage::RegionMode mode,
-                                           const std::array<int, 2> &anchor,
-                                           const std::array<int, 2> &current,
-                                           const std::vector<std::array<int, 2>> &polygonVertices,
-                                           double annulusInnerRadius)
-{
-    RegionStatistics stats;
-    if (!imageData) {
-        return stats;
-    }
 
-    int extent[6];
-    imageData->GetExtent(extent);
-    const auto bounds = regionBounds2D(mode, anchor, current, polygonVertices);
-    std::vector<double> values;
-    double sum = 0.0;
-    double sumSq = 0.0;
-    stats.minValue = std::numeric_limits<double>::infinity();
-    stats.maxValue = -std::numeric_limits<double>::infinity();
 
-    for (int y = std::max(extent[2], bounds[2]); y <= std::min(extent[3], bounds[3]); ++y) {
-        for (int x = std::max(extent[0], bounds[0]); x <= std::min(extent[1], bounds[1]); ++x) {
-            const bool inside =
-                    pointInRegion(mode, anchor, current, polygonVertices, annulusInnerRadius, x, y);
-            if (!inside) {
-                continue;
-            }
-
-            ++stats.totalCount;
-            const double value = imageData->GetScalarComponentAsDouble(x, y, 0, 0);
-            if (!std::isfinite(value)) {
-                ++stats.blankedCount;
-                continue;
-            }
-
-            ++stats.validCount;
-            stats.minValue = std::min(stats.minValue, value);
-            stats.maxValue = std::max(stats.maxValue, value);
-            sum += value;
-            sumSq += value * value;
-            values.push_back(value);
-        }
-    }
-
-    if (stats.validCount <= 0) {
-        return stats;
-    }
-
-    stats.sum = sum;
-    stats.mean = sum / static_cast<double>(stats.validCount);
-    stats.stddev = std::sqrt(std::max(0.0, sumSq / static_cast<double>(stats.validCount)
-                                               - stats.mean * stats.mean));
-    std::sort(values.begin(), values.end());
-    const int mid = stats.validCount / 2;
-    stats.median = (stats.validCount % 2 == 0) ? 0.5 * (values[mid - 1] + values[mid]) : values[mid];
-
-    // MAD-based robust σ — much more reliable than std-dev for radio fields
-    // where bright sources skew the variance.
-    std::vector<double> absDev;
-    absDev.reserve(values.size());
-    for (double v : values) absDev.push_back(std::abs(v - stats.median));
-    std::sort(absDev.begin(), absDev.end());
-    const int amid = static_cast<int>(absDev.size()) / 2;
-    const double mad = (absDev.size() % 2 == 0)
-            ? 0.5 * (absDev[amid - 1] + absDev[amid])
-            : absDev[amid];
-    stats.madSigma = 1.4826 * mad;
-
-    stats.valid = true;
-    return stats;
-}
-
-VisibleImageBounds2D computeVisibleImageBounds2D(vtkRenderer *renderer, vtkImageData *imageData)
-{
-    VisibleImageBounds2D result;
-    if (!renderer || !imageData || !renderer->GetActiveCamera()) {
-        return result;
-    }
-
-    const int *size = renderer->GetSize();
-    if (!size || size[0] <= 0 || size[1] <= 0) {
-        return result;
-    }
-
-    double bounds[6];
-    imageData->GetBounds(bounds);
-    auto *camera = renderer->GetActiveCamera();
-    const double *focalPoint = camera->GetFocalPoint();
-    const double halfHeight = camera->GetParallelScale();
-    const double halfWidth = halfHeight * static_cast<double>(size[0]) / static_cast<double>(size[1]);
-
-    result.xmin = std::max(bounds[0], focalPoint[0] - halfWidth);
-    result.xmax = std::min(bounds[1], focalPoint[0] + halfWidth);
-    result.ymin = std::max(bounds[2], focalPoint[1] - halfHeight);
-    result.ymax = std::min(bounds[3], focalPoint[1] + halfHeight);
-    result.valid = result.xmin <= result.xmax && result.ymin <= result.ymax;
-    return result;
-}
-
-void configureAxisActor(vtkAxisActor2D *axis, double x1, double y1, double x2, double y2)
-{
-    axis->GetPoint1Coordinate()->SetCoordinateSystemToDisplay();
-    axis->GetPoint2Coordinate()->SetCoordinateSystemToDisplay();
-    axis->GetPoint1Coordinate()->SetValue(x1, y1);
-    axis->GetPoint2Coordinate()->SetValue(x2, y2);
-    axis->SetNumberOfLabels(5);
-    axis->AdjustLabelsOn();
-    axis->SetLabelFormat("%-#6.4g");
-    axis->SetFontFactor(0.6);
-    axis->SetTickLength(6);
-    axis->AxisVisibilityOn();
-    axis->TickVisibilityOn();
-    axis->LabelVisibilityOn();
-    axis->TitleVisibilityOn();
-    axis->GetProperty()->SetColor(1., 1., 1.);
-    axis->GetLabelTextProperty()->SetColor(1., 1., 1.);
-    axis->GetTitleTextProperty()->SetColor(1., 1., 1.);
-    axis->GetLabelTextProperty()->SetFontSize(14);
-    axis->GetTitleTextProperty()->SetFontSize(16);
-}
-
-void configureVerticalAxisTitle(vtkAxisActor2D *axis)
-{
-    auto *titleProp = axis->GetTitleTextProperty();
-    titleProp->SetOrientation(90.);
-    titleProp->SetJustificationToCentered();
-    titleProp->SetVerticalJustificationToCentered();
-    titleProp->SetColor(1., 1., 1.);
-    titleProp->SetFontSize(14);
-    axis->SetTitlePosition(0.5);
-}
-
-QString upperCtype(const QString &value)
-{
-    return value.trimmed().toUpper();
-}
-
-int inferCelestialFrameFromCtypePair(const std::array<QString, 3> &ctype)
-{
-    const QString c1 = upperCtype(ctype[0]);
-    const QString c2 = upperCtype(ctype[1]);
-    if (c1.startsWith(u"GLON"_s) && c2.startsWith(u"GLAT"_s)) {
-        return WCS_GALACTIC;
-    }
-    if (c1.startsWith(u"ELON"_s) && c2.startsWith(u"ELAT"_s)) {
-        return WCS_ECLIPTIC;
-    }
-    if (c1.startsWith(u"RA"_s) && c2.startsWith(u"DEC"_s)) {
-        return WCS_J2000;
-    }
-    return -1;
-}
 
 SanityReport buildImageSanityReport(const std::array<QString, 3> &ctype,
                                     const std::array<QString, 3> &cunit,
@@ -801,28 +399,7 @@ SanityReport buildImageSanityReport(const std::array<QString, 3> &ctype,
     return report;
 }
 
-QString formatCelestialCoordinate(int frame, int axis, double value)
-{
-    char buffer[64] = { 0 };
-    if (frame == WCS_J2000 && axis == 0) {
-        ra2str(buffer, sizeof(buffer), value, 1);
-    } else {
-        dec2str(buffer, sizeof(buffer), value, axis == 0 ? 1 : 0);
-    }
-    return QString::fromLatin1(buffer).trimmed();
-}
 
-void configureTickLabelActor(vtkTextActor *actor, bool rightAligned)
-{
-    actor->GetTextProperty()->SetColor(1., 1., 1.);
-    actor->GetTextProperty()->SetFontSize(12);
-    actor->GetTextProperty()->SetVerticalJustificationToCentered();
-    if (rightAligned) {
-        actor->GetTextProperty()->SetJustificationToRight();
-    } else {
-        actor->GetTextProperty()->SetJustificationToCentered();
-    }
-}
 
 vtkSmartPointer<vtkImageData> createPlaceholderImageData()
 {
@@ -880,20 +457,32 @@ ImageLayerLoadResult fetchRemoteImageLayer(const QString &backendUrl, const QStr
     vtkSmartPointer<vtkImageData> image = vtkSmartPointer<vtkImageData>::New();
     image->SetExtent(0, response.width - 1, 0, response.height - 1, 0, 0);
     image->SetOrigin(0., 0., 0.);
-    double spacingX = 1.0;
-    double spacingY = 1.0;
-    if (response.isPreview && response.width > 1 && response.height > 1 && response.fullWidth > 1
-        && response.fullHeight > 1) {
-        spacingX = static_cast<double>(response.fullWidth - 1) / static_cast<double>(response.width - 1);
-        spacingY = static_cast<double>(response.fullHeight - 1) / static_cast<double>(response.height - 1);
+    // The mapping displayed -> source, as the BACKEND actually sampled: origin
+    // too, not just spacing. Everything else in this window (overlays, probe
+    // readout, WCS labels, extracted spectra) reads this geometry, so this is
+    // the single place that decides whether they are on the right pixel.
+    ImageLod::SourceMapping mapping;
+    if (response.isPreview && response.width > 0 && response.height > 0 && response.fullWidth > 0
+        && response.fullHeight > 0) {
+        mapping = ImageLod::previewMapping(response.fullWidth, response.fullHeight, response.width,
+                                           response.height);
     }
-    image->SetSpacing(spacingX, spacingY, 1.);
+    image->SetOrigin(mapping.originX, mapping.originY, 0.);
+    image->SetSpacing(mapping.scaleX, mapping.scaleY, 1.);
     image->AllocateScalars(VTK_FLOAT, 1);
     std::memcpy(image->GetScalarPointer(), response.data.constData(),
                 static_cast<std::size_t>(expectedBytes));
 
     result.imageData = image;
     result.scalarRange = { response.rangeMin, response.rangeMax };
+    // …and on the RESULT, not only on the image: ImageLayer::applyLoadResult
+    // re-applies result.spacing/origin over whatever the image carries, so
+    // leaving them at the {1,1,1}/{0,0,0} defaults threw the preview's
+    // decimation away entirely - every overlay and readout on a preview was off
+    // by the whole decimation factor, not by the half cell the spacing formula
+    // was wrong by.
+    result.spacing = { mapping.scaleX, mapping.scaleY, 1.0 };
+    result.origin = { mapping.originX, mapping.originY, 0.0 };
     result.isPreview = response.isPreview;
     result.fullWidth = response.fullWidth;
     result.fullHeight = response.fullHeight;
@@ -907,6 +496,342 @@ ImageLayerLoadResult fetchRemoteImageLayer(const QString &backendUrl, const QStr
                        .arg(response.fullWidth)
                        .arg(response.fullHeight)
                        .arg(response.previewScaleFactor, 0, 'f', 3);
+    return result;
+}
+
+// Outcome of assembling a set of tiles: ok/error + the folded finite value range
+// (degenerate all-NaN [0,0] tiles are skipped so they don't drag the range to 0).
+struct TileAssembleOutcome
+{
+    bool ok{ true };
+    QString error;
+    double rmin{ 0.0 };
+    double rmax{ 0.0 };
+    bool haveRange{ false };
+};
+
+// Fetch every tile in `coords` at `level` and blit it via `blit`, fanned out
+// across up to 8 parallel chunks (each its own BackendClient — value-copied
+// inputs only; blits are lock-free since every tile writes a disjoint rectangle
+// of the shared destination buffer). `blit(tile)` returns false on a malformed
+// tile. Shared by the whole-image and viewport assemblers. On a chunk failure
+// the outcome carries the first error but ALL chunks are still joined before
+// returning (the caller discards the half-built image).
+template <typename BlitFn>
+TileAssembleOutcome fetchAndBlitTiles(const QString &backendUrl, const QString &datasetId,
+                                      const QString &sessionId, const QString &backendToken,
+                                      int level, int tileSize,
+                                      const QVector<QPair<int, int>> &coords, BlitFn blit)
+{
+    TileAssembleOutcome out;
+    if (coords.isEmpty()) {
+        return out;
+    }
+
+    struct ChunkResult
+    {
+        bool ok{ true };
+        QString error;
+        double rmin{ 0.0 };
+        double rmax{ 0.0 };
+        bool haveRange{ false };
+    };
+    const auto processChunk =
+            [backendUrl, datasetId, sessionId, backendToken, tileSize, level, blit](
+                    const QVector<QPair<int, int>> &chunk) -> ChunkResult {
+        ChunkResult cr;
+        BackendClient c(backendUrl, backendToken);
+        c.setSessionId(sessionId);
+        for (const auto &xy : chunk) {
+            const auto t = c.requestImageTile(datasetId, level, xy.first, xy.second, tileSize);
+            if (!t.valid || !blit(t)) {
+                cr.ok = false;
+                cr.error = t.error.isEmpty() ? u"Remote image tile assembly failed."_s : t.error;
+                return cr;
+            }
+            if (t.rangeMin < t.rangeMax) {
+                if (!cr.haveRange) {
+                    cr.rmin = t.rangeMin;
+                    cr.rmax = t.rangeMax;
+                    cr.haveRange = true;
+                } else {
+                    cr.rmin = std::min(cr.rmin, t.rangeMin);
+                    cr.rmax = std::max(cr.rmax, t.rangeMax);
+                }
+            }
+        }
+        return cr;
+    };
+
+    const auto foldRange = [&](double lo, double hi, bool have) {
+        if (!have) {
+            return;
+        }
+        if (!out.haveRange) {
+            out.rmin = lo;
+            out.rmax = hi;
+            out.haveRange = true;
+        } else {
+            out.rmin = std::min(out.rmin, lo);
+            out.rmax = std::max(out.rmax, hi);
+        }
+    };
+
+    constexpr int kConcurrency = 8;
+    const int nChunks = std::min(kConcurrency, static_cast<int>(coords.size()));
+    QVector<QVector<QPair<int, int>>> chunks(nChunks);
+    for (int i = 0; i < coords.size(); ++i) {
+        chunks[i % nChunks].append(coords[i]);
+    }
+    QThreadPool pool;
+    pool.setMaxThreadCount(nChunks);
+    QVector<QFuture<ChunkResult>> futures;
+    futures.reserve(nChunks);
+    for (const auto &chunk : chunks) {
+        futures.append(QtConcurrent::run(&pool, processChunk, chunk));
+    }
+    for (auto &f : futures) {
+        f.waitForFinished();
+        const ChunkResult cr = f.result();
+        if (!cr.ok) {
+            out.ok = false;
+            if (out.error.isEmpty()) {
+                out.error = cr.error;
+            }
+        } else {
+            foldRange(cr.rmin, cr.rmax, cr.haveRange);
+        }
+    }
+    return out;
+}
+
+// Assemble the full-resolution image from level-0 pyramid tiles. Each tile is a
+// bounded out-of-core read on the backend, so a mosaic too large for the backend
+// to load in one /v1/image/full call can still be served tile-by-tile. The
+// client-side vtkImageData is full size (same as the single-request full load);
+// display downsampling is handled downstream by ImageLayer.
+ImageLayerLoadResult fetchRemoteImageLayerTiled(const QString &backendUrl, const QString &datasetId,
+                                                const QString &datasetPath, int tileSize,
+                                                int requestGeneration, const QString &sessionId,
+                                                const QString &backendToken)
+{
+    ImageLayerLoadResult result;
+    result.filepath = datasetPath.toStdString();
+    result.requestGeneration = requestGeneration;
+
+    BackendClient client(backendUrl, backendToken);
+    client.setSessionId(sessionId);
+
+    // Probe tile (0,0) to learn full dims + tile grid before allocating.
+    const auto probe = client.requestImageTile(datasetId, 0, 0, 0, tileSize);
+    if (!probe.valid) {
+        result.errorMessage = probe.error.isEmpty() ? "Remote image tile request failed."
+                                                     : probe.error.toStdString();
+        return result;
+    }
+    if (probe.scalarType != u"float32"_s) {
+        result.errorMessage = "Unsupported remote image scalar type.";
+        return result;
+    }
+    const int fullW = probe.fullWidth;
+    const int fullH = probe.fullHeight;
+    const int ts = probe.tileSize > 0 ? probe.tileSize : tileSize;
+    if (fullW <= 0 || fullH <= 0 || ts <= 0) {
+        result.errorMessage = "Invalid remote image dimensions.";
+        return result;
+    }
+
+    // Assemble the WHOLE image at the coarsest pyramid level that fits a pixel
+    // budget (the display is downsampled to ≤1536px anyway, so a huge mosaic
+    // need not materialise full-res; this also lets arbitrarily large mosaics
+    // open). 64 MP ≈ 256 MB float32; images ≤ budget keep level 0 (full res).
+    // Coordinate readouts (probe / region / measurement) map the decimated grid
+    // back to full-res pixels, so science stays correct.
+    constexpr long long kMaxAssemblePixels = 64'000'000LL;
+    const int level =
+            ImageLod::chooseAssemblyLevel(fullW, fullH, probe.numLevels, kMaxAssemblePixels);
+    const int step = 1 << level;
+    const int downW = (fullW + step - 1) / step;
+    const int downH = (fullH + step - 1) / step;
+    // Spacing maps the decimated grid onto the full-resolution world extent
+    // (preview convention). Set on the image AND result.spacing, since
+    // ImageLayer::applyLoadResult re-applies result.spacing to the image.
+    // Decimated tiles are a STRIDE read on the backend: displayed pixel i is
+    // source pixel i·2^level, exactly. Stretching the spacing to land the last
+    // displayed pixel on source fullW-1 (the old formula) put every coordinate
+    // slightly off, by up to one source pixel at the far edge.
+    const auto mapping = ImageLod::assemblyMapping(level);
+    const double sx = mapping.scaleX;
+    const double sy = mapping.scaleY;
+
+    vtkSmartPointer<vtkImageData> image = vtkSmartPointer<vtkImageData>::New();
+    image->SetExtent(0, downW - 1, 0, downH - 1, 0, 0);
+    image->SetOrigin(mapping.originX, mapping.originY, 0.);
+    image->SetSpacing(sx, sy, 1.);
+    image->AllocateScalars(VTK_FLOAT, 1);
+    float *const buf = static_cast<float *>(image->GetScalarPointer());
+
+    // Copy a tile into the decimated buffer at its (tileX, tileY) offset (in
+    // level-`level` pixels). Captured by VALUE (buf pointer + dims) so it is safe
+    // from worker threads: every tile writes a disjoint rectangle, no locking.
+    const auto blit = [buf, downW, downH, ts](const BackendImageTileResult &t) -> bool {
+        const qsizetype expected =
+                static_cast<qsizetype>(t.width) * t.height * static_cast<qsizetype>(sizeof(float));
+        if (t.width <= 0 || t.height <= 0 || t.data.size() != expected) {
+            return false;
+        }
+        const int x0 = t.tileX * ts;
+        const int y0 = t.tileY * ts;
+        if (x0 + t.width > downW || y0 + t.height > downH) {
+            return false;
+        }
+        const float *src = reinterpret_cast<const float *>(t.data.constData());
+        for (int r = 0; r < t.height; ++r) {
+            std::memcpy(buf + (static_cast<qsizetype>(y0 + r) * downW + x0),
+                        src + static_cast<qsizetype>(r) * t.width,
+                        static_cast<std::size_t>(t.width) * sizeof(float));
+        }
+        return true;
+    };
+
+    // Every tile at the chosen level (the probe was level-0 metadata only).
+    const auto counts = ImageLod::tileCounts(level, { fullW, fullH, ts, probe.numLevels });
+    const int cols = counts.first;
+    const int rows = counts.second;
+    QVector<QPair<int, int>> coords;
+    coords.reserve(cols * rows);
+    for (int ty = 0; ty < rows; ++ty) {
+        for (int tx = 0; tx < cols; ++tx) {
+            coords.append({ tx, ty });
+        }
+    }
+
+    // Parallel fan-out: the backend serves tile POSTs concurrently, so a bounded
+    // burst turns hundreds of serial round-trips into ~wall-clock/kConcurrency.
+    const auto outcome = fetchAndBlitTiles(backendUrl, datasetId, sessionId, backendToken,
+                                           level, ts, coords, blit);
+    if (!outcome.ok) {
+        result.errorMessage = outcome.error.toStdString();
+        return result;
+    }
+    const int concurrency = coords.isEmpty() ? 1 : std::min(8, static_cast<int>(coords.size()));
+
+    result.imageData = image;
+    result.scalarRange = { outcome.haveRange ? outcome.rmin : 0.0,
+                           outcome.haveRange ? outcome.rmax : 0.0 };
+    // Final image (not a preview in the reload-chain sense — must NOT trigger
+    // another fetch). Decimation is conveyed via spacing/origin.
+    result.isPreview = false;
+    result.spacing = { sx, sy, 1.0 };
+    result.origin = { mapping.originX, mapping.originY, 0.0 };
+    result.fullWidth = fullW;
+    result.fullHeight = fullH;
+    result.previewScaleFactor = static_cast<double>(step);
+    result.numLevels = probe.numLevels;
+    result.valid = true;
+    qDebug().noquote()
+            << QStringLiteral("[remote-image] assembled level=%1 dims=%2x%3 (full %4x%5) "
+                              "from %6x%7 tiles (size %8, %9-way)")
+                       .arg(level).arg(downW).arg(downH).arg(fullW).arg(fullH)
+                       .arg(cols).arg(rows).arg(ts).arg(concurrency);
+    return result;
+}
+
+// Assemble ONLY the tiles covering the currently-visible source rectangle, at the
+// pyramid level chosen for the current zoom (viewport-driven LOD). Unlike the
+// whole-image assembler this produces a sub-image with a non-zero origin: the VTK
+// image's world coords still equal full-res source pixels (origin + voxel*spacing),
+// so every overlay/readout stays correct. RAM is bounded by the viewport, not the
+// image, enabling smooth pan/zoom on gigapixel mosaics. `rect*` is the visible
+// source-pixel rectangle (full res) and `viewportHeightPx` the on-screen height.
+ImageLayerLoadResult fetchRemoteImageLayerViewport(
+        const QString &backendUrl, const QString &datasetId, const QString &datasetPath,
+        int fullW, int fullH, int numLevels, int tileSize,
+        double rectX0, double rectY0, double rectX1, double rectY1, double viewportHeightPx,
+        int requestGeneration, const QString &sessionId, const QString &backendToken)
+{
+    ImageLayerLoadResult result;
+    result.filepath = datasetPath.toStdString();
+    result.requestGeneration = requestGeneration;
+
+    const int ts = tileSize > 0 ? tileSize : 256;
+    const ImageLod::TileGrid grid{ fullW, fullH, ts, numLevels };
+    const ImageLod::ViewportAssembly va =
+            ImageLod::viewportAssembly(rectX0, rectY0, rectX1, rectY1, viewportHeightPx, grid, 1);
+    if (!va.valid) {
+        result.errorMessage = "Invalid viewport LOD geometry.";
+        return result;
+    }
+
+    const int unionW = va.width;
+    const int unionH = va.height;
+    const int x0px = va.tileOriginX;   // level-pixel offset of the tile union
+    const int y0px = va.tileOriginY;
+
+    vtkSmartPointer<vtkImageData> image = vtkSmartPointer<vtkImageData>::New();
+    image->SetExtent(0, unionW - 1, 0, unionH - 1, 0, 0);
+    image->SetOrigin(va.originX, va.originY, 0.);
+    image->SetSpacing(va.spacing, va.spacing, 1.);
+    image->AllocateScalars(VTK_FLOAT, 1);
+    float *const buf = static_cast<float *>(image->GetScalarPointer());
+
+    // Blit a tile into the union buffer at its offset relative to the union origin
+    // (level pixels). Captured by value (buf + dims + offsets) so it is safe across
+    // worker threads: every tile writes a disjoint rectangle, no locking.
+    const auto blit = [buf, unionW, unionH, ts, x0px, y0px](
+                              const BackendImageTileResult &t) -> bool {
+        const qsizetype expected =
+                static_cast<qsizetype>(t.width) * t.height * static_cast<qsizetype>(sizeof(float));
+        if (t.width <= 0 || t.height <= 0 || t.data.size() != expected) {
+            return false;
+        }
+        const int cx = t.tileX * ts - x0px;   // column offset within the union
+        const int cy = t.tileY * ts - y0px;   // row offset within the union
+        if (cx < 0 || cy < 0 || cx + t.width > unionW || cy + t.height > unionH) {
+            return false;
+        }
+        const float *src = reinterpret_cast<const float *>(t.data.constData());
+        for (int r = 0; r < t.height; ++r) {
+            std::memcpy(buf + (static_cast<qsizetype>(cy + r) * unionW + cx),
+                        src + static_cast<qsizetype>(r) * t.width,
+                        static_cast<std::size_t>(t.width) * sizeof(float));
+        }
+        return true;
+    };
+
+    QVector<QPair<int, int>> coords;
+    coords.reserve((va.txMax - va.txMin + 1) * (va.tyMax - va.tyMin + 1));
+    for (int ty = va.tyMin; ty <= va.tyMax; ++ty) {
+        for (int tx = va.txMin; tx <= va.txMax; ++tx) {
+            coords.append({ tx, ty });
+        }
+    }
+
+    const auto outcome = fetchAndBlitTiles(backendUrl, datasetId, sessionId, backendToken,
+                                           va.level, ts, coords, blit);
+    if (!outcome.ok) {
+        result.errorMessage = outcome.error.toStdString();
+        return result;
+    }
+    const int concurrency = coords.isEmpty() ? 1 : std::min(8, static_cast<int>(coords.size()));
+
+    result.imageData = image;
+    result.scalarRange = { outcome.haveRange ? outcome.rmin : 0.0,
+                           outcome.haveRange ? outcome.rmax : 0.0 };
+    result.isPreview = false;
+    result.spacing = { va.spacing, va.spacing, 1.0 };
+    result.origin = { va.originX, va.originY, 0.0 };
+    result.fullWidth = fullW;
+    result.fullHeight = fullH;
+    result.numLevels = numLevels;
+    result.previewScaleFactor = static_cast<double>(1 << va.level);
+    result.valid = true;
+    qDebug().noquote()
+            << QStringLiteral("[remote-image] viewport assembled level=%1 dims=%2x%3 "
+                              "origin=(%4,%5) tiles=%6 (%7-way) full=%8x%9")
+                       .arg(va.level).arg(unionW).arg(unionH)
+                       .arg(va.originX, 0, 'f', 0).arg(va.originY, 0, 'f', 0)
+                       .arg(coords.size()).arg(concurrency).arg(fullW).arg(fullH);
     return result;
 }
 
@@ -969,242 +894,14 @@ static void tanSkyToPix(double lonDeg, double latDeg,
 }
 
 // ── (fetchVlkbAdditionalLayer removed) ───────────────────────────────────────
-// The VLKB add-layer path now reuses addLayerImage() directly, which calls
-// loadImageLayer() → AstroUtils/libwcs for WCS alignment.  This is the same
-// pipeline as "File → Add New Layer" and handles CD-matrix FITS correctly.
+// Its 190 lines of hand-rolled WCS alignment - the reason the backend-side layer
+// path was abandoned - are gone rather than commented out: loadRemoteImageLayer()
+// below does the same job with the SAME arithmetic as the local loader, because
+// AstroUtils can now build its WCS from the header the backend sends instead of
+// needing the file. The lesson (don't re-derive the alignment; reuse libwcs) is
+// in that function's comment, which is where it is useful.
 // ─────────────────────────────────────────────────────────────────────────────
-#if 0  // dead code block kept for reference, not compiled
-static ImageLayerLoadResult fetchVlkbAdditionalLayer(const QString &backendUrl,
-                                                      const QString &backendToken,
-                                                      const QString &backendPath,
-                                                      const QString &displayName,
-                                                      const std::array<double, 3> &masterCrpix,
-                                                      const std::array<double, 3> &masterCrval,
-                                                      const std::array<double, 3> &masterCdelt,
-                                                      const std::array<QString, 3> &masterCtype)
-{
-    ImageLayerLoadResult result;
-    result.filepath = displayName.toStdString(); // used as the layer display name
 
-    BackendClient client(backendUrl, backendToken);
-    const auto opened = client.openDataset(backendPath);
-    if (!opened.valid) {
-        result.errorMessage = opened.error.isEmpty() ? "Could not open VLKB layer on backend."
-                                                     : opened.error.toStdString();
-        return result;
-    }
-    if (opened.kind != u"image"_s) {
-        result.errorMessage = "VLKB entry is not a 2D image (kind=" + opened.kind.toStdString() + ").";
-        return result;
-    }
-
-    const auto response = client.requestImage(opened.datasetId);
-    if (!response.valid) {
-        result.errorMessage = response.error.isEmpty() ? "Remote image request failed."
-                                                       : response.error.toStdString();
-        return result;
-    }
-    if (response.scalarType != u"float32"_s) {
-        result.errorMessage = "Unsupported remote image scalar type.";
-        return result;
-    }
-    const qsizetype expectedBytes =
-            static_cast<qsizetype>(response.width) * response.height
-            * static_cast<qsizetype>(sizeof(float));
-    if (response.width <= 0 || response.height <= 0 || response.data.size() != expectedBytes) {
-        result.errorMessage = "Invalid remote image payload.";
-        return result;
-    }
-
-    // Build the raw layer image from the backend payload (no resampling).
-    auto rawImage = vtkSmartPointer<vtkImageData>::New();
-    rawImage->SetExtent(0, response.width - 1, 0, response.height - 1, 0, 0);
-    rawImage->AllocateScalars(VTK_FLOAT, 1);
-    std::memcpy(rawImage->GetScalarPointer(), response.data.constData(),
-                static_cast<std::size_t>(expectedBytes));
-
-    result.imageData  = rawImage;
-    result.scalarRange = { response.rangeMin, response.rangeMax };
-
-    // ── Legacy WCS alignment: spacing + origin + rotation ────────────────────
-    // Mirrors ImageLayerSet::registerLayerToMaster exactly:
-    //
-    //   1. Isotropic pixel-scale ratio  →  VTK spacing
-    //   2. WCS round-trip pixel (0,0) : layer→sky→master pixel  →  VTK origin
-    //   3. WCS round-trip pixel (0,100): slope → rotation angle  →  vtkTransform
-    //
-    // Frame conversion between layer and master (e.g. FK5 ↔ Galactic) is
-    // handled by wcscon if the CTYPE pairs differ.
-    //
-    // IMPORTANT: secpixLayer uses opened.pixelScaleArcsec (from astropy, handles
-    // CD matrix) instead of computing sqrt(|CDELT1*CDELT2|)*3600 from raw header
-    // CDELT which defaults to 1.0 (3600 arcsec/pix) for CD-matrix-only FITS.
-    // Similarly, sky coordinates for origin/rotation come from opened.wcsRefSky*
-    // (astropy WCS pixel_to_world) rather than our manual tanPixToSky, which also
-    // requires correct CDELT.
-
-    // ── Debug: master WCS params ──────────────────────────────────────────────
-    // masterCdelt here is already the effective CDELT (from addLayerFromBackendPath
-    // which substitutes remoteDatasetEffectiveCdelt when valid).
-    const double secpixMaster = std::sqrt(std::abs(masterCdelt[0] * masterCdelt[1])) * 3600.0;
-    qDebug().noquote()
-            << QStringLiteral("[vlkb-layer] MASTER  cdelt=(%1,%2) secpix=%3 arcsec/px"
-                               "  crpix=(%4,%5) crval=(%6,%7) ctype=(%8,%9)")
-                       .arg(masterCdelt[0], 0, 'g', 8).arg(masterCdelt[1], 0, 'g', 8)
-                       .arg(secpixMaster, 0, 'g', 6)
-                       .arg(masterCrpix[0], 0, 'f', 2).arg(masterCrpix[1], 0, 'f', 2)
-                       .arg(masterCrval[0], 0, 'f', 6).arg(masterCrval[1], 0, 'f', 6)
-                       .arg(masterCtype[0]).arg(masterCtype[1]);
-
-    // ── Debug: overlay WCS params ─────────────────────────────────────────────
-    const double secpixLayerFromCdelt =
-            std::sqrt(std::abs(opened.cdelt[0] * opened.cdelt[1])) * 3600.0;
-    qDebug().noquote()
-            << QStringLiteral("[vlkb-layer] OVERLAY cdelt=(%1,%2) secpix_cdelt=%3 secpix_astropy=%4"
-                               "  crpix=(%5,%6) crval=(%7,%8) ctype=(%9,%10)"
-                               "  wcsRefValid=%11")
-                       .arg(opened.cdelt[0], 0, 'g', 8).arg(opened.cdelt[1], 0, 'g', 8)
-                       .arg(secpixLayerFromCdelt, 0, 'g', 6)
-                       .arg(opened.pixelScaleArcsec, 0, 'g', 6)
-                       .arg(opened.crpix[0], 0, 'f', 2).arg(opened.crpix[1], 0, 'f', 2)
-                       .arg(opened.crval[0], 0, 'f', 6).arg(opened.crval[1], 0, 'f', 6)
-                       .arg(opened.ctype[0]).arg(opened.ctype[1])
-                       .arg(opened.wcsRefSkyValid ? QStringLiteral("yes") : QStringLiteral("no"));
-    if (opened.wcsRefSkyValid) {
-        qDebug().noquote()
-                << QStringLiteral("[vlkb-layer] OVERLAY wcsRef: pix(0,0)->sky(%1,%2)"
-                                   "  pix(0,100)->sky(%3,%4)")
-                           .arg(opened.wcsRefSky00[0], 0, 'f', 8).arg(opened.wcsRefSky00[1], 0, 'f', 8)
-                           .arg(opened.wcsRefSky0100[0], 0, 'f', 8).arg(opened.wcsRefSky0100[1], 0, 'f', 8);
-    }
-
-    // Use astropy pixel scale when available; fall back to CDELT only as last resort.
-    const double secpixLayer = (opened.pixelScaleArcsec > 0.0 && std::isfinite(opened.pixelScaleArcsec))
-                                ? opened.pixelScaleArcsec
-                                : secpixLayerFromCdelt;
-
-    if (secpixLayer > 0.0 && secpixMaster > 0.0
-            && std::isfinite(secpixLayer) && std::isfinite(secpixMaster)) {
-
-        // 1. Isotropic spacing
-        const double scaledPixel = secpixLayer / secpixMaster;
-        result.spacing = { scaledPixel, scaledPixel, 1.0 };
-
-        // Celestial frame codes (needed for cross-frame conversion via wcscon)
-        const int layerFrame  = inferCelestialFrameFromCtypePair(opened.ctype);
-        const int masterFrame = inferCelestialFrameFromCtypePair(masterCtype);
-        const bool needFrameConv = (layerFrame >= 0 && masterFrame >= 0
-                                    && layerFrame != masterFrame);
-
-        // Helper: convert sky coords from layer's frame to master's frame
-        auto toMasterFrame = [&](double &lon, double &lat) {
-            if (needFrameConv) {
-                wcscon(layerFrame, masterFrame, 2000.0, 2000.0, &lon, &lat, 2000.0);
-            }
-        };
-
-        // 2. Origin: layer pixel (0,0) → sky → master pixel
-        //    Prefer astropy-computed sky coord (wcsRefSky00) over manual tanPixToSky
-        //    to avoid CDELT=1.0 corruption in CD-matrix FITS.
-        double lon0, lat0;
-        if (opened.wcsRefSkyValid) {
-            lon0 = opened.wcsRefSky00[0];
-            lat0 = opened.wcsRefSky00[1];
-        } else {
-            tanPixToSky(0.0, 0.0, opened.crpix, opened.crval, opened.cdelt, lon0, lat0);
-        }
-        toMasterFrame(lon0, lat0);
-        double mx0, my0;
-        tanSkyToPix(lon0, lat0, masterCrpix, masterCrval, masterCdelt, mx0, my0);
-        result.origin = { mx0, my0, 0.0 };
-
-        // 3. Rotation: layer pixel (0,100) → sky → master pixel → slope → angle
-        double lon1, lat1;
-        if (opened.wcsRefSkyValid) {
-            lon1 = opened.wcsRefSky0100[0];
-            lat1 = opened.wcsRefSky0100[1];
-        } else {
-            tanPixToSky(0.0, 100.0, opened.crpix, opened.crval, opened.cdelt, lon1, lat1);
-        }
-        toMasterFrame(lon1, lat1);
-        double mx1, my1;
-        tanSkyToPix(lon1, lat1, masterCrpix, masterCrval, masterCdelt, mx1, my1);
-
-        const double dx = mx1 - mx0;
-        const double dy = my1 - my0;
-        if (std::abs(dx) > 1e-9) {
-            // Same formula as legacy vtkwindow_new::addLayerImage / registerLayerToMaster
-            const double m = std::abs(dy / dx);
-            result.rotationDegrees = 90.0 - std::atan(m) * 180.0 / M_PI;
-        }
-        // dx ≈ 0: overlay column maps to master column → no rotation
-
-        qDebug().noquote()
-                << QStringLiteral("[vlkb-layer] COMPUTED scaledPixel=%1"
-                                   " origin=(%2,%3) angle=%4°"
-                                   " frameConv=%5 skySource=%6")
-                           .arg(scaledPixel, 0, 'g', 6)
-                           .arg(mx0, 0, 'g', 8).arg(my0, 0, 'g', 8)
-                           .arg(result.rotationDegrees, 0, 'f', 4)
-                           .arg(needFrameConv ? QStringLiteral("yes") : QStringLiteral("no"))
-                           .arg(opened.wcsRefSkyValid ? QStringLiteral("astropy") : QStringLiteral("tanPixToSky"));
-    } else {
-        qWarning().noquote()
-                << QStringLiteral("[vlkb-layer] degenerate pixel scale for \"%1\","
-                                   " secpixLayer=%2 secpixMaster=%3"
-                                   " (layer cdelt=(%4,%5) astropy=%6);"
-                                   " using raw image without WCS alignment")
-                           .arg(displayName)
-                           .arg(secpixLayer).arg(secpixMaster)
-                           .arg(opened.cdelt[0]).arg(opened.cdelt[1])
-                           .arg(opened.pixelScaleArcsec);
-    }
-
-    result.valid = true;
-    return result;
-}
-#endif  // dead code block end
-
-void buildArrowGeometry(vtkPoints *points, vtkCellArray *lines,
-                        double x1, double y1, double x2, double y2)
-{
-    points->Reset();
-    lines->Reset();
-
-    // Shaft: from label pos (x1,y1) to tip (x2,y2)
-    points->InsertNextPoint(x1, y1, 0.0); // 0
-    points->InsertNextPoint(x2, y2, 0.0); // 1
-    lines->InsertNextCell(2);
-    lines->InsertCellPoint(0);
-    lines->InsertCellPoint(1);
-
-    // Arrowhead at (x2, y2) — fixed size, never larger than 30% of shaft
-    const double dx = x2 - x1;
-    const double dy = y2 - y1;
-    const double len = std::sqrt(dx * dx + dy * dy);
-    if (len > 1e-6) {
-        constexpr double fixedHeadLen = 8.0;
-        const double headLen = std::min(fixedHeadLen, len * 0.3);
-        const double ndx = dx / len;
-        const double ndy = dy / len;
-        const double px = -ndy;
-        const double py = ndx;
-        const double headWidth = headLen * 0.4;
-        const double bx = x2 - ndx * headLen;
-        const double by = y2 - ndy * headLen;
-
-        points->InsertNextPoint(bx + px * headWidth, by + py * headWidth, 0.0); // 2
-        points->InsertNextPoint(bx - px * headWidth, by - py * headWidth, 0.0); // 3
-
-        lines->InsertNextCell(2);
-        lines->InsertCellPoint(1);
-        lines->InsertCellPoint(2);
-
-        lines->InsertNextCell(2);
-        lines->InsertCellPoint(1);
-        lines->InsertCellPoint(3);
-    }
-}
 
 QString formatImageBoundsSummary(vtkImageData *imageData)
 {
@@ -1228,6 +925,7 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                                const std::array<double, 3> &remoteCrval,
                                const std::array<double, 3> &remoteCrpix,
                                const std::array<double, 3> &remoteCdelt,
+                               const QString &remoteBunit,
                                const QString &remoteDegenerateAxesSummary,
                                const QString &remoteWcsStatus,
                                const QString &remoteWcsWarningMessage,
@@ -1245,6 +943,7 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
       remoteDatasetCrval(remoteCrval),
       remoteDatasetCrpix(remoteCrpix),
       remoteDatasetCdelt(remoteCdelt),
+      remoteDatasetBunit(remoteBunit),
       remoteDegenerateAxesSummary(remoteDegenerateAxesSummary),
       remoteWcsStatus(remoteWcsStatus),
       remoteWcsWarningMessage(remoteWcsWarningMessage),
@@ -1253,8 +952,13 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
       layers(nullptr),
       importService(std::make_unique<ImageLayerImportService>())
 {
+    // Per-window product scope (session-wide registry): so this image window's Session tree
+    // ignores products a sibling cube/image window registered for the same dataset.
+    this->m_windowScope = ProductRegistry::instance().newOwnerScope();
     ui->setupUi(this);
     this->setupViewerToolbar();
+    // The row under it: which mode the window is in, and how to leave it.
+    this->setupModeStrip();
     // setupSidebar() is called later, after all QActions are initialised
     qDebug().noquote()
             << QStringLiteral("[wcs] remote metadata loaded ctype=%1,%2 cdelt=%3,%4")
@@ -1284,12 +988,34 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     this->catalogueInfoLabel->setStyleSheet(u"QLabel { padding-left: 8px; color: palette(window-text); }"_s);
     this->catalogueInfoLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     this->statusBar()->addPermanentWidget(this->catalogueInfoLabel);
+    // Install the additive status rail now that the window's own permanent
+    // labels exist (so the rail lands to their right), then poll backend health.
+    if (this->m_workspaceChrome) {
+        this->m_workspaceChrome->installStatusRail();
+        this->m_workspaceChrome->installSessionDock(
+                this->filepath, QFileInfo(this->filepath).fileName(), u"image"_s,
+                this->m_windowScope);
+        // The dock was installed and an owner scope minted, but nothing here ever
+        // registered a product: this window's Session Data listed the dataset and
+        // stayed empty for the rest of the session, however many maps, statistics
+        // and figures its tools produced. Same contract as the cube viewer now —
+        // a tool that makes something the user could want later leaves a row.
+        connect(this->m_workspaceChrome, &WorkspaceChrome::sessionRowContextMenu, this,
+                &vtkWindowImage::showSessionRowContextMenu);
+        connect(this->m_workspaceChrome, &WorkspaceChrome::sessionProductReopen, this,
+                &vtkWindowImage::openProduct);
+        // setupInspector()/start() run at the END of the constructor — the
+        // Analysis-tab tools reference QActions created later below.
+    }
     this->updateCatalogueInfoPanel();
     this->statusMessageClearTimer.setSingleShot(true);
     QObject::connect(&this->statusMessageClearTimer, &QTimer::timeout, this, [this]() {
         this->persistentStatusActive = false;
         this->statusBar()->clearMessage();
     });
+    QObject::connect(&this->m_stokesListingWatcher,
+                     &QFutureWatcher<StokesListing>::finished, this,
+                     [this]() { this->onStokesListingReady(m_stokesListingWatcher.result()); });
     QObject::connect(&this->layerLoadWatcher, &QFutureWatcher<ImageLayerLoadResult>::finished, this,
                      [this]() {
                          this->setLayerImportEnabled(true);
@@ -1299,11 +1025,43 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                              if (!result.errorMessage.empty()) {
                                  this->persistentStatusActive = false;
                                  this->statusMessageClearTimer.stop();
-                                 QMessageBox::warning(this, u"Import FITS file"_s,
-                                                      QString::fromStdString(result.errorMessage));
                              }
+                             // Snapshot before the clearing: "Add Anyway" puts
+                             // the load back through the queue, and a layer that
+                             // returns without its label loses its Stokes role
+                             // with it.
+                             const QString failedDisplayName = m_pendingVlkbDisplayName;
                              m_pendingVlkbDisplayName.clear();
+                             // Drop the "Loading layer..." text first: clearing it
+                             // after the message below would wipe it immediately.
                              this->clearPersistentStatusMessage();
+                             // Taken and cleared FIRST: the queue is pumped below
+                             // and a load starting from there must not inherit
+                             // this flag and be treated as part of the failed set.
+                             const bool wasPartOfSet = m_currentLoadPartOfSet;
+                             m_currentLoadPartOfSet = false;
+                             // A companion that fails aborts the rest of ITS
+                             // SET: half a Stokes set is worse than none, and
+                             // the user cannot see which half they got.
+                             // Independent layers — a batch of VLKB cutouts —
+                             // are not part of that bargain and carry on.
+                             if (wasPartOfSet) {
+                                 const qsizetype before = m_pendingLayerLoads.size();
+                                 m_pendingLayerLoads.removeIf(
+                                         [](const PendingLayerLoad &p) { return p.partOfSet; });
+                                 if (before != m_pendingLayerLoads.size()) {
+                                     statusBar()->showMessage(
+                                             u"Stokes companion loading stopped after an error."_s,
+                                             5000);
+                                 }
+                             }
+                             // The message is shown without a nested event loop,
+                             // and only after the queue has been put right: an
+                             // exec() here pumps the pending loads while the flags
+                             // above still describe the failed one, and its stack
+                             // frame outlives the window if the user closes it.
+                             this->showLayerLoadFailure(result, failedDisplayName, wasPartOfSet);
+                             this->pumpLayerQueue();
                              return;
                          }
 
@@ -1332,6 +1090,11 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                          }
 
                          this->clearPersistentStatusMessage();
+                         // Cleared before the next load, which sets its own.
+                         m_currentLoadPartOfSet = false;
+                         // The loader has a single watcher, so queued layers go
+                         // in one after the other from here.
+                         this->startNextQueuedLayerLoad();
                      });
     QObject::connect(&this->remoteImageWatcher, &QFutureWatcher<ImageLayerLoadResult>::finished, this,
                      [this]() {
@@ -1361,6 +1124,9 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                              this->startRemoteFullResolutionLoad();
                          } else {
                              this->clearPersistentStatusMessage();
+                             // A cutout that arrived while this was loading was
+                             // queued; nothing else would have started it.
+                             this->pumpLayerQueue();
                          }
                      });
     QObject::connect(&this->remoteFullImageWatcher, &QFutureWatcher<ImageLayerLoadResult>::finished, this,
@@ -1390,8 +1156,27 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                          this->transitioningToFull = false;
                          this->suspendLutEditorUpdates = false;
                          this->applyRemoteMasterLayer(result);
+                         // Enable viewport-driven LOD once the multi-level pyramid
+                         // image is loaded: further zoom/pan re-streams the visible
+                         // region at the appropriate level.
+                         this->m_lodFullWidth = result.fullWidth;
+                         this->m_lodFullHeight = result.fullHeight;
+                         this->m_lodNumLevels = result.numLevels;
+                         this->m_viewportLodEnabled = (result.numLevels > 1
+                                                       && result.fullWidth > 0 && result.fullHeight > 0);
+                         this->m_lodApplied = { -1, -1, -1, -1, -1 };
+                         // Same as the preview path: release anything queued
+                         // while the full-resolution image was loading.
+                         this->pumpLayerQueue();
+                         qDebug().noquote()
+                                 << QStringLiteral("[viewport-lod] %1 (full=%2x%3 levels=%4)")
+                                            .arg(this->m_viewportLodEnabled ? u"enabled"_s : u"disabled"_s)
+                                            .arg(result.fullWidth).arg(result.fullHeight).arg(result.numLevels);
                          this->clearPersistentStatusMessage();
                      });
+
+    QObject::connect(&this->m_viewportLodWatcher, &QFutureWatcher<ImageLayerLoadResult>::finished,
+                     this, &vtkWindowImage::onViewportLodReady);
 
     // Backend-authoritative: initialise with a placeholder; real image data
     // arrives via the remote full-image watcher.
@@ -1408,7 +1193,43 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     this->updateWcsStatusIndicator();
 
     // Setup Menu File
-    QObject::connect(ui->actionAddFITS, &QAction::triggered, this, &vtkWindowImage::addLocalFile);
+    QObject::connect(ui->actionAddFITS, &QAction::triggered, this,
+                     &vtkWindowImage::addLayerFromBrowser);
+    // Each layer as a card: its own colour map, stretch and opacity on the row,
+    // instead of one line of text and a settings panel that describes only
+    // whichever layer happens to be selected.
+    if (ui->listLayer) {
+        ui->listLayer->setItemDelegate(new LayerCardDelegate(ui->listLayer));
+        ui->listLayer->setSpacing(0);
+        ui->listLayer->setUniformItemSizes(true);
+    }
+
+    // The way to add a layer, at the end of the stack — the design's dashed
+    // "Add layer from backend…" row.
+    //
+    // It is a widget under the list rather than a last row INSIDE it, which is
+    // what the design draws. A phantom row would have to be a row of the model,
+    // and every index-based accessor in this window (getImageData, the LUT, the
+    // opacity, the drag-reorder) would then have to know that the last row is
+    // not a layer. That is a wrong-layer bug waiting to be written, in exchange
+    // for a few pixels of position — and this way the row stays visible when
+    // the list scrolls, which the design's version does not.
+    if (ui->btnAddLayer) {
+        ui->btnAddLayer->setCursor(Qt::PointingHandCursor);
+        ui->btnAddLayer->setFlat(true);
+        ui->btnAddLayer->setFixedHeight(28);
+        ui->btnAddLayer->setStyleSheet(
+                QStringLiteral("QPushButton{background:transparent;"
+                               "border:1px dashed %2; border-radius:6px; color:%1;"
+                               "font-size:11px;font-weight:600;padding:0 8px;text-align:left;}"
+                               "QPushButton:hover{border-color:%1;}"
+                               "QPushButton:disabled{color:%3;border-color:%3;}")
+                        .arg(QLatin1StringView(VisivoTheme::kPrimary()),
+                             QLatin1StringView(VisivoTheme::kOutline()),
+                             QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        QObject::connect(ui->btnAddLayer, &QPushButton::clicked, this,
+                         &vtkWindowImage::addLayerFromBrowser);
+    }
 
     // Setup Menu WCS
     auto groupWCS = new QActionGroup(this);
@@ -1440,7 +1261,9 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     ui->actionProfile->setCheckable(true);
     QObject::connect(ui->actionProfile, &QAction::toggled, this, &vtkWindowImage::setProbeModeActive);
     this->actionExtractSpectrum = ui->menuTools->addAction(u"Extract Spectrum"_s);
-    this->actionExtractSpectrum->setEnabled(false);
+    this->actionExtractSpectrum->setEnabled(false);   // enabled in dynspec mode
+    QObject::connect(this->actionExtractSpectrum, &QAction::triggered, this,
+                     &vtkWindowImage::extractSpectrum2D);
     this->actionExtractSpectrum->setToolTip(
             u"Spectrum extraction is only available for cube views."_s);
     this->actionExtractSpectrum->setStatusTip(
@@ -1469,7 +1292,11 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     QObject::connect(this->actionAnnulusRegion, &QAction::toggled, this,
                      [this](bool checked) { this->setRegionMode(RegionMode::Annulus, checked); });
     ui->menuTools->addSeparator();
-    this->actionLoadCatalogueOverlay = ui->menuTools->addAction(u"Load Catalogue Overlay"_s);
+    this->actionLoadCatalogueOverlay = ui->menuTools->addAction(u"Load Catalogue Overlay…"_s);
+    this->actionCrossmatch = ui->menuTools->addAction(u"Cross-match with Catalogue…"_s);
+    this->actionCrossmatch->setToolTip(
+            u"Query an external catalogue (SIMBAD / 2MASS / NVSS / FIRST) over this image's "
+            u"footprint and overlay the matches."_s);
     this->actionShowCatalogueOverlay = ui->menuTools->addAction(u"Show Catalogue Overlay"_s);
     this->actionShowCatalogueLabels = ui->menuTools->addAction(u"Show Catalogue Labels"_s);
     this->actionClearCatalogueOverlay = ui->menuTools->addAction(u"Clear Catalogue Overlay"_s);
@@ -1482,6 +1309,11 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     this->actionClearCatalogueOverlay->setEnabled(false);
     QObject::connect(this->actionLoadCatalogueOverlay, &QAction::triggered, this,
                      &vtkWindowImage::loadCatalogueOverlay);
+    QObject::connect(this->actionCrossmatch, &QAction::triggered, this,
+                     &vtkWindowImage::crossmatchCatalogue);
+    QObject::connect(&this->m_crossmatchWatcher,
+                     &QFutureWatcher<CatalogueOverlayParseResult>::finished, this,
+                     &vtkWindowImage::onCrossmatchReady);
     QObject::connect(this->actionShowCatalogueOverlay, &QAction::toggled, this,
                      &vtkWindowImage::setCatalogueOverlayVisible);
     QObject::connect(this->actionShowCatalogueLabels, &QAction::toggled, this,
@@ -1489,6 +1321,28 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     QObject::connect(this->actionClearCatalogueOverlay, &QAction::triggered, this,
                      &vtkWindowImage::clearCatalogueOverlay);
     this->ensureCatalogueDock();
+    // …and a way back to it: the dock shows itself when a catalogue loads and
+    // hides when the overlay is cleared, but nothing could reopen it once the
+    // user had closed it.
+    if (this->catalogueDock) {
+        QAction *toggle = this->catalogueDock->toggleViewAction();
+        toggle->setText(u"Catalogue Sources"_s);
+        toggle->setToolTip(u"The table of sources in the loaded catalogue overlay. "
+                           u"Selecting a row highlights that source on the image."_s);
+        ui->menuView->addAction(toggle);
+    }
+
+    // Smooth / regrid — the legacy's "Filter FITS", which lived in a menu of
+    // its own in the main window and acted on whatever file you picked. Here it
+    // acts on the image you are looking at, and the result comes back as a
+    // layer over it.
+    ui->menuTools->addSeparator();
+    m_actFilterFits = ui->menuTools->addAction(u"Smooth / Regrid…"_s);
+    m_actFilterFits->setToolTip(
+            u"Gaussian-smooth and/or shrink this image on the backend, into a new "
+            u"file in the Workspace, and add it as a layer."_s);
+    QObject::connect(m_actFilterFits, &QAction::triggered, this,
+                     &vtkWindowImage::openFilterFitsDialog);
 
     // FITS export → Workspace
     ui->menuTools->addSeparator();
@@ -1518,6 +1372,19 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                              if (!self) return;
                              self->statusBar()->clearMessage();
                              if (r.first) {
+                                 // A file product, so the export is findable
+                                 // afterwards from this window rather than only
+                                 // from the Data Hub's exports panel.
+                                 QVariantMap params;
+                                 params.insert(u"Workspace filename"_s, r.second);
+                                 params.insert(u"Storage"_s, u"Workspace Exports"_s);
+                                 params.insert(u"Contents"_s,
+                                         u"the source dataset of this window, not its "
+                                         u"derived layers"_s);
+                                 self->registerAnalysisProduct(
+                                         u"export"_s,
+                                         u"Workspace export: %1"_s.arg(r.second),
+                                         params, self->scopedProductId(u"wsexport"_s));
                                  QMessageBox::information(self, u"Export"_s,
                                          u"Saved to Workspace Exports:\n%1"_s.arg(r.second));
                              } else {
@@ -1532,6 +1399,17 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
             return { true, r.deletedFilename };
         }));
     });
+
+    // Region export — save the active drawn ROI for CASA/CARTA/ds9. Loading
+    // region files (incl. CRTF) goes through Load Catalogue Overlay (one loader).
+    ui->menuTools->addSeparator();
+    m_actExportRegions = ui->menuTools->addAction(u"Export Region (CRTF/DS9)…"_s);
+    m_actExportRegions->setToolTip(
+            u"Save the active *drawn* region (Box/Circle/Polygon/Annulus) as a "
+            u"CASA CRTF or DS9 region file. To *load* regions (incl. CRTF) use "
+            u"Tools ▸ Load Catalogue Overlay."_s);
+    QObject::connect(m_actExportRegions, &QAction::triggered, this,
+                     [this]() { this->exportRegionsToFile(); });
 
     // Contour overlay — same approach as the cube viewer: toggle + Level/Lower/Upper
     ui->menuTools->addSeparator();
@@ -1573,17 +1451,23 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
 
     // ── Histogram ─────────────────────────────────────────────────────────
     ui->menuTools->addSeparator();
-    auto *actHistogram = ui->menuTools->addAction(u"Pixel Histogram…"_s);
+    auto *actHistogram = ui->menuTools->addAction(u"Pixel Histogram"_s);
+    this->m_actHistogram = actHistogram;
     QObject::connect(actHistogram, &QAction::triggered, this,
                      &vtkWindowImage::showHistogramPanel);
 
     // ── Annotations ──────────────────────────────────────────────────────
     ui->menuTools->addSeparator();
     auto *actAddText = ui->menuTools->addAction(u"Add Text Annotation…"_s);
+    this->m_actAddText = actAddText;
     auto *actAddArrow = ui->menuTools->addAction(u"Add Arrow Annotation…"_s);
+    this->m_actAddArrow = actAddArrow;
     auto *actClearAnnot = ui->menuTools->addAction(u"Clear Annotations"_s);
-    auto *actSaveAnnot = ui->menuTools->addAction(u"Save Annotations"_s);
-    auto *actLoadAnnot = ui->menuTools->addAction(u"Load Annotations"_s);
+    this->m_actClearAnnot = actClearAnnot;
+    auto *actSaveAnnot = ui->menuTools->addAction(u"Save Annotations…"_s);
+    this->m_actSaveAnnot = actSaveAnnot;
+    auto *actLoadAnnot = ui->menuTools->addAction(u"Load Annotations…"_s);
+    this->m_actLoadAnnot = actLoadAnnot;
     QObject::connect(actAddText, &QAction::triggered, this, &vtkWindowImage::addTextAnnotation);
     QObject::connect(actAddArrow, &QAction::triggered, this, &vtkWindowImage::addArrowAnnotation);
     QObject::connect(actClearAnnot, &QAction::triggered, this, &vtkWindowImage::clearAnnotations);
@@ -1594,7 +1478,8 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     ui->menuTools->addSeparator();
     m_actLoadStokesCompanions = ui->menuTools->addAction(u"Load Stokes Q/U/V Companions…"_s);
     m_actLoadStokesCompanions->setToolTip(
-            u"Auto-detect and load Stokes Q, U, V files matching the current Stokes I."_s);
+            u"Auto-detect Stokes Q, U, V files matching the current Stokes I; "
+            u"anything not found can be picked from the backend file browser."_s);
     QObject::connect(m_actLoadStokesCompanions, &QAction::triggered, this,
                      &vtkWindowImage::detectAndLoadStokesCompanions);
 
@@ -1630,7 +1515,7 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
 
     m_actComputeFaradayRM = ui->menuTools->addAction(u"Compute Faraday RM…"_s);
     m_actComputeFaradayRM->setToolTip(
-            u"Linear fit of PA vs λ² from ≥ 3 (Q, U, ν) triplets — low-RM regime only."_s);
+            u"Linear fit of PA vs λ² from ≥ 3 (Q, U, ν) triplets, low-RM regime only."_s);
     QObject::connect(m_actComputeFaradayRM, &QAction::triggered, this,
                      &vtkWindowImage::computeFaradayRM);
 
@@ -1679,7 +1564,7 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     actionCommandPalette->setShortcut(QKeySequence(QStringLiteral("Ctrl+K")));
     actionCommandPalette->setShortcutContext(Qt::ApplicationShortcut);
     actionCommandPalette->setToolTip(
-            u"Quick action search — same palette as the main window (⌘K)."_s);
+            u"Quick action search, same palette as the main window (⌘K)."_s);
     ui->menuView->addAction(actionCommandPalette);
     QObject::connect(actionCommandPalette, &QAction::triggered, this, [this]() {
         for (QWidget *w : QApplication::topLevelWidgets()) {
@@ -1693,8 +1578,11 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     // All QActions are now initialised — safe to build the sidebar
     this->setupSidebar();
 
-    // Color Maps Combobox — with gradient preview icon
-    ui->comboLut->setIconSize(QSize(80, 14));
+    // Color Maps Combobox — with gradient preview icon. 48×12 is the cube
+    // viewer's size, and it is what fits a 26 px field once the theme's padding
+    // and border are taken off; the 80×14 this used to ask for had room only
+    // while the combo owned a line of its own.
+    ui->comboLut->setIconSize(QSize(48, 12));
     auto cmaps = ColorMaps::GetColorMapNames();
     std::for_each(cmaps.cbegin(), cmaps.cend(), [this](const std::string &name) {
         ui->comboLut->addItem(makeColormapIcon(name), QString::fromStdString(name));
@@ -1703,36 +1591,51 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     QObject::connect(ui->comboLut, &QComboBox::textActivated, this,
                      &vtkWindowImage::changeCurrentColorMap);
 
-    // LUT Customizer — give the button a clear label and tooltip
-    ui->btnLutEdit->setText(u"Advanced…"_s);
+    // LUT customizer — an inline "Edit" beside the combo, as in the cube viewer.
+    // A full-width "Advanced…" button under the combo read as a second control
+    // of its own rather than as the way into the map you are looking at.
+    if (ui->labelColorMap) {
+        ui->labelColorMap->setStyleSheet(
+                QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    }
+    // Let the combo shrink with the dock instead of forcing the row wider than
+    // the panel — but not past its own gradient preview, hence the floor.
+    ui->comboLut->setMinimumContentsLength(3);
+    ui->comboLut->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    ui->comboLut->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    ui->comboLut->setMinimumWidth(110);
+    ui->comboLut->setFixedHeight(26);
+    // The theme gives combo boxes 6px of vertical padding and a border, which
+    // leaves 12px of a 26px field — less than the icon. Tighten both here.
+    ui->comboLut->setStyleSheet(
+            u"QComboBox { padding: 2px 8px; font-size: 12px; }"_s);
+    // Only the combo grows with the dock: the label and the link keep their size.
+    if (ui->hboxColorMap) {
+        ui->hboxColorMap->setStretch(0, 0);
+        ui->hboxColorMap->setStretch(1, 1);
+        ui->hboxColorMap->setStretch(2, 0);
+    }
+
+    ui->btnLutEdit->setText(u"Edit"_s);
+    ui->btnLutEdit->setCursor(Qt::PointingHandCursor);
+    ui->btnLutEdit->setFlat(true);
+    ui->btnLutEdit->setFixedHeight(26);
+    ui->btnLutEdit->setStyleSheet(
+            QStringLiteral("QPushButton{background:transparent;border:none;color:%1;"
+                           "font-size:11px;font-weight:600;padding:0 2px;}"
+                           "QPushButton:hover{text-decoration:underline;}")
+                    .arg(QLatin1StringView(VisivoTheme::kPrimary())));
     ui->btnLutEdit->setToolTip(u"Open advanced LUT editor (histogram, manual range adjustment)"_s);
     QObject::connect(ui->btnLutEdit, &QPushButton::clicked, this,
                      &vtkWindowImage::showLUTCustomizer);
 
-    // Scale: SegmentedToggle replaces the old radio buttons for visual
-    // consistency with the cube viewer's mode selectors.
+    // Colour scale lives entirely in the LUT Customizer ("Advanced…"), matching
+    // the cube viewer — a single source of truth with the full Linear / Log /
+    // Sqrt / Square / Power(γ) set, instead of a reduced inline toggle. The old
+    // radio buttons stay hidden (showCurrentLayerSettings still reflects state).
     ui->radioLinear->hide();
     ui->radioLog->hide();
-    auto *scaleToggle = new SegmentedToggle(ui->frameLayerControls);
-    scaleToggle->addItem(u"Linear"_s, u"Linear colour scale"_s);
-    scaleToggle->addItem(u"Log"_s,    u"Logarithmic colour scale"_s);
-    scaleToggle->setCurrentIndex(ui->radioLog->isChecked() ? 1 : 0);
-    // Insert right where the radios were (after the LUT combo row).
-    if (auto *fl = qobject_cast<QVBoxLayout *>(ui->frameLayerControls->layout())) {
-        const int radioIdx = fl->indexOf(ui->radioLinear);
-        if (radioIdx >= 0)
-            fl->insertWidget(radioIdx, scaleToggle);
-        else
-            fl->addWidget(scaleToggle);
-    }
-    QObject::connect(scaleToggle, &SegmentedToggle::currentIndexChanged, this,
-                     [this](int idx) {
-                         const QSignalBlocker bL(ui->radioLinear);
-                         const QSignalBlocker bG(ui->radioLog);
-                         ui->radioLinear->setChecked(idx == 0);
-                         ui->radioLog->setChecked(idx == 1);
-                         this->changeCurrentColorScale();
-                     });
 
     // Layer Opacity — label + tooltip
     ui->sliderOpacity->setToolTip(u"Layer opacity (0 = transparent, 100 = opaque)"_s);
@@ -1750,15 +1653,87 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     QObject::connect(ui->sliderOpacity, &QSlider::actionTriggered, this,
                      &vtkWindowImage::changeCurrentLayerOpacity);
 
+    // The header names the layer these controls edit. "LAYER SETTINGS" sits
+    // ABOVE the list whose current row it acts on, which reads as settings for
+    // the panel rather than for a layer — harmless with one layer, a trap in the
+    // window this is: load Stokes companions and compute P, PA, P/I, α and RM and
+    // there are ten rows, any of whose colour map you can change without being
+    // told which one you changed (user report on the layout).
+    const auto nameLayerSettings = [this]() {
+        if (!ui->labelLayerHdr)
+            return;
+        const int row = this->currentLayerIndex();
+        const QString name = (row >= 0 && this->layers && row < this->layers->rowCount())
+                ? this->layers->data(this->layers->index(row, 0), Qt::DisplayRole).toString()
+                : QString();
+        // ELIDED: a long dataset name (image.i.SB9325.cont.taylor.0.restored.fits)
+        // otherwise sets the label's size hint and stretches the whole left
+        // column past the dock, taking the layer list with it. The middle is
+        // dropped so the extension stays readable, and the full name is in the
+        // tooltip below.
+        const QString full = name.isEmpty() ? u"LAYER SETTINGS"_s
+                                            : u"LAYER SETTINGS, %1"_s.arg(name);
+        // The full text is kept on the widget so the elision can be redone when
+        // the font or the width changes (see the event filter below): computing
+        // it once left a near-limit caption clipped rather than elided after a
+        // font change.
+        ui->labelLayerHdr->setProperty("fullText", full);
+        ui->labelLayerHdr->setMinimumWidth(0);
+        ui->labelLayerHdr->setMaximumWidth(VisivoTheme::kLeftDockWidth - 24);
+        elideLayerSettingsHeader();
+        ui->labelLayerHdr->setToolTip(
+                name.isEmpty() ? QString()
+                               : u"These controls act on the layer selected below: %1"_s.arg(name));
+    };
+    QObject::connect(this->layers, &LayerListModel::dataChanged, this,
+                     [nameLayerSettings]() { nameLayerSettings(); });
+    if (ui->labelLayerHdr)
+        ui->labelLayerHdr->installEventFilter(this);
+
     // Setup Layer List View
     ui->listLayer->setAcceptDrops(true);
     ui->listLayer->setModel(this->layers);
     ui->listLayer->setCurrentIndex(this->layers->index(0, 0));
+    // Only now does the view have a selection model: connecting before setModel()
+    // subscribed to a null one, so the header kept naming the first layer no
+    // matter which row the user selected.
+    QObject::connect(ui->listLayer->selectionModel(), &QItemSelectionModel::currentChanged, this,
+                     [nameLayerSettings](const QModelIndex &, const QModelIndex &) {
+                         nameLayerSettings();
+                     });
+    nameLayerSettings();
     QObject::connect(this->layers, &LayerListModel::dataChanged, this, &vtkWindowImage::vtkRender);
+    // dataChanged alone is not enough: it covers a layer's *properties*, not
+    // the structure. Reordering the stack by drag and drop changes what is
+    // drawn on top without changing any row's data, and a master replacement
+    // resets the model — neither emits dataChanged, so the scene stayed as it
+    // was until an unrelated event (a click on the VTK widget) forced a render.
+    QObject::connect(this->layers, &LayerListModel::rowsMoved, this, &vtkWindowImage::vtkRender);
+    QObject::connect(this->layers, &LayerListModel::modelReset, this, &vtkWindowImage::vtkRender);
+    // Keep a layer always selected: if the current row is cleared while layers
+    // remain, re-select the first one (deferred to avoid reentrancy).
+    QObject::connect(ui->listLayer->selectionModel(), &QItemSelectionModel::currentChanged, this,
+                     [this](const QModelIndex &current, const QModelIndex &) {
+                         if (!current.isValid() && this->layers && this->layers->rowCount() > 0) {
+                             QTimer::singleShot(0, this, [this]() {
+                                 if (!ui->listLayer->currentIndex().isValid()
+                                     && this->layers->rowCount() > 0) {
+                                     ui->listLayer->setCurrentIndex(this->layers->index(0, 0));
+                                 }
+                             });
+                         }
+                     });
     QObject::connect(ui->listLayer->selectionModel(), &QItemSelectionModel::currentChanged, this,
                      &vtkWindowImage::showCurrentLayerSettings);
     QObject::connect(ui->listLayer->selectionModel(), &QItemSelectionModel::currentChanged, this,
                      &vtkWindowImage::updateLUTCustomizer);
+
+    // Inspector shell + first health poll: done last so every Analysis-tab tool
+    // action (created above) is available.
+    if (this->m_workspaceChrome) {
+        this->setupInspector();
+        this->m_workspaceChrome->start();
+    }
 
     // Backend-authoritative: kick off the preview load immediately.
     this->showPersistentStatusMessage(u"Loading image preview..."_s);
@@ -1776,6 +1751,16 @@ vtkWindowImage::~vtkWindowImage()
 
 void vtkWindowImage::closeEvent(QCloseEvent *event)
 {
+    if (m_stokesDiscoveryActive) {
+        // The companion search may be suspended inside a file chooser's nested
+        // event loop with `this` on the stack. Deleting the window now would
+        // resume that call on freed memory. (The directory listing itself is no
+        // longer blocking - it runs on a worker thread.)
+        this->statusBar()->showMessage(
+                u"Finish or cancel the Stokes companion search first."_s, 4000);
+        event->ignore();
+        return;
+    }
     if (this->isBusy()) {
         this->showPersistentStatusMessage(u"Loading image..."_s);
         event->ignore();
@@ -1790,52 +1775,9 @@ void vtkWindowImage::closeEvent(QCloseEvent *event)
     QMainWindow::closeEvent(event);
 }
 
-void vtkWindowImage::showLUTCustomizer()
-{
-    const int index = this->currentLayerIndex();
-    if (!this->layers || index < 0 || index >= this->layers->rowCount()) {
-        return;
-    }
-    qDebug().noquote() << QStringLiteral("[lut] open request index=%1 existing=%2")
-                                  .arg(index)
-                                  .arg(this->lutCustomizer != nullptr);
-    if (!this->lutCustomizer) {
-        this->lutCustomizer = new LUTCustomizerDialog(this);
-        QObject::connect(this->lutCustomizer, &LUTCustomizerDialog::lutUpdated, this,
-                         [this]() {
-                             this->markDisplayStateAdjusted("lut editor");
-                             this->showCurrentLayerSettings();
-                         });
-    }
-    this->lutCustomizer->show();
-    this->lutCustomizer->raise();
-    this->lutCustomizer->activateWindow();
-    qDebug().noquote() << QStringLiteral("[lut] dialog shown/raised");
-    if (this->suspendLutEditorUpdates) {
-        return;
-    }
-    QPointer<LUTCustomizerDialog> dialog = this->lutCustomizer;
-    auto *dataset = this->layers->getImageData(index);
-    auto *lut = this->layers->getLookupTable(index);
-    QTimer::singleShot(0, this, [this, dialog, dataset, lut]() {
-        if (!dialog || this->suspendLutEditorUpdates || !dataset || !lut) {
-            return;
-        }
-        qDebug().noquote() << QStringLiteral("[lut] deferred init started");
-        dialog->init(dataset, lut);
-    });
-}
 
-void vtkWindowImage::updateLUTCustomizer()
-{
-    if (this->lutCustomizer && !this->suspendLutEditorUpdates) {
-        const int index = this->currentLayerIndex();
-        this->lutCustomizer->init(this->layers->getImageData(index),
-                                  this->layers->getLookupTable(index));
-    }
-}
 
-void vtkWindowImage::addLocalFile()
+void vtkWindowImage::addLayerFromBrowser()
 {
     if (this->isBusy()) {
         return;
@@ -1855,1700 +1797,43 @@ void vtkWindowImage::addLocalFile()
     this->addLayerImage(path.toStdString());
 }
 
-void vtkWindowImage::setupRenderer()
-{
-    this->wcsOverlayInitialized = false;
-    vtkNew<vtkRenderer> ren;
-    ren->SetBackground(0.21, 0.23, 0.25);
-    ren->GetActiveCamera()->ParallelProjectionOn();
-
-    vtkNew<vtkGenericOpenGLRenderWindow> win;
-    win->AddRenderer(ren);
-    ui->vtk->setRenderWindow(win);
-    ui->vtk->setEnableTouchEventProcessing(false);
-
-    vtkNew<vtkInteractorStyleImage> style;
-    win->GetInteractor()->SetInteractorStyle(style);
-    win->GetInteractor()->AddObserver(vtkCommand::MouseMoveEvent, this,
-                                      &vtkWindowImage::mouseCallback);
-    win->GetInteractor()->AddObserver(vtkCommand::LeftButtonPressEvent, this,
-                                      &vtkWindowImage::beginImageInteraction);
-    win->GetInteractor()->AddObserver(vtkCommand::LeftButtonPressEvent, this,
-                                      &vtkWindowImage::toggleProbeFreeze);
-    win->GetInteractor()->AddObserver(vtkCommand::LeftButtonReleaseEvent, this,
-                                      &vtkWindowImage::endImageInteraction);
-    win->GetInteractor()->AddObserver(vtkCommand::LeftButtonReleaseEvent, this,
-                                      &vtkWindowImage::finishRegionInteraction);
-    win->GetInteractor()->AddObserver(vtkCommand::RightButtonPressEvent, this,
-                                      &vtkWindowImage::finishRegionInteraction);
-    win->GetInteractor()->AddObserver(vtkCommand::LeftButtonDoubleClickEvent, this,
-                                      &vtkWindowImage::finishRegionInteraction);
-
-    this->coordinate->SetCoordinateSystemToDisplay();
-    this->coordinate->SetViewport(ren);
-
-    // Stack
-    this->stack->AddImage(this->layers->getMasterLayerActor());
-    this->stack->SetActiveLayer(0);
-    ren->AddViewProp(this->stack);
-
-    // Color bar
-    this->colorbar->SetMaximumWidthInPixels(120);
-    this->colorbar->SetPosition(0.9, 0.1);
-    this->colorbar->SetLookupTable(this->layers->getLookupTable(this->layers->getMasterIndex()));
-    ren->AddViewProp(this->colorbar);
-
-    this->layerController =
-            std::make_unique<ImageLayerController>(*(this->layers), this->stack, this->colorbar);
-
-    // Legend: local AstroUtils-based legend not used in backend mode; remote WCS overlay actors are used instead.
-    ren->AddViewProp(this->overlayXAxis);
-    ren->AddViewProp(this->overlayYAxis);
-    ren->AddViewProp(this->overlayXTitleActor);
-    ren->AddViewProp(this->overlayYTitleActor);
-    vtkNew<vtkPolyDataMapper> probeHorizontalMapper;
-    probeHorizontalMapper->SetInputConnection(this->probeHorizontalLine->GetOutputPort());
-    this->probeHorizontalActor->SetMapper(probeHorizontalMapper);
-    this->probeHorizontalActor->GetProperty()->SetColor(1.0, 0.85, 0.1);
-    this->probeHorizontalActor->GetProperty()->SetLineWidth(1.5);
-    this->probeHorizontalActor->VisibilityOff();
-    ren->AddActor(this->probeHorizontalActor);
-    vtkNew<vtkPolyDataMapper> probeVerticalMapper;
-    probeVerticalMapper->SetInputConnection(this->probeVerticalLine->GetOutputPort());
-    this->probeVerticalActor->SetMapper(probeVerticalMapper);
-    this->probeVerticalActor->GetProperty()->SetColor(1.0, 0.85, 0.1);
-    this->probeVerticalActor->GetProperty()->SetLineWidth(1.5);
-    this->probeVerticalActor->VisibilityOff();
-    ren->AddActor(this->probeVerticalActor);
-    // ── Measurement actors ─────────────────────────────────────────────────
-    {
-        const auto configureMeasActor = [&ren](vtkLineSource *line, vtkActor *actor) {
-            vtkNew<vtkPolyDataMapper> mapper;
-            mapper->SetInputConnection(line->GetOutputPort());
-            actor->SetMapper(mapper);
-            actor->GetProperty()->SetColor(1.0, 0.65, 0.0);
-            actor->GetProperty()->SetLineWidth(2.0);
-            actor->GetProperty()->SetLineStipplePattern(0xF0F0);
-            actor->VisibilityOff();
-            ren->AddActor(actor);
-        };
-        configureMeasActor(this->m_measLine1, this->m_measLineActor1);
-        configureMeasActor(this->m_measLine2, this->m_measLineActor2);
-
-        this->m_measLabelActor = vtkSmartPointer<vtkTextActor>::New();
-        this->m_measLabelActor->GetTextProperty()->SetColor(1.0, 0.85, 0.1);
-        this->m_measLabelActor->GetTextProperty()->SetFontSize(14);
-        this->m_measLabelActor->GetTextProperty()->SetBold(true);
-        this->m_measLabelActor->GetTextProperty()->SetShadow(true);
-        this->m_measLabelActor->VisibilityOff();
-        ren->AddViewProp(this->m_measLabelActor);
-    }
-
-    // ── Polarization vector overlay actor ─────────────────────────────────
-    {
-        vtkNew<vtkPolyDataMapper> mapper;
-        mapper->SetInputData(this->m_polVecData);
-        this->m_polVecActor->SetMapper(mapper);
-        this->m_polVecActor->GetProperty()->SetColor(0.95, 0.95, 0.25);
-        this->m_polVecActor->GetProperty()->SetLineWidth(1.2);
-        this->m_polVecActor->VisibilityOff();
-        ren->AddActor(this->m_polVecActor);
-    }
-
-    // ── Annotation placement preview actor ────────────────────────────────
-    {
-        vtkNew<vtkPolyDataMapper> mapper;
-        mapper->SetInputData(this->m_annotPreviewData);
-        this->m_annotPreviewActor->SetMapper(mapper);
-        this->m_annotPreviewActor->GetProperty()->SetColor(1.0, 1.0, 0.3);
-        this->m_annotPreviewActor->GetProperty()->SetLineWidth(2.0);
-        this->m_annotPreviewActor->GetProperty()->SetOpacity(0.7);
-        this->m_annotPreviewActor->VisibilityOff();
-        ren->AddActor(this->m_annotPreviewActor);
-    }
-
-    vtkRenderer *renderer = ren;
-    const auto configureRegionLineActor = [renderer](vtkLineSource *line, vtkActor *actor) {
-        vtkNew<vtkPolyDataMapper> mapper;
-        mapper->SetInputConnection(line->GetOutputPort());
-        actor->SetMapper(mapper);
-        actor->GetProperty()->SetColor(0.2, 0.9, 1.0);
-        actor->GetProperty()->SetLineWidth(2.0);
-        actor->VisibilityOff();
-        renderer->AddActor(actor);
-    };
-    configureRegionLineActor(this->regionTopLine, this->regionTopActor);
-    configureRegionLineActor(this->regionBottomLine, this->regionBottomActor);
-    configureRegionLineActor(this->regionLeftLine, this->regionLeftActor);
-    configureRegionLineActor(this->regionRightLine, this->regionRightActor);
-    this->regionCircleSource->SetNumberOfSides(96);
-    this->regionCircleSource->GeneratePolygonOff();
-    vtkNew<vtkPolyDataMapper> regionCircleMapper;
-    regionCircleMapper->SetInputConnection(this->regionCircleSource->GetOutputPort());
-    this->regionCircleActor->SetMapper(regionCircleMapper);
-    this->regionCircleActor->GetProperty()->SetColor(0.2, 0.9, 1.0);
-    this->regionCircleActor->GetProperty()->SetLineWidth(2.0);
-    this->regionCircleActor->VisibilityOff();
-    ren->AddActor(this->regionCircleActor);
-    this->regionAnnulusOuterSource->SetNumberOfSides(96);
-    this->regionAnnulusOuterSource->GeneratePolygonOff();
-    vtkNew<vtkPolyDataMapper> regionAnnulusOuterMapper;
-    regionAnnulusOuterMapper->SetInputConnection(this->regionAnnulusOuterSource->GetOutputPort());
-    this->regionAnnulusOuterActor->SetMapper(regionAnnulusOuterMapper);
-    this->regionAnnulusOuterActor->GetProperty()->SetColor(0.2, 0.9, 1.0);
-    this->regionAnnulusOuterActor->GetProperty()->SetLineWidth(2.0);
-    this->regionAnnulusOuterActor->GetProperty()->SetRepresentationToWireframe();
-    this->regionAnnulusOuterActor->VisibilityOff();
-    ren->AddActor(this->regionAnnulusOuterActor);
-    this->regionAnnulusInnerSource->SetNumberOfSides(96);
-    this->regionAnnulusInnerSource->GeneratePolygonOff();
-    vtkNew<vtkPolyDataMapper> regionAnnulusInnerMapper;
-    regionAnnulusInnerMapper->SetInputConnection(this->regionAnnulusInnerSource->GetOutputPort());
-    this->regionAnnulusInnerActor->SetMapper(regionAnnulusInnerMapper);
-    this->regionAnnulusInnerActor->GetProperty()->SetColor(0.2, 0.9, 1.0);
-    this->regionAnnulusInnerActor->GetProperty()->SetLineWidth(1.5);
-    this->regionAnnulusInnerActor->GetProperty()->SetRepresentationToWireframe();
-    this->regionAnnulusInnerActor->VisibilityOff();
-    ren->AddActor(this->regionAnnulusInnerActor);
-    vtkNew<vtkPolyDataMapper> regionAnnulusFillMapper;
-    regionAnnulusFillMapper->SetInputData(this->regionAnnulusFillData);
-    this->regionAnnulusFillActor->SetMapper(regionAnnulusFillMapper);
-    this->regionAnnulusFillActor->GetProperty()->SetColor(0.2, 0.9, 1.0);
-    this->regionAnnulusFillActor->GetProperty()->SetOpacity(0.18);
-    this->regionAnnulusFillActor->GetProperty()->SetRepresentationToSurface();
-    this->regionAnnulusFillActor->VisibilityOff();
-    ren->AddActor(this->regionAnnulusFillActor);
-    this->regionPolygonTriangulator->SetInputData(this->regionPolygonFillData);
-    vtkNew<vtkPolyDataMapper> regionPolygonMapper;
-    regionPolygonMapper->SetInputData(this->regionPolygonData);
-    this->regionPolygonActor->SetMapper(regionPolygonMapper);
-    this->regionPolygonActor->GetProperty()->SetColor(0.2, 0.9, 1.0);
-    this->regionPolygonActor->GetProperty()->SetLineWidth(2.0);
-    this->regionPolygonActor->VisibilityOff();
-    ren->AddActor(this->regionPolygonActor);
-    vtkNew<vtkPolyDataMapper> regionPolygonFillMapper;
-    regionPolygonFillMapper->SetInputConnection(this->regionPolygonTriangulator->GetOutputPort());
-    this->regionPolygonFillActor->SetMapper(regionPolygonFillMapper);
-    this->regionPolygonFillActor->GetProperty()->SetColor(0.2, 0.9, 1.0);
-    this->regionPolygonFillActor->GetProperty()->SetOpacity(0.18);
-    this->regionPolygonFillActor->VisibilityOff();
-    ren->AddActor(this->regionPolygonFillActor);
-    this->catalogueOverlayData->SetPoints(this->catalogueOverlayPoints);
-    this->catalogueOverlayData->SetLines(this->catalogueOverlayCells);
-    vtkNew<vtkPolyDataMapper> catalogueOverlayMapper;
-    catalogueOverlayMapper->SetInputData(this->catalogueOverlayData);
-    this->catalogueOverlayActor->SetMapper(catalogueOverlayMapper);
-    this->catalogueOverlayActor->GetProperty()->SetColor(1.0, 0.45, 0.15);
-    this->catalogueOverlayActor->GetProperty()->SetLineWidth(1.5);
-    this->catalogueOverlayActor->VisibilityOff();
-    ren->AddActor(this->catalogueOverlayActor);
-    this->catalogueHoverOverlayData->SetPoints(this->catalogueHoverOverlayPoints);
-    this->catalogueHoverOverlayData->SetLines(this->catalogueHoverOverlayCells);
-    vtkNew<vtkPolyDataMapper> catalogueHoverMapper;
-    catalogueHoverMapper->SetInputData(this->catalogueHoverOverlayData);
-    this->catalogueHoverOverlayActor->SetMapper(catalogueHoverMapper);
-    this->catalogueHoverOverlayActor->GetProperty()->SetColor(1.0, 0.95, 0.45);
-    this->catalogueHoverOverlayActor->GetProperty()->SetLineWidth(2.5);
-    this->catalogueHoverOverlayActor->VisibilityOff();
-    ren->AddActor(this->catalogueHoverOverlayActor);
-    this->catalogueSelectionOverlayData->SetPoints(this->catalogueSelectionOverlayPoints);
-    this->catalogueSelectionOverlayData->SetLines(this->catalogueSelectionOverlayCells);
-    vtkNew<vtkPolyDataMapper> catalogueSelectionMapper;
-    catalogueSelectionMapper->SetInputData(this->catalogueSelectionOverlayData);
-    this->catalogueSelectionOverlayActor->SetMapper(catalogueSelectionMapper);
-    this->catalogueSelectionOverlayActor->GetProperty()->SetColor(0.15, 0.95, 1.0);
-    this->catalogueSelectionOverlayActor->GetProperty()->SetLineWidth(3.2);
-    this->catalogueSelectionOverlayActor->VisibilityOff();
-    ren->AddActor(this->catalogueSelectionOverlayActor);
-    this->overlayXAxis->GetTitleTextProperty()->SetFontSize(16);
-    this->overlayXAxis->GetTitleTextProperty()->SetBold(false);
-    this->overlayYAxis->GetTitleTextProperty()->SetFontSize(16);
-    this->overlayYAxis->GetTitleTextProperty()->SetOrientation(90.);
-    this->overlayYAxis->GetTitleTextProperty()->SetBold(false);
-    this->overlayXTitleActor->GetTextProperty()->SetColor(1., 1., 1.);
-    this->overlayXTitleActor->GetTextProperty()->SetFontSize(14);
-    this->overlayXTitleActor->GetTextProperty()->SetJustificationToCentered();
-    this->overlayXTitleActor->GetTextProperty()->SetVerticalJustificationToCentered();
-    this->overlayYTitleActor->GetTextProperty()->SetColor(1., 1., 1.);
-    this->overlayYTitleActor->GetTextProperty()->SetFontSize(14);
-    this->overlayYTitleActor->GetTextProperty()->SetOrientation(90.);
-    this->overlayYTitleActor->GetTextProperty()->SetJustificationToCentered();
-    this->overlayYTitleActor->GetTextProperty()->SetVerticalJustificationToCentered();
-    this->ensureOverlayTickActors(ren);
-    this->wcsOverlayInitialized = true;
-    this->setWcsOverlayVisible(this->showWcsAxes);
-    win->AddObserver(vtkCommand::EndEvent, this, &vtkWindowImage::updateWcsOverlay);
-    win->AddObserver(vtkCommand::EndEvent, this, &vtkWindowImage::updateCatalogueOverlayLabels);
-
-    // Loading placeholder — visible until first image data arrives.
-    {
-        auto *prop = this->m_loadingActor->GetTextProperty();
-        prop->SetFontSize(16);
-        double r, g, b;
-        ThemeManager::instance().vtkTextColor(r, g, b);
-        prop->SetColor(r, g, b);
-        prop->SetJustificationToCentered();
-        prop->SetVerticalJustificationToCentered();
-        prop->BoldOff();
-        prop->ShadowOff();
-        this->m_loadingActor->SetInput("Loading image\xe2\x80\xa6");
-        this->m_loadingActor->GetPositionCoordinate()
-                ->SetCoordinateSystemToNormalizedViewport();
-        this->m_loadingActor->SetPosition(0.5, 0.5);
-        this->m_loadingActor->VisibilityOn();
-        ren->AddActor2D(this->m_loadingActor);
-
-        // Track runtime theme changes so the loading text stays readable.
-        QObject::connect(&ThemeManager::instance(), &ThemeManager::themeChanged,
-                         this, [this](EffectiveTheme) {
-                             double tr, tg, tb;
-                             ThemeManager::instance().vtkTextColor(tr, tg, tb);
-                             this->m_loadingActor->GetTextProperty()->SetColor(tr, tg, tb);
-                         });
-    }
-
-    ren->ResetCamera();
-    win->Render();
-}
-
-void vtkWindowImage::mouseCallback()
-{
-    if (this->isBusy()) {
-        return;
-    }
-
-    if (this->suspendHeavyOverlayUpdates) {
-        return;
-    }
-
-    if (this->probeModeActive && this->probeFrozen) {
-        return;
-    }
-
-    const int *position = ui->vtk->renderWindow()->GetInteractor()->GetEventPosition();
-    if (!position) {
-        return;
-    }
-    this->refreshCatalogueOverlayInteraction(position[0], position[1], false);
-    this->updateProbeFromDisplayPosition(position[0], position[1]);
-    if (this->regionMode != RegionMode::None && this->regionDragging) {
-        if (this->updateRegionFromDisplayPosition(position[0], position[1])) {
-            ui->vtk->renderWindow()->Render();
-        }
-    }
-
-    // Live arrow preview while placing an annotation
-    if (this->m_annotPlaceMode == AnnotPlaceMode::ArrowLabel) {
-        auto *ren = ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer();
-        if (ren) {
-            this->coordinate->SetValue(position[0], position[1]);
-            const double *wc = this->coordinate->GetComputedWorldValue(ren);
-            if (wc) {
-                this->updateAnnotationPreview(wc[0], wc[1]);
-                ui->vtk->renderWindow()->Render();
-            }
-        }
-    }
-}
-
-void vtkWindowImage::beginImageInteraction()
-{
-    if (!this->largeImageModeActive) {
-        return;
-    }
-    if (this->probeModeActive || this->regionMode != RegionMode::None) {
-        return;
-    }
-    this->suspendHeavyOverlayUpdates = true;
-    qDebug().noquote() << QStringLiteral("[large-image] begin interactive drag; suspending hover/overlay updates");
-}
-
-void vtkWindowImage::endImageInteraction()
-{
-    if (!this->suspendHeavyOverlayUpdates) {
-        return;
-    }
-    this->suspendHeavyOverlayUpdates = false;
-    qDebug().noquote() << QStringLiteral("[large-image] end interactive drag; refreshing overlays");
-    this->invalidateWcsOverlayCache();
-    this->requestWcsOverlayRender();
-}
-
-void vtkWindowImage::toggleProbeFreeze()
-{
-    if (this->isBusy()) {
-        return;
-    }
-
-    const int *position = ui->vtk->renderWindow()->GetInteractor()->GetEventPosition();
-    if (!position) {
-        return;
-    }
-
-    // ── Annotation placement click ────────────────────────────────────────
-    if (this->m_annotPlaceMode != AnnotPlaceMode::None) {
-        auto *annotRen = ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer();
-        if (annotRen) {
-            this->coordinate->SetValue(position[0], position[1]);
-            const double *wc = this->coordinate->GetComputedWorldValue(annotRen);
-            if (wc) {
-                this->placeAnnotationAt(wc[0], wc[1]);
-                ui->vtk->renderWindow()->Render();
-            }
-        }
-        return;
-    }
-
-    // ── Measurement mode click ──────────────────────────────────────────
-    if (this->m_measMode != MeasurementMode::None) {
-        auto *measRenderer = ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer();
-        auto *measImage = this->layers
-                ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
-        if (measRenderer && measImage) {
-            this->coordinate->SetValue(position[0], position[1]);
-            const double *wc = this->coordinate->GetComputedWorldValue(measRenderer);
-            if (wc) {
-                int ext[6]; double ori[3]; double sp[3];
-                measImage->GetExtent(ext);
-                measImage->GetOrigin(ori);
-                measImage->GetSpacing(sp);
-                const int vx = std::lround(ext[0] + (wc[0] - ori[0]) / sp[0]);
-                const int vy = std::lround(ext[2] + (wc[1] - ori[1]) / sp[1]);
-                if (vx >= ext[0] && vx <= ext[1] && vy >= ext[2] && vy <= ext[3])
-                    this->addMeasurementPoint(vx, vy);
-            }
-        }
-        return;
-    }
-
-    if (this->catalogueOverlayLoaded && this->regionMode == RegionMode::None) {
-        this->refreshCatalogueOverlayInteraction(position[0], position[1], true);
-        if (this->selectedCatalogueSourceIndex >= 0) {
-            ui->vtk->renderWindow()->Render();
-            return;
-        }
-    }
-
-    if (this->regionMode != RegionMode::None) {
-        if (this->updateRegionFromDisplayPosition(position[0], position[1])) {
-            if (this->regionMode == RegionMode::Polygon) {
-                if (!this->regionDragging) {
-                    this->regionPolygonVertices.clear();
-                    this->regionPolygonVertices.push_back(this->regionCurrentVoxel);
-                    this->regionDragging = true;
-                    this->ignoreNextPolygonRelease = true;
-                } else if (this->regionPolygonVertices.size() >= 3
-                           && distance2d(this->regionCurrentVoxel, this->regionPolygonVertices.front())
-                                   <= polygonClosureTolerance) {
-                    this->regionCurrentVoxel = this->regionPolygonVertices.front();
-                    this->ignoreNextPolygonRelease = false;
-                    if (this->finalizePolygonRegion()) {
-                        ui->vtk->renderWindow()->Render();
-                    }
-                    return;
-                } else if (this->regionPolygonVertices.empty()
-                           || this->regionPolygonVertices.back() != this->regionCurrentVoxel) {
-                    this->regionPolygonVertices.push_back(this->regionCurrentVoxel);
-                    this->ignoreNextPolygonRelease = true;
-                }
-                this->regionValid = !this->regionPolygonVertices.empty();
-            } else {
-                this->regionAnchorVoxel = this->regionCurrentVoxel;
-                this->regionDragging = true;
-                this->regionValid = true;
-            }
-            this->refreshRegionOverlay();
-            ui->vtk->renderWindow()->Render();
-        }
-        return;
-    }
-
-    if (!this->probeModeActive) {
-        return;
-    }
-
-    if (!this->probeFrozen) {
-        if (this->updateProbeFromDisplayPosition(position[0], position[1])) {
-            this->probeFrozen = true;
-        }
-    } else {
-        this->probeFrozen = false;
-        this->updateProbeFromDisplayPosition(position[0], position[1]);
-    }
-}
-
-void vtkWindowImage::finishRegionInteraction()
-{
-    if (this->m_annotPlaceMode != AnnotPlaceMode::None) {
-        this->cancelAnnotationPlacement();
-        return;
-    }
-
-    if (this->isBusy() || this->regionMode == RegionMode::None || !this->regionDragging) {
-        return;
-    }
-
-    if (this->regionMode == RegionMode::Polygon) {
-        if (this->ignoreNextPolygonRelease) {
-            this->ignoreNextPolygonRelease = false;
-            return;
-        }
-        if (this->finalizePolygonRegion()) {
-            ui->vtk->renderWindow()->Render();
-        }
-        return;
-    }
-
-    const int *position = ui->vtk->renderWindow()->GetInteractor()->GetEventPosition();
-    if (position) {
-        this->updateRegionFromDisplayPosition(position[0], position[1]);
-    }
-    if (this->regionMode == RegionMode::Annulus) {
-        const double dx = static_cast<double>(this->regionCurrentVoxel[0] - this->regionAnchorVoxel[0]);
-        const double dy = static_cast<double>(this->regionCurrentVoxel[1] - this->regionAnchorVoxel[1]);
-        const double outerRadius = std::sqrt(dx * dx + dy * dy);
-        bool accepted = false;
-        const double innerRadius = QInputDialog::getDouble(
-                this, u"Annulus Inner Radius"_s, u"Inner radius (pixels):"_s, 0.0, 0.0,
-                std::max(0.0, outerRadius), 1, &accepted);
-        if (!accepted) {
-            if (this->actionAnnulusRegion && this->actionAnnulusRegion->isChecked()) {
-                this->actionAnnulusRegion->setChecked(false);
-            }
-            return;
-        }
-        if (innerRadius < 0.0 || innerRadius >= outerRadius) {
-            this->statusBar()->showMessage(
-                    u"Inner radius must be >= 0 and smaller than the outer radius."_s, 3000);
-            this->regionAnnulusInnerRadius = 0.0;
-            this->regionValid = true;
-            this->refreshRegionOverlay();
-            ui->vtk->renderWindow()->Render();
-            return;
-        }
-        this->regionAnnulusInnerRadius = innerRadius;
-        this->regionDragging = false;
-        this->regionValid = true;
-        this->refreshRegionOverlay();
-        ui->vtk->renderWindow()->Render();
-    }
-    this->regionDragging = false;
-    this->regionValid = true;
-    this->refreshRegionOverlay();
-    this->analyzeCurrentRegion();
-    ui->vtk->renderWindow()->Render();
-    // Note: the region action is intentionally NOT unchecked here.
-    // The overlay stays visible while the result dialog is open, and is cleared
-    // (along with the action check state) when the dialog is closed.
-}
-
-bool vtkWindowImage::updateProbeFromDisplayPosition(int displayX, int displayY)
-{
-    auto *renderer = ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer();
-    auto *imageData = this->layers ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
-    if (!renderer || !imageData) {
-        this->clearProbe();
-        return false;
-    }
-
-    this->coordinate->SetValue(displayX, displayY);
-    const double *worldCoord = this->coordinate->GetComputedWorldValue(renderer);
-    if (!worldCoord) {
-        this->clearProbe();
-        return false;
-    }
-
-    int extent[6];
-    imageData->GetExtent(extent);
-    double origin[3];
-    double spacing[3];
-    imageData->GetOrigin(origin);
-    imageData->GetSpacing(spacing);
-
-    const int voxelX = std::lround(extent[0] + (worldCoord[0] - origin[0]) / spacing[0]);
-    const int voxelY = std::lround(extent[2] + (worldCoord[1] - origin[1]) / spacing[1]);
-    if (voxelX < extent[0] || voxelX > extent[1] || voxelY < extent[2] || voxelY > extent[3]) {
-        if (!this->probeFrozen) {
-            this->clearProbe();
-        }
-        return false;
-    }
-
-    if (this->probeValid && this->probeVoxel[0] == voxelX && this->probeVoxel[1] == voxelY) {
-        return true;
-    }
-
-    this->probeValid = true;
-    this->probeVoxel = { voxelX, voxelY };
-
-    const float value = this->layers->getPixelValue(this->layers->getMasterIndex(), voxelX, voxelY);
-    QString valueText = std::isfinite(value) ? QString::number(value, 'g', 8) : u"NaN"_s;
-    QString message = u"X=%1  Y=%2  Value=%3"_s.arg(voxelX).arg(voxelY).arg(valueText);
-    {
-        QString axis0 = this->remoteFormatAxisCoordinate(0, voxelX);
-        QString axis1 = this->remoteFormatAxisCoordinate(1, voxelY);
-        if (this->remoteHasCelestialAxes()) {
-            bool ok0 = false;
-            bool ok1 = false;
-            const double nativeX = this->remoteVoxelToWcs(0, voxelX, &ok0);
-            const double nativeY = this->remoteVoxelToWcs(1, voxelY, &ok1);
-            double frameX = nativeX;
-            double frameY = nativeY;
-            if (ok0 && ok1 && this->convertRemoteCelestialCoordinates(nativeX, nativeY, frameX, frameY)) {
-                axis0 = this->formatRemoteOverlayCoordinate(0, frameX);
-                axis1 = this->formatRemoteOverlayCoordinate(1, frameY);
-            }
-        }
-        message += u"  %1=%2  %3=%4"_s.arg(this->selectedFrameAxisTitle(0),
-                                           axis0,
-                                           this->selectedFrameAxisTitle(1),
-                                           axis1);
-    }
-    if (this->probeFrozen) {
-        message += u"  [Frozen]"_s;
-    }
-    if (this->hoverReadoutLabel) {
-        this->hoverReadoutLabel->setText(message);
-        this->hoverReadoutLabel->setToolTip(message);
-    }
-    if (this->probeModeActive) {
-        this->refreshProbeOverlay();
-        this->updateProbeProfile();
-        ui->vtk->renderWindow()->Render();
-    }
-    return true;
-}
-
-void vtkWindowImage::refreshProbeOverlay()
-{
-    auto *imageData = this->layers ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
-    if (!imageData || !this->probeValid || !this->probeModeActive) {
-        this->probeHorizontalActor->VisibilityOff();
-        this->probeVerticalActor->VisibilityOff();
-        return;
-    }
-
-    double bounds[6];
-    imageData->GetBounds(bounds);
-    this->probeHorizontalLine->SetPoint1(bounds[0], static_cast<double>(this->probeVoxel[1]), 0.0);
-    this->probeHorizontalLine->SetPoint2(bounds[1], static_cast<double>(this->probeVoxel[1]), 0.0);
-    this->probeVerticalLine->SetPoint1(static_cast<double>(this->probeVoxel[0]), bounds[2], 0.0);
-    this->probeVerticalLine->SetPoint2(static_cast<double>(this->probeVoxel[0]), bounds[3], 0.0);
-    this->probeHorizontalActor->VisibilityOn();
-    this->probeVerticalActor->VisibilityOn();
-}
-
-void vtkWindowImage::clearProbe()
-{
-    this->probeValid = false;
-    if (this->hoverReadoutLabel) {
-        this->hoverReadoutLabel->clear();
-    }
-    this->probeHorizontalActor->VisibilityOff();
-    this->probeVerticalActor->VisibilityOff();
-}
-
-void vtkWindowImage::setRegionMode(RegionMode mode, bool active)
-{
-    if (!active) {
-        if (this->regionMode == mode) {
-            this->regionMode = RegionMode::None;
-            this->regionDragging = false;
-            this->clearRegion();
-            this->setInteractorStyleImage();
-            ui->vtk->setCursor(this->probeModeActive ? Qt::CrossCursor : Qt::ArrowCursor);
-            if (ui->vtk->renderWindow()) {
-                ui->vtk->renderWindow()->Render();
-            }
-        }
-        return;
-    }
-
-    if (this->probeModeActive && ui->actionProfile->isChecked()) {
-        ui->actionProfile->setChecked(false);
-    }
-    if (mode == RegionMode::Box && this->actionCircleRegion && this->actionCircleRegion->isChecked()) {
-        this->actionCircleRegion->setChecked(false);
-    }
-    if (mode == RegionMode::Circle && this->actionBoxRegion && this->actionBoxRegion->isChecked()) {
-        this->actionBoxRegion->setChecked(false);
-    }
-    if (mode != RegionMode::Polygon && this->actionPolygonRegion && this->actionPolygonRegion->isChecked()) {
-        this->actionPolygonRegion->setChecked(false);
-    }
-    if (mode != RegionMode::Annulus && this->actionAnnulusRegion && this->actionAnnulusRegion->isChecked()) {
-        this->actionAnnulusRegion->setChecked(false);
-    }
-    this->regionMode = mode;
-    this->regionDragging = false;
-    this->regionValid = false;
-    this->ignoreNextPolygonRelease = false;
-    this->regionPolygonVertices.clear();
-    this->regionAnnulusInnerRadius = 0.0;
-    this->clearRegion();
-    this->setInteractorStyleRegion();
-    ui->vtk->setCursor(Qt::CrossCursor);
-}
-
-bool vtkWindowImage::updateRegionFromDisplayPosition(int displayX, int displayY)
-{
-    auto *renderer = ui->vtk->renderWindow() ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()
-                                             : nullptr;
-    auto *imageData = this->layers ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
-    if (!renderer || !imageData) {
-        return false;
-    }
-
-    this->coordinate->SetValue(displayX, displayY);
-    const double *worldCoord = this->coordinate->GetComputedWorldValue(renderer);
-    if (!worldCoord) {
-        return false;
-    }
-
-    int extent[6];
-    imageData->GetExtent(extent);
-    double origin[3];
-    double spacing[3];
-    imageData->GetOrigin(origin);
-    imageData->GetSpacing(spacing);
-    const int voxelX = std::lround(extent[0] + (worldCoord[0] - origin[0]) / spacing[0]);
-    const int voxelY = std::lround(extent[2] + (worldCoord[1] - origin[1]) / spacing[1]);
-    if (voxelX < extent[0] || voxelX > extent[1] || voxelY < extent[2] || voxelY > extent[3]) {
-        return false;
-    }
-
-    this->regionCurrentVoxel = { voxelX, voxelY };
-    this->refreshRegionOverlay();
-    return true;
-}
-
-void vtkWindowImage::refreshRegionOverlay()
-{
-    auto *imageData = this->layers ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
-    if (!imageData || this->regionMode == RegionMode::None || !this->regionValid) {
-        this->clearRegion();
-        return;
-    }
-
-    const int xmin = std::min(this->regionAnchorVoxel[0], this->regionCurrentVoxel[0]);
-    const int xmax = std::max(this->regionAnchorVoxel[0], this->regionCurrentVoxel[0]);
-    const int ymin = std::min(this->regionAnchorVoxel[1], this->regionCurrentVoxel[1]);
-    const int ymax = std::max(this->regionAnchorVoxel[1], this->regionCurrentVoxel[1]);
-
-    const bool showBox = this->regionMode == RegionMode::Box;
-    const bool showCircle = this->regionMode == RegionMode::Circle;
-    const bool showAnnulus = this->regionMode == RegionMode::Annulus;
-    const bool showPolygon = this->regionMode == RegionMode::Polygon;
-    this->regionTopActor->SetVisibility(showBox);
-    this->regionBottomActor->SetVisibility(showBox);
-    this->regionLeftActor->SetVisibility(showBox);
-    this->regionRightActor->SetVisibility(showBox);
-    this->regionCircleActor->SetVisibility(showCircle);
-    this->regionAnnulusOuterActor->SetVisibility(showAnnulus);
-    this->regionAnnulusInnerActor->SetVisibility(showAnnulus && !this->regionDragging);
-    this->regionAnnulusFillActor->SetVisibility(showAnnulus && !this->regionDragging);
-    this->regionPolygonActor->SetVisibility(showPolygon);
-    this->regionPolygonFillActor->SetVisibility(showPolygon);
-
-    if (showBox) {
-        this->regionTopLine->SetPoint1(xmin, ymax, 0.0);
-        this->regionTopLine->SetPoint2(xmax, ymax, 0.0);
-        this->regionBottomLine->SetPoint1(xmin, ymin, 0.0);
-        this->regionBottomLine->SetPoint2(xmax, ymin, 0.0);
-        this->regionLeftLine->SetPoint1(xmin, ymin, 0.0);
-        this->regionLeftLine->SetPoint2(xmin, ymax, 0.0);
-        this->regionRightLine->SetPoint1(xmax, ymin, 0.0);
-        this->regionRightLine->SetPoint2(xmax, ymax, 0.0);
-    } else if (showCircle || showAnnulus) {
-        const double dx = static_cast<double>(this->regionCurrentVoxel[0] - this->regionAnchorVoxel[0]);
-        const double dy = static_cast<double>(this->regionCurrentVoxel[1] - this->regionAnchorVoxel[1]);
-        const double outerRadius = std::sqrt(dx * dx + dy * dy);
-        if (showCircle) {
-            this->regionCircleSource->SetCenter(this->regionAnchorVoxel[0], this->regionAnchorVoxel[1], 0.0);
-            this->regionCircleSource->SetRadius(outerRadius);
-        } else {
-            this->regionAnnulusOuterSource->SetCenter(this->regionAnchorVoxel[0], this->regionAnchorVoxel[1], 0.0);
-            this->regionAnnulusOuterSource->SetRadius(outerRadius);
-            if (!this->regionDragging) {
-                this->regionAnnulusInnerSource->SetCenter(this->regionAnchorVoxel[0], this->regionAnchorVoxel[1], 0.0);
-                const double innerRadius = std::max(0.0, std::min(this->regionAnnulusInnerRadius, outerRadius));
-                this->regionAnnulusInnerSource->SetRadius(innerRadius);
-                buildAnnulusFill(this->regionAnnulusFillPoints, this->regionAnnulusFillCells,
-                                 this->regionAnnulusFillData, this->regionAnchorVoxel, innerRadius,
-                                 outerRadius, 96);
-                this->regionAnnulusFillActor->SetVisibility(innerRadius < outerRadius);
-            } else {
-                this->regionAnnulusFillData->Initialize();
-                this->regionAnnulusInnerActor->SetVisibility(false);
-                this->regionAnnulusFillActor->SetVisibility(false);
-            }
-        }
-    } else if (showPolygon) {
-        std::vector<std::array<int, 2>> drawVertices = this->regionPolygonVertices;
-        if (this->regionDragging && (drawVertices.empty() || drawVertices.back() != this->regionCurrentVoxel)) {
-            drawVertices.push_back(this->regionCurrentVoxel);
-        }
-        const bool previewClosure = this->regionDragging && drawVertices.size() >= 3
-                && distance2d(this->regionCurrentVoxel, drawVertices.front()) <= polygonClosureTolerance;
-        this->regionPolygonPoints->Reset();
-        this->regionPolygonCells->Reset();
-        this->regionPolygonFillData->Initialize();
-        if (drawVertices.size() >= 2) {
-            const bool closed = !this->regionDragging || previewClosure;
-            const vtkIdType count = static_cast<vtkIdType>(drawVertices.size() + (closed ? 1 : 0));
-            this->regionPolygonCells->InsertNextCell(count);
-            for (vtkIdType i = 0; i < static_cast<vtkIdType>(drawVertices.size()); ++i) {
-                this->regionPolygonPoints->InsertNextPoint(drawVertices[static_cast<std::size_t>(i)][0],
-                                                           drawVertices[static_cast<std::size_t>(i)][1], 0.0);
-                this->regionPolygonCells->InsertCellPoint(i);
-            }
-            if (closed) {
-                this->regionPolygonPoints->InsertNextPoint(drawVertices.front()[0], drawVertices.front()[1], 0.0);
-                this->regionPolygonCells->InsertCellPoint(static_cast<vtkIdType>(drawVertices.size()));
-            }
-            this->regionPolygonData->SetPoints(this->regionPolygonPoints);
-            this->regionPolygonData->SetLines(this->regionPolygonCells);
-            this->regionPolygonData->Modified();
-            if (drawVertices.size() >= 3 && closed) {
-                this->regionPolygonFillData->SetPoints(this->regionPolygonPoints);
-                this->regionPolygonFillData->SetLines(this->regionPolygonCells);
-                this->regionPolygonFillData->Modified();
-                this->regionPolygonTriangulator->Update();
-                this->regionPolygonFillActor->SetVisibility(true);
-            } else {
-                this->regionPolygonFillActor->SetVisibility(false);
-            }
-        } else {
-            this->regionPolygonFillActor->SetVisibility(false);
-        }
-    } else {
-        this->regionAnnulusFillActor->SetVisibility(false);
-        this->regionPolygonFillActor->SetVisibility(false);
-    }
-}
-
-void vtkWindowImage::clearRegion()
-{
-    this->regionValid = false;
-    this->regionDragging = false;
-    this->ignoreNextPolygonRelease = false;
-    this->regionPolygonVertices.clear();
-    this->regionAnnulusInnerRadius = 0.0;
-    this->regionTopActor->VisibilityOff();
-    this->regionBottomActor->VisibilityOff();
-    this->regionLeftActor->VisibilityOff();
-    this->regionRightActor->VisibilityOff();
-    this->regionCircleActor->VisibilityOff();
-    this->regionAnnulusOuterActor->VisibilityOff();
-    this->regionAnnulusInnerActor->VisibilityOff();
-    this->regionAnnulusFillActor->VisibilityOff();
-    this->regionPolygonActor->VisibilityOff();
-    this->regionPolygonFillActor->VisibilityOff();
-}
-
-void vtkWindowImage::analyzeCurrentRegion()
-{
-    if (this->regionMode == RegionMode::None || !this->regionValid || !this->layers) {
-        return;
-    }
-
-    // Close any previous result dialog (its stale generation prevents cleanup races)
-    if (this->m_regionResultDialog) {
-        this->m_regionResultDialog->close();
-    }
-
-    auto *imageData = this->layers->getImageData(this->layers->getMasterIndex());
-    const auto stats = computeRegionStatistics2D(imageData, this->regionMode, this->regionAnchorVoxel,
-                                                 this->regionCurrentVoxel, this->regionPolygonVertices,
-                                                 this->regionAnnulusInnerRadius);
-
-    const int myGeneration = ++this->m_regionDialogGeneration;
-    const RegionMode capturedMode = this->regionMode;
-
-    auto *dlg = new ToolResultDialog(this);
-    this->m_regionResultDialog = dlg;
-
-    dlg->setTitle(u"Region Analysis"_s);
-    dlg->setSubtitle(
-            QStringLiteral("%1  ·  computed on the currently loaded data block")
-                    .arg(regionModeLabel(capturedMode)));
-
-    if (!stats.valid) {
-        dlg->addSection(u"Statistics"_s,
-                        { { u"Result"_s, u"No valid pixels in the selected region."_s },
-                          { u"Note"_s,   u"Blanked / NaN pixels are ignored."_s } });
-    } else {
-        dlg->addSection(u"Statistics"_s,
-                        { { u"Valid pixels"_s,
-                            QStringLiteral("%1 / %2").arg(stats.validCount).arg(stats.totalCount) },
-                          { u"Blanked / NaN"_s, QString::number(stats.blankedCount) },
-                          { u"Min"_s,    QStringLiteral("%1").arg(stats.minValue, 0, 'g', 8) },
-                          { u"Max"_s,    QStringLiteral("%1").arg(stats.maxValue, 0, 'g', 8) },
-                          { u"Mean"_s,   QStringLiteral("%1").arg(stats.mean,     0, 'g', 8) },
-                          { u"Median"_s, QStringLiteral("%1").arg(stats.median,   0, 'g', 8) },
-                          { u"Std Dev"_s,QStringLiteral("%1").arg(stats.stddev,   0, 'g', 8) },
-                          { u"σ (MAD)"_s,QStringLiteral("%1").arg(stats.madSigma, 0, 'g', 8) } });
-
-        // ── Radio-specific: integrated flux if beam known ────────────────
-        if (this->hasBeamInfo()) {
-            const double Omega_beam_px = this->beamAreaPixels();
-            if (Omega_beam_px > 0.0) {
-                const double fluxJy = stats.sum / Omega_beam_px;
-                const double snrPeak = (stats.madSigma > 0.0)
-                        ? (stats.maxValue / stats.madSigma) : 0.0;
-                dlg->addSection(u"Radio (beam-aware)"_s,
-                        { { u"Beam (BMAJ × BMIN)"_s,
-                            QStringLiteral("%1\" × %2\"")
-                                    .arg(this->m_beamMajorDeg * 3600.0, 0, 'f', 2)
-                                    .arg(this->m_beamMinorDeg * 3600.0, 0, 'f', 2) },
-                          { u"Beam area (pixels)"_s,
-                            QStringLiteral("%1").arg(Omega_beam_px, 0, 'f', 2) },
-                          { u"Integrated flux"_s,
-                            QStringLiteral("%1 Jy").arg(fluxJy, 0, 'g', 6) },
-                          { u"Peak SNR (peak/σ_MAD)"_s,
-                            QStringLiteral("%1").arg(snrPeak, 0, 'f', 1) } });
-            }
-        }
-
-        // ── Per-Stokes flux when a Stokes set is loaded ──────────────────
-        if (!m_stokesRoles.isEmpty()) {
-            QList<QPair<QString, QString>> rows;
-            const StokesRole order[] = {
-                StokesRole::I, StokesRole::Q, StokesRole::U, StokesRole::V,
-                StokesRole::DerivedP, StokesRole::DerivedPdb,
-                StokesRole::DerivedPA, StokesRole::DerivedFrac,
-                StokesRole::DerivedAlpha, StokesRole::DerivedRM };
-            const double Omega = this->hasBeamInfo() ? this->beamAreaPixels() : 0.0;
-            for (StokesRole role : order) {
-                const int idx = this->findLayerByStokesRole(role);
-                if (idx < 0) continue;
-                auto *roleData = this->layers->getImageData(idx);
-                if (!roleData || roleData == imageData) continue;  // skip if same as master
-                const auto roleStats = computeRegionStatistics2D(
-                        roleData, this->regionMode, this->regionAnchorVoxel,
-                        this->regionCurrentVoxel, this->regionPolygonVertices,
-                        this->regionAnnulusInnerRadius);
-                if (!roleStats.valid) continue;
-                const QString roleName = this->stokesRoleLabel(role);
-                if (role == StokesRole::DerivedPA) {
-                    rows.append({ roleName + u" (mean)"_s,
-                            QStringLiteral("%1°").arg(roleStats.mean, 0, 'f', 2) });
-                } else if (role == StokesRole::DerivedFrac) {
-                    rows.append({ roleName + u" (mean)"_s,
-                            QStringLiteral("%1 %").arg(roleStats.mean * 100.0, 0, 'f', 2) });
-                } else if (role == StokesRole::DerivedAlpha) {
-                    rows.append({ roleName + u" (mean)"_s,
-                            QStringLiteral("%1").arg(roleStats.mean, 0, 'f', 2) });
-                } else if (role == StokesRole::DerivedRM) {
-                    rows.append({ roleName + u" (mean)"_s,
-                            QStringLiteral("%1 rad m⁻²").arg(roleStats.mean, 0, 'f', 1) });
-                } else if (Omega > 0.0) {
-                    rows.append({ roleName,
-                            QStringLiteral("%1 Jy").arg(roleStats.sum / Omega, 0, 'g', 6) });
-                } else {
-                    rows.append({ roleName + u" (sum)"_s,
-                            QStringLiteral("%1").arg(roleStats.sum, 0, 'g', 6) });
-                }
-            }
-            if (!rows.isEmpty()) {
-                dlg->addSection(u"Stokes (per-layer)"_s, rows);
-            }
-        }
-
-        dlg->addSection(u"Note"_s,
-                        { { QString(), u"Computed on valid pixels only."_s } });
-    }
-
-    // When the dialog is closed, clear the overlay and deactivate the region tool.
-    // The generation guard prevents the cleanup from running if a newer analysis has
-    // already replaced this dialog (e.g., the user drew a second region while this
-    // dialog was still open).
-    QObject::connect(dlg, &QObject::destroyed, this, [this, myGeneration, capturedMode]() {
-        if (this->m_regionDialogGeneration != myGeneration) {
-            return; // stale — a newer analysis supersedes this one
-        }
-        this->clearRegion();
-        // Deactivate the region action; setRegionMode() will restore the image interactor.
-        QAction *regionAction = nullptr;
-        switch (capturedMode) {
-        case RegionMode::Box:     regionAction = this->actionBoxRegion;     break;
-        case RegionMode::Circle:  regionAction = this->actionCircleRegion;  break;
-        case RegionMode::Polygon: regionAction = this->actionPolygonRegion; break;
-        case RegionMode::Annulus: regionAction = this->actionAnnulusRegion; break;
-        default: break;
-        }
-        if (regionAction && regionAction->isChecked()) {
-            regionAction->setChecked(false); // triggers setRegionMode(mode, false)
-        } else {
-            // Action was already unchecked; at minimum restore the interactor and render.
-            this->setInteractorStyleImage();
-            if (ui && ui->vtk && ui->vtk->renderWindow()) {
-                ui->vtk->renderWindow()->Render();
-            }
-        }
-    });
-
-    dlg->show();
-}
-
-bool vtkWindowImage::finalizePolygonRegion()
-{
-    const int *position = ui->vtk->renderWindow()->GetInteractor()->GetEventPosition();
-    if (position) {
-        this->updateRegionFromDisplayPosition(position[0], position[1]);
-        const bool closesToFirst = this->regionPolygonVertices.size() >= 3
-                && this->regionCurrentVoxel == this->regionPolygonVertices.front();
-        if (!closesToFirst && (this->regionPolygonVertices.empty()
-                               || this->regionPolygonVertices.back() != this->regionCurrentVoxel)) {
-            this->regionPolygonVertices.push_back(this->regionCurrentVoxel);
-        }
-    }
-
-    std::vector<std::array<int, 2>> cleaned;
-    cleaned.reserve(this->regionPolygonVertices.size());
-    for (const auto &vertex : this->regionPolygonVertices) {
-        if (cleaned.empty() || cleaned.back() != vertex) {
-            cleaned.push_back(vertex);
-        }
-    }
-    this->regionPolygonVertices = std::move(cleaned);
-    if (this->regionPolygonVertices.size() < 3) {
-        this->statusBar()->showMessage(u"Define at least three points for a polygon region."_s, 2500);
-        return false;
-    }
-
-    this->regionDragging = false;
-    this->regionValid = true;
-    this->refreshRegionOverlay();
-    this->analyzeCurrentRegion();
-    // Note: polygon action is NOT unchecked here — the overlay stays visible while
-    // the result dialog is open and is cleared when the dialog closes.
-    return true;
-}
-
-void vtkWindowImage::loadCatalogueOverlay()
-{
-    const QString path = QFileDialog::getOpenFileName(
-            this, u"Load Catalogue Overlay"_s, QString(),
-            u"Catalogue files (*.reg *.csv);;DS9 region (*.reg);;CSV (*.csv)"_s);
-    if (path.isEmpty()) {
-        return;
-    }
-
-    const CatalogueOverlayParseResult parsed = CatalogueOverlayUtils::parseFile(path);
-    if (!parsed.valid) {
-        QMessageBox::warning(this, u"Catalogue Overlay"_s, parsed.errorMessage);
-        return;
-    }
-
-    if (!this->remoteHasCelestialAxes()) {
-        const bool hasImageEntries = std::any_of(
-                parsed.entries.cbegin(), parsed.entries.cend(), [](const CatalogueOverlayEntry &entry) {
-                    return entry.frame == CatalogueOverlayEntry::Frame::Image;
-                });
-        if (hasImageEntries) {
-            // Image-frame DS9 entries do not require WCS.
-        } else {
-        QMessageBox::warning(this, u"Catalogue Overlay"_s,
-                             u"Catalogue overlay requires celestial WCS information."_s);
-        return;
-        }
-    }
-
-    this->catalogueOverlayEntries.clear();
-    this->catalogueOverlayPixels.clear();
-    this->catalogueOverlayPolylines.clear();
-    this->catalogueOverlaySourceFirstPolyline.clear();
-    this->catalogueOverlaySourcePolylineCount.clear();
-    this->catalogueOverlayLabels.clear();
-    this->catalogueOverlayLabelIndices.clear();
-    this->hoveredCatalogueSourceIndex = -1;
-    this->selectedCatalogueSourceIndex = -1;
-    int skippedProjection = 0;
-    for (const CatalogueOverlayEntry &entry : parsed.entries) {
-        CatalogueOverlayEntry storedEntry = entry;
-        std::array<double, 2> anchor{ 0.0, 0.0 };
-        const int firstPolyline = static_cast<int>(this->catalogueOverlayPolylines.size());
-        if (entry.frame == CatalogueOverlayEntry::Frame::Image) {
-            anchor = { entry.pixelX, entry.pixelY };
-            if (entry.shape == CatalogueOverlayEntry::Shape::Ellipse) {
-                auto ellipse = buildEllipsePolyline(entry.pixelX, entry.pixelY, entry.radiusX, entry.radiusY,
-                                                    entry.angleDeg);
-                if (ellipse.empty()) {
-                    ++skippedProjection;
-                    continue;
-                }
-                this->catalogueOverlayPolylines.push_back(std::move(ellipse));
-            }
-        } else {
-            if (!this->catalogueWorldToPixel(entry.raDeg, entry.decDeg, anchor)) {
-                ++skippedProjection;
-                continue;
-            }
-
-            this->catalogueOverlayPolylines.push_back(
-                    { { anchor[0] - catalogueMarkerHalfSize, anchor[1] },
-                      { anchor[0] + catalogueMarkerHalfSize, anchor[1] } });
-            this->catalogueOverlayPolylines.push_back(
-                    { { anchor[0], anchor[1] - catalogueMarkerHalfSize },
-                      { anchor[0], anchor[1] + catalogueMarkerHalfSize } });
-        }
-        storedEntry.pixelX = anchor[0];
-        storedEntry.pixelY = anchor[1];
-        this->catalogueOverlayEntries.push_back(storedEntry);
-        this->catalogueOverlayPixels.push_back(anchor);
-        this->catalogueOverlaySourceFirstPolyline.push_back(firstPolyline);
-        this->catalogueOverlaySourcePolylineCount.push_back(
-                static_cast<int>(this->catalogueOverlayPolylines.size()) - firstPolyline);
-        this->catalogueOverlayLabels.push_back(entry.label);
-    }
-
-    if (this->catalogueOverlayPixels.empty()) {
-        QMessageBox::warning(this, u"Catalogue Overlay"_s,
-                             u"No sources could be projected onto the current image WCS."_s);
-        return;
-    }
-
-    this->catalogueOverlayLoaded = true;
-    this->catalogueOverlaySummary =
-            u"%1 sources from %2 (%3)"_s.arg(this->catalogueOverlayPixels.size())
-                    .arg(parsed.sourceLabel, parsed.frameLabel);
-    this->rebuildCatalogueOverlay();
-    this->refreshCatalogueTable();
-    this->updateCatalogueInfoPanel();
-    if (this->actionShowCatalogueOverlay) {
-        this->actionShowCatalogueOverlay->setEnabled(true);
-        this->actionShowCatalogueOverlay->setChecked(true);
-    }
-    if (this->actionShowCatalogueLabels) {
-        this->actionShowCatalogueLabels->setEnabled(true);
-        this->actionShowCatalogueLabels->setChecked(true);
-    }
-    if (this->actionClearCatalogueOverlay) {
-        this->actionClearCatalogueOverlay->setEnabled(true);
-    }
-    this->setCatalogueOverlayVisible(true);
-    this->showPersistentStatusMessage(
-            u"Catalogue overlay loaded: %1 sources (%2)."_s.arg(this->catalogueOverlayPixels.size())
-                    .arg(parsed.frameLabel),
-            3000);
-    if (skippedProjection > 0 || parsed.skippedEntries > 0) {
-        qDebug().noquote() << QStringLiteral("[catalogue] loaded=%1 skipped_parse=%2 skipped_wcs=%3")
-                                          .arg(this->catalogueOverlayPixels.size())
-                                          .arg(parsed.skippedEntries)
-                                          .arg(skippedProjection);
-    }
-    ui->vtk->renderWindow()->Render();
-}
-
-void vtkWindowImage::clearCatalogueOverlay()
-{
-    this->catalogueOverlayLoaded = false;
-    this->catalogueOverlayPixels.clear();
-    this->catalogueOverlayEntries.clear();
-    this->catalogueOverlayPolylines.clear();
-    this->catalogueOverlaySourceFirstPolyline.clear();
-    this->catalogueOverlaySourcePolylineCount.clear();
-    this->catalogueOverlayLabels.clear();
-    this->catalogueOverlayLabelIndices.clear();
-    this->catalogueOverlaySummary.clear();
-    this->hoveredCatalogueSourceIndex = -1;
-    this->selectedCatalogueSourceIndex = -1;
-    this->catalogueOverlayPoints->Reset();
-    this->catalogueOverlayCells->Reset();
-    this->catalogueOverlayData->Modified();
-    this->catalogueHoverOverlayPoints->Reset();
-    this->catalogueHoverOverlayCells->Reset();
-    this->catalogueHoverOverlayData->Modified();
-    this->catalogueSelectionOverlayPoints->Reset();
-    this->catalogueSelectionOverlayCells->Reset();
-    this->catalogueSelectionOverlayData->Modified();
-    if (auto *renderer = ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()) {
-        for (const auto &actor : this->catalogueOverlayLabelActors) {
-            renderer->RemoveViewProp(actor);
-        }
-    }
-    this->catalogueOverlayLabelActors.clear();
-    this->catalogueOverlayActor->VisibilityOff();
-    this->catalogueHoverOverlayActor->VisibilityOff();
-    this->catalogueSelectionOverlayActor->VisibilityOff();
-    if (this->actionShowCatalogueOverlay) {
-        const QSignalBlocker blocker(this->actionShowCatalogueOverlay);
-        this->actionShowCatalogueOverlay->setChecked(false);
-        this->actionShowCatalogueOverlay->setEnabled(false);
-    }
-    if (this->actionShowCatalogueLabels) {
-        const QSignalBlocker blocker(this->actionShowCatalogueLabels);
-        this->actionShowCatalogueLabels->setChecked(false);
-        this->actionShowCatalogueLabels->setEnabled(false);
-    }
-    if (this->actionClearCatalogueOverlay) {
-        this->actionClearCatalogueOverlay->setEnabled(false);
-    }
-    this->refreshCatalogueTable();
-    this->updateCatalogueInfoPanel();
-    ui->vtk->renderWindow()->Render();
-}
-
-void vtkWindowImage::setCatalogueOverlayVisible(bool visible)
-{
-    const bool effectiveVisible = visible && this->catalogueOverlayLoaded;
-    this->catalogueOverlayActor->SetVisibility(effectiveVisible ? 1 : 0);
-    if (effectiveVisible) {
-        this->updateCatalogueOverlayLabels();
-    } else {
-        for (const auto &actor : this->catalogueOverlayLabelActors) {
-            actor->SetVisibility(0);
-        }
-        this->catalogueHoverOverlayActor->VisibilityOff();
-        this->catalogueSelectionOverlayActor->VisibilityOff();
-    }
-    if (ui && ui->vtk && ui->vtk->renderWindow()) {
-        ui->vtk->renderWindow()->Render();
-    }
-}
-
-void vtkWindowImage::rebuildCatalogueOverlay()
-{
-    this->catalogueOverlayPoints->Reset();
-    this->catalogueOverlayCells->Reset();
-    this->catalogueOverlayLabelIndices.clear();
-    for (const auto &polyline : this->catalogueOverlayPolylines) {
-        if (polyline.size() < 2) {
-            continue;
-        }
-        this->catalogueOverlayCells->InsertNextCell(static_cast<vtkIdType>(polyline.size()));
-        for (const auto &point : polyline) {
-            const vtkIdType id = this->catalogueOverlayPoints->InsertNextPoint(point[0], point[1], 0.0);
-            this->catalogueOverlayCells->InsertCellPoint(id);
-        }
-    }
-    for (std::size_t i = 0; i < this->catalogueOverlayPixels.size(); ++i) {
-        if (!this->catalogueOverlayLabels.value(static_cast<qsizetype>(i)).trimmed().isEmpty()
-            && static_cast<int>(this->catalogueOverlayLabelIndices.size()) < maxCatalogueLabelCount) {
-            this->catalogueOverlayLabelIndices.push_back(static_cast<int>(i));
-        }
-    }
-    this->catalogueOverlayData->SetPoints(this->catalogueOverlayPoints);
-    this->catalogueOverlayData->SetLines(this->catalogueOverlayCells);
-    this->catalogueOverlayData->Modified();
-
-    auto *renderer = ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer();
-    if (!renderer) {
-        return;
-    }
-    for (const auto &actor : this->catalogueOverlayLabelActors) {
-        renderer->RemoveViewProp(actor);
-    }
-    this->catalogueOverlayLabelActors.clear();
-    for (int index : this->catalogueOverlayLabelIndices) {
-        auto actor = vtkSmartPointer<vtkTextActor>::New();
-        actor->SetInput(this->catalogueOverlayLabels.value(index).toUtf8().constData());
-        actor->GetTextProperty()->SetColor(1.0, 0.65, 0.25);
-        actor->GetTextProperty()->SetFontSize(12);
-        actor->GetTextProperty()->SetBold(false);
-        actor->GetTextProperty()->SetShadow(true);
-        actor->SetVisibility(this->actionShowCatalogueOverlay && this->actionShowCatalogueOverlay->isChecked());
-        renderer->AddViewProp(actor);
-        this->catalogueOverlayLabelActors.push_back(actor);
-    }
-    this->rebuildCatalogueHighlightOverlay(this->catalogueHoverOverlayPoints,
-                                           this->catalogueHoverOverlayCells,
-                                           this->catalogueHoverOverlayData,
-                                           this->hoveredCatalogueSourceIndex);
-    this->rebuildCatalogueHighlightOverlay(this->catalogueSelectionOverlayPoints,
-                                           this->catalogueSelectionOverlayCells,
-                                           this->catalogueSelectionOverlayData,
-                                           this->selectedCatalogueSourceIndex);
-    this->catalogueHoverOverlayActor->SetVisibility(this->hoveredCatalogueSourceIndex >= 0 ? 1 : 0);
-    this->catalogueSelectionOverlayActor->SetVisibility(this->selectedCatalogueSourceIndex >= 0 ? 1 : 0);
-    this->updateCatalogueOverlayLabels();
-}
-
-void vtkWindowImage::updateCatalogueOverlayLabels()
-{
-    if (this->suspendHeavyOverlayUpdates) {
-        return;
-    }
-    if (!this->catalogueOverlayLoaded || !this->actionShowCatalogueOverlay
-        || !this->actionShowCatalogueOverlay->isChecked()) {
-        for (const auto &actor : this->catalogueOverlayLabelActors) {
-            actor->SetVisibility(0);
-        }
-        this->catalogueHoverOverlayActor->VisibilityOff();
-        this->catalogueSelectionOverlayActor->VisibilityOff();
-        return;
-    }
-    auto *renderer = ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer();
-    if (!renderer) {
-        return;
-    }
-
-    const auto visible = computeVisibleImageBounds2D(
-            renderer, this->layers ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr);
-    const int *size = renderer->GetSize();
-    const double pixelsPerUnitX =
-            (visible.valid && size && (visible.xmax - visible.xmin) > 0.0)
-            ? static_cast<double>(size[0]) / (visible.xmax - visible.xmin)
-            : 0.0;
-    const double pixelsPerUnitY =
-            (visible.valid && size && (visible.ymax - visible.ymin) > 0.0)
-            ? static_cast<double>(size[1]) / (visible.ymax - visible.ymin)
-            : 0.0;
-    int visibleSources = 0;
-    for (const auto &point : this->catalogueOverlayPixels) {
-        if (pointInVisibleBounds(point, visible)) {
-            ++visibleSources;
-        }
-    }
-    const bool labelsEnabled = this->actionShowCatalogueLabels && this->actionShowCatalogueLabels->isChecked();
-    const bool smartVisible = labelsEnabled && visibleSources <= smartCatalogueLabelMaxVisible
-            && std::max(pixelsPerUnitX, pixelsPerUnitY) >= smartCatalogueLabelMinPixelsPerUnit;
-
-    auto *interactor = ui->vtk->renderWindow()->GetInteractor();
-    const int *eventPos = interactor ? interactor->GetEventPosition() : nullptr;
-    vtkNew<vtkCoordinate> coordinate;
-    coordinate->SetCoordinateSystemToWorld();
-    if (eventPos && this->hoveredCatalogueSourceIndex < 0) {
-        double distancePx = 0.0;
-        this->hoveredCatalogueSourceIndex =
-                this->catalogueSourceIndexNearDisplayPosition(eventPos[0], eventPos[1], renderer, &distancePx);
-    }
-    const bool showHoveredLabel = this->hoveredCatalogueSourceIndex >= 0;
-
-    for (std::size_t i = 0; i < this->catalogueOverlayLabelActors.size()
-                             && i < this->catalogueOverlayLabelIndices.size();
-         ++i) {
-        const int pointIndex = this->catalogueOverlayLabelIndices[i];
-        if (pointIndex < 0 || static_cast<std::size_t>(pointIndex) >= this->catalogueOverlayPixels.size()) {
-            this->catalogueOverlayLabelActors[i]->SetVisibility(0);
-            continue;
-        }
-        coordinate->SetValue(this->catalogueOverlayPixels[pointIndex][0],
-                             this->catalogueOverlayPixels[pointIndex][1], 0.0);
-        int *display = coordinate->GetComputedDisplayValue(renderer);
-        if (!display) {
-            this->catalogueOverlayLabelActors[i]->SetVisibility(0);
-            continue;
-        }
-        this->catalogueOverlayLabelActors[i]->SetDisplayPosition(display[0] + 4, display[1] + 4);
-        const bool showThis = smartVisible || (showHoveredLabel && pointIndex == this->hoveredCatalogueSourceIndex)
-                || pointIndex == this->selectedCatalogueSourceIndex;
-        this->catalogueOverlayLabelActors[i]->SetVisibility(showThis ? 1 : 0);
-    }
-    this->catalogueHoverOverlayActor->SetVisibility(
-            this->hoveredCatalogueSourceIndex >= 0 && this->hoveredCatalogueSourceIndex != this->selectedCatalogueSourceIndex
-                    ? 1
-                    : 0);
-    this->catalogueSelectionOverlayActor->SetVisibility(this->selectedCatalogueSourceIndex >= 0 ? 1 : 0);
-}
-
-void vtkWindowImage::refreshCatalogueOverlayInteraction(int displayX, int displayY, bool fromClick)
-{
-    if (!this->catalogueOverlayLoaded || !this->actionShowCatalogueOverlay
-        || !this->actionShowCatalogueOverlay->isChecked()) {
-        return;
-    }
-
-    auto *renderer = ui && ui->vtk && ui->vtk->renderWindow()
-            ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()
-            : nullptr;
-    if (!renderer) {
-        return;
-    }
-
-    double hoverDistance = 0.0;
-    const int hoveredIndex =
-            this->catalogueSourceIndexNearDisplayPosition(displayX, displayY, renderer, &hoverDistance);
-    if (hoveredIndex != this->hoveredCatalogueSourceIndex) {
-        qDebug().noquote() << QStringLiteral("[catalogue:image] hover index=%1 distance_px=%2")
-                                      .arg(hoveredIndex)
-                                      .arg(hoverDistance, 0, 'f', 2);
-        this->hoveredCatalogueSourceIndex = hoveredIndex;
-        this->rebuildCatalogueHighlightOverlay(this->catalogueHoverOverlayPoints,
-                                               this->catalogueHoverOverlayCells,
-                                               this->catalogueHoverOverlayData,
-                                               this->hoveredCatalogueSourceIndex);
-    }
-
-    if (fromClick) {
-        qDebug().noquote() << QStringLiteral("[catalogue:image] select index=%1").arg(hoveredIndex);
-        this->setSelectedCatalogueSourceIndex(hoveredIndex);
-    }
-
-    this->updateCatalogueOverlayLabels();
-}
-
-int vtkWindowImage::catalogueSourceIndexNearDisplayPosition(int displayX, int displayY,
-                                                            vtkRenderer *renderer,
-                                                            double *distancePx) const
-{
-    if (distancePx) {
-        *distancePx = std::numeric_limits<double>::quiet_NaN();
-    }
-    if (!renderer) {
-        return -1;
-    }
-
-    vtkNew<vtkCoordinate> coordinate;
-    coordinate->SetCoordinateSystemToWorld();
-    int nearestIndex = -1;
-    double nearestDistance2 = std::numeric_limits<double>::max();
-    for (std::size_t i = 0; i < this->catalogueOverlayPixels.size(); ++i) {
-        coordinate->SetValue(this->catalogueOverlayPixels[i][0], this->catalogueOverlayPixels[i][1], 0.0);
-        int *display = coordinate->GetComputedDisplayValue(renderer);
-        if (!display) {
-            continue;
-        }
-        const double dx = static_cast<double>(display[0] - displayX);
-        const double dy = static_cast<double>(display[1] - displayY);
-        const double dist2 = dx * dx + dy * dy;
-        if (dist2 < nearestDistance2) {
-            nearestDistance2 = dist2;
-            nearestIndex = static_cast<int>(i);
-        }
-    }
-
-    if (nearestDistance2 > catalogueHoverDisplayThresholdPx * catalogueHoverDisplayThresholdPx) {
-        nearestIndex = -1;
-    }
-    if (distancePx) {
-        *distancePx = nearestIndex >= 0 ? std::sqrt(nearestDistance2) : std::numeric_limits<double>::quiet_NaN();
-    }
-    return nearestIndex;
-}
-
-void vtkWindowImage::rebuildCatalogueHighlightOverlay(vtkPoints *points, vtkCellArray *cells, vtkPolyData *data,
-                                                      int sourceIndex)
-{
-    if (!points || !cells || !data) {
-        return;
-    }
-    points->Reset();
-    cells->Reset();
-
-    if (sourceIndex >= 0 && static_cast<std::size_t>(sourceIndex) < this->catalogueOverlayEntries.size()
-        && static_cast<std::size_t>(sourceIndex) < this->catalogueOverlaySourceFirstPolyline.size()
-        && static_cast<std::size_t>(sourceIndex) < this->catalogueOverlaySourcePolylineCount.size()) {
-        const int first = this->catalogueOverlaySourceFirstPolyline[sourceIndex];
-        const int count = this->catalogueOverlaySourcePolylineCount[sourceIndex];
-        for (int polylineIndex = first; polylineIndex < first + count; ++polylineIndex) {
-            if (polylineIndex < 0
-                || static_cast<std::size_t>(polylineIndex) >= this->catalogueOverlayPolylines.size()) {
-                continue;
-            }
-            const auto &polyline = this->catalogueOverlayPolylines[polylineIndex];
-            if (polyline.size() < 2) {
-                continue;
-            }
-            cells->InsertNextCell(static_cast<vtkIdType>(polyline.size()));
-            for (const auto &point : polyline) {
-                const vtkIdType id = points->InsertNextPoint(point[0], point[1], 0.0);
-                cells->InsertCellPoint(id);
-            }
-        }
-    }
-
-    data->SetPoints(points);
-    data->SetLines(cells);
-    data->Modified();
-}
-
-void vtkWindowImage::updateCatalogueInfoPanel()
-{
-    if (!this->catalogueInfoLabel) {
-        return;
-    }
-    if (this->selectedCatalogueSourceIndex < 0
-        || static_cast<std::size_t>(this->selectedCatalogueSourceIndex) >= this->catalogueOverlayEntries.size()) {
-        this->catalogueInfoLabel->setText(u"Source: none"_s);
-        this->catalogueInfoLabel->setToolTip(u"No source selected"_s);
-        return;
-    }
-
-    const QString summary = this->catalogueSourceSummary(this->selectedCatalogueSourceIndex);
-    this->catalogueInfoLabel->setText(summary);
-    this->catalogueInfoLabel->setToolTip(summary);
-}
-
-QString vtkWindowImage::catalogueSourceSummary(int sourceIndex) const
-{
-    if (sourceIndex < 0 || static_cast<std::size_t>(sourceIndex) >= this->catalogueOverlayEntries.size()
-        || static_cast<std::size_t>(sourceIndex) >= this->catalogueOverlayPixels.size()) {
-        return QStringLiteral("Source: none");
-    }
-
-    const CatalogueOverlayEntry &entry = this->catalogueOverlayEntries[sourceIndex];
-    const auto &pixel = this->catalogueOverlayPixels[sourceIndex];
-    QString summary = u"Source %1"_s.arg(sourceIndex + 1);
-    if (!entry.label.trimmed().isEmpty()) {
-        summary += u" [%1]"_s.arg(entry.label.trimmed());
-    }
-    summary += u" | %1 | %2 | x=%3 y=%4"_s.arg(catalogueShapeName(entry.shape),
-                                               catalogueFrameName(entry.frame))
-                       .arg(pixel[0], 0, 'f', 2)
-                       .arg(pixel[1], 0, 'f', 2);
-    if (entry.frame == CatalogueOverlayEntry::Frame::Sky) {
-        summary += u" | RA=%1 deg DEC=%2 deg"_s.arg(entry.raDeg, 0, 'f', 6).arg(entry.decDeg, 0, 'f', 6);
-    }
-    if (entry.shape == CatalogueOverlayEntry::Shape::Ellipse) {
-        summary += u" | rx=%1 ry=%2 ang=%3"_s.arg(entry.radiusX, 0, 'f', 2)
-                           .arg(entry.radiusY, 0, 'f', 2)
-                           .arg(entry.angleDeg, 0, 'f', 1);
-    }
-    return summary;
-}
-
-void vtkWindowImage::ensureCatalogueDock()
-{
-    if (this->catalogueDock) {
-        return;
-    }
-
-    this->catalogueDock = new QDockWidget(u"Catalogue"_s, this);
-    this->catalogueDock->setObjectName(u"CatalogueDockImage"_s);
-    this->catalogueTableView = new QTableView(this->catalogueDock);
-    this->catalogueTableModel = new CatalogueTableModel(this->catalogueDock);
-    this->catalogueTableView->setModel(this->catalogueTableModel);
-    this->catalogueTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
-    this->catalogueTableView->setSelectionMode(QAbstractItemView::SingleSelection);
-    this->catalogueTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    this->catalogueTableView->setSortingEnabled(false);
-    this->catalogueTableView->verticalHeader()->setVisible(false);
-    this->catalogueTableView->horizontalHeader()->setStretchLastSection(true);
-    this->catalogueDock->setWidget(this->catalogueTableView);
-    this->addDockWidget(Qt::RightDockWidgetArea, this->catalogueDock);
-    this->catalogueDock->hide();
-
-    QObject::connect(this, &vtkWindowImage::catalogueSourceSelectionChanged, this,
-                     &vtkWindowImage::syncCatalogueTableSelection);
-    QObject::connect(this->catalogueTableView->selectionModel(), &QItemSelectionModel::currentRowChanged,
-                     this, [this](const QModelIndex &current) {
-        if (this->syncingCatalogueSelection) {
-            return;
-        }
-        this->setSelectedCatalogueSourceIndex(current.isValid() ? current.row() : -1);
-    });
-    QObject::connect(this->catalogueTableView, &QTableView::doubleClicked, this,
-                     [this](const QModelIndex &index) {
-        if (index.isValid()) {
-            this->setSelectedCatalogueSourceIndex(index.row());
-            this->centerViewOnCatalogueSource(index.row());
-        }
-    });
-    this->refreshCatalogueTable();
-}
-
-void vtkWindowImage::refreshCatalogueTable()
-{
-    if (!this->catalogueTableModel) {
-        return;
-    }
-    this->catalogueTableModel->setEntries(&this->catalogueOverlayEntries);
-    if (this->catalogueDock) {
-        this->catalogueDock->setVisible(!this->catalogueOverlayEntries.empty());
-    }
-    if (this->catalogueTableView) {
-        this->catalogueTableView->resizeColumnsToContents();
-    }
-    this->syncCatalogueTableSelection(this->selectedCatalogueSourceIndex);
-}
-
-void vtkWindowImage::setSelectedCatalogueSourceIndex(int index)
-{
-    if (index < 0 || static_cast<std::size_t>(index) >= this->catalogueOverlayEntries.size()) {
-        index = -1;
-    }
-    if (this->selectedCatalogueSourceIndex == index) {
-        this->updateCatalogueInfoPanel();
-        emit this->catalogueSourceSelectionChanged(index);
-        return;
-    }
-
-    this->selectedCatalogueSourceIndex = index;
-    this->rebuildCatalogueHighlightOverlay(this->catalogueSelectionOverlayPoints,
-                                           this->catalogueSelectionOverlayCells,
-                                           this->catalogueSelectionOverlayData,
-                                           this->selectedCatalogueSourceIndex);
-    this->updateCatalogueInfoPanel();
-    this->updateCatalogueOverlayLabels();
-    if (ui && ui->vtk && ui->vtk->renderWindow()) {
-        ui->vtk->renderWindow()->Render();
-    }
-    emit this->catalogueSourceSelectionChanged(index);
-}
-
-void vtkWindowImage::centerViewOnCatalogueSource(int index, double zoomFactor)
-{
-    if (index < 0 || static_cast<std::size_t>(index) >= this->catalogueOverlayPixels.size()) {
-        return;
-    }
-    auto *renderer = ui && ui->vtk && ui->vtk->renderWindow()
-            ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()
-            : nullptr;
-    auto *camera = renderer ? renderer->GetActiveCamera() : nullptr;
-    if (!renderer || !camera) {
-        return;
-    }
-
-    const auto &pixel = this->catalogueOverlayPixels[index];
-    double focal[3];
-    double position[3];
-    camera->GetFocalPoint(focal);
-    camera->GetPosition(position);
-    const double dz = position[2] - focal[2];
-    camera->SetFocalPoint(pixel[0], pixel[1], 0.0);
-    camera->SetPosition(pixel[0], pixel[1], dz);
-    if (camera->GetParallelProjection() && zoomFactor > 1.0) {
-        camera->SetParallelScale(camera->GetParallelScale() / zoomFactor);
-    }
-    renderer->ResetCameraClippingRange();
-    ui->vtk->renderWindow()->Render();
-}
-
-void vtkWindowImage::syncCatalogueTableSelection(int index)
-{
-    if (!this->catalogueTableView || !this->catalogueTableView->selectionModel()
-        || !this->catalogueTableModel) {
-        return;
-    }
-
-    this->syncingCatalogueSelection = true;
-    if (index < 0 || index >= this->catalogueTableModel->rowCount()) {
-        this->catalogueTableView->clearSelection();
-    } else {
-        const QModelIndex modelIndex = this->catalogueTableModel->index(index, 0);
-        this->catalogueTableView->selectionModel()->setCurrentIndex(
-                modelIndex, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
-        this->catalogueTableView->scrollTo(modelIndex, QAbstractItemView::PositionAtCenter);
-    }
-    this->syncingCatalogueSelection = false;
-}
-
-bool vtkWindowImage::catalogueWorldToPixel(double raDeg, double decDeg, std::array<double, 2> &pixel) const
-{
-    if (!std::isfinite(raDeg) || !std::isfinite(decDeg)) {
-        return false;
-    }
-
-    if (!this->remoteHasCelestialAxes()) {
-        return false;
-    }
-
-    double nativeX = raDeg;
-    double nativeY = decDeg;
-    const int nativeFrame = this->remoteNativeCelestialFrame();
-    if (nativeFrame < 0) {
-        return false;
-    }
-    if (nativeFrame != WCS_J2000) {
-        wcscon(WCS_J2000, nativeFrame, 2000.0, 2000.0, &nativeX, &nativeY, 2000.0);
-    }
-    if (std::abs(this->remoteDatasetCdelt[0]) <= std::numeric_limits<double>::epsilon()
-        || std::abs(this->remoteDatasetCdelt[1]) <= std::numeric_limits<double>::epsilon()) {
-        return false;
-    }
-    // Use the full TAN (gnomonic) inverse projection instead of the linear
-    // approximation that was here before.  The linear formula diverges from
-    // the true sky position by ~1 arcsec per degree from the reference pixel,
-    // which matters for fields wider than ~1 degree.
-    tanSkyToPix(nativeX, nativeY, this->remoteDatasetCrpix, this->remoteDatasetCrval,
-                this->remoteDatasetCdelt, pixel[0], pixel[1]);
-    return std::isfinite(pixel[0]) && std::isfinite(pixel[1]);
-}
-
-void vtkWindowImage::setProbeModeActive(bool active)
-{
-    this->probeModeActive = active;
-    if (active) {
-        if (this->actionBoxRegion && this->actionBoxRegion->isChecked()) {
-            this->actionBoxRegion->setChecked(false);
-        }
-        if (this->actionCircleRegion && this->actionCircleRegion->isChecked()) {
-            this->actionCircleRegion->setChecked(false);
-        }
-        if (this->actionPolygonRegion && this->actionPolygonRegion->isChecked()) {
-            this->actionPolygonRegion->setChecked(false);
-        }
-        if (this->actionAnnulusRegion && this->actionAnnulusRegion->isChecked()) {
-            this->actionAnnulusRegion->setChecked(false);
-        }
-    }
-    ui->vtk->setCursor(active ? Qt::CrossCursor : Qt::ArrowCursor);
-    this->probeFrozen = false;
-    if (!active) {
-        this->probeHorizontalActor->VisibilityOff();
-        this->probeVerticalActor->VisibilityOff();
-        if (this->profileWidget) {
-            this->profileWidget->close();
-        }
-        this->vtkRender();
-        return;
-    }
-
-    if (!this->profileWidget) {
-        this->profileWidget = new ProfileWidget(this);
-        this->profileWidget->setUsageMode(ProfileWidget::UsageMode::ProbeLive, u"Profile"_s);
-        this->profileWidget->setupImagePlots(u"Pixel"_s, u"Value"_s);
-        QObject::connect(this->profileWidget, &ProfileWidget::destroyed, this, [this]() {
-            this->profileWidget = nullptr;
-            if (ui->actionProfile->isChecked()) {
-                ui->actionProfile->setChecked(false);
-            }
-        });
-    } else {
-        this->profileWidget->setUsageMode(ProfileWidget::UsageMode::ProbeLive, u"Profile"_s);
-    }
-
-    if (!this->probeValid) {
-        auto *imageData = this->layers ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
-        if (imageData) {
-            int extent[6];
-            imageData->GetExtent(extent);
-            this->probeValid = true;
-            this->probeVoxel = { (extent[0] + extent[1]) / 2, (extent[2] + extent[3]) / 2 };
-        }
-    }
-    this->refreshProbeOverlay();
-    this->updateProbeProfile();
-    this->profileWidget->show();
-    this->profileWidget->raise();
-    this->vtkRender();
-}
-
-void vtkWindowImage::updateProbeProfile()
-{
-    if (!this->probeModeActive || !this->probeValid || !this->profileWidget || !this->layers) {
-        return;
-    }
-
-    auto *imageData = this->layers->getImageData(this->layers->getMasterIndex());
-    if (!imageData) {
-        return;
-    }
-    int extent[6];
-    imageData->GetExtent(extent);
-    if (this->probeVoxel[0] < extent[0] || this->probeVoxel[0] > extent[1] || this->probeVoxel[1] < extent[2]
-        || this->probeVoxel[1] > extent[3]) {
-        return;
-    }
-
-    const int width = extent[1] - extent[0] + 1;
-    const int height = extent[3] - extent[2] + 1;
-    QVector<double> keyX(width), valuesX(width), keyY(height), valuesY(height);
-    for (int x = extent[0]; x <= extent[1]; ++x) {
-        const int idx = x - extent[0];
-        keyX[idx] = x;
-        valuesX[idx] = this->layers->getPixelValue(this->layers->getMasterIndex(), x, this->probeVoxel[1]);
-    }
-    for (int y = extent[2]; y <= extent[3]; ++y) {
-        const int idx = y - extent[2];
-        keyY[idx] = y;
-        valuesY[idx] = this->layers->getPixelValue(this->layers->getMasterIndex(), this->probeVoxel[0], y);
-    }
-    this->profileWidget->updateImageProfiles(keyX, valuesX, keyY, valuesY, this->probeVoxel[0],
-                                             this->probeVoxel[1], !this->probeFrozen);
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ── Region interchange (CRTF / DS9) ───────────────────────────────────────────
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 void vtkWindowImage::setInteractorStyleImage()
 {
@@ -3581,17 +1866,341 @@ void vtkWindowImage::setInteractorStyleProfile()
     }
 }
 
-int vtkWindowImage::currentLayerIndex() const
+void vtkWindowImage::elideLayerSettingsHeader()
 {
-    return ui->listLayer->currentIndex().row();
+    if (!ui || !ui->labelLayerHdr)
+        return;
+    const QString full = ui->labelLayerHdr->property("fullText").toString();
+    if (full.isEmpty())
+        return;
+    const int budget = std::max(40, ui->labelLayerHdr->width());
+    ui->labelLayerHdr->setText(
+            QFontMetrics(ui->labelLayerHdr->font()).elidedText(full, Qt::ElideMiddle, budget));
 }
 
-void vtkWindowImage::addLayerImage(const std::string &filepath)
+bool vtkWindowImage::eventFilter(QObject *watched, QEvent *event)
 {
+    if (ui && watched == ui->labelLayerHdr
+        && (event->type() == QEvent::Resize || event->type() == QEvent::FontChange)) {
+        elideLayerSettingsHeader();
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
+
+int vtkWindowImage::currentLayerIndex() const
+{
+    const int row = ui->listLayer->currentIndex().row();
+    // Fall back to the first layer when the list view has no current row but
+    // layers exist (e.g. the selection was cleared) — settings always act on a
+    // concrete layer rather than silently no-op.
+    if (row < 0 && this->layers && this->layers->rowCount() > 0) {
+        return 0;
+    }
+    return row;
+}
+
+
+// ── Loading an additional layer that lives on the backend ────────────────────
+// The master image already opens remotely: its pixels come from the image
+// endpoints and never touch this filesystem. An additional layer could not,
+// for one reason only - loadImageLayer() aligns a layer to the master with
+// AstroUtils, and AstroUtils could only build a WCS from a FILE. That is not a
+// property of the alignment, it is a property of the constructor: the WCS lives
+// in the header, and /v1/files/header hands the header over.
+//
+// So a remote layer is loaded the same way the master is: pixels from
+// /v1/image/preview (which returns the plane unchanged when it is small enough,
+// and a decimated one when it is not), WCS from the two headers. No file is
+// copied to this machine, and the alignment is the SAME arithmetic as the local
+// path - the numbers it works on just arrive over HTTP.
+static ImageLayerLoadResult loadRemoteImageLayer(const QString &backendUrl,
+                                                 const QString &backendToken,
+                                                 const QString &sessionId,
+                                                 const QString &layerPath,
+                                                 const QString &masterPath, bool ignoreOverlap)
+{
+    ImageLayerLoadResult result;
+    result.filepath = layerPath.toStdString();
+
+    BackendClient client(backendUrl, backendToken);
+    if (!sessionId.isEmpty())
+        client.setSessionId(sessionId);
+
+    // The headers first, and the pixels only if the two images have sky in
+    // common: downloading a plane to discover it belongs somewhere else is
+    // wasted on a slow link, and on a fast one it is still the wrong answer.
+    const auto layerHeaderEarly = client.fileHeader(layerPath);
+    const auto masterHeaderEarly = client.fileHeader(masterPath);
+    if (!layerHeaderEarly.valid || !masterHeaderEarly.valid) {
+        result.errorMessage = "Could not read the FITS headers needed to align this layer.";
+        return result;
+    }
+    const auto cardsOf = [](const QStringList &cards) {
+        std::vector<std::string> out;
+        out.reserve(static_cast<std::size_t>(cards.size()));
+        for (const QString &c : cards)
+            out.push_back(c.toStdString());
+        return out;
+    };
+    AstroUtils astroLayer(cardsOf(layerHeaderEarly.cards));
+    AstroUtils astroMaster(cardsOf(masterHeaderEarly.cards));
+    if (astroMaster.getSecPix() <= 0. || !std::isfinite(astroMaster.getSecPix())) {
+        result.errorMessage = "The master image has no usable WCS to align this layer to.";
+        return result;
+    }
+    // …and the LAYER's own WCS. Without it xy2sky() returns leaving `pos`
+    // untouched, so the alignment below would read uninitialised sky coordinates
+    // and hand back a layer with spacing 0 at an arbitrary place - marked valid.
+    if (astroLayer.getSecPix() <= 0. || !std::isfinite(astroLayer.getSecPix())) {
+        result.errorMessage = "This layer has no usable WCS, so it cannot be aligned to the "
+                              "image: its FITS header carries no celestial solution.";
+        return result;
+    }
+    // A layer that covers none of the master's sky is placed correctly — off
+    // the edge of the image — and is therefore invisible. Refuse it here and
+    // let the window offer the only thing that makes sense: its own window.
+    if (astroMaster.isSimulation() || astroLayer.isSimulation()) {
+        // "Does not overlap" would be a guess: without a celestial solution
+        // there is no position to compare, only pixel indices.
+        result.errorMessage = "One of these images has no celestial solution in its header (pixel "
+                              "coordinates only), so there is no way to line the two up.";
+        return result;
+    }
+    if (!ignoreOverlap && !astroMaster.overlap(astroLayer)) {
+        result.noOverlap = true;
+        result.errorMessage = "This image covers none of the sky the current image covers, "
+                              "so it cannot be layered on top of it.";
+        return result;
+    }
+
+    const auto opened = client.openDataset(layerPath);
+    if (!opened.valid) {
+        result.errorMessage = opened.error.isEmpty()
+                ? ("The backend could not open " + layerPath.toStdString() + ".")
+                : opened.error.toStdString();
+        return result;
+    }
+
+    // One call for both cases: a plane within the budget comes back whole
+    // (scale 1), a larger one decimated, exactly as the master's preview does.
+    constexpr int kMaxLongestSide = 8192;
+    const auto pixels = client.requestImagePreview(opened.datasetId, kMaxLongestSide);
+    if (!pixels.valid) {
+        result.errorMessage = pixels.error.isEmpty() ? "Remote layer request failed."
+                                                     : pixels.error.toStdString();
+        return result;
+    }
+    if (pixels.scalarType != u"float32"_s) {
+        result.errorMessage = "Unsupported remote layer scalar type.";
+        return result;
+    }
+    const qsizetype expectedBytes = static_cast<qsizetype>(pixels.width) * pixels.height
+            * static_cast<qsizetype>(sizeof(float));
+    if (pixels.width <= 0 || pixels.height <= 0 || pixels.data.size() != expectedBytes) {
+        result.errorMessage = "Invalid remote layer payload.";
+        return result;
+    }
+
+    auto image = vtkSmartPointer<vtkImageData>::New();
+    image->SetExtent(0, pixels.width - 1, 0, pixels.height - 1, 0, 0);
+    image->AllocateScalars(VTK_FLOAT, 1);
+    std::memcpy(image->GetScalarPointer(), pixels.data.constData(),
+                static_cast<std::size_t>(expectedBytes));
+    result.imageData = image;
+    result.scalarRange = { pixels.rangeMin, pixels.rangeMax };
+
+    // Two mappings compose here: the layer's own decimation (displayed pixel ->
+    // layer source pixel) and the alignment (layer source pixel -> master pixel).
+    const auto decim = pixels.isPreview
+            ? ImageLod::previewMapping(pixels.fullWidth, pixels.fullHeight, pixels.width,
+                                       pixels.height)
+            : ImageLod::SourceMapping{};
+    const double scalingFactor = astroLayer.getSecPix() / astroMaster.getSecPix();
+    result.spacing = { decim.scaleX * scalingFactor, decim.scaleY * scalingFactor, 1. };
+
+    // Origin: where the FIRST DISPLAYED pixel sits in master pixels. It is the
+    // source pixel decim.origin, not source (0,0) - on a decimated layer those
+    // are not the same place.
+    double pos[2];
+    double pix[2] = { decim.originX, decim.originY };
+    astroLayer.xy2sky(pix, pos, WCS_J2000);
+    astroMaster.sky2xy(pos, pix, WCS_J2000);
+    result.origin = { pix[0], pix[1], 0. };
+
+    // Rotation: the same measurement as the local path - the angle of the
+    // layer's +Y axis in the master's frame, signed - over a span of 100
+    // DISPLAYED pixels so a decimated layer measures the same arc.
+    pix[0] = decim.originX;
+    pix[1] = decim.originY + 100. * decim.scaleY;
+    astroLayer.xy2sky(pix, pos, WCS_J2000);
+    astroMaster.sky2xy(pos, pix, WCS_J2000);
+    const double dx = pix[0] - result.origin[0];
+    const double dy = pix[1] - result.origin[1];
+    // VTK's RotateWXYZ(theta, 0,0,1) maps the layer's +Y to (-sin theta, cos theta),
+    // so reaching the master-space direction (dx, dy) needs theta = atan2(-dx, dy).
+    // atan2(dx, dy) has the right magnitude and the WRONG SIGN: a layer rotated
+    // -30 deg was drawn at +30. (The formula it replaced, 90 - atan|dy/dx|, had
+    // no sign at all, so this was never right - it is now.)
+    result.rotationDegrees = std::atan2(-dx, dy) * 180. / vtkMath::Pi();
+
+    if (!std::isfinite(result.spacing[0]) || !std::isfinite(result.spacing[1])
+        || result.spacing[0] <= 0. || result.spacing[1] <= 0.
+        || !std::isfinite(result.origin[0]) || !std::isfinite(result.origin[1])
+        || !std::isfinite(result.rotationDegrees)) {
+        result.imageData = nullptr;
+        result.errorMessage = "The alignment of this layer to the image produced no usable "
+                              "geometry (incompatible WCS?).";
+        return result;
+    }
+
+    result.valid = true;
+    qDebug().noquote()
+            << QStringLiteral("[remote-layer] %1 %2x%3 (source %4x%5) spacing=%6 origin=(%7, %8)")
+                       .arg(QFileInfo(layerPath).fileName())
+                       .arg(pixels.width).arg(pixels.height)
+                       .arg(pixels.fullWidth).arg(pixels.fullHeight)
+                       .arg(result.spacing[0])
+                       .arg(result.origin[0]).arg(result.origin[1]);
+    return result;
+}
+
+void vtkWindowImage::openFilterFitsDialog()
+{
+    // The pixel scale is what turns "3 pixels" into something an astronomer can
+    // judge, so it is passed in rather than left for the dialog to guess.
+    const double cdeltX = std::abs(this->remoteDatasetCdelt[0]);
+    const double cdeltY = std::abs(this->remoteDatasetCdelt[1]);
+    const double scaleDeg = (std::isfinite(cdeltX) && cdeltX > 0
+                             && std::isfinite(cdeltY) && cdeltY > 0)
+            ? 0.5 * (cdeltX + cdeltY)
+            : 0.0;
+
+    int dims[3] = { 0, 0, 0 };
+    if (this->layers && this->layers->getImageData(this->layers->getMasterIndex()))
+        this->layers->getImageData(this->layers->getMasterIndex())->GetDimensions(dims);
+
+    auto *dialog = new FilterFitsDialog(this->filepath, scaleDeg * 3600.0, dims[0], dims[1],
+                                        this->remoteBackendUrl, this->remoteBackendToken, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    QPointer<vtkWindowImage> self(this);
+    QObject::connect(dialog, &FilterFitsDialog::filtered, this,
+                     [this, self](const QString &path) {
+                         if (!self)
+                             return;
+                         // Same field, so it passes the overlap check by
+                         // construction — a regridded copy covers exactly the
+                         // sky the original did.
+                         this->addLayerFromBackendPath(path, QFileInfo(path).fileName());
+                     });
+    dialog->open();
+}
+
+
+void vtkWindowImage::showLayerLoadFailure(const ImageLayerLoadResult &result,
+                                          const QString &displayName, bool partOfSet)
+{
+    if (result.errorMessage.empty())
+        return;
+
+    const QString path = QString::fromStdString(result.filepath);
+    const QString detail = QString::fromStdString(result.errorMessage);
+
+    // Six VLKB cutouts that all fail are six failures, not six dialogs stacked
+    // over the window. The first one speaks; the rest are counted in the status
+    // bar, which can be read without dismissing anything.
+    if (m_layerFailureDialog) {
+        ++m_suppressedLayerFailures;
+        statusBar()->showMessage(
+                u"%1 more layer(s) could not be added; see the open message."_s.arg(
+                        m_suppressedLayerFailures),
+                6000);
+        return;
+    }
+
+    auto *box = new QMessageBox(this);
+    m_layerFailureDialog = box;
+    QObject::connect(box, &QObject::destroyed, this,
+                     [this]() { m_suppressedLayerFailures = 0; });
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->setWindowTitle(u"Add image layer"_s);
+    box->setTextFormat(Qt::PlainText);
+    box->setIcon(result.noOverlap ? QMessageBox::Information : QMessageBox::Warning);
+    box->setText(path.isEmpty() ? detail
+                                : u"%1\n\n%2"_s.arg(QFileInfo(path).fileName(), detail));
+
+    if (!result.noOverlap) {
+        box->setStandardButtons(QMessageBox::Ok);
+        box->open();
+        return;
+    }
+
+    // The file is not broken — it is of somewhere else. Two answers make sense,
+    // and neither is "layer it anyway and show nothing".
+    auto *openOwn = box->addButton(u"Open in New Window"_s, QMessageBox::AcceptRole);
+    // The sky bounds behind the refusal come from wcsrange(), which is a
+    // bounding box: a rotated field straddling RA = 0 can measure narrower than
+    // it is. This is the user's way to overrule us.
+    auto *addAnyway = box->addButton(u"Add Anyway"_s, QMessageBox::DestructiveRole);
+    box->addButton(QMessageBox::Cancel);
+    box->setDefaultButton(openOwn);
+
+    QPointer<vtkWindowImage> self(this);
+    QObject::connect(box, &QMessageBox::finished, this,
+                     [this, self, box, openOwn, addAnyway, path, displayName, partOfSet]() {
+                         if (!self || path.isEmpty())
+                             return;
+                         QAbstractButton *clicked = box->clickedButton();
+                         if (clicked == openOwn) {
+                             emit this->openInOwnWindowRequested(path);
+                         } else if (clicked == addAnyway) {
+                             // Through the queue, not straight into the loader:
+                             // another layer may have started while the dialog
+                             // was open, and a second future on the one watcher
+                             // would strand it. The queue carries the label back
+                             // too, so the layer keeps its name and its role.
+                             m_pendingLayerLoads.append(
+                                     { path, displayName, partOfSet, /*ignoreOverlap=*/true });
+                             this->pumpLayerQueue();
+                         }
+                     });
+    box->open();
+}
+
+
+void vtkWindowImage::addLayerImage(const std::string &filepath, bool ignoreOverlap)
+{
+    const QString path = QString::fromStdString(filepath);
+    // WHOSE filesystem is this path on? Every dataset here is opened through the
+    // backend, so a path is a BACKEND path. Asking QFile::exists() answers a
+    // different question - "is there a file here with that name" - and on a
+    // remote backend a client-side file of the same name would be loaded
+    // instead, silently: the wrong pixels, and the wrong WCS with them.
+    //
+    // The filesystem is shared only when the backend is on this machine, which
+    // the URL says. Anything else goes through the backend - same watcher, same
+    // result, so every caller (Add New Layer, the VLKB cutouts, the Stokes
+    // companions) is unaffected.
+    const QString backendHost = QUrl(this->remoteBackendUrl).host();
+    const bool backendIsLocal = backendHost.isEmpty() || backendHost == u"localhost"_s
+            || backendHost == u"127.0.0.1"_s || backendHost == u"::1"_s
+            || backendHost == u"0.0.0.0"_s;
+    const bool haveBothLocally = QFile::exists(path) && QFile::exists(this->filepath);
+    const bool useBackend = !this->remoteBackendUrl.isEmpty()
+            && !(backendIsLocal && haveBothLocally);
+    if (useBackend) {
+        this->setLayerImportEnabled(false);
+        this->showPersistentStatusMessage(
+                u"Loading %1 from the backend..."_s.arg(QFileInfo(path).fileName()));
+        this->layerLoadWatcher.setFuture(QtConcurrent::run(
+                &loadRemoteImageLayer, this->remoteBackendUrl, this->remoteBackendToken,
+                this->remoteSessionId, path, this->filepath, ignoreOverlap));
+        return;
+    }
     this->setLayerImportEnabled(false);
     this->showPersistentStatusMessage(u"Loading layer..."_s);
     this->layerLoadWatcher.setFuture(QtConcurrent::run(
-            &loadImageLayer, ImageLayerLoadRequest { this->filepath.toStdString(), filepath }));
+            &loadImageLayer,
+            ImageLayerLoadRequest { this->filepath.toStdString(), filepath, ignoreOverlap }));
 }
 
 void vtkWindowImage::applyLoadedLayer(const ImageLayerLoadResult &result)
@@ -3727,7 +2336,7 @@ void vtkWindowImage::updateLargeImageMode(vtkImageData *imageData, const char *c
                        .arg(large);
 }
 
-void vtkWindowImage::applyRemoteMasterLayer(const ImageLayerLoadResult &result)
+void vtkWindowImage::applyRemoteMasterLayer(const ImageLayerLoadResult &result, bool preserveView)
 {
     auto *newActor = this->layers->updateMasterLayer(result);
     if (!newActor) {
@@ -3751,7 +2360,11 @@ void vtkWindowImage::applyRemoteMasterLayer(const ImageLayerLoadResult &result)
     } else if (lut) {
         lut->Build();
     }
-    this->updateLargeImageMode(imageData, "remote apply");
+    // A viewport-LOD reload swaps in a small sub-region; large-image mode reflects
+    // the FULL image (unchanged) so don't recompute it from the sub-image dims.
+    if (!preserveView) {
+        this->updateLargeImageMode(imageData, "remote apply");
+    }
     auto *renderWindow = ui && ui->vtk ? ui->vtk->renderWindow() : nullptr;
     auto *renderer = renderWindow ? renderWindow->GetRenderers()->GetFirstRenderer() : nullptr;
     const bool validExtent = isImageExtentUsable(imageData);
@@ -3762,7 +2375,9 @@ void vtkWindowImage::applyRemoteMasterLayer(const ImageLayerLoadResult &result)
                        .arg(imageData ? imageData->GetExtent()[2] : -1)
                        .arg(imageData ? imageData->GetExtent()[3] : -1)
                        .arg(validExtent);
-    if (renderer) {
+    // Reset the camera only on a fresh load; a viewport-LOD reload MUST keep the
+    // user's current zoom/pan (that camera is what drove the tile request).
+    if (renderer && !preserveView) {
         renderer->ResetCamera();
         renderer->ResetCameraClippingRange();
     }
@@ -3840,18 +2455,124 @@ void vtkWindowImage::startRemoteFullResolutionLoad()
     this->transitioningToFull = true;
     this->suspendLutEditorUpdates = true;
     qDebug().noquote()
-            << QStringLiteral("[remote-image] requesting full-resolution image dataset=%1")
+            << QStringLiteral("[remote-image] requesting full-resolution image (tiled) dataset=%1")
                        .arg(this->remoteDatasetId);
+    // Assemble the full-resolution image from pyramid tiles: each tile is a
+    // bounded out-of-core read on the backend, so mosaics too large for a single
+    // /v1/image/full call load without OOMing the backend. 512 px balances
+    // request count against per-tile payload size.
+    constexpr int kFullResTileSize = 512;
     this->remoteFullImageWatcher.setFuture(
-            QtConcurrent::run(&fetchRemoteImageLayer, this->remoteBackendUrl, this->remoteDatasetId,
-                              this->filepath, false, 1536, this->remoteLoadGeneration,
-                              this->remoteSessionId, this->remoteBackendToken));
+            QtConcurrent::run(&fetchRemoteImageLayerTiled, this->remoteBackendUrl,
+                              this->remoteDatasetId, this->filepath, kFullResTileSize,
+                              this->remoteLoadGeneration, this->remoteSessionId,
+                              this->remoteBackendToken));
 }
 
 bool vtkWindowImage::isBusy() const
 {
+    // The companion listing counts too: it ends in a layer load, and a second
+    // import starting on top of it replaces the single layer watcher's future
+    // and overwrites m_pendingVlkbDisplayName - layers silently lost or
+    // mislabelled.
     return this->layerLoadWatcher.isRunning() || this->remoteImageWatcher.isRunning()
-            || this->remoteFullImageWatcher.isRunning();
+            || this->remoteFullImageWatcher.isRunning()
+            || this->m_stokesListingWatcher.isRunning();
+}
+
+void vtkWindowImage::onImageInteractionSettled()
+{
+    // A camera pan/zoom ended — (re)arm the debounce so a burst of end-events
+    // collapses into a single stream request once the view is quiet.
+    if (this->m_viewportLodEnabled && this->m_lodSettleTimer) {
+        this->m_lodSettleTimer->start();
+    }
+}
+
+void vtkWindowImage::maybeStreamViewportLod()
+{
+    if (!this->m_viewportLodEnabled || this->isBusy() || this->m_viewportLodWatcher.isRunning()) {
+        return;
+    }
+    // Don't re-stream while the user is drawing/probing (the master swap would
+    // disturb the region/measurement in progress).
+    if (this->probeModeActive || this->regionMode != RegionMode::None
+        || this->m_measMode != MeasurementMode::None) {
+        return;
+    }
+    auto *renderWindow = ui && ui->vtk ? ui->vtk->renderWindow() : nullptr;
+    auto *renderer = renderWindow ? renderWindow->GetRenderers()->GetFirstRenderer() : nullptr;
+    auto *camera = renderer ? renderer->GetActiveCamera() : nullptr;
+    if (!renderer || !camera) {
+        return;
+    }
+    const int *sz = renderWindow->GetSize();
+    if (!sz || sz[0] <= 0 || sz[1] <= 0) {
+        return;
+    }
+    // Raw viewport rectangle in WORLD coords (== full-res source pixels, since the
+    // image world extent equals the full-res grid). NOT clamped to the currently
+    // displayed sub-image — we must see the whole panned-to region to know which
+    // tiles to fetch; viewportAssembly() clamps to the full image itself.
+    const double *fp = camera->GetFocalPoint();
+    const double halfH = camera->GetParallelScale();
+    const double halfW = halfH * static_cast<double>(sz[0]) / static_cast<double>(sz[1]);
+    const double rx0 = fp[0] - halfW, rx1 = fp[0] + halfW;
+    const double ry0 = fp[1] - halfH, ry1 = fp[1] + halfH;
+    const double viewportH = static_cast<double>(sz[1]);
+
+    const ImageLod::TileGrid grid{ this->m_lodFullWidth, this->m_lodFullHeight,
+                                   this->m_lodTileSize, this->m_lodNumLevels };
+    const ImageLod::ViewportAssembly va =
+            ImageLod::viewportAssembly(rx0, ry0, rx1, ry1, viewportH, grid, 1);
+    if (!va.valid) {
+        return;
+    }
+    const std::array<int, 5> sig{ { va.level, va.txMin, va.txMax, va.tyMin, va.tyMax } };
+    if (sig == this->m_lodApplied) {
+        return;   // same region + level already displayed
+    }
+    this->m_lodPending = sig;
+    qDebug().noquote()
+            << QStringLiteral("[viewport-lod] stream level=%1 tiles x[%2..%3] y[%4..%5] "
+                              "view=[%6..%7, %8..%9] vpH=%10")
+                       .arg(va.level).arg(va.txMin).arg(va.txMax).arg(va.tyMin).arg(va.tyMax)
+                       .arg(rx0, 0, 'f', 0).arg(rx1, 0, 'f', 0)
+                       .arg(ry0, 0, 'f', 0).arg(ry1, 0, 'f', 0)
+                       .arg(viewportH, 0, 'f', 0);
+    const int gen = ++this->m_lodGeneration;
+    this->m_viewportLodWatcher.setFuture(QtConcurrent::run(
+            &fetchRemoteImageLayerViewport, this->remoteBackendUrl, this->remoteDatasetId,
+            this->filepath, this->m_lodFullWidth, this->m_lodFullHeight, this->m_lodNumLevels,
+            this->m_lodTileSize, rx0, ry0, rx1, ry1,
+            viewportH, gen, this->remoteSessionId, this->remoteBackendToken));
+}
+
+void vtkWindowImage::onViewportLodReady()
+{
+    const auto result = this->m_viewportLodWatcher.result();
+    if (result.requestGeneration != this->m_lodGeneration) {
+        qDebug().noquote() << QStringLiteral("[viewport-lod] discarded stale gen=%1 current=%2")
+                                      .arg(result.requestGeneration).arg(this->m_lodGeneration);
+        return;
+    }
+    if (!result.valid || !result.imageData) {
+        qDebug().noquote() << QStringLiteral("[viewport-lod] stream failed: %1")
+                                      .arg(QString::fromStdString(result.errorMessage));
+        // The view may have moved while this (failed) fetch was in flight, and the
+        // debounce that would have re-checked was dropped by the isRunning() guard.
+        // Re-arm so a transient tile failure self-heals — but bounded so a dead
+        // backend isn't polled forever.
+        if (++this->m_lodConsecutiveFailures <= 3 && this->m_lodSettleTimer) {
+            this->m_lodSettleTimer->start();
+        }
+        return;
+    }
+    this->m_lodConsecutiveFailures = 0;
+    this->applyRemoteMasterLayer(result, /*preserveView=*/true);
+    this->m_lodApplied = this->m_lodPending;   // this view is now displayed
+    // The view may have moved again while the tiles were fetching — re-check.
+    this->maybeStreamViewportLod();
 }
 
 void vtkWindowImage::showPersistentStatusMessage(const QString &text, int minDurationMs)
@@ -3886,300 +2607,19 @@ void vtkWindowImage::setLayerImportEnabled(bool enabled)
     // reads files directly on the client desktop for rendering purposes only.
     // It is not an authoritative data operation and is kept as an adapter.
     ui->actionAddFITS->setEnabled(enabled);
+    // The sidebar button is the same action: it must grey out with it, or a
+    // second load would be started while the first is still running.
+    if (ui->btnAddLayer)
+        ui->btnAddLayer->setEnabled(enabled);
 }
 
-void vtkWindowImage::updateWcsOverlay()
-{
-    if (this->suspendHeavyOverlayUpdates) {
-        return;
-    }
-    if (!this->wcsOverlayInitialized) {
-        qDebug().noquote() << QStringLiteral("[wcs-overlay] vtkWindowImage not initialized yet");
-        return;
-    }
 
-    if (!ui || !ui->vtk) {
-        qDebug().noquote() << QStringLiteral("[wcs-overlay] vtkWindowImage missing ui/ui->vtk ui=%1 vtk=%2")
-                                      .arg(reinterpret_cast<quintptr>(ui), 0, 16)
-                                      .arg(reinterpret_cast<quintptr>(ui ? ui->vtk : nullptr), 0, 16);
-        return;
-    }
 
-    auto *renderWindow = ui->vtk->renderWindow();
-    auto *rendererCollection = renderWindow ? renderWindow->GetRenderers() : nullptr;
-    auto *renderer = rendererCollection ? rendererCollection->GetFirstRenderer() : nullptr;
-    auto *imageData = this->layers ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
-    if (!renderWindow || !renderer || !this->overlayXAxis.GetPointer() || !this->overlayYAxis.GetPointer()
-        || !this->overlayXTitleActor.GetPointer() || !this->overlayYTitleActor.GetPointer()) {
-        qDebug().noquote()
-                << QStringLiteral("[wcs-overlay] vtkWindowImage missing objects renderer=%1 renderWindow=%2 xAxis=%3 yAxis=%4 xTitle=%5 yTitle=%6 image=%7")
-                           .arg(reinterpret_cast<quintptr>(renderer), 0, 16)
-                           .arg(reinterpret_cast<quintptr>(renderWindow), 0, 16)
-                           .arg(reinterpret_cast<quintptr>(this->overlayXAxis.GetPointer()), 0, 16)
-                           .arg(reinterpret_cast<quintptr>(this->overlayYAxis.GetPointer()), 0, 16)
-                           .arg(reinterpret_cast<quintptr>(this->overlayXTitleActor.GetPointer()), 0, 16)
-                           .arg(reinterpret_cast<quintptr>(this->overlayYTitleActor.GetPointer()), 0, 16)
-                           .arg(reinterpret_cast<quintptr>(imageData), 0, 16);
-        return;
-    }
-    if (!isImageExtentUsable(imageData)) {
-        qDebug().noquote()
-                << QStringLiteral("[wcs-overlay] remote image extent not ready x=%1..%2 y=%3..%4")
-                           .arg(imageData ? imageData->GetExtent()[0] : -1)
-                           .arg(imageData ? imageData->GetExtent()[1] : -1)
-                           .arg(imageData ? imageData->GetExtent()[2] : -1)
-                           .arg(imageData ? imageData->GetExtent()[3] : -1);
-        this->invalidateWcsOverlayCache();
-        hideCustomWcsOverlay(this->overlayXAxis, this->overlayYAxis, this->overlayXTitleActor,
-                             this->overlayYTitleActor, this->overlayXTickActors,
-                             this->overlayYTickActors);
-        return;
-    }
-    this->setWcsOverlayVisible(this->showWcsAxes);
-    if (!this->showWcsAxes || !renderer || !imageData) {
-        return;
-    }
-    this->ensureOverlayTickActors(renderer);
-    if (this->overlayXTickActors.size() < overlayTickCount
-        || this->overlayYTickActors.size() < overlayTickCount) {
-        qDebug().noquote()
-                << QStringLiteral("[wcs-overlay] vtkWindowImage tick actors incomplete x=%1 y=%2")
-                           .arg(this->overlayXTickActors.size())
-                           .arg(this->overlayYTickActors.size());
-        return;
-    }
 
-    const auto visible = computeVisibleImageBounds2D(renderer, imageData);
-    if (!visible.valid || std::abs(visible.xmax - visible.xmin) < 1.0
-        || std::abs(visible.ymax - visible.ymin) < 1.0) {
-        qDebug().noquote()
-                << QStringLiteral("[wcs-overlay] visible bounds not ready x=%1..%2 y=%3..%4")
-                           .arg(visible.xmin, 0, 'g', 12)
-                           .arg(visible.xmax, 0, 'g', 12)
-                           .arg(visible.ymin, 0, 'g', 12)
-                           .arg(visible.ymax, 0, 'g', 12);
-        this->invalidateWcsOverlayCache();
-        hideCustomWcsOverlay(this->overlayXAxis, this->overlayYAxis, this->overlayXTitleActor,
-                             this->overlayYTitleActor, this->overlayXTickActors,
-                             this->overlayYTickActors);
-        return;
-    }
 
-    const int *size = renderer->GetSize();
-    if (!size || size[0] <= 0 || size[1] <= 0) {
-        return;
-    }
 
-    const std::array<double, 4> visibleBounds = { visible.xmin, visible.xmax, visible.ymin, visible.ymax };
-    const std::array<int, 2> viewportSize = { size[0], size[1] };
-    const int currentFrame = this->selectedWcsFrame();
-    const int currentFormat = this->useSexagesimalWcsFormat ? 1 : 0;
-    if (visibleBounds == this->lastOverlayVisibleBounds && viewportSize == this->lastOverlayViewportSize
-        && currentFrame == this->lastRenderedWcsFrame && currentFormat == this->lastRenderedWcsFormat) {
-        return;
-    }
-    this->lastOverlayVisibleBounds = visibleBounds;
-    this->lastOverlayViewportSize = viewportSize;
-    this->lastRenderedWcsFrame = currentFrame;
-    this->lastRenderedWcsFormat = currentFormat;
 
-    constexpr double leftMargin = 168.;
-    constexpr double axisX = 136.;
-    constexpr double bottomMargin = 58.;
-    constexpr double rightMargin = 34.;
-    constexpr double topMargin = 28.;
-    configureAxisActor(this->overlayXAxis, axisX, bottomMargin, size[0] - rightMargin, bottomMargin);
-    configureAxisActor(this->overlayYAxis, axisX, size[1] - topMargin, axisX, bottomMargin);
-    this->overlayXAxis->SetTitle("");
-    this->overlayXTitleActor->SetInput(this->remoteOverlayAxisTitle(0).toStdString().c_str());
-    this->overlayXTitleActor->SetDisplayPosition((axisX + (size[0] - rightMargin)) / 2,
-                                                 static_cast<int>(bottomMargin / 2.0) - 2);
-    this->overlayYAxis->SetTitle("");
-    this->overlayYTitleActor->SetInput(this->remoteOverlayAxisTitle(1).toStdString().c_str());
-    this->overlayYTitleActor->SetDisplayPosition(static_cast<int>(leftMargin / 3.0), size[1] / 2);
 
-    bool xOk = false;
-    const double xMin = this->remoteVoxelToWcs(0, visible.xmin, &xOk);
-    const double xMax = this->remoteVoxelToWcs(0, visible.xmax, &xOk);
-    bool yOk = false;
-    const double yMin = this->remoteVoxelToWcs(1, visible.ymin, &yOk);
-    const double yMax = this->remoteVoxelToWcs(1, visible.ymax, &yOk);
-    this->overlayXAxis->SetRange(xOk ? xMin : visible.xmin, xOk ? xMax : visible.xmax);
-    this->overlayYAxis->SetRange(yOk ? yMax : visible.ymax, yOk ? yMin : visible.ymin);
-    this->overlayXAxis->LabelVisibilityOff();
-    this->overlayYAxis->LabelVisibilityOff();
-    this->overlayXAxis->VisibilityOn();
-    this->overlayYAxis->VisibilityOn();
-    this->overlayXTitleActor->VisibilityOn();
-    this->overlayYTitleActor->VisibilityOn();
-    for (int i = 0; i < overlayTickCount; ++i) {
-        const double t = overlayTickCount == 1 ? 0.0
-                                               : static_cast<double>(i)
-                        / static_cast<double>(overlayTickCount - 1);
-        const double voxelX = visible.xmin + t * (visible.xmax - visible.xmin);
-        const double voxelY = visible.ymin + t * (visible.ymax - visible.ymin);
-        bool tickXOk = false;
-        bool tickYOk = false;
-        double tickX = this->remoteVoxelToWcs(0, voxelX, &tickXOk);
-        double tickY = this->remoteVoxelToWcs(1, voxelY, &tickYOk);
-        double frameX = tickX;
-        double frameY = tickY;
-        if (tickXOk && tickYOk && this->remoteHasCelestialAxes()) {
-            this->convertRemoteCelestialCoordinates(tickX, tickY, frameX, frameY);
-        }
-
-        this->overlayXTickActors[static_cast<std::size_t>(i)]->SetInput(
-                this->formatRemoteOverlayCoordinate(0, frameX).toStdString().c_str());
-        this->overlayXTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
-                static_cast<int>(axisX + t * ((size[0] - rightMargin) - axisX)),
-                static_cast<int>(bottomMargin - 18));
-        this->overlayXTickActors[static_cast<std::size_t>(i)]->VisibilityOn();
-
-        this->overlayYTickActors[static_cast<std::size_t>(i)]->SetInput(
-                this->formatRemoteOverlayCoordinate(1, frameY).toStdString().c_str());
-        this->overlayYTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
-                static_cast<int>(axisX - 10),
-                static_cast<int>(bottomMargin + t * ((size[1] - topMargin) - bottomMargin)));
-        this->overlayYTickActors[static_cast<std::size_t>(i)]->VisibilityOn();
-    }
-    qDebug().noquote()
-            << QStringLiteral("[wcs-overlay] updated ticks x=%1..%2 y=%3..%4 size=%5x%6 renderer=%7 renderWindow=%8 xAxis=%9 yAxis=%10 xTitle=%11 yTitle=%12 endpoints=(%13,%14)->(%15,%16) outer=%17")
-                       .arg(visible.xmin, 0, 'g', 12)
-                       .arg(visible.xmax, 0, 'g', 12)
-                       .arg(visible.ymin, 0, 'g', 12)
-                       .arg(visible.ymax, 0, 'g', 12)
-                       .arg(size[0])
-                       .arg(size[1])
-                       .arg(reinterpret_cast<quintptr>(renderer), 0, 16)
-                       .arg(reinterpret_cast<quintptr>(renderWindow), 0, 16)
-                       .arg(reinterpret_cast<quintptr>(this->overlayXAxis.GetPointer()), 0, 16)
-                       .arg(reinterpret_cast<quintptr>(this->overlayYAxis.GetPointer()), 0, 16)
-                       .arg(reinterpret_cast<quintptr>(this->overlayXTitleActor.GetPointer()), 0, 16)
-                       .arg(reinterpret_cast<quintptr>(this->overlayYTitleActor.GetPointer()), 0, 16)
-                       .arg(axisX, 0, 'g', 12)
-                       .arg(size[1] - topMargin, 0, 'g', 12)
-                       .arg(axisX, 0, 'g', 12)
-                       .arg(bottomMargin, 0, 'g', 12)
-                       .arg(leftMargin, 0, 'g', 12);
-}
-
-void vtkWindowImage::setWcsOverlayVisible(bool visible)
-{
-    if (!this->wcsOverlayInitialized) {
-        return;
-    }
-    if (this->legendWCS) {
-        this->legendWCS->SetVisibility(false);
-    }
-    this->overlayXAxis->SetVisibility(visible);
-    this->overlayYAxis->SetVisibility(visible);
-    this->overlayXTitleActor->SetVisibility(visible);
-    this->overlayYTitleActor->SetVisibility(visible);
-    for (const auto &actor : this->overlayXTickActors) {
-        if (actor) {
-            actor->SetVisibility(visible);
-        }
-    }
-    for (const auto &actor : this->overlayYTickActors) {
-        if (actor) {
-            actor->SetVisibility(visible);
-        }
-    }
-}
-
-void vtkWindowImage::ensureOverlayTickActors(vtkRenderer *renderer)
-{
-    if (!renderer) {
-        return;
-    }
-    if (this->overlayXTickActors.empty()) {
-        for (int i = 0; i < overlayTickCount; ++i) {
-            auto actor = vtkSmartPointer<vtkTextActor>::New();
-            configureTickLabelActor(actor, false);
-            renderer->AddViewProp(actor);
-            this->overlayXTickActors.push_back(actor);
-        }
-    }
-    if (this->overlayYTickActors.empty()) {
-        for (int i = 0; i < overlayTickCount; ++i) {
-            auto actor = vtkSmartPointer<vtkTextActor>::New();
-            configureTickLabelActor(actor, true);
-            renderer->AddViewProp(actor);
-            this->overlayYTickActors.push_back(actor);
-        }
-    }
-}
-
-void vtkWindowImage::invalidateWcsOverlayCache()
-{
-    this->lastOverlayVisibleBounds = { std::numeric_limits<double>::quiet_NaN(),
-                                       std::numeric_limits<double>::quiet_NaN(),
-                                       std::numeric_limits<double>::quiet_NaN(),
-                                       std::numeric_limits<double>::quiet_NaN() };
-    this->lastOverlayViewportSize = { -1, -1 };
-    this->lastRenderedWcsFrame = std::numeric_limits<int>::min();
-    this->lastRenderedWcsFormat = -1;
-}
-
-void vtkWindowImage::applyDefaultWcsFormatForSelectedFrame()
-{
-    if (this->wcsFormatExplicitlyChosen) {
-        return;
-    }
-
-    this->useSexagesimalWcsFormat = this->selectedWcsFrame() == WCS_J2000;
-    if (this->actionWcsSexagesimal) {
-        this->actionWcsSexagesimal->setChecked(this->useSexagesimalWcsFormat);
-    }
-    if (this->actionWcsDecimal) {
-        this->actionWcsDecimal->setChecked(!this->useSexagesimalWcsFormat);
-    }
-}
-
-void vtkWindowImage::requestWcsOverlayRender()
-{
-    QMetaObject::invokeMethod(
-            this,
-            [this]() {
-                if (!ui || !ui->vtk || !ui->vtk->renderWindow()) {
-                    return;
-                }
-                this->updateWcsOverlay();
-                if (this->probeValid) {
-                    this->refreshProbeOverlay();
-                }
-                ui->vtk->renderWindow()->Render();
-                ui->vtk->update();
-            },
-            Qt::QueuedConnection);
-}
-
-void vtkWindowImage::refreshWcsOverlayImmediately()
-{
-    if (!ui || !ui->vtk || !ui->vtk->renderWindow()) {
-        return;
-    }
-    this->updateWcsOverlay();
-    if (this->probeValid) {
-        auto *interactor = ui->vtk->renderWindow()->GetInteractor();
-        const int *position = interactor ? interactor->GetEventPosition() : nullptr;
-        if (position) {
-            this->updateProbeFromDisplayPosition(position[0], position[1]);
-        } else {
-            this->refreshProbeOverlay();
-        }
-    }
-    ui->vtk->renderWindow()->Render();
-    ui->vtk->update();
-    this->requestWcsOverlayRender();
-}
-
-QString vtkWindowImage::currentWcsFrameLabel() const
-{
-    const int frame = this->selectedWcsFrame();
-    return frame == WCS_GALACTIC ? u"Galactic"_s
-            : (frame == WCS_J2000 ? u"FK5"_s : u"Ecliptic"_s);
-}
 
 void vtkWindowImage::updateDataStatePanel()
 {
@@ -4272,131 +2712,17 @@ void vtkWindowImage::updateSanityPanel()
     this->sanityLabel->setToolTip(report.details);
 }
 
-bool vtkWindowImage::remoteHasWcsAxis(int axis) const
-{
-    return axis >= 0 && axis < 3 && std::isfinite(this->remoteDatasetCrval[axis])
-            && std::isfinite(this->remoteDatasetCrpix[axis])
-            && std::isfinite(this->remoteDatasetCdelt[axis])
-            && std::abs(this->remoteDatasetCdelt[axis]) > 1e-12;
-}
 
-double vtkWindowImage::remoteVoxelToWcs(int axis, double voxelIndex, bool *ok) const
-{
-    const bool valid = this->remoteHasWcsAxis(axis);
-    if (ok) {
-        *ok = valid;
-    }
-    if (!valid) {
-        return voxelIndex;
-    }
 
-    return this->remoteDatasetCrval[axis]
-            + ((voxelIndex + 1.0) - this->remoteDatasetCrpix[axis]) * this->remoteDatasetCdelt[axis];
-}
 
-QString vtkWindowImage::remoteFormatAxisCoordinate(int axis, double voxelIndex) const
-{
-    bool ok = false;
-    const double world = this->remoteVoxelToWcs(axis, voxelIndex, &ok);
-    if (!ok) {
-        return QString::number(voxelIndex, 'g', 12);
-    }
 
-    const QString unit = (axis >= 0 && axis < 3) ? this->remoteDatasetCunit[axis].trimmed() : QString();
-    if (unit.isEmpty()) {
-        return QString::number(world, 'g', 12);
-    }
-    return u"%1 %2"_s.arg(QString::number(world, 'g', 12), unit);
-}
 
-QString vtkWindowImage::remoteAxisTitle(int axis) const
-{
-    const QString base = axis == 0 ? u"X"_s : (axis == 1 ? u"Y"_s : u"Z"_s);
-    const QString ctype = (axis >= 0 && axis < 3) ? this->remoteDatasetCtype[axis].trimmed() : QString();
-    const QString cunit = (axis >= 0 && axis < 3) ? this->remoteDatasetCunit[axis].trimmed() : QString();
-    const QString label = ctype.isEmpty() ? base : ctype;
-    return cunit.isEmpty() ? label : u"%1 (%2)"_s.arg(label, cunit);
-}
 
-int vtkWindowImage::selectedWcsFrame() const
-{
-    return ui->actionGalactic->isChecked() ? WCS_GALACTIC
-            : (ui->actionFK5->isChecked() ? WCS_J2000 : WCS_ECLIPTIC);
-}
 
-int vtkWindowImage::remoteNativeCelestialFrame() const
-{
-    return inferCelestialFrameFromCtypePair(this->remoteDatasetCtype);
-}
 
-bool vtkWindowImage::remoteHasCelestialAxes() const
-{
-    return this->remoteNativeCelestialFrame() >= 0 && this->remoteHasWcsAxis(0)
-            && this->remoteHasWcsAxis(1);
-}
 
-bool vtkWindowImage::convertRemoteCelestialCoordinates(double nativeX, double nativeY, double &frameX,
-                                                       double &frameY) const
-{
-    frameX = nativeX;
-    frameY = nativeY;
-    const int nativeFrame = this->remoteNativeCelestialFrame();
-    const int targetFrame = this->selectedWcsFrame();
-    if (nativeFrame < 0) {
-        return false;
-    }
-    if (nativeFrame != targetFrame) {
-        wcscon(nativeFrame, targetFrame, 2000.0, 2000.0, &frameX, &frameY, 2000.0);
-    }
-    return true;
-}
 
-QString vtkWindowImage::formatRemoteOverlayCoordinate(int axis, double value) const
-{
-    if (!this->remoteHasCelestialAxes()) {
-        return QString::number(value, 'g', 8);
-    }
-    if (!this->useSexagesimalWcsFormat) {
-        return this->formatDegreeCoordinate(value);
-    }
-    return formatCelestialCoordinate(this->selectedWcsFrame(), axis, value);
-}
 
-QString vtkWindowImage::remoteOverlayAxisTitle(int axis) const
-{
-    if (m_dynamicSpectrumMode) {
-        // Beamformed convention: NAXIS1 = TIME, NAXIS2 = FREQUENCY (see
-        // hdf5_dynspec.convert_hdf5_to_sidecar_fits and the FITS CTYPE check
-        // in ScientificFitsDataset.is_dynamic_spectrum). Inherit the unit
-        // from the FITS CUNIT so users with non-default units (e.g.
-        // CUNIT2='MHz') see the right label.
-        const QString cunit = (axis >= 0 && axis < 3)
-                ? this->remoteDatasetCunit[axis].trimmed() : QString();
-        const QString base = axis == 0 ? u"Time"_s : u"Frequency"_s;
-        return cunit.isEmpty() ? base : u"%1 (%2)"_s.arg(base, cunit);
-    }
-    if (!this->remoteHasCelestialAxes()) {
-        return this->remoteAxisTitle(axis);
-    }
-    const int frame = this->selectedWcsFrame();
-    if (frame == WCS_J2000) {
-        return axis == 0 ? u"Right Ascension"_s : u"Declination"_s;
-    }
-    if (frame == WCS_GALACTIC) {
-        return axis == 0 ? u"Galactic Longitude"_s : u"Galactic Latitude"_s;
-    }
-    return axis == 0 ? u"Ecliptic Longitude"_s : u"Ecliptic Latitude"_s;
-}
-
-QString vtkWindowImage::formatDegreeCoordinate(double value) const
-{
-    return QString::number(value, 'f', 2);
-}
-
-QString vtkWindowImage::selectedFrameAxisTitle(int axis) const
-{
-    return this->remoteOverlayAxisTitle(axis);
-}
 
 void vtkWindowImage::vtkRender()
 {
@@ -4428,6 +2754,180 @@ void vtkWindowImage::changeCurrentColorMap()
                                               ui->comboLut->currentText().toStdString());
     this->markDisplayStateAdjusted("color map");
     this->vtkRender();
+}
+
+// ── Copilot actions ──────────────────────────────────────────────────────────
+// The image viewer handles the directive types that make sense in 2-D (colour
+// map, camera). Cube-only types (goto_channel, render/blend mode, threshold) are
+// ignored. Display-only and reversible: a snapshot is taken before each batch.
+
+void vtkWindowImage::applyCopilotActions(const QList<QJsonObject> &actions)
+{
+    // Only these directive types apply in 2-D; if the batch has none (all
+    // cube-only), do nothing — don't overwrite the undo slot or claim a change.
+    // Map a scale name to a LutScale::Mode; returns false for an unknown scale.
+    auto parseScale = [](const QString &raw, LutScale::Mode &out) -> bool {
+        const QString s = raw.trimmed().toLower();
+        if (s == u"linear"_s) { out = LutScale::Mode::Linear; return true; }
+        if (s == u"log"_s)    { out = LutScale::Mode::Log;    return true; }
+        if (s == u"sqrt"_s)   { out = LutScale::Mode::Sqrt;   return true; }
+        if (s == u"square"_s) { out = LutScale::Mode::Square; return true; }
+        if (s == u"power"_s)  { out = LutScale::Mode::Power;  return true; }
+        return false;
+    };
+
+    int applicable = 0;
+    bool batchSetsColormap = false;
+    bool batchSetsScale = false;
+    bool batchResetsCamera = false;
+    for (const QJsonObject &a : actions) {
+        const QString t = a.value(u"type"_s).toString();
+        LutScale::Mode m{};
+        if (t == u"set_colormap"_s) { ++applicable; batchSetsColormap = true; }
+        else if (t == u"reset_camera"_s) { ++applicable; batchResetsCamera = true; }
+        else if (t == u"set_scaling"_s && parseScale(a.value(u"scale"_s).toString(), m)) {
+            ++applicable; batchSetsScale = true;
+        }
+    }
+    if (applicable == 0)
+        return;
+
+    auto *renderer = (ui && ui->vtk && ui->vtk->renderWindow())
+            ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()
+            : nullptr;
+
+    this->m_copilotUndo = CopilotSnapshot{};
+    this->m_copilotUndo.valid = true;
+    // Snapshot the CURRENT layer index, so Undo restores that exact layer even if
+    // the user switches layers before undoing. Capture only what the batch touches.
+    this->m_copilotUndo.layerIndex = this->currentLayerIndex();
+    const int idx = this->m_copilotUndo.layerIndex;
+    if (batchSetsColormap && this->layerController) {
+        this->m_copilotUndo.colormap = QString::fromStdString(
+                this->layerController->layerViewState(idx).colorMapName);
+        this->m_copilotUndo.colormapCaptured = true;
+    }
+    if (batchSetsScale && this->layers && idx >= 0 && idx < this->layers->rowCount()) {
+        this->m_copilotUndo.scaleMode = this->layers->scaleMode(idx);
+        this->m_copilotUndo.scaleGamma = this->layers->scaleGamma(idx);
+        // Log clamps the LUT table range to positive; capture it so Undo can put
+        // back a range that spanned negatives (e.g. a linear [-5, 10]).
+        if (auto *lut = this->layers->getLookupTable(idx)) {
+            const double *r = lut->GetTableRange();
+            this->m_copilotUndo.lutRange[0] = r ? r[0] : 0.0;
+            this->m_copilotUndo.lutRange[1] = r ? r[1] : 1.0;
+        }
+        this->m_copilotUndo.scaleCaptured = true;
+    }
+    if (batchResetsCamera && renderer) {
+        if (auto *cam = renderer->GetActiveCamera()) {
+            cam->GetPosition(this->m_copilotUndo.camPos);
+            cam->GetFocalPoint(this->m_copilotUndo.camFoc);
+            cam->GetViewUp(this->m_copilotUndo.camUp);
+            this->m_copilotUndo.camScale = cam->GetParallelScale();
+            this->m_copilotUndo.cameraCaptured = true;
+        }
+    }
+
+    for (const QJsonObject &a : actions) {
+        const QString type = a.value(u"type"_s).toString();
+        if (type == u"set_colormap"_s) {
+            const QString want = a.value(u"name"_s).toString().trimmed();
+            for (const std::string &n : ColorMaps::GetColorMapNames()) {
+                const QString qn = QString::fromStdString(n);
+                if (qn.compare(want, Qt::CaseInsensitive) == 0) {
+                    if (ui->comboLut) {
+                        const QSignalBlocker b(ui->comboLut);
+                        ui->comboLut->setCurrentText(qn);
+                    }
+                    this->changeCurrentColorMap();
+                    break;
+                }
+            }
+        } else if (type == u"set_scaling"_s && this->layers) {
+            LutScale::Mode mode{};
+            if (parseScale(a.value(u"scale"_s).toString(), mode)
+                && idx >= 0 && idx < this->layers->rowCount()) {
+                // Log needs positive values in range; skip (like the LUT editor)
+                // rather than collapse to a degenerate range on an all-≤0 image.
+                bool ok = true;
+                if (mode == LutScale::Mode::Log) {
+                    auto *img = this->layers->getImageData(idx);
+                    const double floor = img
+                            ? sampledPositiveFloor(img, initialAutoscaleTargetSamples)
+                            : 0.0;
+                    if (!(floor > 0.0) || !std::isfinite(floor)) {
+                        ok = false;
+                        this->statusBar()->showMessage(
+                                tr("Log scale needs positive values in the visible range."), 3000);
+                    }
+                }
+                if (ok) {
+                    // Canonical per-layer stretch API (same one the LUT editor
+                    // uses), keeping its gamma. dataChanged re-renders; Undo
+                    // restores mode+gamma+range exactly.
+                    this->layers->setScaleMode(idx, mode, this->layers->scaleGamma(idx));
+                    this->updateLUTCustomizer();
+                }
+            }
+        } else if (type == u"reset_camera"_s && renderer) {
+            renderer->ResetCamera();
+            renderer->ResetCameraClippingRange();
+        }
+        // Cube-only directive types are silently ignored on a 2-D image.
+    }
+    this->vtkRender();
+    this->statusBar()->showMessage(
+            tr("Copilot applied %n visualisation change(s), Undo available.", "", applicable),
+            6000);
+}
+
+void vtkWindowImage::undoCopilotActions()
+{
+    if (!this->m_copilotUndo.valid)
+        return;
+    const CopilotSnapshot s = this->m_copilotUndo;
+    this->m_copilotUndo.valid = false;
+
+    if (s.colormapCaptured && !s.colormap.isEmpty() && this->layerController) {
+        // Restore the captured layer's colormap directly (not the now-current one).
+        this->layerController->setCurrentColorMap(s.layerIndex, s.colormap.toStdString());
+        // Reflect in the combo only if that layer is still selected.
+        if (ui->comboLut && this->currentLayerIndex() == s.layerIndex) {
+            const QSignalBlocker b(ui->comboLut);
+            ui->comboLut->setCurrentText(s.colormap);
+        }
+    }
+    if (s.scaleCaptured && this->layers && s.layerIndex >= 0
+        && s.layerIndex < this->layers->rowCount()) {
+        // Restore the pre-batch LUT range FIRST (a log stretch clamped it to
+        // positive), so setScaleMode rebuilds from the original range, then
+        // restore the captured stretch (mode + gamma) exactly.
+        //
+        // Forced linear for that one call: the saved range is the unclamped one
+        // and the table may still be logarithmic from the batch, in which case a
+        // plain SetTableRange is refused and the restore silently does nothing —
+        // setScaleMode would then rebuild from the clamped range this is trying
+        // to undo. setScaleMode installs the real mode immediately after.
+        if (auto *lut = this->layers->getLookupTable(s.layerIndex))
+            LutScale::setRange(lut, LutScale::Mode::Linear, s.lutRange[0], s.lutRange[1]);
+        this->layers->setScaleMode(s.layerIndex, s.scaleMode, s.scaleGamma);
+        if (this->currentLayerIndex() == s.layerIndex)
+            this->updateLUTCustomizer();
+    }
+    if (s.cameraCaptured && ui && ui->vtk && ui->vtk->renderWindow()) {
+        if (auto *ren = ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()) {
+            if (auto *cam = ren->GetActiveCamera()) {
+                cam->SetPosition(s.camPos[0], s.camPos[1], s.camPos[2]);
+                cam->SetFocalPoint(s.camFoc[0], s.camFoc[1], s.camFoc[2]);
+                cam->SetViewUp(s.camUp[0], s.camUp[1], s.camUp[2]);
+                cam->SetParallelScale(s.camScale);
+                ren->ResetCameraClippingRange();
+            }
+        }
+    }
+    this->vtkRender();
+    this->statusBar()->showMessage(tr("Reverted the copilot's visualisation changes."), 4000);
 }
 
 void vtkWindowImage::changeCurrentColorScale()
@@ -4513,7 +3013,10 @@ void vtkWindowImage::changeCurrentColorScale()
     } else if (lut->UsingLogScale()) {
         const auto saved = this->savedLinearDisplayRanges[static_cast<std::size_t>(index)];
         if (std::isfinite(saved[0]) && std::isfinite(saved[1]) && saved[0] < saved[1]) {
-            lut->SetTableRange(saved[0], saved[1]);
+            // The table is still logarithmic here — that is the branch condition —
+            // and the saved range is the signed one from before log was turned on,
+            // so it has to go in as linear or VTK refuses it.
+            LutScale::setRange(lut, LutScale::Mode::Linear, saved[0], saved[1]);
             lut->Build();
             qDebug().noquote()
                     << QStringLiteral("[image] linear scale restore index=%1 restored=%2..%3")
@@ -4588,118 +3091,9 @@ void vtkWindowImage::markDisplayStateAdjusted(const char *reason)
 
 // ── FITS header dialog (shown on primary tag click) ──────────────────────────
 
-void vtkWindowImage::showFitsHeaderDialog()
-{
-    BackendClient client(this->remoteBackendUrl, this->remoteBackendToken);
-    const auto result = client.fileHeader(this->filepath);
-
-    auto *dlg = new QDialog(this);
-    dlg->setAttribute(Qt::WA_DeleteOnClose);
-    dlg->setWindowModality(Qt::NonModal);
-    dlg->setWindowTitle(u"FITS Header — %1"_s.arg(QFileInfo(this->filepath).fileName()));
-    dlg->resize(620, 480);
-
-    auto *vbox = new QVBoxLayout(dlg);
-    vbox->setContentsMargins(0, 0, 0, 0);
-    vbox->setSpacing(0);
-
-    auto *header = new QFrame(dlg);
-    header->setStyleSheet(
-            QStringLiteral(
-                    "QFrame {"
-                    "  background-color: %1;"
-                    "  border-bottom: 1px solid %2;"
-                    "}"
-                    "QFrame QLabel { background: transparent; }")
-                    .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerLow()),
-                         QLatin1StringView(VisivoTheme::kOutline())));
-    auto *headerLayout = new QVBoxLayout(header);
-    headerLayout->setContentsMargins(16, 12, 16, 12);
-    headerLayout->setSpacing(2);
-    auto *title = new QLabel(u"FITS Header"_s, header);
-    title->setStyleSheet(
-            QStringLiteral("color: %1; font-size: 14px; font-weight: 700;")
-                    .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
-    headerLayout->addWidget(title);
-    auto *sub = new QLabel(this->filepath, header);
-    sub->setStyleSheet(
-            QStringLiteral("color: %1; font-size: 11px; "
-                            "font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;")
-                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
-    sub->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    headerLayout->addWidget(sub);
-    vbox->addWidget(header);
-
-    auto *body = new QPlainTextEdit(dlg);
-    body->setReadOnly(true);
-    body->setLineWrapMode(QPlainTextEdit::NoWrap);
-    body->setStyleSheet(
-            QStringLiteral(
-                    "QPlainTextEdit {"
-                    "  background-color: %1; color: %2;"
-                    "  font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;"
-                    "  font-size: 11px;"
-                    "  border: none;"
-                    "  padding: 12px 14px;"
-                    "}")
-                    .arg(QLatin1StringView(VisivoTheme::kSurface()),
-                         QLatin1StringView(VisivoTheme::kOnSurface())));
-    if (result.valid && !result.cards.isEmpty()) {
-        body->setPlainText(result.cards.join(u"\n"_s));
-    } else if (!result.valid) {
-        body->setPlainText(
-                QStringLiteral("Could not load FITS header.\n\n%1")
-                        .arg(result.error.isEmpty() ? u"Unknown error."_s : result.error));
-    } else {
-        body->setPlainText(u"(empty header)"_s);
-    }
-    vbox->addWidget(body, 1);
-
-    dlg->show();
-}
 
 // ── Layout B viewer toolbar ──────────────────────────────────────────────────
 
-void vtkWindowImage::setupViewerToolbar()
-{
-    VisivoTheme::ViewerToolbarSpec spec;
-    spec.filePath = this->filepath;
-    spec.primaryTag = QStringLiteral("IMAGE");
-    spec.secondaryTag = QStringLiteral("remote · full-res");
-
-    QToolButton *findBtn = nullptr;
-    QToolButton *cmdBtn  = nullptr;
-    QToolButton *expBtn  = nullptr;
-    QToolButton *tagBtn  = nullptr;
-    QWidget *bar = VisivoTheme::makeViewerToolbar(
-            spec, &findBtn, &cmdBtn, &expBtn, &tagBtn, this);
-
-    if (tagBtn) {
-        QObject::connect(tagBtn, &QToolButton::clicked, this, [this]() {
-            this->showFitsHeaderDialog();
-        });
-    }
-
-    auto *qtBar = new QToolBar(this);
-    qtBar->setObjectName(u"viewerToolbarHost"_s);
-    qtBar->setMovable(false);
-    qtBar->setFloatable(false);
-    qtBar->setContextMenuPolicy(Qt::PreventContextMenu);
-    qtBar->setStyleSheet(
-            QStringLiteral(
-                    "QToolBar#viewerToolbarHost {"
-                    "  background-color: transparent;"
-                    "  border: none;"
-                    "  padding: 6px 10px 4px 10px;"
-                    "  spacing: 0px;"
-                    "}"));
-    qtBar->addWidget(bar);
-    this->addToolBar(Qt::TopToolBarArea, qtBar);
-
-    Q_UNUSED(findBtn);
-    Q_UNUSED(cmdBtn);
-    Q_UNUSED(expBtn);
-}
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
@@ -4709,201 +3103,11 @@ void vtkWindowImage::setupViewerToolbar()
 // cube viewer's Level / Lower / Upper UI pattern. The actor is permanently
 // in the renderer; visibility is toggled via the "Show Contours" button.
 
-void vtkWindowImage::setupContourPipeline()
-{
-    auto *imageData = this->layers
-            ? this->layers->getImageData(this->layers->getMasterIndex())
-            : nullptr;
-    if (!imageData) return;
 
-    double range[2];
-    imageData->GetScalarRange(range);
-    m_contourLower = range[0];
-    m_contourUpper = range[1];
 
-    const bool firstTime = !m_contourFilter;
-    if (firstTime) {
-        m_contourFilter = vtkSmartPointer<vtkFlyingEdges2D>::New();
-        m_contourActor  = vtkSmartPointer<vtkActor>::New();
-    }
 
-    m_contourFilter->SetInputData(imageData);
-    m_contourFilter->GenerateValues(m_contourLevel, m_contourLower, m_contourUpper);
-    m_contourFilter->Update();
 
-    if (firstTime) {
-        vtkNew<vtkPolyDataMapper> mapper;
-        mapper->SetInputConnection(m_contourFilter->GetOutputPort());
-        mapper->SetScalarRange(m_contourLower, m_contourUpper);
-        m_contourActor->SetMapper(mapper);
-        m_contourActor->VisibilityOff();
 
-        auto *ren = ui->vtk->renderWindow()
-                    ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()
-                    : nullptr;
-        if (ren) ren->AddViewProp(m_contourActor);
-    } else if (m_contourActor->GetMapper()) {
-        static_cast<vtkPolyDataMapper *>(m_contourActor->GetMapper())
-                ->SetScalarRange(m_contourLower, m_contourUpper);
-    }
-
-    // Sync the sidebar line edits so the user sees the actual range from
-    // the real image data, not the stale defaults from construction time.
-    if (m_contourLowerEdit) {
-        const QSignalBlocker b(m_contourLowerEdit);
-        m_contourLowerEdit->setText(QString::number(m_contourLower, 'g', 6));
-    }
-    if (m_contourUpperEdit) {
-        const QSignalBlocker b(m_contourUpperEdit);
-        m_contourUpperEdit->setText(QString::number(m_contourUpper, 'g', 6));
-    }
-
-    m_contourActor->SetVisibility(m_contoursVisible);
-    m_contourPipelineDirty = false;
-}
-
-void vtkWindowImage::updateContours()
-{
-    if (!m_contourFilter) return;
-    // Guard: lower must be < upper for GenerateValues to produce valid levels.
-    if (m_contourLower >= m_contourUpper) return;
-    m_contourFilter->GenerateValues(m_contourLevel, m_contourLower, m_contourUpper);
-    m_contourFilter->Modified();
-    m_contourFilter->Update();
-    if (m_contourActor && m_contourActor->GetMapper()) {
-        static_cast<vtkPolyDataMapper *>(m_contourActor->GetMapper())
-                ->SetScalarRange(m_contourLower, m_contourUpper);
-    }
-    if (ui->vtk->renderWindow())
-        ui->vtk->renderWindow()->Render();
-}
-
-void vtkWindowImage::setContoursVisible(bool vis)
-{
-    // Lazy pipeline rebuild: applyRemoteMasterLayer skips setupContourPipeline
-    // on the preview→full swap when contours are invisible, so we have to
-    // wire the filter to the current master image data the first time the
-    // user actually turns contours on. setupContourPipeline clears the dirty
-    // flag, so subsequent toggles are cheap (just SetVisibility + Render).
-    if (vis && m_contourPipelineDirty) {
-        setupContourPipeline();
-    }
-    m_contoursVisible = vis;
-    if (m_contourActor) {
-        m_contourActor->SetVisibility(vis);
-    }
-    if (ui->vtk->renderWindow())
-        ui->vtk->renderWindow()->Render();
-}
-
-void vtkWindowImage::addExternalContours()
-{
-    auto *ren = ui->vtk->renderWindow()
-                ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()
-                : nullptr;
-    if (!ren) return;
-
-    const QString path = QFileDialog::getOpenFileName(
-            this, u"Load Contour FITS"_s, QString(),
-            u"FITS files (*.fits *.fit);;All files (*)"_s);
-    if (path.isEmpty()) return;
-
-    bool ok = false;
-    const QString levelsStr = QInputDialog::getText(
-            this, u"Contour Levels"_s,
-            u"Enter contour levels (comma-separated):"_s,
-            QLineEdit::Normal,
-            u"0.1, 0.5, 1.0, 2.0, 5.0"_s, &ok);
-    if (!ok || levelsStr.trimmed().isEmpty()) return;
-
-    QVector<double> levels;
-    for (const auto &s : levelsStr.split(u','))  {
-        bool lok = false;
-        const double v = s.trimmed().toDouble(&lok);
-        if (lok && std::isfinite(v)) levels.append(v);
-    }
-    if (levels.isEmpty()) return;
-
-    vtkNew<vtkFITSReader> reader;
-    reader->SetFileName(path.toStdString().c_str());
-    reader->Update();
-    auto *extData = reader->GetOutput();
-    if (!extData || extData->GetNumberOfPoints() == 0) {
-        QMessageBox::warning(this, u"Contour"_s,
-                u"Could not read FITS data from:\n%1"_s.arg(path));
-        return;
-    }
-
-    vtkNew<vtkContourFilter> contour;
-    contour->SetInputData(extData);
-    contour->SetNumberOfContours(levels.size());
-    for (int i = 0; i < levels.size(); ++i)
-        contour->SetValue(i, levels[i]);
-    contour->Update();
-
-    vtkNew<vtkPolyDataMapper> mapper;
-    mapper->SetInputConnection(contour->GetOutputPort());
-    mapper->ScalarVisibilityOff();
-
-    auto actor = vtkSmartPointer<vtkActor>::New();
-    actor->SetMapper(mapper);
-    actor->GetProperty()->SetColor(1.0, 0.4, 0.2);
-    actor->GetProperty()->SetLineWidth(1.5);
-    actor->VisibilityOn();
-
-    ren->AddActor(actor);
-    m_externalContourLayers.append({ QFileInfo(path).fileName(), actor });
-    ui->vtk->renderWindow()->Render();
-}
-
-void vtkWindowImage::overlayExternalContourData(const QString &label, vtkImageData *data)
-{
-    if (!data || data->GetNumberOfPoints() == 0) return;
-    auto *ren = ui->vtk->renderWindow()
-                ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer() : nullptr;
-    if (!ren) return;
-
-    double range[2];
-    data->GetScalarRange(range);
-    if (range[1] <= range[0]) return;
-
-    constexpr int nLevels = 8;
-    vtkNew<vtkFlyingEdges2D> contour;
-    contour->SetInputData(data);
-    contour->GenerateValues(nLevels, range[0] + (range[1] - range[0]) * 0.1,
-                            range[0] + (range[1] - range[0]) * 0.9);
-    contour->Update();
-
-    vtkNew<vtkPolyDataMapper> mapper;
-    mapper->SetInputConnection(contour->GetOutputPort());
-    mapper->ScalarVisibilityOff();
-
-    auto actor = vtkSmartPointer<vtkActor>::New();
-    actor->SetMapper(mapper);
-    actor->GetProperty()->SetColor(0.2, 1.0, 0.4);
-    actor->GetProperty()->SetLineWidth(1.5);
-    actor->VisibilityOn();
-
-    ren->AddActor(actor);
-    m_externalContourLayers.append({ label, actor });
-    statusBar()->showMessage(
-            QStringLiteral("Contour overlay from cube: %1").arg(label), 3000);
-    ui->vtk->renderWindow()->Render();
-}
-
-void vtkWindowImage::clearAllContours()
-{
-    auto *ren = ui->vtk->renderWindow()
-                ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()
-                : nullptr;
-    for (auto &layer : m_externalContourLayers) {
-        if (ren && layer.actor) ren->RemoveActor(layer.actor);
-    }
-    m_externalContourLayers.clear();
-    setContoursVisible(false);
-    if (ren && ui->vtk->renderWindow())
-        ui->vtk->renderWindow()->Render();
-}
 
 // ── Beam ellipse indicator ───────────────────────────────────────────────────
 
@@ -4964,2036 +3168,60 @@ void vtkWindowImage::setBeamInfo(double majorDeg, double minorDeg, double paDeg)
 
 // ── Dynamic spectrum / beamformed mode ──────────────────────────────────────
 
-void vtkWindowImage::setDynamicSpectrumMode(bool enabled)
-{
-    if (m_dynamicSpectrumMode == enabled) return;
-    m_dynamicSpectrumMode = enabled;
-
-    // Hide celestial-WCS specific tools and overlays. They make no sense for
-    // a time × frequency waterfall: no beam, no Galactic / FK5 frame, no
-    // polarimetry workflow, no catalogue overlay against sky coords.
-    const auto setActionEnabled = [enabled](QAction *act) {
-        if (!act) return;
-        act->setEnabled(!enabled);
-        act->setVisible(!enabled);
-    };
-    setActionEnabled(actionWcsSexagesimal);
-    setActionEnabled(actionWcsDecimal);
-    setActionEnabled(actionLoadCatalogueOverlay);
-    setActionEnabled(actionShowCatalogueOverlay);
-    setActionEnabled(actionShowCatalogueLabels);
-    setActionEnabled(actionClearCatalogueOverlay);
-    setActionEnabled(m_actLoadStokesCompanions);
-    setActionEnabled(m_actComputeStokesP);
-    setActionEnabled(m_actComputeStokesPA);
-    setActionEnabled(m_actComputeStokesFrac);
-    setActionEnabled(m_actComputeStokesPdebiased);
-    setActionEnabled(m_actComputeSpectralIndex);
-    setActionEnabled(m_actComputeFaradayRM);
-    setActionEnabled(m_actTogglePolVecs);
-    if (ui->actionGalactic)  ui->actionGalactic->setEnabled(!enabled);
-    if (ui->actionFK5)       ui->actionFK5->setEnabled(!enabled);
-    if (ui->actionEcliptic)  ui->actionEcliptic->setEnabled(!enabled);
-
-    // Sidebar cards: hide celestial-only ones and reveal the Time-Series
-    // Tools placeholder. Done outside the if/else so the inverse direction
-    // (re-enabling celestial mode after a dynspec was loaded) also works.
-    for (const auto &card : std::as_const(m_dynspecHiddenCards)) {
-        if (card) card->setVisible(!enabled);
-    }
-    if (m_dynspecToolsCard) {
-        m_dynspecToolsCard->setVisible(enabled);
-    }
-
-    if (enabled) {
-        // Beam indicator is meaningless for beamformed data.
-        m_beamMajorDeg = std::numeric_limits<double>::quiet_NaN();
-        m_beamMinorDeg = std::numeric_limits<double>::quiet_NaN();
-        m_beamPaDeg    = std::numeric_limits<double>::quiet_NaN();
-        if (m_beamActor) m_beamActor->VisibilityOff();
-        // Status-bar panels: replace sanity messaging with a stable note.
-        if (this->sanityLabel) {
-            this->sanityLabel->setText(u"Dynamic Spectrum"_s);
-            this->sanityLabel->setToolTip(
-                    u"This dataset is a beamformed / dynamic-spectrum product. "
-                    u"Time × frequency axes; celestial-WCS tools are disabled."_s);
-        }
-    }
-
-    if (ui->vtk && ui->vtk->renderWindow()) {
-        this->invalidateWcsOverlayCache();
-        this->requestWcsOverlayRender();
-    }
-}
 
 // ── Dynamic-spectrum tool slots ─────────────────────────────────────────────
 
-void vtkWindowImage::runDynspecDedispersion()
-{
-    if (!m_dynamicSpectrumMode) return;
-    auto *edit = this->findChild<QLineEdit *>(u"dynspecDmEdit"_s);
-    if (!edit) return;
-    const double dm = edit->text().toDouble();
-    if (dm <= 0.0) {
-        QMessageBox::information(this, u"Dedispersion"_s,
-                u"Set a positive Dispersion Measure (pc cm⁻³) before computing."_s);
-        return;
-    }
 
-    const QString url   = this->remoteBackendUrl;
-    const QString token = this->remoteBackendToken;
-    const QString sid   = this->remoteSessionId;
-    const QString dsId  = this->remoteDatasetId;
 
-    statusBar()->showMessage(
-            QStringLiteral("Dedispersing at DM=%1 pc cm⁻³…").arg(dm), 0);
-
-    QPointer<vtkWindowImage> self(this);
-    auto *watcher = new QFutureWatcher<BackendDynspecDedisperseResult>(this);
-    QObject::connect(watcher, &QFutureWatcher<BackendDynspecDedisperseResult>::finished,
-                     this, [self, watcher]() {
-        const auto r = watcher->result();
-        watcher->deleteLater();
-        if (!self) return;
-        self->statusBar()->clearMessage();
-        if (!r.valid) {
-            QMessageBox::warning(self, u"Dedispersion"_s,
-                    u"Dedispersion failed:\n\n%1"_s.arg(r.error));
-            return;
-        }
-        QMessageBox::information(self, u"Dedispersion"_s,
-                u"Dedispersed dynspec saved.\n\n"
-                u"Filename: %1\nDM: %2 pc cm⁻³\nRef. freq.: %3 MHz\n"
-                u"Max channel shift: %4 samples\n\n"
-                u"Open the file in a new viewer or as a layer to inspect "
-                u"the result."_s
-                .arg(r.workspaceFilename)
-                .arg(r.dmPcCm3, 0, 'f', 4)
-                .arg(r.refFreqMhz, 0, 'f', 3)
-                .arg(r.maxShiftSamples));
-    });
-    watcher->setFuture(QtConcurrent::run([url, token, sid, dsId, dm]() {
-        BackendClient c(url, token);
-        c.setSessionId(sid);
-        return c.dedisperseDynspec(dsId, dm, /*refFreqMhz=*/0.0, QString());
-    }));
-}
-
-void vtkWindowImage::runDynspecPulseProfile()
-{
-    if (!m_dynamicSpectrumMode) return;
-    auto *pEdit = this->findChild<QLineEdit *>(u"dynspecPeriodEdit"_s);
-    auto *dmEdit = this->findChild<QLineEdit *>(u"dynspecDmEdit"_s);
-    if (!pEdit) return;
-    const double period = pEdit->text().toDouble();
-    const double dm = dmEdit ? dmEdit->text().toDouble() : 0.0;
-    if (period <= 0.0) {
-        QMessageBox::information(this, u"Pulse Profile"_s,
-                u"Set a positive period (seconds) before folding."_s);
-        return;
-    }
-
-    const QString url   = this->remoteBackendUrl;
-    const QString token = this->remoteBackendToken;
-    const QString sid   = this->remoteSessionId;
-    const QString dsId  = this->remoteDatasetId;
-
-    statusBar()->showMessage(
-            QStringLiteral("Folding at P=%1 s (DM=%2)…")
-                    .arg(period, 0, 'g', 6).arg(dm, 0, 'f', 3), 0);
-
-    QPointer<vtkWindowImage> self(this);
-    auto *watcher = new QFutureWatcher<BackendDynspecPulseProfileResult>(this);
-    QObject::connect(watcher, &QFutureWatcher<BackendDynspecPulseProfileResult>::finished,
-                     this, [self, watcher]() {
-        const auto r = watcher->result();
-        watcher->deleteLater();
-        if (!self) return;
-        self->statusBar()->clearMessage();
-        if (!r.valid) {
-            QMessageBox::warning(self, u"Pulse Profile"_s,
-                    u"Pulse profile computation failed:\n\n%1"_s.arg(r.error));
-            return;
-        }
-
-        // Floating QCustomPlot window with the folded profile
-        auto *win = new QWidget(nullptr, Qt::Window);
-        win->setAttribute(Qt::WA_DeleteOnClose);
-        win->setWindowTitle(
-                QStringLiteral("Pulse Profile — P=%1 s · DM=%2 · SNR=%3")
-                        .arg(r.periodS, 0, 'g', 6)
-                        .arg(r.dmPcCm3, 0, 'f', 3)
-                        .arg(r.snrPeak, 0, 'f', 1));
-        win->resize(640, 360);
-        auto *layout = new QVBoxLayout(win);
-        layout->setContentsMargins(4, 4, 4, 4);
-
-        auto *info = new QLabel(QStringLiteral(
-                "Period: %1 s    DM: %2 pc cm⁻³    Bins: %3    "
-                "Peak: %4    σ_MAD: %5    SNR (peak/σ): %6")
-                        .arg(r.periodS, 0, 'g', 6).arg(r.dmPcCm3, 0, 'f', 3)
-                        .arg(r.nBins)
-                        .arg(r.peak, 0, 'g', 5).arg(r.sigmaMad, 0, 'g', 5)
-                        .arg(r.snrPeak, 0, 'f', 2), win);
-        layout->addWidget(info);
-
-        auto *plot = new QCustomPlot(win);
-        layout->addWidget(plot);
-        plot->addGraph();
-        plot->graph(0)->setData(r.phase, r.profile);
-        plot->graph(0)->setPen(QPen(QColor(70, 130, 180), 1.5));
-        plot->graph(0)->setBrush(QBrush(QColor(70, 130, 180, 40)));
-        plot->xAxis->setLabel(u"Pulse phase"_s);
-        plot->yAxis->setLabel(u"Mean intensity"_s);
-        if (!r.phase.isEmpty()) {
-            plot->xAxis->setRange(0.0, 1.0);
-            double minY = std::numeric_limits<double>::infinity();
-            double maxY = -std::numeric_limits<double>::infinity();
-            for (double v : r.profile) {
-                if (std::isfinite(v)) {
-                    minY = std::min(minY, v);
-                    maxY = std::max(maxY, v);
-                }
-            }
-            if (std::isfinite(minY) && std::isfinite(maxY) && minY < maxY) {
-                const double pad = (maxY - minY) * 0.10;
-                plot->yAxis->setRange(minY - pad, maxY + pad);
-            }
-        }
-        plot->replot();
-        win->show();
-    });
-    watcher->setFuture(QtConcurrent::run([url, token, sid, dsId, period, dm]() {
-        BackendClient c(url, token);
-        c.setSessionId(sid);
-        return c.pulseProfile(dsId, period, /*nBins=*/64, dm,
-                              /*fLo*/ 0.0, /*fHi*/ 0.0);
-    }));
-}
-
-void vtkWindowImage::runDynspecRfiMask()
-{
-    if (!m_dynamicSpectrumMode) return;
-    auto *edit = this->findChild<QLineEdit *>(u"dynspecSigmaEdit"_s);
-    if (!edit) return;
-    const double sigma = edit->text().toDouble();
-    if (sigma <= 0.0) {
-        QMessageBox::information(this, u"RFI Mask"_s,
-                u"Set a positive σ threshold before flagging."_s);
-        return;
-    }
-
-    const QString url   = this->remoteBackendUrl;
-    const QString token = this->remoteBackendToken;
-    const QString sid   = this->remoteSessionId;
-    const QString dsId  = this->remoteDatasetId;
-
-    statusBar()->showMessage(
-            QStringLiteral("Flagging RFI at %1 σ…").arg(sigma), 0);
-
-    QPointer<vtkWindowImage> self(this);
-    auto *watcher = new QFutureWatcher<BackendDynspecRfiMaskResult>(this);
-    QObject::connect(watcher, &QFutureWatcher<BackendDynspecRfiMaskResult>::finished,
-                     this, [self, watcher]() {
-        const auto r = watcher->result();
-        watcher->deleteLater();
-        if (!self) return;
-        self->statusBar()->clearMessage();
-        if (!r.valid) {
-            QMessageBox::warning(self, u"RFI Mask"_s,
-                    u"RFI mask computation failed:\n\n%1"_s.arg(r.error));
-            return;
-        }
-        QMessageBox::information(self, u"RFI Mask"_s,
-                u"RFI mask saved to Workspace Exports.\n\n"
-                u"Filename: %1\n"
-                u"Flagged fraction: %2 %\n"
-                u"σ threshold: %3 (across %4 axis)\n\n"
-                u"Open it as a layer over the source dynspec to highlight "
-                u"the flagged pixels."_s
-                .arg(r.workspaceFilename)
-                .arg(r.flaggedFraction * 100.0, 0, 'f', 2)
-                .arg(r.nSigma, 0, 'f', 1)
-                .arg(r.axis));
-    });
-    watcher->setFuture(QtConcurrent::run([url, token, sid, dsId, sigma]() {
-        BackendClient c(url, token);
-        c.setSessionId(sid);
-        return c.rfiMask(dsId, sigma, QStringLiteral("channel"), QString());
-    }));
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-void vtkWindowImage::setupSidebar()
-{
-    // Remove the UI-file sidebar container and replace it with SidebarPanel.
-    auto *mainLayout = qobject_cast<QHBoxLayout *>(ui->centralwidget->layout());
-    mainLayout->removeWidget(ui->sidebarContainer);
-    ui->sidebarContainer->hide();
-
-    // ── Shared style constants (same palette as VBT / catalogue viewers) ──────
-    const QString hdrStyle     = VisivoTheme::sidebarHeaderStyleSheet();
-    const QString cardStyle    = VisivoTheme::sidebarCardStyleSheet();
-    const QString subHdrStyle  = VisivoTheme::sidebarSubHeaderStyleSheet();
-    const QString keyStyle     = VisivoTheme::infoKeyStyleSheet();
-    const QString valStyle     = VisivoTheme::infoValueStyleSheet();
-    const QString toolBtnStyle = VisivoTheme::sidebarToolButtonStyleSheet();
-
-    // ── Page 0: Layer Settings (from UI file) ──────────────────────────────────
-    // Apply styles to existing UI-file page widgets (page3D is hidden; not styled)
-    for (QLabel *lbl : { ui->labelLayerHdr, ui->labelCatalogueHdr }) {
-        lbl->setStyleSheet(hdrStyle);
-    }
-    for (QLabel *lbl : { ui->labelLayerListHdr, ui->labelInventoryHdr, ui->labelObjectsHdr }) {
-        lbl->setStyleSheet(subHdrStyle);
-    }
-    for (QFrame *f : { ui->frameLayerControls, ui->frameCatalogueActions }) {
-        f->setStyleSheet(cardStyle);
-    }
-
-    // ── Page 1: Tools ─────────────────────────────────────────────────────────
-    auto *pageTools = new QWidget;
-    auto *toolsLayout = new QVBoxLayout(pageTools);
-    toolsLayout->setContentsMargins(8, 8, 8, 8);
-    toolsLayout->setSpacing(8);
-
-    {
-        auto *hdr = new QLabel(u"TOOLS"_s, pageTools);
-        hdr->setStyleSheet(hdrStyle);
-        toolsLayout->addWidget(hdr);
-    }
-
-    // Helper: create a full-width tool button bound to an action
-    const auto makeToolBtn = [&toolBtnStyle](QAction *action, QWidget *parent) -> QToolButton * {
-        auto *btn = new QToolButton(parent);
-        btn->setDefaultAction(action);
-        btn->setStyleSheet(toolBtnStyle);
-        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        return btn;
-    };
-
-    // Card: Analysis Tools (probe + region stats)
-    {
-        auto *card = new QFrame(pageTools);
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(4);
-
-        auto *cardHdr = new QLabel(u"Analysis Tools"_s, card);
-        cardHdr->setStyleSheet(subHdrStyle);
-        cl->addWidget(cardHdr);
-
-        cl->addWidget(makeToolBtn(ui->actionProfile,          card));
-        cl->addWidget(makeToolBtn(this->actionBoxRegion,      card));
-        cl->addWidget(makeToolBtn(this->actionCircleRegion,   card));
-        cl->addWidget(makeToolBtn(this->actionPolygonRegion,  card));
-        cl->addWidget(makeToolBtn(this->actionAnnulusRegion,  card));
-        toolsLayout->addWidget(card);
-    }
-
-    // Card: Catalogue Overlay
-    {
-        auto *card = new QFrame(pageTools);
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(4);
-
-        auto *cardHdr = new QLabel(u"Catalogue Overlay"_s, card);
-        cardHdr->setStyleSheet(subHdrStyle);
-        cl->addWidget(cardHdr);
-
-        cl->addWidget(makeToolBtn(this->actionLoadCatalogueOverlay,  card));
-        cl->addWidget(makeToolBtn(this->actionShowCatalogueOverlay,  card));
-        cl->addWidget(makeToolBtn(this->actionShowCatalogueLabels,   card));
-        cl->addWidget(makeToolBtn(this->actionClearCatalogueOverlay, card));
-        toolsLayout->addWidget(card);
-        m_dynspecHiddenCards.append(QPointer<QFrame>(card));
-    }
-
-    // Card: Measurement Tools (Ruler / Angle)
-    {
-        auto *card = new QFrame(pageTools);
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(4);
-
-        auto *cardHdr = new QLabel(u"Measurement"_s, card);
-        cardHdr->setStyleSheet(subHdrStyle);
-        cl->addWidget(cardHdr);
-
-        cl->addWidget(makeToolBtn(m_actRuler,     card));
-        cl->addWidget(makeToolBtn(m_actAngle,     card));
-        cl->addWidget(makeToolBtn(m_actClearMeas, card));
-        toolsLayout->addWidget(card);
-    }
-
-    // Card: Contours (same Level / Lower / Upper as the cube viewer)
-    {
-        auto *card = new QFrame(pageTools);
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(6);
-
-        auto *cardHdr = new QLabel(u"Contours"_s, card);
-        cardHdr->setStyleSheet(subHdrStyle);
-        cl->addWidget(cardHdr);
-
-        cl->addWidget(makeToolBtn(m_actToggleContours, card));
-
-        auto *formLayout = new QFormLayout();
-        formLayout->setHorizontalSpacing(8);
-        formLayout->setVerticalSpacing(4);
-
-        m_contourLevelSpin = new QSpinBox(card);
-        m_contourLevelSpin->setRange(1, 100);
-        m_contourLevelSpin->setValue(m_contourLevel);
-        formLayout->addRow(u"Level"_s, m_contourLevelSpin);
-
-        m_contourLowerEdit = new QLineEdit(QString::number(m_contourLower, 'g', 6), card);
-        m_contourLowerEdit->setValidator(new QDoubleValidator(card));
-        formLayout->addRow(u"Lower"_s, m_contourLowerEdit);
-
-        m_contourUpperEdit = new QLineEdit(QString::number(m_contourUpper, 'g', 6), card);
-        m_contourUpperEdit->setValidator(new QDoubleValidator(card));
-        formLayout->addRow(u"Upper"_s, m_contourUpperEdit);
-        QSpinBox  *levelSpin = m_contourLevelSpin;
-        QLineEdit *lowerEdit = m_contourLowerEdit;
-        QLineEdit *upperEdit = m_contourUpperEdit;
-
-        cl->addLayout(formLayout);
-        toolsLayout->addWidget(card);
-
-        QObject::connect(levelSpin, qOverload<int>(&QSpinBox::valueChanged), this,
-                         [this](int v) { m_contourLevel = v; updateContours(); });
-        QObject::connect(lowerEdit, &QLineEdit::editingFinished, this,
-                         [this, lowerEdit]() {
-                             m_contourLower = lowerEdit->text().toDouble();
-                             updateContours();
-                         });
-        QObject::connect(upperEdit, &QLineEdit::editingFinished, this,
-                         [this, upperEdit]() {
-                             m_contourUpper = upperEdit->text().toDouble();
-                             updateContours();
-                         });
-
-        // External contour overlay actions (mirror the Tools menu)
-        cl->addWidget(makeToolBtn(m_actLoadExternalContour, card));
-        cl->addWidget(makeToolBtn(m_actClearAllContours,    card));
-    }
-
-    // Card: I/O — Export to Workspace (mirror the Tools menu)
-    {
-        auto *card = new QFrame(pageTools);
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(4);
-
-        auto *cardHdr = new QLabel(u"I/O"_s, card);
-        cardHdr->setStyleSheet(subHdrStyle);
-        cl->addWidget(cardHdr);
-
-        cl->addWidget(makeToolBtn(m_actExportToWorkspace, card));
-        toolsLayout->addWidget(card);
-    }
-
-    // Card: WCS Display — toggle button for axes + SegmentedToggle for
-    // format (Sexagesimal / Decimal) and frame (Galactic / FK5 / Ecliptic),
-    // consistent with the cube viewer's mode selectors.
-    {
-        auto *card = new QFrame(pageTools);
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(6);
-
-        auto *cardHdr = new QLabel(u"WCS Display"_s, card);
-        cardHdr->setStyleSheet(subHdrStyle);
-        cl->addWidget(cardHdr);
-
-        cl->addWidget(makeToolBtn(this->actionShowWcsAxes, card));
-
-        const QString secStyle =
-                QStringLiteral("QLabel { color: %1; font-size: 9px; margin-top: 4px; }")
-                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
-
-        // Coordinate format: Sexagesimal | Decimal
-        auto *fmtHdr = new QLabel(u"Coordinate format"_s, card);
-        fmtHdr->setStyleSheet(secStyle);
-        cl->addWidget(fmtHdr);
-        auto *fmtToggle = new SegmentedToggle(card);
-        fmtToggle->addItem(u"Sexagesimal"_s, u"HMS / DMS"_s);
-        fmtToggle->addItem(u"Decimal"_s,     u"Decimal degrees"_s);
-        fmtToggle->setCurrentIndex(
-                this->actionWcsDecimal->isChecked() ? 1 : 0);
-        cl->addWidget(fmtToggle);
-        QObject::connect(fmtToggle, &SegmentedToggle::currentIndexChanged, this,
-                         [this](int idx) {
-                             if (idx == 0 && !this->actionWcsSexagesimal->isChecked())
-                                 this->actionWcsSexagesimal->trigger();
-                             else if (idx == 1 && !this->actionWcsDecimal->isChecked())
-                                 this->actionWcsDecimal->trigger();
-                         });
-
-        // Coordinate frame: Galactic | FK5 | Ecliptic
-        auto *frameHdr = new QLabel(u"Coordinate frame"_s, card);
-        frameHdr->setStyleSheet(secStyle);
-        cl->addWidget(frameHdr);
-        auto *frameToggle = new SegmentedToggle(card);
-        frameToggle->addItem(u"Galactic"_s, u"Galactic l, b"_s);
-        frameToggle->addItem(u"FK5"_s,      u"RA, Dec (J2000)"_s);
-        frameToggle->addItem(u"Ecliptic"_s, u"Ecliptic λ, β"_s);
-        if (ui->actionGalactic->isChecked())       frameToggle->setCurrentIndex(0);
-        else if (ui->actionFK5->isChecked())       frameToggle->setCurrentIndex(1);
-        else if (ui->actionEcliptic->isChecked())  frameToggle->setCurrentIndex(2);
-        cl->addWidget(frameToggle);
-        QObject::connect(frameToggle, &SegmentedToggle::currentIndexChanged, this,
-                         [this](int idx) {
-                             QAction *targets[] = { ui->actionGalactic,
-                                                    ui->actionFK5,
-                                                    ui->actionEcliptic };
-                             if (idx >= 0 && idx < 3 && !targets[idx]->isChecked())
-                                 targets[idx]->trigger();
-                         });
-
-        toolsLayout->addWidget(card);
-        m_dynspecHiddenCards.append(QPointer<QFrame>(card));
-    }
-
-    // Card: Histogram
-    {
-        auto *card = new QFrame(pageTools);
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(4);
-
-        auto *cardHdr = new QLabel(u"Histogram"_s, card);
-        cardHdr->setStyleSheet(subHdrStyle);
-        cl->addWidget(cardHdr);
-
-        auto *btn = new QToolButton(card);
-        btn->setText(u"Pixel Histogram…"_s);
-        btn->setStyleSheet(toolBtnStyle);
-        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        QObject::connect(btn, &QToolButton::clicked, this, &vtkWindowImage::showHistogramPanel);
-        cl->addWidget(btn);
-        toolsLayout->addWidget(card);
-    }
-
-    // Card: Annotations
-    {
-        auto *card = new QFrame(pageTools);
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(4);
-
-        auto *cardHdr = new QLabel(u"Annotations"_s, card);
-        cardHdr->setStyleSheet(subHdrStyle);
-        cl->addWidget(cardHdr);
-
-        auto *btnText = new QToolButton(card);
-        btnText->setText(u"Add Text…"_s);
-        btnText->setStyleSheet(toolBtnStyle);
-        btnText->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        btnText->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        QObject::connect(btnText, &QToolButton::clicked, this, &vtkWindowImage::addTextAnnotation);
-        cl->addWidget(btnText);
-
-        auto *btnArrow = new QToolButton(card);
-        btnArrow->setText(u"Add Arrow…"_s);
-        btnArrow->setStyleSheet(toolBtnStyle);
-        btnArrow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        btnArrow->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        QObject::connect(btnArrow, &QToolButton::clicked, this, &vtkWindowImage::addArrowAnnotation);
-        cl->addWidget(btnArrow);
-
-        auto *btnClear = new QToolButton(card);
-        btnClear->setText(u"Clear All"_s);
-        btnClear->setStyleSheet(toolBtnStyle);
-        btnClear->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        btnClear->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        QObject::connect(btnClear, &QToolButton::clicked, this, &vtkWindowImage::clearAnnotations);
-        cl->addWidget(btnClear);
-
-        auto *rowIO = new QHBoxLayout;
-        rowIO->setSpacing(4);
-        auto *btnSave = new QToolButton(card);
-        btnSave->setText(u"Save"_s);
-        btnSave->setStyleSheet(toolBtnStyle);
-        btnSave->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        btnSave->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        QObject::connect(btnSave, &QToolButton::clicked, this, &vtkWindowImage::saveAnnotationsJson);
-        rowIO->addWidget(btnSave);
-
-        auto *btnLoad = new QToolButton(card);
-        btnLoad->setText(u"Load"_s);
-        btnLoad->setStyleSheet(toolBtnStyle);
-        btnLoad->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        btnLoad->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        QObject::connect(btnLoad, &QToolButton::clicked, this, &vtkWindowImage::loadAnnotationsJson);
-        rowIO->addWidget(btnLoad);
-
-        cl->addLayout(rowIO);
-        toolsLayout->addWidget(card);
-    }
-
-    // Card: Blink / Compare
-    {
-        auto *card = new QFrame(pageTools);
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(4);
-
-        auto *cardHdr = new QLabel(u"Blink / Compare"_s, card);
-        cardHdr->setStyleSheet(subHdrStyle);
-        cl->addWidget(cardHdr);
-
-        cl->addWidget(makeToolBtn(m_actBlink, card));
-
-        auto *speedLbl = new QLabel(u"Speed"_s, card);
-        speedLbl->setStyleSheet(
-                QStringLiteral("QLabel { color: %1; font-size: 9px; "
-                               "font-weight: 600; margin-top: 2px; }")
-                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
-        cl->addWidget(speedLbl);
-
-        auto *speedSlider = new QSlider(Qt::Horizontal, card);
-        speedSlider->setRange(50, 1000);
-        speedSlider->setValue(m_blinkIntervalMs);
-        speedSlider->setToolTip(u"Blink interval in ms (50–1000)"_s);
-        cl->addWidget(speedSlider);
-        QObject::connect(speedSlider, &QSlider::valueChanged, this,
-                         [this](int val) {
-                             m_blinkIntervalMs = val;
-                             if (m_blinkTimer.isActive())
-                                 m_blinkTimer.setInterval(val);
-                         });
-
-        toolsLayout->addWidget(card);
-    }
-
-    // Card: Stokes Analysis (radio polarimetry workflow)
-    {
-        auto *card = new QFrame(pageTools);
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(4);
-
-        auto *cardHdr = new QLabel(u"Stokes Analysis"_s, card);
-        cardHdr->setStyleSheet(subHdrStyle);
-        cl->addWidget(cardHdr);
-
-        cl->addWidget(makeToolBtn(m_actLoadStokesCompanions, card));
-        cl->addWidget(makeToolBtn(m_actComputeStokesP, card));
-        cl->addWidget(makeToolBtn(m_actComputeStokesPdebiased, card));
-        cl->addWidget(makeToolBtn(m_actComputeStokesPA, card));
-        cl->addWidget(makeToolBtn(m_actComputeStokesFrac, card));
-        cl->addWidget(makeToolBtn(m_actComputeSpectralIndex, card));
-        cl->addWidget(makeToolBtn(m_actComputeFaradayRM, card));
-        cl->addWidget(makeToolBtn(m_actTogglePolVecs, card));
-
-        // Pol-vector parameters
-        const QString secStyle =
-                QStringLiteral("QLabel { color: %1; font-size: 9px; "
-                               "font-weight: 600; margin-top: 4px; }")
-                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
-
-        auto *gridLbl = new QLabel(u"Vector grid step (px)"_s, card);
-        gridLbl->setStyleSheet(secStyle);
-        cl->addWidget(gridLbl);
-        auto *gridSpin = new QSpinBox(card);
-        gridSpin->setRange(2, 200);
-        gridSpin->setValue(m_polVecGridStep);
-        cl->addWidget(gridSpin);
-        QObject::connect(gridSpin, qOverload<int>(&QSpinBox::valueChanged),
-                         this, [this](int v) {
-            m_polVecGridStep = v;
-            if (m_polVecsVisible) rebuildPolarizationVectors();
-            if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
-        });
-
-        auto *snrLbl = new QLabel(u"SNR threshold (σ_MAD multiples)"_s, card);
-        snrLbl->setStyleSheet(secStyle);
-        cl->addWidget(snrLbl);
-        auto *snrEdit = new QLineEdit(QString::number(m_polVecSnrMin, 'f', 1), card);
-        snrEdit->setValidator(new QDoubleValidator(0.0, 100.0, 2, card));
-        cl->addWidget(snrEdit);
-        QObject::connect(snrEdit, &QLineEdit::editingFinished,
-                         this, [this, snrEdit]() {
-            m_polVecSnrMin = snrEdit->text().toDouble();
-            if (m_polVecsVisible) rebuildPolarizationVectors();
-            if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
-        });
-
-        auto *scaleLbl = new QLabel(u"Vector length scale"_s, card);
-        scaleLbl->setStyleSheet(secStyle);
-        cl->addWidget(scaleLbl);
-        auto *scaleSlider = new QSlider(Qt::Horizontal, card);
-        scaleSlider->setRange(10, 300);
-        scaleSlider->setValue(static_cast<int>(m_polVecScale * 100.0));
-        cl->addWidget(scaleSlider);
-        QObject::connect(scaleSlider, &QSlider::valueChanged,
-                         this, [this](int v) {
-            m_polVecScale = v / 100.0;
-            if (m_polVecsVisible) rebuildPolarizationVectors();
-            if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
-        });
-
-        toolsLayout->addWidget(card);
-        m_dynspecHiddenCards.append(QPointer<QFrame>(card));
-    }
-
-    // Card: Time-Series Tools (only visible in dynamic-spectrum mode)
-    {
-        auto *card = new QFrame(pageTools);
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(6);
-
-        auto *cardHdr = new QLabel(u"Time-Series Tools"_s, card);
-        cardHdr->setStyleSheet(subHdrStyle);
-        cl->addWidget(cardHdr);
-
-        const QString miniHdrStyle =
-                QStringLiteral("QLabel { color: %1; font-size: 9px; "
-                               "font-weight: 600; margin-top: 4px; }")
-                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
-
-        // ── Incoherent Dedispersion ────────────────────────────────────
-        cl->addWidget(([&]() {
-            auto *l = new QLabel(u"Dedispersion (DM, pc cm⁻³)"_s, card);
-            l->setStyleSheet(miniHdrStyle);
-            return l;
-        })());
-        auto *dmEdit = new QLineEdit(u"0.0"_s, card);
-        dmEdit->setValidator(new QDoubleValidator(0.0, 1e6, 4, card));
-        dmEdit->setObjectName(u"dynspecDmEdit"_s);
-        cl->addWidget(dmEdit);
-        auto *dedispBtn = new QToolButton(card);
-        dedispBtn->setText(u"Compute Dedispersion"_s);
-        dedispBtn->setStyleSheet(toolBtnStyle);
-        dedispBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        dedispBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        QObject::connect(dedispBtn, &QToolButton::clicked, this,
-                         &vtkWindowImage::runDynspecDedispersion);
-        cl->addWidget(dedispBtn);
-
-        // ── Pulse profile folding ──────────────────────────────────────
-        cl->addWidget(([&]() {
-            auto *l = new QLabel(u"Pulse profile (period, s)"_s, card);
-            l->setStyleSheet(miniHdrStyle);
-            return l;
-        })());
-        auto *periodEdit = new QLineEdit(u"1.0"_s, card);
-        periodEdit->setValidator(new QDoubleValidator(1e-9, 1e6, 9, card));
-        periodEdit->setObjectName(u"dynspecPeriodEdit"_s);
-        cl->addWidget(periodEdit);
-        auto *foldBtn = new QToolButton(card);
-        foldBtn->setText(u"Compute Pulse Profile"_s);
-        foldBtn->setStyleSheet(toolBtnStyle);
-        foldBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        foldBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        QObject::connect(foldBtn, &QToolButton::clicked, this,
-                         &vtkWindowImage::runDynspecPulseProfile);
-        cl->addWidget(foldBtn);
-
-        // ── RFI flagging mask ──────────────────────────────────────────
-        cl->addWidget(([&]() {
-            auto *l = new QLabel(u"RFI mask (σ-clip, σ-MAD multiple)"_s, card);
-            l->setStyleSheet(miniHdrStyle);
-            return l;
-        })());
-        auto *sigmaEdit = new QLineEdit(u"5.0"_s, card);
-        sigmaEdit->setValidator(new QDoubleValidator(0.5, 50.0, 2, card));
-        sigmaEdit->setObjectName(u"dynspecSigmaEdit"_s);
-        cl->addWidget(sigmaEdit);
-        auto *rfiBtn = new QToolButton(card);
-        rfiBtn->setText(u"Compute RFI Mask"_s);
-        rfiBtn->setStyleSheet(toolBtnStyle);
-        rfiBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        rfiBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        QObject::connect(rfiBtn, &QToolButton::clicked, this,
-                         &vtkWindowImage::runDynspecRfiMask);
-        cl->addWidget(rfiBtn);
-
-        toolsLayout->addWidget(card);
-        card->setVisible(false);  // shown only when setDynamicSpectrumMode(true)
-        m_dynspecToolsCard = card;
-    }
-
-    toolsLayout->addStretch(1);
-
-    // ── Page 2: Info / Stats ─────────────────────────────────────────────────
-    auto *pageInfo = new QWidget;
-    auto *infoLayout = new QVBoxLayout(pageInfo);
-    infoLayout->setContentsMargins(8, 6, 8, 6);
-    infoLayout->setSpacing(4);
-
-    {
-        auto *hdr = new QLabel(u"INFO / STATS"_s, pageInfo);
-        hdr->setStyleSheet(hdrStyle);
-        infoLayout->addWidget(hdr);
-    }
-
-    // Field-name style: small, muted, uppercase feel
-    const QString fnHdrStyle =
-            QStringLiteral("QLabel { color: %1; font-size: 9px; font-weight: 600; }")
-                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
-    // Field-value style: readable, proportional (not monospace — avoids extra width)
-    const QString fnValStyle =
-            QStringLiteral("QLabel { color: %1; font-size: 10px; }")
-                    .arg(QLatin1StringView(VisivoTheme::kOnSurface()));
-
-    // ── Card 1: Dataset (stacked label-over-value — no two-column layout) ─────
-    // Each field is a small header label stacked above its value label.
-    // Every value is full-card-width, word-wrapped where needed.
-    // This eliminates all horizontal overflow regardless of filename length.
-    {
-        auto *card = new QFrame(pageInfo);
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(10, 8, 10, 8);
-        cl->setSpacing(0);
-
-        // Helper: add one stacked field (header + value) with optional word-wrap/tooltip
-        const auto addField = [&](const QString &header, const QString &value,
-                                  const QString &tip = {}, bool wrap = false) {
-            auto *hdrLbl = new QLabel(header);
-            hdrLbl->setStyleSheet(fnHdrStyle);
-            cl->addWidget(hdrLbl);
-
-            auto *valLbl = new QLabel(value);
-            valLbl->setStyleSheet(fnValStyle);
-            valLbl->setWordWrap(wrap);
-            valLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
-            if (!tip.isEmpty())
-                valLbl->setToolTip(tip);
-            cl->addWidget(valLbl);
-        };
-
-        const QFileInfo fi(this->filepath);
-        const int nLayers = this->layers ? this->layers->rowCount() : 1;
-
-        addField(u"Active Layer"_s, fi.fileName(), fi.absoluteFilePath(), /*wrap=*/true);
-        cl->addSpacing(5);
-        addField(u"Layers"_s, QString::number(nLayers));
-        cl->addSpacing(5);
-        addField(u"Directory"_s, compactDirPath(fi.absolutePath()), fi.absolutePath(), /*wrap=*/true);
-        cl->addSpacing(5);
-        addField(u"WCS"_s, this->remoteWcsStatus);
-
-        infoLayout->addWidget(card);
-    }
-
-    // ── Card 2: Axes (compact grid: Ax# | Type [unit] | Δ) ───────────────────
-    // Axis type names are always short — a 3-column grid stays within sidebar width.
-    {
-        bool hasAnyAxis = false;
-        for (int ax = 0; ax < 3 && !hasAnyAxis; ++ax)
-            hasAnyAxis = !this->remoteDatasetCtype[ax].isEmpty();
-
-        if (hasAnyAxis) {
-            auto *card = new QFrame(pageInfo);
-            card->setStyleSheet(cardStyle);
-            auto *gl = new QGridLayout(card);
-            gl->setContentsMargins(10, 6, 10, 6);
-            gl->setSpacing(2);
-            gl->setColumnStretch(1, 1); // type column absorbs available width
-
-            // Tiny column headers
-            const auto gridHdr = [&fnHdrStyle](const QString &t,
-                                               Qt::Alignment align = Qt::AlignLeft) -> QLabel * {
-                auto *l = new QLabel(t);
-                l->setStyleSheet(fnHdrStyle);
-                l->setAlignment(align);
-                return l;
-            };
-            gl->addWidget(gridHdr(u"Ax"_s),                     0, 0);
-            gl->addWidget(gridHdr(u"Type [unit]"_s),            0, 1);
-            gl->addWidget(gridHdr(u"\u0394"_s, Qt::AlignRight), 0, 2);
-
-            auto *sep = new QFrame;
-            sep->setFrameShape(QFrame::HLine);
-            sep->setStyleSheet(
-                    u"QFrame { border: none; border-top: 1px solid rgba(4,138,191,0.14);"
-                    u"         margin-bottom: 1px; }"_s);
-            gl->addWidget(sep, 1, 0, 1, 3);
-
-            int gridRow = 2;
-            for (int ax = 0; ax < 3; ++ax) {
-                const QString &ctype = this->remoteDatasetCtype[ax];
-                if (ctype.isEmpty())
-                    continue;
-                const QString &cunit = this->remoteDatasetCunit[ax];
-                const QString typeStr = cunit.isEmpty()
-                        ? ctype
-                        : QStringLiteral("%1 [%2]").arg(ctype, cunit);
-                const QString deltaStr =
-                        QStringLiteral("%1").arg(this->remoteDatasetCdelt[ax], 0, 'g', 5);
-
-                auto *axLbl = new QLabel(QString::number(ax + 1));
-                axLbl->setStyleSheet(fnHdrStyle);
-
-                auto *typeLbl = new QLabel(typeStr);
-                typeLbl->setStyleSheet(fnValStyle);
-                typeLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
-
-                auto *deltaLbl = new QLabel(deltaStr);
-                deltaLbl->setStyleSheet(fnValStyle);
-                deltaLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-                deltaLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
-
-                gl->addWidget(axLbl,    gridRow, 0);
-                gl->addWidget(typeLbl,  gridRow, 1);
-                gl->addWidget(deltaLbl, gridRow, 2);
-                ++gridRow;
-            }
-
-            infoLayout->addWidget(card);
-        }
-    }
-
-    // ── WCS Warning card (amber, only when present) ───────────────────────────
-    if (!this->remoteWcsWarningMessage.isEmpty()) {
-        auto *warnCard = new QFrame(pageInfo);
-        warnCard->setStyleSheet(cardStyle);
-        auto *wl = new QHBoxLayout(warnCard);
-        wl->setContentsMargins(10, 6, 10, 6);
-        wl->setSpacing(6);
-        auto *warnIcon = new QLabel(u"\u26A0"_s); // ⚠
-        warnIcon->setStyleSheet(u"QLabel { color: #CC8800; font-size: 12px; }"_s);
-        warnIcon->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-        auto *warnMsg = new QLabel(this->remoteWcsWarningMessage);
-        warnMsg->setStyleSheet(u"QLabel { color: #BB9900; font-size: 9px; }"_s);
-        warnMsg->setWordWrap(true);
-        wl->addWidget(warnIcon);
-        wl->addWidget(warnMsg, 1);
-        infoLayout->addWidget(warnCard);
-    }
-
-    infoLayout->addStretch(1);
-
-    // ── Wire pages into SidebarPanel ──────────────────────────────────────────
-    this->m_sidebar = new SidebarPanel(272, this);
-    this->m_sidebar->addPage(u":/icons/rail_layers.svg"_s,    u"Layer Settings"_s, ui->pageLayer);
-    this->m_sidebar->addPage(u":/icons/rail_catalogue.svg"_s, u"Catalogue"_s,       ui->pageCatalogue);
-    this->m_sidebar->addPage(u":/icons/rail_viz.svg"_s,        u"Tools"_s,           pageTools);
-    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s,      u"Info / Stats"_s,    pageInfo);
-    // Note: the "3D View" page (ui->page3D) is intentionally omitted — not relevant
-    // for the 2D image viewer. The widget remains in the hidden sidebarContainer.
-    this->m_sidebar->finalize(0);
-    mainLayout->insertWidget(0, this->m_sidebar);
-
-    this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
-            u"Controls Sidebar"_s, this);
-    ui->menuView->addAction(this->actionShowControlsSidebar);
-}
 
 // ── Measurement tools (Ruler / Angle) ────────────────────────────────────────
 
-void vtkWindowImage::setMeasurementMode(MeasurementMode mode)
-{
-    if (m_measMode == mode) return;
 
-    if (this->probeModeActive && ui->actionProfile->isChecked())
-        ui->actionProfile->setChecked(false);
-    if (this->regionMode != RegionMode::None) {
-        QAction *actions[] = { actionBoxRegion, actionCircleRegion,
-                               actionPolygonRegion, actionAnnulusRegion };
-        for (auto *a : actions) {
-            if (a && a->isChecked()) a->setChecked(false);
-        }
-    }
 
-    m_measMode = mode;
-    clearMeasurement();
-    if (mode == MeasurementMode::None) {
-        setInteractorStyleImage();
-        ui->vtk->setCursor(Qt::ArrowCursor);
-    } else {
-        setInteractorStyleRegion();
-        ui->vtk->setCursor(Qt::CrossCursor);
-    }
-}
 
-void vtkWindowImage::addMeasurementPoint(int voxelX, int voxelY)
-{
-    m_measPoints.push_back({ voxelX, voxelY });
 
-    const int needed = (m_measMode == MeasurementMode::Ruler) ? 2 : 3;
-    if (static_cast<int>(m_measPoints.size()) >= needed) {
-        refreshMeasurementOverlay();
-    } else {
-        if (m_measLabelActor) {
-            const QString hint = (m_measMode == MeasurementMode::Ruler)
-                    ? u"Click second point…"_s
-                    : QStringLiteral("Click point %1 of 3…").arg(m_measPoints.size() + 1);
-            m_measLabelActor->SetInput(hint.toStdString().c_str());
-            m_measLabelActor->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
-            m_measLabelActor->SetPosition(0.5, 0.96);
-            m_measLabelActor->VisibilityOn();
-        }
-    }
-    if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
-}
-
-void vtkWindowImage::refreshMeasurementOverlay()
-{
-    if (m_measMode == MeasurementMode::Ruler && m_measPoints.size() >= 2) {
-        const auto &a = m_measPoints[0];
-        const auto &b = m_measPoints[1];
-        m_measLine1->SetPoint1(a[0], a[1], 0.0);
-        m_measLine1->SetPoint2(b[0], b[1], 0.0);
-        m_measLineActor1->VisibilityOn();
-        m_measLineActor2->VisibilityOff();
-
-        const double dx = b[0] - a[0];
-        const double dy = b[1] - a[1];
-        const double pixDist = std::sqrt(dx * dx + dy * dy);
-        QString label = QStringLiteral("%1 px").arg(pixDist, 0, 'f', 1);
-
-        const double angDeg = angularSeparationDeg(a[0], a[1], b[0], b[1]);
-        if (angDeg >= 0.0) {
-            const double arcsec = angDeg * 3600.0;
-            if (arcsec < 60.0)
-                label += QStringLiteral("  (%1\")").arg(arcsec, 0, 'f', 2);
-            else if (arcsec < 3600.0)
-                label += QStringLiteral("  (%1')").arg(arcsec / 60.0, 0, 'f', 2);
-            else
-                label += QStringLiteral("  (%1°)").arg(angDeg, 0, 'f', 4);
-        }
-
-        if (m_measLabelActor) {
-            m_measLabelActor->SetInput(label.toStdString().c_str());
-            m_measLabelActor->GetPositionCoordinate()->SetCoordinateSystemToWorld();
-            m_measLabelActor->SetPosition((a[0] + b[0]) / 2.0 + 3.0,
-                                           (a[1] + b[1]) / 2.0 + 3.0);
-            m_measLabelActor->VisibilityOn();
-        }
-    } else if (m_measMode == MeasurementMode::Angle && m_measPoints.size() >= 3) {
-        const auto &a = m_measPoints[0];
-        const auto &b = m_measPoints[1];
-        const auto &c = m_measPoints[2];
-        m_measLine1->SetPoint1(a[0], a[1], 0.0);
-        m_measLine1->SetPoint2(b[0], b[1], 0.0);
-        m_measLine2->SetPoint1(b[0], b[1], 0.0);
-        m_measLine2->SetPoint2(c[0], c[1], 0.0);
-        m_measLineActor1->VisibilityOn();
-        m_measLineActor2->VisibilityOn();
-
-        const double bax = a[0] - b[0], bay = a[1] - b[1];
-        const double bcx = c[0] - b[0], bcy = c[1] - b[1];
-        const double dot = bax * bcx + bay * bcy;
-        const double magBA = std::sqrt(bax * bax + bay * bay);
-        const double magBC = std::sqrt(bcx * bcx + bcy * bcy);
-        double angleDeg = 0.0;
-        if (magBA > 0.0 && magBC > 0.0)
-            angleDeg = std::acos(std::clamp(dot / (magBA * magBC), -1.0, 1.0)) * 180.0 / M_PI;
-
-        const QString label = QStringLiteral("%1°").arg(angleDeg, 0, 'f', 2);
-        if (m_measLabelActor) {
-            m_measLabelActor->SetInput(label.toStdString().c_str());
-            m_measLabelActor->GetPositionCoordinate()->SetCoordinateSystemToWorld();
-            m_measLabelActor->SetPosition(b[0] + 5.0, b[1] + 5.0);
-            m_measLabelActor->VisibilityOn();
-        }
-    }
-}
-
-void vtkWindowImage::clearMeasurement()
-{
-    m_measPoints.clear();
-    m_measLineActor1->VisibilityOff();
-    m_measLineActor2->VisibilityOff();
-    if (m_measLabelActor) m_measLabelActor->VisibilityOff();
-    if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
-}
-
-double vtkWindowImage::angularSeparationDeg(double vx1, double vy1, double vx2, double vy2) const
-{
-    if (!remoteHasCelestialAxes()) return -1.0;
-    bool ok1 = false, ok2 = false, ok3 = false, ok4 = false;
-    const double lon1 = remoteVoxelToWcs(0, vx1, &ok1);
-    const double lat1 = remoteVoxelToWcs(1, vy1, &ok2);
-    const double lon2 = remoteVoxelToWcs(0, vx2, &ok3);
-    const double lat2 = remoteVoxelToWcs(1, vy2, &ok4);
-    if (!ok1 || !ok2 || !ok3 || !ok4) return -1.0;
-
-    const double deg2rad = M_PI / 180.0;
-    const double dlon = (lon2 - lon1) * deg2rad;
-    const double la1 = lat1 * deg2rad;
-    const double la2 = lat2 * deg2rad;
-    const double a = std::sin(dlon / 2.0);
-    const double b = std::sin((la2 - la1) / 2.0);
-    const double h = b * b + std::cos(la1) * std::cos(la2) * a * a;
-    return 2.0 * std::asin(std::sqrt(std::clamp(h, 0.0, 1.0))) * 180.0 / M_PI;
-}
 
 // ── Histogram panel ──────────────────────────────────────────────────────────
 
-void vtkWindowImage::showHistogramPanel()
-{
-    if (m_histogramWindow) {
-        m_histogramWindow->raise();
-        m_histogramWindow->activateWindow();
-        return;
-    }
-
-    auto *imageData = this->layers
-            ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
-    if (!imageData) return;
-
-    int extent[6];
-    imageData->GetExtent(extent);
-    const int width = extent[1] - extent[0] + 1;
-    const int height = extent[3] - extent[2] + 1;
-    if (width <= 0 || height <= 0) return;
-
-    std::vector<double> values;
-    const qint64 pixels = static_cast<qint64>(width) * height;
-    const int stride = std::max(1, static_cast<int>(std::sqrt(static_cast<double>(pixels) / 500000.0)));
-    values.reserve(static_cast<std::size_t>(pixels / std::max(1, stride * stride)));
-    for (int y = extent[2]; y <= extent[3]; y += stride) {
-        for (int x = extent[0]; x <= extent[1]; x += stride) {
-            const double v = imageData->GetScalarComponentAsDouble(x, y, 0, 0);
-            if (std::isfinite(v)) values.push_back(v);
-        }
-    }
-    if (values.empty()) return;
-
-    std::sort(values.begin(), values.end());
-    const double vmin = values.front();
-    const double vmax = values.back();
-    if (vmax <= vmin) return;
-
-    constexpr int nBins = 256;
-    const double binWidth = (vmax - vmin) / nBins;
-    QVector<double> binCenters(nBins), counts(nBins, 0.0);
-    for (int i = 0; i < nBins; ++i)
-        binCenters[i] = vmin + (i + 0.5) * binWidth;
-    for (const double v : values) {
-        int bin = static_cast<int>((v - vmin) / binWidth);
-        if (bin >= nBins) bin = nBins - 1;
-        counts[bin] += 1.0;
-    }
-
-    auto *win = new QWidget(nullptr, Qt::Window);
-    win->setAttribute(Qt::WA_DeleteOnClose);
-    win->setWindowTitle(u"Pixel Histogram"_s);
-    win->resize(600, 360);
-    auto *layout = new QVBoxLayout(win);
-    layout->setContentsMargins(4, 4, 4, 4);
-
-    auto *plot = new QCustomPlot(win);
-    layout->addWidget(plot);
-
-    auto *bars = new QCPBars(plot->xAxis, plot->yAxis);
-    bars->setWidth(binWidth * 0.92);
-    bars->setData(binCenters, counts);
-    bars->setPen(QPen(QColor(70, 130, 180)));
-    bars->setBrush(QColor(70, 130, 180, 120));
-
-    plot->xAxis->setLabel(u"Pixel Value"_s);
-    plot->yAxis->setLabel(u"Count"_s);
-    plot->xAxis->setRange(vmin, vmax);
-    plot->yAxis->setRange(0, *std::max_element(counts.begin(), counts.end()) * 1.05);
-
-    auto *lut = this->layers->getLookupTable(this->layers->getMasterIndex());
-    const double *lutRange = lut ? lut->GetTableRange() : nullptr;
-    const double clipLow  = lutRange ? lutRange[0] : vmin;
-    const double clipHigh = lutRange ? lutRange[1] : vmax;
-
-    auto *lowLine = new QCPItemLine(plot);
-    lowLine->setPen(QPen(QColor(220, 50, 50), 2, Qt::DashLine));
-    lowLine->start->setType(QCPItemPosition::ptPlotCoords);
-    lowLine->end->setType(QCPItemPosition::ptPlotCoords);
-    lowLine->start->setCoords(clipLow, 0);
-    lowLine->end->setCoords(clipLow, *std::max_element(counts.begin(), counts.end()) * 1.05);
-
-    auto *highLine = new QCPItemLine(plot);
-    highLine->setPen(QPen(QColor(50, 180, 50), 2, Qt::DashLine));
-    highLine->start->setType(QCPItemPosition::ptPlotCoords);
-    highLine->end->setType(QCPItemPosition::ptPlotCoords);
-    highLine->start->setCoords(clipHigh, 0);
-    highLine->end->setCoords(clipHigh, *std::max_element(counts.begin(), counts.end()) * 1.05);
-
-    auto *lowLabel = new QCPItemText(plot);
-    lowLabel->setPositionAlignment(Qt::AlignBottom | Qt::AlignHCenter);
-    lowLabel->position->setType(QCPItemPosition::ptPlotCoords);
-    lowLabel->position->setCoords(clipLow, *std::max_element(counts.begin(), counts.end()) * 1.02);
-    lowLabel->setText(QStringLiteral("Low: %1").arg(clipLow, 0, 'g', 5));
-    lowLabel->setColor(QColor(220, 50, 50));
-
-    auto *highLabel = new QCPItemText(plot);
-    highLabel->setPositionAlignment(Qt::AlignBottom | Qt::AlignHCenter);
-    highLabel->position->setType(QCPItemPosition::ptPlotCoords);
-    highLabel->position->setCoords(clipHigh, *std::max_element(counts.begin(), counts.end()) * 1.02);
-    highLabel->setText(QStringLiteral("High: %1").arg(clipHigh, 0, 'g', 5));
-    highLabel->setColor(QColor(50, 180, 50));
-
-    QPointer<vtkWindowImage> self(this);
-    QPointer<QCPItemLine> lowLinePtr(lowLine);
-    QPointer<QCPItemLine> highLinePtr(highLine);
-    QPointer<QCPItemText> lowLabelPtr(lowLabel);
-    QPointer<QCPItemText> highLabelPtr(highLabel);
-
-    bool *draggingLow = new bool(false);
-    bool *draggingHigh = new bool(false);
-    const double maxCount = *std::max_element(counts.begin(), counts.end()) * 1.05;
-
-    QObject::connect(plot, &QCustomPlot::mousePress, win,
-                     [plot, lowLinePtr, highLinePtr, draggingLow, draggingHigh](QMouseEvent *event) {
-        const double x = plot->xAxis->pixelToCoord(event->pos().x());
-        if (lowLinePtr && std::abs(x - lowLinePtr->start->coords().x()) < (plot->xAxis->range().size() * 0.015))
-            *draggingLow = true;
-        else if (highLinePtr && std::abs(x - highLinePtr->start->coords().x()) < (plot->xAxis->range().size() * 0.015))
-            *draggingHigh = true;
-    });
-
-    QObject::connect(plot, &QCustomPlot::mouseMove, win,
-                     [plot, lowLinePtr, highLinePtr, lowLabelPtr, highLabelPtr,
-                      draggingLow, draggingHigh, maxCount](QMouseEvent *event) {
-        if (!*draggingLow && !*draggingHigh) return;
-        const double x = plot->xAxis->pixelToCoord(event->pos().x());
-        if (*draggingLow && lowLinePtr) {
-            lowLinePtr->start->setCoords(x, 0);
-            lowLinePtr->end->setCoords(x, maxCount);
-            if (lowLabelPtr) {
-                lowLabelPtr->position->setCoords(x, maxCount * 0.98);
-                lowLabelPtr->setText(QStringLiteral("Low: %1").arg(x, 0, 'g', 5));
-            }
-            plot->replot();
-        } else if (*draggingHigh && highLinePtr) {
-            highLinePtr->start->setCoords(x, 0);
-            highLinePtr->end->setCoords(x, maxCount);
-            if (highLabelPtr) {
-                highLabelPtr->position->setCoords(x, maxCount * 0.98);
-                highLabelPtr->setText(QStringLiteral("High: %1").arg(x, 0, 'g', 5));
-            }
-            plot->replot();
-        }
-    });
-
-    QObject::connect(plot, &QCustomPlot::mouseRelease, win,
-                     [self, lowLinePtr, highLinePtr, draggingLow, draggingHigh](QMouseEvent *) {
-        if (*draggingLow || *draggingHigh) {
-            if (self && lowLinePtr && highLinePtr) {
-                double lo = lowLinePtr->start->coords().x();
-                double hi = highLinePtr->start->coords().x();
-                if (lo > hi) std::swap(lo, hi);
-                if (hi > lo) {
-                    auto *lut2 = self->layers->getLookupTable(self->layers->getMasterIndex());
-                    if (lut2) {
-                        lut2->SetTableRange(lo, hi);
-                        lut2->Build();
-                        self->markDisplayStateAdjusted("histogram drag");
-                        self->vtkRender();
-                    }
-                }
-            }
-        }
-        *draggingLow = false;
-        *draggingHigh = false;
-    });
-
-    QObject::connect(win, &QObject::destroyed, win, [draggingLow, draggingHigh]() {
-        delete draggingLow;
-        delete draggingHigh;
-    });
-
-    plot->replot();
-    m_histogramWindow = win;
-    win->show();
-}
 
 // ── Annotations ──────────────────────────────────────────────────────────────
 
-void vtkWindowImage::addTextAnnotation()
-{
-    bool ok = false;
-    const QString text = QInputDialog::getText(
-            this, u"Add Text Annotation"_s, u"Text:"_s, QLineEdit::Normal, QString(), &ok);
-    if (!ok || text.trimmed().isEmpty()) return;
 
-    m_pendingAnnotText = text.trimmed();
-    m_annotPlaceMode = AnnotPlaceMode::Text;
-    ui->vtk->setCursor(Qt::CrossCursor);
-    statusBar()->showMessage(u"Click on the image to place the text annotation."_s, 0);
-}
 
-void vtkWindowImage::addArrowAnnotation()
-{
-    bool ok = false;
-    const QString text = QInputDialog::getText(
-            this, u"Add Arrow Annotation"_s, u"Label (optional):"_s,
-            QLineEdit::Normal, QString(), &ok);
-    if (!ok) return;
 
-    m_pendingAnnotText = text.trimmed();
-    m_annotPlaceMode = AnnotPlaceMode::ArrowTip;
-    ui->vtk->setCursor(Qt::CrossCursor);
-    statusBar()->showMessage(u"Click on the image to place the arrow tip."_s, 0);
-}
 
-void vtkWindowImage::placeAnnotationAt(double worldX, double worldY)
-{
-    switch (m_annotPlaceMode) {
-    case AnnotPlaceMode::Text: {
-        Annotation ann;
-        ann.type = Annotation::Text;
-        ann.text = m_pendingAnnotText;
-        ann.worldX = worldX;
-        ann.worldY = worldY;
-        m_annotations.push_back(ann);
-        cancelAnnotationPlacement();
-        refreshAnnotationOverlay();
-        break;
-    }
-    case AnnotPlaceMode::ArrowTip:
-        m_pendingArrowTipX = worldX;
-        m_pendingArrowTipY = worldY;
-        m_annotPlaceMode = AnnotPlaceMode::ArrowLabel;
-        updateAnnotationPreview(worldX, worldY);
-        statusBar()->showMessage(u"Move mouse to see the arrow, click to place the label."_s, 0);
-        break;
-    case AnnotPlaceMode::ArrowLabel: {
-        Annotation ann;
-        ann.type = Annotation::Arrow;
-        ann.text = m_pendingAnnotText;
-        ann.worldX = worldX;
-        ann.worldY = worldY;
-        ann.arrowEndX = m_pendingArrowTipX;
-        ann.arrowEndY = m_pendingArrowTipY;
-        m_annotations.push_back(ann);
-        cancelAnnotationPlacement();
-        refreshAnnotationOverlay();
-        break;
-    }
-    default:
-        break;
-    }
-}
 
-void vtkWindowImage::updateAnnotationPreview(double worldX, double worldY)
-{
-    if (m_annotPlaceMode != AnnotPlaceMode::ArrowLabel) {
-        m_annotPreviewActor->VisibilityOff();
-        return;
-    }
 
-    vtkNew<vtkPoints> pts;
-    vtkNew<vtkCellArray> cells;
-    buildArrowGeometry(pts, cells, worldX, worldY, m_pendingArrowTipX, m_pendingArrowTipY);
-    m_annotPreviewData->SetPoints(pts);
-    m_annotPreviewData->SetLines(cells);
-    m_annotPreviewData->Modified();
-    m_annotPreviewActor->VisibilityOn();
-}
 
-void vtkWindowImage::cancelAnnotationPlacement()
-{
-    m_annotPlaceMode = AnnotPlaceMode::None;
-    m_pendingAnnotText.clear();
-    m_annotPreviewActor->VisibilityOff();
-    const bool needsCross = this->probeModeActive
-            || this->regionMode != RegionMode::None
-            || this->m_measMode != MeasurementMode::None;
-    ui->vtk->setCursor(needsCross ? Qt::CrossCursor : Qt::ArrowCursor);
-    statusBar()->clearMessage();
-    if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
-}
 
-void vtkWindowImage::clearAnnotations()
-{
-    auto *ren = ui->vtk->renderWindow()
-                ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer() : nullptr;
-    if (ren) {
-        for (auto &a : m_annotTextActors) if (a) ren->RemoveViewProp(a);
-        for (auto &a : m_annotArrowActors) if (a) ren->RemoveActor(a);
-    }
-    m_annotations.clear();
-    m_annotTextActors.clear();
-    m_annotArrowActors.clear();
-    if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
-}
 
-void vtkWindowImage::refreshAnnotationOverlay()
-{
-    auto *ren = ui->vtk->renderWindow()
-                ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer() : nullptr;
-    if (!ren) return;
-
-    for (auto &a : m_annotTextActors) if (a) ren->RemoveViewProp(a);
-    for (auto &a : m_annotArrowActors) if (a) ren->RemoveActor(a);
-    m_annotTextActors.clear();
-    m_annotArrowActors.clear();
-
-    for (const auto &ann : m_annotations) {
-        auto textActor = vtkSmartPointer<vtkTextActor>::New();
-        textActor->SetInput(ann.text.toStdString().c_str());
-        textActor->GetTextProperty()->SetColor(1.0, 1.0, 0.3);
-        textActor->GetTextProperty()->SetFontSize(14);
-        textActor->GetTextProperty()->SetBold(true);
-        textActor->GetTextProperty()->SetShadow(true);
-        textActor->GetPositionCoordinate()->SetCoordinateSystemToWorld();
-        textActor->SetPosition(ann.worldX, ann.worldY);
-        ren->AddViewProp(textActor);
-        m_annotTextActors.push_back(textActor);
-
-        if (ann.type == Annotation::Arrow) {
-            vtkNew<vtkPoints> pts;
-            vtkNew<vtkCellArray> cells;
-            buildArrowGeometry(pts, cells,
-                               ann.worldX, ann.worldY,
-                               ann.arrowEndX, ann.arrowEndY);
-            vtkNew<vtkPolyData> arrowData;
-            arrowData->SetPoints(pts);
-            arrowData->SetLines(cells);
-            vtkNew<vtkPolyDataMapper> mapper;
-            mapper->SetInputData(arrowData);
-            auto arrowActor = vtkSmartPointer<vtkActor>::New();
-            arrowActor->SetMapper(mapper);
-            arrowActor->GetProperty()->SetColor(1.0, 1.0, 0.3);
-            arrowActor->GetProperty()->SetLineWidth(2.0);
-            ren->AddActor(arrowActor);
-            m_annotArrowActors.push_back(arrowActor);
-        } else {
-            m_annotArrowActors.push_back(nullptr);
-        }
-    }
-
-    ui->vtk->renderWindow()->Render();
-}
-
-void vtkWindowImage::saveAnnotationsJson()
-{
-    if (m_annotations.empty()) {
-        statusBar()->showMessage(u"No annotations to save."_s, 2000);
-        return;
-    }
-
-    const QString defaultPath = annotationsJsonPath();
-    const QString path = QFileDialog::getSaveFileName(
-            this, u"Save Annotations"_s,
-            defaultPath.isEmpty() ? QDir::homePath() : defaultPath,
-            u"JSON files (*.json);;All files (*)"_s);
-    if (path.isEmpty()) return;
-
-    QJsonArray arr;
-    for (const auto &ann : m_annotations) {
-        QJsonObject obj;
-        obj[u"type"_s] = (ann.type == Annotation::Arrow) ? u"arrow"_s : u"text"_s;
-        obj[u"text"_s] = ann.text;
-        obj[u"x"_s] = ann.worldX;
-        obj[u"y"_s] = ann.worldY;
-        if (ann.type == Annotation::Arrow) {
-            obj[u"arrowEndX"_s] = ann.arrowEndX;
-            obj[u"arrowEndY"_s] = ann.arrowEndY;
-        }
-        arr.append(obj);
-    }
-
-    QFile file(path);
-    if (file.open(QIODevice::WriteOnly)) {
-        file.write(QJsonDocument(arr).toJson(QJsonDocument::Indented));
-        statusBar()->showMessage(
-                QStringLiteral("Saved %1 annotations to %2")
-                        .arg(m_annotations.size())
-                        .arg(QFileInfo(path).fileName()),
-                3000);
-    } else {
-        QMessageBox::warning(this, u"Save Annotations"_s,
-                u"Could not write to:\n%1"_s.arg(path));
-    }
-}
-
-void vtkWindowImage::loadAnnotationsJson()
-{
-    const QString defaultDir = filepath.isEmpty()
-            ? QDir::homePath()
-            : QFileInfo(filepath).absolutePath();
-    const QString path = QFileDialog::getOpenFileName(
-            this, u"Load Annotations"_s, defaultDir,
-            u"JSON files (*.json);;All files (*)"_s);
-    if (path.isEmpty()) return;
-
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        QMessageBox::warning(this, u"Load Annotations"_s,
-                u"Could not read:\n%1"_s.arg(path));
-        return;
-    }
-
-    const QJsonArray arr = QJsonDocument::fromJson(file.readAll()).array();
-    if (arr.isEmpty()) {
-        statusBar()->showMessage(u"No annotations found in file."_s, 2000);
-        return;
-    }
-
-    clearAnnotations();
-    for (const auto &val : arr) {
-        const QJsonObject obj = val.toObject();
-        Annotation ann;
-        ann.type = obj[u"type"_s].toString() == u"arrow"_s ? Annotation::Arrow : Annotation::Text;
-        ann.text = obj[u"text"_s].toString();
-        ann.worldX = obj[u"x"_s].toDouble();
-        ann.worldY = obj[u"y"_s].toDouble();
-        ann.arrowEndX = obj[u"arrowEndX"_s].toDouble();
-        ann.arrowEndY = obj[u"arrowEndY"_s].toDouble();
-        m_annotations.push_back(ann);
-    }
-    refreshAnnotationOverlay();
-    statusBar()->showMessage(
-            QStringLiteral("Loaded %1 annotations from %2")
-                    .arg(m_annotations.size())
-                    .arg(QFileInfo(path).fileName()),
-                3000);
-}
-
-QString vtkWindowImage::annotationsJsonPath() const
-{
-    if (filepath.isEmpty()) return {};
-    return filepath + u".annotations.json"_s;
-}
 
 // ── Blink / Compare ──────────────────────────────────────────────────────────
 
-void vtkWindowImage::toggleBlink(bool active)
-{
-    if (!this->layers || this->layers->rowCount() < 2) {
-        if (active) {
-            statusBar()->showMessage(u"Blink requires at least two layers."_s, 2000);
-            if (m_actBlink) m_actBlink->setChecked(false);
-        }
-        return;
-    }
 
-    if (active) {
-        m_blinkState = false;
-        m_blinkTimer.start(m_blinkIntervalMs);
-    } else {
-        m_blinkTimer.stop();
-        for (int i = 0; i < this->layers->rowCount(); ++i) {
-            auto *actor = this->layers->getLayerActor(i);
-            if (actor) actor->SetVisibility(true);
-        }
-        vtkRender();
-    }
-}
-
-void vtkWindowImage::blinkTick()
-{
-    if (!this->layers || this->layers->rowCount() < 2) {
-        m_blinkTimer.stop();
-        return;
-    }
-
-    m_blinkState = !m_blinkState;
-    for (int i = 0; i < this->layers->rowCount(); ++i) {
-        auto *actor = this->layers->getLayerActor(i);
-        if (!actor) continue;
-        if (i == 0)
-            actor->SetVisibility(!m_blinkState);
-        else if (i == 1)
-            actor->SetVisibility(m_blinkState);
-        else
-            actor->SetVisibility(false);
-    }
-    vtkRender();
-}
 
 // ── Stokes / Radio polarimetry analysis ─────────────────────────────────────
 
-bool vtkWindowImage::hasBeamInfo() const
-{
-    return std::isfinite(m_beamMajorDeg) && std::isfinite(m_beamMinorDeg)
-            && m_beamMajorDeg > 0.0 && m_beamMinorDeg > 0.0
-            && std::isfinite(this->remoteDatasetCdelt[0])
-            && std::abs(this->remoteDatasetCdelt[0]) > 0.0;
-}
 
-double vtkWindowImage::beamAreaPixels() const
-{
-    if (!hasBeamInfo()) return 0.0;
-    const double cdelt = std::abs(this->remoteDatasetCdelt[0]);
-    const double bmaj_px = m_beamMajorDeg / cdelt;
-    const double bmin_px = m_beamMinorDeg / cdelt;
-    return M_PI * bmaj_px * bmin_px / (4.0 * std::log(2.0));
-}
 
-QString vtkWindowImage::stokesRoleLabel(StokesRole r) const
-{
-    switch (r) {
-    case StokesRole::I:          return u"Stokes I"_s;
-    case StokesRole::Q:          return u"Stokes Q"_s;
-    case StokesRole::U:          return u"Stokes U"_s;
-    case StokesRole::V:          return u"Stokes V"_s;
-    case StokesRole::DerivedP:    return u"Pol. intensity (P)"_s;
-    case StokesRole::DerivedPA:   return u"Pol. angle (PA)"_s;
-    case StokesRole::DerivedFrac: return u"Frac. pol. (P/I)"_s;
-    case StokesRole::DerivedPdb:  return u"P (debiased)"_s;
-    case StokesRole::DerivedAlpha:return u"Spectral index (α)"_s;
-    case StokesRole::DerivedRM:   return u"Faraday RM"_s;
-    case StokesRole::None:
-    default:                      return QString();
-    }
-}
 
-int vtkWindowImage::findLayerByStokesRole(StokesRole role) const
-{
-    if (!this->layers) return -1;
-    for (auto it = m_stokesRoles.constBegin(); it != m_stokesRoles.constEnd(); ++it) {
-        if (it.value() == role && it.key() >= 0 && it.key() < this->layers->rowCount())
-            return it.key();
-    }
-    return -1;
-}
 
-QString vtkWindowImage::findStokesCompanionPath(const QString &iPath, const QString &role) const
-{
-    // Pattern strict: replace "StokesI" → "Stokes<role>" in the basename.
-    // Handles common variants: _StokesI_, -StokesI-, _I.fits, _I_PB.fits.
-    const QFileInfo fi(iPath);
-    const QString dir = fi.absolutePath();
-    const QString name = fi.fileName();
 
-    QStringList candidateNames;
-    candidateNames << QString(name).replace(u"StokesI"_s, u"Stokes"_s + role);
-    candidateNames << QString(name).replace(u"stokesI"_s, u"stokes"_s + role.toLower());
-    candidateNames << QString(name).replace(u"STOKESI"_s, u"STOKES"_s + role);
-    // ASKAP/MeerKAT patterns: _I.fits or _I_PB.fits
-    candidateNames << QString(name).replace(u"_I.fits"_s, u"_"_s + role + u".fits"_s);
-    candidateNames << QString(name).replace(u"_I_PB.fits"_s, u"_"_s + role + u"_PB.fits"_s);
-    candidateNames << QString(name).replace(u"_I.fits.gz"_s, u"_"_s + role + u".fits.gz"_s);
-    candidateNames << QString(name).replace(u"_I_PB.fits.gz"_s, u"_"_s + role + u"_PB.fits.gz"_s);
-    candidateNames.removeDuplicates();
-    candidateNames.removeAll(name);  // never match the I file itself
 
-    for (const QString &candidate : candidateNames) {
-        const QString full = dir + u"/"_s + candidate;
-        if (QFile::exists(full)) return full;
-    }
-    return QString();
-}
 
-void vtkWindowImage::detectAndLoadStokesCompanions()
-{
-    // The master layer is treated as Stokes I.
-    const int masterIdx = this->layers->getMasterIndex();
-    if (!m_stokesRoles.contains(masterIdx))
-        m_stokesRoles.insert(masterIdx, StokesRole::I);
 
-    const QStringList roles = { u"Q"_s, u"U"_s, u"V"_s };
-    QStringList missing;
-    QStringList autoFound;
-
-    for (const QString &role : roles) {
-        if (findLayerByStokesRole(
-                role == u"Q"_s ? StokesRole::Q
-                : role == u"U"_s ? StokesRole::U : StokesRole::V) >= 0)
-            continue;
-
-        QString path = findStokesCompanionPath(this->filepath, role);
-        if (path.isEmpty()) {
-            missing.append(role);
-        } else {
-            autoFound.append(QStringLiteral("%1: %2").arg(role, QFileInfo(path).fileName()));
-            // Tag the slot for the role-assignment hook after the layer loads
-            m_pendingVlkbDisplayName = u"Stokes "_s + role;
-            this->addLayerImage(path.toStdString());
-            // The role will be assigned in the load-watcher callback by matching
-            // m_pendingVlkbDisplayName. For now, we just record an intent.
-            // Simpler: after addLayerImage we know rowCount will increase, but the
-            // load is async. We'll defer role assignment to the load completion.
-        }
-    }
-
-    if (!autoFound.isEmpty()) {
-        statusBar()->showMessage(
-                QStringLiteral("Stokes companions found: %1").arg(autoFound.join(u", "_s)),
-                4000);
-    }
-
-    if (!missing.isEmpty()) {
-        for (const QString &role : missing) {
-            const QString path = QFileDialog::getOpenFileName(
-                    this,
-                    QStringLiteral("Locate Stokes %1 file").arg(role),
-                    QFileInfo(this->filepath).absolutePath(),
-                    u"FITS files (*.fits *.fit *.fits.gz);;All files (*)"_s);
-            if (path.isEmpty()) continue;
-            m_pendingVlkbDisplayName = u"Stokes "_s + role;
-            this->addLayerImage(path.toStdString());
-        }
-    }
-}
-
-void vtkWindowImage::computeStokesP()
-{
-    const int qIdx = findLayerByStokesRole(StokesRole::Q);
-    const int uIdx = findLayerByStokesRole(StokesRole::U);
-    if (qIdx < 0 || uIdx < 0) {
-        QMessageBox::warning(this, u"Polarized Intensity"_s,
-                u"Need both Stokes Q and Stokes U layers loaded."_s);
-        return;
-    }
-    auto *qData = this->layers->getImageData(qIdx);
-    auto *uData = this->layers->getImageData(uIdx);
-    if (!qData || !uData) return;
-
-    int ext[6];
-    qData->GetExtent(ext);
-    auto pData = vtkSmartPointer<vtkImageData>::New();
-    pData->SetExtent(ext);
-    pData->SetOrigin(qData->GetOrigin());
-    pData->SetSpacing(qData->GetSpacing());
-    pData->AllocateScalars(VTK_FLOAT, 1);
-
-    double pMin = std::numeric_limits<double>::infinity();
-    double pMax = -std::numeric_limits<double>::infinity();
-    auto *outPtr = static_cast<float *>(pData->GetScalarPointer());
-    const int W = ext[1] - ext[0] + 1;
-    for (int y = ext[2]; y <= ext[3]; ++y) {
-        for (int x = ext[0]; x <= ext[1]; ++x) {
-            const float q = qData->GetScalarComponentAsFloat(x, y, 0, 0);
-            const float u = uData->GetScalarComponentAsFloat(x, y, 0, 0);
-            float p;
-            if (std::isfinite(q) && std::isfinite(u)) {
-                p = std::sqrt(q * q + u * u);
-                if (std::isfinite(p)) {
-                    pMin = std::min(pMin, static_cast<double>(p));
-                    pMax = std::max(pMax, static_cast<double>(p));
-                }
-            } else {
-                p = std::numeric_limits<float>::quiet_NaN();
-            }
-            outPtr[(y - ext[2]) * W + (x - ext[0])] = p;
-        }
-    }
-    if (!std::isfinite(pMin) || !std::isfinite(pMax) || pMin >= pMax) {
-        QMessageBox::warning(this, u"Polarized Intensity"_s,
-                u"Could not compute valid P map (no overlap?)."_s);
-        return;
-    }
-    addDerivedLayer(pData, u"Stokes P"_s, StokesRole::DerivedP,
-                    u"Inferno"_s, pMin, pMax);
-}
-
-void vtkWindowImage::computeStokesPA()
-{
-    const int qIdx = findLayerByStokesRole(StokesRole::Q);
-    const int uIdx = findLayerByStokesRole(StokesRole::U);
-    if (qIdx < 0 || uIdx < 0) {
-        QMessageBox::warning(this, u"Polarization Angle"_s,
-                u"Need both Stokes Q and Stokes U layers loaded."_s);
-        return;
-    }
-    auto *qData = this->layers->getImageData(qIdx);
-    auto *uData = this->layers->getImageData(uIdx);
-    if (!qData || !uData) return;
-
-    int ext[6];
-    qData->GetExtent(ext);
-    auto paData = vtkSmartPointer<vtkImageData>::New();
-    paData->SetExtent(ext);
-    paData->SetOrigin(qData->GetOrigin());
-    paData->SetSpacing(qData->GetSpacing());
-    paData->AllocateScalars(VTK_FLOAT, 1);
-
-    auto *outPtr = static_cast<float *>(paData->GetScalarPointer());
-    const int W = ext[1] - ext[0] + 1;
-    for (int y = ext[2]; y <= ext[3]; ++y) {
-        for (int x = ext[0]; x <= ext[1]; ++x) {
-            const float q = qData->GetScalarComponentAsFloat(x, y, 0, 0);
-            const float u = uData->GetScalarComponentAsFloat(x, y, 0, 0);
-            float pa;
-            if (std::isfinite(q) && std::isfinite(u) && (q != 0.0f || u != 0.0f)) {
-                pa = static_cast<float>(0.5 * std::atan2(static_cast<double>(u),
-                                                          static_cast<double>(q))
-                                        * 180.0 / M_PI);
-            } else {
-                pa = std::numeric_limits<float>::quiet_NaN();
-            }
-            outPtr[(y - ext[2]) * W + (x - ext[0])] = pa;
-        }
-    }
-    addDerivedLayer(paData, u"Pol. Angle"_s, StokesRole::DerivedPA,
-                    u"Spectrum"_s, -90.0, 90.0);
-}
-
-void vtkWindowImage::computeStokesFractional()
-{
-    const int iIdx = findLayerByStokesRole(StokesRole::I);
-    const int qIdx = findLayerByStokesRole(StokesRole::Q);
-    const int uIdx = findLayerByStokesRole(StokesRole::U);
-    if (iIdx < 0 || qIdx < 0 || uIdx < 0) {
-        QMessageBox::warning(this, u"Fractional Polarization"_s,
-                u"Need Stokes I, Q, and U layers loaded."_s);
-        return;
-    }
-    auto *iData = this->layers->getImageData(iIdx);
-    auto *qData = this->layers->getImageData(qIdx);
-    auto *uData = this->layers->getImageData(uIdx);
-    if (!iData || !qData || !uData) return;
-
-    int ext[6];
-    iData->GetExtent(ext);
-    auto fData = vtkSmartPointer<vtkImageData>::New();
-    fData->SetExtent(ext);
-    fData->SetOrigin(iData->GetOrigin());
-    fData->SetSpacing(iData->GetSpacing());
-    fData->AllocateScalars(VTK_FLOAT, 1);
-
-    auto *outPtr = static_cast<float *>(fData->GetScalarPointer());
-    const int W = ext[1] - ext[0] + 1;
-    double fMin = std::numeric_limits<double>::infinity();
-    double fMax = -std::numeric_limits<double>::infinity();
-    for (int y = ext[2]; y <= ext[3]; ++y) {
-        for (int x = ext[0]; x <= ext[1]; ++x) {
-            const float i = iData->GetScalarComponentAsFloat(x, y, 0, 0);
-            const float q = qData->GetScalarComponentAsFloat(x, y, 0, 0);
-            const float u = uData->GetScalarComponentAsFloat(x, y, 0, 0);
-            float f;
-            if (std::isfinite(i) && std::isfinite(q) && std::isfinite(u)
-                && std::abs(i) > 1e-30f) {
-                const float p = std::sqrt(q * q + u * u);
-                f = p / i;
-                if (std::isfinite(f)) {
-                    fMin = std::min(fMin, static_cast<double>(f));
-                    fMax = std::max(fMax, static_cast<double>(f));
-                }
-            } else {
-                f = std::numeric_limits<float>::quiet_NaN();
-            }
-            outPtr[(y - ext[2]) * W + (x - ext[0])] = f;
-        }
-    }
-    if (!std::isfinite(fMin) || !std::isfinite(fMax) || fMin >= fMax) {
-        QMessageBox::warning(this, u"Fractional Polarization"_s,
-                u"Could not compute valid P/I map."_s);
-        return;
-    }
-    // Clamp display range to a reasonable polarization fraction [0, 1].
-    fMax = std::min(fMax, 1.0);
-    addDerivedLayer(fData, u"Frac. Pol."_s, StokesRole::DerivedFrac,
-                    u"Viridis"_s, std::max(0.0, fMin), fMax);
-}
 
 // ── Bias-corrected P: P_debiased = √(max(0, Q² + U² − σ²)) ─────────────────
 // σ is the per-channel noise. We estimate it as the MAD-σ of the Q and U
 // pixel distributions averaged together. This is the simplest "ad-hoc"
 // debiasing; for rigorous work the noise map should be supplied.
-void vtkWindowImage::computeStokesPdebiased()
-{
-    const int qIdx = findLayerByStokesRole(StokesRole::Q);
-    const int uIdx = findLayerByStokesRole(StokesRole::U);
-    if (qIdx < 0 || uIdx < 0) {
-        QMessageBox::warning(this, u"Debiased P"_s,
-                u"Need both Stokes Q and Stokes U layers loaded."_s);
-        return;
-    }
-    auto *qData = this->layers->getImageData(qIdx);
-    auto *uData = this->layers->getImageData(uIdx);
-    if (!qData || !uData) return;
-
-    const auto madSigmaOf = [](vtkImageData *d) -> double {
-        int ext[6]; d->GetExtent(ext);
-        std::vector<double> vals;
-        vals.reserve(static_cast<std::size_t>((ext[1] - ext[0] + 1)
-                                              * (ext[3] - ext[2] + 1)));
-        for (int y = ext[2]; y <= ext[3]; ++y)
-            for (int x = ext[0]; x <= ext[1]; ++x) {
-                const double v = d->GetScalarComponentAsDouble(x, y, 0, 0);
-                if (std::isfinite(v)) vals.push_back(v);
-            }
-        if (vals.empty()) return 0.0;
-        std::sort(vals.begin(), vals.end());
-        const double med = vals[vals.size() / 2];
-        std::vector<double> dev;
-        dev.reserve(vals.size());
-        for (double v : vals) dev.push_back(std::abs(v - med));
-        std::sort(dev.begin(), dev.end());
-        return 1.4826 * dev[dev.size() / 2];
-    };
-    const double sigmaQ = madSigmaOf(qData);
-    const double sigmaU = madSigmaOf(uData);
-    const double sigma = 0.5 * (sigmaQ + sigmaU);
-    const double sigma2 = sigma * sigma;
-
-    if (sigma <= 0.0) {
-        QMessageBox::warning(this, u"Debiased P"_s,
-                u"Could not estimate noise from Q/U layers."_s);
-        return;
-    }
-
-    int ext[6];
-    qData->GetExtent(ext);
-    auto pData = vtkSmartPointer<vtkImageData>::New();
-    pData->SetExtent(ext);
-    pData->SetOrigin(qData->GetOrigin());
-    pData->SetSpacing(qData->GetSpacing());
-    pData->AllocateScalars(VTK_FLOAT, 1);
-
-    auto *outPtr = static_cast<float *>(pData->GetScalarPointer());
-    const int W = ext[1] - ext[0] + 1;
-    double pMin = std::numeric_limits<double>::infinity();
-    double pMax = -std::numeric_limits<double>::infinity();
-    for (int y = ext[2]; y <= ext[3]; ++y) {
-        for (int x = ext[0]; x <= ext[1]; ++x) {
-            const float q = qData->GetScalarComponentAsFloat(x, y, 0, 0);
-            const float u = uData->GetScalarComponentAsFloat(x, y, 0, 0);
-            float p;
-            if (std::isfinite(q) && std::isfinite(u)) {
-                const double raw = q * q + u * u - sigma2;
-                p = (raw > 0.0) ? static_cast<float>(std::sqrt(raw)) : 0.0f;
-                pMin = std::min(pMin, static_cast<double>(p));
-                pMax = std::max(pMax, static_cast<double>(p));
-            } else {
-                p = std::numeric_limits<float>::quiet_NaN();
-            }
-            outPtr[(y - ext[2]) * W + (x - ext[0])] = p;
-        }
-    }
-    if (!std::isfinite(pMin) || pMin >= pMax) {
-        QMessageBox::warning(this, u"Debiased P"_s,
-                u"Could not compute a valid debiased P map."_s);
-        return;
-    }
-    addDerivedLayer(pData,
-            QStringLiteral("P_deb (σ=%1)").arg(sigma, 0, 'g', 4),
-            StokesRole::DerivedPdb, u"Inferno"_s, pMin, pMax);
-    statusBar()->showMessage(
-            QStringLiteral("Debiased P: σ_Q=%1, σ_U=%2, σ=%3")
-                    .arg(sigmaQ, 0, 'g', 4).arg(sigmaU, 0, 'g', 4).arg(sigma, 0, 'g', 4),
-            5000);
-}
 
 // ── Spectral index map: α = log(S_B/S_A) / log(ν_B/ν_A) ───────────────────
 // Per-pixel formula on two layers at different frequencies. Both layers
 // must share the same pixel grid (same WCS, same extent).
-void vtkWindowImage::computeSpectralIndex()
-{
-    if (!this->layers || this->layers->rowCount() < 2) {
-        QMessageBox::warning(this, u"Spectral Index"_s,
-                u"Need at least two layers loaded."_s);
-        return;
-    }
-
-    QDialog dlg(this);
-    dlg.setWindowTitle(u"Compute Spectral Index"_s);
-    auto *form = new QFormLayout(&dlg);
-    auto *comboA = new QComboBox(&dlg);
-    auto *comboB = new QComboBox(&dlg);
-    for (int i = 0; i < this->layers->rowCount(); ++i) {
-        const QString name = this->layers->data(
-                this->layers->index(i, 0), Qt::DisplayRole).toString();
-        comboA->addItem(name);
-        comboB->addItem(name);
-    }
-    comboA->setCurrentIndex(0);
-    comboB->setCurrentIndex(std::min(1, this->layers->rowCount() - 1));
-
-    auto *freqA = new QLineEdit(u"1.284"_s, &dlg);
-    freqA->setValidator(new QDoubleValidator(1e-9, 1e9, 6, &dlg));
-    auto *freqB = new QLineEdit(u"1.400"_s, &dlg);
-    freqB->setValidator(new QDoubleValidator(1e-9, 1e9, 6, &dlg));
-
-    form->addRow(u"Layer A:"_s, comboA);
-    form->addRow(u"Frequency A (GHz):"_s, freqA);
-    form->addRow(u"Layer B:"_s, comboB);
-    form->addRow(u"Frequency B (GHz):"_s, freqB);
-
-    auto *btns = new QDialogButtonBox(
-            QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    form->addRow(btns);
-
-    if (dlg.exec() != QDialog::Accepted) return;
-
-    const int idxA = comboA->currentIndex();
-    const int idxB = comboB->currentIndex();
-    const double nuA = freqA->text().toDouble();
-    const double nuB = freqB->text().toDouble();
-    if (idxA == idxB || nuA <= 0.0 || nuB <= 0.0 || std::abs(nuA - nuB) < 1e-9) {
-        QMessageBox::warning(this, u"Spectral Index"_s,
-                u"Pick two distinct layers and two distinct positive frequencies."_s);
-        return;
-    }
-
-    auto *dataA = this->layers->getImageData(idxA);
-    auto *dataB = this->layers->getImageData(idxB);
-    if (!dataA || !dataB) return;
-
-    int extA[6], extB[6];
-    dataA->GetExtent(extA);
-    dataB->GetExtent(extB);
-    if (extA[0] != extB[0] || extA[1] != extB[1]
-        || extA[2] != extB[2] || extA[3] != extB[3]) {
-        QMessageBox::warning(this, u"Spectral Index"_s,
-                u"Layers must share the same pixel grid. Use the cube viewer's "
-                u"moment-map export to produce co-registered images."_s);
-        return;
-    }
-
-    auto aData = vtkSmartPointer<vtkImageData>::New();
-    aData->SetExtent(extA);
-    aData->SetOrigin(dataA->GetOrigin());
-    aData->SetSpacing(dataA->GetSpacing());
-    aData->AllocateScalars(VTK_FLOAT, 1);
-
-    const double logNuRatio = std::log(nuB / nuA);
-    auto *outPtr = static_cast<float *>(aData->GetScalarPointer());
-    const int W = extA[1] - extA[0] + 1;
-    double aMin = std::numeric_limits<double>::infinity();
-    double aMax = -std::numeric_limits<double>::infinity();
-    int nValid = 0;
-    for (int y = extA[2]; y <= extA[3]; ++y) {
-        for (int x = extA[0]; x <= extA[1]; ++x) {
-            const float ia = dataA->GetScalarComponentAsFloat(x, y, 0, 0);
-            const float ib = dataB->GetScalarComponentAsFloat(x, y, 0, 0);
-            float alpha;
-            if (std::isfinite(ia) && std::isfinite(ib) && ia > 0.0f && ib > 0.0f) {
-                alpha = static_cast<float>(
-                        std::log(static_cast<double>(ib) / static_cast<double>(ia))
-                        / logNuRatio);
-                if (std::isfinite(alpha)) {
-                    aMin = std::min(aMin, static_cast<double>(alpha));
-                    aMax = std::max(aMax, static_cast<double>(alpha));
-                    ++nValid;
-                }
-            } else {
-                alpha = std::numeric_limits<float>::quiet_NaN();
-            }
-            outPtr[(y - extA[2]) * W + (x - extA[0])] = alpha;
-        }
-    }
-    if (nValid == 0) {
-        QMessageBox::warning(this, u"Spectral Index"_s,
-                u"No pixel with positive flux in both layers."_s);
-        return;
-    }
-    // Clamp display to physically reasonable α range for synchrotron + thermal.
-    addDerivedLayer(aData,
-            QStringLiteral("α (%1↔%2 GHz)").arg(nuA, 0, 'f', 2).arg(nuB, 0, 'f', 2),
-            StokesRole::DerivedAlpha, u"Spectrum"_s, -2.5, 1.5);
-    statusBar()->showMessage(
-            QStringLiteral("Spectral index: %1 valid pixels, range %2 — %3")
-                    .arg(nValid).arg(aMin, 0, 'f', 2).arg(aMax, 0, 'f', 2),
-            5000);
-}
 
 // ── Faraday Rotation Measure: per-pixel linear fit of PA vs λ² ─────────────
 // Requires ≥ 3 frequency pairs (Q_i, U_i, ν_i). For each pixel:
@@ -7003,349 +3231,33 @@ void vtkWindowImage::computeSpectralIndex()
 // NOTE: no PA unwrapping — only valid in the "low-RM" regime where the n·π
 // ambiguity does not flip between channels. For aggressive RM use the
 // future backend-side RM synthesis tool.
-void vtkWindowImage::computeFaradayRM()
-{
-    if (!this->layers || this->layers->rowCount() < 6) {  // ≥ 3 pairs × 2
-        QMessageBox::warning(this, u"Faraday RM"_s,
-                u"Need at least 3 Q/U pairs (6 layers minimum) at different frequencies."_s);
-        return;
-    }
 
-    // Modal dialog with a table of (Q layer, U layer, frequency GHz) rows
-    QDialog dlg(this);
-    dlg.setWindowTitle(u"Compute Faraday Rotation Measure"_s);
-    auto *vl = new QVBoxLayout(&dlg);
 
-    auto *intro = new QLabel(
-            u"Add ≥ 3 (Q, U, ν) triplets at different frequencies. The tool will "
-            u"compute PA per pixel for each, then fit a line PA vs λ². The slope "
-            u"is RM (rad m⁻²). No PA unwrapping — works only for low-RM regimes."_s,
-            &dlg);
-    intro->setWordWrap(true);
-    vl->addWidget(intro);
 
-    auto *table = new QTableWidget(0, 3, &dlg);
-    table->setHorizontalHeaderLabels({ u"Stokes Q layer"_s, u"Stokes U layer"_s,
-                                       u"ν (GHz)"_s });
-    table->horizontalHeader()->setStretchLastSection(true);
-    table->setSelectionBehavior(QAbstractItemView::SelectRows);
-    vl->addWidget(table);
-
-    auto *btnRow = new QHBoxLayout();
-    auto *btnAdd = new QPushButton(u"Add row"_s, &dlg);
-    auto *btnDel = new QPushButton(u"Remove row"_s, &dlg);
-    btnRow->addWidget(btnAdd);
-    btnRow->addWidget(btnDel);
-    btnRow->addStretch(1);
-    vl->addLayout(btnRow);
-
-    const auto addRow = [this, table]() {
-        const int r = table->rowCount();
-        table->insertRow(r);
-        auto *cQ = new QComboBox();
-        auto *cU = new QComboBox();
-        for (int i = 0; i < this->layers->rowCount(); ++i) {
-            const QString name = this->layers->data(
-                    this->layers->index(i, 0), Qt::DisplayRole).toString();
-            cQ->addItem(name, i);
-            cU->addItem(name, i);
-        }
-        table->setCellWidget(r, 0, cQ);
-        table->setCellWidget(r, 1, cU);
-        auto *e = new QLineEdit(u"1.284"_s);
-        e->setValidator(new QDoubleValidator(1e-9, 1e9, 6));
-        table->setCellWidget(r, 2, e);
-    };
-    QObject::connect(btnAdd, &QPushButton::clicked, &dlg, addRow);
-    QObject::connect(btnDel, &QPushButton::clicked, &dlg, [table]() {
-        const int r = table->currentRow();
-        if (r >= 0) table->removeRow(r);
-    });
-
-    // Seed 3 rows
-    addRow(); addRow(); addRow();
-
-    auto *btns = new QDialogButtonBox(
-            QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    vl->addWidget(btns);
-    dlg.resize(520, 340);
-
-    if (dlg.exec() != QDialog::Accepted) return;
-
-    struct FreqPair {
-        vtkImageData *q{ nullptr };
-        vtkImageData *u{ nullptr };
-        double lambda2{ 0.0 };  // m²
-    };
-    std::vector<FreqPair> pairs;
-    for (int r = 0; r < table->rowCount(); ++r) {
-        auto *cQ = qobject_cast<QComboBox *>(table->cellWidget(r, 0));
-        auto *cU = qobject_cast<QComboBox *>(table->cellWidget(r, 1));
-        auto *eF = qobject_cast<QLineEdit *>(table->cellWidget(r, 2));
-        if (!cQ || !cU || !eF) continue;
-        const int qi = cQ->currentData().toInt();
-        const int ui = cU->currentData().toInt();
-        const double nuGHz = eF->text().toDouble();
-        if (qi == ui || nuGHz <= 0.0) continue;
-        const double nuHz = nuGHz * 1e9;
-        constexpr double c_m_per_s = 299792458.0;
-        const double lambda = c_m_per_s / nuHz;
-        FreqPair fp;
-        fp.q = this->layers->getImageData(qi);
-        fp.u = this->layers->getImageData(ui);
-        fp.lambda2 = lambda * lambda;
-        if (fp.q && fp.u) pairs.push_back(fp);
-    }
-    if (pairs.size() < 3) {
-        QMessageBox::warning(this, u"Faraday RM"_s,
-                u"Need at least 3 valid Q/U pairs at distinct frequencies."_s);
-        return;
-    }
-
-    // Verify all share the same extent
-    int ext0[6];
-    pairs[0].q->GetExtent(ext0);
-    for (const auto &p : pairs) {
-        int e[6];
-        p.q->GetExtent(e);
-        if (e[0] != ext0[0] || e[1] != ext0[1] || e[2] != ext0[2] || e[3] != ext0[3]) {
-            QMessageBox::warning(this, u"Faraday RM"_s,
-                    u"All selected layers must share the same pixel grid."_s);
-            return;
-        }
-    }
-
-    // Pre-compute λ² stats for the linear fit
-    const int N = static_cast<int>(pairs.size());
-    double meanL2 = 0.0;
-    for (const auto &p : pairs) meanL2 += p.lambda2;
-    meanL2 /= N;
-    double sumL2_dev2 = 0.0;
-    for (const auto &p : pairs) {
-        const double d = p.lambda2 - meanL2;
-        sumL2_dev2 += d * d;
-    }
-    if (sumL2_dev2 <= 0.0) {
-        QMessageBox::warning(this, u"Faraday RM"_s,
-                u"Selected frequencies are too close to fit a linear RM."_s);
-        return;
-    }
-
-    auto rmData = vtkSmartPointer<vtkImageData>::New();
-    rmData->SetExtent(ext0);
-    rmData->SetOrigin(pairs[0].q->GetOrigin());
-    rmData->SetSpacing(pairs[0].q->GetSpacing());
-    rmData->AllocateScalars(VTK_FLOAT, 1);
-
-    auto *outPtr = static_cast<float *>(rmData->GetScalarPointer());
-    const int W = ext0[1] - ext0[0] + 1;
-    double rmMin = std::numeric_limits<double>::infinity();
-    double rmMax = -std::numeric_limits<double>::infinity();
-    int nValid = 0;
-
-    std::vector<double> paBuf(static_cast<std::size_t>(N));
-    for (int y = ext0[2]; y <= ext0[3]; ++y) {
-        for (int x = ext0[0]; x <= ext0[1]; ++x) {
-            bool allFinite = true;
-            for (int k = 0; k < N; ++k) {
-                const float q = pairs[k].q->GetScalarComponentAsFloat(x, y, 0, 0);
-                const float u = pairs[k].u->GetScalarComponentAsFloat(x, y, 0, 0);
-                if (!std::isfinite(q) || !std::isfinite(u)) {
-                    allFinite = false;
-                    break;
-                }
-                paBuf[k] = 0.5 * std::atan2(static_cast<double>(u),
-                                            static_cast<double>(q));
-            }
-            float rm;
-            if (allFinite) {
-                // Linear fit slope:  Σ(x_i − x̄)(y_i − ȳ) / Σ(x_i − x̄)²
-                double meanPA = 0.0;
-                for (double v : paBuf) meanPA += v;
-                meanPA /= N;
-                double num = 0.0;
-                for (int k = 0; k < N; ++k) {
-                    num += (pairs[k].lambda2 - meanL2) * (paBuf[k] - meanPA);
-                }
-                const double slope = num / sumL2_dev2;
-                rm = static_cast<float>(slope);  // rad m⁻²
-                rmMin = std::min(rmMin, static_cast<double>(rm));
-                rmMax = std::max(rmMax, static_cast<double>(rm));
-                ++nValid;
-            } else {
-                rm = std::numeric_limits<float>::quiet_NaN();
-            }
-            outPtr[(y - ext0[2]) * W + (x - ext0[0])] = rm;
-        }
-    }
-    if (nValid == 0) {
-        QMessageBox::warning(this, u"Faraday RM"_s,
-                u"No pixel had finite Q and U at all selected frequencies."_s);
-        return;
-    }
-    // Clip the display range to ±5σ_MAD of the RM distribution to keep colours
-    // useful even when a handful of pixels have outlier RM values.
-    addDerivedLayer(rmData,
-            QStringLiteral("RM (N=%1)").arg(N),
-            StokesRole::DerivedRM, u"Spectrum"_s,
-            std::max(-500.0, rmMin), std::min(500.0, rmMax));
-    statusBar()->showMessage(
-            QStringLiteral("Faraday RM: %1 pixels, range %2 — %3 rad m⁻² (clipped to ±500 for display)")
-                    .arg(nValid).arg(rmMin, 0, 'f', 1).arg(rmMax, 0, 'f', 1),
-            6000);
-}
-
-void vtkWindowImage::addDerivedLayer(vtkSmartPointer<vtkImageData> data,
-                                      const QString &name, StokesRole role,
-                                      const QString &colorMap,
-                                      double rangeMin, double rangeMax)
-{
-    ImageLayerLoadResult result;
-    result.valid = true;
-    result.filepath = name.toStdString();
-    result.imageData = data;
-    result.scalarRange = { rangeMin, rangeMax };
-
-    this->applyLoadedLayer(result);
-
-    const int newIdx = this->layers->rowCount() - 1;
-    m_stokesRoles.insert(newIdx, role);
-    this->setLayerDisplayName(newIdx, name);
-
-    if (auto *lut = this->layers->getLookupTable(newIdx)) {
-        ColorMaps::SetColorMap(lut, colorMap.toStdString());
-        lut->SetTableRange(rangeMin, rangeMax);
-        lut->SetNanColor(0.0, 0.0, 0.0, 0.0);
-        lut->Build();
-    }
-    this->vtkRender();
-    statusBar()->showMessage(
-            QStringLiteral("Derived map added: %1 (range %2 — %3)")
-                    .arg(name)
-                    .arg(rangeMin, 0, 'g', 4)
-                    .arg(rangeMax, 0, 'g', 4),
-            4000);
-}
-
-void vtkWindowImage::rebuildPolarizationVectors()
-{
-    const int qIdx = findLayerByStokesRole(StokesRole::Q);
-    const int uIdx = findLayerByStokesRole(StokesRole::U);
-    if (qIdx < 0 || uIdx < 0) {
-        m_polVecActor->VisibilityOff();
-        return;
-    }
-    auto *qData = this->layers->getImageData(qIdx);
-    auto *uData = this->layers->getImageData(uIdx);
-    if (!qData || !uData) {
-        m_polVecActor->VisibilityOff();
-        return;
-    }
-
-    int ext[6];
-    qData->GetExtent(ext);
-
-    m_polVecPoints->Reset();
-    m_polVecCells->Reset();
-
-    // First pass: collect P values, find robust max for normalization.
-    double pMax = 0.0;
-    std::vector<double> pSamples;
-    for (int y = ext[2]; y <= ext[3]; y += m_polVecGridStep) {
-        for (int x = ext[0]; x <= ext[1]; x += m_polVecGridStep) {
-            const float q = qData->GetScalarComponentAsFloat(x, y, 0, 0);
-            const float u = uData->GetScalarComponentAsFloat(x, y, 0, 0);
-            if (std::isfinite(q) && std::isfinite(u)) {
-                const double p = std::sqrt(q * q + u * u);
-                pSamples.push_back(p);
-                pMax = std::max(pMax, p);
-            }
-        }
-    }
-    if (pSamples.empty() || pMax <= 0.0) {
-        m_polVecActor->VisibilityOff();
-        return;
-    }
-
-    // Robust noise estimate from the sample set (median absolute deviation).
-    std::vector<double> sorted = pSamples;
-    std::sort(sorted.begin(), sorted.end());
-    const double median = sorted[sorted.size() / 2];
-    std::vector<double> dev;
-    dev.reserve(sorted.size());
-    for (double v : sorted) dev.push_back(std::abs(v - median));
-    std::sort(dev.begin(), dev.end());
-    const double sigma = 1.4826 * dev[dev.size() / 2];
-    const double pThreshold = sigma * m_polVecSnrMin;
-
-    const double maxLen = m_polVecGridStep * 0.9 * m_polVecScale;
-
-    int nDrawn = 0;
-    for (int y = ext[2]; y <= ext[3]; y += m_polVecGridStep) {
-        for (int x = ext[0]; x <= ext[1]; x += m_polVecGridStep) {
-            const float q = qData->GetScalarComponentAsFloat(x, y, 0, 0);
-            const float u = uData->GetScalarComponentAsFloat(x, y, 0, 0);
-            if (!std::isfinite(q) || !std::isfinite(u)) continue;
-            const double p = std::sqrt(q * q + u * u);
-            if (p < pThreshold) continue;
-
-            // Radio convention: PA measured from N through E.
-            // In image pixel coords with +y = north and +x = east (typical
-            // for FITS with CDELT1<0), the vector orientation is:
-            //   dx = -sin(PA), dy = +cos(PA)
-            const double pa_rad = 0.5 * std::atan2(static_cast<double>(u),
-                                                    static_cast<double>(q));
-            const double len = 0.5 * (p / pMax) * maxLen;
-            const double dx = -len * std::sin(pa_rad);
-            const double dy = +len * std::cos(pa_rad);
-
-            const vtkIdType id1 = m_polVecPoints->InsertNextPoint(x - dx, y - dy, 0.0);
-            const vtkIdType id2 = m_polVecPoints->InsertNextPoint(x + dx, y + dy, 0.0);
-            m_polVecCells->InsertNextCell(2);
-            m_polVecCells->InsertCellPoint(id1);
-            m_polVecCells->InsertCellPoint(id2);
-            ++nDrawn;
-        }
-    }
-
-    m_polVecData->SetPoints(m_polVecPoints);
-    m_polVecData->SetLines(m_polVecCells);
-    m_polVecData->Modified();
-
-    statusBar()->showMessage(
-            QStringLiteral("Polarization vectors: %1 (step=%2 px, SNR≥%3, σ_P≈%4)")
-                    .arg(nDrawn).arg(m_polVecGridStep)
-                    .arg(m_polVecSnrMin, 0, 'f', 1).arg(sigma, 0, 'g', 4),
-            5000);
-}
-
-void vtkWindowImage::setPolVectorsVisible(bool vis)
-{
-    m_polVecsVisible = vis;
-    if (vis) {
-        rebuildPolarizationVectors();
-    }
-    m_polVecActor->SetVisibility(vis);
-    if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
-}
 
 // ── VLKB layer support ────────────────────────────────────────────────────────
 
 void vtkWindowImage::addLayerFromBackendPath(const QString &backendPath,
                                               const QString &displayName)
 {
-    if (this->isBusy()) {
-        qWarning().noquote()
-                << QStringLiteral("[vlkb-layer] viewer busy, ignoring addLayerFromBackendPath");
+    if (this->isBusy() || !m_pendingLayerLoads.isEmpty()) {
+        // Queued, not dropped. Selecting six datasets in the VLKB inventory
+        // fires six of these at once, and the viewer loads one layer at a time:
+        // ignoring the rest meant the user got one cutout and a log line.
+        m_pendingLayerLoads.append({ backendPath, displayName, false });
+        this->showPersistentStatusMessage(
+                u"Queued VLKB layer \"%1\" (%2 waiting)…"_s.arg(displayName)
+                        .arg(m_pendingLayerLoads.size()));
+        // The queue may be non-empty while nothing is actually loading — the
+        // previous load finished between the two checks — so give it a push
+        // rather than waiting for an event that has already happened.
+        this->pumpLayerQueue();
         return;
     }
-    // Reuse the standard addLayerImage pipeline (vtkFITSReader + AstroUtils/libwcs).
-    // libwcs handles CD matrix correctly — no custom WCS math needed.
-    // The VLKB cutout FITS is saved on the backend filesystem; when the backend
-    // runs on the same machine as the client (the common case), backendPath is
-    // directly accessible as a local filesystem path.
+    // Reuse the standard addLayerImage pipeline, which picks the local reader or
+    // the backend depending on whether this machine can see the file. The VLKB
+    // cutout is written on the BACKEND's filesystem, so with a remote backend
+    // that is the backend path - and it loads either way.
     m_pendingVlkbDisplayName = displayName;
     this->addLayerImage(backendPath.toStdString());
     // Override the generic "Loading layer..." message with the VLKB-specific label.

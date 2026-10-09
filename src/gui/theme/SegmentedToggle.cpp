@@ -14,13 +14,14 @@ SegmentedToggle::SegmentedToggle(QWidget *parent)
     m_group->setExclusive(true);
 
     m_layout = new QHBoxLayout(this);
-    m_layout->setContentsMargins(1, 1, 1, 1);     // matches design `padding: 1`
+    m_layout->setContentsMargins(3, 3, 3, 3);     // inset: the chip floats in the track (§3.0c)
     m_layout->setSpacing(0);                       // segments are joined
 
     applyStyle();
     setAttribute(Qt::WA_StyledBackground, true);
 
     QObject::connect(m_group, &QButtonGroup::idClicked, this, [this](int idx) {
+        emit segmentClicked(idx);   // fires even when re-clicking the current segment
         if (idx == m_currentIndex) return;
         m_currentIndex = idx;
         refreshSegmentLooks();
@@ -42,7 +43,13 @@ void SegmentedToggle::addItem(const QString &label, const QString &toolTip)
     btn->setFocusPolicy(Qt::TabFocus);
     btn->setCursor(Qt::PointingHandCursor);
     btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    btn->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    // Segments share the container width equally (flex) so a narrow dock never
+    // clips the last label ("MinIP"); the widget fills, it does not overflow.
+    btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    // Segments share surplus width equally (flex), but never shrink below their
+    // own label — an over-tight setMaximumWidth() on the container must overflow
+    // visibly, not elide ("Moment Map" → "Mom…Map").
+    btn->setMinimumWidth(btn->fontMetrics().horizontalAdvance(label) + 18);  // 8 px padding × 2 + 2
     if (!toolTip.isEmpty()) {
         btn->setToolTip(toolTip);
     }
@@ -51,6 +58,30 @@ void SegmentedToggle::addItem(const QString &label, const QString &toolTip)
     m_group->addButton(btn, idx);
     m_layout->addWidget(btn);
 
+    if (m_currentIndex < 0) {
+        m_currentIndex = 0;
+        btn->setChecked(true);
+    }
+    refreshSegmentLooks();
+}
+
+void SegmentedToggle::addItem(const QIcon &icon, const QString &toolTip)
+{
+    auto *btn = new QToolButton(this);
+    btn->setIcon(icon);
+    btn->setIconSize(QSize(14, 14));
+    btn->setCheckable(true);
+    btn->setAutoExclusive(false);
+    btn->setFocusPolicy(Qt::TabFocus);
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    btn->setMinimumWidth(30);   // icon-only: room for the glyph + padding
+    btn->setToolTip(toolTip);   // mandatory — the glyph alone doesn't name the layout
+
+    const int idx = count();
+    m_group->addButton(btn, idx);
+    m_layout->addWidget(btn);
     if (m_currentIndex < 0) {
         m_currentIndex = 0;
         btn->setChecked(true);
@@ -80,6 +111,12 @@ void SegmentedToggle::setItemToolTip(int index, const QString &toolTip)
     }
 }
 
+void SegmentedToggle::setItemIcon(int index, const QIcon &icon)
+{
+    if (auto *btn = qobject_cast<QToolButton *>(m_group->button(index)))
+        btn->setIcon(icon);
+}
+
 void SegmentedToggle::setCurrentIndex(int index)
 {
     if (index < 0 || index >= count() || index == m_currentIndex) {
@@ -106,13 +143,17 @@ void SegmentedToggle::applyStyle()
     // (t.line border, borderRadius 4). Per-segment look set in
     // refreshSegmentLooks() so selected / unselected can use different
     // backgrounds + font weights without restyling the whole widget.
+    // An INSET track (§3.0c): the container is a recessed rail (kSurface) with a
+    // 5px radius; the selected chip sits inside it with a 4px radius and 3px of
+    // padding around — the single change that reads most as "finished".
     const QString css = QStringLiteral(
         "SegmentedToggle {"
-        "  background: transparent;"
+        "  background: %2;"
         "  border: 1px solid %1;"
-        "  border-radius: 4px;"
+        "  border-radius: 5px;"
         "}"
-    ).arg(QString::fromLatin1(VisivoTheme::kOutline()));
+    ).arg(QString::fromLatin1(VisivoTheme::kOutline()),
+          QString::fromLatin1(VisivoTheme::kSurface()));
     setStyleSheet(css);
 }
 
@@ -132,7 +173,7 @@ void SegmentedToggle::refreshSegmentLooks()
         "  background: %1;"
         "  color: %2;"
         "  border: none;"
-        "  border-radius: 3px;"
+        "  border-radius: 4px;"
         "  padding: 3px 8px;"
         "  font-size: 11px;"
         "  font-weight: 600;"
@@ -145,7 +186,7 @@ void SegmentedToggle::refreshSegmentLooks()
         "  background: transparent;"
         "  color: %1;"
         "  border: none;"
-        "  border-radius: 3px;"
+        "  border-radius: 4px;"
         "  padding: 3px 8px;"
         "  font-size: 11px;"
         "  font-weight: 400;"

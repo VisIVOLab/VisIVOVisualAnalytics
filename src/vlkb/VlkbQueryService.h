@@ -36,6 +36,11 @@ public:
     /// POS=RANGE search (dl/db are half-extents in degrees).
     void searchRange(double l, double b, double dl, double db);
 
+    /// Search a region given as a ready-built POS string. The callers that
+    /// already show the user a POS string use this, so what is previewed and
+    /// what is queried cannot drift apart.
+    void searchPos(const QString &pos);
+
     /// SODA cutout: download the FITS to destDir, emit cutoutFinished(localPath).
     void downloadCutout(const QString &ivoID, const QString &pos, const QDir &destDir);
 

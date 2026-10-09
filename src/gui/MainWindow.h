@@ -4,7 +4,10 @@
 #include "app/RecentDatasetsManager.h"
 
 #include <QMainWindow>
+#include <functional>
 #include <QPointer>
+#include <QStringList>
+#include <QUrl>
 #include <QString>
 #include <QTimer>
 
@@ -19,11 +22,14 @@ class HiPSWindow;
 class SampClient;
 class SampMessageHandler;
 class QAction;
+class QLabel;
 class QMenu;
+class QProgressDialog;
 class QTabWidget;
 class Settings;
 class VLKBInventoryTree;
 class vtkWindowImage;
+struct BackendNode;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -39,27 +45,72 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
+    /// Recent-datasets model, shared with viewer windows (dataset switcher).
+    RecentDatasetsManager *recentDatasetsManager() const { return recentMgr; }
+
+public slots:
+    /// Open a local dataset the DESKTOP asked for: a double-clicked FITS file, a
+    /// drop on the Dock icon, a path on the command line. Public because the
+    /// request arrives outside the UI (main()'s FileOpen relay). Raises the
+    /// window first — the app may not be in front — and reports an unreadable
+    /// path itself rather than failing silently.
+    void openDatasetPath(const QString &path);
+    /// Reopen a previously opened dataset (dataset switcher / Recent panel).
+    void reopenDataset(const RecentDataset &dataset);
+
 protected:
     void closeEvent(QCloseEvent *event) override;
 
 private slots:
     void setApplicationTheme();
+    /// One *Open…* for every file: browse, ask the backend what it is, and
+    /// send it to the viewer that suits it. Replaces the split between
+    /// ``openData``/``openCatalogue3D``/``openVbt``, which made the user
+    /// classify the file before opening it — and could not be answered for a
+    /// `.fits`, since two of the three accepted one.
+    void openAnything();
     void openData();
     void openCatalogue3D();
     void openVbt();
+    void openVelocityField();   ///< F1: open a cosmic-flow velocity field (3-component FITS)
     void openHiPS();
+    /// Data ▸ HiPS Cutout — a FITS out of any HiPS survey (CDS hips2fits).
+    void openHips2Fits();
+    /// Data ▸ Cone Search — a VO Simple Cone Search, saved as a catalogue.
+    void openConeSearch();
+    /// Browse an AREPO snapshot on the backend and extract a uniform cube.
+    void openArepoSnapshot();
     void openSettingsDialog();
     void openAboutDialog();
     void loadPanoramicView();
     void changeViewSelectionMode();
     void skyRegionSelected(const QString &point, const QString &area);
-    void reopenDataset(const RecentDataset &dataset);
     void queryVlkb();   ///< Triggered by btnQuery in the VLKB panel
+    /// Keep the VLKB panel honest: say which region the Query button will
+    /// actually send, and refuse to send one that has no size.
+    void refreshVlkbQueryPreview();
 
 private:
+    /// Live description of the region the VLKB Query button would send, shown
+    /// under the coordinate fields. Which SHAPE is sent is decided by which
+    /// fields are filled — radius means a cone, dl/db a box — and nothing said
+    /// so, least of all the "Selection" radios, which only control what the sky
+    /// view draws.
+    QPointer<QLabel> m_vlkbQueryPreview;
+    /// Progress affordance for a VLKB inventory query, and the watchdog that
+    /// ends it if the service never answers at all.
+    QPointer<QProgressDialog> m_vlkbQuerySheet;
+    QPointer<QTimer> m_vlkbQueryWatchdog;
+
     void buildDataMenu();
     void buildSampMenu();
-    void buildScienceMenu();
+    /// Builds the Data Hub's "Combine" menu: the operations that take SEVERAL
+    /// of the session's datasets and produce a new one, and so have no owning
+    /// viewer window. Single-view tools live in the viewers (see the comment on
+    /// the implementation for what moved where).
+    void buildCombineMenu();
+    /// Enable/disable Combine's entries from what the session actually holds.
+    void refreshCombineMenuState();
     void syncDataHubSettings();
     void syncSampSettings();
     void updateSampActions();
@@ -71,14 +122,99 @@ private:
 
     // Path-based open helpers (skip the file browser dialog, used for reopen).
     void doOpenDataPath(const QString &path);
-    void doOpenCataloguePath(const QString &path);
+    /// Classify ``path`` on the backend and open it accordingly, asking the
+    /// user only when the content itself is ambiguous (a FITS table can be a
+    /// catalogue or an overlay) or unrecognised.
+    void dispatchOpenForPath(const QString &path);
+    void doOpenCataloguePath(const QString &path, const QStringList &paths = QStringList());
+    /// Resolve a remote URL → download via VisIVO backend → open. Used by
+    /// the SKAVA Discovery tab after a DataLink lookup. ``obsId`` is the
+    /// SKAVA-side identifier, used as a filename hint in the cache and as
+    /// the display name for the Recent Datasets panel.
+    void doOpenDataFromUrl(const QString &url, const QString &obsId);
+    /// Backend-aware open driven by a full SKAVA DataLink response. When
+    /// SKAVA advertises a ``visivo-backend`` service descriptor that
+    /// matches a registered backend, route the open through that backend
+    /// (compute next to data, no download). When no descriptor matches,
+    /// fall back to ``doOpenDataFromUrl`` (download via local backend).
+    /// See docs/distributed-backend-design.md §4.2.
+    void doOpenSkavaDataset(const QString &obsId,
+                              const struct SkavaDatalinkResponse &datalink);
+    /// SKAVA "SODA subset": prompt for a POS/BAND region, run the cutout on
+    /// the dataset's co-located VisIVO backend (compute next to data) and
+    /// open the resulting FITS in place. Falls back with a clear message when
+    /// the dataset has no co-located backend / non-file replica. Kept distinct
+    /// from the VLKB-specific cutout flow in ``queryVlkb``.
+    void doSkavaSodaSubset(const QString &obsId,
+                             const struct SkavaDatalinkResponse &datalink);
+    /// Open a backend-side FITS produced by an advanced product (map math,
+    /// mosaic) in the viewer, using the science backend that computed it.
+    void openBackendProductFits(const QString &backendUrl, const QString &backendToken,
+                                  const QString &path, const QString &displayName);
+    /// Open the SoFiA-2 source-finding dialog for a dataset and wire its mask-cube
+    /// overlay. Shared by the Science menu action and the copilot's show_sources.
+    void openSourceFinder(const QString &backendUrl, const QString &backendToken,
+                          const QString &sessionId, const QString &datasetId);
+    /// Action handlers for the advanced 2-D product use cases.
+    /// @p onDone, when given, receives the rendered file's path so the calling
+    /// viewer can record the figure as a product of its own.
+    void runPublicationFigure(const QString &backendUrl, const QString &backendToken,
+                              const QString &sessionId, const QString &datasetId,
+                              std::function<void(const QString &outputPath)> onDone = {});   ///< UC 1.3
+    /// @p onDone receives the metrics so the calling viewer can record them.
+    void runImageQuality(const QString &backendUrl, const QString &backendToken,
+                         const QString &sessionId, const QString &datasetId,
+                         std::function<void(const QVariantMap &metrics)> onDone = {});        ///< UC 4.2
+    void runPixelMath();           ///< UC 3.2
+    void runMosaic();              ///< UC 3.3
+    /// Shared viewer-creation logic used by both ``doOpenDataPath`` (local
+    /// path open) and ``doOpenDataFromUrl`` (SKAVA HTTP open). ``path`` is
+    /// the *display* identifier — window title, Recent Datasets entry,
+    /// SAMP metadata — and may be a SKAVA obs_id rather than a real file
+    /// path when the dataset came in through ``openDatasetFromUrl``.
+    /// Connect an image viewer's product requests (Publication Figure, Image
+    /// Quality) to this window, binding them to THAT viewer's dataset. Every
+    /// path that creates a vtkWindowImage must call it.
+    void wireImageViewerProducts(vtkWindowImage *window,
+                                 const QString &backendUrl, const QString &backendToken,
+                                 const QString &sessionId, const QString &datasetId);
+    /// Record the backend session a newly opened dataset belongs to, and refresh
+    /// the Combine menu from it.
+    void adoptSessionContext(const QString &backendUrl, const QString &backendToken,
+                             const QString &sessionId, const QString &datasetId,
+                             int depth, const QString &spectralAxisType,
+                             const QString &spectralAxisUnit);
+    void openViewerFromOpenedDataset(const QString &path,
+                                       const struct BackendOpenDatasetResult &opened,
+                                       const class BackendClient &client);
     void doOpenVbtPath(const QString &path);
 
     /// Open a VLKB 2D cutout (backend path) in a new vtkWindowImage, label its
     /// master layer with @p displayName, and associate the window with @p tree
     /// so subsequent 2D items from the same inventory session are added as layers.
+    /// @p tree is a QPointer, not a raw pointer: the inventory has
+    /// WA_DeleteOnClose and the backend calls in here spin an event loop, so it
+    /// can be closed while they run.
+    /// What to do with a VLKB cutout once it has been fetched.
+    enum class VlkbCutoutMode {
+        Layer,       ///< add to the inventory's shared viewer (the default)
+        NewWindow,   ///< a viewer of its own, for side-by-side comparison
+        SaveOnly,    ///< keep the file, do not open it
+    };
+    /// Fetch one inventory dataset and act on it. The fetch, the error report
+    /// and the dialog's "requesting…" bookkeeping are identical for all three
+    /// modes, so they are written once.
+    void fetchVlkbCutout(const QString &ivoID, const QString &pos,
+                         const QString &displayName, const QString &type,
+                         QPointer<VLKBInventoryTree> tree, VlkbCutoutMode mode);
+
+    /// Keep a fetched cutout as a file, without opening it. The cutout lives on
+    /// the BACKEND, which may be another machine, so it travels: workspace copy,
+    /// then download to the path the user picked.
+    void saveVlkbCutoutAs(const QString &backendPath, const QString &displayName);
+
     void openVlkbImageLayer(const QString &backendPath, const QString &displayName,
-                             VLKBInventoryTree *tree);
+                             QPointer<VLKBInventoryTree> tree);
 
     Ui::MainWindow *ui;
     QPointer<Settings>               settings;
@@ -93,6 +229,10 @@ private:
     // distinguish it from genuinely-disposable tabs in the close handler.
     QPointer<QWidget>                m_vlkbPanel;
     QPointer<CommandPalette>         m_commandPalette;
+    /// Palette groups contributed by the active viewer's menus. Cleared and
+    /// rebuilt on every open, so a viewer that has been closed since leaves
+    /// nothing behind in the list.
+    QStringList                      m_paletteWindowGroups;
 
     // Backend diagnostics mirror — polls /v1/diagnostics/events every few
     // seconds and re-publishes each new entry into DiagnosticsManager, so
@@ -115,6 +255,14 @@ private:
     // closed it. Used by both the Data Hub Quick action and the command
     // palette entry.
     void revealVLKBTab();
+    /// Point the panoramic view at the Galactic plane once its page has loaded.
+    void frameGalacticPlane();
+    /// Panoramic-view load state: the URL last asked for, whether the
+    /// loadFinished handler is already connected (it is connected once, not per
+    /// load), and whether what is on screen is our own error page.
+    QUrl m_panoramicUrl;
+    bool m_panoramicHandlerConnected = false;
+    bool m_panoramicShowingError = false;
     std::unique_ptr<BackendClient>   m_sampBackendClient;
     QPointer<SampClient>             m_sampClient;
     QPointer<SampMessageHandler>     m_sampHandler;
@@ -130,10 +278,14 @@ private:
     QString  m_sciSpectralAxisUnit;  ///< Backend CUNIT3, e.g. "km/s", "GHz".
 
     QPointer<QMenu>   m_scienceMenu;
-    QPointer<QAction> m_actLinewidth;
-    QPointer<QAction> m_actBaseline;
-    QPointer<QAction> m_actStack;
-    QPointer<QAction> m_actSourceFind;
+    // Line-Width, Baseline, Stack, Source Finding, Publication Figure and
+    // Image Quality used to be Data-Hub actions here. They are tools of a
+    // single view and now live in the viewer that owns the data (the cube's and
+    // the image's Analysis lists), which is the only place that knows which
+    // dataset the user means.
+    QMenu *m_viewMenu{ nullptr };
+    QPointer<QAction> m_actPixelMath;     ///< UC 3.2 pixel math / spectral index
+    QPointer<QAction> m_actMosaic;        ///< UC 3.3 noise-weighted mosaic
     QPointer<QMenu>   m_sampMenu;
     QPointer<QAction> m_actSampConnect;
     QPointer<QAction> m_actSampDisconnect;
@@ -146,6 +298,15 @@ private:
     QString           m_sampCurrentCatalogueFormat;
 
     void openDiagnosticsWindow();
+
+    // ── "Served by" backend badge ─────────────────────────────────────────
+    // Permanent widget in the status bar showing which backend is currently
+    // active. Updated by ``setActiveBackendBadge()`` whenever a dataset
+    // open routes through a remote SRC backend (``Backend: <name>`` in
+    // accent colour) or falls back to the local backend (``Backend:
+    // Local`` in muted colour).
+    QPointer<QLabel> m_backendBadge;
+    void setActiveBackendBadge(const BackendNode &node);
 
 
 };

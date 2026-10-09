@@ -49,7 +49,8 @@ MomentMapComputeResult computeMomentMap(const MomentMapComputeRequest &request)
             MomentRequest { request.filepath, request.datasetId, request.backendUrl,
                             request.sessionId, request.backendToken,
                             request.momentOrder, request.channelStart, request.channelEnd,
-                            request.maskEnabled, request.thresholdValue });
+                            request.maskEnabled, request.thresholdValue,
+                            request.thresholdAuto });
     qDebug().noquote()
             << QStringLiteral("[perf][moment] backend compute: %1 ms").arg(computeTimer.elapsed());
     if (!processed.valid || !processed.image) {

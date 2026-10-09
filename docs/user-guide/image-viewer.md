@@ -23,6 +23,12 @@ Single 2-D dock with the image and a side panel for:
 - **Tools** — region statistics, profile / probe, WCS frame switch.
 - **Info / Stats** — pixel-value summary, BUNIT, image extent.
 
+Tools that have settings do not each open their own panel. Picking one mounts
+its controls in a single contextual **Parameters** tab in the Inspector, and
+switches to it — so "where are this tool's options" has one answer, and the
+answer is visible the moment you start the tool rather than behind a dock you
+have to find. The tab also carries the provenance of what the tool measured.
+
 ## Preview → full upgrade
 
 Like the cube viewer, the image viewer first shows a downsampled **preview**
@@ -31,30 +37,119 @@ interactive immediately. The full resolution (`/v1/image/full`) loads in
 the background; the LUT and WCS overlay continue to work during the
 upgrade.
 
+For very large mosaics the full upgrade is assembled from tiles
+(`/v1/image/tile`) at a **decimated level of detail** capped at ~64 Mpx,
+rather than uploading every pixel. The decimated image is visually identical
+(display is downsampled for rendering anyway), and all overlays and tools —
+probe, profile, region statistics, ruler/angle, catalogue markers — report
+**full-resolution pixel and WCS coordinates**, so measurements are unaffected
+by the LOD. The badge next to the file path shows `full-res` once the upgrade
+has loaded.
+
+### Viewport-driven level of detail
+
+On a multi-level pyramid image the viewer then **streams the visible region
+at the zoom-appropriate resolution**: when a pan or zoom settles, it fetches
+only the tiles covering the current view at the pyramid level where one source
+pixel ≈ one screen pixel, and swaps that sub-image in while keeping your camera
+in place. So zooming into a source reveals its **full-resolution** detail
+without ever materialising the whole gigapixel mosaic, and panning loads new
+regions on demand; memory stays bounded by the viewport rather than the image.
+The streamed sub-image carries a non-zero origin, but its world coordinates are
+still full-resolution source pixels, so every readout and overlay stays correct.
+Zooming back out returns to a coarse whole-image level. This is transparent —
+there are no controls; it just tracks your view.
+
 ## Adding layers
 
 You can overlay or compare multiple images in the same window:
 
-- **Add New Layer…** — pick another FITS image from the *remote file
-  browser*. Backend-side check (`ImageLayerImportService`) validates the
-  layer's WCS against the base image and warns if the pixel grids don't
-  overlap.
-- Use the layer panel to **reorder**, **toggle visibility**, set a
-  **per-layer colour map**, **opacity** and **z-order**.
-- Manual local files: drop a `.fits` from the OS file browser, or pick it
-  via *File → Add New FITS File…*
+- **Add Image Layer…** (*File* menu, ⌘L, or the **+ Add…** beside the
+  *Layers* list) — pick another FITS image from the *remote file browser*.
+- Each layer is a **card**: the visibility box, its name, and — on the second
+  line — a strip of that layer's own colour map with its stretch and opacity.
+  Before, those three were visible only in the panel above the list and only for
+  the selected layer, so telling six VLKB cutouts apart meant clicking each one
+  in turn. The base layer is tagged `base`.
+- Drag the cards to **reorder** them; that is the z-order. Clicking the
+  visibility box toggles the layer without changing which one the settings above
+  act on.
+- **＋ Add layer…** sits under the stack, and **Overlays** under that.
+- You can also drop a `.fits` from the OS file browser onto the window.
+
+### A layer has to cover the same sky
+
+Before anything is downloaded, the two headers are compared: a file that
+covers none of the sky the current image covers is not added. It is not a
+broken file — the WCS alignment would place it correctly, off the edge of the
+image, so the load would "succeed" and nothing would appear.
+
+Instead the viewer says so and offers:
+
+- **Open in New Window** — the sensible answer for an image of somewhere else;
+- **Add Anyway** — the sky bounds behind the refusal come from `wcsrange()`,
+  which is a bounding box, and a rotated field straddling RA = 0 can measure
+  narrower than it really is. This is how you overrule the check;
+- **Cancel**.
+
+An image whose header carries no celestial solution (pixel coordinates only)
+is refused outright: there is no position to line it up with.
 
 All layer sources go through the same `loadImageLayer()` / `AstroUtils` /
 `libwcs` pipeline, so alignment between layers is handled the same way
 regardless of whether they come from VLKB, the remote backend, or local
-disk.
+disk. Which path a file takes is decided by **where the backend is**, not
+by whether the path happens to exist on your own disk: against a remote
+backend the layer is opened there and its WCS built from the header the
+backend returns, so a path that also exists locally cannot silently load
+a different file.
+
+## Smoothing and regridding
+
+*Tools → Smooth / Regrid…* (the legacy's *Filter FITS*) applies a Gaussian
+kernel and/or an integer shrink on the backend and adds the result as a layer.
+The dialog says what each choice means before you commit: the kernel FWHM in
+arcseconds, and the pixel size the regrid would produce.
+
+Three things it does that the legacy did not:
+
+- **blank pixels stay blank** and do not eat their neighbourhood — the
+  convolution is normalised by the smoothed coverage;
+- **the beam grows with the kernel** (`BMAJ`/`BMIN` summed in quadrature), so
+  the output still describes its own resolution — and for a map in Jy/beam the
+  pixels are scaled with it, so the integrated flux is the same before and
+  after. (Smoothing preserves the sum of the pixels; the flux is that sum over
+  the beam area, so a wider beam with unchanged numbers means less flux.) The
+  dialog reports the factor it applied;
+- **a per-pixel unit is summed, not averaged.** Block-averaging a `Jy/pixel` map
+  loses flux by the square of the factor; `BUNIT` decides, and the result says
+  which rule was used.
+
+The same entry exists in the cube viewer, where every plane is filtered — a
+spatial operation, so the spectral axis is left alone.
+
+## Editing the header
+
+Click the **IMAGE** tag in the toolbar to see the FITS header, then **Edit…**.
+Any keyword can be changed, added or removed; the result is written as a **new
+file** in the Workspace and offered for opening, and the file on disk is never
+modified.
+
+Structural keywords (`SIMPLE`, `BITPIX`, `NAXISn`) and the data-scaling ones
+(`BSCALE`, `BZERO`, `BLANK`) are not editable: they describe the bytes rather
+than the science, and editing them makes the header disagree with its own data.
+
+When you save, the backend builds the WCS from the edited header and tells you
+what it amounts to — *Celestial WCS (RA---TAN, DEC--TAN)*, or that there still
+is none. The legacy's header dialog reported "File has been saved!" either way,
+so a wrong guess was only discovered by reopening the copy.
 
 ## WCS overlay and frame
 
 - **Show WCS Axes** in the *View* menu paints ticks along the image axes
   according to its WCS metadata.
 - **Coordinate format** — a **Sexagesimal | Decimal** segmented toggle in
-  the sidebar's *Tools → WCS Display* card.
+  *Tools ▸ WCS Display*.
 - **Coordinate frame** — a **Galactic | FK5 | Ecliptic** segmented toggle
   in the same card. Conversions go through `wcscon()` from libwcs. The
   current frame label is shown in the bottom status bar.
@@ -71,23 +166,65 @@ If the WCS metadata is partial or invalid the backend sanitises it and the
 **WCS** badge in the status bar turns yellow with a tooltip listing what
 was changed.
 
+## Overlays
+
+Under the layer stack, one row per thing drawn *on top* of the image —
+catalogue sources, source labels, polarisation vectors, WCS axes, annotations —
+each with a count on the right.
+
+They were switched from four different places before: two entries in Tools, one
+in View, and annotations from nowhere at all (they could be added and cleared,
+never hidden). And none of them said how many objects were up there, so "is that
+all of them?" had no answer short of exporting the catalogue.
+
+A row whose overlay has nothing loaded is greyed out rather than failing
+silently when clicked. The rows and the menu entries are the same switches: use
+either.
+
 ## Color map & contrast
 
 The *Layer Settings* sidebar exposes:
 
-- **Color map** combo (Inferno, Viridis, Magma, Plasma, Cividis, …) with
-  gradient preview icons.
-- **Scale** — a **Linear | Log** segmented toggle (same pill-style
-  control used throughout the cube viewer). Log scale compresses the
-  dynamic range and is useful for images spanning several orders of
-  magnitude (e.g. Hα narrowband, X-ray mosaics).
+- **Color map** — the combo (Inferno, Viridis, Magma, Plasma, Cividis, …)
+  with gradient preview icons, and an inline **Edit** beside it, as in the
+  cube viewer.
 - **Layer opacity** slider for blending when multiple layers are stacked.
 
-For more precise control open the *2-D LUT editor* (`Advanced…` button) —
-a non-modal QCustomPlot editor where you can drag the transfer-function
-control points.
+**Edit** opens the *2-D LUT editor* — a non-modal QCustomPlot editor where you
+drag the transfer-function control points. The scale (Linear, Log, Sqrt,
+Square, Power γ) lives there too: one place with the full set, rather than an
+inline Linear | Log toggle offering two of five.
+
+## Modes: what the next click will do
+
+Under the toolbar there is a **mode strip** — Pan · Probe · Region · Ruler ·
+Annotate. These five are mutually exclusive: arming one disarms the others, and
+which one is on decides what a click on the image does.
+
+That was always true; what is new is that you can see it. Before, the modes were
+armed from the Tools menu, whose checkmarks are invisible until you open it, so
+the way to find out which mode you were in was to click and watch what happened.
+
+- Picking a segment arms that mode; **Pan** disarms everything.
+- Choosing **Region** shows a second strip for the shape — Box, Circle, Poly,
+  Annulus — and remembers your last choice for the next time.
+- The strip is two-way: arming a mode from the Tools menu or the command palette
+  moves it, and leaving Annotate cancels an annotation that was waiting to be
+  placed, rather than leaving it to land on your next click.
+- To the right, a short line says what the armed mode expects — *drag on the
+  image*, *click each vertex · double-click to close*, *click the two ends*.
 
 ## Regions and probes
+
+While you drag a region, a small box in the bottom-left corner of the viewport
+shows what is inside it: **Σ** and **μ**, updating as you drag. Before, the
+numbers arrived only when you let go, in a dialog — so the region was chosen
+blind and adjusted by repetition.
+
+A **≈** in front of a figure means it was sampled rather than summed: the
+readout runs on every mouse move, so on a region of more than ~200 000 pixels it
+reads a grid of them and scales up. The full statistics on release use every
+pixel, and those are the ones to quote.
 
 The image viewer shares the same region / probe machinery as the cube
 viewer's 2-D dock:
@@ -106,7 +243,8 @@ The detailed semantics are documented in
 Iso-contour lines can be drawn on top of the image from two sources:
 
 - **Self contours** — computed from the image's own pixel values.
-  Toggle **Show Contours** in the *Tools* sidebar (or *Tools* menu),
+  Toggle **Show Contours** from the *Tools* menu (or the Inspector's *Analysis*
+  list),
   then adjust **Level** (number of contour lines), **Lower** and
   **Upper** (value range). The pipeline uses `vtkFlyingEdges2D`, the
   same filter as the cube viewer's slice contours.
@@ -117,7 +255,7 @@ Iso-contour lines can be drawn on top of the image from two sources:
 - **Clear All Contours** removes every contour layer.
 
 - **Cube → Image direct** — if a cube viewer is open, use
-  *Tools → Send Slice to Image Viewer…* in the cube window. The
+  *Tools → Overlay Slice on an Open Image…* in the cube window. The
   current 2-D slice is sent to the first open image viewer as a
   contour overlay without requiring a FITS export round-trip.
 
@@ -130,8 +268,8 @@ optical comparison workflow.
 
 ## Measurement tools
 
-Two interactive measurement modes are available in the *Tools* sidebar
-**Measurement** card (or *Tools* menu):
+Two interactive measurement modes, from *Tools ▸ Measure* or the Inspector's
+*Analysis* list:
 
 - **Ruler (Distance)** — click two points on the image. A dashed
   orange line is drawn between them and the distance is displayed in
@@ -142,20 +280,55 @@ Two interactive measurement modes are available in the *Tools* sidebar
   B–C are drawn and the angle at vertex B is displayed in degrees.
 - **Clear Measurement** removes the current measurement overlay.
 
-Only one measurement mode can be active at a time (ExclusiveOptional
-group). Activating a measurement mode deactivates any active probe or
-region tool.
+Only one measurement mode can be active at a time (ExclusiveOptional group),
+and arming one disarms the probe, any region and a pending annotation — in both
+directions. That symmetry was missing until recently: arming a region from
+*Tools ▸ Regions* while the ruler was on left the ruler in charge, so the menu
+entry showed as checked, the mode strip still said Ruler, and dragging drew a
+distance instead of a region.
+
+## Products from this map
+
+*Inspector ▸ Analysis ▸ Products* (or the *Tools* menu) has two operations that
+take the single 2-D map this window shows:
+
+- **Publication Figure…** renders the map as a publication-ready PNG through
+  matplotlib on the backend: choose the stretch (linear / log / sqrt / asinh /
+  power), the colormap, an optional title, and whether to draw the WCS sky grid
+  and a colorbar labelled with BUNIT. The file lands in Workspace Exports.
+- **Image Quality / Artifacts…** reports the diagnostics you want before
+  trusting a map: blanked fraction, dynamic range, noise, and indicators for
+  striping and negative-bowl artefacts.
+
+```{note}
+Both were previously in the Data Hub's *Science* menu, where they ran against
+whichever dataset had been opened last rather than the one you were looking at.
+They now act on this window's dataset. Both reduce anything with more than two
+axes to its first plane, so on a cube they describe one channel; to render or
+measure a cube's collapsed emission, compute a moment map first and open that.
+```
 
 ## Pixel histogram
 
-*Tools → Pixel Histogram…* (or the **Histogram** card in the sidebar)
-opens a floating QCustomPlot window showing the pixel-value distribution
-of the master layer as a 256-bin bar chart.
+*Tools → Pixel Histogram…* (or the Inspector's *Analysis* list)
+opens a window showing the pixel-value distribution of the master layer as a
+256-bin bar chart.
 
 Two draggable vertical cursors mark the current LUT clip range
 (red = low, green = high). Dragging either cursor updates the LUT
 range live, so you can interactively clip the display without opening
 the advanced LUT editor.
+
+Two checkboxes decide whether the histogram is readable at all:
+
+- **Clip to 0.5–99.5 %** — bins over a robust percentile range instead of the
+  full data range. Astronomical images are mostly sky with a few bright
+  outliers; over the full range every source lands in one bin at the far right
+  and the sky in one at the far left. On by default, unless a LUT cursor would
+  fall outside the clipped range — the cursors have to stay reachable.
+- **Log counts** — a logarithmic count axis. The sky bin is orders of magnitude
+  taller than everything else, so on a linear axis the astronomically
+  interesting tail is a flat line along the bottom.
 
 ## Annotations
 
@@ -190,6 +363,14 @@ motion, or artefact differences between two epochs or bands.
 
 ## Stokes / Radio polarimetry analysis
 
+```{note}
+This section is the **image** path: the companions are loaded as layers and
+combined here, pixel by pixel. For full-Stokes **cubes** — one cube per plane,
+as MeerKAT MGCLS and ASKAP/POSSUM publish them — use the cube viewer instead,
+where the arithmetic happens on the backend and nothing that large is loaded.
+See [Polarimetry (Stokes Q, U, V)](polarimetry).
+```
+
 For continuum radio data with full polarimetry (Stokes I, Q, U, V), the
 image viewer has a dedicated **Stokes Analysis** workflow card in the
 *Tools* sidebar (also available under *Tools* menu):
@@ -205,9 +386,21 @@ image viewer has a dedicated **Stokes Analysis** workflow card in the
    - `*_I.fits` / `*_I_PB.fits` → replaces the role tag
    - Also tries `.fits.gz` variants for ASKAP / MeerKAT compressed
      releases
-3. Files found are loaded as additional layers, tagged with their
-   Stokes role. Missing roles trigger a file dialog so you can locate
-   them manually.
+3. The search is reported **once**, as a summary of what was found and
+   what was not, rather than as one file dialog per missing role. From
+   there you either accept the set or locate the missing companions
+   yourself; cancelling means cancelling, not being asked again for the
+   next role.
+4. Files found are loaded as additional layers, tagged with their Stokes
+   role, one after another.
+
+```{note}
+The search runs wherever the data actually is. With a **remote backend**
+the companions are looked for — and browsed for, if you have to locate
+them by hand — on the backend's filesystem, not on your laptop: the
+Stokes I file you opened lives there too, so its siblings almost
+certainly do.
+```
 
 ### Derived maps
 
@@ -503,10 +696,48 @@ available, otherwise from `OBSFREQ` / `OBSBW`.
 ## Catalogue overlay
 
 Same machinery as the cube viewer: load a CSV / VOTable from
-*Tools → Load Catalogue Overlay*. The sources are projected through the
-image WCS, drawn as glyphs, and listed in a sortable side table. Click a
-row to centre the view on the source; click on a glyph to highlight the
-matching table row.
+*Tools → Load Catalogue Overlay*, or query the VLKB directly with
+*Tools → Overlay VLKB Compact Sources* / *Overlay VLKB Filaments*. The sources are projected
+through the image WCS, drawn as glyphs, and listed in a table dock at the
+bottom of the window.
+
+Click a row to highlight the source, double-click to zoom to it, and
+right-click for *Fit SED of this source…*. The table shows every column the
+catalogue carries, groups a band-merged catalogue's per-band detections under
+their parent source, and exports to CSV. See
+[Catalogues · Overlay](catalogues-hips#catalogue-overlay-on-cubes--images) for
+the full description and [SED fitting](sed-fitting) for what to do with a
+source's fluxes once you have them.
+
+### Cross-match with a catalogue
+
+*Tools → Cross-match with Catalogue…* queries an external catalogue over the
+footprint of the current image and overlays the matches — no file needed. It
+requires a celestial WCS and a loaded dataset.
+
+1. Pick a catalogue — **SIMBAD**, **2MASS**, **NVSS**, or **FIRST** — and a
+   search radius in arcseconds (the effective radius is at least the image
+   half-diagonal, so the whole footprint is always covered).
+2. The backend resolves the image centre + footprint, queries the catalogue
+   (via `astroquery`), and **crops the matches to the valid image pixels** —
+   sources that project onto the blank/unobserved (NaN) border of a
+   non-rectangular mosaic are discarded, so the overlay only marks real data.
+3. The results are drawn and listed exactly like a file overlay (same
+   projection and side table), so you can click through them. The side table
+   includes **RA / Dec (deg)** alongside the projected image **X / Y**.
+
+The query runs asynchronously, so the UI stays responsive; results are capped
+at the backend's `max_sources` and flagged as *truncated* if there were more.
+When a dense field exceeds the cap, the retained sources are a **uniform
+spatial sub-sample** across the whole footprint (not just the ones nearest the
+centre), so the overlay stays representative instead of collapsing into a
+central clump. Catalogue column names are resolved case-insensitively, so the
+feature stays robust across `astroquery` versions.
+
+Overlay markers are sized relative to the image, so they stay visible on very
+large (multi-thousand-pixel) mosaics. Catalogue coordinates are equatorial
+(RA/Dec); if the status bar reads Galactic, switch **WCS → FK5** to compare
+them directly against the table.
 
 ## Diagnostics & errors
 

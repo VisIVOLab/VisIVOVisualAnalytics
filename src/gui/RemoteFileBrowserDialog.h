@@ -43,6 +43,9 @@ private:
     void clearDetails();
     void updateDetails(const BackendFileEntry *entry);
     void updateSelectionState();
+    /// Can this row be opened: the caller's extension filter if there is one,
+    /// any file if there is not (the unified "Open…" classifies afterwards).
+    bool isSelectable(const QTreeWidgetItem *item) const;
     QString humanReadableSize(qint64 size) const;
     void refreshEntriesView();
 

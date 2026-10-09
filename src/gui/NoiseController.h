@@ -30,11 +30,14 @@
 #include "CubeNoiseTypes.h"
 
 #include <QObject>
+#include <QPointer>
 
 #include <functional>
 
 // Forward declarations
 class QWidget;
+class NoiseRegionDialog;
+class QProgressDialog;
 
 // ---------------------------------------------------------------------------
 
@@ -66,12 +69,39 @@ public:
     // vtkWindowCube queries this inside updateBackendDerivedActionsAvailability().
     bool isBusy() const;
 
+signals:
+    /// A completed estimate, ready to be recorded as a product.
+    ///
+    /// σ is the number the rest of the session is built on — moment-map
+    /// thresholds, isosurface levels, mask cut-offs — but it used to exist only
+    /// inside a WA_DeleteOnClose result dialog, so closing that window lost it
+    /// and the only way back was to re-run the tool. Session Data is where a
+    /// tool's output belongs (the region tools already fold their statistics
+    /// into a product's Provenance), so the controller announces the result and
+    /// the cube window registers it. @p stableKey identifies the region+channel
+    /// range, so re-running the SAME selection updates its row in place while a
+    /// different selection adds one.
+    void noiseProvenanceReady(const QString &stableKey, const QString &label,
+                              const QVariantMap &params);
+
+    /// The recipe of the result window just shown, so the product can put the
+    /// same window back on screen later (ToolResultDialog::makeRecord). Emitted
+    /// immediately before noiseProvenanceReady's product is registered.
+    void noiseResultViewReady(const QVariantMap &record);
+
 public slots:
     // Triggered by QAction::triggered from vtkWindowCube.
     // Opens the region dialog; if accepted, launches the async estimation.
     void startEstimation();
 
 private:
+    /// Run one estimate for the region currently set in @p dialog. The dialog
+    /// stays open throughout and owns the progress sheet.
+    void runEstimate(NoiseRegionDialog *dialog);
+    /// Clear the cube's region overlay only if @p generation is still the one on
+    /// screen. Both the settings window and each result window can outlive the
+    /// estimate that drew the overlay, so neither may clear it unconditionally.
+    void clearPreviewIfCurrent(quint64 generation);
     void showResult(const CubeNoiseEstimateResult &result);
 
     const QString m_backendUrl;
@@ -85,6 +115,13 @@ private:
     std::function<void()> m_onRunFinished;
 
     bool m_busy{ false };
+    /// Bumped by every estimate; whoever wants to clear the overlay must still
+    /// hold the current value.
+    quint64 m_previewGeneration{ 0 };
+    /// The region window, kept alive between estimates (WA_DeleteOnClose clears
+    /// this QPointer when the user closes it), and its progress sheet.
+    QPointer<NoiseRegionDialog> m_regionDialog;
+    QPointer<QProgressDialog> m_progressSheet;
 };
 
 #endif // NoiseController_h

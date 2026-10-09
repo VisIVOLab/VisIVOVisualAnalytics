@@ -1,0 +1,23 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 22, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "Default (Ninja)",
+      "description": "Portable base preset. Qt6 and VTK are machine-specific: provide their install prefixes via the CMAKE_PREFIX_PATH environment variable, or create a CMakeUserPresets.json (git-ignored) that inherits this preset and sets cacheVariables.CMAKE_PREFIX_PATH. Example: export CMAKE_PREFIX_PATH=/path/to/Qt/6.x/macos:/path/to/VTK-9.x",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$penv{CMAKE_PREFIX_PATH}"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default",
+      "targets": ["VisIVOVisualAnalytics"]
+    }
+  ]
+}

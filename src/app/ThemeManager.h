@@ -39,9 +39,14 @@ public:
     /// Returns the process-wide singleton.
     static ThemeManager &instance();
 
-    // Apply QPalette + stylesheet for the given scheme.
+    // Apply QPalette + stylesheet for the given scheme, ONCE per process.
     // Qt::ColorScheme::Unknown means "follow the OS".
     // Emits themeChanged() if the effective theme changes.
+    //
+    // Later calls are ignored: a mid-session switch leaves every widget that
+    // baked a theme token at construction on the old palette (see the note at
+    // the top of VisivoTheme.h), so the theme is settled at startup and a
+    // changed preference takes effect on the next launch.
     void apply(Qt::ColorScheme scheme, QApplication *app);
 
     // Returns the currently active resolved theme.
@@ -64,6 +69,7 @@ private:
 
     EffectiveTheme m_effective{ EffectiveTheme::Dark };
     Qt::ColorScheme m_userScheme{ Qt::ColorScheme::Unknown };
+    bool m_applied{ false };   ///< latched by the first apply(); see apply()
 };
 
 #endif // ThemeManager_h

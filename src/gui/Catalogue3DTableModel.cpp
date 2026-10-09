@@ -69,8 +69,8 @@ QVariant Catalogue3DTableModel::data(const QModelIndex &index, int role) const
     if (!this->schema || rawColumn < 0 || rawColumn >= this->schema->headers.size()) {
         return {};
     }
-    if (rawColumn >= 0 && rawColumn < entry.rawFieldValues.size()) {
-        return entry.rawFieldValues.at(rawColumn);
+    if (rawColumn >= 0 && rawColumn < entry.fields.size()) {
+        return entry.fields.at(rawColumn);
     }
     return {};
 }

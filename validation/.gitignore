@@ -1,0 +1,13 @@
+# Heavy / regenerable validation artifacts (reproduce via README).
+sofia_out/
+out/*.png
+
+# The root .gitignore has a blanket `out/` rule, which would swallow this
+# directory whole — git does not descend into an excluded directory, so the
+# negation must re-include the directory FIRST and re-exclude its contents.
+# The small metric tables are the paper's traceable artifacts and belong in the
+# repo: a number quoted in the text must be checkable without re-running SoFiA.
+!out/
+out/*
+!out/*.md
+!out/*.csv

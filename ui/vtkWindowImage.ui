@@ -155,10 +155,38 @@
                <property name="bottomMargin"><number>8</number></property>
                <property name="spacing"><number>8</number></property>
 
+               <!-- Colour map on one line: label, the combo, and an inline
+                    "Edit" link into the LUT customizer — the same row the cube
+                    viewer uses. A full-width "Advanced…" button below the combo
+                    read as a second, unrelated control. -->
                <item>
-                <widget class="QComboBox" name="comboLut"/>
+                <layout class="QHBoxLayout" name="hboxColorMap">
+                 <property name="spacing"><number>8</number></property>
+                 <item>
+                  <widget class="QLabel" name="labelColorMap">
+                   <property name="text"><string>Color map</string></property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QComboBox" name="comboLut"/>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="btnLutEdit">
+                   <property name="sizePolicy">
+                    <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                     <horstretch>0</horstretch>
+                     <verstretch>0</verstretch>
+                    </sizepolicy>
+                   </property>
+                   <property name="text"><string>Edit</string></property>
+                  </widget>
+                 </item>
+                </layout>
                </item>
 
+               <!-- The scale radios are hidden at runtime (the LUT customizer
+                    owns the full Linear / Log / Sqrt / Square / Power set), but
+                    showCurrentLayerSettings still reads their state. -->
                <item>
                 <layout class="QHBoxLayout" name="hboxScale">
                  <property name="spacing"><number>6</number></property>
@@ -171,25 +199,6 @@
                  <item>
                   <widget class="QRadioButton" name="radioLog">
                    <property name="text"><string>Log</string></property>
-                  </widget>
-                 </item>
-                 <item>
-                  <spacer>
-                   <property name="orientation"><enum>Qt::Horizontal</enum></property>
-                   <property name="sizeHint" stdset="0">
-                    <size><width>10</width><height>20</height></size>
-                   </property>
-                  </spacer>
-                 </item>
-                 <item>
-                  <widget class="QPushButton" name="btnLutEdit">
-                   <property name="sizePolicy">
-                    <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-                     <horstretch>0</horstretch>
-                     <verstretch>0</verstretch>
-                    </sizepolicy>
-                   </property>
-                   <property name="text"><string>...</string></property>
                   </widget>
                  </item>
                 </layout>
@@ -209,11 +218,18 @@
              </widget>
             </item>
 
-            <!-- Layer list sub-header -->
+            <!-- Layer list sub-header, with the action that adds one. The
+                 menu entry alone (File ▸ Add Image Layer…) was the only way in,
+                 and nobody looks in a File menu for "another layer". -->
             <item>
-             <widget class="QLabel" name="labelLayerListHdr">
-              <property name="text"><string>Layers</string></property>
-             </widget>
+             <layout class="QHBoxLayout" name="hboxLayerListHdr">
+              <property name="spacing"><number>8</number></property>
+              <item>
+               <widget class="QLabel" name="labelLayerListHdr">
+                <property name="text"><string>Layers</string></property>
+               </widget>
+              </item>
+             </layout>
             </item>
 
             <!-- Layer list (expands to fill remaining space) -->
@@ -231,6 +247,15 @@
               </property>
               <property name="defaultDropAction">
                <enum>Qt::DropAction::MoveAction</enum>
+              </property>
+             </widget>
+            </item>
+
+            <item>
+             <widget class="QPushButton" name="btnAddLayer">
+              <property name="text"><string>＋  Add layer…</string></property>
+              <property name="toolTip">
+               <string>Overlay another FITS image on this one (⌘L). It must cover some of the same sky.</string>
               </property>
              </widget>
             </item>
@@ -289,41 +314,6 @@
              </widget>
             </item>
 
-            <!-- Inventory table sub-section -->
-            <item>
-             <widget class="QLabel" name="labelInventoryHdr">
-              <property name="text"><string>Inventory</string></property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QTableWidget" name="tableInventory">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-                <horstretch>0</horstretch>
-                <verstretch>1</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="minimumHeight"><number>120</number></property>
-             </widget>
-            </item>
-
-            <!-- Objects table sub-section -->
-            <item>
-             <widget class="QLabel" name="labelObjectsHdr">
-              <property name="text"><string>Objects</string></property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QTableWidget" name="tableObjects">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-                <horstretch>0</horstretch>
-                <verstretch>1</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="minimumHeight"><number>120</number></property>
-             </widget>
-            </item>
 
            </layout>
           </widget>
@@ -468,7 +458,11 @@
    <property name="shortcut"><string>Ctrl+P</string></property>
   </action>
   <action name="actionAddFITS">
-   <property name="text"><string>Add new FITS file...</string></property>
+   <property name="text"><string>Add Image Layer…</string></property>
+   <property name="toolTip">
+    <string>Overlay another FITS image on this one. It must cover some of the same sky.</string>
+   </property>
+   <property name="shortcut"><string>Ctrl+L</string></property>
   </action>
 
  </widget>
@@ -489,10 +483,9 @@
   <tabstop>btnLutEdit</tabstop>
   <tabstop>sliderOpacity</tabstop>
   <tabstop>listLayer</tabstop>
+  <tabstop>btnAddLayer</tabstop>
   <tabstop>btnSources</tabstop>
   <tabstop>btnFilaments</tabstop>
-  <tabstop>tableInventory</tabstop>
-  <tabstop>tableObjects</tabstop>
   <tabstop>btn3D</tabstop>
  </tabstops>
 

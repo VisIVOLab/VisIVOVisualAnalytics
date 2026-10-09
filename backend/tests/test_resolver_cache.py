@@ -31,12 +31,12 @@ import pytest
 
 
 def _fn():
-    from app.main import _resolve_target_sync
+    from app.dependencies import _resolve_target_sync
     return _resolve_target_sync
 
 
 def _clear():
-    from app.main import clear_resolver_cache
+    from app.dependencies import clear_resolver_cache
     clear_resolver_cache()
 
 

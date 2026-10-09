@@ -1,0 +1,87 @@
+// click.swift — a raw mouse event at a screen point, for gui_smoke.py.
+//
+// Why not AppleScript: System Events can SEE Qt widgets (it reports
+// "checkbox Region"), but its `click` performs an accessibility action that Qt
+// does not implement for custom-painted controls — the element is found and
+// nothing happens. A CGEvent is a real press and release at a point on the
+// screen, which the application cannot tell from a hand.
+//
+// The native menu bar is the exception: that IS a real NSMenu, so gui_smoke.py
+// drives menus through System Events and only the in-window widgets through
+// this.
+//
+//   click X Y              — click once at (X, Y), in screen POINTS (not pixels)
+//   click X Y toX toY      — press at (X, Y), drag, release at (toX, toY)
+//   click --double X Y     — double-click at (X, Y)
+//
+// The double click is a real one: the two clicks carry clickCount 1 and 2 on
+// the same events, which is what VTK's LeftButtonDoubleClickEvent is derived
+// from. Two separate single clicks do not produce it, so the tools that
+// finalise on a double click — the PV path, the kinematic lasso — cannot be
+// driven without this.
+
+import CoreGraphics
+import Foundation
+
+var args = CommandLine.arguments
+var doubleClick = false
+if let index = args.firstIndex(of: "--double") {
+    doubleClick = true
+    args.remove(at: index)
+}
+// Scrolling is how a VTK view zooms, and a screenshot of a source that occupies
+// 1 % of the frame is not a figure. The wheel event has to be posted at the
+// point, so the pointer is moved there first like every other gesture here.
+var scrollTicks: Int32 = 0
+if let index = args.firstIndex(of: "--scroll"), index + 1 < args.count,
+   let ticks = Int32(args[index + 1]) {
+    scrollTicks = ticks
+    args.removeSubrange(index...(index + 1))
+}
+guard args.count >= 3, let x = Double(args[1]), let y = Double(args[2]) else {
+    print("usage: click [--double] [--scroll N] X Y [dragToX dragToY]"); exit(1)
+}
+let p = CGPoint(x: x, y: y)
+let src = CGEventSource(stateID: .hidSystemState)
+CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left)?.post(tap: .cghidEventTap)
+usleep(80_000)
+
+if scrollTicks != 0 {
+    // One event per tick, the way a wheel actually reports, with a pause
+    // between: a single large delta makes VTK jump instead of zoom.
+    let step: Int32 = scrollTicks > 0 ? 1 : -1
+    for _ in 0..<abs(scrollTicks) {
+        CGEvent(scrollWheelEvent2Source: src, units: .line, wheelCount: 1,
+                wheel1: step, wheel2: 0, wheel3: 0)?.post(tap: .cghidEventTap)
+        usleep(60_000)
+    }
+    exit(0)
+}
+
+if doubleClick {
+    for count in 1...2 {
+        for type in [CGEventType.leftMouseDown, CGEventType.leftMouseUp] {
+            let event = CGEvent(mouseEventSource: src, mouseType: type,
+                                mouseCursorPosition: p, mouseButton: .left)
+            event?.setIntegerValueField(.mouseEventClickState, value: Int64(count))
+            event?.post(tap: .cghidEventTap)
+            usleep(30_000)
+        }
+    }
+    exit(0)
+}
+
+CGEvent(mouseEventSource: src, mouseType: .leftMouseDown, mouseCursorPosition: p, mouseButton: .left)?.post(tap: .cghidEventTap)
+usleep(80_000)
+if args.count >= 5, let dx = Double(args[3]), let dy = Double(args[4]) {
+    let steps = 12
+    for i in 1...steps {
+        let t = Double(i) / Double(steps)
+        let q = CGPoint(x: x + (dx - x) * t, y: y + (dy - y) * t)
+        CGEvent(mouseEventSource: src, mouseType: .leftMouseDragged, mouseCursorPosition: q, mouseButton: .left)?.post(tap: .cghidEventTap)
+        usleep(40_000)
+    }
+    CGEvent(mouseEventSource: src, mouseType: .leftMouseUp, mouseCursorPosition: CGPoint(x: dx, y: dy), mouseButton: .left)?.post(tap: .cghidEventTap)
+} else {
+    CGEvent(mouseEventSource: src, mouseType: .leftMouseUp, mouseCursorPosition: p, mouseButton: .left)?.post(tap: .cghidEventTap)
+}

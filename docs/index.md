@@ -77,6 +77,14 @@ Line-width (FWHM + EW) maps, baseline subtraction, spectral stacking
 across multiple cubes.
 :::
 
+:::{grid-item-card} 🔭 SED fitting
+:link: user-guide/sed-fitting
+:link-type: doc
+
+Greybody fits of a compact source's photometry: mass, dust temperature,
+β, L_bol, plus the VLKB theoretical-model grid.
+:::
+
 :::{grid-item-card} ✏️ Regions, PV, noise
 :link: user-guide/region-pv-noise
 :link-type: doc
@@ -91,6 +99,15 @@ extraction, MAD-based noise.
 
 3-D catalogue scatter, multi-layer 2-D images, all-sky HiPS surveys,
 SAMP messaging with TOPCAT/Aladin.
+:::
+
+:::{grid-item-card} 🤖 Scientific Copilot
+:link: user-guide/copilot
+:link-type: doc
+
+Ask questions in natural language; every number is computed by a real
+backend tool (never hallucinated), with provenance + a reproducibility
+script. Cloud (Claude / ChatGPT) or your own self-hosted LLM.
 :::
 
 :::{grid-item-card} 🛠️ Troubleshooting
@@ -150,10 +167,22 @@ operations.
 user-guide/getting-started
 user-guide/cube-viewer
 user-guide/image-viewer
+user-guide/vbt-viewer
+user-guide/velocity-fields
 user-guide/moment-maps
 user-guide/spectral-tools
 user-guide/region-pv-noise
+user-guide/kinematic-lasso
+user-guide/polarimetry
+user-guide/source-finding
 user-guide/catalogues-hips
+user-guide/vlkb-archive
+user-guide/sed-fitting
+user-guide/simulations
+user-guide/skava-discovery
+user-guide/publication-output
+user-guide/copilot
+user-guide/copilot-self-hosted
 user-guide/glossary
 user-guide/troubleshooting
 ```
@@ -165,9 +194,17 @@ user-guide/troubleshooting
 
 architecture-note
 backend-api
+copilot-backend
+multi-user-backend
 async-patterns
 service-mapping-note
 catalogue3d-viewer
+velocity-field-viewer
+kinematic-model
+kinematic-lasso
+movie-export
+linked-views
+demo-datasets
 testing
 ```
 
@@ -205,21 +242,53 @@ every tool together with the page that documents its scientific use.
   -
   -
 * - Open a remote FITS cube / image
-  - **Data Hub → Open Remote Dataset** (or ⌘O)
+  - **Data Hub → Open…** (or ⌘O)
   - Cube viewer or Image viewer
   - [Getting started](user-guide/getting-started)
+* - Smooth or regrid a map / cube
+  - **Tools → Smooth / Regrid…**
+  - A new FITS in the Workspace, added as a layer
+  - [Image viewer](user-guide/image-viewer)
+* - Repair a FITS header
+  - **IMAGE tag → Edit…**
+  - A corrected copy, with what its WCS now amounts to
+  - [Image viewer](user-guide/image-viewer)
+* - Cut a FITS out of a HiPS survey
+  - **Data → HiPS Cutout (hips2fits)…**
+  - Image viewer
+  - [Catalogues & HiPS](user-guide/catalogues-hips)
+* - Ask a VO service what is around a position
+  - **Data → Cone Search…**
+  - A table, saved as a catalogue
+  - [Catalogues & HiPS](user-guide/catalogues-hips)
+* - Query the VLKB catalogues
+  - **Tools → VLKB Catalogue Query…**
+  - A catalogue, or an overlay on the image
+  - [Catalogues & HiPS](user-guide/catalogues-hips)
 * - Navigate the spectral axis
   - Slice slider, ▶ Play animation
   - Slice tile + textured 3-D cutting plane
   - [Cube viewer](user-guide/cube-viewer)
+* - Ask the AI copilot about the data
+  - **Inspector → Copilot** tab (natural-language question)
+  - Prose answer grounded in real tool calls + provenance + reproducibility script
+  - [Scientific Copilot](user-guide/copilot)
 * - **EXPLORATION tools** (cube viewer → Tools menu / sidebar)
   -
   -
   -
 * - Extract a spectrum at a pixel
   - **Tools → Extract Spectrum** (Probe), or *Pick Spectrum on Plane Click* (3-D)
-  - Spectral profile window
+  - Live spectrum in a pane; a pixel you click is kept as a SPEC product
   - [Cube viewer · Extract Spectrum](user-guide/cube-viewer#extract-spectrum-probe-a-single-pixel)
+* - Identify lines on a spectrum
+  - **Inspector ▸ Analysis ▸ SPECTRUM ▸ Load Lines…** (bundled list, or a catalogue export)
+  - Rest-frame list shifted by v_sys / z and converted to the axis convention
+  - [Spectral tools · Line identification](user-guide/spectral-tools#line-identification-overlaying-a-line-list)
+* - Fit a Gaussian to a line
+  - **Inspector ▸ Analysis ▸ SPECTRUM ▸ Fit Gaussian** (**Clear Fit** to remove)
+  - Gaussian + linear baseline, peak / centre / FWHM / ∫ with 1σ errors
+  - [Spectral tools · Gaussian line fit](user-guide/spectral-tools#gaussian-line-fit)
 * - Open the cube in a VR headset (Windows / Linux, opt-in build)
   - **Tools → Open in VR**
   - OpenXR stereo render — LUT / threshold / opacity TF synced live
@@ -245,13 +314,17 @@ every tool together with the page that documents its scientific use.
   - New cube dataset (registered in the session)
   - [Spectral tools · Baseline](user-guide/spectral-tools#baseline-subtraction-s-03)
 * - Stack multiple cubes
-  - **Tools → Stack Spectral Cubes…**
+  - **Tools → Stack Cubes to a Spectrum…**
   - 1-D stacked spectrum
-  - [Spectral tools · Stacking](user-guide/spectral-tools#spectral-stacking-s-04)
+  - [Spectral tools · Stack cubes to a spectrum](user-guide/spectral-tools#stack-cubes-to-a-spectrum-s-04)
 * - Position-velocity diagram
   - **Tools → Extract PV Diagram** + polyline on the slice
   - 2-D PV map
   - [Regions, PV, noise · PV](user-guide/region-pv-noise#position-velocity-diagrams)
+* - Select & mask a 3-D object (Kinematic Lasso)
+  - **Tools → Kinematic Lasso** + double-click a source in the 3-D view
+  - Geodesic PPV selection → isolated / removed new cube
+  - [Kinematic Lasso](kinematic-lasso)
 * - **REGIONS tools** (draw on the 2-D slice / moment)
   -
   -
@@ -276,6 +349,50 @@ every tool together with the page that documents its scientific use.
   - **Tools → Clear Catalogue Overlay**
   - Glyphs + table dock removed
   - [Catalogues · Overlay](user-guide/catalogues-hips#catalogue-overlay-on-cubes--images)
+* - Overlay VLKB compact sources / filaments without a file
+  - **Tools → Overlay VLKB Compact Sources** / **Overlay VLKB Filaments**
+  - Band-merged sources (all bands) or filament contours over the image footprint
+  - [Catalogues · VLKB](user-guide/catalogues-hips#querying-the-vlkb-directly)
+* - Export the overlay on screen
+  - **Tools → Export Catalogue…**
+  - CSV with the sky frame named in the header
+  - [Catalogues · The catalogue table](user-guide/catalogues-hips#the-catalogue-table)
+* - **VLKB ARCHIVE**
+  -
+  -
+  -
+* - Find and cut out images / cubes over a region of the Galactic plane
+  - **VLKB** tab: coordinates + radius (cone) or dl/db (box) → **Query**
+  - An inventory of every dataset covering the region, with its coverage
+  - [VLKB archive](user-guide/vlkb-archive)
+* - Download several datasets at once
+  - Select them in the inventory → **Download & Open**
+  - Images stack as layers in one viewer; cubes open in the cube viewer
+  - [VLKB archive · Downloading](user-guide/vlkb-archive#downloading)
+* - Ask the archive for a long list as one job
+  - Select them → **Request as batch (N)…**
+  - One asynchronous job, collected and unpacked in one go; survives closing the window
+  - [VLKB archive · Many datasets at once](user-guide/vlkb-archive#many-datasets-at-once)
+* - **SIMULATIONS**
+  -
+  -
+  -
+* - Extract a uniform cube from an AREPO snapshot
+  - **Data → Extract from AREPO Snapshot…**
+  - One FITS cube per field, with a physical WCS in parsec
+  - [Simulation snapshots](user-guide/simulations)
+* - **SED FITTING**
+  -
+  -
+  -
+* - Fit a compact source's SED (mass, dust temperature, β, L_bol)
+  - Right-click a source in the catalogue table → **Fit SED of this source…**
+  - Optically thin / thick greybody fit + product in Session Data
+  - [SED fitting](user-guide/sed-fitting)
+* - Rank a source against pre-computed theoretical models
+  - **Fit theoretical models** in the SED window
+  - VLKB model grid ranked by χ², best overplotted
+  - [SED fitting · Theoretical models](user-guide/sed-fitting#theoretical-models-from-the-vlkb)
 * - **Interop**
   -
   -

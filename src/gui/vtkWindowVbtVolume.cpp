@@ -3,6 +3,15 @@
 #include "app/ThemeManager.h"
 #include "DiagnosticsWindow.h"
 #include "theme/VisivoTheme.h"
+#include <QFileInfo>
+#include <QHeaderView>
+#include <QTableWidget>
+#include <QDialogButtonBox>
+#include <QDialog>
+#include "WorkspaceChrome.h"
+#include "InspectorPanel.h"
+#include <QDockWidget>
+#include <QToolButton>
 
 #include <QApplication>
 #include <QKeySequence>
@@ -36,7 +45,8 @@
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QVBoxLayout>
-#include "SidebarPanel.h"
+#include "AssistantPanel.h"
+#include "CopilotActionRouter.h"
 #include <QWidget>
 
 #include <algorithm>
@@ -69,9 +79,11 @@ vtkWindowVbtVolume::vtkWindowVbtVolume(BackendVbtOpenResult openResult,
                                        const QString &backendUrl,
                                        const QString &backendToken,
                                        const QString &sessionId,
+                                       const QString &headerPath,
                                        QWidget *parent)
     : QMainWindow(parent)
     , openResult(std::move(openResult))
+    , m_headerPath(headerPath)
     , backendUrl(backendUrl)
     , backendToken(backendToken)
     , sessionId(sessionId)
@@ -89,6 +101,7 @@ vtkWindowVbtVolume::vtkWindowVbtVolume(BackendVbtOpenResult openResult,
                        .arg(this->openResult.fields.empty() ? QStringLiteral("<none>")
                                                             : this->openResult.fields[0].name);
     this->setupUi();
+    this->setupViewerChrome();
     this->setupRenderer();
     // Apply the initial subset received at open time without an extra round-trip.
     // rebuildVolumeData() will contact the backend on subsequent field changes.
@@ -99,7 +112,7 @@ vtkWindowVbtVolume::vtkWindowVbtVolume(BackendVbtOpenResult openResult,
 void vtkWindowVbtVolume::setupUi()
 {
     this->setAttribute(Qt::WA_DeleteOnClose);
-    this->setWindowTitle(QStringLiteral("VBT Volume Viewer — %1 x %2 x %3")
+    this->setWindowTitle(QStringLiteral("VBT Volume Viewer, %1 x %2 x %3")
                                  .arg(this->openResult.dimensions[0])
                                  .arg(this->openResult.dimensions[1])
                                  .arg(this->openResult.dimensions[2]));
@@ -113,7 +126,6 @@ void vtkWindowVbtVolume::setupUi()
     rootLayout->setContentsMargins(0, 0, 0, 0);
 
     this->setupSidebarUi();
-    rootLayout->addWidget(this->m_sidebar);
 
     this->vtkWidget = new QVTKOpenGLNativeWidget(central);
     this->vtkWidget->setMinimumSize(700, 500);
@@ -128,8 +140,17 @@ void vtkWindowVbtVolume::setupUi()
                      [this](int) { this->updateTransferFunctions(); });
     QObject::connect(this->comboScaleMode, &QComboBox::currentIndexChanged, this,
                      [this](int) { this->updateTransferFunctions(); });
+    QObject::connect(this->spinScaleGamma, &QDoubleSpinBox::valueChanged, this,
+                     [this](double) { this->updateTransferFunctions(); });
     QObject::connect(this->buttonAutoscale, &QPushButton::clicked, this, [this]() {
-        this->setColorRange(this->dataScalarMin, this->dataScalarMax);
+        // The SAME range the field is loaded with, not the raw extremes.
+        // Autoscale used to set min..max, and on a simulation volume — where a
+        // handful of voxels are orders of magnitude above the rest — that put
+        // essentially every voxel at the bottom of the colour and opacity ramps
+        // and the volume disappeared (user report: "autoscale fa sparire
+        // tutto", on a 512³ CDM density field spanning 5e-12 … 4e-4). The raw
+        // extremes are still one edit away in the two fields above.
+        this->applyAutoColorRange();
         this->updateTransferFunctions();
     });
     QObject::connect(this->comboBackground, &QComboBox::currentIndexChanged, this,
@@ -151,9 +172,23 @@ void vtkWindowVbtVolume::setupUi()
 
     // ── View menu ─────────────────────────────────────────────────────────────
     auto *viewMenu = this->menuBar()->addMenu(u"View"_s);
-    this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
-            u"Controls Sidebar"_s, this);
+    this->m_actionSessionPanel = new QAction(u"Session Data Panel"_s, this);
+    this->m_actionSessionPanel->setCheckable(true);
+    this->m_actionSessionPanel->setChecked(true);
+    viewMenu->addAction(this->m_actionSessionPanel);
+    QObject::connect(this->m_actionSessionPanel, &QAction::toggled, this, [this](bool checked) {
+        if (this->m_workspaceChrome)
+            this->m_workspaceChrome->setSessionCollapsed(!checked);
+    });
+    this->actionShowControlsSidebar = new QAction(u"Inspector Panel"_s, this);
+    this->actionShowControlsSidebar->setCheckable(true);
+    this->actionShowControlsSidebar->setChecked(true);
     viewMenu->addAction(this->actionShowControlsSidebar);
+    QObject::connect(this->actionShowControlsSidebar, &QAction::toggled, this,
+                     [this](bool checked) {
+                         if (this->m_workspaceChrome)
+                             this->m_workspaceChrome->setInspectorCollapsed(!checked);
+                     });
 
     // ── Diagnostics + Command Palette (replicated across windows) ────────────
     viewMenu->addSeparator();
@@ -180,6 +215,31 @@ void vtkWindowVbtVolume::setupUi()
 // ─────────────────────────────────────────────────────────────────────────────
 // Sidebar implementation
 // ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+/// Fill a form layout with muted key / mono value rows — the same pairing the
+/// image and cube viewers use for their info grids. A five-line label in one
+/// colour is not readable at a glance the way aligned pairs are, and it was the
+/// only place in the application that presented dataset facts that way.
+void setInfoRows(QFormLayout *grid, const QList<QPair<QString, QString>> &rows)
+{
+    if (!grid)
+        return;
+    while (grid->rowCount() > 0)
+        grid->removeRow(0);
+    for (const auto &row : rows) {
+        auto *key = new QLabel(row.first);
+        key->setStyleSheet(VisivoTheme::infoKeyStyleSheet());
+        auto *value = new QLabel(row.second);
+        value->setStyleSheet(VisivoTheme::infoValueStyleSheet());
+        value->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        value->setWordWrap(true);
+        grid->addRow(key, value);
+    }
+}
+
+}   // namespace
 
 void vtkWindowVbtVolume::setupSidebarUi()
 {
@@ -241,11 +301,22 @@ void vtkWindowVbtVolume::setupSidebarUi()
                 u"MinIP: show the minimum scalar value along each ray."_s);
 
         this->comboScaleMode = new QComboBox(inner);
-        this->comboScaleMode->addItems({ u"Linear"_s, u"Log"_s });
+        for (const char *label : LutScale::modeLabels()) {
+            this->comboScaleMode->addItem(QString::fromUtf8(label));
+        }
+
+        this->spinScaleGamma = new QDoubleSpinBox(inner);
+        this->spinScaleGamma->setRange(0.1, 10.0);
+        this->spinScaleGamma->setSingleStep(0.1);
+        this->spinScaleGamma->setDecimals(2);
+        this->spinScaleGamma->setValue(2.0);
+        this->spinScaleGamma->setToolTip(u"Exponent γ for the Power stretch (t^γ)."_s);
+        this->spinScaleGamma->setEnabled(false);  // enabled only in Power mode
 
         fl->addRow(u"Scalar"_s, this->comboScalarField);
         fl->addRow(u"Mode"_s, this->comboBlendMode);
         fl->addRow(u"Scale"_s, this->comboScaleMode);
+        fl->addRow(u"Power γ"_s, this->spinScaleGamma);
         pageVolumeLayout->addWidget(makeCard(u"SOURCE"_s, inner));
     }
 
@@ -264,6 +335,10 @@ void vtkWindowVbtVolume::setupSidebarUi()
         this->spinRangeMin->setRange(-1e30, 1e30);
         this->spinRangeMax->setRange(-1e30, 1e30);
         this->buttonAutoscale = new QPushButton(u"Autoscale"_s, inner);
+        this->buttonAutoscale->setToolTip(
+                u"Reset the colour range to the 2nd–99.9th percentile of the data — "
+                u"what the viewer opens with. The raw minimum and maximum are rarely "
+                u"a useful range for a density field."_s);
 
         fl->addRow(u"Range min"_s, this->spinRangeMin);
         fl->addRow(u"Range max"_s, this->spinRangeMax);
@@ -283,7 +358,7 @@ void vtkWindowVbtVolume::setupSidebarUi()
         this->sliderOpacity->setRange(1, 100);
         this->sliderOpacity->setValue(28);
         this->sliderOpacity->setToolTip(
-                u"Composite: scales the opacity ramp — higher = more opaque.\n"
+                u"Composite: scales the opacity ramp, higher = more opaque.\n"
                 u"MIP/MinIP: raises the threshold above which voxels are projection candidates."_s);
 
         this->comboBackground = new QComboBox(inner);
@@ -294,17 +369,12 @@ void vtkWindowVbtVolume::setupSidebarUi()
         pageVolumeLayout->addWidget(makeCard(u"RENDERING"_s, inner));
     }
 
-    // Card: Summary
-    {
-        auto *inner = new QWidget;
-        auto *vl = new QVBoxLayout(inner);
-        vl->setContentsMargins(0, 0, 0, 0);
-        this->summaryLabel = new QLabel(inner);
-        this->summaryLabel->setWordWrap(true);
-        this->summaryLabel->setStyleSheet(u"color: #6080a0; font-size: 10px;"_s);
-        vl->addWidget(this->summaryLabel);
-        pageVolumeLayout->addWidget(makeCard(u"SUMMARY"_s, inner));
-    }
+    // No SUMMARY card here any more. It described the DATASET — dimensions,
+    // spacing, fields, scalar type — in the column that holds the CONTROLS, and
+    // said the same things the Inspector's Properties tab says two panels away
+    // (user report). What is on screen belongs on the right; what changes what
+    // is on screen belongs here. The one row that was not a duplicate, the
+    // active scalar, is a live row in Properties now.
     pageVolumeLayout->addStretch(1);
 
     // ── Page 1: Info ──────────────────────────────────────────────────────────
@@ -317,9 +387,11 @@ void vtkWindowVbtVolume::setupSidebarUi()
         auto *inner = new QWidget;
         auto *vl = new QVBoxLayout(inner);
         vl->setContentsMargins(0, 0, 0, 0);
-        this->metadataLabel = new QLabel(inner);
-        this->metadataLabel->setWordWrap(true);
-        vl->addWidget(this->metadataLabel);
+        this->metadataGrid = new QFormLayout;
+        this->metadataGrid->setContentsMargins(0, 0, 0, 0);
+        this->metadataGrid->setSpacing(4);
+        this->metadataGrid->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        vl->addLayout(this->metadataGrid);
         pageInfoLayout->addWidget(makeCard(u"DATASET INFO"_s, inner));
     }
     {
@@ -334,11 +406,15 @@ void vtkWindowVbtVolume::setupSidebarUi()
     }
     pageInfoLayout->addStretch(1);
 
-    // ── Wire pages into SidebarPanel ──────────────────────────────────────────
-    this->m_sidebar = new SidebarPanel(320, this);
-    this->m_sidebar->addPage(u":/icons/rail_display.svg"_s,  u"Volume Settings"_s, pageVolume);
-    this->m_sidebar->addPage(u":/icons/rail_metadata.svg"_s, u"Info"_s,            pageInfo);
-    this->m_sidebar->finalize(0);
+    // ── Scientific copilot page ───────────────────────────────────────────────
+    // The pages go into the two docks, not into a rail of this window's own —
+    // see setupWorkspaceDocks(), called right after this from the constructor.
+    this->m_pageVolume = pageVolume;
+    this->m_pageInfo = pageInfo;
+    pageVolume->setParent(this);
+    pageVolume->hide();
+    pageInfo->setParent(this);
+    pageInfo->hide();
 }
 
 void vtkWindowVbtVolume::setupRenderer()
@@ -514,12 +590,7 @@ void vtkWindowVbtVolume::applySubsetResult(const BackendVbtSubsetResult &subset)
         this->cachedOpacityMidHigh = std::sqrt(this->cachedPositiveFloor * positiveMax);
         this->cachedOpacityHigh = positiveMax;
     }
-    if (this->cachedSampledValues.size() >= 16) {
-        this->setColorRange(percentileFromSortedSample(this->cachedSampledValues, 0.02),
-                            percentileFromSortedSample(this->cachedSampledValues, 0.999));
-    } else {
-        this->setColorRange(minValue, maxValue);
-    }
+    this->applyAutoColorRange();
 
     double imageRange[2]{ 0.0, 0.0 };
     this->currentImageData->GetScalarRange(imageRange);
@@ -574,6 +645,20 @@ void vtkWindowVbtVolume::applySubsetResult(const BackendVbtSubsetResult &subset)
     this->updateSummary();
 }
 
+void vtkWindowVbtVolume::applyAutoColorRange()
+{
+    // A density field is not uniform: its top percentile can be four orders of
+    // magnitude above its median, so the extremes are a bad colour range and a
+    // worse opacity one. The 2nd-to-99.9th percentile of the sampled voxels is
+    // what shows the structure, and it is what the viewer opens with.
+    if (this->cachedSampledValues.size() >= 16) {
+        this->setColorRange(percentileFromSortedSample(this->cachedSampledValues, 0.02),
+                            percentileFromSortedSample(this->cachedSampledValues, 0.999));
+        return;
+    }
+    this->setColorRange(this->dataScalarMin, this->dataScalarMax);
+}
+
 void vtkWindowVbtVolume::updateTransferFunctions()
 {
     if (!this->currentImageData) {
@@ -594,7 +679,14 @@ void vtkWindowVbtVolume::updateTransferFunctions()
     }
 
     // ── Colour/opacity range ──────────────────────────────────────────────────
-    const bool logMode = this->comboScaleMode && this->comboScaleMode->currentIndex() == 1;
+    const LutScale::Mode scaleMode = this->comboScaleMode
+            ? static_cast<LutScale::Mode>(std::clamp(this->comboScaleMode->currentIndex(), 0, 4))
+            : LutScale::Mode::Linear;
+    const double scaleGamma = this->spinScaleGamma ? this->spinScaleGamma->value() : 2.0;
+    if (this->spinScaleGamma) {
+        this->spinScaleGamma->setEnabled(scaleMode == LutScale::Mode::Power);
+    }
+    const bool logMode = (scaleMode == LutScale::Mode::Log);
     double colorMin = this->activeColorMin;
     double colorMax = this->activeColorMax;
     if (!(colorMin < colorMax)) {
@@ -636,6 +728,14 @@ void vtkWindowVbtVolume::updateTransferFunctions()
         this->colorTransfer->AddRGBPoint(mid1,     0.08, 0.25, 0.70);
         this->colorTransfer->AddRGBPoint(mid2,     0.90, 0.55, 0.12);
         this->colorTransfer->AddRGBPoint(colorMax, 1.00, 0.97, 0.88);
+    }
+
+    // Sqrt/Square/Power: redistribute the linear gradient just built through the
+    // stretch curve (Log keeps its dedicated log-spaced nodes above).
+    if (scaleMode == LutScale::Mode::Sqrt || scaleMode == LutScale::Mode::Square
+        || scaleMode == LutScale::Mode::Power) {
+        LutScale::applyToColorTransferFunction(this->colorTransfer, scaleMode, colorMin, colorMax,
+                                               scaleGamma);
     }
 
     // ── Opacity transfer function ─────────────────────────────────────────────
@@ -749,6 +849,114 @@ void vtkWindowVbtVolume::resetView()
     this->renderer->ResetCameraClippingRange();
 }
 
+void vtkWindowVbtVolume::applyCopilotActions(const QList<QJsonObject> &actions)
+{
+    // Which directives can this volume view act on?
+    bool batchSetsScale = false, batchSetsBlend = false;
+    bool batchSetsColorField = false, batchResetsCamera = false;
+    for (const QJsonObject &a : actions) {
+        const QString t = a.value(u"type"_s).toString();
+        if (t == u"set_scaling"_s)          batchSetsScale = true;
+        else if (t == u"set_blend_mode"_s)  batchSetsBlend = true;
+        else if (t == u"set_color_field"_s) batchSetsColorField = true;
+        else if (t == u"reset_camera"_s)    batchResetsCamera = true;
+    }
+    if (!batchSetsScale && !batchSetsBlend && !batchSetsColorField && !batchResetsCamera)
+        return;   // nothing applicable — leave any prior Undo point untouched
+
+    // Fresh snapshot of only what this batch touches (per-batch "Undo latest").
+    vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
+    this->m_copilotUndo = CopilotUndo{};
+    if (batchSetsScale && this->comboScaleMode) {
+        this->m_copilotUndo.scaleText = this->comboScaleMode->currentText();
+        this->m_copilotUndo.scaleCaptured = true;
+    }
+    if (batchSetsBlend && this->comboBlendMode) {
+        this->m_copilotUndo.blendIndex = this->comboBlendMode->currentIndex();
+        this->m_copilotUndo.blendCaptured = true;
+    }
+    if (batchSetsColorField && this->comboScalarField) {
+        this->m_copilotUndo.colorFieldIndex = this->comboScalarField->currentIndex();
+        this->m_copilotUndo.colorFieldCaptured = true;
+    }
+    // Capture the camera when the batch resets it OR changes the colour field —
+    // switching field rebuilds the volume and reframes the camera as a side
+    // effect, so Undo must restore the user's pre-copilot view. undo restores the
+    // camera LAST (after the field restore's own reframing) so it wins.
+    if ((batchResetsCamera || batchSetsColorField) && camera) {
+        camera->GetPosition(this->m_copilotUndo.position);
+        camera->GetFocalPoint(this->m_copilotUndo.focalPoint);
+        camera->GetViewUp(this->m_copilotUndo.viewUp);
+        this->m_copilotUndo.parallelScale = camera->GetParallelScale();
+        this->m_copilotUndo.cameraCaptured = true;
+    }
+
+    for (const QJsonObject &a : actions) {
+        const QString type = a.value(u"type"_s).toString();
+        if (type == u"set_scaling"_s && this->comboScaleMode) {
+            const int idx = this->comboScaleMode->findText(
+                    a.value(u"scale"_s).toString().trimmed(), Qt::MatchFixedString);
+            if (idx >= 0)
+                this->comboScaleMode->setCurrentIndex(idx);   // triggers re-render
+        } else if (type == u"set_blend_mode"_s && this->comboBlendMode) {
+            const QString m = a.value(u"mode"_s).toString().trimmed().toLower();
+            const int idx = (m == u"mip"_s) ? 1 : (m == u"minip"_s) ? 2
+                          : (m == u"composite"_s) ? 0 : -1;
+            if (idx >= 0 && idx < this->comboBlendMode->count())
+                this->comboBlendMode->setCurrentIndex(idx);
+        } else if (type == u"set_color_field"_s && this->comboScalarField) {
+            const QString field = a.value(u"field"_s).toString().trimmed();
+            int idx = -1;
+            for (int i = 0; i < this->comboScalarField->count(); ++i) {
+                if (this->comboScalarField->itemText(i).compare(field, Qt::CaseInsensitive) == 0) {
+                    idx = i;
+                    break;
+                }
+            }
+            if (idx >= 0)
+                this->comboScalarField->setCurrentIndex(idx);
+        } else if (type == u"reset_camera"_s && camera) {
+            this->resetView();
+            if (this->renderWindow)
+                this->renderWindow->Render();
+        }
+    }
+}
+
+void vtkWindowVbtVolume::undoCopilotActions()
+{
+    if (this->m_copilotUndo.scaleCaptured && this->comboScaleMode) {
+        const int idx = this->comboScaleMode->findText(this->m_copilotUndo.scaleText,
+                                                       Qt::MatchFixedString);
+        if (idx >= 0)
+            this->comboScaleMode->setCurrentIndex(idx);
+        this->m_copilotUndo.scaleCaptured = false;
+    }
+    if (this->m_copilotUndo.blendCaptured && this->comboBlendMode) {
+        const int idx = this->m_copilotUndo.blendIndex;
+        if (idx >= 0 && idx < this->comboBlendMode->count())
+            this->comboBlendMode->setCurrentIndex(idx);
+        this->m_copilotUndo.blendCaptured = false;
+    }
+    if (this->m_copilotUndo.colorFieldCaptured && this->comboScalarField) {
+        const int idx = this->m_copilotUndo.colorFieldIndex;
+        if (idx >= 0 && idx < this->comboScalarField->count())
+            this->comboScalarField->setCurrentIndex(idx);
+        this->m_copilotUndo.colorFieldCaptured = false;
+    }
+    vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
+    if (camera && this->m_copilotUndo.cameraCaptured) {
+        camera->SetPosition(this->m_copilotUndo.position);
+        camera->SetFocalPoint(this->m_copilotUndo.focalPoint);
+        camera->SetViewUp(this->m_copilotUndo.viewUp);
+        camera->SetParallelScale(this->m_copilotUndo.parallelScale);
+        this->m_copilotUndo.cameraCaptured = false;
+        this->renderer->ResetCameraClippingRange();
+        if (this->renderWindow)
+            this->renderWindow->Render();
+    }
+}
+
 void vtkWindowVbtVolume::applyBackground()
 {
     if (!this->comboBackground) return;
@@ -850,21 +1058,175 @@ void vtkWindowVbtVolume::updateSummary()
     const QString activeField = this->comboScalarField ? this->comboScalarField->currentText() : QString();
     const auto &dims = this->openResult.dimensions;
     const auto &spacing = this->openResult.spacing;
-    if (this->summaryLabel) {
-        this->summaryLabel->setText(
-                QStringLiteral("Dimensions: %1 x %2 x %3\nSpacing: %4, %5, %6\nFields: %7\nScalar type: %8\nActive scalar: %9")
-                        .arg(dims[0]).arg(dims[1]).arg(dims[2])
-                        .arg(spacing[0]).arg(spacing[1]).arg(spacing[2])
-                        .arg(this->openResult.fields.size())
-                        .arg(this->openResult.scalarType)
-                        .arg(activeField));
+    Q_UNUSED(dims);
+    // The scalar being rendered follows the Scalar selector on the left, so it
+    // is the one line of the old SUMMARY card that had to stay live.
+    if (this->m_propActiveScalar)
+        InspectorPanel::applyValueStyle(this->m_propActiveScalar, activeField);
+    setInfoRows(this->metadataGrid,
+                { { u"Kind"_s, this->openResult.kind },
+                  { u"Spacing"_s, QStringLiteral("%1, %2, %3")
+                                          .arg(spacing[0]).arg(spacing[1]).arg(spacing[2]) },
+                  { u"Fields"_s, QString::number(this->openResult.fields.size()) },
+                  { u"Voxels"_s, QString::number(this->openResult.numRows) },
+                  { u"Dataset ID"_s, this->openResult.datasetId } });
+}
+
+// ── Shared viewer chrome ─────────────────────────────────────────────────────
+//
+// Same command bar and status rail as the image and cube viewers: the path of
+// the file on screen, a tag saying what it is, ⌘K, and the live backend chip —
+// plus the bottom rail with health, queue, cache and session. This window is a
+// remote dataset viewer like the others and had none of it.
+
+void vtkWindowVbtVolume::setupViewerChrome()
+{
+    VisivoTheme::ViewerToolbarSpec spec;
+    spec.filePath = this->m_headerPath;
+    spec.primaryTag = QStringLiteral("VBT · %1×%2×%3")
+                              .arg(this->openResult.dimensions[0])
+                              .arg(this->openResult.dimensions[1])
+                              .arg(this->openResult.dimensions[2]);
+    spec.secondaryTag = QStringLiteral("remote · %1").arg(this->openResult.scalarType);
+
+    VisivoTheme::ViewerToolbarWidgets widgets;
+    this->m_workspaceChrome = WorkspaceChrome::installCommandBar(
+            this, spec, this->backendUrl, this->backendToken, this->sessionId, &widgets);
+    if (!this->m_workspaceChrome)
+        return;
+    if (widgets.primaryTag) {
+        widgets.primaryTag->setToolTip(QStringLiteral("The VBT header: fields, type, geometry."));
+        QObject::connect(widgets.primaryTag, &QToolButton::clicked, this,
+                         [this]() { this->showVbtHeaderDialog(); });
     }
-    if (this->metadataLabel) {
-        this->metadataLabel->setText(
-                QStringLiteral("Kind: %1\nFields: %2\nVoxel count: %3\nDataset ID: %4")
-                        .arg(this->openResult.kind)
-                        .arg(this->openResult.fields.size())
-                        .arg(this->openResult.numRows)
-                        .arg(this->openResult.datasetId));
+    this->m_workspaceChrome->installStatusRail();
+    this->setupWorkspaceDocks();
+    this->m_workspaceChrome->start();
+}
+
+void vtkWindowVbtVolume::setupWorkspaceDocks()
+{
+    WorkspaceChrome *chrome = this->m_workspaceChrome;
+    if (!chrome)
+        return;
+    const QFileInfo info(this->m_headerPath);
+    chrome->installSessionDock(this->m_headerPath, info.fileName(), u"vbt-volume"_s);
+    if (this->m_pageVolume) {
+        this->m_pageVolume->show();
+        chrome->addSessionLayers(this->m_pageVolume);
     }
+
+    InspectorPanel *panel = chrome->installInspectorDock();
+    if (!panel)
+        return;
+    panel->clearProperties();
+    panel->addPropertyRow(u"Dataset"_s, info.fileName());
+    panel->addPropertyRow(u"Type"_s, u"VBT VOLUME"_s);
+    panel->addPropertyRow(u"Dimensions"_s, QStringLiteral("%1 × %2 × %3")
+                                                   .arg(this->openResult.dimensions[0])
+                                                   .arg(this->openResult.dimensions[1])
+                                                   .arg(this->openResult.dimensions[2]));
+    panel->addPropertyRow(u"Scalar type"_s, this->openResult.scalarType);
+    // Live: the scalar being rendered follows the Scalar selector on the left.
+    this->m_propActiveScalar = new QLabel;
+    InspectorPanel::applyValueStyle(
+            this->m_propActiveScalar,
+            this->comboScalarField ? this->comboScalarField->currentText() : QString());
+    panel->addPropertyRow(u"Active scalar"_s, this->m_propActiveScalar);
+    panel->addPropertyRow(u"Path"_s, this->m_headerPath);
+    panel->addPropertyRow(u"Session"_s, this->sessionId);
+    panel->addPropertyRow(u"Backend"_s, this->backendUrl);
+    if (this->m_pageInfo) {
+        this->m_pageInfo->show();
+        panel->addPropertiesSection(this->m_pageInfo);
+    }
+
+    if (!this->backendUrl.isEmpty()) {
+        this->m_copilot = chrome->installCopilot(this->backendUrl, this->backendToken,
+                                                 this->openResult.datasetId);
+        if (this->m_copilot) {
+            this->m_copilot->setSuggestions({
+                    u"How many points and what fields does this table have?"_s,
+                    u"Show it in log scale"_s,
+                    u"Use MIP blending"_s });
+            CopilotActionRouter::instance()->registerTarget(
+                    this->openResult.datasetId, this,
+                    [this](const QList<QJsonObject> &acts) { this->applyCopilotActions(acts); },
+                    [this]() { this->undoCopilotActions(); });
+        }
+    }
+
+    if (this->m_actionSessionPanel) {
+        QSignalBlocker block(this->m_actionSessionPanel);
+        this->m_actionSessionPanel->setChecked(!chrome->sessionCollapsed());
+    }
+    if (this->actionShowControlsSidebar) {
+        QSignalBlocker block(this->actionShowControlsSidebar);
+        this->actionShowControlsSidebar->setChecked(!chrome->inspectorCollapsed());
+    }
+    QObject::connect(chrome, &WorkspaceChrome::dockCollapseChanged, this, [this]() {
+        if (!this->m_workspaceChrome)
+            return;
+        if (this->m_actionSessionPanel) {
+            QSignalBlocker block(this->m_actionSessionPanel);
+            this->m_actionSessionPanel->setChecked(!this->m_workspaceChrome->sessionCollapsed());
+        }
+        if (this->actionShowControlsSidebar) {
+            QSignalBlocker block(this->actionShowControlsSidebar);
+            this->actionShowControlsSidebar->setChecked(
+                    !this->m_workspaceChrome->inspectorCollapsed());
+        }
+    });
+}
+
+void vtkWindowVbtVolume::showVbtHeaderDialog()
+{
+    auto *dlg = new QDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowModality(Qt::NonModal);
+    dlg->setWindowTitle(QStringLiteral("VBT Header - %1")
+                                .arg(QFileInfo(this->m_headerPath).fileName()));
+    dlg->resize(520, 420);
+
+    auto *layout = new QVBoxLayout(dlg);
+    layout->setContentsMargins(16, 14, 16, 14);
+    layout->setSpacing(10);
+
+    auto *header = new QLabel(QStringLiteral("VBT Header"), dlg);
+    header->setStyleSheet(VisivoTheme::sidebarHeaderStyleSheet());
+    layout->addWidget(header);
+
+    auto *summary = new QLabel(
+            QStringLiteral("%1 × %2 × %3 voxels · spacing %4, %5, %6\n%7 · %8 field(s)")
+                    .arg(this->openResult.dimensions[0])
+                    .arg(this->openResult.dimensions[1])
+                    .arg(this->openResult.dimensions[2])
+                    .arg(this->openResult.spacing[0], 0, 'g', 6)
+                    .arg(this->openResult.spacing[1], 0, 'g', 6)
+                    .arg(this->openResult.spacing[2], 0, 'g', 6)
+                    .arg(this->openResult.scalarType)
+                    .arg(this->openResult.fields.size()),
+            dlg);
+    summary->setStyleSheet(VisivoTheme::infoValueStyleSheet());
+    layout->addWidget(summary);
+
+    auto *table = new QTableWidget(static_cast<int>(this->openResult.fields.size()), 1, dlg);
+    table->setHorizontalHeaderLabels({ QStringLiteral("Field") });
+    table->verticalHeader()->setVisible(false);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->horizontalHeader()->setStretchLastSection(true);
+    for (int row = 0; row < static_cast<int>(this->openResult.fields.size()); ++row)
+        table->setItem(row, 0, new QTableWidgetItem(this->openResult.fields[row].name));
+    layout->addWidget(table, 1);
+
+    auto *path = new QLabel(this->m_headerPath, dlg);
+    path->setStyleSheet(VisivoTheme::infoKeyStyleSheet());
+    path->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    path->setWordWrap(true);
+    layout->addWidget(path);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dlg);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
+    layout->addWidget(buttons);
+    dlg->show();
 }

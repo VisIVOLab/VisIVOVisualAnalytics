@@ -1,11 +1,14 @@
 #ifndef AstroUtils_h
 #define AstroUtils_h
 
+#include "gui/SkyOverlap.h"
+
 #include <fitsio.h>
 
 #include <QString>
 
 #include <string>
+#include <vector>
 
 struct WorldCoor;
 
@@ -20,6 +23,15 @@ public:
    * @param filepath FITS absolute filepath
    */
     AstroUtils(const std::string &filepath);
+    /**
+   * Build the WCS from FITS header CARDS instead of a file - the 80-character
+   * card images the backend's ``/v1/files/header`` returns. A dataset that lives
+   * on another machine can then be aligned to another one without copying a
+   * single pixel to this one: the WCS is the only part of the file this class
+   * ever needed.
+   * @param headerCards one FITS card per entry, in header order
+   */
+    explicit AstroUtils(const std::vector<std::string> &headerCards);
     ~AstroUtils();
 
     /**
@@ -118,6 +130,22 @@ public:
    */
     bool overlap(const std::string &filepath) const;
 
+  /**
+   * Check whether this image and @p other cover any common sky.
+   *
+   * The overload taking a path has to open a file; this one does not, so it
+   * also serves the remote layer path, where both WCS are built from headers
+   * fetched over HTTP and no file exists on this machine.
+   *
+   * @return true if there is an overlap
+   */
+    bool overlap(const AstroUtils &other) const;
+
+  /**
+   * @return the sky bounds used by overlap(), in degrees (J2000).
+   */
+    SkyOverlap::Bounds skyBounds() const;
+
     /**
    * @return true if FITS file has exactly 2 axes
    */
@@ -139,6 +167,10 @@ public:
     bool isSimulation() const;
 
 private:
+    /// The part of construction that is the same either way: everything after
+    /// the WCS itself is read out of the header string with hget*.
+    void readHeaderKeywords(char *header);
+
     std::string filepath;
     struct WorldCoor *wcs;
     int naxis;

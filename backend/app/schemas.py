@@ -35,6 +35,28 @@ class FileHeaderResponse(BaseModel):
     cards: list[str]
 
 
+class FileClassifyRequest(BaseModel):
+    path: str
+
+
+class FileClassifyResponse(BaseModel):
+    """What one file is, so a single *Open…* can decide where it goes."""
+    valid: bool
+    error: str = ""
+    path: str = ""
+    #: image | cube | dynspec | fits-table | catalogue | vbt | directory | unknown
+    kind: str = ""
+    #: dataset | catalogue | vbt | ask | unsupported — the route that opens it
+    opener: str = ""
+    #: The path to hand the opener when it differs from `path` — a VBT chosen by
+    #: its `.bin` opens by its `.head` sidecar. Empty means "use `path`".
+    open_path: str = ""
+    #: False when the client should ask the user instead of dispatching.
+    confident: bool = False
+    #: One sentence for the user, in the words of what was actually found.
+    detail: str = ""
+
+
 class OpenDatasetRequest(BaseModel):
     path: str
 
@@ -55,8 +77,10 @@ class OpenDatasetResponse(BaseModel):
     wcs_sanitized_axes: list[int] = []
     spectral_axis_type: str = ""
     spectral_axis_unit: str = ""
+    rest_freq_hz: float | None = None   # header RESTFRQ/RESTFREQ, Hz (None = absent)
     spacing: list[float] = [1.0, 1.0, 1.0]
     origin: list[float] = [0.0, 0.0, 0.0]
+    bunit: str = ""
     ctype: list[str] = ["", "", ""]
     cunit: list[str] = ["", "", ""]
     crval: list[float] = [0.0, 0.0, 0.0]
@@ -65,6 +89,19 @@ class OpenDatasetResponse(BaseModel):
     beam_major: float | None = None
     beam_minor: float | None = None
     beam_pa: float | None = None
+    # Size-aware loading policy. Clients use ``recommended_load_mode``
+    # to decide whether to auto-load full resolution or default to
+    # preview-only. Threshold is configurable via
+    # VISIVO_FULL_RES_THRESHOLD_BYTES (default 4 GiB).
+    file_size_bytes: int = 0
+    full_res_threshold_bytes: int = 4 * 1024 ** 3
+    recommended_load_mode: str = "auto_full"  # "auto_full" | "preview_only"
+    # True iff this backend can host server-side rendering for the
+    # opened cube (EGL build + GPU detected). Backend-agnostic: any
+    # client connecting to any backend (SKAVA-discovered, manually
+    # added Remote Backend, localhost) reads this single flag to
+    # decide whether to offer the "Use remote rendering" mode.
+    server_side_rendering_available: bool = False
 
 
 class MomentProductRequest(BaseModel):
@@ -74,6 +111,13 @@ class MomentProductRequest(BaseModel):
     channel_end: int = 0
     mask_enabled: bool = False
     threshold_value: float = 0.0
+    # When True (and mask_enabled), the backend derives the mask threshold from
+    # the data itself (median + 3·σ via MAD) instead of using threshold_value.
+    threshold_auto: bool = False
+    # R-03: for moment order 2 the default output is the velocity dispersion σ
+    # (km/s), matching CASA/CARTA/SoFiA. Set True to return the raw variance σ²
+    # (spectral_unit²) instead. Ignored for other orders.
+    moment2_variance: bool = False
 
 
 class MomentProductResponse(BaseModel):
@@ -88,6 +132,9 @@ class MomentProductResponse(BaseModel):
     spectral_axis_unit: str = ""
     moment_unit: str = ""
     bunit: str = ""
+    # Echo of the mask threshold actually applied (resolved value when
+    # threshold_auto was requested); null when no mask was applied.
+    threshold_used: float | None = None
     data_base64: str = ""
 
 
@@ -105,6 +152,13 @@ class CubePreviewResponse(BaseModel):
     scalar_type: str = ""
     range_min: float = 0.0
     range_max: float = 0.0
+    # Empty string = uncompressed raw float32 (legacy default).
+    # "qt-zlib"  = zlib bytes with 4-byte big-endian length prefix
+    #              (Qt's qUncompress convention). Required for the
+    #              compressed preview path; without it pydantic drops
+    #              the field, the client falls back to "uncompressed",
+    #              decodes zlib bytes as raw float32 → grey slice.
+    compression: str = ""
     data_base64: str = ""
 
 
@@ -148,6 +202,10 @@ class CubeSubvolumeResponse(BaseModel):
     spectral_axis_type: str = ""
     spectral_axis_unit: str = ""
     bunit: str = ""
+    # Same compression negotiation as CubePreviewResponse — see comment
+    # there. Required for the compressed-subvolume path; absent → silent
+    # zlib-as-float32 corruption client-side.
+    compression: str = ""
     data_base64: str = ""
 
 
@@ -212,6 +270,34 @@ class ImagePreviewRequest(BaseModel):
     max_longest_side: int = 1536
 
 
+class ImageTileRequest(BaseModel):
+    dataset_id: str
+    # Pyramid level: 0 = full resolution, L decimates by 2**L.
+    level: int = 0
+    tile_x: int = 0
+    tile_y: int = 0
+    tile_size: int = 256
+
+
+class ImageTileResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    width: int = 0            # actual tile pixel dims (≤ tile_size at edges)
+    height: int = 0
+    full_width: int = 0
+    full_height: int = 0
+    level: int = 0
+    num_levels: int = 1
+    tile_x: int = 0
+    tile_y: int = 0
+    tile_size: int = 256
+    scalar_type: str = ""
+    range_min: float = 0.0
+    range_max: float = 0.0
+    compression: str = ""
+    data_base64: str = ""
+
+
 class ImageFullResponse(BaseModel):
     valid: bool
     error: str
@@ -256,6 +342,10 @@ class CubeNoiseResponse(BaseModel):
 class CatalogueOpenRequest(BaseModel):
     path: str
     format: str = "csv"
+    # Optional: open SEVERAL catalogue files of the same format as ONE catalogue
+    # (e.g. the 27 spatial subtables of a cosmological snapshot). When non-empty
+    # these are concatenated; `path` is then a fallback label only.
+    paths: list[str] = []
 
 
 class CatalogueFieldInfo(BaseModel):
@@ -266,6 +356,17 @@ class CatalogueFieldInfo(BaseModel):
 class CatalogueCoordinateFields(BaseModel):
     ra: str = ""
     dec: str = ""
+    #: Galactic longitude/latitude columns, when the catalogue carries l/b
+    #: instead of RA/Dec — every VLKB table does. Reported as themselves, with
+    #: `system` naming the frame, rather than copied into ra/dec: l/b relabelled
+    #: as RA/Dec places a source up to 90 degrees from where it is.
+    glon: str = ""
+    glat: str = ""
+    x: str = ""
+    y: str = ""
+    z: str = ""
+    #: "sky" (RA/DEC) · "galactic" (l/b) · "cartesian" (X/Y/Z, e.g. Mpc)
+    system: str = "sky"
 
 
 class CatalogueOpenResponse(BaseModel):
@@ -388,11 +489,13 @@ class CosmologyDistanceRequest(BaseModel):
 class CosmologyDistanceResponse(BaseModel):
     valid: bool
     error: str
-    z: float = 0.0
+    # None (JSON null) when no real value was computed (e.g. valid=False).
+    # 0.0 is a VALID redshift/distance, so it must NOT double as a sentinel.
+    z: float | None = None
     model: str = ""
-    comoving_Mpc: float = 0.0
-    luminosity_Mpc: float = 0.0
-    proper_motion_kpc_per_arcsec: float = 0.0
+    comoving_Mpc: float | None = None
+    luminosity_Mpc: float | None = None
+    proper_motion_kpc_per_arcsec: float | None = None
 
 
 class CosmologyBatchRequest(BaseModel):
@@ -404,7 +507,8 @@ class CosmologyBatchResponse(BaseModel):
     valid: bool
     error: str
     model: str = ""
-    distances_Mpc: list[float] = []
+    # None entries mark invalid/uncomputable redshifts (valid z=0.0 stays 0.0).
+    distances_Mpc: list[float | None] = []
 
 
 class HiPSOpenRequest(BaseModel):
@@ -440,6 +544,10 @@ class HiPSViewRequest(BaseModel):
     dec_center: float
     fov_deg: float
     order: int
+    # Angular radius that actually covers the viewport. A field of view quoted
+    # across the width says nothing about a tall window or a curved
+    # projection; 0 falls back to deriving it from fov_deg.
+    radius_deg: float = 0.0
 
 
 class HiPSViewResponse(BaseModel):
@@ -466,9 +574,31 @@ class CatalogueOverlayRequest(BaseModel):
     ra_center: float
     dec_center: float
     fov_deg: float
+    # Angular radius that actually covers the viewport, corners included. The
+    # client knows its aspect ratio and projection and can measure it; without
+    # it the field is guessed from fov_deg alone and the corners are cut off.
+    radius_deg: float = 0.0  # 0 = derive it from fov_deg
     ra_field: str = ""       # auto-detected if empty
     dec_field: str = ""
     max_sources: int = 5000  # spatial sub-sample cap
+
+
+class HiPSRegistryEntry(BaseModel):
+    id: str = ""
+    title: str = ""
+    url: str = ""
+    category: str = ""
+    regime: str = ""
+    frame: str = ""
+    tile_formats: list[str] = []
+    kind: str = ""          # image | catalog | cube | spectral-cube | unknown
+    max_order: int = 0
+
+
+class HiPSRegistryResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    surveys: list[HiPSRegistryEntry] = []
 
 
 class CatalogueOverlaySource(BaseModel):

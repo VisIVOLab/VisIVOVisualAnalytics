@@ -115,7 +115,7 @@ RemoteMomentWindow::RemoteMomentWindow(const QString &backendUrl, const QString 
     const QList<QPair<int, QString>> momentOrders = {
         { 0, u"Moment 0 (Integrated intensity)"_s },
         { 1, u"Moment 1 (Mean velocity)"_s },
-        { 2, u"Moment 2 (Variance – NOT dispersion)"_s },
+        { 2, u"Moment 2 (Velocity dispersion σ)"_s },
         { 8, u"Moment 8 (Peak value)"_s },
         { 10, u"Moment 10 (Minimum value)"_s },
     };
@@ -207,10 +207,15 @@ void RemoteMomentWindow::requestMoment(int order)
     this->watcher.setProperty("requestId", requestId);
     this->watcher.setProperty("momentOrder", order);
     this->showPersistentStatusMessage(u"Computing moment..."_s);
+    // Mask ON with an auto (~3σ) threshold by default, mirroring the main
+    // Compute Moment dialog so M1/M2 come out physically clean here too.
+    // (channelStart/channelEnd keep their prior 0/0 defaults.)
     this->watcher.setFuture(QtConcurrent::run(
             &computeMomentMap,
             MomentMapComputeRequest { {}, this->datasetId, this->backendUrl, this->sessionId,
-                                      this->backendToken, order }));
+                                      this->backendToken, order, 0, 0,
+                                      /*maskEnabled=*/true, /*thresholdValue=*/0.0,
+                                      /*thresholdAuto=*/true }));
 }
 
 void RemoteMomentWindow::showPersistentStatusMessage(const QString &text, int minDurationMs)

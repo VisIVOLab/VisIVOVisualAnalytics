@@ -1,0 +1,40 @@
+# SoFiA-2 parameters for the SECOND validation cube (WALLABY / ASKAP HI).
+#
+# IDENTICAL detection settings to sofia_hgc44.par. That is the point of the
+# second cube: the lasso is tested against an independently produced mask on a
+# different instrument (ASKAP), projection (RA---SIN vs the HGC 44 observation)
+# and spectral convention (VOPT vs VELO-HEL) — WITHOUT re-tuning the reference
+# finder per cube, which would make the agreement a property of the tuning.
+#
+# SoFiA warns that only 13 negative detections are available for the reliability
+# kernel on a cube this small (109 x 280 x 196); it completes anyway and returns
+# the same 12 sources as with reliability off, so the filter is not doing the
+# work here — filter.minSNR is.
+#
+# Noise scaling was tried and is NOT enabled: scaleNoise.mode=spectral leaves the
+# count at 12 with near-identical sizes, but mode=local gives 15 sources and
+# larger masks (top non-primary source 1737 vs 1090 voxels). Neither breaks up
+# the large source #1, which was the reason for trying — #1 is a genuine extended
+# object (its flux-weighted centroid moves monotonically across 86 channels at
+# peak SNR 10-32), not linked noise. Local scaling is left off because it would
+# change the reference mask relative to the HGC 44 run for no diagnosed problem.
+input.data              =  /data/WALLABY.fits
+scfind.enable           =  true
+scfind.threshold        =  4.0
+scfind.kernelsXY        =  0, 3, 6
+scfind.kernelsZ         =  0, 3, 7, 15
+scfind.replacement      =  2.0
+scfind.statistic        =  mad
+linker.enable           =  true
+linker.radiusXY         =  2
+linker.radiusZ          =  2
+linker.minSizeXY        =  5
+linker.minSizeZ         =  5
+reliability.enable      =  true
+reliability.threshold   =  0.9
+filter.minSNR           =  3.0
+output.directory        =  /out
+output.filename         =  sofia_wallaby
+output.writeMask        =  true
+output.writeCatXML      =  true
+output.overwrite        =  true

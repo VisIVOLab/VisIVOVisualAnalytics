@@ -1,5 +1,6 @@
 #include "VlkbQueryService.h"
 #include "auth/AuthWrapper.h"
+#include "gui/VlkbPosString.h"
 
 #include <QFile>
 #include <QNetworkAccessManager>
@@ -20,37 +21,23 @@ VlkbQueryService::VlkbQueryService(const QString &baseUrl, AuthWrapper *auth, QO
 
 void VlkbQueryService::searchCircle(double l, double b, double r)
 {
-    if (l < 0.)
-        l += 180.;
-
-    QUrlQuery q;
-    q.addQueryItem(u"POS"_s,
-                   u"CIRCLE %1 %2 %3"_s.arg(QString::number(l),
-                                             QString::number(b),
-                                             QString::number(r)));
-    q.addQueryItem(u"POSSYS"_s, u"GALACTIC"_s);
-
-    QUrl url(m_baseUrl + u"/siav2/query"_s);
-    url.setQuery(q);
-
-    doGet(url,
-          [this](const QByteArray &data) { emit searchFinished(data); },
-          [this](const QString &err)     { emit searchFailed(err); });
+    searchPos(visivo::circlePosString(l, b, r));
 }
 
 void VlkbQueryService::searchRange(double l, double b, double dl, double db)
 {
-    double l1 = l - dl;
-    double l2 = l + dl;
-    if (l1 < 0.) l1 += 180.;
-    if (l2 < 0.) l2 += 180.;
+    searchPos(visivo::rangePosString(l, b, dl, db));
+}
 
+void VlkbQueryService::searchPos(const QString &pos)
+{
+    // ONE place builds a POS string, and it is visivo::*PosString (unit-tested).
+    // This function used to build its own — with `l += 180` for a negative
+    // longitude instead of 360 — so after the caller's copy was fixed the panel
+    // previewed 358° while the inventory was searched at 178°, and the cutout
+    // that followed came from a third place again.
     QUrlQuery q;
-    q.addQueryItem(u"POS"_s,
-                   u"RANGE %1 %2 %3 %4"_s.arg(QString::number(l1),
-                                               QString::number(l2),
-                                               QString::number(b - db),
-                                               QString::number(b + db)));
+    q.addQueryItem(u"POS"_s, pos);
     q.addQueryItem(u"POSSYS"_s, u"GALACTIC"_s);
 
     QUrl url(m_baseUrl + u"/siav2/query"_s);

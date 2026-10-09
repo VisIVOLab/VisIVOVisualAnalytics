@@ -28,6 +28,23 @@ _TEST_TOKEN = "test-token-visivo-12345"
 os.environ["VISIVO_TOKEN"] = _TEST_TOKEN
 
 
+@pytest.fixture(autouse=True)
+def _isolated_exports(monkeypatch, tmp_path_factory):
+    """Redirect the Workspace Exports directory into a tmpdir for EVERY test.
+
+    Without this the suite writes real files into ``~/.visivo/exports`` — it had
+    accumulated ~100 of them (``test_image_spectral_index_*.fits`` and friends)
+    before this fixture existed. An individual test module had its own
+    ``isolated_workspace``, but any test that saved a product without opting in
+    polluted the user's home. Autouse, because the failure mode is silent.
+    """
+    from app import dependencies
+    workspace = tmp_path_factory.mktemp("exports")
+    monkeypatch.setattr(dependencies, "_EXPORTS_DIR", workspace)
+    monkeypatch.setattr(dependencies, "get_exports_dir", lambda: workspace)
+    return workspace
+
+
 @pytest.fixture(scope="session")
 def auth_headers() -> dict[str, str]:
     """Headers that satisfy the authentication dependency."""
@@ -111,6 +128,7 @@ def _write_fits_cube(path: str) -> None:
     h["CUNIT1"] = "deg"
     h["CUNIT2"] = "deg"
     h["CUNIT3"] = "Hz"
+    h["RESTFRQ"] = 115.271202e9      # CO(1-0) rest frequency (Hz) — enables FREQ→velocity
     h["BUNIT"]  = "Jy/beam"
     hdu.writeto(path, overwrite=True)
 

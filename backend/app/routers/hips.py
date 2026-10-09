@@ -18,6 +18,7 @@ from ..tasks import TASKS
 from ..product_cache import PRODUCT_CACHE
 from ..fits_dataset import ScientificFitsDataset
 import asyncio
+import urllib.error as _urllib_error
 
 router = APIRouter(tags=['hips'])
 
@@ -54,13 +55,26 @@ async def hips_open(
              or props.get("obs_collection")
              or props.get("creator_did")
              or "Unknown Survey")
-    frame_raw = props.get("hips_frame", "equatorial").lower()
-    if "galactic" in frame_raw:
-        frame = "galactic"
-    elif "ecliptic" in frame_raw:
-        frame = "ecliptic"
-    else:
-        frame = "equatorial"
+    # Exact names, not substrings: "supergalactic" is not galactic, and reading
+    # it as such would place the survey tens of degrees out.
+    frame_raw = props.get("hips_frame", "equatorial").lower().strip()
+    _FRAME_ALIASES = {
+        "": "equatorial", "equatorial": "equatorial", "icrs": "equatorial",
+        "j2000": "equatorial", "fk5": "equatorial",
+        "galactic": "galactic", "gal": "galactic",
+        "ecliptic": "ecliptic", "ecl": "ecliptic",
+    }
+    frame = _FRAME_ALIASES.get(frame_raw)
+    if frame is None:
+        # Most of what lands here is a planetary surface — the registry carries
+        # maps of Mars, the Moon, Io. Calling those equatorial, as this used
+        # to, drew a planet's terrain onto the sky at coordinates that mean
+        # nothing.
+        return HiPSSurveyResponse(
+            valid=False,
+            error=f"This HiPS declares the frame '{frame_raw}', which VisIVO's "
+                  f"sky viewer does not support. It reads equatorial, galactic "
+                  f"and ecliptic surveys; a planetary surface is not a sky.")
 
     try:
         max_order = int(props.get("hips_order", "9"))
@@ -93,6 +107,39 @@ async def hips_open(
         max_order=max_order, min_order=min_order,
         tile_width=tile_width, tile_formats=formats,
     )
+
+@router.get("/v1/hips/surveys", response_model=HiPSRegistryResponse, tags=["hips"])
+async def hips_surveys(
+    refresh: bool = Query(False, description="Refetch from CDS instead of using the cache."),
+    kind: str = Query("image", description="Filter by dataproduct type; empty for all."),
+    _: None = _auth,
+) -> HiPSRegistryResponse:
+    """Every HiPS registered with the CDS MOCServer.
+
+    Typing a survey URL by hand was the only way into the viewer, which meant
+    you had to know one already. The list is cached on disk for a week; the
+    registry changes rarely and the document is a third of a megabyte.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        surveys = await loop.run_in_executor(None, _load_hips_registry_sync, refresh)
+    except Exception as exc:  # noqa: BLE001 — a remote service, not our code
+        logger.warning("[hips-registry] unavailable: %s", exc)
+        return HiPSRegistryResponse(
+            valid=False,
+            error=f"The HiPS registry could not be read: {exc}")
+
+    wanted = kind.strip().lower()
+    if wanted:
+        surveys = [s for s in surveys if s.get("kind") == wanted]
+    # The registry also carries planetary-body HiPS — Mars, the Moon, Io. They
+    # are maps of a surface, not of the sky, and have no position a celestial
+    # viewer can place them at.
+    surveys = [s for s in surveys
+               if (s.get("frame") or "equatorial").lower() in _HIPS_SKY_FRAMES]
+    return HiPSRegistryResponse(valid=True,
+                                surveys=[HiPSRegistryEntry(**s) for s in surveys])
+
 
 @router.get("/v1/hips/{survey_id}/allsky", tags=["hips"])
 async def hips_allsky(
@@ -134,6 +181,7 @@ async def hips_allsky(
 
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_bytes(data)
+        _maybe_cleanup_hips_cache()  # throttled TTL purge + size eviction
 
     mt = ("image/jpeg" if fmt in ("jpeg", "jpg")
           else "image/fits" if fmt == "fits"
@@ -179,6 +227,7 @@ async def hips_tile(
 
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_bytes(data)
+        _maybe_cleanup_hips_cache()  # throttled TTL purge + size eviction
 
     mt = ("image/jpeg" if fmt in ("jpeg", "jpg")
           else "image/fits" if fmt == "fits"
@@ -212,10 +261,11 @@ async def hips_query_tiles(
     max_order: int = entry["max_order"]
     order = max(0, min(request.order, max_order))
     try:
-        loop = _asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         tiles_raw = await loop.run_in_executor(
             None, _get_tiles_for_fov,
             request.ra_center, request.dec_center, request.fov_deg, order,
+            entry.get("frame", "equatorial"), request.radius_deg,
         )
     except Exception as exc:
         return HiPSViewResponse(valid=False, error=f"HEALPix query failed: {exc}")
@@ -233,11 +283,12 @@ async def hips_catalogue_overlay(
 ) -> CatalogueOverlayResponse:
     """Return catalogue sources (RA/Dec) visible in the given HiPS viewport.
     Reads a CSV file at `catalogue_path` on the backend filesystem."""
-    loop = _asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     d = await loop.run_in_executor(
         None, _catalogue_overlay_sync,
         request.catalogue_path, request.ra_center, request.dec_center,
         request.fov_deg, request.ra_field, request.dec_field, request.max_sources,
+        request.radius_deg,
     )
     if not d["valid"]:
         return CatalogueOverlayResponse(valid=False, error=d["error"])
@@ -247,3 +298,90 @@ async def hips_catalogue_overlay(
         total_in_view=d["total_in_view"],
         truncated=d["truncated"],
     )
+
+
+# ── hips2fits: a FITS cut out of any HiPS survey ─────────────────────────────
+
+class Hips2FitsRequest(BaseModel):
+    hips: str
+    width: int = 512
+    height: int = 512
+    ra: float = 0.0
+    dec: float = 0.0
+    fov: float = 1.0
+    projection: str = "TAN"
+    coordsys: str = "icrs"
+    rotation_angle: float = 0.0
+    format: str = "fits"
+    #: Percentile cuts and stretch — only meaningful for jpg/png.
+    min_cut: float = 0.5
+    max_cut: float = 99.5
+    stretch: str = "linear"
+    output_basename: str = ""
+
+
+class Hips2FitsResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    output_path: str = ""
+    workspace_filename: str = ""
+    bytes: int = 0
+    is_fits: bool = False
+    #: The full request URL, so what was asked for is reproducible outside the app.
+    url: str = ""
+
+
+class Hips2FitsSurveysResponse(BaseModel):
+    surveys: list[str]
+    projections: list[str]
+    stretches: list[str]
+    endpoint: str
+
+
+@router.get("/v1/hips/hips2fits/surveys", response_model=Hips2FitsSurveysResponse, tags=["hips"])
+async def hips2fits_surveys(_: None = _auth) -> Hips2FitsSurveysResponse:
+    """The starting list of surveys and the accepted enumerations.
+
+    The legacy carried these as a QStringList inside the dialog, so correcting a
+    survey id meant releasing a client.
+    """
+    from .. import hips2fits  # noqa: PLC0415
+    return Hips2FitsSurveysResponse(
+        surveys=hips2fits.known_surveys(),
+        projections=list(hips2fits.PROJECTIONS),
+        stretches=list(hips2fits.STRETCHES),
+        endpoint=hips2fits.endpoint(),
+    )
+
+
+@router.post("/v1/hips/hips2fits", response_model=Hips2FitsResponse, tags=["hips"])
+async def hips2fits_cutout(request: Hips2FitsRequest, _: None = _auth) -> Hips2FitsResponse:
+    """Cut a FITS (or a picture) out of a HiPS survey, into the workspace."""
+    from .. import hips2fits  # noqa: PLC0415
+
+    try:
+        params = hips2fits.build_query(
+            request.hips, request.width, request.height, request.ra, request.dec,
+            request.fov, request.projection, request.coordsys, request.rotation_angle,
+            request.format, request.min_cut, request.max_cut, request.stretch)
+    except ValueError as exc:
+        # A parameter the service would have refused: say so without the round trip.
+        return Hips2FitsResponse(valid=False, error=str(exc))
+
+    basename = request.output_basename.strip() or hips2fits.default_basename(
+        request.hips, request.format)
+    output_path = str(make_workspace_path(basename))
+    try:
+        # A network fetch: a thread, not a compute worker (see _run_io).
+        result = await _run_io(hips2fits.fetch_cutout, params, output_path)
+    except ValueError as exc:
+        return Hips2FitsResponse(valid=False, error=str(exc))
+    except Exception as exc:
+        # An unforeseen failure: logged in full, reported without the
+        # server-side detail (a path, a mount point) that str(exc) carries.
+        logger.exception("[hips2fits] failed hips=%s", request.hips)
+        return Hips2FitsResponse(
+            valid=False, error="The cutout could not be completed. See the backend log.")
+
+    return Hips2FitsResponse(
+        valid=True, workspace_filename=Path(result["output_path"]).name, **result)

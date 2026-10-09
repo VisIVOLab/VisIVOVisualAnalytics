@@ -40,6 +40,22 @@ class QWidget;
 // ---------------------------------------------------------------------------
 namespace VisivoTheme {
 
+// ── Workspace layout metrics (design #1d / CUBE_VIEWER_SPEC.md) ────────────────
+// Fixed dimensions asserted once here rather than as literals at each call site,
+// so a screenshot only has to confirm them in one place.
+inline constexpr int kLeftDockWidth  = 272;   ///< Session Data / left dock (open)
+inline constexpr int kRightDockWidth = 320;   ///< Inspector / right dock (open)
+inline constexpr int kRailWidth      = 36;    ///< collapsed dock rail (never 0)
+inline constexpr int kSectionHeaderPtSize = 10;   ///< section header font size (px)
+// Section-header CSS fragment (Lato 10px/700, letter-spacing 0.14em, muted).
+// Append a color at the call site if a non-default is needed.
+inline QString sectionHeaderCss()
+{
+    return QStringLiteral("font-family:'Lato'; font-size:%1px; font-weight:700;"
+                          " letter-spacing:0.14em;")
+            .arg(kSectionHeaderPtSize);
+}
+
 // ── Theme mode tracking ───────────────────────────────────────────────────────
 // Set by applyDarkTo() / applyLightTo(); read by the color functions below.
 // All colors that vary between dark and light are returned by inline accessors
@@ -219,11 +235,11 @@ QString infoValueStyleSheet();
 // QToolButton — sidebar action button with brand-blue hover / checked tint.
 QString sidebarToolButtonStyleSheet();
 
-// ── Layout B viewer toolbar ──────────────────────────────────────────────────
-// Slim horizontal bar that anchors a viewer screen: a path-pill on the left
-// (icon + selectable file path), one or more tag chips, and an action zone on
-// the right (Find / Command / Export). Used at the top of the cube and image
-// viewers so they share the same Layout B "screen" header.
+// ── Workspace command bar (design #1d) ───────────────────────────────────────
+// Slim horizontal bar at the top of the cube and image viewers: VisIVO app mark,
+// the dataset pill (path + kind/dims tags + ▼ switcher), a centred ⌘K search
+// field that opens the command palette, and the live remote/health chip + theme
+// toggle on the right.
 
 struct ViewerToolbarSpec
 {
@@ -232,16 +248,26 @@ struct ViewerToolbarSpec
     QString secondaryTag;   // "remote · full-res" (neutral)
 };
 
+// Handles to the interactive widgets the toolbar builds, so the caller (or the
+// shared WorkspaceChrome helper) can wire behaviour. All are owned by the
+// returned toolbar widget; any may be null if not built.
+struct ViewerToolbarWidgets
+{
+    QToolButton *find = nullptr;
+    QToolButton *command = nullptr;        // "Command ⌘K"
+    QToolButton *exportBtn = nullptr;
+    QToolButton *primaryTag = nullptr;     // "CUBE · …" clickable (FITS header)
+    QToolButton *datasetSwitch = nullptr;  // "▼" recent-dataset switcher
+    QLabel      *remoteChip = nullptr;     // live "host · N running" health chip
+};
+
 // Returns a fully built QWidget for placement at the top of a viewer's central
-// area. Out parameters expose the action buttons so the caller can wire them
-// to handlers; pass nullptr to skip any. `primaryTagButton` returns the
-// "CUBE · 1024×…" tag chip rendered as a clickable button so callers can hook
-// it up (e.g. to open the FITS header dialog).
+// area. `out` (optional) receives handles to the action widgets so the caller
+// can wire them — Find / Command / Export, the clickable "CUBE · …" primary
+// tag (e.g. opens the FITS header dialog), the dataset switcher, and the live
+// remote/health chip.
 QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
-                           QToolButton **findButton,
-                           QToolButton **commandButton,
-                           QToolButton **exportButton,
-                           QToolButton **primaryTagButton = nullptr,
+                           ViewerToolbarWidgets *out = nullptr,
                            QWidget *parent = nullptr);
 
 // Small "Tools → Foo…" breadcrumb chip used in the footer of tool dialogs to
@@ -253,7 +279,7 @@ QLabel *makeBreadcrumbTag(const QString &text, QWidget *parent = nullptr);
 // colour (kOnSurfaceVariant). Used by the viewer rail buttons so the icons
 // follow the theme without needing per-theme SVG variants.
 QPixmap renderThemeIcon(const QString &resourcePath, int size,
-                        const QColor *colorOverride = nullptr);
+                        const QColor *colorOverride = nullptr, double dpr = 1.0);
 
 // ── Global theme application ──────────────────────────────────────────────────
 

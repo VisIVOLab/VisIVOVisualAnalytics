@@ -1,0 +1,42 @@
+# VisIVO scientific-copilot LLM — self-hosted, OpenAI-compatible (vLLM).
+#
+# Runs an open-weight LLM on your GPU server and exposes the OpenAI chat API
+# (with tool-calling) that the VisIVO copilot's "Your server" option points to.
+#
+# Quick start:
+#   cd deploy/copilot-llm
+#   cp .env.example .env      # then edit: set VLLM_API_KEY (and LLM_MODEL if you like)
+#   docker compose up -d      # first run downloads the model into ./hf-cache
+#   ./validate.sh             # confirms the endpoint answers + does a tool call
+# Then in VisIVO: Copilot panel → ⚙ → "Your server" →
+#   URL:  http://<this-server-ip>:8000/v1     Key: <VLLM_API_KEY>
+#
+# Requires on the HOST: NVIDIA driver + nvidia-container-toolkit + Docker Compose.
+services:
+  copilot-llm:
+    image: vllm/vllm-openai:${VLLM_TAG:-latest}
+    container_name: visivo-copilot-llm
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    env_file: .env
+    ports:
+      - "${LLM_PORT:-8000}:8000"
+    volumes:
+      - ./entrypoint.sh:/entrypoint.sh:ro
+      - ${HF_CACHE:-./hf-cache}:/root/.cache/huggingface
+    ipc: host                      # vLLM needs a large /dev/shm
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all           # single RTX PRO 6000 → all == that one GPU
+              capabilities: [gpu]
+    healthcheck:
+      # vLLM serves /health once the model is loaded (can take minutes on first
+      # download); start_period keeps the container from being marked unhealthy.
+      test: ["CMD", "sh", "-c", "wget -qO- http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 30
+      start_period: 900s

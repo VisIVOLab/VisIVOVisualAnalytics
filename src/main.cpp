@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "Version.h"
+#include "app/BackendClient.h"
 #include "app/BackendLauncher.h"
 #include "app/ThemeManager.h"
 #include "gui/StartupDialog.h"
@@ -7,15 +8,30 @@
 #include <QVTKOpenGLNativeWidget.h>
 
 #include <QApplication>
+
+#include "DiagnosticsManager.h"
 #include <QDebug>
 #include <QDir>
+#include <QFileInfo>
+#include <QFileOpenEvent>
+#include <QCryptographicHash>
+#include <QDeadlineTimer>
+#include <QLocalServer>
+#include <QLocalSocket>
+#include <QLockFile>
+#include <QStandardPaths>
+#include <QThread>
+#include <QTimer>
+#include <QPointer>
 #include <QIcon>
+#include <QUuid>
 #include <QLocale>
 #include <QSettings>
 #include <QSurfaceFormat>
 #include <QWebEngineUrlScheme>
 
 #include <clocale>
+#include <memory>
 #include <vtkNew.h>
 #include <vtkObjectFactory.h>
 #include <vtkOutputWindow.h>
@@ -69,6 +85,298 @@ private:
 
 using namespace Qt::StringLiterals;
 
+/// Files the desktop asks us to open — a Finder double-click, a drop on the Dock
+/// icon, `open -a`, a file manager's "Open with", or a path on the command line.
+///
+/// macOS does NOT pass a double-clicked file in argv: it sends an Apple Event
+/// that Qt delivers as QEvent::FileOpen, and only to an application object that
+/// is already running. So the filter is installed immediately after
+/// QApplication is constructed — before the startup dialog, which takes seconds
+/// while the backend comes up and would otherwise swallow the event — and the
+/// paths wait in a queue until MainWindow exists. Afterwards each event is
+/// forwarded straight through, so double-clicking a second file while VisIVO is
+/// running opens it in the same instance.
+class DesktopOpenRelay : public QObject
+{
+public:
+    ~DesktopOpenRelay() override
+    {
+        // Order matters. Members are destroyed before ~QObject deletes its
+        // children, so the lock would be released while the QLocalServer was
+        // still listening — long enough for a new primary to take the lock and
+        // listen, and then have its socket unlinked by this one's cleanup
+        //. Close and delete the server first, then let go of the lock.
+        if (m_server) {
+            m_server->close();
+            delete m_server;
+            m_server = nullptr;
+        }
+        m_lock.reset();
+    }
+
+    /// Paths from the command line (Linux / Windows associations pass them this
+    /// way), keeping only what exists — the flags this app accepts are not files.
+    void takeCommandLine(const QStringList &args)
+    {
+        for (int i = 1; i < args.size(); ++i) {
+            const QString a = args.at(i);
+            if (a.startsWith(QLatin1Char('-')))
+                continue;
+            if (QFileInfo::exists(a))
+                m_pending << QFileInfo(a).absoluteFilePath();
+        }
+    }
+
+    /// Called once MainWindow is up: flush the queue and keep forwarding.
+    void attach(MainWindow *window)
+    {
+        m_window = window;
+        flush();
+    }
+
+    bool hasPending() const { return !m_pending.isEmpty(); }
+    QStringList pending() const { return m_pending; }
+
+    /// Decide what this process is, and act on it. Returns false when the files
+    /// were handed to an already-running instance and this one should exit.
+    ///
+    /// Linux and Windows deliver a double-click as a new PROCESS with the path in
+    /// argv, so "is there already a VisIVO?" has to be answered before the
+    /// startup sequence. A QLockFile — not the socket — is the authority: two
+    /// launches racing to probe-and-replace a stale socket could unlink each
+    /// other's live endpoint, and on Windows several QLocalServers may listen on
+    /// one pipe name, so `listen()` succeeding proves nothing about ownership
+    ///. Only the lock holder listens.
+    bool becomePrimaryOrForward()
+    {
+        const QString base = instanceKey();
+        m_lock = std::make_unique<QLockFile>(
+                QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+                        .absoluteFilePath(base + QStringLiteral(".lock")));
+        m_lock->setStaleLockTime(0);   // never steal by age; a live holder answers
+        if (m_lock->tryLock(300)) {
+            // Primary. Any socket left by a crash is ours to clear, and doing it
+            // under the lock is what makes that safe.
+            QLocalServer::removeServer(base);
+            startListening(base);
+            return true;
+        }
+        m_lock.reset();
+        if (m_pending.isEmpty()) {
+            // A bare second launch: a normal, independent instance.
+            startTakeoverPolling(base);
+            return true;
+        }
+        // Files to hand over. The primary may still be starting up, so retry a
+        // little before falling back to opening them here.
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            if (forwardToRunningInstance(base, m_pending))
+                return false;
+            QThread::msleep(200);
+        }
+        // The handover failed — most likely the primary died mid-flight — so
+        // these files open here, and this instance watches for the seat too
+        //: otherwise the surviving window could never receive the next
+        // double-click and a third instance would start.
+        startTakeoverPolling(base);
+        return true;
+    }
+
+private:
+    /// Watch the lock: when the primary exits, the surviving instance becomes
+    /// the one that receives files.
+    void startTakeoverPolling(const QString &base)
+    {
+        m_takeoverKey = base;
+        auto *retry = new QTimer(this);
+        retry->setInterval(5000);
+        QObject::connect(retry, &QTimer::timeout, this, [this, retry]() {
+            if (tryTakeOver())
+                retry->stop();
+        });
+        retry->start();
+    }
+
+    /// Become the primary if the seat is free (a secondary polls this).
+    bool tryTakeOver()
+    {
+        if (m_takeoverKey.isEmpty() || m_lock)
+            return true;
+        auto lock = std::make_unique<QLockFile>(
+                QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+                        .absoluteFilePath(m_takeoverKey + QStringLiteral(".lock")));
+        lock->setStaleLockTime(0);
+        if (!lock->tryLock(0))
+            return false;
+        m_lock = std::move(lock);
+        QLocalServer::removeServer(m_takeoverKey);
+        startListening(m_takeoverKey);
+        return true;
+    }
+
+    /// Accept handovers. The wire format is a QDataStream-serialised QStringList,
+    /// not newline-separated text: a Unix filename may contain a newline or end
+    /// in a space, and readyRead delivers arbitrary fragments — half a path, or
+    /// half a UTF-8 character. A stream transaction consumes only whole frames.
+    void startListening(const QString &name)
+    {
+        m_server = new QLocalServer(this);
+        QObject::connect(m_server, &QLocalServer::newConnection, this, [this]() {
+            while (QLocalSocket *c = m_server->nextPendingConnection()) {
+                // "I am alive and reading": the sender waits for this BEFORE
+                // writing anything. If our event loop were stuck it would never
+                // arrive, the sender would send nothing at all, and it can then
+                // open the files itself with no risk of us opening them too.
+                c->write("RDY");
+                c->flush();
+                // Shared, because a QDataStream is not a QObject and cannot be
+                // parented to the socket; both lambdas hold it, so it dies with
+                // the connection and never outlives its device.
+                auto stream = std::make_shared<QDataStream>(c);
+                stream->setVersion(QDataStream::Qt_6_0);
+                QObject::connect(c, &QLocalSocket::readyRead, c, [this, c, stream]() {
+                    QStringList paths;
+                    stream->startTransaction();
+                    *stream >> paths;
+                    if (!stream->commitTransaction())
+                        return;   // incomplete frame — wait for the rest
+                    for (const QString &p : paths)
+                        if (QFileInfo::exists(p))
+                            m_pending << QFileInfo(p).absoluteFilePath();
+                    // Accepted. The sender waits for this before exiting: RDY
+                    // only proved the transport was being read, and a primary
+                    // that died between RDY and here would have lost the files
+                    // silently.
+                    c->write("DONE");
+                    c->flush();
+                    flush();
+                });
+                QObject::connect(c, &QLocalSocket::disconnected, c, &QObject::deleteLater);
+            }
+        });
+        m_server->listen(name);
+    }
+
+    /// Read until @p token appears, or the deadline passes. A single
+    /// waitForReadyRead() can return a fragment — "DO" then "NE" — and treating
+    /// that as failure made the sender open files the primary had already
+    /// accepted. Bytes already buffered are consumed first.
+    static bool waitForToken(QLocalSocket &sock, const QByteArray &token, int msec)
+    {
+        QByteArray buf = sock.readAll();
+        QDeadlineTimer deadline(msec);
+        while (!buf.contains(token)) {
+            const int left = int(deadline.remainingTime());
+            if (left <= 0 || !sock.waitForReadyRead(left))
+                return false;
+            buf += sock.readAll();
+            if (buf.size() > 64)
+                buf = buf.right(64);   // bounded: the tokens are 3-4 bytes
+        }
+        return true;
+    }
+
+    /// Two-phase handover: wait for the primary's "RDY", THEN write. Nothing is
+    /// written to a primary that is not reading, so a timeout can never leave a
+    /// request that is delivered late while this process also opened the files.
+    static bool forwardToRunningInstance(const QString &name, const QStringList &paths)
+    {
+        if (paths.isEmpty())
+            return false;
+        QLocalSocket sock;
+        sock.connectToServer(name);
+        if (!sock.waitForConnected(300))
+            return false;
+        if (!waitForToken(sock, QByteArrayLiteral("RDY"), 1500))
+            return false;   // no RDY: primary busy or dead — we sent nothing
+        QByteArray block;
+        {
+            QDataStream out(&block, QIODevice::WriteOnly);
+            out.setVersion(QDataStream::Qt_6_0);
+            out << paths;
+        }
+        sock.write(block);
+        // waitForBytesWritten promises only that SOME bytes went out, and this
+        // process exits right after; drain before letting it.
+        while (sock.bytesToWrite() > 0)
+            if (!sock.waitForBytesWritten(1000))
+                return false;
+        // …and wait to be told the frame was ACCEPTED, not merely transported.
+        // On timeout this returns false and the caller opens the files here: a
+        // file opening twice is visible and recoverable, a file that silently
+        // never opens is not, so the trade is deliberate.
+        return waitForToken(sock, QByteArrayLiteral("DONE"), 3000);
+    }
+
+public:
+protected:
+    bool eventFilter(QObject *obj, QEvent *event) override
+    {
+        if (event->type() == QEvent::FileOpen) {
+            auto *fe = static_cast<QFileOpenEvent *>(event);
+            QString path = fe->file();
+            if (path.isEmpty() && fe->url().isLocalFile())
+                path = fe->url().toLocalFile();
+            if (!path.isEmpty()) {
+                m_pending << path;
+                flush();
+                return true;
+            }
+        }
+        return QObject::eventFilter(obj, event);
+    }
+
+private:
+    // ONE at a time, and never on top of a modal dialog. Opening a dataset runs
+    // synchronous backend calls that spin nested event loops, so two queued
+    // opens interleave: the second one's dialog suspends the first one's health
+    // request until its timeout fires, and a perfectly reachable backend is
+    // reported unavailable.
+    void flush()
+    {
+        if (!m_window || m_busy || m_pending.isEmpty())
+            return;   // still starting up, or an open is in flight
+        if (QApplication::activeModalWidget()) {
+            // A dialog owns the interaction (the startup sequence, an open error,
+            // a file chooser). Come back rather than stacking another on top.
+            QTimer::singleShot(250, this, [this]() { flush(); });
+            return;
+        }
+        const QString path = m_pending.takeFirst();
+        m_busy = true;
+        // Queued, not direct: this can run from inside the event filter.
+        QMetaObject::invokeMethod(
+                m_window,
+                [this, w = m_window, path]() {
+                    if (w)
+                        w->openDatasetPath(path);
+                    m_busy = false;
+                    flush();   // the next one, now that this open has returned
+                },
+                Qt::QueuedConnection);
+    }
+
+    /// Socket + lock name, one per account. NOT from the environment ($USER is
+    /// unset in a Finder/launchd-started macOS app, $USERNAME is not unique
+    /// across Windows accounts) and NOT from qHash, whose algorithm is not
+    /// stable across Qt versions — two builds would derive different names
+    ///. A SHA-256 digest of the home path is stable everywhere, and
+    /// truncating it keeps the name inside the ~104-byte Unix-socket path limit.
+    static QString instanceKey()
+    {
+        const QByteArray digest = QCryptographicHash::hash(QDir::homePath().toUtf8(),
+                                                           QCryptographicHash::Sha256);
+        return QStringLiteral("visivo-va-") + QString::fromLatin1(digest.toHex().left(16));
+    }
+
+    QStringList m_pending;
+    QPointer<MainWindow> m_window;
+    QLocalServer *m_server{ nullptr };
+    std::unique_ptr<QLockFile> m_lock;   ///< held for this process's lifetime
+    QString m_takeoverKey;               ///< set in a secondary, which polls for the seat
+    bool m_busy{ false };
+};
+
 int main(int argc, char *argv[])
 {
     // Register custom URL scheme needed for authentication
@@ -96,14 +404,59 @@ int main(int argc, char *argv[])
 
     QApplication app(argc, argv);
 
+    // Build the diagnostics singleton here, on the main thread, rather than
+    // wherever the first diagnostic happens to be published. It is a
+    // function-local static parented to qApp, so whichever thread touches it
+    // first is the thread it is constructed on — and the first publisher is
+    // often a worker (the backend health check runs in QtConcurrent and reports
+    // a failure). Qt then refuses to parent it across threads and says so:
+    //
+    //   QObject: Cannot create children for a parent that is in a different thread.
+    //
+    // Measured: the object's thread affinity ends up correct either way, so
+    // nothing malfunctions — the parent is simply never set, and a singleton
+    // that lives for the whole process does not need one. What it costs is the
+    // warning itself, printed at exactly the moment something has gone wrong
+    // and someone is reading the log for a reason.
+    DiagnosticsManager::instance();
+
+    // Before anything can block: a Finder double-click delivers its FileOpen
+    // event as soon as the app object exists, and the startup dialog below runs
+    // for as long as the backend takes to come up.
+    DesktopOpenRelay openRelay;
+    app.installEventFilter(&openRelay);
+
+    // A second launch that carries files (every Linux / Windows double-click
+    // starts a new process) hands them to the instance already running and
+    // exits, so the file opens in the window the user is looking at instead of
+    // starting a second app and a second backend session. A launch with NO
+    // files always starts its own instance — running two VisIVOs against two
+    // backends stays possible.
+    openRelay.takeCommandLine(QCoreApplication::arguments());
+    if (!openRelay.becomePrimaryOrForward())
+        return 0;   // the files went to the instance already running
+
     // Set locale to C.UTF-8
     std::setlocale(LC_NUMERIC, "C.UTF-8");
     QLocale::setDefault(QLocale::c());
 
+    // Give this desktop instance a private backend session so several desktops
+    // sharing one backend don't see each other's datasets (or copilot config).
+    // A fresh id per launch is enough for isolation; the backend evicts it on idle.
+    BackendClient::setDefaultSessionId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+
     // Set application info
     QApplication::setApplicationName(u"VisIVO Visual Analytics"_s);
     QApplication::setApplicationVersion(QStringLiteral(VISIVO_VERSION_STR));
+#ifndef Q_OS_MACOS
+    // NOT on macOS. There the Dock icon comes from the bundle's .icns, which is
+    // drawn with Apple's rounded-rectangle mask; calling setWindowIcon replaces
+    // it at runtime with this flat square PNG, so the icon visibly changes shape
+    // the moment the application finishes launching (reported as "rounded while
+    // loading, square once open"). macOS windows carry no icon of their own, so
+    // there is nothing else this call would buy us there.
     QApplication::setWindowIcon(QIcon(":/icons/VisIVO_512.png"));
+#endif
     QApplication::setOrganizationName(u"Osservatorio Astrofisico di Catania"_s);
     QApplication::setOrganizationDomain(u"it.inaf.oact"_s);
 
@@ -160,6 +513,11 @@ int main(int argc, char *argv[])
     // ── Main window ───────────────────────────────────────────────────────────
     MainWindow w;
     w.show();
+
+    // Whatever the desktop asked for while we were starting up — and everything
+    // it asks for from now on. (The command line was taken before the startup
+    // dialog, so a second instance could forward instead of booting.)
+    openRelay.attach(&w);
 
     return QApplication::exec();
 }

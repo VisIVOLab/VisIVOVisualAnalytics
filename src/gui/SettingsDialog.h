@@ -5,7 +5,10 @@
 #include <QPointer>
 
 class AuthWrapper;
+class BackendsSettingsWidget;
 class Settings;
+class QComboBox;
+class QLineEdit;
 
 enum class AuthService;
 
@@ -37,6 +40,16 @@ private:
     Ui::SettingsDialog *ui;
     QPointer<Settings> settings;
     QPointer<AuthWrapper> auth;
+    BackendsSettingsWidget *backendsWidget{ nullptr };
+
+    // Scientific-copilot LLM provider (persisted; applied to the backend on OK).
+    QComboBox *m_copilotProvider{ nullptr };
+    QLineEdit *m_copilotKey{ nullptr };
+    QLineEdit *m_copilotUrl{ nullptr };
+    QLineEdit *m_copilotModel{ nullptr };
+    QWidget *buildCopilotSection();   ///< build the group, pre-filled from Settings
+    /// Reparent every section into a QTabWidget and size the dialog to it.
+    void buildTabs(QWidget *copilotSection);
 
     void setVLKBAuthStatus();
 };

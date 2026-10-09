@@ -1,0 +1,25 @@
+# Easiest alternative to vLLM: Ollama. Lower throughput, but a one-liner to pull
+# a model and an OpenAI-compatible endpoint at :11434/v1 with tool support.
+#
+#   docker compose -f docker-compose.ollama.yml up -d
+#   docker exec -it visivo-copilot-ollama ollama pull qwen2.5:32b   # or llama3.3
+# Then in VisIVO: Copilot ⚙ → "Your server" → http://<server>:11434/v1
+# (Ollama needs no API key by default — leave the copilot Key blank.)
+services:
+  copilot-ollama:
+    image: ollama/ollama:latest
+    container_name: visivo-copilot-ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama:/root/.ollama
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+volumes:
+  ollama:

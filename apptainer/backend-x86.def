@@ -1,0 +1,281 @@
+Bootstrap: docker
+From: condaforge/mambaforge:latest
+
+%labels
+    Maintainer VisIVOLab <visivo@inaf.it>
+    Version    1.0.0-x86-blackwell
+    Description VisIVO Backend (x86_64 + NVIDIA Blackwell variant) — optimised for RTX PRO 6000 Server Edition + AMD EPYC 9004/9005.
+
+%help
+    Apptainer image for the VisIVO backend targeting x86_64 with
+    next-generation NVIDIA Blackwell GPUs and AMD EPYC Genoa / Turin
+    CPUs. Optimised for the INAF SRC GPU testbed configuration:
+    NVIDIA RTX PRO 6000 Server Edition (96 GB GDDR7, PCIe 5,
+    Compute Capability 12.0) hosted on AMD EPYC 9004 / 9005.
+
+    Differences vs the other recipes:
+
+    * ``backend.def`` (slim) — python:3.12-slim base, multi-arch,
+      no compiled scientific deps. Used when image size matters more
+      than performance and the operator accepts the moment kernels
+      running in pure-Python fallback.
+    * ``backend-conda.def`` — mambaforge base, staged install
+      (workaround for ppc64le solver segfaults), default
+      ``conda --no-lock``. Universal but slower to build on x86.
+    * ``backend-x86.def`` (this file) — mambaforge base, single-pass
+      mamba install, CuPy on by default with CUDA 12.8 runtime for
+      Blackwell sm_120, AMX/AVX-512 enabled BLAS via conda-forge
+      build for the EPYC class.
+
+    ── Quick start ──────────────────────────────────────────────────────
+    # Build (RUN FROM REPO ROOT — paths in %setup are relative to cwd)
+    cd VisIVO-next
+    apptainer build --fakeroot backend-x86.sif apptainer/backend-x86.def
+
+    # Run with GPU passthrough (REQUIRES NVIDIA driver >= 570 on host
+    # for Blackwell support; older drivers raise ImportError on cupy).
+    apptainer run --nv \\
+        --bind /data:/data \\
+        --env VISIVO_DATA_ROOT=/data \\
+        backend-x86.sif
+
+    # Optional: pin the EPYC NUMA node for cache-friendly worker
+    # placement (assumes lstopo / numactl on the host).
+    numactl --cpunodebind=0 --membind=0 \\
+        apptainer run --nv --bind /data:/data backend-x86.sif
+
+    ── Environment ──────────────────────────────────────────────────────
+    APPTAINERENV_VISIVO_DATA_ROOT      Path jail for open_skava.
+    APPTAINERENV_VISIVO_WORKERS        ProcessPoolExecutor size (default 4).
+    APPTAINERENV_VISIVO_SESSION_TTL    Session idle timeout (default 1800).
+
+    ── HPC / SLURM ──────────────────────────────────────────────────────
+    Run inside a SLURM cluster (e.g. an x86 / Blackwell GPU partition):
+
+        bash scripts/launch_backend_slurm.sh \\
+            --partition gpu --gres gpu:rtx6000:1 \\
+            --data-root /data --sif backend-x86.sif
+
+    Drive it remotely from your laptop in a single command:
+
+        bash scripts/visivo_slurm_tunnel.sh \\
+            --frontend <cluster-frontend> --user <login> \\
+            --partition gpu --gres gpu:rtx6000:1 \\
+            --data-root /data --sif backend-x86.sif
+
+%environment
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    # Ensure conda binaries take precedence — mambaforge puts python,
+    # uvicorn, etc. under /opt/conda/bin.
+    export PATH=/opt/conda/bin:${PATH}
+    # CUDA runtime version the host driver must understand. Blackwell
+    # (RTX PRO 6000 Server Edition, sm_120) requires CUDA 12.8+;
+    # NVIDIA driver >= 570 ships that runtime.
+    export CUDA_VERSION_REQUIRED=12.8
+    # Session idle-timeout in seconds (default 30 min)
+    export VISIVO_SESSION_TTL=${VISIVO_SESSION_TTL:-1800}
+    # OpenMP / MKL / OpenBLAS thread count alignment with the
+    # worker pool. EPYC 9004/9005 prefer fewer-but-fatter threads
+    # in scientific loops. Let the operator override.
+    export OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}
+    export MKL_NUM_THREADS=${MKL_NUM_THREADS:-4}
+    export OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-4}
+    # CuPy logs at the host level — surface them in uvicorn's stdout.
+    export CUPY_DUMP_CUDA_SOURCE_ON_ERROR=1
+
+%post
+    set -e
+
+    # ── Source the conda activate hook ─────────────────────────────────
+    . /opt/conda/etc/profile.d/conda.sh
+    conda activate base
+
+    # ── Locate the requirements file ──────────────────────────────────
+    # Same pattern as the other recipes: search /srv/backend_src for
+    # the staged copy of the host's backend/ tree (placed there by
+    # %setup below).
+    REQS=$(find /srv/backend_src -name requirements.txt -print -quit 2>/dev/null)
+    if [ -z "$REQS" ]; then
+        echo "ERROR: requirements.txt not found anywhere under /srv/backend_src"
+        ls -la /srv/backend_src/ || true
+        exit 1
+    fi
+    SRC_DIR=$(dirname "$REQS")
+    echo "[backend-x86.def] Source root resolved to: $SRC_DIR"
+
+    # ── Scientific stack from conda-forge ───────────────────────────────
+    # x86_64 has pre-built wheels for everything in one pass, so we
+    # skip the staged-install workaround the ppc64le variant needs.
+    # Mamba native is always the right choice on x86 — it resolves
+    # the whole dependency graph in ~5 s.
+    #
+    # healpy >= 1.19 imports ``scipy.integrate.trapezoid`` (the new
+    # name) and so works fine with the latest scipy. No version pin
+    # acrobatics needed here.
+    mamba install -y -n base -c conda-forge \
+        python=3.12 \
+        fastapi \
+        uvicorn-standard \
+        astropy \
+        numpy \
+        scipy \
+        pandas \
+        "healpy>=1.19" \
+        numba \
+        llvmlite \
+        photutils \
+        reproject \
+        astroquery \
+        scikit-image \
+        h5py \
+        vtk \
+        dask \
+        distributed \
+        pyerfa \
+        pillow \
+        httpx \
+        pip
+
+    # ── CuPy for NVIDIA Blackwell ──────────────────────────────────────
+    # Always installed on this variant — the whole point of x86 +
+    # RTX PRO 6000 is GPU compute. Conda-forge's cupy package bundles
+    # its own CUDA 12.x runtime, so the host only needs the NVIDIA
+    # driver (>= 570 for Blackwell).
+    #
+    # Operators wanting a CPU-only build for some reason can override
+    # with ENABLE_CUPY=0 at build time.
+    if [ "${ENABLE_CUPY:-1}" != "0" ]; then
+        echo "[backend-x86.def] Installing cupy + CUDA 12.8 runtime"
+        mamba install -y -n base -c conda-forge \
+            "cupy>=13.4" \
+            "cuda-version=12.8"
+    else
+        echo "[backend-x86.def] ENABLE_CUPY=0 → skipping GPU acceleration"
+    fi
+
+    # ── AVX-512 / AMX-aware NumPy / SciPy ──────────────────────────────
+    # conda-forge's NumPy / SciPy ship MKL-linked builds on x86_64.
+    # Verify at boot so a config mismatch surfaces in the build log.
+    python -c "
+import numpy as np
+cfg = np.show_config(mode='dicts') if hasattr(np, 'show_config') else None
+print('numpy version:', np.__version__)
+print('numpy BLAS:', cfg.get('Build Dependencies', {}).get('blas', {}).get('name')
+      if cfg else 'unknown')
+"
+
+    # ── Cleanup caches to shrink the final image ──────────────────────
+    conda clean --all --yes
+
+    # ── Copy application source ────────────────────────────────────────
+    mkdir -p /app
+    cp -r "$SRC_DIR"/* /app/
+
+    # ── Sanity check ───────────────────────────────────────────────────
+    python -c "
+import fastapi, astropy, numpy, scipy, healpy, numba, vtk
+print(f'[sanity] fastapi {fastapi.__version__}')
+print(f'[sanity] astropy {astropy.__version__}')
+print(f'[sanity] numpy   {numpy.__version__}')
+print(f'[sanity] scipy   {scipy.__version__}')
+print(f'[sanity] healpy  {healpy.__version__}')
+print(f'[sanity] numba   {numba.__version__}')
+print(f'[sanity] vtk     {vtk.vtkVersion.GetVTKVersion()}')
+try:
+    import cupy
+    rt = cupy.cuda.runtime.runtimeGetVersion()
+    print(f'[sanity] cupy    {cupy.__version__} (CUDA runtime {rt})')
+except ImportError:
+    print('[sanity] cupy NOT installed (ENABLE_CUPY=0 build)')
+print('[sanity] Full x86 + Blackwell stack OK')
+"
+
+%setup
+    # Stage the host's backend/ tree into the building rootfs, same
+    # pattern as the other recipes. See backend.def for the design
+    # discussion of %setup vs %files.
+    set -ex
+    ROOTFS="${APPTAINER_ROOTFS:-${SINGULARITY_ROOTFS:-}}"
+    if [ -z "$ROOTFS" ]; then
+        echo "ERROR: Neither APPTAINER_ROOTFS nor SINGULARITY_ROOTFS is set."
+        exit 1
+    fi
+    SRC="${VISIVO_BACKEND_SRC:-}"
+    if [ -z "$SRC" ] || [ ! -d "$SRC" ]; then
+        if [ -d "${PWD}/backend" ]; then
+            SRC="${PWD}/backend"
+        elif [ -d "${PWD}/../backend" ]; then
+            SRC="${PWD}/../backend"
+        else
+            echo "ERROR: backend/ source directory not found."
+            echo "Tried: \$VISIVO_BACKEND_SRC, \${PWD}/backend, \${PWD}/../backend"
+            exit 1
+        fi
+    fi
+    echo "[%setup] Staging backend source from: $SRC → $ROOTFS/srv/backend_src"
+    mkdir -p "$ROOTFS/srv/backend_src"
+    cp -r "$SRC"/. "$ROOTFS/srv/backend_src/"
+    if [ ! -f "$ROOTFS/srv/backend_src/requirements.txt" ]; then
+        echo "ERROR: requirements.txt NOT present after copy from $SRC"
+        exit 1
+    fi
+    echo "[%setup] OK — backend/ staged into rootfs, %post can proceed."
+
+%runscript
+    #!/bin/bash
+    HOST="${VISIVO_HOST:-0.0.0.0}"
+    PORT="${PORT:-8000}"
+    WORKERS="${VISIVO_WORKERS:-$(nproc)}"
+
+    echo "[VisIVO/x86-blackwell] Starting backend on ${HOST}:${PORT} with ${WORKERS} worker(s)"
+
+    # CuPy / NVIDIA detection — informational. Doesn't abort if absent
+    # so the same image can boot on a non-GPU host for, e.g., a CI
+    # smoke test against the HTTP surface.
+    python -c "
+try:
+    import cupy
+    props = cupy.cuda.runtime.getDeviceProperties(0)
+    name = props['name'].decode()
+    mem_gb = props['totalGlobalMem'] / 1e9
+    cc = props['major'] * 10 + props['minor']
+    print(f'[VisIVO] GPU: {name} ({mem_gb:.1f} GB, CC {cc})')
+    if cc < 120:
+        print(f'[VisIVO] NOTE: detected GPU is older than Blackwell '
+              f'(CC {cc} vs 120). Image will still work, '
+              'optimised paths may not engage.')
+except Exception as exc:
+    print(f'[VisIVO] No GPU detected ({exc}); CPU-only execution.')
+"
+
+    exec uvicorn app.main:app \
+        --host "${HOST}" \
+        --port "${PORT}" \
+        --workers 1 \
+        --log-level info \
+        --app-dir /app
+
+%test
+    python -c "
+import sys, platform
+sys.path.insert(0, '/app')
+from app.auth import TOKEN
+from app.sessions import REGISTRY
+print(f'[test] Architecture: {platform.machine()}')
+print(f'[test] Python: {sys.version.split()[0]}')
+print(f'[test] Auth module OK. Token length: {len(TOKEN)}')
+print(f'[test] Sessions module OK.')
+import numpy, scipy, astropy, healpy, numba, vtk
+print(f'[test] numpy {numpy.__version__}, scipy {scipy.__version__}, '
+      f'astropy {astropy.__version__}, healpy {healpy.__version__}')
+print(f'[test] numba {numba.__version__} (JIT available), '
+      f'vtk {vtk.vtkVersion.GetVTKVersion()} (isosurface available)')
+try:
+    import cupy
+    rt = cupy.cuda.runtime.runtimeGetVersion()
+    print(f'[test] cupy {cupy.__version__} (CUDA runtime {rt})')
+except ImportError:
+    print('[test] cupy not installed (ENABLE_CUPY=0 build)')
+print('[test] Full x86 + Blackwell stack verified.')
+"

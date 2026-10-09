@@ -12,6 +12,7 @@ const std::map<std::string, std::function<void(vtkLookupTable *)>> ColorMaps::Lo
     { "Magma"s, &ColorMaps::SetMagma },
     { "Plasma"s, &ColorMaps::SetPlasma },
     { "Cividis"s, &ColorMaps::SetCividis },
+    { "CoolWarm"s, &ColorMaps::SetCoolWarm },
     { "Gray"s, &ColorMaps::SetGray },
     { "Default"s, &ColorMaps::SetDefault },
     { "DefaultStep"s, &ColorMaps::SetDefaultStep },
@@ -1385,6 +1386,33 @@ void ColorMaps::SetCividis(vtkLookupTable *lut)
     lut->SetTableValue(253, 0.995249, 0.898384, 0.207561);
     lut->SetTableValue(254, 0.995503, 0.903866, 0.21237);
     lut->SetTableValue(255, 0.995737, 0.909344, 0.217772);
+}
+
+void ColorMaps::SetCoolWarm(vtkLookupTable *lut)
+{
+    // Diverging blue→white→red (Moreland cool/warm endpoints), the right default for a
+    // velocity field: blue = blueshift, red = redshift, white = systemic (§3.2). Linear
+    // RGB interpolation through a light-grey midpoint so the zero-crossing reads clearly.
+    const double cool[3] = { 0.230, 0.299, 0.754 };   // 59,76,192
+    const double mid[3]  = { 0.865, 0.865, 0.865 };   // 221,221,221
+    const double warm[3] = { 0.706, 0.016, 0.150 };   // 180,4,38
+    lut->SetNumberOfTableValues(256);
+    for (vtkIdType i = 0; i < 256; ++i) {
+        const double t = i / 255.0;
+        double r, g, b;
+        if (t < 0.5) {
+            const double u = t / 0.5;
+            r = cool[0] + (mid[0] - cool[0]) * u;
+            g = cool[1] + (mid[1] - cool[1]) * u;
+            b = cool[2] + (mid[2] - cool[2]) * u;
+        } else {
+            const double u = (t - 0.5) / 0.5;
+            r = mid[0] + (warm[0] - mid[0]) * u;
+            g = mid[1] + (warm[1] - mid[1]) * u;
+            b = mid[2] + (warm[2] - mid[2]) * u;
+        }
+        lut->SetTableValue(i, r, g, b, 1.0);
+    }
 }
 
 void ColorMaps::SetGray(vtkLookupTable *lut)

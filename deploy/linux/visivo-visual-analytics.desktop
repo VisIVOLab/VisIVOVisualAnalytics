@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=VisIVO Visual Analytics
+GenericName=Astronomical data visualiser
+Comment=Interactive visual analytics for FITS images and spectral cubes
+# %F, not %U: the app opens local paths through its backend, not URLs.
+Exec=VisIVOVisualAnalytics %F
+Icon=visivo-visual-analytics
+Terminal=false
+Categories=Science;Astronomy;Education;
+Keywords=FITS;cube;astronomy;spectrum;datacube;VisIVO;
+MimeType=image/fits;application/fits;
+StartupNotify=true

@@ -56,8 +56,78 @@ class ScientificFitsDataset:
             minor=float(header["BMIN"]) if "BMIN" in header else None,
             pa=float(header["BPA"]) if "BPA" in header else None,
         )
+        # R-05: per-channel beam table (CASA multi-beam cubes carry a binary-table
+        # HDU named "BEAMS" with per-plane BMAJ/BMIN/BPA). Read lazily-safe here so
+        # flux/beam-area is correct channel-to-channel on wideband ALMA/SKA cubes.
+        self._per_channel_beam: dict[int, BeamMetadata] | None = self._read_beams_table()
         self._stokes_planes: dict[str, int] | None = None  # lazy
         self._log_axis_debug()
+
+    def _read_beams_table(self) -> dict[int, BeamMetadata] | None:
+        """Read a CASA per-plane beam table (EXTNAME='BEAMS') if present.
+
+        The table has one row per (channel, pol) with columns BMAJ, BMIN (arcsec)
+        and BPA (deg), plus a CHAN column. We index by channel (collapsing over
+        pol by taking the first row per channel) and store BMAJ/BMIN in **degrees**
+        to match the primary-header convention used everywhere else. Returns None
+        when there is no such table (the common single-beam case).
+        """
+        try:
+            with fits.open(self.path, memmap=True, mode="readonly") as hdul:
+                beams_hdu = None
+                for hdu in hdul[1:]:
+                    if str(hdu.header.get("EXTNAME", "")).strip().upper() == "BEAMS":
+                        beams_hdu = hdu
+                        break
+                if beams_hdu is None:
+                    return None
+                cols = {c.upper(): c for c in beams_hdu.columns.names}
+                if not {"BMAJ", "BMIN"} <= set(cols):
+                    return None
+                data = beams_hdu.data
+                bmaj = np.asarray(data[cols["BMAJ"]], dtype=np.float64)
+                bmin = np.asarray(data[cols["BMIN"]], dtype=np.float64)
+                bpa = (np.asarray(data[cols["BPA"]], dtype=np.float64)
+                       if "BPA" in cols else np.zeros_like(bmaj))
+                chan = (np.asarray(data[cols["CHAN"]], dtype=np.int64)
+                        if "CHAN" in cols else np.arange(bmaj.size, dtype=np.int64))
+                # Convert each size column to degrees using ITS OWN unit (BMAJ and
+                # BMIN can in principle carry different TUNITs). Default arcsec.
+                def _col_to_deg(colname: str) -> float:
+                    raw = beams_hdu.columns[cols[colname]].unit or "arcsec"
+                    try:
+                        return float(u.Unit(raw).to(u.deg))
+                    except Exception:  # noqa: BLE001
+                        return 1.0 / 3600.0  # assume arcsec on an unparsable unit
+                bmaj_to_deg = _col_to_deg("BMAJ")
+                bmin_to_deg = _col_to_deg("BMIN")
+                out: dict[int, BeamMetadata] = {}
+                for i in range(bmaj.size):
+                    ch = int(chan[i])
+                    if ch in out:
+                        continue  # first pol wins
+                    out[ch] = BeamMetadata(
+                        major=float(bmaj[i]) * bmaj_to_deg,
+                        minor=float(bmin[i]) * bmin_to_deg,
+                        pa=float(bpa[i]),
+                    )
+                return out or None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[fits] BEAMS table read failed path=%s: %s", self.path, exc)
+            return None
+
+    def beam_for_channel(self, channel: int | None) -> BeamMetadata:
+        """Beam for a given channel — the per-plane beam when a BEAMS table is
+        present, otherwise the single primary-header beam. R-05."""
+        if channel is not None and self._per_channel_beam:
+            b = self._per_channel_beam.get(int(channel))
+            if b is not None:
+                return b
+        return self.beam
+
+    @property
+    def has_per_channel_beam(self) -> bool:
+        return bool(self._per_channel_beam)
 
     @staticmethod
     def _is_celestial_ctype(ctype: str) -> bool:
@@ -154,7 +224,17 @@ class ScientificFitsDataset:
     @staticmethod
     def squeeze_to_3d(data: np.ndarray) -> np.ndarray:
         arr = np.squeeze(data)
+        # np.squeeze already dropped all degenerate (size-1) axes. If we still have
+        # >3 dims, a *non-degenerate* extra axis remains (e.g. a real multi-plane
+        # STOKES/FREQ axis): taking arr[0] keeps only plane 0 with no guarantee it
+        # is Stokes I (R-10). Warn loudly rather than silently picking a plane.
         while arr.ndim > 3:
+            logger.warning(
+                "squeeze_to_3d: dropping a non-degenerate leading axis of size %d "
+                "(keeping index 0 only), remaining shape %s; if this is a STOKES "
+                "axis the plane may not be Stokes I.",
+                arr.shape[0], arr.shape,
+            )
             arr = arr[0]
         return arr
 
@@ -171,8 +251,94 @@ class ScientificFitsDataset:
             entries.append(label)
         return f"Collapsed axes: {', '.join(entries)}" if entries else ""
 
+    def _rest_freq_hz(self) -> float | None:
+        """RESTFRQ / RESTFREQ in Hz, or None when the header carries neither.
+
+        Both spellings are in the wild (RESTFRQ is the FITS standard, RESTFREQ
+        the older AIPS form). A non-positive value means "not set" as surely as
+        a missing card, so it is reported as None rather than passed on to a
+        client that would divide by it.
+        """
+        for key in ("RESTFRQ", "RESTFREQ"):
+            value = self.header.get(key)
+            if value is None:
+                continue
+            try:
+                hz = float(value)
+            except (TypeError, ValueError):
+                continue
+            if hz > 0.0:
+                return hz
+        return None
+
     def _axis_float(self, key: str, default: float = 0.0) -> float:
         return float(self.header.get(key, default))
+
+    def _cdelt(self, axis: int) -> float:
+        """Degrees (or native units) per pixel along `axis`, CD matrix included.
+
+        ``CDELT`` is optional in FITS: a header may express the whole linear
+        transformation as a ``CD`` matrix instead, and GLIMPSE mosaics — and so
+        every VLKB cutout of one — do exactly that. Reading only ``CDELT`` gave
+        those images a scale of 1.0 **degree** per pixel, which is not a small
+        error: a 0.6° cutout was placed across 1800° of longitude, the axes were
+        labelled with numbers near -3861, and every catalogue query built from
+        those corners asked the VLKB about a region that does not exist. That is
+        the "the coordinates are wrong and compact sources find nothing" pair;
+        they are one defect.
+
+        For the celestial axes the scale of axis *j* is the norm of **column j**
+        of the matrix, not its diagonal element — a 90°-rotated field has zeros
+        on the diagonal and perfectly square pixels. The sign is the orientation
+        and has to be carried: a negative determinant means the longitude axis
+        runs backwards, which is the usual case for sky images.
+        """
+        def keyword(name: str) -> float | None:
+            raw = self.header.get(name)
+            if raw is None:
+                return None
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                return None
+            return value if np.isfinite(value) and value != 0.0 else None
+
+        def cd(i: int, j: int) -> float | None:
+            raw = self.header.get(f"CD{i}_{j}")
+            if raw is None:
+                return None
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                return None
+            return value if np.isfinite(value) else None
+
+        # When both are written the CD matrix wins, which is what astropy does
+        # and so what the rest of this class already assumes. A header carrying
+        # both is malformed — the standard makes them exclusive — but they exist,
+        # and agreeing with the WCS object beside us matters more than agreeing
+        # with the keyword that happens to be read first.
+        if axis in (1, 2):
+            matrix = [[cd(i, j) for j in (1, 2)] for i in (1, 2)]
+            if any(element is not None for row in matrix for element in row):
+                m = [[element or 0.0 for element in row] for row in matrix]
+                scale = float(np.hypot(m[0][axis - 1], m[1][axis - 1]))
+                if scale > 0.0:
+                    determinant = m[0][0] * m[1][1] - m[0][1] * m[1][0]
+                    # Convention: the handedness flip is attributed to axis 1,
+                    # which is how a negative CDELT1 is written when CDELT is.
+                    if axis == 1 and determinant < 0.0:
+                        return -scale
+                    return scale
+
+        written = keyword(f"CDELT{axis}")
+        if written is not None:
+            return written
+
+        diagonal = cd(axis, axis)
+        if diagonal is not None and diagonal != 0.0:
+            return diagonal
+        return 1.0
 
     def _wcs_ref_pixel_sky(self, pix_x: float, pix_y: float) -> list[float] | None:
         """Return [lon, lat] in degrees (native WCS frame) for a 0-indexed pixel via astropy."""
@@ -219,7 +385,7 @@ class ScientificFitsDataset:
             eff2 = float(sky_p1y[1] - sky_ref[1])
             if not (np.isfinite(eff1) and np.isfinite(eff2)):
                 return None
-            return [eff1, eff2, float(self._axis_float("CDELT3", 1.0))]
+            return [eff1, eff2, self._cdelt(3)]
         except Exception as exc:
             logger.warning("[fits] effective_cdelt failed for path=%s: %s", self.path, exc)
             return None
@@ -250,8 +416,37 @@ class ScientificFitsDataset:
                 freq_axes.append(axis)
         return bool(time_axes) and bool(freq_axes)
 
+    def _file_size_bytes_safe(self) -> int:
+        """Return the dataset file size in bytes, or 0 if unreadable.
+
+        ``self.path`` is a string; we use ``os.path.getsize`` rather than
+        a Path method to avoid AttributeError on non-Path inputs and to
+        keep the call cheap. Errors (file missing, race with deletion)
+        degrade to 0 — the recommended_load_mode falls back to
+        ``auto_full`` in that case, matching legacy behaviour.
+        """
+        import os as _os
+        try:
+            return int(_os.path.getsize(self.path))
+        except (OSError, TypeError):
+            return 0
+
+    def _full_res_threshold_bytes(self) -> int:
+        """Default 4 GiB; override with VISIVO_FULL_RES_THRESHOLD_BYTES.
+
+        At/above this size the client is told to default to preview-only
+        and let the user opt explicitly into full-resolution download
+        (or ROI crop). For cubes well below this threshold the legacy
+        auto-full-load path is preserved unchanged.
+        """
+        import os as _os
+        return int(_os.environ.get(
+            "VISIVO_FULL_RES_THRESHOLD_BYTES",
+            str(4 * 1024 ** 3),
+        ))
+
     def geometry_metadata(self) -> dict[str, Any]:
-        spacing = [self._axis_float("CDELT1", 1.0), self._axis_float("CDELT2", 1.0), self._axis_float("CDELT3", 1.0)]
+        spacing = [self._cdelt(1), self._cdelt(2), self._cdelt(3)]
         origin = [
             self._axis_float("CRVAL1") - spacing[0] * (self._axis_float("CRPIX1", 1.0) - 1.0),
             self._axis_float("CRVAL2") - spacing[1] * (self._axis_float("CRPIX2", 1.0) - 1.0),
@@ -294,11 +489,17 @@ class ScientificFitsDataset:
             "wcs_sanitized_axes": list(self.wcs_sanitized_axes),
             "spectral_axis_type": spectral_axis_type,
             "spectral_axis_unit": spectral_axis_unit,
+            # Rest frequency of the observed transition, in Hz. Already read from
+            # the header by the line-fit path (compute/spectral.py); exposed here
+            # so a client can place a spectral-line list on a VELOCITY axis, which
+            # is impossible without it.
+            "rest_freq_hz": self._rest_freq_hz(),
             "width": width,
             "height": height,
             "depth": depth,
             "spacing": spacing,
             "origin": origin,
+            "bunit": self.bunit,
             "ctype": [str(self.header.get(f"CTYPE{i}", "")) for i in range(1, 4)],
             "cunit": [str(self.header.get(f"CUNIT{i}", "")) for i in range(1, 4)],
             "crval": [self._axis_float(f"CRVAL{i}") for i in range(1, 4)],
@@ -318,11 +519,48 @@ class ScientificFitsDataset:
             "beam_major": self.beam.major,
             "beam_minor": self.beam.minor,
             "beam_pa": self.beam.pa,
+            # File-size aware loading policy (added for Pattern B / SDC2).
+            # Client reads ``recommended_load_mode`` to decide whether to
+            # auto-fetch full-resolution data or stay in preview-only mode
+            # and ask the user explicitly. Threshold is configurable via
+            # VISIVO_FULL_RES_THRESHOLD_BYTES; the default 4 GiB is
+            # empirically the size above which a 16 GB-RAM laptop starts
+            # thrashing on VTK volume rendering of an HI cube.
+            #
+            # NOTE: ``self.path`` is a string (``str(Path(path))``), not a
+            # Path. We use ``os.path.getsize`` to avoid an AttributeError.
+            "file_size_bytes": self._file_size_bytes_safe(),
+            "full_res_threshold_bytes": self._full_res_threshold_bytes(),
+            "recommended_load_mode": (
+                "preview_only"
+                if self._file_size_bytes_safe() >= self._full_res_threshold_bytes()
+                else "auto_full"
+            ),
         }
+
+    # FITS CTYPE prefixes that denote a spectral axis (frequency, velocity,
+    # wavelength, energy, …) per FITS WCS Paper III.
+    # SPECLNMF is not in Paper III: it is what Obit MFImage writes for the
+    # per-sub-band frequency axis of a wide-band image, and it is what every
+    # MeerKAT MGCLS cube carries. Without it such a cube only finds its spectral
+    # axis through the positional fallback below, which is wrong for any cube
+    # whose spectral axis is not last.
+    _SPECTRAL_CTYPE_PREFIXES = (
+        "FREQ", "ENER", "WAVN", "VRAD", "WAVE", "VOPT", "ZOPT",
+        "AWAV", "VELO", "BETA", "FELO", "SPECLNMF",
+    )
 
     def cube_numpy_spectral_fits_axis(self) -> int:
         if len(self.active_axes) < 3:
             raise ValueError("Scientific cube helpers require at least three active FITS axes.")
+        # Prefer the axis whose CTYPE actually names a spectral coordinate, so
+        # transposed cubes (spectral not in the conventional 3rd slot) are
+        # handled correctly. Fall back to the last active axis — the usual
+        # position — when no CTYPE matches, preserving prior behaviour.
+        for axis in self.active_axes:
+            ctype = str(self.header.get(f"CTYPE{axis}", "")).strip().upper()
+            if ctype.startswith(self._SPECTRAL_CTYPE_PREFIXES):
+                return axis
         return self.active_axes[-1]
 
     def _linear_axis_coordinates(self, fits_axis: int, start: int, end: int) -> np.ndarray:
@@ -415,12 +653,35 @@ class ScientificFitsDataset:
             )
             coordinates = self._linear_axis_coordinates(spectral_fits_axis, channel_start, channel_end)
 
-        axis_type = axis_types[spectral_world_index] if spectral_world_index < len(axis_types) else ""
+        # The IVOA physical type (e.g. "em.freq", "spect.dopplerVeloc.radio").
+        # Kept as a separate field; ``axis_type`` itself stays the FITS CTYPE so
+        # the value is consistent with the WCS-degraded code paths above and
+        # with what the desktop client / moment metadata consumers expect.
+        axis_physical_type = axis_types[spectral_world_index] if spectral_world_index < len(axis_types) else ""
+
+        # astropy normalises world units to SI (e.g. a "km/s" header axis comes
+        # back as "m.s**-1", with pixel_to_world_values in m/s). Radio data is
+        # authored and displayed in the header unit (km/s), so keep the header
+        # CUNIT and convert the WCS coordinates *into* it — otherwise axis_unit
+        # and the coordinate scale would disagree by 1000× and moment M1/M2
+        # would be reported in the wrong unit. FREQ cubes (header already Hz)
+        # are unaffected: source and target unit match, so nothing is rescaled.
+        world_unit = ""
         if hasattr(self.wcs, "world_axis_units") and spectral_world_index < len(self.wcs.world_axis_units):
-            axis_unit = self.wcs.world_axis_units[spectral_world_index] or axis_unit
+            world_unit = self.wcs.world_axis_units[spectral_world_index] or ""
+        if world_unit and axis_unit and world_unit != axis_unit:
+            try:
+                import astropy.units as u
+                coordinates = (coordinates * u.Unit(world_unit)).to(u.Unit(axis_unit)).value
+            except Exception:
+                # Header CUNIT not convertible to the WCS unit — trust the WCS.
+                axis_unit = world_unit
+        elif not axis_unit:
+            axis_unit = world_unit
         return {
             "coordinates": coordinates,
-            "axis_type": axis_type or axis_label,
+            "axis_type": axis_label,
+            "axis_physical_type": axis_physical_type,
             "axis_unit": axis_unit,
             "axis_label": axis_label,
             "fits_axis": spectral_fits_axis,
@@ -428,11 +689,12 @@ class ScientificFitsDataset:
         }
 
     def spatial_pixel_scale_arcsec(self) -> float:
-        """Return the mean spatial pixel scale in arcseconds.
-
-        Uses astropy.wcs.utils.proj_plane_pixel_scales on the celestial
-        sub-WCS when available (handles rotated and skewed projections).
-        Falls back to |CDELT1| × 3600 in degrees when WCS is not usable.
+        """Representative LINEAR spatial pixel scale in arcseconds (mean of the two
+        celestial axis scales) — for lengths: aperture radii, box sizes, fitted
+        FWHM, PV path length, ℓ. For the pixel SOLID ANGLE (flux / beam-area /
+        N_HI / M_HI) use ``spatial_pixel_area_arcsec2()`` instead, which is exact
+        even for skewed WCS. Uses proj_plane_pixel_scales on the celestial
+        sub-WCS; falls back to |CDELT1| × 3600 when WCS is unusable.
         """
         if self.wcs is not None:
             try:
@@ -440,14 +702,29 @@ class ScientificFitsDataset:
                 celestial = self.wcs.celestial
                 if celestial is not None and celestial.pixel_n_dim >= 2:
                     scales_deg = proj_plane_pixel_scales(celestial)
-                    # proj_plane_pixel_scales returns values in the same units
-                    # as the WCS axes; celestial sub-WCS always has angular units
-                    # (degrees by default from astropy).
                     return float(np.mean(np.abs(scales_deg))) * 3600.0
             except Exception as exc:
-                logger.warning("[fits] proj_plane_pixel_scales failed for path=%s: %s. Using CDELT1 fallback.", self.path, exc)
-        cdelt1_deg = abs(float(self.header.get("CDELT1", 1.0)))
-        return cdelt1_deg * 3600.0
+                logger.warning("[fits] proj_plane_pixel_scales failed for path=%s: %s. Using CDELT/CD fallback.", self.path, exc)
+        return abs(self._cdelt(1)) * 3600.0
+
+    def spatial_pixel_area_arcsec2(self) -> float:
+        """EXACT pixel solid angle in arcsec² — the quantity flux/N_HI/M_HI need.
+
+        Uses astropy ``proj_plane_pixel_area`` on the celestial sub-WCS, which is
+        the true parallelogram area (|det| of the local CD matrix) and so is
+        correct for non-square AND skewed/rotated pixels. Falls back to
+        the header's own CDELT (or CD matrix) when the WCS is unusable.
+        """
+        if self.wcs is not None:
+            try:
+                from astropy.wcs.utils import proj_plane_pixel_area
+                celestial = self.wcs.celestial
+                if celestial is not None and celestial.pixel_n_dim >= 2:
+                    # Returns deg² for angular-unit WCS.
+                    return float(abs(proj_plane_pixel_area(celestial))) * 3600.0 * 3600.0
+            except Exception as exc:
+                logger.warning("[fits] proj_plane_pixel_area failed for path=%s: %s. Using CDELT fallback.", self.path, exc)
+        return abs(self._cdelt(1)) * abs(self._cdelt(2)) * 3600.0 * 3600.0
 
     # ── Stokes axis detection ─────────────────────────────────────────────────
 

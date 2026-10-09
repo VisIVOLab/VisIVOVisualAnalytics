@@ -80,7 +80,7 @@ StartupDialog::StartupDialog(BackendLauncher *launcher, bool noAutostart, QWidge
     const QString workDir = QDir::home().absoluteFilePath(qApp->applicationName());
     m_settings = new Settings(workDir, this);
 
-    setWindowTitle(u"VisIVO Visual Analytics — Starting"_s);
+    setWindowTitle(u"VisIVO Visual Analytics, Starting"_s);
     setFixedWidth(kDialogWidth);
     setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
 
@@ -292,7 +292,7 @@ void StartupDialog::buildUi()
 
         m_skipBtn = makeButton(u"Skip (no VLKB)"_s, this);
         m_skipBtn->setVisible(false);
-        m_skipBtn->setToolTip(u"Continue without a token — VLKB data access will be unavailable."_s);
+        m_skipBtn->setToolTip(u"Continue without a token, VLKB data access will be unavailable."_s);
         QObject::connect(m_skipBtn, &QPushButton::clicked,
                          this, &StartupDialog::onSkipAuth);
 
@@ -333,7 +333,8 @@ void StartupDialog::beginSequence()
 
     const QString backendUrl  = m_settings->getBackendUrl();
     const QString pythonExe   = m_settings->getPythonLocation();
-    m_launcher->startAsync(backendUrl, pythonExe, m_noAutostart);
+    m_launcher->startAsync(backendUrl, pythonExe, m_noAutostart,
+                           m_settings->getBackendToken());
 }
 
 // ---------------------------------------------------------------------------

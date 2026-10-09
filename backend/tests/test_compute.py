@@ -225,9 +225,27 @@ class TestWorkerMomentMetadata:
 
     def test_freq_cube_m2_metadata(self, freq_cube_path):
         from app.compute import worker_moment
+        # R-03: default order-2 output is the dispersion σ (unit = spectral_unit).
         result = worker_moment(str(freq_cube_path), 2, 0, 31, False, 0.0)
-        # M2 unit = spectral_unit^2
-        assert result["moment_unit"] == "Hz^2"
+        assert result["moment_unit"] == "Hz"
+        # Opting into the variance variant restores σ² and the squared unit.
+        var = worker_moment(str(freq_cube_path), 2, 0, 31, False, 0.0,
+                            moment2_variance=True)
+        assert var["moment_unit"] == "Hz^2"
+
+    def test_m2_dispersion_is_sqrt_of_variance(self, freq_cube_path):
+        """R-03: the default dispersion map must equal sqrt(variance) pixel-wise."""
+        import base64
+        from app.compute import worker_moment
+        disp = worker_moment(str(freq_cube_path), 2, 0, 31, False, 0.0)
+        var = worker_moment(str(freq_cube_path), 2, 0, 31, False, 0.0,
+                            moment2_variance=True)
+        d = np.frombuffer(base64.b64decode(disp["data_base64"]), dtype=np.float32)
+        v = np.frombuffer(base64.b64decode(var["data_base64"]), dtype=np.float32)
+        m = np.isfinite(d) & np.isfinite(v)
+        assert m.any()
+        np.testing.assert_allclose(d[m], np.sqrt(np.maximum(v[m], 0.0)),
+                                   rtol=1e-5, atol=1e-4)
 
     @pytest.mark.parametrize("order", [6, 8, 10])
     def test_intensity_moment_unit_equals_bunit(self, freq_cube_path, order):
@@ -245,8 +263,12 @@ class TestWorkerMomentMetadata:
 
     def test_vrad_cube_m2_unit(self, vrad_cube_path):
         from app.compute import worker_moment
+        # R-03: dispersion default → km/s (not km/s^2).
         result = worker_moment(str(vrad_cube_path), 2, 0, 31, False, 0.0)
-        assert result["moment_unit"] == "km/s^2"
+        assert result["moment_unit"] == "km/s"
+        var = worker_moment(str(vrad_cube_path), 2, 0, 31, False, 0.0,
+                            moment2_variance=True)
+        assert var["moment_unit"] == "(km/s)^2"
 
 
 class TestWorkerMomentWCSEdgeCases:
@@ -364,6 +386,56 @@ class TestWorkerCubeSaveSubregion:
             )
 
 
+class TestWorkerCubeMask:
+    """3-D masking: blank inside/outside a box, full dims + WCS preserved."""
+
+    def test_blank_inside_nans_box_keeps_rest(self, freq_cube_path, tmp_path):
+        from app.compute import worker_cube_mask
+        from astropy.io import fits
+        import numpy as np
+        out = tmp_path / "mask_in.fits"
+        with fits.open(str(freq_cube_path)) as src:
+            src_shape = np.squeeze(src[0].data).shape   # (nz, ny, nx)
+            src_crpix1 = src[0].header["CRPIX1"]
+        result = worker_cube_mask(
+            str(freq_cube_path), str(out), 2, 5, 2, 5, 2, 5, "blank_inside")
+        # Full dimensions preserved (no crop).
+        assert (result["depth"], result["height"], result["width"]) == src_shape
+        with fits.open(str(out)) as hdul:
+            data = np.squeeze(hdul[0].data)
+            assert data.shape == src_shape
+            # The box is all-NaN; a voxel outside the box is finite.
+            assert np.all(np.isnan(data[2:6, 2:6, 2:6]))
+            assert np.isfinite(data[0, 0, 0])
+            # WCS kept verbatim (no crop shift).
+            assert hdul[0].header["CRPIX1"] == src_crpix1
+
+    def test_blank_outside_isolates_box(self, freq_cube_path, tmp_path):
+        from app.compute import worker_cube_mask
+        from astropy.io import fits
+        import numpy as np
+        out = tmp_path / "mask_out.fits"
+        worker_cube_mask(
+            str(freq_cube_path), str(out), 3, 7, 3, 7, 3, 7, "blank_outside")
+        with fits.open(str(out)) as hdul:
+            data = np.squeeze(hdul[0].data)
+            # Outside the box is NaN; inside is finite (matches the source values).
+            assert np.isnan(data[0, 0, 0])
+            assert np.all(np.isfinite(data[3:8, 3:8, 3:8]))
+
+    def test_mask_bad_mode_raises(self, freq_cube_path, tmp_path):
+        from app.compute import worker_cube_mask
+        with pytest.raises(ValueError):
+            worker_cube_mask(str(freq_cube_path), str(tmp_path / "bad.fits"),
+                             0, 5, 0, 5, 0, 5, "nonsense")
+
+    def test_mask_invalid_box_raises(self, freq_cube_path, tmp_path):
+        from app.compute import worker_cube_mask
+        with pytest.raises(ValueError):
+            worker_cube_mask(str(freq_cube_path), str(tmp_path / "bad.fits"),
+                             10, 3, 0, 5, 0, 5, "blank_inside")   # x0 > x1
+
+
 class TestWorkerMomentSaveFits:
     """Moment FITS persistence: 2-D output with celestial WCS + BUNIT."""
 
@@ -439,7 +511,7 @@ class TestMomentUnitHelper:
 
     def test_m2(self):
         from app.compute import _moment_unit
-        assert _moment_unit(2, "Jy/beam", "km/s") == "km/s^2"
+        assert _moment_unit(2, "Jy/beam", "km/s") == "(km/s)^2"
 
     def test_m2_no_spectral(self):
         from app.compute import _moment_unit
@@ -561,19 +633,23 @@ def _numpy_m2(cube: np.ndarray, spectral_values: np.ndarray, valid_mask: np.ndar
 
 def test_moment1_numba_matches_numpy() -> None:
     """Numba M1 result must match numpy M1 within rtol=1e-4 (float32 precision)."""
-    import app.compute as _c
+    import app.compute.moment as _c
 
     if not _c._NUMBA_OK:
         pytest.skip("numba not installed")
 
     rng = np.random.default_rng(11)
     cube = (rng.standard_normal((16, 24, 24)) * 2 + 5).astype(np.float32)
-    spectral_values = np.linspace(1.0e9, 1.0016e9, 16)
+    # R-04: use a genuinely NON-uniform spectral axis so the I·Δv weighting is
+    # actually exercised (a uniform axis would hide a raw-I vs I·Δv difference).
+    spectral_values = np.sort(rng.uniform(1.0e9, 1.0016e9, 16))
+    delta = _c._integrated_spacing(np.asarray(spectral_values, dtype=np.float64))
     valid_mask = np.isfinite(cube)
 
     numba_result = _c._moment1_numba(
         np.ascontiguousarray(cube, dtype=np.float32),
         np.ascontiguousarray(spectral_values, dtype=np.float64),
+        np.ascontiguousarray(delta, dtype=np.float64),
         np.ascontiguousarray(valid_mask, dtype=np.bool_),
     ).astype(np.float32)
     numpy_result = _numpy_m1(cube, spectral_values, valid_mask)
@@ -588,19 +664,22 @@ def test_moment1_numba_matches_numpy() -> None:
 
 def test_moment2_numba_matches_numpy() -> None:
     """Numba M2 result must match numpy M2 within rtol=1e-4."""
-    import app.compute as _c
+    import app.compute.moment as _c
 
     if not _c._NUMBA_OK:
         pytest.skip("numba not installed")
 
     rng = np.random.default_rng(13)
     cube = (rng.standard_normal((16, 24, 24)) * 2 + 5).astype(np.float32)
-    spectral_values = np.linspace(1.0e9, 1.0016e9, 16)
+    # R-04: non-uniform axis to exercise the I·Δv weighting.
+    spectral_values = np.sort(rng.uniform(1.0e9, 1.0016e9, 16))
+    delta = _c._integrated_spacing(np.asarray(spectral_values, dtype=np.float64))
     valid_mask = np.isfinite(cube)
 
     numba_result = _c._moment2_numba(
         np.ascontiguousarray(cube, dtype=np.float32),
         np.ascontiguousarray(spectral_values, dtype=np.float64),
+        np.ascontiguousarray(delta, dtype=np.float64),
         np.ascontiguousarray(valid_mask, dtype=np.bool_),
     ).astype(np.float32)
     numpy_result = _numpy_m2(cube, spectral_values, valid_mask)
@@ -615,7 +694,7 @@ def test_moment2_numba_matches_numpy() -> None:
 
 def test_moment1_fallback_no_numba() -> None:
     """With _NUMBA_OK=False the numpy path is used and no crash occurs."""
-    import app.compute as _c
+    import app.compute.moment as _c
 
     rng = np.random.default_rng(17)
     cube = (rng.standard_normal((8, 16, 16)) * 2 + 5).astype(np.float32)
@@ -640,7 +719,7 @@ def test_moment1_fallback_no_numba() -> None:
 
 def test_dask_moment0_matches_numpy() -> None:
     """Dask M0 result must match numpy M0 within rtol=1e-5 on a small in-memory cube."""
-    import app.compute as _c
+    import app.compute.moment as _c
 
     if not _c._DASK_OK:
         pytest.skip("dask not installed")
@@ -705,7 +784,7 @@ def test_dask_moment0_matches_numpy() -> None:
 
 def test_dask_fallback_when_unavailable() -> None:
     """When _DASK_OK=False the regular numpy path is used without error."""
-    import app.compute as _c
+    import app.compute.moment as _c
 
     rng = np.random.default_rng(99)
     cube = (rng.standard_normal((8, 16, 16)) * 2 + 5).astype(np.float32)
@@ -721,3 +800,370 @@ def test_dask_fallback_when_unavailable() -> None:
         assert np.isfinite(result).any(), "All values NaN — fallback failed"
     finally:
         _c._DASK_OK = original
+
+
+# ── Out-of-core (streaming) moments: M0/M1/M2 must match the in-memory result ──
+def test_moment_streaming_matches_in_memory():
+    """Streamed-slab M0/M1/M2 equal the in-memory map (uniform axis)."""
+    import numpy as np
+    import app.compute.moment as M
+    from app.compute.moment import _moment_map_from_array, _moment_map_streaming
+
+    rng = np.random.default_rng(3)
+    nz, ny, nx = 50, 12, 10
+    idx = np.arange(nz)
+    cube = np.zeros((nz, ny, nx), dtype=np.float32)
+    for j in range(ny):
+        for i in range(nx):
+            amp = 0.0 if i == 0 else rng.uniform(1.0, 5.0)   # column 0 = empty → blank path
+            vc = rng.uniform(10.0, 40.0)
+            sig = rng.uniform(4.0, 10.0)
+            cube[:, j, i] = amp * np.exp(-((idx - vc) ** 2) / (2.0 * sig ** 2))
+    cube += np.abs(rng.normal(0.0, 0.02, cube.shape)).astype(np.float32)  # small positive noise
+
+    # Two uniform axes: velocity (small coords) and — crucially for M2 numerical
+    # stability — a FREQ axis with ~1e11 offsets, which breaks the naive
+    # ΣI·v² − M1² identity but not the two-pass differencing.
+    velocity_axis = np.linspace(-100.0, 100.0, nz)
+    freq_axis = 1.15e11 + idx * 1.0e6
+
+    orig_slab = M._MOMENT_SLAB_CHANNELS
+    M._MOMENT_SLAB_CHANNELS = 7                    # force many slabs
+    try:
+        for coords in (velocity_axis, freq_axis):
+            for mask_enabled, thr in [(False, 0.0), (True, 0.5)]:
+                for order in (0, 1, 2):
+                    ref = _moment_map_from_array(cube, order, coords, mask_enabled, thr)
+                    got = _moment_map_streaming(cube, 0, nz - 1, order, coords, mask_enabled, thr)
+                    assert got.shape == ref.shape
+                    assert np.array_equal(np.isnan(got), np.isnan(ref)), \
+                        f"NaN pattern mismatch order={order} mask={mask_enabled}"
+                    fin = ~np.isnan(got)
+                    # M2 on a 1e11 FREQ axis needs a generous relative tolerance.
+                    rtol = 1e-3 if (order == 2 and coords[0] > 1e6) else 1e-4
+                    assert np.allclose(got[fin], ref[fin], rtol=rtol, atol=1e-4), \
+                        f"value mismatch order={order} mask={mask_enabled}"
+
+        # Non-zero channel start: streaming over data[z0:z1] must equal the
+        # in-memory result on the pre-sliced sub-cube.
+        za, zb = 6, 41
+        for order in (0, 1, 2):
+            ref = _moment_map_from_array(cube[za:zb + 1], order, velocity_axis[za:zb + 1], False, 0.0)
+            got = _moment_map_streaming(cube, za, zb, order, velocity_axis[za:zb + 1], False, 0.0)
+            fin = ~np.isnan(got)
+            assert np.array_equal(np.isnan(got), np.isnan(ref)), f"z0!=0 nan order={order}"
+            assert np.allclose(got[fin], ref[fin], rtol=1e-4, atol=1e-4), f"z0!=0 order={order}"
+    finally:
+        M._MOMENT_SLAB_CHANNELS = orig_slab
+
+
+def test_worker_moment_streaming_branch(tmp_path, monkeypatch):
+    """Forcing the streaming branch (threshold 0) yields the same map as the
+    in-memory path, on a realistic positive-emission cube (ΣI > 0 everywhere, so
+    all moment paths agree — the ambiguous ΣI ≤ 0 case is covered by the direct
+    test above)."""
+    import numpy as np
+    from astropy.io import fits
+    import app.compute.moment as M
+    from app.compute import worker_moment
+
+    nz, ny, nx = 40, 12, 12
+    rng = np.random.default_rng(11)
+    zc = np.arange(nz)
+    data = np.zeros((nz, ny, nx), dtype=np.float32)
+    for j in range(ny):
+        for i in range(nx):
+            c = rng.uniform(12.0, 28.0)
+            amp = rng.uniform(2.0, 6.0)
+            sig = rng.uniform(3.0, 7.0)
+            data[:, j, i] = amp * np.exp(-((zc - c) ** 2) / (2.0 * sig ** 2))
+    data += 0.5 + np.abs(rng.normal(0.0, 0.05, data.shape)).astype(np.float32)  # positive baseline
+    p = tmp_path / "pos_cube.fits"
+    hdu = fits.PrimaryHDU(data)
+    h = hdu.header
+    h["CTYPE1"], h["CTYPE2"], h["CTYPE3"] = "RA---SIN", "DEC--SIN", "VRAD"
+    h["CRVAL1"], h["CRVAL2"], h["CRVAL3"] = 83.8, -5.4, 0.0
+    h["CRPIX1"], h["CRPIX2"], h["CRPIX3"] = nx / 2.0, ny / 2.0, 1.0
+    h["CDELT1"], h["CDELT2"], h["CDELT3"] = -1e-3, 1e-3, 1000.0
+    h["CUNIT3"] = "m/s"
+    hdu.writeto(p, overwrite=True)
+
+    in_mem = {o: _decode_f32(worker_moment(str(p), o, 0, nz - 1, False, 0.0)["data_base64"])
+              for o in (0, 1, 2)}
+    monkeypatch.setattr(M, "_MOMENT_STREAM_BYTES", 0)   # force streaming for any size
+    for o in (0, 1, 2):
+        b = _decode_f32(worker_moment(str(p), o, 0, nz - 1, False, 0.0)["data_base64"])
+        a = in_mem[o]
+        assert a.shape == b.shape
+        assert np.array_equal(np.isnan(a), np.isnan(b)), f"nan pattern order {o}"
+        fin = np.isfinite(a) & np.isfinite(b)
+        assert np.allclose(a[fin], b[fin], rtol=1e-4, atol=1e-4), f"order {o}"
+
+
+def test_moment_m1_physical_range_guard_and_auto_mask(tmp_path):
+    """On a noisy cube with mask OFF, unmasked M1 must be blanked outside the
+    velocity axis (no superluminal values) instead of blowing up; and the
+    auto-threshold path must yield a physical, better-masked map."""
+    import numpy as np
+    from astropy.io import fits
+    from app.compute import worker_moment
+    from app.compute.moment import _auto_mask_threshold
+
+    nz, ny, nx = 64, 24, 24
+    rng = np.random.default_rng(7)
+    zc = np.arange(nz)
+    # Faint centred emission blob + zero-mean noise (produces ΣI→0 pixels).
+    data = rng.normal(0.0, 0.01, (nz, ny, nx)).astype(np.float32)
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    disk = ((yy - ny / 2) ** 2 + (xx - nx / 2) ** 2) < (ny / 3) ** 2
+    for j in range(ny):
+        for i in range(nx):
+            if disk[j, i]:
+                data[:, j, i] += 1.0 * np.exp(-((zc - 32) ** 2) / (2.0 * 6.0 ** 2))
+    p = tmp_path / "noisy_cube.fits"
+    hdu = fits.PrimaryHDU(data)
+    h = hdu.header
+    h["CTYPE1"], h["CTYPE2"], h["CTYPE3"] = "RA---SIN", "DEC--SIN", "VRAD"
+    h["CRVAL1"], h["CRVAL2"], h["CRVAL3"] = 83.8, -5.4, -320000.0
+    h["CRPIX1"], h["CRPIX2"], h["CRPIX3"] = nx / 2.0, ny / 2.0, 1.0
+    h["CDELT1"], h["CDELT2"], h["CDELT3"] = -1e-3, 1e-3, 10000.0
+    h["CUNIT3"] = "m/s"
+    hdu.writeto(p, overwrite=True)
+
+    vmin, vmax = -320000.0, -320000.0 + (nz - 1) * 10000.0
+
+    # Mask OFF: physical-range guard must bound M1 to the velocity axis.
+    r_off = worker_moment(str(p), 1, 0, nz - 1, False, 0.0, False)
+    m1 = _decode_f32(r_off["data_base64"])
+    fin = np.isfinite(m1)
+    assert fin.any()
+    assert m1[fin].min() >= vmin - 1e-3 and m1[fin].max() <= vmax + 1e-3
+    assert r_off["threshold_used"] is None
+
+    # Auto mask: threshold resolves to ~3σ (≈0.03) and the map stays physical.
+    thr = _auto_mask_threshold(data, 0, nz - 1)
+    assert 0.01 < thr < 0.1
+    r_auto = worker_moment(str(p), 1, 0, nz - 1, True, 0.0, True)
+    m1a = _decode_f32(r_auto["data_base64"])
+    fina = np.isfinite(m1a)
+    assert fina.any()
+    assert m1a[fina].min() >= vmin - 1e-3 and m1a[fina].max() <= vmax + 1e-3
+    assert abs(r_auto["threshold_used"] - thr) < 1e-6
+    # Masking removes noise pixels, so fewer valid pixels than the unmasked map.
+    assert fina.sum() < fin.sum()
+
+
+def test_select_moment_backend_modes(monkeypatch):
+    """VISIVO_DASK_MODE routing: off disables, auto uses local threaded dask
+    only for large jobs, local always, distributed needs a cluster."""
+    import app.dependencies as d
+
+    monkeypatch.setattr(d, "_DASK_SCHEDULER", "")       # no distributed cluster
+    monkeypatch.setattr(d, "_DASK_SYNC_CLIENT", None)
+    monkeypatch.setattr(d, "_DASK_AVAILABLE", True)     # pretend dask.array importable
+    big = 800 * 1024 ** 2
+    small = 8 * 1024 ** 2
+
+    monkeypatch.setattr(d, "_DASK_MODE", "auto")
+    assert d._select_moment_backend(1, small) == (False, None)
+    assert d._select_moment_backend(1, big) == (True, None)
+    assert d._select_moment_backend(7, big) == (False, None)   # order 7 unsupported
+
+    monkeypatch.setattr(d, "_DASK_MODE", "off")
+    assert d._select_moment_backend(1, big) == (False, None)
+
+    monkeypatch.setattr(d, "_DASK_MODE", "local")
+    assert d._select_moment_backend(2, small) == (True, None)  # forced local
+    # 'local' must win even when a distributed cluster is configured/reachable.
+    monkeypatch.setattr(d, "_DASK_SYNC_CLIENT", object())
+    assert d._select_moment_backend(1, big) == (True, None)
+    monkeypatch.setattr(d, "_DASK_SYNC_CLIENT", None)
+
+    monkeypatch.setattr(d, "_DASK_MODE", "distributed")
+    assert d._select_moment_backend(1, big) == (False, None)   # cluster required, none
+
+    # dask.array unavailable → never route to the local threaded path
+    monkeypatch.setattr(d, "_DASK_MODE", "auto")
+    monkeypatch.setattr(d, "_DASK_AVAILABLE", False)
+    assert d._select_moment_backend(1, big) == (False, None)
+
+
+def test_moment_dask_local_matches_worker(tmp_path):
+    """The local threaded dask.array path (dist_client=None) must agree with the
+    in-process worker_moment on a positive-emission cube for every order the
+    dask path supports."""
+    import numpy as np
+    from astropy.io import fits
+    from app.compute import worker_moment
+    from app.compute.moment import _moment_map_dask
+
+    nz, ny, nx = 40, 10, 10
+    rng = np.random.default_rng(3)
+    zc = np.arange(nz)
+    data = np.zeros((nz, ny, nx), dtype=np.float32)
+    for j in range(ny):
+        for i in range(nx):
+            data[:, j, i] = rng.uniform(2.0, 5.0) * np.exp(
+                -((zc - rng.uniform(14, 26)) ** 2) / (2.0 * 5.0 ** 2))
+    data += 0.5  # strictly positive → all moment validity rules agree
+    p = tmp_path / "pos_cube_dask.fits"
+    hdu = fits.PrimaryHDU(data)
+    h = hdu.header
+    h["CTYPE1"], h["CTYPE2"], h["CTYPE3"] = "RA---SIN", "DEC--SIN", "VRAD"
+    h["CRVAL3"], h["CRPIX3"], h["CDELT3"] = 0.0, 1.0, 1000.0
+    h["CUNIT3"] = "m/s"
+    hdu.writeto(p, overwrite=True)
+
+    for order in (0, 1, 2, 6):
+        a = _decode_f32(worker_moment(str(p), order, 0, nz - 1, False, 0.0)["data_base64"])
+        b = _decode_f32(
+            _moment_map_dask(str(p), order, 0, nz - 1, 0.0, False, 64, None)["data_base64"])
+        assert a.shape == b.shape
+        fin = np.isfinite(a) & np.isfinite(b)
+        assert fin.any()
+        assert np.allclose(a[fin], b[fin], rtol=1e-4, atol=1e-4), f"order {order}"
+
+
+# ── worker_image_tile: out-of-core 2-D pyramid tiling ─────────────────────────
+
+
+def _decode_tile(result: dict) -> np.ndarray:
+    """Decode a tile payload (either raw or qt-zlib) into a (h, w) array."""
+    b64 = result["data_base64"]
+    flat = _decode_qt_zlib(b64) if result.get("compression") == "qt-zlib" else _decode_f32(b64)
+    return flat.reshape(result["height"], result["width"])
+
+
+def _write_gradient_image(path: str, h: int, w: int) -> None:
+    from astropy.io import fits
+    # value = row*10000 + col → every pixel is unique, so decimation is checkable
+    data = (np.arange(h)[:, None] * 10000 + np.arange(w)[None, :]).astype(np.float32)
+    fits.PrimaryHDU(data).writeto(path, overwrite=True)
+
+
+def test_image_tile_level0_matches_source(tmp_path):
+    from app.compute import worker_image_tile
+    p = tmp_path / "mosaic.fits"
+    _write_gradient_image(str(p), 3000, 2000)
+
+    r = worker_image_tile(str(p), 0, 0, 0, 256)
+    assert (r["full_width"], r["full_height"]) == (2000, 3000)
+    assert (r["width"], r["height"]) == (256, 256)
+    assert r["level"] == 0 and r["num_levels"] >= 4
+    t = _decode_tile(r)
+    # Top-left block equals the source pixels exactly at level 0.
+    assert t[0, 0] == 0.0 and t[0, 1] == 1.0 and t[1, 0] == 10000.0
+
+
+def test_image_tile_level1_decimates_by_two(tmp_path):
+    from app.compute import worker_image_tile
+    p = tmp_path / "mosaic.fits"
+    _write_gradient_image(str(p), 1024, 1024)
+
+    r = worker_image_tile(str(p), 1, 0, 0, 256)
+    t = _decode_tile(r)
+    # step = 2 → samples columns 0,2,4… and rows 0,2,4…
+    assert t[0, 0] == 0.0 and t[0, 1] == 2.0 and t[1, 0] == 20000.0
+
+
+def test_image_tile_edge_tile_is_clipped(tmp_path):
+    from app.compute import worker_image_tile
+    p = tmp_path / "mosaic.fits"
+    _write_gradient_image(str(p), 500, 2000)
+
+    last_tx = (2000 - 1) // 256  # 7
+    r = worker_image_tile(str(p), 0, last_tx, 0, 256)
+    assert r["width"] == 2000 - last_tx * 256   # 208
+    assert r["height"] == 256
+
+
+def test_image_tile_out_of_range_raises(tmp_path):
+    from app.compute import worker_image_tile
+    p = tmp_path / "mosaic.fits"
+    _write_gradient_image(str(p), 512, 512)
+    with pytest.raises(ValueError, match="out of range"):
+        worker_image_tile(str(p), 0, 999, 0, 256)
+
+
+def test_image_tile_rejects_bad_params(tmp_path):
+    from app.compute import worker_image_tile
+    p = tmp_path / "mosaic.fits"
+    _write_gradient_image(str(p), 512, 512)
+    with pytest.raises(ValueError):
+        worker_image_tile(str(p), -1, 0, 0, 256)
+    with pytest.raises(ValueError):
+        worker_image_tile(str(p), 0, 0, 0, 0)          # tile_size < 1
+    with pytest.raises(ValueError):
+        worker_image_tile(str(p), 0, 0, 0, 99999)      # tile_size > 4096
+
+
+def test_image_tile_num_levels_and_coarsest_fits_one_tile(tmp_path):
+    from app.compute import worker_image_tile
+    from app.compute.cube import _num_pyramid_levels
+    p = tmp_path / "mosaic.fits"
+    _write_gradient_image(str(p), 3000, 2000)
+
+    nl = _num_pyramid_levels(2000, 3000, 256)
+    # At the coarsest level the whole image must fit within one tile.
+    r = worker_image_tile(str(p), nl - 1, 0, 0, 256)
+    assert r["width"] <= 256 and r["height"] <= 256
+    assert r["num_levels"] == nl
+    # A level beyond the advertised range must be rejected (no phantom levels).
+    with pytest.raises(ValueError, match="out of range"):
+        worker_image_tile(str(p), nl, 0, 0, 256)
+
+
+def test_image_tile_is_out_of_core(tmp_path):
+    """The tile read must materialise only the tile, not the full plane."""
+    import tracemalloc
+    from app.compute import worker_image_tile
+    p = tmp_path / "big.fits"
+    # ~48 MB on disk; a full-plane load would dwarf a single 256² tile (256 KB).
+    _write_gradient_image(str(p), 4000, 3000)
+
+    tracemalloc.start()
+    r = worker_image_tile(str(p), 2, 1, 1, 256)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    # A 256² float32 tile is 256 KB; allow generous headroom but far below the
+    # 48 MB full plane — proves the strided read never loaded the whole image.
+    assert peak < 8_000_000, f"tile read used {peak} bytes — not out-of-core"
+    assert r["width"] <= 256 and r["height"] <= 256
+
+
+def test_image_tile_requires_2d(tmp_path):
+    from app.compute import worker_image_tile
+    from astropy.io import fits
+    p = tmp_path / "cube.fits"
+    fits.PrimaryHDU(np.zeros((4, 8, 8), dtype=np.float32)).writeto(str(p), overwrite=True)
+    with pytest.raises(ValueError, match="2D"):
+        worker_image_tile(str(p), 0, 0, 0, 256)
+
+
+def test_image_preview_is_out_of_core(tmp_path):
+    """worker_image_preview must downsample by reading only the decimated pixels
+    from the memmap, never materialising the whole plane, and must match the
+    in-memory _build_preview result exactly."""
+    import tracemalloc
+    from astropy.io import fits
+    from app.compute import worker_image_preview
+    from app.compute.cube import _build_preview
+
+    H, W = 6000, 4000  # 96 MB plane
+    data = (np.arange(H, dtype=np.float32)[:, None] + np.arange(W, dtype=np.float32)[None, :])
+    p = tmp_path / "mosaic.fits"
+    fits.PrimaryHDU(data).writeto(str(p), overwrite=True)
+
+    reference, _ = _build_preview(data, 1536)  # in-memory path
+
+    tracemalloc.start()
+    r = worker_image_preview(str(p), 1536)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert (r["full_width"], r["full_height"]) == (W, H)
+    assert r["is_preview"] is True
+    got = _decode_tile(r).reshape(r["height"], r["width"])
+    assert np.array_equal(got, reference), "OOC preview must match the in-memory downsample"
+    # Peak well under the full plane (H*W*4 bytes) → the whole image was never loaded.
+    assert peak < (H * W * 4) // 3, f"preview used {peak} bytes — not out-of-core"
