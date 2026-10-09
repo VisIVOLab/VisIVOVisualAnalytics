@@ -103,18 +103,22 @@ From: python:3.12-slim
     # on ppc64le from PyPI and we strip them here:
     #
     #   * vtk      — no ppc64le wheel; building from source would take
-    #                ~1 h. The backend uses VTK only inside
-    #                worker_isosurface() with a lazy import, so the
-    #                /v1/cube/isosurface endpoint surfaces a clear "VTK
-    #                not installed" error; every other endpoint works.
+    #                ~1 h. Every VTK import in the backend is function-local,
+    #                so the service starts and the endpoints that do not need
+    #                it work normally. What degrades has grown since this was
+    #                written: isosurface extraction, velocity-field products
+    #                (app/velocity_field.py) and server-side rendering
+    #                (app/render_session/) all import it lazily and will
+    #                report that VTK is missing.
     #
     #   * numba / llvmlite — llvmlite is strict 1:1 with LLVM major and
     #                Debian trixie ships LLVM 19, but no llvmlite release
     #                supports 19 (0.42-0.44 want 14-17, 0.45+ wants 20).
-    #                Backend code in app/compute.py already wraps numba
-    #                imports in try/except: when missing, @njit becomes a
-    #                no-op and prange becomes range, so moment kernels
-    #                run in pure Python (slower but correct). With
+    #                Backend code wraps the numba import in try/except
+    #                (app/compute/moment.py — it was app/compute.py when
+    #                this was written): when missing, @njit becomes a no-op
+    #                and prange becomes range, so moment kernels run in
+    #                pure Python (slower but correct). With
     #                ENABLE_CUPY=1 below, those kernels are bypassed
     #                entirely in favor of the GPU path.
     #
@@ -220,7 +224,23 @@ From: python:3.12-slim
     echo "[%setup] Staging backend source from: $SRC"
     echo "[%setup] Target rootfs: $ROOTFS"
     mkdir -p "$ROOTFS/srv/backend_src"
-    cp -r "$SRC"/. "$ROOTFS/srv/backend_src/"
+    # Stage the application, not the developer's world. A plain `cp -r` of
+    # backend/ carries whatever the host happens to have in there — and the
+    # documented way to build this image is from a working tree, where
+    # backend/.venv is a virtualenv of 1.4 GB that was built for the host's
+    # OS and cannot run in this container anyway. Measured on one checkout:
+    # 2.5 MB of payload inside 1.4 GB of copy, and copied again when /app is
+    # populated from here.
+    #
+    # tar rather than cp: --exclude is honoured by both GNU tar and the
+    # bsdtar macOS ships, and %setup runs on the host, so it may be either.
+    tar -cf - -C "$SRC" \
+        --exclude='./.venv' \
+        --exclude='./.git' \
+        --exclude='*__pycache__*' \
+        --exclude='*.pyc' \
+        --exclude='*.pytest_cache*' \
+        . | tar -xf - -C "$ROOTFS/srv/backend_src/"
     echo "[%setup] Top-level files staged:"
     ls -la "$ROOTFS/srv/backend_src/" | head -20
     if [ ! -f "$ROOTFS/srv/backend_src/requirements.txt" ]; then

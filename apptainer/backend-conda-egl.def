@@ -590,7 +590,23 @@ print('[sanity] Full conda+EGL VTK stack verified.')
         exit 1
     fi
     mkdir -p "$SRC_TGT"
-    cp -r "$SRC_HOST"/. "$SRC_TGT/"
+    # Stage the application, not the developer's world. A plain `cp -r` of
+    # backend/ carries whatever the host happens to have in there — and the
+    # documented way to build this image is from a working tree, where
+    # backend/.venv is a virtualenv of 1.4 GB that was built for the host's
+    # OS and cannot run in this container anyway. Measured on one checkout:
+    # 2.5 MB of payload inside 1.4 GB of copy, and copied again when /app is
+    # populated from here.
+    #
+    # tar rather than cp: --exclude is honoured by both GNU tar and the
+    # bsdtar macOS ships, and %setup runs on the host, so it may be either.
+    tar -cf - -C "$SRC_HOST" \
+        --exclude='./.venv' \
+        --exclude='./.git' \
+        --exclude='*__pycache__*' \
+        --exclude='*.pyc' \
+        --exclude='*.pytest_cache*' \
+        . | tar -xf - -C "$SRC_TGT"
 
 %runscript
     #!/bin/bash
