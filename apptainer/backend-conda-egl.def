@@ -226,6 +226,36 @@ From: condaforge/mambaforge:latest
     $INSTALL_CMD -n base -c conda-forge fastapi uvicorn-standard
     echo "[backend-conda-egl.def] Stage 4b — Astronomy analysis"
     $INSTALL_CMD -n base -c conda-forge photutils reproject scikit-image
+    echo "[backend-conda-egl.def] Stage 4b-bis — Source finding (SoFiA-2)"
+    # conda-forge builds sofia-2 for linux-64 ONLY — there is no ppc64le and
+    # no aarch64 package (checked on anaconda.org). So an unconditional
+    # `conda install sofia-2` fails the build on Power9, which is one of the
+    # architectures these images target.
+    #
+    # Try the package; fall back to the source build, which is cheap because
+    # SoFiA-2 is plain C with its own compile.sh; and if neither works, do NOT
+    # fail the image. The backend already answers "SoFiA-2 is not installed on
+    # the server" for that one tool and everything else keeps working — an
+    # image that builds without source finding beats an image that does not
+    # build.
+    if $INSTALL_CMD -n base -c conda-forge sofia-2; then
+        echo "[backend-conda-egl.def] SoFiA-2 installed from conda-forge"
+    else
+        echo "[backend-conda-egl.def] no conda-forge sofia-2 for this architecture — building from source"
+        $INSTALL_CMD -n base -c conda-forge c-compiler make git || true
+        if git clone --depth 1 https://github.com/SoFiA-Admin/SoFiA-2 /tmp/SoFiA-2 \
+           && ( cd /tmp/SoFiA-2 && ./compile.sh -fopenmp ) \
+           && cp /tmp/SoFiA-2/sofia /opt/conda/bin/; then
+            echo "[backend-conda-egl.def] SoFiA-2 built from source"
+        else
+            echo "[backend-conda-egl.def] WARN: SoFiA-2 unavailable — source finding will be disabled"
+        fi
+        rm -rf /tmp/SoFiA-2
+    fi
+    # resolve_sofia_bin() accepts either name; provide both.
+    if [ -x /opt/conda/bin/sofia ] && [ ! -e /opt/conda/bin/sofia2 ]; then
+        ln -s /opt/conda/bin/sofia /opt/conda/bin/sofia2
+    fi
     echo "[backend-conda-egl.def] Stage 4c — Astroquery"
     $INSTALL_CMD -n base -c conda-forge astroquery
     echo "[backend-conda-egl.def] Stage 4d — Distributed compute"
@@ -590,7 +620,23 @@ print('[sanity] Full conda+EGL VTK stack verified.')
         exit 1
     fi
     mkdir -p "$SRC_TGT"
-    cp -r "$SRC_HOST"/. "$SRC_TGT/"
+    # Stage the application, not the developer's world. A plain `cp -r` of
+    # backend/ carries whatever the host happens to have in there — and the
+    # documented way to build this image is from a working tree, where
+    # backend/.venv is a virtualenv of 1.4 GB that was built for the host's
+    # OS and cannot run in this container anyway. Measured on one checkout:
+    # 2.5 MB of payload inside 1.4 GB of copy, and copied again when /app is
+    # populated from here.
+    #
+    # tar rather than cp: --exclude is honoured by both GNU tar and the
+    # bsdtar macOS ships, and %setup runs on the host, so it may be either.
+    tar -cf - -C "$SRC_HOST" \
+        --exclude='./.venv' \
+        --exclude='./.git' \
+        --exclude='*__pycache__*' \
+        --exclude='*.pyc' \
+        --exclude='*.pytest_cache*' \
+        . | tar -xf - -C "$SRC_TGT"
 
 %runscript
     #!/bin/bash
