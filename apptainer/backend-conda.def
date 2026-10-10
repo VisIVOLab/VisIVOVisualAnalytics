@@ -211,13 +211,32 @@ From: condaforge/mambaforge:latest
         scikit-image
 
     echo "[backend-conda.def] Stage 4b-bis — Source finding (SoFiA-2)"
-    # conda-forge ships SoFiA-2 (feedstock 'sofia-2'); the binary is installed
-    # as 'sofia'. The backend's resolve_sofia_bin() accepts 'sofia' or 'sofia2',
-    # but we add a 'sofia2' alias too for tools/scripts that expect that name.
-    # If the conda package is ever unavailable on a target arch, fall back to a
-    # source build:  git clone https://github.com/SoFiA-Admin/SoFiA-2 && \
-    #                cd SoFiA-2 && ./compile.sh -fopenmp && cp sofia /opt/conda/bin/
-    $INSTALL_CMD -n base -c conda-forge sofia-2
+    # conda-forge builds sofia-2 for linux-64 ONLY — there is no ppc64le and
+    # no aarch64 package (checked on anaconda.org). So an unconditional
+    # `conda install sofia-2` fails the build on Power9, which is one of the
+    # architectures these images target.
+    #
+    # Try the package; fall back to the source build, which is cheap because
+    # SoFiA-2 is plain C with its own compile.sh; and if neither works, do NOT
+    # fail the image. The backend already answers "SoFiA-2 is not installed on
+    # the server" for that one tool and everything else keeps working — an
+    # image that builds without source finding beats an image that does not
+    # build.
+    if $INSTALL_CMD -n base -c conda-forge sofia-2; then
+        echo "[backend-conda.def] SoFiA-2 installed from conda-forge"
+    else
+        echo "[backend-conda.def] no conda-forge sofia-2 for this architecture — building from source"
+        $INSTALL_CMD -n base -c conda-forge c-compiler make git || true
+        if git clone --depth 1 https://github.com/SoFiA-Admin/SoFiA-2 /tmp/SoFiA-2 \
+           && ( cd /tmp/SoFiA-2 && ./compile.sh -fopenmp ) \
+           && cp /tmp/SoFiA-2/sofia /opt/conda/bin/; then
+            echo "[backend-conda.def] SoFiA-2 built from source"
+        else
+            echo "[backend-conda.def] WARN: SoFiA-2 unavailable — source finding will be disabled"
+        fi
+        rm -rf /tmp/SoFiA-2
+    fi
+    # resolve_sofia_bin() accepts either name; provide both.
     if [ -x /opt/conda/bin/sofia ] && [ ! -e /opt/conda/bin/sofia2 ]; then
         ln -s /opt/conda/bin/sofia /opt/conda/bin/sofia2
     fi

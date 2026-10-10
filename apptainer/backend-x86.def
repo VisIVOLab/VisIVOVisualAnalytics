@@ -137,6 +137,37 @@ From: condaforge/mambaforge:latest
         httpx \
         pip
 
+    echo "[backend-x86.def] Stage 4b-bis — Source finding (SoFiA-2)"
+    # conda-forge builds sofia-2 for linux-64 ONLY — there is no ppc64le and
+    # no aarch64 package (checked on anaconda.org). So an unconditional
+    # `conda install sofia-2` fails the build on Power9, which is one of the
+    # architectures these images target.
+    #
+    # Try the package; fall back to the source build, which is cheap because
+    # SoFiA-2 is plain C with its own compile.sh; and if neither works, do NOT
+    # fail the image. The backend already answers "SoFiA-2 is not installed on
+    # the server" for that one tool and everything else keeps working — an
+    # image that builds without source finding beats an image that does not
+    # build.
+    if mamba install -y -n base -c conda-forge sofia-2; then
+        echo "[backend-x86.def] SoFiA-2 installed from conda-forge"
+    else
+        echo "[backend-x86.def] no conda-forge sofia-2 for this architecture — building from source"
+        mamba install -y -n base -c conda-forge c-compiler make git || true
+        if git clone --depth 1 https://github.com/SoFiA-Admin/SoFiA-2 /tmp/SoFiA-2 \
+           && ( cd /tmp/SoFiA-2 && ./compile.sh -fopenmp ) \
+           && cp /tmp/SoFiA-2/sofia /opt/conda/bin/; then
+            echo "[backend-x86.def] SoFiA-2 built from source"
+        else
+            echo "[backend-x86.def] WARN: SoFiA-2 unavailable — source finding will be disabled"
+        fi
+        rm -rf /tmp/SoFiA-2
+    fi
+    # resolve_sofia_bin() accepts either name; provide both.
+    if [ -x /opt/conda/bin/sofia ] && [ ! -e /opt/conda/bin/sofia2 ]; then
+        ln -s /opt/conda/bin/sofia /opt/conda/bin/sofia2
+    fi
+
     # ── CuPy for NVIDIA Blackwell ──────────────────────────────────────
     # Always installed on this variant — the whole point of x86 +
     # RTX PRO 6000 is GPU compute. Conda-forge's cupy package bundles
