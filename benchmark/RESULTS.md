@@ -52,7 +52,7 @@ LaTeX rows ready to paste in `results_cold/table2_rows.tex`.
 
 ## CARTA column (external reference, 8 GB cube)
 
-CARTA v22.21.1 (backend v6.0.0), same host, same `cube_8gb.fits`, measured in a
+CARTA 6.0.0 (app bundle and backend both report 6.0.0), same host, same `cube_8gb.fits`, measured in a
 GUI session (CARTA has no headless/scriptable compute path — its scripting proxies
 actions to a connected Electron frontend — which is itself a data point for the
 "different architectures" framing):

@@ -497,6 +497,16 @@ class CubeKinematicSelectRequest(BaseModel):
     # every integer budget up to this, not a single mask. Capped at 254, the
     # largest level a uint8 field can carry alongside the unreachable sentinel.
     reach_max: float = Field(default=0.0, ge=0.0, le=254.0, allow_inf_nan=False)
+    # Smooth-before-threshold, in sigma voxels per axis (velocity, y, x). 0 = off,
+    # which is the default and the behaviour every published number was measured
+    # with. It exists for ONE shape of object: a large source whose faint envelope
+    # a per-voxel cut cannot see. Measured on WALLABY's NGC 3137 it takes the
+    # selection from 16% of the SoFiA mask to ~103%; measured on the compact,
+    # crowded sources of HCG 44 it is actively harmful — completeness reaches 1.0
+    # but Dice falls from 0.84 to 0.59, because the selection bleeds into the
+    # neighbours the lasso exists to keep apart. Per-object knob, never a default.
+    smooth_v: float = Field(default=0.0, ge=0.0, le=16.0, allow_inf_nan=False)
+    smooth_xy: float = Field(default=0.0, ge=0.0, le=16.0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _check_seeds(self) -> "CubeKinematicSelectRequest":
@@ -580,6 +590,8 @@ async def cube_kinematic_select_bin(
             request.reach, request.lambda_v, request.sigma,
             request.roi_radius, request.nsigma,
             request.reach_max if request.reach_max > 0.0 else None,
+            ((request.smooth_v, request.smooth_xy, request.smooth_xy)
+             if (request.smooth_v > 0.0 or request.smooth_xy > 0.0) else None),
         )
     except HTTPException:
         raise
