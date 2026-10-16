@@ -204,10 +204,10 @@ BackendRmSynthesisResult BackendClient::requestRmSynthesis(
     result.dPhi   = metaObj.value(QStringLiteral("d_phi")).toDouble();
     result.rangeMin = static_cast<float>(metaObj.value(QStringLiteral("range_min")).toDouble());
     result.rangeMax = static_cast<float>(metaObj.value(QStringLiteral("range_max")).toDouble());
-    for (const QJsonValue &v : metaObj.value(QStringLiteral("phi_grid")).toArray())
-        result.phiGrid.append(v.toDouble());
-    for (const QJsonValue &v : metaObj.value(QStringLiteral("rmsf")).toArray())
-        result.rmsf.append(v.toDouble());
+    result.phiGrid       = BackendJson::toDoubleVector(metaObj.value(QStringLiteral("phi_grid")).toArray());
+    result.rmsf          = BackendJson::toDoubleVector(metaObj.value(QStringLiteral("rmsf")).toArray());
+    result.droppedPlanes = BackendJson::toIntVector(metaObj.value(QStringLiteral("dropped_planes")).toArray());
+    result.droppedFreqHz = BackendJson::toDoubleVector(metaObj.value(QStringLiteral("dropped_freq_hz")).toArray());
     result.phiPeakMin = static_cast<float>(metaObj.value(QStringLiteral("phi_peak_min")).toDouble());
     result.phiPeakMax = static_cast<float>(metaObj.value(QStringLiteral("phi_peak_max")).toDouble());
 

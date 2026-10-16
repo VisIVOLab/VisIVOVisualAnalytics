@@ -176,6 +176,13 @@ Four things in these files are worth knowing before you trust a header:
   therefore trusts the role *you* assigned a companion file over what its
   header claims, whenever that file holds a single Stokes plane — and logs the
   disagreement rather than refusing a published dataset over a wrong keyword.
+- **A sub-band can be blank.** In G000.0+2.5 the 1199 and 1256 MHz sub-bands
+  carry no data at all (NaN end to end; other pipelines fill flagged bands with
+  zeros). RM synthesis leaves such planes out and records them in the product
+  parameters as *Sub-bands dropped*, next to *Channels used*, which counts only
+  the planes transformed; fewer than three usable sub-bands is refused. Polarised
+  intensity and angle on a blank plane are refused with a message naming the
+  plane, so pick another channel.
 - **`CTYPE3` is `SPECLNMF`**, Obit MFImage's spelling for a per-sub-band
   frequency axis and not in the FITS standard. VisIVO-next recognises it. The
   axis has no `CUNIT`, so the unit is inferred from the magnitude; a header

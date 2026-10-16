@@ -28,26 +28,10 @@ from astropy.io import fits
 sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "backend"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from app.compute.selection import cube_kinematic_select  # noqa: E402
-from datasets import OUT, add_dataset_arg, resolve  # noqa: E402
+from datasets import OUT, add_dataset_arg, parse_floats, rank_sources, resolve, robust_sigma, spectral_axis_kms  # noqa: E402
 
 N_SOURCES = 5                 # compare the N largest SoFiA sources
 REACH, LAMBDA_V, NSIGMA = 8.0, 1.0, 2.5   # lasso defaults (as a user would click)
-
-
-def robust_sigma(data: np.ndarray, source_free: np.ndarray | None = None) -> float:
-    """Noise scale (1.4826·MAD), estimated from EMISSION-FREE voxels.
-
-    Including the sources biases the MAD high; the effect measured here is small
-    (0.05 % on HGC 44, 1.7 % on WALLABY) but excluding them costs nothing and
-    removes an avoidable objection.
-    """
-    sample = data if source_free is None else data[source_free]
-    finite = np.asarray(sample[np.isfinite(sample)], dtype=np.float64)
-    if finite.size == 0:
-        return 0.0
-    if finite.size > 5_000_000:
-        finite = finite[:: finite.size // 5_000_000]
-    return float(1.4826 * np.median(np.abs(finite - np.median(finite))))
 
 
 def stencil_flux_sigma(data: np.ndarray, source_free: np.ndarray,
@@ -142,12 +126,32 @@ def beam_area_px(hd) -> float:
     return (np.pi / (4.0 * np.log(2.0))) * bmaj * bmin / (cd1 * cd2)
 
 
+def sigma_zyx(text: str) -> tuple[float, ...]:
+    """Three non-negative, finite Gaussian sigmas in voxels (velocity, y, x)."""
+    return parse_floats(text, 3, "--smooth", "1,3,3", lo=0.0)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     add_dataset_arg(ap)
     ap.add_argument("mask", nargs="?", help="override the reference SoFiA mask "
                                             "(e.g. a differently-parameterised run)")
+    ap.add_argument("--smooth", type=sigma_zyx, default=None, metavar="Z,Y,X",
+                    help="smooth-before-threshold, Gaussian sigma in voxels per axis "
+                         "(velocity, y, x). Off by default, which is what every "
+                         "published default-click number was measured with; the "
+                         "outputs of a smoothed run carry a _smoothZ-Y-X suffix so "
+                         "the two never overwrite each other.")
     args = ap.parse_args()
+    smooth = args.smooth
+    tag = "" if smooth is None else "_smooth" + "-".join(f"{v:g}" for v in smooth)
+    # A different reference mask is a different experiment: its outputs carry
+    # the mask's name so the published-mask run and the SoFiA-2 run can sit
+    # side by side in out/ instead of overwriting each other.
+    ref_name = Path(args.mask).stem.removesuffix("_mask") if args.mask else "SoFiA-2"
+    ref_word = "reference" if args.mask else "SoFiA"      # the reference's name in the report
+    if args.mask:
+        tag = f"_ref-{ref_name}" + tag
     # resolve() fails early with an actionable message rather than a cryptic astropy
     # error: the paper artifact must be runnable by a co-author who has only cloned.
     ds = resolve(args.dataset)
@@ -164,7 +168,7 @@ def main() -> None:
         sys.exit(f"error: cube {data.shape} and mask {sofia.shape} differ in shape")
 
     barea = beam_area_px(hd)
-    dv = abs(float(hd["CDELT3"])) / 1000.0            # m/s → km/s per channel
+    _, dv = spectral_axis_kms(hd)                      # km/s per channel, from FREQ or velocity
     # Jy·km/s over a boolean voxel mask.
     flux = lambda msk: float(data[msk].sum()) * dv / barea
     # R-18(d) / R-09: correlated-noise uncertainty on an integrated flux. Voxels
@@ -190,10 +194,9 @@ def main() -> None:
     f_chan = spectral_correlation_factor(data, sofia)
     analytic_err = lambda n: sigma_rms * np.sqrt(max(int(n), 0) * f_chan / barea) * dv
 
-    labels, counts = np.unique(sofia[sofia > 0], return_counts=True)
+    labels, counts, order = rank_sources(sofia, N_SOURCES)
     if labels.size == 0:
-        sys.exit("error: the SoFiA mask has no labelled sources (all zero).")
-    order = np.argsort(counts)[::-1][:N_SOURCES]
+        sys.exit("error: the reference mask has no labelled sources (all zero).")
 
     rows = []
     import matplotlib
@@ -215,7 +218,8 @@ def main() -> None:
         seed = (int(zz[k]), int(yy[k]), int(xx[k]))
 
         lasso = cube_kinematic_select(
-            data, seed, reach=REACH, lambda_v=LAMBDA_V, sigma=None, nsigma=NSIGMA)
+            data, seed, reach=REACH, lambda_v=LAMBDA_V, sigma=None, nsigma=NSIGMA,
+            smooth_zyx=smooth)
 
         inter = int(np.count_nonzero(src & lasso))
         a, b = int(lasso.sum()), int(src.sum())
@@ -286,27 +290,28 @@ def main() -> None:
         ax[1].set_xlabel("channel"); ax[1].set_ylabel("flux (Jy·km/s)")
         ax[1].set_title("total spectrum"); ax[1].legend()
         fig.tight_layout()
-        fig.savefig(ds.out(f"source_{lab:02d}", "png"), dpi=130)
+        fig.savefig(ds.out(f"source_{lab:02d}{tag}", "png"), dpi=130)
         plt.close(fig)
 
     # ── metrics table ──
     if not rows:
         sys.exit("error: no SoFiA source could be seeded (all masks empty/NaN).")
-    with open(ds.out("metrics", "csv"), "w", newline="") as f:
+    with open(ds.out("metrics", "csv", variant=tag), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader(); w.writerows(rows)
 
-    md = [f"# Kinematic Lasso vs SoFiA-2 — {ds.title} ({ds.instrument})",
+    md = [f"# Kinematic Lasso vs {ref_name} — {ds.title} ({ds.instrument})",
           f"\n{ds.note}.\n",
           f"\nCube `{Path(CUBE).name}` {data.shape}, beam {barea:.1f} px, "
           f"Δv {dv:.2f} km/s, rms {sigma_rms:.4g} (1.4826·MAD), "
           f"spectral correlation factor F = {f_chan:.2f} (analytic column only). "
-          f"Lasso defaults reach={REACH}, λv={LAMBDA_V}, nσ={NSIGMA}. "
-          f"Seed = each SoFiA source's peak voxel.\n",
+          f"Lasso defaults reach={REACH}, λv={LAMBDA_V}, nσ={NSIGMA}"
+          + (f"; smooth-before-threshold σ(z,y,x) = ({', '.join(f'{v:g}' for v in smooth)})" if smooth else "") + ". "
+          f"Seed = each reference source's peak voxel.\n",
           "\nFlux uncertainties are estimated empirically rather than modelled: the "
           "mask's own stencil "
-          "(and, for Δ, the SIGNED stencil +1 lasso / −1 SoFiA) is dropped at "
-          "positions that are FULLY outside a dilated SoFiA mask, and σ is the "
+          f"(and, for Δ, the SIGNED stencil +1 lasso / −1 {ref_word}) is dropped at "
+          f"positions that are FULLY outside a dilated {ref_word} mask, and σ is the "
           "scatter of the resulting weighted sums. This avoids the analytic "
           "covariance model, at the price of assuming those off-source placements "
           "represent the noise and covariance at the source's own position and "
@@ -318,8 +323,8 @@ def main() -> None:
           "\n`n_σ` is a fixed-mask, noise-equivalent contrast, NOT a p-value: both "
           "masks were selected on the same noisy data they are integrated over, so "
           "boundary voxels carry selection bias that this does not model.\n",
-          "| SoFiA id | SoFiA vox | Lasso vox | Dice | IoU | Compl. | Relia. | "
-          "F_SoFiA | F_Lasso | ratio | Δflux | σ_Δ | σ_Δ analytic | n_σ | clean Δ placements |",
+          f"| {ref_word} id | {ref_word} vox | Lasso vox | Dice | IoU | Compl. | Relia. | "
+          f"F_{ref_word} | F_Lasso | ratio | Δflux | σ_Δ | σ_Δ analytic | n_σ | clean Δ placements |",
           "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     def cell(v: float, prec: int = 2) -> str:
         """An unmeasurable σ prints as a dash, never as a number."""
@@ -348,8 +353,8 @@ def main() -> None:
               f"{np.nanmedian(fr):.3f}, median |Δflux| {np.nanmedian(ns):.1f} "
               f"noise-equivalent σ over the {n_measured}/{len(rows)} sources whose "
               f"scatter is measurable.**")
-    ds.out("metrics", "md").write_text("\n".join(md) + "\n")
-    print("\nWrote", ds.out("metrics", "md"), "and per-source figures.")
+    ds.out("metrics", "md", variant=tag).write_text("\n".join(md) + "\n")
+    print("\nWrote", ds.out("metrics", "md", variant=tag), "and per-source figures.")
 
 
 if __name__ == "__main__":

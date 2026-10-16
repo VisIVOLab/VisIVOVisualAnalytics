@@ -27,14 +27,7 @@ QJsonArray toJsonArray(const QVector<double> &values)
     return out;
 }
 
-QVector<double> toDoubleVector(const QJsonArray &array)
-{
-    QVector<double> out;
-    out.reserve(array.size());
-    for (const QJsonValue &value : array)
-        out.append(value.toDouble());
-    return out;
-}
+using BackendJson::toDoubleVector;
 
 QStringList toStringList(const QJsonArray &array)
 {

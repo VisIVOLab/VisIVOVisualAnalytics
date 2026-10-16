@@ -204,7 +204,7 @@ async def polarisation_pi(
     """
     result = await _compute_pi(session, dataset_id, request)
     payload = {k: result[k] for k in (
-        "width", "height", "channel", "sigma_qu2",
+        "width", "height", "channel", "sigma_qu2", "line_free_channels_dropped",
         "pi_range_min", "pi_range_max", "pa_range_min", "pa_range_max")}
     return {"valid": True, "error": "", "pi_dataset_id": "", "pa_dataset_id": "", **payload}
 
@@ -257,8 +257,8 @@ async def rm_synthesis(
 ):
     """RM-synthesis metadata: φ grid, RMSF and the Faraday dispersion shape."""
     result = await _compute_rm(session, dataset_id, request)
-    keys = ["n_phi", "n_freq", "width", "height", "phi_min", "phi_max", "d_phi",
-            "phi_grid", "rmsf", "range_min", "range_max", "reduce"]
+    keys = ["n_phi", "n_freq", "dropped_planes", "dropped_freq_hz", "width", "height",
+            "phi_min", "phi_max", "d_phi", "phi_grid", "rmsf", "range_min", "range_max", "reduce"]
     if result.get("reduce") == "peak":
         keys += ["phi_peak_min", "phi_peak_max"]
     payload = {k: result[k] for k in keys if k in result}

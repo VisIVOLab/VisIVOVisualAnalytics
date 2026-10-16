@@ -46,6 +46,14 @@ def _b64i32_compressed(array: np.ndarray, level: int = 6) -> tuple[str, str]:
     raw = np.ascontiguousarray(array, dtype=np.int32).tobytes()
     return "qt-zlib", base64.b64encode(_qt_zlib_compress(raw, level)).decode("ascii")
 
+def clamped_sqrt(x: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
+    """sqrt(max(x, 0)) with NaN kept: `maximum`, never `fmax` or `where(x > 0, …)`,
+    so a blank pixel stays blank instead of becoming a measured zero. `out=x`
+    works in place."""
+    out = np.maximum(x, 0.0, out=out)
+    return np.sqrt(out, out=out)
+
+
 def _finite_range(array: np.ndarray) -> tuple[float, float]:
     """Min/max over the FINITE values, for display ranges and LUT limits.
 

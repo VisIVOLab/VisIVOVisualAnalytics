@@ -1,13 +1,13 @@
 #!/usr/bin/env python
 """Figure 3 (data-driven panels) — the kinematic lasso on a real HI galaxy.
 
-Produces the science panels of the paper's Figure 3 on an HGC 44 galaxy, headless:
-  (b) the grown selection outlined on the galaxy's moment-0;
-  (c) the kinematic knob λv: low λv follows the rotation further in velocity;
-  (e) isolate  — the galaxy on a NaN background (masked moment-0);
-  (f) remove   — the residual cube (masked moment-0).
-Panels (a) volume rendering with the seed double-click and (d) per-channel polygon
-refinement are live GUI screenshots, captured in the app.
+Produces the science panels of the paper's Figure 3 on an HCG 44 galaxy, headless:
+  (a) the grown selection outlined on the galaxy's moment-0;
+  (b) the kinematic knob λv: low λv follows the rotation further in velocity;
+  (c) isolate  — the galaxy on a NaN background (masked moment-0);
+  (d) remove   — the residual cube (masked moment-0).
+The seed double-click and the per-channel polygon refinement are gestures in the
+app and are described in the text rather than drawn here.
 
 Run:  backend/.venv/bin/python validation/figure3_lasso_hgc44.py
 """
@@ -20,6 +20,8 @@ import numpy as np
 from astropy.io import fits
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from datasets import rank_sources  # noqa: E402
 from app.compute.selection import cube_kinematic_select  # noqa: E402
 
 import os  # noqa: E402
@@ -43,8 +45,8 @@ def main():
     OUT.mkdir(exist_ok=True)
     data = np.squeeze(fits.getdata(CUBE)).astype(np.float32)
     sofia = np.squeeze(fits.getdata(MASK)).astype(np.int32)
-    labels, counts = np.unique(sofia[sofia > 0], return_counts=True)
-    lab = int(labels[np.argmax(counts)])                       # the biggest galaxy
+    labels, counts, order = rank_sources(sofia, 1)
+    lab = int(labels[order[0]])                                # the biggest galaxy
     src = sofia == lab
     zz, yy, xx = np.where(src)
     k = int(np.argmax(data[zz, yy, xx]))
@@ -72,7 +74,7 @@ def main():
     m0 = crop(moment0(data[zc0:zc1], None))
     ax[0, 0].imshow(m0, origin="lower", cmap="gray_r")
     ax[0, 0].contour(crop(sel[zc0:zc1].any(0)), [0.5], colors="tab:green", linewidths=1.4)
-    ax[0, 0].set_title("(b) grown selection on moment-0")
+    ax[0, 0].set_title("(a) grown selection on moment-0")
 
     # (c) kinematic knob λv: per-channel selected area
     zc = np.arange(data.shape[0])
@@ -82,23 +84,23 @@ def main():
     ax[0, 1].plot(zc, area(hi), color="tab:red", label="high λv = 1.6")
     ax[0, 1].set_xlim(zz.min() - 8, zz.max() + 8)
     ax[0, 1].set_xlabel("channel (velocity)"); ax[0, 1].set_ylabel("selected pixels")
-    ax[0, 1].set_title("(c) kinematic knob λv: velocity extent"); ax[0, 1].legend()
+    ax[0, 1].set_title("(b) kinematic knob λv: velocity extent"); ax[0, 1].legend()
 
     # (e) isolate — galaxy on NaN background
     iso = moment0(data[zc0:zc1], sel[zc0:zc1])
     im = ax[1, 0].imshow(crop(iso), origin="lower", cmap="magma")
-    ax[1, 0].set_title("(e) isolate → galaxy on blank background")
+    ax[1, 0].set_title("(c) isolate → galaxy on blank background")
     fig.colorbar(im, ax=ax[1, 0], fraction=0.046)
 
     # (f) remove — residual
     res = moment0(data[zc0:zc1], ~sel[zc0:zc1])
     im2 = ax[1, 1].imshow(crop(res), origin="lower", cmap="magma")
-    ax[1, 1].set_title("(f) remove → residual")
+    ax[1, 1].set_title("(d) remove → residual")
     fig.colorbar(im2, ax=ax[1, 1], fraction=0.046)
     for a in (ax[0, 0], ax[1, 0], ax[1, 1]):
         a.set_xticks([]); a.set_yticks([])
 
-    fig.suptitle(f"Kinematic lasso on an HGC 44 HI galaxy "
+    fig.suptitle(f"Kinematic lasso on an HCG 44 HI galaxy "
                  f"(one double-click, {int(sel.sum())} voxels)", y=0.995)
     fig.tight_layout(rect=(0, 0, 1, 0.98))
     fig.savefig(OUT / "figure3_lasso.png", dpi=130)

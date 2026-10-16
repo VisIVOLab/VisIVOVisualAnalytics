@@ -6,6 +6,26 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## 1.0.1 (2026-10-16)
+
+- **Polarimetry: blank sub-bands.** A release can flag a sub-band out entirely
+  (two of the fourteen of the MeerKAT Bulge field G000.0+2.5 are NaN end to
+  end). RM synthesis now leaves such planes out instead of returning an empty
+  map, reports them (`dropped_planes`, `dropped_freq_hz`; the product records
+  *Sub-bands dropped* by frequency) and refuses fewer than three usable
+  sub-bands. PI/PA keeps NaN where there is no data instead of a measured zero,
+  refuses a blank plane or an out-of-range channel, and drops blank line-free
+  channels from the noise estimate. The Faraday transform is a BLAS matrix
+  product (about 20× faster on a 900² cutout).
+- **Kinematic lasso: optional smooth-before-threshold** (`smooth_v`, `smooth_xy`
+  on the select request; off by default).
+- **Remote backends:** a remote URL is never auto-started locally, and the local
+  token is never sent to it.
+- **Containers:** SoFiA-2 installed robustly in the Apptainer images
+  (`ENABLE_SOFIA=1`); local artifacts excluded from the image staging.
+- **Docs and CI:** documentation refreshed; release workflow triggers on plain
+  numeric tags; docs sync on the right branches.
+
 **next-server branch — spectral analysis improvements (2026-04)**
 
 - **Moment orders 3, 4, 5 fully supported** — M3 (skewness = μ₃/σ³), M4 (excess kurtosis = μ₄/σ⁴ − 3), and M5 (standardised 5th moment = μ₅/σ⁵) are now correctly computed in both the numpy and Dask paths. All three are dimensionless and normalised consistently with one another. The C++ `isSupportedMomentOrder()` guard was extended to include these orders (previously returned "Unsupported moment order" at runtime).

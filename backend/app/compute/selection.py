@@ -66,6 +66,7 @@ def cube_kinematic_select(
     roi_radius: int = 0,
     nsigma: float = 2.5,
     margin_reach: float | None = None,
+    smooth_zyx: tuple[float, float, float] | None = None,
 ) -> np.ndarray:
     """Geodesic, kinematics-aware region grow from ``seed_zyx`` (z=velocity).
 
@@ -76,7 +77,8 @@ def cube_kinematic_select(
     (see :func:`cube_kinematic_levels`) instead of re-running Dijkstra per step.
     """
     dist, (dz0, dy0, dx0) = _geodesic_distance(
-        data, seed_zyx, reach, lambda_v, sigma, roi_radius, nsigma, margin_reach)
+        data, seed_zyx, reach, lambda_v, sigma, roi_radius, nsigma, margin_reach,
+        smooth_zyx)
     mask = np.zeros(data.shape, dtype=bool)
     sel = dist <= float(reach)
     mask[dz0:dz0 + dist.shape[0], dy0:dy0 + dist.shape[1], dx0:dx0 + dist.shape[2]] = sel
@@ -92,6 +94,7 @@ def _geodesic_distance(
     roi_radius: int = 0,
     nsigma: float = 2.5,
     margin_reach: float | None = None,
+    smooth_zyx: tuple[float, float, float] | None = None,
 ) -> tuple[np.ndarray, tuple[int, int, int]]:
     """Geodesic cost from ``seed_zyx``, over the object's bounding box only.
 
@@ -176,7 +179,37 @@ def _geodesic_distance(
     # and (w > thr) each read pages and yield a bool, so peak memory drops by one window-sized
     # float array on SKA-scale windows. NaN > thr is False, so NaN is excluded as before.
     finite_w = np.isfinite(w)
-    candidate = finite_w & (w > thr)
+
+    # Optional smooth-before-threshold. A per-voxel cut on the raw cube cannot see
+    # the smooth faint envelope of an extended source; a smooth-and-clip finder
+    # such as SoFiA-2 can, and that — not the geodesic budget — is where the two
+    # disagree on extent. Measured on WALLABY's NGC 3137 (SoFiA mask 299,562
+    # voxels): the raw 2.5sigma component holding the clicked voxel is 47,994
+    # voxels, 16% of it; the same threshold on a (2, 6, 6)-smoothed copy gives
+    # 309,858, i.e. 103%.
+    #
+    # Normalised convolution, not a plain filter: blank voxels are zero-filled for
+    # the numerator and the same kernel is run over the finite mask as denominator,
+    # so emission beside a blank region is not diluted towards zero. NaN stays a
+    # hard barrier either way, because `finite_w` is taken from the RAW window.
+    #
+    # Only the SELECTION is smoothed. Every measurement downstream runs on the raw
+    # cube under the resulting mask, so fluxes are untouched.
+    work = w
+    if smooth_zyx is not None and any(float(v) > 0.0 for v in smooth_zyx):
+        sm = tuple(max(0.0, float(v)) for v in smooth_zyx)
+        num = ndimage.gaussian_filter(
+            np.where(finite_w, w, 0.0).astype(np.float32), sigma=sm, mode="nearest")
+        den = ndimage.gaussian_filter(
+            finite_w.astype(np.float32), sigma=sm, mode="nearest")
+        work = np.where(den > 1.0e-6, num / np.maximum(den, 1.0e-6), 0.0).astype(np.float32)
+        del num, den
+        # The noise drops with the kernel, so a threshold in sigma units has to be
+        # re-measured on the smoothed data — reusing the raw sigma would make nsigma
+        # mean something different for every kernel.
+        thr = float(nsigma) * _robust_sigma(work)
+
+    candidate = finite_w & (work > thr)
     candidate[lz, ly, lx] = True               # the clicked voxel always seeds it
 
     # Connected component (6-connectivity) containing the seed → the object. A seed FLOOD-FILL
@@ -231,7 +264,7 @@ def _geodesic_distance(
     # is a Dijkstra distance compared against `reach` (≈8); float32 keeps that to ~1e-6, well below
     # any voxel's cost, so the selection is unchanged (validated lasso-vs-SoFiA on HGC 44 — same
     # Dice to 3 dp). Node ids are exact in int32 (n_nodes < _MAX_SELECT_NODES = 4M ≪ 2^31).
-    subdata = np.asarray(w[z0:z1, y0:y1, x0:x1], dtype=np.float32)
+    subdata = np.asarray(work[z0:z1, y0:y1, x0:x1], dtype=np.float32)
     dz, dy, dx = sub.shape
 
     # Node ids for component voxels only (−1 elsewhere).
@@ -246,8 +279,13 @@ def _geodesic_distance(
     # Keep the scalars as Python floats: numpy's weak-scalar rule keeps the arrays float32 (no
     # float64 promotion), while sigma/nsigma retain full precision as the scalar operands — this
     # also avoids a np.float32(sigma) underflow to 0 for a pathologically tiny sigma.
+    # `cost_sigma` is the scale of the data the cost is applied to: the raw sigma
+    # normally, the smoothed one when smoothing is on. Mixing them would make a
+    # voxel at the threshold cost something other than 1, which is the whole
+    # calibration of `reach`.
+    cost_sigma = float(thr) / float(nsigma) if float(nsigma) > 0.0 else float(sigma)
     with np.errstate(over="ignore"):
-        costv = np.exp(float(nsigma) - np.clip(subdata, 0.0, None) / float(sigma))
+        costv = np.exp(float(nsigma) - np.clip(subdata, 0.0, None) / cost_sigma)
     costv = np.minimum(costv, 1.0e6)
 
     rows: list[np.ndarray] = []
@@ -312,6 +350,7 @@ def cube_kinematic_levels(
     sigma: float | None = None,
     roi_radius: int = 0,
     nsigma: float = 2.5,
+    smooth_zyx: tuple[float, float, float] | None = None,
 ) -> dict[str, Any]:
     """Geodesic level fields for an INTERACTIVE reach slider.
 
@@ -351,7 +390,7 @@ def cube_kinematic_levels(
             try:
                 out.append(_geodesic_distance(
                     data, pt, budget, lambda_v, sigma, roi_radius, nsigma,
-                    margin_reach=budget))
+                    margin_reach=budget, smooth_zyx=smooth_zyx))
             except ValueError:
                 # Only a SUB seed may land on blank sky and be ignored (⌥-clicking
                 # empty space removes nothing). An add seed that cannot grow is an
@@ -426,6 +465,7 @@ def cube_kinematic_select_multi(
     roi_radius: int = 0,
     nsigma: float = 2.5,
     margin_reach: float | None = None,
+    smooth_zyx: tuple[float, float, float] | None = None,
 ) -> np.ndarray:
     """Union of the geodesic selections grown from each seed in ``seeds``, minus
     the selections grown from each seed in ``sub_seeds`` — so the user can ⇧-click
@@ -436,13 +476,13 @@ def cube_kinematic_select_multi(
     mask: np.ndarray | None = None
     for s in seeds:
         m = cube_kinematic_select(data, s, reach, lambda_v, sigma, roi_radius, nsigma,
-                                  margin_reach)
+                                  margin_reach, smooth_zyx)
         mask = m if mask is None else (mask | m)
     assert mask is not None
     for s in sub_seeds:
         try:
             m = cube_kinematic_select(data, s, reach, lambda_v, sigma, roi_radius, nsigma,
-                                      margin_reach)
+                                      margin_reach, smooth_zyx)
         except ValueError:
             continue    # sub-seed on blank emission → nothing to remove
         mask &= ~m
@@ -459,6 +499,7 @@ def worker_cube_kinematic_select(
     roi_radius: int,
     nsigma: float = 2.5,
     margin_reach: float | None = None,
+    smooth_zyx: tuple[float, float, float] | None = None,
 ) -> dict[str, Any]:
     """Top-level worker (picklable). Loads the cube, runs the geodesic selection,
     and serialises the mask as little-endian float32 (0/1, x-fastest = vtkImageData
@@ -483,6 +524,7 @@ def worker_cube_kinematic_select(
             sigma=float(sigma) if sigma and sigma > 0 else None,
             roi_radius=int(roi_radius), nsigma=float(nsigma),
             margin_reach=(float(margin_reach) if margin_reach else None),
+            smooth_zyx=smooth_zyx,
         )
     finally:
         hdul.close()

@@ -15,6 +15,7 @@ import numpy as np
 
 from ..fits_dataset import ScientificFitsDataset  # noqa: F401
 from ._common import (  # noqa: F401
+    clamped_sqrt,
     logger,
     _qt_zlib_compress,
     _b64f32,
@@ -185,7 +186,7 @@ def _finalize_moment2(
     if moment2_variance:
         return image, moment_unit  # keep variance + squared unit
     # NaNs (blanked voxels) propagate through maximum/sqrt and stay NaN.
-    disp = np.sqrt(np.maximum(image, 0.0)).astype(image.dtype, copy=False)
+    disp = clamped_sqrt(image).astype(image.dtype, copy=False)
     return disp, (spectral_unit or "")
 
 

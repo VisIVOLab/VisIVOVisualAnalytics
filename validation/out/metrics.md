@@ -3,7 +3,7 @@
 compact group: several galaxies of comparable brightness in one field.
 
 
-Cube `hgc44_3axes.fits` (158, 700, 700), beam 30.7 px, Δv 8.24 km/s, rms 0.0002247 (1.4826·MAD), spectral correlation factor F = 3.45 (analytic column only). Lasso defaults reach=8.0, λv=1.0, nσ=2.5. Seed = each SoFiA source's peak voxel.
+Cube `hgc44_3axes.fits` (158, 700, 700), beam 30.7 px, Δv 8.24 km/s, rms 0.0002247 (1.4826·MAD), spectral correlation factor F = 3.45 (analytic column only). Lasso defaults reach=8.0, λv=1.0, nσ=2.5. Seed = each reference source's peak voxel.
 
 
 Flux uncertainties are estimated empirically rather than modelled: the mask's own stencil (and, for Δ, the SIGNED stencil +1 lasso / −1 SoFiA) is dropped at positions that are FULLY outside a dilated SoFiA mask, and σ is the scatter of the resulting weighted sums. This avoids the analytic covariance model, at the price of assuming those off-source placements represent the noise and covariance at the source's own position and channel range. `σ_Δ analytic` is the rms·√(N·F/B)·Δv model shown for comparison only: wherever it can be checked it overestimates σ_Δ (the disagreeing voxels share a mask boundary, so the signed sum cancels much of their noise), and on the one stencil that spans the field it cannot be checked at all.
