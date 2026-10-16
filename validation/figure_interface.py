@@ -26,13 +26,14 @@ WIDTH_IN = 17.5 / 2.54
 
 
 def parse_panel(spec: str):
-    parts = spec.split(":")
-    path, crop, label = parts[0], None, ""
-    for p in parts[1:]:
-        if p and p[0].isdigit() and p.count(",") == 3:
-            crop = tuple(int(v) for v in p.split(","))
-        else:
-            label = p
+    """`path[:x0,y0,x1,y1][:label]` — the label is everything after the path
+    (and the optional crop), colons included."""
+    path, _, rest = spec.partition(":")
+    crop, label = None, rest
+    head, sep, tail = rest.partition(":")
+    parts = head.split(",")
+    if len(parts) == 4 and all(p.strip().lstrip("-").isdigit() for p in parts):
+        crop, label = tuple(int(v) for v in parts), tail if sep else ""
     img = mpimg.imread(path)
     if crop:
         x0, y0, x1, y1 = crop
@@ -62,7 +63,7 @@ def main() -> None:
         ax.imshow(img, interpolation="lanczos")
         ax.set_axis_off()
     a.out.parent.mkdir(exist_ok=True)
-    dpi = a.dpi or round(panels[0][0].shape[1] / WIDTH_IN)
+    dpi = a.dpi or panels[0][0].shape[1] / WIDTH_IN    # exact: the first panel keeps its pixels
     fig.savefig(a.out, dpi=dpi, facecolor="white")
     print("written", a.out, "panels:", len(panels))
 

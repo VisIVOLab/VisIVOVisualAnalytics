@@ -14,11 +14,13 @@
 # all), and again after any bump of QT_VERSION / VTK_VERSION / CFITSIO_VERSION,
 # because those are part of the keys. A missing cache is reported as a warning
 # in the run, not as a failure. Cost: a few runner-minutes per platform per
-# week, mostly the download of the VTK install tree.
+# run, mostly the download of the VTK install tree.
 name: Warm dependency caches
 on:
   schedule:
-    - cron: '17 4 * * 1'   # Mondays 04:17 UTC — well inside the 7-day window
+    # Twice a week, not weekly: scheduled runs can start late, and two runs a
+    # week apart can straddle the 7-day eviction window.
+    - cron: '17 4 * * 1,4'   # Mondays and Thursdays 04:17 UTC
   workflow_dispatch:
 
 jobs:

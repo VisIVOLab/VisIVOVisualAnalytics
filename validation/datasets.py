@@ -82,6 +82,20 @@ def spectral_axis_kms(header) -> tuple[np.ndarray, float]:
     return vel, float(np.mean(np.abs(np.diff(vel))))
 
 
+def channel_widths_kms(header) -> np.ndarray:
+    """Per-channel width in km/s, from the velocities of the half-channel edges.
+
+    Channels uniform in frequency are not uniform in optical velocity (on the
+    WALLABY cubelet 3.932-3.943 km/s), so an integral over the spectral axis
+    weights each channel by its own width rather than by the mean."""
+    h = dict(header)
+    nz = int(h["NAXIS3"])
+    h["NAXIS3"] = nz + 1
+    h["CRPIX3"] = float(h["CRPIX3"]) + 0.5            # channel k's lower edge sits at pixel k - 0.5
+    edges, _ = spectral_axis_kms(h)
+    return np.abs(np.diff(edges))
+
+
 def rank_sources(mask: np.ndarray, n: int | None = None):
     """Labelled sources by size, largest first: `(labels, counts, order)` with
     `order` the indices of the `n` largest. One ranking for every script, so row

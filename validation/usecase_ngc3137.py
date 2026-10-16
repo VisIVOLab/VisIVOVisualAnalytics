@@ -36,7 +36,7 @@ from astropy.io import fits
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "backend"))
-from datasets import spectral_axis_kms  # noqa: E402
+from datasets import channel_widths_kms, spectral_axis_kms  # noqa: E402
 
 from app.compute.selection import cube_kinematic_select        # noqa: E402
 from app.kinematic_model import (tilted_ring_model,            # noqa: E402
@@ -97,6 +97,7 @@ def run(cube: str = CUBE, verbose: bool = True) -> dict:
     data = np.squeeze(fits.getdata(cube)).astype(np.float32)
     nz, ny, nx = data.shape
     vel, dv = spectral_axis_kms(h)                             # km/s per channel, descending
+    dvk = channel_widths_kms(h)                                # each channel's own width
     bpx = beam_area_px(h)
     R: dict = dict(header=h, data=data, vel=vel, dv=dv, beam_px=bpx)
     log(f"cube {nx}x{ny}x{nz}   dv={dv:.2f} km/s   beam={bpx:.1f} px")
@@ -113,7 +114,7 @@ def run(cube: str = CUBE, verbose: bool = True) -> dict:
 
     # ---- 2. isolate, then measure on the RAW cube under the mask ---------
     d = np.where(mask & np.isfinite(data), data, np.nan)
-    m0 = np.nansum(d, axis=0) * dv / bpx                       # Jy km/s per pixel
+    m0 = np.nansum(d * dvk[:, None, None], axis=0) / bpx       # Jy km/s per pixel
     with np.errstate(invalid="ignore"):
         wsum = np.nansum(d, axis=0)
         m1 = np.nansum(d * vel[:, None, None], axis=0) / wsum  # km/s
@@ -131,7 +132,7 @@ def run(cube: str = CUBE, verbose: bool = True) -> dict:
     log(f"    velocity field  {n_vf} px above 3 sigma")
 
     spectrum = np.nansum(d, axis=(1, 2)) / bpx                 # Jy per channel
-    flux = float(np.nansum(spectrum) * dv)                     # Jy km/s
+    flux = float(np.nansum(spectrum * dvk))                    # Jy km/s
     # SoFiA-2 already divides by the beam solid angle when the header carries a
     # beam, so f_sum is a flux (Jy Hz), not a flux density summed over beams.
     cat_flux = CAT_FSUM_JYHZ * C_KMS / float(h["RESTFRQ"])
