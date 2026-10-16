@@ -1,0 +1,91 @@
+# Keeps the release-build caches alive and visible to tag builds.
+#
+# Why this exists. GitHub scopes Actions caches by git ref: a run started by a
+# tag (refs/tags/1.0.1) can restore only caches saved on that same tag or on
+# the DEFAULT branch — never the ones a manual run saved on a feature branch —
+# and any cache not accessed for 7 days is deleted. Both bit the 1.0.1 release:
+# the only VTK caches had been produced by workflow_dispatch runs on `skava`,
+# so every platform rebuilt VTK from source (45–60 min, macOS billed at 10×).
+#
+# What it does. Runs on the default branch and RESTORES the three dependency
+# caches with exactly the keys release.yml uses (a restore counts as an access
+# and resets the 7-day clock). It never builds: the caches are populated by
+# running the Release workflow on `main` once via workflow_dispatch (platforms:
+# all), and again after any bump of QT_VERSION / VTK_VERSION / CFITSIO_VERSION,
+# because those are part of the keys. A missing cache is reported as a warning
+# in the run, not as a failure. Cost: a few runner-minutes per platform per
+# week, mostly the download of the VTK install tree.
+name: Warm dependency caches
+on:
+  schedule:
+    - cron: '17 4 * * 1'   # Mondays 04:17 UTC — well inside the 7-day window
+  workflow_dispatch:
+
+jobs:
+  versions:
+    name: read the versions release.yml pins
+    runs-on: ubuntu-22.04
+    outputs:
+      qt: ${{ steps.pick.outputs.qt }}
+      vtk: ${{ steps.pick.outputs.vtk }}
+      cfitsio: ${{ steps.pick.outputs.cfitsio }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: pick
+        shell: bash
+        # One source of truth: the keys below must match release.yml's, so the
+        # versions are read from it rather than copied here.
+        run: |
+          set -euo pipefail
+          f=.github/workflows/release.yml
+          pick() { grep -E "^  $1: '" "$f" | head -1 | sed -E "s/.*'([^']+)'.*/\1/"; }
+          echo "qt=$(pick QT_VERSION)" >> "$GITHUB_OUTPUT"
+          echo "vtk=$(pick VTK_VERSION)" >> "$GITHUB_OUTPUT"
+          echo "cfitsio=$(pick CFITSIO_VERSION)" >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
+  warm:
+    name: touch caches (${{ matrix.os }})
+    needs: versions
+    strategy:
+      fail-fast: false
+      matrix:
+        # The same four platforms as release.yml's `setup` job.
+        include:
+          - { os: ubuntu-22.04,   qt_arch: linux_gcc_64 }
+          - { os: macos-15,       qt_arch: clang_64 }
+          - { os: macos-15-intel, qt_arch: clang_64 }
+          - { os: windows-2022,   qt_arch: win64_msvc2022_64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Restore zlib install (Windows)
+        if: runner.os == 'Windows'
+        id: zlib
+        uses: actions/cache/restore@v4
+        with:
+          path: zlib-install
+          key: zlib-1.3.1-${{ matrix.os }}-v1
+      - name: Restore cfitsio install (Linux/Windows)
+        if: runner.os != 'macOS'
+        id: cfitsio
+        uses: actions/cache/restore@v4
+        with:
+          path: cfitsio-install
+          key: cfitsio-${{ needs.versions.outputs.cfitsio }}-${{ matrix.os }}-v2
+      - name: Restore VTK install tree
+        id: vtk
+        uses: actions/cache/restore@v4
+        with:
+          path: vtk-install
+          key: vtk-${{ needs.versions.outputs.vtk }}-qt${{ needs.versions.outputs.qt }}-${{ matrix.os }}-${{ matrix.qt_arch }}-macos13-v2
+      - name: Report
+        shell: bash
+        env:
+          HIT_VTK: ${{ steps.vtk.outputs.cache-hit }}
+          HIT_CFITSIO: ${{ steps.cfitsio.outputs.cache-hit }}
+          HIT_ZLIB: ${{ steps.zlib.outputs.cache-hit }}
+        run: |
+          echo "VTK: ${HIT_VTK:-n/a}  cfitsio: ${HIT_CFITSIO:-n/a}  zlib: ${HIT_ZLIB:-n/a}"
+          if [[ "$HIT_VTK" != "true" ]]; then
+            echo "::warning title=VTK cache missing on ${{ matrix.os }}::Run the Release workflow on main (workflow_dispatch, platforms: all) so the next tag build does not rebuild VTK."
+          fi

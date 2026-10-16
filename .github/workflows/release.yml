@@ -37,7 +37,11 @@
 #   - Windows: %APPDATA%\VisIVO\.venv
 #
 # Builds are unsigned — internal-tester distribution only.
-# First run is slow (~45–60 min for VTK); subsequent runs hit the cache.
+# First run is slow (~45–60 min for VTK); subsequent runs hit the cache —
+# but only a cache saved on the DEFAULT branch is visible to a tag build
+# (GitHub scopes caches by ref), and an untouched cache is evicted after
+# 7 days. Populate the caches by running this workflow on `main` via
+# workflow_dispatch; warm-cache.yml keeps them alive week to week.
 
 name: Release Build
 
