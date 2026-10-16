@@ -29,7 +29,7 @@ from astropy.io import fits
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from app.compute.selection import cube_kinematic_select  # noqa: E402
-from datasets import OUT, add_dataset_arg, resolve  # noqa: E402
+from datasets import OUT, add_dataset_arg, rank_sources, resolve  # noqa: E402
 
 NSIGMAS = [1.5, 2.0, 2.5, 3.0, 3.5]
 # Wide enough to show an interior optimum, not just the part of the curve that
@@ -58,8 +58,7 @@ def main() -> None:
     OUT.mkdir(exist_ok=True)
     data = np.squeeze(fits.getdata(ds.cube)).astype(np.float32)
     sofia = np.squeeze(fits.getdata(ds.mask_path)).astype(np.int32)
-    labels, counts = np.unique(sofia[sofia > 0], return_counts=True)
-    order = np.argsort(counts)[::-1]
+    labels, counts, order = rank_sources(sofia)
     bright, faint = int(labels[order[0]]), int(labels[order[3]])   # #1 and #4 by size
 
     import matplotlib

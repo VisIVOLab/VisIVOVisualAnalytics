@@ -15,9 +15,12 @@ when the file is missing.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+import numpy as np
 
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "out"
@@ -46,8 +49,49 @@ class Dataset:
         paper and INDEX.md already cite; further cubes are suffixed."""
         return "" if self.name == DEFAULT else f"_{self.name}"
 
-    def out(self, stem: str, ext: str) -> Path:
-        return OUT / f"{stem}{self.suffix()}.{ext}"
+    def out(self, stem: str, ext: str, variant: str = "") -> Path:
+        """`variant` names a run that must not overwrite the default one
+        (`_smooth1-3-3`, `_ref-serra2013_hcg44`); it goes between the stem and
+        the dataset suffix, which is the naming every artefact in out/ follows."""
+        return OUT / f"{stem}{variant}{self.suffix()}.{ext}"
+
+
+def rank_sources(mask: np.ndarray, n: int | None = None):
+    """Labelled sources by size, largest first: `(labels, counts, order)` with
+    `order` the indices of the `n` largest. One ranking for every script, so row
+    k of one table is the same object as row k of another."""
+    labels, counts = np.unique(mask[mask > 0], return_counts=True)
+    order = np.argsort(counts)[::-1][:n]
+    return labels, counts, order
+
+
+def robust_sigma(data: np.ndarray, source_free: np.ndarray | None = None) -> float:
+    """Noise scale (1.4826·MAD) over finite values, from EMISSION-FREE voxels when
+    a mask is given: including the sources biases the MAD high (0.05 % on
+    HGC 44, 1.7 % on WALLABY), and excluding them costs nothing."""
+    sample = data if source_free is None else data[source_free]
+    finite = np.asarray(sample[np.isfinite(sample)], dtype=np.float64)
+    if finite.size == 0:
+        return 0.0
+    if finite.size > 5_000_000:
+        finite = finite[:: finite.size // 5_000_000]
+    return float(1.4826 * np.median(np.abs(finite - np.median(finite))))
+
+
+def parse_floats(spec: str, n: int, name: str, example: str,
+                 lo: float | None = None, hi: float | None = None) -> tuple[float, ...]:
+    """`n` comma-separated finite numbers, optionally bounded — for argparse
+    `type=` and for hand parsing alike; the error names the option."""
+    try:
+        values = tuple(float(x) for x in spec.split(","))
+    except ValueError:
+        values = ()
+    ok = (len(values) == n and all(math.isfinite(v) for v in values)
+          and (lo is None or min(values) >= lo) and (hi is None or max(values) <= hi))
+    if not ok:
+        bounds = "" if lo is None and hi is None else f" in [{'-inf' if lo is None else lo:g}, {'inf' if hi is None else hi:g}]"
+        raise argparse.ArgumentTypeError(f"{name} wants {n} finite numbers{bounds}, e.g. {example}")
+    return values
 
 
 DATASETS: dict[str, Dataset] = {

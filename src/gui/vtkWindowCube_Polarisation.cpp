@@ -662,6 +662,15 @@ void vtkWindowCube::publishRmSynthesisMaps(const BackendRmSynthesisResult &r, co
     params.insert(u"φ step"_s, r.dPhi);
     params.insert(u"φ samples"_s, r.nPhi);
     params.insert(u"Channels used"_s, r.nFreq);
+    if (!r.droppedPlanes.isEmpty()) {
+        // A release can leave a sub-band blank; the service leaves it out and
+        // says so, and the product must say so too or "Channels used" lies.
+        QStringList planes, mhz;
+        for (int p : r.droppedPlanes) planes << QString::number(p);
+        for (double f : r.droppedFreqHz) mhz << QString::number(f / 1e6, 'f', 0);
+        params.insert(u"Sub-bands dropped"_s,
+                      u"%1 MHz (planes %2, no data)"_s.arg(mhz.join(u", "_s), planes.join(u", "_s)));
+    }
     if (region.isValid()) {
         params.insert(u"Region"_s, u"x %1–%2, y %3–%4"_s
                               .arg(region.left()).arg(region.right())

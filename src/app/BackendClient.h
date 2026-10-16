@@ -8,6 +8,8 @@
 #include <QWaitCondition>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
+#include <QVector>
 #include <QList>
 #include <QNetworkRequest>
 #include <QPoint>
@@ -1435,6 +1437,26 @@ struct BackendPolarisationPiResult
     QByteArray paData;             ///< float32 LE PA map (from /binary endpoint)
 };
 
+/// JSON arrays of numbers as vectors, the way every backend payload carries them.
+namespace BackendJson {
+inline QVector<double> toDoubleVector(const QJsonArray &array)
+{
+    QVector<double> out;
+    out.reserve(array.size());
+    for (const QJsonValue &value : array)
+        out.append(value.toDouble());
+    return out;
+}
+inline QVector<int> toIntVector(const QJsonArray &array)
+{
+    QVector<int> out;
+    out.reserve(array.size());
+    for (const QJsonValue &value : array)
+        out.append(value.toInt());
+    return out;
+}
+} // namespace BackendJson
+
 // ── P-03: Rotation Measure synthesis ─────────────────────────────────────────
 
 struct BackendRmSynthesisResult
@@ -1442,7 +1464,9 @@ struct BackendRmSynthesisResult
     bool valid{ false };
     QString error;
     int nPhi{ 0 };
-    int nFreq{ 0 };
+    int nFreq{ 0 };               ///< sub-bands actually transformed
+    QVector<int> droppedPlanes;   ///< file planes left out because they carry no data
+    QVector<double> droppedFreqHz; ///< their frequencies, for the product record
     int width{ 0 };
     int height{ 0 };
     double phiMin{ 0. };

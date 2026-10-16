@@ -16,6 +16,7 @@ import numpy as np
 
 from ..fits_dataset import ScientificFitsDataset  # noqa: F401
 from ._common import (  # noqa: F401
+    clamped_sqrt,
     logger,
     _qt_zlib_compress,
     _b64f32,
@@ -171,7 +172,7 @@ def worker_linewidth(
             diff = sv3 - m1[None, :, :]
             m2 = np.where(nz_m0,
                           np.nansum(safe * weights * diff * diff, axis=0) / m0_chunk, np.nan)
-            fwhm_full = (2.3548 * np.sqrt(np.maximum(m2, 0.0))).astype(np.float32)
+            fwhm_full = (2.3548 * clamped_sqrt(m2)).astype(np.float32)
             ew_full = np.where(np.isfinite(m0_chunk) & (peak_chunk > 0.0),
                                m0_chunk / peak_chunk, np.nan).astype(np.float32)
         # Blank FWHM below the SNR cutoff (the fit path skips those pixels), and

@@ -15,6 +15,7 @@ import numpy as np
 
 from ..fits_dataset import ScientificFitsDataset  # noqa: F401
 from ._common import (  # noqa: F401
+    clamped_sqrt,
     logger,
     _qt_zlib_compress,
     _b64f32,
@@ -397,39 +398,76 @@ def worker_polarisation_pi_pa(
     Both output maps are float32, returned as base64 payloads.
     """
     sources = _resolve_stokes_sources(path, ("Q", "U"), companions)
+    (q_ds, q_auth), (u_ds, u_auth) = sources["Q"], sources["U"]
+    depth = _plane_count(q_ds, "Q", authoritative=q_auth)
     ch = 0 if channel is None else int(channel)
-    Q = _read_stokes_cube(sources["Q"][0], "Q", authoritative=sources["Q"][1], channel=ch)[0]
-    U = _read_stokes_cube(sources["U"][0], "U", authoritative=sources["U"][1], channel=ch)[0]
+    if not 0 <= ch < depth:
+        raise ValueError(f"Channel {ch} is outside the {depth} plane(s) of the Stokes Q data.")
+    Q = _read_stokes_cube(q_ds, "Q", authoritative=q_auth, channel=ch)[0]
+    U = _read_stokes_cube(u_ds, "U", authoritative=u_auth, channel=ch)[0]
     if Q.shape != U.shape:
         raise ValueError(
             f"Stokes Q and U have different shapes ({Q.shape} vs {U.shape}); they must be "
             f"on the same grid.")
-    _require_same_sky_grid(sources["Q"][0], sources["U"][0])
+    _require_same_sky_grid(q_ds, u_ds)
+    if not _plane_has_data(Q, U):
+        raise ValueError(
+            f"Stokes Q and U are blank on plane {ch} (0-based, as the file counts them) — "
+            f"likely a flagged sub-band. Choose another channel.")
 
-    # Bias correction: σ²_QU from line-free channels. Read separately (and only
-    # when asked for), so the common case costs one channel per plane.
+    # Bias correction: σ²_QU from line-free channels, read one plane at a time
+    # and accumulated as (count, Σ, Σ²) per Stokes, so a 7500² × 16 cube never
+    # sits in memory for it. Per pixel over its finite samples, as nanvar would.
     sigma_qu2 = 0.0
-    if line_free_channels and len(line_free_channels) >= 2:
-        q_cube = _read_stokes_cube(sources["Q"][0], "Q", authoritative=sources["Q"][1])
-        u_cube = _read_stokes_cube(sources["U"][0], "U", authoritative=sources["U"][1])
-        if q_cube.shape[0] > 1:
-            lfc = np.array([i for i in line_free_channels if 0 <= i < q_cube.shape[0]])
-            if len(lfc) >= 2:
-                sigma_qu2 = float(
-                    np.nanmean(np.nanvar(q_cube[lfc], axis=0))
-                    + np.nanmean(np.nanvar(u_cube[lfc], axis=0))
-                ) / 2.0
+    line_free_dropped: list[int] = []
+    wanted = sorted({int(i) for i in (line_free_channels or []) if 0 <= int(i) < depth})
+    if depth > 1 and len(wanted) >= 2:
+        count = {k: np.zeros(Q.shape, dtype=np.int32) for k in "qu"}
+        total = {k: np.zeros(Q.shape, dtype=np.float64) for k in ("q", "qq", "u", "uu")}
+        used = 0
+        for i in wanted:
+            qi = _read_stokes_cube(q_ds, "Q", authoritative=q_auth, channel=i)[0]
+            ui = _read_stokes_cube(u_ds, "U", authoritative=u_auth, channel=i)[0]
+            # A blank channel is no measurement of the noise: a NaN plane would
+            # silently switch the de-bias off (variance over one sample is 0), a
+            # zero-filled one would count the fill as signal.
+            if not _plane_has_data(qi, ui):
+                line_free_dropped.append(i)
+                continue
+            for k, plane in (("q", qi), ("u", ui)):
+                finite = np.isfinite(plane)
+                count[k] += finite
+                plane = np.where(finite, plane, 0.0)
+                total[k] += plane
+                total[k + k] += plane * plane
+            used += 1
+        if used < 2:
+            raise ValueError(
+                f"Fewer than two of the line-free channels carry data (blank: "
+                f"{line_free_dropped}); choose channels with data for the noise estimate.")
+        with np.errstate(invalid="ignore", divide="ignore"):   # a pixel with no sample is NaN
+            var = [total[k + k] / count[k] - (total[k] / count[k]) ** 2 for k in "qu"]
+        sigma_qu2 = float(np.nanmean(var[0]) + np.nanmean(var[1])) / 2.0
 
+    # PA first, then Q² + U² − σ² and the NaN-keeping clamped sqrt, all in place:
+    # at 7500² each float64 temporary avoided is 450 MB.
     Qd = Q.astype(np.float64)
     Ud = U.astype(np.float64)
-    pi2 = Qd ** 2 + Ud ** 2 - sigma_qu2
-    pi_corr = np.sqrt(np.where(pi2 > 0.0, pi2, 0.0)).astype(np.float32)
-    pa_deg  = (0.5 * np.degrees(np.arctan2(Ud, Qd))).astype(np.float32)
+    pa = np.arctan2(Ud, Qd)
+    np.degrees(pa, out=pa)
+    pa *= 0.5
+    pa_deg = pa.astype(np.float32)
+    Qd *= Qd
+    Ud *= Ud
+    Qd += Ud
+    Qd -= sigma_qu2
+    pi_corr = clamped_sqrt(Qd, out=Qd).astype(np.float32)
 
     pi_range = _finite_range(pi_corr)
     pa_range = _finite_range(pa_deg)
     ny, nx = pi_corr.shape
     return {
+        "line_free_channels_dropped": line_free_dropped,
         "width": nx,
         "height": ny,
         "channel": channel,
@@ -454,6 +492,55 @@ def worker_polarisation_pi_pa(
 _FDF_CUBE_LIMIT_BYTES = 512 * 1024 * 1024
 #: Working-memory budget for one φ block of the complex intermediate.
 _FDF_BLOCK_BYTES = 256 * 1024 * 1024
+
+
+def _plane_has_data(q: np.ndarray, u: np.ndarray) -> bool:
+    """Whether a Stokes Q/U plane carries data at all.
+
+    The one definition of a blank sub-band, shared by the workers and the
+    figure scripts: a release can flag one out entirely (two of the fourteen of
+    the MeerKAT Bulge field G000.0+2.5 are) and fill it with NaN or with exact
+    zeros. Blank is: Q or U has no finite pixel (P = Q + iU is NaN throughout),
+    or both are exactly zero wherever finite; U = 0 next to a finite Q is a
+    measurement, not a gap.
+    """
+    fq, fu = np.isfinite(q), np.isfinite(u)
+    return bool(fq.any() and fu.any() and ((q[fq] != 0.0).any() or (u[fu] != 0.0).any()))
+
+
+def _plane_count(dataset: ScientificFitsDataset, role: str, *, authoritative: bool) -> int:
+    """How many planes `_read_stokes_cube` returns for this Stokes — read through a
+    1×1 region, so the answer costs one memmap open and n pixels."""
+    return int(_read_stokes_cube(dataset, role, authoritative=authoritative, region=(0, 0, 1, 1)).shape[0])
+
+
+def _planes_with_data(q_cube: np.ndarray, u_cube: np.ndarray) -> np.ndarray:
+    """`_plane_has_data` per plane, one plane at a time: the temporaries are a plane, not a cube."""
+    return np.array([_plane_has_data(q, u) for q, u in zip(q_cube, u_cube)], dtype=bool)
+
+
+def stokes_plane_coverage(
+    path: str,
+    companions: dict[str, str] | None = None,
+    region: tuple[int, int, int, int] | None = None,
+) -> list[dict[str, Any]]:
+    """Per sub-band of a Q/U pair: file plane, frequency, and whether it carries data.
+
+    The RM worker applies the same rule to the region it transforms; this is
+    the way to ask beforehand — a figure choosing the plane to show, a channel
+    picker greying out blank sub-bands — on a `region` small enough to be cheap.
+    Planes are counted as the file counts them, 0-based, fitted planes included.
+    """
+    sources = _resolve_stokes_sources(path, ("Q", "U"), companions)
+    (q_dataset, q_auth), (u_dataset, u_auth) = sources["Q"], sources["U"]
+    layout = _mfimage_subbands(q_dataset)
+    offset, planes = (layout[0], (layout[0], len(layout[1]))) if layout else (0, None)
+    q = _read_stokes_cube(q_dataset, "Q", authoritative=q_auth, region=region, planes=planes)
+    u = _read_stokes_cube(u_dataset, "U", authoritative=u_auth, region=region, planes=planes)
+    freq_hz = layout[1] if layout else _frequencies_hz(q_dataset, q.shape[0])
+    has_data = _planes_with_data(q, u)
+    return [{"plane": offset + i, "freq_hz": float(freq_hz[i]), "has_data": bool(has_data[i])}
+            for i in range(q.shape[0])]
 
 
 def worker_rm_synthesis(
@@ -495,6 +582,7 @@ def worker_rm_synthesis(
     # WCS axis, over every plane.
     q_layout = _mfimage_subbands(q_dataset)
     planes: tuple[int, int] | None = None
+    offset = 0                       # file plane of the first sub-band
     if q_layout is not None:
         offset, freq_hz = q_layout
         planes = (offset, len(freq_hz))
@@ -518,25 +606,44 @@ def worker_rm_synthesis(
             f"Stokes Q and U have different shapes ({Q_cube.shape} vs {U_cube.shape}); "
             f"they must be on the same grid.")
 
-    n_freq, ny, nx = Q_cube.shape
+    n_read, ny, nx = Q_cube.shape
 
     if q_layout is None:
         # λ² from the Q file's own spectral axis — never the primary's, whose
         # grid may differ. When U came from a different file its grid has to
         # agree, or the two are being combined at frequencies they were not
         # measured at.
-        freq_hz = _frequencies_hz(q_dataset, n_freq)
+        freq_hz = _frequencies_hz(q_dataset, n_read)
         if u_dataset.path != q_dataset.path:
-            u_freq = _frequencies_hz(u_dataset, n_freq)
+            u_freq = _frequencies_hz(u_dataset, n_read)
             if not np.allclose(freq_hz, u_freq, rtol=1e-6):
                 raise ValueError(
                     "Stokes Q and U are on different frequency grids "
                     f"({freq_hz[0]:.6g}…{freq_hz[-1]:.6g} Hz vs "
                     f"{u_freq[0]:.6g}…{u_freq[-1]:.6g} Hz); RM synthesis would combine "
                     "them at frequencies they were not measured at.")
-    if len(freq_hz) != n_freq:                      # pragma: no cover — guarded above
+    if len(freq_hz) != n_read:                      # pragma: no cover — guarded above
         raise ValueError(
-            f"{n_freq} planes were read but {len(freq_hz)} frequencies are known.")
+            f"{n_read} planes were read but {len(freq_hz)} frequencies are known.")
+    if n_read < 3:
+        raise ValueError(
+            f"This cube has {n_read} spectral plane(s); RM synthesis needs at least three.")
+    # A blank plane must leave the transform: one NaN plane makes every F(φ)
+    # NaN, and a zero-filled one biases the 1/N normalisation and the RMSF. A
+    # pixel that is NaN in only some planes deliberately stays NaN: its
+    # coverage is incomplete, and a renormalised value would hide that.
+    # Dropped planes are named as the file counts them (0-based, fitted planes
+    # included) and by frequency; the GUI records them by frequency.
+    carries_data = _planes_with_data(Q_cube, U_cube)
+    kept, dropped = np.flatnonzero(carries_data), np.flatnonzero(~carries_data)
+    dropped_planes = (offset + dropped).tolist()
+    dropped_freq_hz = freq_hz[dropped].tolist()
+    if len(kept) < 3:
+        raise ValueError(
+            f"Only {len(kept)} of {n_read} sub-bands carry data in this region "
+            f"(blank planes {dropped_planes}); RM synthesis needs at least three.")
+    freq_hz = freq_hz[kept]
+    n_freq = len(kept)
     lambda2 = (C_LIGHT / freq_hz) ** 2   # (n_freq,)
 
     # φ grid
@@ -553,8 +660,13 @@ def worker_rm_synthesis(
                 f"({n_phi} φ × {ny} × {nx}), over the {_FDF_CUBE_LIMIT_BYTES >> 20} MiB limit. "
                 f"Ask for reduce='peak', a smaller region, or a coarser φ grid.")
 
-    # Complex polarisation cube
-    P_cube = (Q_cube.astype(np.float64) + 1j * U_cube.astype(np.float64))
+    # Complex polarisation cube, assembled plane by plane from the kept
+    # sub-bands: no float64 copies of Q and U, which at 7500² are 5.4 GB each.
+    P_cube = np.empty((n_freq, ny, nx), dtype=np.complex128)
+    for j, i in enumerate(kept):
+        P_cube.real[j] = Q_cube[i]
+        P_cube.imag[j] = U_cube[i]
+    del Q_cube, U_cube
 
     # FDF: F[phi, y, x] = (1/N) Σ_f P[f,y,x] * exp(-2i*phi*lambda2[f])
     #
@@ -566,7 +678,8 @@ def worker_rm_synthesis(
     block = max(1, int(_FDF_BLOCK_BYTES // max(1, ny * nx * 16)))
 
     def kernel_for(lo: int, hi: int) -> np.ndarray:
-        return np.exp(-2j * np.outer(phi_grid[lo:hi], lambda2))   # (hi-lo, n_freq)
+        return np.exp(-2j * np.outer(phi_grid[lo:hi], lambda2)) / float(n_freq)   # (hi-lo, n_freq), 1/N in
+    P_flat = P_cube.reshape(n_freq, -1)                              # a view: P_cube is C-contiguous
 
     FDF: np.ndarray | None = None
     peak_value: np.ndarray | None = None
@@ -575,29 +688,35 @@ def worker_rm_synthesis(
         FDF = np.empty((n_phi, ny, nx), dtype=np.float32)
     for lo in range(0, n_phi, block):
         hi = min(lo + block, n_phi)
-        chunk = np.abs(np.einsum("pf,fyx->pyx", kernel_for(lo, hi), P_cube)
-                       / float(n_freq)).astype(np.float32)
+        # a BLAS matmul: the same contraction as the einsum, ~20× faster at the
+        # Figure 6 scale (900² cutout: 0.7 s instead of 14 s per FDF)
+        chunk = np.abs(kernel_for(lo, hi) @ P_flat).astype(np.float32).reshape(hi - lo, ny, nx)
         if FDF is not None:
             FDF[lo:hi] = chunk
             continue
-        local_index = np.argmax(chunk, axis=0)
-        local_value = np.take_along_axis(chunk, local_index[np.newaxis], axis=0)[0]
+        if hi - lo == 1:                     # one φ per block at full field: no argmax needed
+            local_value, local_index = chunk[0], 0
+        else:
+            local_index = np.argmax(chunk, axis=0)
+            local_value = np.take_along_axis(chunk, local_index[np.newaxis], axis=0)[0]
         if peak_value is None:
-            peak_value, peak_index = local_value, local_index + lo
+            peak_value = np.array(local_value, copy=True)
+            peak_index = np.full((ny, nx), lo, dtype=np.intp) + local_index
         else:
             better = local_value > peak_value
-            peak_value = np.where(better, local_value, peak_value)
-            peak_index = np.where(better, local_index + lo, peak_index)
+            np.putmask(peak_index, better, local_index + lo)
+            np.maximum(peak_value, local_value, out=peak_value)
 
     # RMSF: theoretical RM spread function as a 1-D array in the same φ space
     # R(φ) = (1/N) Σ_f exp(-2i*φ*λ²_f)
-    rmsf = np.abs(np.concatenate([np.einsum("pf->p", kernel_for(lo, min(lo + block, n_phi)))
-                                  for lo in range(0, n_phi, block)])
-                  / float(n_freq)).tolist()
+    rmsf = np.abs(np.concatenate([kernel_for(lo, min(lo + block, n_phi)).sum(axis=1)
+                                  for lo in range(0, n_phi, block)])).tolist()
 
     result: dict[str, Any] = {
         "n_phi": n_phi,
         "n_freq": n_freq,
+        "dropped_planes": dropped_planes,
+        "dropped_freq_hz": dropped_freq_hz,
         "width": nx,
         "height": ny,
         "scalar_type": "float32",

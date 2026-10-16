@@ -30,6 +30,9 @@ import argparse
 import pathlib
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from datasets import parse_floats  # noqa: E402
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.image as mpimg
@@ -40,7 +43,7 @@ from matplotlib.patches import FancyArrowPatch
 # what the reader follows; keep them verbs, not feature names.
 STAGES = [
     ("01_open",     "a", "open the cube"),
-    ("02_explore",  "b", "explore in 3-D"),
+    ("02_explore",  "b", "explore the channels"),
     ("03_lasso",    "c", "one double-click"),
     ("04_isolated", "d", "isolated cube"),
     ("05_moment0",  "e", "moment 0"),
@@ -63,10 +66,10 @@ def parse_crop(spec: str | None):
     """`--crop l,t,r,b` as fractions of the image, or None."""
     if not spec:
         return None
-    parts = [float(x) for x in spec.split(",")]
-    if len(parts) != 4 or not all(0.0 <= v <= 1.0 for v in parts):
-        sys.exit("error: --crop wants four fractions 0..1, e.g. 0.18,0.15,0.79,0.96")
-    l, t, r, b = parts
+    try:
+        l, t, r, b = parse_floats(spec, 4, "--crop", "0.18,0.15,0.79,0.96", lo=0.0, hi=1.0)
+    except argparse.ArgumentTypeError as exc:
+        sys.exit(f"error: {exc}")
     if l >= r or t >= b:
         sys.exit("error: --crop needs left<right and top<bottom")
     return (l, t, r, b)

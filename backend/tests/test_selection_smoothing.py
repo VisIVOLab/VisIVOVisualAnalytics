@@ -83,13 +83,20 @@ class TestSmoothingReachesTheFaintEnvelope:
 
 
 class TestWhySmoothingIsNotTheDefault:
-    """The measurement that decided it.
+    """The measurement that decided it — and what it does and does not say.
 
-    On the five largest SoFiA sources of HCG 44, smoothing (1, 3, 3) takes
-    completeness to ~1.0 and Dice DOWN, from 0.84/0.83/0.74/0.66/0.69 to
-    0.59/0.53/0.49/0.53/0.57, because the selection grows two to three times the
-    reference mask and reaches the neighbours. A finder may want that trade; a
-    selector must not, so the knob is per-object and the default stays off.
+    Against our own, conservative SoFiA-2 mask of HCG 44 (4 sigma, reliability
+    0.9), smoothing (1, 3, 3) takes completeness to ~1.0 and Dice DOWN, from
+    0.84/0.83/0.74/0.66/0.69 to 0.59/0.53/0.49/0.53/0.57, because the selection
+    grows two to three times that mask. Against the PUBLISHED mask of the same
+    cube (Serra et al. 2013), which is itself two to three times larger than our
+    SoFiA-2 run, the same smoothing raises Dice on every source, 0.61->0.73,
+    0.69->0.75, 0.52->0.65, 0.47->0.73, 0.53->0.71. So the knob moves the
+    selection across the range two reasonable finder configurations span; it is
+    not "harmful" in itself. It stays off by default for one reason, pinned
+    below: a selector's first duty is not to bleed into a neighbour, and the
+    default's reliability (0.94-0.97 against either mask) is what guarantees
+    that. Both harness runs are in validation/out/.
     """
 
     def test_two_nearby_sources_are_merged_by_a_large_kernel(self):

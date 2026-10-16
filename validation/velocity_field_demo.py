@@ -69,8 +69,8 @@ def main():
     ax[1].set_xticks([]); ax[1].set_yticks([])
 
     fig.tight_layout()
-    fig.savefig(OUT / "velocity_field.png", dpi=130)
-    print("Wrote", OUT / "velocity_field.png")
+    fig.savefig(OUT / "figure7_velocity_field.png", dpi=130)   # the paper's Figure 7, under its own name
+    print("Wrote", OUT / "figure7_velocity_field.png")
 
 
 if __name__ == "__main__":

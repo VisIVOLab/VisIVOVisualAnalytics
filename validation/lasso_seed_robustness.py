@@ -37,7 +37,7 @@ from app.compute.selection import cube_kinematic_select  # noqa: E402
 
 # Out-of-repo HI cube; point at it via the env var so the script is reproducible anywhere.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from datasets import OUT, add_dataset_arg, resolve  # noqa: E402
+from datasets import OUT, add_dataset_arg, rank_sources, resolve  # noqa: E402
 
 N_SOURCES = 5                        # perturb the N largest SoFiA sources
 REACH, LAMBDA_V, NSIGMA = 8.0, 1.0, 2.5   # lasso defaults (as a user would click)
@@ -145,6 +145,8 @@ def main() -> None:
     dset = resolve(args.dataset)
     CUBE = dset.cube
     MASK = args.mask or str(dset.mask_path)
+    # a different reference mask is a different experiment: tag its outputs
+    variant = f"_ref-{Path(args.mask).stem.removesuffix('_mask')}" if args.mask else ""
     for label, path in (("cube", CUBE), ("SoFiA mask", MASK)):
         if not Path(path).is_file():
             sys.exit(f"error: {label} not found: {path}")
@@ -158,10 +160,9 @@ def main() -> None:
     if data.shape != sofia.shape:
         sys.exit(f"error: cube {data.shape} and mask {sofia.shape} differ in shape")
 
-    labels, counts = np.unique(sofia[sofia > 0], return_counts=True)
+    labels, counts, order = rank_sources(sofia, N_SOURCES)
     if labels.size == 0:
-        sys.exit("error: the SoFiA mask has no labelled sources (all zero).")
-    order = np.argsort(counts)[::-1][:N_SOURCES]
+        sys.exit("error: the reference mask has no labelled sources (all zero).")
 
     import matplotlib
     matplotlib.use("Agg")
@@ -230,9 +231,9 @@ def main() -> None:
     ax[1].set_title("interior metric spread (lower = more click-robust)")
     ax[1].legend(fontsize=8)
     fig.tight_layout()
-    fig.savefig(dset.out("seed_robustness", "png"), dpi=130)
+    fig.savefig(dset.out("seed_robustness", "png", variant=variant), dpi=130)
 
-    with open(dset.out("seed_robustness", "csv"), "w", newline="") as f:
+    with open(dset.out("seed_robustness", "csv", variant=variant), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader(); w.writerows(rows)
 
@@ -273,8 +274,8 @@ def main() -> None:
         f"_Scope: a single-cube, {len(rows)}-source sanity check — it shows the peak-seed "
         "comparison is not driven by exact peak clicks for well-connected sources; it does "
         "not by itself establish general seed robustness across all cubes._")
-    (dset.out("seed_robustness", "md")).write_text("\n".join(md) + "\n")
-    print("\nWrote", dset.out("seed_robustness", "md"), "and", dset.out("seed_robustness", "png"))
+    (dset.out("seed_robustness", "md", variant=variant)).write_text("\n".join(md) + "\n")
+    print("\nWrote", dset.out("seed_robustness", "md", variant=variant), "and", dset.out("seed_robustness", "png", variant=variant))
 
 
 if __name__ == "__main__":

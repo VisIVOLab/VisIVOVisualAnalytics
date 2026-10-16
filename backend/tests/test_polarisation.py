@@ -1007,5 +1007,140 @@ class TestGridAndNaNGuards(unittest.TestCase):
             os.unlink(path)
 
 
+class TestBlankSubBands(unittest.TestCase):
+    """A released cube can leave a sub-band entirely blank.
+
+    Found on the MeerKAT Bulge field G000.0+2.5 (Cotton et al. 2025), where the
+    1199 and 1256 MHz sub-bands are NaN end to end. Before this, one such plane
+    made every F(phi) NaN at every pixel — the RM map came back empty — and the
+    PI/PA worker turned the NaN into a measured zero, so a blank plane looked
+    perfectly unpolarised.
+    """
+
+    N_FREQ, NY, NX, RM = 10, 12, 12, 37.0
+    FREQ0, DFREQ = 9.0e8, 6.0e7
+
+    def _trio(self, blank_plane=None, fill=np.nan, n_freq=None):
+        """I, Q, U on a plain FREQ axis, Q/U Faraday-rotated by RM; one plane blanked."""
+        kw = dict(ny=self.NY, nx=self.NX, n_freq=n_freq or self.N_FREQ, freq_start_hz=self.FREQ0,
+                  freq_delta_hz=self.DFREQ, ctype3="FREQ", cunit3="Hz")
+        paths = {"I": _make_single_plane_fits(stokes_value=1, value=1.0, **kw),
+                 "Q": _make_single_plane_fits(stokes_value=2, value=1.0, rm_rad_m2=self.RM, **kw),
+                 "U": _make_single_plane_fits(stokes_value=3, value=1.0, rm_rad_m2=self.RM,
+                                              quadrature=True, **kw)}
+        for path in paths.values():
+            self.addCleanup(os.unlink, path)
+        if blank_plane is not None:
+            self._blank(paths, blank_plane, fill)
+        return paths
+
+    @staticmethod
+    def _blank(paths, plane, fill=np.nan):
+        """Blank one plane of Q and of U: a sub-band is blank in both or it is not blank."""
+        from astropy.io import fits
+        for stokes in ("Q", "U"):
+            with fits.open(paths[stokes], mode="update") as hdul:
+                hdul[0].data[0, plane] = fill
+
+    def _rm(self, paths, **kw):
+        from app.compute import worker_rm_synthesis
+        return worker_rm_synthesis(paths["I"], -100.0, 100.0, 1.0,
+                                   companions={"Q": paths["Q"], "U": paths["U"]}, reduce="peak", **kw)
+
+    def test_a_blank_plane_is_dropped_and_the_rm_is_still_recovered(self):
+        r = self._rm(self._trio(blank_plane=4))
+        self.assertEqual(r["dropped_planes"], [4])
+        self.assertAlmostEqual(r["dropped_freq_hz"][0], self.FREQ0 + 4 * self.DFREQ, delta=1.0)
+        self.assertEqual(r["n_freq"], self.N_FREQ - 1)
+        phi = _b64_to_f32(r["phi_peak_base64"], (self.NY, self.NX))
+        self.assertTrue(np.isfinite(phi).all(), "no pixel may be poisoned by the blank plane")
+        self.assertAlmostEqual(float(phi[6, 6]), self.RM, delta=1.0)
+
+    def test_a_zero_filled_plane_is_blank_too(self):
+        """Pipelines fill flagged bands with 0.0 as often as with NaN."""
+        r = self._rm(self._trio(blank_plane=4, fill=0.0))
+        self.assertEqual(r["dropped_planes"], [4])
+        self.assertEqual(r["n_freq"], self.N_FREQ - 1)
+
+    def test_nothing_is_dropped_when_every_plane_has_data(self):
+        r = self._rm(self._trio())
+        self.assertEqual(r["dropped_planes"], [])
+        self.assertEqual(r["dropped_freq_hz"], [])
+        self.assertEqual(r["n_freq"], self.N_FREQ)
+
+    def test_dropped_planes_are_counted_as_the_file_counts_them(self):
+        """MFImage: two fitted planes first, so sub-band 5 is file plane 7 — the
+        number the file and the figures use (0-based; the GUI names the band
+        by frequency), not the position in the sub-band list."""
+        q = _make_mfimage_fits(stokes_value=2, rm_rad_m2=self.RM)
+        u = _make_mfimage_fits(stokes_value=3, rm_rad_m2=self.RM, quadrature=True)
+        for path in (q, u):
+            self.addCleanup(os.unlink, path)
+        paths = {"I": q, "Q": q, "U": u}       # the Q file carries the primary's own Stokes
+        self._blank(paths, 7)
+        r = self._rm(paths)
+        self.assertEqual(r["dropped_planes"], [7])
+        self.assertAlmostEqual(r["dropped_freq_hz"][0], 9.080371093750e8 + 5 * 5.755108e7, delta=1.0)
+        self.assertEqual(r["n_freq"], 13)
+        phi = _b64_to_f32(r["phi_peak_base64"], (r["height"], r["width"]))
+        np.testing.assert_allclose(phi, self.RM, atol=2.0)
+
+    def test_fewer_than_three_surviving_planes_is_refused(self):
+        """With one or two planes |F(phi)| has no unique peak: the map would be
+        phi_min everywhere, finite and invented."""
+        paths = self._trio()
+        for plane in range(2, self.N_FREQ):
+            self._blank(paths, plane)
+        with self.assertRaises(ValueError) as ctx:
+            self._rm(paths)
+        self.assertIn("carry data in this region", str(ctx.exception))
+
+    def test_a_cube_with_fewer_than_three_planes_is_refused_as_such(self):
+        """A two-plane cube is not a blank-plane problem and must not be told it is."""
+        with self.assertRaises(ValueError) as ctx:
+            self._rm(self._trio(n_freq=2))
+        self.assertIn("spectral plane", str(ctx.exception))
+
+    def test_coverage_query_matches_the_worker(self):
+        from app.compute.polarisation import stokes_plane_coverage
+        paths = self._trio(blank_plane=4)
+        cov = stokes_plane_coverage(paths["I"], {"Q": paths["Q"], "U": paths["U"]})
+        self.assertEqual([c["plane"] for c in cov if not c["has_data"]], [4])
+        self.assertAlmostEqual(cov[4]["freq_hz"], self.FREQ0 + 4 * self.DFREQ, delta=1.0)
+        self.assertEqual(len(cov), self.N_FREQ)
+
+    def test_pi_pa_keeps_nan_and_refuses_a_blank_plane(self):
+        from app.compute import worker_polarisation_pi_pa
+        paths = self._trio(blank_plane=4)
+        comp = {"Q": paths["Q"], "U": paths["U"]}
+        with self.assertRaises(ValueError) as ctx:
+            worker_polarisation_pi_pa(paths["I"], 4, None, companions=comp)
+        self.assertIn("blank on plane 4", str(ctx.exception))
+        with self.assertRaises(ValueError) as ctx:
+            worker_polarisation_pi_pa(paths["I"], 40, None, companions=comp)
+        self.assertIn("outside", str(ctx.exception))       # refused, not clamped to the last plane
+        # a plane with data, but poke a hole in it: the hole must stay a hole
+        from astropy.io import fits
+        with fits.open(paths["Q"], mode="update") as hdul:
+            hdul[0].data[0, 2, 3, 3] = np.nan
+        r = worker_polarisation_pi_pa(paths["I"], 2, None, companions=comp)
+        pi = _b64_to_f32(r["pi_base64"], (self.NY, self.NX))
+        self.assertTrue(np.isnan(pi[3, 3]), "a missing measurement is not a zero one")
+        self.assertTrue(np.isfinite(pi[0, 0]))
+
+    def test_blank_line_free_channels_are_dropped_from_the_noise_estimate(self):
+        """A blank channel in the line-free list is no measurement of the noise:
+        a NaN plane would silently switch the de-bias off (nanvar over one
+        sample is 0), a zero-filled one would count the fill as signal."""
+        from app.compute import worker_polarisation_pi_pa
+        paths = self._trio(blank_plane=4)
+        comp = {"Q": paths["Q"], "U": paths["U"]}
+        r = worker_polarisation_pi_pa(paths["I"], 2, [3, 4, 5], companions=comp)
+        self.assertEqual(r["line_free_channels_dropped"], [4])
+        with self.assertRaises(ValueError) as ctx:
+            worker_polarisation_pi_pa(paths["I"], 2, [2, 4], companions=comp)
+        self.assertIn("line-free", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

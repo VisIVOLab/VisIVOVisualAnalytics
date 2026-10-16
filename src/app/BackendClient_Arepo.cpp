@@ -28,23 +28,8 @@ QJsonArray toJsonArray(const QVector<double> &values)
     return out;
 }
 
-QVector<double> toDoubleVector(const QJsonArray &array)
-{
-    QVector<double> out;
-    out.reserve(array.size());
-    for (const QJsonValue &value : array)
-        out.append(value.toDouble());
-    return out;
-}
-
-QVector<int> toIntVector(const QJsonArray &array)
-{
-    QVector<int> out;
-    out.reserve(array.size());
-    for (const QJsonValue &value : array)
-        out.append(value.toInt());
-    return out;
-}
+using BackendJson::toDoubleVector;
+using BackendJson::toIntVector;
 
 /// An HDF5 attribute as one line of text. The backend has already reduced it to
 /// a JSON scalar, list or summary string; this is only about display.

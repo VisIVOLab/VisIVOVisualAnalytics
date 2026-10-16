@@ -89,6 +89,31 @@ voxel (= the click), grows with defaults (reach 8, λv 1, nσ 2.5), and writes
 contours + total-spectrum overlay). The `.md`/`.csv` tables are committed; the
 figures and the SoFiA masks are regenerable and git-ignored.
 
+### The second reference: the published mask
+
+The SoFiA-2 run above is *our* reference. The paper's primary reference is the
+mask the published science of HCG 44 was done with (Serra et al. 2013, provided
+by the authors; distributed with the paper's supplementary material next to the
+cube). It is binary, so label it once into the SoFiA-style id mask the
+comparison reads, then pass it as the positional mask override; `--smooth Z,Y,X`
+switches on the lasso's smooth-before-threshold option:
+
+```bash
+backend/.venv/bin/python validation/label_published_mask.py \
+  /path/to/hcg44_cube_3.0_binmask.fits validation/sofia_out/serra2013_hcg44_mask.fits
+backend/.venv/bin/python validation/lasso_vs_sofia.py validation/sofia_out/serra2013_hcg44_mask.fits
+backend/.venv/bin/python validation/lasso_vs_sofia.py validation/sofia_out/serra2013_hcg44_mask.fits --smooth 1,3,3
+# → out/metrics_ref-serra2013_hcg44{,_smooth1-3-3}.{md,csv}
+```
+
+Labelling is 6-connected in raster order (scipy default), so component ids are
+deterministic. The pairing the paper's rows A–E rest on — published components
+13, 1, 8, 3, 7 hold SoFiA-2 sources 5, 7, 12, 14, 8, each to ≥ 98 % of its
+voxels — is computed, not asserted: `crosswalk_references.py` writes
+`out/crosswalk_serra2013_sofia2.md` from the two masks. The published mask is 2–3× more
+inclusive than our SoFiA-2 run (their mutual Dice is 0.50–0.66), which is the
+scale any lasso-vs-reference number has to be read against.
+
 ## Result (vs the reproducible mask)
 
 | SoFiA id | Dice | IoU | Completeness | Reliability | F_Lasso/F_SoFiA | Δflux (Jy·km/s) | noise-equiv. n_σ |
@@ -332,3 +357,28 @@ large, low-surface-brightness one (WALLABY CV 0.36–0.51). It is a property of 
 source, not a blanket property of the method — which is why the second cube was
 needed to state it at all.
 
+## Figures of the paper
+
+Every figure is rendered from the products, not screenshotted, and each script
+prints the numbers it draws. All are sized for the journal's 17.5 cm text width.
+
+| figure | script | needs |
+|---|---|---|
+| 1 storyboard | `figure1_panels_ngc3137.py`, then `figure1_storyboard.py --src validation/out/fig1 --out validation/out/figure1_storyboard.png --crop 0,0,1,1` | `VISIVO_VALIDATION_CUBE_2` |
+| 2 architecture | `figure2_architecture.py` | nothing (a drawing) |
+| 3 lasso on HCG 44 | `figure3_lasso_hgc44.py` | `VISIVO_VALIDATION_CUBE`, SoFiA mask |
+| 4 tilted-ring model | `figure4_model_ngc3137.py` | `VISIVO_VALIDATION_CUBE_2` |
+| 5 chain of products | `figure5_transitions.py` | `VISIVO_VALIDATION_CUBE_2`, the service's routers |
+| 6 polarimetry | `figure6_polarimetry.py` (below) | the MeerKAT Bulge I/Q/U cubes of G000.0+2.5 and `Mosaic_Pol_Cat.csv` from doi:10.48479/f2a2-qw16 |
+| 7 velocity field | `velocity_field_demo.py` | `VISIVO_VALIDATION_FIELD` |
+
+Figures 4 and 5 call `usecase_ngc3137.run()`, so every number on them is the
+one in `out/usecase_ngc3137.md`. Figure 6 is the 900-px cutout holding three
+catalogued polarised sources; the script runs the service's own workers and
+prints the catalogue-vs-ours rotation measures:
+
+```bash
+backend/.venv/bin/python validation/figure6_polarimetry.py \
+  --dir /path/to/meerkat_bulge --field G000.0+2.5 \
+  --centre "17h36m16.510s -27d49m09.54s" --size 900 --catalogue /path/to/Mosaic_Pol_Cat.csv
+```

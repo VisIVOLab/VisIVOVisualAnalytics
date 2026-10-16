@@ -621,6 +621,7 @@ Bias-corrected polarised intensity and position angle.
 (−90…+90). σ²_QU is estimated from `line_free_channels` when at least two are
 given, and is 0 otherwise. The binary variant returns **two** frames, PI then
 PA.
+Channels that carry no data (a blank sub-band, NaN or zero-filled) are left out of the estimate and listed in `line_free_channels_dropped`; fewer than two usable ones is an error (422), and a `channel` outside the cube is refused rather than clamped.
 
 ### `POST /v1/polarisation/rmsynthesis/{dataset_id}` · `POST …/binary`
 RM synthesis (Brentjens & de Bruyn 2005).
@@ -652,7 +653,7 @@ with the message naming the ways out:
 > `The requested FDF cube is 6250 MiB (400000 φ × 64 × 64), over the 512 MiB
 > limit. Ask for reduce='peak', a smaller region, or a coarser φ grid.`
 
-Both variants always return `phi_grid`, `rmsf`, `n_phi` and `n_freq`.
+Both variants always return `phi_grid`, `rmsf`, `n_phi` and `n_freq`, plus `dropped_planes` and `dropped_freq_hz`: sub-bands that carry no data in the requested region (a release can flag one out entirely, as NaN or zeros) are left out of the transform and listed by file-plane index and frequency; `n_freq` counts the planes actually used, and fewer than three is an error (422).
 
 ## Spectral
 
