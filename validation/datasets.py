@@ -56,6 +56,32 @@ class Dataset:
         return OUT / f"{stem}{variant}{self.suffix()}.{ext}"
 
 
+C_KMS = 299792.458
+
+
+def spectral_axis_kms(header) -> tuple[np.ndarray, float]:
+    """Per-channel velocity (km/s, optical convention) and the channel width.
+
+    A frequency axis (the CASDA WALLABY cubelets) is converted with the rest
+    frequency as v = c (nu0/nu - 1); a velocity axis (VOPT/VELO/VRAD, m/s or
+    km/s) is read as it is. The CASDA cubelet and its relabelled copy in the
+    2022 demo data therefore give the same axis, to 0.15 km/s."""
+    nz = int(header["NAXIS3"])
+    ch = np.arange(1, nz + 1, dtype=np.float64)
+    axis = float(header["CRVAL3"]) + (ch - float(header["CRPIX3"])) * float(header["CDELT3"])
+    ctype = str(header.get("CTYPE3", "")).upper()
+    unit = str(header.get("CUNIT3", "")).strip().lower()
+    if ctype.startswith("FREQ"):
+        rest = float(header.get("RESTFRQ", header.get("RESTFREQ", 1420405751.79)))
+        scale = {"hz": 1.0, "khz": 1e3, "mhz": 1e6, "ghz": 1e9}.get(unit, 1.0)
+        vel = C_KMS * (rest / (axis * scale) - 1.0)
+    elif ctype.startswith(("VOPT", "VELO", "VRAD", "VEL")):
+        vel = axis / (1.0 if unit.startswith("km") else 1000.0)
+    else:
+        raise ValueError(f"spectral axis {ctype!r} is neither frequency nor velocity")
+    return vel, float(np.mean(np.abs(np.diff(vel))))
+
+
 def rank_sources(mask: np.ndarray, n: int | None = None):
     """Labelled sources by size, largest first: `(labels, counts, order)` with
     `order` the indices of the `n` largest. One ranking for every script, so row
@@ -107,10 +133,10 @@ DATASETS: dict[str, Dataset] = {
     "wallaby": Dataset(
         name="wallaby",
         env="VISIVO_VALIDATION_CUBE_2",
-        default_path="/Users/fvitello/downloads/DemoData/WALLABY.fits",
+        default_path="/Users/fvitello/downloads/DemoData/WALLABY_J100903-290239_Hydra_TR2_cube.fits",
         mask="sofia_wallaby_mask.fits",
         title="WALLABY",
-        instrument="ASKAP, RA---SIN / VOPT",
+        instrument="ASKAP, RA---SIN / FREQ",
         note="different instrument, projection and spectral convention; one large "
              "velocity-gradient source plus faint compact ones",
     ),

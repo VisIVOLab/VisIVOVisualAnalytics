@@ -28,7 +28,7 @@ from astropy.io import fits
 sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "backend"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from app.compute.selection import cube_kinematic_select  # noqa: E402
-from datasets import OUT, add_dataset_arg, parse_floats, rank_sources, resolve, robust_sigma  # noqa: E402
+from datasets import OUT, add_dataset_arg, parse_floats, rank_sources, resolve, robust_sigma, spectral_axis_kms  # noqa: E402
 
 N_SOURCES = 5                 # compare the N largest SoFiA sources
 REACH, LAMBDA_V, NSIGMA = 8.0, 1.0, 2.5   # lasso defaults (as a user would click)
@@ -168,7 +168,7 @@ def main() -> None:
         sys.exit(f"error: cube {data.shape} and mask {sofia.shape} differ in shape")
 
     barea = beam_area_px(hd)
-    dv = abs(float(hd["CDELT3"])) / 1000.0            # m/s → km/s per channel
+    _, dv = spectral_axis_kms(hd)                      # km/s per channel, from FREQ or velocity
     # Jy·km/s over a boolean voxel mask.
     flux = lambda msk: float(data[msk].sum()) * dv / barea
     # R-18(d) / R-09: correlated-noise uncertainty on an integrated flux. Voxels

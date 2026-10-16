@@ -8,4 +8,4 @@
 | kinematic PA / inclination | 352.0 / 72.7 deg | catalogue kin_pa 169.4 |
 | V_rot / V_rot sin i | 118.3 / 113.0 km/s | w50/2 = 125.2 |
 | median velocity residual, flat | 19.8 km/s | channel 3.9 km/s |
-| median velocity residual, warped | 14.5 km/s | - |
+| median velocity residual, warped | 14.8 km/s | - |

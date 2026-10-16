@@ -17,7 +17,7 @@ separate a property of the method from a property of the observation (R-18):
 | `--dataset` | file | shape | frame | Δv | beam | why this one |
 |---|---|---|---|---|---|---|
 | `hgc44` (default) | `hgc44_3axes.fits` | 158 × 700 × 700 | VELO-HEL | 8.24 km/s | 6.6 px | compact group: several galaxies of similar brightness in one field |
-| `wallaby` | `WALLABY.fits` | 109 × 280 × 196 | RA---SIN / VOPT | 3.94 km/s | 5.0 px | different instrument (ASKAP), projection and spectral convention; one large velocity-gradient source plus faint compact ones |
+| `wallaby` | `WALLABY_J100903-290239_Hydra_TR2_cube.fits` (CASDA, cubelet-41) | 109 × 280 × 196 | RA---SIN / FREQ | 3.94 km/s | 5.0 px | different instrument (ASKAP), projection and spectral convention; one large velocity-gradient source plus faint compact ones |
 
 Both are run through SoFiA-2 with the **same** detection parameters. That is the
 point: if the reference finder were tuned per cube, the agreement we report would
@@ -29,7 +29,7 @@ local paths and exit naming the missing variable):
 
 ```bash
 export VISIVO_VALIDATION_CUBE=/path/to/hgc44_3axes.fits     # --dataset hgc44
-export VISIVO_VALIDATION_CUBE_2=/path/to/WALLABY.fits       # --dataset wallaby
+export VISIVO_VALIDATION_CUBE_2=/path/to/WALLABY_J100903-290239_Hydra_TR2_cube.fits   # --dataset wallaby (CASDA)
 export VISIVO_DEMODATA=/path/to/DemoData        # benchmark.py (multiple cubes)
 export VISIVO_VALIDATION_FIELD=/path/to/CF4_velocity.fits   # velocity_field_demo.py
 ```
@@ -371,6 +371,7 @@ prints the numbers it draws. All are sized for the journal's 17.5 cm text width.
 | 5 chain of products | `figure5_transitions.py` | `VISIVO_VALIDATION_CUBE_2`, the service's routers |
 | 6 polarimetry | `figure6_polarimetry.py` (below) | the MeerKAT Bulge I/Q/U cubes of G000.0+2.5 and `Mosaic_Pol_Cat.csv` from doi:10.48479/f2a2-qw16 |
 | 7 velocity field | `velocity_field_demo.py` | `VISIVO_VALIDATION_FIELD` |
+| interface, Data Hub | `figure_interface.py` on the window captures in `shots/` (`screencapture -l` of the client's main window: lasso armed, lasso selected; nothing retouched) | the client, 1512×900 window, Retina |
 
 Figures 4 and 5 call `usecase_ngc3137.run()`, so every number on them is the
 one in `out/usecase_ngc3137.md`. Figure 6 is the 900-px cutout holding three

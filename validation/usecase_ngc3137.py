@@ -36,6 +36,7 @@ from astropy.io import fits
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "backend"))
+from datasets import spectral_axis_kms  # noqa: E402
 
 from app.compute.selection import cube_kinematic_select        # noqa: E402
 from app.kinematic_model import (tilted_ring_model,            # noqa: E402
@@ -95,9 +96,7 @@ def run(cube: str = CUBE, verbose: bool = True) -> dict:
     h = fits.getheader(cube)
     data = np.squeeze(fits.getdata(cube)).astype(np.float32)
     nz, ny, nx = data.shape
-    dv = abs(float(h["CDELT3"])) / 1000.0                      # km/s per channel
-    vel = (float(h["CRVAL3"]) + (np.arange(nz) + 1 - float(h["CRPIX3"]))
-           * float(h["CDELT3"])) / 1000.0                      # km/s, descending
+    vel, dv = spectral_axis_kms(h)                             # km/s per channel, descending
     bpx = beam_area_px(h)
     R: dict = dict(header=h, data=data, vel=vel, dv=dv, beam_px=bpx)
     log(f"cube {nx}x{ny}x{nz}   dv={dv:.2f} km/s   beam={bpx:.1f} px")
