@@ -28,7 +28,7 @@ from astropy.io import fits
 sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "backend"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from app.compute.selection import cube_kinematic_select  # noqa: E402
-from datasets import OUT, add_dataset_arg, parse_floats, rank_sources, resolve, robust_sigma, spectral_axis_kms  # noqa: E402
+from datasets import OUT, add_dataset_arg, parse_floats, rank_sources, resolve, robust_sigma, channel_widths_kms, spectral_axis_kms  # noqa: E402
 
 N_SOURCES = 5                 # compare the N largest SoFiA sources
 REACH, LAMBDA_V, NSIGMA = 8.0, 1.0, 2.5   # lasso defaults (as a user would click)
@@ -168,9 +168,10 @@ def main() -> None:
         sys.exit(f"error: cube {data.shape} and mask {sofia.shape} differ in shape")
 
     barea = beam_area_px(hd)
-    _, dv = spectral_axis_kms(hd)                      # km/s per channel, from FREQ or velocity
+    _, dv = spectral_axis_kms(hd)                      # mean km/s per channel, from FREQ or velocity
+    dvk = channel_widths_kms(hd)                       # each channel's own width, for integrals
     # Jy·km/s over a boolean voxel mask.
-    flux = lambda msk: float(data[msk].sum()) * dv / barea
+    flux = lambda msk: float((np.where(msk, data, 0.0).sum((1, 2)) * dvk).sum()) / barea
     # R-18(d) / R-09: correlated-noise uncertainty on an integrated flux. Voxels
     # inside a beam are not independent, so N voxels carry only N/beam_area
     # independent samples: σ_F = rms·√(N/B)·Δv. Same formula the backend uses for
@@ -281,8 +282,8 @@ def main() -> None:
         ax[0].set_title(f"SoFiA #{lab}: moment-0 + masks\n(blue=SoFiA, green=Lasso)")
         ax[0].set_xticks([]); ax[0].set_yticks([])
 
-        spec_s = np.where(src, data, 0.0).sum((1, 2)) * dv / barea
-        spec_l = np.where(lasso, data, 0.0).sum((1, 2)) * dv / barea
+        spec_s = np.where(src, data, 0.0).sum((1, 2)) * dvk / barea
+        spec_l = np.where(lasso, data, 0.0).sum((1, 2)) * dvk / barea
         zc = np.arange(data.shape[0])
         ax[1].plot(zc, spec_s, color="tab:blue", label="SoFiA")
         ax[1].plot(zc, spec_l, color="tab:green", ls="--", label="Lasso")
