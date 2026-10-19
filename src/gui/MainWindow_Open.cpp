@@ -74,10 +74,14 @@
 #include <QPainter>
 #include <QUrl>
 #include <QtConcurrent>
+#include <functional>
+#include <QInputDialog>
+#include <QProgressDialog>
 
 #include <memory>
 
 #include <cmath>
+#include <limits>
 
 #include "app/DiagnosticsManager.h"
 
@@ -214,6 +218,51 @@ static VbtOpenTaskResult runVbtOpenTask(const QString &headerPath,
 
 }  // namespace
 
+namespace {
+
+/// Run @p work on a worker thread behind a cancellable progress dialog and
+/// hand the result to @p done on the UI thread. Cancelling dismisses the
+/// dialog and drops the result: the request cannot be recalled from the
+/// server, but the window is never frozen behind it.
+template <typename T>
+void runWithProgress(QWidget *parent, const QString &title, const QString &label,
+                     std::function<T()> work, std::function<void(const T &)> done)
+{
+    auto *progress = new QProgressDialog(label, QObject::tr("Cancel"), 0, 0, parent);
+    progress->setWindowTitle(title);
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setMinimumDuration(400);
+    progress->setAttribute(Qt::WA_DeleteOnClose);
+    auto *watcher = new QFutureWatcher<T>(parent);
+    QObject::connect(progress, &QProgressDialog::canceled, watcher, [watcher, progress]() {
+        QObject::disconnect(watcher, nullptr, nullptr, nullptr);
+        watcher->deleteLater();   // the worker finishes on its own; nobody reads the result
+        // Cancel only hides the dialog (QProgressDialog::cancel → reset/hide), so
+        // WA_DeleteOnClose never fires on this path: free it explicitly.
+        progress->deleteLater();
+    });
+    QObject::connect(watcher, &QFutureWatcher<T>::finished, parent, [watcher, progress, done]() {
+        const T result = watcher->result();
+        watcher->deleteLater();
+        progress->close();
+        done(result);
+    });
+    watcher->setFuture(QtConcurrent::run(std::move(work)));
+}
+
+/// "file:///a/b.fits" → "/a/b.fits"; empty for any other scheme.
+QString pathFromFileUrl(const QString &url)
+{
+    if (!url.startsWith(QStringLiteral("file://")))
+        return QString();
+    QString tail = url.mid(7);
+    if (tail.startsWith(QStringLiteral("localhost/")))
+        tail = tail.mid(9);
+    return QUrl::fromPercentEncoding(tail.toUtf8());
+}
+
+}  // namespace
+
 void MainWindow::reopenDataset(const RecentDataset &dataset)
 {
     // ── SKAVA-origin entries route through discovery on reopen ──
@@ -221,21 +270,26 @@ void MainWindow::reopenDataset(const RecentDataset &dataset)
     // the operator's file move across nodes, or the visivo-backend at a
     // node be replaced, without breaking the Recent Datasets entry.
     if (dataset.source == u"skava"_s && !dataset.obsId.isEmpty()) {
-        SkavaClient skava(this->settings->getSkavaUrl(),
-                           this->settings->getSkavaToken(), this);
-        QApplication::setOverrideCursor(Qt::WaitCursor);
-        const auto datalink = skava.getDatalink(dataset.obsId);
-        QApplication::restoreOverrideCursor();
-        if (!datalink.valid) {
-            QMessageBox::warning(
-                    this, u"Reopen from SKAVA"_s,
-                    u"Could not reopen '%1':\n\nSKAVA query failed: %2"_s
-                            .arg(dataset.displayName,
-                                  datalink.error.isEmpty()
-                                          ? u"unknown error"_s : datalink.error));
-            return;
-        }
-        doOpenSkavaDataset(dataset.obsId, datalink);
+        const QString skavaUrl = this->settings->getSkavaUrl();
+        const QString skavaToken = this->settings->getSkavaToken();
+        const QString obsId = dataset.obsId;
+        const QString name = dataset.displayName;
+        runWithProgress<SkavaDatalinkResponse>(
+                this, u"Reopen from SKAVA"_s, u"Resolving %1 with SKAVA…"_s.arg(name),
+                [skavaUrl, skavaToken, obsId]() {
+                    return SkavaClient(skavaUrl, skavaToken).getDatalink(obsId);
+                },
+                [this, obsId, name](const SkavaDatalinkResponse &datalink) {
+                    if (!datalink.valid) {
+                        QMessageBox::warning(
+                                this, u"Reopen from SKAVA"_s,
+                                u"Could not reopen '%1':\n\nSKAVA query failed: %2"_s
+                                        .arg(name, datalink.error.isEmpty() ? u"unknown error"_s
+                                                                            : datalink.error));
+                        return;
+                    }
+                    doOpenSkavaDataset(obsId, datalink);
+                });
         return;
     }
 
@@ -298,101 +352,160 @@ void MainWindow::openData()
 void MainWindow::doOpenSkavaDataset(const QString &obsId,
                                       const SkavaDatalinkResponse &datalink)
 {
-    // Backend-aware routing per docs/distributed-backend-design.md §4.2.
-    const BackendNode chosen = pickBackendForSkavaDataset(this->settings, datalink);
-    // ── Routing decision ────────────────────────────────────────────
-    // pickBackendForSkavaDataset returns:
-    //   * a remote BackendNode → compute-next-to-data via that node
-    //   * the local BackendNode → still use compute-next-to-data, just
-    //     against the local backend (no special-case needed — the
-    //     desktop's "local" backend supports /v1/datasets/open_skava
-    //     same as any remote one)
-    //   * nothing → no SKAVA visivo-backend descriptor matched; we
-    //     fall through to the download-via-local path below, which
-    //     handles HTTP-served archives.
-    // Strip ``file://`` from the access URL so downstream viewer code can
-    // both call backend endpoints that expect a real path (fileHeader,
-    // moment exports, etc.) and render a friendly window title via
-    // QFileInfo(path).fileName(). Returns an empty string when the URL
-    // isn't a file:// one — callers fall back to obs_id in that case.
-    auto pathFromFileUrl = [](const QString &url) -> QString {
-        if (!url.startsWith(QStringLiteral("file://"))) {
-            return QString();
-        }
-        QString tail = url.mid(7);  // strip "file://"
-        // Allow file://localhost/path → /path
-        if (tail.startsWith(QStringLiteral("localhost/"))) {
-            tail = tail.mid(9);  // strip "localhost"
-        }
-        return QUrl::fromPercentEncoding(tail.toUtf8());
-    };
-    const QString fsPath = pathFromFileUrl(datalink.primaryAccessUrl);
+    // Backend-aware routing per docs/distributed-backend-design.md §4.2: a
+    // registered backend matching one of SKAVA's visivo-backend descriptors,
+    // together with the address of the dataset's copy on THAT node.
+    const SkavaRoute route = routeSkavaDataset(this->settings, datalink);
+    if (!route.valid()) {
+        openSkavaWithoutRoute(obsId, datalink, route.skipped);
+        return;
+    }
+    this->setActiveBackendBadge(route.node);
+    const QString url = route.node.url;
+    const QString token = route.node.token;
+    const QString accessUrl = route.accessUrl;
+    const QString skavaToken = this->settings->getSkavaToken();
+    const QString fsPath = pathFromFileUrl(accessUrl);
+    const QString nodeLabel = route.node.name.isEmpty() ? route.node.id : route.node.name;
 
-    if (!chosen.id.isEmpty()) {
-        this->setActiveBackendBadge(chosen);
-        QApplication::setOverrideCursor(Qt::WaitCursor);
-        BackendClient client(chosen.url, chosen.token);
-        const auto opened = client.openSkavaDataset(obsId, datalink.primaryAccessUrl);
-        QApplication::restoreOverrideCursor();
-        if (!opened.valid) {
-            qWarning().noquote() << QStringLiteral(
-                    "[skava] remote backend %1 refused open: %2, falling back to local download")
-                    .arg(chosen.id, opened.error);
-            // Revert the badge: the remote refused, so the imminent
-            // download/open below is served by the local backend.
-            this->setActiveBackendBadge(this->settings->getLocalBackend());
-            // Fall through to the local-download path so the user still
-            // gets the dataset rather than a hard failure.
-        } else {
-            // Prefer the real filesystem path so window title shows the
-            // FITS basename and "View FITS header" works without round-
-            // tripping the backend through an obs_id string.
-            const QString displayPath = !fsPath.isEmpty()
-                    ? fsPath
-                    : (obsId.isEmpty() ? datalink.primaryAccessUrl : obsId);
-            openViewerFromOpenedDataset(displayPath, opened, client);
-            // Re-record the just-opened dataset as a SKAVA entry: the
-            // generic ``openViewerFromOpenedDataset`` recorded it under
-            // its path with source=remote, but we want source=skava so
-            // the DataHub badge fires and the next reopen routes through
-            // the discovery flow instead of a dead local path.
-            if (this->recentMgr) {
-                this->recentMgr->remove(displayPath);
-                const QString name = !fsPath.isEmpty()
-                        ? QFileInfo(fsPath).fileName() : displayPath;
-                this->recentMgr->record(
-                        QStringLiteral("skava:") + obsId,
-                        name, opened.kind, u"skava"_s, obsId);
-            }
-            return;
+    runWithProgress<BackendOpenDatasetResult>(
+            this, u"Open from SKAVA"_s,
+            u"Opening %1 on %2…"_s.arg(obsId, nodeLabel),
+            [url, token, obsId, accessUrl, fsPath, skavaToken]() {
+                BackendClient client(url, token);
+                // A file:// replica is opened in place; an http one is fetched
+                // by the node's own backend, which sits next to it.
+                return fsPath.isEmpty()
+                        ? client.openDatasetFromUrl(accessUrl, obsId, skavaToken)
+                        : client.openSkavaDataset(obsId, accessUrl);
+            },
+            [this, url, token, obsId, datalink, route, fsPath, nodeLabel](
+                    const BackendOpenDatasetResult &opened) {
+                if (!opened.valid) {
+                    qWarning().noquote() << u"[skava] backend %1 refused open: %2"_s.arg(
+                            route.node.id, opened.error);
+                    this->setActiveBackendBadge(this->settings->getLocalBackend());
+                    QStringList reasons = route.skipped;
+                    reasons << u"%1: %2"_s.arg(nodeLabel, opened.error.isEmpty()
+                                                              ? u"the backend refused the open"_s
+                                                              : opened.error);
+                    openSkavaWithoutRoute(obsId, datalink, reasons);
+                    return;
+                }
+                const QString displayPath = !fsPath.isEmpty() ? fsPath : obsId;
+                BackendClient client(url, token);
+                // The viewer and the session context read the client's own session id,
+                // which a fresh client lacks: hand it the one the open was made in.
+                client.setSessionId(opened.sessionId);
+                openViewerFromOpenedDataset(displayPath, opened, client);
+                // Re-record as a SKAVA entry so the next reopen goes through
+                // discovery instead of a path that may have moved.
+                if (this->recentMgr) {
+                    this->recentMgr->remove(displayPath);
+                    const QString name = !fsPath.isEmpty() ? QFileInfo(fsPath).fileName() : displayPath;
+                    this->recentMgr->record(QStringLiteral("skava:") + obsId, name, opened.kind,
+                                            u"skava"_s, obsId);
+                }
+            });
+}
+
+void MainWindow::openSkavaWithoutRoute(const QString &obsId,
+                                         const SkavaDatalinkResponse &datalink,
+                                         const QStringList &reasons)
+{
+    // An http(s) copy can be fetched by the local backend.
+    if (datalink.primaryAccessUrl.startsWith(u"http"_s)) {
+        doOpenDataFromUrl(datalink.primaryAccessUrl, obsId, this->settings->getSkavaToken());
+        return;
+    }
+    // A file:// copy exists only on its node's disk: only the backend there
+    // can open it, and the local backend could not even read the URL.
+    const QString why = reasons.isEmpty() ? QString()
+                                          : u"\n\n• "_s + reasons.join(u"\n• "_s);
+    // Two things the user can fix from here, for the first descriptor that
+    // could serve this dataset (its node lists a replica): a node with no
+    // registered backend (register it — design §4.2 step 5), or a registered
+    // backend the node wants a token for and has none (enter it).
+    enum class Fix { None, Register, Token };
+    Fix fix = Fix::None;
+    BackendNode node;
+    const SkavaVisivoBackendDescriptor *offer = nullptr;
+    const auto registry = this->settings->getBackendNodes();
+    const bool autoToken = !BackendClient::readTokenFile().isEmpty();
+    for (const auto &desc : datalink.visivoBackends) {
+        if (desc.endpoint.isEmpty() || datalink.accessUrlForNode(desc.nodeCode).isEmpty())
+            continue;
+        const int idx = findRegisteredBackend(registry, desc);
+        if (idx < 0) {
+            fix = Fix::Register;
+            offer = &desc;
+            node.id = u"src-"_s + desc.nodeCode.toLower();
+            node.name = desc.nodeCode;
+            node.url = desc.endpoint;
+            node.srcCode = desc.nodeCode;
+            break;
+        }
+        if (desc.requiresAuth && registry[idx].token.isEmpty() && !autoToken) {
+            fix = Fix::Token;
+            offer = &desc;
+            node = registry[idx];          // update this entry, never a duplicate
+            break;
         }
     }
-    // ── Fallback: download via local backend cache → open ──────────────
-    doOpenDataFromUrl(datalink.primaryAccessUrl, obsId);
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Information);
+    box.setWindowTitle(u"Open from SKAVA"_s);
+    box.setText(u"“%1” is stored on an SRC node and can only be opened by the VisIVO "
+                u"backend running there."_s.arg(obsId));
+    QString detail = u"No registered backend can open it."_s;
+    if (fix == Fix::Register)
+        detail = u"SKAVA advertises a backend for node %1 at %2, which is not registered in "
+                 u"Settings ▸ Backends."_s.arg(offer->nodeCode, offer->endpoint);
+    else if (fix == Fix::Token)
+        detail = u"The backend of node %1 (registered as “%2”) requires a token, and none is "
+                 u"set."_s.arg(offer->nodeCode, node.name.isEmpty() ? node.id : node.name);
+    box.setInformativeText(detail + why);
+    QPushButton *fixBtn = nullptr;
+    if (fix != Fix::None)
+        fixBtn = box.addButton(fix == Fix::Register ? u"Register backend…"_s : u"Enter backend token…"_s,
+                               QMessageBox::AcceptRole);
+    box.addButton(QMessageBox::Close);
+    box.exec();
+    if (fix == Fix::None || box.clickedButton() != fixBtn)
+        return;
+    if (offer->requiresAuth) {
+        bool ok = false;
+        const QString token = QInputDialog::getText(
+                this, u"Backend token"_s,
+                u"Token for the VisIVO backend of node %1:"_s.arg(offer->nodeCode),
+                QLineEdit::Password, QString(), &ok);
+        if (!ok || token.isEmpty())
+            return;
+        node.token = token;
+    }
+    this->settings->upsertBackendNode(node);
+    doOpenSkavaDataset(obsId, datalink);   // routes through the new backend
 }
 
 
 void MainWindow::doSkavaSodaSubset(const QString &obsId,
                                      const SkavaDatalinkResponse &datalink)
 {
-    // The cutout must run where the data lives: pick the same co-located
-    // backend that would open the dataset. A SODA subset only makes sense
-    // when that backend exists AND serves a file:// replica it can open in
-    // place — otherwise there is nothing to compute next to.
-    const BackendNode chosen = pickBackendForSkavaDataset(this->settings, datalink);
-    const bool isFileUrl =
-            datalink.primaryAccessUrl.startsWith(QStringLiteral("file://"));
-    if (chosen.id.isEmpty() || !isFileUrl) {
+    // The cutout runs where the data lives: the same routed backend that
+    // would open the dataset, on that node's own copy of the file.
+    const SkavaRoute route = routeSkavaDataset(this->settings, datalink);
+    if (!route.valid() || !route.accessUrl.startsWith(QStringLiteral("file://"))) {
         QMessageBox::information(
                 this, u"SODA subset unavailable"_s,
-                u"This dataset has no co-located VisIVO backend serving a "
-                u"file:// replica, so a server-side SODA cutout cannot run.\n\n"
-                u"Use “Open selected in VisIVO” to download and open the full "
-                u"dataset instead."_s);
+                u"A server-side cutout needs a registered VisIVO backend on a node that "
+                u"holds a file:// replica of this dataset.%1\n\nUse “Open selected in VisIVO” "
+                u"to open the full dataset instead."_s.arg(
+                        route.skipped.isEmpty() ? QString()
+                                                : u"\n\n• "_s + route.skipped.join(u"\n• "_s)));
         return;
     }
 
-    // ── Region dialog (POS + BAND), prefilled from the dataset metadata ──
+    // ── Region dialog (POS + BAND), prefilled from the discovery row ──
     const SkavaDatasetMetadata &m = datalink.dataset;
     QDialog dlg(this);
     dlg.setWindowTitle(u"SODA subset - %1"_s.arg(obsId));
@@ -406,8 +519,7 @@ void MainWindow::doSkavaSodaSubset(const QString &obsId,
     };
     auto *raEdit   = mkEdit(m.sRa,  u"RA (deg)"_s);
     auto *decEdit  = mkEdit(m.sDec, u"Dec (deg)"_s);
-    auto *radEdit  = mkEdit(std::isfinite(m.sFov) ? m.sFov * 0.5 : 0.1,
-                            u"radius (deg)"_s);
+    auto *radEdit  = mkEdit(std::isfinite(m.sFov) ? m.sFov * 0.5 : 0.1, u"radius (deg)"_s);
     auto *bMinEdit = mkEdit(m.emMin, u"min (m)"_s);
     auto *bMaxEdit = mkEdit(m.emMax, u"max (m)"_s);
     form->addRow(u"POS, RA (deg)"_s, raEdit);
@@ -415,22 +527,19 @@ void MainWindow::doSkavaSodaSubset(const QString &obsId,
     form->addRow(u"Radius (deg)"_s, radEdit);
     form->addRow(u"BAND, min (m)"_s, bMinEdit);
     form->addRow(u"BAND, max (m)"_s, bMaxEdit);
+    const QString nodeLabel = route.node.name.isEmpty() ? route.node.id : route.node.name;
     auto *hint = new QLabel(
-            u"Leave all POS fields or both BAND fields blank to omit that "
-            u"axis. At least one of POS / BAND is required. The cutout runs on "
-            u"node %1."_s.arg(chosen.name.isEmpty() ? chosen.id : chosen.name),
-            &dlg);
+            u"Leave an axis blank to omit it; at least one of POS / BAND is "
+            u"required. The cutout runs on node %1, next to the data."_s.arg(nodeLabel), &dlg);
     hint->setWordWrap(true);
     form->addRow(hint);
-    auto *buttons = new QDialogButtonBox(
-            QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
     buttons->button(QDialogButtonBox::Ok)->setText(u"Run cutout"_s);
     form->addRow(buttons);
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     if (dlg.exec() != QDialog::Accepted) return;
 
-    // ── Build the SODA POS / BAND strings ────────────────────────────────
     auto readNum = [](QLineEdit *e, double &out) {
         const QString t = e->text().trimmed();
         if (t.isEmpty()) return false;
@@ -438,71 +547,64 @@ void MainWindow::doSkavaSodaSubset(const QString &obsId,
         out = t.toDouble(&ok);
         return ok;
     };
-    double ra = 0, dec = 0, rad = 0, bMin = 0, bMax = 0;
-    QString pos, band;
+    auto range = [&](QLineEdit *lo, QLineEdit *hi) {
+        double a = 0, b = 0;
+        if (!readNum(lo, a) || !readNum(hi, b)) return QString();
+        return u"%1 %2"_s.arg(QString::number(std::min(a, b), 'g', 10),
+                              QString::number(std::max(a, b), 'g', 10));
+    };
+    double ra = 0, dec = 0, rad = 0;
+    QString pos;
     if (readNum(raEdit, ra) && readNum(decEdit, dec) && readNum(radEdit, rad)) {
-        pos = u"CIRCLE %1 %2 %3"_s.arg(QString::number(ra, 'g', 10),
-                                        QString::number(dec, 'g', 10),
+        pos = u"CIRCLE %1 %2 %3"_s.arg(QString::number(ra, 'g', 10), QString::number(dec, 'g', 10),
                                         QString::number(rad, 'g', 10));
     }
-    if (readNum(bMinEdit, bMin) && readNum(bMaxEdit, bMax)) {
-        band = u"%1 %2"_s.arg(QString::number(std::min(bMin, bMax), 'g', 10),
-                               QString::number(std::max(bMin, bMax), 'g', 10));
-    }
+    const QString band = range(bMinEdit, bMaxEdit);
     if (pos.isEmpty() && band.isEmpty()) {
-        QMessageBox::information(
-                this, u"SODA subset"_s,
-                u"Provide a POS (RA/Dec/radius) and/or a BAND (min/max) to "
-                u"subset."_s);
+        QMessageBox::information(this, u"SODA subset"_s,
+                                 u"Provide a POS and/or a BAND range to subset."_s);
         return;
     }
 
-    // ── Run the cutout on the chosen backend, then open it in place ──────
-    this->setActiveBackendBadge(chosen);
-    const QString accessUrl = datalink.primaryAccessUrl;
-    const QString url = chosen.url;
-    const QString token = chosen.token;
-
-    auto *watcher = new QFutureWatcher<BackendSodaCutoutResult>(this);
-    QObject::connect(
-            watcher, &QFutureWatcher<BackendSodaCutoutResult>::finished, this,
-            [this, watcher, url, token, obsId]() {
-                QApplication::restoreOverrideCursor();
-                watcher->deleteLater();
-                const auto res = watcher->result();
-                if (!res.valid) {
-                    QMessageBox::critical(
-                            this, u"SODA subset failed"_s,
-                            res.error.isEmpty() ? u"The backend returned no detail."_s
-                                                : res.error);
-                    return;
-                }
-                // The cutout lives on the backend filesystem — open it there,
-                // never downloading it to the desktop (compute next to data).
-                BackendClient client(url, token);
-                const auto opened = client.openDataset(res.path);
-                if (!opened.valid) {
-                    QMessageBox::critical(
-                            this, u"Could not open SODA cutout"_s,
-                            opened.error.isEmpty()
-                                    ? u"Backend returned no error detail."_s
-                                    : opened.error);
-                    return;
-                }
-                openViewerFromOpenedDataset(res.path, opened, client);
-                if (this->recentMgr) {
-                    this->recentMgr->record(res.path,
-                                            u"%1 [SODA cutout]"_s.arg(obsId),
-                                            opened.kind);
-                }
-            });
-
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    watcher->setFuture(QtConcurrent::run(
+    // ── Cutout + open on the routed backend, off the UI thread ───────────
+    this->setActiveBackendBadge(route.node);
+    const QString url = route.node.url;
+    const QString token = route.node.token;
+    const QString accessUrl = route.accessUrl;
+    struct Outcome { BackendSodaCutoutResult cut; BackendOpenDatasetResult opened; };
+    runWithProgress<Outcome>(
+            this, u"SODA subset"_s, u"Cutting %1 on %2…"_s.arg(obsId, nodeLabel),
             [url, token, obsId, accessUrl, pos, band]() {
+                Outcome o;
                 BackendClient bc(url, token);
-                return bc.sodaCutout(obsId, accessUrl, pos, band, QString());
-            }));
+                // No TIME: the node's cutout engine does not slice in time yet.
+                o.cut = bc.sodaCutout(obsId, accessUrl, pos, band);
+                // The cutout stays on the node: open it there, never downloaded.
+                if (o.cut.valid)
+                    o.opened = bc.openDataset(o.cut.path);
+                return o;
+            },
+            [this, url, token, obsId](const Outcome &o) {
+                if (!o.cut.valid) {
+                    QMessageBox::critical(this, u"SODA subset failed"_s,
+                                          o.cut.error.isEmpty() ? u"The backend returned no detail."_s
+                                                                : o.cut.error);
+                    return;
+                }
+                if (!o.opened.valid) {
+                    QMessageBox::critical(this, u"Could not open SODA cutout"_s,
+                                          o.opened.error.isEmpty() ? u"Backend returned no error detail."_s
+                                                                   : o.opened.error);
+                    return;
+                }
+                BackendClient client(url, token);
+                // The viewer and the session context read the client's own session id,
+                // which a fresh client lacks: hand it the one the open was made in.
+                client.setSessionId(o.opened.sessionId);
+                openViewerFromOpenedDataset(o.cut.path, o.opened, client);
+                if (this->recentMgr)
+                    this->recentMgr->record(o.cut.path, u"%1 [SODA cutout]"_s.arg(obsId), o.opened.kind);
+            });
 }
 
 
@@ -549,7 +651,8 @@ void MainWindow::openSourceFinder(const QString &backendUrl, const QString &back
 }
 
 
-void MainWindow::doOpenDataFromUrl(const QString &url, const QString &obsId)
+void MainWindow::doOpenDataFromUrl(const QString &url, const QString &obsId,
+                                     const QString &remoteBearerToken)
 {
     if (url.trimmed().isEmpty()) {
         QMessageBox::warning(this, u"SKAVA"_s,
@@ -557,31 +660,43 @@ void MainWindow::doOpenDataFromUrl(const QString &url, const QString &obsId)
         return;
     }
     this->setActiveBackendBadge(this->settings->getLocalBackend());
-    BackendClient client(this->settings->getBackendUrl(),
-                          this->settings->getBackendToken());
-    const auto health = client.health();
-    if (!health.ok) {
-        QMessageBox::critical(this, u"Backend unavailable"_s,
-                u"Cannot download the SKAVA dataset: the VisIVO backend is "
-                u"not reachable.\n\nError: %1"_s.arg(
-                        health.error.isEmpty() ? u"No response"_s : health.error));
-        return;
-    }
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    const auto opened = client.openDatasetFromUrl(url, obsId);
-    QApplication::restoreOverrideCursor();
-    if (!opened.valid) {
-        QMessageBox::critical(this, u"Open from SKAVA"_s,
-                u"Could not open the dataset:\n\n%1"_s.arg(
-                        opened.error.isEmpty() ? u"unknown error"_s : opened.error));
-        return;
-    }
-    // The viewer wants a displayable path — for SKAVA-originated opens we
-    // use the obs_id so the window title, Recent Datasets entry, SAMP
-    // metadata etc. carry meaningful labels. The actual data is pulled
-    // by the viewer via opened.datasetId (already session-registered).
-    const QString displayPath = obsId.isEmpty() ? url : obsId;
-    openViewerFromOpenedDataset(displayPath, opened, client);
+    const QString backendUrl = this->settings->getBackendUrl();
+    const QString backendToken = this->settings->getBackendToken();
+    struct Outcome { bool reachable{ false }; QString healthError; BackendOpenDatasetResult opened; };
+    runWithProgress<Outcome>(
+            this, u"Open from SKAVA"_s,
+            u"Downloading %1 through the local backend…"_s.arg(obsId.isEmpty() ? url : obsId),
+            [backendUrl, backendToken, url, obsId, remoteBearerToken]() {
+                Outcome o;
+                BackendClient client(backendUrl, backendToken);
+                const auto health = client.health();
+                o.reachable = health.ok;
+                o.healthError = health.error;
+                if (o.reachable)
+                    o.opened = client.openDatasetFromUrl(url, obsId, remoteBearerToken);
+                return o;
+            },
+            [this, backendUrl, backendToken, url, obsId](const Outcome &o) {
+                if (!o.reachable) {
+                    QMessageBox::critical(this, u"Backend unavailable"_s,
+                            u"Cannot download the SKAVA dataset: the VisIVO backend is "
+                            u"not reachable.\n\nError: %1"_s.arg(
+                                    o.healthError.isEmpty() ? u"No response"_s : o.healthError));
+                    return;
+                }
+                if (!o.opened.valid) {
+                    QMessageBox::critical(this, u"Open from SKAVA"_s,
+                            u"Could not open the dataset:\n\n%1"_s.arg(
+                                    o.opened.error.isEmpty() ? u"unknown error"_s : o.opened.error));
+                    return;
+                }
+                // Display name: the obs_id, so titles and Recent Datasets read well.
+                BackendClient client(backendUrl, backendToken);
+                // The viewer and the session context read the client's own session id,
+                // which a fresh client lacks: hand it the one the open was made in.
+                client.setSessionId(o.opened.sessionId);
+                openViewerFromOpenedDataset(obsId.isEmpty() ? url : obsId, o.opened, client);
+            });
 }
 
 

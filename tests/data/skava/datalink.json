@@ -1,0 +1,187 @@
+{
+ "dataset": {
+  "obs_id": "d22-apertif-dr1-HI",
+  "obs_collection": "Apertif-DR1",
+  "dataproduct_type": "cube"
+ },
+ "routing": {
+  "best_node": "VIS-LOCAL",
+  "replicas": [
+   {
+    "code": "VIS-LOCAL",
+    "name": "VisIVO Backend (local Workspace Exports)",
+    "is_enabled": true,
+    "is_available": true,
+    "latency_score": 5.0,
+    "load_score": 0.1,
+    "capability_score": 0.95,
+    "access_endpoint": "http://host.docker.internal:8001/v1/exports/download?filename=Apertif_DR1_field191_HI.fits"
+   }
+  ]
+ },
+ "primary_access": {
+  "access_url": "http://host.docker.internal:8001/v1/exports/download?filename=Apertif_DR1_field191_HI.fits",
+  "access_format": "image/fits",
+  "access_estsize": 2000000000
+ },
+ "links": [
+  {
+   "rel": "self",
+   "href": "http://testserver/datalink/d22-apertif-dr1-HI",
+   "content_type": "application/json",
+   "title": "Access descriptor",
+   "description": "DataLink-like JSON descriptor for this dataset.",
+   "node_id": null
+  },
+  {
+   "rel": "direct-download",
+   "href": "http://host.docker.internal:8001/v1/exports/download?filename=Apertif_DR1_field191_HI.fits",
+   "content_type": "image/fits",
+   "title": "Primary direct download",
+   "description": "Direct remote access endpoint for the selected node.",
+   "node_id": "VIS-LOCAL"
+  },
+  {
+   "rel": "preview",
+   "href": null,
+   "content_type": "image/png",
+   "title": "Preview placeholder",
+   "description": "Preview service not yet implemented.",
+   "node_id": null
+  },
+  {
+   "rel": "metadata",
+   "href": null,
+   "content_type": "application/json",
+   "title": "Metadata placeholder",
+   "description": "Dedicated metadata endpoint not yet implemented.",
+   "node_id": null
+  },
+  {
+   "rel": "datalink",
+   "href": "http://testserver/datalink/d22-apertif-dr1-HI",
+   "content_type": "application/json",
+   "title": "DataLink-like entrypoint",
+   "description": "Current JSON precursor; future DataLink serialization can map here.",
+   "node_id": null
+  },
+  {
+   "rel": "soda-sync",
+   "href": "http://testserver/soda/sync",
+   "content_type": "application/json",
+   "title": "SODA sync endpoint",
+   "description": "SODA sync stub endpoint with request validation and routing orchestration.",
+   "node_id": null
+  },
+  {
+   "rel": "soda-async",
+   "href": "http://testserver/soda/async",
+   "content_type": "application/json",
+   "title": "SODA async placeholder",
+   "description": "SODA async endpoint placeholder.",
+   "node_id": null
+  }
+ ],
+ "service_descriptors": [
+  {
+   "service_type": "access-resolution",
+   "service_id": "skava-access-resolution",
+   "access_url": "http://testserver/datalink/d22-apertif-dr1-HI",
+   "standard_id": "ivo://ivoa.net/std/DataLink#links-1.1",
+   "supported_parameters": [
+    "ID"
+   ],
+   "enabled": true,
+   "description": "Dataset access resolution endpoint returning DataLink-like JSON.",
+   "endpoint": null,
+   "node_code": null,
+   "requires_auth": null,
+   "supports_kinds": null
+  },
+  {
+   "service_type": "soda-sync",
+   "service_id": "skava-soda-sync",
+   "access_url": "http://testserver/soda/sync",
+   "standard_id": "ivo://ivoa.net/std/SODA#sync-1.0",
+   "supported_parameters": [
+    "ID",
+    "POS",
+    "BAND",
+    "TIME",
+    "RESPONSEFORMAT"
+   ],
+   "enabled": true,
+   "description": "Operational SODA sync stub endpoint (validation/orchestration only, no server-side subsetting execution yet).",
+   "endpoint": null,
+   "node_code": null,
+   "requires_auth": null,
+   "supports_kinds": null
+  },
+  {
+   "service_type": "soda-async",
+   "service_id": "skava-soda-async",
+   "access_url": "http://testserver/soda/async",
+   "standard_id": "ivo://ivoa.net/std/SODA#async-1.0",
+   "supported_parameters": [
+    "ID",
+    "POS",
+    "BAND",
+    "TIME"
+   ],
+   "enabled": false,
+   "description": "Planned asynchronous SODA subset service.",
+   "endpoint": null,
+   "node_code": null,
+   "requires_auth": null,
+   "supports_kinds": null
+  },
+  {
+   "service_type": "cutout",
+   "service_id": "skava-cutout",
+   "access_url": "http://testserver/soda/execute",
+   "standard_id": "ivo://ivoa.net/std/SODA#sync-1.0",
+   "supported_parameters": [
+    "ID",
+    "POS",
+    "BAND",
+    "TIME"
+   ],
+   "enabled": true,
+   "description": "Server-side SODA cutout executed on the node's co-located VisIVO backend (compute-next-to-data).",
+   "endpoint": null,
+   "node_code": null,
+   "requires_auth": null,
+   "supports_kinds": null
+  },
+  {
+   "service_type": "visivo-backend",
+   "service_id": "visivo-backend-vis-local",
+   "access_url": "http://host.docker.internal:8001",
+   "standard_id": null,
+   "supported_parameters": [
+    "ID"
+   ],
+   "enabled": true,
+   "description": "VisIVO compute backend co-located with node VIS-LOCAL (VisIVO Backend (local Workspace Exports)). Desktop clients can open datasets directly on the SRC without downloading the file.",
+   "endpoint": "http://host.docker.internal:8001",
+   "node_code": "VIS-LOCAL",
+   "requires_auth": false,
+   "supports_kinds": [
+    "image",
+    "cube",
+    "dynspec"
+   ]
+  }
+ ],
+ "capabilities": {
+  "supports_datalink": true,
+  "supports_soda_sync": true,
+  "supports_soda_async": false,
+  "supports_cutout": true,
+  "supports_preview": false,
+  "supports_soda_sync_endpoint": true,
+  "supports_soda_sync_execution": true,
+  "supports_soda_async_endpoint": false,
+  "supports_soda_async_execution": false
+ }
+}

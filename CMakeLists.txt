@@ -823,6 +823,7 @@ qt_add_executable(test_remote_render
         src/AnalysisParamStore.cpp
         src/Settings.cpp
         src/skava/BackendRouting.cpp
+        src/skava/SkavaClient.cpp
         src/vtk/ImageLod.cpp
 )
 target_include_directories(test_remote_render PRIVATE

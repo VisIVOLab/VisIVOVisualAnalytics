@@ -163,7 +163,7 @@ QByteArray SkavaClient::performGet(const QUrl &url, QString &error) const
     cancelPoll.stop();
 
     if (cancelled || m_cancelRequested.load()) {
-        error = u"Search cancelled."_s;
+        error = u"Request cancelled."_s;
         reply->deleteLater();
         return {};
     }
@@ -176,7 +176,10 @@ QByteArray SkavaClient::performGet(const QUrl &url, QString &error) const
         return {};
     }
     if (reply->error() != QNetworkReply::NoError) {
-        error = reply->errorString();
+        // SKAVA explains a 4xx/5xx in its error envelope (dataset_not_found,
+        // no_available_nodes, …); Qt's errorString only says "Not Found".
+        const QString detail = parseErrorEnvelope(reply->readAll());
+        error = detail.isEmpty() ? reply->errorString() : detail;
         reply->deleteLater();
         return {};
     }
@@ -278,6 +281,33 @@ SkavaDatalinkResponse SkavaClient::getDatalink(const QString &obsId) const
 
 // ── Parsers (JSON-only, unit-testable) ──────────────────────────────────────
 
+QString SkavaClient::parseErrorEnvelope(const QByteArray &body)
+{
+    const QJsonDocument doc = QJsonDocument::fromJson(body);
+    if (!doc.isObject())
+        return {};
+    const QJsonValue err = doc.object().value(u"error"_s);
+    if (!err.isObject())
+        return {};
+    const QJsonObject e = err.toObject();
+    const QString code = e.value(u"code"_s).toString();
+    const QString message = e.value(u"message"_s).toString();
+    if (code.isEmpty() && message.isEmpty())
+        return {};
+    return code.isEmpty() ? message : (message.isEmpty() ? code : u"%1 - %2"_s.arg(code, message));
+}
+
+QString SkavaDatalinkResponse::accessUrlForNode(const QString &nodeCode) const
+{
+    if (nodeCode.isEmpty() || nodeCode == bestNode)
+        return primaryAccessUrl;
+    for (const auto &rep : replicas) {
+        if (rep.code == nodeCode)
+            return rep.accessEndpoint;
+    }
+    return {};
+}
+
 SkavaDatasetMetadata SkavaClient::parseDatasetMetadata(const QJsonObject &obj)
 {
     SkavaDatasetMetadata m;
@@ -311,9 +341,9 @@ SkavaReplica SkavaClient::parseReplica(const QJsonObject &obj)
     r.name            = getStringField(obj, u"name"_s);
     r.isEnabled       = obj.value(u"is_enabled"_s).toBool(true);
     r.isAvailable     = obj.value(u"is_available"_s).toBool(true);
-    r.latencyScore    = getDoubleField(obj, u"latency_score"_s, 0.0);
-    r.loadScore       = getDoubleField(obj, u"load_score"_s, 0.0);
-    r.capabilityScore = getDoubleField(obj, u"capability_score"_s, 0.0);
+    r.latencyScore    = getDoubleField(obj, u"latency_score"_s);
+    r.loadScore       = getDoubleField(obj, u"load_score"_s);
+    r.capabilityScore = getDoubleField(obj, u"capability_score"_s);
     r.accessEndpoint  = getStringField(obj, u"access_endpoint"_s);
     return r;
 }

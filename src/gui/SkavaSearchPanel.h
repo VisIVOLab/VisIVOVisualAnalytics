@@ -36,9 +36,9 @@ class Settings;
 ///   5. Provenance panel    — selected dataset's DOI / PID / citation /
 ///                            license (copy-to-clipboard buttons)
 ///   6. Open button         — resolves /datalink/{obs_id} and emits
-///                            openDatasetUrlRequested(url, obs_id), which
-///                            the MainWindow forwards to the VisIVO backend
-///                            `/v1/datasets/open_url` for download + open.
+///                            openSkavaDatasetRequested(obs_id, datalink);
+///                            MainWindow routes it to the VisIVO backend on
+///                            the node that holds the data.
 ///
 /// All network activity runs on a QtConcurrent worker so the UI thread
 /// stays responsive — the same async pattern used by the rest of the
@@ -47,16 +47,10 @@ class SkavaSearchPanel : public QWidget
 {
     Q_OBJECT
 public:
-    explicit SkavaSearchPanel(Settings *settings,
-                               class BackendClient *backendClient,
-                               QWidget *parent = nullptr);
+    explicit SkavaSearchPanel(Settings *settings, QWidget *parent = nullptr);
     ~SkavaSearchPanel() override;
 
 signals:
-    /// Legacy: emitted when only the access URL is needed. Still wired so
-    /// callers that just want a download path keep working.
-    void openDatasetUrlRequested(const QString &accessUrl, const QString &obsId);
-
     /// Emitted when the user has clicked **Open** and SKAVA resolved the
     /// full DataLink envelope. MainWindow uses this to make a
     /// backend-aware routing decision (compute next to data when a
@@ -89,7 +83,6 @@ private:
     void cancelRequest();
 
     Settings *m_settings{ nullptr };
-    BackendClient *m_backendClient{ nullptr };
     SkavaClient *m_skavaClient{ nullptr };
 
     // Connection bar

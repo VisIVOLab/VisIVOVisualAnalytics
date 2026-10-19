@@ -1,19 +1,40 @@
 # Distributed VisIVO Backend — Architecture & Design
 
-> Status: **desktop side implemented** (July 2026); SKAVA server side still design
+> Status: **implemented on both sides** (desktop July 2026; SKAVA server side
+> and routing hardening October 2026)
 > Author: VisIVO integration, June 2026
 > Related: SKAVA D3.1 (§3.4 Data Locality), SKAVA D3.1 (§13.3 Data Staging)
 
 ```{note}
-**Implementation status (July 2026).** The desktop side of this design is
-built and shipped: the `Settings` multi-backend registry (§6.1), the
-`BackendsSettingsWidget` dialog tab (§6.2), `BackendClientFactory` session
-caching (§6.3), SKAVA `visivo-backend` descriptor parsing (§6.4), and the
-`pickBackendForSkavaDataset` / `doOpenSkavaDataset` routing (§4.2 / §6.5).
-The routing decision is unit-tested (`tests/TestBackendRouting`, see
-[Testing](testing)). What remains design-only is the **SKAVA server side**
-(§7 — the `nodes.visivo_backend_url` column and DataLink descriptor
-emission), which lives in the SKAVA repository, not this one.
+**Implementation status (October 2026).**
+
+*Desktop:* `Settings` multi-backend registry (§6.1), `BackendsSettingsWidget`
+(§6.2), SKAVA descriptor parsing (§6.4) and routing (§4.2 / §6.5), now as the
+pure function `routeSkavaDataset` (`src/skava/BackendRouting.h`). It honours
+`supports_kinds` and `requires_auth`, opens **the chosen node's own replica**
+(`routing.replicas[node_code].access_endpoint`, never another node's path),
+treats `host.docker.internal` / `localhost` / `127.0.0.1` as one host, and
+reports why each descriptor was skipped. With no usable descriptor, an http
+replica is downloaded by the local backend with the SKAVA token, and a
+`file://` one prompts to register the advertised backend (§4.2 step 5) and
+retries. Open, reopen and SODA run off the UI thread. Tests:
+`tests/TestBackendRouting`, `tests/TestSkavaClient` (fixtures recorded from a
+live SKAVA), `backend/tests/test_open_skava.py`.
+
+*SKAVA server (§7):* `nodes.visivo_backend_url` (migration 0007), `visivo-backend`
+descriptors in the JSON DataLink and `#auxiliary` rows in the VOTable,
+delegation of `/soda/execute` to the first executable replica.
+
+*Not yet:* the "Served by" column and dynamic "Open via" label (§6.6), retry on
+the next replica after a 5xx (§9), keychain storage of tokens (§8.1).
+`BackendClientFactory` is not needed by the SKAVA flow: requests from every
+`BackendClient` to the same backend carry the same session — the id that
+backend minted for the (URL, effective token) pair (`s_minted`), or the
+process-wide default (`s_defaultSessionId`) when it minted none — so a dataset
+opened by a worker-thread client is visible to the viewer's client. The
+viewer's client is still given `opened.sessionId` explicitly, because the
+viewer and the session context read `BackendClient::sessionId()`, which a
+fresh client leaves empty.
 ```
 
 ## 1. Executive Summary

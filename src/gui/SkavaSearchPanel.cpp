@@ -1,7 +1,6 @@
 #include "SkavaSearchPanel.h"
 
 #include "../Settings.h"
-#include "../app/BackendClient.h"
 
 #include <QAbstractItemModel>
 #include <QApplication>
@@ -148,14 +147,14 @@ public:
             case ColTime:     return formatMjdRange(r.metadata.tMin, r.metadata.tMax);
             case ColBestNode: return r.bestNode;
             case ColLatency: {
-                if (r.replicas.isEmpty()) return {};
-                // Show the best replica's latency_score.
+                // The best replica's latency_score: a dimensionless ranking
+                // score set by the SKAVA operator, not a measured time.
                 double best = std::numeric_limits<double>::infinity();
                 for (const auto &rep : r.replicas) {
-                    if (rep.latencyScore < best) best = rep.latencyScore;
+                    if (std::isfinite(rep.latencyScore) && rep.latencyScore < best)
+                        best = rep.latencyScore;
                 }
-                if (!std::isfinite(best)) return {};
-                return QStringLiteral("%1 ms").arg(best, 0, 'f', 1);
+                return std::isfinite(best) ? QString::number(best, 'g', 3) : u"—"_s;
             }
             default: return {};
             }
@@ -177,7 +176,7 @@ public:
         case ColBand:     return u"Band"_s;
         case ColTime:     return u"Time"_s;
         case ColBestNode: return u"Best node"_s;
-        case ColLatency:  return u"Latency"_s;
+        case ColLatency:  return u"Latency score"_s;
         default:          return {};
         }
     }
@@ -189,12 +188,9 @@ private:
 
 // ── Constructor / build UI ─────────────────────────────────────────────────
 
-SkavaSearchPanel::SkavaSearchPanel(Settings *settings,
-                                    BackendClient *backendClient,
-                                    QWidget *parent)
+SkavaSearchPanel::SkavaSearchPanel(Settings *settings, QWidget *parent)
     : QWidget(parent),
       m_settings(settings),
-      m_backendClient(backendClient),
       m_skavaClient(new SkavaClient(QString(), QString(), this)),
       m_resultsModel(new SkavaResultsModel(this)),
       m_searchWatcher(new QFutureWatcher<SkavaDiscoveryResponse>(this)),
@@ -230,12 +226,24 @@ SkavaSearchPanel::SkavaSearchPanel(Settings *settings,
         // leave a stale subset flag that hijacks the next Open.
         const bool wantSubset = m_pendingSubset;
         m_pendingSubset = false;
-        const auto resp = m_datalinkWatcher->result();
+        auto resp = m_datalinkWatcher->result();
         if (!resp.valid) {
             QMessageBox::warning(this, u"SKAVA DataLink"_s,
                     u"Access resolution failed:\n\n%1"_s.arg(
                             resp.error.isEmpty() ? u"unknown error"_s : resp.error));
             return;
+        }
+        // DataLink describes the dataset only by id, collection and type; the
+        // discovery row has the full ObsCore metadata (position, field, band).
+        // Merge it so the SODA dialog can prefill the region.
+        for (const auto &row : m_resultsModel->results()) {
+            if (row.metadata.obsId == resp.dataset.obsId) {
+                const QString type = resp.dataset.dataproductType;
+                resp.dataset = row.metadata;
+                if (!type.isEmpty())
+                    resp.dataset.dataproductType = type;
+                break;
+            }
         }
         // The same DataLink resolution feeds two actions. When the user
         // clicked "SODA subset", route to the subset flow; otherwise do the
@@ -249,7 +257,6 @@ SkavaSearchPanel::SkavaSearchPanel(Settings *settings,
         // legacy signal is retained for any consumer that only wants the
         // URL. Both connect to the same effective flow inside MainWindow.
         emit openSkavaDatasetRequested(resp.dataset.obsId, resp);
-        emit openDatasetUrlRequested(resp.primaryAccessUrl, resp.dataset.obsId);
     });
 
     QObject::connect(m_resultsTable->selectionModel(),

@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QString>
 #include <QVector>
+#include <limits>
 #include <optional>
 
 /// Synchronous (worker-thread friendly) REST client for the SKAVA Data
@@ -39,9 +40,11 @@ struct SkavaReplica
     QString name;
     bool    isEnabled{ true };
     bool    isAvailable{ true };
-    double  latencyScore{ 0. };
-    double  loadScore{ 0. };
-    double  capabilityScore{ 0. };
+    /// Ranking scores entered by the SKAVA operator. NaN when the node has
+    /// none: they are dimensionless ranking inputs, not measured latencies.
+    double  latencyScore{ std::numeric_limits<double>::quiet_NaN() };
+    double  loadScore{ std::numeric_limits<double>::quiet_NaN() };
+    double  capabilityScore{ std::numeric_limits<double>::quiet_NaN() };
     QString accessEndpoint;
 };
 
@@ -109,8 +112,9 @@ struct SkavaDatalinkResponse
 {
     bool                  valid{ false };
     QString               error;
-    /// The download URL the desktop should hand to ``open_url`` — taken
-    /// from ``primary_access.access_url``.
+    /// The access URL of the replica on the BEST node (``primary_access``).
+    /// Another node's copy of the file lives elsewhere: use
+    /// ``accessUrlForNode()`` for any node other than ``bestNode``.
     QString               primaryAccessUrl;
     QString               primaryAccessFormat;
     qint64                primaryAccessEstSize{ 0 };
@@ -123,6 +127,11 @@ struct SkavaDatalinkResponse
     /// when empty the desktop falls back to download via the local
     /// backend's ``/v1/datasets/open_url``.
     QVector<SkavaVisivoBackendDescriptor> visivoBackends;
+
+    /// Where this dataset lives on node ``nodeCode``: the primary access URL
+    /// for the best node, otherwise that node's replica ``access_endpoint``.
+    /// Empty when SKAVA lists no replica on that node.
+    QString accessUrlForNode(const QString &nodeCode) const;
 };
 
 // ── Search filter ───────────────────────────────────────────────────────────
@@ -207,6 +216,13 @@ public:
 
 private:
     QByteArray performGet(const class QUrl &url, QString &error) const;
+
+public:
+    /// SKAVA's error envelope ``{"error": {"code", "message"}}`` as one line,
+    /// or empty when ``body`` is not one. Factored out for unit tests.
+    static QString parseErrorEnvelope(const QByteArray &body);
+
+private:
 
     QString m_baseUrl;
     QString m_bearerToken;
