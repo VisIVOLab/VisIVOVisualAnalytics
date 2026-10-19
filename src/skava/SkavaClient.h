@@ -2,6 +2,7 @@
 #define SkavaClient_h
 
 #include <atomic>
+#include <QHash>
 #include <QObject>
 #include <QString>
 #include <QVector>
@@ -83,6 +84,9 @@ struct SkavaDiscoveryResult
     /// from" without making a second round-trip. The canonical access
     /// URL still comes from ``getDatalink()``.
     QString                  accessUrl;
+    /// ObsCore ``access_format`` (VO protocol). When it is the DataLink
+    /// content type, ``accessUrl`` is the dataset's DataLink document.
+    QString                  accessFormat;
 };
 
 struct SkavaDiscoveryResponse
@@ -127,6 +131,11 @@ struct SkavaDatalinkResponse
     /// when empty the desktop falls back to download via the local
     /// backend's ``/v1/datasets/open_url``.
     QVector<SkavaVisivoBackendDescriptor> visivoBackends;
+    /// SODA service advertised by the DataLink document (VOTable
+    /// ``adhoc:service`` behind the ``#cutout`` row): its access URL and
+    /// standardID. Empty when no cutout is offered.
+    QString sodaServiceUrl;
+    QString sodaStandardId;
 
     /// Where this dataset lives on node ``nodeCode``: the primary access URL
     /// for the best node, otherwise that node's replica ``access_endpoint``.
@@ -180,6 +189,16 @@ public:
     void setBearerToken(const QString &token);
     QString baseUrl() const { return m_baseUrl; }
 
+    /// Which interface to speak (see Settings::getSkavaProtocol): SKAVA's
+    /// JSON API, or the IVOA standards (TAP/ObsCore + DataLink VOTable).
+    enum class Protocol { SkavaJson, Vo };
+    void setProtocol(Protocol protocol) { m_protocol = protocol; }
+    Protocol protocol() const { return m_protocol; }
+    /// VO protocol endpoints; empty = derived from the base URL (SKAVA layout).
+    void setTapUrl(const QString &url);
+    void setDatalinkUrl(const QString &url);
+    QString tapUrl() const;
+
     /// Blocking discovery query. ``GET /discovery/search`` with the supplied
     /// filter encoded as query parameters per ``discovery_queries.md``.
     SkavaDiscoveryResponse searchDiscovery(const SkavaSearchFilter &filter) const;
@@ -189,6 +208,31 @@ public:
     /// ``primaryAccessUrl`` to the VisIVO backend's ``/v1/datasets/open_url``
     /// to download and open the file.
     SkavaDatalinkResponse  getDatalink(const QString &obsId) const;
+
+    /// Access resolution for one search result row. With the VO protocol the
+    /// row's own ObsCore access_url is used — a DataLink document when
+    /// access_format says so, otherwise a direct download — because obs_id
+    /// need not identify a single product. Falls back to getDatalink(obs_id).
+    SkavaDatalinkResponse  resolveAccess(const SkavaDiscoveryResult &row) const;
+
+    /// "vo" → Vo, anything else → SkavaJson (Settings::getSkavaProtocol values).
+    static Protocol protocolFromString(const QString &name);
+
+    // ── VO protocol (static, unit-testable) ──
+    /// ADQL for an ObsCore search equivalent to @p filter: cone with CONTAINS,
+    /// band and time as interval overlaps, string columns quoted with ''
+    /// doubled. Pagination is TOP (ADQL 2.0 has no OFFSET).
+    static QString buildObscoreAdql(const SkavaSearchFilter &filter);
+    /// TAP result (VOTable TABLEDATA, ObsCore columns) → discovery response.
+    static SkavaDiscoveryResponse parseObscoreVotable(const QByteArray &votable);
+    /// DataLink VOTable → the same response the JSON DataLink produces:
+    /// ``#this`` rows are the replicas (best first, ``node_id`` = node code),
+    /// ``#auxiliary`` rows pointing at a VisIVO backend's ``/v1/health`` are
+    /// the co-located backends, the ``#cutout`` row's service is the SODA.
+    static SkavaDatalinkResponse parseDatalinkVotable(const QByteArray &votable,
+                                                      const QString &obsId);
+    /// ObsCore access_format of a DataLink document.
+    static QString datalinkContentType();
 
     // ── JSON-only parsers (factored out for unit-testing without HTTP) ──
     static SkavaDatasetMetadata    parseDatasetMetadata(const class QJsonObject &obj);
@@ -215,7 +259,11 @@ public:
     void clearCancel();
 
 private:
-    QByteArray performGet(const class QUrl &url, QString &error) const;
+    QByteArray performGet(const class QUrl &url, QString &error,
+                          const QByteArray &accept = "application/json") const;
+    SkavaDiscoveryResponse searchTap(const SkavaSearchFilter &filter) const;
+    SkavaDatalinkResponse  getDatalinkVo(const QString &obsId) const;
+    SkavaDatalinkResponse  fetchDatalinkVo(const class QUrl &url, const QString &obsId) const;
 
 public:
     /// SKAVA's error envelope ``{"error": {"code", "message"}}`` as one line,
@@ -226,6 +274,9 @@ private:
 
     QString m_baseUrl;
     QString m_bearerToken;
+    Protocol m_protocol{ Protocol::SkavaJson };
+    QString m_tapUrl;
+    QString m_datalinkUrl;
     /// Set by requestCancel(), read by the worker inside performGet().
     mutable std::atomic_bool m_cancelRequested{ false };
 };

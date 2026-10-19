@@ -48,6 +48,7 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/Settings.cpp
     ${VISIVO_ROOT}/src/skava/BackendRouting.cpp
     ${VISIVO_ROOT}/src/skava/SkavaClient.cpp
+    ${VISIVO_ROOT}/src/skava/VoTable.cpp
     ${VISIVO_ROOT}/src/vtk/ImageLod.cpp
 )
 set_target_properties(visivo_test_support PROPERTIES AUTOMOC ON)

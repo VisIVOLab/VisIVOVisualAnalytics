@@ -3234,6 +3234,13 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
 vtkWindowCube::~vtkWindowCube()
 {
+    // Child widgets (PV diagram, probe/profile plots, …) are deleted later by ~QWidget, when
+    // this object is already half destroyed — but their destroyed() lambdas use `this` as the
+    // context and would still run (Qt drops receiver connections only in ~QObject, after the
+    // children are gone), calling clearPv()/Render() on torn-down members → segfault on quit.
+    // Cut every child → this connection up front.
+    for (QObject *child : this->findChildren<QObject *>())
+        QObject::disconnect(child, nullptr, this, nullptr);
     // #5b: drop the transitory live-spectrum entry from the SESSION-WIDE registry (panes are
     // being torn down anyway — just clear the registry so a closed window leaves nothing).
     if (!this->m_spectrumLiveId.isEmpty()) {

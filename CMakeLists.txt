@@ -393,7 +393,9 @@ set(PROJECT_SOURCES
         src/vlkb/VlkbQueryService.cpp
         src/vlkb/VlkbQueryService.h
         src/skava/SkavaClient.cpp
+        src/skava/VoTable.cpp
         src/skava/SkavaClient.h
+        src/skava/VoTable.h
         src/skava/BackendRouting.cpp
         src/skava/BackendRouting.h
         src/gui/SkavaSearchPanel.cpp
@@ -824,6 +826,7 @@ qt_add_executable(test_remote_render
         src/Settings.cpp
         src/skava/BackendRouting.cpp
         src/skava/SkavaClient.cpp
+        src/skava/VoTable.cpp
         src/vtk/ImageLod.cpp
 )
 target_include_directories(test_remote_render PRIVATE

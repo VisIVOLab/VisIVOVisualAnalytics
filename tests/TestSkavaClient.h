@@ -15,6 +15,16 @@ private slots:
     void nullScoresStayNaN();
     void parsesErrorEnvelope();
     void accessUrlForNode();
+    // VO protocol (TAP/ObsCore + DataLink VOTable)
+    void adqlFromFilter();
+    void adqlQuotesStrings();
+    void parsesObscoreVotable();
+    void parsesDatalinkVotable();
+    void datalinkVotableRoutesLikeJson();
+    void votableErrorsAreReported();
+    void votableSkipsMetaResource();
+    void adqlOrdersWhenPaging();
+    void resolveAccessUsesTheRow();
 };
 
 #endif  // TestSkavaClient_h

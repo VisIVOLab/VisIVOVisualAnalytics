@@ -75,8 +75,14 @@ jobs:
       - name: Configure (standalone tests project)
         run: cmake -S tests -B build-tests -DCMAKE_BUILD_TYPE=Release
 
+      # A bare `-j` is NO limit with the Makefile generator: every translation
+      # unit compiles at once, each holding the Qt headers in a few hundred MB.
+      # On a 4-core / 16 GB runner that swaps until the job timeout sends
+      # SIGTERM (exit 143, "Terminated", no compiler error in the log) — which
+      # is how the suite started failing once it reached ~35 units. One job
+      # per core is as fast and stays in memory.
       - name: Build
-        run: cmake --build build-tests -j
+        run: cmake --build build-tests -j "$(nproc)"
 
       - name: Test
         run: ctest --test-dir build-tests --output-on-failure

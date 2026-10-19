@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<VOTABLE version="1.4" xmlns="http://www.ivoa.net/xml/VOTable/v1.4">
+  <RESOURCE type="results">
+    <INFO name="QUERY_STATUS" value="OK"/>
+    <TABLE name="ivoa.ObsCore">
+      <FIELD name="obs_id" datatype="char" arraysize="*"/>
+<FIELD name="obs_collection" datatype="char" arraysize="*"/>
+<FIELD name="obs_title" datatype="char" arraysize="*"/>
+<FIELD name="dataproduct_type" datatype="char" arraysize="*"/>
+<FIELD name="calib_level" datatype="int"/>
+<FIELD name="target_name" datatype="char" arraysize="*"/>
+<FIELD name="facility_name" datatype="char" arraysize="*"/>
+<FIELD name="instrument_name" datatype="char" arraysize="*"/>
+<FIELD name="s_ra" datatype="double"/>
+<FIELD name="s_dec" datatype="double"/>
+<FIELD name="s_fov" datatype="double"/>
+<FIELD name="t_min" datatype="double"/>
+<FIELD name="t_max" datatype="double"/>
+<FIELD name="em_min" datatype="double"/>
+<FIELD name="em_max" datatype="double"/>
+<FIELD name="access_url" datatype="char" arraysize="*"/>
+<FIELD name="access_format" datatype="char" arraysize="*"/>
+      <DATA>
+        <TABLEDATA>
+          <TR><TD>d22-apertif-dr1-HI</TD><TD>Apertif-DR1</TD><TD>Apertif DR1 HI cube</TD><TD>cube</TD><TD>3</TD><TD>Apertif DR1 HI field</TD><TD>WSRT</TD><TD>Apertif</TD><TD>200.0</TD><TD>42.0</TD><TD>8.0</TD><TD>58200.0</TD><TD>58300.0</TD><TD>0.17951644191616767</TD><TD>0.3331027311111111</TD><TD>http://testserver/datalink/d22-apertif-dr1-HI?RESPONSEFORMAT=votable</TD><TD>application/x-votable+xml;content=datalink</TD></TR>
+<TR><TD>d22-meerkat-fornax-HI</TD><TD>MFS</TD><TD>MeerKAT Fornax Survey — HI cube fragment</TD><TD>cube</TD><TD>3</TD><TD>Fornax A surroundings</TD><TD>MeerKAT</TD><TD>MeerKAT L-band</TD><TD>50.7</TD><TD>-37.2</TD><TD>4.0</TD><TD>59400.0</TD><TD>59600.0</TD><TD>0.17951644191616767</TD><TD>0.3331027311111111</TD><TD>http://testserver/datalink/d22-meerkat-fornax-HI?RESPONSEFORMAT=votable</TD><TD>application/x-votable+xml;content=datalink</TD></TR>
+        </TABLEDATA>
+      </DATA>
+    </TABLE>
+  </RESOURCE>
+</VOTABLE>

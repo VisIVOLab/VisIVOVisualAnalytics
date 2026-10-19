@@ -233,18 +233,7 @@ SkavaSearchPanel::SkavaSearchPanel(Settings *settings, QWidget *parent)
                             resp.error.isEmpty() ? u"unknown error"_s : resp.error));
             return;
         }
-        // DataLink describes the dataset only by id, collection and type; the
-        // discovery row has the full ObsCore metadata (position, field, band).
-        // Merge it so the SODA dialog can prefill the region.
-        for (const auto &row : m_resultsModel->results()) {
-            if (row.metadata.obsId == resp.dataset.obsId) {
-                const QString type = resp.dataset.dataproductType;
-                resp.dataset = row.metadata;
-                if (!type.isEmpty())
-                    resp.dataset.dataproductType = type;
-                break;
-            }
-        }
+        // resolveAccess() already merged the selected row's full ObsCore metadata.
         // The same DataLink resolution feeds two actions. When the user
         // clicked "SODA subset", route to the subset flow; otherwise do the
         // normal open.
@@ -510,6 +499,11 @@ void SkavaSearchPanel::reloadClientFromFields()
     if (!m_skavaClient) return;
     m_skavaClient->setBaseUrl(m_urlEdit->text().trimmed());
     m_skavaClient->setBearerToken(m_tokenEdit->text().trimmed());
+    if (m_settings) {
+        m_skavaClient->setProtocol(SkavaClient::protocolFromString(m_settings->getSkavaProtocol()));
+        m_skavaClient->setTapUrl(m_settings->getSkavaTapUrl());
+        m_skavaClient->setDatalinkUrl(m_settings->getSkavaDatalinkUrl());
+    }
 }
 
 void SkavaSearchPanel::setBusy(bool busy, const QString &message)
@@ -650,14 +644,14 @@ void SkavaSearchPanel::openSelected()
     const int row = m_resultsTable->currentIndex().row();
     const auto &all = m_resultsModel->results();
     if (row < 0 || row >= all.size()) return;
-    const QString obsId = all[row].metadata.obsId;
-    if (obsId.isEmpty()) return;
+    const SkavaDiscoveryResult selected = all[row];
+    if (selected.metadata.obsId.isEmpty()) return;
 
     setBusy(true, u"Resolving access URL…"_s);
     SkavaClient *client = m_skavaClient;
     client->clearCancel();
-    m_datalinkWatcher->setFuture(QtConcurrent::run([client, obsId]() {
-        return client->getDatalink(obsId);
+    m_datalinkWatcher->setFuture(QtConcurrent::run([client, selected]() {
+        return client->resolveAccess(selected);
     }));
 }
 
@@ -669,8 +663,8 @@ void SkavaSearchPanel::requestSubset()
     const int row = m_resultsTable->currentIndex().row();
     const auto &all = m_resultsModel->results();
     if (row < 0 || row >= all.size()) return;
-    const QString obsId = all[row].metadata.obsId;
-    if (obsId.isEmpty()) return;
+    const SkavaDiscoveryResult selected = all[row];
+    if (selected.metadata.obsId.isEmpty()) return;
 
     // Reuse the shared DataLink resolution; the watcher routes to
     // sodaSubsetRequested instead of the open signals because of this flag.
@@ -678,8 +672,8 @@ void SkavaSearchPanel::requestSubset()
     setBusy(true, u"Resolving access for SODA subset…"_s);
     SkavaClient *client = m_skavaClient;
     client->clearCancel();
-    m_datalinkWatcher->setFuture(QtConcurrent::run([client, obsId]() {
-        return client->getDatalink(obsId);
+    m_datalinkWatcher->setFuture(QtConcurrent::run([client, selected]() {
+        return client->resolveAccess(selected);
     }));
 }
 

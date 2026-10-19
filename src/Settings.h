@@ -195,6 +195,29 @@ public:
    */
     void setSkavaToken(const QString &token);
 
+    /**
+   * How the discovery tab talks to its service: ``"skava"`` (SKAVA's JSON
+   * API, the default) or ``"vo"`` (IVOA standards: TAP on ObsCore and
+   * DataLink VOTables — what the SRCNet global services speak).
+   */
+    QString getSkavaProtocol() const;
+    void setSkavaProtocol(const QString &protocol);
+
+    /**
+   * TAP service base URL for the ``"vo"`` protocol (``…/tap``; the client
+   * appends ``/sync``). Empty = ``<SKAVA url>/tap``.
+   */
+    QString getSkavaTapUrl() const;
+    void setSkavaTapUrl(const QString &url);
+
+    /**
+   * DataLink endpoint for the ``"vo"`` protocol, used only when a TAP row
+   * does not carry its own DataLink ``access_url`` (called as ``<url>?ID=``).
+   * Empty = SKAVA's ``<SKAVA url>/datalink/<id>``.
+   */
+    QString getSkavaDatalinkUrl() const;
+    void setSkavaDatalinkUrl(const QString &url);
+
     // ── Scientific copilot (LLM provider) ────────────────────────────────────
     // Persisted so the user configures the provider once. providerChoice mirrors
     // the panel/dialog combo: 0=Claude, 1=ChatGPT, 2=Your server, 3=None.
@@ -276,6 +299,9 @@ private:
     // SKAVA discovery service
     static const std::pair<QString, QVariant> SkavaUrl;
     static const std::pair<QString, QVariant> SkavaToken;
+    static const std::pair<QString, QVariant> SkavaProtocol;
+    static const std::pair<QString, QVariant> SkavaTapUrl;
+    static const std::pair<QString, QVariant> SkavaDatalinkUrl;
 
     // Scientific copilot (LLM provider)
     static const std::pair<QString, QVariant> CopilotProvider;

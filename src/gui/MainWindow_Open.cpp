@@ -272,12 +272,19 @@ void MainWindow::reopenDataset(const RecentDataset &dataset)
     if (dataset.source == u"skava"_s && !dataset.obsId.isEmpty()) {
         const QString skavaUrl = this->settings->getSkavaUrl();
         const QString skavaToken = this->settings->getSkavaToken();
+        const auto protocol = SkavaClient::protocolFromString(this->settings->getSkavaProtocol());
+        const QString tapUrl = this->settings->getSkavaTapUrl();
+        const QString datalinkUrl = this->settings->getSkavaDatalinkUrl();
         const QString obsId = dataset.obsId;
         const QString name = dataset.displayName;
         runWithProgress<SkavaDatalinkResponse>(
                 this, u"Reopen from SKAVA"_s, u"Resolving %1 with SKAVA…"_s.arg(name),
-                [skavaUrl, skavaToken, obsId]() {
-                    return SkavaClient(skavaUrl, skavaToken).getDatalink(obsId);
+                [skavaUrl, skavaToken, protocol, tapUrl, datalinkUrl, obsId]() {
+                    SkavaClient client(skavaUrl, skavaToken);
+                    client.setProtocol(protocol);
+                    client.setTapUrl(tapUrl);
+                    client.setDatalinkUrl(datalinkUrl);
+                    return client.getDatalink(obsId);
                 },
                 [this, obsId, name](const SkavaDatalinkResponse &datalink) {
                     if (!datalink.valid) {
