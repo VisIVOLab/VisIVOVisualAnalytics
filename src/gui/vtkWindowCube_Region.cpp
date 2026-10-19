@@ -307,6 +307,10 @@ RegionStatistics computeRegionStatistics2D(vtkImageData *imageData, vtkWindowCub
 
 void vtkWindowCube::finishRegionInteraction()
 {
+    if (this->m_pvEdit != PvEdit::None) {
+        this->endPvEdit();   // a PV path drag ends here, busy or not
+        return;
+    }
     if (this->isBusy()) {
         return;
     }

@@ -42,6 +42,7 @@
 #include "ToolResultDialog.h"
 #include "ProfileWidget.h"
 #include "PvController.h"
+#include "PvPathGeometry.h"
 #include "PvDiagramWidget.h"
 #include "RemoteRenderWidget.h"
 #include "SidebarPanel.h"
@@ -2082,13 +2083,20 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             this,
             [this]() { this->updateBackendDerivedActionsAvailability(); },
             [this](const RemotePvFetchResult &result) {
-                // Build spectral axis for the Y axis of the diagram.
-                QVector<double> spectral(result.depth);
-                for (int z = 0; z < result.depth; ++z) {
-                    bool ok = false;
-                    spectral[z] = this->spectralAxisValue(static_cast<double>(z), &ok);
-                    if (!ok) {
-                        spectral[z] = static_cast<double>(z);
+                // The Y axis: the backend's own channel coordinates (the same axis
+                // its CTYPE label names, channel 0 first, possibly decreasing). The
+                // local FITS-axis-3 reconstruction is only the fallback for an older
+                // backend — it can disagree with the label on a cube whose spectral
+                // axis is not NAXIS3.
+                QVector<double> spectral = result.spectralCoordinates;
+                if (spectral.size() != result.depth) {
+                    spectral.resize(result.depth);
+                    for (int z = 0; z < result.depth; ++z) {
+                        bool ok = false;
+                        spectral[z] = this->spectralAxisValue(static_cast<double>(z), &ok);
+                        if (!ok) {
+                            spectral[z] = static_cast<double>(z);
+                        }
                     }
                 }
 
@@ -2117,6 +2125,13 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 pvInfo.spatialUnit   = result.spatialUnit.isEmpty()
                         ? u"pixels"_s : result.spatialUnit;
                 pvInfo.pixelScaleArcsecPerPixel = result.pixelScaleArcsecPerPixel;
+                pvInfo.bunit = result.bunit;
+                if (result.skyMatrixArcsec.size() == 4)
+                    this->m_pvSkyMatrix = { result.skyMatrixArcsec[0], result.skyMatrixArcsec[1],
+                                            result.skyMatrixArcsec[2], result.skyMatrixArcsec[3] };
+                // What Save as FITS exports: the cut this diagram shows.
+                this->m_pvShownVertices = result.capturedVertices;
+                this->m_pvShownWidth = result.capturedWidthPixels;
 
                 // Create PvDiagramWidget lazily on first successful extraction.
                 if (!this->pvDiagramWidget) {
@@ -2136,6 +2151,27 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                     const auto pvKids = this->pvDiagramWidget->findChildren<QWidget *>();
                     for (QWidget *kid : pvKids)
                         kid->installEventFilter(this);
+                    // Path controls inline in the diagram: every change recomputes.
+                    QObject::connect(this->pvDiagramWidget, &PvDiagramWidget::widthChanged, this,
+                                     [this](int width) {
+                                         this->pvWidthPixels = std::max(1, width);
+                                         this->refreshPvOverlay();
+                                         if (auto *win = this->active2dWin())
+                                             win->Render();
+                                         this->schedulePvLiveUpdate(0);
+                                     });
+                    QObject::connect(this->pvDiagramWidget, &PvDiagramWidget::smoothChanged, this,
+                                     [this](bool smooth) {
+                                         this->m_pvSmooth = smooth;
+                                         this->refreshPvOverlay();
+                                         if (auto *win = this->active2dWin())
+                                             win->Render();
+                                         this->schedulePvLiveUpdate(0);
+                                     });
+                    QObject::connect(this->pvDiagramWidget, &PvDiagramWidget::newPathRequested,
+                                     this, &vtkWindowCube::startNewPvPath);
+                    QObject::connect(this->pvDiagramWidget, &PvDiagramWidget::saveFitsRequested,
+                                     this, &vtkWindowCube::exportPvAsFits);
                     QObject::connect(
                             this->pvDiagramWidget, &PvDiagramWidget::destroyed, this,
                             [this]() {
@@ -2153,19 +2189,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                             });
                 }
 
-                // Now that the widget exists, it's safe to flip PV mode off.
-                // Doing this earlier (right after the user finished drawing)
-                // would race with the async extraction: setPvModeActive(false)
-                // calls clearPv() unless pvDiagramWidget is non-null, so the
-                // polyline would vanish before the plot opened.
-                if (this->actionExtractPvDiagram
-                    && this->actionExtractPvDiagram->isChecked()) {
-                    this->actionExtractPvDiagram->setChecked(false);
-                }
-                // refreshPvOverlay() keeps the polyline visible because
-                // pvDiagramWidget is now non-null (see the guard in
-                // refreshPvOverlay()), so the overlay survives the
-                // PV-mode-off transition.
+                // PV mode stays ON: the finished path remains editable and the
+                // diagram follows it. Turning PV mode off keeps the path visible
+                // (pvDiagramWidget is non-null now) but frozen; on again resumes.
                 this->refreshPvOverlay();
                 if (this->active2dWin())
                     this->active2dWin()->Render();
@@ -2206,8 +2232,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 if (!pvVerts.empty()) {
                     const auto &a = pvVerts.front();
                     const auto &b = pvVerts.back();
-                    pvParams.insert(u"From"_s, u"(%1, %2)"_s.arg(a[0]).arg(a[1]));
-                    pvParams.insert(u"To"_s, u"(%1, %2)"_s.arg(b[0]).arg(b[1]));
+                    pvParams.insert(u"From"_s, u"(%1, %2)"_s.arg(a[0], 0, 'f', 1).arg(a[1], 0, 'f', 1));
+                    pvParams.insert(u"To"_s, u"(%1, %2)"_s.arg(b[0], 0, 'f', 1).arg(b[1], 0, 'f', 1));
                 }
                 pvParams.insert(u"Measured on"_s, visivo::describeOrigin(pvOrigin));
                 this->registerAnalysisProduct(u"pv"_s, u"PV diagram"_s, pvParams,
@@ -2251,10 +2277,13 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
                 qDebug().noquote()
                         << QStringLiteral("[pv] updating widget (hosted in pane)");
+                this->pvDiagramWidget->setPathControls(this->pvWidthPixels, this->m_pvSmooth);
                 this->pvDiagramWidget->setPvData(pvPositions, spectral, result.values,
                                                  result.numSamples, result.depth,
                                                  xLabel, yLabel,
-                                                 u"PV Diagram (Polyline)"_s, pvInfo);
+                                                 this->m_pvSmooth ? u"PV Diagram (curve)"_s
+                                                                  : u"PV Diagram (polyline)"_s,
+                                                 pvInfo);
                 this->clearPersistentStatusMessage();
                 refreshPaneChrome();
             },
@@ -4043,7 +4072,7 @@ void vtkWindowCube::closeEvent(QCloseEvent *event)
 
 void vtkWindowCube::finalizePvInteraction()
 {
-    if (this->isBusy()) {
+    if (this->isBusyForPvInteraction()) {
         return;
     }
     if (this->m_lassoEditActive) {
@@ -4062,18 +4091,31 @@ void vtkWindowCube::finalizePvInteraction()
     }
 
     const int *position = this->active2dWin()->GetInteractor()->GetEventPosition();
+    if (this->pvEditing()) {
+        // A finished path: double-click adds a vertex on it, right-click removes one.
+        // (QVTK reports a double-click with repeat count 1.)
+        if (position) {
+            const bool doubleClick = this->active2dWin()->GetInteractor()->GetRepeatCount() > 0;
+            this->editPvVertexAt(position[0], position[1], /*insert=*/doubleClick);
+        }
+        return;
+    }
     if (position) {
         this->updatePvFromDisplayPosition(position[0], position[1]);
     }
+    const auto samePoint = [](const std::array<double, 2> &a, const std::array<double, 2> &b) {
+        return std::hypot(a[0] - b[0], a[1] - b[1]) < 0.25;
+    };
     if (this->pvDragging && this->pvCursorValid
-        && (this->pvPolylineVertices.empty() || this->pvPolylineVertices.back() != this->pvCurrentVoxel)) {
+        && (this->pvPolylineVertices.empty()
+            || !samePoint(this->pvPolylineVertices.back(), this->pvCurrentVoxel))) {
         this->pvPolylineVertices.push_back(this->pvCurrentVoxel);
     }
 
-    std::vector<std::array<int, 2>> cleaned;
+    std::vector<std::array<double, 2>> cleaned;
     cleaned.reserve(this->pvPolylineVertices.size());
     for (const auto &vertex : this->pvPolylineVertices) {
-        if (cleaned.empty() || cleaned.back() != vertex) {
+        if (cleaned.empty() || !samePoint(cleaned.back(), vertex)) {
             cleaned.push_back(vertex);
         }
     }
@@ -4093,6 +4135,10 @@ void vtkWindowCube::finalizePvInteraction()
     }
 
     this->extractCurrentPvDiagram();
+    this->refreshPvOverlay();   // the finished path shows its handles: it is editable now
+    this->statusBar()->showMessage(
+            u"Path ready. Drag a vertex or the path (Shift: rotate), double-click it to add a "
+            u"vertex, right-click a vertex to remove it — the diagram follows."_s, 8000);
     this->active2dWin()->Render();
     // DO NOT toggle off actionExtractPvDiagram here. It triggers
     // setPvModeActive(false) → clearPv() (guarded by `if (!pvDiagramWidget)`
@@ -4111,6 +4157,20 @@ void vtkWindowCube::setPvModeActive(bool active)
     this->pvModeActive = active;
     if (!active) {
         this->pvDragging = false;
+        this->m_pvEdit = PvEdit::None;
+        // A finished path whose diagram is still being computed is kept too: the
+        // result is about to open a diagram for it, and that diagram must find
+        // its path (to show and to resume editing).
+        const bool pathAwaitingDiagram = this->pvValid && this->pvPolylineVertices.size() >= 2
+                && this->pvController && this->pvController->isBusy();
+        if (pathAwaitingDiagram) {
+            this->setInteractorStyleImage();
+            this->refreshPvOverlay();
+            if (auto *w2d = this->active2dWidget()) w2d->setCursor(this->probeModeActive ? Qt::CrossCursor : Qt::ArrowCursor);
+            if (this->active2dWin())
+                this->active2dWin()->Render();
+            return;
+        }
         // Only clear the overlay if no PV Diagram window is currently open.
         // When a window IS open it continues to show the path; clearPv() is
         // called from the pvDiagramWidget::destroyed handler when the user
@@ -4126,19 +4186,8 @@ void vtkWindowCube::setPvModeActive(bool active)
         return;
     }
 
-    bool accepted = false;
-    const int width = QInputDialog::getInt(this, u"PV Width"_s, u"Path width (pixels):"_s,
-                                           this->pvWidthPixels, 1, 99, 1, &accepted);
-    if (!accepted) {
-        this->pvModeActive = false;
-        if (this->actionExtractPvDiagram && this->actionExtractPvDiagram->isChecked()) {
-            const QSignalBlocker blocker(this->actionExtractPvDiagram);
-            this->actionExtractPvDiagram->setChecked(false);
-        }
-        return;
-    }
-    this->pvWidthPixels = width;
-
+    // No width prompt: the width is a control of the diagram itself, editable at
+    // any time, and the last one used is kept.
     if (this->probeModeActive && ui->actionExtractSpectrum->isChecked()) {
         ui->actionExtractSpectrum->setChecked(false);
     }
@@ -4155,43 +4204,32 @@ void vtkWindowCube::setPvModeActive(bool active)
         this->actionAnnulusRegion->setChecked(false);
     }
     this->pvDragging = false;
-    this->pvValid = false;
-    this->clearPv();
+    const bool pvComputing = this->pvController && this->pvController->isBusy();
+    if ((this->pvDiagramWidget || pvComputing) && this->pvPolylineVertices.size() >= 2) {
+        // A diagram is open (or its first result is on the way): PV mode resumes
+        // EDITING its path instead of wiping it.
+        this->pvValid = true;
+        this->statusBar()->showMessage(
+                u"Editing the PV path: drag a vertex or the path (Shift: rotate). "
+                u"New path… in the diagram starts over."_s, 6000);
+    } else {
+        this->pvValid = false;
+        this->clearPv();
+    }
     this->setInteractorStyleRegion();
+    this->refreshPvOverlay();
     if (auto *w2d = this->active2dWidget()) w2d->setCursor(Qt::CrossCursor);
+    if (auto *win = this->active2dWin())
+        win->Render();
 }
 
 
 bool vtkWindowCube::updatePvFromDisplayPosition(int displayX, int displayY)
 {
-    auto *renderer = this->active2dWin() ? this->active2dWin()->GetRenderers()->GetFirstRenderer()
-                                                  : nullptr;
-    auto *imageData = this->viewingSlice()
-            ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
-            : vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
-    if (!renderer || !imageData) {
+    std::array<double, 2> pixel{};
+    if (!this->pvPixelFromDisplay(displayX, displayY, pixel))
         return false;
-    }
-
-    this->coordinate->SetValue(displayX, displayY);
-    const double *worldCoord = this->coordinate->GetComputedWorldValue(renderer);
-    if (!worldCoord) {
-        return false;
-    }
-
-    int extent[6];
-    imageData->GetExtent(extent);
-    double origin[3];
-    double spacing[3];
-    imageData->GetOrigin(origin);
-    imageData->GetSpacing(spacing);
-    const int voxelX = std::lround(extent[0] + (worldCoord[0] - origin[0]) / spacing[0]);
-    const int voxelY = std::lround(extent[2] + (worldCoord[1] - origin[1]) / spacing[1]);
-    if (voxelX < extent[0] || voxelX > extent[1] || voxelY < extent[2] || voxelY > extent[3]) {
-        return false;
-    }
-
-    this->pvCurrentVoxel = { voxelX, voxelY };
+    this->pvCurrentVoxel = pixel;
     this->pvCursorValid = true;
     this->refreshPvOverlay();
     return true;
@@ -4284,49 +4322,39 @@ void vtkWindowCube::setBeamInfo(double majorDeg, double minorDeg, double paDeg)
 
 void vtkWindowCube::refreshPvOverlay()
 {
-    const auto updateLine = [this](vtkImageData *imageData, vtkPoints *points, vtkCellArray *cells,
-                                   vtkPolyData *polyData, vtkActor *actor, vtkPoints *upperPoints,
-                                   vtkCellArray *upperCells, vtkPolyData *upperData,
-                                   vtkActor *upperActor, vtkPoints *lowerPoints,
-                                   vtkCellArray *lowerCells, vtkPolyData *lowerData,
-                                   vtkActor *lowerActor) {
-        // Hide if there's nothing to draw on. The polyline stays visible
-        // through the PvDiagramWidget's lifetime even after PV mode is
-        // toggled off — that way the user can see the path the plot was
-        // computed from. clearPv() (called from the widget's destroyed
-        // handler) is what actually removes it.
-        const bool keepingForPlotWindow = (this->pvDiagramWidget != nullptr);
-        if (!imageData || (!this->pvModeActive && !keepingForPlotWindow)) {
-            actor->VisibilityOff();
-            upperActor->VisibilityOff();
-            lowerActor->VisibilityOff();
-            return;
-        }
-        std::vector<std::array<int, 2>> drawVertices = this->pvPolylineVertices;
-        // The hovering cursor preview only makes sense while the user is
-        // actively drawing — don't extend the saved polyline with the
-        // current mouse position when we're just keeping it on screen
-        // because the plot window is open.
-        if (this->pvModeActive
-            && this->pvDragging && this->pvCursorValid
-            && (drawVertices.empty() || drawVertices.back() != this->pvCurrentVoxel)) {
-            drawVertices.push_back(this->pvCurrentVoxel);
-        }
-        if (drawVertices.size() < 2) {
-            actor->VisibilityOff();
-            upperActor->VisibilityOff();
-            lowerActor->VisibilityOff();
-            return;
-        }
+    // Drawn in world coordinates where cube pixel (x, y) sits at (x, y).
+    // Kept on screen while a diagram shows it, or while its first diagram computes.
+    const bool keepingForPlotWindow = (this->pvDiagramWidget != nullptr)
+            || (this->pvValid && this->pvController && this->pvController->isBusy());
+    std::vector<std::array<double, 2>> control = this->pvPolylineVertices;
+    // The hovering cursor extends the path only while it is being drawn.
+    if (this->pvModeActive && this->pvDragging && this->pvCursorValid
+        && (control.empty() || control.back() != this->pvCurrentVoxel)) {
+        control.push_back(this->pvCurrentVoxel);
+    }
+    const auto path = this->m_pvSmooth ? pvpath::smoothed(control, 8) : control;
+    const bool editing = this->pvEditing();
 
+    const auto updateLine = [&](vtkImageData *imageData, vtkPoints *points, vtkCellArray *cells,
+                                vtkPolyData *polyData, vtkActor *actor, vtkPoints *upperPoints,
+                                vtkCellArray *upperCells, vtkPolyData *upperData,
+                                vtkActor *upperActor, vtkPoints *lowerPoints,
+                                vtkCellArray *lowerCells, vtkPolyData *lowerData,
+                                vtkActor *lowerActor) {
+        if (!imageData || (!this->pvModeActive && !keepingForPlotWindow) || path.size() < 2) {
+            actor->VisibilityOff();
+            upperActor->VisibilityOff();
+            lowerActor->VisibilityOff();
+            return;
+        }
         points->Reset();
         cells->Reset();
-        cells->InsertNextCell(static_cast<vtkIdType>(drawVertices.size()));
-        for (vtkIdType i = 0; i < static_cast<vtkIdType>(drawVertices.size()); ++i) {
-            points->InsertNextPoint(drawVertices[static_cast<std::size_t>(i)][0],
-                                    drawVertices[static_cast<std::size_t>(i)][1], 0.0);
+        cells->InsertNextCell(static_cast<vtkIdType>(path.size()));
+        for (vtkIdType i = 0; i < static_cast<vtkIdType>(path.size()); ++i) {
+            points->InsertNextPoint(path[std::size_t(i)][0], path[std::size_t(i)][1], 0.0);
             cells->InsertCellPoint(i);
         }
+        points->Modified();
         polyData->Modified();
         actor->VisibilityOn();
 
@@ -4335,36 +4363,58 @@ void vtkWindowCube::refreshPvOverlay()
             lowerActor->VisibilityOff();
             return;
         }
-
-        const auto sampledPath = this->pvSampledPath(drawVertices);
-        if (sampledPath.size() < 2) {
-            upperActor->VisibilityOff();
-            lowerActor->VisibilityOff();
-            return;
+        // The two edges of the band the cut averages over, in the backend's
+        // convention: normals and spacing on the sky (pixels need not be square),
+        // one sample per FINER pixel; each path vertex offset along the mean of
+        // its adjacent segment normals. Square pixels: plain pixel offsets.
+        // Pixel → sky matrix M (row-major a b / c d): the backend's after the first
+        // result, else the header's CDELTs. Normals and offsets live on the sky.
+        std::array<double, 4> M = this->m_pvSkyMatrix;
+        double det = M[0] * M[3] - M[1] * M[2];
+        if (!(std::abs(det) > 0.0) || !std::isfinite(det)) {
+            double ax = std::abs(this->remoteDatasetCdelt[0]);
+            double ay = std::abs(this->remoteDatasetCdelt[1]);
+            if (!(ax > 0.0) || !(ay > 0.0) || !std::isfinite(ax) || !std::isfinite(ay))
+                ax = ay = 1.0;
+            M = { ax, 0.0, 0.0, ay };
+            det = ax * ay;
         }
-
+        const std::array<double, 4> Minv{ M[3] / det, -M[1] / det, -M[2] / det, M[0] / det };
+        const double step = std::min(std::hypot(M[0], M[2]), std::hypot(M[1], M[3]));
         const double halfWidth = 0.5 * static_cast<double>(this->pvWidthPixels - 1);
         upperPoints->Reset();
         upperCells->Reset();
-        upperCells->InsertNextCell(static_cast<vtkIdType>(sampledPath.size()));
         lowerPoints->Reset();
         lowerCells->Reset();
-        lowerCells->InsertNextCell(static_cast<vtkIdType>(sampledPath.size()));
-
-        for (vtkIdType i = 0; i < static_cast<vtkIdType>(sampledPath.size()); ++i) {
-            const auto &point = sampledPath[static_cast<std::size_t>(i)];
-            const auto normal = this->pvLocalNormalForSample(sampledPath,
-                                                             static_cast<std::size_t>(i));
-            upperPoints->InsertNextPoint(static_cast<double>(point[0]) + halfWidth * normal[0],
-                                         static_cast<double>(point[1]) + halfWidth * normal[1],
-                                         0.0);
-            upperCells->InsertCellPoint(i);
-            lowerPoints->InsertNextPoint(static_cast<double>(point[0]) - halfWidth * normal[0],
-                                         static_cast<double>(point[1]) - halfWidth * normal[1],
-                                         0.0);
-            lowerCells->InsertCellPoint(i);
+        upperCells->InsertNextCell(static_cast<vtkIdType>(path.size()));
+        lowerCells->InsertNextCell(static_cast<vtkIdType>(path.size()));
+        const auto segNormal = [&](std::size_t i) -> std::array<double, 2> {   // on the sky
+            const double dx = path[i + 1][0] - path[i][0];
+            const double dy = path[i + 1][1] - path[i][1];
+            const double tx = M[0] * dx + M[1] * dy;
+            const double ty = M[2] * dx + M[3] * dy;
+            const double len = std::hypot(tx, ty);
+            return len > 0.0 ? std::array<double, 2>{ -ty / len, tx / len }
+                             : std::array<double, 2>{ 0.0, 0.0 };
+        };
+        for (std::size_t i = 0; i < path.size(); ++i) {
+            std::array<double, 2> n{ 0.0, 0.0 };
+            if (i > 0) { const auto a = segNormal(i - 1); n[0] += a[0]; n[1] += a[1]; }
+            if (i + 1 < path.size()) { const auto b = segNormal(i); n[0] += b[0]; n[1] += b[1]; }
+            const double len = std::hypot(n[0], n[1]);
+            if (len > 0.0) { n[0] /= len; n[1] /= len; }
+            // Sky offset (halfWidth steps along n) back to pixels.
+            const double su = halfWidth * step * n[0];
+            const double sv = halfWidth * step * n[1];
+            const double ox = Minv[0] * su + Minv[1] * sv;
+            const double oy = Minv[2] * su + Minv[3] * sv;
+            upperPoints->InsertNextPoint(path[i][0] + ox, path[i][1] + oy, 0.0);
+            lowerPoints->InsertNextPoint(path[i][0] - ox, path[i][1] - oy, 0.0);
+            upperCells->InsertCellPoint(static_cast<vtkIdType>(i));
+            lowerCells->InsertCellPoint(static_cast<vtkIdType>(i));
         }
-
+        upperPoints->Modified();
+        lowerPoints->Modified();
         upperData->Modified();
         lowerData->Modified();
         upperActor->VisibilityOn();
@@ -4381,6 +4431,19 @@ void vtkWindowCube::refreshPvOverlay()
                this->momentPvUpperPoints, this->momentPvUpperCells, this->momentPvUpperData,
                this->momentPvUpperActor, this->momentPvLowerPoints, this->momentPvLowerCells,
                this->momentPvLowerData, this->momentPvLowerActor);
+
+    // Handles on the control vertices while the path can be edited.
+    this->slicePvHandlePoints->Reset();
+    this->slicePvHandleCells->Reset();
+    if (editing) {
+        for (const auto &v : this->pvPolylineVertices) {
+            const vtkIdType id = this->slicePvHandlePoints->InsertNextPoint(v[0], v[1], 0.0);
+            this->slicePvHandleCells->InsertNextCell(1, &id);
+        }
+    }
+    this->slicePvHandlePoints->Modified();
+    this->slicePvHandleData->Modified();
+    this->slicePvHandleActor->SetVisibility(editing);
 }
 
 void vtkWindowCube::clearPv()
@@ -4391,6 +4454,8 @@ void vtkWindowCube::clearPv()
     this->slicePvActor->VisibilityOff();
     this->slicePvUpperActor->VisibilityOff();
     this->slicePvLowerActor->VisibilityOff();
+    this->slicePvHandleActor->VisibilityOff();
+    this->m_pvEdit = PvEdit::None;
     this->momentPvActor->VisibilityOff();
     this->momentPvUpperActor->VisibilityOff();
     this->momentPvLowerActor->VisibilityOff();
@@ -5065,6 +5130,7 @@ void vtkWindowCube::showSliceHistogramPanel()
                 if (hi > lo && self->lutSlice) {
                     LutScale::setRange(self->lutSlice, self->m_sliceScaleMode, lo, hi);
                     self->lutSlice->Build();
+                    self->setSliceRangeLocked(true);   // survives the next channel
                     // A range change can widen the colorbar labels → re-fit only if
                     // the gutter width actually changed (else the zoom is preserved).
                     self->layout2dPaneFor(/*slice=*/true, /*force=*/false);
@@ -5454,75 +5520,311 @@ QString vtkWindowCube::formatSpatialPointSummary(const std::array<int, 2> &voxel
             .arg(axis1);
 }
 
-std::vector<std::array<int, 2>> vtkWindowCube::pvSampledPath(
-        const std::vector<std::array<int, 2>> &vertices) const
+QString vtkWindowCube::formatSpatialPointSummary(const std::array<double, 2> &pixel) const
 {
-    std::vector<std::array<int, 2>> sampledPoints;
-    if (vertices.size() < 2) {
-        return sampledPoints;
-    }
-
-    sampledPoints.reserve(vertices.size() * 4);
-    for (std::size_t vertexIndex = 1; vertexIndex < vertices.size(); ++vertexIndex) {
-        const auto &start = vertices[vertexIndex - 1];
-        const auto &end = vertices[vertexIndex];
-        const int dx = end[0] - start[0];
-        const int dy = end[1] - start[1];
-        const int steps = std::max(std::abs(dx), std::abs(dy));
-        if (steps <= 0) {
-            if (sampledPoints.empty() || sampledPoints.back() != start) {
-                sampledPoints.push_back(start);
-            }
-            continue;
-        }
-
-        for (int step = 0; step <= steps; ++step) {
-            const double t = static_cast<double>(step) / static_cast<double>(steps);
-            const std::array<int, 2> point = { static_cast<int>(std::lround(
-                                                       static_cast<double>(start[0]) + t * dx)),
-                                               static_cast<int>(std::lround(
-                                                       static_cast<double>(start[1]) + t * dy)) };
-            if (sampledPoints.empty() || sampledPoints.back() != point) {
-                sampledPoints.push_back(point);
-            }
+    QString axis0 = this->remoteFormatAxisCoordinate(0, pixel[0]);
+    QString axis1 = this->remoteFormatAxisCoordinate(1, pixel[1]);
+    if (this->remoteHasCelestialAxes()) {
+        bool ok0 = false;
+        bool ok1 = false;
+        const double nativeX = this->remoteVoxelToWcs(0, pixel[0], &ok0);
+        const double nativeY = this->remoteVoxelToWcs(1, pixel[1], &ok1);
+        double frameX = nativeX;
+        double frameY = nativeY;
+        if (ok0 && ok1 && this->convertRemoteCelestialCoordinates(nativeX, nativeY, frameX, frameY)) {
+            axis0 = this->formatRemoteOverlayCoordinate(0, frameX);
+            axis1 = this->formatRemoteOverlayCoordinate(1, frameY);
         }
     }
-
-    return sampledPoints;
+    return u"(%1, %2)  %3=%4  %5=%6"_s.arg(pixel[0], 0, 'f', 1)
+            .arg(pixel[1], 0, 'f', 1)
+            .arg(this->selectedFrameAxisTitle(0))
+            .arg(axis0)
+            .arg(this->selectedFrameAxisTitle(1))
+            .arg(axis1);
 }
 
-std::array<double, 2> vtkWindowCube::pvLocalNormalForSample(
-        const std::vector<std::array<int, 2>> &sampledPoints, std::size_t index) const
+std::vector<std::array<double, 2>> vtkWindowCube::pvEffectivePath() const
 {
-    if (sampledPoints.empty()) {
-        return { 0.0, 1.0 };
-    }
+    return this->m_pvSmooth ? pvpath::smoothed(this->pvPolylineVertices, 8)
+                            : this->pvPolylineVertices;
+}
 
-    const auto &center = sampledPoints[index];
-    const auto &prev = sampledPoints[index == 0 ? index : index - 1];
-    const auto &next = sampledPoints[index + 1 < sampledPoints.size() ? index + 1 : index];
-    double tx = static_cast<double>(next[0] - prev[0]);
-    double ty = static_cast<double>(next[1] - prev[1]);
-    if (tx == 0.0 && ty == 0.0) {
-        tx = 1.0;
-        ty = 0.0;
-        if (index > 0) {
-            tx = static_cast<double>(center[0] - sampledPoints[index - 1][0]);
-            ty = static_cast<double>(center[1] - sampledPoints[index - 1][1]);
-        } else if (index + 1 < sampledPoints.size()) {
-            tx = static_cast<double>(sampledPoints[index + 1][0] - center[0]);
-            ty = static_cast<double>(sampledPoints[index + 1][1] - center[1]);
+bool vtkWindowCube::pvPixelFromDisplay(int displayX, int displayY,
+                                       std::array<double, 2> &pixel) const
+{
+    auto *renderer = this->active2dWin() ? this->active2dWin()->GetRenderers()->GetFirstRenderer()
+                                         : nullptr;
+    auto *imageData = this->viewingSlice()
+            ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
+            : vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
+    if (!renderer || !imageData)
+        return false;
+    this->coordinate->SetValue(displayX, displayY);
+    const double *world = this->coordinate->GetComputedWorldValue(renderer);
+    if (!world)
+        return false;
+    int extent[6];
+    double origin[3];
+    double spacing[3];
+    imageData->GetExtent(extent);
+    imageData->GetOrigin(origin);
+    imageData->GetSpacing(spacing);
+    if (spacing[0] == 0.0 || spacing[1] == 0.0)
+        return false;
+    const double x = extent[0] + (world[0] - origin[0]) / spacing[0];
+    const double y = extent[2] + (world[1] - origin[1]) / spacing[1];
+    // Half a pixel of slack: the edge pixels are clickable all the way to their border.
+    if (x < extent[0] - 0.5 || x > extent[1] + 0.5 || y < extent[2] - 0.5 || y > extent[3] + 0.5)
+        return false;
+    pixel = { x, y };
+    return true;
+}
+
+bool vtkWindowCube::pvDisplayFromPixel(const std::array<double, 2> &pixel,
+                                       std::array<double, 2> &display) const
+{
+    auto *renderer = this->active2dWin() ? this->active2dWin()->GetRenderers()->GetFirstRenderer()
+                                         : nullptr;
+    if (!renderer)
+        return false;
+    // The overlay draws pixel (x, y) at world (x, y) (see refreshPvOverlay).
+    renderer->SetWorldPoint(pixel[0], pixel[1], 0.0, 1.0);
+    renderer->WorldToDisplay();
+    const double *d = renderer->GetDisplayPoint();
+    display = { d[0], d[1] };
+    return true;
+}
+
+std::vector<std::array<double, 2>> vtkWindowCube::pvDisplayPath(
+        const std::vector<std::array<double, 2>> &pixels) const
+{
+    std::vector<std::array<double, 2>> out;
+    out.reserve(pixels.size());
+    for (const auto &p : pixels) {
+        std::array<double, 2> d{};
+        if (!this->pvDisplayFromPixel(p, d))
+            return {};
+        out.push_back(d);
+    }
+    return out;
+}
+
+bool vtkWindowCube::pvEditing() const
+{
+    return this->pvModeActive && this->pvValid && !this->pvDragging
+            && this->pvPolylineVertices.size() >= 2;
+}
+
+namespace {
+// Screen-pixel reach of a handle / of the path for the editing gestures.
+constexpr double kPvHandleTolerance = 9.0;
+constexpr double kPvPathTolerance = 7.0;
+}  // namespace
+
+bool vtkWindowCube::beginPvEdit(int displayX, int displayY)
+{
+    const auto display = this->pvDisplayPath(this->pvPolylineVertices);
+    if (display.size() != this->pvPolylineVertices.size())
+        return false;
+    const std::array<double, 2> at{ double(displayX), double(displayY) };
+    std::array<double, 2> pixel{};
+    if (!this->pvPixelFromDisplay(displayX, displayY, pixel)) {
+        // Off the image: the hit test still works on the path, but the anchor
+        // needs a pixel — extrapolate through the renderer instead.
+        auto *renderer = this->active2dWin()->GetRenderers()->GetFirstRenderer();
+        renderer->SetDisplayPoint(displayX, displayY, 0.0);
+        renderer->DisplayToWorld();
+        const double *w = renderer->GetWorldPoint();
+        pixel = { w[0] / (w[3] != 0.0 ? w[3] : 1.0), w[1] / (w[3] != 0.0 ? w[3] : 1.0) };
+    }
+    const int vertex = pvpath::hitVertex(display, at, kPvHandleTolerance);
+    auto *iren = this->active2dWin()->GetInteractor();
+    if (vertex >= 0) {
+        this->m_pvEdit = PvEdit::MoveVertex;
+        this->m_pvEditVertex = vertex;
+    } else if (pvpath::hitSegment(pvDisplayPath(this->pvEffectivePath()), at, kPvPathTolerance).segment >= 0) {
+        this->m_pvEdit = iren && iren->GetShiftKey() ? PvEdit::Rotate : PvEdit::Translate;
+    } else {
+        return false;
+    }
+    this->m_pvEditAnchor = pixel;
+    this->m_pvEditStart = this->pvPolylineVertices;
+    this->m_pvEditStartAngle = pvpath::angleAround(pvpath::centroid(this->m_pvEditStart), pixel);
+    return true;
+}
+
+void vtkWindowCube::updatePvEdit(int displayX, int displayY)
+{
+    if (this->m_pvEdit == PvEdit::None)
+        return;
+    auto *renderer = this->active2dWin()->GetRenderers()->GetFirstRenderer();
+    renderer->SetDisplayPoint(displayX, displayY, 0.0);
+    renderer->DisplayToWorld();
+    const double *w = renderer->GetWorldPoint();
+    const double h = w[3] != 0.0 ? w[3] : 1.0;
+    const std::array<double, 2> pixel{ w[0] / h, w[1] / h };
+    switch (this->m_pvEdit) {
+    case PvEdit::MoveVertex:
+        if (this->m_pvEditVertex >= 0
+            && this->m_pvEditVertex < static_cast<int>(this->pvPolylineVertices.size()))
+            this->pvPolylineVertices[std::size_t(this->m_pvEditVertex)] = pixel;
+        break;
+    case PvEdit::Translate:
+        this->pvPolylineVertices = pvpath::translated(this->m_pvEditStart,
+                                                      pixel[0] - this->m_pvEditAnchor[0],
+                                                      pixel[1] - this->m_pvEditAnchor[1]);
+        break;
+    case PvEdit::Rotate: {
+        const auto center = pvpath::centroid(this->m_pvEditStart);
+        this->pvPolylineVertices = pvpath::rotated(
+                this->m_pvEditStart, center,
+                pvpath::angleAround(center, pixel) - this->m_pvEditStartAngle);
+        break;
+    }
+    case PvEdit::None:
+        break;
+    }
+    this->refreshPvOverlay();
+    this->active2dWin()->Render();
+    this->schedulePvLiveUpdate(150);   // the diagram follows the drag
+}
+
+void vtkWindowCube::endPvEdit()
+{
+    const bool changed = this->m_pvEdit != PvEdit::None
+            && this->pvPolylineVertices != this->m_pvEditStart;
+    this->m_pvEdit = PvEdit::None;
+    this->m_pvEditVertex = -1;
+    this->m_pvEditStart.clear();
+    if (changed)
+        this->schedulePvLiveUpdate(0);
+}
+
+void vtkWindowCube::editPvVertexAt(int displayX, int displayY, bool insert)
+{
+    // A double-click begins with a press that may have started a drag: drop it
+    // first, or the next mouse move would restore the path it captured.
+    this->m_pvEdit = PvEdit::None;
+    this->m_pvEditStart.clear();
+    const std::array<double, 2> at{ double(displayX), double(displayY) };
+    std::vector<std::array<double, 2>> next = this->pvPolylineVertices;
+    if (insert) {
+        // Hit-test what is DRAWN (the smooth curve when on) and map the span back
+        // to its control interval: the curve has 8 samples per control segment.
+        const auto display = this->pvDisplayPath(this->pvEffectivePath());
+        const auto hit = pvpath::hitSegment(display, at, kPvPathTolerance);
+        std::array<double, 2> pixel{};
+        if (hit.segment < 0 || !this->pvPixelFromDisplay(displayX, displayY, pixel))
+            return;
+        const bool curved = this->m_pvSmooth && this->pvPolylineVertices.size() >= 3;
+        const int controlSegment = curved ? hit.segment / 8 : hit.segment;
+        next = pvpath::withVertexInserted(next, controlSegment, pixel);
+    } else {
+        const int vertex = pvpath::hitVertex(this->pvDisplayPath(this->pvPolylineVertices), at,
+                                             kPvHandleTolerance);
+        if (vertex < 0)
+            return;
+        if (next.size() <= 2) {
+            this->statusBar()->showMessage(u"A PV path needs at least two vertices."_s, 2500);
+            return;
         }
+        next = pvpath::withVertexRemoved(next, vertex);
     }
+    this->pvPolylineVertices = std::move(next);
+    this->refreshPvOverlay();
+    this->active2dWin()->Render();
+    this->schedulePvLiveUpdate(0);
+}
 
-    const double length = std::hypot(tx, ty);
-    if (length <= 0.0) {
-        return { 0.0, 1.0 };
+void vtkWindowCube::schedulePvLiveUpdate(int delayMs)
+{
+    if (!this->m_pvLiveTimer) {
+        this->m_pvLiveTimer = new QTimer(this);
+        this->m_pvLiveTimer->setSingleShot(true);
+        QObject::connect(this->m_pvLiveTimer, &QTimer::timeout, this, [this]() {
+            if (!this->pvValid || this->pvPolylineVertices.size() < 2 || !this->pvController
+                || this->remoteDatasetId.isEmpty())
+                return;
+            this->pvController->startExtraction(this->pvEffectivePath(), this->pvWidthPixels,
+                                                /*interactive=*/true);
+        });
     }
+    this->m_pvLiveTimer->start(std::max(0, delayMs));
+}
 
-    const double nx = -ty / length;
-    const double ny = tx / length;
-    return { nx, ny };
+void vtkWindowCube::startNewPvPath()
+{
+    this->m_pvEdit = PvEdit::None;
+    this->pvPolylineVertices.clear();
+    this->pvValid = false;
+    this->pvDragging = false;
+    this->pvCursorValid = false;
+    this->refreshPvOverlay();
+    if (this->actionExtractPvDiagram && !this->actionExtractPvDiagram->isChecked())
+        this->actionExtractPvDiagram->setChecked(true);   // → setPvModeActive(true)
+    this->statusBar()->showMessage(
+            u"Click on the image to place the vertices of a new path; double-click or "
+            u"right-click to finish it."_s, 5000);
+    if (auto *win = this->active2dWin())
+        win->Render();
+}
+
+void vtkWindowCube::exportPvAsFits()
+{
+    if (this->m_pvShownVertices.size() < 2 || this->remoteDatasetId.isEmpty()) {
+        QMessageBox::warning(this, u"Save PV as FITS"_s,
+                             u"There is no PV diagram to save yet."_s);
+        return;
+    }
+    const QFileInfo srcInfo(this->filepath);
+    bool ok = false;
+    const QString basename = QInputDialog::getText(
+            this, u"Save PV as FITS"_s,
+            u"Save in Workspace Exports as (.fits will be appended if missing;\n"
+            u"existing names get a _1, _2 suffix):"_s,
+            QLineEdit::Normal, u"%1_pv.fits"_s.arg(srcInfo.completeBaseName()), &ok);
+    if (!ok)
+        return;
+    const QString url = this->remoteBackendUrl;
+    const QString token = this->remoteBackendToken;
+    const QString sessionId = this->remoteSessionId;
+    const QString datasetId = this->remoteDatasetId;
+    const auto vertices = this->m_pvShownVertices;
+    const int width = this->m_pvShownWidth;
+    this->statusBar()->showMessage(u"Saving the PV diagram as FITS…"_s, 0);
+    auto *watcher = new QFutureWatcher<BackendSavePvFitsResult>(this);
+    QPointer<vtkWindowCube> self(this);
+    QObject::connect(watcher, &QFutureWatcher<BackendSavePvFitsResult>::finished, this,
+                     [self, watcher]() {
+                         const auto r = watcher->result();
+                         watcher->deleteLater();
+                         if (!self)
+                             return;
+                         self->statusBar()->clearMessage();
+                         if (!r.valid) {
+                             QMessageBox::warning(self, u"Save PV as FITS"_s,
+                                                  u"PV FITS export failed:\n\n%1"_s.arg(r.error));
+                             return;
+                         }
+                         emit self->workspaceExportsChanged();
+                         QString msg = u"PV diagram saved to the Workspace Exports.\n\n"
+                                       u"Filename: %1\nPath: %2\n"
+                                       u"Shape: %3 offsets × %4 channels"_s
+                                               .arg(r.workspaceFilename, r.outputPath)
+                                               .arg(r.width).arg(r.height);
+                         if (!r.bunit.isEmpty())
+                             msg += u"\nBUNIT: %1"_s.arg(r.bunit);
+                         msg += u"\n\nAxis 1 = offset along the path (arcsec), axis 2 = the "
+                                u"cube's spectral axis."_s;
+                         QMessageBox::information(self, u"Save PV as FITS"_s, msg);
+                     });
+    watcher->setFuture(QtConcurrent::run([url, token, sessionId, datasetId, vertices, width,
+                                          basename]() {
+        BackendClient client(url, token);
+        client.setSessionId(sessionId);
+        return client.savePvFits(datasetId, vertices, width, basename.trimmed());
+    }));
 }
 
 void vtkWindowCube::extractCurrentPvDiagram()
@@ -5554,7 +5856,7 @@ void vtkWindowCube::extractCurrentPvDiagram()
                        .arg(this->pvPolylineVertices.size())
                        .arg(this->pvWidthPixels);
     this->showPersistentStatusMessage(u"Computing PV diagram..."_s);
-    this->pvController->startExtraction(this->pvPolylineVertices, this->pvWidthPixels);
+    this->pvController->startExtraction(this->pvEffectivePath(), this->pvWidthPixels);
 }
 
 
@@ -7841,10 +8143,123 @@ void vtkWindowCube::setActiveDisplayRange(double lo, double hi)
             return;
         LutScale::setRange(this->lutSlice, this->m_sliceScaleMode, lo, hi);
         this->lutSlice->Build();
+        this->setSliceRangeLocked(true);   // a chosen range must survive the next channel
         this->layout2dPaneFor(/*slice=*/true, /*force=*/false);
         if (this->sliceWin)
             this->sliceWin->Render();
+        // The clip fields must show the range now in force (Cube range, presets):
+        // stale values would be re-applied the next time a field loses focus.
+        if (!m_applyingPaneDisplay)
+            updateDisplaySectionForActivePane();
     }
+}
+
+void vtkWindowCube::setSliceRangeLocked(bool locked)
+{
+    this->m_sliceRangeLocked = locked;
+    if (m_sliceRangeLock && m_sliceRangeLock->isChecked() != locked) {
+        const QSignalBlocker block(m_sliceRangeLock);
+        m_sliceRangeLock->setChecked(locked);
+    }
+}
+
+QList<QPair<QString, QString>> vtkWindowCube::sliceBackdropCandidates() const
+{
+    QList<QPair<QString, QString>> out;
+    int dims[3] = { 0, 0, 0 };
+    if (auto *slice = vtkImageData::SafeDownCast(
+                this->remoteSliceDisplaySource->GetOutputDataObject(0)))
+        slice->GetDimensions(dims);
+    for (auto it = m_products2d.constBegin(); it != m_products2d.constEnd(); ++it) {
+        const Product2D &p = it.value();
+        if (!p.imageData || !p.regionOrigin.isNull())
+            continue;   // a cropped map is not on the slice's pixel grid
+        int pd[3] = { 0, 0, 0 };
+        p.imageData->GetDimensions(pd);
+        if (dims[0] > 1 && (pd[0] != dims[0] || pd[1] != dims[1]))
+            continue;
+        out.append({ it.key(), p.label.isEmpty() ? it.key() : p.label });
+    }
+    std::sort(out.begin(), out.end(),
+              [](const auto &a, const auto &b) { return a.second < b.second; });
+    return out;
+}
+
+void vtkWindowCube::refreshSliceBackdropCombo()
+{
+    if (!m_sliceBackdropCombo)
+        return;
+    if (!m_sliceBackdropProductId.isEmpty() && !m_products2d.contains(m_sliceBackdropProductId))
+        setSliceBackdrop(QString());   // its product is gone
+    const QSignalBlocker block(m_sliceBackdropCombo);
+    m_sliceBackdropCombo->clear();
+    m_sliceBackdropCombo->addItem(u"Channel"_s, QString());
+    for (const auto &c : sliceBackdropCandidates())
+        m_sliceBackdropCombo->addItem(c.second, c.first);
+    const int at = m_sliceBackdropCombo->findData(m_sliceBackdropProductId);
+    m_sliceBackdropCombo->setCurrentIndex(std::max(0, at));
+    m_sliceBackdropCombo->setEnabled(m_sliceBackdropCombo->count() > 1);
+    if (m_sliceBackdropCombo->count() <= 1)
+        m_sliceBackdropCombo->setToolTip(u"Compute a moment map to draw on it here."_s);
+}
+
+void vtkWindowCube::setSliceBackdrop(const QString &productId)
+{
+    if (productId == m_sliceBackdropProductId)
+        return;
+    if (productId.isEmpty()) {
+        m_sliceBackdropProductId.clear();
+        // The channel's range comes back with it (and the lock as it was).
+        if (this->lutSlice && this->m_sliceRangeBeforeBackdrop[1] > this->m_sliceRangeBeforeBackdrop[0])
+            LutScale::setRange(this->lutSlice, this->m_sliceScaleMode,
+                               this->m_sliceRangeBeforeBackdrop[0], this->m_sliceRangeBeforeBackdrop[1]);
+        this->setSliceRangeLocked(this->m_sliceRangeLockedBeforeBackdrop);
+        const int channel = ui->spinSlice->value() - 1;
+        this->m_displayedSliceIndex = -1;   // force the channel back onto the pane
+        this->requestRemoteSlice(this->clampRemoteSliceIndex(channel));
+    } else {
+        auto it = m_products2d.constFind(productId);
+        if (it == m_products2d.constEnd() || !it->imageData)
+            return;
+        if (m_sliceBackdropProductId.isEmpty() && this->lutSlice) {
+            const double *r = this->lutSlice->GetTableRange();
+            this->m_sliceRangeBeforeBackdrop = { r[0], r[1] };
+            this->m_sliceRangeLockedBeforeBackdrop = this->m_sliceRangeLocked;
+        }
+        m_sliceBackdropProductId = productId;
+        this->m_slice2dLoadingActor->VisibilityOff();
+        this->remoteSliceDisplaySource->SetOutput(it->imageData);
+        this->remoteSliceDisplaySource->Modified();
+        this->sliceColors->SetInputData(it->imageData);
+        double lo = it->imageRange[0];
+        double hi = it->imageRange[1];
+        if (this->m_sliceScaleMode == LutScale::Mode::Log && !(lo > 0.0)) {
+            const double floorValue = LutScale::sampledPositiveFloor(it->imageData);
+            lo = floorValue > 0.0 ? floorValue : hi * 1e-6;
+        }
+        if (this->lutSlice && std::isfinite(lo) && std::isfinite(hi) && hi > lo)
+            LutScale::setRange(this->lutSlice, this->m_sliceScaleMode, lo, hi);
+        // The map's own range; it does not leak into the channels (restored above).
+        this->m_sliceRangeLocked = true;
+        if (this->channelOverlay)
+            this->channelOverlay->setSpectralLabel(u"Showing %1"_s.arg(it->label));
+        this->statusBar()->showMessage(
+                u"The 2D Slice shows %1. Tools draw on it as on a channel; choose Channel "
+                u"under DISPLAY → Show to browse the channels again."_s.arg(it->label), 6000);
+    }
+    if (this->lutSlice)
+        this->lutSlice->Build();
+    this->refreshPvOverlay();
+    if (this->regionValid)
+        this->refreshRegionOverlay();
+    this->layout2dPaneFor(/*slice=*/true, /*force=*/false);
+    if (this->sliceWin)
+        this->sliceWin->Render();
+    refreshSliceBackdropCombo();
+    // The dock's range fields follow the new image — unless this runs from inside
+    // the dock's own repopulation (refreshSliceBackdropCombo dropping a vanished map).
+    if (!m_applyingPaneDisplay)
+        updateDisplaySectionForActivePane();
 }
 
 void vtkWindowCube::showActiveDisplayLUTEditor()
@@ -7909,6 +8324,7 @@ void vtkWindowCube::resetActiveDisplayLut()
     if (activePaneIsSlice() && this->lutSlice) {
         this->m_sliceInvert = false;
         this->m_sliceScaleMode = LutScale::Mode::Linear;
+        this->setSliceRangeLocked(false);   // back to each channel's own range
         vtkImageData *img = activeDisplayImageData();
         if (img) {
             double range[2] = { 0., 0. };
@@ -8228,6 +8644,70 @@ QWidget *vtkWindowCube::buildPaneDisplayPage()
         h->addWidget(m_paneScaleSeg, 1);
         m_paneScaleRow->setFixedHeight(28);
         lay->addWidget(m_paneScaleRow);
+    }
+
+    // Background of the 2D Slice: the channel, or a moment map to draw on.
+    {
+        m_sliceBackdropRow = new QWidget();
+        auto *h = new QHBoxLayout(m_sliceBackdropRow);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(8);
+        auto *l = new QLabel(u"Show"_s, m_sliceBackdropRow);
+        l->setStyleSheet(labelCss);
+        h->addWidget(l, 0);
+        m_sliceBackdropCombo = new QComboBox(m_sliceBackdropRow);
+        m_sliceBackdropCombo->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        m_sliceBackdropCombo->setToolTip(
+                u"What the 2D Slice shows: the current channel, or a moment map in its place "
+                u"on the same pixels — to draw a PV path, a region or a probe on the integrated "
+                u"emission. Channels come back when you choose Channel again."_s);
+        h->addWidget(m_sliceBackdropCombo, 1);
+        m_sliceBackdropRow->setFixedHeight(28);
+        lay->addWidget(m_sliceBackdropRow);
+        QObject::connect(m_sliceBackdropCombo, &QComboBox::activated, this, [this](int i) {
+            if (m_applyingPaneDisplay || !m_sliceBackdropCombo)
+                return;
+            setSliceBackdrop(m_sliceBackdropCombo->itemData(i).toString());
+        });
+    }
+
+    // Same range on every channel (2D Slice only).
+    {
+        m_sliceRangeLockRow = new QWidget();
+        auto *h = new QHBoxLayout(m_sliceRangeLockRow);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(6);
+        m_sliceRangeLock = new QCheckBox(u"Same range on every channel"_s, m_sliceRangeLockRow);
+        m_sliceRangeLock->setStyleSheet(labelCss);
+        m_sliceRangeLock->setToolTip(
+                u"Keep this colour range while you move through the channels, so emission "
+                u"compares by colour from one channel to the next. Off: each channel is "
+                u"stretched to its own minimum and maximum.\n\n"
+                u"Choosing a range yourself (percentile, clip values, histogram) turns this on."_s);
+        h->addWidget(m_sliceRangeLock, 1);
+        auto *cubeBtn = new QToolButton(m_sliceRangeLockRow);
+        cubeBtn->setText(u"Cube range"_s);
+        cubeBtn->setCursor(Qt::PointingHandCursor);
+        cubeBtn->setToolTip(u"Use the minimum and maximum of the whole cube for every channel "
+                            u"(of the loaded cube: the preview's until the full resolution is "
+                            u"loaded)."_s);
+        h->addWidget(cubeBtn, 0);
+        m_sliceRangeLockRow->setFixedHeight(28);
+        lay->addWidget(m_sliceRangeLockRow);
+        QObject::connect(m_sliceRangeLock, &QCheckBox::toggled, this, [this](bool on) {
+            if (m_applyingPaneDisplay)
+                return;
+            setSliceRangeLocked(on);
+        });
+        QObject::connect(cubeBtn, &QToolButton::clicked, this, [this]() {
+            const double lo = this->currentCubeVisibleRange[0];
+            const double hi = this->currentCubeVisibleRange[1];
+            if (!std::isfinite(lo) || !std::isfinite(hi) || hi <= lo) {
+                this->statusBar()->showMessage(u"The cube's range is not known yet."_s, 3000);
+                return;
+            }
+            setActiveDisplayRange(lo, hi);   // explicit range → locked
+        });
         QObject::connect(m_paneScaleSeg, &SegmentedToggle::currentIndexChanged, this,
                          [this](int i) {
                              if (m_applyingPaneDisplay)
@@ -8389,6 +8869,14 @@ void vtkWindowCube::applyPaneDisplayRange(bool /*fromMin*/)
     if (!m_paneRangeMin || !m_paneRangeMax)
         return;
     double lo = m_paneRangeMin->value(), hi = m_paneRangeMax->value();
+    // editingFinished also fires when focus merely leaves the field: an unchanged
+    // value is not a choice (and on the slice, a choice locks the range).
+    const auto same = [](double a, double b) {
+        // The field rounds to its 6 decimals; anything within that is "unchanged".
+        return std::abs(a - b) <= 1e-6 + 1e-6 * std::max(std::abs(a), std::abs(b));
+    };
+    if (same(lo, activeDisplayRangeLo()) && same(hi, activeDisplayRangeHi()))
+        return;
     if (m_paneSymmetricRow && m_paneSymmetricRow->isVisible() && m_paneSymmetric
         && m_paneSymmetric->isChecked()) {
         const double m = std::max(std::fabs(lo), std::fabs(hi));
@@ -8491,6 +8979,14 @@ void vtkWindowCube::updateDisplaySectionForActivePane()
     QScopedValueRollback<bool> paneDisplayGuard(m_applyingPaneDisplay, true);
     if (m_paneScaleRow)
         m_paneScaleRow->setVisible(kind == ViewId::Slice2D);   // Scale: 2D Slice only
+    if (m_sliceRangeLockRow)
+        m_sliceRangeLockRow->setVisible(kind == ViewId::Slice2D);
+    if (m_sliceBackdropRow)
+        m_sliceBackdropRow->setVisible(kind == ViewId::Slice2D);
+    if (kind == ViewId::Slice2D)
+        refreshSliceBackdropCombo();
+    if (m_sliceRangeLock)
+        m_sliceRangeLock->setChecked(this->m_sliceRangeLocked);
 
     // Symmetric-about-0 only makes sense for a SIGNED velocity field (Moment 1). Intensity
     // (Moment 0) and width (Moment 2) are ≥ 0, so hide it there — showing it on Moment 0
@@ -9594,6 +10090,14 @@ QString vtkWindowCube::addImageProduct(const QString &kind, const QString &stabl
     cached.label = label;
     cached.unit = unit;
     m_products2d.insert(productId, cached);   // replaces on recompute (statsComputed resets)
+    if (productId == this->m_sliceBackdropProductId && cached.imageData) {
+        // The slice is showing this map as its background: show the new pixels.
+        this->remoteSliceDisplaySource->SetOutput(cached.imageData);
+        this->remoteSliceDisplaySource->Modified();
+        this->sliceColors->SetInputData(cached.imageData);
+        if (this->sliceWin)
+            this->sliceWin->Render();
+    }
     this->registerAnalysisProduct(kind, label, params, this, productId, u"image2d"_s);
 
     auto visible = [&](int i) { return m_slots[i].frame && m_slots[i].frame->isVisible(); };
@@ -12099,6 +12603,14 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
         cached.unit = (u == u"-"_s) ? QString() : u;
     }
     this->m_products2d.insert(productId, cached);
+    if (productId == this->m_sliceBackdropProductId && cached.imageData) {
+        // The slice is showing this map as its background: show the new pixels.
+        this->remoteSliceDisplaySource->SetOutput(cached.imageData);
+        this->remoteSliceDisplaySource->Modified();
+        this->sliceColors->SetInputData(cached.imageData);
+        if (this->sliceWin)
+            this->sliceWin->Render();
+    }
     // New pixels under a product id that survives a recompute of the same order:
     // measurements stamped with the previous generation are no longer about this
     // map, and say so when restored. Per product - switching between two cached
@@ -12167,6 +12679,18 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
     }
     qDebug().noquote() << QStringLiteral("[perf][moment] apply total: %1 ms").arg(
             totalTimer.elapsed());
+}
+
+bool vtkWindowCube::isBusyForPvInteraction() const
+{
+    const bool pvBusy = this->pvController && this->pvController->isBusy();
+    if (!pvBusy || !this->pvModeActive)
+        return this->isBusy();
+    return this->cubeOpenWatcher.isRunning() || this->remotePreviewWatcher.isRunning()
+            || this->remoteHighResCubeWatcher.isRunning()
+            || (this->momentController && this->momentController->isBusy())
+            || this->activeRemoteSliceRequests > 0
+            || this->activeRemoteIsosurfaceRequests > 0 || this->isosurfaceWatcher.isRunning();
 }
 
 bool vtkWindowCube::isBusy() const
@@ -12239,9 +12763,10 @@ void vtkWindowCube::updateBackendDerivedActionsAvailability()
             !(this->momentController && this->momentController->isBusy()));
 
     if (this->actionExtractPvDiagram) {
-        const bool pvBusy = this->pvController && this->pvController->isBusy();
+        // Not disabled while a PV computes: the controller queues the latest
+        // request, and a live-edited path recomputes continuously.
         const bool pvEnabled = available && !this->cubeOpenWatcher.isRunning()
-                && !this->remotePreviewWatcher.isRunning() && !pvBusy;
+                && !this->remotePreviewWatcher.isRunning();
         this->actionExtractPvDiagram->setEnabled(pvEnabled);
         this->actionExtractPvDiagram->setToolTip(available ? QString {} : kPvBackendTooltip);
         this->actionExtractPvDiagram->setStatusTip(available ? QString {} : kPvBackendTooltip);
@@ -12318,6 +12843,15 @@ QVariantMap vtkWindowCube::stampRegionSurface(QVariantMap origin) const
                                            ? this->m_displayedSliceIndex
                                            : this->clampRemoteSliceIndex(ui->spinSlice->value() - 1))
                                 : -1;
+    if (onSlice && !this->m_sliceBackdropProductId.isEmpty()) {
+        // The slice is showing a map (setSliceBackdrop): that map was measured,
+        // not a channel — name it and its version, as for a moment pane.
+        origin = visivo::withMeasuredSurface(std::move(origin), u"moment"_s, -1);
+        origin.insert(u"momentProduct"_s, this->m_sliceBackdropProductId);
+        origin.insert(u"momentGeneration"_s,
+                      this->m_momentProductGeneration.value(this->m_sliceBackdropProductId, 0));
+        return origin;
+    }
     origin = visivo::withMeasuredSurface(std::move(origin), onSlice ? u"slice"_s : u"moment"_s,
                                          channel);
     // "moment" alone does not say WHICH moment map: the pipeline holds one at a
@@ -12356,10 +12890,11 @@ bool vtkWindowCube::restoreProductOrigin(const QVariantMap &origin)
         return true;
     }
     if (kind == u"pvpath"_s) {
-        const auto verts = visivo::originPolygon(origin);
+        const auto verts = visivo::originPathF(origin);
         if (verts.size() < 2)
             return false;
         this->pvPolylineVertices = verts;
+        this->m_pvSmooth = false;   // the recorded points ARE the cut that was taken
         this->pvWidthPixels = std::max(1, visivo::originWidth(origin));
         this->pvCurrentVoxel = verts.back();
         this->pvValid = true;

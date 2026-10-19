@@ -163,7 +163,7 @@ using namespace CubeStats;
 
 void vtkWindowCube::mouseCallback()
 {
-    if (this->isBusy()) {
+    if (this->isBusyForPvInteraction()) {
         return;
     }
     if (this->m_lassoEditActive) {
@@ -181,6 +181,10 @@ void vtkWindowCube::mouseCallback()
     this->refreshCatalogueOverlayInteraction(position[0], position[1], false);
     this->updateProbeFromDisplayPosition(position[0], position[1]);
     if (this->pvModeActive) {
+        if (this->m_pvEdit != PvEdit::None) {
+            this->updatePvEdit(position[0], position[1]);
+            return;
+        }
         if (this->updatePvFromDisplayPosition(position[0], position[1]) && this->pvDragging) {
             this->active2dWin()->Render();
         }
@@ -195,7 +199,7 @@ void vtkWindowCube::mouseCallback()
 
 void vtkWindowCube::toggleProbeFreeze()
 {
-    if (this->isBusy()) {
+    if (this->isBusyForPvInteraction()) {
         return;
     }
     if (this->m_lassoEditActive) {
@@ -217,13 +221,25 @@ void vtkWindowCube::toggleProbeFreeze()
     }
 
     if (this->pvModeActive) {
+        if (this->pvEditing()) {
+            // A finished path: a press on a handle / on the path starts a drag;
+            // anywhere else does nothing (New path… in the diagram starts over).
+            if (!this->beginPvEdit(position[0], position[1]))
+                this->statusBar()->showMessage(
+                        u"Drag a vertex or the path to edit it (Shift: rotate); "
+                        u"New path… in the diagram starts a new one."_s, 3000);
+            return;
+        }
         if (this->updatePvFromDisplayPosition(position[0], position[1])) {
+            const auto &last = this->pvPolylineVertices;
+            const bool samePoint = !last.empty()
+                    && std::hypot(last.back()[0] - this->pvCurrentVoxel[0],
+                                  last.back()[1] - this->pvCurrentVoxel[1]) < 0.25;
             if (!this->pvDragging) {
                 this->pvPolylineVertices.clear();
                 this->pvPolylineVertices.push_back(this->pvCurrentVoxel);
                 this->pvDragging = true;
-            } else if (this->pvPolylineVertices.empty()
-                       || this->pvPolylineVertices.back() != this->pvCurrentVoxel) {
+            } else if (!samePoint) {
                 this->pvPolylineVertices.push_back(this->pvCurrentVoxel);
             } else {
                 this->statusBar()->showMessage(u"PV vertex unchanged; move and click to add a new point."_s,
@@ -413,8 +429,12 @@ void vtkWindowCube::updateProbeReadout(vtkImageData *imageData)
     QString valueText = std::isfinite(value) ? QString::number(value, 'e', 2) : u"NaN"_s;
     // Append the brightness unit from the header when known — an unqualified value
     // in a brightness readout is ambiguous, but a wrong unit is worse than none.
-    if (std::isfinite(value) && !this->m_brightnessUnit.isEmpty()) {
-        valueText += u" %1"_s.arg(this->m_brightnessUnit);
+    // On a backdrop map (setSliceBackdrop) the value is the MAP's, in its unit.
+    const QString unit = this->m_sliceBackdropProductId.isEmpty()
+            ? this->m_brightnessUnit
+            : this->m_products2d.value(this->m_sliceBackdropProductId).unit;
+    if (std::isfinite(value) && !unit.isEmpty()) {
+        valueText += u" %1"_s.arg(unit);
     }
     const QString channelText = u"ch %1"_s.arg(this->probeVoxel[2] + 1);
 

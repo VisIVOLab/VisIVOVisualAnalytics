@@ -498,6 +498,7 @@ set(PROJECT_SOURCES
         src/gui/CubeWcsUtil.cpp
         src/gui/CubeWcsUtil.h
         src/gui/CubeRegionGeom.cpp
+        src/gui/PvPathGeometry.cpp
         src/gui/CubeRegionGeom.h
         src/gui/vtkWindowImage.cpp
         src/gui/vtkWindowImage.h

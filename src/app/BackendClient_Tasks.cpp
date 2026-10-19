@@ -163,6 +163,41 @@ BackendSaveChannel2dResult BackendClient::saveMap2dToWorkspace(
     return parseSaveChannel2dObject(QJsonDocument::fromJson(raw).object());
 }
 
+BackendSavePvFitsResult BackendClient::savePvFits(const QString &datasetId,
+                                                  const std::vector<std::array<double, 2>> &vertices,
+                                                  int widthPixels,
+                                                  const QString &outputBasename)
+{
+    BackendSavePvFitsResult result;
+    QString error;
+    QJsonArray vertexArray;
+    for (const auto &v : vertices)
+        vertexArray.append(QJsonArray{ v[0], v[1] });
+    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
+                                          { QStringLiteral("vertices"), vertexArray },
+                                          { QStringLiteral("width_pixels"), widthPixels },
+                                          { QStringLiteral("output_basename"), outputBasename } });
+    const QByteArray raw =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/pv_fits")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject o = QJsonDocument::fromJson(raw).object();
+    result.valid = o.value(QStringLiteral("valid")).toBool(false);
+    result.error = o.value(QStringLiteral("error")).toString();
+    result.outputPath = o.value(QStringLiteral("output_path")).toString();
+    result.workspaceFilename = o.value(QStringLiteral("workspace_filename")).toString();
+    result.width = o.value(QStringLiteral("width")).toInt();
+    result.height = o.value(QStringLiteral("height")).toInt();
+    result.rangeMin = o.value(QStringLiteral("range_min")).toDouble();
+    result.rangeMax = o.value(QStringLiteral("range_max")).toDouble();
+    result.bunit = o.value(QStringLiteral("bunit")).toString();
+    if (!result.valid && result.error.isEmpty())
+        result.error = QStringLiteral("The backend could not write the PV FITS file.");
+    return result;
+}
+
 BackendSaveMomentFitsResult BackendClient::saveMomentFits(
         const QString &datasetId,
         int order,
@@ -438,7 +473,7 @@ BackendTaskCreateResult BackendClient::createMomentTask(const QString &datasetId
 }
 
 BackendTaskCreateResult BackendClient::createPvTask(const QString &datasetId,
-                                                    const std::vector<std::array<int, 2>> &vertices,
+                                                    const std::vector<std::array<double, 2>> &vertices,
                                                     int widthPixels) const
 {
     BackendTaskCreateResult result;

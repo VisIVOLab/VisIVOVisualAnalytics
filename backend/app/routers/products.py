@@ -149,6 +149,62 @@ async def moment_save_fits(
            ("output_path", "width", "height", "range_min", "range_max",
             "bunit", "moment_unit")})
 
+# ── Persist a PV diagram to a 2-D FITS file ────────────────────────────────
+# Same path parameters as /v1/cube/pv. Axis 1 = offset along the path
+# (arcsec), axis 2 = the cube's spectral axis; written to Workspace Exports.
+
+class PvSaveFitsRequest(BaseModel):
+    dataset_id: str
+    vertices: list[list[float]]
+    width_pixels: int = 1
+    output_basename: str = ""
+
+
+class PvSaveFitsResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    output_path: str = ""
+    workspace_filename: str = ""
+    width: int = 0
+    height: int = 0
+    range_min: float = 0.0
+    range_max: float = 0.0
+    bunit: str = ""
+
+
+@router.post("/v1/products/pv_fits", response_model=PvSaveFitsResponse, tags=["products"])
+async def pv_save_fits(
+    request: PvSaveFitsRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> PvSaveFitsResponse:
+    """Compute the PV diagram along the given path and save it in the
+    **Workspace Exports** dir as a 2-D FITS image with WCS."""
+    from ..compute import worker_pv_save_fits  # noqa: PLC0415
+    try:
+        entry = _require_dataset(session, request.dataset_id)
+        if entry["kind"] != "cube":
+            raise HTTPException(422, "PV FITS export requires a spectral cube dataset.")
+        basename = request.output_basename.strip() or f"{Path(entry['path']).stem}_pv.fits"
+        output_path = str(make_workspace_path(basename))
+        result = await _run_heavy_with_limit(
+            session,
+            worker_pv_save_fits,
+            entry["path"],
+            output_path,
+            [list(v) for v in request.vertices],
+            max(1, int(request.width_pixels)),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("[pv_fits] failed dataset_id=%s error=%s", request.dataset_id, exc)
+        return PvSaveFitsResponse(valid=False, error=str(exc))
+    return PvSaveFitsResponse(
+        valid=True, workspace_filename=Path(result["output_path"]).name,
+        **{k: result[k] for k in ("output_path", "width", "height", "range_min", "range_max", "bunit")})
+
+
 @router.post("/v1/products/isosurface", response_model=IsosurfaceProductResponse, tags=["products"])
 async def isosurface_product(
     request: IsosurfaceProductRequest,

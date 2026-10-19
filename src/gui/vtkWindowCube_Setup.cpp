@@ -1507,6 +1507,19 @@ void vtkWindowCube::setupSliceRenderer()
                              this->slicePvUpperData, this->slicePvUpperActor);
     configurePvBoundaryActor(this->slicePvLowerPoints, this->slicePvLowerCells,
                              this->slicePvLowerData, this->slicePvLowerActor);
+    {
+        // Vertex handles of an editable PV path: round points, constant screen size.
+        this->slicePvHandleData->SetPoints(this->slicePvHandlePoints);
+        this->slicePvHandleData->SetVerts(this->slicePvHandleCells);
+        vtkNew<vtkPolyDataMapper> mapper;
+        mapper->SetInputData(this->slicePvHandleData);
+        this->slicePvHandleActor->SetMapper(mapper);
+        this->slicePvHandleActor->GetProperty()->SetColor(1.0, 0.85, 0.3);
+        this->slicePvHandleActor->GetProperty()->SetPointSize(9.0);
+        this->slicePvHandleActor->GetProperty()->RenderPointsAsSpheresOn();
+        this->slicePvHandleActor->VisibilityOff();
+        sliceRenderer->AddActor(this->slicePvHandleActor);
+    }
     const auto configureRegionLineActor = [sliceRenderer](vtkLineSource *line, vtkActor *actor) {
         vtkNew<vtkPolyDataMapper> mapper;
         mapper->SetInputConnection(line->GetOutputPort());

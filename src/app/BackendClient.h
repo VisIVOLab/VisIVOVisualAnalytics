@@ -318,10 +318,30 @@ struct BackendCubePvResult
     int validSamples{ 0 };
     QString spectralAxisType;
     QString spectralAxisUnit;
+    /// Channel coordinates in spectralAxisUnit, channel 0 first (may DEcrease:
+    /// CDELT < 0). Empty from a backend that predates them.
+    QVector<double> spectralCoordinates;
+    /// Pixel offset → sky arcsec, row-major [a, b, c, d]: the geometry the cut was
+    /// sampled in (non-square / skewed pixels). Empty from an older backend.
+    QVector<double> skyMatrixArcsec;
     QString bunit;
     double beamMajor{ 0.0 };
     double beamMinor{ 0.0 };
     double beamPa{ 0.0 };
+};
+
+/// POST /v1/products/pv_fits — the PV diagram as a 2-D FITS in Workspace Exports.
+struct BackendSavePvFitsResult
+{
+    bool valid{ false };
+    QString error;
+    QString outputPath;
+    QString workspaceFilename;
+    int width{ 0 };    ///< samples along the path
+    int height{ 0 };   ///< channels
+    double rangeMin{ 0. };
+    double rangeMax{ 0. };
+    QString bunit;
 };
 
 struct BackendCubeNoiseResult
@@ -1929,8 +1949,9 @@ public:
                                         int index) const;
     BackendCubeSubvolumeResult requestSubvolume(const QString &datasetId, int x0, int x1, int y0,
                                                 int y1, int z0, int z1) const;
+    /// @p vertices are 0-based cube pixels (x, y); fractional values are honoured.
     BackendCubePvResult requestPv(const QString &datasetId,
-                                  const std::vector<std::array<int, 2>> &vertices,
+                                  const std::vector<std::array<double, 2>> &vertices,
                                   int widthPixels) const;
     BackendCubeNoiseResult requestNoise(const QString &datasetId, int x0, int x1, int y0, int y1,
                                         int channelStart, int channelEnd) const;
@@ -2145,7 +2166,7 @@ public:
                                              int channelEnd, bool maskEnabled,
                                              double thresholdValue, bool thresholdAuto = false) const;
     BackendTaskCreateResult createPvTask(const QString &datasetId,
-                                         const std::vector<std::array<int, 2>> &vertices,
+                                         const std::vector<std::array<double, 2>> &vertices,
                                          int widthPixels) const;
     BackendTaskStatusResult requestTaskStatus(const QString &taskId) const;
     BackendTaskStatusResult waitForTaskCompletion(const BackendTaskCreateResult &createResult,
@@ -2390,6 +2411,11 @@ public:
     BackendFilterFitsResult filterFits(const QString &path, double smoothFwhmPixels,
                                        int regridFactor, const QString &combine,
                                        const QString &outputBasename = QString());
+
+    BackendSavePvFitsResult savePvFits(const QString &datasetId,
+                                       const std::vector<std::array<double, 2>> &vertices,
+                                       int widthPixels,
+                                       const QString &outputBasename = {});
 
     BackendSaveMomentFitsResult saveMomentFits(const QString &datasetId,
                                                 int order,

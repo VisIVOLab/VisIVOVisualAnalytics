@@ -15,6 +15,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QtEndian>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
@@ -2114,7 +2115,7 @@ BackendVelocityDensityResult BackendClient::fetchVelocityDensity(const QString &
 }
 
 BackendCubePvResult BackendClient::requestPv(const QString &datasetId,
-                                             const std::vector<std::array<int, 2>> &vertices,
+                                             const std::vector<std::array<double, 2>> &vertices,
                                              int widthPixels) const
 {
     QString error;
@@ -2859,6 +2860,23 @@ BackendCubePvResult BackendClient::parsePvResultObject(const QJsonObject &object
     result.beamMajor = object.value(QStringLiteral("beam_major")).toDouble();
     result.beamMinor = object.value(QStringLiteral("beam_minor")).toDouble();
     result.beamPa = object.value(QStringLiteral("beam_pa")).toDouble();
+    {
+        // float64 little-endian, uncompressed: a float32 frequency in Hz would
+        // lose the channel width.
+        const QByteArray raw = QByteArray::fromBase64(
+                object.value(QStringLiteral("spectral_coordinates_base64")).toString().toLatin1());
+        if (!raw.isEmpty() && raw.size() == result.depth * qsizetype(sizeof(double))) {
+            result.spectralCoordinates.resize(result.depth);
+            for (int i = 0; i < result.depth; ++i)
+                result.spectralCoordinates[i] = qFromLittleEndian<double>(raw.constData() + i * sizeof(double));
+        }
+    }
+    {
+        const QJsonArray m = object.value(QStringLiteral("sky_matrix_arcsec")).toArray();
+        if (m.size() == 4)
+            for (const QJsonValue &v : m)
+                result.skyMatrixArcsec.push_back(v.toDouble());
+    }
     result.positionsArcsec = decodePayload(object, QStringLiteral("positions_arcsec_base64"),
                                            QStringLiteral("compression"), result.error);
     result.error.clear(); // missing arcsec positions is non-fatal

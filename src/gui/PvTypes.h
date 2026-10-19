@@ -37,11 +37,14 @@ struct RemotePvFetchResult
     double pixelScaleArcsecPerPixel{ 0. };
     QString spectralAxisType;
     QString spectralAxisUnit;
+    QVector<double> spectralCoordinates;  // channel 0 first, in spectralAxisUnit (may decrease)
+    QString bunit;
+    QVector<double> skyMatrixArcsec;      // [a, b, c, d] pixel → sky arcsec (may be empty)
 
     // Vertices captured at dispatch time; passed back to the callback so
     // vtkWindowCube can build provenance strings without relying on shared
     // mutable state (pvPolylineVertices).
-    std::vector<std::array<int, 2>> capturedVertices;
+    std::vector<std::array<double, 2>> capturedVertices;
     int capturedWidthPixels{ 1 };
 };
 

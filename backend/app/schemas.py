@@ -211,7 +211,9 @@ class CubeSubvolumeResponse(BaseModel):
 
 class CubePvRequest(BaseModel):
     dataset_id: str
-    vertices: list[list[int]]
+    # 0-based cube pixel (x, y); fractional values are honoured (an edited path
+    # is not snapped to the grid).
+    vertices: list[list[float]]
     width_pixels: int = 1
 
 
@@ -234,6 +236,13 @@ class CubePvResponse(BaseModel):
     valid_samples: int = 0
     spectral_axis_type: str = ""
     spectral_axis_unit: str = ""
+    # Channel coordinates (float64 little-endian, base64), channel 0 first, in
+    # spectral_axis_unit; and the linear axis they define (CDELT may be < 0).
+    spectral_coordinates_base64: str = ""
+    spectral_crval: float = 0.0
+    spectral_cdelt: float = 0.0
+    step_pixels: float = 1.0
+    sky_matrix_arcsec: list[float] = []
     bunit: str = ""
     beam_major: float | None = None
     beam_minor: float | None = None

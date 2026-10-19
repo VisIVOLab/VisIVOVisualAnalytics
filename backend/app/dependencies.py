@@ -1427,10 +1427,13 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
 
 async def _pv_product_payload(entry: dict[str, Any], request: CubePvRequest) -> tuple[dict[str, Any], bool]:
     from .compute import worker_pv
+    from .compute.pv_iso import canonical_pv_vertices
 
     dataset = ScientificFitsDataset(entry["path"])
+    # The SAME canonical vertices key the cache and feed the worker.
+    vertices = canonical_pv_vertices(request.vertices)
     cache_params = {
-        "vertices": request.vertices,
+        "vertices": vertices,
         "width_pixels": max(1, int(request.width_pixels)),
     }
     cache_key, param_hash = PRODUCT_CACHE.make_key(dataset.path, "pv", cache_params)
@@ -1443,7 +1446,7 @@ async def _pv_product_payload(entry: dict[str, Any], request: CubePvRequest) -> 
     result = await _run_heavy(
         worker_pv,
         dataset.path,
-        request.vertices,
+        vertices,
         max(1, int(request.width_pixels)),
     )
     PRODUCT_CACHE.put(

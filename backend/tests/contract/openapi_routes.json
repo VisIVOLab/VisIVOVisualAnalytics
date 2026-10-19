@@ -99,6 +99,7 @@
     "POST /v1/products/moment_fits",
     "POST /v1/products/mosaic",
     "POST /v1/products/publication_figure",
+    "POST /v1/products/pv_fits",
     "POST /v1/pv/result/binary",
     "POST /v1/regions/export",
     "POST /v1/regions/parse",

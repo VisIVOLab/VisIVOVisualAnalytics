@@ -73,13 +73,14 @@ inline QVariantMap encodeRegionOrigin(int mode,
 /// The path a PV diagram was cut along. Its own kind rather than a "polygon":
 /// a PV path is open and carries a width, and restoring one into a region's
 /// polygon would draw a closed shape that was never there.
-inline QVariantMap encodePvPathOrigin(const std::vector<std::array<int, 2>> &vertices,
+/// Fractional vertices are kept: an edited path is not snapped to the grid.
+inline QVariantMap encodePvPathOrigin(const std::vector<std::array<double, 2>> &vertices,
                                       int widthPixels)
 {
     if (vertices.size() < 2)
         return {};
     QVariantList points;
-    for (const std::array<int, 2> &v : vertices)
+    for (const std::array<double, 2> &v : vertices)
         points.append(QVariant(QVariantList{ v[0], v[1] }));
     return { { QStringLiteral("kind"), QStringLiteral("pvpath") },
              { QStringLiteral("points"), points },
@@ -133,6 +134,19 @@ inline std::vector<std::array<int, 2>> originPolygon(const QVariantMap &origin)
         const QVariantList p = pv.toList();
         if (p.size() >= 2)
             out.push_back({ p.at(0).toInt(), p.at(1).toInt() });
+    }
+    return out;
+}
+
+/// The points of a PV path, fractional values kept (an edited path is not on the grid).
+inline std::vector<std::array<double, 2>> originPathF(const QVariantMap &origin)
+{
+    std::vector<std::array<double, 2>> out;
+    const QVariantList points = origin.value(QStringLiteral("points")).toList();
+    for (const QVariant &pv : points) {
+        const QVariantList p = pv.toList();
+        if (p.size() >= 2)
+            out.push_back({ p.at(0).toDouble(), p.at(1).toDouble() });
     }
     return out;
 }

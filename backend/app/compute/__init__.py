@@ -52,6 +52,8 @@ from .pv_iso import (  # noqa: F401
     _sample_polyline,
     _local_normal,
     worker_pv,
+    worker_pv_save_fits,
+    compute_pv,
 )
 from .selection import (  # noqa: F401
     cube_kinematic_levels,
@@ -139,6 +141,8 @@ __all__ = [
     "_sample_polyline",
     "_local_normal",
     "worker_pv",
+    "worker_pv_save_fits",
+    "compute_pv",
     "cube_kinematic_levels",
     "cube_kinematic_select",
     "cube_kinematic_select_multi",

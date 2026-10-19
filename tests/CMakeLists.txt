@@ -50,6 +50,7 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/skava/SkavaClient.cpp
     ${VISIVO_ROOT}/src/skava/VoTable.cpp
     ${VISIVO_ROOT}/src/vtk/ImageLod.cpp
+    ${VISIVO_ROOT}/src/gui/PvPathGeometry.cpp
 )
 set_target_properties(visivo_test_support PROPERTIES AUTOMOC ON)
 target_include_directories(visivo_test_support
@@ -128,6 +129,8 @@ add_executable(VisIVOTests
     test_backend_url_locality.cpp
     TestSkavaClient.h
     test_skava_client.cpp
+    TestPvPathGeometry.h
+    test_pv_path_geometry.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

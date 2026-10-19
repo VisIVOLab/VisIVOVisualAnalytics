@@ -1,6 +1,7 @@
 #include "PvDiagramWidget.h"
 
 #include "ColorMaps.h"
+#include "PvPathGeometry.h"
 #include "qcustomplot.h"
 #include "theme/VisivoTheme.h"
 
@@ -12,8 +13,11 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QApplication>
+#include <QCheckBox>
 #include <QEventLoop>
 #include <QPushButton>
+#include <QSignalBlocker>
+#include <QSpinBox>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -60,21 +64,57 @@ PvDiagramWidget::PvDiagramWidget(QWidget *parent)
     // Here we just add the plot below.
     root->addWidget(this->plot, 1);
 
-    // ── Footer toolbar (Save PNG) ─────────────────────────────────────────────
+    // ── Footer: path controls + exports ───────────────────────────────────────
+    // The path is edited on the image (drag a vertex, drag the path to move it,
+    // Shift-drag to rotate) and the diagram follows; width and the curve shape
+    // live here, inline, so changing them never interrupts with a dialog.
     auto *footer = new QFrame(this);
-    footer->setStyleSheet(u"QFrame { background: %1; border-top: 1px solid %2; }"_s
-                                  .arg(tHeaderBg(), tBorder()));
+    // By object name: a bare "QFrame" selector also styles the QLabels inside
+    // (QLabel is a QFrame) and drew a border over the Width label.
+    footer->setObjectName(u"pvDiagramFooter"_s);
+    footer->setStyleSheet(u"QFrame#pvDiagramFooter { background: %1; border-top: 1px solid %2; }"
+                          u"QCheckBox { color: %3; font-size: 11px; background: transparent; spacing: 6px; }"
+                          u"QCheckBox::indicator { width: 13px; height: 13px; border: 1px solid %4;"
+                          u" border-radius: 3px; background: %1; }"
+                          u"QCheckBox::indicator:checked { background: %5; border-color: %5; }"_s
+                                  .arg(tHeaderBg(), tBorder(), tValue(), tKey(), tGroupTitle()));
     auto *footerLayout = new QHBoxLayout(footer);
-    footerLayout->setContentsMargins(12, 10, 12, 10);
+    footerLayout->setContentsMargins(12, 8, 12, 8);
+    footerLayout->setSpacing(10);
+
+    auto *widthLabel = new QLabel(u"Width"_s, footer);
+    widthLabel->setStyleSheet(u"color: %1; font-size: 11px; background: transparent;"_s.arg(tKey()));
+    m_widthSpin = new QSpinBox(footer);
+    m_widthSpin->setRange(1, 99);
+    m_widthSpin->setSuffix(u" px"_s);
+    m_widthSpin->setKeyboardTracking(false);
+    m_widthSpin->setToolTip(u"Width of the cut across the path, averaged (cube pixels)"_s);
+    m_smoothCheck = new QCheckBox(u"Smooth curve"_s, footer);
+    m_smoothCheck->setToolTip(u"Cut along a smooth curve through the vertices instead of straight segments"_s);
+    auto *btnNew = new QPushButton(u"New path"_s, footer);
+    btnNew->setToolTip(u"Discard this path and draw a new one on the image"_s);
+    footerLayout->addWidget(widthLabel);
+    footerLayout->addWidget(m_widthSpin);
+    footerLayout->addWidget(m_smoothCheck);
+    footerLayout->addWidget(btnNew);
+    footerLayout->addStretch(1);
 
     auto *buttonBox = new QDialogButtonBox(footer);
+    auto *btnFits = new QPushButton(u"Save as FITS\u2026"_s);
+    btnFits->setToolTip(u"Save the PV diagram as a 2-D FITS image with WCS (offset × spectral axis) "
+                        u"in the Workspace Exports"_s);
     auto *btnSave = new QPushButton(u"Save as PNG\u2026"_s);
     btnSave->setToolTip(u"Save the PV diagram as a PNG image"_s);
+    buttonBox->addButton(btnFits, QDialogButtonBox::ActionRole);
     buttonBox->addButton(btnSave, QDialogButtonBox::ActionRole);
     footerLayout->addWidget(buttonBox);
 
     root->addWidget(footer);
     QObject::connect(btnSave, &QPushButton::clicked, this, &PvDiagramWidget::savePng);
+    QObject::connect(btnFits, &QPushButton::clicked, this, &PvDiagramWidget::saveFitsRequested);
+    QObject::connect(btnNew, &QPushButton::clicked, this, &PvDiagramWidget::newPathRequested);
+    QObject::connect(m_widthSpin, &QSpinBox::valueChanged, this, &PvDiagramWidget::widthChanged);
+    QObject::connect(m_smoothCheck, &QCheckBox::toggled, this, &PvDiagramWidget::smoothChanged);
 
     // ── QCustomPlot setup ─────────────────────────────────────────────────────
     this->plot->plotLayout()->insertRow(0);
@@ -87,6 +127,15 @@ PvDiagramWidget::PvDiagramWidget(QWidget *parent)
     this->colorMap = new QCPColorMap(this->plot->xAxis, this->plot->yAxis);
     this->colorMap->setInterpolate(false);
     this->plot->axisRect()->setupFullAxesBox(true);
+    // Colour bar on the right: the diagram's values have a unit (BUNIT), and a
+    // colour map without its scale cannot be read.
+    this->colorScale = new QCPColorScale(this->plot);
+    this->colorScale->setType(QCPAxis::atRight);
+    this->plot->plotLayout()->addElement(1, 1, this->colorScale);
+    this->colorMap->setColorScale(this->colorScale);
+    auto *marginGroup = new QCPMarginGroup(this->plot);
+    this->plot->axisRect()->setMarginGroup(QCP::msBottom | QCP::msTop, marginGroup);
+    this->colorScale->setMarginGroup(QCP::msBottom | QCP::msTop, marginGroup);
 
     // Apply default dark theme.
     applyPlotTheme(true);
@@ -111,8 +160,11 @@ void PvDiagramWidget::applyPlotTheme(bool dark)
         const QColor subTick(QString::fromLatin1(VisivoTheme::kOutlineVariant()));
         const QColor tickLbl(tValue());
         const QColor axisLbl(QString::fromLatin1(VisivoTheme::kPrimary()));
-        for (auto *axis : { this->plot->xAxis, this->plot->xAxis2,
-                            this->plot->yAxis, this->plot->yAxis2 }) {
+        QList<QCPAxis *> axes{ this->plot->xAxis, this->plot->xAxis2,
+                               this->plot->yAxis, this->plot->yAxis2 };
+        if (this->colorScale)
+            axes << this->colorScale->axis();
+        for (auto *axis : axes) {
             axis->setBasePen(QPen(axisLine));
             axis->setTickPen(QPen(axisLine));
             axis->setSubTickPen(QPen(subTick));
@@ -124,8 +176,11 @@ void PvDiagramWidget::applyPlotTheme(bool dark)
         this->plot->axisRect()->setBackground(QColor(u"#f8f8f8"_s));
         if (this->titleElement)
             this->titleElement->setTextColor(Qt::black);
-        for (auto *axis : { this->plot->xAxis, this->plot->xAxis2,
-                            this->plot->yAxis, this->plot->yAxis2 }) {
+        QList<QCPAxis *> axes{ this->plot->xAxis, this->plot->xAxis2,
+                               this->plot->yAxis, this->plot->yAxis2 };
+        if (this->colorScale)
+            axes << this->colorScale->axis();
+        for (auto *axis : axes) {
             axis->setBasePen(QPen(Qt::black));
             axis->setTickPen(QPen(Qt::black));
             axis->setSubTickPen(QPen(QColor(u"#888888"_s)));
@@ -308,14 +363,24 @@ void PvDiagramWidget::setPvData(const QVector<double> &positions,
     const double yMin = *std::min_element(spectral.cbegin(), spectral.cend());
     const double yMax = *std::max_element(spectral.cbegin(), spectral.cend());
 
-    this->colorMap->data()->setSize(nx, ny);
+    // QCPColorMap spreads row 0 at yMin … row ny-1 at yMax. The rows arrive in
+    // CHANNEL order, which runs downwards on a cube with CDELT3 < 0 (most HI
+    // cubes): written as they come, the diagram was mirrored against its own
+    // axis and emission landed at the wrong velocity.
+    const pvpath::UniformRows grid = pvpath::rowsOnUniformSpectralGrid(
+            std::vector<double>(intensities.cbegin(), intensities.cend()), nx, ny,
+            std::vector<double>(spectral.cbegin(), spectral.cend()));
+    const std::vector<double> &rows = grid.values;
+    const int plotRows = grid.rows;
+
+    this->colorMap->data()->setSize(nx, plotRows);
     this->colorMap->data()->setRange(QCPRange(xMin, xMax), QCPRange(yMin, yMax));
 
     double minValue = std::numeric_limits<double>::infinity();
     double maxValue = -std::numeric_limits<double>::infinity();
-    for (int y = 0; y < ny; ++y) {
+    for (int y = 0; y < plotRows; ++y) {
         for (int x = 0; x < nx; ++x) {
-            const double value = intensities[y * nx + x];
+            const double value = rows[std::size_t(y) * nx + x];
             this->colorMap->data()->setCell(x, y, value);
             if (std::isfinite(value)) {
                 minValue = std::min(minValue, value);
@@ -331,9 +396,19 @@ void PvDiagramWidget::setPvData(const QVector<double> &positions,
 
     this->colorMap->setDataRange(QCPRange(minValue, maxValue));
     this->colorMap->setGradient(QCPColorGradient::gpJet);
+    if (this->colorScale)
+        this->colorScale->axis()->setLabel(info.bunit);
     this->plot->rescaleAxes();
     this->plot->replot();
     this->show();
     this->raise();
     this->activateWindow();
+}
+
+void PvDiagramWidget::setPathControls(int widthPixels, bool smooth)
+{
+    const QSignalBlocker b1(m_widthSpin);
+    const QSignalBlocker b2(m_smoothCheck);
+    m_widthSpin->setValue(widthPixels);
+    m_smoothCheck->setChecked(smooth);
 }

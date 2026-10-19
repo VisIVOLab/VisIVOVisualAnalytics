@@ -754,6 +754,10 @@ private:
     QPointer<QDoubleSpinBox> m_paneRangeMax;
     QPointer<QWidget> m_paneScaleRow;      ///< 2D Slice only (linear/log/asinh)
     QPointer<SegmentedToggle> m_paneScaleSeg;
+    QPointer<QWidget> m_sliceBackdropRow;  ///< 2D Slice only: channel or a map underneath
+    QPointer<QComboBox> m_sliceBackdropCombo;
+    QPointer<QWidget> m_sliceRangeLockRow; ///< 2D Slice only: one range for every channel
+    QPointer<QCheckBox> m_sliceRangeLock;
     QPointer<QWidget> m_paneSymmetricRow;  ///< Moment only ("Symmetric about 0")
     QPointer<QCheckBox> m_paneSymmetric;
     bool m_applyingPaneDisplay{ false };   ///< guard dock↔pane two-way binding
@@ -1466,8 +1470,29 @@ protected:
     int hoveredCatalogueSourceIndex{ -1 };
     int selectedCatalogueSourceIndex{ -1 };
     double regionAnnulusInnerRadius{ 0.0 };
-    std::array<int, 2> pvCurrentVoxel{ -1, -1 };
-    std::vector<std::array<int, 2>> pvPolylineVertices;
+    // PV path: control vertices in cube pixels, fractional (an edited path is
+    // not snapped to the grid). With m_pvSmooth the cut follows a curve through them.
+    std::array<double, 2> pvCurrentVoxel{ -1.0, -1.0 };
+    std::vector<std::array<double, 2>> pvPolylineVertices;
+    bool m_pvSmooth{ false };
+    // A FINISHED path stays editable while PV mode is on: drag a handle to move a
+    // vertex, drag the path to move it, Shift-drag to rotate it; double-click the
+    // path to add a vertex, right-click a vertex to remove it. The diagram follows.
+    enum class PvEdit { None, MoveVertex, Translate, Rotate };
+    PvEdit m_pvEdit{ PvEdit::None };
+    int m_pvEditVertex{ -1 };
+    std::array<double, 2> m_pvEditAnchor{ 0.0, 0.0 };       ///< pixel where the drag began
+    std::vector<std::array<double, 2>> m_pvEditStart;       ///< path when the drag began
+    double m_pvEditStartAngle{ 0.0 };
+    QTimer *m_pvLiveTimer{ nullptr };                       ///< debounces live recomputes
+    // The path and width the DISPLAYED diagram was computed from: what Save as
+    // FITS exports, whatever the user has dragged since.
+    std::vector<std::array<double, 2>> m_pvShownVertices;
+    int m_pvShownWidth{ 1 };
+    // Pixel → sky (arcsec) matrix the backend sampled with, so the width band on
+    // screen is the band it averaged, also on skewed grids. Until the first
+    // result: diag(|CDELT1|, |CDELT2|).
+    std::array<double, 4> m_pvSkyMatrix{ 0.0, 0.0, 0.0, 0.0 };
     RemoteCubeDisplayState remoteCubeDisplayState{ RemoteCubeDisplayState::Preview };
     // Pattern B: backend-driven size-aware loading policy.
     // ``preview_only`` suppresses the auto requestHighResCube() call that
@@ -1621,10 +1646,26 @@ protected:
     void updateProbeReadout(vtkImageData *imageData);
     void updateProbePlot();
     QString formatSpatialPointSummary(const std::array<int, 2> &voxel) const;
-    std::vector<std::array<int, 2>> pvSampledPath(
-            const std::vector<std::array<int, 2>> &vertices) const;
-    std::array<double, 2> pvLocalNormalForSample(
-            const std::vector<std::array<int, 2>> &sampledPoints, std::size_t index) const;
+    QString formatSpatialPointSummary(const std::array<double, 2> &pixel) const;
+    /// The path the cut follows: the control vertices, or the smooth curve through them.
+    std::vector<std::array<double, 2>> pvEffectivePath() const;
+    /// Display → cube pixel (fractional) on the active 2-D image; false off the image.
+    bool pvPixelFromDisplay(int displayX, int displayY, std::array<double, 2> &pixel) const;
+    bool pvDisplayFromPixel(const std::array<double, 2> &pixel, std::array<double, 2> &display) const;
+    std::vector<std::array<double, 2>> pvDisplayPath(const std::vector<std::array<double, 2>> &pixels) const;
+    /// PV mode on and the path finished: clicks edit it instead of drawing.
+    bool pvEditing() const;
+    bool beginPvEdit(int displayX, int displayY);
+    void updatePvEdit(int displayX, int displayY);
+    void endPvEdit();
+    /// Double-click / right-click while editing: add or remove a vertex.
+    void editPvVertexAt(int displayX, int displayY, bool insert);
+    void schedulePvLiveUpdate(int delayMs);
+    void startNewPvPath();
+    void exportPvAsFits();
+    /// isBusy() for the PV interaction handlers: the PV's OWN running
+    /// computation must not freeze the path it is computing (live editing).
+    bool isBusyForPvInteraction() const;
     QString selectedFrameAxisTitle(int axis) const;
     bool viewingIsosurface() const;
     bool viewingSlice() const;
@@ -1948,6 +1989,25 @@ protected:
     // Colour-scale stretch (Linear/Log/Sqrt/Square/Power) tracked per display so
     // it survives reopening the LUT dialog and colormap swaps.
     LutScale::Mode m_sliceScaleMode{ LutScale::Mode::Linear };
+    // Channel maps compared by eye need ONE colour scale: when set, a new channel
+    // keeps the slice's range instead of stretching to its own min/max. Set by
+    // the user, and automatically by any range they choose explicitly (a percentile
+    // preset, the clip fields, the histogram), which a channel change used to undo.
+    bool m_sliceRangeLocked{ false };
+    void setSliceRangeLocked(bool locked);
+    // The 2D Slice's BACKGROUND: empty = the current channel; else the id of a
+    // full-field 2-D product (a moment map) shown in its place, on the same pixel
+    // grid, so the slice tools — the PV path first of all (Serra: draw the cut on
+    // a moment 0/1 map) — work on it unchanged. Channels keep loading into the
+    // cache meanwhile and come back when the background returns to "Channel".
+    QString m_sliceBackdropProductId;
+    std::array<double, 2> m_sliceRangeBeforeBackdrop{ 0.0, 0.0 };
+    bool m_sliceRangeLockedBeforeBackdrop{ false };
+    void setSliceBackdrop(const QString &productId);
+    /// Products that can be the slice background: image products covering the
+    /// whole field on the slice's pixel grid. Pairs of (product id, label).
+    QList<QPair<QString, QString>> sliceBackdropCandidates() const;
+    void refreshSliceBackdropCombo();
     double m_sliceScaleGamma{ 2.0 };
     LutScale::Mode m_volumeScaleMode{ LutScale::Mode::Linear };
     double m_volumeScaleGamma{ 2.0 };
@@ -2024,6 +2084,10 @@ protected:
     vtkNew<vtkCellArray> slicePvLowerCells;
     vtkNew<vtkPolyData> slicePvLowerData;
     vtkNew<vtkActor> slicePvLowerActor;
+    vtkNew<vtkPoints> slicePvHandlePoints;    ///< editable vertices (shown while editing)
+    vtkNew<vtkCellArray> slicePvHandleCells;
+    vtkNew<vtkPolyData> slicePvHandleData;
+    vtkNew<vtkActor> slicePvHandleActor;
     vtkNew<vtkPoints> catalogueHoverOverlayPoints;
     vtkNew<vtkCellArray> catalogueHoverOverlayCells;
     vtkNew<vtkPolyData> catalogueHoverOverlayData;
