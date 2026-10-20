@@ -6,6 +6,33 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## Unreleased
+
+- **PV diagram: fixed a mirrored spectral axis.** On a cube whose spectral axis
+  decreases (`CDELT3 < 0`, most HI cubes) the diagram was drawn mirrored against
+  its own axis, so emission appeared at the wrong velocity. Channels are now
+  placed by their spectral value, taken from the backend; non-linear axes
+  (e.g. `VOPT-F2W`) are placed correctly too. PV diagrams of such cubes made with
+  earlier versions should be redone. Reported by P. Serra.
+- **PV path, editable and live** (requested by P. Serra, in the manner of
+  kpvslice): the finished path stays on the image and can be edited (drag a
+  vertex, move it, Shift-drag to rotate, double-click to add a vertex,
+  right-click to remove one); the diagram is recomputed as you edit. Width,
+  *Smooth curve* and *New path* are controls of the diagram; the width dialog is
+  gone. A colour bar shows `BUNIT`.
+- **PV as FITS:** *Save as FITS…* (`POST /v1/products/pv_fits`): offset axis in
+  arcsec and the cube's own spectral WCS, beam, `BUNIT`, path in `HISTORY`.
+- **PV sampling:** sub-pixel vertices; a uniform step along the path measured on
+  the sky (non-square and skewed pixels); NaN-aware bilinear interpolation;
+  only the pixels around the path are read. Cubes whose spectral axis is not the
+  last one are refused instead of being cut along a spatial axis.
+- **Draw on a moment map:** *DISPLAY → Show* puts a full-field moment map in the
+  2-D Slice in place of the channel; PV, regions and probe work on it.
+- **One colour range for every channel:** *Same range on every channel* and
+  *Cube range* for the 2-D Slice; a range chosen by hand is no longer undone by
+  the next channel.
+- **Fixed a crash on quit** when a PV diagram or a probe/profile plot was open.
+
 ## 1.0.1 (2026-10-16)
 
 - **Polarimetry: blank sub-bands.** A release can flag a sub-band out entirely

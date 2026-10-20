@@ -5,7 +5,7 @@ Three commonly-used interactive analyses on a 2-D slice or moment map:
 | Tool | What it gives you | Where in UI |
 |------|-------------------|-------------|
 | [Region statistics](#region-statistics) | mean / median / σ / sum over a shape | drag on the slice |
-| [PV diagram](#position-velocity-diagrams) | intensity along a path × velocity | polyline + Compute |
+| [PV diagram](#position-velocity-diagrams) | intensity along a path × velocity | draw a path; edit it live |
 | [Noise estimation](#noise-estimation) | per-channel MAD + 1σ | choose a line-free region |
 
 ---
@@ -126,58 +126,132 @@ and the ring appeared only after you had already chosen.)
 A **position–velocity (PV) diagram** is a 2-D plot that shows intensity
 along a chosen spatial path (one axis) versus velocity / frequency (the
 spectral axis of the cube, the other axis). It is the standard way to
-inspect kinematic structure: rotation curves, outflows, jets, expansion.
+inspect kinematic structure: rotation curves, warps, outflows, jets,
+expansion.
 
-### Extracting a PV
+### Drawing the path
 
-1. In the cube viewer click **Tools → Extract PV Diagram**. The cursor
-   becomes a polyline tool.
-2. Draw a polyline on the 2-D slice:
-   - Click each vertex (one or more segments are fine).
-   - The path is rendered as a yellow line, with control points at every
-     vertex.
-3. Set the **path width** (in pixels) in the right-side card — this
-   controls how many adjacent pixels perpendicular to the path are
-   averaged to make the PV (default 3). Larger width → smoother PV but
-   blurs narrow features.
-4. Click **Compute**. The backend reads the cube along the path and
-   builds the PV map; the result opens in a dedicated *PV viewer* with
-   its own LUT, range, and WCS overlay.
+1. In the cube viewer choose **Tools → Extract PV Diagram**. The cursor
+   becomes a cross.
+2. Click on the 2-D slice to place the vertices of the path, as many as you
+   like. Vertices are kept at sub-pixel precision.
+3. **Double-click** or **right-click** to finish the path. The diagram is
+   computed on the backend and opens in a pane.
 
-### What you see
+You can draw the path on a **moment map** instead of a channel: choose the
+map under *DISPLAY → Show* first (see
+[Drawing on a moment map](#drawing-on-a-moment-map)).
 
-- **X axis** — position along the polyline (arcsec or pixels, depending
-  on whether the cube has spatial WCS).
-- **Y axis** — spectral coordinate (velocity, frequency, channel).
-- **Color** — intensity (BUNIT).
+### Editing the path
 
-A small extras panel shows:
+The finished path stays on the image with a handle on each vertex, and while
+*Extract PV Diagram* is on it can be edited. The diagram follows every change.
 
-| | |
+| Gesture | Effect |
 |---|---|
-| **Total length** | Polyline length in arcsec (if WCS is available) |
-| **Spatial unit** | arcsec / pixel |
-| **Pixel scale** | arcsec / pixel along the path |
-| **BUNIT** | Cube brightness unit |
-| **Beam** | If the cube header carries beam metadata (BMAJ / BMIN / BPA) |
+| Drag a handle | moves that vertex |
+| Drag the path | moves the whole path |
+| **Shift** + drag the path | rotates it about its centre |
+| Double-click on the path | adds a vertex there |
+| Right-click on a vertex | removes it (a path keeps at least two) |
+
+While you drag, the diagram is recomputed a fraction of a second after the
+pointer pauses; if a computation is still running, only the latest shape is
+computed next, so nothing piles up.
+
+Turning *Extract PV Diagram* off keeps the path on screen but frozen; turning
+it on again resumes editing the same path. **New path** in the diagram starts
+over.
+
+### The diagram window
+
+The footer of the diagram holds the path controls, so none of them needs a
+dialog:
+
+| Control | Meaning |
+|---|---|
+| **Width** | width of the cut across the path; the values across it are averaged |
+| **Smooth curve** | cut along a smooth curve through the vertices (centripetal Catmull-Rom) instead of straight segments |
+| **New path** | discard this path and draw a new one |
+| **Save as FITS…** | write the diagram to the Workspace Exports (below) |
+| **Save as PNG…** | save the picture |
+
+The header repeats the path (start, end, vertices, length) and the sampling
+(width, spectral axis, spatial unit, scale). A colour bar on the right carries
+the cube's `BUNIT`.
+
+### What is computed
+
+- **X axis**: offset along the path, in arcsec when the cube has a celestial
+  WCS (pixels otherwise), starting at 0 at the first vertex.
+- **Y axis**: the cube's spectral coordinate (velocity, frequency, …), placed
+  by **value**, so a spectral axis that decreases (`CDELT3 < 0`, the usual case
+  for HI cubes) or that is not linear (e.g. `VOPT-F2W`) is drawn where it
+  belongs.
+- **Sampling**: one sample every pixel *along* the path (the finer pixel size
+  when pixels are not square, measured on the sky), so the offset axis is
+  exactly linear also for diagonal and curved paths. Values are bilinear at
+  sub-pixel positions; a blank (NaN) neighbour is left out instead of blanking
+  the sample. Across the path, *Width* samples one pixel apart are averaged.
+- The computation runs on the backend, at **full resolution**, and reads only
+  the pixels around the path, so it works on large and remote cubes.
+
+```{important}
+Up to version 1.0.1 the diagram of a cube with a **decreasing** spectral axis was drawn
+mirrored against its own axis: emission appeared at the wrong velocity (e.g. a
+source at the centre of the band near one end). Diagrams made with earlier
+versions on such cubes should be redone.
+```
+
+The PV needs the spectral axis to be the cube's last axis (e.g. `NAXIS3`); a
+transposed cube is refused with a message rather than cut along a spatial axis.
+
+### Saving the diagram as FITS
+
+**Save as FITS…** asks for a file name and writes a 2-D FITS image to the
+Workspace Exports (browsable from the Data Hub):
+
+| Card | Content |
+|---|---|
+| `CTYPE1 = 'OFFSET'`, `CUNIT1 = 'arcsec'` | offset along the path, `CRVAL1 = 0` at the first vertex, `CDELT1` = sample step |
+| `CTYPE2`, `CUNIT2`, `CRVAL2`, `CDELT2`, `CRPIX2` | the cube's **own** spectral axis, algorithm and parameters included, so a non-linear axis stays exact |
+| `BUNIT`, `BMAJ`, `BMIN`, `BPA` | from the cube |
+| `RESTFRQ`, `SPECSYS`, … | copied when present |
+| `PVWIDTH`, `PVSTEP` | width and sample step, in cube pixels |
+| `HISTORY` | every vertex, in pixels and in sky coordinates |
+
+The file is computed from the path the **displayed** diagram was made from.
+
+### Drawing on a moment map
+
+The *DISPLAY* section of the 2-D Slice has a **Show** menu: *Channel* (the
+default) or any moment map computed over the whole field. With a map
+selected, the slice shows it on the same pixels, and the slice tools (PV path,
+regions, probe) work on it exactly as on a channel. This is the way to draw a
+PV path along a disk or a filament seen in moment 0, or across the velocity
+gradient of moment 1.
+
+Meanwhile the channel controls keep working: the channel number, linked
+windows and the 3-D cutting plane follow them, and the channel shows again as
+soon as you choose *Channel*. A region measured on the map records the map
+(and its version) as what it measured, and the probe reports the map's unit.
 
 ### Tips
 
-- Place the polyline **along** the kinematic axis (the direction of
-  rotation, the outflow axis, etc.) for the clearest signature.
-- Two short segments at an angle let you trace a curved structure (jet
-  break, S-shape).
-- Use *Slice playback* in the cube viewer first to identify where the
-  emission lives, then draw the PV path on a representative slice.
+- Place the path **along** the kinematic axis (the major axis of a disk, the
+  outflow axis) for the clearest signature; use *Smooth curve* for a warp or
+  a spiral arm.
+- Use *Slice playback* or a moment map first to see where the emission lives.
+- For channel-by-channel comparison keep one colour scale: *DISPLAY → Same
+  range on every channel* (see
+  [One colour range for every channel](cube-viewer.md#one-colour-range-for-every-channel)).
 
 ### Caveats
 
-- The PV is computed on the **full-resolution** cube on the backend, not
-  on a downsampled preview, so the first PV after opening a cube may take
-  longer if the high-res swap hasn't completed.
-- It's a heavy backend task, so it's throttled to leave a worker free for
-  interactive slice scrolling; you can keep navigating the cube while
-  the PV computes.
+- The PV is computed on the full-resolution cube on the backend, not on the
+  downsampled preview; a long, wide path on a very large cube takes longer.
+- It is a heavy backend task, throttled so that slice scrolling stays
+  responsive while it runs.
 
 ---
 

@@ -1,0 +1,48 @@
+{
+  "environment": {
+    "timestamp": "2026-10-19T20:46:59",
+    "base_url": "http://127.0.0.1:8765",
+    "repeats": 1,
+    "platform": "macOS-27.0.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "python": "3.11.15",
+    "note": "add CPU/RAM/GPU/disk of the backend host here"
+  },
+  "records": [
+    {
+      "cube": "/Users/fvitello/visivo_bench_data/cube_8gb.fits",
+      "ops": {
+        "preview": [
+          6.6847119579906575
+        ],
+        "roi": [
+          2.0890634160023183
+        ],
+        "lasso": [
+          6.372687957977178
+        ],
+        "m0": [
+          12.382448124990333
+        ],
+        "pv": [
+          3.2459291249979287
+        ]
+      },
+      "width": 1586,
+      "height": 1586,
+      "depth": 793,
+      "size_gb_f32": 7.98,
+      "open_s": 0.014,
+      "failed_ops": {
+        "full-res": "ChunkedEncodingError: ('Connection broken: IncompleteRead(0 bytes read, 7978836112 more expected)', IncompleteRead(0 bytes read, 7978836112 more expected))"
+      },
+      "roi_gb": 1.07,
+      "seed_zyx": [
+        396,
+        795,
+        792
+      ],
+      "lasso_selected_voxels": 528860
+    }
+  ]
+}

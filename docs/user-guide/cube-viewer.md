@@ -133,7 +133,6 @@ a GPU node with 80 GB of VRAM, or a cube on a filesystem you do not want to pull
 several GB across. On your own laptop, against your own backend, it is mostly a
 way around this client's threshold.
 ```
-```
 
 ## Color maps and transfer function
 
@@ -146,6 +145,26 @@ way around this client's threshold.
 - For the slice / moment maps, the **2-D LUT editor** opens from the
   *2-D View Settings* sidebar. Both editors are non-modal: keep them open
   while you scrub through slices to fine-tune in real time.
+
+### One colour range for every channel
+
+By default each channel of the 2-D Slice is stretched to its own minimum and
+maximum, which makes faint channels look as bright as the peak. To compare
+channels by colour, tick **Same range on every channel** in the *DISPLAY*
+section of the 2-D Slice: the range in force is kept as you move through the
+cube. **Cube range** next to it sets the minimum and maximum of the whole
+loaded cube (of the preview until the full resolution has loaded).
+
+Any range you choose yourself (a percentile button, the *Clip* fields, the
+cursors of the pixel histogram) turns the option on, so a chosen range is no
+longer undone by the next channel. *Reset* goes back to the per-channel range.
+
+### What the 2-D Slice shows
+
+*DISPLAY → Show* chooses what the 2-D Slice displays: the current **Channel**,
+or a moment map computed over the whole field, shown on the same pixels so
+that the slice tools work on it. See
+[Drawing on a moment map](region-pv-noise.md#drawing-on-a-moment-map).
 
 ## Tools
 

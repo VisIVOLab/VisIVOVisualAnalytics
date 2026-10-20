@@ -1,0 +1,48 @@
+{
+  "environment": {
+    "timestamp": "2026-10-19T20:46:46",
+    "base_url": "http://127.0.0.1:8765",
+    "repeats": 1,
+    "platform": "macOS-27.0.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "python": "3.11.15",
+    "note": "add CPU/RAM/GPU/disk of the backend host here"
+  },
+  "records": [
+    {
+      "cube": "/Users/fvitello/visivo_bench_data/cube_1gb.fits",
+      "ops": {
+        "preview": [
+          2.905827374983346
+        ],
+        "fullres": [
+          1.637146124994615
+        ],
+        "roi": [
+          0.45581920800032094
+        ],
+        "lasso": [
+          1.9896080000035
+        ],
+        "m0": [
+          1.3600554169970565
+        ],
+        "pv": [
+          0.10101304200361483
+        ]
+      },
+      "width": 794,
+      "height": 794,
+      "depth": 397,
+      "size_gb_f32": 1.0,
+      "open_s": 0.018,
+      "roi_gb": 0.66,
+      "seed_zyx": [
+        198,
+        392,
+        400
+      ],
+      "lasso_selected_voxels": 534196
+    }
+  ]
+}
