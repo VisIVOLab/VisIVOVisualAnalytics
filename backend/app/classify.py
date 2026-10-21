@@ -109,16 +109,20 @@ def _classify_fits(path: Path, head: bytes) -> dict:
 
     try:
         with fits.open(path, memmap=False, lazy_load_hdus=True) as hdul:
-            primary = hdul[0].header
-            naxis = int(primary.get("NAXIS", 0))
+            # The same choice the opener makes: the primary when it holds an
+            # image, else the first image extension (an ESO phase-3 or APEX
+            # product keeps the primary empty and the cube in DATA_EXT), so a
+            # file is never classified from one HDU and opened from another.
+            from .fits_dataset import image_hdu_index  # noqa: PLC0415
+            header = hdul[image_hdu_index(hdul)].header
+            naxis = int(header.get("NAXIS", 0))
             # The real axes: FITS routinely carries degenerate ones (a Stokes
             # axis of length 1), and counting those would call a map a cube.
-            axes = [int(primary.get(f"NAXIS{i}", 0)) for i in range(1, naxis + 1)]
+            axes = [int(header.get(f"NAXIS{i}", 0)) for i in range(1, naxis + 1)]
             significant = [n for n in axes if n > 1]
 
             if naxis == 0 or not significant:
-                # No image in the primary HDU: the content is in an extension,
-                # and for these files that is almost always a table.
+                # No image anywhere: the content is a table, or nothing we read.
                 for hdu in hdul[1:]:
                     kind = str(hdu.header.get("XTENSION", "")).strip().upper()
                     if kind in ("BINTABLE", "TABLE"):
@@ -129,7 +133,7 @@ def _classify_fits(path: Path, head: bytes) -> dict:
                 return _result("unknown", "ask", False,
                                "FITS with no image and no table in it.")
 
-            ctypes = [str(primary.get(f"CTYPE{i}", "")).upper() for i in range(1, naxis + 1)]
+            ctypes = [str(header.get(f"CTYPE{i}", "")).upper() for i in range(1, naxis + 1)]
             # A velocity field: three components (vx, vy, vz) on a 3-D grid, the
             # layout the vector-field viewer reads. A Stokes or spectral axis of
             # length 3 is something else, so only an axis that names neither.

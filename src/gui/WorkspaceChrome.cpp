@@ -555,7 +555,7 @@ InspectorPanel *WorkspaceChrome::installInspectorDock()
                         return;
                     }
                     const AnalysisProduct p = ProductRegistry::instance().product(productId);
-                    m_inspector->showProvenance(p.label.isEmpty() ? p.kind : p.label, p.params);
+                    m_inspector->showProvenance(p);
                 });
     }
 

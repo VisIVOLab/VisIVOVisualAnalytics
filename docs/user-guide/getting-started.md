@@ -119,6 +119,14 @@ the backend-side filesystem:
   usual case: it can be a source catalogue or a table to overlay on an image,
   and nothing in the file says which — so the client asks instead of guessing.
 
+  The image or cube need not be in the primary HDU. Archive products such as
+  ESO phase-3 or APEX cubes keep the primary empty and the data in an image
+  extension (`DATA_EXT`, with the variance beside it in `STAT_EXT`): the
+  backend opens the first extension that holds a real array, reads its WCS
+  and `BUNIT` from there, and carries the descriptive cards only the primary
+  has (`OBJECT`, the instrument) along with it. The header viewer lists the
+  two together, and an edit of a card goes back to the HDU that owns it.
+
 Under **Archives**:
 
 - **HiPS Viewer** opens the all-sky [HiPS viewer](catalogues-hips).

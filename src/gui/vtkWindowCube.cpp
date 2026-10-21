@@ -7250,7 +7250,8 @@ QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QStrin
                                                const QString &stableId, const QString &renderer,
                                                bool revealProvenance,
                                                const QVariantMap &origin,
-                                               bool selectInSession)
+                                               bool selectInSession,
+                                               const QString &endpoint)
 {
     AnalysisProduct p;
     p.productId = stableId;
@@ -7265,6 +7266,7 @@ QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QStrin
     p.ownerId = this->m_windowScope;   // this window owns + renders the product
     p.window = window;
     p.origin = origin;
+    p.endpoint = endpoint;
     const QString id = ProductRegistry::instance().registerProduct(std::move(p));
     if (this->m_workspaceChrome) {
         // Select the new product first (so Provenance is populated), then auto-expand

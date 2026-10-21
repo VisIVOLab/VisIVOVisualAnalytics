@@ -20,6 +20,34 @@ class BeamMetadata:
     pa: float | None
 
 
+# Descriptive keywords an archive puts in the (empty) primary header of a
+# multi-extension product; copied onto the image header when it lacks them.
+# Spellings of one quantity are one entry, so a primary RESTFRQ never lands
+# beside the extension's own RESTFREQ (the reader prefers the first spelling).
+_PRIMARY_DESCRIPTIVE_KEYS = (("OBJECT",), ("TELESCOP",), ("INSTRUME",), ("OBSERVER",),
+                             ("DATE-OBS",), ("BUNIT",), ("RESTFRQ", "RESTFREQ"), ("SPECSYS",))
+
+
+def image_hdu_index(hdul) -> int:
+    """Index of the HDU that holds the image.
+
+    The primary when it has at least a 2-D array, otherwise the first image
+    extension with one: ESO phase-3 and APEX products keep the primary empty
+    (``NAXIS = 0``) and the cube in ``DATA_EXT``, with the variance cube in
+    ``STAT_EXT`` beside it, and reading ``hdul[0]`` on those gave an image of
+    shape ``()``. Headers only — no data is touched. 0 when nothing qualifies,
+    so callers fail where they always did.
+    """
+    for index, hdu in enumerate(hdul):
+        if not getattr(hdu, "is_image", False):
+            continue
+        header = hdu.header
+        naxis = int(header.get("NAXIS", 0))
+        if naxis >= 2 and sum(int(header.get(f"NAXIS{k}", 1)) > 1 for k in range(1, naxis + 1)) >= 2:
+            return index
+    return 0
+
+
 class ScientificFitsDataset:
     """
     Minimal backend-side scientific FITS dataset helper.
@@ -37,8 +65,18 @@ class ScientificFitsDataset:
     def __init__(self, path: str | Path) -> None:
         self.path = str(Path(path))
         with fits.open(self.path, memmap=True, mode="readonly") as hdul:
-            header = hdul[0].header.copy()
-            shape = hdul[0].shape
+            self.hdu_index = image_hdu_index(hdul)
+            header = hdul[self.hdu_index].header.copy()
+            shape = hdul[self.hdu_index].shape
+            if self.hdu_index != 0:
+                primary = hdul[0].header
+                for spellings in _PRIMARY_DESCRIPTIVE_KEYS:
+                    if any(key in header for key in spellings):
+                        continue
+                    for key in spellings:
+                        if key in primary:
+                            header[key] = primary[key]
+                            break
         self.header = header
         self.shape = tuple(shape) if shape is not None else ()
         self.naxis = int(header.get("NAXIS", 0))
@@ -215,10 +253,10 @@ class ScientificFitsDataset:
 
     def open_memmap(self):
         hdul = fits.open(self.path, memmap=True, mode="readonly")
-        data = hdul[0].data
+        data = hdul[self.hdu_index].data
         if data is None:
             hdul.close()
-            raise ValueError("FITS file contains no primary image data.")
+            raise ValueError("FITS file contains no image data.")
         return hdul, data
 
     @staticmethod

@@ -16,7 +16,7 @@ from ..auth import verify_token
 from ..sessions import Session, get_session, REGISTRY
 from ..tasks import TASKS
 from ..product_cache import PRODUCT_CACHE
-from ..fits_dataset import ScientificFitsDataset
+from ..fits_dataset import ScientificFitsDataset, image_hdu_index
 import asyncio
 
 router = APIRouter(tags=['files'])
@@ -78,7 +78,22 @@ async def file_header(request: FileHeaderRequest, _: None = _auth) -> FileHeader
         if not _is_fits(path):
             raise ValueError("FITS file not found.")
         with fits.open(str(path), memmap=True) as hdul:
-            cards = [str(card) for card in hdul[0].header.cards]
+            # The image's own header (WCS, BUNIT) — the extension's, on a
+            # multi-extension product — followed by the primary's descriptive
+            # cards it does not repeat (OBJECT, the ESO hierarchy). Structural
+            # cards and duplicates stay out: the header editor needs every
+            # keyword once, and edits go to the image HDU.
+            index = image_hdu_index(hdul)
+            image_header = hdul[index].header
+            cards = [str(card) for card in image_header.cards]
+            if index != 0:
+                skip = {"SIMPLE", "BITPIX", "NAXIS", "EXTEND", "PCOUNT", "GCOUNT",
+                        "XTENSION", "EXTNAME", "EXTVER", "END", "COMMENT", "HISTORY", ""}
+                for card in hdul[0].header.cards:
+                    key = card.keyword
+                    if key in skip or key.startswith("NAXIS") or key in image_header:
+                        continue
+                    cards.append(str(card))
     except PermissionError:
         # Same answer as a genuinely absent file: echoing the refusal reason
         # would tell the caller that the path exists but is out of bounds.

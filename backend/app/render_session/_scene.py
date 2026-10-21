@@ -45,6 +45,7 @@ class SceneMixin:
         from vtkmodules.vtkRenderingOpenGL2 import vtkEGLRenderWindow
         from vtk.util.numpy_support import numpy_to_vtk
         from ..cube_reader import CubeReader
+        from ..fits_dataset import image_hdu_index
 
         # ── 1. Peek the FITS for cube shape WITHOUT loading data ─────
         # Phase 4 Path 1: the FITS read happens in a separate worker
@@ -53,7 +54,7 @@ class SceneMixin:
         # to discover (nz, ny, nx) so we can pre-allocate the shared
         # memory buffer that backs vtkImageData.
         with _fits.open(self.dataset_path, memmap=True) as hdul:
-            data = hdul[0].data  # type: ignore[attr-defined]
+            data = hdul[image_hdu_index(hdul)].data  # type: ignore[attr-defined]
             while data.ndim > 3:
                 data = data[0]
             if data.ndim != 3:
@@ -110,7 +111,7 @@ class SceneMixin:
             # WALLABY-class datasets don't regress.
             self._cube_reader = None
             with _fits.open(self.dataset_path, memmap=True) as hdul:
-                data = hdul[0].data
+                data = hdul[image_hdu_index(hdul)].data
                 while data.ndim > 3:
                     data = data[0]
                 cube = np.asarray(data, dtype=np.float32)

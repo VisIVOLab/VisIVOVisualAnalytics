@@ -1,4 +1,4 @@
-# Lasso parameter sensitivity — WALLABY (ASKAP, RA---SIN / VOPT)
+# Lasso parameter sensitivity — WALLABY (ASKAP, RA---SIN / FREQ)
 
 Completeness (∩/SoFiA), reliability (∩/lasso) and Dice at every setting of the two interactive controls, for the largest and the 4th-largest SoFiA source. Defaults are nσ=2.5, reach=8; the other control is held at its default while one is swept.
 

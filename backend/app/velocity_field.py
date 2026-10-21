@@ -26,6 +26,8 @@ from typing import Any
 import numpy as np
 from astropy.io import fits
 
+from .fits_dataset import image_hdu_index
+
 logger = logging.getLogger("visivo.velocityfield")
 
 # R-16: above this materialised field size, the full-resolution divergence is
@@ -194,7 +196,7 @@ def _spatial_transform_determinant(hdr: "fits.Header") -> float | None:
 def load_multicomponent_fits(path: str, box_mpc: float | None = None) -> VelocityField:
     """Load a single FITS whose component axis (NAXIS4 == 3) holds vx, vy, vz."""
     with fits.open(path, memmap=False) as hdul:
-        hdu = hdul[0]
+        hdu = hdul[image_hdu_index(hdul)]
         data = np.asarray(hdu.data, dtype=np.float32)
         hdr = hdu.header
     if data.ndim != 4 or data.shape[0] != 3:
@@ -350,7 +352,7 @@ def velocity_subgrid_worker(path: str, x0: int, x1: int, y0: int, y1: int,
     stay bounded even for a 512³ source.
     """
     with fits.open(path, memmap=True) as hdul:
-        data = hdul[0].data  # memmap, shape (3, nz, ny, nx)
+        data = hdul[image_hdu_index(hdul)].data  # memmap, shape (3, nz, ny, nx)
         if data is None or data.ndim != 4 or data.shape[0] != 3:
             raise ValueError(
                 f"expected a 4-D FITS with a length-3 component axis; got "
@@ -478,8 +480,9 @@ def _density_streaming(path: str, box_mpc: float | None) -> dict[str, Any] | Non
     three-file loader path falls back to the in-memory worker).
     """
     with fits.open(path, memmap=True, mode="readonly") as hdul:
-        data = hdul[0].data
-        hdr = hdul[0].header
+        hdu = hdul[image_hdu_index(hdul)]
+        data = hdu.data
+        hdr = hdu.header
         if data is None or data.ndim != 4 or data.shape[0] != 3:
             return None
         _, nz, ny, nx = (int(d) for d in data.shape)

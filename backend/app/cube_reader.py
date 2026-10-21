@@ -86,6 +86,7 @@ def _reader_main(
     """
     try:
         from astropy.io import fits  # noqa: PLC0415 — lazy in subprocess
+        from .fits_dataset import image_hdu_index  # noqa: PLC0415
     except ImportError as e:
         progress_q.put({"event": "error", "message": f"astropy import failed: {e}"})
         return
@@ -99,7 +100,7 @@ def _reader_main(
         global_vmax = float("-inf")
 
         with fits.open(path, memmap=True) as hdul:
-            data = hdul[0].data
+            data = hdul[image_hdu_index(hdul)].data
             # Strip degenerate axes (FITS Stokes/etc).
             while data.ndim > 3 and data.shape[0] == 1:
                 data = data[0]

@@ -54,8 +54,10 @@ def _wcs_transforms(path: str, origin: int = 1):
     from astropy.wcs import WCS  # noqa: PLC0415
     from astropy.wcs.utils import proj_plane_pixel_scales  # noqa: PLC0415
 
+    from ..fits_dataset import image_hdu_index  # noqa: PLC0415
+
     with fits.open(path) as hdul:
-        header = hdul[0].header
+        header = hdul[image_hdu_index(hdul)].header
     wcs = WCS(header)
     if not wcs.has_celestial:
         raise HTTPException(422, "Dataset has no celestial WCS; cannot convert region frames.")

@@ -13,7 +13,7 @@ from typing import Any  # noqa: F401
 
 import numpy as np
 
-from ..fits_dataset import ScientificFitsDataset  # noqa: F401
+from ..fits_dataset import ScientificFitsDataset, image_hdu_index  # noqa: F401
 from ._common import (  # noqa: F401
     clamped_sqrt,
     logger,
@@ -919,7 +919,7 @@ def worker_moment_save_fits(
     # Build a 2-D header from the source WCS — celestial() projects away the
     # spectral / Stokes axes and gives us a clean (RA, Dec) or (l, b) header.
     with _fits.open(src_path, memmap=True, mode="readonly") as hdul:
-        src_header = hdul[0].header.copy()
+        src_header = hdul[image_hdu_index(hdul)].header.copy()
     try:
         wcs2d = _WCS(src_header, relax=True).celestial
         out_header = wcs2d.to_header()

@@ -887,7 +887,9 @@ void vtkWindowCube::publishKinematicFit(const BackendKinematicFitResult &r,
                                   u"Source properties: %1 %2"_s.arg(f(r.flux, 1),
                                           r.fluxIsJy ? u"Jy km/s"_s : u"(BUNIT km/s)"_s),
                                   props, /*window=*/nullptr, this->scopedProductId(u"kinfit-props"_s),
-                                  /*renderer=*/QString(), /*revealProvenance=*/false);
+                                  /*renderer=*/QString(), /*revealProvenance=*/false,
+                                  /*origin=*/{}, /*selectInSession=*/true,
+                                  /*endpoint=*/u"/v1/cube/kinematic_fit_bin"_s);
     this->statusBar()->showMessage(
             u"Kinematic fit: PA %1°, i %2°, V_rot %3 km/s; maps and measures in Session Data."_s
                     .arg(f(r.pa), f(r.incl), f(r.vrot)),

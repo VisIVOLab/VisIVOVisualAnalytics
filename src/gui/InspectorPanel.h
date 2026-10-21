@@ -11,6 +11,9 @@
 #include <QWidget>
 #include <QVariantMap>
 #include <QHash>
+#include <QJsonObject>
+
+#include "app/ProductRegistry.h"
 
 class QLabel;
 class QTabWidget;
@@ -101,6 +104,11 @@ public:
 
     /// Provenance tab: show the recipe (params) of the selected product.
     void showProvenance(const QString &title, const QVariantMap &params);
+    /// Same, from the product itself, so Export recipe can write what the
+    /// labels alone do not say: which dataset, which route, which version.
+    void showProvenance(const AnalysisProduct &product);
+    /// The exported recipe: product, dataset, route, parameters, geometry, version.
+    static QJsonObject recipeJson(const AnalysisProduct &product);
     void clearProvenance();
 
     /// Lazily add a "Copilot" tab hosting the scientific-copilot chat panel
@@ -139,6 +147,8 @@ private:
     QLabel *m_provTitle = nullptr;
     QLabel *m_provBody = nullptr;
     QVariantMap m_provParams;
+    AnalysisProduct m_provProduct;   ///< what the Provenance tab shows; label+params only when
+                                     ///< it was fed through the two-argument overload
 
     AssistantPanel *m_copilot = nullptr;   ///< lazily created "Copilot" tab (R-22)
 };

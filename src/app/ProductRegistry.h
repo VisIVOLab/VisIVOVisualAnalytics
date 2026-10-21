@@ -35,6 +35,10 @@ struct AnalysisProduct
     QString taskId;          ///< backend task id, if async
     QString sourceDatasetId; ///< volatile backend dataset id
     QString sessionId;       ///< backend session id
+    /// The service route that performed the transition and replays it from
+    /// `params` (e.g. "/v1/cube/mask_apply_bin"). Empty for a product that is a
+    /// client-side measurement rather than a service call.
+    QString endpoint;
     QString ownerId;         ///< the VIEWER WINDOW that produced+renders it (scope token). Two
                              ///< windows on the same dataset share parentKey but not ownerId, so
                              ///< product ids never collide and each window's tree shows only its

@@ -1760,7 +1760,9 @@ void vtkWindowCube::applyLassoMask(const QString &mode)
                                  u"lasso"_s, removed ? u"Lasso: removed cube"_s : u"Lasso: isolated cube"_s,
                                  p, /*window=*/nullptr,
                                  self->scopedProductId(u"lasso-"_s + r.newDatasetId),
-                                 /*renderer=*/QString(), /*revealProvenance=*/true);
+                                 /*renderer=*/QString(), /*revealProvenance=*/true,
+                                 /*origin=*/{}, /*selectInSession=*/true,
+                                 /*endpoint=*/u"/v1/cube/mask_apply_bin"_s);
                          QMessageBox::information(self, u"Kinematic Lasso"_s,
                              u"Selection %1 → new masked cube in the Workspace Exports:\n%2 "
                              u"(%3 × %4 × %5).\n\nHow it was made is in its FITS HISTORY and in "

@@ -626,7 +626,7 @@ def worker_baseline(
 
         subset = np.asarray(data[z0 : z1 + 1, :, :], dtype=np.float32)
         logger.info("[BASELINE] subset shape after slice: %s", subset.shape)
-        header = hdul[0].header.copy()
+        header = dataset.header.copy()
     finally:
         hdul.close()
 

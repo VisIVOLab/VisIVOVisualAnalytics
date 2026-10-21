@@ -185,6 +185,14 @@ The new cube goes to the Workspace Exports and appears in Session Data as a
 velocity coupling, threshold, smoothing, the number of selected voxels and
 whether the mask was refined by hand; the same recipe is written into the FITS
 `HISTORY` of the new cube, one card per item (`Lasso reach=8`, …).
+*Export recipe as JSON…* on that tab writes the record out: the product (its
+id, kind and the service route that replays it, `/v1/cube/mask_apply_bin`),
+the dataset it was made from (name, path, the backend's dataset and session
+ids), the parameters above, the application version and the export time, under
+`"schema": "visivo-recipe/1"`. The geodesic part of a selection is regenerated
+by the grow endpoint from the seed and parameters; a hand-refined mask is not
+reducible to them, which is why the recipe says `Hand-edited: yes` and the
+masked cube itself, with its `HISTORY`, is the exact record.
 
 ```{note}
 Neither one crops. The product keeps the source cube's **full dimensions**, so

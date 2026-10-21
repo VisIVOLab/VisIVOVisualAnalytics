@@ -11,6 +11,8 @@
 #include <QAction>
 #include <QButtonGroup>
 #include <QClipboard>
+#include <QCoreApplication>
+#include <QDateTime>
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QMenu>
@@ -140,7 +142,7 @@ InspectorPanel::InspectorPanel(QWidget *parent)
             return;
         QFile f(path);
         if (f.open(QIODevice::WriteOnly)) {
-            f.write(QJsonDocument(QJsonObject::fromVariantMap(m_provParams)).toJson());
+            f.write(QJsonDocument(recipeJson(m_provProduct)).toJson());
         }
     });
     // ── Two halves, one tab ──────────────────────────────────────────────────
@@ -456,9 +458,56 @@ void InspectorPanel::copyProvenanceSelection() const
         QGuiApplication::clipboard()->setText(m_provBody->selectedText().remove(QChar(0x200B)));
 }
 
+QJsonObject InspectorPanel::recipeJson(const AnalysisProduct &p)
+{
+    // The exported recipe used to be the label→value map of the tab and nothing
+    // else: enough to read, not enough to replay. A record that claims to
+    // reproduce a product has to say which dataset it came from, which route
+    // performs the transition and which version of the software recorded it.
+    QJsonObject recipe;
+    recipe.insert(u"schema"_s, u"visivo-recipe/1"_s);
+    recipe.insert(u"application"_s,
+                  u"%1 %2"_s.arg(QCoreApplication::applicationName(),
+                                 QCoreApplication::applicationVersion()));
+    recipe.insert(u"exported"_s, QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+
+    QJsonObject product;
+    product.insert(u"id"_s, p.productId);
+    product.insert(u"kind"_s, p.kind);
+    product.insert(u"label"_s, p.label);
+    if (!p.endpoint.isEmpty())
+        product.insert(u"endpoint"_s, p.endpoint);
+    recipe.insert(u"product"_s, product);
+
+    QJsonObject dataset;
+    dataset.insert(u"label"_s, p.parentLabel);
+    dataset.insert(u"path"_s, p.parentKey);
+    // Volatile ids: valid for the session that made the product, kept because
+    // they tie the record to the service's own job log.
+    if (!p.sourceDatasetId.isEmpty())
+        dataset.insert(u"backend_dataset_id"_s, p.sourceDatasetId);
+    if (!p.sessionId.isEmpty())
+        dataset.insert(u"backend_session_id"_s, p.sessionId);
+    recipe.insert(u"dataset"_s, dataset);
+
+    recipe.insert(u"parameters"_s, QJsonObject::fromVariantMap(p.params));
+    if (!p.origin.isEmpty())
+        recipe.insert(u"origin"_s, QJsonObject::fromVariantMap(p.origin));
+    return recipe;
+}
+
+void InspectorPanel::showProvenance(const AnalysisProduct &product)
+{
+    showProvenance(product.label.isEmpty() ? product.kind : product.label, product.params);
+    m_provProduct = product;   // after: the two-argument form resets it
+}
+
 void InspectorPanel::showProvenance(const QString &title, const QVariantMap &params)
 {
     m_provParams = params;
+    m_provProduct = AnalysisProduct{};
+    m_provProduct.label = title;
+    m_provProduct.params = params;
     m_provTitle->setText(title);
     if (params.isEmpty()) {
         m_provBody->setText(u"No recorded parameters for this product."_s);
@@ -555,6 +604,7 @@ void InspectorPanel::clearToolSettings()
 void InspectorPanel::clearProvenance()
 {
     m_provParams.clear();
+    m_provProduct = AnalysisProduct{};
     m_provTitle->setText(u"Select a product in Session Data."_s);
     m_provBody->clear();
 }

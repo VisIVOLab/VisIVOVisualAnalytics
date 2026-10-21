@@ -291,7 +291,7 @@ def worker_reproject(
             squeezed = np.squeeze(raw)
             image = squeezed[0] if squeezed.ndim == 3 else np.asarray(squeezed, dtype=np.float32)
             image = np.asarray(image, dtype=np.float32)
-        src_header = hdul[0].header.copy()
+        src_header = dataset.header.copy()
     finally:
         hdul.close()
 
