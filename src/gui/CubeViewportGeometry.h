@@ -76,6 +76,18 @@ struct ImageRect
 /// pathological unit (Moment 0 ~1e4) cannot eat the pane (§3.0b).
 ImageGutter imageGutter(bool wcsAxesVisible, double rightGutter = 0., double dpr = 1.);
 
+/// @p g shrunk for a small viewport (device px): the margins never take more than
+/// half the width or 40 % of the height, scaled down together, so an image in a
+/// narrow pane (a 4-pane layout) keeps room instead of a sliver between fixed
+/// axis and colour-bar columns. Unchanged when the viewport has room.
+ImageGutter fitGutterToViewport(ImageGutter g, const int size[2]);
+
+/// fitGutterToViewport() for a viewport whose bottom @p reserve device pixels are
+/// covered by a widget (the channel bar): the margins are fitted to the rest and
+/// the reserve is added whole, so a short pane shrinks the axes, not the room
+/// kept for the bar.
+ImageGutter fitGutterWithBottomReserve(ImageGutter g, const int size[2], double reserve);
+
 /// Where an aspect-preserved image lands inside the gutter, for a GIVEN viewport
 /// size. Pure — no renderer state, no caching. Both the camera fit and the WCS
 /// overlays call this, so they cannot disagree about where the data is (§2.7).

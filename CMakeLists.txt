@@ -25,7 +25,7 @@ endif ()
 
 
 project(VisIVOVisualAnalytics
-        VERSION 1.0.1
+        VERSION 1.0.2
         LANGUAGES CXX C
 )
 
@@ -393,7 +393,9 @@ set(PROJECT_SOURCES
         src/vlkb/VlkbQueryService.cpp
         src/vlkb/VlkbQueryService.h
         src/skava/SkavaClient.cpp
+        src/skava/VoTable.cpp
         src/skava/SkavaClient.h
+        src/skava/VoTable.h
         src/skava/BackendRouting.cpp
         src/skava/BackendRouting.h
         src/gui/SkavaSearchPanel.cpp
@@ -403,7 +405,9 @@ set(PROJECT_SOURCES
         src/gui/theme/VisivoTheme.cpp
         src/gui/theme/VisivoTheme.h
         src/gui/theme/SegmentedToggle.cpp
+        src/gui/theme/ScrollWheelGuard.cpp
         src/gui/theme/SegmentedToggle.h
+        src/gui/theme/ScrollWheelGuard.h
         src/gui/ChannelOverlay.cpp
         src/gui/ChannelOverlay.h
         src/gui/CubeVRController.cpp
@@ -496,6 +500,7 @@ set(PROJECT_SOURCES
         src/gui/CubeWcsUtil.cpp
         src/gui/CubeWcsUtil.h
         src/gui/CubeRegionGeom.cpp
+        src/gui/PvPathGeometry.cpp
         src/gui/CubeRegionGeom.h
         src/gui/vtkWindowImage.cpp
         src/gui/vtkWindowImage.h
@@ -823,6 +828,8 @@ qt_add_executable(test_remote_render
         src/AnalysisParamStore.cpp
         src/Settings.cpp
         src/skava/BackendRouting.cpp
+        src/skava/SkavaClient.cpp
+        src/skava/VoTable.cpp
         src/vtk/ImageLod.cpp
 )
 target_include_directories(test_remote_render PRIVATE
@@ -897,6 +904,10 @@ if (WIN32)
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                     "${CMAKE_CURRENT_SOURCE_DIR}/backend/app"
                     "$<TARGET_FILE_DIR:${PROJECT_NAME}>/backend/app"
+            # The first-run bootstrap installs from <backend>/requirements.txt.
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/backend/requirements.txt"
+                    "$<TARGET_FILE_DIR:${PROJECT_NAME}>/backend/requirements.txt"
             COMMENT "Copying backend next to the executable")
 else()
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD

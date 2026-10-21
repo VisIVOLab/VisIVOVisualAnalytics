@@ -47,7 +47,10 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/AnalysisParamStore.cpp
     ${VISIVO_ROOT}/src/Settings.cpp
     ${VISIVO_ROOT}/src/skava/BackendRouting.cpp
+    ${VISIVO_ROOT}/src/skava/SkavaClient.cpp
+    ${VISIVO_ROOT}/src/skava/VoTable.cpp
     ${VISIVO_ROOT}/src/vtk/ImageLod.cpp
+    ${VISIVO_ROOT}/src/gui/PvPathGeometry.cpp
 )
 set_target_properties(visivo_test_support PROPERTIES AUTOMOC ON)
 target_include_directories(visivo_test_support
@@ -124,6 +127,10 @@ add_executable(VisIVOTests
     test_region_readout.cpp
     TestBackendUrlLocality.h
     test_backend_url_locality.cpp
+    TestSkavaClient.h
+    test_skava_client.cpp
+    TestPvPathGeometry.h
+    test_pv_path_geometry.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE
@@ -140,6 +147,7 @@ target_link_libraries(VisIVOTests PRIVATE
 # Let the contract test locate the shared header manifest in both build layouts.
 target_compile_definitions(VisIVOTests PRIVATE
     VISIVO_REPO_ROOT="${VISIVO_ROOT}"
+    VISIVO_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
 
 # ── CTest registration ───────────────────────────────────────────────────────

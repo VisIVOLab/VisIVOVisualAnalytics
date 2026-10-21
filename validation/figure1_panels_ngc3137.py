@@ -60,9 +60,10 @@ panel("05_moment0", lambda ax: ax.imshow(np.ma.masked_invalid(m0[crop]), origin=
                                         interpolation="nearest"), f"$M_0$: {R['flux']:.1f} Jy km/s")
 panel("06_model", lambda ax: channel(ax, iso, crec, contour=warp, color="#1f77b4"),
       f"tilted ring, {len(R['rings'])} rings, {vel[crec]:.0f} km/s")
-panel("07_residual", lambda ax: ax.imshow(np.ma.masked_invalid(np.abs(m1 - vw)[crop]), origin="lower",
-                                         cmap="viridis", vmin=0, vmax=60, interpolation="nearest"),
-      f"|v$_{{data}}$ − v$_{{model}}$|, median {R['warp_median']:.1f} km/s")
+# Signed, as the viewer's "Residual v − v_model (rings)" product shows it.
+panel("07_residual", lambda ax: ax.imshow(np.ma.masked_invalid((m1 - vw)[crop]), origin="lower",
+                                         cmap="RdBu_r", vmin=-60, vmax=60, interpolation="nearest"),
+      f"v$_{{data}}$ − v$_{{model}}$, |median| {R['warp_median']:.1f} km/s")
 def export(ax):
     ax.axis("off")
     txt = ("masked cube  →  FITS\n$M_0$, $M_1$ maps  →  FITS\nrings  →  JSON\nchannel scan  →  movie\n\n"

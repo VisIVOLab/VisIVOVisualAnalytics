@@ -40,10 +40,9 @@ from astropy.wcs import WCS
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "backend"))
 from app.compute.polarisation import (  # noqa: E402
-    _read_stokes_cube, stokes_plane_coverage, worker_polarisation_pi_pa, worker_rm_synthesis)
+    stokes_plane_coverage, worker_polarisation_pi_pa, worker_rm_synthesis)
 sys.path.insert(0, str(HERE))
-from datasets import parse_floats, robust_sigma  # noqa: E402
-from app.fits_dataset import ScientificFitsDataset  # noqa: E402
+from datasets import parse_floats  # noqa: E402
 
 
 def f32(b64: str, h: int, w: int) -> np.ndarray:
@@ -89,17 +88,11 @@ def main() -> None:
     # 1. polarised intensity and angle over the whole field, one sub-band
     r = worker_polarisation_pi_pa(paths["I"], k, None, companions=comp)
     ny, nx = r["height"], r["width"]
-    pi = f32(r["pi_base64"], ny, nx); pa = f32(r["pa_base64"], ny, nx)
-    # A single pointing is blank (NaN or exact 0) outside its primary-beam area,
-    # which can be more than half of a 7500^2 plane; a MAD over the whole plane
-    # then reports zero. Measure the noise where there is data: finite, non-zero,
-    # and inside the central half of the field.
+    pi = f32(r["pi_base64"], ny, nx)
+    # A single pointing is blank (NaN or exact 0) outside its primary-beam area.
     pi = np.where(pi == 0.0, np.nan, pi)
-    cy0, cx0 = ny // 4, nx // 4
-    core = pi[cy0:3 * cy0, cx0:3 * cx0]
-    sig = robust_sigma(core)
     frac_valid = np.isfinite(pi).mean()
-    print(f"PI map {nx}x{ny}, {100*frac_valid:.0f}% valid pixels, sigma_PI (central half) = {sig*1e3:.3f} mJy/beam")
+    print(f"PI map {nx}x{ny}, {100*frac_valid:.0f}% valid pixels")
 
     # 2. the cutout: around a sky position, or around the brightest PI
     hdr = fits.getheader(paths["I"]); w = WCS(hdr).celestial
@@ -130,30 +123,29 @@ def main() -> None:
     fpk = peak[np.isfinite(peak)]
     if fpk.size < 100:
         sys.exit("the cutout is blank: choose a centre inside the pointing's primary-beam area")
-    sig_f = robust_sigma(peak)
+    # The noise of the peak map as the service reports it (peak_sigma): the same
+    # number the viewer's "Faraday depth (peak |F| > 6σ)" product is cut with.
+    sig_f = float(rr["peak_sigma"])
     print(f"RM synthesis: phi {pmin}..{pmax} step {dphi}; sigma_|F| = {sig_f*1e3:.3f} mJy/beam")
 
-    # 4. figure
-    # Stokes I through the service's reader as well, so the panel and the contour
-    # drawn on it come from the same plane of the same axes
-    I = _read_stokes_cube(ScientificFitsDataset(paths["I"]), "I", authoritative=True,
-                          channel=k, region=(x0, y0, a.size, a.size))[0]
-    pic, pac = pi[y0:y0 + a.size, x0:x0 + a.size], pa[y0:y0 + a.size, x0:x0 + a.size]
-    fig, ax = plt.subplots(1, 2, figsize=(8.6, 4.3), constrained_layout=True)
-    vmax = np.nanpercentile(I, 99.7)
-    ax[0].imshow(I, origin="lower", cmap="Greys", vmin=0, vmax=vmax, interpolation="nearest")
-    # Polarised intensity as a 6-sigma contour. The polarisation angle is not
+    # 4. figure: the two maps the viewer produces, as it produces them.
+    # Left, Polarised Intensity & Angle's PI map over the cutout (the angle is not
     # drawn: on a 22' cutout the sources are a few beams across, so angle ticks
-    # inside them would be below the resolution of the printed figure.
-    ax[0].contour(np.nan_to_num(pic), levels=[6.0 * sig], colors=["#d62728"], linewidths=0.6)
-    ax[0].set_title(f"Stokes I at {freq[s]/1e6:.0f} MHz; PI > 6σ contour", fontsize=8.5)
+    # inside them would be below the resolution of the printed figure).
+    pic = pi[y0:y0 + a.size, x0:x0 + a.size]
+    fig, ax = plt.subplots(1, 2, figsize=(8.6, 4.3), constrained_layout=True)
+    vmax = np.nanpercentile(pic, 99.7)
+    ip = ax[0].imshow(pic * 1e3, origin="lower", cmap="inferno", vmin=0, vmax=vmax * 1e3,
+                      interpolation="nearest")
+    cb0 = fig.colorbar(ip, ax=ax[0], shrink=0.85); cb0.set_label("polarised intensity (mJy beam$^{-1}$)", fontsize=8.5)
+    ax[0].set_title(f"Polarised intensity at {freq[s]/1e6:.0f} MHz", fontsize=8.5)
     good = np.isfinite(phi) & (peak > 6.0 * sig_f)
     lim = float(np.nanpercentile(np.abs(phi[good]), 98)) if good.any() else abs(pmax)
     im = ax[1].imshow(np.ma.masked_where(~good, phi), origin="lower", cmap="RdBu_r", vmin=-lim, vmax=lim,
                       interpolation="nearest")
     ax[1].set_facecolor("#eeeeee")
     cb = fig.colorbar(im, ax=ax[1], shrink=0.85); cb.set_label("Faraday depth at peak |F(φ)|  (rad m$^{-2}$)", fontsize=8.5)
-    ax[1].set_title("RM synthesis, service-side, reduced to the peak", fontsize=8.5)
+    ax[1].set_title("Faraday depth where peak |F| > 6σ", fontsize=8.5)
     # catalogue cross-check: mark published RMs inside the cutout
     if a.catalogue and Path(a.catalogue).exists():
         n_marked = 0
@@ -166,6 +158,8 @@ def main() -> None:
             if 0 <= px < a.size and 0 <= py < a.size and float(row["PPol"]) > 200:
                 yy_, xx_ = int(round(py)), int(round(px))
                 win = (slice(max(0, yy_ - 2), yy_ + 3), slice(max(0, xx_ - 2), xx_ + 3))
+                # What the viewer's box region reports on the masked map: the
+                # median of its finite pixels (5 × 5 px around the position).
                 ours = np.nanmedian(np.where(good[win], phi[win], np.nan)) if good[win].any() else float("nan")
                 for axx in ax:
                     axx.plot(px, py, "o", mfc="none", mec="#2ca02c", ms=9, mew=1.2)

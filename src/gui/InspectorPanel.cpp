@@ -10,6 +10,10 @@
 
 #include <QAction>
 #include <QButtonGroup>
+#include <QClipboard>
+#include <QGuiApplication>
+#include <QKeyEvent>
+#include <QMenu>
 #include <QDebug>
 #include <QFileDialog>
 #include <QFrame>
@@ -89,8 +93,13 @@ InspectorPanel::InspectorPanel(QWidget *parent)
     analysisScroll->setWidget(m_analysisPage);
     m_tabs->addTab(analysisScroll, u"Analysis"_s);
 
-    // Provenance
-    m_provPage = new QWidget(m_tabs);
+    // Provenance (scrollable: a tool's settings block plus a long recipe must
+    // not squeeze each other into the panel's height)
+    auto *provScroll = new QScrollArea(m_tabs);
+    provScroll->setWidgetResizable(true);
+    provScroll->setFrameShape(QFrame::NoFrame);
+    provScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_provPage = new QWidget(provScroll);
     m_provLayout = new QVBoxLayout(m_provPage);
     m_provLayout->setContentsMargins(4, 8, 4, 4);
     m_provLayout->setSpacing(6);
@@ -102,6 +111,20 @@ InspectorPanel::InspectorPanel(QWidget *parent)
     m_provBody = new QLabel(m_provPage);
     m_provBody->setWordWrap(true);
     m_provBody->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    // showProvenance() puts zero-width spaces into long values so they wrap; a
+    // copy out of this label must not carry them into a path or a number, so
+    // both ways to copy (the shortcut and the context menu) go through here.
+    m_provBody->installEventFilter(this);
+    m_provBody->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_provBody, &QLabel::customContextMenuRequested, this, [this](const QPoint &pos) {
+        QMenu menu(m_provBody);
+        QAction *copy = menu.addAction(u"Copy"_s);
+        copy->setShortcut(QKeySequence::Copy);
+        copy->setEnabled(m_provBody->hasSelectedText());
+        QAction *chosen = menu.exec(m_provBody->mapToGlobal(pos));
+        if (chosen == copy)
+            copyProvenanceSelection();
+    });
     m_provBody->setStyleSheet(
             QStringLiteral("QLabel { color:%1; font-family:'JetBrains Mono',monospace;"
                            " font-size:11px; }")
@@ -157,7 +180,8 @@ InspectorPanel::InspectorPanel(QWidget *parent)
     m_provLayout->addWidget(m_provBody);
     m_provLayout->addWidget(exportBtn);
     m_provLayout->addStretch(1);
-    m_tabs->addTab(m_provPage, u"Parameters"_s);
+    provScroll->setWidget(m_provPage);
+    m_tabs->addTab(provScroll, u"Parameters"_s);
 }
 
 void InspectorPanel::clearProperties()
@@ -411,6 +435,27 @@ void InspectorPanel::logPropertiesFit()
     });
 }
 
+bool InspectorPanel::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_provBody && event->type() == QEvent::ShortcutOverride
+        && static_cast<QKeyEvent *>(event)->matches(QKeySequence::Copy)) {
+        event->accept();   // keep the shortcut ours, then the key press arrives
+        return true;
+    }
+    if (watched == m_provBody && event->type() == QEvent::KeyPress
+        && static_cast<QKeyEvent *>(event)->matches(QKeySequence::Copy)) {
+        copyProvenanceSelection();
+        return true;
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+void InspectorPanel::copyProvenanceSelection() const
+{
+    if (m_provBody->hasSelectedText())
+        QGuiApplication::clipboard()->setText(m_provBody->selectedText().remove(QChar(0x200B)));
+}
+
 void InspectorPanel::showProvenance(const QString &title, const QVariantMap &params)
 {
     m_provParams = params;
@@ -432,13 +477,23 @@ void InspectorPanel::showProvenance(const QString &title, const QVariantMap &par
 
     const QString muted = QString::fromLatin1(VisivoTheme::kOnSurfaceVariant());
     const QString ink = QString::fromLatin1(VisivoTheme::kOnSurface());
+    // Values such as file names and seed lists are long unbroken tokens: a
+    // zero-width space after each separator lets them wrap inside the panel
+    // instead of widening the table past its right edge.
+    const auto breakable = [](const QString &value) {
+        QString out = value.toHtmlEscaped();
+        for (const QString &sep : { u"_"_s, u"/"_s, u","_s, u";"_s, u"="_s, u"-"_s, u"."_s })
+            out.replace(sep, sep + QChar(0x200B));
+        return out;
+    };
     QString html = u"<table width='100%' cellspacing='0' cellpadding='2'>"_s;
     for (const QString &k : std::as_const(keys)) {
         html += QStringLiteral(
-                        "<tr><td style='color:%1; font-family:Lato; font-size:11px;'>%2</td>"
+                        "<tr><td valign='top' style='color:%1; font-family:Lato; font-size:11px;"
+                        " white-space:nowrap;'>%2</td>"
                         "<td align='right' style='color:%3;"
                         " font-family:\"JetBrains Mono\",\"SF Mono\",monospace; font-size:11px;'>%4</td></tr>")
-                        .arg(muted, k.toHtmlEscaped(), ink, params.value(k).toString().toHtmlEscaped());
+                        .arg(muted, k.toHtmlEscaped(), ink, breakable(params.value(k).toString()));
     }
     html += u"</table>"_s;
     m_provBody->setText(html);

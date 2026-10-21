@@ -56,6 +56,7 @@ struct BackendHealthResult
     int productCacheEntries{ 0 };
     int productCacheCapacity{ 0 };
     int taskRegistryEntries{ 0 };
+    int queuedTasks{ 0 };   ///< tasks not started yet (health 'queued_tasks')
     bool taskTtlEnabled{ false };
     int taskTtlSeconds{ 0 };
     // Live activity, populated from the new /v1/health snapshot fields.
@@ -318,10 +319,30 @@ struct BackendCubePvResult
     int validSamples{ 0 };
     QString spectralAxisType;
     QString spectralAxisUnit;
+    /// Channel coordinates in spectralAxisUnit, channel 0 first (may DEcrease:
+    /// CDELT < 0). Empty from a backend that predates them.
+    QVector<double> spectralCoordinates;
+    /// Pixel offset → sky arcsec, row-major [a, b, c, d]: the geometry the cut was
+    /// sampled in (non-square / skewed pixels). Empty from an older backend.
+    QVector<double> skyMatrixArcsec;
     QString bunit;
     double beamMajor{ 0.0 };
     double beamMinor{ 0.0 };
     double beamPa{ 0.0 };
+};
+
+/// POST /v1/products/pv_fits — the PV diagram as a 2-D FITS in Workspace Exports.
+struct BackendSavePvFitsResult
+{
+    bool valid{ false };
+    QString error;
+    QString outputPath;
+    QString workspaceFilename;
+    int width{ 0 };    ///< samples along the path
+    int height{ 0 };   ///< channels
+    double rangeMin{ 0. };
+    double rangeMax{ 0. };
+    QString bunit;
 };
 
 struct BackendCubeNoiseResult
@@ -773,6 +794,60 @@ struct BackendSaveSubregionResult
     int depth { 0 };
     double rangeMin{ 0. };
     double rangeMax{ 0. };
+};
+
+// ── Kinematic fit of a selection (/v1/cube/kinematic_fit_bin) ────────────────
+
+struct BackendKinematicRing
+{
+    double r{ 0. }, pa{ 0. }, incl{ 0. }, vrot{ 0. };
+    int nPix{ 0 };
+};
+
+struct BackendKinematicResidual
+{
+    bool valid{ false };
+    int nPix{ 0 };
+    double median{ 0. }, p90{ 0. }, withinChannel{ 0. };   ///< km/s; fraction within one channel
+};
+
+/// Measures, geometry, flat and per-ring tilted-ring fit of a selection, on the
+/// raw cube under the lasso's mask. Velocities are km/s (optical cz for a
+/// frequency axis — the convention the kinematic model uses too). A measure the
+/// backend could not make is NaN.
+struct BackendKinematicFitResult
+{
+    bool valid{ false };
+    QString error;
+    int width{ 0 }, height{ 0 };
+    QString velocityUnit, velocityConvention;
+    double sigma{ 0. };
+    QString sigmaSource;
+    double beamAreaPx{ 0. };
+    double flux{ 0. };   ///< Jy km/s when fluxIsJy, else (BUNIT × km/s) summed
+    bool fluxIsJy{ false };
+    double w20{ 0. }, w50{ 0. }, vsysW20{ 0. };
+    int nVelocityField{ 0 };
+    double x0{ 0. }, y0{ 0. }, paMorph{ 0. }, axisRatio{ 0. }, incl{ 0. }, rmax{ 0. };
+    double pa{ 0. }, vsys{ 0. }, vrot{ 0. }, vrotSini{ 0. }, fitRms{ 0. };
+    QVector<BackendKinematicRing> rings;
+    double lineSigma{ 0. }, channelWidth{ 0. };
+    BackendKinematicResidual residualFlat, residualWarp;
+    QVector<double> spectrum, spectrumVelocity;
+    QByteArray velocityField, modelFlat, modelWarp;   ///< float32 width × height, NaN = no data
+};
+
+/// Residual of a given model (fitted or edited) against a selection's velocity
+/// field (/v1/cube/kinematic_residual_bin).
+struct BackendKinematicResidualResult
+{
+    bool valid{ false };
+    QString error;
+    int width{ 0 }, height{ 0 };
+    double sigma{ 0. };
+    QString sigmaSource, velocityConvention;
+    BackendKinematicResidual residual;
+    QByteArray model, velocityField;   ///< float32 width × height, NaN = no data
 };
 
 // ── Dynamic-spectrum / beamformed analysis ───────────────────────────────────
@@ -1482,6 +1557,9 @@ struct BackendRmSynthesisResult
     QByteArray phiPeakData;
     float phiPeakMin{ 0.f };
     float phiPeakMax{ 0.f };
+    /// Peak mode: 1.4826·MAD of the measured peak |F| — the noise a significance
+    /// cut on the Faraday depth is counted in. NaN when the backend has none.
+    double peakSigma{ std::numeric_limits<double>::quiet_NaN() };
     bool peakMode{ false };
 };
 
@@ -1929,8 +2007,9 @@ public:
                                         int index) const;
     BackendCubeSubvolumeResult requestSubvolume(const QString &datasetId, int x0, int x1, int y0,
                                                 int y1, int z0, int z1) const;
+    /// @p vertices are 0-based cube pixels (x, y); fractional values are honoured.
     BackendCubePvResult requestPv(const QString &datasetId,
-                                  const std::vector<std::array<int, 2>> &vertices,
+                                  const std::vector<std::array<double, 2>> &vertices,
                                   int widthPixels) const;
     BackendCubeNoiseResult requestNoise(const QString &datasetId, int x0, int x1, int y0, int y1,
                                         int channelStart, int channelEnd) const;
@@ -2011,7 +2090,8 @@ public:
                                                  double reachMax, double lambdaV,
                                                  double sigma, double nsigma, int roiRadius,
                                                  const QVector<std::array<int, 3>> &addSeeds,
-                                                 const QVector<std::array<int, 3>> &subSeeds) const;
+                                                 const QVector<std::array<int, 3>> &subSeeds,
+                                                 double smoothV = 0.0, double smoothXy = 0.0) const;
 
     BackendKinematicSelectResult kinematicSelect(const QString &datasetId,
                                                  int seedZ, int seedY, int seedX,
@@ -2019,7 +2099,10 @@ public:
                                                  double sigma = 0.0, double nsigma = 2.5,
                                                  int roiRadius = 0,   // 0 = object-bounded (whole connected source)
                                                  const QVector<std::array<int, 3>> &addSeeds = {},
-                                                 const QVector<std::array<int, 3>> &subSeeds = {}) const;
+                                                 const QVector<std::array<int, 3>> &subSeeds = {},
+                                                 // Smooth-before-threshold, sigma in voxels
+                                                 // (velocity; spatial). 0 = off, the default.
+                                                 double smoothV = 0.0, double smoothXy = 0.0) const;
 
     /** POST /v1/cube/mask_selection — apply a Kinematic Lasso selection: blank
      *  inside (@p mode "blank_inside", remove) or outside ("blank_outside",
@@ -2044,7 +2127,24 @@ public:
                                              int originX, int originY, int originZ,
                                              int width, int height, int depth,
                                              const QString &mode,
-                                             const QString &outputBasename = {}) const;
+                                             const QString &outputBasename = {},
+                                             const QString &recipe = {}) const;
+    /** POST /v1/cube/kinematic_fit_bin — measure and fit the selection given by an
+     *  explicit ROI mask (the same payload as applyCubeMask) on the raw cube.
+     *  @p sigma is the session's noise estimate (0 = the cube's own MAD). */
+    BackendKinematicFitResult kinematicFit(const QString &datasetId, const QByteArray &maskBytes,
+                                           int originX, int originY, int originZ,
+                                           int width, int height, int depth,
+                                           double sigma = 0.0, int minRingPix = 150) const;
+    /** POST /v1/cube/kinematic_residual_bin — residual of the model given by
+     *  x0/y0/vsys/lineSigma and either a single disc (pa/incl/vrot/rmax) or
+     *  @p rings (r, pa, incl, vrot) against the selection's velocity field. */
+    BackendKinematicResidualResult kinematicResidual(
+            const QString &datasetId, const QByteArray &maskBytes,
+            int originX, int originY, int originZ, int width, int height, int depth,
+            double x0, double y0, double vsys, double lineSigma,
+            double pa, double incl, double vrot, double rmax,
+            const QVector<std::array<double, 4>> &rings, double sigma = 0.0) const;
     /** POST /v1/hips/catalogue_overlay – RA/Dec sources in current viewport. */
     BackendHiPSCatalogueOverlayResult requestHiPSCatalogueOverlay(
             const QString &cataloguePath, double raDeg, double decDeg, double fovDeg,
@@ -2145,7 +2245,7 @@ public:
                                              int channelEnd, bool maskEnabled,
                                              double thresholdValue, bool thresholdAuto = false) const;
     BackendTaskCreateResult createPvTask(const QString &datasetId,
-                                         const std::vector<std::array<int, 2>> &vertices,
+                                         const std::vector<std::array<double, 2>> &vertices,
                                          int widthPixels) const;
     BackendTaskStatusResult requestTaskStatus(const QString &taskId) const;
     BackendTaskStatusResult waitForTaskCompletion(const BackendTaskCreateResult &createResult,
@@ -2178,6 +2278,8 @@ public:
     /// so they can be unit-tested without a live HTTP server (mirrors the
     /// pattern used by parseNoiseResultObject above).
     static BackendSaveSubregionResult       parseSaveSubregionObject(const QJsonObject &object);
+    static BackendKinematicFitResult        parseKinematicFitObject(const QJsonObject &object);
+    static BackendKinematicResidualResult   parseKinematicResidualObject(const QJsonObject &object);
     static BackendSaveChannel2dResult       parseSaveChannel2dObject(const QJsonObject &object);
     static BackendSaveMomentFitsResult      parseSaveMomentFitsObject(const QJsonObject &object);
     static BackendWorkspaceExportsList      parseExportsListObject(const QJsonObject &object);
@@ -2390,6 +2492,11 @@ public:
     BackendFilterFitsResult filterFits(const QString &path, double smoothFwhmPixels,
                                        int regridFactor, const QString &combine,
                                        const QString &outputBasename = QString());
+
+    BackendSavePvFitsResult savePvFits(const QString &datasetId,
+                                       const std::vector<std::array<double, 2>> &vertices,
+                                       int widthPixels,
+                                       const QString &outputBasename = {});
 
     BackendSaveMomentFitsResult saveMomentFits(const QString &datasetId,
                                                 int order,

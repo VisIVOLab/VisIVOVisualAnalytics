@@ -57,6 +57,8 @@
 #include <QtConcurrentRun>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <cstring>
 
 using namespace Qt::StringLiterals;
@@ -466,7 +468,7 @@ void vtkWindowCube::computePolarisedIntensityMap()
     const BackendStokesCompanionIds companions = m_stokesCompanions;
 
     this->statusBar()->showMessage(
-            u"Computing polarised intensity for channel %1…"_s.arg(channel), 0);
+            u"Computing polarised intensity for channel %1…"_s.arg(channel + 1), 0);
 
     auto *watcher = new QFutureWatcher<BackendPolarisationPiResult>(this);
     QPointer<vtkWindowCube> self(this);
@@ -504,7 +506,7 @@ void vtkWindowCube::publishPolarisationMaps(const BackendPolarisationPiResult &r
     }
 
     QVariantMap params;
-    params.insert(u"Channel"_s, channel);
+    params.insert(u"Channel"_s, channel + 1);   // from 1, as on the channel bar
     params.insert(u"Stokes from"_s,
                   m_hasOwnStokesAxis ? u"this cube's Stokes axis"_s : stokesCompanionSummary());
     if (r.sigmaQu2 > 0.0)
@@ -515,13 +517,13 @@ void vtkWindowCube::publishPolarisationMaps(const BackendPolarisationPiResult &r
     // same channel refreshes every pane already showing it.
     const QString unit = this->m_brightnessUnit;
     addImageProduct(u"polarisation"_s, u"stokes_pi_ch%1"_s.arg(channel),
-                    u"Polarised intensity (ch %1)"_s.arg(channel), pi, unit, params,
+                    u"Polarised intensity (ch %1)"_s.arg(channel + 1), pi, unit, params,
                     u"Inferno"_s);
     // PA is an angle in −90..+90: a diverging map, not a sequential one, or the
     // wrap at ±90 reads as a real gradient.
     addImageProduct(u"polarisation"_s, u"stokes_pa_ch%1"_s.arg(channel),
-                    u"Polarisation angle (ch %1)"_s.arg(channel), pa, u"deg"_s, params,
-                    u"Coolwarm"_s);
+                    u"Polarisation angle (ch %1)"_s.arg(channel + 1), pa, u"deg"_s, params,
+                    u"CoolWarm"_s);
 }
 
 // ── RM synthesis ─────────────────────────────────────────────────────────────
@@ -582,8 +584,14 @@ void vtkWindowCube::runRmSynthesis()
     outer->addWidget(cost);
     auto refreshCost = [&]() {
         const double span = phiMax->value() - phiMin->value();
-        const int nPhi = span > 0.0 && dPhi->value() > 0.0
-                ? static_cast<int>(span / dPhi->value()) : 0;
+        // Both ends are sampled: the backend's phi_sample_count(), same tolerance.
+        const double step = dPhi->value();
+        const double tol = std::min(
+                1e-9 + 8 * std::numeric_limits<double>::epsilon()
+                        * std::max({ std::abs(phiMin->value()), std::abs(phiMax->value()), step }) / step,
+                0.5);
+        const int nPhi = span > 0.0 && step > 0.0
+                ? static_cast<int>(std::floor(span / step + tol)) + 1 : 0;
         const int w = useRegion->isChecked() ? (x1 - x0 + 1) : this->remoteDatasetWidth;
         const int h = useRegion->isChecked() ? (y1 - y0 + 1) : this->remoteDatasetHeight;
         cost->setText(nPhi <= 0
@@ -695,12 +703,43 @@ void vtkWindowCube::publishRmSynthesisMaps(const BackendRmSynthesisResult &r, co
     // velocity field, so the sign is readable at a glance.
     const QString depthId = addImageProduct(
             u"polarisation"_s, u"fdf_depth_%1"_s.arg(key),
-            u"Faraday depth (RM)"_s, depth, u"rad m⁻²"_s, params, u"Coolwarm"_s);
+            u"Faraday depth (RM)"_s, depth, u"rad m⁻²"_s, params, u"CoolWarm"_s,
+            /*symmetricRange=*/true);
+
+    // The Faraday depth where it is measured: only where the peak stands above
+    // the noise of the peak map. Elsewhere the "depth" is the φ of the largest
+    // noise excursion, and a map of those reads like structure.
+    QString significantId;
+    constexpr double kSignificance = 6.0;
+    if (std::isfinite(r.peakSigma) && r.peakSigma > 0.0
+        && r.fdfData.size() == r.phiPeakData.size()) {
+        QByteArray masked = r.phiPeakData;
+        const auto *pk = reinterpret_cast<const float *>(r.fdfData.constData());
+        auto *ph = reinterpret_cast<float *>(masked.data());
+        const qsizetype n = masked.size() / qsizetype(sizeof(float));
+        const double cut = kSignificance * r.peakSigma;
+        for (qsizetype k = 0; k < n; ++k)
+            if (!(std::isfinite(pk[k]) && pk[k] > cut))
+                ph[k] = std::numeric_limits<float>::quiet_NaN();
+        if (auto sig = imageFromFloats(masked, r.width, r.height); sig) {
+            QVariantMap sp = params;
+            sp.insert(u"Shown where"_s, u"peak |F| > %1σ (σ = %2, 1.4826·MAD of the peak map)"_s
+                                               .arg(kSignificance)
+                                               .arg(r.peakSigma, 0, 'g', 4));
+            significantId = addImageProduct(
+                    u"polarisation"_s, u"fdf_depth_sig_%1"_s.arg(key),
+                    u"Faraday depth (peak |F| > %1σ)"_s.arg(kSignificance), sig, u"rad m⁻²"_s, sp,
+                    u"CoolWarm"_s, /*symmetricRange=*/true);
+        }
+    }
+
+    if (significantId.isEmpty())   // no noise this time: an earlier mask must not stay as this one's
+        this->removeImageProduct(u"fdf_depth_sig_%1"_s.arg(key));
 
     // Where these pixels sit in the source grid, so exporting them writes the
     // astrometry of the crop and not of the whole field.
     if (region.isValid()) {
-        for (const QString &id : { peakId, depthId }) {
+        for (const QString &id : { peakId, depthId, significantId }) {
             if (auto it = m_products2d.find(id); it != m_products2d.end())
                 it->regionOrigin = region.topLeft();
         }

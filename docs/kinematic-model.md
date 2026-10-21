@@ -73,13 +73,17 @@ by a few fixed-point iterations. Ring radii must be **distinct** (duplicate
 ## Velocity units (FREQ vs velocity axes)
 
 The model is built in **velocity**. The backend converts the cube's spectral
-axis to **radio-convention velocity (km/s)** before modelling, so `vsys / vrot /
-sigma` are always entered in km/s when the conversion succeeds:
+axis to velocity in km/s before modelling, so `vsys / vrot / sigma` are always
+entered in km/s when the conversion succeeds:
 
-- **Velocity axis** (`VRAD`/`VELO`/… or a unit equivalent to km/s) → converted
-  directly with astropy.
+- **Velocity axis** (`VOPT`/`VRAD`/`VELO`/… or a unit equivalent to km/s) → read
+  in its own convention, converted to km/s with astropy.
 - **Frequency axis** (`FREQ`, Hz) with a rest frequency in the header
-  (`RESTFRQ`/`RESTFREQ` > 0) → `v = c · (f₀ − f) / f₀`.
+  (`RESTFRQ`/`RESTFREQ` > 0) → **optical velocity**, `cz = c · (f₀/f − 1)`, the
+  convention HI galaxy catalogues quote.
+
+The [kinematic fit](#fitting-the-parameters-from-a-selection) uses the same
+axis, so parameters it fits draw the model they were fitted with.
 
 The realised working unit and mode are returned in the response headers and the
 GUI labels its fields accordingly:
@@ -129,6 +133,49 @@ Chunked/streamed generation for very large cubes is future work.
 
 ---
 
+## Fitting the parameters from a selection
+
+`POST /v1/cube/kinematic_fit_bin` measures a **selection** — the Kinematic
+Lasso's mask, sent as raw float32 bytes with its origin and size, exactly as for
+`/v1/cube/mask_apply_bin` — on the raw cube and fits the model to it. Query
+parameters: `dataset_id`, `origin_x/y/z`, `width/height/depth`, `sigma` (the
+noise; 0 = the cube's own 1.4826·MAD), `min_ring_pix` (default 150).
+
+What it returns, in order of derivation:
+
+1. **Measures under the mask:** moment 0 (Jy km/s per pixel when `BUNIT` is
+   Jy/beam), a moment-1 velocity field kept only where a pixel's summed emission
+   clears 3σ√(channels summed), the integrated spectrum, the flux (each channel
+   weighted by its own width), the w20 and w50 widths and the systemic velocity
+   at the w20 midpoint.
+2. **Geometry from moment 0:** centre, position angle and axis ratio from the
+   second moments of the light; inclination from cos i = b/a; disc radius
+   2.5 σ of the light.
+3. **A flat disc fitted to the velocity field:** the position angle scanned over
+   the full circle in the model's own frame, V_sys and V_rot solved by least
+   squares at each; a negative amplitude is folded into the PA.
+4. **Rings:** PA and V_rot per annulus (rings with fewer than `min_ring_pix`
+   pixels are skipped), the inclination of each ring read from the moment-0
+   isophotes — never from the velocity field, where V_rot and sin i are
+   degenerate. Ring PAs stay continuous (e.g. 356 → 362), because the profile
+   model interpolates them.
+5. **Model velocity fields** (flat, and rings when at least three are populated)
+   and the residual |v_data − v_model| statistics (median, 90th percentile,
+   fraction within one channel).
+
+Maps are float32 base64 planes (width × height, NaN = no data); measures that
+could not be made are `null`. A cube larger than the voxel cap is refused (413);
+so is one whose spectral axis is not the last FITS axis (422).
+
+In the cube viewer, **Fit from the lasso selection** in the Kinematic Model
+dialog runs it on the selection on screen, with the session's noise estimate
+(Tools ▸ Estimate Noise) as σ when there is one. It fills in the parameters and
+the ring table, which stay editable, and adds to Session Data the velocity field,
+the two model velocity fields, the two residual maps (signed, on a range
+symmetric about zero), the integrated spectrum and the source's measures — each
+with the selection, σ and convention it was made with. **Save rings as JSON…**
+writes the ring table.
+
 ## Desktop overlay (cube viewer)
 
 In the 3-D cube viewer (`vtkWindowCube`): **Tools ▸ Kinematic Model Overlay…**.
@@ -148,13 +195,13 @@ The workflow is split in two:
     interpolated with radius, so you can model a warp (tilt changing outward) or
     a real rotation curve (rising-then-flat) instead of one flat value. The
     table is seeded from the current scalar values; radii must be distinct.
-- **A live "Kinematic Model" dock panel** then restyles the overlay with **no
-  re-fetch** — the model cube and its FlyingEdges filter are kept client-side:
+- **The Kinematic Model controls** (Inspector ▸ Parameters, while an overlay
+  exists) then restyle the overlay with **no re-fetch** — the model cube and its
+  FlyingEdges filter are kept client-side:
   - **Contour level (% peak)** — re-`SetValue` on the kept filter.
   - **Opacity**, **Colour** (colour picker), **Representation** (Wireframe /
     Surface), **Show overlay** (visibility), **Remove overlay**.
   - **Contour on 2D channel maps** (default on) — see below.
-  The panel is reachable again via **View ▸ Kinematic Model** if you close it.
 
 ### 2-D channel-map contour (model-vs-data)
 
@@ -208,8 +255,10 @@ rotate the box to view the disk edge-on along the velocity axis.
 
 ## Limitations (phase-1) / roadmap
 
-- Single PA/incl and a flat rotation curve; **per-ring** parameters (a real
-  tilted-ring fit, à la 3DBarolo/TiRiFiC) are the next refinement.
+- The fit is a comparator on the moment-1 field, not a 3-D fit à la
+  3DBarolo/TiRiFiC: the model is a kinematic footprint, not convolved with the
+  beam, so inner rings are beam-smeared and their V_rot is not to be read.
+- One overlay at a time: overlaying a new model replaces the previous one.
 - Uniform disk intensity (the overlay is about kinematics/footprint, not flux).
 - Image-pixel PA rather than WCS sky PA (see convention note).
 - Full in-memory materialisation bounded by the voxel cap.

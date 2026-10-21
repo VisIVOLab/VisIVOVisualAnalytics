@@ -188,6 +188,45 @@ ImageGutter imageGutter(bool wcsAxesVisible, double rightGutter, double dpr)
     return g;   // `right` (the colorbar's) survives the axes being hidden
 }
 
+ImageGutter fitGutterToViewport(ImageGutter g, const int size[2])
+{
+    if (!size || size[0] <= 0 || size[1] <= 0)
+        return g;
+    const double maxH = 0.5 * size[0];
+    if (g.left + g.right > maxH) {
+        // The axis column gives way first (down to a fifth of the width): the
+        // colour bar's labels were measured and clip if squeezed; tick labels can
+        // sit closer. Only then do both shrink together.
+        g.left = std::min(g.left, std::max(0.2 * size[0], maxH - g.right));
+        if (g.left + g.right > maxH) {
+            const double k = maxH / (g.left + g.right);
+            g.left *= k;
+            g.right *= k;
+        }
+    }
+    const double maxV = 0.4 * size[1];
+    if (g.bottom + g.top > maxV) {
+        const double k = maxV / (g.bottom + g.top);
+        g.bottom *= k;
+        g.top *= k;
+    }
+    return g;
+}
+
+ImageGutter fitGutterWithBottomReserve(ImageGutter g, const int size[2], double reserve)
+{
+    if (!(reserve > 0.))
+        return fitGutterToViewport(g, size);
+    if (!size || size[0] <= 0 || size[1] <= 0) {
+        g.bottom += reserve;
+        return g;
+    }
+    const int rest[2] = { size[0], std::max(1, size[1] - static_cast<int>(std::lround(reserve))) };
+    g = fitGutterToViewport(g, rest);
+    g.bottom += reserve;
+    return g;
+}
+
 ImageRect dataAreaFor(const int size[2], vtkImageData *image, const ImageGutter &g)
 {
     ImageRect r;

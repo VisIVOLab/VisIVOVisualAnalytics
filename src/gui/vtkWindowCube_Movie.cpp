@@ -29,6 +29,7 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -44,7 +45,9 @@
 #include <QTemporaryDir>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
+#include <optional>
 
 using namespace Qt::StringLiterals;
 
@@ -133,6 +136,73 @@ void vtkWindowCube::showExportMovieDialog()
 
     const bool scan = (mode->currentIndex() == 0);
     const int fpsVal = fps->value();
+
+    // Frames are grabbed from the view AS SHOWN: the 2-D Slice for a scan, the 3-D
+    // view for an orbit. Off screen, its widget keeps a placeholder size and the
+    // movie came out a couple of hundred pixels wide; wearing a map, the slice
+    // would record the map at every "channel".
+    if (scan && !m_sliceBackdropProductId.isEmpty()) {
+        QMessageBox::information(this, u"Export Movie"_s,
+                u"The 2-D Slice is showing a map, not the channels. Choose 2D Slice in its "
+                u"pane menu, then export the channel scan."_s);
+        return;
+    }
+    const ViewId needed = scan ? ViewId::Slice2D : ViewId::View3D;
+    const auto neededOnScreen = [this, needed]() {
+        for (int i = 0; i < 4; ++i)
+            if (m_slots[i].view.kind == needed && m_slots[i].frame && m_slots[i].frame->isVisible())
+                return true;
+        return false;
+    };
+    // Re-entry / lifetime guard, raised before anything below processes events:
+    // block a second export, disable the action, and restore both on every exit
+    // path. The window-modal progress dialog also blocks closing the viewer.
+    this->m_exportMovieInProgress = true;
+    if (this->m_actExportMovie)
+        this->m_actExportMovie->setEnabled(false);
+    auto guard = qScopeGuard([this]() {
+        this->m_exportMovieInProgress = false;
+        if (this->m_actExportMovie)
+            this->m_actExportMovie->setEnabled(true);
+    });
+
+    // One pane: show the needed view for the export, then put back exactly what
+    // every pane held (the one on screen may show a map, a spectrum, the PV; the
+    // hidden ones keep their views for when the layout grows again), on every exit.
+    // Not while the slice wears a map: switching the pane would take the map and
+    // its Channels pane down, which no view assignment can put back.
+    std::optional<std::array<PaneView, 4>> restoreViews;
+    if (!neededOnScreen() && m_paneCount == 1 && m_sliceBackdropProductId.isEmpty()) {
+        restoreViews = std::array<PaneView, 4>{ m_slots[0].view, m_slots[1].view,
+                                                m_slots[2].view, m_slots[3].view };
+        m_slots[0].view = PaneView{ needed, {} };
+        clearViewFromOtherSlots(0);
+        mountView(0);
+        refreshPaneChrome();
+        syncPick3d2d();
+        layout2dPane(true);
+        qApp->processEvents();   // lay the view out at its real size before rendering
+    }
+    auto restoreView = qScopeGuard([this, &restoreViews]() {
+        // Something else changed the layout meanwhile (a PV result grows it): that
+        // layout is now the user's, not ours to undo.
+        if (!restoreViews || m_paneCount != 1)
+            return;
+        for (int i = 0; i < 4; ++i)
+            m_slots[i].view = (*restoreViews)[std::size_t(i)];
+        mountView(0);   // the only pane on screen; the others mount when shown
+        refreshPaneChrome();
+        syncPick3d2d();
+        layout2dPane(true);
+    });
+    if (!neededOnScreen()) {
+        QMessageBox::information(this, u"Export Movie"_s,
+                scan ? u"The channel scan records the 2-D Slice as it is on screen: show it in "
+                       u"a pane, then export again."_s
+                     : u"The orbit records the 3-D view as it is on screen: show it in a pane, "
+                       u"then export again."_s);
+        return;
+    }
     const int c0 = std::min(chStart->value(), chEnd->value()) - 1;   // 0-based
     const int c1 = std::max(chStart->value(), chEnd->value()) - 1;
     const int nFrames = scan ? (c1 - c0 + 1) : orbitFrames->value();
@@ -143,14 +213,21 @@ void vtkWindowCube::showExportMovieDialog()
     QString outputMp4, framesDir;
     if (!ffmpeg.isEmpty()) {
         const QString base = QFileInfo(this->filepath).completeBaseName();
+        // A full path: a bare name opened the picker in the process's working
+        // directory (the source tree, when launched from a build).
+        QString dir = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
+        if (dir.isEmpty() || !QFileInfo(dir).isDir())
+            dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
         outputMp4 = QFileDialog::getSaveFileName(
                 this, u"Export movie as"_s,
-                QStringLiteral("%1_%2.mp4").arg(base, scan ? u"channels"_s : u"orbit"_s),
+                QDir(dir).filePath(QStringLiteral("%1_%2.mp4").arg(base, scan ? u"channels"_s : u"orbit"_s)),
                 u"MP4 video (*.mp4)"_s);
         if (outputMp4.isEmpty())
             return;
     } else {
-        framesDir = QFileDialog::getExistingDirectory(this, u"Save PNG frames to folder"_s);
+        framesDir = QFileDialog::getExistingDirectory(
+                this, u"Save PNG frames to folder"_s,
+                QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation));
         if (framesDir.isEmpty())
             return;
     }
@@ -164,18 +241,6 @@ void vtkWindowCube::showExportMovieDialog()
         }
         workDir = tmp.path();
     }
-
-    // Re-entry / lifetime guard: block a second export, disable the action, and
-    // restore both on every exit path. The window-modal progress dialog also
-    // blocks closing the viewer while frames render.
-    this->m_exportMovieInProgress = true;
-    if (this->m_actExportMovie)
-        this->m_actExportMovie->setEnabled(false);
-    auto guard = qScopeGuard([this]() {
-        this->m_exportMovieInProgress = false;
-        if (this->m_actExportMovie)
-            this->m_actExportMovie->setEnabled(true);
-    });
 
     QProgressDialog progress(scan ? u"Rendering channel frames…"_s : u"Rendering orbit frames…"_s,
                              u"Cancel"_s, 0, nFrames, this);

@@ -108,7 +108,14 @@ public:
     /// Idempotent: repeated calls return the same panel.
     AssistantPanel *ensureCopilotTab();
 
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
+    /// Copy the provenance selection without the wrap points showProvenance()
+    /// put into long values.
+    void copyProvenanceSelection() const;
+
     QVBoxLayout *groupLayout(const QString &caption);   ///< find/create an analysis group box
 
     QLabel *m_cloudChip = nullptr;

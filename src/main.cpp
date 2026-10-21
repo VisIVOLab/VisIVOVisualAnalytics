@@ -4,6 +4,7 @@
 #include "app/BackendLauncher.h"
 #include "app/ThemeManager.h"
 #include "gui/StartupDialog.h"
+#include "gui/theme/ScrollWheelGuard.h"
 
 #include <QVTKOpenGLNativeWidget.h>
 
@@ -425,6 +426,9 @@ int main(int argc, char *argv[])
     // for as long as the backend takes to come up.
     DesktopOpenRelay openRelay;
     app.installEventFilter(&openRelay);
+    // Scrolling a settings page must not edit the controls under the cursor.
+    ScrollWheelGuard scrollWheelGuard;
+    app.installEventFilter(&scrollWheelGuard);
 
     // A second launch that carries files (every Linux / Windows double-click
     // starts a new process) hands them to the instance already running and

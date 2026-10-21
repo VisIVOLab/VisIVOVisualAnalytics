@@ -210,6 +210,8 @@ BackendRmSynthesisResult BackendClient::requestRmSynthesis(
     result.droppedFreqHz = BackendJson::toDoubleVector(metaObj.value(QStringLiteral("dropped_freq_hz")).toArray());
     result.phiPeakMin = static_cast<float>(metaObj.value(QStringLiteral("phi_peak_min")).toDouble());
     result.phiPeakMax = static_cast<float>(metaObj.value(QStringLiteral("phi_peak_max")).toDouble());
+    if (const QJsonValue ps = metaObj.value(QStringLiteral("peak_sigma")); ps.isDouble())
+        result.peakSigma = ps.toDouble();
 
     // Step 2: fetch binary FDF cube (nPhi*height rows × width cols float32)
     const QJsonDocument binBody(body);   // same request, so the same computation

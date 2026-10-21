@@ -174,16 +174,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 
     // ── SKAVA Discovery tab ───────────────────────────────────────────
     // Persistent tab next to Data Hub. The panel handles its own state
-    // (filters, results, provenance) and emits two signals on Open:
+    // (filters, results, provenance) and emits one signal on Open:
     //   - openSkavaDatasetRequested → backend-aware routing via
     //     doOpenSkavaDataset() which checks visivo-backend service
     //     descriptors against the registry (compute next to data)
-    //   - openDatasetUrlRequested → legacy download-via-local fallback
-    // We connect only the rich signal so we do not open twice.
     {
-        auto *skava = new SkavaSearchPanel(this->settings,
-                                            this->m_sampBackendClient.get(),
-                                            tabs);
+        auto *skava = new SkavaSearchPanel(this->settings, tabs);
         tabs->addTab(skava, u"SKAVA"_s);
         QObject::connect(skava, &SkavaSearchPanel::openSkavaDatasetRequested,
                          this, &MainWindow::doOpenSkavaDataset);

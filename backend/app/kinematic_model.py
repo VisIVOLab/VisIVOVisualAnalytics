@@ -33,7 +33,6 @@ from typing import Any
 
 import numpy as np
 
-_C_KMS = 299792.458  # speed of light, km/s
 
 # Hard cap on the generated model size (voxels). A model cube is materialised in
 # full as float32 plus a raw bytes copy, so peak memory ≈ 2× this × 4 bytes.
@@ -193,31 +192,6 @@ def tilted_ring_model_profile(nx: int, ny: int, spectral: np.ndarray, x0: float,
     return model
 
 
-def _spectral_axis_kms(coords: np.ndarray, axis_unit: str, axis_type: str,
-                       restfreq_hz: float) -> tuple[np.ndarray, str, str]:
-    """Convert a native spectral axis to radio-convention velocity in km/s.
-
-    Returns ``(values, unit, mode)``:
-      * mode="velocity", unit="km/s" — converted from a velocity axis, or from a
-        frequency axis via ``restfreq_hz`` (radio convention v=c·(f0−f)/f0).
-      * mode="native" — axis kept in its own unit (no rest frequency for a FREQ
-        axis, or an unrecognised spectral type). Caller should surface this so
-        the GUI can label/​warn correctly.
-    """
-    coords = np.asarray(coords, dtype=np.float64).ravel()
-    try:
-        import astropy.units as u  # noqa: PLC0415
-        unit = u.Unit(axis_unit) if axis_unit else u.dimensionless_unscaled
-        if unit.is_equivalent(u.km / u.s):
-            return (coords * unit).to(u.km / u.s).value, "km/s", "velocity"
-        if unit.is_equivalent(u.Hz) and math.isfinite(restfreq_hz) and restfreq_hz > 0:
-            freq_hz = (coords * unit).to(u.Hz).value
-            return _C_KMS * (restfreq_hz - freq_hz) / restfreq_hz, "km/s", "velocity"
-    except Exception:
-        pass
-    return coords, (axis_unit or ""), "native"
-
-
 def kinematic_model_payload(model: np.ndarray) -> dict[str, Any]:
     """Serialise the model cube as little-endian float32 (x-fastest = vtkImageData
     point order), with its peak value for the caller's contour scaling."""
@@ -284,7 +258,10 @@ def kinematic_model_worker(path: str, x0: float, y0: float, pa_deg: float, incl_
                 restfreq = 0.0
             if restfreq:
                 break
-        velocity, unit, mode = _spectral_axis_kms(coords, axis_unit, axis_type, restfreq)
+        # The axis the kinematic FIT uses too (optical cz for a frequency axis), so
+        # parameters fitted in the app draw the model they were fitted with.
+        from .compute.kinematic_fit import velocity_axis_kms  # noqa: PLC0415
+        velocity, unit, mode = velocity_axis_kms(coords, axis_unit, axis_type, restfreq)
 
     if rings:
         ring_r = [float(r[0]) for r in rings]

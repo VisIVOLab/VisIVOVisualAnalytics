@@ -307,6 +307,10 @@ RegionStatistics computeRegionStatistics2D(vtkImageData *imageData, vtkWindowCub
 
 void vtkWindowCube::finishRegionInteraction()
 {
+    if (this->m_pvEdit != PvEdit::None) {
+        this->endPvEdit();   // a PV path drag ends here, busy or not
+        return;
+    }
     if (this->isBusy()) {
         return;
     }
@@ -456,6 +460,7 @@ void vtkWindowCube::setRegionMode(RegionMode mode, bool active)
     if (mode != RegionMode::Annulus && this->actionAnnulusRegion && this->actionAnnulusRegion->isChecked()) {
         this->actionAnnulusRegion->setChecked(false);
     }
+    this->ensureSliceForTools();   // a moment pane becomes the slice to draw on
     this->regionMode = mode;
     this->regionDragging = false;
     this->regionValid = false;
@@ -887,6 +892,18 @@ void vtkWindowCube::analyzeCurrentRegion()
         QVector<double> spectral(zCount);
         QVector<double> meanValues(zCount, 0.0);
         QVector<int>    counts(zCount, 0);
+        const double blankBelow = this->currentCubeVisibleRange[0];
+        // Every channel keeps its spectral coordinate, blank or not: a fully
+        // NaN plane must plot as a gap (NaN value), and QCustomPlot only gaps
+        // on NaN VALUES — a NaN key broke the line into a spike instead.
+        for (int idx = 0; idx < zCount; ++idx) {
+            const double datasetZ = origin[2] + static_cast<double>(idx) * spacing[2];
+            bool ok = false;
+            spectral[idx] = this->spectralAxisValue(datasetZ, &ok);
+            if (!ok) {
+                spectral[idx] = datasetZ;
+            }
+        }
 
         // Clamp the 2D loop to the actually-available extent to avoid
         // unnecessary iterations.
@@ -920,18 +937,11 @@ void vtkWindowCube::analyzeCurrentRegion()
                     const int idx = localZ - extent[4];
                     const double value =
                             cubeImage->GetScalarComponentAsDouble(localX, localY, localZ, 0);
-                    if (!std::isfinite(value)) {
+                    // Blanks were replaced by a finite sentinel below the visible
+                    // minimum when the cube was sanitised; averaging it turned a
+                    // fully blank channel into a deep negative spike.
+                    if (!std::isfinite(value) || value < blankBelow) {
                         continue;
-                    }
-                    // Build spectral axis value once per channel (idempotent).
-                    if (counts[idx] == 0) {
-                        const double datasetZ = origin[2] + static_cast<double>(localZ - extent[4])
-                                                * spacing[2];
-                        bool ok = false;
-                        spectral[idx] = this->spectralAxisValue(datasetZ, &ok);
-                        if (!ok) {
-                            spectral[idx] = datasetZ;
-                        }
                     }
                     meanValues[idx] += value;
                     counts[idx] += 1;
@@ -940,7 +950,7 @@ void vtkWindowCube::analyzeCurrentRegion()
         }
 
         // Normalise: convert accumulated sums to per-channel means.
-        // Channels with no valid pixels keep NaN so QCustomPlot skips them.
+        // Channels with no valid pixels get a NaN mean, which QCustomPlot draws as a gap.
         bool haveSpectrum = false;
         for (int i = 0; i < zCount; ++i) {
             if (counts[i] > 0) {
@@ -948,7 +958,6 @@ void vtkWindowCube::analyzeCurrentRegion()
                 haveSpectrum = true;
             } else {
                 meanValues[i] = std::numeric_limits<double>::quiet_NaN();
-                spectral[i]   = std::numeric_limits<double>::quiet_NaN();
             }
         }
 

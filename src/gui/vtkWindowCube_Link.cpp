@@ -298,8 +298,10 @@ void vtkWindowCube::applyLinkedChannel(int channel0, double fraction, double spe
         ui->spinSlice->setValue(target + 1);
     }
     if (this->channelOverlay) {   // the floating scrubber too (immediate feedback)
-        this->channelOverlay->setChannel(target + 1);
-        this->channelOverlay->setSpectralLabel(this->formatSpectralAxisValue(target));
+        for (ChannelOverlay *co : this->channelOverlays()) {
+            co->setChannel(target + 1);
+            co->setSpectralLabel(this->formatSpectralAxisValue(target));
+        }
     }
     // Programmatic request; the result path sets the widgets via QSignalBlocker,
     // so it does not re-fire the user slot → no echo.

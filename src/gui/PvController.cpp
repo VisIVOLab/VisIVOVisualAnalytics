@@ -30,7 +30,7 @@ using namespace Qt::StringLiterals;
 
 static RemotePvFetchResult fetchRemotePv(const QString &backendUrl,
                                          const QString &datasetId,
-                                         const std::vector<std::array<int, 2>> &vertices,
+                                         const std::vector<std::array<double, 2>> &vertices,
                                          int widthPixels,
                                          const QString &sessionId,
                                          const QString &backendToken)
@@ -128,6 +128,10 @@ static RemotePvFetchResult fetchRemotePv(const QString &backendUrl,
     result.pixelScaleArcsecPerPixel = response.pixelScaleArcsecPerPixel;
     result.spectralAxisType = response.spectralAxisType;
     result.spectralAxisUnit = response.spectralAxisUnit;
+    if (response.spectralCoordinates.size() == response.depth)
+        result.spectralCoordinates = response.spectralCoordinates;
+    result.bunit = response.bunit;
+    result.skyMatrixArcsec = response.skyMatrixArcsec;
     return result;
 }
 
@@ -160,11 +164,13 @@ bool PvController::isBusy() const
     return m_busy;
 }
 
-void PvController::startExtraction(const std::vector<std::array<int, 2>> &vertices,
-                                   int widthPixels)
+void PvController::startExtraction(const std::vector<std::array<double, 2>> &vertices,
+                                   int widthPixels, bool interactive)
 {
     if (m_busy) {
-        return; // guard against re-entrancy
+        m_pending = { vertices, widthPixels, interactive };
+        m_hasPending = true;
+        return;
     }
 
     if (auto *win = qobject_cast<QMainWindow *>(m_parentWindow)) {
@@ -187,7 +193,7 @@ void PvController::startExtraction(const std::vector<std::array<int, 2>> &vertic
     QPointer<PvController> self(this);
     auto *watcher = new QFutureWatcher<RemotePvFetchResult>();
     QObject::connect(watcher, &QFutureWatcher<RemotePvFetchResult>::finished,
-                     watcher, [self, watcher, datasetId, sessionId]() {
+                     watcher, [self, watcher, datasetId, sessionId, interactive]() {
         const auto result = watcher->result();
         watcher->deleteLater();
 
@@ -196,12 +202,23 @@ void PvController::startExtraction(const std::vector<std::array<int, 2>> &vertic
         }
 
         self->m_busy = false;
+        // A newer path was asked for while this one ran: start it now. This
+        // result is still shown (it is the latest available) unless it failed.
+        const bool superseded = self->m_hasPending;
+        if (superseded) {
+            const Pending next = std::move(self->m_pending);
+            self->m_hasPending = false;
+            self->startExtraction(next.vertices, next.widthPixels, next.interactive);
+        }
 
         // Re-enable the PV action first (same ordering as MomentMapController).
         if (self->m_onRunFinished) {
             self->m_onRunFinished();
         }
 
+        if (!result.valid && superseded) {
+            return;   // the newer request will report for itself
+        }
         if (!result.valid) {
             const QString message = result.errorMessage.isEmpty()
                     ? u"PV computation failed on the backend."_s
@@ -211,7 +228,8 @@ void PvController::startExtraction(const std::vector<std::array<int, 2>> &vertic
                     DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
                     QStringLiteral("PvController"), message,
                     datasetId, sessionId, QStringLiteral("pv"));
-            QMessageBox::warning(self->m_parentWindow, u"PV Diagram"_s, message);
+            if (!interactive)
+                QMessageBox::warning(self->m_parentWindow, u"PV Diagram"_s, message);
             if (auto *win = qobject_cast<QMainWindow *>(self->m_parentWindow)) {
                 win->statusBar()->showMessage(message, 4000);
             }

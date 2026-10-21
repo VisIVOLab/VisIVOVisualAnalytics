@@ -121,7 +121,8 @@ Moment (M0, M1, M2, …)
 
 PV
   *Position-Velocity diagram* — 2-D plot of intensity along a path on the
-  sky (X) vs. velocity (Y). Standard tool for kinematic inspection. See
+  sky (X) vs. velocity (Y). Standard tool for kinematic inspection. The path
+  stays editable and the diagram can be saved as FITS. See
   [Regions, PV, noise](region-pv-noise#position-velocity-diagrams).
 
 Probe

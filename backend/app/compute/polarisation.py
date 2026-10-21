@@ -543,6 +543,25 @@ def stokes_plane_coverage(
             for i in range(q.shape[0])]
 
 
+def phi_sample_count(phi_min: float, phi_max: float, d_phi: float) -> int:
+    """Samples in φ_min, φ_min + dφ, …, up to and including φ_max when it is reached.
+
+    The tolerance covers the rounding of (φ_max − φ_min)/dφ, which grows with the
+    endpoints' magnitude: 99999.99..100000 at 0.001 is 10.000 steps, not 9.99999.
+    """
+    if not (d_phi > 0) or not (phi_max >= phi_min):
+        return 0
+    if phi_max == phi_min:
+        return 1
+    scale = max(abs(phi_min), abs(phi_max))
+    if d_phi <= 64 * np.finfo(np.float64).eps * scale:
+        raise ValueError(f"dφ = {d_phi:g} is below the resolution of φ around {scale:g}.")
+    steps = (phi_max - phi_min) / d_phi
+    # Never more than half a step, so the count cannot run past φ max.
+    tol = min(1e-9 + 8 * np.finfo(np.float64).eps * max(scale, d_phi) / d_phi, 0.5)
+    return int(np.floor(steps + tol)) + 1
+
+
 def worker_rm_synthesis(
     path: str,
     phi_min: float,
@@ -646,9 +665,11 @@ def worker_rm_synthesis(
     n_freq = len(kept)
     lambda2 = (C_LIGHT / freq_hz) ** 2   # (n_freq,)
 
-    # φ grid
-    phi_grid = np.arange(phi_min, phi_max, d_phi, dtype=np.float64)
-    n_phi = len(phi_grid)
+    # φ grid, both ends included: −80..80 must sample +80 too (np.arange stopped
+    # one step short, an asymmetric grid that never reached φ max). A range that is
+    # not a whole number of steps ends at the last sample not past φ max.
+    n_phi = phi_sample_count(phi_min, phi_max, d_phi)
+    phi_grid = phi_min + d_phi * np.arange(n_phi, dtype=np.float64)
     if n_phi == 0:
         raise ValueError("Empty φ grid - check phi_min, phi_max, d_phi.")
 
@@ -739,6 +760,12 @@ def worker_rm_synthesis(
         peak_value = np.where(undefined, np.nan, peak_value)
         result["range_min"], result["range_max"] = _finite_range(peak_value)
         result["phi_peak_min"], result["phi_peak_max"] = _finite_range(peak_phi)
+        # The noise of the peak map, 1.4826·MAD over the pixels that have one (an
+        # exact 0 is a pixel with no data, not a measurement): what a "peak above
+        # N σ" significance cut on the Faraday depth is counted in.
+        measured = peak_value[np.isfinite(peak_value) & (peak_value != 0.0)]
+        result["peak_sigma"] = (float(1.4826 * np.median(np.abs(measured - np.median(measured))))
+                                if measured.size else None)   # JSON has no NaN
         result["data_base64"] = _b64f32(np.asarray(peak_value, dtype=np.float32))
         result["phi_peak_base64"] = _b64f32(peak_phi)
         return result

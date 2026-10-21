@@ -101,7 +101,7 @@ void ChannelMapsWindow::buildUi()
     headerLay->setContentsMargins(14, 8, 14, 8);
     auto *title = new QLabel(
             u"Channel Maps  ·  CH %1–%2  stride %3  ·  %4"_s
-            .arg(m_config.channelStart).arg(m_config.channelEnd)
+            .arg(m_config.channelStart + 1).arg(m_config.channelEnd + 1)   // as on the channel bar
             .arg(m_config.stride).arg(m_config.lutName),
             header);
     title->setStyleSheet(
@@ -182,6 +182,42 @@ void ChannelMapsWindow::fetchAndRender()
                 return c.requestSubvolume(did, 0, w - 1, 0, h - 1, z0, z1);
             }));
 }
+
+namespace {
+// Sky pixels are square: one data unit spans the same number of screen pixels on
+// both axes, so a 196 × 280 cube is drawn taller than wide instead of stretched
+// into the cell.
+void keepSquarePixels(QCustomPlot *plot, int w, int h, bool interactive)
+{
+    // Only when the plot area's size changes: afterLayout also follows every
+    // replot. A cell always shows the whole image; the zoomable enlarged view is
+    // fitted once and afterwards only kept square around the current centre and
+    // zoom (its area also changes when a zoom widens the tick labels).
+    const auto fit = [plot, w, h, interactive, last = QSize()]() mutable {
+        const QRect r = plot->axisRect()->rect();
+        // The enlarged view fits once, so not before it is on screen: until its
+        // layout places it the size is a placeholder it would then keep. (A cell
+        // refits on every size change, so an early fit corrects itself.)
+        if ((interactive && !plot->isVisible()) || r.width() <= 0 || r.height() <= 0 || w <= 0
+            || h <= 0 || r.size() == last)
+            return;
+        const bool first = last.isEmpty();
+        last = r.size();
+        double cx = 0.5 * (w - 1), cy = 0.5 * (h - 1);
+        double scale = std::min(r.width() / double(w), r.height() / double(h));   // px per pixel
+        if (interactive && !first) {
+            cx = plot->xAxis->range().center();
+            cy = plot->yAxis->range().center();
+            scale = r.width() / plot->xAxis->range().size();
+        }
+        const double halfX = 0.5 * r.width() / scale, halfY = 0.5 * r.height() / scale;
+        plot->xAxis->setRange(QCPRange(cx - halfX, cx + halfX));
+        plot->yAxis->setRange(QCPRange(cy - halfY, cy + halfY));
+        plot->replot(QCustomPlot::rpQueuedReplot);
+    };
+    QObject::connect(plot, &QCustomPlot::afterLayout, plot, fit);
+}
+}  // namespace
 
 // ── Grid population ─────────────────────────────────────────────────────────
 
@@ -275,7 +311,7 @@ void ChannelMapsWindow::populateGrid(const BackendCubeSubvolumeResult &vol)
         // Title element: "CH 42"
         plot->plotLayout()->insertRow(0);
         auto *titleEl = new QCPTextElement(plot,
-                u"CH %1"_s.arg(absChannel));
+                u"CH %1"_s.arg(absChannel + 1));
         titleEl->setTextColor(labelColor);
         QFont titleFont;
         titleFont.setPixelSize(13);
@@ -303,6 +339,7 @@ void ChannelMapsWindow::populateGrid(const BackendCubeSubvolumeResult &vol)
 
         plot->xAxis->setRange(0, w - 1);
         plot->yAxis->setRange(0, h - 1);
+        keepSquarePixels(plot, w, h, /*interactive=*/false);
         plot->setInteractions(QCP::Interactions());
 
         plot->replot(QCustomPlot::rpQueuedReplot);
@@ -342,7 +379,7 @@ void ChannelMapsWindow::showEnlargedCell(int cellIdx, int absChannel,
     if (!srcMap) return;
 
     auto *dlg = new QDialog(this);
-    dlg->setWindowTitle(u"Channel %1"_s.arg(absChannel));
+    dlg->setWindowTitle(u"Channel %1"_s.arg(absChannel + 1));
     dlg->setAttribute(Qt::WA_DeleteOnClose);
     dlg->resize(640, 560);
 
@@ -370,7 +407,7 @@ void ChannelMapsWindow::showEnlargedCell(int cellIdx, int absChannel,
     // Title
     plot->plotLayout()->insertRow(0);
     auto *title = new QCPTextElement(plot,
-            u"CH %1"_s.arg(absChannel));
+            u"CH %1"_s.arg(absChannel + 1));
     title->setTextColor(lbl);
     QFont titleFont;
     titleFont.setPixelSize(14);
@@ -407,6 +444,7 @@ void ChannelMapsWindow::showEnlargedCell(int cellIdx, int absChannel,
 
     plot->xAxis->setRange(0, nx - 1);
     plot->yAxis->setRange(0, ny - 1);
+    keepSquarePixels(plot, nx, ny, /*interactive=*/true);
     plot->replot();
 
     root->addWidget(plot);
@@ -487,7 +525,7 @@ void ChannelMapsWindow::saveMosaicPng()
                      Qt::AlignVCenter | Qt::AlignLeft,
                      u"Channel Maps  ·  %1  ·  CH %2–%3  stride %4"_s
                      .arg(QFileInfo(m_filepath).fileName())
-                     .arg(m_config.channelStart).arg(m_config.channelEnd)
+                     .arg(m_config.channelStart + 1).arg(m_config.channelEnd + 1)
                      .arg(m_config.stride));
 
     // Cell label font
@@ -511,7 +549,7 @@ void ChannelMapsWindow::saveMosaicPng()
         painter.setPen(QColor(QString::fromLatin1(VisivoTheme::kOnSurface())));
         painter.drawText(QRect(cellX, cellY, cellW, labelH),
                          Qt::AlignCenter,
-                         u"CH %1"_s.arg(slice.channel));
+                         u"CH %1"_s.arg(slice.channel + 1));
 
         // Rasterise at full source resolution × scale factor.
         // Source data is row-major [y][x] with origin at bottom-left

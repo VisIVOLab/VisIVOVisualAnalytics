@@ -1,0 +1,106 @@
+{
+ "results": [
+  {
+   "metadata": {
+    "obs_id": "d22-apertif-dr1-HI",
+    "obs_collection": "Apertif-DR1",
+    "obs_title": "Apertif DR1 HI cube",
+    "dataproduct_type": "cube",
+    "calib_level": 3,
+    "target_name": "Apertif DR1 HI field",
+    "facility_name": "WSRT",
+    "instrument_name": "Apertif",
+    "s_ra": 200.0,
+    "s_dec": 42.0,
+    "s_fov": 8.0,
+    "t_min": 58200.0,
+    "t_max": 58300.0,
+    "em_min": 0.17951644191616767,
+    "em_max": 0.3331027311111111,
+    "spatial_index_order": 8,
+    "spatial_index_cell": "order8:ra284:dec187",
+    "doi": "10.1051/0004-6361/202244039",
+    "pid": "skava:d22:apertif-dr1:HI",
+    "citation": "Adams et al. 2022, Apertif DR1",
+    "license": "CC-BY-4.0"
+   },
+   "replicas": [
+    {
+     "code": "VIS-LOCAL",
+     "name": "VisIVO Backend (local Workspace Exports)",
+     "is_enabled": true,
+     "is_available": true,
+     "latency_score": 5.0,
+     "load_score": 0.1,
+     "capability_score": 0.95,
+     "access_endpoint": "http://host.docker.internal:8001/v1/exports/download?filename=Apertif_DR1_field191_HI.fits"
+    }
+   ],
+   "best_node": "VIS-LOCAL",
+   "access_url": "http://testserver/access/d22-apertif-dr1-HI",
+   "datalink_descriptor": {
+    "service": "http://testserver/access/d22-apertif-dr1-HI",
+    "standard_hint": "DataLink/SODA precursor",
+    "operations": [
+     "download",
+     "cutout:TBD",
+     "band_subset:TBD",
+     "time_subset:TBD"
+    ]
+   }
+  },
+  {
+   "metadata": {
+    "obs_id": "d22-meerkat-fornax-HI",
+    "obs_collection": "MFS",
+    "obs_title": "MeerKAT Fornax Survey \u2014 HI cube fragment",
+    "dataproduct_type": "cube",
+    "calib_level": 3,
+    "target_name": "Fornax A surroundings",
+    "facility_name": "MeerKAT",
+    "instrument_name": "MeerKAT L-band",
+    "s_ra": 50.7,
+    "s_dec": -37.2,
+    "s_fov": 4.0,
+    "t_min": 59400.0,
+    "t_max": 59600.0,
+    "em_min": 0.17951644191616767,
+    "em_max": 0.3331027311111111,
+    "spatial_index_order": 8,
+    "spatial_index_cell": "order8:ra72:dec75",
+    "doi": "10.1093/mnras/stab1822",
+    "pid": "skava:d22:mfs:fornax-A",
+    "citation": "Serra et al. 2023, MeerKAT Fornax Survey",
+    "license": "CC-BY-4.0"
+   },
+   "replicas": [
+    {
+     "code": "VIS-LOCAL",
+     "name": "VisIVO Backend (local Workspace Exports)",
+     "is_enabled": true,
+     "is_available": true,
+     "latency_score": 5.0,
+     "load_score": 0.1,
+     "capability_score": 0.95,
+     "access_endpoint": "http://host.docker.internal:8001/v1/exports/download?filename=MeerKAT_Fornax_HI.fits"
+    }
+   ],
+   "best_node": "VIS-LOCAL",
+   "access_url": "http://testserver/access/d22-meerkat-fornax-HI",
+   "datalink_descriptor": {
+    "service": "http://testserver/access/d22-meerkat-fornax-HI",
+    "standard_hint": "DataLink/SODA precursor",
+    "operations": [
+     "download",
+     "cutout:TBD",
+     "band_subset:TBD",
+     "time_subset:TBD"
+    ]
+   }
+  }
+ ],
+ "total": 5,
+ "limit": 2,
+ "offset": 0,
+ "returned": 2
+}

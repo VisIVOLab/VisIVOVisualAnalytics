@@ -73,6 +73,10 @@ private slots:
     void openCatalogue3D();
     void openVbt();
     void openVelocityField();   ///< F1: open a cosmic-flow velocity field (3-component FITS)
+    /// Open the velocity field at @p path (a backend path) in the vector-field viewer:
+    /// what the menu entry does once a file is chosen, and what Open… does when the
+    /// classifier recognises one.
+    void openVelocityFieldPath(const QString &path);
     void openHiPS();
     /// Data ▸ HiPS Cutout — a FITS out of any HiPS survey (CDS hips2fits).
     void openHips2Fits();
@@ -131,7 +135,8 @@ private:
     /// the SKAVA Discovery tab after a DataLink lookup. ``obsId`` is the
     /// SKAVA-side identifier, used as a filename hint in the cache and as
     /// the display name for the Recent Datasets panel.
-    void doOpenDataFromUrl(const QString &url, const QString &obsId);
+    void doOpenDataFromUrl(const QString &url, const QString &obsId,
+                           const QString &remoteBearerToken = QString());
     /// Backend-aware open driven by a full SKAVA DataLink response. When
     /// SKAVA advertises a ``visivo-backend`` service descriptor that
     /// matches a registered backend, route the open through that backend
@@ -147,6 +152,13 @@ private:
     /// from the VLKB-specific cutout flow in ``queryVlkb``.
     void doSkavaSodaSubset(const QString &obsId,
                              const struct SkavaDatalinkResponse &datalink);
+    /// No registered backend could open a SKAVA dataset: download an http(s)
+    /// copy through the local backend, or — for a file:// copy that exists
+    /// only on its node — explain why (``reasons``) and offer to register the
+    /// backend SKAVA advertises for that node, then retry.
+    void openSkavaWithoutRoute(const QString &obsId,
+                               const struct SkavaDatalinkResponse &datalink,
+                               const QStringList &reasons);
     /// Open a backend-side FITS produced by an advanced product (map math,
     /// mosaic) in the viewer, using the science backend that computed it.
     void openBackendProductFits(const QString &backendUrl, const QString &backendToken,

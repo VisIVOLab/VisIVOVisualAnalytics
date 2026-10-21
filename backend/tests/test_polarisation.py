@@ -437,6 +437,34 @@ class TestRmSynthesis(unittest.TestCase):
         result = self._run()
         self.assertEqual(len(result["phi_grid"]), result["n_phi"])
 
+    def test_peak_mode_reports_the_peak_noise(self):
+        """peak_sigma is 1.4826·MAD of the measured peak values, for a significance cut."""
+        from app.compute import worker_rm_synthesis
+        r = worker_rm_synthesis(self.fits_path, -50.0, 50.0, 1.0, reduce="peak")
+        peak = _b64_to_f32(r["data_base64"], (r["height"], r["width"]))
+        v = peak[np.isfinite(peak) & (peak != 0)]
+        expected = 1.4826 * np.median(np.abs(v - np.median(v)))
+        self.assertAlmostEqual(r["peak_sigma"], float(expected), places=6)
+
+    def test_phi_sample_count_edges(self):
+        from app.compute.polarisation import phi_sample_count
+        self.assertEqual(phi_sample_count(99999.99, 100000.0, 0.001), 11)   # large offset
+        self.assertEqual(phi_sample_count(-0.3, 0.3, 0.1), 7)               # decimal step
+        self.assertEqual(phi_sample_count(-80.0, 80.0, 3.0), 54)            # ends at 79, not past 80
+        self.assertEqual(phi_sample_count(5.0, 5.0, 0.1), 1)
+        self.assertEqual(phi_sample_count(10.0, 5.0, 1.0), 0)
+        self.assertEqual(phi_sample_count(1e12, 1e12, 0.001), 1)            # equal ends at any scale
+        with self.assertRaises(ValueError):                                  # step below φ's resolution
+            phi_sample_count(1e12, 1e12 + 1.0, 1e-6)
+
+    def test_phi_grid_includes_both_ends(self):
+        """−20..20 at step 1 is 41 samples, symmetric: φ max is sampled too."""
+        result = self._run(phi_min=-20.0, phi_max=20.0, d_phi=1.0)
+        grid = np.array(result["phi_grid"])
+        self.assertEqual(result["n_phi"], 41)
+        self.assertAlmostEqual(grid[0], -20.0)
+        self.assertAlmostEqual(grid[-1], 20.0)
+
     def test_rmsf_peak_at_zero(self):
         """RMSF = |Σ exp(-2i φ λ²)|/N; its peak should be at φ=0 (index 0 when phi_min=0)."""
         result = self._run(phi_min=0.0, phi_max=50.0, d_phi=0.5)
@@ -988,7 +1016,7 @@ class TestGridAndNaNGuards(unittest.TestCase):
         try:
             # 400k phi samples over 8x8: the cube would be 97 MiB, the blocks are small.
             r = worker_rm_synthesis(q, -10000.0, 10000.0, 0.05, {"U": u}, reduce="peak")
-            self.assertEqual(r["n_phi"], 400000)
+            self.assertEqual(r["n_phi"], 400001)   # both ends sampled
             phi = _b64_to_f32(r["phi_peak_base64"], (r["height"], r["width"]))
             np.testing.assert_allclose(phi, 10.0, atol=1.0)
         finally:

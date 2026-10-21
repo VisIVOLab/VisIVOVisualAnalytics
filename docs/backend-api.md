@@ -246,11 +246,30 @@ Position-velocity diagram along a polyline.
 ```json
 {
   "dataset_id": "...",
-  "points_ra_dec": [[ra1, dec1], [ra2, dec2]],
+  "vertices": [[12.5, 40.0], [80.25, 41.0], [130.0, 90.0]],
   "width_pixels": 3
 }
 ```
-Returns `num_samples`, `depth`, `scalar_type`, `positions_arcsec_base64`, `total_length`, `valid_samples`, `pixel_scale_arcsec_per_pixel`, `spatial_unit`, `spectral_axis_type`, `spectral_axis_unit`, `bunit`, `beam_major`, `beam_minor`, `beam_pa`.
+- `vertices` — 0-based cube pixels `(x, y)`; fractional values are honoured
+  (rounded to 1/1000 pixel, the same values key the product cache and feed the
+  computation). At least two distinct vertices.
+- `width_pixels` — samples across the path, one pixel apart, averaged.
+
+Sampling: one sample per step along the path's arc length, in **angular** space
+(the full pixel→sky matrix, so non-square and skewed pixels are handled; one
+step = the finer pixel); NaN-aware bilinear interpolation. The cube must have
+its spectral axis last (else 422 / `valid: false`).
+
+Response: `num_samples`, `depth`, `scalar_type`, `compression`,
+`positions_base64` (offsets in steps), `positions_arcsec_base64`,
+`pixel_scale_arcsec_per_pixel` (= arcsec per step), `spatial_unit`,
+`data_base64` (`depth × num_samples` float32, channel-major), `width_pixels`,
+`vertex_count`, `total_length` (pixels), `valid_samples`, `step_pixels`,
+`spectral_axis_type`, `spectral_axis_unit`,
+`spectral_coordinates_base64` (float64 little-endian, **channel 0 first**, may
+decrease), `spectral_crval`, `spectral_cdelt`, `sky_matrix_arcsec`
+(row-major 2×2, pixel offset → projection-plane arcsec), `bunit`,
+`beam_major`, `beam_minor`, `beam_pa`.
 
 ### `POST /v1/cube/noise`
 Noise statistics (MAD and sigma) over a spatial region and channel range.
@@ -295,6 +314,21 @@ Supported `order` values and their definitions:
 | 10 | Minimum value | min(I) | BUNIT |
 
 For orders 3–5, `spectral_delta` (channel spacing) is used as the integration weight. NaN/blanked voxels are excluded. Variance must be positive; pixels where σ=0 or M0=0 are set to NaN.
+
+### `POST /v1/products/pv_fits`
+Compute the PV diagram along a path and save it as a 2-D FITS file in the
+Workspace Exports.
+```json
+{ "dataset_id": "...", "vertices": [[12.5, 40.0], [130.0, 90.0]], "width_pixels": 3,
+  "output_basename": "ngc3137_pv.fits" }
+```
+Axis 1 is `OFFSET` (arcsec, 0 at the first vertex, `CDELT1` = step); axis 2 is
+the cube's own spectral axis WCS (CTYPE/CUNIT/CRPIX/CRVAL, CDELT×PC or CD,
+`PVn_m`/`PSn_m`). `BUNIT`, beam, `RESTFRQ`/`RESTWAV`, `SPECSYS` are copied;
+`PVWIDTH`, `PVSTEP` and the vertices (`HISTORY`, pixel and sky) are recorded.
+An existing file is never overwritten (the name is suffixed). Response:
+`valid`, `error`, `output_path`, `workspace_filename`, `width` (samples),
+`height` (channels), `range_min`, `range_max`, `bunit`.
 
 ### `POST /v1/products/isosurface`
 ```json
@@ -653,7 +687,7 @@ with the message naming the ways out:
 > `The requested FDF cube is 6250 MiB (400000 φ × 64 × 64), over the 512 MiB
 > limit. Ask for reduce='peak', a smaller region, or a coarser φ grid.`
 
-Both variants always return `phi_grid`, `rmsf`, `n_phi` and `n_freq`, plus `dropped_planes` and `dropped_freq_hz`: sub-bands that carry no data in the requested region (a release can flag one out entirely, as NaN or zeros) are left out of the transform and listed by file-plane index and frequency; `n_freq` counts the planes actually used, and fewer than three is an error (422).
+The φ grid is `phi_min, phi_min + dphi, …` up to and including `phi_max` when a whole number of steps reaches it (a step below the numerical resolution of φ is refused with 422). Both variants always return `phi_grid`, `rmsf`, `n_phi` and `n_freq`, plus `dropped_planes` and `dropped_freq_hz`: sub-bands that carry no data in the requested region (a release can flag one out entirely, as NaN or zeros) are left out of the transform and listed by file-plane index and frequency; `n_freq` counts the planes actually used, and fewer than three is an error (422).
 
 ## Spectral
 

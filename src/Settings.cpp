@@ -309,6 +309,9 @@ const std::pair<QString, QVariant> Settings::SkavaUrl = {
     u"Skava/url"_s, u"http://localhost:8000"_s
 };
 const std::pair<QString, QVariant> Settings::SkavaToken = { u"Skava/token"_s, u""_s };
+const std::pair<QString, QVariant> Settings::SkavaProtocol = { u"Skava/protocol"_s, u"skava"_s };
+const std::pair<QString, QVariant> Settings::SkavaTapUrl = { u"Skava/tapUrl"_s, u""_s };
+const std::pair<QString, QVariant> Settings::SkavaDatalinkUrl = { u"Skava/datalinkUrl"_s, u""_s };
 const std::pair<QString, QVariant> Settings::CopilotProvider = { u"Copilot/provider"_s, 3 };
 const std::pair<QString, QVariant> Settings::CopilotKey = { u"Copilot/key"_s, u""_s };
 const std::pair<QString, QVariant> Settings::CopilotUrl = { u"Copilot/url"_s, u""_s };
@@ -368,6 +371,39 @@ QString Settings::getSkavaToken() const
 void Settings::setSkavaToken(const QString &token)
 {
     this->settings->setValue(Settings::SkavaToken.first, token);
+}
+
+QString Settings::getSkavaProtocol() const
+{
+    const QString p = this->settings->value(Settings::SkavaProtocol.first,
+                                            Settings::SkavaProtocol.second).toString();
+    return p == "vo"_L1 ? p : u"skava"_s;
+}
+
+void Settings::setSkavaProtocol(const QString &protocol)
+{
+    this->settings->setValue(Settings::SkavaProtocol.first, protocol == "vo"_L1 ? u"vo"_s : u"skava"_s);
+}
+
+QString Settings::getSkavaTapUrl() const
+{
+    return this->settings->value(Settings::SkavaTapUrl.first, Settings::SkavaTapUrl.second).toString().trimmed();
+}
+
+void Settings::setSkavaTapUrl(const QString &url)
+{
+    this->settings->setValue(Settings::SkavaTapUrl.first, url.trimmed());
+}
+
+QString Settings::getSkavaDatalinkUrl() const
+{
+    return this->settings->value(Settings::SkavaDatalinkUrl.first, Settings::SkavaDatalinkUrl.second)
+            .toString().trimmed();
+}
+
+void Settings::setSkavaDatalinkUrl(const QString &url)
+{
+    this->settings->setValue(Settings::SkavaDatalinkUrl.first, url.trimmed());
 }
 
 //----------------------------------------------------------------------------

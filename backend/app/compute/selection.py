@@ -561,6 +561,7 @@ def worker_cube_kinematic_levels(
     sigma: float,
     roi_radius: int,
     nsigma: float = 2.5,
+    smooth_zyx: tuple[float, float, float] | None = None,
 ) -> dict[str, Any]:
     """Top-level worker (picklable) for the interactive reach slider: computes the
     geodesic level fields ONCE up to ``reach_max`` so the front end can re-threshold
@@ -583,6 +584,7 @@ def worker_cube_kinematic_levels(
             lambda_v=float(lambda_v),
             sigma=float(sigma) if sigma and sigma > 0 else None,
             roi_radius=int(roi_radius), nsigma=float(nsigma),
+            smooth_zyx=smooth_zyx,
         )
         nz, ny, nx = data.shape
     finally:
@@ -682,6 +684,7 @@ def worker_cube_mask_apply(
     origin_x: int, origin_y: int, origin_z: int,
     roi_width: int, roi_height: int, roi_depth: int,
     mode: str,
+    recipe: str = "",
 ) -> dict[str, Any]:
     """Apply an EXPLICIT selection mask (a ROI bounding-box binary mask + its origin
     in cube voxels, little-endian float32 0/1 x-fastest = the same wire the select
@@ -735,6 +738,11 @@ def worker_cube_mask_apply(
         out_hdul[0].header.add_history(
             f"VisIVO Kinematic Lasso mask ({mode}) from {Path(path).name}: "
             f"explicit {int(roi_mask.sum())}-voxel mask at ({ox},{oy},{oz})")
+        # How the mask was made (seed, reach, coupling, threshold, smoothing,
+        # hand edits), as the client sent it: one parameter per HISTORY card, so
+        # the file alone says how to make it again.
+        for item in [part.strip() for part in str(recipe).split(";") if part.strip()][:24]:
+            out_hdul[0].header.add_history(f"Lasso {item}"[:72])
         range_min, range_max = _finite_range(kept)
         out_hdul.flush()
     finally:

@@ -71,9 +71,13 @@ public:
     bool isBusy() const;
 
 public slots:
-    // Dispatches the async fetch.  Re-entrancy-safe: no-op if already running.
-    void startExtraction(const std::vector<std::array<int, 2>> &vertices,
-                         int widthPixels);
+    // Dispatches the async fetch. While one runs, a new request is QUEUED and
+    // replaces any request already queued: the latest path wins, so editing a
+    // path live never piles up computations nor loses the final shape.
+    // @p interactive: an error goes to the status bar instead of a message box
+    // (a live edit must not throw a dialog at every intermediate shape).
+    void startExtraction(const std::vector<std::array<double, 2>> &vertices,
+                         int widthPixels, bool interactive = false);
 
 private:
     const QString m_backendUrl;
@@ -85,6 +89,14 @@ private:
     std::function<void(const RemotePvFetchResult &)> m_onCompleted;
 
     bool m_busy{ false };
+    struct Pending
+    {
+        std::vector<std::array<double, 2>> vertices;
+        int widthPixels{ 1 };
+        bool interactive{ false };
+    };
+    bool m_hasPending{ false };
+    Pending m_pending;
 };
 
 #endif // PvController_h

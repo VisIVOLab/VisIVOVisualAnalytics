@@ -7,9 +7,9 @@ about five minutes.
 
 | | |
 |---|---|
-| **macOS** | 14 or newer (primary target). Linux works too; the build files are CMake-portable. |
+| **OS** | macOS 14 or newer (primary development platform), Linux (Ubuntu 22.04 or newer), Windows 10/11 x64. Release packages exist for all three. |
 | **Compiler** | Apple Clang 15+, GCC 11+, or MSVC 2022. C++17. |
-| **Qt** | 6.5 or newer (Core, Gui, Widgets, OpenGL, OpenGLWidgets, Concurrent, Network, NetworkAuth, Svg, PrintSupport). |
+| **Qt** | 6.10 or newer (Concurrent, Widgets, Xml, Svg, Network, NetworkAuth, PrintSupport, WebEngineWidgets, WebSockets). |
 | **VTK** | 9.5 or newer, built with Qt 6 support. |
 | **Python** | **3.11 or newer** for the backend. The client checks this and says so if the interpreter it finds is older — note that macOS ships 3.9 and several Linux distributions ship 3.9 or 3.10, so a system `python3` is often not enough. |
 | **GPU** | Any Apple-Silicon GPU or a modern desktop GPU. Volume rendering uses `vtkGPUVolumeRayCastMapper`. |
@@ -83,6 +83,10 @@ open build/VisIVOVisualAnalytics.app                  # macOS bundle
 # or:
 build/VisIVOVisualAnalytics                           # Linux binary
 ```
+
+On Windows the dependencies (zlib, cfitsio, VTK with Qt) are built from source
+first and the executable needs its DLLs beside it; follow the step-by-step
+Windows section of `BUILDING.md`, which is what the release workflow runs.
 
 The first window you see is the **Startup Dialog**:
 

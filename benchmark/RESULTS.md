@@ -34,6 +34,23 @@ backend/.venv/bin/python benchmark/benchmark_visivo.py \
 
 LaTeX rows ready to paste in `results_cold/table2_rows.tex`.
 
+## PV re-run after the extractor rewrite (2026-10-19)
+
+The PV extractor was rewritten (arc-length sampling on the sky, NaN-aware
+bilinear, lazy reads of the pixels around the path; see CHANGELOG). Same host,
+same protocol as `results_cold_20260923` (repeats = 1, fresh backend per cube,
+all operations in order), raw files in `results_cold_20261019/`:
+
+| Operation | 1 GB | 8 GB | 30 GB |
+|---|---:|---:|---:|
+| PV extraction (new) | 0.10 | 3.25 | 27.8 |
+| PV extraction (2026-09-23) | 0.8 | 4.6 | 31.0 |
+
+Only the PV row of the paper's Table 2 was replaced (marked §). The other rows of
+this run differ from 2026-09-23 by run-to-run noise (8 GB preview 6.7 vs 3.3 s,
+30 GB M₀ 103 vs 89 s), so at 8 and 30 GB the PV gain is within that spread; at
+1 GB it is real (the old path read the whole bounding box of the cut).
+
 ## Reading the numbers
 
 - **Nothing fails at 30 GB** on a 64 GB laptop: every operation completes, out-of-

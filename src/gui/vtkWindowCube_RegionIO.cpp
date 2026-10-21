@@ -204,6 +204,13 @@ void vtkWindowCube::applyImportedRegion(const QJsonArray &regions)
         QMessageBox::information(this, u"Import Region"_s, u"No regions found in the file."_s);
         return;
     }
+    // Drawn and measured on the 2-D Slice: a moment pane becomes the slice with
+    // that map as background; with neither on screen there is nothing to measure.
+    if (!this->ensureSliceForTools()) {
+        QMessageBox::information(this, u"Import Region"_s,
+                                 u"Show the 2D Slice or a moment map in a pane first."_s);
+        return;
+    }
     const QJsonObject reg = regions.first().toObject();
     const QString shape = reg.value(u"shape"_s).toString();
     // image-frame canonical coords are 1-based px; the viewer stores 0-based voxels.

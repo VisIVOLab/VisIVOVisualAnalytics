@@ -15,6 +15,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QtEndian>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
@@ -450,6 +451,7 @@ BackendHealthResult BackendClient::health() const
     result.productCacheEntries = object.value(QStringLiteral("product_cache_entries")).toInt();
     result.productCacheCapacity = object.value(QStringLiteral("product_cache_capacity")).toInt();
     result.taskRegistryEntries = object.value(QStringLiteral("task_registry_entries")).toInt();
+    result.queuedTasks = object.value(QStringLiteral("queued_tasks")).toInt(0);
     result.taskTtlEnabled = object.value(QStringLiteral("task_ttl_enabled")).toBool(false);
     result.taskTtlSeconds = object.value(QStringLiteral("task_ttl_seconds")).toInt();
 
@@ -1762,7 +1764,7 @@ BackendKinematicLevelsResult BackendClient::kinematicLevels(
         const QString &datasetId, int seedZ, int seedY, int seedX,
         double reachMax, double lambdaV, double sigma, double nsigma, int roiRadius,
         const QVector<std::array<int, 3>> &addSeeds,
-        const QVector<std::array<int, 3>> &subSeeds) const
+        const QVector<std::array<int, 3>> &subSeeds, double smoothV, double smoothXy) const
 {
     BackendKinematicLevelsResult r;
     QJsonObject bodyObj{
@@ -1775,6 +1777,10 @@ BackendKinematicLevelsResult BackendClient::kinematicLevels(
             { QStringLiteral("roi_radius"), roiRadius } };
     if (!addSeeds.isEmpty()) bodyObj.insert(QStringLiteral("add_seeds"), seedsToJson(addSeeds));
     if (!subSeeds.isEmpty()) bodyObj.insert(QStringLiteral("sub_seeds"), seedsToJson(subSeeds));
+    if (smoothV > 0.0 || smoothXy > 0.0) {
+        bodyObj.insert(QStringLiteral("smooth_v"), smoothV);
+        bodyObj.insert(QStringLiteral("smooth_xy"), smoothXy);
+    }
     const QJsonDocument body(bodyObj);
     QNetworkRequest req =
             buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/cube/kinematic_levels_bin")));
@@ -1850,7 +1856,7 @@ BackendKinematicSelectResult BackendClient::kinematicSelect(
         const QString &datasetId, int seedZ, int seedY, int seedX,
         double reach, double lambdaV, double sigma, double nsigma, int roiRadius,
         const QVector<std::array<int, 3>> &addSeeds,
-        const QVector<std::array<int, 3>> &subSeeds) const
+        const QVector<std::array<int, 3>> &subSeeds, double smoothV, double smoothXy) const
 {
     BackendKinematicSelectResult r;
     QJsonObject bodyObj{
@@ -1862,6 +1868,10 @@ BackendKinematicSelectResult BackendClient::kinematicSelect(
             { QStringLiteral("roi_radius"), roiRadius } };
     if (!addSeeds.isEmpty()) bodyObj.insert(QStringLiteral("add_seeds"), seedsToJson(addSeeds));
     if (!subSeeds.isEmpty()) bodyObj.insert(QStringLiteral("sub_seeds"), seedsToJson(subSeeds));
+    if (smoothV > 0.0 || smoothXy > 0.0) {
+        bodyObj.insert(QStringLiteral("smooth_v"), smoothV);
+        bodyObj.insert(QStringLiteral("smooth_xy"), smoothXy);
+    }
     const QJsonDocument body(bodyObj);
     QNetworkRequest req =
             buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/cube/kinematic_select_bin")));
@@ -1947,7 +1957,7 @@ BackendSaveSubregionResult BackendClient::applyCubeMask(
         const QString &datasetId, const QByteArray &maskBytes,
         int originX, int originY, int originZ,
         int width, int height, int depth,
-        const QString &mode, const QString &outputBasename) const
+        const QString &mode, const QString &outputBasename, const QString &recipe) const
 {
     BackendSaveSubregionResult result;
     QUrl url(m_baseUrl + QStringLiteral("/v1/cube/mask_apply_bin"));
@@ -1962,7 +1972,9 @@ BackendSaveSubregionResult BackendClient::applyCubeMask(
     q.addQueryItem(QStringLiteral("mode"), mode);
     if (!outputBasename.isEmpty())
         q.addQueryItem(QStringLiteral("output_basename"), outputBasename);
-    url.setQuery(q);
+    if (!recipe.isEmpty())   // addQueryItem takes ENCODED input
+        q.addQueryItem(QStringLiteral("recipe"), QString::fromUtf8(QUrl::toPercentEncoding(recipe)));
+    url.setQuery(q.query(QUrl::FullyEncoded), QUrl::StrictMode);
 
     QNetworkRequest req = buildRequest(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/octet-stream"));
@@ -1981,6 +1993,208 @@ BackendSaveSubregionResult BackendClient::applyCubeMask(
         return result;
     }
     return parseSaveSubregionObject(QJsonDocument::fromJson(raw).object());
+}
+
+BackendKinematicFitResult BackendClient::kinematicFit(
+        const QString &datasetId, const QByteArray &maskBytes,
+        int originX, int originY, int originZ, int width, int height, int depth,
+        double sigma, int minRingPix) const
+{
+    BackendKinematicFitResult result;
+    QUrl url(m_baseUrl + QStringLiteral("/v1/cube/kinematic_fit_bin"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("dataset_id"), datasetId);
+    q.addQueryItem(QStringLiteral("origin_x"), QString::number(originX));
+    q.addQueryItem(QStringLiteral("origin_y"), QString::number(originY));
+    q.addQueryItem(QStringLiteral("origin_z"), QString::number(originZ));
+    q.addQueryItem(QStringLiteral("width"), QString::number(width));
+    q.addQueryItem(QStringLiteral("height"), QString::number(height));
+    q.addQueryItem(QStringLiteral("depth"), QString::number(depth));
+    if (sigma > 0.0)
+        q.addQueryItem(QStringLiteral("sigma"), QString::number(sigma, 'g', 17));
+    q.addQueryItem(QStringLiteral("min_ring_pix"), QString::number(minRingPix));
+    url.setQuery(q.query(QUrl::FullyEncoded), QUrl::StrictMode);
+
+    QNetworkRequest req = buildRequest(url);
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/octet-stream"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    // A per-ring fit scans angles over every annulus: allow it minutes on a big cube.
+    const QByteArray raw = performBinaryPost(nam, req, maskBytes, 600000, status, headers, err);
+    if (status != 200) {
+        QString reason = QString::fromUtf8(raw);
+        const QJsonObject eo = QJsonDocument::fromJson(raw).object();
+        if (eo.contains(QStringLiteral("detail")))
+            reason = eo.value(QStringLiteral("detail")).toString();
+        if (reason.isEmpty())
+            reason = err;
+        result.error = reason.isEmpty() ? QStringLiteral("HTTP %1 on kinematic_fit_bin").arg(status)
+                                        : QStringLiteral("HTTP %1: %2").arg(status).arg(reason);
+        return result;
+    }
+    return parseKinematicFitObject(QJsonDocument::fromJson(raw).object());
+}
+
+BackendKinematicResidualResult BackendClient::kinematicResidual(
+        const QString &datasetId, const QByteArray &maskBytes,
+        int originX, int originY, int originZ, int width, int height, int depth,
+        double x0, double y0, double vsys, double lineSigma,
+        double pa, double incl, double vrot, double rmax,
+        const QVector<std::array<double, 4>> &rings, double sigma) const
+{
+    BackendKinematicResidualResult result;
+    QUrl url(m_baseUrl + QStringLiteral("/v1/cube/kinematic_residual_bin"));
+    QUrlQuery q;
+    const auto num = [](double v) { return QString::number(v, 'g', 17); };
+    q.addQueryItem(QStringLiteral("dataset_id"), datasetId);
+    q.addQueryItem(QStringLiteral("origin_x"), QString::number(originX));
+    q.addQueryItem(QStringLiteral("origin_y"), QString::number(originY));
+    q.addQueryItem(QStringLiteral("origin_z"), QString::number(originZ));
+    q.addQueryItem(QStringLiteral("width"), QString::number(width));
+    q.addQueryItem(QStringLiteral("height"), QString::number(height));
+    q.addQueryItem(QStringLiteral("depth"), QString::number(depth));
+    q.addQueryItem(QStringLiteral("x0"), num(x0));
+    q.addQueryItem(QStringLiteral("y0"), num(y0));
+    q.addQueryItem(QStringLiteral("vsys"), num(vsys));
+    q.addQueryItem(QStringLiteral("line_sigma"), num(lineSigma));
+    if (rings.isEmpty()) {
+        q.addQueryItem(QStringLiteral("pa"), num(pa));
+        q.addQueryItem(QStringLiteral("incl"), num(incl));
+        q.addQueryItem(QStringLiteral("vrot"), num(vrot));
+        q.addQueryItem(QStringLiteral("rmax"), num(rmax));
+    } else {
+        QStringList items;
+        for (const auto &ring : rings)
+            items << QStringLiteral("%1:%2:%3:%4").arg(num(ring[0]), num(ring[1]), num(ring[2]),
+                                                        num(ring[3]));
+        q.addQueryItem(QStringLiteral("rings"),
+                       QString::fromUtf8(QUrl::toPercentEncoding(items.join(QLatin1Char(',')))));
+    }
+    if (sigma > 0.0)
+        q.addQueryItem(QStringLiteral("sigma"), num(sigma));
+    url.setQuery(q.query(QUrl::FullyEncoded), QUrl::StrictMode);
+
+    QNetworkRequest req = buildRequest(url);
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/octet-stream"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    const QByteArray raw = performBinaryPost(nam, req, maskBytes, 300000, status, headers, err);
+    if (status != 200) {
+        QString reason = QString::fromUtf8(raw);
+        const QJsonObject eo = QJsonDocument::fromJson(raw).object();
+        if (eo.contains(QStringLiteral("detail")))
+            reason = eo.value(QStringLiteral("detail")).toString();
+        if (reason.isEmpty())
+            reason = err;
+        result.error = reason.isEmpty() ? QStringLiteral("HTTP %1 on kinematic_residual_bin").arg(status)
+                                        : QStringLiteral("HTTP %1: %2").arg(status).arg(reason);
+        return result;
+    }
+    return parseKinematicResidualObject(QJsonDocument::fromJson(raw).object());
+}
+
+BackendKinematicResidualResult BackendClient::parseKinematicResidualObject(const QJsonObject &o)
+{
+    BackendKinematicResidualResult r;
+    constexpr double nan = std::numeric_limits<double>::quiet_NaN();
+    const auto num = [nan](const QJsonObject &obj, const char *key) {
+        const QJsonValue v = obj.value(QLatin1String(key));
+        return v.isDouble() ? v.toDouble() : nan;
+    };
+    r.width = o.value(QStringLiteral("width")).toInt();
+    r.height = o.value(QStringLiteral("height")).toInt();
+    r.sigma = num(o, "sigma");
+    r.sigmaSource = o.value(QStringLiteral("sigma_source")).toString();
+    r.velocityConvention = o.value(QStringLiteral("velocity_convention")).toString();
+    const QJsonObject ro = o.value(QStringLiteral("residual")).toObject();
+    r.residual.valid = !ro.isEmpty();
+    r.residual.nPix = ro.value(QStringLiteral("n_pix")).toInt();
+    r.residual.median = num(ro, "median");
+    r.residual.p90 = num(ro, "p90");
+    r.residual.withinChannel = num(ro, "within_channel");
+    r.model = QByteArray::fromBase64(o.value(QStringLiteral("model_base64")).toString().toLatin1());
+    r.velocityField = QByteArray::fromBase64(
+            o.value(QStringLiteral("velocity_field_base64")).toString().toLatin1());
+    const qsizetype plane = qsizetype(r.width) * r.height * qsizetype(sizeof(float));
+    r.valid = r.width > 0 && r.height > 0 && r.residual.valid && r.model.size() == plane
+              && r.velocityField.size() == plane;
+    if (!r.valid)
+        r.error = QStringLiteral("The kinematic residual returned an unexpected payload.");
+    return r;
+}
+
+BackendKinematicFitResult BackendClient::parseKinematicFitObject(const QJsonObject &o)
+{
+    BackendKinematicFitResult r;
+    constexpr double nan = std::numeric_limits<double>::quiet_NaN();
+    // JSON null (a measure that could not be made) reads as NaN, never as 0.
+    const auto num = [nan](const QJsonObject &obj, const char *key) {
+        const QJsonValue v = obj.value(QLatin1String(key));
+        return v.isDouble() ? v.toDouble() : nan;
+    };
+    const auto b64 = [&o](const char *key) {
+        return QByteArray::fromBase64(o.value(QLatin1String(key)).toString().toLatin1());
+    };
+    r.width = o.value(QStringLiteral("width")).toInt();
+    r.height = o.value(QStringLiteral("height")).toInt();
+    r.velocityUnit = o.value(QStringLiteral("velocity_unit")).toString();
+    r.velocityConvention = o.value(QStringLiteral("velocity_convention")).toString();
+    r.sigma = num(o, "sigma");
+    r.sigmaSource = o.value(QStringLiteral("sigma_source")).toString();
+    r.beamAreaPx = num(o, "beam_area_px");
+    const QJsonObject m = o.value(QStringLiteral("measures")).toObject();
+    r.flux = num(m, "flux");
+    r.fluxIsJy = m.value(QStringLiteral("flux_is_jy")).toBool();
+    r.w20 = num(m, "w20");
+    r.w50 = num(m, "w50");
+    r.vsysW20 = num(m, "vsys_w20");
+    r.nVelocityField = m.value(QStringLiteral("n_velocity_field")).toInt();
+    const QJsonObject g = o.value(QStringLiteral("geometry")).toObject();
+    r.x0 = num(g, "x0"); r.y0 = num(g, "y0");
+    r.paMorph = num(g, "pa_morph"); r.axisRatio = num(g, "axis_ratio");
+    r.incl = num(g, "incl"); r.rmax = num(g, "rmax");
+    const QJsonObject f = o.value(QStringLiteral("flat")).toObject();
+    r.pa = num(f, "pa"); r.vsys = num(f, "vsys"); r.vrot = num(f, "vrot");
+    r.vrotSini = num(f, "vrot_sini"); r.fitRms = num(f, "rms");
+    for (const QJsonValue &v : o.value(QStringLiteral("rings")).toArray()) {
+        const QJsonObject ro = v.toObject();
+        r.rings.append({ num(ro, "r"), num(ro, "pa"), num(ro, "incl"), num(ro, "vrot"),
+                         ro.value(QStringLiteral("n_pix")).toInt() });
+    }
+    r.lineSigma = num(o, "line_sigma");
+    r.channelWidth = num(o, "channel_width");
+    const auto residual = [&num](const QJsonValue &v) {
+        BackendKinematicResidual res;
+        if (!v.isObject())
+            return res;   // null: no warped model
+        const QJsonObject ro = v.toObject();
+        res.valid = true;
+        res.nPix = ro.value(QStringLiteral("n_pix")).toInt();
+        res.median = num(ro, "median");
+        res.p90 = num(ro, "p90");
+        res.withinChannel = num(ro, "within_channel");
+        return res;
+    };
+    r.residualFlat = residual(o.value(QStringLiteral("residual_flat")));
+    r.residualWarp = residual(o.value(QStringLiteral("residual_warp")));
+    for (const QJsonValue &v : o.value(QStringLiteral("spectrum")).toArray())
+        r.spectrum.append(v.isDouble() ? v.toDouble() : nan);
+    for (const QJsonValue &v : o.value(QStringLiteral("spectrum_velocity")).toArray())
+        r.spectrumVelocity.append(v.isDouble() ? v.toDouble() : nan);
+    r.velocityField = b64("velocity_field_base64");
+    r.modelFlat = b64("model_flat_base64");
+    r.modelWarp = b64("model_warp_base64");
+    const qsizetype plane = qsizetype(r.width) * r.height * qsizetype(sizeof(float));
+    r.valid = r.width > 0 && r.height > 0 && r.velocityField.size() == plane
+              && r.modelFlat.size() == plane
+              && (r.modelWarp.isEmpty() || r.modelWarp.size() == plane);
+    if (!r.valid)
+        r.error = QStringLiteral("The kinematic fit returned maps of an unexpected size.");
+    return r;
 }
 
 BackendVelocityGridResult BackendClient::fetchVelocitySubgrid(const QString &datasetId,
@@ -2114,7 +2328,7 @@ BackendVelocityDensityResult BackendClient::fetchVelocityDensity(const QString &
 }
 
 BackendCubePvResult BackendClient::requestPv(const QString &datasetId,
-                                             const std::vector<std::array<int, 2>> &vertices,
+                                             const std::vector<std::array<double, 2>> &vertices,
                                              int widthPixels) const
 {
     QString error;
@@ -2859,6 +3073,23 @@ BackendCubePvResult BackendClient::parsePvResultObject(const QJsonObject &object
     result.beamMajor = object.value(QStringLiteral("beam_major")).toDouble();
     result.beamMinor = object.value(QStringLiteral("beam_minor")).toDouble();
     result.beamPa = object.value(QStringLiteral("beam_pa")).toDouble();
+    {
+        // float64 little-endian, uncompressed: a float32 frequency in Hz would
+        // lose the channel width.
+        const QByteArray raw = QByteArray::fromBase64(
+                object.value(QStringLiteral("spectral_coordinates_base64")).toString().toLatin1());
+        if (!raw.isEmpty() && raw.size() == result.depth * qsizetype(sizeof(double))) {
+            result.spectralCoordinates.resize(result.depth);
+            for (int i = 0; i < result.depth; ++i)
+                result.spectralCoordinates[i] = qFromLittleEndian<double>(raw.constData() + i * sizeof(double));
+        }
+    }
+    {
+        const QJsonArray m = object.value(QStringLiteral("sky_matrix_arcsec")).toArray();
+        if (m.size() == 4)
+            for (const QJsonValue &v : m)
+                result.skyMatrixArcsec.push_back(v.toDouble());
+    }
     result.positionsArcsec = decodePayload(object, QStringLiteral("positions_arcsec_base64"),
                                            QStringLiteral("compression"), result.error);
     result.error.clear(); // missing arcsec positions is non-fatal

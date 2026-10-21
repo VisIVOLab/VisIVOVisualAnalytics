@@ -424,6 +424,7 @@ async def test_cube_mask_apply_bin_explicit_mask(client: AsyncClient, opened_cub
             "origin_x": 20, "origin_y": 24, "origin_z": 8,
             "width": rw, "height": rh, "depth": rd,
             "mode": "blank_outside",
+            "recipe": "seed_zyx=9,25,21; reach=8; lambda_v=1.00; nsigma=2.5; smooth_zyx=2,6,6",
         },
         content=m.tobytes(),
         headers={**opened_cube["headers"], "Content-Type": "application/octet-stream"},
@@ -432,6 +433,11 @@ async def test_cube_mask_apply_bin_explicit_mask(client: AsyncClient, opened_cub
     data = resp.json()
     assert data["valid"] is True
     assert data["new_dataset_id"].startswith("ds_")
+    # How the mask was made travels with the file: one HISTORY card per parameter.
+    from astropy.io import fits as _f
+    history = [str(c) for c in _f.getheader(data["output_path"])["HISTORY"]]
+    for item in ("Lasso seed_zyx=9,25,21", "Lasso reach=8", "Lasso nsigma=2.5", "Lasso smooth_zyx=2,6,6"):
+        assert item in history, history
     assert (data["width"], data["height"], data["depth"]) == (64, 64, 32)  # full dims kept
 
     # The EXACT mask must have been applied verbatim (not re-grown): for blank_outside

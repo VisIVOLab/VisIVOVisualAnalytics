@@ -3,6 +3,7 @@
 #include <QFrame>
 #include <QPointer>
 
+class QFontMetrics;
 class QLabel;
 class QSlider;
 
@@ -31,6 +32,14 @@ public:
 
     int channel() const;
 
+    /// The spectral value as shown in @p available pixels: the full text when it
+    /// fits, else a frequency in GHz / MHz, else elided at the end — never cut at
+    /// the front, which turned "1414222222.22 Hz" into a plausible "22.22 Hz".
+    static QString fitSpectralLabel(const QString &full, const QFontMetrics &fm, int available);
+    /// Logical pixels the bar takes at the bottom of its host, margins included:
+    /// what a 2-D view keeps free below its axes so the bar does not cover them.
+    static int reservedHeight();
+
 signals:
     /// Emitted when the user drags or arrows the overlay slider. The host
     /// (vtkWindowCube) forwards this to ui->spinSlice / the slice fetcher.
@@ -38,9 +47,12 @@ signals:
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 private:
     void applyStyle();
+    void refreshSpectralLabel();
+    QString m_spectralFull;
     void repositionOverParent();
 
     QLabel  *m_chLabel   { nullptr };   // "CH"

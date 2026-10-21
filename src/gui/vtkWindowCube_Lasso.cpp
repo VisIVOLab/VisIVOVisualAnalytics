@@ -7,6 +7,10 @@
 // a green isosurface overlay showing the selected object. No coordinates, no box.
 
 #include "vtkWindowCube.h"
+
+#include "theme/ToolDialogStyle.h"
+#include "theme/VisivoTheme.h"
+#include "qcustomplot/qcustomplot.h"
 #include "ui_vtkWindowCube.h"
 
 #include "CubeRegionGeom.h"
@@ -39,10 +43,12 @@
 #include <vtkTextActor.h>
 #include <vtkTextProperty.h>
 #include <vtkTrivialProducer.h>
+#include <vtkMatrix4x4.h>
 #include <vtkVolumePicker.h>
 
 #include <QApplication>
 #include <QScopeGuard>
+#include <QComboBox>
 #include <QDockWidget>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -70,13 +76,15 @@ namespace {
 RemoteKinematicSelectResult fetchKinematicSelect(
         QString url, QString token, QString session, QString datasetId,
         int seedZ, int seedY, int seedX, double reach, double lambdaV, int roiRadius,
-        QVector<std::array<int, 3>> addSeeds, QVector<std::array<int, 3>> subSeeds)
+        QVector<std::array<int, 3>> addSeeds, QVector<std::array<int, 3>> subSeeds,
+        double sigma, double nsigma, double smoothV, double smoothXy)
 {
     BackendClient client(url, token);
     client.setSessionId(session);
+    // sigma 0: the backend measures its own robust σ over the cube.
     const BackendKinematicSelectResult b = client.kinematicSelect(
-            datasetId, seedZ, seedY, seedX, reach, lambdaV, /*sigma=*/0.0,
-            /*nsigma=*/2.5, roiRadius, addSeeds, subSeeds);
+            datasetId, seedZ, seedY, seedX, reach, lambdaV, sigma,
+            nsigma, roiRadius, addSeeds, subSeeds, smoothV, smoothXy);
     RemoteKinematicSelectResult out;
     out.valid = b.valid;
     out.errorMessage = b.error;
@@ -94,13 +102,14 @@ RemoteKinematicSelectResult fetchKinematicSelect(
 BackendKinematicLevelsResult fetchKinematicLevels(
         QString url, QString token, QString session, QString datasetId,
         int seedZ, int seedY, int seedX, double reachMax, double lambdaV, int roiRadius,
-        QVector<std::array<int, 3>> addSeeds, QVector<std::array<int, 3>> subSeeds)
+        QVector<std::array<int, 3>> addSeeds, QVector<std::array<int, 3>> subSeeds,
+        double sigma, double nsigma, double smoothV, double smoothXy)
 {
     BackendClient client(url, token);
     client.setSessionId(session);
     return client.kinematicLevels(datasetId, seedZ, seedY, seedX, reachMax, lambdaV,
-                                  /*sigma=*/0.0, /*nsigma=*/2.5, roiRadius,
-                                  addSeeds, subSeeds);
+                                  sigma, nsigma, roiRadius,
+                                  addSeeds, subSeeds, smoothV, smoothXy);
 }
 
 // (De-duplicated in E-04: the per-channel mask refinement below now uses the
@@ -219,14 +228,52 @@ void vtkWindowCube::onLassoRelease()
     // Ray-cast the click into the VOLUME: the picker stops at the visible surface
     // of the source (where the transfer function accumulates opacity) → the seed
     // voxel of whatever you clicked on.
+    // Only the data can be picked: the cutting plane, a kinematic-model wireframe
+    // or a catalogue in front of the source would otherwise stop the ray first
+    // and seed the selection at their own voxel (0,0,0) or at nothing.
     auto picker = vtkSmartPointer<vtkVolumePicker>::New();
     picker->SetVolumeOpacityIsovalue(0.05);
-    if (picker->Pick(pos[0], pos[1], 0.0, renderer) == 0) {
+    picker->PickFromListOn();
+    // Shown = in the renderer AND visible: isosurface mode takes the volume out of
+    // the renderer without touching its visibility flag.
+    const bool volumeShown = renderer->HasViewProp(this->volume) && this->volume->GetVisibility() != 0;
+    vtkActor *iso = this->currentIsosurfaceActor;
+    const bool isoShown = !volumeShown && iso && renderer->HasViewProp(iso) && iso->GetVisibility() != 0;
+    if (volumeShown)
+        picker->AddPickList(this->volume);
+    else if (isoShown)
+        picker->AddPickList(iso);
+    if ((!volumeShown && !isoShown) || picker->Pick(pos[0], pos[1], 0.0, renderer) == 0) {
+        qDebug().noquote() << u"[lasso] no pick at (%1,%2) volume=%3 iso=%4"_s
+                                      .arg(pos[0]).arg(pos[1]).arg(volumeShown).arg(isoShown);
         this->statusBar()->showMessage(u"Kinematic Lasso: click on visible emission."_s, 2000);
         return;
     }
+    auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
+    if (!cubeImage) {
+        return;
+    }
     int ijk[3];
-    picker->GetPointIJK(ijk);   // voxel index in the DISPLAYED cube
+    if (volumeShown) {
+        picker->GetPointIJK(ijk);   // voxel index in the DISPLAYED cube
+    } else {
+        // The isosurface is a mesh, not voxels: take the picked point back
+        // through the actor's transform into the image it was contoured from.
+        double world[4] = { 0., 0., 0., 1. };
+        picker->GetPickPosition(world);
+        vtkNew<vtkMatrix4x4> inv;
+        vtkMatrix4x4::Invert(iso->GetMatrix(), inv);
+        double local[4];
+        inv->MultiplyPoint(world, local);
+        int dims[3];
+        double org[3], sp[3];
+        cubeImage->GetDimensions(dims);
+        cubeImage->GetOrigin(org);
+        cubeImage->GetSpacing(sp);
+        for (int a = 0; a < 3; ++a)
+            ijk[a] = std::clamp(static_cast<int>(std::lround((local[a] - org[a]) / (sp[a] != 0. ? sp[a] : 1.))),
+                                0, std::max(0, dims[a] - 1));
+    }
 
     // Map the displayed-cube voxel → full-resolution cube voxel (the backend
     // selection runs on the full cube). Two display conventions (same as the
@@ -234,10 +281,6 @@ void vtkWindowCube::onLassoRelease()
     // image origin at the ROI corner → world == full-res voxels, so
     // full = origin + ijk; a downsampled preview has origin 0 and fewer voxels →
     // full = round(ijk·(full-1)/(ddim-1)).
-    auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
-    if (!cubeImage) {
-        return;
-    }
     int ddim[3];
     double dorg[3];
     cubeImage->GetDimensions(ddim);
@@ -343,6 +386,10 @@ void vtkWindowCube::requestLassoSelection()
     // Snapshot the identity this fetch is for; the handler tags the cache with
     // it rather than with whatever the sliders hold by the time it lands.
     this->m_lassoLevelsReqLambdaV = lambdaV;
+    this->m_lassoLevelsReqNSigma = this->m_lassoNSigma;
+    this->m_lassoLevelsReqSigma = this->m_noiseSigma;
+    this->m_lassoLevelsReqSmooth = this->m_lassoSmoothPreset;
+    const auto smoothing = this->lassoSmoothing();
     this->m_lassoLevelsReqSeeds = addSeeds;
     this->m_lassoLevelsReqSubSeeds = subSeeds;
     this->m_lassoLevelsReqSeed[0] = seedZ;
@@ -350,7 +397,9 @@ void vtkWindowCube::requestLassoSelection()
     this->m_lassoLevelsReqSeed[2] = seedX;
     this->m_lassoLevelsWatcher.setFuture(QtConcurrent::run(
             &fetchKinematicLevels, url, token, session, dataset,
-            seedZ, seedY, seedX, reachMax, lambdaV, roiRadius, addSeeds, subSeeds));
+            seedZ, seedY, seedX, reachMax, lambdaV, roiRadius, addSeeds, subSeeds,
+            this->m_noiseSigma, this->m_lassoNSigma, smoothing[0], smoothing[1]));
+    this->refreshKinematicFitAvailability();   // no fit of a selection being regrown
 }
 
 void vtkWindowCube::requestLassoGrow()
@@ -365,7 +414,22 @@ void vtkWindowCube::requestLassoGrow()
             &fetchKinematicSelect, url, token, session, dataset,
             this->m_lassoLastSeed[0], this->m_lassoLastSeed[1], this->m_lassoLastSeed[2],
             this->m_lassoReach, this->m_lassoLambdaV, this->m_lassoRoiRadius,
-            this->m_lassoAddSeeds, this->m_lassoSubSeeds));
+            this->m_lassoAddSeeds, this->m_lassoSubSeeds, this->m_noiseSigma,
+            this->m_lassoNSigma, this->lassoSmoothing()[0], this->lassoSmoothing()[1]));
+    this->refreshKinematicFitAvailability();
+}
+
+std::array<double, 2> vtkWindowCube::lassoSmoothing() const
+{
+    // (velocity, spatial) Gaussian σ in voxels — the three settings the paper's
+    // validation used: (1,3,3) on compact HCG 44 sources, (2,4,4) on WALLABY's
+    // faint sources, (2,6,6) on the extended disc of NGC 3137.
+    switch (this->m_lassoSmoothPreset) {
+    case 1: return { 1.0, 3.0 };
+    case 2: return { 2.0, 4.0 };
+    case 3: return { 2.0, 6.0 };
+    default: return { 0.0, 0.0 };
+    }
 }
 
 void vtkWindowCube::placeLassoSeedMarker(const double world[3], bool render)
@@ -447,7 +511,10 @@ void vtkWindowCube::onLassoSelectReady()
 {
     // Whatever this handler does — present, fail, discard, re-request — the marker
     // must end up agreeing with what is on screen.
-    const auto markerSync = qScopeGuard([this] { this->updateLassoSeedMarkerVisibility(); });
+    const auto markerSync = qScopeGuard([this] {
+        this->updateLassoSeedMarkerVisibility();
+        this->refreshKinematicFitAvailability();   // a grow ended: the fit may be offered
+    });
     if (ui->vtkCube) ui->vtkCube->setCursor(this->m_lassoActive ? Qt::CrossCursor : Qt::ArrowCursor);
     const RemoteKinematicSelectResult r = this->m_lassoSelectWatcher.result();
     this->statusBar()->clearMessage();
@@ -480,10 +547,12 @@ void vtkWindowCube::onLassoSelectReady()
     }
 
     this->ensureLassoPanel();
-    // A user double-click landed a selection: that is an explicit gesture, so it
-    // may reveal Parameters — but a result arriving after the tool was disarmed
-    // must not.
-    this->showLassoPanel(this->m_lassoActive);
+    // The first selection mounts the controls (they are built lazily, so arming
+    // had nothing to show). A later result — a slider re-grow — must not reorder
+    // the Parameters tab over a tool switched on since, and one arriving after the
+    // tool was disarmed must not mount anything.
+    if (this->m_lassoActive && !this->toolSettingsClaimed(u"Kinematic Lasso"_s))
+        this->showLassoPanel(true);
     if (this->m_lassoCountLabel) {
         this->m_lassoCountLabel->setText(u"%1 voxels selected"_s.arg(r.count));
     }
@@ -506,6 +575,7 @@ void vtkWindowCube::clearPresentedLassoSelection(bool render)
     this->m_lassoMaskBytes.clear();
     this->m_lassoMaskDims[0] = this->m_lassoMaskDims[1] = this->m_lassoMaskDims[2] = 0;
     this->m_lassoMaskHandEdited = false;
+    this->refreshKinematicFitAvailability();
     // Leave 2-D refinement properly, not just by greying its button: the mode
     // installs interactor observers, and disabling the toggle would leave them
     // live with no mask under them. Reachable without any edit having been
@@ -519,6 +589,7 @@ void vtkWindowCube::clearPresentedLassoSelection(bool render)
     this->updateLassoMaskOverlay(render);
     this->rebuildLassoIsosurface(false);
     this->setLassoApplyEnabled(false);
+    this->refreshLassoChannelProfile();   // empty profile, no extent
     if (this->m_lassoCountLabel) this->m_lassoCountLabel->setText(u"0 voxels selected"_s);
     if (render && ui->vtkCube && ui->vtkCube->renderWindow()) {
         ui->vtkCube->renderWindow()->Render();
@@ -531,6 +602,10 @@ bool vtkWindowCube::lassoLevelsUsable() const
     // Reach only selects a level set of it, so it does not. Seeds obviously do.
     return this->m_lassoLevels.valid
             && qFuzzyCompare(this->m_lassoLevelsLambdaV, this->m_lassoLambdaV)
+            // The threshold and the smoothing define the component itself.
+            && qFuzzyCompare(this->m_lassoLevelsNSigma, this->m_lassoNSigma)
+            && this->m_lassoLevelsSigma == this->m_noiseSigma   // σ scales the cost
+            && this->m_lassoLevelsSmooth == this->m_lassoSmoothPreset
             && this->m_lassoLevelsSeed[0] == this->m_lassoLastSeed[0]
             && this->m_lassoLevelsSeed[1] == this->m_lassoLastSeed[1]
             && this->m_lassoLevelsSeed[2] == this->m_lassoLastSeed[2]
@@ -604,7 +679,10 @@ void vtkWindowCube::onLassoLevelsReady()
 {
     // Whatever this handler does — present, fail, discard, re-request — the marker
     // must end up agreeing with what is on screen.
-    const auto markerSync = qScopeGuard([this] { this->updateLassoSeedMarkerVisibility(); });
+    const auto markerSync = qScopeGuard([this] {
+        this->updateLassoSeedMarkerVisibility();
+        this->refreshKinematicFitAvailability();   // a grow ended: the fit may be offered
+    });
     const BackendKinematicLevelsResult lv = this->m_lassoLevelsWatcher.result();
     if (ui->vtkCube) ui->vtkCube->setCursor(this->m_lassoActive ? Qt::CrossCursor : Qt::ArrowCursor);
     this->statusBar()->clearMessage();
@@ -629,6 +707,9 @@ void vtkWindowCube::onLassoLevelsReady()
     // Tag with the request's identity, not the live one.
     this->m_lassoLevels = lv;
     this->m_lassoLevelsLambdaV = this->m_lassoLevelsReqLambdaV;
+    this->m_lassoLevelsNSigma = this->m_lassoLevelsReqNSigma;
+    this->m_lassoLevelsSigma = this->m_lassoLevelsReqSigma;
+    this->m_lassoLevelsSmooth = this->m_lassoLevelsReqSmooth;
     this->m_lassoLevelsSeeds = this->m_lassoLevelsReqSeeds;
     this->m_lassoLevelsSubSeeds = this->m_lassoLevelsReqSubSeeds;
     std::copy_n(this->m_lassoLevelsReqSeed, 3, this->m_lassoLevelsSeed);
@@ -647,11 +728,62 @@ void vtkWindowCube::onLassoLevelsReady()
     }
 }
 
+void vtkWindowCube::refreshLassoChannelProfile()
+{
+    const int w = this->m_lassoMaskDims[0], h = this->m_lassoMaskDims[1], d = this->m_lassoMaskDims[2];
+    const qsizetype plane = qsizetype(w) * h;
+    const bool have = w > 0 && h > 0 && d > 0
+            && this->m_lassoMaskBytes.size() == plane * d * qsizetype(sizeof(float));
+    QVector<double> channel, pixels;
+    long long total = 0;
+    int first = -1, last = -1;
+    if (have) {
+        const auto *m = reinterpret_cast<const float *>(this->m_lassoMaskBytes.constData());
+        for (int z = 0; z < d; ++z) {
+            long long n = 0;
+            const float *p = m + qsizetype(z) * plane;
+            for (qsizetype k = 0; k < plane; ++k)
+                n += p[k] > 0.5f ? 1 : 0;
+            const int cube = this->m_lassoMaskOrigin[2] + z;   // 0-based channel of the cube
+            channel.append(cube + 1);                          // shown from 1
+            pixels.append(double(n));
+            total += n;
+            if (n > 0) {
+                if (first < 0)
+                    first = cube;
+                last = cube;
+            }
+        }
+    }
+    if (this->m_lassoCountLabel)
+        this->m_lassoCountLabel->setText(have ? u"%1 voxels selected"_s.arg(total) : u"-"_s);
+    if (this->m_lassoProfilePlot) {
+        this->m_lassoProfilePlot->graph(0)->setData(channel, pixels, /*alreadySorted=*/true);
+        this->m_lassoProfilePlot->rescaleAxes();
+        this->m_lassoProfilePlot->yAxis->setRangeLower(0.0);
+        this->m_lassoProfilePlot->replot();
+    }
+    if (this->m_lassoExtentLabel) {
+        QString text;
+        if (first >= 0) {
+            text = u"Channels %1–%2"_s.arg(first + 1).arg(last + 1);
+            // The physical extent only where the axis has one: otherwise the
+            // formatter falls back to the 0-based index, a second numbering.
+            const auto descriptor = this->spectralAxisDescriptor();
+            if (descriptor.kind != SpectralAxisKind::Channel && descriptor.physical)
+                text += u" (%1 … %2)"_s.arg(this->formatSpectralAxisValue(first),
+                                             this->formatSpectralAxisValue(last));
+        }
+        this->m_lassoExtentLabel->setText(text);
+    }
+}
+
 void vtkWindowCube::presentLassoSelection(const RemoteKinematicSelectResult &r)
 {
     // Keep the EXACT ROI mask (full-res voxel coords) so Apply sends what's shown
     // and the 2-D channel overlay can slice it per channel.
     this->m_lassoMaskBytes = r.data;
+    this->refreshKinematicFitAvailability();
     this->m_lassoMaskOrigin[0] = r.originX;
     this->m_lassoMaskOrigin[1] = r.originY;
     this->m_lassoMaskOrigin[2] = r.originZ;
@@ -659,6 +791,7 @@ void vtkWindowCube::presentLassoSelection(const RemoteKinematicSelectResult &r)
     this->m_lassoMaskDims[1] = r.roiHeight;
     this->m_lassoMaskDims[2] = r.roiDepth;
     this->updateLassoMaskOverlay(true);
+    this->refreshLassoChannelProfile();
 
     // Store the DISPLAY geometry for the ROI mask so the isosurface can be rebuilt
     // after 2-D edits. ROI display: world == full-res voxels → origin = selection
@@ -808,11 +941,81 @@ void vtkWindowCube::ensureLassoPanel()
     lamLay->addWidget(m_lassoLambdaSlider, 1);
     lamLay->addWidget(m_lassoLambdaValue);
     form->addRow(u"Velocity coupling"_s, lamRow);
+
+    // Threshold nσ: slider 10..50 → 1.0σ .. 5.0σ. The component the selection grows
+    // in is the emission above it; lowering it reaches a source's faint envelope.
+    m_lassoSigmaSlider = new QSlider(Qt::Horizontal, body);
+    m_lassoSigmaSlider->setRange(10, 50);
+    m_lassoSigmaSlider->setValue(std::clamp(int(std::lround(m_lassoNSigma * 10.0)), 10, 50));
+    m_lassoSigmaSlider->setMinimumWidth(70);
+    m_lassoSigmaSlider->setToolTip(
+            u"Detection threshold: the selection grows inside the emission above this many σ "
+            u"(noise from the cube). Lower it to reach the faint envelope of a source; the "
+            u"default 2.5σ keeps the selection on the object."_s);
+    m_lassoSigmaValue = new QLabel(u"%1σ"_s.arg(m_lassoNSigma, 0, 'f', 1), body);
+    m_lassoSigmaValue->setMinimumWidth(m_lassoSigmaValue->fontMetrics().horizontalAdvance(u"0.0σ"_s));
+    m_lassoSigmaValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    auto *sigRow = new QWidget(body);
+    auto *sigLay = new QHBoxLayout(sigRow);
+    sigLay->setContentsMargins(0, 0, 0, 0);
+    sigLay->addWidget(m_lassoSigmaSlider, 1);
+    sigLay->addWidget(m_lassoSigmaValue);
+    form->addRow(u"Threshold"_s, sigRow);
+
+    // Smooth-before-threshold: per object, off by default.
+    m_lassoSmoothCombo = new QComboBox(body);
+    m_lassoSmoothCombo->addItem(u"Off"_s);
+    m_lassoSmoothCombo->addItem(u"Light (1, 3, 3)"_s);
+    m_lassoSmoothCombo->addItem(u"Medium (2, 4, 4)"_s);
+    m_lassoSmoothCombo->addItem(u"Strong (2, 6, 6)"_s);
+    m_lassoSmoothCombo->setCurrentIndex(std::clamp(m_lassoSmoothPreset, 0, 3));
+    m_lassoSmoothCombo->setToolTip(
+            u"Smooth the data before thresholding (Gaussian σ in voxels: velocity, y, x). "
+            u"The selection reaches a large source's faint envelope, as a source finder "
+            u"does; measurements stay on the raw cube. Off by default: on compact, crowded "
+            u"sources it bleeds into the neighbours."_s);
+    form->addRow(u"Smoothing"_s, m_lassoSmoothCombo);
+    // Which σ the threshold counts in: the session's noise estimate when there is
+    // one (Tools › Estimate Noise), else the cube's own robust σ.
+    m_lassoNoiseLabel = new QLabel(body);
+    m_lassoNoiseLabel->setWordWrap(true);
+    m_lassoNoiseLabel->setStyleSheet(ToolDialogStyle::helperCss());
+    // A full-width row: in the field column a wrapped label is given one line's
+    // height by the form and its text is cut.
+    form->addRow(m_lassoNoiseLabel);
     outer->addLayout(form);
+    this->refreshLassoNoiseLabel();
 
     m_lassoCountLabel = new QLabel(u"-"_s, body);
-    m_lassoCountLabel->setStyleSheet(u"color: palette(mid);"_s);
+    // The result of the click — the number Figure 3 of the paper quotes — so it must
+    // be readable: palette(mid) put it at near-white on white.
+    m_lassoCountLabel->setStyleSheet(
+            QStringLiteral("color: %1; font-weight: 600;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
     outer->addWidget(m_lassoCountLabel);
+
+    m_lassoProfilePlot = new QCustomPlot(body);
+    m_lassoProfilePlot->setMinimumHeight(110);
+    m_lassoProfilePlot->setMaximumHeight(140);
+    m_lassoProfilePlot->setBackground(QColor(QString::fromLatin1(VisivoTheme::kSurface())));
+    m_lassoProfilePlot->addGraph();
+    m_lassoProfilePlot->graph(0)->setPen(QPen(QColor(QString::fromLatin1(VisivoTheme::kPrimary())), 1.5));
+    m_lassoProfilePlot->graph(0)->setLineStyle(QCPGraph::lsStepCenter);
+    m_lassoProfilePlot->xAxis->setLabel(u"channel"_s);
+    m_lassoProfilePlot->yAxis->setLabel(u"pixels"_s);
+    for (QCPAxis *axis : { m_lassoProfilePlot->xAxis, m_lassoProfilePlot->yAxis }) {
+        QFont f = axis->labelFont();
+        f.setPointSizeF(f.pointSizeF() * 0.85);
+        axis->setLabelFont(f);
+        axis->setTickLabelFont(f);
+    }
+    m_lassoProfilePlot->setToolTip(u"Selected pixels in each channel: how far in velocity the "
+                                   u"selection reaches (Velocity coupling changes this)."_s);
+    outer->addWidget(m_lassoProfilePlot);
+    m_lassoExtentLabel = new QLabel(body);
+    m_lassoExtentLabel->setWordWrap(true);
+    m_lassoExtentLabel->setStyleSheet(ToolDialogStyle::helperCss());
+    outer->addWidget(m_lassoExtentLabel);
 
     auto *hint = new QLabel(
             u"<i>One double-click grabs the whole connected source. "
@@ -908,6 +1111,19 @@ void vtkWindowCube::ensureLassoPanel()
     });
     QObject::connect(m_lassoLambdaSlider, &QSlider::sliderReleased, this,
                      [this]() { this->requestLassoSelection(); });
+    QObject::connect(m_lassoSigmaSlider, &QSlider::valueChanged, this, [this](int v) {
+        this->m_lassoNSigma = double(v) / 10.0;
+        this->m_lassoLevels = {};   // the threshold defines the component → field is stale
+        if (this->m_lassoSigmaValue)
+            this->m_lassoSigmaValue->setText(u"%1σ"_s.arg(this->m_lassoNSigma, 0, 'f', 1));
+    });
+    QObject::connect(m_lassoSigmaSlider, &QSlider::sliderReleased, this,
+                     [this]() { this->requestLassoSelection(); });
+    QObject::connect(m_lassoSmoothCombo, &QComboBox::currentIndexChanged, this, [this](int i) {
+        this->m_lassoSmoothPreset = std::clamp(i, 0, 3);
+        this->m_lassoLevels = {};
+        this->requestLassoSelection();
+    });
     QObject::connect(clearBtn, &QPushButton::clicked, this,
                      [this]() { this->clearKinematicLassoSelection(); });
 
@@ -923,9 +1139,64 @@ void vtkWindowCube::ensureLassoPanel()
     }
 }
 
+void vtkWindowCube::refreshLassoNoiseLabel()
+{
+    if (!m_lassoNoiseLabel)
+        return;
+    m_lassoNoiseLabel->setText(
+            m_noiseSigma > 0.0
+                    ? u"Noise σ %1, from Estimate Noise (%2)"_s.arg(m_noiseSigma, 0, 'g', 4).arg(m_noiseWhere)
+                    : u"Noise σ: robust, over the whole cube - Tools › Estimate Noise sets it "
+                      u"from a line-free region"_s);
+}
+
 InspectorPanel *vtkWindowCube::lassoInspectorPanel() const
 {
     return this->m_workspaceChrome ? this->m_workspaceChrome->inspectorPanel() : nullptr;
+}
+
+void vtkWindowCube::claimToolSettings(const QString &toolName, QWidget *settings, bool reveal)
+{
+    if (!settings)
+        return;
+    releaseToolSettings(toolName);   // no duplicate entries
+    m_activeToolSettings.append({ toolName, QPointer<QWidget>(settings) });
+    refreshToolSettingsPanel(reveal);
+}
+
+bool vtkWindowCube::toolSettingsClaimed(const QString &toolName) const
+{
+    for (const auto &entry : m_activeToolSettings)
+        if (entry.first == toolName && entry.second)
+            return true;
+    return false;
+}
+
+void vtkWindowCube::releaseToolSettings(const QString &toolName)
+{
+    for (int i = m_activeToolSettings.size() - 1; i >= 0; --i)
+        if (m_activeToolSettings.at(i).first == toolName)
+            m_activeToolSettings.removeAt(i);
+}
+
+void vtkWindowCube::refreshToolSettingsPanel(bool reveal)
+{
+    auto *panel = this->lassoInspectorPanel();
+    if (!panel)
+        return;
+    while (!m_activeToolSettings.isEmpty() && !m_activeToolSettings.last().second)
+        m_activeToolSettings.removeLast();
+    if (m_activeToolSettings.isEmpty()) {
+        panel->clearToolSettings();
+        return;
+    }
+    const auto &entry = m_activeToolSettings.last();
+    // Re-mounting the block already shown would park and re-show it, which can
+    // cost a slider its keyboard focus mid-drag — so only mount when it changes.
+    if (panel->activeToolSettings() != entry.first)
+        panel->setToolSettings(entry.first, entry.second);
+    if (reveal)
+        this->m_workspaceChrome->revealParametersTab();
 }
 
 void vtkWindowCube::showLassoPanel(bool reveal)
@@ -937,19 +1208,11 @@ void vtkWindowCube::showLassoPanel(bool reveal)
     // Contours and the image tools already follow) — not in a dock of their own
     // stacked under the Inspector, where they only look like part of Analysis.
     if (auto *panel = this->lassoInspectorPanel()) {
-        if (panel->activeToolSettings() != u"Kinematic Lasso"_s) {
-            // A background grow finishing must not yank the tab away from a tool
-            // the user has since switched to: only an explicit arm/select does.
-            if (!reveal) {
-                return;
-            }
-            // Re-mounting the same widget would park and re-show it, which can cost
-            // the slider its keyboard focus mid-drag — so only mount when needed.
-            panel->setToolSettings(u"Kinematic Lasso"_s, this->m_lassoSettings);
-        }
-        if (reveal) {
-            this->m_workspaceChrome->revealParametersTab();
-        }
+        // A background grow finishing must not yank the tab away from a tool
+        // the user has since switched to: only an explicit arm/select does.
+        if (!reveal)
+            return;
+        this->claimToolSettings(u"Kinematic Lasso"_s, this->m_lassoSettings);
         return;
     }
     if (this->m_lassoPanel) {
@@ -960,12 +1223,10 @@ void vtkWindowCube::showLassoPanel(bool reveal)
 
 void vtkWindowCube::hideLassoPanel()
 {
-    if (auto *panel = this->lassoInspectorPanel()) {
-        // Only give the tab back if it is still ours: another tool may have taken
-        // it over in the meantime.
-        if (panel->activeToolSettings() == u"Kinematic Lasso"_s) {
-            panel->clearToolSettings();
-        }
+    if (this->lassoInspectorPanel()) {
+        // Off the stack; whatever tool is still on underneath comes back.
+        this->releaseToolSettings(u"Kinematic Lasso"_s);
+        this->refreshToolSettingsPanel(/*reveal=*/false);
         return;
     }
     if (this->m_lassoPanel) {
@@ -1355,6 +1616,7 @@ void vtkWindowCube::commitLassoEditPolygon()
         this->m_lassoMaskHandEdited = true;
         this->rebuildLassoIsosurface(true);
         this->updateLassoMaskOverlay(true);
+        this->refreshLassoChannelProfile();   // the count and the profile follow the edit
     }
     this->statusBar()->showMessage(
             u"Mask edit: %1 %2 voxels on channel %3."_s
@@ -1388,6 +1650,7 @@ void vtkWindowCube::clearKinematicLassoSelection()
     this->m_lassoAddSeeds.clear();
     this->m_lassoSubSeeds.clear();
     this->m_lassoMaskBytes.clear();
+    this->refreshKinematicFitAvailability();
     if (this->m_lassoEditActive) this->setLassoEditActive(false);
     if (this->m_lassoEditToggle) {
         QSignalBlocker blk(this->m_lassoEditToggle);
@@ -1399,6 +1662,7 @@ void vtkWindowCube::clearKinematicLassoSelection()
     if (!this->m_lassoActive) {
         this->hideLassoPanel();
     }
+    this->refreshLassoChannelProfile();
     if (this->m_lassoCountLabel) this->m_lassoCountLabel->setText(u"-"_s);
     // Back to the start: re-arm the call-to-action so it's obvious a click is needed.
     if (this->m_lassoActive) this->showLassoHint(true);
@@ -1432,10 +1696,50 @@ void vtkWindowCube::applyLassoMask(const QString &mode)
               md = this->m_lassoMaskDims[2];
     this->statusBar()->showMessage(u"Kinematic Lasso: applying mask…"_s, 0);
 
+    // How this mask was made — written into the new cube's HISTORY and into its
+    // product's provenance, so either says how to make it again.
+    const auto smoothing = this->lassoSmoothing();
+    QVariantMap params;
+    params.insert(u"Seed (z, y, x)"_s, u"(%1, %2, %3)"_s.arg(this->m_lassoLastSeed[0])
+                                             .arg(this->m_lassoLastSeed[1]).arg(this->m_lassoLastSeed[2]));
+    if (!this->m_lassoAddSeeds.isEmpty() || !this->m_lassoSubSeeds.isEmpty())
+        params.insert(u"Extra seeds"_s, u"%1 added, %2 carved"_s.arg(this->m_lassoAddSeeds.size())
+                                                .arg(this->m_lassoSubSeeds.size()));
+    params.insert(u"Reach"_s, QString::number(this->m_lassoReach, 'g', 4));
+    params.insert(u"Velocity coupling"_s, QString::number(this->m_lassoLambdaV, 'f', 2));
+    params.insert(u"Threshold"_s, u"%1σ"_s.arg(this->m_lassoNSigma, 0, 'f', 1));
+    params.insert(u"Noise σ"_s, this->m_noiseSigma > 0.0
+                          ? u"%1 (noise estimate, %2)"_s.arg(this->m_noiseSigma, 0, 'g', 4)
+                                    .arg(this->m_noiseWhere)
+                          : u"robust, whole cube"_s);
+    params.insert(u"Smoothing (v, y, x)"_s, smoothing[0] > 0 || smoothing[1] > 0
+                          ? u"(%1, %2, %2)"_s.arg(smoothing[0]).arg(smoothing[1]) : u"off"_s);
+    params.insert(u"Hand-edited"_s, this->m_lassoMaskHandEdited ? u"yes"_s : u"no"_s);
+    // The selection, whichever side of it the new cube keeps — read now, with the
+    // mask: the label may change while the export runs.
+    if (this->m_lassoCountLabel)
+        params.insert(u"Selected voxels"_s, this->m_lassoCountLabel->text().section(u' ', 0, 0));
+    params.insert(u"Mode"_s, mode == u"blank_inside"_s ? u"remove (inside blanked)"_s
+                                                       : u"isolate (outside blanked)"_s);
+    QStringList recipeParts;
+    recipeParts << u"seed_zyx=%1,%2,%3"_s.arg(this->m_lassoLastSeed[0]).arg(this->m_lassoLastSeed[1])
+                           .arg(this->m_lassoLastSeed[2])
+                << u"reach=%1"_s.arg(this->m_lassoReach, 0, 'g', 4)
+                << u"lambda_v=%1"_s.arg(this->m_lassoLambdaV, 0, 'f', 2)
+                << u"nsigma=%1"_s.arg(this->m_lassoNSigma, 0, 'f', 1)
+                << (this->m_noiseSigma > 0.0
+                            ? u"sigma=%1 (noise estimate)"_s.arg(this->m_noiseSigma, 0, 'g', 6)
+                            : u"sigma=robust (whole cube)"_s)
+                << u"smooth_zyx=%1,%2,%2"_s.arg(smoothing[0]).arg(smoothing[1])
+                << u"add_seeds=%1 sub_seeds=%2"_s.arg(this->m_lassoAddSeeds.size())
+                           .arg(this->m_lassoSubSeeds.size())
+                << u"hand_edited=%1"_s.arg(this->m_lassoMaskHandEdited ? u"yes"_s : u"no"_s);
+    const QString recipe = recipeParts.join(u"; "_s);
+
     auto *watcher = new QFutureWatcher<BackendSaveSubregionResult>(this);
     QPointer<vtkWindowCube> self(this);
     QObject::connect(watcher, &QFutureWatcher<BackendSaveSubregionResult>::finished, this,
-                     [self, watcher, mode]() {
+                     [self, watcher, mode, params]() {
                          const auto r = watcher->result();
                          watcher->deleteLater();
                          if (!self) return;
@@ -1446,17 +1750,29 @@ void vtkWindowCube::applyLassoMask(const QString &mode)
                              return;
                          }
                          emit self->workspaceExportsChanged();
-                         const QString what = (mode == u"blank_inside"_s) ? u"removed"_s : u"isolated"_s;
+                         const bool removed = (mode == u"blank_inside"_s);
+                         const QString what = removed ? u"removed"_s : u"isolated"_s;
+                         // A product of this cube, with how it was made: a node of the
+                         // analysis chain like a moment map or a PV diagram.
+                         QVariantMap p = params;
+                         p.insert(u"File"_s, r.workspaceFilename);
+                         self->registerAnalysisProduct(
+                                 u"lasso"_s, removed ? u"Lasso: removed cube"_s : u"Lasso: isolated cube"_s,
+                                 p, /*window=*/nullptr,
+                                 self->scopedProductId(u"lasso-"_s + r.newDatasetId),
+                                 /*renderer=*/QString(), /*revealProvenance=*/true);
                          QMessageBox::information(self, u"Kinematic Lasso"_s,
-                             u"Selection %1 → new masked cube '%2' in the Workspace Exports "
-                             u"(%3 × %4 × %5).\n\nOpen it from the Data Hub to analyse just the "
-                             u"selection (moment map, profile, …)."_s
-                             .arg(what, r.newDatasetId).arg(r.width).arg(r.height).arg(r.depth));
+                             u"Selection %1 → new masked cube in the Workspace Exports:\n%2 "
+                             u"(%3 × %4 × %5).\n\nHow it was made is in its FITS HISTORY and in "
+                             u"Session Data › Provenance. Open it from the Data Hub to analyse just "
+                             u"the selection (moment map, profile, …)."_s
+                             .arg(what, r.workspaceFilename).arg(r.width).arg(r.height).arg(r.depth));
                      });
     watcher->setFuture(QtConcurrent::run(
-            [url, token, session, dataset, maskBytes, ox, oy, oz, mw, mh, md, mode]() {
+            [url, token, session, dataset, maskBytes, ox, oy, oz, mw, mh, md, mode, recipe]() {
                 BackendClient c(url, token);
                 c.setSessionId(session);
-                return c.applyCubeMask(dataset, maskBytes, ox, oy, oz, mw, mh, md, mode);
+                return c.applyCubeMask(dataset, maskBytes, ox, oy, oz, mw, mh, md, mode,
+                                       QString(), recipe);
             }));
 }

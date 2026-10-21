@@ -6,6 +6,168 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## 1.0.2 (2026-10-21)
+
+- **Large IPAC catalogues open in seconds.** Opening the 2.3-million-row
+  `NKATZ_2.3M.tbl` used to take minutes and more than 18 GB, and the whole
+  backend stopped answering meanwhile (the parse ran on its event loop, so
+  `/v1/health` timed out). All-numeric IPAC tables are now read by pandas' C
+  parser (0.6 s, 165 MB), giving the same frame as astropy, whose reader is
+  still used for tables with string columns or declared null markers; the
+  catalogue open runs in a worker thread.
+- **Multi-file catalogue offer, narrowed.** Picking a `.tbl` used to offer every
+  same-extension file in the folder as one catalogue, so a folder of unrelated
+  tables ended in "Column mismatch". Only pieces whose names differ by a
+  trailing partition index (`…_1_1_1.tbl`) are offered now, and the question
+  lists them.
+- **Region spectrum across a blank channel.** A channel that is entirely NaN
+  in the cube (channel 91 of the WALLABY Hydra cube) showed as a deep negative
+  spike in the box/circle/polygon mean spectrum, because the sanitised cube
+  stores blanks as a value below the data minimum. Blanks are now skipped and
+  the channel plots as a gap.
+- **Windows build instructions rewritten** from the release workflow: Qt 6.10.1
+  for MSVC 2022 with its add-ons, zlib → cfitsio → VTK built from source (vcpkg's
+  VTK has no Qt support), `-DVISIVO_ENABLE_WEBRTC=OFF` as in the release, the
+  DLLs the executable needs, and the backend environment. The docs no longer
+  imply that only macOS and Linux build. When run from the build folder on
+  Windows, the backend's `requirements.txt` is now copied too, so the first-run
+  environment bootstrap works there.
+
+- **PV diagram: fixed a mirrored spectral axis.** On a cube whose spectral axis
+  decreases (`CDELT3 < 0`, most HI cubes) the diagram was drawn mirrored against
+  its own axis, so emission appeared at the wrong velocity. Channels are now
+  placed by their spectral value, taken from the backend; non-linear axes
+  (e.g. `VOPT-F2W`) are placed correctly too. PV diagrams of such cubes made with
+  earlier versions should be redone. Reported by P. Serra.
+- **PV path, editable and live** (requested by P. Serra, in the manner of
+  kpvslice): the finished path stays on the image and can be edited (drag a
+  vertex, move it, Shift-drag to rotate, double-click to add a vertex,
+  right-click to remove one); the diagram is recomputed as you edit. Width,
+  *Smooth curve* and *New path* are controls of the diagram; the width dialog is
+  gone. A colour bar shows `BUNIT`.
+- **PV as FITS:** *Save as FITS…* (`POST /v1/products/pv_fits`): offset axis in
+  arcsec and the cube's own spectral WCS, beam, `BUNIT`, path in `HISTORY`.
+- **PV sampling:** sub-pixel vertices; a uniform step along the path measured on
+  the sky (non-square and skewed pixels); NaN-aware bilinear interpolation;
+  only the pixels around the path are read. Cubes whose spectral axis is not the
+  last one are refused instead of being cut along a spatial axis.
+- **Draw on a moment map:** arming PV, a region or the probe with a moment pane
+  active draws on the map (it keeps its title and colours); the pane that showed
+  the 2-D Slice keeps showing the channels, with the channel bar and the PV path.
+  The PV path is drawn on every map pane of the field. *2D Slice* in a pane's
+  menu restores the layout.
+- **Zoom while drawing:** wheel zoom and middle-button pan stay available while a
+  PV path or a region is being drawn.
+- **Product panes showed native RA/Dec under a Galactic title:** their axis
+  ticks now use the same frame conversion as the 2-D Slice.
+- **Channel bar on the 2-D Slice:** the channel scrubber was only on the 3-D view,
+  so a layout without it (slice + moment + PV) had no way to change channel; the
+  2-D Slice now has its own, kept in step with the other.
+- **One colour range for every channel:** *Same range on every channel* and
+  *Cube range* for the 2-D Slice; a range chosen by hand is no longer undone by
+  the next channel.
+- **Fixed a crash on quit** when a PV diagram or a probe/profile plot was open.
+- **PV diagram placement:** a first diagram with every pane taken grows the layout
+  instead of being parked out of sight; live updates refresh it in place without
+  moving the focus, the selection or the Inspector away from the path.
+- **PV on full-Stokes cubes** (RA/DEC/FREQ/STOKES) works again (plane 0, as
+  before); the FITS `PVSTEP` card is in arcsec; HISTORY carries one vertex per card.
+- **Narrow panes (4-pane layout):** margins shrink with the pane, so a map keeps
+  room; crowded axis labels are thinned and the axis title gives way; the channel
+  bar keeps its slider and shows a long frequency as GHz/MHz. Overlay labels no
+  longer reappear on every redraw.
+- **Buttons inside a pane work on the first click** (they used to only activate
+  the pane).
+- **Readout and DISPLAY on a drawn-on map:** the cursor readout names the map
+  instead of a channel; with the PV diagram active, the DISPLAY section says where
+  its controls are instead of showing colour controls that do not apply.
+- **Status bar:** "queued" counts jobs that are actually waiting (it counted every
+  finished job still in the backend's task registry).
+- **Kinematic Lasso, threshold and smoothing in the panel:** *Threshold* (1.0–5.0σ)
+  and *Smoothing* (Off / Light / Medium / Strong, smooth-before-threshold) sit next
+  to Reach and Velocity coupling; the field computation now honours the smoothing.
+- **Lasso results are products:** *Isolate* / *Remove* add a LASSO entry to Session
+  Data with how it was made (seed, reach, velocity coupling, threshold, smoothing,
+  selected voxels, file); the new cube's FITS `HISTORY` carries the same recipe.
+- **Lasso pick:** a double-click selects the emission under the cursor even with
+  the cutting plane, a kinematic-model overlay or a catalogue in front of it (they
+  used to stop the pick at their own position); isolines mode picks the surface.
+- **Kinematic Model controls in the Inspector:** level, opacity, representation,
+  colour and visibility of the model overlay are in Inspector › Parameters, like
+  every other live tool, instead of a dock that overflowed the window. Tools on
+  together stack: switching one off brings back the one still on.
+- **Inspector › Parameters scrolls:** a tool's controls and a long recipe no longer
+  squeeze each other; long values (file names) wrap, and copying them gives the
+  plain text.
+- **Axes above the channel bar:** the 2-D Slice and the Channels pane keep room
+  for the channel bar below the x axis, whose labels and title it used to cover.
+- **Polarimetry colour maps:** the polarisation-angle and Faraday-depth maps are
+  drawn with the diverging CoolWarm map they ask for (a misspelt name left them
+  sequential, with a header swatch that did not match).
+- **RM synthesis samples φ max:** the φ grid includes φ max when the step reaches
+  it (−80…80 at 1 is 161 samples; it stopped at +79). An axis tick at the origin reads `0.000`, not
+  `-0.000`.
+- **Pick Spectrum on Plane Click works:** a click on the cutting plane, the volume
+  or the isosurface extracts the spectrum there. It never fired in the 3-D view
+  (the camera style holds the mouse between press and release, and the pick was
+  not listening that way). A press that moves is a rotation, not a pick.
+- **Spectrum CSV provenance:** the file names the dataset, the pixel and its WCS
+  position (to 10⁻⁵ degree in decimal format) of the spectrum actually shown;
+  it said `pixel: (0, 0)` with no dataset or position. A probed spectrum's
+  intensity column carries `BUNIT`, and the default file name the real pixel.
+- **Spectrum statistics** include the median and σ(MAD), next to mean and RMS.
+- **Channel maps keep square pixels:** a 196 × 280 cube was stretched into
+  landscape panels (and in the enlarged view).
+- **Export Movie at full size:** a channel scan started with only the 3-D view on
+  screen came out 200 × 60 pixels; the needed view is now shown for the export
+  (or the user is asked to show it), and movies default to the Movies folder
+  rather than the program's working directory.
+- **Channels are numbered from 1 everywhere:** Channel Maps, Estimate Noise and
+  the Z range of Export Sub-Cube took 0-based channels while the channel bar,
+  Compute Moment, Line-width and Export Movie counted from 1, and Channel Maps'
+  own provenance printed the other numbering (30–80 became "31..81"). File names,
+  status messages and polarimetry labels follow.
+- **σ from Estimate Noise is used by the other tools:** the moment mask offers
+  3σ of it (chosen by default), the line-width mask is set to 3σ of it, and the
+  Kinematic Lasso counts its threshold in units of it; each records σ and the
+  region it came from. Without an estimate nothing changes. The median reported
+  for an even number of channels is now the true median.
+- **Line-width map provenance** lists method, channels, mask and rest frequency
+  (it had only the map type); the rest frequency is prefilled from `RESTFRQ`.
+- The noise dialog's pixel count no longer uses the system's thousands
+  separator ("54.880" read as a decimal).
+- **Kinematic fit in the app:** *Fit from the lasso selection* in the Kinematic
+  Model dialog (`POST /v1/cube/kinematic_fit_bin`) measures the selection on the
+  raw cube (flux, w20/w50, V_sys, an S/N-cut velocity field), reads the geometry
+  from moment 0, fits a flat and a per-ring disc to the velocity field, and fills
+  in the parameters and the ring table. Velocity field, model and residual maps,
+  the integrated spectrum and the source's measures become products with their
+  provenance; *Save rings as JSON…* exports the rings. The validation script of
+  the paper's use case now calls these same functions.
+- **One velocity convention for model and fit:** a frequency axis is converted to
+  optical velocity (cz), as HI catalogues quote it; the model used the radio
+  convention (≈ 4 km/s apart at 1100 km/s).
+- Residual and Faraday-depth maps are shown on a range symmetric about zero, so
+  the diverging colour map's neutral colour is zero.
+- **Residual of the model on screen:** after *Overlay*, with a lasso selection
+  present, the residual v − v_model of the model actually in the fields (fitted or
+  edited rings) is computed (`POST /v1/cube/kinematic_residual_bin`), reported in
+  the dialog and added as a product — dropping or changing a ring is judged on the
+  next overlay.
+- **Scrolling no longer edits values:** a wheel over a spin box, combo box or
+  slider inside a scrolling page (the Inspector, a tool window) scrolls the page;
+  a control takes the wheel only once clicked. A fitted V_sys was changed from
+  1120 to 1081 that way.
+- **Velocity fields open from *Open…*:** a FITS with a length-3 component axis
+  is recognised and opened in the velocity-field viewer; it opened as a blank 2-D
+  image.
+- **RM synthesis: Faraday depth above 6σ.** The service reports the noise of the
+  peak |F| map, and the viewer adds *Faraday depth (peak |F| > 6σ)*, the map to
+  read rotation measures from.
+- **Lasso panel: per-channel profile and extent** of the selection, and the
+  voxel count is recounted after a 2-D hand refinement (provenance and the FITS
+  recipe recorded the count from before the edit).
+
 ## 1.0.1 (2026-10-16)
 
 - **Polarimetry: blank sub-bands.** A release can flag a sub-band out entirely

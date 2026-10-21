@@ -47,6 +47,9 @@ async def health(token: str = _auth) -> dict:
         "task_ttl_seconds": task_stats["ttl_seconds"],
         # Live activity for the desktop client's System Insights panel.
         "running_tasks": task_snapshot["running_count"],
+        # Of those, the ones not started yet. The registry also keeps FINISHED
+        # tasks until they expire, so entries − running is not a queue.
+        "queued_tasks": task_snapshot["pending_count"],
         # The recent-task list names other users' operations, so it is only
         # detailed for the operator once per-user tokens are configured.
         "recent_tasks": task_snapshot["recent_tasks"] if is_admin_token(token) else [],

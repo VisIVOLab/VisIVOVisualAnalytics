@@ -355,14 +355,21 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
     this->m_slice2dLoadingActor->VisibilityOff();
 
     this->cacheRemoteSliceResult(result);
-    this->remoteSliceDisplaySource->SetOutput(result.imageData);
-    this->remoteSliceDisplaySource->Modified();
-    auto *img = vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0));
-    if (img) {
-        this->sliceColors->SetInputData(img);
-    } else {
-        qWarning() << "[vtk] Expected vtkImageData for remote slice colors but got null";
-        return;
+    // A map is the slice's BACKGROUND (setSliceBackdrop): the channel still
+    // becomes the current one — slider, linked windows, 3-D cutting plane — but
+    // its pixels wait in the cache until the background goes back to "Channel".
+    const bool backdrop = !this->m_sliceBackdropProductId.isEmpty();
+    vtkImageData *img = nullptr;
+    if (!backdrop) {
+        this->remoteSliceDisplaySource->SetOutput(result.imageData);
+        this->remoteSliceDisplaySource->Modified();
+        img = vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0));
+        if (img) {
+            this->sliceColors->SetInputData(img);
+        } else {
+            qWarning() << "[vtk] Expected vtkImageData for remote slice colors but got null";
+            return;
+        }
     }
     // Through LutScale, not SetTableRange: on a log stretch the raw range of a
     // radio slice is negative at the low end, VTK rejects it and quietly swaps
@@ -374,7 +381,11 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
     // the sampled floor on the very next channel — the linear path already
     // follows the data slice by slice, so the log path does too. A slice with no
     // positive values keeps the floor already in force.
-    if (this->m_sliceScaleMode == LutScale::Mode::Log) {
+    if (backdrop || this->m_sliceRangeLocked) {
+        // One colour scale for every channel (see m_sliceRangeLocked): the range
+        // in force stays, so channel maps compare by colour. (Under a backdrop
+        // the range is the map's.)
+    } else if (this->m_sliceScaleMode == LutScale::Mode::Log) {
         const double floorValue = LutScale::sampledPositiveFloor(img);
         const double lo = (floorValue > 0.0) ? floorValue
                                              : this->lutSlice->GetTableRange()[0];
@@ -401,8 +412,10 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
     // which we just blocked — update it explicitly so it tracks every displayed
     // slice (cached / fetched / linked).
     if (this->channelOverlay) {
-        this->channelOverlay->setChannel(result.index + 1);
-        this->channelOverlay->setSpectralLabel(ui->lineSpectral->text());
+        for (ChannelOverlay *co : this->channelOverlays()) {
+            co->setChannel(result.index + 1);
+            co->setSpectralLabel(ui->lineSpectral->text());
+        }
     }
 
     // Linked views: this is the single convergence where a slice is actually
@@ -422,6 +435,21 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
     this->updateRemoteCuttingPlane(result.index);
     ui->vtkCube->renderWindow()->Render();
     qDebug().noquote() << QStringLiteral("[remote-plane] render triggered");
+    if (backdrop) {
+        // The "Channels" pane shows this channel, at the range the slice had (kept
+        // when the user had locked one, else this channel's own).
+        const bool locked = this->m_sliceRangeLockedBeforeBackdrop
+                && this->m_sliceRangeBeforeBackdrop[1] > this->m_sliceRangeBeforeBackdrop[0];
+        this->updateChannelMirror(result.imageData,
+                                  locked ? this->m_sliceRangeBeforeBackdrop[0] : result.imageRange[0],
+                                  locked ? this->m_sliceRangeBeforeBackdrop[1] : result.imageRange[1]);
+        // The channel overlays (kinematic contour, lasso outline) follow the
+        // channel even over a background map; the pixel work below does not apply.
+        this->updateKinematic2dContour(/*render=*/false);
+        this->updateLassoMaskOverlay(/*render=*/false);
+        this->sliceWin->Render();
+        return;
+    }
 
     if (this->viewingSlice()) {
         ui->lineImgMin->setText(fmtStat(result.imageRange[0]));

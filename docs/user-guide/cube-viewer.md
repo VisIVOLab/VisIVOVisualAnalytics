@@ -36,9 +36,10 @@ cubes when you only want detail in the region you're inspecting.
 
 ## Slice navigation
 
-Use the slice slider and spin box (right of the 2-D dock) or the keyboard
-arrows. The active slice index is shown in the *Cutting plane* card; the
-cutting-plane indicator in the 3-D view updates in real time.
+Use the **channel bar** at the bottom of the 2-D Slice, or the identical one at
+the bottom of the 3-D view: both show the channel number and its spectral value
+and move together. The cutting-plane indicator in the 3-D view updates in real
+time.
 
 ```{tip}
 The cutting plane is **textured with the live slice contents** — what you
@@ -133,7 +134,6 @@ a GPU node with 80 GB of VRAM, or a cube on a filesystem you do not want to pull
 several GB across. On your own laptop, against your own backend, it is mostly a
 way around this client's threshold.
 ```
-```
 
 ## Color maps and transfer function
 
@@ -146,6 +146,27 @@ way around this client's threshold.
 - For the slice / moment maps, the **2-D LUT editor** opens from the
   *2-D View Settings* sidebar. Both editors are non-modal: keep them open
   while you scrub through slices to fine-tune in real time.
+
+### One colour range for every channel
+
+By default each channel of the 2-D Slice is stretched to its own minimum and
+maximum, which makes faint channels look as bright as the peak. To compare
+channels by colour, tick **Same range on every channel** in the *DISPLAY*
+section of the 2-D Slice: the range in force is kept as you move through the
+cube. **Cube range** next to it sets the minimum and maximum of the whole
+loaded cube (of the preview until the full resolution has loaded).
+
+Any range you choose yourself (a percentile button, the *Clip* fields, the
+cursors of the pixel histogram) turns the option on, so a chosen range is no
+longer undone by the next channel. *Reset* goes back to the per-channel range.
+
+### Drawing on a moment map
+
+A moment map shown in a pane can be drawn on: arm *Extract PV Diagram*, a region
+or the probe while it is on screen, and the tool works on the map, which keeps
+its title and its colours. Choosing *2D Slice* in the pane's menu (or in Session
+Data) brings the channels back. See
+[Drawing on a moment map](region-pv-noise.md#drawing-on-a-moment-map).
 
 ## Tools
 
@@ -297,7 +318,13 @@ to find.
 *Kinematic Model Overlay…* **draws** a tilted-ring model over the cube from
 parameters you supply — inclination, position angle, rotation curve. It does
 not fit them. Use it to test whether a model you already have is consistent
-with the data, not to derive one.
+with the data, not to derive one. Once drawn, its level, opacity, representation,
+colour and the 2-D channel-map contour are set in Inspector › Parameters.
+*Fit from the lasso selection* fills the parameters in from a source selected
+with the Kinematic Lasso — geometry from its moment 0, a flat and a per-ring disc
+fitted to its velocity field — and adds the velocity field, model and residual
+maps and the source's flux, w20/w50 and V_sys to Session Data. See
+[the kinematic model](../kinematic-model) for how each is derived.
 ```
 
 Every entry is available both in the menu bar **and** as a tool button on
@@ -451,15 +478,20 @@ pane — or, while a probe tool is armed, the live one it is driving):
     slice slider, the marker moves with it and you can see exactly which
     sample of the spectrum corresponds to the slice on screen.
 * - **Stats bar**
-  - `N` (finite samples) · `Min` / `Max` / `Mean` · `RMS` · `∫`
-    (integrated value over the visible spectrum, ≈ flux density × `Δv`,
-    a quick column-density / line-flux proxy). All recomputed on every
-    new probe.
+  - `N` (finite samples) · `Min` / `Max` / `Mean` · `RMS` · `Median` ·
+    `σ(MAD)` (1.4826 × the median absolute deviation over all finite
+    channels: a robust scatter that a narrow line barely moves, though a line
+    filling much of the band will) · `∫` (integrated
+    value over the visible spectrum, ≈ flux density × `Δv`, a quick
+    column-density / line-flux proxy). All recomputed on every new probe.
 * - **Export (Inspector)**
   - *Save PNG…* exports the plot as an image; *Save CSV…* exports the actual
-    data (two columns: spectral axis + intensity), prefaced by `#` comment lines
-    carrying the dataset name, pixel + WCS coords, and sample count — so the
-    file is self-documenting and parses straight into pandas / astropy / TOPCAT.
+    data (two columns: spectral axis + intensity, with the cube's `BUNIT` in the
+    header of a probed spectrum), prefaced by `#` comment lines carrying the
+    dataset path, the pixel and its WCS position (in the selected frame and
+    format; in degrees, to 10⁻⁵) and the sample count — so the file is
+    self-documenting and parses straight into pandas / astropy / TOPCAT. A
+    region or stacked spectrum has no single pixel and writes none.
 * - **Analysis (Inspector)**
   - Smoothing kernel, *Fit Gaussian* / *Clear Fit*, *Load Lines…* /
     *Clear Lines*, *Compare* / *Clear Overlays* — see [Spectral
@@ -623,9 +655,11 @@ lobes, expanding shells, velocity gradients, and cloud morphology.
    shot; the mosaic window renders all panels within a few seconds even
    for 64+ channels.
 4. The header shows the channel range, stride and LUT; each cell shows
-   **CH N** (the 0-indexed channel index). Axis ticks appear only on
+   **CH N** (channels numbered from 1, as on the channel bar). Axis ticks appear only on
    edge panels (bottom row = X, left column = Y) to keep the grid
    clean.
+   Panels keep the sky's square pixels: a cube taller than wide is drawn
+   taller than wide, with margin around it, never stretched to the cell.
 5. **Double-click** any panel to open it in a standalone resizable
    window with the full colour bar, axes, and drag + zoom. Useful for
    inspecting a single channel in detail without leaving the mosaic

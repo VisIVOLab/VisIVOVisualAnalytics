@@ -562,7 +562,8 @@ void ProfileWidget::refreshSpectrumHeader()
     // once a pixel has been pinned (it's just for discoverability).
     QStringList parts;
     if (!m_fileLabel.isEmpty()) parts << m_fileLabel;
-    parts << u"pixel (%1, %2)"_s.arg(m_pixelX).arg(m_pixelY);
+    if (m_pixelX >= 0 && m_pixelY >= 0)
+        parts << u"pixel (%1, %2)"_s.arg(m_pixelX).arg(m_pixelY);
     if (!m_wcsLabel.isEmpty()) parts << m_wcsLabel;
     QString text = parts.join(u"  ·  "_s);
     if (m_frozen) {
@@ -825,8 +826,29 @@ void ProfileWidget::refreshSpectrumStats(const QVector<double> &spectralKey,
         return QString::number(v, 'g', 6);
     };
 
-    QString text = u"N=%1   Min=%2   Max=%3   Mean=%4   RMS=%5"_s
-                           .arg(n).arg(fmt(mn)).arg(fmt(mx)).arg(fmt(mean)).arg(fmt(rms));
+    // Robust pair: the median, and σ = 1.4826·MAD — the noise of a line-free
+    // spectrum that one bright line barely moves (RMS includes the line).
+    QVector<double> finite;
+    finite.reserve(n);
+    for (double v : values)
+        if (std::isfinite(v))
+            finite.push_back(v);
+    const auto medianOf = [](QVector<double> &v) {
+        const auto mid = v.begin() + v.size() / 2;
+        std::nth_element(v.begin(), mid, v.end());
+        double m = *mid;
+        if (v.size() % 2 == 0)
+            m = 0.5 * (m + *std::max_element(v.begin(), mid));
+        return m;
+    };
+    const double median = medianOf(finite);
+    for (double &v : finite)
+        v = std::abs(v - median);
+    const double sigmaMad = 1.4826 * medianOf(finite);
+
+    QString text = u"N=%1   Min=%2   Max=%3   Mean=%4   RMS=%5   Median=%6   \u03c3(MAD)=%7"_s
+                           .arg(n).arg(fmt(mn)).arg(fmt(mx)).arg(fmt(mean)).arg(fmt(rms))
+                           .arg(fmt(median)).arg(fmt(sigmaMad));
     if (std::isfinite(integral)) {
         text += u"   ∫=%1"_s.arg(fmt(integral));
     }
@@ -1564,7 +1586,7 @@ void ProfileWidget::saveSpectrumCsv()
         defaultDir = QDir::homePath();
     }
     const QString suggested = QDir(defaultDir).filePath(
-            u"spectrum_x%1_y%2.csv"_s.arg(px).arg(py));
+            px >= 0 && py >= 0 ? u"spectrum_x%1_y%2.csv"_s.arg(px).arg(py) : u"spectrum.csv"_s);
 
     // Construct the file dialog explicitly so we can make it *application
     // modal* — the static convenience getSaveFileName() returns a window-
@@ -1620,7 +1642,8 @@ void ProfileWidget::saveSpectrumCsv()
     // starting with '#' by convention).
     w << u"# VisIVO spectrum export\n"_s;
     if (!fileLabel.isEmpty()) w << u"# dataset: "_s << fileLabel << u"\n"_s;
-    w << u"# pixel:   ("_s << px << u", "_s << py << u")\n"_s;
+    if (px >= 0 && py >= 0)   // a line of sight; a region or a stack has none
+        w << u"# pixel:   ("_s << px << u", "_s << py << u")\n"_s;
     if (!wcsLabel.isEmpty())  w << u"# wcs:     "_s << wcsLabel  << u"\n"_s;
     w << u"# samples: "_s << key.size() << u"\n"_s;
     // Header row + data. Sanitise label commas so the column count stays

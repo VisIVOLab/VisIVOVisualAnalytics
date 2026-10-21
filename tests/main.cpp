@@ -31,6 +31,8 @@
 #include "TestLayerCardGeometry.h"
 #include "TestRegionReadout.h"
 #include "TestBackendUrlLocality.h"
+#include "TestSkavaClient.h"
+#include "TestPvPathGeometry.h"
 
 #include <QCoreApplication>
 #include <QTest>
@@ -68,5 +70,7 @@ int main(int argc, char *argv[])
     { TestLayerCardGeometry t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionReadout    t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendUrlLocality t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSkavaClient      t; status |= QTest::qExec(&t, argc, argv); }
+    { TestPvPathGeometry   t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }

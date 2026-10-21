@@ -260,7 +260,7 @@ async def rm_synthesis(
     keys = ["n_phi", "n_freq", "dropped_planes", "dropped_freq_hz", "width", "height",
             "phi_min", "phi_max", "d_phi", "phi_grid", "rmsf", "range_min", "range_max", "reduce"]
     if result.get("reduce") == "peak":
-        keys += ["phi_peak_min", "phi_peak_max"]
+        keys += ["phi_peak_min", "phi_peak_max", "peak_sigma"]
     payload = {k: result[k] for k in keys if k in result}
     return {"valid": True, "error": "", **payload}
 

@@ -8,6 +8,8 @@
 #include <QJsonObject>
 #include <QTest>
 
+#include <cmath>
+
 // Build a QJsonObject from a JSON string literal.
 static QJsonObject fromLiteral(const char *json)
 {
@@ -519,4 +521,67 @@ void TestBackendClient::operationTag_edgeCases()
     // No /v1 prefix: still usable.
     QCOMPARE(BackendClient::operationTagForPath(QStringLiteral("/cube/slice")),
              QStringLiteral("cube/slice"));
+}
+
+
+namespace {
+QJsonObject kinematicFitJson(int w, int h, bool warp)
+{
+    QByteArray plane(w * h * int(sizeof(float)), '\0');
+    const QString b64 = QString::fromLatin1(plane.toBase64());
+    QJsonObject o{
+            { QStringLiteral("width"), w }, { QStringLiteral("height"), h },
+            { QStringLiteral("velocity_unit"), QStringLiteral("km/s") },
+            { QStringLiteral("velocity_convention"), QStringLiteral("optical (cz), from frequency") },
+            { QStringLiteral("sigma"), 0.002 },
+            { QStringLiteral("sigma_source"), QStringLiteral("noise estimate") },
+            { QStringLiteral("measures"), QJsonObject{ { QStringLiteral("flux"), 140.42 },
+                                                       { QStringLiteral("flux_is_jy"), true },
+                                                       { QStringLiteral("w20"), 259.9 },
+                                                       { QStringLiteral("w50"), QJsonValue() },
+                                                       { QStringLiteral("vsys_w20"), 1105.9 },
+                                                       { QStringLiteral("n_velocity_field"), 5900 } } },
+            { QStringLiteral("geometry"), QJsonObject{ { QStringLiteral("x0"), 84.0 },
+                                                       { QStringLiteral("incl"), 72.7 } } },
+            { QStringLiteral("flat"), QJsonObject{ { QStringLiteral("pa"), 352.0 },
+                                                   { QStringLiteral("vrot"), 118.3 } } },
+            { QStringLiteral("rings"), QJsonArray{ QJsonObject{ { QStringLiteral("r"), 6.7 },
+                                                                { QStringLiteral("pa"), 362.0 },
+                                                                { QStringLiteral("n_pix"), 169 } } } },
+            { QStringLiteral("residual_flat"), QJsonObject{ { QStringLiteral("median"), 19.8 },
+                                                            { QStringLiteral("n_pix"), 4472 } } },
+            { QStringLiteral("residual_warp"), QJsonValue() },
+            { QStringLiteral("spectrum"), QJsonArray{ 0.1, QJsonValue(), 0.3 } },
+            { QStringLiteral("velocity_field_base64"), b64 },
+            { QStringLiteral("model_flat_base64"), b64 },
+            { QStringLiteral("model_warp_base64"), warp ? b64 : QString() } };
+    return o;
+}
+}  // namespace
+
+void TestBackendClient::parseKinematicFit_readsFitsAndNullsAsNaN()
+{
+    const auto r = BackendClient::parseKinematicFitObject(kinematicFitJson(3, 2, false));
+    QVERIFY(r.valid);
+    QCOMPARE(r.flux, 140.42);
+    QVERIFY(r.fluxIsJy);
+    QVERIFY(std::isnan(r.w50));               // null → NaN, not 0
+    QCOMPARE(r.pa, 352.0);
+    QCOMPARE(r.rings.size(), 1);
+    QCOMPARE(r.rings[0].pa, 362.0);           // continuous PA kept
+    QCOMPARE(r.rings[0].nPix, 169);
+    QVERIFY(r.residualFlat.valid);
+    QVERIFY(!r.residualWarp.valid);           // no warped model
+    QCOMPARE(r.spectrum.size(), 3);
+    QVERIFY(std::isnan(r.spectrum[1]));
+    QVERIFY(r.modelWarp.isEmpty());
+}
+
+void TestBackendClient::parseKinematicFit_rejectsMapsOfTheWrongSize()
+{
+    QJsonObject o = kinematicFitJson(3, 2, true);
+    o.insert(QStringLiteral("width"), 4);     // maps were made for 3 × 2
+    const auto r = BackendClient::parseKinematicFitObject(o);
+    QVERIFY(!r.valid);
+    QVERIFY(!r.error.isEmpty());
 }

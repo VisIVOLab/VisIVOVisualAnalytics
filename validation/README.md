@@ -359,8 +359,16 @@ needed to state it at all.
 
 ## Figures of the paper
 
-Every figure is rendered from the products, not screenshotted, and each script
-prints the numbers it draws. All are sized for the journal's 17.5 cm text width.
+Every figure shows what the application does: the scripts call the service's own
+workers (the same functions the client's routes run) and draw what the viewer
+shows, and the interface, Data Hub and velocity-field figures are window
+captures. Each script prints the numbers it draws. All are sized for the
+journal's 17.5 cm text width.
+
+The first column is the script's number (its file name); in the paper the
+figures appear as 1 storyboard, 2 architecture, 3 interface, 4 lasso (script 3),
+5 model (script 4), 6 Data Hub, 7 chain of products (script 5), 8 polarimetry
+(script 6), 9 velocity field (script 7).
 
 | figure | script | needs |
 |---|---|---|
@@ -370,11 +378,14 @@ prints the numbers it draws. All are sized for the journal's 17.5 cm text width.
 | 4 tilted-ring model | `figure4_model_ngc3137.py` | `VISIVO_VALIDATION_CUBE_2` |
 | 5 chain of products | `figure5_transitions.py` | `VISIVO_VALIDATION_CUBE_2`, the service's routers |
 | 6 polarimetry | `figure6_polarimetry.py` (below) | the MeerKAT Bulge I/Q/U cubes of G000.0+2.5 and `Mosaic_Pol_Cat.csv` from doi:10.48479/f2a2-qw16 |
-| 7 velocity field | `velocity_field_demo.py` | `VISIVO_VALIDATION_FIELD` |
+| 7 velocity field | `figure_interface.py "shots/velocity_field_basins_streamlines.png:340,200,1400,1290:" --out validation/out/figure7_velocity_field.png` — a window capture of the velocity-field viewer (streamlines + basins); `velocity_field_demo.py` prints the same basin count headless | the client, the CF4 field |
 | interface, Data Hub | `figure_interface.py` on the window captures in `shots/` (`screencapture -l` of the client's main window: lasso armed, lasso selected; nothing retouched) | the client, 1512×900 window, Retina |
 
-Figures 4 and 5 call `usecase_ngc3137.run()`, so every number on them is the
-one in `out/usecase_ngc3137.md`. Figure 6 is the 900-px cutout holding three
+Figures 1, 4 and 5 call `usecase_ngc3137.run()`, which runs the client's kinematic
+fit (`app.compute.kinematic_fit`, what *Fit from the lasso selection* calls), so
+every number on them is the one in `out/usecase_ngc3137.md` and the one the
+Kinematic Model dialog reports. `sofia_out/` (the SoFiA-2 and Serra et al. masks,
+300 MB each) is not tracked in git: regenerate it as described above. Figure 6 is the 900-px cutout holding three
 catalogued polarised sources; the script runs the service's own workers and
 prints the catalogue-vs-ours rotation measures:
 

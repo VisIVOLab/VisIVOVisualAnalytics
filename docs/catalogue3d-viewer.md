@@ -120,6 +120,13 @@ format is inferred from the file suffix (`catalogueFormatForPath`). All formats
 can also be relayed over SAMP (`/v1/samp/send-catalogue` converts non-native
 formats to VOTable).
 
+Large IPAC tables whose columns are all declared numeric (the usual case for
+simulation snapshots) are read by a C parser: the 2.3-million-row
+`NKATZ_2.3M.tbl` opens in under a second. A table with string columns or
+declared null markers goes through astropy's IPAC reader, which gives the same
+result more slowly. Either way the parse runs off the service's event loop, so
+the backend keeps answering while a big table loads.
+
 ### Paging — Load more / Load all
 
 The viewer loads sources in pages of 50 000 (`m_pageSize`); the **Filters** tab
@@ -133,9 +140,13 @@ loaded.
 
 ### Multi-file load
 
-When you pick a catalogue file that has same-extension siblings in its folder,
-the viewer offers to load **all of them as one combined catalogue** (e.g. the 27
-spatial subtables of a cosmological snapshot). The desktop sends the full path
+When you pick a catalogue file whose name ends in a numeric partition index
+(`snap_p50n576_z0_1_1_1.tbl`, `part_001.csv`, …) and the folder holds other
+pieces with the same name and extension, the viewer lists them and offers to
+load **all of them as one combined catalogue** (e.g. the 27 spatial subtables of
+a cosmological snapshot). Other files with the same extension are not offered:
+a folder of unrelated tables, or two sizes of one sample such as
+`NKATZ_2.3M.tbl` and `NKATZ_4.6M.tbl`, opens one file at a time. The desktop sends the full path
 list; `/v1/catalogue/open` accepts `paths: [...]`, loads each (same format) and
 `pd.concat`s them — **requiring identical columns** (a mismatch is rejected,
 naming the offending file, so a silent NaN union can't corrupt the data). The

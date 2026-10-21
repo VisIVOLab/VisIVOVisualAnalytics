@@ -23,12 +23,15 @@ In the [cube viewer](cube-viewer):
      line to avoid integrating background.
    - **Mask** — **on by default**. Only voxels above the threshold contribute,
      which is what keeps M1/M2 physically clean (see the note below).
-   - **Auto threshold (≈ 3 σ)** — **on by default**. The backend derives the
-     mask threshold from the data itself (median + 3 · σ, with σ from the MAD),
-     the same convention CASA/SoFiA use. Untick it to type a value by hand in
-     **Mask threshold**; untick **Mask** entirely to compute an unmasked moment.
-   - **RMS** — the cube noise level, used by some orders (e.g. weighted by
-     1/σ²). Auto-filled from the latest noise estimate if available.
+   - **3σ of the noise estimate** — shown, and chosen by default, once you have
+     run *Tools → Estimate Noise* in this session: the threshold is 3σ of the σ
+     you measured on a line-free region (the tooltip says where), and the
+     product's provenance records it as such.
+   - **Auto threshold (≈ 3 σ)** — the default when there is no estimate. The
+     backend derives the mask threshold from the data itself (median + 3 · σ,
+     with σ from the MAD over the cube), the same convention CASA/SoFiA use.
+     Untick both to type a value by hand in **Mask threshold**; untick **Mask**
+     entirely to compute an unmasked moment.
 3. Click **Compute**. The Moment card in the sidebar tracks the state
    (`Computing… → Ready` or `Error`). The channel range and mask settings are
    **remembered per dataset**, so re-opening the dialog for the same cube (this

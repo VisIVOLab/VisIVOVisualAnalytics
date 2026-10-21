@@ -36,6 +36,7 @@
 #include <vtkImageData.h>
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <utility>
 
@@ -219,11 +220,7 @@ void MomentMapController::dispatch(const Config &config)
         // Build provenance strings (pure string work – no UI access needed here).
         // vtkWindowCube's onCompleted lambda appends the two WCS-specific fields
         // (spectralAxisTitle, currentWcsFrameLabel) that require window state.
-        const QString maskSummary = config.maskEnabled
-                ? (config.thresholdAuto
-                           ? u"auto (≈ 3σ)"_s
-                           : u">= %1"_s.arg(config.thresholdValue, 0, 'g', 8))
-                : u"none"_s;
+        const QString maskSummary = describeMask(config);
         const QString unitLabel = result.momentUnit.isEmpty() ? u"-"_s : result.momentUnit;
 
         const QString summary =
@@ -441,28 +438,72 @@ void MomentMapController::openMomentDialog(int defaultOrder, Config config,
     thresholdSpin->setRange(-1.0e30, 1.0e30);
     thresholdSpin->setDecimals(6);
     thresholdSpin->setValue(config.thresholdValue);
-    // The manual threshold is only editable when masking is on AND auto is off.
-    thresholdSpin->setEnabled(config.maskEnabled && !config.thresholdAuto);
+    // The session's noise estimate, when there is one, is the threshold the
+    // user already measured: 3σ of it, offered first (and chosen by default).
+    // The backend's Auto derives its own σ from the whole cube instead.
+    QCheckBox *noiseCheck = nullptr;
+    // Snapshot: a re-estimate while this window is open must not pair this
+    // threshold with another region's description.
+    const double noiseThreshold = 3.0 * m_noiseSigma;
+    const QString noiseWhere = m_noiseWhere;
+    if (m_noiseSigma > 0.0) {
+        noiseCheck = new QCheckBox(
+                u"3σ of the noise estimate (%1)"_s.arg(noiseThreshold, 0, 'g', 4), dlg);
+        noiseCheck->setToolTip(u"σ = %1, measured with Tools › Estimate Noise on %2."_s
+                                       .arg(m_noiseSigma, 0, 'g', 4).arg(noiseWhere));
+        // Enough decimals to show a small σ as itself, not as 0.000000.
+        if (noiseThreshold > 0.0)
+            thresholdSpin->setDecimals(std::clamp(
+                    static_cast<int>(std::ceil(-std::log10(noiseThreshold))) + 4, 6, 15));
+        noiseCheck->setChecked(config.maskEnabled);
+        if (noiseCheck->isChecked()) {
+            autoCheck->setChecked(false);
+            thresholdSpin->setValue(noiseThreshold);
+        }
+    }
 
-    auto updateThresholdEnabled = [maskCheck, autoCheck, thresholdSpin]() {
+    // The manual threshold is only editable when masking is on, and neither the
+    // estimate nor Auto supplies it.
+    auto updateThresholdEnabled = [maskCheck, autoCheck, thresholdSpin, noiseCheck]() {
         const bool on = maskCheck->isChecked();
-        autoCheck->setEnabled(on);
-        thresholdSpin->setEnabled(on && !autoCheck->isChecked());
+        const bool fromNoise = noiseCheck && noiseCheck->isChecked();
+        if (noiseCheck)
+            noiseCheck->setEnabled(on);
+        autoCheck->setEnabled(on && !fromNoise);
+        thresholdSpin->setEnabled(on && !fromNoise && !autoCheck->isChecked());
     };
+    updateThresholdEnabled();
     QObject::connect(maskCheck, &QCheckBox::toggled, dlg,
                      [updateThresholdEnabled](bool) { updateThresholdEnabled(); });
     QObject::connect(autoCheck, &QCheckBox::toggled, dlg,
                      [updateThresholdEnabled](bool) { updateThresholdEnabled(); });
+    if (noiseCheck)
+        QObject::connect(noiseCheck, &QCheckBox::toggled, dlg,
+                         [updateThresholdEnabled, autoCheck, thresholdSpin, noiseThreshold](bool on) {
+                             if (on) {
+                                 autoCheck->setChecked(false);
+                                 thresholdSpin->setValue(noiseThreshold);
+                             }
+                             updateThresholdEnabled();
+                         });
 
     auto *maskHintLabel = new QLabel(
-            u"Only voxels above the threshold contribute to the moment - this "
-            u"cleans up M1/M2. With Auto, the backend derives the threshold "
-            u"from the noise (median + 3·σ via MAD); untick it to set a value "
-            u"by hand."_s, dlg);
+            (noiseCheck ? u"Only voxels above the threshold contribute to the moment - this "
+                          u"cleans up M1/M2. The noise estimate gives 3σ of the σ you measured "
+                          u"on a line-free region; Auto derives one from the whole cube "
+                          u"(median + 3·σ via MAD); untick both to set a value by hand."_s
+                        : u"Only voxels above the threshold contribute to the moment - this "
+                          u"cleans up M1/M2. With Auto, the backend derives the threshold "
+                          u"from the noise (median + 3·σ via MAD); untick it to set a value "
+                          u"by hand. Tools › Estimate Noise measures σ on a region you choose, "
+                          u"and it is then offered here."_s),
+            dlg);
     maskHintLabel->setStyleSheet(ToolDialogStyle::helperCss());
     maskHintLabel->setWordWrap(true);
 
     maskForm->addRow(u"Mask"_s,           maskCheck);
+    if (noiseCheck)
+        maskForm->addRow(QString(),       noiseCheck);
     maskForm->addRow(QString(),           autoCheck);
     maskForm->addRow(u"Mask threshold"_s, thresholdSpin);
     maskForm->addRow(QString(),           maskHintLabel);
@@ -496,7 +537,8 @@ void MomentMapController::openMomentDialog(int defaultOrder, Config config,
     QObject::connect(closeBtn, &QPushButton::clicked, dlg, &QDialog::close);
     QObject::connect(okBtn, &QPushButton::clicked, this,
                      [this, dlg, config, momentCombo, channelStartSpin, channelEndSpin,
-                      maskCheck, autoCheck, thresholdSpin]() mutable {
+                      maskCheck, autoCheck, thresholdSpin, noiseCheck, noiseThreshold,
+                      noiseWhere]() mutable {
         if (m_busy)
             return;   // the sheet blocks the dialog, but be explicit
         const int channelStart = channelStartSpin->value() - 1;
@@ -512,6 +554,12 @@ void MomentMapController::openMomentDialog(int defaultOrder, Config config,
         config.maskEnabled    = maskCheck->isChecked();
         config.thresholdAuto  = autoCheck->isChecked();
         config.thresholdValue = thresholdSpin->value();
+        const bool fromNoise = noiseCheck && noiseCheck->isChecked() && config.maskEnabled;
+        if (fromNoise)
+            config.thresholdValue = noiseThreshold;   // exact, not the box's rounding
+        config.thresholdSource = fromNoise
+                ? u"3σ of the noise estimate, %1"_s.arg(noiseWhere)
+                : QString();
 
         m_currentConfig = config;
         AnalysisParamStore().save(m_filepath, u"moment"_s, {
@@ -537,6 +585,18 @@ void MomentMapController::openMomentDialog(int defaultOrder, Config config,
 // ─────────────────────────────────────────────────────────────────────────────
 // Static string helpers – moved from vtkWindowCube
 // ─────────────────────────────────────────────────────────────────────────────
+
+QString MomentMapController::describeMask(const Config &config)
+{
+    if (!config.maskEnabled)
+        return u"none"_s;
+    if (config.thresholdAuto)
+        return u"auto (≈ 3σ)"_s;
+    QString text = u">= %1"_s.arg(config.thresholdValue, 0, 'g', 8);
+    if (!config.thresholdSource.isEmpty())
+        text += u" (%1)"_s.arg(config.thresholdSource);
+    return text;
+}
 
 QString MomentMapController::describeMomentOrder(int order)
 {

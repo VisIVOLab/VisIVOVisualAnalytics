@@ -4,9 +4,12 @@
 #include <QVector>
 #include <QWidget>
 
+class QCheckBox;
 class QLabel;
+class QSpinBox;
 class QCustomPlot;
 class QCPColorMap;
+class QCPColorScale;
 class QCPTextElement;
 
 class PvDiagramWidget : public QWidget
@@ -28,8 +31,11 @@ public:
         QString spectralAxisLabel;
         QString spatialUnit;             ///< e.g. "arcsec" or "pixels"
         double  pixelScaleArcsecPerPixel { 0.0 };
+        QString bunit;                   ///< colour-bar label
     };
 
+    /// @p spectral: the coordinate of each channel, channel 0 first — it may
+    /// DEcrease (CDELT3 < 0); rows are placed by value, never by index.
     void setPvData(const QVector<double> &positions,
                    const QVector<double> &spectral,
                    const QVector<double> &intensities,
@@ -41,6 +47,15 @@ public:
 
     /// Apply dark (true) or light (false) plot theme.
     void applyPlotTheme(bool dark);
+
+    /// Reflect the path settings in the controls without emitting the signals.
+    void setPathControls(int widthPixels, bool smooth);
+
+signals:
+    void widthChanged(int widthPixels);
+    void smoothChanged(bool smooth);
+    void newPathRequested();
+    void saveFitsRequested();
 
 private slots:
     void savePng();
@@ -63,7 +78,10 @@ private:
     // ── Plot ──────────────────────────────────────────────────────────────────
     QCustomPlot    *plot         { nullptr };
     QCPColorMap    *colorMap     { nullptr };
+    QCPColorScale  *colorScale   { nullptr };
     QCPTextElement *titleElement { nullptr };
+    QSpinBox       *m_widthSpin  { nullptr };
+    QCheckBox      *m_smoothCheck{ nullptr };
 };
 
 #endif

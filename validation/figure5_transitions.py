@@ -58,7 +58,7 @@ def ep(pattern: str) -> str:
     head, _, name = route.rpartition("/")
     return f"{head}/\n{name}"
 
-resid_map = np.abs(m1 - vw)
+resid_map = m1 - vw          # signed, as the viewer's "Residual v − v_model (rings)"
 cards = [   # every line at most 25 monospace characters: that is what a card holds at 6.4 pt
     ("Cube", lambda ax: show_channel(ax, data, crec),
      f"WALLABY J100903-290239\n{nx}×{ny}×{nz} voxels\n{ep(r'datasets/open$')}"),
@@ -67,12 +67,12 @@ cards = [   # every line at most 25 monospace characters: that is what a card ho
     ("Isolated cube", lambda ax: show_channel(ax, iso, crec),
      f"NaN outside the mask,\nas displayed; WCS and\ndimensions kept\n{ep(r'mask_apply_bin')}"),
     ("Moments", lambda ax: ax.imshow(np.ma.masked_invalid(m0[crop]), origin="lower", cmap="magma", interpolation="nearest"),
-     f"M0: {R['flux']:.1f} Jy km/s\nM1 over {R['n_velocity_field']} px > 3σ\n{ep(r'tasks/moment$')}"),
+     f"M0: {R['flux']:.1f} Jy km/s\nM1 over {R['n_velocity_field']} px > 3σ\n{ep(r'kinematic_fit_bin')}"),
     ("Model", lambda ax: show_channel(ax, iso, crec, warp, color="#1f77b4"),
-     f"PA {R['pa_kin']:.0f}°, i {R['incl']:.0f}°, V_rot {R['vrot']:.0f}\n{len(R['rings'])} rings, warped\n{ep(r'kinematic_model')}"),
-    ("Residual", lambda ax: ax.imshow(np.ma.masked_invalid(resid_map[crop]), origin="lower", cmap="viridis",
-                                      vmin=0, vmax=60, interpolation="nearest"),
-     f"|v_data − v_model|\nmedian {R['warp_median']:.1f} km/s\n(flat {np.median(R['resid_flat']):.1f})\nderived from\nMoments + Model"),
+     f"PA {R['pa_kin']:.0f}°, i {R['incl']:.0f}°, V_rot {R['vrot']:.0f}\n{len(R['rings'])} rings, fitted\n{ep(r'kinematic_model_bin')}"),
+    ("Residual", lambda ax: ax.imshow(np.ma.masked_invalid(resid_map[crop]), origin="lower", cmap="RdBu_r",
+                                      vmin=-60, vmax=60, interpolation="nearest"),
+     f"v_data − v_model\n|median| {R['warp_median']:.1f} km/s\n(flat {np.median(R['resid_flat']):.1f})\n{ep(r'kinematic_residual_bin')}"),
     ("Export", lambda ax: show_channel(ax, iso, csys, warp, color="#1f77b4"),
      f"channel scan,\nmodel vs data\nmovie + FITS products\n{ep(r'exports')}"),
 ]

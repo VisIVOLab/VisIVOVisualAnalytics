@@ -24,6 +24,14 @@ private slots:
     void routeNoMatchReturnsEmpty();
     void routeEmptyDatalinkReturnsEmpty();
     void routeNullSettingsReturnsEmpty();
+    void routeUsesTheChosenNodesReplica();
+    void routePrefersRankingOrder();
+    void routeSkipsUnsupportedKind();
+    void routeSkipsAuthWithoutToken();
+    void routeSkipsNodeWithoutReplica();
+    void kindMapping();
+    void routeTreatsLoopbackNamesAsOneHost();
+    void findRegisteredBackendMatchesLikeRouting();
 };
 
 #endif  // TestBackendRouting_h

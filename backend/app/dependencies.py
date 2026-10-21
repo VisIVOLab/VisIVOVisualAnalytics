@@ -966,9 +966,98 @@ def _read_ipac(path: Path) -> pd.DataFrame:
     attribute columns. astropy parses it natively; keeping the column names lets
     the X/Y/Z detection treat it as a Cartesian catalogue.
     """
+    fast = _read_ipac_numeric(path)
+    if fast is not None:
+        return fast
     from astropy.io import ascii as astropy_ascii  # noqa: PLC0415
 
     return astropy_ascii.read(str(path), format="ipac").to_pandas()
+
+
+# IPAC type codes that are purely numeric (the spec's r/real, d/double,
+# f/float, i/int, l/long, and their abbreviations).
+_IPAC_NUMERIC_TYPES = {"r", "real", "d", "double", "f", "float", "i", "int", "l", "long"}
+_IPAC_INT_TYPES = {"i", "int", "l", "long"}
+
+
+def _read_ipac_numeric(path: Path) -> pd.DataFrame | None:
+    """Fast path for an all-numeric IPAC table, or None to fall back.
+
+    astropy's IPAC reader is pure Python: a 2.3-million-row snapshot table
+    (277 MB) took minutes and more than 18 GB. When every column is declared
+    numeric the data block is plain whitespace-separated numbers, which the C
+    parser of pandas reads in seconds. Anything else (a string column, whose
+    values may contain blanks; a row with the wrong number of fields) goes back
+    to astropy, so this only ever changes the speed, never the result.
+    """
+    pipe_rows: list[str] = []
+    header_lines = 0
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if stripped.startswith("\\") or not stripped:
+                header_lines += 1
+                continue
+            if stripped.startswith("|"):
+                pipe_rows.append(stripped)
+                header_lines += 1
+                continue
+            break
+    if not pipe_rows:
+        return None
+
+    def cells(row: str) -> list[str]:
+        return [c.strip() for c in row.strip("|").split("|")]
+
+    names = cells(pipe_rows[0])
+    if not names or any(not n for n in names) or len(set(names)) != len(names):
+        return None
+    types = cells(pipe_rows[1]) if len(pipe_rows) > 1 else []
+    if len(types) != len(names) or any(t.lower() not in _IPAC_NUMERIC_TYPES for t in types):
+        return None
+    # Declared null markers are per column and literal in astropy ("-999" is
+    # null in x but "-999.0" is not, and "-1" in y says nothing about x);
+    # pandas would apply them to every column and match them numerically. Such
+    # tables keep the exact reader; the big simulation tables declare none. An
+    # undeclared "null" token is not a null for astropy either: it leaves the
+    # column non-numeric here and falls back too.
+    if len(pipe_rows) > 3 and any(cells(pipe_rows[3])):
+        return None
+    try:
+        raw = pd.read_csv(path, skiprows=header_lines, sep=r"\s+", header=None,
+                          engine="c", keep_default_na=False,
+                          na_values=["nan", "NaN", "NAN", "-nan", "+nan"])
+    except (ValueError, pd.errors.ParserError):
+        return None
+    if raw.shape[1] != len(names):
+        return None
+    raw.columns = names
+    # The DECLARED type decides, as in astropy: a double column of whole
+    # numbers is still float, and an int column holding 1.5 is not readable.
+    for name, kind in zip(names, types):
+        col = raw[name]
+        if kind.lower() in _IPAC_INT_TYPES:
+            if not pd.api.types.is_signed_integer_dtype(col):
+                return None
+        elif pd.api.types.is_numeric_dtype(col) and not pd.api.types.is_bool_dtype(col):
+            raw[name] = col.astype("float64")
+        else:
+            return None
+    # A short row is NaN-padded by the C parser; a genuine NaN comes from a
+    # "nan" token. Re-count tokens only when a NaN exists, so clean tables pay nothing.
+    if raw.isna().to_numpy().any() and not _ipac_rows_complete(path, header_lines, len(names)):
+        return None
+    return raw
+
+
+def _ipac_rows_complete(path: Path, header_lines: int, ncols: int) -> bool:
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for i, line in enumerate(handle):
+            if i < header_lines or not line.strip():
+                continue
+            if len(line.split()) != ncols:
+                return False
+    return True
 
 
 def _catalogue_load_dataframe(path: Path, fmt: str) -> pd.DataFrame:
@@ -1427,10 +1516,13 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
 
 async def _pv_product_payload(entry: dict[str, Any], request: CubePvRequest) -> tuple[dict[str, Any], bool]:
     from .compute import worker_pv
+    from .compute.pv_iso import canonical_pv_vertices
 
     dataset = ScientificFitsDataset(entry["path"])
+    # The SAME canonical vertices key the cache and feed the worker.
+    vertices = canonical_pv_vertices(request.vertices)
     cache_params = {
-        "vertices": request.vertices,
+        "vertices": vertices,
         "width_pixels": max(1, int(request.width_pixels)),
     }
     cache_key, param_hash = PRODUCT_CACHE.make_key(dataset.path, "pv", cache_params)
@@ -1443,7 +1535,7 @@ async def _pv_product_payload(entry: dict[str, Any], request: CubePvRequest) -> 
     result = await _run_heavy(
         worker_pv,
         dataset.path,
-        request.vertices,
+        vertices,
         max(1, int(request.width_pixels)),
     )
     PRODUCT_CACHE.put(

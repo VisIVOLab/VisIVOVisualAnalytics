@@ -118,3 +118,80 @@ def test_ipac_multifile_rejects_column_mismatch(tmp_path):
     body = r.json()
     assert body["valid"] is False
     assert "mismatch" in body["error"].lower()
+
+
+def _astropy_ipac(path):
+    from astropy.io import ascii as astropy_ascii
+    return astropy_ascii.read(str(path), format="ipac").to_pandas()
+
+
+def test_fast_ipac_reader_matches_astropy(tmp_path):
+    """The numeric fast path gives astropy's frame, NaN tokens included."""
+    import pandas as pd
+    from app.dependencies import _read_ipac_numeric
+    p = tmp_path / "plain.tbl"
+    p.write_text(
+        "\\ comment\n"
+        "|    x     |    y     |   n   |\n"
+        "|  double  |  double  |  int  |\n"
+        "|   Mpc    |   Mpc    |       |\n"
+        "     1.5      2.5      3\n"
+        "     6.0      nan      7\n"
+    )
+    fast = _read_ipac_numeric(p)
+    assert fast is not None
+    pd.testing.assert_frame_equal(fast, _astropy_ipac(p).reset_index(drop=True))
+    assert np.isnan(fast["y"][1])
+
+
+def test_fast_ipac_reader_honours_declared_types(tmp_path):
+    """A double column of whole numbers stays float; an int column with 1.5 falls back."""
+    from app.dependencies import _read_ipac_numeric
+    p = tmp_path / "types.tbl"
+    p.write_text("|   x    |   n   |\n|  double |  int  |\n      1        2\n      3        4\n")
+    fast = _read_ipac_numeric(p)
+    assert str(fast["x"].dtype) == "float64" and str(fast["n"].dtype) == "int64"
+    bad = tmp_path / "bad.tbl"
+    bad.write_text("|   n   |\n|  int  |\n    1.5\n")
+    assert _read_ipac_numeric(bad) is None
+
+
+def test_declared_null_markers_keep_the_exact_reader(tmp_path):
+    """Markers are per column and literal: -1.0 in x and -999.0 in y are DATA."""
+    import pandas as pd
+    from app.dependencies import _read_ipac_numeric
+    p = tmp_path / "markers.tbl"
+    p.write_text(
+        "|     x    |     y    |\n"
+        "|   double |   double |\n"
+        "|          |          |\n"
+        "|    -999  |    -1    |\n"
+        "     -1.0      -999.0\n"
+        "     -999      2.0\n"
+    )
+    assert _read_ipac_numeric(p) is None
+    df = _read_ipac(p)
+    pd.testing.assert_frame_equal(df, _astropy_ipac(p))
+    assert df["x"][0] == -1.0 and df["y"][0] == -999.0
+
+
+def test_fast_ipac_reader_falls_back_for_strings_and_short_rows(tmp_path):
+    from app.dependencies import _read_ipac_numeric
+    strings = tmp_path / "strings.tbl"
+    strings.write_text(
+        "|    x     |   name    |\n"
+        "|    r     |   char    |\n"
+        "     1.0     NGC 3137\n"
+    )
+    assert _read_ipac_numeric(strings) is None
+    # Same table through the public reader: astropy keeps the blank in the name.
+    assert _read_ipac(strings)["name"][0] == "NGC 3137"
+
+    short = tmp_path / "short.tbl"
+    short.write_text(
+        "|    x     |    y     |    z     |\n"
+        "|    r     |    r     |    r     |\n"
+        "     1.0       2.0       3.0\n"
+        "     4.0       5.0\n"
+    )
+    assert _read_ipac_numeric(short) is None

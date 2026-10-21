@@ -1,5 +1,8 @@
 #include "ColorMaps.h"
 
+#include <algorithm>
+#include <cctype>
+
 #include <vtkColorTransferFunction.h>
 #include <vtkLookupTable.h>
 #include <vtkMath.h>
@@ -51,9 +54,21 @@ void ColorMaps::SetColorMap(vtkLookupTable *lut, const std::string &name)
     }
 
     auto cmap = ColorMaps::LookupTables.find(name);
+    if (cmap == ColorMaps::LookupTables.cend()) {
+        // "Coolwarm" for "CoolWarm" used to leave the table as it was: the map drawn
+        // and the swatch shown disagreed, and a diverging product came out sequential.
+        const auto lower = [](std::string s) {
+            std::transform(s.begin(), s.end(), s.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return s;
+        };
+        const std::string wanted = lower(name);
+        cmap = std::find_if(ColorMaps::LookupTables.cbegin(), ColorMaps::LookupTables.cend(),
+                            [&](const auto &entry) { return lower(entry.first) == wanted; });
+    }
     if (cmap != ColorMaps::LookupTables.cend()) {
         cmap->second(lut);
-        lut->SetObjectName(name);
+        lut->SetObjectName(cmap->first);   // the registry's spelling, which the pickers list
     }
 }
 

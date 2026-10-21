@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<VOTABLE version="1.4" xmlns="http://www.ivoa.net/xml/VOTable/v1.4">
+  <RESOURCE type="results">
+    <INFO name="QUERY_STATUS" value="OK"/>
+    <TABLE name="datalink">
+      <PARAM name="ID" datatype="char" arraysize="*" value="d22-apertif-dr1-HI" ID="primaryID"/>
+      <FIELD name="ID" datatype="char" arraysize="*" ucd="meta.id;meta.main"/>
+      <FIELD name="access_url" datatype="char" arraysize="*" ucd="meta.ref.url"/>
+      <FIELD name="service_def" datatype="char" arraysize="*" ucd="meta.ref"/>
+      <FIELD name="error_message" datatype="char" arraysize="*" ucd="meta.code.error"/>
+      <FIELD name="semantics" datatype="char" arraysize="*" ucd="meta.code"/>
+      <FIELD name="description" datatype="char" arraysize="*" ucd="meta.note"/>
+      <FIELD name="content_type" datatype="char" arraysize="*" ucd="meta.code.mime"/>
+      <FIELD name="content_length" datatype="long" ucd="phys.size;meta.file" unit="byte"/>
+      <FIELD name="link_auth" datatype="char" arraysize="*" ucd="meta.code"/>
+      <FIELD name="link_authorized" datatype="boolean" ucd="meta.code"/>
+      <FIELD name="node_id" datatype="char" arraysize="*" ucd="meta.id"/>
+      <DATA>
+        <TABLEDATA>
+          <TR><TD>d22-apertif-dr1-HI</TD><TD>file:///data/apertif/Apertif_DR1_field191_HI.fits</TD><TD></TD><TD></TD><TD>#this</TD><TD>Direct remote access endpoint for the selected node.</TD><TD>image/fits</TD><TD>2000000000</TD><TD></TD><TD></TD><TD>VIS-LOCAL</TD></TR>
+          <TR><TD>d22-apertif-dr1-HI</TD><TD>http://host.docker.internal:8001/v1/health</TD><TD></TD><TD></TD><TD>#auxiliary</TD><TD>VisIVO compute backend co-located with node VIS-LOCAL: status and capacity</TD><TD>application/json</TD><TD></TD><TD>false</TD><TD></TD><TD>VIS-LOCAL</TD></TR>
+          <TR><TD>d22-apertif-dr1-HI</TD><TD></TD><TD>skava_soda_cutout</TD><TD></TD><TD>#cutout</TD><TD>Server-side SODA cutout (compute-next-to-data).</TD><TD>application/fits</TD><TD></TD><TD>false</TD><TD>true</TD><TD></TD></TR>
+        </TABLEDATA>
+      </DATA>
+    </TABLE>
+  </RESOURCE>
+  <RESOURCE type="meta" ID="skava_soda_cutout" utype="adhoc:service">
+    <PARAM name="standardID" datatype="char" arraysize="*" value="ivo://ivoa.net/std/SODA#sync-1.0"/>
+    <PARAM name="accessURL" datatype="char" arraysize="*" value="http://testserver/soda/execute"/>
+    <GROUP name="inputParams">
+      <PARAM name="ID" datatype="char" arraysize="*" ref="primaryID" value=""/>
+      <PARAM name="POS" datatype="char" arraysize="*" value="" ucd="phys.angArea;obs"/>
+      <PARAM name="BAND" datatype="char" arraysize="*" value="" ucd="em.wl"/>
+      <PARAM name="TIME" datatype="char" arraysize="*" value="" ucd="time.interval"/>
+    </GROUP>
+  </RESOURCE>
+</VOTABLE>
