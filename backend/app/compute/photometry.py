@@ -167,7 +167,7 @@ def worker_aperture_photometry(
         # estimate. The aperture's OWN scatter is not a substitute: it is
         # dominated by the source, so on a noiseless Gaussian it reported an
         # uncertainty that scaled with the peak (4.3 at amplitude 1, 427 at
-        # amplitude 100 â€). "Unknown" is the honest answer.
+        # amplitude 100). "Unknown" is the honest answer.
         bkg_rms = 0.0
 
     # Aperture sum

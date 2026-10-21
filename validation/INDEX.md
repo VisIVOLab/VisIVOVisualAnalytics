@@ -11,6 +11,9 @@ Heavy/regenerable outputs are git-ignored; reproduce via the commands below.
 | **§5 lasso validation** vs SoFiA-2 (2 cubes) | [README.md](README.md) | `lasso_vs_sofia.py [--dataset wallaby]` (+ `sofia_{hgc44,wallaby}.par` via Docker) | `out/metrics{,_wallaby}.{md,csv}`, `out/source_NN{,_wallaby}.png` |
 | §5 lasso completeness–reliability tradeoff (nσ, reach) | [README.md](README.md#completenessreliability-tradeoff) | `lasso_sensitivity.py [--dataset wallaby]` | `out/sensitivity{,_wallaby}.{md,csv,png}` |
 | §5 lasso seed (click) robustness | [README.md](README.md#seed-click-robustness) | `lasso_seed_robustness.py [--dataset wallaby]` | `out/seed_robustness{,_wallaby}.{md,csv,png}` |
+| §5 Dice over (λv, reach) — Fig. "lasso grid" | [README.md](README.md#completenessreliability-tradeoff) | `lasso_sensitivity.py --grid [--dataset wallaby]` | `out/sensitivity_grid{,_wallaby}.{md,csv,png}` |
+| §5 lasso on synthetic discs (S/N, extent, neighbour) — Fig. "lasso synthetic" | [README.md](README.md#the-method-on-its-own-synthetic-discs) | `lasso_synthetic.py` | `out/lasso_synthetic.{md,csv,png}` |
+| §5 comparator's fit on discs of known kinematics | [README.md](README.md#the-method-on-its-own-synthetic-discs) | `kinematic_fit_synthetic.py` | `out/kinematic_fit_synthetic.{md,csv}` |
 | **Figure 3** panels b/c/e/f (lasso on real HI galaxy) | — | `figure3_lasso_hgc44.py` | `out/figure3_lasso.png` |
 | **Figure 7** (cosmic flows: streamlines + basins) | [velocity_field.md](velocity_field.md) | `velocity_field_demo.py` | `out/velocity_field.png` |
 

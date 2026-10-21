@@ -372,6 +372,7 @@ set(PROJECT_SOURCES
         src/gui/DockRail.cpp
         src/gui/DockRail.h
         src/app/ProductRegistry.cpp
+        src/app/HostMemory.cpp
         src/app/ProductRegistry.h
         src/app/ThumbnailCache.cpp
         src/app/ThumbnailCache.h

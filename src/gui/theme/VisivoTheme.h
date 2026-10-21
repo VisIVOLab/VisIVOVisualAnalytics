@@ -15,7 +15,7 @@ class QWidget;
 // ---------------------------------------------------------------------------
 // VisivoTheme — VisIVO "Observatory console" design system (Layout B).
 //
-// The palette derives from the OKLCH ramp shipped in the Claude-Design bundle
+// The palette derives from the OKLCH ramp shipped in the design bundle
 // (`visivo/project/tokens.js`) — cool-neutral surfaces with very low chroma
 // and the brand blue (#048ABF) reserved for primary actions. Hex values are
 // the sRGB conversions of those OKLCH coordinates and live as inline string

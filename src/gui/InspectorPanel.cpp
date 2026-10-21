@@ -21,6 +21,7 @@
 #include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
@@ -475,8 +476,10 @@ QJsonObject InspectorPanel::recipeJson(const AnalysisProduct &p)
     product.insert(u"id"_s, p.productId);
     product.insert(u"kind"_s, p.kind);
     product.insert(u"label"_s, p.label);
-    if (!p.endpoint.isEmpty())
-        product.insert(u"endpoint"_s, p.endpoint);
+    if (!p.replay.isEmpty())
+        product.insert(u"replay"_s, QJsonArray::fromStringList(p.replay));
+    if (!p.replayCaveat.isEmpty())
+        product.insert(u"replay_caveat"_s, p.replayCaveat);
     recipe.insert(u"product"_s, product);
 
     QJsonObject dataset;

@@ -53,7 +53,8 @@ inline QProgressDialog *showToolProgressSheet(QWidget *parent, const QString &wh
     sheet->setAutoReset(false);
     sheet->setWindowTitle(QCoreApplication::translate("ToolProgressSheet", "Working"));
     // setValue(), NOT show(): show() puts the sheet up immediately, which
-    // defeats the minimumDuration and flashes a sheet at every fast compute.
+    // defeats the minimumDuration and flashes a sheet at every fast compute
+    // (confirmed with an offscreen Qt probe: visible after 50 ms).
     // setValue() arms QProgressDialog's OWN delayed-show timer, so the sheet
     // appears only if the work is still running 400 ms later — and because the
     // timer belongs to the dialog, closing it cancels the pending show. A

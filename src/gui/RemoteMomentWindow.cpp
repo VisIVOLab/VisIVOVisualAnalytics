@@ -119,8 +119,11 @@ RemoteMomentWindow::RemoteMomentWindow(const QString &backendUrl, const QString 
         { 8, u"Moment 8 (Peak value)"_s },
         { 10, u"Moment 10 (Minimum value)"_s },
     };
-    for (const auto &[order, label] : momentOrders) {
-        auto *action = momentMenu->addAction(label);
+    for (const auto &entry : momentOrders) {
+        // A plain local, not a structured binding: capturing one is C++20 and
+        // MSVC refuses it in C++17.
+        const int order = entry.first;
+        auto *action = momentMenu->addAction(entry.second);
         QObject::connect(action, &QAction::triggered, this, [this, order]() { this->requestMoment(order); });
     }
 

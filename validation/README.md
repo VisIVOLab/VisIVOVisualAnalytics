@@ -317,6 +317,42 @@ It writes `out/sensitivity{,_wallaby}.{md,csv}` as well as the figure, including
 a *best-Dice per source and axis* table — so a number quoted in the paper is
 traceable to a committed artifact rather than eyeballed off a curve.
 
+With `--grid` it also sweeps the two sliders together — Dice over
+λv ∈ {0.35, 0.5, 1, 2, 3} × reach ∈ {4, 8, 16, 32} at nσ = 2.5 — and writes
+`out/sensitivity_grid{,_wallaby}.{md,csv,png}` (the paper's Fig. "lasso grid").
+What it found: the optimum sits at λv < 1 on all four sources (HI discs are
+extended in velocity), and at a reach that grows with the object (4–8 on
+HGC 44, 16 on the WALLABY disc); the defaults are within 0.02 of the best cell
+on the largest HGC 44 source and 0.10–0.17 below it on the other three.
+
+## The method on its own: synthetic discs
+
+Two observations cannot separate what the algorithm does from what the data
+are. `lasso_synthetic.py` injects discs built with the application's own
+tilted-ring model (`app.kinematic_model`, with an exponential light profile)
+into Gaussian noise and runs the lasso at the shipped defaults, seeded on
+five clicks per case, against the noiseless disc above 2.5 σ of the injected
+noise:
+
+```bash
+backend/.venv/bin/python validation/lasso_synthetic.py
+```
+
+It writes `out/lasso_synthetic.{md,csv,png}`: Dice/completeness/reliability
+over peak S/N {3, 5, 10, 20} × radius {8, 16, 32} px at the defaults and at the
+best of four reach budgets (median and range over the clicks), plus a
+neighbour experiment (two equal discs along the apparent minor axis, Δv_sys 0
+and 150 km/s) reporting how much of a selection leaks into the neighbour. At
+S/N 3 a per-voxel threshold sees nothing; at S/N 10–20 one click reaches
+Dice 0.70–0.80 (0.83–0.88 at the best reach); a neighbour at the same velocity
+is never entered once the discs are apart on the sky, and never at all 150 km/s
+away.
+
+`kinematic_fit_synthetic.py` does the same for the comparator's quick fit
+(`app.compute.kinematic_fit`, what *Fit from the lasso selection* runs): a
+flat and a warped disc with known PA, inclination, V_sys and V_rot, at peak
+S/N 25 and 8, recovered vs true per ring, in `out/kinematic_fit_synthetic.{md,csv}`.
+
 The faint source, only 59 % complete at the default nσ = 2.5, rises toward the
 bright source's completeness as nσ is lowered to 1.5 or *reach* is raised — **but
 that completeness is bought with reliability**: lowering nσ floods the selection
@@ -372,7 +408,7 @@ figures appear as 1 storyboard, 2 architecture, 3 interface, 4 lasso (script 3),
 
 | figure | script | needs |
 |---|---|---|
-| 1 storyboard | `figure1_panels_ngc3137.py`, then `figure1_storyboard.py --src validation/out/fig1 --out validation/out/figure1_storyboard.png --crop 0,0,1,1` | `VISIVO_VALIDATION_CUBE_2` |
+| 1 storyboard | `figure1_panels_ngc3137.py`, then `figure1_storyboard.py --src validation/out/fig1 --out validation/out/figure1_storyboard.png --crop ''` (panels are drawn at the slot size they print at, so no window crop) | `VISIVO_VALIDATION_CUBE_2` |
 | 2 architecture | `figure2_architecture.py` | nothing (a drawing) |
 | 3 lasso on HCG 44 | `figure3_lasso_hgc44.py` | `VISIVO_VALIDATION_CUBE`, SoFiA mask |
 | 4 tilted-ring model | `figure4_model_ngc3137.py` | `VISIVO_VALIDATION_CUBE_2` |

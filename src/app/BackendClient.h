@@ -298,6 +298,11 @@ struct BackendCubeSubvolumeResult
     QString spectralAxisUnit;
     QString bunit;
     QByteArray data;
+    /// The Z-slabs as fetched, in Z order, when the caller asked to keep them
+    /// (``keepSlabs``): the volume can then be assembled straight into its final
+    /// buffer, slab by slab, instead of through a stitched copy that doubles the
+    /// transient memory of a multi-GB load. ``data`` is empty in that case.
+    QList<QByteArray> slabs;
 };
 
 struct BackendCubePvResult
@@ -2006,7 +2011,8 @@ public:
     BackendCubeSliceResult requestSlice(const QString &datasetId, const QString &axis,
                                         int index) const;
     BackendCubeSubvolumeResult requestSubvolume(const QString &datasetId, int x0, int x1, int y0,
-                                                int y1, int z0, int z1) const;
+                                                int y1, int z0, int z1,
+                                                bool keepSlabs = false) const;
     /// @p vertices are 0-based cube pixels (x, y); fractional values are honoured.
     BackendCubePvResult requestPv(const QString &datasetId,
                                   const std::vector<std::array<double, 2>> &vertices,

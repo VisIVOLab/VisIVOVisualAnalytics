@@ -198,6 +198,10 @@ struct RemoteKinematicSelectResult
     int count{ 0 };
     int bbox[6]{ 0, 0, 0, 0, 0, 0 };
     QByteArray data;   // ROI binary mask (float32 0/1)
+    /// The budget the grow's graph was built with — the level field's reach_max
+    /// when the mask is a level set of it, the reach itself for a single-budget
+    /// grow. It sizes the faint shell, so a replay must pass it as reach_max.
+    double graphBudget{ 0.0 };
 };
 
 class vtkWindowCube : public QMainWindow
@@ -1264,6 +1268,7 @@ protected:
     // + its full-res voxel origin/dims — kept so Apply sends the EXACT mask shown
     // (foundation for per-channel 2-D refinement) and the 2-D overlay can slice it.
     QByteArray m_lassoMaskBytes;
+    double m_lassoMaskGraphBudget{ 0.0 };  ///< graphBudget of the mask on screen (see RemoteKinematicSelectResult)
     int m_lassoMaskOrigin[3]{ 0, 0, 0 };   ///< full-res voxel origin (x,y,z)
     int m_lassoMaskDims[3]{ 0, 0, 0 };     ///< ROI dims (w,h,d) = (x,y,z)
     double m_lassoDispOrigin[3]{ 0., 0., 0. };   ///< 3-D display origin of the ROI mask
@@ -2385,7 +2390,8 @@ protected:
                                     bool revealProvenance = true,
                                     const QVariantMap &origin = {},
                                     bool selectInSession = true,
-                                    const QString &endpoint = QString());
+                                    const QStringList &replay = {},
+                                    const QString &replayCaveat = QString());
     /// Redraw the region, or re-place the probe marker, a product was generated
     /// from. Returns false when the product carries no geometry.
     bool restoreProductOrigin(const QVariantMap &origin);

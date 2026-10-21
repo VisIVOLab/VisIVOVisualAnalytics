@@ -321,7 +321,8 @@ bool vtkWindowCube::backendIsLocal() const
     //
     // Read raw with QSettings, NOT through Settings: that constructor launches
     // python3 (and possibly python) with 30-second synchronous waits to locate
-    // an interpreter, which is not something to do while composing a banner.
+    // an interpreter, which is not something to do while composing a banner
+    // (main.cpp avoids it for the same reason when reading the theme).
     const QString iniPath =
             QDir(QDir::home().absoluteFilePath(qApp->applicationName()))
                     .absoluteFilePath(QStringLiteral("Settings.ini"));

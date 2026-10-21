@@ -700,7 +700,10 @@ async def cube_mask_apply_bin(
     mode: str = Query("blank_outside"),
     output_basename: str = Query(""),
     # "key=value; key=value" — how the mask was made, written to HISTORY.
-    recipe: str = Query("", max_length=1000),
+    # Room for a selection's seed lists ("(z,y,x)|…"): a count could not be
+    # replayed, coordinates can, and a hundred of them is a long session. Kept
+    # under the 8 KB request line most servers accept.
+    recipe: str = Query("", max_length=4000),
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> CubeMaskResponse:

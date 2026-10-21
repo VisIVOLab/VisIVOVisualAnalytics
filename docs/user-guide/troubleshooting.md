@@ -60,6 +60,17 @@ Then restart the app.
 
 ## Performance
 
+### "Full resolution" is refused: not enough memory
+
+Loading a cube at full resolution holds about three times its size while it
+arrives (the slabs, the assembled volume, the copy on the GPU). The client
+compares that with the machine's physical memory before fetching and, when it
+does not fit, keeps the decimated proxy and says so with the numbers. Crop the
+region you need (*Tools ▸ Crop Full Resolution*), or render on a remote
+backend. A load that fails part-way (a slab the backend could not serve)
+reports the failure instead of retrying through the JSON route, which on a
+multi-GB cube used to multiply the client's memory until the system killed it.
+
 ### The cube swap from preview to full-resolution takes several seconds
 
 Expected for cubes ≥ ~500 MB. The first full-resolution Render uploads

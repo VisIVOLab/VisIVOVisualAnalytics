@@ -1323,7 +1323,7 @@ static QByteArray performBinaryPost(QNetworkAccessManager *nam,
 
 BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datasetId, int x0,
                                                            int x1, int y0, int y1, int z0,
-                                                           int z1) const
+                                                           int z1, bool keepSlabs) const
 {
     BackendCubeSubvolumeResult result;
     const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
@@ -1344,9 +1344,13 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
     // throughput stacks roughly linearly until the tunnel's outer TCP
     // saturates.
     //
-    // Fallback to the JSON endpoint on:
-    //   - 404 on any slab (older backend without the binary route)
-    //   - any transport error  — keep the legacy path as a safety net.
+    // Fallback to the JSON endpoint ONLY on a 404 (an older backend without
+    // the binary route). It used to fall back on any transport error too, and
+    // that was the hazard: a timed-out or failed slab of a multi-GB cube sent
+    // the whole volume again as base64 JSON, which the client then held as the
+    // reply buffer, its copy, the parsed document and the decoded bytes — four
+    // times the cube on top of everything else, while the backend kept serving
+    // the aborted slabs. A failed slab now fails the load, and says so.
     {
         struct SlabResult {
             bool ok{ false };
@@ -1489,17 +1493,19 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
         QList<SlabResult> slabs;
         slabs.reserve(futures.size());
         bool anyFailed = false;
+        bool routeMissing = false;
         QString firstError;
         for (auto &f : futures) {
             f.waitForFinished();
-            const SlabResult sr = f.result();
+            SlabResult sr = f.result();
             if (!sr.ok && !anyFailed) {
                 firstError = sr.error;
             }
             if (!sr.ok) {
                 anyFailed = true;
+                routeMissing = routeMissing || sr.status == 404;
             }
-            slabs.append(sr);
+            slabs.append(std::move(sr));
         }
 
         const qint64 fetchElapsedMs = subvolTimer.elapsed();
@@ -1515,9 +1521,17 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
             QElapsedTimer stitchTimer;
             stitchTimer.start();
             QByteArray stitched;
-            stitched.reserve(int(totalBytes));
-            for (const auto &s : slabs) {
-                stitched.append(s.data);
+            QList<QByteArray> kept;
+            if (keepSlabs) {
+                kept.reserve(slabs.size());
+                for (auto &s : slabs) {
+                    kept.append(std::move(s.data));
+                }
+            } else {
+                stitched.reserve(int(totalBytes));
+                for (const auto &s : slabs) {
+                    stitched.append(s.data);
+                }
             }
             const qint64 stitchElapsedMs = stitchTimer.elapsed();
             qDebug().noquote() << QStringLiteral(
@@ -1549,15 +1563,22 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
             result.spectralAxisUnit  = slabs[0].spectralAxisUnit;
             result.bunit             = slabs[0].bunit;
             result.data              = stitched;
+            result.slabs             = kept;
             return result;
         }
 
-        if (!firstError.isEmpty()) {
+        if (!routeMissing) {
+            result = BackendCubeSubvolumeResult{};
+            result.error = firstError.isEmpty()
+                    ? QStringLiteral("subvolume_bin parallel fetch failed")
+                    : firstError;
             qWarning().noquote()
-                    << QStringLiteral("subvolume_bin parallel fetch failed: %1. "
-                                      "Falling back to JSON endpoint.")
-                               .arg(firstError);
+                    << QStringLiteral("subvolume_bin parallel fetch failed: %1").arg(result.error);
+            return result;
         }
+        qWarning().noquote()
+                << QStringLiteral("subvolume_bin is not served by this backend (404): "
+                                  "falling back to the JSON endpoint.");
         // Reset partial state before fallback.
         result = BackendCubeSubvolumeResult{};
     }

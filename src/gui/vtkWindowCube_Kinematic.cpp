@@ -473,7 +473,7 @@ void vtkWindowCube::showKinematicModelDialog()
     // rest of the analysis instead of being retyped.
     auto *saveRingsBtn = new QPushButton(u"Save rings as JSON…"_s, ringButtonsW);
     ringButtons->addWidget(saveRingsBtn);
-    QObject::connect(saveRingsBtn, &QPushButton::clicked, &dlg, [=, this]() {
+    QObject::connect(saveRingsBtn, &QPushButton::clicked, &dlg, [=]() {
         QString error;
         const auto rings = readRings(&error);
         if (!error.isEmpty() || rings.isEmpty()) {
@@ -504,7 +504,7 @@ void vtkWindowCube::showKinematicModelDialog()
                                  u"Could not write %1:\n%2"_s.arg(path, f.errorString()));
     });
 
-    QObject::connect(fitBtn, &QPushButton::clicked, &dlg, [=, this]() {
+    QObject::connect(fitBtn, &QPushButton::clicked, &dlg, [=]() {
         if (this->m_lassoMaskBytes.isEmpty() || this->m_kinFitRunning)
             return;
         this->m_kinFitRunning = true;
@@ -532,7 +532,7 @@ void vtkWindowCube::showKinematicModelDialog()
             this->refreshKinematicFitAvailability();
         });
         QObject::connect(watcher, &QFutureWatcher<BackendKinematicFitResult>::finished, dlgPtr,
-                         [=, this]() {
+                         [=]() {
             const BackendKinematicFitResult r = watcher->result();
             watcher->deleteLater();
             if (sheet)
@@ -594,8 +594,8 @@ void vtkWindowCube::showKinematicModelDialog()
     // isRunning() is false as soon as the WORKER ends, while `finished` is still
     // queued for the GUI thread. A second click in that window replaced the
     // member watcher's future and overwrote m_kinematicSheet, so the first
-    // sheet stayed on screen forever and its result was dropped (
-    // reproduced in a Qt harness). The flag is held until the result has been
+    // sheet stayed on screen forever and its result was dropped
+    // (reproduced in a Qt harness). The flag is held until the result has been
     // HANDLED, not until the worker stops.
     if (this->m_kinematicBusy)
         return;
@@ -889,7 +889,11 @@ void vtkWindowCube::publishKinematicFit(const BackendKinematicFitResult &r,
                                   props, /*window=*/nullptr, this->scopedProductId(u"kinfit-props"_s),
                                   /*renderer=*/QString(), /*revealProvenance=*/false,
                                   /*origin=*/{}, /*selectInSession=*/true,
-                                  /*endpoint=*/u"/v1/cube/kinematic_fit_bin"_s);
+                                  /*replay=*/{ u"/v1/cube/kinematic_fit_bin"_s },
+                                  /*replayCaveat=*/u"The fit ran on the lasso selection's mask, "
+                                                   u"which this record describes but does not "
+                                                   u"carry: replay that selection from its own "
+                                                   u"recipe first, then post its mask here."_s);
     this->statusBar()->showMessage(
             u"Kinematic fit: PA %1°, i %2°, V_rot %3 km/s; maps and measures in Session Data."_s
                     .arg(f(r.pa), f(r.incl), f(r.vrot)),

@@ -739,10 +739,12 @@ def worker_cube_mask_apply(
             f"VisIVO Kinematic Lasso mask ({mode}) from {Path(path).name}: "
             f"explicit {int(roi_mask.sum())}-voxel mask at ({ox},{oy},{oz})")
         # How the mask was made (seed, reach, coupling, threshold, smoothing,
-        # hand edits), as the client sent it: one parameter per HISTORY card, so
-        # the file alone says how to make it again.
-        for item in [part.strip() for part in str(recipe).split(";") if part.strip()][:24]:
-            out_hdul[0].header.add_history(f"Lasso {item}"[:72])
+        # extra seeds, hand edits), as the client sent it: one parameter per
+        # HISTORY entry, so the file alone says how to make it again. Nothing is
+        # cut: astropy continues a value longer than a card onto further HISTORY
+        # cards, and a seed list is exactly the item that must survive whole.
+        for item in [part.strip() for part in str(recipe).split(";") if part.strip()]:
+            out_hdul[0].header.add_history(f"Lasso {item}")
         range_min, range_max = _finite_range(kept)
         out_hdul.flush()
     finally:

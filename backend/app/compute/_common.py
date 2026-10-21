@@ -60,7 +60,7 @@ def _finite_range(array: np.ndarray) -> tuple[float, float]:
     nanmin/nanmax skip NaN but keep infinities, so the mask computed here used
     to be discarded: a plane carrying a single +inf reported range_max = inf,
     which is not representable in JSON and made the endpoint answer 500
-    (reproduced on /v1/stokes â€).
+    (reproduced on /v1/stokes).
     """
     finite = np.isfinite(array)
     if not finite.any():
