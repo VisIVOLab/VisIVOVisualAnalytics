@@ -1,7 +1,7 @@
 # Troubleshooting
 
 Common problems, what they mean, and how to fix them. Open a
-[GitHub issue](https://github.com/VisIVOLab/VisIVO-next/issues)
+[GitHub issue](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues)
 if you hit something not covered here.
 
 ## Backend / connection

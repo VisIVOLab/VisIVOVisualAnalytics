@@ -37,7 +37,7 @@
 #   # Power9 testbed: 1 GPU, jail under /data
 #   bash scripts/launch_backend_slurm.sh \
 #       --partition gpu --gres gpu:1 --data-root /data \
-#       --sif ~/VisIVO-next/backend-gpu.sif
+#       --sif ~/VisIVOVisualAnalytics/backend-gpu.sif
 #
 #   # CPU-only smoke test
 #   bash scripts/launch_backend_slurm.sh --no-gpu --partition normal

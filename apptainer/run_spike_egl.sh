@@ -22,8 +22,8 @@ set -euo pipefail
 
 FITS="${1:-}"
 OUT="${2:-/tmp/spike_egl_output.png}"
-SIF="${VISIVO_SIF:-$HOME/VisIVO-next/backend-egl.sif}"
-SPIKE="${VISIVO_SPIKE:-$HOME/VisIVO-next/apptainer/spike_egl_volume.py}"
+SIF="${VISIVO_SIF:-$HOME/VisIVOVisualAnalytics/backend-egl.sif}"
+SPIKE="${VISIVO_SPIKE:-$HOME/VisIVOVisualAnalytics/apptainer/spike_egl_volume.py}"
 
 if [[ -z "$FITS" ]]; then
     echo "Usage: $0 <fits_path> [<output_png>]" >&2

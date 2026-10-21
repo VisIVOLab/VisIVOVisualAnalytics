@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate synthetic demo datasets for testing every VisIVO-next viewer feature.
+"""Generate synthetic demo datasets for testing every VisIVO Visual Analytics viewer feature.
 
 Each dataset is small, self-contained, and targets a specific feature so a
 reviewer can exercise the app end-to-end without hunting for real data. Run:

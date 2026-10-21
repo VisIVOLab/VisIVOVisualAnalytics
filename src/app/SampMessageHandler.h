@@ -1,4 +1,4 @@
-// SampMessageHandler.h – MType handlers for inbound SAMP messages in VisIVO-next
+// SampMessageHandler.h – MType handlers for inbound SAMP messages in VisIVO Visual Analytics
 //
 // SampMessageHandler connects to SampClient::messageReceived() and dispatches
 // each SAMP message to the appropriate VisIVO action.

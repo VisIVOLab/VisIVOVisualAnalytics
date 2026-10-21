@@ -1,6 +1,6 @@
 # Polarimetry (Stokes Q, U, V)
 
-Radio surveys publish full-Stokes data in two shapes, and VisIVO-next handles
+Radio surveys publish full-Stokes data in two shapes, and VisIVO Visual Analytics handles
 both — but by two different routes, because they are not the same problem.
 
 | Your data | Where to work | Why |
@@ -171,14 +171,14 @@ Four things in these files are worth knowing before you trust a header:
   then `NSPEC = 14` sub-bands, whose real frequencies are in per-plane
   `FREQ0001`…`FREQ0014` keywords — 908 to 1656 MHz. The WCS axis
   (`CRVAL3`/`CDELT3`) describes 1284 to 2147 MHz, which is neither the same
-  grid nor the same planes. VisIVO-next reads the keywords when they are
+  grid nor the same planes. VisIVO Visual Analytics reads the keywords when they are
   present and consistent, and falls back to the WCS axis when they are not.
   Without this, RM synthesis would use the wrong λ² *and* feed two fitted
   planes into the transform, producing a plausible-looking and wrong RM map.
 
 - **`OBJECT` is unreliable.** The Q/U/V cubes of `G000.0+2.5` say
   `OBJECT = 'SMC1R07C'`, a different pointing entirely.
-- **The V cubes carry `CRVAL4 = 1`**, which decodes as Stokes I. VisIVO-next
+- **The V cubes carry `CRVAL4 = 1`**, which decodes as Stokes I. VisIVO Visual Analytics
   therefore trusts the role *you* assigned a companion file over what its
   header claims, whenever that file holds a single Stokes plane — and logs the
   disagreement rather than refusing a published dataset over a wrong keyword.
@@ -190,7 +190,7 @@ Four things in these files are worth knowing before you trust a header:
   intensity and angle on a blank plane are refused with a message naming the
   plane, so pick another channel.
 - **`CTYPE3` is `SPECLNMF`**, Obit MFImage's spelling for a per-sub-band
-  frequency axis and not in the FITS standard. VisIVO-next recognises it. The
+  frequency axis and not in the FITS standard. VisIVO Visual Analytics recognises it. The
   axis has no `CUNIT`, so the unit is inferred from the magnitude; a header
   whose values are not plausible frequencies in Hz is rejected rather than
   guessed at.

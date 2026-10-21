@@ -25,6 +25,9 @@ on:
 
 jobs:
   versions:
+    # The caches it keeps warm are the release build's, which runs only in the
+    # public repository (see release.yml).
+    if: github.repository == 'VisIVOLab/VisIVOVisualAnalytics'
     name: read the versions release.yml pins
     runs-on: ubuntu-22.04
     outputs:

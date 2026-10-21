@@ -2,7 +2,7 @@
 # `VisIVOLab/VisIVO-doc` repository, which Read the Docs uses as the source
 # for https://visivo.readthedocs.io.
 #
-# Why this exists: the main repo (VisIVO-next) is private and
+# Why this exists: the development repo (VisIVO-next) is private and
 # RTD Community can only build from public repositories. The cleanest way to
 # keep RTD happy without paying for RTD Business is to mirror only the docs
 # tree into a public repo that RTD points at. Editors keep working on the
@@ -48,6 +48,9 @@ concurrency:
 
 jobs:
   sync:
+    # Only the development repo holds the VisIVO-doc deploy key; in the public
+    # repository the job would fail on the missing secret.
+    if: github.repository == 'VisIVOLab/VisIVO-next'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -91,9 +94,9 @@ jobs:
           VisIVO project documentation. **Do not edit files here directly.**
 
           The contents of this repo are auto-generated from the `docs/`
-          subtree of the (private) source repository
-          [`VisIVOLab/VisIVO-next`](https://github.com/VisIVOLab/VisIVO-next)
-          via a [GitHub Actions workflow](https://github.com/VisIVOLab/VisIVO-next/blob/main/.github/workflows/sync-docs.yml).
+          subtree of the source repository
+          [`VisIVOLab/VisIVOVisualAnalytics`](https://github.com/VisIVOLab/VisIVOVisualAnalytics)
+          via a GitHub Actions workflow.
           Every push to the upstream `docs/` triggers a sync that overwrites
           the contents of this repo and re-runs the RTD build.
 

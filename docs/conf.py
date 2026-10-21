@@ -135,7 +135,7 @@ html_theme_options = {
     "footer_icons": [
         {
             "name": "GitHub",
-            "url":  "https://github.com/VisIVOLab/VisIVO-next",
+            "url":  "https://github.com/VisIVOLab/VisIVOVisualAnalytics",
             "html": "",  # furo uses an svg icon by default
             "class": "fa-brands fa-github",
         },

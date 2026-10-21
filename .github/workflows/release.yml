@@ -89,6 +89,10 @@ jobs:
   # matrix is emitted here instead. A tag push ignores the input and builds
   # everything, because a published release has to be complete.
   setup:
+    # Releases are built in the public repository, where GitHub-hosted runners
+    # are free; the private development repo has a minutes quota (macOS counts
+    # 10×) and must not spend it on a tag pushed there too.
+    if: github.repository == 'VisIVOLab/VisIVOVisualAnalytics'
     name: choose platforms
     runs-on: ubuntu-22.04
     outputs:

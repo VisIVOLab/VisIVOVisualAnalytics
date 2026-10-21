@@ -17,10 +17,13 @@
 #       --user     fvitello \
 #       --partition gpu --gres gpu:1 \
 #       --data-root /data \
-#       --sif /home/fvitello/VisIVO-next/backend-gpu.sif
+#       --sif ~/VisIVOVisualAnalytics/backend-gpu.sif
 #
 # After it returns, the SSH tunnel is running in the background; kill it
 # (and free the local port) with:
+#   (--repo-dir DIR: the clone on the frontend, relative to its home;
+#    default VisIVOVisualAnalytics, or $VISIVO_REMOTE_REPO)
+#
 #   bash scripts/visivo_slurm_tunnel.sh --stop
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -28,6 +31,9 @@ set -euo pipefail
 FRONTEND=""
 SSH_USER="${USER}"
 LOCAL_PORT="${VISIVO_PORT:-8000}"
+# The clone on the frontend, relative to the remote home (an older checkout
+# may still be called VisIVO-next: pass --repo-dir or set VISIVO_REMOTE_REPO).
+REMOTE_REPO="${VISIVO_REMOTE_REPO:-VisIVOVisualAnalytics}"
 REMOTE_OPTS=()
 PIDFILE="${HOME}/.visivo_slurm_tunnel.pid"
 JOBFILE="${HOME}/.visivo_slurm_job"
@@ -36,6 +42,7 @@ STOP=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --frontend)  FRONTEND="$2"; shift 2 ;;
+        --repo-dir) REMOTE_REPO="$2"; shift 2 ;;
         --user)      SSH_USER="$2"; shift 2 ;;
         --port)      LOCAL_PORT="$2"; REMOTE_OPTS+=("--port" "$2"); shift 2 ;;
         --stop)      STOP=true; shift ;;
@@ -90,7 +97,7 @@ fi
 
 # ── Submit via SSH and capture the launcher's output ─────────────────────────
 echo "[visivo] Submitting backend job on ${SSH_USER}@${FRONTEND}…"
-REMOTE_CMD=(bash 'VisIVO-next/scripts/launch_backend_slurm.sh' "${REMOTE_OPTS[@]}")
+REMOTE_CMD=(bash "${REMOTE_REPO}/scripts/launch_backend_slurm.sh" "${REMOTE_OPTS[@]}")
 
 # Stream the launcher's stdout to our terminal AND capture it for parsing.
 # macOS BSD mktemp wants ``XXXXXX`` at the END of the template; a

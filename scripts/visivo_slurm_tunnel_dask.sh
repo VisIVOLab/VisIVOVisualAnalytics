@@ -24,11 +24,13 @@
 #       --cpus     32 \
 #       --workers  32 \
 #       --data-root /mnt/beegfs/fvitello/data \
-#       --sif      /home/fvitello/VisIVO-next/backend-gpu.sif \
+#       --sif      ~/VisIVOVisualAnalytics/backend-gpu.sif \
 #       --token    "$(cat ~/.visivo/power9_token)"
 #
 # Local-side options (do NOT pass through to the launcher):
 #   --frontend HOST    SLURM frontend hostname (required)
+#   --repo-dir DIR     the clone on the frontend, relative to its home
+#                      (default VisIVOVisualAnalytics; $VISIVO_REMOTE_REPO)
 #   --user     USER    SSH login (default: $USER)
 #   --port     PORT    Local port for the backend tunnel (default: 8000)
 #   --dashboard-port P Local port for the Dask dashboard tunnel (default: 18787)
@@ -47,6 +49,9 @@ set -euo pipefail
 FRONTEND=""
 SSH_USER="${USER}"
 LOCAL_PORT="${VISIVO_PORT:-8000}"
+# The clone on the frontend, relative to the remote home (an older checkout
+# may still be called VisIVO-next: pass --repo-dir or set VISIVO_REMOTE_REPO).
+REMOTE_REPO="${VISIVO_REMOTE_REPO:-VisIVOVisualAnalytics}"
 LOCAL_DASH_PORT="${VISIVO_DASHBOARD_PORT:-18787}"
 WITH_DASHBOARD=true
 REMOTE_OPTS=()
@@ -58,6 +63,7 @@ STOP=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --frontend)       FRONTEND="$2"; shift 2 ;;
+        --repo-dir)      REMOTE_REPO="$2"; shift 2 ;;
         --user)           SSH_USER="$2"; shift 2 ;;
         --port)           LOCAL_PORT="$2"; REMOTE_OPTS+=("--port" "$2"); shift 2 ;;
         --dashboard-port) LOCAL_DASH_PORT="$2"; shift 2 ;;
@@ -110,7 +116,7 @@ fi
 
 # ── Submit via SSH and capture the launcher's output ─────────────────────────
 echo "[visivo] Submitting Dask multi-node backend job on ${SSH_USER}@${FRONTEND}…"
-REMOTE_CMD=(bash 'VisIVO-next/scripts/launch_backend_slurm_dask.sh' "${REMOTE_OPTS[@]}")
+REMOTE_CMD=(bash "${REMOTE_REPO}/scripts/launch_backend_slurm_dask.sh" "${REMOTE_OPTS[@]}")
 
 # Stream + capture (BSD mktemp on macOS: no trailing suffix).
 TMP="$(mktemp /tmp/visivo_slurm_dask_XXXXXX)"

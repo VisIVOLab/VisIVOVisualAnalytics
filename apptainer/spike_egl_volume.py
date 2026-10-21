@@ -28,7 +28,7 @@ Usage:
   apptainer exec --nv \\
       --bind /mnt/beegfs:/mnt/beegfs \\
       backend-gpu.sif \\
-      python3 /home/fvitello/VisIVO-next/apptainer/spike_egl_volume.py \\
+      python3 ~/VisIVOVisualAnalytics/apptainer/spike_egl_volume.py \\
       /mnt/beegfs/fvitello/data/WALLABY.fits \\
       /tmp/spike_output.png
 """

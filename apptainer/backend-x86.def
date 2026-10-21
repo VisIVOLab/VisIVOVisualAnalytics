@@ -29,7 +29,7 @@ From: condaforge/mambaforge:latest
 
     ── Quick start ──────────────────────────────────────────────────────
     # Build (RUN FROM REPO ROOT — paths in %setup are relative to cwd)
-    cd VisIVO-next
+    cd VisIVOVisualAnalytics
     apptainer build --fakeroot backend-x86.sif apptainer/backend-x86.def
 
     # Run with GPU passthrough (REQUIRES NVIDIA driver >= 570 on host

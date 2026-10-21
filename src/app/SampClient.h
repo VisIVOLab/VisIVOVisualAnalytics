@@ -1,4 +1,4 @@
-// SampClient.h – Qt SAMP client for VisIVO-next
+// SampClient.h – Qt SAMP client for VisIVO Visual Analytics
 //
 // This class implements a lightweight SAMP Standard Profile client using
 // Qt's own networking stack (QNetworkAccessManager + QDomDocument for XML-RPC).

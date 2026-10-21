@@ -35,7 +35,7 @@
 #   bash scripts/launch_backend_slurm_dask.sh \
 #       --nodes 4 --cpus 32 --workers 32 \
 #       --gres gpu:v100:1 --data-root /mnt/beegfs/fvitello/data \
-#       --sif ~/VisIVO-next/backend-gpu.sif
+#       --sif ~/VisIVOVisualAnalytics/backend-gpu.sif
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 

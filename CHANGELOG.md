@@ -8,6 +8,10 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## 1.0.2 (2026-10-21)
 
+- **Public repository: `VisIVOLab/VisIVOVisualAnalytics`.** Documentation,
+  issue links, the paper and the build/HPC examples point there; the SLURM
+  tunnel scripts take `--repo-dir` (or `VISIVO_REMOTE_REPO`) for a clone with
+  another name on the frontend.
 - **Full-resolution load: a bounded transient, and no JSON fallback.** Loading
   a cube at full resolution held it three times over while it arrived (the
   four Z-slabs, a stitched copy, the image) before the GPU copy; the slabs are
