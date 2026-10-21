@@ -8,6 +8,22 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## 1.0.2 (2026-10-21)
 
+- **Multi-extension FITS cubes open.** An ESO phase-3 or APEX product keeps
+  the primary HDU empty (`NAXIS = 0`) and the cube in an image extension
+  (`DATA_EXT`, with the variance in `STAT_EXT`). The classifier called it
+  "unknown" and the opener read an image of shape `()`. Every reader now takes
+  the first image HDU with a real array (`image_hdu_index`): the opener, the
+  classifier, the cube reader, server-side rendering, moment and PV headers,
+  region WCS, the velocity-field and dynamic-spectrum loaders, and the header
+  viewer, which lists the extension's header followed by the descriptive cards
+  only the primary carries; header edits go to the HDU that owns the card.
+- **Exported recipe is a record, not a list.** *Export recipe as JSON…* now
+  writes the product (id, kind, label, the service route that replays it), the
+  dataset (name, path, backend ids), the parameters, the geometry it was taken
+  from, the application version and the export time, under
+  `"schema": "visivo-recipe/1"`. Before, it was the label→value map of the
+  Provenance tab alone.
+
 - **Large IPAC catalogues open in seconds.** Opening the 2.3-million-row
   `NKATZ_2.3M.tbl` used to take minutes and more than 18 GB, and the whole
   backend stopped answering meanwhile (the parse ran on its event loop, so

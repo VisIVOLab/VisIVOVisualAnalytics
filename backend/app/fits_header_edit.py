@@ -29,6 +29,8 @@ from typing import Any
 
 from astropy.io import fits
 
+from .fits_dataset import image_hdu_index
+
 #: Keywords that describe the file's structure rather than its science. Editing
 #: them through this route would make the header disagree with the data that
 #: follows it; the shape of a file is changed by rewriting the data, not by
@@ -192,18 +194,35 @@ def worker_patch_header(input_path: str, output_path: str, cards: list[dict[str,
         raise HeaderEditError("No changes were given.")
 
     with fits.open(input_path, memmap=False) as hdul:
-        hdu_index = next(
-            (i for i, h in enumerate(hdul)
-             if isinstance(h, (fits.PrimaryHDU, fits.ImageHDU, fits.CompImageHDU))
-             and getattr(h, "data", None) is not None),
-            0)
+        # The HDU the viewer shows and lists: the same rule as the opener.
+        hdu_index = image_hdu_index(hdul)
         # A patch is written into a copy of the whole file, extensions included:
         # the edited header is one HDU of it, and dropping the rest would lose
         # data the user never asked to lose.
         hdul = fits.HDUList([h.copy() for h in hdul])
-        changes = apply_patch(hdul[hdu_index].header, cards, remove)
-        hdul[hdu_index].header["HISTORY"] = "VisIVO: header edited"
-        wcs = describe_wcs(hdul[hdu_index].header)
+        image_header = hdul[hdu_index].header
+        # The listing the editor shows merges the image header with the cards
+        # only the primary carries (OBJECT, the ESO hierarchy). An edit of one
+        # of those goes back to the primary, where it lives, so removing or
+        # changing it has the effect the listing promised; a new keyword and
+        # anything the image HDU already has go to the image HDU.
+        primary_edits: list[dict[str, Any]] = []
+        primary_removals: list[str] = []
+        if hdu_index != 0:
+            primary_header = hdul[0].header
+            def _primary_owns(key: str) -> bool:
+                return key in primary_header and key not in image_header
+            primary_edits = [c for c in cards if _primary_owns(validate_key(c.get("key", "")))]
+            primary_removals = [k for k in (remove or []) if _primary_owns(validate_key(k))]
+            cards = [c for c in cards if c not in primary_edits]
+            remove = [k for k in (remove or []) if k not in primary_removals]
+        changes = apply_patch(image_header, cards, remove)
+        if cards or remove:
+            image_header["HISTORY"] = "VisIVO: header edited"
+        if primary_edits or primary_removals:
+            changes += apply_patch(hdul[0].header, primary_edits, primary_removals)
+            hdul[0].header["HISTORY"] = "VisIVO: header edited"
+        wcs = describe_wcs(image_header)
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         hdul.writeto(output_path, overwrite=True)
 

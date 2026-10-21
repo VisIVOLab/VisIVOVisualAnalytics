@@ -294,10 +294,10 @@ def worker_cube_save_subregion(
             )
         sub = np.asarray(data[z0c:z1c + 1, y0c:y1c + 1, x0c:x1c + 1],
                          dtype=np.float32)
-        # Header is cloned from the source PRIMARY so we keep BUNIT, OBJECT,
+        # Header is cloned from the source image HDU so we keep BUNIT, OBJECT,
         # HISTORY and every WCS keyword by default. NAXIS / CRPIX get the
         # crop-aware updates below.
-        header = hdul[0].header.copy()
+        header = dataset.header.copy()
     finally:
         hdul.close()
 
@@ -483,7 +483,7 @@ def worker_cube_save_channel_2d(
                 f"Channel {ch} is out of range (cube has {depth} channels)."
             )
         plane = np.asarray(data[ch, :, :], dtype=np.float32).copy()
-        src_header = hdul[0].header.copy()
+        src_header = dataset.header.copy()
     finally:
         hdul.close()
 
@@ -948,7 +948,7 @@ def worker_save_map_2d(
     dataset = ScientificFitsDataset(src_path)
     hdul, _ = dataset.open_memmap()
     try:
-        src_header = hdul[0].header.copy()
+        src_header = dataset.header.copy()
     finally:
         hdul.close()
 

@@ -32,6 +32,8 @@ from typing import Any
 import numpy as np
 from astropy.io import fits
 
+from .fits_dataset import image_hdu_index
+
 logger = logging.getLogger("visivo.dynspec")
 
 
@@ -40,8 +42,9 @@ logger = logging.getLogger("visivo.dynspec")
 def _open_dynspec(src_path: str) -> tuple[np.ndarray, fits.Header]:
     """Read a 2-D dynspec FITS into a (freq, time) float32 array."""
     with fits.open(src_path, memmap=True, mode="readonly") as hdul:
-        data = np.asarray(hdul[0].data, dtype=np.float32)
-        header = hdul[0].header.copy()
+        hdu = hdul[image_hdu_index(hdul)]
+        data = np.asarray(hdu.data, dtype=np.float32)
+        header = hdu.header.copy()
     if data.ndim > 2:
         # Squeeze any degenerate leading axes (Stokes/Pol/etc.) so the result
         # is purely (freq, time). Last two dims are kept as (NAXIS2, NAXIS1).

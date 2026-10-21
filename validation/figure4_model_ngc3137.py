@@ -3,11 +3,13 @@
 
 Top row: three channel maps of the isolated cube (approaching, systemic,
 receding), with the half-maximum contour of the rings model — the 2-D contour
-the overlay draws on the channel map. Bottom row: the velocity field and the
+the overlay draws on the channel map. Middle row: the velocity field and the
 two model velocity fields the kinematic fit adds to Session Data, on one colour
-scale. Every array comes from ``usecase_ngc3137.run()``, which calls the
-application's own fit and model, so the figure and the numbers in Section 6.1
-are the same products.
+scale. Bottom row: the two residual maps v_data − v_model the comparator reports
+(the "Residual v − v_model" products), on one signed scale, with the
+distribution of |residual| beside them. Every array comes from
+``usecase_ngc3137.run()``, which calls the application's own fit and model, so
+the figure and the numbers in Section 6.1 are the same products.
 
 Run:  backend/.venv/bin/python validation/figure4_model_ngc3137.py
 """
@@ -48,7 +50,7 @@ crop = (slice(y0, y1), slice(x0, x1))
 vmax = np.nanpercentile(iso[:, y0:y1, x0:x1], 99.5)
 
 # drawn at the journal's two-column text width (17.5 cm) so the 7-9 pt labels print at size
-fig, axes = plt.subplots(2, 3, figsize=(6.89, 4.73), constrained_layout=True)
+fig, axes = plt.subplots(3, 3, figsize=(6.89, 7.0), constrained_layout=True)
 for ax, c, lab in zip(axes[0], chans, labels):
     img = np.ma.masked_invalid(iso[c][crop])
     ax.imshow(img, origin="lower", cmap="Greys", vmin=0, vmax=vmax, interpolation="nearest")
@@ -68,8 +70,36 @@ for ax, fld, lab in zip(axes[1], [m1, vf, vw],
     ax.set_title(lab, fontsize=9); ax.set_xticks([]); ax.set_yticks([])
 cb = fig.colorbar(im, ax=axes[1], shrink=0.85, pad=0.01)
 cb.set_label("$v_\\mathrm{los}$ (km s$^{-1}$)", fontsize=8); cb.ax.tick_params(labelsize=7)
-fig.supxlabel(f"median |v$_\\mathrm{{data}}$ − v$_\\mathrm{{model}}$|: flat {np.median(R['resid_flat']):.1f}, "
-              f"rings {np.median(R['resid_warp']):.1f} km s$^{{-1}}$ (one channel is {R['dv']:.1f})", fontsize=8)
+
+# Residual maps, signed, as the viewer's "Residual v − v_model" products show
+# them (the same pixels the median is taken over: where the velocity field and
+# the model are both defined), on one symmetric scale for the two models.
+res_flat, res_warp = m1 - vf, m1 - vw
+lim = 60.0
+for ax, fld, lab, med in zip(axes[2, 1:], [res_flat, res_warp],
+                             ["data − flat disc", f"data − {len(R['rings'])} rings"],
+                             [np.median(R["resid_flat"]), np.median(R["resid_warp"])]):
+    im2 = ax.imshow(np.ma.masked_invalid(fld[crop]), origin="lower", cmap="RdBu_r",
+                    vmin=-lim, vmax=lim, interpolation="nearest")
+    ax.set_title(f"{lab}\nmedian |Δv| {med:.1f} km s$^{{-1}}$", fontsize=8.5)
+    ax.set_xticks([]); ax.set_yticks([])
+cb2 = fig.colorbar(im2, ax=axes[2, 1:], shrink=0.85, pad=0.01)
+cb2.set_label("$v_\\mathrm{data} - v_\\mathrm{model}$ (km s$^{-1}$)", fontsize=8)
+cb2.ax.tick_params(labelsize=7)
+# The same residuals as a distribution: how much of the disc each model leaves
+# within a channel, and where the tails are.
+axh = axes[2, 0]
+# Bins cover both samples to their maximum, so the tail is drawn whole.
+top = 10.0 * np.ceil(max(np.max(R["resid_flat"]), np.max(R["resid_warp"])) / 10.0)
+bins = np.linspace(0, top, int(top / 2.5) + 1)
+axh.hist(R["resid_flat"], bins=bins, histtype="step", color="#7f7f7f", lw=1.2,
+         label=f"flat disc, p90 {np.percentile(R['resid_flat'], 90):.0f}")
+axh.hist(R["resid_warp"], bins=bins, histtype="step", color="#d62728", lw=1.2,
+         label=f"{len(R['rings'])} rings, p90 {np.percentile(R['resid_warp'], 90):.0f}")
+axh.axvline(R["dv"], color="k", ls=":", lw=0.8, label=f"one channel ({R['dv']:.1f})")
+axh.set_xlabel("|v$_\\mathrm{data}$ − v$_\\mathrm{model}$| (km s$^{-1}$)", fontsize=8)
+axh.set_ylabel("pixels", fontsize=8); axh.tick_params(labelsize=7)
+axh.legend(fontsize=7, frameon=False)
 out = HERE / "out" / "figure4_model.png"
 fig.savefig(out, dpi=220)
 print("written", out, "channels", chans)

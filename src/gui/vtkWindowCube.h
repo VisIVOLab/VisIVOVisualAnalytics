@@ -2384,7 +2384,8 @@ protected:
                                     const QString &renderer = QString(),
                                     bool revealProvenance = true,
                                     const QVariantMap &origin = {},
-                                    bool selectInSession = true);
+                                    bool selectInSession = true,
+                                    const QString &endpoint = QString());
     /// Redraw the region, or re-place the probe marker, a product was generated
     /// from. Returns false when the product carries no geometry.
     bool restoreProductOrigin(const QVariantMap &origin);

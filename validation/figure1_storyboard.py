@@ -127,14 +127,22 @@ def main() -> int:
     ncol = 8 if args.row else 4
     nrow = 1 if args.row else 2
     # Figure width = the journal's figure* width, so what you see is what the
-    # reader gets. Panel aspect assumes a 16:10 window capture.
+    # reader gets. The slot aspect follows the first panel there is (a 16:10
+    # window capture or a portrait render of the disc), so a portrait panel is
+    # not squeezed into a landscape slot with white at both sides.
     width_in = 17.5 / 2.54
     panel_w = width_in / ncol
-    height_in = nrow * panel_w * 0.72 + 0.85   # + room for the REST inset
+    aspect = 0.72
+    for stem, _, _ in STAGES:
+        first = load(args.src, stem, crop, overrides)
+        if first is not None:
+            aspect = first.shape[0] / first.shape[1]
+            break
+    height_in = nrow * panel_w * aspect + 1.0   # + room for the REST inset
 
     fig = plt.figure(figsize=(width_in, height_in))
-    gs = fig.add_gridspec(nrow, ncol, wspace=0.06, hspace=0.30,
-                          left=0.012, right=0.988, top=0.97, bottom=0.20)
+    gs = fig.add_gridspec(nrow, ncol, wspace=0.06, hspace=0.22,
+                          left=0.012, right=0.988, top=0.97, bottom=0.17)
 
     missing = []
     for i, (stem, letter, label) in enumerate(STAGES):
@@ -150,7 +158,7 @@ def main() -> int:
         ax.set_xticks([]); ax.set_yticks([])
         for s in ax.spines.values():
             s.set_linewidth(0.4); s.set_color("#666666")
-        ax.set_title(f"({letter}) {label}", fontsize=6.2, pad=2.5)
+        ax.set_title(f"({letter}) {label}", fontsize=7.5, pad=2.5)
 
         # Arrow to the next panel, inside the row only: an arrow that wrapped
         # from the end of a row to the start of the next would point the wrong
@@ -162,13 +170,13 @@ def main() -> int:
                 transform=fig.transFigure, arrowstyle="-|>", mutation_scale=7,
                 linewidth=0.7, color="#444444"))
 
-    fig.text(0.5, 0.085, REST_INSET, ha="center", va="center", fontsize=6.0,
+    fig.text(0.5, 0.085, REST_INSET, ha="center", va="center", fontsize=7.0,
              family="monospace", linespacing=1.6,
              bbox=dict(boxstyle="round,pad=0.45", facecolor="#f7f7f7",
                        edgecolor="#bbbbbb", linewidth=0.5))
     fig.text(0.5, 0.018,
              "every arrow is a state transition; every panel a persistent product",
-             ha="center", fontsize=5.8, style="italic", color="#555555")
+             ha="center", fontsize=7.0, style="italic", color="#555555")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.out, dpi=args.dpi, bbox_inches="tight", facecolor="white")

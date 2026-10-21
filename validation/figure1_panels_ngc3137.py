@@ -30,15 +30,22 @@ csys = int(np.argmin(np.abs(vel - R["vsys_fit"])))
 capp = int(np.argmin(np.abs(vel - (R["vsys_fit"] - 0.6 * R["vrot_sini"]))))
 crec = int(np.argmin(np.abs(vel - (R["vsys_fit"] + 0.6 * R["vrot_sini"]))))
 ys, xs = np.where(np.isfinite(m1))
-crop = (slice(max(0, ys.min() - 12), ys.max() + 13), slice(max(0, xs.min() - 12), xs.max() + 13))
+crop = (slice(max(0, ys.min() - 6), ys.max() + 7), slice(max(0, xs.min() - 6), xs.max() + 7))
 vmax = np.nanpercentile(data[:, crop[0], crop[1]], 99.7)
+# Each panel prints at a quarter of the journal's 17.5 cm text width (1.72 in);
+# drawn at that size, so the 7 pt notes are 7 pt on the page rather than the
+# 4 pt they became when a 3.2 in panel was shrunk into the slot.
+PANEL_W = 17.5 / 2.54 / 4
+PANEL_H = PANEL_W * (crop[0].stop - crop[0].start) / (crop[1].stop - crop[1].start)
+NOTE_PT = 7.0
 
 def panel(name, draw, note):
-    fig, ax = plt.subplots(figsize=(3.2, 3.6))
+    fig, ax = plt.subplots(figsize=(PANEL_W, PANEL_H))
+    fig.subplots_adjust(left=0.01, right=0.99, bottom=0.01, top=0.99)
     draw(ax); ax.set_xticks([]); ax.set_yticks([])
-    ax.text(0.03, 0.02, note, transform=ax.transAxes, fontsize=8, va="bottom", ha="left",
+    ax.text(0.03, 0.02, note, transform=ax.transAxes, fontsize=NOTE_PT, va="bottom", ha="left",
             bbox=dict(fc="white", ec="none", alpha=0.85, pad=1.5))
-    fig.savefig(OUT / f"{name}.png", dpi=200, bbox_inches="tight"); plt.close(fig)
+    fig.savefig(OUT / f"{name}.png", dpi=300); plt.close(fig)
 
 def channel(ax, cube, c, cmap="Greys", contour=None, color="#d62728", ls="-"):
     ax.imshow(np.ma.masked_invalid(cube[c][crop]), origin="lower", cmap=cmap, vmin=0, vmax=vmax,
@@ -51,7 +58,7 @@ panel("01_open", lambda ax: channel(ax, data, csys), f"channel {csys}, {vel[csys
 def explore(ax):
     ax.imshow(np.ma.masked_invalid(data[crec][crop]), origin="lower", cmap="Greys", vmin=0, vmax=vmax,
               interpolation="nearest")
-    ax.plot([SEED[2] - crop[1].start], [SEED[1] - crop[0].start], marker="+", ms=14, mew=2, color="#d62728")
+    ax.plot([SEED[2] - crop[1].start], [SEED[1] - crop[0].start], marker="+", ms=10, mew=1.6, color="#d62728")
 panel("02_explore", explore, f"channel {crec}, {vel[crec]:.0f} km/s; the click")
 panel("03_lasso", lambda ax: channel(ax, data, crec, contour=mask),
       f"lasso: {R['n_sel']:,} voxels")
@@ -66,10 +73,10 @@ panel("07_residual", lambda ax: ax.imshow(np.ma.masked_invalid((m1 - vw)[crop]),
       f"v$_{{data}}$ − v$_{{model}}$, |median| {R['warp_median']:.1f} km/s")
 def export(ax):
     ax.axis("off")
-    txt = ("masked cube  →  FITS\n$M_0$, $M_1$ maps  →  FITS\nrings  →  JSON\nchannel scan  →  movie\n\n"
-           f"replay:\nPOST /v1/cube/kinematic_select_bin\n  seed {SEED}\n  reach {REACH:g}, λv {LAMBDA_V:g}\n"
-           f"  smooth {tuple(int(v) for v in SMOOTH)}")
-    ax.text(0.5, 0.5, txt, ha="center", va="center", fontsize=7.6, family="monospace",
-            bbox=dict(boxstyle="round,pad=0.6", fc="#f4f4f4", ec="#888888"))
+    txt = ("masked cube → FITS\n$M_0$, $M_1$ → FITS\nrings → JSON\nscan → movie\n\n"
+           f"replay: POST\n/v1/cube/\nkinematic_select_bin\nseed {SEED}\nreach {REACH:g}, λv {LAMBDA_V:g}\n"
+           f"smooth {tuple(int(v) for v in SMOOTH)}")
+    ax.text(0.5, 0.5, txt, ha="center", va="center", fontsize=6.2, family="monospace",
+            linespacing=1.35, bbox=dict(boxstyle="round,pad=0.5", fc="#f4f4f4", ec="#888888"))
 panel("08_export", export, "")
 print("panels written to", OUT)
