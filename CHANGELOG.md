@@ -6,7 +6,7 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
-## Unreleased
+## 1.0.2 (2026-10-21)
 
 - **Large IPAC catalogues open in seconds.** Opening the 2.3-million-row
   `NKATZ_2.3M.tbl` used to take minutes and more than 18 GB, and the whole
