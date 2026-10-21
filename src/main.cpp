@@ -227,7 +227,8 @@ private:
                 // "I am alive and reading": the sender waits for this BEFORE
                 // writing anything. If our event loop were stuck it would never
                 // arrive, the sender would send nothing at all, and it can then
-                // open the files itself with no risk of us opening them too.
+                // open the files itself with no risk of us opening them too
+                // (an ack AFTER the payload cannot undo the delivery).
                 c->write("RDY");
                 c->flush();
                 // Shared, because a QDataStream is not a QObject and cannot be

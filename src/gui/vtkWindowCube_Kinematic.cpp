@@ -594,8 +594,8 @@ void vtkWindowCube::showKinematicModelDialog()
     // isRunning() is false as soon as the WORKER ends, while `finished` is still
     // queued for the GUI thread. A second click in that window replaced the
     // member watcher's future and overwrote m_kinematicSheet, so the first
-    // sheet stayed on screen forever and its result was dropped (
-    // reproduced in a Qt harness). The flag is held until the result has been
+    // sheet stayed on screen forever and its result was dropped
+    // (reproduced in a Qt harness). The flag is held until the result has been
     // HANDLED, not until the worker stops.
     if (this->m_kinematicBusy)
         return;

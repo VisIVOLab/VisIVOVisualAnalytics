@@ -9276,7 +9276,7 @@ void vtkWindowCube::showPaneLUTCustomizer()
         return;
     // Dedicated dialog instance (NOT the shared 3D/slice one) with a single lutUpdated
     // slot; the target pane is captured so Apply edits the pane that OPENED the dialog,
-    // not whatever is active later (§5.2, review).
+    // not whatever is active later (§5.2).
     if (!m_paneLutCustomizer) {
         m_paneLutCustomizer = new LUTCustomizerDialog(this);
         QObject::connect(m_paneLutCustomizer, &LUTCustomizerDialog::lutUpdated, this, [this]() {
@@ -10281,7 +10281,7 @@ ProfileWidget *vtkWindowCube::ensureSlotSpectrumView(int slot, const QString &xL
     // #5: a per-slot, display-only ProfileWidget for a 1-D spectrum product (independent of
     // the shared probePlotWidget, which the live probe / region owns). Instantiated lazily,
     // one per slot; setupSpectrumPlot runs ONCE here (it insertRow(0)s a title element, so
-    // re-running it per mount would accumulate rows �).
+    // re-running it per mount would accumulate rows).
     if (slot < 0 || slot > 3)
         return nullptr;
     if (!m_paneSpectra[slot]) {
