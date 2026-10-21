@@ -74,13 +74,19 @@ $$F(\varphi) = \frac{1}{N}\sum_i P(\lambda_i^2)\, e^{-2i\varphi\lambda_i^2},
 
 You choose φ min, φ max and the φ step; the dialog shows how many samples that
 gives, over how many pixels, and how large the full dispersion cube would be.
+Both ends are sampled: −80 to 80 at a step of 1 is 161 samples. A range that is
+not a whole number of steps stops at the last sample before φ max.
 If a region is drawn on the 2-D slice you can restrict the computation to it.
 
 Two maps come back:
 
 - **Peak |F(φ)|** — how polarised each pixel is at its strongest Faraday depth;
 - **Faraday depth (RM)** — the φ at which it peaks, i.e. the rotation-measure
-  map. Diverging colour map, because the sign is the physics.
+  map. Diverging colour map centred on zero, because the sign is the physics;
+- **Faraday depth (peak |F| > 6σ)** — the same map where the peak stands above
+  the noise of the peak map (σ = 1.4826 × its MAD, recorded in the product).
+  Elsewhere the "depth" is the φ of the largest noise excursion; this is the map
+  to read rotation measures from, e.g. with a box region's median.
 
 ```{important}
 The whole dispersion cube is **not** transferred. It is `n_φ × height × width`

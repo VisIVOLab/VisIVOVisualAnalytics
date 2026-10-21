@@ -405,7 +405,9 @@ set(PROJECT_SOURCES
         src/gui/theme/VisivoTheme.cpp
         src/gui/theme/VisivoTheme.h
         src/gui/theme/SegmentedToggle.cpp
+        src/gui/theme/ScrollWheelGuard.cpp
         src/gui/theme/SegmentedToggle.h
+        src/gui/theme/ScrollWheelGuard.h
         src/gui/ChannelOverlay.cpp
         src/gui/ChannelOverlay.h
         src/gui/CubeVRController.cpp
@@ -902,6 +904,10 @@ if (WIN32)
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                     "${CMAKE_CURRENT_SOURCE_DIR}/backend/app"
                     "$<TARGET_FILE_DIR:${PROJECT_NAME}>/backend/app"
+            # The first-run bootstrap installs from <backend>/requirements.txt.
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/backend/requirements.txt"
+                    "$<TARGET_FILE_DIR:${PROJECT_NAME}>/backend/requirements.txt"
             COMMENT "Copying backend next to the executable")
 else()
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD

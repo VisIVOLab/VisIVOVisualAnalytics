@@ -1,6 +1,6 @@
 # Building VisIVO Visual Analytics (C++ client)
 
-This document covers how to obtain dependencies, configure, and compile the desktop client on macOS and Linux.
+This document covers how to obtain dependencies, configure, and compile the desktop client on macOS, Linux and Windows. The Windows recipe below is the one the release workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml)) runs on every tag, step for step.
 
 ---
 
@@ -10,7 +10,7 @@ This document covers how to obtain dependencies, configure, and compile the desk
 |---|---|---|
 | CMake | 3.22 | |
 | C++ compiler | C++17 | GCC 11+, Clang 14+, or MSVC 2022 |
-| Qt | 6.10 | Modules: Concurrent, Widgets, Svg, Network, NetworkAuth, PrintSupport, WebEngineWidgets |
+| Qt | 6.10 | Modules: Concurrent, Widgets, Xml, Svg, Network, NetworkAuth, PrintSupport, WebEngineWidgets, WebSockets |
 | VTK | 9.5 | Modules: CommonColor, FiltersModeling, FiltersStatistics, GUISupportQt, InteractionStyle, RenderingAnnotation, RenderingImage, RenderingVolumeOpenGL2 |
 | cfitsio | any recent | Provides FITS I/O |
 
@@ -105,25 +105,143 @@ sudo dnf install -y cmake ninja-build gcc-c++ \
 
 ---
 
-## Windows (MSVC + vcpkg)
+## Windows (MSVC 2022, everything from source)
 
-```powershell
-# 1. Install Qt 6.10 from qt.io installer
-#    e.g. C:\Qt\6.10.x\msvc2022_64
+Windows is a supported platform: the release workflow builds and packages it on
+every tag, and the commands below are that workflow's steps written out for a
+developer machine. Two shortcuts that look natural do **not** work, which is why
+this recipe avoids them:
 
-# 2. Install vcpkg
-git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
-C:\vcpkg\bootstrap-vcpkg.bat
-C:\vcpkg\vcpkg install vtk cfitsio --triplet x64-windows
+* `vcpkg install vtk` builds VTK **without Qt support** (no `GUISupportQt`), so
+  the project refuses to configure; and `vtk[qt]` pulls a second Qt from vcpkg
+  that clashes with the one from qt.io. Build VTK from source against your Qt.
+* MSVC has no system zlib, and cfitsio's CMake build needs one: build zlib first.
 
-# 3. Open Developer Command Prompt for VS 2022, then:
-cmake -S . -B build `
-  -DCMAKE_BUILD_TYPE=Release `
-  -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
-  -DCMAKE_PREFIX_PATH="C:\Qt\6.10.x\msvc2022_64"
+Expect about an hour for VTK; everything else takes minutes.
 
-cmake --build build --config Release --parallel
+### 1. Tools
+
+* **Visual Studio 2022** (Community is fine) with the *Desktop development with
+  C++* workload. It ships CMake and Ninja.
+* **Git**.
+* **Qt 6.10.1** for `msvc2022_64`, with the add-ons the client links:
+  **Qt WebEngine**, **Qt WebChannel**, **Qt WebSockets**, **Qt Positioning** and
+  **Qt Network Authorization**. With the Qt online installer, tick them under
+  *Qt 6.10.1 ▸ Additional Libraries*. Or script it the way CI does (any Python):
+
+  ```bat
+  py -m pip install aqtinstall
+  py -m aqt install-qt windows desktop 6.10.1 win64_msvc2022_64 ^
+     -m qtwebengine qtwebchannel qtwebsockets qtpositioning qtnetworkauth -O C:\Qt
+  ```
+* **Python 3.11+** only if you want to run the backend from your own
+  environment (step 6); the source build itself does not need it.
+
+Open **x64 Native Tools Command Prompt for VS 2022** (not the plain Developer
+prompt, which may default to 32-bit) and run every command below in it. Keep
+the paths short: VTK's build tree is deep and long paths break MSVC tools.
+The examples use `C:\src` for sources and `C:\deps` for installed libraries,
+with forward slashes in CMake paths.
+
+### 2. zlib 1.3.1
+
+```bat
+cd C:\src
+git clone --depth 1 --branch v1.3.1 https://github.com/madler/zlib.git zlib-src
+cmake -S zlib-src -B zlib-build -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+  -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX=C:/deps/zlib
+cmake --build zlib-build --parallel
+cmake --install zlib-build
 ```
+
+### 3. cfitsio 4.6.3
+
+`curl` and `tar` are built into Windows 10 and 11.
+
+```bat
+cd C:\src
+curl -fsSL -o cfitsio.tar.gz https://heasarc.gsfc.nasa.gov/FTP/software/fitsio/c/cfitsio-4.6.3.tar.gz
+mkdir cfitsio-src
+tar -xzf cfitsio.tar.gz --strip-components=1 -C cfitsio-src
+cmake -S cfitsio-src -B cfitsio-build -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+  -DBUILD_SHARED_LIBS=ON -DUSE_BZIP2=OFF -DUSE_CURL=OFF -DTESTS=OFF -DUTILS=OFF ^
+  -DCMAKE_PREFIX_PATH=C:/deps/zlib -DCMAKE_INSTALL_PREFIX=C:/deps/cfitsio
+cmake --build cfitsio-build --parallel
+cmake --install cfitsio-build
+```
+
+### 4. VTK 9.5.0 with Qt
+
+```bat
+cd C:\src
+git clone --depth 1 --branch v9.5.0 https://gitlab.kitware.com/vtk/vtk.git vtk-src
+cmake -S vtk-src -B vtk-build -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+  -DBUILD_SHARED_LIBS=ON -DBUILD_TESTING=OFF -DVTK_BUILD_EXAMPLES=OFF ^
+  -DVTK_GROUP_ENABLE_Qt=YES -DVTK_QT_VERSION=6 ^
+  -DCMAKE_PREFIX_PATH=C:/Qt/6.10.1/msvc2022_64 ^
+  -DCMAKE_INSTALL_PREFIX=C:/deps/vtk
+cmake --build vtk-build --parallel
+cmake --install vtk-build
+```
+
+### 5. VisIVO
+
+From the repository root:
+
+```bat
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+  -DCMAKE_PREFIX_PATH="C:/Qt/6.10.1/msvc2022_64;C:/deps/vtk;C:/deps/cfitsio;C:/deps/zlib" ^
+  -DVISIVO_ENABLE_WEBRTC=OFF ^
+  -DCMAKE_INSTALL_PREFIX=C:/visivo
+cmake --build build --parallel
+```
+
+`-DVISIVO_ENABLE_WEBRTC=OFF` gives the same client as the Windows release.
+The optional H.265 WebRTC transport for remote rendering needs libdatachannel
+(fetched at configure time, and it needs an MSVC OpenSSL) plus FFmpeg
+development libraries. The CI runner has OpenSSL preinstalled but no FFmpeg,
+so the release is built without WebRTC as well, and remote rendering uses
+the JPEG-over-WebSocket transport. Leave the option at its default only if you
+have installed OpenSSL (`OPENSSL_ROOT_DIR`) and FFmpeg (`.pc` files that
+pkg-config can find).
+
+To get a runnable folder, install it: `cmake --install` runs `windeployqt`,
+which puts the Qt DLLs and plugins next to the executable. Then copy the
+VTK, cfitsio and zlib DLLs beside it too, as the release does, because the
+Qt deploy step does not follow them:
+
+```bat
+cmake --install build
+for %d in (C:\deps\vtk\bin C:\deps\cfitsio\bin C:\deps\zlib\bin) do copy /Y %d\*.dll C:\visivo\bin\
+C:\visivo\bin\VisIVOVisualAnalytics.exe
+```
+
+(In a `.bat` file write `%%d` instead of `%d`.) For an edit-build-run loop
+straight from `build\`, configure once with `-DVISIVO_AUTO_WINDEPLOYQT=ON`,
+which runs `windeployqt` after every build. The post-build step copies the
+backend code and the VTK and cfitsio DLLs next to `build\VisIVOVisualAnalytics.exe`,
+but not zlib (cfitsio links it by file path, so CMake cannot see the
+dependency). Copy it once:
+
+```bat
+copy /Y C:\deps\zlib\bin\*.dll build\
+```
+
+### 6. Backend (Python)
+
+The client starts the backend itself and looks for an environment at
+`%APPDATA%\VisIVO\.venv`. If a Python 3.11+ is on `PATH` it creates that
+environment on first launch; to do it by hand:
+
+```bat
+py -3.12 -m venv "%APPDATA%\VisIVO\.venv"
+"%APPDATA%\VisIVO\.venv\Scripts\python.exe" -m pip install -r backend\requirements.txt
+```
+
+`healpy` has no Windows wheels and is skipped there by an environment marker in
+`requirements.txt`, so the HiPS tile-query endpoints are unavailable on Windows;
+everything else runs. The packaged release avoids all of this by shipping its own
+interpreter in `bin\python`.
 
 ---
 
@@ -140,7 +258,7 @@ cmake --build build --config Release --parallel
 
 ## Running the built binary
 
-The executable is placed at `build/VisIVOVisualAnalytics` (or `build/Release/VisIVOVisualAnalytics.exe` on Windows).
+The executable is placed at `build/VisIVOVisualAnalytics` (`build\VisIVOVisualAnalytics.exe` on Windows with the Ninja generator above; a Visual Studio generator puts it in `build\Release\`). On Windows see step 5 above for the DLLs it needs beside it.
 
 On macOS you may need to set `DYLD_LIBRARY_PATH` if Qt or VTK were not installed system-wide:
 

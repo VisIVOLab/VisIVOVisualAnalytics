@@ -164,16 +164,6 @@ def _sample_polyline(vertices: np.ndarray, step: float = PV_STEP_PIXELS) -> tupl
     return points, normals, total
 
 
-def _local_normal(pts, i):  # kept for API compatibility (compute.__all__)
-    prev = pts[i if i == 0 else i - 1]
-    nxt = pts[i + 1 if i + 1 < len(pts) else i]
-    tx, ty = float(nxt[0] - prev[0]), float(nxt[1] - prev[1])
-    length = float(np.hypot(tx, ty))
-    if length <= 0:
-        return 0.0, 1.0
-    return -ty / length, tx / length
-
-
 def _bilinear_mean(cube: np.ndarray, cx: np.ndarray, cy: np.ndarray, n_samples: int,
                    width_pixels: int, x_limit: int, y_limit: int) -> np.ndarray:
     """(depth, n_samples): per channel, the NaN-aware bilinear value at each
@@ -237,10 +227,13 @@ def _pixel_to_plane_arcsec(dataset: ScientificFitsDataset) -> np.ndarray:
 
 
 def _require_spectral_last(dataset: ScientificFitsDataset) -> None:
-    # squeeze_to_3d yields (spectral, y, x) only when the spectral axis is the
-    # LAST active FITS axis. A transposed cube would be cut along a spatial axis
-    # while being labelled with the spectral one, so refuse it.
-    if dataset.active_axes and dataset.cube_numpy_spectral_fits_axis() != dataset.active_axes[-1]:
+    # squeeze_to_3d keeps the FIRST three active FITS axes (a 4th, e.g. a full
+    # STOKES axis, is dropped as numpy's leading axis, plane 0 kept) and yields
+    # (spectral, y, x) only when the spectral axis is the third of them. A
+    # transposed cube would be cut along a spatial axis while being labelled with
+    # the spectral one, so refuse it.
+    kept = dataset.active_axes[:3]
+    if len(kept) == 3 and dataset.cube_numpy_spectral_fits_axis() != kept[2]:
         raise ValueError(
             "PV extraction needs the spectral axis to be the cube's last axis "
             "(e.g. NAXIS3); this cube's spectral axis is elsewhere."
@@ -431,7 +424,7 @@ def worker_pv_save_fits(path: str, output_path: str, vertices: list[list[float]]
         hdr["BMIN"] = float(beam.minor)
         hdr["BPA"] = float(beam.pa or 0.0)
     hdr["PVWIDTH"] = (int(r["width_pixels"]), "PV path width (cube pixels)")
-    hdr["PVSTEP"] = (float(r["step_pixels"]), "Sample step along the path (cube pixels)")
+    hdr["PVSTEP"] = (float(r["step_pixels"] * r["pixel_scale_arcsec"]), "Sample step along the path (arcsec)")
     hdr["HISTORY"] = f"VisIVO PV diagram of {Path(dataset.path).name}"
     sky = None
     if dataset.wcs is not None:
@@ -439,10 +432,13 @@ def worker_pv_save_fits(path: str, output_path: str, vertices: list[list[float]]
             sky = dataset.wcs.celestial.pixel_to_world_values(r["vertices"][:, 0], r["vertices"][:, 1])
         except Exception:  # noqa: BLE001 — sky positions are informative only
             sky = None
+    # One card per line, each within the 72 characters a HISTORY card holds: a
+    # longer line is wrapped by astropy in the middle of a number.
+    hdr["HISTORY"] = "PV vertices: 0-based pixel (x, y); world (deg) in the cube's frame"
     for i, (x, y) in enumerate(r["vertices"]):
-        line = f"PV vertex {i}: x={x:.3f} y={y:.3f} (0-based pixel)"
+        line = f"PV vertex {i}: pix {x:.3f} {y:.3f}"
         if sky is not None:
-            line += f" lon={float(sky[0][i]):.6f} lat={float(sky[1][i]):.6f} deg"
+            line += f" world {float(sky[0][i]):.6f} {float(sky[1][i]):.6f}"
         hdr["HISTORY"] = line
     fits.PrimaryHDU(data=r["pv"], header=hdr).writeto(output_path, overwrite=False)
     finite = r["pv"][np.isfinite(r["pv"])]

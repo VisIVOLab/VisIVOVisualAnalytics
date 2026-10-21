@@ -582,7 +582,10 @@ QString vtkWindowImage::remoteOverlayAxisTitle(int axis) const
 
 QString vtkWindowImage::formatDegreeCoordinate(double value) const
 {
-    return QString::number(value, 'f', 2);
+    QString text = QString::number(value, 'f', 2);
+    if (text.startsWith(u'-') && text.mid(1).toDouble() == 0.0)
+        text.remove(0, 1);   // "-0.00": a tiny negative value at the origin
+    return text;
 }
 
 QString vtkWindowImage::selectedFrameAxisTitle(int axis) const

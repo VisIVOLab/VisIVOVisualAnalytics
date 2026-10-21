@@ -34,6 +34,10 @@ struct Inputs
     bool slice2dVisible{ false };
     /// The 3-D view is mounted in a visible pane.
     bool view3dVisible{ false };
+    /// A visible pane shows a full-field map (a moment) that the 2-D Slice can
+    /// take as its background: arming a slice tool turns that pane into the
+    /// slice with the map underneath, so the tool draws on the map.
+    bool slicePaneAvailable{ false };
     /// A spectrum has been probed (2-D click) or picked (3-D plane click), so
     /// Pin Spectrum has something to promote.
     bool haveProbeSpectrum{ false };
@@ -63,7 +67,7 @@ inline Decision evaluate(const Inputs &in)
     // Each family needs its own view on screen — that is where it draws its
     // overlay and where its interactor observer lives. Nothing else about the
     // layout matters, the focused pane included.
-    d.slice2dTools = in.slice2dVisible;
+    d.slice2dTools = in.slice2dVisible || in.slicePaneAvailable;
     d.view3dTools = in.view3dVisible;
     // These four gate on state, not on the layout: a spectrum can be probed on
     // the slice or picked on the 3-D cutting plane and stays pinnable from

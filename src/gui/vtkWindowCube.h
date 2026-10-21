@@ -40,6 +40,7 @@ class PvController;
 #include <QVector>
 
 #include <array>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -481,6 +482,10 @@ private:
         QVector<double> values;   ///< intensity per channel
         QString xLabel, yLabel;   ///< axis titles
         QString label;            ///< identical to the tree/dropdown label
+        /// Where a line-of-sight spectrum was taken (the CSV export writes it):
+        /// dataset pixel and WCS position; -1 / empty for a region or a stack.
+        int pixelX{ -1 }, pixelY{ -1 };
+        QString position;
     };
     QHash<QString, Spectrum1D> m_products1d;
     std::array<class ProfileWidget *, 4> m_paneSpectra{ nullptr, nullptr, nullptr, nullptr };
@@ -527,9 +532,11 @@ private:
     /// #5: promote a 2-D generator result (Line-width, …) to a first-class IMAGE product —
     /// cache it in m_products2d, register it (renderer "image2d"), and mount it in a free pane
     /// (no-steal), or refresh every visible copy on a recompute of the same stableKey.
+    /// @p symmetricRange: a signed map (a residual, a Faraday depth) is shown over
+    /// [−a, a], so a diverging colour map puts its neutral colour at zero.
     QString addImageProduct(const QString &kind, const QString &stableKey, const QString &label,
                             vtkImageData *img, const QString &unit, const QVariantMap &params,
-                            const QString &lutName);
+                            const QString &lutName, bool symmetricRange = false);
     /// #5: spectrum1d twin of addImageProduct — promote a 1-D generator result (Stack, …) to a
     /// first-class SPEC product: cache it in m_products1d, register it (renderer "spectrum1d"),
     /// mount it in a free pane (no-steal), or refresh every visible copy on a recompute.
@@ -559,6 +566,9 @@ private:
     QVector<double> m_lastProbeKey;
     QVector<double> m_lastProbeValues;
     QString m_lastProbeXLabel, m_lastProbeYLabel, m_lastProbeContext;
+    /// The voxel the cached probe spectrum was taken at — probeVoxel itself keeps
+    /// following the cursor after the probe stops, so a later pin must not read it.
+    std::array<int, 3> m_lastProbeVoxel{ -1, -1, -1 };
     int m_pinnedSpectrumCount{ 0 };   ///< suffix for the next Pin Spectrum product id/label
     int m_stackCount{ 0 };            ///< suffix for the next Stack SPEC product (each is distinct)
 
@@ -749,13 +759,12 @@ private:
     QPointer<QWidget> m_layerRowContours;
     QPointer<QWidget> m_layerRow3dWcsAxes;
     QPointer<QStackedWidget> m_displayStack;
+    QPointer<QLabel> m_displayNoControls;   ///< page 2: a view with no colour map of its own here
     QPointer<QComboBox> m_paneLutCombo;
     QPointer<QDoubleSpinBox> m_paneRangeMin;
     QPointer<QDoubleSpinBox> m_paneRangeMax;
     QPointer<QWidget> m_paneScaleRow;      ///< 2D Slice only (linear/log/asinh)
     QPointer<SegmentedToggle> m_paneScaleSeg;
-    QPointer<QWidget> m_sliceBackdropRow;  ///< 2D Slice only: channel or a map underneath
-    QPointer<QComboBox> m_sliceBackdropCombo;
     QPointer<QWidget> m_sliceRangeLockRow; ///< 2D Slice only: one range for every channel
     QPointer<QCheckBox> m_sliceRangeLock;
     QPointer<QWidget> m_paneSymmetricRow;  ///< Moment only ("Symmetric about 0")
@@ -1012,6 +1021,23 @@ protected:
     // Created as a child of ui->vtkCube; positioned via an installed event
     // filter on resize. See ChannelOverlay.h.
     QPointer<ChannelOverlay> channelOverlay;
+    /// The same scrubber on the 2-D Slice: without a 3-D pane on screen (slice +
+    /// moment + PV) it is the only way to change channel. Mirrors channelOverlay.
+    QPointer<ChannelOverlay> channelOverlay2d;
+    /// A control in a non-active pane was pressed: the pane activates on its release.
+    int m_pendingControlActivation{ -1 };
+    /// Refit a pane once a mount / relayout has settled — coalesced per slot, and
+    /// skipped if the user has panned or zoomed it in the meantime.
+    void scheduleSettledRefit(int slot);
+    unsigned long paneCameraMTime(int slot) const;
+    std::array<int, 4> m_refitGeneration{ 0, 0, 0, 0 };
+    /// Both scrubbers that exist, for the places that update them.
+    QList<ChannelOverlay *> channelOverlays() const;
+    /// Put the 2-D channel bar on @p host (the slice, or the Channels pane),
+    /// keeping room for it below that view's axes.
+    void attachChannelBar2d(QWidget *host);
+    /// The 2-D channel bar is over the slice (it shows channels, not a map).
+    bool sliceChannelBarShown() const;
     QPointer<PvDiagramWidget> pvDiagramWidget;
     // #5: the PV diagram is a first-class pane product (renderer "pvdiagram") — the single
     // reused PvDiagramWidget is HOSTED IN a pane (it renders its own position/velocity axes,
@@ -1222,6 +1248,14 @@ protected:
     unsigned long m_lassoReleaseTag{ 0 };
     double m_lassoReach{ 8.0 };       ///< geodesic cost budget (selection reach)
     double m_lassoLambdaV{ 1.0 };     ///< velocity-axis weight (the kinematic knob)
+    double m_lassoNSigma{ 2.5 };      ///< detection threshold in σ (the component's floor)
+    /// Tools › Estimate Noise: σ (median per-channel 1.4826·MAD) and where it was
+    /// measured; 0 = none, and the tools fall back to their own robust σ.
+    double m_noiseSigma{ 0.0 };
+    QString m_noiseWhere;
+    int m_lassoSmoothPreset{ 0 };     ///< 0 off, 1 (1,3,3), 2 (2,4,4), 3 (2,6,6) σ voxels (v,y,x)
+    /// Smoothing sigmas (velocity, spatial) for the current preset.
+    std::array<double, 2> lassoSmoothing() const;
     int m_lassoRoiRadius{ 0 };   ///< 0 = object-bounded grow (whole connected source)
     QFutureWatcher<RemoteKinematicSelectResult> m_lassoSelectWatcher;
     vtkSmartPointer<vtkActor> m_lassoActor;
@@ -1325,7 +1359,19 @@ protected:
     QSlider *m_lassoLambdaSlider{ nullptr };
     QLabel  *m_lassoReachValue{ nullptr };
     QLabel  *m_lassoLambdaValue{ nullptr };
+    QSlider *m_lassoSigmaSlider{ nullptr };
+    QLabel  *m_lassoSigmaValue{ nullptr };
+    QComboBox *m_lassoSmoothCombo{ nullptr };
     QLabel  *m_lassoCountLabel{ nullptr };
+    QLabel  *m_lassoNoiseLabel{ nullptr };   ///< which σ the threshold is in units of
+    /// Selected pixels per channel and the velocity extent: what λv changes is
+    /// visible here, not only in the total.
+    QPointer<class QCustomPlot> m_lassoProfilePlot;
+    QPointer<QLabel> m_lassoExtentLabel;
+    /// Recount the selection from the mask on screen (after a grow or a hand
+    /// edit): the total, the per-channel profile and the extent.
+    void refreshLassoChannelProfile();
+    void refreshLassoNoiseLabel();
     QPushButton *m_lassoIsolateBtn{ nullptr };    ///< Apply buttons — disabled while a grow is in flight
     QPushButton *m_lassoRemoveBtn{ nullptr };
     void setLassoApplyEnabled(bool on);           ///< gate Apply on the displayed selection being current
@@ -1349,6 +1395,12 @@ protected:
     // or re-click while the fetch is in flight, and tagging with the live values
     // would label a stale field as current.
     double m_lassoLevelsLambdaV{ 0.0 };           ///< λv the cache was computed for
+    double m_lassoLevelsNSigma{ 0.0 };            ///< …and the threshold
+    double m_lassoLevelsSigma{ -1.0 };            ///< …and the σ it is in units of
+    double m_lassoLevelsReqSigma{ 0.0 };
+    int m_lassoLevelsSmooth{ -1 };                ///< …and the smoothing preset
+    double m_lassoLevelsReqNSigma{ 0.0 };
+    int m_lassoLevelsReqSmooth{ -1 };
     QVector<std::array<int, 3>> m_lassoLevelsSeeds;      ///< seeds it was computed for
     QVector<std::array<int, 3>> m_lassoLevelsSubSeeds;
     int m_lassoLevelsSeed[3]{ -1, -1, -1 };       ///< primary seed it was computed for
@@ -1390,6 +1442,15 @@ protected:
     void refreshLassoAfterDisplaySwap();
     void ensureLassoPanel();
     InspectorPanel *lassoInspectorPanel() const;  ///< the Parameters host, or null with no chrome
+    // Live tool settings in the Inspector's Parameters tab, one stack for every
+    // tool of this window (as vtkWindowImage does): the most recent tool still on
+    // is shown, and turning it off brings back the one underneath instead of
+    // leaving the tab empty while that tool is still on.
+    QList<QPair<QString, QPointer<QWidget>>> m_activeToolSettings;
+    void claimToolSettings(const QString &toolName, QWidget *settings, bool reveal = true);
+    void releaseToolSettings(const QString &toolName);
+    bool toolSettingsClaimed(const QString &toolName) const;
+    void refreshToolSettingsPanel(bool reveal);
     /// Mount the controls wherever they are hosted; \a reveal also switches to the
     /// Parameters tab, and is false for results arriving in the background.
     void showLassoPanel(bool reveal = true);
@@ -1715,8 +1776,11 @@ protected:
     // the finished handler detects the mismatch and discards the stale actor.
     std::array<int, 3> m_kinematicLaunchDim{ 0, 0, 0 };
     std::array<double, 3> m_kinematicLaunchOrigin{ 0., 0., 0. };
-    // Live overlay control panel (dock), created lazily and shown while an
-    // overlay exists; its widgets mutate the actor/contour directly.
+    // Live overlay controls, created lazily and shown while an overlay exists;
+    // its widgets mutate the actor/contour directly. They live in the
+    // Inspector's Parameters tab; m_kinematicPanel is the fallback dock used
+    // only when this window has no workspace chrome to host them.
+    QPointer<QWidget> m_kinematicSettings;
     QPointer<QDockWidget> m_kinematicPanel;
     QPointer<QSlider> m_kinOpacitySlider;
     QPointer<QSlider> m_kinLevelSlider;
@@ -1729,6 +1793,29 @@ protected:
     /// Prompt for tilted-ring parameters and launch the (async) model build +
     /// contour off the GUI thread (see vtkWindowCube_Kinematic.cpp).
     void showKinematicModelDialog();
+    /// The kinematic fit of the lasso selection as products: velocity field,
+    /// model velocity fields, residuals, integrated spectrum and the source's
+    /// measures (Session Data), each with how it was made.
+    void publishKinematicFit(const BackendKinematicFitResult &r,
+                             const QString &selectionDescription);
+    /// Take a product this window registered (by its stable key) out of Session
+    /// Data, its cache and any pane showing it.
+    void removeImageProduct(const QString &stableKey);
+    /// Enable the dialog's "Fit from the lasso selection" when there is a
+    /// selection to fit and no grow in flight.
+    void refreshKinematicFitAvailability();
+    QPointer<QPushButton> m_kinFitBtn;
+    bool m_kinFitRunning{ false };
+    quint64 m_kinOverlayGeneration{ 0 };   ///< bumped per Overlay: a residual answers only the latest
+    quint64 m_kinBuildGeneration{ 0 };     ///< the Overlay the model build in flight belongs to
+    quint64 m_kinInstalledGeneration{ 0 }; ///< the Overlay whose model is on screen
+    /// A residual that arrived before its model was installed, published once it is.
+    std::function<void()> m_kinPendingResidual;
+    quint64 m_kinPendingResidualGeneration{ 0 };   ///< a fit request is out (held until its result is handled)
+    const void *m_kinFitRequest{ nullptr };   ///< that request's watcher, to tell it from older ones
+    QPointer<QLabel> m_kinFitInfo;
+    /// One line per finding of a fit, for the dialog and the status bar.
+    static QString describeKinematicFit(const BackendKinematicFitResult &r);
     /// Apply a finished async kinematic-model build: add the overlay actor.
     void onKinematicModelReady();
     /// Build (once) the live overlay control panel and wire its widgets.
@@ -1921,9 +2008,13 @@ protected:
     vtkSmartPointer<vtkCubeAxesActor> wcs3dAxesActor;
     // Pick handler tag on the cube interactor (so we can disconnect cleanly).
     unsigned long cube3dPickObserverTag{ 0 };
+    unsigned long cube3dPickPressTag{ 0 };
+    unsigned long cube3dPickMoveTag{ 0 };
+    bool m_pick3dDragged{ false };   ///< the press left the click radius (a rotation, not a pick)
+    std::array<int, 2> m_pick3dPressPos{ -1, -1 };   ///< where the left press began (a drag is no pick)
     void install3dPickObserver();
     void remove3dPickObserver();
-    void handle3dPickEvent();
+    void handle3dPickEvent(const std::array<int, 2> &pos);
     bool remoteIsosurfaceReady{ false };
     void applyCubeOpenResult(const CubeOpenStageResult &result);
     void applyIsosurfaceResult(const AsyncIsosurfaceResult &result);
@@ -2003,11 +2094,54 @@ protected:
     QString m_sliceBackdropProductId;
     std::array<double, 2> m_sliceRangeBeforeBackdrop{ 0.0, 0.0 };
     bool m_sliceRangeLockedBeforeBackdrop{ false };
+    // The slice's own colour map, kept while it wears the map's (the map shows
+    // with the same colours as in its own pane).
+    QString m_sliceLutNameBeforeBackdrop;
+    LutScale::Mode m_sliceScaleBeforeBackdrop{ LutScale::Mode::Linear };
+    double m_sliceGammaBeforeBackdrop{ 2.0 };
+    bool m_sliceInvertBeforeBackdrop{ false };
+    /// The pane the slice wears the map in. Any explicit view change there (or a
+    /// relayout that moves the slice away) clears the background.
+    int m_sliceBackdropSlot{ -1 };
+    /// How the map looked in its own pane at the moment it became the slice's
+    /// background — the user may have changed its colours there.
+    struct BackdropLook
+    {
+        bool valid{ false };
+        QString lutName;
+        LutScale::Mode scale{ LutScale::Mode::Linear };
+        double gamma{ 2.0 };
+        bool invert{ false };
+        bool clamp{ false };
+        double lo{ 0.0 };
+        double hi{ 0.0 };
+    };
+    BackdropLook m_pendingBackdropLook;
+    // While the slice wears a map, the pane that showed the slice keeps showing the
+    // CHANNELS: a display-only "Channels" product (this id, not in the registry),
+    // fed by every channel the slice receives, with the channel bar on it.
+    QString channelMirrorId() const { return scopedProductId(QStringLiteral("channels")); }
+    int channelMirrorSlot() const;
+    void updateChannelMirror(vtkImageData *img, double lo, double hi);
+    /// The range last installed on the Channels pane: a pane range that differs
+    /// from it was set by the user there, and is kept across channels.
+    std::array<double, 2> m_channelMirrorInstalledRange{ 0.0, 0.0 };
+    bool m_channelMirrorUserRange{ false };   ///< sticky once the user set one
+    /// The PV path on every map pane of the slice's field (channels, moments).
+    void refreshPaneOverlayPaths(const std::vector<std::array<double, 2>> &path);
     void setSliceBackdrop(const QString &productId);
     /// Products that can be the slice background: image products covering the
     /// whole field on the slice's pixel grid. Pairs of (product id, label).
     QList<QPair<QString, QString>> sliceBackdropCandidates() const;
+    /// Drops the background if its product is gone.
     void refreshSliceBackdropCombo();
+    /// A visible pane showing a map the slice can take as background (active
+    /// pane preferred), or -1.
+    int momentPaneForSliceTools() const;
+    /// Before a slice tool arms: when the 2-D Slice is not on screen but a
+    /// moment map is, turn that pane into the slice with the map as background.
+    /// False when there is neither.
+    bool ensureSliceForTools();
     double m_sliceScaleGamma{ 2.0 };
     LutScale::Mode m_volumeScaleMode{ LutScale::Mode::Linear };
     double m_volumeScaleGamma{ 2.0 };
@@ -2217,6 +2351,8 @@ protected:
     std::array<int, 2> m_moment2dFitSize{ -1, -1 };
     double m_slice2dFitRight{ -1. };    ///< gutter.right the slice was last fit for (§3.0b)
     double m_moment2dFitRight{ -1. };
+    double m_slice2dFitBottom{ -1. };   ///< gutter.bottom of that fit (the channel bar's room)
+    double m_moment2dFitBottom{ -1. };
     QString m_brightnessUnit;   ///< raw BUNIT for the cursor readout (may be empty)
 
     /// Aspect-preserving gutter fit + colorbar placement for the currently-visible
@@ -2247,7 +2383,8 @@ protected:
                                     const QString &stableId = QString(),
                                     const QString &renderer = QString(),
                                     bool revealProvenance = true,
-                                    const QVariantMap &origin = {});
+                                    const QVariantMap &origin = {},
+                                    bool selectInSession = true);
     /// Redraw the region, or re-place the probe marker, a product was generated
     /// from. Returns false when the product carries no geometry.
     bool restoreProductOrigin(const QVariantMap &origin);

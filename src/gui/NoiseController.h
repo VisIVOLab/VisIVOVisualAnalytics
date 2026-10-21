@@ -84,6 +84,10 @@ signals:
     void noiseProvenanceReady(const QString &stableKey, const QString &label,
                               const QVariantMap &params);
 
+    /// The estimate as the number the other tools use: σ (the median of the
+    /// per-channel σ = 1.4826·MAD) and where it was measured, for their labels.
+    void noiseEstimated(double sigma, const QString &where);
+
     /// The recipe of the result window just shown, so the product can put the
     /// same window back on screen later (ToolResultDialog::makeRecord). Emitted
     /// immediately before noiseProvenanceReady's product is registered.

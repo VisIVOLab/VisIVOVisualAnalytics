@@ -32,6 +32,7 @@
 #include "vtkWindowVectorField.h"
 
 #include <QLabel>
+#include <QRegularExpression>
 #include <QStatusBar>
 #include "HiPSWindow.h"
 #include "vtkWindowVbt.h"
@@ -1023,24 +1024,47 @@ static QStringList catalogueSiblingGroup(const BackendClient &client, const QStr
 {
     const QFileInfo info(filepath);
     const QString suffix = info.suffix().toLower();
+    // Pieces of one catalogue share a name and differ only in a trailing
+    // partition index (snap_z0_1_1_1.tbl, snap_z0_1_1_2.tbl, part_001.csv, …).
+    // Same extension alone was not enough: a folder of unrelated tables was
+    // offered as one catalogue, which the backend then refused for mismatching
+    // columns. Other digits stay significant, so NKATZ_2.3M and NKATZ_4.6M (two
+    // sizes of one sample) are not offered as pieces of each other.
+    static const QRegularExpression partition(u"^(.*?)((?:[_\\-.]\\d+)+)$"_s);
+    const auto pieceKey = [](const QString &name) -> QString {
+        const auto m = partition.match(QFileInfo(name).completeBaseName());
+        if (!m.hasMatch() || m.captured(1).isEmpty())
+            return {};
+        return m.captured(1) + u'#' + QString::number(m.captured(2).count(QRegularExpression(u"\\d+"_s)));
+    };
+    const QString pattern = pieceKey(info.fileName());
+    if (pattern.isEmpty())
+        return {};
     QStringList group;
     const auto listing = client.listFiles(info.path());
     if (listing.valid) {
         for (const auto &entry : listing.entries) {
             if (entry.type == u"file"_s && !entry.path.isEmpty()
-                && QFileInfo(entry.name).suffix().toLower() == suffix)
+                && QFileInfo(entry.name).suffix().toLower() == suffix
+                && pieceKey(entry.name) == pattern)
                 group << entry.path;
         }
     }
     if (group.size() < 2)
         return {};
     std::sort(group.begin(), group.end());
+    QStringList names;
+    for (const QString &p : std::as_const(group).first(std::min<qsizetype>(group.size(), 6)))
+        names << QFileInfo(p).fileName();
+    if (group.size() > names.size())
+        names << u"… and %1 more"_s.arg(group.size() - names.size());
     const auto answer = QMessageBox::question(
             parent, u"Multiple catalogue files"_s,
-            u"Found %1 .%2 files in this folder.\n\nLoad ALL of them as one "
-            u"combined catalogue? (No = open just the selected file.)"_s
+            u"Found %1 .%2 files in this folder that look like pieces of one "
+            u"catalogue:\n\n%3\n\nLoad ALL of them as one combined catalogue? "
+            u"(No = open just the selected file.)"_s
                     .arg(group.size())
-                    .arg(suffix),
+                    .arg(suffix, names.join(u'\n')),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
     return answer == QMessageBox::Yes ? group : QStringList();
 }
@@ -1175,6 +1199,12 @@ void MainWindow::dispatchOpenForPath(const QString &path)
     }
     if (opener == u"vbt"_s) {
         doOpenVbtPath(target);
+        return;
+    }
+    if (opener == u"velocity"_s) {
+        // A 3-component vector field: the 2-D image viewer would show one plane
+        // of one component, which reads as an empty picture.
+        openVelocityFieldPath(target);
         return;
     }
     if (opener == u"unsupported"_s) {
@@ -1348,6 +1378,12 @@ void MainWindow::openVelocityField()
     if (path.isEmpty()) {
         return;
     }
+    this->openVelocityFieldPath(path);
+}
+
+void MainWindow::openVelocityFieldPath(const QString &path)
+{
+    BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
 
     // The 64³×3 grid is small; do the two synchronous calls under a wait cursor.
     QApplication::setOverrideCursor(Qt::WaitCursor);

@@ -10,6 +10,8 @@ class TestBackendClient : public QObject
     Q_OBJECT
 
 private slots:
+    void parseKinematicFit_readsFitsAndNullsAsNaN();
+    void parseKinematicFit_rejectsMapsOfTheWrongSize();
     // Diagnostics "Operation" column — derived from the request path.
     void operationTag_stripsVersionAndTransportSuffix();
     void operationTag_keepsTwoSegments();

@@ -2,6 +2,7 @@
 
 #include <QMainWindow>
 #include <QPointer>
+#include <QVariantMap>
 
 class QCheckBox;
 class QComboBox;
@@ -69,7 +70,8 @@ Q_SIGNALS:
     /// Emitted when the line-width map is computed, so the caller promotes it to a first-class
     /// PANE product (#5) instead of a standalone window. Payload = the raw float map + geometry.
     void mapReady(const QByteArray &floatData, int width, int height, float rangeMin,
-                  float rangeMax, const QString &label, const QString &unit);
+                  float rangeMax, const QString &label, const QString &unit,
+                  const QVariantMap &recipe);
 
 public:
 
@@ -98,6 +100,15 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+
+public:
+    /// The session's noise estimate: the mask is turned on at 3σ of it, and the
+    /// map's provenance says so. Called again on a re-estimate; once the
+    /// threshold has been edited by hand it is the user's and is left alone.
+    void setNoiseEstimate(double sigma, const QString &where);
+    /// The cube's rest frequency (RESTFRQ), so a frequency cube's widths come out
+    /// in km/s without the user retyping what the header already says.
+    void setRestFrequencyHz(double restFreqHz);
 
 private slots:
     void onCompute();
@@ -140,5 +151,9 @@ private:
     QSpinBox       *m_chanEndSpin{ nullptr };
     QCheckBox      *m_maskCheck{ nullptr };
     QDoubleSpinBox *m_thresholdSpin{ nullptr };
+    QLabel         *m_thresholdSourceLabel{ nullptr };
+    QString         m_thresholdSource;   ///< "3σ of the noise estimate, …"; empty when typed
+    double          m_estimateThreshold{ 0.0 };   ///< exact 3σ (the box rounds)
+    bool            m_thresholdTouched{ false };  ///< edited by hand: estimates no longer apply
     QPushButton    *m_computeBtn{ nullptr };
 };

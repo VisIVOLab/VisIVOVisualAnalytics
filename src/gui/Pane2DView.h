@@ -26,6 +26,10 @@
 
 class QWidget;
 class QVTKOpenGLNativeWidget;
+class vtkActor;
+class vtkCellArray;
+class vtkPoints;
+class vtkPolyData;
 
 class vtkImageData;
 class vtkTextProperty;
@@ -55,12 +59,18 @@ public:
         // axisSpan (in the axis' WCS units, e.g. degrees) lets the formatter pick enough
         // precision that adjacent ticks never print the SAME label on a tiny field ((b)).
         std::function<QString(int axis, double value, double axisSpan)> formatCoord;
+        // Pixel (x, y) → coordinates in the DISPLAY frame, both at once. A frame
+        // change (FK5 ↔ Galactic, …) mixes the two axes, so the per-axis
+        // voxelToWcs alone gives native values under a frame's title. When set,
+        // ticks use this; when unset, the native per-axis values.
+        std::function<bool(double vx, double vy, double &fx, double &fy)> voxelToFrame;
     };
 
     explicit Pane2DView(QObject *parent = nullptr);
     ~Pane2DView() override;
 
     QVTKOpenGLNativeWidget *widget() const;                 // the mountable Qt widget
+    vtkRenderer *renderer() const { return m_renderer; }
     // `destScale` is the mode the pane is ABOUT to be put in, when the caller
     // follows this with setColorMap(). It matters because the range is installed
     // here and read back by rebuildLut(): installed under the pane's OLD mode, a
@@ -72,6 +82,8 @@ public:
                      bool clampOutliersTransparent);
     void setWcsContext(WcsContext ctx);
     void setWcsAxesVisible(bool on);
+    /// Keep @p logicalPx free below the axes (a channel bar sits there).
+    void setBottomReserve(int logicalPx);
     void fit(bool force = true);                            // gutter→fit→colorbar→overlay→render
     // §5.1: the interactor is LIVE only on the active pane, flipped in the activation
     // slot (not per-event) so no VTK observer ever sees a stray hover on an idle pane.
@@ -84,6 +96,12 @@ public:
     LutScale::Mode scale() const { return m_scale; }
     double gamma() const { return m_gamma; }
     bool invert() const { return m_invert; }
+    bool clampOutliers() const { return m_clampOutliers; }
+
+    /// A polyline drawn over the image, in its pixel coordinates (the PV path, shown
+    /// on every map of the same field). Empty = hidden. Renders.
+    void setOverlayPath(const std::vector<std::array<double, 2>> &pixels);
+    void render();
     double rangeMin() const;
     double rangeMax() const;
     bool lutInitialized() const { return m_lutInitialized; }  // §5.3: don't re-seed on recompute
@@ -143,6 +161,11 @@ private:
     vtkSmartPointer<vtkImageSliceMapper> m_mapper;
     vtkSmartPointer<vtkImageSlice> m_actor;
     vtkSmartPointer<vtkScalarBarActor> m_colorbar;
+    vtkSmartPointer<vtkPoints> m_pathPoints;
+    vtkSmartPointer<vtkCellArray> m_pathCells;
+    vtkSmartPointer<vtkPolyData> m_pathData;
+    vtkSmartPointer<vtkActor> m_pathActor;
+    std::vector<std::array<double, 2>> m_pathShown;   ///< skip re-renders of the same path
 
     // WCS overlay actors (x/y axis lines, x/y titles, per-tick label vectors).
     vtkSmartPointer<vtkAxisActor2D> m_overlayXAxis;
@@ -184,6 +207,8 @@ private:
     // fit cache (see vtkWindowCube::layout2dPaneFor)
     std::array<int, 2> m_fitSize{ -1, -1 };
     double m_fitRight{ -1. };
+    double m_fitBottom{ -1. };
+    int m_bottomReserve{ 0 };   ///< logical px kept free at the bottom (channel bar)
 
     // overlay cache (see vtkWindowCube::updateMomentWcsOverlay)
     std::array<double, 4> m_overlayVisibleBounds{ std::numeric_limits<double>::quiet_NaN(),

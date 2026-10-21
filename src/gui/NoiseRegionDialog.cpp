@@ -102,8 +102,10 @@ NoiseRegionDialog::NoiseRegionDialog(int width, int height, int depth, QWidget *
     // ── SPECTRAL RANGE ───────────────────────────────────────────────────
     auto *spectralForm = ToolDialogStyle::addSection(root, u"Spectral range (channels)"_s, this);
 
-    m_chStartSpin = makeSpinBox(0, zMax, 0);
-    m_chEndSpin   = makeSpinBox(0, zMax, zMax);
+    // Channels from 1, as on the channel bar; the accessors and the preview
+    // signal stay 0-based, which is what the backend and the overlay use.
+    m_chStartSpin = makeSpinBox(1, zMax + 1, 1);
+    m_chEndSpin   = makeSpinBox(1, zMax + 1, zMax + 1);
 
     spectralForm->addRow(u"Start → End"_s, makeRangeRow(m_chStartSpin, m_chEndSpin));
 
@@ -174,7 +176,7 @@ void NoiseRegionDialog::emitRegion()
 {
     emit regionPreviewChanged(m_x0Spin->value(), m_x1Spin->value(),
                               m_y0Spin->value(), m_y1Spin->value(),
-                              m_chStartSpin->value(), m_chEndSpin->value());
+                              channelStart(), channelEnd());
 }
 
 void NoiseRegionDialog::validate()
@@ -203,7 +205,7 @@ void NoiseRegionDialog::validate()
                     u"Pick an off-source area inside the data footprint - "
                     u"avoid blanked borders or the result is mostly zero."_s
                             .arg(wPx).arg(hPx)
-                            .arg(QLocale::system().toString(nPx)).arg(pct));
+                            .arg(nPx).arg(pct));   // not the system locale: "54.880" read as a decimal
         }
     }
 
@@ -229,16 +231,16 @@ void NoiseRegionDialog::resetToFullExtent()
     m_x1Spin->setValue(std::max(0, m_width  - 1));
     m_y0Spin->setValue(0);
     m_y1Spin->setValue(std::max(0, m_height - 1));
-    m_chStartSpin->setValue(0);
-    m_chEndSpin->setValue(std::max(0, m_depth - 1));
+    m_chStartSpin->setValue(1);
+    m_chEndSpin->setValue(std::max(1, m_depth));
 }
 
 int NoiseRegionDialog::x0()          const { return m_x0Spin->value(); }
 int NoiseRegionDialog::x1()          const { return m_x1Spin->value(); }
 int NoiseRegionDialog::y0()          const { return m_y0Spin->value(); }
 int NoiseRegionDialog::y1()          const { return m_y1Spin->value(); }
-int NoiseRegionDialog::channelStart() const { return m_chStartSpin->value(); }
-int NoiseRegionDialog::channelEnd()   const { return m_chEndSpin->value(); }
+int NoiseRegionDialog::channelStart() const { return m_chStartSpin->value() - 1; }
+int NoiseRegionDialog::channelEnd()   const { return m_chEndSpin->value() - 1; }
 
 void NoiseRegionDialog::setRegion(int x0, int x1, int y0, int y1, int chStart, int chEnd)
 {
@@ -249,8 +251,8 @@ void NoiseRegionDialog::setRegion(int x0, int x1, int y0, int y1, int chStart, i
     m_x1Spin->setValue(x1);
     m_y0Spin->setValue(y0);
     m_y1Spin->setValue(y1);
-    m_chStartSpin->setValue(chStart);
-    m_chEndSpin->setValue(chEnd);
+    m_chStartSpin->setValue(chStart + 1);   // 0-based in, shown from 1
+    m_chEndSpin->setValue(chEnd + 1);
     if (m_restoredHint) {
         m_restoredHint->show();   // called only when restoring a saved region
     }

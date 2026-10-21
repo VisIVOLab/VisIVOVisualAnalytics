@@ -673,3 +673,30 @@ async def test_samp_upload_file_round_trip(client: AsyncClient, auth_headers: di
     served = await client.get(f"/v1/samp/files/{token}", headers=auth_headers)
     assert served.status_code == 200
     assert served.content == b"hello", "what comes back must be what went in"
+
+
+@pytest.mark.asyncio
+async def test_kinematic_levels_bin_honours_smoothing_and_threshold(
+        client: AsyncClient, opened_cube: dict) -> None:
+    """The interactive (level-field) path takes the panel's Threshold and Smoothing,
+    as the select route does: smoothing then reaches at least as many voxels within
+    the same budget, and a lower threshold likewise."""
+    async def reached(extra: dict) -> int:
+        resp = await client.post(
+            "/v1/cube/kinematic_levels_bin",
+            json={"dataset_id": opened_cube["dataset_id"],
+                  "seed_z": 16, "seed_y": 32, "seed_x": 32,
+                  "reach": 8.0, "reach_max": 16.0, "lambda_v": 1.0, "roi_radius": 20,
+                  **extra},
+            headers=opened_cube["headers"],
+        )
+        assert resp.status_code == 200, resp.text
+        n = int(resp.headers["X-Visivo-Width"]) * int(resp.headers["X-Visivo-Height"]) \
+            * int(resp.headers["X-Visivo-Depth"])
+        add = np.frombuffer(resp.content[:n], dtype=np.uint8)
+        return int((add <= 8).sum())
+
+    base = await reached({})
+    # Before the route passed it on, smoothing was silently ignored here: same field.
+    assert await reached({"smooth_v": 2.0, "smooth_xy": 4.0}) != base
+    assert await reached({"nsigma": 1.5}) >= base

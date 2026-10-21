@@ -47,14 +47,16 @@ ChannelMapsDialog::ChannelMapsDialog(int cubeDepth, int currentSlice,
 
     auto *form = ToolDialogStyle::addSection(root, u"Channel range"_s, this);
 
+    // Channels are numbered from 1 here, as on the channel bar and in every other
+    // tool; config() hands the backend its 0-based indices.
     m_startSpin = new QSpinBox(this);
-    m_startSpin->setRange(0, maxCh);
-    m_startSpin->setValue(std::clamp(currentSlice, 0, maxCh));
+    m_startSpin->setRange(1, maxCh + 1);
+    m_startSpin->setValue(std::clamp(currentSlice, 0, maxCh) + 1);
     form->addRow(u"Start channel"_s, m_startSpin);
 
     m_endSpin = new QSpinBox(this);
-    m_endSpin->setRange(0, maxCh);
-    m_endSpin->setValue(std::min(m_startSpin->value() + 63, maxCh));
+    m_endSpin->setRange(1, maxCh + 1);
+    m_endSpin->setValue(std::min(m_startSpin->value() + 63, maxCh + 1));
     form->addRow(u"End channel"_s, m_endSpin);
 
     m_strideSpin = new QSpinBox(this);
@@ -111,8 +113,8 @@ ChannelMapsDialog::ChannelMapsDialog(int cubeDepth, int currentSlice,
 ChannelMapsConfig ChannelMapsDialog::config() const
 {
     ChannelMapsConfig cfg;
-    cfg.channelStart = m_startSpin->value();
-    cfg.channelEnd   = m_endSpin->value();
+    cfg.channelStart = m_startSpin->value() - 1;   // 0-based from here on
+    cfg.channelEnd   = m_endSpin->value() - 1;
     cfg.stride       = std::max(1, m_strideSpin->value());
     cfg.columns      = std::max(1, m_colsSpin->value());
     cfg.lutName      = m_lutCombo->currentText();

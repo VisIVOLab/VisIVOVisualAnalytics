@@ -547,7 +547,11 @@ QString vtkWindowCube::formatDegreeCoordinate(double value, double axisSpan) con
         if (spacing > 0.0)
             decimals = std::clamp(static_cast<int>(std::ceil(-std::log10(spacing))) + 1, 2, 8);
     }
-    return QString::number(value, 'f', decimals);
+    QString text = QString::number(value, 'f', decimals);
+    // A tiny negative longitude rounds to "-0.000": the tick at the origin.
+    if (text.startsWith(u'-') && text.mid(1).toDouble() == 0.0)
+        text.remove(0, 1);
+    return text;
 }
 
 QString vtkWindowCube::currentWcsFrameLabel() const
@@ -651,6 +655,12 @@ double vtkWindowCube::dprFor(bool slice) const
     return (w && w->devicePixelRatioF() > 0.) ? w->devicePixelRatioF() : 1.;
 }
 
+bool vtkWindowCube::sliceChannelBarShown() const
+{
+    return this->channelOverlay2d && this->channelOverlay2d->parentWidget() == ui->vtkImage
+            && m_sliceBackdropProductId.isEmpty();
+}
+
 CubeGeom::ImageGutter vtkWindowCube::gutter2dFor(bool slice) const
 {
     auto *lut = slice ? this->lutSlice.GetPointer() : this->lutMoment.GetPointer();
@@ -692,7 +702,12 @@ CubeGeom::ImageGutter vtkWindowCube::gutter2dFor(bool slice) const
             + CubeGeom::kColorbarTextPad * dpr                    // bar → label
             + labelW                                              // already device px
             + CubeGeom::kColorbarMargin * dpr;                    // label → pane edge
-    return CubeGeom::imageGutter(this->showWcsAxes, rightGutter, dpr);
+    // The channel bar sits over the slice's bottom edge while it shows channels:
+    // the axes go above it, not under it.
+    const bool bar = slice && this->sliceChannelBarShown();
+    return CubeGeom::fitGutterWithBottomReserve(CubeGeom::imageGutter(this->showWcsAxes, rightGutter, dpr),
+                                                win ? win->GetSize() : nullptr,
+                                                bar ? ChannelOverlay::reservedHeight() * dpr : 0.);
 }
 
 void vtkWindowCube::layout2dPane(bool force)
@@ -724,7 +739,8 @@ void vtkWindowCube::layout2dPaneFor(bool slice, bool force)
     const std::array<int, 2> viewport = { size[0], size[1] };
     auto &lastFit = slice ? this->m_slice2dFitSize : this->m_moment2dFitSize;
     auto &lastRight = slice ? this->m_slice2dFitRight : this->m_moment2dFitRight;
-    if (!force && viewport == lastFit && gutter.right == lastRight) {
+    auto &lastBottom = slice ? this->m_slice2dFitBottom : this->m_moment2dFitBottom;
+    if (!force && viewport == lastFit && gutter.right == lastRight && gutter.bottom == lastBottom) {
         return;   // same geometry — do NOT touch the camera, the user may have zoomed
     }
 
@@ -743,6 +759,7 @@ void vtkWindowCube::layout2dPaneFor(bool slice, bool force)
                                          renderer, gutter, dataArea, this->dprFor(slice));
         lastFit = viewport;   // only remember a viewport we actually fit into
         lastRight = gutter.right;
+        lastBottom = gutter.bottom;
         // STEP6-P1/P2: the slice just re-letterboxed to its own bounds, discarding any shared
         // Linked-2D zoom. If Linked·camera holds a shared view, re-adopt it so the slice rejoins
         // the group instead of snapping to full-frame. (Only the SLICE viewport; the singular
@@ -788,8 +805,12 @@ void vtkWindowCube::updateSliceWcsOverlay()
                            .arg(reinterpret_cast<quintptr>(imageData), 0, 16);
         return;
     }
-    this->set2dWcsOverlayVisible(this->showWcsAxes);
+    // Per-actor visibility is decided by the full update below (leftmost label,
+    // crowded labels, a title with no room); switching everything on here undid
+    // it on every render that hits the cache. Hidden axes hide everything.
     if (!this->showWcsAxes || !renderer || !imageData) {
+        if (!this->showWcsAxes)
+            this->set2dWcsOverlayVisible(false);
         return;
     }
     this->ensureOverlayTickActors(renderer, this->sliceOverlayXTickActors, this->sliceOverlayYTickActors);
@@ -871,8 +892,14 @@ void vtkWindowCube::updateSliceWcsOverlay()
     this->sliceOverlayYAxis->LabelVisibilityOff();
     this->sliceOverlayXAxis->VisibilityOn();
     this->sliceOverlayYAxis->VisibilityOn();
-    this->sliceOverlayXTitleActor->VisibilityOn();
-    this->sliceOverlayYTitleActor->VisibilityOn();
+    // A narrow pane squeezes the axis column (fitGutterToViewport): the numbers
+    // stay, the rotated title would sit on top of them.
+    const bool narrowAxis = gutter.left < 0.8 * CubeGeom::ImageGutter{}.left * dpr;
+    // A short pane above the channel bar: the title would land on the bar.
+    const double barRoom = this->sliceChannelBarShown() ? ChannelOverlay::reservedHeight() * dpr : 0.;
+    const bool shortAxis = barRoom > 0. && bottomMargin - barRoom < 46. * dpr;
+    this->sliceOverlayXTitleActor->SetVisibility(!shortAxis);
+    this->sliceOverlayYTitleActor->SetVisibility(!narrowAxis);
     // (b) axis WCS span (from the tick extremes, honouring the paired celestial conversion)
     // so the degree formatter uses enough precision that adjacent ticks never coincide.
     auto frameAt = [&](double tt, double &fx, double &fy) {
@@ -913,7 +940,11 @@ void vtkWindowCube::updateSliceWcsOverlay()
                 static_cast<int>(bottomMargin - 18. * dpr));
         // Drop the leftmost x label — it collides with the bottom y label in the
         // corner, and that value is readable from the y axis anyway.
-        this->sliceOverlayXTickActors[static_cast<std::size_t>(i)]->SetVisibility(i != 0);
+        // In a narrow pane the labels collide: keep every other one.
+        const bool crowded = overlayTickCount > 1
+                && (xRight - axisX) / (overlayTickCount - 1) < 62. * dpr;
+        this->sliceOverlayXTickActors[static_cast<std::size_t>(i)]->SetVisibility(
+                i != 0 && (!crowded || i % 2 == 0));
         this->sliceOverlayYTickActors[static_cast<std::size_t>(i)]->SetInput(
                 this->formatRemoteOverlayCoordinate(1, frameY, sliceSpanY).toStdString().c_str());
         this->sliceOverlayYTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
@@ -961,8 +992,12 @@ void vtkWindowCube::updateMomentWcsOverlay()
                            .arg(reinterpret_cast<quintptr>(imageData), 0, 16);
         return;
     }
-    this->set2dWcsOverlayVisible(this->showWcsAxes);
+    // Per-actor visibility is decided by the full update below (leftmost label,
+    // crowded labels, a title with no room); switching everything on here undid
+    // it on every render that hits the cache. Hidden axes hide everything.
     if (!this->showWcsAxes || !renderer || !imageData) {
+        if (!this->showWcsAxes)
+            this->set2dWcsOverlayVisible(false);
         return;
     }
     this->ensureOverlayTickActors(renderer, this->momentOverlayXTickActors, this->momentOverlayYTickActors);

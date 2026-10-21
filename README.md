@@ -80,8 +80,9 @@ them the first time with right-click → Open.
 
 ### From source
 
-See [BUILDING.md](BUILDING.md). In short, you need Qt 6.5+, VTK 9.5+ built with
-Qt support, a C++17 compiler, and Python 3.11+ for the backend.
+See [BUILDING.md](BUILDING.md), which has step-by-step recipes for macOS, Linux
+and Windows (MSVC 2022). In short, you need Qt 6.10+, VTK 9.5+ built with Qt
+support, cfitsio, a C++17 compiler, and Python 3.11+ for the backend.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \

@@ -72,7 +72,9 @@ and carve away the companion that touches it in projection with one ⌥-click.
 
 ---
 
-## The two controls
+## The controls
+
+The controls sit in Inspector › Parameters while the tool is on.
 
 ```{list-table}
 :header-rows: 1
@@ -93,7 +95,26 @@ and carve away the companion that touches it in projection with one ⌥-click.
     grows readily along velocity (good for a rotating disc, whose emission moves
     across channels); above 1 it stays spatially compact (good for separating two
     objects that overlap on the sky at different velocities).
+* - **Threshold** nσ
+  - 1.0 – 5.0σ
+  - The level that defines the connected emission the selection can grow
+    through (default 2.5σ). Lower it to join a source to faint gas separated
+    from it by sub-threshold voxels. σ is the session's noise estimate
+    (*Tools → Estimate Noise*) when there is one, otherwise the cube's own
+    robust σ; the panel's **Noise σ** line says which, and Isolate / Remove
+    record it.
+* - **Smoothing**
+  - Off, Light (1, 3, 3), Medium (2, 4, 4), Strong (2, 6, 6)
+  - Smooth before thresholding, in voxels (velocity, y, x). A per-voxel
+    threshold does not see a faint envelope that a smoothed one does; on the
+    extended disc of NGC 3137 Strong takes a default click from 68 909 to
+    319 793 voxels. The mask itself is still applied to the raw cube.
 ```
+
+Under the controls the panel shows the number of selected voxels, the **selected
+pixels per channel** as a small profile, and the channel extent (with its
+velocity or frequency when the axis has one). Lowering the velocity coupling
+widens the profile; a hand refinement on the 2-D map updates all three.
 
 Dragging **Reach** updates the surface immediately, with no round trip to the
 backend: the geodesic field is computed once when you click and every budget is
@@ -159,6 +180,12 @@ happens. Do your 2-D refinement **after** you have settled the controls.
 Both write the mask exactly as displayed, including any 2-D refinements, so what
 you see is what is written. Neither modifies your original file.
 
+The new cube goes to the Workspace Exports and appears in Session Data as a
+**LASSO** product. Its Provenance (Inspector › Parameters) lists the seed, Reach,
+velocity coupling, threshold, smoothing, the number of selected voxels and
+whether the mask was refined by hand; the same recipe is written into the FITS
+`HISTORY` of the new cube, one card per item (`Lasso reach=8`, …).
+
 ```{note}
 Neither one crops. The product keeps the source cube's **full dimensions**, so
 isolating a compact source out of a 1.5 GB cube gives you another 1.5 GB file in
@@ -188,7 +215,9 @@ which does crop and shifts ``CRPIX`` accordingly.
   - **Out of scope.** A finder like SoFiA detects these by smoothing over many
     channels; individually their voxels sit below the nσ contour, and a
     voxel-level geodesic cannot follow emission that is nowhere above threshold.
-    Use the finder for those.
+    Use the finder for those. The **Smoothing** control is for the faint
+    envelope of a source that is detected, not for detecting one: its largest
+    kernel is two channels by six pixels.
 * - Blind detection over a field
   - Not what this is. See [Source finding](source-finding).
 ```

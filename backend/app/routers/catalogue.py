@@ -35,25 +35,29 @@ async def open_catalogue(
     for p in paths:
         if not p.exists() or not p.is_file():
             return CatalogueOpenResponse(valid=False, error=f"Catalogue file not found: {p}")
-    try:
+    def load() -> tuple[pd.DataFrame, dict[str, Any]]:
         if len(paths) == 1:
-            dataframe, metadata = _catalogue_metadata(paths[0], request.format)
-        else:
-            # Multi-file: load each (same format) and concatenate into one
-            # catalogue. Require identical columns so a silent NaN-fill can't
-            # corrupt "same catalogue split into files".
-            frames = [_catalogue_load_dataframe(p, request.format) for p in paths]
-            base_cols = list(frames[0].columns)
-            for src, frame in zip(paths[1:], frames[1:]):
-                if list(frame.columns) != base_cols:
-                    raise ValueError(
-                        f"Column mismatch in {src.name}: expected {base_cols}, "
-                        f"got {list(frame.columns)}"
-                    )
-            dataframe = pd.concat(frames, ignore_index=True)
-            if dataframe.empty and len(dataframe.columns) == 0:
-                raise ValueError("Catalogue is empty.")
-            metadata = _catalogue_metadata_from_dataframe(dataframe, request.format.strip().lower())
+            return _catalogue_metadata(paths[0], request.format)
+        # Multi-file: load each (same format) and concatenate into one
+        # catalogue. Require identical columns so a silent NaN-fill can't
+        # corrupt "same catalogue split into files".
+        frames = [_catalogue_load_dataframe(p, request.format) for p in paths]
+        base_cols = list(frames[0].columns)
+        for src, frame in zip(paths[1:], frames[1:]):
+            if list(frame.columns) != base_cols:
+                raise ValueError(
+                    f"Column mismatch in {src.name}: expected {base_cols}, "
+                    f"got {list(frame.columns)}"
+                )
+        frame = pd.concat(frames, ignore_index=True)
+        if frame.empty and len(frame.columns) == 0:
+            raise ValueError("Catalogue is empty.")
+        return frame, _catalogue_metadata_from_dataframe(frame, request.format.strip().lower())
+
+    try:
+        # Off the event loop: a multi-million-row table takes seconds to parse,
+        # and parsing it inline froze every other route, /v1/health included.
+        dataframe, metadata = await asyncio.to_thread(load)
     except Exception as exc:
         return CatalogueOpenResponse(valid=False, error=str(exc))
 

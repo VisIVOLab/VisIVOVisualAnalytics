@@ -7,7 +7,7 @@ answers a different question from the cube viewer: not *what is here* but
 
 | | |
 |---|---|
-| **Open** | *File → Open Velocity Field…* |
+| **Open** | *File → Open Velocity Field…*, or *Open…* on the file: a FITS with a length-3 component axis is recognised and opened here |
 | **Input** | a FITS grid with three velocity components (km s⁻¹) |
 | **Overlay** | a galaxy catalogue, to compare the reconstruction against observed motions |
 

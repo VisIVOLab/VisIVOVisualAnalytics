@@ -46,6 +46,7 @@ struct WorkspaceChrome::HealthSnapshot
     qint64 ms = 0;
     int runningTasks = 0;
     int registryEntries = 0;
+    int queuedTasks = 0;
     int cacheEntries = 0;
     int cacheCapacity = 0;
 };
@@ -755,6 +756,7 @@ void WorkspaceChrome::poll()
         s.ms = t.elapsed();
         s.runningTasks = h.runningTasks;
         s.registryEntries = h.taskRegistryEntries;
+        s.queuedTasks = h.queuedTasks;
         s.cacheEntries = h.productCacheEntries;
         s.cacheCapacity = h.productCacheCapacity;
         return s;
@@ -800,15 +802,18 @@ void WorkspaceChrome::onPollFinished()
                                                     : VisivoTheme::kError())));
     }
     if (m_queueSlot) {
-        const int queued = std::max(0, s.registryEntries - s.runningTasks);
-        // The backend's figure counts its task REGISTRY (the async moment / PV
-        // jobs). Every other compute — line-width, isosurface, stacking, noise,
+        // Tasks not started yet, as the backend reports them. (entries − running
+        // counted every FINISHED task still in the registry as "queued": a live PV
+        // edit made it climb into the dozens while nothing waited at all.)
+        const int queued = std::max(0, s.queuedTasks);
+        // The backend's running figure counts its task REGISTRY (the async moment /
+        // PV jobs). Every other compute — line-width, isosurface, stacking, noise,
         // baseline — is a synchronous POST that appears nowhere in it, so this
         // read "0 running" for minutes while one was in flight (user report).
         // The client knows about its own, so add them.
         const int local = BackendClient::heavyRequestsInFlight();
         m_queueSlot->setText(QStringLiteral("%1 running · %2 queued")
-                                     .arg(s.runningTasks + local)
+                                     .arg(std::max(0, s.runningTasks - queued) + local)
                                      .arg(queued));
     }
     // Right rail count reuses the running-task figure the poll already computed

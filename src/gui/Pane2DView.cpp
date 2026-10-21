@@ -9,7 +9,13 @@
 #include <QVTKInteractor.h>
 #include <QVTKOpenGLNativeWidget.h>
 
+#include <vtkActor.h>
 #include <vtkAxisActor2D.h>
+#include <vtkCellArray.h>
+#include <vtkPoints.h>
+#include <vtkPolyData.h>
+#include <vtkPolyDataMapper.h>
+#include <vtkProperty.h>
 #include <vtkCallbackCommand.h>
 #include <vtkCamera.h>
 #include <vtkCommand.h>
@@ -123,7 +129,7 @@ vtkSmartPointer<vtkImageData> makePlaceholderImage()
 // the LUT range labels with VTK's own text engine at the exact property the colorbar
 // uses, then hand CubeGeom::imageGutter() the measured right-gutter width (device px).
 CubeGeom::ImageGutter computeGutter(vtkGenericOpenGLRenderWindow *win, vtkLookupTable *lut,
-                                    bool showWcsAxes, double dpr)
+                                    bool showWcsAxes, double dpr, int bottomReserve = 0)
 {
     double range[2] = { 0., 0. };
     if (lut)
@@ -153,7 +159,8 @@ CubeGeom::ImageGutter computeGutter(vtkGenericOpenGLRenderWindow *win, vtkLookup
             + CubeGeom::kColorbarTextPad * dpr                     // bar → label
             + labelW                                               // already device px
             + CubeGeom::kColorbarMargin * dpr;                     // label → pane edge
-    return CubeGeom::imageGutter(showWcsAxes, rightGutter, dpr);
+    return CubeGeom::fitGutterWithBottomReserve(CubeGeom::imageGutter(showWcsAxes, rightGutter, dpr),
+                                                win ? win->GetSize() : nullptr, bottomReserve * dpr);
 }
 
 }  // namespace
@@ -237,13 +244,30 @@ Pane2DView::Pane2DView(QObject *parent)
     m_actor->GetProperty()->SetInterpolationTypeToNearest();
     m_renderer->AddViewProp(m_actor);
 
+    // --- an overlaid path (the PV cut, same colour as on the slice) -------------
+    m_pathPoints = vtkSmartPointer<vtkPoints>::New();
+    m_pathCells = vtkSmartPointer<vtkCellArray>::New();
+    m_pathData = vtkSmartPointer<vtkPolyData>::New();
+    m_pathData->SetPoints(m_pathPoints);
+    m_pathData->SetLines(m_pathCells);
+    {
+        vtkNew<vtkPolyDataMapper> pathMapper;
+        pathMapper->SetInputData(m_pathData);
+        m_pathActor = vtkSmartPointer<vtkActor>::New();
+        m_pathActor->SetMapper(pathMapper);
+        m_pathActor->GetProperty()->SetColor(1.0, 0.4, 0.1);
+        m_pathActor->GetProperty()->SetLineWidth(2.5);
+        m_pathActor->VisibilityOff();
+        m_renderer->AddActor(m_pathActor);
+    }
+
     // --- colorbar (parked in the right gutter, laid out by fit()) ---------------
     m_colorbar = vtkSmartPointer<vtkScalarBarActor>::New();
     m_colorbar->SetLookupTable(m_lut);
     CubeWcs::applyOverlayFont(m_colorbar->GetLabelTextProperty());
     m_renderer->AddViewProp(m_colorbar);
     CubeGeom::layoutColorbarInGutter(m_colorbar, m_renderer,
-                                     computeGutter(m_window, m_lut, m_showWcsAxes, dpr()),
+                                     computeGutter(m_window, m_lut, m_showWcsAxes, dpr(), m_bottomReserve),
                                      CubeGeom::ImageRect{}, dpr());
 
     // --- WCS overlay actors (4 props + tick vectors) ----------------------------
@@ -667,7 +691,7 @@ bool Pane2DView::cameraStateNormalized(double dataCenterXY[2], double &worldHeig
         return false;
     auto *image = vtkImageData::SafeDownCast(m_source->GetOutputDataObject(0));
     const double d = dpr();
-    const auto gutter = computeGutter(m_window, m_lut, m_showWcsAxes, d);
+    const auto gutter = computeGutter(m_window, m_lut, m_showWcsAxes, d, m_bottomReserve);
     const auto data = CubeGeom::dataAreaFor(size, image, gutter);
     return CubeGeom::readNormalizedCamera(m_renderer, data, dataCenterXY, worldHeight);
 }
@@ -685,7 +709,7 @@ void Pane2DView::setCameraStateNormalized(const double dataCenterXY[2], double w
         return;
     auto *image = vtkImageData::SafeDownCast(m_source->GetOutputDataObject(0));
     const double d = dpr();
-    const auto gutter = computeGutter(m_window, m_lut, m_showWcsAxes, d);
+    const auto gutter = computeGutter(m_window, m_lut, m_showWcsAxes, d, m_bottomReserve);
     const auto data = CubeGeom::dataAreaFor(size, image, gutter);
     double focalXY[2] = { 0., 0. }, parScale = 0.;
     if (!CubeGeom::normalizedToFocalScale(size, data, dataCenterXY, worldHeight, focalXY, parScale))
@@ -704,10 +728,20 @@ void Pane2DView::setWcsContext(WcsContext ctx)
     m_overlayViewportSize = { -1, -1 };
 }
 
+void Pane2DView::setBottomReserve(int logicalPx)
+{
+    if (m_bottomReserve == logicalPx)
+        return;
+    m_bottomReserve = logicalPx;
+    m_overlayViewportSize = { -1, -1 };
+    this->fit(true);
+}
+
 void Pane2DView::setWcsAxesVisible(bool on)
 {
     m_showWcsAxes = on;
     this->setOverlayVisible(on);
+    m_overlayViewportSize = { -1, -1 };   // recompute (and re-decide each label) next frame
     this->fit(true);   // gutter collapses / expands with the axes, so re-fit + refresh
 }
 
@@ -731,9 +765,10 @@ void Pane2DView::fit(bool force)
     // The gutter (hence the data-area size) depends on the LUT range via the measured
     // colorbar column, so a range change must re-fit even at the same viewport (§3.0b).
     const double d = dpr();
-    const auto gutter = computeGutter(m_window, m_lut, m_showWcsAxes, d);
+    const auto gutter = computeGutter(m_window, m_lut, m_showWcsAxes, d, m_bottomReserve);
     const std::array<int, 2> viewport = { size[0], size[1] };
-    if (!force && viewport == m_fitSize && gutter.right == m_fitRight)
+    if (!force && viewport == m_fitSize && gutter.right == m_fitRight
+        && gutter.bottom == m_fitBottom)
         return;   // same geometry — do NOT touch the camera (the user may have zoomed)
 
     auto *image = vtkImageData::SafeDownCast(m_source->GetOutputDataObject(0));
@@ -743,6 +778,7 @@ void Pane2DView::fit(bool force)
         CubeGeom::layoutColorbarInGutter(m_colorbar, m_renderer, gutter, dataArea, d);
         m_fitSize = viewport;
         m_fitRight = gutter.right;
+        m_fitBottom = gutter.bottom;
     }
 
     // Invalidate the overlay cache so the next EndEvent recomputes.
@@ -768,9 +804,13 @@ void Pane2DView::updateWcsOverlay()
 
     auto *imageData = vtkImageData::SafeDownCast(m_source->GetOutputDataObject(0));
 
-    this->setOverlayVisible(m_showWcsAxes);
-    if (!m_showWcsAxes || !imageData)
+    // Visibility is decided below, per actor (the leftmost x label, crowded labels,
+    // a title with no room): switching everything on here and then returning on an
+    // unchanged camera undid those choices on every frame.
+    if (!m_showWcsAxes || !imageData) {
+        this->setOverlayVisible(false);
         return;
+    }
     // If the caller never supplied WCS closures, skip the overlay gracefully — but
     // hide the actors first so no stale axes/ticks linger from a previous context.
     if (!m_wcs.voxelToWcs || !m_wcs.axisTitle || !m_wcs.formatCoord) {
@@ -809,7 +849,7 @@ void Pane2DView::updateWcsOverlay()
     m_overlayCameraMTime = camMTime;
 
     const double d = dpr();
-    const auto gutter = computeGutter(m_window, m_lut, m_showWcsAxes, d);
+    const auto gutter = computeGutter(m_window, m_lut, m_showWcsAxes, d, m_bottomReserve);
     // Derive the data area at the CURRENT viewport size — never a cached member (§2.7).
     const auto data = CubeGeom::dataAreaFor(size, imageData, gutter);
     const double axisX = data.valid ? data.x : gutter.left;
@@ -847,10 +887,39 @@ void Pane2DView::updateWcsOverlay()
     m_overlayYAxis->LabelVisibilityOff();
     m_overlayXAxis->VisibilityOn();
     m_overlayYAxis->VisibilityOn();
-    m_overlayXTitle->VisibilityOn();
-    m_overlayYTitle->VisibilityOn();
+    // A narrow pane squeezes the axis column (fitGutterToViewport): the numbers
+    // stay, the rotated title would sit on top of them.
+    const bool narrowAxis = gutter.left < 0.8 * CubeGeom::ImageGutter{}.left * d;
+    // A short pane above a channel bar: the title would land on the bar.
+    const bool shortAxis = m_bottomReserve > 0 && bottomMargin - m_bottomReserve * d < 46. * d;
+    m_overlayXTitle->SetVisibility(!shortAxis);
+    m_overlayYTitle->SetVisibility(!narrowAxis);
 
     const bool hasCelestial = m_wcs.hasCelestial && m_wcs.hasCelestial();
+    // Ticks in the display frame: paired conversion when the caller provides it.
+    const auto frameAt = [&](double vx, double vy, double &fx, double &fy, bool &okX, bool &okY) {
+        fx = m_wcs.voxelToWcs(0, vx, &okX);
+        fy = m_wcs.voxelToWcs(1, vy, &okY);
+        if (okX && okY && hasCelestial && m_wcs.voxelToFrame) {
+            double gx = fx, gy = fy;
+            if (m_wcs.voxelToFrame(vx, vy, gx, gy)) {
+                fx = gx;
+                fy = gy;
+            }
+        }
+    };
+    double spanX = std::fabs(xMax - xMin);
+    double spanY = std::fabs(yMax - yMin);
+    if (m_wcs.voxelToFrame && hasCelestial) {
+        double fx0 = 0., fy0 = 0., fx1 = 0., fy1 = 0.;
+        bool a = false, b = false, c = false, e = false;
+        frameAt(rxMin, ryMin, fx0, fy0, a, b);
+        frameAt(rxMax, ryMax, fx1, fy1, c, e);
+        if (a && b && c && e) {
+            spanX = std::fabs(fx1 - fx0);
+            spanY = std::fabs(fy1 - fy0);
+        }
+    }
     for (int i = 0; i < kOverlayTickCount; ++i) {
         const double t = kOverlayTickCount == 1
                 ? 0.0
@@ -859,8 +928,9 @@ void Pane2DView::updateWcsOverlay()
         const double voxelY = ryMin + t * (ryMax - ryMin);
         bool tickXOk = false;
         bool tickYOk = false;
-        const double frameX = m_wcs.voxelToWcs(0, voxelX, &tickXOk);
-        const double frameY = m_wcs.voxelToWcs(1, voxelY, &tickYOk);
+        double frameX = 0.0;
+        double frameY = 0.0;
+        frameAt(voxelX, voxelY, frameX, frameY, tickXOk, tickYOk);
         // NOTE on frames: the original moment overlay does a PAIRED celestial
         // conversion (convertRemoteCelestialCoordinates(x,y,...)) because e.g.
         // FK5<->Galactic mixes both axes. This class's required API is per-axis
@@ -870,19 +940,46 @@ void Pane2DView::updateWcsOverlay()
         // want to branch on it; the tick loop itself needs no cross-axis mixing.
         (void)hasCelestial;
         const auto x = static_cast<std::size_t>(i);
-        // Pass the axis' WCS span so the formatter uses enough decimals for THIS zoom (a
-        // 0.007° moment field must not print "47.21" on every tick) (b).
-        const double spanX = std::fabs(xMax - xMin);
-        const double spanY = std::fabs(yMax - yMin);
+        // The axis' WCS span (in the display frame, above) lets the formatter use enough
+        // decimals for THIS zoom (a 0.007° moment field must not print "47.21" on every
+        // tick) (b).
         m_overlayXTicks[x]->SetInput(m_wcs.formatCoord(0, frameX, spanX).toStdString().c_str());
         m_overlayXTicks[x]->SetDisplayPosition(static_cast<int>(axisX + t * (xRight - axisX)),
                                                static_cast<int>(bottomMargin - 18. * d));
         // Drop the leftmost x label — corner collision with the bottom y label.
-        m_overlayXTicks[x]->SetVisibility(i != 0);
+        // In a narrow pane the five labels collide: keep every other one.
+        const bool crowded = (xRight - axisX) / (kOverlayTickCount - 1) < 62. * d;
+        m_overlayXTicks[x]->SetVisibility(i != 0 && (!crowded || i % 2 == 0));
         m_overlayYTicks[x]->SetInput(m_wcs.formatCoord(1, frameY, spanY).toStdString().c_str());
         m_overlayYTicks[x]->SetDisplayPosition(
                 static_cast<int>(axisX - 10. * d),
                 static_cast<int>(bottomMargin + t * (yTop - bottomMargin)));
         m_overlayYTicks[x]->VisibilityOn();
     }
+}
+
+void Pane2DView::setOverlayPath(const std::vector<std::array<double, 2>> &pixels)
+{
+    if (!m_pathActor || pixels == m_pathShown)
+        return;
+    m_pathShown = pixels;
+    m_pathPoints->Reset();
+    m_pathCells->Reset();
+    if (pixels.size() >= 2) {
+        m_pathCells->InsertNextCell(static_cast<vtkIdType>(pixels.size()));
+        for (vtkIdType i = 0; i < static_cast<vtkIdType>(pixels.size()); ++i) {
+            m_pathPoints->InsertNextPoint(pixels[std::size_t(i)][0], pixels[std::size_t(i)][1], 0.0);
+            m_pathCells->InsertCellPoint(i);
+        }
+    }
+    m_pathPoints->Modified();
+    m_pathData->Modified();
+    m_pathActor->SetVisibility(pixels.size() >= 2);
+    render();
+}
+
+void Pane2DView::render()
+{
+    if (m_window)
+        m_window->Render();
 }

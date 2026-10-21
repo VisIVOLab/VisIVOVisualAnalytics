@@ -138,8 +138,8 @@ expansion.
 3. **Double-click** or **right-click** to finish the path. The diagram is
    computed on the backend and opens in a pane.
 
-You can draw the path on a **moment map** instead of a channel: choose the
-map under *DISPLAY → Show* first (see
+You can draw the path on a **moment map** instead of a channel: arm the tool
+while the map is on screen (see
 [Drawing on a moment map](#drawing-on-a-moment-map)).
 
 ### Editing the path
@@ -154,6 +154,8 @@ The finished path stays on the image with a handle on each vertex, and while
 | **Shift** + drag the path | rotates it about its centre |
 | Double-click on the path | adds a vertex there |
 | Right-click on a vertex | removes it (a path keeps at least two) |
+
+The mouse wheel zooms and the middle button pans while the tool is armed.
 
 While you drag, the diagram is recomputed a fraction of a second after the
 pointer pauses; if a computation is still running, only the latest shape is
@@ -217,24 +219,30 @@ Workspace Exports (browsable from the Data Hub):
 | `CTYPE2`, `CUNIT2`, `CRVAL2`, `CDELT2`, `CRPIX2` | the cube's **own** spectral axis, algorithm and parameters included, so a non-linear axis stays exact |
 | `BUNIT`, `BMAJ`, `BMIN`, `BPA` | from the cube |
 | `RESTFRQ`, `SPECSYS`, … | copied when present |
-| `PVWIDTH`, `PVSTEP` | width and sample step, in cube pixels |
+| `PVWIDTH`, `PVSTEP` | width (cube pixels) and sample step (arcsec) |
 | `HISTORY` | every vertex, in pixels and in sky coordinates |
 
 The file is computed from the path the **displayed** diagram was made from.
 
 ### Drawing on a moment map
 
-The *DISPLAY* section of the 2-D Slice has a **Show** menu: *Channel* (the
-default) or any moment map computed over the whole field. With a map
-selected, the slice shows it on the same pixels, and the slice tools (PV path,
-regions, probe) work on it exactly as on a channel. This is the way to draw a
-PV path along a disk or a filament seen in moment 0, or across the velocity
-gradient of moment 1.
+Open the moment map in a pane (Session Data, or the pane's menu), then arm the
+tool — *Extract PV Diagram*, a region or the probe. The tool draws on the map:
+the pane keeps the map's title and colours, and the path, region or probe sit
+on its pixels. This is the way to draw a PV path along a disk or a filament seen
+in moment 0, or across the velocity gradient of moment 1.
 
-Meanwhile the channel controls keep working: the channel number, linked
-windows and the 3-D cutting plane follow them, and the channel shows again as
-soon as you choose *Channel*. A region measured on the map records the map
-(and its version) as what it measured, and the probe reports the map's unit.
+Click in the moment pane first, so that it is the active one: the tool always
+works in the active pane. If the 2-D Slice was on screen in another pane, that
+pane becomes **Channels**: it keeps showing the current channel (display only),
+follows the channel bar, which moves onto it, and shows the PV path too, so you
+can follow the cut through the channels while you draw it on the map. The path
+is also drawn on every other map pane of the same field.
+
+Choose *2D Slice* in either pane's menu (or in Session Data) to stop drawing on
+the map: the panes go back to how they were.
+A region measured on the map records the map (and its version) as what it
+measured, and the probe reports the map's unit.
 
 ### Tips
 
@@ -295,6 +303,18 @@ region and channel range.
    result panel back** exactly as it was: it is rebuilt from what the product
    recorded, so it outlives the panel you closed, the tool window and anything
    else you do in between.
+6. **σ is then used by the tools that need a noise level** — measured once, on
+   a region you chose, instead of each tool guessing its own:
+   - *Compute Moment* offers **3σ of the noise estimate** as the mask threshold
+     (chosen by default; Auto and a typed value remain available);
+   - the *Line-Width Map* turns its mask on at 3σ of it;
+   - the *Kinematic Lasso* counts its threshold in units of it (its panel shows
+     which σ it uses).
+
+   Each records the σ and the region in its product's provenance. The value is
+   the median of the per-channel σ. Without an estimate every tool falls back to
+   its own robust σ over the whole cube, as before. A new estimate replaces the
+   previous one; a lasso selection on screen is grown again with it.
 
 ### Live preview overlays
 

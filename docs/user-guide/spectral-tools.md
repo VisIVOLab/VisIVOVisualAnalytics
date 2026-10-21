@@ -208,11 +208,16 @@ spectral profile:
    - **Channel start / end** — restrict the fit to where the line is. The
      fit is sensitive to including line-free noise channels.
    - **Mask threshold** — only fit pixels above this intensity (a quick way
-     to skip background voxels).
+     to skip background voxels). After *Tools → Estimate Noise* the mask is on
+     at 3σ of the estimate, which the map's provenance records; edit the value
+     to override it.
+   - **Rest frequency** — for a frequency cube, prefilled from the header's
+     `RESTFRQ` so the widths come out in km/s.
 2. Click **Compute**. A progress overlay appears in the dialog (the rest
    of the app stays interactive).
-3. The result opens in a dedicated *Science Map* window — two side-by-side
-   maps (FWHM, EW), each with its own range and unit.
+3. The map (FWHM or EW, as chosen) is added to Session Data and shown in a pane,
+   with its unit; its provenance lists the method, channels, mask and rest
+   frequency.
 
 ### Optimisations (under the hood)
 

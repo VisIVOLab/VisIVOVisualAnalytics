@@ -26,9 +26,10 @@ _SNIFF_BYTES = 8192
 #:   "dataset"     → POST /v1/datasets/open  (image, cube, dynamic spectrum)
 #:   "catalogue"   → POST /v1/catalogue/open (CSV, VOTable, IPAC, speck, FITS table)
 #:   "vbt"         → POST /v1/vbt/open
+#:   "velocity"    → POST /v1/velocity/open (a 3-component vector field)
 #:   "ask"         → the content is ambiguous or unknown; let the user choose
 #:   "unsupported" → we know what it is and no opener takes it; say so, don't ask
-OPENERS = ("dataset", "catalogue", "vbt", "ask", "unsupported")
+OPENERS = ("dataset", "catalogue", "vbt", "velocity", "ask", "unsupported")
 
 
 def classify_path(path: str | Path) -> dict:
@@ -129,6 +130,25 @@ def _classify_fits(path: Path, head: bytes) -> dict:
                                "FITS with no image and no table in it.")
 
             ctypes = [str(primary.get(f"CTYPE{i}", "")).upper() for i in range(1, naxis + 1)]
+            # A velocity field: three components (vx, vy, vz) on a 3-D grid, the
+            # layout the vector-field viewer reads. A Stokes or spectral axis of
+            # length 3 is something else, so only an axis that names neither.
+            # The fourth axis must not name anything but a component: an unlabelled
+            # axis (the CF4 reconstructions carry none) or one that says so; a TIME,
+            # STOKES or spectral axis of length 3 is a cube of something else. The
+            # three grid axes must not be spectral, Stokes or time either.
+            from .fits_dataset import ScientificFitsDataset  # noqa: PLC0415
+            not_grid = tuple(ScientificFitsDataset._SPECTRAL_CTYPE_PREFIXES) + (
+                "STOKES", "TIME", "UTC", "MJD")
+            fourth = ctypes[3].strip() if naxis == 4 else "?"
+            fourth_is_component = fourth == "" or "COMP" in fourth or fourth in ("V", "VEC",
+                                                                                  "VECTOR")
+            if (naxis == 4 and axes[3] == 3 and all(n > 1 for n in axes[:3])
+                    and fourth_is_component
+                    and not any(c.startswith(not_grid) for c in ctypes[:3])):
+                return _result("velocity-field", "velocity", True,
+                               f"Velocity field: 3 components on a "
+                               f"{axes[0]} × {axes[1]} × {axes[2]} grid.")
             if any(c.startswith(("TIME", "UTC")) for c in ctypes) \
                     and any(c.startswith("FREQ") for c in ctypes):
                 return _result("dynspec", "dataset", True,

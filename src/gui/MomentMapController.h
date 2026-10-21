@@ -58,6 +58,9 @@ public:
         bool maskEnabled{ true };
         double thresholdValue{ 0.0 };
         bool thresholdAuto{ true };
+        /// Where a manual threshold came from, for its provenance: empty when
+        /// typed, "3σ of the noise estimate (…)" when taken from Estimate Noise.
+        QString thresholdSource;
     };
 
     // onRunFinished – called when the watcher transitions busy state:
@@ -102,6 +105,16 @@ public:
     // params too, so exposed publicly — §3.0b).
     static QString describeMomentOrder(int order);
     static QString describeMomentScope();
+    /// The mask, as provenance says it: none, auto, or the threshold and its source.
+    static QString describeMask(const Config &config);
+
+    /// The session's noise estimate (Tools › Estimate Noise): offered in the
+    /// dialog as the mask threshold, 3σ, so σ is measured once and used here.
+    void setNoiseEstimate(double sigma, const QString &where)
+    {
+        m_noiseSigma = sigma;
+        m_noiseWhere = where;
+    }
 
 signals:
     /// A computation has actually STARTED (Compute pressed and validated), with
@@ -123,6 +136,8 @@ public slots:
     void startComputationHeadless(Config config);
 
 private:
+    double m_noiseSigma{ 0.0 };   ///< 0: no estimate this session
+    QString m_noiseWhere;
     void dispatch(const Config &config);   ///< async compute for a resolved Config (shared)
     /// Open (or raise) the persistent Moment Map Settings window. Compute runs
     /// from inside it: the window stays open across the run, carries its own

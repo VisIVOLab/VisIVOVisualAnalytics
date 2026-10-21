@@ -61,6 +61,14 @@ A figure is not reproducible from its own pixels. Whatever you export, note:
     cancel it — the view you were working in is not disturbed.
 ```
 
+Frames are recorded from the view as it is on screen, at its size: the 2-D
+Slice for a scan, the 3-D view for an orbit. In a one-pane layout the pane
+switches to that view for the export and back afterwards (unless the slice is
+showing a map, or the layout changed meanwhile); otherwise show the view in a
+pane first. A scan is refused while the slice is showing a map instead of the
+channels. The movie is offered in your Movies folder (Documents if there is
+none; PNG frames, without ffmpeg, in Documents).
+
 Both take a frames-per-second setting. For a channel scan, match it to the
 number of channels: a 300-channel cube at 30 fps is ten seconds, which is about
 right for a talk; the same cube at 5 fps is a minute, which is not.

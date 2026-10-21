@@ -48,7 +48,7 @@ def test_tilted_ring_face_on_is_flat():
 @pytest.mark.asyncio
 async def test_kinematic_model_endpoint(client, opened_cube):
     # The synthetic cube has a FREQ axis (Hz) + RESTFRQ, so the backend converts
-    # it to radio-convention velocity (km/s); vsys/vrot/sigma are km/s.
+    # it to optical velocity (cz, km/s), as the kinematic fit does; vsys/vrot/sigma are km/s.
     resp = await client.post(
         "/v1/cube/kinematic_model_bin",
         json={

@@ -93,6 +93,7 @@ QString productBadge(const QString &kind)
         { u"channelmaps"_s, u"CHAN"_s }, { u"linewidth"_s, u"LINE"_s },
         { u"pv"_s, u"PV"_s },         { u"noise"_s, u"NOISE"_s },
         { u"stack"_s, u"STACK"_s },   { u"spectrum"_s, u"SPEC"_s },
+        { u"lasso"_s, u"LASSO"_s },
     };
     const QString b = map.value(kind);
     return b.isEmpty() ? kind.left(4).toUpper() : b;

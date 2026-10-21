@@ -128,8 +128,10 @@ def test_fits_export_has_wcs_and_matches_the_diagram(descending_cube, tmp_path):
     assert h["BMAJ"] == pytest.approx(3.0 / 3600)
     assert h["SPECSYS"] == "BARYCENT"
     assert h["PVWIDTH"] == 3
+    assert h["PVSTEP"] == pytest.approx(1.0, rel=1e-6)                 # arcsec per sample
     history = "\n".join(str(x) for x in h["HISTORY"])
-    assert "PV vertex 0: x=2.000 y=10.000" in history and "lon=" in history
+    assert "PV vertex 0: pix 2.000 10.000 world" in history
+    assert all(len(str(card)) <= 72 for card in h["HISTORY"])
 
 
 def test_fits_export_never_overwrites(descending_cube, tmp_path):
@@ -252,3 +254,18 @@ def test_bilinear_reads_only_the_neighbours(tmp_path):
     arr = np.arange(3 * 50 * 60, dtype=np.float32).reshape(3, 50, 60)
     out = _bilinear_mean(Lazy(arr), np.array([1.5, 2.0]), np.array([3.0, 3.5]), 2, 1, 60, 50)
     assert out.shape == (3, 2) and np.all(np.isfinite(out))
+
+
+def test_full_stokes_cube_is_cut_on_its_first_plane(tmp_path):
+    """RA/DEC/FREQ/STOKES(4): squeeze_to_3d drops the STOKES axis (plane 0), so
+    the spectral axis is the third KEPT axis and the cut must be allowed."""
+    nx, ny, nz = 12, 10, 6
+    h = _cube_header(nx, ny, nz, 1.0, 0.0)
+    h["CTYPE4"], h["CRPIX4"], h["CRVAL4"], h["CDELT4"] = "STOKES", 1.0, 1.0, 1.0
+    data = np.zeros((4, nz, ny, nx), dtype=np.float32)
+    data[0, 3, 5, 6] = 50.0            # Stokes I
+    data[1, 3, 5, 6] = -99.0           # Stokes Q, must not appear
+    path = _write(tmp_path, data, h)
+    r = compute_pv(path, [[1, 5], [10, 5]], 1)
+    z, s = np.unravel_index(np.nanargmax(r["pv"]), r["pv"].shape)
+    assert z == 3 and r["pv"][z, s] == pytest.approx(50.0)

@@ -206,7 +206,7 @@ void NoiseController::runEstimate(NoiseRegionDialog *dialog)
             DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
             QStringLiteral("NoiseController"),
             QStringLiteral("Noise estimation started (x:%1-%2 y:%3-%4 ch:%5-%6).")
-                    .arg(x0).arg(x1).arg(y0).arg(y1).arg(channelStart).arg(channelEnd),
+                    .arg(x0).arg(x1).arg(y0).arg(y1).arg(channelStart + 1).arg(channelEnd + 1),
             m_datasetId, m_sessionId,
             QStringLiteral("noise"));
 
@@ -310,7 +310,9 @@ void NoiseController::showResult(const CubeNoiseEstimateResult &result)
         std::sort(finite.begin(), finite.end());
         const double sum  = std::accumulate(finite.begin(), finite.end(), 0.0);
         const double mean = sum / static_cast<double>(finite.size());
-        const double med  = finite[finite.size() / 2];
+        const qsizetype mid = finite.size() / 2;
+        const double med  = (finite.size() % 2 != 0) ? finite[mid]
+                                                    : 0.5 * (finite[mid - 1] + finite[mid]);
         return { mean, med, finite.front(), finite.back() };
     };
 
@@ -323,8 +325,8 @@ void NoiseController::showResult(const CubeNoiseEstimateResult &result)
 
     QString subtitle =
             u"Channels: %1..%2  (%3 planes)  ·  region x=%4..%5, y=%6..%7"_s
-                    .arg(result.channelStart)
-                    .arg(result.channelEnd)
+                    .arg(result.channelStart + 1)   // from 1, as on the channel bar
+                    .arg(result.channelEnd + 1)
                     .arg(result.numChannels)
                     .arg(result.x0).arg(result.x1)
                     .arg(result.y0).arg(result.y1);
@@ -355,8 +357,8 @@ void NoiseController::showResult(const CubeNoiseEstimateResult &result)
                                            .arg(result.x0).arg(result.x1)
                                            .arg(result.y0).arg(result.y1));
         params.insert(u"Channels"_s, u"%1..%2 (%3 planes)"_s
-                                             .arg(result.channelStart)
-                                             .arg(result.channelEnd)
+                                             .arg(result.channelStart + 1)
+                                             .arg(result.channelEnd + 1)
                                              .arg(result.numChannels));
         params.insert(u"σ mean"_s,   fmt(sigmaStats[0]));
         params.insert(u"σ median"_s, fmt(sigmaStats[1]));
@@ -376,9 +378,14 @@ void NoiseController::showResult(const CubeNoiseEstimateResult &result)
                                           .arg(result.channelStart).arg(result.channelEnd);
         emit noiseProvenanceReady(
                 stableKey,
-                u"Noise σ=%1 (x %2..%3, y %4..%5)"_s.arg(fmt(sigmaStats[1]))
+                u"Noise σ=%1 (x %2..%3, y %4..%5)"_s.arg(sigmaStats[1], 0, 'g', 4)
                         .arg(result.x0).arg(result.x1).arg(result.y0).arg(result.y1),
                 params);
+        if (std::isfinite(sigmaStats[1]) && sigmaStats[1] > 0.0)
+            emit noiseEstimated(sigmaStats[1],
+                                u"x %1..%2, y %3..%4, ch %5..%6"_s
+                                        .arg(result.x0).arg(result.x1).arg(result.y0).arg(result.y1)
+                                        .arg(result.channelStart + 1).arg(result.channelEnd + 1));
     }
 
     // Described ONCE, then shown and recorded from the same description, so the

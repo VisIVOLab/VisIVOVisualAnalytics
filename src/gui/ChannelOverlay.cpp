@@ -7,6 +7,10 @@
 #include <QResizeEvent>
 #include <QShowEvent>
 #include <QSlider>
+#include <algorithm>
+#include <cmath>
+#include <QFontMetrics>
+#include <QRegularExpression>
 
 using namespace Qt::StringLiterals;
 
@@ -43,15 +47,20 @@ ChannelOverlay::ChannelOverlay(QWidget *parent)
     m_slider->setPageStep(10);
     m_slider->setTracking(true);
     m_slider->setMinimumHeight(20);
+    // The slider is the control; it keeps room to be dragged in a narrow pane (a
+    // 4-pane layout), and the spectral value yields instead — a long frequency
+    // ("1414870370.37 Hz") had squeezed the slider down to its handle.
+    m_slider->setMinimumWidth(70);
 
-    m_vValue->setMinimumWidth(110);
+    m_vValue->setMinimumWidth(40);
+    m_vValue->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_vValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
     row->addWidget(m_chLabel);
     row->addWidget(m_chValue);
     row->addWidget(m_slider, /*stretch=*/1);
     row->addWidget(m_vLabel);
-    row->addWidget(m_vValue);
+    row->addWidget(m_vValue, /*stretch=*/1);
 
     applyStyle();
 
@@ -83,7 +92,44 @@ void ChannelOverlay::setChannel(int channel)
 
 void ChannelOverlay::setSpectralLabel(const QString &textWithUnit)
 {
-    m_vValue->setText(textWithUnit);
+    m_spectralFull = textWithUnit;
+    m_vValue->setToolTip(textWithUnit);
+    refreshSpectralLabel();
+}
+
+void ChannelOverlay::refreshSpectralLabel()
+{
+    m_vValue->setText(fitSpectralLabel(m_spectralFull, m_vValue->fontMetrics(),
+                                       std::max(0, m_vValue->width())));
+}
+
+void ChannelOverlay::resizeEvent(QResizeEvent *event)
+{
+    QFrame::resizeEvent(event);
+    refreshSpectralLabel();
+}
+
+QString ChannelOverlay::fitSpectralLabel(const QString &full, const QFontMetrics &fm, int available)
+{
+    if (available <= 0 || fm.horizontalAdvance(full) <= available)
+        return full;
+    // "<number> Hz" → GHz / MHz with the significant digits a channel needs.
+    static const QRegularExpression hz(QStringLiteral("^\\s*([-+]?[0-9.]+(?:[eE][-+]?[0-9]+)?)\\s*Hz\\s*$"));
+    const auto m = hz.match(full);
+    if (m.hasMatch()) {
+        bool ok = false;
+        const double v = m.captured(1).toDouble(&ok);
+        if (ok) {
+            const QString compact = std::abs(v) >= 1e9
+                    ? QStringLiteral("%1 GHz").arg(v / 1e9, 0, 'f', 6)
+                    : std::abs(v) >= 1e6 ? QStringLiteral("%1 MHz").arg(v / 1e6, 0, 'f', 4)
+                                         : full;
+            if (fm.horizontalAdvance(compact) <= available)
+                return compact;
+            return fm.elidedText(compact, Qt::ElideRight, available);
+        }
+    }
+    return fm.elidedText(full, Qt::ElideRight, available);
 }
 
 int ChannelOverlay::channel() const
@@ -98,6 +144,11 @@ bool ChannelOverlay::eventFilter(QObject *obj, QEvent *event)
         repositionOverParent();
     }
     return QFrame::eventFilter(obj, event);
+}
+
+int ChannelOverlay::reservedHeight()
+{
+    return kOverlayHeight + 2 * kOverlayMargin;
 }
 
 void ChannelOverlay::repositionOverParent()

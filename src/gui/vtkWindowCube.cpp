@@ -75,6 +75,7 @@
 #include <vtkImageSliceMapper.h>
 #include <vtkInteractorStyleImage.h>
 #include <vtkInteractorStyleUser.h>
+#include <vtkObjectFactory.h>
 #include <vtkCubeSource.h>
 #include <vtkLineSource.h>
 #include <vtkLookupTable.h>
@@ -170,6 +171,8 @@
 #include <QResizeEvent>
 #include <QStackedWidget>
 #include <QTimer>
+#include <QAbstractButton>
+#include <QCoreApplication>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -1955,12 +1958,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                         u"Channels"_s,
                         u"%1–%2"_s.arg(config.channelStart + 1).arg(config.channelEnd + 1));
                 this->m_momentProvenanceParams.insert(
-                        u"Mask"_s,
-                        config.maskEnabled
-                                ? (config.thresholdAuto
-                                           ? u"auto (≈ 3σ)"_s
-                                           : u">= %1"_s.arg(config.thresholdValue, 0, 'g', 8))
-                                : u"none"_s);
+                        u"Mask"_s, MomentMapController::describeMask(config));
                 this->m_momentProvenanceParams.insert(u"Scope"_s,
                                                       MomentMapController::describeMomentScope());
                 this->m_momentProvenanceParams.insert(
@@ -2066,6 +2064,23 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                  this->scopedProductId(stableKey),
                                  /*renderer=*/QString(),
                                  /*revealProvenance=*/false);
+                     });
+    // σ, measured once, is the currency of the tools that need a noise level:
+    // the moment mask, the line-width mask and the Kinematic Lasso use it from
+    // now on (each says so where its threshold is set).
+    QObject::connect(this->noiseController, &NoiseController::noiseEstimated, this,
+                     [this](double sigma, const QString &where) {
+                         this->m_noiseSigma = sigma;
+                         this->m_noiseWhere = where;
+                         if (this->momentController)
+                             this->momentController->setNoiseEstimate(sigma, where);
+                         this->m_lassoLevels = {};   // σ scales the lasso's cost
+                         this->refreshLassoNoiseLabel();
+                         // A selection grown (or growing) with the old σ is grown again,
+                         // or Isolate would record a σ its mask was not made with; a grow
+                         // in flight is marked pending and Isolate waits for it.
+                         if (this->m_lassoHasSeed)
+                             this->requestLassoSelection();
                      });
     // …and the recipe of the window that reported it, emitted right after, so
     // reopening the row shows that window again rather than a reconstruction.
@@ -2236,11 +2251,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                     pvParams.insert(u"To"_s, u"(%1, %2)"_s.arg(b[0], 0, 'f', 1).arg(b[1], 0, 'f', 1));
                 }
                 pvParams.insert(u"Measured on"_s, visivo::describeOrigin(pvOrigin));
-                this->registerAnalysisProduct(u"pv"_s, u"PV diagram"_s, pvParams,
-                                              this->pvDiagramWidget, this->m_pvProductId,
-                                              u"pvdiagram"_s, /*revealProvenance=*/true,
-                                              pvOrigin);
-
                 auto pvVisible = [this](int i) {
                     return m_slots[i].frame && m_slots[i].frame->isVisible();
                 };
@@ -2251,20 +2261,30 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                         pvTarget = i;   // already mounted somewhere → refresh in place
                         break;
                     }
+                // A diagram already on screen is being REFRESHED (a live edit every
+                // fraction of a second): update it in place. Selecting the product,
+                // opening its provenance and moving the focus to its pane belong to the
+                // first result only — mid-drag they would pull the pane, the dock and
+                // the Inspector away from the path being edited.
+                const bool refreshInPlace = pvTarget >= 0;
+                this->registerAnalysisProduct(u"pv"_s, u"PV diagram"_s, pvParams,
+                                              this->pvDiagramWidget, this->m_pvProductId,
+                                              u"pvdiagram"_s, /*revealProvenance=*/!refreshInPlace,
+                                              pvOrigin, /*selectInSession=*/!refreshInPlace);
+                // A first result goes where it can be SEEN, like a region spectrum: a
+                // free pane, else the layout grows (1→2→4); never borrowed. With every
+                // pane taken it used to be parked out of sight.
                 if (pvTarget < 0)
-                    for (int i = 0; i < 4; ++i)
-                        if (pvVisible(i) && m_slots[i].view.isNone()) {
-                            m_slots[i].view = PaneView{ ViewId::Product, this->m_pvProductId };
-                            pvTarget = i;
-                            break;
-                        }
+                    pvTarget = acquirePaneForProduct(this->m_pvProductId, /*mayBorrow=*/false);
                 if (pvTarget >= 0) {
                     // A hidden slot may still claim PV from a prior layout; drop those (else a
                     // later layout expansion could re-surface the stale claim and move PV away
                     // from where recompute placed it).
                     clearViewFromOtherSlots(pvTarget);
-                    mountView(pvTarget);        // embeds the widget into the pane host
-                    setActivePane(pvTarget);
+                    // The focus stays on the pane the path is drawn in: the next thing
+                    // the user does is edit it there.
+                    if (!refreshInPlace)
+                        mountView(pvTarget);        // embeds the widget into the pane host
                 } else {
                     // No free pane: park the widget hidden (its parent becomes the hidden
                     // holder) so setPvData's show() can't pop a floating window; the tree row
@@ -2413,11 +2433,20 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                         this->remoteSpectralAxisUnit,
                                         this);
         dlg->setAttribute(Qt::WA_DeleteOnClose);
+        if (this->m_noiseSigma > 0.0)
+            dlg->setNoiseEstimate(this->m_noiseSigma, this->m_noiseWhere);
+        dlg->setRestFrequencyHz(this->m_restFreqHz);
+        // A later re-estimate reaches every open line-width window (each one is
+        // the connection's context, so a closed window simply drops out).
+        if (this->noiseController)
+            QObject::connect(this->noiseController, &NoiseController::noiseEstimated, dlg,
+                             &LinewidthDialog::setNoiseEstimate);
         // #5: the Line-width map is a first-class PANE product now — the dialog emits the raw
         // float map on completion; build a vtkImageData (same layout as a moment) + register.
         QObject::connect(dlg, &LinewidthDialog::mapReady, this,
                          [this](const QByteArray &data, int w, int h, float /*rmin*/,
-                                float /*rmax*/, const QString &label, const QString &unit) {
+                                float /*rmax*/, const QString &label, const QString &unit,
+                                const QVariantMap &recipe) {
                              if (w <= 0 || h <= 0
                                  || data.size()
                                          != static_cast<qsizetype>(w) * h
@@ -2432,7 +2461,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              // the same method updates its product, like a moment recompute).
                              const QString key = label.startsWith(u"FWHM"_s) ? u"linewidth_fwhm"_s
                                                                              : u"linewidth_ew"_s;
-                             QVariantMap params;
+                             QVariantMap params = recipe;   // method, channels, mask
                              params.insert(u"Type"_s, label);
                              if (!unit.isEmpty())
                                  params.insert(u"Unit"_s, unit);
@@ -3124,26 +3153,28 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // (mirrors ui->spinSlice; design ref: cubeviewer.jsx "Channel scrubber")
     {
         this->channelOverlay = new ChannelOverlay(ui->vtkCube);
-        this->channelOverlay->setRange(ui->spinSlice->minimum(),
-                                       ui->spinSlice->maximum());
-        this->channelOverlay->setChannel(ui->spinSlice->value());
-        this->channelOverlay->setSpectralLabel(ui->lineSpectral->text());
         ui->vtkCube->installEventFilter(this->channelOverlay);
-        this->channelOverlay->show();
-
-        // Overlay → sidebar spin: drives the existing slice-fetch pipeline.
-        QObject::connect(this->channelOverlay, &ChannelOverlay::channelChanged,
-                         this, [this](int v) {
-                             if (ui->spinSlice->value() == v) return;
-                             ui->spinSlice->setValue(v);
-                         });
+        // The same scrubber on the 2-D Slice (see channelOverlay2d).
+        this->channelOverlay2d = new ChannelOverlay(ui->vtkImage);
+        ui->vtkImage->installEventFilter(this->channelOverlay2d);
+        for (ChannelOverlay *co : this->channelOverlays()) {
+            co->setRange(ui->spinSlice->minimum(), ui->spinSlice->maximum());
+            co->setChannel(ui->spinSlice->value());
+            co->setSpectralLabel(ui->lineSpectral->text());
+            co->show();
+            // Overlay → sidebar spin: drives the existing slice-fetch pipeline.
+            QObject::connect(co, &ChannelOverlay::channelChanged, this, [this](int v) {
+                if (ui->spinSlice->value() == v) return;
+                ui->spinSlice->setValue(v);
+            });
+        }
         // Sidebar spin → overlay (programmatic updates: range change, animation,
         // user drag of the sidebar slider). SignalBlocker inside ChannelOverlay
         // prevents the bidirectional loop.
         QObject::connect(ui->spinSlice, &QSpinBox::valueChanged, this, [this](int v) {
-            if (this->channelOverlay) {
-                this->channelOverlay->setChannel(v);
-                this->channelOverlay->setSpectralLabel(ui->lineSpectral->text());
+            for (ChannelOverlay *co : this->channelOverlays()) {
+                co->setChannel(v);
+                co->setSpectralLabel(ui->lineSpectral->text());
             }
             // Keep the spectrum window's channel marker in sync with the
             // slice the user is looking at: a dashed vertical line at the
@@ -3160,9 +3191,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         });
         QObject::connect(ui->sliderSlice, &QSlider::rangeChanged, this,
                          [this](int lo, int hi) {
-                             if (this->channelOverlay) {
-                                 this->channelOverlay->setRange(lo, hi);
-                             }
+                             for (ChannelOverlay *co : this->channelOverlays())
+                                 co->setRange(lo, hi);
                          });
     }
 
@@ -4188,6 +4218,7 @@ void vtkWindowCube::setPvModeActive(bool active)
 
     // No width prompt: the width is a control of the diagram itself, editable at
     // any time, and the last one used is kept.
+    this->ensureSliceForTools();   // a moment pane becomes the slice to draw on
     if (this->probeModeActive && ui->actionExtractSpectrum->isChecked()) {
         ui->actionExtractSpectrum->setChecked(false);
     }
@@ -4444,6 +4475,14 @@ void vtkWindowCube::refreshPvOverlay()
     this->slicePvHandlePoints->Modified();
     this->slicePvHandleData->Modified();
     this->slicePvHandleActor->SetVisibility(editing);
+
+    // The same path on the map panes of this field (channels, moments): the cut
+    // is seen against every view of the data, as in kpvslice.
+    // The COMMITTED path (no hover segment): the panes follow edits, not every
+    // mouse move, which would re-render each of them for nothing.
+    const auto committed = this->pvEffectivePath();
+    const bool pathShown = (this->pvModeActive || keepingForPlotWindow) && committed.size() >= 2;
+    this->refreshPaneOverlayPaths(pathShown ? committed : std::vector<std::array<double, 2>>{});
 }
 
 void vtkWindowCube::clearPv()
@@ -4455,6 +4494,7 @@ void vtkWindowCube::clearPv()
     this->slicePvUpperActor->VisibilityOff();
     this->slicePvLowerActor->VisibilityOff();
     this->slicePvHandleActor->VisibilityOff();
+    this->refreshPaneOverlayPaths({});
     this->m_pvEdit = PvEdit::None;
     this->momentPvActor->VisibilityOff();
     this->momentPvUpperActor->VisibilityOff();
@@ -4535,8 +4575,9 @@ public:
         m_spX1 = makeSpin(0, xMax, defaultX1);
         m_spY0 = makeSpin(0, yMax, defaultY0);
         m_spY1 = makeSpin(0, yMax, defaultY1);
-        m_spZ0 = makeSpin(0, zMax, defaultZ0);
-        m_spZ1 = makeSpin(0, zMax, defaultZ1);
+        // Channels from 1, as on the channel bar; bounds() stays 0-based.
+        m_spZ0 = makeSpin(1, zMax + 1, defaultZ0 + 1);
+        m_spZ1 = makeSpin(1, zMax + 1, defaultZ1 + 1);
         auto makeRow = [this](QSpinBox *lo, QSpinBox *hi) {
             auto *w = new QWidget(this);
             auto *h = new QHBoxLayout(w);
@@ -4568,15 +4609,15 @@ public:
     }
 
     /// Inclusive 0-indexed bounds, normalised so the user may type them in any
-    /// order: {x0, x1, y0, y1, z0, z1}.
+    /// order: {x0, x1, y0, y1, z0, z1}. (The channel boxes show z + 1.)
     std::array<int, 6> bounds() const
     {
         return { std::min(m_spX0->value(), m_spX1->value()),
                  std::max(m_spX0->value(), m_spX1->value()),
                  std::min(m_spY0->value(), m_spY1->value()),
                  std::max(m_spY0->value(), m_spY1->value()),
-                 std::min(m_spZ0->value(), m_spZ1->value()),
-                 std::max(m_spZ0->value(), m_spZ1->value()) };
+                 std::min(m_spZ0->value(), m_spZ1->value()) - 1,
+                 std::max(m_spZ0->value(), m_spZ1->value()) - 1 };
     }
 
     /// Runs @p onRun with this dialog as the owner of the run.
@@ -4680,7 +4721,8 @@ void vtkWindowCube::exportSubCubeAsFits()
     nameEdit->setPlaceholderText(u"leave empty to let the backend name it"_s);
     nameEdit->setText(u"%1_subcube_x%2-%3_y%4-%5_z%6-%7.fits"_s
                               .arg(srcInfo.completeBaseName())
-                              .arg(defX0).arg(defX1).arg(defY0).arg(defY1).arg(defZ0).arg(defZ1));
+                              .arg(defX0).arg(defX1).arg(defY0).arg(defY1)
+                              .arg(defZ0 + 1).arg(defZ1 + 1));   // channels as shown in the Z boxes
     // One window per tool, re-raised rather than duplicated: a second window
     // could start a second run while the first was still going, and disabling
     // one window's button does nothing for the other.
@@ -4893,7 +4935,7 @@ void vtkWindowCube::exportCurrentChannelAs2dFits()
     const QFileInfo srcInfo(this->filepath);
     const QString defaultName =
             u"%1_ch%2.fits"_s.arg(srcInfo.completeBaseName())
-                              .arg(channel, 4, 10, QChar(u'0'));
+                              .arg(channel + 1, 4, 10, QChar(u'0'));   // as on the channel bar
 
     bool ok = false;
     const QString basename = QInputDialog::getText(
@@ -4909,7 +4951,7 @@ void vtkWindowCube::exportCurrentChannelAs2dFits()
     const QString datasetId = this->remoteDatasetId;
 
     this->statusBar()->showMessage(
-            QStringLiteral("Exporting channel %1 to workspace…").arg(channel), 0);
+            QStringLiteral("Exporting channel %1 to workspace…").arg(channel + 1), 0);
 
     auto *watcher = new QFutureWatcher<BackendSaveChannel2dResult>(this);
     QPointer<vtkWindowCube> self(this);
@@ -4936,7 +4978,7 @@ void vtkWindowCube::exportCurrentChannelAs2dFits()
                                  u"Open the file in the image viewer to use it in the\n"
                                  u"Stokes / spectral-index / Faraday-RM workflows."_s
                                  .arg(r.workspaceFilename, r.outputPath)
-                                 .arg(r.width).arg(r.height).arg(r.channel);
+                                 .arg(r.width).arg(r.height).arg(r.channel + 1);   // backend: 0-based
                          QMessageBox::information(self, u"Export Channel"_s, msg);
                      });
     watcher->setFuture(QtConcurrent::run(
@@ -5650,7 +5692,10 @@ bool vtkWindowCube::beginPvEdit(int displayX, int displayY)
     }
     this->m_pvEditAnchor = pixel;
     this->m_pvEditStart = this->pvPolylineVertices;
-    this->m_pvEditStartAngle = pvpath::angleAround(pvpath::centroid(this->m_pvEditStart), pixel);
+    // The reference angle is taken on the first move clear of the centre (see
+    // updatePvEdit): pressed on the middle of a straight path — the natural grab
+    // point, and its centroid — atan2 of a near-zero vector is arbitrary.
+    this->m_pvEditStartAngle = std::numeric_limits<double>::quiet_NaN();
     return true;
 }
 
@@ -5677,6 +5722,12 @@ void vtkWindowCube::updatePvEdit(int displayX, int displayY)
         break;
     case PvEdit::Rotate: {
         const auto center = pvpath::centroid(this->m_pvEditStart);
+        if (std::hypot(pixel[0] - center[0], pixel[1] - center[1]) < 2.0)
+            return;   // too close to the centre to define an angle
+        if (std::isnan(this->m_pvEditStartAngle)) {
+            this->m_pvEditStartAngle = pvpath::angleAround(center, pixel);
+            return;   // reference set; rotation starts with the next move
+        }
         this->pvPolylineVertices = pvpath::rotated(
                 this->m_pvEditStart, center,
                 pvpath::angleAround(center, pixel) - this->m_pvEditStartAngle);
@@ -6909,15 +6960,11 @@ void vtkWindowCube::updateContoursVisibility()
     // sidebar container - built, wired, and unreachable: Level / Lower / Upper
     // could not be typed at all, which is also why the bounds bug below stayed
     // invisible for so long.
-    if (this->m_workspaceChrome) {
-        if (auto *panel = this->m_workspaceChrome->inspectorPanel()) {
-            if (on && ui->frameContours) {
-                panel->setToolSettings(u"Contours"_s, ui->frameContours);
-                this->m_workspaceChrome->revealParametersTab();
-            } else if (panel->activeToolSettings() == u"Contours"_s) {
-                panel->clearToolSettings();
-            }
-        }
+    if (on && ui->frameContours) {
+        this->claimToolSettings(u"Contours"_s, ui->frameContours);
+    } else {
+        this->releaseToolSettings(u"Contours"_s);
+        this->refreshToolSettingsPanel(/*reveal=*/false);
     }
     this->sliceWin->Render();
 }
@@ -7202,7 +7249,8 @@ QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QStrin
                                                const QVariantMap &params, QWidget *window,
                                                const QString &stableId, const QString &renderer,
                                                bool revealProvenance,
-                                               const QVariantMap &origin)
+                                               const QVariantMap &origin,
+                                               bool selectInSession)
 {
     AnalysisProduct p;
     p.productId = stableId;
@@ -7222,7 +7270,8 @@ QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QStrin
         // Select the new product first (so Provenance is populated), then auto-expand
         // the Inspector onto Provenance (§4.1.4) — otherwise the tab reveals empty
         // (§3.0b (c)). Also refresh the left rail's product count.
-        this->m_workspaceChrome->selectSessionProduct(id);
+        if (selectInSession)
+            this->m_workspaceChrome->selectSessionProduct(id);
         if (revealProvenance)
             this->m_workspaceChrome->revealParametersTab();
         // Count only THIS window's products (the registry is session-wide; a sibling window on
@@ -7692,6 +7741,22 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
     }
     // Page 1 (§5.2): the 2D/Moment pane DISPLAY controls, driving the active Pane2DView.
     dispStack->addWidget(buildPaneDisplayPage());   // index 1
+    // Page 2: the active view has no colour map driven from here (the PV diagram
+    // carries its own controls, a spectrum has none). Saying so beats a page of
+    // colour controls that do nothing.
+    {
+        auto *page = new QWidget();
+        auto *v = new QVBoxLayout(page);
+        v->setContentsMargins(12, 8, 12, 8);
+        m_displayNoControls = new QLabel(page);
+        m_displayNoControls->setWordWrap(true);
+        m_displayNoControls->setStyleSheet(
+                QStringLiteral("QLabel { color: %1; font-size: 11px; }")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        v->addWidget(m_displayNoControls);
+        v->addStretch(1);
+        dispStack->addWidget(page);   // index 2
+    }
     // The DISPLAY section header + which page follow the active pane; keep the header
     // text correct through collapse/expand too (its built-in setTxt would revert it).
     QObject::connect(this, &vtkWindowCube::activePaneChanged, root,
@@ -8170,10 +8235,11 @@ QList<QPair<QString, QString>> vtkWindowCube::sliceBackdropCandidates() const
     if (auto *slice = vtkImageData::SafeDownCast(
                 this->remoteSliceDisplaySource->GetOutputDataObject(0)))
         slice->GetDimensions(dims);
+    const QString mirror = channelMirrorId();
     for (auto it = m_products2d.constBegin(); it != m_products2d.constEnd(); ++it) {
         const Product2D &p = it.value();
-        if (!p.imageData || !p.regionOrigin.isNull())
-            continue;   // a cropped map is not on the slice's pixel grid
+        if (!p.imageData || !p.regionOrigin.isNull() || it.key() == mirror)
+            continue;   // a cropped map is not on the slice's pixel grid; channels are channels
         int pd[3] = { 0, 0, 0 };
         p.imageData->GetDimensions(pd);
         if (dims[0] > 1 && (pd[0] != dims[0] || pd[1] != dims[1]))
@@ -8187,20 +8253,226 @@ QList<QPair<QString, QString>> vtkWindowCube::sliceBackdropCandidates() const
 
 void vtkWindowCube::refreshSliceBackdropCombo()
 {
-    if (!m_sliceBackdropCombo)
-        return;
     if (!m_sliceBackdropProductId.isEmpty() && !m_products2d.contains(m_sliceBackdropProductId))
         setSliceBackdrop(QString());   // its product is gone
-    const QSignalBlocker block(m_sliceBackdropCombo);
-    m_sliceBackdropCombo->clear();
-    m_sliceBackdropCombo->addItem(u"Channel"_s, QString());
+}
+
+int vtkWindowCube::channelMirrorSlot() const
+{
+    const QString mirror = channelMirrorId();
+    for (int i = 0; i < 4; ++i)
+        if (m_slots[i].view.kind == ViewId::Product && m_slots[i].view.productId == mirror)
+            return i;
+    return -1;
+}
+
+void vtkWindowCube::updateChannelMirror(vtkImageData *img, double lo, double hi)
+{
+    auto it = m_products2d.find(channelMirrorId());
+    if (it == m_products2d.end() || !img)
+        return;
+    it->imageData = img;
+    it->statsComputed = false;
+    for (int i = 0; i < 4; ++i)
+        if (m_slots[i].view.kind == ViewId::Product && m_slots[i].view.productId == it.key()
+            && m_paneViews[i]) {
+            Pane2DView *pv = m_paneViews[i];
+            // A range the user set on the Channels pane (clip fields, presets,
+            // window/level) differs from the one we installed: keep it, as the
+            // slice keeps a chosen range across channels.
+            const double tol = 1e-9 * std::max({ 1.0, std::abs(pv->rangeMin()), std::abs(pv->rangeMax()) });
+            if (!m_channelMirrorUserRange && pv->lutInitialized()
+                && (std::abs(pv->rangeMin() - m_channelMirrorInstalledRange[0]) > tol
+                    || std::abs(pv->rangeMax() - m_channelMirrorInstalledRange[1]) > tol))
+                m_channelMirrorUserRange = true;   // sticky until the mirror goes
+            const double useLo = m_channelMirrorUserRange ? pv->rangeMin() : lo;
+            const double useHi = m_channelMirrorUserRange ? pv->rangeMax() : hi;
+            pv->setImageData(img, useLo, useHi);
+            pv->render();
+            it->imageRange = { useLo, useHi };
+            // What the pane ACTUALLY holds (a log stretch floors a non-positive
+            // minimum): comparing against the request would read that as a user edit.
+            if (!m_channelMirrorUserRange)
+                m_channelMirrorInstalledRange = { pv->rangeMin(), pv->rangeMax() };
+        }
+}
+
+void vtkWindowCube::refreshPaneOverlayPaths(const std::vector<std::array<double, 2>> &path)
+{
+    // Only maps on the slice's own pixel grid: the path is in those pixels.
+    QSet<QString> sameGrid;
     for (const auto &c : sliceBackdropCandidates())
-        m_sliceBackdropCombo->addItem(c.second, c.first);
-    const int at = m_sliceBackdropCombo->findData(m_sliceBackdropProductId);
-    m_sliceBackdropCombo->setCurrentIndex(std::max(0, at));
-    m_sliceBackdropCombo->setEnabled(m_sliceBackdropCombo->count() > 1);
-    if (m_sliceBackdropCombo->count() <= 1)
-        m_sliceBackdropCombo->setToolTip(u"Compute a moment map to draw on it here."_s);
+        sameGrid.insert(c.first);
+    sameGrid.insert(channelMirrorId());
+    for (int i = 0; i < 4; ++i) {
+        if (!m_paneViews[i])
+            continue;
+        const PaneView &v = m_slots[i].view;
+        const bool onGrid = v.kind == ViewId::Product && sameGrid.contains(v.productId);
+        m_paneViews[i]->setOverlayPath(onGrid ? path : std::vector<std::array<double, 2>>{});
+    }
+}
+
+QList<ChannelOverlay *> vtkWindowCube::channelOverlays() const
+{
+    QList<ChannelOverlay *> out;
+    if (this->channelOverlay)
+        out << this->channelOverlay.data();
+    if (this->channelOverlay2d)
+        out << this->channelOverlay2d.data();
+    return out;
+}
+
+void vtkWindowCube::attachChannelBar2d(QWidget *host)
+{
+    if (!this->channelOverlay2d || !host)
+        return;
+    // The view the bar sits on keeps room for it below its axes (and the one it
+    // leaves gives that room back), so the bar never covers the x labels.
+    const auto paneFor = [this](QWidget *w) -> Pane2DView * {
+        for (Pane2DView *pv : m_paneViews)
+            if (pv && pv->widget() == w)
+                return pv;
+        return nullptr;
+    };
+    QWidget *cur = this->channelOverlay2d->parentWidget();
+    if (cur != host) {
+        if (cur) {
+            cur->removeEventFilter(this->channelOverlay2d);
+            if (Pane2DView *pv = paneFor(cur))
+                pv->setBottomReserve(0);
+        }
+        this->channelOverlay2d->setParent(host);
+        host->installEventFilter(this->channelOverlay2d);
+    }
+    if (Pane2DView *pv = paneFor(host))
+        pv->setBottomReserve(ChannelOverlay::reservedHeight());
+}
+
+int vtkWindowCube::momentPaneForSliceTools() const
+{
+    const auto candidates = sliceBackdropCandidates();
+    const auto usable = [&](int i) {
+        if (i < 0 || i > 3 || !m_slots[i].frame || !m_slots[i].frame->isVisible()
+            || m_slots[i].view.kind != ViewId::Product)
+            return false;
+        for (const auto &c : candidates)
+            if (c.first == m_slots[i].view.productId)
+                return true;
+        return false;
+    };
+    if (usable(m_activePane))
+        return m_activePane;
+    for (int i = 0; i < 4; ++i)
+        if (usable(i))
+            return i;
+    return -1;
+}
+
+bool vtkWindowCube::ensureSliceForTools()
+{
+    // The pane the user is working in decides: a tool armed while a moment pane is
+    // ACTIVE draws on that moment, even with the 2D Slice on screen elsewhere.
+    int candidate = momentPaneForSliceTools();
+    bool activeIsMoment = candidate >= 0 && candidate == m_activePane;
+    // The channel to seed a new Channels pane with: when retargeting, the current
+    // mirror's — restoring the slice may still be fetching its channel, and the
+    // slice's pixels would then be the old map's.
+    vtkSmartPointer<vtkImageData> channelSeed;
+    std::array<double, 2> channelSeedRange{ 0.0, 0.0 };
+    if (activeIsMoment && !m_sliceBackdropProductId.isEmpty()) {
+        if (auto mit = m_products2d.constFind(channelMirrorId()); mit != m_products2d.constEnd()) {
+            channelSeed = mit->imageData;
+            channelSeedRange = mit->imageRange;
+        }
+        // Already drawing on another map: put that one back first (its panes as
+        // they were), then take this one from a clean layout.
+        const int keepActive = m_activePane;
+        setSliceBackdrop(QString());
+        if (keepActive != m_activePane)
+            setActivePane(keepActive);
+        candidate = momentPaneForSliceTools();
+        activeIsMoment = candidate >= 0 && candidate == m_activePane;
+    }
+    if (slice2dVisible() && !activeIsMoment)
+        return true;
+    const int slot = candidate;
+    if (slot < 0)
+        return false;
+    const QString productId = m_slots[slot].view.productId;
+    // The map's look AS SHOWN in its pane (the user may have changed it there).
+    m_pendingBackdropLook = {};
+    if (Pane2DView *pv = m_paneViews[slot]; pv && pv->lutInitialized()) {
+        m_pendingBackdropLook = { true, pv->colorMapName(), pv->scale(), pv->gamma(),
+                                  pv->invert(), pv->clampOutliers(), pv->rangeMin(),
+                                  pv->rangeMax() };
+    }
+    // The slice is one view: if another visible pane shows it, the two panes swap
+    // (as the pane menu does), so that pane gets the map and none goes blank.
+    int sliceSlot = -1;
+    for (int i = 0; i < 4; ++i)
+        if (i != slot && m_slots[i].view.kind == ViewId::Slice2D && m_slots[i].frame
+            && m_slots[i].frame->isVisible()) {
+            sliceSlot = i;
+            break;
+        }
+    if (sliceSlot >= 0) {
+        // That pane keeps the CHANNELS (display-only, following the channel bar):
+        // seeded with the channel on screen now, with the slice's own colours.
+        Product2D channels;
+        const double *r = this->lutSlice ? this->lutSlice->GetTableRange() : nullptr;
+        if (channelSeed) {
+            channels.imageData = channelSeed;
+            channels.imageRange = channelSeedRange;
+        } else {
+            channels.imageData = vtkImageData::SafeDownCast(
+                    this->remoteSliceDisplaySource->GetOutputDataObject(0));
+            channels.imageRange = r ? std::array<double, 2>{ r[0], r[1] }
+                                    : std::array<double, 2>{ 0.0, 1.0 };
+        }
+        channels.lutName = this->m_activeSliceLutName;
+        channels.scaleMode = this->m_sliceScaleMode;
+        channels.gamma = this->m_sliceScaleGamma;
+        channels.label = u"Channels"_s;
+        channels.unit = this->m_brightnessUnit;
+        m_products2d.insert(channelMirrorId(), channels);
+        m_channelMirrorInstalledRange = channels.imageRange;
+        m_channelMirrorUserRange = false;
+    }
+    m_slots[slot].view = { ViewId::Slice2D, {} };
+    if (sliceSlot >= 0)
+        m_slots[sliceSlot].view = { ViewId::Product, channelMirrorId() };
+    clearViewFromOtherSlots(slot);
+    mountView(slot);
+    if (sliceSlot >= 0) {
+        mountView(sliceSlot);
+        // The baseline is what the pane installed (a log stretch floors the minimum).
+        if (Pane2DView *mpv = m_paneViews[sliceSlot])
+            m_channelMirrorInstalledRange = { mpv->rangeMin(), mpv->rangeMax() };
+    }
+    syncPick3d2d();
+    refreshPaneChrome();
+    layout2dPane(true);
+    setActivePane(slot);
+    m_sliceBackdropSlot = slot;
+    setSliceBackdrop(productId);
+    m_pendingBackdropLook = {};
+    // The channel bar goes with the channels.
+    if (sliceSlot >= 0 && m_paneViews[sliceSlot] && m_paneViews[sliceSlot]->widget()
+        && this->channelOverlay2d) {
+        QWidget *host = m_paneViews[sliceSlot]->widget();
+        attachChannelBar2d(host);
+        this->channelOverlay2d->setSpectralLabel(ui->lineSpectral->text());
+        this->channelOverlay2d->show();
+        QResizeEvent ev(host->size(), host->size());
+        QCoreApplication::sendEvent(host, &ev);   // place it at the host's bottom edge
+    }
+    this->refreshPvOverlay();   // the path on the channels too
+    this->statusBar()->showMessage(
+            u"The tool draws on %1. Choose 2D Slice in the pane's menu to see the channels."_s
+                    .arg(m_products2d.value(productId).label),
+            7000);
+    return true;
 }
 
 void vtkWindowCube::setSliceBackdrop(const QString &productId)
@@ -8208,12 +8480,56 @@ void vtkWindowCube::setSliceBackdrop(const QString &productId)
     if (productId == m_sliceBackdropProductId)
         return;
     if (productId.isEmpty()) {
+        const QString wornId = m_sliceBackdropProductId;
+        const int wornSlot = m_sliceBackdropSlot;
         m_sliceBackdropProductId.clear();
+        // The channel bar back on the slice.
+        attachChannelBar2d(ui->vtkImage);
+        // The layout as it was: the "Channels" pane becomes the slice again and the
+        // map pane the map (unless something else was chosen there).
+        const int mirrorSlot = channelMirrorSlot();
+        if (mirrorSlot >= 0) {
+            bool sliceElsewhere = false;
+            for (int i = 0; i < 4; ++i)
+                if (i != mirrorSlot && i != wornSlot && m_slots[i].view.kind == ViewId::Slice2D)
+                    sliceElsewhere = true;
+            if (wornSlot >= 0 && wornSlot < 4 && m_slots[wornSlot].view.kind == ViewId::Slice2D) {
+                m_slots[wornSlot].view = { ViewId::Product, wornId };
+            }
+            m_slots[mirrorSlot].view = sliceElsewhere ? PaneView{ ViewId::Product, wornId }
+                                                      : PaneView{ ViewId::Slice2D, {} };
+            mountView(mirrorSlot);   // takes the slice widget first…
+            if (wornSlot >= 0 && wornSlot < 4)
+                mountView(wornSlot);   // …then the map's pane gets its own view
+            m_products2d.remove(channelMirrorId());
+        } else {
+            m_products2d.remove(channelMirrorId());
+        }
         // The channel's range comes back with it (and the lock as it was).
-        if (this->lutSlice && this->m_sliceRangeBeforeBackdrop[1] > this->m_sliceRangeBeforeBackdrop[0])
-            LutScale::setRange(this->lutSlice, this->m_sliceScaleMode,
-                               this->m_sliceRangeBeforeBackdrop[0], this->m_sliceRangeBeforeBackdrop[1]);
+        // …and the slice's own colour map, stretch and range (taken off on entry).
+        this->m_sliceScaleMode = this->m_sliceScaleBeforeBackdrop;
+        this->m_sliceScaleGamma = this->m_sliceGammaBeforeBackdrop;
+        this->m_sliceInvert = this->m_sliceInvertBeforeBackdrop;
+        this->m_sliceBackdropSlot = -1;
+        if (this->lutSlice) {
+            this->lutSlice->SetUseBelowRangeColor(0);
+            this->lutSlice->SetUseAboveRangeColor(0);
+            if (this->m_sliceRangeBeforeBackdrop[1] > this->m_sliceRangeBeforeBackdrop[0])
+                LutScale::setRange(this->lutSlice, this->m_sliceScaleMode,
+                                   this->m_sliceRangeBeforeBackdrop[0],
+                                   this->m_sliceRangeBeforeBackdrop[1]);
+        }
+        if (!this->m_sliceLutNameBeforeBackdrop.isEmpty())
+            applySliceLutByName(this->m_sliceLutNameBeforeBackdrop);
         this->setSliceRangeLocked(this->m_sliceRangeLockedBeforeBackdrop);
+        if (this->channelOverlay)
+            for (ChannelOverlay *co : this->channelOverlays())
+                co->setSpectralLabel(ui->lineSpectral->text());
+        if (this->channelOverlay2d) {
+            this->channelOverlay2d->show();   // channels on the slice again
+            QResizeEvent ev(ui->vtkImage->size(), ui->vtkImage->size());
+            QCoreApplication::sendEvent(ui->vtkImage, &ev);
+        }
         const int channel = ui->spinSlice->value() - 1;
         this->m_displayedSliceIndex = -1;   // force the channel back onto the pane
         this->requestRemoteSlice(this->clampRemoteSliceIndex(channel));
@@ -8225,28 +8541,49 @@ void vtkWindowCube::setSliceBackdrop(const QString &productId)
             const double *r = this->lutSlice->GetTableRange();
             this->m_sliceRangeBeforeBackdrop = { r[0], r[1] };
             this->m_sliceRangeLockedBeforeBackdrop = this->m_sliceRangeLocked;
+            this->m_sliceLutNameBeforeBackdrop = this->m_activeSliceLutName;
+            this->m_sliceScaleBeforeBackdrop = this->m_sliceScaleMode;
+            this->m_sliceGammaBeforeBackdrop = this->m_sliceScaleGamma;
+            this->m_sliceInvertBeforeBackdrop = this->m_sliceInvert;
         }
         m_sliceBackdropProductId = productId;
         this->m_slice2dLoadingActor->VisibilityOff();
         this->remoteSliceDisplaySource->SetOutput(it->imageData);
         this->remoteSliceDisplaySource->Modified();
         this->sliceColors->SetInputData(it->imageData);
-        double lo = it->imageRange[0];
-        double hi = it->imageRange[1];
+        // The map's OWN appearance — colour map, stretch, range, hidden out-of-range
+        // pixels for a velocity field — so it looks as in its own pane.
+        const BackdropLook &look = m_pendingBackdropLook;
+        this->m_sliceScaleMode = look.valid ? look.scale : it->scaleMode;
+        this->m_sliceScaleGamma = look.valid ? look.gamma : it->gamma;
+        this->m_sliceInvert = look.valid && look.invert;
+        double lo = look.valid ? look.lo : it->imageRange[0];
+        double hi = look.valid ? look.hi : it->imageRange[1];
+        const QString lutName = look.valid && !look.lutName.isEmpty() ? look.lutName : it->lutName;
+        const bool clamp = look.valid ? look.clamp : it->clampOutliers;
         if (this->m_sliceScaleMode == LutScale::Mode::Log && !(lo > 0.0)) {
             const double floorValue = LutScale::sampledPositiveFloor(it->imageData);
             lo = floorValue > 0.0 ? floorValue : hi * 1e-6;
         }
         if (this->lutSlice && std::isfinite(lo) && std::isfinite(hi) && hi > lo)
             LutScale::setRange(this->lutSlice, this->m_sliceScaleMode, lo, hi);
+        if (!lutName.isEmpty())
+            applySliceLutByName(lutName);
+        if (this->lutSlice) {
+            this->lutSlice->SetUseBelowRangeColor(clamp ? 1 : 0);
+            this->lutSlice->SetUseAboveRangeColor(clamp ? 1 : 0);
+            this->lutSlice->SetBelowRangeColor(0., 0., 0., 0.);
+            this->lutSlice->SetAboveRangeColor(0., 0., 0., 0.);
+        }
         // The map's own range; it does not leak into the channels (restored above).
         this->m_sliceRangeLocked = true;
-        if (this->channelOverlay)
-            this->channelOverlay->setSpectralLabel(u"Showing %1"_s.arg(it->label));
-        this->statusBar()->showMessage(
-                u"The 2D Slice shows %1. Tools draw on it as on a channel; choose Channel "
-                u"under DISPLAY → Show to browse the channels again."_s.arg(it->label), 6000);
+        // The pane shows the map, not a channel: its channel bar would only confuse.
+        // (The 3-D view keeps its own.)
+        if (this->channelOverlay2d)
+            this->channelOverlay2d->hide();
     }
+    // With or without the channel bar the slice keeps a different bottom margin.
+    this->layout2dPaneFor(/*slice=*/true, /*force=*/false);
     if (this->lutSlice)
         this->lutSlice->Build();
     this->refreshPvOverlay();
@@ -8256,10 +8593,13 @@ void vtkWindowCube::setSliceBackdrop(const QString &productId)
     if (this->sliceWin)
         this->sliceWin->Render();
     refreshSliceBackdropCombo();
-    // The dock's range fields follow the new image — unless this runs from inside
-    // the dock's own repopulation (refreshSliceBackdropCombo dropping a vanished map).
-    if (!m_applyingPaneDisplay)
+    // Pane title and menu show the map (or the slice again); the dock's range
+    // fields follow the new image — unless this runs from inside the dock's own
+    // repopulation (refreshSliceBackdropCombo dropping a vanished map).
+    if (!m_applyingPaneDisplay) {
+        refreshPaneChrome();
         updateDisplaySectionForActivePane();
+    }
 }
 
 void vtkWindowCube::showActiveDisplayLUTEditor()
@@ -8646,31 +8986,6 @@ QWidget *vtkWindowCube::buildPaneDisplayPage()
         lay->addWidget(m_paneScaleRow);
     }
 
-    // Background of the 2D Slice: the channel, or a moment map to draw on.
-    {
-        m_sliceBackdropRow = new QWidget();
-        auto *h = new QHBoxLayout(m_sliceBackdropRow);
-        h->setContentsMargins(0, 0, 0, 0);
-        h->setSpacing(8);
-        auto *l = new QLabel(u"Show"_s, m_sliceBackdropRow);
-        l->setStyleSheet(labelCss);
-        h->addWidget(l, 0);
-        m_sliceBackdropCombo = new QComboBox(m_sliceBackdropRow);
-        m_sliceBackdropCombo->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-        m_sliceBackdropCombo->setToolTip(
-                u"What the 2D Slice shows: the current channel, or a moment map in its place "
-                u"on the same pixels — to draw a PV path, a region or a probe on the integrated "
-                u"emission. Channels come back when you choose Channel again."_s);
-        h->addWidget(m_sliceBackdropCombo, 1);
-        m_sliceBackdropRow->setFixedHeight(28);
-        lay->addWidget(m_sliceBackdropRow);
-        QObject::connect(m_sliceBackdropCombo, &QComboBox::activated, this, [this](int i) {
-            if (m_applyingPaneDisplay || !m_sliceBackdropCombo)
-                return;
-            setSliceBackdrop(m_sliceBackdropCombo->itemData(i).toString());
-        });
-    }
-
     // Same range on every channel (2D Slice only).
     {
         m_sliceRangeLockRow = new QWidget();
@@ -8931,15 +9246,28 @@ void vtkWindowCube::updateDisplaySectionForActivePane()
              && m_products2d.contains(m_slots[m_activePane].view.productId));
     const bool isPane = (activeIsImageProduct || kind == ViewId::Slice2D);
 
-    m_displayStack->setCurrentIndex(is3d ? 0 : 1);
+    m_displayStack->setCurrentIndex(is3d ? 0 : (isPane ? 1 : 2));
     if (auto *p1 = m_displayStack->widget(1))
         p1->setEnabled(isPane);
+    if (m_displayNoControls && !is3d && !isPane) {
+        const bool pv = kind == ViewId::Product && m_activePane >= 0 && m_activePane < 4
+                && !m_pvProductId.isEmpty() && m_slots[m_activePane].view.productId == m_pvProductId;
+        m_displayNoControls->setText(
+                pv ? u"The PV diagram's width, curve and exports are in the diagram itself; "
+                     u"its colour bar follows the data."_s
+                : kind == ViewId::Product
+                        ? u"A spectrum has no colour map: its tools (compare, fit, line list, "
+                          u"export) are in Inspector › Analysis."_s
+                        : u"Pick a view for this pane from its ▾ menu."_s);
+    }
 
     // Header text `DISPLAY — <active pane title>` (pane name in primary is handled by the
     // section style; keep it simple text here). The built-in setTxt would revert this on
     // toggle, so this runs on toggle too.
     const bool hasActive = (m_activePane >= 0 && m_activePane < 4);
+    const bool wearingMap = (kind == ViewId::Slice2D) && !m_sliceBackdropProductId.isEmpty();
     QString title = is3d ? u"3D VIEW"_s
+                  : wearingMap ? viewTitle(PaneView{ ViewId::Product, m_sliceBackdropProductId }).toUpper()
                   : (kind == ViewId::Slice2D)  ? u"2D SLICE"_s
                   : (kind == ViewId::Product)  ? viewTitle(m_slots[m_activePane].view).toUpper()
                   : (kind == ViewId::Spectrum) ? u"SPECTRUM"_s
@@ -8979,10 +9307,10 @@ void vtkWindowCube::updateDisplaySectionForActivePane()
     QScopedValueRollback<bool> paneDisplayGuard(m_applyingPaneDisplay, true);
     if (m_paneScaleRow)
         m_paneScaleRow->setVisible(kind == ViewId::Slice2D);   // Scale: 2D Slice only
+    // "Same range on every channel" means nothing while the slice shows a map.
     if (m_sliceRangeLockRow)
-        m_sliceRangeLockRow->setVisible(kind == ViewId::Slice2D);
-    if (m_sliceBackdropRow)
-        m_sliceBackdropRow->setVisible(kind == ViewId::Slice2D);
+        m_sliceRangeLockRow->setVisible(kind == ViewId::Slice2D
+                                        && m_sliceBackdropProductId.isEmpty());
     if (kind == ViewId::Slice2D)
         refreshSliceBackdropCombo();
     if (m_sliceRangeLock)
@@ -9220,7 +9548,9 @@ void vtkWindowCube::applySliceCameraNormalized(const double dataCenterXY[2], dou
     // fitted and doesn't snap it back.
     this->captureSliceCamPose();
     this->m_slice2dFitSize = { size[0], size[1] };
-    this->m_slice2dFitRight = this->gutter2dFor(/*slice=*/true).right;
+    const auto fitGutter = this->gutter2dFor(/*slice=*/true);
+    this->m_slice2dFitRight = fitGutter.right;
+    this->m_slice2dFitBottom = fitGutter.bottom;
     if (render)
         this->sliceWin->Render();
 }
@@ -9367,6 +9697,10 @@ void vtkWindowCube::activateSessionView(const QString &viewTag, const QString &p
         target = { ViewId::Product, productId };
     else
         return;
+
+    // Asking for the 2D Slice means the channels: a map worn as background goes.
+    if (target.kind == ViewId::Slice2D && !m_sliceBackdropProductId.isEmpty())
+        setSliceBackdrop(QString());
 
     // Already on a visible pane → just make it active (tree-select = pane-select).
     for (int i = 0; i < 4; ++i)
@@ -9592,6 +9926,8 @@ void vtkWindowCube::syncSessionTreeToActivePane()
     QString tag, pid;
     if (v.kind == ViewId::View3D)
         tag = u"view3d"_s;
+    else if (v.kind == ViewId::Slice2D && !m_sliceBackdropProductId.isEmpty())
+        pid = m_sliceBackdropProductId;   // the slice wearing a map IS that map to the user
     else if (v.kind == ViewId::Slice2D)
         tag = u"slice2d"_s;
     else if (v.kind == ViewId::Product)
@@ -9795,7 +10131,29 @@ bool vtkWindowCube::eventFilter(QObject *watched, QEvent *event)
         // reach its controls in the Inspector, say — made the armed tool inert
         // with no sign of it: the amber border still said "listening here" while
         // every hover and click was being swallowed.
-        const bool nonActive = (m_activePane != renderSlot) && !paneIsArmedTarget(renderSlot);
+        bool nonActive = (m_activePane != renderSlot) && !paneIsArmedTarget(renderSlot);
+        // A CONTROL inside a pane (the PV diagram's Save as FITS…, its width box, a
+        // spectrum's buttons) works on the first click: it activates the pane and the
+        // click goes through. Swallowing it made every button need two clicks.
+        const bool onControl = qobject_cast<QAbstractButton *>(rw) || qobject_cast<QAbstractSpinBox *>(rw)
+                || qobject_cast<QComboBox *>(rw) || qobject_cast<QLineEdit *>(rw)
+                || (rw && rw->parentWidget()
+                    && (qobject_cast<QAbstractSpinBox *>(rw->parentWidget())
+                        || qobject_cast<QComboBox *>(rw->parentWidget())));
+        if (onControl) {
+            // Activate AFTER the click (on the release, deferred): done during the
+            // press, the pane change re-lays the chrome out and the button loses
+            // the mouse before its release — it then never emits clicked().
+            if (et == QEvent::MouseButtonPress && nonActive)
+                m_pendingControlActivation = renderSlot;
+            if (et == QEvent::MouseButtonRelease && m_pendingControlActivation == renderSlot) {
+                const int slot = renderSlot;
+                m_pendingControlActivation = -1;
+                QTimer::singleShot(0, this, [this, slot]() { setActivePane(slot); });
+            }
+            m_paneActivationGesture = nullptr;
+            nonActive = false;
+        }
         if (et == QEvent::MouseButtonPress) {
             if (nonActive) {
                 setActivePane(renderSlot);
@@ -9911,6 +10269,14 @@ Pane2DView *vtkWindowCube::ensureSlotProductView(int slot)
         ctx.axisTitle = [this](int axis) { return this->remoteOverlayAxisTitle(axis); };
         ctx.formatCoord = [this](int axis, double value, double axisSpan) {
             return this->formatRemoteOverlayCoordinate(axis, value, axisSpan);
+        };
+        // The same paired frame conversion as the 2D Slice's ticks: without it the
+        // pane printed native RA/Dec under a "Galactic" title.
+        ctx.voxelToFrame = [this](double vx, double vy, double &fx, double &fy) {
+            bool okX = false, okY = false;
+            const double nx = this->remoteVoxelToWcs(0, vx, &okX);
+            const double ny = this->remoteVoxelToWcs(1, vy, &okY);
+            return okX && okY && this->convertRemoteCelestialCoordinates(nx, ny, fx, fy);
         };
         pv->setWcsContext(std::move(ctx));
         pv->setWcsAxesVisible(this->showWcsAxes);
@@ -10061,7 +10427,7 @@ QString vtkWindowCube::productRenderer(const QString &productId) const
 QString vtkWindowCube::addImageProduct(const QString &kind, const QString &stableKey,
                                        const QString &label, vtkImageData *img,
                                        const QString &unit, const QVariantMap &params,
-                                       const QString &lutName)
+                                       const QString &lutName, bool symmetricRange)
 {
     if (!img)
         return QString();
@@ -10078,6 +10444,12 @@ QString vtkWindowCube::addImageProduct(const QString &kind, const QString &stabl
         double range[2] = { 0., 1. };
         img->GetScalarRange(range);
         cached.imageRange = { range[0], range[1] };
+    }
+    if (symmetricRange) {
+        double a = std::max(std::abs(cached.imageRange[0]), std::abs(cached.imageRange[1]));
+        if (!(a > 0.0))
+            a = 1.0;   // an all-zero signed map: zero still sits on the neutral colour
+        cached.imageRange = { -a, a };
     }
     // A constant / degenerate map gives lo==hi → a broken LUT range; widen it.
     if (!(cached.imageRange[1] > cached.imageRange[0]))
@@ -10148,6 +10520,9 @@ void vtkWindowCube::pinCurrentSpectrum()
     s.xLabel = m_lastProbeXLabel;
     s.yLabel = m_lastProbeYLabel;
     s.label = label;
+    s.pixelX = m_lastProbeVoxel[0];
+    s.pixelY = m_lastProbeVoxel[1];
+    s.position = m_lastProbeContext;
     m_products1d.insert(productId, s);
 
     QVariantMap params;
@@ -10157,7 +10532,7 @@ void vtkWindowCube::pinCurrentSpectrum()
     // The pixel it was probed at travels with it: "which line of sight is this?"
     // is the first thing asked of a pinned spectrum, and the Position string
     // alone cannot put the crosshair back on the slice.
-    const QVariantMap origin = visivo::encodeProbeOrigin(this->probeVoxel);
+    const QVariantMap origin = visivo::encodeProbeOrigin(m_lastProbeVoxel);
     params.insert(u"Measured on"_s, visivo::describeOrigin(origin));
     this->registerAnalysisProduct(u"spectrum"_s, label, params, this, productId,
                                   u"spectrum1d"_s, /*revealProvenance=*/true, origin);
@@ -10483,6 +10858,26 @@ void vtkWindowCube::stopLiveSpectrum()
     refreshPaneChrome();
 }
 
+void vtkWindowCube::removeImageProduct(const QString &stableKey)
+{
+    const QString id = this->scopedProductId(stableKey);
+    if (!m_products2d.contains(id) && !m_products1d.contains(id))
+        return;
+    // The slice may be wearing this map as its background: give the slice its
+    // channels back first, or it keeps showing a product that no longer exists.
+    if (id == this->m_sliceBackdropProductId)
+        this->setSliceBackdrop(QString());
+    m_products2d.remove(id);
+    m_products1d.remove(id);
+    ProductRegistry::instance().removeProduct(id);
+    for (int i = 0; i < 4; ++i)
+        if (m_slots[i].view.kind == ViewId::Product && m_slots[i].view.productId == id) {
+            m_slots[i].view = {};
+            mountView(i);
+        }
+    refreshPaneChrome();
+}
+
 void vtkWindowCube::updateLiveSpectrumPane(const QVector<double> &key,
                                            const QVector<double> &values,
                                            const QString &pixelLabel)
@@ -10494,10 +10889,19 @@ void vtkWindowCube::updateLiveSpectrumPane(const QVector<double> &key,
     Spectrum1D &s = m_products1d[m_spectrumLiveId];
     s.key = key;
     s.values = values;
+    const bool labelsChanged = s.xLabel != m_lastProbeXLabel || s.yLabel != m_lastProbeYLabel;
+    s.xLabel = m_lastProbeXLabel;
+    s.yLabel = m_lastProbeYLabel;
+    s.pixelX = m_lastProbeVoxel[0];
+    s.pixelY = m_lastProbeVoxel[1];
+    s.position = m_lastProbeContext;
     for (int i = 0; i < 4; ++i)
         if (m_slots[i].view.kind == ViewId::Product && m_slots[i].view.productId == m_spectrumLiveId
             && m_paneSpectra[i]) {
+            if (labelsChanged)
+                m_paneSpectra[i]->setSpectrumAxisLabels(s.xLabel, s.yLabel);
             m_paneSpectra[i]->updateSpectrumPlot(key, values, u"Spectrum (live)"_s, /*live=*/true);
+            m_paneSpectra[i]->setSpectrumContext(this->filepath, s.pixelX, s.pixelY, s.position);
         }
     Q_UNUSED(pixelLabel);   // the pane header owns the pixel line (updateLiveSpectrumHeader)
     this->updateLiveSpectrumHeader();
@@ -11011,6 +11415,9 @@ void vtkWindowCube::mountView(int slot)
         else
             sp->setSpectralAxisContext(QString(), QString(), 0.0);
         sp->setSpectrumMeta(s.label.isEmpty() ? QString() : s.label);
+        // What the CSV export writes as provenance: the dataset, and the line of
+        // sight when there is one (a region or a stack has none).
+        sp->setSpectrumContext(this->filepath, s.pixelX, s.pixelY, s.position);
         // …except for the LIVE product, whose header carries the tool's state and
         // the ways out of it. Every remount (a pane swap, a layout change, a
         // 4→1 collapse) would otherwise reduce it back to "Spectrum (live)" —
@@ -11073,6 +11480,47 @@ void vtkWindowCube::mountView(int slot)
     // showing frames doesn't fit into a stale size (applyPaneLayout re-fits after).
     if (pv && m_slots[slot].frame && m_slots[slot].frame->isVisible())
         pv->fit(true);
+    // A map pane mounted while a PV path is up shows it too (and a reused pane
+    // drops a path that does not belong to its product).
+    if (pv)
+        this->refreshPvOverlay();
+    // …and refit once the move has settled: the pane's own resize refit runs a tick
+    // later, when VTK may still report the OLD size, and the view then keeps a camera
+    // for the old pane (an image shrunk into a corner after a swap or a relayout).
+    this->scheduleSettledRefit(slot);
+}
+
+unsigned long vtkWindowCube::paneCameraMTime(int slot) const
+{
+    if (slot < 0 || slot > 3)
+        return 0;
+    vtkRenderer *ren = nullptr;
+    if (m_slots[slot].view.kind == ViewId::Product && m_paneViews[slot])
+        ren = m_paneViews[slot]->renderer();
+    else if (m_slots[slot].view.kind == ViewId::Slice2D && this->sliceWin)
+        ren = this->sliceWin->GetRenderers()->GetFirstRenderer();
+    return (ren && ren->GetActiveCamera()) ? ren->GetActiveCamera()->GetMTime() : 0;
+}
+
+void vtkWindowCube::scheduleSettledRefit(int slot)
+{
+    if (slot < 0 || slot > 3)
+        return;
+    const int generation = ++m_refitGeneration[slot];
+    const PaneView view = m_slots[slot].view;
+    const unsigned long camera = paneCameraMTime(slot);
+    QTimer::singleShot(120, this, [this, slot, generation, view, camera]() {
+        if (generation != m_refitGeneration[slot] || m_slots[slot].view != view)
+            return;   // a newer mount or relayout owns this pane now
+        if (!m_slots[slot].frame || !m_slots[slot].frame->isVisible())
+            return;
+        if (paneCameraMTime(slot) != camera)
+            return;   // panned / zoomed (or already refit) since: leave that view alone
+        if (view.kind == ViewId::Product && m_paneViews[slot])
+            m_paneViews[slot]->fit(true);
+        else if (view.kind == ViewId::Slice2D)
+            this->layout2dPaneFor(/*slice=*/true, /*force=*/true);
+    });
 }
 
 void vtkWindowCube::parkView(int slot)
@@ -11143,6 +11591,22 @@ void vtkWindowCube::assignViews(const std::array<bool, 4> &visible)
 
 void vtkWindowCube::refreshPaneChrome()
 {
+    // The 2-D channel bar lives on the slice, or on the Channels pane while the
+    // slice wears a map. A Channels pane switched to something else gives it back.
+    if (this->channelOverlay2d && this->channelOverlay2d->parentWidget() != ui->vtkImage
+        && channelMirrorSlot() < 0) {
+        attachChannelBar2d(ui->vtkImage);
+        this->channelOverlay2d->setVisible(m_sliceBackdropProductId.isEmpty());
+        this->layout2dPaneFor(/*slice=*/true, /*force=*/false);   // room for the bar again
+    }
+    // The slice wears a map only in the pane it was put there for: any view change
+    // that took the slice out of that pane (menu, toggle, swap) means channels.
+    // A pane merely hidden by the layout keeps its view, and the background.
+    if (!m_sliceBackdropProductId.isEmpty()
+        && (m_sliceBackdropSlot < 0 || m_sliceBackdropSlot > 3
+            || m_slots[m_sliceBackdropSlot].view.kind != ViewId::Slice2D)) {
+        setSliceBackdrop(QString());   // then this refresh carries on with the slice
+    }
     // Re-gate the slice tools. setActivePane() emits activePaneChanged only when
     // the pane INDEX changes, so replacing the content of the pane already in
     // focus — 3-D swapped for the slice, say — left the tools at whatever the
@@ -11177,7 +11641,14 @@ void vtkWindowCube::refreshPaneChrome()
         // elsewhere swaps the two slots, otherwise it moves the view here.
         if (s.titleBtn) {
             s.titleBtn->setPopupMode(QToolButton::InstantPopup);
-            s.titleBtn->setText(viewTitle(s.view) + u"  ▾"_s);
+            // A slice wearing a map as background (setSliceBackdrop) IS that map to the
+            // user: same title, and the map's entry is the checked one below.
+            const bool backdropHere = s.view.kind == ViewId::Slice2D
+                    && !m_sliceBackdropProductId.isEmpty();
+            const PaneView shownAs = backdropHere
+                    ? PaneView{ ViewId::Product, m_sliceBackdropProductId }
+                    : s.view;
+            s.titleBtn->setText(viewTitle(shownAs) + u"  ▾"_s);
             QMenu *menu = new QMenu(s.titleBtn);
             menu->setToolTipsVisible(true);
             for (const PaneView &cand : choices) {
@@ -11209,6 +11680,13 @@ void vtkWindowCube::refreshPaneChrome()
                             break;
                         }
                 QString label = viewTitle(cand);
+                // The slice worn as a map by THIS pane is shown here as the map; its
+                // "2D Slice" entry is the way back to the channels, not "already here".
+                if (backdropHere && cand.kind == ViewId::Slice2D && atPane == i)
+                    atPane = -1;
+                if (backdropHere && cand.kind == ViewId::Product
+                    && cand.productId == m_sliceBackdropProductId)
+                    atPane = i;
                 if (atPane >= 0)
                     label += QStringLiteral("   ·  P%1").arg(atPane + 1);
                 else if (collideJ >= 0)
@@ -11217,11 +11695,14 @@ void vtkWindowCube::refreshPaneChrome()
                 // (this pane doesn't show it) and reads "· P1" — clicking it DUPLICATES it
                 // into this pane (each Product gets its own Pane2DView, §3.2 B3). Only the
                 // view THIS pane currently shows is checked.
-                if (atPane >= 0 && atPane != i && cand.kind == ViewId::Product)
+                // Image and spectrum products duplicate (each pane has its own view);
+                // the PV diagram is a single widget that MOVES.
+                if (atPane >= 0 && atPane != i && cand.kind == ViewId::Product
+                    && cand.productId != m_pvProductId)
                     label += u"  (duplicate here)"_s;
                 QAction *a = menu->addAction(label);
                 a->setCheckable(true);
-                a->setChecked(cand == s.view);
+                a->setChecked(cand == shownAs);
                 if (collideJ >= 0) {
                     // Disabled + the pane number reads as "can't - a moment is in P3"
                     // without needing the tooltip (which stays as the full explanation).
@@ -11232,7 +11713,22 @@ void vtkWindowCube::refreshPaneChrome()
                                           .arg(collideJ + 1));
                     continue;
                 }
-                QObject::connect(a, &QAction::triggered, this, [this, i, cand]() {
+                QObject::connect(a, &QAction::triggered, this, [this, i, cand, backdropHere]() {
+                    // Already this map (drawn on through the slice): nothing to change.
+                    if (backdropHere && cand.kind == ViewId::Product
+                        && cand.productId == m_sliceBackdropProductId) {
+                        refreshPaneChrome();
+                        return;
+                    }
+                    // Asking for the 2D Slice while the slice wears a map means "stop
+                    // drawing on the map": the panes go back as they were.
+                    if (!m_sliceBackdropProductId.isEmpty() && cand.kind == ViewId::Slice2D) {
+                        setSliceBackdrop(QString());
+                        return;
+                    }
+                    // Any other choice on the map's pane: the background goes first.
+                    if (backdropHere)
+                        setSliceBackdrop(QString());
                     // A FIXED view (single shared widget) already shown elsewhere RELOCATES
                     // via a swap, so neither pane goes blank. A Product has a per-slot
                     // Pane2DView (viewWidget → null), so it can DUPLICATE — fall through to
@@ -12461,6 +12957,14 @@ void vtkWindowCube::applyPaneLayout(int panes)
         layout2dPaneFor(/*slice=*/true, /*force=*/true);
     if (momentVis)
         layout2dPaneFor(/*slice=*/false, /*force=*/true);
+    // The product panes refit on their own resize, one event-loop tick later — when
+    // VTK may not have adopted the new size yet, so the fit sees the old one and
+    // keeps a camera scaled for the old pane (an image shrunk into a corner after
+    // the layout grows). Fit them again once the layout has settled.
+    for (int i = 0; i < 4; ++i)
+        if (vis[i] && (m_slots[i].view.kind == ViewId::Product
+                       || m_slots[i].view.kind == ViewId::Slice2D))
+            scheduleSettledRefit(i);
     saveLayoutSettings();
 }
 
@@ -13227,6 +13731,7 @@ void vtkWindowCube::applyMomentToolGate()
     CubeToolGate::Inputs in;
     in.slice2dVisible = slice2dVisible();
     in.view3dVisible = view3dVisible();
+    in.slicePaneAvailable = momentPaneForSliceTools() >= 0;
     const CubeToolGate::Decision d = CubeToolGate::evaluate(in);
     // Preserving a RUNNING tool is a different question from letting a new one
     // start. While a pane is maximized the other frames are hidden but
@@ -13264,6 +13769,12 @@ void vtkWindowCube::applyMomentToolGate()
             applyGate(a, false, reasonNoSlice);
         } else {
             applyGate(a, baseline, QString());
+            // Enabled because a moment pane could become the slice — but a tool
+            // ALREADY armed listens on the slice, which has just left the screen:
+            // un-arm it (arming again draws on the moment pane).
+            const bool sliceHiddenByZoom = zoomed && viewAssigned(ViewId::Slice2D);
+            if (!in.slice2dVisible && !sliceHiddenByZoom && a->isCheckable() && a->isChecked())
+                a->setChecked(false);
         }
     }
     m_momentToolGated = !d.slice2dTools;
@@ -13371,11 +13882,30 @@ void vtkWindowCube::setInteractorStyleImage()
         win->Render();
 }
 
+namespace {
+// While a drawing tool (PV path, region) is armed, the left and right buttons
+// belong to the tool — the observers on the interactor read them — so the style
+// must not window/level or zoom with them. The wheel still zooms and the middle
+// button still pans: drawing a path along a small source needs both.
+class DrawingToolInteractorStyle : public vtkInteractorStyleImage
+{
+public:
+    static DrawingToolInteractorStyle *New();
+    vtkTypeMacro(DrawingToolInteractorStyle, vtkInteractorStyleImage);
+    void OnLeftButtonDown() override {}
+    void OnLeftButtonUp() override {}
+    void OnRightButtonDown() override {}
+    void OnRightButtonUp() override {}
+    void OnChar() override {}   // no 'r'/'w'/… shortcuts while drawing
+};
+vtkStandardNewMacro(DrawingToolInteractorStyle);
+}  // namespace
+
 void vtkWindowCube::setInteractorStyleRegion()
 {
     for (auto *win : { this->sliceWin.GetPointer(), this->momentWin.GetPointer() }) {
         if (win && win->GetInteractor()) {
-            vtkNew<vtkInteractorStyleUser> style;
+            vtkNew<DrawingToolInteractorStyle> style;
             win->GetInteractor()->SetInteractorStyle(style);
         }
     }
@@ -13716,6 +14246,14 @@ void vtkWindowCube::applyCopilotActions(const QList<QJsonObject> &actions)
             if (a.contains(u"mask_enabled"_s)) cfg.maskEnabled = a.value(u"mask_enabled"_s).toBool();
             if (a.contains(u"threshold_value"_s)) cfg.thresholdValue = a.value(u"threshold_value"_s).toDouble();
             if (a.contains(u"threshold_auto"_s)) cfg.thresholdAuto = a.value(u"threshold_auto"_s).toBool();
+            // No threshold named: the same default as the dialog — 3σ of the
+            // session's noise estimate when there is one, else Auto.
+            if (cfg.maskEnabled && this->m_noiseSigma > 0.0 && !a.contains(u"threshold_value"_s)
+                && !a.contains(u"threshold_auto"_s)) {
+                cfg.thresholdAuto = false;
+                cfg.thresholdValue = 3.0 * this->m_noiseSigma;
+                cfg.thresholdSource = u"3σ of the noise estimate, %1"_s.arg(this->m_noiseWhere);
+            }
             this->momentController->startComputationHeadless(cfg);
         }
     }
@@ -14085,14 +14623,62 @@ void vtkWindowCube::install3dPickObserver()
     if (!iren || this->cube3dPickObserverTag != 0) {
         return;
     }
-    auto cb = vtkSmartPointer<vtkCallbackCommand>::New();
-    cb->SetClientData(this);
-    cb->SetCallback([](vtkObject *, unsigned long, void *clientData, void *) {
+    // Both observers are PASSIVE: the trackball style grabs the interactor's focus
+    // on the press, after which VTK delivers the release only to it and to passive
+    // observers — an active observer never saw a single click. Passive observers
+    // must not change anything, so they only note positions; the pick runs queued,
+    // after VTK has finished with the event, and only for a click: the release
+    // that ends a rotation is not a pick.
+    auto press = vtkSmartPointer<vtkCallbackCommand>::New();
+    press->SetClientData(this);
+    press->SetCallback([](vtkObject *caller, unsigned long, void *clientData, void *) {
         auto *self = static_cast<vtkWindowCube *>(clientData);
-        self->handle3dPickEvent();
+        int p[2];
+        static_cast<vtkRenderWindowInteractor *>(caller)->GetEventPosition(p);
+        self->m_pick3dPressPos = { p[0], p[1] };
+        self->m_pick3dDragged = false;
     });
-    this->cube3dPickObserverTag =
-            iren->AddObserver(vtkCommand::LeftButtonReleaseEvent, cb, 1.0);
+    press->SetPassiveObserver(1);
+    this->cube3dPickPressTag = iren->AddObserver(vtkCommand::LeftButtonPressEvent, press, 1.0);
+
+    constexpr int kClickSlop = 4;   // device px; beyond it, at any point, is a drag
+    auto move = vtkSmartPointer<vtkCallbackCommand>::New();
+    move->SetClientData(this);
+    move->SetCallback([](vtkObject *caller, unsigned long, void *clientData, void *) {
+        auto *self = static_cast<vtkWindowCube *>(clientData);
+        const std::array<int, 2> from = self->m_pick3dPressPos;
+        if (from[0] < 0 || self->m_pick3dDragged)
+            return;
+        int p[2];
+        static_cast<vtkRenderWindowInteractor *>(caller)->GetEventPosition(p);
+        if (std::abs(p[0] - from[0]) > kClickSlop || std::abs(p[1] - from[1]) > kClickSlop)
+            self->m_pick3dDragged = true;   // latched: coming back does not make it a click
+    });
+    move->SetPassiveObserver(1);
+    this->cube3dPickMoveTag = iren->AddObserver(vtkCommand::MouseMoveEvent, move, 1.0);
+
+    auto release = vtkSmartPointer<vtkCallbackCommand>::New();
+    release->SetClientData(this);
+    release->SetCallback([](vtkObject *caller, unsigned long, void *clientData, void *) {
+        auto *self = static_cast<vtkWindowCube *>(clientData);
+        int p[2];
+        static_cast<vtkRenderWindowInteractor *>(caller)->GetEventPosition(p);
+        const std::array<int, 2> pos{ p[0], p[1] };
+        const std::array<int, 2> from = self->m_pick3dPressPos;
+        const bool dragged = self->m_pick3dDragged;
+        self->m_pick3dPressPos = { -1, -1 };
+        self->m_pick3dDragged = false;
+        if (from[0] < 0 || dragged || std::abs(pos[0] - from[0]) > kClickSlop
+            || std::abs(pos[1] - from[1]) > kClickSlop)
+            return;
+        QPointer<vtkWindowCube> guard(self);
+        QTimer::singleShot(0, self, [guard, pos]() {
+            if (guard && guard->actionPickSpectrum3d && guard->actionPickSpectrum3d->isChecked())
+                guard->handle3dPickEvent(pos);
+        });
+    });
+    release->SetPassiveObserver(1);
+    this->cube3dPickObserverTag = iren->AddObserver(vtkCommand::LeftButtonReleaseEvent, release, 1.0);
 }
 
 void vtkWindowCube::remove3dPickObserver()
@@ -14103,7 +14689,17 @@ void vtkWindowCube::remove3dPickObserver()
     if (iren && this->cube3dPickObserverTag != 0) {
         iren->RemoveObserver(this->cube3dPickObserverTag);
     }
+    if (iren && this->cube3dPickPressTag != 0) {
+        iren->RemoveObserver(this->cube3dPickPressTag);
+    }
+    if (iren && this->cube3dPickMoveTag != 0) {
+        iren->RemoveObserver(this->cube3dPickMoveTag);
+    }
     this->cube3dPickObserverTag = 0;
+    this->cube3dPickPressTag = 0;
+    this->cube3dPickMoveTag = 0;
+    this->m_pick3dPressPos = { -1, -1 };
+    this->m_pick3dDragged = false;
 }
 
 void vtkWindowCube::showPick3dMarker(const double world[3])
@@ -14258,7 +14854,7 @@ bool vtkWindowCube::pickVolumeAlongRay(vtkRenderer *renderer, const int displayP
     return true;
 }
 
-void vtkWindowCube::handle3dPickEvent()
+void vtkWindowCube::handle3dPickEvent(const std::array<int, 2> &eventPos)
 {
     auto *iren = ui->vtkCube->renderWindow()
             ? ui->vtkCube->renderWindow()->GetInteractor()
@@ -14270,8 +14866,7 @@ void vtkWindowCube::handle3dPickEvent()
         return;
     }
 
-    int pos[2];
-    iren->GetEventPosition(pos);
+    int pos[2] = { eventPos[0], eventPos[1] };   // captured at the release (queued call)
     auto picker = vtkSmartPointer<vtkPropPicker>::New();
     const bool hitProp = (picker->Pick(pos[0], pos[1], 0., renderer) != 0);
 

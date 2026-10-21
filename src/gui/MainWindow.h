@@ -73,6 +73,10 @@ private slots:
     void openCatalogue3D();
     void openVbt();
     void openVelocityField();   ///< F1: open a cosmic-flow velocity field (3-component FITS)
+    /// Open the velocity field at @p path (a backend path) in the vector-field viewer:
+    /// what the menu entry does once a file is chosen, and what Open… does when the
+    /// classifier recognises one.
+    void openVelocityFieldPath(const QString &path);
     void openHiPS();
     /// Data ▸ HiPS Cutout — a FITS out of any HiPS survey (CDS hips2fits).
     void openHips2Fits();

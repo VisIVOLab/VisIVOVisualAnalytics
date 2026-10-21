@@ -192,6 +192,17 @@ LinewidthDialog::LinewidthDialog(const QString &backendUrl,
     form->addRow(u"Threshold"_s, m_thresholdSpin);
 
     connect(m_maskCheck, &QCheckBox::toggled, m_thresholdSpin, &QWidget::setEnabled);
+    m_thresholdSourceLabel = new QLabel(central);
+    m_thresholdSourceLabel->setStyleSheet(ToolDialogStyle::helperCss());
+    m_thresholdSourceLabel->setWordWrap(true);
+    m_thresholdSourceLabel->hide();
+    form->addRow(QString(), m_thresholdSourceLabel);
+    // A value typed by hand is no longer the estimate's: say so, and record none.
+    connect(m_thresholdSpin, &QDoubleSpinBox::valueChanged, this, [this]() {
+        m_thresholdTouched = true;
+        m_thresholdSource.clear();
+        m_thresholdSourceLabel->hide();
+    });
 
     // ── Buttons: Close (secondary) + Compute (primary), right-aligned.
     // The old bottom-left breadcrumb pill is gone — the top breadcrumb
@@ -225,6 +236,31 @@ void LinewidthDialog::closeEvent(QCloseEvent *event)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+void LinewidthDialog::setRestFrequencyHz(double restFreqHz)
+{
+    if (restFreqHz > 0.0 && m_restFreqSpin)
+        m_restFreqSpin->setValue(restFreqHz / 1.0e9);
+}
+
+void LinewidthDialog::setNoiseEstimate(double sigma, const QString &where)
+{
+    if (!(sigma > 0.0) || m_thresholdTouched)
+        return;
+    m_estimateThreshold = 3.0 * sigma;
+    {
+        const QSignalBlocker block(m_thresholdSpin);   // not a hand edit
+        // Enough decimals to show a small σ as itself, not as 0.000000.
+        m_thresholdSpin->setDecimals(std::clamp(
+                static_cast<int>(std::ceil(-std::log10(m_estimateThreshold))) + 4, 6, 15));
+        m_thresholdSpin->setValue(m_estimateThreshold);
+    }
+    m_maskCheck->setChecked(true);
+    m_thresholdSource = u"3σ of the noise estimate, %1"_s.arg(where);
+    m_thresholdSourceLabel->setText(
+            u"3σ of the noise estimate (σ = %1, %2); edit to override."_s.arg(sigma, 0, 'g', 4).arg(where));
+    m_thresholdSourceLabel->show();
+}
 
 void LinewidthDialog::onCompute()
 {
@@ -269,7 +305,19 @@ void LinewidthDialog::onCompute()
     const QString sessionId    = m_sessionId;
     const QString datasetId    = m_datasetId;
     const bool    maskEnabled  = m_maskCheck->isChecked();
-    const float   threshold    = static_cast<float>(m_thresholdSpin->value());
+    // The estimate's exact 3σ while it still sets the value; the box rounds.
+    const float   threshold    = static_cast<float>(
+            m_thresholdSource.isEmpty() ? m_thresholdSpin->value() : m_estimateThreshold);
+    // How the map was made, for its provenance in Session Data.
+    QVariantMap recipe;
+    recipe.insert(u"Method"_s, m_methodCombo->currentText());
+    recipe.insert(u"Channels"_s, u"%1–%2"_s.arg(chanStart + 1).arg(chanEnd + 1));
+    recipe.insert(u"Mask"_s, !maskEnabled ? u"none"_s
+                          : m_thresholdSource.isEmpty()
+                          ? u">= %1"_s.arg(double(threshold), 0, 'g', 6)
+                          : u">= %1 (%2)"_s.arg(double(threshold), 0, 'g', 6).arg(m_thresholdSource));
+    if (restFreqHz > 0.0)
+        recipe.insert(u"Rest frequency"_s, u"%1 GHz"_s.arg(restFreqHz / 1.0e9, 0, 'f', 6));
     const QString methodData   = m_methodCombo->currentData().toString();
     // "fwhm_fast" and "ew" both take the backend's vectorised path; only the
     // exact Gaussian fit pays per pixel.
@@ -295,7 +343,7 @@ void LinewidthDialog::onCompute()
     QPointer<LinewidthDialog> self(this);
 
     connect(watcher, &QFutureWatcher<BackendLinewidthResult>::finished,
-            watcher, [self, watcher, requestId, method, datasetId, sessionId]() {
+            watcher, [self, watcher, requestId, method, datasetId, sessionId, recipe]() {
 
         const auto result = watcher->result();
         watcher->deleteLater();
@@ -404,7 +452,7 @@ void LinewidthDialog::onCompute()
         // #5: the map is a first-class PANE product now, not a standalone window — hand the
         // raw float map to the caller (vtkWindowCube), which caches + registers + mounts it.
         emit self->mapReady(frame.data, result.width, result.height, rangeMin, rangeMax, label,
-                            unit);
+                            unit, recipe);
 
         self->statusBar()->showMessage(
                 u"Done, %1 map: %2 × %3 px"_s.arg(label).arg(result.width).arg(result.height),

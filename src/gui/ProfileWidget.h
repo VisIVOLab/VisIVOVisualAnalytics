@@ -252,8 +252,8 @@ private:
     QFrame      *m_specFooter     { nullptr };   ///< save-buttons footer (hidden in pane mode)
 
     QString m_fileLabel;
-    int     m_pixelX{ 0 };
-    int     m_pixelY{ 0 };
+    int     m_pixelX{ -1 };   ///< -1: no line of sight known (never "(0, 0)" by default)
+    int     m_pixelY{ -1 };
     QString m_wcsLabel;
     bool    m_frozen{ false };
 

@@ -412,9 +412,10 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
     // which we just blocked — update it explicitly so it tracks every displayed
     // slice (cached / fetched / linked).
     if (this->channelOverlay) {
-        this->channelOverlay->setChannel(result.index + 1);
-        if (!backdrop)
-            this->channelOverlay->setSpectralLabel(ui->lineSpectral->text());
+        for (ChannelOverlay *co : this->channelOverlays()) {
+            co->setChannel(result.index + 1);
+            co->setSpectralLabel(ui->lineSpectral->text());
+        }
     }
 
     // Linked views: this is the single convergence where a slice is actually
@@ -435,6 +436,13 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
     ui->vtkCube->renderWindow()->Render();
     qDebug().noquote() << QStringLiteral("[remote-plane] render triggered");
     if (backdrop) {
+        // The "Channels" pane shows this channel, at the range the slice had (kept
+        // when the user had locked one, else this channel's own).
+        const bool locked = this->m_sliceRangeLockedBeforeBackdrop
+                && this->m_sliceRangeBeforeBackdrop[1] > this->m_sliceRangeBeforeBackdrop[0];
+        this->updateChannelMirror(result.imageData,
+                                  locked ? this->m_sliceRangeBeforeBackdrop[0] : result.imageRange[0],
+                                  locked ? this->m_sliceRangeBeforeBackdrop[1] : result.imageRange[1]);
         // The channel overlays (kinematic contour, lasso outline) follow the
         // channel even over a background map; the pixel work below does not apply.
         this->updateKinematic2dContour(/*render=*/false);

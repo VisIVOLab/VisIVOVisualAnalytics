@@ -50,6 +50,15 @@ void TestCubeToolGate::families_areIndependentNotExclusive()
     QVERIFY(d.view3dTools);
 }
 
+void TestCubeToolGate::slice2dTools_alsoOnAMomentPane()
+{
+    // A moment map on screen and no slice: the slice tools stay available —
+    // arming one makes that pane the slice with the map as its background.
+    Inputs in = layout(false, true);
+    in.slicePaneAvailable = true;
+    QVERIFY(evaluate(in).slice2dTools);
+}
+
 void TestCubeToolGate::noViews_disablesBothFamilies()
 {
     // e.g. two panes both showing derived products.

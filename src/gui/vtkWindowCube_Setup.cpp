@@ -1515,7 +1515,7 @@ void vtkWindowCube::setupSliceRenderer()
         mapper->SetInputData(this->slicePvHandleData);
         this->slicePvHandleActor->SetMapper(mapper);
         this->slicePvHandleActor->GetProperty()->SetColor(1.0, 0.85, 0.3);
-        this->slicePvHandleActor->GetProperty()->SetPointSize(9.0);
+        this->slicePvHandleActor->GetProperty()->SetPointSize(12.0);
         this->slicePvHandleActor->GetProperty()->RenderPointsAsSpheresOn();
         this->slicePvHandleActor->VisibilityOff();
         sliceRenderer->AddActor(this->slicePvHandleActor);

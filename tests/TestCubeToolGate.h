@@ -13,6 +13,7 @@ private slots:
     void slice2dTools_followTheSliceViewBeingOnScreen();
     void view3dTools_followThe3dViewBeingOnScreen();
     void families_areIndependentNotExclusive();
+    void slice2dTools_alsoOnAMomentPane();
     void noViews_disablesBothFamilies();
 
     void pinSpectrum_followsTheProbedSpectrumOnly();

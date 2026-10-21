@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, model_validator
 from typing import Any
+import math
 import uuid
 import logging
 import os
@@ -542,6 +543,10 @@ async def cube_kinematic_levels_bin(
             worker_cube_kinematic_levels,
             path, seeds, subs, budget,
             request.lambda_v, request.sigma, request.roi_radius, request.nsigma,
+            # The interactive path honours smoothing too: it is what the panel's
+            # Smoothing control drives (the select route already did).
+            ((request.smooth_v, request.smooth_xy, request.smooth_xy)
+             if (request.smooth_v > 0.0 or request.smooth_xy > 0.0) else None),
         )
     except HTTPException:
         raise
@@ -694,6 +699,8 @@ async def cube_mask_apply_bin(
     width: int = Query(..., ge=1), height: int = Query(..., ge=1), depth: int = Query(..., ge=1),
     mode: str = Query("blank_outside"),
     output_basename: str = Query(""),
+    # "key=value; key=value" — how the mask was made, written to HISTORY.
+    recipe: str = Query("", max_length=1000),
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> CubeMaskResponse:
@@ -722,7 +729,7 @@ async def cube_mask_apply_bin(
             session,
             worker_cube_mask_apply,
             entry["path"], output_path, mask_bytes,
-            origin_x, origin_y, origin_z, width, height, depth, mode,
+            origin_x, origin_y, origin_z, width, height, depth, mode, recipe,
         )
     except HTTPException:
         raise
@@ -743,6 +750,100 @@ async def cube_mask_apply_bin(
         valid=True, new_dataset_id=new_id, workspace_filename=workspace_filename,
         **{k: result[k] for k in
            ("output_path", "width", "height", "depth", "range_min", "range_max")})
+
+
+# ── Kinematic fit of a selection ─────────────────────────────────────────────
+
+@router.post("/v1/cube/kinematic_fit_bin", tags=["cube"])
+async def cube_kinematic_fit_bin(
+    request: Request,
+    dataset_id: str = Query(...),
+    origin_x: int = Query(...), origin_y: int = Query(...), origin_z: int = Query(...),
+    width: int = Query(..., ge=1), height: int = Query(..., ge=1), depth: int = Query(..., ge=1),
+    # The session's noise estimate; 0 = the cube's own 1.4826·MAD.
+    sigma: float = Query(0.0, ge=0.0, allow_inf_nan=False),
+    min_ring_pix: int = Query(150, ge=10),
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Measure and fit a SELECTION (the lasso's explicit mask in the body, as for
+    mask_apply_bin) on the raw cube: moment maps, flux and widths, geometry from
+    moment 0, a flat and a per-ring tilted-ring fit, model velocity fields and
+    residuals — the comparator's input, so it can be checked, edited and drawn."""
+    from ..compute.kinematic_fit import worker_kinematic_fit  # noqa: PLC0415
+    from ..kinematic_model import ModelTooLargeError, max_voxels  # noqa: PLC0415
+    mask_bytes = await request.body()
+    expected = int(width) * int(height) * int(depth) * 4
+    if len(mask_bytes) != expected:
+        raise HTTPException(422, f"mask body is {len(mask_bytes)} bytes; expected {expected}")
+    entry = _require_dataset(session, dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "A kinematic fit requires a spectral cube dataset.")
+    try:
+        return await _run_heavy_with_limit(
+            session, worker_kinematic_fit, entry["path"], mask_bytes,
+            origin_x, origin_y, origin_z, width, height, depth,
+            float(sigma), int(min_ring_pix), max_voxels())
+    except ModelTooLargeError as exc:
+        raise HTTPException(413, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/v1/cube/kinematic_residual_bin", tags=["cube"])
+async def cube_kinematic_residual_bin(
+    request: Request,
+    dataset_id: str = Query(...),
+    origin_x: int = Query(...), origin_y: int = Query(...), origin_z: int = Query(...),
+    width: int = Query(..., ge=1), height: int = Query(..., ge=1), depth: int = Query(..., ge=1),
+    x0: float = Query(..., allow_inf_nan=False), y0: float = Query(..., allow_inf_nan=False),
+    vsys: float = Query(..., allow_inf_nan=False),
+    line_sigma: float = Query(..., gt=0.0, allow_inf_nan=False),
+    pa: float | None = Query(None, allow_inf_nan=False),
+    incl: float | None = Query(None, ge=0.0, le=90.0, allow_inf_nan=False),
+    vrot: float | None = Query(None, allow_inf_nan=False),
+    rmax: float | None = Query(None, gt=0.0, allow_inf_nan=False),
+    # "r:pa:incl:vrot,r:pa:incl:vrot,…" — the ring table as it stands.
+    rings: str = Query("", max_length=4000),
+    sigma: float = Query(0.0, ge=0.0, allow_inf_nan=False),
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Residual of the model GIVEN by these parameters (fitted or edited) against
+    the selection's velocity field — what the comparator reports for the model on
+    screen. Same selection wire and noise rule as kinematic_fit_bin."""
+    from ..compute.kinematic_fit import worker_kinematic_residual  # noqa: PLC0415
+    from ..kinematic_model import ModelTooLargeError, max_voxels  # noqa: PLC0415
+    mask_bytes = await request.body()
+    expected = int(width) * int(height) * int(depth) * 4
+    if len(mask_bytes) != expected:
+        raise HTTPException(422, f"mask body is {len(mask_bytes)} bytes; expected {expected}")
+    ring_list: list[tuple[float, float, float, float]] = []
+    if rings.strip():
+        try:
+            for item in rings.split(","):
+                r, p_, i_, v_ = (float(x) for x in item.split(":"))
+                if not all(math.isfinite(x) for x in (r, p_, i_, v_)) or r <= 0 or not 0 <= i_ <= 90:
+                    raise ValueError(item)
+                ring_list.append((r, p_, i_, v_))
+        except ValueError as exc:
+            raise HTTPException(422, f"rings must be 'r:pa:incl:vrot,…' (bad item {exc})") from exc
+        if len({r[0] for r in ring_list}) != len(ring_list):
+            raise HTTPException(422, "ring radii must be distinct")
+    elif None in (pa, incl, vrot, rmax):
+        raise HTTPException(422, "a single-disc model needs pa, incl, vrot and rmax (or rings)")
+    entry = _require_dataset(session, dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "A kinematic residual requires a spectral cube dataset.")
+    try:
+        return await _run_heavy_with_limit(
+            session, worker_kinematic_residual, entry["path"], mask_bytes,
+            origin_x, origin_y, origin_z, width, height, depth, float(sigma),
+            x0, y0, vsys, line_sigma, pa, incl, vrot, rmax, ring_list or None, max_voxels())
+    except ModelTooLargeError as exc:
+        raise HTTPException(413, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 # ── Single-channel 2-D FITS export ───────────────────────────────────────────

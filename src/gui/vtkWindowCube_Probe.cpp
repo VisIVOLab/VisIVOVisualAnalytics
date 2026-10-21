@@ -436,7 +436,10 @@ void vtkWindowCube::updateProbeReadout(vtkImageData *imageData)
     if (std::isfinite(value) && !unit.isEmpty()) {
         valueText += u" %1"_s.arg(unit);
     }
-    const QString channelText = u"ch %1"_s.arg(this->probeVoxel[2] + 1);
+    // On a map worn by the slice there is no channel under the cursor: name the map.
+    const QString channelText = this->m_sliceBackdropProductId.isEmpty()
+            ? u"ch %1"_s.arg(this->probeVoxel[2] + 1)
+            : this->m_products2d.value(this->m_sliceBackdropProductId).label;
 
     // Short axis symbols — the full names live on the axes, so no KEY= labels here.
     const auto shortAxis = [](const QString &title) -> QString {
@@ -539,8 +542,11 @@ void vtkWindowCube::updateProbePlot()
             double frameX = nativeX, frameY = nativeY;
             if (ok0 && ok1
                 && this->convertRemoteCelestialCoordinates(nativeX, nativeY, frameX, frameY)) {
-                axis0 = this->formatRemoteOverlayCoordinate(0, frameX);
-                axis1 = this->formatRemoteOverlayCoordinate(1, frameY);
+                // Five decimals in degrees (0.04″): a line of sight's provenance must
+                // name its pixel; the readout's two (36″) span several.
+                constexpr double kPixelPrecisionSpan = 4e-4;
+                axis0 = this->formatRemoteOverlayCoordinate(0, frameX, kPixelPrecisionSpan);
+                axis1 = this->formatRemoteOverlayCoordinate(1, frameY, kPixelPrecisionSpan);
             }
         }
         wcsLabel = u"%1=%2  %3=%4"_s.arg(this->selectedFrameAxisTitle(0), axis0,
@@ -556,8 +562,10 @@ void vtkWindowCube::updateProbePlot()
     this->m_lastProbeSpectrumProduct.clear();
     this->m_lastProbeXLabel = this->spectralAxisTitle().isEmpty() ? u"Spectral axis"_s
                                                                   : this->spectralAxisTitle();
-    this->m_lastProbeYLabel = u"Intensity"_s;
+    this->m_lastProbeYLabel = m_brightnessUnit.trimmed().isEmpty()
+            ? u"Intensity"_s : u"Intensity (%1)"_s.arg(m_brightnessUnit.trimmed());
     this->m_lastProbeContext = wcsLabel;
+    this->m_lastProbeVoxel = this->probeVoxel;
 
     // Pin Spectrum is gated on there BEING a probed spectrum; re-gate only when
     // that flipped, since this runs on every probe update (2-D moves and 3-D picks).
@@ -587,6 +595,7 @@ void vtkWindowCube::setProbeModeActive(bool active)
 {
     this->probeModeActive = active;
     if (active) {
+        this->ensureSliceForTools();   // a moment pane becomes the slice to probe
         // Give the 2-D Slice pane the focus first, exactly as the 3-D picker does
         // for its own view: otherwise the pane container swallows the activating
         // press and the user has to click the slice once just to wake it, which

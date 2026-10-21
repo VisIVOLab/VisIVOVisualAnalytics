@@ -687,7 +687,7 @@ with the message naming the ways out:
 > `The requested FDF cube is 6250 MiB (400000 φ × 64 × 64), over the 512 MiB
 > limit. Ask for reduce='peak', a smaller region, or a coarser φ grid.`
 
-Both variants always return `phi_grid`, `rmsf`, `n_phi` and `n_freq`, plus `dropped_planes` and `dropped_freq_hz`: sub-bands that carry no data in the requested region (a release can flag one out entirely, as NaN or zeros) are left out of the transform and listed by file-plane index and frequency; `n_freq` counts the planes actually used, and fewer than three is an error (422).
+The φ grid is `phi_min, phi_min + dphi, …` up to and including `phi_max` when a whole number of steps reaches it (a step below the numerical resolution of φ is refused with 422). Both variants always return `phi_grid`, `rmsf`, `n_phi` and `n_freq`, plus `dropped_planes` and `dropped_freq_hz`: sub-bands that carry no data in the requested region (a release can flag one out entirely, as NaN or zeros) are left out of the transform and listed by file-plane index and frequency; `n_freq` counts the planes actually used, and fewer than three is an error (422).
 
 ## Spectral
 

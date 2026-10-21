@@ -180,10 +180,13 @@ class TaskRegistry:
         with self._lock:
             self._evict_expired_locked()
             running_count = 0
+            pending_count = 0
             finished: list[TaskRecord] = []
             for record in self._tasks.values():
                 if record.status in ("pending", "running"):
                     running_count += 1
+                    if record.status == "pending":
+                        pending_count += 1
                 # "completed" as well as "done": the task API's own terminal
                 # status is "completed" (that is what /v1/tasks/{id} reports and
                 # what the client polls for), so a registry that only knew
@@ -243,7 +246,8 @@ class TaskRegistry:
             recent = recent[: max(0, int(recent_limit))]
             for entry in recent:
                 entry.pop("_finished_at", None)
-            return {"running_count": running_count, "recent_tasks": recent}
+            return {"running_count": running_count, "pending_count": pending_count,
+                    "recent_tasks": recent}
 
 
 TASKS = TaskRegistry()
