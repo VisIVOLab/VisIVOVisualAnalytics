@@ -1112,3 +1112,38 @@ async def test_image_tile_on_cube_returns_422(
         headers=opened_cube["headers"],
     )
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_cube_mask_apply_bin_long_recipe_survives_whole(client: AsyncClient,
+                                                              opened_cube: dict) -> None:
+    """A selection with many extra seeds carries them as coordinates: the route
+    must accept the long recipe and the HISTORY must keep every seed, not the
+    first 72 characters of the first 24 items."""
+    import numpy as np
+    from astropy.io import fits as _f
+    rw, rh, rd = 5, 4, 3
+    m = np.zeros((rd, rh, rw), dtype="<f4")
+    m[1, 1:3, 1:3] = 1.0
+    seeds = "|".join(f"({100 + i},{200 + i},{300 + i})" for i in range(80))
+    recipe = ("seed_zyx=9,25,21; reach=8; lambda_v=1.00; nsigma=2.5; "
+              "sigma=0.0019689999999999999 (noise estimate); smooth_zyx=0,0,0; reach_max=64; "
+              f"add_seeds={seeds}; sub_seeds=none; hand_edited=no")
+    assert len(recipe) > 1000
+    resp = await client.post(
+        "/v1/cube/mask_apply_bin",
+        params={"dataset_id": opened_cube["dataset_id"], "origin_x": 20, "origin_y": 24,
+                "origin_z": 8, "width": rw, "height": rh, "depth": rd,
+                "mode": "blank_outside", "recipe": recipe},
+        content=m.tobytes(),
+        headers={**opened_cube["headers"], "Content-Type": "application/octet-stream"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["valid"] is True, data
+    history = "\n".join(str(c) for c in _f.getheader(data["output_path"])["HISTORY"])
+    joined = history.replace("\n", "")
+    for i in (0, 40, 79):
+        assert f"({100 + i},{200 + i},{300 + i})" in joined
+    assert "Lasso hand_edited=no" in history and "Lasso reach_max=64" in history
+    assert "sigma=0.0019689999999999999" in joined

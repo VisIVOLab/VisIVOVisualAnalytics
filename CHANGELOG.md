@@ -8,6 +8,23 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## 1.0.2 (2026-10-21)
 
+- **Full-resolution load: a bounded transient, and no JSON fallback.** Loading
+  a cube at full resolution held it three times over while it arrived (the
+  four Z-slabs, a stitched copy, the image) before the GPU copy; the slabs are
+  now copied straight into the image and released one by one. Worse, a slab
+  that failed for any reason — a timeout, a connection the backend dropped
+  under load — made the client re-request the whole volume as base64 JSON and
+  hold it as the reply, its copy, the parsed document and the decoded bytes,
+  while the backend kept serving the aborted slabs (the "5 running" of a
+  45 GB client on a laptop). That fallback now exists only for a backend
+  without the binary route (404); a failed slab fails the load and says so.
+  Before fetching, the client compares three times the region with the
+  machine's physical memory and refuses, with the numbers, when it does not
+  fit.
+- **Windows build fixed.** Three lambdas in the kinematic-model dialog used
+  the C++20 capture `[=, this]`, which MSVC rejects in C++17 (clang only
+  warns); the release workflow's Windows job stopped there. The sources were
+  checked with clang's C++20-extension warnings turned into errors.
 - **Multi-extension FITS cubes open.** An ESO phase-3 or APEX product keeps
   the primary HDU empty (`NAXIS = 0`) and the cube in an image extension
   (`DATA_EXT`, with the variance in `STAT_EXT`). The classifier called it
@@ -17,8 +34,18 @@ are preserved here unedited; the branch names they refer to are historical.
   region WCS, the velocity-field and dynamic-spectrum loaders, and the header
   viewer, which lists the extension's header followed by the descriptive cards
   only the primary carries; header edits go to the HDU that owns the card.
+- **Validation harness: the methods on discs of known truth.**
+  `validation/lasso_synthetic.py` runs the lasso on discs built with the
+  application's tilted-ring model (S/N, extent, a neighbour along the minor
+  axis); `validation/kinematic_fit_synthetic.py` recovers a flat and a warped
+  disc with the comparator's fit; `validation/lasso_sensitivity.py --grid`
+  maps Dice over the (λv, reach) plane. Figure 4 of the paper gains the two
+  residual maps; Figure 1's panels are drawn at the size they print at.
 - **Exported recipe is a record, not a list.** *Export recipe as JSON…* now
-  writes the product (id, kind, label, the service route that replays it), the
+  writes the product (id, kind, label, the service routes that replay it, in
+  order: the grow from the parameters, then the apply — and a `replay_caveat`
+  when the parameters alone do not suffice: a hand-edited mask, a fit that
+  needs its selection), the
   dataset (name, path, backend ids), the parameters, the geometry it was taken
   from, the application version and the export time, under
   `"schema": "visivo-recipe/1"`. Before, it was the label→value map of the

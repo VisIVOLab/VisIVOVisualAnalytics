@@ -14,9 +14,11 @@ is known by construction. Three things are varied:
   number is the median over five clicks (the peak and four random bright
   voxels), with the range, so a result is not an accident of where one click
   landed;
-* **separation from a neighbour** of the same brightness, at the same systemic
-  velocity (the hard case) and 150 km/s away, at two values of the kinematic
-  knob — the case the knob exists for.
+* **separation from a neighbour** of the same brightness along the apparent
+  minor axis, at the same systemic velocity (the hard case: the edges that
+  touch are both at v_sys) and 150 km/s away. The question is how much of a
+  selection leaks into the neighbour, so the leak is what is plotted; the
+  budget being a per-object slider, the defaults are what is measured.
 
 Two truths are reported, because a per-voxel selector cannot see what is below
 its own threshold: the noiseless disc above 2.5 σ of the injected noise (what
@@ -51,9 +53,12 @@ SNRS = [3.0, 5.0, 10.0, 20.0]
 RADII = [8.0, 16.0, 32.0]
 REACHES = [4.0, 8.0, 16.0, 32.0]
 N_CLICKS = 5
-SEPARATIONS = [1.25, 1.5, 2.0, 3.0]                   # centre distance, in disc radii
+# Centre distance in disc radii, along the apparent MINOR axis: that is where
+# the two discs' touching edges are both at their systemic velocity, so with
+# Δv_sys = 0 nothing in velocity tells them apart. The projected half-width of
+# a disc on that axis is r cos i, so below 2 cos i radii (1.0 here) they overlap.
+SEPARATIONS = [0.4, 0.6, 0.8, 1.0, 1.5, 2.5]
 NEIGHBOUR_DV = [0.0, 150.0]                           # km/s between the two systemic velocities
-NEIGHBOUR_LAMBDAS = [1.0, 3.0]
 SEP_SNR, SEP_RADIUS = 10.0, 16.0
 # The lasso's shipped defaults, exactly as the client sends them.
 DEFAULTS = dict(reach=8.0, lambda_v=1.0, nsigma=2.5)
@@ -154,35 +159,43 @@ def main() -> None:
     # ── separation from a neighbour, and the kinematic knob ──
     md += ["## A neighbour of the same brightness", "",
            f"Two discs of radius {SEP_RADIUS:g} px at peak S/N {SEP_SNR:g}, centres separated "
-           f"along the apparent minor axis; the click is the left disc's brightest voxel, reach "
-           f"{DEFAULTS['reach']:g}. 'Leak' is the fraction of the selection inside the "
-           f"neighbour's 2.5σ truth. Below 2 radii the two discs overlap on the sky.", "",
-           "| Δv_sys (km/s) | λv | separation (radii) | Dice | completeness | reliability | leak |",
-           "|---|---|---|---|---|---|---|"]
-    leak = np.full((len(NEIGHBOUR_DV), len(NEIGHBOUR_LAMBDAS), len(SEPARATIONS)), np.nan)
+           f"along the apparent minor axis; {N_CLICKS} clicks on the left disc at the defaults. "
+           f"'Leak' is the fraction of the selection inside the neighbour's 2.5σ truth. The "
+           f"discs' projected half-width on that axis is r cos i, so below "
+           f"{2 * math.cos(math.radians(DISC['incl'])):.1f} radii they overlap on the sky.", "",
+           "| Δv_sys (km/s) | separation (radii) | Dice | completeness | reliability | leak |",
+           "|---|---|---|---|---|---|"]
+    leak_med = np.full((len(NEIGHBOUR_DV), len(SEPARATIONS)), np.nan)
+    leak_lo, leak_hi = leak_med.copy(), leak_med.copy()
     for i, dv in enumerate(NEIGHBOUR_DV):
-        for k, lv in enumerate(NEIGHBOUR_LAMBDAS):
-            for j, sep in enumerate(SEPARATIONS):
-                d = sep * SEP_RADIUS
-                ang = math.radians(DISC["pa"] + 90.0)
-                dx, dy = d * math.cos(ang), d * math.sin(ang)
-                mine = disc_cube(NX / 2 - dx / 2, NY / 2 - dy / 2, SEP_RADIUS, DISC["vsys"])
-                other = disc_cube(NX / 2 + dx / 2, NY / 2 + dy / 2, SEP_RADIUS, DISC["vsys"] + dv)
-                data, noise = noisy(mine + other, SEP_SNR, rng_seed=int(100 + 10 * sep + dv))
-                seed = tuple(int(v) for v in np.unravel_index(int(np.argmax(mine)), mine.shape))
-                sel = cube_kinematic_select(data, seed, reach=DEFAULTS["reach"], lambda_v=lv,
-                                            nsigma=DEFAULTS["nsigma"])
-                truth, truth_other = mine > 2.5 * noise, other > 2.5 * noise
+        for j, sep in enumerate(SEPARATIONS):
+            d = sep * SEP_RADIUS
+            # (cos PA, sin PA) is the minor axis in deproject()'s convention:
+            # its major-axis coordinate -dx sin PA + dy cos PA vanishes.
+            ang = math.radians(DISC["pa"])
+            dx, dy = d * math.cos(ang), d * math.sin(ang)
+            mine = disc_cube(NX / 2 - dx / 2, NY / 2 - dy / 2, SEP_RADIUS, DISC["vsys"])
+            other = disc_cube(NX / 2 + dx / 2, NY / 2 + dy / 2, SEP_RADIUS, DISC["vsys"] + dv)
+            data, noise = noisy(mine + other, SEP_SNR, rng_seed=int(100 + 10 * sep + dv))
+            truth, truth_other = mine > 2.5 * noise, other > 2.5 * noise
+            got: list[tuple[float, float, float, float]] = []
+            for seed in clicks(mine, rng_seed=int(300 + 10 * sep + dv)):
+                sel = cube_kinematic_select(data, seed, **DEFAULTS)
                 dd, cc, rr = metrics(sel, truth)
                 lk = float(np.count_nonzero(sel & truth_other) / max(1, sel.sum()))
-                leak[i, k, j] = lk
-                md.append(f"| {dv:g} | {lv:g} | {sep:g} | {dd:.2f} | {cc:.2f} | {rr:.2f} | {lk:.2f} |")
+                got.append((dd, cc, rr, lk))
                 rows.append(dict(experiment="neighbour", snr=SEP_SNR, radius=SEP_RADIUS,
-                                 reach=DEFAULTS["reach"], lambda_v=lv, seed=str(seed),
-                                 separation=sep, neighbour_dv=dv, truth_vox=int(truth.sum()),
-                                 selected_vox=int(sel.sum()), dice=round(dd, 4),
-                                 completeness=round(cc, 4), reliability=round(rr, 4),
-                                 completeness_envelope=np.nan, leak=round(lk, 4)))
+                                 reach=DEFAULTS["reach"], lambda_v=DEFAULTS["lambda_v"],
+                                 seed=str(seed), separation=sep, neighbour_dv=dv,
+                                 truth_vox=int(truth.sum()), selected_vox=int(sel.sum()),
+                                 dice=round(dd, 4), completeness=round(cc, 4),
+                                 reliability=round(rr, 4), completeness_envelope=np.nan,
+                                 leak=round(lk, 4)))
+            leaks = [g[3] for g in got]
+            leak_med[i, j], leak_lo[i, j], leak_hi[i, j] = np.median(leaks), min(leaks), max(leaks)
+            md.append(f"| {dv:g} | {sep:g} | {fmt_range([g[0] for g in got])} | "
+                      f"{fmt_range([g[1] for g in got])} | {fmt_range([g[2] for g in got])} | "
+                      f"{fmt_range(leaks)} |")
     md.append("")
 
     (OUT / "lasso_synthetic.md").write_text("\n".join(md) + "\n")
@@ -199,20 +212,20 @@ def main() -> None:
     for i, (rmax, col) in enumerate(zip(RADII, colours)):
         a1.plot(SNRS, dice_default[i], "-o", ms=4, color=col, label=f"radius {rmax:g} px, defaults")
         a1.plot(SNRS, dice_best[i], "--", color=col, alpha=0.7, label=f"radius {rmax:g} px, best reach")
-    a1.set_xscale("log"); a1.set_xticks(SNRS, [f"{s:g}" for s in SNRS])
+    a1.set_xscale("log"); a1.set_xticks(SNRS, [f"{s:g}" for s in SNRS]); a1.minorticks_off()
     a1.set_xlabel("peak signal-to-noise", fontsize=8)
     a1.set_ylabel("Dice vs 2.5σ truth (median of 5 clicks)", fontsize=8)
     a1.set_ylim(0, 1.02); a1.tick_params(labelsize=7); a1.legend(fontsize=6, frameon=False, ncol=2)
     a1.set_title("one click on a disc", fontsize=8.5)
-    styles = {0.0: "-", 150.0: "--"}
-    for i, dv in enumerate(NEIGHBOUR_DV):
-        for k, (lv, col) in enumerate(zip(NEIGHBOUR_LAMBDAS, ["#1f77b4", "#d62728"])):
-            a2.plot(SEPARATIONS, leak[i, k], styles[dv], marker="s", ms=4, color=col,
-                    label=f"Δv$_\\mathrm{{sys}}$ {dv:g} km s$^{{-1}}$, $\\lambda_v$ {lv:g}")
-    a2.axvline(2.0, color="k", ls=":", lw=0.8)
-    a2.set_xlabel("centre separation (disc radii)", fontsize=8)
+    for i, (dv, col) in enumerate(zip(NEIGHBOUR_DV, ["#1f77b4", "#d62728"])):
+        a2.plot(SEPARATIONS, leak_med[i], "-s", ms=4, color=col,
+                label=f"Δv$_\\mathrm{{sys}}$ {dv:g} km s$^{{-1}}$ (median of {N_CLICKS} clicks)")
+        a2.fill_between(SEPARATIONS, leak_lo[i], leak_hi[i], color=col, alpha=0.15, lw=0)
+    a2.axvline(2 * math.cos(math.radians(DISC["incl"])), color="k", ls=":", lw=0.8,
+               label="discs touch on the sky")
+    a2.set_xlabel("centre separation along the minor axis (disc radii)", fontsize=8)
     a2.set_ylabel("fraction of selection in the neighbour", fontsize=8)
-    a2.set_ylim(-0.02, 1.02); a2.tick_params(labelsize=7); a2.legend(fontsize=6, frameon=False)
+    a2.set_ylim(-0.02, 1.02); a2.tick_params(labelsize=7); a2.legend(fontsize=6.5, frameon=False)
     a2.set_title(f"a neighbour of equal brightness (S/N {SEP_SNR:g})", fontsize=8.5)
     fig.savefig(OUT / "lasso_synthetic.png", dpi=220)
     print("\n".join(md))

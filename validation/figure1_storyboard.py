@@ -131,18 +131,24 @@ def main() -> int:
     # window capture or a portrait render of the disc), so a portrait panel is
     # not squeezed into a landscape slot with white at both sides.
     width_in = 17.5 / 2.54
-    panel_w = width_in / ncol
     aspect = 0.72
     for stem, _, _ in STAGES:
         first = load(args.src, stem, crop, overrides)
         if first is not None:
             aspect = first.shape[0] / first.shape[1]
             break
-    height_in = nrow * panel_w * aspect + 1.0   # + room for the REST inset
+    # The slot width is what is left after the margins and the gaps between
+    # columns (matplotlib's wspace is a fraction of one slot), and the figure
+    # height follows from it: a panel drawn at the slot size then prints at
+    # the slot size, with its type at the point size it was set in.
+    left, right, top, bottom, wspace, hspace = 0.012, 0.988, 0.97, 0.17, 0.06, 0.22
+    slot_w = width_in * (right - left) / (ncol + (ncol - 1) * wspace)
+    slot_h = slot_w * aspect
+    height_in = (nrow * slot_h + (nrow - 1) * hspace * slot_h) / (top - bottom)
 
     fig = plt.figure(figsize=(width_in, height_in))
-    gs = fig.add_gridspec(nrow, ncol, wspace=0.06, hspace=0.22,
-                          left=0.012, right=0.988, top=0.97, bottom=0.17)
+    gs = fig.add_gridspec(nrow, ncol, wspace=wspace, hspace=hspace,
+                          left=left, right=right, top=top, bottom=bottom)
 
     missing = []
     for i, (stem, letter, label) in enumerate(STAGES):

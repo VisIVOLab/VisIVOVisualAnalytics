@@ -20,6 +20,7 @@
 #include "InspectorPanel.h"
 #include "theme/SegmentedToggle.h"
 #include "app/ProductRegistry.h"
+#include "app/HostMemory.h"
 
 #include <QEvent>
 #include <QIcon>
@@ -738,6 +739,34 @@ AsyncIsosurfaceResult computeIsosurface(vtkSmartPointer<vtkImageData> image, dou
     return result;
 }
 
+/// Assemble the volume from its Z-slabs straight into the image's buffer,
+/// releasing each slab once copied, so a multi-GB load holds at most the image
+/// plus the slabs still to copy, never a stitched intermediate as well.
+vtkSmartPointer<vtkImageData> decodeRemoteVolume(QList<QByteArray> &slabs, int width, int height,
+                                                 int depth)
+{
+    const qsizetype expectedBytes = static_cast<qsizetype>(width) * height
+            * static_cast<qsizetype>(depth) * static_cast<qsizetype>(sizeof(float));
+    qsizetype total = 0;
+    for (const auto &s : slabs)
+        total += s.size();
+    if (width <= 0 || height <= 0 || depth <= 0 || total != expectedBytes) {
+        return nullptr;
+    }
+    vtkSmartPointer<vtkImageData> image = vtkSmartPointer<vtkImageData>::New();
+    image->SetExtent(0, width - 1, 0, height - 1, 0, depth - 1);
+    image->SetOrigin(0., 0., 0.);
+    image->SetSpacing(1., 1., 1.);
+    image->AllocateScalars(VTK_FLOAT, 1);
+    auto *dst = static_cast<char *>(image->GetScalarPointer());
+    for (auto &s : slabs) {
+        std::memcpy(dst, s.constData(), static_cast<std::size_t>(s.size()));
+        dst += s.size();
+        s = QByteArray();   // give the slab back before the next one is copied
+    }
+    return image;
+}
+
 vtkSmartPointer<vtkImageData> decodeRemoteVolume(const QByteArray &data, int width, int height, int depth)
 {
     const qsizetype expectedBytes = static_cast<qsizetype>(width) * height
@@ -873,8 +902,8 @@ RemoteCubeSubvolumeResult fetchRemoteSubvolume(const QString &backendUrl, const 
 
     BackendClient client(backendUrl, backendToken);
     client.setSessionId(sessionId);
-    const auto response = client.requestSubvolume(datasetId, roi[0], roi[1], roi[2], roi[3], roi[4],
-                                                  roi[5]);
+    auto response = client.requestSubvolume(datasetId, roi[0], roi[1], roi[2], roi[3], roi[4],
+                                            roi[5], /*keepSlabs=*/true);
     if (!response.valid) {
         result.errorMessage =
                 response.error.isEmpty() ? u"Remote subvolume request failed."_s : response.error;
@@ -886,8 +915,12 @@ RemoteCubeSubvolumeResult fetchRemoteSubvolume(const QString &backendUrl, const 
         return result;
     }
 
-    result.cubeImageData = decodeRemoteVolume(response.data, response.width, response.height,
-                                              response.depth);
+    // Slabs from the binary route are copied into the image one at a time and
+    // released; the JSON fallback (an old backend) still arrives stitched.
+    result.cubeImageData = response.slabs.isEmpty()
+            ? decodeRemoteVolume(response.data, response.width, response.height, response.depth)
+            : decodeRemoteVolume(response.slabs, response.width, response.height, response.depth);
+    response.data = QByteArray();
     if (!result.cubeImageData) {
         result.errorMessage = u"Invalid remote subvolume payload."_s;
         return result;
@@ -1555,10 +1588,15 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                      << QStringLiteral("[remote-roi] scheduling refinement reload");
                              return;
                          }
+                         const bool hadHighRes = this->usingHighResCube;
                          this->usingHighResCube = false;
                          qDebug().noquote()
                                  << QStringLiteral("[remote-roi] starting refinement reload");
-                         this->requestHighResCube();
+                         if (!this->requestHighResCube()) {
+                             // Refused (not enough memory for the new region): the
+                             // image on screen is still the one loaded before.
+                             this->usingHighResCube = hadHighRes;
+                         }
                      });
     this->statusMessageClearTimer.setSingleShot(true);
     QObject::connect(&this->statusMessageClearTimer, &QTimer::timeout, this, [this]() {
@@ -6381,6 +6419,32 @@ bool vtkWindowCube::requestHighResCube()
     }
 
     const auto roi = this->computeVisibleROI();
+    // What the load will hold at its peak: the volume as it arrives (the slabs),
+    // the volume assembled, and its copy on the GPU — three times the region,
+    // beside whatever is already resident. A machine without that much RAM
+    // was left to find out by swapping until the system killed the client
+    // (a 1.9 GB cube on a laptop reached a 45 GB footprint); it is told first.
+    const double roiBytes = double(roi[1] - roi[0] + 1) * double(roi[3] - roi[2] + 1)
+            * double(roi[5] - roi[4] + 1) * 4.0;
+    const double physical = double(hostPhysicalMemoryBytes());
+    if (physical > 0.0 && 3.0 * roiBytes > physical) {
+        const auto gib = [](double b) { return QString::number(b / (1024.0 * 1024.0 * 1024.0), 'f', 1); };
+        qWarning().noquote() << QStringLiteral("[remote-roi] full-resolution load refused: "
+                                               "needs ~%1 GiB, machine has %2 GiB")
+                                        .arg(gib(3.0 * roiBytes), gib(physical));
+        QMessageBox::warning(
+                this, u"Full resolution"_s,
+                u"This region is %1 GiB at full resolution. Loading it holds about three "
+                u"times that, %2 GiB, while it arrives and is handed to the GPU, and this "
+                u"machine has %3 GiB of memory.\n\nThe decimated proxy stays on screen. "
+                u"Crop a region (Tools \u25b8 Crop Full Resolution), or render on a "
+                u"remote backend."_s
+                        .arg(gib(roiBytes), gib(3.0 * roiBytes), gib(physical)));
+        // Nothing was requested, so nothing changes: whatever image is installed
+        // (the proxy, or a smaller ROI loaded earlier) keeps its state, and the
+        // caller that cleared a flag ahead of this call puts it back.
+        return false;
+    }
     this->currentRemoteRoi = roi;
     qDebug().noquote()
             << QStringLiteral("[remote-roi] mode=%1 request x=%2..%3 y=%4..%5 z=%6..%7")
@@ -7251,7 +7315,8 @@ QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QStrin
                                                bool revealProvenance,
                                                const QVariantMap &origin,
                                                bool selectInSession,
-                                               const QString &endpoint)
+                                               const QStringList &replay,
+                                               const QString &replayCaveat)
 {
     AnalysisProduct p;
     p.productId = stableId;
@@ -7266,7 +7331,8 @@ QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QStrin
     p.ownerId = this->m_windowScope;   // this window owns + renders the product
     p.window = window;
     p.origin = origin;
-    p.endpoint = endpoint;
+    p.replay = replay;
+    p.replayCaveat = replayCaveat;
     const QString id = ProductRegistry::instance().registerProduct(std::move(p));
     if (this->m_workspaceChrome) {
         // Select the new product first (so Provenance is populated), then auto-expand

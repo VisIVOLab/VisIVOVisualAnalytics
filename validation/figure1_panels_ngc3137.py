@@ -6,7 +6,7 @@ lays them out.
 
 Run:  backend/.venv/bin/python validation/figure1_panels_ngc3137.py
       backend/.venv/bin/python validation/figure1_storyboard.py \
-          --src validation/out/fig1 --out validation/out/figure1_storyboard.png
+          --src validation/out/fig1 --out validation/out/figure1_storyboard.png --crop ''
 """
 from __future__ import annotations
 
