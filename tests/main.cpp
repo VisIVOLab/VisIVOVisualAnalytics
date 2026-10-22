@@ -33,6 +33,8 @@
 #include "TestBackendUrlLocality.h"
 #include "TestSkavaClient.h"
 #include "TestPvPathGeometry.h"
+#include "TestProductRecipe.h"
+#include "TestLassoReplay.h"
 
 #include <QCoreApplication>
 #include <QTest>
@@ -72,5 +74,7 @@ int main(int argc, char *argv[])
     { TestBackendUrlLocality t; status |= QTest::qExec(&t, argc, argv); }
     { TestSkavaClient      t; status |= QTest::qExec(&t, argc, argv); }
     { TestPvPathGeometry   t; status |= QTest::qExec(&t, argc, argv); }
+    { TestProductRecipe    t; status |= QTest::qExec(&t, argc, argv); }
+    { TestLassoReplay      t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }

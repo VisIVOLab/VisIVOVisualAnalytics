@@ -41,6 +41,7 @@
     "X-Visivo-Speed-Max",
     "X-Visivo-Speed-Min",
     "X-Visivo-Token",
+    "X-Visivo-Trim-Box",
     "X-Visivo-Unit",
     "X-Visivo-Warnings",
     "X-Visivo-Width"

@@ -186,18 +186,33 @@ velocity coupling, threshold, smoothing, the number of selected voxels and
 whether the mask was refined by hand; the same recipe is written into the FITS
 `HISTORY` of the new cube, one card per item (`Lasso reach=8`, …).
 *Export recipe as JSON…* on that tab writes the record out: the product (its
-id, kind and the routes that replay it, in order: `/v1/cube/kinematic_select_bin`
+id, kind and the calls that replay it, in order: `/v1/cube/kinematic_select_bin`
 regrows the selection from the seed and parameters — the same voxels the
-slider's level field gave, provided the replay passes the recorded *Level-field
-budget* as `reach_max` — and `/v1/cube/mask_apply_bin` makes the cube), the
-dataset it was made from (name, path, the backend's dataset and session ids),
-the parameters above (extra seeds as coordinates, the noise estimate at full
-precision), the application version and the export time, under
-`"schema": "visivo-recipe/1"`. When the parameters alone do not regenerate the
+slider's level field gave, because the replay passes the recorded *Level-field
+budget* as `reach_max` — and `/v1/cube/mask_apply_bin` makes the cube; each
+call carries its `request` as the service takes it, under the API's field names
+with numbers as numbers and seeds as `[z, y, x]`, so a script posts it back
+without parsing the labels, and names in `body` what travels as bytes: the
+float32 mask the grow returns, posted to the apply with the origin and
+dimensions of that response, which the record describes but does not carry;
+the request recorded is the one the mask on screen was grown with, not the
+sliders' values at the time of the apply), the
+dataset it was made from (name, path, the backend's dataset and session ids;
+a replay opens the path again and uses the dataset id that open returns),
+the parameters above as the tab shows them (extra seeds as coordinates, the
+noise estimate at full precision), the application version and the export
+time, under `"schema": "visivo-recipe/1"`. When the parameters alone do not regenerate the
 product the record says so in `replay_caveat`: a hand-refined mask is not
 reducible to them (the recipe says `Hand-edited: yes`, and the masked cube
 itself, with its `HISTORY`, is the exact record), and a kinematic fit needs the
 selection mask it ran on, so its record points back to the selection's recipe.
+
+A source larger than the grow's graph budget (four million nodes) is cut to a
+seed-centred box; the selection is then exact within that box only. The status
+bar says so when it happens, and the product's Provenance carries a *Domain
+trimmed* line (and the FITS `HISTORY` a `domain_trimmed=` card) with the largest
+box half-width, so a reader of the record knows the selection was bounded by
+the cap and not by the emission.
 
 ```{note}
 Neither one crops. The product keeps the source cube's **full dimensions**, so

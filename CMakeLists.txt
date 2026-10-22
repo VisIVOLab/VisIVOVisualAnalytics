@@ -25,7 +25,7 @@ endif ()
 
 
 project(VisIVOVisualAnalytics
-        VERSION 1.0.2
+        VERSION 1.0.3
         LANGUAGES CXX C
 )
 
@@ -372,8 +372,12 @@ set(PROJECT_SOURCES
         src/gui/DockRail.cpp
         src/gui/DockRail.h
         src/app/ProductRegistry.cpp
+        src/app/ProductRecipe.cpp
+        src/app/LassoReplay.cpp
         src/app/HostMemory.cpp
         src/app/ProductRegistry.h
+        src/app/ProductRecipe.h
+        src/app/LassoReplay.h
         src/app/ThumbnailCache.cpp
         src/app/ThumbnailCache.h
         src/gui/CatalogueTableModel.cpp

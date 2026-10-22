@@ -93,6 +93,23 @@ def run(cube: str = CUBE, verbose: bool = True) -> dict:
                                  smooth_zyx=SMOOTH)
     nsel = int(mask.sum())
     R.update(mask_default=mask_default, mask=mask, n_default=int(mask_default.sum()), n_sel=nsel)
+    # Where the default selection comes from: the thresholded component the
+    # click lands in (what a plain 2.5σ cut connected to the seed gives), and
+    # the sub-threshold shell the geodesic reaches within its budget. The two
+    # are the numbers the paper has to reconcile (68 909 > 47 994).
+    from app.compute.selection import _robust_sigma  # noqa: PLC0415
+    from skimage.morphology import flood  # noqa: PLC0415
+    thr = 2.5 * _robust_sigma(data)
+    cand = np.isfinite(data) & (data > thr)
+    cand[SEED] = True
+    comp = flood(cand, SEED, connectivity=1)
+    R.update(n_component=int(comp.sum()),
+             n_in_component=int((mask_default & comp).sum()),
+             n_in_shell=int((mask_default & ~comp).sum()),
+             n_component_beyond_budget=int((comp & ~mask_default).sum()))
+    log(f"    2.5σ component at the seed {R['n_component']} voxels; the default selection keeps "
+        f"{R['n_in_component']} of them, adds {R['n_in_shell']} sub-threshold voxels within the "
+        f"budget, leaves {R['n_component_beyond_budget']} beyond it")
     log(f"\n[1] lasso, defaults {int(mask_default.sum())} voxels "
         f"({100*mask_default.sum()/CAT_NPIX:.0f}% of the SoFiA mask's {CAT_NPIX});"
         f" smoothed {nsel} ({100*nsel/CAT_NPIX:.0f}%)")
@@ -175,6 +192,7 @@ def main() -> None:
     out.write_text(
         "| quantity | measured | reference |\n|---|---|---|\n"
         f"| lasso selection, defaults | {R['n_default']} voxels | SoFiA mask {CAT_NPIX} |\n"
+        f"| of which in the 2.5σ component / in the sub-threshold shell | {R['n_in_component']} / {R['n_in_shell']} | component {R['n_component']} voxels, {R['n_component_beyond_budget']} of them beyond the budget |\n"
         f"| lasso selection, smoothed (2,6,6) | {R['n_sel']} voxels | SoFiA mask {CAT_NPIX} |\n"
         f"| integrated flux | {R['flux']:.2f} Jy km/s | catalogue {R['cat_flux']:.2f} |\n"
         f"| systemic velocity (w20 midpoint / fit) | {R['vsys_w20']:.1f} / {R['vsys_fit']:.1f} km/s | catalogue {CAT_VSYS} |\n"

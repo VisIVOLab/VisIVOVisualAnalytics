@@ -1827,6 +1827,7 @@ BackendKinematicLevelsResult BackendClient::kinematicLevels(
     r.roiHeight = hget(VisivoHeaders::HEIGHT).toInt();
     r.roiDepth  = hget(VisivoHeaders::DEPTH).toInt();
     r.reachMax  = hget(VisivoHeaders::RANGE_MAX).toInt();
+    r.trimBox   = hget(VisivoHeaders::TRIM_BOX).toInt();
     const int sentinel = hget(VisivoHeaders::PEAK).toInt();
     if (sentinel > 0 && sentinel <= 255) r.unreachable = sentinel;
     const auto origin = hget(VisivoHeaders::ORIGIN).split(',');
@@ -1918,6 +1919,7 @@ BackendKinematicSelectResult BackendClient::kinematicSelect(
     r.roiHeight = hget(VisivoHeaders::HEIGHT).toInt();
     r.roiDepth  = hget(VisivoHeaders::DEPTH).toInt();
     r.count     = hget(VisivoHeaders::SELECTED_COUNT).toInt();
+    r.trimBox   = hget(VisivoHeaders::TRIM_BOX).toInt();
     const auto origin = hget(VisivoHeaders::ORIGIN).split(',');
     if (origin.size() == 3) {
         r.originX = origin[0].toInt();

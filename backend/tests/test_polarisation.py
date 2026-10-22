@@ -928,6 +928,16 @@ class TestMfImagePlaneLayout(unittest.TestCase):
         planes, the WCS axis 1284-2147 MHz over all 16, so reading the axis
         also drags the two fitted planes into the transform. If this number
         ever moves, the sentence in the paper has to move with it.
+
+        Conventions, the same as worker_rm_synthesis uses (Brentjens & de
+        Bruyn 2005): the sub-band frequencies are the per-plane FREQnnnn
+        keywords, lambda^2 = (c / nu)^2 with no lambda_0^2 derotation, a
+        source at Faraday depth phi_0 is P(lambda^2) = exp(+2i phi_0 lambda^2),
+        the transform is F(phi) = sum_i P(lambda^2_i) exp(-2i phi lambda^2_i)
+        (the worker divides by N; the peak position does not care), and the
+        recovered depth is the maximum of |F| on the phi grid itself — no
+        sub-grid refinement — here np.arange(-200, 200, 0.5): -200 inclusive to
+        +200 exclusive, step 0.5 rad/m^2 (the worker's grid includes both ends).
         """
         c = 2.99792458e8
         true_rm = 25.0

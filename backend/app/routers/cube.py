@@ -572,6 +572,9 @@ async def cube_kinematic_levels_bin(
             "X-Visivo-Components": "2",          # add levels, then sub levels
             "X-Visivo-Range-Max": str(result["reach_max"]),      # highest usable budget
             "X-Visivo-Peak": str(result["unreachable"]),         # sentinel level
+            # >0: the domain was cut to a seed-centred box of this half-width
+            # (node cap); the field is exact for that box, not the whole source.
+            "X-Visivo-Trim-Box": str(result["trim_box"]),
         },
     )
 
@@ -622,6 +625,7 @@ async def cube_kinematic_select_bin(
         "X-Visivo-Scalar-Type": "float32",
         "X-Visivo-Selected-Count": str(result["count"]),
         "X-Visivo-Bbox": ",".join(str(v) for v in bbox),   # x0,x1,y0,y1,z0,z1
+        "X-Visivo-Trim-Box": str(result["trim_box"]),     # >0: domain cut to ±box (node cap)
         "X-Visivo-Byte-Order": "little",
         "Content-Length": str(len(raw_bytes)),
     }

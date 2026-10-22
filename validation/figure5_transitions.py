@@ -63,7 +63,7 @@ cards = [   # every line at most 25 monospace characters: that is what a card ho
     ("Cube", lambda ax: show_channel(ax, data, crec),
      f"WALLABY J100903-290239\n{nx}×{ny}×{nz} voxels\n{ep(r'datasets/open$')}"),
     ("Mask", lambda ax: show_channel(ax, data, crec, mask),
-     f"seed {SEED}\nλv={LAMBDA_V:g}, reach={REACH:g}\nsmooth {tuple(int(v) for v in SMOOTH)}\n→ {R['n_sel']:,} vox\n{ep(r'kinematic_select_bin')}"),
+     f"seed {SEED}\nλv={LAMBDA_V:g}, reach={REACH:g}\nsmoothed {tuple(int(v) for v in SMOOTH)}\n→ {R['n_sel']:,} vox\n(default click: {R['n_default']:,})\n{ep(r'kinematic_select_bin')}"),
     ("Isolated cube", lambda ax: show_channel(ax, iso, crec),
      f"NaN outside the mask,\nas displayed; WCS and\ndimensions kept\n{ep(r'mask_apply_bin')}"),
     ("Moments", lambda ax: ax.imshow(np.ma.masked_invalid(m0[crop]), origin="lower", cmap="magma", interpolation="nearest"),
@@ -83,8 +83,10 @@ assert all(len(line) <= 25 for _, _, t in cards for line in t.split("\n")), "a c
 # short downward arrow under "Moments"
 NCOL = 4
 cells = [(0, 0), (0, 1), (0, 2), (0, 3), (2, 3), (2, 2), (2, 1)]
-fig = plt.figure(figsize=(6.89, 5.4))
-gs = fig.add_gridspec(4, NCOL, height_ratios=[1.0, 0.5, 1.0, 0.5], hspace=0.06, wspace=0.06,
+fig = plt.figure(figsize=(6.89, 5.9))
+# The text rows hold up to six card lines (the mask card names both the
+# smoothed and the default selection), so they get more than half an image.
+gs = fig.add_gridspec(4, NCOL, height_ratios=[1.0, 0.62, 1.0, 0.62], hspace=0.06, wspace=0.06,
                       left=0.01, right=0.99, top=0.955, bottom=0.01)
 img_axes, txt_axes = [], []
 for (r, c), (title, draw, text) in zip(cells, cards):

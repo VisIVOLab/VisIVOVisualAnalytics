@@ -52,14 +52,6 @@ STAGES = [
     ("08_export",   "h", "export"),
 ]
 
-# The call that regenerates the derived dataset. mask_apply_bin, NOT
-# mask_selection: the claim in the caption is that what you SAW is what is
-# reproduced, and mask_selection re-grows from the seeds instead of applying the
-# displayed mask.
-REST_INSET = (
-    "double-click  →  POST /v1/cube/kinematic_select_bin  (seed z,y,x · reach · $\\lambda_v$)\n"
-    "apply         →  POST /v1/cube/mask_apply_bin?mode=blank_outside  →  *_lasso-outside.fits"
-)
 
 
 def parse_crop(spec: str | None):
@@ -141,7 +133,9 @@ def main() -> int:
     # columns (matplotlib's wspace is a fraction of one slot), and the figure
     # height follows from it: a panel drawn at the slot size then prints at
     # the slot size, with its type at the point size it was set in.
-    left, right, top, bottom, wspace, hspace = 0.012, 0.988, 0.97, 0.17, 0.06, 0.22
+    # Nothing sits under the panels: the call that regenerates the selection
+    # is on panel (h), and the caption says what the arrows are.
+    left, right, top, bottom, wspace, hspace = 0.012, 0.988, 0.97, 0.03, 0.06, 0.22
     slot_w = width_in * (right - left) / (ncol + (ncol - 1) * wspace)
     slot_h = slot_w * aspect
     height_in = (nrow * slot_h + (nrow - 1) * hspace * slot_h) / (top - bottom)
@@ -164,25 +158,21 @@ def main() -> int:
         ax.set_xticks([]); ax.set_yticks([])
         for s in ax.spines.values():
             s.set_linewidth(0.4); s.set_color("#666666")
-        ax.set_title(f"({letter}) {label}", fontsize=7.5, pad=2.5)
+        ax.set_title(f"({letter}) {label}", fontsize=8.5, pad=2.5)
 
         # Arrow to the next panel, inside the row only: an arrow that wrapped
         # from the end of a row to the start of the next would point the wrong
         # way across the page.
+        # (a)→(b) is navigation — a change of view that persists nothing — so it
+        # is dashed, unlike the transitions that leave a product behind.
         if i < len(STAGES) - 1 and (i % ncol) != ncol - 1:
+            navigation = i == 0
             fig.add_artist(FancyArrowPatch(
                 (ax.get_position().x1 + 0.004, ax.get_position().y0 + 0.5 * ax.get_position().height),
                 (ax.get_position().x1 + 0.016, ax.get_position().y0 + 0.5 * ax.get_position().height),
                 transform=fig.transFigure, arrowstyle="-|>", mutation_scale=7,
-                linewidth=0.7, color="#444444"))
-
-    fig.text(0.5, 0.085, REST_INSET, ha="center", va="center", fontsize=7.0,
-             family="monospace", linespacing=1.6,
-             bbox=dict(boxstyle="round,pad=0.45", facecolor="#f7f7f7",
-                       edgecolor="#bbbbbb", linewidth=0.5))
-    fig.text(0.5, 0.018,
-             "every arrow is a state transition; every panel a persistent product",
-             ha="center", fontsize=7.0, style="italic", color="#555555")
+                linewidth=0.7, color="#999999" if navigation else "#444444",
+                linestyle=(0, (2.0, 1.5)) if navigation else "solid"))
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.out, dpi=args.dpi, bbox_inches="tight", facecolor="white")

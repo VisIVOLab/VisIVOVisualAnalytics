@@ -1,0 +1,52 @@
+{
+    "application": "VisIVO Visual Analytics 1.0.2",
+    "dataset": {
+        "backend_dataset_id": "ds_fabfa6340815",
+        "backend_session_id": "c3c7c3b0-a95d-4b42-bbc3-b188f9958b7e",
+        "label": "WALLABY_J100903-290239_Hydra_TR2_cube.fits",
+        "path": "/Users/fvitello/Downloads/DemoData/WALLABY_J100903-290239_Hydra_TR2_cube.fits"
+    },
+    "exported": "2026-10-22T09:14:32Z",
+    "parameters": {
+        "File": "WALLABY_J100903-290239_Hydra_TR2_cube_lasso-outside_5.fits",
+        "Hand-edited": "no",
+        "Level-field budget (reach_max)": "64",
+        "Mode": "isolate (outside blanked)",
+        "Noise σ": "robust, whole cube",
+        "Reach": "8",
+        "Seed (z, y, x)": "(69, 83, 80)",
+        "Selected voxels": "68618",
+        "Smoothing (v, y, x)": "off",
+        "Threshold": "2.5σ",
+        "Velocity coupling": "1.00"
+    },
+    "product": {
+        "id": "lasso-ds_e59fc05e9402@/Users/fvitello/Downloads/DemoData/WALLABY_J100903-290239_Hydra_TR2_cube.fits#win1",
+        "kind": "lasso",
+        "label": "Lasso: isolated cube",
+        "replay": [
+            {
+                "request": {
+                    "lambda_v": 1,
+                    "nsigma": 2.5,
+                    "reach": 8,
+                    "reach_max": 64,
+                    "roi_radius": 0,
+                    "seed_x": 80,
+                    "seed_y": 83,
+                    "seed_z": 69,
+                    "sigma": 0
+                },
+                "route": "/v1/cube/kinematic_select_bin"
+            },
+            {
+                "body": "the previous call's response body, the selection as a little-endian float32 mask, posted back with origin_x, origin_y, origin_z from its X-Visivo-Origin header and width, height, depth from X-Visivo-Width, X-Visivo-Height, X-Visivo-Depth",
+                "request": {
+                    "mode": "blank_outside"
+                },
+                "route": "/v1/cube/mask_apply_bin"
+            }
+        ]
+    },
+    "schema": "visivo-recipe/1"
+}

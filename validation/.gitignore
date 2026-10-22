@@ -11,3 +11,5 @@ out/*.png
 out/*
 !out/*.md
 !out/*.csv
+# The client's recipe export quoted in the paper (Sect. 4.2.3): 2 KB, not regenerable by script.
+!out/recipe_ngc3137_lasso.json

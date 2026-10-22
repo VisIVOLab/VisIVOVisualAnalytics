@@ -5,7 +5,9 @@
 #include "CatalogueOverlayUtils.h"
 #include "CubeOpenPreviewTask.h"
 #include "LutScale.h"
+#include "LassoReplay.h"
 #include "LinkedWindowRegistry.h"
+#include "ProductRegistry.h"
 #include "RemoteSliceCache.h"
 #include "SpectralAxisTypes.h"
 
@@ -198,10 +200,13 @@ struct RemoteKinematicSelectResult
     int count{ 0 };
     int bbox[6]{ 0, 0, 0, 0, 0, 0 };
     QByteArray data;   // ROI binary mask (float32 0/1)
-    /// The budget the grow's graph was built with — the level field's reach_max
-    /// when the mask is a level set of it, the reach itself for a single-budget
-    /// grow. It sizes the faint shell, so a replay must pass it as reach_max.
-    double graphBudget{ 0.0 };
+    /// The request this mask was grown with — the level field's identity and
+    /// budget when the mask is a level set of it, the single-budget grow's own
+    /// otherwise. Kept with the mask so that what is applied is recorded as it
+    /// was grown, not as the controls read later.
+    visivo::LassoGrowRequest grow;
+    QString noiseWhere;   ///< where grow.sigma came from, when it was supplied
+    int trimBox{ 0 };     ///< >0: the domain was cut to a seed-centred box of this half-width
 };
 
 class vtkWindowCube : public QMainWindow
@@ -1260,6 +1265,8 @@ protected:
     int m_lassoSmoothPreset{ 0 };     ///< 0 off, 1 (1,3,3), 2 (2,4,4), 3 (2,6,6) σ voxels (v,y,x)
     /// Smoothing sigmas (velocity, spatial) for the current preset.
     std::array<double, 2> lassoSmoothing() const;
+    /// The (velocity, spatial) Gaussian σ a smoothing preset stands for.
+    static std::array<double, 2> lassoSmoothingFor(int preset);
     int m_lassoRoiRadius{ 0 };   ///< 0 = object-bounded grow (whole connected source)
     QFutureWatcher<RemoteKinematicSelectResult> m_lassoSelectWatcher;
     vtkSmartPointer<vtkActor> m_lassoActor;
@@ -1268,7 +1275,9 @@ protected:
     // + its full-res voxel origin/dims — kept so Apply sends the EXACT mask shown
     // (foundation for per-channel 2-D refinement) and the 2-D overlay can slice it.
     QByteArray m_lassoMaskBytes;
-    double m_lassoMaskGraphBudget{ 0.0 };  ///< graphBudget of the mask on screen (see RemoteKinematicSelectResult)
+    visivo::LassoGrowRequest m_lassoMaskGrow;  ///< the request the mask on screen was grown with (see RemoteKinematicSelectResult)
+    QString m_lassoMaskNoiseWhere;             ///< …and where its σ came from
+    int m_lassoMaskTrimBox{ 0 };               ///< …and the box it was cut to, 0 when it was not
     int m_lassoMaskOrigin[3]{ 0, 0, 0 };   ///< full-res voxel origin (x,y,z)
     int m_lassoMaskDims[3]{ 0, 0, 0 };     ///< ROI dims (w,h,d) = (x,y,z)
     double m_lassoDispOrigin[3]{ 0., 0., 0. };   ///< 3-D display origin of the ROI mask
@@ -1403,6 +1412,9 @@ protected:
     double m_lassoLevelsNSigma{ 0.0 };            ///< …and the threshold
     double m_lassoLevelsSigma{ -1.0 };            ///< …and the σ it is in units of
     double m_lassoLevelsReqSigma{ 0.0 };
+    QString m_lassoLevelsNoiseWhere;              ///< …and where that σ came from
+    bool m_lassoLevelsTrimNoted{ false };         ///< the field's trim note has been shown once
+    QString m_lassoLevelsReqNoiseWhere;
     int m_lassoLevelsSmooth{ -1 };                ///< …and the smoothing preset
     double m_lassoLevelsReqNSigma{ 0.0 };
     int m_lassoLevelsReqSmooth{ -1 };
@@ -1800,9 +1812,11 @@ protected:
     void showKinematicModelDialog();
     /// The kinematic fit of the lasso selection as products: velocity field,
     /// model velocity fields, residuals, integrated spectrum and the source's
-    /// measures (Session Data), each with how it was made.
+    /// measures (Session Data), each with how it was made. @p fitCall is the
+    /// fit's call as recorded for the measures' replay (LassoReplay).
     void publishKinematicFit(const BackendKinematicFitResult &r,
-                             const QString &selectionDescription);
+                             const QString &selectionDescription,
+                             const ReplayStep &fitCall);
     /// Take a product this window registered (by its stable key) out of Session
     /// Data, its cache and any pane showing it.
     void removeImageProduct(const QString &stableKey);
@@ -2390,7 +2404,7 @@ protected:
                                     bool revealProvenance = true,
                                     const QVariantMap &origin = {},
                                     bool selectInSession = true,
-                                    const QStringList &replay = {},
+                                    const QList<ReplayStep> &replay = {},
                                     const QString &replayCaveat = QString());
     /// Redraw the region, or re-place the probe marker, a product was generated
     /// from. Returns false when the product carries no geometry.

@@ -6,6 +6,7 @@
 #include <functional>
 
 #include "AssistantPanel.h"
+#include "app/ProductRecipe.h"
 #include "theme/VisivoTheme.h"
 
 #include <QAction>
@@ -461,42 +462,13 @@ void InspectorPanel::copyProvenanceSelection() const
 
 QJsonObject InspectorPanel::recipeJson(const AnalysisProduct &p)
 {
-    // The exported recipe used to be the label→value map of the tab and nothing
-    // else: enough to read, not enough to replay. A record that claims to
-    // reproduce a product has to say which dataset it came from, which route
-    // performs the transition and which version of the software recorded it.
-    QJsonObject recipe;
-    recipe.insert(u"schema"_s, u"visivo-recipe/1"_s);
-    recipe.insert(u"application"_s,
-                  u"%1 %2"_s.arg(QCoreApplication::applicationName(),
-                                 QCoreApplication::applicationVersion()));
-    recipe.insert(u"exported"_s, QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
-
-    QJsonObject product;
-    product.insert(u"id"_s, p.productId);
-    product.insert(u"kind"_s, p.kind);
-    product.insert(u"label"_s, p.label);
-    if (!p.replay.isEmpty())
-        product.insert(u"replay"_s, QJsonArray::fromStringList(p.replay));
-    if (!p.replayCaveat.isEmpty())
-        product.insert(u"replay_caveat"_s, p.replayCaveat);
-    recipe.insert(u"product"_s, product);
-
-    QJsonObject dataset;
-    dataset.insert(u"label"_s, p.parentLabel);
-    dataset.insert(u"path"_s, p.parentKey);
-    // Volatile ids: valid for the session that made the product, kept because
-    // they tie the record to the service's own job log.
-    if (!p.sourceDatasetId.isEmpty())
-        dataset.insert(u"backend_dataset_id"_s, p.sourceDatasetId);
-    if (!p.sessionId.isEmpty())
-        dataset.insert(u"backend_session_id"_s, p.sessionId);
-    recipe.insert(u"dataset"_s, dataset);
-
-    recipe.insert(u"parameters"_s, QJsonObject::fromVariantMap(p.params));
-    if (!p.origin.isEmpty())
-        recipe.insert(u"origin"_s, QJsonObject::fromVariantMap(p.origin));
-    return recipe;
+    // The record itself is ProductRecipe (testable without a widget); the panel
+    // only says who is writing it and when.
+    return visivo::productRecipe(
+            p,
+            u"%1 %2"_s.arg(QCoreApplication::applicationName(),
+                           QCoreApplication::applicationVersion()),
+            QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
 }
 
 void InspectorPanel::showProvenance(const AnalysisProduct &product)

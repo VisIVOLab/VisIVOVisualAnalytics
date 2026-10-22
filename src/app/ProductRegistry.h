@@ -20,6 +20,18 @@
 
 class QWidget;
 
+/// One service call of a product's replay: the route, and the request the
+/// client sent it as the API takes it — the JSON body of a POST, or the query
+/// of a binary POST — with numbers as numbers and seeds as [z, y, x], so a
+/// script posts it back without parsing the display strings of the product's
+/// `params`. What travelled as bytes (a mask) is named in `body`, not carried.
+struct ReplayStep
+{
+    QString route;
+    QVariantMap request;
+    QString body;
+};
+
 struct AnalysisProduct
 {
     QString productId;       ///< unique; assigned by the registry when empty
@@ -35,10 +47,11 @@ struct AnalysisProduct
     QString taskId;          ///< backend task id, if async
     QString sourceDatasetId; ///< volatile backend dataset id
     QString sessionId;       ///< backend session id
-    /// The service routes that regenerate the product from `params`, in order:
-    /// for a lasso cube the grow from the seed and parameters, then the apply
-    /// of that selection. Empty for a client-side measurement.
-    QStringList replay;
+    /// The service calls that regenerate the product, in order: for a lasso
+    /// cube the grow from the seed and parameters, then the apply of that
+    /// selection. Each carries the request the client sent, typed, under the
+    /// API's own field names (ReplayStep). Empty for a client-side measurement.
+    QList<ReplayStep> replay;
     /// Why `params` alone do NOT regenerate the product, when they do not: a
     /// mask that was edited by hand, a fit that needs the mask it ran on. Empty
     /// when the routes above replay it from the record.

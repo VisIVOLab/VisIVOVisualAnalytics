@@ -67,6 +67,7 @@ def cube_kinematic_select(
     nsigma: float = 2.5,
     margin_reach: float | None = None,
     smooth_zyx: tuple[float, float, float] | None = None,
+    info: dict[str, Any] | None = None,
 ) -> np.ndarray:
     """Geodesic, kinematics-aware region grow from ``seed_zyx`` (z=velocity).
 
@@ -78,7 +79,7 @@ def cube_kinematic_select(
     """
     dist, (dz0, dy0, dx0) = _geodesic_distance(
         data, seed_zyx, reach, lambda_v, sigma, roi_radius, nsigma, margin_reach,
-        smooth_zyx)
+        smooth_zyx, info=info)
     mask = np.zeros(data.shape, dtype=bool)
     sel = dist <= float(reach)
     mask[dz0:dz0 + dist.shape[0], dy0:dy0 + dist.shape[1], dx0:dx0 + dist.shape[2]] = sel
@@ -95,8 +96,14 @@ def _geodesic_distance(
     nsigma: float = 2.5,
     margin_reach: float | None = None,
     smooth_zyx: tuple[float, float, float] | None = None,
+    info: dict[str, Any] | None = None,
 ) -> tuple[np.ndarray, tuple[int, int, int]]:
     """Geodesic cost from ``seed_zyx``, over the object's bounding box only.
+
+    ``info``, when given, receives ``trim_box``: the half-width of the
+    seed-centred box the domain was cut to when it exceeded the node cap, 0
+    when it was not. The selection is then exact for that box, not for the
+    whole component, and the client and the recipe say so.
 
     Returns ``(dist, origin)``: ``dist`` is **float64** over the component bbox
     (``inf`` where unreachable within the budget) and ``origin`` is that box's
@@ -238,6 +245,7 @@ def _geodesic_distance(
     comp[lz, ly, lx] = True
 
     # Worst-case guard: shrink to a seed-centred box until the node count is sane.
+    trim_box = 0
     if int(comp.sum()) > _MAX_SELECT_NODES:
         rr = 128
         while rr >= 8:
@@ -248,8 +256,11 @@ def _geodesic_distance(
             trimmed = comp & box
             if int(trimmed.sum()) <= _MAX_SELECT_NODES:
                 comp = trimmed
+                trim_box = rr
                 break
             rr //= 2
+    if info is not None:
+        info["trim_box"] = trim_box
 
     # Tight bbox of the component (window-local) → build the graph only over it.
     zc = np.where(comp.any(axis=(1, 2)))[0]
@@ -383,14 +394,18 @@ def cube_kinematic_levels(
             f"reach_max {budget:g} exceeds the {MAX_LEVEL_REACH} the uint8 level "
             f"field can represent; request a smaller budget.")
 
+    trims: list[int] = []    # the box each field was cut to, 0 when it was not
+
     def fields(points: list[tuple[int, int, int]], *, tolerate_blank: bool
                ) -> list[tuple[np.ndarray, tuple[int, int, int]]]:
         out = []
         for pt in points:
+            one: dict[str, Any] = {}
             try:
                 out.append(_geodesic_distance(
                     data, pt, budget, lambda_v, sigma, roi_radius, nsigma,
-                    margin_reach=budget, smooth_zyx=smooth_zyx))
+                    margin_reach=budget, smooth_zyx=smooth_zyx, info=one))
+                trims.append(int(one.get("trim_box", 0)))
             except ValueError:
                 # Only a SUB seed may land on blank sky and be ignored (⌥-clicking
                 # empty space removes nothing). An add seed that cannot grow is an
@@ -441,6 +456,7 @@ def cube_kinematic_levels(
         "origin": (z0, y0, x0), "shape": shape,
         "reach_max": int(math.floor(budget)),
         "unreachable": _LEVEL_UNREACHABLE,
+        "trim_box": max(trims, default=0),
     }
 
 
@@ -466,6 +482,7 @@ def cube_kinematic_select_multi(
     nsigma: float = 2.5,
     margin_reach: float | None = None,
     smooth_zyx: tuple[float, float, float] | None = None,
+    info: dict[str, Any] | None = None,
 ) -> np.ndarray:
     """Union of the geodesic selections grown from each seed in ``seeds``, minus
     the selections grown from each seed in ``sub_seeds`` — so the user can ⇧-click
@@ -474,18 +491,25 @@ def cube_kinematic_select_multi(
     if not seeds:
         raise ValueError("At least one selection seed is required.")
     mask: np.ndarray | None = None
+    trim_box = 0    # the widest box any grow, add or carve, was cut to
     for s in seeds:
+        one: dict[str, Any] = {}
         m = cube_kinematic_select(data, s, reach, lambda_v, sigma, roi_radius, nsigma,
-                                  margin_reach, smooth_zyx)
+                                  margin_reach, smooth_zyx, info=one)
+        trim_box = max(trim_box, int(one.get("trim_box", 0)))
         mask = m if mask is None else (mask | m)
     assert mask is not None
     for s in sub_seeds:
+        one = {}
         try:
             m = cube_kinematic_select(data, s, reach, lambda_v, sigma, roi_radius, nsigma,
-                                      margin_reach, smooth_zyx)
+                                      margin_reach, smooth_zyx, info=one)
         except ValueError:
             continue    # sub-seed on blank emission → nothing to remove
+        trim_box = max(trim_box, int(one.get("trim_box", 0)))
         mask &= ~m
+    if info is not None:
+        info["trim_box"] = trim_box
     return mask
 
 
@@ -518,13 +542,14 @@ def worker_cube_kinematic_select(
         # Runs while the memmap is open; each grow reads ONLY the ROI around its
         # seed (out-of-core on huge cubes). The returned mask is a fresh array,
         # safe to use after the file closes.
+        info: dict[str, Any] = {}
         mask = cube_kinematic_select_multi(
             data, list(seeds), list(sub_seeds),
             reach=float(reach), lambda_v=float(lambda_v),
             sigma=float(sigma) if sigma and sigma > 0 else None,
             roi_radius=int(roi_radius), nsigma=float(nsigma),
             margin_reach=(float(margin_reach) if margin_reach else None),
-            smooth_zyx=smooth_zyx,
+            smooth_zyx=smooth_zyx, info=info,
         )
     finally:
         hdul.close()
@@ -549,6 +574,7 @@ def worker_cube_kinematic_select(
         "origin_x": x0, "origin_y": y0, "origin_z": z0,
         "full_width": int(nx), "full_height": int(ny), "full_depth": int(nz),
         "count": count, "bbox": [x0, x1, y0, y1, z0, z1],
+        "trim_box": int(info.get("trim_box", 0)),
     }
 
 
@@ -600,6 +626,7 @@ def worker_cube_kinematic_levels(
         "origin_x": int(x0), "origin_y": int(y0), "origin_z": int(z0),
         "full_width": int(nx), "full_height": int(ny), "full_depth": int(nz),
         "reach_max": int(lv["reach_max"]), "unreachable": int(lv["unreachable"]),
+        "trim_box": int(lv.get("trim_box", 0)),
     }
 
 

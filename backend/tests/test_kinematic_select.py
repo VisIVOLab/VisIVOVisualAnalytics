@@ -43,3 +43,38 @@ def test_lasso_replay_passes_the_level_field_budget(monkeypatch):
         (add <= 4) & (add != out["unreachable"])
     replay = cube_kinematic_select(data, seed, reach=4.0, sigma=1.0, margin_reach=64.0)
     assert np.array_equal(replay, levels)
+
+
+def test_trimming_is_reported(monkeypatch):
+    """When the node cap cuts the domain to a seed-centred box, the grow says so
+    and by how much (the box's half-width), so the client can tell the user and
+    the recipe can record it; an untrimmed grow reports 0. Both paths agree."""
+    import numpy as np
+    from app.compute import selection
+    from app.compute.selection import cube_kinematic_levels, cube_kinematic_select
+    data = np.zeros((32, 64, 64), dtype=np.float32)
+    data[16, 32, 15:50] = 20.0
+    seed = (16, 32, 32)
+    info: dict = {}
+    cube_kinematic_select(data, seed, reach=8.0, sigma=1.0, info=info)
+    assert info["trim_box"] == 0
+    assert cube_kinematic_levels(data, [seed], [], reach_max=64.0, sigma=1.0)["trim_box"] == 0
+    monkeypatch.setattr(selection, "_MAX_SELECT_NODES", 6000)
+    info = {}
+    cube_kinematic_select(data, seed, reach=8.0, sigma=1.0, margin_reach=64.0, info=info)
+    out = cube_kinematic_levels(data, [seed], [], reach_max=64.0, sigma=1.0)
+    assert info["trim_box"] > 0
+    assert out["trim_box"] == info["trim_box"]
+
+    # Several seeds: the value is the largest box any grow was cut to; a carve
+    # seed on blank sky is skipped and reports nothing, before or after an add.
+    from app.compute.selection import cube_kinematic_select_multi
+    data[0, 0, 0] = np.nan
+    multi: dict = {}
+    cube_kinematic_select_multi(data, [seed], [(0, 0, 0)], reach=8.0, sigma=1.0,
+                                margin_reach=64.0, info=multi)
+    assert multi["trim_box"] == info["trim_box"]
+    multi = {}
+    cube_kinematic_select_multi(data, [seed, (16, 32, 40)], [(16, 32, 20)], reach=8.0,
+                                sigma=1.0, margin_reach=64.0, info=multi)
+    assert multi["trim_box"] >= info["trim_box"]

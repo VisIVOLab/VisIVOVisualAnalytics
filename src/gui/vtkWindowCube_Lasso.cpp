@@ -71,13 +71,26 @@ using namespace Qt::StringLiterals;
 
 namespace {
 
+// What to tell the user when the node cap cut a grow's domain: the selection
+// is exact within the box(es) only. Appended to the completion message that
+// follows a presentation rather than posted on its own, which that message
+// would overwrite before the event loop ever showed it.
+QString trimNote(int trimBox)
+{
+    return trimBox > 0
+            ? u" The source exceeded the graph budget: one or more grows were cut to a "
+              u"seed-centred box (largest half-width %1 voxels), each restricted to its own "
+              u"box; recorded in the product's provenance."_s.arg(trimBox)
+            : QString();
+}
+
 // Network-only worker (value copies; never touches `this`). Returns a GUI-side
 // result; the VTK isosurface is built on the GUI thread (the ROI is small).
 RemoteKinematicSelectResult fetchKinematicSelect(
         QString url, QString token, QString session, QString datasetId,
         int seedZ, int seedY, int seedX, double reach, double lambdaV, int roiRadius,
         QVector<std::array<int, 3>> addSeeds, QVector<std::array<int, 3>> subSeeds,
-        double sigma, double nsigma, double smoothV, double smoothXy)
+        double sigma, double nsigma, double smoothV, double smoothXy, QString noiseWhere)
 {
     BackendClient client(url, token);
     client.setSessionId(session);
@@ -94,7 +107,13 @@ RemoteKinematicSelectResult fetchKinematicSelect(
     out.count = b.count;
     for (int i = 0; i < 6; ++i) out.bbox[i] = b.bbox[i];
     out.data = b.data;
-    out.graphBudget = reach;   // a single-budget grow: the shell is sized by the reach
+    // A single-budget grow: the shell is sized by the reach, so that is the
+    // budget a replay passes as reach_max.
+    out.grow = visivo::LassoGrowRequest{ { seedZ, seedY, seedX }, addSeeds, subSeeds,
+                                         reach, lambdaV, sigma, nsigma, roiRadius,
+                                         /*reachMax=*/reach, smoothV, smoothXy };
+    out.noiseWhere = noiseWhere;
+    out.trimBox = b.trimBox;
     return out;
 }
 
@@ -389,6 +408,7 @@ void vtkWindowCube::requestLassoSelection()
     this->m_lassoLevelsReqLambdaV = lambdaV;
     this->m_lassoLevelsReqNSigma = this->m_lassoNSigma;
     this->m_lassoLevelsReqSigma = this->m_noiseSigma;
+    this->m_lassoLevelsReqNoiseWhere = this->m_noiseWhere;
     this->m_lassoLevelsReqSmooth = this->m_lassoSmoothPreset;
     const auto smoothing = this->lassoSmoothing();
     this->m_lassoLevelsReqSeeds = addSeeds;
@@ -416,21 +436,27 @@ void vtkWindowCube::requestLassoGrow()
             this->m_lassoLastSeed[0], this->m_lassoLastSeed[1], this->m_lassoLastSeed[2],
             this->m_lassoReach, this->m_lassoLambdaV, this->m_lassoRoiRadius,
             this->m_lassoAddSeeds, this->m_lassoSubSeeds, this->m_noiseSigma,
-            this->m_lassoNSigma, this->lassoSmoothing()[0], this->lassoSmoothing()[1]));
+            this->m_lassoNSigma, this->lassoSmoothing()[0], this->lassoSmoothing()[1],
+            this->m_noiseWhere));
     this->refreshKinematicFitAvailability();
 }
 
-std::array<double, 2> vtkWindowCube::lassoSmoothing() const
+std::array<double, 2> vtkWindowCube::lassoSmoothingFor(int preset)
 {
     // (velocity, spatial) Gaussian σ in voxels — the three settings the paper's
     // validation used: (1,3,3) on compact HCG 44 sources, (2,4,4) on WALLABY's
     // faint sources, (2,6,6) on the extended disc of NGC 3137.
-    switch (this->m_lassoSmoothPreset) {
+    switch (preset) {
     case 1: return { 1.0, 3.0 };
     case 2: return { 2.0, 4.0 };
     case 3: return { 2.0, 6.0 };
     default: return { 0.0, 0.0 };
     }
+}
+
+std::array<double, 2> vtkWindowCube::lassoSmoothing() const
+{
+    return lassoSmoothingFor(this->m_lassoSmoothPreset);
 }
 
 void vtkWindowCube::placeLassoSeedMarker(const double world[3], bool render)
@@ -559,7 +585,9 @@ void vtkWindowCube::onLassoSelectReady()
     }
     this->statusBar()->showMessage(
             u"Kinematic Lasso: %1 voxels selected, tune reach / velocity coupling to refine."_s
-            .arg(r.count), 4000);
+                            .arg(r.count)
+                    + trimNote(r.trimBox),
+            r.trimBox > 0 ? 10000 : 4000);
 
     if (pending)
         this->requestLassoSelection();            // a slider moved mid-grow → re-grow now
@@ -576,6 +604,9 @@ void vtkWindowCube::clearPresentedLassoSelection(bool render)
     this->m_lassoMaskBytes.clear();
     this->m_lassoMaskDims[0] = this->m_lassoMaskDims[1] = this->m_lassoMaskDims[2] = 0;
     this->m_lassoMaskHandEdited = false;
+    this->m_lassoMaskGrow = {};
+    this->m_lassoMaskNoiseWhere.clear();
+    this->m_lassoMaskTrimBox = 0;
     this->refreshKinematicFitAvailability();
     // Leave 2-D refinement properly, not just by greying its button: the mode
     // installs interactor observers, and disabling the toggle would leave them
@@ -637,21 +668,26 @@ vtkWindowCube::LassoLevels vtkWindowCube::showLassoSelectionFromLevels(int reach
     // A Reach change recomputes the mask from the geodesic field, so any 2-D
     // hand-refinement on top of it is discarded — the same rule a backend re-grow
     // already followed. Say so instead of losing the work silently.
-    if (this->m_lassoMaskHandEdited) {
+    // Said once, at the end, together with the trim note when there is one: two
+    // messages in a row would leave only the second on screen.
+    const bool discarded = this->m_lassoMaskHandEdited;
+    const QString discardedNote =
+            discarded ? u" 2-D refinements discarded, Reach regrows the mask."_s : QString();
+    if (discarded) {
         this->m_lassoMaskHandEdited = false;
         if (this->m_lassoEditActive) this->setLassoEditActive(false);
         if (this->m_lassoEditToggle) {
             QSignalBlocker b(this->m_lassoEditToggle);
             this->m_lassoEditToggle->setChecked(false);
         }
-        this->statusBar()->showMessage(
-                u"Kinematic Lasso: 2-D refinements discarded, Reach regrows the mask."_s, 4000);
     }
     if (sel.count <= 0) {
         // Legitimate with a carve seed: the budget can exclude everything the add
         // seeds reached. Clear rather than leave a stale surface the user could
         // still Apply.
         this->clearPresentedLassoSelection(render);
+        if (discarded)
+            this->statusBar()->showMessage(u"Kinematic Lasso:"_s + discardedNote, 4000);
         return LassoLevels::Empty;
     }
 
@@ -663,13 +699,32 @@ vtkWindowCube::LassoLevels vtkWindowCube::showLassoSelectionFromLevels(int reach
     r.count = sel.count;
     std::copy(sel.bbox.begin(), sel.bbox.end(), r.bbox);
     r.data = sel.mask;
-    r.graphBudget = double(lv.reachMax);   // a level set of the field: its budget
+    // A level set of the cached field: the mask's request is the field's
+    // identity — not the live controls — at this reach, with the field's budget.
+    const auto smooth = lassoSmoothingFor(this->m_lassoLevelsSmooth);
+    r.grow = visivo::LassoGrowRequest{
+        { this->m_lassoLevelsSeed[0], this->m_lassoLevelsSeed[1], this->m_lassoLevelsSeed[2] },
+        this->m_lassoLevelsSeeds, this->m_lassoLevelsSubSeeds,
+        double(reach), this->m_lassoLevelsLambdaV, this->m_lassoLevelsSigma,
+        this->m_lassoLevelsNSigma, this->m_lassoRoiRadius, double(lv.reachMax),
+        smooth[0], smooth[1] };
+    r.noiseWhere = this->m_lassoLevelsNoiseWhere;
+    r.trimBox = lv.trimBox;
 
     this->showLassoHint(false);
     this->presentLassoSelection(r);
     if (this->m_lassoCountLabel) {
         this->m_lassoCountLabel->setText(u"%1 voxels selected"_s.arg(sel.count));
     }
+    // The trim note once per field: the slider's release re-thresholds the same
+    // field and must not repost it over the discard notice, or over itself.
+    const bool noteTrim = r.trimBox > 0 && !this->m_lassoLevelsTrimNoted;
+    if (noteTrim || discarded)
+        this->statusBar()->showMessage(
+                u"Kinematic Lasso:"_s + discardedNote + (noteTrim ? trimNote(r.trimBox) : QString()),
+                noteTrim ? 10000 : 4000);
+    if (r.trimBox > 0)
+        this->m_lassoLevelsTrimNoted = true;
     this->setLassoApplyEnabled(true);
     if (render && ui->vtkCube && ui->vtkCube->renderWindow()) {
         ui->vtkCube->renderWindow()->Render();
@@ -711,6 +766,8 @@ void vtkWindowCube::onLassoLevelsReady()
     this->m_lassoLevelsLambdaV = this->m_lassoLevelsReqLambdaV;
     this->m_lassoLevelsNSigma = this->m_lassoLevelsReqNSigma;
     this->m_lassoLevelsSigma = this->m_lassoLevelsReqSigma;
+    this->m_lassoLevelsNoiseWhere = this->m_lassoLevelsReqNoiseWhere;
+    this->m_lassoLevelsTrimNoted = false;   // a new field: say it once if it was cut
     this->m_lassoLevelsSmooth = this->m_lassoLevelsReqSmooth;
     this->m_lassoLevelsSeeds = this->m_lassoLevelsReqSeeds;
     this->m_lassoLevelsSubSeeds = this->m_lassoLevelsReqSubSeeds;
@@ -785,7 +842,9 @@ void vtkWindowCube::presentLassoSelection(const RemoteKinematicSelectResult &r)
     // Keep the EXACT ROI mask (full-res voxel coords) so Apply sends what's shown
     // and the 2-D channel overlay can slice it per channel.
     this->m_lassoMaskBytes = r.data;
-    this->m_lassoMaskGraphBudget = r.graphBudget;
+    this->m_lassoMaskGrow = r.grow;
+    this->m_lassoMaskNoiseWhere = r.noiseWhere;
+    this->m_lassoMaskTrimBox = r.trimBox;   // said by the caller's completion message
     this->refreshKinematicFitAvailability();
     this->m_lassoMaskOrigin[0] = r.originX;
     this->m_lassoMaskOrigin[1] = r.originY;
@@ -1699,77 +1758,30 @@ void vtkWindowCube::applyLassoMask(const QString &mode)
               md = this->m_lassoMaskDims[2];
     this->statusBar()->showMessage(u"Kinematic Lasso: applying mask…"_s, 0);
 
-    // How this mask was made — written into the new cube's HISTORY and into its
-    // product's provenance, so either says how to make it again.
-    const auto smoothing = this->lassoSmoothing();
-    QVariantMap params;
-    params.insert(u"Seed (z, y, x)"_s, u"(%1, %2, %3)"_s.arg(this->m_lassoLastSeed[0])
-                                             .arg(this->m_lassoLastSeed[1]).arg(this->m_lassoLastSeed[2]));
-    // Extra seeds as coordinates, not counts: a count cannot be replayed. The
-    // HISTORY form is compact ("(z,y,x)|(z,y,x)"): the recipe travels as a
-    // query parameter and its items are split on ";".
-    const auto seedList = [](const QVector<std::array<int, 3>> &seeds, const QString &sep,
-                             const QString &fmt) {
-        QStringList out;
-        for (const auto &s : seeds)
-            out << fmt.arg(s[0]).arg(s[1]).arg(s[2]);
-        return out.join(sep);
-    };
-    const QString shown = u"(%1, %2, %3)"_s, compact = u"(%1,%2,%3)"_s;
-    // The budget the displayed mask's graph was grown with, stored with the
-    // mask when it was presented (a slider change may invalidate the cached
-    // field while the old mask stays on screen until the regrow arrives). It
-    // sizes the faint shell, so a replay passes it as reach_max.
-    const double graphBudget = this->m_lassoMaskGraphBudget > 0.0 ? this->m_lassoMaskGraphBudget
-                                                                  : this->m_lassoReach;
-    if (!this->m_lassoAddSeeds.isEmpty())
-        params.insert(u"Extra seeds added"_s, seedList(this->m_lassoAddSeeds, u"; "_s, shown));
-    if (!this->m_lassoSubSeeds.isEmpty())
-        params.insert(u"Extra seeds carved"_s, seedList(this->m_lassoSubSeeds, u"; "_s, shown));
-    params.insert(u"Reach"_s, QString::number(this->m_lassoReach, 'g', 4));
-    params.insert(u"Level-field budget (reach_max)"_s, QString::number(graphBudget, 'g', 4));
-    params.insert(u"Velocity coupling"_s, QString::number(this->m_lassoLambdaV, 'f', 2));
-    params.insert(u"Threshold"_s, u"%1σ"_s.arg(this->m_lassoNSigma, 0, 'f', 1));
-    // The estimate at the precision the grow received it, so a replay thresholds
-    // the same voxels; the 4-digit display rounded it.
-    params.insert(u"Noise σ"_s, this->m_noiseSigma > 0.0
-                          ? u"%1 (noise estimate, %2)"_s.arg(this->m_noiseSigma, 0, 'g', 17)
-                                    .arg(this->m_noiseWhere)
-                          : u"robust, whole cube"_s);
-    params.insert(u"Smoothing (v, y, x)"_s, smoothing[0] > 0 || smoothing[1] > 0
-                          ? u"(%1, %2, %2)"_s.arg(smoothing[0]).arg(smoothing[1]) : u"off"_s);
-    params.insert(u"Hand-edited"_s, this->m_lassoMaskHandEdited ? u"yes"_s : u"no"_s);
+    // How this mask was made: the request it was grown with, kept beside the
+    // mask when it was presented (the controls may have moved on since — a
+    // keyboard nudge of λv invalidates the field without regrowing). Written
+    // into the new cube's HISTORY and into its product's provenance, and
+    // exported as the typed calls that replay it.
+    const visivo::LassoGrowRequest grow = this->m_lassoMaskGrow;
+    const bool handEdited = this->m_lassoMaskHandEdited;
+    QVariantMap params = visivo::lassoDisplayParams(grow, this->m_lassoMaskNoiseWhere, handEdited,
+                                                    this->m_lassoMaskTrimBox);
     // The selection, whichever side of it the new cube keeps — read now, with the
     // mask: the label may change while the export runs.
     if (this->m_lassoCountLabel)
         params.insert(u"Selected voxels"_s, this->m_lassoCountLabel->text().section(u' ', 0, 0));
     params.insert(u"Mode"_s, mode == u"blank_inside"_s ? u"remove (inside blanked)"_s
                                                        : u"isolate (outside blanked)"_s);
-    QStringList recipeParts;
-    recipeParts << u"seed_zyx=%1,%2,%3"_s.arg(this->m_lassoLastSeed[0]).arg(this->m_lassoLastSeed[1])
-                           .arg(this->m_lassoLastSeed[2])
-                << u"reach=%1"_s.arg(this->m_lassoReach, 0, 'g', 4)
-                << u"lambda_v=%1"_s.arg(this->m_lassoLambdaV, 0, 'f', 2)
-                << u"nsigma=%1"_s.arg(this->m_lassoNSigma, 0, 'f', 1)
-                << (this->m_noiseSigma > 0.0
-                            ? u"sigma=%1 (noise estimate)"_s.arg(this->m_noiseSigma, 0, 'g', 17)
-                            : u"sigma=robust (whole cube)"_s)
-                << u"smooth_zyx=%1,%2,%2"_s.arg(smoothing[0]).arg(smoothing[1])
-                << u"reach_max=%1"_s.arg(graphBudget, 0, 'g', 4)
-                << u"add_seeds=%1"_s.arg(this->m_lassoAddSeeds.isEmpty()
-                                                 ? u"none"_s
-                                                 : seedList(this->m_lassoAddSeeds, u"|"_s, compact))
-                << u"sub_seeds=%1"_s.arg(this->m_lassoSubSeeds.isEmpty()
-                                                 ? u"none"_s
-                                                 : seedList(this->m_lassoSubSeeds, u"|"_s, compact))
-                << u"hand_edited=%1"_s.arg(this->m_lassoMaskHandEdited ? u"yes"_s : u"no"_s);
-    const QString recipe = recipeParts.join(u"; "_s);
-    const bool handEdited = this->m_lassoMaskHandEdited;
+    const QString recipe =
+            visivo::lassoHistoryItems(grow, handEdited, this->m_lassoMaskTrimBox).join(u"; "_s);
+    const QList<ReplayStep> replay{ visivo::lassoGrowStep(grow),
+                                    visivo::lassoApplyStep(mode, handEdited) };
 
     auto *watcher = new QFutureWatcher<BackendSaveSubregionResult>(this);
     QPointer<vtkWindowCube> self(this);
     QObject::connect(watcher, &QFutureWatcher<BackendSaveSubregionResult>::finished, this,
-                     [self, watcher, mode, params, handEdited]() {
+                     [self, watcher, mode, params, handEdited, replay]() {
                          const auto r = watcher->result();
                          watcher->deleteLater();
                          if (!self) return;
@@ -1796,8 +1808,7 @@ void vtkWindowCube::applyLassoMask(const QString &mode)
                                  // parameters (the slider's level field thresholded at
                                  // the reach is the same voxels, test_lasso_levels_
                                  // replay_select); the apply makes the cube from it.
-                                 /*replay=*/{ u"/v1/cube/kinematic_select_bin"_s,
-                                              u"/v1/cube/mask_apply_bin"_s },
+                                 replay,
                                  /*replayCaveat=*/handEdited
                                          ? u"The mask was edited by hand after the grow: the "
                                            u"parameters regrow only its geodesic part. The cube "

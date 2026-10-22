@@ -7315,7 +7315,7 @@ QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QStrin
                                                bool revealProvenance,
                                                const QVariantMap &origin,
                                                bool selectInSession,
-                                               const QStringList &replay,
+                                               const QList<ReplayStep> &replay,
                                                const QString &replayCaveat)
 {
     AnalysisProduct p;

@@ -52,12 +52,13 @@ inline constexpr const char *SPECTRAL_MODE = "X-Visivo-Spectral-Mode";
 inline constexpr const char *SPEED_MAX = "X-Visivo-Speed-Max";
 inline constexpr const char *SPEED_MIN = "X-Visivo-Speed-Min";
 inline constexpr const char *TOKEN = "X-Visivo-Token";
+inline constexpr const char *TRIM_BOX = "X-Visivo-Trim-Box";
 inline constexpr const char *UNIT = "X-Visivo-Unit";
 inline constexpr const char *WARNINGS = "X-Visivo-Warnings";
 inline constexpr const char *WIDTH = "X-Visivo-Width";
 
 // Every declared header name, for the contract test to diff against the manifest.
-inline constexpr std::array<const char *, 43> kAll = {
+inline constexpr std::array<const char *, 44> kAll = {
     EW_UNIT,
     FWHM_UNIT,
     MAP_UNIT,
@@ -98,6 +99,7 @@ inline constexpr std::array<const char *, 43> kAll = {
     SPEED_MAX,
     SPEED_MIN,
     TOKEN,
+    TRIM_BOX,
     UNIT,
     WARNINGS,
     WIDTH,

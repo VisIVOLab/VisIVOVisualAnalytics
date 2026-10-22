@@ -1785,6 +1785,7 @@ struct BackendKinematicSelectResult
     int fullWidth = 0, fullHeight = 0, fullDepth = 0;
     int count = 0;
     int bbox[6] = { 0, 0, 0, 0, 0, 0 };   // x0,x1,y0,y1,z0,z1
+    int trimBox = 0;   ///< >0: the grow's domain was cut to a seed-centred box of this half-width
     QByteArray data;
 };
 
@@ -1806,6 +1807,7 @@ struct BackendKinematicLevelsResult
     int fullWidth = 0, fullHeight = 0, fullDepth = 0;
     int reachMax = 0;              ///< highest budget this field can answer for
     int unreachable = 255;         ///< level meaning "beyond the budget"
+    int trimBox = 0;               ///< >0: the field's domain was cut to a box of this half-width
     QByteArray addLevels;          ///< uint8, roiW*roiH*roiD, x-fastest
     QByteArray subLevels;          ///< uint8, same geometry (all-sentinel if no carve)
 };

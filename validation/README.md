@@ -409,13 +409,14 @@ figures appear as 1 storyboard, 2 architecture, 3 interface, 4 lasso (script 3),
 | figure | script | needs |
 |---|---|---|
 | 1 storyboard | `figure1_panels_ngc3137.py`, then `figure1_storyboard.py --src validation/out/fig1 --out validation/out/figure1_storyboard.png --crop ''` (panels are drawn at the slot size they print at, so no window crop) | `VISIVO_VALIDATION_CUBE_2` |
+| recipe of §4.2.3 | none: `out/recipe_ngc3137_lasso.json` is the client's *Export recipe as JSON…* of the isolated cube, as written (seed (69, 83, 80), 68 618 voxels) | the GUI session |
 | 2 architecture | `figure2_architecture.py` | nothing (a drawing) |
 | 3 lasso on HCG 44 | `figure3_lasso_hgc44.py` | `VISIVO_VALIDATION_CUBE`, SoFiA mask |
 | 4 tilted-ring model | `figure4_model_ngc3137.py` | `VISIVO_VALIDATION_CUBE_2` |
 | 5 chain of products | `figure5_transitions.py` | `VISIVO_VALIDATION_CUBE_2`, the service's routers |
 | 6 polarimetry | `figure6_polarimetry.py` (below) | the MeerKAT Bulge I/Q/U cubes of G000.0+2.5 and `Mosaic_Pol_Cat.csv` from doi:10.48479/f2a2-qw16 |
 | 7 velocity field | `figure_interface.py "shots/velocity_field_basins_streamlines.png:340,200,1400,1290:" --out validation/out/figure7_velocity_field.png` — a window capture of the velocity-field viewer (streamlines + basins); `velocity_field_demo.py` prints the same basin count headless | the client, the CF4 field |
-| interface, Data Hub | `figure_interface.py` on the window captures in `shots/` (`screencapture -l` of the client's main window: lasso armed, lasso selected; nothing retouched) | the client, 1512×900 window, Retina |
+| interface, Data Hub | `figure_interface.py` on the window captures in `shots/` (`screencapture -l` of the client's main window: lasso armed, lasso selected; nothing retouched). The interface figure is the whole window plus a row of two enlarged crops of the same capture (a panel spec starting with `+` joins the previous row): `figure_interface.py shots/cube_viewer_lasso_selected.png:"(a) …" shots/cube_viewer_lasso_selected.png:2390,330,3024,1230:"(b) …" +shots/cube_viewer_lasso_selected.png:1450,560,2380,1530:"(c) …"` | the client, 1512×900 window, Retina |
 
 Figures 1, 4 and 5 call `usecase_ngc3137.run()`, which runs the client's kinematic
 fit (`app.compute.kinematic_fit`, what *Fit from the lasso selection* calls), so

@@ -37,7 +37,7 @@ vmax = np.nanpercentile(data[:, crop[0], crop[1]], 99.7)
 # 4 pt they became when a 3.2 in panel was shrunk into the slot.
 PANEL_W = 17.5 / 2.54 / 4
 PANEL_H = PANEL_W * (crop[0].stop - crop[0].start) / (crop[1].stop - crop[1].start)
-NOTE_PT = 7.0
+NOTE_PT = 8.0
 
 def panel(name, draw, note):
     fig, ax = plt.subplots(figsize=(PANEL_W, PANEL_H))
@@ -59,10 +59,10 @@ def explore(ax):
     ax.imshow(np.ma.masked_invalid(data[crec][crop]), origin="lower", cmap="Greys", vmin=0, vmax=vmax,
               interpolation="nearest")
     ax.plot([SEED[2] - crop[1].start], [SEED[1] - crop[0].start], marker="+", ms=10, mew=1.6, color="#d62728")
-panel("02_explore", explore, f"channel {crec}, {vel[crec]:.0f} km/s; the click")
+panel("02_explore", explore, f"channel {crec}, {vel[crec]:.0f} km/s\nthe click")
 panel("03_lasso", lambda ax: channel(ax, data, crec, contour=mask),
       f"lasso: {R['n_sel']:,} voxels")
-panel("04_isolated", lambda ax: channel(ax, iso, crec), "isolated: NaN outside the mask")
+panel("04_isolated", lambda ax: channel(ax, iso, crec), "isolated: NaN outside\nthe mask")
 panel("05_moment0", lambda ax: ax.imshow(np.ma.masked_invalid(m0[crop]), origin="lower", cmap="magma",
                                         interpolation="nearest"), f"$M_0$: {R['flux']:.1f} Jy km/s")
 panel("06_model", lambda ax: channel(ax, iso, crec, contour=warp, color="#1f77b4"),
@@ -70,13 +70,13 @@ panel("06_model", lambda ax: channel(ax, iso, crec, contour=warp, color="#1f77b4
 # Signed, as the viewer's "Residual v − v_model (rings)" product shows it.
 panel("07_residual", lambda ax: ax.imshow(np.ma.masked_invalid((m1 - vw)[crop]), origin="lower",
                                          cmap="RdBu_r", vmin=-60, vmax=60, interpolation="nearest"),
-      f"v$_{{data}}$ − v$_{{model}}$, |median| {R['warp_median']:.1f} km/s")
+      f"v$_{{data}}$ − v$_{{model}}$\n|median| {R['warp_median']:.1f} km/s")
 def export(ax):
     ax.axis("off")
     txt = ("masked cube → FITS\n$M_0$, $M_1$ → FITS\nrings → JSON\nscan → movie\n\n"
            f"replay: POST\n/v1/cube/\nkinematic_select_bin\nseed {SEED}\nreach {REACH:g}, λv {LAMBDA_V:g}\n"
            f"smooth {tuple(int(v) for v in SMOOTH)}")
-    ax.text(0.5, 0.5, txt, ha="center", va="center", fontsize=6.2, family="monospace",
+    ax.text(0.5, 0.5, txt, ha="center", va="center", fontsize=7.0, family="monospace",
             linespacing=1.35, bbox=dict(boxstyle="round,pad=0.5", fc="#f4f4f4", ec="#888888"))
 panel("08_export", export, "")
 print("panels written to", OUT)

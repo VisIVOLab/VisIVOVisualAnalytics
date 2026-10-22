@@ -518,6 +518,12 @@ void vtkWindowCube::showKinematicModelDialog()
         const QString selection = u"Kinematic Lasso, %1 voxels"_s.arg(
                 this->m_lassoCountLabel ? this->m_lassoCountLabel->text().section(u' ', 0, 0)
                                         : u"?"_s);
+        const double sigma = this->m_noiseSigma;
+        const int minRingPix = 150;
+        // The call for the replay record of the fit's products: the mask is the
+        // body, with the ROI its own grow answers (LassoReplay), so the record
+        // carries the fit's parameters only.
+        const ReplayStep fitCall = visivo::lassoFitStep(sigma, minRingPix);
         QPointer<QProgressDialog> sheet =
                 visivo::showToolProgressSheet(dlgPtr, u"Fitting the selection"_s);
         auto *watcher = new QFutureWatcher<BackendKinematicFitResult>(dlgPtr);
@@ -571,15 +577,15 @@ void vtkWindowCube::showKinematicModelDialog()
             perRingCheck->setChecked(r.rings.size() >= 3);
             fitInfo->setText(describeKinematicFit(r));
             fitInfo->setProperty("fitShown", true);
-            this->publishKinematicFit(r, selection);
+            this->publishKinematicFit(r, selection, fitCall);
         });
         const QString url = this->remoteBackendUrl, token = this->remoteBackendToken;
         const QString session = this->remoteSessionId, dataset = this->remoteDatasetId;
-        const double sigma = this->m_noiseSigma;
         watcher->setFuture(QtConcurrent::run([=]() {
             BackendClient c(url, token);
             c.setSessionId(session);
-            return c.kinematicFit(dataset, mask, o[0], o[1], o[2], d[0], d[1], d[2], sigma);
+            return c.kinematicFit(dataset, mask, o[0], o[1], o[2], d[0], d[1], d[2], sigma,
+                                  minRingPix);
         }));
     });
 
@@ -800,7 +806,8 @@ QString vtkWindowCube::describeKinematicFit(const BackendKinematicFitResult &r)
 }
 
 void vtkWindowCube::publishKinematicFit(const BackendKinematicFitResult &r,
-                                        const QString &selectionDescription)
+                                        const QString &selectionDescription,
+                                        const ReplayStep &fitCall)
 {
     const auto f = [](double v, int prec = 1) {
         return std::isfinite(v) ? QString::number(v, 'f', prec) : u"-"_s;
@@ -889,7 +896,7 @@ void vtkWindowCube::publishKinematicFit(const BackendKinematicFitResult &r,
                                   props, /*window=*/nullptr, this->scopedProductId(u"kinfit-props"_s),
                                   /*renderer=*/QString(), /*revealProvenance=*/false,
                                   /*origin=*/{}, /*selectInSession=*/true,
-                                  /*replay=*/{ u"/v1/cube/kinematic_fit_bin"_s },
+                                  /*replay=*/{ fitCall },
                                   /*replayCaveat=*/u"The fit ran on the lasso selection's mask, "
                                                    u"which this record describes but does not "
                                                    u"carry: replay that selection from its own "

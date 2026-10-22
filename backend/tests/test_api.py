@@ -352,6 +352,7 @@ async def test_cube_kinematic_select_bin(client: AsyncClient, opened_cube: dict)
     count = int(resp.headers["X-Visivo-Selected-Count"])
     assert count >= 1                                     # at least the seed
     assert len(resp.headers["X-Visivo-Bbox"].split(",")) == 6
+    assert resp.headers["X-Visivo-Trim-Box"] == "0"       # nothing cut on a small cube
 
 
 @pytest.mark.asyncio

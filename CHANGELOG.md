@@ -6,13 +6,46 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## 1.0.3 (2026-10-22)
+
+- **Recipe replay steps are typed.** *Export recipe as JSON…* now writes each
+  replay call with its `request` as the service takes it, under the API's
+  field names with numbers as numbers and seeds as `[z, y, x]` (`seed_z`,
+  `reach`, `lambda_v`, `reach_max`, …; the apply's `mode`; the fit's `sigma`
+  and `min_ring_pix`), plus a `body` line naming what travels as bytes — the
+  float32 mask the grow returns, posted to the apply with the origin and
+  dimensions of that response — so a script posts the record back instead of
+  parsing the Provenance labels. The request recorded is the one the mask on
+  screen was grown with, kept beside the mask, not the sliders' values at the
+  time of the apply (a keyboard nudge of λv invalidates the field without
+  regrowing it). The schema name stays `visivo-recipe/1`; the display
+  `parameters` are unchanged. A C++ test reads the fields of the service's
+  request model out of the router and holds the recipe to them.
+- **The lasso says when its domain was cut.** A source larger than the grow's
+  graph budget (four million nodes) is cut to a seed-centred box, and the
+  selection is exact within that box only. The service now reports it
+  (`X-Visivo-Trim-Box`, the largest box half-width over the seeds), the
+  completion message says so, and the product's Provenance (*Domain trimmed*)
+  and the cube's FITS `HISTORY` (`domain_trimmed=`) record it; nothing is
+  added when no grow was cut.
+- **Validation harness.** `usecase_ngc3137.py` reports how the default
+  selection splits between the 2.5σ component and the sub-threshold shell;
+  the interface figure adds enlarged crops (`figure_interface.py` lays panels
+  out in rows); Figure 1's storyboard drops the API strip, keeps its panel
+  notes on two lines and draws the navigation step (a)→(b) dashed, apart from
+  the transitions that leave a product; the client's complete recipe export
+  quoted in the paper ships as `validation/out/recipe_ngc3137_lasso.json`;
+  the RM-synthesis test that pins the 25 → 63 rad m⁻² number states its
+  conventions (per-plane frequencies, λ² = (c/ν)², sign, grid maximum).
+- **Docs build from this repository.** Read the Docs builds from the
+  `docs/` tree here, so the `VisIVO-doc` mirror and its sync workflow are gone.
+
 ## 1.0.2 (2026-10-21)
 
 - **Public repository: `VisIVOLab/VisIVOVisualAnalytics`.** Documentation,
   issue links, the paper and the build/HPC examples point there; the SLURM
   tunnel scripts take `--repo-dir` (or `VISIVO_REMOTE_REPO`) for a clone with
-  another name on the frontend. Read the Docs builds from this repository
-  directly, so the `VisIVO-doc` mirror and its sync workflow are gone.
+  another name on the frontend.
 - **Full-resolution load: a bounded transient, and no JSON fallback.** Loading
   a cube at full resolution held it three times over while it arrived (the
   four Z-slabs, a stitched copy, the image) before the GPU copy; the slabs are
