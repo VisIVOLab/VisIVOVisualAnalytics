@@ -1,12 +1,12 @@
 {
-    "application": "VisIVO Visual Analytics 1.0.2",
+    "application": "VisIVO Visual Analytics 1.0.3",
     "dataset": {
-        "backend_dataset_id": "ds_fabfa6340815",
-        "backend_session_id": "c3c7c3b0-a95d-4b42-bbc3-b188f9958b7e",
+        "backend_dataset_id": "ds_5cb9fe317f25",
+        "backend_session_id": "341c0d80-6282-4462-a3b8-7eb290a4644f",
         "label": "WALLABY_J100903-290239_Hydra_TR2_cube.fits",
         "path": "/Users/fvitello/Downloads/DemoData/WALLABY_J100903-290239_Hydra_TR2_cube.fits"
     },
-    "exported": "2026-10-22T09:14:32Z",
+    "exported": "2026-10-22T16:37:04Z",
     "parameters": {
         "File": "WALLABY_J100903-290239_Hydra_TR2_cube_lasso-outside_5.fits",
         "Hand-edited": "no",
@@ -21,7 +21,7 @@
         "Velocity coupling": "1.00"
     },
     "product": {
-        "id": "lasso-ds_e59fc05e9402@/Users/fvitello/Downloads/DemoData/WALLABY_J100903-290239_Hydra_TR2_cube.fits#win1",
+        "id": "lasso-ds_8d0903b5bfe7@/Users/fvitello/Downloads/DemoData/WALLABY_J100903-290239_Hydra_TR2_cube.fits#win1",
         "kind": "lasso",
         "label": "Lasso: isolated cube",
         "replay": [
