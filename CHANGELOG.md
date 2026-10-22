@@ -11,7 +11,8 @@ are preserved here unedited; the branch names they refer to are historical.
 - **Public repository: `VisIVOLab/VisIVOVisualAnalytics`.** Documentation,
   issue links, the paper and the build/HPC examples point there; the SLURM
   tunnel scripts take `--repo-dir` (or `VISIVO_REMOTE_REPO`) for a clone with
-  another name on the frontend.
+  another name on the frontend. Read the Docs builds from this repository
+  directly, so the `VisIVO-doc` mirror and its sync workflow are gone.
 - **Full-resolution load: a bounded transient, and no JSON fallback.** Loading
   a cube at full resolution held it three times over while it arrived (the
   four Z-slabs, a stitched copy, the image) before the GPU copy; the slabs are

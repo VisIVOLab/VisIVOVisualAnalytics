@@ -166,9 +166,8 @@ cmake -S tests -B build-tests && cmake --build build-tests
 cd backend && pip install -r requirements-dev.txt && pytest -q
 ```
 
-Documentation sources live in [`docs/`](docs/) and are mirrored to a public
-repository that Read the Docs builds from; see
-[`.github/workflows/sync-docs.yml`](.github/workflows/sync-docs.yml).
+Documentation sources live in [`docs/`](docs/); Read the Docs builds
+<https://visivo.readthedocs.io> from this repository (`.readthedocs.yaml`).
 
 Release notes and the development history are in [CHANGELOG.md](CHANGELOG.md).
 
