@@ -73,6 +73,7 @@ SettingsDialog::SettingsDialog(Settings *settings, AuthWrapper *auth, QWidget *p
     ui->lineVLKBUrl->setText(this->settings->getVLKBUrl());
     this->setVLKBAuthStatus();
     ui->checkVLKBSearch->setChecked(this->settings->getSearchOnImportFlag());
+    ui->checkUpdates->setChecked(this->settings->getCheckForUpdates());
     QObject::connect(ui->btnVLKBAuth, &QPushButton::clicked, this,
                      &SettingsDialog::VLKBAuthTriggered);
 
@@ -213,6 +214,7 @@ void SettingsDialog::accept()
     this->settings->setMaxGlyphs(ui->lineMaxGlyphs->text().toInt());
     this->settings->setVLKBUrl(ui->lineVLKBUrl->text());
     this->settings->setSearchOnImportFlag(ui->checkVLKBSearch->isChecked());
+    this->settings->setCheckForUpdates(ui->checkUpdates->isChecked());
     this->settings->setBackendUrl(ui->lineBackendUrl->text().trimmed());
     this->settings->setBackendToken(ui->lineBackendToken->text().trimmed());
     if (this->backendsWidget) {

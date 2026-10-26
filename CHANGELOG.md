@@ -6,6 +6,23 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## Unreleased
+
+- **New-version notice.** Once a day at startup the client asks GitHub for the
+  latest release and, when a newer one is out, offers to open its download
+  page (*Download…*, *Skip This Version*, *Later*). *Help ▸ Check for
+  Updates…* asks on demand and always answers. The startup check can be
+  switched off in *Settings ▸ UI*; the request tells GitHub only the user's IP
+  address and the version they run.
+- **Velocity fields reopen from Recent Datasets.** They are now recorded in the
+  list and reopen in the vector-field viewer. An older entry that had recorded
+  a velocity field as an image no longer opens a blank image viewer: cube and
+  image entries are re-identified when reopened.
+- **Basins and full-resolution regions do not freeze the window.** In the
+  velocity-field viewer both are computed in the background under the same
+  progress sheet as the other analysis tools, instead of a blocking wait
+  cursor.
+
 ## 1.0.4 (2026-10-26)
 
 - **Left dock no longer clipped.** The cube viewer's sidebar sized itself to

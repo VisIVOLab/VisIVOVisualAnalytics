@@ -345,6 +345,8 @@ set(PROJECT_SOURCES
         src/app/ThemeManager.h
         src/app/RecentDatasetsManager.cpp
         src/app/RecentDatasetsManager.h
+        src/app/UpdateCheck.cpp
+        src/app/UpdateCheck.h
         src/app/SampClient.cpp
         src/app/SampClient.h
         src/app/SampMessageHandler.cpp
@@ -442,6 +444,8 @@ set(PROJECT_SOURCES
         src/gui/PvDiagramWidget.h
         src/gui/SettingsDialog.cpp
         src/gui/SettingsDialog.h
+        src/gui/UpdateNotifier.cpp
+        src/gui/UpdateNotifier.h
         src/gui/BackendsSettingsWidget.cpp
         src/gui/BackendsSettingsWidget.h
         src/gui/HiPSViewportWidget.cpp

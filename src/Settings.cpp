@@ -49,6 +49,7 @@ void Settings::resetDefaults()
     this->settings->setValue(Settings::MaxGlyphs.first, Settings::MaxGlyphs.second);
     this->settings->setValue(Settings::VLKBUrl.first, Settings::VLKBUrl.second);
     this->settings->setValue(Settings::VLKBSearch.first, Settings::VLKBSearch.second);
+    this->settings->setValue(Settings::UpdatesCheck.first, Settings::UpdatesCheck.second);
     this->settings->setValue(Settings::BackendUrl.first, Settings::BackendUrl.second);
     this->settings->setValue(Settings::BackendToken.first, Settings::BackendToken.second);
     this->settings->setValue(Settings::PlotTheme.first, Settings::PlotTheme.second);
@@ -210,6 +211,46 @@ bool Settings::getSearchOnImportFlag() const
 void Settings::setSearchOnImportFlag(bool flag)
 {
     this->settings->setValue(Settings::VLKBSearch.first, flag);
+}
+
+//----------------------------------------------------------------------------
+// New-version notice
+//----------------------------------------------------------------------------
+const std::pair<QString, QVariant> Settings::UpdatesCheck = { u"Updates/check_on_startup"_s, true };
+const std::pair<QString, QVariant> Settings::UpdatesLastCheck = { u"Updates/last_check"_s, QString() };
+const std::pair<QString, QVariant> Settings::UpdatesSkipped = { u"Updates/skipped_version"_s, QString() };
+
+bool Settings::getCheckForUpdates() const
+{
+    return this->settings->value(Settings::UpdatesCheck.first, Settings::UpdatesCheck.second).toBool();
+}
+
+void Settings::setCheckForUpdates(bool enabled)
+{
+    this->settings->setValue(Settings::UpdatesCheck.first, enabled);
+}
+
+QDateTime Settings::getLastUpdateCheck() const
+{
+    // Stored as ISO 8601 UTC text so the INI stays readable and portable.
+    const QString text = this->settings->value(Settings::UpdatesLastCheck.first).toString();
+    return text.isEmpty() ? QDateTime() : QDateTime::fromString(text, Qt::ISODate);
+}
+
+void Settings::setLastUpdateCheck(const QDateTime &when)
+{
+    this->settings->setValue(Settings::UpdatesLastCheck.first,
+                             when.isValid() ? when.toUTC().toString(Qt::ISODate) : QString());
+}
+
+QString Settings::getSkippedVersion() const
+{
+    return this->settings->value(Settings::UpdatesSkipped.first).toString();
+}
+
+void Settings::setSkippedVersion(const QString &version)
+{
+    this->settings->setValue(Settings::UpdatesSkipped.first, version);
 }
 
 //----------------------------------------------------------------------------

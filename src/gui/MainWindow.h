@@ -37,6 +37,8 @@ class MainWindow;
 }
 QT_END_NAMESPACE
 
+class UpdateNotifier;
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -236,6 +238,7 @@ private:
     QPointer<HiPSWindow>             m_lastHiPSWindow;
     QPointer<QTabWidget>             m_tabs;
     QPointer<RecentDatasetsManager>  recentMgr;
+    QPointer<UpdateNotifier>         updateNotifier;   ///< new-release notice (Help ▸ Check for Updates…)
     // VLKB tab is closeable but the widget itself is preserved across
     // close/reopen so the inventory state is not lost. Held here so we can
     // distinguish it from genuinely-disposable tabs in the close handler.

@@ -285,6 +285,7 @@
     <property name="title">
      <string>Help</string>
     </property>
+    <addaction name="actionCheckUpdates"/>
     <addaction name="actionAbout"/>
    </widget>
    <addaction name="menuFile"/>
@@ -333,6 +334,14 @@
    </property>
    <property name="menuRole">
     <enum>QAction::MenuRole::QuitRole</enum>
+   </property>
+  </action>
+  <action name="actionCheckUpdates">
+   <property name="text">
+    <string>Check for Updates…</string>
+   </property>
+   <property name="menuRole">
+    <enum>QAction::MenuRole::ApplicationSpecificRole</enum>
    </property>
   </action>
   <action name="actionAbout">

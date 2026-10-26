@@ -82,6 +82,16 @@
         </item>
        </widget>
       </item>
+      <item row="2" column="0" colspan="2">
+       <widget class="QCheckBox" name="checkUpdates">
+        <property name="text">
+         <string>Check for new versions at startup</string>
+        </property>
+        <property name="toolTip">
+         <string>Once a day, ask GitHub whether a newer release of VisIVO Visual Analytics is out. The request tells GitHub your IP address and the version you run; nothing else is sent.</string>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>

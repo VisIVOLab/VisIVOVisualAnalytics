@@ -17,6 +17,7 @@
 #include "RemoteFileBrowserDialog.h"
 #include "Settings.h"
 #include "SettingsDialog.h"
+#include "UpdateNotifier.h"
 #include "theme/VisivoTheme.h"
 #include "SourceFindDialog.h"
 #include "StackDialog.h"
@@ -256,6 +257,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 
     // ── Setup Menu About ──────────────────────────────────────────────────────
     QObject::connect(ui->actionAbout, &QAction::triggered, this, &MainWindow::openAboutDialog);
+
+    // ── New-version notice ────────────────────────────────────────────────────
+    // Once a day at startup (if enabled in Settings) and on demand from Help.
+    this->updateNotifier = new UpdateNotifier(this->settings, this);
+    QObject::connect(ui->actionCheckUpdates, &QAction::triggered, this,
+                     [this]() { if (this->updateNotifier) this->updateNotifier->check(true); });
+    this->updateNotifier->scheduleStartupCheck();
 
     // ── Setup Panoramic View (VLKB tab) ──────────────────────────────────────
     this->loadPanoramicView();

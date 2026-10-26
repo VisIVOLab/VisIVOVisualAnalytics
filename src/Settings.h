@@ -1,6 +1,7 @@
 #ifndef Settings_h
 #define Settings_h
 
+#include <QDateTime>
 #include <QList>
 #include <QObject>
 #include <QPointer>
@@ -143,6 +144,19 @@ public:
    * @param flag
    */
     void setSearchOnImportFlag(bool flag);
+
+    // ── New-version notice (GitHub Releases) ─────────────────────────────────
+    /// Whether the client asks GitHub for the latest release at startup (on by
+    /// default; the request reveals the user's IP address to GitHub).
+    bool getCheckForUpdates() const;
+    void setCheckForUpdates(bool enabled);
+    /// When the last automatic check completed; invalid if never.
+    QDateTime getLastUpdateCheck() const;
+    void setLastUpdateCheck(const QDateTime &when);
+    /// A release the user chose to skip: the automatic check stays quiet about
+    /// it (a manual check still reports it). Empty when none.
+    QString getSkippedVersion() const;
+    void setSkippedVersion(const QString &version);
 
     // ── Backend (R1, R8) ──────────────────────────────────────────────────────
 
@@ -291,6 +305,9 @@ private:
     static const std::pair<QString, QVariant> MaxGlyphs;
     static const std::pair<QString, QVariant> VLKBUrl;
     static const std::pair<QString, QVariant> VLKBSearch;
+    static const std::pair<QString, QVariant> UpdatesCheck;
+    static const std::pair<QString, QVariant> UpdatesLastCheck;
+    static const std::pair<QString, QVariant> UpdatesSkipped;
 
     // Backend settings (R1, R8)
     static const std::pair<QString, QVariant> BackendUrl;
