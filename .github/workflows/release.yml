@@ -295,8 +295,14 @@ jobs:
         shell: bash
         run: |
           WS="$(pwd -W 2>/dev/null || pwd)"
-          curl -fsSL -o cfitsio.tar.gz \
-            "https://heasarc.gsfc.nasa.gov/FTP/software/fitsio/c/cfitsio-${CFITSIO_VERSION}.tar.gz"
+          # HEASARC first; the HEASARC GitHub tag archive (same sources, a
+          # different top-level directory, which --strip-components drops) when
+          # the NASA host is down or misconfigured — on 2026-10-26 it served
+          # another site's certificate and every release build failed here.
+          curl -fsSL --retry 3 -o cfitsio.tar.gz \
+            "https://heasarc.gsfc.nasa.gov/FTP/software/fitsio/c/cfitsio-${CFITSIO_VERSION}.tar.gz" \
+          || curl -fsSL --retry 3 -o cfitsio.tar.gz \
+            "https://github.com/HEASARC/cfitsio/archive/refs/tags/cfitsio-${CFITSIO_VERSION}.tar.gz"
           mkdir cfitsio-src
           tar -xzf cfitsio.tar.gz --strip-components=1 -C cfitsio-src
           # On Windows, point CMake at our locally-built zlib.
