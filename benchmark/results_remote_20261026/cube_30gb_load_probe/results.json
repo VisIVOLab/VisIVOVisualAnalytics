@@ -1,0 +1,48 @@
+{
+  "environment": {
+    "timestamp": "2026-10-26T20:23:50",
+    "base_url": "http://127.0.0.1:8012",
+    "repeats": 3,
+    "platform": "macOS-27.0.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "python": "3.11.15",
+    "note": "container: mem 8g (no swap), cpus 8, workers 4; egress netem delay 20ms rate 1gbit; health RTT median 0.051412s",
+    "memory_source": "docker exec visivo-bench cat /sys/fs/cgroup/memory.current"
+  },
+  "records": [
+    {
+      "cube": "/data/cube_30gb.fits",
+      "ops": {},
+      "width": 2466,
+      "height": 2466,
+      "depth": 1233,
+      "size_gb_f32": 29.99,
+      "open_s": 0.082,
+      "load": {
+        "slice_idle_s": [
+          2.2370142500003567,
+          1.1107607080011803,
+          1.0826450419990579,
+          1.0961915000007139,
+          1.0733245000010356,
+          1.0400570829988283,
+          1.0637411250027071,
+          1.1443456669985608,
+          1.0645004170000902,
+          1.0772689580007864
+        ],
+        "slice_busy_s": [
+          2.2881284579998464,
+          1.6864179170006537,
+          1.4066098750008678,
+          1.8596261249986128,
+          1.5755787909984065,
+          1.7366560000009486
+        ],
+        "slice_straddling_s": [],
+        "m0_under_probe_s": 12.24550279200048,
+        "slice_bytes": 30037974
+      }
+    }
+  ]
+}

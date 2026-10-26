@@ -1,0 +1,7 @@
+# Only the backend sources go into the benchmark image.
+*
+!backend/
+backend/.venv/
+backend/**/__pycache__/
+backend/tests/
+backend/.pytest_cache/

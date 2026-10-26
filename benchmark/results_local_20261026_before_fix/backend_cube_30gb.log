@@ -1,0 +1,123 @@
+INFO:     Started server process [43600]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8011 (Press CTRL+C to quit)
+2026-10-26 18:40:51,416 visivo.sessions WARNING [sessions] Created anonymous session (no X-Visivo-Session header). Multi-user isolation is disabled for this request.
+2026-10-26 18:40:51,418 visivo.fits INFO [fits] path=/Users/fvitello/visivo_bench_data/cube_30gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 18:40:51,420 visivo.backend INFO [open] session=anonymou… dataset_id=ds_556202bc7f8c kind=cube path=/Users/fvitello/visivo_bench_data/cube_30gb.fits
+
+[VisIVO] Backend token (from VISIVO_TOKEN env): benchtok
+
+
+[VisIVO] Backend token (from VISIVO_TOKEN env): benchtok
+
+[subvolume-bin-timing] roi=(910,1554,910,1554,294,938) shape=(645,645,645) raw=1073.3MB stages_s: read=3.47 tobytes=0.24 total=3.71
+[subvolume-bin-timing] roi=(910,1554,910,1554,294,938) shape=(645,645,645) raw=1073.3MB stages_s: read=0.24 tobytes=0.18 total=0.42
+[subvolume-bin-timing] roi=(910,1554,910,1554,294,938) shape=(645,645,645) raw=1073.3MB stages_s: read=0.24 tobytes=0.18 total=0.42
+[subvolume-bin-timing] roi=(0,2465,0,2465,616,616) shape=(1,2466,2466) raw=24.3MB stages_s: read=0.04 tobytes=0.01 total=0.05
+2026-10-26 18:42:24,322 visivo.fits INFO [fits] path=/Users/fvitello/visivo_bench_data/cube_30gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 18:42:24,322 visivo.cache INFO [cache] miss key=moment:/Users/fvitello/visivo_bench_data/cube_30gb.fits:608cc931a68fb84e
+2026-10-26 18:42:24,322 visivo.backend INFO [moment] backend=dask-local-threaded order=0 subset_bytes=29992261392
+2026-10-26 18:43:44,703 visivo.cache INFO [cache] insert key=moment:/Users/fvitello/visivo_bench_data/cube_30gb.fits:608cc931a68fb84e op=moment
+2026-10-26 18:43:44,759 visivo.fits INFO [fits] path=/Users/fvitello/visivo_bench_data/cube_30gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 18:43:44,759 visivo.cache INFO [cache] miss key=moment:/Users/fvitello/visivo_bench_data/cube_30gb.fits:b27bce92bd81f61d
+2026-10-26 18:43:44,759 visivo.backend INFO [moment] backend=dask-local-threaded order=0 subset_bytes=29967936768
+2026-10-26 18:45:02,980 visivo.cache INFO [cache] insert key=moment:/Users/fvitello/visivo_bench_data/cube_30gb.fits:b27bce92bd81f61d op=moment
+2026-10-26 18:45:03,044 visivo.fits INFO [fits] path=/Users/fvitello/visivo_bench_data/cube_30gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 18:45:03,044 visivo.cache INFO [cache] miss key=moment:/Users/fvitello/visivo_bench_data/cube_30gb.fits:b969049f4564d83f
+2026-10-26 18:45:03,045 visivo.backend INFO [moment] backend=dask-local-threaded order=0 subset_bytes=29943612144
+2026-10-26 18:46:20,061 visivo.cache INFO [cache] insert key=moment:/Users/fvitello/visivo_bench_data/cube_30gb.fits:b969049f4564d83f op=moment
+2026-10-26 18:46:20,122 visivo.fits INFO [fits] path=/Users/fvitello/visivo_bench_data/cube_30gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 18:46:20,122 visivo.cache INFO [cache] miss key=pv:/Users/fvitello/visivo_bench_data/cube_30gb.fits:1374991491fb1853
+2026-10-26 18:46:45,007 visivo.cache INFO [cache] insert key=pv:/Users/fvitello/visivo_bench_data/cube_30gb.fits:1374991491fb1853 op=pv
+2026-10-26 18:46:45,035 visivo.fits INFO [fits] path=/Users/fvitello/visivo_bench_data/cube_30gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 18:46:45,035 visivo.cache INFO [cache] miss key=pv:/Users/fvitello/visivo_bench_data/cube_30gb.fits:e2d1a45688618895
+2026-10-26 18:46:46,360 visivo.cache INFO [cache] insert key=pv:/Users/fvitello/visivo_bench_data/cube_30gb.fits:e2d1a45688618895 op=pv
+2026-10-26 18:46:46,384 visivo.fits INFO [fits] path=/Users/fvitello/visivo_bench_data/cube_30gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 18:46:46,384 visivo.cache INFO [cache] miss key=pv:/Users/fvitello/visivo_bench_data/cube_30gb.fits:e32e2f5520fcbf7b
+2026-10-26 18:46:47,705 visivo.cache INFO [cache] insert key=pv:/Users/fvitello/visivo_bench_data/cube_30gb.fits:e32e2f5520fcbf7b op=pv
+[slice-timing] z=651 shape=(2466,2466) raw_kB=23755 wire_kB=29340 stages_s: read=0.086 encode=0.541 total=0.627
+[slice-timing] z=425 shape=(2466,2466) raw_kB=23755 wire_kB=29337 stages_s: read=0.088 encode=0.540 total=0.628
+[slice-timing] z=661 shape=(2466,2466) raw_kB=23755 wire_kB=29341 stages_s: read=0.088 encode=0.541 total=0.629
+[slice-timing] z=354 shape=(2466,2466) raw_kB=23755 wire_kB=29336 stages_s: read=0.089 encode=0.542 total=0.631
+[slice-timing] z=325 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.090 encode=0.541 total=0.632
+[slice-timing] z=665 shape=(2466,2466) raw_kB=23755 wire_kB=29341 stages_s: read=0.090 encode=0.541 total=0.631
+[slice-timing] z=727 shape=(2466,2466) raw_kB=23755 wire_kB=29343 stages_s: read=0.089 encode=0.541 total=0.630
+[slice-timing] z=1136 shape=(2466,2466) raw_kB=23755 wire_kB=29334 stages_s: read=0.078 encode=0.541 total=0.619
+[slice-timing] z=294 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.089 encode=0.541 total=0.630
+[slice-timing] z=350 shape=(2466,2466) raw_kB=23755 wire_kB=29334 stages_s: read=0.088 encode=0.668 total=0.757
+2026-10-26 18:46:54,666 visivo.fits INFO [fits] path=/Users/fvitello/visivo_bench_data/cube_30gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 18:46:54,666 visivo.cache INFO [cache] miss key=moment:/Users/fvitello/visivo_bench_data/cube_30gb.fits:e046730d627393f2
+2026-10-26 18:46:54,666 visivo.backend INFO [moment] backend=dask-local-threaded order=0 subset_bytes=29846313648
+
+[VisIVO] Backend token (from VISIVO_TOKEN env): benchtok
+
+[slice-timing] z=289 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.017 encode=0.549 total=0.566
+[slice-timing] z=1096 shape=(2466,2466) raw_kB=23755 wire_kB=29334 stages_s: read=0.007 encode=0.555 total=0.563
+[slice-timing] z=122 shape=(2466,2466) raw_kB=23755 wire_kB=29333 stages_s: read=0.007 encode=0.550 total=0.557
+[slice-timing] z=645 shape=(2466,2466) raw_kB=23755 wire_kB=29341 stages_s: read=0.016 encode=0.549 total=0.564
+[slice-timing] z=543 shape=(2466,2466) raw_kB=23755 wire_kB=29343 stages_s: read=0.007 encode=0.549 total=0.556
+[slice-timing] z=799 shape=(2466,2466) raw_kB=23755 wire_kB=29340 stages_s: read=0.017 encode=0.548 total=0.566
+[slice-timing] z=141 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.007 encode=0.551 total=0.559
+[slice-timing] z=161 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.008 encode=0.552 total=0.560
+[slice-timing] z=875 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.007 encode=0.556 total=0.564
+[slice-timing] z=840 shape=(2466,2466) raw_kB=23755 wire_kB=29333 stages_s: read=0.008 encode=0.555 total=0.562
+[slice-timing] z=1083 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.039 encode=0.553 total=0.592
+[slice-timing] z=850 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.008 encode=0.557 total=0.565
+[slice-timing] z=366 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.007 encode=0.557 total=0.564
+[slice-timing] z=489 shape=(2466,2466) raw_kB=23755 wire_kB=29344 stages_s: read=0.015 encode=0.551 total=0.567
+[slice-timing] z=137 shape=(2466,2466) raw_kB=23755 wire_kB=29334 stages_s: read=0.091 encode=0.550 total=0.642
+[slice-timing] z=877 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.008 encode=0.549 total=0.557
+[slice-timing] z=1051 shape=(2466,2466) raw_kB=23755 wire_kB=29334 stages_s: read=0.008 encode=0.548 total=0.555
+[slice-timing] z=143 shape=(2466,2466) raw_kB=23755 wire_kB=29334 stages_s: read=0.044 encode=0.548 total=0.592
+[slice-timing] z=1035 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.007 encode=0.548 total=0.556
+[slice-timing] z=244 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.040 encode=0.548 total=0.588
+[slice-timing] z=1022 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.007 encode=0.550 total=0.557
+[slice-timing] z=470 shape=(2466,2466) raw_kB=23755 wire_kB=29345 stages_s: read=0.011 encode=0.549 total=0.560
+[slice-timing] z=369 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.013 encode=0.550 total=0.563
+[slice-timing] z=200 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.038 encode=0.550 total=0.588
+[slice-timing] z=564 shape=(2466,2466) raw_kB=23755 wire_kB=29341 stages_s: read=0.007 encode=0.549 total=0.557
+[slice-timing] z=243 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.021 encode=0.549 total=0.570
+[slice-timing] z=847 shape=(2466,2466) raw_kB=23755 wire_kB=29334 stages_s: read=0.008 encode=0.549 total=0.557
+[slice-timing] z=1155 shape=(2466,2466) raw_kB=23755 wire_kB=29334 stages_s: read=0.008 encode=0.549 total=0.556
+[slice-timing] z=935 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.275 encode=0.589 total=0.863
+[slice-timing] z=1108 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.009 encode=0.573 total=0.582
+[slice-timing] z=892 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.008 encode=0.593 total=0.601
+[slice-timing] z=1118 shape=(2466,2466) raw_kB=23755 wire_kB=29333 stages_s: read=0.010 encode=0.575 total=0.586
+[slice-timing] z=559 shape=(2466,2466) raw_kB=23755 wire_kB=29341 stages_s: read=1.892 encode=0.586 total=2.477
+[slice-timing] z=617 shape=(2466,2466) raw_kB=23755 wire_kB=29341 stages_s: read=1.025 encode=0.593 total=1.618
+[slice-timing] z=525 shape=(2466,2466) raw_kB=23755 wire_kB=29342 stages_s: read=0.885 encode=0.606 total=1.491
+[slice-timing] z=997 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.879 encode=0.667 total=1.545
+[slice-timing] z=747 shape=(2466,2466) raw_kB=23755 wire_kB=29344 stages_s: read=0.131 encode=0.623 total=0.754
+[slice-timing] z=797 shape=(2466,2466) raw_kB=23755 wire_kB=29340 stages_s: read=0.044 encode=0.694 total=0.738
+[slice-timing] z=853 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.478 encode=0.620 total=1.098
+[slice-timing] z=690 shape=(2466,2466) raw_kB=23755 wire_kB=29342 stages_s: read=0.805 encode=0.616 total=1.421
+[slice-timing] z=278 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.749 encode=0.604 total=1.353
+[slice-timing] z=872 shape=(2466,2466) raw_kB=23755 wire_kB=29334 stages_s: read=1.048 encode=0.607 total=1.655
+[slice-timing] z=969 shape=(2466,2466) raw_kB=23755 wire_kB=29334 stages_s: read=0.480 encode=0.650 total=1.129
+[slice-timing] z=391 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.307 encode=0.613 total=0.920
+[slice-timing] z=236 shape=(2466,2466) raw_kB=23755 wire_kB=29334 stages_s: read=0.059 encode=0.660 total=0.719
+[slice-timing] z=180 shape=(2466,2466) raw_kB=23755 wire_kB=29333 stages_s: read=1.364 encode=0.580 total=1.944
+[slice-timing] z=1148 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.111 encode=0.573 total=0.684
+[slice-timing] z=786 shape=(2466,2466) raw_kB=23755 wire_kB=29342 stages_s: read=0.055 encode=0.588 total=0.643
+[slice-timing] z=238 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.663 encode=0.582 total=1.246
+[slice-timing] z=48 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.378 encode=0.668 total=1.046
+[slice-timing] z=50 shape=(2466,2466) raw_kB=23755 wire_kB=29334 stages_s: read=0.437 encode=0.683 total=1.120
+[slice-timing] z=654 shape=(2466,2466) raw_kB=23755 wire_kB=29341 stages_s: read=0.064 encode=0.726 total=0.790
+[slice-timing] z=300 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.761 encode=0.729 total=1.490
+[slice-timing] z=603 shape=(2466,2466) raw_kB=23755 wire_kB=29342 stages_s: read=0.894 encode=0.610 total=1.504
+[slice-timing] z=178 shape=(2466,2466) raw_kB=23755 wire_kB=29334 stages_s: read=0.615 encode=0.726 total=1.341
+[slice-timing] z=609 shape=(2466,2466) raw_kB=23755 wire_kB=29341 stages_s: read=0.938 encode=0.716 total=1.654
+[slice-timing] z=170 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.677 encode=0.682 total=1.359
+[slice-timing] z=701 shape=(2466,2466) raw_kB=23755 wire_kB=29343 stages_s: read=0.126 encode=0.726 total=0.852
+[slice-timing] z=530 shape=(2466,2466) raw_kB=23755 wire_kB=29342 stages_s: read=0.910 encode=0.619 total=1.529
+[slice-timing] z=696 shape=(2466,2466) raw_kB=23755 wire_kB=29342 stages_s: read=0.635 encode=0.577 total=1.211
+[slice-timing] z=836 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.270 encode=0.557 total=0.826
+[slice-timing] z=527 shape=(2466,2466) raw_kB=23755 wire_kB=29342 stages_s: read=0.055 encode=0.550 total=0.605
+2026-10-26 18:48:09,576 visivo.cache INFO [cache] insert key=moment:/Users/fvitello/visivo_bench_data/cube_30gb.fits:e046730d627393f2 op=moment
+[slice-timing] z=810 shape=(2466,2466) raw_kB=23755 wire_kB=29336 stages_s: read=0.055 encode=0.547 total=0.602
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2026-10-26 18:48:10,921 visivo.backend INFO [shutdown] worker pool stopped (2 worker(s), 0 terminated, 0 killed)
+INFO:     Application shutdown complete.
+INFO:     Finished server process [43600]

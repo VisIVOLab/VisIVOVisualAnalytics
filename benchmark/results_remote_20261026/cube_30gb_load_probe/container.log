@@ -1,0 +1,36 @@
+
+[VisIVO] Backend token (from VISIVO_TOKEN env): benchtok
+
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+2026-10-26 19:23:50,863 visivo.sessions WARNING [sessions] Created anonymous session (no X-Visivo-Session header). Multi-user isolation is disabled for this request.
+2026-10-26 19:23:50,869 visivo.fits INFO [fits] path=/data/cube_30gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 19:23:50,871 visivo.backend INFO [open] session=anonymou… dataset_id=ds_e6fb0d6f1774 kind=cube path=/data/cube_30gb.fits
+
+[VisIVO] Backend token (from VISIVO_TOKEN env): benchtok
+
+[slice-timing] z=651 shape=(2466,2466) raw_kB=23755 wire_kB=29340 stages_s: read=0.011 encode=0.550 total=0.561
+[slice-timing] z=425 shape=(2466,2466) raw_kB=23755 wire_kB=29337 stages_s: read=0.020 encode=0.562 total=0.582
+[slice-timing] z=661 shape=(2466,2466) raw_kB=23755 wire_kB=29341 stages_s: read=0.021 encode=0.556 total=0.577
+[slice-timing] z=354 shape=(2466,2466) raw_kB=23755 wire_kB=29336 stages_s: read=0.021 encode=0.559 total=0.581
+[slice-timing] z=325 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.019 encode=0.555 total=0.574
+[slice-timing] z=665 shape=(2466,2466) raw_kB=23755 wire_kB=29341 stages_s: read=0.011 encode=0.544 total=0.555
+[slice-timing] z=727 shape=(2466,2466) raw_kB=23755 wire_kB=29343 stages_s: read=0.011 encode=0.546 total=0.557
+[slice-timing] z=1136 shape=(2466,2466) raw_kB=23755 wire_kB=29334 stages_s: read=0.021 encode=0.555 total=0.576
+[slice-timing] z=294 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.018 encode=0.555 total=0.572
+[slice-timing] z=350 shape=(2466,2466) raw_kB=23755 wire_kB=29334 stages_s: read=0.019 encode=0.556 total=0.576
+2026-10-26 19:24:02,939 visivo.fits INFO [fits] path=/data/cube_30gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 19:24:02,939 visivo.cache INFO [cache] miss key=moment:/data/cube_30gb.fits:e046730d627393f2
+2026-10-26 19:24:02,940 visivo.backend INFO [moment] backend=dask-local-threaded order=0 subset_bytes=29846313648
+
+[VisIVO] Backend token (from VISIVO_TOKEN env): benchtok
+
+[slice-timing] z=289 shape=(2466,2466) raw_kB=23755 wire_kB=29335 stages_s: read=0.189 encode=0.600 total=0.788
+[slice-timing] z=1096 shape=(2466,2466) raw_kB=23755 wire_kB=29334 stages_s: read=0.506 encode=0.721 total=1.227
+[slice-timing] z=122 shape=(2466,2466) raw_kB=23755 wire_kB=29333 stages_s: read=0.355 encode=0.583 total=0.938
+[slice-timing] z=645 shape=(2466,2466) raw_kB=23755 wire_kB=29341 stages_s: read=0.691 encode=0.688 total=1.380
+[slice-timing] z=543 shape=(2466,2466) raw_kB=23755 wire_kB=29343 stages_s: read=0.521 encode=0.589 total=1.110
+[slice-timing] z=799 shape=(2466,2466) raw_kB=23755 wire_kB=29340 stages_s: read=0.555 encode=0.607 total=1.162
+2026-10-26 19:24:14,503 visivo.cache INFO [cache] insert key=moment:/data/cube_30gb.fits:e046730d627393f2 op=moment

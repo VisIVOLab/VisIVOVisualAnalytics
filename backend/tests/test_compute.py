@@ -1024,6 +1024,129 @@ def test_moment_dask_local_matches_worker(tmp_path):
         assert np.allclose(a[fin], b[fin], rtol=1e-4, atol=1e-4), f"order {order}"
 
 
+def test_dask_moment_blocks_are_sized_in_bytes():
+    """A dask block never exceeds the byte budget, whatever the plane size: a
+    fixed 64-channel block was 1.6 GB on a 2466² plane and four threads of it
+    were enough to get an 8 GB service killed."""
+    from app.compute import moment as m
+
+    budget = m._MOMENT_CHUNK_BYTES
+    for plane in (2466 * 2466 * 4, 1586 * 1586 * 4, 794 * 794 * 4, 100 * 100 * 4):
+        z = m._moment_chunk_z(plane, 64)
+        assert 1 <= z <= 64
+        assert z == 1 or z * plane <= budget
+    assert m._moment_chunk_z(budget * 10, 64) == 1          # one plane over budget
+    assert m._moment_chunk_z(4, 64) == 64                   # never above the request
+
+
+def test_dask_moment_never_holds_the_whole_cube(tmp_path, monkeypatch):
+    """Out-of-core means the cube is never resident: dask's from_array copies an
+    ndarray source before chunking, which used to put the whole selected range
+    in memory. With small blocks the peak allocation must stay well below the
+    cube's size."""
+    import tracemalloc
+    from astropy.io import fits
+    from app.compute import moment as m
+
+    monkeypatch.setattr(m, "_MOMENT_CHUNK_BYTES", 256 * 1024)
+    # Deep enough that a resident cube would show: the reduction itself keeps a
+    # few dozen partial planes alive (about 30 MiB here, independent of depth).
+    nz, ny, nx = 256, 256, 512                    # 128 MiB of float32
+    hdu = fits.PrimaryHDU(np.ones((nz, ny, nx), np.float32))
+    h = hdu.header
+    h["CTYPE1"], h["CTYPE2"], h["CTYPE3"] = "RA---SIN", "DEC--SIN", "VRAD"
+    h["CRVAL3"], h["CRPIX3"], h["CDELT3"] = 0.0, 1.0, 1000.0
+    h["CUNIT3"] = "m/s"
+    p = tmp_path / "big.fits"
+    hdu.writeto(p, overwrite=True)
+    # M0 and the moments that need the centroid first (M1, M2, kurtosis): the
+    # latter used to keep every block of the first pass until the centroid was
+    # known, i.e. the whole cube.
+    for order in (0, 1, 2, 4):
+        tracemalloc.start()
+        try:
+            m._moment_map_dask(str(p), order, 0, nz - 1, 0.0, False, 64, None)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert peak < nz * ny * nx * 4 / 2, (
+            f"order {order}: peak {peak / 2**20:.1f} MiB for a 128 MiB cube")
+
+
+def test_dask_moment_source_refuses_a_file_changed_mid_computation(tmp_path):
+    """One computation never mixes two versions of a cube: a source built
+    against one file refuses to read it once it has been replaced."""
+    import os
+    import time
+    from astropy.io import fits
+    from app.compute import moment as m
+
+    p = tmp_path / "c.fits"
+    fits.PrimaryHDU(np.zeros((4, 3, 3), np.float32)).writeto(p)
+    src = m._FitsCubeSource(str(p), 0, 0, (4, 3, 3), np.dtype(">f4"))
+    assert src[0:2].shape == (2, 3, 3)
+    time.sleep(0.01)
+    fits.PrimaryHDU(np.ones((4, 3, 3), np.float32)).writeto(tmp_path / "n.fits")
+    os.replace(tmp_path / "n.fits", p)
+    with pytest.raises(RuntimeError, match="changed"):
+        src[2:4]
+
+
+def test_dask_moment_source_maps_the_file_it_checked(tmp_path, monkeypatch):
+    """A file replaced while it is being opened is not read: the signature is
+    checked on the open descriptor and that same descriptor is mapped, so the
+    block comes from the version the graph was built against."""
+    import os
+    from astropy.io import fits
+    from app.compute import moment as m
+
+    p = tmp_path / "c.fits"
+    fits.PrimaryHDU(np.zeros((4, 3, 3), np.float32)).writeto(p)
+    src = m._FitsCubeSource(str(p), 0, 0, (4, 3, 3), np.dtype(">f4"))
+    fits.PrimaryHDU(np.ones((4, 3, 3), np.float32)).writeto(tmp_path / "n.fits")
+    original = fits.open
+
+    def replacing_open(*args, **kwargs):
+        os.replace(tmp_path / "n.fits", p)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(fits, "open", replacing_open)
+    for fh, hdul, _ in list(m._MAPPED_CUBES.values()):
+        hdul.close()
+        fh.close()
+    m._MAPPED_CUBES.clear()
+    assert np.all(src[0:2] == 0.0)
+
+
+def test_dask_moment_matches_with_single_channel_blocks(tmp_path, monkeypatch):
+    """The byte budget changes only the block size, not the result: with a
+    budget that forces one channel per block the dask path still equals the
+    in-process path for every order it supports."""
+    from astropy.io import fits
+    from app.compute import moment as m
+    from app.compute import worker_moment
+
+    monkeypatch.setattr(m, "_MOMENT_CHUNK_BYTES", 1)
+    nz, ny, nx = 24, 9, 11
+    rng = np.random.default_rng(5)
+    data = (rng.uniform(0.5, 3.0, (nz, ny, nx))).astype(np.float32)
+    p = tmp_path / "chunked.fits"
+    hdu = fits.PrimaryHDU(data)
+    h = hdu.header
+    h["CTYPE1"], h["CTYPE2"], h["CTYPE3"] = "RA---SIN", "DEC--SIN", "VRAD"
+    h["CRVAL3"], h["CRPIX3"], h["CDELT3"] = 0.0, 1.0, 1000.0
+    h["CUNIT3"] = "m/s"
+    hdu.writeto(p, overwrite=True)
+    for order in (0, 1, 2, 6):
+        a = _decode_f32(worker_moment(str(p), order, 0, nz - 1, False, 0.0)["data_base64"])
+        b = _decode_f32(m._moment_map_dask(str(p), order, 0, nz - 1, 0.0, False, 64, None)
+                        ["data_base64"])
+        assert np.array_equal(np.isfinite(a), np.isfinite(b)), f"order {order}"
+        fin = np.isfinite(a) & np.isfinite(b)
+        assert fin.any()
+        assert np.allclose(a[fin], b[fin], rtol=1e-4, atol=1e-4), f"order {order}"
+
+
 # ── worker_image_tile: out-of-core 2-D pyramid tiling ─────────────────────────
 
 

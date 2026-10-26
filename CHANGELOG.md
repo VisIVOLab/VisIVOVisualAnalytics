@@ -6,7 +6,7 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
-## Unreleased
+## 1.0.5 (2026-10-26)
 
 - **New-version notice.** Once a day at startup the client asks GitHub for the
   latest release and, when a newer one is out, offers to open its download
@@ -18,6 +18,16 @@ are preserved here unedited; the branch names they refer to are historical.
   list and reopen in the vector-field viewer. An older entry that had recorded
   a velocity field as an image no longer opens a blank image viewer: cube and
   image entries are re-identified when reopened.
+- **Moment maps of large cubes are out-of-core in fact, not only in name.**
+  The dask path handed the memory-mapped cube to `dask.array.from_array`,
+  which copies an ndarray before chunking it: the whole selected channel range
+  was read into memory. A service capped at 8 GB was killed computing a masked
+  M0 of an 8 GB cube. The cube is now read block by block from the file, blocks
+  are sized in bytes (`VISIVO_MOMENT_CHUNK_BYTES`, 64 MB by default) and the
+  moments that need the centroid first (M1 to M5) are computed in two passes
+  instead of keeping the first pass's blocks. Results are unchanged. A file
+  replaced on disk during the computation is reported instead of read half old,
+  half new.
 - **Basins and full-resolution regions do not freeze the window.** In the
   velocity-field viewer both are computed in the background under the same
   progress sheet as the other analysis tools, instead of a blocking wait

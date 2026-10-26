@@ -3,16 +3,13 @@ message: "If you use this software, please cite it as below."
 title: "VisIVO Visual Analytics"
 abstract: "A hybrid desktop–service visual analytics platform for astronomical data cubes: a Qt 6/VTK 9 client and a REST compute service that run embedded on a laptop or next to the data, with a kinematic lasso for PPV source selection, interactive tilted-ring modelling and persistent, replayable analysis products."
 type: software
-version: 1.0.4
+version: 1.0.5
 date-released: 2026-10-26
 doi: 10.5281/zenodo.23669666
 identifiers:
   - type: doi
     value: 10.5281/zenodo.23669666
     description: "Concept DOI: all versions, resolves to the latest"
-  - type: doi
-    value: 10.5281/zenodo.23669667
-    description: "Version 1.0.4"
 license: Apache-2.0
 repository-code: "https://github.com/VisIVOLab/VisIVOVisualAnalytics"
 url: "https://visivo.readthedocs.io"

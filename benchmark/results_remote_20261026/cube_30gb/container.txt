@@ -1,0 +1,13 @@
+memory_peak_bytes 8589934592
+memory_max_bytes 8589934592
+oom_events 0
+health_rtt_median_s 0.047761
+--- tc
+qdisc netem 8003: root refcnt 19 limit 1000 delay 20ms rate 1Gbit seed 18076067295346108733
+ Sent 5803688485 bytes 91602 pkt (dropped 0, overlimits 0 requeues 0) 
+ backlog 0b 0p requeues 0
+--- memory.stat
+anon 1654677504
+file 143962112
+shmem 61440
+file_mapped 116928512

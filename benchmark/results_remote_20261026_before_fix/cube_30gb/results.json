@@ -1,0 +1,85 @@
+{
+  "environment": {
+    "timestamp": "2026-10-26T18:51:35",
+    "base_url": "http://127.0.0.1:8012",
+    "repeats": 3,
+    "platform": "macOS-27.0.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "python": "3.11.15",
+    "note": "container: mem 8g (no swap), cpus 8, workers 4; egress netem delay 20ms rate 1gbit; health RTT median 0.046359s",
+    "memory_source": "docker exec visivo-bench cat /sys/fs/cgroup/memory.current"
+  },
+  "records": [
+    {
+      "cube": "/data/cube_30gb.fits",
+      "ops": {
+        "preview": [
+          21.457181499998114,
+          20.465717209001014,
+          20.455889000000752
+        ],
+        "roi": [
+          15.137093790999643,
+          14.971121500002482,
+          14.850289833000716
+        ],
+        "lasso": [
+          17.116232041997137,
+          17.10783904100026,
+          17.687356833001104
+        ],
+        "pv": [
+          56.21882454200022,
+          42.91062500000044,
+          43.65062899999975
+        ]
+      },
+      "width": 2466,
+      "height": 2466,
+      "depth": 1233,
+      "size_gb_f32": 29.99,
+      "open_s": 0.071,
+      "peak_mem_gb": {
+        "preview": 8.59,
+        "roi": 8.47,
+        "lasso": 6.26,
+        "pv": 8.59
+      },
+      "bytes_out": {
+        "preview": 582794389,
+        "roi": 1073344500,
+        "lasso": 8586756,
+        "pv": 16010559
+      },
+      "roi_gb": 1.07,
+      "seed_zyx": [
+        616,
+        1254,
+        1220
+      ],
+      "lasso_selected_voxels": 639280,
+      "failed_ops": {
+        "masked M0": "OpFailed: A process in the process pool was terminated abruptly while the future was running or pending."
+      },
+      "load": {
+        "slice_idle_s": [
+          1.4671640000015032,
+          1.043972916999337,
+          1.0511435829976108,
+          1.0538050420000218,
+          1.044092541000282,
+          1.011329166998621,
+          1.0328095839977323,
+          1.0569544159989164,
+          1.0570312920026481,
+          1.051396750001004
+        ],
+        "slice_busy_s": [
+          2.7687925409991294
+        ],
+        "m0_under_probe_s": 2.918041417000495,
+        "slice_bytes": 30037974
+      }
+    }
+  ]
+}

@@ -39,6 +39,7 @@ except Exception:
 
 try:
     import dask.array as _da  # type: ignore[import-untyped]
+    from dask.base import tokenize as _dask_tokenize  # type: ignore[import-untyped]
     _DASK_OK = True
 except ImportError:
     _DASK_OK = False
@@ -70,6 +71,106 @@ _MOMENT_THREADS = int(_os.environ.get("VISIVO_MOMENT_THREADS", "0"))
 # keep the faster in-memory (GPU/Numba) path.
 _MOMENT_STREAM_BYTES = int(_os.environ.get("VISIVO_MOMENT_STREAM_BYTES", str(2 * 1024 ** 3)))
 _MOMENT_SLAB_CHANNELS = max(1, int(_os.environ.get("VISIVO_MOMENT_SLAB_CHANNELS", "64")))
+# Out-of-core means bounded memory, not just lazy reads. The dask path processes
+# one block of channels per thread, and each block spawns a few temporaries (the
+# finite mask, the clipped copy, the float64 product with the channel widths):
+# about seven times the block's float32 size. A fixed 64-channel block is 0.6 GB
+# on a 1586² plane and 1.6 GB on a 2466² one, so four threads needed 16-40 GB and
+# a service capped at 8 GB was killed (measured, benchmark/remote). The block is
+# therefore sized in BYTES: at most this many per block, at least one channel.
+_MOMENT_CHUNK_BYTES = int(_os.environ.get("VISIVO_MOMENT_CHUNK_BYTES", str(64 * 1024 ** 2)))
+
+
+class _FitsCubeSource:
+    """The channel range of a FITS cube as dask's source, read block by block.
+
+    ``dask.array.from_array`` copies a NumPy array before chunking it, and the
+    array astropy returns for a memory-mapped FITS image is a plain ndarray over
+    the mapping: handing it to dask materialised the WHOLE selected range in RAM
+    (32 MiB for a 32 MiB cube, measured), so the "out-of-core" path held the
+    cube in memory. This object is not an ndarray: it carries only the path and
+    the range, and each block dask asks for is read from the mapping on demand.
+    It pickles to a few fields, so a distributed worker maps its own slabs.
+
+    It also carries the file's size and modification time when the graph was
+    built, and refuses to read a file that has changed since: one computation
+    must never mix two versions of a cube.
+    """
+
+    ndim = 3
+
+    def __init__(self, path: str, hdu_index: int, z0: int, shape: tuple, dtype) -> None:
+        self.path = str(path)
+        self.hdu_index = int(hdu_index)
+        self.z0 = int(z0)
+        self.shape = tuple(int(n) for n in shape)
+        self.dtype = np.dtype(dtype)
+        st = _os.stat(self.path)
+        self.signature = (int(st.st_size), int(st.st_mtime_ns))
+
+    def __getitem__(self, key):
+        cube = _mapped_cube(self.path, self.hdu_index, self.signature)
+        view = cube[self.z0 : self.z0 + self.shape[0]]
+        return np.array(view[key])   # a copy of this block only
+
+
+_MAPPED_CUBES: dict[tuple, tuple] = {}
+_MAPPED_CUBES_LOCK = __import__("threading").Lock()
+_MAPPED_CUBES_MAX = 4
+
+
+def _mapped_cube(path: str, hdu_index: int, signature: tuple[int, int]) -> np.ndarray:
+    """The 3-D memory-mapped data of ``path``, opened once per process.
+
+    ``signature`` is the (size, mtime) the caller's graph was built against; a
+    file that no longer matches is an error, not a silent switch to the new
+    content. The check is made on the descriptor that is then mapped. The
+    cache holds at most a few open files and is shared by the threads of the
+    local scheduler, so lookup, eviction and opening happen under one lock; the
+    caller slices the returned mapping outside it.
+    """
+    from astropy.io import fits as _fits  # noqa: PLC0415
+
+    want = (int(signature[0]), int(signature[1]))
+    key = (path, int(hdu_index), want)
+    with _MAPPED_CUBES_LOCK:
+        hit = _MAPPED_CUBES.get(key)
+        if hit is None:
+            # Open the descriptor first and check THAT file, then map the same
+            # descriptor: a path checked and opened separately could be replaced
+            # in between, and the new content cached under the old signature.
+            fh = open(path, "rb")  # noqa: SIM115 - kept open with the mapping
+            try:
+                st = _os.fstat(fh.fileno())
+                if (int(st.st_size), int(st.st_mtime_ns)) != want:
+                    raise RuntimeError(f"{path} changed while a moment was being computed.")
+                hdul = _fits.open(fh, memmap=True, mode="readonly")
+                data = ScientificFitsDataset.squeeze_to_3d(hdul[hdu_index].data)
+            except BaseException:
+                fh.close()
+                raise
+            while len(_MAPPED_CUBES) >= _MAPPED_CUBES_MAX:
+                # Closing drops only the handles; a block another thread is
+                # copying keeps the mapping alive through its own reference.
+                _, (old_fh, old_hdul, _old) = _MAPPED_CUBES.popitem()
+                old_hdul.close()
+                old_fh.close()
+            hit = _MAPPED_CUBES[key] = (fh, hdul, data)
+        else:
+            # A cached mapping is of the right version; the path must still be.
+            st = _os.stat(path)
+            if (int(st.st_size), int(st.st_mtime_ns)) != want:
+                raise RuntimeError(f"{path} changed while a moment was being computed.")
+        return hit[2]
+
+
+def _moment_chunk_z(plane_bytes: int, requested: int) -> int:
+    """Channels per dask block: as many as fit in ``_MOMENT_CHUNK_BYTES``, never
+    more than ``requested`` and never fewer than one."""
+    fit = _MOMENT_CHUNK_BYTES // max(1, int(plane_bytes))
+    return int(max(1, min(int(requested), fit)))
+
+
 # Higher-order moments that the Dask backend supports out-of-core (R-06 fallback).
 _DASK_MOMENT_ORDERS = frozenset({3, 4, 5, 6, 8, 10})
 
@@ -642,8 +743,18 @@ def _moment_map_dask(
             effective_threshold = _auto_mask_threshold(data, z0, z1)
         spectral = dataset.spectral_axis_metadata(z0, z1)
         # Wrap the memmap slice in a Dask array — data is NOT loaded yet.
-        sub_memmap = data[z0 : z1 + 1, :, :]
-        da_cube = _da.from_array(sub_memmap, chunks=(chunk_z, -1, -1))
+        source = _FitsCubeSource(fits_path, dataset.hdu_index, z0,
+                                 (z1 - z0 + 1, int(data.shape[1]), int(data.shape[2])),
+                                 data.dtype)
+        chunk_z = _moment_chunk_z(source.shape[1] * source.shape[2] * source.dtype.itemsize,
+                                  chunk_z)
+        # An explicit name (dask would otherwise tokenise the source object) that
+        # changes with anything that changes the blocks: file, version, HDU,
+        # channel range and block size.
+        da_cube = _da.from_array(
+            source, chunks=(chunk_z, -1, -1), lock=False, fancy=False,
+            name="fits-" + _dask_tokenize(source.path, source.signature, source.hdu_index,
+                                          z0, z1, chunk_z))
         spectral_values = np.asarray(spectral["coordinates"], dtype=np.float64)
         spectral_delta = _integrated_spacing(spectral_values)
         bunit = dataset.bunit
@@ -658,69 +769,54 @@ def _moment_map_dask(
 
     da_delta = _da.from_array(spectral_delta[:, None, None], chunks=(chunk_z, -1, -1))
 
-    if order == 0:
-        da_result = _da.nansum(da_safe * da_delta, axis=0)
-    elif order == 6:
-        da_result = _da.sqrt(_da.nanmean(da_safe * da_safe, axis=0))
-    elif order == 8:
-        da_result = _da.nanmax(da_safe, axis=0)
-    elif order == 10:
-        da_result = _da.nanmin(da_safe, axis=0)
-    elif order == 1:
-        da_sv = _da.from_array(spectral_values[:, None, None], chunks=(chunk_z, -1, -1))
-        m0 = _da.nansum(da_safe * da_delta, axis=0)
-        num = _da.nansum(da_safe * da_sv * da_delta, axis=0)
-        da_result = _da.where(m0 != 0.0, num / m0, np.nan)
-    elif order == 2:
-        da_sv = _da.from_array(spectral_values[:, None, None], chunks=(chunk_z, -1, -1))
-        m0 = _da.nansum(da_safe * da_delta, axis=0)
-        m1 = _da.where(m0 != 0.0, _da.nansum(da_safe * da_sv * da_delta, axis=0) / m0, np.nan)
-        diff = da_sv - m1[None, :, :]
-        da_result = _da.where(m0 != 0.0,
-                              _da.nansum(da_safe * diff * diff * da_delta, axis=0) / m0,
-                              np.nan)
-    elif order in {3, 4, 5}:
-        da_sv = _da.from_array(spectral_values[:, None, None], chunks=(chunk_z, -1, -1))
-        m0 = _da.nansum(da_safe * da_delta, axis=0)
-        valid_m0 = m0 != 0.0
-        m1 = _da.where(valid_m0, _da.nansum(da_safe * da_sv * da_delta, axis=0) / m0, np.nan)
-        diff = da_sv - m1[None, :, :]
-        m2 = _da.where(valid_m0,
-                       _da.nansum(da_safe * diff * diff * da_delta, axis=0) / m0,
-                       np.nan)
-        sigma = _da.sqrt(_da.where(m2 > 0.0, m2, np.nan))
-        if order == 3:
-            m3_raw = _da.where(valid_m0,
-                               _da.nansum(da_safe * diff ** 3 * da_delta, axis=0) / m0,
-                               np.nan)
-            da_result = _da.where(sigma != 0.0, m3_raw / sigma ** 3, np.nan)
-        elif order == 4:
-            m4_raw = _da.where(valid_m0,
-                               _da.nansum(da_safe * diff ** 4 * da_delta, axis=0) / m0,
-                               np.nan)
-            da_result = _da.where(sigma != 0.0, m4_raw / sigma ** 4 - 3.0, np.nan)
-        else:  # order == 5
-            m5_raw = _da.where(valid_m0,
-                               _da.nansum(da_safe * diff ** 5 * da_delta, axis=0) / m0,
-                               np.nan)
-            da_result = _da.where(sigma != 0.0, m5_raw / sigma ** 5, np.nan)
-    else:
-        raise ValueError(f"Unsupported moment order for Dask path: {order}.")
+    def compute(*arrays):
+        """Evaluate dask arrays together: on the distributed cluster if one is
+        configured (each worker maps its own slabs from the shared filesystem),
+        else on the local threaded scheduler."""
+        if dist_client is not None:
+            return tuple(dist_client.compute(list(arrays), sync=True))
+        return _da.compute(*arrays, scheduler="threads", num_workers=_n_moment_threads())
 
-    # Distributed cluster path: dispatch the graph to all dask workers
-    # across all nodes. Each worker mmaps its own slab from the FITS file
-    # on the shared filesystem and computes a partial reduction; the
-    # final aggregation happens on the scheduler. On SKA-scale cubes the
-    # speedup is roughly linear in worker count until BeeGFS sequential
-    # throughput saturates.
-    if dist_client is not None:
-        image = dist_client.compute(da_result, sync=True).astype(np.float32)
-    else:
-        # Local fallback: in-process thread pool. Fine for small cubes
-        # and when no Dask cluster is configured.
-        image = da_result.compute(
-            scheduler="threads", num_workers=_n_moment_threads()
-        ).astype(np.float32)
+    # Every reduction below consumes each block as soon as it is read. Moments
+    # that need the centroid first are computed in two passes, the second
+    # re-reading the blocks from disk with the centroid as a plain array: a
+    # single graph would keep every block of the first pass in memory until the
+    # centroid was known, i.e. the whole cube.
+    with np.errstate(invalid="ignore", divide="ignore"):
+        if order == 0:
+            (result,) = compute(_da.nansum(da_safe * da_delta, axis=0))
+        elif order == 6:
+            (result,) = compute(_da.sqrt(_da.nanmean(da_safe * da_safe, axis=0)))
+        elif order == 8:
+            (result,) = compute(_da.nanmax(da_safe, axis=0))
+        elif order == 10:
+            (result,) = compute(_da.nanmin(da_safe, axis=0))
+        elif order in {1, 2, 3, 4, 5}:
+            da_sv = _da.from_array(spectral_values[:, None, None], chunks=(chunk_z, -1, -1))
+            m0, num = compute(_da.nansum(da_safe * da_delta, axis=0),
+                              _da.nansum(da_safe * da_sv * da_delta, axis=0))
+            valid_m0 = m0 != 0.0
+            m1 = np.where(valid_m0, num / np.where(valid_m0, m0, 1.0), np.nan)
+            if order == 1:
+                result = m1
+            else:
+                diff = da_sv - m1[None, :, :]
+                if order == 2:
+                    (m2_num,) = compute(_da.nansum(da_safe * diff * diff * da_delta, axis=0))
+                    result = np.where(valid_m0, m2_num / np.where(valid_m0, m0, 1.0), np.nan)
+                else:
+                    m2_num, mk_num = compute(
+                        _da.nansum(da_safe * diff * diff * da_delta, axis=0),
+                        _da.nansum(da_safe * diff ** order * da_delta, axis=0))
+                    safe_m0 = np.where(valid_m0, m0, 1.0)
+                    m2 = np.where(valid_m0, m2_num / safe_m0, np.nan)
+                    mk_raw = np.where(valid_m0, mk_num / safe_m0, np.nan)
+                    sigma = np.sqrt(np.where(m2 > 0.0, m2, np.nan))
+                    norm = np.where(sigma != 0.0, mk_raw / sigma ** order, np.nan)
+                    result = norm - 3.0 if order == 4 else norm
+        else:
+            raise ValueError(f"Unsupported moment order for Dask path: {order}.")
+    image = np.asarray(result).astype(np.float32)
 
     _apply_position_moment_range_guard(image, order, spectral_values)
     # R-03: order-2 default → velocity dispersion (sqrt of variance), same as

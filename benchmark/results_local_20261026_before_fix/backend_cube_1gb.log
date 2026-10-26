@@ -1,0 +1,64 @@
+INFO:     Started server process [38576]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8011 (Press CTRL+C to quit)
+2026-10-26 17:34:36,015 visivo.sessions WARNING [sessions] Created anonymous session (no X-Visivo-Session header). Multi-user isolation is disabled for this request.
+2026-10-26 17:34:36,018 visivo.fits INFO [fits] path=/Users/fvitello/visivo_bench_data/cube_1gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 17:34:36,020 visivo.backend INFO [open] session=anonymou… dataset_id=ds_9b252514ec14 kind=cube path=/Users/fvitello/visivo_bench_data/cube_1gb.fits
+
+[VisIVO] Backend token (from VISIVO_TOKEN env): benchtok
+
+
+[VisIVO] Backend token (from VISIVO_TOKEN env): benchtok
+
+[subvolume-bin-timing] roi=(0,793,0,793,0,396) shape=(397,794,794) raw=1001.1MB stages_s: read=0.12 tobytes=0.21 total=0.32
+[subvolume-bin-timing] roi=(0,793,0,793,0,396) shape=(397,794,794) raw=1001.1MB stages_s: read=0.08 tobytes=0.17 total=0.25
+[subvolume-bin-timing] roi=(0,793,0,793,0,396) shape=(397,794,794) raw=1001.1MB stages_s: read=0.08 tobytes=0.16 total=0.24
+[subvolume-bin-timing] roi=(74,718,74,718,0,396) shape=(397,645,645) raw=660.6MB stages_s: read=0.07 tobytes=0.11 total=0.17
+[subvolume-bin-timing] roi=(74,718,74,718,0,396) shape=(397,645,645) raw=660.6MB stages_s: read=0.07 tobytes=0.11 total=0.17
+[subvolume-bin-timing] roi=(74,718,74,718,0,396) shape=(397,645,645) raw=660.6MB stages_s: read=0.06 tobytes=0.11 total=0.17
+[subvolume-bin-timing] roi=(0,793,0,793,198,198) shape=(1,794,794) raw=2.5MB stages_s: read=0.01 tobytes=0.00 total=0.01
+2026-10-26 17:34:46,431 visivo.fits INFO [fits] path=/Users/fvitello/visivo_bench_data/cube_1gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 17:34:46,431 visivo.cache INFO [cache] miss key=moment:/Users/fvitello/visivo_bench_data/cube_1gb.fits:a302c7ec8c17f50f
+2026-10-26 17:34:46,432 visivo.backend INFO [moment] backend=dask-local-threaded order=0 subset_bytes=1001132368
+2026-10-26 17:34:47,446 visivo.cache INFO [cache] insert key=moment:/Users/fvitello/visivo_bench_data/cube_1gb.fits:a302c7ec8c17f50f op=moment
+2026-10-26 17:34:47,454 visivo.fits INFO [fits] path=/Users/fvitello/visivo_bench_data/cube_1gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 17:34:47,454 visivo.cache INFO [cache] miss key=moment:/Users/fvitello/visivo_bench_data/cube_1gb.fits:883764b76b69ae16
+2026-10-26 17:34:47,454 visivo.backend INFO [moment] backend=dask-local-threaded order=0 subset_bytes=998610624
+2026-10-26 17:34:48,075 visivo.cache INFO [cache] insert key=moment:/Users/fvitello/visivo_bench_data/cube_1gb.fits:883764b76b69ae16 op=moment
+2026-10-26 17:34:48,082 visivo.fits INFO [fits] path=/Users/fvitello/visivo_bench_data/cube_1gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 17:34:48,082 visivo.cache INFO [cache] miss key=moment:/Users/fvitello/visivo_bench_data/cube_1gb.fits:06a7cd474e0e8063
+2026-10-26 17:34:48,082 visivo.backend INFO [moment] backend=dask-local-threaded order=0 subset_bytes=996088880
+2026-10-26 17:34:48,691 visivo.cache INFO [cache] insert key=moment:/Users/fvitello/visivo_bench_data/cube_1gb.fits:06a7cd474e0e8063 op=moment
+2026-10-26 17:34:48,698 visivo.fits INFO [fits] path=/Users/fvitello/visivo_bench_data/cube_1gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 17:34:48,698 visivo.cache INFO [cache] miss key=pv:/Users/fvitello/visivo_bench_data/cube_1gb.fits:413fcc39fe013c67
+2026-10-26 17:34:48,789 visivo.cache INFO [cache] insert key=pv:/Users/fvitello/visivo_bench_data/cube_1gb.fits:413fcc39fe013c67 op=pv
+2026-10-26 17:34:48,794 visivo.fits INFO [fits] path=/Users/fvitello/visivo_bench_data/cube_1gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 17:34:48,794 visivo.cache INFO [cache] miss key=pv:/Users/fvitello/visivo_bench_data/cube_1gb.fits:8b5ae685578cb431
+2026-10-26 17:34:48,885 visivo.cache INFO [cache] insert key=pv:/Users/fvitello/visivo_bench_data/cube_1gb.fits:8b5ae685578cb431 op=pv
+2026-10-26 17:34:48,890 visivo.fits INFO [fits] path=/Users/fvitello/visivo_bench_data/cube_1gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 17:34:48,890 visivo.cache INFO [cache] miss key=pv:/Users/fvitello/visivo_bench_data/cube_1gb.fits:41b8f7e22329500d
+2026-10-26 17:34:48,979 visivo.cache INFO [cache] insert key=pv:/Users/fvitello/visivo_bench_data/cube_1gb.fits:41b8f7e22329500d op=pv
+[slice-timing] z=139 shape=(794,794) raw_kB=2463 wire_kB=3042 stages_s: read=0.009 encode=0.054 total=0.063
+[slice-timing] z=149 shape=(794,794) raw_kB=2463 wire_kB=3042 stages_s: read=0.010 encode=0.054 total=0.064
+[slice-timing] z=354 shape=(794,794) raw_kB=2463 wire_kB=3042 stages_s: read=0.009 encode=0.054 total=0.064
+[slice-timing] z=95 shape=(794,794) raw_kB=2463 wire_kB=3041 stages_s: read=0.011 encode=0.054 total=0.065
+[slice-timing] z=322 shape=(794,794) raw_kB=2463 wire_kB=3041 stages_s: read=0.009 encode=0.054 total=0.063
+[slice-timing] z=325 shape=(794,794) raw_kB=2463 wire_kB=3041 stages_s: read=0.010 encode=0.054 total=0.064
+[slice-timing] z=153 shape=(794,794) raw_kB=2463 wire_kB=3042 stages_s: read=0.009 encode=0.054 total=0.063
+[slice-timing] z=308 shape=(794,794) raw_kB=2463 wire_kB=3041 stages_s: read=0.009 encode=0.054 total=0.063
+[slice-timing] z=215 shape=(794,794) raw_kB=2463 wire_kB=3042 stages_s: read=0.011 encode=0.054 total=0.065
+[slice-timing] z=112 shape=(794,794) raw_kB=2463 wire_kB=3041 stages_s: read=0.010 encode=0.054 total=0.064
+2026-10-26 17:34:49,696 visivo.fits INFO [fits] path=/Users/fvitello/visivo_bench_data/cube_1gb.fits ctype=['RA---SIN', 'DEC--SIN', 'VRAD'] cunit=['', '', 'm/s'] active_axes=[1, 2, 3] client_axis_to_fits_axis={1: 1, 2: 2, 3: 3} wcs_status=ok sanitized_axes=[]
+2026-10-26 17:34:49,696 visivo.cache INFO [cache] miss key=moment:/Users/fvitello/visivo_bench_data/cube_1gb.fits:5b6f7447c8f3015c
+2026-10-26 17:34:49,696 visivo.backend INFO [moment] backend=dask-local-threaded order=0 subset_bytes=986001904
+2026-10-26 17:34:50,306 visivo.cache INFO [cache] insert key=moment:/Users/fvitello/visivo_bench_data/cube_1gb.fits:5b6f7447c8f3015c op=moment
+[slice-timing] z=294 shape=(794,794) raw_kB=2463 wire_kB=3041 stages_s: read=0.009 encode=0.057 total=0.066
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+
+[VisIVO] Backend token (from VISIVO_TOKEN env): benchtok
+
+2026-10-26 17:34:51,898 visivo.backend INFO [shutdown] worker pool stopped (2 worker(s), 0 terminated, 0 killed)
+INFO:     Application shutdown complete.
+INFO:     Finished server process [38576]

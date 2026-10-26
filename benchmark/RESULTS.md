@@ -1,3 +1,53 @@
+# Responsiveness campaigns of 2026-10-26 (paper Tables 4 and 5)
+
+Two campaigns, three calls per operation with fresh parameters (the product
+cache is never hit), a fresh service per cube. Cells: first call / median of
+the two further calls, seconds. Raw files: `results_local_20261026/`,
+`results_remote_20261026/`.
+
+**Local** (`run_local_bench.sh`, embedded service, Apple M5 Max, 64 GB):
+
+| operation | 1 GB | 8 GB | 30 GB |
+|---|---:|---:|---:|
+| preview | 2.6 / 0.3 | 6.5 / 2.7 | 11.8 / 9.7 |
+| full resolution | 1.1 / 0.5 | n/a | n/a |
+| camera ROI | 0.4 / 0.4 | 2.7 / 0.7 | 1.6 / 1.4 and 5.7 |
+| lasso grow | 1.7 / 1.3 | 6.0 / 4.9 | 16.6 / 15.2 |
+| masked M0 | 0.3 / 0.3 | 5.6 / 1.4 | 10.2 / 5.5 |
+| PV | 0.1 / 0.1 | 0.5 / 0.5 | 1.5 / 1.5 |
+| slice idle (median) | 0.07 | 0.25 | 0.60 |
+
+During a 30 GB masked M0: slice median 0.67 s, max 3.0 s (slices that started
+and ended inside the M0).
+
+**Container** (`remote/run_remote_bench.sh`: 8 GB memory cap, no swap, netem
++20 ms per round trip, 1 Gbit/s; measured round trip 47 ms):
+
+| operation | 1 GB | 8 GB | 30 GB | sent at 30 GB |
+|---|---:|---:|---:|---:|
+| preview | 2.1 / 0.8 | 6.5 / 5.4 | 22.3 / 21.2 | 583 MB |
+| camera ROI | 8.4 / 8.4 | 14.5 / 13.9 | 16.1 / 15.6 | 1073 MB |
+| lasso grow | 1.8 / 1.8 | 5.6 / 5.5 | 16.8 / 16.8 | 9 MB |
+| masked M0 | 0.6 / 0.5 | 4.5 / 3.4 | 23.2 / 23.4 | 32 MB |
+| PV | 0.4 / 0.3 | 2.5 / 2.4 | 48.7 / 44.1 | 16 MB |
+| slice idle | 0.13 | 0.44 | 1.06 | 29 MB |
+
+No OOM kill. During a 30 GB masked M0 (`cube_30gb_load_probe/`): slice median
+1.7 s, max 2.3 s.
+
+**What the container found.** Before the fix, the masked M0 was OOM-killed on
+the 8 and 30 GB cubes (`results_*_20261026_before_fix/`): `dask.array.from_array`
+copied the memory-mapped cube into RAM. Fixed in `app/compute/moment.py`
+(block-by-block reads, blocks bounded in bytes, two-pass M1-M5); locally the
+30 GB M0 went from 78 s to 5-10 s as a side effect.
+
+**Traps** (see the scripts' headers): quit Docker before the local campaign (its
+VM memory made the 30 GB M0 swap); macOS background indexing (mediaanalysisd,
+Spotlight) slowed zlib encoding six-fold during one run, which was discarded
+and repeated when the host was idle.
+
+---
+
 # Table 2 — measured responsiveness (fills the paper's [TODO])
 
 Numbers for Table 2, produced with `benchmark_visivo.py` driving the **real REST

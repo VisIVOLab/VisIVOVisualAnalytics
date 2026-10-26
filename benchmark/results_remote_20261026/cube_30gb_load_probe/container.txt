@@ -1,0 +1,15 @@
+memory_peak_bytes 7540666368
+memory_max_bytes 8589934592
+oom_events 0
+health_rtt_median_s 0.051412
+--- tc
+qdisc netem 8001: root refcnt 19 limit 1000 delay 20ms rate 1Gbit seed 16793125966013923989
+ Sent 514181136 bytes 8210 pkt (dropped 0, overlimits 0 requeues 0) 
+ backlog 0b 0p requeues 0
+--- memory.stat
+anon 819757056
+file 2791309312
+shmem 61440
+file_mapped 1997828096
+--- docker inspect (state)
+{"Status":"running","Running":true,"Paused":false,"Restarting":false,"OOMKilled":false,"Dead":false,"Pid":760,"ExitCode":0,"Error":"","StartedAt":"2026-10-26T19:23:47.275909292Z","FinishedAt":"0001-01-01T00:00:00Z"}

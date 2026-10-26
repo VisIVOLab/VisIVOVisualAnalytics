@@ -1,0 +1,67 @@
+{
+  "environment": {
+    "timestamp": "2026-10-26T18:49:57",
+    "base_url": "http://127.0.0.1:8012",
+    "repeats": 3,
+    "platform": "macOS-27.0.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "python": "3.11.15",
+    "note": "container: mem 8g (no swap), cpus 8, workers 4; egress netem delay 20ms rate 1gbit; health RTT median 0.047400s",
+    "memory_source": "docker exec visivo-bench cat /sys/fs/cgroup/memory.current"
+  },
+  "records": [
+    {
+      "cube": "/data/cube_8gb.fits",
+      "ops": {
+        "preview": [
+          6.535991875000036,
+          5.470888040999853,
+          5.372861416999513
+        ],
+        "roi": [
+          14.153492290999566,
+          13.876000915999612,
+          13.86623200000031
+        ],
+        "lasso": [
+          5.576529750000191,
+          5.554768917001638,
+          5.594460000000254
+        ],
+        "pv": [
+          3.1113897089999227,
+          2.354635709001741,
+          2.352154791002249
+        ]
+      },
+      "width": 1586,
+      "height": 1586,
+      "depth": 793,
+      "size_gb_f32": 7.98,
+      "open_s": 0.078,
+      "peak_mem_gb": {
+        "preview": 3.12,
+        "roi": 6.62,
+        "lasso": 3.77,
+        "pv": 6.93
+      },
+      "bytes_out": {
+        "preview": 155391241,
+        "roi": 1073344500,
+        "lasso": 8586756,
+        "pv": 6628585
+      },
+      "roi_gb": 1.07,
+      "seed_zyx": [
+        396,
+        795,
+        792
+      ],
+      "lasso_selected_voxels": 528860,
+      "failed_ops": {
+        "masked M0": "OpFailed: A process in the process pool was terminated abruptly while the future was running or pending.",
+        "load probe": "OpFailed: A process in the process pool was terminated abruptly while the future was running or pending."
+      }
+    }
+  ]
+}
