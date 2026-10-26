@@ -66,6 +66,7 @@ TypeInfo typeInfo(const QString &type)
     if (type == QLatin1StringView("vbt"))        return { QStringLiteral("VBT"),     QStringLiteral("vbt")       };
     if (type == QLatin1StringView("vbt-volume")) return { QStringLiteral("VBT-VOL"), QStringLiteral("vbt")       };
     if (type == QLatin1StringView("hips"))       return { QStringLiteral("HiPS"),    QStringLiteral("hips")      };
+    if (type == QLatin1StringView("velocity"))   return { QStringLiteral("VEL"),     QStringLiteral("dataset")   };
     return { type.toUpper(), QStringLiteral("dataset") };
 }
 

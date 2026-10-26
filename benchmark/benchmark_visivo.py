@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-benchmark_visivo.py - reproducible responsiveness benchmark for VisIVO Next.
+benchmark_visivo.py - reproducible responsiveness benchmark for VisIVO Visual Analytics.
 
 Fills Table 2 of the paper: for each cube it measures
   1. preview interactive      POST /v1/cube/preview   (downsample=4)

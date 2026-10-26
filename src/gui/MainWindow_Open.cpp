@@ -264,8 +264,12 @@ QString pathFromFileUrl(const QString &url)
 
 }  // namespace
 
-void MainWindow::reopenDataset(const RecentDataset &dataset)
+void MainWindow::reopenDataset(const RecentDataset &datasetRef)
 {
+    // A copy, not the reference: the classifier call below waits in a nested
+    // event loop, and the Recent row that owns the referenced entry can be
+    // rebuilt (and deleted) while it does.
+    const RecentDataset dataset = datasetRef;
     // ── SKAVA-origin entries route through discovery on reopen ──
     // Re-querying SKAVA (rather than reusing the stale local path) lets
     // the operator's file move across nodes, or the visivo-backend at a
@@ -302,7 +306,22 @@ void MainWindow::reopenDataset(const RecentDataset &dataset)
     }
 
     if (dataset.type == u"cube"_s || dataset.type == u"image"_s) {
-        doOpenDataPath(dataset.id);
+        // The stored type is what the file was opened as at the time, not what
+        // it is: an entry written before the classifier knew a 3-component
+        // velocity field (or by a route that skipped it) says "image", and the
+        // image viewer shows one plane of one component as an empty picture.
+        // Ask the classifier again; only a velocity field changes route, so
+        // every cube and image reopens exactly as before.
+        BackendClient client(this->settings->getBackendUrl(),
+                             this->settings->getBackendToken());
+        const BackendClassifyResult verdict = client.classifyFile(dataset.id);
+        if (verdict.valid && verdict.opener == u"velocity"_s) {
+            openVelocityFieldPath(dataset.id);
+        } else {
+            doOpenDataPath(dataset.id);
+        }
+    } else if (dataset.type == u"velocity"_s) {
+        openVelocityFieldPath(dataset.id);
     } else if (dataset.type == u"catalogue"_s) {
         doOpenCataloguePath(dataset.id);
     } else if (dataset.type == u"vbt"_s || dataset.type == u"vbt-volume"_s) {
@@ -1412,6 +1431,10 @@ void MainWindow::openVelocityFieldPath(const QString &path)
     win->setAttribute(Qt::WA_DeleteOnClose);
     win->resize(1100, 760);
     win->show();
+    // Recorded as "velocity" so the Recent list reopens it here; recording it
+    // also replaces a stale "image" entry for the same path (same id).
+    if (this->recentMgr)
+        this->recentMgr->record(path, QFileInfo(path).fileName(), u"velocity"_s);
     this->statusBar()->showMessage(
             u"Velocity field opened: %1×%2×%3"_s.arg(grid.nx).arg(grid.ny).arg(grid.nz), 5000);
 }

@@ -1,4 +1,4 @@
-# Benchmark VisIVO Next — protocollo per la Tabella 2 del paper
+# Benchmark VisIVO Visual Analytics — protocollo per la Tabella 2 del paper
 
 Due script, zero dipendenze esotiche (`requests`, `numpy`, `astropy`).
 Obiettivo: riempire la Tabella 2 con numeri riproducibili e pubblicabili
@@ -87,7 +87,7 @@ identiche. Dichiararlo in didascalia (già fatto).
 ## 5. Integrazione nel paper
 
 1. Incolla `table2_rows.tex` nella Tabella 2 (le righe combaciano).
-2. Didascalia: hardware, versione VisIVO Next (commit), versione CARTA,
+2. Didascalia: hardware, versione VisIVO Visual Analytics (commit), versione CARTA,
    dataset sintetici con seed RNG 42 (riproducibili), mediana di 3 run.
 3. `benchmark_visivo.py` + `make_synthetic_cube.py` nel repo pubblico →
    citarli in "Data and software availability" ("benchmark scripts and

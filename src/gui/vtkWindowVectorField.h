@@ -12,6 +12,7 @@
 #include <QFutureWatcher>
 #include <QMainWindow>
 #include <QPointer>
+#include <QProgressDialog>
 #include <QString>
 
 #include <vector>
@@ -83,6 +84,8 @@ private:
     void resetCamera();
     void toggleRoiWidget(bool on);
     void loadFullResRoi();
+    void placeFullResRoi(const BackendVelocityGridResult &roi, double fsx, double fsy,
+                         double fsz, double ox, double oy, double oz);
     void showBasins(bool on);   // F1 phase-2: gravitational-basin (watershed) regions
     void placeBasins();         // (re)build the basin actor from m_basins at the current scale
 
@@ -140,6 +143,13 @@ private:
     vtkSmartPointer<vtkActor> basinActor;        // gravitational-basin surfaces
     vtkSmartPointer<vtkLookupTable> basinLut;    // categorical basin colours
     BackendVelocityBasinsResult m_basins;        // cached labels (re-placed on scale change)
+    // Basins and the full-res ROI are fetched off the GUI thread under the house
+    // progress sheet (ToolProgressSheet.h). Each request bumps its generation, so
+    // a result that a newer request (or unticking Basins) superseded is dropped.
+    QPointer<QProgressDialog> m_basinSheet;
+    QPointer<QProgressDialog> m_roiSheet;
+    int m_basinGen = 0;
+    int m_roiGen = 0;
 
     vtkSmartPointer<vtkImageData> divergenceGrid;  // cached ∇·v field (scalars); overdense = ∇·v<0
     vtkSmartPointer<vtkActor> divergenceActor;     // overdensity (convergent-core) isosurface

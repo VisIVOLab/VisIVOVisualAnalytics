@@ -37,7 +37,7 @@ struct RecentDataset
     // Short human-readable name shown in the Recent Datasets panel.
     QString displayName;
 
-    // Dataset kind: "cube" | "image" | "catalogue" | "vbt" | "vbt-volume" | "hips"
+    // Dataset kind: "cube" | "image" | "catalogue" | "vbt" | "vbt-volume" | "hips" | "velocity"
     QString type;
 
     // Origin tag, used by the DataHub UI for a visual badge and by

@@ -2,6 +2,7 @@
 
 #include "ColorMaps.h"
 #include "ColormapIcon.h"
+#include "ToolProgressSheet.h"
 
 #include <QVTKOpenGLNativeWidget.h>
 #include <vtkActor.h>
@@ -51,6 +52,7 @@
 #include <QStringList>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QtConcurrent>
 
 #include <algorithm>
 #include <cmath>
@@ -611,6 +613,9 @@ void vtkWindowVectorField::applyBoxSize(double boxMpc)
     }
     if (this->roiGlyphActor) { this->renderer->RemoveActor(this->roiGlyphActor); this->roiGlyphActor = nullptr; }
     if (this->roiStreamActor) { this->renderer->RemoveActor(this->roiStreamActor); this->roiStreamActor = nullptr; }
+    // A region still loading was placed with the old spacing: drop its result.
+    ++m_roiGen;
+    visivo::closeToolProgressSheet(m_roiSheet);
     this->rebuildLodActors();
     // Re-place basins at the new scale (labels are scale-independent, cached).
     if (this->basinActor && m_basins.valid) {
@@ -688,12 +693,40 @@ void vtkWindowVectorField::loadFullResRoi()
     const int y0 = toIdx(b[2], oy, fsy, m_grid.fullNy), y1 = toIdx(b[3], oy, fsy, m_grid.fullNy);
     const int z0 = toIdx(b[4], oz, fsz, m_grid.fullNz), z1 = toIdx(b[5], oz, fsz, m_grid.fullNz);
 
-    BackendClient client(m_backendUrl, m_backendToken);
-    client.setSessionId(m_sessionId);
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    const BackendVelocityGridResult roi =
-            client.fetchVelocitySubgrid(m_datasetId, x0, x1 + 1, y0, y1 + 1, z0, z1 + 1);
-    QApplication::restoreOverrideCursor();
+    const int gen = ++m_roiGen;
+    visivo::closeToolProgressSheet(m_roiSheet);
+    m_roiSheet = visivo::showToolProgressSheet(this, u"Loading the full-resolution region"_s);
+    const QString url = m_backendUrl, token = m_backendToken, session = m_sessionId,
+                  dataset = m_datasetId;
+    auto *watcher = new QFutureWatcher<BackendVelocityGridResult>(this);
+    QObject::connect(watcher, &QFutureWatcher<BackendVelocityGridResult>::finished, this,
+                     [this, watcher, gen, fsx, fsy, fsz, ox, oy, oz]() {
+        const BackendVelocityGridResult roi = watcher->result();
+        watcher->deleteLater();
+        if (gen != m_roiGen)
+            return;   // a newer request owns the sheet now
+        visivo::closeToolProgressSheet(m_roiSheet);
+        this->placeFullResRoi(roi, fsx, fsy, fsz, ox, oy, oz);
+    });
+    watcher->setFuture(QtConcurrent::run([url, token, session, dataset,
+                                          x0, x1, y0, y1, z0, z1]() {
+        // Nothing may escape the worker: result() would rethrow on the GUI thread.
+        try {
+            BackendClient client(url, token);
+            client.setSessionId(session);
+            return client.fetchVelocitySubgrid(dataset, x0, x1 + 1, y0, y1 + 1, z0, z1 + 1);
+        } catch (...) {
+            BackendVelocityGridResult failed;
+            failed.error = QStringLiteral("unexpected error while fetching the region");
+            return failed;
+        }
+    }));
+}
+
+void vtkWindowVectorField::placeFullResRoi(const BackendVelocityGridResult &roi,
+                                           double fsx, double fsy, double fsz,
+                                           double ox, double oy, double oz)
+{
     if (!roi.valid) {
         QMessageBox::warning(this, u"ROI"_s,
                              u"Full-res ROI fetch failed: %1"_s.arg(roi.error));
@@ -723,6 +756,9 @@ void vtkWindowVectorField::loadFullResRoi()
 
 void vtkWindowVectorField::showBasins(bool on)
 {
+    // Any call, on or off, supersedes a computation still in flight.
+    ++m_basinGen;
+    visivo::closeToolProgressSheet(m_basinSheet);
     if (!on) {
         if (this->basinActor) { this->renderer->RemoveActor(this->basinActor); this->basinActor = nullptr; }
         this->m_basins = BackendVelocityBasinsResult{};
@@ -733,24 +769,44 @@ void vtkWindowVectorField::showBasins(bool on)
     // Clear any existing basin surface before (re)fetching, so a failed re-fetch
     // (e.g. switching attraction↔repulsion) never leaves a stale surface behind.
     if (this->basinActor) { this->renderer->RemoveActor(this->basinActor); this->basinActor = nullptr; }
+    this->m_basins = BackendVelocityBasinsResult{};
 
-    BackendClient client(m_backendUrl, m_backendToken);
-    client.setSessionId(m_sessionId);
+    const int gen = m_basinGen;   // bumped at the top of this function
     const int direction = (this->comboBasinDir && this->comboBasinDir->currentIndex() == 1) ? -1 : 1;
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    this->statusBar()->showMessage(u"Computing gravitational basins…"_s);
-    this->m_basins = client.fetchVelocityBasins(m_datasetId, 64, direction);
-    QApplication::restoreOverrideCursor();
-    if (!m_basins.valid || m_basins.nBasins <= 0) {
-        QMessageBox::warning(this, u"Basins"_s,
-                             m_basins.valid ? u"No basins found."_s
-                                            : u"Basin computation failed: %1"_s.arg(m_basins.error));
-        this->m_basins = BackendVelocityBasinsResult{};
-        if (this->chkBasins) { QSignalBlocker blk(this->chkBasins); this->chkBasins->setChecked(false); }
-        this->renderWindow->Render();
-        return;
-    }
-    this->placeBasins();
+    m_basinSheet = visivo::showToolProgressSheet(this, u"Computing gravitational basins"_s);
+    const QString url = m_backendUrl, token = m_backendToken, session = m_sessionId,
+                  dataset = m_datasetId;
+    auto *watcher = new QFutureWatcher<BackendVelocityBasinsResult>(this);
+    QObject::connect(watcher, &QFutureWatcher<BackendVelocityBasinsResult>::finished, this,
+                     [this, watcher, gen]() {
+        BackendVelocityBasinsResult result = watcher->result();
+        watcher->deleteLater();
+        if (gen != m_basinGen)
+            return;   // superseded by a newer request or by unticking Basins
+        visivo::closeToolProgressSheet(m_basinSheet);
+        if (!result.valid || result.nBasins <= 0) {
+            QMessageBox::warning(this, u"Basins"_s,
+                                 result.valid ? u"No basins found."_s
+                                              : u"Basin computation failed: %1"_s.arg(result.error));
+            if (this->chkBasins) { QSignalBlocker blk(this->chkBasins); this->chkBasins->setChecked(false); }
+            this->renderWindow->Render();
+            return;
+        }
+        this->m_basins = std::move(result);
+        this->placeBasins();
+    });
+    watcher->setFuture(QtConcurrent::run([url, token, session, dataset, direction]() {
+        // Nothing may escape the worker: result() would rethrow on the GUI thread.
+        try {
+            BackendClient client(url, token);
+            client.setSessionId(session);
+            return client.fetchVelocityBasins(dataset, 64, direction);
+        } catch (...) {
+            BackendVelocityBasinsResult failed;
+            failed.error = QStringLiteral("unexpected error while computing the basins");
+            return failed;
+        }
+    }));
 }
 
 void vtkWindowVectorField::placeBasins()
