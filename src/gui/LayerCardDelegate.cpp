@@ -7,10 +7,13 @@
 #include "LayerListModel.h"
 #include "theme/VisivoTheme.h"
 
+#include <QAbstractItemView>
 #include <QApplication>
 #include <QFontMetrics>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QResizeEvent>
+#include <QTimer>
 
 using namespace Qt::Literals::StringLiterals;
 
@@ -57,12 +60,52 @@ QRect LayerCardDelegate::checkboxRect(const QStyleOptionViewItem &option)
     return visivo::layerCheckboxRect(option.rect, kMetrics);
 }
 
+namespace {
+class ViewportWidthWatcher : public QObject
+{
+public:
+    explicit ViewportWidthWatcher(QAbstractItemView *view) : QObject(view), m_view(view) {}
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event->type() == QEvent::Resize) {
+            const auto *re = static_cast<QResizeEvent *>(event);
+            if (re->size().width() != re->oldSize().width() && !m_queued) {
+                m_queued = true;   // one relayout per burst of resizes
+                QTimer::singleShot(0, this, [this]() {
+                    m_queued = false;
+                    m_view->doItemsLayout();
+                });
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    QAbstractItemView *m_view;
+    bool m_queued = false;
+};
+}   // namespace
+
+void visivo::relayoutOnViewportWidthChange(QAbstractItemView *view)
+{
+    if (view && view->viewport())
+        view->viewport()->installEventFilter(new ViewportWidthWatcher(view));
+}
+
 QSize LayerCardDelegate::sizeHint(const QStyleOptionViewItem &option,
                                   const QModelIndex &index) const
 {
     Q_UNUSED(index);
     // Deliberately not the model's SizeHintRole: the card is taller than the
     // one-line row it replaces, and the model's 36 px describes that old row.
+    // The width is the view's viewport, not option.rect: the list asks for the
+    // hint before it has a geometry (and caches it, uniform sizes), so the
+    // rect's width was a stale default wider than the dock and the cards
+    // scrolled sideways.
+    if (const auto *view = qobject_cast<const QAbstractItemView *>(parent()))
+        return QSize(view->viewport()->width(), kMetrics.height);
     return QSize(option.rect.width(), kMetrics.height);
 }
 

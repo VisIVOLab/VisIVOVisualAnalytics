@@ -7652,6 +7652,18 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
     auto *dispStack = new QStackedWidget(root);
     m_displayStack = dispStack;
     disp->addWidget(dispStack);
+    // A QStackedWidget sizes itself to its LARGEST page, hidden ones included:
+    // the 2D page (266 px) pushed the dock content to 286 px against a 272 px
+    // dock, and the 3D page was clipped on the right. Only the current page
+    // counts; the others are Ignored until they are shown.
+    QObject::connect(dispStack, &QStackedWidget::currentChanged, dispStack, [dispStack](int cur) {
+        for (int i = 0; i < dispStack->count(); ++i) {
+            QWidget *pg = dispStack->widget(i);
+            pg->setSizePolicy(i == cur ? QSizePolicy::Preferred : QSizePolicy::Ignored,
+                              i == cur ? QSizePolicy::Preferred : QSizePolicy::Ignored);
+        }
+        dispStack->updateGeometry();
+    });
     auto *page3d = new QWidget(dispStack);
     auto *p3 = new QVBoxLayout(page3d);
     p3->setContentsMargins(0, 0, 0, 0);
@@ -7825,6 +7837,8 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         v->addStretch(1);
         dispStack->addWidget(page);   // index 2
     }
+    // Pages added after the first never emitted currentChanged: size them now.
+    emit dispStack->currentChanged(dispStack->currentIndex());
     // The DISPLAY section header + which page follow the active pane; keep the header
     // text correct through collapse/expand too (its built-in setTxt would revert it).
     QObject::connect(this, &vtkWindowCube::activePaneChanged, root,

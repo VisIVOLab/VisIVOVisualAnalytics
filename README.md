@@ -166,8 +166,11 @@ cmake -S tests -B build-tests && cmake --build build-tests
 cd backend && pip install -r requirements-dev.txt && pytest -q
 ```
 
-Documentation sources live in [`docs/`](docs/); Read the Docs builds
-<https://visivo.readthedocs.io> from this repository (`.readthedocs.yaml`).
+Documentation sources live in [`docs/`](docs/) and are mirrored to
+[`VisIVOLab/VisIVO-doc`](https://github.com/VisIVOLab/VisIVO-doc), the repository
+Read the Docs builds <https://visivo.readthedocs.io> from; see
+[`.github/workflows/sync-docs.yml`](.github/workflows/sync-docs.yml) (or
+`scripts/sync-docs.sh` for a manual sync).
 
 Release notes and the development history are in [CHANGELOG.md](CHANGELOG.md).
 

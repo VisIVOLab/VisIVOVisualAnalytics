@@ -36,6 +36,9 @@ public:
     /// fits, else a frequency in GHz / MHz, else elided at the end — never cut at
     /// the front, which turned "1414222222.22 Hz" into a plausible "22.22 Hz".
     static QString fitSpectralLabel(const QString &full, const QFontMetrics &fm, int available);
+    /// The symbol in front of the spectral value: ν (frequency), λ (wavelength)
+    /// or v (velocity, or a bare channel), from the unit the value ends with.
+    static QString spectralSymbol(const QString &valueWithUnit);
     /// Logical pixels the bar takes at the bottom of its host, margins included:
     /// what a 2-D view keeps free below its axes so the bar does not cover them.
     static int reservedHeight();

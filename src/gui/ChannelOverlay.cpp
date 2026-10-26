@@ -19,6 +19,61 @@ namespace {
 // `bottom: 10, left: 10, right: 10` values in cubeviewer.jsx).
 constexpr int kOverlayMargin = 10;
 constexpr int kOverlayHeight = 28;
+
+// The spectral readout. It asks the layout for the width of the FULL value,
+// whatever compacted text it is showing — a hint taken from the shown text
+// would shrink with every compaction and never give the width back — can be
+// squeezed to 40 px, and re-fits its text to the width it is actually given.
+class SpectralReadout : public QLabel
+{
+public:
+    using QLabel::QLabel;
+    void setFull(const QString &full)
+    {
+        if (full == m_full)
+            return;   // the overlay's resize handler calls this on every resize
+        m_full = full;
+        refit();
+        updateGeometry();
+    }
+    QSize sizeHint() const override
+    {
+        const QMargins m = contentsMargins();
+        return { fontMetrics().horizontalAdvance(m_full) + m.left() + m.right() + 2,
+                 QLabel::sizeHint().height() };
+    }
+    QSize minimumSizeHint() const override { return { 40, QLabel::minimumSizeHint().height() }; }
+
+protected:
+    void resizeEvent(QResizeEvent *e) override
+    {
+        QLabel::resizeEvent(e);
+        refit();
+    }
+
+private:
+    void refit()
+    {
+        setText(ChannelOverlay::fitSpectralLabel(m_full, fontMetrics(), std::max(0, contentsRect().width())));
+    }
+    QString m_full;
+};
+}
+
+QString ChannelOverlay::spectralSymbol(const QString &valueWithUnit)
+{
+    // ν for a frequency, λ for a wavelength, v otherwise (a velocity, or a bare
+    // channel index). The unit is the last word, spelled as the axis spells it.
+    const QString unit = valueWithUnit.section(u' ', -1).trimmed();
+    const QString u = unit.toLower();
+    if (u.endsWith(u"hz"_s))
+        return u"\u03bd"_s;
+    static const QStringList wavelengths{
+        u"m"_s, u"cm"_s, u"mm"_s, u"um"_s, u"\u00b5m"_s, u"\u03bcm"_s, u"micron"_s, u"microns"_s,
+        u"nm"_s, u"angstrom"_s, u"\u00e5"_s, u"\u212b"_s, u"a"_s };
+    if (wavelengths.contains(u))
+        return u"\u03bb"_s;
+    return u"v"_s;
 }
 
 ChannelOverlay::ChannelOverlay(QWidget *parent)
@@ -37,7 +92,7 @@ ChannelOverlay::ChannelOverlay(QWidget *parent)
     m_chValue = new QLabel(u"1"_s, this);
     m_slider  = new QSlider(Qt::Horizontal, this);
     m_vLabel  = new QLabel(u"v"_s, this);
-    m_vValue  = new QLabel(QString(), this);
+    m_vValue  = new SpectralReadout(QString(), this);
 
     m_chValue->setMinimumWidth(38);
     m_chValue->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -52,15 +107,19 @@ ChannelOverlay::ChannelOverlay(QWidget *parent)
     // ("1414870370.37 Hz") had squeezed the slider down to its handle.
     m_slider->setMinimumWidth(70);
 
-    m_vValue->setMinimumWidth(40);
-    m_vValue->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    // The readout takes the width its text needs and no more, and the slider
+    // gets the rest of the strip. With both at stretch 1 the readout owned half
+    // the strip as blank space and the slider stopped at the middle. When a
+    // narrow pane squeezes it below its text, fitSpectralLabel() compacts the
+    // value (GHz/MHz) down to the 40 px minimum.
+    m_vValue->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
     m_vValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
     row->addWidget(m_chLabel);
     row->addWidget(m_chValue);
     row->addWidget(m_slider, /*stretch=*/1);
     row->addWidget(m_vLabel);
-    row->addWidget(m_vValue, /*stretch=*/1);
+    row->addWidget(m_vValue, /*stretch=*/0);
 
     applyStyle();
 
@@ -99,8 +158,10 @@ void ChannelOverlay::setSpectralLabel(const QString &textWithUnit)
 
 void ChannelOverlay::refreshSpectralLabel()
 {
-    m_vValue->setText(fitSpectralLabel(m_spectralFull, m_vValue->fontMetrics(),
-                                       std::max(0, m_vValue->width())));
+    // The symbol follows the quantity the axis is in: ν for a frequency, λ for
+    // a wavelength, v otherwise (a velocity, or a bare channel index).
+    m_vLabel->setText(spectralSymbol(m_spectralFull));
+    static_cast<SpectralReadout *>(m_vValue)->setFull(m_spectralFull);
 }
 
 void ChannelOverlay::resizeEvent(QResizeEvent *event)

@@ -42,4 +42,13 @@ private:
     static const LayerListModel *layerModel(const QModelIndex &index);
 };
 
+class QAbstractItemView;
+
+namespace visivo {
+/// Re-lay @p view out (once, queued) whenever its viewport's WIDTH changes,
+/// so a delegate whose size hint is the viewport width never leaves cards
+/// wider than the list — on a dock resize or when a scrollbar appears.
+void relayoutOnViewportWidthChange(QAbstractItemView *view);
+}
+
 #endif   // LayerCardDelegate_h

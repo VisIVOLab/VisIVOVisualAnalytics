@@ -1202,6 +1202,13 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
         ui->listLayer->setItemDelegate(new LayerCardDelegate(ui->listLayer));
         ui->listLayer->setSpacing(0);
         ui->listLayer->setUniformItemSizes(true);
+        // Cards are as wide as the list and never scroll sideways. QListView's
+        // Adjust mode re-lays a top-to-bottom list out only when its HEIGHT
+        // changes, so a width-only dock resize, or the vertical scrollbar
+        // appearing, kept the cached card width: the viewport's width changes
+        // are watched instead, and one relayout is queued per change.
+        ui->listLayer->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        visivo::relayoutOnViewportWidthChange(ui->listLayer);
     }
 
     // The way to add a layer, at the end of the stack — the design's dashed

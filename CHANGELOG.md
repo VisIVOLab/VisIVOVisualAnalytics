@@ -6,6 +6,26 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## 1.0.4 (2026-10-26)
+
+- **Left dock no longer clipped.** The cube viewer's sidebar sized itself to
+  the widest page of its *Display* section, hidden ones included, so the 2-D
+  page (266 px) pushed the 3-D controls past the 272 px dock and Volume,
+  MinIP and the threshold field were cut on the right. Only the page shown
+  counts now (content 234 px).
+- **Channel strip.** The slider takes the width of the strip; the spectral
+  readout takes only what its value needs (compacting to GHz/MHz in a narrow
+  pane and widening back), instead of half the strip as blank space. The
+  symbol follows the axis: ν for a frequency, λ for a wavelength, v for a
+  velocity.
+- **2-D layer list does not scroll sideways.** Layer cards are as wide as the
+  list and follow it when the dock is resized or a scrollbar appears.
+- **Docs publish through the `VisIVO-doc` mirror again.** The sync workflow
+  and `scripts/sync-docs.sh` are back, now keyed to this repository: a push
+  that touches `docs/` copies the tree into `VisIVOLab/VisIVO-doc`, which is
+  what the Read the Docs project builds (`VISIVO_DOC_DEPLOY_KEY` secret
+  required here).
+
 ## 1.0.3 (2026-10-22)
 
 - **Recipe replay steps are typed.** *Export recipe as JSON…* now writes each
