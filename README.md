@@ -15,6 +15,8 @@ on your desktop, with the heavy computation wherever the data lives.**
 [Backend API](https://visivo.readthedocs.io/en/latest/backend-api.html) ·
 [Building from source](BUILDING.md)
 
+[![DOI](https://zenodo.org/badge/1428760358.svg)](https://doi.org/10.5281/zenodo.23669666)
+
 </div>
 
 ---

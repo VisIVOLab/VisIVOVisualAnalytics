@@ -5,6 +5,14 @@ abstract: "A hybrid desktop–service visual analytics platform for astronomical
 type: software
 version: 1.0.4
 date-released: 2026-10-26
+doi: 10.5281/zenodo.23669666
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.23669666
+    description: "Concept DOI: all versions, resolves to the latest"
+  - type: doi
+    value: 10.5281/zenodo.23669667
+    description: "Version 1.0.4"
 license: Apache-2.0
 repository-code: "https://github.com/VisIVOLab/VisIVOVisualAnalytics"
 url: "https://visivo.readthedocs.io"
