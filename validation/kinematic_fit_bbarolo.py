@@ -5,9 +5,9 @@
 application's own model, which shares its deprojection with the fit: a test of
 internal consistency only. Here the discs come from 3DBarolo (Di Teodoro &
 Fraternali 2015), whose GALMOD builds a cube from a tilted-ring description the
-way a real observation looks: an exponential gas surface density, a disc of
-finite thickness, a velocity dispersion, and convolution with the synthesised
-beam. None of that is in the comparator's model (a unit-amplitude kinematic
+way a real observation looks: an exponential gas surface density, a velocity
+dispersion, gas clouds sampled along each ring, and convolution with the
+synthesised beam (the disc is thin, Z0 = 0). None of that is in the comparator's model (a unit-amplitude kinematic
 footprint, no beam), so this measures how far the comparator's numbers drift
 on emission that is closer to a real galaxy, beam smearing included.
 
@@ -119,6 +119,11 @@ def galmod(name: str, pa, incl, vrot, exe: str) -> np.ndarray:
         "CDENS     10",
         "NV        20",
         "SM        true",
+        # A pure model: the template is an empty cube, so there is nothing to
+        # build a source mask from or to normalise the model to (GALMOD's
+        # defaults, MASK SEARCH and NORM AZIM, abort on an empty cube).
+        "MASK      NONE",
+        "NORM      NONE",
     ]) + "\n")
     log = subprocess.run([exe, "-p", str(par)], cwd=d, capture_output=True, text=True)
     (d / "bbarolo.log").write_text(log.stdout + log.stderr)
