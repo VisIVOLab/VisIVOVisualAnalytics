@@ -25,7 +25,7 @@ endif ()
 
 
 project(VisIVOVisualAnalytics
-        VERSION 1.0.5
+        VERSION 1.0.6
         LANGUAGES CXX C
 )
 
@@ -316,6 +316,42 @@ set(CMAKE_AUTOUIC OFF)
 
 configure_file(src/Version.h.in Version.h @ONLY)
 
+# VLKB sign-in (OIDC authorization-code flow against the IA2 single sign-on,
+# Settings ▸ VLKB). The endpoints and scope are public and are the defaults
+# below, as in the legacy ViaLactea client. The client credentials are never
+# committed: pass them at configure time, as the release workflow does from the
+# repository's secrets. Without a client id the build has no VLKB sign-in and
+# the Settings dialog says so.
+set(VISIVO_VLKB_AUTH_URL "https://sso.ia2.inaf.it/rap-ia2/auth/oauth2/authorize"
+    CACHE STRING "VLKB OIDC authorization endpoint")
+set(VISIVO_VLKB_TOKEN_URL "https://sso.ia2.inaf.it/rap-ia2/auth/oauth2/token"
+    CACHE STRING "VLKB OIDC token endpoint")
+set(VISIVO_VLKB_SCOPE "openid read:gms read:rap" CACHE STRING "VLKB OIDC scopes, space-separated")
+set(VISIVO_VLKB_CLIENT_ID "" CACHE STRING "VLKB OIDC client identifier")
+set(VISIVO_VLKB_CLIENT_SECRET "" CACHE STRING "VLKB OIDC client secret")
+set(VISIVO_VLKB_TAP_USER "" CACHE STRING "VLKB TAP user (unused by the client today)")
+set(VISIVO_VLKB_TAP_SECRET "" CACHE STRING "VLKB TAP secret (unused by the client today)")
+mark_as_advanced(VISIVO_VLKB_CLIENT_SECRET VISIVO_VLKB_TAP_SECRET)
+# The values land inside C++ string literals: escape backslashes and quotes, and
+# refuse control characters rather than let them silently change a credential.
+# The *_C copies are what the template substitutes; the cache keeps the raw value.
+foreach(_vlkb_var AUTH_URL TOKEN_URL SCOPE CLIENT_ID CLIENT_SECRET TAP_USER TAP_SECRET)
+    set(_vlkb_value "${VISIVO_VLKB_${_vlkb_var}}")
+    if(_vlkb_value MATCHES "[\t\r\n]")
+        message(FATAL_ERROR "VISIVO_VLKB_${_vlkb_var} contains a tab or a line break")
+    endif()
+    string(REPLACE "\\" "\\\\" _vlkb_value "${_vlkb_value}")
+    string(REPLACE "\"" "\\\"" _vlkb_value "${_vlkb_value}")
+    set(VISIVO_VLKB_${_vlkb_var}_C "${_vlkb_value}")
+endforeach()
+configure_file(src/auth/AuthKeys.h.in AuthKeys.h @ONLY)
+if(VISIVO_VLKB_AUTH_URL STREQUAL "" OR VISIVO_VLKB_TOKEN_URL STREQUAL ""
+        OR VISIVO_VLKB_CLIENT_ID STREQUAL "")
+    message(STATUS "VLKB sign-in: not configured (set VISIVO_VLKB_CLIENT_ID and _CLIENT_SECRET)")
+else()
+    message(STATUS "VLKB sign-in: configured")
+endif()
+
 set(PROJECT_SOURCES
         src/LayerListModel.cpp
         src/LayerListModel.h
@@ -326,13 +362,14 @@ set(PROJECT_SOURCES
         src/Settings.h
         src/WebViewProcess.cpp
         src/WebViewProcess.h
-        src/auth/AuthKeys.h
         src/auth/AuthWrapper.cpp
         src/auth/AuthWrapper.h
         src/auth/HttpServerReplyHandler.cpp
         src/auth/HttpServerReplyHandler.h
         src/auth/OIDCAuthorizationCodeFlow.cpp
         src/auth/OIDCAuthorizationCodeFlow.h
+        src/auth/SecureStore.cpp
+        src/auth/SecureStore.h
         src/auth/VisIVOUrlSchemeHandler.cpp
         src/auth/VisIVOUrlSchemeHandler.h
         src/app/BackendLauncher.cpp
@@ -398,6 +435,8 @@ set(PROJECT_SOURCES
         src/gui/VLKBInventoryTree.cpp
         src/gui/VLKBInventoryTree.h
         src/vlkb/VlkbQueryService.cpp
+        src/vlkb/SourceTable.cpp
+        src/vlkb/SourceTable.h
         src/vlkb/VlkbQueryService.h
         src/skava/SkavaClient.cpp
         src/skava/VoTable.cpp
@@ -444,6 +483,8 @@ set(PROJECT_SOURCES
         src/gui/PvDiagramWidget.h
         src/gui/SettingsDialog.cpp
         src/gui/SettingsDialog.h
+        src/gui/SourceTableDialog.cpp
+        src/gui/SourceTableDialog.h
         src/gui/UpdateNotifier.cpp
         src/gui/UpdateNotifier.h
         src/gui/BackendsSettingsWidget.cpp
@@ -777,6 +818,28 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         ${qt_modules}
         QCustomPlot
 )
+
+# The VLKB sign-in survives a restart through the platform's secure store
+# (src/auth/SecureStore.cpp): the Keychain on macOS, the Credential Manager on
+# Windows, libsecret on Linux when it is installed (libsecret-1-dev); without
+# it the Linux build simply asks for the login on every start.
+if(APPLE)
+    target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Security" "-framework CoreFoundation")
+elseif(WIN32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE advapi32)
+else()
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LIBSECRET IMPORTED_TARGET libsecret-1)
+    endif()
+    if(LIBSECRET_FOUND)
+        target_link_libraries(${PROJECT_NAME} PRIVATE PkgConfig::LIBSECRET)
+        target_compile_definitions(${PROJECT_NAME} PRIVATE VISIVO_HAVE_LIBSECRET=1)
+        message(STATUS "VLKB sign-in storage: libsecret")
+    else()
+        message(STATUS "VLKB sign-in storage: none (install libsecret-1-dev to keep the sign-in)")
+    endif()
+endif()
 
 if (VISIVO_HAS_WEBRTC)
     # Compile-time toggle picked up by RemoteRenderWidget to gate the

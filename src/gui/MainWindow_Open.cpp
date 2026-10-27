@@ -973,6 +973,16 @@ void MainWindow::openViewerFromOpenedDataset(const QString &path,
 void MainWindow::openVlkbImageLayer(const QString &backendPath, const QString &displayName,
                                      QPointer<VLKBInventoryTree> tree)
 {
+    vtkWindowImage *win = this->openVlkbImageViewer(backendPath, displayName);
+    // Associate this window with the inventory tree so subsequent 2D items from
+    // the same session are stacked as additional layers.
+    if (win && tree)
+        tree->setLinkedImageWindow(win);
+}
+
+vtkWindowImage *MainWindow::openVlkbImageViewer(const QString &backendPath,
+                                                const QString &displayName)
+{
     BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
     const auto health = client.health();
     if (!health.ok) {
@@ -980,7 +990,7 @@ void MainWindow::openVlkbImageLayer(const QString &backendPath, const QString &d
                 this, u"Backend unavailable"_s,
                 u"Cannot open VLKB dataset: the backend is not reachable.\n\nError: %1"_s.arg(
                         health.error.isEmpty() ? u"No response"_s : health.error));
-        return;
+        return nullptr;
     }
 
     const auto opened = client.openDataset(backendPath);
@@ -988,13 +998,13 @@ void MainWindow::openVlkbImageLayer(const QString &backendPath, const QString &d
         QMessageBox::critical(
                 this, u"Could not open VLKB dataset"_s,
                 (opened.error.isEmpty() ? u"Backend returned no error detail."_s : opened.error));
-        return;
+        return nullptr;
     }
 
     if (opened.kind != u"image"_s) {
         // Not a 2D image — fall back to the generic open so cubes land in the right viewer.
         doOpenDataPath(backendPath);
-        return;
+        return nullptr;
     }
 
     auto *win = new vtkWindowImage(backendPath, client.baseUrl(), opened.datasetId,
@@ -1014,9 +1024,6 @@ void MainWindow::openVlkbImageLayer(const QString &backendPath, const QString &d
     // Override the master layer name with the human-readable inventory label.
     win->setLayerDisplayName(0, displayName);
 
-    // Associate this window with the inventory tree so subsequent 2D items from
-    // the same session are stacked as additional layers.
-    if (tree) tree->setLinkedImageWindow(win);
 
     this->m_sampCurrentFitsPath = backendPath;
     this->m_sampCurrentFitsName = displayName;
@@ -1032,6 +1039,7 @@ void MainWindow::openVlkbImageLayer(const QString &backendPath, const QString &d
     win->showMaximized();
     win->raise();
     win->activateWindow();
+    return win;
 }
 
 

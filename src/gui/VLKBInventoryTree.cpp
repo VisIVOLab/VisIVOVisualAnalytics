@@ -518,6 +518,7 @@ void VLKBInventoryTree::requestBatch()
 {
     QStringList ids;
     QStringList names;
+    QStringList types;
     const QModelIndexList selected = m_tree->selectionModel()
             ? m_tree->selectionModel()->selectedRows()
             : QModelIndexList{};
@@ -533,10 +534,11 @@ void VLKBInventoryTree::requestBatch()
         const Cutout &c = m_cutouts.value(id);
         ids.append(c.ivoID);
         names.append((c.survey + u' ' + c.transition).simplified());
+        types.append(c.type);
     }
     if (ids.size() < 2)
         return;
-    emit batchRequested(ids, m_posCutout, names);
+    emit batchRequested(ids, m_posCutout, names, types);
 }
 
 VLKBInventoryTree::RowRequest VLKBInventoryTree::rowRequest(const QModelIndex &idx) const

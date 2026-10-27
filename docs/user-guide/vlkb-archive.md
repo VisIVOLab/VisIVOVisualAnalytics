@@ -130,14 +130,62 @@ phase (queued, executing, completed), and when the job finishes it marks each
 dataset **ready** or **failed** — hover a failed row for the archive's own
 reason, which is usually the interesting part when nineteen of twenty worked.
 
-Press **Download & Open** there to collect the results. They are downloaded to
-the backend and **unpacked** for you, then opened like any other cutout. (The
-legacy tool stopped at handing you a `.tar.gz`.)
+While the job runs the window shows its phase and the time elapsed; the archive
+reports no finer progress than that. **Abort job** stops it on the archive.
+Closing the window while it runs asks whether to stop the job or leave it
+running — a job left running finishes on the archive, but its results can no
+longer be collected from that window.
+
+When it has finished:
+
+- **Download** fetches the results to the backend and **unpacks** them,
+  without opening anything; **Show folder** reveals where they are.
+- **Open…** opens them (downloading first if needed): the images of each
+  source as **layers of one viewer**, each cube in a window of its own. Above
+  twelve files it asks first.
+
+(The legacy tool stopped at handing you a `.tar.gz`.)
 
 ```{tip}
 A job the archive accepted keeps going whether or not you are watching it. If
 the report cannot be read — a moment of network trouble — the window offers
 **Retry report** rather than losing the job: the results are still there.
+```
+
+## A list of sources
+
+To cut out the same surveys around many positions — the sources of a
+catalogue, a list of clumps — use **Data ▸ VLKB Cutouts for a Source Table…**.
+It replaces the legacy client's *Load User Table* window.
+
+1. **Open a table**, or drop the file on the window. It needs a header line
+   and one source per line, with at least an identifier and galactic l and b.
+   Tab-, comma-, semicolon- and space-separated files are all read (the
+   separator is taken from the header); lines starting with `#` are ignored,
+   and quoted cells may contain the separator.
+2. **Choose the columns** for ID, longitude and latitude (they are guessed from
+   names such as `id`, `glon`/`l`, `glat`/`b`), and the region around each
+   source: a cone of a given radius or a box of half-widths dl × db.
+3. **Tick the sources** and press **Query**. The archive is searched once per
+   source; a progress bar follows the run and **Stop** ends it early, keeping
+   what has been found so far.
+4. **Read the preview** in the **Images** and **Cubes** tabs. Each row is a
+   source, with the number of datasets found; each survey column is
+   **green** when the source has every species and transition of that survey
+   found in the table, **yellow** when it has some, **red** when it has none.
+   Hover a cell to see which products are there.
+5. **Tick what you want**: sources in the table, products (survey and
+   band or line) on the left; **All** and **None** help with long lists.
+   The button counts the cutouts as you tick.
+6. **Request N cutouts…** sends, for every ticked source and product, the
+   dataset that best covers the source, as **one** asynchronous archive job —
+   the batch window described above follows it and opens the results.
+
+```{note}
+"Every product found in the table" is the reference for green and yellow: a
+survey's species and transitions that none of the sources has do not count
+against any of them. One job takes at most 500 cutouts; the window says so if
+the ticks add up to more.
 ```
 
 ## When the archive says no

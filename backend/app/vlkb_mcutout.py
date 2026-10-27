@@ -264,6 +264,34 @@ def run_job(base_url: str, job: str, bearer: str = "") -> str:
     return job_phase(base_url, job, bearer)
 
 
+def abort_job(base_url: str, job: str, bearer: str = "") -> str:
+    """Ask the service to stop a job (UWS ``PHASE=ABORT``); report the phase after.
+
+    The cutouts already made are discarded by the service. A job that has
+    already finished stays as it was: the service ignores the request.
+    """
+    url = f"{base_url.rstrip('/')}{UWS_PATH}/{validate_job_id(job)}/phase"
+    try:
+        with _open(url, method="POST", data=b"PHASE=ABORT", bearer=bearer,
+                   headers={"Content-Type": "application/x-www-form-urlencoded"},
+                   capture_redirect=True):
+            pass
+    except _urllib_error.HTTPError as exc:
+        if exc.code not in (302, 303, 307):
+            raise
+    return job_phase(base_url, job, bearer)
+
+
+#: What counts as a cutout among the files of a results archive. The archive
+#: also carries the service's own bookkeeping (a response_*.json), which is not
+#: a dataset and must not be offered to the viewers.
+_DATA_SUFFIXES = (".fits", ".fit", ".fts", ".fits.gz", ".fit.gz", ".fz")
+
+
+def is_data_file(path: str) -> bool:
+    return path.lower().endswith(_DATA_SUFFIXES)
+
+
 def job_report(base_url: str, job: str, bearer: str = "") -> list[dict]:
     """Per-dataset outcome, in the order the batch was submitted.
 
@@ -332,14 +360,19 @@ def fetch_results(base_url: str, job: str, out_dir: str, bearer: str = "") -> di
                     raise McutoutError(
                         f"the results archive exceeds {_MAX_ARCHIVE_BYTES} bytes")
                 out.write(chunk)
-        files = extract_archive(archive, target)
+        extracted = extract_archive(archive, target)
     except Exception:
         # A half-written archive or a half-unpacked job is not a result. Take
         # the staging directory with it rather than leaving the caller to
         # wonder which of those files are real.
         shutil.rmtree(target, ignore_errors=True)
         raise
-    return {"archive": str(archive), "files": files, "bytes": total}
+    # Once unpacked the archive is a second copy of every cutout: drop it.
+    archive.unlink(missing_ok=True)
+    files = [f for f in extracted if is_data_file(f)]
+    other = [f for f in extracted if not is_data_file(f)]
+    return {"archive": "", "directory": str(target), "files": files, "other": other,
+            "bytes": total}
 
 
 def extract_archive(archive: Path, target: Path) -> list[str]:

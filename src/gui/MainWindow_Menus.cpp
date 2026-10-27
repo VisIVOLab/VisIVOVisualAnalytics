@@ -375,6 +375,13 @@ void MainWindow::buildDataMenu()
             u"Cut a FITS out of any HiPS survey at a position and field of view."_s);
     QObject::connect(actHips2Fits, &QAction::triggered, this, &MainWindow::openHips2Fits);
 
+    auto *actSourceTable = dataMenu->addAction(u"VLKB Cutouts for a Source Table…"_s);
+    actSourceTable->setToolTip(u"Read a tab-separated list of sources (id, l, b), preview "
+                               u"which VLKB surveys cover each one, and request the cutouts "
+                               u"as one archive job."_s);
+    QObject::connect(actSourceTable, &QAction::triggered, this,
+                     &MainWindow::openSourceTableCutouts);
+
     auto *actConeSearch = dataMenu->addAction(u"Cone Search…"_s);
     actConeSearch->setToolTip(
             u"Ask a VO cone-search service what is around a position; the result is "

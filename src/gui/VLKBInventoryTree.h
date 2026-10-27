@@ -117,7 +117,7 @@ signals:
     /// The user asked for the selection as ONE asynchronous archive job rather
     /// than N synchronous cutouts. Parallel lists, one entry per dataset.
     void batchRequested(const QStringList &ivoIDs, const QString &posCutout,
-                        const QStringList &displayNames);
+                        const QStringList &displayNames, const QStringList &types);
 
 private slots:
     void onDoubleClicked(const QModelIndex &idx);

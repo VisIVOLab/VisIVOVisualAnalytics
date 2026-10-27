@@ -17,6 +17,8 @@ public:
     explicit AuthWrapper(QObject *parent = nullptr);
 
     bool hasTokens(AuthService service) const;
+    /// Whether this build can sign in to @p service at all (see AuthKeys.h.in).
+    bool isConfigured(AuthService service) const;
     void putAuthorizationHeader(AuthService service, QNetworkRequest &req);
     /// Returns the raw bearer token for @p service, or empty if not authenticated.
     QString bearerToken(AuthService service) const;

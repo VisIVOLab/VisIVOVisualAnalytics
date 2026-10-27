@@ -6,6 +6,36 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## 1.0.6 (2026-10-27)
+
+- **VLKB cutouts for a source table** (*Data ▸ VLKB Cutouts for a Source
+  Table…*), the legacy client's *Load User Table* brought back: a table of
+  sources (id, l, b) is searched source by source, the Images and Cubes tabs
+  preview which surveys cover each source (green, yellow, red), and the ticked
+  sources and products go as one asynchronous archive job. Beyond the legacy:
+  comma-, semicolon- and space-separated tables and `#` comments, drag and
+  drop, All/None ticks, a coverage legend, a progress bar with Stop, and a
+  live count of the cutouts that will be requested.
+- **VLKB sign-in works again.** `AuthKeys.h` was committed with empty
+  endpoints, so *Sign in* did nothing. The IA2 endpoints are now CMake
+  defaults and the client credentials come from `VISIVO_VLKB_CLIENT_ID` /
+  `VISIVO_VLKB_CLIENT_SECRET` (release: repository secrets); a build without
+  them says sign-in is not available. The login page opens above the Settings
+  dialog instead of behind it.
+- **The VLKB sign-in survives a restart.** The refresh token is kept in the
+  system's secure store (macOS Keychain, Windows Credential Manager, libsecret
+  on Linux when installed), never in the settings file; at start the session
+  is renewed silently. A token the SSO refuses is forgotten; an SSO that cannot
+  be reached is retried at the next start; *Sign out* removes it.
+- **The VLKB batch window.** *Download* keeps the cutouts without opening them
+  (*Show folder* reveals them); *Open…* opens them with the images of each
+  source as layers of one viewer and each cube in its own window, asking first
+  above twelve files. *Abort job* stops the job on the archive, and closing the
+  window while it runs asks whether to stop it or leave it running. The status
+  shows the elapsed time (the archive reports a phase, not a progress). The
+  results no longer include the archive's `.tar.gz` and its `response_*.json`,
+  which were offered to the viewers and failed with "Unsupported file type".
+
 ## 1.0.5 (2026-10-26)
 
 - **New-version notice.** Once a day at startup the client asks GitHub for the

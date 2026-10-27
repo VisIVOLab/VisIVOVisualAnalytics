@@ -60,6 +60,26 @@ cmake --build build --parallel
 
 ---
 
+## VLKB sign-in (optional)
+
+Settings ▸ VLKB ▸ *Sign in* uses an OpenID Connect authorization-code flow
+against the IA2 single sign-on. Its endpoints and scope are public and are the
+CMake defaults; the client credentials are not in the repository. Pass them at
+configure time; they end up only in the generated `AuthKeys.h` of the build
+tree:
+
+```bash
+cmake -S . -B build ... \
+  -DVISIVO_VLKB_CLIENT_ID=... \
+  -DVISIVO_VLKB_CLIENT_SECRET=...
+```
+
+Without them the build works, public VLKB services included, and the Settings
+dialog shows the sign-in as not available in this build. The release workflow
+reads the same values from the repository secrets `VLKB_CLIENT_ID` and
+`VLKB_CLIENT_SECRET`. `VISIVO_VLKB_AUTH_URL`, `VISIVO_VLKB_TOKEN_URL` and
+`VISIVO_VLKB_SCOPE` override the endpoints if they ever change.
+
 ## Linux
 
 ### Ubuntu / Debian

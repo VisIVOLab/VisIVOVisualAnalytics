@@ -33,6 +33,7 @@
 #include "vtkWindowVbt.h"
 #include "vtkWindowVbtVolume.h"
 #include "McutoutJobDialog.h"
+#include "SourceTableDialog.h"
 #include "VLKBInventoryTree.h"
 #include "ToolProgressSheet.h"
 #include "VlkbPosString.h"
@@ -397,6 +398,55 @@ void MainWindow::refreshVlkbQueryPreview()
     ui->btnQuery->setEnabled(!(m_vlkbQueryWatchdog && m_vlkbQueryWatchdog->isActive()));
 }
 
+void MainWindow::startMcutoutJob(const QVector<BackendMcutoutItem> &items,
+                                 const QStringList &labels)
+{
+    auto *job = new McutoutJobDialog(items, labels, this->settings->getVLKBUrl(),
+                                     this->auth->bearerToken(AuthService::VLKB),
+                                     this->settings->getBackendUrl(),
+                                     this->settings->getBackendToken(), this);
+    QObject::connect(job, &McutoutJobDialog::openRequested, this,
+                     &MainWindow::openMcutoutResults);
+    job->show();
+}
+
+void MainWindow::openMcutoutResults(const QVector<McutoutResultFile> &files)
+{
+    // Images of the same source cover the same patch of sky: one viewer each,
+    // the rest as its layers. A cube cannot be a layer and opens on its own;
+    // so does a file whose type is unknown, rather than be forced into a layer.
+    QStringList groups;
+    QHash<QString, QVector<McutoutResultFile>> images;
+    for (const McutoutResultFile &f : files) {
+        if (f.type != u"image"_s) {
+            this->doOpenDataPath(f.path);
+            continue;
+        }
+        if (!images.contains(f.group))
+            groups << f.group;
+        images[f.group] << f;
+    }
+    for (const QString &group : groups) {
+        QPointer<vtkWindowImage> viewer;
+        for (const McutoutResultFile &f : images.value(group)) {
+            if (viewer)
+                viewer->addLayerFromBackendPath(f.path, f.label);
+            else
+                viewer = this->openVlkbImageViewer(f.path, f.label);
+        }
+    }
+}
+
+void MainWindow::openSourceTableCutouts()
+{
+    auto *dialog = new SourceTableDialog(this->settings->getVLKBUrl(), this->auth, this);
+    QObject::connect(dialog, &SourceTableDialog::cutoutsRequested, this,
+                     [this](const QVector<BackendMcutoutItem> &items, const QStringList &labels) {
+                         this->startMcutoutJob(items, labels);
+                     });
+    dialog->show();
+}
+
 void MainWindow::queryVlkb()
 {
     if (m_vlkbQueryWatchdog && m_vlkbQueryWatchdog->isActive()) {
@@ -482,21 +532,15 @@ void MainWindow::queryVlkb()
                          // the archive whether or not the window stays open.
                          QObject::connect(tree, &VLKBInventoryTree::batchRequested, this,
                                           [this](const QStringList &ids, const QString &pos,
-                                                 const QStringList &names) {
+                                                 const QStringList &names,
+                                                 const QStringList &types) {
                              QVector<BackendMcutoutItem> items;
                              items.reserve(ids.size());
-                             for (const QString &id : ids)
-                                 items.append({ id, pos });
-                             auto *job = new McutoutJobDialog(
-                                     items, names, this->settings->getVLKBUrl(),
-                                     this->auth->bearerToken(AuthService::VLKB),
-                                     this->settings->getBackendUrl(),
-                                     this->settings->getBackendToken(), this);
-                             QObject::connect(job, &McutoutJobDialog::cutoutReady, this,
-                                              [this](const QString &backendPath) {
-                                                  this->doOpenDataPath(backendPath);
-                                              });
-                             job->show();
+                             // One inventory is one region: all its images are
+                             // layers of one viewer.
+                             for (int i = 0; i < ids.size(); ++i)
+                                 items.append({ ids.at(i), pos, types.value(i), pos });
+                             this->startMcutoutJob(items, names);
                          });
                          // One handler, three intentions. The fetch, the error
                          // reporting and the "requesting…" bookkeeping are the same

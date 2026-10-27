@@ -149,6 +149,7 @@
     "POST /v1/velocity/open",
     "POST /v1/velocity/subgrid_bin",
     "POST /v1/vlkb/fetch_cutout",
+    "POST /v1/vlkb/mcutout/abort",
     "POST /v1/vlkb/mcutout/fetch",
     "POST /v1/vlkb/mcutout/phase",
     "POST /v1/vlkb/mcutout/report",

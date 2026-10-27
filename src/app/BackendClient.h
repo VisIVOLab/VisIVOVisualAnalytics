@@ -1298,6 +1298,9 @@ struct BackendMcutoutItem
 {
     QString id;      ///< the archive's obs_publisher_did
     QString pos;     ///< "CIRCLE l b r" or "RANGE l1 l2 b1 b2"
+    // Client-side only, never sent to the archive: how to open the result.
+    QString type;    ///< "image" or "cube"; empty if unknown
+    QString group;   ///< what the cutout belongs to (a source), for stacking layers
 };
 
 struct BackendMcutoutSubmitResult
@@ -1340,8 +1343,9 @@ struct BackendMcutoutFetchResult
 {
     bool valid{ false };
     QString error;
-    QString archivePath;      ///< the .tar.gz, on the BACKEND
-    QStringList files;        ///< the cutouts extracted from it
+    QString archivePath;      ///< the .tar.gz, on the BACKEND (removed once unpacked)
+    QString directory;        ///< where the cutouts were unpacked, on the BACKEND
+    QStringList files;        ///< the cutouts extracted from it (FITS only)
     qint64 bytes{ 0 };
 };
 
@@ -2584,6 +2588,10 @@ public:
 
     /** POST /v1/vlkb/mcutout/phase — where the job has got to (starts a HELD one). */
     BackendMcutoutPhaseResult vlkbMcutoutPhase(const QString &jobId, const QString &serviceUrl,
+                                               const QString &bearer) const;
+
+    /** POST /v1/vlkb/mcutout/abort — stop a running job on the archive. */
+    BackendMcutoutPhaseResult vlkbMcutoutAbort(const QString &jobId, const QString &serviceUrl,
                                                const QString &bearer) const;
 
     /** POST /v1/vlkb/mcutout/report — per-dataset outcome, in submission order. */

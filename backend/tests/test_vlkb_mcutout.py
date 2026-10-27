@@ -453,3 +453,75 @@ def test_a_failed_fetch_leaves_no_half_unpacked_directory(tmp_path, monkeypatch)
     # The staging directory goes with the failure: a half-written archive is
     # not a result, and leaving it invites someone to open it.
     assert list(root.glob("mcutout-*")) == []
+
+
+# ── download without opening, abort ────────────────────────────────────────────
+
+def test_fetch_returns_only_the_cutouts_and_drops_the_archive(tmp_path, monkeypatch):
+    """The archive also carries the service's response_*.json; offering it to a
+    viewer gave "Unsupported file type". And once unpacked, the .tar.gz is a
+    second copy of every cutout."""
+    from app import vlkb_mcutout
+
+    archive = _tar_with(tmp_path, [("0_a.fits", b"SIMPLE  =  T"), ("1_b.fits", b"SIMPLE  =  T"),
+                                   ("response_1.json", b"{}")])
+    payload = archive.read_bytes()
+
+    class _Response:
+        def __init__(self):
+            self._data = payload
+
+        def read(self, n=-1):
+            out, self._data = self._data[:n], self._data[n:]
+            return out
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(vlkb_mcutout, "_request", lambda *a, **k: _Response())
+    out = vlkb_mcutout.fetch_results("https://vlkb.example.org", "job1", str(tmp_path / "out"))
+    assert [os.path.basename(f) for f in out["files"]] == ["0_a.fits", "1_b.fits"]
+    assert [os.path.basename(f) for f in out["other"]] == ["response_1.json"]
+    assert not any(name.endswith(".tar.gz") for name in os.listdir(out["directory"]))
+    assert out["archive"] == ""
+
+
+def test_abort_posts_the_uws_phase_and_reports_the_result(monkeypatch):
+    from app import vlkb_mcutout
+
+    calls = []
+
+    class _Ok:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_open(url, **kwargs):
+        calls.append((url, kwargs.get("method"), kwargs.get("data")))
+        return _Ok()
+
+    monkeypatch.setattr(vlkb_mcutout, "_open", fake_open)
+    monkeypatch.setattr(vlkb_mcutout, "job_phase", lambda *a, **k: "ABORTED")
+    assert vlkb_mcutout.abort_job("https://vlkb.example.org/", "job1") == "ABORTED"
+    assert calls == [("https://vlkb.example.org/soda/async/uws/job1/phase", "POST",
+                      b"PHASE=ABORT")]
+
+
+def test_abort_route_requires_auth_and_reports_terminal(monkeypatch):
+    client, auth = _client()
+    from app import vlkb_mcutout
+    from app.routers import vlkb as vlkb_router
+
+    assert client.post("/v1/vlkb/mcutout/abort", json={"job_id": "job1"}).status_code in (401, 403)
+    monkeypatch.setattr(vlkb_router, "assert_safe_fetch_url", lambda *a, **k: None)
+    monkeypatch.setattr(vlkb_mcutout, "abort_job", lambda *a, **k: "ABORTED")
+    r = client.post("/v1/vlkb/mcutout/abort",
+                    json={"job_id": "job1", "service_url": "https://vlkb.example.org"},
+                    headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["phase"] == "ABORTED" and r.json()["terminal"] is True

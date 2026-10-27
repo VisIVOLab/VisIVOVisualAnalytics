@@ -15,6 +15,7 @@
 
 class AuthWrapper;
 class BackendClient;
+struct BackendMcutoutItem;
 class CommandPalette;
 class DataHubWidget;
 class DiagnosticsWindow;
@@ -92,6 +93,10 @@ private slots:
     void changeViewSelectionMode();
     void skyRegionSelected(const QString &point, const QString &area);
     void queryVlkb();   ///< Triggered by btnQuery in the VLKB panel
+    /// VLKB cutouts for a list of sources read from a TSV file (legacy "user table").
+    void openSourceTableCutouts();
+    /// One asynchronous VLKB cutout job for @p items, in its own window.
+    void startMcutoutJob(const QVector<BackendMcutoutItem> &items, const QStringList &labels);
     /// Keep the VLKB panel honest: say which region the Query button will
     /// actually send, and refuse to send one that has no size.
     void refreshVlkbQueryPreview();
@@ -229,6 +234,12 @@ private:
 
     void openVlkbImageLayer(const QString &backendPath, const QString &displayName,
                              QPointer<VLKBInventoryTree> tree);
+    /// Open a VLKB image in a new viewer and return it; nullptr if it failed or
+    /// was not an image (a cube then opens in its own viewer).
+    vtkWindowImage *openVlkbImageViewer(const QString &backendPath, const QString &displayName);
+    /// Open the unpacked cutouts of a batch job: the images of each source as
+    /// layers of one viewer, each cube in its own window.
+    void openMcutoutResults(const QVector<struct McutoutResultFile> &files);
 
     Ui::MainWindow *ui;
     QPointer<Settings>               settings;

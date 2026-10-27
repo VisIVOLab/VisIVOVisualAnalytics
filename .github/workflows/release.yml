@@ -397,6 +397,13 @@ jobs:
 
       - name: Configure
         shell: bash
+        # VLKB sign-in credentials come from the repository's secrets and reach
+        # only the generated AuthKeys.h in the build tree (the IA2 endpoints and
+        # scope are public CMake defaults). Without the secrets the build ships
+        # without VLKB sign-in, and the Settings dialog says so.
+        env:
+          VLKB_CLIENT_ID: ${{ secrets.VLKB_CLIENT_ID }}
+          VLKB_CLIENT_SECRET: ${{ secrets.VLKB_CLIENT_SECRET }}
         run: |
           # On Windows, Git Bash $PWD returns POSIX paths (/d/a/…) that CMake
           # mishandles when joined with ';' in CMAKE_PREFIX_PATH. `pwd -W` is a
@@ -415,7 +422,9 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$WS/vtk-install;$CFITSIO_PREFIX" \
-            -DCMAKE_INSTALL_PREFIX="$WS/dist"
+            -DCMAKE_INSTALL_PREFIX="$WS/dist" \
+            -DVISIVO_VLKB_CLIENT_ID="$VLKB_CLIENT_ID" \
+            -DVISIVO_VLKB_CLIENT_SECRET="$VLKB_CLIENT_SECRET"
 
       - name: Build
         run: cmake --build build --parallel

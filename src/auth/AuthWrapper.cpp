@@ -36,6 +36,12 @@ bool AuthWrapper::hasTokens(AuthService service) const
     return this->authObject(service)->hasTokens();
 }
 
+bool AuthWrapper::isConfigured(AuthService service) const
+{
+    const auto *obj = this->authObject(service);
+    return obj && obj->isConfigured();
+}
+
 void AuthWrapper::putAuthorizationHeader(AuthService service, QNetworkRequest &req)
 {
     this->authObject(service)->putAuthorizationHeader(req);

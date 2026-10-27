@@ -319,6 +319,22 @@ void SettingsDialog::VLKBAuthTriggered()
 
 void SettingsDialog::setVLKBAuthStatus()
 {
+    // A build made without the VLKB client configuration cannot sign in: say so
+    // rather than offer a button that silently does nothing.
+    if (!this->auth->isConfigured(AuthService::VLKB)) {
+        ui->labelVLKBAuth->setText(u"Not available in this build"_s);
+        ui->btnVLKBAuth->setText(u"Sign in"_s);
+        ui->btnVLKBAuth->setEnabled(false);
+        const QString why = u"This build was made without the VLKB sign-in configuration "
+                            u"(VISIVO_VLKB_* at build time). Public VLKB services still work; "
+                            u"authenticated ones need a build that includes it."_s;
+        ui->btnVLKBAuth->setToolTip(why);
+        ui->labelVLKBAuth->setToolTip(why);
+        return;
+    }
+    ui->btnVLKBAuth->setEnabled(true);
+    ui->btnVLKBAuth->setToolTip(QString());
+    ui->labelVLKBAuth->setToolTip(QString());
     if (this->auth->hasTokens(AuthService::VLKB)) {
         ui->labelVLKBAuth->setText(u"Authenticated"_s);
         ui->btnVLKBAuth->setText(u"Sign out"_s);

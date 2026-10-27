@@ -308,6 +308,27 @@ BackendMcutoutPhaseResult BackendClient::vlkbMcutoutPhase(const QString &jobId,
     return result;
 }
 
+BackendMcutoutPhaseResult BackendClient::vlkbMcutoutAbort(const QString &jobId,
+                                                          const QString &serviceUrl,
+                                                          const QString &bearer) const
+{
+    BackendMcutoutPhaseResult result;
+    QString transportError;
+    const QByteArray payload = performPostRetryingBackpressure(
+            QUrl(m_baseUrl + QStringLiteral("/v1/vlkb/mcutout/abort")),
+            QJsonDocument(mcutoutJobBody(jobId, serviceUrl, bearer)), transportError);
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    if (!transportError.isEmpty() || !object.value(QStringLiteral("valid")).toBool()) {
+        result.error = describeFailure(payload, transportError,
+                                       QStringLiteral("The job could not be stopped."));
+        return result;
+    }
+    result.phase = object.value(QStringLiteral("phase")).toString();
+    result.terminal = object.value(QStringLiteral("terminal")).toBool();
+    result.valid = true;
+    return result;
+}
+
 BackendMcutoutReportResult BackendClient::vlkbMcutoutReport(const QString &jobId,
                                                             const QString &serviceUrl,
                                                             const QString &bearer) const
@@ -353,6 +374,7 @@ BackendMcutoutFetchResult BackendClient::vlkbMcutoutFetch(const QString &jobId,
         return result;
     }
     result.archivePath = object.value(QStringLiteral("archive")).toString();
+    result.directory = object.value(QStringLiteral("directory")).toString();
     const QJsonArray files = object.value(QStringLiteral("files")).toArray();
     for (const QJsonValue &value : files)
         result.files.append(value.toString());

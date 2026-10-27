@@ -308,6 +308,26 @@ async def vlkb_mcutout_phase(request: McutoutJobRequest, _: None = _auth):
     return {"valid": True, "error": "", "phase": phase, "terminal": phase in TERMINAL_PHASES}
 
 
+@router.post("/v1/vlkb/mcutout/abort", tags=["vlkb"])
+async def vlkb_mcutout_abort(request: McutoutJobRequest, _: None = _auth):
+    """Stop a running job on the archive (UWS ``PHASE=ABORT``).
+
+    Returns ``{valid, error, phase, terminal}`` with the phase the archive
+    reports afterwards; a job that had already finished keeps its phase.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from ..vlkb_mcutout import TERMINAL_PHASES, abort_job  # noqa: PLC0415
+
+    base = _mcutout_service(request.service_url)
+    try:
+        phase = await asyncio.to_thread(abort_job, base, request.job_id, request.vlkb_bearer)
+    except Exception as exc:  # noqa: BLE001
+        raise _mcutout_failure(exc) from exc
+    logger.info("[mcutout] abort job=%s phase=%s", request.job_id, phase)
+    return {"valid": True, "error": "", "phase": phase, "terminal": phase in TERMINAL_PHASES}
+
+
 @router.post("/v1/vlkb/mcutout/report", tags=["vlkb"])
 async def vlkb_mcutout_report(request: McutoutJobRequest, _: None = _auth):
     """Per-dataset outcome of a finished job, in submission order.
@@ -332,8 +352,10 @@ async def vlkb_mcutout_report(request: McutoutJobRequest, _: None = _auth):
 async def vlkb_mcutout_fetch(request: McutoutJobRequest, _: None = _auth):
     """Download the job's archive and unpack it on the backend.
 
-    Returns ``{valid, error, archive, files, bytes}`` — ``files`` are the
-    extracted cutouts, ready for the ordinary dataset-open route. The legacy
+    Returns ``{valid, error, archive, directory, files, other, bytes}`` —
+    ``files`` are the extracted cutouts (FITS only), ready for the ordinary
+    dataset-open route; ``other`` the archive's remaining members (the
+    service's bookkeeping), never to be opened; ``directory`` where they are. The legacy
     stopped at the `.tar.gz`, which left the cutouts one manual step away from
     the viewer that had just asked for them.
 
