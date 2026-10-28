@@ -28,8 +28,9 @@ the laptop in front of you or on an HPC cluster on another continent — the
 client renders, the service computes next to the data, and only the result
 travels.
 
-It is developed at **INAF** and is part of the wider VisIVO family, alongside
-the [VisIVO Server](https://visivo.readthedocs.io/en/latest/server/visivo_server.html)
+It is developed by [**VisIVOLab**](https://visivolab.oact.inaf.it) at INAF –
+Osservatorio Astrofisico di Catania and is part of the wider VisIVO family,
+alongside the [VisIVO Server](https://visivo.readthedocs.io/en/latest/server/visivo_server.html)
 command-line toolkit, with which it shares data formats.
 
 ## What it does
@@ -187,4 +188,5 @@ reference once it is available.
 
 Apache License 2.0 — see [LICENSE](LICENSE).
 
-Developed at the Istituto Nazionale di Astrofisica (INAF).
+VisIVO Visual Analytics is developed by [VisIVOLab](https://visivolab.oact.inaf.it)
+at INAF – Osservatorio Astrofisico di Catania.

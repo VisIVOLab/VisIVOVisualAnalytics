@@ -3,8 +3,9 @@
 **Tools for exploring and analysing astronomy data — interactive desktop
 viewing plus a command-line processing toolkit.**
 
-VisIVO is a family of two complementary components developed at INAF,
-sharing the same data formats (FITS, plus VisIVO's own Volume Binary
+VisIVO is a family of two complementary components developed by
+[VisIVOLab](https://visivolab.oact.inaf.it) at INAF – Osservatorio Astrofisico
+di Catania, sharing the same data formats (FITS, plus VisIVO's own Volume Binary
 Table — VBT) so workflows mix freely between them:
 
 - **VisIVO Visual Analytics** — desktop GUI for spectral cubes, 2-D maps,
@@ -206,6 +207,14 @@ movie-export
 linked-views
 demo-datasets
 testing
+```
+
+```{toctree}
+:caption: Project
+:hidden:
+:maxdepth: 1
+
+roadmap
 ```
 
 ```{toctree}
