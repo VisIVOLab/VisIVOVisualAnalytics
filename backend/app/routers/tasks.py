@@ -43,7 +43,7 @@ async def create_moment_task(
     async def _runner() -> None:
         ticker = asyncio.create_task(_progress_ticker(task.task_id))
         try:
-            result, cache_hit = await _moment_product_payload(entry, request)
+            result, cache_hit = await _moment_product_payload(entry, request, task.task_id)
             ticker.cancel()
             TASKS.update(
                 task.task_id,
@@ -92,7 +92,7 @@ async def create_pv_task(
     async def _runner() -> None:
         ticker = asyncio.create_task(_progress_ticker(task.task_id))
         try:
-            result, cache_hit = await _pv_product_payload(entry, request)
+            result, cache_hit = await _pv_product_payload(entry, request, task.task_id)
             ticker.cancel()
             TASKS.update(
                 task.task_id,
@@ -106,6 +106,79 @@ async def create_pv_task(
             TASKS.update(task.task_id, status="cancelled", progress=0.0, error="Cancelled by client.")
         except Exception as exc:  # pragma: no cover - exercised at runtime
             ticker.cancel()
+            TASKS.update(task.task_id, status="failed", progress=1.0, error=str(exc))
+
+    handle = asyncio.create_task(_runner())
+    TASKS.update(task.task_id, asyncio_handle=handle)
+    return TaskCreateResponse(valid=True, error="", task_id=task.task_id, status="running", cache_hit=False)
+
+
+# ── Source finding as a task ─────────────────────────────────────────────────
+# The finders are plugins (app/compute/finders): SoFiA-2 for cubes when it is
+# installed, photutils segmentation for images. A finder run is a task so it can
+# be polled and cancelled, and its products (label mask, VOTable catalogue) land
+# in the workspace under sourcefind/<task_id>/ where the client opens them.
+
+class SourceFindTaskRequest(BaseModel):
+    dataset_id: str
+    finder: str = "sofia2"
+    params: dict[str, Any] = {}
+
+
+@router.get("/v1/finders", tags=["tasks"])
+async def list_finders(token: str = _auth) -> dict:
+    """The source finders this node knows, available or not, with their parameters."""
+    from ..compute import finders  # noqa: PLC0415
+    return {"finders": [f.as_dict() for f in finders.catalogue()]}
+
+
+@router.post("/v1/tasks/sourcefind", response_model=TaskCreateResponse, tags=["tasks"])
+async def create_sourcefind_task(
+    request: SourceFindTaskRequest,
+    token: str = _auth,
+    session: Session = Depends(get_session),
+) -> TaskCreateResponse:
+    import shutil  # noqa: PLC0415
+
+    from ..compute import finders  # noqa: PLC0415
+
+    entry = _require_dataset(session, request.dataset_id)
+    meta = finders.info(request.finder)
+    if meta is None:
+        raise HTTPException(404, f"Unknown finder {request.finder!r}; this node has {', '.join(finders.names())}.")
+    if not meta.available:
+        raise HTTPException(503, f"{meta.name} is not available on this node: {meta.reason}")
+    if entry["kind"] not in meta.kinds:
+        raise HTTPException(422, f"{meta.name} works on {', '.join(meta.kinds)} datasets; "
+                                 f"this one is a {entry['kind']}.")
+
+    task = TASKS.create("sourcefind", owner_token=token)
+    TASKS.update(task.task_id, status="running", progress=0.05)
+    out_dir = get_exports_dir() / "sourcefind" / task.task_id
+
+    async def _runner() -> None:
+        ticker = asyncio.create_task(_progress_ticker(task.task_id))
+        try:
+            result = await finders.run(request.finder, entry["path"], entry["kind"], out_dir,
+                                       request.params, finders.default_timeout())
+            ticker.cancel()
+            TASKS.update(task.task_id, status="completed", progress=1.0,
+                         result={"valid": True, "error": "", "dataset_id": request.dataset_id, **result})
+            record_history(session, operation="sourcefind", dataset_id=request.dataset_id,
+                           endpoint="/v1/tasks/sourcefind",
+                           params={"finder": request.finder, **request.params})
+        except asyncio.CancelledError:
+            ticker.cancel()
+            shutil.rmtree(out_dir, ignore_errors=True)
+            TASKS.update(task.task_id, status="cancelled", progress=0.0, error="Cancelled by client.")
+        except finders.FinderError as exc:
+            ticker.cancel()
+            shutil.rmtree(out_dir, ignore_errors=True)
+            TASKS.update(task.task_id, status="failed", progress=1.0, error=str(exc))
+        except Exception as exc:  # noqa: BLE001 — reported through the task
+            ticker.cancel()
+            shutil.rmtree(out_dir, ignore_errors=True)
+            logger.exception("[sourcefind] task %s failed", task.task_id)
             TASKS.update(task.task_id, status="failed", progress=1.0, error=str(exc))
 
     handle = asyncio.create_task(_runner())

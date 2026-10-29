@@ -23,8 +23,24 @@ private slots:
     void datalinkVotableRoutesLikeJson();
     void votableErrorsAreReported();
     void votableSkipsMetaResource();
+    void votableStatusRowsMatchOnPath();
+    void votablePrefersFirstSyncCutout();
     void adqlOrdersWhenPaging();
     void resolveAccessUsesTheRow();
+    // The routing decision and the node services (testbed fixtures)
+    void parsesRoutingDecisionJson();
+    void parsesNodeServicesJson();
+    void parsesNodeServicesVotable();
+    void nodeServiceKinds();
+    void routesCandidatesInOrder();
+    void preferredNodeGoesFirst();
+    // The node's SODA job and the Computing Broker's job, as the desktop reads them
+    void sodaJobJson();
+    void sodaServiceUrlOnBackend();
+    void brokerJobJson();
+    // Sign-in: the 401 challenge and the IAM's discovery document
+    void authChallenge();
+    void oidcDocument();
 };
 
 #endif  // TestSkavaClient_h

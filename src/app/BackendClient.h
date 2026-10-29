@@ -247,6 +247,25 @@ struct BackendTaskCreateResult
     bool cacheHit{ false };
 };
 
+/// A source finder the backend can run (GET /v1/finders): SoFiA-2 for cubes,
+/// photutils for images; ``parameters`` names what a caller may set.
+struct BackendFinderInfo
+{
+    QString name;
+    QStringList kinds;              ///< "cube", "image"
+    QString description;
+    QMap<QString, QString> parameters;   ///< name → what it means
+    bool available{ false };
+    QString reason;                 ///< why not available (no executable)
+};
+
+struct BackendFindersResult
+{
+    bool valid{ false };
+    QString error;
+    QVector<BackendFinderInfo> finders;
+};
+
 struct BackendTaskStatusResult
 {
     bool valid{ false };
@@ -2271,6 +2290,18 @@ public:
     BackendTaskCreateResult createPvTask(const QString &datasetId,
                                          const std::vector<std::array<double, 2>> &vertices,
                                          int widthPixels) const;
+    /** GET /v1/finders — the source finders this backend offers. */
+    BackendFindersResult listFinders() const;
+    /** POST /v1/tasks/sourcefind — run ``finder`` on a dataset as a cancellable
+     *  task; the result object carries ``n_sources``, ``sources``,
+     *  ``mask_path`` and ``catalog_path`` (on the backend's filesystem).
+     *  ``params`` are the finder's own parameters (its names). */
+    BackendTaskCreateResult createSourceFindTask(const QString &datasetId, const QString &finder,
+                                                 const QJsonObject &params) const;
+    /** DELETE /v1/tasks/{id} — ask the backend to cancel a running or pending
+     *  task. True when it accepted; ``error`` says why not (404: no such
+     *  task, 409: already finished). Best-effort: the task may still complete. */
+    bool cancelTask(const QString &taskId, QString &error) const;
     BackendTaskStatusResult requestTaskStatus(const QString &taskId) const;
     BackendTaskStatusResult waitForTaskCompletion(const BackendTaskCreateResult &createResult,
                                                   const QString &logTag,

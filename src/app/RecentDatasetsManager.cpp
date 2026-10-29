@@ -15,6 +15,13 @@ static constexpr char kName[]      = "displayName";
 static constexpr char kType[]      = "type";
 static constexpr char kSource[]    = "source";
 static constexpr char kObsId[]     = "obsId";
+static constexpr char kSkavaUrl[]  = "skavaUrl";
+static constexpr char kProtocol[]  = "skavaProtocol";
+static constexpr char kEndpoints[] = "skavaEndpointsRecorded";
+static constexpr char kTapUrl[]    = "skavaTapUrl";
+static constexpr char kDatalink[]  = "skavaDatalinkUrl";
+static constexpr char kAccessUrl[] = "accessUrl";
+static constexpr char kServedBy[]  = "servedBy";
 static constexpr char kOpened[]    = "lastOpened";
 
 // ---------------------------------------------------------------------------
@@ -41,25 +48,34 @@ void RecentDatasetsManager::record(const QString &id,
                                    const QString &source,
                                    const QString &obsId)
 {
-    if (id.isEmpty()) {
+    RecentDataset entry;
+    entry.id          = id;
+    entry.displayName = displayName;
+    entry.type        = type;
+    entry.source      = source;
+    entry.obsId       = obsId;
+    record(std::move(entry));
+}
+
+void RecentDatasetsManager::record(RecentDataset entry)
+{
+    if (entry.id.isEmpty()) {
         return;
     }
 
     // Remove any existing entry with the same id.
     for (auto it = m_datasets.begin(); it != m_datasets.end(); ++it) {
-        if (it->id == id) {
+        if (it->id == entry.id) {
             m_datasets.erase(it);
             break;
         }
     }
 
     // Prepend the new (or updated) entry.
-    RecentDataset entry;
-    entry.id          = id;
-    entry.displayName = displayName.isEmpty() ? id : displayName;
-    entry.type        = type;
-    entry.source      = source.isEmpty() ? u"remote"_s : source;
-    entry.obsId       = obsId;
+    if (entry.displayName.isEmpty())
+        entry.displayName = entry.id;
+    if (entry.source.isEmpty())
+        entry.source = u"remote"_s;
     entry.lastOpened  = QDateTime::currentDateTime();
     m_datasets.prepend(entry);
 
@@ -114,6 +130,13 @@ void RecentDatasetsManager::load()
         // have it and load as an empty string, which makes ``reopenDataset``
         // fall back to path-based reopen unchanged.
         e.obsId       = s.value(QLatin1StringView(kObsId)).toString();
+        e.skavaUrl    = s.value(QLatin1StringView(kSkavaUrl)).toString();
+        e.skavaProtocol = s.value(QLatin1StringView(kProtocol)).toString();
+        e.skavaEndpointsRecorded = s.value(QLatin1StringView(kEndpoints), false).toBool();
+        e.skavaTapUrl = s.value(QLatin1StringView(kTapUrl)).toString();
+        e.skavaDatalinkUrl = s.value(QLatin1StringView(kDatalink)).toString();
+        e.accessUrl   = s.value(QLatin1StringView(kAccessUrl)).toString();
+        e.servedBy    = s.value(QLatin1StringView(kServedBy)).toString();
         e.lastOpened  = s.value(QLatin1StringView(kOpened)).toDateTime();
         s.endGroup();
         if (!e.id.isEmpty()) {
@@ -140,6 +163,13 @@ void RecentDatasetsManager::save() const
         if (!e.obsId.isEmpty()) {
             s.setValue(QLatin1StringView(kObsId), e.obsId);
         }
+        if (!e.skavaUrl.isEmpty())      s.setValue(QLatin1StringView(kSkavaUrl), e.skavaUrl);
+        if (!e.skavaProtocol.isEmpty()) s.setValue(QLatin1StringView(kProtocol), e.skavaProtocol);
+        if (e.skavaEndpointsRecorded)   s.setValue(QLatin1StringView(kEndpoints), true);
+        if (!e.skavaTapUrl.isEmpty())   s.setValue(QLatin1StringView(kTapUrl), e.skavaTapUrl);
+        if (!e.skavaDatalinkUrl.isEmpty()) s.setValue(QLatin1StringView(kDatalink), e.skavaDatalinkUrl);
+        if (!e.accessUrl.isEmpty())     s.setValue(QLatin1StringView(kAccessUrl), e.accessUrl);
+        if (!e.servedBy.isEmpty())      s.setValue(QLatin1StringView(kServedBy), e.servedBy);
         s.setValue(QLatin1StringView(kOpened), e.lastOpened);
         s.endGroup();
     }

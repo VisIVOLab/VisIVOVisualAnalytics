@@ -440,8 +440,12 @@ set(PROJECT_SOURCES
         src/vlkb/VlkbQueryService.h
         src/skava/SkavaClient.cpp
         src/skava/VoTable.cpp
+        src/skava/NodeSoda.cpp
+        src/skava/BrokerClient.cpp
         src/skava/SkavaClient.h
         src/skava/VoTable.h
+        src/skava/NodeSoda.h
+        src/skava/BrokerClient.h
         src/skava/BackendRouting.cpp
         src/skava/BackendRouting.h
         src/gui/SkavaSearchPanel.cpp
@@ -469,6 +473,7 @@ set(PROJECT_SOURCES
         src/gui/MainWindow.cpp
         src/gui/MainWindow_Menus.cpp
         src/gui/MainWindow_Open.cpp
+        src/gui/MainWindow_SkavaOps.cpp
         src/gui/MainWindow_Science.cpp
         src/gui/MainWindow_Samp.cpp
         src/gui/MainWindow_Sky.cpp
@@ -509,6 +514,8 @@ set(PROJECT_SOURCES
         src/gui/StackDialog.h
         src/gui/SourceFindDialog.cpp
         src/gui/SourceFindDialog.h
+        src/gui/SkavaSourceFindDialog.cpp
+        src/gui/SkavaSourceFindDialog.h
         src/gui/PvController.cpp
         src/gui/PvController.h
         src/gui/PvTypes.h
@@ -902,6 +909,8 @@ qt_add_executable(test_remote_render
         src/skava/BackendRouting.cpp
         src/skava/SkavaClient.cpp
         src/skava/VoTable.cpp
+        src/skava/NodeSoda.cpp
+        src/skava/BrokerClient.cpp
         src/vtk/ImageLod.cpp
 )
 target_include_directories(test_remote_render PRIVATE

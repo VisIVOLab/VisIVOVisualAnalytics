@@ -53,6 +53,8 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/skava/BackendRouting.cpp
     ${VISIVO_ROOT}/src/skava/SkavaClient.cpp
     ${VISIVO_ROOT}/src/skava/VoTable.cpp
+    ${VISIVO_ROOT}/src/skava/NodeSoda.cpp
+    ${VISIVO_ROOT}/src/skava/BrokerClient.cpp
     ${VISIVO_ROOT}/src/vtk/ImageLod.cpp
     ${VISIVO_ROOT}/src/gui/PvPathGeometry.cpp
 )

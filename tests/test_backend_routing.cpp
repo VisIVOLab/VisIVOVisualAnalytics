@@ -1,3 +1,4 @@
+#include "app/BackendClient.h"
 #include "TestBackendRouting.h"
 
 #include "Settings.h"
@@ -243,8 +244,18 @@ void TestBackendRouting::routeSkipsAuthWithoutToken()
     SkavaRoute route = routeSkavaDataset(registry, dl);
     QVERIFY(!route.valid());
     QVERIFY(route.skipped.first().contains(u"requires a token"_s));
-    // No token in the registry, but the client would send the automatic one.
-    QVERIFY(routeSkavaDataset(registry, dl, /*autoToken=*/true).valid());
+    // The automatic token is the local backend's: it does not stand in for a
+    // remote node's missing one...
+    QVERIFY(!routeSkavaDataset(registry, dl, /*autoToken=*/true).valid());
+    // ...but it does for the local backend itself.
+    {
+        SkavaDatalinkResponse local = twoNodeDatalink();
+        local.visivoBackends = { descriptor(u"http://127.0.0.1:8000"_s, u"A"_s, {}, /*requiresAuth=*/true) };
+        const QList<BackendNode> reg = { makeNode(u"src-a"_s, u"http://127.0.0.1:8000"_s, u"A"_s) };
+        BackendClient::setLocalBackendUrl(QString());
+        QVERIFY(routeSkavaDataset(reg, local, /*autoToken=*/true).valid());
+        QVERIFY(!routeSkavaDataset(reg, local, /*autoToken=*/false).valid());
+    }
     registry[0].token = u"secret"_s;
     route = routeSkavaDataset(registry, dl);
     QVERIFY(route.valid());

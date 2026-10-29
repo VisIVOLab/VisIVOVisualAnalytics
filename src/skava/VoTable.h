@@ -21,6 +21,9 @@ struct VoTableService
     QString standardId;   ///< e.g. ivo://ivoa.net/std/SODA#sync-1.0
     QString accessUrl;
     QStringList inputParams;
+    /// The inputs the service fixes for this dataset (a PARAM with a value in
+    /// the inputParams GROUP): the dataset's ID on the node, an OPERATION.
+    QHash<QString, QString> inputValues;
 };
 
 struct VoTable

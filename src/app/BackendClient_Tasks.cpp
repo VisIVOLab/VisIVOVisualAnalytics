@@ -27,6 +27,11 @@
 
 #include <limits>
 
+namespace {
+/// How long a task cancellation may wait for the backend's answer.
+constexpr int kCancelTaskTimeoutMs = 15'000;
+}  // namespace
+
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 // ── BackendClient: Tasks domain (extracted verbatim) ──
@@ -498,6 +503,100 @@ BackendTaskCreateResult BackendClient::createPvTask(const QString &datasetId,
     result.status = object.value(QStringLiteral("status")).toString();
     result.cacheHit = object.value(QStringLiteral("cache_hit")).toBool(false);
     return result;
+}
+
+BackendFindersResult BackendClient::listFinders() const
+{
+    BackendFindersResult result;
+    QString error;
+    const QByteArray payload = performGet(QUrl(m_baseUrl + QStringLiteral("/v1/finders")), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    if (!object.contains(QStringLiteral("finders"))) {
+        result.error = QStringLiteral("The backend lists no finders (older backend?).");
+        return result;
+    }
+    for (const auto &value : object.value(QStringLiteral("finders")).toArray()) {
+        const QJsonObject f = value.toObject();
+        BackendFinderInfo info;
+        info.name = f.value(QStringLiteral("name")).toString();
+        for (const auto &k : f.value(QStringLiteral("kinds")).toArray())
+            info.kinds << k.toString();
+        info.description = f.value(QStringLiteral("description")).toString();
+        const QJsonObject params = f.value(QStringLiteral("parameters")).toObject();
+        for (auto it = params.begin(); it != params.end(); ++it)
+            info.parameters.insert(it.key(), it.value().toString());
+        info.available = f.value(QStringLiteral("available")).toBool(false);
+        info.reason = f.value(QStringLiteral("reason")).toString();
+        if (!info.name.isEmpty())
+            result.finders.append(info);
+    }
+    result.valid = true;
+    return result;
+}
+
+BackendTaskCreateResult BackendClient::createSourceFindTask(const QString &datasetId,
+                                                            const QString &finder,
+                                                            const QJsonObject &params) const
+{
+    BackendTaskCreateResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
+                                          { QStringLiteral("finder"), finder },
+                                          { QStringLiteral("params"), params } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/sourcefind")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.taskId = object.value(QStringLiteral("task_id")).toString();
+    result.status = object.value(QStringLiteral("status")).toString();
+    return result;
+}
+
+bool BackendClient::cancelTask(const QString &taskId, QString &error) const
+{
+    const QString safeSeg = QString::fromUtf8(QUrl::toPercentEncoding(taskId, "", "/"));
+    QNetworkRequest req(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/") + safeSeg));
+    // Hand-built, as deleteExport: QNAM has no DELETE helper that takes the
+    // session headers.
+    BackendClient::applySessionHeaders(req, m_baseUrl, m_token, m_sessionId);
+    // Bounded: a cancellation is asked for from a worker the user is waiting
+    // on, and a backend that does not answer must not hold it.
+    req.setTransferTimeout(kCancelTaskTimeoutMs);
+    auto *nam = getThreadLocalNam();
+    auto *reply = nam->sendCustomRequest(req, "DELETE");
+    QEventLoop loop;
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    QTimer deadline;
+    deadline.setSingleShot(true);
+    bool timedOut = false;
+    QObject::connect(&deadline, &QTimer::timeout, &loop, [&]() {
+        timedOut = true;
+        reply->abort();          // → finished() → loop.quit()
+    });
+    deadline.start(kCancelTaskTimeoutMs);
+    loop.exec();
+    deadline.stop();
+    const QByteArray raw = reply->readAll();
+    const bool ok = reply->error() == QNetworkReply::NoError;
+    if (timedOut) {
+        error = QStringLiteral("the backend did not confirm the cancellation within %1 s")
+                        .arg(kCancelTaskTimeoutMs / 1000);
+    } else if (!ok) {
+        const QString detail = QJsonDocument::fromJson(raw).object().value(QStringLiteral("detail")).toString();
+        error = detail.isEmpty() ? reply->errorString() : detail;
+    }
+    reply->deleteLater();
+    return ok && !timedOut
+           && QJsonDocument::fromJson(raw).object().value(QStringLiteral("cancelled")).toBool(true);
 }
 
 BackendTaskStatusResult BackendClient::requestTaskStatus(const QString &taskId) const

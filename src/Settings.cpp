@@ -353,6 +353,11 @@ const std::pair<QString, QVariant> Settings::SkavaToken = { u"Skava/token"_s, u"
 const std::pair<QString, QVariant> Settings::SkavaProtocol = { u"Skava/protocol"_s, u"skava"_s };
 const std::pair<QString, QVariant> Settings::SkavaTapUrl = { u"Skava/tapUrl"_s, u""_s };
 const std::pair<QString, QVariant> Settings::SkavaDatalinkUrl = { u"Skava/datalinkUrl"_s, u""_s };
+const std::pair<QString, QVariant> Settings::SkavaBrokerUrl = { u"Skava/brokerUrl"_s, u""_s };
+const std::pair<QString, QVariant> Settings::SkavaOidcAuthUrl = { u"Skava/oidcAuthUrl"_s, u""_s };
+const std::pair<QString, QVariant> Settings::SkavaOidcTokenUrl = { u"Skava/oidcTokenUrl"_s, u""_s };
+const std::pair<QString, QVariant> Settings::SkavaOidcClientId = { u"Skava/oidcClientId"_s, u"visivo"_s };
+const std::pair<QString, QVariant> Settings::SkavaOidcScope = { u"Skava/oidcScope"_s, u"openid profile email"_s };
 const std::pair<QString, QVariant> Settings::CopilotProvider = { u"Copilot/provider"_s, 3 };
 const std::pair<QString, QVariant> Settings::CopilotKey = { u"Copilot/key"_s, u""_s };
 const std::pair<QString, QVariant> Settings::CopilotUrl = { u"Copilot/url"_s, u""_s };
@@ -405,6 +410,8 @@ void Settings::setSkavaUrl(const QString &url)
 
 QString Settings::getSkavaToken() const
 {
+    if (!m_skavaSessionToken.isEmpty())
+        return m_skavaSessionToken;
     return this->settings->value(Settings::SkavaToken.first,
                                   Settings::SkavaToken.second).toString();
 }
@@ -412,6 +419,11 @@ QString Settings::getSkavaToken() const
 void Settings::setSkavaToken(const QString &token)
 {
     this->settings->setValue(Settings::SkavaToken.first, token);
+}
+
+void Settings::setSkavaSessionToken(const QString &token)
+{
+    m_skavaSessionToken = token;
 }
 
 QString Settings::getSkavaProtocol() const
@@ -445,6 +457,63 @@ QString Settings::getSkavaDatalinkUrl() const
 void Settings::setSkavaDatalinkUrl(const QString &url)
 {
     this->settings->setValue(Settings::SkavaDatalinkUrl.first, url.trimmed());
+}
+
+QString Settings::getSkavaBrokerUrl() const
+{
+    return this->settings->value(Settings::SkavaBrokerUrl.first, Settings::SkavaBrokerUrl.second)
+            .toString().trimmed();
+}
+
+void Settings::setSkavaBrokerUrl(const QString &url)
+{
+    this->settings->setValue(Settings::SkavaBrokerUrl.first, url.trimmed());
+}
+
+QString Settings::getSkavaOidcAuthUrl() const
+{
+    return this->settings->value(Settings::SkavaOidcAuthUrl.first, Settings::SkavaOidcAuthUrl.second)
+            .toString().trimmed();
+}
+
+void Settings::setSkavaOidcAuthUrl(const QString &url)
+{
+    this->settings->setValue(Settings::SkavaOidcAuthUrl.first, url.trimmed());
+}
+
+QString Settings::getSkavaOidcTokenUrl() const
+{
+    return this->settings->value(Settings::SkavaOidcTokenUrl.first, Settings::SkavaOidcTokenUrl.second)
+            .toString().trimmed();
+}
+
+void Settings::setSkavaOidcTokenUrl(const QString &url)
+{
+    this->settings->setValue(Settings::SkavaOidcTokenUrl.first, url.trimmed());
+}
+
+QString Settings::getSkavaOidcClientId() const
+{
+    const QString id = this->settings->value(Settings::SkavaOidcClientId.first,
+                                             Settings::SkavaOidcClientId.second).toString().trimmed();
+    return id.isEmpty() ? Settings::SkavaOidcClientId.second.toString() : id;
+}
+
+void Settings::setSkavaOidcClientId(const QString &id)
+{
+    this->settings->setValue(Settings::SkavaOidcClientId.first, id.trimmed());
+}
+
+QString Settings::getSkavaOidcScope() const
+{
+    const QString scope = this->settings->value(Settings::SkavaOidcScope.first,
+                                                Settings::SkavaOidcScope.second).toString().trimmed();
+    return scope.isEmpty() ? Settings::SkavaOidcScope.second.toString() : scope;
+}
+
+void Settings::setSkavaOidcScope(const QString &scope)
+{
+    this->settings->setValue(Settings::SkavaOidcScope.first, scope.trimmed());
 }
 
 //----------------------------------------------------------------------------

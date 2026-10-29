@@ -7,6 +7,8 @@ and keep to ``VISIVO_DATA_ROOT`` when an operator sets one.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from app.skava_client import SkavaResolveError, access_url_to_local_path
@@ -39,6 +41,19 @@ def test_data_root_jail(monkeypatch, synthetic_fits_cube, tmp_path):
         access_url_to_local_path(f"file://{synthetic_fits_cube}")
     with pytest.raises(SkavaResolveError):
         access_url_to_local_path(f"file://{tmp_path / 'jail'}/../{synthetic_fits_cube.name}")
+
+
+def test_data_roots_also_jail(monkeypatch, synthetic_fits_cube, tmp_path):
+    # VISIVO_DATA_ROOTS, the name the rest of the backend uses, confines SKAVA
+    # access URLs too, so a node declares its data once.
+    monkeypatch.delenv("VISIVO_DATA_ROOT", raising=False)
+    (tmp_path / "jail").mkdir()
+    monkeypatch.setenv("VISIVO_DATA_ROOTS", str(tmp_path / "jail"))
+    with pytest.raises(SkavaResolveError):
+        access_url_to_local_path(f"file://{synthetic_fits_cube}")
+    monkeypatch.setenv("VISIVO_DATA_ROOTS",
+                       os.pathsep.join([str(tmp_path / "jail"), str(synthetic_fits_cube.parent)]))
+    assert access_url_to_local_path(f"file://{synthetic_fits_cube}")
 
 
 # ── Route ───────────────────────────────────────────────────────────────────

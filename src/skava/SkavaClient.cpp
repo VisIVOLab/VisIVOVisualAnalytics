@@ -11,6 +11,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QRegularExpression>
 #include <QThreadStorage>
 #include <QUrl>
 #include <QUrlQuery>
@@ -62,11 +63,8 @@ static double getDoubleField(const QJsonObject &obj, const QString &key,
 
 // ── Construction ────────────────────────────────────────────────────────────
 
-SkavaClient::SkavaClient(const QString &baseUrl,
-                          const QString &bearerToken,
-                          QObject *parent)
-    : QObject(parent),
-      m_baseUrl(baseUrl),
+SkavaClient::SkavaClient(const QString &baseUrl, const QString &bearerToken)
+    : m_baseUrl(baseUrl),
       m_bearerToken(bearerToken)
 {
     while (m_baseUrl.endsWith(u'/')) {
@@ -112,11 +110,20 @@ void SkavaClient::clearCancel()
     m_cancelRequested.store(false);
 }
 
-QByteArray SkavaClient::performGet(const QUrl &url, QString &error, const QByteArray &accept) const
+void SkavaClient::stampOrigin(SkavaDatalinkResponse &r) const
+{
+    r.catalogueUrl = !m_baseUrl.isEmpty() ? m_baseUrl : (m_protocol == Protocol::Vo ? m_datalinkUrl : QString());
+    r.protocol = m_protocol == Protocol::Vo ? u"vo"_s : u"skava"_s;
+    r.tapUrl = m_protocol == Protocol::Vo ? m_tapUrl : QString();
+    r.datalinkUrl = m_protocol == Protocol::Vo ? m_datalinkUrl : QString();
+}
+
+QByteArray SkavaClient::performGet(const QUrl &url, QString &error, const QByteArray &accept,
+                                   SkavaAuthChallenge *challenge, bool anonymous) const
 {
     QNetworkRequest req(url);
     req.setRawHeader("Accept", accept);
-    if (!m_bearerToken.isEmpty()) {
+    if (!m_bearerToken.isEmpty() && !anonymous) {
         req.setRawHeader("Authorization",
                           QByteArray("Bearer ") + m_bearerToken.toUtf8());
     }
@@ -181,6 +188,18 @@ QByteArray SkavaClient::performGet(const QUrl &url, QString &error, const QByteA
         // no_available_nodes, …); Qt's errorString only says "Not Found".
         const QString detail = parseErrorEnvelope(reply->readAll());
         error = detail.isEmpty() ? reply->errorString() : detail;
+        // A 401 says what token it wants: the caller can sign in and retry.
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (status == 401) {
+            const QString header = QString::fromUtf8(reply->rawHeader("WWW-Authenticate"));
+            if (challenge) {
+                *challenge = parseAuthChallenge(header);
+                challenge->required = true;
+            }
+            error = m_bearerToken.isEmpty()
+                    ? u"%1 requires a sign-in (%2)."_s.arg(url.host(), error)
+                    : u"%1 refused the token (%2)."_s.arg(url.host(), error);
+        }
         reply->deleteLater();
         return {};
     }
@@ -252,7 +271,7 @@ SkavaDiscoveryResponse SkavaClient::searchDiscovery(
     url.setQuery(q);
 
     QString error;
-    const QByteArray raw = performGet(url, error);
+    const QByteArray raw = performGet(url, error, "application/json", &result.authChallenge);
     if (!error.isEmpty()) {
         result.error = error;
         return result;
@@ -288,7 +307,7 @@ SkavaDatalinkResponse SkavaClient::getDatalink(const QString &obsId) const
     QUrl url(m_baseUrl + u"/datalink/"_s + encoded);
 
     QString error;
-    const QByteArray raw = performGet(url, error);
+    const QByteArray raw = performGet(url, error, "application/json", &result.authChallenge);
     if (!error.isEmpty()) {
         result.error = error;
         return result;
@@ -298,7 +317,172 @@ SkavaDatalinkResponse SkavaClient::getDatalink(const QString &obsId) const
         result.error = u"Unexpected SKAVA response (not a JSON object)."_s;
         return result;
     }
-    return parseDatalinkResponse(doc.object());
+    result = parseDatalinkResponse(doc.object());
+    stampOrigin(result);
+    return result;
+}
+
+namespace {
+
+/// RFC 9110 §11.2: a token character.
+bool isTokenChar(QChar ch)
+{
+    static const QString extra = u"!#$%&'*+-.^_`|~"_s;
+    return ch.isLetterOrNumber() && ch.unicode() < 128 ? true : extra.contains(ch);
+}
+
+/// One item of a WWW-Authenticate header, read at ``pos``: a scheme (a
+/// token followed by whitespace, a comma or the end), a token68
+/// ("abc/def==", a token followed by '=' padding and nothing else), or an
+/// auth-param ("name=value", the value a token or a quoted-string with
+/// backslash escapes). Returns false at the end of the header.
+struct AuthItem
+{
+    enum Kind { Scheme, Token68, Param } kind{ Scheme };
+    QString name;
+    QString value;
+};
+
+bool readAuthItem(const QString &h, qsizetype &pos, AuthItem &item, bool &afterComma)
+{
+    // Separators, and any stray character that is none of the grammar's.
+    // A run is read over the token68 alphabet (the token's plus '/'), the
+    // widest of the three items'. ``afterComma`` says a comma was crossed:
+    // a bare token right after a scheme without one is that scheme's
+    // token68 payload, not another scheme.
+    afterComma = false;
+    qsizetype start = pos;
+    for (;;) {
+        while (pos < h.size() && (h[pos] == u',' || h[pos].isSpace())) {
+            afterComma = afterComma || h[pos] == u',';
+            ++pos;
+        }
+        if (pos >= h.size())
+            return false;
+        start = pos;
+        while (pos < h.size() && (isTokenChar(h[pos]) || h[pos] == u'/'))
+            ++pos;
+        if (pos > start)
+            break;
+        ++pos;              // a stray character: skip it
+    }
+    const QString run = h.mid(start, pos - start);
+    item.value.clear();
+    // token68 ("abc/def==", "/x"): a run with a '/' anywhere, or one with
+    // '=' padding followed by a separator, is one, whole; a scheme or a
+    // parameter name has neither.
+    qsizetype pad = pos;
+    while (pad < h.size() && h[pad] == u'=')
+        ++pad;
+    const bool endsItem = pad >= h.size() || h[pad] == u',' || h[pad].isSpace();
+    if (run.contains(u'/') || (pad > pos && endsItem)) {
+        item.kind = AuthItem::Token68;
+        pos = pad;
+        return true;
+    }
+    item.name = run;
+    qsizetype eq = pos;
+    while (eq < h.size() && h[eq].isSpace())
+        ++eq;
+    if (eq < h.size() && h[eq] == u'=') {
+        item.kind = AuthItem::Param;
+        pos = eq + 1;
+        while (pos < h.size() && h[pos].isSpace())
+            ++pos;
+        if (pos < h.size() && h[pos] == u'"') {
+            ++pos;
+            while (pos < h.size() && h[pos] != u'"') {
+                if (h[pos] == u'\\' && pos + 1 < h.size())
+                    ++pos;          // quoted-pair: the next character as is
+                item.value += h[pos];
+                ++pos;
+            }
+            if (pos < h.size())
+                ++pos;              // the closing quote
+        } else {
+            // A token by the grammar; read leniently to the next separator,
+            // for a server that leaves a URL unquoted.
+            const qsizetype vstart = pos;
+            while (pos < h.size() && h[pos] != u',' && !h[pos].isSpace())
+                ++pos;
+            item.value = h.mid(vstart, pos - vstart);
+        }
+        return true;
+    }
+    item.kind = AuthItem::Scheme;
+    return true;
+}
+
+}  // namespace
+
+SkavaAuthChallenge SkavaClient::parseAuthChallenge(const QString &wwwAuthenticate)
+{
+    SkavaAuthChallenge c;
+    const QString header = wwwAuthenticate.trimmed();
+    if (header.isEmpty())
+        return c;
+    c.required = true;
+    // RFC 9110 §11.6.1: challenges separated by commas, each a scheme with
+    // either a token68 or comma-separated auth-params; a scheme's params
+    // run until the next scheme.
+    QString scheme;
+    qsizetype pos = 0;
+    AuthItem item;
+    bool afterComma = false;
+    bool lastWasScheme = false;
+    while (readAuthItem(header, pos, item, afterComma)) {
+        // "Negotiate abc": a bare token right after a scheme, with no comma
+        // between, is its token68 (schemes are comma-separated).
+        if (item.kind == AuthItem::Scheme && lastWasScheme && !afterComma)
+            item.kind = AuthItem::Token68;
+        lastWasScheme = item.kind == AuthItem::Scheme;
+        if (item.kind == AuthItem::Scheme) {
+            scheme = item.name.toLower();
+            if (scheme == "ivoa_bearer"_L1 || c.scheme.isEmpty())
+                c.scheme = scheme;
+        } else if (item.kind == AuthItem::Param) {
+            if (scheme == "ivoa_bearer"_L1 && item.name.compare(u"access_url"_s, Qt::CaseInsensitive) == 0)
+                c.wellKnownUrl = item.value;
+            else if (item.name.compare(u"realm"_s, Qt::CaseInsensitive) == 0 && c.realm.isEmpty())
+                c.realm = item.value;
+        }
+        // A token68 carries nothing the client reads.
+    }
+    return c;
+}
+
+SkavaClient::OidcEndpoints SkavaClient::parseOidcDocument(const QByteArray &body)
+{
+    OidcEndpoints e;
+    const QJsonDocument doc = QJsonDocument::fromJson(body);
+    if (!doc.isObject()) {
+        e.error = u"The discovery document is not JSON."_s;
+        return e;
+    }
+    e.authorizationUrl = doc.object().value(u"authorization_endpoint"_s).toString();
+    e.tokenUrl = doc.object().value(u"token_endpoint"_s).toString();
+    if (!e.valid())
+        e.error = u"The discovery document names no authorization and token endpoints."_s;
+    return e;
+}
+
+SkavaClient::OidcEndpoints SkavaClient::fetchOidcEndpoints(const QString &wellKnownUrl) const
+{
+    OidcEndpoints e;
+    const QUrl url(wellKnownUrl.trimmed());
+    if (!url.isValid() || url.scheme().isEmpty()) {
+        e.error = u"The IAM's discovery document address is not a URL: %1"_s.arg(wellKnownUrl);
+        return e;
+    }
+    // The document is public: no token goes with the request. Made by this
+    // client, so a cancel asked of it ends this too.
+    QString error;
+    const QByteArray body = performGet(url, error, "application/json", nullptr, /*anonymous=*/true);
+    if (!error.isEmpty()) {
+        e.error = error;
+        return e;
+    }
+    return parseOidcDocument(body);
 }
 
 // ── Parsers (JSON-only, unit-testable) ──────────────────────────────────────
@@ -327,6 +511,74 @@ QString SkavaDatalinkResponse::accessUrlForNode(const QString &nodeCode) const
         if (rep.code == nodeCode)
             return rep.accessEndpoint;
     }
+    return {};
+}
+
+const SkavaReplica *SkavaDatalinkResponse::replica(const QString &nodeCode) const
+{
+    for (const auto &rep : replicas) {
+        if (rep.code == nodeCode)
+            return &rep;
+    }
+    return nullptr;
+}
+
+const SkavaNodeService *SkavaDatalinkResponse::service(const QString &kind, const QString &nodeCode) const
+{
+    for (const auto &svc : services) {
+        if (svc.kind == kind && (nodeCode.isEmpty() || svc.nodeCode == nodeCode))
+            return &svc;
+    }
+    return nullptr;
+}
+
+namespace {
+
+/// The SODA the legacy fields name: a node may offer its cutout synchronously
+/// and as a job, and the services come best node first, so the first
+/// synchronous one is the one to call; an asynchronous one only stands in
+/// until a synchronous one is seen.
+void pickLegacySoda(SkavaDatalinkResponse &r)
+{
+    bool haveSync = false;
+    for (const auto &svc : r.services) {
+        if (svc.kind != "cutout-sync"_L1 && svc.kind != "cutout-async"_L1)
+            continue;
+        const bool sync = svc.kind == "cutout-sync"_L1;
+        if (r.sodaServiceUrl.isEmpty() || (sync && !haveSync)) {
+            r.sodaServiceUrl = svc.accessUrl;
+            r.sodaStandardId = svc.standardId;
+            haveSync = sync;
+        }
+    }
+}
+
+constexpr QLatin1StringView kSodaSync("ivo://ivoa.net/std/SODA#sync-1.0");
+constexpr QLatin1StringView kSodaAsync("ivo://ivoa.net/std/SODA#async-1.0");
+
+}  // namespace
+
+QString SkavaClient::nodeServiceKind(const QString &semantics, const QString &standardId,
+                                     const QString &operation)
+{
+    // Only the SODA standard the client speaks; a service of another kind
+    // behind a #cutout row is not one to call with SODA parameters. A
+    // #cutout without a standardID (older documents) is taken as synchronous.
+    const QString id = standardId.trimmed();
+    const bool sync = id.compare(kSodaSync, Qt::CaseInsensitive) == 0;
+    const bool async = id.compare(kSodaAsync, Qt::CaseInsensitive) == 0;
+    if (semantics == "#cutout"_L1) {
+        if (async)
+            return u"cutout-async"_s;
+        return sync || id.isEmpty() ? u"cutout-sync"_s : QString();
+    }
+    if (semantics != "#proc"_L1 || !async)
+        return {};
+    const QString op = operation.trimmed().toUpper();
+    if (op == "MOMENT"_L1)
+        return u"moment"_s;
+    if (op == "PV"_L1)
+        return u"pv"_s;
     return {};
 }
 
@@ -367,6 +619,9 @@ SkavaReplica SkavaClient::parseReplica(const QJsonObject &obj)
     r.loadScore       = getDoubleField(obj, u"load_score"_s);
     r.capabilityScore = getDoubleField(obj, u"capability_score"_s);
     r.accessEndpoint  = getStringField(obj, u"access_endpoint"_s);
+    r.rankReason      = getStringField(obj, u"rank_reason"_s);
+    r.score           = getDoubleField(obj, u"score"_s);
+    r.telemetryAgeS   = getDoubleField(obj, u"telemetry_age_s"_s);
     return r;
 }
 
@@ -427,18 +682,43 @@ SkavaDatalinkResponse SkavaClient::parseDatalinkResponse(const QJsonObject &obj)
     for (const auto &repVal : routing.value(u"replicas"_s).toArray()) {
         r.replicas.append(parseReplica(repVal.toObject()));
     }
+    r.policy = getStringField(routing, u"policy"_s);
+    for (const auto &exVal : routing.value(u"excluded"_s).toArray()) {
+        const QJsonObject ex = exVal.toObject();
+        r.excluded.append({ getStringField(ex, u"code"_s), getStringField(ex, u"reason"_s) });
+    }
     r.dataset = parseDatasetMetadata(obj.value(u"dataset"_s).toObject());
-    // ── Service descriptors → extract visivo-backend entries ───────────
-    // These tell the desktop "compute next to data" is available: the
-    // SRC node hosts a VisIVO backend that can open this dataset
-    // directly without a download. Unknown service_type values are
-    // ignored — the schema is intentionally extensible per
-    // docs/access_datalink.md.
+    // ── Service descriptors ────────────────────────────────────────────
+    // visivo-backend entries tell the desktop "compute next to data" is
+    // available: the SRC node hosts a VisIVO backend that can open this
+    // dataset directly without a download. The node's SODA and product
+    // services (node-soda-*, visivo-moment, visivo-pv) say what it can
+    // compute in place. Unknown service_type values are ignored — the
+    // schema is intentionally extensible per docs/access_datalink.md.
+    static const QHash<QString, QString> kNodeServiceKinds{
+        { u"node-soda-sync"_s, u"cutout-sync"_s }, { u"node-soda-async"_s, u"cutout-async"_s },
+        { u"visivo-moment"_s, u"moment"_s },       { u"visivo-pv"_s, u"pv"_s } };
     for (const auto &sdVal : obj.value(u"service_descriptors"_s).toArray()) {
         const QJsonObject sdObj = sdVal.toObject();
         const QString type = sdObj.value(u"service_type"_s).toString();
-        if (type != "visivo-backend"_L1) continue;
         if (!sdObj.value(u"enabled"_s).toBool(true)) continue;
+        if (kNodeServiceKinds.contains(type)) {
+            SkavaNodeService svc;
+            svc.kind = kNodeServiceKinds.value(type);
+            svc.id = sdObj.value(u"service_id"_s).toString();
+            svc.standardId = sdObj.value(u"standard_id"_s).toString();
+            svc.accessUrl = sdObj.value(u"access_url"_s).toString();
+            svc.nodeCode = sdObj.value(u"node_code"_s).toString();
+            svc.requiresAuth = sdObj.value(u"requires_auth"_s).toBool(false);
+            svc.description = sdObj.value(u"description"_s).toString();
+            const QJsonObject inputs = sdObj.value(u"input_params"_s).toObject();
+            for (auto it = inputs.begin(); it != inputs.end(); ++it)
+                svc.inputParams.insert(it.key(), it.value().toString());
+            if (!svc.accessUrl.isEmpty())
+                r.services.append(svc);
+            continue;
+        }
+        if (type != "visivo-backend"_L1) continue;
         SkavaVisivoBackendDescriptor desc;
         desc.endpoint     = sdObj.value(u"endpoint"_s).toString();
         desc.nodeCode     = sdObj.value(u"node_code"_s).toString();
@@ -450,6 +730,7 @@ SkavaDatalinkResponse SkavaClient::parseDatalinkResponse(const QJsonObject &obj)
             r.visivoBackends.append(desc);
         }
     }
+    pickLegacySoda(r);
     // Fall back to legacy compatibility fields if structured ones are missing.
     if (r.primaryAccessUrl.isEmpty()) {
         r.primaryAccessUrl = getStringField(obj, u"access_url"_s);
@@ -482,7 +763,10 @@ double cellDouble(const VoTable &t, int row, const QString &name)
     return ok ? v : std::numeric_limits<double>::quiet_NaN();
 }
 
-constexpr QLatin1StringView kHealthSuffix{ "/v1/health" };
+// What a backend's #auxiliary row points at: its public node status (now), or
+// its health document (SKAVA before node telemetry). Either names the backend.
+constexpr QLatin1StringView kStatusSuffixes[]{ QLatin1StringView("/v1/node/status"),
+                                               QLatin1StringView("/v1/health") };
 
 }  // namespace
 
@@ -589,6 +873,8 @@ SkavaDatalinkResponse SkavaClient::parseDatalinkVotable(const QByteArray &votabl
             rep.code = node;
             rep.name = node;
             rep.accessEndpoint = url;
+            rep.rankReason = t.cell(i, u"rank_reason"_s);
+            rep.score = cellDouble(t, i, u"score"_s);
             if (r.primaryAccessUrl.isEmpty()) {    // rows come best node first
                 r.primaryAccessUrl = url;
                 r.primaryAccessFormat = t.cell(i, u"content_type"_s);
@@ -596,19 +882,56 @@ SkavaDatalinkResponse SkavaClient::parseDatalinkVotable(const QByteArray &votabl
                 r.bestNode = node;
             }
             r.replicas.append(rep);
-        } else if (sem == "#auxiliary"_L1 && url.endsWith(kHealthSuffix)) {
-            SkavaVisivoBackendDescriptor desc;
-            desc.endpoint = url.chopped(kHealthSuffix.size());
-            desc.nodeCode = node;
-            desc.requiresAuth = t.cell(i, u"link_auth"_s) == "true"_L1;
-            r.visivoBackends.append(desc);
-        } else if (sem == "#cutout"_L1) {
-            if (const VoTableService *svc = t.service(t.cell(i, u"service_def"_s))) {
-                r.sodaServiceUrl = svc->accessUrl;
-                r.sodaStandardId = svc->standardId;
+        } else if (sem == "#auxiliary"_L1) {
+            // Matched on the URL's path: a query string or a trailing slash
+            // does not change which backend the row names.
+            // The path is handled in its encoded form, so a percent-encoded
+            // segment of the backend's own path survives the round trip.
+            const QUrl statusUrl(url);
+            QString path = statusUrl.path(QUrl::FullyEncoded);
+            while (path.size() > 1 && path.endsWith(u'/'))
+                path.chop(1);
+            for (QLatin1StringView suffix : kStatusSuffixes) {
+                if (!path.endsWith(suffix))
+                    continue;
+                QUrl endpoint = statusUrl;
+                endpoint.setPath(path.chopped(suffix.size()), QUrl::StrictMode);
+                endpoint.setQuery(QString());
+                endpoint.setFragment(QString());
+                SkavaVisivoBackendDescriptor desc;
+                desc.endpoint = endpoint.toString();
+                desc.nodeCode = node;
+                // The status document itself is public; "optional" is how
+                // SKAVA says the backend's API takes a token.
+                const QString auth = t.cell(i, u"link_auth"_s);
+                desc.requiresAuth = auth == "true"_L1 || auth == "optional"_L1;
+                r.visivoBackends.append(desc);
+                break;
             }
+        } else if (sem == "#cutout"_L1 || sem == "#proc"_L1) {
+            // A node service: its descriptor RESOURCE says what it is (a SODA
+            // cutout, or a product by its fixed OPERATION) and, from SKAVA,
+            // fixes the dataset's ID on that node (another DataLink may leave
+            // ID to the caller: the replica's URL). The rows come best node first.
+            const VoTableService *svc = t.service(t.cell(i, u"service_def"_s));
+            if (!svc || svc->accessUrl.isEmpty())
+                continue;
+            const QString kind = nodeServiceKind(sem, svc->standardId, svc->inputValues.value(u"OPERATION"_s));
+            if (kind.isEmpty())
+                continue;
+            SkavaNodeService service;
+            service.kind = kind;
+            service.id = svc->id;
+            service.standardId = svc->standardId;
+            service.accessUrl = svc->accessUrl;
+            service.nodeCode = node;
+            service.requiresAuth = t.cell(i, u"link_auth"_s) == "true"_L1;
+            service.inputParams = svc->inputValues;
+            service.description = t.cell(i, u"description"_s);
+            r.services.append(service);
         }
     }
+    pickLegacySoda(r);
     r.dataset.obsId = t.params.value(u"ID"_s, obsId);
     if (r.dataset.obsId.isEmpty() && !t.rows.isEmpty())
         r.dataset.obsId = t.cell(0, u"ID"_s);
@@ -634,7 +957,8 @@ SkavaDiscoveryResponse SkavaClient::searchTap(const SkavaSearchFilter &filter) c
     q.addQueryItem(u"QUERY"_s, QString::fromUtf8(QUrl::toPercentEncoding(buildObscoreAdql(filter))));
     url.setQuery(q.query(QUrl::FullyEncoded), QUrl::StrictMode);
     QString error;
-    const QByteArray raw = performGet(url, error, "application/x-votable+xml, text/xml;q=0.9, */*;q=0.1");
+    const QByteArray raw = performGet(url, error, "application/x-votable+xml, text/xml;q=0.9, */*;q=0.1",
+                                      &result.authChallenge);
     if (!error.isEmpty()) {
         result.error = error;
         return result;
@@ -705,6 +1029,7 @@ SkavaDatalinkResponse SkavaClient::resolveAccess(const SkavaDiscoveryResult &row
     r.primaryAccessUrl = row.accessUrl;
     r.primaryAccessFormat = row.accessFormat;
     r.valid = true;
+    stampOrigin(r);
     return r;
 }
 
@@ -738,10 +1063,13 @@ SkavaDatalinkResponse SkavaClient::fetchDatalinkVo(const QUrl &url, const QStrin
 {
     SkavaDatalinkResponse result;
     QString error;
-    const QByteArray raw = performGet(url, error, "application/x-votable+xml, text/xml;q=0.9, */*;q=0.1");
+    const QByteArray raw = performGet(url, error, "application/x-votable+xml, text/xml;q=0.9, */*;q=0.1",
+                                      &result.authChallenge);
     if (!error.isEmpty()) {
         result.error = error;
         return result;
     }
-    return parseDatalinkVotable(raw, obsId);
+    result = parseDatalinkVotable(raw, obsId);
+    stampOrigin(result);
+    return result;
 }

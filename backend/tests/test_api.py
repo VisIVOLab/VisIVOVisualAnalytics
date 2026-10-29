@@ -1148,3 +1148,126 @@ async def test_cube_mask_apply_bin_long_recipe_survives_whole(client: AsyncClien
         assert f"({100 + i},{200 + i},{300 + i})" in joined
     assert "Lasso hand_edited=no" in history and "Lasso reach_max=64" in history
     assert "sigma=0.0019689999999999999" in joined
+
+
+def test_task_registry_never_evicts_live_work() -> None:
+    """A record whose work is still going outlives the retention clock; one
+    whose cancelled computation is still running too."""
+    import asyncio
+
+    from app.tasks import TaskRegistry
+
+    loop = asyncio.new_event_loop()
+    try:
+        registry = TaskRegistry(ttl_seconds=1)
+        running = registry.create("moment", owner_token="t")
+        registry.update(running.task_id, status="running", asyncio_handle=loop.create_future())
+        abandoned = registry.create("soda-moment", owner_token="t")
+        work = loop.create_future()
+        registry.update(abandoned.task_id, status="cancelled", work_handle=work)
+        finished = registry.create("pv", owner_token="t")
+        registry.update(finished.task_id, status="completed")
+        for record in (running, abandoned, finished):
+            record.last_touched_monotonic -= 10
+        snapshot = registry.snapshot()
+        assert snapshot["running_count"] == 2          # the running one and the abandoned worker
+        assert registry.peek(running.task_id) is not None
+        assert registry.peek(abandoned.task_id) is not None
+        assert registry.peek(finished.task_id) is None  # ended: evicted on time
+        work.set_result(None)
+        abandoned.last_touched_monotonic -= 10
+        registry.stats()
+        assert registry.peek(abandoned.task_id) is None  # its work over, it goes too
+    finally:
+        loop.close()
+
+
+@pytest_asyncio.fixture()
+async def heavy_sandbox(monkeypatch):
+    """A registry and a heavy semaphore of this test's own, so that work it
+    holds back never leaks into other tests; the held pool tasks are always
+    released and awaited at the end, whatever the test did."""
+    from app import dependencies
+    from app.tasks import TaskRegistry
+
+    registry = TaskRegistry()
+    monkeypatch.setattr(dependencies, "TASKS", registry)
+    monkeypatch.setattr(dependencies, "_HEAVY_SEM", asyncio.Semaphore(2))
+    monkeypatch.setattr(dependencies, "_HEAVY_TIMEOUT_S", 0.01)
+    gate, started, done = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    held_tasks: list[asyncio.Task] = []
+
+    async def held(fn, *args):
+        held_tasks.append(asyncio.current_task())
+        started.set()
+        try:
+            await gate.wait()
+            return "late"
+        finally:
+            done.set()
+
+    monkeypatch.setattr(dependencies, "_run", held)
+    try:
+        yield registry, gate, started, done
+    finally:
+        gate.set()
+        await asyncio.gather(*held_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_heavy_timeout_keeps_the_work_counted(heavy_sandbox) -> None:
+    """A heavy call that times out answers 504, but the pool task behind it
+    runs on: the node counts it as running until it ends."""
+    from fastapi import HTTPException
+
+    from app import dependencies
+
+    registry, gate, _started, done = heavy_sandbox
+    with pytest.raises(HTTPException) as failure:
+        await dependencies._run_heavy(lambda: None)
+    assert failure.value.status_code == 504
+    assert registry.snapshot()["running_count"] == 1
+    gate.set()
+    await asyncio.wait_for(done.wait(), 1)
+    await asyncio.sleep(0)
+    assert registry.snapshot()["running_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelled_heavy_call_keeps_the_work_counted(heavy_sandbox, monkeypatch) -> None:
+    """Cancelling the caller (a cancelled task) does not stop the pool task:
+    it is counted until it ends."""
+    from app import dependencies
+
+    registry, gate, started, done = heavy_sandbox
+    monkeypatch.setattr(dependencies, "_HEAVY_TIMEOUT_S", 10.0)
+    caller = asyncio.create_task(dependencies._run_heavy(lambda: None))
+    await asyncio.wait_for(started.wait(), 1)
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    assert registry.snapshot()["running_count"] == 1
+    gate.set()
+    await asyncio.wait_for(done.wait(), 1)
+    await asyncio.sleep(0)
+    assert registry.snapshot()["running_count"] == 0
+
+
+def test_forgetting_a_record_counts_its_work_once() -> None:
+    """A deleted job's runner and the work it shields are one activity."""
+    from app.tasks import TaskRegistry
+
+    loop = asyncio.new_event_loop()
+    try:
+        registry = TaskRegistry()
+        record = registry.create("soda-moment", owner_token="t")
+        runner, work = loop.create_future(), loop.create_future()
+        registry.update(record.task_id, status="cancelled", asyncio_handle=runner, work_handle=work)
+        registry.forget(record.task_id)
+        assert registry.snapshot()["running_count"] == 1
+        runner.set_result(None)
+        assert registry.snapshot()["running_count"] == 1
+        work.set_result(None)
+        assert registry.snapshot()["running_count"] == 0
+    finally:
+        loop.close()

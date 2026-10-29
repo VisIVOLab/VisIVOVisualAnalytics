@@ -9,7 +9,8 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 
 logger = logging.getLogger("visivo.tasks")
 
@@ -37,6 +38,24 @@ class TaskRecord:
     last_touched_monotonic: float = field(default_factory=time.monotonic, repr=False)
     # Stored by the task runner so callers can request cancellation.
     asyncio_handle: asyncio.Task | None = field(default=None, repr=False, compare=False)
+    # The computation behind the task when it can outlive it: a cancelled
+    # job's worker that cannot be interrupted still runs, and the node still
+    # counts it as running (it holds the CPU and the memory) until it ends.
+    work_handle: asyncio.Future | None = field(default=None, repr=False, compare=False)
+    # The file the worker of this task polls between its steps (see
+    # app/compute/abort.py); touched on cancellation, removed when the work
+    # ends. None when the computation cannot be stopped this way.
+    stop_file: str | None = field(default=None, repr=False, compare=False)
+
+    def busy(self) -> bool:
+        """Whether the node is still doing this task's work: its own runner
+        is alive, or the computation it abandoned on cancellation still is.
+        A record without a live runner (never started, or ended) is not."""
+        return _live(self.asyncio_handle) or _live(self.work_handle)
+
+
+def _live(handle: asyncio.Future | None) -> bool:
+    return handle is not None and not handle.done()
 
 
 @dataclass
@@ -68,6 +87,47 @@ class TaskRegistry:
         self._history: deque[OperationRecord] = deque(maxlen=_HISTORY_LENGTH)
         self._lock = threading.Lock()
         self._ttl_seconds = max(1, int(ttl_seconds))
+        # Called (under the registry lock: keep them short, and never call back
+        # into the registry) with each record the TTL evicts, so whoever owns
+        # resources tied to a task can release them.
+        self._eviction_listeners: list[Any] = []
+        # Computations whose record is gone (see track_work), until they end:
+        # one list of handles per activity.
+        self._detached: list[list[asyncio.Future]] = []
+        # Where the stop files go (a directory, made on first use); set by the
+        # application once it knows its workspace. Without it, a cancelled
+        # computation runs to its end and stays counted until then.
+        self.stop_dir_provider: Callable[[], Path] | None = None
+
+    def stop_file(self, task_id: str) -> str | None:
+        """The stop file of a task, for its worker to poll (``check_abort``);
+        None when no stop directory is configured. Recorded on the task, so
+        that ``cancel`` knows what to touch."""
+        if self.stop_dir_provider is None:
+            return None
+        try:
+            directory = Path(self.stop_dir_provider())
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            logger.warning("[tasks] no stop directory: task %s cannot be interrupted", task_id)
+            return None
+        path = str(directory / "".join(c for c in task_id if c.isalnum() or c in "-_"))
+        with self._lock:
+            record = self._tasks.get(task_id)
+            if record is None:
+                return None
+            record.stop_file = path
+        return path
+
+    @staticmethod
+    def _unlink_stop(stop_file: str | None) -> None:
+        if stop_file:
+            try:
+                os.unlink(stop_file)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                logger.warning("[tasks] could not remove stop file %s", stop_file)
 
     def record_operation(self, operation: str, status: str = "done",
                          duration_seconds: float = 0.0,
@@ -88,15 +148,38 @@ class TaskRegistry:
         with self._lock:
             self._history.append(record)
 
+    def track_work(self, *handles: asyncio.Future | None) -> None:
+        """Count a computation that no record holds any more (a deleted job's
+        worker, a timed-out or cancelled heavy call's pool task) as running
+        until it ends: it still holds a worker and its memory. The handles
+        given together are one activity (a runner and the work it shields),
+        counted once while any of them lives."""
+        with self._lock:
+            self._track_locked(handles)
+
+    def _track_locked(self, handles: tuple[asyncio.Future | None, ...]) -> None:
+        live = [handle for handle in handles if _live(handle)]
+        if live:
+            self._detached.append(live)
+
     def _evict_expired_locked(self) -> int:
+        # A record whose work is still going is never evicted, however long
+        # it has been since anything touched it: the retention clock is for
+        # what has ended; the record lives as long as its work does.
         now = time.monotonic()
         expired_task_ids = [
             task_id
             for task_id, record in self._tasks.items()
-            if (now - record.last_touched_monotonic) > self._ttl_seconds
+            if (now - record.last_touched_monotonic) > self._ttl_seconds and not record.busy()
         ]
         for task_id in expired_task_ids:
             record = self._tasks.pop(task_id)
+            self._unlink_stop(record.stop_file)
+            for listener in self._eviction_listeners:
+                try:
+                    listener(record)
+                except Exception:  # noqa: BLE001 — a listener never breaks eviction
+                    logger.exception("[tasks] eviction listener failed for %s", task_id)
             logger.info(
                 "[tasks] evicted task_id=%s operation=%s age_seconds=%.1f",
                 task_id,
@@ -128,6 +211,35 @@ class TaskRegistry:
             record.last_touched_monotonic = time.monotonic()
             return record
 
+    def add_eviction_listener(self, listener) -> None:
+        self._eviction_listeners.append(listener)
+
+    def list_owned(self, owner_token: str | None) -> list[TaskRecord]:
+        """The tasks created by ``owner_token`` (for a UWS job list), oldest first."""
+        import secrets as _sec
+
+        with self._lock:
+            self._evict_expired_locked()
+            records = list(self._tasks.values())
+        return [r for r in records
+                if r.owner_token is not None and owner_token is not None
+                and _sec.compare_digest(r.owner_token, owner_token)]
+
+    def forget(self, task_id: str) -> bool:
+        """Drop a task record (a deleted UWS job). True if it existed. Work
+        still going behind it stays counted as running until it ends."""
+        with self._lock:
+            record = self._tasks.pop(task_id, None)
+            if record is not None:
+                # In the same locked step, so that no reader sees the work
+                # neither on the record nor among the detached.
+                self._track_locked((record.asyncio_handle, record.work_handle))
+        if record is not None and not record.busy():
+            # A busy record's stop file is for the running worker to see; the
+            # callback cancel() registered removes it when the work ends.
+            self._unlink_stop(record.stop_file)
+        return record is not None
+
     def update(self, task_id: str, **changes: Any) -> TaskRecord | None:
         with self._lock:
             self._evict_expired_locked()
@@ -156,6 +268,31 @@ class TaskRegistry:
             record.status = "cancelled"
             record.updated_at = _now_iso()
             record.last_touched_monotonic = time.monotonic()
+            stop_file, work = record.stop_file, record.work_handle
+        if stop_file:
+            # Tell the worker first: it polls the file between its steps and
+            # stops within one, so the runner's cancellation below finds the
+            # computation ending rather than running on to its end.
+            try:
+                Path(stop_file).touch()
+            except OSError:
+                logger.warning("[tasks] could not touch stop file %s", stop_file)
+            # The file lives as long as the work does: the runner ends at
+            # once on cancellation, the worker behind it within one slab, so
+            # the last of the live handles to end removes the file.
+            live = [h for h in (work, handle) if _live(h)]
+            if live:
+                remaining = {"n": len(live)}
+
+                def _ended(_f, path=stop_file) -> None:
+                    remaining["n"] -= 1
+                    if remaining["n"] == 0:
+                        self._unlink_stop(path)
+
+                for h in live:
+                    h.add_done_callback(_ended)
+            else:
+                self._unlink_stop(stop_file)
         if handle is not None and not handle.done():
             handle.cancel()
             logger.info("[tasks] cancel requested task_id=%s operation=%s", task_id, record.operation)
@@ -182,11 +319,18 @@ class TaskRegistry:
             running_count = 0
             pending_count = 0
             finished: list[TaskRecord] = []
+            # Work that outlived its record: counted while it runs, dropped once done.
+            self._detached = [group for group in self._detached if any(_live(h) for h in group)]
+            running_count += len(self._detached)
             for record in self._tasks.values():
-                if record.status in ("pending", "running"):
+                if record.status in ("pending", "running") or record.busy():
+                    # Cancelled with its computation still going: still running
+                    # as far as the node's load is concerned.
                     running_count += 1
                     if record.status == "pending":
                         pending_count += 1
+                    if record.status not in ("pending", "running"):
+                        continue
                 # "completed" as well as "done": the task API's own terminal
                 # status is "completed" (that is what /v1/tasks/{id} reports and
                 # what the client polls for), so a registry that only knew

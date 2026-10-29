@@ -31,11 +31,21 @@ class SkavaResolveError(RuntimeError):
     """Raised when an access URL cannot be turned into a local path."""
 
 
-def _data_root() -> Path | None:
-    raw = (os.environ.get("VISIVO_DATA_ROOT") or "").strip()
-    if not raw:
-        return None
-    return Path(raw).resolve()
+def _data_roots() -> list[Path]:
+    """The directories a SKAVA access URL may point into.
+
+    ``VISIVO_DATA_ROOT`` (one directory) is SKAVA's historical name; the rest of
+    the backend confines paths with ``VISIVO_DATA_ROOTS`` (os.pathsep-separated).
+    Either is honoured, so a node needs to declare its data only once.
+    """
+    roots = []
+    single = (os.environ.get("VISIVO_DATA_ROOT") or "").strip()
+    if single:
+        roots.append(Path(single).expanduser().resolve())
+    for part in (os.environ.get("VISIVO_DATA_ROOTS") or "").split(os.pathsep):
+        if part.strip():
+            roots.append(Path(part.strip()).expanduser().resolve())
+    return roots
 
 
 def access_url_to_local_path(access_url: str) -> str:
@@ -50,9 +60,9 @@ def access_url_to_local_path(access_url: str) -> str:
                      download path into ``open_skava`` would defeat the
                      point of compute-next-to-data.
 
-    When ``VISIVO_DATA_ROOT`` is configured, the resolved path is
-    rejected if it escapes that directory (defence against path
-    traversal in client-supplied URLs).
+    When ``VISIVO_DATA_ROOT`` or ``VISIVO_DATA_ROOTS`` is configured, the
+    resolved path is rejected if it escapes those directories (defence
+    against path traversal in client-supplied URLs).
     """
     if not access_url:
         raise SkavaResolveError("access_url is empty.")
@@ -67,13 +77,10 @@ def access_url_to_local_path(access_url: str) -> str:
             f"file:// URL points at a non-local host: {access_url!r}")
     resolved = Path(unquote(parsed.path)).resolve()
 
-    root = _data_root()
-    if root is not None:
-        try:
-            resolved.relative_to(root)
-        except ValueError as exc:
-            raise SkavaResolveError(
-                f"Resolved path {resolved} is outside VISIVO_DATA_ROOT={root}."
-            ) from exc
+    roots = _data_roots()
+    if roots and not any(resolved == root or root in resolved.parents for root in roots):
+        raise SkavaResolveError(
+            f"Resolved path {resolved} is outside the node's data roots "
+            f"({', '.join(str(r) for r in roots)}).")
 
     return str(resolved)

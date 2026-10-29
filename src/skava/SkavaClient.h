@@ -24,14 +24,13 @@
 ///     to the VisIVO backend's ``/v1/datasets/open_url`` for download.
 ///
 /// Both calls are blocking — designed to be invoked from a
-/// ``QtConcurrent::run`` worker thread to keep the UI responsive. The
-/// underlying HTTP machinery is shared across the codebase
-/// (``QNetworkAccessManager`` via a thread-local helper installed by
-/// ``BackendClient``).
+/// ``QtConcurrent::run`` worker thread to keep the UI responsive, with a
+/// ``QNetworkAccessManager`` of the calling thread's own (a thread-local
+/// helper of this file).
 ///
-/// SKAVA URL + bearer token come from ``Settings::getSkavaUrl()`` /
-/// ``Settings::getSkavaToken()`` on construction; callers may pass an
-/// override pair for unit tests or one-shot remote queries.
+/// The service URL and bearer token are given at construction (the SKAVA
+/// tab reads them from its connection bar, a reopen from the Recent entry);
+/// a client is made for one request and shared with the worker running it.
 
 // ── Result structs ──────────────────────────────────────────────────────────
 
@@ -47,6 +46,41 @@ struct SkavaReplica
     double  loadScore{ std::numeric_limits<double>::quiet_NaN() };
     double  capabilityScore{ std::numeric_limits<double>::quiet_NaN() };
     QString accessEndpoint;
+    /// SKAVA's routing decision for this replica: why the policy ranked it
+    /// where it is (one line), its cost under the policy (lower is better;
+    /// NaN for the static policy) and the age of the node telemetry it used.
+    QString rankReason;
+    double  score{ std::numeric_limits<double>::quiet_NaN() };
+    double  telemetryAgeS{ std::numeric_limits<double>::quiet_NaN() };
+};
+
+/// A replica the ranking policy set aside, with why (a node that is down,
+/// or one without the memory for this dataset).
+struct SkavaExcludedReplica
+{
+    QString code;
+    QString reason;
+};
+
+/// A service a node offers for this dataset, next to its replica: the node's
+/// SODA cutout (synchronous or as a UWS job) and the products it computes
+/// (moment map, PV diagram) as SODA jobs with a custom OPERATION. From the
+/// JSON ``service_descriptors`` (``node-soda-sync``, ``node-soda-async``,
+/// ``visivo-moment``, ``visivo-pv``) or the VOTable's ``adhoc:service``
+/// RESOURCEs behind the ``#cutout`` / ``#proc`` rows.
+struct SkavaNodeService
+{
+    /// "cutout-sync" | "cutout-async" | "moment" | "pv"
+    QString kind;
+    QString id;             ///< service_id / RESOURCE ID
+    QString standardId;     ///< ivo://ivoa.net/std/SODA#sync-1.0 or #async-1.0
+    QString accessUrl;      ///< the node's /soda/sync or /soda/async
+    QString nodeCode;
+    bool    requiresAuth{ false };   ///< the node's backend wants its token
+    /// Inputs the service fixes for this dataset: ``ID`` (the replica's own
+    /// identifier on that node) and, for a product, ``OPERATION``.
+    QHash<QString, QString> inputParams;
+    QString description;
 };
 
 struct SkavaDatasetMetadata
@@ -89,10 +123,22 @@ struct SkavaDiscoveryResult
     QString                  accessFormat;
 };
 
+/// What a 401 asked for: the ``WWW-Authenticate`` challenge. SRCNet services
+/// answer ``Bearer realm="…", ivoa_bearer standard_id="ivo://ivoa.net/sso#BearerToken",
+/// access_url="<OIDC discovery document>"``: a bearer token from that IAM.
+struct SkavaAuthChallenge
+{
+    bool    required{ false };   ///< the request was refused for want of a token
+    QString scheme;              ///< "ivoa_bearer" when the IVOA challenge is there, else "bearer"
+    QString realm;
+    QString wellKnownUrl;        ///< the IAM's OpenID discovery document (ivoa_bearer access_url)
+};
+
 struct SkavaDiscoveryResponse
 {
     bool                          valid{ false };
     QString                       error;
+    SkavaAuthChallenge            authChallenge;   ///< set when the service answered 401
     QVector<SkavaDiscoveryResult> results;
     int                           total{ 0 };
     int                           limit{ 0 };
@@ -116,6 +162,16 @@ struct SkavaDatalinkResponse
 {
     bool                  valid{ false };
     QString               error;
+    SkavaAuthChallenge    authChallenge;   ///< set when the service answered 401
+    /// Where this came from: the service's base URL, the protocol spoken
+    /// ("skava" / "vo") and, for the VO protocol, the TAP and DataLink
+    /// endpoints used (empty = derived from the base URL), so what is
+    /// recorded about the dataset names the catalogue that answered, not the
+    /// one the settings point at now.
+    QString               catalogueUrl;
+    QString               protocol;
+    QString               tapUrl;
+    QString               datalinkUrl;
     /// The access URL of the replica on the BEST node (``primary_access``).
     /// Another node's copy of the file lives elsewhere: use
     /// ``accessUrlForNode()`` for any node other than ``bestNode``.
@@ -124,7 +180,15 @@ struct SkavaDatalinkResponse
     qint64                primaryAccessEstSize{ 0 };
     QString               bestNode;
     SkavaDatasetMetadata  dataset;
+    /// The replicas in SKAVA's ranking order, each with the policy's reason.
     QVector<SkavaReplica> replicas;
+    /// The ranking policy that decided ("static", "resource_aware"), and the
+    /// replicas it set aside with why. Empty from a DataLink VOTable.
+    QString               policy;
+    QVector<SkavaExcludedReplica> excluded;
+    /// What the nodes offer for this dataset, best node first: cutouts and
+    /// computed products next to the data.
+    QVector<SkavaNodeService> services;
     /// VisIVO backends advertised in ``service_descriptors[]``. When
     /// non-empty the desktop should route the open through a registered
     /// backend matching one of these descriptors (compute next to data);
@@ -141,6 +205,11 @@ struct SkavaDatalinkResponse
     /// for the best node, otherwise that node's replica ``access_endpoint``.
     /// Empty when SKAVA lists no replica on that node.
     QString accessUrlForNode(const QString &nodeCode) const;
+    /// The replica on ``nodeCode``, or null.
+    const SkavaReplica *replica(const QString &nodeCode) const;
+    /// The first service of ``kind`` (see SkavaNodeService::kind), on
+    /// ``nodeCode`` when given, else on the best-ranked node that has one.
+    const SkavaNodeService *service(const QString &kind, const QString &nodeCode = {}) const;
 };
 
 // ── Search filter ───────────────────────────────────────────────────────────
@@ -175,14 +244,15 @@ struct SkavaSearchFilter
     int offset{ 0 };
 };
 
-class SkavaClient : public QObject
+/// Not a QObject: a client is made for one request, handed to the worker
+/// that runs it (shared with the panel, which keeps it only to cancel), and
+/// freed by whichever side lets go of it last, on either thread.
+class SkavaClient
 {
-    Q_OBJECT
 public:
     explicit SkavaClient(const QString &baseUrl = QString(),
-                          const QString &bearerToken = QString(),
-                          QObject *parent = nullptr);
-    ~SkavaClient() override;
+                          const QString &bearerToken = QString());
+    ~SkavaClient();
 
     /// Reconfigure the endpoint. Cheap — no network activity.
     void setBaseUrl(const QString &url);
@@ -226,11 +296,17 @@ public:
     /// TAP result (VOTable TABLEDATA, ObsCore columns) → discovery response.
     static SkavaDiscoveryResponse parseObscoreVotable(const QByteArray &votable);
     /// DataLink VOTable → the same response the JSON DataLink produces:
-    /// ``#this`` rows are the replicas (best first, ``node_id`` = node code),
-    /// ``#auxiliary`` rows pointing at a VisIVO backend's ``/v1/health`` are
-    /// the co-located backends, the ``#cutout`` row's service is the SODA.
+    /// ``#this`` rows are the replicas (best first, ``node_id`` = node code,
+    /// ``rank_reason`` / ``score`` the decision), ``#auxiliary`` rows pointing
+    /// at a VisIVO backend's ``/v1/node/status`` (or, from older SKAVA,
+    /// ``/v1/health``) are the co-located backends, and the ``#cutout`` /
+    /// ``#proc`` rows with a service descriptor are the node services.
     static SkavaDatalinkResponse parseDatalinkVotable(const QByteArray &votable,
                                                       const QString &obsId);
+    /// The kind of node service a DataLink row describes (see
+    /// SkavaNodeService::kind), or empty when it is none of them.
+    static QString nodeServiceKind(const QString &semantics, const QString &standardId,
+                                   const QString &operation);
     /// ObsCore access_format of a DataLink document.
     static QString datalinkContentType();
 
@@ -248,8 +324,9 @@ public:
     /// blocking call runs on a QtConcurrent worker. The worker notices within
     /// ~200 ms and returns an error reading "cancelled", so the panel is free
     /// again immediately instead of waiting out the network deadline. The flag
-    /// is cleared by the next request, so a cancel that arrives after a request
-    /// has already finished does not kill the following one.
+    /// stays set until clearCancel(): a caller clears it before each request
+    /// it submits, so a cancel that arrived after the previous request had
+    /// finished does not kill the next one.
     void requestCancel();
 
     /// Clear a previous cancellation. Call it on the UI thread immediately
@@ -259,8 +336,13 @@ public:
     void clearCancel();
 
 private:
+    /// ``challenge``, when given, receives a 401's WWW-Authenticate;
+    /// ``anonymous`` leaves the bearer token out (a public document).
     QByteArray performGet(const class QUrl &url, QString &error,
-                          const QByteArray &accept = "application/json") const;
+                          const QByteArray &accept = "application/json",
+                          SkavaAuthChallenge *challenge = nullptr, bool anonymous = false) const;
+    /// Stamp a response with this client's service and protocol.
+    void stampOrigin(SkavaDatalinkResponse &r) const;
     SkavaDiscoveryResponse searchTap(const SkavaSearchFilter &filter) const;
     SkavaDatalinkResponse  getDatalinkVo(const QString &obsId) const;
     SkavaDatalinkResponse  fetchDatalinkVo(const class QUrl &url, const QString &obsId) const;
@@ -269,6 +351,23 @@ public:
     /// SKAVA's error envelope ``{"error": {"code", "message"}}`` as one line,
     /// or empty when ``body`` is not one. Factored out for unit tests.
     static QString parseErrorEnvelope(const QByteArray &body);
+    /// A ``WWW-Authenticate`` header as the challenge it carries (RFC 7235
+    /// list of schemes with ``name="value"`` parameters). ``required`` is set
+    /// for any non-empty header.
+    static SkavaAuthChallenge parseAuthChallenge(const QString &wwwAuthenticate);
+
+    /// The OpenID discovery document at ``wellKnownUrl`` → its authorization
+    /// and token endpoints (blocking; empty on failure, ``error`` says why).
+    struct OidcEndpoints
+    {
+        QString authorizationUrl;
+        QString tokenUrl;
+        QString error;
+        bool valid() const { return !authorizationUrl.isEmpty() && !tokenUrl.isEmpty(); }
+    };
+    OidcEndpoints fetchOidcEndpoints(const QString &wellKnownUrl) const;
+    /// The discovery document's fields; factored out for unit tests.
+    static OidcEndpoints parseOidcDocument(const QByteArray &body);
 
 private:
 

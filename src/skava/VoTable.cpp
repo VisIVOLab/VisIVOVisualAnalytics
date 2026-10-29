@@ -49,7 +49,7 @@ VoTable VoTable::parse(const QByteArray &xml)
                 resourceTypes << (attrs.hasAttribute("type"_L1) ? attrs.value("type"_L1).toString()
                                                                 : u"results"_s);
                 if (attrs.value("utype"_L1) == "adhoc:service"_L1) {
-                    t.services.append({ attrs.value("ID"_L1).toString(), {}, {}, {} });
+                    t.services.append({ attrs.value("ID"_L1).toString(), {}, {}, {}, {} });
                     svc = &t.services.last();
                     svcDepth = resourceDepth;
                 }
@@ -63,9 +63,11 @@ VoTable VoTable::parse(const QByteArray &xml)
                 const QString pname = attrs.value("name"_L1).toString();
                 const QString value = attrs.value("value"_L1).toString();
                 if (svc) {
-                    if (inInputParams)
+                    if (inInputParams) {
                         svc->inputParams << pname;
-                    else if (pname == "standardID"_L1)
+                        if (!value.isEmpty())
+                            svc->inputValues.insert(pname, value);
+                    } else if (pname == "standardID"_L1)
                         svc->standardId = value;
                     else if (pname == "accessURL"_L1)
                         svc->accessUrl = value;

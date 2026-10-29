@@ -107,10 +107,11 @@ void OIDCAuthorizationCodeFlow::forgetStoredSession()
     if (!visivo::secure::available())
         return;
     const QString account = this->storeAccount();
-    storePool()->start([account]() {
+    const QString what = this->displayName;
+    storePool()->start([account, what]() {
         if (!visivo::secure::remove(kStoreService, account))
-            reportStoreFailure(u"The stored VLKB sign-in could not be removed, so the next "
-                               u"start may sign you in again."_s);
+            reportStoreFailure(u"The stored sign-in to %1 could not be removed, so the next "
+                               u"start may sign you in again."_s.arg(what));
     });
 }
 
@@ -120,11 +121,24 @@ void OIDCAuthorizationCodeFlow::storeSession()
         return;
     const QString account = this->storeAccount();
     const QString token = this->refreshToken;
-    storePool()->start([account, token]() {
+    const QString what = this->displayName;
+    storePool()->start([account, token, what]() {
         if (!visivo::secure::write(kStoreService, account, token))
-            reportStoreFailure(u"The VLKB sign-in could not be kept for the next start; you "
-                               u"will be asked to sign in again then."_s);
+            reportStoreFailure(u"The sign-in to %1 could not be kept for the next start; you "
+                               u"will be asked to sign in again then."_s.arg(what));
     });
+}
+
+void OIDCAuthorizationCodeFlow::putClientAuthentication(QNetworkRequest &req, QUrlQuery &postData) const
+{
+    const QString secret = this->auth->clientIdentifierSharedKey();
+    postData.addQueryItem(u"client_id"_s, this->auth->clientIdentifier());
+    if (secret.isEmpty())
+        return;   // a public client: no credentials, the IAM knows it by id
+    QByteArray authHeader = u"%1:%2"_s.arg(this->auth->clientIdentifier(), secret).toUtf8().toBase64();
+    authHeader.prepend("Basic "_ba);
+    req.setRawHeader("Authorization"_ba, authHeader);
+    postData.addQueryItem(u"client_secret"_s, secret);
 }
 
 void OIDCAuthorizationCodeFlow::restoreSession()
@@ -207,7 +221,7 @@ void OIDCAuthorizationCodeFlow::authorizeWithWebView(const QUrl &url)
     // Application-modal, not window-modal: on macOS a window-modal child becomes
     // a sheet glued to the dialog, too small for a login page.
     view->setWindowModality(modal ? Qt::ApplicationModal : Qt::NonModal);
-    view->setWindowTitle(u"Sign in to the VLKB"_s);
+    view->setWindowTitle(u"Sign in to %1"_s.arg(this->displayName));
     view->setAttribute(Qt::WA_DeleteOnClose);
     view->setContextMenuPolicy(Qt::NoContextMenu);
     view->resize(1024, 768);
@@ -223,20 +237,12 @@ void OIDCAuthorizationCodeFlow::authorizeWithWebView(const QUrl &url)
 
 void OIDCAuthorizationCodeFlow::authorizationCallbackReceived(const QVariantMap &data)
 {
-    QByteArray authHeader =
-            u"%1:%2"_s.arg(this->auth->clientIdentifier(), this->auth->clientIdentifierSharedKey())
-                    .toUtf8()
-                    .toBase64();
-    authHeader.prepend("Basic "_ba);
-
     QNetworkRequest req(this->auth->tokenUrl());
     req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/x-www-form-urlencoded"_s);
-    req.setRawHeader("Authorization"_ba, authHeader);
 
     QUrlQuery postData;
     postData.addQueryItem(u"grant_type"_s, u"authorization_code"_s);
-    postData.addQueryItem(u"client_id"_s, this->auth->clientIdentifier());
-    postData.addQueryItem(u"client_secret"_s, this->auth->clientIdentifierSharedKey());
+    this->putClientAuthentication(req, postData);
     postData.addQueryItem(u"redirect_uri"_s, this->auth->replyHandler()->callback());
     postData.addQueryItem(u"code"_s, data.value(u"code"_s).toString());
     const QByteArray postDataEncoded = postData.toString(QUrl::FullyEncoded).toUtf8();
@@ -283,6 +289,8 @@ void OIDCAuthorizationCodeFlow::tokensReceived(const QByteArray &data, bool init
     if (expiration > 60) {
         this->refreshTimer->start((expiration - 60) * 1000);
     }
+    if (!this->accessToken.isEmpty())
+        emit this->accessTokenChanged();
 }
 
 void OIDCAuthorizationCodeFlow::refreshTokens()
@@ -294,20 +302,12 @@ void OIDCAuthorizationCodeFlow::refreshTokens()
         return;
     }
 
-    QByteArray authHeader =
-            u"%1:%2"_s.arg(this->auth->clientIdentifier(), this->auth->clientIdentifierSharedKey())
-                    .toUtf8()
-                    .toBase64();
-    authHeader.prepend("Basic "_ba);
-
     QNetworkRequest req(this->auth->tokenUrl());
     req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/x-www-form-urlencoded"_s);
-    req.setRawHeader("Authorization"_ba, authHeader);
 
     QUrlQuery postData;
     postData.addQueryItem(u"grant_type"_s, u"refresh_token"_s);
-    postData.addQueryItem(u"client_id"_s, this->auth->clientIdentifier());
-    postData.addQueryItem(u"client_secret"_s, this->auth->clientIdentifierSharedKey());
+    this->putClientAuthentication(req, postData);
     postData.addQueryItem(u"refresh_token"_s, this->refreshToken);
     const QByteArray postDataEncoded = postData.toString(QUrl::FullyEncoded).toUtf8();
 

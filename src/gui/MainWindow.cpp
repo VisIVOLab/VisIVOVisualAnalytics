@@ -185,8 +185,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         tabs->addTab(skava, u"SKAVA"_s);
         QObject::connect(skava, &SkavaSearchPanel::openSkavaDatasetRequested,
                          this, &MainWindow::doOpenSkavaDataset);
-        QObject::connect(skava, &SkavaSearchPanel::sodaSubsetRequested,
-                         this, &MainWindow::doSkavaSodaSubset);
+        QObject::connect(skava, &SkavaSearchPanel::nodeOperationRequested,
+                         this, &MainWindow::doSkavaNodeOperation);
     }
 
     // Detach the .ui-defined central widget (the VLKB sky panel) but DO NOT
@@ -439,7 +439,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     this->resize(1280, 840);
 }
 
-void MainWindow::setActiveBackendBadge(const BackendNode &node)
+void MainWindow::setActiveBackendBadge(const BackendNode &node, const QString &reason)
 {
     if (!this->m_backendBadge) {
         return;
@@ -454,6 +454,10 @@ void MainWindow::setActiveBackendBadge(const BackendNode &node)
     const QString colour = node.isLocal ? u"#888"_s : u"#2c7be5"_s;
     this->m_backendBadge->setText(
             u"<span style='color:%1'><b>%2</b></span>"_s.arg(colour, labelText));
+    // Why this backend: SKAVA's ranking reason for the node that serves the
+    // dataset, where the open came from discovery.
+    this->m_backendBadge->setToolTip(reason.isEmpty() ? QString()
+                                                      : u"%1 serves this dataset: %2"_s.arg(name, reason));
 }
 
 void MainWindow::pollBackendDiagnosticsOnce()

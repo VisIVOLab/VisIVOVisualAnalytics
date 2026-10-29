@@ -14,6 +14,7 @@ from typing import Any  # noqa: F401
 import numpy as np
 
 from ..fits_dataset import ScientificFitsDataset  # noqa: F401
+from .abort import check_abort
 from ._common import (  # noqa: F401
     logger,
     _qt_zlib_compress,
@@ -164,12 +165,18 @@ def _sample_polyline(vertices: np.ndarray, step: float = PV_STEP_PIXELS) -> tupl
     return points, normals, total
 
 
+# Gathered values per block of channels in _bilinear_mean (memory bound).
+_PV_GATHER_BUDGET = 4_000_000
+
+
 def _bilinear_mean(cube: np.ndarray, cx: np.ndarray, cy: np.ndarray, n_samples: int,
-                   width_pixels: int, x_limit: int, y_limit: int) -> np.ndarray:
+                   width_pixels: int, x_limit: int, y_limit: int,
+                   stop_file: str | None = None) -> np.ndarray:
     """(depth, n_samples): per channel, the NaN-aware bilinear value at each
     (cx, cy) (slab coordinates, ``n_samples × width_pixels`` of them), averaged
     over the width. Samples outside the cube (``x_limit``/``y_limit`` = cube
-    extent in slab coordinates) are blank."""
+    extent in slab coordinates) are blank. ``stop_file`` (app/compute/abort.py)
+    is checked before every block of channels."""
     depth, sh, sw = cube.shape
     inside = (cx >= -1e-9) & (cy >= -1e-9) & (cx <= x_limit - 1 + 1e-9) & (cy <= y_limit - 1 + 1e-9)
     ix0 = np.clip(np.floor(cx).astype(np.int64), 0, sw - 1)
@@ -188,8 +195,9 @@ def _bilinear_mean(cube: np.ndarray, cx: np.ndarray, cy: np.ndarray, n_samples: 
     out = np.full((depth, n_samples), np.nan, dtype=np.float32)
     # ~4 M gathered values per block. ``cube`` stays a lazy memmap slab: the fancy
     # indexing below reads only the neighbour pixels, never whole planes.
-    chunk = max(1, 4_000_000 // max(1, n))
+    chunk = max(1, _PV_GATHER_BUDGET // max(1, n))
     for z0 in range(0, depth, chunk):
+        check_abort(stop_file)
         c = cube[z0 : z0 + chunk]
         nz = min(chunk, depth - z0)
         acc = np.zeros((nz, n), dtype=np.float64)
@@ -240,9 +248,13 @@ def _require_spectral_last(dataset: ScientificFitsDataset) -> None:
         )
 
 
-def compute_pv(path: str, vertices: list[list[float]], width_pixels: int) -> dict[str, Any]:
+def compute_pv(path: str, vertices: list[list[float]], width_pixels: int,
+               stop_file: str | None = None) -> dict[str, Any]:
     """The PV diagram as arrays: ``pv`` (depth, n_samples), sample geometry, and
-    the spectral axis (coordinates + linear WCS) and cube metadata."""
+    the spectral axis (coordinates + linear WCS) and cube metadata. With a
+    ``stop_file`` (app/compute/abort.py) an aborted task ends within one block
+    of channels, raising ``ComputationAborted``."""
+    check_abort(stop_file)
     verts = _clean_vertices(vertices)
     width_pixels = max(1, int(width_pixels))
     dataset = ScientificFitsDataset(path)
@@ -281,7 +293,7 @@ def compute_pv(path: str, vertices: list[list[float]], width_pixels: int) -> dic
         # The slab view stays lazy (memmap): _bilinear_mean reads it a block of
         # channels at a time, so a long diagonal never materialises the cube.
         pv = _bilinear_mean(data[:, y0 : y1 + 1, x0 : x1 + 1], (sx - x0).ravel(), (sy - y0).ravel(),
-                            n_samples, width_pixels, width - x0, height - y0)
+                            n_samples, width_pixels, width - x0, height - y0, stop_file)
         spectral = dataset.spectral_axis_metadata(0, depth - 1)
     finally:
         hdul.close()
@@ -319,8 +331,9 @@ def compute_pv(path: str, vertices: list[list[float]], width_pixels: int) -> dic
     }
 
 
-def worker_pv(path: str, vertices: list[list[float]], width_pixels: int) -> dict[str, Any]:
-    r = compute_pv(path, vertices, width_pixels)
+def worker_pv(path: str, vertices: list[list[float]], width_pixels: int,
+              stop_file: str | None = None) -> dict[str, Any]:
+    r = compute_pv(path, vertices, width_pixels, stop_file)
     pv = r["pv"]
     dataset = r["dataset"]
     positions = r["positions"].astype(np.float32)
@@ -393,7 +406,7 @@ def _copy_spectral_axis(dataset: ScientificFitsDataset, hdr, out_axis: int) -> N
 
 
 def worker_pv_save_fits(path: str, output_path: str, vertices: list[list[float]],
-                        width_pixels: int) -> dict[str, Any]:
+                        width_pixels: int, stop_file: str | None = None) -> dict[str, Any]:
     """Compute the PV diagram and write it as a 2-D FITS image with WCS.
 
     Axis 1 is the offset along the path (CTYPE1 ``OFFSET``, arcsec, 0 at the first
@@ -402,7 +415,8 @@ def worker_pv_save_fits(path: str, output_path: str, vertices: list[list[float]]
     """
     from astropy.io import fits  # noqa: PLC0415
 
-    r = compute_pv(path, vertices, width_pixels)
+    r = compute_pv(path, vertices, width_pixels, stop_file)
+    check_abort(stop_file)   # not a byte of an aborted job's product is written
     dataset = r["dataset"]
     src = dataset.header
     hdr = fits.Header()

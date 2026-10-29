@@ -65,11 +65,12 @@ int findRegisteredBackend(const QList<BackendNode> &registry,
     return -1;
 }
 
-SkavaRoute routeSkavaDataset(const QList<BackendNode> &registry,
-                             const SkavaDatalinkResponse &datalink,
-                             bool autoToken)
+SkavaRouting routeSkavaCandidates(const QList<BackendNode> &registry,
+                                  const SkavaDatalinkResponse &datalink,
+                                  bool autoToken,
+                                  const QString &preferredNode)
 {
-    SkavaRoute route;
+    SkavaRouting routing;
     const QString type = datalink.dataset.dataproductType;
     for (const auto &desc : datalink.visivoBackends) {
         const QString descUrl = trimSlash(desc.endpoint);
@@ -78,16 +79,19 @@ SkavaRoute routeSkavaDataset(const QList<BackendNode> &registry,
         const int idx = findRegisteredBackend(registry, desc);
         const BackendNode *match = idx >= 0 ? &registry[idx] : nullptr;
         if (!match) {
-            route.skipped << u"%1: no registered backend for %2"_s.arg(label, descUrl);
+            routing.skipped << u"%1: no registered backend for %2"_s.arg(label, descUrl);
             continue;
         }
         if (!skavaBackendSupportsKind(desc.supportedKinds, type)) {
-            route.skipped << u"%1: the backend does not open %2 datasets (it serves %3)"_s.arg(
+            routing.skipped << u"%1: the backend does not open %2 datasets (it serves %3)"_s.arg(
                     label, type, desc.supportedKinds.join(u", "_s));
             continue;
         }
-        if (desc.requiresAuth && match->token.isEmpty() && !autoToken) {
-            route.skipped << u"%1: the backend requires a token, and \"%2\" has none"_s.arg(
+        // The automatic token (env / ~/.visivo_token) is the local backend's
+        // and is sent to it alone: another backend needs its own.
+        if (desc.requiresAuth && match->token.isEmpty()
+            && !(autoToken && BackendClient::isLocalBackendUrl(match->url))) {
+            routing.skipped << u"%1: the backend requires a token, and \"%2\" has none"_s.arg(
                     label, match->name.isEmpty() ? match->id : match->name);
             continue;
         }
@@ -95,24 +99,52 @@ SkavaRoute routeSkavaDataset(const QList<BackendNode> &registry,
         // another node's backend.
         const QString accessUrl = datalink.accessUrlForNode(desc.nodeCode);
         if (accessUrl.isEmpty()) {
-            route.skipped << u"%1: SKAVA lists no replica of this dataset on that node"_s.arg(label);
+            routing.skipped << u"%1: SKAVA lists no replica of this dataset on that node"_s.arg(label);
             continue;
         }
+        SkavaRoute route;
         route.node = *match;
         route.accessUrl = accessUrl;
         route.nodeCode = desc.nodeCode;
         route.endpoint = descUrl;
-        return route;
+        if (const SkavaReplica *rep = datalink.replica(desc.nodeCode)) {
+            route.rankReason = rep->rankReason;
+            route.score = rep->score;
+        }
+        // The node the user asked for goes first; the others keep SKAVA's order.
+        if (!preferredNode.isEmpty() && desc.nodeCode == preferredNode)
+            routing.candidates.prepend(route);
+        else
+            routing.candidates.append(route);
     }
+    return routing;
+}
+
+SkavaRoute routeSkavaDataset(const QList<BackendNode> &registry,
+                             const SkavaDatalinkResponse &datalink,
+                             bool autoToken)
+{
+    const SkavaRouting routing = routeSkavaCandidates(registry, datalink, autoToken);
+    SkavaRoute route = routing.candidates.isEmpty() ? SkavaRoute{} : routing.candidates.first();
+    route.skipped = routing.skipped;
     return route;
+}
+
+SkavaRouting routeSkavaCandidates(Settings *settings, const SkavaDatalinkResponse &datalink,
+                                  const QString &preferredNode)
+{
+    if (!settings)
+        return {};
+    // A node registered without a token is not unauthenticated when it is the
+    // local backend: BackendClient sends VISIVO_TOKEN or ~/.visivo_token to it.
+    return routeSkavaCandidates(settings->getBackendNodes(), datalink,
+                                !BackendClient::readTokenFile().isEmpty(), preferredNode);
 }
 
 SkavaRoute routeSkavaDataset(Settings *settings, const SkavaDatalinkResponse &datalink)
 {
     if (!settings)
         return {};
-    // A node registered without a token is not unauthenticated: BackendClient
-    // sends VISIVO_TOKEN or ~/.visivo_token in its place.
     return routeSkavaDataset(settings->getBackendNodes(), datalink,
                              !BackendClient::readTokenFile().isEmpty());
 }

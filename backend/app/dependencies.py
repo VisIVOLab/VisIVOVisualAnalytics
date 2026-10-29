@@ -436,6 +436,11 @@ def get_exports_dir() -> _Path:
     return _EXPORTS_DIR
 
 
+# The stop files of the tasks (app/compute/abort.py) live in the workspace,
+# which every worker process sees, in a hidden directory the listings skip.
+TASKS.stop_dir_provider = lambda: get_exports_dir() / ".abort"
+
+
 def make_workspace_path(basename: str, reserve: bool = False) -> _Path:
     """Resolve a user-provided basename into a safe workspace path,
     auto-suffixing on collision (``cube.fits`` → ``cube_1.fits`` → …).
@@ -1288,7 +1293,8 @@ def _heavy_semaphore() -> asyncio.Semaphore:
     return _HEAVY_SEM
 
 
-async def _run_heavy(fn, *args) -> Any:
+async def _run_heavy(fn, *args, task_id: str | None = None, dispatch: Any = None,
+                     throttle: bool = True, bounded: bool = True) -> Any:
     """Like ``_run()``, but throttled by the heavy-task semaphore and bounded by
     a wall-clock timeout (E-03).
 
@@ -1296,21 +1302,31 @@ async def _run_heavy(fn, *args) -> Any:
     linewidth / baseline / stack). Guarantees at least one pool slot remains
     free for interactive requests dispatched via plain ``_run()``. A task that
     exceeds ``VISIVO_HEAVY_TIMEOUT_S`` raises HTTP 504 instead of hanging.
+
+    ``dispatch`` replaces ``_run`` as the way the work is started (the local
+    threaded Dask path pins itself to the process pool, the distributed path
+    to a thread); ``throttle=False`` takes no pool slot (work that runs on a
+    cluster), ``bounded=False`` no timeout.
+
+    The work outlives a caller that times out or is cancelled: the ProcessPool
+    subprocess cannot be stopped from here (a worker that polls a stop file,
+    app/compute/abort.py, stops itself within one slab). Until it ends it
+    keeps its slot, so that admission control counts real worker occupancy,
+    and the node counts it as running: on the task's record when ``task_id``
+    names one (its cancellation then waits for the worker before removing the
+    stop file), among the registry's detached work otherwise. Work for a task
+    that was cancelled or deleted while it waited for a slot is not started.
     """
     sem = _heavy_semaphore()
-    if not (_HEAVY_TIMEOUT_S and _HEAVY_TIMEOUT_S > 0):
-        async with sem:
-            return await _run(fn, *args)
-
-    # Timeout path. We acquire/release the semaphore MANUALLY (not via `async
-    # with`) so that on a timeout the slot is held until the underlying work
-    # ACTUALLY finishes — the ProcessPool subprocess keeps running (Python can't
-    # cancel it), and releasing the slot early would let admission control
-    # under-count real worker occupancy and admit unbounded queued heavy work
-    # after repeated 504s. Exactly one release happens per task.
-    await sem.acquire()
-    task = asyncio.ensure_future(_run(fn, *args))
-    _released = False
+    timeout = _HEAVY_TIMEOUT_S if (bounded and _HEAVY_TIMEOUT_S and _HEAVY_TIMEOUT_S > 0) else None
+    # The semaphore is acquired/released MANUALLY (not via `async with`) so
+    # that on a timeout or a cancellation the slot is held until the
+    # underlying work ACTUALLY finishes; releasing it early would let
+    # admission control under-count real worker occupancy and admit unbounded
+    # queued heavy work after repeated 504s. Exactly one release per task.
+    if throttle:
+        await sem.acquire()
+    _released = not throttle
 
     def _release_once(_fut: Any = None) -> None:
         nonlocal _released
@@ -1318,14 +1334,30 @@ async def _run_heavy(fn, *args) -> Any:
             _released = True
             sem.release()
 
+    if task_id is not None:
+        record = TASKS.peek(task_id)
+        if record is None or record.status == "cancelled":
+            _release_once()
+            raise asyncio.CancelledError("cancelled before the computation started")
+    task = asyncio.ensure_future((dispatch or _run)(fn, *args))
+    # On the record when there is one (so that its cancellation can wait for
+    # the worker); a record that vanished between the check and here is not
+    # possible on one event loop, but the detached list is the fallback.
+    registered = task_id is not None and TASKS.update(task_id, work_handle=task) is not None
+
+    def _abandon() -> None:
+        task.add_done_callback(_release_once)
+        task.add_done_callback(_settle_abandoned)
+        if not registered:
+            TASKS.track_work(task)
+
     try:
-        result = await asyncio.wait_for(asyncio.shield(task), timeout=_HEAVY_TIMEOUT_S)
+        result = await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
         _release_once()
         return result
     except asyncio.TimeoutError:
-        # Keep the slot until the shielded task really settles (accurate
-        # admission control); the client gets 504 now.
-        task.add_done_callback(_release_once)
+        # The client gets 504 now; the work runs on, counted, until it ends.
+        _abandon()
         fname = getattr(fn, "__name__", str(fn))
         logger.warning("[heavy] timeout after %.0fs in %s", _HEAVY_TIMEOUT_S, fname)
         raise HTTPException(
@@ -1337,13 +1369,24 @@ async def _run_heavy(fn, *args) -> Any:
             ),
         ) from None
     except BaseException:
-        # The task itself errored/was cancelled before the timeout — release now
-        # (or when it settles) so the slot is never leaked.
+        # The task itself errored, or the caller was cancelled: release now
+        # (or when the shielded pool task settles) so the slot is never leaked.
         if task.done():
             _release_once()
         else:
-            task.add_done_callback(_release_once)
+            _abandon()
         raise
+
+
+def _settle_abandoned(task: "asyncio.Future[Any]") -> None:
+    """Take the outcome of a pool task nobody awaits any more, so that an
+    aborted worker's ``ComputationAborted`` is logged once and not reported
+    as a never-retrieved exception."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.info("[heavy] abandoned computation ended: %s", exc)
 
 
 # How long a request waits for a per-session compute slot before giving up with
@@ -1414,8 +1457,14 @@ async def _run_heavy_with_limit(session: Session, fn, *args) -> Any:
         session.release_task_slot()
 
 
-async def _moment_product_payload(entry: dict[str, Any], request: MomentProductRequest) -> tuple[dict[str, Any], bool]:
+async def _moment_product_payload(entry: dict[str, Any], request: MomentProductRequest,
+                                  task_id: str | None = None) -> tuple[dict[str, Any], bool]:
+    """The moment product, from the cache or computed; ``task_id`` names the
+    task this runs for, which makes the computation interruptible (the stop
+    file of app/compute/abort.py) and counted on the task's record."""
     from .compute import _moment_map_dask, worker_moment
+
+    stop_file = TASKS.stop_file(task_id) if task_id else None
 
     dataset = ScientificFitsDataset(entry["path"])
     cache_params = {
@@ -1445,9 +1494,12 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
             "[moment] backend=dask-distributed order=%s subset_bytes=%s",
             request.moment_order, subset_bytes,
         )
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
+        # The cluster does the work: no local pool slot, no local time limit;
+        # the thread that drives it is still the task's work (counted, and
+        # not started for a cancelled task). The Dask reduction itself does
+        # not poll the stop file.
+        loop = asyncio.get_running_loop()
+        result = await _run_heavy(
             _moment_map_dask,
             dataset.path,
             request.moment_order,
@@ -1459,31 +1511,37 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
             dist_client,            # → distributed cluster
             request.threshold_auto,
             bool(getattr(request, "moment2_variance", False)),
+            task_id=task_id,
+            dispatch=lambda f, *a: loop.run_in_executor(None, f, *a),
+            throttle=False, bounded=False,
         )
     elif use_dask:
         # Local threaded dask.array — CPU-heavy. Run it DIRECTLY on the local
-        # process pool under the heavy semaphore, NOT via _run_heavy/_run: the
-        # latter would re-dispatch to an async Dask cluster if one happens to be
-        # reachable, turning "local threaded" into a single remote task. Pinning
-        # to _POOL keeps it a local subprocess with scheduler="threads" inside.
+        # process pool under the heavy semaphore, NOT via _run: the latter
+        # would re-dispatch to an async Dask cluster if one happens to be
+        # reachable, turning "local threaded" into a single remote task.
+        # Pinning to _POOL keeps it a local subprocess with scheduler="threads"
+        # inside; _run_heavy's accounting (slot held and task counted until
+        # the subprocess really ends) is the same as the in-process path's.
         logger.info(
             "[moment] backend=dask-local-threaded order=%s subset_bytes=%s",
             request.moment_order, subset_bytes,
         )
-        async with _heavy_semaphore():
-            result = await _run_in_pool(
-                _moment_map_dask,
-                dataset.path,
-                request.moment_order,
-                request.channel_start,
-                request.channel_end,
-                request.threshold_value,
-                request.mask_enabled,
-                64,       # chunk_z
-                None,     # dist_client → local threaded scheduler
-                request.threshold_auto,
-                bool(getattr(request, "moment2_variance", False)),
-            )
+        result = await _run_heavy(
+            _moment_map_dask,
+            dataset.path,
+            request.moment_order,
+            request.channel_start,
+            request.channel_end,
+            request.threshold_value,
+            request.mask_enabled,
+            64,       # chunk_z
+            None,     # dist_client → local threaded scheduler
+            request.threshold_auto,
+            bool(getattr(request, "moment2_variance", False)),
+            task_id=task_id,
+            dispatch=_run_in_pool,
+        )
     else:
         # Heavy task — throttled so other interactive requests stay responsive.
         result = await _run_heavy(
@@ -1496,6 +1554,8 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
             request.threshold_value,
             request.threshold_auto,
             bool(getattr(request, "moment2_variance", False)),
+            stop_file,
+            task_id=task_id,
         )
     PRODUCT_CACHE.put(
         key=cache_key,
@@ -1514,9 +1574,14 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
     return result, False
 
 
-async def _pv_product_payload(entry: dict[str, Any], request: CubePvRequest) -> tuple[dict[str, Any], bool]:
+async def _pv_product_payload(entry: dict[str, Any], request: CubePvRequest,
+                              task_id: str | None = None) -> tuple[dict[str, Any], bool]:
+    """The PV product, from the cache or computed (see _moment_product_payload
+    for ``task_id``)."""
     from .compute import worker_pv
     from .compute.pv_iso import canonical_pv_vertices
+
+    stop_file = TASKS.stop_file(task_id) if task_id else None
 
     dataset = ScientificFitsDataset(entry["path"])
     # The SAME canonical vertices key the cache and feed the worker.
@@ -1537,6 +1602,8 @@ async def _pv_product_payload(entry: dict[str, Any], request: CubePvRequest) -> 
         dataset.path,
         vertices,
         max(1, int(request.width_pixels)),
+        stop_file,
+        task_id=task_id,
     )
     PRODUCT_CACHE.put(
         key=cache_key,

@@ -1,144 +1,187 @@
 # SKAVA Discovery tab
 
-The **SKAVA** tab in the Data Hub queries an external SKAVA Data
-Discovery and Access service (see the SKAVA D3.1 design and
-[SKAVA project page](https://github.com/your-org/SKAVA)) and lets you
-open the matching datasets directly in VisIVO without leaving the
-application.
+The **SKAVA** tab in the Data Hub queries a data discovery service of the
+SKA Regional Centre network, SKAVA ([VisIVOLab/SKAVA](https://github.com/VisIVOLab/SKAVA))
+or any service that speaks the IVOA standards, and opens the datasets it
+finds where they are: on the VisIVO backend of the node that holds the
+copy, when SKAVA advertises one, so that nothing is transferred. The same
+tab runs cutouts, moment maps, PV diagrams and source finders on that node,
+and shows the result in VisIVO.
 
 ## How the flow works
 
 ```
-[SKAVA tab]  →  GET /discovery/search       → list of matching datasets
-                      (POS, BAND, TIME, COLLECTION, DPTYPE)
-[user picks one in the table]
-[Open button] →  GET /datalink/{obs_id}     → primary_access.access_url
-              →  POST /v1/datasets/open_url → VisIVO backend downloads
-                                              the FITS / HDF5 to its
-                                              cache and opens it in the
-                                              appropriate viewer
+[SKAVA tab]  →  GET /discovery/search  (or TAP on ivoa.obscore)
+                 → matching datasets, each with the replicas ranked by SKAVA
+                   and the reason for the ranking
+[user picks one]
+[Open]       →  GET /datalink/{obs_id}  (or the row's DataLink document)
+                 → the replicas, the VisIVO backend on each node, the node's
+                   SODA and product services
+             →  routing: the first registered backend in SKAVA's order
+             →  POST /v1/datasets/open_skava on that backend: opened in place
+                 (a refusal moves on to the next node; a download through the
+                 local backend is the last resort)
 ```
 
-Discovery is **metadata-only**: SKAVA holds an ObsCore-style catalogue
-of dataset descriptors plus replica routing information. The actual
-FITS / HDF5 files live on storage nodes (or, for a fully local demo,
-on your own VisIVO backend's Workspace Exports endpoint). The desktop
-never bypasses the VisIVO backend — file downloads always go through
-`POST /v1/datasets/open_url`, which caches them under
-`<workspace_exports>/skava_cache/`.
+Discovery is metadata only: the service holds an ObsCore catalogue plus the
+replicas and their routing. The files stay on the nodes. The desktop talks
+to a node only through the VisIVO backend registered for it
+(Settings ▸ Backends), with that backend's token.
 
-## Configuration
+## Discovery service
 
-Two settings persist between sessions (Settings dialog → **SKAVA**
-section, or via the connection bar at the top of the tab):
+The box at the top of the tab (saved in the settings, shared with the
+Settings dialog) has two rows, the service and the token; the endpoints a
+default deployment never sets are folded under **Advanced**:
 
-* **SKAVA URL** — base URL of the SKAVA discovery service
-  (e.g. `http://localhost:8000` for a dev container, or your SRC's
-  public discovery endpoint).
-* **Token** — optional bearer token. If SKAVA was started with
-  `SKAVA_ACCESS_TOKENS` set, paste one of those tokens here. Empty
-  when the service does not require authentication.
+| Field | Meaning |
+|---|---|
+| **Service** (protocol) | *SKAVA JSON API* (SKAVA's own endpoints) or *IVOA TAP + DataLink* (ADQL on `ivoa.obscore` and DataLink VOTables, what the SRCNet global services speak). |
+| **Service** (URL) | The service's base URL. |
+| **Token** | A bearer token pasted by hand, or the one obtained with **Sign in…**. |
+| **Sign in… / IAM…** | OpenID Connect sign-in to the IAM the service trusts (the SRCNet IAM, or Keycloak on a testbed), as a public client with `vlva://callback` as redirect URI. **IAM…** sets the endpoints, the client id and the scope. A service that answers `401` with an `ivoa_bearer` challenge names its IAM's discovery document, and the tab configures the endpoints from it on its own. The sign-in is kept in the system's secure store, so the next start signs in silently. |
+| **Advanced: TAP URL**, **DataLink URL** | For the IVOA protocol: the TAP service (`/sync` is appended) and the DataLink service used when a TAP row carries no DataLink `access_url` of its own. Empty: SKAVA's own `/tap` and `/datalink/<id>`. |
+| **Advanced: Broker URL** | A Computing Broker (the SRCNet job API) that places and runs the source finder next to the data. Empty: the finder runs as a task on the dataset's node, started by the desktop. |
 
-The settings sync both ways: edits in the tab's connection bar are
-saved as you press Enter; conversely, changes from the Settings
-dialog show up in the connection bar the next time the tab opens.
+When a request comes back `401`, the tab offers to sign in and repeats the
+request afterwards.
 
-## Scientific filters
+## Filters
 
-The form mirrors the ObsCore parameters supported by SKAVA's
-`GET /discovery/search` (per the *discovery_queries* SKAVA guide).
-All filters combine with `AND` semantics; leave any field blank to
-skip it.
+The **Filters** section (fold it away with its arrow to give the results
+more room) mirrors the ObsCore parameters of `GET /discovery/search` and of
+the ADQL query built for TAP. All filters combine with `AND`; leave a field
+blank to skip it.
 
-| Field | What it sends to SKAVA | Notes |
+| Field | What it sends | Notes |
 |---|---|---|
-| **RA / Dec / Radius** (deg) | `POS=CIRCLE <ra> <dec> <radius>` | CIRCLE is the only shape supported by the current SKAVA baseline. RA in [0, 360], Dec in [-90, 90]. |
-| **BAND min / max** + unit | `BAND=<λ_min> <λ_max>` (metres) | The unit selector (MHz / GHz / Hz / m) tells the panel how to convert from your input to **metres**, the unit SKAVA expects internally. Radio astronomers typically enter frequencies and let the panel handle the conversion. |
-| **TIME MJD min / max** | `TIME=<mjd_min> <mjd_max>` | Modified Julian Date floats. |
-| **COLLECTION** | `COLLECTION=<value>` | Free-form string matching ObsCore `obs_collection` (e.g. `MGCLS`, `LoTSS-DR2`, `WALLABY`). |
-| **DPTYPE** | `DPTYPE=<value>` | Dataproduct type: `image`, `cube`, `timeseries`, `spectrum`. |
-| **obs_id** | `obs_id=<value>` | Exact-match lookup of a known identifier. |
-| **limit / offset** | `limit=…&offset=…` | Pagination. `limit` ≤ 1000, `offset` ≤ 1 000 000. |
-
-Press **Search** (or just hit Enter inside any field) to run the query.
+| **Position**: RA / Dec / radius (deg) | `POS=CIRCLE <ra> <dec> <radius>` | RA in [0, 360], Dec in [-90, 90]. |
+| **Band**: min / max + unit | `BAND=<λ_min> <λ_max>` (metres) | The unit selector (MHz / GHz / Hz / m) converts your input to metres, the unit the services expect. |
+| **Time**: MJD min / max | `TIME=<mjd_min> <mjd_max>` | Modified Julian Date. |
+| **Dataset**: collection | `COLLECTION=<value>` | ObsCore `obs_collection`. |
+| **type** | `DPTYPE=<value>` | `image`, `cube`, `timeseries`, `spectrum`. |
+| **obs_id** | `obs_id=<value>` | Exact match. |
+| **limit / offset** | pagination | `limit` ≤ 1000. |
 
 ## Results table
 
-Each row is one SKAVA discovery result. Columns:
+The table and the provenance of the selected row share the rest of the
+tab; drag the divider between them. Short columns fit their content, the
+**Why** column takes the remaining width, and a cell cut short shows its
+whole text on hover.
 
 | Column | Source |
 |---|---|
-| **obs_id** | `metadata.obs_id` |
+| **obs_id** | `metadata.obs_id` (hover for the title) |
 | **Target** | `metadata.target_name` |
 | **Type** | `metadata.dataproduct_type` |
-| **Sky position** | `metadata.s_ra` / `metadata.s_dec` (formatted as `RA°, Dec°`) |
-| **Band** | `metadata.em_min` / `em_max` (metres on the wire, formatted in MHz / GHz / μm depending on the value) |
-| **Time** | `metadata.t_min` / `t_max` (MJD) |
-| **Best node** | `best_node` from the routing block |
-| **Latency** | best replica's `latency_score` (ms) |
+| **Sky position** | `s_ra` / `s_dec` |
+| **Band** | `em_min` / `em_max`, shown in MHz / GHz / μm |
+| **Time** | `t_min` / `t_max` (MJD) |
+| **Served by** | the node SKAVA ranked first, and how many other replicas there are |
+| **Why** | SKAVA's reason for that ranking: with the resource-aware policy the measured round trip, CPU pressure, queue and memory margin of the node; with the static policy the declared scores |
 
-Hover the **obs_id** cell for the full `obs_title` tooltip.
-
-## Provenance panel
-
-Below the results table, a panel shows the **selected dataset**'s
-ObsCore provenance metadata:
-
-* **Title** — `obs_title`
-* **DOI** — clickable link to `https://doi.org/<doi>` (or the raw
-  value if it already starts with `http`)
-* **PID** — persistent identifier (e.g. `skava:demo:dataset-1`)
-* **License** — typically `CC-BY-4.0`, `Public Domain`, etc.
-* **Citation** — full citation string; **Copy citation** copies it to
-  the clipboard for pasting into papers / notebooks.
+Hover **Served by** or **Why** for the whole decision: every replica in
+ranking order with its cost, reason and the age of the telemetry it was
+judged on.
 
 ## Opening a dataset
 
-Click **Open selected in VisIVO** (enabled once a row is selected).
-The panel:
+**Open** (or a double-click on the row) resolves the dataset's DataLink and opens it:
 
-1. Resolves the access URL by querying
-   `GET /datalink/{obs_id}` on SKAVA and reading
-   `primary_access.access_url`.
-2. Hands the URL to the VisIVO backend via
-   `POST /v1/datasets/open_url`.
-3. The backend downloads the file with streaming `urllib` to
-   `<workspace_exports>/skava_cache/`, classifies it with the same
-   `_fits_metadata` used for local opens (so HDF5 / PSRFITS / dynamic
-   spectrum sidecar conversion all kick in automatically), and
-   registers it as a session dataset.
-4. The matching viewer opens (image viewer for `kind=image` or
-   `dynspec`, cube viewer for `kind=cube`).
-5. The dataset is added to the **Recent Datasets** panel with the
-   SKAVA `obs_id` as the display label, so reopening it later
-   re-runs the full discovery → download → open chain.
+1. The DataLink lists the replicas in SKAVA's order and, for each node, the
+   VisIVO backend co-located with it (`visivo-backend` service descriptor,
+   or the `#auxiliary` row pointing at the backend's `/v1/node/status` in
+   the VOTable).
+2. The desktop takes the first node whose backend is registered in
+   Settings ▸ Backends, opens the dataset *in place* there
+   (`POST /v1/datasets/open_skava` with the replica's `file://` URL), and
+   shows the viewer. The backend badge in the status bar names the node;
+   its tooltip gives SKAVA's reason.
+3. If that backend refuses, the next node in the ranking is tried, and the
+   status bar says so. When no node can serve it, the tab explains why for
+   each descriptor and, when SKAVA advertises a backend that is not
+   registered, offers to register it (or to enter its token).
+4. An `http(s)` replica with no co-located backend is downloaded through
+   the local backend (`POST /v1/datasets/open_url`).
 
-A status line under the action bar reports `Showing N of M results
-(limit=X, offset=Y)` so you know whether to paginate.
+**Open via…** lists the replicas with SKAVA's reasons: pick one to open on
+that node instead of the first-ranked one.
 
-## Caching
+The dataset is added to the Recent Datasets panel with the catalogue it
+came from, the protocol, the replica and the node that served it, so a
+reopen asks the same service again (and routes afresh) rather than reusing
+a path that may have moved.
 
-`POST /v1/datasets/open_url` keeps a hash-keyed cache under the
-backend's Workspace Exports directory
-(`~/.visivo/exports/skava_cache/`). Re-opening the same SKAVA URL is
-free — no second download. To force a re-download (e.g. after the
-underlying file has changed upstream) delete the matching cache file
-manually.
+## Compute next to data
+
+The **Compute next to data…** menu runs on the node, through the services
+SKAVA's DataLink advertises for the dataset (`node-soda-sync`,
+`node-soda-async`, `visivo-moment`, `visivo-pv` as JSON descriptors; the
+`#cutout` and `#proc` rows with their `adhoc:service` descriptors in the
+VOTable). The product stays in the node's workspace and is opened from
+there.
+
+* **SODA cutout…**: a POS (CIRCLE or POLYGON), BAND and/or TIME subset,
+  submitted to the node's `/soda/async` as a UWS job (`PHASE=RUN`), polled
+  until it ends, then opened in place. Without an advertised SODA job
+  service, the backend's own `/v1/datasets/cutout` route is used.
+* **Moment map…**: `OPERATION=MOMENT` with the order (0, 1, 2), an optional
+  channel range and threshold.
+* **PV diagram…**: `OPERATION=PV` with the path's vertices (degrees) and the
+  slice width in pixels.
+* **Source finder…**: the finders the node offers (`GET /v1/finders`:
+  SoFiA-2 for cubes, photutils for images) with their parameters. With a
+  **Broker URL** set, the job goes to the Computing Broker
+  (`POST /v1/jobs`), which asks SKAVA where to run it, keeps to the nodes
+  that have the finder and the memory it needs (each node states how much
+  its finders need per byte of dataset in `GET /v1/node/status`; the
+  desktop sends no memory figure of its own) and starts the finder on that
+  node's backend; otherwise the desktop opens the dataset on the
+  first-ranked node and starts the finder there as a task
+  (`POST /v1/tasks/sourcefind`). The dialog follows the run's log, can
+  cancel it, and opens the mask (as a cube) and the catalogue (VOTable)
+  from the node.
+
+The desktop calls a node's service at the address of the backend
+registered for that node (the DataLink names the node as the catalogue
+sees it, which need not be reachable from the desktop), with that
+backend's token.
+
+## Running a backend as an SRC node
+
+A backend next to a node's data serves `GET /v1/ping` and
+`GET /v1/node/status` (CPU, memory under the container's limits, queued
+tasks, finders) without a token, so SKAVA can measure the node; set
+`VISIVO_NODE_STATUS_PUBLIC=0` to require the backend token for the status
+document. `VISIVO_NODE_CODE` names the node as the catalogue knows it.
+
+When the catalogue cannot reach the backend (a firewall, a NAT, a tunnel),
+the backend reports to the catalogue instead, every few seconds:
+
+| Variable | Meaning |
+|---|---|
+| `VISIVO_SKAVA_TELEMETRY_URL` | the catalogue's base URL (`http` or `https`) |
+| `VISIVO_SKAVA_NODE_TOKEN` | this node's telemetry token, printed by the catalogue's operator with `python -m app.security.node_token CODE` |
+| `VISIVO_NODE_CODE` | this node's code in that catalogue |
+| `VISIVO_SKAVA_TELEMETRY_INTERVAL` | seconds between reports (default 10, at least 1) |
+
+Reporting is off unless the first three are set. The token speaks for this
+node only; it is not the catalogue's internal key. A report that fails is
+logged once per outage, and the backend keeps reporting.
 
 ## Common failure modes
 
-* **`SKAVA base URL is not configured`** — populate the URL field
-  before searching.
-* **`Search failed: invalid_query — POS must be ...`** — SKAVA's
-  `parse_pos` rejected the spatial filter. Double-check ra / dec /
-  radius are all set (or all blank).
-* **`Open from SKAVA: Remote returned HTTP 404`** — the
-  `primary_access.access_url` for the chosen dataset is unreachable.
-  Causes: the storage node is down, the file has moved, or for the
-  local demo seed the file is not in `~/.visivo/exports/` under the
-  expected name. Check the SKAVA seed catalogue's `access_endpoint`
-  fields to see what filename the discovery layer expects.
-* **`Cached file could not be classified`** — the file downloaded
-  fine but didn't pass the FITS / HDF5 classifier (e.g. it's HTML
-  from an error page). Inspect the cache file directly to see what
-  came back.
+* **`SKAVA base URL is not configured`**: fill the URL before searching.
+* **`… requires a sign-in`**: the service answered `401`. Sign in, or paste
+  a token.
+* **`Search failed: invalid_query - POS must be ...`**: the spatial filter
+  was rejected; set RA, Dec and radius together, or none.
+* **"… is stored on an SRC node and can only be opened by the VisIVO
+  backend running there"**: no registered backend matches the nodes
+  holding the dataset. Register the node's backend (the dialog offers to),
+  or check its token.
+* **"SKAVA advertises no moment service"**: the dataset is not a cube, or
+  the node's backend predates the operation; open the dataset and compute
+  in the viewer instead.

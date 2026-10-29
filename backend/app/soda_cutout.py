@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import io
 import logging
+import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -48,6 +49,13 @@ _SPEC_PREFIXES = ("FREQ", "WAVE", "VELO", "VRAD", "VOPT", "ENER", "WAVN", "AWAV"
 
 class CutoutError(RuntimeError):
     """Raised when a cutout cannot be produced (bad params, unreadable FITS)."""
+
+
+class CutoutNoOverlap(CutoutError):
+    """The request is valid but selects nothing: POS, BAND or TIME misses the data.
+
+    SODA answers this with an empty response (HTTP 204), not an error.
+    """
 
 
 @dataclass
@@ -110,6 +118,41 @@ def parse_pos(value: str | None) -> Circle | Range | None:
     raise CutoutError(f"Unsupported POS shape {shape!r}. Use CIRCLE, RANGE or POLYGON.")
 
 
+def parse_time(value: str | None) -> tuple[float, float] | None:
+    """SODA TIME: '<mjd_lo> <mjd_hi>' (either may be -Inf/+Inf)."""
+    if not value or not value.strip():
+        return None
+    parts = value.replace(",", " ").split()
+    if len(parts) != 2:
+        raise CutoutError("TIME requires '<mjd_lo> <mjd_hi>'.")
+    try:
+        lo, hi = (float(p) for p in parts)
+    except ValueError as exc:
+        raise CutoutError(f"TIME contains non-numeric values: {value!r}") from exc
+    if lo != lo or hi != hi or lo > hi:
+        raise CutoutError("TIME needs lo <= hi.")
+    return lo, hi
+
+
+def _time_coverage(header: fits.Header) -> tuple[float, float] | None:
+    """The observation's time span in MJD from its header, when it says so."""
+    start = header.get("MJD-OBS")
+    if start is None and header.get("DATE-OBS"):
+        try:
+            from astropy.time import Time
+
+            start = Time(str(header["DATE-OBS"]), format="isot", scale="utc").mjd
+        except ValueError:
+            start = None
+    if start is None:
+        return None
+    end = header.get("MJD-END")
+    if end is None:
+        exposure = header.get("EXPTIME") or header.get("EXPOSURE") or header.get("TELAPSE")
+        end = float(start) + (float(exposure) / 86400.0 if exposure else 0.0)
+    return float(start), float(end)
+
+
 def parse_band(value: str | None) -> Band | None:
     if not value or not value.strip():
         return None
@@ -118,7 +161,7 @@ def parse_band(value: str | None) -> Band | None:
         nums = [float(p) for p in parts]
     except ValueError as exc:
         raise CutoutError(f"BAND contains non-numeric values: {value!r}") from exc
-    if len(nums) != 2:
+    if len(nums) != 2 or any(x != x for x in nums):
         raise CutoutError("BAND requires '<min> <max>' (metres).")
     lo, hi = sorted(nums)
     return Band(lo, hi)
@@ -179,18 +222,20 @@ def _spatial_slices(
     if isinstance(pos, Circle):
         from astropy.coordinates import SkyCoord  # local import: optional dep path
 
-        center = SkyCoord(pos.ra, pos.dec, unit="deg", frame=_frame_for(cel))
+        # SODA positions are ICRS whatever the cube's own frame: astropy
+        # converts to the cube's frame (Galactic cubes included) on the way.
+        center = SkyCoord(pos.ra, pos.dec, unit="deg", frame="icrs")
         # A point outside the projection's valid domain (e.g. the far side
         # of a SIN tangent plane) maps to NaN pixels — treat as no overlap
         # rather than letting astropy raise a bare ValueError.
         px, py = cel.world_to_pixel(center)
         if not (np.isfinite(px) and np.isfinite(py)):
-            raise CutoutError("POS CIRCLE does not overlap the dataset footprint.")
+            raise CutoutNoOverlap("POS CIRCLE does not overlap the dataset footprint.")
         size = 2.0 * pos.radius * u.deg
         try:
             cut = Cutout2D(plane, position=center, size=size, wcs=cel, mode="trim")
         except ValueError as exc:  # NoOverlapError / PartialOverlapError / NaN
-            raise CutoutError(
+            raise CutoutNoOverlap(
                 "POS CIRCLE does not overlap the dataset footprint.") from exc
     else:  # Range bounding box → pixel corners
         (y0, y1), (x0, x1) = _range_to_pixel_bbox(cel, pos, plane.shape)
@@ -203,7 +248,7 @@ def _spatial_slices(
                 mode="trim",
             )
         except ValueError as exc:
-            raise CutoutError(
+            raise CutoutNoOverlap(
                 "POS RANGE does not overlap the dataset footprint.") from exc
 
     (ymin, ymax), (xmin, xmax) = cut.bbox_original  # inclusive bounds
@@ -212,32 +257,91 @@ def _spatial_slices(
     return {lat_np: lat_slice, lng_np: lng_slice}
 
 
-def _frame_for(cel: WCS) -> str:
-    head = (cel.wcs.ctype[0] or "")[:4].upper()
-    if head.startswith("GLON"):
-        return "galactic"
-    return "icrs"
-
-
 def _range_to_pixel_bbox(cel: WCS, rng: Range, shape: tuple[int, int]):
-    """Convert a RA/Dec RANGE to inclusive (y0,y1),(x0,x1) pixel bounds."""
+    """Convert an ICRS RA/Dec RANGE to inclusive (y0,y1),(x0,x1) pixel bounds.
+
+    The box is tested against the cube's own grid, not by projecting its
+    corners: the corners of a large box (a hemisphere, a box wrapping through
+    RA 0) can lie outside the projection while the box contains the image,
+    and a thin strip can cross the image with both ends outside it.
+
+    The image is covered by cells between at most ~512x512 sample points; a
+    cell is kept when the RA and Dec ranges spanned by its corners intersect
+    the box. The kept cells, widened by one cell, bound every pixel inside the
+    box (a conservative superset, a cell or two larger than exact). ``ra1 > ra2`` is a box that
+    wraps through RA 0; an infinite or >= 360 deg RA span is the full circle.
+    """
+    ny, nx = shape
+    step = max(1, int(np.ceil(max(nx, ny) / 512)))
+    ys = np.unique(np.append(np.arange(0, ny, step), ny - 1)).astype(float)
+    xs = np.unique(np.append(np.arange(0, nx, step), nx - 1)).astype(float)
+    # Sample the pixel edges, not centres, so cells cover whole pixels.
+    ys = np.unique(np.concatenate(([-0.5], ys[1:-1], [ny - 0.5]))) if ny > 1 else np.array([-0.5, 0.5])
+    xs = np.unique(np.concatenate(([-0.5], xs[1:-1], [nx - 0.5]))) if nx > 1 else np.array([-0.5, 0.5])
+    gx, gy = np.meshgrid(xs, ys)
+    with np.errstate(invalid="ignore"):
+        world = cel.pixel_to_world(gx.ravel(), gy.ravel()).icrs
+        ra = np.asarray(world.ra.deg, dtype=float).reshape(gx.shape)
+        dec = np.asarray(world.dec.deg, dtype=float).reshape(gx.shape)
+
+    def corners(a):
+        return np.stack([a[:-1, :-1], a[1:, :-1], a[:-1, 1:], a[1:, 1:]])
+
+    dec_c, ra_c = corners(dec), corners(ra)
+    valid = np.isfinite(dec_c).any(axis=0)
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        cell_dec_lo, cell_dec_hi = np.nanmin(dec_c, axis=0), np.nanmax(dec_c, axis=0)
+        # RA spanned by each cell, unwrapped around its first finite corner.
+        ref = np.where(np.isfinite(ra_c[0]), ra_c[0], np.nanmax(ra_c, axis=0))
+        rel = ((ra_c - ref + 180.0) % 360.0) - 180.0
+        cell_ra_lo, cell_ra_hi = ref + np.nanmin(rel, axis=0), ref + np.nanmax(rel, axis=0)
+
+    # A celestial pole inside a cell: the corners do not reach its Dec, and
+    # around it every RA occurs. Extend that cell to the pole.
     from astropy.coordinates import SkyCoord
 
-    frame = _frame_for(cel)
-    corners = SkyCoord(
-        [rng.ra1, rng.ra1, rng.ra2, rng.ra2],
-        [rng.dec1, rng.dec2, rng.dec1, rng.dec2],
-        unit="deg",
-        frame=frame,
-    )
-    xs, ys = cel.world_to_pixel(corners)
-    ny, nx = shape
-    x0 = int(max(0, np.floor(np.nanmin(xs))))
-    x1 = int(min(nx - 1, np.ceil(np.nanmax(xs))))
-    y0 = int(max(0, np.floor(np.nanmin(ys))))
-    y1 = int(min(ny - 1, np.ceil(np.nanmax(ys))))
-    if x1 < x0 or y1 < y0:
-        raise CutoutError("POS RANGE does not overlap the dataset footprint.")
+    pole_cell = np.zeros_like(valid)
+    for pole in (90.0, -90.0):
+        with np.errstate(invalid="ignore"):
+            px, py = cel.world_to_pixel(SkyCoord(0.0, pole, unit="deg", frame="icrs"))
+        px, py = float(px), float(py)
+        if np.isfinite(px) and np.isfinite(py) and xs[0] <= px <= xs[-1] and ys[0] <= py <= ys[-1]:
+            r = min(max(int(np.searchsorted(ys, py)) - 1, 0), len(ys) - 2)
+            c = min(max(int(np.searchsorted(xs, px)) - 1, 0), len(xs) - 2)
+            pole_cell[r, c] = True
+            valid[r, c] = True
+            if pole > 0:
+                cell_dec_hi[r, c] = 90.0
+            else:
+                cell_dec_lo[r, c] = -90.0
+
+    dec_lo, dec_hi = sorted((rng.dec1, rng.dec2))
+    keep = valid & (cell_dec_hi >= dec_lo) & (cell_dec_lo <= dec_hi)
+    full_ra = not (np.isfinite(rng.ra1) and np.isfinite(rng.ra2)) or abs(rng.ra2 - rng.ra1) >= 360.0
+    if not full_ra:
+        ra1 = rng.ra1 % 360.0
+        ra2 = rng.ra2 % 360.0
+        if ra2 < ra1:
+            ra2 += 360.0                  # wraps through RA 0
+        hit = np.zeros_like(keep)
+        for shift in (-360.0, 0.0, 360.0):
+            hit |= (cell_ra_hi + shift >= ra1) & (cell_ra_lo + shift <= ra2)
+        keep &= hit | pole_cell | (cell_ra_hi - cell_ra_lo >= 180.0)   # around a pole: every RA
+
+    rows, cols = np.nonzero(keep)
+    if rows.size == 0:
+        raise CutoutNoOverlap("POS RANGE does not overlap the dataset footprint.")
+    # One more cell on each side: next to a pole (or any extremum) a cell's
+    # Dec can exceed its corners' along an edge, so the neighbours of the kept
+    # cells are taken too. Cell (r, c) spans the pixel edges ys[r]..ys[r+1],
+    # xs[c]..xs[c+1].
+    r0, r1 = max(0, rows.min() - 1), min(len(ys) - 2, rows.max() + 1)
+    c0, c1 = max(0, cols.min() - 1), min(len(xs) - 2, cols.max() + 1)
+    y0 = int(max(0, np.floor(ys[r0] + 0.5)))
+    y1 = int(min(ny - 1, np.ceil(ys[r1 + 1] - 0.5)))
+    x0 = int(max(0, np.floor(xs[c0] + 0.5)))
+    x1 = int(min(nx - 1, np.ceil(xs[c1 + 1] - 0.5)))
     return (y0, y1), (x0, x1)
 
 
@@ -253,19 +357,28 @@ def _spectral_slice(
 
     spec = wcs.spectral
     unit = u.Unit(spec.wcs.cunit[0] or "m")
-    lo = u.Quantity(band.lo, u.m).to(unit, equivalencies=u.spectral()).value
-    hi = u.Quantity(band.hi, u.m).to(unit, equivalencies=u.spectral()).value
-    lo, hi = sorted((lo, hi))
-
     spec_np = _fits_axis_to_numpy(roles["spec"], data.ndim)
     n = data.shape[spec_np]
+
+    # Clip the band (metres, possibly open-ended: SODA allows -Inf/+Inf) to the
+    # cube's own wavelength coverage BEFORE converting: an infinite wavelength
+    # would become a zero frequency.
+    edges = u.Quantity(spec.pixel_to_world_values(np.array([-0.5, n - 0.5])), unit)
+    cover = sorted(edges.to(u.m, equivalencies=u.spectral()).value)
+    band_lo, band_hi = max(band.lo, cover[0]), min(band.hi, cover[1])
+    if band_lo > band_hi:
+        raise CutoutNoOverlap("BAND does not overlap the dataset spectral range.")
+    lo = u.Quantity(band_lo, u.m).to(unit, equivalencies=u.spectral()).value
+    hi = u.Quantity(band_hi, u.m).to(unit, equivalencies=u.spectral()).value
+    lo, hi = sorted((lo, hi))
+
     p_lo = spec.world_to_pixel(u.Quantity(lo, unit))
     p_hi = spec.world_to_pixel(u.Quantity(hi, unit))
     a, b = sorted((float(p_lo), float(p_hi)))
     i0 = int(max(0, np.floor(a)))
     i1 = int(min(n - 1, np.ceil(b)))
     if i1 < i0:
-        raise CutoutError("BAND does not overlap the dataset spectral range.")
+        raise CutoutNoOverlap("BAND does not overlap the dataset spectral range.")
     return {spec_np: slice(i0, i1 + 1)}
 
 
@@ -291,7 +404,7 @@ def make_cutout(
     *,
     pos: str | None = None,
     band: str | None = None,
-    time: str | None = None,  # accepted for API symmetry; not yet a data axis
+    time: str | None = None,  # MJD interval, checked against the observation's time
     filename_hint: str = "cutout",
 ) -> CutoutResult:
     """Open a FITS file and return a spatial/spectral subset as FITS bytes.
@@ -302,6 +415,7 @@ def make_cutout(
     """
     parsed_pos = parse_pos(pos)
     parsed_band = parse_band(band)
+    parsed_time = parse_time(time)
     applied: dict[str, Any] = {"pos": False, "band": False, "time": False}
 
     try:
@@ -317,6 +431,16 @@ def make_cutout(
         header = hdu.header.copy()
         wcs = WCS(header)
         roles = _axis_roles(wcs)
+
+        # A cube has no time axis to cut, but its observation has a time: a
+        # TIME interval that misses it selects nothing. Without a recorded
+        # time the constraint cannot be evaluated and is not applied.
+        if parsed_time is not None:
+            coverage = _time_coverage(header)
+            if coverage is not None:
+                if parsed_time[1] < coverage[0] or parsed_time[0] > coverage[1]:
+                    raise CutoutNoOverlap("TIME does not overlap the observation.")
+                applied["time"] = True
 
         slices: dict[int, slice] = {}
         if parsed_pos is not None:

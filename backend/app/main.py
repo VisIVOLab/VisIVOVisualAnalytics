@@ -22,6 +22,8 @@ from .auth import verify_token
 from .tasks import TASKS
 from .routers import (
     meta,
+    node,
+    soda,
     files,
     datasets,
     catalogue,
@@ -78,7 +80,17 @@ async def _lifespan(_app: "FastAPI"):
             "[startup] VISIVO_TOKENS is set but VISIVO_DATA_ROOTS is not: "
             "path-based endpoints (file browser, dataset open, overlays) are "
             "DISABLED. Declare the directories this backend may share.")
+    # A node its catalogue cannot probe reports itself (off unless configured).
+    import asyncio  # noqa: PLC0415
+    from . import telemetry_push  # noqa: PLC0415
+    push_task = telemetry_push.start(_app.version)
     yield
+    if push_task is not None:
+        push_task.cancel()
+        try:
+            await push_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001 - the loop is ending anyway
+            pass
     if _render_mounted:
         # Release all open EGL contexts cleanly on uvicorn shutdown. Without this
         # the EGL display handle is leaked and the next backend start may fail to
@@ -317,7 +329,11 @@ async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSON
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 _auth = Depends(verify_token)
+# Node liveness/status/metrics: public by design (see routers/node.py).
+app.include_router(node.router)
 app.include_router(meta.router, dependencies=[_auth])
+# IVOA SODA on the node (sync cutout, async UWS jobs); auth per route.
+app.include_router(soda.router)
 app.include_router(files.router, dependencies=[_auth])
 app.include_router(datasets.router, dependencies=[_auth])
 app.include_router(catalogue.router, dependencies=[_auth])

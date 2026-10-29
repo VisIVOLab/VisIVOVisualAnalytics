@@ -73,7 +73,9 @@ REQUIRED_HEADERS = frozenset({
 # Single- and double-quoted string literals, scanned across the whole app tree
 # (not just routers) so a header emitted from a helper module is still seen.
 _HEADER_LITERAL = re.compile(r'''["'](X-[A-Za-z0-9-]+)["']''')
-_IGNORE_HEADERS = {"X-Forwarded-For", "X-Forwarded-Proto", "X-Real-IP"}
+_IGNORE_HEADERS = {"X-Forwarded-For", "X-Forwarded-Proto", "X-Real-IP",
+                   # Sent by the backend to its SKAVA catalogue, never to the client.
+                   "X-Skava-Node-Token"}
 
 
 def _emitted_header_literals() -> set[str]:

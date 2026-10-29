@@ -52,6 +52,21 @@ struct RecentDataset
     // SKAVA obs_id (non-empty only when ``source == "skava"``).
     QString obsId;
 
+    // Where the dataset was found and served from, so a reopen asks the
+    // same catalogue (even after the settings moved to another one) and the
+    // panel can say which node served it: the SKAVA service and protocol
+    // ("skava" / "vo"), the replica's access URL, the serving node's code.
+    // Empty on entries from before this was recorded.
+    QString skavaUrl;
+    QString skavaProtocol;
+    // True when the entry recorded its VO endpoints: then empty ones mean
+    // "derived from the catalogue URL", not "unknown" (older entries).
+    bool    skavaEndpointsRecorded{ false };
+    QString skavaTapUrl;        ///< VO protocol: the TAP endpoint used (empty = derived)
+    QString skavaDatalinkUrl;   ///< VO protocol: the DataLink endpoint used (empty = derived)
+    QString accessUrl;
+    QString servedBy;
+
     QDateTime lastOpened;
 };
 
@@ -81,6 +96,8 @@ public:
                 const QString &type,
                 const QString &source = QStringLiteral("remote"),
                 const QString &obsId = QString());
+    // The same, with every field of the entry (``lastOpened`` is set here).
+    void record(RecentDataset entry);
 
     // Removes the entry with the given id (no-op if not found).
     void remove(const QString &id);

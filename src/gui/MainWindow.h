@@ -31,6 +31,7 @@ class Settings;
 class VLKBInventoryTree;
 class vtkWindowImage;
 struct BackendNode;
+struct SkavaRoute;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -147,18 +148,44 @@ private:
     /// Backend-aware open driven by a full SKAVA DataLink response. When
     /// SKAVA advertises a ``visivo-backend`` service descriptor that
     /// matches a registered backend, route the open through that backend
-    /// (compute next to data, no download). When no descriptor matches,
-    /// fall back to ``doOpenDataFromUrl`` (download via local backend).
+    /// (compute next to data, no download); a backend that refuses is
+    /// followed by the next one in SKAVA's ranking. When no descriptor
+    /// matches, fall back to ``doOpenDataFromUrl`` (download via local
+    /// backend). ``preferredNode`` (a SKAVA node code) is tried first.
     /// See docs/distributed-backend-design.md §4.2.
     void doOpenSkavaDataset(const QString &obsId,
+                              const struct SkavaDatalinkResponse &datalink,
+                              const QString &preferredNode = QString());
+    /// Open on ``candidates[index]``; on refusal, on the next candidate, with
+    /// the refusal added to ``reasons``; past the last one, explain
+    /// (``openSkavaWithoutRoute``).
+    void openSkavaOnCandidate(const QString &obsId,
+                              const struct SkavaDatalinkResponse &datalink,
+                              const QList<SkavaRoute> &candidates, int index,
+                              const QStringList &reasons);
+    /// An operation next to the data, chosen in the SKAVA tab: ``kind`` is
+    /// "cutout", "moment", "pv" or "sourcefind". Dispatches to the handlers
+    /// below.
+    void doSkavaNodeOperation(const QString &kind, const QString &obsId,
                               const struct SkavaDatalinkResponse &datalink);
-    /// SKAVA "SODA subset": prompt for a POS/BAND region, run the cutout on
-    /// the dataset's co-located VisIVO backend (compute next to data) and
-    /// open the resulting FITS in place. Falls back with a clear message when
-    /// the dataset has no co-located backend / non-file replica. Kept distinct
-    /// from the VLKB-specific cutout flow in ``queryVlkb``.
+    /// SKAVA "SODA subset": prompt for a POS/BAND/TIME region, run the cutout
+    /// on the dataset's node (the SODA job service SKAVA advertises for it,
+    /// else the co-located backend's own cutout route) and open the result
+    /// in place. Falls back with a clear message when the dataset has no
+    /// co-located backend / non-file replica. Kept distinct from the
+    /// VLKB-specific cutout flow in ``queryVlkb``.
     void doSkavaSodaSubset(const QString &obsId,
                              const struct SkavaDatalinkResponse &datalink);
+    /// A product computed on the node next to the data ("moment" or "pv"),
+    /// through the SODA job service SKAVA advertises for the dataset, then
+    /// opened in place on that node.
+    void doSkavaNodeProduct(const QString &kind, const QString &obsId,
+                            const struct SkavaDatalinkResponse &datalink);
+    /// A source finder run next to the data: the dataset is opened on its
+    /// node and the finder runs there; its mask and catalogue open from the
+    /// node.
+    void doSkavaSourceFind(const QString &obsId,
+                           const struct SkavaDatalinkResponse &datalink);
     /// No registered backend could open a SKAVA dataset: download an http(s)
     /// copy through the local backend, or — for a file:// copy that exists
     /// only on its node — explain why (``reasons``) and offer to register the
@@ -332,7 +359,8 @@ private:
     // accent colour) or falls back to the local backend (``Backend:
     // Local`` in muted colour).
     QPointer<QLabel> m_backendBadge;
-    void setActiveBackendBadge(const BackendNode &node);
+    /// ``reason`` is SKAVA's ranking reason for the node, shown as the tooltip.
+    void setActiveBackendBadge(const BackendNode &node, const QString &reason = QString());
 
 
 };

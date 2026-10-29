@@ -198,8 +198,10 @@ public:
     void setSkavaUrl(const QString &url);
 
     /**
-   * @return The bearer token used to authenticate against SKAVA
-   * (SKAVA_ACCESS_TOKENS). Empty when SKAVA does not require auth.
+   * @return The bearer token used to authenticate against SKAVA: the one
+   * of the current sign-in when there is one (see setSkavaSessionToken),
+   * else the stored one (SKAVA_ACCESS_TOKENS). Empty when SKAVA does not
+   * require auth.
    */
     QString getSkavaToken() const;
 
@@ -208,6 +210,15 @@ public:
    * @param token Bearer token string
    */
     void setSkavaToken(const QString &token);
+
+    /**
+   * The token of an OpenID Connect sign-in to SKAVA: short-lived, refreshed
+   * by the sign-in flow, kept in memory only (never in the settings file),
+   * and read by every consumer through getSkavaToken() while it is set.
+   * Empty = signed out.
+   */
+    void setSkavaSessionToken(const QString &token);
+    QString getSkavaSessionToken() const { return m_skavaSessionToken; }
 
     /**
    * How the discovery tab talks to its service: ``"skava"`` (SKAVA's JSON
@@ -231,6 +242,28 @@ public:
    */
     QString getSkavaDatalinkUrl() const;
     void setSkavaDatalinkUrl(const QString &url);
+
+    /**
+   * Computing Broker (SRCNet-style job API) that places and runs a source
+   * finder next to the data. Empty = run the finder as a task on the
+   * dataset's node directly.
+   */
+    QString getSkavaBrokerUrl() const;
+    void setSkavaBrokerUrl(const QString &url);
+
+    /**
+   * OIDC sign-in to SKAVA (the SRCNet IAM, or Keycloak on a testbed): the
+   * authorization and token endpoints, the public client id and the scope.
+   * Empty endpoints = no sign-in; the bearer token is pasted by hand.
+   */
+    QString getSkavaOidcAuthUrl() const;
+    void setSkavaOidcAuthUrl(const QString &url);
+    QString getSkavaOidcTokenUrl() const;
+    void setSkavaOidcTokenUrl(const QString &url);
+    QString getSkavaOidcClientId() const;
+    void setSkavaOidcClientId(const QString &id);
+    QString getSkavaOidcScope() const;
+    void setSkavaOidcScope(const QString &scope);
 
     // ── Scientific copilot (LLM provider) ────────────────────────────────────
     // Persisted so the user configures the provider once. providerChoice mirrors
@@ -293,6 +326,7 @@ signals:
 private:
     const QString workDir;
     QPointer<QSettings> settings;
+    QString m_skavaSessionToken;   ///< see setSkavaSessionToken()
 
     // Platform dependent
     std::pair<QString, QVariant> PythonLocation;
@@ -319,6 +353,11 @@ private:
     static const std::pair<QString, QVariant> SkavaProtocol;
     static const std::pair<QString, QVariant> SkavaTapUrl;
     static const std::pair<QString, QVariant> SkavaDatalinkUrl;
+    static const std::pair<QString, QVariant> SkavaBrokerUrl;
+    static const std::pair<QString, QVariant> SkavaOidcAuthUrl;
+    static const std::pair<QString, QVariant> SkavaOidcTokenUrl;
+    static const std::pair<QString, QVariant> SkavaOidcClientId;
+    static const std::pair<QString, QVariant> SkavaOidcScope;
 
     // Scientific copilot (LLM provider)
     static const std::pair<QString, QVariant> CopilotProvider;

@@ -291,9 +291,15 @@ void DataHubWidget::refreshRecentDatasets()
         // transparent to mouse events, so a tooltip set here is never shown.
         // displayName is not always a basename — the manager falls back to the
         // full id — so the untruncated name belongs somewhere reachable.
-        row->setToolTip(ds.source == u"skava"_s && !ds.obsId.isEmpty()
+        QString tip = ds.source == u"skava"_s && !ds.obsId.isEmpty()
                 ? u"%1\nSKAVA obs_id: %2"_s.arg(ds.displayName, ds.obsId)
-                : u"%1\n%2"_s.arg(ds.displayName, ds.id));
+                : u"%1\n%2"_s.arg(ds.displayName, ds.id);
+        // Where it came from and who served it, when the entry recorded that.
+        if (!ds.skavaUrl.isEmpty())
+            tip += u"\nCatalogue: %1"_s.arg(ds.skavaUrl);
+        if (!ds.servedBy.isEmpty())
+            tip += u"\nServed by node %1"_s.arg(ds.servedBy);
+        row->setToolTip(tip);
         nameRowLayout->addWidget(nameLbl, 1);
 
         if (ds.source == u"skava"_s) {

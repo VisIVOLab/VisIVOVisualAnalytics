@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<VOTABLE version="1.4" xmlns="http://www.ivoa.net/xml/VOTable/v1.3">
+  <RESOURCE type="results">
+    <INFO name="QUERY_STATUS" value="OK"/>
+    <TABLE name="datalink">
+      <PARAM name="ID" datatype="char" arraysize="*" value="tb-cube-l" ID="primaryID"/>
+      <FIELD name="ID" datatype="char" arraysize="*" ucd="meta.id;meta.main"/>
+      <FIELD name="access_url" datatype="char" arraysize="*" ucd="meta.ref.url"/>
+      <FIELD name="service_def" datatype="char" arraysize="*" ucd="meta.ref"/>
+      <FIELD name="error_message" datatype="char" arraysize="*" ucd="meta.code.error"/>
+      <FIELD name="semantics" datatype="char" arraysize="*" ucd="meta.code"/>
+      <FIELD name="description" datatype="char" arraysize="*" ucd="meta.note"/>
+      <FIELD name="content_type" datatype="char" arraysize="*" ucd="meta.code.mime"/>
+      <FIELD name="content_length" datatype="long" ucd="phys.size;meta.file" unit="byte"/>
+      <FIELD name="link_auth" datatype="char" arraysize="*" ucd="meta.code"/>
+      <FIELD name="link_authorized" datatype="boolean" ucd="meta.code"/>
+      <FIELD name="node_id" datatype="char" arraysize="*" ucd="meta.id"/>
+      <FIELD name="rank_reason" datatype="char" arraysize="*" ucd="meta.note"/>
+      <FIELD name="score" datatype="double" ucd="stat.rank"/>
+      <DATA>
+        <TABLEDATA>
+          <TR><TD>tb-cube-l</TD><TD>file:///data/cubes/tb-cube-l.fits</TD><TD></TD><TD></TD><TD>#this</TD><TD>Direct remote access endpoint for the selected node.</TD><TD>image/fits</TD><TD>32771</TD><TD></TD><TD></TD><TD>BIG</TD><TD>rtt 1.1 ms, cpu pressure 0%, 0.0 tasks/worker, needs 32.0 MB of 7.8 GB free</TD><TD>1.26</TD></TR>
+          <TR><TD>tb-cube-l</TD><TD>file:///data/cubes/tb-cube-l.fits</TD><TD></TD><TD></TD><TD>#this</TD><TD>Alternate remote replica endpoint.</TD><TD>image/fits</TD><TD></TD><TD></TD><TD></TD><TD>SMALL</TD><TD>rtt 1.1 ms, cpu pressure 0%, 0.0 tasks/worker, needs 32.0 MB of 1.8 GB free</TD><TD>1.94</TD></TR>
+          <TR><TD>tb-cube-l</TD><TD>file:///data/cubes/tb-cube-l.fits</TD><TD></TD><TD></TD><TD>#this</TD><TD>Alternate remote replica endpoint.</TD><TD>image/fits</TD><TD></TD><TD></TD><TD></TD><TD>BUSY</TD><TD>rtt 0.7 ms, cpu pressure 49%, 0.0 tasks/worker, needs 32.0 MB of 3.8 GB free</TD><TD>50.45</TD></TR>
+          <TR><TD>tb-cube-l</TD><TD>http://node-big:8000/v1/node/status</TD><TD></TD><TD></TD><TD>#auxiliary</TD><TD>VisIVO compute backend co-located with node BIG: status and capacity</TD><TD>application/json</TD><TD></TD><TD>optional</TD><TD></TD><TD>BIG</TD><TD></TD><TD></TD></TR>
+          <TR><TD>tb-cube-l</TD><TD>http://node-small:8000/v1/node/status</TD><TD></TD><TD></TD><TD>#auxiliary</TD><TD>VisIVO compute backend co-located with node SMALL: status and capacity</TD><TD>application/json</TD><TD></TD><TD>optional</TD><TD></TD><TD>SMALL</TD><TD></TD><TD></TD></TR>
+          <TR><TD>tb-cube-l</TD><TD>http://node-busy:8000/v1/node/status</TD><TD></TD><TD></TD><TD>#auxiliary</TD><TD>VisIVO compute backend co-located with node BUSY: status and capacity</TD><TD>application/json</TD><TD></TD><TD>optional</TD><TD></TD><TD>BUSY</TD><TD></TD><TD></TD></TR>
+          <TR><TD>tb-cube-l</TD><TD></TD><TD>soda-sync-big</TD><TD></TD><TD>#cutout</TD><TD>SODA cutout on node BIG, next to the data.</TD><TD>application/fits</TD><TD></TD><TD>true</TD><TD></TD><TD>BIG</TD><TD></TD><TD></TD></TR>
+          <TR><TD>tb-cube-l</TD><TD></TD><TD>soda-async-big</TD><TD></TD><TD>#cutout</TD><TD>SODA cutout as an asynchronous (UWS) job on node BIG.</TD><TD>application/fits</TD><TD></TD><TD>true</TD><TD></TD><TD>BIG</TD><TD></TD><TD></TD></TR>
+          <TR><TD>tb-cube-l</TD><TD></TD><TD>moment-big</TD><TD></TD><TD>#proc</TD><TD>Moment map computed on node BIG (SODA async job, OPERATION=MOMENT).</TD><TD>application/fits</TD><TD></TD><TD>true</TD><TD></TD><TD>BIG</TD><TD></TD><TD></TD></TR>
+          <TR><TD>tb-cube-l</TD><TD></TD><TD>pv-big</TD><TD></TD><TD>#proc</TD><TD>Position-velocity diagram computed on node BIG (SODA async job, OPERATION=PV).</TD><TD>application/fits</TD><TD></TD><TD>true</TD><TD></TD><TD>BIG</TD><TD></TD><TD></TD></TR>
+        </TABLEDATA>
+      </DATA>
+    </TABLE>
+  </RESOURCE>
+  <RESOURCE type="meta" ID="soda-sync-big" utype="adhoc:service">
+    <DESCRIPTION>SODA cutout on node BIG, next to the data.</DESCRIPTION>
+    <PARAM name="standardID" datatype="char" arraysize="*" value="ivo://ivoa.net/std/SODA#sync-1.0"/>
+    <PARAM name="accessURL" datatype="char" arraysize="*" value="http://node-big:8000/soda/sync"/>
+    <GROUP name="inputParams">
+      <PARAM name="ID" datatype="char" arraysize="*" value="file:///data/cubes/tb-cube-l.fits"/>
+      <PARAM name="POS" datatype="char" arraysize="*" ucd="phys.angArea;obs" value=""/>
+      <PARAM name="CIRCLE" datatype="double" arraysize="3" xtype="circle" unit="deg" ucd="phys.angArea;obs" value=""/>
+      <PARAM name="POLYGON" datatype="double" arraysize="*" xtype="polygon" unit="deg" ucd="phys.angArea;obs" value=""/>
+      <PARAM name="BAND" datatype="double" arraysize="2" xtype="interval" unit="m" ucd="em.wl;stat.interval" value=""/>
+      <PARAM name="TIME" datatype="double" arraysize="2" xtype="interval" unit="d" ucd="time.interval;obs.exposure" value=""/>
+    </GROUP>
+  </RESOURCE>
+  <RESOURCE type="meta" ID="soda-async-big" utype="adhoc:service">
+    <DESCRIPTION>SODA cutout as an asynchronous (UWS) job on node BIG.</DESCRIPTION>
+    <PARAM name="standardID" datatype="char" arraysize="*" value="ivo://ivoa.net/std/SODA#async-1.0"/>
+    <PARAM name="accessURL" datatype="char" arraysize="*" value="http://node-big:8000/soda/async"/>
+    <GROUP name="inputParams">
+      <PARAM name="ID" datatype="char" arraysize="*" value="file:///data/cubes/tb-cube-l.fits"/>
+      <PARAM name="POS" datatype="char" arraysize="*" ucd="phys.angArea;obs" value=""/>
+      <PARAM name="CIRCLE" datatype="double" arraysize="3" xtype="circle" unit="deg" ucd="phys.angArea;obs" value=""/>
+      <PARAM name="POLYGON" datatype="double" arraysize="*" xtype="polygon" unit="deg" ucd="phys.angArea;obs" value=""/>
+      <PARAM name="BAND" datatype="double" arraysize="2" xtype="interval" unit="m" ucd="em.wl;stat.interval" value=""/>
+      <PARAM name="TIME" datatype="double" arraysize="2" xtype="interval" unit="d" ucd="time.interval;obs.exposure" value=""/>
+    </GROUP>
+  </RESOURCE>
+  <RESOURCE type="meta" ID="moment-big" utype="adhoc:service">
+    <DESCRIPTION>Moment map computed on node BIG (SODA async job, OPERATION=MOMENT).</DESCRIPTION>
+    <PARAM name="standardID" datatype="char" arraysize="*" value="ivo://ivoa.net/std/SODA#async-1.0"/>
+    <PARAM name="accessURL" datatype="char" arraysize="*" value="http://node-big:8000/soda/async"/>
+    <GROUP name="inputParams">
+      <PARAM name="ID" datatype="char" arraysize="*" value="file:///data/cubes/tb-cube-l.fits"/>
+      <PARAM name="OPERATION" datatype="char" arraysize="*" value="MOMENT"/>
+      <PARAM name="MOMENT" datatype="int" arraysize="1" value=""/>
+      <PARAM name="CHANNELS" datatype="int" arraysize="2" xtype="interval" value=""/>
+      <PARAM name="THRESHOLD" datatype="double" arraysize="1" value=""/>
+    </GROUP>
+  </RESOURCE>
+  <RESOURCE type="meta" ID="pv-big" utype="adhoc:service">
+    <DESCRIPTION>Position-velocity diagram computed on node BIG (SODA async job, OPERATION=PV).</DESCRIPTION>
+    <PARAM name="standardID" datatype="char" arraysize="*" value="ivo://ivoa.net/std/SODA#async-1.0"/>
+    <PARAM name="accessURL" datatype="char" arraysize="*" value="http://node-big:8000/soda/async"/>
+    <GROUP name="inputParams">
+      <PARAM name="ID" datatype="char" arraysize="*" value="file:///data/cubes/tb-cube-l.fits"/>
+      <PARAM name="OPERATION" datatype="char" arraysize="*" value="PV"/>
+      <PARAM name="PVPATH" datatype="double" arraysize="*" unit="deg" value=""/>
+      <PARAM name="PVWIDTH" datatype="int" arraysize="1" value=""/>
+    </GROUP>
+  </RESOURCE>
+</VOTABLE>

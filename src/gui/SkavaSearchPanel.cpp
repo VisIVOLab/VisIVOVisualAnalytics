@@ -1,12 +1,15 @@
 #include "SkavaSearchPanel.h"
 
 #include "../Settings.h"
+#include "../auth/OIDCAuthorizationCodeFlow.h"
 
 #include <QAbstractItemModel>
 #include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDoubleValidator>
 #include <QFormLayout>
 #include <QFutureWatcher>
@@ -18,11 +21,15 @@
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QProgressBar>
 #include <QSpinBox>
+#include <QFont>
+#include <QSplitter>
 #include <QTableView>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QtConcurrentRun>
 
@@ -97,6 +104,38 @@ QString formatMjdRange(double tMin, double tMax)
     return QStringLiteral("MJD %1–%2").arg(tMin, 0, 'f', 2).arg(tMax, 0, 'f', 2);
 }
 
+/// The replica SKAVA ranked first: ``best_node``, else the first listed.
+const SkavaReplica *bestReplica(const SkavaDiscoveryResult &r)
+{
+    for (const auto &rep : r.replicas) {
+        if (rep.code == r.bestNode)
+            return &rep;
+    }
+    return r.replicas.isEmpty() ? nullptr : &r.replicas.first();
+}
+
+/// One line per replica: the node, its cost and SKAVA's reason, in ranking
+/// order, so the user sees the whole decision, not just its winner.
+QString replicasTooltip(const SkavaDiscoveryResult &r)
+{
+    QStringList lines;
+    for (const auto &rep : r.replicas) {
+        QString line = rep.code == r.bestNode ? u"▶ %1"_s.arg(rep.code) : u"   %1"_s.arg(rep.code);
+        if (!rep.name.isEmpty() && rep.name != rep.code)
+            line += u" (%1)"_s.arg(rep.name);
+        if (std::isfinite(rep.score))
+            line += u", cost %1"_s.arg(rep.score, 0, 'g', 3);
+        if (!rep.rankReason.isEmpty())
+            line += u": %1"_s.arg(rep.rankReason);
+        if (std::isfinite(rep.telemetryAgeS))
+            line += u" (telemetry %1 s old)"_s.arg(rep.telemetryAgeS, 0, 'f', 0);
+        if (!rep.isAvailable)
+            line += u" [unavailable]"_s;
+        lines << line;
+    }
+    return lines.join(u'\n');
+}
+
 }  // namespace
 
 // ── Results model ─────────────────────────────────────────────────────────
@@ -112,8 +151,8 @@ public:
         ColPos,
         ColBand,
         ColTime,
-        ColBestNode,
-        ColLatency,
+        ColServedBy,
+        ColReason,
         ColCount,
     };
 
@@ -145,22 +184,31 @@ public:
             case ColPos:      return formatPos(r.metadata.sRa, r.metadata.sDec);
             case ColBand:     return formatEmRange(r.metadata.emMin, r.metadata.emMax);
             case ColTime:     return formatMjdRange(r.metadata.tMin, r.metadata.tMax);
-            case ColBestNode: return r.bestNode;
-            case ColLatency: {
-                // The best replica's latency_score: a dimensionless ranking
-                // score set by the SKAVA operator, not a measured time.
-                double best = std::numeric_limits<double>::infinity();
-                for (const auto &rep : r.replicas) {
-                    if (std::isfinite(rep.latencyScore) && rep.latencyScore < best)
-                        best = rep.latencyScore;
-                }
-                return std::isfinite(best) ? QString::number(best, 'g', 3) : u"—"_s;
+            case ColServedBy: {
+                // The node SKAVA ranked first for this dataset, and how many
+                // other replicas it could fall back to.
+                if (r.bestNode.isEmpty())
+                    return u"—"_s;
+                const int others = std::max(0, static_cast<int>(r.replicas.size()) - 1);
+                return others > 0 ? u"%1 (+%2)"_s.arg(r.bestNode).arg(others) : r.bestNode;
+            }
+            case ColReason: {
+                // Why: the policy's reason for the serving node. The static
+                // policy's reason names declared scores; the resource-aware
+                // one measured values.
+                const SkavaReplica *best = bestReplica(r);
+                return best && !best->rankReason.isEmpty() ? best->rankReason : u"—"_s;
             }
             default: return {};
             }
         }
-        if (role == Qt::ToolTipRole && index.column() == ColObsId) {
-            return r.metadata.obsTitle;
+        if (role == Qt::ToolTipRole) {
+            if (index.column() == ColObsId && !r.metadata.obsTitle.isEmpty())
+                return r.metadata.obsTitle;
+            if (index.column() == ColServedBy || index.column() == ColReason)
+                return replicasTooltip(r);
+            // Any other cell may be elided: its full text.
+            return data(index, Qt::DisplayRole);
         }
         return {};
     }
@@ -175,8 +223,8 @@ public:
         case ColPos:      return u"Sky position"_s;
         case ColBand:     return u"Band"_s;
         case ColTime:     return u"Time"_s;
-        case ColBestNode: return u"Best node"_s;
-        case ColLatency:  return u"Latency score"_s;
+        case ColServedBy: return u"Served by"_s;
+        case ColReason:   return u"Why"_s;
         default:          return {};
         }
     }
@@ -191,20 +239,25 @@ private:
 SkavaSearchPanel::SkavaSearchPanel(Settings *settings, QWidget *parent)
     : QWidget(parent),
       m_settings(settings),
-      m_skavaClient(new SkavaClient(QString(), QString(), this)),
       m_resultsModel(new SkavaResultsModel(this)),
       m_searchWatcher(new QFutureWatcher<SkavaDiscoveryResponse>(this)),
       m_datalinkWatcher(new QFutureWatcher<SkavaDatalinkResponse>(this))
 {
     buildUi();
     applySettingsToFields();
-    reloadClientFromFields();
 
     QObject::connect(m_searchWatcher, &QFutureWatcher<SkavaDiscoveryResponse>::finished,
                      this, [this]() {
         setBusy(false);
+        m_activeClient.reset();
+        if (m_submittedGeneration != m_requestGeneration)
+            return;   // cancelled: whatever came back is not acted on
         const auto resp = m_searchWatcher->result();
         if (!resp.valid) {
+            // A 401: sign in and search again, when an IAM is at hand.
+            if (resp.authChallenge.required
+                && offerSignIn(resp.authChallenge, [this]() { runSearch(); }))
+                return;
             QMessageBox::warning(this, u"SKAVA Discovery"_s,
                     u"Search failed:\n\n%1"_s.arg(
                             resp.error.isEmpty() ? u"unknown error"_s : resp.error));
@@ -216,36 +269,47 @@ SkavaSearchPanel::SkavaSearchPanel(Settings *settings, QWidget *parent)
                         .arg(resp.returned).arg(resp.total)
                         .arg(resp.limit).arg(resp.offset));
         m_openBtn->setEnabled(false);
-        if (m_subsetBtn) m_subsetBtn->setEnabled(false);
+        if (m_computeBtn) m_computeBtn->setEnabled(false);
     });
 
     QObject::connect(m_datalinkWatcher, &QFutureWatcher<SkavaDatalinkResponse>::finished,
                      this, [this]() {
         setBusy(false);
+        m_activeClient.reset();
         // Capture + clear the intent up front so a failed resolution can't
-        // leave a stale subset flag that hijacks the next Open.
-        const bool wantSubset = m_pendingSubset;
-        m_pendingSubset = false;
+        // leave a stale operation (or node) that hijacks the next Open.
+        const QString operation = m_pendingOperation;
+        const QString preferredNode = m_pendingNode;
+        const SkavaDiscoveryResult row = m_pendingRow;
+        m_pendingOperation.clear();
+        m_pendingNode.clear();
+        m_pendingRow = {};
+        if (m_submittedGeneration != m_requestGeneration)
+            return;   // cancelled: whatever came back is not acted on
         auto resp = m_datalinkWatcher->result();
         if (!resp.valid) {
+            // A 401: sign in and resolve the same action, on the same row,
+            // again (the selection may have moved meanwhile).
+            if (resp.authChallenge.required
+                && offerSignIn(resp.authChallenge, [this, row, operation, preferredNode]() {
+                       resolveRow(row, operation, preferredNode);
+                   }))
+                return;
             QMessageBox::warning(this, u"SKAVA DataLink"_s,
                     u"Access resolution failed:\n\n%1"_s.arg(
                             resp.error.isEmpty() ? u"unknown error"_s : resp.error));
             return;
         }
         // resolveAccess() already merged the selected row's full ObsCore metadata.
-        // The same DataLink resolution feeds two actions. When the user
-        // clicked "SODA subset", route to the subset flow; otherwise do the
-        // normal open.
-        if (wantSubset) {
-            emit sodaSubsetRequested(resp.dataset.obsId, resp);
+        // The same DataLink resolution feeds every action: an operation next
+        // to the data goes to its flow, otherwise this is the normal open.
+        if (!operation.isEmpty()) {
+            emit nodeOperationRequested(operation, resp.dataset.obsId, resp);
             return;
         }
-        // Backend-aware: emit the rich signal first so MainWindow can
-        // pick a registered backend from the visivo-backend descriptors;
-        // legacy signal is retained for any consumer that only wants the
-        // URL. Both connect to the same effective flow inside MainWindow.
-        emit openSkavaDatasetRequested(resp.dataset.obsId, resp);
+        // Backend-aware: MainWindow picks a registered backend from the
+        // visivo-backend descriptors, the preferred node first.
+        emit openSkavaDatasetRequested(resp.dataset.obsId, resp, preferredNode);
     });
 
     QObject::connect(m_resultsTable->selectionModel(),
@@ -257,140 +321,274 @@ SkavaSearchPanel::SkavaSearchPanel(Settings *settings, QWidget *parent)
         else
             runSearch();
     });
-    QObject::connect(m_openBtn, &QPushButton::clicked,
-                     this, &SkavaSearchPanel::openSelected);
-    QObject::connect(m_subsetBtn, &QPushButton::clicked,
-                     this, &SkavaSearchPanel::requestSubset);
+    QObject::connect(m_openBtn, &QPushButton::clicked, this, [this]() { openSelected(); });
+    QObject::connect(m_resultsTable, &QTableView::doubleClicked, this, [this](const QModelIndex &index) {
+        if (index.isValid() && !m_busy)
+            openSelected();
+    });
+    QObject::connect(m_cutoutAct, &QAction::triggered, this, [this]() { requestOperation(u"cutout"_s); });
+    QObject::connect(m_momentAct, &QAction::triggered, this, [this]() { requestOperation(u"moment"_s); });
+    QObject::connect(m_pvAct, &QAction::triggered, this, [this]() { requestOperation(u"pv"_s); });
+    QObject::connect(m_finderAct, &QAction::triggered, this, [this]() { requestOperation(u"sourcefind"_s); });
     QObject::connect(m_copyCitationBtn, &QPushButton::clicked,
                      this, &SkavaSearchPanel::copyToClipboard);
     QObject::connect(m_urlEdit, &QLineEdit::editingFinished, this, [this]() {
         if (m_settings) m_settings->setSkavaUrl(m_urlEdit->text().trimmed());
-        reloadClientFromFields();
     });
     QObject::connect(m_tokenEdit, &QLineEdit::editingFinished, this, [this]() {
-        if (m_settings) m_settings->setSkavaToken(m_tokenEdit->text().trimmed());
-        reloadClientFromFields();
+        if (!m_settings)
+            return;
+        // The field shows the sign-in's token too; that one is never written
+        // to the settings file. A token the user typed over it is: it takes
+        // the place of the sign-in's from now on.
+        const QString text = m_tokenEdit->text().trimmed();
+        const QString session = m_settings->getSkavaSessionToken();
+        if (!session.isEmpty() && text == session)
+            return;
+        m_settings->setSkavaToken(text);
+        if (!session.isEmpty()) {
+            // A token typed over the sign-in's ends the sign-in: otherwise
+            // the flow's next refresh would put its own token back.
+            m_settings->setSkavaSessionToken(QString());
+            if (m_oidc && m_oidc->hasTokens())
+                m_oidc->logout();          // onSignedOut shows the typed token
+            updateSignInStatus();
+        }
     });
+    QObject::connect(m_protocolCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
+        const QString protocol = m_protocolCombo->itemData(index).toString();
+        if (m_settings) m_settings->setSkavaProtocol(protocol);
+        const bool vo = protocol == "vo"_L1;
+        m_tapEdit->setEnabled(vo);
+        m_datalinkEdit->setEnabled(vo);
+    });
+    QObject::connect(m_tapEdit, &QLineEdit::editingFinished, this, [this]() {
+        if (m_settings) m_settings->setSkavaTapUrl(m_tapEdit->text().trimmed());
+    });
+    QObject::connect(m_datalinkEdit, &QLineEdit::editingFinished, this, [this]() {
+        if (m_settings) m_settings->setSkavaDatalinkUrl(m_datalinkEdit->text().trimmed());
+    });
+    QObject::connect(m_brokerEdit, &QLineEdit::editingFinished, this, [this]() {
+        if (m_settings) m_settings->setSkavaBrokerUrl(m_brokerEdit->text().trimmed());
+    });
+    QObject::connect(m_signInBtn, &QPushButton::clicked, this, &SkavaSearchPanel::signInOrOut);
+    QObject::connect(m_signInSetupBtn, &QPushButton::clicked, this, &SkavaSearchPanel::editSignInSettings);
+    // An IAM named in the settings: build the flow now, so a sign-in kept
+    // from an earlier session is picked up silently.
+    ensureOidc();
+    updateSignInStatus();
 }
 
-SkavaSearchPanel::~SkavaSearchPanel() = default;
+SkavaSearchPanel::~SkavaSearchPanel()
+{
+    // A worker still out keeps its client alive; it is told to stop.
+    if (m_activeClient)
+        m_activeClient->requestCancel();
+}
+
+namespace {
+
+// A titled section whose body folds away behind a disclosure arrow, so the
+// panel keeps its room for the results.
+QWidget *makeFoldable(const QString &title, QWidget *body, bool expanded, QWidget *parent,
+                      QToolButton **toggleOut = nullptr)
+{
+    auto *section = new QWidget(parent);
+    auto *layout = new QVBoxLayout(section);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(2);
+    auto *toggle = new QToolButton(section);
+    toggle->setText(title);
+    toggle->setCheckable(true);
+    toggle->setChecked(expanded);
+    toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    toggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+    toggle->setAutoRaise(true);
+    QFont f = toggle->font();
+    f.setBold(true);
+    toggle->setFont(f);
+    layout->addWidget(toggle);
+    layout->addWidget(body);
+    body->setVisible(expanded);
+    QObject::connect(toggle, &QToolButton::toggled, body, [toggle, body](bool on) {
+        toggle->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
+        body->setVisible(on);
+    });
+    if (toggleOut)
+        *toggleOut = toggle;
+    return section;
+}
+
+// A grid whose field columns carry the stretch: on macOS a QFormLayout kept
+// its fields at their size hint however much room the row had.
+QGridLayout *makeGrid(QWidget *owner)
+{
+    auto *grid = new QGridLayout(owner);
+    grid->setContentsMargins(6, 4, 6, 4);
+    grid->setHorizontalSpacing(8);
+    grid->setVerticalSpacing(4);
+    return grid;
+}
+
+QLabel *rightLabel(const QString &text, QWidget *parent)
+{
+    auto *label = new QLabel(text, parent);
+    label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    return label;
+}
+
+}  // namespace
 
 void SkavaSearchPanel::buildUi()
 {
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(8, 8, 8, 8);
-    root->setSpacing(8);
+    root->setSpacing(6);
 
-    // ── Connection bar ───────────────────────────────────────────────
+    // ── Connection: the service and the identity, two rows ──────────
     {
-        auto *box = new QGroupBox(u"Connection"_s, this);
-        auto *grid = new QGridLayout(box);
-        // A QGridLayout with an explicit column stretch, not a QFormLayout:
-        // QFormLayout's field column is sized by the style, and on macOS the
-        // field kept its size hint however much room the row had — the SKAVA URL
-        // showed as "…r.oact.inaf.it:8443" in a box a third of the width
-        // available, with the label stranded mid-row. Setting
-        // AllNonFixedFieldsGrow did not change it. A grid whose field column
-        // carries all the stretch behaves the same on every platform.
-        grid->setHorizontalSpacing(8);
-        grid->setVerticalSpacing(4);
-        grid->setColumnStretch(0, 0);
-        grid->setColumnStretch(1, 1);
-        auto *urlLabel = new QLabel(u"SKAVA URL"_s, box);
+        auto *box = new QGroupBox(u"Discovery service"_s, this);
+        auto *grid = makeGrid(box);
+        grid->setColumnStretch(2, 1);
+        // Which interface the service speaks: SKAVA's own JSON, or the IVOA
+        // standards the SRCNet global services speak.
+        m_protocolCombo = new QComboBox(box);
+        m_protocolCombo->addItem(u"SKAVA JSON API"_s, u"skava"_s);
+        m_protocolCombo->addItem(u"IVOA TAP + DataLink (SRCNet)"_s, u"vo"_s);
+        m_protocolCombo->setToolTip(u"SKAVA's JSON API, or the IVOA standards (TAP on ObsCore and DataLink "
+                                    u"VOTables) any SRCNet discovery service speaks."_s);
         m_urlEdit = new QLineEdit(box);
-        m_urlEdit->setPlaceholderText(u"http://localhost:8000"_s);
-        urlLabel->setBuddy(m_urlEdit);
-        grid->addWidget(urlLabel, 0, 0);
-        grid->addWidget(m_urlEdit, 0, 1);
-        auto *tokenLabel = new QLabel(u"Token"_s, box);
+        m_urlEdit->setPlaceholderText(u"SKAVA URL, e.g. http://localhost:8000"_s);
+        m_urlEdit->setToolTip(u"The SKAVA (or SRCNet discovery) service to search."_s);
+        grid->addWidget(rightLabel(u"Service"_s, box), 0, 0);
+        grid->addWidget(m_protocolCombo, 0, 1);
+        grid->addWidget(m_urlEdit, 0, 2);
+
+        // The token: pasted, or obtained by signing in to the IAM.
         m_tokenEdit = new QLineEdit(box);
-        m_tokenEdit->setPlaceholderText(u"(optional bearer token)"_s);
+        m_tokenEdit->setPlaceholderText(u"not needed by an open service; paste a bearer token or sign in"_s);
         m_tokenEdit->setEchoMode(QLineEdit::Password);
-        tokenLabel->setBuddy(m_tokenEdit);
-        grid->addWidget(tokenLabel, 1, 0);
-        grid->addWidget(m_tokenEdit, 1, 1);
+        m_signInBtn = new QPushButton(u"Sign in…"_s, box);
+        m_signInBtn->setToolTip(u"Sign in to the IAM the service trusts (OpenID Connect); the token "
+                                u"it issues is used from then on."_s);
+        m_signInSetupBtn = new QPushButton(u"IAM…"_s, box);
+        m_signInSetupBtn->setToolTip(u"The IAM's endpoints and this client's id. A service that answers "
+                                     u"401 with an ivoa_bearer challenge fills them in by itself."_s);
+        m_signInStatus = new QLabel(box);
+        auto *signRow = new QHBoxLayout;
+        signRow->setSpacing(6);
+        signRow->addWidget(m_signInBtn);
+        signRow->addWidget(m_signInSetupBtn);
+        signRow->addWidget(m_signInStatus);
+        grid->addWidget(rightLabel(u"Token"_s, box), 1, 0);
+        grid->addWidget(m_tokenEdit, 1, 1, 1, 2);
+        grid->addLayout(signRow, 1, 3);
+
+        // The endpoints a default deployment never needs to set.
+        auto *advanced = new QWidget(box);
+        auto *agrid = makeGrid(advanced);
+        agrid->setContentsMargins(0, 0, 0, 0);
+        agrid->setColumnStretch(1, 1);
+        m_tapEdit = new QLineEdit(advanced);
+        m_tapEdit->setPlaceholderText(u"empty: <service URL>/tap (IVOA protocol only)"_s);
+        m_tapEdit->setToolTip(u"The TAP service (…/tap; /sync is appended), for the IVOA protocol."_s);
+        m_datalinkEdit = new QLineEdit(advanced);
+        m_datalinkEdit->setPlaceholderText(u"empty: <service URL>/datalink/<id> (IVOA protocol only)"_s);
+        m_datalinkEdit->setToolTip(u"The DataLink service (called as <URL>?ID=…) when a TAP row carries "
+                                   u"no DataLink access_url of its own."_s);
+        m_brokerEdit = new QLineEdit(advanced);
+        m_brokerEdit->setPlaceholderText(u"empty: the source finder runs as a task on the dataset's node"_s);
+        m_brokerEdit->setToolTip(u"A Computing Broker (SRCNet job API) that places and runs the source "
+                                 u"finder next to the data."_s);
+        agrid->addWidget(rightLabel(u"TAP URL"_s, advanced), 0, 0);
+        agrid->addWidget(m_tapEdit, 0, 1);
+        agrid->addWidget(rightLabel(u"DataLink URL"_s, advanced), 1, 0);
+        agrid->addWidget(m_datalinkEdit, 1, 1);
+        agrid->addWidget(rightLabel(u"Broker URL"_s, advanced), 2, 0);
+        agrid->addWidget(m_brokerEdit, 2, 1);
+        grid->addWidget(makeFoldable(u"Advanced: TAP, DataLink, Computing Broker"_s, advanced, false, box),
+                        2, 0, 1, 4);
         root->addWidget(box);
     }
 
-    // ── Scientific filters ───────────────────────────────────────────
+    // ── Scientific filters: three rows, folded away when not needed ──
     {
-        auto *box = new QGroupBox(u"Scientific filters (ObsCore)"_s, this);
-        auto *grid = new QGridLayout(box);
-        grid->setHorizontalSpacing(8);
-        grid->setVerticalSpacing(4);
+        auto *body = new QWidget(this);
+        auto *grid = makeGrid(body);
+        for (int c : { 1, 3, 5 })
+            grid->setColumnStretch(c, 1);
 
-        int row = 0;
-        // POS
-        grid->addWidget(new QLabel(u"POS, RA (deg)"_s), row, 0);
-        m_raEdit = new QLineEdit; m_raEdit->setPlaceholderText(u"e.g. 187.5"_s);
-        m_raEdit->setValidator(new QDoubleValidator(0.0, 360.0, 6, this));
-        grid->addWidget(m_raEdit, row, 1);
-        grid->addWidget(new QLabel(u"Dec (deg)"_s), row, 2);
-        m_decEdit = new QLineEdit; m_decEdit->setPlaceholderText(u"e.g. 5.0"_s);
-        m_decEdit->setValidator(new QDoubleValidator(-90.0, 90.0, 6, this));
-        grid->addWidget(m_decEdit, row, 3);
-        grid->addWidget(new QLabel(u"Radius (deg)"_s), row, 4);
-        m_radiusEdit = new QLineEdit; m_radiusEdit->setPlaceholderText(u"e.g. 1.0"_s);
-        m_radiusEdit->setValidator(new QDoubleValidator(0.0, 180.0, 6, this));
-        grid->addWidget(m_radiusEdit, row, 5);
-        ++row;
+        auto dbl = [this](QLineEdit *e, double lo, double hi, int dec) {
+            e->setValidator(new QDoubleValidator(lo, hi, dec, this));
+        };
+        // Position
+        m_raEdit = new QLineEdit(body); m_raEdit->setPlaceholderText(u"RA (deg), e.g. 187.5"_s);
+        dbl(m_raEdit, 0.0, 360.0, 6);
+        m_decEdit = new QLineEdit(body); m_decEdit->setPlaceholderText(u"Dec (deg), e.g. 5.0"_s);
+        dbl(m_decEdit, -90.0, 90.0, 6);
+        m_radiusEdit = new QLineEdit(body); m_radiusEdit->setPlaceholderText(u"radius (deg), e.g. 1.0"_s);
+        dbl(m_radiusEdit, 0.0, 180.0, 6);
+        grid->addWidget(rightLabel(u"Position"_s, body), 0, 0);
+        grid->addWidget(m_raEdit, 0, 1);
+        grid->addWidget(m_decEdit, 0, 3);
+        grid->addWidget(m_radiusEdit, 0, 5);
 
-        // BAND
-        grid->addWidget(new QLabel(u"BAND, min"_s), row, 0);
-        m_freqMinEdit = new QLineEdit; m_freqMinEdit->setPlaceholderText(u"e.g. 900"_s);
-        m_freqMinEdit->setValidator(new QDoubleValidator(0.0, 1e18, 6, this));
-        grid->addWidget(m_freqMinEdit, row, 1);
-        grid->addWidget(new QLabel(u"max"_s), row, 2);
-        m_freqMaxEdit = new QLineEdit; m_freqMaxEdit->setPlaceholderText(u"e.g. 1670"_s);
-        m_freqMaxEdit->setValidator(new QDoubleValidator(0.0, 1e18, 6, this));
-        grid->addWidget(m_freqMaxEdit, row, 3);
-        m_freqUnit = new QComboBox;
+        // Band and time
+        m_freqMinEdit = new QLineEdit(body); m_freqMinEdit->setPlaceholderText(u"band min, e.g. 900"_s);
+        dbl(m_freqMinEdit, 0.0, 1e18, 6);
+        m_freqMaxEdit = new QLineEdit(body); m_freqMaxEdit->setPlaceholderText(u"band max, e.g. 1670"_s);
+        dbl(m_freqMaxEdit, 0.0, 1e18, 6);
+        m_freqUnit = new QComboBox(body);
         m_freqUnit->addItems(QStringList{ u"MHz"_s, u"GHz"_s, u"Hz"_s, u"m"_s });
-        grid->addWidget(m_freqUnit, row, 4);
-        grid->addWidget(new QLabel(u"(min<max)"_s), row, 5);
-        ++row;
+        auto *bandRow = new QHBoxLayout;
+        bandRow->setSpacing(4);
+        bandRow->addWidget(m_freqMaxEdit, 1);
+        bandRow->addWidget(m_freqUnit);
+        m_timeMinEdit = new QLineEdit(body); m_timeMinEdit->setPlaceholderText(u"MJD min, e.g. 59000"_s);
+        dbl(m_timeMinEdit, 0.0, 1e9, 4);
+        m_timeMaxEdit = new QLineEdit(body); m_timeMaxEdit->setPlaceholderText(u"MJD max, e.g. 60000"_s);
+        dbl(m_timeMaxEdit, 0.0, 1e9, 4);
+        auto *timeRow = new QHBoxLayout;
+        timeRow->setSpacing(4);
+        timeRow->addWidget(m_timeMinEdit, 1);
+        timeRow->addWidget(m_timeMaxEdit, 1);
+        grid->addWidget(rightLabel(u"Band"_s, body), 1, 0);
+        grid->addWidget(m_freqMinEdit, 1, 1);
+        grid->addLayout(bandRow, 1, 3);
+        grid->addWidget(rightLabel(u"Time"_s, body), 1, 4);
+        grid->addLayout(timeRow, 1, 5);
 
-        // TIME (MJD)
-        grid->addWidget(new QLabel(u"TIME, MJD min"_s), row, 0);
-        m_timeMinEdit = new QLineEdit; m_timeMinEdit->setPlaceholderText(u"e.g. 59000"_s);
-        m_timeMinEdit->setValidator(new QDoubleValidator(0.0, 1e9, 4, this));
-        grid->addWidget(m_timeMinEdit, row, 1);
-        grid->addWidget(new QLabel(u"MJD max"_s), row, 2);
-        m_timeMaxEdit = new QLineEdit; m_timeMaxEdit->setPlaceholderText(u"e.g. 60000"_s);
-        m_timeMaxEdit->setValidator(new QDoubleValidator(0.0, 1e9, 4, this));
-        grid->addWidget(m_timeMaxEdit, row, 3);
-        ++row;
-
-        // COLLECTION / DPTYPE / obs_id
-        grid->addWidget(new QLabel(u"COLLECTION"_s), row, 0);
-        m_collectionEdit = new QLineEdit;
-        m_collectionEdit->setPlaceholderText(u"e.g. MGCLS"_s);
-        grid->addWidget(m_collectionEdit, row, 1);
-        grid->addWidget(new QLabel(u"DPTYPE"_s), row, 2);
-        m_dptypeCombo = new QComboBox;
+        // Collection, type, id, paging
+        m_collectionEdit = new QLineEdit(body);
+        m_collectionEdit->setPlaceholderText(u"collection, e.g. MGCLS"_s);
+        m_dptypeCombo = new QComboBox(body);
         m_dptypeCombo->addItems(QStringList{ u""_s, u"image"_s, u"cube"_s,
                                               u"timeseries"_s, u"spectrum"_s });
-        grid->addWidget(m_dptypeCombo, row, 3);
-        grid->addWidget(new QLabel(u"obs_id"_s), row, 4);
-        m_obsIdEdit = new QLineEdit;
-        m_obsIdEdit->setPlaceholderText(u"exact match"_s);
-        grid->addWidget(m_obsIdEdit, row, 5);
-        ++row;
-
-        // Pagination
-        grid->addWidget(new QLabel(u"limit"_s), row, 0);
-        m_limitSpin = new QSpinBox;
+        m_dptypeCombo->setToolTip(u"Data product type (empty: any)."_s);
+        m_obsIdEdit = new QLineEdit(body);
+        m_obsIdEdit->setPlaceholderText(u"obs_id, exact match"_s);
+        m_limitSpin = new QSpinBox(body);
         m_limitSpin->setRange(1, 1000);
         m_limitSpin->setValue(100);
-        grid->addWidget(m_limitSpin, row, 1);
-        grid->addWidget(new QLabel(u"offset"_s), row, 2);
-        m_offsetSpin = new QSpinBox;
+        m_limitSpin->setPrefix(u"limit "_s);
+        m_offsetSpin = new QSpinBox(body);
         m_offsetSpin->setRange(0, 1'000'000);
         m_offsetSpin->setValue(0);
-        grid->addWidget(m_offsetSpin, row, 3);
-        ++row;
+        m_offsetSpin->setPrefix(u"offset "_s);
+        // Type and paging share a cell; the obs_id gets one of its own, so it
+        // is never squeezed to a few characters.
+        auto *typeRow = new QHBoxLayout;
+        typeRow->setSpacing(4);
+        typeRow->addWidget(new QLabel(u"type"_s, body));
+        typeRow->addWidget(m_dptypeCombo, 1);
+        typeRow->addWidget(m_limitSpin);
+        typeRow->addWidget(m_offsetSpin);
+        grid->addWidget(rightLabel(u"Dataset"_s, body), 2, 0);
+        grid->addWidget(m_collectionEdit, 2, 1);
+        grid->addLayout(typeRow, 2, 3);
+        grid->addWidget(m_obsIdEdit, 2, 5);
 
-        root->addWidget(box);
+        root->addWidget(makeFoldable(u"Filters (ObsCore; all optional)"_s, body, true, this));
     }
 
     // ── Action bar ───────────────────────────────────────────────────
@@ -398,13 +596,39 @@ void SkavaSearchPanel::buildUi()
         auto *bar = new QHBoxLayout;
         m_searchBtn = new QPushButton(u"Search"_s, this);
         m_searchBtn->setDefault(true);
-        m_openBtn   = new QPushButton(u"Open selected in VisIVO"_s, this);
+        m_openBtn   = new QPushButton(u"Open"_s, this);
+        m_openBtn->setToolTip(u"Open the selected dataset in VisIVO, on the node SKAVA chose "
+                              u"(double-click a row does the same)."_s);
         m_openBtn->setEnabled(false);
-        m_subsetBtn = new QPushButton(u"SODA subset…"_s, this);
-        m_subsetBtn->setEnabled(false);
-        m_subsetBtn->setToolTip(
-                u"Compute a spatial/spectral cutout on the dataset's co-located "
-                u"VisIVO backend (compute next to data) and open the result."_s);
+        // The replicas SKAVA listed, in its ranking order with its reasons:
+        // the user can overrule the policy and open on another node.
+        m_openViaBtn = new QToolButton(this);
+        m_openViaBtn->setText(u"Open via…"_s);
+        m_openViaBtn->setPopupMode(QToolButton::InstantPopup);
+        m_openViaBtn->setToolTip(u"Open the selected dataset on a node of your choice "
+                                 u"among those holding a replica."_s);
+        m_openViaMenu = new QMenu(m_openViaBtn);
+        m_openViaBtn->setMenu(m_openViaMenu);
+        m_openViaBtn->setEnabled(false);
+        // What the dataset's node computes on it in place, through the
+        // services SKAVA advertises: the product opens in VisIVO without the
+        // dataset ever leaving the node.
+        m_computeBtn = new QToolButton(this);
+        m_computeBtn->setText(u"Compute next to data…"_s);
+        m_computeBtn->setPopupMode(QToolButton::InstantPopup);
+        m_computeBtn->setEnabled(false);
+        auto *computeMenu = new QMenu(m_computeBtn);
+        m_cutoutAct = computeMenu->addAction(u"SODA cutout…"_s);
+        m_cutoutAct->setToolTip(u"A spatial / spectral / temporal subset, cut on the node and opened in place."_s);
+        m_momentAct = computeMenu->addAction(u"Moment map…"_s);
+        m_momentAct->setToolTip(u"A moment map of the cube, computed on the node and opened in place."_s);
+        m_pvAct = computeMenu->addAction(u"PV diagram…"_s);
+        m_pvAct->setToolTip(u"A position-velocity diagram along a path, computed on the node and opened in place."_s);
+        m_finderAct = computeMenu->addAction(u"Source finder…"_s);
+        m_finderAct->setToolTip(u"Run a source finder on the node (through the Computing Broker when one is "
+                                u"configured) and open its mask and catalogue."_s);
+        computeMenu->setToolTipsVisible(true);
+        m_computeBtn->setMenu(computeMenu);
         m_statusLabel = new QLabel(this);
         // An indeterminate bar, scoped to this panel, rather than an
         // application-wide wait cursor: the search is a network call, the rest
@@ -417,74 +641,89 @@ void SkavaSearchPanel::buildUi()
         m_busyBar->setFixedSize(90, 6);
         m_busyBar->setVisible(false);
         bar->addWidget(m_searchBtn);
+        bar->addSpacing(12);
         bar->addWidget(m_openBtn);
-        bar->addWidget(m_subsetBtn);
+        bar->addWidget(m_openViaBtn);
+        bar->addWidget(m_computeBtn);
         bar->addStretch(1);
         bar->addWidget(m_busyBar);
         bar->addWidget(m_statusLabel);
         root->addLayout(bar);
     }
 
-    // ── Results table ────────────────────────────────────────────────
-    m_resultsTable = new QTableView(this);
+    // ── Results and provenance, sharing the rest of the height ──────
+    auto *split = new QSplitter(Qt::Vertical, this);
+    split->setChildrenCollapsible(false);
+
+    m_resultsTable = new QTableView(split);
     m_resultsTable->setModel(m_resultsModel);
     m_resultsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_resultsTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_resultsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_resultsTable->setTextElideMode(Qt::ElideMiddle);
+    m_resultsTable->setWordWrap(false);
+    m_resultsTable->setMinimumHeight(140);
     m_resultsTable->verticalHeader()->setVisible(false);
-    m_resultsTable->horizontalHeader()->setStretchLastSection(true);
     m_resultsTable->setAlternatingRowColors(true);
-    root->addWidget(m_resultsTable, 1);
+    {
+        // Short columns fit their content; the target can be dragged wider;
+        // the policy's reason takes what is left.
+        auto *header = m_resultsTable->horizontalHeader();
+        header->setMinimumSectionSize(40);
+        for (int c = 0; c < SkavaResultsModel::ColCount; ++c)
+            header->setSectionResizeMode(c, QHeaderView::ResizeToContents);
+        header->setSectionResizeMode(SkavaResultsModel::ColTarget, QHeaderView::Interactive);
+        header->resizeSection(SkavaResultsModel::ColTarget, 200);
+        header->setSectionResizeMode(SkavaResultsModel::ColReason, QHeaderView::Stretch);
+    }
 
     // ── Provenance ───────────────────────────────────────────────────
     {
-        auto *box = new QGroupBox(u"Provenance"_s, this);
-        auto *grid = new QGridLayout(box);
-        // A QGridLayout with an explicit column stretch, not a QFormLayout:
-        // QFormLayout's field column is sized by the style, and on macOS the
-        // field kept its size hint however much room the row had — the SKAVA URL
-        // showed as "…r.oact.inaf.it:8443" in a box a third of the width
-        // available, with the label stranded mid-row. Setting
-        // AllNonFixedFieldsGrow did not change it. A grid whose field column
-        // carries all the stretch behaves the same on every platform.
-        grid->setHorizontalSpacing(8);
-        grid->setVerticalSpacing(4);
-        grid->setColumnStretch(0, 0);
+        auto *box = new QGroupBox(u"Provenance of the selected dataset"_s, split);
+        auto *grid = makeGrid(box);
         grid->setColumnStretch(1, 1);
-        int prow = 0;
+        grid->setColumnStretch(3, 1);
         // Long values (title, citation) wrap, so the label sits at the top of
         // its row rather than floating against the middle line.
-        auto addRow = [&](const QString &text, QWidget *field) {
-            auto *label = new QLabel(text, box);
-            label->setAlignment(Qt::AlignRight | Qt::AlignTop);
-            grid->addWidget(label, prow, 0);
-            grid->addWidget(field, prow, 1);
-            ++prow;
+        auto label = [box](const QString &text) {
+            auto *l = new QLabel(text, box);
+            l->setAlignment(Qt::AlignRight | Qt::AlignTop);
+            return l;
         };
         m_provenanceTitle = new QLabel(u"-"_s, box);
         m_provenanceTitle->setWordWrap(true);
         m_provenanceTitle->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        addRow(u"Title"_s, m_provenanceTitle);
         m_provenanceDoi = new QLabel(u"-"_s, box);
         m_provenanceDoi->setTextInteractionFlags(Qt::TextSelectableByMouse);
         m_provenanceDoi->setTextFormat(Qt::RichText);
         m_provenanceDoi->setOpenExternalLinks(true);
-        addRow(u"DOI"_s, m_provenanceDoi);
         m_provenancePid = new QLabel(u"-"_s, box);
         m_provenancePid->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        addRow(u"PID"_s, m_provenancePid);
         m_provenanceLicense = new QLabel(u"-"_s, box);
         m_provenanceLicense->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        addRow(u"License"_s, m_provenanceLicense);
         m_provenanceCitation = new QLabel(u"-"_s, box);
         m_provenanceCitation->setWordWrap(true);
         m_provenanceCitation->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        addRow(u"Citation"_s, m_provenanceCitation);
         m_copyCitationBtn = new QPushButton(u"Copy citation"_s, box);
         m_copyCitationBtn->setEnabled(false);
-        grid->addWidget(m_copyCitationBtn, prow, 1, Qt::AlignLeft);
-        root->addWidget(box);
+        // Two columns: the short identifiers side by side, the long texts
+        // across the whole width.
+        grid->addWidget(label(u"Title"_s), 0, 0);
+        grid->addWidget(m_provenanceTitle, 0, 1, 1, 3);
+        grid->addWidget(label(u"DOI"_s), 1, 0);
+        grid->addWidget(m_provenanceDoi, 1, 1);
+        grid->addWidget(label(u"PID"_s), 1, 2);
+        grid->addWidget(m_provenancePid, 1, 3);
+        grid->addWidget(label(u"License"_s), 2, 0);
+        grid->addWidget(m_provenanceLicense, 2, 1, 1, 3);
+        grid->addWidget(label(u"Citation"_s), 3, 0);
+        grid->addWidget(m_provenanceCitation, 3, 1, 1, 2);
+        grid->addWidget(m_copyCitationBtn, 3, 3, Qt::AlignRight | Qt::AlignTop);
+        grid->setRowStretch(4, 1);
     }
+    split->setStretchFactor(0, 4);
+    split->setStretchFactor(1, 1);
+    root->addWidget(split, 1);
 }
 
 void SkavaSearchPanel::applySettingsToFields()
@@ -492,18 +731,217 @@ void SkavaSearchPanel::applySettingsToFields()
     if (!m_settings) return;
     m_urlEdit->setText(m_settings->getSkavaUrl());
     m_tokenEdit->setText(m_settings->getSkavaToken());
+    const int index = m_protocolCombo->findData(m_settings->getSkavaProtocol());
+    m_protocolCombo->setCurrentIndex(std::max(0, index));
+    const bool vo = m_protocolCombo->currentData().toString() == "vo"_L1;
+    m_tapEdit->setText(m_settings->getSkavaTapUrl());
+    m_tapEdit->setEnabled(vo);
+    m_datalinkEdit->setText(m_settings->getSkavaDatalinkUrl());
+    m_datalinkEdit->setEnabled(vo);
+    m_brokerEdit->setText(m_settings->getSkavaBrokerUrl());
 }
 
-void SkavaSearchPanel::reloadClientFromFields()
+std::shared_ptr<SkavaClient> SkavaSearchPanel::makeClient() const
 {
-    if (!m_skavaClient) return;
-    m_skavaClient->setBaseUrl(m_urlEdit->text().trimmed());
-    m_skavaClient->setBearerToken(m_tokenEdit->text().trimmed());
-    if (m_settings) {
-        m_skavaClient->setProtocol(SkavaClient::protocolFromString(m_settings->getSkavaProtocol()));
-        m_skavaClient->setTapUrl(m_settings->getSkavaTapUrl());
-        m_skavaClient->setDatalinkUrl(m_settings->getSkavaDatalinkUrl());
+    // A snapshot of the connection bar: the worker's client never changes
+    // under it, whatever the user edits meanwhile.
+    auto client = std::make_shared<SkavaClient>(m_urlEdit->text().trimmed(), m_tokenEdit->text().trimmed());
+    client->setProtocol(SkavaClient::protocolFromString(m_protocolCombo->currentData().toString()));
+    client->setTapUrl(m_tapEdit->text().trimmed());
+    client->setDatalinkUrl(m_datalinkEdit->text().trimmed());
+    return client;
+}
+
+// ── Sign-in ───────────────────────────────────────────────────────────────
+
+OIDCAuthorizationCodeFlow *SkavaSearchPanel::ensureOidc()
+{
+    if (!m_settings)
+        return nullptr;
+    const QString authUrl = m_settings->getSkavaOidcAuthUrl();
+    const QString tokenUrl = m_settings->getSkavaOidcTokenUrl();
+    const QString clientId = m_settings->getSkavaOidcClientId();
+    const QString scope = m_settings->getSkavaOidcScope();
+    const QString key = authUrl + u'\n' + tokenUrl + u'\n' + clientId + u'\n' + scope;
+    if (m_oidc && m_oidcKey == key)
+        return m_oidc;
+    if (m_oidc) {
+        // Another IAM (or none): the old sign-in's token is no longer
+        // refreshed, so nobody keeps using it.
+        m_oidc->disconnect(this);
+        m_oidc->deleteLater();
+        m_oidc = nullptr;
+        if (!m_settings->getSkavaSessionToken().isEmpty()) {
+            m_settings->setSkavaSessionToken(QString());
+            m_tokenEdit->setText(m_settings->getSkavaToken());
+        }
     }
+    m_oidcKey = key;
+    if (authUrl.isEmpty() || tokenUrl.isEmpty() || clientId.isEmpty())
+        return nullptr;
+    // A public client: no secret, the IAM knows it by id (the testbed's
+    // Keycloak, the SRCNet IAM with a registered public client).
+    m_oidc = new OIDCAuthorizationCodeFlow(authUrl, tokenUrl, scope, clientId, QString(), this);
+    m_oidc->setDisplayName(u"SKAVA"_s);
+    // Every token the flow obtains, the first and each refresh, goes to the
+    // consumers (the panel's client and, through Settings, the other flows).
+    QObject::connect(m_oidc, &OIDCAuthorizationCodeFlow::accessTokenChanged, this, &SkavaSearchPanel::onSignedIn);
+    QObject::connect(m_oidc, &OIDCAuthorizationCodeFlow::loggedOut, this, &SkavaSearchPanel::onSignedOut);
+    return m_oidc;
+}
+
+void SkavaSearchPanel::updateSignInStatus()
+{
+    const bool configured = m_oidc != nullptr;
+    const bool signedIn = configured && m_oidc->hasTokens();
+    m_signInBtn->setText(signedIn ? u"Sign out"_s : u"Sign in…"_s);
+    m_signInStatus->setText(signedIn ? u"signed in"_s : configured ? u"not signed in"_s : u"no IAM"_s);
+    m_signInStatus->setToolTip(configured ? u"IAM: %1"_s.arg(m_settings ? m_settings->getSkavaOidcAuthUrl() : QString())
+                                          : u"No IAM is configured (IAM…); a pasted token is used instead."_s);
+}
+
+void SkavaSearchPanel::onSignedIn()
+{
+    if (!m_oidc)
+        return;
+    // The token the IAM issued is what every SKAVA request sends from now
+    // on: this panel's client, and the flows that read Settings (reopen, the
+    // broker). It is short-lived and refreshed by the flow, so it lives in
+    // memory only; the next start signs in again from the secure store.
+    const QString token = m_oidc->getAccessToken();
+    if (m_settings)
+        m_settings->setSkavaSessionToken(token);
+    m_tokenEdit->setText(token);   // the next request's client reads it from here
+    updateSignInStatus();
+    if (m_retryAfterSignIn) {
+        const std::function<void()> retry = std::move(m_retryAfterSignIn);
+        m_retryAfterSignIn = nullptr;
+        if (m_busy)
+            m_statusLabel->setText(u"Signed in; run the request again."_s);   // another one is out
+        else
+            retry();
+    }
+}
+
+void SkavaSearchPanel::onSignedOut()
+{
+    m_retryAfterSignIn = nullptr;
+    // The token field held the IAM's token: a sign-out takes it away. A
+    // token the user pasted is in the settings and comes back from there.
+    if (m_settings)
+        m_settings->setSkavaSessionToken(QString());
+    m_tokenEdit->setText(m_settings ? m_settings->getSkavaToken() : QString());
+    updateSignInStatus();
+}
+
+void SkavaSearchPanel::signInOrOut()
+{
+    OIDCAuthorizationCodeFlow *oidc = ensureOidc();
+    if (oidc && oidc->hasTokens()) {
+        oidc->logout();
+        return;
+    }
+    if (!oidc) {
+        editSignInSettings();
+        oidc = ensureOidc();
+        if (!oidc)
+            return;
+    }
+    oidc->grant();
+}
+
+void SkavaSearchPanel::editSignInSettings()
+{
+    if (!m_settings)
+        return;
+    QDialog dlg(this);
+    dlg.setWindowTitle(u"Sign-in to SKAVA (OpenID Connect)"_s);
+    auto *form = new QFormLayout(&dlg);
+    auto *authEdit = new QLineEdit(m_settings->getSkavaOidcAuthUrl(), &dlg);
+    authEdit->setPlaceholderText(u"https://iam.example/auth/realms/x/protocol/openid-connect/auth"_s);
+    auto *tokenEdit = new QLineEdit(m_settings->getSkavaOidcTokenUrl(), &dlg);
+    tokenEdit->setPlaceholderText(u"https://iam.example/auth/realms/x/protocol/openid-connect/token"_s);
+    auto *clientEdit = new QLineEdit(m_settings->getSkavaOidcClientId(), &dlg);
+    auto *scopeEdit = new QLineEdit(m_settings->getSkavaOidcScope(), &dlg);
+    form->addRow(u"Authorization endpoint"_s, authEdit);
+    form->addRow(u"Token endpoint"_s, tokenEdit);
+    form->addRow(u"Client id"_s, clientEdit);
+    form->addRow(u"Scope"_s, scopeEdit);
+    auto *hint = new QLabel(u"A public client (no secret) registered with the IAM, with "
+                            u"vlva://callback as its redirect URI. A service that answers 401 with "
+                            u"an ivoa_bearer challenge fills the endpoints in by itself."_s, &dlg);
+    hint->setWordWrap(true);
+    form->addRow(hint);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    form->addRow(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    m_settings->setSkavaOidcAuthUrl(authEdit->text());
+    m_settings->setSkavaOidcTokenUrl(tokenEdit->text());
+    m_settings->setSkavaOidcClientId(clientEdit->text());
+    m_settings->setSkavaOidcScope(scopeEdit->text());
+    ensureOidc();
+    updateSignInStatus();
+}
+
+bool SkavaSearchPanel::offerSignIn(const SkavaAuthChallenge &challenge, std::function<void()> retry)
+{
+    OIDCAuthorizationCodeFlow *oidc = ensureOidc();
+    if (!oidc && challenge.wellKnownUrl.isEmpty())
+        return false;   // nothing to sign in with: the plain error is told
+    const QString service = m_urlEdit->text().trimmed();
+    const QString why = m_tokenEdit->text().trimmed().isEmpty()
+            ? u"%1 requires a sign-in."_s.arg(service)
+            : u"%1 did not accept the token."_s.arg(service);
+    const auto answer = QMessageBox::question(
+            this, u"Sign in to SKAVA"_s,
+            u"%1\n\nSign in to %2 now? The request is repeated afterwards."_s.arg(
+                    why, oidc ? m_settings->getSkavaOidcAuthUrl() : challenge.wellKnownUrl),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+    if (answer != QMessageBox::Yes)
+        return true;    // declined: nothing more to say
+    m_retryAfterSignIn = std::move(retry);
+    if (oidc) {
+        oidc->grant();
+        return true;
+    }
+    // The challenge names the IAM: read its discovery document for the
+    // endpoints, off the UI thread, then sign in. Cancel (the Search button
+    // meanwhile) ends the read and drops the sign-in.
+    const QString wellKnown = challenge.wellKnownUrl;
+    setBusy(true, u"Reading the IAM's discovery document…"_s);
+    const int generation = m_requestGeneration;
+    const std::shared_ptr<SkavaClient> client = makeClient();
+    m_activeClient = client;
+    auto *watcher = new QFutureWatcher<SkavaClient::OidcEndpoints>(this);
+    QObject::connect(watcher, &QFutureWatcher<SkavaClient::OidcEndpoints>::finished, this,
+                     [this, watcher, generation]() {
+        const SkavaClient::OidcEndpoints endpoints = watcher->result();
+        watcher->deleteLater();
+        setBusy(false);
+        m_activeClient.reset();
+        if (generation != m_requestGeneration) {
+            m_retryAfterSignIn = nullptr;   // cancelled meanwhile
+            return;
+        }
+        if (!endpoints.valid()) {
+            m_retryAfterSignIn = nullptr;
+            QMessageBox::warning(this, u"Sign in to SKAVA"_s,
+                                 u"The IAM could not be configured from the service's challenge: %1\n\n"
+                                 u"Set its endpoints with IAM…"_s.arg(endpoints.error));
+            return;
+        }
+        m_settings->setSkavaOidcAuthUrl(endpoints.authorizationUrl);
+        m_settings->setSkavaOidcTokenUrl(endpoints.tokenUrl);
+        if (OIDCAuthorizationCodeFlow *flow = ensureOidc()) {
+            updateSignInStatus();
+            flow->grant();
+        }
+    });
+    watcher->setFuture(QtConcurrent::run([client, wellKnown]() { return client->fetchOidcEndpoints(wellKnown); }));
+    return true;
 }
 
 void SkavaSearchPanel::setBusy(bool busy, const QString &message)
@@ -520,7 +958,8 @@ void SkavaSearchPanel::setBusy(bool busy, const QString &message)
                               && m_resultsTable->currentIndex().isValid()
                               && m_resultsTable->currentIndex().row() >= 0;
     m_openBtn->setEnabled(hasSelection);
-    if (m_subsetBtn) m_subsetBtn->setEnabled(hasSelection);
+    if (m_openViaBtn) m_openViaBtn->setEnabled(hasSelection && !m_openViaMenu->isEmpty());
+    if (m_computeBtn) m_computeBtn->setEnabled(hasSelection);
     if (busy) {
         m_statusLabel->setText(message.isEmpty() ? u"Working…"_s : message);
     }
@@ -530,13 +969,15 @@ void SkavaSearchPanel::setBusy(bool busy, const QString &message)
 
 void SkavaSearchPanel::cancelRequest()
 {
-    if (!m_busy || !m_skavaClient)
+    if (!m_busy)
         return;
     // The worker is inside a blocking call; it polls the flag and unwinds on
     // its own. setBusy(false) is left to the watcher's finished handler, which
     // runs either way, so the panel cannot be re-enabled while the thread is
-    // still using the client.
-    m_skavaClient->requestCancel();
+    // still out.
+    if (m_activeClient)
+        m_activeClient->requestCancel();
+    ++m_requestGeneration;      // whatever ends later must not act
     m_searchBtn->setEnabled(false);
     m_statusLabel->setText(u"Cancelling…"_s);
 }
@@ -545,7 +986,6 @@ void SkavaSearchPanel::runSearch()
 {
     if (m_busy)
         return;   // one request at a time: see onResultSelectionChanged()
-    reloadClientFromFields();
     if (m_urlEdit->text().trimmed().isEmpty()) {
         QMessageBox::information(this, u"SKAVA"_s,
                 u"Set the SKAVA base URL before searching."_s);
@@ -591,8 +1031,9 @@ void SkavaSearchPanel::runSearch()
     f.offset = m_offsetSpin->value();
 
     setBusy(true, u"Searching…"_s);
-    SkavaClient *client = m_skavaClient;  // captured by ptr
-    client->clearCancel();
+    const std::shared_ptr<SkavaClient> client = makeClient();
+    m_activeClient = client;
+    m_submittedGeneration = m_requestGeneration;
     m_searchWatcher->setFuture(QtConcurrent::run([client, f]() {
         return client->searchDiscovery(f);
     }));
@@ -604,7 +1045,9 @@ void SkavaSearchPanel::onResultSelectionChanged()
     const auto &all = m_resultsModel->results();
     if (row < 0 || row >= all.size()) {
         m_openBtn->setEnabled(false);
-        if (m_subsetBtn) m_subsetBtn->setEnabled(false);
+        m_openViaMenu->clear();
+        if (m_openViaBtn) m_openViaBtn->setEnabled(false);
+        if (m_computeBtn) m_computeBtn->setEnabled(false);
         m_provenanceTitle->setText(u"-"_s);
         m_provenanceDoi->setText(u"-"_s);
         m_provenancePid->setText(u"-"_s);
@@ -619,7 +1062,24 @@ void SkavaSearchPanel::onResultSelectionChanged()
     // the first watcher's setBusy(false) hand the panel back while a worker is
     // still using the client — and one cancel flag would serve both.
     m_openBtn->setEnabled(!m_busy);
-    if (m_subsetBtn) m_subsetBtn->setEnabled(!m_busy);
+    if (m_computeBtn) m_computeBtn->setEnabled(!m_busy);
+    // The products of a cube: a 2-D image has no moments, PV or line finder.
+    const bool cube = meta.dataproductType.trimmed().compare(u"cube"_s, Qt::CaseInsensitive) == 0;
+    m_momentAct->setEnabled(cube);
+    m_pvAct->setEnabled(cube);
+    // "Open via…": one entry per replica, SKAVA's order and reasons.
+    m_openViaMenu->clear();
+    for (const auto &rep : all[row].replicas) {
+        const QString code = rep.code;
+        QString text = rep.code == all[row].bestNode ? u"%1 (ranked first)"_s.arg(code) : code;
+        if (!rep.name.isEmpty() && rep.name != rep.code)
+            text += u" — %1"_s.arg(rep.name);
+        QAction *act = m_openViaMenu->addAction(text, this, [this, code]() { openSelected(code); });
+        act->setToolTip(rep.rankReason);
+        act->setEnabled(rep.isEnabled && rep.isAvailable);
+    }
+    m_openViaMenu->setToolTipsVisible(true);
+    if (m_openViaBtn) m_openViaBtn->setEnabled(!m_busy && !m_openViaMenu->isEmpty());
     m_provenanceTitle->setText(
             meta.obsTitle.isEmpty() ? u"-"_s : meta.obsTitle);
     if (!meta.doi.isEmpty()) {
@@ -636,44 +1096,42 @@ void SkavaSearchPanel::onResultSelectionChanged()
     m_copyCitationBtn->setEnabled(!meta.citation.isEmpty());
 }
 
-void SkavaSearchPanel::openSelected()
+void SkavaSearchPanel::openSelected(const QString &preferredNode)
 {
-    if (m_busy)
-        return;   // one request at a time: see onResultSelectionChanged()
-    reloadClientFromFields();
     const int row = m_resultsTable->currentIndex().row();
     const auto &all = m_resultsModel->results();
     if (row < 0 || row >= all.size()) return;
-    const SkavaDiscoveryResult selected = all[row];
-    if (selected.metadata.obsId.isEmpty()) return;
-
-    setBusy(true, u"Resolving access URL…"_s);
-    SkavaClient *client = m_skavaClient;
-    client->clearCancel();
-    m_datalinkWatcher->setFuture(QtConcurrent::run([client, selected]() {
-        return client->resolveAccess(selected);
-    }));
+    resolveRow(all[row], QString(), preferredNode);
 }
 
-void SkavaSearchPanel::requestSubset()
+void SkavaSearchPanel::requestOperation(const QString &kind)
 {
-    if (m_busy)
-        return;   // one request at a time: see onResultSelectionChanged()
-    reloadClientFromFields();
     const int row = m_resultsTable->currentIndex().row();
     const auto &all = m_resultsModel->results();
     if (row < 0 || row >= all.size()) return;
-    const SkavaDiscoveryResult selected = all[row];
-    if (selected.metadata.obsId.isEmpty()) return;
+    resolveRow(all[row], kind, QString());
+}
 
-    // Reuse the shared DataLink resolution; the watcher routes to
-    // sodaSubsetRequested instead of the open signals because of this flag.
-    m_pendingSubset = true;
-    setBusy(true, u"Resolving access for SODA subset…"_s);
-    SkavaClient *client = m_skavaClient;
-    client->clearCancel();
-    m_datalinkWatcher->setFuture(QtConcurrent::run([client, selected]() {
-        return client->resolveAccess(selected);
+void SkavaSearchPanel::resolveRow(const SkavaDiscoveryResult &row, const QString &operation,
+                                  const QString &preferredNode)
+{
+    if (m_busy)
+        return;   // one request at a time: see onResultSelectionChanged()
+    if (row.metadata.obsId.isEmpty())
+        return;
+    // The shared DataLink resolution; the watcher reads these to know what
+    // the user asked for once it completes.
+    m_pendingOperation = operation;
+    m_pendingNode = preferredNode;
+    m_pendingRow = row;
+    setBusy(true, !operation.isEmpty() ? u"Resolving access for the operation…"_s
+            : preferredNode.isEmpty()  ? u"Resolving access URL…"_s
+                                       : u"Resolving access via %1…"_s.arg(preferredNode));
+    const std::shared_ptr<SkavaClient> client = makeClient();
+    m_activeClient = client;
+    m_submittedGeneration = m_requestGeneration;
+    m_datalinkWatcher->setFuture(QtConcurrent::run([client, row]() {
+        return client->resolveAccess(row);
     }));
 }
 
