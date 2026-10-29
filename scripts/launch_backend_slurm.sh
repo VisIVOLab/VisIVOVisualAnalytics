@@ -30,6 +30,11 @@
 #                           Python code without rebuilding the .sif.
 #                           (default: $VISIVO_BACKEND_SRC_OVERRIDE or unset)
 #   --token      TOKEN      Auth token (auto-generated if absent)
+#   --workspace  DIR        A writable directory for everything the backend and
+#                           this launcher write: products (exports, also served
+#                           as a data root), caches, the job logs and the token
+#                           file. Needed where $HOME is read-only.
+#                           ($VISIVO_WORKSPACE; default: under $HOME)
 #   --node-code  CODE       The node's code in the SKAVA catalogue, reported
 #                           in /v1/node/status ($VISIVO_NODE_CODE)
 #   --version    TEXT       What the status document reports as the backend
@@ -70,6 +75,7 @@ SIF="${VISIVO_SIF:-$(dirname "$0")/../apptainer/backend.sif}"
 BACKEND_SRC="${VISIVO_BACKEND_SRC_OVERRIDE:-}"
 TOKEN="${VISIVO_TOKEN:-}"
 NODE_CODE="${VISIVO_NODE_CODE:-}"
+WORKSPACE="${VISIVO_WORKSPACE:-}"
 VERSION="${VISIVO_VERSION:-}"
 LOG_DIR="${VISIVO_LOG_DIR:-$HOME/.visivo_logs}"
 POLL_MAX=60   # max poll attempts × 5 s = 5 min
@@ -91,6 +97,7 @@ while [[ $# -gt 0 ]]; do
         --backend-src) BACKEND_SRC="$2"; shift 2 ;;
         --token)     TOKEN="$2";     shift 2 ;;
         --node-code) NODE_CODE="$2"; shift 2 ;;
+        --workspace) WORKSPACE="$2"; shift 2 ;;
         --version)   VERSION="$2";   shift 2 ;;
         --no-gpu)    USE_GPU=false; GRES=""; shift ;;
         --help|-h)
@@ -119,10 +126,21 @@ if [[ -z "$TOKEN" ]]; then
     TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 fi
 
-TOKEN_FILE="$HOME/.visivo_token"
-echo "$TOKEN" > "$TOKEN_FILE"
-chmod 600 "$TOKEN_FILE"
-echo "[visivo] Token saved to $TOKEN_FILE"
+# With a workspace, everything this launcher writes goes there (a read-only
+# $HOME is common on HPC frontends); an explicit VISIVO_LOG_DIR still wins.
+if [[ -n "$WORKSPACE" ]]; then
+    mkdir -p "$WORKSPACE"
+    WORKSPACE="$(cd "$WORKSPACE" && pwd -P)"
+    LOG_DIR="${VISIVO_LOG_DIR:-$WORKSPACE/logs}"
+    TOKEN_FILE="$WORKSPACE/token"
+else
+    TOKEN_FILE="$HOME/.visivo_token"
+fi
+if ( umask 077 && printf '%s\n' "$TOKEN" > "$TOKEN_FILE" && chmod 600 "$TOKEN_FILE" ) 2>/dev/null; then
+    echo "[visivo] Token saved to $TOKEN_FILE"
+else
+    echo "[visivo] WARNING: could not write $TOKEN_FILE; the token is printed below"
+fi
 
 # ── Verify the Apptainer image exists ────────────────────────────────────────
 if [[ ! -f "$SIF" ]]; then
@@ -146,8 +164,8 @@ SBATCH_HEADER=$(cat <<EOF
 #SBATCH --cpus-per-task=${CPUS}
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --output=${SLURM_LOG}
-#SBATCH --error=${SLURM_LOG}
+#SBATCH --output="${SLURM_LOG}"
+#SBATCH --error="${SLURM_LOG}"
 EOF
 )
 
@@ -176,6 +194,22 @@ fi
 # catalogue, whether it has a GPU (the one SLURM allocated), the version.
 # Values are quoted for the job script, which bash reads again.
 NODE_ENV="export APPTAINERENV_VISIVO_NODE_GPU=$([[ "$USE_GPU" == "true" ]] && echo 1 || echo 0)"
+
+# The workspace inside the container: products (also a data root, so a
+# product opens where it was written), caches; bound at the same path.
+WORKSPACE_ENV=""
+WORKSPACE_BIND_FLAG=""
+if [[ -n "$WORKSPACE" ]]; then
+    mkdir -p "$WORKSPACE/exports" "$WORKSPACE/cache/hips" "$WORKSPACE/cache/numba" "$WORKSPACE/cache/cupy"
+    ROOTS="$WORKSPACE/exports"
+    [[ -n "$DATA_ROOT" ]] && ROOTS="${DATA_ROOT}:${ROOTS}"
+    WORKSPACE_ENV="export APPTAINERENV_VISIVO_EXPORTS_DIR=$(printf '%q' "$WORKSPACE/exports")"
+    WORKSPACE_ENV+=$'\n'"export APPTAINERENV_VISIVO_HIPS_CACHE=$(printf '%q' "$WORKSPACE/cache/hips")"
+    WORKSPACE_ENV+=$'\n'"export APPTAINERENV_NUMBA_CACHE_DIR=$(printf '%q' "$WORKSPACE/cache/numba")"
+    WORKSPACE_ENV+=$'\n'"export APPTAINERENV_CUPY_CACHE_DIR=$(printf '%q' "$WORKSPACE/cache/cupy")"
+    WORKSPACE_ENV+=$'\n'"export APPTAINERENV_VISIVO_DATA_ROOTS=$(printf '%q' "$ROOTS")"
+    WORKSPACE_BIND_FLAG="--bind $(printf '%q' "$WORKSPACE:$WORKSPACE")"
+fi
 if [[ -n "$NODE_CODE" ]]; then
     NODE_ENV+=$'\n'"export APPTAINERENV_VISIVO_NODE_CODE=$(printf '%q' "$NODE_CODE")"
 fi
@@ -261,10 +295,12 @@ export APPTAINERENV___GLX_VENDOR_LIBRARY_NAME=nvidia
 mkdir -p /tmp/visivo-cache /tmp/visivo-config /tmp/visivo-data /tmp/visivo-mpl
 ${DATA_ROOT_ENV}
 ${NODE_ENV}
+${WORKSPACE_ENV}
 
 apptainer run ${NV_FLAG} \\
     --bind "${BIND_PATH}:${BIND_PATH}" \\
     ${DATA_BIND_FLAG} \\
+    ${WORKSPACE_BIND_FLAG} \\
     ${NV_RUNTIME_BINDS} \\
     ${SRC_BIND_FLAG} \\
     "${SIF}"
@@ -346,7 +382,7 @@ cat <<EOF
       Settings → Remote Backends → Add:
           ID:       src-power9-slurm
           URL:      http://localhost:${PORT}
-          Token:    $(cat "$TOKEN_FILE")
+          Token:    ${TOKEN}
           SRC code: POWER9
 
   Job log:

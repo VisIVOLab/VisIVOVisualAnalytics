@@ -170,7 +170,7 @@ Apptainer on a compute node (`scripts/visivo_slurm_tunnel.sh` does it from a
 laptop and opens the SSH tunnel). `--node-code CODE` and `--version TEXT` set
 `VISIVO_NODE_CODE` and `VISIVO_VERSION` in the container, and a job that was
 given a GPU declares it (`VISIVO_NODE_GPU=1`), so the status document says
-which node it is, which build runs and what it was granted. A complete,
+which node it is, which build runs and what it was granted. Where `$HOME` is read-only, `--workspace DIR` puts everything the backend and the launcher write in `DIR`: the products (also served as a data root), the caches, the job log and the token file. A complete,
 recorded run with a SKAVA catalogue is described in the
 [SKAVA documentation](https://skava.readthedocs.io/en/latest/operations/e2e-pleiadi-gpu-runbook.html).
 

@@ -46,6 +46,7 @@ while [[ $# -gt 0 ]]; do
         --user)      SSH_USER="$2"; shift 2 ;;
         --port)      LOCAL_PORT="$2"; REMOTE_OPTS+=("--port" "$2"); shift 2 ;;
         --node-code) NODE_CODE="$2"; REMOTE_OPTS+=("--node-code" "$2"); shift 2 ;;
+        --workspace) WORKSPACE_DIR="$2"; REMOTE_OPTS+=("--workspace" "$2"); shift 2 ;;
         --stop)      STOP=true; shift ;;
         --help|-h)
             grep '^#' "$0" | sed 's/^# \{0,2\}//'
@@ -162,7 +163,7 @@ cat <<EOF
 
   Tail the SLURM job log:
       ssh ${SSH_USER}@${FRONTEND} \\
-          tail -f \\\$HOME/.visivo_logs/visivo_backend_${JOB_ID}.log
+          tail -f ${WORKSPACE_DIR:-\\\$HOME/.visivo_logs}${WORKSPACE_DIR:+/logs}/visivo_backend_${JOB_ID}.log
 
   Stop everything (tunnel + scancel):
       bash scripts/visivo_slurm_tunnel.sh --stop
