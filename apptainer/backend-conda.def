@@ -1,5 +1,5 @@
 Bootstrap: docker
-From: condaforge/mambaforge:latest
+From: condaforge/miniforge3:latest
 
 %labels
     Maintainer VisIVOLab <visivo@inaf.it>
@@ -76,8 +76,9 @@ From: condaforge/mambaforge:latest
     export LC_ALL=C.UTF-8
     export LANG=C.UTF-8
     # Ensure the conda environment's binaries take precedence — mambaforge
-    # puts python, uvicorn, etc. under /opt/conda/bin.
-    export PATH=/opt/conda/bin:${PATH}
+    # puts conda itself under /opt/conda/bin; the backend's stack lives in
+    # its own environment, /opt/conda/envs/visivo, first on the PATH.
+    export PATH=/opt/conda/envs/visivo/bin:/opt/conda/bin:${PATH}
     # Worker processes for CPU-bound FITS/VTK operations. We deliberately
     # do NOT export a default here — the backend's ``app/dependencies.py``
     # uses ``int(os.environ.get('VISIVO_WORKERS', '4'))`` and would
@@ -124,9 +125,11 @@ From: condaforge/mambaforge:latest
     case "$CONDA_INSTALLER" in
         mamba)
             INSTALL_CMD="mamba install -y"
+            CREATE_CMD="mamba create -y"
             ;;
         conda)
             INSTALL_CMD="conda install -y --no-lock"
+            CREATE_CMD="conda create -y --no-lock"
             ;;
         *)
             echo "ERROR: CONDA_INSTALLER must be 'mamba' or 'conda', got '$CONDA_INSTALLER'"
@@ -172,8 +175,13 @@ From: condaforge/mambaforge:latest
     # keeps ``trapz`` available for any healpy version the solver
     # picks, and stays well within ``scipy>=1.10`` from requirements.txt.
 
+    # The stack goes into its own environment, ``visivo``, never into
+    # ``base``: base holds conda and its solver, and installing the stack
+    # there let it replace libraries the solver links against (libxml2 2.14
+    # dropped libxml2.so.2, and conda-libmamba-solver could no longer load,
+    # failing every later stage on ppc64le). Base stays as the image built it.
     echo "[backend-conda.def] Stage 1/4 — foundation (python, numpy, scipy<1.14, astropy, pandas, healpy)"
-    $INSTALL_CMD -n base -c conda-forge \
+    $CREATE_CMD -n visivo -c conda-forge \
         python=3.12 \
         numpy \
         "scipy<1.14" \
@@ -184,13 +192,17 @@ From: condaforge/mambaforge:latest
         pillow \
         pip
 
+    # Every later stage, and the SoFiA-2 source build (its compilers come
+    # from this environment), runs in the backend's environment.
+    conda activate visivo
+
     echo "[backend-conda.def] Stage 2/4 — VTK + HDF5 (rendering / I/O)"
-    $INSTALL_CMD -n base -c conda-forge \
+    $INSTALL_CMD -n visivo -c conda-forge \
         vtk \
         h5py
 
     echo "[backend-conda.def] Stage 3/4 — Numba JIT"
-    $INSTALL_CMD -n base -c conda-forge \
+    $INSTALL_CMD -n visivo -c conda-forge \
         numba \
         llvmlite
 
@@ -200,12 +212,12 @@ From: condaforge/mambaforge:latest
     # combined with photutils/scikit-image's own dep tree. Splitting
     # keeps each solve fast and memory-bounded.
     echo "[backend-conda.def] Stage 4a — Web framework"
-    $INSTALL_CMD -n base -c conda-forge \
+    $INSTALL_CMD -n visivo -c conda-forge \
         fastapi \
         uvicorn-standard
 
     echo "[backend-conda.def] Stage 4b — Astronomy analysis"
-    $INSTALL_CMD -n base -c conda-forge \
+    $INSTALL_CMD -n visivo -c conda-forge \
         photutils \
         reproject \
         scikit-image
@@ -222,14 +234,14 @@ From: condaforge/mambaforge:latest
     # the server" for that one tool and everything else keeps working — an
     # image that builds without source finding beats an image that does not
     # build.
-    if $INSTALL_CMD -n base -c conda-forge sofia-2; then
+    if $INSTALL_CMD -n visivo -c conda-forge sofia-2; then
         echo "[backend-conda.def] SoFiA-2 installed from conda-forge"
     else
         echo "[backend-conda.def] no conda-forge sofia-2 for this architecture — building from source"
-        $INSTALL_CMD -n base -c conda-forge c-compiler make git || true
+        $INSTALL_CMD -n visivo -c conda-forge c-compiler make git || true
         if git clone --depth 1 https://github.com/SoFiA-Admin/SoFiA-2 /tmp/SoFiA-2 \
            && ( cd /tmp/SoFiA-2 && ./compile.sh -fopenmp ) \
-           && cp /tmp/SoFiA-2/sofia /opt/conda/bin/; then
+           && cp /tmp/SoFiA-2/sofia /opt/conda/envs/visivo/bin/; then
             echo "[backend-conda.def] SoFiA-2 built from source"
         else
             echo "[backend-conda.def] WARN: SoFiA-2 unavailable — source finding will be disabled"
@@ -237,16 +249,16 @@ From: condaforge/mambaforge:latest
         rm -rf /tmp/SoFiA-2
     fi
     # resolve_sofia_bin() accepts either name; provide both.
-    if [ -x /opt/conda/bin/sofia ] && [ ! -e /opt/conda/bin/sofia2 ]; then
-        ln -s /opt/conda/bin/sofia /opt/conda/bin/sofia2
+    if [ -x /opt/conda/envs/visivo/bin/sofia ] && [ ! -e /opt/conda/envs/visivo/bin/sofia2 ]; then
+        ln -s /opt/conda/envs/visivo/bin/sofia /opt/conda/envs/visivo/bin/sofia2
     fi
 
     echo "[backend-conda.def] Stage 4c — Astroquery (heavy dep tree)"
-    $INSTALL_CMD -n base -c conda-forge \
+    $INSTALL_CMD -n visivo -c conda-forge \
         astroquery
 
     echo "[backend-conda.def] Stage 4d — Distributed compute"
-    $INSTALL_CMD -n base -c conda-forge \
+    $INSTALL_CMD -n visivo -c conda-forge \
         dask \
         distributed
 
@@ -258,7 +270,7 @@ From: condaforge/mambaforge:latest
     # container so cupy can talk to the GPU.
     if [ "${ENABLE_CUPY:-0}" = "1" ]; then
         echo "[backend-conda.def] ENABLE_CUPY=1 → installing cupy from conda-forge"
-        $INSTALL_CMD -n base -c conda-forge cupy
+        $INSTALL_CMD -n visivo -c conda-forge cupy
     else
         echo "[backend-conda.def] ENABLE_CUPY not set → skipping GPU acceleration"
     fi
@@ -346,6 +358,10 @@ print('[sanity] Full conda stack OK')
         --app-dir /app
 
 %test
+    # The backend creates its workspace and caches at import, under $HOME by
+    # default, which can be read-only where the image is built (an HPC
+    # frontend): the test points them at /tmp.
+    export VISIVO_EXPORTS_DIR=/tmp/visivo-test/exports VISIVO_HIPS_CACHE=/tmp/visivo-test/hips
     python -c "
 import sys, platform
 sys.path.insert(0, '/app')
