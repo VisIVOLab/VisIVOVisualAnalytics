@@ -153,29 +153,42 @@ backend's token.
 
 A backend next to a node's data serves `GET /v1/ping` and
 `GET /v1/node/status` (CPU, memory under the container's limits, queued
-tasks, finders) without a token, so SKAVA can measure the node; set
-`VISIVO_NODE_STATUS_PUBLIC=0` to require the backend token for the status
-document. `VISIVO_NODE_CODE` names the node as the catalogue knows it.
+tasks, finders) without a token, so a catalogue can measure the node. The
+settings that matter on a node:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `VISIVO_DATA_ROOTS` (or `VISIVO_DATA_ROOT`) | none | the directories the backend may open; every `file://` location a client or a catalogue gives it must lie inside them (see [Sharing one backend between users](../multi-user-backend.md)) |
+| `VISIVO_NODE_CODE` | none | the node's code as the catalogue knows it, reported in the status document |
+| `VISIVO_NODE_STATUS_PUBLIC` | `1` | `0` makes `/v1/node/status` require the backend token (`/v1/ping` stays open) |
+| `VISIVO_NODE_GPU` | unset | declares a GPU (`1`) or none (`0`) in the status document |
+| `VISIVO_SOFIA_BIN` | `sofia2` or `sofia` on `PATH` | the SoFiA-2 executable for source finding on the node |
+| `VISIVO_FINDER_TIMEOUT_S` | `3600` | the longest a source finder may run |
 
 The node's SODA service (`/soda/sync`, `/soda/async`) cuts and computes on
-the files under its data roots. A synchronous request with only `ID`, no
-`POS`, `BAND` or `TIME`, returns the file as stored, byte for byte: this is
-where SKAVA's DataLink `#this` rows send a VO client for a copy that lives
-on the node's own storage.
+the files under its data roots. A synchronous request with only `ID`, and
+no `POS`, `BAND` or `TIME`, returns the file as stored, byte for byte, with
+its own media type (`application/fits` for FITS).
 
 When the catalogue cannot reach the backend (a firewall, a NAT, a tunnel),
-the backend reports to the catalogue instead, every few seconds:
+the backend can report its status document to the catalogue instead, every
+few seconds:
 
 | Variable | Meaning |
 |---|---|
 | `VISIVO_SKAVA_TELEMETRY_URL` | the catalogue's base URL (`http` or `https`) |
-| `VISIVO_SKAVA_NODE_TOKEN` | this node's telemetry token, printed by the catalogue's operator with `python -m app.security.node_token CODE` |
+| `VISIVO_SKAVA_NODE_TOKEN` | this node's telemetry token, issued by the catalogue's operator |
 | `VISIVO_NODE_CODE` | this node's code in that catalogue |
 | `VISIVO_SKAVA_TELEMETRY_INTERVAL` | seconds between reports (default 10, at least 1) |
 
-Reporting is off unless the first three are set. The token speaks for this
-node only; it is not the catalogue's internal key. A report that fails is
-logged once per outage, and the backend keeps reporting.
+Reporting is off unless the first three are set. The backend sends the
+token with each report and never follows a redirect with it. A report that
+fails is logged once per outage, without the token, and the backend keeps
+reporting.
+
+How the catalogue measures nodes, issues their tokens and uses the reports
+is described in the
+[SKAVA documentation](https://skava.readthedocs.io/en/latest/deployment/configuration.html#node-reports-telemetry-pushed-by-the-node).
 
 ## Common failure modes
 
