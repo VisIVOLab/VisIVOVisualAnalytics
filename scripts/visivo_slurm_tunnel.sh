@@ -45,6 +45,7 @@ while [[ $# -gt 0 ]]; do
         --repo-dir) REMOTE_REPO="$2"; shift 2 ;;
         --user)      SSH_USER="$2"; shift 2 ;;
         --port)      LOCAL_PORT="$2"; REMOTE_OPTS+=("--port" "$2"); shift 2 ;;
+        --node-code) NODE_CODE="$2"; REMOTE_OPTS+=("--node-code" "$2"); shift 2 ;;
         --stop)      STOP=true; shift ;;
         --help|-h)
             grep '^#' "$0" | sed 's/^# \{0,2\}//'
@@ -105,7 +106,11 @@ REMOTE_CMD=(bash "${REMOTE_REPO}/scripts/launch_backend_slurm.sh" "${REMOTE_OPTS
 # ``File exists`` error. Drop the suffix entirely — the file is local
 # and ephemeral, no extension needed.
 TMP="$(mktemp /tmp/visivo_slurm_XXXXXX)"
-ssh "${SSH_USER}@${FRONTEND}" "${REMOTE_CMD[@]}" 2>&1 | tee "$TMP"
+# ssh joins its arguments into one command line for the remote shell: each
+# argument is quoted for that shell first, so a value with spaces or shell
+# characters reaches the launcher as one argument, and only as data.
+REMOTE_LINE="$(printf '%q ' "${REMOTE_CMD[@]}")"
+ssh "${SSH_USER}@${FRONTEND}" "$REMOTE_LINE" 2>&1 | tee "$TMP"
 
 JOB_ID="$(grep -oE 'Job ID: [0-9]+' "$TMP" | head -1 | awk '{print $3}')"
 NODE="$(grep -oE 'Compute node: [^ ]+' "$TMP" | head -1 | awk '{print $3}')"
@@ -150,10 +155,10 @@ cat <<EOF
 
   In VisIVO desktop:
       Settings → Remote Backends → Add
-          ID:        src-power9-slurm
+          ID:        src-$(printf '%s' "${NODE_CODE:-node}" | tr '[:upper:]' '[:lower:]')
           URL:       http://localhost:${LOCAL_PORT}
           Token:     <paste from above>
-          SRC code:  POWER9
+          SRC code:  ${NODE_CODE:-<the node's code in SKAVA>}
 
   Tail the SLURM job log:
       ssh ${SSH_USER}@${FRONTEND} \\

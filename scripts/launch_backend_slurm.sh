@@ -30,6 +30,11 @@
 #                           Python code without rebuilding the .sif.
 #                           (default: $VISIVO_BACKEND_SRC_OVERRIDE or unset)
 #   --token      TOKEN      Auth token (auto-generated if absent)
+#   --node-code  CODE       The node's code in the SKAVA catalogue, reported
+#                           in /v1/node/status ($VISIVO_NODE_CODE)
+#   --version    TEXT       What the status document reports as the backend
+#                           version, e.g. the VisIVO commit the image was
+#                           built from ($VISIVO_VERSION; default: the image's)
 #   --no-gpu                Shorthand for --gres ""; also drops --nv at runtime.
 #   --help                  Print this help.
 #
@@ -64,6 +69,8 @@ DATA_ROOT="${VISIVO_DATA_ROOT:-}"
 SIF="${VISIVO_SIF:-$(dirname "$0")/../apptainer/backend.sif}"
 BACKEND_SRC="${VISIVO_BACKEND_SRC_OVERRIDE:-}"
 TOKEN="${VISIVO_TOKEN:-}"
+NODE_CODE="${VISIVO_NODE_CODE:-}"
+VERSION="${VISIVO_VERSION:-}"
 LOG_DIR="${VISIVO_LOG_DIR:-$HOME/.visivo_logs}"
 POLL_MAX=60   # max poll attempts × 5 s = 5 min
 USE_GPU=true
@@ -83,6 +90,8 @@ while [[ $# -gt 0 ]]; do
         --sif)       SIF="$2";       shift 2 ;;
         --backend-src) BACKEND_SRC="$2"; shift 2 ;;
         --token)     TOKEN="$2";     shift 2 ;;
+        --node-code) NODE_CODE="$2"; shift 2 ;;
+        --version)   VERSION="$2";   shift 2 ;;
         --no-gpu)    USE_GPU=false; GRES=""; shift ;;
         --help|-h)
             grep '^#' "$0" | sed 's/^# \{0,2\}//'
@@ -163,6 +172,17 @@ if [[ "$USE_GPU" == "true" ]]; then
     NV_FLAG="--nv"
 fi
 
+# What the node says about itself in /v1/node/status: its code in the
+# catalogue, whether it has a GPU (the one SLURM allocated), the version.
+# Values are quoted for the job script, which bash reads again.
+NODE_ENV="export APPTAINERENV_VISIVO_NODE_GPU=$([[ "$USE_GPU" == "true" ]] && echo 1 || echo 0)"
+if [[ -n "$NODE_CODE" ]]; then
+    NODE_ENV+=$'\n'"export APPTAINERENV_VISIVO_NODE_CODE=$(printf '%q' "$NODE_CODE")"
+fi
+if [[ -n "$VERSION" ]]; then
+    NODE_ENV+=$'\n'"export APPTAINERENV_VISIVO_VERSION=$(printf '%q' "$VERSION")"
+fi
+
 # Optional: bind a host backend/app dir over /app/app inside the
 # container, so an operator can iterate on the Python code without
 # rebuilding the .sif. The typical use is testing the CUDA-after-fork
@@ -240,6 +260,7 @@ export APPTAINERENV___GLX_VENDOR_LIBRARY_NAME=nvidia
 # filesystem mount.
 mkdir -p /tmp/visivo-cache /tmp/visivo-config /tmp/visivo-data /tmp/visivo-mpl
 ${DATA_ROOT_ENV}
+${NODE_ENV}
 
 apptainer run ${NV_FLAG} \\
     --bind "${BIND_PATH}:${BIND_PATH}" \\

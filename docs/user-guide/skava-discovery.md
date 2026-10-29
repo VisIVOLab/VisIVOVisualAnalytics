@@ -165,6 +165,15 @@ settings that matter on a node:
 | `VISIVO_SOFIA_BIN` | `sofia2` or `sofia` on `PATH` | the SoFiA-2 executable for source finding on the node |
 | `VISIVO_FINDER_TIMEOUT_S` | `3600` | the longest a source finder may run |
 
+On a SLURM cluster, `scripts/launch_backend_slurm.sh` starts the backend in
+Apptainer on a compute node (`scripts/visivo_slurm_tunnel.sh` does it from a
+laptop and opens the SSH tunnel). `--node-code CODE` and `--version TEXT` set
+`VISIVO_NODE_CODE` and `VISIVO_VERSION` in the container, and a job that was
+given a GPU declares it (`VISIVO_NODE_GPU=1`), so the status document says
+which node it is, which build runs and what it was granted. A complete,
+recorded run with a SKAVA catalogue is described in the
+[SKAVA documentation](https://skava.readthedocs.io/en/latest/operations/e2e-pleiadi-gpu-runbook.html).
+
 The node's SODA service (`/soda/sync`, `/soda/async`) cuts and computes on
 the files under its data roots. A synchronous request with only `ID`, and
 no `POS`, `BAND` or `TIME`, returns the file as stored, byte for byte, with
