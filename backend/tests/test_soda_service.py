@@ -35,6 +35,53 @@ async def test_sync_cutout_is_fits(client, auth_headers, synthetic_fits_cube):
 
 
 @pytest.mark.asyncio
+async def test_sync_without_constraints_returns_the_file_itself(client, auth_headers, tmp_path, monkeypatch):
+    # A DataLink "#this" link through the node's SODA: every HDU, the bytes as stored.
+    import numpy as np
+    from pathlib import Path
+
+    path = tmp_path / "two_hdus.fits"
+    fits.HDUList([fits.PrimaryHDU(np.zeros((2, 3, 4), dtype=np.float32)),
+                  fits.ImageHDU(np.ones((3, 4), dtype=np.float32), name="SECOND")]).writeto(path)
+    monkeypatch.setenv("VISIVO_DATA_ROOTS", str(tmp_path))
+    resp = await client.get("/soda/sync", params={"ID": _id(path)}, headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.content == Path(path).read_bytes()
+    assert int(resp.headers["content-length"]) == path.stat().st_size
+    assert resp.headers["content-type"] == "application/fits"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name, media", [("cube.fits.gz", "application/gzip"),
+                                         ("search.sf", "application/octet-stream"),
+                                         ("beam.h5", "application/x-hdf5")])
+async def test_sync_without_constraints_serves_any_data_file_as_stored(client, auth_headers, tmp_path,
+                                                                       monkeypatch, name, media):
+    path = tmp_path / name
+    path.write_bytes(b"\x1f\x8b not parsed, only served" * 10)
+    monkeypatch.setenv("VISIVO_DATA_ROOTS", str(tmp_path))
+    resp = await client.get("/soda/sync", params={"ID": _id(path)}, headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.content == path.read_bytes() and resp.headers["content-type"].startswith(media)
+    # The node converts nothing: asking for FITS from a non-FITS file is an error.
+    refused = await client.get("/soda/sync", params={"ID": _id(path), "RESPONSEFORMAT": "application/fits"},
+                               headers=auth_headers)
+    assert refused.status_code == 400 and "as stored" in refused.text
+
+
+@pytest.mark.asyncio
+async def test_sync_without_constraints_stays_inside_the_data_roots(client, auth_headers, tmp_path,
+                                                                    monkeypatch):
+    inside, outside = tmp_path / "in", tmp_path / "out"
+    inside.mkdir(); outside.mkdir()
+    secret = outside / "secret.fits"
+    secret.write_bytes(b"x" * 100)
+    monkeypatch.setenv("VISIVO_DATA_ROOTS", str(inside))
+    resp = await client.get("/soda/sync", params={"ID": _id(secret)}, headers=auth_headers)
+    assert resp.status_code in (400, 403, 404) and b"x" * 100 not in resp.content
+
+
+@pytest.mark.asyncio
 async def test_sync_accepts_post_form_and_case_insensitive_names(client, auth_headers, synthetic_fits_cube):
     resp = await client.post("/soda/sync", data={"id": _id(synthetic_fits_cube), "pos": POS},
                              headers=auth_headers)

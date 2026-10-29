@@ -370,6 +370,15 @@ void TestSkavaClient::parsesNodeServicesVotable()
         QVERIFY(std::isfinite(r.replicas[i].score));
     }
     QVERIFY(r.replicas[0].score < r.replicas[2].score);
+    // ...and on where each copy lies on its node, although the VOTable's
+    // #this links lead a client to the node's SODA instead.
+    QCOMPARE(r.primaryAccessUrl, json.primaryAccessUrl);
+    for (int i = 0; i < r.replicas.size(); ++i)
+        QCOMPARE(r.replicas[i].accessEndpoint, json.accessUrlForNode(json.replicas[i].code));
+    QVERIFY(r.primaryAccessUrl.startsWith(u"file:///"_s));
+    // Sizes in bytes on both paths (the JSON's access_estsize is kilobytes).
+    QCOMPARE(r.primaryAccessEstSize, json.primaryAccessEstSize);
+    QCOMPARE(r.primaryAccessEstSize, qint64(32771) * 1024);
     // ...and on the services, with the inputs the node fixes.
     QCOMPARE(r.services.size(), json.services.size());
     for (int i = 0; i < r.services.size(); ++i) {

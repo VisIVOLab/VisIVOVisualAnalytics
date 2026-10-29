@@ -675,8 +675,11 @@ SkavaDatalinkResponse SkavaClient::parseDatalinkResponse(const QJsonObject &obj)
     const QJsonObject primary = obj.value(u"primary_access"_s).toObject();
     r.primaryAccessUrl    = getStringField(primary, u"access_url"_s);
     r.primaryAccessFormat = getStringField(primary, u"access_format"_s);
-    r.primaryAccessEstSize =
-            static_cast<qint64>(primary.value(u"access_estsize"_s).toDouble(0.0));
+    // Bytes: SKAVA's content_length when it gives one, else ObsCore's
+    // access_estsize, which is in kilobytes.
+    r.primaryAccessEstSize = primary.contains(u"content_length"_s)
+            ? static_cast<qint64>(primary.value(u"content_length"_s).toDouble(0.0))
+            : static_cast<qint64>(primary.value(u"access_estsize"_s).toDouble(0.0) * 1024.0);
     const QJsonObject routing = obj.value(u"routing"_s).toObject();
     r.bestNode = getStringField(routing, u"best_node"_s);
     for (const auto &repVal : routing.value(u"replicas"_s).toArray()) {
@@ -869,14 +872,20 @@ SkavaDatalinkResponse SkavaClient::parseDatalinkVotable(const QByteArray &votabl
             continue;
         }
         if (sem == "#this"_L1 && !url.isEmpty()) {
+            // A copy local to its node is linked through the node's SODA (a
+            // URL any client can follow); where it lies on the node's storage,
+            // which the node's backend opens in place, is local_access_url.
+            // An older SKAVA put that file:// location in access_url itself.
+            const QString local = t.cell(i, u"local_access_url"_s);
+            const QString endpoint = local.isEmpty() ? url : local;
             SkavaReplica rep;
             rep.code = node;
             rep.name = node;
-            rep.accessEndpoint = url;
+            rep.accessEndpoint = endpoint;
             rep.rankReason = t.cell(i, u"rank_reason"_s);
             rep.score = cellDouble(t, i, u"score"_s);
             if (r.primaryAccessUrl.isEmpty()) {    // rows come best node first
-                r.primaryAccessUrl = url;
+                r.primaryAccessUrl = endpoint;
                 r.primaryAccessFormat = t.cell(i, u"content_type"_s);
                 r.primaryAccessEstSize = t.cell(i, u"content_length"_s).toLongLong();
                 r.bestNode = node;

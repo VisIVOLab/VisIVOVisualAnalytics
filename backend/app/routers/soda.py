@@ -44,7 +44,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 
 from ..auth import verify_token
-from ..dependencies import _is_supported_dataset, _normalize_path, _run_heavy, get_exports_dir
+from ..dependencies import _FITS_SUFFIXES, _is_supported_dataset, _normalize_path, _run_heavy, get_exports_dir
 from ..skava_client import SkavaResolveError, access_url_to_local_path
 from ..soda_cutout import CutoutError, CutoutNoOverlap, make_cutout
 from ..tasks import TASKS
@@ -108,7 +108,10 @@ def _one(params: dict[str, list[str]], name: str) -> str | None:
     return values[0].strip() if values else None
 
 
-def _resolve(dataset_id: str | None) -> Path:
+def _resolve(dataset_id: str | None, *, any_file: bool = False) -> Path:
+    """The local file an ID names, inside the node's data roots. ``any_file``
+    accepts any regular file there (a compressed FITS, a PSRFITS search file),
+    for a request that returns the file as stored and never reads it."""
     if not dataset_id:
         raise SodaError("ID is required")
     try:
@@ -117,8 +120,46 @@ def _resolve(dataset_id: str | None) -> Path:
         raise SodaError(f"ID cannot be served by this node: {exc}") from exc
     if not path.is_file():
         raise SodaError(f"ID not found on this node: {dataset_id}", status=404)
-    if not _is_supported_dataset(path):
+    if not any_file and not _is_supported_dataset(path):
         raise SodaError(f"ID is not a supported dataset: {dataset_id}")
+    return path
+
+
+def _media_type(path: Path) -> str:
+    """The media type of a file served as stored."""
+    name = path.name.lower()
+    if path.suffix.lower() in _FITS_SUFFIXES:
+        return "application/fits"
+    if name.endswith((".h5", ".hdf5", ".he5")):
+        return "application/x-hdf5"
+    if name.endswith(".gz"):
+        return "application/gzip"
+    return "application/octet-stream"
+
+
+def _whole_file(params: dict[str, list[str]]) -> Path | None:
+    """The file an unconstrained cutout asks for, or None when the request
+    constrains something (or is not a cutout) and takes the usual route.
+
+    No POS, CIRCLE, POLYGON, BAND or TIME selects the whole dataset, which
+    is the file as stored: every HDU and the original header, not a
+    rewritten copy. This is what a DataLink "#this" link through this
+    service fetches. RESPONSEFORMAT, when given, must be the file's own
+    format: the node converts nothing.
+    """
+    if (_one(params, "OPERATION") or "CUTOUT").upper() != "CUTOUT":
+        return None
+    if any(_one(params, name) for name in ("POS", "CIRCLE", "POLYGON", "BAND", "TIME")):
+        return None
+    unknown = set(params) - _ALLOWED["CUTOUT"] - _CONTROL
+    if unknown:
+        raise SodaError(f"parameters not understood by OPERATION=CUTOUT: {', '.join(sorted(unknown))}")
+    path = _resolve(_one(params, "ID"), any_file=True)
+    fmt = _one(params, "RESPONSEFORMAT")
+    if fmt and fmt.split(";")[0].strip().lower() not in (
+            _FITS_FORMATS if _media_type(path) == "application/fits" else {_media_type(path)}):
+        raise SodaError(f"RESPONSEFORMAT {fmt!r} is not this file's format ({_media_type(path)}); "
+                        "the whole dataset is returned as stored, without conversion")
     return path
 
 
@@ -313,6 +354,11 @@ async def soda_sync(request: Request, token: str = _auth) -> Response:
         params = await _params(request)
         if (_one(params, "OPERATION") or "CUTOUT").upper() != "CUTOUT":
             raise SodaError("only cutouts run synchronously; use /soda/async for OPERATION=MOMENT or PV")
+        whole = _whole_file(params)
+        if whole is not None:
+            logger.info("[soda] sync %s unconstrained: the file as stored", whole.name)
+            return FileResponse(whole, media_type=_media_type(whole), filename=whole.name,
+                                headers={"X-Soda-Applied": ""})
         _, path, values = _validate(params)
         result = await asyncio.to_thread(make_cutout, str(path), pos=values.get("POS"),
                                          band=values.get("BAND"), time=values.get("TIME"),

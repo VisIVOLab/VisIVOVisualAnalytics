@@ -157,6 +157,12 @@ tasks, finders) without a token, so SKAVA can measure the node; set
 `VISIVO_NODE_STATUS_PUBLIC=0` to require the backend token for the status
 document. `VISIVO_NODE_CODE` names the node as the catalogue knows it.
 
+The node's SODA service (`/soda/sync`, `/soda/async`) cuts and computes on
+the files under its data roots. A synchronous request with only `ID`, no
+`POS`, `BAND` or `TIME`, returns the file as stored, byte for byte: this is
+where SKAVA's DataLink `#this` rows send a VO client for a copy that lives
+on the node's own storage.
+
 When the catalogue cannot reach the backend (a firewall, a NAT, a tunnel),
 the backend reports to the catalogue instead, every few seconds:
 

@@ -177,7 +177,7 @@ struct SkavaDatalinkResponse
     /// ``accessUrlForNode()`` for any node other than ``bestNode``.
     QString               primaryAccessUrl;
     QString               primaryAccessFormat;
-    qint64                primaryAccessEstSize{ 0 };
+    qint64                primaryAccessEstSize{ 0 };   ///< bytes (0 = unknown)
     QString               bestNode;
     SkavaDatasetMetadata  dataset;
     /// The replicas in SKAVA's ranking order, each with the policy's reason.
