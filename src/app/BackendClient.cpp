@@ -18,6 +18,7 @@
 #include <QtEndian>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMutex>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -109,7 +110,10 @@ BackendClient::BackendClient(QString baseUrl, QString token)
 {
     // R1: Auto-resolve token from env / file if not provided explicitly.
     if (m_token.isEmpty()) {
-        m_token = BackendClient::readTokenFile();
+        // Only the local backend's token lives in the env / ~/.visivo_token;
+        // another backend without a token stays without one.
+        if (isLocalBackendUrl(m_baseUrl))
+            m_token = BackendClient::readTokenFile();
         return;
     }
 
@@ -118,15 +122,10 @@ BackendClient::BackendClient(QString baseUrl, QString token)
     // explicit token from Settings is stale (e.g. the backend was restarted
     // and regenerated its token), every request would 401 and trigger the
     // retry path, polluting the diagnostics log. Prefer the file token here
-    // to short-circuit that ping-pong. Remote backends keep using the
-    // explicit token because ~/.visivo_token belongs to the local machine.
-    const QUrl parsed(m_baseUrl);
-    const QString host = parsed.host().trimmed().toLower();
-    const bool isLocal = host.isEmpty()
-                         || host == QLatin1StringView("localhost")
-                         || host == QLatin1StringView("127.0.0.1")
-                         || host == QLatin1StringView("::1");
-    if (isLocal) {
+    // to short-circuit that ping-pong. Every other backend keeps its explicit
+    // token: ~/.visivo_token belongs to the local backend only, and a backend
+    // on this machine at another port (a testbed node) has its own.
+    if (isLocalBackendUrl(m_baseUrl)) {
         const QString fileToken = BackendClient::readTokenFile();
         if (!fileToken.isEmpty() && fileToken != m_token) {
             m_token = fileToken;
@@ -167,6 +166,47 @@ void BackendClient::setSessionId(const QString &sessionId)
 }
 
 // ── Static helpers ────────────────────────────────────────────────────────────
+
+namespace {
+QMutex s_localUrlMutex;
+QString s_localBackendUrl;  // empty = Settings' default
+
+bool isLoopbackHost(const QString &host)
+{
+    const QString h = host.trimmed().toLower();
+    return h.isEmpty() || h == QLatin1StringView("localhost") || h == QLatin1StringView("127.0.0.1")
+           || h == QLatin1StringView("::1") || h == QLatin1StringView("[::1]");
+}
+
+int effectivePort(const QUrl &url)
+{
+    return url.port(url.scheme().compare(QLatin1StringView("https"), Qt::CaseInsensitive) == 0 ? 443 : 80);
+}
+}  // namespace
+
+void BackendClient::setLocalBackendUrl(const QString &url)
+{
+    QMutexLocker lock(&s_localUrlMutex);
+    s_localBackendUrl = url.trimmed();
+}
+
+bool BackendClient::isLocalBackendUrl(const QString &url)
+{
+    QString local;
+    {
+        QMutexLocker lock(&s_localUrlMutex);
+        local = s_localBackendUrl;
+    }
+    if (local.isEmpty())
+        local = QStringLiteral("http://127.0.0.1:8000");
+    if (url.trimmed().isEmpty())
+        return true;  // no URL yet: the client is the local one being set up
+    const QUrl candidate(url.trimmed());
+    const QUrl reference(local);
+    if (!isLoopbackHost(candidate.host()) || !isLoopbackHost(reference.host()))
+        return false;
+    return effectivePort(candidate) == effectivePort(reference);
+}
 
 QString BackendClient::readTokenFile()
 {
@@ -3331,7 +3371,9 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
     QElapsedTimer perfTimer;
     perfTimer.start();
     QNetworkAccessManager *nam = getThreadLocalNam();
-    const QString fallbackToken = BackendClient::readTokenFile().trimmed();
+    // The 401 retry with the local token file: for the local backend only.
+    const QString fallbackToken =
+            isLocalBackendUrl(m_baseUrl) ? BackendClient::readTokenFile().trimmed() : QString();
     const QStringList tokenCandidates = [&]() {
         QStringList tokens;
         tokens << this->m_token.trimmed();
@@ -3514,7 +3556,9 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
     perfTimer.start();
     QNetworkAccessManager *nam = getThreadLocalNam();
     const QByteArray bodyBytes = body.toJson(QJsonDocument::Compact);
-    const QString fallbackToken = BackendClient::readTokenFile().trimmed();
+    // The 401 retry with the local token file: for the local backend only.
+    const QString fallbackToken =
+            isLocalBackendUrl(m_baseUrl) ? BackendClient::readTokenFile().trimmed() : QString();
     const QStringList tokenCandidates = [&]() {
         QStringList tokens;
         tokens << this->m_token.trimmed();

@@ -115,7 +115,8 @@ async def _lifespan(_app: "FastAPI"):
 app = FastAPI(
     title="VisIVO Backend",
     version="1.0.0",
-    description="Astrophysical data visualization backend for ViaLactea Visual Analytics.",
+    description="Compute service of VisIVO Visual Analytics, developed by VisIVOLab "
+                "(https://visivolab.oact.inaf.it) at INAF - Osservatorio Astrofisico di Catania.",
     docs_url="/v1/docs",
     redoc_url="/v1/redoc",
     openapi_url="/v1/openapi.json",

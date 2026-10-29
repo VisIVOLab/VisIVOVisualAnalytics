@@ -478,6 +478,10 @@ int main(int argc, char *argv[])
                                          .toInt();
         const auto scheme      = static_cast<Qt::ColorScheme>(storedInt);
         ThemeManager::instance().apply(scheme, &app);
+        // The local backend's URL, before the launcher builds its first
+        // clients: only that backend gets the ~/.visivo_token token.
+        BackendClient::setLocalBackendUrl(
+                rawSettings.value(u"Backend/url"_s, u"http://127.0.0.1:8000"_s).toString().trimmed());
     }
 
     // Customize QDebug message format

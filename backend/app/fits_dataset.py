@@ -469,19 +469,31 @@ class ScientificFitsDataset:
         except (OSError, TypeError):
             return 0
 
-    def _full_res_threshold_bytes(self) -> int:
-        """Default 4 GiB; override with VISIVO_FULL_RES_THRESHOLD_BYTES.
+    # A full-resolution load sends the cube in a few concurrent slabs, each
+    # read and then copied into the reply: about twice the cube is in the
+    # backend's memory at once, next to everything else it serves. A quarter
+    # of the memory the backend can have keeps that well inside it.
+    _FULL_RES_MEMORY_FRACTION = 4
 
-        At/above this size the client is told to default to preview-only
-        and let the user opt explicitly into full-resolution download
-        (or ROI crop). For cubes well below this threshold the legacy
-        auto-full-load path is preserved unchanged.
+    def _full_res_threshold_bytes(self) -> int:
+        """At/above this size the client is told to default to preview-only.
+
+        VISIVO_FULL_RES_THRESHOLD_BYTES sets it outright. Otherwise it is
+        4 GiB, or a quarter of the backend's memory (its container's limit,
+        or the host's) when that is less: a node with 8 GB cannot serve a
+        3 GB cube at full resolution, and used to be killed trying. The user
+        can still opt into full resolution (or crop a region) explicitly.
         """
         import os as _os
-        return int(_os.environ.get(
-            "VISIVO_FULL_RES_THRESHOLD_BYTES",
-            str(4 * 1024 ** 3),
-        ))
+        explicit = _os.environ.get("VISIVO_FULL_RES_THRESHOLD_BYTES", "").strip()
+        if explicit:
+            return int(explicit)
+        threshold = 4 * 1024 ** 3
+        from .node_status import memory_limit_bytes
+        limit = memory_limit_bytes()
+        if limit:
+            threshold = min(threshold, limit // self._FULL_RES_MEMORY_FRACTION)
+        return threshold
 
     def geometry_metadata(self) -> dict[str, Any]:
         spacing = [self._cdelt(1), self._cdelt(2), self._cdelt(3)]
@@ -563,17 +575,16 @@ class ScientificFitsDataset:
             # and ask the user explicitly. Threshold is configurable via
             # VISIVO_FULL_RES_THRESHOLD_BYTES; the default 4 GiB is
             # empirically the size above which a 16 GB-RAM laptop starts
-            # thrashing on VTK volume rendering of an HI cube.
+            # thrashing on VTK volume rendering of an HI cube, lowered to a
+            # quarter of the backend's own memory when that is less (see
+            # _full_res_threshold_bytes).
             #
             # NOTE: ``self.path`` is a string (``str(Path(path))``), not a
             # Path. We use ``os.path.getsize`` to avoid an AttributeError.
-            "file_size_bytes": self._file_size_bytes_safe(),
-            "full_res_threshold_bytes": self._full_res_threshold_bytes(),
-            "recommended_load_mode": (
-                "preview_only"
-                if self._file_size_bytes_safe() >= self._full_res_threshold_bytes()
-                else "auto_full"
-            ),
+            # Each read once: the threshold probes the memory limit.
+            "file_size_bytes": (size := self._file_size_bytes_safe()),
+            "full_res_threshold_bytes": (threshold := self._full_res_threshold_bytes()),
+            "recommended_load_mode": "preview_only" if size >= threshold else "auto_full",
         }
 
     # FITS CTYPE prefixes that denote a spectral axis (frequency, velocity,

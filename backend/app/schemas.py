@@ -92,7 +92,8 @@ class OpenDatasetResponse(BaseModel):
     # Size-aware loading policy. Clients use ``recommended_load_mode``
     # to decide whether to auto-load full resolution or default to
     # preview-only. Threshold is configurable via
-    # VISIVO_FULL_RES_THRESHOLD_BYTES (default 4 GiB).
+    # VISIVO_FULL_RES_THRESHOLD_BYTES (default 4 GiB, or a quarter of the
+    # backend's memory when that is less).
     file_size_bytes: int = 0
     full_res_threshold_bytes: int = 4 * 1024 ** 3
     recommended_load_mode: str = "auto_full"  # "auto_full" | "preview_only"

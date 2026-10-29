@@ -888,9 +888,12 @@ def test_worker_moment_streaming_branch(tmp_path, monkeypatch):
     h["CUNIT3"] = "m/s"
     hdu.writeto(p, overwrite=True)
 
+    # The reference is the in-memory path whatever the host's free memory;
+    # the threshold is a function of it, so it is the function that is pinned.
+    monkeypatch.setattr(M, "_moment_stream_bytes", lambda: 1 << 62)
     in_mem = {o: _decode_f32(worker_moment(str(p), o, 0, nz - 1, False, 0.0)["data_base64"])
               for o in (0, 1, 2)}
-    monkeypatch.setattr(M, "_MOMENT_STREAM_BYTES", 0)   # force streaming for any size
+    monkeypatch.setattr(M, "_moment_stream_bytes", lambda: 0)   # force streaming for any size
     for o in (0, 1, 2):
         b = _decode_f32(worker_moment(str(p), o, 0, nz - 1, False, 0.0)["data_base64"])
         a = in_mem[o]
@@ -898,6 +901,42 @@ def test_worker_moment_streaming_branch(tmp_path, monkeypatch):
         assert np.array_equal(np.isnan(a), np.isnan(b)), f"nan pattern order {o}"
         fin = np.isfinite(a) & np.isfinite(b)
         assert np.allclose(a[fin], b[fin], rtol=1e-4, atol=1e-4), f"order {o}"
+
+
+def test_moment_streams_when_the_node_has_little_memory(monkeypatch):
+    """The streaming threshold follows the node's free memory: a 512 MB range
+    on a node with 4 GB free is streamed, not held (the in-memory path needs
+    several times the range and was killed on such a node); the configured
+    ceiling still caps it, and without a reading the ceiling stands."""
+    import app.compute.moment as M
+    import app.node_status as NS
+
+    free = int(3.5 * 1024 ** 3)                                 # a 4 GB node running its backend
+    monkeypatch.setattr(M, "_MOMENT_STREAM_BYTES", 2 * 1024 ** 3)
+    monkeypatch.setattr(NS, "available_memory_bytes", lambda: free)
+    assert M._moment_stream_bytes() == free // M._MOMENT_INMEMORY_FACTOR
+    assert 512 * 1024 ** 2 > M._moment_stream_bytes()        # the 512 MB range streams
+    monkeypatch.setattr(NS, "available_memory_bytes", lambda: 64 * 1024 ** 3)
+    assert M._moment_stream_bytes() == 2 * 1024 ** 3        # the ceiling caps it
+    monkeypatch.setattr(NS, "available_memory_bytes", lambda: None)
+    assert M._moment_stream_bytes() == 2 * 1024 ** 3        # no reading: the ceiling
+    monkeypatch.setattr(M, "_MOMENT_STREAM_BYTES", 0)
+    monkeypatch.setattr(NS, "available_memory_bytes", lambda: 64 * 1024 ** 3)
+    assert M._moment_stream_bytes() == 0                    # forced streaming stays forced
+
+
+def test_moment_streaming_slab_is_bounded_in_bytes(monkeypatch):
+    """A streamed slab holds at most _MOMENT_CHUNK_BYTES of float32, however
+    many channels that is (and one channel when a single plane is larger than
+    that): 64 channels of a 1024² plane would be 256 MB (and seven times that
+    in temporaries), which a small node cannot hold."""
+    import app.compute.moment as M
+
+    monkeypatch.setattr(M, "_MOMENT_CHUNK_BYTES", 64 * 1024 ** 2)
+    assert M._moment_chunk_z(1024 * 1024 * 4, 64) == 16      # 16 channels of 4 MB planes
+    assert M._moment_chunk_z(2048 * 2048 * 4, 64) == 4
+    assert M._moment_chunk_z(64 * 64 * 4, 64) == 64           # a small plane: the requested slab
+    assert M._moment_chunk_z(8192 * 8192 * 4, 64) == 1        # never fewer than one channel
 
 
 def test_moment_m1_physical_range_guard_and_auto_mask(tmp_path):

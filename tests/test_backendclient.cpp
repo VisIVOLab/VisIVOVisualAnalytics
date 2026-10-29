@@ -585,3 +585,53 @@ void TestBackendClient::parseKinematicFit_rejectsMapsOfTheWrongSize()
     QVERIFY(!r.valid);
     QVERIFY(!r.error.isEmpty());
 }
+
+
+// ── The local backend is one URL, not every loopback service ──────────────────
+
+namespace {
+// Restores VISIVO_TOKEN and the local backend URL however the test ends.
+struct LocalTokenGuard {
+    QByteArray saved = qgetenv("VISIVO_TOKEN");
+    ~LocalTokenGuard()
+    {
+        if (saved.isNull()) qunsetenv("VISIVO_TOKEN"); else qputenv("VISIVO_TOKEN", saved);
+        BackendClient::setLocalBackendUrl(QString());
+    }
+};
+}  // namespace
+
+void TestBackendClient::localBackendUrl_onlyTheConfiguredPortIsLocal()
+{
+    LocalTokenGuard guard;
+    BackendClient::setLocalBackendUrl(QStringLiteral("http://127.0.0.1:8000"));
+    QVERIFY(BackendClient::isLocalBackendUrl(QStringLiteral("http://127.0.0.1:8000")));
+    QVERIFY(BackendClient::isLocalBackendUrl(QStringLiteral("http://localhost:8000/")));
+    QVERIFY(!BackendClient::isLocalBackendUrl(QStringLiteral("http://localhost:18101")));
+    QVERIFY(!BackendClient::isLocalBackendUrl(QStringLiteral("http://node.example:8000")));
+
+    BackendClient::setLocalBackendUrl(QStringLiteral("http://localhost:9000"));
+    QVERIFY(BackendClient::isLocalBackendUrl(QStringLiteral("http://127.0.0.1:9000")));
+    QVERIFY(!BackendClient::isLocalBackendUrl(QStringLiteral("http://127.0.0.1:8000")));
+
+    BackendClient::setLocalBackendUrl(QString());  // back to the default
+    QVERIFY(BackendClient::isLocalBackendUrl(QStringLiteral("http://127.0.0.1:8000")));
+}
+
+void TestBackendClient::explicitTokenKeptForAnotherLocalhostPort()
+{
+    // A testbed node on this machine has its own token; the local backend's
+    // (env / ~/.visivo_token) must neither replace it nor fill in for a missing one.
+    LocalTokenGuard guard;
+    qputenv("VISIVO_TOKEN", "local-backend-token");
+    BackendClient::setLocalBackendUrl(QStringLiteral("http://127.0.0.1:8000"));
+
+    const BackendClient node(QStringLiteral("http://localhost:18101"), QStringLiteral("node-token"));
+    QCOMPARE(node.token(), QStringLiteral("node-token"));
+    const BackendClient tokenless(QStringLiteral("http://localhost:18102"), QString());
+    QVERIFY(tokenless.token().isEmpty());
+    const BackendClient local(QStringLiteral("http://127.0.0.1:8000"), QStringLiteral("stale"));
+    QCOMPARE(local.token(), QStringLiteral("local-backend-token"));
+    const BackendClient localEmpty(QStringLiteral("http://localhost:8000"), QString());
+    QCOMPARE(localEmpty.token(), QStringLiteral("local-backend-token"));
+}

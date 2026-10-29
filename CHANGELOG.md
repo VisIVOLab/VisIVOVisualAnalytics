@@ -6,6 +6,29 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## 1.0.7 (2026-10-29)
+
+- **The local token stays local.** The token in `VISIVO_TOKEN` or
+  `~/.visivo_token` belongs to the local backend, the one set in Settings. It
+  was also sent to any other backend on this machine (another port), and
+  used as the retry after a `401` from any backend, remote ones included.
+  Now only the configured local backend receives it; every other backend
+  keeps the token it was registered with.
+- **Large cubes on a machine with little memory.** The size above which a
+  cube opens as a preview, with full resolution on request, is 4 GiB or a
+  quarter of the backend's memory (its container's limit, or the machine's)
+  when that is less, so an 8 GB machine no longer runs out of memory loading
+  a 3 GB cube at full resolution. `VISIVO_FULL_RES_THRESHOLD_BYTES` still
+  sets it outright.
+- **Moment maps follow the free memory.** A channel range is integrated in
+  memory only when it is below `VISIVO_MOMENT_STREAM_BYTES` (2 GiB) and
+  twelve times its size is free; otherwise it is streamed from disk, in slabs
+  of at most `VISIVO_MOMENT_CHUNK_BYTES` (64 MiB) rather than a fixed number
+  of channels, so wide planes no longer exhaust a small machine.
+- **Credits.** The About dialog and the backend's API page name VisIVOLab at
+  INAF - Osservatorio Astrofisico di Catania, with links to the source code
+  and the documentation.
+
 ## 1.0.6 (2026-10-27)
 
 - **VLKB cutouts for a source table** (*Data ▸ VLKB Cutouts for a Source

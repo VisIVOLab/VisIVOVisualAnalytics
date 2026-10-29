@@ -3,8 +3,8 @@ message: "If you use this software, please cite it as below."
 title: "VisIVO Visual Analytics"
 abstract: "A hybrid desktop–service visual analytics platform for astronomical data cubes: a Qt 6/VTK 9 client and a REST compute service that run embedded on a laptop or next to the data, with a kinematic lasso for PPV source selection, interactive tilted-ring modelling and persistent, replayable analysis products."
 type: software
-version: 1.0.6
-date-released: 2026-10-27
+version: 1.0.7
+date-released: 2026-10-29
 doi: 10.5281/zenodo.23669666
 identifiers:
   - type: doi

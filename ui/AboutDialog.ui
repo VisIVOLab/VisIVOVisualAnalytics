@@ -50,6 +50,22 @@
     </layout>
    </item>
    <item>
+    <widget class="QLabel" name="labelCredits">
+     <property name="text">
+      <string>&lt;p&gt;Developed by &lt;a href=&quot;https://visivolab.oact.inaf.it&quot;&gt;VisIVOLab&lt;/a&gt; at INAF – Osservatorio Astrofisico di Catania.&lt;/p&gt;&lt;p&gt;&lt;a href=&quot;https://github.com/VisIVOLab/VisIVOVisualAnalytics&quot;&gt;Source code&lt;/a&gt; · &lt;a href=&quot;https://visivo.readthedocs.io&quot;&gt;Documentation&lt;/a&gt;&lt;/p&gt;</string>
+     </property>
+     <property name="textFormat">
+      <enum>Qt::TextFormat::RichText</enum>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+     <property name="openExternalLinks">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
     <spacer name="verticalSpacer">
      <property name="orientation">
       <enum>Qt::Orientation::Vertical</enum>

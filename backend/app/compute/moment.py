@@ -14,6 +14,7 @@ from typing import Any  # noqa: F401
 import numpy as np
 
 from ..fits_dataset import ScientificFitsDataset, image_hdu_index  # noqa: F401
+from .abort import check_abort
 from ._common import (  # noqa: F401
     clamped_sqrt,
     logger,
@@ -71,6 +72,26 @@ _MOMENT_THREADS = int(_os.environ.get("VISIVO_MOMENT_THREADS", "0"))
 # keep the faster in-memory (GPU/Numba) path.
 _MOMENT_STREAM_BYTES = int(_os.environ.get("VISIVO_MOMENT_STREAM_BYTES", str(2 * 1024 ** 3)))
 _MOMENT_SLAB_CHANNELS = max(1, int(_os.environ.get("VISIVO_MOMENT_SLAB_CHANNELS", "64")))
+# The in-memory path needs several times the channel range: the float32 copy,
+# the float64 temporaries of the reduction (8.6 times the range at the peak of
+# the numpy M2, measured with tracemalloc), and the mapped pages the kernel
+# charges to the process. A range is kept in memory only when twelve times its
+# size is free; a 512 MB range on a node limited to 4 GB (3.5 GB free) was
+# killed in memory and computed streamed (measured on the SKAVA testbed).
+_MOMENT_INMEMORY_FACTOR = 12
+
+
+def _moment_stream_bytes() -> int:
+    """Above this many bytes a channel range is streamed: the configured
+    ceiling, and never more than a share of what the node has free right now
+    (its cgroup's headroom in a container)."""
+    from ..node_status import available_memory_bytes  # noqa: PLC0415
+
+    ceiling = _MOMENT_STREAM_BYTES
+    available = available_memory_bytes()
+    if available is None:
+        return ceiling
+    return min(ceiling, available // _MOMENT_INMEMORY_FACTOR)
 # Out-of-core means bounded memory, not just lazy reads. The dask path processes
 # one block of channels per thread, and each block spawns a few temporaries (the
 # finite mask, the clipped copy, the float64 product with the channel widths):
@@ -575,9 +596,13 @@ def _moment_map_streaming(
     spectral_coordinates: np.ndarray,
     mask_enabled: bool,
     threshold_value: float,
+    stop_file: str | None = None,
 ) -> np.ndarray:
     """Out-of-core M0/M1/M2 — stream spectral slabs and accumulate running sums so
     the whole channel range never sits in RAM (SKA-scale cubes).
+
+    ``stop_file`` (see app/compute/abort.py) is checked before every slab:
+    an aborted task ends within one slab, with ``ComputationAborted``.
 
     Matches the in-memory (Numba) path for uniform spacing:
       M0 = Σ I·Δv, blanked where a pixel has no valid voxel;
@@ -596,11 +621,17 @@ def _moment_map_streaming(
         raise ValueError("spectral_coordinates must be the [z0:z1] slice (length nch).")
     delta = _integrated_spacing(sv)                     # per-channel Δv weight (M0)
 
+    # The slab is sized in bytes, as the dask blocks are: 64 channels of a
+    # 1024² plane are 256 MB of float32 and about seven times that in the
+    # temporaries below, which a node limited to a few GB cannot hold.
+    slab = _moment_chunk_z(ny * nx * 4, _MOMENT_SLAB_CHANNELS)
+
     def _slabs():
         """Yield (cs, ce, inten64, valid) for each spectral slab — only that slab
         is read from disk, so peak memory is O(slab · ny · nx), not O(nz)."""
-        for cs in range(0, nch, _MOMENT_SLAB_CHANNELS):
-            ce = min(cs + _MOMENT_SLAB_CHANNELS, nch)
+        for cs in range(0, nch, slab):
+            check_abort(stop_file)
+            ce = min(cs + slab, nch)
             block = np.asarray(data[z0 + cs : z0 + ce, :, :], dtype=np.float32)
             valid = np.isfinite(block)
             if mask_enabled:
@@ -876,6 +907,7 @@ def worker_moment(
     threshold_value: float,
     threshold_auto: bool = False,
     moment2_variance: bool = False,
+    stop_file: str | None = None,
 ) -> dict[str, Any]:
     """
     Compute a moment map reading only [channel_start:channel_end] planes.
@@ -886,7 +918,12 @@ def worker_moment(
     threshold is derived from the data (median + 3·σ via MAD) instead of using
     the supplied ``threshold_value`` — the CASA/SoFiA default that keeps M1/M2
     clean without the caller having to know the noise level.
+
+    ``stop_file`` makes the computation interruptible (app/compute/abort.py):
+    the streaming path checks it before every slab, the in-memory and Dask
+    paths before they start; an aborted task raises ``ComputationAborted``.
     """
+    check_abort(stop_file)
     dataset = ScientificFitsDataset(path)
     hdul, raw = dataset.open_memmap()
     try:
@@ -900,15 +937,17 @@ def worker_moment(
         effective_threshold = float(threshold_value)
         if mask_enabled and threshold_auto:
             effective_threshold = _auto_mask_threshold(data, z0, z1)
+        check_abort(stop_file)
         spectral = dataset.spectral_axis_metadata(z0, z1)
         # Out-of-core path for the big/OOM-prone orders: if the channel range would
         # materialise to more than the stream threshold, stream slabs from disk
         # instead of loading it all. Small cubes keep the in-memory GPU/Numba path.
         subset_bytes = (z1 - z0 + 1) * int(data.shape[1]) * int(data.shape[2]) * 4
-        big = subset_bytes > _MOMENT_STREAM_BYTES
+        big = subset_bytes > _moment_stream_bytes()
         if order in (0, 1, 2) and big:
             image = _moment_map_streaming(
-                data, z0, z1, order, spectral["coordinates"], mask_enabled, effective_threshold)
+                data, z0, z1, order, spectral["coordinates"], mask_enabled, effective_threshold,
+                stop_file)
         elif order in _DASK_MOMENT_ORDERS and big and _DASK_OK:
             # R-06: higher-order moments (3–10) have no bespoke slab streamer;
             # when the subset would OOM the in-memory path AND Dask is available,
@@ -980,6 +1019,7 @@ def worker_moment_save_fits(
     threshold_value: float,
     threshold_auto: bool = False,
     moment2_variance: bool = False,
+    stop_file: str | None = None,
 ) -> dict[str, Any]:
     """Compute a moment map and persist it as a standalone 2-D FITS file at
     ``output_path``.
@@ -1002,8 +1042,9 @@ def worker_moment_save_fits(
     payload = worker_moment(
         src_path, int(order), int(channel_start), int(channel_end),
         bool(mask_enabled), float(threshold_value), bool(threshold_auto),
-        bool(moment2_variance),
+        bool(moment2_variance), stop_file,
     )
+    check_abort(stop_file)   # not a byte of an aborted job's product is written
     # The base64 round-trip is unnecessary for the FITS path but keeps a
     # single source of truth — the cost is one float32 array decode, dwarfed
     # by the moment compute itself.

@@ -136,6 +136,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // multi-backend registry. After this point any code may call
     // BackendClientFactory::instance()->get(id) without further setup.
     BackendClientFactory::instance()->setSettings(this->settings);
+    BackendClient::setLocalBackendUrl(this->settings->getBackendUrl());
     this->auth = new AuthWrapper(this);
     this->m_sampBackendClient = std::make_unique<BackendClient>(
             this->settings->getBackendUrl(), this->settings->getBackendToken());
@@ -530,6 +531,7 @@ void MainWindow::syncDataHubSettings()
 
 void MainWindow::syncSampSettings()
 {
+    BackendClient::setLocalBackendUrl(this->settings->getBackendUrl());
     if (!this->m_sampBackendClient) {
         return;
     }

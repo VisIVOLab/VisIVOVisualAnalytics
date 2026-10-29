@@ -1941,6 +1941,18 @@ public:
      */
     static QString readTokenFile();
 
+    /**
+     * The URL of the local backend (Settings' "Remote Backend (Visivo)" URL):
+     * the one backend whose token ~/.visivo_token holds. A client for it
+     * prefers the file's token over a stale explicit one; a client for any
+     * other backend, even one on this machine at another port (a testbed
+     * node, say), keeps the token it was given.
+     */
+    static void setLocalBackendUrl(const QString &url);
+    /// True when @p url is the local backend: a loopback host and the same
+    /// port as setLocalBackendUrl()'s (http://127.0.0.1:8000 until it is set).
+    static bool isLocalBackendUrl(const QString &url);
+
     // ── API calls ─────────────────────────────────────────────────────────────
 
     BackendHealthResult health() const;

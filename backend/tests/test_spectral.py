@@ -138,11 +138,12 @@ class TestHigherOrderMoments:
         import app.compute.moment as _m
         from app.compute import worker_moment
 
-        # In-memory reference (huge threshold → never streams).
-        monkeypatch.setattr(_m, "_MOMENT_STREAM_BYTES", 1 << 62)
+        # In-memory reference (huge threshold → never streams). The threshold
+        # is a function of the host's free memory, so the function is pinned.
+        monkeypatch.setattr(_m, "_moment_stream_bytes", lambda: 1 << 62)
         ref = worker_moment(self.cube_path, 6, 0, 31, False, 0.0)
         # Force the streaming/OOC branch (threshold 0 → any subset is "big").
-        monkeypatch.setattr(_m, "_MOMENT_STREAM_BYTES", 0)
+        monkeypatch.setattr(_m, "_moment_stream_bytes", lambda: 0)
         ooc = worker_moment(self.cube_path, 6, 0, 31, False, 0.0)
         a = np.frombuffer(base64.b64decode(ref["data_base64"]), dtype=np.float32)
         b = np.frombuffer(base64.b64decode(ooc["data_base64"]), dtype=np.float32)
@@ -162,9 +163,9 @@ class TestHigherOrderMoments:
         path = str(tmp_path / "parity_cube.fits")
         _write_gaussian_cube(path, nz=80, ny=6, nx=6, sigma_chan=6.0)
 
-        monkeypatch.setattr(_m, "_MOMENT_STREAM_BYTES", 1 << 62)      # in-memory
+        monkeypatch.setattr(_m, "_moment_stream_bytes", lambda: 1 << 62)      # in-memory
         mem = worker_moment(path, order, 0, 79, False, 0.0)
-        monkeypatch.setattr(_m, "_MOMENT_STREAM_BYTES", 0)            # streaming
+        monkeypatch.setattr(_m, "_moment_stream_bytes", lambda: 0)            # streaming
         stream = worker_moment(path, order, 0, 79, False, 0.0)
         dask = _moment_map_dask(path, order, 0, 79, 0.0, False)      # dask path
 
