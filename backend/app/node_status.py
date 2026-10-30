@@ -4,7 +4,8 @@ A catalogue that routes work to nodes (SKAVA) needs facts it cannot declare in
 advance: how much memory is free for a new dataset, whether the CPU is already
 contended, how many tasks are waiting. This module reads them where they are
 true for this process: in a container, from its cgroup (the limits the node
-really has, not the host's); elsewhere, from the operating system.
+really has, not the host's); in a SLURM job, also from the memory the scheduler
+granted; elsewhere, from the operating system.
 
 Nothing here names a user, a dataset or a path: the status is safe to publish.
 """
@@ -41,6 +42,33 @@ def _own_cgroup() -> Path:
 
 
 _CGROUP = _own_cgroup()
+
+# cgroup v1 reports "no limit" as the largest page-aligned 64-bit value.
+_V1_UNLIMITED = 1 << 62
+_V1_MOUNT = Path("/sys/fs/cgroup/memory")
+
+
+def _own_v1_memory() -> Path | None:
+    """This process's cgroup v1 memory directory; None on a v2-only host.
+
+    Older clusters (SLURM with cgroup v1) name it in /proc/self/cgroup as
+    ``<n>:memory:/<path>`` (possibly with other controllers). Not consulted
+    when ``VISIVO_CGROUP_ROOT`` names the cgroup explicitly.
+    """
+    if os.environ.get("VISIVO_CGROUP_ROOT"):
+        return None
+    try:
+        for line in Path("/proc/self/cgroup").read_text().splitlines():
+            _, controllers, rel = line.split(":", 2)
+            if "memory" in controllers.split(","):
+                candidate = _V1_MOUNT / rel.strip().lstrip("/")
+                return candidate if candidate.is_dir() else None
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+_CGROUP_V1 = _own_v1_memory()
 
 # Previous cgroup CPU usage sample, for a utilisation figure between two calls.
 _last_cpu_sample: tuple[float, int] | None = None
@@ -93,6 +121,40 @@ def _levels() -> list[Path]:
         if level.parent == level or not (level.parent / "cgroup.controllers").exists():
             return levels
         level = level.parent
+
+
+def _v1_levels() -> list[Path]:
+    """The v1 memory cgroup and its ancestors up to the mount, innermost first.
+
+    The mount itself is a level: in a cgroup namespace it is the container's
+    own group, which may carry the limit.
+    """
+    levels, level = [], _CGROUP_V1
+    while level is not None:
+        levels.append(level)
+        if level == _V1_MOUNT or _V1_MOUNT not in level.parents:
+            break
+        level = level.parent
+    return levels
+
+
+def _granted_memory() -> int | None:
+    """The memory SLURM granted this job, in bytes; None outside a job.
+
+    A grant binds the node even where the cluster does not enforce it with a
+    cgroup limit: work beyond it is work the scheduler did not allot. Read
+    only inside a job; ``--mem=0`` grants the whole node, so states no cap.
+    """
+    if not (os.environ.get("SLURM_JOB_ID") or "").strip():
+        return None
+    per_node = _int(os.environ.get("SLURM_MEM_PER_NODE"))
+    if per_node is not None:
+        return per_node << 20 if per_node > 0 else None
+    per_cpu = _int(os.environ.get("SLURM_MEM_PER_CPU"))
+    cpus = _int(os.environ.get("SLURM_CPUS_ON_NODE"))
+    if per_cpu and cpus:
+        return (per_cpu * cpus) << 20
+    return None
 
 
 def _cpu_quota() -> float | None:
@@ -178,6 +240,40 @@ def _host_memory() -> tuple[int | None, int | None]:
     return total, available
 
 
+def _working_set(current: int, stat: str, *, v1: bool) -> int:
+    """Usage minus the clean file cache, active or not (see ``_memory``)."""
+    cache_keys = ("total_inactive_file", "total_active_file") if v1 else ("inactive_file", "active_file")
+    unclean_keys = ("total_dirty", "total_writeback") if v1 else ("file_dirty", "file_writeback")
+    cached = unclean = 0
+    for line in stat.splitlines():
+        key, _, value = line.partition(" ")
+        if key in cache_keys:
+            cached += _int(value) or 0
+        elif key in unclean_keys:
+            unclean += _int(value) or 0   # still to be written: not droppable yet
+    return max(0, current - max(0, cached - unclean))
+
+
+def _cgroup_memory() -> list[tuple[int | None, int]]:
+    """(limit or None when unlimited, working set) at each readable cgroup
+    level, innermost first: the v2 hierarchy, else the v1 memory one."""
+    levels: list[tuple[int | None, int]] = []
+    for level in _levels():
+        current = _int(_read(level / "memory.current"))
+        if current is not None:
+            levels.append((_int(_read(level / "memory.max")),          # "max": no limit
+                           _working_set(current, _read(level / "memory.stat") or "", v1=False)))
+    if levels:
+        return levels
+    for level in _v1_levels():
+        current = _int(_read(level / "memory.usage_in_bytes"))
+        if current is not None:
+            limit = _int(_read(level / "memory.limit_in_bytes"))
+            levels.append((limit if limit is not None and limit < _V1_UNLIMITED else None,
+                           _working_set(current, _read(level / "memory.stat") or "", v1=True)))
+    return levels
+
+
 def _memory() -> dict[str, int | None]:
     """Memory limit and what is still available under it, in bytes.
 
@@ -186,30 +282,23 @@ def _memory() -> dict[str, int | None]:
     count on it, as MemAvailable counts it on a host (container runtimes
     show usage minus the inactive part only, a view of what is cached, not
     of what a job can get). Available is the limit minus the working set.
+    A SLURM grant is one more limit, charged with this process's own
+    cgroup's working set.
     """
-    total = available = None
-    for level in _levels():
-        limit = _int(_read(level / "memory.max"))
-        current = _int(_read(level / "memory.current"))
-        if limit is None or current is None:
-            continue                     # "max": no limit at this level
-        cached = unclean = 0
-        for line in (_read(level / "memory.stat") or "").splitlines():
-            key, _, value = line.partition(" ")
-            if key in ("inactive_file", "active_file"):
-                cached += _int(value) or 0
-            elif key in ("file_dirty", "file_writeback"):
-                unclean += _int(value) or 0   # still to be written: not droppable yet
-        # A parent's usage includes its other children, so its headroom is what
-        # is left for everybody under it, this node included.
-        headroom = max(0, limit - max(0, current - max(0, cached - unclean)))
-        total = limit if total is None else min(total, limit)
-        available = headroom if available is None else min(available, headroom)
+    levels = _cgroup_memory()
+    # A parent's usage includes its other children, so its headroom is what
+    # is left for everybody under it, this node included.
+    limited = [(limit, used) for limit, used in levels if limit is not None]
+    grant = _granted_memory()
+    if grant is not None:
+        limited.append((grant, levels[0][1] if levels else None))
     host_total, host_available = _host_memory()
-    if total is not None:
-        # A cgroup limit is a ceiling, not a reservation: on a host under
-        # pressure a node cannot get more than the host has left.
-        if available is not None and host_available is not None:
+    if limited:
+        total = min(limit for limit, _ in limited)
+        available = min(limit if used is None else max(0, limit - used) for limit, used in limited)
+        # A limit is a ceiling, not a reservation: on a host under pressure a
+        # node cannot get more than the host has left.
+        if host_available is not None:
             available = min(available, host_available)
         return {"total_bytes": total, "available_bytes": available}
 
@@ -235,12 +324,18 @@ def available_memory_bytes() -> int | None:
 
 def memory_limit_bytes() -> int | None:
     """The memory this process can ever have, in bytes: the tightest cgroup
-    limit over its levels in a container, the host's memory otherwise; None
-    when neither can be read. Only the limits are read, not the usage, so a
-    limit is never lost because a usage file is missing."""
+    limit (v2, else v1) over its levels or SLURM grant, the host's memory
+    otherwise; None when none can be read. Only the limits are read, not the
+    usage, so a limit is never lost because a usage file is missing."""
     try:
         limits = [limit for level in _levels()
                   if (limit := _int(_read(level / "memory.max"))) is not None]
+        if not limits:
+            limits = [limit for level in _v1_levels()
+                      if (limit := _int(_read(level / "memory.limit_in_bytes"))) is not None
+                      and limit < _V1_UNLIMITED]
+        if (grant := _granted_memory()) is not None:
+            limits.append(grant)
         if limits:
             return min(limits)
         total, _ = _host_memory()

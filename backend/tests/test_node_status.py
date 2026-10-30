@@ -81,6 +81,13 @@ def _host_memory_unknown(monkeypatch):
     monkeypatch.setattr(node_status, "_host_memory", lambda: (None, None))
 
 
+def _fake_v1(root: Path, *, limit: str, usage: str, inactive: str = "0") -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "memory.limit_in_bytes").write_text(limit + "\n")
+    (root / "memory.usage_in_bytes").write_text(usage + "\n")
+    (root / "memory.stat").write_text(f"cache 9\ntotal_inactive_file {inactive}\ntotal_active_file 0\n")
+
+
 def _collect():
     return node_status.collect(workers=2, running_tasks=1, queued_tasks=3, render_active=0,
                                render_capacity=4, workspace=Path("."), finders=[], version="t")
@@ -234,3 +241,80 @@ def test_host_memory_is_read_from_meminfo(monkeypatch):
     assert _REAL_HOST_MEMORY() == (16777216 * 1024, 262144 * 1024)
     monkeypatch.setattr(node_status, "_read", lambda path: None)
     assert _REAL_HOST_MEMORY() == (None, None)
+
+
+_V1_NO_LIMIT = "9223372036854710272"
+
+
+def test_cgroup_v1_limits_bind_the_node(tmp_path, monkeypatch):
+    # A SLURM step under a job whose v1 memory cgroup limits it to 8 GiB.
+    job = tmp_path / "slurm" / "uid_1" / "job_7"
+    task = job / "step_0" / "task_0"
+    _fake_v1(job, limit=str(8 << 30), usage=str(3 << 30), inactive=str(1 << 30))
+    _fake_v1(job / "step_0", limit=_V1_NO_LIMIT, usage=str(2 << 30))
+    _fake_v1(task, limit=_V1_NO_LIMIT, usage=str(2 << 30))
+    monkeypatch.setattr(node_status, "_V1_MOUNT", tmp_path)
+    monkeypatch.setattr(node_status, "_CGROUP_V1", task)
+    monkeypatch.setattr(node_status, "_CGROUP", tmp_path / "absent")
+    memory = node_status._memory()
+    assert memory == {"total_bytes": 8 << 30, "available_bytes": (8 << 30) - (2 << 30)}
+    assert node_status.memory_limit_bytes() == 8 << 30
+
+
+def test_slurm_grant_binds_an_unenforced_job(tmp_path, monkeypatch):
+    # The cluster does not enforce memory (v1 limits unlimited), but the job
+    # was granted 64 GiB: that is the node's ceiling, less what it already uses.
+    task = tmp_path / "slurm" / "job_7" / "task_0"
+    _fake_v1(task.parent, limit=_V1_NO_LIMIT, usage=str(5 << 30))
+    _fake_v1(task, limit=_V1_NO_LIMIT, usage=str(2 << 30), inactive=str(1 << 30))
+    monkeypatch.setattr(node_status, "_V1_MOUNT", tmp_path)
+    monkeypatch.setattr(node_status, "_CGROUP_V1", task)
+    monkeypatch.setattr(node_status, "_CGROUP", tmp_path / "absent")
+    monkeypatch.setattr(node_status, "_host_memory", lambda: (320 << 30, 300 << 30))
+    monkeypatch.setenv("SLURM_JOB_ID", "7")
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "65536")
+    memory = node_status._memory()
+    assert memory == {"total_bytes": 64 << 30, "available_bytes": (64 << 30) - (1 << 30)}
+    assert node_status.memory_limit_bytes() == 64 << 30
+
+
+def test_slurm_grant_per_cpu_and_without_a_cgroup(tmp_path, monkeypatch):
+    monkeypatch.setattr(node_status, "_CGROUP", tmp_path / "absent")
+    monkeypatch.setattr(node_status, "_host_memory", lambda: (320 << 30, 300 << 30))
+    monkeypatch.setenv("SLURM_MEM_PER_CPU", "4096")
+    monkeypatch.setenv("SLURM_CPUS_ON_NODE", "8")
+    # Grant variables without a job (inherited by some service) state nothing.
+    assert node_status._memory()["total_bytes"] == 320 << 30
+    monkeypatch.setenv("SLURM_JOB_ID", "7")
+    assert node_status._memory() == {"total_bytes": 32 << 30, "available_bytes": 32 << 30}
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "0")      # --mem=0: the whole node, no cap
+    assert node_status._memory()["total_bytes"] == 320 << 30
+
+
+def test_namespaced_v1_root_is_the_container_group(tmp_path, monkeypatch):
+    # In a cgroup namespace /proc/self/cgroup says "memory:/": the mount is the
+    # container's own group and carries its limit.
+    _fake_v1(tmp_path, limit=str(8 << 30), usage=str(2 << 30))
+    monkeypatch.setattr(node_status, "_V1_MOUNT", tmp_path)
+    monkeypatch.setattr(node_status, "_CGROUP_V1", tmp_path)
+    monkeypatch.setattr(node_status, "_CGROUP", tmp_path / "absent")
+    monkeypatch.setattr(node_status, "_host_memory", lambda: (320 << 30, 300 << 30))
+    assert node_status._memory() == {"total_bytes": 8 << 30, "available_bytes": 6 << 30}
+    assert node_status.memory_limit_bytes() == 8 << 30
+
+
+def test_own_v1_memory_follows_proc_self(tmp_path, monkeypatch):
+    monkeypatch.delenv("VISIVO_CGROUP_ROOT", raising=False)
+    (tmp_path / "slurm" / "job_7").mkdir(parents=True)
+    monkeypatch.setattr(node_status, "_V1_MOUNT", tmp_path)
+    real_read = node_status.Path.read_text
+
+    def fake_read(self, *a, **k):
+        if str(self) == "/proc/self/cgroup":
+            return "12:cpuset:/\n3:memory:/slurm/job_7\n0::/\n"
+        return real_read(self, *a, **k)
+
+    monkeypatch.setattr(node_status.Path, "read_text", fake_read)
+    assert node_status._own_v1_memory() == tmp_path / "slurm" / "job_7"
+    monkeypatch.setenv("VISIVO_CGROUP_ROOT", str(tmp_path))
+    assert node_status._own_v1_memory() is None

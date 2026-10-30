@@ -8,7 +8,7 @@
 #   4. Opens an SSH tunnel from the laptop to the compute node
 #   5. Prints the URL + token for the desktop client's Remote Backends form
 #
-# So the operator goes from "I want the backend on Power9" to
+# So the operator goes from "I want the backend on the cluster" to
 # "VisIVO desktop knows where to connect" in a single command.
 #
 # Usage:
@@ -37,6 +37,9 @@ REMOTE_REPO="${VISIVO_REMOTE_REPO:-VisIVOVisualAnalytics}"
 REMOTE_OPTS=()
 PIDFILE="${HOME}/.visivo_slurm_tunnel.pid"
 JOBFILE="${HOME}/.visivo_slurm_job"
+# The remote backend's token. Not ~/.visivo_token: that is the local
+# backend's, which the desktop would then fail to authenticate against.
+TOKENFILE="${HOME}/.visivo_slurm_token"
 STOP=false
 
 while [[ $# -gt 0 ]]; do
@@ -88,6 +91,7 @@ if [[ "$STOP" == "true" ]]; then
         ssh "${SLURM_USER}@${SLURM_FRONTEND}" "scancel ${SLURM_JOB_ID}" || true
         rm -f "$JOBFILE"
     fi
+    rm -f "$TOKENFILE"
     exit 0
 fi
 
@@ -151,7 +155,7 @@ cat <<EOF
   SLURM job:    ${JOB_ID} (on ${NODE})
   Local URL:    http://localhost:${LOCAL_PORT}
   Token:        ${TOKEN}
-  Token file:   ${HOME}/.visivo_token
+  Token file:   ${TOKENFILE}
 ══════════════════════════════════════════════════════════════════════
 
   In VisIVO desktop:
@@ -171,6 +175,6 @@ cat <<EOF
 ══════════════════════════════════════════════════════════════════════
 EOF
 
-# Save the token for the desktop launcher if it ever reads from this path.
-echo "$TOKEN" > "$HOME/.visivo_token"
-chmod 600 "$HOME/.visivo_token"
+# A private file renamed into place: an existing one keeps its mode on overwrite.
+TOKENTMP="$(umask 077 && mktemp "${TOKENFILE}.XXXXXX")"
+printf '%s\n' "$TOKEN" > "$TOKENTMP" && mv -f "$TOKENTMP" "$TOKENFILE"

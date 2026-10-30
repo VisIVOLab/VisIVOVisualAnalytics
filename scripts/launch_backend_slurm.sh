@@ -4,7 +4,7 @@
 # Submit the VisIVO backend to a SLURM compute node, wait for it to become
 # ready, and print the SSH tunnel command the operator runs on the laptop.
 #
-# Designed for the INAF Power9 SRC testbed where ``pleiadi-gpu.oact.inaf.it``
+# Designed for the INAF PLEIADI-GPU system, where ``pleiadi-gpu.oact.inaf.it``
 # is the frontend (login node) of a SLURM cluster. The frontend should not
 # run long-lived services; this script puts the backend on a real compute
 # node instead, optionally with GPU allocation.
@@ -380,10 +380,10 @@ cat <<EOF
   Then in the VisIVO desktop client:
 
       Settings → Remote Backends → Add:
-          ID:       src-power9-slurm
+          ID:       src-$(printf '%s' "${NODE_CODE:-node}" | tr '[:upper:]' '[:lower:]')
           URL:      http://localhost:${PORT}
           Token:    ${TOKEN}
-          SRC code: POWER9
+          SRC code: ${NODE_CODE:-<the node's code in SKAVA>}
 
   Job log:
       ssh ${FRONTEND} tail -f ${LOG_DIR}/visivo_backend_${JOB_ID}.log

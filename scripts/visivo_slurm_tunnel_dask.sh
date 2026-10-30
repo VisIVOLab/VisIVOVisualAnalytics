@@ -58,6 +58,9 @@ REMOTE_OPTS=()
 PIDFILE="${HOME}/.visivo_slurm_tunnel_dask.pid"
 DASH_PIDFILE="${HOME}/.visivo_slurm_tunnel_dask_dashboard.pid"
 JOBFILE="${HOME}/.visivo_slurm_dask_job"
+# The remote backend's token. Not ~/.visivo_token: that is the local
+# backend's, which the desktop would then fail to authenticate against.
+TOKENFILE="${HOME}/.visivo_slurm_dask_token"
 STOP=false
 
 while [[ $# -gt 0 ]]; do
@@ -105,6 +108,7 @@ if [[ "$STOP" == "true" ]]; then
         ssh "${SLURM_USER}@${SLURM_FRONTEND}" "scancel ${SLURM_JOB_ID}" || true
         rm -f "$JOBFILE"
     fi
+    rm -f "$TOKENFILE"
     exit 0
 fi
 
@@ -120,7 +124,9 @@ REMOTE_CMD=(bash "${REMOTE_REPO}/scripts/launch_backend_slurm_dask.sh" "${REMOTE
 
 # Stream + capture (BSD mktemp on macOS: no trailing suffix).
 TMP="$(mktemp /tmp/visivo_slurm_dask_XXXXXX)"
-ssh "${SSH_USER}@${FRONTEND}" "${REMOTE_CMD[@]}" 2>&1 | tee "$TMP"
+# ssh joins its arguments into one remote shell line: quote each one.
+REMOTE_LINE="$(printf '%q ' "${REMOTE_CMD[@]}")"
+ssh "${SSH_USER}@${FRONTEND}" "$REMOTE_LINE" 2>&1 | tee "$TMP"
 
 # Parse the launcher's output. The dask launcher prints (see README block):
 #   [visivo] Job ID: <N>
@@ -179,16 +185,16 @@ cat <<EOF
   SLURM job:    ${JOB_ID} (driver on ${NODE})
   Local URL:    http://localhost:${LOCAL_PORT}
   Token:        ${TOKEN}
-  Token file:   ${HOME}/.visivo_token
+  Token file:   ${TOKENFILE}
 ${DASH_LINE}
 ══════════════════════════════════════════════════════════════════════
 
   In VisIVO desktop:
       Settings → Remote Backends → Add
-          ID:        src-power9-dask
+          ID:        src-slurm-dask
           URL:       http://localhost:${LOCAL_PORT}
           Token:     <paste from above>
-          SRC code:  POWER9
+          SRC code:  <the node's code in SKAVA>
 
   Tail the SLURM job log:
       ssh ${SSH_USER}@${FRONTEND} \\
@@ -200,6 +206,6 @@ ${DASH_LINE}
 ══════════════════════════════════════════════════════════════════════
 EOF
 
-# Save the token for any local tooling that reads ~/.visivo_token.
-echo "$TOKEN" > "$HOME/.visivo_token"
-chmod 600 "$HOME/.visivo_token"
+# A private file renamed into place: an existing one keeps its mode on overwrite.
+TOKENTMP="$(umask 077 && mktemp "${TOKENFILE}.XXXXXX")"
+printf '%s\n' "$TOKEN" > "$TOKENTMP" && mv -f "$TOKENTMP" "$TOKENFILE"

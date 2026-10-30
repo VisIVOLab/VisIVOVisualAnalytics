@@ -45,6 +45,16 @@ def _isolated_exports(monkeypatch, tmp_path_factory):
     return workspace
 
 
+@pytest.fixture(autouse=True)
+def _host_job_hidden(monkeypatch):
+    # Memory limits come from the test host's v1 cgroup and SLURM job when it
+    # runs in one; no test may see them.
+    from app import node_status
+    monkeypatch.setattr(node_status, "_CGROUP_V1", None)
+    for name in ("SLURM_JOB_ID", "SLURM_MEM_PER_NODE", "SLURM_MEM_PER_CPU", "SLURM_CPUS_ON_NODE"):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture(scope="session")
 def auth_headers() -> dict[str, str]:
     """Headers that satisfy the authentication dependency."""
