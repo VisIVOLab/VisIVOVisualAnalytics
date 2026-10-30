@@ -14,6 +14,7 @@ private slots:
     void parsesDatalink();
     void nullScoresStayNaN();
     void parsesErrorEnvelope();
+    void explainsAnUnreachableNode();
     void accessUrlForNode();
     // VO protocol (TAP/ObsCore + DataLink VOTable)
     void adqlFromFilter();

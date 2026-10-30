@@ -84,6 +84,17 @@ void TestSkavaClient::parsesErrorEnvelope()
     QVERIFY(SkavaClient::parseErrorEnvelope(R"({"detail":"x"})").isEmpty());
 }
 
+void TestSkavaClient::explainsAnUnreachableNode()
+{
+    const QString detail = u"no_available_nodes - No available nodes for dataset 'x'"_s;
+    const QString text = SkavaClient::explainHttpError(503, detail);
+    QVERIFY(text.startsWith(detail));
+    QVERIFY(text.contains(u"cannot reach any node"_s));
+    QVERIFY(!text.contains(u"sign"_s, Qt::CaseInsensitive));
+    QCOMPARE(SkavaClient::explainHttpError(404, u"dataset_not_found - x"_s), u"dataset_not_found - x"_s);
+    QCOMPARE(SkavaClient::explainHttpError(503, u"overloaded"_s), u"overloaded"_s);
+}
+
 void TestSkavaClient::accessUrlForNode()
 {
     auto r = SkavaClient::parseDatalinkResponse(fixtureObject("datalink.json"));

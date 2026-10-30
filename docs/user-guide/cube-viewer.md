@@ -99,8 +99,16 @@ segment above the 3-D pane:
   switch, because `/v1/render/*` would refuse the request. It uses the *same* mapper on the whole cube (it is **not**
   out-of-core), so the memory has to exist there instead of here; what you gain
   is that the backend loads the full grid where the client would fall back to a
-  decimated proxy, and that a large cube never crosses the network. The cost is
-  an encode/decode round trip per frame.
+  decimated proxy, and that a large cube never crosses the network. With the
+  JPEG transport (the one used unless the backend offers WebRTC), the backend
+  sends a frame whenever the view changes, without waiting to be asked (a few
+  frames ahead of the client's acknowledgements); while you rotate it lowers
+  the volume's quality adaptively, aiming at about 25 ms of GPU time (render
+  and read-back) a frame, and on release sends a full-resolution one. Each
+  remote view renders in a process of its own, and the views are spread over
+  the backend machine's GPUs in turn (with more views than GPUs, some share
+  one). On a 2 GB cube on a V100 node behind an SSH tunnel this ran at about
+  28 frames per second while rotating.
 - **Auto** — starts local and lets the recommendation below appear.
 
 A cube whose full resolution exceeds `Cube/local_full_threshold_mb`
@@ -115,7 +123,8 @@ which case you are in:
 
 - a **remote** backend: the full-resolution cube never crosses the network — the
   frames do, and they are the same size whatever the cube is;
-- a **local** backend (`127.0.0.1`): there is no elsewhere. Same machine, same
+- a **local** backend (`127.0.0.1`, unless it is registered under *Remote
+  Backends* as another machine reached through a tunnel): there is no elsewhere. Same machine, same
   GPU, the same whole volume in memory — just held by the backend process
   instead of this one — plus a per-frame encode. The only thing it gains you is
   the **full grid** instead of the decimated proxy, and that is a limit this

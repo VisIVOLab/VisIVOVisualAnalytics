@@ -351,6 +351,10 @@ public:
     /// SKAVA's error envelope ``{"error": {"code", "message"}}`` as one line,
     /// or empty when ``body`` is not one. Factored out for unit tests.
     static QString parseErrorEnvelope(const QByteArray &body);
+    /// What to tell the user about an HTTP error, from its status and SKAVA's
+    /// ``code - message`` detail: the detail, plus what it means when that is
+    /// not obvious (a 503 ``no_available_nodes`` is a node out of reach).
+    static QString explainHttpError(int status, const QString &detail);
     /// A ``WWW-Authenticate`` header as the challenge it carries (RFC 7235
     /// list of schemes with ``name="value"`` parameters). ``required`` is set
     /// for any non-empty header.

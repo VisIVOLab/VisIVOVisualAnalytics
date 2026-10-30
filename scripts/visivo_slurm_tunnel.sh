@@ -78,7 +78,12 @@ if [[ "$STOP" == "true" ]]; then
     if [[ -f "$PIDFILE" ]]; then
         PID="$(cat "$PIDFILE")"
         if kill -0 "$PID" 2>/dev/null; then
+            # The reconnect loop ends its own ssh on TERM.
             kill "$PID"
+            for _ in $(seq 1 20); do
+                kill -0 "$PID" 2>/dev/null || break
+                sleep 0.25
+            done
             echo "[visivo] SSH tunnel stopped (pid $PID)."
         fi
         rm -f "$PIDFILE"
@@ -99,6 +104,19 @@ fi
 if [[ -z "$FRONTEND" ]]; then
     echo "ERROR: --frontend <host> is required" >&2
     exit 2
+fi
+# Before submitting anything: a tunnel still open (or its reconnect loop) on
+# the local port would make the new one fail after a job had been submitted,
+# and --stop would then know only the new job.
+if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+    echo "[visivo] ERROR: a tunnel from an earlier run is still active (pid $(cat "$PIDFILE"))." >&2
+    echo "[visivo]        Stop it first: bash $0 --stop" >&2
+    exit 1
+fi
+if (exec 3<>"/dev/tcp/127.0.0.1/${LOCAL_PORT}") 2>/dev/null; then
+    echo "[visivo] ERROR: localhost:${LOCAL_PORT} is already in use." >&2
+    echo "[visivo]        Stop what holds it, or choose another --port." >&2
+    exit 1
 fi
 
 # ── Submit via SSH and capture the launcher's output ─────────────────────────
@@ -134,17 +152,46 @@ echo "${JOB_ID} ${FRONTEND} ${SSH_USER}" > "$JOBFILE"
 
 # ── Open the SSH tunnel in the background ─────────────────────────────────────
 echo "[visivo] Opening tunnel: localhost:${LOCAL_PORT} → ${NODE}:${REMOTE_PORT} via ${FRONTEND}"
-ssh -N -f \
-    -L "${LOCAL_PORT}:${NODE}:${REMOTE_PORT}" \
-    -o ExitOnForwardFailure=yes \
-    -o ServerAliveInterval=30 \
-    "${SSH_USER}@${FRONTEND}"
-
-# Capture the SSH pid for --stop.
-sleep 1
-TUNNEL_PID="$(pgrep -f "ssh -N.*${LOCAL_PORT}:${NODE}:${REMOTE_PORT}" | head -1 || true)"
-if [[ -n "$TUNNEL_PID" ]]; then
-    echo "$TUNNEL_PID" > "$PIDFILE"
+# A tunnel that drops (a network change, the laptop sleeping, an idle
+# timeout) is opened again by itself: ssh runs in a loop in the background,
+# with keep-alives so a dead connection is noticed within a minute. --stop
+# ends the loop and its ssh. Non-interactive (BatchMode): key-based access.
+# The loop ends its own ssh when it is told to stop (TERM), so no ssh it
+# starts can outlive it.
+nohup bash -c '
+    child=
+    trap "[ -n \"\$child\" ] && kill \$child 2>/dev/null; exit 0" TERM INT
+    while true; do
+        ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            -L "$1" "$2" &
+        child=$!
+        wait "$child"
+        child=
+        sleep 3 & wait $!
+    done' visivo-tunnel "${LOCAL_PORT}:${NODE}:${REMOTE_PORT}" "${SSH_USER}@${FRONTEND}" \
+    >/dev/null 2>&1 &
+echo "$!" > "$PIDFILE"
+# Ready means the backend answers through the tunnel, not only that the
+# local port listens.
+READY=false
+DEADLINE=$((SECONDS + 30))
+while (( SECONDS < DEADLINE )); do
+    LEFT=$((DEADLINE - SECONDS))
+    (( LEFT > 0 )) || break   # --max-time 0 would mean no limit at all
+    if curl -sf -o /dev/null --max-time "$(( LEFT < 3 ? LEFT : 3 ))" \
+            -H "X-Visivo-Token: ${TOKEN}" "http://localhost:${LOCAL_PORT}/v1/health"; then
+        READY=true
+        break
+    fi
+    sleep 0.5
+done
+if [[ "$READY" != "true" ]]; then
+    kill "$(cat "$PIDFILE")" 2>/dev/null || true
+    rm -f "$PIDFILE"
+    echo "[visivo] ERROR: the backend did not answer through the tunnel within 30 s." >&2
+    echo "[visivo]        The job (${JOB_ID}) is still queued or running: bash $0 --stop cancels it." >&2
+    exit 1
 fi
 
 cat <<EOF

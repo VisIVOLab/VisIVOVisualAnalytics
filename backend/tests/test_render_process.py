@@ -123,3 +123,100 @@ async def test_a_cancelled_close_still_ends_the_child():
             break
         await asyncio.sleep(0.1)
     assert s._released and not s._process.is_alive()
+
+
+def test_sessions_take_only_the_jobs_gpus_in_turn():
+    from app.render_session._process import _pick_egl_device
+    # All four GPUs visible: EGL device i is CUDA ordinal i.
+    assert [_pick_egl_device([0, 1, 2, 3], slot) for slot in range(5)] == [0, 1, 2, 3, 0]
+    # CUDA_VISIBLE_DEVICES=2,3 (as measured on PLEIADI-GPU): EGL devices 0 and 1
+    # do not answer, and the sessions must never land on them.
+    assert [_pick_egl_device([None, None, 0, 1], slot) for slot in range(4)] == [2, 3, 2, 3]
+    # Ordered by CUDA ordinal, not by EGL index.
+    assert _pick_egl_device([1, 0], 0) == 1
+    # No mapping known: VTK keeps its choice.
+    assert _pick_egl_device([], 0) is None
+    assert _pick_egl_device([None, None], 1) is None
+
+
+def test_the_device_is_bound_and_an_operators_choice_wins(monkeypatch):
+    import os
+    import app.render_session._process as proc
+    monkeypatch.setattr(proc, "_egl_cuda_ordinals", lambda: [None, None, 0, 1])
+    monkeypatch.setenv("VTK_EGL_DEVICE_INDEX", "3")
+    proc._egl_device_for(0)
+    assert os.environ["VTK_EGL_DEVICE_INDEX"] == "3"           # left alone
+    monkeypatch.delenv("VTK_EGL_DEVICE_INDEX")
+    proc._egl_device_for(1)
+    assert os.environ["VTK_EGL_DEVICE_INDEX"] == "3"           # slot 1 → CUDA 1 → EGL 3
+    monkeypatch.delenv("VTK_EGL_DEVICE_INDEX")
+
+
+def test_no_allowed_gpu_refuses_and_no_mapping_leaves_vtk_to_choose(monkeypatch):
+    import os
+    import app.render_session._process as proc
+    monkeypatch.delenv("VTK_EGL_DEVICE_INDEX", raising=False)
+    monkeypatch.setattr(proc, "_egl_cuda_ordinals", lambda: [None, None])
+    with pytest.raises(RuntimeError, match="visible to this job"):
+        proc._egl_device_for(0)
+    monkeypatch.setattr(proc, "_egl_cuda_ordinals", lambda: [])
+    proc._egl_device_for(0)
+    assert "VTK_EGL_DEVICE_INDEX" not in os.environ
+
+
+async def test_a_session_that_cannot_be_built_fails_its_init():
+    s = RenderSessionProcess("feedc0de09", "x", factory="tests._fake_render_session:NoSuchSession")
+    with pytest.raises(RuntimeError, match="NoSuchSession"):
+        await s.initialize()
+    await s.close()
+    assert not s._process.is_alive()
+
+
+def _fake_egl(monkeypatch, devices):
+    """Point _egl_cuda_ordinals at fake EGL entry points: ``devices`` is a list
+    of (extensions, cuda_ordinal or None when the query fails)."""
+    import ctypes as c
+    from types import SimpleNamespace
+
+    import app.render_session._process as proc
+
+    @c.CFUNCTYPE(c.c_uint, c.c_int, c.POINTER(c.c_void_p), c.POINTER(c.c_int))
+    def query_devices(limit, out, count):
+        for i in range(len(devices)):
+            out[i] = i + 1
+        count[0] = len(devices)
+        return 1
+
+    @c.CFUNCTYPE(c.c_uint, c.c_void_p, c.c_int, c.POINTER(c.c_ssize_t))
+    def query_attrib(device, key, out):
+        ordinal = devices[device - 1][1]
+        if ordinal is None:
+            return 0
+        out[0] = ordinal
+        return 1
+
+    strings = [c.c_char_p(ext) for ext, _ in devices]
+
+    @c.CFUNCTYPE(c.c_void_p, c.c_void_p, c.c_int)
+    def query_string(device, key):
+        return c.cast(strings[device - 1], c.c_void_p).value
+
+    keep = (query_devices, query_attrib, query_string, strings)
+    table = {b"eglQueryDevicesEXT": query_devices, b"eglQueryDeviceAttribEXT": query_attrib,
+             b"eglQueryDeviceStringEXT": query_string}
+    lib = SimpleNamespace(eglGetProcAddress=lambda name: c.cast(table[name], c.c_void_p).value
+                          if name in table else None)
+    monkeypatch.setattr(proc.ctypes, "CDLL", lambda name: lib)
+    return keep
+
+
+def test_the_cuda_mapping_is_read_from_the_devices_that_support_it(monkeypatch):
+    import app.render_session._process as proc
+    nv = b"EGL_EXT_device_drm EGL_NV_device_cuda"
+    keep = _fake_egl(monkeypatch, [(nv, None), (nv, None), (nv, 0), (nv, 1)])
+    assert proc._egl_cuda_ordinals() == [None, None, 0, 1]     # outside the job: refused
+    keep = _fake_egl(monkeypatch, [(b"EGL_EXT_device_drm", None)] * 2)
+    assert proc._egl_cuda_ordinals() == []                     # no extension: no mapping
+    keep = _fake_egl(monkeypatch, [(b"EGL_MESA_device_software", None), (nv, 0)])
+    assert proc._egl_cuda_ordinals() == [None, 0]              # a software device is skipped
+    del keep

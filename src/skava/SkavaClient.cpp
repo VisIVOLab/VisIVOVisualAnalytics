@@ -187,9 +187,9 @@ QByteArray SkavaClient::performGet(const QUrl &url, QString &error, const QByteA
         // SKAVA explains a 4xx/5xx in its error envelope (dataset_not_found,
         // no_available_nodes, …); Qt's errorString only says "Not Found".
         const QString detail = parseErrorEnvelope(reply->readAll());
-        error = detail.isEmpty() ? reply->errorString() : detail;
         // A 401 says what token it wants: the caller can sign in and retry.
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        error = detail.isEmpty() ? reply->errorString() : explainHttpError(status, detail);
         if (status == 401) {
             const QString header = QString::fromUtf8(reply->rawHeader("WWW-Authenticate"));
             if (challenge) {
@@ -501,6 +501,18 @@ QString SkavaClient::parseErrorEnvelope(const QByteArray &body)
     if (code.isEmpty() && message.isEmpty())
         return {};
     return code.isEmpty() ? message : (message.isEmpty() ? code : u"%1 - %2"_s.arg(code, message));
+}
+
+QString SkavaClient::explainHttpError(int status, const QString &detail)
+{
+    // The catalogue knows the dataset but reaches none of the nodes holding
+    // it: nothing the user can fix here, and nothing a sign-in would change.
+    if (status == 503 && detail.startsWith(u"no_available_nodes"_s))
+        return u"%1\n\nThe catalogue cannot reach any node that holds this dataset right now: "
+               u"the node's backend may be stopped, or the tunnel to it closed. The catalogue "
+               u"probes its nodes every few seconds, so a node that comes back is found again."_s
+                .arg(detail);
+    return detail;
 }
 
 QString SkavaDatalinkResponse::accessUrlForNode(const QString &nodeCode) const

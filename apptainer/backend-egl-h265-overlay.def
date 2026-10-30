@@ -7,6 +7,13 @@ From: backend-egl.sif
     Description VisIVO Backend (EGL) + Phase-3 H.265 / NVENC / PyAV / aiortc
 
 %help
+    NOT UP TO DATE: written for the earlier backend-egl image, which
+    installed the scientific stack in conda's base environment. The current
+    backend-conda-egl.def keeps it in /opt/conda/envs/visivo, so this overlay
+    would build FFmpeg and install PyAV and aiortc where the backend does not
+    look. Server-side rendering does not need it: the JPEG stream is the
+    default transport. Retarget it (prefix and pip of the visivo environment)
+    before using it.
     Overlay-build that takes the existing ``backend-egl.sif`` as its
     base layer and adds JUST the H.265 / NVENC stack on top:
 

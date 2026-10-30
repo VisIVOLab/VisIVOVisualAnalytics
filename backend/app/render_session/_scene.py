@@ -282,10 +282,9 @@ class SceneMixin:
         self._render_window = vtkEGLRenderWindow()
         self._render_window.SetOffScreenRendering(1)
         self._render_window.SetSize(self.view.width, self.view.height)
-        if hasattr(self._render_window, "SetDeviceIndex"):
-            # Round-robin per-session GPU assignment would go here; for
-            # now everybody on device 0. Multi-GPU pinning is Phase 2.
-            self._render_window.SetDeviceIndex(0)
+        # The EGL device is the one the window's constructor took from
+        # VTK_DEFAULT_EGL_DEVICE_INDEX, which the render process sets to this
+        # session's GPU (render_session/_process.py); unset, VTK's default, 0.
         # Two layered renderers: 0=main scene, 1=corner-axes triad.
         self._render_window.SetNumberOfLayers(2)
         self._renderer.SetLayer(0)

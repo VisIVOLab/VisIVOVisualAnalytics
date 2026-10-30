@@ -174,6 +174,32 @@ which node it is, which build runs and what it was granted. Where `$HOME` is rea
 recorded run with a SKAVA catalogue is described in the
 [SKAVA documentation](https://skava.readthedocs.io/en/latest/operations/e2e-pleiadi-gpu-runbook.html).
 
+The helper keeps the tunnel open by itself: `ssh` runs in a loop with
+keep-alives and is restarted a few seconds after the connection drops (a
+network change, the laptop sleeping), and the helper reports the tunnel ready
+only once the backend answers through it. It needs key-based SSH access to the
+frontend; `--stop` closes the tunnel and cancels the job.
+
+For the 3-D view to be rendered on the node (see
+[Cube viewer](cube-viewer.md)), the backend's image needs VTK built with EGL,
+the off-screen rendering of NVIDIA drivers without a display. The conda-forge
+VTK 9.3.1 packages for POWER9 (`linux-ppc64le`) are built for X11 only, so
+`apptainer/backend-conda-egl.def` builds VTK with EGL as a layer on the conda
+image (`backend-conda.sif`; about 20 minutes on 32 cores, built where
+Apptainer's temporary directory is node-local), and the job is started with
+`--sif backend-egl.sif`. Each remote view then renders in a process of its
+own, and the views take the GPUs the job was given (`CUDA_VISIBLE_DEVICES`)
+in turn. Matching EGL devices to those GPUs needs the driver's
+`EGL_NV_device_cuda`; without it the backend logs a warning and VTK picks the
+device.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `VISIVO_RENDER_MAX_SESSIONS` | `8` | remote views the backend accepts at once |
+| `VISIVO_RENDER_IDLE_TTL_SECONDS` | `300` | a view with no command for this long is closed |
+| `VISIVO_RENDER_IN_PROCESS` | unset | `1` renders in the backend's own process instead (slower: rendering then holds the process the WebSocket is served from) |
+| `VTK_EGL_DEVICE_INDEX` | unset | binds every view to that EGL device instead of spreading them over the job's GPUs |
+
 The node's SODA service (`/soda/sync`, `/soda/async`) cuts and computes on
 the files under its data roots. A synchronous request with only `ID`, and
 no `POS`, `BAND` or `TIME`, returns the file as stored, byte for byte, with
@@ -204,6 +230,10 @@ is described in the
 * **`SKAVA base URL is not configured`**: fill the URL before searching.
 * **`… requires a sign-in`**: the service answered `401`. Sign in, or paste
   a token.
+* **`no_available_nodes - No available nodes for dataset …`**: the catalogue
+  knows the dataset but cannot reach any node that holds it: the node's
+  backend is stopped, or the tunnel to it is closed. It probes its nodes every
+  few seconds, so a node that comes back is used again by itself.
 * **`Search failed: invalid_query - POS must be ...`**: the spatial filter
   was rejected; set RA, Dec and radius together, or none.
 * **"… is stored on an SRC node and can only be opened by the VisIVO

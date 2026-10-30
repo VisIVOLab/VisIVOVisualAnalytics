@@ -22,12 +22,15 @@ from __future__ import annotations
 import asyncio
 import atexit
 import collections
+import ctypes
+import itertools
 import logging
 import multiprocessing
 # Imported before the exit hook below is registered: it registers its own hook
 # (which joins non-daemon children) on import, and hooks run in reverse order,
 # so ours, which ends the children, runs first.
 import multiprocessing.util  # noqa: F401
+import os
 import queue
 import threading
 import time
@@ -51,6 +54,93 @@ _LIVE: weakref.WeakSet = weakref.WeakSet()
 def _end_children() -> None:
     for proxy in list(_LIVE):
         proxy._release()
+
+
+# Sessions take the job's GPUs in turn (see _egl_device_for): one view
+# renders on one GPU, so a second view or user gets a GPU of its own.
+_next_slot = itertools.count()
+
+
+def _pick_egl_device(cuda_ordinals: list[int | None], slot: int) -> int | None:
+    """The EGL device for the ``slot``-th session, or None to leave VTK's choice.
+
+    ``cuda_ordinals[i]`` is the CUDA ordinal of EGL device ``i`` as this process
+    sees it (EGL_NV_device_cuda), None for a device it may not use. EGL lists
+    every GPU of the node whatever CUDA_VISIBLE_DEVICES says; the CUDA query is
+    what answers only for the job's GPUs (measured on PLEIADI-GPU: with
+    CUDA_VISIBLE_DEVICES=2,3, EGL devices 0 and 1 refuse it, 2 and 3 answer 0
+    and 1), so an EGL index taken from CUDA_VISIBLE_DEVICES could pick a GPU
+    outside the allocation.
+    """
+    allowed = sorted((ordinal, index) for index, ordinal in enumerate(cuda_ordinals)
+                     if ordinal is not None)
+    if not allowed:
+        return None
+    return allowed[slot % len(allowed)][1]
+
+
+def _egl_cuda_ordinals() -> list[int | None]:
+    """CUDA ordinal of each EGL device, None where the device does not answer;
+    empty when the mapping is unavailable (no EGL device query, or no device
+    with EGL_NV_device_cuda), which is not the same as "no device allowed"."""
+    try:
+        egl = ctypes.CDLL("libEGL.so.1")
+        get = egl.eglGetProcAddress
+        get.restype, get.argtypes = ctypes.c_void_p, [ctypes.c_char_p]
+        query_devices = get(b"eglQueryDevicesEXT")
+        query_attrib = get(b"eglQueryDeviceAttribEXT")
+        query_string = get(b"eglQueryDeviceStringEXT")
+        if not query_devices or not query_attrib or not query_string:
+            return []
+        devices_fn = ctypes.CFUNCTYPE(ctypes.c_uint, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p),
+                                      ctypes.POINTER(ctypes.c_int))(query_devices)
+        attrib_fn = ctypes.CFUNCTYPE(ctypes.c_uint, ctypes.c_void_p, ctypes.c_int,
+                                     ctypes.POINTER(ctypes.c_ssize_t))(query_attrib)
+        string_fn = ctypes.CFUNCTYPE(ctypes.c_char_p, ctypes.c_void_p, ctypes.c_int)(query_string)
+        devices, count = (ctypes.c_void_p * 32)(), ctypes.c_int(0)
+        if not devices_fn(32, devices, ctypes.byref(count)):
+            return []
+        ordinals: list[int | None] = []
+        any_mapping = False
+        for i in range(count.value):
+            extensions = (string_fn(devices[i], 0x3055) or b"").split()   # EGL_EXTENSIONS
+            if b"EGL_NV_device_cuda" not in extensions:
+                ordinals.append(None)
+                continue
+            any_mapping = True
+            value = ctypes.c_ssize_t(-1)   # EGLAttrib is intptr_t
+            ok = attrib_fn(devices[i], 0x323A, ctypes.byref(value))   # EGL_CUDA_DEVICE_NV
+            ordinals.append(value.value if ok and value.value >= 0 else None)
+        return ordinals if any_mapping else []
+    except (OSError, AttributeError):
+        return []
+
+
+def _egl_device_for(slot: int) -> None:
+    """In the child, before the session builds its window: bind VTK's EGL
+    window to this session's GPU.
+
+    VTK_EGL_DEVICE_INDEX, not the default index: the default is a preference
+    VTK abandons for another device when it fails, which could be a GPU
+    outside the job; the explicit index fails instead. An index the operator
+    set is left alone. When the CUDA mapping says no device is the job's, the
+    session does not start; when there is no mapping at all (no
+    EGL_NV_device_cuda), nothing can be decided and VTK keeps its default.
+    """
+    if os.environ.get("VTK_EGL_DEVICE_INDEX"):
+        return
+    log = logging.getLogger("visivo.render")
+    ordinals = _egl_cuda_ordinals()
+    if not ordinals:
+        log.warning("[render-process] no EGL-to-CUDA device mapping: VTK picks the GPU")
+        return
+    index = _pick_egl_device(ordinals, slot)
+    if index is None:
+        raise RuntimeError("None of the node's GPUs is visible to this job "
+                           f"(CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')!r}).")
+    os.environ["VTK_EGL_DEVICE_INDEX"] = str(index)
+    log.info("[render-process] slot %d renders on EGL device %d (CUDA ordinal %d)",
+             slot, index, ordinals[index])
 
 
 class _View:
@@ -105,8 +195,10 @@ class RenderSessionProcess:
         # Not a daemon: the session starts a reader process of its own for
         # large cubes, and daemonic processes may not have children. close()
         # and the exit hook end it instead.
+        self.gpu_slot = next(_next_slot)
         self._process = ctx.Process(
-            target=_serve, args=(child, self.session_id, self.dataset_path, self._factory),
+            target=_serve,
+            args=(child, self.session_id, self.dataset_path, self._factory, self.gpu_slot),
             name=f"visivo-render-{self.session_id[:8]}", daemon=False,
         )
         self._process.start()
@@ -279,7 +371,22 @@ def _load(factory: str):
     return getattr(mod, name)
 
 
-def _serve(conn, session_id: str, dataset_path: str, factory: str) -> None:
+def _refuse_all(conn, message: str) -> None:
+    """The session could not be built: answer each request with the error,
+    so the init waiting for it fails with the reason, then end."""
+    from ._common import SessionStats as _Stats
+    while True:
+        try:
+            kind = conn.recv()[0]
+        except (EOFError, OSError):
+            return
+        if kind != _COMMAND:
+            conn.send(("error", message, asdict(_Stats()), (0, 0)))
+        if kind in ("init", "close"):
+            return
+
+
+def _serve(conn, session_id: str, dataset_path: str, factory: str, gpu_slot: int = 0) -> None:
     """Child process: run the session, answering requests in the order received."""
     # A spawned child starts with logging unconfigured: without this the
     # session's messages (render timings, failures) would be lost.
@@ -287,7 +394,12 @@ def _serve(conn, session_id: str, dataset_path: str, factory: str) -> None:
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    session = _load(factory)(session_id, dataset_path)
+    try:
+        _egl_device_for(gpu_slot)
+        session = _load(factory)(session_id, dataset_path)
+    except Exception as exc:   # noqa: BLE001 - reported to the waiting init
+        _refuse_all(conn, f"{type(exc).__name__}: {exc}")
+        return
 
     def reply(status: str, value: Any) -> None:
         view = getattr(session, "view", None)
