@@ -80,11 +80,25 @@ From: backend-conda.sif
             > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
     fi
 
-    # ── 2. Drop conda-forge's X11 VTK ─────────────────────────────────
+    # ── 2. Drop conda-forge's X11 VTK and its OpenGL stack ────────────
     # --force: remove these packages only, not what depends on them; the
     # source build below provides the same vtkmodules package.
+    #
+    # The X11 VTK brought conda's own libglvnd (libGLdispatch, libOpenGL,
+    # libGL, libGLX) and the libraries that need it. Left in the env, its
+    # libGLdispatch is found through the env's RPATHs while libEGL comes
+    # from the host (--nv): two dispatch libraries in one process, and the
+    # first GL call crashed inside the NVIDIA driver on PLEIADI-GPU. With
+    # them gone, the env provides none of them, so under --nv the loader
+    # takes all three from the host's glvnd, as long as Apptainer's
+    # nvliblist exposes all three (it does on PLEIADI-GPU).
     . /opt/conda/etc/profile.d/conda.sh
-    conda remove -y --force -p "$ENV_PREFIX" vtk vtk-base vtk-io-ffmpeg || true
+    conda remove -y --force -p "$ENV_PREFIX" vtk vtk-base vtk-io-ffmpeg \
+        gl2ps glew libglu libgl libglx libopengl libegl libglvnd || true
+    for lib in libGLdispatch.so.0 libOpenGL.so.0 libEGL.so.1 libGL.so.1 libGLX.so.0; do
+        [ ! -e "$ENV_PREFIX/lib/$lib" ] \
+            || { echo "[backend-conda-egl.def] FATAL: conda's $lib is still in the env"; exit 1; }
+    done
     if "$PY" -c "import vtkmodules" 2>/dev/null; then
         echo "[backend-conda-egl.def] FATAL: conda's vtkmodules is still importable"
         exit 1
