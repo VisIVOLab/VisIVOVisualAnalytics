@@ -955,9 +955,10 @@ protected:
     QPointer<QWidget> m_orphanToolsPage;   ///< kept alive, not shown (Analysis tab supersedes it)
     const QString filepath;
     const QString remoteBackendUrl;
-    /// The backend is on THIS machine (loopback host). It changes what a
-    /// recommendation to render remotely actually buys: no transfer is saved,
-    /// only the client's own GPU memory.
+    /// The backend is on THIS machine (loopback host, unless the backends
+    /// registry lists that URL as a remote node reached through a tunnel). It
+    /// changes what a recommendation to render remotely actually buys: no
+    /// transfer is saved, only the client's own GPU memory.
     bool backendIsLocal() const;
     /// Path of the app's Settings.ini, for cheap raw QSettings reads/writes.
     /// NOT via Settings: that constructor launches python3 with 30-second

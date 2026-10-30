@@ -133,8 +133,10 @@
 #include <QMetaObject>
 #include <QMenu>
 #include <QMessageBox>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -307,18 +309,21 @@ bool vtkWindowCube::backendIsLocal() const
     const QString host = url.host().toLower();
     if (host.isEmpty())
         return false;
-    if (host == QStringLiteral("localhost"))
-        return true;
+    // Scheme-aware default port, so an implicit https URL and an explicit :443
+    // are the same endpoint.
+    const auto portOf = [](const QUrl &u) {
+        return u.port(u.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0 ? 443
+                                                                                            : 80);
+    };
     // 127.0.0.0/8 and ::1, whatever spelling the user typed (QUrl::host()
     // already strips the brackets of an IPv6 literal). QHostAddress parses
     // numeric addresses only — it does NOT resolve names.
-    const QHostAddress addr(host);
-    if (!addr.isNull() && addr.isLoopback())
-        return true;
-    // …which leaves a hosts-file alias for 127.0.0.1. Rather than
-    // resolve a name on a UI path, compare against the URL the app calls its
-    // LOCAL backend — the authoritative answer.
-    //
+    const auto isLoopback = [](const QString &h) {
+        if (h == QStringLiteral("localhost"))
+            return true;
+        const QHostAddress addr(h);
+        return !addr.isNull() && addr.isLoopback();
+    };
     // Read raw with QSettings, NOT through Settings: that constructor launches
     // python3 (and possibly python) with 30-second synchronous waits to locate
     // an interpreter, which is not something to do while composing a banner
@@ -327,15 +332,30 @@ bool vtkWindowCube::backendIsLocal() const
             QDir(QDir::home().absoluteFilePath(qApp->applicationName()))
                     .absoluteFilePath(QStringLiteral("Settings.ini"));
     QSettings raw(iniPath, QSettings::IniFormat);
+    // A loopback URL is not proof either: a node on a cluster is reached
+    // through an SSH tunnel on a local port, and the backends registry, where
+    // the user added it, says it is remote.
+    const QJsonArray nodes =
+            QJsonDocument::fromJson(raw.value(QStringLiteral("Backends/nodes")).toString().toUtf8())
+                    .array();
+    for (const QJsonValue &value : nodes) {
+        const QJsonObject node = value.toObject();
+        if (node.value(QStringLiteral("is_local")).toBool(false))
+            continue;
+        const QUrl nodeUrl(node.value(QStringLiteral("url")).toString());
+        const QString nodeHost = nodeUrl.host().toLower();
+        const bool sameHost = nodeHost == host || (isLoopback(nodeHost) && isLoopback(host));
+        if (sameHost && portOf(nodeUrl) == portOf(url))
+            return false;
+    }
+    if (isLoopback(host))
+        return true;
+    // …which leaves a hosts-file alias for 127.0.0.1. Rather than resolve a
+    // name on a UI path, compare against the URL the app calls its LOCAL
+    // backend — the authoritative answer.
     const QUrl localUrl(raw.value(QStringLiteral("Backend/url"),
                                   QStringLiteral("http://127.0.0.1:8000"))
                                 .toString());
-    // Scheme-aware default port, so an implicit https URL and an explicit :443
-    // are the same endpoint.
-    const auto portOf = [](const QUrl &u) {
-        return u.port(u.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0 ? 443
-                                                                                            : 80);
-    };
     return !localUrl.host().isEmpty() && localUrl.host().toLower() == host
             && portOf(localUrl) == portOf(url);
 }
