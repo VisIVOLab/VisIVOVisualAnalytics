@@ -163,7 +163,7 @@ cat <<EOF
           ID:        src-$(printf '%s' "${NODE_CODE:-node}" | tr '[:upper:]' '[:lower:]')
           URL:       http://localhost:${LOCAL_PORT}
           Token:     <paste from above>
-          SRC code:  ${NODE_CODE:-<the node's code in SKAVA>}
+          SRC code:  ${NODE_CODE:-<the node code in SKAVA>}
 
   Tail the SLURM job log:
       ssh ${SSH_USER}@${FRONTEND} \\

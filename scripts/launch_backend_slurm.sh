@@ -383,7 +383,7 @@ cat <<EOF
           ID:       src-$(printf '%s' "${NODE_CODE:-node}" | tr '[:upper:]' '[:lower:]')
           URL:      http://localhost:${PORT}
           Token:    ${TOKEN}
-          SRC code: ${NODE_CODE:-<the node's code in SKAVA>}
+          SRC code: ${NODE_CODE:-<the node code in SKAVA>}
 
   Job log:
       ssh ${FRONTEND} tail -f ${LOG_DIR}/visivo_backend_${JOB_ID}.log
