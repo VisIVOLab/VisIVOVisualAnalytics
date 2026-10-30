@@ -27,13 +27,14 @@ from ._common import (
 # at the first level with an opaque-ish transfer function and 60-110 ms with a
 # half-transparent one. (Shrinking the window further instead of sparser rays
 # was tried on PLEIADI-GPU and gave fewer frames per second, not more.)
-_LOD_LEVELS = ((2.0, 2.0), (3.0, 3.0), (4.0, 4.0))
-# Render time a drag frame aims at (30 FPS). A level is coarsened when a frame
+_LOD_LEVELS = ((2.0, 2.0), (3.0, 3.0), (4.0, 4.0), (6.0, 6.0))
+# GPU time (render + readback) a drag frame aims at: with ~15 ms of flip and
+# JPEG on top, about 30 FPS. A level is coarsened when a frame
 # takes more than _LOD_SLOWER of it, and refined only when the finer level is
 # expected to fit it: the measured time scaled by the levels' relative cost
 # (rays × samples per ray, image_sd² × factor). Refining on "fast" alone made a
 # cube at 42 ms on one level and 12 ms on the next bounce between them.
-_LOD_TARGET_MS = 33.0
+_LOD_TARGET_MS = 25.0
 _LOD_SLOWER = 1.2
 
 

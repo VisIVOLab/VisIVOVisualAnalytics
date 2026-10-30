@@ -332,32 +332,54 @@ class _PushState:
         self.acked.set()
 
 
+async def _window_room(push: _PushState) -> None:
+    """Wait until fewer than ``window`` frames are unacknowledged."""
+    while push.in_flight >= push.window:
+        push.acked.clear()
+        if push.in_flight >= push.window:
+            await push.acked.wait()
+
+
 async def _push_frames(websocket: WebSocket, sess, send_lock: asyncio.Lock,
                        push: _PushState) -> None:
-    """Send a frame whenever the view changes, within the ack window and the rate cap."""
+    """Send a frame whenever the view changes, within the ack window and the rate cap.
+
+    The next frame renders while this one is sent: as soon as a frame comes
+    back, the following one is asked for if the view has moved on and the
+    window has room for it, so the renderer is not idle while the frame goes
+    out (and, when the session renders in a process of its own, while it is
+    handed across).
+    """
     loop = asyncio.get_running_loop()
     last_sent = 0.0
-    sent_version = -1   # the scene version of the last frame sent; -1: none yet
+    version = -1          # the scene version of the newest frame asked for; -1: none yet
+    ahead: asyncio.Future | None = None   # the next frame, rendering while one is sent
     try:
         while True:
-            if push.in_flight >= push.window:
-                push.acked.clear()
-                if push.in_flight >= push.window:
-                    await push.acked.wait()
+            if ahead is None:
+                # Nothing rendered while the window is full: a frame made now
+                # would wait for acks and arrive stale.
+                await _window_room(push)
+                try:
+                    await asyncio.wait_for(sess.changed.wait(), timeout=_PUSH_POLL_S)
+                except asyncio.TimeoutError:
+                    pass
+                # Cleared before rendering: a change made during the render
+                # sets it again (and moves the version on), so it is sent next.
+                sess.changed.clear()
+                ahead = asyncio.ensure_future(sess.render_frame_if_changed(version))
+            jpeg, version = await ahead
+            ahead = None
+            if jpeg is None:
                 continue
-            try:
-                await asyncio.wait_for(sess.changed.wait(), timeout=_PUSH_POLL_S)
-            except asyncio.TimeoutError:
-                pass
-            # Cleared before rendering: a change made during the render sets
-            # it again (and the dirty flag), so it is sent next.
-            sess.changed.clear()
+            # Room for one more after this frame: start the next one now.
+            if sess.changed.is_set() and push.in_flight + 1 < push.window:
+                sess.changed.clear()
+                ahead = asyncio.ensure_future(sess.render_frame_if_changed(version))
+            await _window_room(push)
             delay = last_sent + 1.0 / push.max_fps - loop.time()
             if delay > 0:
                 await asyncio.sleep(delay)
-            jpeg, sent_version = await sess.render_frame_if_changed(sent_version)
-            if jpeg is None:
-                continue
             # The credit is taken before the send: the client can acknowledge
             # the frame while send_bytes() is still waiting on the transport,
             # and an ack counted before its frame would be lost for good.
@@ -376,6 +398,10 @@ async def _push_frames(websocket: WebSocket, sess, send_lock: asyncio.Lock,
             await websocket.close(code=1011, reason="render failed")
         except Exception:
             pass
+    finally:
+        if ahead is not None:
+            ahead.cancel()
+            await asyncio.gather(ahead, return_exceptions=True)
 
 
 @router.websocket("/{session_id}/ws")

@@ -540,29 +540,25 @@ class PipelineMixin:
                 (t4 - t0) * 1000.0,
             )
         render_ms = (t1 - t0) * 1000.0
-        self._adapt_lod_on_thread(render_ms)   # next drag frame, coarser or finer
+        # The LOD adapts to render AND readback: Render() returns before the
+        # GPU has finished, and the readback waits for it, so the first alone
+        # was half of the frame's GPU time (20-40 ms of 40-75 on PLEIADI-GPU).
+        self._adapt_lod_on_thread((t2 - t0) * 1000.0)
         return rgba, render_ms
 
     def _render_frame_on_thread(self) -> bytes:
         """Render one frame and return JPEG bytes. Legacy WS transport path.
 
-        ``_render_rgb_on_thread`` now returns an RGBA bottom-up buffer
-        (the WebRTC path consumes it as-is). For JPEG we still need RGB
-        top-down, so flip + drop alpha here. Costs ~15-20 ms on the
-        legacy path, but that path is fallback-only and has never been
-        targeted for 60 FPS — JPEG-over-WS struggles to clear 20 FPS
-        anyway because of the encoder cost.
+        ``_render_rgb_on_thread`` returns an RGBA bottom-up buffer (the
+        WebRTC path consumes it as-is). The JPEG must be top-down RGB: Pillow
+        reads the buffer bottom-up (negative stride) as RGBX, which the JPEG
+        encoder takes, so neither the flip nor the alpha drop is a copy. The
+        numpy flip-and-drop it replaces took ~10 ms of a ~21 ms drag frame
+        (1270×780 on PLEIADI-GPU), holding the GIL; the image is the same.
         """
-        import numpy as _np
         rgba, render_ms = self._render_rgb_on_thread()
-
-        # JPEG path needs the vertical flip + alpha drop server-side
-        # — PIL doesn't do cheap pixel mirroring on the encoder side,
-        # and the legacy ws-jpeg client paints the QImage directly
-        # without a Qt transform.
-        rgb = _np.ascontiguousarray(rgba[::-1, :, :3])
-        # JPEG encode.
-        img = Image.fromarray(rgb, mode="RGB")
+        h, w = rgba.shape[:2]
+        img = Image.frombuffer("RGBX", (w, h), rgba, "raw", "RGBX", 0, -1)
         buf = io.BytesIO()
         # A frame of a drag is on screen for tens of milliseconds: its
         # quality buys nothing the eye keeps, its size costs frame rate.

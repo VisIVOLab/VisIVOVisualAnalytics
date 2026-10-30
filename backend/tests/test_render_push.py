@@ -207,6 +207,43 @@ async def test_two_push_streams_each_get_every_change():
         s._executor.shutdown()
 
 
+async def test_the_next_frame_renders_while_this_one_is_sent():
+    # The view changes while frame-1 renders; frame-1's send is held open, and
+    # the next frame must start rendering before that send returns.
+    sess = _PushSession()
+    push = render_router._PushState()
+    push.window, push.max_fps = 8, 60.0
+    renders = 0
+    second_render = asyncio.Event()
+
+    async def counting_render(since):
+        nonlocal renders
+        renders += 1
+        frame = await _PushSession.render_frame_if_changed(sess, since)
+        if renders == 1:
+            await sess.apply_command({"type": "rotate"})       # the view moves on meanwhile
+        if renders == 2:
+            second_render.set()
+        return frame
+    sess.render_frame_if_changed = counting_render
+
+    release = asyncio.Event()
+
+    class Socket:
+        async def send_bytes(self, data):
+            if data == b"frame-1":
+                await release.wait()
+
+    task = asyncio.create_task(render_router._push_frames(Socket(), sess, asyncio.Lock(), push))
+    try:
+        await asyncio.wait_for(second_render.wait(), timeout=5)   # while frame-1 is still sending
+        assert not release.is_set()
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 # ── Interactive LOD ─────────────────────────────────────────────────────────
 
 
@@ -394,3 +431,25 @@ def test_isosurface_or_hidden_frames_do_not_train_the_volume_level():
         for _ in range(3):
             s._adapt_lod_on_thread(1.0)
         assert s._lod_level == 2
+
+
+def test_the_jpeg_of_a_bottom_up_frame_is_upright():
+    # The readback is bottom-up RGBA; the JPEG is encoded straight from it
+    # (negative stride, RGBX), without a numpy flip: it must still be upright.
+    import io
+    from types import SimpleNamespace
+
+    import numpy as np
+    from PIL import Image
+
+    from app.render_session._common import SessionStats
+    from app.render_session._pipeline import PipelineMixin
+
+    h, w = 48, 64
+    rgba = np.zeros((h, w, 4), np.uint8)
+    rgba[: h // 2, :, 0] = 255                         # the bottom half, bottom-up
+    s = SimpleNamespace(view=SimpleNamespace(jpeg_quality=95, interactive=False),
+                        stats=SessionStats(), _render_rgb_on_thread=lambda: (rgba, 1.0))
+    img = np.asarray(Image.open(io.BytesIO(PipelineMixin._render_frame_on_thread(s))).convert("RGB"), int)
+    assert img.shape == (h, w, 3)
+    assert img[-3, :, 0].mean() > 200 and img[2, :, 0].mean() < 50

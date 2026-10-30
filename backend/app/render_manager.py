@@ -29,7 +29,14 @@ import time
 import uuid
 from typing import Any
 
-from .render_session import RenderSession
+from .render_session import RenderSession as _InProcessSession
+from .render_session._process import RenderSessionProcess
+
+# Each session renders in a process of its own (see render_session._process),
+# so VTK and the JPEG encoder never hold the GIL of the event loop that serves
+# the clients. VISIVO_RENDER_IN_PROCESS=1 keeps them in this process.
+RenderSession = (_InProcessSession if os.environ.get("VISIVO_RENDER_IN_PROCESS") == "1"
+                 else RenderSessionProcess)
 
 logger = logging.getLogger("visivo.render")
 
