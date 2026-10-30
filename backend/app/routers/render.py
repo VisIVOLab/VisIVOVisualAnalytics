@@ -164,11 +164,11 @@ async def diagnostics(token: str = _auth) -> dict[str, Any]:
     # only when the optional Stage 6 H.265 build was applied.
     try:
         from ..webrtc_session import webrtc_available
-        transports = ["jpeg-ws"]
+        transports = ["jpeg-ws", "jpeg-ws-push"]
         if webrtc_available():
             transports.append("h265-webrtc")
     except ImportError:
-        transports = ["jpeg-ws"]
+        transports = ["jpeg-ws", "jpeg-ws-push"]
     snap["transports"] = transports
     return snap
 
@@ -304,6 +304,80 @@ logger = logging.getLogger("visivo.render")
 # ── WebSocket: command / frame channel ───────────────────────────────────────
 
 
+# How often the push loop looks at a cube still loading in the background when
+# no command arrives: its chunks change the picture without anyone asking.
+_PUSH_POLL_S = 0.25
+
+
+class _PushState:
+    """Flow control of one push stream: frames sent but not yet acknowledged."""
+
+    def __init__(self) -> None:
+        self.window = 3
+        self.max_fps = 30.0
+        self.in_flight = 0
+        self.acked = asyncio.Event()
+
+    def configure(self, command: dict) -> None:
+        try:
+            self.window = max(1, min(8, int(command.get("window", self.window))))
+            self.max_fps = max(1.0, min(60.0, float(command.get("max_fps", self.max_fps))))
+        except (TypeError, ValueError):
+            pass   # keep the defaults
+
+    def ack(self) -> None:
+        # A frame answered under request_frame before the stream started is
+        # acknowledged too: never count below zero.
+        self.in_flight = max(0, self.in_flight - 1)
+        self.acked.set()
+
+
+async def _push_frames(websocket: WebSocket, sess, send_lock: asyncio.Lock,
+                       push: _PushState) -> None:
+    """Send a frame whenever the view changes, within the ack window and the rate cap."""
+    loop = asyncio.get_running_loop()
+    last_sent = 0.0
+    sent_version = -1   # the scene version of the last frame sent; -1: none yet
+    try:
+        while True:
+            if push.in_flight >= push.window:
+                push.acked.clear()
+                if push.in_flight >= push.window:
+                    await push.acked.wait()
+                continue
+            try:
+                await asyncio.wait_for(sess.changed.wait(), timeout=_PUSH_POLL_S)
+            except asyncio.TimeoutError:
+                pass
+            # Cleared before rendering: a change made during the render sets
+            # it again (and the dirty flag), so it is sent next.
+            sess.changed.clear()
+            delay = last_sent + 1.0 / push.max_fps - loop.time()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            jpeg, sent_version = await sess.render_frame_if_changed(sent_version)
+            if jpeg is None:
+                continue
+            # The credit is taken before the send: the client can acknowledge
+            # the frame while send_bytes() is still waiting on the transport,
+            # and an ack counted before its frame would be lost for good.
+            push.in_flight += 1
+            async with send_lock:
+                await websocket.send_bytes(jpeg)
+            last_sent = loop.time()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # A failed render or send. The receive loop would go on taking
+        # commands with nothing coming back, so end the connection: the
+        # client sees it close and can reconnect.
+        logger.warning("[render-ws] push stream failed, closing", exc_info=True)
+        try:
+            await websocket.close(code=1011, reason="render failed")
+        except Exception:
+            pass
+
+
 @router.websocket("/{session_id}/ws")
 async def render_ws(websocket: WebSocket, session_id: str) -> None:
     """Bidirectional channel: client commands in, JPEG frames out.
@@ -344,21 +418,47 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
 
     # Inner loop. Pattern: receive a JSON command; if it's request_frame,
     # render and send a JPEG; otherwise apply and continue (the next
-    # request_frame picks up the accumulated state).
+    # request_frame picks up the accumulated state). A client that sends
+    # ``stream`` switches to push: the server renders and sends a frame
+    # whenever the scene changes, at most ``window`` frames ahead of the
+    # client's ``frame_ack``s, so a round trip no longer bounds the frame rate.
+    send_lock = asyncio.Lock()   # the push task and this loop both send
+    push = _PushState()
+    push_task: asyncio.Task | None = None
     try:
         while True:
             raw = await websocket.receive_text()
             try:
                 command = json.loads(raw)
             except json.JSONDecodeError:
-                await websocket.send_text(
-                    json.dumps({"error": "invalid JSON"}, separators=(",", ":"))
-                )
+                async with send_lock:
+                    await websocket.send_text(
+                        json.dumps({"error": "invalid JSON"}, separators=(",", ":"))
+                    )
                 continue
             ctype = command.get("type", "")
             if ctype == "request_frame":
+                if push_task is not None:
+                    # Streaming: every frame goes through the push loop, so
+                    # each one is a frame the client acknowledges. A request
+                    # with nothing changed has nothing to send.
+                    sess.changed.set()
+                    continue
                 jpeg = await sess.render_frame()
-                await websocket.send_bytes(jpeg)
+                async with send_lock:
+                    await websocket.send_bytes(jpeg)
+            elif ctype == "stream":
+                if push_task is None:
+                    push.configure(command)
+                    async with send_lock:
+                        await websocket.send_text(json.dumps(
+                            {"stream": "on", "window": push.window, "max_fps": push.max_fps},
+                            separators=(",", ":")))
+                    sess.changed.set()     # the client gets the current view first
+                    push_task = asyncio.create_task(
+                        _push_frames(websocket, sess, send_lock, push))
+            elif ctype == "frame_ack":
+                push.ack()
             elif ctype == "keepalive":
                 # Touches stats.last_command_at via apply_command's bookkeeping.
                 await sess.apply_command({"type": "keepalive"})
@@ -375,6 +475,11 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
         except RuntimeError:
             pass
     finally:
+        if push_task is not None:
+            push_task.cancel()
+            # Its outcome (cancelled, or failed and already logged) is
+            # collected without hiding a cancellation of this handler.
+            await asyncio.gather(push_task, return_exceptions=True)
         # Disconnect does NOT auto-evict the session — the user might
         # reconnect quickly (network blip, page reload). TTL eviction
         # handles real abandonment.

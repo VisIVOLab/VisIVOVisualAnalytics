@@ -93,8 +93,14 @@ From: backend-conda.sif
     # takes all three from the host's glvnd, as long as Apptainer's
     # nvliblist exposes all three (it does on PLEIADI-GPU).
     . /opt/conda/etc/profile.d/conda.sh
-    conda remove -y --force -p "$ENV_PREFIX" vtk vtk-base vtk-io-ffmpeg \
-        gl2ps glew libglu libgl libglx libopengl libegl libglvnd || true
+    # Only the installed ones: conda refuses the whole command when one of
+    # the names is not in the env, and then removes nothing.
+    DROP=""
+    for pkg in vtk vtk-base vtk-io-ffmpeg gl2ps glew libglu libgl libglx libopengl libegl libglvnd; do
+        ls "$ENV_PREFIX/conda-meta/$pkg-"[0-9]*.json >/dev/null 2>&1 && DROP="$DROP $pkg"
+    done
+    echo "[backend-conda-egl.def] removing from the env:$DROP"
+    [ -z "$DROP" ] || conda remove -y --force -p "$ENV_PREFIX" $DROP
     for lib in libGLdispatch.so.0 libOpenGL.so.0 libEGL.so.1 libGL.so.1 libGLX.so.0; do
         [ ! -e "$ENV_PREFIX/lib/$lib" ] \
             || { echo "[backend-conda-egl.def] FATAL: conda's $lib is still in the env"; exit 1; }

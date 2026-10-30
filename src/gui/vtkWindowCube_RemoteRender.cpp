@@ -331,6 +331,7 @@ void vtkWindowCube::abortRemoteSwitch(const QString &reason)
     }
     this->m_effectiveRenderMode = RenderMode::Local;
     this->updateRenderModeBadges();
+    this->applyDeferredPreviewWhenLocal();
 }
 
 void vtkWindowCube::connectRemoteRenderWidgetWithTransport(const QString &sessionId)
@@ -392,6 +393,10 @@ void vtkWindowCube::releaseRemoteRenderSession()
 
 void vtkWindowCube::onRemoteRenderConnectionStateChanged(const QString &state)
 {
+    // The stream takes input from here on: settle whether its pane is the
+    // active one now, not at whatever focus or layout change came last.
+    if (state == QLatin1String("Live"))
+        this->refreshPaneInteractors();
     if (this->m_remoteRenderBannerLabel) {
         if (state == QLatin1String("Live")) {
             this->m_remoteRenderBannerLabel->setText(

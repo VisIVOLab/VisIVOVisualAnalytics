@@ -1737,141 +1737,32 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                          this->setCubeOpenActionsEnabled(true);
 
                          const auto result = this->remotePreviewWatcher.result();
-                         if (!result.valid || !result.cubeImageData) {
-                             this->m_cube3dLoadingActor->VisibilityOff();
-                             this->m_slice2dLoadingActor->VisibilityOff();
-                             ui->vtkCube->renderWindow()->Render();
-                             this->sliceWin->Render();
-                             this->persistentStatusActive = false;
-                             this->statusMessageClearTimer.stop();
-                             this->statusBar()->showMessage(result.errorMessage.isEmpty()
-                                                                    ? u"Could not load preview."_s
-                                                                    : result.errorMessage);
+                         // The preview is fetched on open and can take tens of seconds
+                         // through a tunnel. If the view switched to rendering on the
+                         // backend meanwhile, applying it now would push the proxy's
+                         // threshold, render mode and slice into that session and
+                         // start work (slice, isosurface, full-resolution fetches)
+                         // that keeps doing so afterwards. Keep it for a switch back
+                         // to Local, which is the only place it is shown.
+                         if (result.valid && result.cubeImageData
+                             && (this->m_effectiveRenderMode == RenderMode::Remote
+                                 || this->m_remoteSwitchInProgress)) {
+                             this->m_deferredPreview = result;
+                             // What the remote session needs from it, and nothing
+                             // the session would be told: the data range the
+                             // threshold controls work in (still the 0..1
+                             // placeholder until now) and the 2-D slice at the
+                             // channel on screen.
+                             const double span = result.cubeRange[1] - result.cubeRange[0];
+                             this->lowerBound = static_cast<float>(result.cubeRange[0] + 0.03 * span);
+                             this->upperBound = static_cast<float>(result.cubeRange[1]);
+                             this->refreshContourBoundsFromData();
+                             this->requestRemoteSlice(this->clampRemoteSliceIndex(ui->spinSlice->value() - 1));
+                             qDebug().noquote() << QStringLiteral(
+                                     "[remote-plane] preview valid, deferred: the view renders on the backend");
                              return;
                          }
-
-                         // The cube's min/max is dominated by background blanks and a
-                         // few bright peaks, so taking literal min as the volume
-                         // floor and lowerBound = min + 10% leaves most of the
-                         // interesting emission below the visibility threshold.
-                         // 3% gives a tighter noise-floor cut that still hides
-                         // the constant-zero background but keeps faint emission
-                         // (the bulk of the science signal) visible.
-                         const double span = result.cubeRange[1] - result.cubeRange[0];
-                         this->lowerBound = static_cast<float>(result.cubeRange[0] + 0.03 * span);
-                         this->upperBound = static_cast<float>(result.cubeRange[1]);
-                         // The contour levels were built from the 0..1 placeholder
-                         // in the constructor; move them onto the real data now.
-                         this->refreshContourBoundsFromData();
-
-                         // applyCubeOpenResult() sets currentCubeVisibleRange from the real data.
-                         // The initial threshold must be applied AFTER this, so that
-                         // applyThresholdToPipeline() sees correct range control points.
-                         this->applyCubeOpenResult({ true,
-                                                     { },
-                                                     result.cubeImageData,
-                                                     nullptr,
-                                                     result.cubeRange,
-                                                     { 0., 0. },
-                                                     result.dataExtent,
-                                                     0.,
-                                                     0. });
-
-                         // ── Data-driven initial threshold (first load only) ──
-                         // Picks the isosurface level on first load. Used to be
-                         // 65% of (upper-lower) — too aggressive for HI / molecular
-                         // cubes whose interesting emission tail sits in the lower
-                         // half of the visible range, so users saw only a couple of
-                         // bright peaks and assumed the cube was empty. 20% catches
-                         // the bulk of the emission contour while still hiding the
-                         // background noise floor, and the user can always raise it
-                         // via the 3D View Settings slider.
-                         if (!this->m_initialThresholdApplied) {
-                             const float initial = this->lowerBound
-                                     + 0.20f * (this->upperBound - this->lowerBound);
-                             this->applyThreshold(initial);   // updates UI + pipeline, no Render
-                             this->m_initialThresholdApplied = true;
-                         }
-
-                         // ── Synchronise the volume LUT to the pipeline ────────
-                         // setupCubeRenderer() built the color transfer function with
-                         // cubeRange = {0,0} (placeholder), so Inferno ends up mapped
-                         // over a degenerate range and VTK clamps all real data to the
-                         // endpoint color (yellow). Re-apply the selected LUT now that
-                         // the cube data and its scalar range are known.
-                         this->setVolumeLut(this->m_activeColorMapName);   // no Render
-
-                         // Hide the 3D loading placeholder and do a single final render
-                         // that reflects real data, correct threshold, and correct LUT.
-                         this->m_cube3dLoadingActor->VisibilityOff();
-                         ui->vtkCube->renderWindow()->Render();
-
-                         this->setRemoteCubeDisplayState(RemoteCubeDisplayState::Preview);
-                         qDebug().noquote() << QStringLiteral("[remote-plane] preview valid");
-                         // Pattern B: skip the automatic full-resolution
-                         // local fetch when EITHER:
-                         //   (a) backend recommended ``preview_only`` (it
-                         //       knows the cube is too big to fit locally), OR
-                         //   (b) the cube's full-res MB exceeds the user's
-                         //       LocalFullThresholdMb (default 256 MB).
-                         // Without (b) a 1 GB cube would auto-download all
-                         // 1 GB locally even though the auto-render-mode
-                         // logic was already moving us to remote streaming
-                         // — wasteful, confusing UX (status bar shows
-                         // "loading full resolution" while the screen is
-                         // already showing the remote stream). The user
-                         // can still force a local full-res fetch via View
-                         // → Load Full Resolution, which sets
-                         // userForcedFullResolution=true and bypasses both
-                         // guards.
-                         const QString fetchWorkDir =
-                                 QDir::home().absoluteFilePath(qApp->applicationName());
-                         Settings fetchSettings(fetchWorkDir);
-                         const double fetchCubeMb =
-                                 (static_cast<double>(this->remoteDatasetWidth)
-                                  * static_cast<double>(this->remoteDatasetHeight)
-                                  * static_cast<double>(this->remoteDatasetDepth)
-                                  * 4.0) / (1024.0 * 1024.0);
-                         const bool tooLargeForLocal =
-                                 fetchCubeMb > static_cast<double>(
-                                         fetchSettings.getLocalFullThresholdMb());
-                         const bool shouldAutoLoad =
-                                 this->userForcedFullResolution
-                                 || (this->recommendedLoadMode
-                                            != QLatin1String("preview_only")
-                                     && !tooLargeForLocal);
-                         qDebug().noquote() << QStringLiteral(
-                                 "[remote-plane] auto-full-fetch decision "
-                                 "cube=%1MB threshold=%2MB tooLarge=%3 forced=%4 "
-                                 "backend_hint=%5 -> shouldAutoLoad=%6")
-                                 .arg(fetchCubeMb, 0, 'f', 1)
-                                 .arg(fetchSettings.getLocalFullThresholdMb())
-                                 .arg(tooLargeForLocal)
-                                 .arg(this->userForcedFullResolution)
-                                 .arg(this->recommendedLoadMode)
-                                 .arg(shouldAutoLoad);
-                         if (!shouldAutoLoad) {
-                             this->clearPersistentStatusMessage();
-                             const double sizeGiB =
-                                     double(this->datasetFileSizeBytes)
-                                     / double(qint64(1) << 30);
-                             const double thresholdGiB =
-                                     double(this->datasetFullResThresholdBytes)
-                                     / double(qint64(1) << 30);
-                             this->statusBar()->showMessage(
-                                     u"Preview-only mode: cube is %1 GB (threshold %2 GB). "
-                                     u"Use View → Load Full Resolution or Crop Region for full-res data."_s
-                                             .arg(sizeGiB, 0, 'f', 2)
-                                             .arg(thresholdGiB, 0, 'f', 1),
-                                     10000);
-                             return;
-                         }
-                         if (!this->requestHighResCube()) {
-                             this->setRemoteCubeDisplayState(this->usingHighResCube
-                                                                     ? RemoteCubeDisplayState::FullResolution
-                                                                     : RemoteCubeDisplayState::Preview);
-                             this->clearPersistentStatusMessage();
-                         }
+                         this->applyRemotePreviewResult(result);
                      });
     QObject::connect(&this->remoteHighResCubeWatcher,
                      &QFutureWatcher<RemoteCubeSubvolumeResult>::finished, this, [this]() {
@@ -1900,6 +1791,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                          }
 
                          this->usingHighResCube = true;
+                         this->m_deferredPreview.reset();   // superseded by the full grid
                          this->applyCubeOpenResult({ true,
                                                      { },
                                                      result.cubeImageData,
@@ -3286,6 +3178,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->setCubeRenderModeLocally(false);
     this->setRemoteCubeDisplayState(RemoteCubeDisplayState::Preview);
     this->showPersistentStatusMessage(u"Loading preview..."_s);
+    this->m_deferredPreview.reset();   // superseded by this request
     this->remotePreviewWatcher.setProperty("requestId", ++this->currentRemotePreviewRequestId);
     // Adaptive preview downsample — target the user's PreviewTargetMb
     // setting (default 100 MB). For a small cube this comes out to
@@ -3848,6 +3741,165 @@ void vtkWindowCube::update2dModeVisibility(bool sliceActive)
 // REST endpoints in either mode.
 
 
+void vtkWindowCube::applyDeferredPreviewWhenLocal()
+{
+    // A preview that arrived while the backend was rendering is shown once the
+    // switch back to Local has run to its end (a cancelled negotiation, the
+    // channel slider moved back), and only if nothing newer replaced it: a
+    // full-resolution cube loaded meanwhile is better data than the proxy.
+    if (!this->m_deferredPreview)
+        return;
+    QTimer::singleShot(0, this, [this]() {
+        if (!this->m_deferredPreview || this->m_effectiveRenderMode != RenderMode::Local
+            || this->m_remoteSwitchInProgress)
+            return;
+        const RemoteCubePreviewResult deferred = *this->m_deferredPreview;
+        this->m_deferredPreview.reset();
+        if (this->usingHighResCube)
+            return;
+        this->applyRemotePreviewResult(deferred);
+    });
+}
+
+void vtkWindowCube::applyRemotePreviewResult(const RemoteCubePreviewResult &result)
+{
+    if (!result.valid || !result.cubeImageData) {
+        this->m_cube3dLoadingActor->VisibilityOff();
+        this->m_slice2dLoadingActor->VisibilityOff();
+        ui->vtkCube->renderWindow()->Render();
+        this->sliceWin->Render();
+        this->persistentStatusActive = false;
+        this->statusMessageClearTimer.stop();
+        this->statusBar()->showMessage(result.errorMessage.isEmpty()
+                                               ? u"Could not load preview."_s
+                                               : result.errorMessage);
+        return;
+    }
+
+    // The cube's min/max is dominated by background blanks and a
+    // few bright peaks, so taking literal min as the volume
+    // floor and lowerBound = min + 10% leaves most of the
+    // interesting emission below the visibility threshold.
+    // 3% gives a tighter noise-floor cut that still hides
+    // the constant-zero background but keeps faint emission
+    // (the bulk of the science signal) visible.
+    const double span = result.cubeRange[1] - result.cubeRange[0];
+    this->lowerBound = static_cast<float>(result.cubeRange[0] + 0.03 * span);
+    this->upperBound = static_cast<float>(result.cubeRange[1]);
+    // The contour levels were built from the 0..1 placeholder
+    // in the constructor; move them onto the real data now.
+    this->refreshContourBoundsFromData();
+
+    // applyCubeOpenResult() sets currentCubeVisibleRange from the real data.
+    // The initial threshold must be applied AFTER this, so that
+    // applyThresholdToPipeline() sees correct range control points.
+    this->applyCubeOpenResult({ true,
+                                { },
+                                result.cubeImageData,
+                                nullptr,
+                                result.cubeRange,
+                                { 0., 0. },
+                                result.dataExtent,
+                                0.,
+                                0. });
+
+    // ── Data-driven initial threshold (first load only) ──
+    // Picks the isosurface level on first load. Used to be
+    // 65% of (upper-lower) — too aggressive for HI / molecular
+    // cubes whose interesting emission tail sits in the lower
+    // half of the visible range, so users saw only a couple of
+    // bright peaks and assumed the cube was empty. 20% catches
+    // the bulk of the emission contour while still hiding the
+    // background noise floor, and the user can always raise it
+    // via the 3D View Settings slider.
+    if (!this->m_initialThresholdApplied) {
+        const float initial = this->lowerBound
+                + 0.20f * (this->upperBound - this->lowerBound);
+        this->applyThreshold(initial);   // updates UI + pipeline, no Render
+        this->m_initialThresholdApplied = true;
+    }
+
+    // ── Synchronise the volume LUT to the pipeline ────────
+    // setupCubeRenderer() built the color transfer function with
+    // cubeRange = {0,0} (placeholder), so Inferno ends up mapped
+    // over a degenerate range and VTK clamps all real data to the
+    // endpoint color (yellow). Re-apply the selected LUT now that
+    // the cube data and its scalar range are known.
+    this->setVolumeLut(this->m_activeColorMapName);   // no Render
+
+    // Hide the 3D loading placeholder and do a single final render
+    // that reflects real data, correct threshold, and correct LUT.
+    this->m_cube3dLoadingActor->VisibilityOff();
+    ui->vtkCube->renderWindow()->Render();
+
+    this->setRemoteCubeDisplayState(RemoteCubeDisplayState::Preview);
+    qDebug().noquote() << QStringLiteral("[remote-plane] preview valid");
+    // Pattern B: skip the automatic full-resolution
+    // local fetch when EITHER:
+    //   (a) backend recommended ``preview_only`` (it
+    //       knows the cube is too big to fit locally), OR
+    //   (b) the cube's full-res MB exceeds the user's
+    //       LocalFullThresholdMb (default 256 MB).
+    // Without (b) a 1 GB cube would auto-download all
+    // 1 GB locally even though the auto-render-mode
+    // logic was already moving us to remote streaming
+    // — wasteful, confusing UX (status bar shows
+    // "loading full resolution" while the screen is
+    // already showing the remote stream). The user
+    // can still force a local full-res fetch via View
+    // → Load Full Resolution, which sets
+    // userForcedFullResolution=true and bypasses both
+    // guards.
+    const QString fetchWorkDir =
+            QDir::home().absoluteFilePath(qApp->applicationName());
+    Settings fetchSettings(fetchWorkDir);
+    const double fetchCubeMb =
+            (static_cast<double>(this->remoteDatasetWidth)
+             * static_cast<double>(this->remoteDatasetHeight)
+             * static_cast<double>(this->remoteDatasetDepth)
+             * 4.0) / (1024.0 * 1024.0);
+    const bool tooLargeForLocal =
+            fetchCubeMb > static_cast<double>(
+                    fetchSettings.getLocalFullThresholdMb());
+    const bool shouldAutoLoad =
+            this->userForcedFullResolution
+            || (this->recommendedLoadMode
+                       != QLatin1String("preview_only")
+                && !tooLargeForLocal);
+    qDebug().noquote() << QStringLiteral(
+            "[remote-plane] auto-full-fetch decision "
+            "cube=%1MB threshold=%2MB tooLarge=%3 forced=%4 "
+            "backend_hint=%5 -> shouldAutoLoad=%6")
+            .arg(fetchCubeMb, 0, 'f', 1)
+            .arg(fetchSettings.getLocalFullThresholdMb())
+            .arg(tooLargeForLocal)
+            .arg(this->userForcedFullResolution)
+            .arg(this->recommendedLoadMode)
+            .arg(shouldAutoLoad);
+    if (!shouldAutoLoad) {
+        this->clearPersistentStatusMessage();
+        const double sizeGiB =
+                double(this->datasetFileSizeBytes)
+                / double(qint64(1) << 30);
+        const double thresholdGiB =
+                double(this->datasetFullResThresholdBytes)
+                / double(qint64(1) << 30);
+        this->statusBar()->showMessage(
+                u"Preview-only mode: cube is %1 GB (threshold %2 GB). "
+                u"Use View → Load Full Resolution or Crop Region for full-res data."_s
+                        .arg(sizeGiB, 0, 'f', 2)
+                        .arg(thresholdGiB, 0, 'f', 1),
+                10000);
+        return;
+    }
+    if (!this->requestHighResCube()) {
+        this->setRemoteCubeDisplayState(this->usingHighResCube
+                                                ? RemoteCubeDisplayState::FullResolution
+                                                : RemoteCubeDisplayState::Preview);
+        this->clearPersistentStatusMessage();
+    }
+}
+
 void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
 {
     // Reentrancy guard. The user can rage-click the banner's "Switch
@@ -4029,6 +4081,7 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
             this->m_renderStack->setCurrentIndex(0);
         }
         this->m_effectiveRenderMode = RenderMode::Local;
+        this->applyDeferredPreviewWhenLocal();
         // Going back to Local CANCELS a switch that was still negotiating —
         // BEFORE the disconnect below, which emits Disconnected synchronously
         // and whose handler clears this very flag, so anything gated on it
@@ -10032,11 +10085,14 @@ void vtkWindowCube::refreshPaneInteractors()
     // §5.1b: the remote 3D widget renders a server stream through its OWN QWidget mouse
     // handlers, so the VTK/Qt-level swallow can't reach it — gate it explicitly. Interactive
     // only when the pane showing the 3D view is the active pane (there is one 3D view).
+    // isHidden(), not isVisible(): before the window is first shown every widget
+    // reports isVisible() false, and a refresh run then left the 3D view
+    // non-interactive until the next focus or layout change.
     if (m_remoteRenderWidget) {
         bool active3d = false;
         for (int i = 0; i < 4; ++i)
             if (m_slots[i].view.kind == ViewId::View3D && m_slots[i].frame
-                && m_slots[i].frame->isVisible()) {
+                && !m_slots[i].frame->isHidden()) {
                 active3d = (i == m_activePane) || paneIsArmedTarget(i);
                 break;
             }

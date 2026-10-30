@@ -28,6 +28,7 @@ class PvController;
 #include <vtkScalarBarActor.h>
 
 #include <QFutureWatcher>
+#include <optional>
 #include <QCloseEvent>
 #include <QElapsedTimer>
 #include <QHash>
@@ -2478,6 +2479,9 @@ protected:
     // RemoteRenderWebRTCClient::connectToSession) and the pile-up
     // would crash inside libdatachannel on teardown of the orphans.
     bool                  m_remoteSwitchInProgress{ false };
+    /// A preview that arrived while the backend was rendering the cube: shown on
+    /// the next switch back to Local, never applied behind the remote session.
+    std::optional<RemoteCubePreviewResult> m_deferredPreview;
     // Wall-clock when the user clicked "Switch to Remote". Drives the
     // progressive status message tier below (3-5 s → "Connecting",
     // 30 s+ → "Allocating on backend GPU", 1 min+ → "Large cube,
@@ -2507,6 +2511,10 @@ protected:
 
     void setupRenderModeUi();
     void applyRenderMode(RenderMode requested, bool fromUserAction);
+    /// Loads a remote preview into the local pipeline and sets the view up around it.
+    void applyRemotePreviewResult(const RemoteCubePreviewResult &result);
+    /// Shows m_deferredPreview after a switch back to Local, unless newer data replaced it.
+    void applyDeferredPreviewWhenLocal();
     void requestRemoteRenderSession();
     void releaseRemoteRenderSession();
     /// Connect the RemoteRenderWidget against the given session,

@@ -27,6 +27,11 @@ namespace {
 constexpr double kRotateSensitivity = 0.2;
 constexpr double kPanSensitivity    = 1.0;
 constexpr double kZoomPerNotch      = 1.1;
+// Push transport: frames the server may send ahead of our acks, and its rate
+// cap. Three frames cover a ~100 ms tunnel round trip at 30 FPS; more would
+// only queue frames that are already stale when they arrive.
+constexpr int    kPushWindow        = 8;
+constexpr int    kPushMaxFps        = 30;
 } // namespace
 
 RemoteRenderWidget::RemoteRenderWidget(QWidget *parent)
@@ -228,7 +233,12 @@ void RemoteRenderWidget::disconnectFromSession()
     }
 #endif
     m_live = false;
+    // Here, not only in onWebSocketDisconnected(): the close handshake is
+    // asynchronous, and a reconnect to a server without push must start in
+    // request mode or its first frame is never asked for.
+    m_push = false;
     m_frameInFlight = false;
+    m_frameRequestPending = false;
     m_status = QStringLiteral("Disconnected");
     emit connectionStateChanged(m_status);
 }
@@ -284,6 +294,15 @@ void RemoteRenderWidget::onWebSocketConnected()
     sz[QStringLiteral("width")]  = qRound(width()  * dpr);
     sz[QStringLiteral("height")] = qRound(height() * dpr);
     sendCommand(QJsonDocument(sz).toJson(QJsonDocument::Compact));
+    // Ask the server to push a frame whenever the view changes, a few frames
+    // ahead of our acks: one round trip through a tunnel per frame was what
+    // bounded the frame rate. A server that predates push ignores this and
+    // answers the request below; one that has it answers {"stream":"on"}.
+    QJsonObject stream;
+    stream[QStringLiteral("type")]    = QStringLiteral("stream");
+    stream[QStringLiteral("window")]  = kPushWindow;
+    stream[QStringLiteral("max_fps")] = kPushMaxFps;
+    sendCommand(QJsonDocument(stream).toJson(QJsonDocument::Compact));
     requestFrame();
     update();
 }
@@ -291,7 +310,9 @@ void RemoteRenderWidget::onWebSocketConnected()
 void RemoteRenderWidget::onWebSocketDisconnected()
 {
     m_live = false;
+    m_push = false;
     m_frameInFlight = false;
+    m_frameRequestPending = false;
     m_status = QStringLiteral("Disconnected");
     emit connectionStateChanged(m_status);
     update();
@@ -302,13 +323,30 @@ void RemoteRenderWidget::onTextMessageReceived(const QString &message)
     // Diagnostic JSON from the server (e.g. {"error": "…"}). We don't
     // expose it to the UI directly yet; future commit can wire it.
     qDebug().noquote() << "[remote-render] server text:" << message;
+    // The server's answer to ``stream``: from here on it sends the frames.
+    // It comes before any pushed frame, so every frame after it is acked.
+    const QJsonObject obj = QJsonDocument::fromJson(message.toUtf8()).object();
+    if (obj.value(QStringLiteral("stream")).toString() == QLatin1String("on")) {
+        m_push = true;
+        m_frameInFlight = false;
+        m_frameRequestPending = false;
+    }
 }
 
 void RemoteRenderWidget::onBinaryMessageReceived(const QByteArray &bytes)
 {
+    // Acknowledged at once, before decoding: the server sends the next frame
+    // as soon as the ack frees a slot in its window.
+    if (m_push && m_ws && m_ws->state() == QAbstractSocket::ConnectedState)
+        m_ws->sendTextMessage(QStringLiteral("{\"type\":\"frame_ack\"}"));
     QImage img;
     if (!img.loadFromData(bytes, "JPEG")) {
         qWarning() << "[remote-render] received invalid JPEG, size=" << bytes.size();
+        m_frameInFlight = false;   // answered, if badly: do not block the next request
+        if (m_frameRequestPending) {
+            m_frameRequestPending = false;
+            requestFrame();
+        }
         return;
     }
     m_currentFrame = std::move(img);
@@ -329,6 +367,10 @@ void RemoteRenderWidget::onBinaryMessageReceived(const QByteArray &bytes)
         emit connectionStateChanged(m_status);
     }
     m_frameInFlight = false;
+    if (m_frameRequestPending) {
+        m_frameRequestPending = false;
+        requestFrame();
+    }
     update();
 }
 
@@ -387,6 +429,7 @@ void RemoteRenderWidget::setInteractive(bool on)
             cmd[QStringLiteral("type")] = QStringLiteral("set_interactive");
             cmd[QStringLiteral("value")] = false;
             sendCommand(QJsonDocument(cmd).toJson(QJsonDocument::Compact));
+            requestFrame();   // as on release: the full-quality frame is only rendered on request
         }
     }
 }
@@ -506,6 +549,9 @@ void RemoteRenderWidget::mouseReleaseEvent(QMouseEvent *event)
         cmd[QStringLiteral("type")]  = QStringLiteral("set_interactive");
         cmd[QStringLiteral("value")] = false;
         sendCommand(QJsonDocument(cmd).toJson(QJsonDocument::Compact));
+        // The JPEG transport renders only on request: without one the last
+        // frame on screen stays the wireframe of the drag.
+        requestFrame();
     }
     event->accept();
 }
@@ -678,11 +724,15 @@ void RemoteRenderWidget::requestFrame()
     if (!m_ws || m_ws->state() != QAbstractSocket::ConnectedState) {
         return;
     }
+    if (m_push) {
+        return;   // the server sends a frame for every change on its own
+    }
     if (m_frameInFlight) {
         // Don't pile up multiple in-flight requests — let the current
-        // one come back first. The server reads the latest view state
-        // when it renders, so the dropped request_frame doesn't lose
-        // any user intent; only frame cadence.
+        // one come back first, then ask once more: the frame in flight
+        // may predate the command that triggered this request, and the
+        // server only renders when asked.
+        m_frameRequestPending = true;
         return;
     }
     m_frameInFlight = true;

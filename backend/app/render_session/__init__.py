@@ -126,6 +126,12 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
         # Render-window size remembered across an LOD cycle so we can
         # restore it on release. None when not in interactive mode.
         self._lod_prev_size = None
+        # Volume-mapper sampling (auto-adjust, image and ray sample distances)
+        # saved across an LOD cycle; None when not in interactive mode.
+        self._lod_prev_sampling = None
+        # Current drag LOD level (index into _modes._LOD_LEVELS), adapted to
+        # the measured render time and kept across drags.
+        self._lod_level = 0
         # Cutting plane infrastructure — see _build_cutting_plane().
         self._cutting_plane_source = None  # vtkPlaneSource
         self._cutting_plane_actor = None   # vtkActor
@@ -169,6 +175,11 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
         # stream runs at the pacing FPS (60) with ~0 ms server CPU.
         # Set ``True`` initially so the first frame renders.
         self._scene_dirty = True
+        # Incremented on every change. Push streams compare it with the
+        # version they last sent, each its own: a flag cleared by whichever
+        # consumer rendered first (the WebRTC path, another connection) would
+        # hide the change from the others.
+        self._scene_version = 0
         # Cached RGBA buffer + render-ms from the last successful
         # render. Returned by ``render_rgb_frame`` when the scene is
         # not dirty. Owned by RenderSession; do NOT mutate from the
@@ -199,6 +210,9 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
         # callsite — "while one frame is in flight, the next call
         # awaits cleanly").
         self._render_lock = asyncio.Lock()
+        # Set whenever a command changes the scene: the push transport waits
+        # on it instead of on a client's request for each frame.
+        self.changed = asyncio.Event()
 
     # ── Public API ───────────────────────────────────────────────────────
 
@@ -212,9 +226,11 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
         every code path that mutates camera, view state, cube data, or
         UI options. The next ``render_rgb_frame`` will actually run
         VTK; subsequent calls reuse the cached RGBA until ``mark_dirty``
-        fires again.
+        fires again. Also called on the worker thread (chunk arrivals):
+        it only sets flags.
         """
         self._scene_dirty = True
+        self._scene_version += 1
 
     def is_dirty(self) -> bool:
         return self._scene_dirty
@@ -255,6 +271,7 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
         # client would see a stale image until the next non-command
         # cause of dirtying (chunk arrival, etc.).
         self.mark_dirty()
+        self.changed.set()
 
     async def render_frame(self) -> bytes:
         """Render the current view state to a JPEG and return the bytes."""
@@ -265,6 +282,29 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
             return await loop.run_in_executor(
                 self._executor, self._render_frame_on_thread,
             )
+
+    async def render_frame_if_changed(self, since: int) -> tuple[bytes | None, int]:
+        """The push transport's frame: ``(jpeg, version)`` of the current view
+        if the scene changed after ``version`` ``since``, else ``(None, since)``.
+
+        Polls the chunk reader first, so a cube still loading keeps arriving
+        on screen without any command. The version is read BEFORE rendering:
+        a command applied meanwhile moves it on and is rendered next, never
+        lost.
+        """
+        if self._closed:
+            raise RuntimeError(f"Session {self.session_id} is closed.")
+        loop = asyncio.get_event_loop()
+        async with self._render_lock:
+            if self._cube_reader is not None:
+                await loop.run_in_executor(self._executor, self._poll_cube_chunks)
+            version = self._scene_version
+            if version == since:
+                return None, since
+            jpeg = await loop.run_in_executor(
+                self._executor, self._render_frame_on_thread,
+            )
+            return jpeg, version
 
     async def render_rgb_frame(self):
         """Render the current view state and return ``(rgb_ndarray, render_ms)``.

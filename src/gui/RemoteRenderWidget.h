@@ -199,4 +199,13 @@ private:
     // at a time. This makes the server skip frames the client wouldn't
     // see anyway, keeping the tunnel from filling up during fast drag.
     bool m_frameInFlight{ false };
+    // A request that arrived while one was in flight. The frame in flight was
+    // rendered before the latest command (the last one of a drag, the LOD
+    // switch on release), so dropping the request would leave that state off
+    // screen: it is sent when the frame in flight comes back.
+    bool m_frameRequestPending{ false };
+    // The server pushes frames on every change (it answered our ``stream``):
+    // no request per frame, only an ack per frame received. Off with a server
+    // that predates it, which then keeps answering request_frame.
+    bool m_push{ false };
 };

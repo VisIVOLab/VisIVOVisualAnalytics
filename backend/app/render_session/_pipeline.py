@@ -17,6 +17,11 @@ from ._common import (
     logger,
 )
 
+
+# JPEG quality of the frames sent during a drag (interactive LOD).
+_LOD_JPEG_QUALITY = 60
+
+
 class PipelineMixin:
     """Command-apply, chunk-poll, frame-render and close worker methods."""
 
@@ -85,6 +90,12 @@ class PipelineMixin:
             self.view.pan_x += float(command.get("dx", 0.0))
             self.view.pan_y += float(command.get("dy", 0.0))
         elif ctype == "reset":
+            # A drag in progress ends first: the new view starts
+            # non-interactive, so a later release would be ignored and leave
+            # the coarse sampling and the halved window size in place.
+            if self.view.interactive:
+                self.view.interactive = False
+                self._apply_interactive_mode_on_thread(False)
             keep_w, keep_h = self.view.width, self.view.height
             self.view = SessionViewState(width=keep_w, height=keep_h,
                                           vmin=self._vmin, vmax=self._vmax,
@@ -302,7 +313,7 @@ class PipelineMixin:
                 self._last_modified_wall = now
                 self._pending_modified = False
                 # Force a re-render so the user sees the new slab.
-                self._scene_dirty = True
+                self.mark_dirty()
             # Reveal threshold: 25 % of chunks loaded AND running
             # vmin/vmax are well-separated (real data range exists,
             # not just zeros). The 25 % threshold keeps the initial
@@ -370,7 +381,7 @@ class PipelineMixin:
                     self.view.threshold or 0.0,
                 )
                 self.request_idr()
-                self._scene_dirty = True
+                self.mark_dirty()
         if complete:
             # Rebuild transfer functions + threshold with the final
             # accurate min/max — placeholder LUT during loading
@@ -400,7 +411,7 @@ class PipelineMixin:
                     self._vtk_intensity_array.Modified()
                 self._last_modified_wall = time.time()
                 self._pending_modified = False
-            self._scene_dirty = True
+            self.mark_dirty()
             self._rebuild_volume_tfs_on_thread()
             self._rebuild_slice_lut_on_thread()
             self.request_idr()
@@ -528,7 +539,9 @@ class PipelineMixin:
                 (t4 - t3) * 1000.0,
                 (t4 - t0) * 1000.0,
             )
-        return rgba, (t1 - t0) * 1000.0
+        render_ms = (t1 - t0) * 1000.0
+        self._adapt_lod_on_thread(render_ms)   # next drag frame, coarser or finer
+        return rgba, render_ms
 
     def _render_frame_on_thread(self) -> bytes:
         """Render one frame and return JPEG bytes. Legacy WS transport path.
@@ -551,7 +564,11 @@ class PipelineMixin:
         # JPEG encode.
         img = Image.fromarray(rgb, mode="RGB")
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=self.view.jpeg_quality,
+        # A frame of a drag is on screen for tens of milliseconds: its
+        # quality buys nothing the eye keeps, its size costs frame rate.
+        quality = (min(self.view.jpeg_quality, _LOD_JPEG_QUALITY)
+                   if self.view.interactive else self.view.jpeg_quality)
+        img.save(buf, format="JPEG", quality=quality,
                   optimize=False, progressive=False)
         jpeg = buf.getvalue()
 
