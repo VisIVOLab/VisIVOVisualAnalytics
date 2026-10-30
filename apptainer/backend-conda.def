@@ -38,7 +38,9 @@ From: condaforge/miniforge3:latest
         apptainer build --fakeroot backend.sif apptainer/backend-conda.def
 
     # Build with NVIDIA GPU support (cupy)
-    ENABLE_CUPY=1 apptainer build --fakeroot backend.sif apptainer/backend-conda.def
+    # (APPTAINERENV_ prefix: Apptainer passes only prefixed variables into
+    # %post; a plain ENABLE_CUPY=1 is silently ignored.)
+    APPTAINERENV_ENABLE_CUPY=1 apptainer build --fakeroot backend.sif apptainer/backend-conda.def
 
     # Run
     apptainer run --bind /path/to/data:/data backend.sif
@@ -228,25 +230,33 @@ From: condaforge/miniforge3:latest
     # `conda install sofia-2` fails the build on Power9, which is one of the
     # architectures these images target.
     #
-    # Try the package; fall back to the source build, which is cheap because
-    # SoFiA-2 is plain C with its own compile.sh; and if neither works, do NOT
-    # fail the image. The backend already answers "SoFiA-2 is not installed on
-    # the server" for that one tool and everything else keeps working — an
-    # image that builds without source finding beats an image that does not
-    # build.
+    # Try the package; otherwise build the pinned release from source. SoFiA-2
+    # lives on GitLab (the GitHub repository is archived and holds only a
+    # README) and needs WCSLIB, which conda-forge does not build for ppc64le
+    # either: the base image's Ubuntu provides it (wcslib-dev) with gcc, and
+    # the binary links against the system library. If neither works, do NOT
+    # fail the image: the backend already answers "SoFiA-2 is not installed on
+    # the server" for that one tool and everything else keeps working.
+    SOFIA_REF="${SOFIA_REF:-v2.7.1}"
     if $INSTALL_CMD -n visivo -c conda-forge sofia-2; then
         echo "[backend-conda.def] SoFiA-2 installed from conda-forge"
     else
-        echo "[backend-conda.def] no conda-forge sofia-2 for this architecture — building from source"
-        $INSTALL_CMD -n visivo -c conda-forge c-compiler make git || true
-        if git clone --depth 1 https://github.com/SoFiA-Admin/SoFiA-2 /tmp/SoFiA-2 \
-           && ( cd /tmp/SoFiA-2 && ./compile.sh -fopenmp ) \
-           && cp /tmp/SoFiA-2/sofia /opt/conda/envs/visivo/bin/; then
-            echo "[backend-conda.def] SoFiA-2 built from source"
+        echo "[backend-conda.def] no conda-forge sofia-2 for this architecture — building ${SOFIA_REF} from source"
+        if apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+               build-essential wcslib-dev git ca-certificates \
+           && git clone --depth 1 --branch "${SOFIA_REF}" https://gitlab.com/SoFiA-Admin/SoFiA-2.git /tmp/SoFiA-2 \
+           && make -C /tmp/SoFiA-2 OMP=true CC=/usr/bin/gcc \
+           && install -m 755 /tmp/SoFiA-2/sofia /opt/conda/envs/visivo/bin/sofia \
+           && linkage=$(ldd /opt/conda/envs/visivo/bin/sofia 2>&1) \
+           && ! printf '%s\n' "$linkage" | grep -q "not found"; then
+            echo "[backend-conda.def] SoFiA-2 ${SOFIA_REF} built from source"
         else
+            # Nothing half-installed: a binary that cannot load would be
+            # advertised as an available finder.
+            rm -f /opt/conda/envs/visivo/bin/sofia
             echo "[backend-conda.def] WARN: SoFiA-2 unavailable — source finding will be disabled"
         fi
-        rm -rf /tmp/SoFiA-2
+        rm -rf /tmp/SoFiA-2 /var/lib/apt/lists/*
     fi
     # resolve_sofia_bin() accepts either name; provide both.
     if [ -x /opt/conda/envs/visivo/bin/sofia ] && [ ! -e /opt/conda/envs/visivo/bin/sofia2 ]; then
@@ -263,7 +273,9 @@ From: condaforge/miniforge3:latest
         distributed
 
     # ── Optional: cupy (NVIDIA GPU) ────────────────────────────────────────
-    # Set ENABLE_CUPY=1 in the build environment. Unlike the slim variant
+    # Set APPTAINERENV_ENABLE_CUPY=1 in the build environment (Apptainer
+    # passes only APPTAINERENV_-prefixed variables into %post, as ENABLE_CUPY).
+    # On ppc64le conda-forge has cupy up to 13.1. Unlike the slim variant
     # which had to fight with apt-mirrored wheels, conda-forge's cupy
     # package bundles its own CUDA runtime — no host CUDA toolkit needed.
     # Apptainer --nv at runtime exposes the NVIDIA driver into the
@@ -377,4 +389,12 @@ print(f'[test] numpy {numpy.__version__}, scipy {scipy.__version__}, '
 print(f'[test] numba {numba.__version__} (JIT available), '
       f'vtk {vtk.vtkVersion.GetVTKVersion()} (isosurface available)')
 print('[test] Full conda-forge stack verified.')
+import shutil
+sofia = shutil.which('sofia2') or shutil.which('sofia') or 'not installed (source finding disabled)'
+print('[test] SoFiA-2: ' + sofia)
+try:
+    import cupy
+    print(f'[test] cupy {cupy.__version__} (GPU kernels available with --nv)')
+except ImportError:
+    print('[test] cupy not installed (CPU only)')
 "
