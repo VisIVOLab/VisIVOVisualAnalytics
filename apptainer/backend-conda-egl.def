@@ -60,13 +60,13 @@ From: backend-conda.sif
     apt-get update
     apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build git pkg-config \
-        libegl-dev libegl1 libgl-dev libgles-dev libglvnd-dev
+        libegl-dev libegl1 libgl-dev libopengl-dev libglvnd-dev
     rm -rf /var/lib/apt/lists/*
 
     EGL_LIBDIR="/usr/lib/$(gcc -print-multiarch)"
     EGL_LIB="$EGL_LIBDIR/libEGL.so"
     [ -e "$EGL_LIB" ] || ln -sf libEGL.so.1 "$EGL_LIB"
-    for f in "$EGL_LIB" /usr/include/EGL/egl.h /usr/include/KHR/khrplatform.h; do
+    for f in "$EGL_LIB" "$EGL_LIBDIR/libOpenGL.so" /usr/include/EGL/egl.h /usr/include/KHR/khrplatform.h; do
         [ -e "$f" ] || { echo "[backend-conda-egl.def] FATAL: $f missing"; exit 1; }
     done
 
@@ -92,9 +92,10 @@ From: backend-conda.sif
 
     # ── 3. VTK from source, headless with EGL ─────────────────────────
     # Every -D carries its :TYPE, or CMake stores it UNINITIALIZED and
-    # VTK's options never see it. GLES with the cell-grid and LIC modules
-    # off is the configuration that built and rendered on POWER9 with the
-    # 550.54.15 driver; those modules use desktop-only GL constants and
+    # VTK's options never see it. Desktop OpenGL through EGL, not GLES: on
+    # PLEIADI-GPU (V100, driver 550.54.15) a GLES build crashed inside the
+    # NVIDIA driver on the first GL call after the context was made
+    # (vtkOpenGLState::Initialize). The cell-grid and LIC modules stay off:
     # the backend renders volumes and slices only.
     rm -rf /tmp/vtk-src /tmp/vtk-build
     git clone --depth 1 --branch "$VTK_TAG" https://gitlab.kitware.com/vtk/vtk.git /tmp/vtk-src
@@ -111,8 +112,10 @@ From: backend-conda.sif
         -DVTK_USE_COCOA:BOOL=OFF \
         -DVTK_OPENGL_HAS_EGL:BOOL=ON \
         -DVTK_OPENGL_HAS_OSMESA:BOOL=OFF \
-        -DVTK_OPENGL_USE_GLES:BOOL=ON \
+        -DVTK_OPENGL_USE_GLES:BOOL=OFF \
         -DVTK_DEFAULT_RENDER_WINDOW_HEADLESS:BOOL=ON \
+        -DOpenGL_GL_PREFERENCE:STRING=GLVND \
+        -DOPENGL_opengl_LIBRARY:FILEPATH="$EGL_LIBDIR/libOpenGL.so" \
         -DOPENGL_egl_LIBRARY:FILEPATH="$EGL_LIB" \
         -DOPENGL_EGL_INCLUDE_DIR:PATH=/usr/include \
         -DEGL_INCLUDE_DIR:PATH=/usr/include \
@@ -136,8 +139,10 @@ From: backend-conda.sif
         -DVTK_MODULE_ENABLE_VTK_IOCellGrid:STRING=NO \
         /tmp/vtk-src 2>&1 | tee /tmp/vtk-cmake.log
     # A configure that quietly dropped EGL still builds; refuse it here.
-    grep -qE "^EGL_LIBRARY:FILEPATH=.+libEGL" CMakeCache.txt \
-        || { echo "[backend-conda-egl.def] FATAL: EGL_LIBRARY not in the cache"; exit 1; }
+    grep -qE "^OPENGL_egl_LIBRARY:FILEPATH=.+libEGL" CMakeCache.txt \
+        || { echo "[backend-conda-egl.def] FATAL: OPENGL_egl_LIBRARY not in the cache"; exit 1; }
+    grep -qE "^OPENGL_opengl_LIBRARY:FILEPATH=.+libOpenGL" CMakeCache.txt \
+        || { echo "[backend-conda-egl.def] FATAL: OPENGL_opengl_LIBRARY not in the cache"; exit 1; }
     grep -qi "vtkEGLRenderWindow" build.ninja \
         || { echo "[backend-conda-egl.def] FATAL: vtkEGLRenderWindow is not built"; exit 1; }
 
