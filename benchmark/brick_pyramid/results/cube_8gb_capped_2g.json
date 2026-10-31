@@ -1,0 +1,109 @@
+{
+  "cube": "/work/cube_8gb.fits",
+  "cube_bytes": 7978841280,
+  "brick": 64,
+  "max_block_bytes": 268435456,
+  "pyramid": "/work/cube_8gb.pyr.h5",
+  "pyramid_bytes": 10003385528,
+  "build_s": 46.0,
+  "build_alloc_peak_bytes": 640109710,
+  "cgroup_memory_max": 2147483648,
+  "cgroup_memory_peak": 2147483648,
+  "reads_per_level": 50,
+  "p95": "nearest rank",
+  "levels": [
+    {
+      "level": 0,
+      "shape": [
+        793,
+        1586,
+        1586
+      ],
+      "bricks": [
+        13,
+        25,
+        25
+      ],
+      "read_ms_median": 7.66,
+      "read_ms_p95": 11.28
+    },
+    {
+      "level": 1,
+      "shape": [
+        397,
+        793,
+        793
+      ],
+      "bricks": [
+        7,
+        13,
+        13
+      ],
+      "read_ms_median": 6.46,
+      "read_ms_p95": 9.39
+    },
+    {
+      "level": 2,
+      "shape": [
+        199,
+        397,
+        397
+      ],
+      "bricks": [
+        4,
+        7,
+        7
+      ],
+      "read_ms_median": 2.67,
+      "read_ms_p95": 5.73
+    },
+    {
+      "level": 3,
+      "shape": [
+        100,
+        199,
+        199
+      ],
+      "bricks": [
+        2,
+        4,
+        4
+      ],
+      "read_ms_median": 1.0,
+      "read_ms_p95": 2.17
+    },
+    {
+      "level": 4,
+      "shape": [
+        50,
+        100,
+        100
+      ],
+      "bricks": [
+        1,
+        2,
+        2
+      ],
+      "read_ms_median": 0.3,
+      "read_ms_p95": 0.33
+    },
+    {
+      "level": 5,
+      "shape": [
+        25,
+        50,
+        50
+      ],
+      "bricks": [
+        1,
+        1,
+        1
+      ],
+      "read_ms_median": 0.11,
+      "read_ms_p95": 0.12
+    }
+  ],
+  "host": "e4d2364bff46",
+  "cpus": 18,
+  "when": "2026-10-31T16:47:16+0000"
+}

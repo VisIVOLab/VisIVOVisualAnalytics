@@ -249,6 +249,7 @@ configuration
 architecture-note
 backend-api
 large-cube-loading
+brick-pyramid
 distributed-backend-design
 copilot-backend
 async-patterns
