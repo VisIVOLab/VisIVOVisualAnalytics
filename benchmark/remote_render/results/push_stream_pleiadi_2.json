@@ -1,0 +1,36 @@
+{
+  "base_url": "http://localhost:18900",
+  "path": "/scratch/fvitello/skava-e2e/data/3D_Ape-DR1_200426041_AP_B021_HI_image_cube0.fits",
+  "width": 2540,
+  "height": 1560,
+  "threshold": null,
+  "window": 8,
+  "seconds": 4.0,
+  "when": "2026-10-30T16:33:14+0100",
+  "rotations": [
+    {
+      "fps": 15.4,
+      "frames": 51,
+      "kb_per_frame": 41.6,
+      "gap_median_ms": 40.8,
+      "gap_p90_ms": 92.5,
+      "run": 1
+    },
+    {
+      "fps": 26.4,
+      "frames": 103,
+      "kb_per_frame": 40.7,
+      "gap_median_ms": 46.7,
+      "gap_p90_ms": 47.9,
+      "run": 2
+    },
+    {
+      "fps": 25.7,
+      "frames": 100,
+      "kb_per_frame": 41.5,
+      "gap_median_ms": 46.9,
+      "gap_p90_ms": 48.3,
+      "run": 3
+    }
+  ]
+}
