@@ -192,6 +192,22 @@ async def test_push_sees_a_change_the_webrtc_path_rendered_first():
         s._executor.shutdown()
 
 
+async def test_a_keepalive_restarts_the_idle_timer_without_a_frame():
+    # A view left still sends only keepalives: they must keep the session
+    # alive, and not make the push stream render and send a frame each time.
+    s = _bare_session()
+    s.changed = asyncio.Event()
+    s.stats.commands_received, s.stats.last_command_at = 0, 0.0
+    try:
+        _, v = await s.render_frame_if_changed(-1)
+        await s.apply_command({"type": "keepalive"})
+        assert s.stats.last_command_at > 0.0
+        assert not s.changed.is_set()
+        assert (await s.render_frame_if_changed(v))[0] is None
+    finally:
+        s._executor.shutdown()
+
+
 async def test_two_push_streams_each_get_every_change():
     s = _bare_session()
     try:

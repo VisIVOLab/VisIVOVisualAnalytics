@@ -32,7 +32,8 @@
 #   --repo-dir DIR     the clone on the frontend, relative to its home
 #                      (default VisIVOVisualAnalytics; $VISIVO_REMOTE_REPO)
 #   --user     USER    SSH login (default: $USER)
-#   --port     PORT    Local port for the backend tunnel (default: 8000)
+#   --port     PORT    Local port for the backend tunnel (default: 18900,
+#                      not the local backend's 8000)
 #   --dashboard-port P Local port for the Dask dashboard tunnel (default: 18787)
 #   --no-dashboard     Skip the dashboard tunnel
 #   --stop             Tear down tunnels + scancel job + exit
@@ -48,7 +49,7 @@ set -euo pipefail
 
 FRONTEND=""
 SSH_USER="${USER}"
-LOCAL_PORT="${VISIVO_PORT:-8000}"
+LOCAL_PORT="${VISIVO_PORT:-18900}"
 # The clone on the frontend, relative to the remote home (an older checkout
 # may still be called VisIVO-next: pass --repo-dir or set VISIVO_REMOTE_REPO).
 REMOTE_REPO="${VISIVO_REMOTE_REPO:-VisIVOVisualAnalytics}"

@@ -111,6 +111,49 @@ backend tool (never hallucinated), with provenance + a reproducibility
 script. Cloud (Claude / ChatGPT) or your own self-hosted LLM.
 :::
 
+:::{grid-item-card} 🌀 Velocity fields
+:link: user-guide/velocity-fields
+:link-type: doc
+
+Streamlines, glyphs and watershed basins of 3-D velocity fields.
+:::
+
+:::{grid-item-card} 🎯 Kinematic lasso
+:link: user-guide/kinematic-lasso
+:link-type: doc
+
+Double-click an object in a cube to select it in 3-D, then fit its
+kinematics.
+:::
+
+:::{grid-item-card} 🧭 Polarimetry
+:link: user-guide/polarimetry
+:link-type: doc
+
+Stokes cubes: polarised intensity and angle, rotation measure.
+:::
+
+:::{grid-item-card} 🗄️ VLKB archive
+:link: user-guide/vlkb-archive
+:link-type: doc
+
+Search the ViaLactea Knowledge Base and open cutouts and source tables.
+:::
+
+:::{grid-item-card} 📡 SKAVA discovery and remote nodes
+:link: user-guide/skava-discovery
+:link-type: doc
+
+Find data across SRC nodes and work on it where it is stored.
+:::
+
+:::{grid-item-card} 🖧 Backend on a cluster
+:link: deployment/hpc-slurm
+:link-type: doc
+
+Run the compute service on a SLURM node and view cubes rendered there.
+:::
+
 :::{grid-item-card} 🛠️ Troubleshooting
 :link: user-guide/troubleshooting
 :link-type: doc
@@ -183,11 +226,21 @@ user-guide/simulations
 user-guide/skava-discovery
 user-guide/publication-output
 user-guide/copilot
-user-guide/copilot-self-hosted
 user-guide/glossary
 user-guide/troubleshooting
 ```
 
+```{toctree}
+:caption: Deployment
+:hidden:
+:maxdepth: 2
+
+deployment/hpc-slurm
+deployment/src-node
+multi-user-backend
+user-guide/copilot-self-hosted
+configuration
+```
 ```{toctree}
 :caption: Developer reference
 :hidden:
@@ -195,8 +248,9 @@ user-guide/troubleshooting
 
 architecture-note
 backend-api
+large-cube-loading
+distributed-backend-design
 copilot-backend
-multi-user-backend
 async-patterns
 service-mapping-note
 catalogue3d-viewer
@@ -442,7 +496,7 @@ cmake --build build
 
 | | |
 |---|---|
-| Active branch | `next-server` |
+| Active branch | `main` |
 | Backend | FastAPI + Python 3.12+ |
 | Client | Qt 6.5+ / VTK 9.5+ / C++17 |
 | License | See repository `LICENSE` |

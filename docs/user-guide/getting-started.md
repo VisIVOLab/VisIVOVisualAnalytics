@@ -92,14 +92,34 @@ The first window you see is the **Startup Dialog**:
 
 1. **Backend check** — the client pings the backend health endpoint and
    shows green when it is reachable.
-2. **Authentication** — the static bearer token is loaded automatically if
-   `~/.visivo_token` exists. You can paste a different one in *Settings* if
-   you point the client at a remote backend.
+2. **Authentication** — the token in `~/.visivo_token` is loaded
+   automatically, and is sent only to the backend configured as the local
+   one. Backends on other machines use the token they were registered with
+   (see *Connecting to a remote backend* below).
 3. **Optional VLKB sign-in** — if you plan to use VLKB-protected services
    (catalogue search, cutout staging) you can complete the OIDC sign-in here.
    Otherwise just continue.
 
 Click **Continue** to enter the main window.
+
+## Connecting to a remote backend
+
+A backend on another machine, for example on a cluster node reached through an
+SSH tunnel, is registered in **Settings ▸ Backends ▸ Remote Backends** with
+its URL and its own token. The client then sends each backend its own token,
+never the local one, and uses the registry to tell a remote backend from the
+local one (which decides, for instance, whether the cube viewer offers
+server-side rendering). Starting a backend on a SLURM node and opening the
+tunnel is described in
+[Running the backend on a cluster](../deployment/hpc-slurm.md); SRC nodes
+found through SKAVA are matched against the same registry
+([SKAVA discovery](skava-discovery.md)).
+
+## New versions
+
+At startup, at most once a day, the client asks GitHub for the latest release
+and tells you when a newer one exists. **Help ▸ Check for Updates…** asks at
+any time; the automatic check can be switched off in *Settings*.
 
 ## Opening your first dataset
 

@@ -25,8 +25,10 @@ live SKAVA), `backend/tests/test_open_skava.py`.
 descriptors in the JSON DataLink and `#auxiliary` rows in the VOTable,
 delegation of `/soda/execute` to the first executable replica.
 
-*Not yet:* the "Served by" column and dynamic "Open via" label (§6.6), retry on
-the next replica after a 5xx (§9), keychain storage of tokens (§8.1).
+*Since then:* the "Served by" column and the "Open via…" menu (§6.6), and the
+fallback to the next node in SKAVA's ranking when a backend refuses the open
+(§9), are implemented. Backend tokens are kept in `Settings.ini`; only the OIDC
+tokens (VLKB, SKAVA sign-in) go to the system keychain (§8.1).
 `BackendClientFactory` is not needed by the SKAVA flow: requests from every
 `BackendClient` to the same backend carry the same session — the id that
 backend minted for the (URL, effective token) pair (`s_minted`), or the
@@ -414,58 +416,12 @@ inspect/change the backend.
 
 ## 7. SKAVA-side extension
 
-### 7.1 Database migration
-
-`migrations/versions/0007_add_visivo_backend.py`:
-
-```python
-def upgrade():
-    op.add_column("nodes", sa.Column(
-        "visivo_backend_url", sa.String(256), nullable=True))
-    op.add_column("nodes", sa.Column(
-        "visivo_backend_requires_auth", sa.Boolean,
-        nullable=False, server_default="false"))
-```
-
-### 7.2 Model update
-
-`app/models/node.py`:
-
-```python
-class Node(Base):
-    # … existing …
-    visivo_backend_url: Mapped[str | None] = mapped_column(
-        String(256), nullable=True)
-    visivo_backend_requires_auth: Mapped[bool] = mapped_column(
-        Boolean, server_default="false", nullable=False)
-```
-
-### 7.3 DataLink builder
-
-`app/vo/datalink.py:build_service_descriptors()` accepts the
-selected replica's node and appends a `visivo-backend` descriptor
-when the node has `visivo_backend_url` populated.
-
-### 7.4 Seed update
-
-`app/services/seed_d22.py`: configure `VIS-LOCAL` and `INAF-PUB`
-nodes with their VisIVO backend URLs:
-
-```python
-"VIS-LOCAL": dict(
-    ...
-    visivo_backend_url="http://host.docker.internal:8001",
-    visivo_backend_requires_auth=False,
-),
-```
-
-### 7.5 Backwards compatibility
-
-Old clients that don't recognise the new descriptor see it as an
-unknown `service_type` and ignore it (per SKAVA's existing extension
-contract). Old SKAVA peers that don't expose the descriptor still
-return the legacy `primary_access.access_url`, and the desktop's
-fallback (download via local backend) handles them.
+The catalogue side (the node's `visivo_backend_url`, the `visivo-backend`
+descriptor in the DataLink, and its later node services) lives in the SKAVA
+repository and is documented there:
+[SKAVA documentation](https://skava.readthedocs.io/en/latest/). Clients that
+do not recognise the descriptor ignore it, and the desktop falls back to
+downloading through the local backend.
 
 ## 8. Authentication & security
 
@@ -554,56 +510,20 @@ Two-backend setup on localhost:
 
 ### 11.4 Heterogeneous-architecture testbed (Power9)
 
-VisIVO backend has no architecture-specific code: it is Python +
-FastAPI + numpy / scipy / astropy / healpy / photutils. All these
-have ppc64le wheels on conda-forge and Anaconda channels, and
-upstream CPython supports ppc64le natively. The backend therefore
-runs **without code changes** on IBM Power9 nodes, which are common
-in SKA-SRC infrastructures.
-
-Recommended testbed:
-
-1. Provision an IBM Power9 node with Linux ppc64le (RHEL 8 / Ubuntu
-   20.04+ both work).
-2. Install Docker for ppc64le.
-3. Build the backend image natively on the node:
-   ```bash
-   cd backend && docker build -t visivo-backend:ppc64le .
-   ```
-   (Multi-arch buildx is also possible but native build is simpler
-   for a dedicated testbed.)
-4. Mount the SRC dataset filesystem read-only into the container:
-   ```bash
-   docker run -d --name visivo-be \
-     -v /srv/data:/data:ro \
-     -v /var/visivo/exports:/exports \
-     -p 8001:8001 \
-     visivo-backend:ppc64le
-   ```
-5. Register the node in the local SKAVA seed (or production SKAVA)
-   with `visivo_backend_url=https://<power9-host>:8001` so the
-   desktop sees it as a routing target.
-
-For the wheel install path, prefer Anaconda / conda-forge over pure
-`pip` to avoid 20–30 min compile times for numba, scipy, healpy:
-
-```bash
-conda install -c conda-forge fastapi uvicorn numpy scipy astropy h5py \
-    healpy photutils scikit-image reproject numba pandas dask
-```
-
-Optional GPU acceleration (`cupy-cuda*`) requires NVIDIA GPU on the
-Power9 node (V100/A100, Summit-class) — gracefully degrades to CPU
-when absent.
+The backend has no architecture-specific code and runs on IBM Power9
+(ppc64le) nodes. The deployment used in practice is an Apptainer image on a
+SLURM node, reached through an SSH tunnel; it is described, with the EGL image
+needed for server-side rendering on ppc64le, in
+[Running the backend on a cluster](deployment/hpc-slurm.md).
 
 ## 12. Future evolution
 
 | Feature | Notes |
 |---|---|
-| OAuth/OIDC federation | Token model evolves to bearer with refresh, IdP integration |
+| OAuth/OIDC federation | Done for SKAVA and VLKB sign-in; backend tokens remain static per backend |
 | Backend health monitor | Desktop polls each registered backend's `/health` periodically; UI shows green/yellow/red |
-| Quota-aware routing | SKAVA's `load_score` becomes input to routing; desktop prefers under-loaded backends |
-| SODA cutout integration | When SKAVA exposes server-side cutout, the request goes to the backend hosting the dataset |
+| Quota-aware routing | Done on the catalogue side: SKAVA ranks nodes on their measured state (`/v1/node/status`) |
+| SODA cutout integration | Done: the backend is a SODA service (sync and UWS async), see [The backend as an SRC node](deployment/src-node.md) |
 | Workspace-to-backend push | Reverse direction: user pushes a Workspace Export to a remote backend (already designed; gated on backend write API) |
 | Backend discovery via VOSI | SRC backends discovered via SKAVA's `/capabilities` rather than explicit registry |
 
@@ -616,20 +536,18 @@ when absent.
 | 3 | BackendClientFactory + session caching | 0.5 day | ✅ done |
 | 4 | SkavaClient: parse visivo-backend descriptors | 0.25 day | ✅ done |
 | 5 | MainWindow routing + viewer badge | 0.5 day | ✅ done |
-| 6 | SKAVA migration + model + DataLink builder | 0.5 day | ⏳ SKAVA repo |
-| 7 | SKAVA seed_d22 update | 0.25 day | ⏳ SKAVA repo |
-| 8 | End-to-end testing + docs | 0.5 day | ◑ unit tests + docs done; SRC e2e pending server side |
+| 6 | SKAVA migration + model + DataLink builder | 0.5 day | ✅ done (SKAVA repo) |
+| 7 | SKAVA seed_d22 update | 0.25 day | ✅ done (SKAVA repo) |
+| 8 | End-to-end testing + docs | 0.5 day | ✅ done: testbed and one PLEIADI-GPU node |
 
-**Total ≈ 3.5 days** of focused work for the full implementation. The desktop
-phases (1–5) and their unit tests / docs are complete; phases 6–7 land in the
-SKAVA repository.
+**Total ≈ 3.5 days** of focused work for the full implementation. All phases are
+complete.
 
 ## 14. Out of scope
 
 - Workspace-to-backend push from the Data Hub Workspace Exports
   panel (separate item)
-- OAuth / OIDC across backends (separate work item)
+- OAuth / OIDC across backends (backend tokens stay static per backend)
 - Automated SRC backend deployment / Helm chart (operator concern)
-- SODA cutout dialog (depends on SKAVA exposing the real endpoint)
 - Backend-side cross-replication or data movement (out of scope per
   SKAVA D3.1 §13.3 deferred-feature list)

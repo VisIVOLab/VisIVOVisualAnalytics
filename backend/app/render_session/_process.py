@@ -262,6 +262,10 @@ class RenderSessionProcess:
         self._check_open()
         self.stats.commands_received += 1
         self.stats.last_command_at = time.time()
+        if command.get("type") == "keepalive":
+            # Only proof that someone is still looking: the child would mark
+            # its scene and the push stream would send a frame for nothing.
+            return
         self._outbox.put((_COMMAND, command))
         self.changed.set()
 

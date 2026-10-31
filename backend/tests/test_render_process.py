@@ -42,6 +42,17 @@ async def test_the_childs_state_comes_back_with_each_answer(session):
     assert session.stats.commands_received == 1           # counted here
 
 
+async def test_a_keepalive_keeps_the_session_without_a_new_frame(session):
+    jpeg, version = await session.render_frame_if_changed(-1)
+    session.changed.clear()
+    before = session.stats.last_command_at
+    time.sleep(0.01)
+    await session.apply_command({"type": "keepalive"})
+    assert session.stats.last_command_at > before          # the idle timer restarts
+    assert not session.changed.is_set()                    # the push loop is not woken
+    assert await session.render_frame_if_changed(version) == (None, version)
+
+
 async def test_a_failure_in_the_child_fails_that_request_only(session):
     await session.apply_command({"type": "fail"})          # logged in the child
     await session.apply_command({"type": "break_next_frame"})

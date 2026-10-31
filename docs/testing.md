@@ -92,6 +92,18 @@ the way files get opened:
   refusing to guess: prose with commas is not a catalogue, a FITS table is
   ambiguous on purpose, and a compressed file is refused rather than routed to
   an opener that would reject it;
+- the node and remote-rendering files: `test_render_push.py` (17) checks the
+  push stream (frames capped by the window of unacknowledged ones, every change
+  reaching every stream, the next frame rendered while one is sent) and the
+  adaptive drag level (it follows the render time and settles instead of
+  oscillating); `test_render_process.py` (14) the session process (a failure or
+  a crash in the child fails that view only, close ends the child, each
+  session takes one of the job's GPUs in turn); `test_node_status.py` (22)
+  the memory a node reports under cgroup v2, cgroup v1 and a SLURM grant;
+  `test_soda_service.py` (34) SODA sync and UWS async; `test_finders.py` (15)
+  the finder registry; `test_telemetry_push.py` (10) the reports a node pushes
+  to a catalogue; `test_abort.py` (13) stopping a moment or PV job between
+  slabs;
 - `test_operation_history.py` (32) covers "Last 5 jobs": that work is recorded
   and that browsing, scrubbing and polling are not, and that a route answering
   HTTP 200 with `{"valid": false}` is filed as failed;
@@ -359,6 +371,23 @@ so it is testable without the GUI/VTK stack). Each test runs against a fresh
 | `routeNullSettingsReturnsEmpty` | `settings == nullptr` | empty node |
 
 ---
+
+## Benchmarks and validation
+
+Measurements reported in papers come from scripts in the repository, each with
+its own README:
+
+- `benchmark/`: the operation timings of the backend on one host
+  (`run_local_bench.sh`, `benchmark_visivo.py`, results in `benchmark/results_*`);
+- `benchmark/remote/`: the same operations against a memory-capped container
+  behind a shaped link (`run_remote_bench.sh`);
+- `benchmark/remote_render/`: the frame rate of the server-rendered 3-D view, as
+  a client receives it through a network (`push_stream_fps.py`) and on the node
+  with several views at once, spread over its GPUs or on one
+  (`multi_gpu_sessions.py`), with the PLEIADI-GPU results;
+- `validation/`: the scientific validation of the kinematic lasso against
+  SoFiA-2 and the scripts behind the paper's figures (`validation/README.md`,
+  `validation/INDEX.md`).
 
 ## Adding new tests
 

@@ -10,28 +10,35 @@ Horizons:
 
 The full list, with current status, is on the [issue tracker](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues?q=is%3Aissue+label%3Aarea%3Aska%2Carea%3Aecogal%2Carea%3Asimulations%2Carea%3Avisualization%2Carea%3Across-cutting) and the [milestones](https://github.com/VisIVOLab/VisIVOVisualAnalytics/milestones) page.
 
+## Delivered
+
+Items of this roadmap that are now in the software (their issues are being closed):
+
+- [Backend health and metrics endpoints for node operation](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/2) (#2): `/v1/ping`, `/v1/node/status`, `/v1/metrics` ([The backend as an SRC node](deployment/src-node.md)).
+- [Concurrent remote rendering sessions per backend](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/4) (#4): each 3-D view renders in its own process, spread over the node's GPUs ([Running the backend on a cluster](deployment/hpc-slurm.md)).
+- [Standard SODA service on the backend, with moments and PV as remote operations](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/7) (#7): SODA sync and UWS async with `OPERATION=MOMENT|PV`.
+- [Show which node serves a dataset and fall back to the next replica](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/1) (#1): the *Served by* column, *Open via…*, and the fallback to the next node when one refuses ([SKAVA discovery](user-guide/skava-discovery.md)).
+- [Linux releases: keep the sign-in across restarts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/56) (#56): through libsecret, when it is installed (1.0.6).
+
 ## SKA and SRCNet
 
 Running VisIVO Visual Analytics as part of the SKA Regional Centre Network: IVOA discovery and access, node services, source finders near the data, scale.
 
 **Next**
 
-- [Backend health and metrics endpoints for node operation](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/2) (#2)
 - [Benchmark out-of-core moments at SKA scale on an HPC node](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/3) (#3)
-- [Concurrent remote rendering sessions per backend](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/4) (#4)
 
 **2027**
 
-- [SRCNet sign-in through IAM (OIDC)](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/6) (#6)
-- [Standard SODA service on the backend, with moments and PV as remote operations](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/7) (#7)
+- [SRCNet sign-in through IAM (OIDC)](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/6) (#6): the client signs in to an OIDC provider with configurable endpoints (tested with Keycloak); still to do against the SRCNet IAM
 - [Deploy the backend as an SRCNet node service](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/8) (#8)
-- [Plugin registry for source finders (SoFiA-2, PyBDSF, Aegean, photutils)](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/9) (#9)
+- [Plugin registry for source finders (SoFiA-2, PyBDSF, Aegean, photutils)](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/9) (#9): the registry, SoFiA-2 and photutils are in place; PyBDSF and Aegean remain
 - [Kinematic lasso: streaming connected components for very large objects](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/10) (#10)
 - [Kinematic lasso: multi-scale selection, 2-D edit growth and velocity conventions](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/11) (#11)
 
 **Long term**
 
-- [Run source finders near the data through the SRCNet Computing Broker](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/12) (#12)
+- [Run source finders near the data through the SRCNet Computing Broker](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/12) (#12): the client submits finder jobs to a broker that follows the SRCNet job API (tested with a mock); still to do against the SRCNet broker
 - [Interface for deep-learning source finders](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/14) (#14)
 - [Bricked level-of-detail rendering for very large cubes](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/15) (#15)
 
@@ -39,13 +46,9 @@ Running VisIVO Visual Analytics as part of the SKA Regional Centre Network: IVOA
 
 SKA Visual Analytics (SKAVA): finding SKA data across SRC nodes and choosing the node that should serve it, from the VisIVO Visual Analytics client.
 
-**Next**
-
-- [Show which node serves a dataset and fall back to the next replica](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/1) (#1)
-
 **2027**
 
-- [IVOA discovery provider: TAP ObsCore and DataLink](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/5) (#5)
+- [IVOA discovery provider: TAP ObsCore and DataLink](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/5) (#5): the client queries SKAVA through TAP ObsCore and DataLink; still to do against other TAP services
 
 **Long term**
 
@@ -155,7 +158,6 @@ Infrastructure shared by all areas.
 - [Common framework for asynchronous jobs: progress, cancel, outlive the dialog](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/53) (#53)
 - [Asynchronous movie export with chosen resolution](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/54) (#54)
 - [Documentation gaps: RM synthesis and time-series data](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/55) (#55)
-- [Linux releases: keep the sign-in across restarts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/56) (#56)
 - [Publish a backend container image for HPC and SRC nodes](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/66) (#66)
 - [Contributing guide and developer onboarding](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/67) (#67)
 

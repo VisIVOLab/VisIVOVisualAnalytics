@@ -30,7 +30,7 @@ set -euo pipefail
 
 FRONTEND=""
 SSH_USER="${USER}"
-LOCAL_PORT="${VISIVO_PORT:-8000}"
+LOCAL_PORT="${VISIVO_PORT:-18900}"
 # The clone on the frontend, relative to the remote home (an older checkout
 # may still be called VisIVO-next: pass --repo-dir or set VISIVO_REMOTE_REPO).
 REMOTE_REPO="${VISIVO_REMOTE_REPO:-VisIVOVisualAnalytics}"

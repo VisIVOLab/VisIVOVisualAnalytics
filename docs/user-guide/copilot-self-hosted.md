@@ -97,6 +97,32 @@ in the package README. The **`TOOL_PARSER` must match the model family**
 pre-wired so the copilot works with no extra config. The LLM uses the GPU; the
 backend runs CPU-only compute, so they share the machine fine.
 
+## Configuring the backend instead of the client
+
+Instead of entering the URL in every client, the backend can start each new
+session already pointed at your server. Set these in the backend's
+environment (the full stack compose file does exactly this):
+
+```bash
+export VISIVO_ASSISTANT_PROVIDER=auto            # or openai, to force it
+export VISIVO_LLM_BASE_URL=http://<server-ip>:8000/v1
+export VISIVO_LLM_API_KEY=<the VLLM_API_KEY you set>   # secret
+export VISIVO_ASSISTANT_MODEL=<served model name>
+```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `VISIVO_ASSISTANT_PROVIDER` | `auto` | `auto`, `anthropic`, `openai` or `null`. `auto` uses `VISIVO_LLM_BASE_URL` (or a cloud OpenAI key) when set, then an Anthropic key, else no model. |
+| `VISIVO_LLM_BASE_URL` | unset | Your server's OpenAI-compatible base URL, ending in `/v1`. Put no credentials, query string or fragment in it: the key goes in `VISIVO_LLM_API_KEY`. |
+| `VISIVO_LLM_API_KEY` | unset | **Secret.** The key your server expects (`VLLM_API_KEY`). It is sent only to `VISIVO_LLM_BASE_URL`, never to a cloud provider. |
+| `VISIVO_ASSISTANT_MODEL` | `gpt-4o` for OpenAI-compatible servers | The model name to request. Set it to the name your server serves (`SERVED_NAME` in the package); the default only suits cloud OpenAI. |
+| `VISIVO_ASSISTANT_SLOTS` | `2` | Copilot queries the backend runs at once. |
+| `VISIVO_ASSISTANT_TIMEOUT_S` | `120` | Time budget of one query, tool calls included. A slow model on a long question may need more. |
+
+These are only the starting values: a user can still change the provider for
+their own session in **Copilot ⚙**, without affecting other sessions. All the
+backend variables are listed in the [Configuration reference](../configuration.md#copilot).
+
 ## Backend requirement
 
 The **VisIVO backend** that talks to your endpoint needs the `openai` Python SDK

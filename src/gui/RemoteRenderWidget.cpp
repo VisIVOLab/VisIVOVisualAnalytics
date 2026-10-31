@@ -32,6 +32,9 @@ constexpr double kZoomPerNotch      = 1.1;
 // only queue frames that are already stale when they arrive.
 constexpr int    kPushWindow        = 8;
 constexpr int    kPushMaxFps        = 30;
+// Well inside the backend's default idle limit (300 s), so one lost or
+// delayed keepalive does not end a session someone is still looking at.
+constexpr int    kKeepaliveMs       = 60 * 1000;
 } // namespace
 
 RemoteRenderWidget::RemoteRenderWidget(QWidget *parent)
@@ -47,6 +50,9 @@ RemoteRenderWidget::RemoteRenderWidget(QWidget *parent)
     setPalette(pal);
     setMouseTracking(false);   // no commands until the user clicks
     setFocusPolicy(Qt::StrongFocus);
+    m_keepaliveTimer = new QTimer(this);
+    m_keepaliveTimer->setInterval(kKeepaliveMs);
+    connect(m_keepaliveTimer, &QTimer::timeout, this, &RemoteRenderWidget::sendKeepalive);
 }
 
 RemoteRenderWidget::~RemoteRenderWidget()
@@ -122,6 +128,12 @@ void RemoteRenderWidget::connectToSession(const QString &baseUrl,
             // wrong cutting plane until they wiggled the controls.
             if (state == QLatin1String("Live")) {
                 m_live = true;
+                m_keepaliveTimer->start();
+            } else {
+                // Any other state is not a channel a keepalive could cross;
+                // commands posted now would only queue up for a channel that
+                // may never open again.
+                m_keepaliveTimer->stop();
             }
             emit connectionStateChanged(state);
             update();
@@ -220,6 +232,7 @@ void RemoteRenderWidget::connectToSession(const QString &baseUrl,
 
 void RemoteRenderWidget::disconnectFromSession()
 {
+    m_keepaliveTimer->stop();
     if (m_ws) {
         m_ws->close();
         m_ws->deleteLater();
@@ -278,10 +291,26 @@ void RemoteRenderWidget::sendStateCommand(const QVariantMap &command)
     requestFrame();
 }
 
+void RemoteRenderWidget::sendKeepalive()
+{
+    // Not through sendStateCommand(): that asks for a frame, and a keepalive
+    // must not make the backend render or the client repaint.
+#ifdef VISIVO_HAS_WEBRTC
+    if (m_transport == Transport::H265WebRTC) {
+        if (m_webrtc && m_live)
+            m_webrtc->sendStateCommand({ { QStringLiteral("type"), QStringLiteral("keepalive") } });
+        return;
+    }
+#endif
+    if (m_ws && m_ws->state() == QAbstractSocket::ConnectedState)
+        m_ws->sendTextMessage(QStringLiteral("{\"type\":\"keepalive\"}"));
+}
+
 // ── WebSocket callbacks ─────────────────────────────────────────────────────
 
 void RemoteRenderWidget::onWebSocketConnected()
 {
+    m_keepaliveTimer->start();
     m_status = QStringLiteral("Connected, awaiting first frame…");
     emit connectionStateChanged(m_status);
     // Tell the server our REAL render size (physical pixels) BEFORE we
@@ -309,6 +338,7 @@ void RemoteRenderWidget::onWebSocketConnected()
 
 void RemoteRenderWidget::onWebSocketDisconnected()
 {
+    m_keepaliveTimer->stop();
     m_live = false;
     m_push = false;
     m_frameInFlight = false;

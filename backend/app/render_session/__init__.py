@@ -263,6 +263,10 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
         loop = asyncio.get_event_loop()
         self.stats.commands_received += 1
         self.stats.last_command_at = time.time()
+        if command.get("type") == "keepalive":
+            # Only proof that someone is still looking: nothing to apply, and
+            # marking the scene would render and push a frame for nothing.
+            return
         await loop.run_in_executor(
             self._executor, self._apply_command_on_thread, command,
         )

@@ -194,21 +194,27 @@ You can right-click the moment dock and:
 - Results are LRU-cached on the backend (`PRODUCT_CACHE`, default 32
   entries). Identical recomputes (same dataset + params) return in
   sub-milliseconds.
-- **Out-of-core by default.** M0/M1/M2 stream the cube in spectral slabs
-  rather than loading the whole channel range, so a moment over a 100+ GB
-  cube never materialises it in RAM. The streaming path kicks in when the
-  selected subset would exceed `VISIVO_MOMENT_STREAM_BYTES` (default 2 GiB);
-  slab size is `VISIVO_MOMENT_SLAB_CHANNELS` (default 64).
-- **Dask is on by default** (`VISIVO_DASK_MODE=auto`). Large moments
-  (materialised subset ≥ `VISIVO_DASK_MIN_BYTES`, default 512 MB) are computed
-  with the chunked `dask.array` path — across a distributed cluster when
-  `VISIVO_DASK_SCHEDULER` is set, otherwise with a local threaded scheduler
-  that parallelises across cores. This also gives the high-order moments
-  (M3–M10) an out-of-core path they previously lacked. Small cubes stay on the
-  fast in-process worker. Set `VISIVO_DASK_MODE=off` to force the plain worker,
+- **In memory only when it fits.** The selected channel range (channels ×
+  width × height × 4 bytes) is held in memory only when it is no larger than
+  the smaller of `VISIVO_MOMENT_STREAM_BYTES` (default 2 GiB) and one twelfth
+  of the memory the backend has available (its container's headroom, when it
+  runs in one). A larger range is computed out of core: M0, M1 and M2 stream
+  the cube from disk in spectral slabs, M3 to M10 go through the chunked Dask
+  path, so a moment over a 100+ GB cube never materialises it in RAM.
+- **Block size is set in bytes.** Each streamed slab or Dask block holds at
+  most `VISIVO_MOMENT_CHUNK_BYTES` (default 64 MiB), and at least one channel.
+  `VISIVO_MOMENT_SLAB_CHANNELS` (default 64) only caps the number of channels
+  in a slab. Moments that need the centroid first (M2 to M5) read the data in
+  two passes, so memory stays bounded by one block.
+- **Dask is on by default** (`VISIVO_DASK_MODE=auto`). With Dask installed,
+  moments over a range of at least `VISIVO_DASK_MIN_BYTES` (default 512 MiB)
+  are computed with the chunked `dask.array` path and a local threaded
+  scheduler that parallelises across cores; when `VISIVO_DASK_SCHEDULER` names
+  a distributed cluster, every moment is computed there. Smaller ranges stay on
+  the in-process worker. Set `VISIVO_DASK_MODE=off` to force the plain worker,
   `local` to always use local threaded Dask, or `distributed` to require a
-  cluster. See the [backend API reference](../backend-api) for the full
-  tunables table.
+  cluster. All the moment and Dask variables are listed in the
+  [Configuration reference](../configuration.md#moments-and-dask).
 
 ## Common pitfalls
 

@@ -309,6 +309,48 @@ served by a different backend, which is a different cube.
 
 ---
 
+## Server-side rendering
+
+A *Remote* 3-D view is rendered by the backend and sent to the desktop as
+frames; the cube never leaves the backend's machine. The pieces, from the
+backend outwards:
+
+- **One process per view.** Each render session runs in a child process of its
+  own (`render_session/_process.py`, `RenderSessionProcess`), started with the
+  `spawn` method and driven over a pipe by a writer and a reader thread. A VTK
+  or driver crash ends that view only; the service and the other views go on.
+  `VISIVO_RENDER_IN_PROCESS=1` runs sessions inside the service process instead
+  (the earlier behaviour, kept for debugging). `VISIVO_RENDER_MAX_SESSIONS`
+  bounds the number of live sessions.
+- **Off-screen EGL, one GPU per view.** On Linux the session renders with
+  VTK's EGL window, which needs a VTK built with EGL (`apptainer/backend-conda-egl.def`).
+  Before building its window, the child maps the EGL devices to CUDA ordinals
+  (`EGL_NV_device_cuda`), keeps the GPUs the job may use, and binds the n-th
+  session to the n-th of them in turn through `VTK_EGL_DEVICE_INDEX`; an index
+  set by the operator is respected, and a job with no usable GPU refuses the
+  session rather than render on another job's GPU.
+- **Push stream.** The desktop asks for a stream once
+  (`{"type":"stream","window":8,"max_fps":30}` on `/v1/render/{id}/ws`); the
+  backend then renders and sends a JPEG whenever the scene changes, up to
+  `window` frames ahead of the client's `frame_ack`s, and renders the next frame
+  while the current one is being sent. A round trip therefore no longer bounds
+  the frame rate, which is what made the view usable through an SSH tunnel.
+- **Adaptive drag level.** While the view moves (`set_interactive`), the window
+  is rendered at half size, with sparser rays and samples
+  (`render_session/_modes.py`, four levels from `(2, 2)` to `(6, 6)`), and sent
+  at JPEG quality 60. The level is chosen from the measured render plus
+  readback time, aiming at 25 ms. On release the backend renders one
+  full-resolution frame.
+
+On the desktop, `RemoteRenderWidget` asks for the stream, acknowledges each
+frame and keeps the last one on screen; `backendIsLocal()` uses the backend
+registry to tell a remote backend from the local one. Deployment on a cluster
+(the EGL image, GPUs, the tunnel) is described in
+[Running the backend on a cluster](deployment/hpc-slurm.md); the measurements
+and the scripts that produce them are in `benchmark/remote_render/`.
+
+---
+
 ## Timeouts: the client must outlast the server
 
 `BackendClient::requestTimeoutFor()` is a per-endpoint table. The rule, which
@@ -2280,9 +2322,8 @@ Static library `visivo_test_support` (BackendClient + DiagnosticsManager) is sha
 ## Non-Goals / Deferred
 
 - No dataset upload/staging for desktop-local files (moment computation requires backend-visible dataset)
-- No remote rendering
 - No general async/job framework (each use case defines its own watcher)
-- No cancellation or progress reporting for in-flight requests
+- No cancellation of plain synchronous requests: long operations that can be stopped go through tasks (`DELETE /v1/tasks/{id}`), SODA jobs (`PHASE=ABORT`) or the VLKB batch abort
 - No generic service interfaces (DI, plugin system)
 - No large `vtkWindowCube` decomposition
 
@@ -2314,15 +2355,19 @@ Test suite → links only `visivo_test_support` (core subset).
 
 ### Backend environment variables
 
+The variables that matter most for performance; every variable the backend
+reads is listed in the [Configuration reference](configuration.md).
+
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `VISIVO_MOMENT_THREADS` | `0` (auto) | Number of threads for M0/M6/M10 moment chunking. `0` = `min(4, cpu_count)`. Positive values set the count explicitly. |
-| `VISIVO_MOMENT_STREAM_BYTES` | `2147483648` (2 GiB) | Materialised-subset size above which M0/M1/M2 stream in spectral slabs (out-of-core) instead of loading the whole channel range. |
-| `VISIVO_MOMENT_SLAB_CHANNELS` | `64` | Channels per slab in the streaming moment path. |
+| `VISIVO_MOMENT_STREAM_BYTES` | `2147483648` (2 GiB) | Ceiling of the channel-range size kept in memory; the effective threshold is the smaller of this and one twelfth of the memory available now (the cgroup's headroom in a container). Larger ranges stream in spectral blocks (out-of-core). |
+| `VISIVO_MOMENT_CHUNK_BYTES` | `67108864` (64 MiB) | Size of each streamed block; at least one channel. |
+| `VISIVO_MOMENT_SLAB_CHANNELS` | `64` | Upper limit on the channels in a streamed block. |
 | `VISIVO_DASK_MODE` | `auto` | Moment compute backend: `auto` (distributed if a scheduler is set, else local threaded Dask for large jobs), `off`, `local` (always local threaded Dask), `distributed` (require a cluster). |
 | `VISIVO_DASK_MIN_BYTES` | `536870912` (512 MiB) | In `auto` mode, minimum materialised-subset size before a moment is routed to the local threaded Dask path. |
 | `VISIVO_DASK_SCHEDULER` | *(unset)* | Address of a `dask.distributed` scheduler; when set, moments fan out across the cluster. |
-| `VISIVO_WORKERS` | `min(4, cpu_count)` | Number of ProcessPoolExecutor workers for CPU-bound FITS operations. |
+| `VISIVO_WORKERS` | `4` | Number of ProcessPoolExecutor workers for CPU-bound FITS operations. |
 | `VISIVO_HEAVY_SLOTS` | `max(1, VISIVO_WORKERS-1)` | Max concurrent heavy tasks (moment / isosurface / pv / spectral). Leaves `WORKERS - HEAVY_SLOTS` pool slots reserved for interactive requests so the GUI stays responsive while compute is running. |
 | `VISIVO_LINEWIDTH_CHUNKS` | `VISIVO_WORKERS` | Row-chunks the linewidth orchestrator fans out per request. Already gated by `VISIVO_HEAVY_SLOTS`, so usually no need to lower this. |
 | `VISIVO_LINEWIDTH_SNR` | `3.0` | Per-pixel SNR cutoff for skipping background pixels before the Gaussian fit (`0` disables skip). |

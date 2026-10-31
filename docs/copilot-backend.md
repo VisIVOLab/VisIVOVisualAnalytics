@@ -84,14 +84,37 @@ then shows *Provider: null* even after you configure a URL/key.
 
 ## Runtime configuration & dispatch
 
-Config lives in a module-level `_CONFIG` dict (seeded from env vars) and is
-changed at runtime by `configure(**kwargs)`:
+Config is held **per session**: `default_config()` builds a fresh dict from the
+environment the first time a session uses the copilot, and stores it on the
+session (`session.assistant_config`). `POST /v1/assistant/config` changes it
+through `configure(config, **kwargs)`, so one user's provider or key never
+reaches another session. The module-level `_CONFIG` is only the process
+default used when no session config is passed. The keys:
 
 - `provider` — `auto | anthropic | openai | null`.
-- `anthropic_key` — Claude.
+- `anthropic_key` — Anthropic.
 - **`openai_key`** — the CLOUD OpenAI key.
 - **`base_url`** + **`base_url_key`** — a self-hosted / OpenAI-compatible endpoint
   and *its own* key.
+- `model`: the model name; `None` means the provider's default.
+
+The environment variables that seed it, and the two that bound `/query`:
+
+| Variable | Config key | Default |
+|----------|------------|---------|
+| `VISIVO_ASSISTANT_PROVIDER` | `provider` | `auto` |
+| `ANTHROPIC_API_KEY` (secret) | `anthropic_key` | unset |
+| `OPENAI_API_KEY` (secret) | `openai_key` | unset |
+| `VISIVO_LLM_BASE_URL` | `base_url` | unset |
+| `VISIVO_LLM_API_KEY` (secret) | `base_url_key` | unset |
+| `VISIVO_ASSISTANT_MODEL` | `model` | unset: `AnthropicProvider` then uses `claude-opus-4-8`, `OpenAIProvider` (cloud or self-hosted) `gpt-4o` |
+| `VISIVO_ASSISTANT_SLOTS` | (`_ASSISTANT_SLOTS`) | `2`, at least 1 |
+| `VISIVO_ASSISTANT_TIMEOUT_S` | (`_ASSISTANT_TIMEOUT_S`) | `120` s |
+
+The environment `base_url` is not passed through `_sanitize_base_url`; only
+values set through `/config` are. See the
+[Configuration reference](configuration.md#copilot) for the other backend
+variables.
 
 The cloud key and the self-hosted key are kept **strictly separate**: the cloud
 key is used only when there is no `base_url`, and a self-hosted endpoint only ever
@@ -106,9 +129,10 @@ construction error it degrades to `NullProvider` (never crashes the route).
 `public_config()` returns the non-secret view for the UI (keys reported only as
 `*_set` booleans; `base_url` sanitised).
 
-The active provider is **module-cached** (`_get_provider`) so `/status` and
+The active provider is **cached on the session** (`_get_provider` in
+`routers/assistant.py`, stored as `session.assistant_provider`) so `/status` and
 `/query` don't rebuild an SDK client each call; `POST /config` calls
-`_invalidate_provider()` so the next call rebuilds it.
+`_invalidate_provider(session)` so that session's next call rebuilds it.
 
 ## Tools
 

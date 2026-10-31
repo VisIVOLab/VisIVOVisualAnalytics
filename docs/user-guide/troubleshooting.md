@@ -71,6 +71,16 @@ backend. A load that fails part-way (a slab the backend could not serve)
 reports the failure instead of retrying through the JSON route, which on a
 multi-GB cube used to multiply the client's memory until the system killed it.
 
+Separately, the backend decides whether a cube opens at full resolution or as
+a preview only. A file at or above the threshold opens as a preview, and you
+load full resolution explicitly. The threshold is 4 GiB, or a quarter of the
+memory the backend may use when that is smaller: its container's or cgroup's
+memory limit, the memory SLURM granted the job, or else the machine's physical
+memory. A backend on a node limited to 8 GiB therefore opens cubes of 2 GiB and
+more as previews. `VISIVO_FULL_RES_THRESHOLD_BYTES` on the backend replaces
+the rule with a fixed size in bytes (see the
+[Configuration reference](../configuration.md#memory-and-full-resolution-loading)).
+
 ### The cube swap from preview to full-resolution takes several seconds
 
 Expected for cubes ≥ ~500 MB. The first full-resolution Render uploads
@@ -120,6 +130,21 @@ The volume mapper is GPU-bound. Causes:
   visible.
 - Some integrated GPUs cap 3-D texture size; reduce the cube via ROI or
   open a downsampled FITS.
+
+### The remote 3-D view is choppy, frozen or shows only the proxy
+
+This is the *Remote* view, rendered by the backend and sent as frames.
+
+- While the view moves it is coarser on purpose, and it sharpens when you
+  release the mouse; the first rotation after opening is slower while the
+  backend adapts the drag level.
+- A view that stops updating usually means the SSH tunnel dropped: the
+  cluster helper reopens it by itself within a few seconds.
+- A decimated proxy instead of the full cube means the backend cannot render
+  server-side (no EGL in its image, or no GPU usable by its job).
+
+The cluster side of all three is described in
+[Running the backend on a cluster](../deployment/hpc-slurm.md#troubleshooting).
 
 ## WCS
 

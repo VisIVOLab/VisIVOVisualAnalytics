@@ -208,4 +208,10 @@ private:
     // no request per frame, only an ack per frame received. Off with a server
     // that predates it, which then keeps answering request_frame.
     bool m_push{ false };
+    // The backend closes a render session that has received no command for
+    // VISIVO_RENDER_IDLE_TTL_SECONDS (300 s by default). Frame acks do not
+    // count, so a view left still while someone looks at it would be closed:
+    // a keepalive goes out on this timer while a transport is connected.
+    QTimer *m_keepaliveTimer{ nullptr };
+    void sendKeepalive();
 };

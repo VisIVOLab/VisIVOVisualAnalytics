@@ -46,8 +46,11 @@ per session, in backend memory only: never logged, never returned by
 `/v1/assistant/status`, never written to disk. Alice configuring Claude does not
 change what Bob's copilot talks to, and neither can read the other's key.
 
-**A session quota.** Each token is capped at a fixed number of live sessions;
-exceeding it returns 429 rather than letting one client exhaust the server.
+**A session quota.** Each token is capped at `VISIVO_MAX_SESSIONS_PER_TOKEN`
+live sessions (default 32); exceeding it returns 429 rather than letting one
+client exhaust the server. Sessions idle for longer than `VISIVO_SESSION_TTL`
+seconds (default 1800) are removed, which frees their place in the quota; a
+session with a task still running is kept.
 
 In multi-user mode the client MUST send `X-Visivo-Session`: the shared anonymous
 session is refused (400), and a client-invented id is not adopted — only ids the
@@ -108,6 +111,25 @@ run one backend per user (each with its own token and its own
 `VISIVO_DATA_ROOTS`) rather than one backend with several tokens. Token isolation
 covers per-session state; it is not a per-user filesystem sandbox, and this page
 would be lying if it implied otherwise.
+
+## Lifetimes, quotas and the snapshot secret
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_SESSION_TTL` | `1800` s | An idle session is removed and its datasets closed, unless one of its tasks is still running. |
+| `VISIVO_MAX_SESSIONS_PER_TOKEN` | `32` | Live sessions per token; the next one answers 429. |
+| `VISIVO_TASK_TTL_SECONDS` | `1800` s | A task record neither read nor updated for this long is dropped (running tasks are kept); a client polling it afterwards gets "not found". |
+| `VISIVO_MAX_CONCURRENT_TASKS` | `3` | Compute tasks one session may run at once. |
+| `VISIVO_SNAPSHOT_SECRET` | `ADMIN_SESSION_SECRET`, else random | **Secret.** HMAC key that signs reproducibility snapshots. |
+
+When neither `VISIVO_SNAPSHOT_SECRET` nor `ADMIN_SESSION_SECRET` is set, the
+backend draws a random key at startup. Snapshots themselves live in session
+memory and disappear with a restart, but the signature a client was given
+with one can only be recomputed under the same key, so set a fixed secret (at
+least 32 random bytes, generated like the tokens above) when signatures kept
+outside the backend must stay checkable across restarts. Keep it as private
+as the tokens: whoever holds it can produce valid signatures. The [Configuration reference](configuration.md) lists
+every backend variable.
 
 ## Checking a deployment
 
