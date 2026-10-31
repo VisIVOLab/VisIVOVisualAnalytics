@@ -64,6 +64,7 @@ Working across Galactic-plane surveys: aligned multi-band cutouts, compact sourc
 
 **Next**
 
+- [VLKB service URL: one default for queries and batch cutouts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/76) (#76)
 - [Open multi-wavelength cutouts of one source on a common grid](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/16) (#16)
 - [Cross-match compact-source catalogues across surveys in the GUI](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/17) (#17)
 - [Polygon and rotated-box regions for VLKB cutouts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/18) (#18)
@@ -140,6 +141,7 @@ Learned models that assist the user, beyond the copilot: object segmentation, so
 
 **Next**
 
+- [Self-hosted copilot: model default and base URL validation from the environment](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/75) (#75)
 - [Suggest SoFiA-2 parameters from the data](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/64) (#64)
 
 **2027**
@@ -168,6 +170,7 @@ Infrastructure shared by all areas.
 
 **2027**
 
+- [One convention for shapes and bounds across the binary volume routes](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/74) (#74)
 - [Open compressed FITS directly](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/57) (#57)
 - [VR off the UI thread; server-side rendering on macOS and CPU-only hosts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/58) (#58)
 - [Evaluate the scientific copilot](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/59) (#59)
