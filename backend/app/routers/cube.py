@@ -673,6 +673,8 @@ async def cube_mask_selection(
             request.reach, request.lambda_v, request.sigma,
             request.roi_radius, request.nsigma, request.mode,
             request.reach_max if request.reach_max > 0.0 else None,
+            ((request.smooth_v, request.smooth_xy, request.smooth_xy)
+             if (request.smooth_v > 0.0 or request.smooth_xy > 0.0) else None),
         )
     except HTTPException:
         raise

@@ -197,7 +197,10 @@ void vtkWindowCube::requestRemoteRenderSession()
             const QJsonArray transports = doc.object().value(u"transports"_s).toArray();
             bool haveWebRtc = false;
             for (const auto &t : transports) {
-                if (t.toString() == QLatin1String("h265-webrtc")) {
+                // "h264-webrtc" names the stream; "h265-webrtc" is the name an
+                // older backend gives the same H.264 stream.
+                if (t.toString() == QLatin1String("h264-webrtc")
+                    || t.toString() == QLatin1String("h265-webrtc")) {
                     haveWebRtc = true;
                     break;
                 }
@@ -206,7 +209,7 @@ void vtkWindowCube::requestRemoteRenderSession()
             QStringList tlist;
             for (const auto &t : transports) tlist << t.toString();
             qDebug().noquote() << QStringLiteral(
-                    "[remote-render] backend transports: [%1] (h265-webrtc=%2)")
+                    "[remote-render] backend transports: [%1] (WebRTC=%2)")
                     .arg(tlist.join(u", "_s))
                     .arg(haveWebRtc ? u"yes"_s : u"no"_s);
         });

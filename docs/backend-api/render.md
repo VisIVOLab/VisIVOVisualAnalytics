@@ -74,7 +74,7 @@ Response:
 | `capacity` | int | The session cap (`VISIVO_RENDER_MAX_SESSIONS`). |
 | `idle_ttl_seconds` | float | The idle timeout (`VISIVO_RENDER_IDLE_TTL_SECONDS`). |
 | `sessions` | array | One object per session, see below. |
-| `transports` | array of string | `"jpeg-ws"` and `"jpeg-ws-push"` always; `"h265-webrtc"` added when the WebRTC module imports and its encoder probe succeeds. |
+| `transports` | array of string | `"jpeg-ws"` and `"jpeg-ws-push"` always; `"h264-webrtc"` and `"h265-webrtc"` added when the WebRTC module imports and its encoder probe succeeds. Both name the same H.264 stream: `"h265-webrtc"` is the earlier name, kept for older clients. |
 
 Each element of `sessions`: `session_id`, `dataset_path`, `frames_rendered`, `bytes_sent`, `commands_received`, `last_render_ms`, `last_jpeg_kb`, `age_seconds`, `idle_seconds`.
 
@@ -95,7 +95,7 @@ Errors: 401 (token).
 
 ## WebRTC signalling
 
-These two routes exist on every backend that mounts the render router, but they only work where the optional WebRTC module (aiortc) is installed. The video track carries H.264, encoded with NVENC (`h264_nvenc`) when the encoder probe succeeds and with aiortc's software encoder otherwise. Note that the transport identifier advertised by `/v1/render/diagnostics` is `h265-webrtc`.
+These two routes exist on every backend that mounts the render router, but they only work where the optional WebRTC module (aiortc) is installed. The video track carries H.264, encoded with NVENC (`h264_nvenc`) when the encoder probe succeeds and with aiortc's software encoder otherwise. `/v1/render/diagnostics` advertises this transport as `h264-webrtc`, and also as `h265-webrtc`, its earlier name.
 
 Camera and rendering commands travel over an `RTCDataChannel` labelled `commands` that the client opens before posting its offer. It accepts the same JSON commands as the WebSocket (see [the command table](#client-commands)); `request_frame` is ignored there, since the video track streams frames continuously, and invalid JSON is logged and dropped.
 

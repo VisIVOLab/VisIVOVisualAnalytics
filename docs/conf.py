@@ -89,6 +89,7 @@ templates_path = ["_templates"]
 # the build output, and the docs python project files / lock files which are
 # not documentation content.
 exclude_patterns = [
+    ".venv",
     "build",
     "source",
     "_build",

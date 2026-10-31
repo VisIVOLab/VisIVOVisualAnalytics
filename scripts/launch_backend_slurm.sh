@@ -79,6 +79,8 @@ WORKSPACE="${VISIVO_WORKSPACE:-}"
 VERSION="${VISIVO_VERSION:-}"
 LOG_DIR="${VISIVO_LOG_DIR:-$HOME/.visivo_logs}"
 POLL_MAX=60   # max poll attempts × 5 s = 5 min
+# How long to wait for SLURM to assign a node (a queued job can wait longer).
+ASSIGN_TIMEOUT="${VISIVO_ASSIGN_TIMEOUT:-300}"
 USE_GPU=true
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -323,7 +325,7 @@ echo "[visivo] Job ID: $JOB_ID"
 # ── Wait for the compute node to be assigned ──────────────────────────────────
 echo "[visivo] Waiting for compute node assignment..."
 NODE=""
-for _ in $(seq 1 30); do
+for _ in $(seq 1 $(( (ASSIGN_TIMEOUT + 1) / 2 ))); do
     NODE="$(squeue -j "$JOB_ID" -h -o '%N' 2>/dev/null || true)"
     if [[ -n "$NODE" && "$NODE" != "None" ]]; then
         break
@@ -332,7 +334,9 @@ for _ in $(seq 1 30); do
 done
 
 if [[ -z "$NODE" || "$NODE" == "None" ]]; then
-    echo "[visivo] ERROR: Could not determine compute node. Check: squeue -j $JOB_ID"
+    echo "[visivo] ERROR: no compute node assigned to job $JOB_ID within ${ASSIGN_TIMEOUT} s." >&2
+    echo "[visivo]        The job is still queued and starts when the resources free up; cancel" >&2
+    echo "[visivo]        it with: scancel $JOB_ID (or wait longer: VISIVO_ASSIGN_TIMEOUT=<seconds>)." >&2
     exit 1
 fi
 

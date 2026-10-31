@@ -642,6 +642,7 @@ def worker_cube_mask_selection(
     nsigma: float,
     mode: str,
     margin_reach: float | None = None,
+    smooth_zyx: tuple[float, float, float] | None = None,
 ) -> dict[str, Any]:
     """Apply a Kinematic Lasso selection to the cube: blank the voxels INSIDE the
     selection (mode="blank_inside", remove the object) or OUTSIDE it
@@ -666,9 +667,10 @@ def worker_cube_mask_selection(
             reach=float(reach), lambda_v=float(lambda_v),
             sigma=float(sigma) if sigma and sigma > 0 else None,
             roi_radius=int(roi_radius), nsigma=float(nsigma),
-            # Match the shell the preview's level field used, so what the user
-            # saw on screen is exactly what gets written out.
-            margin_reach=(float(margin_reach) if margin_reach else None))
+            # Match the shell and the smoothing the preview used, so what the
+            # user saw on screen is exactly what gets written out.
+            margin_reach=(float(margin_reach) if margin_reach else None),
+            smooth_zyx=smooth_zyx)
     finally:
         hdul.close()
     if not mask.any():
@@ -690,7 +692,9 @@ def worker_cube_mask_selection(
         out_hdul[0].header.add_history(
             f"VisIVO Kinematic Lasso mask ({mode}) from {Path(path).name}: "
             f"{len(seeds)} add + {len(sub_seeds)} subtract seeds, "
-            f"reach={reach}, lambda_v={lambda_v}")
+            f"reach={reach}, lambda_v={lambda_v}"
+            + (f", smooth_zyx={tuple(float(v) for v in smooth_zyx)}"
+               if smooth_zyx and any(v > 0 for v in smooth_zyx) else ""))
         range_min, range_max = _finite_range(kept)
         out_hdul.flush()
         nz, ny, nx = arr.shape

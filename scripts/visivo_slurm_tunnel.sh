@@ -113,6 +113,11 @@ if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
     echo "[visivo]        Stop it first: bash $0 --stop" >&2
     exit 1
 fi
+if [[ -f "$JOBFILE" ]]; then
+    echo "[visivo] ERROR: a job from an earlier run is still recorded ($(cut -d' ' -f1 "$JOBFILE"))." >&2
+    echo "[visivo]        Stop it first: bash $0 --stop" >&2
+    exit 1
+fi
 if (exec 3<>"/dev/tcp/127.0.0.1/${LOCAL_PORT}") 2>/dev/null; then
     echo "[visivo] ERROR: localhost:${LOCAL_PORT} is already in use." >&2
     echo "[visivo]        Stop what holds it, or choose another --port." >&2
@@ -133,22 +138,38 @@ TMP="$(mktemp /tmp/visivo_slurm_XXXXXX)"
 # argument is quoted for that shell first, so a value with spaces or shell
 # characters reaches the launcher as one argument, and only as data.
 REMOTE_LINE="$(printf '%q ' "${REMOTE_CMD[@]}")"
-ssh "${SSH_USER}@${FRONTEND}" "$REMOTE_LINE" 2>&1 | tee "$TMP"
+# The launcher can fail after submitting (no node assigned in time, backend not
+# ready): its status must not end this script before the job is recorded.
+LAUNCH_RC=0
+ssh "${SSH_USER}@${FRONTEND}" "$REMOTE_LINE" 2>&1 | while IFS= read -r line; do
+    printf '%s\n' "$line"
+    # errexit does not apply in this loop (the pipeline is tested below): a
+    # failed write ends it explicitly, which the status then reports.
+    printf '%s\n' "$line" >> "$TMP" || exit 1
+    if [[ ! -f "$JOBFILE" && "$line" =~ Job\ ID:\ ([0-9]+) ]]; then
+        echo "${BASH_REMATCH[1]} ${FRONTEND} ${SSH_USER}" > "$JOBFILE" || exit 1
+    fi
+done || LAUNCH_RC=$?
 
-JOB_ID="$(grep -oE 'Job ID: [0-9]+' "$TMP" | head -1 | awk '{print $3}')"
-NODE="$(grep -oE 'Compute node: [^ ]+' "$TMP" | head -1 | awk '{print $3}')"
-REMOTE_PORT="$(grep -oE 'Port: +[0-9]+' "$TMP" | head -1 | awk '{print $2}')"
-TOKEN="$(grep -oE 'Token: +[A-Za-z0-9_.-]+' "$TMP" | head -1 | awk '{print $2}')"
+JOB_ID="$(grep -oE 'Job ID: [0-9]+' "$TMP" | head -1 | awk '{print $3}' || true)"
+# The loop above recorded the job as soon as the launcher printed its id.
+NODE="$(grep -oE 'Compute node: [^ ]+' "$TMP" | head -1 | awk '{print $3}' || true)"
+REMOTE_PORT="$(grep -oE 'Port: +[0-9]+' "$TMP" | head -1 | awk '{print $2}' || true)"
+TOKEN="$(grep -oE 'Token: +[A-Za-z0-9_.-]+' "$TMP" | head -1 | awk '{print $2}' || true)"
 
-if [[ -z "$JOB_ID" || -z "$NODE" || -z "$REMOTE_PORT" || -z "$TOKEN" ]]; then
-    echo "[visivo] ERROR: could not parse the launcher's output." >&2
+if [[ "$LAUNCH_RC" -ne 0 || -z "$JOB_ID" || -z "$NODE" || -z "$REMOTE_PORT" || -z "$TOKEN" ]]; then
+    if [[ "$LAUNCH_RC" -ne 0 ]]; then
+        echo "[visivo] ERROR: the launcher failed (exit $LAUNCH_RC); see its output above." >&2
+    else
+        echo "[visivo] ERROR: could not parse the launcher's output." >&2
+    fi
     echo "[visivo] Saved to $TMP for inspection." >&2
+    if [[ -n "$JOB_ID" ]]; then
+        echo "[visivo] Job ${JOB_ID} may still be queued or running: bash $0 --stop cancels it." >&2
+    fi
     exit 1
 fi
 rm -f "$TMP"
-
-# Remember the job id + frontend so --stop can kill it later.
-echo "${JOB_ID} ${FRONTEND} ${SSH_USER}" > "$JOBFILE"
 
 # ── Open the SSH tunnel in the background ─────────────────────────────────────
 echo "[visivo] Opening tunnel: localhost:${LOCAL_PORT} → ${NODE}:${REMOTE_PORT} via ${FRONTEND}"

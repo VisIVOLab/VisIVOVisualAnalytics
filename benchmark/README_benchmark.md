@@ -1,36 +1,37 @@
-# Benchmark VisIVO Visual Analytics — protocollo per la Tabella 2 del paper
+# VisIVO Visual Analytics benchmark: protocol
 
-Due script, zero dipendenze esotiche (`requests`, `numpy`, `astropy`).
-Obiettivo: riempire la Tabella 2 con numeri riproducibili e pubblicabili
-("idealmente con script pubblici" — questi possono finire nel repo, cartella
-`benchmarks/`, e citati nel paper nella sezione Data & software availability).
+Two scripts with no unusual dependencies (`requests`, `numpy`, `astropy`).
+They produce reproducible timings of the backend's main operations, the
+numbers reported in the paper's benchmark table.
 
-## 1. Preparazione
+## 1. Preparation
 
-Backend avviato sull'host da misurare (embedded sul Mac, o remoto/HPC):
+Start the backend on the host to measure (embedded on the desktop machine, or
+a remote/HPC node):
 
     cd backend && .venv/bin/uvicorn app.main:app --port 8000
 
-Il token è in `~/.visivo_token` (lo script lo legge da solo con backend
-locale; con backend remoto passalo con `--token`).
+The token is in `~/.visivo_token` (the script reads it by itself for a local
+backend; for a remote backend pass it with `--token`).
 
-### Cubi di test
+### Test cubes
 
-**Opzione A — sintetici (riproducibili al bit, consigliata per la Tabella 2):**
+**Option A: synthetic (bit-for-bit reproducible, recommended):**
 
     python3 make_synthetic_cube.py --gb 1  --out /data/cube_1gb.fits
     python3 make_synthetic_cube.py --gb 8  --out /data/cube_8gb.fits
     python3 make_synthetic_cube.py --gb 30 --out /data/cube_30gb.fits
 
-Ogni cubo contiene rumore gaussiano + un disco rotante iniettato (PA 30°,
-inc 60°, S/N di picco ~12) centrato nel cubo: il seed automatico del
-benchmark (pixel più brillante del canale centrale) cade sul disco per
-costruzione, e il lasso ha un oggetto cinematicamente esteso realistico.
+Each cube holds Gaussian noise plus an injected rotating disc (PA 30°,
+inclination 60°, peak S/N about 12) at the centre of the cube: the
+benchmark's automatic seed (the brightest pixel of the central channel) falls
+on the disc by construction, and the lasso has a realistic, kinematically
+extended object to select.
 
-**Opzione B — dati reali (per il testo degli use case):** un campo WALLABY
-pubblico. Passa `--seed Z,Y,X` sulla galassia scelta.
+**Option B: real data (for use cases):** a public WALLABY field. Pass
+`--seed Z,Y,X` on the chosen galaxy.
 
-## 2. Esecuzione
+## 2. Running
 
     python3 benchmark_visivo.py \
         --cube /data/cube_1gb.fits \
@@ -38,59 +39,61 @@ pubblico. Passa `--seed Z,Y,X` sulla galassia scelta.
         --cube /data/cube_30gb.fits \
         --repeats 3 --out results_$(hostname)
 
-Note:
-- I percorsi `--cube` sono percorsi SUL FILESYSTEM DEL BACKEND.
-- Ogni ripetizione varia leggermente i parametri (reach del lasso, canale
-  iniziale di M0, vertici della PV) per impedire alla cache LRU dei prodotti
-  di falsare i tempi. Riportati mediana ± 1.4826·MAD.
-- Sul cubo da 30 GB il full-res di default non viene misurato (`(ROI)` in
-  tabella): sopra `--roi-only-above 10` GB si misura solo il camera-ROI
-  (half-box centrale, 1/8 dei voxel), coerente con la raccomandazione d'uso
-  del tool. Per misurare comunque il full-res: `--roi-only-above 100`.
-- Prima misura "a freddo" vs ripetizioni "a caldo" (page cache del SO):
-  per la tabella usare le mediane; se vuoi anche il cold-start, riavvia il
-  backend e svuota la page cache (macOS: `sudo purge`) tra i run e usa
-  `--repeats 1` in un run separato.
-- COMPLETARE in `results.json` → `environment.note` la spec hardware
-  (CPU, RAM, GPU, disco, filesystem): va nella didascalia della Tabella 2.
+Notes:
+- The `--cube` paths are paths ON THE BACKEND'S FILESYSTEM.
+- Each repetition varies the parameters slightly (the lasso's reach, the
+  first channel of M0, the vertices of the PV path) so that the product LRU
+  cache does not distort the timings. Results are reported as median ±
+  1.4826·MAD.
+- On the 30 GB cube the full-resolution load is not measured by default
+  (`(ROI)` in the table): above `--roi-only-above 10` GB only the camera ROI
+  is measured (the central half-box, 1/8 of the voxels), consistent with how
+  the tool is meant to be used. To measure the full resolution anyway:
+  `--roi-only-above 100`.
+- First ("cold") measurement versus repetitions ("warm", with the operating
+  system's page cache): the table uses the medians. To measure a cold start
+  as well, restart the backend and drop the page cache (macOS: `sudo purge`)
+  between runs, and use `--repeats 1` in a separate run.
+- Fill in the hardware specification (CPU, RAM, GPU, disk, filesystem) in
+  `environment.note` of `results.json`: it belongs with any published table.
 
 ## 3. Output
 
-- `results.md` — tabella leggibile;
-- `table2_rows.tex` — righe LaTeX pronte da incollare nella Tabella 2
-  (stessa etichettatura delle righe del paper);
-- `results.json` — dati grezzi + record d'ambiente (da archiviare, ed
-  eventualmente da depositare su Zenodo insieme agli script).
+- `results.md`: a readable table;
+- `table2_rows.tex`: LaTeX rows for the paper's benchmark table (same row
+  labels);
+- `results.json`: raw data plus the environment record (to archive, and to
+  deposit with the scripts if the results are published).
 
-## 4. Colonna CARTA (contestualizzazione, non gara)
+## 4. CARTA column (context, not a contest)
 
-Stesso host, stesso cubo da 8 GB (`cube_8gb.fits`), CARTA più recente.
-Protocollo manuale (3 ripetizioni, riportare la mediana):
+Same host, same 8 GB cube (`cube_8gb.fits`), the latest CARTA. Manual
+protocol (3 repetitions, report the median):
 
-| riga                | cosa misurare in CARTA                                        |
-|---------------------|---------------------------------------------------------------|
-| Preview interactive | File → Open → tempo fino al primo render interattivo del canale |
-| Full resolution     | tempo fino a immagine full-res del canale corrente (progress bar) |
-| Lasso grow          | **n/a** (nessuna operazione equivalente)                       |
-| Masked M0           | Moment Generator: intervallo completo, maschera 3σ → tempo di generazione |
-| PV extraction       | PV Generator: linea a 3 segmenti equivalente, width 3 → tempo  |
+| row                 | what to measure in CARTA                                         |
+|---------------------|------------------------------------------------------------------|
+| Preview interactive | File → Open → time to the first interactive render of the channel |
+| Full resolution     | time to the full-resolution image of the current channel (progress bar) |
+| Lasso grow          | **n/a** (no equivalent operation)                                |
+| Masked M0           | Moment Generator: full range, 3σ mask → generation time         |
+| PV extraction       | PV Generator: equivalent 3-segment line, width 3 → time          |
 
-Se hai il backend CARTA con `--enable_scripting`, le stesse misure si
-possono automatizzare col pacchetto Python `carta`; per la tabella la
-misura manuale con cronometro (±0.5 s) è comunque adeguata, dichiarandola
-in didascalia. Nota metodologica già nel paper: "contextualizes rather
-than ranks: the two tools optimize different interactions" — CARTA fa
-rendering server-side di tile 2D, VisIVO trasferisce i voxel per il volume
-rendering 3D locale: le due colonne misurano operazioni omologhe, non
-identiche. Dichiararlo in didascalia (già fatto).
+With a CARTA backend started with `--enable_scripting`, the same measurements
+can be automated with the `carta` Python package; a manual stopwatch
+measurement (±0.5 s) is adequate if the caption says so. The two columns
+contextualise rather than rank: the tools optimise different interactions
+(CARTA renders 2-D tiles server-side, VisIVO Visual Analytics transfers voxels
+for local 3-D volume rendering), so they measure homologous, not identical,
+operations; the caption should say so.
 
-## 5. Integrazione nel paper
+## 5. Reporting the results
 
-1. Incolla `table2_rows.tex` nella Tabella 2 (le righe combaciano).
-2. Didascalia: hardware, versione VisIVO Visual Analytics (commit), versione CARTA,
-   dataset sintetici con seed RNG 42 (riproducibili), mediana di 3 run.
-3. `benchmark_visivo.py` + `make_synthetic_cube.py` nel repo pubblico →
-   citarli in "Data and software availability" ("benchmark scripts and
-   synthetic datasets are available at ...").
-4. Il numero "lasso grow" sul cubo reale WALLABY (con `--seed` sulla
-   galassia) è anche il numero da citare nel testo dell'use case HI.
+1. `table2_rows.tex` gives the rows of the benchmark table (labels match).
+2. The caption states the hardware, the VisIVO Visual Analytics commit, the
+   CARTA version, the synthetic datasets with RNG seed 42 (reproducible) and
+   the median of 3 runs.
+3. `benchmark_visivo.py` and `make_synthetic_cube.py` are in the public
+   repository and can be cited in the data and software availability
+   statement.
+4. The "lasso grow" figure on the real WALLABY cube (with `--seed` on the
+   galaxy) is the one to quote for that use case.

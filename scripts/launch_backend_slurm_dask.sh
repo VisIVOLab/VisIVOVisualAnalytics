@@ -55,6 +55,8 @@ TOKEN="${VISIVO_TOKEN:-}"
 LOG_DIR="${VISIVO_LOG_DIR:-$HOME/.visivo_logs}"
 USE_GPU=true
 POLL_MAX=120   # 10 min (multi-node startup can be slower)
+# How long to wait for SLURM to assign the nodes (a queued job can wait longer).
+ASSIGN_TIMEOUT="${VISIVO_ASSIGN_TIMEOUT:-300}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -298,13 +300,15 @@ echo "[visivo] Job ID: $JOB_ID"
 
 echo "[visivo] Waiting for compute node assignment..."
 NODELIST=""
-for _ in $(seq 1 30); do
-    NODELIST="$(squeue -j "$JOB_ID" -h -o '%N' 2>/dev/null | head -1)"
+for _ in $(seq 1 $(( (ASSIGN_TIMEOUT + 1) / 2 ))); do
+    NODELIST="$(squeue -j "$JOB_ID" -h -o '%N' 2>/dev/null | head -1 || true)"
     if [[ -n "$NODELIST" && "$NODELIST" != "None" ]]; then break; fi
     sleep 2
 done
 if [[ -z "$NODELIST" || "$NODELIST" == "None" ]]; then
-    echo "[visivo] ERROR: could not get a compute node" >&2
+    echo "[visivo] ERROR: no compute node assigned to job $JOB_ID within ${ASSIGN_TIMEOUT} s." >&2
+    echo "[visivo]        The job is still queued and starts when the resources free up; cancel" >&2
+    echo "[visivo]        it with: scancel $JOB_ID (or wait longer: VISIVO_ASSIGN_TIMEOUT=<seconds>)." >&2
     exit 1
 fi
 # squeue's %N format is SLURM's compact hostlist syntax (e.g.

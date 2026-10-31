@@ -97,7 +97,12 @@ if [[ "$STOP" == "true" ]]; then
         if [[ -f "$pf" ]]; then
             PID="$(cat "$pf")"
             if kill -0 "$PID" 2>/dev/null; then
+                # The reconnect loop ends its own ssh on TERM.
                 kill "$PID"
+                for _ in $(seq 1 20); do
+                    kill -0 "$PID" 2>/dev/null || break
+                    sleep 0.25
+                done
                 echo "[visivo] SSH tunnel stopped (pid $PID, from $pf)."
             fi
             rm -f "$pf"
@@ -118,6 +123,34 @@ if [[ -z "$FRONTEND" ]]; then
     echo "ERROR: --frontend <host> is required" >&2
     exit 2
 fi
+# Before submitting anything: a tunnel still open from an earlier run, or a
+# local port already taken, would make the new tunnels fail after a job had
+# been submitted, and --stop would then know only the new job.
+for pf in "$PIDFILE" "$DASH_PIDFILE"; do
+    if [[ -f "$pf" ]] && kill -0 "$(cat "$pf")" 2>/dev/null; then
+        echo "[visivo] ERROR: a tunnel from an earlier run is still active (pid $(cat "$pf"))." >&2
+        echo "[visivo]        Stop it first: bash $0 --stop" >&2
+        exit 1
+    fi
+done
+if [[ -f "$JOBFILE" ]]; then
+    echo "[visivo] ERROR: a job from an earlier run is still recorded ($(cut -d' ' -f1 "$JOBFILE"))." >&2
+    echo "[visivo]        Stop it first: bash $0 --stop" >&2
+    exit 1
+fi
+if [[ "$WITH_DASHBOARD" == "true" && "$LOCAL_PORT" == "$LOCAL_DASH_PORT" ]]; then
+    echo "[visivo] ERROR: --port and --dashboard-port are the same (${LOCAL_PORT})." >&2
+    exit 2
+fi
+PORTS=("$LOCAL_PORT")
+[[ "$WITH_DASHBOARD" == "true" ]] && PORTS+=("$LOCAL_DASH_PORT")
+for port in "${PORTS[@]}"; do
+    if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then
+        echo "[visivo] ERROR: localhost:${port} is already in use." >&2
+        echo "[visivo]        Stop what holds it, or choose another --port / --dashboard-port." >&2
+        exit 1
+    fi
+done
 
 # ── Submit via SSH and capture the launcher's output ─────────────────────────
 echo "[visivo] Submitting Dask multi-node backend job on ${SSH_USER}@${FRONTEND}…"
@@ -127,7 +160,16 @@ REMOTE_CMD=(bash "${REMOTE_REPO}/scripts/launch_backend_slurm_dask.sh" "${REMOTE
 TMP="$(mktemp /tmp/visivo_slurm_dask_XXXXXX)"
 # ssh joins its arguments into one remote shell line: quote each one.
 REMOTE_LINE="$(printf '%q ' "${REMOTE_CMD[@]}")"
-ssh "${SSH_USER}@${FRONTEND}" "$REMOTE_LINE" 2>&1 | tee "$TMP"
+LAUNCH_RC=0
+ssh "${SSH_USER}@${FRONTEND}" "$REMOTE_LINE" 2>&1 | while IFS= read -r line; do
+    printf '%s\n' "$line"
+    # errexit does not apply in this loop (the pipeline is tested below): a
+    # failed write ends it explicitly, which the status then reports.
+    printf '%s\n' "$line" >> "$TMP" || exit 1
+    if [[ ! -f "$JOBFILE" && "$line" =~ Job\ ID:\ ([0-9]+) ]]; then
+        echo "${BASH_REMATCH[1]} ${FRONTEND} ${SSH_USER}" > "$JOBFILE" || exit 1
+    fi
+done || LAUNCH_RC=$?
 
 # Parse the launcher's output. The dask launcher prints (see README block):
 #   [visivo] Job ID: <N>
@@ -135,46 +177,78 @@ ssh "${SSH_USER}@${FRONTEND}" "$REMOTE_LINE" 2>&1 | tee "$TMP"
 #   ║  Backend port:    <port>
 #   ║  Dashboard:       http://<host>:<port>
 #   ║  Token: <token>     (read from token line after the ascii box)
-JOB_ID="$(grep -oE 'Job ID: [0-9]+' "$TMP" | head -1 | awk '{print $3}')"
-NODE="$(grep -oE 'Backend host \(first node\): [^ ]+' "$TMP" | head -1 | awk '{print $5}')"
-REMOTE_PORT="$(grep -oE 'Backend port: +[0-9]+' "$TMP" | head -1 | awk '{print $3}')"
+JOB_ID="$(grep -oE 'Job ID: [0-9]+' "$TMP" | head -1 | awk '{print $3}' || true)"
+# The loop above recorded the job as soon as the launcher printed its id.
+NODE="$(grep -oE 'Backend host \(first node\): [^ ]+' "$TMP" | head -1 | awk '{print $5}' || true)"
+REMOTE_PORT="$(grep -oE 'Backend port: +[0-9]+' "$TMP" | head -1 | awk '{print $3}' || true)"
 DASH_PORT="$(grep -oE 'Dashboard: +http://[^:]+:[0-9]+' "$TMP" \
-             | head -1 | sed -E 's/.*:([0-9]+)$/\1/')"
-TOKEN="$(grep -oE 'Token: +[A-Za-z0-9_.-]+' "$TMP" | head -1 | awk '{print $2}')"
+             | head -1 | sed -E 's/.*:([0-9]+)$/\1/' || true)"
+TOKEN="$(grep -oE 'Token: +[A-Za-z0-9_.-]+' "$TMP" | head -1 | awk '{print $2}' || true)"
 
-if [[ -z "$JOB_ID" || -z "$NODE" || -z "$REMOTE_PORT" || -z "$TOKEN" ]]; then
-    echo "[visivo] ERROR: could not parse the launcher's output." >&2
+if [[ "$LAUNCH_RC" -ne 0 || -z "$JOB_ID" || -z "$NODE" || -z "$REMOTE_PORT" || -z "$TOKEN" ]]; then
+    if [[ "$LAUNCH_RC" -ne 0 ]]; then
+        echo "[visivo] ERROR: the launcher failed (exit $LAUNCH_RC); see its output above." >&2
+    else
+        echo "[visivo] ERROR: could not parse the launcher's output." >&2
+    fi
     echo "[visivo] Saved to $TMP for inspection." >&2
+    if [[ -n "$JOB_ID" ]]; then
+        echo "[visivo] Job ${JOB_ID} may still be queued or running: bash $0 --stop cancels it." >&2
+    fi
     exit 1
 fi
 rm -f "$TMP"
 
-# Remember the job id + frontend so --stop can kill it later.
-echo "${JOB_ID} ${FRONTEND} ${SSH_USER}" > "$JOBFILE"
+# A tunnel that drops (a network change, the laptop sleeping, an idle timeout)
+# is opened again by itself: ssh runs in a loop in the background, with
+# keep-alives so a dead connection is noticed within a minute. --stop ends the
+# loop and its ssh. Non-interactive (BatchMode): key-based access.
+open_tunnel() {   # <local:host:remote> <pidfile>
+    nohup bash -c '
+        child=
+        trap "[ -n \"\$child\" ] && kill \$child 2>/dev/null; exit 0" TERM INT
+        while true; do
+            ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes \
+                -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+                -L "$1" "$2" &
+            child=$!
+            wait "$child"
+            child=
+            sleep 3 & wait $!
+        done' visivo-tunnel "$1" "${SSH_USER}@${FRONTEND}" >/dev/null 2>&1 &
+    echo "$!" > "$2"
+}
 
 # ── Backend tunnel ────────────────────────────────────────────────────────────
 echo "[visivo] Opening backend tunnel: localhost:${LOCAL_PORT} → ${NODE}:${REMOTE_PORT} via ${FRONTEND}"
-ssh -N -f \
-    -L "${LOCAL_PORT}:${NODE}:${REMOTE_PORT}" \
-    -o ExitOnForwardFailure=yes \
-    -o ServerAliveInterval=30 \
-    "${SSH_USER}@${FRONTEND}"
-sleep 1
-TUNNEL_PID="$(pgrep -f "ssh -N.*${LOCAL_PORT}:${NODE}:${REMOTE_PORT}" | head -1 || true)"
-[[ -n "$TUNNEL_PID" ]] && echo "$TUNNEL_PID" > "$PIDFILE"
+open_tunnel "${LOCAL_PORT}:${NODE}:${REMOTE_PORT}" "$PIDFILE"
+# Ready means the backend answers through the tunnel, not only that the local
+# port listens.
+READY=false
+DEADLINE=$((SECONDS + 30))
+while (( SECONDS < DEADLINE )); do
+    LEFT=$((DEADLINE - SECONDS))
+    (( LEFT > 0 )) || break   # --max-time 0 would mean no limit at all
+    if curl -sf -o /dev/null --max-time "$(( LEFT < 3 ? LEFT : 3 ))" \
+            -H "X-Visivo-Token: ${TOKEN}" "http://localhost:${LOCAL_PORT}/v1/health"; then
+        READY=true
+        break
+    fi
+    sleep 0.5
+done
+if [[ "$READY" != "true" ]]; then
+    kill "$(cat "$PIDFILE")" 2>/dev/null || true
+    rm -f "$PIDFILE"
+    echo "[visivo] ERROR: the backend did not answer through the tunnel within 30 s." >&2
+    echo "[visivo]        The job (${JOB_ID}) is still queued or running: bash $0 --stop cancels it." >&2
+    exit 1
+fi
 
 # ── Dashboard tunnel (optional) ───────────────────────────────────────────────
 DASH_LINE=""
 if [[ "$WITH_DASHBOARD" == "true" && -n "$DASH_PORT" ]]; then
     echo "[visivo] Opening dashboard tunnel: localhost:${LOCAL_DASH_PORT} → ${NODE}:${DASH_PORT} via ${FRONTEND}"
-    ssh -N -f \
-        -L "${LOCAL_DASH_PORT}:${NODE}:${DASH_PORT}" \
-        -o ExitOnForwardFailure=yes \
-        -o ServerAliveInterval=30 \
-        "${SSH_USER}@${FRONTEND}"
-    sleep 1
-    DASH_PID="$(pgrep -f "ssh -N.*${LOCAL_DASH_PORT}:${NODE}:${DASH_PORT}" | head -1 || true)"
-    [[ -n "$DASH_PID" ]] && echo "$DASH_PID" > "$DASH_PIDFILE"
+    open_tunnel "${LOCAL_DASH_PORT}:${NODE}:${DASH_PORT}" "$DASH_PIDFILE"
     DASH_LINE="  Dashboard:    http://localhost:${LOCAL_DASH_PORT}"
 fi
 

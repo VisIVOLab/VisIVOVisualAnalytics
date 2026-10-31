@@ -160,13 +160,15 @@ async def diagnostics(token: str = _auth) -> dict[str, Any]:
     from ..auth import multi_user_mode as _multi
     snap = await get_render_manager().snapshot_for_owner(token, _multi())
     # Surface which transports this backend can serve so the client
-    # picks the best path: ``jpeg-ws`` is always on; ``h265-webrtc``
-    # only when the optional Stage 6 H.265 build was applied.
+    # picks the best path: ``jpeg-ws`` is always on; the WebRTC stream only
+    # when the optional WebRTC build was applied. That stream is H.264
+    # (webrtc_session.py): ``h264-webrtc`` names it, and ``h265-webrtc`` is
+    # kept for the clients that look for the name it was first given.
     try:
         from ..webrtc_session import webrtc_available
         transports = ["jpeg-ws", "jpeg-ws-push"]
         if webrtc_available():
-            transports.append("h265-webrtc")
+            transports += ["h264-webrtc", "h265-webrtc"]
     except ImportError:
         transports = ["jpeg-ws", "jpeg-ws-push"]
     snap["transports"] = transports

@@ -671,7 +671,8 @@ async def soda_async_error(job_id: str, token: str = _auth) -> Response:
 
 @router.delete("/soda/async/{job_id}")
 async def soda_async_delete(job_id: str, request: Request, token: str = _auth) -> Response:
-    """Abort the job if needed and forget it; its product stays in the workspace."""
+    """Abort the job if needed, delete its product and forget it (UWS: destroying
+    a job reclaims its result storage). Keep a product by copying it first."""
     try:
         task = _job_or_404(job_id, token)
     except SodaError as exc:

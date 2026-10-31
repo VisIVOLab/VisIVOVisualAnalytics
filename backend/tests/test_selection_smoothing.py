@@ -125,3 +125,30 @@ class TestWhySmoothingIsNotTheDefault:
         assert merged[:, :, midpoint:].sum() > 1000, (
             "this is the documented cost of smoothing: it bridges the gap between "
             "neighbouring sources, which is why it is not the default")
+
+
+class TestTheSavedMaskMatchesThePreview:
+    def test_mask_selection_writes_the_smoothed_selection(self, tmp_path):
+        """Isolating a selection writes the voxels the preview showed: with
+        smoothing on, the saved cube keeps the smoothed selection, not the raw
+        one, and its HISTORY says so."""
+        from astropy.io import fits
+        from app.compute.selection import cube_kinematic_select_multi, worker_cube_mask_selection
+
+        data, seed = _cube_with_envelope()
+        src = tmp_path / "cube.fits"
+        fits.PrimaryHDU(data).writeto(src)
+        sm = (1.0, 3.0, 3.0)
+        expected = cube_kinematic_select_multi(data, [list(seed)], [], reach=8.0, lambda_v=1.0,
+                                               sigma=None, roi_radius=0, nsigma=2.5, smooth_zyx=sm)
+        raw = cube_kinematic_select_multi(data, [list(seed)], [], reach=8.0, lambda_v=1.0,
+                                          sigma=None, roi_radius=0, nsigma=2.5)
+        assert expected.sum() > raw.sum()
+        out = tmp_path / "isolated.fits"
+        worker_cube_mask_selection(str(src), str(out), [list(seed)], [], 8.0, 1.0, 0.0, 0, 2.5,
+                                   "blank_outside", None, sm)
+        with fits.open(out) as hdul:
+            kept = np.isfinite(hdul[0].data)
+            history = " ".join(str(h) for h in hdul[0].header["HISTORY"])
+        assert np.array_equal(kept, expected)
+        assert "smooth_zyx=(1.0, 3.0, 3.0)" in history

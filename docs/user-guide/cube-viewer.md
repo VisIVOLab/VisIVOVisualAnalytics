@@ -199,7 +199,7 @@ SPECTRUM controls of the product it just produced. The Tools menu and
 collapsed.
 ```
 
-#### Preparing the cube: Smooth / Regrid
+### Preparing the cube: Smooth / Regrid
 
 *Tools → Smooth / Regrid…* applies a Gaussian kernel and/or an integer shrink
 to **every plane**, on the backend, and writes a new FITS into the Workspace,
@@ -214,7 +214,7 @@ for why each of those matters.
 The header can be repaired the same way as in the image viewer: the **CUBE**
 tag in the toolbar shows the FITS header, and **Edit…** writes a corrected copy.
 
-#### Session Data: selecting vs showing
+### Session Data: selecting vs showing
 
 The left panel's tree is a **table of contents**, and the two gestures do
 different things:
@@ -252,7 +252,7 @@ pane and acts on it. If the tree says *2D Slice* while the active pane is the
 a row now takes the focus with it.
 ```
 
-#### When a tool is available, and where it acts
+### When a tool is available, and where it acts
 
 A tool is bound to a **view**, not to the pane you happen to have selected:
 

@@ -46,7 +46,8 @@ then refuses.
 ## The launcher: `launch_backend_slurm.sh`
 
 The launcher writes a batch script, submits it with `sbatch`, waits for the
-compute node to be assigned, then polls the backend's `/v1/health` over SSH
+compute node to be assigned (up to `VISIVO_ASSIGN_TIMEOUT` seconds, 300 by
+default, set in the frontend's environment), then polls the backend's `/v1/health` over SSH
 from the frontend to the compute node until it answers. It then prints the job
 id, the compute node, the port, the `ssh -N -L` command to run on the laptop,
 and the entries for the desktop's Backends page.
@@ -69,6 +70,7 @@ and the entries for the desktop's Backends page.
 | `--workspace DIR` | `VISIVO_WORKSPACE` | unset | A writable directory for everything the backend and the launcher write (see below). Needed where `$HOME` is read-only. |
 | `--node-code CODE` | `VISIVO_NODE_CODE` | unset | The node's code in the SKAVA catalogue, reported in `/v1/node/status`. |
 | `--version TEXT` | `VISIVO_VERSION` | the image's | What the status document reports as the backend version, for example the commit the image was built from. |
+| | `VISIVO_ASSIGN_TIMEOUT` | `300` | Seconds to wait for SLURM to assign the node before the launcher stops (the job stays queued; `--stop` cancels it). |
 | `--help` | | | Print the help. |
 
 `VISIVO_LOG_DIR` (default `~/.visivo_logs`, or `<workspace>/logs` with a
@@ -174,12 +176,11 @@ to the Dask dashboard, default `VISIVO_DASHBOARD_PORT` or `18787`) and
 launcher. The token is saved in `~/.visivo_slurm_dask_token`; `--stop` closes
 both tunnels and cancels the job.
 
-```{note}
-The Dask helper is simpler than the single-node one: its tunnels are plain
-`ssh -N -f` processes that are not reopened when they drop, it does not check
-for an earlier tunnel or a busy port, and it does not wait for the backend to
-answer through the tunnel.
-```
+The Dask helper behaves like the single-node one: it refuses to start while
+an earlier tunnel or job is recorded or a local port is taken (and when
+`--port` and `--dashboard-port` are the same), reopens either tunnel when it
+drops, records the job as soon as the launcher prints its id, and is ready
+only when the backend answers through the tunnel.
 
 ## Apptainer images
 
@@ -307,12 +308,14 @@ described in the
 
 ## Troubleshooting
 
-**The job stays pending.** The launcher waits about 60 seconds for SLURM to
-assign a node, then stops with `Could not determine compute node`, but the job
-stays queued. The tunnel helper then cannot read the node and has recorded no
-job, so `--stop` does not know it: check it with `squeue -j <jobid>` on the
-frontend and `scancel` it yourself, or ask for fewer resources (a shorter
-`--time`, fewer GPUs, another `--partition`).
+**The job stays pending.** The launcher waits `VISIVO_ASSIGN_TIMEOUT` seconds
+(300 by default) for SLURM to assign a node, then stops with `no compute node
+assigned`; the job stays queued and starts when the resources free up. The
+helper has recorded the job as soon as it was submitted, so `--stop` cancels
+it. To wait longer, set `VISIVO_ASSIGN_TIMEOUT` on the frontend; otherwise ask
+for fewer resources (a shorter `--time`, fewer GPUs, another `--partition`).
+A new run refuses to start while a job from an earlier run is still recorded:
+stop it first.
 
 **The backend does not become ready.** The launcher polls for five minutes
 (ten for the Dask variant), then names the job log. Look there first: a
