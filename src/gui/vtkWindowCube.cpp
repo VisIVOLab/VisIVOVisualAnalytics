@@ -3971,6 +3971,9 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
         // so they know the click registered while the 3-5 s WebRTC
         // negotiation happens.
         this->m_remoteSwitchInProgress = true;
+        // A new switch starts without the progress of an earlier one.
+        this->m_remotePreparing = false;
+        this->m_remotePreparingProgress = 0.0;
         // Start the elapsed-time counter that drives the progressive
         // status messages. A 1 Hz ticker re-paints the banner text
         // based on how long we've been waiting — the user sees
@@ -4022,14 +4025,28 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
                 constexpr qint64 kSwitchTimeoutS = 300;
                 if (secs >= kSwitchTimeoutS) {
                     this->abortRemoteSwitch(
-                            QStringLiteral("Remote rendering did not start within %1 s - "
-                                           "staying local. Check the backend's GPU / EGL "
-                                           "support in Diagnostics, then retry.")
-                                    .arg(kSwitchTimeoutS));
+                            this->m_remotePreparing
+                                    ? QStringLiteral("Preparing the cube on the backend stopped "
+                                                     "advancing for %1 s - staying local. The "
+                                                     "build may go on there; retry Remote later.")
+                                              .arg(kSwitchTimeoutS)
+                                    : QStringLiteral("Remote rendering did not start within %1 s - "
+                                                     "staying local. Check the backend's GPU / EGL "
+                                                     "support in Diagnostics, then retry.")
+                                              .arg(kSwitchTimeoutS));
                     return;
                 }
                 QString msg;
-                if (secs < 5) {
+                if (this->m_remotePreparing) {
+                    // The backend is building the cube's pyramid: the watchdog
+                    // counts from the last progress, so this can take as long as
+                    // the build needs while it keeps advancing.
+                    msg = QStringLiteral(
+                            "Preparing the cube for full resolution on the backend… %1%. "
+                            "The preview stays until it is ready; this is needed only the "
+                            "first time.")
+                                  .arg(qRound(this->m_remotePreparingProgress * 100.0));
+                } else if (secs < 5) {
                     msg = QStringLiteral(
                             "Connecting to remote rendering… (%1 s)").arg(secs);
                 } else if (secs < 30) {

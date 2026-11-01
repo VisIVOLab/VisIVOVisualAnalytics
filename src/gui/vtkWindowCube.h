@@ -2498,6 +2498,10 @@ protected:
     // sits on a static "Connecting…" for minutes on a 22 GB cube
     // and the user can't tell whether the click registered.
     QElapsedTimer         m_remoteSwitchElapsed;
+    /// The backend is building the cube's brick pyramid (create_session
+    /// answered 202): the switch waits, showing this fraction, and asks again.
+    bool                  m_remotePreparing{ false };
+    double                m_remotePreparingProgress{ 0.0 };
     QTimer               *m_remoteSwitchProgressTimer{ nullptr };
     QLabel               *m_renderModeBadge{ nullptr };  // status-bar pill
     QLabel               *m_renderFpsBadge{ nullptr };   // status-bar FPS

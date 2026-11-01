@@ -37,6 +37,17 @@ Response:
 | `initial_frame_jpeg_b64` | string | The first frame, JPEG, base64-encoded. |
 | `width`, `height` | int | Size of the render window, in pixels (1920 x 1080 until the client sends `resize`). |
 
+A cube larger than `VISIVO_RENDER_OUT_OF_CORE_BYTES` is drawn from its brick pyramid ([Brick pyramid](../brick-pyramid.md#rendering-from-the-pyramid)). When the pyramid is missing or out of date, the backend starts building it in a separate process and answers **202** without creating a session:
+
+| Field | Type | Description |
+|---|---|---|
+| `valid` | bool | `false`. |
+| `preparing` | bool | `true`. |
+| `progress` | float | Fraction of the build done, 0 to 1. |
+| `error` | string | A sentence to show while waiting. |
+
+Ask again (the desktop does every 2 s); every request for the same cube joins the same build, also from another backend sharing `VISIVO_PYRAMID_DIR`. Once the pyramid is ready the answer is the session above. If the build failed, the answer is 500 with `detail` starting "Preparing the cube for full resolution failed:" and the reason; it is not retried for a minute.
+
 ```json
 {"dataset_id": "c0ffee"}
 ```

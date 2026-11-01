@@ -69,14 +69,20 @@ except ImportError:
 async def open_render_session(client: httpx.AsyncClient, base_url: str,
                                token: str, dataset_id: str) -> str:
     """Hit POST /v1/render/create_session and return the session_id."""
-    r = await client.post(
-        f"{base_url}/v1/render/create_session",
-        headers={"X-Visivo-Token": token, "Content-Type": "application/json"},
-        json={"dataset_id": dataset_id},
-        timeout=30.0,
-    )
-    r.raise_for_status()
-    body = r.json()
+    while True:
+        r = await client.post(
+            f"{base_url}/v1/render/create_session",
+            headers={"X-Visivo-Token": token, "Content-Type": "application/json"},
+            json={"dataset_id": dataset_id},
+            timeout=30.0,
+        )
+        r.raise_for_status()
+        body = r.json()
+        if r.status_code != 202:
+            break
+        # The backend is building the cube's brick pyramid.
+        print(f"preparing the cube on the backend: {100 * body.get('progress', 0):.0f}%")
+        await asyncio.sleep(5)
     sid = body.get("session_id", "")
     if not sid:
         raise RuntimeError(f"create_session returned no session_id: {body}")

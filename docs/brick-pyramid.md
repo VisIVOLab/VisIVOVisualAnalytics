@@ -78,11 +78,16 @@ pyramid (`backend/app/render_session/_ooc.py`, block choice in
 `backend/app/brick_lod.py`). Smaller cubes, and every view on a local backend,
 keep the paths they had.
 
-- **Pyramid.** The session reuses the cube's pyramid from the default location
-  or builds it there before the first frame. On PLEIADI-GPU a build took 46 s
-  for a 7.4 GiB cube and 253 s for a 23.4 GiB one, so for large cubes build it
-  beforehand with the command above, with `VISIVO_PYRAMID_DIR` set as the
-  backend will have it.
+- **Pyramid.** The view uses the cube's pyramid from the default location.
+  When it is missing or out of date, the backend builds it there in a process
+  of its own (`backend/app/pyramid_builds.py`). Meanwhile, the remote view
+  answers HTTP 202 with the fraction done, and the desktop keeps its preview
+  and shows "Preparing the cube for full resolution… N%". The view switches
+  to the pyramid when the build ends. Every view of the same cube on that
+  backend shares one build, and a failed build is reported with its reason.
+  On PLEIADI-GPU a build took 46 s for a 7.4 GiB cube and 253 s for a
+  23.4 GiB one. To skip the wait, build it beforehand with the command above,
+  with `VISIVO_PYRAMID_DIR` set as the backend will have it.
 - **Blocks.** For each view the session picks blocks of 256 voxels per side
   at the level each part of the view needs: fine near the camera, coarse far
   away or outside the window. The choice keeps within
@@ -127,4 +132,4 @@ at 2.5 GB. On a 1.8 GB cube drawn both ways, the frames differ from the
 in-core ones by 1.4 to 2.1 (of 255, on average) in the overall and MIP views;
 zoomed in, the coarser blocks in front of the cutting plane show less noise. The
 recorded runs are in `benchmark/remote_render/results`. Building the pyramid of
-the 23.4 GiB cube inside the session took 253 s.
+the 23.4 GiB cube took 253 s.
