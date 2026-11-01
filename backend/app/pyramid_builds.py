@@ -235,9 +235,8 @@ def _sweep_stale_parts(out_path: Path) -> None:
 def _build_child(dataset_path: str, out: str, hdu: int, progress_file: str) -> None:
     """In the build process: build, and report progress or the error in
     ``progress_file`` (written atomically, at most twice a second)."""
-    from astropy.io import fits  # noqa: PLC0415
-
-    from .brick_pyramid import DEFAULT_BRICK, build_pyramid, default_workers, level_shapes  # noqa: PLC0415
+    from .brick_pyramid import (build_pyramid, default_brick, default_workers,  # noqa: PLC0415
+                                level_shapes, source_shape)
 
     def write(payload: dict) -> None:
         # Only the lock holder writes it; a failed write never stops the build.
@@ -265,9 +264,8 @@ def _build_child(dataset_path: str, out: str, hdu: int, progress_file: str) -> N
     Path(progress_file).unlink(missing_ok=True)
 
     try:
-        with fits.open(dataset_path, memmap=True) as hdul:
-            shape = tuple(int(n) for n in hdul[hdu].shape[-3:])
-        shapes = level_shapes(shape, DEFAULT_BRICK)
+        shape = source_shape(dataset_path, hdu)
+        shapes = level_shapes(shape, default_brick(shape))
         last = [0.0]
 
         def progress(stage: str, fraction: float) -> None:

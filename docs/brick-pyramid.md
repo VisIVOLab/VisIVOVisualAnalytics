@@ -10,6 +10,11 @@ client-side bricked renderer
 ([#15](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/15)) read the
 same file. The code is `backend/app/brick_pyramid.py`.
 
+A 2-D image larger than memory has one too
+([#85](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/85)): the
+same file, for a cube one plane deep, from which the image viewer's tiles are
+served averaged (see [Images](#images) below).
+
 ## Format
 
 One HDF5 file per cube (version 1):
@@ -26,6 +31,14 @@ when none is finite, so blank regions stay blank instead of pulling averages
 towards zero. The last level fits in one brick. The per-brick extremes let a
 renderer skip empty bricks and bricks entirely below the threshold without
 reading them.
+
+### Images
+
+An image is stored as a cube one plane deep (`shape` is `1, height, width`).
+Its levels are halved in y and x only, each pixel the mean of a 2x2 block of
+the level below over its finite pixels, and its bricks are larger: 256 pixels
+by default (`brick` records it; a 512-pixel tile of the desktop reads four).
+Tile-compressed and scaled images are read tile by tile, as cubes are.
 
 Bricks are stored without a border. A reader that interpolates across brick
 edges asks for a ghost border, which is read from the neighbouring bricks and
@@ -50,7 +63,7 @@ switches to it), or **by hand**, beforehand, so that nobody waits for it.
 
 ```bash
 cd backend
-python -m app.brick_pyramid build cube.fits [out.pyr.h5] [--hdu N] [--brick 64] [--max-block-mb 256] [--workers N]
+python -m app.brick_pyramid build cube.fits [out.pyr.h5] [--hdu N] [--brick N] [--max-block-mb 256] [--workers N]
 python -m app.brick_pyramid info out.pyr.h5
 ```
 
@@ -61,6 +74,8 @@ python -m app.brick_pyramid info out.pyr.h5
   `VISIVO_PYRAMID_DIR` the backend will have, or the backend will not find it
   and build its own. A cube changed afterwards gets a new pyramid; the old one
   is no longer used.
+- **Images.** The same command builds an image's pyramid (`--brick` defaults to
+  64 for a cube and 256 for an image).
 - **Which HDU.** Without `--hdu`, the first HDU with an image, the one the
   viewer opens.
 - **How many processes.** `--workers`, by default the CPUs available up to 8

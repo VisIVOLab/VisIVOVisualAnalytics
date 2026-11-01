@@ -509,6 +509,14 @@ struct TileAssembleOutcome
     double rmin{ 0.0 };
     double rmax{ 0.0 };
     bool haveRange{ false };
+    // Issue #85: how many tiles came averaged from the image's pyramid and how
+    // many sampled from the file (a pyramid finishing mid-assembly mixes them),
+    // and the pyramid's state as the last tile reported it.
+    int averagedTiles{ 0 };
+    int sampledTiles{ 0 };
+    QString pyramidState;
+    double pyramidProgress{ 0.0 };
+    bool mixed() const { return averagedTiles > 0 && sampledTiles > 0; }
 };
 
 // Fetch every tile in `coords` at `level` and blit it via `blit`, fanned out
@@ -536,6 +544,10 @@ TileAssembleOutcome fetchAndBlitTiles(const QString &backendUrl, const QString &
         double rmin{ 0.0 };
         double rmax{ 0.0 };
         bool haveRange{ false };
+        int averagedTiles{ 0 };
+        int sampledTiles{ 0 };
+        QString pyramidState;
+        double pyramidProgress{ 0.0 };
     };
     const auto processChunk =
             [backendUrl, datasetId, sessionId, backendToken, tileSize, level, blit](
@@ -550,6 +562,9 @@ TileAssembleOutcome fetchAndBlitTiles(const QString &backendUrl, const QString &
                 cr.error = t.error.isEmpty() ? u"Remote image tile assembly failed."_s : t.error;
                 return cr;
             }
+            ++(t.averaged ? cr.averagedTiles : cr.sampledTiles);
+            cr.pyramidState = t.pyramidState;
+            cr.pyramidProgress = t.pyramidProgress;
             if (t.rangeMin < t.rangeMax) {
                 if (!cr.haveRange) {
                     cr.rmin = t.rangeMin;
@@ -601,6 +616,12 @@ TileAssembleOutcome fetchAndBlitTiles(const QString &backendUrl, const QString &
             }
         } else {
             foldRange(cr.rmin, cr.rmax, cr.haveRange);
+            out.averagedTiles += cr.averagedTiles;
+            out.sampledTiles += cr.sampledTiles;
+            if (!cr.pyramidState.isEmpty()) {
+                out.pyramidState = cr.pyramidState;
+                out.pyramidProgress = std::max(out.pyramidProgress, cr.pyramidProgress);
+            }
         }
     }
     return out;
@@ -661,13 +682,11 @@ ImageLayerLoadResult fetchRemoteImageLayerTiled(const QString &backendUrl, const
     // source pixel i·2^level, exactly. Stretching the spacing to land the last
     // displayed pixel on source fullW-1 (the old formula) put every coordinate
     // slightly off, by up to one source pixel at the far edge.
-    const auto mapping = ImageLod::assemblyMapping(level);
-    const double sx = mapping.scaleX;
-    const double sy = mapping.scaleY;
+    const double sx = static_cast<double>(step);
+    const double sy = static_cast<double>(step);
 
     vtkSmartPointer<vtkImageData> image = vtkSmartPointer<vtkImageData>::New();
     image->SetExtent(0, downW - 1, 0, downH - 1, 0, 0);
-    image->SetOrigin(mapping.originX, mapping.originY, 0.);
     image->SetSpacing(sx, sy, 1.);
     image->AllocateScalars(VTK_FLOAT, 1);
     float *const buf = static_cast<float *>(image->GetScalarPointer());
@@ -709,17 +728,29 @@ ImageLayerLoadResult fetchRemoteImageLayerTiled(const QString &backendUrl, const
 
     // Parallel fan-out: the backend serves tile POSTs concurrently, so a bounded
     // burst turns hundreds of serial round-trips into ~wall-clock/kConcurrency.
-    const auto outcome = fetchAndBlitTiles(backendUrl, datasetId, sessionId, backendToken,
-                                           level, ts, coords, blit);
+    auto outcome = fetchAndBlitTiles(backendUrl, datasetId, sessionId, backendToken,
+                                     level, ts, coords, blit);
+    // The image's pyramid finished during the assembly: some tiles are averaged
+    // and some sampled, which place their pixels differently. Once more, now
+    // all from the pyramid (issue #85).
+    if (outcome.ok && outcome.mixed()) {
+        outcome = fetchAndBlitTiles(backendUrl, datasetId, sessionId, backendToken,
+                                    level, ts, coords, blit);
+    }
     if (!outcome.ok) {
         result.errorMessage = outcome.error.toStdString();
         return result;
     }
     const int concurrency = coords.isEmpty() ? 1 : std::min(8, static_cast<int>(coords.size()));
+    const auto mapping = ImageLod::assemblyMapping(level, outcome.averagedTiles > 0);
+    image->SetOrigin(mapping.originX, mapping.originY, 0.);
 
     result.imageData = image;
     result.scalarRange = { outcome.haveRange ? outcome.rmin : 0.0,
                            outcome.haveRange ? outcome.rmax : 0.0 };
+    result.pyramidState = outcome.pyramidState.toStdString();
+    result.pyramidProgress = outcome.pyramidProgress;
+    result.averaged = outcome.averagedTiles > 0;
     // Final image (not a preview in the reload-chain sense — must NOT trigger
     // another fetch). Decimation is conveyed via spacing/origin.
     result.isPreview = false;
@@ -771,7 +802,6 @@ ImageLayerLoadResult fetchRemoteImageLayerViewport(
 
     vtkSmartPointer<vtkImageData> image = vtkSmartPointer<vtkImageData>::New();
     image->SetExtent(0, unionW - 1, 0, unionH - 1, 0, 0);
-    image->SetOrigin(va.originX, va.originY, 0.);
     image->SetSpacing(va.spacing, va.spacing, 1.);
     image->AllocateScalars(VTK_FLOAT, 1);
     float *const buf = static_cast<float *>(image->GetScalarPointer());
@@ -808,20 +838,30 @@ ImageLayerLoadResult fetchRemoteImageLayerViewport(
         }
     }
 
-    const auto outcome = fetchAndBlitTiles(backendUrl, datasetId, sessionId, backendToken,
-                                           va.level, ts, coords, blit);
+    auto outcome = fetchAndBlitTiles(backendUrl, datasetId, sessionId, backendToken,
+                                     va.level, ts, coords, blit);
+    if (outcome.ok && outcome.mixed()) {   // the pyramid finished meanwhile (#85)
+        outcome = fetchAndBlitTiles(backendUrl, datasetId, sessionId, backendToken,
+                                    va.level, ts, coords, blit);
+    }
     if (!outcome.ok) {
         result.errorMessage = outcome.error.toStdString();
         return result;
     }
     const int concurrency = coords.isEmpty() ? 1 : std::min(8, static_cast<int>(coords.size()));
+    // Averaged pixels sit at the centre of their cell (issue #85).
+    const double shift = outcome.averagedTiles > 0 ? ImageLod::averagedOffset(va.level) : 0.0;
+    image->SetOrigin(va.originX + shift, va.originY + shift, 0.);
 
     result.imageData = image;
     result.scalarRange = { outcome.haveRange ? outcome.rmin : 0.0,
                            outcome.haveRange ? outcome.rmax : 0.0 };
+    result.pyramidState = outcome.pyramidState.toStdString();
+    result.pyramidProgress = outcome.pyramidProgress;
+    result.averaged = outcome.averagedTiles > 0;
     result.isPreview = false;
     result.spacing = { va.spacing, va.spacing, 1.0 };
-    result.origin = { va.originX, va.originY, 0.0 };
+    result.origin = { va.originX + shift, va.originY + shift, 0.0 };
     result.fullWidth = fullW;
     result.fullHeight = fullH;
     result.numLevels = numLevels;
@@ -1174,10 +1214,13 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                                             .arg(this->m_viewportLodEnabled ? u"enabled"_s : u"disabled"_s)
                                             .arg(result.fullWidth).arg(result.fullHeight).arg(result.numLevels);
                          this->clearPersistentStatusMessage();
+                         this->watchImagePyramid(result);
                      });
 
     QObject::connect(&this->m_viewportLodWatcher, &QFutureWatcher<ImageLayerLoadResult>::finished,
                      this, &vtkWindowImage::onViewportLodReady);
+    QObject::connect(&this->m_pyramidProbeWatcher, &QFutureWatcher<QPair<QString, double>>::finished,
+                     this, &vtkWindowImage::onImagePyramidProbed);
 
     // Backend-authoritative: initialise with a placeholder; real image data
     // arrives via the remote full-image watcher.
@@ -2364,6 +2407,7 @@ void vtkWindowImage::applyRemoteMasterLayer(const ImageLayerLoadResult &result, 
         lut->SetNanColor(0., 0., 0., 0.);
     }
     this->remoteDisplayingPreview = result.isPreview;
+    this->m_displayAveraged = result.averaged;
     this->remoteFullImageDims = { result.fullWidth, result.fullHeight };
     if (!this->displayStateInitialized && !this->userAdjustedDisplayState) {
         this->applyInitialAutoscale(imageData, lut, result.isPreview ? "remote preview" : "remote full");
@@ -2582,8 +2626,95 @@ void vtkWindowImage::onViewportLodReady()
     this->m_lodConsecutiveFailures = 0;
     this->applyRemoteMasterLayer(result, /*preserveView=*/true);
     this->m_lodApplied = this->m_lodPending;   // this view is now displayed
+    this->watchImagePyramid(result);
     // The view may have moved again while the tiles were fetching — re-check.
     this->maybeStreamViewportLod();
+}
+
+void vtkWindowImage::watchImagePyramid(const ImageLayerLoadResult &result)
+{
+    if (result.pyramidState != "building") {
+        return;
+    }
+    this->showImagePyramidProgress(result.pyramidProgress);
+    if (!this->m_pyramidPollTimer) {
+        this->m_pyramidPollTimer = new QTimer(this);
+        this->m_pyramidPollTimer->setSingleShot(true);
+        this->m_pyramidPollTimer->setInterval(2000);
+        QObject::connect(this->m_pyramidPollTimer, &QTimer::timeout, this,
+                         &vtkWindowImage::probeImagePyramid);
+    }
+    if (!this->m_pyramidPollTimer->isActive() && !this->m_pyramidProbeWatcher.isRunning()) {
+        this->m_pyramidPollTimer->start();
+    }
+}
+
+void vtkWindowImage::showImagePyramidProgress(double progress)
+{
+    // In the data-state panel, not the status bar's message: the cursor
+    // readout writes there at every mouse move.
+    this->m_pyramidBuildProgress = progress;
+    this->updateDataStatePanel();
+}
+
+void vtkWindowImage::probeImagePyramid()
+{
+    // The coarsest tile: one small read, and its answer carries the build's state.
+    const int level = std::max(0, this->m_lodNumLevels - 1);
+    const int tileSize = this->m_lodTileSize;
+    const QString url = this->remoteBackendUrl, dataset = this->remoteDatasetId;
+    const QString session = this->remoteSessionId, token = this->remoteBackendToken;
+    this->m_pyramidProbeWatcher.setFuture(QtConcurrent::run(
+            [url, dataset, session, token, level, tileSize]() -> QPair<QString, double> {
+                BackendClient client(url, token);
+                client.setSessionId(session);
+                const auto t = client.requestImageTile(dataset, level, 0, 0, tileSize);
+                if (!t.valid) {
+                    return { QString(), 0.0 };
+                }
+                return { t.pyramidState, t.pyramidProgress };
+            }));
+}
+
+void vtkWindowImage::onImagePyramidProbed()
+{
+    const auto [state, progress] = this->m_pyramidProbeWatcher.result();
+    if (state.isEmpty()) {
+        // No answer (a dropped tunnel, a busy backend): ask again, a few times.
+        if (++this->m_pyramidProbeFailures <= 5) {
+            this->m_pyramidPollTimer->start();
+        }
+        return;
+    }
+    this->m_pyramidProbeFailures = 0;
+    if (state != u"building"_s) {
+        this->m_pyramidBuildProgress = -1.0;
+        this->updateDataStatePanel();
+    }
+    if (state == u"building"_s) {
+        this->showImagePyramidProgress(progress);
+        this->m_pyramidPollTimer->start();
+        return;
+    }
+    if (state == u"ready"_s) {
+        // The view on screen was assembled from sampled tiles: stream it again,
+        // averaged, keeping the camera where it is.
+        this->m_lodApplied = { -1, -1, -1, -1, -1 };
+        this->maybeStreamViewportLod();
+        // Not streamed now (a load in flight, a region being drawn, the probe
+        // on): ask again until it is.
+        if (!this->m_viewportLodWatcher.isRunning()) {
+            if (this->m_viewportLodEnabled) {
+                this->m_pyramidPollTimer->start();
+            }
+        } else {
+            this->statusBar()->showMessage(u"Averaged overviews ready."_s, 3000);
+        }
+    } else if (state == u"failed"_s) {
+        this->statusBar()->showMessage(
+                u"The averaged overviews of this image could not be built; "
+                u"its coarse levels stay sampled."_s, 6000);
+    }
 }
 
 void vtkWindowImage::showPersistentStatusMessage(const QString &text, int minDurationMs)
@@ -2639,7 +2770,23 @@ void vtkWindowImage::updateDataStatePanel()
     }
 
     auto *imageData = this->layers ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
-    const QString representation = this->remoteDisplayingPreview ? u"Preview image"_s : u"Full image"_s;
+    QString representation = this->remoteDisplayingPreview ? u"Preview image"_s : u"Full image"_s;
+    // Below full resolution, what a displayed pixel is (issue #85): the mean of
+    // its block of source pixels, or one source pixel of the block.
+    if (imageData) {
+        double spacing[3];
+        imageData->GetSpacing(spacing);
+        const int block = qRound(spacing[0]);
+        if (spacing[0] > 1.001) {
+            representation += this->m_displayAveraged
+                    ? u" (each pixel the mean of %1\u00d7%1)"_s.arg(block)
+                    : u" (sampled: 1 pixel in %1\u00d7%1)"_s.arg(block);
+        }
+    }
+    if (this->m_pyramidBuildProgress >= 0.0) {
+        representation += u" | Building averaged overviews\u2026 %1%"_s.arg(
+                qRound(100.0 * this->m_pyramidBuildProgress));
+    }
     const QString loadedBounds = formatImageBoundsSummary(imageData);
     const QString datasetBounds = (this->remoteFullImageDims[0] > 0 && this->remoteFullImageDims[1] > 0)
             ? u"x=0..%1 y=0..%2"_s.arg(this->remoteFullImageDims[0] - 1).arg(this->remoteFullImageDims[1] - 1)

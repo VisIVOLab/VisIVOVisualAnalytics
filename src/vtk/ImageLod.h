@@ -75,11 +75,18 @@ struct SourceMapping
     double originX{ 0.0 }, originY{ 0.0 };
 };
 
-/// Whole-image assembly from pyramid tiles at ``level``: the backend reads
-/// ``data[y0:y_stop:step, x0:x_stop:step]`` with ``step = 2^level`` and
-/// ``x0 = tileX*tileSize*step``, so displayed pixel i IS source pixel i*step.
-/// Exact - no interpolation, no endpoint stretching.
-SourceMapping assemblyMapping(int level);
+/// Whole-image assembly from pyramid tiles at ``level``. A SAMPLED tile is the
+/// backend reading ``data[y0:y_stop:step, x0:x_stop:step]`` with
+/// ``step = 2^level`` and ``x0 = tileX*tileSize*step``, so displayed pixel i IS
+/// source pixel i*step. An AVERAGED tile (the image's pyramid, issue #85) holds
+/// the mean of source pixels i*step .. (i+1)*step - 1, so its centre is
+/// averagedOffset(level) further on. Exact - no interpolation, no endpoint
+/// stretching.
+SourceMapping assemblyMapping(int level, bool averaged = false);
+
+/// Where an averaged pixel of ``level`` sits relative to a sampled one, in
+/// source pixels: the centre of its 2^level cell, (2^level - 1) / 2.
+double averagedOffset(int level);
 
 /// Backend preview (``_build_preview``): displayed pixel i holds source pixel
 /// ``floor((i + 0.5) * full / preview)``. The cell is ``full/preview`` source

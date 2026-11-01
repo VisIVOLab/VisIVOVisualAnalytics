@@ -38,6 +38,12 @@ struct ImageLayerLoadResult
     int numLevels{ 1 };   ///< pyramid levels available (for viewport-driven LOD gating)
     double previewScaleFactor{ 1.0 };
     int requestGeneration{ 0 };
+    /// Remote tiles (issue #85): the image's averaged pyramid, "none",
+    /// "building", "ready" or "failed", and the fraction of its build done.
+    std::string pyramidState;
+    double pyramidProgress{ 0. };
+    /// The pixels are block means of the source (averaged tiles), not samples.
+    bool averaged{ false };
 };
 
 ImageLayerLoadResult loadImageLayer(const ImageLayerLoadRequest &request);

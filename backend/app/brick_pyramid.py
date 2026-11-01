@@ -1,5 +1,7 @@
 """A brick pyramid of a cube: the cube in fixed-size bricks at several
-resolutions, built out of core (issue #69).
+resolutions, built out of core (issue #69). A 2-D image has one too, as a cube
+one plane deep (issue #85): its levels are halved in y and x only, and its
+bricks are larger (``DEFAULT_IMAGE_BRICK``).
 
 Rendering a cube larger than a GPU, or than the node's memory, means reading
 only the bricks a view needs at the resolution it needs. This module writes
@@ -45,6 +47,9 @@ import numpy as np
 FORMAT = "visivo-brick-pyramid"
 VERSION = 1
 DEFAULT_BRICK = 64
+#: The brick of a 2-D image's pyramid: one plane deep, so 256² is 256 KiB
+#: (a 512-pixel tile of the desktop reads four).
+DEFAULT_IMAGE_BRICK = 256
 DEFAULT_MAX_BLOCK_BYTES = 256 * 1024 ** 2
 
 
@@ -63,6 +68,33 @@ class SourceSignature:
     def of(cls, path: str | os.PathLike, hdu: int) -> "SourceSignature":
         st = os.stat(path)
         return cls(str(Path(path).resolve()), int(hdu), int(st.st_size), int(st.st_mtime_ns))
+
+
+def default_brick(shape: tuple[int, int, int]) -> int:
+    """The brick for a pyramid of ``shape`` (z, y, x): a 2-D image (one plane)
+    takes the larger image brick."""
+    return DEFAULT_IMAGE_BRICK if int(shape[0]) == 1 else DEFAULT_BRICK
+
+
+def _min_block_bytes(shape: tuple[int, int, int], brick: int) -> int:
+    """What one brick of a higher level reads from the level below: 2x2x2
+    bricks, or 2x2 for one plane."""
+    depth = min(brick, int(shape[0]))
+    return (8 if depth > 1 else 4) * depth * brick * brick * 4
+
+
+def source_shape(path: str | os.PathLike, hdu: int) -> tuple[int, int, int]:
+    """The (z, y, x) shape a pyramid of HDU ``hdu`` of ``path`` has, from the
+    header alone: degenerate axes dropped, the last three kept, and a 2-D image
+    one plane deep (as :class:`_SourceCube` reads it)."""
+    from astropy.io import fits  # noqa: PLC0415
+
+    with fits.open(path, memmap=True) as hdul:
+        full = tuple(int(n) for n in (hdul[hdu].shape or ()))
+    kept = [n for n in full if n > 1]
+    if len(kept) < 2:
+        raise ValueError(f"HDU {hdu} of {path} is neither an image nor a cube (shape {full}).")
+    return (1, *kept[-2:]) if len(kept) == 2 else tuple(kept[-3:])
 
 
 def level_shapes(shape: tuple[int, int, int], brick: int) -> list[tuple[int, int, int]]:
@@ -136,6 +168,8 @@ def _halve(block: np.ndarray) -> np.ndarray:
     """Mean of each 2x2x2 block over its finite voxels (NaN where none is
     finite); an odd edge is padded with NaN, so it averages what exists."""
     nz, ny, nx = block.shape
+    if nz == 1:
+        return _halve_plane(block)
     pad = ((0, nz % 2), (0, ny % 2), (0, nx % 2))
     if any(p[1] for p in pad):
         block = np.pad(block, pad, constant_values=np.nan)
@@ -154,6 +188,26 @@ def _halve(block: np.ndarray) -> np.ndarray:
     with np.errstate(invalid="ignore", divide="ignore"):
         out = np.where(count > 0, total / np.maximum(count, 1), np.nan)
     return out.astype(np.float32)
+
+
+def _halve_plane(block: np.ndarray) -> np.ndarray:
+    """:func:`_halve` of one plane (a 2-D image): the mean of each 2x2 block over
+    its finite pixels, without padding a second plane of NaN to halve."""
+    _, ny, nx = block.shape
+    plane = block[0]
+    if ny % 2 or nx % 2:
+        plane = np.pad(plane, ((0, ny % 2), (0, nx % 2)), constant_values=np.nan)
+    total = np.zeros((plane.shape[0] // 2, plane.shape[1] // 2), dtype=np.float64)
+    count = np.zeros(total.shape, dtype=np.int8)
+    for i in (0, 1):
+        for j in (0, 1):
+            view = plane[i::2, j::2]
+            finite = np.isfinite(view)
+            total += np.where(finite, view, 0.0)
+            count += finite
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = np.where(count > 0, total / np.maximum(count, 1), np.nan)
+    return out.astype(np.float32)[np.newaxis]
 
 
 def _refuse_whole_file_compression(path) -> None:
@@ -194,15 +248,19 @@ class _SourceCube:
             item = self._hdul[hdu]
             full = tuple(int(n) for n in (item.shape or ()))
             kept = [i for i, n in enumerate(full) if n > 1]
-            if len(kept) < 3:
-                raise ValueError(f"HDU {hdu} of {path} is not a cube (shape {full}).")
+            if len(kept) < 2:
+                raise ValueError(f"HDU {hdu} of {path} is neither an image nor a cube (shape {full}).")
             if len(kept) > 3:
                 logging.getLogger(__name__).warning(
                     "brick pyramid of %s: keeping the first plane of the leading axes %s",
                     path, [full[i] for i in kept[:-3]])
+            # A 2-D image is read as a cube one plane deep: its z is not an
+            # axis of the file.
             self._axes = kept[-3:]
             self._ndim = len(full)
             self.shape = tuple(full[i] for i in self._axes)
+            if len(self.shape) == 2:
+                self.shape = (1, *self.shape)
             header = item.header
             if isinstance(item, fits.CompImageHDU):
                 tile = [int(n) for n in (getattr(item, "tile_shape", None) or ())]
@@ -228,6 +286,15 @@ class _SourceCube:
 
     def _raw(self, ranges: tuple[tuple[int, int], ...]) -> np.ndarray:
         """The stored (unscaled) values of a (z, y, x) range."""
+        if len(self._axes) == 2:
+            # A 2-D image: its one plane, read as a (y, x) range.
+            return self._raw_axes(ranges[1:])[np.newaxis]
+        return self._raw_axes(ranges)
+
+    def _raw_axes(self, ranges: tuple[tuple[int, int], ...]) -> np.ndarray:
+        """The stored values of a range along the kept axes of the file."""
+        import itertools  # noqa: PLC0415
+
         index: list = [0] * self._ndim
         for axis, (a, b) in zip(self._axes, ranges):
             index[axis] = slice(a, b)
@@ -240,15 +307,14 @@ class _SourceCube:
         pieces = [[(s, min(b, (s // t + 1) * t)) for s in [a] + list(range((a // t + 1) * t, b, t))]
                   for (a, b), t in zip(ranges, tiles)]
         out = None
-        for (za, zb), (ya, yb), (xa, xb) in ((z, y, x) for z in pieces[0] for y in pieces[1] for x in pieces[2]):
+        for parts in itertools.product(*pieces):
             sub: list = list(index)
-            for axis, (a, b) in zip(self._axes, ((za, zb), (ya, yb), (xa, xb))):
+            for axis, (a, b) in zip(self._axes, parts):
                 sub[axis] = slice(a, b)
             part = np.asarray(self._read[tuple(sub)])
             if out is None:
                 out = np.empty(tuple(b - a for a, b in ranges), dtype=part.dtype)
-            out[za - ranges[0][0]:zb - ranges[0][0], ya - ranges[1][0]:yb - ranges[1][0],
-                xa - ranges[2][0]:xb - ranges[2][0]] = part
+            out[tuple(slice(a - r[0], b - r[0]) for (a, b), r in zip(parts, ranges))] = part
         return out
 
     def block(self, z0: int, z1: int, y0: int, y1: int, x0: int, x1: int) -> np.ndarray:
@@ -378,7 +444,7 @@ def _fill_levels_parallel(h5, shapes, brick: int, source: str, hdu: int, max_blo
 
     slots = workers + 2
     # One buffer pair per slot; their total is about twice max_block_bytes.
-    per_slot = max(8 * brick ** 3 * 4, max_block_bytes // slots)
+    per_slot = max(_min_block_bytes(shapes[0], brick), max_block_bytes // slots)
     outs: list = []
     ins: list = []
     clock = time.perf_counter if timings is not None else None
@@ -467,19 +533,22 @@ def _fill_levels_parallel(h5, shapes, brick: int, source: str, hdu: int, max_blo
 
 
 def build_pyramid(source: str | os.PathLike, out: str | os.PathLike | None = None, *,
-                  hdu: int = 0, brick: int = DEFAULT_BRICK,
+                  hdu: int = 0, brick: int | None = None,
                   max_block_bytes: int = DEFAULT_MAX_BLOCK_BYTES,
                   progress: Callable[[str, float], None] | None = None,
                   should_stop: Callable[[], None] | None = None,
                   timings: dict[str, float] | None = None, workers: int = 1) -> Path:
-    """Write the brick pyramid of ``source`` (a FITS cube) and return its path.
+    """Write the brick pyramid of ``source`` (a FITS cube, or a 2-D image as a
+    cube one plane deep) and return its path. ``brick`` defaults to
+    :func:`default_brick` of the source's shape.
 
     The cube is read in brick-aligned blocks of at most ``max_block_bytes`` of
     float32 data; each level after the first is built from the one below in the
     same way, so the memory used does not grow with the cube: it stays within a
     small multiple of ``max_block_bytes`` (the block, its conversion and the
     halving's temporaries). ``max_block_bytes`` must hold at least what one brick
-    of a higher level reads from the level below, ``8 * brick**3 * 4`` bytes.
+    of a higher level reads from the level below, ``8 * brick**3 * 4`` bytes
+    (``4 * brick**2 * 4`` for an image).
     The file is written under a temporary name and renamed into place when
     complete, so a reader never sees a partial pyramid. ``progress(stage,
     fraction)`` is called as blocks are written; ``should_stop()`` may raise to
@@ -495,11 +564,15 @@ def build_pyramid(source: str | os.PathLike, out: str | os.PathLike | None = Non
     """
     import h5py  # noqa: PLC0415
 
+    sig = SourceSignature.of(source, hdu)
+    shape0 = source_shape(sig.path, hdu)
+    if brick is None:
+        brick = default_brick(shape0)
     if brick < 8 or brick & (brick - 1):
         raise ValueError("brick must be a power of two, at least 8")
-    if max_block_bytes < 8 * brick ** 3 * 4:
-        raise ValueError(f"max_block_bytes must be at least {8 * brick ** 3 * 4} for brick {brick}")
-    sig = SourceSignature.of(source, hdu)
+    need = _min_block_bytes(shape0, brick)
+    if max_block_bytes < need:
+        raise ValueError(f"max_block_bytes must be at least {need} for brick {brick}")
     out_path = Path(out) if out is not None else default_pyramid_path(source, hdu)
     if out_path.resolve() == Path(sig.path) or (out_path.exists() and out_path.samefile(sig.path)):
         raise ValueError("the pyramid cannot be written over its source")
@@ -514,7 +587,8 @@ def build_pyramid(source: str | os.PathLike, out: str | os.PathLike | None = Non
             h5.attrs.update({
                 "format": FORMAT, "version": VERSION, "brick": brick, "levels": len(shapes),
                 "shape": np.asarray(shapes[0], dtype=np.int64), "axis_order": "zyx",
-                "downsample": "mean of 2x2x2 over finite voxels",
+                "downsample": ("mean of 2x2 over finite pixels" if shapes[0][0] == 1
+                               else "mean of 2x2x2 over finite voxels"),
                 "source_path": sig.path, "source_hdu": sig.hdu,
                 "source_size": sig.size, "source_mtime_ns": sig.mtime_ns,
             })
@@ -692,7 +766,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("out", nargs="?")
     b.add_argument("--hdu", type=int, default=None,
                    help="default: the first HDU with an image, the one the viewer opens")
-    b.add_argument("--brick", type=int, default=DEFAULT_BRICK)
+    b.add_argument("--brick", type=int, default=None,
+                   help=f"brick size (default {DEFAULT_BRICK} for a cube, {DEFAULT_IMAGE_BRICK} for an image)")
     b.add_argument("--max-block-mb", type=float, default=DEFAULT_MAX_BLOCK_BYTES / 1024 ** 2)
     b.add_argument("--workers", type=int, default=None,
                    help="processes that read and reduce (default: the CPUs available, at most 8)")

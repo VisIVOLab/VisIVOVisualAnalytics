@@ -33,6 +33,7 @@ private slots:
     void previewMapping_matchesTheBackendSampler();
     void previewMapping_beatsTheOldEndpointFormula();
     void assemblyMapping_isTheStrideExactly();
+    void assemblyMapping_averagedTilesSitAtTheCellCentre();
 
     void viewportAssembly_degenerateGridInvalid();
     void viewportAssembly_nonIntersectingInvalid();

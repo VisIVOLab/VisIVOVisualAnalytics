@@ -543,6 +543,14 @@ struct BackendImageTileResult
     QString scalarType;
     double rangeMin{ 0. };
     double rangeMax{ 0. };
+    /// Issue #85: from the image's averaged pyramid (pixel i of level L is the
+    /// mean of source pixels i*2^L .. (i+1)*2^L - 1) rather than sampled from
+    /// the file (pixel i is source pixel i*2^L).
+    bool averaged{ false };
+    /// The image's pyramid: "none", "building", "ready" or "failed" (empty
+    /// from an older backend).
+    QString pyramidState;
+    double pyramidProgress{ 0. };
     QByteArray data;       ///< float32 LE, row-major, width*height
 };
 

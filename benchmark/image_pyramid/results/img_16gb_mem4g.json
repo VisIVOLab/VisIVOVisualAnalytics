@@ -1,0 +1,84 @@
+{
+  "image": "/work/img_16gb.fits",
+  "image_bytes": 17179873920,
+  "width": 65536,
+  "height": 65536,
+  "pyramid_bytes": 22914009480,
+  "build_s": 52.6,
+  "workers": 8,
+  "traced_peak_bytes": 2796830,
+  "cgroup": {
+    "memory.max": 4294967296,
+    "memory.peak": 4294967296
+  },
+  "cpus": 18,
+  "platform": "Linux-7.0.14-linuxkit-aarch64-with-glibc2.41",
+  "tile": 512,
+  "reads_per_level": 30,
+  "levels": [
+    {
+      "level": 0,
+      "tiles": 16384,
+      "sampled_median_ms": 113.0,
+      "sampled_p95_ms": 118.6,
+      "averaged_median_ms": 27.4,
+      "averaged_p95_ms": 32.6
+    },
+    {
+      "level": 1,
+      "tiles": 4096,
+      "sampled_median_ms": 113.1,
+      "sampled_p95_ms": 120.3,
+      "averaged_median_ms": 26.1,
+      "averaged_p95_ms": 27.3
+    },
+    {
+      "level": 2,
+      "tiles": 1024,
+      "sampled_median_ms": 109.9,
+      "sampled_p95_ms": 119.8,
+      "averaged_median_ms": 26.9,
+      "averaged_p95_ms": 28.8
+    },
+    {
+      "level": 3,
+      "tiles": 256,
+      "sampled_median_ms": 98.5,
+      "sampled_p95_ms": 116.1,
+      "averaged_median_ms": 26.9,
+      "averaged_p95_ms": 28.0
+    },
+    {
+      "level": 4,
+      "tiles": 64,
+      "sampled_median_ms": 91.2,
+      "sampled_p95_ms": 155.7,
+      "averaged_median_ms": 26.5,
+      "averaged_p95_ms": 28.5
+    },
+    {
+      "level": 5,
+      "tiles": 16,
+      "sampled_median_ms": 94.8,
+      "sampled_p95_ms": 135.6,
+      "averaged_median_ms": 25.8,
+      "averaged_p95_ms": 28.3
+    },
+    {
+      "level": 6,
+      "tiles": 4,
+      "sampled_median_ms": 97.8,
+      "sampled_p95_ms": 107.8,
+      "averaged_median_ms": 26.6,
+      "averaged_p95_ms": 28.0
+    },
+    {
+      "level": 7,
+      "tiles": 1,
+      "sampled_median_ms": 112.4,
+      "sampled_p95_ms": 125.3,
+      "averaged_median_ms": 26.0,
+      "averaged_p95_ms": 28.0
+    }
+  ]
+}
