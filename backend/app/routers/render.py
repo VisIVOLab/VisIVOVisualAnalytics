@@ -5,6 +5,7 @@ Endpoints
 
 * ``POST   /v1/render/create_session`` — start a session for a dataset
 * ``DELETE /v1/render/{session_id}``   — explicit teardown
+* ``GET    /v1/render/{session_id}/levels`` — starting threshold and data range
 * ``WS     /v1/render/{session_id}/ws`` — bidirectional render channel
 * ``GET    /v1/render/diagnostics``    — fleet snapshot for ops
 
@@ -95,6 +96,28 @@ class CreateRenderSessionResponse(BaseModel):
     initial_frame_jpeg_b64: str = ""
     width: int = 0
     height: int = 0
+    # The values the session renders with, for the client to show rather than
+    # replace with its own (issue #82); see RenderLevels.
+    threshold: float | None = None
+    data_min: float | None = None
+    data_max: float | None = None
+    levels_pending: bool = False
+
+
+class RenderLevels(BaseModel):
+    """The threshold a render session draws with and the cube's data range.
+
+    ``pending`` while a large cube is still streaming into the session: the
+    values are null until it is shown and may change until it is complete.
+    """
+    threshold: float | None = None
+    data_min: float | None = None
+    data_max: float | None = None
+    pending: bool = False
+
+
+def _levels(sess) -> RenderLevels:
+    return RenderLevels(**(sess.levels() or {"pending": True}))
 
 
 async def _pyramid_preparing(entry: dict[str, Any]) -> JSONResponse | None:
@@ -179,13 +202,28 @@ async def create_session(
     # the user finds the mouse).
     import base64
     initial = await sess.render_frame()
+    levels = _levels(sess)
     return CreateRenderSessionResponse(
         valid=True,
         session_id=sess.session_id,
         initial_frame_jpeg_b64=base64.b64encode(initial).decode("ascii"),
         width=sess.view.width,
         height=sess.view.height,
+        threshold=levels.threshold,
+        data_min=levels.data_min,
+        data_max=levels.data_max,
+        levels_pending=levels.pending,
     )
+
+
+@router.get("/{session_id}/levels", response_model=RenderLevels)
+async def session_levels(session_id: str, token: str = _auth) -> RenderLevels:
+    """The session's current threshold and data range; asked again by the
+    client while ``pending``, until a cube streaming in is complete."""
+    sess = await _owned_render_session(session_id, token)
+    if sess is None:
+        raise HTTPException(404, "Unknown render session_id.")
+    return _levels(sess)
 
 
 @router.delete("/{session_id}")

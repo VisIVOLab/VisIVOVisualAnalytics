@@ -116,6 +116,16 @@ segment above the 3-D pane:
   the backend machine's GPUs in turn (with more views than GPUs, some share
   one). On a 2 GB cube on a V100 node behind an SSH tunnel this ran at about
   28 frames per second while rotating.
+
+  The remote view starts with the **backend's threshold**: the cube's 99th
+  percentile, from a sample of the full-resolution data (out of core, of its
+  bricks), which puts the cut at the edge of the noise. The Threshold field and
+  slider show it, and their range covers the cube's full-resolution values. A
+  cube still being read into the backend shows a threshold once the volume
+  appears and a final one when it is complete. Once you move the slider or
+  edit the field, your threshold is the one used, and it is kept when the view
+  switches between Local and Remote. Until then the desktop's own default,
+  computed from the preview, is not sent to the backend.
 - **Auto** — on a **remote** backend that can render (a cluster connected from
   the Data Hub, or `--backend`), a cube above the local threshold goes to
   Remote by itself; a smaller one is drawn here. On the **local** backend it

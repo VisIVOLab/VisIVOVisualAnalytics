@@ -36,6 +36,9 @@ Response:
 | `session_id` | string | The render session id (a 32-character hex UUID). |
 | `initial_frame_jpeg_b64` | string | The first frame, JPEG, base64-encoded. |
 | `width`, `height` | int | Size of the render window, in pixels (1920 x 1080 until the client sends `resize`). |
+| `threshold` | float or null | The threshold the session renders with, until a `set_threshold` changes it: the cube's 99th percentile, from a regular sample of its voxels (out of core, from a sample of full-resolution bricks). A client shows it rather than sending a default of its own. |
+| `data_min`, `data_max` | float or null | The cube's data range, at full resolution. |
+| `levels_pending` | bool | `true` while a cube read in the background (above 256 MB, in core) is still arriving: `threshold` and the range are null until the volume is shown (after a quarter of the cube, with the 99th percentile of the part loaded), and change once more when the cube is complete (the percentile over all of it), unless a `set_threshold` came first; a `set_threshold` is kept, even 0. Ask [`GET /v1/render/{session_id}/levels`](#get-v1-render-session-id-levels) until it is `false`. |
 
 A cube larger than `VISIVO_RENDER_OUT_OF_CORE_BYTES` is drawn from its brick pyramid ([Brick pyramid](../brick-pyramid.md#rendering-from-the-pyramid)). When the pyramid is missing or out of date, the backend starts building it in a separate process and answers **202** without creating a session:
 
@@ -53,7 +56,8 @@ Ask again (the desktop does every 2 s); every request for the same cube joins th
 ```
 
 ```json
-{"valid": true, "error": "", "session_id": "9f1c...", "initial_frame_jpeg_b64": "/9j/4AAQ...", "width": 1920, "height": 1080}
+{"valid": true, "error": "", "session_id": "9f1c...", "initial_frame_jpeg_b64": "/9j/4AAQ...", "width": 1920, "height": 1080,
+ "threshold": 2.31, "data_min": -5.02, "data_max": 48.7, "levels_pending": false}
 ```
 
 Errors:
@@ -64,6 +68,16 @@ Errors:
 - 503: server-side rendering is not available on this backend, or the session cap is reached (`"Server-side rendering capacity reached (N sessions active)."`).
 
 The cap is `VISIVO_RENDER_MAX_SESSIONS` (default 8) sessions per backend. A session that receives no command for `VISIVO_RENDER_IDLE_TTL_SECONDS` (default 300) is closed by a reaper that runs every 30 s; a client that keeps a still view open sends `keepalive` to stay alive. Closing the WebSocket does not close the session, so a client can reconnect.
+
+### `GET /v1/render/{session_id}/levels`
+
+The session's current threshold and data range, as in the answer of `create_session`: `threshold`, `data_min`, `data_max` and `pending` (the `levels_pending` of that answer). The desktop asks every 2 s while `pending` is `true`, and shows the values in the Threshold field and slider unless the user has set a threshold.
+
+```json
+{"threshold": 2.31, "data_min": -5.02, "data_max": 48.7, "pending": false}
+```
+
+Errors: 401 (token), 404 (`"Unknown render session_id."`, also for a session owned by another token).
 
 ### `DELETE /v1/render/{session_id}`
 

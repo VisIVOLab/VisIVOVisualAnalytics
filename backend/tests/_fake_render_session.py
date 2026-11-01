@@ -50,6 +50,10 @@ class FakeRenderSession:
     async def render_rgb_frame(self):
         return [[1, 2], [3, 4]], 1.5
 
+    def levels(self) -> dict:
+        return {"threshold": 0.5 + len(self.applied), "data_min": -1.0, "data_max": 9.0,
+                "pending": False}
+
     def consume_idr_flag(self) -> bool:
         flag, self.idr = self.idr, False
         return flag

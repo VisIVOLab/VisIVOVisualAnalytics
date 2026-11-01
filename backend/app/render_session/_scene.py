@@ -107,6 +107,7 @@ class SceneMixin:
             # ``_poll_cube_chunks``). Outline + axes stay visible so
             # the user has spatial context.
             self._volume_revealed = False
+            self._cube_complete = False
             self._cube_reader.start()
             logger.info(
                 "[render-session %s] using chunked reader for %.2f GB cube "

@@ -130,6 +130,7 @@ class PipelineMixin:
             self._rebuild_slice_lut_on_thread()
             self.request_idr()
         elif ctype == "set_threshold":
+            self._threshold_from_client = True
             self.view.threshold = float(command.get("value", self.view.threshold or self._vmin))
             self._rebuild_volume_tfs_on_thread()
             self.request_idr()
@@ -281,6 +282,7 @@ class PipelineMixin:
                     self._vmax = float(v_hi)
             elif kind == "complete":
                 complete = True
+                self._cube_complete = True
                 self._vmin = float(ev.get("vmin", self._vmin))
                 self._vmax = float(ev.get("vmax", self._vmax))
                 logger.info(
@@ -294,6 +296,8 @@ class PipelineMixin:
                     "[render-session %s] cube reader started, shape=%s",
                     self.session_id, ev.get("shape"))
             elif kind == "error":
+                # Nothing more will arrive: the values are as final as they get.
+                self._cube_complete = True
                 logger.warning(
                     "[render-session %s] cube reader error: %s",
                     self.session_id, ev.get("message"))
@@ -331,14 +335,12 @@ class PipelineMixin:
                 # zero), so heuristics like ``vmin + 0.7*span`` would
                 # set the threshold above all the data and make the
                 # cube render as transparent / invisible.
-                # Override the placeholder threshold (0.0) from init.
-                # If the user already set a real threshold via the
-                # slider during loading, ``threshold != 0.0`` and we
-                # respect their pick. Otherwise compute the proper
-                # p99 from a stride sample of the loaded data.
+                # Override the placeholder threshold (0.0) from init,
+                # unless the client sent one during loading (even 0):
+                # then its pick is respected. Otherwise compute p99
+                # from a stride sample of the loaded data.
                 if (self._cube_np is not None
-                    and (self.view.threshold is None
-                         or self.view.threshold == 0.0)):
+                    and not self._threshold_from_client):
                     # Sample stride: target ~5M voxels in the sample
                     # regardless of cube size (sub-100 ms percentile).
                     stride = max(1, int(
@@ -393,7 +395,9 @@ class PipelineMixin:
             if self._cube_np is not None:
                 stride = max(1, int((self._cube_np.size / 5_000_000) ** (1.0 / 3.0)))
                 sample = self._cube_np[::stride, ::stride, ::stride]
-                if self.view.threshold is None or self.view.threshold == 0.0:
+                # The whole cube is in: p99 over all of it replaces the one
+                # taken from the first quarter, unless the client chose one.
+                if not self._threshold_from_client:
                     self.view.threshold = float(np.percentile(sample, 99.0))
                 self._slice_vmin = float(np.percentile(sample, 1.0))
                 self._slice_vmax = float(np.percentile(sample, 99.0))

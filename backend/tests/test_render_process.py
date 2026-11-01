@@ -42,6 +42,14 @@ async def test_the_childs_state_comes_back_with_each_answer(session):
     assert session.stats.commands_received == 1           # counted here
 
 
+async def test_the_starting_values_come_back_with_each_answer(session):
+    assert session.levels() == {"threshold": 0.5, "data_min": -1.0, "data_max": 9.0,
+                                "pending": False}
+    await session.apply_command({"type": "set_threshold"})
+    await session.render_frame()
+    assert session.levels()["threshold"] == 1.5
+
+
 async def test_a_keepalive_keeps_the_session_without_a_new_frame(session):
     jpeg, version = await session.render_frame_if_changed(-1)
     session.changed.clear()

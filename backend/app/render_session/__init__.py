@@ -201,6 +201,11 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
         # the whole time so the user always sees the cube's spatial
         # extent.
         self._volume_revealed = True   # default for legacy path
+        # Set when the chunked reader has delivered the whole cube (or failed).
+        self._cube_complete = True
+        # A threshold the client sent, even 0, is never replaced by the
+        # percentile computed once a streaming cube is in.
+        self._threshold_from_client = False
         # Scene-change IDR request. Set by apply_command for state
         # mutations that drastically change the rendered image (LUT,
         # blend mode, cutting plane position); consumed by the WebRTC
@@ -219,6 +224,20 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
         self.changed = asyncio.Event()
 
     # ── Public API ───────────────────────────────────────────────────────
+
+    def levels(self) -> dict[str, Any]:
+        """The starting values the client shows: the threshold the session
+        renders with and the cube's data range. While a large cube is still
+        streaming in, ``pending`` is true; the threshold and range are None
+        until it is revealed and may still change until it is complete."""
+        loading = self._cube_reader is not None and not self._cube_complete
+        known = not loading or self._volume_revealed
+        return {
+            "threshold": self.view.threshold if known else None,
+            "data_min": self._vmin if known else None,
+            "data_max": self._vmax if known else None,
+            "pending": loading,
+        }
 
     async def initialize(self) -> None:
         """Run the VTK pipeline setup on the worker thread."""
