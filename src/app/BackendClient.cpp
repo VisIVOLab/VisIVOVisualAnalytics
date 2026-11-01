@@ -2768,6 +2768,9 @@ BackendImageTileResult BackendClient::parseImageTileObject(const QJsonObject &ob
     result.scalarType = object.value(QStringLiteral("scalar_type")).toString();
     result.rangeMin = object.value(QStringLiteral("range_min")).toDouble();
     result.rangeMax = object.value(QStringLiteral("range_max")).toDouble();
+    result.averaged = object.value(QStringLiteral("averaged")).toBool(false);
+    result.pyramidState = object.value(QStringLiteral("pyramid")).toString();
+    result.pyramidProgress = object.value(QStringLiteral("pyramid_progress")).toDouble();
     return result;
 }
 

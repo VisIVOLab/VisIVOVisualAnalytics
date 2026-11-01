@@ -744,7 +744,8 @@ def _num_pyramid_levels(full_w: int, full_h: int, tile_size: int) -> int:
 
 
 def worker_image_tile(
-    path: str, level: int, tile_x: int, tile_y: int, tile_size: int = 256
+    path: str, level: int, tile_x: int, tile_y: int, tile_size: int = 256,
+    pyramid: str | None = None,
 ) -> dict[str, Any]:
     """Serve one pyramid tile of a 2-D image, **out-of-core**.
 
@@ -754,9 +755,12 @@ def worker_image_tile(
     multi-GB mosaic never loads into RAM — unlike ``worker_image_full`` /
     ``worker_image_preview`` which read the whole plane.
 
-    Downsampling is nearest-neighbour decimation (stride read); this keeps the
-    memory bound independent of level at the cost of some aliasing on coarse
-    levels, which is acceptable for pan/zoom navigation.
+    Without ``pyramid``, downsampling is nearest-neighbour decimation (a stride
+    read): bounded memory at any level, at the cost of aliasing on coarse
+    levels. With ``pyramid`` (an averaged image pyramid, issue #85) the tile is
+    read from it: each pixel of level ``L`` the mean of a ``2**L`` square of
+    source pixels (``averaged`` in the result), and nothing is read from the
+    file.
     """
     level = int(level)
     tile_x = int(tile_x)
@@ -766,6 +770,9 @@ def worker_image_tile(
         raise ValueError("level, tile_x and tile_y must be non-negative.")
     if tile_size < 1 or tile_size > 4096:
         raise ValueError("tile_size must be in [1, 4096].")
+
+    if pyramid is not None:
+        return _image_tile_from_pyramid(pyramid, level, tile_x, tile_y, tile_size)
 
     dataset = ScientificFitsDataset(path)
     hdul, raw = dataset.open_memmap()
@@ -797,6 +804,12 @@ def worker_image_tile(
     finally:
         hdul.close()
 
+    return _image_tile_result(tile, full_w, full_h, level, num_levels, tile_x, tile_y,
+                              tile_size, averaged=False)
+
+
+def _image_tile_result(tile: np.ndarray, full_w: int, full_h: int, level: int, num_levels: int,
+                       tile_x: int, tile_y: int, tile_size: int, averaged: bool) -> dict[str, Any]:
     range_min, range_max = _finite_range(tile)
     compression, data_b64 = _b64f32_compressed(tile)
     return {
@@ -812,9 +825,41 @@ def worker_image_tile(
         "scalar_type": "float32",
         "range_min": range_min,
         "range_max": range_max,
+        "averaged": averaged,
         "compression": compression,
         "data_base64": data_b64,
     }
+
+
+def _image_tile_from_pyramid(pyramid: str, level: int, tile_x: int, tile_y: int,
+                             tile_size: int) -> dict[str, Any]:
+    """:func:`worker_image_tile` from an averaged image pyramid: the same tiling
+    (level ``L`` is ``ceil(n / 2**L)`` pixels per axis, as the halving rounds
+    up), the pixels averaged rather than sampled."""
+    import h5py
+
+    from ..image_pyramid import read_level
+
+    with h5py.File(pyramid, "r") as h5:
+        _, full_h, full_w = (int(n) for n in h5.attrs["shape"])
+    num_levels = _num_pyramid_levels(full_w, full_h, tile_size)
+    if level >= num_levels:
+        raise ValueError(
+            f"level {level} is out of range: this {full_w}x{full_h} image has "
+            f"{num_levels} pyramid level(s) (0..{num_levels - 1}) for tile_size {tile_size}."
+        )
+    step = 1 << level
+    level_w, level_h = -(-full_w // step), -(-full_h // step)
+    x0, y0 = tile_x * tile_size, tile_y * tile_size
+    if x0 >= level_w or y0 >= level_h:
+        raise ValueError(
+            f"Tile (level={level}, x={tile_x}, y={tile_y}) is out of range "
+            f"for a {full_w}x{full_h} image."
+        )
+    tile = read_level(pyramid, level, y0, min(y0 + tile_size, level_h),
+                      x0, min(x0 + tile_size, level_w))
+    return _image_tile_result(tile, full_w, full_h, level, num_levels, tile_x, tile_y,
+                              tile_size, averaged=level > 0)
 
 
 def worker_cube_preview(path: str, downsample: int) -> dict[str, Any]:

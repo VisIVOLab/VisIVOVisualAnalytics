@@ -307,6 +307,16 @@ class ImageTileResponse(BaseModel):
     scalar_type: str = ""
     range_min: float = 0.0
     range_max: float = 0.0
+    # Issue #85. True when the tile comes from the image's averaged pyramid:
+    # pixel i of level L stands for source pixels i*2**L .. (i+1)*2**L - 1
+    # (centred at i*2**L + (2**L - 1)/2), the mean of the 2x2 means of the
+    # level below; false when sampled from the file (pixel i is source pixel
+    # i*2**L).
+    averaged: bool = False
+    # The image's pyramid: "none" (small image, no pyramid), "building",
+    # "ready" or "failed"; and the fraction of its build done.
+    pyramid: str = "none"
+    pyramid_progress: float = 0.0
     compression: str = ""
     data_base64: str = ""
 

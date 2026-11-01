@@ -254,6 +254,21 @@ void TestImageLod::assemblyMapping_isTheStrideExactly()
     }
 }
 
+void TestImageLod::assemblyMapping_averagedTilesSitAtTheCellCentre()
+{
+    // An averaged pixel of level L is the mean of 2^L source pixels: its centre
+    // is (2^L - 1)/2 past the first of them (issue #85). Level 0 is not moved.
+    QCOMPARE(ImageLod::assemblyMapping(0, true).originX, 0.0);
+    QCOMPARE(ImageLod::assemblyMapping(1, true).originX, 0.5);
+    const auto m = ImageLod::assemblyMapping(3, true);
+    QCOMPARE(m.scaleX, 8.0);
+    QCOMPARE(m.originX, 3.5);
+    QCOMPARE(m.originY, 3.5);
+    // Pixel 2 of level 3 averages source 16..23: centre 19.5.
+    QCOMPARE(m.originX + 2 * m.scaleX, 19.5);
+    QCOMPARE(ImageLod::averagedOffset(3), 3.5);
+}
+
 void TestImageLod::viewportAssembly_degenerateGridInvalid()
 {
     const ImageLod::TileGrid bad{ 0, 0, 512, 6 };

@@ -317,6 +317,18 @@ private:
     void onImageInteractionSettled();     ///< EndInteractionEvent → (re)arm the debounce
     void maybeStreamViewportLod();        ///< compute visible region + level, fetch if changed
     void onViewportLodReady();            ///< apply a viewport tile assembly (camera preserved)
+    // Issue #85: while the backend builds the image's averaged pyramid, tiles
+    // come sampled from the file. The window asks every 2 s how far the build
+    // is, shows it, and re-streams the view once the pyramid is ready.
+    QTimer *m_pyramidPollTimer{ nullptr };
+    QFutureWatcher<QPair<QString, double>> m_pyramidProbeWatcher;  ///< {state, progress}
+    int m_pyramidProbeFailures{ 0 };   ///< probes in a row with no answer
+    double m_pyramidBuildProgress{ -1.0 };   ///< shown while >= 0
+    bool m_displayAveraged{ false };   ///< the master's pixels are block means (averaged tiles)
+    void showImagePyramidProgress(double progress);
+    void watchImagePyramid(const ImageLayerLoadResult &result);
+    void probeImagePyramid();
+    void onImagePyramidProbed();
     QFutureWatcher<CatalogueOverlayParseResult> m_crossmatchWatcher;  // async cross-match
     /// Set by addLayerFromBackendPath before calling addLayerImage so that the
     /// layerLoadWatcher completion slot can rename the new layer to the VLKB label.

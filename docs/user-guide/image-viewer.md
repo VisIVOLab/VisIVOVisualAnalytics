@@ -60,6 +60,30 @@ still full-resolution source pixels, so every readout and overlay stays correct.
 Zooming back out returns to a coarse whole-image level. This is transparent —
 there are no controls; it just tracks your view.
 
+### Averaged overviews of large images
+
+An image larger than 256 MiB (as float32; `VISIVO_IMAGE_PYRAMID_BYTES` on the
+backend) gets **averaged overviews**: each coarse level is the mean of the
+pixels it covers, as the cube pyramid is ([Brick
+pyramid](../brick-pyramid.md#images)). Sampling one pixel in 4, 16 or 64, as a
+smaller image's coarse levels do, lets noise and small sources alias and makes
+the overview speckled; averaging shows what the area contains, and serves
+every tile from a compact file instead of reading pages across the whole image
+(the image itself can be several times larger than the backend's memory).
+
+The first time such an image is opened, the backend builds the overviews in
+the background: the status bar shows *Building averaged overviews of the image
+on the backend… N% (sampled meanwhile)*, the image is shown sampled meanwhile,
+and the view on screen is loaded again, averaged, when they are ready. They
+are kept with the cube pyramids (`<exports>/.pyramids`) and reused; building
+them by hand beforehand works as for a cube.
+
+They take disk space: about 4/3 of the image's size as float32, so about 2.7
+times a 16-bit file and 5.3 times an 8-bit one. They are not removed by
+themselves, and an image that changes gets new ones; delete the files in
+`.pyramids` to reclaim the space (the next view builds them again). An image
+compressed as a whole (`.fits.gz`) cannot have them: decompress it first.
+
 ## Adding layers
 
 You can overlay or compare multiple images in the same window:

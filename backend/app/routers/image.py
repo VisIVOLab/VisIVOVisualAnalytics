@@ -18,6 +18,7 @@ from ..tasks import TASKS
 from ..product_cache import PRODUCT_CACHE
 from ..fits_dataset import ScientificFitsDataset
 import asyncio
+from ..image_pyramid import tile_source
 
 router = APIRouter(tags=['image'])
 
@@ -85,9 +86,17 @@ async def image_tile(
         # 429 most of the burst. Tile reads are bounded strided memmap reads
         # (I/O-bound, not heavy compute), so they run on the interactive pool —
         # same rationale as the binary subvolume endpoint.
-        result = await _run(
+        # A large image is served from its averaged pyramid once built; the
+        # first tile starts the build, and meanwhile tiles come from the file
+        # (issue #85).
+        source = await asyncio.to_thread(tile_source, str(entry["path"]))
+        # From the pyramid, in this machine's pool: it lies in this backend's
+        # pyramid directory, which Dask workers elsewhere may not see.
+        run = _run_interactive if source.pyramid else _run
+        result = await run(
             worker_image_tile, entry["path"],
             request.level, request.tile_x, request.tile_y, request.tile_size,
+            source.pyramid,
         )
     except HTTPException:
         raise
@@ -95,7 +104,8 @@ async def image_tile(
         raise HTTPException(422, str(exc)) from exc
     except Exception as exc:
         return ImageTileResponse(valid=False, error=str(exc))
-    return ImageTileResponse(valid=True, error="", **result)
+    return ImageTileResponse(valid=True, error="", pyramid=source.state,
+                             pyramid_progress=round(source.progress, 3), **result)
 
 
 # ── Filter FITS: smooth and/or regrid a file into the workspace ──────────────

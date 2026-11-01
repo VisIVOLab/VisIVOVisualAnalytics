@@ -51,7 +51,7 @@ def test_a_missing_pyramid_is_built_in_another_process(pyramid_dir):
 
 def test_a_failed_build_reports_its_error_and_is_not_retried_at_once(pyramid_dir):
     path = pyramid_dir / "flat.fits"
-    fits.PrimaryHDU(np.zeros((8, 8), dtype=np.float32)).writeto(path)   # not a cube
+    fits.PrimaryHDU(np.zeros(64, dtype=np.float32)).writeto(path)   # neither image nor cube
     status = _wait(path, 0)
     assert status.state == "failed"
     assert status.error

@@ -341,6 +341,17 @@ bool vtkWindowImage::updateProbeFromDisplayPosition(int displayX, int displayY)
 
     const float value = this->layers->getPixelValue(this->layers->getMasterIndex(), voxelX, voxelY);
     QString valueText = std::isfinite(value) ? QString::number(value, 'g', 8) : u"NaN"_s;
+    // Below full resolution the value is not pixel (X, Y)'s: say whose it is
+    // (issue #85).
+    if (spacing[0] > 1.001) {
+        const int block = static_cast<int>(std::lround(spacing[0]));
+        valueText += this->m_displayAveraged
+                ? u" (mean of %1\u00d7%1 px)"_s.arg(block)
+                : u" (pixel %1,%2: sampled 1 in %3\u00d7%3)"_s
+                          .arg(std::lround(origin[0] + (voxelX - extent[0]) * spacing[0]))
+                          .arg(std::lround(origin[1] + (voxelY - extent[2]) * spacing[1]))
+                          .arg(block);
+    }
     QString message = u"X=%1  Y=%2  Value=%3"_s.arg(fullXi).arg(fullYi).arg(valueText);
     {
         QString axis0 = this->remoteFormatAxisCoordinate(0, fullResX);

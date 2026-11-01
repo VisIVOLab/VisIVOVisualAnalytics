@@ -149,10 +149,16 @@ ViewportAssembly viewportAssembly(double x0, double y0, double x1, double y1,
     return va;
 }
 
-SourceMapping assemblyMapping(int level)
+double averagedOffset(int level)
+{
+    return (static_cast<double>(1 << std::max(0, level)) - 1.0) / 2.0;
+}
+
+SourceMapping assemblyMapping(int level, bool averaged)
 {
     const double step = static_cast<double>(1 << std::max(0, level));
-    return { step, step, 0.0, 0.0 };
+    const double origin = averaged ? averagedOffset(level) : 0.0;
+    return { step, step, origin, origin };
 }
 
 SourceMapping previewMapping(int fullWidth, int fullHeight, int previewWidth, int previewHeight)
