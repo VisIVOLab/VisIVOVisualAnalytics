@@ -645,6 +645,17 @@ void BackendLauncher::onInitialHealthDone()
         return;
     }
 
+    if (!m_remoteName.isEmpty()) {
+        QString message = u"Cannot reach the remote backend \"%1\" at %2.\n\n"
+                          u"Check that its job is running and the tunnel is open, and that "
+                          u"the token given with --backend-token-file is this job's "
+                          u"(a new job has a new token)."_s.arg(m_remoteName, m_backendUrl);
+        if (!result.error.isEmpty())
+            message += u"\n\nThe check reported: %1"_s.arg(result.error);
+        emit failed(message);
+        return;
+    }
+
     if (m_noAutostart) {
         emit failed(
                 u"The backend is not running and auto-start is disabled.\n\n"

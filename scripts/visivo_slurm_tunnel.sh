@@ -31,6 +31,8 @@ set -euo pipefail
 FRONTEND=""
 SSH_USER="${USER}"
 LOCAL_PORT="${VISIVO_PORT:-18900}"
+# Only --port is strict; VISIVO_PORT just changes the default the helper starts from.
+PORT_GIVEN=false
 # The clone on the frontend, relative to the remote home (an older checkout
 # may still be called VisIVO-next: pass --repo-dir or set VISIVO_REMOTE_REPO).
 REMOTE_REPO="${VISIVO_REMOTE_REPO:-VisIVOVisualAnalytics}"
@@ -47,7 +49,7 @@ while [[ $# -gt 0 ]]; do
         --frontend)  FRONTEND="$2"; shift 2 ;;
         --repo-dir) REMOTE_REPO="$2"; shift 2 ;;
         --user)      SSH_USER="$2"; shift 2 ;;
-        --port)      LOCAL_PORT="$2"; REMOTE_OPTS+=("--port" "$2"); shift 2 ;;
+        --port)      LOCAL_PORT="$2"; PORT_GIVEN=true; REMOTE_OPTS+=("--port" "$2"); shift 2 ;;
         --node-code) NODE_CODE="$2"; REMOTE_OPTS+=("--node-code" "$2"); shift 2 ;;
         --workspace) WORKSPACE_DIR="$2"; REMOTE_OPTS+=("--workspace" "$2"); shift 2 ;;
         --stop)      STOP=true; shift ;;
@@ -118,10 +120,50 @@ if [[ -f "$JOBFILE" ]]; then
     echo "[visivo]        Stop it first: bash $0 --stop" >&2
     exit 1
 fi
-if (exec 3<>"/dev/tcp/127.0.0.1/${LOCAL_PORT}") 2>/dev/null; then
-    echo "[visivo] ERROR: localhost:${LOCAL_PORT} is already in use." >&2
-    echo "[visivo]        Stop what holds it, or choose another --port." >&2
-    exit 1
+# The desktop client starts its own local backend on the port of its saved
+# Backend URL (Settings.ini, [Backend] url; http://127.0.0.1:8000 by default),
+# possibly after this tunnel is up: the tunnel must never take that port.
+client_backend_port() {
+    local ini="${HOME}/VisIVO Visual Analytics/Settings.ini" url=""
+    if [[ -f "$ini" ]]; then
+        url="$(awk '/^\[/{s=($0=="[Backend]")} s && /^url=/{sub(/^url=/,""); print; exit}' "$ini" || true)"
+    fi
+    # As the client reads it: trimmed, and port 8000 when the URL gives none
+    # (BackendUrl::portOf(url, 8000) in the launcher).
+    url="$(printf '%s' "$url" | tr -d '"'"'"'' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    url="${url:-http://127.0.0.1:8000}"
+    local hostport="${url#*://}"
+    hostport="${hostport%%/*}"
+    local port="${hostport##*:}"
+    [[ "$hostport" == *:* && "$port" =~ ^[0-9]+$ ]] || port=8000
+    printf '%s' "$port"
+}
+port_in_use() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+
+CLIENT_PORT="$(client_backend_port)"
+if [[ "$LOCAL_PORT" == "$CLIENT_PORT" ]] || port_in_use "$LOCAL_PORT"; then
+    if [[ "$PORT_GIVEN" == "true" ]]; then
+        if [[ "$LOCAL_PORT" == "$CLIENT_PORT" ]]; then
+            echo "[visivo] ERROR: localhost:${LOCAL_PORT} is the port of the desktop client's own local" >&2
+            echo "[visivo]        backend (Settings ▸ Backend URL). Choose another --port." >&2
+        else
+            echo "[visivo] ERROR: localhost:${LOCAL_PORT} is already in use." >&2
+            echo "[visivo]        Stop what holds it, or choose another --port." >&2
+        fi
+        exit 1
+    fi
+    WANTED="$LOCAL_PORT"
+    for candidate in $(seq $((LOCAL_PORT + 1)) $((LOCAL_PORT + 50))); do
+        if [[ "$candidate" != "$CLIENT_PORT" ]] && ! port_in_use "$candidate"; then
+            LOCAL_PORT="$candidate"
+            break
+        fi
+    done
+    if [[ "$LOCAL_PORT" == "$WANTED" ]]; then
+        echo "[visivo] ERROR: no free local port found after ${WANTED}; choose one with --port." >&2
+        exit 1
+    fi
+    echo "[visivo] localhost:${WANTED} is taken (or is the client's local backend port); using ${LOCAL_PORT}."
 fi
 
 # ── Submit via SSH and capture the launcher's output ─────────────────────────
@@ -215,6 +257,11 @@ if [[ "$READY" != "true" ]]; then
     exit 1
 fi
 
+BACKEND_NAME="${NODE_CODE:-${FRONTEND%%.*}}"
+# Quoted for copy and paste: a home directory may contain spaces.
+Q_TOKENFILE="$(printf '%q' "$TOKENFILE")"
+Q_BACKEND_NAME="$(printf '%q' "$BACKEND_NAME")"
+
 cat <<EOF
 
 ══════════════════════════════════════════════════════════════════════
@@ -226,7 +273,14 @@ cat <<EOF
   Token file:   ${TOKENFILE}
 ══════════════════════════════════════════════════════════════════════
 
-  In VisIVO desktop:
+  Open VisIVO on this backend (this run only; a plain launch stays local):
+      macOS:   open -n -a VisIVOVisualAnalytics --args \\
+                   --backend http://localhost:${LOCAL_PORT} --backend-token-file ${Q_TOKENFILE} \\
+                   --backend-name ${Q_BACKEND_NAME}
+      Linux:   VisIVOVisualAnalytics --backend http://localhost:${LOCAL_PORT} \\
+                   --backend-token-file ${Q_TOKENFILE} --backend-name ${Q_BACKEND_NAME}
+
+  For datasets found through SKAVA, also register it:
       Settings → Remote Backends → Add
           ID:        src-$(printf '%s' "${NODE_CODE:-node}" | tr '[:upper:]' '[:lower:]')
           URL:       http://localhost:${LOCAL_PORT}

@@ -1,4 +1,5 @@
 #include "WorkspaceChrome.h"
+#include "Settings.h"
 
 #include "MainWindow.h"
 #include "DiagnosticsWindow.h"
@@ -768,7 +769,14 @@ void WorkspaceChrome::onPollFinished()
     const HealthSnapshot s = m_watcher->result();
 
     const QString host = QUrl(m_url).host();
-    const QString hostLabel = host.isEmpty() ? QStringLiteral("backend") : host;
+    QString hostLabel = host.isEmpty() ? QStringLiteral("backend") : host;
+    // This run's remote backend by its name: through a tunnel its host is
+    // "localhost", which would read as the local backend.
+    if (const Settings::SessionBackend *session = Settings::sessionBackend()) {
+        if (QUrl(m_url).adjusted(QUrl::StripTrailingSlash)
+            == QUrl(session->url).adjusted(QUrl::StripTrailingSlash))
+            hostLabel = session->name;
+    }
 
     // Command-bar chip + inspector cloud chip: "host · N running" (or offline).
     // Leading "●" status dot inherits the chip's foreground colour, so it reads

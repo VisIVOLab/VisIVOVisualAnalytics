@@ -1,4 +1,5 @@
 #include "vtkWindowImage.h"
+#include "Settings.h"
 #include "ui_vtkWindowImage.h"
 #include "CubeWcsUtil.h"
 #include "CubeViewportGeometry.h"
@@ -2188,9 +2189,12 @@ void vtkWindowImage::addLayerImage(const std::string &filepath, bool ignoreOverl
     // result, so every caller (Add New Layer, the VLKB cutouts, the Stokes
     // companions) is unaffected.
     const QString backendHost = QUrl(this->remoteBackendUrl).host();
-    const bool backendIsLocal = backendHost.isEmpty() || backendHost == u"localhost"_s
+    // A run on a remote backend (--backend) has no local one, even through a
+    // tunnel at a localhost address.
+    const bool backendIsLocal = !Settings::sessionBackend()
+            && (backendHost.isEmpty() || backendHost == u"localhost"_s
             || backendHost == u"127.0.0.1"_s || backendHost == u"::1"_s
-            || backendHost == u"0.0.0.0"_s;
+            || backendHost == u"0.0.0.0"_s);
     const bool haveBothLocally = QFile::exists(path) && QFile::exists(this->filepath);
     const bool useBackend = !this->remoteBackendUrl.isEmpty()
             && !(backendIsLocal && haveBothLocally);

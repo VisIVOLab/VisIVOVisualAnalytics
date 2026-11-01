@@ -12,6 +12,7 @@ class TestBackendClient : public QObject
 private slots:
     void localBackendUrl_onlyTheConfiguredPortIsLocal();
     void explicitTokenKeptForAnotherLocalhostPort();
+    void noLocalBackend_aTunnelKeepsItsToken();
     void parseKinematicFit_readsFitsAndNullsAsNaN();
     void parseKinematicFit_rejectsMapsOfTheWrongSize();
     // Diagnostics "Operation" column — derived from the request path.

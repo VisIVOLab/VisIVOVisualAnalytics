@@ -1105,6 +1105,7 @@ void vtkWindowCube::setupRenderModeUi()
 
     // View → Rendering submenu.
     auto *renderMenu = ui->menuView->addMenu(u"Rendering"_s);
+    this->m_menuRenderMode = renderMenu;   // regroupViewMenu() puts it back in place
     auto *renderGroup = new QActionGroup(this);
     renderGroup->setExclusive(true);
 

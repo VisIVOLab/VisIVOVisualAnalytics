@@ -444,14 +444,19 @@ void MainWindow::setActiveBackendBadge(const BackendNode &node, const QString &r
     if (!this->m_backendBadge) {
         return;
     }
-    const QString name = node.name.isEmpty() ? node.id : node.name;
-    const QString labelText = node.isLocal
+    // The default backend slot is "Local" unless this run was started on a
+    // remote backend (--backend): then that one serves everything by default.
+    const Settings::SessionBackend *session = Settings::sessionBackend();
+    const bool local = node.isLocal && !session;
+    const QString name = node.isLocal && session ? session->name
+                                                 : (node.name.isEmpty() ? node.id : node.name);
+    const QString labelText = local
             ? u"Backend: Local"_s
             : u"Backend: %1"_s.arg(name);
     // Accent colour for remote backends so the user can tell at a glance
     // that compute is happening off-host; muted for the default local
     // path so it does not draw attention.
-    const QString colour = node.isLocal ? u"#888"_s : u"#2c7be5"_s;
+    const QString colour = local ? u"#888"_s : u"#2c7be5"_s;
     this->m_backendBadge->setText(
             u"<span style='color:%1'><b>%2</b></span>"_s.arg(colour, labelText));
     // Why this backend: SKAVA's ranking reason for the node that serves the

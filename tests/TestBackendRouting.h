@@ -12,6 +12,11 @@ class TestBackendRouting : public QObject
 private slots:
     // Settings registry
     void registryAlwaysHasLocal();
+    void sessionBackendIsUsedButNeverSaved();
+    void sessionBackendNotWrittenIntoTheRegistry();
+    void launchOptions_localUnlessABackendIsGiven();
+    void launchOptions_optionsWithoutValueAreErrors();
+    void launchOptions_tokenFromFileOrEnvironment();
     void upsertInsertsAndUpdates();
     void removeDropsNode();
     void localCannotBeRemoved();

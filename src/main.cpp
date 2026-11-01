@@ -2,9 +2,11 @@
 #include "Version.h"
 #include "app/BackendClient.h"
 #include "app/BackendLauncher.h"
+#include "app/LaunchOptions.h"
 #include "app/ThemeManager.h"
 #include "gui/StartupDialog.h"
 #include "gui/theme/ScrollWheelGuard.h"
+#include "Settings.h"
 
 #include <QVTKOpenGLNativeWidget.h>
 
@@ -27,12 +29,15 @@
 #include <QIcon>
 #include <QUuid>
 #include <QLocale>
+#include <QProcessEnvironment>
+#include <QMessageBox>
 #include <QSettings>
 #include <QSurfaceFormat>
 #include <QWebEngineUrlScheme>
 
 #include <clocale>
 #include <memory>
+#include <optional>
 #include <vtkNew.h>
 #include <vtkObjectFactory.h>
 #include <vtkOutputWindow.h>
@@ -86,6 +91,7 @@ private:
 
 using namespace Qt::StringLiterals;
 
+
 /// Files the desktop asks us to open — a Finder double-click, a drop on the Dock
 /// icon, `open -a`, a file manager's "Open with", or a path on the command line.
 ///
@@ -121,6 +127,10 @@ public:
     {
         for (int i = 1; i < args.size(); ++i) {
             const QString a = args.at(i);
+            if (LaunchOptions::backendValueOptions().contains(a)) {
+                ++i;   // its value (a URL, a token file, a name) is not a file to open
+                continue;
+            }
             if (a.startsWith(QLatin1Char('-')))
                 continue;
             if (QFileInfo::exists(a))
@@ -148,8 +158,13 @@ public:
     /// other's live endpoint, and on Windows several QLocalServers may listen on
     /// one pipe name, so `listen()` succeeding proves nothing about ownership
     ///. Only the lock holder listens.
-    bool becomePrimaryOrForward()
+    bool becomePrimaryOrForward(bool mayForward = true)
     {
+        if (!mayForward) {
+            // A run on a remote backend: its files open here, and it never takes
+            // the seat, so a later plain launch never sends its files to it.
+            return true;
+        }
         const QString base = instanceKey();
         m_lock = std::make_unique<QLockFile>(
                 QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
@@ -437,8 +452,27 @@ int main(int argc, char *argv[])
     // starting a second app and a second backend session. A launch with NO
     // files always starts its own instance — running two VisIVOs against two
     // backends stays possible.
+    // A remote backend chosen for this run (--backend). With none, everything
+    // below is the local-backend start-up it has always been.
+    std::optional<Settings::SessionBackend> remoteBackend;
+    {
+        QString error;
+        if (!LaunchOptions::remoteBackend(QCoreApplication::arguments(),
+                                          QProcessEnvironment::systemEnvironment(),
+                                          &remoteBackend, &error)) {
+            QMessageBox::critical(nullptr, u"VisIVO Visual Analytics"_s, error);
+            return 2;
+        }
+    }
+    if (remoteBackend) {
+        Settings::setSessionBackend(*remoteBackend);
+        BackendClient::setNoLocalBackend(true);
+        qInfo().noquote() << "Remote backend for this run:" << remoteBackend->name
+                          << remoteBackend->url;
+    }
+
     openRelay.takeCommandLine(QCoreApplication::arguments());
-    if (!openRelay.becomePrimaryOrForward())
+    if (!openRelay.becomePrimaryOrForward(!remoteBackend))
         return 0;   // the files went to the instance already running
 
     // Set locale to C.UTF-8
@@ -501,14 +535,18 @@ int main(int argc, char *argv[])
     // env var so that developers / CI / users with an external backend can skip
     // the launch step and connect to an already-running instance.
     const QStringList cliArgs = QCoreApplication::arguments();
+    // A remote backend is never started here.
     const bool noAutostart =
             cliArgs.contains(u"--no-backend-autostart"_s)
-            || !qEnvironmentVariable("VISIVO_NO_BACKEND_AUTOSTART").isEmpty();
+            || !qEnvironmentVariable("VISIVO_NO_BACKEND_AUTOSTART").isEmpty()
+            || remoteBackend.has_value();
 
     // ── Backend launcher (lives for the full application lifetime) ────────────
     // Owned here in main() so the backend process is terminated cleanly when
     // the application exits.
     BackendLauncher launcher;
+    if (remoteBackend)
+        launcher.setRemoteBackendName(remoteBackend->name);
 
     // ── Startup dialog ────────────────────────────────────────────────────────
     // Drives the backend + auth sequence before the main window is shown.

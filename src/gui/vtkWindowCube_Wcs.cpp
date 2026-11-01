@@ -305,6 +305,10 @@ QString vtkWindowCube::remoteRecommendKey() const
 
 bool vtkWindowCube::backendIsLocal() const
 {
+    // A run on a remote backend (--backend) has no local one, even when a
+    // tunnel puts the remote backend at a localhost address.
+    if (Settings::sessionBackend())
+        return false;
     const QUrl url(this->remoteBackendUrl);
     const QString host = url.host().toLower();
     if (host.isEmpty())

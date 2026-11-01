@@ -62,6 +62,18 @@ SettingsDialog::SettingsDialog(Settings *settings, AuthWrapper *auth, QWidget *p
                                  checked ? QLineEdit::EchoMode::Normal
                                          : QLineEdit::EchoMode::Password);
                      });
+    if (const Settings::SessionBackend *session = Settings::sessionBackend()) {
+        // Shown, not editable: this run's remote backend is not saved, and the
+        // saved local backend comes back with the next plain launch.
+        const QString why = u"This run uses the remote backend \"%1\" given at launch "
+                            u"(--backend). The saved local backend is unchanged and is "
+                            u"used again when VisIVO is started without --backend."_s
+                                    .arg(session->name);
+        for (QLineEdit *field : { ui->lineBackendUrl, ui->lineBackendToken }) {
+            field->setReadOnly(true);
+            field->setToolTip(why);
+        }
+    }
     QObject::connect(ui->btnBackendTokenCopy, &QToolButton::clicked, this, [this]() {
         const QString token = ui->lineBackendToken->text().trimmed();
         if (!token.isEmpty()) {
