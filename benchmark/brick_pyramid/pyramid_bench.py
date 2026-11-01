@@ -56,18 +56,29 @@ def main() -> None:
     ap.add_argument("--max-block-mb", type=float, default=256)
     ap.add_argument("--reads", type=int, default=50, help="random bricks read per level")
     ap.add_argument("--json", help="also write the results as JSON")
+    ap.add_argument("--workers", type=int, default=1,
+                    help="processes that read and reduce while one writes (issue #89)")
+    ap.add_argument("--breakdown", action="store_true",
+                    help="time the build's stages (read the FITS, read back HDF5 levels, "
+                         "reduce, statistics, write HDF5); tracemalloc is off, as its "
+                         "overhead would distort them (issue #89)")
     args = ap.parse_args()
 
     from app.brick_pyramid import BrickPyramid, build_pyramid  # noqa: PLC0415
 
     cube_bytes = Path(args.cube).stat().st_size
-    tracemalloc.start()
+    timings = {} if args.breakdown else None
+    if not args.breakdown:
+        tracemalloc.start()
     start = time.perf_counter()
     path = build_pyramid(args.cube, args.out, hdu=args.hdu, brick=args.brick,
-                         max_block_bytes=int(args.max_block_mb * 1024 ** 2))
+                         max_block_bytes=int(args.max_block_mb * 1024 ** 2), timings=timings,
+                         workers=args.workers)
     build_s = time.perf_counter() - start
-    _, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
+    peak = None
+    if not args.breakdown:
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
     cgroup = _cgroup_memory()
 
     rng = random.Random(42)
@@ -93,13 +104,21 @@ def main() -> None:
         "build_s": round(build_s, 1), "build_alloc_peak_bytes": peak,
         "cgroup_memory_max": cgroup["memory.max"], "cgroup_memory_peak": cgroup["memory.peak"],
         "reads_per_level": args.reads, "p95": "nearest rank",
-        "levels": levels, "host": platform.node(), "cpus": os.cpu_count(),
+        "levels": levels, "host": platform.node(), "cpus": os.cpu_count(), "workers": args.workers,
+        "cpus_available": (len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity")
+                           else os.cpu_count()),
+        "breakdown_s": ({**{k: round(v, 1) for k, v in sorted(timings.items())},
+                         "other": round(build_s - sum(timings.values()), 1)}
+                        if timings is not None else None),
         "when": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
     gib = 1024 ** 3
     print(f"cube {cube_bytes / gib:.2f} GiB -> pyramid {result['pyramid_bytes'] / gib:.2f} GiB "
-          f"in {build_s:.0f} s; traced allocation peak {peak / 1024 ** 2:.0f} MiB"
+          f"in {build_s:.0f} s"
+          + (f"; traced allocation peak {peak / 1024 ** 2:.0f} MiB" if peak is not None else "")
           + (f"; cgroup limit {cgroup['memory.max'] / gib:.2f} GiB" if cgroup["memory.max"] else ""))
+    if result["breakdown_s"]:
+        print("  stages (s): " + ", ".join(f"{k} {v}" for k, v in result["breakdown_s"].items()))
     for row in levels:
         print(f"  level{row['level']} {row['shape']}: brick read median {row['read_ms_median']} ms, "
               f"p95 {row['read_ms_p95']} ms")

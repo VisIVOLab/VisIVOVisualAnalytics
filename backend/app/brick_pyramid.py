@@ -35,6 +35,7 @@ from __future__ import annotations
 import math
 import os
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -118,9 +119,16 @@ def _brick_stats(block: np.ndarray, brick: int) -> tuple[np.ndarray, np.ndarray]
     for gz, gy, gx in np.ndindex(grid):
         tile = block[gz * brick:(gz + 1) * brick, gy * brick:(gy + 1) * brick,
                      gx * brick:(gx + 1) * brick]
-        values = tile[np.isfinite(tile)]
-        if values.size:
-            lo[gz, gy, gx], hi[gz, gy, gx] = values.min(), values.max()
+        # fmin/fmax skip NaN without copying the finite values out (about three
+        # times faster, issue #89); an infinity is not a finite value, so a
+        # brick holding one takes the filtering path.
+        a, b = np.fmin.reduce(tile, axis=None), np.fmax.reduce(tile, axis=None)
+        if np.isinf(a) or np.isinf(b):
+            values = tile[np.isfinite(tile)]
+            if values.size:
+                lo[gz, gy, gx], hi[gz, gy, gx] = values.min(), values.max()
+        else:
+            lo[gz, gy, gx], hi[gz, gy, gx] = a, b   # NaN when the brick is all blank
     return lo, hi
 
 
@@ -131,10 +139,18 @@ def _halve(block: np.ndarray) -> np.ndarray:
     pad = ((0, nz % 2), (0, ny % 2), (0, nx % 2))
     if any(p[1] for p in pad):
         block = np.pad(block, pad, constant_values=np.nan)
-    cells = block.reshape(block.shape[0] // 2, 2, block.shape[1] // 2, 2, block.shape[2] // 2, 2)
-    finite = np.isfinite(cells)
-    count = finite.sum(axis=(1, 3, 5))
-    total = np.where(finite, cells, 0.0).sum(axis=(1, 3, 5), dtype=np.float64)
+    # The eight strided views of a 2x2x2 cell, added one at a time: about three
+    # times faster than reducing a 6-D reshape over its odd axes, and the same
+    # result (the same float64 sums and counts) (issue #89).
+    total = np.zeros((block.shape[0] // 2, block.shape[1] // 2, block.shape[2] // 2), dtype=np.float64)
+    count = np.zeros(total.shape, dtype=np.int8)
+    for i in (0, 1):
+        for j in (0, 1):
+            for k in (0, 1):
+                view = block[i::2, j::2, k::2]
+                finite = np.isfinite(view)
+                total += np.where(finite, view, 0.0)
+                count += finite
     with np.errstate(invalid="ignore", divide="ignore"):
         out = np.where(count > 0, total / np.maximum(count, 1), np.nan)
     return out.astype(np.float32)
@@ -266,11 +282,196 @@ class _SourceCube:
         self._hdul.close()
 
 
+# ── Building with several processes (issue #89) ─────────────────────────────
+#
+# The workers read (level 0, from the FITS file) or halve (higher levels, from
+# the level below that the writer hands them) and compute the per-brick
+# statistics; the writer, the calling process, is the only one touching the
+# HDF5 file. Blocks travel through a fixed set of shared-memory buffers, so
+# nothing large is pickled and the memory stays bounded.
+
+_W: dict = {}   # in a worker: its source cube and the shared buffers it has attached
+
+
+def _worker_init(source: str, hdu: int, max_block_bytes: int) -> None:
+    import multiprocessing  # noqa: PLC0415
+    import threading  # noqa: PLC0415
+
+    # A build killed outright (OOM, SIGKILL) would leave its workers waiting for
+    # tasks for ever, holding the shared buffers: they leave with it.
+    parent = multiprocessing.parent_process()
+    if parent is not None:
+        def follow() -> None:
+            parent.join()
+            os._exit(1)
+        threading.Thread(target=follow, daemon=True).start()
+    _W["cube"] = _SourceCube(source, hdu, max_block_bytes)
+    _W["buffers"] = {}
+
+
+def _worker_buffer(name: str):
+    from multiprocessing import shared_memory  # noqa: PLC0415
+
+    buf = _W["buffers"].get(name)
+    if buf is None:
+        # The writer owns the buffers and unlinks them. A spawned worker shares
+        # the writer's resource tracker, so attaching here registers nothing new
+        # that could outlive or remove them; on Python 3.13+ track=False says so.
+        try:
+            buf = shared_memory.SharedMemory(name=name, track=False)
+        except TypeError:   # Python < 3.13
+            buf = shared_memory.SharedMemory(name=name)
+        _W["buffers"][name] = buf
+    return buf
+
+
+def _worker_task(level: int, box: tuple[int, ...], brick: int, out_name: str,
+                 in_name: str | None, in_shape: tuple[int, int, int] | None):
+    z0, z1, y0, y1, x0, x1 = box
+    if level == 0:
+        block = _W["cube"].block(z0, z1, y0, y1, x0, x1)
+    else:
+        below = np.ndarray(in_shape, dtype=np.float32, buffer=_worker_buffer(in_name).buf)
+        block = _halve(below)
+    out = np.ndarray(block.shape, dtype=np.float32, buffer=_worker_buffer(out_name).buf)
+    out[...] = block
+    lo, hi = _brick_stats(block, brick)
+    return lo, hi
+
+
+def _parallel_ok(cube: "_SourceCube", max_block_bytes: int) -> bool:
+    """Whether a build can use several processes; otherwise it runs in one.
+
+    Not for a tile-compressed cube: its tiles were checked against
+    ``max_block_bytes``, and the workers' smaller blocks would decompress each
+    tile several times or refuse it. Not when the shared memory cannot hold the
+    buffers (about twice ``max_block_bytes``): Docker gives /dev/shm 64 MiB by
+    default, and writing past it kills the process (SIGBUS) without cleanup.
+    Builds running at the same time each see the same free space: the margin
+    covers some of that, not every case."""
+    if getattr(cube, "_tile", None) is not None:
+        return False
+    try:
+        st = os.statvfs("/dev/shm")
+    except (AttributeError, OSError):   # macOS, Windows: no such limit
+        return True
+    return 2 * max_block_bytes <= 0.8 * st.f_bavail * st.f_frsize
+
+
+def default_workers() -> int:
+    """The processes a build uses by default: the CPUs this process may run on
+    (the job's, under SLURM), at most 8. Past about four the single writer
+    limits: on PLEIADI-GPU a 23.4 GiB cube took 45 s with 4, 8, 16 or 32
+    (benchmark/brick_pyramid/results/scale_23gb_pleiadi_*.json)."""
+    try:
+        cpus = len(os.sched_getaffinity(0))
+    except AttributeError:   # macOS, Windows
+        cpus = os.cpu_count() or 1
+    return max(1, min(8, cpus))
+
+
+def _fill_levels_parallel(h5, shapes, brick: int, source: str, hdu: int, max_block_bytes: int,
+                          workers: int, progress, should_stop, timings) -> None:
+    import concurrent.futures as cf  # noqa: PLC0415
+    import multiprocessing  # noqa: PLC0415
+    from multiprocessing import shared_memory  # noqa: PLC0415
+
+    slots = workers + 2
+    # One buffer pair per slot; their total is about twice max_block_bytes.
+    per_slot = max(8 * brick ** 3 * 4, max_block_bytes // slots)
+    outs: list = []
+    ins: list = []
+    clock = time.perf_counter if timings is not None else None
+
+    def spent(stage: str, since: float) -> float:
+        now = clock()
+        timings[stage] = timings.get(stage, 0.0) + (now - since)
+        return now
+
+    try:
+        for _ in range(slots):
+            outs.append(shared_memory.SharedMemory(create=True, size=per_slot))
+            ins.append(shared_memory.SharedMemory(create=True, size=per_slot))
+        with cf.ProcessPoolExecutor(max_workers=workers,
+                                    mp_context=multiprocessing.get_context("spawn"),
+                                    initializer=_worker_init,
+                                    initargs=(source, hdu, per_slot)) as pool:
+            for level, shape in enumerate(shapes):
+                itemsize = 4 if level == 0 else 4 * 8
+                bz, by, bx = _block_extent(shape, brick, itemsize, per_slot)
+                nz, ny, nx = shape
+                boxes = [(z0, min(nz, z0 + bz), y0, min(ny, y0 + by), x0, min(nx, x0 + bx))
+                         for z0 in range(0, nz, bz) for y0 in range(0, ny, by)
+                         for x0 in range(0, nx, bx)]
+                group = h5[f"level{level}"]
+                below = h5[f"level{level - 1}/data"] if level else None
+                free = list(range(slots))
+                pending: dict = {}
+                done = 0
+                todo = iter(boxes)
+                exhausted = False
+                while True:
+                    while free and not exhausted:
+                        box = next(todo, None)
+                        if box is None:
+                            exhausted = True
+                            break
+                        if should_stop is not None:
+                            should_stop()
+                        slot = free.pop()
+                        z0, z1, y0, y1, x0, x1 = box
+                        in_shape = None
+                        if level:
+                            # The 2x region of the level below, clipped to it;
+                            # _halve pads an odd edge as in the serial build.
+                            bnz, bny, bnx = below.shape
+                            src = np.s_[2 * z0:min(bnz, 2 * z1), 2 * y0:min(bny, 2 * y1),
+                                        2 * x0:min(bnx, 2 * x1)]
+                            in_shape = (min(bnz, 2 * z1) - 2 * z0, min(bny, 2 * y1) - 2 * y0,
+                                        min(bnx, 2 * x1) - 2 * x0)
+                            t = clock() if clock else 0.0
+                            dest = np.ndarray(in_shape, dtype=np.float32, buffer=ins[slot].buf)
+                            below.read_direct(dest, source_sel=src)
+                            if clock:
+                                spent("read_hdf5", t)
+                        fut = pool.submit(_worker_task, level, box, brick, outs[slot].name,
+                                          ins[slot].name if level else None, in_shape)
+                        pending[fut] = (slot, box)
+                    if not pending:
+                        break
+                    t = clock() if clock else 0.0
+                    finished, _ = cf.wait(pending, return_when=cf.FIRST_COMPLETED)
+                    if clock:
+                        spent("wait_workers", t)
+                    for fut in finished:
+                        slot, box = pending.pop(fut)
+                        lo, hi = fut.result()
+                        z0, z1, y0, y1, x0, x1 = box
+                        t = clock() if clock else 0.0
+                        block = np.ndarray((z1 - z0, y1 - y0, x1 - x0), dtype=np.float32,
+                                           buffer=outs[slot].buf)
+                        group["data"][z0:z1, y0:y1, x0:x1] = block
+                        gz, gy, gx = z0 // brick, y0 // brick, x0 // brick
+                        group["min"][gz:gz + lo.shape[0], gy:gy + lo.shape[1], gx:gx + lo.shape[2]] = lo
+                        group["max"][gz:gz + hi.shape[0], gy:gy + hi.shape[1], gx:gx + hi.shape[2]] = hi
+                        if clock:
+                            spent("write_hdf5", t)
+                        free.append(slot)
+                        done += 1
+                        if progress is not None:
+                            progress(f"level{level}", done / len(boxes))
+    finally:
+        for buf in outs + ins:
+            buf.close()
+            buf.unlink()
+
+
 def build_pyramid(source: str | os.PathLike, out: str | os.PathLike | None = None, *,
                   hdu: int = 0, brick: int = DEFAULT_BRICK,
                   max_block_bytes: int = DEFAULT_MAX_BLOCK_BYTES,
                   progress: Callable[[str, float], None] | None = None,
-                  should_stop: Callable[[], None] | None = None) -> Path:
+                  should_stop: Callable[[], None] | None = None,
+                  timings: dict[str, float] | None = None, workers: int = 1) -> Path:
     """Write the brick pyramid of ``source`` (a FITS cube) and return its path.
 
     The cube is read in brick-aligned blocks of at most ``max_block_bytes`` of
@@ -283,6 +484,14 @@ def build_pyramid(source: str | os.PathLike, out: str | os.PathLike | None = Non
     complete, so a reader never sees a partial pyramid. ``progress(stage,
     fraction)`` is called as blocks are written; ``should_stop()`` may raise to
     abandon the build (the temporary file is then removed).
+
+    With ``workers`` > 1 the blocks are read and reduced by that many processes
+    while this one writes the file (issue #89): the result is the same. The
+    blocks are split into smaller ones, one pair of shared buffers per worker
+    and two spare, about twice ``max_block_bytes`` in all; each worker's
+    temporaries add up to about as much again (some 4x in all with 8 workers).
+    A tile-compressed cube, or a shared memory too small for the buffers, is
+    built by one process.
     """
     import h5py  # noqa: PLC0415
 
@@ -318,37 +527,71 @@ def build_pyramid(source: str | os.PathLike, out: str | os.PathLike | None = Non
                 group.create_dataset("min", shape=grid, dtype="f4", fillvalue=np.nan)
                 group.create_dataset("max", shape=grid, dtype="f4", fillvalue=np.nan)
 
-            read_level0 = cube.block
+            # Seconds spent per stage, when the caller asks (benchmark/brick_pyramid).
+            clock = time.perf_counter if timings is not None else None
+
+            def spent(stage: str, since: float) -> float:
+                now = clock()
+                timings[stage] = timings.get(stage, 0.0) + (now - since)
+                return now
+
+            def read_level0(z0, z1, y0, y1, x0, x1):
+                if clock is None:
+                    return cube.block(z0, z1, y0, y1, x0, x1)
+                t = clock()
+                block = cube.block(z0, z1, y0, y1, x0, x1)
+                spent("read_fits", t)
+                return block
 
             def read_below(level):
                 data = h5[f"level{level - 1}/data"]
-                return lambda z0, z1, y0, y1, x0, x1: _halve(
-                    data[2 * z0:2 * z1, 2 * y0:2 * y1, 2 * x0:2 * x1])
 
-            for level, shape in enumerate(shapes):
-                read = read_level0 if level == 0 else read_below(level)
-                # A block of this level reads 8x its size from the level below.
-                itemsize = 4 if level == 0 else 4 * 8
-                bz, by, bx = _block_extent(shape, brick, itemsize, max_block_bytes)
-                group = h5[f"level{level}"]
-                nz, ny, nx = shape
-                total = math.ceil(nz / bz) * math.ceil(ny / by) * math.ceil(nx / bx)
-                done = 0
-                for z0 in range(0, nz, bz):
-                    for y0 in range(0, ny, by):
-                        for x0 in range(0, nx, bx):
-                            if should_stop is not None:
-                                should_stop()
-                            z1, y1, x1 = min(nz, z0 + bz), min(ny, y0 + by), min(nx, x0 + bx)
-                            block = read(z0, z1, y0, y1, x0, x1)
-                            group["data"][z0:z1, y0:y1, x0:x1] = block
-                            lo, hi = _brick_stats(block, brick)
-                            gz, gy, gx = z0 // brick, y0 // brick, x0 // brick
-                            group["min"][gz:gz + lo.shape[0], gy:gy + lo.shape[1], gx:gx + lo.shape[2]] = lo
-                            group["max"][gz:gz + hi.shape[0], gy:gy + hi.shape[1], gx:gx + hi.shape[2]] = hi
-                            done += 1
-                            if progress is not None:
-                                progress(f"level{level}", done / total)
+                def read(z0, z1, y0, y1, x0, x1):
+                    if clock is None:
+                        return _halve(data[2 * z0:2 * z1, 2 * y0:2 * y1, 2 * x0:2 * x1])
+                    t = clock()
+                    below = data[2 * z0:2 * z1, 2 * y0:2 * y1, 2 * x0:2 * x1]
+                    t = spent("read_hdf5", t)
+                    halved = _halve(below)
+                    spent("reduce", t)
+                    return halved
+                return read
+
+            if workers > 1 and _parallel_ok(cube, max_block_bytes):
+                _fill_levels_parallel(h5, shapes, brick, sig.path, hdu, max_block_bytes, workers,
+                                      progress, should_stop, timings)
+            else:
+                for level, shape in enumerate(shapes):
+                    read = read_level0 if level == 0 else read_below(level)
+                    # A block of this level reads 8x its size from the level below.
+                    itemsize = 4 if level == 0 else 4 * 8
+                    bz, by, bx = _block_extent(shape, brick, itemsize, max_block_bytes)
+                    group = h5[f"level{level}"]
+                    nz, ny, nx = shape
+                    total = math.ceil(nz / bz) * math.ceil(ny / by) * math.ceil(nx / bx)
+                    done = 0
+                    for z0 in range(0, nz, bz):
+                        for y0 in range(0, ny, by):
+                            for x0 in range(0, nx, bx):
+                                if should_stop is not None:
+                                    should_stop()
+                                z1, y1, x1 = min(nz, z0 + bz), min(ny, y0 + by), min(nx, x0 + bx)
+                                block = read(z0, z1, y0, y1, x0, x1)
+                                t = clock() if clock else 0.0
+                                group["data"][z0:z1, y0:y1, x0:x1] = block
+                                if clock:
+                                    t = spent("write_hdf5", t)
+                                lo, hi = _brick_stats(block, brick)
+                                if clock:
+                                    t = spent("stats", t)
+                                gz, gy, gx = z0 // brick, y0 // brick, x0 // brick
+                                group["min"][gz:gz + lo.shape[0], gy:gy + lo.shape[1], gx:gx + lo.shape[2]] = lo
+                                group["max"][gz:gz + hi.shape[0], gy:gy + hi.shape[1], gx:gx + hi.shape[2]] = hi
+                                if clock:
+                                    spent("write_hdf5", t)
+                                done += 1
+                                if progress is not None:
+                                    progress(f"level{level}", done / total)
         os.replace(tmp_name, out_path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
@@ -451,6 +694,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="default: the first HDU with an image, the one the viewer opens")
     b.add_argument("--brick", type=int, default=DEFAULT_BRICK)
     b.add_argument("--max-block-mb", type=float, default=DEFAULT_MAX_BLOCK_BYTES / 1024 ** 2)
+    b.add_argument("--workers", type=int, default=None,
+                   help="processes that read and reduce (default: the CPUs available, at most 8)")
     i = sub.add_parser("info", help="describe a pyramid")
     i.add_argument("path")
     args = ap.parse_args(argv)
@@ -474,7 +719,8 @@ def main(argv: list[str] | None = None) -> int:
             with fits.open(args.source, memmap=True) as hdul:
                 hdu = image_hdu_index(hdul)
         path = build_pyramid(args.source, args.out, hdu=hdu, brick=args.brick,
-                             max_block_bytes=int(args.max_block_mb * 1024 ** 2), progress=progress)
+                             max_block_bytes=int(args.max_block_mb * 1024 ** 2), progress=progress,
+                             workers=args.workers if args.workers else default_workers())
         print(f"{path} ({path.stat().st_size / 1024 ** 2:.0f} MB) in {time.perf_counter() - start:.1f} s")
         return 0
     with BrickPyramid(args.path) as p:

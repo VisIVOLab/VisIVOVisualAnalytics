@@ -43,7 +43,7 @@ modification time, so a changed file gets a new pyramid.
 
 ```bash
 cd backend
-python -m app.brick_pyramid build cube.fits [out.pyr.h5] [--brick 64] [--max-block-mb 256]
+python -m app.brick_pyramid build cube.fits [out.pyr.h5] [--brick 64] [--max-block-mb 256] [--workers N]
 python -m app.brick_pyramid info out.pyr.h5
 ```
 
@@ -57,6 +57,21 @@ restored exactly), and tile-compressed images are decompressed one tile at a
 time. Two inputs cannot be read in bounded memory and are refused: a FITS file
 compressed as a whole (`.fits.gz`, `.bz2`, `.zip`) and a tile-compressed image
 whose tiles are larger than the block size.
+
+**Several processes.** With `--workers N`, by default the CPUs available up
+to 8, N processes read the cube and compute the averages and per-brick
+statistics, while one process writes the file. The blocks pass between them
+through shared memory, about twice `--max-block-mb` in all, and the result is
+the same as with one process; with the workers' own temporaries a build with
+8 processes uses about four times `--max-block-mb`. A tile-compressed cube is
+built by one process, and so is any build when `/dev/shm` cannot hold the
+buffers (Docker gives it 64 MiB unless `shm_size` is set). Builds of several
+cubes at the same time each check the free space on their own, so give a
+container's `/dev/shm` room for more than one build. On
+PLEIADI-GPU (POWER9) a 23.4 GiB cube is built in 78 s with one process and in
+45 s with four or more. Past four, writing the file is the limit, at about
+600 MB/s to BeeGFS: more processes do not shorten it. The background builds
+of the remote view use the same default.
 
 The file is written under a temporary name and renamed when complete, so a
 reader never finds a partial pyramid, and a build that is stopped leaves
@@ -85,9 +100,9 @@ keep the paths they had.
   and shows "Preparing the cube for full resolution… N%". The view switches
   to the pyramid when the build ends. Every view of the same cube on that
   backend shares one build, and a failed build is reported with its reason.
-  On PLEIADI-GPU a build took 46 s for a 7.4 GiB cube and 253 s for a
-  23.4 GiB one. To skip the wait, build it beforehand with the command above,
-  with `VISIVO_PYRAMID_DIR` set as the backend will have it.
+  On PLEIADI-GPU the build of a 23.4 GiB cube takes about 45 s. To skip the
+  wait, build it beforehand with the command above, with `VISIVO_PYRAMID_DIR`
+  set as the backend will have it.
 - **Blocks.** For each view the session picks blocks of 256 voxels per side
   at the level each part of the view needs: fine near the camera, coarse far
   away or outside the window. The choice keeps within
@@ -132,4 +147,5 @@ at 2.5 GB. On a 1.8 GB cube drawn both ways, the frames differ from the
 in-core ones by 1.4 to 2.1 (of 255, on average) in the overall and MIP views;
 zoomed in, the coarser blocks in front of the cutting plane show less noise. The
 recorded runs are in `benchmark/remote_render/results`. Building the pyramid of
-the 23.4 GiB cube took 253 s.
+the 23.4 GiB cube took 253 s then; it takes about 45 s since issue #89 (see
+Building).

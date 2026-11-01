@@ -1,0 +1,116 @@
+{
+  "cube": "/scratch/fvitello/skava-e2e/data/synthetic_25gb.fits",
+  "cube_bytes": 25165828800,
+  "brick": 64,
+  "max_block_bytes": 268435456,
+  "pyramid": "/scratch/fvitello/bench89/synthetic.pyr.h5",
+  "pyramid_bytes": 29455380848,
+  "build_s": 45.7,
+  "build_alloc_peak_bytes": null,
+  "cgroup_memory_max": null,
+  "cgroup_memory_peak": null,
+  "reads_per_level": 5,
+  "p95": "nearest rank",
+  "levels": [
+    {
+      "level": 0,
+      "shape": [
+        1500,
+        2048,
+        2048
+      ],
+      "bricks": [
+        24,
+        32,
+        32
+      ],
+      "read_ms_median": 15.17,
+      "read_ms_p95": 16.57
+    },
+    {
+      "level": 1,
+      "shape": [
+        750,
+        1024,
+        1024
+      ],
+      "bricks": [
+        12,
+        16,
+        16
+      ],
+      "read_ms_median": 17.41,
+      "read_ms_p95": 18.79
+    },
+    {
+      "level": 2,
+      "shape": [
+        375,
+        512,
+        512
+      ],
+      "bricks": [
+        6,
+        8,
+        8
+      ],
+      "read_ms_median": 15.82,
+      "read_ms_p95": 17.29
+    },
+    {
+      "level": 3,
+      "shape": [
+        188,
+        256,
+        256
+      ],
+      "bricks": [
+        3,
+        4,
+        4
+      ],
+      "read_ms_median": 4.29,
+      "read_ms_p95": 10.75
+    },
+    {
+      "level": 4,
+      "shape": [
+        94,
+        128,
+        128
+      ],
+      "bricks": [
+        2,
+        2,
+        2
+      ],
+      "read_ms_median": 1.43,
+      "read_ms_p95": 4.27
+    },
+    {
+      "level": 5,
+      "shape": [
+        47,
+        64,
+        64
+      ],
+      "bricks": [
+        1,
+        1,
+        1
+      ],
+      "read_ms_median": 0.59,
+      "read_ms_p95": 0.8
+    }
+  ],
+  "host": "r33c1s01",
+  "cpus": 128,
+  "workers": 32,
+  "breakdown_s": {
+    "read_hdf5": 6.5,
+    "wait_workers": 1.7,
+    "write_hdf5": 18.1,
+    "other": 19.4
+  },
+  "when": "2026-11-01T15:21:15+0100"
+}
