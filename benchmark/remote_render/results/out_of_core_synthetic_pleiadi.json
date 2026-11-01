@@ -1,0 +1,39 @@
+{
+ "cube": "/scratch/fvitello/skava-e2e/ooc70/big/synthetic_25gb.fits",
+ "width": 1280,
+ "height": 800,
+ "egl_device": "0",
+ "cuda_visible_devices": "0",
+ "ooc": {
+  "open_s": 2.55,
+  "views": {
+   "home": {
+    "settle_s": 1.29,
+    "frames": 3
+   },
+   "zoom": {
+    "settle_s": 0.3,
+    "frames": 1
+   },
+   "side": {
+    "settle_s": 0.73,
+    "frames": 1
+   },
+   "mip": {
+    "settle_s": 1.25,
+    "frames": 1
+   },
+   "mip_zoom": {
+    "settle_s": 0.03,
+    "frames": 1
+   }
+  },
+  "drag_fps": 53.9,
+  "render_process_kB": {
+   "VmHWM": 2529344,
+   "VmRSS": 2432960,
+   "RssAnon": 2196096,
+   "RssFile": 236864
+  }
+ }
+}

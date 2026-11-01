@@ -14,6 +14,7 @@ from ._common import (
     SessionViewState,
     _build_color_tf,
     _build_opacity_tf,
+    _opacity_floor,
     logger,
 )
 
@@ -447,6 +448,20 @@ class PipelineMixin:
         # vtkImageData points to; here we just call Modified() so VTK
         # re-uploads the relevant slabs to VRAM on the next draw.
         self._poll_cube_chunks()
+        # Out of core: choose the blocks of this view and read some of them
+        # before drawing; while some are still missing, ask for another frame.
+        self._ooc_more = False
+        if self._ooc is not None:
+            # In Composite, blocks whose values are all fully transparent are
+            # left out (MIP and MinIP draw one whole level, see _ooc.py).
+            floor = None
+            if self.view.blend_mode == 0:
+                floor = _opacity_floor(self._vmin, self._vmax,
+                                       self.view.threshold or self._vmin)
+            self._ooc_more = self._ooc.update(self._renderer, self._render_window.GetSize(),
+                                              floor, self.view.interactive)
+            if self._ooc_more:
+                self.mark_dirty()
 
         cam = self._renderer.GetActiveCamera()
 
@@ -603,6 +618,9 @@ class PipelineMixin:
             self._cube_flat_view = None
             self._image_data = None
             self._cube_np = None
+            if self._ooc is not None:
+                self._ooc.close()
+                self._ooc = None
             if self._cube_reader is not None:
                 try:
                     self._cube_reader.close()

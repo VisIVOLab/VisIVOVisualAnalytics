@@ -174,6 +174,7 @@ def _bare_session():
     s._last_rgba_view, s._last_render_ms = "old rgb", 1.0
     s.stats = SimpleNamespace(frames_rendered=0, last_render_ms=0.0)
     s._poll_cube_chunks = lambda: None
+    s._ooc, s._ooc_more = None, False
     s._render_frame_on_thread = lambda: b"new jpeg"
     s._render_rgb_on_thread = lambda: ("new rgb", 2.0)
     return s

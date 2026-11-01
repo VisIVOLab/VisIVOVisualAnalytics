@@ -70,8 +70,61 @@ depends on how the cube's sizes fit the brick: 1.25 times the cube for the
 On a shared filesystem that does not support HDF5's file locking, set
 `HDF5_USE_FILE_LOCKING=FALSE` for the processes that read pyramids.
 
+## Rendering from the pyramid
+
+A remote 3-D view of a cube larger than `VISIVO_RENDER_OUT_OF_CORE_BYTES`
+(6 GiB of float32 by default) does not load the cube: it draws it from the
+pyramid (`backend/app/render_session/_ooc.py`, block choice in
+`backend/app/brick_lod.py`). Smaller cubes, and every view on a local backend,
+keep the paths they had.
+
+- **Pyramid.** The session reuses the cube's pyramid from the default location
+  or builds it there before the first frame. On PLEIADI-GPU a build took 46 s
+  for a 7.4 GiB cube and 253 s for a 23.4 GiB one, so for large cubes build it
+  beforehand with the command above, with `VISIVO_PYRAMID_DIR` set as the
+  backend will have it.
+- **Blocks.** For each view the session picks blocks of 256 voxels per side
+  at the level each part of the view needs: fine near the camera, coarse far
+  away or outside the window. The choice keeps within
+  `VISIVO_RENDER_OOC_BUDGET_BYTES` of GPU data and `VISIVO_RENDER_OOC_MAX_BLOCKS`
+  blocks; each block is one ray-casting pass, about 5 ms per frame on a V100.
+  Blocks are chosen again when the view stops moving; the new ones are read a
+  few at a time between frames, and they replace the old set only once all
+  have arrived, so a frame never shows a hole. While you drag, the set stays
+  and only its drawing order changes.
+- **No seams.** Each block carries one extra sample on every side and is
+  cropped to the region it owns, so blocks of different levels meet exactly.
+  They are drawn back to front, which composites correctly in Composite mode.
+- **MIP and MinIP.** An extremum along the whole ray cannot be assembled from
+  separate passes, so in these modes the view draws the finest level that fits
+  the budget as one block.
+- **Threshold.** In Composite mode, blocks whose values are all below the
+  transparent end of the opacity ramp are not read. The default threshold
+  (99th percentile) and the cutting plane's colour range come from a sample
+  of full-resolution bricks.
+- **Everything else.** The outline, the isosurface and the percentiles use a
+  coarse copy (at most 256³ voxels) placed over the cube. The cutting plane is
+  read from the FITS file at full resolution.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_RENDER_OUT_OF_CORE_BYTES` | 6 GiB | Cubes larger than this (as float32) are drawn from their pyramid. |
+| `VISIVO_RENDER_OOC_BUDGET_BYTES` | 2 GiB | GPU data of the blocks drawn at once, extra samples included. |
+| `VISIVO_RENDER_OOC_MAX_BLOCKS` | `12` | Blocks drawn at once. |
+| `VISIVO_RENDER_OOC_NODE` | `256` | Voxels per side of a block; a multiple of the pyramid's brick. |
+
 ## Measurements
 
 `benchmark/brick_pyramid/pyramid_bench.py` builds the pyramid of a cube and
 times random brick reads per level; its README gives the commands, including a
 build in a container whose memory limit is smaller than the cube.
+
+`benchmark/remote_render/out_of_core_views.py` measures the view drawn from
+the pyramid. On PLEIADI-GPU (one V100 16 GB), a 23.4 GiB cube opened in 2.6 s
+with its pyramid already built, the views settled within 1.3 s, the view
+turned at 54 frames per second while dragged, and the render process peaked
+at 2.5 GB. On a 1.8 GB cube drawn both ways, the frames differ from the
+in-core ones by 1.4 to 2.1 (of 255, on average) in the overall and MIP views;
+zoomed in, the coarser blocks in front of the cutting plane show less noise. The
+recorded runs are in `benchmark/remote_render/results`. Building the pyramid of
+the 23.4 GiB cube inside the session took 253 s.

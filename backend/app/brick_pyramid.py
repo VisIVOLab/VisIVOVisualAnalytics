@@ -140,6 +140,16 @@ def _halve(block: np.ndarray) -> np.ndarray:
     return out.astype(np.float32)
 
 
+def _refuse_whole_file_compression(path) -> None:
+    """A file compressed as a whole is recognised by its first bytes, before
+    astropy opens it: it would decompress the whole member to do so."""
+    with open(path, "rb") as fh:
+        magic = fh.read(4)
+    if magic[:2] == b"\x1f\x8b" or magic[:3] == b"BZh" or magic == b"PK\x03\x04":
+        raise ValueError(f"{path} is compressed as a whole, which can only be read whole: "
+                         "decompress it first.")
+
+
 class _SourceCube:
     """Blocks of a FITS cube as float32 (z, y, x), read without holding the cube.
 
@@ -159,13 +169,7 @@ class _SourceCube:
         import logging  # noqa: PLC0415
         from astropy.io import fits  # noqa: PLC0415
 
-        # A file compressed as a whole is recognised by its first bytes, before
-        # astropy opens it: it would decompress the whole member to do so.
-        with open(path, "rb") as fh:
-            magic = fh.read(4)
-        if magic[:2] == b"\x1f\x8b" or magic[:3] == b"BZh" or magic == b"PK\x03\x04":
-            raise ValueError(f"{path} is compressed as a whole, which can only be read whole: "
-                             "decompress it first.")
+        _refuse_whole_file_compression(path)
         self._hdul = fits.open(path, memmap=True, mode="readonly", do_not_scale_image_data=True)
         try:
             if getattr(self._hdul._file, "compression", None):
@@ -443,7 +447,8 @@ def main(argv: list[str] | None = None) -> int:
     b = sub.add_parser("build", help="build the pyramid of a FITS cube")
     b.add_argument("source")
     b.add_argument("out", nargs="?")
-    b.add_argument("--hdu", type=int, default=0)
+    b.add_argument("--hdu", type=int, default=None,
+                   help="default: the first HDU with an image, the one the viewer opens")
     b.add_argument("--brick", type=int, default=DEFAULT_BRICK)
     b.add_argument("--max-block-mb", type=float, default=DEFAULT_MAX_BLOCK_BYTES / 1024 ** 2)
     i = sub.add_parser("info", help="describe a pyramid")
@@ -459,7 +464,16 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{stage}: {fraction:.0%}", flush=True)
                 last[0] = stage
 
-        path = build_pyramid(args.source, args.out, hdu=args.hdu, brick=args.brick,
+        hdu = args.hdu
+        if hdu is None:
+            # The HDU the render session opens, so that it finds this pyramid.
+            from astropy.io import fits  # noqa: PLC0415
+
+            from .fits_dataset import image_hdu_index  # noqa: PLC0415
+            _refuse_whole_file_compression(args.source)
+            with fits.open(args.source, memmap=True) as hdul:
+                hdu = image_hdu_index(hdul)
+        path = build_pyramid(args.source, args.out, hdu=hdu, brick=args.brick,
                              max_block_bytes=int(args.max_block_mb * 1024 ** 2), progress=progress)
         print(f"{path} ({path.stat().st_size / 1024 ** 2:.0f} MB) in {time.perf_counter() - start:.1f} s")
         return 0

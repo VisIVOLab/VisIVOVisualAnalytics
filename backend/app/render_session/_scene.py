@@ -54,14 +54,15 @@ class SceneMixin:
         # to discover (nz, ny, nx) so we can pre-allocate the shared
         # memory buffer that backs vtkImageData.
         with _fits.open(self.dataset_path, memmap=True) as hdul:
-            data = hdul[image_hdu_index(hdul)].data  # type: ignore[attr-defined]
-            while data.ndim > 3:
-                data = data[0]
-            if data.ndim != 3:
+            hdu_index = image_hdu_index(hdul)
+            # From the header: touching .data would decompress a whole
+            # tile-compressed cube here.
+            shape = tuple(hdul[hdu_index].shape)  # type: ignore[attr-defined]
+            if len(shape) < 3:
                 raise ValueError(
-                    f"Volume rendering requires a 3-D cube, got shape {data.shape}"
+                    f"Volume rendering requires a 3-D cube, got shape {shape}"
                 )
-            disk_shape = data.shape   # (nz, ny, nx)
+            disk_shape = shape[-3:]   # (nz, ny, nx); leading axes: first plane
             nz, ny, nx = disk_shape
             cube_size_bytes = int(np.prod(disk_shape)) * 4   # float32
 
@@ -71,10 +72,26 @@ class SceneMixin:
         # process. 256 MB (~256³ voxels) is the same threshold the
         # client uses for local-vs-remote rendering.
         chunked_threshold = 256 * 1024 * 1024
-        use_chunked = cube_size_bytes > chunked_threshold
+        # Larger still, the cube is not loaded at all: it is drawn from its
+        # brick pyramid, block by block (_ooc.py, issue #70).
+        from ._ooc import BlockVolumes, OutOfCoreCube, wants_out_of_core
+        out_of_core = wants_out_of_core(cube_size_bytes)
+        use_chunked = cube_size_bytes > chunked_threshold and not out_of_core
+        proxy_origin, proxy_spacing = (0.0, 0.0, 0.0), 1.0
 
         # ── 2. Allocate the cube buffer + start reader if chunked ─────
-        if use_chunked:
+        if out_of_core:
+            self._cube_reader = None
+            self._ooc = OutOfCoreCube(self.dataset_path, hdu_index, self.session_id)
+            # The coarse proxy stands in for the cube wherever the whole of it
+            # is needed (outline, isosurface, percentiles).
+            cube, proxy_origin, proxy_spacing = self._ooc.proxy()
+            finite_mask = np.ones(cube.shape, dtype=bool)
+            vmin, vmax = self._ooc.vmin, self._ooc.vmax
+            logger.info("[render-session %s] out-of-core rendering of a %.2f GB cube "
+                        "(proxy %s, spacing %g)", self.session_id,
+                        cube_size_bytes / (1024 ** 3), cube.shape, proxy_spacing)
+        elif use_chunked:
             # Pick a chunk schedule. For a 109-deep cube that's
             # max(1, 109//32) = 3 → ~36 chunks; for a 6668-deep cube
             # that's 208 → ~32 chunks. The render side calls
@@ -155,8 +172,11 @@ class SceneMixin:
         # minutes and blocks the whole executor thread, defeating
         # the point of the background reader.
         if not use_chunked:
+            # Out of core, from level-0 bricks: the proxy's averages would put
+            # p99 well inside the noise.
+            sample = self._ooc.sample() if out_of_core else None
             if self.view.threshold is None:
-                finite = cube[finite_mask] if not finite_mask.all() else cube
+                finite = sample if out_of_core else (cube[finite_mask] if not finite_mask.all() else cube)
                 self.view.threshold = float(np.percentile(finite, 99.0))
             # Slice-LUT range: the cube's vmin/vmax is dominated by a
             # few outlier voxels (galaxy peaks, edge artefacts), so
@@ -169,7 +189,7 @@ class SceneMixin:
             # match that by using cube percentiles p1..p99 — robust
             # to the bright-tail outliers, close to what the desktop
             # sees when it samples a typical channel.
-            finite = cube[finite_mask] if not finite_mask.all() else cube
+            finite = sample if out_of_core else (cube[finite_mask] if not finite_mask.all() else cube)
             self._slice_vmin = float(np.percentile(finite, 1.0))
             self._slice_vmax = float(np.percentile(finite, 99.0))
         # Cutting plane defaults to the middle channel — matches the
@@ -184,9 +204,12 @@ class SceneMixin:
 
         # ── 2. Wrap as vtkImageData ──────────────────────────────────
         img = vtk.vtkImageData()
-        img.SetDimensions(nx, ny, nz)
-        img.SetSpacing(1.0, 1.0, 1.0)
-        img.SetOrigin(0.0, 0.0, 0.0)
+        # Out of core this is the coarse proxy, placed in level-0 voxels so
+        # that its bounds are the cube's.
+        pz, py, px = cube.shape
+        img.SetDimensions(px, py, pz)
+        img.SetSpacing(proxy_spacing, proxy_spacing, proxy_spacing)
+        img.SetOrigin(*proxy_origin)
         flat = cube.ravel(order="C")
         # Chunked path uses ``deep=False`` so the vtkFloatArray points
         # AT the shared-memory buffer the reader process is writing
@@ -231,15 +254,24 @@ class SceneMixin:
         # its "denser, more luminous" feel: it dithers the sample
         # positions per pixel so opacity accumulates more uniformly
         # along the ray, no banding, no per-voxel undersampling.
-        self._volume_mapper = vtk.vtkGPUVolumeRayCastMapper()
-        self._volume_mapper.SetInputData(img)
+        if out_of_core:
+            # The blocks of the view, behind the same interface: the code that
+            # sets sampling, blend mode and visibility does not change.
+            self._volume_mapper = BlockVolumes(prop)
+            self._ooc.blocks = self._volume_mapper
+        else:
+            self._volume_mapper = vtk.vtkGPUVolumeRayCastMapper()
+            self._volume_mapper.SetInputData(img)
         self._volume_mapper.SetAutoAdjustSampleDistances(1)
         self._volume_mapper.SetUseJittering(1)
         self._apply_blend_mode_on_thread(self.view.blend_mode)
 
-        self._volume = vtk.vtkVolume()
-        self._volume.SetMapper(self._volume_mapper)
-        self._volume.SetProperty(prop)
+        if out_of_core:
+            self._volume = self._volume_mapper
+        else:
+            self._volume = vtk.vtkVolume()
+            self._volume.SetMapper(self._volume_mapper)
+            self._volume.SetProperty(prop)
         # Chunked path starts with the volume hidden — the outline +
         # axes are visible immediately so the user has spatial context,
         # but the volume only appears after enough chunks have landed
@@ -258,7 +290,10 @@ class SceneMixin:
 
         # ── 5. Renderer + EGL offscreen window ──────────────────────
         self._renderer = vtk.vtkRenderer()
-        self._renderer.AddVolume(self._volume)
+        if out_of_core:
+            self._volume.attach(self._renderer)
+        else:
+            self._renderer.AddVolume(self._volume)
         self._renderer.SetBackground(*self.view.background_rgb)
 
         # Bounding box wireframe + XYZ orientation marker — built
@@ -585,7 +620,9 @@ class SceneMixin:
 
         import vtk
         from vtk.util.numpy_support import numpy_to_vtk
-        slice2d = self._cube_np[z]  # (ny, nx)
+        # Out of core the cube is not in memory: the plane is read from the
+        # file at full resolution.
+        slice2d = self._ooc.plane(z) if self._ooc is not None else self._cube_np[z]  # (ny, nx)
         flat = slice2d.ravel(order="C").astype(np.float32, copy=False)
         arr = numpy_to_vtk(flat, deep=True, array_type=vtk.VTK_FLOAT)
         arr.SetName("slice")

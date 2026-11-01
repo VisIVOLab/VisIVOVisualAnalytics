@@ -350,3 +350,34 @@ def test_a_compressed_block_decompresses_one_tile_at_a_time(tmp_path):
         cube.close()
     assert np.array_equal(block, _astropy_level0(src, 1)[0:8, 0:16, 0:64])
     assert peak < data.nbytes / 4, peak            # never the whole cube
+
+
+def test_the_command_builds_the_pyramid_the_viewer_looks_for(tmp_path, monkeypatch):
+    """A cube in an extension: without --hdu the command picks the HDU the
+    render session opens, so the session finds the pyramid built beforehand."""
+    from app.brick_pyramid import default_pyramid_path, main
+
+    monkeypatch.setenv("VISIVO_PYRAMID_DIR", str(tmp_path / "pyr"))
+    src = tmp_path / "ext.fits"
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(_cube((16, 16, 16)))]).writeto(src)
+    assert main(["build", str(src), "--brick", "8"]) == 0
+    with BrickPyramid(default_pyramid_path(src, 1), source=src) as p:
+        assert p.source.hdu == 1 and p.shape(0) == (16, 16, 16)
+
+
+def test_the_command_refuses_a_zipped_cube_without_reading_it(tmp_path, monkeypatch):
+    import io
+    import zipfile
+
+    from app.brick_pyramid import main
+
+    buf = io.BytesIO()
+    fits.PrimaryHDU(_cube((16, 16, 16))).writeto(buf)
+    src = tmp_path / "cube.zip"
+    with zipfile.ZipFile(src, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr("cube.fits", buf.getvalue())
+    reads = []
+    monkeypatch.setattr(zipfile.ZipFile, "read", lambda *a, **k: reads.append(a) or b"")
+    with pytest.raises(ValueError, match="compressed as a whole"):
+        main(["build", str(src), str(tmp_path / "p.h5"), "--brick", "8"])
+    assert not reads

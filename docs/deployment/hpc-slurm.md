@@ -292,6 +292,17 @@ GPUs in the job, the session does not start.
 | `VISIVO_RENDER_IN_PROCESS` | unset | `1` renders in the backend's own process instead (slower: rendering then holds the process that serves the WebSocket). |
 | `VTK_EGL_DEVICE_INDEX` | unset | Binds every view to that EGL device instead of spreading them over the job's GPUs. |
 
+A cube larger than `VISIVO_RENDER_OUT_OF_CORE_BYTES` (6 GiB) is not loaded:
+the view draws it from its brick pyramid, a few blocks at the resolution each
+part of the view needs, so a cube larger than the GPU's memory can be shown.
+How it works and its settings are in
+[Brick pyramid](../brick-pyramid.md#rendering-from-the-pyramid). The session
+builds the pyramid before its first frame if it is missing; for large cubes,
+build it beforehand in a job of its own (`python -m app.brick_pyramid build`,
+with the backend's `VISIVO_PYRAMID_DIR`), so opening the view does not wait for
+it. On PLEIADI-GPU a 23.4 GiB cube, larger than the V100's 16 GB, opened in
+2.6 s from its pyramid and turned at 54 frames per second.
+
 How the view streams frames and lowers its quality while you rotate is
 described for users in the
 [Cube viewer](../user-guide/cube-viewer.md#where-the-rendering-happens-auto-local-remote)
