@@ -138,6 +138,9 @@ struct RemoteCubePreviewResult
     vtkSmartPointer<vtkImageData> cubeImageData;
     std::array<double, 2> cubeRange{ 0., 0. };
     std::array<int, 6> dataExtent{ 0, -1, 0, -1, 0, -1 };
+    /// The backend's default threshold for the cube, from its noise (#93).
+    bool hasDefaultThreshold{ false };
+    double defaultThreshold{ 0. };
 };
 
 struct RemoteCubeSliceResult

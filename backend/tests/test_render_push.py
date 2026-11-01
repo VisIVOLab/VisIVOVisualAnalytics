@@ -392,6 +392,7 @@ def test_a_reset_during_a_drag_restores_the_full_sampling():
         setattr(s, name, None)
     s._lod_level = 0
     s._vmin, s._vmax, s._nz = 0.0, 1.0, 1
+    s._default_threshold = 0.4
     for stub in ("_rebuild_volume_tfs_on_thread", "_rebuild_slice_lut_on_thread",
                  "_apply_blend_mode_on_thread", "_update_cutting_plane_slice_on_thread"):
         setattr(s, stub, lambda *a: None)
@@ -401,6 +402,7 @@ def test_a_reset_during_a_drag_restores_the_full_sampling():
     m = s._volume_mapper
     assert (m.auto, m.image_sd, m.sample_d) == (1, 1.0, 0.5)
     assert s._lod_prev_sampling is None
+    assert s.view.threshold == 0.4      # back to the session's default (#93)
 
 
 def test_the_drag_level_follows_the_render_time_and_is_kept():

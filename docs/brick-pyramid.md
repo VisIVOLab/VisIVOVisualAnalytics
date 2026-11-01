@@ -163,8 +163,9 @@ keep the paths they had.
   the budget as one block.
 - **Threshold.** In Composite mode, blocks whose values are all below the
   transparent end of the opacity ramp are not read. The default threshold
-  (99th percentile) and the cutting plane's colour range come from a sample
-  of full-resolution bricks.
+  (from the noise, see [The default threshold](user-guide/cube-viewer.md#the-default-threshold))
+  and the cutting plane's colour range come from a sample of full-resolution
+  bricks.
 - **Everything else.** The outline, the isosurface and the percentiles use a
   coarse copy (at most 256³ voxels) placed over the cube. The cutting plane is
   read from the FITS file at full resolution.

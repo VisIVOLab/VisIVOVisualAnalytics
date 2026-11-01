@@ -146,7 +146,8 @@ def _chunk(lo, hi):
     return {"event": "chunk", "vmin": lo, "vmax": hi}
 
 
-def test_a_streaming_cube_gets_p99_at_reveal_and_again_when_complete():
+def test_a_streaming_cube_gets_its_threshold_at_reveal_and_again_when_complete():
+    from app.noise_threshold import default_threshold
     import numpy as np
     cube = np.zeros((40, 40, 40), dtype=np.float32)
     cube[:10] = np.random.default_rng(0).normal(size=(10, 40, 40))   # the first quarter
@@ -156,7 +157,9 @@ def test_a_streaming_cube_gets_p99_at_reveal_and_again_when_complete():
         sess._poll_cube_chunks()
         first = sess.levels()
         assert first["pending"] is True
-        assert first["threshold"] == pytest.approx(np.percentile(cube[:10], 99.0), rel=0.05)
+        # From the noise of the part loaded, for the size of the whole cube.
+        assert first["threshold"] == pytest.approx(default_threshold(cube[:10], cube.size),
+                                                   rel=0.05)
 
         cube[10:] = 10 * np.random.default_rng(1).normal(size=(30, 40, 40))
         sess._cube_reader.events = [{"event": "complete", "vmin": float(cube.min()),

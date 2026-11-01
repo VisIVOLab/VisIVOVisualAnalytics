@@ -153,6 +153,9 @@ class CubePreviewResponse(BaseModel):
     scalar_type: str = ""
     range_min: float = 0.0
     range_max: float = 0.0
+    # The cube's default 3-D threshold, from its noise (issue #93); null for
+    # a preview with no finite value.
+    default_threshold: float | None = None
     # Empty string = uncompressed raw float32 (legacy default).
     # "qt-zlib"  = zlib bytes with 4-byte big-endian length prefix
     #              (Qt's qUncompress convention). Required for the
