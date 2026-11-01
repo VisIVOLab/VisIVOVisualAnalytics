@@ -131,6 +131,8 @@ add_executable(VisIVOTests
     test_fits_header_card.cpp
     TestViewerModeState.h
     test_viewer_mode_state.cpp
+    TestRemoteLevels.h
+    test_remote_levels.cpp
     TestLayerCardGeometry.h
     test_layer_card_geometry.cpp
     TestRegionReadout.h

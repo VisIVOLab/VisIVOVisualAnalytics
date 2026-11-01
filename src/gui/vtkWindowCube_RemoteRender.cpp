@@ -27,6 +27,7 @@
 #include "ProfileWidget.h"
 #include "PvController.h"
 #include "PvDiagramWidget.h"
+#include "RemoteLevels.h"
 #include "RemoteRenderWidget.h"
 #include "SidebarPanel.h"
 #include "Settings.h"
@@ -297,6 +298,10 @@ void vtkWindowCube::requestRemoteRenderSession()
         this->m_renderSessionId = sid;
         this->m_renderBackendSupportsSsr = true;
         qDebug().noquote() << "[remote-render] session created:" << sid;
+        // The session draws with the backend's threshold (issue #82): show it.
+        this->adoptRemoteLevels(doc.object());
+        if (visivo::parseRemoteLevels(doc.object()).pending)
+            this->pollRemoteLevels(sid);
 
         if (this->m_remoteRenderWidget) {
             this->connectRemoteRenderWidgetWithTransport(sid);
@@ -550,7 +555,8 @@ void vtkWindowCube::resendThresholdToRemote()
     // any race where the backend's TF could be stale (e.g. the
     // bootstrap state push happened before applyCubeOpenResult set
     // m_initialThresholdApplied=true).
-    if (!this->m_initialThresholdApplied) return;
+    // A threshold the user did not choose is the backend's own (issue #82).
+    if (!this->m_userSetThreshold) return;
     QVariantMap m;
     m[u"type"_s]  = u"set_threshold"_s;
     // Read from the line-edit, NOT from this->lowerBound — the latter
@@ -563,6 +569,96 @@ void vtkWindowCube::resendThresholdToRemote()
     // resync the backend.
     m[u"value"_s] = ui->lineThreshold->text().toDouble();
     this->sendRemoteRenderStateCommand(m);
+}
+
+void vtkWindowCube::adoptRemoteLevels(const QJsonObject &answer)
+{
+    const visivo::RemoteLevels levels = visivo::parseRemoteLevels(answer);
+    if (levels.dataMin) {
+        this->m_remoteRangeKnown = true;
+        this->m_remoteDataMin = *levels.dataMin;
+        this->m_remoteDataMax = *levels.dataMax;
+    }
+    // Not while the user is typing a value of their own: it becomes theirs
+    // when they press Enter or leave the field.
+    const bool typing = ui->lineThreshold->hasFocus() && ui->lineThreshold->isModified();
+    if (levels.threshold && !this->m_userSetThreshold && !typing) {
+        const float value = static_cast<float>(*levels.threshold);
+        const visivo::ThresholdBounds b =
+                visivo::including({ this->lowerBound, this->upperBound }, value);
+        this->lowerBound = b.lower;
+        this->upperBound = b.upper;
+        const QSignalBlocker blockLine(ui->lineThreshold);
+        ui->lineThreshold->setText(QString::number(value));
+        this->m_initialThresholdApplied = true;
+        qDebug().noquote() << "[remote-render] threshold from the backend:" << value;
+    }
+    this->widenThresholdBoundsToRemoteRange();
+}
+
+void vtkWindowCube::widenThresholdBoundsToRemoteRange()
+{
+    visivo::ThresholdBounds b{ this->lowerBound, this->upperBound };
+    if (this->m_remoteRangeKnown) {
+        const visivo::ThresholdBounds remote =
+                visivo::boundsFromRange(this->m_remoteDataMin, this->m_remoteDataMax);
+        // Before any preview the bounds are the 0..1 placeholder: replaced.
+        b = this->m_boundsFromData ? visivo::unite(b, remote) : remote;
+        this->m_boundsFromData = true;
+    }
+    // The field's threshold stays inside the bounds (a backend's p99 can lie
+    // below a range's 3 % floor), so nothing later clamps it to another value.
+    const float value = ui->lineThreshold->text().toFloat();
+    if (this->m_initialThresholdApplied)
+        b = visivo::including(b, value);
+    this->lowerBound = b.lower;
+    this->upperBound = b.upper;
+    const QSignalBlocker blockSlider(ui->sliderThreshold);
+    ui->sliderThreshold->setValue(visivo::thresholdSliderPosition(b, value));
+}
+
+void vtkWindowCube::pollRemoteLevels(const QString &sid)
+{
+    // A cube still streaming into the session has no threshold yet, then one
+    // that may still change: ask again until the backend has all of it. Ends
+    // with the session; paused while the view is Local, whose field the
+    // remote values must not change.
+    QTimer::singleShot(2000, this, [this, sid]() {
+        if (sid != this->m_renderSessionId || !this->m_renderNam)
+            return;
+        if (this->m_effectiveRenderMode != RenderMode::Remote) {
+            this->pollRemoteLevels(sid);
+            return;
+        }
+        QUrl url(this->remoteBackendUrl);
+        url.setPath(u"/v1/render/%1/levels"_s.arg(sid));
+        QNetworkRequest req(url);
+        BackendClient::applySessionHeaders(req, this->remoteBackendUrl,
+                                           this->remoteBackendToken, this->remoteSessionId);
+        QNetworkReply *reply = this->m_renderNam->get(req);
+        QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, sid]() {
+            reply->deleteLater();
+            if (sid != this->m_renderSessionId)
+                return;
+            if (reply->error() != QNetworkReply::NoError) {
+                // The session is gone (404) or the backend does not have the
+                // route: stop. Anything else, such as a dropped tunnel: retry.
+                const int code =
+                        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                if (code != 404)
+                    this->pollRemoteLevels(sid);
+                return;
+            }
+            const QJsonObject answer = QJsonDocument::fromJson(reply->readAll()).object();
+            if (this->m_effectiveRenderMode != RenderMode::Remote) {
+                this->pollRemoteLevels(sid);   // switched to Local meanwhile
+                return;
+            }
+            this->adoptRemoteLevels(answer);
+            if (visivo::parseRemoteLevels(answer).pending)
+                this->pollRemoteLevels(sid);
+        });
+    });
 }
 
 void vtkWindowCube::sendRemoteRenderStateCommand(const QVariantMap &command)
@@ -618,7 +714,7 @@ void vtkWindowCube::pushRenderStateToRemote()
         m[u"name"_s] = this->m_activeSliceLutName;
         this->sendRemoteRenderStateCommand(m);
     }
-    if (this->m_initialThresholdApplied) {
+    if (this->m_userSetThreshold) {
         QVariantMap m;
         m[u"type"_s]  = u"set_threshold"_s;
         // See resendThresholdToRemote() for why lineThreshold is the

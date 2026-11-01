@@ -1762,6 +1762,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              const double span = result.cubeRange[1] - result.cubeRange[0];
                              this->lowerBound = static_cast<float>(result.cubeRange[0] + 0.03 * span);
                              this->upperBound = static_cast<float>(result.cubeRange[1]);
+                             this->m_boundsFromData = true;
+                             this->widenThresholdBoundsToRemoteRange();
                              this->refreshContourBoundsFromData();
                              this->requestRemoteSlice(this->clampRemoteSliceIndex(ui->spinSlice->value() - 1));
                              qDebug().noquote() << QStringLiteral(
@@ -3794,6 +3796,8 @@ void vtkWindowCube::applyRemotePreviewResult(const RemoteCubePreviewResult &resu
     const double span = result.cubeRange[1] - result.cubeRange[0];
     this->lowerBound = static_cast<float>(result.cubeRange[0] + 0.03 * span);
     this->upperBound = static_cast<float>(result.cubeRange[1]);
+    this->m_boundsFromData = true;
+    this->widenThresholdBoundsToRemoteRange();
     // The contour levels were built from the 0..1 placeholder
     // in the constructor; move them onto the real data now.
     this->refreshContourBoundsFromData();
@@ -3825,6 +3829,10 @@ void vtkWindowCube::applyRemotePreviewResult(const RemoteCubePreviewResult &resu
                 + 0.20f * (this->upperBound - this->lowerBound);
         this->applyThreshold(initial);   // updates UI + pipeline, no Render
         this->m_initialThresholdApplied = true;
+    } else {
+        // The field already holds a threshold (the user's, or a remote
+        // session's): the local pipeline draws with it too.
+        this->applyThresholdToPipeline(ui->lineThreshold->text().toDouble());
     }
 
     // ── Synchronise the volume LUT to the pipeline ────────
@@ -4113,6 +4121,11 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
             this->m_renderStack->setCurrentIndex(0);
         }
         this->m_effectiveRenderMode = RenderMode::Local;
+        // The threshold is kept across the switch: the local pipeline takes
+        // the field's value, which a remote session may have set (issue #82).
+        if (this->m_initialThresholdApplied
+            && this->currentCubeVisibleRange[1] > this->currentCubeVisibleRange[0])
+            this->applyThresholdToPipeline(ui->lineThreshold->text().toDouble());
         this->applyDeferredPreviewWhenLocal();
         // Going back to Local CANCELS a switch that was still negotiating —
         // BEFORE the disconnect below, which emits Disconnected synchronously
@@ -7223,6 +7236,7 @@ void vtkWindowCube::refreshContourBoundsFromData()
 void vtkWindowCube::thresholdSliderChanged(int action)
 {
     Q_UNUSED(action);
+    this->m_userSetThreshold = true;
     const int p = ui->sliderThreshold->sliderPosition();
     const float threshold = 0.01 * p * (this->upperBound - this->lowerBound) + this->lowerBound;
     ui->lineThreshold->setText(QString::number(threshold));
@@ -7231,6 +7245,13 @@ void vtkWindowCube::thresholdSliderChanged(int action)
 
 void vtkWindowCube::thresholdLineChanged()
 {
+    // editingFinished also fires on Enter or leaving the field without an
+    // edit: only an edit makes the threshold the user's. Without one nothing
+    // changed, and a remote session keeps the backend's threshold.
+    if (ui->lineThreshold->isModified())
+        this->m_userSetThreshold = true;
+    else if (!this->m_userSetThreshold)
+        return;
     const float threshold =
             std::clamp(ui->lineThreshold->text().toFloat(), this->lowerBound, this->upperBound);
     ui->lineThreshold->setText(QString::number(threshold));
@@ -14357,6 +14378,7 @@ void vtkWindowCube::applyCopilotActions(const QList<QJsonObject> &actions)
             const double v = std::clamp(a.value(u"value"_s).toDouble(),
                                         double(this->lowerBound), double(this->upperBound));
             if (ui->lineThreshold) {
+                this->m_userSetThreshold = true;
                 ui->lineThreshold->setText(QString::number(v));
                 this->thresholdLineChanged();
             }
@@ -14468,6 +14490,7 @@ void vtkWindowCube::undoCopilotActions()
     if (!s.colormap.isEmpty())
         this->applyColorMapByName(s.colormap);
     if (ui->lineThreshold && !s.threshold.isEmpty()) {
+        this->m_userSetThreshold = true;
         ui->lineThreshold->setText(s.threshold);
         this->thresholdLineChanged();
     }

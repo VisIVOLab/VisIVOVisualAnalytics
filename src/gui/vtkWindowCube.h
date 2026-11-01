@@ -2502,6 +2502,15 @@ protected:
     /// answered 202): the switch waits, showing this fraction, and asks again.
     bool                  m_remotePreparing{ false };
     double                m_remotePreparingProgress{ 0.0 };
+    /// Issue #82: a remote session starts from the backend's threshold and
+    /// data range. The field shows them until the user changes the threshold;
+    /// only a threshold the user chose is sent to a remote session.
+    bool                  m_userSetThreshold{ false };
+    /// lowerBound/upperBound come from data (a preview), not the 0..1 placeholder.
+    bool                  m_boundsFromData{ false };
+    bool                  m_remoteRangeKnown{ false };
+    double                m_remoteDataMin{ 0.0 };
+    double                m_remoteDataMax{ 0.0 };
     QTimer               *m_remoteSwitchProgressTimer{ nullptr };
     QLabel               *m_renderModeBadge{ nullptr };  // status-bar pill
     QLabel               *m_renderFpsBadge{ nullptr };   // status-bar FPS
@@ -2553,6 +2562,14 @@ protected:
     /// before the backend has caught up to the user's slider value —
     /// the call is cheap and idempotent server-side.
     void resendThresholdToRemote();
+    /// Show the backend's threshold and data range (create_session or
+    /// /levels) in the threshold field and slider, without sending them back.
+    void adoptRemoteLevels(const QJsonObject &levels);
+    /// Ask /levels again while a cube is still streaming into session ``sid``.
+    void pollRemoteLevels(const QString &sid);
+    /// Widen the threshold bounds to hold the backend's data range, and keep
+    /// the slider on the field's value.
+    void widenThresholdBoundsToRemoteRange();
 
     void setRemoteCubeDisplayState(RemoteCubeDisplayState state);
     void showPersistentStatusMessage(const QString &text, int minDurationMs = 400);

@@ -149,6 +149,7 @@ class _View:
     def __init__(self) -> None:
         self.width = 0
         self.height = 0
+        self.levels: dict[str, Any] | None = None
 
 
 class RenderSessionProcess:
@@ -285,6 +286,11 @@ class RenderSessionProcess:
         self._idr = self._idr or idr
         return rgba, render_ms
 
+    def levels(self) -> dict[str, Any] | None:
+        """The child's starting values as of its last answer (see
+        :meth:`RenderSession.levels`); None before the first."""
+        return self.view.levels
+
     def consume_idr_flag(self) -> bool:
         """The child's key-frame flag as of the last RGB frame (the WebRTC
         track asks right after receiving it)."""
@@ -334,11 +340,13 @@ class RenderSessionProcess:
                 return
 
     def _deliver(self, reply: tuple) -> None:
-        status, value, stats, size = reply
+        status, value, stats, size, levels = reply
         for key, val in stats.items():
             if key not in ("commands_received", "last_command_at", "created_at"):
                 setattr(self.stats, key, val)
         self.view.width, self.view.height = size
+        if levels is not None:
+            self.view.levels = levels
         if not self._pending:
             return
         future = self._pending.popleft()
@@ -385,7 +393,7 @@ def _refuse_all(conn, message: str) -> None:
         except (EOFError, OSError):
             return
         if kind != _COMMAND:
-            conn.send(("error", message, asdict(_Stats()), (0, 0)))
+            conn.send(("error", message, asdict(_Stats()), (0, 0), None))
         if kind in ("init", "close"):
             return
 
@@ -408,7 +416,8 @@ def _serve(conn, session_id: str, dataset_path: str, factory: str, gpu_slot: int
     def reply(status: str, value: Any) -> None:
         view = getattr(session, "view", None)
         size = (getattr(view, "width", 0), getattr(view, "height", 0))
-        conn.send((status, value, asdict(session.stats), size))
+        levels = session.levels() if hasattr(session, "levels") else None
+        conn.send((status, value, asdict(session.stats), size, levels))
 
     while True:
         try:

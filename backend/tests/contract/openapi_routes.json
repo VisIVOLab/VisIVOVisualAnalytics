@@ -40,6 +40,7 @@
     "GET /v1/node/status",
     "GET /v1/ping",
     "GET /v1/render/diagnostics",
+    "GET /v1/render/{session_id}/levels",
     "GET /v1/reproducibility/provenance",
     "GET /v1/reproducibility/snapshot/{snapshot_id}",
     "GET /v1/reproducibility/snapshots",

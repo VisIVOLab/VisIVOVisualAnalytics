@@ -28,6 +28,7 @@
 #include "TestCatalogueCosmology.h"
 #include "TestFitsHeaderCard.h"
 #include "TestViewerModeState.h"
+#include "TestRemoteLevels.h"
 #include "TestLayerCardGeometry.h"
 #include "TestRegionReadout.h"
 #include "TestBackendUrlLocality.h"
@@ -71,6 +72,7 @@ int main(int argc, char *argv[])
     { TestCatalogueCosmology       t; status |= QTest::qExec(&t, argc, argv); }
     { TestFitsHeaderCard   t; status |= QTest::qExec(&t, argc, argv); }
     { TestViewerModeState  t; status |= QTest::qExec(&t, argc, argv); }
+    { TestRemoteLevels     t; status |= QTest::qExec(&t, argc, argv); }
     { TestLayerCardGeometry t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionReadout    t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendUrlLocality t; status |= QTest::qExec(&t, argc, argv); }
