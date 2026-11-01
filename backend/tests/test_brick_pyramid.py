@@ -381,3 +381,102 @@ def test_the_command_refuses_a_zipped_cube_without_reading_it(tmp_path, monkeypa
     with pytest.raises(ValueError, match="compressed as a whole"):
         main(["build", str(src), str(tmp_path / "p.h5"), "--brick", "8"])
     assert not reads
+
+
+def test_halving_gives_exactly_what_it_gave_before_issue_89():
+    """The view-based halving against the reshape one it replaced, bit for bit."""
+    from app.brick_pyramid import _halve
+
+    def before(block):
+        nz, ny, nx = block.shape
+        pad = ((0, nz % 2), (0, ny % 2), (0, nx % 2))
+        if any(p[1] for p in pad):
+            block = np.pad(block, pad, constant_values=np.nan)
+        cells = block.reshape(block.shape[0] // 2, 2, block.shape[1] // 2, 2, block.shape[2] // 2, 2)
+        finite = np.isfinite(cells)
+        count = finite.sum(axis=(1, 3, 5))
+        total = np.where(finite, cells, 0.0).sum(axis=(1, 3, 5), dtype=np.float64)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            out = np.where(count > 0, total / np.maximum(count, 1), np.nan)
+        return out.astype(np.float32)
+
+    rng = np.random.default_rng(891)
+    block = (rng.normal(size=(33, 64, 129)) * np.exp(rng.uniform(-40, 40, size=(33, 64, 129))))
+    block = block.astype(np.float32)
+    block[rng.random(block.shape) < 0.2] = np.nan
+    block[3, 5, 7] = np.inf
+    assert np.array_equal(_halve(block), before(block), equal_nan=True)
+
+
+def test_halving_matches_the_nan_mean_of_each_cell():
+    """The view-based halving (#89) against the definition: the mean of each
+    2x2x2 cell over its finite voxels, NaN where none; odd edges included."""
+    import warnings
+
+    from app.brick_pyramid import _halve
+
+    rng = np.random.default_rng(89)
+    block = rng.normal(size=(17, 22, 31)).astype(np.float32) * 100
+    block[rng.random(block.shape) < 0.2] = np.nan
+    block[:4, :4, :4] = np.nan
+    padded = np.pad(block, ((0, 1), (0, 0), (0, 1)), constant_values=np.nan)
+    cells = padded.reshape(9, 2, 11, 2, 16, 2).transpose(0, 2, 4, 1, 3, 5).reshape(9, 11, 16, 8)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        expected = np.nanmean(cells.astype(np.float64), axis=-1).astype(np.float32)
+    assert np.allclose(_halve(block), expected, equal_nan=True, rtol=1e-6, atol=0)
+
+
+def test_brick_statistics_skip_blanks_and_infinities():
+    from app.brick_pyramid import _brick_stats
+
+    rng = np.random.default_rng(90)
+    block = rng.normal(size=(20, 24, 40)).astype(np.float32)
+    block[rng.random(block.shape) < 0.1] = np.nan
+    block[0:8, 0:8, 0:8] = np.nan                    # a brick with nothing finite
+    block[9, 3, 3], block[9, 4, 4] = np.inf, -np.inf  # infinities are not finite values
+    lo, hi = _brick_stats(block, 8)
+    for gz, gy, gx in np.ndindex(lo.shape):
+        tile = block[gz * 8:(gz + 1) * 8, gy * 8:(gy + 1) * 8, gx * 8:(gx + 1) * 8]
+        finite = tile[np.isfinite(tile)]
+        if finite.size:
+            assert (lo[gz, gy, gx], hi[gz, gy, gx]) == (finite.min(), finite.max())
+        else:
+            assert np.isnan(lo[gz, gy, gx]) and np.isnan(hi[gz, gy, gx])
+
+
+@pytest.mark.parametrize("workers", [2, 3])
+def test_a_build_with_several_processes_writes_the_same_pyramid(tmp_path, workers):
+    """Issue #89: the parallel build is the serial one, level by level, value by value."""
+    import h5py
+
+    data = _cube((37, 45, 70))
+    src = tmp_path / "cube.fits"
+    fits.PrimaryHDU(data).writeto(src)
+    serial = build_pyramid(src, tmp_path / "serial.pyr.h5", brick=8, max_block_bytes=8 * 8 ** 3 * 4 * 6)
+    parallel = build_pyramid(src, tmp_path / "parallel.pyr.h5", brick=8,
+                             max_block_bytes=8 * 8 ** 3 * 4 * 6, workers=workers)
+    with h5py.File(serial) as a, h5py.File(parallel) as b:
+        assert a.attrs["levels"] == b.attrs["levels"]
+        for level in range(a.attrs["levels"]):
+            for name in ("data", "min", "max"):
+                x, y = a[f"level{level}/{name}"][...], b[f"level{level}/{name}"][...]
+                assert np.array_equal(x, y, equal_nan=True), (level, name)
+
+
+def test_a_tile_compressed_cube_is_built_by_one_process(tmp_path, monkeypatch):
+    """Its tiles were checked against the whole block budget: the workers'
+    smaller blocks would decompress them again and again, or refuse them."""
+    import h5py
+
+    from app import brick_pyramid
+
+    data = _cube((20, 32, 32))
+    src = tmp_path / "tiles.fits"
+    fits.HDUList([fits.PrimaryHDU(), fits.CompImageHDU(data, tile_shape=(1, 32, 32))]).writeto(src)
+    started = []
+    monkeypatch.setattr(brick_pyramid, "_fill_levels_parallel", lambda *a, **k: started.append(a))
+    out = build_pyramid(src, tmp_path / "p.h5", hdu=1, brick=8, workers=4)
+    assert not started
+    with h5py.File(out) as h:
+        assert h["level0/data"].shape == (20, 32, 32)

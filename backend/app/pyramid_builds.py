@@ -15,6 +15,7 @@ file next to the pyramid's temporary file, read on each query.
 """
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import multiprocessing
@@ -126,13 +127,42 @@ def _start(dataset_path: str, out: Path, hdu: int, key: str, progress_file: Path
     out.parent.mkdir(parents=True, exist_ok=True)
     # spawn: a fresh interpreter, not a fork of a server holding sockets,
     # threads and a GPU context.
+    # Not a daemon: the build starts worker processes of its own (issue #89),
+    # which a daemon may not. _stop_builds_at_exit ends it with the server.
     process = multiprocessing.get_context("spawn").Process(
         target=_build_child, args=(str(dataset_path), str(out), int(hdu), str(progress_file)),
-        name=f"pyramid-{out.stem}", daemon=True)
+        name=f"pyramid-{out.stem}", daemon=False)
     process.start()
     _builds[key] = _Build(process, progress_file, time.monotonic())
     logger.info("[pyramid] building %s for %s (pid %s)", out, dataset_path, process.pid)
     return BuildStatus("building", 0.0)
+
+
+def _stop_builds_at_exit() -> None:
+    """SIGTERM to the builds still running when the server exits: each unwinds
+    through its cleanup (its partial file removed). Registered after
+    multiprocessing's own exit handler, so it runs first and that handler's
+    join of non-daemon processes does not wait for a whole build."""
+    with _lock:
+        running = [b.process for b in _builds.values() if b.process.is_alive()]
+    for process in running:
+        process.terminate()
+    # One deadline for all of them; a build that has not unwound by then is
+    # killed, so the exit handler's join (no timeout) cannot wait on it.
+    deadline = time.monotonic() + 3.0
+    for process in running:
+        process.join(timeout=max(0.0, deadline - time.monotonic()))
+    for process in running:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=1.0)
+
+
+# Imported first, so that its exit handler (which joins non-daemon processes)
+# is registered before this one and therefore runs after it.
+import multiprocessing.util  # noqa: E402,F401
+
+atexit.register(_stop_builds_at_exit)
 
 
 def _progress_path(out: Path) -> Path:
@@ -207,7 +237,7 @@ def _build_child(dataset_path: str, out: str, hdu: int, progress_file: str) -> N
     ``progress_file`` (written atomically, at most twice a second)."""
     from astropy.io import fits  # noqa: PLC0415
 
-    from .brick_pyramid import DEFAULT_BRICK, build_pyramid, level_shapes  # noqa: PLC0415
+    from .brick_pyramid import DEFAULT_BRICK, build_pyramid, default_workers, level_shapes  # noqa: PLC0415
 
     def write(payload: dict) -> None:
         # Only the lock holder writes it; a failed write never stops the build.
@@ -250,7 +280,7 @@ def _build_child(dataset_path: str, out: str, hdu: int, progress_file: str) -> N
 
         # Nothing is written after this: the pyramid is in place, and the
         # parent removes the progress file when it sees it.
-        build_pyramid(dataset_path, out, hdu=hdu, progress=progress)
+        build_pyramid(dataset_path, out, hdu=hdu, progress=progress, workers=default_workers())
         # Again at the end, still holding the lock: a leftover too recent to
         # remove when the build started is old enough now.
         _sweep_stale_parts(out_path)

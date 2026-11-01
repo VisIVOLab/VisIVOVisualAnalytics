@@ -1,0 +1,118 @@
+{
+  "cube": "/scratch/fvitello/skava-e2e/data/synthetic_25gb.fits",
+  "cube_bytes": 25165828800,
+  "brick": 64,
+  "max_block_bytes": 268435456,
+  "pyramid": "/scratch/fvitello/bench89/synthetic.pyr.h5",
+  "pyramid_bytes": 29455004528,
+  "build_s": 78.0,
+  "build_alloc_peak_bytes": null,
+  "cgroup_memory_max": null,
+  "cgroup_memory_peak": null,
+  "reads_per_level": 5,
+  "p95": "nearest rank",
+  "levels": [
+    {
+      "level": 0,
+      "shape": [
+        1500,
+        2048,
+        2048
+      ],
+      "bricks": [
+        24,
+        32,
+        32
+      ],
+      "read_ms_median": 14.64,
+      "read_ms_p95": 17.42
+    },
+    {
+      "level": 1,
+      "shape": [
+        750,
+        1024,
+        1024
+      ],
+      "bricks": [
+        12,
+        16,
+        16
+      ],
+      "read_ms_median": 13.48,
+      "read_ms_p95": 14.08
+    },
+    {
+      "level": 2,
+      "shape": [
+        375,
+        512,
+        512
+      ],
+      "bricks": [
+        6,
+        8,
+        8
+      ],
+      "read_ms_median": 12.92,
+      "read_ms_p95": 16.27
+    },
+    {
+      "level": 3,
+      "shape": [
+        188,
+        256,
+        256
+      ],
+      "bricks": [
+        3,
+        4,
+        4
+      ],
+      "read_ms_median": 4.45,
+      "read_ms_p95": 11.25
+    },
+    {
+      "level": 4,
+      "shape": [
+        94,
+        128,
+        128
+      ],
+      "bricks": [
+        2,
+        2,
+        2
+      ],
+      "read_ms_median": 1.29,
+      "read_ms_p95": 4.23
+    },
+    {
+      "level": 5,
+      "shape": [
+        47,
+        64,
+        64
+      ],
+      "bricks": [
+        1,
+        1,
+        1
+      ],
+      "read_ms_median": 0.62,
+      "read_ms_p95": 1.5
+    }
+  ],
+  "host": "r33c1s01",
+  "cpus": 128,
+  "workers": 1,
+  "breakdown_s": {
+    "read_fits": 3.9,
+    "read_hdf5": 7.0,
+    "reduce": 35.8,
+    "stats": 9.3,
+    "write_hdf5": 21.1,
+    "other": 1.0
+  },
+  "when": "2026-11-01T15:18:07+0100"
+}
