@@ -1346,6 +1346,7 @@ protected:
     QPointer<QAction> m_actDiagnostics;
     QPointer<QAction> m_actCommandPalette;
     QPointer<QMenu> m_menuCuttingPlaneOpacity;
+    QPointer<QMenu> m_menuRenderMode;   ///< View ▸ Rendering: Auto / Local / Remote
     QPointer<QMenu> m_menuAnimationSpeed;
     QPointer<QMenu> m_menuAnimationMode;
     QPointer<QAction> m_actSourceFind;

@@ -1970,7 +1970,15 @@ public:
     static void setLocalBackendUrl(const QString &url);
     /// True when @p url is the local backend: a loopback host and the same
     /// port as setLocalBackendUrl()'s (http://127.0.0.1:8000 until it is set).
+    /// Always false once setNoLocalBackend(true) was called.
     static bool isLocalBackendUrl(const QString &url);
+    /**
+     * This run uses a remote backend (Settings::sessionBackend()) and has no
+     * local one: no URL is the local backend, so no client takes the local
+     * token from ~/.visivo_token or VISIVO_TOKEN, not even for a tunnel that
+     * reaches the remote backend through a localhost port.
+     */
+    static void setNoLocalBackend(bool none);
 
     // ── API calls ─────────────────────────────────────────────────────────────
 

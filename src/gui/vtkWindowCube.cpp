@@ -7599,6 +7599,8 @@ void vtkWindowCube::regroupViewMenu()
     group();
     addSub(ui->menu3DRendering);
     addSub(this->m_menuVolumeRendering);
+    // Where the 3-D view is drawn: on this machine or on the backend's GPU.
+    addSub(this->m_menuRenderMode);
     addAct(this->actionShowCuttingPlane);
     addSub(m_menuCuttingPlaneOpacity);
     addSub(ui->menu2DPanel);
@@ -11902,7 +11904,11 @@ void vtkWindowCube::refreshPaneChrome()
         if (s.qualifier)
             s.qualifier->setText(s.view.kind == ViewId::View3D ? u"volume"_s : QString());
         // Per-view controls: only the 3D view has one now (Auto/Local/Remote).
-        if (shown && s.controls && s.view.kind == ViewId::View3D && m_renderModeSeg) {
+        // Placed by layout, not by isVisible(): a refresh before the window is
+        // on screen saw no pane as visible, and a single-pane window never got
+        // the control until the layout changed.
+        const bool laidOut = s.frame && !s.frame->isHidden();
+        if (laidOut && s.controls && s.view.kind == ViewId::View3D && m_renderModeSeg) {
             m_renderModeSeg->setParent(s.controls->parentWidget());
             s.controls->addWidget(m_renderModeSeg);
             m_renderModeSeg->show();

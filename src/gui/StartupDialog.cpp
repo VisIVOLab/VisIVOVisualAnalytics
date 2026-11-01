@@ -376,6 +376,14 @@ void StartupDialog::backendReady()
 
 void StartupDialog::beginAuthStep()
 {
+    // A remote backend chosen for this run brings its own token (or needs
+    // none: its health check has already answered). The local backend's token
+    // file is not its token, and nothing typed here may overwrite that file.
+    if (Settings::sessionBackend()) {
+        authReady(m_settings->getBackendToken());
+        return;
+    }
+
     // Resolve token: Settings → env var / token file.
     QString token = m_settings->getBackendToken();
     if (token.isEmpty())
@@ -477,6 +485,11 @@ void StartupDialog::onSaveAndContinue()
         m_tokenSaveHint->setText(
                 u"⚠ Token cannot be empty. Paste a valid token or click Skip."_s);
         m_tokenSaveHint->setStyleSheet(u"font-size: 11px; color: #EF5350;"_s);
+        return;
+    }
+
+    if (Settings::sessionBackend()) {   // not reached (beginAuthStep), but never the local file
+        authReady(token);
         return;
     }
 

@@ -170,6 +170,7 @@ void BackendClient::setSessionId(const QString &sessionId)
 namespace {
 QMutex s_localUrlMutex;
 QString s_localBackendUrl;  // empty = Settings' default
+bool s_noLocalBackend = false;
 
 bool isLoopbackHost(const QString &host)
 {
@@ -190,11 +191,19 @@ void BackendClient::setLocalBackendUrl(const QString &url)
     s_localBackendUrl = url.trimmed();
 }
 
+void BackendClient::setNoLocalBackend(bool none)
+{
+    QMutexLocker lock(&s_localUrlMutex);
+    s_noLocalBackend = none;
+}
+
 bool BackendClient::isLocalBackendUrl(const QString &url)
 {
     QString local;
     {
         QMutexLocker lock(&s_localUrlMutex);
+        if (s_noLocalBackend)
+            return false;
         local = s_localBackendUrl;
     }
     if (local.isEmpty())

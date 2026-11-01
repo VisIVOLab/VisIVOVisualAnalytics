@@ -2,9 +2,13 @@
 #include "TestBackendRouting.h"
 
 #include "Settings.h"
+#include "app/LaunchOptions.h"
 #include "skava/BackendRouting.h"
 #include "skava/SkavaClient.h"
 
+#include <QFile>
+#include <QProcessEnvironment>
+#include <QSettings>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -91,6 +95,135 @@ void TestBackendRouting::registryAlwaysHasLocal()
         }
     }
     QVERIFY2(foundLocal, "the 'local' backend must always be present");
+}
+
+void TestBackendRouting::sessionBackendIsUsedButNeverSaved()
+{
+    // A remote backend chosen at launch serves this run; the saved local
+    // backend is untouched and is what the next plain launch reads again.
+    QTemporaryDir dir;
+    Settings s(dir.path());
+    s.setBackendUrl(u"http://127.0.0.1:8000"_s);
+    s.setBackendToken(u"local-token"_s);
+
+    Settings::setSessionBackend({ u"http://localhost:18910"_s, u"job-token"_s, u"PLEIADI"_s });
+    QCOMPARE(s.getBackendUrl(), u"http://localhost:18910"_s);
+    QCOMPARE(s.getBackendToken(), u"job-token"_s);
+    QCOMPARE(s.getLocalBackend().url, u"http://localhost:18910"_s);
+    s.setBackendUrl(u"http://localhost:18910"_s);   // what a Settings dialog would save back
+    s.setBackendToken(u"job-token"_s);
+    Settings::clearSessionBackend();
+
+    QCOMPARE(s.getBackendUrl(), u"http://127.0.0.1:8000"_s);
+    QCOMPARE(s.getBackendToken(), u"local-token"_s);
+    QVERIFY(!Settings::sessionBackend());
+}
+
+void TestBackendRouting::sessionBackendNotWrittenIntoTheRegistry()
+{
+    // Saving the backend list during a remote run (the Settings dialog saves it
+    // whatever else changed) keeps the local entry's stored URL and token.
+    QTemporaryDir dir;
+    Settings s(dir.path());
+    s.setBackendUrl(u"http://127.0.0.1:8000"_s);
+    s.setBackendToken(u"local-token"_s);
+    Settings::setSessionBackend({ u"http://localhost:18910"_s, u"job-token"_s, u"PLEIADI"_s });
+    s.setBackendNodes(s.getBackendNodes());
+    Settings::clearSessionBackend();
+
+    QSettings raw(dir.filePath(u"Settings.ini"_s), QSettings::IniFormat);
+    const QString nodes = raw.value(u"Backends/nodes"_s).toString();
+    QVERIFY(!nodes.contains(u"job-token"_s));
+    QVERIFY(!nodes.contains(u"18910"_s));
+    QCOMPARE(s.getLocalBackend().url, u"http://127.0.0.1:8000"_s);
+}
+
+void TestBackendRouting::launchOptions_localUnlessABackendIsGiven()
+{
+    std::optional<Settings::SessionBackend> out;
+    QString error;
+    const QProcessEnvironment none;
+    QVERIFY(LaunchOptions::remoteBackend({ u"visivo"_s }, none, &out, &error));
+    QVERIFY(!out);
+    QVERIFY(LaunchOptions::remoteBackend({ u"visivo"_s, u"/data/cube.fits"_s }, none, &out, &error));
+    QVERIFY(!out);
+
+    QVERIFY(LaunchOptions::remoteBackend({ u"visivo"_s, u"--backend"_s, u"http://localhost:18910/"_s },
+                                         none, &out, &error));
+    QVERIFY(out);
+    QCOMPARE(out->url, u"http://localhost:18910"_s);
+    QCOMPARE(out->name, u"localhost:18910"_s);
+    QVERIFY(out->token.isEmpty());
+
+    QProcessEnvironment env;
+    env.insert(u"VISIVO_BACKEND_URL"_s, u"http://env.example:9000"_s);
+    env.insert(u"VISIVO_BACKEND_NAME"_s, u"ENV"_s);
+    out.reset();
+    QVERIFY(LaunchOptions::remoteBackend({ u"visivo"_s, u"--backend=http://cli.example:8001"_s,
+                                           u"--backend-name"_s, u"PLEIADI"_s },
+                                         env, &out, &error));
+    QCOMPARE(out->url, u"http://cli.example:8001"_s);   // the command line wins
+    QCOMPARE(out->name, u"PLEIADI"_s);
+    out.reset();
+    QVERIFY(LaunchOptions::remoteBackend({ u"visivo"_s }, env, &out, &error));
+    QCOMPARE(out->url, u"http://env.example:9000"_s);
+    QCOMPARE(out->name, u"ENV"_s);
+}
+
+void TestBackendRouting::launchOptions_optionsWithoutValueAreErrors()
+{
+    const QProcessEnvironment none;
+    const QList<QStringList> bad = {
+        { u"visivo"_s, u"--backend"_s },
+        { u"visivo"_s, u"--backend="_s },
+        { u"visivo"_s, u"--backend"_s, u"--backend-name"_s, u"X"_s },
+        { u"visivo"_s, u"--backend"_s, u"http://h:1"_s, u"--backend-token-file"_s },
+        { u"visivo"_s, u"--backend"_s, u"http://h:1"_s, u"--backend-name="_s },
+        { u"visivo"_s, u"--backend-name"_s, u"X"_s },                       // without --backend
+        { u"visivo"_s, u"--backend"_s, u"localhost:18910"_s },              // no scheme
+        { u"visivo"_s, u"--backend"_s, u"ftp://host:1"_s },
+        { u"visivo"_s, u"--backend"_s, u"http://h:1"_s, u"--backend-token-file"_s,
+          u"/nonexistent/token"_s },
+    };
+    for (const QStringList &args : bad) {
+        std::optional<Settings::SessionBackend> out;
+        QString error;
+        QVERIFY2(!LaunchOptions::remoteBackend(args, none, &out, &error), qPrintable(args.join(u' ')));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(!out);
+    }
+}
+
+void TestBackendRouting::launchOptions_tokenFromFileOrEnvironment()
+{
+    QTemporaryDir dir;
+    const QString tokenPath = dir.filePath(u"token"_s);
+    {
+        QFile f(tokenPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("file-token\n");
+    }
+    const QString emptyPath = dir.filePath(u"empty"_s);
+    {
+        QFile f(emptyPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+    }
+    QProcessEnvironment env;
+    env.insert(u"VISIVO_BACKEND_TOKEN"_s, u"env-token"_s);
+    std::optional<Settings::SessionBackend> out;
+    QString error;
+    QVERIFY(LaunchOptions::remoteBackend({ u"visivo"_s, u"--backend"_s, u"http://h:1"_s,
+                                           u"--backend-token-file"_s, tokenPath },
+                                         env, &out, &error));
+    QCOMPARE(out->token, u"file-token"_s);   // trimmed, and the file wins
+    out.reset();
+    QVERIFY(LaunchOptions::remoteBackend({ u"visivo"_s, u"--backend"_s, u"http://h:1"_s }, env, &out,
+                                         &error));
+    QCOMPARE(out->token, u"env-token"_s);
+    out.reset();
+    QVERIFY(!LaunchOptions::remoteBackend({ u"visivo"_s, u"--backend"_s, u"http://h:1"_s,
+                                            u"--backend-token-file"_s, emptyPath },
+                                          env, &out, &error));
 }
 
 void TestBackendRouting::upsertInsertsAndUpdates()

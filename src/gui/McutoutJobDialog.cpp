@@ -1,6 +1,7 @@
 // McutoutJobDialog.cpp — see McutoutJobDialog.h.
 
 #include "McutoutJobDialog.h"
+#include "Settings.h"
 
 #include <QDesktopServices>
 #include <QFileInfo>
@@ -37,6 +38,10 @@ QString formatElapsed(qint64 ms)
 
 bool isLocalBackend(const QString &url)
 {
+    // A run on a remote backend (--backend) has no local one, even when a
+    // tunnel puts the remote backend at a localhost address.
+    if (Settings::sessionBackend())
+        return false;
     const QString host = QUrl(url).host();
     return host == u"127.0.0.1"_s || host == u"localhost"_s || host == u"::1"_s;
 }

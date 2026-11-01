@@ -82,6 +82,10 @@ namespace {
 
 bool backendUrlIsLocal(const QString &url)
 {
+    // A run on a remote backend (--backend) has no local one, even when a
+    // tunnel puts the remote backend at a localhost address.
+    if (Settings::sessionBackend())
+        return false;
     const QUrl parsed(url);
     const QString host = parsed.host().trimmed().toLower();
     return host.isEmpty() || host == QStringLiteral("127.0.0.1")

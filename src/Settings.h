@@ -183,6 +183,25 @@ public:
    */
     void setBackendToken(const QString &token);
 
+    /**
+     * A remote backend chosen for this run only (`--backend`, or
+     * VISIVO_BACKEND_URL; see main.cpp). While one is set, getBackendUrl() and
+     * getBackendToken() answer with it, the client starts no local backend, and
+     * setBackendUrl() / setBackendToken() store nothing: the saved settings stay
+     * those of the local backend, which the next plain launch uses again.
+     */
+    struct SessionBackend
+    {
+        QString url;
+        QString token;
+        QString name;   ///< shown in the status bar; the URL's host:port if not given
+    };
+    static void setSessionBackend(const SessionBackend &backend);
+    /// Back to the local backend (tests; the client sets one only at launch).
+    static void clearSessionBackend();
+    /// The remote backend of this run, or nullptr when the client runs on its local one.
+    static const SessionBackend *sessionBackend();
+
     // ── SKAVA discovery service ───────────────────────────────────────────────
 
     /**

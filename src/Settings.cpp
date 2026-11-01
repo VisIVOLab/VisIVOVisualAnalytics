@@ -12,6 +12,7 @@
 #include <QSettings>
 
 #include <limits>
+#include <optional>
 
 using namespace Qt::StringLiterals;
 
@@ -260,8 +261,35 @@ const std::pair<QString, QVariant> Settings::BackendUrl = {
     u"Backend/url"_s, u"http://127.0.0.1:8000"_s
 };
 
+namespace {
+// Set once in main(), before any window or worker thread exists; read-only after.
+std::optional<Settings::SessionBackend> &sessionBackendSlot()
+{
+    static std::optional<Settings::SessionBackend> slot;
+    return slot;
+}
+}  // namespace
+
+void Settings::setSessionBackend(const SessionBackend &backend)
+{
+    sessionBackendSlot() = backend;
+}
+
+void Settings::clearSessionBackend()
+{
+    sessionBackendSlot().reset();
+}
+
+const Settings::SessionBackend *Settings::sessionBackend()
+{
+    const auto &slot = sessionBackendSlot();
+    return slot ? &*slot : nullptr;
+}
+
 QString Settings::getBackendUrl() const
 {
+    if (const SessionBackend *remote = sessionBackend())
+        return remote->url;
     // Trimmed here rather than at each reader. A value stored with a trailing
     // space parses as the right host and the DEFAULT port, and BackendClient
     // concatenates the string straight into a request URL — so one caller binds
@@ -275,6 +303,9 @@ QString Settings::getBackendUrl() const
 
 void Settings::setBackendUrl(const QString &url)
 {
+    // The remote backend of this run is not saved over the local one.
+    if (sessionBackend())
+        return;
     this->settings->setValue(Settings::BackendUrl.first, url);
 }
 
@@ -334,12 +365,16 @@ QString Settings::getBackendToken() const
     // Trimmed for the same reason, and one of its own: a token copied out of a
     // terminal commonly brings a newline with it, and the server compares the
     // bytes exactly.
+    if (const SessionBackend *remote = sessionBackend())
+        return remote->token;
     return this->settings->value(Settings::BackendToken.first,
                                   Settings::BackendToken.second).toString().trimmed();
 }
 
 void Settings::setBackendToken(const QString &token)
 {
+    if (sessionBackend())
+        return;
     this->settings->setValue(Settings::BackendToken.first, token);
 }
 
@@ -596,14 +631,27 @@ QList<BackendNode> Settings::getBackendNodes() const
 
 void Settings::setBackendNodes(const QList<BackendNode> &nodes)
 {
+    // The built-in local entry is saved with the stored local backend: during a
+    // run on a remote backend (sessionBackend()) it reads back as that one, and
+    // its URL and token must not be written into the registry.
+    const auto saved = [this](BackendNode n) {
+        if (n.id == "local"_L1 && sessionBackend()) {
+            const QString url = this->settings->value(Settings::BackendUrl.first)
+                                        .toString().trimmed();
+            n.url = url.isEmpty() ? Settings::BackendUrl.second.toString() : url;
+            n.token = this->settings->value(Settings::BackendToken.first,
+                                            Settings::BackendToken.second).toString().trimmed();
+        }
+        return n;
+    };
     QJsonArray arr;
     bool sawLocal = false;
     for (const auto &n : nodes) {
         if (n.id == "local"_L1) sawLocal = true;
-        arr.append(backendNodeToJson(n));
+        arr.append(backendNodeToJson(saved(n)));
     }
     if (!sawLocal) {
-        arr.prepend(backendNodeToJson(buildLocalBackend()));
+        arr.prepend(backendNodeToJson(saved(buildLocalBackend())));
     }
     this->settings->setValue(
             Settings::BackendNodes.first,

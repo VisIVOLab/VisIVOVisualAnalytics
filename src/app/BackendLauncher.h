@@ -67,6 +67,13 @@ public:
     /** Stop polling and mark cancelled.  Does not kill a running backend. */
     void cancel();
 
+    /**
+     * The backend is a remote one chosen for this run (`--backend`), named
+     * @p name: never started here, and a failed health check says so by name
+     * instead of asking the user to start a backend.
+     */
+    void setRemoteBackendName(const QString &name) { m_remoteName = name; }
+
     /** stdout + stderr captured from the backend process (usable after any state). */
     QString capturedLogs() const;
 
@@ -109,6 +116,7 @@ private:
     QString m_backendToken;
     QString m_pythonExe;
     bool m_noAutostart{ false };
+    QString m_remoteName;   ///< non-empty: a remote backend chosen for this run
     bool m_cancelled{ false };
     bool m_ready{ false };
     bool m_pollCheckInFlight{ false };

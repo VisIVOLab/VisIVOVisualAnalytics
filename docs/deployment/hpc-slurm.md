@@ -116,16 +116,20 @@ compute node, the port and the token from its output, and opens the tunnel
 | `--frontend HOST` | required | The SLURM frontend. |
 | `--user USER` | `$USER` | The SSH login on the frontend. |
 | `--repo-dir DIR` | `VISIVO_REMOTE_REPO`, else `VisIVOVisualAnalytics` | The clone on the frontend, relative to the remote home. |
-| `--port N` | `VISIVO_PORT`, else `18900` | The local port of the tunnel. When given, it is also passed to the launcher, so the backend listens on the same port on the node; otherwise the backend listens on the launcher's default and the tunnel maps one to the other. |
+| `--port N` | `VISIVO_PORT`, else `18900` | The local port of the tunnel. When given, it is also passed to the launcher, so the backend listens on the same port on the node; otherwise the backend listens on the launcher's default and the tunnel maps one to the other. Without `--port`, a port that is taken, or that is the desktop client's own local backend port, is replaced by the next free one. |
 | `--stop` | | Stop the tunnel, cancel the job and remove the token file. |
 | any other option | | Passed unchanged to the launcher (`--partition`, `--gres`, `--sif`, `--data-root`, `--node-code`, `--workspace`, ...). |
 
 The helper:
 
 * **checks before submitting anything**: it refuses to start while a tunnel
-  from an earlier run is still active (stop it first with `--stop`) or while
-  the local port is already in use, so a job is never submitted that its
-  tunnel could not reach;
+  from an earlier run is still active (stop it first with `--stop`), so a job
+  is never submitted that its tunnel could not reach. The local port must be
+  free and must not be the port of the desktop client's own local backend
+  (read from the client's saved Backend URL, `http://127.0.0.1:8000` by
+  default): the client starts that backend when it opens, possibly after the
+  tunnel is up. Without `--port` the helper takes the next free port; with
+  `--port` it stops and says why;
 * **keeps the tunnel open**: `ssh` runs in a loop in the background, with
   keep-alives (`ServerAliveInterval=15`, `ServerAliveCountMax=4`) so a dead
   connection is noticed within about a minute, and is started again three
@@ -144,6 +148,45 @@ The helper:
 `--stop` ends the reconnect loop (and the `ssh` it started), runs `scancel` on
 the frontend for the job it recorded (`~/.visivo_slurm_job`) and removes
 `~/.visivo_slurm_token`.
+
+### Opening the desktop client on the cluster backend
+
+Started with no options, the desktop client runs on its own local backend. To
+use the cluster backend instead, start it with the command the helper prints:
+
+```bash
+# macOS
+open -n -a VisIVOVisualAnalytics --args --backend http://localhost:18901 \
+    --backend-token-file ~/.visivo_slurm_token --backend-name PLEIADI
+# Linux
+VisIVOVisualAnalytics --backend http://localhost:18901 \
+    --backend-token-file ~/.visivo_slurm_token --backend-name PLEIADI
+```
+
+| Option | Environment | Meaning |
+|---|---|---|
+| `--backend URL` | `VISIVO_BACKEND_URL` | The backend this run uses. |
+| `--backend-token-file FILE` | `VISIVO_BACKEND_TOKEN_FILE`, or the token itself in `VISIVO_BACKEND_TOKEN` | Its token, read from a file so that it does not appear in the process list. |
+| `--backend-name NAME` | `VISIVO_BACKEND_NAME` | The name shown in the status bar and the backend chip (default: `host:port`). |
+
+For that run only:
+
+* the client starts no local backend and sends only this backend's token,
+  never the local one from `~/.visivo_token`, even though the tunnel is on
+  `localhost`;
+* the saved settings, the list of remote backends and `~/.visivo_token` are
+  not changed. The Settings dialog shows the backend URL and token read-only.
+  The next plain launch is local again;
+* the status bar and the backend chip name the backend, and the 3-D view
+  offers Remote rendering (View ▸ Rendering, or Auto / Local / Remote in the
+  view's header);
+* an option given without its value, a malformed URL, or an empty or
+  unreadable token file stops the launch with an error, rather than starting
+  on the local backend.
+
+If the backend does not answer, the start-up screen names it and says what to
+check: the job, the tunnel, and that the token is this job's (a new job has a
+new token).
 
 ## Multi-node backend with Dask
 

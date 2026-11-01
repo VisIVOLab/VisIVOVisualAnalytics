@@ -597,6 +597,7 @@ struct LocalTokenGuard {
     {
         if (saved.isNull()) qunsetenv("VISIVO_TOKEN"); else qputenv("VISIVO_TOKEN", saved);
         BackendClient::setLocalBackendUrl(QString());
+        BackendClient::setNoLocalBackend(false);
     }
 };
 }  // namespace
@@ -634,4 +635,25 @@ void TestBackendClient::explicitTokenKeptForAnotherLocalhostPort()
     QCOMPARE(local.token(), QStringLiteral("local-backend-token"));
     const BackendClient localEmpty(QStringLiteral("http://localhost:8000"), QString());
     QCOMPARE(localEmpty.token(), QStringLiteral("local-backend-token"));
+}
+
+void TestBackendClient::noLocalBackend_aTunnelKeepsItsToken()
+{
+    // A run on a remote backend (--backend) reached through a tunnel on this
+    // machine, even on the local backend's own port: no URL is the local
+    // backend, so the local token neither replaces the tunnel's nor fills in.
+    LocalTokenGuard guard;
+    qputenv("VISIVO_TOKEN", "local-backend-token");
+    BackendClient::setLocalBackendUrl(QStringLiteral("http://localhost:18910"));
+    BackendClient::setNoLocalBackend(true);
+
+    QVERIFY(!BackendClient::isLocalBackendUrl(QStringLiteral("http://localhost:18910")));
+    QVERIFY(!BackendClient::isLocalBackendUrl(QString()));
+    const BackendClient tunnel(QStringLiteral("http://localhost:18910"), QStringLiteral("job-token"));
+    QCOMPARE(tunnel.token(), QStringLiteral("job-token"));
+    const BackendClient tokenless(QStringLiteral("http://localhost:18910"), QString());
+    QVERIFY(tokenless.token().isEmpty());
+
+    BackendClient::setNoLocalBackend(false);
+    QVERIFY(BackendClient::isLocalBackendUrl(QStringLiteral("http://localhost:18910")));
 }
