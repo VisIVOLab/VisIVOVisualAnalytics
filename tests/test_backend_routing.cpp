@@ -2,11 +2,14 @@
 #include "TestBackendRouting.h"
 
 #include "Settings.h"
+#include "app/ClusterConnection.h"
+#include "app/ClusterProfile.h"
 #include "app/LaunchOptions.h"
 #include "skava/BackendRouting.h"
 #include "skava/SkavaClient.h"
 
 #include <QFile>
+#include <QProcess>
 #include <QProcessEnvironment>
 #include <QSettings>
 #include <QTemporaryDir>
@@ -224,6 +227,156 @@ void TestBackendRouting::launchOptions_tokenFromFileOrEnvironment()
     QVERIFY(!LaunchOptions::remoteBackend({ u"visivo"_s, u"--backend"_s, u"http://h:1"_s,
                                             u"--backend-token-file"_s, emptyPath },
                                           env, &out, &error));
+}
+
+void TestBackendRouting::cluster_launcherOutputIsParsed()
+{
+    // As launch_backend_slurm.sh prints it (a real run, token replaced).
+    const QString out = uR"([visivo] Token saved to /scratch/u/visivo-ws/token
+[visivo] Submitting SLURM job...
+[visivo]   partition: gpu
+[visivo] Job ID: 995
+[visivo] Waiting for compute node assignment...
+[visivo] Compute node: r33c1s01
+[visivo]  attempt 1/60 – not ready yet...
+  VisIVO backend is READY
+  Job ID:        995
+  Compute node:  r33c1s01
+  Port:          18900
+  Frontend:      pleiadi-gpu
+      ssh -N -L 18900:r33c1s01:18900 ${USER}@pleiadi-gpu
+          Token:    tok_AbC-12.x
+)"_s;
+    const auto info = ClusterConnection::parseLauncherOutput(out);
+    QCOMPARE(info.jobId, u"995"_s);
+    QCOMPARE(info.node, u"r33c1s01"_s);
+    QCOMPARE(info.port, 18900);
+    QCOMPARE(info.token, u"tok_AbC-12.x"_s);
+    QVERIFY(info.complete());
+    // Before the job is ready only the id is known: incomplete, but recordable.
+    const auto early = ClusterConnection::parseLauncherOutput(u"[visivo] Job ID: 42\n"_s);
+    QCOMPARE(early.jobId, u"42"_s);
+    QVERIFY(!early.complete());
+}
+
+void TestBackendRouting::cluster_remoteCommandLineQuotesEveryArgument()
+{
+    // What the remote POSIX shell makes of the line must be the arguments, as data.
+    const QStringList args = { u"bash"_s, u"dir with space/scripts/launch.sh"_s, u"--mem"_s,
+                               u"96G"_s, u"it's"_s, u"$(touch /tmp/x);`id`"_s, u""_s };
+    const QString line = ClusterConnection::remoteCommandLine(args);
+    QProcess sh;
+    sh.start(u"/bin/sh"_s, { u"-c"_s, u"for a in "_s + line + u"; do printf '%s\\n' \"$a\"; done"_s });
+    QVERIFY(sh.waitForFinished(5000));
+    const QStringList back = QString::fromUtf8(sh.readAllStandardOutput()).split(u'\n');
+    QCOMPARE(back.mid(0, args.size()), args);
+}
+
+void TestBackendRouting::cluster_localPortAvoidsTheLocalBackend()
+{
+    const auto freeExcept = [](QList<int> busy) { return [busy](int p) { return !busy.contains(p); }; };
+    QCOMPARE(ClusterConnection::chooseLocalPort(18901, 8000, freeExcept({})), 18901);
+    QCOMPARE(ClusterConnection::chooseLocalPort(18900, 18900, freeExcept({})), 18901);
+    QCOMPARE(ClusterConnection::chooseLocalPort(18901, 18902, freeExcept({ 18901 })), 18903);
+    QCOMPARE(ClusterConnection::chooseLocalPort(18901, 0, [](int) { return false; }), 0);
+}
+
+void TestBackendRouting::cluster_tokenNeverShown()
+{
+    QCOMPARE(ClusterConnection::redacted(u"          Token:    tok_secret"_s),
+             u"          Token:    (received, not shown)"_s);
+    const QString curl = ClusterConnection::redacted(
+            u"curl -sf -H 'X-Visivo-Token: tok_secret' http://localhost:18900/v1/health"_s);
+    QVERIFY(!curl.contains(u"tok_secret"_s));
+    QCOMPARE(ClusterConnection::redacted(u"[visivo] Token saved to /x/token"_s),
+             u"[visivo] Token saved to /x/token"_s);
+}
+
+void TestBackendRouting::cluster_cancelByIdOrByName()
+{
+    // By the unique name whenever it is known: it works for a job whose id never
+    // arrived, and for one that has already ended (scancel by id fails then).
+    QCOMPARE(ClusterConnection::cancelCommand(u"995"_s, u"visivo-ab-cd"_s),
+             u"scancel -u \"$USER\" --name='visivo-ab-cd'"_s);
+    QCOMPARE(ClusterConnection::cancelCommand(u"995"_s, QString()), u"scancel 995"_s);
+    QCOMPARE(ClusterConnection::cancelCommand(QString(), u"visivo-ab-cd"_s),
+             u"scancel -u \"$USER\" --name='visivo-ab-cd'"_s);
+    QCOMPARE(ClusterConnection::cancelCommand(u"-"_s, u"visivo-ab-cd"_s),
+             u"scancel -u \"$USER\" --name='visivo-ab-cd'"_s);
+    // A record that is not a job id is never passed to the remote shell.
+    QCOMPARE(ClusterConnection::cancelCommand(u"1; rm -rf ~"_s, QString()), QString());
+    QVERIFY(ClusterConnection::cancelCommand(QString(), QString()).isEmpty());
+}
+
+void TestBackendRouting::cluster_profileCannotInjectSshOptions()
+{
+    ClusterProfile p;
+    p.name = u"X"_s;
+    p.frontend = u"pleiadi-gpu.oact.inaf.it"_s;
+    p.user = u"fv"_s;
+    QVERIFY(ClusterConnection::profileProblem(p).isEmpty());
+    p.frontend = u"-oProxyCommand=touch /tmp/x"_s;
+    QVERIFY(!ClusterConnection::profileProblem(p).isEmpty());
+    p.frontend = u"host"_s;
+    p.user = u"-F/tmp/cfg"_s;
+    QVERIFY(!ClusterConnection::profileProblem(p).isEmpty());
+    p.user = u"a b"_s;
+    QVERIFY(!ClusterConnection::profileProblem(p).isEmpty());
+}
+
+void TestBackendRouting::cluster_profilesRoundTrip()
+{
+    QTemporaryDir dir;
+    QSettings s(dir.filePath(u"Settings.ini"_s), QSettings::IniFormat);
+    ClusterProfile p;
+    p.name = u"PLEIADI"_s;
+    p.frontend = u"pleiadi-gpu.oact.inaf.it"_s;
+    p.user = u"fv"_s;
+    p.partition = u"gpu"_s;
+    p.gres = u"gpu:1"_s;
+    p.cpus = 16;
+    p.mem = u"96G"_s;
+    p.sif = u"/scratch/fv/backend-egl.sif"_s;
+    p.dataRoot = u"/scratch/fv/data"_s;
+    p.workspace = u"/scratch/fv/visivo-ws"_s;
+    p.extraArgs = { u"--backend-src"_s, u"/scratch/fv/app"_s };
+    ClusterProfiles::upsert(s, p);
+    ClusterProfile q = p;
+    q.name = u"OTHER"_s;
+    q.frontend = u"other.example"_s;
+    ClusterProfiles::upsert(s, q);
+    p.mem = u"128G"_s;
+    ClusterProfiles::upsert(s, p);   // replaces, does not add
+
+    QCOMPARE(ClusterProfiles::load(s).size(), 2);
+    const ClusterProfile back = ClusterProfiles::find(s, u"PLEIADI"_s);
+    QCOMPARE(back.mem, u"128G"_s);
+    QCOMPARE(back.sshTarget(), u"fv@pleiadi-gpu.oact.inaf.it"_s);
+    QCOMPARE(back.launcherArgs(),
+             (QStringList{ u"--partition"_s, u"gpu"_s, u"--gres"_s, u"gpu:1"_s, u"--cpus"_s, u"16"_s,
+                           u"--mem"_s, u"128G"_s, u"--sif"_s, u"/scratch/fv/backend-egl.sif"_s,
+                           u"--data-root"_s, u"/scratch/fv/data"_s, u"--workspace"_s,
+                           u"/scratch/fv/visivo-ws"_s, u"--backend-src"_s, u"/scratch/fv/app"_s }));
+    QVERIFY(!ClusterProfiles::find(s, u"missing"_s).isValid());
+}
+
+void TestBackendRouting::launchOptions_connectCluster()
+{
+    const QProcessEnvironment none;
+    QString name, error;
+    QVERIFY(LaunchOptions::clusterToConnect({ u"visivo"_s }, none, &name, &error));
+    QVERIFY(name.isEmpty());
+    QVERIFY(LaunchOptions::clusterToConnect({ u"visivo"_s, u"--connect-cluster"_s, u"PLEIADI"_s },
+                                            none, &name, &error));
+    QCOMPARE(name, u"PLEIADI"_s);
+    QVERIFY(!LaunchOptions::clusterToConnect({ u"visivo"_s, u"--connect-cluster"_s }, none, &name, &error));
+    QVERIFY(!LaunchOptions::clusterToConnect(
+            { u"visivo"_s, u"--connect-cluster=X"_s, u"--backend"_s, u"http://h:1"_s }, none, &name, &error));
+    QProcessEnvironment env;
+    env.insert(u"VISIVO_BACKEND_URL"_s, u"http://h:1"_s);
+    QVERIFY(!LaunchOptions::clusterToConnect({ u"visivo"_s, u"--connect-cluster"_s, u"X"_s }, env, &name,
+                                             &error));
+    QVERIFY(LaunchOptions::backendValueOptions().contains(u"--connect-cluster"_s));
 }
 
 void TestBackendRouting::upsertInsertsAndUpdates()

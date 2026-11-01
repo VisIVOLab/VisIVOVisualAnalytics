@@ -37,6 +37,17 @@ const QStringList &backendValueOptions();
 bool remoteBackend(const QStringList &args, const QProcessEnvironment &env,
                    std::optional<Settings::SessionBackend> *out, QString *error);
 
+/**
+ * The cluster profile `--connect-cluster NAME` asks this run to connect to
+ * (empty when not given): the window submits the backend job, opens the
+ * tunnel and runs on that backend (ClusterConnection).
+ *
+ * @return false with @p error set when the option has no value or is combined
+ *         with --backend / VISIVO_BACKEND_URL.
+ */
+bool clusterToConnect(const QStringList &args, const QProcessEnvironment &env, QString *name,
+                      QString *error);
+
 }  // namespace LaunchOptions
 
 #endif

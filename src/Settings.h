@@ -195,6 +195,9 @@ public:
         QString url;
         QString token;
         QString name;   ///< shown in the status bar; the URL's host:port if not given
+        /// This window connected to a cluster itself (--connect-cluster): it
+        /// owns the backend job, and closing it cancels the job.
+        bool ownsClusterJob = false;
     };
     static void setSessionBackend(const SessionBackend &backend);
     /// Back to the local backend (tests; the client sets one only at launch).

@@ -69,6 +69,7 @@ and the entries for the desktop's Backends page.
 | `--token T` | `VISIVO_TOKEN` | generated | The backend token; a random one is generated when none is given. |
 | `--workspace DIR` | `VISIVO_WORKSPACE` | unset | A writable directory for everything the backend and the launcher write (see below). Needed where `$HOME` is read-only. |
 | `--node-code CODE` | `VISIVO_NODE_CODE` | unset | The node's code in the SKAVA catalogue, reported in `/v1/node/status`. |
+| `--job-name NAME` | `VISIVO_JOB_NAME` | `visivo_backend` | The SLURM job name. The desktop gives each job a unique name, so that it can cancel a job whose id it never received. |
 | `--version TEXT` | `VISIVO_VERSION` | the image's | What the status document reports as the backend version, for example the commit the image was built from. |
 | | `VISIVO_ASSIGN_TIMEOUT` | `300` | Seconds to wait for SLURM to assign the node before the launcher stops (the job stays queued; `--stop` cancels it). |
 | `--help` | | | Print the help. |
@@ -148,6 +149,35 @@ The helper:
 `--stop` ends the reconnect loop (and the `ssh` it started), runs `scancel` on
 the frontend for the job it recorded (`~/.visivo_slurm_job`) and removes
 `~/.visivo_slurm_token`.
+
+### Connecting from the desktop
+
+The desktop can do all of the above itself. In the Data Hub, **Connect to a
+cluster…** keeps named profiles: the frontend and your login there, the VisIVO
+clone on the frontend (for `scripts/launch_backend_slurm.sh`), the SLURM
+resources (partition, GPUs, CPUs, memory, time), the backend image, the data
+root, the workspace, and any further launcher options. **Connect** opens a new
+VisIVO window on that cluster; the window you were using stays on its own
+backend.
+
+The new window, before it opens:
+
+* submits the backend job over `ssh` (OpenSSH, as on macOS, Linux and
+  Windows 10 and later) with key-based access to the frontend, since nothing
+  can be typed: set it up once with `ssh-copy-id`;
+* reads the job, the compute node, the port and the token from the launcher
+  (the token is never shown);
+* opens the tunnel on a free local port that is not the desktop's own local
+  backend port, and opens it again if it drops;
+* waits for the backend to answer, then runs on it as with `--backend` below.
+
+The window owns the job. Closing it, or **Disconnect from NAME** in its Data
+Hub, closes the tunnel and cancels the job (`scancel`). Cancel on the progress
+screen does the same at any stage. Only one window per profile can be open; a
+job left by a window that did not close normally is cancelled by the next one
+for the same profile (each job is recorded, under its unique name, until a
+cancel succeeds). From a terminal, the same is
+`VisIVOVisualAnalytics --connect-cluster NAME`.
 
 ### Opening the desktop client on the cluster backend
 

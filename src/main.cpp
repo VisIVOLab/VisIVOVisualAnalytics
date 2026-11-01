@@ -2,7 +2,10 @@
 #include "Version.h"
 #include "app/BackendClient.h"
 #include "app/BackendLauncher.h"
+#include "app/BackendUrl.h"
+#include "app/ClusterConnection.h"
 #include "app/LaunchOptions.h"
+#include "gui/ClusterConnectDialog.h"
 #include "app/ThemeManager.h"
 #include "gui/StartupDialog.h"
 #include "gui/theme/ScrollWheelGuard.h"
@@ -470,9 +473,21 @@ int main(int argc, char *argv[])
         qInfo().noquote() << "Remote backend for this run:" << remoteBackend->name
                           << remoteBackend->url;
     }
+    // Or a cluster to connect to (--connect-cluster NAME): the backend job is
+    // submitted below, once the theme is in place for the progress screen.
+    QString clusterName;
+    {
+        QString error;
+        if (!LaunchOptions::clusterToConnect(QCoreApplication::arguments(),
+                                             QProcessEnvironment::systemEnvironment(),
+                                             &clusterName, &error)) {
+            QMessageBox::critical(nullptr, u"VisIVO Visual Analytics"_s, error);
+            return 2;
+        }
+    }
 
     openRelay.takeCommandLine(QCoreApplication::arguments());
-    if (!openRelay.becomePrimaryOrForward(!remoteBackend))
+    if (!openRelay.becomePrimaryOrForward(!remoteBackend && clusterName.isEmpty()))
         return 0;   // the files went to the instance already running
 
     // Set locale to C.UTF-8
@@ -516,6 +531,41 @@ int main(int argc, char *argv[])
         // clients: only that backend gets the ~/.visivo_token token.
         BackendClient::setLocalBackendUrl(
                 rawSettings.value(u"Backend/url"_s, u"http://127.0.0.1:8000"_s).toString().trimmed());
+    }
+
+    // ── A window on a cluster (--connect-cluster NAME) ────────────────────────
+    // This window submits the backend job, keeps the tunnel open and owns both:
+    // they are closed and cancelled when it quits. From then on the run is a
+    // remote one, exactly as with --backend.
+    std::unique_ptr<ClusterConnection> cluster;
+    if (!clusterName.isEmpty()) {
+        QSettings rawSettings(QDir(QDir::home().absoluteFilePath(app.applicationName()))
+                                      .absoluteFilePath(u"Settings.ini"_s),
+                              QSettings::IniFormat);
+        const ClusterProfile profile = ClusterProfiles::find(rawSettings, clusterName);
+        if (!profile.isValid()) {
+            QMessageBox::critical(nullptr, u"VisIVO Visual Analytics"_s,
+                                  u"There is no cluster profile named \"%1\". Create it from the "
+                                  u"Data Hub: Connect to a cluster…"_s.arg(clusterName));
+            return 2;
+        }
+        // The tunnel never takes the port of this machine's own local backend.
+        const int localPort = BackendUrl::portOf(
+                rawSettings.value(u"Backend/url"_s, u"http://127.0.0.1:8000"_s).toString().trimmed(),
+                8000);
+        cluster = std::make_unique<ClusterConnection>(profile, localPort);
+        ClusterConnectDialog connecting(cluster.get());
+        if (connecting.exec() != QDialog::Accepted)
+            return 0;   // cancelled or failed; the connection has cancelled its job
+        remoteBackend = Settings::SessionBackend{ cluster->url(), cluster->token(), profile.name,
+                                                  /*ownsClusterJob=*/true };
+        Settings::setSessionBackend(*remoteBackend);
+        BackendClient::setNoLocalBackend(true);
+        QObject::connect(&app, &QCoreApplication::aboutToQuit, cluster.get(), &ClusterConnection::stop);
+        QObject::connect(cluster.get(), &ClusterConnection::tunnelLost, &app, [name = profile.name]() {
+            qWarning().noquote() << "The tunnel to" << name << "dropped; reopening it.";
+        });
+        qInfo().noquote() << "Connected to cluster" << profile.name << "job" << cluster->jobId();
     }
 
     // Customize QDebug message format

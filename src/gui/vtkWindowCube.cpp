@@ -3929,14 +3929,21 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
     // cube size exceeds the user's LocalFullThresholdMb setting. The
     // size-based path is what lets the client decide independently
     // when the backend just says ``auto_full``.
-    const QString rmWorkDir = QDir::home().absoluteFilePath(qApp->applicationName());
-    Settings rmSettings(rmWorkDir);
+    // Raw QSettings, not Settings: that constructor runs python3 with blocking
+    // waits, and this now runs on every cube opened on a remote backend
+    // (applyAutoRenderModeOnOpen). Default and clamp mirror
+    // Settings::getLocalFullThresholdMb.
+    const int rmThresholdMb = [] {
+        QSettings raw(vtkWindowCube::settingsIniPath(), QSettings::IniFormat);
+        return std::clamp(raw.value(QStringLiteral("Cube/local_full_threshold_mb"), 256).toInt(), 16,
+                          16384);
+    }();
     const double rmCubeFullMb = (static_cast<double>(this->remoteDatasetWidth)
                                   * static_cast<double>(this->remoteDatasetHeight)
                                   * static_cast<double>(this->remoteDatasetDepth)
                                   * 4.0) / (1024.0 * 1024.0);
     const bool rmSizeWantsRemote =
-            rmCubeFullMb > static_cast<double>(rmSettings.getLocalFullThresholdMb());
+            rmCubeFullMb > static_cast<double>(rmThresholdMb);
     // A backend that cannot render server-side is not a candidate, for Auto or
     // for an explicit request: /v1/render/* refuses it, and Auto would have gone
     // looking for it on every large cube.

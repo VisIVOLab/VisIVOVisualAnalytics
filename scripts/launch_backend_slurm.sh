@@ -35,6 +35,9 @@
 #                           as a data root), caches, the job logs and the token
 #                           file. Needed where $HOME is read-only.
 #                           ($VISIVO_WORKSPACE; default: under $HOME)
+#   --job-name   NAME       SLURM job name (default: visivo_backend). A unique
+#                           name lets a client cancel the job by name when it
+#                           never saw the job id (scancel --name).
 #   --node-code  CODE       The node's code in the SKAVA catalogue, reported
 #                           in /v1/node/status ($VISIVO_NODE_CODE)
 #   --version    TEXT       What the status document reports as the backend
@@ -75,6 +78,7 @@ SIF="${VISIVO_SIF:-$(dirname "$0")/../apptainer/backend.sif}"
 BACKEND_SRC="${VISIVO_BACKEND_SRC_OVERRIDE:-}"
 TOKEN="${VISIVO_TOKEN:-}"
 NODE_CODE="${VISIVO_NODE_CODE:-}"
+JOB_NAME="${VISIVO_JOB_NAME:-}"
 WORKSPACE="${VISIVO_WORKSPACE:-}"
 VERSION="${VISIVO_VERSION:-}"
 LOG_DIR="${VISIVO_LOG_DIR:-$HOME/.visivo_logs}"
@@ -99,6 +103,7 @@ while [[ $# -gt 0 ]]; do
         --backend-src) BACKEND_SRC="$2"; shift 2 ;;
         --token)     TOKEN="$2";     shift 2 ;;
         --node-code) NODE_CODE="$2"; shift 2 ;;
+        --job-name)  JOB_NAME="$2";  shift 2 ;;
         --workspace) WORKSPACE="$2"; shift 2 ;;
         --version)   VERSION="$2";   shift 2 ;;
         --no-gpu)    USE_GPU=false; GRES=""; shift ;;
@@ -318,7 +323,8 @@ echo "[visivo]   mem:       ${MEM}"
 echo "[visivo]   time:      ${TIME}"
 echo "[visivo]   sif:       ${SIF}"
 
-JOB_ID="$(sbatch --parsable "$JOB_SCRIPT")"
+# A name given on the command line takes precedence over the script's #SBATCH line.
+JOB_ID="$(sbatch --parsable ${JOB_NAME:+--job-name="$JOB_NAME"} "$JOB_SCRIPT")"
 rm -f "$JOB_SCRIPT"
 echo "[visivo] Job ID: $JOB_ID"
 

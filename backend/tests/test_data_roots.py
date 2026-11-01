@@ -142,6 +142,37 @@ async def test_files_list_refusal_is_not_enumerable(client, auth_headers, monkey
 
 
 @pytest.mark.asyncio
+async def test_files_list_without_a_path_opens_the_first_root(client, auth_headers, monkeypatch,
+                                                              tmp_path):
+    """A browser opening (no path) on a backend whose home is outside its roots
+    (a cluster job: data root and workspace on /scratch) lands in the first root,
+    the data root, instead of on "Directory not found"."""
+    data = tmp_path / "data"
+    exports = tmp_path / "ws" / "exports"
+    data.mkdir()
+    exports.mkdir(parents=True)
+    (data / "cube.fits").write_bytes(b"")
+    monkeypatch.setenv("VISIVO_DATA_ROOTS", os.pathsep.join([str(data), str(exports)]))
+    monkeypatch.setenv("HOME", str(tmp_path / "home-outside"))
+    resp = await client.get("/v1/files/list", params={"path": ""}, headers=auth_headers)
+    body = resp.json()
+    assert body["valid"] is True
+    assert body["current_path"] == str(data.resolve())
+    assert [e["name"] for e in body["entries"]] == ["cube.fits"]
+    # An explicit path outside the roots is still refused.
+    denied = await client.get("/v1/files/list", params={"path": str(tmp_path)}, headers=auth_headers)
+    assert denied.json()["valid"] is False
+
+
+def test_empty_path_keeps_an_allowed_home(clean_env, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    clean_env.setenv("VISIVO_DATA_ROOTS", os.pathsep.join([str(tmp_path / "other"), str(tmp_path)]))
+    assert _normalize_path("") == home
+
+
+@pytest.mark.asyncio
 async def test_file_header_refuses_outside_roots(client, auth_headers, monkeypatch,
                                                  tmp_path, synthetic_fits_image):
     monkeypatch.setenv("VISIVO_DATA_ROOTS", str(tmp_path))

@@ -378,6 +378,10 @@ set(PROJECT_SOURCES
         src/app/BackendUrl.h
         src/app/LaunchOptions.cpp
         src/app/LaunchOptions.h
+        src/app/ClusterProfile.cpp
+        src/app/ClusterProfile.h
+        src/app/ClusterConnection.cpp
+        src/app/ClusterConnection.h
         src/app/DiagnosticsManager.cpp
         src/app/DiagnosticsManager.h
         src/app/ThemeManager.cpp
@@ -393,6 +397,10 @@ set(PROJECT_SOURCES
         src/gui/RemoteFileBrowserDialog.cpp
         src/gui/RemoteFileBrowserDialog.h
         src/gui/StartupDialog.cpp
+        src/gui/ClusterConnectDialog.cpp
+        src/gui/ClusterConnectDialog.h
+        src/gui/ClusterProfileDialog.cpp
+        src/gui/ClusterProfileDialog.h
         src/gui/StartupDialog.h
         src/gui/RemoteMomentWindow.cpp
         src/gui/RemoteMomentWindow.h

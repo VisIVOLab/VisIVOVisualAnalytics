@@ -64,6 +64,11 @@ public slots:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    /// A window on a cluster (--connect-cluster): asks before closing it, which
+    /// closes the tunnel and cancels the job. True to go ahead.
+    bool confirmClusterDisconnect();
+    /// Hides every window and leaves the event loop, without the per-window prompts.
+    void exitApplication();
 
 private slots:
     void setApplicationTheme();

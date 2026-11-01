@@ -739,7 +739,14 @@ def _normalize_path(raw: str) -> Path:
         raise PermissionError(
             "Path-based access is disabled: a shared backend (VISIVO_TOKENS) must "
             "declare VISIVO_DATA_ROOTS before any filesystem path is served.")
-    path = Path.home() if not raw else Path(raw).expanduser().resolve()
+    # Resolved like the roots, so a home that is a symlink into a root matches.
+    path = Path.home().resolve() if not raw else Path(raw).expanduser().resolve()
+    if roots and not raw and not any(path == root or root in path.parents for root in roots):
+        # No path asked (a browser opening): the home when it is allowed, else
+        # the first root, the data root (the launcher lists it before the
+        # workspace). A home outside the roots used to be refused as "not
+        # found", so the browser opened on an error.
+        path = roots[0]
     if roots and not any(path == root or root in path.parents for root in roots):
         raise PermissionError("Path is outside the backend's allowed data roots.")
     if hide_hidden_entries() and any(
