@@ -96,10 +96,17 @@ segment above the 3-D pane:
   `server_side_rendering_available`, and a CPU-only backend — or any backend on
   **macOS**, where there is no EGL — reports false. The mode entry is then
   disabled with that reason and the recommendation banner does not offer the
-  switch, because `/v1/render/*` would refuse the request. It uses the *same* mapper on the whole cube (it is **not**
-  out-of-core), so the memory has to exist there instead of here; what you gain
-  is that the backend loads the full grid where the client would fall back to a
-  decimated proxy, and that a large cube never crosses the network. With the
+  switch, because `/v1/render/*` would refuse the request. Up to
+  6 GiB (`VISIVO_RENDER_OUT_OF_CORE_BYTES`) the backend loads the whole cube,
+  so the memory has to exist there instead of here. A larger cube, even one
+  larger than the backend's GPU, is drawn **out of core** from its *brick
+  pyramid*: a few blocks at a time, fine where you look and coarse elsewhere
+  ([Brick pyramid](../brick-pyramid.md#rendering-from-the-pyramid)). The first
+  time such a cube is opened, the backend builds its pyramid: the preview stays
+  and the banner shows *Preparing the cube for full resolution on the
+  backend… N%*, then the full-resolution view appears by itself (about 45 s for
+  a 23 GB cube on PLEIADI-GPU; afterwards it is reused). Either way, a large
+  cube never crosses the network. With the
   JPEG transport (the one used unless the backend offers WebRTC), the backend
   sends a frame whenever the view changes, without waiting to be asked (a few
   frames ahead of the client's acknowledgements); while you rotate it lowers
@@ -109,7 +116,10 @@ segment above the 3-D pane:
   the backend machine's GPUs in turn (with more views than GPUs, some share
   one). On a 2 GB cube on a V100 node behind an SSH tunnel this ran at about
   28 frames per second while rotating.
-- **Auto** — starts local and lets the recommendation below appear.
+- **Auto** — on a **remote** backend that can render (a cluster connected from
+  the Data Hub, or `--backend`), a cube above the local threshold goes to
+  Remote by itself; a smaller one is drawn here. On the **local** backend it
+  starts local and lets the recommendation below appear.
 
 A cube whose full resolution exceeds `Cube/local_full_threshold_mb`
 (`~/VisIVO Visual Analytics/Settings.ini`, default **256 MB**), or one the

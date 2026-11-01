@@ -41,11 +41,47 @@ modification time, so a changed file gets a new pyramid.
 
 ## Building
 
+A pyramid is built in one of two ways: **automatically**, the first time a
+remote 3-D view needs it (see [Rendering from the
+pyramid](#rendering-from-the-pyramid): the view shows the progress and then
+switches to it), or **by hand**, beforehand, so that nobody waits for it.
+
+### By hand
+
 ```bash
 cd backend
-python -m app.brick_pyramid build cube.fits [out.pyr.h5] [--brick 64] [--max-block-mb 256] [--workers N]
+python -m app.brick_pyramid build cube.fits [out.pyr.h5] [--hdu N] [--brick 64] [--max-block-mb 256] [--workers N]
 python -m app.brick_pyramid info out.pyr.h5
 ```
+
+- **Where it goes.** Without `out.pyr.h5` the pyramid goes where the backend
+  looks for it: `VISIVO_PYRAMID_DIR`, or else `.pyramids` in the backend's
+  workspace exports (`<exports>/.pyramids`). The name comes from the cube's
+  path, HDU, size and modification time. Build it with the **same**
+  `VISIVO_PYRAMID_DIR` the backend will have, or the backend will not find it
+  and build its own. A cube changed afterwards gets a new pyramid; the old one
+  is no longer used.
+- **Which HDU.** Without `--hdu`, the first HDU with an image, the one the
+  viewer opens.
+- **How many processes.** `--workers`, by default the CPUs available up to 8
+  (see *Several processes* below).
+
+On a cluster, run it in a job of its own with the backend's image, so it does
+not take the backend's CPUs. For example, on PLEIADI-GPU:
+
+```bash
+srun -p gpu --gres=gpu:1 -c 8 --mem=32G --time=00:30:00 \
+    apptainer exec --bind /scratch \
+    --env PYTHONPATH=<clone>/backend,VISIVO_PYRAMID_DIR=<workspace>/exports/.pyramids \
+    <dir>/backend-egl.sif python3 -m app.brick_pyramid build <data>/cube.fits
+```
+
+(`<workspace>` as given to the launcher with `--workspace`; the job needs no
+GPU, but a partition may require one.) With the desktop's local backend, the
+same command from `backend/` writes to `~/.visivo/exports/.pyramids` unless
+`VISIVO_PYRAMID_DIR` is set.
+
+### How it is built
 
 The builder never holds the cube. It reads level 0 from the FITS file in
 brick-aligned blocks of at most `--max-block-mb` and builds each level from
@@ -74,8 +110,8 @@ PLEIADI-GPU (POWER9) a 23.4 GiB cube is built in 78 s with one process and in
 of the remote view use the same default.
 
 The file is written under a temporary name and renamed when complete, so a
-reader never finds a partial pyramid, and a build that is stopped leaves
-nothing behind. In float32, the levels add up to about 8/7 of the cube for a
+reader never finds a partial pyramid. A build that is stopped removes the
+partial file; one killed outright leaves it, and a later build removes it. In float32, the levels add up to about 8/7 of the cube for a
 cube with axes of comparable size (each level is about an eighth of the one
 below), and HDF5 stores the edge chunks whole even
 where the cube does not fill them, so the file is larger by an amount that
@@ -93,13 +129,20 @@ pyramid (`backend/app/render_session/_ooc.py`, block choice in
 `backend/app/brick_lod.py`). Smaller cubes, and every view on a local backend,
 keep the paths they had.
 
-- **Pyramid.** The view uses the cube's pyramid from the default location.
-  When it is missing or out of date, the backend builds it there in a process
-  of its own (`backend/app/pyramid_builds.py`). Meanwhile, the remote view
+- **Pyramid, built automatically.** The view uses the cube's pyramid from the
+  default location. When it is missing or out of date (the cube changed), the
+  backend builds it there in a process of its own (`backend/app/pyramid_builds.py`),
+  with the same several processes as by hand. Meanwhile the remote view
   answers HTTP 202 with the fraction done, and the desktop keeps its preview
   and shows "Preparing the cube for full resolution… N%". The view switches
-  to the pyramid when the build ends. Every view of the same cube on that
-  backend shares one build, and a failed build is reported with its reason.
+  to the pyramid when the build ends.
+  - Every view of the same cube shares one build, also across backends sharing
+    `VISIVO_PYRAMID_DIR` (a lock file next to the pyramid decides which builds;
+    the others show its progress).
+  - A failed build is reported with its reason and not retried for a minute.
+  - A build stopped with the backend removes its partial file; one killed
+    outright leaves it, and the next build removes it once nobody has written
+    to it for ten minutes.
   On PLEIADI-GPU the build of a 23.4 GiB cube takes about 45 s. To skip the
   wait, build it beforehand with the command above, with `VISIVO_PYRAMID_DIR`
   set as the backend will have it.
