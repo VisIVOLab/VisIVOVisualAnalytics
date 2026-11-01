@@ -148,8 +148,16 @@ async def _measure(args, token: str) -> list[dict]:
     opened = _call(args.base_url, token, "POST", "/v1/datasets/open", {"path": args.path})
     if not opened.get("valid"):
         raise SystemExit(f"open refused: {opened.get('error')}")
-    sid = _call(args.base_url, token, "POST", "/v1/render/create_session",
-                {"dataset_id": opened["dataset_id"]}, opened.get("session_id", ""))["session_id"]
+    # 202 while the backend builds the cube's brick pyramid: ask again.
+    while True:
+        created = _call(args.base_url, token, "POST", "/v1/render/create_session",
+                        {"dataset_id": opened["dataset_id"]}, opened.get("session_id", ""))
+        if not created.get("preparing"):
+            break
+        print(f"preparing the cube on the backend: {100 * created.get('progress', 0):.0f}%",
+              flush=True)
+        await asyncio.sleep(5)
+    sid = created["session_id"]
     ws_url = args.base_url.replace("http", "ws", 1) + f"/v1/render/{sid}/ws?token={token}"
     results = []
     try:

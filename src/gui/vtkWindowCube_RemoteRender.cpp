@@ -242,7 +242,16 @@ void vtkWindowCube::requestRemoteRenderSession()
             return;
         }
         if (reply->error() != QNetworkReply::NoError) {
+            this->m_remotePreparing = false;
             const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            // The pyramid build failed: the backend can render, this cube could
+            // not be prepared. Say why, and keep Remote available.
+            const QString detail =
+                    QJsonDocument::fromJson(reply->readAll()).object().value(u"detail"_s).toString();
+            if (detail.startsWith(u"Preparing the cube"_s)) {
+                this->abortRemoteSwitch(detail + u" Staying local."_s);
+                return;
+            }
             qWarning().noquote()
                     << "[remote-render] create_session failed:" << reply->errorString()
                     << "(HTTP" << code << ")";
@@ -259,6 +268,24 @@ void vtkWindowCube::requestRemoteRenderSession()
             return;
         }
         const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        // 202: the backend is building the cube's brick pyramid (issue #80).
+        // Keep the preview, show the progress, ask again in a moment.
+        if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 202
+            && doc.object().value(u"preparing"_s).toBool()) {
+            const double progress = doc.object().value(u"progress"_s).toDouble();
+            // The watchdog counts from the last progress, not the last answer:
+            // a build that stops advancing is still given up on.
+            if (!this->m_remotePreparing || progress > this->m_remotePreparingProgress)
+                this->m_remoteSwitchElapsed.restart();
+            this->m_remotePreparing = true;
+            this->m_remotePreparingProgress = progress;
+            QTimer::singleShot(2000, this, [this, generation]() {
+                if (generation == this->m_remoteSwitchGeneration && this->m_remoteSwitchInProgress)
+                    this->requestRemoteRenderSession();
+            });
+            return;
+        }
+        this->m_remotePreparing = false;
         const QString sid = doc.object().value(u"session_id"_s).toString();
         if (sid.isEmpty()) {
             qWarning() << "[remote-render] create_session returned no session_id";
@@ -290,6 +317,7 @@ void vtkWindowCube::abortRemoteSwitch(const QString &reason)
     // session_id) left the banner frozen on "Connecting…" with both actions
     // disabled — the user could neither retry nor load locally.
     this->m_remoteSwitchInProgress = false;
+    this->m_remotePreparing = false;
     ++this->m_remoteSwitchGeneration;   // a reply landing later is stale
     // …and stop the transport itself. The generation check only guards the HTTP
     // completion: a negotiation already under way could still reach Live, hide

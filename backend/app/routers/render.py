@@ -46,6 +46,7 @@ import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..auth import verify_token
@@ -96,7 +97,47 @@ class CreateRenderSessionResponse(BaseModel):
     height: int = 0
 
 
-@router.post("/create_session", response_model=CreateRenderSessionResponse)
+async def _pyramid_preparing(entry: dict[str, Any]) -> JSONResponse | None:
+    """202 while the cube's pyramid is being built, an error if its build
+    failed, None when the session can start (an in-core cube, or the pyramid
+    ready)."""
+    from ..pyramid_builds import BuildStatus, ensure_pyramid  # noqa: PLC0415
+    from ..render_session._ooc import wants_out_of_core  # noqa: PLC0415
+
+    def status() -> BuildStatus | None:
+        from astropy.io import fits  # noqa: PLC0415
+
+        from ..fits_dataset import image_hdu_index  # noqa: PLC0415
+        try:
+            # As the render session decides (render_session/_scene.py): the
+            # HDU it opens and the last three axes of its header shape.
+            with fits.open(str(entry["path"]), memmap=True) as hdul:
+                hdu = image_hdu_index(hdul)
+                shape = tuple(int(n) for n in (hdul[hdu].shape or ())[-3:])
+        except Exception as exc:  # noqa: BLE001
+            return BuildStatus("failed", 0.0, f"the cube could not be read: {exc}")
+        if len(shape) < 3 or not wants_out_of_core(shape[0] * shape[1] * shape[2] * 4):
+            return None
+        try:
+            return ensure_pyramid(str(entry["path"]), hdu)
+        except Exception as exc:  # noqa: BLE001 - e.g. a pyramid directory that cannot be written
+            return BuildStatus("failed", 0.0, f"the build could not start: {exc}")
+
+    built = await asyncio.to_thread(status)
+    if built is None or built.state == "ready":
+        return None
+    if built.state == "failed":
+        raise HTTPException(500, f"Preparing the cube for full resolution failed: {built.error}")
+    return JSONResponse(status_code=202, content={
+        "valid": False, "preparing": True, "progress": round(built.progress, 3),
+        "error": "Preparing the cube for full-resolution rendering on the backend.",
+    })
+
+
+@router.post("/create_session", response_model=CreateRenderSessionResponse, responses={
+    202: {"description": "The cube's brick pyramid is being built for out-of-core rendering: "
+                         "``{valid: false, preparing: true, progress: 0..1, error}``. Ask again "
+                         "in a moment; the session starts once it is ready."}})
 async def create_session(
     request: CreateRenderSessionRequest,
     token: str = _auth,
@@ -116,6 +157,13 @@ async def create_session(
         raise HTTPException(404, f"Unknown dataset_id {request.dataset_id!r}.")
     if entry.get("kind") != "cube":
         raise HTTPException(422, "Server-side rendering currently supports cube datasets only.")
+
+    # A cube drawn out of core needs its brick pyramid. When it is missing it
+    # is built in the background (app/pyramid_builds.py) and this answers 202
+    # with the fraction done; the client keeps its preview and asks again.
+    preparing = await _pyramid_preparing(entry)
+    if preparing is not None:
+        return preparing
 
     manager = get_render_manager()
     await manager.start()   # idempotent — reaper coroutine

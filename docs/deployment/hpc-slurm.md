@@ -378,11 +378,11 @@ A cube larger than `VISIVO_RENDER_OUT_OF_CORE_BYTES` (6 GiB) is not loaded:
 the view draws it from its brick pyramid, a few blocks at the resolution each
 part of the view needs, so a cube larger than the GPU's memory can be shown.
 How it works and its settings are in
-[Brick pyramid](../brick-pyramid.md#rendering-from-the-pyramid). The session
-builds the pyramid before its first frame if it is missing; for large cubes,
-build it beforehand in a job of its own (`python -m app.brick_pyramid build`,
-with the backend's `VISIVO_PYRAMID_DIR`), so opening the view does not wait for
-it. On PLEIADI-GPU a 23.4 GiB cube, larger than the V100's 16 GB, opened in
+[Brick pyramid](../brick-pyramid.md#rendering-from-the-pyramid). If the
+pyramid is missing, the backend builds it in the background and the desktop
+shows its progress over the preview, then switches to the full-resolution
+view. To skip that wait, build it beforehand in a job of its own
+(`python -m app.brick_pyramid build`, with the backend's `VISIVO_PYRAMID_DIR`). On PLEIADI-GPU a 23.4 GiB cube, larger than the V100's 16 GB, opened in
 2.6 s from its pyramid and turned at 54 frames per second.
 
 How the view streams frames and lowers its quality while you rotate is
