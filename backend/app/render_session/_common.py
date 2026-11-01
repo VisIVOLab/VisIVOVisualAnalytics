@@ -182,6 +182,16 @@ def _build_color_tf(name: str, vmin: float, vmax: float):
     return ctf
 
 
+def _opacity_floor(vmin: float, vmax: float, threshold: float) -> float | None:
+    """The value at and below which ``_build_opacity_tf`` is fully transparent
+    (None when the range is empty and everything has some opacity)."""
+    span = vmax - vmin
+    if span <= 0.0:
+        return None
+    threshold = max(vmin, min(vmax, threshold))
+    return max(vmin, threshold - 0.01 * span)
+
+
 def _build_opacity_tf(vmin: float, vmax: float, threshold: float):
     """Build a vtkPiecewiseFunction matching ``vtkWindowCube::applyThresholdToPipeline``.
 
@@ -207,9 +217,9 @@ def _build_opacity_tf(vmin: float, vmax: float, threshold: float):
         tf.AddPoint(vmin, 0.0)
         tf.AddPoint(vmax, 1.0)
         return tf
+    knee = _opacity_floor(vmin, vmax, threshold)
     threshold = max(vmin, min(vmax, threshold))
     tf.AddPoint(vmin,                            0.00)
-    knee = max(vmin, threshold - 0.01 * span)
     tf.AddPoint(knee,                            0.00)
     tf.AddPoint(threshold,                       0.25)
     tf.AddPoint(min(threshold + 0.05 * span, vmax), 0.60)

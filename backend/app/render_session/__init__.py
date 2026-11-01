@@ -145,6 +145,10 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
         # legacy synchronous path (small cubes < 256 MB); a CubeReader
         # instance for large cubes that fill in progressively.
         self._cube_reader = None
+        # Out-of-core rendering from the brick pyramid (_ooc.py), for cubes
+        # above VISIVO_RENDER_OUT_OF_CORE_BYTES; None otherwise.
+        self._ooc = None
+        self._ooc_more = False
         # vtkFloatArray kept alive while ``_image_data`` is alive.
         # Necessary when ``numpy_to_vtk(deep=False)`` shares the shared
         # memory buffer — without this reference Python would reclaim
@@ -349,7 +353,8 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
             rgb, render_ms = await loop.run_in_executor(
                 self._executor, self._render_rgb_on_thread,
             )
-            self._scene_dirty = False
+            # Blocks still loading out of core: the next frame shows more.
+            self._scene_dirty = self._ooc_more
             self._last_rgba_view = rgb
             self._last_render_ms = render_ms
         self.stats.frames_rendered += 1

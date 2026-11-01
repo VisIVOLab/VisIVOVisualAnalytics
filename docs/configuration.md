@@ -93,6 +93,10 @@ backend, each in a process of its own.
 | `VISIVO_RENDER_MAX_SESSIONS` | `8` | Remote views accepted at once; beyond it a new view answers HTTP 503. |
 | `VISIVO_RENDER_IDLE_TTL_SECONDS` | `300` | A view that receives no command for this long is closed. |
 | `VISIVO_RENDER_IN_PROCESS` | unset | `1` renders inside the backend's own process instead of a child process (slower: rendering then competes with the process that serves the clients). |
+| `VISIVO_RENDER_OUT_OF_CORE_BYTES` | 6 GiB | A cube larger than this (as float32) is not loaded: the view draws it from its brick pyramid, block by block ([Brick pyramid](brick-pyramid.md#rendering-from-the-pyramid)). |
+| `VISIVO_RENDER_OOC_BUDGET_BYTES` | 2 GiB | Out of core: GPU data of the blocks drawn at once. |
+| `VISIVO_RENDER_OOC_MAX_BLOCKS` | `12` | Out of core: blocks drawn at once (each is one ray-casting pass). |
+| `VISIVO_RENDER_OOC_NODE` | `256` | Out of core: voxels per side of a block. |
 
 ## SRC node
 
@@ -133,6 +137,7 @@ fit together.
 | Variable | Default | Effect |
 |---|---|---|
 | `VISIVO_EXPORTS_DIR` | `~/.visivo/exports` | The Workspace exports folder: saved cut-outs, moment FITS files and source-finding products. Created if missing. |
+| `VISIVO_PYRAMID_DIR` | `<exports>/.pyramids` | Where brick pyramids are written and looked for ([Brick pyramid](brick-pyramid.md)). |
 | `VISIVO_HIPS_CACHE` | `~/.cache/visivo/hips` | Directory of the HiPS tile cache. |
 | `VISIVO_HIPS_CACHE_MAX_BYTES` | `2 GiB` | Size cap of the HiPS cache; the least recently used tiles are evicted beyond it. |
 | `VISIVO_HIPS_CACHE_TTL_SECONDS` | `604800` (7 days) | Tiles older than this are deleted. |

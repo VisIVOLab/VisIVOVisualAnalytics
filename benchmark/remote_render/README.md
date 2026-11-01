@@ -7,6 +7,8 @@ GUI, so the numbers can be reproduced.
 |---|---|---|
 | `push_stream_fps.py` | where the desktop would run | frames per second a client receives while the view is rotated, through whatever network lies between (an SSH tunnel to a cluster node, for instance) |
 | `multi_gpu_sessions.py` | on the backend's node, inside its image | frames per second of several views rotated at once, spread over the node's GPUs or all on one |
+| `out_of_core_views.py` | on the backend's node, inside its image | the same views drawn in core and out of core from the brick pyramid: frames, their difference, time to settle, frames per second while dragging, the render process's memory |
+| `make_synthetic_cube.py` | anywhere | writes a cube of any size (noise and 40 sources) plane by plane, to test views of cubes larger than a GPU |
 
 Both use a 2540 × 1560 frame (the 3-D pane of a Retina desktop), the
 backend's own volume threshold (the cube's 99th percentile) unless
@@ -56,6 +58,21 @@ Each session is a render process, as in the backend; the GPU each one
 rendered on is read from `nvidia-smi`. On PLEIADI-GPU `--nv` was enough
 with the EGL image; where it is not, add the binds and environment
 `scripts/launch_backend_slurm.sh` sets for EGL.
+
+### Out of core
+
+```bash
+python3 benchmark/remote_render/make_synthetic_cube.py <dir>/synthetic.fits      # 23.4 GiB
+srun -p gpu --gres=gpu:1 -c 16 --mem=96G --time=00:30:00 \
+    apptainer exec --nv --bind /scratch --env PYTHONPATH=<checkout>/backend,VISIVO_PYRAMID_DIR=<dir>/pyr \
+    <dir>/backend-egl.sif python3 <checkout>/benchmark/remote_render/out_of_core_views.py \
+    --cube <dir>/synthetic.fits --out <dir>/ooc_synthetic --mode ooc
+```
+
+Build the pyramid first (`python -m app.brick_pyramid build`, same
+`VISIVO_PYRAMID_DIR`) or the first session builds it, and its time and memory
+then count in the run. `--mode both` on a cube that fits the GPU compares the
+two paths.
 
 ## Results
 

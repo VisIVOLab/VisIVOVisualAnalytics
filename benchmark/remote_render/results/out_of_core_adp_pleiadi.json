@@ -1,0 +1,99 @@
+{
+ "cube": "/scratch/fvitello/skava-e2e/data/ADP.2025-09-05T10_57_51.916.fits",
+ "width": 1280,
+ "height": 800,
+ "egl_device": "0",
+ "cuda_visible_devices": "0",
+ "incore": {
+  "open_s": 4.38,
+  "views": {
+   "home": {
+    "settle_s": 0.6,
+    "frames": 1
+   },
+   "zoom": {
+    "settle_s": 0.7,
+    "frames": 1
+   },
+   "side": {
+    "settle_s": 0.1,
+    "frames": 1
+   },
+   "mip": {
+    "settle_s": 0.73,
+    "frames": 1
+   },
+   "mip_zoom": {
+    "settle_s": 0.22,
+    "frames": 1
+   }
+  },
+  "loaded_s": 44.8,
+  "drag_fps": 216.2,
+  "render_process_kB": {
+   "VmHWM": 4652096,
+   "VmRSS": 4226240,
+   "RssAnon": 2132352,
+   "RssFile": 203584
+  }
+ },
+ "ooc": {
+  "open_s": 1.9,
+  "views": {
+   "home": {
+    "settle_s": 0.73,
+    "frames": 2
+   },
+   "zoom": {
+    "settle_s": 0.14,
+    "frames": 1
+   },
+   "side": {
+    "settle_s": 0.13,
+    "frames": 1
+   },
+   "mip": {
+    "settle_s": 3.23,
+    "frames": 1
+   },
+   "mip_zoom": {
+    "settle_s": 0.3,
+    "frames": 1
+   }
+  },
+  "drag_fps": 68.4,
+  "render_process_kB": {
+   "VmHWM": 4804416,
+   "VmRSS": 3034816,
+   "RssAnon": 2813120,
+   "RssFile": 221696
+  }
+ },
+ "difference": {
+  "home": {
+   "mean_abs": 1.92,
+   "p99": 30.7,
+   "frac_gt_32": 0.0093
+  },
+  "zoom": {
+   "mean_abs": 11.66,
+   "p99": 59.0,
+   "frac_gt_32": 0.0489
+  },
+  "side": {
+   "mean_abs": 6.65,
+   "p99": 33.7,
+   "frac_gt_32": 0.0134
+  },
+  "mip": {
+   "mean_abs": 1.37,
+   "p99": 13.0,
+   "frac_gt_32": 0.0067
+  },
+  "mip_zoom": {
+   "mean_abs": 2.11,
+   "p99": 8.0,
+   "frac_gt_32": 0.0018
+  }
+ }
+}
