@@ -299,6 +299,11 @@ void DataHubWidget::refreshRecentDatasets()
             tip += u"\nCatalogue: %1"_s.arg(ds.skavaUrl);
         if (!ds.servedBy.isEmpty())
             tip += u"\nServed by node %1"_s.arg(ds.servedBy);
+        if (!ds.backend.isEmpty())
+            tip += ds.backendIsCluster
+                    ? u"\nOn the cluster %1: from another window, reopening it offers to "
+                      u"open a window on %1."_s.arg(ds.backend)
+                    : u"\nOn the backend %1."_s.arg(ds.backend);
         row->setToolTip(tip);
         nameRowLayout->addWidget(nameLbl, 1);
 
@@ -318,6 +323,21 @@ void DataHubWidget::refreshRecentDatasets()
                     u"Opened via SKAVA discovery routing, reopen will "
                     u"re-query SKAVA and route to the current backend."_s);
             nameRowLayout->addWidget(skavaBadge, 0, Qt::AlignVCenter);
+        }
+        // The backend it lives on, when not the local one.
+        if (!ds.backend.isEmpty() && ds.source != u"skava"_s) {
+            auto *backendBadge = new QLabel(ds.backend.toUpper(), row);
+            QFont bf(QStringLiteral("Lato"));
+            bf.setPixelSize(9);
+            bf.setWeight(QFont::Bold);
+            bf.setLetterSpacing(QFont::AbsoluteSpacing, 0.4);
+            backendBadge->setFont(bf);
+            backendBadge->setStyleSheet(
+                    QStringLiteral(
+                        "color: white; background: #0f766e; border-radius: 3px; "
+                        "padding: 1px 5px; margin: 0;"));
+            backendBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
+            nameRowLayout->addWidget(backendBadge, 0, Qt::AlignVCenter);
         }
         nameRowLayout->addStretch();
         textCol->addLayout(nameRowLayout);
@@ -364,9 +384,11 @@ void DataHubWidget::refreshRecentDatasets()
                 .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         const QString dsId          = ds.id;
         const QString dsDisplayName = ds.displayName;
+        const std::optional<QString> dsBackend =
+                ds.backendKnown ? std::optional<QString>(ds.backend) : std::nullopt;
         QPointer<DataHubWidget> guard(this);
         QObject::connect(removeBtn, &QPushButton::clicked, this,
-                         [guard, dsId, dsDisplayName]() {
+                         [guard, dsId, dsDisplayName, dsBackend]() {
                              if (!guard || !guard->recentMgr) return;
                              const auto reply = QMessageBox::question(
                                      guard, u"Remove from Recent Datasets"_s,
@@ -374,7 +396,7 @@ void DataHubWidget::refreshRecentDatasets()
                                      u"The actual dataset on the backend is not deleted."_s
                                              .arg(dsDisplayName));
                              if (reply != QMessageBox::Yes) return;
-                             guard->recentMgr->remove(dsId);
+                             guard->recentMgr->remove(dsId, dsBackend);
                              // changed() signal triggers refreshRecentDatasets
                              // automatically, so the row disappears without
                              // an explicit refresh call here.

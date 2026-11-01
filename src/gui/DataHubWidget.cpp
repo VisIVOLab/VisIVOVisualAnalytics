@@ -1,4 +1,5 @@
 #include "DataHubWidget.h"
+#include "Settings.h"
 #include "CardClickFilter.h"
 #include "app/BackendClient.h"
 #include "app/RecentDatasetsManager.h"
@@ -416,6 +417,17 @@ QFrame *DataHubWidget::buildBackendCard()
     QObject::connect(this->btnCheckConnection, &QPushButton::clicked,
                      this, &DataHubWidget::refreshStatus);
     hbox->addWidget(this->btnCheckConnection, 0, Qt::AlignVCenter);
+
+    // ── Cluster: connect a new window to one, or disconnect this one ──────
+    const Settings::SessionBackend *session = Settings::sessionBackend();
+    const bool onCluster = session && session->ownsClusterJob;
+    this->btnCluster = VisivoTheme::makeSecondaryButton(
+            onCluster ? u"Disconnect from %1"_s.arg(session->name) : u"Connect to a cluster…"_s, bar);
+    this->btnCluster->setToolTip(
+            onCluster ? u"Close this window: the tunnel is closed and the backend job cancelled."_s
+                      : u"Submit the backend on a SLURM cluster and open a new window on it."_s);
+    QObject::connect(this->btnCluster, &QPushButton::clicked, this, &DataHubWidget::clusterRequested);
+    hbox->addWidget(this->btnCluster, 0, Qt::AlignVCenter);
 
     return bar;
 }

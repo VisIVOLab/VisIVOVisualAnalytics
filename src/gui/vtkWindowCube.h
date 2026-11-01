@@ -270,6 +270,10 @@ public:
     /// Called at setup AND whenever the backend's capability arrives, since the
     /// setter lands after the constructor has already composed it once.
     void refreshRemoteRecommendBanner();
+    /// Called once the open result is known: on a remote backend that renders
+    /// on its GPU, Auto goes to Remote by itself for a cube too large to load
+    /// here. On the local backend Auto only recommends, as before.
+    void applyAutoRenderModeOnOpen();
     /// Provide beam metadata (BMAJ/BMIN in degrees, BPA in degrees E of N).
     /// Call after construction; the beam ellipse is drawn in the 2D slice
     /// renderer's bottom-left corner. Pass NaN major to hide the indicator.
@@ -2022,6 +2026,10 @@ protected:
     int animationFps{ 5 };
     int animationDirection{ +1 };
     QTimer sliceAnimationTimer;
+    /// Closed while still loading or computing: the window is hidden at once
+    /// and the close completes when the work ends (polled by this timer).
+    QTimer m_closeWhenIdleTimer;
+    bool m_closeWhenIdle{ false };
     void setCuttingPlaneOpacity(double opacity);
     void advanceSliceAnimation();
     void setSliceAnimationActive(bool active);

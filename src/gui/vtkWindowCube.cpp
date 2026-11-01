@@ -1695,6 +1695,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // The first content arrives via requestRemotePreview() below.
     QObject::connect(&this->cubeOpenWatcher, &QFutureWatcher<CubeOpenStageResult>::finished, this,
                      [this]() {
+                         if (this->m_closeWhenIdle)
+                             return;   // closed while it loaded: nothing more to show
                          this->setCubeOpenActionsEnabled(true);
 
                          const auto result = this->cubeOpenWatcher.result();
@@ -1725,6 +1727,10 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                      });
     QObject::connect(&this->remotePreviewWatcher, &QFutureWatcher<RemoteCubePreviewResult>::finished, this,
                      [this]() {
+                         // Closed while it loaded: no preview, no automatic
+                         // full-resolution fetch, no dialog for a hidden window.
+                         if (this->m_closeWhenIdle)
+                             return;
                          qDebug().noquote() << QStringLiteral("[preview-debug] watcher::finished fired");
                          const int requestId =
                                  this->remotePreviewWatcher.property("requestId").toInt();
@@ -1766,6 +1772,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                      });
     QObject::connect(&this->remoteHighResCubeWatcher,
                      &QFutureWatcher<RemoteCubeSubvolumeResult>::finished, this, [this]() {
+                         if (this->m_closeWhenIdle)
+                             return;   // closed while it loaded
                          const int requestId =
                                  this->remoteHighResCubeWatcher.property("requestId").toInt();
                          if (requestId != this->currentRemoteHighResRequestId) {
@@ -3929,14 +3937,21 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
     // cube size exceeds the user's LocalFullThresholdMb setting. The
     // size-based path is what lets the client decide independently
     // when the backend just says ``auto_full``.
-    const QString rmWorkDir = QDir::home().absoluteFilePath(qApp->applicationName());
-    Settings rmSettings(rmWorkDir);
+    // Raw QSettings, not Settings: that constructor runs python3 with blocking
+    // waits, and this now runs on every cube opened on a remote backend
+    // (applyAutoRenderModeOnOpen). Default and clamp mirror
+    // Settings::getLocalFullThresholdMb.
+    const int rmThresholdMb = [] {
+        QSettings raw(vtkWindowCube::settingsIniPath(), QSettings::IniFormat);
+        return std::clamp(raw.value(QStringLiteral("Cube/local_full_threshold_mb"), 256).toInt(), 16,
+                          16384);
+    }();
     const double rmCubeFullMb = (static_cast<double>(this->remoteDatasetWidth)
                                   * static_cast<double>(this->remoteDatasetHeight)
                                   * static_cast<double>(this->remoteDatasetDepth)
                                   * 4.0) / (1024.0 * 1024.0);
     const bool rmSizeWantsRemote =
-            rmCubeFullMb > static_cast<double>(rmSettings.getLocalFullThresholdMb());
+            rmCubeFullMb > static_cast<double>(rmThresholdMb);
     // A backend that cannot render server-side is not a candidate, for Auto or
     // for an explicit request: /v1/render/* refuses it, and Auto would have gone
     // looking for it on every large cube.
@@ -4150,32 +4165,43 @@ void vtkWindowCube::closeEvent(QCloseEvent *event)
     this->sliceAnimationTimer.stop();
     this->remove3dPickObserver();
 
+    // Capture a thumbnail of the last view BEFORE the cube renderer is torn
+    // down — the Data Hub's recents list shows it next to this dataset.
+    if (!this->isBusy() && !this->m_closeWhenIdle && ui && ui->vtkCube) {
+        ThumbnailCache::captureFromWidget(ui->vtkCube, this->filepath);
+    }
+
     // Tear down the remote render session BEFORE the rest of the cleanup;
     // fire-and-forget so the close isn't blocked on a slow backend. We
     // pass through Local first so the widget disconnects cleanly even if
     // the DELETE never makes it.
     this->releaseRemoteRenderSession();
 
-    // Capture a thumbnail of the last view BEFORE the cube renderer is torn
-    // down — the Data Hub's recents list shows it next to this dataset.
-    if (!this->isBusy() && ui && ui->vtkCube) {
-        ThumbnailCache::captureFromWidget(ui->vtkCube, this->filepath);
-    }
-
     if (this->isBusy()) {
-        if (this->cubeOpenWatcher.isRunning() || this->remotePreviewWatcher.isRunning()
-            || this->remoteHighResCubeWatcher.isRunning()) {
-            this->showPersistentStatusMessage(u"Loading cube data..."_s);
-        } else if (this->activeRemoteSliceRequests > 0) {
-            this->showPersistentStatusMessage(u"Loading slice..."_s);
-        } else if (this->activeRemoteIsosurfaceRequests > 0 || this->isosurfaceWatcher.isRunning()) {
-            this->showPersistentStatusMessage(u"Computing isosurface..."_s);
-        } else if (this->pvController && this->pvController->isBusy()) {
-            this->showPersistentStatusMessage(u"Computing PV diagram..."_s);
-        } else {
-            this->showPersistentStatusMessage(u"Computing moment map..."_s);
-        }
+        // Still loading or computing (a preview through a tunnel can take a
+        // while): the window must not be destroyed under work that writes into
+        // it, but the user asked to close it. It goes away now and the close
+        // completes when the work ends. It used to stay on screen, already
+        // disconnected from remote rendering, with nothing to say why.
         event->ignore();
+        this->hide();
+        if (!this->m_closeWhenIdle) {   // the first deferred close connects the poll
+            this->m_closeWhenIdle = true;
+            // A linked view would keep driving it (new slice requests), and
+            // keep it busy, while the user thinks it is gone.
+            if (this->m_linkViews)
+                this->setLinkViews(false);
+            this->m_closeWhenIdleTimer.setInterval(250);
+            QObject::connect(&this->m_closeWhenIdleTimer, &QTimer::timeout, this, [this]() {
+                // Never under an open modal dialog: deleting the window would
+                // delete a dialog that is still running its event loop.
+                if (!this->isBusy() && !QApplication::activeModalWidget()) {
+                    this->m_closeWhenIdleTimer.stop();
+                    this->close();
+                }
+            });
+        }
+        this->m_closeWhenIdleTimer.start();
         return;
     }
 

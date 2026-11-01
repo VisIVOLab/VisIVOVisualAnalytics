@@ -70,6 +70,10 @@ signals:
     /// User clicked the global search bar — host should open the command palette.
     void commandPaletteRequested();
 
+    /// "Connect to a cluster…" (this window runs on its local or a chosen backend),
+    /// or "Disconnect" (this window runs on a cluster it connected to).
+    void clusterRequested();
+
     // Emitted when the user clicks a recent dataset item.
     // MainWindow handles this by reopening the dataset using the stored path.
     void reopenDatasetRequested(const RecentDataset &dataset);
@@ -117,6 +121,8 @@ QFrame *makeActionCard(const QString &iconKind, const QString &title,
     QPointer<QLabel>       labelStatusBadge;
     QPointer<QLabel>       labelStatusDetail;
     QPointer<QPushButton>  btnCheckConnection;
+    /// "Connect to a cluster…", or "Disconnect from NAME" in a window on a cluster.
+    QPointer<QPushButton>  btnCluster;
 
     // System insights panel — live activity readouts.
     QPointer<QLabel>   labelRunningTasks;

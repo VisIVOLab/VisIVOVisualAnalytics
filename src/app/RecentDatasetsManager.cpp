@@ -2,8 +2,13 @@
 
 #include "RecentDatasetsManager.h"
 
+#include "Settings.h"
+
 #include <QDateTime>
+#include <QLockFile>
 #include <QSettings>
+
+#include <memory>
 
 using namespace Qt::StringLiterals;
 
@@ -23,6 +28,28 @@ static constexpr char kDatalink[]  = "skavaDatalinkUrl";
 static constexpr char kAccessUrl[] = "accessUrl";
 static constexpr char kServedBy[]  = "servedBy";
 static constexpr char kOpened[]    = "lastOpened";
+static constexpr char kBackend[]   = "backend";
+static constexpr char kCluster[]   = "backendIsCluster";
+static constexpr char kKnown[]     = "backendKnown";
+
+namespace {
+/// Same dataset: the same id on the same backend. An entry of unknown backend
+/// (saved before backends were recorded) is taken as the same.
+bool sameEntry(const RecentDataset &e, const QString &id, const std::optional<QString> &backend)
+{
+    return e.id == id && (!backend || !e.backendKnown || e.backend == *backend);
+}
+
+/// Serialises the read-modify-write of the list across windows (processes)
+/// sharing Settings.ini.
+std::unique_ptr<QLockFile> lockList(const QString &settingsPath)
+{
+    auto lock = std::make_unique<QLockFile>(settingsPath + u".recents.lock"_s);
+    lock->setStaleLockTime(10000);
+    lock->tryLock(2000);   // a stuck lock costs at most two seconds, never the write
+    return lock;
+}
+}  // namespace
 
 // ---------------------------------------------------------------------------
 
@@ -57,19 +84,43 @@ void RecentDatasetsManager::record(const QString &id,
     record(std::move(entry));
 }
 
+RecentDataset RecentDatasetsManager::find(const QString &id,
+                                          const std::optional<QString> &backend) const
+{
+    for (const auto &e : m_datasets)
+        if (sameEntry(e, id, backend))
+            return e;
+    return {};
+}
+
 void RecentDatasetsManager::record(RecentDataset entry)
 {
     if (entry.id.isEmpty()) {
         return;
     }
+    // Several windows (a local one, one per cluster) share Settings.ini: start
+    // from what is on disk, so this write does not drop another window's entries.
+    const auto lock = lockList(m_settingsPath);
+    load();
 
-    // Remove any existing entry with the same id.
-    for (auto it = m_datasets.begin(); it != m_datasets.end(); ++it) {
-        if (it->id == entry.id) {
-            m_datasets.erase(it);
-            break;
+    // Where it was opened, unless the caller said so (SKAVA entries reopen
+    // through discovery, wherever they are clicked).
+    if (entry.source != u"skava"_s && !entry.backendKnown) {
+        if (entry.backend.isEmpty()) {
+            if (const Settings::SessionBackend *session = Settings::sessionBackend()) {
+                entry.backend = session->name;
+                entry.backendIsCluster = session->ownsClusterJob;
+            }
         }
+        entry.backendKnown = true;
     }
+
+    // Remove the existing entry for the same dataset on the same backend: the
+    // same path on another backend is another dataset.
+    m_datasets.removeIf([&entry](const RecentDataset &e) {
+        return sameEntry(e, entry.id,
+                         entry.backendKnown ? std::optional<QString>(entry.backend) : std::nullopt);
+    });
 
     // Prepend the new (or updated) entry.
     if (entry.displayName.isEmpty())
@@ -88,10 +139,12 @@ void RecentDatasetsManager::record(RecentDataset entry)
     emit changed();
 }
 
-void RecentDatasetsManager::remove(const QString &id)
+void RecentDatasetsManager::remove(const QString &id, const std::optional<QString> &backend)
 {
+    const auto lock = lockList(m_settingsPath);
+    load();
     const int before = m_datasets.size();
-    m_datasets.removeIf([&id](const RecentDataset &e) { return e.id == id; });
+    m_datasets.removeIf([&](const RecentDataset &e) { return sameEntry(e, id, backend); });
     if (m_datasets.size() != before) {
         save();
         emit changed();
@@ -100,6 +153,8 @@ void RecentDatasetsManager::remove(const QString &id)
 
 void RecentDatasetsManager::clear()
 {
+    const auto lock = lockList(m_settingsPath);
+    load();
     if (m_datasets.isEmpty()) {
         return;
     }
@@ -138,6 +193,9 @@ void RecentDatasetsManager::load()
         e.accessUrl   = s.value(QLatin1StringView(kAccessUrl)).toString();
         e.servedBy    = s.value(QLatin1StringView(kServedBy)).toString();
         e.lastOpened  = s.value(QLatin1StringView(kOpened)).toDateTime();
+        e.backend     = s.value(QLatin1StringView(kBackend)).toString();
+        e.backendIsCluster = s.value(QLatin1StringView(kCluster), false).toBool();
+        e.backendKnown = s.value(QLatin1StringView(kKnown), false).toBool();
         s.endGroup();
         if (!e.id.isEmpty()) {
             m_datasets.append(std::move(e));
@@ -171,6 +229,13 @@ void RecentDatasetsManager::save() const
         if (!e.accessUrl.isEmpty())     s.setValue(QLatin1StringView(kAccessUrl), e.accessUrl);
         if (!e.servedBy.isEmpty())      s.setValue(QLatin1StringView(kServedBy), e.servedBy);
         s.setValue(QLatin1StringView(kOpened), e.lastOpened);
+        if (e.backendKnown) {
+            s.setValue(QLatin1StringView(kKnown), true);
+            if (!e.backend.isEmpty()) {
+                s.setValue(QLatin1StringView(kBackend), e.backend);
+                s.setValue(QLatin1StringView(kCluster), e.backendIsCluster);
+            }
+        }
         s.endGroup();
     }
     s.endGroup();

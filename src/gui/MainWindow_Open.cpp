@@ -19,6 +19,10 @@
 #include "DiagnosticsWindow.h"
 #include "LinewidthDialog.h"
 #include "ArepoExtractDialog.h"
+#include "ClusterProfileDialog.h"
+#include "app/ClusterProfile.h"
+
+#include <QSettings>
 #include "RemoteFileBrowserDialog.h"
 #include "Settings.h"
 #include "SettingsDialog.h"
@@ -264,12 +268,76 @@ QString pathFromFileUrl(const QString &url)
 
 }  // namespace
 
+void MainWindow::reopenOnItsBackend(const RecentDataset &dataset)
+{
+    const Settings::SessionBackend *session = Settings::sessionBackend();
+    const QString here = session ? session->name : u"the local backend"_s;
+    if (dataset.backend.isEmpty()) {
+        QMessageBox::information(
+                this, u"Reopen %1"_s.arg(dataset.displayName),
+                u"%1 was opened on the local backend, and this window runs on %2. Reopen it "
+                u"from a VisIVO window on your local backend."_s.arg(dataset.displayName, here));
+        return;
+    }
+    if (dataset.backendIsCluster) {
+        QSettings raw(QDir(QDir::home().absoluteFilePath(qApp->applicationName()))
+                              .absoluteFilePath(u"Settings.ini"_s),
+                      QSettings::IniFormat);
+        if (ClusterProfiles::find(raw, dataset.backend).isValid()) {
+            QMessageBox box(this);
+            box.setWindowTitle(u"Reopen %1"_s.arg(dataset.displayName));
+            box.setText(u"%1 is on the cluster %2."_s.arg(dataset.displayName, dataset.backend));
+            box.setInformativeText(
+                    u"Open a VisIVO window on %1 and reopen it there? This submits the backend "
+                    u"job on the cluster; closing that window cancels it. If a window on %1 is "
+                    u"already open, reopen the dataset from that one instead."_s.arg(dataset.backend));
+            auto *open = box.addButton(u"Open on %1"_s.arg(dataset.backend), QMessageBox::AcceptRole);
+            box.addButton(QMessageBox::Cancel);
+            box.setDefaultButton(open);
+            box.exec();
+            if (box.clickedButton() != open)
+                return;
+            QString error;
+            if (!ClusterProfileDialog::openWindowOn(
+                        dataset.backend, { u"--reopen-recent"_s, dataset.id }, &error))
+                QMessageBox::critical(this, u"Reopen %1"_s.arg(dataset.displayName), error);
+            return;
+        }
+        QMessageBox::information(
+                this, u"Reopen %1"_s.arg(dataset.displayName),
+                u"%1 was opened on the cluster %2, and there is no cluster profile with that "
+                u"name any more. Create it again from the Data Hub: Connect to a cluster…"_s
+                        .arg(dataset.displayName, dataset.backend));
+        return;
+    }
+    QMessageBox::information(
+            this, u"Reopen %1"_s.arg(dataset.displayName),
+            u"%1 was opened on the backend %2, and this window runs on %3. Start VisIVO on %2 "
+            u"(--backend) to reopen it."_s.arg(dataset.displayName, dataset.backend, here));
+}
+
 void MainWindow::reopenDataset(const RecentDataset &datasetRef)
 {
     // A copy, not the reference: the classifier call below waits in a nested
     // event loop, and the Recent row that owns the referenced entry can be
     // rebuilt (and deleted) while it does.
     const RecentDataset dataset = datasetRef;
+    // A dataset opened on another backend than this window's: its path means
+    // nothing here (a cluster path on the local backend, or the reverse). An
+    // entry of unknown backend (saved before backends were recorded) is tried
+    // anywhere, as before. Between --backend windows the name is not compared:
+    // by default it is host:port, and a tunnel's port changes from run to run.
+    if (dataset.source != u"skava"_s && dataset.backendKnown) {
+        const Settings::SessionBackend *session = Settings::sessionBackend();
+        const bool elsewhere =
+                dataset.backend.isEmpty()   ? session != nullptr
+                : dataset.backendIsCluster  ? !session || session->name != dataset.backend
+                                            : session == nullptr;
+        if (elsewhere) {
+            this->reopenOnItsBackend(dataset);
+            return;
+        }
+    }
     // ── SKAVA-origin entries route through discovery on reopen ──
     // Re-querying SKAVA (rather than reusing the stale local path) lets
     // the operator's file move across nodes, or the visivo-backend at a
@@ -462,7 +530,10 @@ void MainWindow::openSkavaOnCandidate(const QString &obsId,
                 // discovery instead of a path that may have moved: the
                 // catalogue it came from, the replica and the node that served it.
                 if (this->recentMgr) {
-                    this->recentMgr->remove(displayPath);
+                    // Only this window's entry for the path: the same path on
+                    // another backend is another dataset.
+                    const Settings::SessionBackend *session = Settings::sessionBackend();
+                    this->recentMgr->remove(displayPath, session ? session->name : QString());
                     RecentDataset entry;
                     entry.id = QStringLiteral("skava:") + obsId;
                     entry.displayName = !fsPath.isEmpty() ? QFileInfo(fsPath).fileName() : displayPath;
@@ -829,6 +900,7 @@ void MainWindow::openViewerFromOpenedDataset(const QString &path,
         cubeWin->setBrightnessUnit(opened.bunit);
         cubeWin->setRestFrequency(opened.restFreqHz);
         cubeWin->setServerSideRenderingAvailable(opened.serverSideRenderingAvailable);
+        cubeWin->applyAutoRenderModeOnOpen();
         // Live refresh: when this cube viewer pushes a new FITS into the
         // Workspace Exports, the Data Hub panel updates within frames of
         // the operation instead of on the next backend health tick.

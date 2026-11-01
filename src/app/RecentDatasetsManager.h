@@ -26,6 +26,8 @@
 #include <QObject>
 #include <QString>
 
+#include <optional>
+
 struct RecentDataset
 {
     // Unique key AND the path/URI needed to reopen the dataset.
@@ -67,6 +69,19 @@ struct RecentDataset
     QString accessUrl;
     QString servedBy;
 
+    // The backend the window that opened it ran on: empty for the local
+    // backend, else the name of a remote one (Settings::sessionBackend()). A
+    // path on a cluster means nothing to the local backend, so a reopen from a
+    // window on another backend offers to go there instead. Not used for SKAVA
+    // entries, which are resolved through discovery again on reopen.
+    QString backend;
+    // True when ``backend`` is a cluster profile the desktop can connect to
+    // (the window was opened with --connect-cluster); false for --backend.
+    bool    backendIsCluster{ false };
+    // False for entries saved before the backend was recorded: their backend
+    // is unknown (not "local"), and they reopen in any window as they did.
+    bool    backendKnown{ false };
+
     QDateTime lastOpened;
 };
 
@@ -99,8 +114,13 @@ public:
     // The same, with every field of the entry (``lastOpened`` is set here).
     void record(RecentDataset entry);
 
+    // The entry with the given id (on @p backend when given; an entry of
+    // unknown backend matches any), or an entry with an empty id.
+    RecentDataset find(const QString &id, const std::optional<QString> &backend = std::nullopt) const;
+
     // Removes the entry with the given id (no-op if not found).
-    void remove(const QString &id);
+    // With @p backend, only the entry on that backend (and one of unknown backend).
+    void remove(const QString &id, const std::optional<QString> &backend = std::nullopt);
 
     // Removes all entries.
     void clear();

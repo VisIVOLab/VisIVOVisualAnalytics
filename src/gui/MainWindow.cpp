@@ -14,6 +14,7 @@
 #include "DataHubWidget.h"
 #include "DiagnosticsWindow.h"
 #include "LinewidthDialog.h"
+#include "ClusterProfileDialog.h"
 #include "RemoteFileBrowserDialog.h"
 #include "Settings.h"
 #include "SettingsDialog.h"
@@ -331,6 +332,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                      this, [this]() { this->revealVLKBTab(); });
     QObject::connect(this->dataHub, &DataHubWidget::commandPaletteRequested,
                      this, &MainWindow::openCommandPalette);
+    QObject::connect(this->dataHub, &DataHubWidget::clusterRequested, this, [this]() {
+        const Settings::SessionBackend *session = Settings::sessionBackend();
+        if (session && session->ownsClusterJob) {
+            if (confirmClusterDisconnect())
+                exitApplication();
+            return;
+        }
+        const QString settingsPath =
+                QDir(QDir::home().absoluteFilePath(qApp->applicationName())).absoluteFilePath(u"Settings.ini"_s);
+        ClusterProfileDialog dialog(settingsPath, this);
+        dialog.exec();
+    });
 
     // ── Initial DataHub state ─────────────────────────────────────────────────
     this->syncDataHubSettings();
@@ -556,8 +569,52 @@ void MainWindow::openDiagnosticsWindow()
     this->diagnosticsWindow = DiagnosticsWindow::showSingleton();
 }
 
+bool MainWindow::confirmClusterDisconnect()
+{
+    const Settings::SessionBackend *session = Settings::sessionBackend();
+    QMessageBox box(this);
+    box.setWindowTitle(u"Disconnect from %1"_s.arg(session ? session->name : QString()));
+    box.setText(u"Disconnect from %1?"_s.arg(session ? session->name : QString()));
+    box.setInformativeText(u"This window and its viewers close, the tunnel is closed and the "
+                           u"backend job on the cluster is cancelled. Your other VisIVO windows "
+                           u"are not affected."_s);
+    auto *disconnect = box.addButton(u"Disconnect"_s, QMessageBox::AcceptRole);
+    box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.setIconPixmap(makeDialogQuestionPixmap(40));
+    box.exec();
+    return box.clickedButton() == disconnect;
+}
+
+void MainWindow::exitApplication()
+{
+    // We hide() — not close() — every top-level window so that their
+    // individual closeEvent busy-guards ("Loading image…", "Computing moment…"
+    // etc.) cannot block the shutdown.  hide() never sends a QCloseEvent.
+    //
+    // BackendLauncher lives on main()'s stack; its destructor runs as soon as
+    // QCoreApplication::exec() returns, terminating the backend process cleanly.
+    // A window on a cluster cancels its job on aboutToQuit (main.cpp).
+    const auto topLevel = QApplication::topLevelWidgets();
+    for (QWidget *w : topLevel)
+        w->hide();
+    QCoreApplication::exit(0);
+}
+
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    // A window that connected to a cluster owns its job: say what closing does.
+    const Settings::SessionBackend *session = Settings::sessionBackend();
+    if (session && session->ownsClusterJob) {
+        if (!confirmClusterDisconnect()) {
+            event->ignore();
+            return;
+        }
+        event->accept();
+        exitApplication();
+        return;
+    }
+
     QMessageBox box(this);
     box.setWindowTitle(u"Exit"_s);
     box.setText(u"Do you want to exit?"_s);
@@ -574,20 +631,8 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
     // User confirmed exit.  Accept this window's close, then force the whole
     // application to terminate.
-    //
-    // We hide() — not close() — any remaining top-level windows so that their
-    // individual closeEvent busy-guards ("Loading image…", "Computing moment…"
-    // etc.) cannot block the shutdown.  hide() never sends a QCloseEvent.
-    //
-    // BackendLauncher lives on main()'s stack; its destructor runs as soon as
-    // QCoreApplication::exec() returns, terminating the backend process cleanly.
     event->accept();
-    const auto topLevel = QApplication::topLevelWidgets();
-    for (QWidget *w : topLevel) {
-        if (w != this)
-            w->hide();
-    }
-    QCoreApplication::exit(0);
+    exitApplication();
 }
 
 void MainWindow::setApplicationTheme()

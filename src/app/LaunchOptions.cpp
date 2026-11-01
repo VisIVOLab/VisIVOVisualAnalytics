@@ -33,7 +33,8 @@ std::optional<QString> optionValue(const QStringList &args, const QString &optio
 const QStringList &LaunchOptions::backendValueOptions()
 {
     static const QStringList options = { u"--backend"_s, u"--backend-token-file"_s,
-                                         u"--backend-name"_s };
+                                         u"--backend-name"_s, u"--connect-cluster"_s,
+                                         u"--reopen-recent"_s };
     return options;
 }
 
@@ -101,4 +102,30 @@ bool LaunchOptions::remoteBackend(const QStringList &args, const QProcessEnviron
                                          : parsed.host();
     *out = backend;
     return true;
+}
+
+bool LaunchOptions::clusterToConnect(const QStringList &args, const QProcessEnvironment &env,
+                                     QString *name, QString *error)
+{
+    const auto opt = optionValue(args, u"--connect-cluster"_s);
+    if (!opt) {
+        name->clear();
+        return true;
+    }
+    if (opt->isEmpty()) {
+        *error = u"--connect-cluster needs the name of a cluster profile."_s;
+        return false;
+    }
+    if (optionValue(args, u"--backend"_s) || !env.value(u"VISIVO_BACKEND_URL"_s).trimmed().isEmpty()) {
+        *error = u"--connect-cluster and --backend (or VISIVO_BACKEND_URL) choose the backend "
+                 u"twice: give one of them."_s;
+        return false;
+    }
+    *name = *opt;
+    return true;
+}
+
+QString LaunchOptions::recentToReopen(const QStringList &args)
+{
+    return optionValue(args, u"--reopen-recent"_s).value_or(QString());
 }

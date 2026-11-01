@@ -17,6 +17,17 @@ private slots:
     void launchOptions_localUnlessABackendIsGiven();
     void launchOptions_optionsWithoutValueAreErrors();
     void launchOptions_tokenFromFileOrEnvironment();
+    void cluster_launcherOutputIsParsed();
+    void cluster_remoteCommandLineQuotesEveryArgument();
+    void cluster_localPortAvoidsTheLocalBackend();
+    void cluster_tokenNeverShown();
+    void cluster_cancelByIdOrByName();
+    void cluster_profileCannotInjectSshOptions();
+    void cluster_profilesRoundTrip();
+    void launchOptions_connectCluster();
+    void recents_recordTheBackendTheyWereOpenedOn();
+    void recents_twoWindowsKeepEachOthersEntries();
+    void recents_samePathOnTwoBackendsAndOldEntries();
     void upsertInsertsAndUpdates();
     void removeDropsNode();
     void localCannotBeRemoved();

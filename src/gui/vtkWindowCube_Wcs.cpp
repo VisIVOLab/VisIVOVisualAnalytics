@@ -364,6 +364,23 @@ bool vtkWindowCube::backendIsLocal() const
             && portOf(localUrl) == portOf(url);
 }
 
+void vtkWindowCube::applyAutoRenderModeOnOpen()
+{
+    // The cube is on a cluster (or another remote backend) with a GPU: moving it
+    // to this desktop to draw it here would only cost time. applyRenderMode()
+    // applies Auto's own test (the backend's preview_only, or the size above
+    // the local full-resolution threshold); a small cube stays local.
+    // A recommendation the user closed for this cube means "keep it here".
+    if (this->m_renderMode != RenderMode::Auto || !this->m_serverSideRenderingAvailable
+        || this->backendIsLocal()
+        || vtkWindowCube::remoteRecommendDismissed().contains(this->remoteRecommendKey()))
+        return;
+    QTimer::singleShot(0, this, [this]() {
+        if (this->m_renderMode == RenderMode::Auto)
+            this->applyRenderMode(RenderMode::Auto, false);
+    });
+}
+
 void vtkWindowCube::setServerSideRenderingAvailable(bool available)
 {
     this->m_serverSideRenderingAvailable = available;
