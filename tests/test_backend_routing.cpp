@@ -5,6 +5,7 @@
 #include "app/ClusterConnection.h"
 #include "app/ClusterProfile.h"
 #include "app/LaunchOptions.h"
+#include "app/RecentDatasetsManager.h"
 #include "skava/BackendRouting.h"
 #include "skava/SkavaClient.h"
 
@@ -333,6 +334,8 @@ void TestBackendRouting::cluster_profilesRoundTrip()
     p.frontend = u"pleiadi-gpu.oact.inaf.it"_s;
     p.user = u"fv"_s;
     p.partition = u"gpu"_s;
+    p.account = u"INA25_proj"_s;
+    p.qos = u"boost_qos_dbg"_s;
     p.gres = u"gpu:1"_s;
     p.cpus = 16;
     p.mem = u"96G"_s;
@@ -353,7 +356,8 @@ void TestBackendRouting::cluster_profilesRoundTrip()
     QCOMPARE(back.mem, u"128G"_s);
     QCOMPARE(back.sshTarget(), u"fv@pleiadi-gpu.oact.inaf.it"_s);
     QCOMPARE(back.launcherArgs(),
-             (QStringList{ u"--partition"_s, u"gpu"_s, u"--gres"_s, u"gpu:1"_s, u"--cpus"_s, u"16"_s,
+             (QStringList{ u"--partition"_s, u"gpu"_s, u"--account"_s, u"INA25_proj"_s, u"--qos"_s,
+                           u"boost_qos_dbg"_s, u"--gres"_s, u"gpu:1"_s, u"--cpus"_s, u"16"_s,
                            u"--mem"_s, u"128G"_s, u"--sif"_s, u"/scratch/fv/backend-egl.sif"_s,
                            u"--data-root"_s, u"/scratch/fv/data"_s, u"--workspace"_s,
                            u"/scratch/fv/visivo-ws"_s, u"--backend-src"_s, u"/scratch/fv/app"_s }));
@@ -377,6 +381,103 @@ void TestBackendRouting::launchOptions_connectCluster()
     QVERIFY(!LaunchOptions::clusterToConnect({ u"visivo"_s, u"--connect-cluster"_s, u"X"_s }, env, &name,
                                              &error));
     QVERIFY(LaunchOptions::backendValueOptions().contains(u"--connect-cluster"_s));
+}
+
+void TestBackendRouting::recents_recordTheBackendTheyWereOpenedOn()
+{
+    QTemporaryDir dir;
+    {
+        RecentDatasetsManager local(dir.path());
+        local.record(u"/Users/me/cube.fits"_s, u"cube.fits"_s, u"cube"_s);
+        QVERIFY(local.find(u"/Users/me/cube.fits"_s).backend.isEmpty());   // the local backend
+        QVERIFY(local.find(u"/Users/me/cube.fits"_s).backendKnown);        // known to be local
+    }
+    Settings::setSessionBackend({ u"http://127.0.0.1:18901"_s, u"t"_s, u"Pleiadi"_s, true });
+    {
+        RecentDatasetsManager onCluster(dir.path());
+        onCluster.record(u"/scratch/d/big.fits"_s, u"big.fits"_s, u"cube"_s);
+        RecentDataset skava;
+        skava.id = u"skava:obs1"_s;
+        skava.source = u"skava"_s;
+        skava.obsId = u"obs1"_s;
+        onCluster.record(skava);
+    }
+    Settings::setSessionBackend({ u"http://h:1"_s, u"t"_s, u"lab"_s, false });
+    {
+        RecentDatasetsManager viaBackend(dir.path());
+        viaBackend.record(u"/data/x.fits"_s, u"x.fits"_s, u"image"_s);
+    }
+    Settings::clearSessionBackend();
+
+    RecentDatasetsManager reread(dir.path());
+    const RecentDataset big = reread.find(u"/scratch/d/big.fits"_s);
+    QCOMPARE(big.backend, u"Pleiadi"_s);
+    QVERIFY(big.backendIsCluster);
+    const RecentDataset x = reread.find(u"/data/x.fits"_s);
+    QCOMPARE(x.backend, u"lab"_s);
+    QVERIFY(!x.backendIsCluster);
+    // SKAVA entries are resolved through discovery again, wherever they are clicked.
+    QVERIFY(reread.find(u"skava:obs1"_s).backend.isEmpty());
+    QVERIFY(reread.find(u"/Users/me/cube.fits"_s).backend.isEmpty());
+    QVERIFY(reread.find(u"missing"_s).id.isEmpty());
+    QCOMPARE(LaunchOptions::recentToReopen({ u"v"_s, u"--reopen-recent"_s, u"/scratch/d/big.fits"_s }),
+             u"/scratch/d/big.fits"_s);
+    QVERIFY(LaunchOptions::recentToReopen({ u"v"_s }).isEmpty());
+    QVERIFY(LaunchOptions::backendValueOptions().contains(u"--reopen-recent"_s));
+}
+
+void TestBackendRouting::recents_twoWindowsKeepEachOthersEntries()
+{
+    // A local window and a cluster window, both open, share Settings.ini.
+    QTemporaryDir dir;
+    RecentDatasetsManager first(dir.path());
+    RecentDatasetsManager second(dir.path());
+    first.record(u"/a.fits"_s, u"a"_s, u"cube"_s);
+    second.record(u"/b.fits"_s, u"b"_s, u"cube"_s);   // must not drop /a.fits
+    first.record(u"/c.fits"_s, u"c"_s, u"cube"_s);    // must not drop /b.fits
+    RecentDatasetsManager reread(dir.path());
+    QCOMPARE(reread.datasets().size(), 3);
+    QCOMPARE(reread.datasets().at(0).id, u"/c.fits"_s);
+    second.remove(u"/a.fits"_s);
+    QCOMPARE(RecentDatasetsManager(dir.path()).datasets().size(), 2);
+}
+
+void TestBackendRouting::recents_samePathOnTwoBackendsAndOldEntries()
+{
+    QTemporaryDir dir;
+    // An entry saved before backends were recorded: no backend keys at all.
+    {
+        QSettings raw(dir.filePath(u"Settings.ini"_s), QSettings::IniFormat);
+        raw.setValue(u"RecentDatasets/count"_s, 1);
+        raw.setValue(u"RecentDatasets/0/id"_s, u"/scratch/old.fits"_s);
+        raw.setValue(u"RecentDatasets/0/type"_s, u"cube"_s);
+        raw.setValue(u"RecentDatasets/0/source"_s, u"remote"_s);
+    }
+    RecentDatasetsManager m(dir.path());
+    const RecentDataset old = m.find(u"/scratch/old.fits"_s, u"Pleiadi"_s);
+    QCOMPARE(old.id, u"/scratch/old.fits"_s);   // unknown backend: matches any
+    QVERIFY(!old.backendKnown);
+
+    // The same path opened locally and on a cluster: two entries.
+    m.record(u"/data/shared.fits"_s, u"shared"_s, u"cube"_s);
+    Settings::setSessionBackend({ u"http://127.0.0.1:18901"_s, u"t"_s, u"Pleiadi"_s, true });
+    m.record(u"/data/shared.fits"_s, u"shared"_s, u"cube"_s);
+    Settings::clearSessionBackend();
+    QCOMPARE(m.find(u"/data/shared.fits"_s, QString()).backend, QString());
+    QCOMPARE(m.find(u"/data/shared.fits"_s, u"Pleiadi"_s).backend, u"Pleiadi"_s);
+    QCOMPARE(m.datasets().size(), 3);
+    // Removing one (the Data Hub's x) leaves the other.
+    m.remove(u"/data/shared.fits"_s, u"Pleiadi"_s);
+    QCOMPARE(m.find(u"/data/shared.fits"_s, u"Pleiadi"_s).id, QString());
+    QCOMPARE(m.find(u"/data/shared.fits"_s, QString()).id, u"/data/shared.fits"_s);
+    // Reopening an old entry on a known backend replaces it rather than adding one.
+    Settings::setSessionBackend({ u"http://127.0.0.1:18901"_s, u"t"_s, u"Pleiadi"_s, true });
+    m.record(u"/scratch/old.fits"_s, u"old"_s, u"cube"_s);
+    Settings::clearSessionBackend();
+    int copies = 0;
+    for (const auto &e : RecentDatasetsManager(dir.path()).datasets())
+        copies += e.id == u"/scratch/old.fits"_s;
+    QCOMPARE(copies, 1);
 }
 
 void TestBackendRouting::upsertInsertsAndUpdates()

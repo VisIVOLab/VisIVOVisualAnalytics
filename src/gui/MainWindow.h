@@ -143,6 +143,9 @@ private:
     /// user only when the content itself is ambiguous (a FITS table can be a
     /// catalogue or an overlay) or unrecognised.
     void dispatchOpenForPath(const QString &path);
+    /// A recent dataset from another backend than this window's: offer to open
+    /// a window on its cluster, or say where it is.
+    void reopenOnItsBackend(const RecentDataset &dataset);
     void doOpenCataloguePath(const QString &path, const QStringList &paths = QStringList());
     /// Resolve a remote URL → download via VisIVO backend → open. Used by
     /// the SKAVA Discovery tab after a DataLink lookup. ``obsId`` is the

@@ -616,5 +616,24 @@ int main(int argc, char *argv[])
     // dialog, so a second instance could forward instead of booting.)
     openRelay.attach(&w);
 
+    // A window opened on a cluster from another window's Recent Datasets
+    // (--reopen-recent ID): reopen that entry here, on this backend.
+    if (const QString recentId = LaunchOptions::recentToReopen(QCoreApplication::arguments());
+        !recentId.isEmpty() && remoteBackend) {
+        QTimer::singleShot(0, &w, [&w, recentId]() {
+            if (!w.recentDatasetsManager())
+                return;
+            const RecentDataset entry =
+                    w.recentDatasetsManager()->find(recentId, Settings::sessionBackend()->name);
+            if (entry.id.isEmpty()) {
+                QMessageBox::information(&w, u"Reopen"_s,
+                                         u"%1 is no longer in Recent Datasets: open it with Open…"_s
+                                                 .arg(recentId));
+                return;
+            }
+            w.reopenDataset(entry);
+        });
+    }
+
     return QApplication::exec();
 }

@@ -2026,6 +2026,10 @@ protected:
     int animationFps{ 5 };
     int animationDirection{ +1 };
     QTimer sliceAnimationTimer;
+    /// Closed while still loading or computing: the window is hidden at once
+    /// and the close completes when the work ends (polled by this timer).
+    QTimer m_closeWhenIdleTimer;
+    bool m_closeWhenIdle{ false };
     void setCuttingPlaneOpacity(double opacity);
     void advanceSliceAnimation();
     void setSliceAnimationActive(bool active);

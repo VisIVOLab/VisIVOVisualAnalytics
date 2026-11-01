@@ -69,6 +69,8 @@ and the entries for the desktop's Backends page.
 | `--token T` | `VISIVO_TOKEN` | generated | The backend token; a random one is generated when none is given. |
 | `--workspace DIR` | `VISIVO_WORKSPACE` | unset | A writable directory for everything the backend and the launcher write (see below). Needed where `$HOME` is read-only. |
 | `--node-code CODE` | `VISIVO_NODE_CODE` | unset | The node's code in the SKAVA catalogue, reported in `/v1/node/status`. |
+| `--account ACCOUNT` | `VISIVO_ACCOUNT` | unset | The SLURM account (project) charged for the job; required on CINECA Leonardo and BSC MareNostrum 5. |
+| `--qos QOS` | `VISIVO_QOS` | unset | The SLURM quality of service. |
 | `--job-name NAME` | `VISIVO_JOB_NAME` | `visivo_backend` | The SLURM job name. The desktop gives each job a unique name, so that it can cancel a job whose id it never received. |
 | `--version TEXT` | `VISIVO_VERSION` | the image's | What the status document reports as the backend version, for example the commit the image was built from. |
 | | `VISIVO_ASSIGN_TIMEOUT` | `300` | Seconds to wait for SLURM to assign the node before the launcher stops (the job stays queued; `--stop` cancels it). |
@@ -155,7 +157,7 @@ the frontend for the job it recorded (`~/.visivo_slurm_job`) and removes
 The desktop can do all of the above itself. In the Data Hub, **Connect to a
 cluster…** keeps named profiles: the frontend and your login there, the VisIVO
 clone on the frontend (for `scripts/launch_backend_slurm.sh`), the SLURM
-resources (partition, GPUs, CPUs, memory, time), the backend image, the data
+resources (partition, account, QOS, GPUs, CPUs, memory, time), the backend image, the data
 root, the workspace, and any further launcher options. **Connect** opens a new
 VisIVO window on that cluster; the window you were using stays on its own
 backend.
@@ -178,6 +180,13 @@ job left by a window that did not close normally is cancelled by the next one
 for the same profile (each job is recorded, under its unique name, until a
 cancel succeeds). From a terminal, the same is
 `VisIVOVisualAnalytics --connect-cluster NAME`.
+
+Recent Datasets remembers where each dataset was opened, and marks those
+opened on a cluster with its name. All windows share the list. Clicking an
+entry from a window on another backend does not try a path that backend does
+not have: for a cluster entry it offers to open a window on that cluster and
+reopens the dataset there (`--connect-cluster NAME --reopen-recent PATH`);
+otherwise it says where the dataset was opened.
 
 ### Opening the desktop client on the cluster backend
 

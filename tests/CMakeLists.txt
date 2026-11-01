@@ -44,6 +44,7 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/app/BackendClient.cpp
     ${VISIVO_ROOT}/src/app/BackendUrl.cpp
     ${VISIVO_ROOT}/src/app/LaunchOptions.cpp
+    ${VISIVO_ROOT}/src/app/RecentDatasetsManager.cpp
     ${VISIVO_ROOT}/src/app/ClusterProfile.cpp
     ${VISIVO_ROOT}/src/app/ClusterConnection.cpp
     ${VISIVO_ROOT}/src/app/DiagnosticsManager.cpp

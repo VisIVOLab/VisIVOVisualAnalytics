@@ -48,6 +48,11 @@ bool remoteBackend(const QStringList &args, const QProcessEnvironment &env,
 bool clusterToConnect(const QStringList &args, const QProcessEnvironment &env, QString *name,
                       QString *error);
 
+/// The recent dataset `--reopen-recent ID` asks the window to reopen once it
+/// is up (a window opened on a cluster from another window's history); empty
+/// when not given.
+QString recentToReopen(const QStringList &args);
+
 }  // namespace LaunchOptions
 
 #endif

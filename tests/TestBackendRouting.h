@@ -25,6 +25,9 @@ private slots:
     void cluster_profileCannotInjectSshOptions();
     void cluster_profilesRoundTrip();
     void launchOptions_connectCluster();
+    void recents_recordTheBackendTheyWereOpenedOn();
+    void recents_twoWindowsKeepEachOthersEntries();
+    void recents_samePathOnTwoBackendsAndOldEntries();
     void upsertInsertsAndUpdates();
     void removeDropsNode();
     void localCannotBeRemoved();

@@ -22,8 +22,9 @@ public:
     /// @p settingsPath: the client's Settings.ini, where the profiles are kept.
     explicit ClusterProfileDialog(const QString &settingsPath, QWidget *parent = nullptr);
 
-    /// Starts a new VisIVO process on the cluster profile @p name.
-    static bool openWindowOn(const QString &name, QString *error);
+    /// Starts a new VisIVO process on the cluster profile @p name, with
+    /// @p extraArgs after it (e.g. --reopen-recent ID).
+    static bool openWindowOn(const QString &name, const QStringList &extraArgs, QString *error);
 
 private:
     void showProfile(const ClusterProfile &p);
@@ -33,7 +34,7 @@ private:
 
     QString m_settingsPath;
     QComboBox *m_name;
-    QLineEdit *m_frontend, *m_user, *m_repoDir, *m_partition, *m_gres, *m_mem, *m_time, *m_sif,
+    QLineEdit *m_frontend, *m_user, *m_repoDir, *m_partition, *m_account, *m_qos, *m_gres, *m_mem, *m_time, *m_sif,
             *m_dataRoot, *m_workspace, *m_nodeCode, *m_extra;
     QSpinBox *m_cpus;
 };

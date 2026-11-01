@@ -52,6 +52,9 @@ ClusterProfileDialog::ClusterProfileDialog(const QString &settingsPath, QWidget 
     m_repoDir = line(u"VisIVO clone"_s, u"VisIVOVisualAnalytics"_s,
                      u"Path of the VisIVO clone on the frontend, relative to the home or absolute."_s);
     m_partition = line(u"Partition"_s, u"gpu"_s);
+    m_account = line(u"Account"_s, u"SLURM project, if the cluster requires one"_s,
+                     u"Charged for the job (sbatch --account); required on Leonardo and MareNostrum 5."_s);
+    m_qos = line(u"QOS"_s, u"optional (sbatch --qos)"_s);
     m_gres = line(u"GPUs (gres)"_s, u"gpu:1"_s);
     m_cpus = new QSpinBox(this);
     m_cpus->setRange(1, 256);
@@ -95,7 +98,7 @@ ClusterProfileDialog::ClusterProfileDialog(const QString &settingsPath, QWidget 
         if (!saveCurrent())
             return;
         QString error;
-        if (!openWindowOn(current().name, &error)) {
+        if (!openWindowOn(current().name, {}, &error)) {
             QMessageBox::critical(this, u"Connect to a cluster"_s, error);
             return;
         }
@@ -129,6 +132,8 @@ void ClusterProfileDialog::showProfile(const ClusterProfile &p)
     m_user->setText(p.user);
     m_repoDir->setText(p.repoDir);
     m_partition->setText(p.partition);
+    m_account->setText(p.account);
+    m_qos->setText(p.qos);
     m_gres->setText(p.gres);
     m_cpus->setValue(p.cpus > 0 ? p.cpus : 16);
     m_mem->setText(p.mem);
@@ -148,6 +153,8 @@ ClusterProfile ClusterProfileDialog::current() const
     p.user = m_user->text().trimmed();
     p.repoDir = m_repoDir->text().trimmed();
     p.partition = m_partition->text().trimmed();
+    p.account = m_account->text().trimmed();
+    p.qos = m_qos->text().trimmed();
     p.gres = m_gres->text().trimmed();
     p.cpus = m_cpus->value();
     p.mem = m_mem->text().trimmed();
@@ -175,13 +182,14 @@ bool ClusterProfileDialog::saveCurrent()
     return true;
 }
 
-bool ClusterProfileDialog::openWindowOn(const QString &name, QString *error)
+bool ClusterProfileDialog::openWindowOn(const QString &name, const QStringList &extraArgs,
+                                        QString *error)
 {
     // The new window chooses its backend by the profile alone: a remote backend
     // this window was started on (VISIVO_BACKEND_*) must not reach it.
     QProcess process;
     process.setProgram(QCoreApplication::applicationFilePath());
-    process.setArguments({ u"--connect-cluster"_s, name });
+    process.setArguments(QStringList{ u"--connect-cluster"_s, name } + extraArgs);
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     for (const QString &var : { u"VISIVO_BACKEND_URL"_s, u"VISIVO_BACKEND_TOKEN"_s,
                                 u"VISIVO_BACKEND_TOKEN_FILE"_s, u"VISIVO_BACKEND_NAME"_s })

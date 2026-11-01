@@ -15,6 +15,7 @@ QJsonObject toJson(const ClusterProfile &p)
     return { { u"name"_s, p.name },           { u"frontend"_s, p.frontend },
              { u"user"_s, p.user },           { u"repo_dir"_s, p.repoDir },
              { u"partition"_s, p.partition }, { u"gres"_s, p.gres },
+             { u"account"_s, p.account },     { u"qos"_s, p.qos },
              { u"cpus"_s, p.cpus },           { u"mem"_s, p.mem },
              { u"time"_s, p.time },           { u"sif"_s, p.sif },
              { u"data_root"_s, p.dataRoot },  { u"workspace"_s, p.workspace },
@@ -31,6 +32,8 @@ ClusterProfile fromJson(const QJsonObject &o)
     p.repoDir = o.value(u"repo_dir"_s).toString();
     p.partition = o.value(u"partition"_s).toString();
     p.gres = o.value(u"gres"_s).toString();
+    p.account = o.value(u"account"_s).toString();
+    p.qos = o.value(u"qos"_s).toString();
     p.cpus = o.value(u"cpus"_s).toInt(16);
     p.mem = o.value(u"mem"_s).toString();
     p.time = o.value(u"time"_s).toString();
@@ -59,6 +62,8 @@ QStringList ClusterProfile::launcherArgs() const
             args << option << value.trimmed();
     };
     add(u"--partition"_s, partition);
+    add(u"--account"_s, account);
+    add(u"--qos"_s, qos);
     add(u"--gres"_s, gres);
     if (cpus > 0)
         args << u"--cpus"_s << QString::number(cpus);

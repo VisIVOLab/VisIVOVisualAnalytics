@@ -21,6 +21,8 @@ struct ClusterProfile
     QString user;            ///< SSH login; empty: the local user name
     QString repoDir;         ///< the clone on the frontend, relative to its home
     QString partition;
+    QString account;         ///< SLURM account (project); needed on Leonardo, MareNostrum 5
+    QString qos;             ///< SLURM quality of service; optional
     QString gres;            ///< e.g. "gpu:1"
     int cpus = 16;
     QString mem;             ///< e.g. "96G"

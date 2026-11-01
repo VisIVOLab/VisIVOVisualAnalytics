@@ -33,7 +33,8 @@ std::optional<QString> optionValue(const QStringList &args, const QString &optio
 const QStringList &LaunchOptions::backendValueOptions()
 {
     static const QStringList options = { u"--backend"_s, u"--backend-token-file"_s,
-                                         u"--backend-name"_s, u"--connect-cluster"_s };
+                                         u"--backend-name"_s, u"--connect-cluster"_s,
+                                         u"--reopen-recent"_s };
     return options;
 }
 
@@ -122,4 +123,9 @@ bool LaunchOptions::clusterToConnect(const QStringList &args, const QProcessEnvi
     }
     *name = *opt;
     return true;
+}
+
+QString LaunchOptions::recentToReopen(const QStringList &args)
+{
+    return optionValue(args, u"--reopen-recent"_s).value_or(QString());
 }

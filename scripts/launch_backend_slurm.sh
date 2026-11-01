@@ -35,6 +35,9 @@
 #                           as a data root), caches, the job logs and the token
 #                           file. Needed where $HOME is read-only.
 #                           ($VISIVO_WORKSPACE; default: under $HOME)
+#   --account    ACCOUNT    SLURM account (project) to charge ($VISIVO_ACCOUNT;
+#                           required on CINECA Leonardo and BSC MareNostrum 5)
+#   --qos        QOS        SLURM quality of service ($VISIVO_QOS)
 #   --job-name   NAME       SLURM job name (default: visivo_backend). A unique
 #                           name lets a client cancel the job by name when it
 #                           never saw the job id (scancel --name).
@@ -79,6 +82,8 @@ BACKEND_SRC="${VISIVO_BACKEND_SRC_OVERRIDE:-}"
 TOKEN="${VISIVO_TOKEN:-}"
 NODE_CODE="${VISIVO_NODE_CODE:-}"
 JOB_NAME="${VISIVO_JOB_NAME:-}"
+ACCOUNT="${VISIVO_ACCOUNT:-}"
+QOS="${VISIVO_QOS:-}"
 WORKSPACE="${VISIVO_WORKSPACE:-}"
 VERSION="${VISIVO_VERSION:-}"
 LOG_DIR="${VISIVO_LOG_DIR:-$HOME/.visivo_logs}"
@@ -104,6 +109,8 @@ while [[ $# -gt 0 ]]; do
         --token)     TOKEN="$2";     shift 2 ;;
         --node-code) NODE_CODE="$2"; shift 2 ;;
         --job-name)  JOB_NAME="$2";  shift 2 ;;
+        --account)   ACCOUNT="$2";   shift 2 ;;
+        --qos)       QOS="$2";       shift 2 ;;
         --workspace) WORKSPACE="$2"; shift 2 ;;
         --version)   VERSION="$2";   shift 2 ;;
         --no-gpu)    USE_GPU=false; GRES=""; shift ;;
@@ -324,7 +331,8 @@ echo "[visivo]   time:      ${TIME}"
 echo "[visivo]   sif:       ${SIF}"
 
 # A name given on the command line takes precedence over the script's #SBATCH line.
-JOB_ID="$(sbatch --parsable ${JOB_NAME:+--job-name="$JOB_NAME"} "$JOB_SCRIPT")"
+JOB_ID="$(sbatch --parsable ${JOB_NAME:+--job-name="$JOB_NAME"} ${ACCOUNT:+--account="$ACCOUNT"} \
+    ${QOS:+--qos="$QOS"} "$JOB_SCRIPT")"
 rm -f "$JOB_SCRIPT"
 echo "[visivo] Job ID: $JOB_ID"
 
