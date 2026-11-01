@@ -7558,6 +7558,7 @@ void vtkWindowCube::regroupViewMenu()
     for (QMenu *m : { ui->menuView, ui->menuCamera, ui->menuEdit, ui->menuWCS,
                       ui->menu3DRendering, ui->menu2DPanel,
                       this->m_menuVolumeRendering.data(), m_menuCuttingPlaneOpacity.data(),
+                      m_menuRenderMode.data(),
                       m_menuAnimationSpeed.data(), m_menuAnimationMode.data() }) {
         if (m)
             m->setToolTipsVisible(true);

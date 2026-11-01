@@ -116,7 +116,7 @@ compute node, the port and the token from its output, and opens the tunnel
 | `--frontend HOST` | required | The SLURM frontend. |
 | `--user USER` | `$USER` | The SSH login on the frontend. |
 | `--repo-dir DIR` | `VISIVO_REMOTE_REPO`, else `VisIVOVisualAnalytics` | The clone on the frontend, relative to the remote home. |
-| `--port N` | `VISIVO_PORT`, else `18900` | The local port of the tunnel. When given, it is also passed to the launcher, so the backend listens on the same port on the node; otherwise the backend listens on the launcher's default and the tunnel maps one to the other. Without `--port`, a port that is taken, or that is the desktop client's own local backend port, is replaced by the next free one. |
+| `--port N` | `VISIVO_PORT`, else `18900` | The local port of the tunnel. When `--port` is given, it is also passed to the launcher, so the backend listens on the same port on the node; otherwise the backend listens on the launcher's default and the tunnel maps one to the other. Without `--port` (`VISIVO_PORT` only changes the default), a port that is taken, or that is the desktop client's own local backend port, is replaced by the next free one. |
 | `--stop` | | Stop the tunnel, cancel the job and remove the token file. |
 | any other option | | Passed unchanged to the launcher (`--partition`, `--gres`, `--sif`, `--data-root`, `--node-code`, `--workspace`, ...). |
 

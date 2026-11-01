@@ -31,8 +31,8 @@ set -euo pipefail
 FRONTEND=""
 SSH_USER="${USER}"
 LOCAL_PORT="${VISIVO_PORT:-18900}"
+# Only --port is strict; VISIVO_PORT just changes the default the helper starts from.
 PORT_GIVEN=false
-[[ -n "${VISIVO_PORT:-}" ]] && PORT_GIVEN=true
 # The clone on the frontend, relative to the remote home (an older checkout
 # may still be called VisIVO-next: pass --repo-dir or set VISIVO_REMOTE_REPO).
 REMOTE_REPO="${VISIVO_REMOTE_REPO:-VisIVOVisualAnalytics}"
@@ -128,10 +128,14 @@ client_backend_port() {
     if [[ -f "$ini" ]]; then
         url="$(awk '/^\[/{s=($0=="[Backend]")} s && /^url=/{sub(/^url=/,""); print; exit}' "$ini" || true)"
     fi
+    # As the client reads it: trimmed, and port 8000 when the URL gives none
+    # (BackendUrl::portOf(url, 8000) in the launcher).
+    url="$(printf '%s' "$url" | tr -d '"'"'"'' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
     url="${url:-http://127.0.0.1:8000}"
-    local port="${url##*:}"
-    port="${port%%/*}"
-    [[ "$port" =~ ^[0-9]+$ ]] || port=80
+    local hostport="${url#*://}"
+    hostport="${hostport%%/*}"
+    local port="${hostport##*:}"
+    [[ "$hostport" == *:* && "$port" =~ ^[0-9]+$ ]] || port=8000
     printf '%s' "$port"
 }
 port_in_use() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
@@ -254,6 +258,9 @@ if [[ "$READY" != "true" ]]; then
 fi
 
 BACKEND_NAME="${NODE_CODE:-${FRONTEND%%.*}}"
+# Quoted for copy and paste: a home directory may contain spaces.
+Q_TOKENFILE="$(printf '%q' "$TOKENFILE")"
+Q_BACKEND_NAME="$(printf '%q' "$BACKEND_NAME")"
 
 cat <<EOF
 
@@ -268,10 +275,10 @@ cat <<EOF
 
   Open VisIVO on this backend (this run only; a plain launch stays local):
       macOS:   open -n -a VisIVOVisualAnalytics --args \\
-                   --backend http://localhost:${LOCAL_PORT} --backend-token-file ${TOKENFILE} \\
-                   --backend-name ${BACKEND_NAME}
+                   --backend http://localhost:${LOCAL_PORT} --backend-token-file ${Q_TOKENFILE} \\
+                   --backend-name ${Q_BACKEND_NAME}
       Linux:   VisIVOVisualAnalytics --backend http://localhost:${LOCAL_PORT} \\
-                   --backend-token-file ${TOKENFILE} --backend-name ${BACKEND_NAME}
+                   --backend-token-file ${Q_TOKENFILE} --backend-name ${Q_BACKEND_NAME}
 
   For datasets found through SKAVA, also register it:
       Settings → Remote Backends → Add
