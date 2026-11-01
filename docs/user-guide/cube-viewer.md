@@ -117,15 +117,14 @@ segment above the 3-D pane:
   one). On a 2 GB cube on a V100 node behind an SSH tunnel this ran at about
   28 frames per second while rotating.
 
-  The remote view starts with the **backend's threshold**: the cube's 99th
-  percentile, from a sample of the full-resolution data (out of core, of its
-  bricks), which puts the cut at the edge of the noise. The Threshold field and
-  slider show it, and their range covers the cube's full-resolution values. A
-  cube still being read into the backend shows a threshold once the volume
-  appears and a final one when it is complete. Once you move the slider or
-  edit the field, your threshold is the one used, and it is kept when the view
-  switches between Local and Remote. Until then the desktop's own default,
-  computed from the preview, is not sent to the backend.
+  The remote view starts with the **backend's threshold** (see *The default
+  threshold* below), computed from a sample of the full-resolution data (out of
+  core, of its bricks). The Threshold field and slider show it, and their range
+  covers the cube's full-resolution values. A cube still being read into the
+  backend shows a threshold once the volume appears and a final one when it is
+  complete. Once you move the slider or edit the field, your threshold is the
+  one used, and it is kept when the view switches between Local and Remote.
+  Until then the desktop's own starting value is not sent to the backend.
 - **Auto** — on a **remote** backend that can render (a cluster connected from
   the Data Hub, or `--backend`), a cube above the local threshold goes to
   Remote by itself; a smaller one is drawn here. On the **local** backend it
@@ -163,6 +162,34 @@ a GPU node with 80 GB of VRAM, or a cube on a filesystem you do not want to pull
 several GB across. On your own laptop, against your own backend, it is mostly a
 way around this client's threshold.
 ```
+
+### The default threshold
+
+The 3-D view, local or remote, starts from a threshold computed by the backend
+from the cube's **noise**, so that the first view shows the emission and not a
+fog of noise voxels:
+
+- The threshold is the value above which about **100 noise voxels** of the whole
+  cube are expected. A fixed number of standard deviations would not do: 3σ
+  lets through 0.13 % of the noise voxels, about 100 000 in a cube of 77 million
+  voxels. So the cut rises with the size of the cube: about 4.2σ on a
+  6-million-voxel cube, 4.7σ on 77 million (4.8σ on HCG 44, whose tails are a
+  little heavier). In a small cube at most 0.01 % of the voxels are let
+  through (at least 3.7σ).
+- The noise is read from the **negative side** of the cube. Emission is
+  positive, so the values below the median are noise alone; the threshold
+  mirrors their tail. Where the noise has heavier tails than a Gaussian, the cut
+  rises by itself (7.3σ on an APERTIF cube whose tails reach that far), up to
+  1.6 times the Gaussian value, so that negative artefacts (absorption,
+  sidelobes) cannot raise it without bound.
+- Data that is not noise around a median (a constant cube, a skewed positive
+  distribution such as a simulation's density) keeps the 99th percentile.
+
+On HCG 44 and WALLABY, about 70 % of the flux inside their SoFiA-2 source
+masks stays above this threshold and 99–100 % of what is drawn lies inside the
+masks; at 3σ only 17 % of what is drawn on HCG 44 does
+(`validation/threshold_from_noise.py`). The emission below the threshold is too
+faint to tell from the noise at that level: lower the threshold to look for it.
 
 ## Color maps and transfer function
 

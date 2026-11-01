@@ -14,6 +14,7 @@ Heavy/regenerable outputs are git-ignored; reproduce via the commands below.
 | §5 Dice over (λv, reach) — Fig. "lasso grid" | [README.md](README.md#completenessreliability-tradeoff) | `lasso_sensitivity.py --grid [--dataset wallaby]` | `out/sensitivity_grid{,_wallaby}.{md,csv,png}` |
 | §5 lasso on synthetic discs (S/N, extent, neighbour) — Fig. "lasso synthetic" | [README.md](README.md#the-method-on-its-own-synthetic-discs) | `lasso_synthetic.py` | `out/lasso_synthetic.{md,csv,png}` |
 | §5 comparator's fit on discs of known kinematics | [README.md](README.md#the-method-on-its-own-synthetic-discs) | `kinematic_fit_synthetic.py` | `out/kinematic_fit_synthetic.{md,csv}` |
+| Default 3-D threshold from the noise (issue #93) | `out/threshold_from_noise.md` | `threshold_from_noise.py [--extra CUBE ...]` | `out/threshold_from_noise.{md,csv}` |
 | **Figure 3** panels b/c/e/f (lasso on real HI galaxy) | — | `figure3_lasso_hgc44.py` | `out/figure3_lasso.png` |
 | **Figure 7** (cosmic flows: streamlines + basins) | [velocity_field.md](velocity_field.md) | `velocity_field_demo.py` | `out/velocity_field.png` |
 

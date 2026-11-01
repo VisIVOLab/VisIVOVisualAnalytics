@@ -45,6 +45,7 @@
 #include "PvController.h"
 #include "PvPathGeometry.h"
 #include "PvDiagramWidget.h"
+#include "RemoteLevels.h"
 #include "RemoteRenderWidget.h"
 #include "SidebarPanel.h"
 #include "Settings.h"
@@ -890,6 +891,8 @@ RemoteCubePreviewResult fetchRemotePreview(const QString &backendUrl, const QStr
     result.valid = true;
     result.cubeRange = { response.rangeMin, response.rangeMax };
     result.dataExtent = { 0, response.width - 1, 0, response.height - 1, 0, response.depth - 1 };
+    result.hasDefaultThreshold = response.hasDefaultThreshold;
+    result.defaultThreshold = response.defaultThreshold;
     return result;
 }
 
@@ -3816,17 +3819,20 @@ void vtkWindowCube::applyRemotePreviewResult(const RemoteCubePreviewResult &resu
                                 0. });
 
     // ── Data-driven initial threshold (first load only) ──
-    // Picks the isosurface level on first load. Used to be
-    // 65% of (upper-lower) — too aggressive for HI / molecular
-    // cubes whose interesting emission tail sits in the lower
-    // half of the visible range, so users saw only a couple of
-    // bright peaks and assumed the cube was empty. 20% catches
-    // the bulk of the emission contour while still hiding the
-    // background noise floor, and the user can always raise it
-    // via the 3D View Settings slider.
+    // The backend's default, from the cube's noise (issue #93): about 100
+    // noise voxels of the whole cube lie above it, by the rule a remote view
+    // starts from. An older backend sends none: then 20 % of the range,
+    // which depends on the brightest voxel rather than on the noise.
     if (!this->m_initialThresholdApplied) {
-        const float initial = this->lowerBound
-                + 0.20f * (this->upperBound - this->lowerBound);
+        float initial = this->lowerBound + 0.20f * (this->upperBound - this->lowerBound);
+        if (result.hasDefaultThreshold) {
+            initial = static_cast<float>(result.defaultThreshold);
+            // Shown as it is: never clamped to the preview's range.
+            const visivo::ThresholdBounds b =
+                    visivo::including({ this->lowerBound, this->upperBound }, initial);
+            this->lowerBound = b.lower;
+            this->upperBound = b.upper;
+        }
         this->applyThreshold(initial);   // updates UI + pipeline, no Render
         this->m_initialThresholdApplied = true;
     } else {
@@ -6138,10 +6144,13 @@ void vtkWindowCube::applyThresholdToPipeline(double threshold)
         const double span   = upper - lower;
 
         // Guard: if range is degenerate or threshold is out of range, fall back to
-        // a safe flat ramp so the volume is still visible.
+        // a safe flat ramp so the volume is still visible -- except above the
+        // range: nothing in the data reaches the threshold, so nothing is drawn
+        // (a noise threshold can lie above a sampled preview's maximum, #93).
         const bool valid = (span > 0.0)
                         && (threshold >= lower)
                         && (threshold <= upper);
+        const bool aboveAll = (span > 0.0) && (threshold > upper);
 
         this->volumeOpacity->RemoveAllPoints();
         // Masked / NaN sentinel: always invisible.
@@ -6161,6 +6170,9 @@ void vtkWindowCube::applyThresholdToPipeline(double threshold)
                     std::min(threshold + 0.20 * span, upper),            0.9);
             // Full opacity at the top of the range.
             this->volumeOpacity->AddPoint(upper,                         1.0);
+        } else if (aboveAll) {
+            this->volumeOpacity->AddPoint(lower,  0.0);
+            this->volumeOpacity->AddPoint(upper,  0.0);
         } else {
             // Fallback: gentle linear ramp across the full range.
             this->volumeOpacity->AddPoint(lower,  0.0);

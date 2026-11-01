@@ -36,9 +36,9 @@ Response:
 | `session_id` | string | The render session id (a 32-character hex UUID). |
 | `initial_frame_jpeg_b64` | string | The first frame, JPEG, base64-encoded. |
 | `width`, `height` | int | Size of the render window, in pixels (1920 x 1080 until the client sends `resize`). |
-| `threshold` | float or null | The threshold the session renders with, until a `set_threshold` changes it: the cube's 99th percentile, from a regular sample of its voxels (out of core, from a sample of full-resolution bricks). A client shows it rather than sending a default of its own. |
+| `threshold` | float or null | The threshold the session renders with, until a `set_threshold` changes it: the cube's default threshold from its noise ([issue #93](../user-guide/cube-viewer.md#the-default-threshold): about 100 noise voxels of the whole cube above it), from a regular sample of its voxels (out of core, from a sample of full-resolution bricks). A client shows it rather than sending a default of its own. |
 | `data_min`, `data_max` | float or null | The cube's data range, at full resolution. |
-| `levels_pending` | bool | `true` while a cube read in the background (above 256 MB, in core) is still arriving: `threshold` and the range are null until the volume is shown (after a quarter of the cube, with the 99th percentile of the part loaded), and change once more when the cube is complete (the percentile over all of it), unless a `set_threshold` came first; a `set_threshold` is kept, even 0. Ask [`GET /v1/render/{session_id}/levels`](#get-v1-render-session-id-levels) until it is `false`. |
+| `levels_pending` | bool | `true` while a cube read in the background (above 256 MB, in core) is still arriving: `threshold` and the range are null until the volume is shown (after a quarter of the cube, with the threshold from the part loaded), and change once more when the cube is complete (the threshold from all of it), unless a `set_threshold` came first; a `set_threshold` is kept, even 0. Ask [`GET /v1/render/{session_id}/levels`](#get-v1-render-session-id-levels) until it is `false`. |
 
 A cube larger than `VISIVO_RENDER_OUT_OF_CORE_BYTES` is drawn from its brick pyramid ([Brick pyramid](../brick-pyramid.md#rendering-from-the-pyramid)). When the pyramid is missing or out of date, the backend starts building it in a separate process and answers **202** without creating a session:
 
@@ -205,7 +205,7 @@ Every other command is applied to the session's view. Each one counts as activit
 | `rotate` | `d_azimuth`, `d_elevation` (degrees, default 0) | Rotates the camera by these increments. |
 | `zoom` | `factor` (default 1.0, clamped to 0.05 to 20) | Zooms the camera by this factor. |
 | `pan` | `dx`, `dy` (default 0) | Accumulates a pan offset in the view state. |
-| `reset` | none | Ends a drag in progress, restores the default view state (keeping the window size; threshold at 3 % of the data range above the minimum, cutting plane on the middle channel) and resets the camera to fit the cube. |
+| `reset` | none | Ends a drag in progress, restores the default view state (keeping the window size; threshold back to the session's default, cutting plane on the middle channel) and resets the camera to fit the cube. |
 | `set_lut` | `name` (string) | Colour map of the volume (and of the isosurface). Unknown names fall back to Inferno. `colormap` is an accepted alias. |
 | `set_slice_lut` | `name` (string) | Colour map of the cutting-plane slice. |
 | `set_threshold` | `value` (number) | Lower anchor of the opacity transfer function, also the isosurface value. |

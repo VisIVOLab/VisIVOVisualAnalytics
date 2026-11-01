@@ -288,6 +288,10 @@ struct BackendCubePreviewResult
     QString scalarType;
     double rangeMin{ 0. };
     double rangeMax{ 0. };
+    /// The cube's default 3-D threshold, from its noise (issue #93); absent
+    /// from an older backend.
+    bool hasDefaultThreshold{ false };
+    double defaultThreshold{ 0. };
     QByteArray data;
 };
 

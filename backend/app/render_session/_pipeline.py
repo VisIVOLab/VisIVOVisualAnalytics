@@ -100,7 +100,9 @@ class PipelineMixin:
             keep_w, keep_h = self.view.width, self.view.height
             self.view = SessionViewState(width=keep_w, height=keep_h,
                                           vmin=self._vmin, vmax=self._vmax,
-                                          threshold=self._vmin + 0.03 * (self._vmax - self._vmin),
+                                          threshold=(self._default_threshold
+                                                     if self._default_threshold is not None
+                                                     else self._vmin + 0.03 * (self._vmax - self._vmin)),
                                           cutting_plane_slice_index=self._nz // 2)
             self._rebuild_volume_tfs_on_thread()
             self._rebuild_slice_lut_on_thread()
@@ -328,38 +330,30 @@ class PipelineMixin:
                 and self._chunks_total > 0
                 and self._chunks_loaded * 4 >= self._chunks_total
                 and self._vmax > self._vmin + 1e-9):
-                # Stride-sample the loaded portion of the cube to get
-                # a fast, reasonably-accurate p99 — this matches the
-                # legacy path's threshold semantic. HI noise cubes
-                # have p99 ≈ vmax/30 (most voxels are noise around
-                # zero), so heuristics like ``vmin + 0.7*span`` would
-                # set the threshold above all the data and make the
-                # cube render as transparent / invisible.
-                # Override the placeholder threshold (0.0) from init,
-                # unless the client sent one during loading (even 0):
-                # then its pick is respected. Otherwise compute p99
-                # from a stride sample of the loaded data.
-                if (self._cube_np is not None
-                    and not self._threshold_from_client):
+                # The default threshold from the noise of the loaded part
+                # (app/noise_threshold.py, as the in-core path does). It
+                # replaces the placeholder (0.0) from init, unless the client
+                # sent a threshold during loading (even 0): then its pick is
+                # respected.
+                if self._cube_np is not None:
+                    from ..noise_threshold import default_threshold, stride_for
                     # Sample stride: target ~5M voxels in the sample
-                    # regardless of cube size (sub-100 ms percentile).
-                    stride = max(1, int(
-                        (self._cube_np.size / 5_000_000) ** (1.0 / 3.0)))
+                    # regardless of cube size (sub-100 ms statistics).
+                    stride = stride_for(self._cube_np.size)
                     sample = self._cube_np[::stride, ::stride, ::stride]
-                    if sample.size:
-                        # Mask out the still-zero (unloaded) regions
-                        # to avoid skewing p99 toward 0. Loaded chunks
-                        # have real data including negatives; only the
-                        # unloaded z-slabs are EXACTLY zero.
-                        nonzero = sample[sample != 0.0]
-                        if nonzero.size > 1000:
-                            self.view.threshold = float(
-                                np.percentile(nonzero, 99.0))
-                        else:
-                            self.view.threshold = self._vmin + 0.05 * (
-                                self._vmax - self._vmin)
+                    # Mask out the still-zero (unloaded) regions: loaded
+                    # chunks have real data including negatives; only the
+                    # unloaded z-slabs are EXACTLY zero.
+                    nonzero = sample[sample != 0.0]
+                    if nonzero.size > 1000:
+                        self._default_threshold = default_threshold(
+                            nonzero, self._cube_np.size)
                     else:
-                        self.view.threshold = self._vmin
+                        self._default_threshold = self._vmin + 0.05 * (
+                            self._vmax - self._vmin)
+                    # Kept for ``reset`` even when the client chose its own.
+                    if not self._threshold_from_client:
+                        self.view.threshold = self._default_threshold
                 self._rebuild_volume_tfs_on_thread()
                 # Force a Modified() at reveal regardless of throttle
                 # — the user expects to SEE the volume the moment we
@@ -393,12 +387,15 @@ class PipelineMixin:
             # multi-GB cubes (a 10 GB cube with stride 8 → ~20 MB
             # sample, p99 in <100 ms instead of minutes).
             if self._cube_np is not None:
-                stride = max(1, int((self._cube_np.size / 5_000_000) ** (1.0 / 3.0)))
+                from ..noise_threshold import default_threshold, stride_for
+                stride = stride_for(self._cube_np.size)
                 sample = self._cube_np[::stride, ::stride, ::stride]
-                # The whole cube is in: p99 over all of it replaces the one
-                # taken from the first quarter, unless the client chose one.
+                # The whole cube is in: the threshold from all of it replaces
+                # the one from the first quarter, unless the client chose one.
+                # (Blanks were read as 0: default_threshold leaves zeros out.)
+                self._default_threshold = default_threshold(sample, self._cube_np.size)
                 if not self._threshold_from_client:
-                    self.view.threshold = float(np.percentile(sample, 99.0))
+                    self.view.threshold = self._default_threshold
                 self._slice_vmin = float(np.percentile(sample, 1.0))
                 self._slice_vmax = float(np.percentile(sample, 99.0))
                 logger.info(

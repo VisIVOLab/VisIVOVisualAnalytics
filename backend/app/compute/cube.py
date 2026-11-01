@@ -826,10 +826,19 @@ def worker_cube_preview(path: str, downsample: int) -> dict[str, Any]:
             raise ValueError("Cube preview requires a 3D cube.")
         stride = max(1, int(downsample))
         preview = np.asarray(data[::stride, ::stride, ::stride], dtype=np.float32)
+        n_voxels = int(np.prod(data.shape))
     finally:
         hdul.close()
 
     range_min, range_max = _finite_range(preview)
+    # The preview samples the cube with a stride, so its noise is the cube's:
+    # the default threshold of the whole cube, from it (issue #93), by the rule
+    # a remote view of this cube starts from (on another sample: within a few
+    # per cent of its value).
+    from ..noise_threshold import default_threshold, stride_for
+    st = stride_for(preview.size)
+    sample = preview[::st, ::st, ::st]
+    threshold = default_threshold(sample, n_voxels) if np.isfinite(sample).any() else None
     # zlib level 1 — same speed-vs-ratio rationale as worker_cube_subvolume.
     # For a 10 GB cube + downsample 4 the preview is ~170 MB; compression
     # brings it to ~70-90 MB on the wire and shaves seconds off the tunnel
@@ -842,6 +851,7 @@ def worker_cube_preview(path: str, downsample: int) -> dict[str, Any]:
         "scalar_type": "float32",
         "range_min": range_min,
         "range_max": range_max,
+        "default_threshold": threshold,
         "compression": compression,
         "data_base64": data_b64,
     }

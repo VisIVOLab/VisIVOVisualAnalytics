@@ -9,7 +9,7 @@ Downsampled cube for fast initial display.
 ```json
 { "dataset_id": "...", "downsample": 4 }
 ```
-Returns `scalar_type`, `width`, `height`, `depth`, `range_min`, `range_max` + base64 `data`.
+Returns `scalar_type`, `width`, `height`, `depth`, `range_min`, `range_max` + base64 `data`, and `default_threshold`: the cube's default 3-D threshold, from its noise ([The default threshold](../user-guide/cube-viewer.md#the-default-threshold)), computed on the preview (a stride sample, so its noise is the cube's) for the number of voxels of the whole cube; `null` when the preview has no finite value. The desktop starts its local view from it, and a remote view of the same cube starts from the same rule.
 
 ## `POST /v1/cube/slice`
 Single 2-D slice.

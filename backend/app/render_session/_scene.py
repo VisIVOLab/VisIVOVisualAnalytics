@@ -158,14 +158,12 @@ class SceneMixin:
             self._slice_vmax = 1.0
         self.view.vmin = vmin if self.view.vmin is None else self.view.vmin
         self.view.vmax = vmax if self.view.vmax is None else self.view.vmax
-        # Default threshold = 99th percentile. HI cubes have ~99 % of
-        # voxels in the Gaussian noise band around zero with maybe 1 %
-        # in the emission tail; p99 puts the cutoff right at the edge
-        # of noise so the FIRST frame already shows only the emission.
-        # Without this default the initial render before the client
-        # pushes its slider value looks like a solid noise block —
-        # vmin + 3 % span lets the noise voxels render fully opaque.
-        # Percentile-based threshold + slice LUT range are ONLY
+        # Default threshold: from the cube's noise (app/noise_threshold.py),
+        # so the FIRST frame already shows the emission and not the noise.
+        # Without a default the initial render before the client pushes a
+        # value looks like a solid noise block — vmin + 3 % span lets the
+        # noise voxels render fully opaque.
+        # The threshold + slice LUT range are ONLY
         # computed on the legacy synchronous path. The chunked path
         # already set placeholders above and defers the real values
         # to ``_poll_cube_chunks``'s ``complete`` handler — running
@@ -173,12 +171,20 @@ class SceneMixin:
         # minutes and blocks the whole executor thread, defeating
         # the point of the background reader.
         if not use_chunked:
+            from ..noise_threshold import default_threshold, stride_for
             # Out of core, from level-0 bricks: the proxy's averages would put
-            # p99 well inside the noise.
-            sample = self._ooc.sample() if out_of_core else None
+            # the threshold well inside the noise. In core, a stride over the
+            # finite voxels (blanks were replaced by the minimum above).
+            if out_of_core:
+                sample = self._ooc.sample()
+            else:
+                st = stride_for(cube.size)
+                sample = cube[::st, ::st, ::st][finite_mask[::st, ::st, ::st]]
+            # The default threshold leaves about 100 noise voxels in the whole
+            # cube above it (issue #93).
+            self._default_threshold = default_threshold(sample, nz * ny * nx)
             if self.view.threshold is None:
-                finite = sample if out_of_core else (cube[finite_mask] if not finite_mask.all() else cube)
-                self.view.threshold = float(np.percentile(finite, 99.0))
+                self.view.threshold = self._default_threshold
             # Slice-LUT range: the cube's vmin/vmax is dominated by a
             # few outlier voxels (galaxy peaks, edge artefacts), so
             # mapping the slice through the full [vmin, vmax] makes

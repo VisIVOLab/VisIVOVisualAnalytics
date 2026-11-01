@@ -206,6 +206,8 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
         # A threshold the client sent, even 0, is never replaced by the
         # percentile computed once a streaming cube is in.
         self._threshold_from_client = False
+        # The threshold the session starts with, kept for ``reset``.
+        self._default_threshold: float | None = None
         # Scene-change IDR request. Set by apply_command for state
         # mutations that drastically change the rendered image (LUT,
         # blend mode, cutting plane position); consumed by the WebRTC

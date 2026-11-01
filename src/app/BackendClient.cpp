@@ -1269,6 +1269,9 @@ BackendCubePreviewResult BackendClient::requestPreview(const QString &datasetId,
     result.scalarType = object.value(QStringLiteral("scalar_type")).toString();
     result.rangeMin = object.value(QStringLiteral("range_min")).toDouble();
     result.rangeMax = object.value(QStringLiteral("range_max")).toDouble();
+    const QJsonValue threshold = object.value(QStringLiteral("default_threshold"));
+    result.hasDefaultThreshold = threshold.isDouble();
+    result.defaultThreshold = threshold.toDouble();
     result.data = decodePayload(object, QStringLiteral("data_base64"),
                                 QStringLiteral("compression"), result.error);
     if (!result.error.isEmpty()) {
