@@ -6,6 +6,34 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## 1.0.8 (2026-11-02)
+
+- **2-D images larger than memory** (#85). An image above
+  `VISIVO_IMAGE_PYRAMID_BYTES` (256 MiB as float32) gets an averaged tile
+  pyramid, built out of core in the background by the backend, local or on a
+  cluster. Until it is ready the tiles are sampled from the file as before;
+  then the view reloads, averaged, without moving the camera. The data-state
+  panel shows the build's progress and says what a displayed pixel is ("each
+  pixel the mean of N×N", or "sampled: 1 pixel in N×N"), and so does the
+  cursor readout. On a 16 GiB image the build takes under a minute with 8
+  processes, and a tile comes in about 27 ms instead of 100.
+- **Region statistics from the full-resolution data** (#95). Below full
+  resolution, or when a region reaches beyond the pixels loaded, the
+  statistics of a box, circle, ellipse, annulus or polygon are computed by
+  the backend on the file, out of core and exactly (median and MAD
+  included), instead of on the displayed block means or samples. The dialog
+  says what they were computed on, and the live readout says when they are
+  being computed. A region of 1.1 billion pixels takes about 25 s on a
+  laptop and 100 s on PLEIADI (BeeGFS), in about 1 GB of memory; its values
+  are copied once to local disk (`VISIVO_REGION_SPILL_DIR`) so that the file
+  is read only once.
+- **Readable region readout.** The live Σ / μ box over the image takes its
+  background from the theme: in the light theme it was dark text on black.
+  Pixel counts in the statistics are grouped by thousands.
+- **Cluster jobs that fail at start-up are reported.** The SLURM launchers
+  stop at once with the job's state and the tail of its log, instead of
+  waiting five minutes and saying that no node was assigned.
+
 ## 1.0.7 (2026-10-29)
 
 - **The local token stays local.** The token in `VISIVO_TOKEN` or
