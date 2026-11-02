@@ -17,6 +17,7 @@
 #include "CopilotActionRouter.h"
 #include "CubeUiAssembler.h"
 #include "WorkspaceChrome.h"
+#include "app/DatasetName.h"
 #include "InspectorPanel.h"
 #include "theme/SegmentedToggle.h"
 #include "app/ProductRegistry.h"
@@ -1171,7 +1172,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     if (this->m_workspaceChrome) {
         this->m_workspaceChrome->installStatusRail();
         this->m_workspaceChrome->installSessionDock(
-                this->filepath, QFileInfo(this->filepath).fileName(), u"cube"_s,
+                this->filepath, visivo::datasetDisplayName(this->filepath), u"cube"_s,
                 this->m_windowScope);
         // Tree-selection = pane-selection: activate (or mount) the matching pane.
         connect(this->m_workspaceChrome, &WorkspaceChrome::sessionRowActivated, this,
@@ -2917,7 +2918,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         }
         const int ch = ui->sliderSlice->value();
         const QString label = QStringLiteral("Slice CH %1 from %2")
-                .arg(ch).arg(QFileInfo(this->filepath).fileName());
+                .arg(ch).arg(visivo::datasetDisplayName(this->filepath));
         emit contourDataReady(label, output);
     });
 
@@ -3296,7 +3297,7 @@ void vtkWindowCube::showFitsHeaderDialog()
     auto *dlg = new QDialog(this);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
     dlg->setWindowModality(Qt::NonModal);
-    dlg->setWindowTitle(u"FITS Header - %1"_s.arg(QFileInfo(this->filepath).fileName()));
+    dlg->setWindowTitle(u"FITS Header - %1"_s.arg(visivo::datasetDisplayName(this->filepath)));
     dlg->resize(620, 480);
 
     auto *vbox = new QVBoxLayout(dlg);
@@ -4869,7 +4870,7 @@ void vtkWindowCube::exportSubCubeAsFits()
 
     // One window with every parameter in it, kept open across the run. The
     // basename used to be a SECOND modal prompt after the bounds dialog closed.
-    const QFileInfo srcInfo(this->filepath);
+    const QFileInfo srcInfo(visivo::datasetExportStem(this->filepath));
     auto *nameEdit = new QLineEdit();
     nameEdit->setPlaceholderText(u"leave empty to let the backend name it"_s);
     nameEdit->setText(u"%1_subcube_x%2-%3_y%4-%5_z%6-%7.fits"_s
@@ -5085,7 +5086,7 @@ void vtkWindowCube::exportCurrentChannelAs2dFits()
     const int channel = std::clamp(ui->sliderSlice->value() - 1,
                                    0, this->remoteDatasetDepth - 1);
 
-    const QFileInfo srcInfo(this->filepath);
+    const QFileInfo srcInfo(visivo::datasetExportStem(this->filepath));
     const QString defaultName =
             u"%1_ch%2.fits"_s.arg(srcInfo.completeBaseName())
                               .arg(channel + 1, 4, 10, QChar(u'0'));   // as on the channel bar
@@ -5519,7 +5520,7 @@ void vtkWindowCube::exportDisplayedMapAsFits(const QString &requestedProductId)
         base.chop(1);
     if (base.isEmpty())
         base = u"map"_s;
-    const QFileInfo srcInfo(this->filepath);
+    const QFileInfo srcInfo(visivo::datasetExportStem(this->filepath));
     bool ok = false;
     const QString basename = QInputDialog::getText(
             this, u"Export Map as FITS"_s,
@@ -5623,7 +5624,7 @@ void vtkWindowCube::exportMomentMapAsFits(const QString &requestedProductId)
 
     // Ask for the basename to save under in the Workspace Exports. Empty
     // input → backend synthesises a name from source + order.
-    const QFileInfo srcInfo(this->filepath);
+    const QFileInfo srcInfo(visivo::datasetExportStem(this->filepath));
     const QString defaultName =
             u"%1_m%2.fits"_s.arg(srcInfo.completeBaseName()).arg(cfg.order);
     bool ok = false;
@@ -5981,7 +5982,7 @@ void vtkWindowCube::exportPvAsFits()
                              u"There is no PV diagram to save yet."_s);
         return;
     }
-    const QFileInfo srcInfo(this->filepath);
+    const QFileInfo srcInfo(visivo::datasetExportStem(this->filepath));
     bool ok = false;
     const QString basename = QInputDialog::getText(
             this, u"Save PV as FITS"_s,
@@ -7450,7 +7451,7 @@ QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QStrin
     AnalysisProduct p;
     p.productId = stableId;
     p.parentKey = this->datasetPersistKey();
-    p.parentLabel = QFileInfo(this->filepath).fileName();
+    p.parentLabel = visivo::datasetDisplayName(this->filepath);
     p.kind = kind;
     p.label = label;
     p.renderer = renderer;
@@ -12394,7 +12395,7 @@ void vtkWindowCube::setupInspector()
     // live stat widgets re-hosted from the (parked) info page, so they stay in
     // sync with updateInfoStats().
     panel->clearProperties();
-    panel->addPropertyRow(u"Dataset"_s, QFileInfo(this->filepath).fileName());
+    panel->addPropertyRow(u"Dataset"_s, visivo::datasetDisplayName(this->filepath));
     panel->addPropertyRow(u"Type"_s, QStringLiteral("CUBE · %1×%2×%3")
                                              .arg(this->remoteDatasetWidth)
                                              .arg(this->remoteDatasetHeight)
@@ -15391,4 +15392,23 @@ void vtkWindowCube::applyIsosurfaceResult(const AsyncIsosurfaceResult &result)
     qDebug().noquote()
             << QStringLiteral("[perf][isosurface] render after apply: %1 ms")
                        .arg(renderTimer.elapsed());
+}
+
+void vtkWindowCube::setSiblingFields(const QList<QPair<QString, QString>> &fields)
+{
+    // One cube per field: the others are listed beside this one, and opening a
+    // row opens that field (reopenProductFromFile → its "Output path").
+    int index = 0;
+    for (const auto &field : fields) {
+        ++index;
+        if (field.second == this->filepath)
+            continue;
+        QVariantMap params;
+        params.insert(u"Field"_s, field.first);
+        params.insert(u"Output path"_s, field.second);
+        this->registerAnalysisProduct(
+                u"field"_s, u"Field: %1"_s.arg(field.first), params, nullptr,
+                this->scopedProductId(u"field-%1"_s.arg(index)), QString(),
+                /*revealProvenance=*/false, {}, /*selectInSession=*/false);
+    }
 }

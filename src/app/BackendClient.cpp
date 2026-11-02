@@ -885,6 +885,12 @@ static BackendOpenDatasetResult parseOpenDatasetObject(const QJsonObject &object
             result.recommendedLoadMode = s;
         }
     }
+    result.fieldName = object.value(QStringLiteral("field_name")).toString();
+    for (const QJsonValue &f : object.value(QStringLiteral("fields")).toArray()) {
+        const QJsonObject field = f.toObject();
+        result.fields.append({ field.value(QStringLiteral("name")).toString(),
+                               field.value(QStringLiteral("path")).toString() });
+    }
     return result;
 }
 

@@ -181,11 +181,13 @@ def vbt_dataset_path(path: str | Path, field: int | None = None) -> str | None:
     if not is_vbt(data):
         return None
     try:
-        if vbt_volume_header(data)["kind"] != "volume":
-            return None
-    except ValueError:
+        header = vbt_volume_header(data)
+    except (OSError, ValueError):
         return None
-    return vbt_field_ref(data, 0 if field is None else field)
+    field = 0 if field is None else int(field)
+    if not 0 <= field < header["field_count"]:
+        return None
+    return vbt_field_ref(data, field)
 
 
 def vbt_fields(path: str | Path) -> list[dict]:

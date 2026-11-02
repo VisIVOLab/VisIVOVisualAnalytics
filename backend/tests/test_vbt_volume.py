@@ -302,3 +302,22 @@ def test_a_vbt_volume_is_opened_as_a_dataset_and_a_table_of_points_as_a_vbt(tmp_
     np.zeros(6, "<f4").tofile(tmp_path / "p.bin")
     (tmp_path / "p.bin.head").write_text("float\n2\n3\nlittle\nX\nY\n")
     assert classify_path(tmp_path / "p.bin")["opener"] == "vbt"
+
+
+@pytest.mark.asyncio
+async def test_a_field_reference_classifies_and_shows_its_header(client, auth_headers, tmp_path):
+    from app.volume_source import vbt_field_ref
+
+    path = _write_vbt(tmp_path, _fields(), spacing=(2.0, 1.0, 0.5), names=["Density", "Gas"])
+    ref = vbt_field_ref(path, 1)
+    verdict = (await client.post("/v1/files/classify", json={"path": ref},
+                                 headers=auth_headers)).json()
+    assert verdict["valid"] and (verdict["kind"], verdict["opener"]) == ("cube", "dataset")
+    header = (await client.post("/v1/files/header", json={"path": ref},
+                                headers=auth_headers)).json()
+    assert header["valid"], header["error"]
+    cards = "\n".join(header["cards"])
+    assert "CDELT1  =                  2.0" in cards and "'Gas" in cards
+    missing = (await client.post("/v1/files/classify", json={"path": vbt_field_ref(path, 7)},
+                                 headers=auth_headers)).json()
+    assert missing["valid"] is False

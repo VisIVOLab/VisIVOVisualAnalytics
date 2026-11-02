@@ -73,11 +73,16 @@ async def list_files(
 
 @router.post("/v1/files/header", response_model=FileHeaderResponse, tags=["files"])
 async def file_header(request: FileHeaderRequest, _: None = _auth) -> FileHeaderResponse:
+    from ..volume_source import open_fits, split_ref, vbt_dataset_path  # noqa: PLC0415
+
     try:
-        path = _normalize_path(request.path)
-        if not _is_fits(path):
+        # A field of a VBT volume (issue #83): the header it is read with.
+        base, field = split_ref(request.path)
+        path = _normalize_path(base)
+        ref = vbt_dataset_path(path, field) if field is not None else None
+        if ref is None and not _is_fits(path):
             raise ValueError("FITS file not found.")
-        with fits.open(str(path), memmap=True) as hdul:
+        with open_fits(ref or str(path), memmap=True) as hdul:
             # The image's own header (WCS, BUNIT) — the extension's, on a
             # multi-extension product — followed by the primary's descriptive
             # cards it does not repeat (OBJECT, the ESO hierarchy). Structural
@@ -113,7 +118,21 @@ async def classify_file(request: FileClassifyRequest, _: None = _auth) -> FileCl
     when the client should ask the user rather than pick.
     """
     from ..classify import classify_path  # noqa: PLC0415
+    from ..volume_source import split_ref, vbt_dataset_path  # noqa: PLC0415
 
+    # A field of a VBT volume (a Recent entry, a Session Data row) opens as the
+    # cube it was (issue #83).
+    base, field = split_ref(request.path)
+    if field is not None:
+        try:
+            ok = vbt_dataset_path(_normalize_path(base), field) is not None
+        except Exception:
+            ok = False
+        if not ok:
+            return FileClassifyResponse(valid=False, error="File not found.")
+        return FileClassifyResponse(valid=True, error="", path=request.path, kind="cube",
+                                    opener="dataset", confident=True,
+                                    detail="A field of a VisIVO Binary Table volume.")
     try:
         path = _normalize_path(request.path)
     except Exception:

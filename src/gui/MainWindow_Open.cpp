@@ -41,6 +41,7 @@
 #include "HiPSWindow.h"
 #include "vtkWindowVbt.h"
 #include "vtkWindowVbtVolume.h"
+#include "app/DatasetName.h"
 #include "VLKBInventoryTree.h"
 #include "SkavaSearchPanel.h"
 #include "../skava/SkavaClient.h"
@@ -844,10 +845,23 @@ void MainWindow::adoptSessionContext(const QString &backendUrl, const QString &b
     this->refreshCombineMenuState();
 }
 
-void MainWindow::openViewerFromOpenedDataset(const QString &path,
+void MainWindow::openViewerFromOpenedDataset(const QString &openedPath,
                                               const BackendOpenDatasetResult &opened,
                                               const BackendClient &client)
 {
+    // A field of a VBT volume (issue #83): the viewer is given the field's
+    // reference, the path every backend call reads that field by, and shows it
+    // as "volume · field". Any other dataset keeps the path it was opened by.
+    QString path = openedPath;
+    if (!opened.fieldName.isEmpty()) {
+        visivo::rememberFieldNames(opened.fields);
+        for (const auto &field : opened.fields) {
+            if (field.first == opened.fieldName) {
+                path = field.second;
+                break;
+            }
+        }
+    }
     QWidget *win = nullptr;
     if (opened.kind == u"image"_s || opened.kind == u"dynspec"_s) {
         const bool isDynspec = opened.kind == u"dynspec"_s;
@@ -900,6 +914,8 @@ void MainWindow::openViewerFromOpenedDataset(const QString &path,
         cubeWin->setBrightnessUnit(opened.bunit);
         cubeWin->setRestFrequency(opened.restFreqHz);
         cubeWin->setServerSideRenderingAvailable(opened.serverSideRenderingAvailable);
+        // The other fields of a VBT volume, each a cube of its own.
+        cubeWin->setSiblingFields(opened.fields);
         cubeWin->applyAutoRenderModeOnOpen();
         // Live refresh: when this cube viewer pushes a new FITS into the
         // Workspace Exports, the Data Hub panel updates within frames of
@@ -949,8 +965,10 @@ void MainWindow::openViewerFromOpenedDataset(const QString &path,
         return;
     }
 
-    this->m_sampCurrentFitsPath = path;
-    this->m_sampCurrentFitsName = QFileInfo(path).fileName();
+    // A field of a VBT volume is no FITS file another tool could load.
+    this->m_sampCurrentFitsPath = visivo::isFieldReference(path) ? QString() : path;
+    this->m_sampCurrentFitsName =
+            visivo::isFieldReference(path) ? QString() : QFileInfo(path).fileName();
     this->m_sampCurrentCataloguePath.clear();
     this->m_sampCurrentCatalogueName.clear();
     this->m_sampCurrentCatalogueFormat.clear();
@@ -958,7 +976,7 @@ void MainWindow::openViewerFromOpenedDataset(const QString &path,
 
     // Record in recent datasets (uses the final kind returned by the backend).
     if (this->recentMgr) {
-        const QString name = QFileInfo(path).fileName();
+        const QString name = visivo::datasetDisplayName(path);
         this->recentMgr->record(path, name, opened.kind);
     }
 

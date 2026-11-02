@@ -377,6 +377,9 @@ public:
     /// path — unlike the session-scoped backend dataset id, it's the same across
     /// sessions). See AnalysisParamStore.
     QString datasetPersistKey() const { return this->filepath; }
+    /// The other fields of the VBT volume this cube is a field of (issue #83),
+    /// as (name, path): rows of Session Data that open each as a cube.
+    void setSiblingFields(const QList<QPair<QString, QString>> &fields);
 
     /// Build a product id scoped to THIS window: "<stem>@<datasetKey>#<windowScope>". The
     /// parentKey stays datasetPersistKey() (so the tree still nests under the dataset), but the
