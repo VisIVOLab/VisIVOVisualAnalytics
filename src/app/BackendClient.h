@@ -1690,8 +1690,9 @@ struct BackendRegionStatsResult
 {
     bool valid{ false };
     QString error;
-    int validCount{ 0 };
-    int blankedCount{ 0 };
+    qint64 totalCount{ 0 };
+    qint64 validCount{ 0 };
+    qint64 blankedCount{ 0 };
     double mean{ 0.0 };
     double rms{ 0.0 };
     double sum{ 0.0 };

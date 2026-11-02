@@ -42,9 +42,13 @@ For very large mosaics the full upgrade is assembled from tiles
 rather than uploading every pixel. The decimated image is visually identical
 (display is downsampled for rendering anyway), and all overlays and tools —
 probe, profile, region statistics, ruler/angle, catalogue markers — report
-**full-resolution pixel and WCS coordinates**, so measurements are unaffected
-by the LOD. The badge next to the file path shows `full-res` once the upgrade
-has loaded.
+**full-resolution pixel and WCS coordinates**. Values are another matter: a
+displayed pixel then stands for a block of source pixels, and the status bar
+says which (*each pixel the mean of N×N*, or *sampled: 1 pixel in N×N*), as
+does the cursor readout. Region statistics are computed on the file at full
+resolution (see [Region statistics below full
+resolution](#region-statistics-below-full-resolution)). The badge next to the
+file path shows `full-res` once the upgrade has loaded.
 
 ### Viewport-driven level of detail
 
@@ -464,6 +468,28 @@ overlay assumes the standard FITS pixel orientation (CDELT1 < 0, north
 up), so `dx = −len·sin(PA)`, `dy = +len·cos(PA)`. For rotated WCS the
 vector orientation may need correction — check against your reduction
 pipeline.
+
+### Region statistics below full resolution
+
+At full resolution a region's statistics are computed from the displayed
+pixels, which are the file's. Below it they would not be the image's: on
+averaged pixels the mean is right but σ and the MAD are those of block means
+(about N times smaller for uncorrelated noise), and on sampled pixels the sum —
+the flux — is short by the block's area. So when the view is reduced, the
+statistics shown when you release the region come from the **file at full
+resolution**: the backend reads the region in blocks, whatever its size, and
+computes count, blanks, minimum, maximum, sum, mean, σ, median and σ_MAD
+exactly (`POST /v1/regions/stats`). The region is handed over as the area it
+covers on screen (on averaged levels, exactly the blocks of its pixels). The
+same happens at full resolution when the region reaches beyond the part of the
+image loaded (a zoomed-in view of a large image holds only what is on screen).
+The dialog's subtitle says what it was computed on; if the backend cannot
+answer, it falls back to the displayed pixels and says so. The per-Stokes rows
+still come from the displayed layers and are marked as such.
+
+The live readout while you drag stays on the displayed pixels, for speed. Below
+full resolution it says so (*overview, N×N means* or *1 in N×N*) and its sum
+is scaled by the block's area and marked `≈`.
 
 ### Region statistics: radio-aware fields
 

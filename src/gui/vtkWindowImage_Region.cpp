@@ -23,6 +23,7 @@
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
 #include "ProductOrigin.h"
+#include "RegionFullRes.h"
 #include "RegionReadout.h"
 #include "ToolResultDialog.h"
 #include "vtkInteractorStyleProfile.h"
@@ -121,9 +122,9 @@ using namespace CubeGeom;  // shared viewport-geometry helpers (deduplicated)
 namespace {
 struct RegionStatistics
 {
-    int totalCount{ 0 };
-    int validCount{ 0 };
-    int blankedCount{ 0 };
+    long long totalCount{ 0 };
+    long long validCount{ 0 };
+    long long blankedCount{ 0 };
     double minValue{ 0. };
     double maxValue{ 0. };
     double mean{ 0. };
@@ -561,22 +562,40 @@ void vtkWindowImage::updateRegionReadout()
         m_regionReadout = new QLabel(ui->vtk);
         m_regionReadout->setAttribute(Qt::WA_TransparentForMouseEvents);
         m_regionReadout->setStyleSheet(
-                QStringLiteral("QLabel { background: rgba(0,0,0,0.55); color:%1;"
+                QStringLiteral("QLabel { background:%3; color:%1;"
                                " border:1px solid %2; border-radius:6px;"
                                " padding:5px 10px;"
                                " font-family:'JetBrains Mono','SF Mono',monospace;"
                                " font-size:10px; }")
                         .arg(QLatin1StringView(VisivoTheme::kOnSurface()),
-                             QLatin1StringView(VisivoTheme::kOutline())));
+                             QLatin1StringView(VisivoTheme::kOutline()),
+                             QLatin1StringView(VisivoTheme::kSurfaceContainer())));
     }
 
-    const auto quick = computeRegionQuickStats(imageData, this->regionMode,
-                                               this->regionAnchorVoxel, this->regionCurrentVoxel,
-                                               this->regionPolygonVertices,
-                                               this->regionAnnulusInnerRadius);
-    m_regionReadout->setText(visivo::regionReadoutText(regionModeLabel(this->regionMode),
-                                                       quick.sum, quick.mean, quick.validCount,
-                                                       quick.sampled));
+    auto quick = computeRegionQuickStats(imageData, this->regionMode,
+                                         this->regionAnchorVoxel, this->regionCurrentVoxel,
+                                         this->regionPolygonVertices,
+                                         this->regionAnnulusInnerRadius);
+    // Below full resolution a displayed pixel stands for a block: the sum is
+    // scaled by its area and marked as an estimate, and the readout says so;
+    // the statistics on release come from the file (issue #95).
+    QString shapeLabel = regionModeLabel(this->regionMode);
+    double spacing[3];
+    imageData->GetSpacing(spacing);
+    if (spacing[0] > 1.001) {
+        const int block = static_cast<int>(std::lround(spacing[0]));
+        quick.sum *= spacing[0] * spacing[1];
+        quick.validCount = static_cast<long long>(quick.validCount * spacing[0] * spacing[1]);
+        quick.sampled = true;
+        shapeLabel += this->m_displayAveraged
+                ? u" (overview, %1\u00d7%1 means)"_s.arg(block)
+                : u" (overview, 1 in %1\u00d7%1)"_s.arg(block);
+    }
+    QString text = visivo::regionReadoutText(shapeLabel, quick.sum, quick.mean,
+                                             quick.validCount, quick.sampled);
+    if (m_regionStatsPending)
+        text += u"\nComputing the statistics on the full-resolution data…"_s;
+    m_regionReadout->setText(text);
     // Never wider than the viewport it floats in: a long shape name plus two
     // figures on a narrow window would run out past the right edge, where there
     // is nothing to clip it.
@@ -736,6 +755,7 @@ void vtkWindowImage::clearRegion()
 {
     // The readout describes a region; with none there is nothing for it to say.
     this->hideRegionReadout();
+    this->m_regionStatsPending = false;
     this->regionValid = false;
     this->regionDragging = false;
     this->ignoreNextPolygonRelease = false;
@@ -886,177 +906,282 @@ void vtkWindowImage::analyzeCurrentRegion()
     }
 
     auto *imageData = this->layers->getImageData(this->layers->getMasterIndex());
-    const auto stats = computeRegionStatistics2D(imageData, this->regionMode, this->regionAnchorVoxel,
-                                                 this->regionCurrentVoxel, this->regionPolygonVertices,
-                                                 this->regionAnnulusInnerRadius);
-
-    const int myGeneration = ++this->m_regionDialogGeneration;
+    const auto displayed = computeRegionStatistics2D(imageData, this->regionMode,
+                                                     this->regionAnchorVoxel,
+                                                     this->regionCurrentVoxel,
+                                                     this->regionPolygonVertices,
+                                                     this->regionAnnulusInnerRadius);
     const RegionMode capturedMode = this->regionMode;
+    const int requestGeneration = ++this->m_regionDialogGeneration;
+    this->m_regionStatsPending = false;   // an earlier request is superseded
 
-    // Built as a RECORD, then shown and registered from that single description
-    // (ToolResultDialog::makeRecord). Registering it is what makes the result
-    // outlive this window: the statistics used to exist only inside a dialog
-    // with WA_DeleteOnClose, so closing it meant drawing the region again.
-    QList<QPair<QString, QList<QPair<QString, QString>>>> sections;
-    const QString subtitle =
-            QStringLiteral("%1  ·  computed on the currently loaded data block")
-                    .arg(regionModeLabel(capturedMode));
+    // What a displayed pixel is (issue #95): at full resolution the displayed
+    // pixels are the file's and their statistics are exact; below it they are
+    // block means or one pixel per block, and the statistics come from the
+    // file, computed by the backend.
+    visivo::DisplayGrid grid;
+    if (imageData) {
+        double origin[3], spacing[3];
+        int extent[6];
+        imageData->GetOrigin(origin);
+        imageData->GetSpacing(spacing);
+        imageData->GetExtent(extent);
+        grid = { origin[0], origin[1], spacing[0], spacing[1], extent[0], extent[2] };
+    }
+    const int block = static_cast<int>(std::lround(grid.spacingX));
+    const QString displayedPixels = this->m_displayAveraged
+            ? u"the displayed pixels, each the mean of %1\u00d7%1"_s.arg(block)
+            : u"the displayed pixels, 1 in %1\u00d7%1 sampled"_s.arg(block);
 
-    if (!stats.valid) {
-        sections.append({ u"Statistics"_s,
-                        { { u"Result"_s, u"No valid pixels in the selected region."_s },
-                          { u"Note"_s,   u"Blanked / NaN pixels are ignored."_s } } });
-    } else {
-        sections.append({ u"Statistics"_s,
-                        { { u"Valid pixels"_s,
-                            QStringLiteral("%1 / %2").arg(stats.validCount).arg(stats.totalCount) },
-                          { u"Blanked / NaN"_s, QString::number(stats.blankedCount) },
-                          { u"Min"_s,    QStringLiteral("%1").arg(stats.minValue, 0, 'g', 8) },
-                          { u"Max"_s,    QStringLiteral("%1").arg(stats.maxValue, 0, 'g', 8) },
-                          { u"Mean"_s,   QStringLiteral("%1").arg(stats.mean,     0, 'g', 8) },
-                          { u"Median"_s, QStringLiteral("%1").arg(stats.median,   0, 'g', 8) },
-                          { u"Std Dev"_s,QStringLiteral("%1").arg(stats.stddev,   0, 'g', 8) },
-                          { u"σ (MAD)"_s,QStringLiteral("%1").arg(stats.madSigma, 0, 'g', 8) } } });
+    auto present = [this, capturedMode, grid](const RegionStatistics &stats, const QString &scope) {
+        const int myGeneration = this->m_regionDialogGeneration;
+        auto *imageData = this->layers->getImageData(this->layers->getMasterIndex());
 
-        // ── Radio-specific: integrated flux if beam known ────────────────
-        if (this->hasBeamInfo()) {
-            const double Omega_beam_px = this->beamAreaPixels();
-            if (Omega_beam_px > 0.0) {
-                const double fluxJy = stats.sum / Omega_beam_px;
-                const double snrPeak = (stats.madSigma > 0.0)
-                        ? (stats.maxValue / stats.madSigma) : 0.0;
-                sections.append({ u"Radio (beam-aware)"_s,
-                        { { u"Beam (BMAJ × BMIN)"_s,
-                            QStringLiteral("%1\" × %2\"")
-                                    .arg(this->m_beamMajorDeg * 3600.0, 0, 'f', 2)
-                                    .arg(this->m_beamMinorDeg * 3600.0, 0, 'f', 2) },
-                          { u"Beam area (pixels)"_s,
-                            QStringLiteral("%1").arg(Omega_beam_px, 0, 'f', 2) },
-                          { u"Integrated flux"_s,
-                            QStringLiteral("%1 Jy").arg(fluxJy, 0, 'g', 6) },
-                          { u"Peak SNR (peak/σ_MAD)"_s,
-                            QStringLiteral("%1").arg(snrPeak, 0, 'f', 1) } } });
-            }
-        }
+        // Built as a RECORD, then shown and registered from that single description
+        // (ToolResultDialog::makeRecord). Registering it is what makes the result
+        // outlive this window: the statistics used to exist only inside a dialog
+        // with WA_DeleteOnClose, so closing it meant drawing the region again.
+        QList<QPair<QString, QList<QPair<QString, QString>>>> sections;
+        const QString subtitle =
+                QStringLiteral("%1  ·  computed on %2").arg(regionModeLabel(capturedMode), scope);
 
-        // ── Per-Stokes flux when a Stokes set is loaded ──────────────────
-        if (!m_stokesRoles.isEmpty()) {
-            QList<QPair<QString, QString>> rows;
-            const StokesRole order[] = {
-                StokesRole::I, StokesRole::Q, StokesRole::U, StokesRole::V,
-                StokesRole::DerivedP, StokesRole::DerivedPdb,
-                StokesRole::DerivedPA, StokesRole::DerivedFrac,
-                StokesRole::DerivedAlpha, StokesRole::DerivedRM };
-            const double Omega = this->hasBeamInfo() ? this->beamAreaPixels() : 0.0;
-            for (StokesRole role : order) {
-                const int idx = this->findLayerByStokesRole(role);
-                if (idx < 0) continue;
-                auto *roleData = this->layers->getImageData(idx);
-                if (!roleData || roleData == imageData) continue;  // skip if same as master
-                const auto roleStats = computeRegionStatistics2D(
-                        roleData, this->regionMode, this->regionAnchorVoxel,
-                        this->regionCurrentVoxel, this->regionPolygonVertices,
-                        this->regionAnnulusInnerRadius);
-                if (!roleStats.valid) continue;
-                const QString roleName = this->stokesRoleLabel(role);
-                if (role == StokesRole::DerivedPA) {
-                    rows.append({ roleName + u" (mean)"_s,
-                            QStringLiteral("%1°").arg(roleStats.mean, 0, 'f', 2) });
-                } else if (role == StokesRole::DerivedFrac) {
-                    rows.append({ roleName + u" (mean)"_s,
-                            QStringLiteral("%1 %").arg(roleStats.mean * 100.0, 0, 'f', 2) });
-                } else if (role == StokesRole::DerivedAlpha) {
-                    rows.append({ roleName + u" (mean)"_s,
-                            QStringLiteral("%1").arg(roleStats.mean, 0, 'f', 2) });
-                } else if (role == StokesRole::DerivedRM) {
-                    rows.append({ roleName + u" (mean)"_s,
-                            QStringLiteral("%1 rad m⁻²").arg(roleStats.mean, 0, 'f', 1) });
-                } else if (Omega > 0.0) {
-                    rows.append({ roleName,
-                            QStringLiteral("%1 Jy").arg(roleStats.sum / Omega, 0, 'g', 6) });
-                } else {
-                    rows.append({ roleName + u" (sum)"_s,
-                            QStringLiteral("%1").arg(roleStats.sum, 0, 'g', 6) });
+        if (!stats.valid) {
+            sections.append({ u"Statistics"_s,
+                            { { u"Result"_s, u"No valid pixels in the selected region."_s },
+                              { u"Note"_s,   u"Blanked / NaN pixels are ignored."_s } } });
+        } else {
+            sections.append({ u"Statistics"_s,
+                            { { u"Valid pixels"_s,
+                                QStringLiteral("%1 / %2").arg(QLocale(QLocale::English).toString(stats.validCount),
+                                                              QLocale(QLocale::English).toString(stats.totalCount)) },
+                              { u"Blanked / NaN"_s, QLocale(QLocale::English).toString(stats.blankedCount) },
+                              { u"Min"_s,    QStringLiteral("%1").arg(stats.minValue, 0, 'g', 8) },
+                              { u"Max"_s,    QStringLiteral("%1").arg(stats.maxValue, 0, 'g', 8) },
+                              { u"Mean"_s,   QStringLiteral("%1").arg(stats.mean,     0, 'g', 8) },
+                              { u"Median"_s, QStringLiteral("%1").arg(stats.median,   0, 'g', 8) },
+                              { u"Std Dev"_s,QStringLiteral("%1").arg(stats.stddev,   0, 'g', 8) },
+                              { u"σ (MAD)"_s,QStringLiteral("%1").arg(stats.madSigma, 0, 'g', 8) } } });
+
+            // ── Radio-specific: integrated flux if beam known ────────────────
+            if (this->hasBeamInfo()) {
+                const double Omega_beam_px = this->beamAreaPixels();
+                if (Omega_beam_px > 0.0) {
+                    const double fluxJy = stats.sum / Omega_beam_px;
+                    const double snrPeak = (stats.madSigma > 0.0)
+                            ? (stats.maxValue / stats.madSigma) : 0.0;
+                    sections.append({ u"Radio (beam-aware)"_s,
+                            { { u"Beam (BMAJ × BMIN)"_s,
+                                QStringLiteral("%1\" × %2\"")
+                                        .arg(this->m_beamMajorDeg * 3600.0, 0, 'f', 2)
+                                        .arg(this->m_beamMinorDeg * 3600.0, 0, 'f', 2) },
+                              { u"Beam area (pixels)"_s,
+                                QStringLiteral("%1").arg(Omega_beam_px, 0, 'f', 2) },
+                              { u"Integrated flux"_s,
+                                QStringLiteral("%1 Jy").arg(fluxJy, 0, 'g', 6) },
+                              { u"Peak SNR (peak/σ_MAD)"_s,
+                                QStringLiteral("%1").arg(snrPeak, 0, 'f', 1) } } });
                 }
             }
-            if (!rows.isEmpty()) {
-                sections.append({ u"Stokes (per-layer)"_s, rows });
+
+            // ── Per-Stokes flux when a Stokes set is loaded ──────────────────
+            if (!m_stokesRoles.isEmpty()) {
+                QList<QPair<QString, QString>> rows;
+                const StokesRole order[] = {
+                    StokesRole::I, StokesRole::Q, StokesRole::U, StokesRole::V,
+                    StokesRole::DerivedP, StokesRole::DerivedPdb,
+                    StokesRole::DerivedPA, StokesRole::DerivedFrac,
+                    StokesRole::DerivedAlpha, StokesRole::DerivedRM };
+                const double Omega = this->hasBeamInfo() ? this->beamAreaPixels() : 0.0;
+                for (StokesRole role : order) {
+                    const int idx = this->findLayerByStokesRole(role);
+                    if (idx < 0) continue;
+                    auto *roleData = this->layers->getImageData(idx);
+                    if (!roleData || roleData == imageData) continue;  // skip if same as master
+                    const auto roleStats = computeRegionStatistics2D(
+                            roleData, this->regionMode, this->regionAnchorVoxel,
+                            this->regionCurrentVoxel, this->regionPolygonVertices,
+                            this->regionAnnulusInnerRadius);
+                    if (!roleStats.valid) continue;
+                    const QString roleName = this->stokesRoleLabel(role);
+                    if (role == StokesRole::DerivedPA) {
+                        rows.append({ roleName + u" (mean)"_s,
+                                QStringLiteral("%1°").arg(roleStats.mean, 0, 'f', 2) });
+                    } else if (role == StokesRole::DerivedFrac) {
+                        rows.append({ roleName + u" (mean)"_s,
+                                QStringLiteral("%1 %").arg(roleStats.mean * 100.0, 0, 'f', 2) });
+                    } else if (role == StokesRole::DerivedAlpha) {
+                        rows.append({ roleName + u" (mean)"_s,
+                                QStringLiteral("%1").arg(roleStats.mean, 0, 'f', 2) });
+                    } else if (role == StokesRole::DerivedRM) {
+                        rows.append({ roleName + u" (mean)"_s,
+                                QStringLiteral("%1 rad m⁻²").arg(roleStats.mean, 0, 'f', 1) });
+                    } else if (Omega > 0.0) {
+                        rows.append({ roleName,
+                                QStringLiteral("%1 Jy").arg(roleStats.sum / Omega, 0, 'g', 6) });
+                    } else {
+                        rows.append({ roleName + u" (sum)"_s,
+                                QStringLiteral("%1").arg(roleStats.sum, 0, 'g', 6) });
+                    }
+                }
+                if (!rows.isEmpty()) {
+                    if (grid.reduced())
+                        rows.append({ u"Note"_s, u"From the displayed layers, not at full resolution."_s });
+                    sections.append({ u"Stokes (per-layer)"_s, rows });
+                }
             }
+
+            sections.append({ u"Note"_s,
+                            { { QString(), u"Computed on valid pixels only."_s } } });
         }
 
-        sections.append({ u"Note"_s,
-                        { { QString(), u"Computed on valid pixels only."_s } } });
+        const QVariantMap record =
+                ToolResultDialog::makeRecord(u"Region Analysis"_s, subtitle, sections);
+        auto *dlg = new ToolResultDialog(this);
+        this->m_regionResultDialog = dlg;
+        dlg->applyRecord(record);
+
+        // One row per REGION SHAPE: re-measuring the same kind of region replaces its
+        // row, a different shape adds one, so two regions can be compared.
+        QVariantMap params;
+        params.insert(u"Region"_s, regionModeLabel(capturedMode));
+        params.insert(u"Scope"_s, scope);
+        if (stats.valid) {
+            params.insert(u"Valid pixels"_s,
+                          u"%1 / %2"_s.arg(stats.validCount).arg(stats.totalCount));
+            params.insert(u"Mean"_s,   QStringLiteral("%1").arg(stats.mean,     0, 'g', 8));
+            params.insert(u"Median"_s, QStringLiteral("%1").arg(stats.median,   0, 'g', 8));
+            params.insert(u"Std Dev"_s,QStringLiteral("%1").arg(stats.stddev,   0, 'g', 8));
+            params.insert(u"σ (MAD)"_s,QStringLiteral("%1").arg(stats.madSigma, 0, 'g', 8));
+        }
+        // …with the geometry it was measured on, so opening the row redraws the very
+        // box/circle/polygon/annulus these numbers came from.
+        QVariantMap origin = visivo::encodeRegionOrigin(
+                static_cast<int>(capturedMode), this->regionAnchorVoxel, this->regionCurrentVoxel,
+                this->regionPolygonVertices, this->regionAnnulusInnerRadius);
+        // Stamp the voxel grid it was drawn on: this window shows a decimated LOD
+        // image before the full-resolution swap, and replaying raw indices across
+        // that swap would draw the overlay at half position and half size.
+        double frameScale[2], framePos[2];
+        if (this->currentVoxelFrame(frameScale, framePos))
+            origin = visivo::withVoxelFrame(origin, frameScale[0], frameScale[1], framePos[0],
+                                            framePos[1]);
+        params.insert(u"Measured on"_s, visivo::describeOrigin(origin));
+        this->registerAnalysisProduct(
+                u"region"_s,
+                u"%1 region stats"_s.arg(regionModeLabel(capturedMode)),
+                params,
+                this->scopedProductId(u"region-%1"_s.arg(static_cast<int>(capturedMode))),
+                record, /*layerIndex=*/-1, origin);
+
+        // When the dialog is closed, clear the overlay and deactivate the region tool.
+        // The generation guard prevents the cleanup from running if a newer analysis has
+        // already replaced this dialog (e.g., the user drew a second region while this
+        // dialog was still open).
+        QObject::connect(dlg, &QObject::destroyed, this, [this, myGeneration, capturedMode]() {
+            if (this->m_regionDialogGeneration != myGeneration) {
+                return; // stale — a newer analysis supersedes this one
+            }
+            this->clearRegion();
+            // Deactivate the region action; setRegionMode() will restore the image interactor.
+            QAction *regionAction = nullptr;
+            switch (capturedMode) {
+            case RegionMode::Box:     regionAction = this->actionBoxRegion;     break;
+            case RegionMode::Circle:  regionAction = this->actionCircleRegion;  break;
+            case RegionMode::Polygon: regionAction = this->actionPolygonRegion; break;
+            case RegionMode::Annulus: regionAction = this->actionAnnulusRegion; break;
+            default: break;
+            }
+            if (regionAction && regionAction->isChecked()) {
+                regionAction->setChecked(false); // triggers setRegionMode(mode, false)
+            } else {
+                // Action was already unchecked; at minimum restore the interactor and render.
+                this->setInteractorStyleImage();
+                if (ui && ui->vtk && ui->vtk->renderWindow()) {
+                    ui->vtk->renderWindow()->Render();
+                }
+            }
+        });
+
+        dlg->show();
+    };
+
+    // The region can reach past the pixels loaded (a zoomed-in view holds the
+    // part of the image on screen): their statistics would be the clipped
+    // region's.
+    bool clipped = false;
+    if (imageData) {
+        int extent[6];
+        imageData->GetExtent(extent);
+        const auto b = regionBounds2D(capturedMode, this->regionAnchorVoxel,
+                                      this->regionCurrentVoxel, this->regionPolygonVertices);
+        clipped = b[0] < extent[0] || b[1] > extent[1] || b[2] < extent[2] || b[3] > extent[3];
+    }
+    if (!grid.reduced() && !clipped) {
+        present(displayed, u"the full-resolution pixels"_s);
+        return;
+    }
+    const QString loadedPixels = grid.reduced()
+            ? displayedPixels
+            : u"the full-resolution pixels loaded (the region reaches beyond them)"_s;
+    if (this->remoteDatasetId.isEmpty()) {
+        present(displayed, loadedPixels);
+        return;
     }
 
-    const QVariantMap record =
-            ToolResultDialog::makeRecord(u"Region Analysis"_s, subtitle, sections);
-    auto *dlg = new ToolResultDialog(this);
-    this->m_regionResultDialog = dlg;
-    dlg->applyRecord(record);
-
-    // One row per REGION SHAPE: re-measuring the same kind of region replaces its
-    // row, a different shape adds one, so two regions can be compared.
-    QVariantMap params;
-    params.insert(u"Region"_s, regionModeLabel(capturedMode));
-    params.insert(u"Scope"_s, u"currently loaded data block"_s);
-    if (stats.valid) {
-        params.insert(u"Valid pixels"_s,
-                      u"%1 / %2"_s.arg(stats.validCount).arg(stats.totalCount));
-        params.insert(u"Mean"_s,   QStringLiteral("%1").arg(stats.mean,     0, 'g', 8));
-        params.insert(u"Median"_s, QStringLiteral("%1").arg(stats.median,   0, 'g', 8));
-        params.insert(u"Std Dev"_s,QStringLiteral("%1").arg(stats.stddev,   0, 'g', 8));
-        params.insert(u"σ (MAD)"_s,QStringLiteral("%1").arg(stats.madSigma, 0, 'g', 8));
-    }
-    // …with the geometry it was measured on, so opening the row redraws the very
-    // box/circle/polygon/annulus these numbers came from.
-    QVariantMap origin = visivo::encodeRegionOrigin(
-            static_cast<int>(capturedMode), this->regionAnchorVoxel, this->regionCurrentVoxel,
+    static const char *const kShapes[] = { "", "box", "circle", "polygon", "annulus" };
+    const int modeIndex = static_cast<int>(capturedMode);
+    const QString shape = (modeIndex >= 0 && modeIndex < 5)
+            ? QString::fromLatin1(kShapes[modeIndex]) : QString();
+    const QJsonObject region = visivo::regionInSourcePixels(
+            shape, grid, this->regionAnchorVoxel, this->regionCurrentVoxel,
             this->regionPolygonVertices, this->regionAnnulusInnerRadius);
-    // Stamp the voxel grid it was drawn on: this window shows a decimated LOD
-    // image before the full-resolution swap, and replaying raw indices across
-    // that swap would draw the overlay at half position and half size.
-    double frameScale[2], framePos[2];
-    if (this->currentVoxelFrame(frameScale, framePos))
-        origin = visivo::withVoxelFrame(origin, frameScale[0], frameScale[1], framePos[0],
-                                        framePos[1]);
-    params.insert(u"Measured on"_s, visivo::describeOrigin(origin));
-    this->registerAnalysisProduct(
-            u"region"_s,
-            u"%1 region stats"_s.arg(regionModeLabel(capturedMode)),
-            params,
-            this->scopedProductId(u"region-%1"_s.arg(static_cast<int>(capturedMode))),
-            record, /*layerIndex=*/-1, origin);
-
-    // When the dialog is closed, clear the overlay and deactivate the region tool.
-    // The generation guard prevents the cleanup from running if a newer analysis has
-    // already replaced this dialog (e.g., the user drew a second region while this
-    // dialog was still open).
-    QObject::connect(dlg, &QObject::destroyed, this, [this, myGeneration, capturedMode]() {
-        if (this->m_regionDialogGeneration != myGeneration) {
-            return; // stale — a newer analysis supersedes this one
+    this->m_regionStatsPending = true;
+    this->updateRegionReadout();
+    auto *watcher = new QFutureWatcher<BackendRegionStatsResult>(this);
+    const auto anchor = this->regionAnchorVoxel;
+    const auto current = this->regionCurrentVoxel;
+    const auto vertices = this->regionPolygonVertices;
+    const double inner = this->regionAnnulusInnerRadius;
+    QObject::connect(watcher, &QFutureWatcher<BackendRegionStatsResult>::finished, this,
+                     [this, watcher, present, displayed, loadedPixels, requestGeneration,
+                      anchor, current, vertices, inner]() {
+        watcher->deleteLater();
+        if (requestGeneration != this->m_regionDialogGeneration)
+            return;   // another region meanwhile: the readout is its
+        this->m_regionStatsPending = false;
+        this->updateRegionReadout();
+        if (!this->regionValid)
+            return;   // no region any more
+        if (anchor != this->regionAnchorVoxel || current != this->regionCurrentVoxel
+            || vertices != this->regionPolygonVertices || inner != this->regionAnnulusInnerRadius)
+            return;   // the region was edited meanwhile: these numbers are not its
+        const BackendRegionStatsResult r = watcher->result();
+        if (!r.valid) {
+            present(displayed, u"%1 (the full-resolution statistics failed: %2)"_s
+                                       .arg(loadedPixels, r.error));
+            return;
         }
-        this->clearRegion();
-        // Deactivate the region action; setRegionMode() will restore the image interactor.
-        QAction *regionAction = nullptr;
-        switch (capturedMode) {
-        case RegionMode::Box:     regionAction = this->actionBoxRegion;     break;
-        case RegionMode::Circle:  regionAction = this->actionCircleRegion;  break;
-        case RegionMode::Polygon: regionAction = this->actionPolygonRegion; break;
-        case RegionMode::Annulus: regionAction = this->actionAnnulusRegion; break;
-        default: break;
-        }
-        if (regionAction && regionAction->isChecked()) {
-            regionAction->setChecked(false); // triggers setRegionMode(mode, false)
-        } else {
-            // Action was already unchecked; at minimum restore the interactor and render.
-            this->setInteractorStyleImage();
-            if (ui && ui->vtk && ui->vtk->renderWindow()) {
-                ui->vtk->renderWindow()->Render();
-            }
-        }
+        RegionStatistics stats;
+        stats.totalCount = r.totalCount;
+        stats.validCount = r.validCount;
+        stats.blankedCount = r.blankedCount;
+        stats.minValue = r.minValue;
+        stats.maxValue = r.maxValue;
+        stats.sum = r.sum;
+        stats.mean = r.mean;
+        stats.median = r.median;
+        stats.stddev = r.rms;
+        stats.madSigma = r.madSigma;
+        stats.valid = r.validCount > 0;
+        present(stats, u"the full-resolution data (from the file)"_s);
     });
-
-    dlg->show();
+    const QString url = this->remoteBackendUrl, token = this->remoteBackendToken;
+    const QString session = this->remoteSessionId, dataset = this->remoteDatasetId;
+    watcher->setFuture(QtConcurrent::run([url, token, session, dataset, region]() {
+        BackendClient client(url, token);
+        client.setSessionId(session);
+        return client.regionStats(dataset, region);
+    }));
 }
 
 bool vtkWindowImage::finalizePolygonRegion()

@@ -317,11 +317,14 @@ class _SourceCube:
             out[tuple(slice(a - r[0], b - r[0]) for (a, b), r in zip(parts, ranges))] = part
         return out
 
-    def block(self, z0: int, z1: int, y0: int, y1: int, x0: int, x1: int) -> np.ndarray:
+    def block(self, z0: int, z1: int, y0: int, y1: int, x0: int, x1: int,
+              dtype=np.float32) -> np.ndarray:
+        """The block's physical values as ``dtype`` (float32 for a pyramid;
+        float64 keeps double-precision data, for statistics)."""
         raw = self._raw(((z0, z1), (y0, y1), (x0, x1)))
         bscale, bzero, blank = self._scale
         if bscale == 1.0 and bzero == 0.0 and blank is None:
-            return raw.astype(np.float32, copy=False)
+            return raw.astype(dtype, copy=False)
         values = raw
         if (raw.dtype.kind == "i" and bscale == 1.0
                 and bzero == float(2 ** (8 * raw.dtype.itemsize - 1))):
@@ -330,8 +333,9 @@ class _SourceCube:
             unsigned = raw.dtype.newbyteorder("=").str.replace("i", "u")
             values = raw.astype(raw.dtype.newbyteorder("="), copy=False).view(unsigned) \
                 ^ np.array(1 << (8 * raw.dtype.itemsize - 1), dtype=unsigned)
-            # Straight to float32: through float64 a uint64 would be rounded twice.
-            out = values.astype(np.float32)
+            # Straight to the result: through float64 a uint64 would be rounded
+            # twice on its way to float32.
+            out = values.astype(dtype)
             if blank is not None:
                 out[raw == blank] = np.nan
             return out
@@ -342,7 +346,7 @@ class _SourceCube:
                 out = out * bscale + bzero
         if blank is not None and raw.dtype.kind in "iu":
             out[raw == blank] = np.nan
-        return out.astype(np.float32)
+        return out.astype(dtype, copy=False)
 
     def close(self) -> None:
         self._hdul.close()

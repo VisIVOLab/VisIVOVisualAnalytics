@@ -30,49 +30,14 @@ def _region_mask(region: dict[str, Any], shape: tuple[int, int]) -> np.ndarray:
     """Build a boolean mask (ny, nx) for a canonical *image-frame* region.
 
     Pixel coordinates are 0-based (numpy convention). Sizes/radii are in pixels.
-    ``angle_deg`` rotates ellipse/box counter-clockwise.
+    ``angle_deg`` rotates ellipse/box counter-clockwise. The geometry is
+    ``app.region_stats.Region``'s, the one the statistics use.
     """
+    from ..region_stats import Region  # noqa: PLC0415
+
     ny, nx = shape
     yy, xx = np.mgrid[0:ny, 0:nx]
-    s = region["shape"]
-    if s == "polygon":
-        pts = region["points"]
-        inside = np.zeros((ny, nx), dtype=bool)
-        j = len(pts) - 1
-        for i in range(len(pts)):
-            xi, yi = pts[i]
-            xj, yj = pts[j]
-            cond = ((yi > yy) != (yj > yy)) & (
-                xx < (xj - xi) * (yy - yi) / (yj - yi + 1e-30) + xi)
-            inside ^= cond
-            j = i
-        return inside
-    cx, cy = region["center"]
-    dx, dy = xx - cx, yy - cy
-    if s == "circle":
-        r = float(region["radius"])
-        return dx * dx + dy * dy <= r * r
-    if s == "annulus":
-        r1, r2 = region["radii"]
-        d2 = dx * dx + dy * dy
-        return (d2 <= r2 * r2) & (d2 > r1 * r1)
-    if s == "point":
-        mask = np.zeros((ny, nx), dtype=bool)
-        ix, iy = int(round(cx)), int(round(cy))
-        if 0 <= iy < ny and 0 <= ix < nx:
-            mask[iy, ix] = True
-        return mask
-    ang = np.radians(region.get("angle_deg", 0.0) or 0.0)
-    cos, sin = np.cos(ang), np.sin(ang)
-    xr = dx * cos + dy * sin
-    yr = -dx * sin + dy * cos
-    if s == "ellipse":
-        a, b = region["semi_axes"]
-        return (xr / a) ** 2 + (yr / b) ** 2 <= 1.0
-    if s == "box":
-        w, h = region["size"]
-        return (np.abs(xr) <= w / 2.0) & (np.abs(yr) <= h / 2.0)
-    raise ValueError(f"Unsupported region shape '{s}'.")
+    return Region(region).mask(xx, yy)
 
 
 def worker_region_stats(
@@ -80,55 +45,47 @@ def worker_region_stats(
     region: dict[str, Any],
     channel: int | None = None,
 ) -> dict[str, Any]:
-    """Pixel statistics inside a 2-D region (image-frame, 0-based pixels).
+    """Pixel statistics inside a 2-D region (image-frame, 0-based pixels), on the
+    file at full resolution, read in blocks (``app.region_stats``, issue #95).
 
     Returns counts and mean/rms/sum/min/max/median/mad_sigma over the finite
     pixels in the region, plus ``flux_jy`` when the data is Jy/beam and a beam
     is defined (integrated intensity = sum / beam-area-in-pixels).
     """
+    from ..brick_pyramid import source_shape  # noqa: PLC0415
+    from ..region_stats import Region, region_statistics  # noqa: PLC0415
+
     if region.get("frame", "image") != "image":
         raise ValueError(
             "Region must be in image (pixel) frame; convert with to_frame='image' first.")
     dataset = ScientificFitsDataset(path)
-    hdul, raw = dataset.open_memmap()
-    try:
-        if raw.ndim == 2:
-            image = np.asarray(raw, dtype=np.float64)
-        elif raw.ndim == 3:
-            ch = 0 if channel is None else max(0, min(int(channel), raw.shape[0] - 1))
-            image = np.asarray(raw[ch], dtype=np.float64)
-        elif raw.ndim == 4:
-            ch = 0 if channel is None else max(0, min(int(channel), raw.shape[1] - 1))
-            image = np.asarray(raw[0, ch], dtype=np.float64)
-        else:
-            raise ValueError(f"Unsupported FITS dimensionality: {raw.ndim}")
-    finally:
-        hdul.close()
+    nz = source_shape(path, dataset.hdu_index)[0]
+    ch = 0 if channel is None else max(0, min(int(channel), nz - 1))
+    stats = region_statistics(path, Region(region), dataset.hdu_index, ch)
+    if stats["total_count"] == 0:
+        raise ValueError("No pixels inside the region.")
+    if stats["valid_count"] == 0:
+        # All blank: an answer, with nothing to average.
+        return {"shape": region["shape"], "total_count": stats["total_count"], "valid_count": 0,
+                "blanked_count": stats["blank_count"], "min": None, "max": None, "mean": None,
+                "rms": None, "sum": 0.0, "median": None, "mad_sigma": None,
+                "bunit": dataset.bunit, "flux_jy": None, "channel": ch}
 
-    mask = _region_mask(region, image.shape)
-    total = int(mask.sum())
-    sel = image[mask]
-    finite = sel[np.isfinite(sel)]
-    if finite.size == 0:
-        raise ValueError("No valid (finite) pixels inside the region.")
-
-    median = float(np.median(finite))
-    mad = float(np.median(np.abs(finite - median)))
     result: dict[str, Any] = {
         "shape": region["shape"],
-        "total_count": total,
-        "valid_count": int(finite.size),
-        "blanked_count": int(total - finite.size),
-        "min": float(np.min(finite)),
-        "max": float(np.max(finite)),
-        "mean": float(np.mean(finite)),
-        "rms": float(np.std(finite)),
-        "sum": float(np.sum(finite)),
-        "median": median,
-        "mad_sigma": 1.4826 * mad,
+        "total_count": stats["total_count"],
+        "valid_count": stats["valid_count"],
+        "blanked_count": stats["blank_count"],
+        "min": stats["min"],
+        "max": stats["max"],
+        "mean": stats["mean"],
+        "rms": stats["stddev"],
+        "sum": stats["sum"],
+        "median": stats["median"],
+        "mad_sigma": stats["mad_sigma"],
         "bunit": dataset.bunit,
         "flux_jy": None,
-        "channel": (0 if channel is None else int(channel)),
+        "channel": ch,
     }
 
     # Integrated flux for Jy/beam data when the beam is known. Uses the EXACT
@@ -140,7 +97,7 @@ def worker_region_stats(
         beam_area_px = beam_area_pixels(bmaj, bmin, dataset.spatial_pixel_scale_arcsec(),
                                         dataset.spatial_pixel_area_arcsec2())
         if beam_area_px and beam_area_px > 0:
-            result["flux_jy"] = float(np.sum(finite) / beam_area_px)
+            result["flux_jy"] = float(stats["sum"] / beam_area_px)
             result["beam_area_pix"] = float(beam_area_px)
     return result
 

@@ -74,9 +74,25 @@ Pixel statistics inside one region.
 
 An `image` region is in 0-based pixels; a world-frame region is converted to
 pixels through the dataset's WCS first. `channel` selects the plane of a cube
-(default 0). Response: `valid`, `error`, `shape`, `total_count`,
+(default 0). A pixel is in the region when its centre is: inside a circle,
+ellipse or (rotated) box, between the radii of an annulus (both edges
+included), inside a polygon (even-odd rule), or nearest a point.
+
+The statistics are computed on the file at full resolution, out of core: the
+region's bounding rows are read in blocks (`app/region_stats.py`), so a region
+of any size fits in bounded memory, in double precision (float64 data keeps its
+digits). They are exact: the variance is combined block by block, and the
+median and MAD come from the values themselves up to 32 M of them, beyond that
+from histogram passes over the region that end on the exact value (the two
+middle values of an even count share their passes). On a laptop SSD
+a region of 81 M pixels takes about 2 s, 900 M about 19 s. A file compressed
+as a whole (`.fits.gz`) cannot be read in parts: its plane is read whole. The
+image viewer asks for them when it displays a reduced level, or when a region
+reaches beyond the pixels it has loaded (issue #95). Response: `valid`, `error`, `shape`, `total_count`,
 `valid_count`, `blanked_count`, `min`, `max`, `mean`, `rms` (standard
 deviation), `sum`, `median`, `mad_sigma` (1.4826 × MAD), `bunit`, `channel`,
 `flux_jy`, and `beam_area_pix` when a flux was computed. `flux_jy` is the sum
 divided by the beam area in pixels, set only for per-beam data with a known
-beam (otherwise `null`). A region with no finite pixel is 422.
+beam (otherwise `null`). A region of blank pixels only is an answer:
+`valid_count` 0, and the statistics `null`. A region with no pixel of the
+image at all is 422.
