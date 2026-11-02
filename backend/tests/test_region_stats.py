@@ -224,3 +224,86 @@ def test_reopening_the_file_between_blocks_changes_nothing(image_file, monkeypat
     again = region_statistics(str(path), region, 0)
     for key, value in exact.items():
         assert again[key] == pytest.approx(value, rel=1e-12, abs=1e-12), key
+
+
+def _counting_reads(monkeypatch) -> list[int]:
+    """Count the passes over the file."""
+    calls = [0]
+    original = region_stats._value_blocks
+
+    class Counted:
+        def __init__(self, read):
+            self._read = read
+
+        def __call__(self):
+            calls[0] += 1
+            return self._read()
+
+        @property
+        def bound_pixels(self):                 # what the copy sizes itself on
+            return self._read.bound_pixels
+
+    monkeypatch.setattr(region_stats, "_value_blocks", lambda *args: Counted(original(*args)))
+    return calls
+
+
+def _small_passes(monkeypatch, spill_dir):
+    monkeypatch.setattr(region_stats, "_IN_MEMORY_VALUES", 5000)
+    monkeypatch.setattr(region_stats, "_BLOCK_PIXELS", 4000)
+    monkeypatch.setattr(region_stats, "_SPILL_MARGIN_BYTES", 0)
+    monkeypatch.setenv("VISIVO_REGION_SPILL_DIR", str(spill_dir))
+
+
+def test_the_histogram_passes_read_a_local_copy_not_the_file(image_file, tmp_path, monkeypatch):
+    path, img = image_file
+    region = Region({"shape": "box", "center": [199.5, 149.5], "size": [399, 299]})
+    exact = region_statistics(str(path), region, 0)
+    spill_dir = tmp_path / "spill"
+    spill_dir.mkdir()
+    _small_passes(monkeypatch, spill_dir)
+    reads = _counting_reads(monkeypatch)
+    passes = region_statistics(str(path), region, 0)
+    assert reads[0] == 1                                    # the file is read once
+    for key in ("median", "mad_sigma", "min", "max", "valid_count"):
+        assert passes[key] == exact[key], key
+    for key in ("sum", "mean", "stddev"):                   # blocks of another size
+        assert passes[key] == pytest.approx(exact[key], rel=1e-12), key
+    assert list(spill_dir.iterdir()) == []                  # the copy is gone
+
+
+def test_without_room_for_the_copy_the_passes_read_the_file(image_file, tmp_path, monkeypatch):
+    path, img = image_file
+    region = Region({"shape": "box", "center": [199.5, 149.5], "size": [399, 299]})
+    _small_passes(monkeypatch, tmp_path)
+    monkeypatch.setattr(region_stats.shutil, "disk_usage",
+                        lambda _: type("U", (), {"free": 0})())
+    reads = _counting_reads(monkeypatch)
+    _check(region_statistics(str(path), region, 0), img)
+    assert reads[0] > 1
+
+
+def test_double_precision_data_is_copied_as_double(tmp_path, monkeypatch):
+    rng = np.random.default_rng(3)
+    img = 1.0 + 1e-9 * rng.standard_normal((120, 150))          # float64, below float32's ulp
+    path = tmp_path / "f64.fits"
+    fits.PrimaryHDU(img).writeto(path)
+    region = Region({"shape": "box", "center": [74.5, 59.5], "size": [149, 119]})
+    exact = region_statistics(str(path), region, 0)
+    _small_passes(monkeypatch, tmp_path)
+    reads = _counting_reads(monkeypatch)
+    passes = region_statistics(str(path), region, 0)
+    assert reads[0] == 1
+    assert passes["median"] == exact["median"] and passes["mad_sigma"] == exact["mad_sigma"]
+
+
+def test_a_value_float32_cannot_hold_drops_the_copy(tmp_path, monkeypatch):
+    rng = np.random.default_rng(4)
+    img = np.round(rng.normal(0, 100, size=(200, 150)))           # integers: exact in float32
+    img[150:] += 1e-9 * rng.standard_normal((50, 150))            # the last rows are not
+    path = tmp_path / "mixed.fits"
+    fits.PrimaryHDU(img).writeto(path)
+    region = Region({"shape": "box", "center": [74.5, 99.5], "size": [149, 199]})
+    _small_passes(monkeypatch, tmp_path)
+    reads = _counting_reads(monkeypatch)
+    _check(region_statistics(str(path), region, 0), img)
+    assert reads[0] > 1                                     # back to the file
