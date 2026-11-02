@@ -10,12 +10,16 @@ from the file in blocks of rows, never whole, and every statistic is exact:
 * count, blanks, minimum, maximum, sum and the mean, with the variance combined
   block by block (Chan et al.), so that a sum of 10⁹ pixels keeps its digits;
 * the median and the MAD, from the values themselves when the region has at
-  most ``_IN_MEMORY_VALUES`` of them, otherwise by narrowing a histogram over
-  further passes until the value of each rank is isolated. Those passes read
+  most ``_IN_MEMORY_VALUES`` of them. Otherwise a random sample drawn in the
+  first pass brackets each rank, and one more pass counts the values below the
+  bracket and keeps those inside it, which hold the exact value (issue #99);
+  should a bracket miss its rank, a histogram is narrowed over further passes
+  until the value of each rank is isolated. Those passes read
   a copy of the region's valid values, written to local disk during the first
   pass (``_Spill``): on a shared filesystem (BeeGFS on a cluster) each pass
   over the file reads it again, and the copy is read from the node's own disk
-  and cache. Without room for it the passes read the file.
+  and cache. Without room for it, or with a temporary directory held in memory
+  (a tmpfs ``/tmp``, common on clusters), the passes read the file.
 
 A region is a canonical image-frame region (``app.regions``) in full-resolution
 pixel coordinates, pixel ``(x, y)`` centred on integers (FITS pixel minus one),
@@ -49,6 +53,12 @@ _IN_MEMORY_VALUES = 32 * 1024 * 1024
 _BINS = 1 << 16
 #: Free space left on the spill directory beyond the copy of the region.
 _SPILL_MARGIN_BYTES = 1 << 30
+#: Values sampled at random from the region during the first pass, to bracket
+#: the ranks of the median and of the MAD (32 MiB as float64).
+_SAMPLE_VALUES = 1 << 22
+#: Half-width of a bracket, in standard deviations of the sample's rank
+#: estimate: at 8 the rank falls outside it about once in 10^15.
+_BRACKET_SIGMAS = 8.0
 #: σ from the median absolute deviation of a Gaussian.
 _MAD_TO_SIGMA = 1.4826
 
@@ -226,8 +236,41 @@ def _value_blocks(path: str, hdu: int, region: Region, channel: int) -> Callable
     return read
 
 
-def _spill_dir() -> str:
-    return os.environ.get("VISIVO_REGION_SPILL_DIR") or tempfile.gettempdir()
+def _memory_backed(path: str, mountinfo: str | None = None) -> bool:
+    """Whether ``path`` is on a filesystem held in memory (tmpfs, ramfs): on
+    many clusters and containers ``/tmp`` is, and what is written there counts
+    against the job's memory. Read from ``/proc/self/mountinfo`` (Linux; else
+    False), or from ``mountinfo`` when given."""
+    if mountinfo is None:
+        try:
+            with open("/proc/self/mountinfo") as fh:
+                mountinfo = fh.read()
+        except OSError:
+            return False
+    mounts = mountinfo.splitlines()
+    target = os.path.realpath(path)
+    best, fstype = "", ""
+    for line in mounts:
+        fields = line.split()
+        if " - " not in line or len(fields) < 5:
+            continue
+        point = fields[4].replace("\\040", " ")
+        inside = target == point or target.startswith(point.rstrip("/") + "/")
+        if inside and len(point) >= len(best):
+            best, fstype = point, line.split(" - ", 1)[1].split()[0]
+    return fstype in ("tmpfs", "ramfs")
+
+
+def _spill_dir() -> str | None:
+    """Where the copy goes: ``VISIVO_REGION_SPILL_DIR`` when set (an explicit
+    choice, trusted as it is); otherwise the system's temporary directory,
+    which honours a per-job ``$TMPDIR``, unless it is held in memory. None:
+    no copy, the passes read the file."""
+    chosen = os.environ.get("VISIVO_REGION_SPILL_DIR")
+    if chosen:
+        return chosen
+    default = tempfile.gettempdir()
+    return None if _memory_backed(default) else default
 
 
 class _Spill:
@@ -241,6 +284,8 @@ class _Spill:
         exact = all(np.array_equal(v.astype(np.float32), v) for v in first)
         self.dtype = np.dtype(np.float32 if exact else np.float64)
         directory = _spill_dir()
+        if directory is None:
+            raise OSError("no disk-backed temporary directory for the copy")
         need = bound_pixels * self.dtype.itemsize + _SPILL_MARGIN_BYTES
         if shutil.disk_usage(directory).free < need:
             raise OSError(f"{directory} has less than {need} bytes free")
@@ -337,6 +382,64 @@ def _select(read, ranks: list[int], transform, kept_bins: list[tuple[float, floa
     return out
 
 
+def _interval(sample: np.ndarray, ranks: list[int], n: int) -> tuple[float, float]:
+    """An interval of values that holds the given ranks of ``n`` values with
+    near certainty, from a sorted random ``sample`` of them: the sample's
+    quantiles a few standard deviations either side of each rank's. An
+    interval that misses only costs the slower passes."""
+    m = sample.size
+    lo, hi = math.inf, -math.inf
+    for r in ranks:
+        p = (r + 0.5) / n
+        centre = p * m
+        half = _BRACKET_SIGMAS * math.sqrt(m * p * (1.0 - p)) + 2.0
+        i, j = math.floor(centre - half), math.ceil(centre + half)
+        lo = min(lo, float(sample[i]) if i >= 0 else -math.inf)
+        hi = max(hi, float(sample[j]) if j < m else math.inf)
+    return lo, hi
+
+
+def _bracketed(passes: Callable[[], Iterator[np.ndarray]], ranks: list[int], transform,
+               lo: float, hi: float) -> list[float] | None:
+    """The values of ``ranks`` among ``transform(v)`` of the finite values, in
+    one pass: those below ``lo`` are counted, those in ``[lo, hi]`` kept. None
+    when a rank is not in the interval, or the interval holds more values than
+    memory takes (unless they are all one value)."""
+    below = inside = 0
+    kept: list[np.ndarray] | None = []
+    for values in passes():
+        v = transform(values[np.isfinite(values)])
+        below += int(np.count_nonzero(v < lo))
+        within = v[(v >= lo) & (v <= hi)]
+        inside += within.size
+        if kept is not None:
+            if inside <= _IN_MEMORY_VALUES:
+                kept.append(within)
+            else:
+                kept = None
+        if kept is None and lo != hi:
+            return None             # more than memory takes: no use reading on
+    if any(not below <= r < below + inside for r in ranks):
+        return None
+    if kept is None:
+        return [lo] * len(ranks) if lo == hi else None
+    candidates = np.concatenate(kept) if kept else np.empty(0)
+    local = [r - below for r in ranks]
+    part = np.partition(candidates, local)
+    return [float(part[r]) for r in local]
+
+
+def _rank_values(passes, ranks: list[int], transform, sample: np.ndarray, n: int,
+                 lo: float, hi: float) -> list[float]:
+    """The values of ``ranks`` among ``transform(v)``, all within ``[lo, hi]``:
+    in one pass when the sample brackets them, else by histogram passes."""
+    a, b = _interval(np.sort(transform(sample)), ranks, n)
+    # An interval open on both sides (no sample) holds every value: straight
+    # to the histograms.
+    found = _bracketed(passes, ranks, transform, a, b) if a > -math.inf or b < math.inf else None
+    return found if found is not None else _ranks(passes, ranks, transform, lo, hi)
+
+
 def _median(values: np.ndarray) -> float:
     n = values.size
     if n % 2:
@@ -359,6 +462,10 @@ def region_statistics(path: str, region: Region, hdu: int, channel: int = 0) -> 
     # copy's type cannot hold), and those passes then read the file.
     spill: _Spill | None = None
     spilling = True
+    # A random sample of the valid values, to bracket the ranks (_interval);
+    # drawn with a fixed seed, so a region gives the same passes every time.
+    rng = np.random.default_rng(0)
+    sample: list[np.ndarray] = []
     try:
         for values in read():
             total += values.size
@@ -375,6 +482,12 @@ def region_statistics(path: str, region: Region, hdu: int, channel: int = 0) -> 
             n += k
             total_sum += float(finite.sum())
             vmin, vmax = min(vmin, float(finite.min())), max(vmax, float(finite.max()))
+            # Each value drawn with probability _SAMPLE_VALUES / (the region's
+            # pixels), the number of draws rounded at random.
+            rate = k * _SAMPLE_VALUES / max(read.bound_pixels, 1)
+            draws = int(rate) + (rng.random() < rate - int(rate))
+            if draws:
+                sample.append(finite[rng.integers(0, k, min(draws, k))])
             if n <= _IN_MEMORY_VALUES:
                 kept.append(finite)
                 continue
@@ -397,9 +510,12 @@ def region_statistics(path: str, region: Region, hdu: int, channel: int = 0) -> 
         else:
             passes = spill.read if spill is not None else read
             ranks = [n // 2] if n % 2 else [n // 2 - 1, n // 2]
-            median = float(np.mean(_ranks(passes, ranks, lambda v: v, vmin, vmax)))
+            drawn = np.concatenate(sample) if sample else np.empty(0)
+            median = float(np.mean(_rank_values(passes, ranks, lambda v: v, drawn, n,
+                                                vmin, vmax)))
             spread = max(vmax - median, median - vmin)
-            mad = float(np.mean(_ranks(passes, ranks, lambda v: np.abs(v - median), 0.0, spread)))
+            mad = float(np.mean(_rank_values(passes, ranks, lambda v: np.abs(v - median),
+                                             drawn, n, 0.0, spread)))
     finally:
         if spill is not None:
             spill.close()
