@@ -90,6 +90,7 @@ def test_the_histogram_passes_give_the_same_median_and_mad(image_file, monkeypat
     exact = region_statistics(str(path), region, 0)
     monkeypatch.setattr(region_stats, "_IN_MEMORY_VALUES", 5000)
     monkeypatch.setattr(region_stats, "_BLOCK_PIXELS", 4000)
+    monkeypatch.setattr(region_stats, "_bracketed", lambda *a: None)   # no bracket: histograms
     passes = region_statistics(str(path), region, 0)
     for key in ("median", "mad_sigma", "sum", "mean", "stddev", "min", "max", "valid_count"):
         assert passes[key] == pytest.approx(exact[key], rel=1e-12, abs=1e-12), key
@@ -307,3 +308,114 @@ def test_a_value_float32_cannot_hold_drops_the_copy(tmp_path, monkeypatch):
     reads = _counting_reads(monkeypatch)
     _check(region_statistics(str(path), region, 0), img)
     assert reads[0] > 1                                     # back to the file
+
+
+# ── Three passes: a sample brackets the ranks (issue #99) ────────────────────
+
+def _counting_copy_reads(monkeypatch) -> list[int]:
+    calls = [0]
+    original = region_stats._Spill.read
+
+    def counted(self):
+        calls[0] += 1
+        return original(self)
+    monkeypatch.setattr(region_stats._Spill, "read", counted)
+    return calls
+
+
+def _large_region_stats(path, region, monkeypatch, tmp_path, sample=100_000):
+    # A bracket holds about 8 / sqrt(sample) of the values: with these sizes
+    # it fits the 5000 values memory takes here, as 4 M samples do 32 M.
+    _small_passes(monkeypatch, tmp_path)
+    monkeypatch.setattr(region_stats, "_SAMPLE_VALUES", sample)
+    return region_statistics(str(path), region, 0)
+
+
+@pytest.mark.parametrize("kind", ["gaussian", "skewed", "quantized"])
+def test_the_bracket_gives_the_exact_median_and_mad_in_two_passes(tmp_path, monkeypatch, kind):
+    rng = np.random.default_rng(7)
+    if kind == "gaussian":
+        img = rng.normal(5.0, 2.0, size=(300, 400)).astype(np.float32)
+    elif kind == "skewed":
+        img = rng.lognormal(0.0, 1.5, size=(300, 400)).astype(np.float32)
+    else:
+        img = rng.integers(-20, 20, size=(300, 400)).astype(np.float32)   # many equal values
+    img[10:30, 10:50] = np.nan
+    path = tmp_path / f"{kind}.fits"
+    fits.PrimaryHDU(img).writeto(path)
+    region = Region({"shape": "box", "center": [199.5, 149.5], "size": [399, 299]})
+    exact = region_statistics(str(path), region, 0)                    # in memory
+    copies = _counting_copy_reads(monkeypatch)
+    files = _counting_reads(monkeypatch)
+    result = _large_region_stats(path, region, monkeypatch, tmp_path)
+    assert result["median"] == exact["median"] and result["mad_sigma"] == exact["mad_sigma"]
+    _check(result, img)
+    assert files[0] == 1
+    if kind != "quantized":
+        assert copies[0] == 2                                           # median, then MAD
+
+
+def test_quantized_values_beyond_memory_end_on_the_tied_value(tmp_path, monkeypatch):
+    rng = np.random.default_rng(8)
+    img = rng.integers(-1, 2, size=(300, 400)).astype(np.float32)     # three values
+    path = tmp_path / "ties.fits"
+    fits.PrimaryHDU(img).writeto(path)
+    region = Region({"shape": "box", "center": [199.5, 149.5], "size": [399, 299]})
+    _check(_large_region_stats(path, region, monkeypatch, tmp_path), img)
+
+
+def test_a_bracket_that_misses_falls_back_to_the_histograms(image_file, tmp_path, monkeypatch):
+    path, img = image_file
+    region = Region({"shape": "box", "center": [199.5, 149.5], "size": [399, 299]})
+    exact = region_statistics(str(path), region, 0)
+    monkeypatch.setattr(region_stats, "_interval", lambda *a: (1e30, 2e30))   # holds no value
+    copies = _counting_copy_reads(monkeypatch)
+    result = _large_region_stats(path, region, monkeypatch, tmp_path)
+    assert result["median"] == exact["median"] and result["mad_sigma"] == exact["mad_sigma"]
+    assert copies[0] > 2
+
+
+def test_an_empty_sample_falls_back_too(image_file, tmp_path, monkeypatch):
+    path, img = image_file
+    region = Region({"shape": "box", "center": [199.5, 149.5], "size": [399, 299]})
+    _check(_large_region_stats(path, region, monkeypatch, tmp_path, sample=0), img)
+
+
+def test_the_same_region_gives_the_same_passes(image_file, tmp_path, monkeypatch):
+    path, _ = image_file
+    region = Region({"shape": "circle", "center": [200, 150], "radius": 120})
+    a = _large_region_stats(path, region, monkeypatch, tmp_path)
+    b = _large_region_stats(path, region, monkeypatch, tmp_path)
+    assert a == b
+
+
+# ── Where the copy goes ──────────────────────────────────────────────────────
+
+_MOUNTS = """\
+22 1 253:0 / / rw,relatime shared:1 - xfs /dev/mapper/root rw
+40 22 0:38 / /jobtmp rw,nosuid shared:20 - tmpfs tmpfs rw,size=8g
+41 22 0:39 / /local rw shared:21 - xfs /dev/sdb1 rw
+42 41 0:40 / /local/ram rw shared:22 - ramfs ramfs rw
+"""
+
+
+@pytest.mark.parametrize("path, held", [("/jobtmp", True), ("/jobtmp/job/x", True),
+                                         ("/local/job", False), ("/local/ram/x", True),
+                                         ("/jobtmpdata", False), ("/home/u", False)])
+def test_a_directory_held_in_memory_is_recognised(path, held):
+    assert region_stats._memory_backed(path, _MOUNTS) is held
+
+
+def test_a_temporary_directory_in_memory_gets_no_copy(image_file, tmp_path, monkeypatch):
+    path, img = image_file
+    region = Region({"shape": "box", "center": [199.5, 149.5], "size": [399, 299]})
+    monkeypatch.delenv("VISIVO_REGION_SPILL_DIR", raising=False)
+    monkeypatch.setattr(region_stats, "_memory_backed", lambda *a: True)
+    assert region_stats._spill_dir() is None
+    monkeypatch.setattr(region_stats, "_IN_MEMORY_VALUES", 5000)
+    monkeypatch.setattr(region_stats, "_BLOCK_PIXELS", 4000)
+    files = _counting_reads(monkeypatch)
+    _check(region_statistics(str(path), region, 0), img)
+    assert files[0] == 3                        # first pass, median, MAD: all from the file
+    monkeypatch.setenv("VISIVO_REGION_SPILL_DIR", str(tmp_path))       # an explicit choice
+    assert region_stats._spill_dir() == str(tmp_path)
