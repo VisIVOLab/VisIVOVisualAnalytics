@@ -3081,7 +3081,10 @@ std::chrono::milliseconds BackendClient::requestTimeoutFor(const QUrl &url) cons
         || path.endsWith(QStringLiteral("/cube/subvolume_bin"))
         // Whole-cube stats stream the FULL-res cube once out-of-core server-side; on an
         // SKA-scale cube that single pass can take minutes on slow storage / a tunnel.
-        || path.contains(QStringLiteral("/analysis/cube-stats"))) {
+        || path.contains(QStringLiteral("/analysis/cube-stats"))
+        // A region's statistics at full resolution read the region from the
+        // file, several times for its median on a large one (issue #95).
+        || path.contains(QStringLiteral("/regions/stats"))) {
         return std::chrono::milliseconds(600000); // 10 min
     }
     // Copilot query: the server enforces its own wall-clock budget

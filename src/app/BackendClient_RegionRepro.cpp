@@ -118,8 +118,9 @@ BackendRegionStatsResult BackendClient::regionStats(const QString &datasetId,
     const QJsonObject obj = QJsonDocument::fromJson(payload).object();
     result.valid        = obj.value(QStringLiteral("valid")).toBool();
     result.error        = obj.value(QStringLiteral("error")).toString();
-    result.validCount   = obj.value(QStringLiteral("valid_count")).toInt();
-    result.blankedCount = obj.value(QStringLiteral("blanked_count")).toInt();
+    result.totalCount   = obj.value(QStringLiteral("total_count")).toInteger();
+    result.validCount   = obj.value(QStringLiteral("valid_count")).toInteger();
+    result.blankedCount = obj.value(QStringLiteral("blanked_count")).toInteger();
     result.mean         = obj.value(QStringLiteral("mean")).toDouble();
     result.rms          = obj.value(QStringLiteral("rms")).toDouble();
     result.sum          = obj.value(QStringLiteral("sum")).toDouble();

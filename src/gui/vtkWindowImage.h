@@ -376,6 +376,9 @@ private:
     void updateRegionReadout();
     void hideRegionReadout();
     QPointer<QLabel> m_regionReadout;
+    /// The backend is computing the region's full-resolution statistics: on a
+    /// large region that takes seconds, and the readout says so (issue #95).
+    bool m_regionStatsPending{ false };
 
     void setupOverlaysBlock();
     /// Re-read the toggles and the counts from the window's own state. Called

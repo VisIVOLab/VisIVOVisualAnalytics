@@ -29,6 +29,7 @@
 #include "TestFitsHeaderCard.h"
 #include "TestViewerModeState.h"
 #include "TestRemoteLevels.h"
+#include "TestRegionFullRes.h"
 #include "TestLayerCardGeometry.h"
 #include "TestRegionReadout.h"
 #include "TestBackendUrlLocality.h"
@@ -73,6 +74,7 @@ int main(int argc, char *argv[])
     { TestFitsHeaderCard   t; status |= QTest::qExec(&t, argc, argv); }
     { TestViewerModeState  t; status |= QTest::qExec(&t, argc, argv); }
     { TestRemoteLevels     t; status |= QTest::qExec(&t, argc, argv); }
+    { TestRegionFullRes    t; status |= QTest::qExec(&t, argc, argv); }
     { TestLayerCardGeometry t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionReadout    t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendUrlLocality t; status |= QTest::qExec(&t, argc, argv); }
