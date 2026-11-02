@@ -32,6 +32,19 @@ _SNIFF_BYTES = 8192
 OPENERS = ("dataset", "catalogue", "vbt", "velocity", "ask", "unsupported")
 
 
+def _classify_vbt(head: Path, reason: str, open_path: str = "") -> dict:
+    from .volume_source import parse_vbt_header  # noqa: PLC0415
+    try:
+        volume = parse_vbt_header(head)["kind"] == "volume"
+    except (OSError, ValueError):
+        volume = False   # the VBT opener reports what is wrong with it
+    if volume:
+        return _result("cube", "dataset", True,
+                       "VisIVO Binary Table volume: each field opens as a cube.",
+                       open_path=open_path)
+    return _result("vbt", "vbt", True, reason, open_path=open_path)
+
+
 def classify_path(path: str | Path) -> dict:
     """``{kind, opener, confident, detail, open_path}`` for one path.
 
@@ -55,14 +68,15 @@ def classify_path(path: str | Path) -> dict:
     stem_suffixes = "".join(path.suffixes).lower()
 
     # ── VBT: a header file, or a .bin with a .head beside it ──────────────────
-    if suffix == ".head":
-        return _result("vbt", "vbt", True, "VisIVO Binary Table header.")
+    # A volume opens as a cube, read in place, as a FITS cube is (issue #83);
+    # a table of points in the VBT viewer.
+    if suffix == ".head" or stem_suffixes.endswith(".bin.head"):
+        return _classify_vbt(path, "VisIVO Binary Table header.")
     if suffix == ".bin" and path.with_suffix(".bin.head").exists():
         # The opener parses the header, not the binary: hand it the sidecar.
-        return _result("vbt", "vbt", True, "VisIVO Binary Table (header found beside it).",
-                       open_path=str(path.with_suffix(".bin.head")))
-    if stem_suffixes.endswith(".bin.head"):
-        return _result("vbt", "vbt", True, "VisIVO Binary Table header.")
+        return _classify_vbt(path.with_suffix(".bin.head"),
+                             "VisIVO Binary Table (header found beside it).",
+                             open_path=str(path.with_suffix(".bin.head")))
 
     if suffix == ".speck":
         return _result("catalogue", "catalogue", True, "speck point catalogue.")

@@ -81,9 +81,12 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
        shuts the executor down
     """
 
-    def __init__(self, session_id: str, dataset_path: str):
+    def __init__(self, session_id: str, dataset_path: str, hdu: int | None = None):
         self.session_id = session_id
         self.dataset_path = dataset_path
+        # The HDU, or the field of a VBT volume (app/volume_source.py); None,
+        # the file's first image HDU.
+        self.hdu = hdu
         self.view = SessionViewState()
         self.stats = SessionStats()
         # Single-thread executor so every VTK call hits the same thread

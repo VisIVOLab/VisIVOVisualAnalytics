@@ -79,7 +79,8 @@ class RenderManager:
                 logger.exception("[render-manager] close on shutdown raised")
 
     async def create_session(self, dataset_path: str,
-                             owner_token: str | None = None) -> RenderSession:
+                             owner_token: str | None = None,
+                             hdu: int | None = None) -> RenderSession:
         """Spin up a new session for ``dataset_path``. Returns it, ready to use.
 
         Raises :class:`RuntimeError` when the max-sessions cap is hit so the
@@ -92,7 +93,10 @@ class RenderManager:
                     f"({self._max_sessions} sessions active)."
                 )
             sid = uuid.uuid4().hex
-            sess = RenderSession(session_id=sid, dataset_path=dataset_path)
+            # ``hdu``: the HDU, or a VBT volume's field (app/volume_source.py);
+            # None, the file's first image HDU.
+            sess = RenderSession(session_id=sid, dataset_path=dataset_path,
+                                 **({} if hdu is None else {"hdu": hdu}))
             # Bind the render session to the caller so another token holding
             # the id can't close, WebRTC-connect to or drive this stream.
             sess.owner_token = owner_token

@@ -33,7 +33,7 @@ def load_image2d(path: str) -> tuple[np.ndarray, fits.Header, WCS]:
     """Return (2-D float32 array, header, WCS) for a FITS image or the first
     plane of a cube. Degenerate axes are squeezed; for >2-D data the first
     spectral/stokes plane is taken."""
-    with fits.open(path, memmap=False) as hdul:
+    with _vs_open_fits(path, memmap=False) as hdul:
         hdu = _first_image_hdu(hdul)
         if hdu.data is None:
             raise ValueError(f"{path!r} has no image data.")
@@ -139,7 +139,7 @@ def worker_map_math(
 def _reproject_to(image: np.ndarray, image_path: str, target_header: fits.Header) -> np.ndarray:
     from reproject import reproject_interp  # noqa: PLC0415
 
-    with fits.open(image_path, memmap=False) as hdul:
+    with _vs_open_fits(image_path, memmap=False) as hdul:
         src_wcs = WCS(_first_image_hdu(hdul).header).celestial
     target_wcs = WCS(target_header).celestial
     target_shape = (int(target_header["NAXIS2"]), int(target_header["NAXIS1"]))
@@ -344,3 +344,9 @@ def worker_image_quality(path: str) -> dict[str, Any]:
         "striping_metric": striping_metric,
         "flags": flags,
     }
+
+
+def _vs_open_fits(path, **kwargs):
+    # A FITS file, or a field of a VBT volume read in place (issue #83).
+    from app.volume_source import open_fits  # noqa: PLC0415
+    return open_fits(path, **kwargs)

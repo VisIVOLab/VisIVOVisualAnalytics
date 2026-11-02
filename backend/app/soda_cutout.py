@@ -419,7 +419,8 @@ def make_cutout(
     applied: dict[str, Any] = {"pos": False, "band": False, "time": False}
 
     try:
-        hdul = fits.open(path, memmap=True)
+        from .volume_source import open_fits  # noqa: PLC0415
+        hdul = open_fits(path, memmap=True)   # a VBT field too (issue #83)
     except Exception as exc:  # noqa: BLE001 — surface any astropy/io failure
         raise CutoutError(f"Could not open FITS at {path!r}: {exc}") from exc
 

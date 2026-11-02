@@ -56,7 +56,7 @@ def _wcs_transforms(path: str, origin: int = 1):
 
     from ..fits_dataset import image_hdu_index  # noqa: PLC0415
 
-    with fits.open(path) as hdul:
+    with _vs_open_fits(path) as hdul:
         header = hdul[image_hdu_index(hdul)].header
     wcs = WCS(header)
     if not wcs.has_celestial:
@@ -163,3 +163,9 @@ async def region_stats(
         logger.warning("[regions/stats] failed dataset_id=%s error=%s", dataset_id, exc)
         raise HTTPException(500, str(exc)) from exc
     return {"valid": True, "error": "", **result}
+
+
+def _vs_open_fits(path, **kwargs):
+    # A FITS file, or a field of a VBT volume read in place (issue #83).
+    from app.volume_source import open_fits  # noqa: PLC0415
+    return open_fits(path, **kwargs)

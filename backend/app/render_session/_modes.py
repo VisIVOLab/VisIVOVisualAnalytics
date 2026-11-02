@@ -13,6 +13,7 @@ from ._common import (
     SessionStats,
     SessionViewState,
     _build_color_tf,
+    _build_explicit_tfs,
     _build_opacity_tf,
     logger,
 )
@@ -229,12 +230,15 @@ class ModesMixin:
         """
         if self._volume_property is None:
             return
-        self._color_tf = _build_color_tf(
-            self.view.volume_lut_name, self._vmin, self._vmax,
-        )
-        self._opacity_tf = _build_opacity_tf(
-            self._vmin, self._vmax, self.view.threshold or self._vmin,
-        )
+        if self.view.explicit_tf is not None:
+            self._color_tf, self._opacity_tf = _build_explicit_tfs(*self.view.explicit_tf)
+        else:
+            self._color_tf = _build_color_tf(
+                self.view.volume_lut_name, self._vmin, self._vmax,
+            )
+            self._opacity_tf = _build_opacity_tf(
+                self._vmin, self._vmax, self.view.threshold or self._vmin,
+            )
         self._volume_property.SetColor(self._color_tf)
         self._volume_property.SetScalarOpacity(self._opacity_tf)
         if self._iso_mapper is not None:

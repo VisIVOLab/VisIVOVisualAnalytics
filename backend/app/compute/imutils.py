@@ -341,7 +341,7 @@ def worker_filter_fits(input_path: str, output_path: str, smooth_fwhm_pixels: fl
     if regrid_factor > 64:
         raise ValueError("A regrid factor above 64 is refused: check the value.")
 
-    with fits.open(input_path, memmap=False) as hdul:
+    with _vs_open_fits(input_path, memmap=False) as hdul:
         # An IMAGE extension, not merely the first HDU that carries data: a file
         # whose only payload is a table would otherwise be read as an image of
         # no dimensions and refused with a confusing message.
@@ -446,3 +446,9 @@ def worker_filter_fits(input_path: str, output_path: str, smooth_fwhm_pixels: fl
         # recorded — so the flux could not be conserved and the user has to know.
         "beam_missing": bool(beam_missing),
     }
+
+
+def _vs_open_fits(path, **kwargs):
+    # A FITS file, or a field of a VBT volume read in place (issue #83).
+    from app.volume_source import open_fits  # noqa: PLC0415
+    return open_fits(path, **kwargs)

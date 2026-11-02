@@ -120,29 +120,26 @@ def _levels(sess) -> RenderLevels:
     return RenderLevels(**(sess.levels() or {"pending": True}))
 
 
-async def _pyramid_preparing(entry: dict[str, Any]) -> JSONResponse | None:
+async def _pyramid_preparing(path: str, hdu: int | None) -> JSONResponse | None:
     """202 while the cube's pyramid is being built, an error if its build
     failed, None when the session can start (an in-core cube, or the pyramid
     ready)."""
     from ..pyramid_builds import BuildStatus, ensure_pyramid  # noqa: PLC0415
     from ..render_session._ooc import wants_out_of_core  # noqa: PLC0415
+    from ..volume_source import volume_shape  # noqa: PLC0415
 
     def status() -> BuildStatus | None:
-        from astropy.io import fits  # noqa: PLC0415
-
-        from ..fits_dataset import image_hdu_index  # noqa: PLC0415
         try:
             # As the render session decides (render_session/_scene.py): the
             # HDU it opens and the last three axes of its header shape.
-            with fits.open(str(entry["path"]), memmap=True) as hdul:
-                hdu = image_hdu_index(hdul)
-                shape = tuple(int(n) for n in (hdul[hdu].shape or ())[-3:])
+            full, index = volume_shape(path, hdu)
+            shape = full[-3:]
         except Exception as exc:  # noqa: BLE001
             return BuildStatus("failed", 0.0, f"the cube could not be read: {exc}")
         if len(shape) < 3 or not wants_out_of_core(shape[0] * shape[1] * shape[2] * 4):
             return None
         try:
-            return ensure_pyramid(str(entry["path"]), hdu)
+            return ensure_pyramid(path, index)
         except Exception as exc:  # noqa: BLE001 - e.g. a pyramid directory that cannot be written
             return BuildStatus("failed", 0.0, f"the build could not start: {exc}")
 
@@ -180,19 +177,21 @@ async def create_session(
         raise HTTPException(404, f"Unknown dataset_id {request.dataset_id!r}.")
     if entry.get("kind") != "cube":
         raise HTTPException(422, "Server-side rendering currently supports cube datasets only.")
+    # A FITS cube, or a field of a VBT volume read in place (its path a field
+    # reference, app/volume_source.py, issue #83).
+    path, hdu = str(entry["path"]), None
 
     # A cube drawn out of core needs its brick pyramid. When it is missing it
     # is built in the background (app/pyramid_builds.py) and this answers 202
     # with the fraction done; the client keeps its preview and asks again.
-    preparing = await _pyramid_preparing(entry)
+    preparing = await _pyramid_preparing(path, hdu)
     if preparing is not None:
         return preparing
 
     manager = get_render_manager()
     await manager.start()   # idempotent — reaper coroutine
     try:
-        sess = await manager.create_session(dataset_path=str(entry["path"]),
-                                            owner_token=token)
+        sess = await manager.create_session(dataset_path=path, owner_token=token, hdu=hdu)
     except RuntimeError as e:
         # Capacity reached.
         raise HTTPException(503, str(e))
