@@ -2181,6 +2181,32 @@ protected:
     double m_sliceScaleGamma{ 2.0 };
     LutScale::Mode m_volumeScaleMode{ LutScale::Mode::Linear };
     double m_volumeScaleGamma{ 2.0 };
+    // ── The 3-D volume's scale (issue #83) ───────────────────────────────────
+    // Colours, opacity ramp and threshold slider follow one scale: Linear, Log,
+    // Sqrt, Square, Power. A field spanning orders of magnitude (a simulation
+    // density) is unreadable in linear. A remote view gets the functions point
+    // by point (set_transfer_functions), as its own ramp is linear.
+    QPointer<QComboBox> m_volumeScaleCombo;
+    /// After a scale change: colour map (unless ``rebuildColours`` is false:
+    /// the LUT editor has built it, over its own range), opacity, slider,
+    /// remote and linked views again.
+    void onVolumeScaleChanged(bool rebuildColours = true);
+    /// The opacity ramp over [lower, upper] for ``threshold``, on the scale.
+    void fillVolumeOpacity(vtkPiecewiseFunction *f, double threshold, double lower,
+                           double upper) const;
+    /// The data range the volume's functions span: the local preview's, or
+    /// for a view drawn only on the backend, the range the backend reported.
+    std::optional<std::pair<double, double>> volumeDataRange() const;
+    /// Position of ``value`` on the volume scale over [lo, hi], 0..1, and back.
+    double volumeScalePosition(double value, double lo, double hi) const;
+    double volumeScaleValue(double position, double lo, double hi) const;
+    /// The span the threshold slider and field cover: [lowerBound, upperBound]
+    /// in linear (its floor 3 % above the minimum); down to the data's minimum
+    /// on another scale, where that floor would cut away orders of magnitude.
+    std::pair<float, float> thresholdSpan() const;
+    /// Send the volume's colour and opacity functions to a remote view when
+    /// the scale is not linear (its own threshold ramp is linear).
+    void pushVolumeTransferFunctionsToRemote();
 
     // Slice
     vtkNew<vtkImageMapToColors> sliceColors;

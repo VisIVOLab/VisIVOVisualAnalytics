@@ -135,6 +135,8 @@ add_executable(VisIVOTests
     test_remote_levels.cpp
     TestRegionFullRes.h
     test_region_full_res.cpp
+    TestDatasetName.h
+    test_dataset_name.cpp
     TestLayerCardGeometry.h
     test_layer_card_geometry.cpp
     TestRegionReadout.h

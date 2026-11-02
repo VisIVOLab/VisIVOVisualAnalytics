@@ -569,6 +569,9 @@ void vtkWindowCube::resendThresholdToRemote()
     // resync the backend.
     m[u"value"_s] = ui->lineThreshold->text().toDouble();
     this->sendRemoteRenderStateCommand(m);
+    // set_threshold returns the backend to its linear ramp: on another scale
+    // the functions go again (a blend-mode switch comes this way).
+    this->pushVolumeTransferFunctionsToRemote();
 }
 
 void vtkWindowCube::adoptRemoteLevels(const QJsonObject &answer)
@@ -614,7 +617,10 @@ void vtkWindowCube::widenThresholdBoundsToRemoteRange()
     this->lowerBound = b.lower;
     this->upperBound = b.upper;
     const QSignalBlocker blockSlider(ui->sliderThreshold);
-    ui->sliderThreshold->setValue(visivo::thresholdSliderPosition(b, value));
+    // On the volume's scale, as every other path that places the slider.
+    const auto [lo, hi] = this->thresholdSpan();
+    ui->sliderThreshold->setValue(
+            static_cast<int>(std::lround(100.0 * this->volumeScalePosition(value, lo, hi))));
 }
 
 void vtkWindowCube::pollRemoteLevels(const QString &sid)
@@ -755,6 +761,9 @@ void vtkWindowCube::pushRenderStateToRemote()
         m[u"visible"_s] = m_show3dRendering;
         this->sendRemoteRenderStateCommand(m);
     }
+    // Last: on a non-linear volume scale the session draws with this window's
+    // own functions, which the LUT and threshold above would otherwise replace.
+    this->pushVolumeTransferFunctionsToRemote();
 }
 
 void vtkWindowCube::updateRenderModeBadges()

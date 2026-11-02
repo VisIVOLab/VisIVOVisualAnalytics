@@ -3469,6 +3469,9 @@ void vtkWindowCube::applyColorMapByName(const QString &name)
     cmd[u"type"_s] = u"set_lut"_s;
     cmd[u"name"_s] = name;
     this->sendRemoteRenderStateCommand(cmd);
+    // set_lut returns the backend to its own linear LUT: on another scale the
+    // functions go again, after it.
+    this->pushVolumeTransferFunctionsToRemote();
 
     // Linked views: mirror the colour (map + volume stretch) to linked cubes.
     if (this->m_linkViews && !this->m_applyingLinkedUpdate)
@@ -6142,44 +6145,18 @@ void vtkWindowCube::applyThresholdToPipeline(double threshold)
     {
         const double lower  = this->currentCubeVisibleRange[0];
         const double upper  = this->currentCubeVisibleRange[1];
-        const double span   = upper - lower;
-
-        // Guard: if range is degenerate or threshold is out of range, fall back to
-        // a safe flat ramp so the volume is still visible -- except above the
-        // range: nothing in the data reaches the threshold, so nothing is drawn
-        // (a noise threshold can lie above a sampled preview's maximum, #93).
-        const bool valid = (span > 0.0)
-                        && (threshold >= lower)
-                        && (threshold <= upper);
-        const bool aboveAll = (span > 0.0) && (threshold > upper);
-
+        // fillVolumeOpacity(): if the range is degenerate or the threshold out
+        // of it, a safe flat ramp so the volume is still visible -- except above
+        // the range: nothing in the data reaches the threshold, so nothing is
+        // drawn (a noise threshold can lie above a sampled preview's maximum, #93).
         this->volumeOpacity->RemoveAllPoints();
         // Masked / NaN sentinel: always invisible.
         this->volumeOpacity->AddPoint(this->currentCubeInvisibleSentinel, 0.0);
-
-        if (valid) {
-            // Transparent sub-threshold zone — slight pull-back so the knee is sharp.
-            this->volumeOpacity->AddPoint(lower,                         0.0);
-            this->volumeOpacity->AddPoint(threshold - 0.01 * span,       0.0);
-            // Steep ramp: threshold itself jumps to 0.25 (first visible voxels).
-            this->volumeOpacity->AddPoint(threshold,                     0.25);
-            // Rapid rise to 0.6 within 5 % of span above threshold.
-            this->volumeOpacity->AddPoint(
-                    std::min(threshold + 0.05 * span, upper),            0.6);
-            // Saturates near 0.9 at 20 % of span above threshold.
-            this->volumeOpacity->AddPoint(
-                    std::min(threshold + 0.20 * span, upper),            0.9);
-            // Full opacity at the top of the range.
-            this->volumeOpacity->AddPoint(upper,                         1.0);
-        } else if (aboveAll) {
-            this->volumeOpacity->AddPoint(lower,  0.0);
-            this->volumeOpacity->AddPoint(upper,  0.0);
-        } else {
-            // Fallback: gentle linear ramp across the full range.
-            this->volumeOpacity->AddPoint(lower,  0.0);
-            this->volumeOpacity->AddPoint(upper,  0.4);
-        }
+        this->fillVolumeOpacity(this->volumeOpacity, threshold, lower, upper);
     }
+
+    // A remote view on a non-linear scale draws with these functions.
+    this->pushVolumeTransferFunctionsToRemote();
 
     // In isosurface mode, schedule an async remote recompute.
     if (!this->cubeOpenWatcher.isRunning() && ui->actionIsosurface->isChecked()) {
@@ -6191,17 +6168,16 @@ void vtkWindowCube::applyThresholdToPipeline(double threshold)
 void vtkWindowCube::applyThreshold(float value)
 {
     // Clamp to the current display range.
-    const float clamped = std::clamp(value, this->lowerBound, this->upperBound);
+    const auto [spanLo, spanHi] = this->thresholdSpan();
+    const float clamped = std::clamp(value, spanLo, spanHi);
 
     // Update UI widgets without triggering user-interaction signals.
     {
         const QSignalBlocker blockLine(ui->lineThreshold);
         ui->lineThreshold->setText(QString::number(clamped));
 
-        const float span = this->upperBound - this->lowerBound;
-        const int p = (span > 0.f)
-                ? static_cast<int>(100.f * (clamped - this->lowerBound) / span)
-                : 0;
+        const int p = static_cast<int>(
+                std::lround(100.0 * this->volumeScalePosition(clamped, spanLo, spanHi)));
         const QSignalBlocker blockSlider(ui->sliderThreshold);
         ui->sliderThreshold->setValue(p);
     }
@@ -7251,7 +7227,9 @@ void vtkWindowCube::thresholdSliderChanged(int action)
     Q_UNUSED(action);
     this->m_userSetThreshold = true;
     const int p = ui->sliderThreshold->sliderPosition();
-    const float threshold = 0.01 * p * (this->upperBound - this->lowerBound) + this->lowerBound;
+    // The slider runs along the volume's scale (linear unless chosen otherwise).
+    const auto [lo, hi] = this->thresholdSpan();
+    const float threshold = static_cast<float>(this->volumeScaleValue(0.01 * p, lo, hi));
     ui->lineThreshold->setText(QString::number(threshold));
     this->updateCube();
 }
@@ -7265,10 +7243,10 @@ void vtkWindowCube::thresholdLineChanged()
         this->m_userSetThreshold = true;
     else if (!this->m_userSetThreshold)
         return;
-    const float threshold =
-            std::clamp(ui->lineThreshold->text().toFloat(), this->lowerBound, this->upperBound);
+    const auto [lo, hi] = this->thresholdSpan();
+    const float threshold = std::clamp(ui->lineThreshold->text().toFloat(), lo, hi);
     ui->lineThreshold->setText(QString::number(threshold));
-    const int p = 100 * (threshold - this->lowerBound) / (this->upperBound - this->lowerBound);
+    const int p = static_cast<int>(std::lround(100.0 * this->volumeScalePosition(threshold, lo, hi)));
     ui->sliderThreshold->setValue(p);
     this->updateCube();
 }
@@ -7401,8 +7379,17 @@ void vtkWindowCube::showLUTCustomizer3D()
                              // lutVolume was already updated and rebuilt by the dialog.
                              // Remember the stretch, then re-derive the CTF from the
                              // (already-stretched) member LUT and re-render.
+                             const bool scaleChanged =
+                                     this->m_volumeScaleMode != this->lutCustomizer3D->scaleMode()
+                                     || this->m_volumeScaleGamma
+                                                != this->lutCustomizer3D->scaleGamma();
                              this->m_volumeScaleMode = this->lutCustomizer3D->scaleMode();
                              this->m_volumeScaleGamma = this->lutCustomizer3D->scaleGamma();
+                             if (scaleChanged)
+                                 QTimer::singleShot(0, this, [this]() {
+                                     // The editor built the colours over its own range.
+                                     this->onVolumeScaleChanged(/*rebuildColours=*/false);
+                                 });
                              const std::string name = this->lutVolume->GetObjectName();
                              ColorMaps::SetColorTransferFunction(this->lutVolume,
                                                                  this->volumeColorTransferFunction);
@@ -7906,6 +7893,39 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         r->setFixedHeight(28);   // deterministic row step (§3.0c density)
         disp3d->addWidget(r);
     }
+    // Scale (issue #83): colours, opacity and the threshold slider together.
+    // A field spanning orders of magnitude needs Log; the same control the
+    // 2-D slice has, so a FITS cube and a VBT field read the same way.
+    QWidget *scaleRow = new QWidget();
+    {
+        auto *h = new QHBoxLayout(scaleRow);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(8);
+        auto *l = new QLabel(u"Scale"_s, scaleRow);
+        l->setStyleSheet(labelCss);
+        h->addWidget(l, 0);
+        this->m_volumeScaleCombo = new QComboBox(scaleRow);
+        const auto labels = LutScale::modeLabels();
+        const auto tips = LutScale::modeToolTips();
+        for (std::size_t i = 0; i < labels.size(); ++i) {
+            this->m_volumeScaleCombo->addItem(QString::fromUtf8(labels[i]));
+            this->m_volumeScaleCombo->setItemData(static_cast<int>(i), QString::fromUtf8(tips[i]),
+                                                  Qt::ToolTipRole);
+        }
+        this->m_volumeScaleCombo->setCurrentIndex(static_cast<int>(this->m_volumeScaleMode));
+        this->m_volumeScaleCombo->setToolTip(
+                u"How values map to colour and opacity in the 3-D volume, and how the "
+                u"threshold slider moves. Log for fields spanning orders of magnitude."_s);
+        this->m_volumeScaleCombo->setFixedHeight(26);
+        h->addWidget(this->m_volumeScaleCombo, 1);
+        QObject::connect(this->m_volumeScaleCombo, &QComboBox::currentIndexChanged, this,
+                         [this](int index) {
+            this->m_volumeScaleMode = static_cast<LutScale::Mode>(std::clamp(index, 0, 4));
+            this->onVolumeScaleChanged();
+        });
+        scaleRow->setFixedHeight(28);   // deterministic row step (§3.0c density)
+        disp3d->addWidget(scaleRow);
+    }
     QWidget *surfRow = nullptr;
     if (ui->btnCubeColor) {
         surfRow = new QWidget();
@@ -7938,8 +7958,9 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
     // segmented control's OWN signal — the render-mode combo updates actionVolume
     // under a QSignalBlocker, so actionVolume::toggled would miss these changes.
     if (modeCombo) {
-        auto applyVis = [volRow, surfRow](int idx) {
+        auto applyVis = [volRow, surfRow, scaleRow](int idx) {
             if (volRow) volRow->setVisible(idx == 1);
+            if (scaleRow) scaleRow->setVisible(idx == 1);
             if (surfRow) surfRow->setVisible(idx == 0);
         };
         applyVis(modeCombo->currentIndex());
@@ -14388,8 +14409,10 @@ void vtkWindowCube::applyCopilotActions(const QList<QJsonObject> &actions)
             if (!matched.isEmpty())
                 this->applyColorMapByName(matched);
         } else if (type == u"set_threshold"_s) {
-            const double v = std::clamp(a.value(u"value"_s).toDouble(),
-                                        double(this->lowerBound), double(this->upperBound));
+            // The span the slider covers on the volume's scale.
+            const auto [spanLo, spanHi] = this->thresholdSpan();
+            const double v = std::clamp(a.value(u"value"_s).toDouble(), double(spanLo),
+                                        double(spanHi));
             if (ui->lineThreshold) {
                 this->m_userSetThreshold = true;
                 ui->lineThreshold->setText(QString::number(v));
@@ -15411,4 +15434,200 @@ void vtkWindowCube::setSiblingFields(const QList<QPair<QString, QString>> &field
                 this->scopedProductId(u"field-%1"_s.arg(index)), QString(),
                 /*revealProvenance=*/false, {}, /*selectInSession=*/false);
     }
+}
+
+// ── The 3-D volume's scale (issue #83) ───────────────────────────────────────
+
+void vtkWindowCube::fillVolumeOpacity(vtkPiecewiseFunction *f, double threshold, double lower,
+                                      double upper) const
+{
+    // The ramp over [lower, upper] for a threshold, on the volume's scale; the
+    // local pipeline and a remote view's functions are built the same way.
+    const double span = upper - lower;
+    const bool valid = (span > 0.0) && (threshold >= lower) && (threshold <= upper);
+    const bool aboveAll = (span > 0.0) && (threshold > upper);
+    if (valid && this->m_volumeScaleMode != LutScale::Mode::Linear) {
+        // The same ramp drawn on the volume's scale (issue #83): its knots
+        // at scaled positions from the threshold's, sampled densely enough
+        // that VTK's interpolation, linear in value, follows the curve.
+        const double ut = this->volumeScalePosition(threshold, lower, upper);
+        const std::array<std::pair<double, double>, 5> knots{ {
+                { std::max(0.0, ut - 0.01), 0.0 },
+                { ut, 0.25 },
+                { std::min(1.0, ut + 0.05), 0.6 },
+                { std::min(1.0, ut + 0.20), 0.9 },
+                { 1.0, 1.0 } } };
+        f->AddPoint(lower, 0.0);
+        // No two nodes closer than a linear texture resolves (see
+        // ColorMaps::SetColorTransferFunction); the top of the range is
+        // always kept.
+        const double minGap = span / 8192.0;
+        double lastX = lower;
+        const auto add = [&](double x, double a, bool knot) {
+            if (!knot && x - lastX < minGap)
+                return;
+            f->AddPoint(x, a);
+            lastX = std::max(lastX, x);
+        };
+        double prevU = 0.0, prevA = 0.0;
+        for (const auto &[u, a] : knots) {
+            constexpr int kSteps = 16;
+            if (u > prevU) {
+                for (int k = 1; k <= kSteps; ++k) {
+                    const double w = static_cast<double>(k) / kSteps;
+                    add(this->volumeScaleValue(prevU + w * (u - prevU), lower, upper),
+                        prevA + w * (a - prevA), k == kSteps && u >= 1.0);
+                }
+            } else {
+                add(this->volumeScaleValue(u, lower, upper), a, u >= 1.0);
+            }
+            prevU = u;
+            prevA = a;
+        }
+    } else if (valid) {
+        // Transparent sub-threshold zone — slight pull-back so the knee is sharp.
+        f->AddPoint(lower,                         0.0);
+        f->AddPoint(threshold - 0.01 * span,       0.0);
+        // Steep ramp: threshold itself jumps to 0.25 (first visible voxels).
+        f->AddPoint(threshold,                     0.25);
+        // Rapid rise to 0.6 within 5 % of span above threshold.
+        f->AddPoint(
+                std::min(threshold + 0.05 * span, upper),            0.6);
+        // Saturates near 0.9 at 20 % of span above threshold.
+        f->AddPoint(
+                std::min(threshold + 0.20 * span, upper),            0.9);
+        // Full opacity at the top of the range.
+        f->AddPoint(upper,                         1.0);
+    } else if (aboveAll) {
+        f->AddPoint(lower,  0.0);
+        f->AddPoint(upper,  0.0);
+    } else {
+        // Fallback: gentle linear ramp across the full range.
+        f->AddPoint(lower,  0.0);
+        f->AddPoint(upper,  0.4);
+    }
+}
+
+double vtkWindowCube::volumeScalePosition(double value, double lo, double hi) const
+{
+    if (!(hi > lo))
+        return 0.0;
+    if (this->m_volumeScaleMode == LutScale::Mode::Log) {
+        const auto r = LutScale::rangeFor(LutScale::Mode::Log, lo, hi);
+        if (!(r[1] > r[0]))
+            return 0.0;
+        return std::clamp(std::log(std::max(value, r[0]) / r[0]) / std::log(r[1] / r[0]), 0.0,
+                          1.0);
+    }
+    // The colour at the fraction t of the range is the map's at t^exp
+    // (LutScale), so that is where a value sits on the scale.
+    const double t = std::clamp((value - lo) / (hi - lo), 0.0, 1.0);
+    return std::pow(t, LutScale::exponent(this->m_volumeScaleMode, this->m_volumeScaleGamma));
+}
+
+double vtkWindowCube::volumeScaleValue(double position, double lo, double hi) const
+{
+    const double u = std::clamp(position, 0.0, 1.0);
+    if (this->m_volumeScaleMode == LutScale::Mode::Log) {
+        const auto r = LutScale::rangeFor(LutScale::Mode::Log, lo, hi);
+        return r[1] > r[0] ? r[0] * std::pow(r[1] / r[0], u) : lo;
+    }
+    return lo + (hi - lo)
+            * std::pow(u, 1.0 / LutScale::exponent(this->m_volumeScaleMode, this->m_volumeScaleGamma));
+}
+
+std::optional<std::pair<double, double>> vtkWindowCube::volumeDataRange() const
+{
+    if (this->currentCubeVisibleRange[1] > this->currentCubeVisibleRange[0])
+        return std::make_pair(this->currentCubeVisibleRange[0], this->currentCubeVisibleRange[1]);
+    // Drawn only on the backend: no preview here, the range it reported.
+    if (this->m_remoteRangeKnown && this->m_remoteDataMax > this->m_remoteDataMin)
+        return std::make_pair(this->m_remoteDataMin, this->m_remoteDataMax);
+    return std::nullopt;
+}
+
+std::pair<float, float> vtkWindowCube::thresholdSpan() const
+{
+    if (this->m_volumeScaleMode == LutScale::Mode::Linear)
+        return { this->lowerBound, this->upperBound };
+    const auto range = this->volumeDataRange();
+    if (!range)
+        return { this->lowerBound, this->upperBound };
+    return { std::min(this->lowerBound, static_cast<float>(range->first)), this->upperBound };
+}
+
+void vtkWindowCube::onVolumeScaleChanged(bool rebuildColours)
+{
+    if (this->m_volumeScaleCombo) {
+        const QSignalBlocker block(this->m_volumeScaleCombo);
+        this->m_volumeScaleCombo->setCurrentIndex(static_cast<int>(this->m_volumeScaleMode));
+    }
+    // Colours: the map rebuilt with the stretch (applyVolumeLutToPipeline reads
+    // m_volumeScaleMode).
+    if (rebuildColours && !this->m_activeColorMapName.isEmpty())
+        this->applyVolumeLutToPipeline(this->m_activeColorMapName);
+    // Opacity and the slider: the threshold kept, its position on the new scale.
+    const float threshold = ui->lineThreshold->text().toFloat();
+    {
+        const auto [lo, hi] = this->thresholdSpan();
+        const QSignalBlocker block(ui->sliderThreshold);
+        ui->sliderThreshold->setValue(static_cast<int>(
+                std::lround(100.0 * this->volumeScalePosition(threshold, lo, hi))));
+    }
+    // Back to linear: a remote view returns to its own LUT and ramp.
+    if (this->m_volumeScaleMode == LutScale::Mode::Linear) {
+        QVariantMap lut;
+        lut[u"type"_s] = u"set_lut"_s;
+        lut[u"name"_s] = this->m_activeColorMapName;
+        this->sendRemoteRenderStateCommand(lut);
+    }
+    this->updateCube();   // the ramp, the remote functions, a render
+    // Linked views follow the colour state, the stretch with it.
+    if (this->m_linkViews && !this->m_applyingLinkedUpdate)
+        this->broadcastLinkedColour();
+}
+
+void vtkWindowCube::pushVolumeTransferFunctionsToRemote()
+{
+    if (this->m_volumeScaleMode == LutScale::Mode::Linear || !this->m_remoteRenderWidget
+        || !this->m_remoteRenderWidget->isLive())
+        return;
+    const auto range = this->volumeDataRange();
+    if (!range)
+        return;   // nothing known of the data yet: the backend keeps its own ramp
+    vtkColorTransferFunction *ctf = this->volumeColorTransferFunction;
+    vtkPiecewiseFunction *otf = this->volumeOpacity;
+    vtkNew<vtkLookupTable> lut;
+    vtkNew<vtkColorTransferFunction> remoteColor;
+    vtkNew<vtkPiecewiseFunction> remoteOpacity;
+    if (!(this->currentCubeVisibleRange[1] > this->currentCubeVisibleRange[0])) {
+        // Drawn only on the backend: the local functions span the placeholder
+        // image, so the remote ones are built over the range it reported.
+        LutScale::build(lut, this->m_activeColorMapName.isEmpty()
+                                     ? ColorMaps::DefaultColorMap
+                                     : this->m_activeColorMapName.toStdString(),
+                        this->m_volumeScaleMode, range->first, range->second,
+                        this->m_volumeScaleGamma);
+        ColorMaps::SetColorTransferFunction(lut, remoteColor);
+        this->fillVolumeOpacity(remoteOpacity, ui->lineThreshold->text().toDouble(),
+                                range->first, range->second);
+        ctf = remoteColor;
+        otf = remoteOpacity;
+    }
+    QVariantList color, opacity;
+    for (int i = 0; i < ctf->GetSize(); ++i) {
+        double node[6];
+        ctf->GetNodeValue(i, node);
+        color << QVariant(QVariantList{ node[0], node[1], node[2], node[3] });
+    }
+    for (int i = 0; i < otf->GetSize(); ++i) {
+        double node[4];
+        otf->GetNodeValue(i, node);
+        opacity << QVariant(QVariantList{ node[0], node[1] });
+    }
+    QVariantMap command;
+    command[u"type"_s] = u"set_transfer_functions"_s;
+    command[u"color"_s] = color;
+    command[u"opacity"_s] = opacity;
+    this->sendRemoteRenderStateCommand(command);
 }

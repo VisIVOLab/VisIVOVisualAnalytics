@@ -649,7 +649,9 @@ void MainWindow::openBackendProductFits(const QString &backendUrl, const QString
         return;
     }
     openViewerFromOpenedDataset(path, opened, client);
-    if (this->recentMgr) this->recentMgr->record(path, displayName, opened.kind);
+    // A field of a VBT volume was recorded there as "volume · field".
+    if (this->recentMgr && opened.fieldName.isEmpty())
+        this->recentMgr->record(path, displayName, opened.kind);
 }
 
 void MainWindow::openSourceFinder(const QString &backendUrl, const QString &backendToken,
