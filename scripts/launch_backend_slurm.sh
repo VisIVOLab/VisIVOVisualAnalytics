@@ -344,6 +344,17 @@ for _ in $(seq 1 $(( (ASSIGN_TIMEOUT + 1) / 2 ))); do
     if [[ -n "$NODE" && "$NODE" != "None" ]]; then
         break
     fi
+    # Out of the queue already: the job ended (a failure at start-up ends it
+    # within the second), and waiting for a node would only hide why.
+    if [[ -z "$(squeue -j "$JOB_ID" -h -o '%i' 2>/dev/null || true)" ]]; then
+        STATE="$(sacct -j "$JOB_ID" -X -n -o State 2>/dev/null | awk 'NF {print $1; exit}' || true)"
+        if [[ -n "$STATE" && "$STATE" != PENDING && "$STATE" != RUNNING ]]; then
+            echo "[visivo] ERROR: job $JOB_ID ended before the backend started (state: $STATE)." >&2
+            echo "[visivo]        Last lines of $LOG_DIR/visivo_backend_${JOB_ID}.log:" >&2
+            tail -n 20 "$LOG_DIR/visivo_backend_${JOB_ID}.log" 2>/dev/null | sed 's/^/[visivo]   /' >&2
+            exit 1
+        fi
+    fi
     sleep 2
 done
 

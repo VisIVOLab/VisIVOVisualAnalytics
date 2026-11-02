@@ -11,7 +11,11 @@ from the file in blocks of rows, never whole, and every statistic is exact:
   block by block (Chan et al.), so that a sum of 10⁹ pixels keeps its digits;
 * the median and the MAD, from the values themselves when the region has at
   most ``_IN_MEMORY_VALUES`` of them, otherwise by narrowing a histogram over
-  further passes until the value of each rank is isolated.
+  further passes until the value of each rank is isolated. Those passes read
+  a copy of the region's valid values, written to local disk during the first
+  pass (``_Spill``): on a shared filesystem (BeeGFS on a cluster) each pass
+  over the file reads it again, and the copy is read from the node's own disk
+  and cache. Without room for it the passes read the file.
 
 A region is a canonical image-frame region (``app.regions``) in full-resolution
 pixel coordinates, pixel ``(x, y)`` centred on integers (FITS pixel minus one),
@@ -24,6 +28,9 @@ pixels here as there.
 from __future__ import annotations
 
 import math
+import os
+import shutil
+import tempfile
 from typing import Callable, Iterator
 
 import numpy as np
@@ -40,6 +47,8 @@ _REMAP_BYTES = 512 * 1024 * 1024
 _IN_MEMORY_VALUES = 32 * 1024 * 1024
 #: Bins of each histogram pass.
 _BINS = 1 << 16
+#: Free space left on the spill directory beyond the copy of the region.
+_SPILL_MARGIN_BYTES = 1 << 30
 #: σ from the median absolute deviation of a Gaussian.
 _MAD_TO_SIGMA = 1.4826
 
@@ -195,6 +204,7 @@ def _value_blocks(path: str, hdu: int, region: Region, channel: int) -> Callable
             if x_max < x_min or y_max < y_min:
                 return
             width = x_max - x_min + 1
+            read.bound_pixels = width * (y_max - y_min + 1)
             rows = max(1, _BLOCK_PIXELS // width)
             xs = np.arange(x_min, x_max + 1)[np.newaxis, :]
             mapped = 0
@@ -212,7 +222,61 @@ def _value_blocks(path: str, hdu: int, region: Region, channel: int) -> Callable
                 yield block[inside]
         finally:
             cube.close()
+    read.bound_pixels = 0       # the clipped bounding box, known once read
     return read
+
+
+def _spill_dir() -> str:
+    return os.environ.get("VISIVO_REGION_SPILL_DIR") or tempfile.gettempdir()
+
+
+class _Spill:
+    """A copy of the region's valid values on local disk, written during the
+    first pass and read by the histogram passes in its place. It holds float32
+    while every value is one exactly (float32 images, the common case: half
+    the space), float64 otherwise; the values read back are those written, so
+    every pass sees the same values the file would give."""
+
+    def __init__(self, first: list[np.ndarray], bound_pixels: int) -> None:
+        exact = all(np.array_equal(v.astype(np.float32), v) for v in first)
+        self.dtype = np.dtype(np.float32 if exact else np.float64)
+        directory = _spill_dir()
+        need = bound_pixels * self.dtype.itemsize + _SPILL_MARGIN_BYTES
+        if shutil.disk_usage(directory).free < need:
+            raise OSError(f"{directory} has less than {need} bytes free")
+        # Deleted on close, whatever ends the computation.
+        self._file = tempfile.TemporaryFile(dir=directory, prefix="visivo-region-")
+        try:
+            for values in first:
+                self.write(values)
+        except BaseException:
+            self._file.close()
+            raise
+
+    def write(self, values: np.ndarray) -> bool:
+        """Append ``values`` (finite); False when they do not fit the copy's
+        type or the disk (filled meanwhile by other requests or jobs: the room
+        was checked once), and the copy is then of no use."""
+        out = values.astype(self.dtype)
+        if self.dtype == np.float32 and not np.array_equal(out, values):
+            return False
+        try:
+            out.tofile(self._file)
+        except OSError:
+            return False
+        return True
+
+    def read(self) -> Iterator[np.ndarray]:
+        self._file.flush()
+        self._file.seek(0)
+        while True:
+            values = np.fromfile(self._file, dtype=self.dtype, count=_BLOCK_PIXELS)
+            if not values.size:
+                return
+            yield values.astype(np.float64)
+
+    def close(self) -> None:
+        self._file.close()
 
 
 def _bin(v: np.ndarray, a: float, width: float) -> np.ndarray:
@@ -289,40 +353,56 @@ def region_statistics(path: str, region: Region, hdu: int, channel: int = 0) -> 
     mean = m2 = 0.0
     total_sum = 0.0
     vmin, vmax = math.inf, -math.inf
-    kept: list[np.ndarray] | None = []
-    for values in read():
-        total += values.size
-        finite = values[np.isfinite(values)]
-        blank += values.size - finite.size
-        if not finite.size:
-            continue
-        f64 = finite
-        k = f64.size
-        b_mean = float(f64.mean())
-        b_m2 = float(((f64 - b_mean) ** 2).sum())
-        delta = b_mean - mean
-        mean += delta * k / (n + k)
-        m2 += b_m2 + delta * delta * n * k / (n + k)
-        n += k
-        total_sum += float(f64.sum())
-        vmin, vmax = min(vmin, float(finite.min())), max(vmax, float(finite.max()))
-        if kept is not None:
+    kept: list[np.ndarray] = []
+    # Past _IN_MEMORY_VALUES the valid values go to a copy on local disk, for
+    # the histogram passes; None once there is none (no room, or a value the
+    # copy's type cannot hold), and those passes then read the file.
+    spill: _Spill | None = None
+    spilling = True
+    try:
+        for values in read():
+            total += values.size
+            finite = values[np.isfinite(values)]
+            blank += values.size - finite.size
+            if not finite.size:
+                continue
+            k = finite.size
+            b_mean = float(finite.mean())
+            b_m2 = float(((finite - b_mean) ** 2).sum())
+            delta = b_mean - mean
+            mean += delta * k / (n + k)
+            m2 += b_m2 + delta * delta * n * k / (n + k)
+            n += k
+            total_sum += float(finite.sum())
+            vmin, vmax = min(vmin, float(finite.min())), max(vmax, float(finite.max()))
             if n <= _IN_MEMORY_VALUES:
                 kept.append(finite)
-            else:
-                kept = None
-    result = {"total_count": total, "valid_count": n, "blank_count": blank}
-    if n == 0:
-        return result
-    if kept is not None:
-        values = np.concatenate(kept)
-        median = _median(values)
-        mad = _median(np.abs(values - median))
-    else:
-        ranks = [n // 2] if n % 2 else [n // 2 - 1, n // 2]
-        median = float(np.mean(_ranks(read, ranks, lambda v: v, vmin, vmax)))
-        spread = max(vmax - median, median - vmin)
-        mad = float(np.mean(_ranks(read, ranks, lambda v: np.abs(v - median), 0.0, spread)))
+                continue
+            if spilling and spill is None:
+                try:
+                    spill = _Spill(kept + [finite], read.bound_pixels)
+                except OSError:
+                    spilling = False
+                kept = []
+            elif spill is not None and not spill.write(finite):
+                spill.close()
+                spill, spilling = None, False
+        result = {"total_count": total, "valid_count": n, "blank_count": blank}
+        if n == 0:
+            return result
+        if n <= _IN_MEMORY_VALUES:
+            values = np.concatenate(kept)
+            median = _median(values)
+            mad = _median(np.abs(values - median))
+        else:
+            passes = spill.read if spill is not None else read
+            ranks = [n // 2] if n % 2 else [n // 2 - 1, n // 2]
+            median = float(np.mean(_ranks(passes, ranks, lambda v: v, vmin, vmax)))
+            spread = max(vmax - median, median - vmin)
+            mad = float(np.mean(_ranks(passes, ranks, lambda v: np.abs(v - median), 0.0, spread)))
+    finally:
+        if spill is not None:
+            spill.close()
     result.update({
         "min": vmin, "max": vmax, "sum": total_sum, "mean": mean,
         "stddev": math.sqrt(max(0.0, m2 / n)),

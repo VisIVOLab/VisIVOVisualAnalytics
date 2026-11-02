@@ -84,7 +84,13 @@ of any size fits in bounded memory, in double precision (float64 data keeps its
 digits). They are exact: the variance is combined block by block, and the
 median and MAD come from the values themselves up to 32 M of them, beyond that
 from histogram passes over the region that end on the exact value (the two
-middle values of an even count share their passes). On a laptop SSD
+middle values of an even count share their passes). Those passes read a copy
+of the region's valid values that the first pass writes to local disk (float32
+when every value is one, else float64), so the file is read once: on a shared
+filesystem each pass over the file would read it again. The copy goes to
+`VISIVO_REGION_SPILL_DIR`, by default the system's temporary directory (on a
+cluster node, its local `/tmp`), and is deleted when the statistics are done;
+without room for it there, the passes read the file. On a laptop SSD
 a region of 81 M pixels takes about 2 s, 900 M about 19 s. A file compressed
 as a whole (`.fits.gz`) cannot be read in parts: its plane is read whole. The
 image viewer asks for them when it displays a reduced level, or when a region
