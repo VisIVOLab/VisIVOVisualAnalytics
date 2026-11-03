@@ -336,6 +336,17 @@ bool vtkWindowCube::backendIsLocal() const
             QDir(QDir::home().absoluteFilePath(qApp->applicationName()))
                     .absoluteFilePath(QStringLiteral("Settings.ini"));
     QSettings raw(iniPath, QSettings::IniFormat);
+    // The URL of the LOCAL backend this run started (no --backend, checked
+    // above) is local whatever the registry says: no tunnel can hold its port
+    // while it runs, so a remote node registered there is a stale entry (an
+    // old tunnel to a cluster on the same port), not this backend.
+    const QUrl localUrl(raw.value(QStringLiteral("Backend/url"),
+                                  QStringLiteral("http://127.0.0.1:8000"))
+                                .toString());
+    const QString localHost = localUrl.host().toLower();
+    if (!localHost.isEmpty() && portOf(localUrl) == portOf(url)
+        && (localHost == host || (isLoopback(localHost) && isLoopback(host))))
+        return true;
     // A loopback URL is not proof either: a node on a cluster is reached
     // through an SSH tunnel on a local port, and the backends registry, where
     // the user added it, says it is remote.
@@ -354,14 +365,9 @@ bool vtkWindowCube::backendIsLocal() const
     }
     if (isLoopback(host))
         return true;
-    // …which leaves a hosts-file alias for 127.0.0.1. Rather than resolve a
-    // name on a UI path, compare against the URL the app calls its LOCAL
-    // backend — the authoritative answer.
-    const QUrl localUrl(raw.value(QStringLiteral("Backend/url"),
-                                  QStringLiteral("http://127.0.0.1:8000"))
-                                .toString());
-    return !localUrl.host().isEmpty() && localUrl.host().toLower() == host
-            && portOf(localUrl) == portOf(url);
+    // A hosts-file alias for 127.0.0.1 was matched against the local
+    // backend's URL above; nothing is resolved on a UI path.
+    return false;
 }
 
 void vtkWindowCube::applyAutoRenderModeOnOpen()

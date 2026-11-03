@@ -27,12 +27,55 @@ from ._common import (  # noqa: F401
 )
 
 
+#: The grid an isosurface is extracted from: at most this many voxels, the cube
+#: sampled with a stride when larger. A surface finer than the viewer's own
+#: copy of the cube shows nothing more, and at full resolution a 512³ density
+#: field at a low threshold gave 176 M triangles (583 MB, 200 s).
+ISO_MAX_VOXELS = 256 ** 3
+
+#: The surface sent to the viewer: at most this many triangles, the stride
+#: doubled until it fits (8.7 M triangles of a 512³ cube are 34 MB on the wire).
+ISO_MAX_POLYS = 4_000_000
+
+#: Below this many samples along the shortest axis the surface no longer
+#: follows the cube; the request fails rather than coarsen further.
+_ISO_MIN_SAMPLES = 32
+
+
+def _samples(shape: tuple[int, ...], strides: tuple[int, ...]) -> list[int]:
+    return [-(-n // s) for n, s in zip(shape, strides)]
+
+
+def _iso_stride(shape: tuple[int, ...], max_voxels: int | None = None) -> tuple[int, ...]:
+    """Per-axis strides whose sampled grid holds at most ``max_voxels``
+    (ISO_MAX_VOXELS by default). The axis with the most samples is coarsened
+    first, so a short axis (a radio cube's 40 channels) keeps its resolution
+    while the long ones are sampled."""
+    max_voxels = ISO_MAX_VOXELS if max_voxels is None else max_voxels
+    strides = [1] * len(shape)
+    while np.prod(_samples(shape, strides), dtype=np.float64) > max_voxels:
+        counts = _samples(shape, strides)
+        strides[counts.index(max(counts))] += 1
+    return tuple(strides)
+
+
+def _coarser(shape: tuple[int, ...], strides: tuple[int, ...]) -> tuple[int, ...] | None:
+    """The strides doubled on every axis that keeps _ISO_MIN_SAMPLES samples
+    doubled; None when no axis can be coarsened."""
+    out = tuple(s * 2 if -(-n // (2 * s)) >= _ISO_MIN_SAMPLES else s
+                for n, s in zip(shape, strides))
+    return None if out == tuple(strides) else out
+
+
 def worker_isosurface(path: str, width: int, height: int, depth: int, threshold: float) -> dict[str, Any]:
     """
     Compute a VTK isosurface (vtkFlyingEdges3D) from a FITS cube.
 
-    The cube is loaded with memmap=True and materialised fully only in the
-    worker process; the main FastAPI process never touches the large array.
+    The cube is loaded with memmap=True and materialised only in the worker
+    process; the main FastAPI process never touches the large array. A large
+    cube is sampled with per-axis strides (ISO_MAX_VOXELS), coarsened while the
+    surface exceeds ISO_MAX_POLYS; the points stay in the full cube's voxel
+    coordinates.
     """
     try:
         import vtk  # noqa: PLC0415
@@ -46,45 +89,40 @@ def worker_isosurface(path: str, width: int, height: int, depth: int, threshold:
         data = dataset.squeeze_to_3d(raw)
         if data.ndim != 3:
             raise ValueError("Isosurface endpoint requires a 3D cube.")
-        cube = np.ascontiguousarray(data, dtype=np.float32)
+        actual_depth, actual_height, actual_width = data.shape
+        if (width, height, depth) != (actual_width, actual_height, actual_depth):
+            logger.info(
+                "[isosurface] geometry override path=%s requested=(%s,%s,%s) actual=(%s,%s,%s)",
+                dataset.path,
+                width,
+                height,
+                depth,
+                actual_width,
+                actual_height,
+                actual_depth,
+            )
+        stride = _iso_stride(data.shape)
+        while True:
+            sz, sy, sx = stride
+            cube = np.ascontiguousarray(data[::sz, ::sy, ::sx], dtype=np.float32)
+            mesh = _flying_edges(vtk, cube, stride, float(threshold))
+            num_points = int(mesh.GetNumberOfPoints())
+            num_polys = int(mesh.GetNumberOfPolys())
+            if num_polys <= ISO_MAX_POLYS:
+                break
+            coarser = _coarser(data.shape, stride)
+            if coarser is None:
+                raise ValueError(
+                    f"The surface at threshold {threshold:g} has too many triangles to draw "
+                    f"({num_polys:,} on a grid sampled every {stride} voxels (z, y, x)): "
+                    f"raise the threshold.")
+            stride = coarser
     finally:
         hdul.close()
+    if stride != (1, 1, 1):
+        logger.info("[isosurface] path=%s threshold=%g sampled every %s voxels (z, y, x): %d triangles",
+                    dataset.path, threshold, stride, num_polys)
 
-    actual_depth, actual_height, actual_width = cube.shape
-    if (width, height, depth) != (actual_width, actual_height, actual_depth):
-        logger.info(
-            "[isosurface] geometry override path=%s requested=(%s,%s,%s) actual=(%s,%s,%s)",
-            dataset.path,
-            width,
-            height,
-            depth,
-            actual_width,
-            actual_height,
-            actual_depth,
-        )
-        width, height, depth = actual_width, actual_height, actual_depth
-
-    cube_bytes = cube.tobytes()
-    image_import = vtk.vtkImageImport()
-    image_import.CopyImportVoidPointer(cube_bytes, len(cube_bytes))
-    image_import.SetDataScalarTypeToFloat()
-    image_import.SetNumberOfScalarComponents(1)
-    image_import.SetDataExtent(0, width - 1, 0, height - 1, 0, depth - 1)
-    image_import.SetWholeExtent(0, width - 1, 0, height - 1, 0, depth - 1)
-    image_import.SetDataSpacing(1.0, 1.0, 1.0)
-    image_import.SetDataOrigin(0.0, 0.0, 0.0)
-    image_import.Update()
-
-    contour = vtk.vtkFlyingEdges3D()
-    contour.SetInputConnection(image_import.GetOutputPort())
-    contour.SetValue(0, float(threshold))
-    contour.ComputeNormalsOff()
-    contour.ComputeGradientsOff()
-    contour.Update()
-
-    mesh = contour.GetOutput()
-    num_points = int(mesh.GetNumberOfPoints())
-    num_polys = int(mesh.GetNumberOfPolys())
     if num_points == 0 or num_polys == 0:
         raise ValueError(f"Empty isosurface mesh for threshold {threshold}.")
 
@@ -100,6 +138,32 @@ def worker_isosurface(path: str, width: int, height: int, depth: int, threshold:
         "num_points": num_points,
         "num_polys": num_polys,
     }
+
+
+def _flying_edges(vtk, cube: np.ndarray, stride: tuple[int, int, int], threshold: float):
+    """The isosurface of ``cube``, a (z, y, x) float32 grid sampled every
+    ``stride`` (z, y, x) voxels, in the full cube's voxel coordinates."""
+    depth, height, width = cube.shape
+    cube_bytes = cube.tobytes()
+    image_import = vtk.vtkImageImport()
+    image_import.CopyImportVoidPointer(cube_bytes, len(cube_bytes))
+    image_import.SetDataScalarTypeToFloat()
+    image_import.SetNumberOfScalarComponents(1)
+    image_import.SetDataExtent(0, width - 1, 0, height - 1, 0, depth - 1)
+    image_import.SetWholeExtent(0, width - 1, 0, height - 1, 0, depth - 1)
+    image_import.SetDataSpacing(float(stride[2]), float(stride[1]), float(stride[0]))
+    image_import.SetDataOrigin(0.0, 0.0, 0.0)
+    image_import.Update()
+
+    contour = vtk.vtkFlyingEdges3D()
+    contour.SetInputConnection(image_import.GetOutputPort())
+    contour.SetValue(0, threshold)
+    contour.ComputeNormalsOff()
+    contour.ComputeGradientsOff()
+    contour.Update()
+    mesh = vtk.vtkPolyData()
+    mesh.DeepCopy(contour.GetOutput())   # outlives the filter and the buffer
+    return mesh
 
 
 # ── Worker: Position-Velocity diagram ────────────────────────────────────────

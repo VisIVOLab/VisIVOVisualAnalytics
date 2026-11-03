@@ -47,6 +47,8 @@
 #include "PvPathGeometry.h"
 #include "PvDiagramWidget.h"
 #include "RemoteLevels.h"
+#include "ThresholdShare.h"
+#include "VolumeColorbar.h"
 #include "RemoteRenderWidget.h"
 #include "SidebarPanel.h"
 #include "Settings.h"
@@ -2547,14 +2549,18 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     groupWCS->addAction(ui->actionEcliptic);
     const bool hasCelestial = this->remoteHasCelestialAxes();
     ui->menuWCS->setEnabled(hasCelestial);
-    // The two overlays the WCS menu configures go with it: a sky grid with no
-    // sky is an entry that can only disappoint.
-    for (QAction *a : { this->actionShowWcsAxes.data(), this->actionShow3dWcsAxes.data() }) {
-        if (!a || hasCelestial)
-            continue;
-        a->setEnabled(false);
-        a->setToolTip(u"This cube's spatial axes are not celestial, so there are no "
-                      u"sky coordinates to draw."_s);
+    // The two overlays stay without a sky: a cube on linear axes (a simulation
+    // box, issue #83) is labelled with its own coordinates, or with voxel
+    // indices when it has none. They say so instead of promising a sky grid.
+    if (!hasCelestial) {
+        this->actionShowWcsAxes->setText(u"Axes on the 2-D Panes"_s);
+        this->actionShowWcsAxes->setToolTip(
+                u"Draw the slice and moment panes' axes with tick labels in the cube's "
+                u"own coordinates (its axes are not celestial)."_s);
+        this->actionShow3dWcsAxes->setText(u"Axes Box in the 3-D View"_s);
+        this->actionShow3dWcsAxes->setToolTip(
+                u"Show a labelled bounding box in the 3-D view, with ticks in the "
+                u"cube's own coordinates (its axes are not celestial)."_s);
     }
     if (!hasCelestial) {
         ui->menuWCS->setTitle(u"WCS (no celestial axes)"_s);
@@ -3098,6 +3104,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     {
         this->channelOverlay = new ChannelOverlay(ui->vtkCube);
         ui->vtkCube->installEventFilter(this->channelOverlay);
+        this->m_volumeColorbar = new VolumeColorbar(this);
+        this->m_volumeColorbar->hide();   // until there is a range to show
+        this->m_volumeColorbar->attachTo(ui->vtkCube);
         // The same scrubber on the 2-D Slice (see channelOverlay2d).
         this->channelOverlay2d = new ChannelOverlay(ui->vtkImage);
         ui->vtkImage->installEventFilter(this->channelOverlay2d);
@@ -3415,6 +3424,14 @@ void vtkWindowCube::applyVolumeLutToPipeline(const QString &name)
         // GetScalarRange reflects the actual data values including any sanitisation.
         cubeImage->GetScalarRange(cubeRange);
     }
+    // Drawn only on the backend: no preview, the range it reported, so the
+    // LUT editor opens on the data's Min/Max rather than the placeholder's.
+    if (!(this->currentCubeVisibleRange[1] > this->currentCubeVisibleRange[0])
+        && this->m_remoteRangeKnown && this->m_remoteDataMax > this->m_remoteDataMin) {
+        cubeRange[0] = this->m_remoteDataMin;
+        cubeRange[1] = this->m_remoteDataMax;
+    }
+    this->m_volumeLutUserRange = false;   // a new map or new data: the data's range
 
     // Keep lutVolume member in sync — it is the authoritative LUT for the 3D
     // LUT customizer dialog and must always reflect the current volume state.
@@ -3424,6 +3441,7 @@ void vtkWindowCube::applyVolumeLutToPipeline(const QString &name)
                     this->m_volumeScaleGamma);
     ColorMaps::SetColorTransferFunction(this->lutVolume, this->volumeColorTransferFunction);
     this->volumeColorTransferFunction->SetObjectName(stdName);
+    this->refreshVolumeColorbar();
     // NOTE: does NOT call Render() — caller decides when to render.
 }
 
@@ -3507,6 +3525,7 @@ void vtkWindowCube::applyVolumeBlendMode(int idx)
     cmd[u"type"_s] = u"set_blend_mode"_s;
     cmd[u"mode"_s] = (idx == 1 || idx == 2) ? idx : 0;
     this->sendRemoteRenderStateCommand(cmd);
+    this->refreshVolumeColorbar();   // the threshold's mark is Composite's
 }
 
 void vtkWindowCube::updateVolumeModeVisibility(bool volumeActive)
@@ -3839,6 +3858,9 @@ void vtkWindowCube::applyRemotePreviewResult(const RemoteCubePreviewResult &resu
         }
         this->applyThreshold(initial);   // updates UI + pipeline, no Render
         this->m_initialThresholdApplied = true;
+        // After the rest of this load (the LUT is synchronised below).
+        const double r0 = result.cubeRange[0], r1 = result.cubeRange[1];
+        QTimer::singleShot(0, this, [this, r0, r1]() { this->chooseDefaultScale(r0, r1); });
     } else {
         // The field already holds a threshold (the user's, or a remote
         // session's): the local pipeline draws with it too.
@@ -4173,6 +4195,12 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
     // Local-mode QVTKOpenGLNativeWidget), which is hidden inside the
     // stack while we're in Remote mode — and the user loses access to
     // the cutting-plane channel slider.
+    if (this->m_volumeColorbar) {
+        this->m_volumeColorbar->attachTo(this->m_effectiveRenderMode == RenderMode::Remote
+                                                 ? static_cast<QWidget *>(this->m_remoteRenderWidget)
+                                                 : static_cast<QWidget *>(ui->vtkCube));
+        this->refreshVolumeColorbar();   // Linear: whose range the view is drawn over
+    }
     if (this->channelOverlay) {
         QWidget *target = (this->m_effectiveRenderMode == RenderMode::Remote)
                 ? static_cast<QWidget *>(this->m_remoteRenderWidget)
@@ -6162,7 +6190,97 @@ void vtkWindowCube::applyThresholdToPipeline(double threshold)
     if (!this->cubeOpenWatcher.isRunning() && ui->actionIsosurface->isChecked()) {
         this->scheduleIsosurfaceRecompute();
     }
+    this->updateThresholdShare(threshold);
+    this->refreshVolumeColorbar();
     // NOTE: does NOT call Render() — caller decides when to render.
+}
+
+void vtkWindowCube::refreshVolumeColorbar()
+{
+    if (!this->m_volumeColorbar)
+        return;
+    // A surface is drawn in one colour, and a hidden rendering has none.
+    const auto range = this->volumeDataRange();
+    if (!range || this->m_isosurfaceDrawn || !this->m_show3dRendering) {
+        this->m_volumeColorbar->hide();
+        return;
+    }
+    // The colours over the Min..Max the volume is drawn with (volumeColourRange),
+    // rebuilt as applyVolumeLutToPipeline and the LUT editor build them.
+    const auto [lo, hi] = this->volumeColourRange();
+    vtkNew<vtkLookupTable> lut;
+    vtkNew<vtkColorTransferFunction> ctf;
+    LutScale::build(lut, this->m_activeColorMapName.isEmpty()
+                                 ? ColorMaps::DefaultColorMap
+                                 : this->m_activeColorMapName.toStdString(),
+                    this->m_volumeScaleMode, lo, hi, this->m_volumeScaleGamma);
+    ColorMaps::SetColorTransferFunction(lut, ctf);
+    constexpr int kColours = 256;
+    QVector<QColor> colours;
+    colours.reserve(kColours);
+    for (int i = 0; i < kColours; ++i) {
+        double rgb[3];
+        ctf->GetColor(this->volumeScaleValue(static_cast<double>(i) / (kColours - 1), lo, hi), rgb);
+        colours << QColor::fromRgbF(rgb[0], rgb[1], rgb[2]);
+    }
+    QVector<QPair<double, QString>> ticks;
+    bool exponent = false;
+    for (const double u : { 0.0, 0.25, 0.5, 0.75, 1.0 }) {
+        ticks << qMakePair(u, QString::number(this->volumeScaleValue(u, lo, hi), 'g', 3));
+        exponent = exponent || ticks.back().second.contains(u'e');
+    }
+    // One notation down the bar: "0.000183" over "5.31e-06" reads as two scales.
+    if (exponent) {
+        for (auto &tick : ticks)
+            tick.second = QString::number(this->volumeScaleValue(tick.first, lo, hi), 'e', 2);
+    }
+    this->m_volumeColorbar->setColours(colours);
+    this->m_volumeColorbar->setTicks(ticks);
+    // The quantity: the cube's unit, or a VBT field's name.
+    this->m_volumeColorbar->setTitle(
+            !this->m_brightnessUnit.isEmpty() ? this->m_brightnessUnit
+            : visivo::isFieldReference(this->filepath)
+                    ? visivo::fieldNames().value(this->filepath)
+                    : QString());
+    // Below the threshold the opacity is zero; MIP and MinIP do not use the
+    // opacity (fillVolumeOpacity), so there the bar has no mark. The threshold
+    // and Min..Max are apart: the opacity spans the data, so voxels between a
+    // threshold and Min are drawn in Min's colour, those above Max in Max's.
+    if (this->m_volumeBlendMode == 0) {
+        const double threshold = ui->lineThreshold->text().toDouble();
+        QString caption = u"threshold %1"_s.arg(QString::number(threshold, 'g', 3));
+        if (threshold < lo)
+            caption += u" < Min"_s;
+        else if (threshold > hi)
+            caption += u" > Max"_s;
+        this->m_volumeColorbar->setThreshold(this->volumeScalePosition(threshold, lo, hi),
+                                             caption);
+    } else {
+        this->m_volumeColorbar->setThreshold(std::nullopt);
+    }
+    this->m_volumeColorbar->show();
+}
+
+void vtkWindowCube::updateThresholdShare(double threshold)
+{
+    if (!this->m_thresholdShareLabel)
+        return;
+    // From the cube this viewer holds (a preview, or the full grid): a view
+    // drawn only on the backend has none here, and says nothing.
+    auto *image = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
+    std::optional<double> share;
+    if (image && image->GetScalarType() == VTK_FLOAT && image->GetNumberOfPoints() > 1)
+        share = visivo::shareAbove(static_cast<const float *>(image->GetScalarPointer()),
+                                   static_cast<std::size_t>(image->GetNumberOfPoints()),
+                                   threshold, this->currentCubeInvisibleSentinel);
+    this->m_thresholdShareLabel->setVisible(share.has_value());
+    if (share) {
+        // None of the sampled voxels above, but the data goes higher: a few.
+        double range[2] = { 0.0, 0.0 };
+        image->GetScalarRange(range);
+        this->m_thresholdShareLabel->setText(
+                visivo::shareAboveText(*share, /*someAbove=*/range[1] > threshold));
+    }
 }
 
 void vtkWindowCube::applyThreshold(float value)
@@ -6879,6 +6997,8 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     });
     qDebug().noquote() << QStringLiteral("[perf][cube] apply total (sync): %1 ms").arg(
             totalTimer.elapsed());
+    // A full-resolution or ROI cube replaced the one the caption counted.
+    this->updateThresholdShare(ui->lineThreshold->text().toDouble());
 }
 
 void vtkWindowCube::updateSlice()
@@ -7385,6 +7505,7 @@ void vtkWindowCube::showLUTCustomizer3D()
                                                 != this->lutCustomizer3D->scaleGamma();
                              this->m_volumeScaleMode = this->lutCustomizer3D->scaleMode();
                              this->m_volumeScaleGamma = this->lutCustomizer3D->scaleGamma();
+                             this->m_volumeLutUserRange = true;
                              if (scaleChanged)
                                  QTimer::singleShot(0, this, [this]() {
                                      // The editor built the colours over its own range.
@@ -7395,6 +7516,11 @@ void vtkWindowCube::showLUTCustomizer3D()
                                                                  this->volumeColorTransferFunction);
                              this->volumeColorTransferFunction->SetObjectName(name);
                              this->m_activeColorMapName = QString::fromStdString(name);
+                             this->refreshVolumeColorbar();
+                             // A remote view draws with the editor's Min/Max too
+                             // (a scale change pushes them from updateCube).
+                             if (!scaleChanged)
+                                 this->pushVolumeTransferFunctionsToRemote();
                              // Keep the sidebar combo in sync (without re-triggering applyColorMapByName)
                              if (auto *combo = m_uiAssembler ? m_uiAssembler->lutCombo() : nullptr) {
                                  const QSignalBlocker blocker(combo);
@@ -7409,6 +7535,21 @@ void vtkWindowCube::showLUTCustomizer3D()
                          });
     }
 
+    // Drawn only on the backend and never coloured over its range yet: the
+    // editor opens on the data's Min/Max (applyVolumeLutToPipeline).
+    if (!(this->currentCubeVisibleRange[1] > this->currentCubeVisibleRange[0])
+        && !this->m_volumeLutUserRange && !this->m_activeColorMapName.isEmpty())
+        this->applyVolumeLutToPipeline(this->m_activeColorMapName);
+    // A remote view in Linear is drawn over the backend's full range, wider than
+    // the preview's: the editor opens on that, or an Apply that only changes the
+    // map would narrow the remote colours to the preview's.
+    if (this->remoteDrawsOwnLut() && !this->m_activeColorMapName.isEmpty()) {
+        const std::string name = this->m_activeColorMapName.toStdString();
+        LutScale::build(this->lutVolume, name, this->m_volumeScaleMode, this->m_remoteDataMin,
+                        this->m_remoteDataMax, this->m_volumeScaleGamma);
+        ColorMaps::SetColorTransferFunction(this->lutVolume, this->volumeColorTransferFunction);
+        this->volumeColorTransferFunction->SetObjectName(name);
+    }
     // Always reinitialise with the current cube data and member LUT.
     auto *cubeImage =
             vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
@@ -7829,6 +7970,15 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         h->setSpacing(8);
         auto *l = new QLabel(u"Threshold"_s, r);
         l->setStyleSheet(labelCss);
+        const QString thresholdTip =
+                u"Voxels below this value are transparent in the volume (Composite); "
+                u"the isosurface is drawn at it. The slider follows the colour map's scale "
+                u"(Edit)."_s;
+        l->setToolTip(thresholdTip);
+        if (ui->lineThreshold)
+            ui->lineThreshold->setToolTip(thresholdTip);
+        if (ui->sliderThreshold)
+            ui->sliderThreshold->setToolTip(thresholdTip);
         h->addWidget(l, 1);
         if (ui->lineThreshold) {
             rehost(ui->lineThreshold);
@@ -7856,6 +8006,17 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         // setFixedHeight forces min==max==22.
         ui->sliderThreshold->setFixedHeight(22);
         disp3d->addWidget(ui->sliderThreshold);
+    }
+    {   // What the threshold keeps, in voxels (issue #83).
+        m_thresholdShareLabel = new QLabel(root);
+        m_thresholdShareLabel->setStyleSheet(labelCss);
+        m_thresholdShareLabel->setAlignment(Qt::AlignRight);
+        m_thresholdShareLabel->setToolTip(
+                u"The share of the cube's voxels above the threshold, in the copy this "
+                u"viewer holds. Voxels below it are transparent in the volume "
+                u"(Composite); the isosurface is drawn at it."_s);
+        m_thresholdShareLabel->hide();   // until there is a cube to count
+        disp3d->addWidget(m_thresholdShareLabel);
     }
     {   // Color map: LUT combo + "Edit" link (no full-width "Advanced…").
         auto *r = new QWidget();
@@ -7893,39 +8054,6 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         r->setFixedHeight(28);   // deterministic row step (§3.0c density)
         disp3d->addWidget(r);
     }
-    // Scale (issue #83): colours, opacity and the threshold slider together.
-    // A field spanning orders of magnitude needs Log; the same control the
-    // 2-D slice has, so a FITS cube and a VBT field read the same way.
-    QWidget *scaleRow = new QWidget();
-    {
-        auto *h = new QHBoxLayout(scaleRow);
-        h->setContentsMargins(0, 0, 0, 0);
-        h->setSpacing(8);
-        auto *l = new QLabel(u"Scale"_s, scaleRow);
-        l->setStyleSheet(labelCss);
-        h->addWidget(l, 0);
-        this->m_volumeScaleCombo = new QComboBox(scaleRow);
-        const auto labels = LutScale::modeLabels();
-        const auto tips = LutScale::modeToolTips();
-        for (std::size_t i = 0; i < labels.size(); ++i) {
-            this->m_volumeScaleCombo->addItem(QString::fromUtf8(labels[i]));
-            this->m_volumeScaleCombo->setItemData(static_cast<int>(i), QString::fromUtf8(tips[i]),
-                                                  Qt::ToolTipRole);
-        }
-        this->m_volumeScaleCombo->setCurrentIndex(static_cast<int>(this->m_volumeScaleMode));
-        this->m_volumeScaleCombo->setToolTip(
-                u"How values map to colour and opacity in the 3-D volume, and how the "
-                u"threshold slider moves. Log for fields spanning orders of magnitude."_s);
-        this->m_volumeScaleCombo->setFixedHeight(26);
-        h->addWidget(this->m_volumeScaleCombo, 1);
-        QObject::connect(this->m_volumeScaleCombo, &QComboBox::currentIndexChanged, this,
-                         [this](int index) {
-            this->m_volumeScaleMode = static_cast<LutScale::Mode>(std::clamp(index, 0, 4));
-            this->onVolumeScaleChanged();
-        });
-        scaleRow->setFixedHeight(28);   // deterministic row step (§3.0c density)
-        disp3d->addWidget(scaleRow);
-    }
     QWidget *surfRow = nullptr;
     if (ui->btnCubeColor) {
         surfRow = new QWidget();
@@ -7958,9 +8086,8 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
     // segmented control's OWN signal — the render-mode combo updates actionVolume
     // under a QSignalBlocker, so actionVolume::toggled would miss these changes.
     if (modeCombo) {
-        auto applyVis = [volRow, surfRow, scaleRow](int idx) {
+        auto applyVis = [volRow, surfRow](int idx) {
             if (volRow) volRow->setVisible(idx == 1);
-            if (scaleRow) scaleRow->setVisible(idx == 1);
             if (surfRow) surfRow->setVisible(idx == 0);
         };
         applyVis(modeCombo->currentIndex());
@@ -8135,7 +8262,8 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
 
     layerCheck(u"Catalogue sources"_s, actionShowCatalogueOverlay,
                u"Load a catalogue first: Tools \u25b8 Load Catalogue Overlay."_s, nullptr);
-    m_layerRow3dWcsAxes = layerCheck(u"3D WCS axes"_s, actionShow3dWcsAxes, QString(), nullptr);
+    m_layerRow3dWcsAxes = layerCheck(remoteHasCelestialAxes() ? u"3D WCS axes"_s : u"3D axes"_s,
+                                     actionShow3dWcsAxes, QString(), nullptr);
 
     // Again, now that the rows exist. The call above runs while building the
     // DISPLAY section, before any of these are constructed, so it set nothing —
@@ -14841,14 +14969,27 @@ void vtkWindowCube::refresh3dWcsAxes()
     this->wcs3dAxesActor->SetYTitle(axisLabel(1).c_str());
     this->wcs3dAxesActor->SetZTitle(axisLabel(2).c_str());
 
-    const auto setRange = [this, bounds](int axis, vtkCubeAxesActor *a) {
+    // The bounds are the displayed image's: a decimated preview spans
+    // 0..n-1 of its own samples, which cover the whole cube, while the
+    // full-resolution or ROI cube is laid out in the cube's own voxels.
+    int dims[3] = { 0, 0, 0 };
+    cubeImage->GetDimensions(dims);
+    const int fullDims[3] = { this->remoteDatasetWidth, this->remoteDatasetHeight,
+                              this->remoteDatasetDepth };
+    const auto toCubeVoxel = [&](int axis, double b) {
+        if (this->usingHighResCube || dims[axis] <= 1 || fullDims[axis] <= 1)
+            return b;
+        return b * (fullDims[axis] - 1) / (dims[axis] - 1);
+    };
+    const auto setRange = [this, bounds, &toCubeVoxel](int axis, vtkCubeAxesActor *a) {
         const int idxMin = axis * 2;
         const int idxMax = idxMin + 1;
         bool okMin = false, okMax = false;
-        const double wMin = this->remoteVoxelToWcs(axis, bounds[idxMin], &okMin);
-        const double wMax = this->remoteVoxelToWcs(axis, bounds[idxMax], &okMax);
-        if (!okMin || !okMax || !std::isfinite(wMin) || !std::isfinite(wMax)) {
-            return; // Leave default voxel-space range when WCS is unusable.
+        const double wMin = this->remoteVoxelToWcs(axis, toCubeVoxel(axis, bounds[idxMin]), &okMin);
+        const double wMax = this->remoteVoxelToWcs(axis, toCubeVoxel(axis, bounds[idxMax]), &okMax);
+        // Without a WCS on the axis, remoteVoxelToWcs gives the voxel index.
+        if (!std::isfinite(wMin) || !std::isfinite(wMax)) {
+            return;
         }
         switch (axis) {
         case 0: a->SetXAxisRange(wMin, wMax); break;
@@ -15241,6 +15382,7 @@ void vtkWindowCube::apply3dRenderingVisibility()
     this->volume->SetVisibility(m_show3dRendering ? 1 : 0);
     if (this->currentIsosurfaceActor)
         this->currentIsosurfaceActor->SetVisibility(m_show3dRendering ? 1 : 0);
+    this->refreshVolumeColorbar();
     if (ui->vtkCube && ui->vtkCube->renderWindow())
         ui->vtkCube->renderWindow()->Render();
 
@@ -15264,6 +15406,8 @@ void vtkWindowCube::setCubeRenderModeLocally(bool isosurfaceMode)
         isosurfaceMode = false;
     }
 
+    this->m_isosurfaceDrawn = isosurfaceMode;
+
     if (isosurfaceMode) {
         if (this->currentIsosurfaceActor && !renderer->HasViewProp(this->currentIsosurfaceActor)) {
             renderer->AddActor(this->currentIsosurfaceActor);
@@ -15285,6 +15429,7 @@ void vtkWindowCube::setCubeRenderModeLocally(bool isosurfaceMode)
     cmd[u"type"_s] = u"set_cube_render_mode"_s;
     cmd[u"mode"_s] = isosurfaceMode ? u"isosurface"_s : u"volume"_s;
     this->sendRemoteRenderStateCommand(cmd);
+    this->refreshVolumeColorbar();
 }
 
 void vtkWindowCube::applyIsosurfaceResult(const AsyncIsosurfaceResult &result)
@@ -15536,6 +15681,32 @@ double vtkWindowCube::volumeScaleValue(double position, double lo, double hi) co
             * std::pow(u, 1.0 / LutScale::exponent(this->m_volumeScaleMode, this->m_volumeScaleGamma));
 }
 
+bool vtkWindowCube::remoteDrawsOwnLut() const
+{
+    return this->m_volumeScaleMode == LutScale::Mode::Linear && !this->m_volumeLutUserRange
+            && this->m_effectiveRenderMode == RenderMode::Remote && this->m_remoteRenderWidget
+            && this->m_remoteRenderWidget->isLive() && this->m_remoteRangeKnown
+            && this->m_remoteDataMax > this->m_remoteDataMin;
+}
+
+std::pair<double, double> vtkWindowCube::volumeColourRange() const
+{
+    const double *table = this->lutVolume->GetTableRange();
+    const bool tableSet = table[1] > table[0];
+    // Min..Max typed in the LUT editor: the volume is drawn with them, locally
+    // and remotely (pushVolumeTransferFunctionsToRemote).
+    if (this->m_volumeLutUserRange && tableSet)
+        return { table[0], table[1] };
+    // A remote view in Linear draws with the backend's own LUT, over the full
+    // cube's range, wider than a strided preview's.
+    if (this->remoteDrawsOwnLut())
+        return { this->m_remoteDataMin, this->m_remoteDataMax };
+    if (this->currentCubeVisibleRange[1] > this->currentCubeVisibleRange[0] && tableSet)
+        return { table[0], table[1] };
+    const auto data = this->volumeDataRange();
+    return data ? *data : std::make_pair(table[0], table[1]);
+}
+
 std::optional<std::pair<double, double>> vtkWindowCube::volumeDataRange() const
 {
     if (this->currentCubeVisibleRange[1] > this->currentCubeVisibleRange[0])
@@ -15544,6 +15715,28 @@ std::optional<std::pair<double, double>> vtkWindowCube::volumeDataRange() const
     if (this->m_remoteRangeKnown && this->m_remoteDataMax > this->m_remoteDataMin)
         return std::make_pair(this->m_remoteDataMin, this->m_remoteDataMax);
     return std::nullopt;
+}
+
+void vtkWindowCube::chooseDefaultScale(double minValue, double maxValue)
+{
+    if (this->m_defaultScaleChosen || !(maxValue > minValue))
+        return;
+    this->m_defaultScaleChosen = true;
+    // Linear shows only the brightest voxels of such data; a radio cube, with
+    // its noise around zero, stays linear.
+    if (!(minValue > 0.0 && maxValue / minValue >= 1e3)
+        || this->m_volumeScaleMode != LutScale::Mode::Linear)
+        return;
+    this->m_volumeScaleMode = LutScale::Mode::Log;
+    this->onVolumeScaleChanged();
+    if (this->m_sliceScaleMode == LutScale::Mode::Linear
+        && this->anchorSliceLogFloor(LutScale::Mode::Log)) {
+        this->m_sliceScaleMode = LutScale::Mode::Log;
+        this->applySliceLutByName(this->m_activeSliceLutName);
+        this->updateDisplaySectionForActivePane();
+    }
+    if (ui->vtkCube->renderWindow())
+        ui->vtkCube->renderWindow()->Render();
 }
 
 std::pair<float, float> vtkWindowCube::thresholdSpan() const
@@ -15558,14 +15751,19 @@ std::pair<float, float> vtkWindowCube::thresholdSpan() const
 
 void vtkWindowCube::onVolumeScaleChanged(bool rebuildColours)
 {
-    if (this->m_volumeScaleCombo) {
-        const QSignalBlocker block(this->m_volumeScaleCombo);
-        this->m_volumeScaleCombo->setCurrentIndex(static_cast<int>(this->m_volumeScaleMode));
-    }
     // Colours: the map rebuilt with the stretch (applyVolumeLutToPipeline reads
     // m_volumeScaleMode).
     if (rebuildColours && !this->m_activeColorMapName.isEmpty())
         this->applyVolumeLutToPipeline(this->m_activeColorMapName);
+    // An open editor shows the scale chosen here (the automatic Log), or its
+    // next Apply would send its own back.
+    if (rebuildColours && this->lutCustomizer3D && this->lutCustomizer3D->isVisible()) {
+        auto *cubeImage =
+                vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
+        if (cubeImage && cubeImage->GetNumberOfPoints() > 0)
+            this->lutCustomizer3D->init(cubeImage, this->lutVolume, this->m_volumeScaleMode,
+                                        this->m_volumeScaleGamma);
+    }
     // Opacity and the slider: the threshold kept, its position on the new scale.
     const float threshold = ui->lineThreshold->text().toFloat();
     {
@@ -15589,8 +15787,9 @@ void vtkWindowCube::onVolumeScaleChanged(bool rebuildColours)
 
 void vtkWindowCube::pushVolumeTransferFunctionsToRemote()
 {
-    if (this->m_volumeScaleMode == LutScale::Mode::Linear || !this->m_remoteRenderWidget
-        || !this->m_remoteRenderWidget->isLive())
+    // Linear over the data's range is the backend's own LUT and ramp.
+    if ((this->m_volumeScaleMode == LutScale::Mode::Linear && !this->m_volumeLutUserRange)
+        || !this->m_remoteRenderWidget || !this->m_remoteRenderWidget->isLive())
         return;
     const auto range = this->volumeDataRange();
     if (!range)
@@ -15600,19 +15799,28 @@ void vtkWindowCube::pushVolumeTransferFunctionsToRemote()
     vtkNew<vtkLookupTable> lut;
     vtkNew<vtkColorTransferFunction> remoteColor;
     vtkNew<vtkPiecewiseFunction> remoteOpacity;
+    // The opacity over the backend's own range: the full cube's, wider than a
+    // strided preview's (a threshold above the preview's maximum still draws).
+    if (this->m_remoteRangeKnown && this->m_remoteDataMax > this->m_remoteDataMin) {
+        this->fillVolumeOpacity(remoteOpacity, ui->lineThreshold->text().toDouble(),
+                                this->m_remoteDataMin, this->m_remoteDataMax);
+        otf = remoteOpacity;
+    }
     if (!(this->currentCubeVisibleRange[1] > this->currentCubeVisibleRange[0])) {
         // Drawn only on the backend: the local functions span the placeholder
-        // image, so the remote ones are built over the range it reported.
+        // image; the colours over the same Min..Max as the colour bar.
+        const auto [lo, hi] = this->volumeColourRange();
         LutScale::build(lut, this->m_activeColorMapName.isEmpty()
                                      ? ColorMaps::DefaultColorMap
                                      : this->m_activeColorMapName.toStdString(),
-                        this->m_volumeScaleMode, range->first, range->second,
-                        this->m_volumeScaleGamma);
+                        this->m_volumeScaleMode, lo, hi, this->m_volumeScaleGamma);
         ColorMaps::SetColorTransferFunction(lut, remoteColor);
-        this->fillVolumeOpacity(remoteOpacity, ui->lineThreshold->text().toDouble(),
-                                range->first, range->second);
+        if (otf != remoteOpacity.GetPointer()) {
+            this->fillVolumeOpacity(remoteOpacity, ui->lineThreshold->text().toDouble(),
+                                    range->first, range->second);
+            otf = remoteOpacity;
+        }
         ctf = remoteColor;
-        otf = remoteOpacity;
     }
     QVariantList color, opacity;
     for (int i = 0; i < ctf->GetSize(); ++i) {

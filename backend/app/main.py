@@ -84,6 +84,9 @@ async def _lifespan(_app: "FastAPI"):
     import asyncio  # noqa: PLC0415
     from . import telemetry_push  # noqa: PLC0415
     push_task = telemetry_push.start(_app.version)
+    # Started by the desktop client: end with it (app/parent_watch.py).
+    from . import parent_watch  # noqa: PLC0415
+    parent_watch.start()
     yield
     if push_task is not None:
         push_task.cancel()

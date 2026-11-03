@@ -1,4 +1,5 @@
 #include "vtkWindowCube.h"
+#include "VolumeColorbar.h"
 
 #include <QScopedValueRollback>
 
@@ -343,6 +344,10 @@ void vtkWindowCube::abortRemoteSwitch(const QString &reason)
     // moved it onto the remote widget; aborting without moving it back left the
     // slider stranded on the hidden page and the user without the cutting-plane
     // channel control. Same steps as applyRenderMode's Local branch.
+    if (this->m_volumeColorbar) {
+        this->m_volumeColorbar->attachTo(ui->vtkCube);
+        this->refreshVolumeColorbar();   // Linear: the preview's range again
+    }
     if (this->channelOverlay && ui->vtkCube
         && this->channelOverlay->parentWidget() != ui->vtkCube) {
         if (QWidget *current = this->channelOverlay->parentWidget())
@@ -520,6 +525,10 @@ void vtkWindowCube::onRemoteRenderConnectionStateChanged(const QString &state)
         // reparenting here: by the time the WS is Live, the cube
         // preview has long since finished, channelOverlay exists, and
         // we're already on the Remote stack page.
+        if (this->m_volumeColorbar && this->m_effectiveRenderMode == RenderMode::Remote) {
+            this->m_volumeColorbar->attachTo(this->m_remoteRenderWidget);
+            this->refreshVolumeColorbar();   // Linear: the backend's own range
+        }
         if (this->channelOverlay
             && this->m_effectiveRenderMode == RenderMode::Remote
             && this->m_remoteRenderWidget
@@ -597,6 +606,9 @@ void vtkWindowCube::adoptRemoteLevels(const QJsonObject &answer)
         qDebug().noquote() << "[remote-render] threshold from the backend:" << value;
     }
     this->widenThresholdBoundsToRemoteRange();
+    // A view drawn only on the backend learns the data's range here.
+    if (this->m_remoteRangeKnown)
+        this->chooseDefaultScale(this->m_remoteDataMin, this->m_remoteDataMax);
 }
 
 void vtkWindowCube::widenThresholdBoundsToRemoteRange()

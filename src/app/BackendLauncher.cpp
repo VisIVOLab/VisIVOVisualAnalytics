@@ -905,7 +905,12 @@ void BackendLauncher::launchProcess()
 
     m_process = new QProcess(this);
     m_process->setWorkingDirectory(backendDir);
-    m_process->setProcessEnvironment(backendEnvironment());
+    // The backend ends with this client (backend/app/parent_watch.py): one left
+    // behind by a crash or a force quit kept the port with a broken output pipe,
+    // and the next client used it and saw requests fail with "Broken pipe".
+    QProcessEnvironment env = backendEnvironment();
+    env.insert(u"VISIVO_EXIT_WITH_PID"_s, QString::number(QCoreApplication::applicationPid()));
+    m_process->setProcessEnvironment(env);
 #ifdef Q_OS_UNIX
     // Give the backend its own process GROUP, so that stopping it can stop the
     // whole family. The backend runs a ProcessPoolExecutor, and its workers are

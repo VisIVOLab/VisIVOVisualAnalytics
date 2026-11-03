@@ -221,7 +221,9 @@ async def isosurface_product(
         entry = _require_dataset(session, request.dataset_id)
         if entry["kind"] != "cube":
             raise HTTPException(422, "Isosurface requires a cube dataset.")
-        iso_cache_params = {"threshold": float(request.threshold)}
+        # "budget": a surface cached before it was bounded (ISO_MAX_POLYS) is
+        # not served again.
+        iso_cache_params = {"threshold": float(request.threshold), "budget": 1}
         cache_key, param_hash = PRODUCT_CACHE.make_key(entry["path"], "isosurface", iso_cache_params)
         cached = PRODUCT_CACHE.get(cache_key)
         if cached is not None:
