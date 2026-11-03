@@ -8260,8 +8260,19 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         m_layerRowContours = row;
     }
 
-    layerCheck(u"Catalogue sources"_s, actionShowCatalogueOverlay,
-               u"Load a catalogue first: Tools \u25b8 Load Catalogue Overlay."_s, nullptr);
+    if (QWidget *catalogueRow = layerCheck(
+                u"Catalogue sources"_s, actionShowCatalogueOverlay,
+                u"Load a catalogue first: Tools \u25b8 Load Catalogue Overlay."_s, nullptr);
+        catalogueRow && actionShowCatalogueOverlay) {
+        // Gone with the catalogue tools on a cube without sky coordinates
+        // (applyMomentToolGate hides the action).
+        QAction *act = actionShowCatalogueOverlay;
+        catalogueRow->setVisible(act->isVisible());
+        QObject::connect(act, &QAction::changed, catalogueRow, [catalogueRow, act]() {
+            if (catalogueRow->isHidden() == act->isVisible())
+                catalogueRow->setVisible(act->isVisible());
+        });
+    }
     m_layerRow3dWcsAxes = layerCheck(remoteHasCelestialAxes() ? u"3D WCS axes"_s : u"3D axes"_s,
                                      actionShow3dWcsAxes, QString(), nullptr);
 
@@ -12681,6 +12692,8 @@ void vtkWindowCube::setupInspector()
 
     // And the menu itself, regrouped from the same table.
     regroupToolsMenu();
+    // The new submenus start visible: hide those left empty for this data.
+    applyMomentToolGate();
     regroupViewMenu();
     // Once, now that the panes exist and the action does too. Without this the
     // unified export keeps its placeholder label — and its default ENABLED
@@ -14103,7 +14116,42 @@ void vtkWindowCube::applyMomentToolGate()
     in.slice2dVisible = slice2dVisible();
     in.view3dVisible = view3dVisible();
     in.slicePaneAvailable = momentPaneForSliceTools() >= 0;
+    // What the data is (issue #83): a VBT field's third axis is Z, not a
+    // spectrum, and its axes carry no sky coordinates. Before the header
+    // arrives (empty CTYPE3, no WCS yet) every tool stays.
+    in.spectralAxis = !CubeToolGate::isSpatialAxisType(this->remoteDatasetCtype[2]);
+    in.celestialWcs = this->remoteDatasetCtype[0].trimmed().isEmpty()
+            || this->remoteHasCelestialAxes();
     const CubeToolGate::Decision d = CubeToolGate::evaluate(in);
+
+    // Hidden rather than greyed: no state would ever make these apply to this
+    // cube. A hidden tool that was armed is un-armed first.
+    const auto showTools = [](std::initializer_list<QAction *> actions, bool visible) {
+        for (QAction *a : actions) {
+            if (!a || a->isVisible() == visible)
+                continue;
+            if (!visible && a->isCheckable() && a->isChecked())
+                a->setChecked(false);
+            a->setVisible(visible);
+        }
+    };
+    showTools({ ui->actionLinewidthMap, ui->actionBaselineSubtract, ui->actionStackCubes,
+                m_actLoadStokesCompanions.data(), m_actPolarisedIntensity.data(),
+                m_actRmSynthesis.data(), m_actSourceFind.data(), m_actKinematicModel.data() },
+              d.spectralTools);
+    showTools({ actionLoadCatalogueOverlay.data(), actionShowCatalogueOverlay.data(),
+                actionShowCatalogueLabels.data(), actionClearCatalogueOverlay.data() },
+              d.celestialTools);
+    // A Tools submenu left with nothing to show goes too (Polarimetry, Catalogue).
+    if (ui->menuTools) {
+        for (QAction *entry : ui->menuTools->actions()) {
+            if (QMenu *sub = entry ? entry->menu() : nullptr) {
+                const auto items = sub->actions();
+                entry->setVisible(std::any_of(items.cbegin(), items.cend(),
+                                              [](QAction *a) { return a && a->isVisible(); }));
+            }
+        }
+    }
     // Preserving a RUNNING tool is a different question from letting a new one
     // start. While a pane is maximized the other frames are hidden but
     // their views are still assigned, so a tool already armed on one of them

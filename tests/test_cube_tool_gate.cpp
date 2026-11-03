@@ -119,3 +119,35 @@ void TestCubeToolGate::stateGates_ignoreTheLayout()
     QVERIFY(!d.slice2dTools);
     QVERIFY(!d.view3dTools);
 }
+
+void TestCubeToolGate::dataKind_spatialAxisTypes()
+{
+    // A VBT volume's synthetic header names its axes X, Y, Z.
+    QVERIFY(CubeToolGate::isSpatialAxisType(u"Z"));
+    QVERIFY(CubeToolGate::isSpatialAxisType(u" linear "));
+    QVERIFY(CubeToolGate::isSpatialAxisType(u"DEC--SIN"));
+    QVERIFY(CubeToolGate::isSpatialAxisType(u"GLAT-CAR"));
+    // Spectra, and a header that says nothing, keep every tool.
+    QVERIFY(!CubeToolGate::isSpatialAxisType(u"FREQ"));
+    QVERIFY(!CubeToolGate::isSpatialAxisType(u"VRAD"));
+    QVERIFY(!CubeToolGate::isSpatialAxisType(u"VELO-LSR"));
+    QVERIFY(!CubeToolGate::isSpatialAxisType(u"WAVE"));
+    QVERIFY(!CubeToolGate::isSpatialAxisType(u"STOKES"));
+    QVERIFY(!CubeToolGate::isSpatialAxisType(u""));
+    QVERIFY(!CubeToolGate::isSpatialAxisType(u"RADIUS"));   // not RA
+}
+
+void TestCubeToolGate::dataKind_hidesSpectralAndCelestialTools()
+{
+    Inputs in = layout(true, true);
+    QVERIFY(evaluate(in).spectralTools);   // the defaults keep every tool
+    QVERIFY(evaluate(in).celestialTools);
+    in.spectralAxis = false;
+    in.celestialWcs = false;
+    const Decision d = evaluate(in);
+    QVERIFY(!d.spectralTools);
+    QVERIFY(!d.celestialTools);
+    // The view families do not depend on what the data is.
+    QVERIFY(d.slice2dTools);
+    QVERIFY(d.view3dTools);
+}

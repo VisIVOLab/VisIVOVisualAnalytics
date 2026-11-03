@@ -21,4 +21,7 @@ private slots:
     void sendSlice_followsAnOpenImageViewer();
     void linkViews_followsLinkTargets();
     void stateGates_ignoreTheLayout();
+
+    void dataKind_spatialAxisTypes();
+    void dataKind_hidesSpectralAndCelestialTools();
 };

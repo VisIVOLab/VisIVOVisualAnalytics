@@ -26,7 +26,27 @@
 // WHY, never a silent no-op) and keeps both surfaces — the Tools menu and
 // Inspector ▸ Analysis — in step, because they are built from the same actions.
 
+#include <QString>
+#include <QStringView>
+
 namespace CubeToolGate {
+
+/// True when a CTYPE names a SPATIAL axis — a celestial one or a plain
+/// coordinate (a simulation box's X/Y/Z, LINEAR) — so a cube whose third axis
+/// is one has no spectrum along it. An empty or unknown type is not: a FITS
+/// cube with an incomplete header keeps every tool, as it always has.
+inline bool isSpatialAxisType(QStringView ctype)
+{
+    const QString t = ctype.trimmed().toString().toUpper();
+    if (t.isEmpty())
+        return false;
+    if (t == u"X" || t == u"Y" || t == u"Z" || t == u"LINEAR" || t.startsWith(u"OFFSET"))
+        return true;
+    for (const char16_t *prefix : { u"RA", u"DEC", u"GLON", u"GLAT", u"ELON", u"ELAT" })
+        if (t == QStringView(prefix) || t.startsWith(QString::fromUtf16(prefix) + u'-'))
+            return true;
+    return false;
+}
 
 struct Inputs
 {
@@ -47,6 +67,11 @@ struct Inputs
     bool imageViewerOpen{ false };
     /// More than one pane in this window, or more than one cube window open.
     bool haveLinkTargets{ false };
+    /// The third axis is a spectrum (frequency, velocity, wavelength, channel,
+    /// or unknown); false for a spatial one (a VBT volume's Z).
+    bool spectralAxis{ true };
+    /// The two first axes carry a celestial WCS.
+    bool celestialWcs{ true };
 };
 
 struct Decision
@@ -59,6 +84,12 @@ struct Decision
     bool exportRegion{ false };
     bool sendSliceToImageViewer{ false };
     bool linkViews{ false };
+    /// Line width, baseline, stacking, polarimetry, source finding, kinematic
+    /// model: they read the third axis as a spectrum. Hidden, not greyed, on a
+    /// cube that has none — no state would ever make them apply.
+    bool spectralTools{ true };
+    /// Catalogue overlays place RA/Dec on the image.
+    bool celestialTools{ true };
 };
 
 inline Decision evaluate(const Inputs &in)
@@ -77,6 +108,9 @@ inline Decision evaluate(const Inputs &in)
     d.exportRegion = in.haveRegion;
     d.sendSliceToImageViewer = in.imageViewerOpen;
     d.linkViews = in.haveLinkTargets;
+    // What the data IS, not what is on screen: fixed for a dataset.
+    d.spectralTools = in.spectralAxis;
+    d.celestialTools = in.celestialWcs;
     return d;
 }
 

@@ -296,7 +296,27 @@ QVBoxLayout *InspectorPanel::groupLayout(const QString &caption)
     boxLayout->setSpacing(2);
     m_analysisLayout->insertWidget(m_analysisLayout->count() - 1, box);
     m_groupLayouts.insert(caption, boxLayout);
+    m_groupCaptions.insert(caption, cap);
     return boxLayout;
+}
+
+void InspectorPanel::refreshGroupVisibility(const QString &caption)
+{
+    QVBoxLayout *l = m_groupLayouts.value(caption, nullptr);
+    QWidget *cap = m_groupCaptions.value(caption, nullptr);
+    if (!l || !cap || !l->parentWidget())
+        return;
+    // Hidden ON PURPOSE: a widget never shown yet is isHidden() too.
+    const auto hiddenOnPurpose = [](const QWidget *w) {
+        return w->isHidden() && w->testAttribute(Qt::WA_WState_ExplicitShowHide);
+    };
+    bool any = false;
+    for (int i = 0; i < l->count() && !any; ++i) {
+        QWidget *w = l->itemAt(i)->widget();
+        any = w && !hiddenOnPurpose(w);
+    }
+    cap->setVisible(any);
+    l->parentWidget()->setVisible(any);
 }
 
 void InspectorPanel::addAnalysisSection(QWidget *section)
@@ -397,6 +417,22 @@ void InspectorPanel::addTool(const QString &groupCaption, const QString &label, 
         mirrorTip();
         QObject::connect(action, &QAction::changed, slot, mirrorTip);
         g->addWidget(slot);
+        // A hidden action hides its entry, as a menu does (setDefaultAction
+        // carries text, enabled and checked, not visibility).
+        // The first sync is unconditional: a slot never shown yet reads as
+        // hidden, so comparing would skip an action the gate hid already.
+        const auto mirrorVisible = [this, slot, action, groupCaption]() {
+            slot->setVisible(action->isVisible());
+            refreshGroupVisibility(groupCaption);
+        };
+        mirrorVisible();
+        QObject::connect(action, &QAction::changed, slot,
+                         [slot, action, mirrorVisible]() {
+                             const bool hiddenOnPurpose = slot->isHidden()
+                                     && slot->testAttribute(Qt::WA_WState_ExplicitShowHide);
+                             if (hiddenOnPurpose != !action->isVisible())
+                                 mirrorVisible();
+                         });
         return;
     }
     g->addWidget(btn);
