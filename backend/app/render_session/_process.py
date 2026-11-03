@@ -288,6 +288,12 @@ class RenderSessionProcess:
         self._idr = self._idr or idr
         return rgba, render_ms
 
+    async def refresh_levels(self) -> None:
+        """Ask the child for its levels, after every command already sent:
+        a command is not answered, and the levels it changes (a point
+        session's colour range) would otherwise wait for the next frame."""
+        await self._request("levels")
+
     def levels(self) -> dict[str, Any] | None:
         """The child's starting values as of its last answer (see
         :meth:`RenderSession.levels`); None before the first."""
@@ -438,6 +444,8 @@ def _serve(conn, session_id: str, dataset_path: str, factory: str, gpu_slot: int
             if kind == "init":
                 loop.run_until_complete(session.initialize())
                 reply("ok", None)
+            elif kind == "levels":
+                reply("ok", None)   # the reply carries them
             elif kind == "frame":
                 reply("ok", loop.run_until_complete(session.render_frame()))
             elif kind == "frame_if_changed":

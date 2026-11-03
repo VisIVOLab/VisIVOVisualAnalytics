@@ -410,6 +410,9 @@ class CatalogueOpenResponse(BaseModel):
     num_rows: int = 0
     fields: list[CatalogueFieldInfo] = []
     coordinate_fields: CatalogueCoordinateFields = CatalogueCoordinateFields()
+    # The points can be drawn on this backend (/v1/render, issue #83): a VBT
+    # point table, on a backend that renders server-side.
+    server_side_rendering_available: bool = False
 
 
 class CatalogueSubsetRequest(BaseModel):

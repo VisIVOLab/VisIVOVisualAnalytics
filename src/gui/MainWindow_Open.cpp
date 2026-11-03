@@ -1,3 +1,4 @@
+#include "CatalogueFormat.h"
 #include "MainWindow.h"
 
 #include "ConeSearchWindow.h"
@@ -101,24 +102,7 @@ namespace {
 
 QString catalogueFormatForPath(const QString &path)
 {
-    const QString suffix = QFileInfo(path).suffix().trimmed().toLower();
-    if (suffix == QStringLiteral("csv")) {
-        return QStringLiteral("csv");
-    }
-    if (suffix == QStringLiteral("vot") || suffix == QStringLiteral("votable")
-        || suffix == QStringLiteral("xml")) {
-        return QStringLiteral("votable");
-    }
-    if (suffix == QStringLiteral("fits") || suffix == QStringLiteral("fit")) {
-        return QStringLiteral("fits");
-    }
-    if (suffix == QStringLiteral("speck")) {
-        return QStringLiteral("speck");
-    }
-    if (suffix == QStringLiteral("tbl")) {
-        return QStringLiteral("ipac");
-    }
-    return QStringLiteral("csv");
+    return visivo::catalogueFormatForPath(path);
 }
 
 struct VbtOpenTaskResult
@@ -406,12 +390,10 @@ void MainWindow::reopenDataset(const RecentDataset &datasetRef)
         openVelocityFieldPath(dataset.id);
     } else if (dataset.type == u"catalogue"_s) {
         doOpenCataloguePath(dataset.id);
-    } else if (dataset.type == u"vbt-volume"_s) {
-        // Recorded before VBT volumes opened as cubes (issue #83): through the
-        // classifier, which sends a volume to the cube viewer like File ▸ Open.
+    } else if (dataset.type == u"vbt"_s || dataset.type == u"vbt-volume"_s) {
+        // Recorded before VBT tables opened in the 3-D catalogue viewer (points)
+        // and as cubes (volumes), issue #83: through the classifier, as File ▸ Open.
         dispatchOpenForPath(dataset.id);
-    } else if (dataset.type == u"vbt"_s) {
-        doOpenVbtPath(dataset.id);
     } else if (dataset.type == u"hips"_s) {
         openHiPS();
     } else {
@@ -1298,7 +1280,7 @@ void MainWindow::dispatchOpenForPath(const QString &path)
     else if (box.clickedButton() == asDataset)
         doOpenDataPath(target);
     else if (asVbt && box.clickedButton() == asVbt)
-        doOpenVbtPath(target);
+        doOpenCataloguePath(target);   // a table of points (issue #83)
 }
 
 

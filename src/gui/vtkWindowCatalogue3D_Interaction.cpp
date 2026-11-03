@@ -1,4 +1,6 @@
 #include "vtkWindowCatalogue3D.h"
+#include "RemotePointView.h"
+#include <vtkPointGaussianMapper.h>
 #include "ui_vtkWindowCatalogue3D.h"
 
 #include "app/DiagnosticsManager.h"
@@ -341,15 +343,19 @@ void vtkWindowCatalogue3D::toggleMorphColors(bool checked)
 {
     glyphMapper->SetScalarVisibility(checked ? 1 : 0);
     pointsMapper->SetScalarVisibility(checked ? 1 : 0);
-    if (!checked)
+    gaussianMapper->SetScalarVisibility(checked ? 1 : 0);
+    if (!checked) {
         glyphActor->GetProperty()->SetColor(0.75, 0.75, 0.85);
-    if (!checked)
         pointsActor->GetProperty()->SetColor(0.75, 0.75, 0.85);
+        gaussianActor->GetProperty()->SetColor(0.75, 0.75, 0.85);
+    }
     if (checked) {
         this->updateColorMapping();
     }
+    this->refreshColorbar();
     if (!entries.empty())
         renderWindow->Render();
+    this->pushRemoteState();
 }
 
 void vtkWindowCatalogue3D::scaleChanged(int value)
@@ -358,13 +364,18 @@ void vtkWindowCatalogue3D::scaleChanged(int value)
         return;
     Q_UNUSED(value);
     this->updateGlyphScales();
+    if (this->geometryMode == GeometryMode::Gaussian)
+        this->updateGaussianSplats();
     renderWindow->Render();
+    this->pushRemoteState();
 }
 
 void vtkWindowCatalogue3D::resetCamera()
 {
     renderer->ResetCamera();
     renderWindow->Render();
+    if (this->m_remoteView)
+        this->m_remoteView->send({ { u"type"_s, u"reset"_s } });
 }
 
 // Match a copilot field name against a comboMapColor item. Its item texts are
@@ -478,24 +489,23 @@ void vtkWindowCatalogue3D::undoCopilotActions()
 
 void vtkWindowCatalogue3D::updateGeometryMode()
 {
-    switch (this->comboGeometry ? this->comboGeometry->currentIndex() : 0) {
-    case 1:
+    // By the item's text, not its index: "Arrows (velocity)" comes and goes
+    // with the velocity columns.
+    const QString shape = this->comboGeometry ? this->comboGeometry->currentText() : QString();
+    if (shape == u"Sphere"_s)
         this->geometryMode = GeometryMode::Sphere;
-        break;
-    case 2:
+    else if (shape == u"Point"_s)
         this->geometryMode = GeometryMode::Point;
-        break;
-    case 3:
+    else if (shape == u"Cross"_s)
         this->geometryMode = GeometryMode::Cross;
-        break;
-    case 4:   // "Arrows (velocity)" — only present when vx/vy/vz exist
+    else if (shape == u"Gaussian splats"_s)
+        this->geometryMode = GeometryMode::Gaussian;
+    else if (shape == u"Arrows (velocity)"_s)
         this->geometryMode = GeometryMode::Velocity;
-        break;
-    default:
+    else
         this->geometryMode = GeometryMode::Ellipsoid;
-        break;
-    }
     this->updateGlyphPipeline();
+    this->pushRemoteState();
 }
 
 void vtkWindowCatalogue3D::updateSizeMode()
@@ -519,12 +529,14 @@ void vtkWindowCatalogue3D::toggleSceneAxes(bool checked)
 {
     this->axesWidget->SetEnabled(checked ? 1 : 0);
     this->renderWindow->Render();
+    this->pushRemoteState();
 }
 
 void vtkWindowCatalogue3D::toggleBoundingBox(bool checked)
 {
     this->cubeAxesActor->SetVisibility(checked ? 1 : 0);
     this->renderWindow->Render();
+    this->pushRemoteState();
 }
 
 void vtkWindowCatalogue3D::toggleShells(bool checked)

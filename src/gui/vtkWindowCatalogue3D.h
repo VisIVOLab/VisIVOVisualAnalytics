@@ -54,6 +54,15 @@ class QToolButton;
 class QTextEdit;
 class QTableView;
 class Catalogue3DTableModel;
+class QStackedWidget;
+class QFormLayout;
+class LUTCustomizerDialog;
+class VolumeColorbar;
+class vtkImageData;
+class RemotePointView;
+class RemoteRenderWidget;
+class vtkPointGaussianMapper;
+class vtkPiecewiseFunction;
 class AssistantPanel;
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -143,6 +152,7 @@ private:
         Point,
         Cross,
         Velocity,   // arrows oriented by vx/vy/vz, scaled by speed
+        Gaussian,   // emissive Gaussian splats (a simulation's particles)
     };
 
     enum class SizeMode
@@ -336,6 +346,19 @@ private:
     vtkNew<vtkLookupTable> valueLut;
     vtkNew<vtkPolyDataMapper> pointsMapper;
     vtkNew<vtkActor> pointsActor;
+    // Gaussian splats (GeometryMode::Gaussian), sized and faded as the former
+    // VBT point viewer did; an actor of their own.
+    vtkNew<vtkPointGaussianMapper> gaussianMapper;
+    vtkNew<vtkPiecewiseFunction> gaussianOpacity;
+    vtkNew<vtkActor> gaussianActor;
+    void updateGaussianSplats();
+    /// Point size of the Point shape, and the splats' size step (1..12).
+    int pointSizeFromScale() const;
+    double splatSizeFromScale() const;   ///< the splats' size step (former VBT viewer's)
+    /// Bounds and count of the points with no filter: the splats are sized on
+    /// them, so that a filter removes points without restyling the others.
+    double m_splatBounds[6]{ 0, 0, 0, 0, 0, 0 };
+    vtkIdType m_splatCount{ 0 };
 
     // Hover highlight (wireframe, yellow)
     vtkNew<vtkSphereSource> hoverSphere;
@@ -370,6 +393,7 @@ private:
     QPointer<QComboBox> comboMapSize;
     QPointer<QComboBox> comboMapColor;
     QPointer<QComboBox> comboColorScale;       // Linear / Log / Sqrt / Square / Power
+    QPointer<QComboBox> comboColormap;         // the generated ramp, or a named map
     QPointer<QDoubleSpinBox> spinColorGamma;   // exponent for the Power mode
     QPointer<QComboBox> comboGeometry;
     QPointer<QComboBox> comboRenderBudget;     // GPU point budget (render LOD)
@@ -427,6 +451,56 @@ private:
     static constexpr int clickDragThresholdPx = 5;
 
     static constexpr double hoverThresholdPx = 14.0;
+
+    // ── Drawn on the backend (issue #83, vtkWindowCatalogue3D_Remote.cpp) ─────
+    // A VBT point table with more rows than this window loaded, on a remote
+    // backend that renders, is drawn whole there and streamed; the loaded rows
+    // stay here for picking, the table and statistics. With the local backend
+    // the view is always local.
+    enum class RenderMode { Auto, Local, Remote };
+    RenderMode m_renderMode{ RenderMode::Auto };
+    bool m_serverSideRendering{ false };   ///< from the open: a VBT, a backend that renders
+    int m_tableRows{ 0 };                  ///< rows of the whole table
+    QPointer<QStackedWidget> m_renderStack;
+    QPointer<RemoteRenderWidget> m_remoteWidget;
+    QPointer<RemotePointView> m_remoteView;
+    QPointer<QAction> m_actRenderRemote;
+    QPointer<QLabel> m_renderBadge;
+    void setupRemoteRendering();
+    bool wantsRemote() const;
+    int rowsToShow() const;
+
+    // ── A table of points (issue #83): a VBT, cartesian ──────────────────────
+    // The same window as a catalogue, without what only a sky catalogue has:
+    // no name/type/RA/Dec/distance columns, no frame, no cosmology, no shells;
+    // it opens drawn as points coloured by its first quantity.
+    bool m_pointTable{ false };   ///< a VBT of points
+    bool m_defaultScaleChosen{ false };   ///< the opening Log/Linear choice, made once
+    bool m_cartesian{ false };    ///< positions are X/Y/Z columns
+    /// A table of points without classes: colour means a column, or one
+    /// colour for all (no morphology checkbox).
+    bool m_noMorphology{ false };
+    QPointer<QWidget> m_cosmoCard;
+    QFormLayout *m_sceneForm{ nullptr };
+    QFormLayout *m_encForm{ nullptr };
+    void applyPointTableLayout();
+    void choosePointTableDefaults();
+
+    // ── Colour bar and LUT editor, as in the cube viewer's 3-D view ───────────
+    QPointer<VolumeColorbar> m_colorbar;
+    QPointer<LUTCustomizerDialog> m_lutEditor;
+    vtkSmartPointer<vtkImageData> m_lutEditorData;   ///< the colour column, for the histogram
+    /// Min..Max set in the editor; empty (lo >= hi): the column's range.
+    double m_colorUserRange[2]{ 0.0, 0.0 };
+    /// Drawn on the backend: the colour column's range over every row drawn
+    /// there, as it reports it (the rows loaded here are only a page).
+    double m_colorRemoteRange[2]{ 0.0, 0.0 };
+    void refreshColorbar();
+    void showLutEditor();
+    void applyRenderMode(RenderMode mode);
+    void updateRenderBadge();
+    /// The view's state as commands for the backend (sent when changed).
+    void pushRemoteState();
 };
 
 #endif // vtkWindowCatalogue3D_h

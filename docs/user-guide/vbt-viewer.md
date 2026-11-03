@@ -1,4 +1,4 @@
-# VBT viewer (point clouds and volumes)
+# VBT tables (point clouds and volumes)
 
 The **VisIVO Binary Table** is VisIVO's own tabular format: a plain binary block
 of columns plus a small `.head` describing them. It is what you use for data
@@ -9,7 +9,7 @@ conversion step.
 | | |
 |---|---|
 | **Open** | *File → Open…* or *Data → Open VBT…* — either half of the pair, `.bin` or `.head` |
-| **Point table** | one row per object → 3-D point cloud |
+| **Point table** | one row per object → the [3-D catalogue viewer](catalogues-hips.md#3-d-catalogue-viewer) |
 | **Volume table** | a regular grid → the [cube viewer](cube-viewer), one cube per field |
 
 ---
@@ -48,63 +48,33 @@ they mean, and you are told so rather than guessed at.
 
 ---
 
-## The window
-
-The point viewer is laid out like the image and cube viewers (a volume opens in
-the cube viewer itself): the command bar across the top (path, a `VBT · …` tag that opens the
-header, ⌘K, the backend chip), **Session Data** on the left with the display
-controls, the **Inspector** on the right (Properties, Analysis, Parameters,
-Copilot) collapsed to a rail until you need it, and the status rail along the
-bottom. *View ▸ Session Data Panel* and *View ▸ Inspector Panel* fold either
-column away.
-
----
-
 ## Point clouds
 
-### Choosing what to plot
+A table of points opens in the **3-D catalogue viewer**, the window every point
+catalogue opens in, so a simulation snapshot and a galaxy catalogue are explored
+with the same controls. Nothing is converted: the backend reads the columns
+where they lie in the binary, and the window loads the rows it shows in pages.
 
-*Available Fields* lists every column in the table. Assign three to the spatial
-axes, then pick a **Color field** to carry a fourth dimension — mass,
-temperature, velocity dispersion, whatever the data has.
+The window is titled *3D Points*, the tag says *VBT · N rows*, and only what
+applies to a table of points is shown: the table lists the file's own columns,
+and there is no sky frame, cosmology or redshift shells.
 
-**Solid color** switches the colouring off, which is often clearer than a
-colormap when you are looking at structure rather than at a quantity.
+- **Positions** are the table's X/Y/Z columns, else its first three (any three
+  columns can be chosen under *Axis mapping*).
+- **Colour** opens on the first column that is not a position; *Single colour*
+  draws every point alike. *Edit*, beside the colour map, sets Min, Max and the
+  scale as for a cube; a quantity that is positive and spans three decades or
+  more (a density) opens in Log. A colour bar shows the column's colours.
+- **Shape** opens as *Point*, or as *Gaussian splats* above a million rows:
+  emissive, so dense regions add up to bright and sparse filaments stay faint
+  but visible. The *Scale* slider sets the point or splat size.
+- **Filters** restrict the rows by value; several combine.
+- Hovering and clicking a point shows its row; the *Catalogue* dock lists the
+  rows loaded.
 
-```{list-table}
-:header-rows: 1
-:widths: 24 76
-
-* - **Point size**
-  - Larger points read better on a sparse cloud; on a dense one they merge into
-    a solid mass and hide the structure you are looking for.
-* - **Colormap** / **Autoscale**
-  - Autoscale maps the colour range to the data range. Turn it off and set
-    *Range min* / *Range max* by hand when comparing two datasets — otherwise
-    each is scaled to itself and the colours are not comparable.
-* - **Log scale** / **Power γ**
-  - For quantities spanning decades (mass, density). γ adjusts the emphasis
-    without the hard floor a log takes at zero.
-* - **Show bounding box** / **orientation axes** / **color bar**
-  - Context for a figure. The bounding box in particular makes the projection
-    legible in a still image, where the reader cannot rotate.
-```
-
-### Filtering
-
-*Add Filter* restricts the displayed points by a column's value; several filters
-combine, and *Active filters* shows what is currently applied. *Clear All*
-removes them.
-
-Filtering is how you make a large table legible: plot the whole cloud once to
-see its extent, then cut to the population you actually mean — a mass range, a
-redshift shell, one simulation subhalo.
-
-```{tip}
-*Data Range / Statistics* reports min, max and the distribution for the selected
-field. Read it before setting a filter, so you cut at a value the data actually
-has rather than a round number.
-```
+See [3-D catalogue viewer](catalogues-hips.md#3-d-catalogue-viewer) for the
+details, and [Drawn on the backend](catalogues-hips.md#drawn-on-the-backend)
+for a table larger than what the window loads, on a cluster.
 
 ---
 
@@ -141,15 +111,13 @@ copy and no disk space.
 
 ## Working with a remote backend
 
-The VBT viewer reads through the backend like everything else, so the file must
-be visible to the **backend's** filesystem — the HPC node, if that is where the
+A VBT is read through the backend like everything else, so the file must be
+visible to the **backend's** filesystem — the HPC node, if that is where the
 backend runs, not your laptop.
 
-If the session expires (a backend restart, a dropped tunnel) the **point**
-viewer recovers by itself on the next page of data: it reopens the dataset and
-carries on in the same window, with your filters and colour settings intact.
-*Re-open Dataset*, the explicit route, opens a fresh window and does not carry
-them over.
+A **point table** larger than what the window loads is drawn on the backend
+when the backend is remote and renders server-side: see
+[Drawn on the backend](catalogues-hips.md#drawn-on-the-backend).
 
 A **volume** is a cube like any other on a remote backend: it is read in place
 there, a large field can be rendered server-side, and its pyramid and

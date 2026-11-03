@@ -42,7 +42,9 @@ def _classify_vbt(head: Path, reason: str, open_path: str = "") -> dict:
         return _result("cube", "dataset", True,
                        "VisIVO Binary Table volume: each field opens as a cube.",
                        open_path=open_path)
-    return _result("vbt", "vbt", True, reason, open_path=open_path)
+    # A table of points is a cartesian catalogue (issue #83): the 3-D
+    # catalogue viewer, read in place (dependencies._read_vbt_points).
+    return _result("vbt", "catalogue", True, reason, open_path=open_path)
 
 
 def classify_path(path: str | Path) -> dict:
@@ -69,7 +71,7 @@ def classify_path(path: str | Path) -> dict:
 
     # ── VBT: a header file, or a .bin with a .head beside it ──────────────────
     # A volume opens as a cube, read in place, as a FITS cube is (issue #83);
-    # a table of points in the VBT viewer.
+    # a table of points in the 3-D catalogue viewer.
     if suffix == ".head" or stem_suffixes.endswith(".bin.head"):
         return _classify_vbt(path, "VisIVO Binary Table header.")
     if suffix == ".bin" and path.with_suffix(".bin.head").exists():

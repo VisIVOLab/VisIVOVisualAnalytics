@@ -292,7 +292,7 @@ def test_out_of_core_rendering_from_a_field_reference(tmp_path, monkeypatch):
         ooc.close()
 
 
-def test_a_vbt_volume_is_opened_as_a_dataset_and_a_table_of_points_as_a_vbt(tmp_path):
+def test_a_vbt_volume_is_opened_as_a_dataset_and_a_table_of_points_as_a_catalogue(tmp_path):
     from app.classify import classify_path
 
     path = _write_vbt(tmp_path, _fields())
@@ -301,7 +301,7 @@ def test_a_vbt_volume_is_opened_as_a_dataset_and_a_table_of_points_as_a_vbt(tmp_
         assert (verdict["kind"], verdict["opener"]) == ("cube", "dataset")
     np.zeros(6, "<f4").tofile(tmp_path / "p.bin")
     (tmp_path / "p.bin.head").write_text("float\n2\n3\nlittle\nX\nY\n")
-    assert classify_path(tmp_path / "p.bin")["opener"] == "vbt"
+    assert classify_path(tmp_path / "p.bin")["opener"] == "catalogue"
 
 
 @pytest.mark.asyncio

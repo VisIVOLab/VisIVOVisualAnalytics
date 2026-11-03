@@ -98,22 +98,23 @@ def test_a_compressed_file_is_refused_rather_than_routed(tmp_path):
 
 # ── VBT ──────────────────────────────────────────────────────────────────────
 
-def test_vbt_header_goes_to_the_vbt_opener(tmp_path):
+def test_vbt_points_go_to_the_catalogue_viewer(tmp_path):
+    """A table of points is a cartesian catalogue (issue #83)."""
     path = tmp_path / "points.bin.head"
     path.write_text("float\n3\n100\nX Y Z\n")
     verdict = classify_path(path)
-    assert (verdict["kind"], verdict["opener"]) == ("vbt", "vbt")
+    assert (verdict["kind"], verdict["opener"]) == ("vbt", "catalogue")
 
 
 def test_vbt_binary_opens_through_its_sidecar(tmp_path):
-    """The VBT route parses the header, not the binary, so the header is the
-    path the client must hand it."""
+    """The header is what describes the table, so it is the path the client
+    must hand the opener."""
     binary = tmp_path / "points.bin"
     binary.write_bytes(b"\x00" * 64)
     header = tmp_path / "points.bin.head"
     header.write_text("float\n3\n100\nX Y Z\n")
     verdict = classify_path(binary)
-    assert verdict["opener"] == "vbt"
+    assert verdict["opener"] == "catalogue"
     assert verdict["open_path"] == str(header)
 
 

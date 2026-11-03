@@ -1,3 +1,4 @@
+#include "CatalogueFormat.h"
 #include "vtkWindowCatalogue3D.h"
 #include "ui_vtkWindowCatalogue3D.h"
 
@@ -88,24 +89,7 @@ namespace {
 // catalogueFormatForPath duplicated (also used by the constructor in main).
 QString catalogueFormatForPath(const QString &path)
 {
-    const QString suffix = QFileInfo(path).suffix().trimmed().toLower();
-    if (suffix == QStringLiteral("csv")) {
-        return QStringLiteral("csv");
-    }
-    if (suffix == QStringLiteral("vot") || suffix == QStringLiteral("votable")
-        || suffix == QStringLiteral("xml")) {
-        return QStringLiteral("votable");
-    }
-    if (suffix == QStringLiteral("fits") || suffix == QStringLiteral("fit")) {
-        return QStringLiteral("fits");
-    }
-    if (suffix == QStringLiteral("speck")) {
-        return QStringLiteral("speck");
-    }
-    if (suffix == QStringLiteral("tbl")) {
-        return QStringLiteral("ipac");
-    }
-    return QStringLiteral("csv");
+    return visivo::catalogueFormatForPath(path);
 }
 }  // namespace
 
@@ -382,6 +366,7 @@ void vtkWindowCatalogue3D::applyFilter()
     const std::vector<BackendTabularFilter> filters = this->activeFilters;
     const Catalogue3DSchema schema = this->schema;
     const int numFilters = nFilters;
+    this->pushRemoteState();   // the filters, on the whole table
     const int pageSize = this->m_pageSize;
 
     this->filterWatcher.setFuture(QtConcurrent::run(

@@ -31,6 +31,10 @@
 #include <vtkPointData.h>
 #include <vtkPoints.h>
 #include <vtkPolyData.h>
+#include <vtkPiecewiseFunction.h>
+#include <vtkPointGaussianMapper.h>
+#include "RemotePointView.h"
+#include "ColorMaps.h"
 #include <vtkPolyDataMapper.h>
 #include <vtkProperty.h>
 #include <vtkRenderer.h>
@@ -197,6 +201,7 @@ void vtkWindowCatalogue3D::buildScene()
     if (this->m_sceneBuilding) {
         this->glyphActor->VisibilityOff();
         this->pointsActor->VisibilityOff();
+        this->gaussianActor->VisibilityOff();
         QApplication::setOverrideCursor(Qt::WaitCursor);
     }
 
@@ -325,6 +330,10 @@ void vtkWindowCatalogue3D::buildScene()
     glyphActor->SetMapper(glyphMapper);
     renderer->AddActor(glyphActor);
     this->pointsMapper->SetInputData(sourcesPolyData);
+    // The splats draw the same arrays and VTK shares their vertex buffer:
+    // stored shifted and scaled by this mapper (it does from about a million
+    // points), it drew every splat at one spot.
+    this->pointsMapper->SetVBOShiftScaleMethod(vtkPolyDataMapper::DISABLE_SHIFT_SCALE);
     this->pointsMapper->SetLookupTable(this->morphologyLut);
     this->pointsMapper->SetScalarRange(-0.5, nMorph - 0.5);
     this->pointsMapper->ScalarVisibilityOn();
@@ -333,6 +342,18 @@ void vtkWindowCatalogue3D::buildScene()
     this->pointsActor->GetProperty()->SetColor(0.78, 0.82, 0.95);
     this->pointsActor->VisibilityOff();
     renderer->AddActor(this->pointsActor);
+    // Emissive splats: every particle adds to the brightness of its pixels
+    // whatever its depth, so dense regions glow and sparse filaments stay
+    // visible; out to 3σ (opacity 1 % at the edge). As the former VBT viewer.
+    this->gaussianMapper->SetEmissive(true);
+    this->gaussianMapper->SetBoundScale(3.0f);
+    this->gaussianMapper->SetOpacityArray(this->morphScalars->GetName());
+    this->gaussianMapper->SetScalarOpacityFunction(this->gaussianOpacity);
+    this->gaussianMapper->SetLookupTable(this->morphologyLut);
+    this->gaussianMapper->SetScalarRange(-0.5, nMorph - 0.5);
+    this->gaussianActor->SetMapper(this->gaussianMapper);
+    this->gaussianActor->VisibilityOff();
+    renderer->AddActor(this->gaussianActor);
 
     // Route the mappers through the render-budget decimator (no-op under budget).
     this->applyRenderBudget();
@@ -659,7 +680,11 @@ void vtkWindowCatalogue3D::updatePointPositions()
     qInfo() << "[catalogue3d] axis mapping updated"
             << "X=" << this->mapXKey << "resolved=" << resolvedXKey
             << "Y=" << this->mapYKey << "resolved=" << resolvedYKey
-            << "Z=" << this->mapZKey << "resolved=" << resolvedZKey;
+            << "Z=" << this->mapZKey << "resolved=" << resolvedZKey;    // New positions: the splats are sized again, on the points drawn now.
+    this->m_splatCount = 0;
+    if (this->geometryMode == GeometryMode::Gaussian)
+        this->updateGaussianSplats();   // sized to the new extent
+    this->pushRemoteState();
 }
 
 void vtkWindowCatalogue3D::updateColorMapping()
@@ -692,6 +717,16 @@ void vtkWindowCatalogue3D::updateColorMapping()
         this->glyphMapper->SetScalarRange(-0.5, this->morphologyNames.size() - 0.5);
         this->pointsMapper->SetLookupTable(this->morphologyLut);
         this->pointsMapper->SetScalarRange(-0.5, this->morphologyNames.size() - 0.5);
+        this->gaussianMapper->SetLookupTable(this->morphologyLut);
+        this->gaussianMapper->SetScalarRange(-0.5, this->morphologyNames.size() - 0.5);
+        // A table of points has no morphology: one colour for all.
+        if (this->m_noMorphology) {
+            this->glyphMapper->SetScalarVisibility(0);
+            this->pointsMapper->SetScalarVisibility(0);
+            this->gaussianMapper->SetScalarVisibility(0);
+        }
+        this->refreshColorbar();
+        this->pushRemoteState();
         qInfo() << "[catalogue3d] color mapping: morphology";
         return;
     }
@@ -713,6 +748,14 @@ void vtkWindowCatalogue3D::updateColorMapping()
         anyValid = true;
     }
 
+    // A column constant over the rows loaded (a sorted table's first page)
+    // keeps its colour, over a range around its value; only a column with no
+    // value falls back.
+    if (anyValid && !(minValue < maxValue)) {
+        const double pad = std::max(std::abs(minValue) * 0.5, 0.5);
+        minValue -= pad;
+        maxValue += pad;
+    }
     if (!anyValid || !(minValue < maxValue)) {
         qWarning() << "[catalogue3d] invalid color mapping" << this->mapColorKey
                    << "-> fallback to morphology";
@@ -729,7 +772,40 @@ void vtkWindowCatalogue3D::updateColorMapping()
     this->sourcesPolyData->GetPointData()->SetScalars(this->morphScalars);
     // Apply the chosen colour-scale stretch to the HSV value ramp. applyGenerated
     // uses ForceBuild(), so it stays idempotent across repeated mapping updates.
-    LutScale::applyGenerated(this->valueLut, colorScale, minValue, maxValue, colorGamma);
+    // Min..Max set in the LUT editor, else the column's range: over the whole
+    // table when it is drawn on the backend, else over the rows loaded.
+    if (this->m_colorUserRange[1] > this->m_colorUserRange[0]) {
+        minValue = this->m_colorUserRange[0];
+        maxValue = this->m_colorUserRange[1];
+    } else if (this->m_remoteView && this->m_colorRemoteRange[1] > this->m_colorRemoteRange[0]) {
+        minValue = this->m_colorRemoteRange[0];
+        maxValue = this->m_colorRemoteRange[1];
+    }
+    // A table of points coloured by a quantity spanning three decades or more,
+    // all positive (a density, a mass), opens in Log, as a cube does.
+    if (this->m_cartesian && !this->m_defaultScaleChosen && this->comboColorScale) {
+        this->m_defaultScaleChosen = true;
+        // (float32 columns: 0.1 is 0.10000000149, so 0.1..100 is 999.99998)
+        if (minValue > 0.0 && maxValue / minValue >= 1e3 * (1.0 - 1e-6)
+            && this->comboColorScale->currentIndex() == static_cast<int>(LutScale::Mode::Linear)) {
+            const QSignalBlocker block(this->comboColorScale);
+            this->comboColorScale->setCurrentIndex(static_cast<int>(LutScale::Mode::Log));
+        }
+    }
+    const LutScale::Mode chosenScale = this->comboColorScale
+            ? static_cast<LutScale::Mode>(std::clamp(this->comboColorScale->currentIndex(), 0, 4))
+            : colorScale;
+    if (this->m_noMorphology) {
+        this->glyphMapper->SetScalarVisibility(1);
+        this->pointsMapper->SetScalarVisibility(1);
+        this->gaussianMapper->SetScalarVisibility(1);
+    }
+    // The generated ramp, or the named map chosen.
+    const QString colormap =
+            this->comboColormap ? this->comboColormap->currentData().toString() : QString();
+    LutScale::build(this->valueLut,
+                    colormap.isEmpty() ? std::string("Rainbow") : colormap.toStdString(),
+                    chosenScale, minValue, maxValue, colorGamma);
     // Drive the mappers from the LUT's (possibly Log-floored) range — otherwise a
     // raw minValue<=0 would override the positive floor at render time.
     double mapperRange[2];
@@ -738,6 +814,10 @@ void vtkWindowCatalogue3D::updateColorMapping()
     this->glyphMapper->SetScalarRange(mapperRange[0], mapperRange[1]);
     this->pointsMapper->SetLookupTable(this->valueLut);
     this->pointsMapper->SetScalarRange(mapperRange[0], mapperRange[1]);
+    this->gaussianMapper->SetLookupTable(this->valueLut);
+    this->gaussianMapper->SetScalarRange(mapperRange[0], mapperRange[1]);
+    this->refreshColorbar();
+    this->pushRemoteState();
     qInfo() << "[catalogue3d] color mapping:" << this->mapColorKey
             << "range:" << mapperRange[0] << mapperRange[1];
 }
@@ -782,9 +862,11 @@ void vtkWindowCatalogue3D::applyRenderBudget()
         this->renderDecimator->SingleVertexPerCellOn();
         this->glyphMapper->SetInputConnection(this->renderDecimator->GetOutputPort());
         this->pointsMapper->SetInputConnection(this->renderDecimator->GetOutputPort());
+        this->gaussianMapper->SetInputConnection(this->renderDecimator->GetOutputPort());
     } else {
         this->glyphMapper->SetInputData(this->sourcesPolyData);
         this->pointsMapper->SetInputData(this->sourcesPolyData);
+        this->gaussianMapper->SetInputData(this->sourcesPolyData);
     }
 }
 
@@ -795,6 +877,7 @@ void vtkWindowCatalogue3D::updateGlyphPipeline()
     }
 
     this->pointsActor->VisibilityOff();
+    this->gaussianActor->VisibilityOff();
     this->glyphActor->VisibilityOn();
 
     // Restore the per-axis (ellipsoid) scaling config for the shape modes; the
@@ -856,6 +939,12 @@ void vtkWindowCatalogue3D::updateGlyphPipeline()
         this->glyphActor->VisibilityOff();
         this->pointsActor->VisibilityOn();
         restoreShapeScaling();
+        break;
+    case GeometryMode::Gaussian:
+        this->glyphActor->VisibilityOff();
+        this->gaussianActor->VisibilityOn();
+        restoreShapeScaling();
+        this->updateGaussianSplats();
         break;
     }
 
@@ -950,10 +1039,58 @@ void vtkWindowCatalogue3D::updateGlyphScales()
     this->glyphScaleVectors->Modified();
     this->sourcesPolyData->Modified();   // bump so the glyph mapper re-reads the scale vectors
     this->glyphMapper->Modified();
-    this->pointsActor->GetProperty()->SetPointSize(std::clamp(4.0 * (ui->sliderScale->value() / 100.0), 3.0, 12.0));
+    this->pointsActor->GetProperty()->SetPointSize(this->pointSizeFromScale());
 
     updateHighlightSphere(hoverSphere.Get(), hoverActor.Get(), hoveredIndex, 1.45);
     updateHighlightSphere(selectSphere.Get(), selectActor.Get(), selectedIndex, 1.28);
     qInfo() << "[catalogue3d] size mapping:" << this->mapSizeKey
             << "visual range:" << minVisual << maxVisual;
+}
+
+int vtkWindowCatalogue3D::pointSizeFromScale() const
+{
+    return static_cast<int>(std::lround(std::clamp(4.0 * (ui->sliderScale->value() / 100.0),
+                                                   3.0, 12.0)));
+}
+
+double vtkWindowCatalogue3D::splatSizeFromScale() const
+{
+    // The former VBT viewer's size step, 3 at the slider's default (100 %),
+    // and continuous: the whole slider reaches below and above it.
+    return std::clamp(3.0 * ui->sliderScale->value() / 100.0, 0.25, 12.0);
+}
+
+void vtkWindowCatalogue3D::updateGaussianSplats()
+{
+    // Sized to the mean spacing of the points drawn and faded by their number,
+    // as the former VBT point viewer (and the backend's point session,
+    // app/render_session/points.py gaussian_splat) do: radius = spacing ×
+    // size / 8, opacity = min(0.9, 20 / ∛N) × 35 %, within 0.05..0.9.
+    // The spacing is ∛(volume / N) of the box the points fill: a filter that
+    // cuts a slab keeps it, as it keeps the density (a flat axis counts as a
+    // thousandth of the longest).
+    vtkIdType n = static_cast<vtkIdType>(this->entries.size());
+    if (this->m_renderDecimated && this->m_renderBudget > 0)
+        n = std::min<vtkIdType>(n, this->m_renderBudget);
+    if (this->activeFilters.empty() || this->m_splatCount <= 0) {
+        this->sourcePoints->GetBounds(this->m_splatBounds);
+        this->m_splatCount = n;
+    }
+    const double *b = this->m_splatBounds;
+    n = this->m_splatCount;
+    const double dims[3] = { b[1] - b[0], b[3] - b[2], b[5] - b[4] };
+    const double longest = std::max({ dims[0], dims[1], dims[2], 1.0e-6 });
+    double volume = 1.0;
+    for (const double d : dims)
+        volume *= std::max(d, longest * 1.0e-3);
+    const double spacing = std::cbrt(volume / std::max<double>(1.0, static_cast<double>(n)));
+    const double radius = spacing * this->splatSizeFromScale() / 8.0;
+    // Splats along the longest sightline: ∛N for a cube (the former viewer's
+    // rule), and unchanged by a filter that cuts a slab.
+    const double depth = std::max(longest / spacing, 1.0);
+    const double opacity = std::clamp(std::min(0.9, 20.0 / depth) * 0.35, 0.05, 0.9);
+    this->gaussianOpacity->RemoveAllPoints();
+    this->gaussianOpacity->AddPoint(-1.0e15, opacity);
+    this->gaussianOpacity->AddPoint(1.0e15, opacity);
+    this->gaussianMapper->SetScaleFactor(radius);
 }

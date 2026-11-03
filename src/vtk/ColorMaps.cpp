@@ -23,6 +23,7 @@ const std::map<std::string, std::function<void(vtkLookupTable *)>> ColorMaps::Lo
     { "Default"s, &ColorMaps::SetDefault },
     { "DefaultStep"s, &ColorMaps::SetDefaultStep },
     { "MinMax"s, &ColorMaps::SetMinMax },
+    { "Rainbow"s, &ColorMaps::SetRainbow },
     { "Glow"s, &ColorMaps::SetGlow },
     { "Temperature"s, &ColorMaps::SetTemperature },
     { "Sar"s, &ColorMaps::SetSar },
@@ -1491,6 +1492,21 @@ void ColorMaps::SetMinMax(vtkLookupTable *lut)
     for (vtkIdType i = 128; i < 256; ++i) {
         hsv[0] = i / 360.;
         rgba[3] = (i - 128.) / 128.;
+        vtkMath::HSVToRGB(hsv, rgba);
+        lut->SetTableValue(i, rgba);
+    }
+}
+
+void ColorMaps::SetRainbow(vtkLookupTable *lut)
+{
+    // The HSV ramp the 3-D catalogue viewer always drew with (hue 0.67 to 0,
+    // saturation 0.85 to 0.95, value 0.9 to 1), as a named map so that the LUT
+    // editor can show and keep it.
+    lut->SetNumberOfTableValues(256);
+    for (vtkIdType i = 0; i < 256; ++i) {
+        const double t = i / 255.0;
+        double hsv[3] = { 0.67 * (1.0 - t), 0.85 + 0.10 * t, 0.9 + 0.1 * t };
+        double rgba[4] = { 0., 0., 0., 1. };
         vtkMath::HSVToRGB(hsv, rgba);
         lut->SetTableValue(i, rgba);
     }

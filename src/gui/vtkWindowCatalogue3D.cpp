@@ -1,4 +1,6 @@
+#include "CatalogueFormat.h"
 #include "vtkWindowCatalogue3D.h"
+#include <QTimer>
 #include "ui_vtkWindowCatalogue3D.h"
 
 #include "app/DiagnosticsManager.h"
@@ -11,6 +13,8 @@
 
 // ── VTK ──────────────────────────────────────────────────────────────────────
 #include <QVTKOpenGLNativeWidget.h>
+#include <vtkPiecewiseFunction.h>
+#include <vtkPointGaussianMapper.h>
 #include <vtkActor.h>
 #include <vtkAppendPolyData.h>
 #include <vtkArrowSource.h>
@@ -100,24 +104,7 @@ namespace {
 
 QString catalogueFormatForPath(const QString &path)
 {
-    const QString suffix = QFileInfo(path).suffix().trimmed().toLower();
-    if (suffix == QStringLiteral("csv")) {
-        return QStringLiteral("csv");
-    }
-    if (suffix == QStringLiteral("vot") || suffix == QStringLiteral("votable")
-        || suffix == QStringLiteral("xml")) {
-        return QStringLiteral("votable");
-    }
-    if (suffix == QStringLiteral("fits") || suffix == QStringLiteral("fit")) {
-        return QStringLiteral("fits");
-    }
-    if (suffix == QStringLiteral("speck")) {
-        return QStringLiteral("speck");
-    }
-    if (suffix == QStringLiteral("tbl")) {
-        return QStringLiteral("ipac");
-    }
-    return QStringLiteral("csv");
+    return visivo::catalogueFormatForPath(path);
 }
 
 } // namespace
@@ -242,6 +229,10 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          // Update pagination state
                          this->m_currentOffset = static_cast<int>(result.entries.size());
                          this->m_totalCount = result.totalRows;
+                         // Auto follows the rows: on the backend while it has
+                         // more than are loaded here.
+                         QTimer::singleShot(0, this,
+                                            [this]() { this->applyRenderMode(this->m_renderMode); });
                          const bool hasMore = this->m_currentOffset < this->m_totalCount;
                          if (this->btnLoadAll)
                              this->btnLoadAll->setVisible(hasMore);
@@ -322,6 +313,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                      result.entries.begin(), result.entries.end());
                 this->m_currentOffset = static_cast<int>(this->entries.size());
                 this->m_totalCount = result.totalRows;
+                QTimer::singleShot(0, this,
+                                   [this]() { this->applyRenderMode(this->m_renderMode); });
 
                 // Re-apply coordinate frame for the newly appended entries
                 this->applyFrameToEntries();
@@ -413,6 +406,11 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     } else {
         this->remoteDatasetId = opened.datasetId;
         this->remoteSessionId = opened.sessionId;
+        // A VBT point table can be drawn on the backend (issue #83).
+        this->m_cartesian = opened.coordSystem == u"cartesian"_s;
+        this->m_pointTable = catalogueFormatForPath(filepath) == u"vbt"_s;
+        this->m_serverSideRendering = opened.serverSideRenderingAvailable && this->m_cartesian;
+        this->m_tableRows = opened.numRows;
         // On the FIRST open the copilot does not exist yet — it is the
         // Inspector's tab, and the Inspector is installed once this load has
         // finished (setupWorkspaceDocks does the same wiring there). This branch
@@ -465,9 +463,13 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         }
     }
 
-    setWindowTitle(QStringLiteral("3D Catalogue, %1  (%2 sources)")
-                           .arg(QFileInfo(filepath).fileName())
-                           .arg(entries.size()));
+    setWindowTitle(this->m_pointTable
+                           ? QStringLiteral("3D Points, %1  (%L2 rows)")
+                                     .arg(QFileInfo(filepath).fileName())
+                                     .arg(this->m_tableRows)
+                           : QStringLiteral("3D Catalogue, %1  (%2 sources)")
+                                     .arg(QFileInfo(filepath).fileName())
+                                     .arg(entries.size()));
 
     // The same command bar and status rail as the image and cube viewers. Built
     // here rather than in setupUi() because the kind tag names the number of
@@ -476,13 +478,18 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
 
     // ── VTK scene ────────────────────────────────────────────────────────────
     setupRenderer();
+    this->setupRemoteRendering();
     if (!entries.empty()) {
         buildScene();
         buildLabels();
     }
+    // Auto: drawn on the backend when it has more rows than this window loaded.
+    QTimer::singleShot(0, this, [this]() { this->applyRenderMode(this->m_renderMode); });
     this->ensureCatalogueDock();
     this->populateMappingControls();
     this->refreshCatalogueTable();
+    this->applyPointTableLayout();
+    this->choosePointTableDefaults();
 
     // ── Filter signal/slot connections ───────────────────────────────────────
     // Widgets (filterList, btnFilter*, filterStatusLabel, btnLoadMore) were

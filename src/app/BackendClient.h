@@ -418,6 +418,9 @@ struct BackendCatalogueInfo
     QString yField;
     QString zField;
     QString coordSystem{ QStringLiteral("sky") };   // "sky" or "cartesian"
+    /// The points can be drawn on the backend (/v1/render, issue #83): a VBT
+    /// point table on a backend that renders server-side.
+    bool serverSideRenderingAvailable{ false };
 };
 
 struct BackendCatalogueSubset
