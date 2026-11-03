@@ -182,6 +182,7 @@ void vtkWindowCatalogue3D::triggerCosmologyUpdate()
     // Planck18 matches the hardcoded local integration in Catalogue3DParser;
     // just clear overrides so entryDistanceMpc() falls back to local values.
     if (this->m_cosmologyModel == QStringLiteral("Planck18")) {
+        this->m_appliedCosmologyModel = this->m_cosmologyModel;
         for (auto &e : this->entries)
             e.distanceMpc = std::numeric_limits<double>::quiet_NaN();
         this->recomputeScenePositionsAndRebuild();
@@ -249,6 +250,14 @@ void vtkWindowCatalogue3D::triggerCosmologyUpdate()
             }));
 }
 
+void vtkWindowCatalogue3D::reapplyCosmologyAfterReload()
+{
+    if (this->schema.isCartesian() || this->m_appliedCosmologyModel == u"Planck18"_s)
+        return;
+    // After the handler that replaced the rows has built their scene.
+    QTimer::singleShot(0, this, [this]() { this->triggerCosmologyUpdate(); });
+}
+
 void vtkWindowCatalogue3D::onCosmologyFinished()
 {
     if (this->m_sceneBuilding) {
@@ -267,6 +276,13 @@ void vtkWindowCatalogue3D::onCosmologyFinished()
 
     const auto result = this->m_cosmologyWatcher.result();
     if (!result.valid) {
+        // The rows stay where the last model placed them: so do the selector
+        // and what the backend is told.
+        this->m_cosmologyModel = this->m_appliedCosmologyModel;
+        if (this->comboCosmology) {
+            const QSignalBlocker block(this->comboCosmology);
+            this->comboCosmology->setCurrentText(this->m_appliedCosmologyModel);
+        }
         const QString msg = QStringLiteral("Cosmology update failed: %1").arg(result.error);
         if (this->m_cosmologyStatus)
             this->m_cosmologyStatus->setText(msg);
@@ -298,6 +314,7 @@ void vtkWindowCatalogue3D::onCosmologyFinished()
         }
         this->entries[static_cast<size_t>(i)].distanceMpc = d;
     }
+    this->m_appliedCosmologyModel = result.model.isEmpty() ? this->m_cosmologyModel : result.model;
     // Recompute positions from the applied overrides and rebuild — the shared
     // helper also reapplies the shells toggle and refreshes the table, so a
     // backend cosmology change keeps them consistent (R-14 follow-up).

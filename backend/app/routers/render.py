@@ -177,12 +177,21 @@ async def create_session(
         raise HTTPException(404, f"Unknown dataset_id {request.dataset_id!r}.")
     # A VBT point table (issue #83): drawn by the point session, from the
     # table where it lies.
-    # Opened by the VBT route, or as a catalogue (the 3-D catalogue viewer).
+    # Opened by the VBT route, or as a catalogue (the 3-D catalogue viewer):
+    # a VBT by its header, any other catalogue by its files and coordinates.
     point_head = None
     if entry.get("kind") == "vbt" and entry.get("header", {}).get("kind") == "point":
         point_head = str(entry["head_path"])
     elif entry.get("kind") == "catalogue" and entry.get("format") == "vbt":
         point_head = str(entry["path"])
+    elif entry.get("kind") == "catalogue":
+        coords = entry.get("coordinate_fields") or {}
+        if coords.get("system") not in ("sky", "cartesian"):
+            raise HTTPException(422, "Server-side rendering of a catalogue needs RA/Dec or "
+                                     "X/Y/Z columns.")
+        point_head = json.dumps({"paths": entry.get("paths") or [str(entry["path"])],
+                                 "format": entry.get("format", "csv"),
+                                 "coordinates": coords})
     if entry.get("kind") != "cube" and point_head is None:
         raise HTTPException(422, "Server-side rendering supports cubes and VBT point tables.")
     if point_head is not None:

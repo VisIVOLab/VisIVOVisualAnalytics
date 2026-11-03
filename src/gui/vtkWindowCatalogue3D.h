@@ -428,6 +428,12 @@ private:
     QFutureWatcher<BackendCatalogueInfo> m_reopenWatcher;
     void autoReopenThenLoadMore();
     QString m_cosmologyModel{ QStringLiteral("Planck18") };
+    /// The model the loaded rows were last placed with (the one the backend is
+    /// told): a request that fails leaves it, and the selector goes back to it.
+    QString m_appliedCosmologyModel{ QStringLiteral("Planck18") };
+    /// Rows replaced (a filter, Load more) arrive with the local Planck18
+    /// distances: another model is computed for them again.
+    void reapplyCosmologyAfterReload();
     bool m_cosmologyBusy{ false };
     QFutureWatcher<Catalogue3DCosmologyTaskResult> m_cosmologyWatcher;
     bool syncingTableSelection{ false };

@@ -100,16 +100,20 @@ range (or the editor's Min..Max) on the scale in use, titled with the column.
 
 ### Drawn on the backend
 
-A VBT table larger than what the window loads, on a **remote** backend that
-renders server-side (an EGL node of a cluster), is drawn on the backend: every
-row, streamed to the window, while the loaded rows stay here for hovering,
-picking, the table and statistics. *View ▸ Rendering* chooses **Auto** (on the
+A catalogue larger than what the window loads (a sky catalogue, a cartesian
+one or a VBT table), on a **remote** backend that renders server-side (an EGL
+node of a cluster), is drawn on the backend: every row, streamed to the window,
+while the loaded rows stay here for hovering, picking, the table and
+statistics. A sky catalogue's positions are computed there as the window
+computes them, from the same RA/Dec, distance or redshift columns and with the
+frame, cosmology and distance convention chosen here. *View ▸ Rendering* chooses **Auto** (on the
 backend when the table has more rows than were loaded), **Local** or
 **Remote**; the status bar says which (*Remote · all N rows*,
 *Local · n of N rows*). Shape, colour, colormap, scale, filters and the box
 drive both views the same way: Point and Gaussian splats are drawn as such on
-the backend, the other shapes as points; numeric filters apply to the backend's
-view, *contains* and the like to the loaded rows. With the **local** backend
+the backend, the other shapes as points; colour by morphology or by speed is
+drawn in a single colour there; numeric filters apply to the backend's view,
+*contains* and the like to the loaded rows. With the **local** backend
 everything is drawn here.
 
 ### Filters & paging

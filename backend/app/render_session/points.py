@@ -1,5 +1,7 @@
 """Server-side rendering of point data (issue #83): a VisIVO Binary Table point
-table drawn on the backend and streamed like a cube's view.
+table, or a catalogue, drawn on the backend and streamed like a cube's view.
+The dataset is a VBT header path, or a JSON catalogue spec
+``{"paths": [...], "format": str, "coordinates": {...}}``.
 
 The session has the public surface of :class:`app.render_session.RenderSession`
 (``initialize``, ``apply_command``, ``render_frame``, ``render_frame_if_changed``,
@@ -26,10 +28,14 @@ Commands (besides the camera / viewport ones the cube session takes):
 ``{"type": "set_filters", "filters": [{"field", "op", "value"}, ...]}``
 ``{"type": "set_background", "name": "Dark" | "Dark gray" | "White"}``
 ``{"type": "set_show_outline" | "set_show_axes" | "set_show_colorbar", "visible": bool}``
+``{"type": "set_sky_positions", "frame": "fk5" | "galactic" | "supergalactic",
+   "distance_mode": "comoving" | "redshift_space", "cosmology": str}``
+                                         — a sky catalogue's positions
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import io
 import logging
 import math
@@ -40,6 +46,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+import pandas as pd
 from PIL import Image
 
 from ._common import SessionStats, _build_color_tf, _parse_tf_points
@@ -100,6 +107,10 @@ class PointViewState:
     show_outline: bool = True
     show_axes: bool = True
     show_colorbar: bool = True
+    # A sky catalogue's positions (app/catalogue_positions.py).
+    sky_frame: str = "fk5"
+    distance_mode: str = "comoving"
+    cosmology: str = "Planck18"
     filters: list[dict] = field(default_factory=list)
 
 
@@ -174,6 +185,8 @@ class PointRenderSession:
         self._num_rows = 0
         self._rows = np.empty(0, dtype=np.int64)   # rows drawn (sample ∩ filters)
         self._splat_basis = None   # (bounds, count) of the unfiltered points
+        self._sky = None    # (ra, dec) columns of a sky catalogue
+        self._frame = None  # the catalogue's table, for its positions
         self._data_range: tuple[float, float] | None = None
         # VTK, on the worker thread.
         self._render_window = self._renderer = None
@@ -277,6 +290,9 @@ class PointRenderSession:
     # ── Worker thread ────────────────────────────────────────────────────
 
     def _open_table(self) -> None:
+        if str(self.dataset_path).startswith("{"):
+            self._open_catalogue(json.loads(self.dataset_path))
+            return
         from ..volume_source import parse_vbt_header
         # The header's path (the VBT route registers it); its binary beside it.
         head = str(self.dataset_path)
@@ -292,6 +308,45 @@ class PointRenderSession:
         self._columns = {n: table[i] for i, n in enumerate(self._names)}
         self._num_rows = int(header["num_rows"])
         self.view.x, self.view.y, self.view.z = _default_axes(self._names)
+
+    def _open_catalogue(self, spec: dict) -> None:
+        """A catalogue file (CSV, VOTable, FITS table, IPAC, .speck), or several
+        of one format concatenated, read in this process; its numeric columns
+        are drawn. A sky catalogue's positions are computed as the desktop
+        computes them (app/catalogue_positions.py), in the columns ``@x``,
+        ``@y``, ``@z``."""
+        from pathlib import Path
+
+        from ..dependencies import _catalogue_load_dataframe
+        paths = [Path(p) for p in spec.get("paths") or []]
+        if not paths:
+            raise ValueError("No catalogue file to draw.")
+        fmt = str(spec.get("format", "csv"))
+        frames = [_catalogue_load_dataframe(p, fmt) for p in paths]
+        frame = frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
+        self._frame = frame
+        self._names = [str(c) for c in frame.columns]
+        self._columns = {}
+        for name in self._names:
+            if pd.api.types.is_numeric_dtype(frame[name]) and not pd.api.types.is_bool_dtype(frame[name]):
+                self._columns[name] = frame[name].to_numpy(dtype=float, na_value=np.nan)
+        self._num_rows = len(frame)
+        coords = spec.get("coordinates") or {}
+        if coords.get("system") == "cartesian":
+            self.view.x, self.view.y, self.view.z = coords["x"], coords["y"], coords["z"]
+        else:
+            self._sky = (str(coords.get("ra", "")), str(coords.get("dec", "")))
+            self._compute_sky_positions()
+            self.view.x, self.view.y, self.view.z = "@x", "@y", "@z"
+
+    def _compute_sky_positions(self) -> None:
+        from ..catalogue_positions import sky_positions
+        ra, dec = self._sky
+        xyz = sky_positions(self._frame, ra, dec, frame_name=self.view.sky_frame,
+                            distance_mode=self.view.distance_mode,
+                            cosmology=self.view.cosmology)
+        for i, axis in enumerate(("@x", "@y", "@z")):
+            self._columns[axis] = xyz[:, i]
 
     def _sample_rows(self) -> np.ndarray:
         """Every row, or an even sample of MAX_POINTS of them."""
@@ -381,6 +436,12 @@ class PointRenderSession:
         xyz = np.empty((len(rows), 3), dtype=np.float32)
         for i, name in enumerate((self.view.x, self.view.y, self.view.z)):
             xyz[:, i] = self._columns[name][rows] if name in self._columns else 0.0
+        # A row without a position (no RA/Dec, a NaN coordinate) is not drawn,
+        # as the desktop skips it when it parses the rows.
+        placed = np.isfinite(xyz).all(axis=1)
+        if not placed.all():
+            rows, xyz = rows[placed], xyz[placed]
+            self._rows = rows
         stride = max(1, -(-len(rows) // LOD_POINTS))
         for poly, pts in ((self._polydata, xyz), (self._lod_polydata, xyz[::stride])):
             points = vtk.vtkPoints()
@@ -503,6 +564,30 @@ class PointRenderSession:
         elif ctype == "set_interactive":
             self.view.interactive = bool(command.get("value", False))
             self._apply_style_on_thread()
+        elif ctype == "set_sky_positions":
+            if self._sky is None:
+                raise ValueError("Not a sky catalogue: its positions are columns.")
+            from ..catalogue_positions import DISTANCE_MODES, FRAMES
+            frame = str(command.get("frame", self.view.sky_frame))
+            mode = str(command.get("distance_mode", self.view.distance_mode))
+            cosmology = str(command.get("cosmology", self.view.cosmology))
+            if frame not in FRAMES or mode not in DISTANCE_MODES:
+                raise ValueError(f"Unknown frame or distance mode: {frame!r}, {mode!r}")
+            if (frame, mode, cosmology) != (self.view.sky_frame, self.view.distance_mode,
+                                            self.view.cosmology):
+                previous = (self.view.sky_frame, self.view.distance_mode, self.view.cosmology)
+                self.view.sky_frame, self.view.distance_mode, self.view.cosmology = (
+                    frame, mode, cosmology)
+                try:
+                    self._compute_sky_positions()
+                except ValueError:
+                    (self.view.sky_frame, self.view.distance_mode,
+                     self.view.cosmology) = previous
+                    raise
+                self._splat_basis = None
+                self._rebuild_points_on_thread()
+                self._renderer.ResetCamera()
+                self.request_idr()
         elif ctype == "set_point_fields":
             fields = {axis: command[axis] for axis in ("x", "y", "z")
                       if command.get(axis) is not None}

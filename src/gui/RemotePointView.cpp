@@ -152,7 +152,8 @@ void RemotePointView::flush()
         return;
     // Positions before colours: a field change rebuilds the points the colour
     // is then computed for.
-    static const QStringList order{ u"set_point_fields"_s, u"set_filters"_s, u"set_color"_s };
+    static const QStringList order{ u"set_sky_positions"_s, u"set_point_fields"_s,
+                                    u"set_filters"_s, u"set_color"_s };
     QStringList types = order;
     for (auto it = m_state.cbegin(); it != m_state.cend(); ++it)
         if (!types.contains(it.key()))

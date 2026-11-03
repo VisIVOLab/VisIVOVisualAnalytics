@@ -63,7 +63,8 @@ async def open_catalogue(
 
     path = paths[0]
     dataset_id = f"cat_{uuid.uuid4().hex[:12]}"
-    session.datasets[dataset_id] = {"path": str(path), "dataframe": dataframe, **metadata}
+    session.datasets[dataset_id] = {"path": str(path), "paths": [str(p) for p in paths],
+                                    "dataframe": dataframe, **metadata}
     logger.info(
         "[catalogue-open] session=%s dataset_id=%s rows=%d cols=%d path=%s",
         session.session_id[:8] + "…",
@@ -80,8 +81,10 @@ async def open_catalogue(
         num_rows=int(metadata["num_rows"]),
         fields=[CatalogueFieldInfo(**field) for field in metadata["fields"]],
         coordinate_fields=CatalogueCoordinateFields(**metadata["coordinate_fields"]),
-        server_side_rendering_available=(metadata.get("format") == "vbt"
-                                         and _server_side_rendering()),
+        # Drawn on the backend: a VBT, a sky (RA/Dec) or a cartesian catalogue.
+        server_side_rendering_available=(
+            metadata.get("coordinate_fields", {}).get("system") in ("sky", "cartesian")
+            and _server_side_rendering()),
     )
 
 
