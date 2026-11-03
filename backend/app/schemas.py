@@ -61,6 +61,12 @@ class OpenDatasetRequest(BaseModel):
     path: str
 
 
+class DatasetField(BaseModel):
+    """A field of a multi-field source, opened as a dataset of its own."""
+    name: str
+    path: str      # what /v1/datasets/open takes to open it
+
+
 class OpenDatasetResponse(BaseModel):
     valid: bool
     error: str
@@ -97,6 +103,10 @@ class OpenDatasetResponse(BaseModel):
     file_size_bytes: int = 0
     full_res_threshold_bytes: int = 4 * 1024 ** 3
     recommended_load_mode: str = "auto_full"  # "auto_full" | "preview_only"
+    # A VisIVO Binary Table volume opens one field as a cube (issue #83): the
+    # field shown, and every field of the file with the path that opens it.
+    field_name: str = ""
+    fields: list[DatasetField] = []
     # True iff this backend can host server-side rendering for the
     # opened cube (EGL build + GPU detected). Backend-agnostic: any
     # client connecting to any backend (SKAVA-discovered, manually

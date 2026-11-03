@@ -78,7 +78,12 @@ Pick between two complementary 3-D views from the top-right viewer toolbar:
 - **Isosurface** — extracts a closed surface at a user-given threshold
   (`vtkFlyingEdges3D` server-side). Adjust the threshold with the slider in
   the *3-D View Settings* sidebar. The compute is asynchronous; the volume
-  stays visible until the mesh is ready.
+  stays visible until the mesh is ready. On a large cube the surface is
+  extracted from a sampled grid of at most 256³ voxels (each axis sampled on
+  its own, so a cube with few channels keeps them all) and coarsened further
+  while it has more than 4 million triangles: a 512³ simulation field takes
+  1–2 s. A surface still too large at the coarsest grid is refused with a
+  message asking for a higher threshold.
 
 You can switch render mode at any time. The colour map is shared between
 volume rendering and the slice view.
@@ -191,14 +196,49 @@ masks; at 3σ only 17 % of what is drawn on HCG 44 does
 (`validation/threshold_from_noise.py`). The emission below the threshold is too
 faint to tell from the noise at that level: lower the threshold to look for it.
 
+### Threshold, colour range and the colour bar
+
+Two separate settings decide what the volume shows:
+
+- the **threshold** decides what is *drawn*: voxels below it are transparent,
+  and the isosurface is drawn at it. Under the slider, the
+  share of the cube's voxels above it is written out (*1.00 % of voxels
+  above*), which says more than the value itself on data spanning decades;
+- the **colour range** (*Min* and *Max* in the LUT editor, below) decides the
+  *colours*: values below Min take the first colour of the map, values above
+  Max the last.
+
+They are independent: the opacity follows the data's own range, not Min..Max.
+With the threshold below Min, the voxels between the two are drawn, all in
+Min's colour; with it above Max, the voxels above it are drawn in Max's colour.
+
+The **colour bar** at the right edge of the 3-D view shows both. It spans
+Min..Max on the volume's scale, is titled with the cube's unit (`BUNIT`) or a
+VBT field's name, marks the threshold with a notch and dims the part of the bar
+below it, and writes the threshold's value underneath, followed by *< Min* or
+*> Max* when it lies outside the colour range. In isosurface mode, which draws
+in one colour, the bar is hidden.
+
+The threshold holds in **MIP** and **MinIP** too: they apply the opacity to the
+value they project, so a ray whose maximum (minimum) is below the threshold
+draws nothing. With a high threshold, Composite and MIP then show nearly the
+same picture — the few bright voxels left are what both project; lower the
+threshold to see MIP's projection of the whole field.
+
 ## Color maps and transfer function
 
 - The active **color map** is picked from the *3-D View Settings* sidebar
   (Inferno, Viridis, Magma, Plasma, Cividis, …).
-- For volume rendering, the **opacity transfer function** maps low values
-  to fully transparent and high values to fully opaque. Customise it from
-  *3-D View → Advanced…* (LUT editor) — drag the control points to
-  emphasise emission peaks or remove background.
+- **Edit**, next to it, opens the 3-D LUT editor: a histogram of the cube with
+  the colour range drawn on it (drag the cyan Min or orange Max line, or type
+  the values), the colour map, and the **scale** — Linear, Log, Sqrt, Square or
+  Power — which applies to the colours, to the opacity ramp and to how the
+  threshold slider moves. *Apply* sends all of it to the volume, local or
+  remote. Choosing a map in the sidebar keeps the scale and returns the colour
+  range to the data's.
+- A cube whose values are all positive and span at least three decades (a
+  simulation's density) opens in **Log**: in Linear such data shows only its
+  brightest voxels.
 - For the slice / moment maps, the **2-D LUT editor** opens from the
   *2-D View Settings* sidebar. Both editors are non-modal: keep them open
   while you scrub through slices to fine-tune in real time.
@@ -235,6 +275,19 @@ they cannot drift apart:
 Wherever you reach a tool, it is the same action: a toggle switched on in one
 place shows as on in the other, and one that is unavailable is greyed out in
 both with the same explanation.
+
+Tools that read the third axis as a spectrum, or place sky coordinates, are
+**hidden** on a cube where they cannot apply, rather than greyed out, since
+nothing would ever enable them there:
+
+- with a spatial third axis (`CTYPE3` of `X`, `Y`, `Z`, `LINEAR` or a celestial
+  type — a [VBT volume](vbt-viewer.md#volume-tables) is one): line-width map,
+  baseline subtraction, spectral stacking, polarimetry, source finding
+  (SoFiA-2) and the kinematic model;
+- without a celestial WCS on the first two axes: the catalogue overlays and the
+  *Catalogue sources* layer.
+
+A cube whose `CTYPE3` is missing keeps every tool.
 
 ```{note}
 The tool list is **not** in the left dock. That panel answers "how is this view

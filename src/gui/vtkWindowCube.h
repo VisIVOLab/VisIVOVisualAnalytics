@@ -82,6 +82,7 @@ class ProfileWidget;
 class PvDiagramWidget;
 class ToolResultDialog;
 class ChannelOverlay;
+class VolumeColorbar;
 class QTableView;
 class QTreeView;
 class vtkAxisActor2D;
@@ -377,6 +378,9 @@ public:
     /// path — unlike the session-scoped backend dataset id, it's the same across
     /// sessions). See AnalysisParamStore.
     QString datasetPersistKey() const { return this->filepath; }
+    /// The other fields of the VBT volume this cube is a field of (issue #83),
+    /// as (name, path): rows of Session Data that open each as a cube.
+    void setSiblingFields(const QList<QPair<QString, QString>> &fields);
 
     /// Build a product id scoped to THIS window: "<stem>@<datasetKey>#<windowScope>". The
     /// parentKey stays datasetPersistKey() (so the tree still nests under the dataset), but the
@@ -1039,6 +1043,9 @@ protected:
     // Created as a child of ui->vtkCube; positioned via an installed event
     // filter on resize. See ChannelOverlay.h.
     QPointer<ChannelOverlay> channelOverlay;
+    /// The 3-D volume's colour bar, on the 3-D view shown (issue #83).
+    QPointer<VolumeColorbar> m_volumeColorbar;
+    void refreshVolumeColorbar();
     /// The same scrubber on the 2-D Slice: without a 3-D pane on screen (slice +
     /// moment + PV) it is the only way to change channel. Mirrors channelOverlay.
     QPointer<ChannelOverlay> channelOverlay2d;
@@ -2049,6 +2056,9 @@ protected:
     void remove3dPickObserver();
     void handle3dPickEvent(const std::array<int, 2> &pos);
     bool remoteIsosurfaceReady{ false };
+    /// The isosurface is what the 3-D view draws (setCubeRenderModeLocally):
+    /// Isosurface can be checked while the volume stays up, waiting for a mesh.
+    bool m_isosurfaceDrawn{ false };
     void applyCubeOpenResult(const CubeOpenStageResult &result);
     void applyIsosurfaceResult(const AsyncIsosurfaceResult &result);
     void startAsyncIsosurface(double isoValue);
@@ -2178,6 +2188,48 @@ protected:
     double m_sliceScaleGamma{ 2.0 };
     LutScale::Mode m_volumeScaleMode{ LutScale::Mode::Linear };
     double m_volumeScaleGamma{ 2.0 };
+    // ── The 3-D volume's scale (issue #83) ───────────────────────────────────
+    // Colours, opacity ramp and threshold slider follow one scale: Linear, Log,
+    // Sqrt, Square, Power. A field spanning orders of magnitude (a simulation
+    // density) is unreadable in linear. A remote view gets the functions point
+    // by point (set_transfer_functions), as its own ramp is linear. Chosen in
+    // the LUT editor (Edit), the one place for the volume's colour range and scale.
+    /// Under the Threshold slider: the share of voxels above it (ThresholdShare.h).
+    QPointer<QLabel> m_thresholdShareLabel;
+    void updateThresholdShare(double threshold);
+    /// After a scale change: colour map (unless ``rebuildColours`` is false:
+    /// the LUT editor has built it, over its own range), opacity, slider,
+    /// remote and linked views again.
+    void onVolumeScaleChanged(bool rebuildColours = true);
+    /// The opacity ramp over [lower, upper] for ``threshold``, on the scale.
+    void fillVolumeOpacity(vtkPiecewiseFunction *f, double threshold, double lower,
+                           double upper) const;
+    /// The data range the volume's functions span: the local preview's, or
+    /// for a view drawn only on the backend, the range the backend reported.
+    std::optional<std::pair<double, double>> volumeDataRange() const;
+    /// The Min..Max the volume's colours span: the LUT editor's when set there,
+    /// else the data's (the backend's full range for a remote view in Linear).
+    std::pair<double, double> volumeColourRange() const;
+    /// A live remote view in Linear with no editor range: the backend draws with
+    /// its own LUT and ramp over the full cube's range.
+    bool remoteDrawsOwnLut() const;
+    /// Min..Max were typed in the LUT editor (reset by a new map or new data).
+    bool m_volumeLutUserRange{ false };
+    /// The scale a cube opens with, chosen once from its first known range:
+    /// Log for values all positive over three decades or more (a simulation
+    /// density, an emission measure), in 3-D and on the slice; else linear.
+    void chooseDefaultScale(double minValue, double maxValue);
+    bool m_defaultScaleChosen{ false };
+    /// Position of ``value`` on the volume scale over [lo, hi], 0..1, and back.
+    double volumeScalePosition(double value, double lo, double hi) const;
+    double volumeScaleValue(double position, double lo, double hi) const;
+    /// The span the threshold slider and field cover: [lowerBound, upperBound]
+    /// in linear (its floor 3 % above the minimum); down to the data's minimum
+    /// on another scale, where that floor would cut away orders of magnitude.
+    std::pair<float, float> thresholdSpan() const;
+    /// Send the volume's colour and opacity functions to a remote view when
+    /// the scale is not linear (its own threshold ramp is linear).
+    void pushVolumeTransferFunctionsToRemote();
 
     // Slice
     vtkNew<vtkImageMapToColors> sliceColors;

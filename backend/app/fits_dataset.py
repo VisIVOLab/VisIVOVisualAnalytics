@@ -48,6 +48,12 @@ def image_hdu_index(hdul) -> int:
     return 0
 
 
+def _open_fits(path, **kwargs):
+    # A FITS file, or a field of a VBT volume read in place (issue #83).
+    from .volume_source import open_fits  # noqa: PLC0415
+    return open_fits(path, **kwargs)
+
+
 class ScientificFitsDataset:
     """
     Minimal backend-side scientific FITS dataset helper.
@@ -64,7 +70,7 @@ class ScientificFitsDataset:
 
     def __init__(self, path: str | Path) -> None:
         self.path = str(Path(path))
-        with fits.open(self.path, memmap=True, mode="readonly") as hdul:
+        with _open_fits(self.path, memmap=True, mode="readonly") as hdul:
             self.hdu_index = image_hdu_index(hdul)
             header = hdul[self.hdu_index].header.copy()
             shape = hdul[self.hdu_index].shape
@@ -111,7 +117,7 @@ class ScientificFitsDataset:
         when there is no such table (the common single-beam case).
         """
         try:
-            with fits.open(self.path, memmap=True, mode="readonly") as hdul:
+            with _open_fits(self.path, memmap=True, mode="readonly") as hdul:
                 beams_hdu = None
                 for hdu in hdul[1:]:
                     if str(hdu.header.get("EXTNAME", "")).strip().upper() == "BEAMS":
@@ -252,7 +258,7 @@ class ScientificFitsDataset:
         )
 
     def open_memmap(self):
-        hdul = fits.open(self.path, memmap=True, mode="readonly")
+        hdul = _open_fits(self.path, memmap=True, mode="readonly")
         data = hdul[self.hdu_index].data
         if data is None:
             hdul.close()
@@ -464,6 +470,11 @@ class ScientificFitsDataset:
         ``auto_full`` in that case, matching legacy behaviour.
         """
         import os as _os
+
+        from .volume_source import split_ref  # noqa: PLC0415
+        if split_ref(self.path)[1] is not None:
+            # A field of a VBT volume: its own bytes, not the whole file's.
+            return int(np.prod(self.shape)) * abs(int(self.header.get("BITPIX", -32))) // 8
         try:
             return int(_os.path.getsize(self.path))
         except (OSError, TypeError):

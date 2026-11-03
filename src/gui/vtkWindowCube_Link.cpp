@@ -336,6 +336,10 @@ void vtkWindowCube::applyLinkedColour(const QString &name, int scaleMode, double
     // applyColorMapByName rebuilds the volume LUT through the (now updated)
     // stretch, so this applies both colormap and stretch in one go.
     this->applyColorMapByName(name.isEmpty() ? this->m_activeColorMapName : name);
+    // The stretch is more than colours: the Scale control, the opacity ramp,
+    // the slider and a remote view follow it too (issue #83).
+    if (!sameScale)
+        this->onVolumeScaleChanged(/*rebuildColours=*/false);
 }
 
 bool vtkWindowCube::sameSpatialGrid2D(const vtkWindowCube *peer) const

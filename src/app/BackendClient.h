@@ -200,6 +200,11 @@ struct BackendOpenDatasetResult
     qint64 fileSizeBytes{ 0 };
     qint64 fullResThresholdBytes{ qint64(4) << 30 };
     QString recommendedLoadMode{ QStringLiteral("auto_full") };
+    /// A VisIVO Binary Table volume opens one field as a cube (issue #83):
+    /// the field shown, and every field of the file with the path that opens
+    /// it (empty for any other dataset).
+    QString fieldName;
+    QList<QPair<QString, QString>> fields;   ///< (name, path)
 };
 
 struct BackendFileHeaderResult

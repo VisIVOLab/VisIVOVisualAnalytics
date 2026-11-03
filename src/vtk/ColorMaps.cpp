@@ -1,5 +1,8 @@
 #include "ColorMaps.h"
 
+#include <cmath>
+#include <limits>
+
 #include <algorithm>
 #include <cctype>
 
@@ -79,10 +82,25 @@ void ColorMaps::SetColorTransferFunction(vtkLookupTable *lut, vtkColorTransferFu
     double range[2];
     lut->GetTableRange(range);
 
+    // A logarithmic table spaces its entries in log: entry i is the colour at
+    // range[0]·(range[1]/range[0])^t, not at the linear fraction t of the range
+    // (which drew a "Log" volume exactly as a linear one).
+    const bool logScale = lut->GetScale() == VTK_SCALE_LOG10 && range[0] > 0.0
+            && range[1] > range[0];
+    // VTK samples a transfer function into a texture LINEAR in value, as fine
+    // as its closest two nodes: log-spaced nodes from a tiny minimum asked for
+    // millions of texels (and a fallback with a warning). Nodes closer than the
+    // finest step such a texture resolves add nothing: they are left out.
+    const double minGap = logScale ? (range[1] - range[0]) / 8192.0 : 0.0;
+    double last = -std::numeric_limits<double>::infinity();
     const vtkIdType n = lut->GetNumberOfTableValues();
     for (vtkIdType i = 0; i < n; ++i) {
         const double t = static_cast<double>(i) / (n - 1);
-        const double value = range[0] + t * (range[1] - range[0]);
+        const double value = logScale ? range[0] * std::pow(range[1] / range[0], t)
+                                      : range[0] + t * (range[1] - range[0]);
+        if (i > 0 && i < n - 1 && value - last < minGap)
+            continue;
+        last = value;
         double rgba[4];
         lut->GetTableValue(i, rgba);
         ctf->AddRGBPoint(value, rgba[0], rgba[1], rgba[2]);

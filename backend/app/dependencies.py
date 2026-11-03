@@ -755,82 +755,9 @@ def _normalize_path(raw: str) -> Path:
     return path
 
 
-def _parse_vbt_header(head_path: Path) -> dict:
-    """Parse a VisIVO Binary Table .head file and return metadata dict."""
-    with open(head_path, "r") as fh:
-        lines = [ln.strip() for ln in fh.readlines() if ln.strip()]
-    if len(lines) < 4:
-        raise ValueError(f"VBT header too short: expected at least 4 lines, got {len(lines)}")
-
-    scalar_str = lines[0].lower()
-    if scalar_str in ("f", "float"):
-        scalar_type = "float32"
-        np_itemcode = "f4"
-    elif scalar_str in ("d", "double"):
-        scalar_type = "float64"
-        np_itemcode = "f8"
-    else:
-        raise ValueError(f"Unknown VBT scalar type: '{lines[0]}'")
-
-    try:
-        field_count = int(lines[1])
-    except ValueError:
-        raise ValueError(f"Invalid field count: '{lines[1]}'")
-    if field_count <= 0:
-        raise ValueError(f"Field count must be positive, got {field_count}")
-
-    tokens = lines[2].split()
-    if len(tokens) == 1:
-        kind = "point"
-        num_rows = int(tokens[0])
-        dimensions: list[int] | None = None
-        spacing: list[float] | None = None
-    elif len(tokens) == 7:
-        kind = "volume"
-        num_rows = int(tokens[0])
-        nx, ny, nz = int(tokens[1]), int(tokens[2]), int(tokens[3])
-        sx, sy, sz = float(tokens[4]), float(tokens[5]), float(tokens[6])
-        if num_rows != nx * ny * nz:
-            raise ValueError(
-                f"VBT voxel count mismatch: header says {num_rows}, dims give {nx * ny * nz}"
-            )
-        dimensions = [nx, ny, nz]
-        spacing = [sx, sy, sz]
-    else:
-        raise ValueError(f"Unexpected token count on row-spec line: {len(tokens)}")
-
-    endian_str = lines[3].lower()
-    if endian_str in ("l", "little"):
-        file_endian = "little"
-    elif endian_str in ("b", "big"):
-        file_endian = "big"
-    else:
-        raise ValueError(f"Unknown VBT endian: '{lines[3]}'")
-
-    # The byte order was parsed and then thrown away: the numpy code was fixed
-    # to "<" by the scalar type above, so EVERY VBT was read as little-endian
-    # and a big-endian one came back as garbage — NaNs and values at the
-    # float32 limit, with nothing to say why. The header line exists precisely
-    # to be obeyed.
-    np_endian_code = ("<" if file_endian == "little" else ">") + np_itemcode
-
-    if len(lines) < 4 + field_count:
-        raise ValueError(
-            f"VBT header has {len(lines)} lines but expected at least {4 + field_count}"
-        )
-    field_names = lines[4 : 4 + field_count]
-
-    return {
-        "kind": kind,
-        "scalar_type": scalar_type,
-        "np_endian_code": np_endian_code,  # numpy dtype string including endian mark
-        "file_endian": file_endian,
-        "field_count": field_count,
-        "num_rows": num_rows,
-        "dimensions": dimensions,
-        "spacing": spacing,
-        "field_names": field_names,
-    }
+# The parser lives with the volume reader (app/volume_source.py), which the
+# render and pyramid processes import without the rest of this module.
+from .volume_source import parse_vbt_header as _parse_vbt_header  # noqa: E402
 
 
 def _is_fits(path: Path) -> bool:
@@ -1746,6 +1673,16 @@ def _fits_metadata(path: Path) -> tuple[str, dict[str, Any]]:
     so the rest of the pipeline (preview / full image readers, region
     stats, …) reuses the standard FITS code path.
     """
+    from .volume_source import split_ref, vbt_fields  # noqa: PLC0415
+    base, field = split_ref(path)
+    if field is not None:
+        # A field of a VBT volume, read in place as a cube (issue #83).
+        dataset = ScientificFitsDataset(str(path))
+        geometry = dataset.geometry_metadata()
+        geometry["resolved_path"] = str(path)
+        geometry["fields"] = vbt_fields(base)
+        geometry["field_name"] = geometry["fields"][field]["name"]
+        return str(geometry["kind"]), geometry
     from .hdf5_dynspec import (  # noqa: PLC0415 (lazy h5py import)
         convert_hdf5_to_sidecar_fits, is_hdf5_path,
     )

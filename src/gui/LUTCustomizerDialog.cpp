@@ -470,11 +470,19 @@ void LUTCustomizerDialog::updateLut()
         // Dataset-aware positive floor (more accurate than a generic epsilon)
         // so the log range starts at the smallest real positive sample.
         const double positiveFloor = sampledPositiveFloor(this->dataset);
-        if (positiveFloor <= 0.0) {
+        if (positiveFloor > 0.0) {
+            maxValue = std::max(maxValue, positiveFloor);
+            minValue = std::max(minValue, positiveFloor);
+            // The fields show the range applied, not one the floor replaced
+            // (the colour bars read the applied one).
+            ui->lineMin->setText(QString::number(minValue));
+            ui->lineMax->setText(QString::number(maxValue));
+            this->updateReferenceLines();
+        } else if (!(maxValue > 0.0)) {
             return;
         }
-        maxValue = std::max(maxValue, positiveFloor);
-        minValue = std::max(minValue, positiveFloor);
+        // No positive sample here (a cube drawn only on the backend, with no
+        // preview): the typed range, floored by LutScale as any log range.
     }
 
     // build() forces a fresh linear colormap fill before stretching, so repeated

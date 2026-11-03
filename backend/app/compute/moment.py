@@ -126,7 +126,8 @@ class _FitsCubeSource:
         self.z0 = int(z0)
         self.shape = tuple(int(n) for n in shape)
         self.dtype = np.dtype(dtype)
-        st = _os.stat(self.path)
+        from ..volume_source import split_ref  # noqa: PLC0415
+        st = _os.stat(split_ref(self.path)[0])   # a VBT field: its data file
         self.signature = (int(st.st_size), int(st.st_mtime_ns))
 
     def __getitem__(self, key):
@@ -152,7 +153,16 @@ def _mapped_cube(path: str, hdu_index: int, signature: tuple[int, int]) -> np.nd
     """
     from astropy.io import fits as _fits  # noqa: PLC0415
 
+    from ..volume_source import split_ref, vbt_field  # noqa: PLC0415
+
     want = (int(signature[0]), int(signature[1]))
+    base, field = split_ref(path)
+    if field is not None:
+        # A field of a VBT volume (issue #83): mapped in place, no header.
+        st = _os.stat(base)
+        if (int(st.st_size), int(st.st_mtime_ns)) != want:
+            raise RuntimeError(f"{base} changed while a moment was being computed.")
+        return vbt_field(base, field)
     key = (path, int(hdu_index), want)
     with _MAPPED_CUBES_LOCK:
         hit = _MAPPED_CUBES.get(key)
@@ -1055,7 +1065,8 @@ def worker_moment_save_fits(
 
     # Build a 2-D header from the source WCS — celestial() projects away the
     # spectral / Stokes axes and gives us a clean (RA, Dec) or (l, b) header.
-    with _fits.open(src_path, memmap=True, mode="readonly") as hdul:
+    from ..volume_source import open_fits  # noqa: PLC0415
+    with open_fits(src_path, memmap=True, mode="readonly") as hdul:
         src_header = hdul[image_hdu_index(hdul)].header.copy()
     try:
         wcs2d = _WCS(src_header, relax=True).celestial

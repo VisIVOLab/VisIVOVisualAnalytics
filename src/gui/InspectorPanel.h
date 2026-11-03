@@ -136,6 +136,10 @@ private:
     QWidget *m_analysisPage = nullptr;
     QVBoxLayout *m_analysisLayout = nullptr;
     QHash<QString, QVBoxLayout *> m_groupLayouts;
+    QHash<QString, QWidget *> m_groupCaptions;
+    /// A group whose tools are all hidden (a cube without a spectrum has no
+    /// polarimetry) hides its caption too.
+    void refreshGroupVisibility(const QString &caption);
 
     QWidget *m_provPage = nullptr;
     QVBoxLayout *m_provLayout = nullptr;

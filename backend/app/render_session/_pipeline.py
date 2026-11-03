@@ -14,7 +14,9 @@ from ._common import (
     SessionViewState,
     _build_color_tf,
     _build_opacity_tf,
+    _explicit_opacity_floor,
     _opacity_floor,
+    _parse_tf_points,
     logger,
 )
 
@@ -123,7 +125,24 @@ class PipelineMixin:
                 self._renderer.ResetCamera()
 
         # ── Volume LUT / opacity / blend ─────────────────────────────
+        elif ctype == "set_transfer_functions":
+            # The client's own transfer functions, point by point (a VBT
+            # volume on a log scale, issue #83); the blend mode with them.
+            try:
+                color = _parse_tf_points(command.get("color"), 4)
+                opacity = _parse_tf_points(command.get("opacity"), 2)
+            except (TypeError, ValueError) as exc:
+                logger.warning("[render-session %s] set_transfer_functions refused: %s",
+                               self.session_id, exc)
+                return
+            self.view.explicit_tf = (color, opacity)
+            if "blend_mode" in command:
+                self.view.blend_mode = int(command["blend_mode"])
+                self._apply_blend_mode_on_thread(self.view.blend_mode)
+            self._rebuild_volume_tfs_on_thread()
+            self.request_idr()
         elif ctype in ("set_lut", "colormap"):
+            self.view.explicit_tf = None
             self.view.volume_lut_name = str(command.get("name", self.view.volume_lut_name))
             self._rebuild_volume_tfs_on_thread()
             self.request_idr()
@@ -132,6 +151,7 @@ class PipelineMixin:
             self._rebuild_slice_lut_on_thread()
             self.request_idr()
         elif ctype == "set_threshold":
+            self.view.explicit_tf = None
             self._threshold_from_client = True
             self.view.threshold = float(command.get("value", self.view.threshold or self._vmin))
             self._rebuild_volume_tfs_on_thread()
@@ -456,7 +476,9 @@ class PipelineMixin:
             # In Composite, blocks whose values are all fully transparent are
             # left out (MIP and MinIP draw one whole level, see _ooc.py).
             floor = None
-            if self.view.blend_mode == 0:
+            if self.view.blend_mode == 0 and self.view.explicit_tf is not None:
+                floor = _explicit_opacity_floor(self.view.explicit_tf[1])
+            elif self.view.blend_mode == 0:
                 floor = _opacity_floor(self._vmin, self._vmax,
                                        self.view.threshold or self._vmin)
             self._ooc_more = self._ooc.update(self._renderer, self._render_window.GetSize(),

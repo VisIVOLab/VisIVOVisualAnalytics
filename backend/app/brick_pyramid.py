@@ -66,8 +66,21 @@ class SourceSignature:
 
     @classmethod
     def of(cls, path: str | os.PathLike, hdu: int) -> "SourceSignature":
+        from .volume_source import resolve_vbt, vbt_head  # noqa: PLC0415
+
+        vbt = resolve_vbt(path, hdu)
+        if vbt is not None:
+            # A field reference names the data and the field: the same
+            # pyramid as the VBT's own, whichever way it was opened.
+            path, hdu = vbt
         st = os.stat(path)
-        return cls(str(Path(path).resolve()), int(hdu), int(st.st_size), int(st.st_mtime_ns))
+        size, mtime = int(st.st_size), int(st.st_mtime_ns)
+        if vbt is not None:
+            # A VBT's values are read as its .head says (type, byte order,
+            # grid): a header edited beside the same data is another source.
+            head = os.stat(vbt_head(path))
+            size, mtime = size + int(head.st_size), max(mtime, int(head.st_mtime_ns))
+        return cls(str(Path(path).resolve()), int(hdu), size, mtime)
 
 
 def default_brick(shape: tuple[int, int, int]) -> int:
@@ -86,11 +99,11 @@ def _min_block_bytes(shape: tuple[int, int, int], brick: int) -> int:
 def source_shape(path: str | os.PathLike, hdu: int) -> tuple[int, int, int]:
     """The (z, y, x) shape a pyramid of HDU ``hdu`` of ``path`` has, from the
     header alone: degenerate axes dropped, the last three kept, and a 2-D image
-    one plane deep (as :class:`_SourceCube` reads it)."""
-    from astropy.io import fits  # noqa: PLC0415
+    one plane deep (as :class:`_SourceCube` reads it). For a VBT volume,
+    ``hdu`` is the field (``app.volume_source``)."""
+    from .volume_source import volume_shape  # noqa: PLC0415
 
-    with fits.open(path, memmap=True) as hdul:
-        full = tuple(int(n) for n in (hdul[hdu].shape or ()))
+    full, _ = volume_shape(path, hdu)
     kept = [n for n in full if n > 1]
     if len(kept) < 2:
         raise ValueError(f"HDU {hdu} of {path} is neither an image nor a cube (shape {full}).")
@@ -239,6 +252,21 @@ class _SourceCube:
         import logging  # noqa: PLC0415
         from astropy.io import fits  # noqa: PLC0415
 
+        from .volume_source import resolve_vbt, vbt_field  # noqa: PLC0415
+
+        vbt = resolve_vbt(path, hdu)
+        if vbt is not None:
+            # A VBT volume: field ``hdu`` (or the field a reference names),
+            # memory-mapped in place, already (z, y, x) and unscaled
+            # (app/volume_source.py, issue #83).
+            self._hdul = None
+            self._read = vbt_field(*vbt)
+            self._axes, self._ndim = [0, 1, 2], 3
+            self.shape = tuple(int(n) for n in self._read.shape)
+            self._tile = None
+            self._scale = (1.0, 0.0, None)
+            return
+        # After the VBT: raw values may begin with any bytes, gzip's included.
         _refuse_whole_file_compression(path)
         self._hdul = fits.open(path, memmap=True, mode="readonly", do_not_scale_image_data=True)
         try:
@@ -349,7 +377,10 @@ class _SourceCube:
         return out.astype(dtype, copy=False)
 
     def close(self) -> None:
-        self._hdul.close()
+        # A VBT's map is left to numpy, which closes it with its last view: a
+        # block of the file's own type is returned without a copy.
+        if self._hdul is not None:
+            self._hdul.close()
 
 
 # ── Building with several processes (issue #89) ─────────────────────────────

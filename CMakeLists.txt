@@ -470,6 +470,8 @@ set(PROJECT_SOURCES
         src/gui/theme/ScrollWheelGuard.h
         src/gui/ChannelOverlay.cpp
         src/gui/ChannelOverlay.h
+        src/gui/VolumeColorbar.cpp
+        src/gui/VolumeColorbar.h
         src/gui/CubeVRController.cpp
         src/gui/CubeVRController.h
         src/gui/Catalogue3DTableModel.cpp

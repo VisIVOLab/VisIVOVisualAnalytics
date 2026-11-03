@@ -56,6 +56,7 @@ def _reader_main(
     shape: Tuple[int, int, int],
     chunks: list[Tuple[int, int]],
     progress_q: "Queue",
+    hdu: Optional[int] = None,
 ) -> None:
     """Reader-process entry point.
 
@@ -85,8 +86,8 @@ def _reader_main(
         {"event": "error",    "message": "..."}
     """
     try:
-        from astropy.io import fits  # noqa: PLC0415 — lazy in subprocess
-        from .fits_dataset import image_hdu_index  # noqa: PLC0415
+        # A FITS HDU or a VBT volume's field (app/volume_source.py, #83).
+        from .volume_source import volume_data  # noqa: PLC0415
     except ImportError as e:
         progress_q.put({"event": "error", "message": f"astropy import failed: {e}"})
         return
@@ -99,11 +100,7 @@ def _reader_main(
         global_vmin = float("inf")
         global_vmax = float("-inf")
 
-        with fits.open(path, memmap=True) as hdul:
-            data = hdul[image_hdu_index(hdul)].data
-            # Strip degenerate axes (FITS Stokes/etc).
-            while data.ndim > 3 and data.shape[0] == 1:
-                data = data[0]
+        with volume_data(path, hdu) as data:
             if data.ndim != 3:
                 progress_q.put({
                     "event": "error",
@@ -120,7 +117,9 @@ def _reader_main(
 
             for z0, z1 in chunks:
                 t0 = time.perf_counter()
-                slab = np.asarray(data[z0:z1], dtype=np.float32)
+                # A copy: the NaNs are replaced in place, and a slab of the
+                # file's own type would otherwise be the read-only map.
+                slab = np.array(data[z0:z1], dtype=np.float32)
                 # NaN → 0.0 in-place. The render side will re-mask to
                 # vmin (its own sanitisation) once it sees a chunk
                 # with valid data; using 0 here keeps the cube
@@ -190,6 +189,7 @@ class CubeReader:
         path: str,
         shape: Tuple[int, int, int],
         chunk_size_z: Optional[int] = None,
+        hdu: Optional[int] = None,
     ) -> None:
         """
         Args:
@@ -206,6 +206,8 @@ class CubeReader:
         """
         self.path = path
         self.shape = shape
+        # The HDU, or a VBT volume's field; None, the first image HDU.
+        self.hdu = hdu
         nz, ny, nx = shape
         if chunk_size_z is None:
             # Aim for ~32 chunks: enough progress events to feel
@@ -235,7 +237,7 @@ class CubeReader:
         self._process = self._MP_CTX.Process(
             target=_reader_main,
             args=(self.path, self.shm.name, self.shape, self.chunks,
-                  self.progress_q),
+                  self.progress_q, self.hdu),
             daemon=True,
             name=f"visivo-cube-reader-{self.shm.name[-8:]}",
         )

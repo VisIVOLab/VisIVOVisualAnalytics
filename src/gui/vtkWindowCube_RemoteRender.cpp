@@ -1,4 +1,5 @@
 #include "vtkWindowCube.h"
+#include "VolumeColorbar.h"
 
 #include <QScopedValueRollback>
 
@@ -343,6 +344,10 @@ void vtkWindowCube::abortRemoteSwitch(const QString &reason)
     // moved it onto the remote widget; aborting without moving it back left the
     // slider stranded on the hidden page and the user without the cutting-plane
     // channel control. Same steps as applyRenderMode's Local branch.
+    if (this->m_volumeColorbar) {
+        this->m_volumeColorbar->attachTo(ui->vtkCube);
+        this->refreshVolumeColorbar();   // Linear: the preview's range again
+    }
     if (this->channelOverlay && ui->vtkCube
         && this->channelOverlay->parentWidget() != ui->vtkCube) {
         if (QWidget *current = this->channelOverlay->parentWidget())
@@ -520,6 +525,10 @@ void vtkWindowCube::onRemoteRenderConnectionStateChanged(const QString &state)
         // reparenting here: by the time the WS is Live, the cube
         // preview has long since finished, channelOverlay exists, and
         // we're already on the Remote stack page.
+        if (this->m_volumeColorbar && this->m_effectiveRenderMode == RenderMode::Remote) {
+            this->m_volumeColorbar->attachTo(this->m_remoteRenderWidget);
+            this->refreshVolumeColorbar();   // Linear: the backend's own range
+        }
         if (this->channelOverlay
             && this->m_effectiveRenderMode == RenderMode::Remote
             && this->m_remoteRenderWidget
@@ -569,6 +578,9 @@ void vtkWindowCube::resendThresholdToRemote()
     // resync the backend.
     m[u"value"_s] = ui->lineThreshold->text().toDouble();
     this->sendRemoteRenderStateCommand(m);
+    // set_threshold returns the backend to its linear ramp: on another scale
+    // the functions go again (a blend-mode switch comes this way).
+    this->pushVolumeTransferFunctionsToRemote();
 }
 
 void vtkWindowCube::adoptRemoteLevels(const QJsonObject &answer)
@@ -594,6 +606,9 @@ void vtkWindowCube::adoptRemoteLevels(const QJsonObject &answer)
         qDebug().noquote() << "[remote-render] threshold from the backend:" << value;
     }
     this->widenThresholdBoundsToRemoteRange();
+    // A view drawn only on the backend learns the data's range here.
+    if (this->m_remoteRangeKnown)
+        this->chooseDefaultScale(this->m_remoteDataMin, this->m_remoteDataMax);
 }
 
 void vtkWindowCube::widenThresholdBoundsToRemoteRange()
@@ -614,7 +629,10 @@ void vtkWindowCube::widenThresholdBoundsToRemoteRange()
     this->lowerBound = b.lower;
     this->upperBound = b.upper;
     const QSignalBlocker blockSlider(ui->sliderThreshold);
-    ui->sliderThreshold->setValue(visivo::thresholdSliderPosition(b, value));
+    // On the volume's scale, as every other path that places the slider.
+    const auto [lo, hi] = this->thresholdSpan();
+    ui->sliderThreshold->setValue(
+            static_cast<int>(std::lround(100.0 * this->volumeScalePosition(value, lo, hi))));
 }
 
 void vtkWindowCube::pollRemoteLevels(const QString &sid)
@@ -755,6 +773,9 @@ void vtkWindowCube::pushRenderStateToRemote()
         m[u"visible"_s] = m_show3dRendering;
         this->sendRemoteRenderStateCommand(m);
     }
+    // Last: on a non-linear volume scale the session draws with this window's
+    // own functions, which the LUT and threshold above would otherwise replace.
+    this->pushVolumeTransferFunctionsToRemote();
 }
 
 void vtkWindowCube::updateRenderModeBadges()

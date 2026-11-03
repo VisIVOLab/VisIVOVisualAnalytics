@@ -91,6 +91,8 @@ def _build_open_response(dataset_id: str, session_id: str, kind: str,
         # Imported lazily so a backend without the EGL build doesn't
         # have to install the render module.
         server_side_rendering_available=_probe_server_side_rendering(),
+        field_name=str(geometry.get("field_name", "")),
+        fields=[DatasetField(**f) for f in geometry.get("fields", [])],
     )
 
 
@@ -100,8 +102,15 @@ async def open_dataset(
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> OpenDatasetResponse:
-    path = _normalize_path(request.path)
-    if not _is_supported_dataset(path):
+    from ..volume_source import split_ref, vbt_dataset_path  # noqa: PLC0415
+
+    # A field of a VBT volume: the file checked as any path, the field kept.
+    base, field = split_ref(request.path)
+    path = _normalize_path(base)
+    vbt = vbt_dataset_path(path, field)
+    if vbt is not None:
+        path = Path(vbt)
+    elif field is not None or not _is_supported_dataset(path):
         return OpenDatasetResponse(
             valid=False,
             error="Unsupported file type. Expected FITS (.fits, .fit) or "

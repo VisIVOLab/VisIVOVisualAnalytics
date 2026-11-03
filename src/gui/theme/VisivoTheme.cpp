@@ -1,4 +1,5 @@
 #include "VisivoTheme.h"
+#include "app/DatasetName.h"
 
 #include <QApplication>
 #include <QEvent>
@@ -530,13 +531,14 @@ QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
     pillLayout->addWidget(icon);
 
     // Split file path: dim directory + bright filename (Layout B aesthetic).
-    const QFileInfo fi(spec.filePath);
+    // A field of a VBT volume: its file's folder, and "volume · field".
+    const QFileInfo fi(visivo::datasetFilePath(spec.filePath));
     const QString dirText = spec.filePath.isEmpty()
             ? QString()
             : (fi.absolutePath().endsWith(QLatin1Char('/'))
                        ? fi.absolutePath()
                        : fi.absolutePath() + QLatin1Char('/'));
-    const QString fileText = fi.fileName();
+    const QString fileText = visivo::datasetDisplayName(spec.filePath);
 
     if (!dirText.isEmpty()) {
         // Long paths are elided in the middle, and the label is given a hard

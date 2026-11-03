@@ -30,6 +30,8 @@ sees fluid motion without backpressure.
 """
 from __future__ import annotations
 
+import math
+
 import asyncio
 import io
 import logging
@@ -192,6 +194,50 @@ def _opacity_floor(vmin: float, vmax: float, threshold: float) -> float | None:
     return max(vmin, threshold - 0.01 * span)
 
 
+#: At most this many points per transfer function from a client.
+_MAX_TF_POINTS = 4096
+
+
+def _parse_tf_points(points, width: int) -> list[tuple[float, ...]]:
+    """Points ``[x, …]`` of ``width`` numbers each, finite, at most
+    ``_MAX_TF_POINTS``, sorted by x; ValueError otherwise."""
+    if not isinstance(points, list) or not points or len(points) > _MAX_TF_POINTS:
+        raise ValueError(f"between 1 and {_MAX_TF_POINTS} points expected")
+    out = []
+    for p in points:
+        if not isinstance(p, (list, tuple)) or len(p) != width:
+            raise ValueError(f"each point has {width} numbers")
+        values = tuple(float(v) for v in p)
+        if not all(math.isfinite(v) for v in values):
+            raise ValueError("a point is not finite")
+        out.append(values)
+    return sorted(out)
+
+
+def _build_explicit_tfs(color_points, opacity_points):
+    """vtkColorTransferFunction and vtkPiecewiseFunction from client points."""
+    import vtk
+    ctf = vtk.vtkColorTransferFunction()
+    for x, r, g, b in color_points:
+        ctf.AddRGBPoint(x, r, g, b)
+    otf = vtk.vtkPiecewiseFunction()
+    for x, a in opacity_points:
+        otf.AddPoint(x, a)
+    return ctf, otf
+
+
+def _explicit_opacity_floor(opacity_points) -> float | None:
+    """The value below which the client's opacity is zero: blocks wholly
+    below it are left out out of core, as below the ramp's knee. None when
+    the opacity is not zero at its first point."""
+    floor = None
+    for x, a in opacity_points:
+        if a > 0.0:
+            break
+        floor = x
+    return floor
+
+
 def _build_opacity_tf(vmin: float, vmax: float, threshold: float):
     """Build a vtkPiecewiseFunction matching ``vtkWindowCube::applyThresholdToPipeline``.
 
@@ -284,6 +330,12 @@ class SessionViewState:
     threshold: float | None = None
     # 0 = Composite, 1 = MIP, 2 = MinIP  — VTK ray-cast blend modes.
     blend_mode: int = 0
+    # Transfer functions given point by point by the client
+    # (``set_transfer_functions``): ``([(x, r, g, b), …], [(x, a), …])``, in
+    # data values. They replace the LUT and threshold ramp above until a
+    # ``set_lut`` or ``set_threshold``; a viewer whose scale is not the
+    # cube's (log, sqrt, power) draws remotely what it draws locally.
+    explicit_tf: tuple[list, list] | None = None
     vmin: float | None = None
     vmax: float | None = None
     # Backward-compat: still honoured by ``opacity`` command for older

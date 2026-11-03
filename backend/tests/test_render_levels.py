@@ -30,7 +30,7 @@ class _Manager:
     async def start(self):
         pass
 
-    async def create_session(self, dataset_path, owner_token=None):
+    async def create_session(self, dataset_path, owner_token=None, hdu=None):
         self.sess.owner_token = owner_token
         return self.sess
 
@@ -44,7 +44,7 @@ def remote(monkeypatch):
 
     monkeypatch.setattr(render, "server_side_rendering_available", lambda: True)
 
-    async def ready(entry):
+    async def ready(path, hdu):
         return None
     monkeypatch.setattr(render, "_pyramid_preparing", ready)
 

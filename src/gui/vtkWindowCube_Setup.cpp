@@ -585,6 +585,7 @@ void vtkWindowCube::setupSidebar()
         }
         if (checked)
             this->updateVolumeModeVisibility(false);
+        this->refreshVolumeColorbar();
     });
     QObject::connect(ui->actionVolume, &QAction::toggled, this, [this](bool checked) {
         if (auto *c = m_uiAssembler->renderModeCombo(); checked && c && c->currentIndex() != 1) {
@@ -593,6 +594,7 @@ void vtkWindowCube::setupSidebar()
         }
         if (checked)
             this->updateVolumeModeVisibility(true);
+        this->refreshVolumeColorbar();
     });
 
     // ── Volume mode combo → apply blend mode ──────────────────────────────────

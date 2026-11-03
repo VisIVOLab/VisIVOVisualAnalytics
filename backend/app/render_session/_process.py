@@ -155,10 +155,11 @@ class _View:
 class RenderSessionProcess:
     """A :class:`RenderSession` running in a child process; see the module doc."""
 
-    def __init__(self, session_id: str, dataset_path: str, *,
+    def __init__(self, session_id: str, dataset_path: str, *, hdu: int | None = None,
                  factory: str = "app.render_session:RenderSession") -> None:
         self.session_id = session_id
         self.dataset_path = dataset_path
+        self.hdu = hdu
         self.owner_token: str | None = None
         self.stats = SessionStats()
         self.view = _View()
@@ -199,7 +200,8 @@ class RenderSessionProcess:
         self.gpu_slot = next(_next_slot)
         self._process = ctx.Process(
             target=_serve,
-            args=(child, self.session_id, self.dataset_path, self._factory, self.gpu_slot),
+            args=(child, self.session_id, self.dataset_path, self._factory, self.gpu_slot,
+                  self.hdu),
             name=f"visivo-render-{self.session_id[:8]}", daemon=False,
         )
         self._process.start()
@@ -398,7 +400,8 @@ def _refuse_all(conn, message: str) -> None:
             return
 
 
-def _serve(conn, session_id: str, dataset_path: str, factory: str, gpu_slot: int = 0) -> None:
+def _serve(conn, session_id: str, dataset_path: str, factory: str, gpu_slot: int = 0,
+           hdu: int | None = None) -> None:
     """Child process: run the session, answering requests in the order received."""
     # A spawned child starts with logging unconfigured: without this the
     # session's messages (render timings, failures) would be lost.
@@ -408,7 +411,10 @@ def _serve(conn, session_id: str, dataset_path: str, factory: str, gpu_slot: int
     asyncio.set_event_loop(loop)
     try:
         _egl_device_for(gpu_slot)
-        session = _load(factory)(session_id, dataset_path)
+        # Only when there is one: a FITS file's first image HDU is the
+        # session's own choice.
+        session = _load(factory)(session_id, dataset_path,
+                                 **({} if hdu is None else {"hdu": hdu}))
     except Exception as exc:   # noqa: BLE001 - reported to the waiting init
         _refuse_all(conn, f"{type(exc).__name__}: {exc}")
         return

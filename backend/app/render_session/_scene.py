@@ -41,11 +41,10 @@ class SceneMixin:
         """
         t0 = time.time()
         import vtk
-        from astropy.io import fits as _fits
         from vtkmodules.vtkRenderingOpenGL2 import vtkEGLRenderWindow
         from vtk.util.numpy_support import numpy_to_vtk
         from ..cube_reader import CubeReader
-        from ..fits_dataset import image_hdu_index
+        from ..volume_source import volume_data, volume_shape
 
         # ── 1. Peek the FITS for cube shape WITHOUT loading data ─────
         # Phase 4 Path 1: the FITS read happens in a separate worker
@@ -53,18 +52,15 @@ class SceneMixin:
         # for 2-3 minutes on a 22 GB cube. Here we just open the header
         # to discover (nz, ny, nx) so we can pre-allocate the shared
         # memory buffer that backs vtkImageData.
-        with _fits.open(self.dataset_path, memmap=True) as hdul:
-            hdu_index = image_hdu_index(hdul)
-            # From the header: touching .data would decompress a whole
-            # tile-compressed cube here.
-            shape = tuple(hdul[hdu_index].shape)  # type: ignore[attr-defined]
-            if len(shape) < 3:
-                raise ValueError(
-                    f"Volume rendering requires a 3-D cube, got shape {shape}"
-                )
-            disk_shape = shape[-3:]   # (nz, ny, nx); leading axes: first plane
-            nz, ny, nx = disk_shape
-            cube_size_bytes = int(np.prod(disk_shape)) * 4   # float32
+        # A FITS HDU, or a VBT volume's field (app/volume_source.py, #83).
+        shape, hdu_index = volume_shape(self.dataset_path, getattr(self, "hdu", None))
+        if len(shape) < 3:
+            raise ValueError(
+                f"Volume rendering requires a 3-D cube, got shape {shape}"
+            )
+        disk_shape = shape[-3:]   # (nz, ny, nx); leading axes: first plane
+        nz, ny, nx = disk_shape
+        cube_size_bytes = int(np.prod(disk_shape)) * 4   # float32
 
         # Threshold for the chunked path: cubes above this size load
         # progressively via CubeReader; smaller ones go through the
@@ -99,7 +95,7 @@ class SceneMixin:
             # in GPU re-upload; keeping the count low (~32) limits
             # the upload churn to once every ~3 % of the cube.
             self._cube_reader = CubeReader(
-                self.dataset_path, shape=disk_shape,
+                self.dataset_path, shape=disk_shape, hdu=hdu_index,
             )
             cube = self._cube_reader.cube   # numpy view into shared mem
             self._chunks_total = len(self._cube_reader.chunks)
@@ -128,11 +124,9 @@ class SceneMixin:
             # 256 MB), keeps the previous behaviour byte-identical so
             # WALLABY-class datasets don't regress.
             self._cube_reader = None
-            with _fits.open(self.dataset_path, memmap=True) as hdul:
-                data = hdul[image_hdu_index(hdul)].data
-                while data.ndim > 3:
-                    data = data[0]
-                cube = np.asarray(data, dtype=np.float32)
+            with volume_data(self.dataset_path, hdu_index) as data:
+                # A copy: the cube is kept, and changed (NaNs) below.
+                cube = np.array(data, dtype=np.float32)
                 finite_mask = np.isfinite(cube)
                 if not finite_mask.all():
                     fmin = float(cube[finite_mask].min()) if finite_mask.any() else 0.0
