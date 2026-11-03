@@ -23,6 +23,28 @@ def test_the_local_planck18_matches_astropy_to_a_permille():
     assert planck18_comoving_mpc(np.array([0.0, -1.0, np.nan])).tolist() == [0.0, 0.0, 0.0]
 
 
+def test_a_large_catalogue_gets_the_same_distances_from_the_grid():
+    # More sources than grid nodes: interpolated, within 100 pc.
+    from astropy.cosmology import WMAP9
+
+    from app.catalogue_positions import _GRID_NODES, _planck18_trapezoid_mpc
+    z = np.random.default_rng(5).uniform(0.0, 3.0, _GRID_NODES * 3)
+    z[:3] = [0.0, np.nan, 3.0]
+    ours = planck18_comoving_mpc(z)
+    direct = np.zeros_like(z)
+    direct[2:] = _planck18_trapezoid_mpc(z[2:])
+    assert np.max(np.abs(ours - direct)) < 1e-4
+    frame = pd.DataFrame({"Z": z})
+    w = distances_mpc(frame, cosmology="WMAP9")
+    assert np.max(np.abs(w[2:] - WMAP9.comoving_distance(z[2:]).to("Mpc").value)) < 1e-4
+    assert w[0] == 300.0 and w[1] == 300.0
+    # One far outlier does not coarsen the grid for the nearby sources.
+    z[2] = 1000.0
+    near = (z > 0) & (z < 0.2)
+    assert np.max(np.abs(planck18_comoving_mpc(z)[near]
+                         - _planck18_trapezoid_mpc(z[near]))) < 1e-3
+
+
 def test_distances_follow_the_desktops_order():
     frame = pd.DataFrame({
         "z": [0.05, 0.05, np.nan, 0.0, 0.05],

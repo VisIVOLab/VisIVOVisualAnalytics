@@ -125,6 +125,27 @@ def _default_axes(names: list[str]) -> tuple[str, str, str]:
     return first[0], first[1], first[2]
 
 
+def _sampled_lut(ctf, cmin: float, cmax: float, log: bool):
+    """``ctf`` as a 1024-entry vtkLookupTable over [cmin, cmax], as the desktop
+    colours its points. A mapper colours every point through its table, and a
+    colour transfer function of 256 nodes on a log scale took seconds per
+    mapper for 3 M points on a POWER9 node; a table takes milliseconds."""
+    import vtk
+    n = 1024
+    lut = vtk.vtkLookupTable()
+    lut.SetNumberOfTableValues(n)
+    lut.SetRange(cmin, cmax)
+    centres = (np.arange(n) + 0.5) / n
+    if log:
+        lut.SetScaleToLog10()
+        xs = cmin * (cmax / cmin) ** centres
+    else:
+        xs = cmin + (cmax - cmin) * centres
+    for i, x in enumerate(xs):
+        lut.SetTableValue(i, *ctf.GetColor(float(x)), 1.0)
+    return lut
+
+
 def _filter_mask(columns, filters: list[dict], rows: np.ndarray) -> np.ndarray:
     """The rows (of ``rows``) passing every filter. Numeric operators only: a
     VBT holds numbers. Unknown fields or operators raise ValueError."""
@@ -382,7 +403,9 @@ class PointRenderSession:
             points.SetInputData(poly)
             gauss = vtk.vtkPointGaussianMapper()
             gauss.SetEmissive(True)
-            gauss.SetBoundScale(3.0)
+            # Splats drawn out to 3 σ. VTK before 9.4 (the POWER9 EGL image
+            # builds 9.3.1) names it TriangleScale.
+            (getattr(gauss, "SetBoundScale", None) or gauss.SetTriangleScale)(3.0)
             gauss.SetOpacityArray("VbtScalar")
             gauss.SetScalarOpacityFunction(self._gauss_opacity)
             gauss.SetInputData(poly)
@@ -488,15 +511,18 @@ class PointRenderSession:
             scalars = numpy_to_vtk(np.ascontiguousarray(vals), deep=True)
             scalars.SetName("VbtScalar")
             poly.GetPointData().SetScalars(scalars)
+        log = False
         if self.view.color_points:
             import vtk
-            lut = vtk.vtkColorTransferFunction()
+            ctf = vtk.vtkColorTransferFunction()
             for x, r, g, b in self.view.color_points:
-                lut.AddRGBPoint(x, r, g, b)
-            if self.view.color_log and cmin > 0:
-                lut.SetScale(1)   # VTK_CTF_LOG10: the client's log scale
+                ctf.AddRGBPoint(x, r, g, b)
+            log = self.view.color_log and cmin > 0   # the client's log scale
+            if log:
+                ctf.SetScale(1)   # VTK_CTF_LOG10: interpolated as the client does
         else:
-            lut = _build_color_tf(self.view.lut, cmin, cmax)
+            ctf = _build_color_tf(self.view.lut, cmin, cmax)
+        lut = _sampled_lut(ctf, cmin, cmax, log)
         coloured = self._data_range is not None
         for mapper in self._mappers.values():
             mapper.SetLookupTable(lut)

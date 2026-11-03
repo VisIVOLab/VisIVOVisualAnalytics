@@ -352,9 +352,16 @@ def test_the_clients_own_colours_are_drawn(tmp_path):
         points = [[1.0, 0.0, 0.0, 1.0], [100.0, 1.0, 0.0, 0.0]]
         run(s.apply_command({"type": "set_color", "field": "Mass", "points": points,
                              "log": True, "min": 1.0, "max": 100.0}))
+        # Sampled into a table, as the desktop colours: a log one here.
         lut = s._mappers[("points", False)].GetLookupTable()
-        assert lut.GetSize() == 2 and lut.GetScale() == 1
-        assert lut.GetColor(100.0) == (1.0, 0.0, 0.0)
+        assert lut.GetNumberOfTableValues() == 1024 and lut.GetScale() == 1
+        def colour(value):
+            rgb = [0.0, 0.0, 0.0]
+            lut.GetColor(value, rgb)
+            return rgb
+        assert np.allclose(colour(1.0), (0.0, 0.0, 1.0), atol=0.01)
+        assert np.allclose(colour(100.0), (1.0, 0.0, 0.0), atol=0.01)
+        assert np.allclose(colour(10.0), (0.5, 0.0, 0.5), atol=0.01)
         with pytest.raises(ValueError):
             s._apply_command_on_thread({"type": "set_color", "field": "Mass", "points": "x"})
     finally:

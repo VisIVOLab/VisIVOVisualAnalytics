@@ -366,6 +366,9 @@ void vtkWindowCatalogue3D::choosePointTableDefaults()
                 this->m_tableRows > 1000000 ? u"Gaussian splats"_s : u"Point"_s);
         if (shape >= 0)
             this->comboGeometry->setCurrentIndex(shape);
+        // Called before the combo's signal is connected: applied here, or the
+        // combo would read splats while points are drawn.
+        this->updateGeometryMode();
     }
     if (!this->comboMapColor)
         return;
