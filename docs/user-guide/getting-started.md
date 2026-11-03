@@ -133,7 +133,8 @@ the backend-side filesystem:
   - 3-D spectral cube → [Spectral cube viewer](cube-viewer)
   - FITS with time and frequency axes, or HDF5 → the dynamic-spectrum viewer
   - CSV / VOTable / IPAC / speck → [3-D catalogue viewer](catalogues-hips)
-  - VisIVO Binary Table (`.bin` + `.head`) → [VBT viewer](vbt-viewer)
+  - VisIVO Binary Table (`.bin` + `.head`) → points in the 3-D catalogue viewer,
+    a volume as a cube per field ([VBT tables](vbt-viewer))
 
   You are asked only when the file itself is ambiguous. A FITS **table** is the
   usual case: it can be a source catalogue or a table to overlay on an image,
@@ -169,7 +170,7 @@ anything else the application opens: a catalogue (CSV, VOTable, IPAC `.tbl`,
 ```bash
 VisIVOVisualAnalytics /data/WALLABY.fits      # also works with several paths
 VisIVOVisualAnalytics /data/snapshot.tbl      # catalogue → 3-D catalogue viewer
-VisIVOVisualAnalytics /data/volume.bin        # VBT → point viewer, or a cube per field
+VisIVOVisualAnalytics /data/volume.bin        # VBT → 3-D catalogue viewer, or a cube per field
 open -a "VisIVO Visual Analytics" cube.fits    # macOS
 ```
 

@@ -80,7 +80,8 @@ class RenderManager:
 
     async def create_session(self, dataset_path: str,
                              owner_token: str | None = None,
-                             hdu: int | None = None) -> RenderSession:
+                             hdu: int | None = None,
+                             factory: str | None = None) -> RenderSession:
         """Spin up a new session for ``dataset_path``. Returns it, ready to use.
 
         Raises :class:`RuntimeError` when the max-sessions cap is hit so the
@@ -95,8 +96,17 @@ class RenderManager:
             sid = uuid.uuid4().hex
             # ``hdu``: the HDU, or a VBT volume's field (app/volume_source.py);
             # None, the file's first image HDU.
-            sess = RenderSession(session_id=sid, dataset_path=dataset_path,
-                                 **({} if hdu is None else {"hdu": hdu}))
+            # ``factory``: the session class, "module:Class"; None, a cube's
+            # (point data: app.render_session.points, issue #83).
+            kwargs = {} if hdu is None else {"hdu": hdu}
+            if factory is None:
+                sess = RenderSession(session_id=sid, dataset_path=dataset_path, **kwargs)
+            elif RenderSession is RenderSessionProcess:
+                sess = RenderSessionProcess(sid, dataset_path, factory=factory, **kwargs)
+            else:
+                module, _, name = factory.partition(":")
+                cls = getattr(__import__(module, fromlist=[name]), name)
+                sess = cls(sid, dataset_path, **kwargs)
             # Bind the render session to the caller so another token holding
             # the id can't close, WebRTC-connect to or drive this stream.
             sess.owner_token = owner_token

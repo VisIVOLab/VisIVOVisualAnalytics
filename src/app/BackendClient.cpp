@@ -1133,6 +1133,8 @@ BackendCatalogueInfo BackendClient::openCatalogue(const QStringList &paths, cons
     result.yField = coord.value(QStringLiteral("y")).toString();
     result.zField = coord.value(QStringLiteral("z")).toString();
     result.coordSystem = coord.value(QStringLiteral("system")).toString(QStringLiteral("sky"));
+    result.serverSideRenderingAvailable =
+            object.value(QStringLiteral("server_side_rendering_available")).toBool(false);
     const QJsonArray fields = object.value(QStringLiteral("fields")).toArray();
     result.fields.reserve(fields.size());
     for (const QJsonValue &fieldValue : fields) {

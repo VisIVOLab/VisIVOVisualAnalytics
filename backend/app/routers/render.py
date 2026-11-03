@@ -175,8 +175,19 @@ async def create_session(
     entry = session.datasets.get(request.dataset_id)
     if entry is None:
         raise HTTPException(404, f"Unknown dataset_id {request.dataset_id!r}.")
-    if entry.get("kind") != "cube":
-        raise HTTPException(422, "Server-side rendering currently supports cube datasets only.")
+    # A VBT point table (issue #83): drawn by the point session, from the
+    # table where it lies.
+    # Opened by the VBT route, or as a catalogue (the 3-D catalogue viewer).
+    point_head = None
+    if entry.get("kind") == "vbt" and entry.get("header", {}).get("kind") == "point":
+        point_head = str(entry["head_path"])
+    elif entry.get("kind") == "catalogue" and entry.get("format") == "vbt":
+        point_head = str(entry["path"])
+    if entry.get("kind") != "cube" and point_head is None:
+        raise HTTPException(422, "Server-side rendering supports cubes and VBT point tables.")
+    if point_head is not None:
+        return await _start_session(point_head, None, token,
+                                    factory="app.render_session.points:PointRenderSession")
     # A FITS cube, or a field of a VBT volume read in place (its path a field
     # reference, app/volume_source.py, issue #83).
     path, hdu = str(entry["path"]), None
@@ -188,10 +199,17 @@ async def create_session(
     if preparing is not None:
         return preparing
 
+    return await _start_session(path, hdu, token)
+
+
+async def _start_session(path: str, hdu: int | None, token: str,
+                         factory: str | None = None) -> CreateRenderSessionResponse:
     manager = get_render_manager()
     await manager.start()   # idempotent — reaper coroutine
     try:
-        sess = await manager.create_session(dataset_path=path, owner_token=token, hdu=hdu)
+        # ``factory`` only for point data: a cube's session is the default.
+        sess = await manager.create_session(dataset_path=path, owner_token=token, hdu=hdu,
+                                            **({} if factory is None else {"factory": factory}))
     except RuntimeError as e:
         # Capacity reached.
         raise HTTPException(503, str(e))
@@ -222,6 +240,10 @@ async def session_levels(session_id: str, token: str = _auth) -> RenderLevels:
     sess = await _owned_render_session(session_id, token)
     if sess is None:
         raise HTTPException(404, "Unknown render session_id.")
+    # In its own process, the session answers after the commands sent before
+    # this request (a colour change), not with the levels of its last frame.
+    if hasattr(sess, "refresh_levels"):
+        await sess.refresh_levels()
     return _levels(sess)
 
 

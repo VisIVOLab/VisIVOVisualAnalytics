@@ -17,7 +17,7 @@ Every render session is bound to the token that created it. Another token gets 4
 
 ### `POST /v1/render/create_session`
 
-Creates a render session for a dataset already opened in the caller's VisIVO session, renders a first frame and returns it.
+Creates a render session for a dataset already opened in the caller's VisIVO session, renders a first frame and returns it. The dataset is a cube (FITS, or a field of a VBT volume), or a VBT **point table** ([Point tables](#point-tables)).
 
 The dataset path is looked up from the VisIVO session (the `X-Visivo-Session` header, as for the other dataset routes), never taken from the request, so the data-root restrictions still apply. When several tokens are configured the `X-Visivo-Session` header is mandatory (400 without it).
 
@@ -64,7 +64,7 @@ Errors:
 
 - 401: missing or invalid token.
 - 404: unknown `dataset_id` in the caller's session.
-- 422: the dataset is not a cube (only cube datasets can be rendered on the server).
+- 422: the dataset is neither a cube nor a VBT point table.
 - 503: server-side rendering is not available on this backend, or the session cap is reached (`"Server-side rendering capacity reached (N sessions active)."`).
 
 The cap is `VISIVO_RENDER_MAX_SESSIONS` (default 8) sessions per backend. A session that receives no command for `VISIVO_RENDER_IDLE_TTL_SECONDS` (default 300) is closed by a reaper that runs every 30 s; a client that keeps a still view open sends `keepalive` to stay alive. Closing the WebSocket does not close the session, so a client can reconnect.
@@ -117,6 +117,25 @@ Each element of `sessions`: `session_id`, `dataset_path`, `frames_rendered`, `by
 ```
 
 Errors: 401 (token).
+
+## Point tables
+
+A VBT point table opened with `/v1/vbt/open` (whose reply says `server_side_rendering_available`) is drawn by a point session (`app/render_session/points.py`, issue #83), as the desktop's point viewer draws it: points or emissive Gaussian splats, coloured by one column through a colour map, with the labelled bounding box, a colour bar and the orientation marker. The table is memory-mapped where it lies; the columns drawn are copied once to the GPU. At most `VISIVO_POINT_RENDER_MAX_POINTS` rows are drawn (default 100 000 000; a larger table is drawn from an even sample of its rows), and during a drag at most `VISIVO_POINT_RENDER_LOD_POINTS` (default 1 000 000).
+
+`threshold` is null; `data_min` / `data_max` are the colour column's range over the rows drawn (null in solid colour), also from `GET /v1/render/{session_id}/levels` after a colour change.
+
+The camera, viewport and encoding commands are those of a cube (`rotate`, `zoom`, `pan`, `reset`, `set_interactive`, `resize`, `jpeg_quality`); `pan` moves the camera in the view plane. The point commands:
+
+| `type` | Fields | Effect |
+|---|---|---|
+| `set_point_fields` | `x`, `y`, `z` (column names; any subset) | The columns used as coordinates. Rebuilds the points. Default: `X`/`Y`/`Z` when the table has them, else its first three columns. |
+| `set_color` | `field` (column, or null for solid colour), `lut` (colour map name), `min`, `max` (null: the column's range) | Colouring. |
+| `set_point_style` | `mode` (`"points"` or `"gaussian"`), `size` (points: pixels of the frame, 1 to 64; splats: 0.25 to 12), `intensity` (1 to 100) | Point size in the frame's pixels (a high-DPI client scales it), or the splats' radius (mean spacing × size / 8, the spacing ∛(volume / N) of the box the points fill) and opacity (min(0.9, 20 / D) × intensity / 100, within 0.05 to 0.9, D = longest side / spacing, the splats along the longest sightline), as on the desktop: a filter that cuts a slab changes neither. |
+| `set_filters` | `filters`: list of `{field, op, value}`, `op` one of `=`, `!=`, `>`, `>=`, `<`, `<=` | The rows drawn: those passing every filter. |
+| `set_background` | `name` (`"Dark"`, `"Dark gray"`, `"White"`; anything else is dark) | Background, and the colour of the box and of the colour bar's text. |
+| `set_show_outline`, `set_show_axes`, `set_show_colorbar` | `visible` (bool) | Labelled box, orientation marker, colour bar. |
+
+An unknown column or operator is refused: the command is logged and the view unchanged.
 
 ## WebRTC signalling
 

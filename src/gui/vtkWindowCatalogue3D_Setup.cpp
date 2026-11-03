@@ -2,6 +2,8 @@
 #include "ui_vtkWindowCatalogue3D.h"
 
 #include "LutScale.h"
+#include "ColorMaps.h"
+#include "LUTCustomizerDialog.h"
 #include "app/DiagnosticsManager.h"
 #include "DiagnosticsWindow.h"
 #include "Catalogue3DTableModel.h"
@@ -131,7 +133,12 @@ void vtkWindowCatalogue3D::buildControlPages()
         reprLayout->addWidget(reprHdr);
 
         this->comboGeometry = new QComboBox(reprCard);
-        this->comboGeometry->addItems({ u"Ellipsoid"_s, u"Sphere"_s, u"Point"_s, u"Cross"_s });
+        this->comboGeometry->addItems(
+                { u"Ellipsoid"_s, u"Sphere"_s, u"Point"_s, u"Cross"_s, u"Gaussian splats"_s });
+        this->comboGeometry->setItemData(
+                4, u"Emissive Gaussian splats: dense regions add up to bright, sparse ones stay "
+                   u"faint but visible (a simulation's particles)"_s,
+                Qt::ToolTipRole);
         auto *reprForm = new QFormLayout;
         reprForm->setContentsMargins(0, 0, 0, 0);
         reprForm->addRow(u"Shape"_s, this->comboGeometry);
@@ -175,6 +182,17 @@ void vtkWindowCatalogue3D::buildControlPages()
         this->comboSizeMode = new QComboBox(encCard);
         this->comboMapSize  = this->comboSizeMode;
         this->comboMapColor = new QComboBox(encCard);
+        // The generated ramp this viewer always had, or a named map (the ones
+        // the image and cube viewers offer).
+        this->comboColormap = new QComboBox(encCard);
+        // Named maps only, so that the LUT editor shows and keeps the one in
+        // use; Rainbow, this viewer's ramp, first. MinMax is a range mode.
+        this->comboColormap->addItem(u"Rainbow (default)"_s, u"Rainbow"_s);
+        for (const std::string &name : ColorMaps::GetColorMapNames()) {
+            if (name != "Rainbow" && name != "MinMax")
+                this->comboColormap->addItem(QString::fromStdString(name),
+                                             QString::fromStdString(name));
+        }
         this->comboColorScale = new QComboBox(encCard);
         for (const char *label : LutScale::modeLabels()) {
             this->comboColorScale->addItem(QString::fromUtf8(label));
@@ -190,8 +208,25 @@ void vtkWindowCatalogue3D::buildControlPages()
         encForm->setContentsMargins(0, 0, 0, 0);
         encForm->addRow(u"Size"_s,  this->comboSizeMode);
         encForm->addRow(u"Color"_s, this->comboMapColor);
+        // The colour map, and Edit: its scale and Min..Max, in the LUT editor
+        // the cube viewer uses (the scale is chosen there, not in this panel).
+        auto *colormapRow = new QWidget(encCard);
+        auto *colormapLayout = new QHBoxLayout(colormapRow);
+        colormapLayout->setContentsMargins(0, 0, 0, 0);
+        colormapLayout->setSpacing(6);
+        colormapLayout->addWidget(this->comboColormap, 1);
+        auto *editLut = new QPushButton(u"Edit"_s, colormapRow);
+        editLut->setToolTip(u"Colour range, scale (Linear, Log, Sqrt, Square, Power) and "
+                            u"colour map, over the histogram of the colour column"_s);
+        colormapLayout->addWidget(editLut, 0);
+        QObject::connect(editLut, &QPushButton::clicked, this, [this]() { this->showLutEditor(); });
+        encForm->addRow(u"Colormap"_s, colormapRow);
         encForm->addRow(u"Color scale"_s, this->comboColorScale);
         encForm->addRow(u"Power γ"_s, this->spinColorGamma);
+        // Kept as the state the editor sets; not shown.
+        encForm->setRowVisible(this->comboColorScale, false);
+        encForm->setRowVisible(this->spinColorGamma, false);
+        this->m_encForm = encForm;
         encForm->addRow(u"Scale"_s, ui->sliderScale);
 
         // Render budget (GPU point LOD): cap how many points the mappers draw so
@@ -212,6 +247,10 @@ void vtkWindowCatalogue3D::buildControlPages()
 
         QObject::connect(this->comboColorScale, &QComboBox::currentIndexChanged, this,
                          [this](int) { this->updateColorMapping(); });
+        QObject::connect(this->comboColormap, &QComboBox::currentIndexChanged, this, [this](int) {
+            this->updateColorMapping();
+            this->renderWindow->Render();
+        });
         QObject::connect(this->spinColorGamma, &QDoubleSpinBox::valueChanged, this,
                          [this](double) { this->updateColorMapping(); });
         QObject::connect(this->comboRenderBudget, &QComboBox::currentIndexChanged, this,
@@ -280,6 +319,7 @@ void vtkWindowCatalogue3D::buildControlPages()
         auto *sceneForm = new QFormLayout;
         sceneForm->setContentsMargins(0, 0, 0, 0);
         sceneForm->addRow(u"Frame"_s, this->comboFrame);
+        this->m_sceneForm = sceneForm;
         sceneLayout->addLayout(sceneForm);
         pageLayout->addWidget(sceneCard);
 
@@ -309,6 +349,7 @@ void vtkWindowCatalogue3D::buildControlPages()
         this->m_cosmologyStatus->setStyleSheet(VisivoTheme::infoKeyStyleSheet());
         cosmoLayout->addWidget(this->m_cosmologyStatus);
         pageLayout->addWidget(cosmoCard);
+        this->m_cosmoCard = cosmoCard;
 
         pageLayout->addStretch(1);
         this->m_pageViz = pageViz;
@@ -547,8 +588,25 @@ void vtkWindowCatalogue3D::ensureCatalogueDock()
             return;
         }
         this->mapColorKey = this->comboMapColor->currentData().toString();
+        // The range and the scale were for the previous column: a new column
+        // opens on its own range, and a table of points chooses Log again.
+        this->m_colorUserRange[0] = this->m_colorUserRange[1] = 0.0;
+        this->m_colorRemoteRange[0] = this->m_colorRemoteRange[1] = 0.0;
+        if (this->comboColorScale) {
+            const QSignalBlocker block(this->comboColorScale);
+            this->comboColorScale->setCurrentIndex(static_cast<int>(LutScale::Mode::Linear));
+        }
+        this->m_defaultScaleChosen = false;
         this->updateColorMapping();
         this->renderWindow->Render();
+        // An open editor shows the new column (its histogram and range), or
+        // its next Apply would set the old range on it.
+        if (this->m_lutEditor && this->m_lutEditor->isVisible()) {
+            if (this->mapColorKey == u"builtin:morphology"_s)
+                this->m_lutEditor->hide();
+            else
+                this->showLutEditor();
+        }
     });
 }
 
@@ -595,9 +653,15 @@ void vtkWindowCatalogue3D::populateMappingControls()
     this->updatingMappingControls = true;
     const auto fillAxisCombo = [this](QComboBox *combo, const QString &currentKey, const QString &defaultKey) {
         combo->clear();
-        combo->addItem(u"Computed Cartesian X"_s, QStringLiteral("computed:x"));
-        combo->addItem(u"Computed Cartesian Y"_s, QStringLiteral("computed:y"));
-        combo->addItem(u"Computed Cartesian Z"_s, QStringLiteral("computed:z"));
+        // A cartesian table's positions are its own columns, not computed.
+        const auto label = [this](const QString &axis, const QString &column) {
+            return this->m_cartesian && !column.isEmpty()
+                    ? u"%1 (position)"_s.arg(column)
+                    : u"Computed Cartesian %1"_s.arg(axis);
+        };
+        combo->addItem(label(u"X"_s, this->schema.xFieldName), QStringLiteral("computed:x"));
+        combo->addItem(label(u"Y"_s, this->schema.yFieldName), QStringLiteral("computed:y"));
+        combo->addItem(label(u"Z"_s, this->schema.zFieldName), QStringLiteral("computed:z"));
         for (const int index : this->numericRawFieldIndices) {
             combo->addItem(QStringLiteral("raw:%1").arg(this->rawHeaders.value(index)),
                            QStringLiteral("raw:%1").arg(index));
@@ -672,7 +736,9 @@ void vtkWindowCatalogue3D::setupViewerChrome()
 {
     VisivoTheme::ViewerToolbarSpec spec;
     spec.filePath = this->filepath;
-    spec.primaryTag = QStringLiteral("CAT · %1 sources").arg(this->entries.size());
+    spec.primaryTag = this->m_pointTable
+            ? QStringLiteral("VBT · %L1 rows").arg(this->m_tableRows)
+            : QStringLiteral("CAT · %1 sources").arg(this->entries.size());
     // A concatenated catalogue is several files behaving as one, which is worth
     // saying here: the path pill can only show the first of them.
     spec.secondaryTag = this->m_cataloguePaths.size() > 1
@@ -714,7 +780,8 @@ void vtkWindowCatalogue3D::setupWorkspaceDocks()
         return;
 
     const QFileInfo info(this->filepath);
-    chrome->installSessionDock(this->filepath, info.fileName(), u"catalogue"_s);
+    chrome->installSessionDock(this->filepath, info.fileName(),
+                               this->m_pointTable ? u"vbt"_s : u"catalogue"_s);
     // Design #1d: what is drawn and how it is drawn lives in the LEFT column,
     // under the dataset it belongs to.
     if (this->m_pageViz) {
@@ -806,7 +873,9 @@ void vtkWindowCatalogue3D::refreshViewerChrome()
 {
     const int count = static_cast<int>(this->entries.size());
     if (this->m_kindTag)
-        this->m_kindTag->setText(u"CAT · %1 sources"_s.arg(count));
+        this->m_kindTag->setText(this->m_pointTable
+                                         ? u"VBT · %L1 rows"_s.arg(this->m_tableRows)
+                                         : u"CAT · %1 sources"_s.arg(count));
     // The Inspector counts the same sources as the command bar, and names the
     // session the window is actually talking to — which changes when an expired
     // one is recovered.

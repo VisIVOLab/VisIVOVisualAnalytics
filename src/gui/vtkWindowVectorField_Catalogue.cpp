@@ -1,3 +1,4 @@
+#include "CatalogueFormat.h"
 #include "vtkWindowVectorField.h"
 
 #include "Catalogue3DParser.h"
@@ -62,18 +63,7 @@ using namespace Qt::StringLiterals;
 namespace {
 QString catalogueFormatForPath(const QString &path)
 {
-    const QString suffix = QFileInfo(path).suffix().trimmed().toLower();
-    if (suffix == u"csv"_s)
-        return u"csv"_s;
-    if (suffix == u"vot"_s || suffix == u"votable"_s || suffix == u"xml"_s)
-        return u"votable"_s;
-    if (suffix == u"fits"_s || suffix == u"fit"_s)
-        return u"fits"_s;
-    if (suffix == u"speck"_s)
-        return u"speck"_s;
-    if (suffix == u"tbl"_s)
-        return u"ipac"_s;
-    return u"csv"_s;
+    return visivo::catalogueFormatForPath(path);
 }
 
 // Bulk flow |⟨v⟩| in spheres of growing radius about the origin (the observer):

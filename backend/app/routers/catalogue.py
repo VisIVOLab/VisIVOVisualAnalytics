@@ -80,7 +80,18 @@ async def open_catalogue(
         num_rows=int(metadata["num_rows"]),
         fields=[CatalogueFieldInfo(**field) for field in metadata["fields"]],
         coordinate_fields=CatalogueCoordinateFields(**metadata["coordinate_fields"]),
+        server_side_rendering_available=(metadata.get("format") == "vbt"
+                                         and _server_side_rendering()),
     )
+
+
+def _server_side_rendering() -> bool:
+    """As for a cube (routers/datasets.py): the probe imports VTK, so lazily."""
+    try:
+        from ..render_session import server_side_rendering_available
+        return bool(server_side_rendering_available())
+    except Exception:   # noqa: BLE001 - no VTK: no server-side rendering
+        return False
 
 @router.post("/v1/catalogue/subset", response_model=CatalogueSubsetResponse, tags=["catalogue"])
 async def catalogue_subset(

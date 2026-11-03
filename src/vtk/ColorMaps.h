@@ -56,6 +56,8 @@ private:
     static void SetDefault(vtkLookupTable *lut);
     static void SetDefaultStep(vtkLookupTable *lut);
     static void SetMinMax(vtkLookupTable *lut);
+    /// Blue to red through the hues, the 3-D catalogue viewer's default ramp.
+    static void SetRainbow(vtkLookupTable *lut);
     static void SetGlow(vtkLookupTable *lut);
     static void SetTemperature(vtkLookupTable *lut);
     static void SetSar(vtkLookupTable *lut);

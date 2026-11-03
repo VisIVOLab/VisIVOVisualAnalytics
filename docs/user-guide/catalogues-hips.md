@@ -12,7 +12,10 @@ catalogues — millions of entries — as glyphs in Cartesian (RA / Dec /
 distance) space.
 
 Opens from **File → Open 3-D Catalogue…** (CSV or VOTable on the backend
-filesystem) or from the Command Palette (⌘K → "open 3d catalogue").
+filesystem) or from the Command Palette (⌘K → "open 3d catalogue"). A
+**VisIVO Binary Table of points** (a simulation snapshot, a mock catalogue)
+opens here too, from any route: its X/Y/Z columns are the positions, read in
+place from the binary ([VBT tables](vbt-viewer.md#point-clouds)).
 
 ### Coordinate frame & distance
 
@@ -71,9 +74,11 @@ check before drawing conclusions about clustering or LSS.
   - Options
   - When to use
 * - Geometry
-  - Ellipsoid, Sphere, Point, Cross
+  - Ellipsoid, Sphere, Point, Cross, Gaussian splats
   - Ellipsoid for axis-aware sources; Point for very dense fields where
-    glyph overhead matters.
+    glyph overhead matters; Gaussian splats for a simulation's particles —
+    emissive, so dense regions add up to bright and sparse filaments stay
+    faint but visible (the *Scale* slider sets their size).
 * - Size
   - Fixed, Major axis, LLS, Flux
   - "Major axis" scales each glyph by the catalogue's morphology size;
@@ -82,7 +87,30 @@ check before drawing conclusions about clustering or LSS.
   - Morphology class (deterministic palette) or any scalar field
   - Click the *Color mode* card and pick a scalar to drive the colour
     map; the colour bar updates live.
+* - Colormap / Edit
+  - The default rainbow ramp or a named map (Inferno, Viridis, …). *Edit*
+    opens the LUT editor of the cube viewer over the histogram of the colour
+    column: Min and Max, the scale (Linear, Log, Sqrt, Square, Power) and the
+    map
+  - Log for quantities spanning decades (a particle mass, a density).
 ```
+
+A colour bar at the right of the view shows the colours over the column's
+range (or the editor's Min..Max) on the scale in use, titled with the column.
+
+### Drawn on the backend
+
+A VBT table larger than what the window loads, on a **remote** backend that
+renders server-side (an EGL node of a cluster), is drawn on the backend: every
+row, streamed to the window, while the loaded rows stay here for hovering,
+picking, the table and statistics. *View ▸ Rendering* chooses **Auto** (on the
+backend when the table has more rows than were loaded), **Local** or
+**Remote**; the status bar says which (*Remote · all N rows*,
+*Local · n of N rows*). Shape, colour, colormap, scale, filters and the box
+drive both views the same way: Point and Gaussian splats are drawn as such on
+the backend, the other shapes as points; numeric filters apply to the backend's
+view, *contains* and the like to the loaded rows. With the **local** backend
+everything is drawn here.
 
 ### Filters & paging
 

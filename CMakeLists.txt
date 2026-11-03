@@ -470,6 +470,10 @@ set(PROJECT_SOURCES
         src/gui/theme/ScrollWheelGuard.h
         src/gui/ChannelOverlay.cpp
         src/gui/ChannelOverlay.h
+        src/gui/BackendLocality.cpp
+        src/gui/BackendLocality.h
+        src/gui/RemotePointView.cpp
+        src/gui/RemotePointView.h
         src/gui/VolumeColorbar.cpp
         src/gui/VolumeColorbar.h
         src/gui/CubeVRController.cpp
@@ -542,6 +546,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCatalogue3D.cpp
         src/gui/vtkWindowCatalogue3D_Setup.cpp
         src/gui/vtkWindowCatalogue3D_Scene.cpp
+        src/gui/vtkWindowCatalogue3D_Remote.cpp
         src/gui/vtkWindowCatalogue3D_Interaction.cpp
         src/gui/vtkWindowCatalogue3D_Data.cpp
         src/gui/vtkWindowCatalogue3D.h

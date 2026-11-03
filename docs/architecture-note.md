@@ -2060,6 +2060,11 @@ Style: font 16 pt, colour `(0.72, 0.84, 0.91)` (`#B8D6E8`), centered, Normalized
 
 ## VBT viewer (`vtkWindowVbt`)
 
+No longer opened by any route (issue #83): a VBT table of points opens in the
+3-D catalogue viewer (`vtkWindowCatalogue3D`, the backend reading it as a
+catalogue of format `vbt`), a volume as cubes. Only a backend too old to have
+that classification still sends a table here. What follows describes it.
+
 Renders a remote VBT (VisIVO Binary Table) dataset as a 3-D point cloud.
 
 Key capabilities:

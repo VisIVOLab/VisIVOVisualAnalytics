@@ -628,6 +628,13 @@ def _apply_tabular_query(
     Raises ``ValueError`` for unknown fields or operators.
     """
     _NUMERIC_OPS = {"=", "!=", ">", ">=", "<", "<="}
+    # Numeric filters and no sort (a VBT of points read in place, issue #83):
+    # one boolean mask, then only the page's rows are taken. Filtering the
+    # frame instead copied every matching row of every column per request —
+    # gigabytes on a table of a hundred million rows.
+    page = _numeric_filter_page(df, filters, sort, limit, offset, _NUMERIC_OPS)
+    if page is not None:
+        return page
     for f in filters:
         if f.field not in df.columns:
             raise ValueError(f"Unknown field: {f.field!r}")
@@ -693,6 +700,36 @@ def _apply_tabular_query(
     if limit > 0:
         df = df.iloc[:limit]
     return df, total
+
+
+def _numeric_filter_page(df, filters, sort, limit, offset, numeric_ops):
+    """``(page, total)`` when every filter compares a numeric column with a
+    number and nothing is sorted; None otherwise (the general path)."""
+    if sort and sort.field in df.columns:
+        return None
+    mask = None
+    for f in filters:
+        if f.field not in df.columns or f.op not in numeric_ops:
+            return None
+        col = df[f.field]
+        if not pd.api.types.is_numeric_dtype(col):
+            return None
+        try:
+            value = float(f.value)
+        except ValueError:
+            return None   # the general path says why
+        arr = col.to_numpy(copy=False)
+        cut = {"=": arr == value, "!=": arr != value, ">": arr > value,
+               ">=": arr >= value, "<": arr < value, "<=": arr <= value}[f.op]
+        mask = cut if mask is None else (mask & cut)
+    if mask is None:
+        total = len(df)
+        stop = total if limit <= 0 else min(total, offset + limit)
+        return df.iloc[offset:stop], total
+    rows = np.flatnonzero(mask)
+    total = int(rows.size)
+    rows = rows[offset:] if limit <= 0 else rows[offset:offset + limit]
+    return df.iloc[rows], total
 
 
 def data_roots() -> list[Path] | None:
@@ -1011,14 +1048,62 @@ def _catalogue_load_dataframe(path: Path, fmt: str) -> pd.DataFrame:
         return _read_speck(path)
     if fmt_lower in {"ipac", "tbl"}:
         return _read_ipac(path)
+    if fmt_lower == "vbt":
+        return _read_vbt_points(path)
     raise ValueError(f"Unsupported catalogue format: {fmt}")
+
+
+def _read_vbt_points(path: Path) -> pd.DataFrame:
+    """A VisIVO Binary Table of points as a catalogue (issue #83): one column
+    per field, each a view of the binary where it lies (no copy: a table of
+    hundreds of millions of rows costs no memory until its rows are read).
+    ``path`` is the ``.head`` or the binary beside it."""
+    from .volume_source import parse_vbt_header  # noqa: PLC0415
+    head = Path(str(path) if str(path).endswith(".head") else str(path) + ".head")
+    header = parse_vbt_header(head)
+    if header["kind"] != "point":
+        raise ValueError("A VBT volume opens as a cube, not as a catalogue.")
+    binary = Path(str(head)[: -len(".head")])
+    dtype = np.dtype(header["np_endian_code"])
+    expected = header["field_count"] * header["num_rows"]
+    if binary.stat().st_size // dtype.itemsize != expected:
+        raise ValueError(f"Binary size mismatch: the header describes {expected} values, "
+                         f"{binary.name} holds {binary.stat().st_size // dtype.itemsize}.")
+    table = np.memmap(binary, dtype=dtype, mode="r",
+                      shape=(header["field_count"], header["num_rows"]))
+    return pd.DataFrame({name: table[i] for i, name in enumerate(header["field_names"])},
+                        copy=False)
 
 
 def _catalogue_metadata(path: Path, fmt: str) -> tuple[pd.DataFrame, dict[str, Any]]:
     frame = _catalogue_load_dataframe(path, fmt)
     if frame.empty and len(frame.columns) == 0:
         raise ValueError("Catalogue is empty.")
+    if fmt.strip().lower() == "vbt":
+        return frame, _vbt_points_metadata(frame)
     return frame, _catalogue_metadata_from_dataframe(frame, fmt.strip().lower())
+
+
+def _vbt_points_metadata(frame: pd.DataFrame) -> dict[str, Any]:
+    """A VBT table of points is cartesian, always: positions from its X/Y/Z
+    columns, else its first three (as the former VBT viewer did). Never read
+    as sky or galactic: a particle table's L and B are a luminosity and a
+    field, not l and b."""
+    names = [str(c) for c in frame.columns]
+    by_alias = {_normalize_catalogue_field(n): n for n in names}
+    picks = [next((by_alias[a] for a in aliases if a in by_alias), "")
+             for aliases in (("X", "POSX", "PX"), ("Y", "POSY", "PY"), ("Z", "POSZ", "PZ"))]
+    if not all(picks):
+        picks = (names * 3)[:3]
+    return {
+        "kind": "catalogue",
+        "format": "vbt",
+        "num_rows": int(len(frame.index)),
+        "fields": [{"name": n, "type": _catalogue_field_type(frame[n].dtype)} for n in names],
+        "coordinate_fields": {"ra": "", "dec": "", "glon": "", "glat": "",
+                              "x": picks[0], "y": picks[1], "z": picks[2],
+                              "system": "cartesian"},
+    }
 
 
 async def _get_dask_client():
