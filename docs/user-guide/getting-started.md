@@ -169,7 +169,7 @@ anything else the application opens: a catalogue (CSV, VOTable, IPAC `.tbl`,
 ```bash
 VisIVOVisualAnalytics /data/WALLABY.fits      # also works with several paths
 VisIVOVisualAnalytics /data/snapshot.tbl      # catalogue → 3-D catalogue viewer
-VisIVOVisualAnalytics /data/volume.bin        # VBT → point or volume viewer
+VisIVOVisualAnalytics /data/volume.bin        # VBT → point viewer, or a cube per field
 open -a "VisIVO Visual Analytics" cube.fits    # macOS
 ```
 

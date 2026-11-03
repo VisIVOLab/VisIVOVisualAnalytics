@@ -93,7 +93,10 @@ void VolumeColorbar::reposition()
         labels = std::max(labels, fm.horizontalAdvance(tick.second));
     const int w = std::max({ kPad + kBarWidth + kTickLength + 4 + labels + kPad,
                              kPad + fm.horizontalAdvance(m_title) + kPad,
-                             kPad + fm.horizontalAdvance(m_thresholdCaption) + kPad });
+                             kPad + fm.horizontalAdvance(m_thresholdCaption) + kPad,
+                             // Room for any threshold caption, so the bar does
+                             // not shift as its value or the blend mode changes.
+                             kPad + fm.horizontalAdvance(QStringLiteral("threshold -8.88e-88 < Min")) + kPad });
     // From 10 % to 90 % of the view's height, as the former VBT viewer's bar
     // (vtkScalarBarActor at y 0.1, height 0.8), clear of the header controls.
     const int top = std::max(kTop, p->height() / 10);

@@ -10,7 +10,7 @@ conversion step.
 |---|---|
 | **Open** | *File → Open…* or *Data → Open VBT…* — either half of the pair, `.bin` or `.head` |
 | **Point table** | one row per object → 3-D point cloud |
-| **Volume table** | a regular grid → volume rendering |
+| **Volume table** | a regular grid → the [cube viewer](cube-viewer), one cube per field |
 
 ---
 
@@ -36,8 +36,8 @@ Z
 ```
 
 A **volume** table declares its geometry on the row-count line instead — row
-count, then `nx ny nz`, then the cell spacing — and VisIVO opens it in the
-volume renderer rather than as points.
+count, then `nx ny nz`, then the cell spacing — and VisIVO opens it as a cube
+rather than as points.
 
 ```{tip}
 Either half of the pair will do. Pick the `.head` or the `.bin` — the backend
@@ -50,8 +50,8 @@ they mean, and you are told so rather than guessed at.
 
 ## The window
 
-Both VBT viewers — points and volumes — are laid out like the image and cube
-viewers: the command bar across the top (path, a `VBT · …` tag that opens the
+The point viewer is laid out like the image and cube viewers (a volume opens in
+the cube viewer itself): the command bar across the top (path, a `VBT · …` tag that opens the
 header, ⌘K, the backend chip), **Session Data** on the left with the display
 controls, the **Inspector** on the right (Properties, Analysis, Parameters,
 Copilot) collapsed to a rail until you need it, and the status rail along the
@@ -110,22 +110,32 @@ has rather than a round number.
 
 ## Volume tables
 
-A volume VBT renders through the same GPU path as a FITS cube.
+A volume VBT opens in the **cube viewer**, with the same controls, tools and
+look as a FITS cube. Nothing is converted: the backend reads each field in place
+from the `.bin`, at its offset in the file, so opening a 512³ field costs no
+copy and no disk space.
 
-```{list-table}
-:header-rows: 1
-:widths: 24 76
-
-* - **Ray intensity**
-  - Overall opacity of the accumulated ray. Raise it to bring out faint
-    structure, lower it when the volume is a solid block of colour.
-* - **Use MIP blending**
-  - Maximum-intensity projection: each ray shows its brightest sample instead of
-    accumulating. Good for finding peaks; misleading about how much material
-    there is, because it discards everything but the maximum.
-* - **Scalar**
-  - Which field the volume renders, when the table carries several.
-```
+- **One cube per field.** The first field opens; the others are listed in
+  *Session Data* as *Field: name*, and opening one opens that field as a cube.
+  The window, the Recent entries and exported files name it `volume · field`
+  (`volumesnap63 · CDM-Density`).
+- **Axes.** The grid is a box, not the sky: its axes are X, Y and Z, in voxels
+  times the spacing the header gives, from 0 at the first voxel. *LAYERS ▸ 3D
+  axes* labels the box; the 2-D Slice steps along Z.
+- **Colours.** A field whose values are all positive and span three decades or
+  more (a density) opens on a **Log** scale; the scale and the colour range are
+  set in the LUT editor (*Edit* next to the colour map), and the colour bar
+  beside the volume shows both, with the threshold. See
+  [Threshold, colour range and the colour bar](cube-viewer.md#threshold-colour-range-and-the-colour-bar).
+- **Threshold.** It starts at the 99th percentile of the field, so 1 % of the
+  voxels are drawn; the share above it is written under the slider.
+- **Tools.** Everything that treats the grid as a 3-D field works: slices and
+  the 3-D view, isosurfaces, moments (the 0th is the projection along Z),
+  channel maps, regions, statistics, the kinematic lasso, export. Profiles
+  (*Extract Spectrum*) and *Extract PV Diagram* run along Z. The tools that need
+  a spectral axis or sky coordinates — line width, baseline, stacking,
+  polarimetry, source finding, the kinematic model, catalogue overlays — are
+  not shown ([Tools](cube-viewer.md#tools)).
 
 ---
 
@@ -141,11 +151,9 @@ carries on in the same window, with your filters and colour settings intact.
 *Re-open Dataset*, the explicit route, opens a fresh window and does not carry
 them over.
 
-```{caution}
-The **volume** viewer has no recovery path. After an expiry, changing the scalar
-field fails quietly — the selector moves and the volume on screen does not — and
-the way back is to open the file again.
-```
+A **volume** is a cube like any other on a remote backend: it is read in place
+there, a large field can be rendered server-side, and its pyramid and
+isosurfaces are built where the file is.
 
 ---
 
@@ -171,6 +179,10 @@ the way back is to open the file again.
 * - Colours differ between two datasets you meant to compare.
   - Autoscale is on, so each is normalised to itself. Turn it off and set the
     same range on both.
+* - A volume looks almost empty.
+  - The threshold is high for the scale in use. On a Linear scale a density
+    field shows only its peaks; choose Log in the LUT editor (*Edit*) and read
+    the share of voxels under the threshold slider while lowering it.
 * - Numbers look scrambled.
   - Byte order. A big-endian file read as little-endian produces finite,
     plausible-looking nonsense rather than an error — check the header's fourth

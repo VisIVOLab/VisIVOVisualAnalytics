@@ -183,7 +183,8 @@ TAP / ADQL
 
 VBT
   *VisIVO Binary Table* — efficient column-oriented binary format used
-  by some VisIVO datasets for million-row point clouds.
+  by some VisIVO datasets for million-row point clouds and for regular grids
+  (volumes), whose fields open as cubes.
 
 VLKB
   *Via Lactea Knowledge Base* — VisIVO's data catalogue / cutout service.

@@ -3525,7 +3525,7 @@ void vtkWindowCube::applyVolumeBlendMode(int idx)
     cmd[u"type"_s] = u"set_blend_mode"_s;
     cmd[u"mode"_s] = (idx == 1 || idx == 2) ? idx : 0;
     this->sendRemoteRenderStateCommand(cmd);
-    this->refreshVolumeColorbar();   // the threshold's mark is Composite's
+    this->refreshVolumeColorbar();
 }
 
 void vtkWindowCube::updateVolumeModeVisibility(bool volumeActive)
@@ -6156,8 +6156,10 @@ void vtkWindowCube::applyThresholdToPipeline(double threshold)
     // Isosurface isovalue
     this->isosurfaceFilter->SetValue(0, threshold);
 
-    // Volume opacity transfer function (Composite mode).
-    // MIP and MinIP ignore the opacity TF — this curve only affects Composite.
+    // Volume opacity transfer function, in every blend mode: Composite
+    // accumulates it along the ray, and MIP / MinIP apply it to the value they
+    // project, so a ray whose maximum (minimum) is below the threshold is
+    // transparent there too (measured on vtkGPUVolumeRayCastMapper).
     //
     // Shape: fully transparent below threshold, steep ramp just above it,
     // rapid saturation towards high values. Produces high contrast without
@@ -6242,11 +6244,11 @@ void vtkWindowCube::refreshVolumeColorbar()
             : visivo::isFieldReference(this->filepath)
                     ? visivo::fieldNames().value(this->filepath)
                     : QString());
-    // Below the threshold the opacity is zero; MIP and MinIP do not use the
-    // opacity (fillVolumeOpacity), so there the bar has no mark. The threshold
-    // and Min..Max are apart: the opacity spans the data, so voxels between a
-    // threshold and Min are drawn in Min's colour, those above Max in Max's.
-    if (this->m_volumeBlendMode == 0) {
+    // Below the threshold the opacity is zero, in every blend mode (MIP and
+    // MinIP apply it to the value they project). The threshold and Min..Max are
+    // apart: the opacity spans the data, so voxels between a threshold and Min
+    // are drawn in Min's colour, those above Max in Max's.
+    {
         const double threshold = ui->lineThreshold->text().toDouble();
         QString caption = u"threshold %1"_s.arg(QString::number(threshold, 'g', 3));
         if (threshold < lo)
@@ -6255,8 +6257,6 @@ void vtkWindowCube::refreshVolumeColorbar()
             caption += u" > Max"_s;
         this->m_volumeColorbar->setThreshold(this->volumeScalePosition(threshold, lo, hi),
                                              caption);
-    } else {
-        this->m_volumeColorbar->setThreshold(std::nullopt);
     }
     this->m_volumeColorbar->show();
 }
@@ -7971,7 +7971,8 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         auto *l = new QLabel(u"Threshold"_s, r);
         l->setStyleSheet(labelCss);
         const QString thresholdTip =
-                u"Voxels below this value are transparent in the volume (Composite); "
+                u"Voxels below this value are transparent in the volume (in MIP, a ray whose "
+                u"maximum is below it); "
                 u"the isosurface is drawn at it. The slider follows the colour map's scale "
                 u"(Edit)."_s;
         l->setToolTip(thresholdTip);
@@ -8013,8 +8014,8 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         m_thresholdShareLabel->setAlignment(Qt::AlignRight);
         m_thresholdShareLabel->setToolTip(
                 u"The share of the cube's voxels above the threshold, in the copy this "
-                u"viewer holds. Voxels below it are transparent in the volume "
-                u"(Composite); the isosurface is drawn at it."_s);
+                u"viewer holds. Voxels below it are transparent in the volume; "
+                u"the isosurface is drawn at it."_s);
         m_thresholdShareLabel->hide();   // until there is a cube to count
         disp3d->addWidget(m_thresholdShareLabel);
     }

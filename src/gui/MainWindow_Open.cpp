@@ -406,7 +406,11 @@ void MainWindow::reopenDataset(const RecentDataset &datasetRef)
         openVelocityFieldPath(dataset.id);
     } else if (dataset.type == u"catalogue"_s) {
         doOpenCataloguePath(dataset.id);
-    } else if (dataset.type == u"vbt"_s || dataset.type == u"vbt-volume"_s) {
+    } else if (dataset.type == u"vbt-volume"_s) {
+        // Recorded before VBT volumes opened as cubes (issue #83): through the
+        // classifier, which sends a volume to the cube viewer like File ▸ Open.
+        dispatchOpenForPath(dataset.id);
+    } else if (dataset.type == u"vbt"_s) {
         doOpenVbtPath(dataset.id);
     } else if (dataset.type == u"hips"_s) {
         openHiPS();
