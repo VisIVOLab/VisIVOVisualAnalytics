@@ -117,8 +117,7 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
         if (!canRemote)
             this->m_actRenderRemote->setToolTip(
                     !this->m_serverSideRendering
-                            ? u"Only a VisIVO Binary Table of points, on a backend that "
-                              u"renders server-side (EGL)"_s
+                            ? u"Only on a backend that renders server-side (EGL)"_s
                             : u"The local backend: the points are drawn on this machine"_s);
     }
     if (!this->wantsRemote()) {
@@ -227,15 +226,31 @@ void vtkWindowCatalogue3D::pushRemoteState()
     RemotePointView *view = this->m_remoteView;
 
     // Coordinates: a column ("raw:<index>" into the table's columns), or the
-    // table's own X/Y/Z ("computed:"), which for a cartesian table are its
-    // X/Y/Z columns.
+    // table's own X/Y/Z ("computed:"): a cartesian table's X/Y/Z columns, a
+    // sky catalogue's positions as the backend computes them (@x/@y/@z), from
+    // the frame, distance convention and cosmology chosen here.
     const auto column = [this](const QString &key, const QString &computed) {
         return key.startsWith(u"raw:"_s) ? this->rawHeaders.value(key.mid(4).toInt()) : computed;
     };
+    if (!this->m_cartesian) {
+        const QString frame = this->activeFrame == CoordFrame::Galactic ? u"galactic"_s
+                : this->activeFrame == CoordFrame::Supergalactic ? u"supergalactic"_s
+                                                                 : u"fk5"_s;
+        view->setState({ { u"type"_s, u"set_sky_positions"_s },
+                         { u"frame"_s, frame },
+                         { u"distance_mode"_s,
+                           this->schema.distanceMode == CatalogueDistanceMode::RedshiftSpace
+                                   ? u"redshift_space"_s
+                                   : u"comoving"_s },
+                         { u"cosmology"_s, this->m_appliedCosmologyModel } });
+    }
     view->setState({ { u"type"_s, u"set_point_fields"_s },
-                     { u"x"_s, column(this->mapXKey, this->schema.xFieldName) },
-                     { u"y"_s, column(this->mapYKey, this->schema.yFieldName) },
-                     { u"z"_s, column(this->mapZKey, this->schema.zFieldName) } });
+                     { u"x"_s, column(this->mapXKey, this->m_cartesian ? this->schema.xFieldName
+                                                                       : u"@x"_s) },
+                     { u"y"_s, column(this->mapYKey, this->m_cartesian ? this->schema.yFieldName
+                                                                       : u"@y"_s) },
+                     { u"z"_s, column(this->mapZKey, this->m_cartesian ? this->schema.zFieldName
+                                                                       : u"@z"_s) } });
 
     // Filters: the backend's view filters on numbers (a VBT holds nothing else).
     static const QStringList numericOps{ u"="_s, u"!="_s, u">"_s, u">="_s, u"<"_s, u"<="_s };

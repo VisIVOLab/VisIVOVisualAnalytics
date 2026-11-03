@@ -247,6 +247,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          // Re-apply the active coordinate frame: the parser always
                          // produces FK5/J2000 scene positions; convert to Galactic if needed.
                          this->applyFrameToEntries();
+                         this->reapplyCosmologyAfterReload();
                          ui->labelStatus->setText(result.statusMsg);
                          if (this->filterStatusLabel) {
                              this->filterStatusLabel->setText(result.statusMsg);
@@ -318,6 +319,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
 
                 // Re-apply coordinate frame for the newly appended entries
                 this->applyFrameToEntries();
+                this->reapplyCosmologyAfterReload();
 
                 const bool hasMore = this->m_currentOffset < this->m_totalCount;
                 if (this->btnLoadAll)
@@ -409,7 +411,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         // A VBT point table can be drawn on the backend (issue #83).
         this->m_cartesian = opened.coordSystem == u"cartesian"_s;
         this->m_pointTable = catalogueFormatForPath(filepath) == u"vbt"_s;
-        this->m_serverSideRendering = opened.serverSideRenderingAvailable && this->m_cartesian;
+        // Any catalogue the backend can draw (sky or cartesian), issue #83.
+        this->m_serverSideRendering = opened.serverSideRenderingAvailable;
         this->m_tableRows = opened.numRows;
         // On the FIRST open the copilot does not exist yet — it is the
         // Inspector's tab, and the Inspector is installed once this load has
