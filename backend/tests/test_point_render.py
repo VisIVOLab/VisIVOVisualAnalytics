@@ -32,6 +32,28 @@ def _table(tmp_path, n=4000):
     return str(tmp_path / "snap.bin.head")
 
 
+_RENDER_PROBE = """
+import vtk
+w = vtk.vtkRenderWindow()
+w.SetOffScreenRendering(1)
+w.SetSize(8, 8)
+w.AddRenderer(vtk.vtkRenderer())
+w.Render()
+"""
+
+
+@pytest.fixture(scope="module")
+def can_render():
+    """Drawing needs a GL context: a CI runner without a GPU or a display
+    crashes the process creating one, so ask a child process first."""
+    import subprocess
+    import sys
+    probe = subprocess.run([sys.executable, "-c", _RENDER_PROBE], capture_output=True,
+                           timeout=60)
+    if probe.returncode != 0:
+        pytest.skip("no offscreen OpenGL here (no GPU or display)")
+
+
 def _run(coro):
     return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
 
@@ -51,7 +73,7 @@ def _image(jpeg: bytes) -> np.ndarray:
     return np.asarray(Image.open(io.BytesIO(jpeg)).convert("L"), dtype=float) > 80
 
 
-def test_the_table_is_drawn_and_filters_cut_it(tmp_path):
+def test_the_table_is_drawn_and_filters_cut_it(tmp_path, can_render):
     s, run, loop = _session(_table(tmp_path))
     try:
         assert len(s._rows) == 4000
@@ -111,7 +133,7 @@ def test_drag_draws_a_sample_and_release_the_whole(tmp_path, monkeypatch):
         loop.close()
 
 
-def test_splats_after_points_cover_the_cloud(tmp_path):
+def test_splats_after_points_cover_the_cloud(tmp_path, can_render):
     """Drawn as points, then as splats: the splats cover the clusters. With
     the points mapper's vertex buffer shifted and scaled (a million points or
     more), the splats were drawn as a single dot."""
