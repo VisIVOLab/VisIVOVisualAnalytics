@@ -115,6 +115,10 @@
 #include <vtkTrivialProducer.h>
 #include <vtkVolume.h>
 #include <vtkVolumeProperty.h>
+#include <vtkTextureObject.h>
+#include <vtkRenderStepsPass.h>
+#include <vtkSSAOPass.h>
+#include <vtkRenderPass.h>
 
 #include <QFileInfo>
 #include <QActionGroup>
@@ -6798,6 +6802,9 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     this->cubeDisplaySource->SetOutput(result.cubeImageData);
     this->cubeDisplaySource->Modified();
     result.cubeImageData->Modified();
+    // The occlusion radius follows the cube's size, which the swap changed.
+    if (this->m_cinematicLighting)
+        this->applyCinematicLighting(true);
     // A lasso selection on screen was placed against the display we just replaced.
     this->refreshLassoAfterDisplaySwap();
     // …and so was any amber ROI preview box (Export Sub-Cube / Mask 3-D / noise).
@@ -7962,6 +7969,26 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         // height across the swap.
         volRow->setFixedHeight(28);
         disp3d->addWidget(volRow);
+    }
+    // Cinematic lighting (issue #101), with the blend mode it modifies.
+    QWidget *cineRow = new QWidget();
+    {
+        auto *h = new QHBoxLayout(cineRow);
+        h->setContentsMargins(0, 0, 0, 0);
+        auto *cb = new QCheckBox(u"Cinematic lighting"_s, cineRow);
+        cb->setStyleSheet(labelCss);
+        cb->setToolTip(u"Lights the volume from its own gradients and darkens its creases "
+                       u"and those of the isosurface (ambient occlusion): the 3-D shape reads "
+                       u"better in a figure or a talk. Colours, threshold and colour bar keep "
+                       u"their meaning; best with Composite blending."_s);
+        cb->setChecked(this->m_cinematicLighting);
+        cb->setProperty("localTip", cb->toolTip());
+        this->m_cinematicCheck = cb;
+        QObject::connect(cb, &QCheckBox::toggled, this,
+                         [this](bool on) { this->applyCinematicLighting(on); });
+        h->addWidget(cb, 1);
+        cineRow->setFixedHeight(28);
+        disp3d->addWidget(cineRow);
     }
     {   // Threshold: label + mono value, then the slider full-width.
         auto *r = new QWidget();
@@ -15305,7 +15332,12 @@ void vtkWindowCube::handle3dPickEvent(const std::array<int, 2> &eventPos)
 
     int pos[2] = { eventPos[0], eventPos[1] };   // captured at the release (queued call)
     auto picker = vtkSmartPointer<vtkPropPicker>::New();
+    // The hardware selector reads prop ids back from the colours drawn: never
+    // through the occlusion pass, which darkens them.
+    vtkSmartPointer<vtkRenderPass> pass = renderer->GetPass();
+    renderer->SetPass(nullptr);
     const bool hitProp = (picker->Pick(pos[0], pos[1], 0., renderer) != 0);
+    renderer->SetPass(pass);
 
     double world[3] = { 0., 0., 0. };
     bool haveWorld = false;
@@ -15887,4 +15919,54 @@ void vtkWindowCube::pushVolumeTransferFunctionsToRemote()
     command[u"color"_s] = color;
     command[u"opacity"_s] = opacity;
     this->sendRemoteRenderStateCommand(command);
+}
+
+// ── Cinematic lighting (issue #101) ──────────────────────────────────────────
+
+void vtkWindowCube::applyCinematicLighting(bool on)
+{
+    this->m_cinematicLighting = on;
+    vtkRenderWindow *win = ui->vtkCube->renderWindow();
+    vtkRenderer *renderer = win ? win->GetRenderers()->GetFirstRenderer() : nullptr;
+    if (!renderer)
+        return;
+    // Shading from the gradients of the data: the shape of the emission.
+    if (vtkVolumeProperty *prop = this->volume->GetProperty()) {
+        // Mostly ambient: the colours keep their brightness (the colour bar
+        // still reads them) and the diffuse part shapes without striping a
+        // cube along its channels, whose gradients are coarse.
+        prop->SetShade(on ? 1 : 0);
+        prop->SetAmbient(on ? 0.6 : 1.0);
+        prop->SetDiffuse(on ? 0.5 : 0.0);
+        prop->SetSpecular(on ? 0.1 : 0.0);
+    }
+    if (!on) {
+        renderer->SetPass(nullptr);
+    } else {
+        // Ambient occlusion in screen space, on the first surface the rays meet
+        // above a quarter opacity (VTK's volume SSAO, Kitware 2023). Its radius
+        // follows the size of the cube on screen.
+        double b[6];
+        this->cubeDisplaySource->Update();
+        vtkImageData *img =
+                vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
+        if (img)
+            img->GetBounds(b);
+        else
+            this->volume->GetBounds(b);
+        const double diag = std::max(
+                1.0, std::sqrt((b[1] - b[0]) * (b[1] - b[0]) + (b[3] - b[2]) * (b[3] - b[2])
+                               + (b[5] - b[4]) * (b[5] - b[4])));
+        vtkNew<vtkRenderStepsPass> steps;
+        vtkNew<vtkSSAOPass> ssao;
+        ssao->SetRadius(0.03 * diag);
+        ssao->SetBias(0.001 * diag);
+        ssao->SetKernelSize(128);
+        ssao->BlurOn();
+        ssao->SetVolumeOpacityThreshold(0.25);
+        ssao->SetDepthFormat(vtkTextureObject::Fixed32);
+        ssao->SetDelegatePass(steps);
+        renderer->SetPass(ssao);
+    }
+    win->Render();
 }

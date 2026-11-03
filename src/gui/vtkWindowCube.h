@@ -1122,6 +1122,12 @@ protected:
     /// Full user-interaction path: update state, apply pipeline, Render.
     void applyColorMapByName(const QString &name);
     void applyVolumeBlendMode(int idx);  // 0=Composite, 1=MIP, 2=MinIP
+    /// Cinematic lighting of the 3-D volume (issue #101): shading from the
+    /// data's gradients and screen-space ambient occlusion. A look for figures
+    /// and talks; colours, threshold and colour bar keep their meaning.
+    void applyCinematicLighting(bool on);
+    bool m_cinematicLighting{ false };
+    QPointer<QCheckBox> m_cinematicCheck;   ///< local views only (a remote one is not lit)
     void updateVolumeModeVisibility(bool volumeActive);
 
     // ── Moment card state machine ─────────────────────────────────────────────
