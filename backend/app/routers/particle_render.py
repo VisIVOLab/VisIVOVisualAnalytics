@@ -11,6 +11,7 @@ so its brightness does not flicker from frame to frame.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import logging
 import math
@@ -337,8 +338,12 @@ def _run(task_id: str, entry: dict, req: ParticleRenderRequest, stop: threading.
                 (out / "request.json").write_text(req.model_dump_json())
             TASKS.update(task_id,
                          progress=min(0.99, 0.05 + 0.95 * (i + 1) / len(req.cameras)))
-    except asyncio.CancelledError:
-        # Nobody will fetch them: the frames go with the task.
+        # Stopped during the last frame: not published as done.
+        if stop.is_set():
+            raise asyncio.CancelledError
+    except BaseException:
+        # Cancelled, deleted (which may have removed the folder under the
+        # frame being written) or failed: nobody will fetch them.
         shutil.rmtree(out, ignore_errors=True)
         raise
     return {"frames": len(req.cameras), "width": req.width, "height": req.height,
@@ -360,7 +365,12 @@ def _auto_exposure(light: np.ndarray) -> float:
 # projected and composited. Keyed by everything that shapes them.
 _PREPARED: OrderedDict[str, dict] = OrderedDict()
 _PREPARED_KEEP = 2
+# One preview at a time: the asyncio lock queues the requests, the thread
+# lock serialises the work itself, which runs on after its request is
+# abandoned (a client gone): the next waits for it, and _PREPARED is never
+# changed by two threads.
 _PREVIEW_LOCK = asyncio.Lock()
+_PREVIEW_WORK = threading.Lock()
 _PARTICLE_FIELDS = ("dataset_id", "x", "y", "z", "sky", "filters", "colour", "radius_field",
                     "radius_scale", "neighbours", "intensity_field", "intensity_log10",
                     "intensity_power", "mode", "colour_by", "velocity")
@@ -410,6 +420,10 @@ async def particle_render_preview(request: ParticlePreviewRequest, token: str = 
         raise HTTPException(422, "Ray-traced rendering needs a table of points.")
 
     def frame() -> tuple[bytes, float, float]:
+        with _PREVIEW_WORK:
+            return draw()
+
+    def draw() -> tuple[bytes, float, float]:
         t0 = time.time()
         particles = _sampled(_prepared(entry, request, token), request.max_particles)
         rgb, _, exposure = _frame(particles, request, request.cameras[0], request.width,
@@ -453,6 +467,10 @@ async def particle_render_particles(request: ParticleDataRequest, token: str = _
         raise HTTPException(422, "Ray-traced rendering needs a table of points.")
 
     def pack() -> tuple[bytes, int, str, int]:
+        with _PREVIEW_WORK:
+            return packed()
+
+    def packed() -> tuple[bytes, int, str, int]:
         n_all = len(_prepared(entry, request, token)["positions"])
         particles = _sampled(_prepared(entry, request, token), request.max_particles)
         step = -(-n_all // request.max_particles) if n_all > request.max_particles else 1
@@ -460,8 +478,11 @@ async def particle_render_particles(request: ParticleDataRequest, token: str = _
         if request.mode == "projected":
             weight = emission_weights(particles["intensity"], radius, "per_particle")
             value = particles.get("value")
-            columns = [pos, radius[:, None], weight[:, None],
-                       (np.zeros(len(pos)) if value is None else value)[:, None]]
+            # As projected_maps reads it: a NaN would blank, on the GPU, every
+            # pixel the particle covers.
+            value = (np.zeros(len(pos)) if value is None
+                     else np.nan_to_num(np.asarray(value, dtype=np.float32)))
+            columns = [pos, radius[:, None], weight[:, None], value[:, None]]
             names = "x,y,z,r,w,v"
         else:
             weight = emission_weights(particles["intensity"], radius, request.quantity)
@@ -494,14 +515,23 @@ async def create_particle_render_task(request: ParticleRenderRequest, token: str
     _STOPS[task.task_id] = stop
 
     async def _runner() -> None:
+        work = asyncio.ensure_future(
+            asyncio.to_thread(_run, task.task_id, entry, request, stop))
+        # The record lives as long as the thread does, which a cancellation
+        # does not stop before the frame it is on is done.
+        TASKS.update(task.task_id, work_handle=work)
         try:
-            result = await asyncio.to_thread(_run, task.task_id, entry, request, stop)
+            result = await asyncio.shield(work)
             TASKS.update(task.task_id, status="completed", progress=1.0,
                          result={"valid": True, "error": "", **result})
         except asyncio.CancelledError:
             stop.set()
             TASKS.update(task.task_id, status="cancelled", progress=0.0,
                          error="Cancelled by client.")
+            # The stop flag stays findable (a delete sets it again) until the
+            # thread has ended and removed what it wrote.
+            with contextlib.suppress(BaseException):
+                await work
         except Exception as exc:   # noqa: BLE001 - reported to the client
             logger.warning("[particle-render] %s failed: %s", task.task_id, exc)
             TASKS.update(task.task_id, status="failed", progress=1.0, error=str(exc))
@@ -577,6 +607,17 @@ async def particle_render_light_fits(task_id: str, token: str = _auth) -> Respon
     buf = io.BytesIO()
     hdu.writeto(buf)
     return Response(buf.getvalue(), media_type="application/fits")
+
+
+def _on_evict(record) -> None:
+    # A render nobody deleted: its frames go with its record. Off the
+    # registry's lock, which the listener is called under.
+    if record.operation == "particle_render":
+        threading.Thread(target=shutil.rmtree, args=(_render_dir(record.task_id),),
+                         kwargs={"ignore_errors": True}, daemon=True).start()
+
+
+TASKS.add_eviction_listener(_on_evict)
 
 
 @router.delete("/v1/particle_render/{task_id}")

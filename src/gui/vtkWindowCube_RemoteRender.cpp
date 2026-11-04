@@ -128,6 +128,7 @@
 #include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QLabel>
+#include <QLocale>
 #include <QList>
 #include <QMetaObject>
 #include <QMenu>
@@ -601,7 +602,7 @@ void vtkWindowCube::adoptRemoteLevels(const QJsonObject &answer)
         this->lowerBound = b.lower;
         this->upperBound = b.upper;
         const QSignalBlocker blockLine(ui->lineThreshold);
-        ui->lineThreshold->setText(QString::number(value));
+        ui->lineThreshold->setText(visivo::thresholdText(value));
         this->m_initialThresholdApplied = true;
         qDebug().noquote() << "[remote-render] threshold from the backend:" << value;
     }

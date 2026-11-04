@@ -190,7 +190,9 @@ def _opacity_floor(vmin: float, vmax: float, threshold: float) -> float | None:
     span = vmax - vmin
     if span <= 0.0:
         return None
-    threshold = max(vmin, min(vmax, threshold))
+    if threshold > vmax:
+        return vmax   # nothing reaches the threshold: all transparent
+    threshold = max(vmin, threshold)
     return max(vmin, threshold - 0.01 * span)
 
 
@@ -252,9 +254,8 @@ def _build_opacity_tf(vmin: float, vmax: float, threshold: float):
         vmax                   → 1.0
 
     Reproducing it byte-for-byte means the SSR and local volumes show
-    the same opacity vs intensity. ``threshold`` is clamped to
-    ``[vmin, vmax]``; out-of-range values fall back to a gentle linear
-    ramp, matching the local fallback path.
+    the same opacity vs intensity. A ``threshold`` below ``vmin`` is taken as
+    ``vmin``; above ``vmax`` everything is transparent, as on the desktop.
     """
     import vtk
     span = vmax - vmin
@@ -263,8 +264,14 @@ def _build_opacity_tf(vmin: float, vmax: float, threshold: float):
         tf.AddPoint(vmin, 0.0)
         tf.AddPoint(vmax, 1.0)
         return tf
+    if threshold > vmax:
+        # Nothing in the data reaches it: nothing is drawn, as on the desktop
+        # (a noise threshold can lie above a sampled maximum).
+        tf.AddPoint(vmin, 0.0)
+        tf.AddPoint(vmax, 0.0)
+        return tf
     knee = _opacity_floor(vmin, vmax, threshold)
-    threshold = max(vmin, min(vmax, threshold))
+    threshold = max(vmin, threshold)
     tf.AddPoint(vmin,                            0.00)
     tf.AddPoint(knee,                            0.00)
     tf.AddPoint(threshold,                       0.25)

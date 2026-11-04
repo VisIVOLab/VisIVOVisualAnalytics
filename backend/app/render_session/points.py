@@ -550,6 +550,39 @@ class PointRenderSession:
             cam.SetPosition(*(pos + shift))
         elif ctype == "reset":
             self._renderer.ResetCamera()
+        elif ctype == "set_camera" and cam is not None:
+            # A camera given whole: the desktop's ray-traced view, turned
+            # meanwhile, hands it back.
+            # Every value checked before the camera changes; a malformed one
+            # is a ValueError (refused, the stream kept), never a TypeError.
+            try:
+                vectors = [np.asarray(command.get(k), dtype=float).reshape(3)
+                           for k in ("position", "focal_point", "view_up")]
+                angle = command.get("view_angle")
+                angle = None if angle is None else float(angle)
+                scale = command.get("parallel_scale")
+                scale = None if scale is None else float(scale)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("set_camera needs three numbers for position, focal_point "
+                                 "and view_up, and numbers for view_angle and "
+                                 "parallel_scale.") from exc
+            if not all(np.isfinite(v).all() for v in vectors):
+                raise ValueError("set_camera needs a finite position, focal_point and view_up.")
+            sight = vectors[1] - vectors[0]
+            if not np.linalg.norm(sight) > 0 or not np.linalg.norm(np.cross(sight, vectors[2])) > 0:
+                raise ValueError("set_camera: the position is the focal point, or the view up "
+                                 "lies along the line of sight.")
+            cam.SetPosition(*vectors[0])
+            cam.SetFocalPoint(*vectors[1])
+            cam.SetViewUp(*vectors[2])
+            cam.OrthogonalizeViewUp()
+            if angle is not None and 0.0 < angle < 180.0:
+                cam.SetViewAngle(angle)
+            if "parallel" in command:
+                cam.SetParallelProjection(bool(command["parallel"]))
+            if scale is not None and scale > 0:
+                cam.SetParallelScale(scale)
+            self._renderer.ResetCameraClippingRange()
         elif ctype == "set_interactive":
             self.view.interactive = bool(command.get("value", False))
             self._apply_style_on_thread()

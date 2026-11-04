@@ -246,6 +246,19 @@ QList<QVariantMap> vtkWindowCatalogue3D::pointViewCommands(bool *textFiltersSkip
     const auto column = [this](const QString &key, const QString &computed) {
         return key.startsWith(u"raw:"_s) ? this->rawHeaders.value(key.mid(4).toInt()) : computed;
     };
+    // A computed axis by its own key: X may be mapped to the table's Y. Any
+    // other key, its own axis, as the local view reads it (validatedAxisKey).
+    const auto position = [this](const QString &key, QChar own) -> QString {
+        const QChar axis = key == u"computed:x"_s || key == u"computed:y"_s
+                        || key == u"computed:z"_s
+                ? key.back()
+                : own;
+        if (axis == u'y')
+            return this->m_cartesian ? this->schema.yFieldName : u"@y"_s;
+        if (axis == u'z')
+            return this->m_cartesian ? this->schema.zFieldName : u"@z"_s;
+        return this->m_cartesian ? this->schema.xFieldName : u"@x"_s;
+    };
     if (!this->m_cartesian) {
         const QString frame = this->activeFrame == CoordFrame::Galactic ? u"galactic"_s
                 : this->activeFrame == CoordFrame::Supergalactic ? u"supergalactic"_s
@@ -259,12 +272,9 @@ QList<QVariantMap> vtkWindowCatalogue3D::pointViewCommands(bool *textFiltersSkip
               { u"cosmology"_s, this->m_appliedCosmologyModel } });
     }
     add({ { u"type"_s, u"set_point_fields"_s },
-          { u"x"_s, column(this->mapXKey, this->m_cartesian ? this->schema.xFieldName
-                                                            : u"@x"_s) },
-          { u"y"_s, column(this->mapYKey, this->m_cartesian ? this->schema.yFieldName
-                                                            : u"@y"_s) },
-          { u"z"_s, column(this->mapZKey, this->m_cartesian ? this->schema.zFieldName
-                                                            : u"@z"_s) } });
+          { u"x"_s, column(this->mapXKey, position(this->mapXKey, u'x')) },
+          { u"y"_s, column(this->mapYKey, position(this->mapYKey, u'y')) },
+          { u"z"_s, column(this->mapZKey, position(this->mapZKey, u'z')) } });
 
     // Filters: the backend's view filters on numbers (a VBT holds nothing else).
     static const QStringList numericOps{ u"="_s, u"!="_s, u">"_s, u">="_s, u"<"_s, u"<="_s };
@@ -640,7 +650,8 @@ void vtkWindowCatalogue3D::setRaytraced(bool on)
             this->m_rtCard->hide();
         if (this->m_rtView && this->m_renderStack
             && this->m_renderStack->currentWidget() == this->m_rtView) {
-            // Back to the view the camera was turned to.
+            // Back to the view the camera was turned to: this window's, and
+            // the backend's when that is the view shown.
             const QJsonObject cam = this->m_rtView->camera();
             if (!cam.isEmpty()) {
                 const auto v = [&](const QString &k, int i) {
@@ -651,9 +662,22 @@ void vtkWindowCatalogue3D::setRaytraced(bool on)
                 c->SetFocalPoint(v(u"focal_point"_s, 0), v(u"focal_point"_s, 1),
                                  v(u"focal_point"_s, 2));
                 c->SetViewUp(v(u"view_up"_s, 0), v(u"view_up"_s, 1), v(u"view_up"_s, 2));
+                // The projection too: a parallel view's zoom is its scale.
+                if (cam.contains(u"view_angle"_s))
+                    c->SetViewAngle(cam.value(u"view_angle"_s).toDouble(30.0));
+                if (cam.contains(u"parallel"_s))
+                    c->SetParallelProjection(cam.value(u"parallel"_s).toBool() ? 1 : 0);
+                if (cam.value(u"parallel_scale"_s).toDouble() > 0.0)
+                    c->SetParallelScale(cam.value(u"parallel_scale"_s).toDouble());
                 this->renderer->ResetCameraClippingRange();
                 if (this->renderWindow)
                     this->renderWindow->Render();
+                if (this->m_remoteView && this->m_remoteWidget
+                    && this->m_renderStack->widget(this->m_renderPage) == this->m_remoteWidget) {
+                    QVariantMap command = cam.toVariantMap();
+                    command.insert(u"type"_s, u"set_camera"_s);
+                    this->m_remoteView->send(command);
+                }
             }
             this->showRenderPage(this->m_renderPage);
             this->refreshColorbar();

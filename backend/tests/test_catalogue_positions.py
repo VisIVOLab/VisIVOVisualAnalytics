@@ -83,6 +83,15 @@ def test_positions_on_the_sky_and_in_other_frames():
         sky_positions(frame, "RA", "DEC", frame_name="icrs")
 
 
+
+@pytest.mark.parametrize("frame_name", ["fk5", "galactic", "supergalactic"])
+def test_a_dec_past_a_pole_leaves_out_its_row_only(frame_name):
+    frame = pd.DataFrame({"RA": [0.0, 10.0, 90.0], "DEC": [0.0, 95.0, 0.0],
+                          "DIST": [100.0, 100.0, 100.0]})
+    xyz = sky_positions(frame, "RA", "DEC", frame_name=frame_name)
+    assert np.isnan(xyz[1]).all()
+    assert np.allclose(np.linalg.norm(xyz[[0, 2]], axis=1), 100.0)
+
 def _sky_csv(tmp_path, n=2000):
     rng = np.random.default_rng(3)
     frame = pd.DataFrame({"NAME": [f"G{i}" for i in range(n)],

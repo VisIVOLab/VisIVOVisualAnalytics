@@ -312,12 +312,15 @@ void MainWindow::reopenDataset(const RecentDataset &datasetRef)
     // entry of unknown backend (saved before backends were recorded) is tried
     // anywhere, as before. Between --backend windows the name is not compared:
     // by default it is host:port, and a tunnel's port changes from run to run.
+    // A cluster window and a --backend one are never each other's, whatever
+    // their names.
     if (dataset.source != u"skava"_s && dataset.backendKnown) {
         const Settings::SessionBackend *session = Settings::sessionBackend();
         const bool elsewhere =
                 dataset.backend.isEmpty()   ? session != nullptr
-                : dataset.backendIsCluster  ? !session || session->name != dataset.backend
-                                            : session == nullptr;
+                : dataset.backendIsCluster  ? !session || !session->ownsClusterJob
+                                                      || session->name != dataset.backend
+                                            : !session || session->ownsClusterJob;
         if (elsewhere) {
             this->reopenOnItsBackend(dataset);
             return;

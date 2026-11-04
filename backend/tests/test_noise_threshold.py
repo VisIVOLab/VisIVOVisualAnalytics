@@ -118,3 +118,13 @@ def test_more_samples_than_voxels_do_not_break_the_rule():
     rng = np.random.default_rng(11)
     t = noise_threshold(_noise(rng, n=5000), 150)
     assert t is not None and np.isfinite(t)
+
+
+def test_the_cut_does_not_depend_on_where_the_blanks_are_in_the_sample():
+    # A slab of blanks read as zero first or last: the same threshold (the
+    # quantization check looked at the first values, zeros included).
+    noise = np.random.default_rng(43).standard_normal(200_000).astype(np.float32)
+    zeros = np.zeros(800_000, np.float32)
+    first = noise_threshold(np.concatenate([zeros, noise]), 1_000_000)
+    last = noise_threshold(np.concatenate([noise, zeros]), 1_000_000)
+    assert first == pytest.approx(last, rel=1e-6)

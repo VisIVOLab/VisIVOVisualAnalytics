@@ -17,4 +17,5 @@ private slots:
     void theRemoteRangeWidensThePreviewsBounds();
     void theBackendsThresholdIsNeverClamped();
     void sliderPositionStaysInRange();
+    void theThresholdFieldShowsTheFloatItHolds();
 };

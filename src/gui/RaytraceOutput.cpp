@@ -39,12 +39,19 @@ using namespace Qt::Literals::StringLiterals;
 
 namespace {
 
+/// A manager owned by the application, for the requests that make and delete
+/// renders: the widget may be going, and a render made for nobody would run on.
+QNetworkAccessManager *appManager()
+{
+    static QNetworkAccessManager *nam = new QNetworkAccessManager(QCoreApplication::instance());
+    return nam;
+}
+
 /// Removes a render's files on the backend (and stops it, if it still runs).
-/// Through a manager owned by the application: the widget may be going.
 void deleteRender(const QString &backendUrl, const QString &token, const QString &sessionId,
                   const QString &taskId)
 {
-    static QNetworkAccessManager *nam = new QNetworkAccessManager(QCoreApplication::instance());
+    QNetworkAccessManager *nam = appManager();
     QUrl url(backendUrl);
     url.setPath(u"/v1/particle_render/"_s + taskId);
     QNetworkRequest req(url);
@@ -158,8 +165,10 @@ QSize RaytraceOutput::imageSize() const
 }
 
 QNetworkReply *RaytraceOutput::send(const QString &verb, const QString &path,
-                                    const QByteArray &body)
+                                    const QByteArray &body, QNetworkAccessManager *nam)
 {
+    if (!nam)
+        nam = m_nam;
     QUrl url(m_source.backendUrl);
     url.setPath(path);
     QNetworkRequest req(url);
@@ -169,10 +178,10 @@ QNetworkReply *RaytraceOutput::send(const QString &verb, const QString &path,
     if (!body.isEmpty())
         req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_s);
     if (verb == u"GET"_s)
-        return m_nam->get(req);
+        return nam->get(req);
     if (verb == u"DELETE"_s)
-        return m_nam->deleteResource(req);
-    return m_nam->post(req, body);
+        return nam->deleteResource(req);
+    return nam->post(req, body);
 }
 
 QImage RaytraceOutput::annotated(const QByteArray &png, const QJsonObject &camera) const
@@ -284,23 +293,33 @@ void RaytraceOutput::submit(const QList<QJsonObject> &cameras, bool movie)
         req.insert(u"tone"_s, m_source.tone(movie ? (keepExposure > 0.0 ? keepExposure : view)
                                                   : 0.0));
     QNetworkReply *reply = send(u"POST"_s, u"/v1/tasks/particle_render"_s,
-                                QJsonDocument(req).toJson(QJsonDocument::Compact));
+                                QJsonDocument(req).toJson(QJsonDocument::Compact), appManager());
     setStage(Stage::Rendering,
              movie ? u"Ray-traced: rendering %1 frames of %2 × %3…"_s.arg(cameras.size())
                              .arg(px.width()).arg(px.height())
                    : u"Ray-traced: rendering %1 × %2…"_s.arg(px.width()).arg(px.height()));
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+    const QPointer<RaytraceOutput> self(this);
+    const quint64 generation = m_generation;
+    const QString backendUrl = m_source.backendUrl, token = m_source.token,
+                  sessionId = m_source.sessionId;
+    connect(reply, &QNetworkReply::finished, reply, [=]() {
         reply->deleteLater();
+        const QString taskId = reply->error() == QNetworkReply::NoError
+                ? QJsonDocument::fromJson(reply->readAll()).object().value(u"task_id"_s).toString()
+                : QString();
+        if (!self || generation != self->m_generation) {
+            // Cancelled, replaced or closed before it existed: stopped and
+            // removed there.
+            if (!taskId.isEmpty())
+                deleteRender(backendUrl, token, sessionId, taskId);
+            return;
+        }
         if (reply->error() != QNetworkReply::NoError) {
-            setStage(Stage::Idle, u"The render could not start: "_s + errorOf(reply));
+            self->setStage(Stage::Idle, u"The render could not start: "_s + errorOf(reply));
             return;
         }
-        m_taskId = QJsonDocument::fromJson(reply->readAll()).object().value(u"task_id"_s).toString();
-        if (m_stage != Stage::Rendering) {
-            forgetTask();   // cancelled before it existed: stopped and removed there
-            return;
-        }
-        m_pollTimer->start();
+        self->m_taskId = taskId;
+        self->m_pollTimer->start();
     });
 }
 
@@ -310,9 +329,9 @@ void RaytraceOutput::poll()
         return;
     QNetworkReply *reply = send(u"GET"_s, u"/v1/tasks/"_s + m_taskId);
     m_pollTimer->stop();   // the next poll once this one answers
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation = m_generation]() {
         reply->deleteLater();
-        if (m_stage != Stage::Rendering)
+        if (m_stage != Stage::Rendering || generation != m_generation)
             return;
         if (reply->error() != QNetworkReply::NoError) {
             setStage(Stage::Idle, u"The render was lost: "_s + errorOf(reply));
@@ -350,8 +369,11 @@ void RaytraceOutput::finished(const QJsonObject &result)
     }
     m_autoExposure = result.value(u"exposure"_s).toDouble();
     QNetworkReply *reply = send(u"GET"_s, u"/v1/particle_render/%1/frames/0"_s.arg(m_taskId));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, summary]() {
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, summary, generation = m_generation]() {
         reply->deleteLater();
+        if (generation != m_generation)
+            return;
         if (reply->error() != QNetworkReply::NoError) {
             setStage(Stage::Idle, u"The still could not be fetched: "_s + errorOf(reply));
             return;
@@ -387,8 +409,10 @@ void RaytraceOutput::regrade()
                                 QJsonDocument(m_source.tone(m_autoExposure))
                                         .toJson(QJsonDocument::Compact));
     m_regradeReply = reply;
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation = m_generation]() {
         reply->deleteLater();
+        if (generation != m_generation)
+            return;
         if (reply->error() != QNetworkReply::NoError) {
             if (reply->error() != QNetworkReply::OperationCanceledError)
                 emit message(u"Could not grade the still: "_s + errorOf(reply));
@@ -411,9 +435,10 @@ void RaytraceOutput::fetchFrame(int index)
     m_progress->setValue(1000 * index / std::max(1, m_frames));
     QNetworkReply *reply = send(u"GET"_s, u"/v1/particle_render/%1/frames/%2"_s.arg(m_taskId)
                                                   .arg(index));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, index]() {
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, index, generation = m_generation]() {
         reply->deleteLater();
-        if (m_stage != Stage::Downloading)
+        if (m_stage != Stage::Downloading || generation != m_generation)
             return;
         if (reply->error() != QNetworkReply::NoError) {
             setStage(Stage::Idle, u"Frame %1 could not be fetched: "_s.arg(index) + errorOf(reply));
@@ -522,6 +547,7 @@ void RaytraceOutput::cancel()
 
 void RaytraceOutput::forgetTask()
 {
+    ++m_generation;   // the replies on their way are of the task forgotten
     if (!m_taskId.isEmpty())
         deleteRender(m_source.backendUrl, m_source.token, m_source.sessionId, m_taskId);
     m_taskId.clear();

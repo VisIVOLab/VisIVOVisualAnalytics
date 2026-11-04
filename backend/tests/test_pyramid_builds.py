@@ -151,3 +151,124 @@ def test_the_lock_holder_removes_what_killed_builds_left(pyramid_dir):
     assert not stale.exists()
     assert live.exists()
     assert out.exists()
+
+
+class _Ended:
+    """A build process that has already ended."""
+    pid = None
+
+    def __init__(self, exitcode=0):
+        self.exitcode = exitcode
+
+    def is_alive(self):
+        return False
+
+    def join(self, timeout=None):
+        pass
+
+
+def test_a_build_ending_while_it_is_polled_is_ready_not_failed(pyramid_dir, monkeypatch):
+    # Published between the first readiness check and the look at its
+    # process: done, not "failed" (the desktop would stop waiting).
+    from app.brick_pyramid import build_pyramid
+    path = pyramid_dir / "cube.fits"
+    fits.PrimaryHDU(np.ones((24, 24, 24), np.float32)).writeto(path)
+    out = default_pyramid_path(path, 0)
+    build_pyramid(path, out)
+    pyramid_builds._builds[str(out)] = pyramid_builds._Build(
+        _Ended(0), pyramid_builds._progress_path(out), 0)
+    calls = []
+    real = pyramid_builds.pyramid_ready
+
+    def first_says_not_yet(p, hdu):
+        calls.append(1)
+        return False if len(calls) == 1 else real(p, hdu)
+
+    monkeypatch.setattr(pyramid_builds, "pyramid_ready", first_says_not_yet)
+    assert ensure_pyramid(str(path), 0).state == "ready"
+    assert str(out) not in pyramid_builds._builds
+
+
+def test_a_build_finished_elsewhere_while_it_waited_for_the_lock_is_kept(pyramid_dir):
+    # The child takes the lock after another backend published the pyramid:
+    # it neither rebuilds it nor replaces the file.
+    from app.brick_pyramid import build_pyramid
+    path = pyramid_dir / "cube.fits"
+    fits.PrimaryHDU(np.ones((24, 24, 24), np.float32)).writeto(path)
+    out = default_pyramid_path(path, 0)
+    build_pyramid(path, out)
+    inode = out.stat().st_ino
+    pyramid_builds._build_child(str(path), str(out), 0, str(pyramid_builds._progress_path(out)))
+    assert out.stat().st_ino == inode
+
+
+def test_a_file_system_that_cannot_lock_does_not_wait_for_ever(pyramid_dir, monkeypatch):
+    import errno
+    if pyramid_builds.fcntl is None:
+        pytest.skip("no fcntl")
+
+    def no_locks(fd, op):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    path = pyramid_dir / "cube.fits"
+    fits.PrimaryHDU(np.ones((8, 8, 8), np.float32)).writeto(path)
+    out = default_pyramid_path(path, 0)
+    monkeypatch.setattr(pyramid_builds.fcntl, "flock", no_locks)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    assert not pyramid_builds._locked_elsewhere(out)
+
+
+def test_a_ready_pyramid_sweeps_old_partial_files(pyramid_dir, monkeypatch):
+    # A leftover too recent when its build started is removed once old, even
+    # though the pyramid is never built again.
+    from app.brick_pyramid import build_pyramid
+    path = pyramid_dir / "cube.fits"
+    fits.PrimaryHDU(np.ones((24, 24, 24), np.float32)).writeto(path)
+    out = default_pyramid_path(path, 0)
+    build_pyramid(path, out)
+    part = out.with_name(out.name + ".crashed.part")
+    part.write_bytes(b"left by a killed build")
+    assert ensure_pyramid(str(path), 0).state == "ready" and part.exists()
+    old = time.time() - pyramid_builds._STALE_PART_S - 10
+    os.utime(part, (old, old))
+    assert ensure_pyramid(str(path), 0).state == "ready" and not part.exists()
+
+
+def test_the_shared_memory_check_counts_the_buffers_a_build_makes(monkeypatch):
+    # Eight workers, an 8 MiB budget, 64-voxel bricks: each of the 20 buffers
+    # is at least a block of bricks, far over twice the budget.
+    from types import SimpleNamespace
+
+    from app import brick_pyramid as bp
+    workers, brick, budget = 8, 64, 8 * 1024 * 1024
+    per_slot = bp._shm_per_slot((512, 512, 512), brick, budget, workers)
+    needed = 2 * bp._shm_slots(workers) * per_slot
+    assert needed > 2 * budget
+    monkeypatch.setattr(bp.os, "statvfs",
+                        lambda p: SimpleNamespace(f_bavail=64 * 1024 * 1024, f_frsize=1),
+                        raising=False)
+    cube = SimpleNamespace(_tile=None)
+    assert bp._parallel_ok(cube, budget)               # the old estimate let it through
+    assert not bp._parallel_ok(cube, budget, needed)   # the buffers it makes do not fit
+
+
+def test_a_killed_builds_buffers_go_and_no_other_builds():
+    """Named from a random tag, not a process id: two builds in containers
+    sharing /dev/shm may have the same pid, and one's cleanup must not take
+    the other's live buffers."""
+    from multiprocessing import shared_memory
+
+    from app.brick_pyramid import new_shm_tag, shm_buffer_name
+    dead, alive = new_shm_tag(), new_shm_tag()
+    assert dead != alive and len(shm_buffer_name(dead, "o", 63)) <= 31
+    left = shared_memory.SharedMemory(name=shm_buffer_name(dead, "o", 0), create=True, size=64)
+    live = shared_memory.SharedMemory(name=shm_buffer_name(alive, "o", 0), create=True, size=64)
+    try:
+        left.close()
+        pyramid_builds._unlink_build_buffers(dead)
+        with pytest.raises(FileNotFoundError):
+            shared_memory.SharedMemory(name=shm_buffer_name(dead, "o", 0))
+        shared_memory.SharedMemory(name=shm_buffer_name(alive, "o", 0)).close()   # still there
+    finally:
+        live.close()
+        live.unlink()

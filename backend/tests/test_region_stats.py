@@ -419,3 +419,43 @@ def test_a_temporary_directory_in_memory_gets_no_copy(image_file, tmp_path, monk
     assert files[0] == 3                        # first pass, median, MAD: all from the file
     monkeypatch.setenv("VISIVO_REGION_SPILL_DIR", str(tmp_path))       # an explicit choice
     assert region_stats._spill_dir() == str(tmp_path)
+
+
+def test_ranks_among_values_a_few_float_steps_apart_are_exact(monkeypatch):
+    # Clustered values near 100 with negative outliers: the recursive bins
+    # end up a few float steps wide, and their bounds round together.
+    from app import region_stats as r
+    monkeypatch.setattr(r, "_IN_MEMORY_VALUES", 2)
+    v = np.array([99.99999999999997, 100.00000000000004, 100.00000000000004,
+                  100.00000000000004, 99.99999999999996, 100.00000000000004,
+                  100.00000000000004, 99.99999999999996, 100., 100.00000000000001,
+                  100.00000000000004, 100., 100.00000000000003, 100.00000000000001,
+                  100.00000000000001, 100., 99.99999999999997, 100.00000000000001,
+                  100.00000000000003, 100.00000000000001, -908.6066897898298,
+                  -396.99209625578914, -175.41237716578274, -876.8339584858044])
+    got = r._ranks(lambda: iter([v]), [11, 12], lambda x: x, float(v.min()), float(v.max()))
+    assert got == np.sort(v)[[11, 12]].tolist()
+
+
+def test_a_copy_that_could_not_be_written_is_not_used(tmp_path, monkeypatch):
+    # A failed write leaves the copy short of values: its ranks would be
+    # wrong. Refused, the statistics read the source again.
+    from unittest.mock import patch
+
+    from app import region_stats as r
+    p = tmp_path / "test.fits"
+    fits.PrimaryHDU(np.arange(100, dtype=np.float32).reshape(10, 10)).writeto(p)
+    monkeypatch.setenv("VISIVO_REGION_SPILL_DIR", str(tmp_path))
+    monkeypatch.setattr(r, "_IN_MEMORY_VALUES", 30)
+    monkeypatch.setattr(r, "_BLOCK_PIXELS", 20)
+    monkeypatch.setattr(r, "_SPILL_MARGIN_BYTES", 0)
+    original, calls = r._Spill.write, [0]
+
+    def fail_first(self, values):
+        calls[0] += 1
+        return False if calls[0] == 1 else original(self, values)
+
+    with patch.object(r._Spill, "write", fail_first):
+        out = r.region_statistics(str(p), r.Region({"shape": "box", "center": [4.5, 4.5],
+                                                    "size": [9, 9]}), 0)
+    assert out["median"] == pytest.approx(49.5)

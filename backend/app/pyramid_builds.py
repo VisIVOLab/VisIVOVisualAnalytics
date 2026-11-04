@@ -16,6 +16,7 @@ file next to the pyramid's temporary file, read on each query.
 from __future__ import annotations
 
 import atexit
+import errno
 import json
 import logging
 import multiprocessing
@@ -56,6 +57,7 @@ class _Build:
     process: multiprocessing.process.BaseProcess
     progress_file: Path
     started: float
+    shm_tag: str = ""         # names its shared buffers (brick_pyramid.shm_buffer_name)
     ended: float | None = None
     error: str = ""
     elsewhere: bool = False   # another backend holds the build
@@ -89,12 +91,7 @@ def ensure_pyramid(dataset_path: str, hdu: int) -> BuildStatus:
     key = str(out)
     progress_file = _progress_path(out)
     if pyramid_ready(dataset_path, hdu):
-        with _lock:
-            done = _builds.pop(key, None)
-        if done is not None:
-            done.process.join(timeout=1.0)   # reap it: it ends right after the rename
-        progress_file.unlink(missing_ok=True)
-        return BuildStatus("ready", 1.0)
+        return _ready(key, out, progress_file)
     with _lock:
         build = _builds.get(key)
         if build is not None:
@@ -102,6 +99,12 @@ def ensure_pyramid(dataset_path: str, hdu: int) -> BuildStatus:
                 return BuildStatus("building", _read_progress(progress_file))
             if build.ended is None:
                 build.process.join(timeout=0)
+                # It may have published its pyramid and exited since the check
+                # above: done, not failed.
+                if pyramid_ready(dataset_path, hdu):
+                    return _ready(key, out, progress_file, locked=True)
+                if build.process.exitcode not in (0, _BUILT_ELSEWHERE):
+                    _unlink_build_buffers(build.shm_tag)
                 build.ended = time.monotonic()
                 build.elsewhere = build.process.exitcode == _BUILT_ELSEWHERE
                 build.error = "" if build.elsewhere else _read_error(progress_file,
@@ -122,6 +125,35 @@ def ensure_pyramid(dataset_path: str, hdu: int) -> BuildStatus:
         return _start(dataset_path, out, hdu, key, progress_file)
 
 
+def _ready(key: str, out: Path, progress_file: Path, locked: bool = False) -> "BuildStatus":
+    """The pyramid is in place: its build reaped, its progress file and any
+    stale partial file of an earlier build removed (a ready pyramid is never
+    built again, so this is the last chance to sweep them)."""
+    if locked:
+        done = _builds.pop(key, None)
+    else:
+        with _lock:
+            done = _builds.pop(key, None)
+    if done is not None:
+        done.process.join(timeout=1.0)   # reap it: it ends right after the rename
+    progress_file.unlink(missing_ok=True)
+    _sweep_stale_parts(out)
+    return BuildStatus("ready", 1.0)
+
+
+def _unlink_build_buffers(tag: str) -> None:
+    """The shared buffers of a build that died without its cleanup (killed
+    outright): named from the tag it was given, they would otherwise hold their
+    memory until the server exits (brick_pyramid.shm_buffer_name)."""
+    if not tag:
+        return
+    from .brick_pyramid import shm_buffer_name, unlink_shm  # noqa: PLC0415
+    removed = sum(unlink_shm(shm_buffer_name(tag, kind, slot))
+                  for kind in ("o", "i") for slot in range(64))
+    if removed:
+        logger.info("[pyramid] removed %d shared buffers left by build %s", removed, tag)
+
+
 def _start(dataset_path: str, out: Path, hdu: int, key: str, progress_file: Path) -> BuildStatus:
     """Spawn the build (called with ``_lock`` held)."""
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -129,11 +161,14 @@ def _start(dataset_path: str, out: Path, hdu: int, key: str, progress_file: Path
     # threads and a GPU context.
     # Not a daemon: the build starts worker processes of its own (issue #89),
     # which a daemon may not. _stop_builds_at_exit ends it with the server.
+    from .brick_pyramid import new_shm_tag  # noqa: PLC0415
+    tag = new_shm_tag()
     process = multiprocessing.get_context("spawn").Process(
-        target=_build_child, args=(str(dataset_path), str(out), int(hdu), str(progress_file)),
+        target=_build_child,
+        args=(str(dataset_path), str(out), int(hdu), str(progress_file), tag),
         name=f"pyramid-{out.stem}", daemon=False)
     process.start()
-    _builds[key] = _Build(process, progress_file, time.monotonic())
+    _builds[key] = _Build(process, progress_file, time.monotonic(), shm_tag=tag)
     logger.info("[pyramid] building %s for %s (pid %s)", out, dataset_path, process.pid)
     return BuildStatus("building", 0.0)
 
@@ -144,18 +179,19 @@ def _stop_builds_at_exit() -> None:
     multiprocessing's own exit handler, so it runs first and that handler's
     join of non-daemon processes does not wait for a whole build."""
     with _lock:
-        running = [b.process for b in _builds.values() if b.process.is_alive()]
-    for process in running:
-        process.terminate()
+        running = [b for b in _builds.values() if b.process.is_alive()]
+    for build in running:
+        build.process.terminate()
     # One deadline for all of them; a build that has not unwound by then is
     # killed, so the exit handler's join (no timeout) cannot wait on it.
     deadline = time.monotonic() + 3.0
-    for process in running:
-        process.join(timeout=max(0.0, deadline - time.monotonic()))
-    for process in running:
-        if process.is_alive():
-            process.kill()
-            process.join(timeout=1.0)
+    for build in running:
+        build.process.join(timeout=max(0.0, deadline - time.monotonic()))
+    for build in running:
+        if build.process.is_alive():
+            build.process.kill()
+            build.process.join(timeout=1.0)
+            _unlink_build_buffers(build.shm_tag)
 
 
 # Imported first, so that its exit handler (which joins non-daemon processes)
@@ -183,9 +219,15 @@ def _try_lock(path: Path) -> int | None:
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return fd
-    except OSError:
-        os.close(fd)
-        return None
+    except OSError as exc:
+        if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+            os.close(fd)
+            return None   # held by another process
+        # The file system cannot lock (ENOLCK, ENOTSUP…): one builder per
+        # directory, as without fcntl. Reporting it as held would answer
+        # "building" for ever with nobody building.
+        logger.warning("[pyramid] cannot lock %s (%s): building without the lock", path, exc)
+        return fd
 
 
 def _locked_elsewhere(out: Path) -> bool:
@@ -232,7 +274,8 @@ def _sweep_stale_parts(out_path: Path) -> None:
             pass
 
 
-def _build_child(dataset_path: str, out: str, hdu: int, progress_file: str) -> None:
+def _build_child(dataset_path: str, out: str, hdu: int, progress_file: str,
+                 shm_tag: str = "") -> None:
     """In the build process: build, and report progress or the error in
     ``progress_file`` (written atomically, at most twice a second)."""
     from .brick_pyramid import (build_pyramid, default_brick, default_workers,  # noqa: PLC0415
@@ -255,6 +298,10 @@ def _build_child(dataset_path: str, out: str, hdu: int, progress_file: str) -> N
     lock = _try_lock(_lock_path(out_path))
     if lock is None:
         sys.exit(_BUILT_ELSEWHERE)
+    # Another backend may have finished it between the parent's check and
+    # this lock: nothing to build, and its pyramid is not to be replaced.
+    if pyramid_ready(dataset_path, hdu):
+        return
     # The lock holder removes what earlier builds left (killed outright, so
     # without their cleanup), but only files nobody has written to for a
     # while: a build that does not take the lock (python -m app.brick_pyramid,
@@ -278,7 +325,8 @@ def _build_child(dataset_path: str, out: str, hdu: int, progress_file: str) -> N
 
         # Nothing is written after this: the pyramid is in place, and the
         # parent removes the progress file when it sees it.
-        build_pyramid(dataset_path, out, hdu=hdu, progress=progress, workers=default_workers())
+        build_pyramid(dataset_path, out, hdu=hdu, progress=progress, workers=default_workers(),
+                      shm_tag=shm_tag or None)
         # Again at the end, still holding the lock: a leftover too recent to
         # remove when the build started is old enough now.
         _sweep_stale_parts(out_path)

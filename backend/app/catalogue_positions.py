@@ -141,18 +141,21 @@ def distances_mpc(frame: pd.DataFrame, distance_mode: str = "comoving",
 def sky_positions(frame: pd.DataFrame, ra_field: str, dec_field: str, *,
                   frame_name: str = "fk5", distance_mode: str = "comoving",
                   cosmology: str = "Planck18") -> np.ndarray:
-    """(N, 3) scene positions, NaN for a source without a finite RA/Dec."""
+    """(N, 3) scene positions, NaN for a source without a finite RA/Dec or
+    with a Dec beyond the poles."""
     if frame_name not in FRAMES:
         raise ValueError(f"Unknown frame {frame_name!r}: one of {FRAMES}.")
     if distance_mode not in DISTANCE_MODES:
         raise ValueError(f"Unknown distance mode {distance_mode!r}: one of {DISTANCE_MODES}.")
     ra = _numeric(frame, ra_field)
     dec = _numeric(frame, dec_field)
-    lon, lat = ra, dec
+    # One row past a pole would make SkyCoord refuse the whole column.
+    with np.errstate(invalid="ignore"):
+        ok = np.isfinite(ra) & (np.abs(dec) <= 90.0)
+    lon, lat = np.where(ok, ra, np.nan), np.where(ok, dec, np.nan)
     if frame_name != "fk5":
         from astropy import units as u  # noqa: PLC0415
         from astropy.coordinates import SkyCoord  # noqa: PLC0415
-        ok = np.isfinite(ra) & np.isfinite(dec)
         lon, lat = np.full(len(ra), np.nan), np.full(len(dec), np.nan)
         if ok.any():
             sky = SkyCoord(ra=ra[ok] * u.deg, dec=dec[ok] * u.deg, frame="fk5", equinox="J2000")

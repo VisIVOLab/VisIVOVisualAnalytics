@@ -719,6 +719,24 @@ def sample_step(total: int, limit: int) -> int:
     return max(1, -(-total // limit)) if limit > 0 and total > limit else 1
 
 
+def _take_rows(df, rows):
+    """``df.iloc[rows]`` for a VBT table too: pandas cannot index a column
+    read big-endian from its file, so such a column is indexed with NumPy and
+    turned to this machine's byte order."""
+    if all(getattr(t, "byteorder", "=") in ("=", "|") for t in df.dtypes):
+        return df.iloc[rows]
+    index = df.index[rows]
+    columns = {}
+    for name in df.columns:
+        col = df[name]
+        if getattr(col.dtype, "byteorder", "=") in ("=", "|"):
+            columns[name] = col.iloc[rows]
+        else:
+            columns[name] = pd.Series(col.to_numpy(copy=False)[rows].astype(
+                col.dtype.newbyteorder("=")), index=index)
+    return pd.DataFrame(columns, index=index)
+
+
 def _numeric_filter_page(df, filters, sort, limit, offset, numeric_ops, *,
                          even_sample: bool = False, phase: int = 0):
     """``(page, total)`` when every filter compares a numeric column with a
@@ -751,9 +769,9 @@ def _numeric_filter_page(df, filters, sort, limit, offset, numeric_ops, *,
     total = int(rows.size)
     step = sample_step(total, limit) if even_sample else 1
     if step > 1:
-        return df.iloc[rows[phase::step][:limit]], total
+        return _take_rows(df, rows[phase::step][:limit]), total
     rows = rows[offset:] if limit <= 0 else rows[offset:offset + limit]
-    return df.iloc[rows], total
+    return _take_rows(df, rows), total
 
 
 def data_roots() -> list[Path] | None:

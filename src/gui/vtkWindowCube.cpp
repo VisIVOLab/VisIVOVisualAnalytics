@@ -163,6 +163,7 @@
 #include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QLabel>
+#include <QLocale>
 #include <QList>
 #include <QMetaObject>
 #include <QAbstractSpinBox>
@@ -3076,7 +3077,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         ui->labelThresholdHdr->setText(
                 u"THRESHOLD (%1)"_s.arg(QString::fromStdString(bunit)).toUpper());
     }
-    ui->lineThreshold->setText(QString::number(this->lowerBound));
+    ui->lineThreshold->setText(
+            visivo::thresholdText(this->lowerBound));
     ui->lineThreshold->setValidator(new QDoubleValidator(ui->lineThreshold));
     ui->btnCubeColor->setIcon(QIcon(u":/icons/COLORIZE.png"_s));
     QObject::connect(ui->lineThreshold, &QLineEdit::editingFinished, this,
@@ -6296,7 +6298,7 @@ void vtkWindowCube::applyThreshold(float value)
     // Update UI widgets without triggering user-interaction signals.
     {
         const QSignalBlocker blockLine(ui->lineThreshold);
-        ui->lineThreshold->setText(QString::number(clamped));
+        ui->lineThreshold->setText(visivo::thresholdText(clamped));
 
         const int p = static_cast<int>(
                 std::lround(100.0 * this->volumeScalePosition(clamped, spanLo, spanHi)));
@@ -7357,7 +7359,7 @@ void vtkWindowCube::thresholdSliderChanged(int action)
     // The slider runs along the volume's scale (linear unless chosen otherwise).
     const auto [lo, hi] = this->thresholdSpan();
     const float threshold = static_cast<float>(this->volumeScaleValue(0.01 * p, lo, hi));
-    ui->lineThreshold->setText(QString::number(threshold));
+    ui->lineThreshold->setText(visivo::thresholdText(threshold));
     this->updateCube();
 }
 
@@ -7372,7 +7374,7 @@ void vtkWindowCube::thresholdLineChanged()
         return;
     const auto [lo, hi] = this->thresholdSpan();
     const float threshold = std::clamp(ui->lineThreshold->text().toFloat(), lo, hi);
-    ui->lineThreshold->setText(QString::number(threshold));
+    ui->lineThreshold->setText(visivo::thresholdText(threshold));
     const int p = static_cast<int>(std::lround(100.0 * this->volumeScalePosition(threshold, lo, hi)));
     ui->sliderThreshold->setValue(p);
     this->updateCube();
@@ -14619,7 +14621,7 @@ void vtkWindowCube::applyCopilotActions(const QList<QJsonObject> &actions)
                                         double(spanHi));
             if (ui->lineThreshold) {
                 this->m_userSetThreshold = true;
-                ui->lineThreshold->setText(QString::number(v));
+                ui->lineThreshold->setText(QString::number(v, 'g', QLocale::FloatingPointShortest));
                 this->thresholdLineChanged();
             }
         } else if (type == u"set_render_mode"_s) {
@@ -15701,11 +15703,16 @@ void vtkWindowCube::fillVolumeOpacity(vtkPiecewiseFunction *f, double threshold,
             if (u > prevU) {
                 for (int k = 1; k <= kSteps; ++k) {
                     const double w = static_cast<double>(k) / kSteps;
+                    // Every knot of the curve is kept (the zero knee, the
+                    // threshold, the top); only the samples between are
+                    // thinned. On a wide Log range the knee and the threshold
+                    // can lie closer than minGap, and dropping them let
+                    // sub-threshold values through.
                     add(this->volumeScaleValue(prevU + w * (u - prevU), lower, upper),
-                        prevA + w * (a - prevA), k == kSteps && u >= 1.0);
+                        prevA + w * (a - prevA), k == kSteps);
                 }
             } else {
-                add(this->volumeScaleValue(u, lower, upper), a, u >= 1.0);
+                add(this->volumeScaleValue(u, lower, upper), a, true);
             }
             prevU = u;
             prevA = a;
@@ -15939,6 +15946,12 @@ void vtkWindowCube::applyCinematicLighting(bool on)
         prop->SetAmbient(on ? 0.6 : 1.0);
         prop->SetDiffuse(on ? 0.5 : 0.0);
         prop->SetSpecular(on ? 0.1 : 0.0);
+    }
+    // The pass replaced keeps its framebuffer and textures on the GPU unless
+    // released here, with the window's context current.
+    if (vtkRenderPass *old = renderer->GetPass()) {
+        win->MakeCurrent();
+        old->ReleaseGraphicsResources(win);
     }
     if (!on) {
         renderer->SetPass(nullptr);

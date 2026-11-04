@@ -13,6 +13,7 @@ pytest.importorskip("numba")
 from app.particle_raytrace import Camera, project, render, smoothing_lengths, tone_map  # noqa: E402
 
 FRONT = Camera((0.0, 0.0, 10.0), (0.0, 0.0, 0.0), (0.0, 1.0, 0.0), 30.0)
+FRONT_JSON = {"position": (0, 0, 10), "focal_point": (0, 0, 0), "view_up": (0, 1, 0)}
 
 
 def test_particles_land_where_vtk_draws_them():
@@ -89,6 +90,25 @@ def test_absorption_dims_what_lies_behind_only():
     # Behind it, the absorber leaves the red as the red's own absorption does.
     assert red(absorber_in_front=False) <= emitted
 
+
+
+def test_many_faint_absorbers_dim_what_lies_behind_them():
+    from app.particle_raytrace import _bin, _composite
+    # One emitter, then 200 000 absorbers in front of it, each with an optical
+    # depth of 5e-7: 0.1 together, whatever their number.
+    n = 200_001
+    sx = np.full(n, 0.5, np.float32)
+    sy = np.full(n, 0.5, np.float32)
+    sr = np.full(n, 0.5, np.float32)
+    weight = np.ones(n, np.float32)
+    emission = np.zeros((n, 3), np.float32)
+    emission[0] = 1.0
+    absorb = np.full((n, 3), 5e-7, np.float32)
+    absorb[0] = 0.0
+    order = np.arange(n, dtype=np.int64)   # back to front: the emitter first
+    counts, items = _bin(sx, sy, sr, order, 1, 1, 1, 1)
+    image = _composite(sx, sy, sr, weight, emission, absorb, counts, items, 1, 1, 1, 1)
+    assert image[0, 0, 0] == pytest.approx(np.exp(-0.1), rel=2e-3)
 
 def test_the_tone_curve_keeps_the_hue_and_the_order():
     light = np.zeros((2, 4, 3), np.float32)
@@ -399,6 +419,25 @@ def test_the_particles_for_the_gpu_are_those_the_renderer_draws(tmp_path, monkey
         loop.close()
 
 
+
+def test_a_projected_value_the_gpu_gets_is_never_nan(tmp_path, monkeypatch):
+    from app.routers import particle_render as router
+    particles = {"positions": np.zeros((4, 3), np.float32), "radius": np.ones(4, np.float32),
+                 "intensity": np.ones(4, np.float32),
+                 "value": np.array([1.0, np.nan, 3.0, np.nan], np.float32)}
+    monkeypatch.setattr(router, "_prepared", lambda entry, req, token: particles)
+    session = _Session(_vbt(tmp_path, n=10))
+    loop = asyncio.new_event_loop()
+    try:
+        req = router.ParticleDataRequest(dataset_id="cat_1", mode="projected")
+        reply = loop.run_until_complete(router.particle_render_particles(
+            req, token="tok", session=session))
+    finally:
+        loop.close()
+    rows = np.frombuffer(reply.body, dtype="<f4").reshape(-1, 6)
+    assert np.isfinite(rows).all()
+    assert np.array_equal(rows[:, 5], [1.0, 0.0, 3.0, 0.0])
+
 def test_a_render_deleted_while_it_runs_stops_and_leaves_nothing(tmp_path, monkeypatch):
     from app.routers import particle_render as router
     from app.tasks import TASKS
@@ -429,4 +468,84 @@ def test_a_render_deleted_while_it_runs_stops_and_leaves_nothing(tmp_path, monke
     finally:
         loop.close()
     assert task.status == "cancelled"
+    assert not frames.exists()
+
+
+def test_a_render_stopped_during_its_last_frame_is_not_published(tmp_path, monkeypatch):
+    import threading
+
+    from app.routers import particle_render as router
+    monkeypatch.setattr(router, "get_exports_dir", lambda: tmp_path / "exports")
+    session = _Session(_vbt(tmp_path))
+    req = router.ParticleRenderRequest(dataset_id="cat_1", cameras=[FRONT_JSON], width=64,
+                                       height=48)
+    stop = threading.Event()
+    real_frame = router._frame
+
+    def frame(*args, **kwargs):   # the delete arrives while the frame renders
+        stop.set()
+        return real_frame(*args, **kwargs)
+
+    monkeypatch.setattr(router, "_frame", frame)
+    with pytest.raises(asyncio.CancelledError):
+        router._run("t_last", session.datasets["cat_1"], req, stop)
+    assert not (tmp_path / "exports" / ".renders" / "t_last").exists()
+
+
+def test_a_cancelled_render_keeps_its_stop_until_its_thread_ends(tmp_path, monkeypatch):
+    import threading
+
+    from app.routers import particle_render as router
+    from app.tasks import TASKS
+    release, entered = threading.Event(), threading.Event()
+
+    def run(task_id, entry, req, stop):
+        entered.set()
+        release.wait(10)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(router, "_run", run)
+    session = _Session(_vbt(tmp_path))
+    req = router.ParticleRenderRequest(dataset_id="cat_1", cameras=[FRONT_JSON], width=64,
+                                       height=48)
+    loop = asyncio.new_event_loop()
+
+    async def go():
+        created = await router.create_particle_render_task(req, token="tok", session=session)
+        task_id = created.task_id
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        TASKS.cancel(task_id)
+        await asyncio.sleep(0.1)
+        during = task_id in router._STOPS and TASKS.peek(task_id).busy()
+        release.set()
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            if task_id not in router._STOPS:
+                break
+        return during, task_id in router._STOPS, TASKS.get(task_id).status
+
+    try:
+        during, after, status = loop.run_until_complete(go())
+    finally:
+        release.set()
+        loop.close()
+    assert during and not after
+    assert status == "cancelled"
+
+
+def test_an_evicted_render_takes_its_frames_with_it(tmp_path, monkeypatch):
+    import time
+    from types import SimpleNamespace
+
+    from app.routers import particle_render as router
+    monkeypatch.setattr(router, "get_exports_dir", lambda: tmp_path / "exports")
+    frames = tmp_path / "exports" / ".renders" / "t_old"
+    frames.mkdir(parents=True)
+    (frames / "frame_00000.png").write_bytes(b"x")
+    router._on_evict(SimpleNamespace(operation="particle_render", task_id="t_old"))
+    for _ in range(100):
+        if not frames.exists():
+            break
+        time.sleep(0.02)
     assert not frames.exists()

@@ -16,7 +16,9 @@
 #include <QString>
 #include <QVariantMap>
 
+class QJsonObject;
 class QNetworkAccessManager;
+class QNetworkReply;
 class RemoteRenderWidget;
 
 class RemotePointView : public QObject
@@ -53,6 +55,8 @@ signals:
     void liveChanged(bool live);
 
 private:
+    /// create_session answered for the generation asked.
+    void created(QNetworkReply *reply, const QJsonObject &doc);
     void flush();
     void fetchLevels();
 

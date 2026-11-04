@@ -17,13 +17,19 @@ using namespace Qt::Literals::StringLiterals;
 
 namespace {
 
-/// Deletes a render session. Through a manager owned by the application, not
-/// by the view: a view deleted right after stop() would take its manager and
-/// the request with it, and the session would hold its GPU until the idle TTL.
+/// A manager owned by the application, not by the view, for the requests that
+/// make and delete sessions: a view deleted meanwhile would take its manager
+/// and the request with it, and a session would hold its GPU until the idle TTL.
+QNetworkAccessManager *sessionManager()
+{
+    static QNetworkAccessManager *nam = new QNetworkAccessManager(QCoreApplication::instance());
+    return nam;
+}
+
 void deleteRenderSession(const QString &backendUrl, const QString &token,
                          const QString &sessionId, const QString &renderSessionId)
 {
-    static QNetworkAccessManager *nam = new QNetworkAccessManager(QCoreApplication::instance());
+    QNetworkAccessManager *nam = sessionManager();
     QUrl url(backendUrl);
     url.setPath(u"/v1/render/"_s + renderSessionId);
     QNetworkRequest req(url);
@@ -84,38 +90,51 @@ void RemotePointView::start()
     const QByteArray body =
             QJsonDocument(QJsonObject{ { u"dataset_id"_s, m_datasetId } }).toJson(
                     QJsonDocument::Compact);
-    QNetworkReply *reply = m_nam->post(req, body);
-    QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, generation]() {
+    QNetworkReply *reply = sessionManager()->post(req, body);
+    const QPointer<RemotePointView> self(this);
+    const QString backendUrl = m_backendUrl, token = m_token, sessionId = m_sessionId;
+    QObject::connect(reply, &QNetworkReply::finished, reply, [=]() {
         reply->deleteLater();
         const QJsonObject doc = QJsonDocument::fromJson(reply->readAll()).object();
-        if (generation != m_generation) {
-            // Stopped meanwhile: the session the backend made is nobody's.
+        if (!self || generation != self->m_generation) {
+            // Stopped or deleted meanwhile: the session the backend made is nobody's.
             const QString orphan = doc.value(u"session_id"_s).toString();
             if (!orphan.isEmpty())
-                deleteRenderSession(m_backendUrl, m_token, m_sessionId, orphan);
+                deleteRenderSession(backendUrl, token, sessionId, orphan);
             return;
         }
-        if (reply->error() != QNetworkReply::NoError) {
-            const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-            const QString detail = doc.value(u"detail"_s).toString();
-            emit failed(detail.isEmpty() ? u"HTTP %1: %2"_s.arg(code).arg(reply->errorString())
-                                         : detail);
-            return;
-        }
-        const QString sid = doc.value(u"session_id"_s).toString();
-        if (sid.isEmpty() || !m_widget) {
-            emit failed(u"The backend returned no render session."_s);
-            return;
-        }
-        m_renderSessionId = sid;
-        // JPEG over the WebSocket: the transport every backend has.
-        m_widget->setTransport(RemoteRenderWidget::Transport::JpegWS);
-        m_widget->connectToSession(m_backendUrl, sid, m_token);
-        emit started();
-        const QJsonValue lo = doc.value(u"data_min"_s), hi = doc.value(u"data_max"_s);
-        if (lo.isDouble() && hi.isDouble())
-            emit colourRange(lo.toDouble(), hi.toDouble());
+        self->created(reply, doc);
     });
+}
+
+void RemotePointView::created(QNetworkReply *reply, const QJsonObject &doc)
+{
+    if (reply->error() != QNetworkReply::NoError) {
+        const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QString detail = doc.value(u"detail"_s).toString();
+        emit failed(detail.isEmpty() ? u"HTTP %1: %2"_s.arg(code).arg(reply->errorString())
+                                     : detail);
+        return;
+    }
+    const QString sid = doc.value(u"session_id"_s).toString();
+    if (sid.isEmpty()) {
+        emit failed(u"The backend returned no render session."_s);
+        return;
+    }
+    if (!m_widget) {
+        // The view it was for is gone: the session is nobody's.
+        deleteRenderSession(m_backendUrl, m_token, m_sessionId, sid);
+        emit failed(u"The view closed while its render session was made."_s);
+        return;
+    }
+    m_renderSessionId = sid;
+    // JPEG over the WebSocket: the transport every backend has.
+    m_widget->setTransport(RemoteRenderWidget::Transport::JpegWS);
+    m_widget->connectToSession(m_backendUrl, sid, m_token);
+    emit started();
+    const QJsonValue lo = doc.value(u"data_min"_s), hi = doc.value(u"data_max"_s);
+    if (lo.isDouble() && hi.isDouble())
+        emit colourRange(lo.toDouble(), hi.toDouble());
 }
 
 void RemotePointView::stop()

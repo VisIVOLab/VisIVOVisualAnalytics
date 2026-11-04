@@ -1,5 +1,7 @@
 #include "ClusterProfile.h"
 
+#include <algorithm>
+
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -77,6 +79,19 @@ QStringList ClusterProfile::launcherArgs() const
         if (!a.isEmpty())
             args << a;
     return args;
+}
+
+QString ClusterProfile::joinCommand(const QStringList &args)
+{
+    QStringList out;
+    for (const QString &a : args) {
+        const bool plain = !a.isEmpty()
+                && std::none_of(a.begin(), a.end(),
+                                [](QChar c) { return c.isSpace() || c == u'"'; });
+        // splitCommand reads three quotes inside a quoted part as one.
+        out << (plain ? a : u"\""_s + QString(a).replace(u"\""_s, u"\"\"\""_s) + u"\""_s);
+    }
+    return out.join(u' ');
 }
 
 QList<ClusterProfile> ClusterProfiles::load(QSettings &settings)

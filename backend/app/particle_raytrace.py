@@ -162,9 +162,12 @@ if njit is not None:
                             continue
                         s = w * math.exp(-d2)
                         a = kappa * s
-                        if a > 1e-6:
-                            att = math.exp(-a)
-                            f = (1.0 - att) / kappa
+                        if a > 0.0:
+                            # expm1: a faint particle still dims what is behind
+                            # it, and a million of them add up.
+                            lost = -math.expm1(-a)
+                            att = 1.0 - lost
+                            f = lost / kappa
                             image[py, px, 0] = image[py, px, 0] * att + e0 * f
                             image[py, px, 1] = image[py, px, 1] * att + e1 * f
                             image[py, px, 2] = image[py, px, 2] * att + e2 * f
@@ -264,8 +267,10 @@ def smoothing_lengths(positions: np.ndarray, neighbours: int = 32) -> np.ndarray
     k = min(neighbours + 1, len(pts))
     if k < 2:
         return np.ones(len(pts), dtype=np.float32)
-    dist, _ = cKDTree(pts).query(pts, k=k, workers=-1)
-    h = 0.5 * dist[:, -1]
+    # Only the k-th neighbour: the whole (N, k) answer is gigabytes for a
+    # snapshot of tens of millions.
+    dist, _ = cKDTree(pts).query(pts, k=[k], workers=-1)
+    h = 0.5 * dist[:, 0]
     positive = h > 0
     floor = h[positive].min() if positive.any() else 1.0
     return np.where(positive, h, floor).astype(np.float32)
@@ -282,10 +287,12 @@ def velocity_dispersion(positions: np.ndarray, velocities: np.ndarray,
     k = min(neighbours + 1, len(pts))
     if k < 2:
         return np.zeros(len(pts), dtype=np.float32)
-    _, idx = cKDTree(pts).query(pts, k=k, workers=-1)
+    tree = cKDTree(pts)
     out = np.empty(len(pts), dtype=np.float32)
-    for start in range(0, len(pts), 262144):   # bounded temporaries
-        v = vel[idx[start:start + 262144]]            # (n, k, 3)
+    batch = max(4096, 8_000_000 // k)   # bounded temporaries: (batch, k, 3)
+    for start in range(0, len(pts), batch):
+        _, idx = tree.query(pts[start:start + batch], k=k, workers=-1)
+        v = vel[idx]                                   # (n, k, 3)
         dv = v - v.mean(axis=1, keepdims=True)
         out[start:start + len(v)] = np.sqrt((dv * dv).sum(axis=2).mean(axis=1) / 3.0)
     return out

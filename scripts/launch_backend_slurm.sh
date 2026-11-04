@@ -135,6 +135,37 @@ if [[ -z "$WORKERS" ]]; then
     WORKERS="$CPUS"
 fi
 
+# ── Values written into the job script ───────────────────────────────────────
+# The job script is read by bash again on the node: every value goes into it
+# quoted (printf %q), the numbers must be numbers, and nothing may hold a
+# line break (an #SBATCH line would end there and the rest run as commands).
+for name in PARTITION TIME MEM CPUS WORKERS GRES PORT BIND_PATH DATA_ROOT SIF BACKEND_SRC \
+            TOKEN NODE_CODE JOB_NAME ACCOUNT QOS WORKSPACE VERSION LOG_DIR; do
+    if [[ "${!name}" == *$'\n'* || "${!name}" == *$'\r'* ]]; then
+        echo "[visivo] ERROR: ${name} holds a line break" >&2
+        exit 1
+    fi
+done
+for name in CPUS WORKERS PORT; do
+    if ! [[ "${!name}" =~ ^[0-9]+$ ]]; then
+        echo "[visivo] ERROR: ${name} must be a whole number, not '${!name}'" >&2
+        exit 1
+    fi
+done
+# sbatch splits an #SBATCH line on spaces and reads its quotes: a space in
+# these would add options, a quote break the line.
+for name in PARTITION TIME MEM GRES; do
+    if [[ "${!name}" =~ [[:space:]\"] ]]; then
+        echo "[visivo] ERROR: ${name} cannot hold spaces or quotes: '${!name}'" >&2
+        exit 1
+    fi
+done
+if [[ "$LOG_DIR" == *\"* ]]; then
+    echo "[visivo] ERROR: the log directory cannot hold a double quote: $LOG_DIR" >&2
+    exit 1
+fi
+q() { printf '%q' "$1"; }
+
 # ── Generate token if not provided ───────────────────────────────────────────
 if [[ -z "$TOKEN" ]]; then
     TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
@@ -195,8 +226,8 @@ fi
 DATA_BIND_FLAG=""
 DATA_ROOT_ENV=""
 if [[ -n "$DATA_ROOT" ]]; then
-    DATA_BIND_FLAG="--bind ${DATA_ROOT}:${DATA_ROOT}"
-    DATA_ROOT_ENV="export APPTAINERENV_VISIVO_DATA_ROOT=${DATA_ROOT}"
+    DATA_BIND_FLAG="--bind $(q "${DATA_ROOT}:${DATA_ROOT}")"
+    DATA_ROOT_ENV="export APPTAINERENV_VISIVO_DATA_ROOT=$(q "${DATA_ROOT}")"
 fi
 
 NV_FLAG=""
@@ -241,7 +272,7 @@ if [[ -n "$BACKEND_SRC" ]]; then
         echo "[visivo] ERROR: --backend-src directory not found: $BACKEND_SRC"
         exit 1
     fi
-    SRC_BIND_FLAG="--bind ${BACKEND_SRC}:/app/app"
+    SRC_BIND_FLAG="--bind $(q "${BACKEND_SRC}:/app/app")"
     echo "[visivo] Overlaying /app/app with host source: $BACKEND_SRC"
 fi
 
@@ -271,7 +302,7 @@ for lib in \
     libnvidia-fatbinaryloader.so.* libnvidia-compiler.so.* ; do
     for f in /usr/lib64/${lib} /usr/lib/powerpc64le-linux-gnu/${lib} ; do
         if [[ -e "$f" ]]; then
-            NV_RUNTIME_BINDS="${NV_RUNTIME_BINDS} --bind ${f}:${f}"
+            NV_RUNTIME_BINDS="${NV_RUNTIME_BINDS} --bind $(q "${f}:${f}")"
         fi
     done
 done
@@ -287,13 +318,13 @@ ${SBATCH_HEADER}
 
 echo "[visivo] Job started on \$(hostname) at \$(date)"
 echo "[visivo] Port: ${PORT}"
-echo "[visivo] GPU:  ${GRES:-disabled}"
-echo "[visivo] Data root: ${DATA_ROOT:-(not jailed)}"
+echo "[visivo] GPU: " $(q "${GRES:-disabled}")
+echo "[visivo] Data root:" $(q "${DATA_ROOT:-(not jailed)}")
 
 # Env vars consumed inside the container.
-export APPTAINERENV_VISIVO_TOKEN="${TOKEN}"
-export APPTAINERENV_VISIVO_WORKERS="${WORKERS}"
-export APPTAINERENV_PORT="${PORT}"
+export APPTAINERENV_VISIVO_TOKEN=$(q "${TOKEN}")
+export APPTAINERENV_VISIVO_WORKERS=${WORKERS}
+export APPTAINERENV_PORT=${PORT}
 export APPTAINERENV_VISIVO_HOST="0.0.0.0"
 # EGL / SSR env (see comment on NV_RUNTIME_BINDS above).
 export APPTAINERENV_LD_LIBRARY_PATH=/usr/lib64
@@ -312,12 +343,12 @@ ${NODE_ENV}
 ${WORKSPACE_ENV}
 
 apptainer run ${NV_FLAG} \\
-    --bind "${BIND_PATH}:${BIND_PATH}" \\
+    --bind $(q "${BIND_PATH}:${BIND_PATH}") \\
     ${DATA_BIND_FLAG} \\
     ${WORKSPACE_BIND_FLAG} \\
     ${NV_RUNTIME_BINDS} \\
     ${SRC_BIND_FLAG} \\
-    "${SIF}"
+    $(q "${SIF}")
 SLURM_EOF
 
 # ── Submit the job ────────────────────────────────────────────────────────────
@@ -372,7 +403,7 @@ echo "[visivo] Waiting for backend to become ready (polling every 5 s)..."
 READY=false
 for attempt in $(seq 1 "$POLL_MAX"); do
     if ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
-           "$NODE" "curl -sf -H 'X-Visivo-Token: ${TOKEN}' http://localhost:${PORT}/v1/health" \
+           "$NODE" "curl -sf -H $(q "X-Visivo-Token: ${TOKEN}") http://localhost:${PORT}/v1/health" \
            >/dev/null 2>&1; then
         READY=true
         break

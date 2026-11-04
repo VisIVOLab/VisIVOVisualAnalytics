@@ -358,3 +358,42 @@ def test_a_removed_block_releases_its_data():
     blocks.clear()
     gc.collect()
     assert all(r() is None for r in refs)
+
+
+def test_the_cutting_plane_shows_blanks_as_the_in_core_cube_does(cube):
+    # The in-memory cube holds a blank as its minimum; a plane read from the
+    # file must too, or the slice gives NaN a colour of its own.
+    path, data = cube
+    ooc, _, _ = _session_objects(path)
+    plane = ooc.plane(4)
+    assert np.isfinite(plane).all()
+    assert np.all(plane[0:8, 0:8] == ooc.vmin)
+    assert np.allclose(plane[8:, 8:], data[4, 8:, 8:])
+    ooc.close()
+
+
+def test_a_roll_chooses_the_blocks_again(cube):
+    # Rolling a wide view turns its frustum: the blocks of the old one would
+    # leave the newly visible parts of the cube empty.
+    path, _ = cube
+    ooc, blocks, renderer = _session_objects(path)
+
+    def settle(size):
+        for _ in range(100):
+            if not ooc.update(renderer, size, None, interactive=False):
+                return set(blocks.nodes)
+        raise AssertionError("the block set never finished loading")
+
+    # Close and narrow, so that the wide frustum misses parts of the cube.
+    cam = renderer.GetActiveCamera()
+    nz, ny, nx = ooc.shape
+    cam.SetPosition(nx / 2, ny / 2, -12)
+    cam.SetViewAngle(12)
+    renderer.ResetCameraClippingRange()
+    before = settle((800, 200))
+    cam.Roll(90)
+    rolled = settle((800, 200))
+    ooc._view_key = None            # what a fresh choice gives
+    assert rolled == settle((800, 200))
+    assert rolled != before         # the roll did show other blocks
+    ooc.close()

@@ -38,6 +38,9 @@ struct ClusterProfile
     QString sshTarget() const;
     /// The options for scripts/launch_backend_slurm.sh, in order.
     QStringList launcherArgs() const;
+    /// @p args as one line that QProcess::splitCommand reads back as they are
+    /// (an argument with a space or a quote is quoted).
+    static QString joinCommand(const QStringList &args);
 };
 
 namespace ClusterProfiles {

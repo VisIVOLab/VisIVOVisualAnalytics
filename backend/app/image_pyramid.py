@@ -90,7 +90,7 @@ def tile_source(path: str) -> TileSource:
 
 def _tile_source(path: str) -> TileSource:
     from .brick_pyramid import default_pyramid_path  # noqa: PLC0415
-    from .pyramid_builds import ensure_pyramid  # noqa: PLC0415
+    from .pyramid_builds import ensure_pyramid, pyramid_ready  # noqa: PLC0415
 
     hdu, (nz, ny, nx) = _hdu_and_shape(path)
     if nz != 1 or ny * nx * 4 <= image_pyramid_bytes():
@@ -99,6 +99,11 @@ def _tile_source(path: str) -> TileSource:
     if pyramid in _ready and os.path.exists(pyramid):
         return TileSource("ready", 1.0, pyramid)
     if pyramid in _failed:
+        # Built since (by another backend, or by hand): the failure is over.
+        if pyramid_ready(path, hdu):
+            _failed.pop(pyramid, None)   # two requests may both find it built
+            _ready.add(pyramid)
+            return TileSource("ready", 1.0, pyramid)
         return TileSource("failed", 0.0, None, _failed[pyramid])
     status = ensure_pyramid(path, hdu)
     if status.state == "ready":

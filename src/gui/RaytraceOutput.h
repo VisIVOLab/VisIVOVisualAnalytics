@@ -87,7 +87,9 @@ private:
     void setStage(Stage stage, const QString &message = QString());
     /// ``png`` with the box and colour bar of ``camera``'s view drawn on it.
     QImage annotated(const QByteArray &png, const QJsonObject &camera) const;
-    QNetworkReply *send(const QString &verb, const QString &path, const QByteArray &body = {});
+    /// ``nam``: this widget's manager when null.
+    QNetworkReply *send(const QString &verb, const QString &path, const QByteArray &body = {},
+                        QNetworkAccessManager *nam = nullptr);
 
     Source m_source;
     QNetworkAccessManager *m_nam{ nullptr };
@@ -96,6 +98,7 @@ private:
     Stage m_stage{ Stage::Idle };
 
     QString m_taskId;
+    quint64 m_generation{ 0 };      ///< the task's: a reply of an earlier one is dropped
     bool m_taskIsMovie{ false };
     double m_autoExposure{ 0.0 };   ///< the still's automatic exposure, 0 before one
     QList<QJsonObject> m_cameras;   ///< of the frames rendered

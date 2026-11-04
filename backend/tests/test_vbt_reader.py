@@ -99,3 +99,29 @@ class TestPointSubsetSize:
         fields, rows = 11, 200_000
         payload = rows * fields * 8 * 4 // 3
         assert payload < _POINT_SUBSET_LIMIT_BYTES
+
+
+class TestFilteringABigEndianTable:
+    """A filter on a big-endian table picked its rows with ``df.iloc``, which
+    pandas refuses for a big-endian column ("Big-endian buffer not supported")."""
+
+    @pytest.mark.parametrize("even_sample", [False, True])
+    def test_filtered_rows_come_back_in_native_order(self, tmp_path, even_sample):
+        from types import SimpleNamespace
+
+        from app.dependencies import _numeric_filter_page, _read_vbt_points
+
+        values = np.array([np.arange(10.0), np.arange(10.0) * 2], dtype=np.float32)
+        head = _write_vbt(tmp_path, values, "big", ["A", "B"])
+        df = _read_vbt_points(Path(str(head)[: -len(".head")]))
+        ops = {"=", "!=", ">", ">=", "<", "<="}
+        page, total = _numeric_filter_page(
+            df, [SimpleNamespace(field="A", op=">", value="5")], None, 3, 0, ops,
+            even_sample=even_sample)
+
+        assert total == 4
+        assert page["B"].dtype.byteorder in ("=", "|")
+        # An even sample of the four rows in three takes every other one.
+        expected = [6.0, 8.0] if even_sample else [6.0, 7.0, 8.0]
+        np.testing.assert_array_equal(page["A"].to_numpy(), expected)
+        np.testing.assert_array_equal(page["B"].to_numpy(), page["A"].to_numpy() * 2)

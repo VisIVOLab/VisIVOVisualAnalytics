@@ -1,5 +1,7 @@
 #include "ClusterProfileDialog.h"
 
+#include "app/ClusterConnection.h"
+
 #include <algorithm>
 
 #include <QComboBox>
@@ -142,7 +144,7 @@ void ClusterProfileDialog::showProfile(const ClusterProfile &p)
     m_dataRoot->setText(p.dataRoot);
     m_workspace->setText(p.workspace);
     m_nodeCode->setText(p.nodeCode);
-    m_extra->setText(p.extraArgs.join(u' '));
+    m_extra->setText(ClusterProfile::joinCommand(p.extraArgs));
 }
 
 ClusterProfile ClusterProfileDialog::current() const
@@ -173,6 +175,10 @@ bool ClusterProfileDialog::saveCurrent()
     if (!p.isValid()) {
         QMessageBox::warning(this, u"Connect to a cluster"_s,
                              u"A profile needs a name and a frontend."_s);
+        return false;
+    }
+    if (const QString problem = ClusterConnection::profileProblem(p); !problem.isEmpty()) {
+        QMessageBox::warning(this, u"Connect to a cluster"_s, problem);
         return false;
     }
     QSettings s(m_settingsPath, QSettings::IniFormat);

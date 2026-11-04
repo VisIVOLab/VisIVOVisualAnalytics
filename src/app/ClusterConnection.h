@@ -53,8 +53,11 @@ public:
     static bool portIsFree(int port);
     /// A launcher output line as shown to the user: the token is never shown.
     static QString redacted(const QString &line);
-    /// The ssh command that cancels a job: by id when known, else by its name.
-    static QString cancelCommand(const QString &jobId, const QString &jobName);
+    /// The ssh command that cancels a job: by its name when known, else by id.
+    /// @p submitting: sbatch may still be running on the frontend, so it
+    /// cancels again for a while and fails if a job is left.
+    static QString cancelCommand(const QString &jobId, const QString &jobName,
+                                 bool submitting = false);
     /// Why @p profile cannot be used for ssh (a host or user that ssh would read
     /// as an option, or with spaces), or empty.
     static QString profileProblem(const ClusterProfile &profile);

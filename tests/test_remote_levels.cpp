@@ -79,3 +79,13 @@ void TestRemoteLevels::sliderPositionStaysInRange()
     QCOMPARE(visivo::thresholdSliderPosition({ 0.f, 10.f }, -3.f), 0);
     QCOMPARE(visivo::thresholdSliderPosition({ 5.f, 5.f }, 5.f), 0);
 }
+
+void TestRemoteLevels::theThresholdFieldShowsTheFloatItHolds()
+{
+    // The float's own shortest text, not that of its widening to double.
+    QCOMPARE(visivo::thresholdText(0.1f), QStringLiteral("0.1"));
+    QCOMPARE(visivo::thresholdText(1.2f), QStringLiteral("1.2"));
+    QCOMPARE(visivo::thresholdText(-3.5e-7f), QStringLiteral("-3.5e-07"));
+    for (const float v : { 0.1f, 1.2f, 123456.79f, -3.5e-7f, 7.0f })
+        QCOMPARE(visivo::thresholdText(v).toFloat(), v);
+}
