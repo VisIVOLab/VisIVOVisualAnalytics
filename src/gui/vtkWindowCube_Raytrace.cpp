@@ -32,10 +32,12 @@
 #include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 using namespace Qt::Literals::StringLiterals;
@@ -139,12 +141,37 @@ QJsonObject vtkWindowCube::raytraceRequest() const
     const QJsonArray box = this->raytraceBox();
     if (!box.isEmpty())
         req.insert(u"box"_s, box);
+    // The 3-D view's threshold, when it darkens: below it nothing emits, so a
+    // radio cube's noise, summed over every channel along a ray, does not veil
+    // the source.
+    bool ok = false;
+    const double floor = ui->lineThreshold ? ui->lineThreshold->text().toDouble(&ok) : 0.0;
+    if (this->m_rtPanel && this->m_rtPanel->thresholdDarkens() && ok && std::isfinite(floor))
+        req.insert(u"brightness_floor"_s, floor);
     if (this->m_rtPanel) {
         const QJsonObject fields = this->m_rtPanel->fields();
         for (auto it = fields.begin(); it != fields.end(); ++it)
             req.insert(it.key(), it.value());
     }
     return req;
+}
+
+void vtkWindowCube::raytraceThresholdChanged()
+{
+    if (!this->raytracedShown() || !this->m_rtView || !this->m_rtPanel
+        || !this->m_rtPanel->thresholdDarkens())
+        return;
+    // A slider drag moves it many times: the grid is prepared once it rests.
+    if (!this->m_rtFloorTimer) {
+        this->m_rtFloorTimer = new QTimer(this);
+        this->m_rtFloorTimer->setSingleShot(true);
+        this->m_rtFloorTimer->setInterval(350);
+        QObject::connect(this->m_rtFloorTimer, &QTimer::timeout, this, [this]() {
+            if (this->raytracedShown() && this->m_rtView)
+                this->m_rtView->refresh();
+        });
+    }
+    this->m_rtFloorTimer->start();
 }
 
 bool vtkWindowCube::raytracedShown() const
@@ -161,6 +188,9 @@ void vtkWindowCube::syncRaytracedControls()
         this->m_classic3dBottom->setVisible(!on);
     if (this->m_rtCard)
         this->m_rtCard->setVisible(on);
+    if (this->m_thresholdBox)
+        this->m_thresholdBox->setVisible(!on || (this->m_rtPanel
+                                                 && this->m_rtPanel->thresholdDarkens()));
     // The 3-D layers follow it (the pane filter asks raytracedShown).
     this->updateDisplaySectionForActivePane();
 }
@@ -213,6 +243,8 @@ void vtkWindowCube::setRaytraced(bool on)
         this->m_rtPanel->setFields(this->m_rtFields);
         if (QComboBox *lut = this->m_uiAssembler ? this->m_uiAssembler->lutCombo() : nullptr)
             this->m_rtPanel->setMap(lut->currentText());
+        // Negative values: a measured cube's noise, which the threshold cuts.
+        this->m_rtPanel->setThresholdDarkens(this->currentCubeVisibleRange[0] < 0.0);
         cardLayout->addWidget(this->m_rtPanel);
         // What the picture is read by, over the view and on what is saved.
         auto *boxCheck = new QCheckBox(u"Box"_s);
@@ -245,7 +277,7 @@ void vtkWindowCube::setRaytraced(bool on)
                 return ParticleGLView::Tone();
             const auto [lo, hi] = self->m_rtView->gridRange();
             return self->m_rtPanel->gpuTone(self->m_rtView->gridLut(), lo, hi,
-                                            self->m_rtView->gridLog(), self->m_rtFieldName);
+                                            self->m_rtView->gridLog(), self->volumeBarTitle());
         };
         source.toneJson = [self](double base) {
             return self && self->m_rtPanel ? self->m_rtPanel->tone(base) : QJsonObject();
@@ -297,6 +329,8 @@ void vtkWindowCube::setRaytraced(bool on)
                          &RaytraceViewport::retone);
         QObject::connect(this->m_rtPanel, &VolumeRaytracePanel::gridChanged, this->m_rtView,
                          &RaytraceViewport::refresh);
+        QObject::connect(this->m_rtPanel, &VolumeRaytracePanel::gridChanged, this,
+                         [this]() { this->syncRaytracedControls(); });
         QObject::connect(this->m_rtPanel, &VolumeRaytracePanel::toneChanged, this, [this]() {
             this->m_rtView->retone();
             this->m_rtOutput->toneChanged();

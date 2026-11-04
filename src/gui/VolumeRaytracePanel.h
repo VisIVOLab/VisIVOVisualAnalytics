@@ -34,6 +34,11 @@ public:
     void setFields(const QList<QPair<QString, int>> &fields);
     /// Starts the map from the 3-D view's, when it is one of these.
     void setMap(const QString &name);
+    /// Whether the 3-D view's threshold darkens what lies below it: a radio
+    /// cube's noise, which a ray sums over every channel. The default: on for
+    /// a cube with negative values (noise), off for a simulation's density.
+    bool thresholdDarkens() const;
+    void setThresholdDarkens(bool on);
 
     bool projected() const;
     /// The request fields these settings set (app/routers/volume_render.py,
@@ -74,6 +79,7 @@ private:
     QDoubleSpinBox *m_stretch{ nullptr };
     QDoubleSpinBox *m_gamma{ nullptr };
     QDoubleSpinBox *m_saturation{ nullptr };
+    QCheckBox *m_floor{ nullptr };
     QToolButton *m_more{ nullptr };
     QWidget *m_advanced{ nullptr };   ///< the rows under "More settings"
 };

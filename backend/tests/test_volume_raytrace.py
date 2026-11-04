@@ -102,6 +102,15 @@ def test_emission_and_colour_index_from_quantities():
     lum = emission_from(np.array([[[42.0, 43.0, 44.0]]], np.float32), log10=True)
     assert np.isfinite(lum).all() and lum[0, 0, 2] == pytest.approx(1.0, rel=0.05)
     assert lum[0, 0, 0] == pytest.approx(0.01 * lum[0, 0, 2], rel=1e-3)
+    # A floor: noise at and under it dark; one below 0 never lights negatives.
+    noise = np.array([[[-3.0, -0.5, 0.5, 2.0, 5.0]]], np.float32)
+    assert np.count_nonzero(emission_from(noise, floor=1.0)) == 2
+    assert np.count_nonzero(emission_from(noise, floor=-1.0)) == 3
+    # Of logarithms: on the logarithms, exactly; one beyond them all, dark.
+    logs = np.linspace(-10, 10, 201, dtype=np.float32)
+    for v in logs[::10]:
+        assert np.all(emission_from(logs, log10=True, floor=float(v))[logs <= v] == 0)
+    assert not emission_from(logs, log10=True, floor=400.0).any()
     sq = emission_from(np.array([[[1.0, 2.0, 4.0]]], np.float32), power=2.0)
     assert sq[0, 0, 1] / sq[0, 0, 0] == pytest.approx(4.0, rel=1e-4)
     idx, lo, hi = colour_index(np.array([[[1e4, 1e6, 1e8, 0.0]]], np.float32), lo=1e4, hi=1e8,

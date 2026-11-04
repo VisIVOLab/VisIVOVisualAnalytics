@@ -1139,12 +1139,19 @@ protected:
     /// analysis rendering, whose controls are hidden while it is on.
     void setRaytraced(bool on);
     /// While the ray-traced light is on, the analysis rendering's controls
-    /// (mode, blend, lighting, threshold, colour map) and its 3-D layers are
-    /// hidden: they draw nothing in it.
+    /// (mode, blend, lighting, colour map) and its 3-D layers are hidden: they
+    /// draw nothing in it. The threshold stays: below it nothing emits.
     bool raytracedShown() const;
     void syncRaytracedControls();
+    /// The 3-D colour bar's title, in both styles: the unit or the field.
+    QString volumeBarTitle() const;
     QPointer<QWidget> m_classic3dTop;     ///< Isosurface/Volume, blend, cinematic
-    QPointer<QWidget> m_classic3dBottom;  ///< threshold, colour map, surface colour
+    QPointer<QWidget> m_classic3dBottom;  ///< colour map, surface colour
+    QPointer<QWidget> m_thresholdBox;     ///< hidden in the ray-traced light unless it darkens
+    /// The threshold changed: the ray-traced light, whose floor it is, is
+    /// prepared again once it settles.
+    void raytraceThresholdChanged();
+    QPointer<QTimer> m_rtFloorTimer;
     /// The 3-D view's camera (the backend view's when that is shown) and the
     /// world box the cube spans in its coordinates; an empty box: the full
     /// cube's voxel coordinates, the backend view's.
@@ -1159,7 +1166,6 @@ protected:
     int m_rtPreviousPage{ 0 };                ///< the stack's page before it
     bool m_rtFromRemote{ false };             ///< its camera came from the backend view
     QList<QPair<QString, int>> m_rtFields;    ///< the volume's other fields, by index
-    QString m_rtFieldName;                    ///< this cube's own field
     /// The stride of the displayed preview (1: full resolution or a region):
     /// a displayed voxel i is the cube's voxel i × stride.
     int m_displayStride{ 1 };

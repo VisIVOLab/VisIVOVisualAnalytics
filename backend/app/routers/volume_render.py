@@ -50,6 +50,11 @@ class VolumeRenderRequest(BaseModel):
     # logarithm), raised to ``brightness_power`` (the contrast).
     brightness_log10: bool = False
     brightness_power: float = Field(1.0, gt=0.0, le=8.0)
+    # Values at or below it emit nothing (in the dataset's own values, a
+    # logarithm when they hold one): the 3-D view's threshold, so a radio
+    # cube's noise, summed over every channel along a ray, does not veil it.
+    # None: only values at or below 0 are dark.
+    brightness_floor: float | None = None
     # The colour: of the brightness itself (``density``) or of another field
     # of the same VBT volume (``colour``, ``colour_field`` its index), through
     # ``colour`` (a named map or the client's points; its range and scale).
@@ -165,7 +170,8 @@ def _prepare(entry: dict, req: VolumeRenderRequest) -> dict:
         lo, hi = float(full[2 * axis]), float(full[2 * axis + 1])
         m = field.shape[2 - axis]
         box += [lo, lo + (hi - lo) * ((m - 1) * stride) / max(n - 1, 1)]
-    emission = emission_from(field, log10=req.brightness_log10, power=req.brightness_power)
+    emission = emission_from(field, log10=req.brightness_log10, power=req.brightness_power,
+                             floor=req.brightness_floor)
     log = req.colour.log
     if colour_path is not None:
         cshape = tuple(int(n) for n in volume_shape(colour_path)[0][-3:])
@@ -290,7 +296,8 @@ _PREPARED: OrderedDict[str, dict] = OrderedDict()
 _PREPARED_KEEP = 2
 _PREPARE_LOCK = asyncio.Lock()
 _PREPARE_WORK = threading.Lock()
-_GRID_FIELDS = ("dataset_id", "box", "brightness_log10", "brightness_power", "colour_by",
+_GRID_FIELDS = ("dataset_id", "box", "brightness_log10", "brightness_power",
+                "brightness_floor", "colour_by",
                 "colour_field", "colour", "max_voxels")
 
 

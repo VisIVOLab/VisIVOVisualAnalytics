@@ -48,6 +48,12 @@ VolumeRaytracePanel::VolumeRaytracePanel(QWidget *parent) : QWidget(parent)
     m_lightLog->setToolTip(u"The cube holds the logarithm of the quantity (a log density): "
                            u"its light is 10 to the value"_s);
     bf->addRow(u"Light"_s, m_lightLog);
+    m_floor = new QCheckBox(u"Dark below the threshold"_s);
+    m_floor->setToolTip(u"Values below the 3-D view's threshold emit nothing. A ray sums every "
+                        u"channel it crosses: a radio cube's noise, a little in each, adds up "
+                        u"to a veil over the source. A simulation's faint gas is light, not "
+                        u"noise: leave it off there."_s);
+    bf->addRow(QString(), m_floor);
     m_contrast = spin(0.25, 4.0, 0.1, 1.0);
     m_contrast->setToolTip(u"The light raised to this power. Above 1 the faint, diffuse "
                            u"emission fades and the dense structure stands out (2: a gas's "
@@ -151,6 +157,7 @@ VolumeRaytracePanel::VolumeRaytracePanel(QWidget *parent) : QWidget(parent)
     connect(m_map, &QComboBox::currentIndexChanged, this, grid);
     connect(m_mapLog, &QCheckBox::toggled, this, grid);
     connect(m_lightLog, &QCheckBox::toggled, this, grid);
+    connect(m_floor, &QCheckBox::toggled, this, grid);
     connect(m_contrast, &QDoubleSpinBox::valueChanged, this, grid);
     const auto tone = [this]() { emit toneChanged(); };
     connect(m_curve, &QComboBox::currentIndexChanged, this, tone);
@@ -180,6 +187,17 @@ void VolumeRaytracePanel::setMap(const QString &name)
         return;
     const QSignalBlocker block(m_map);
     m_map->setCurrentIndex(at);
+}
+
+bool VolumeRaytracePanel::thresholdDarkens() const
+{
+    return m_floor->isChecked();
+}
+
+void VolumeRaytracePanel::setThresholdDarkens(bool on)
+{
+    const QSignalBlocker block(m_floor);
+    m_floor->setChecked(on);
 }
 
 void VolumeRaytracePanel::setRowVisible(QWidget *field, bool visible)
@@ -278,7 +296,8 @@ QString VolumeRaytracePanel::gridKey(const QJsonObject &request)
 {
     QJsonObject key;
     for (const QString &k : { u"dataset_id"_s, u"box"_s, u"brightness_log10"_s,
-                              u"brightness_power"_s, u"colour_by"_s, u"colour_field"_s,
+                              u"brightness_power"_s, u"brightness_floor"_s,
+                              u"colour_by"_s, u"colour_field"_s,
                               u"colour"_s, u"mode"_s, u"max_voxels"_s })
         if (request.contains(k))
             key.insert(k, request.value(k));

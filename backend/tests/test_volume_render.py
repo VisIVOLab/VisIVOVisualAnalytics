@@ -173,6 +173,18 @@ def test_the_grid_for_the_gpu_is_what_a_render_draws(tmp_path):
     assert lut.min() >= 0 and lut.max() <= 1
 
 
+def test_the_floor_darkens_what_lies_below_it(tmp_path):
+    # The 3-D view's threshold: below it nothing emits (a radio cube's noise).
+    from app.routers import volume_render as router
+    path, density, _ = _volume(tmp_path)
+    req = router.VolumeGridRequest(dataset_id="vol", brightness_floor=0.5)
+    reply, loop = _run(lambda: router.volume_render_grid(req, token="tok",
+                                                         session=_Session(path)))
+    loop.close()
+    e = np.frombuffer(reply.body[:N ** 3 * 4], "<f4").reshape(N, N, N)
+    assert np.all(e[density <= 0.5] == 0) and np.all(e[density > 0.5] > 0)
+
+
 def test_a_large_grid_is_read_with_a_stride(tmp_path):
     from app.routers import volume_render as router
     path, _, _ = _volume(tmp_path)

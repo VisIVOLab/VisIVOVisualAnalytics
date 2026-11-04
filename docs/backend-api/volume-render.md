@@ -15,6 +15,7 @@ session token.
 | `dataset_id` | A cube opened in this session: a FITS cube or a field of a VBT volume, at least two voxels along each axis (else 422). |
 | `box` | `[x0, x1, y0, y1, z0, z1]`: the world box the grid's points span (the desktop's view places its cube there); null: the cube's voxel coordinates, 0 to n − 1. |
 | `brightness_log10`, `brightness_power` | The light: the cube's values (holding their log10), raised to this power (the contrast); scaled so their 99.5th percentile is 1. |
+| `brightness_floor` | Values at or below it emit nothing (the dataset's own values, a logarithm when they hold one): the desktop sends its 3-D view's threshold, so a radio cube's noise, summed over every channel along a ray, does not veil the source. Null: only values at or below 0 are dark. |
 | `colour_by`, `colour_field` | The colour: of the brightness (`density`) or of another field of the same VBT volume (`colour`, `colour_field` its index; a FITS cube has none: 422). |
 | `colour` | `{lut, points, min, max, log}`: a named map or the client's colour function, over `[min, max]` (null ends: the 1st and 99.9th percentiles of the quantity where there is light). |
 | `absorption` | Grey absorption, as the optical depth where the emitted light is brightest (0: emission only). |

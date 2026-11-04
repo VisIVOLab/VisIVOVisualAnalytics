@@ -6154,6 +6154,7 @@ QVTKOpenGLNativeWidget *vtkWindowCube::active2dWidget() const
 
 void vtkWindowCube::applyThresholdToPipeline(double threshold)
 {
+    this->raytraceThresholdChanged();   // the ray-traced light's floor
     // Mirror the new threshold to the remote renderer first so the
     // network call is on its way while the local VTK pipeline updates.
     {
@@ -6249,11 +6250,7 @@ void vtkWindowCube::refreshVolumeColorbar()
     this->m_volumeColorbar->setColours(colours);
     this->m_volumeColorbar->setTicks(ticks);
     // The quantity: the cube's unit, or a VBT field's name.
-    this->m_volumeColorbar->setTitle(
-            !this->m_brightnessUnit.isEmpty() ? this->m_brightnessUnit
-            : visivo::isFieldReference(this->filepath)
-                    ? visivo::fieldNames().value(this->filepath)
-                    : QString());
+    this->m_volumeColorbar->setTitle(this->volumeBarTitle());
     // Below the threshold the opacity is zero, in every blend mode (MIP and
     // MinIP apply it to the value they project). The threshold and Min..Max are
     // apart: the opacity spans the data, so voxels between a threshold and Min
@@ -7958,6 +7955,10 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
     QVBoxLayout *classicBottom = classicBox(classicBottomBox);
     m_classic3dTop = classicTopBox;
     m_classic3dBottom = classicBottomBox;
+    // The threshold, shared with the ray-traced light when it darkens.
+    QWidget *thresholdBox = nullptr;
+    QVBoxLayout *thresholdRows = classicBox(thresholdBox);
+    m_thresholdBox = thresholdBox;
     SegmentedToggle *modeCombo = m_uiAssembler->renderModeCombo();
     if (modeCombo) {
         rehost(modeCombo);
@@ -8035,9 +8036,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         cardLayout->setContentsMargins(0, 0, 0, 6);
         card->hide();
         this->m_rtCard = card;
-        disp3d->addWidget(card);
     }
-    disp3d->addWidget(classicBottomBox);
     {   // Threshold: label + mono value, then the slider full-width.
         auto *r = new QWidget();
         auto *h = new QHBoxLayout(r);
@@ -8047,7 +8046,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         l->setStyleSheet(labelCss);
         const QString thresholdTip =
                 u"Voxels below this value are transparent in the volume (in MIP, a ray whose "
-                u"maximum is below it); "
+                u"maximum is below it) and emit no light in the ray-traced view; "
                 u"the isosurface is drawn at it. The slider follows the colour map's scale "
                 u"(Edit)."_s;
         l->setToolTip(thresholdTip);
@@ -8071,7 +8070,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
             h->addWidget(ui->lineThreshold, 0);
         }
         r->setFixedHeight(28);   // deterministic row step (§3.0c density)
-        classicBottom->addWidget(r);
+        thresholdRows->addWidget(r);
     }
     if (ui->sliderThreshold) {
         rehost(ui->sliderThreshold);
@@ -8081,7 +8080,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         // slider kept rendering ~39 px and dominated the Threshold→slider step.
         // setFixedHeight forces min==max==22.
         ui->sliderThreshold->setFixedHeight(22);
-        classicBottom->addWidget(ui->sliderThreshold);
+        thresholdRows->addWidget(ui->sliderThreshold);
     }
     {   // What the threshold keeps, in voxels (issue #83).
         m_thresholdShareLabel = new QLabel(root);
@@ -8092,8 +8091,13 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
                 u"viewer holds. Voxels below it are transparent in the volume; "
                 u"the isosurface is drawn at it."_s);
         m_thresholdShareLabel->hide();   // until there is a cube to count
-        classicBottom->addWidget(m_thresholdShareLabel);
+        thresholdRows->addWidget(m_thresholdShareLabel);
     }
+    disp3d->addWidget(thresholdBox);
+    // The ray-traced settings under the threshold, which both styles share;
+    // the colour map is the analysis rendering's only.
+    disp3d->addWidget(m_rtCard);
+    disp3d->addWidget(classicBottomBox);
     {   // Color map: LUT combo + "Edit" link (no full-width "Advanced…").
         auto *r = new QWidget();
         auto *h = new QHBoxLayout(r);
@@ -15694,6 +15698,15 @@ void vtkWindowCube::applyIsosurfaceResult(const AsyncIsosurfaceResult &result)
                        .arg(renderTimer.elapsed());
 }
 
+QString vtkWindowCube::volumeBarTitle() const
+{
+    // The quantity: the cube's unit, or a VBT field's name.
+    return !this->m_brightnessUnit.isEmpty() ? this->m_brightnessUnit
+           : visivo::isFieldReference(this->filepath)
+                   ? visivo::fieldNames().value(this->filepath)
+                   : QString();
+}
+
 void vtkWindowCube::setSiblingFields(const QList<QPair<QString, QString>> &fields)
 {
     // One cube per field: the others are listed beside this one, and opening a
@@ -15702,10 +15715,8 @@ void vtkWindowCube::setSiblingFields(const QList<QPair<QString, QString>> &field
     this->m_rtFields.clear();
     for (const auto &field : fields) {
         ++index;
-        if (field.second == this->filepath) {
-            this->m_rtFieldName = field.first;
+        if (field.second == this->filepath)
             continue;
-        }
         // The ray-traced light's colour may come from it (index: the VBT's).
         this->m_rtFields.append({ field.first, index - 1 });
         QVariantMap params;

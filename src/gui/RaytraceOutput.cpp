@@ -359,8 +359,12 @@ void RaytraceOutput::poll()
 
 void RaytraceOutput::finished(const QJsonObject &result)
 {
-    const QString summary = u"%1 particles, %2 × %3, in %4 s"_s
-                                    .arg(QLocale().toString(result.value(u"particles"_s).toInt()))
+    // A volume's render counts its voxels, a table's its particles.
+    const bool volume = result.contains(u"voxels"_s);
+    const QString summary = (volume ? u"%1 voxels, %2 × %3, in %4 s"_s
+                                    : u"%1 particles, %2 × %3, in %4 s"_s)
+                                    .arg(QLocale().toString(result.value(
+                                            volume ? u"voxels"_s : u"particles"_s).toInteger()))
                                     .arg(result.value(u"width"_s).toInt())
                                     .arg(result.value(u"height"_s).toInt())
                                     .arg(result.value(u"seconds"_s).toDouble());

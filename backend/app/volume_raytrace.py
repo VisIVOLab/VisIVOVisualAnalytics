@@ -279,12 +279,17 @@ def emission_from(field: np.ndarray, *, log10: bool = False, power: float = 1.0,
         ref = float(np.percentile(logs[::stride], 99.5)) if logs.size else 0.0
         with np.errstate(over="ignore", invalid="ignore"):
             e = np.power(np.float32(10.0), f - np.float32(ref), dtype=np.float32)
-        lit_floor = (10.0 ** (floor - ref)) if floor is not None else 0.0
-        e = np.where(np.isfinite(e) & (e > lit_floor), e, 0.0).astype(np.float32, copy=False)
+        # The floor on the logarithms themselves: compared after the power,
+        # rounding lit some at it, and 10 to a far floor overflowed.
+        keep = np.isfinite(e) & (e > 0)
+        if floor is not None:
+            keep &= f > np.float32(floor)
+        e = np.where(keep, e, 0.0).astype(np.float32, copy=False)
         if power != 1.0:
             np.power(e, np.float32(power), out=e)
         return e
-    e = np.where(np.isfinite(f) & (f > (floor if floor is not None else 0.0)), f, 0.0)
+    # Light is never negative: a floor below 0 still darkens what is.
+    e = np.where(np.isfinite(f) & (f > max(floor or 0.0, 0.0)), f, 0.0)
     e = e.astype(np.float32, copy=False)
     lit = e[e > 0]
     if lit.size:

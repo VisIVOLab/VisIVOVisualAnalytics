@@ -39,8 +39,7 @@ projection only has a meaning along the velocity axis, which the
 
 Checking *Ray-traced light* replaces the 3-D view with the ray-traced one and
 opens its settings under the check, in place of the analysis rendering's
-(blend, lighting, threshold, colour map and the 3-D layers, which draw nothing
-in it). Its map starts from the 3-D view's, and its colour bar is drawn like
+(blend, lighting, colour map and the 3-D layers, which draw nothing in it). Its map starts from the 3-D view's, and its colour bar is drawn like
 the 3-D view's. The camera starts from the 3-D view's (the backend view's, when
 that is shown), and the 3-D view takes it back, with its controls, when the
 check is cleared.
@@ -57,6 +56,7 @@ check is cleared.
 |---|---|
 | **Mode** | *3-D light*: emission and absorption, in perspective. *Projected map*: the column along each line of sight, without perspective. |
 | **Light** | *Values are log₁₀*: the cube holds the logarithm of its quantity, its light is 10 to it. |
+| **Dark below the threshold** | Values under the 3-D view's *Threshold* (shown above the settings while this is on) emit nothing. A ray sums every channel it crosses, so a radio cube's noise, a little light in each, adds up to a veil over the source: on by default for a cube with negative values (noise), off for a simulation's grid, whose faint gas is light, not noise. |
 | **Contrast** | The light raised to this power: above 1 the faint, diffuse emission fades and the dense structure stands out (2: a gas's density squared). |
 | **Colour by**, **Map**, **Log scale** | The colour: of the light's own values, or of another field of a VBT volume, through a colour map. Its range is that of the quantity where there is light (its 1st to 99.9th percentile), not of an empty background. |
 | **Exposure** | In stops over the automatic exposure (the 99.5th percentile of the lit pixels): +1 doubles the light. |
