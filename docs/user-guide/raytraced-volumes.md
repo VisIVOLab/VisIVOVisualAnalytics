@@ -38,8 +38,11 @@ projection only has a meaning along the velocity axis, which the
 ## In the window: *Ray-traced light*
 
 Checking *Ray-traced light* replaces the 3-D view with the ray-traced one and
-opens its settings under the check. The camera starts from the 3-D view's (the
-backend view's, when that is shown), and the 3-D view takes it back when the
+opens its settings under the check, in place of the analysis rendering's
+(blend, lighting, threshold, colour map and the 3-D layers, which draw nothing
+in it). Its map starts from the 3-D view's, and its colour bar is drawn like
+the 3-D view's. The camera starts from the 3-D view's (the backend view's, when
+that is shown), and the 3-D view takes it back, with its controls, when the
 check is cleared.
 
 - **drag** to turn, **Shift-drag** or the right button to move, **scroll** to

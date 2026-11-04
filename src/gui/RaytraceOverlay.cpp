@@ -1,6 +1,9 @@
 #include "RaytraceOverlay.h"
 
+#include "VolumeColorbar.h"
+
 #include <QFont>
+#include <QFontMetrics>
 #include <QJsonArray>
 #include <QLinearGradient>
 #include <QMatrix4x4>
@@ -21,16 +24,6 @@ QVector3D vec(const QJsonObject &o, const QString &key)
 {
     const QJsonArray a = o.value(key).toArray();
     return { float(a.at(0).toDouble()), float(a.at(1).toDouble()), float(a.at(2).toDouble()) };
-}
-
-QString label(double v)
-{
-    const double a = std::abs(v);
-    if (v == 0.0)
-        return u"0"_s;
-    if (a >= 1e4 || a < 1e-2)
-        return QString::number(v, 'e', 1);
-    return QString::number(v, 'g', 3);
 }
 
 /// The box's twelve edges, projected as the renderer projects (its camera:
@@ -79,46 +72,43 @@ void paintBox(QPainter &p, const QRectF &target, const QJsonObject &camera,
         }
 }
 
+/// The bar as the 3-D view's own (VolumeColorbar): the same place, size and
+/// type, so it does not change with the style; a still larger than the view
+/// draws it larger by the same factor.
 void paintBar(QPainter &p, const QRectF &target, const RaytraceOverlay &o)
 {
     if (o.lut.empty() || !(o.hi > o.lo))
         return;
-    const double h = target.height();
-    const QRectF bar(target.right() - 0.075 * h, target.top() + 0.22 * h, 0.022 * h, 0.56 * h);
-    QFont font = p.font();
-    font.setPixelSize(std::max(9, int(std::lround(0.024 * h))));
-    p.setFont(font);
-    // A dark plate under it, as the 3-D views' colour bar has.
-    const QRectF plate(bar.left() - 0.012 * h, bar.top() - 0.07 * h, 0.17 * h, bar.height() + 0.1 * h);
-    QPainterPath back;
-    back.addRoundedRect(plate.translated(-0.1 * h, 0), 0.01 * h, 0.01 * h);
-    p.fillPath(back, QColor(0, 0, 0, 150));
-    QLinearGradient ramp(bar.bottomLeft(), bar.topLeft());
-    const int n = int(o.lut.size());
-    for (int i = 0; i < n; ++i) {
-        const QVector3D &c = o.lut[size_t(i)];
-        ramp.setColorAt(i / std::max(1.0, n - 1.0),
-                        QColor::fromRgbF(std::clamp(c.x(), 0.0f, 1.0f),
+    VolumeColorbar::Look look;
+    look.colours.reserve(int(o.lut.size()));
+    for (const QVector3D &c : o.lut)
+        look.colours << QColor::fromRgbF(std::clamp(c.x(), 0.0f, 1.0f),
                                          std::clamp(c.y(), 0.0f, 1.0f),
-                                         std::clamp(c.z(), 0.0f, 1.0f)));
+                                         std::clamp(c.z(), 0.0f, 1.0f));
+    const bool log = o.log && o.lo > 0;
+    const auto value = [&](double f) {
+        return log ? o.lo * std::pow(o.hi / o.lo, f) : o.lo + (o.hi - o.lo) * f;
+    };
+    bool exponent = false;
+    for (const double f : { 0.0, 0.25, 0.5, 0.75, 1.0 }) {
+        look.ticks << qMakePair(f, QString::number(value(f), 'g', 3));
+        exponent = exponent || look.ticks.back().second.contains(u'e');
     }
-    p.fillRect(bar, ramp);
-    p.setPen(QColor(220, 225, 235));
-    p.drawRect(bar);
-    const QFontMetricsF fm(font);
-    for (int k = 0; k <= 4; ++k) {
-        const double f = k / 4.0;
-        const double v = o.log && o.lo > 0 ? o.lo * std::pow(o.hi / o.lo, f) : o.lo + (o.hi - o.lo) * f;
-        const double y = bar.bottom() - f * bar.height();
-        p.drawLine(QPointF(bar.left() - 0.006 * h, y), QPointF(bar.left(), y));
-        const QString text = label(v);
-        p.drawText(QPointF(bar.left() - 0.01 * h - fm.horizontalAdvance(text), y + fm.ascent() / 2.5),
-                   text);
-    }
-    if (!o.title.isEmpty()) {
-        const QString title = fm.elidedText(o.title, Qt::ElideRight, 0.2 * h);
-        p.drawText(QPointF(bar.right() - fm.horizontalAdvance(title), bar.top() - 0.025 * h), title);
-    }
+    // One notation down the bar, as the 3-D view's.
+    if (exponent)
+        for (auto &tick : look.ticks)
+            tick.second = QString::number(value(tick.first), 'e', 2);
+    look.title = o.title;
+    const double s = std::max(0.1, o.scale);
+    const QFont &font = o.font;
+    p.save();
+    p.setFont(font);
+    p.translate(target.topLeft());
+    p.scale(s, s);
+    const QFontMetrics fm(font, p.device());
+    const QSize host(int(std::lround(target.width() / s)), int(std::lround(target.height() / s)));
+    VolumeColorbar::paint(p, VolumeColorbar::placement(host, fm, look), fm, look);
+    p.restore();
 }
 
 } // namespace

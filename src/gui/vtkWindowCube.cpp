@@ -7944,12 +7944,26 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
     p3->setSpacing(6);
     dispStack->addWidget(page3d);   // index 0
     QVBoxLayout *disp3d = p3;       // the 3D widgets below go into the 3D PAGE, not `disp`
+    // The analysis rendering's controls, above and below the ray-traced light:
+    // hidden while that style is on, as they draw nothing in it.
+    const auto classicBox = [p3](QWidget *&box) {
+        box = new QWidget();
+        auto *l = new QVBoxLayout(box);
+        l->setContentsMargins(0, 0, 0, 0);
+        l->setSpacing(p3->spacing());
+        return l;
+    };
+    QWidget *classicTopBox = nullptr, *classicBottomBox = nullptr;
+    QVBoxLayout *classicTop = classicBox(classicTopBox);
+    QVBoxLayout *classicBottom = classicBox(classicBottomBox);
+    m_classic3dTop = classicTopBox;
+    m_classic3dBottom = classicBottomBox;
     SegmentedToggle *modeCombo = m_uiAssembler->renderModeCombo();
     if (modeCombo) {
         rehost(modeCombo);
         modeCombo->setMinimumWidth(0);   // let segments share the narrow dock, never overflow
         modeCombo->setParent(root);
-        disp3d->addWidget(modeCombo);
+        classicTop->addWidget(modeCombo);
     }
     QWidget *volRow = nullptr;
     if (auto *v = m_uiAssembler->volumeModeCombo()) {
@@ -7974,7 +7988,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         // Same fixed step as surfRow, so the block below the selector keeps its
         // height across the swap.
         volRow->setFixedHeight(28);
-        disp3d->addWidget(volRow);
+        classicTop->addWidget(volRow);
     }
     // Cinematic lighting (issue #101), with the blend mode it modifies.
     QWidget *cineRow = new QWidget();
@@ -7994,8 +8008,9 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
                          [this](bool on) { this->applyCinematicLighting(on); });
         h->addWidget(cb, 1);
         cineRow->setFixedHeight(28);
-        disp3d->addWidget(cineRow);
+        classicTop->addWidget(cineRow);
     }
+    disp3d->addWidget(classicTopBox);
     // Ray-traced light (issue #106): its settings and output open under it.
     {
         QWidget *rtRow = new QWidget();
@@ -8022,6 +8037,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         this->m_rtCard = card;
         disp3d->addWidget(card);
     }
+    disp3d->addWidget(classicBottomBox);
     {   // Threshold: label + mono value, then the slider full-width.
         auto *r = new QWidget();
         auto *h = new QHBoxLayout(r);
@@ -8055,7 +8071,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
             h->addWidget(ui->lineThreshold, 0);
         }
         r->setFixedHeight(28);   // deterministic row step (§3.0c density)
-        disp3d->addWidget(r);
+        classicBottom->addWidget(r);
     }
     if (ui->sliderThreshold) {
         rehost(ui->sliderThreshold);
@@ -8065,7 +8081,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         // slider kept rendering ~39 px and dominated the Threshold→slider step.
         // setFixedHeight forces min==max==22.
         ui->sliderThreshold->setFixedHeight(22);
-        disp3d->addWidget(ui->sliderThreshold);
+        classicBottom->addWidget(ui->sliderThreshold);
     }
     {   // What the threshold keeps, in voxels (issue #83).
         m_thresholdShareLabel = new QLabel(root);
@@ -8076,7 +8092,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
                 u"viewer holds. Voxels below it are transparent in the volume; "
                 u"the isosurface is drawn at it."_s);
         m_thresholdShareLabel->hide();   // until there is a cube to count
-        disp3d->addWidget(m_thresholdShareLabel);
+        classicBottom->addWidget(m_thresholdShareLabel);
     }
     {   // Color map: LUT combo + "Edit" link (no full-width "Advanced…").
         auto *r = new QWidget();
@@ -8112,7 +8128,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
             h->addWidget(edit, 0);
         }
         r->setFixedHeight(28);   // deterministic row step (§3.0c density)
-        disp3d->addWidget(r);
+        classicBottom->addWidget(r);
     }
     QWidget *surfRow = nullptr;
     if (ui->btnCubeColor) {
@@ -8127,7 +8143,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         ui->btnCubeColor->setParent(surfRow);
         h->addWidget(ui->btnCubeColor, 0);
         surfRow->setFixedHeight(28);   // deterministic row step (§3.0c density)
-        disp3d->addWidget(surfRow);
+        classicBottom->addWidget(surfRow);
     }
     {
         // Slack goes to the bottom, not into the controls.
@@ -9724,10 +9740,12 @@ void vtkWindowCube::updateDisplaySectionForActivePane()
     // for. Below the return, opening in 3-D left every row showing and switching
     // slice → 3-D left the 3-D rows hidden.
     const bool isSlice = (kind == ViewId::Slice2D);
-    if (m_layerRowVolume)        m_layerRowVolume->setVisible(is3d);
-    if (m_layerRowCuttingPlane)  m_layerRowCuttingPlane->setVisible(is3d);
+    // The ray-traced light draws none of the 3-D layers.
+    const bool layers3d = is3d && !raytracedShown();
+    if (m_layerRowVolume)        m_layerRowVolume->setVisible(layers3d);
+    if (m_layerRowCuttingPlane)  m_layerRowCuttingPlane->setVisible(layers3d);
     updateCuttingPlaneOpacityRowVisibility();
-    if (m_layerRow3dWcsAxes)     m_layerRow3dWcsAxes->setVisible(is3d);
+    if (m_layerRow3dWcsAxes)     m_layerRow3dWcsAxes->setVisible(layers3d);
     if (m_layerRowContours)      m_layerRowContours->setVisible(isSlice);
 
     if (!isPane)
@@ -15484,7 +15502,8 @@ void vtkWindowCube::updateCuttingPlaneOpacityRowVisibility()
         return;
     const ViewId kind =
             (m_activePane >= 0 && m_activePane < 4) ? m_slots[m_activePane].view.kind : ViewId::None;
-    m_layerRowCuttingPlaneOpacity->setVisible(kind == ViewId::View3D && actionShowCuttingPlane
+    m_layerRowCuttingPlaneOpacity->setVisible(kind == ViewId::View3D && !raytracedShown()
+                                              && actionShowCuttingPlane
                                               && actionShowCuttingPlane->isChecked());
 }
 

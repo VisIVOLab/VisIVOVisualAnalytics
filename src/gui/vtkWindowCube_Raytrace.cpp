@@ -8,6 +8,7 @@
 #include "vtkWindowCube.h"
 #include "ui_vtkWindowCube.h"
 
+#include "CubeUiAssembler.h"
 #include "RaytraceOutput.h"
 #include "RaytraceViewport.h"
 #include "VolumeRaytracePanel.h"
@@ -19,6 +20,7 @@
 #include <vtkRendererCollection.h>
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -26,6 +28,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QScopeGuard>
 #include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QStatusBar>
@@ -144,11 +147,29 @@ QJsonObject vtkWindowCube::raytraceRequest() const
     return req;
 }
 
+bool vtkWindowCube::raytracedShown() const
+{
+    return this->m_rtCheck && this->m_rtCheck->isChecked();
+}
+
+void vtkWindowCube::syncRaytracedControls()
+{
+    const bool on = this->raytracedShown();
+    if (this->m_classic3dTop)
+        this->m_classic3dTop->setVisible(!on);
+    if (this->m_classic3dBottom)
+        this->m_classic3dBottom->setVisible(!on);
+    if (this->m_rtCard)
+        this->m_rtCard->setVisible(on);
+    // The 3-D layers follow it (the pane filter asks raytracedShown).
+    this->updateDisplaySectionForActivePane();
+}
+
 void vtkWindowCube::setRaytraced(bool on)
 {
+    // The card and the controls follow the check, whichever way this returns.
+    const auto sync = qScopeGuard([this]() { this->syncRaytracedControls(); });
     if (!on) {
-        if (this->m_rtCard)
-            this->m_rtCard->hide();
         if (this->m_rtView && this->m_renderStack
             && this->m_renderStack->currentWidget() == this->m_rtView) {
             // Back to the view the camera was turned to (this window's; the
@@ -190,6 +211,8 @@ void vtkWindowCube::setRaytraced(bool on)
         auto *cardLayout = qobject_cast<QVBoxLayout *>(this->m_rtCard->layout());
         this->m_rtPanel = new VolumeRaytracePanel(this->m_rtCard);
         this->m_rtPanel->setFields(this->m_rtFields);
+        if (QComboBox *lut = this->m_uiAssembler ? this->m_uiAssembler->lutCombo() : nullptr)
+            this->m_rtPanel->setMap(lut->currentText());
         cardLayout->addWidget(this->m_rtPanel);
         // What the picture is read by, over the view and on what is saved.
         auto *boxCheck = new QCheckBox(u"Box"_s);
@@ -288,11 +311,9 @@ void vtkWindowCube::setRaytraced(bool on)
                                  return;
                              const QSignalBlocker block(this->m_rtCheck);
                              this->m_rtCheck->setChecked(false);
-                             if (this->m_rtCard)
-                                 this->m_rtCard->hide();
+                             this->syncRaytracedControls();
                          });
     }
-    this->m_rtCard->show();
     const bool alreadyOn = this->m_renderStack->currentWidget() == this->m_rtView;
     if (alreadyOn) {
         this->m_rtView->refresh();
@@ -306,6 +327,7 @@ void vtkWindowCube::setRaytraced(bool on)
             return;
         if (camera.isEmpty()) {
             self->statusBar()->showMessage(u"No camera for the ray-traced view: "_s + error, 8000);
+            self->m_rtCheck->setChecked(false);   // the analysis view and its controls back
             return;
         }
         self->m_rtView->setCamera(camera);

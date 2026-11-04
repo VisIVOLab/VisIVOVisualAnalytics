@@ -375,6 +375,7 @@ visivo::RaytraceOverlay ParticleGLView::overlay() const
     o.bounds = m_bounds;
     o.parallel = m_mode == Mode::Projected;
     o.title = m_tone.barTitle;
+    o.font = font();   // the window's type, as the 3-D view's own bar
     if (m_mode == Mode::Projected) {
         if (!m_stats)
             return o;

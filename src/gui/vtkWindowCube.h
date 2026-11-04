@@ -1136,8 +1136,15 @@ protected:
     /// The 3-D view as HDR light, graded by a tone curve, its colour from the
     /// cube or from another field: a ray-march on this machine's GPU, stills
     /// and movies by the backend. A presentation style switched on beside the
-    /// analysis rendering, which keeps its controls.
+    /// analysis rendering, whose controls are hidden while it is on.
     void setRaytraced(bool on);
+    /// While the ray-traced light is on, the analysis rendering's controls
+    /// (mode, blend, lighting, threshold, colour map) and its 3-D layers are
+    /// hidden: they draw nothing in it.
+    bool raytracedShown() const;
+    void syncRaytracedControls();
+    QPointer<QWidget> m_classic3dTop;     ///< Isosurface/Volume, blend, cinematic
+    QPointer<QWidget> m_classic3dBottom;  ///< threshold, colour map, surface colour
     /// The 3-D view's camera (the backend view's when that is shown) and the
     /// world box the cube spans in its coordinates; an empty box: the full
     /// cube's voxel coordinates, the backend view's.

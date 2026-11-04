@@ -282,6 +282,11 @@ void RaytraceOutput::submit(const QList<QJsonObject> &cameras, bool movie)
     m_overlay = m_source.overlay ? m_source.overlay() : visivo::RaytraceOverlay();
     QJsonObject req = m_source.request ? m_source.request() : QJsonObject();
     const QSize px = imageSize();
+    // The bar as large, against the picture, as it is against the view, for
+    // every frame of the render whatever the window does meanwhile.
+    const QSize shown = m_source.viewSize ? m_source.viewSize() : QSize();
+    if (shown.height() > 0)
+        m_overlay.scale = double(px.height()) / shown.height();
     req.insert(u"width"_s, px.width());
     req.insert(u"height"_s, px.height());
     QJsonArray cams;
@@ -404,7 +409,9 @@ void RaytraceOutput::regrade()
     if (m_regradeReply)
         m_regradeReply->abort();
     // The grade and the overlay as they are now.
+    const double scale = m_overlay.scale;   // the still's size has not changed
     m_overlay = m_source.overlay ? m_source.overlay() : m_overlay;
+    m_overlay.scale = scale;
     QNetworkReply *reply = send(u"POST"_s, u"/v1/particle_render/%1/tone"_s.arg(m_taskId),
                                 QJsonDocument(m_source.tone(m_autoExposure))
                                         .toJson(QJsonDocument::Compact));

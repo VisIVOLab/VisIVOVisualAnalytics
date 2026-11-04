@@ -32,6 +32,8 @@ public:
     /// The other fields the colour can come from (a VBT volume's): their
     /// names, by field index; the cube's own field is left out.
     void setFields(const QList<QPair<QString, int>> &fields);
+    /// Starts the map from the 3-D view's, when it is one of these.
+    void setMap(const QString &name);
 
     bool projected() const;
     /// The request fields these settings set (app/routers/volume_render.py,
@@ -73,6 +75,7 @@ private:
     QDoubleSpinBox *m_gamma{ nullptr };
     QDoubleSpinBox *m_saturation{ nullptr };
     QToolButton *m_more{ nullptr };
+    QWidget *m_advanced{ nullptr };   ///< the rows under "More settings"
 };
 
 #endif // VOLUMERAYTRACEPANEL_H

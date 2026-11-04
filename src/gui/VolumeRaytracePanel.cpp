@@ -7,7 +7,6 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
-#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QJsonDocument>
 #include <QSignalBlocker>
@@ -34,8 +33,9 @@ QDoubleSpinBox *spin(double lo, double hi, double step, double value, int decima
 
 VolumeRaytracePanel::VolumeRaytracePanel(QWidget *parent) : QWidget(parent)
 {
-    auto *style = new QGroupBox(u"Style"_s);
-    auto *sf = new QFormLayout(style);
+    // The settings one changes, then the rest under "More settings".
+    auto *basic = new QWidget;
+    auto *bf = new QFormLayout(basic);
     m_mode = new QComboBox;
     m_mode->addItem(u"3-D light"_s, u"light"_s);
     m_mode->addItem(u"Projected map"_s, u"projected"_s);
@@ -43,42 +43,40 @@ VolumeRaytracePanel::VolumeRaytracePanel(QWidget *parent) : QWidget(parent)
                        u"by a tone curve: its faint emission and its bright cores both show.\n"
                        u"Projected map: the column along each line of sight, without "
                        u"perspective, the brightness its logarithm."_s);
-    sf->addRow(u"Mode"_s, m_mode);
-
-    auto *light = new QGroupBox(u"Light and colour"_s);
-    auto *lf = new QFormLayout(light);
+    bf->addRow(u"Mode"_s, m_mode);
     m_lightLog = new QCheckBox(u"Values are log₁₀"_s);
     m_lightLog->setToolTip(u"The cube holds the logarithm of the quantity (a log density): "
                            u"its light is 10 to the value"_s);
-    lf->addRow(u"Light"_s, m_lightLog);
+    bf->addRow(u"Light"_s, m_lightLog);
     m_contrast = spin(0.25, 4.0, 0.1, 1.0);
     m_contrast->setToolTip(u"The light raised to this power. Above 1 the faint, diffuse "
                            u"emission fades and the dense structure stands out (2: a gas's "
                            u"density squared, as an emissivity ∝ ρ² shows it)."_s);
-    lf->addRow(u"Contrast"_s, m_contrast);
+    bf->addRow(u"Contrast"_s, m_contrast);
     m_colour = new QComboBox;
     m_colour->addItem(u"Its own values"_s, -1);
     m_colour->setToolTip(u"The colour: of the light's own quantity, or of another field of the "
                          u"volume (a density as the light, a temperature as the colour)"_s);
-    lf->addRow(u"Colour by"_s, m_colour);
+    bf->addRow(u"Colour by"_s, m_colour);
     m_map = new QComboBox;
     m_map->setIconSize(QSize(28, 10));
     for (const QString &name : { u"Inferno"_s, u"Magma"_s, u"Plasma"_s, u"Viridis"_s,
                                  u"Cividis"_s, u"Glow"_s, u"Temperature"_s, u"Coolwarm"_s,
                                  u"Gray"_s })
         m_map->addItem(makeColormapIcon(name.toStdString()), name, name);
-    lf->addRow(u"Map"_s, m_map);
+    bf->addRow(u"Map"_s, m_map);
     m_mapLog = new QCheckBox(u"Log scale"_s);
     m_mapLog->setChecked(true);
     m_mapLog->setToolTip(u"The colour's quantity on a log scale"_s);
-    lf->addRow(QString(), m_mapLog);
+    bf->addRow(QString(), m_mapLog);
 
-    auto *grade = new QGroupBox(u"Tone"_s);
-    auto *gf = new QFormLayout(grade);
     m_exposureEv = spin(-12.0, 12.0, 0.5, 0.0);
     m_exposureEv->setSuffix(u" EV"_s);
     m_exposureEv->setToolTip(u"Relative to the automatic exposure: +1 doubles the light."_s);
-    gf->addRow(u"Exposure"_s, m_exposureEv);
+    bf->addRow(u"Exposure"_s, m_exposureEv);
+
+    m_advanced = new QWidget;
+    auto *gf = new QFormLayout(m_advanced);
     m_absorption = spin(0.0, 20.0, 0.25, 0.0);
     m_absorption->setToolTip(u"Grey absorption, as the optical depth where the light is "
                              u"brightest. 0: emission only; 1 or more: dense regions hide "
@@ -126,15 +124,13 @@ VolumeRaytracePanel::VolumeRaytracePanel(QWidget *parent) : QWidget(parent)
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
-    for (QGroupBox *box : { style, light, grade }) {
-        box->setFlat(true);
-        if (auto *form = qobject_cast<QFormLayout *>(box->layout())) {
-            form->setContentsMargins(0, 4, 0, 4);
-            form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-        }
-        layout->addWidget(box);
+    for (QFormLayout *form : { bf, gf }) {
+        form->setContentsMargins(0, 2, 0, 2);
+        form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     }
+    layout->addWidget(basic);
     layout->addWidget(m_more);
+    layout->addWidget(m_advanced);
     // Narrow enough for the viewer's sidebar.
     for (QComboBox *combo : findChildren<QComboBox *>()) {
         combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
@@ -177,6 +173,15 @@ void VolumeRaytracePanel::setFields(const QList<QPair<QString, int>> &fields)
     syncRows();
 }
 
+void VolumeRaytracePanel::setMap(const QString &name)
+{
+    const int at = m_map->findText(name, Qt::MatchFixedString);
+    if (at < 0)
+        return;
+    const QSignalBlocker block(m_map);
+    m_map->setCurrentIndex(at);
+}
+
 void VolumeRaytracePanel::setRowVisible(QWidget *field, bool visible)
 {
     if (auto *form = qobject_cast<QFormLayout *>(field->parentWidget()->layout()))
@@ -191,12 +196,12 @@ void VolumeRaytracePanel::syncRows()
     setRowVisible(m_colour, m_colour->count() > 1);
     // A map has no absorption, and its brightness is the log of the column:
     // the light's curve does not apply.
+    m_advanced->setVisible(more);
     for (QWidget *w : std::initializer_list<QWidget *>{ m_absorption, m_curve, m_stretch,
                                                         m_gamma, m_saturation })
-        setRowVisible(w, !map && more);
+        setRowVisible(w, !map);
     for (QWidget *w : std::initializer_list<QWidget *>{ m_slab, m_decades })
-        setRowVisible(w, map && more);
-    setRowVisible(m_quality, more);
+        setRowVisible(w, map);
 }
 
 bool VolumeRaytracePanel::projected() const

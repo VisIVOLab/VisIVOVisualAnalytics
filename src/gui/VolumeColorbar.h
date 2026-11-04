@@ -8,6 +8,8 @@
 
 #include <optional>
 
+class QFontMetrics;
+
 /// The 3-D volume's colour bar (issue #83): the colour map over its Min..Max on
 /// the volume's scale, its values, and the threshold below which the volume is
 /// transparent (that part of the bar is dimmed; its value is written under the
@@ -18,11 +20,24 @@
 /// Positions along the bar are fractions of the scale, 0 at the bottom: the
 /// host computes them (vtkWindowCube::volumeScalePosition), so the bar reads
 /// the same on a linear, log or power scale.
+///
+/// The ray-traced views draw their bar with the same look (paint), so the bar
+/// does not change when the style does.
 class VolumeColorbar : public QWidget
 {
     Q_OBJECT
 
 public:
+    /// What a bar shows.
+    struct Look
+    {
+        QVector<QColor> colours;                 ///< from the bottom of the bar to its top
+        QVector<QPair<double, QString>> ticks;   ///< labelled values: (position, text)
+        QString title;
+        std::optional<double> threshold;
+        QString thresholdCaption;
+    };
+
     explicit VolumeColorbar(QWidget *parent = nullptr);
 
     /// Moves the bar onto `host` (the 3-D view now shown) and re-places it.
@@ -38,6 +53,14 @@ public:
     /// bar; none hides both.
     void setThreshold(std::optional<double> position, const QString &caption = {});
 
+    /// The bar's font.
+    static QFont barFont();
+    /// Where a bar showing `look` sits in a view of `host` size.
+    static QRect placement(const QSize &host, const QFontMetrics &fm, const Look &look);
+    /// Draws `look` into `rect` (as placed by placement).
+    static void paint(QPainter &painter, const QRect &rect, const QFontMetrics &fm,
+                      const Look &look);
+
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
@@ -45,9 +68,5 @@ protected:
 private:
     void reposition();
 
-    QVector<QColor> m_colours;
-    QVector<QPair<double, QString>> m_ticks;
-    QString m_title;
-    std::optional<double> m_threshold;
-    QString m_thresholdCaption;
+    Look m_look;
 };
