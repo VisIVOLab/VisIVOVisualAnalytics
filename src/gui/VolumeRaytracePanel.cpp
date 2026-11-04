@@ -19,6 +19,11 @@ using namespace Qt::Literals::StringLiterals;
 
 namespace {
 
+// The colour's source, as the "Colour by" items hold it: the light's own
+// values, each channel's velocity, or a VBT field's index (0 and up).
+constexpr int kOwnValues = -1;
+constexpr int kVelocity = -2;
+
 QDoubleSpinBox *spin(double lo, double hi, double step, double value, int decimals = 2)
 {
     auto *box = new QDoubleSpinBox;
@@ -60,9 +65,11 @@ VolumeRaytracePanel::VolumeRaytracePanel(QWidget *parent) : QWidget(parent)
                            u"density squared, as an emissivity ∝ ρ² shows it)."_s);
     bf->addRow(u"Contrast"_s, m_contrast);
     m_colour = new QComboBox;
-    m_colour->addItem(u"Its own values"_s, -1);
-    m_colour->setToolTip(u"The colour: of the light's own quantity, or of another field of the "
-                         u"volume (a density as the light, a temperature as the colour)"_s);
+    m_colour->addItem(u"Its own values"_s, kOwnValues);
+    m_colour->setToolTip(u"The colour: of the light's own quantity, of another field of the "
+                         u"volume (a density as the light, a temperature as the colour), or "
+                         u"of each channel's velocity (a spectral cube's motions: in a map "
+                         u"seen along the spectrum, its mean velocity)"_s);
     bf->addRow(u"Colour by"_s, m_colour);
     m_map = new QComboBox;
     m_map->setIconSize(QSize(28, 10));
@@ -153,7 +160,12 @@ VolumeRaytracePanel::VolumeRaytracePanel(QWidget *parent) : QWidget(parent)
         emit gridChanged();
     };
     connect(m_mode, &QComboBox::currentIndexChanged, this, grid);
-    connect(m_colour, &QComboBox::currentIndexChanged, this, grid);
+    connect(m_colour, &QComboBox::currentIndexChanged, this, [this, grid]() {
+        // Approaching blue, receding red.
+        if (m_colour->currentData().toInt() == kVelocity)
+            setMap(u"Coolwarm"_s);
+        grid();
+    });
     connect(m_map, &QComboBox::currentIndexChanged, this, grid);
     connect(m_mapLog, &QCheckBox::toggled, this, grid);
     connect(m_lightLog, &QCheckBox::toggled, this, grid);
@@ -171,12 +183,24 @@ void VolumeRaytracePanel::setFields(const QList<QPair<QString, int>> &fields)
 {
     const QSignalBlocker block(m_colour);
     const int chosen = m_colour->currentData().toInt();
-    while (m_colour->count() > 1)
-        m_colour->removeItem(1);
+    for (int i = m_colour->count() - 1; i >= 0; --i)
+        if (m_colour->itemData(i).toInt() >= 0)
+            m_colour->removeItem(i);
     for (const auto &[name, index] : fields)
         m_colour->addItem(name, index);
     const int at = m_colour->findData(chosen);
     m_colour->setCurrentIndex(at >= 0 ? at : 0);
+    syncRows();
+}
+
+void VolumeRaytracePanel::setVelocity(bool available)
+{
+    const QSignalBlocker block(m_colour);
+    const int at = m_colour->findData(kVelocity);
+    if (available && at < 0)
+        m_colour->insertItem(1, u"Velocity"_s, kVelocity);
+    else if (!available && at >= 0)
+        m_colour->removeItem(at);   // the current item moves to the own values
     syncRows();
 }
 
@@ -210,8 +234,9 @@ void VolumeRaytracePanel::syncRows()
 {
     const bool map = projected();
     const bool more = m_more && m_more->isChecked();
-    // A single-field cube has no colour to choose.
+    // A single-field cube has no colour to choose; a velocity no log scale.
     setRowVisible(m_colour, m_colour->count() > 1);
+    setRowVisible(m_mapLog, m_colour->currentData().toInt() != kVelocity);
     // A map has no absorption, and its brightness is the log of the column:
     // the light's curve does not apply.
     m_advanced->setVisible(more);
@@ -240,6 +265,8 @@ QJsonObject VolumeRaytracePanel::fields() const
     if (field >= 0) {
         f.insert(u"colour_by"_s, u"colour"_s);
         f.insert(u"colour_field"_s, field);
+    } else if (field == kVelocity) {
+        f.insert(u"colour_by"_s, u"velocity"_s);
     } else {
         f.insert(u"colour_by"_s, u"density"_s);
     }
@@ -279,8 +306,11 @@ ParticleGLView::Tone VolumeRaytracePanel::gpuTone(const std::vector<QVector3D> &
     t.hueMin = lo;
     t.hueMax = hi;
     t.hueLog = log;
-    const bool byField = m_colour->currentData().toInt() >= 0;
-    t.barTitle = byField ? m_colour->currentText() : brightnessName;
+    const int source = m_colour->currentData().toInt();
+    const bool byField = source != kOwnValues;
+    t.barTitle = source == kVelocity ? u"km/s"_s
+            : byField               ? m_colour->currentText()
+                                    : brightnessName;
     if (projected()) {
         t.slab = m_slab->value();
         // The column's own map, or the mean colour index (backend:

@@ -12,6 +12,7 @@
     "X-Visivo-Byte-Order",
     "X-Visivo-Calibrated",
     "X-Visivo-Colour-Range",
+    "X-Visivo-Colour-Table",
     "X-Visivo-Components",
     "X-Visivo-Density-Factor",
     "X-Visivo-Depth",

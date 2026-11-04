@@ -167,3 +167,20 @@ def test_parallel_kernels_from_several_threads_do_not_abort_the_process():
                           cwd=Path(__file__).resolve().parents[1], timeout=300,
                           env={**__import__("os").environ, "VISIVO_TOKEN": "x"})
     assert done.returncode == 0 and "ok" in done.stdout, done.stderr[-2000:]
+
+
+def test_a_velocity_range_holds_the_light_not_the_noise():
+    from app.volume_raytrace import velocity_range
+    # A source over channels 40..60 of 100, and one faint noise peak in every
+    # channel: counted by voxels the range would be the whole band.
+    vel = np.linspace(-500.0, 500.0, 100)
+    emission = np.zeros((100, 8, 8), np.float32)
+    emission[:, 0, 0] = 1e-3
+    emission[40:61, 4, 4] = 1.0
+    lo, hi = velocity_range(vel, emission)
+    assert vel[40] - 1 <= lo <= vel[41] and vel[59] <= hi <= vel[60] + 1
+    # A decreasing axis gives the same range; an end given is kept.
+    assert velocity_range(vel[::-1], emission[::-1]) == (lo, hi)
+    assert velocity_range(vel, emission, lo=-100.0) == (-100.0, hi)
+    # No light at all: the whole band.
+    assert velocity_range(vel, np.zeros_like(emission)) == (-500.0, 500.0)

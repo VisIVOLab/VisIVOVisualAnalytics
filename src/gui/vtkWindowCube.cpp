@@ -48,6 +48,7 @@
 #include "PvDiagramWidget.h"
 #include "RemoteLevels.h"
 #include "ThresholdShare.h"
+#include "ColourBarTicks.h"
 #include "VolumeColorbar.h"
 #include "RemoteRenderWidget.h"
 #include "SidebarPanel.h"
@@ -6236,17 +6237,14 @@ void vtkWindowCube::refreshVolumeColorbar()
         ctf->GetColor(this->volumeScaleValue(static_cast<double>(i) / (kColours - 1), lo, hi), rgb);
         colours << QColor::fromRgbF(rgb[0], rgb[1], rgb[2]);
     }
+    const QVector<double> at{ 0.0, 0.25, 0.5, 0.75, 1.0 };
+    QVector<double> values;
+    for (const double u : at)
+        values << this->volumeScaleValue(u, lo, hi);
+    const QStringList labels = visivo::tickLabels(values);
     QVector<QPair<double, QString>> ticks;
-    bool exponent = false;
-    for (const double u : { 0.0, 0.25, 0.5, 0.75, 1.0 }) {
-        ticks << qMakePair(u, QString::number(this->volumeScaleValue(u, lo, hi), 'g', 3));
-        exponent = exponent || ticks.back().second.contains(u'e');
-    }
-    // One notation down the bar: "0.000183" over "5.31e-06" reads as two scales.
-    if (exponent) {
-        for (auto &tick : ticks)
-            tick.second = QString::number(this->volumeScaleValue(tick.first, lo, hi), 'e', 2);
-    }
+    for (int i = 0; i < at.size(); ++i)
+        ticks << qMakePair(at[i], labels[i]);
     this->m_volumeColorbar->setColours(colours);
     this->m_volumeColorbar->setTicks(ticks);
     // The quantity: the cube's unit, or a VBT field's name.

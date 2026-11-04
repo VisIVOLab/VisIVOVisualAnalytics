@@ -18,6 +18,7 @@ from ._common import (
     _opacity_floor,
     _parse_tf_points,
     logger,
+    set_camera,
 )
 
 
@@ -37,6 +38,8 @@ class PipelineMixin:
         ``{"type": "zoom",   "factor":    float}``
         ``{"type": "pan",    "dx": float, "dy": float}``
         ``{"type": "reset"}``
+        ``{"type": "set_camera", "position": [3], "focal_point": [3],
+          "view_up": [3], "view_angle"?, "parallel"?, "parallel_scale"?}``
 
         Volume rendering commands — these mutate VTK state on the
         worker thread so the next ``render_frame`` reflects the new
@@ -82,6 +85,12 @@ class PipelineMixin:
                 # accumulates after repeated Elevation calls — same
                 # behaviour as vtkInteractorStyleTrackballCamera.
                 cam.OrthogonalizeViewUp()
+        elif ctype == "set_camera":
+            # The desktop's ray-traced view hands back the camera it was
+            # turned to (in the cube's voxel coordinates, as this view's).
+            if self._renderer is not None:
+                set_camera(self._renderer.GetActiveCamera(), command)
+                self._renderer.ResetCameraClippingRange()
         elif ctype == "zoom":
             if self._renderer is not None:
                 factor = max(0.05, min(20.0, float(command.get("factor", 1.0))))

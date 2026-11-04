@@ -3,9 +3,10 @@
 
 // The settings of a ray-traced cube (issue #106): its style (3-D light, or a
 // projected map), its light (from the cube's values, their contrast), its
-// colour (from the same values or from another field of a VBT volume: a
-// two-field colour table) and its tone. In the cube viewer's sidebar, under
-// "Ray-traced light"; the stills and movies render what it sets.
+// colour (from the same values, from another field of a VBT volume: a
+// two-field colour table, or from each channel's velocity) and its tone. In
+// the cube viewer's sidebar, under "Ray-traced light"; the stills and movies
+// render what it sets.
 
 #include "ParticleGLView.h"
 
@@ -32,6 +33,9 @@ public:
     /// The other fields the colour can come from (a VBT volume's): their
     /// names, by field index; the cube's own field is left out.
     void setFields(const QList<QPair<QString, int>> &fields);
+    /// Whether the colour may come from each channel's velocity (a spectral
+    /// cube's).
+    void setVelocity(bool available);
     /// Starts the map from the 3-D view's, when it is one of these.
     void setMap(const QString &name);
     /// Whether the 3-D view's threshold darkens what lies below it: a radio

@@ -65,7 +65,9 @@ public:
     void retone();
     double autoExposure() const;
     void setOverlayShown(bool box, bool colourbar);
-    visivo::RaytraceOverlay overlay() const { return m_gl->overlay(); }
+    /// The box and colour bar over the view: the GPU view's, or without one
+    /// a grid's from the backend's frames.
+    visivo::RaytraceOverlay overlay() const;
     /// A picture (a still) in place of the view, until it is turned.
     void showStill(const QImage &image);
     /// A grid's colour table and its quantity's range, as the backend made
@@ -92,7 +94,13 @@ private:
     void showGl();
     /// No GPU view: a frame of the backend's (/v1/particle_render/preview).
     void fallbackFrame();
+    /// The backend's last frame, with the overlay drawn over it.
+    void showFallback();
     bool takeGrid(QNetworkReply *reply);
+    /// A grid's box and colours from a backend frame's headers, read with the
+    /// settings the frame was asked with.
+    void takeFallbackGrid(QNetworkReply *reply, bool projected,
+                          const ParticleGLView::Tone &tone);
 
     Source m_source;
     ParticleGLView *m_gl{ nullptr };
@@ -113,6 +121,13 @@ private:
     std::vector<QVector3D> m_gridLut;
     std::pair<double, double> m_gridRange{ 0.0, 1.0 };
     bool m_gridLog{ false };
+    // Without a GPU view: the backend's last frame, its camera and overlay,
+    // and what the overlay shows.
+    QImage m_fallbackImage;
+    QJsonObject m_fallbackCamera;
+    visivo::RaytraceOverlay m_fallbackOverlay;
+    bool m_showBox{ true };
+    bool m_showBar{ true };
 };
 
 #endif // RAYTRACEVIEWPORT_H

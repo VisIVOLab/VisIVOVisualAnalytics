@@ -140,6 +140,8 @@ add_executable(VisIVOTests
     test_dataset_name.cpp
     TestThresholdShare.h
     test_threshold_share.cpp
+    TestColourBarTicks.h
+    test_colour_bar_ticks.cpp
     TestLayerCardGeometry.h
     test_layer_card_geometry.cpp
     TestRegionReadout.h

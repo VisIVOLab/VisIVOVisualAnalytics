@@ -23,6 +23,7 @@ inline constexpr const char *BUNIT = "X-Visivo-Bunit";
 inline constexpr const char *BYTEORDER = "X-Visivo-Byte-Order";
 inline constexpr const char *CALIBRATED = "X-Visivo-Calibrated";
 inline constexpr const char *COLOUR_RANGE = "X-Visivo-Colour-Range";
+inline constexpr const char *COLOUR_TABLE = "X-Visivo-Colour-Table";
 inline constexpr const char *COMPONENTS = "X-Visivo-Components";
 inline constexpr const char *DENSITY_FACTOR = "X-Visivo-Density-Factor";
 inline constexpr const char *DEPTH = "X-Visivo-Depth";
@@ -66,7 +67,7 @@ inline constexpr const char *WARNINGS = "X-Visivo-Warnings";
 inline constexpr const char *WIDTH = "X-Visivo-Width";
 
 // Every declared header name, for the contract test to diff against the manifest.
-inline constexpr std::array<const char *, 52> kAll = {
+inline constexpr std::array<const char *, 53> kAll = {
     EW_UNIT,
     FWHM_UNIT,
     MAP_UNIT,
@@ -78,6 +79,7 @@ inline constexpr std::array<const char *, 52> kAll = {
     BYTEORDER,
     CALIBRATED,
     COLOUR_RANGE,
+    COLOUR_TABLE,
     COMPONENTS,
     DENSITY_FACTOR,
     DEPTH,

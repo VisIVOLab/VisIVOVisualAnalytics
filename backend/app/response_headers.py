@@ -74,6 +74,7 @@ X_PARTICLE_STEP = "X-Visivo-Particle-Step"
 X_VOLUME_SHAPE = "X-Visivo-Volume-Shape"
 X_VOLUME_BOX = "X-Visivo-Volume-Box"
 X_COLOUR_RANGE = "X-Visivo-Colour-Range"
+X_COLOUR_TABLE = "X-Visivo-Colour-Table"
 
 # ── Line-width / moment map units (out-of-band because body is binary) ──────
 X_FWHM_UNIT = "X-Fwhm-Unit"

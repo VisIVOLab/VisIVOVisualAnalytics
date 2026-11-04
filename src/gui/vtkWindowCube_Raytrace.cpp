@@ -37,10 +37,20 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <utility>
 
 using namespace Qt::Literals::StringLiterals;
+
+namespace {
+
+// The spectral CTYPE3s the backend reads a velocity from (FITS WCS Paper III;
+// a redshift, ZOPT, is not one).
+const std::array<QString, 5> kVelocityCtypes{ u"FREQ"_s, u"VRAD"_s, u"VOPT"_s,
+                                              u"VELO"_s, u"FELO"_s };
+
+} // namespace
 
 void vtkWindowCube::raytraceCamera(
         std::function<void(const QJsonObject &, const QString &)> done)
@@ -202,9 +212,17 @@ void vtkWindowCube::setRaytraced(bool on)
     if (!on) {
         if (this->m_rtView && this->m_renderStack
             && this->m_renderStack->currentWidget() == this->m_rtView) {
-            // Back to the view the camera was turned to (this window's; the
-            // backend view keeps its own).
+            // Back to the view the camera was turned to: this window's, or
+            // the backend's, which takes it in the cube's voxel coordinates
+            // it gave it in.
             const QJsonObject cam = this->m_rtView->camera();
+            if (!cam.isEmpty() && this->m_rtFromRemote) {
+                QVariantMap command = cam.toVariantMap();
+                command.insert(u"type"_s, u"set_camera"_s);
+                this->m_renderStack->setCurrentIndex(this->m_rtPreviousPage);
+                this->sendRemoteRenderStateCommand(command);
+                return;
+            }
             vtkRenderWindow *win = ui->vtkCube->renderWindow();
             vtkRenderer *ren = win ? win->GetRenderers()->GetFirstRenderer() : nullptr;
             if (!cam.isEmpty() && ren && !this->m_rtFromRemote) {
@@ -241,6 +259,12 @@ void vtkWindowCube::setRaytraced(bool on)
         auto *cardLayout = qobject_cast<QVBoxLayout *>(this->m_rtCard->layout());
         this->m_rtPanel = new VolumeRaytracePanel(this->m_rtCard);
         this->m_rtPanel->setFields(this->m_rtFields);
+        // A spectral axis: the colour may come from each channel's velocity
+        // (a frequency one needs its rest frequency, which the backend reads).
+        const QString spectral = this->remoteDatasetCtype[2].trimmed().toUpper();
+        this->m_rtPanel->setVelocity(std::any_of(
+                kVelocityCtypes.cbegin(), kVelocityCtypes.cend(),
+                [&](const QString &prefix) { return spectral.startsWith(prefix); }));
         if (QComboBox *lut = this->m_uiAssembler ? this->m_uiAssembler->lutCombo() : nullptr)
             this->m_rtPanel->setMap(lut->currentText());
         // Negative values: a measured cube's noise, which the threshold cuts.
@@ -269,7 +293,8 @@ void vtkWindowCube::setRaytraced(bool on)
         source.sessionId = this->remoteSessionId;
         source.grid = true;
         source.dataPath = u"/v1/volume_render/grid"_s;
-        source.previewPath.clear();   // no backend frames without a GPU view (yet)
+        // No GPU view: the backend marches the same grid, a frame at a time.
+        source.previewPath = u"/v1/volume_render/preview"_s;
         source.key = &VolumeRaytracePanel::gridKey;
         source.request = [self]() { return self ? self->raytraceRequest() : QJsonObject(); };
         source.tone = [self]() {

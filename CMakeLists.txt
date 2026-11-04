@@ -488,6 +488,7 @@ set(PROJECT_SOURCES
         src/gui/VolumeRaytracePanel.h
         src/gui/RaytraceViewport.cpp
         src/gui/RaytraceViewport.h
+        src/gui/ColourBarTicks.h
         src/gui/VolumeColorbar.cpp
         src/gui/VolumeColorbar.h
         src/gui/CubeVRController.cpp

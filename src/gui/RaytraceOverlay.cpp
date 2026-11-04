@@ -1,5 +1,6 @@
 #include "RaytraceOverlay.h"
 
+#include "ColourBarTicks.h"
 #include "VolumeColorbar.h"
 
 #include <QFont>
@@ -89,15 +90,14 @@ void paintBar(QPainter &p, const QRectF &target, const RaytraceOverlay &o)
     const auto value = [&](double f) {
         return log ? o.lo * std::pow(o.hi / o.lo, f) : o.lo + (o.hi - o.lo) * f;
     };
-    bool exponent = false;
-    for (const double f : { 0.0, 0.25, 0.5, 0.75, 1.0 }) {
-        look.ticks << qMakePair(f, QString::number(value(f), 'g', 3));
-        exponent = exponent || look.ticks.back().second.contains(u'e');
-    }
-    // One notation down the bar, as the 3-D view's.
-    if (exponent)
-        for (auto &tick : look.ticks)
-            tick.second = QString::number(value(tick.first), 'e', 2);
+    // Labelled as the 3-D view's.
+    const QVector<double> at{ 0.0, 0.25, 0.5, 0.75, 1.0 };
+    QVector<double> values;
+    for (const double f : at)
+        values << value(f);
+    const QStringList labels = visivo::tickLabels(values);
+    for (int i = 0; i < at.size(); ++i)
+        look.ticks << qMakePair(at[i], labels[i]);
     look.title = o.title;
     const double s = std::max(0.1, o.scale);
     const QFont &font = o.font;

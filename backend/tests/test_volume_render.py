@@ -31,6 +31,17 @@ def _volume(tmp_path):
     return str(data), density, temperature
 
 
+class _Headers:
+    """What a route reads of the HTTP request: its headers and its client."""
+    def __init__(self, host="10.0.0.2", **headers):
+        from types import SimpleNamespace
+        self.headers = {k.replace("_", "-"): v for k, v in headers.items()}
+        self.client = SimpleNamespace(host=host)
+
+
+_PLAIN = _Headers()
+
+
 class _Session:
     def __init__(self, path):
         self.datasets = {"vol": {"kind": "cube", "path": vbt_field_ref(path, 0)},
@@ -154,7 +165,7 @@ def test_the_grid_for_the_gpu_is_what_a_render_draws(tmp_path):
     req = router.VolumeGridRequest(dataset_id="vol", colour_by="colour", colour_field=1,
                                    colour={"lut": "Viridis", "log": True},
                                    box=(0, 5, 0, 5, 0, 5))
-    reply, loop = _run(lambda: router.volume_render_grid(req, token="tok",
+    reply, loop = _run(lambda: router.volume_render_grid(req, _PLAIN, token="tok",
                                                          session=_Session(path)))
     loop.close()
     nz, ny, nx = map(int, reply.headers["X-Visivo-Volume-Shape"].split(","))
@@ -178,7 +189,7 @@ def test_the_floor_darkens_what_lies_below_it(tmp_path):
     from app.routers import volume_render as router
     path, density, _ = _volume(tmp_path)
     req = router.VolumeGridRequest(dataset_id="vol", brightness_floor=0.5)
-    reply, loop = _run(lambda: router.volume_render_grid(req, token="tok",
+    reply, loop = _run(lambda: router.volume_render_grid(req, _PLAIN, token="tok",
                                                          session=_Session(path)))
     loop.close()
     e = np.frombuffer(reply.body[:N ** 3 * 4], "<f4").reshape(N, N, N)
@@ -189,7 +200,7 @@ def test_a_large_grid_is_read_with_a_stride(tmp_path):
     from app.routers import volume_render as router
     path, _, _ = _volume(tmp_path)
     req = router.VolumeGridRequest(dataset_id="vol", max_voxels=16 ** 3)
-    reply, loop = _run(lambda: router.volume_render_grid(req, token="tok",
+    reply, loop = _run(lambda: router.volume_render_grid(req, _PLAIN, token="tok",
                                                          session=_Session(path)))
     loop.close()
     assert reply.headers["X-Visivo-Volume-Shape"] == "12,12,12"
@@ -202,7 +213,7 @@ def test_a_gpu_grid_keeps_each_axis_within_a_texture(tmp_path):
     from app.routers import volume_render as router
     path, _, _ = _volume(tmp_path)
     req = router.VolumeGridRequest(dataset_id="vol", max_axis=16)
-    reply, loop = _run(lambda: router.volume_render_grid(req, token="tok",
+    reply, loop = _run(lambda: router.volume_render_grid(req, _PLAIN, token="tok",
                                                          session=_Session(path)))
     loop.close()
     assert reply.headers["X-Visivo-Volume-Shape"] == "12,12,12"
@@ -230,3 +241,145 @@ def test_what_cannot_be_rendered_is_refused(tmp_path):
             _run(lambda: router.create_volume_render_task(request, token="tok",
                                                           session=session))
         assert err.value.status_code == 422
+
+
+def _spectral_cube(tmp_path, **spectral):
+    """A cube of two clouds, one per side, at channels 6 and 18 of 24 (a
+    rotating disc seen edge-on), on a spectral axis given by ``spectral``."""
+    from astropy.io import fits
+    z, y, x = np.mgrid[0:N, 0:N, 0:N].astype(np.float32)
+    cube = (np.exp(-((x - 6) ** 2 + (y - 12) ** 2 + (z - 6) ** 2) / 6.0)
+            + np.exp(-((x - 18) ** 2 + (y - 12) ** 2 + (z - 18) ** 2) / 6.0)).astype(np.float32)
+    hdu = fits.PrimaryHDU(cube)
+    for key, value in {"CTYPE1": "RA---SIN", "CUNIT1": "deg", "CRPIX1": 12, "CRVAL1": 150.0,
+                       "CDELT1": -1e-3, "CTYPE2": "DEC--SIN", "CUNIT2": "deg", "CRPIX2": 12,
+                       "CRVAL2": -29.0, "CDELT2": 1e-3, **spectral}.items():
+        hdu.header[key] = value
+    path = tmp_path / "spectral.fits"
+    hdu.writeto(path)
+    return str(path), cube
+
+
+def test_the_colour_follows_each_channels_velocity(tmp_path):
+    from app.routers import volume_render as router
+    # Channel k at 1300 - 10 k km/s, a velocity decreasing along the cube.
+    path, cube = _spectral_cube(tmp_path, CTYPE3="VRAD", CUNIT3="m/s", CRPIX3=1,
+                                CRVAL3=1.3e6, CDELT3=-1e4)
+    session = _Session(path)
+    session.datasets["spec"] = {"kind": "cube", "path": path}
+    req = router.VolumeGridRequest(dataset_id="spec", colour_by="velocity",
+                                   colour={"lut": "Coolwarm", "log": True})
+    reply, loop = _run(lambda: router.volume_render_grid(req, _PLAIN, token="tok", session=session))
+    loop.close()
+    lo, hi, log = reply.headers["X-Visivo-Colour-Range"].split(",")
+    lo, hi = float(lo), float(hi)
+    # Linear (a velocity is signed), over the light's channels: the clouds'
+    # 1240 and 1120 km/s and their wings, three channels on either side.
+    assert log == "0"
+    assert 1080 <= lo <= 1100 and 1260 <= hi <= 1280
+    n = N ** 3
+    c = np.frombuffer(reply.body[n * 4:n * 6], "<f2").reshape(N, N, N).astype(float)
+    vel = 1300.0 - 10.0 * np.arange(N)
+    expected = np.clip((vel - lo) / (hi - lo), 0, 1)
+    assert np.allclose(c, expected[:, None, None], atol=1e-3)
+    # The near cloud (channel 6, faster) is red, the far one blue.
+    assert c[6, 12, 6] > 0.75 and c[18, 12, 18] < 0.25
+
+
+def test_a_frequency_axis_colours_by_optical_velocity(tmp_path):
+    from app.routers import volume_render as router
+    rest = 1.420405751e9
+    path, _ = _spectral_cube(tmp_path, CTYPE3="FREQ", CUNIT3="Hz", CRPIX3=1,
+                             CRVAL3=1.414e9, CDELT3=1e5, RESTFRQ=rest)
+    session = _Session(path)
+    session.datasets["spec"] = {"kind": "cube", "path": path}
+    req = router.VolumeGridRequest(dataset_id="spec", colour_by="velocity",
+                                   colour={"min": 0.0, "max": 2000.0})
+    reply, loop = _run(lambda: router.volume_render_grid(req, _PLAIN, token="tok", session=session))
+    loop.close()
+    n = N ** 3
+    c = np.frombuffer(reply.body[n * 4:n * 6], "<f2").reshape(N, N, N).astype(float)
+    cz = 299792.458 * (rest / (1.414e9 + 1e5 * np.arange(N)) - 1.0)
+    assert np.allclose(c[:, 0, 0], np.clip(cz / 2000.0, 0, 1), atol=1e-3)
+
+
+def test_what_has_no_velocity_is_refused(tmp_path):
+    from app.routers import volume_render as router
+    path, _, _ = _volume(tmp_path)
+    session = _Session(path)
+    # A frequency without its rest frequency; a VBT's third axis is z.
+    freq, _ = _spectral_cube(tmp_path, CTYPE3="FREQ", CUNIT3="Hz", CRPIX3=1,
+                             CRVAL3=1.414e9, CDELT3=1e5)
+    session.datasets["freq"] = {"kind": "cube", "path": freq}
+    for dataset in ("freq", "vol"):
+        request = router.VolumeRenderRequest(dataset_id=dataset, colour_by="velocity",
+                                             cameras=[CAM])
+        with pytest.raises(HTTPException) as err:
+            _run(lambda: router.create_volume_render_task(request, token="tok",
+                                                          session=session))
+        assert err.value.status_code == 422
+
+
+def test_a_preview_frame_is_drawn_from_the_prepared_grid(tmp_path, monkeypatch):
+    # No GPU view on the desktop: the backend draws its frames, preparing the
+    # grid once; a turn of the camera only marches it again.
+    from PIL import Image
+
+    from app.routers import volume_render as router
+    path, _, _ = _volume(tmp_path)
+    session = _Session(path)
+    router._PREPARED.clear()
+    prepared = []
+    real = router._prepare
+    monkeypatch.setattr(router, "_prepare",
+                        lambda entry, req: prepared.append(1) or real(entry, req))
+    turned = dict(CAM, position=(11.5 - 40, 11.5 + 25, 11.5 + 50))
+    for mode, camera in (("light", CAM), ("light", turned), ("projected", CAM)):
+        req = router.VolumePreviewRequest(dataset_id="vol", mode=mode, width=80, height=48,
+                                          cameras=[camera])
+        reply, loop = _run(lambda: router.volume_render_preview(req, token="tok",
+                                                                session=session))
+        loop.close()
+        assert reply.media_type == "image/jpeg"
+        img = np.asarray(Image.open(io.BytesIO(reply.body)))
+        assert img.shape == (48, 80, 3) and img.max() > 50
+        assert float(reply.headers["X-Visivo-Exposure"]) > 0
+        # What the desktop draws over the frame: the box, the colours' range
+        # and table.
+        assert len(reply.headers["X-Visivo-Volume-Box"].split(",")) == 6
+        assert reply.headers["X-Visivo-Colour-Range"].count(",") == 2
+        assert len(bytes.fromhex(reply.headers["X-Visivo-Colour-Table"])) == 256 * 3
+    assert len(prepared) == 1
+
+
+def test_the_grid_is_gzipped_for_a_client_that_takes_it(tmp_path):
+    # Through a tunnel: below the floor the grid is zeros, which pack well.
+    import gzip
+
+    from app.routers import volume_render as router
+    path, _, _ = _volume(tmp_path)
+    req = router.VolumeGridRequest(dataset_id="vol", brightness_floor=0.5)
+    plain, loop = _run(lambda: router.volume_render_grid(req, _PLAIN, token="tok",
+                                                         session=_Session(path)))
+    loop.close()
+    packed, loop = _run(lambda: router.volume_render_grid(
+        req, _Headers(accept_encoding="gzip, deflate"), token="tok", session=_Session(path)))
+    loop.close()
+    assert "Content-Encoding" not in plain.headers
+    assert packed.headers["Content-Encoding"] == "gzip"
+    assert gzip.decompress(packed.body) == plain.body
+    assert len(packed.body) < len(plain.body) / 4
+    # Refused by the client.
+    refused, loop = _run(lambda: router.volume_render_grid(
+        req, _Headers(accept_encoding="gzip;q=0, identity"), token="tok",
+        session=_Session(path)))
+    loop.close()
+    assert "Content-Encoding" not in refused.headers
+    assert router._accepts_gzip("deflate, *;q=0.5") and not router._accepts_gzip("*;q=0")
+    assert router._accepts_gzip("GZIP;q=0.8") and not router._accepts_gzip("br")
+    # The desktop's own backend: nothing to save, only time to lose.
+    local, loop = _run(lambda: router.volume_render_grid(
+        req, _Headers(host="127.0.0.1", accept_encoding="gzip"), token="tok",
+        session=_Session(path)))
+    loop.close()
+    assert "Content-Encoding" not in local.headers

@@ -190,6 +190,7 @@
     "POST /v1/vlkb/mcutout/report",
     "POST /v1/vlkb/mcutout/submit",
     "POST /v1/vlkb/tap",
-    "POST /v1/volume_render/grid"
+    "POST /v1/volume_render/grid",
+    "POST /v1/volume_render/preview"
   ]
 }

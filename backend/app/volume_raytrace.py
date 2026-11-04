@@ -335,3 +335,29 @@ def colour_index(field: np.ndarray, *, lo: float | None = None, hi: float | None
         idx = (f - lo) / (hi - lo)
     idx = np.clip(np.nan_to_num(idx, nan=0.0), 0.0, 1.0).astype(np.float32)
     return idx, lo, hi
+
+
+def velocity_range(velocity: np.ndarray, emission: np.ndarray, *, lo: float | None = None,
+                   hi: float | None = None, share: float = 0.01) -> tuple[float, float]:
+    """The range a colour by velocity spans: ``velocity`` per plane of
+    ``emission`` (its first axis), an open end the velocity below which (above
+    which) lies ``share`` of the light. Weighted by the light, not counted by
+    voxels: a few noise peaks above the floor, in every channel, would
+    otherwise stretch it over the whole band."""
+    v = np.asarray(velocity, dtype=np.float64).ravel()
+    w = np.asarray(emission, dtype=np.float32).reshape(len(v), -1).sum(axis=1, dtype=np.float64)
+    w = np.where(np.isfinite(v) & np.isfinite(w), w, 0.0)
+    order = np.argsort(v)
+    cum = np.cumsum(w[order])
+    if cum.size and cum[-1] > 0:
+        cum /= cum[-1]
+        dlo = float(v[order][np.searchsorted(cum, share)])
+        dhi = float(v[order][min(np.searchsorted(cum, 1.0 - share), cum.size - 1)])
+    else:
+        finite = v[np.isfinite(v)]
+        dlo, dhi = (float(finite.min()), float(finite.max())) if finite.size else (0.0, 1.0)
+    lo = dlo if lo is None else float(lo)
+    hi = dhi if hi is None else float(hi)
+    if not hi > lo:
+        hi = lo + (abs(lo) or 1.0)
+    return lo, hi

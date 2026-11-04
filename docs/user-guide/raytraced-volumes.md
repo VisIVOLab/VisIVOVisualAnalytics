@@ -5,15 +5,16 @@ along each line of sight is summed in floating point, without a ceiling, then
 graded into a picture by a tone curve. A cube with a large dynamic range keeps
 both its faint diffuse emission and its bright cores, with no opacity curve to
 tune by hand. Its colour can come from a second quantity: a simulation's
-density lit and coloured by its temperature. It is meant for figures, talks and
+density lit and coloured by its temperature, or a spectral cube's emission
+coloured by the velocity of each channel, its motions in 3-D. It is meant for figures, talks and
 movies; the analysis rendering (Composite, MIP, MinIP, threshold, colour bar)
 stays as it is.
 
 | | |
 |---|---|
-| **In the window** | *Ray-traced light* in the cube viewer's *Display, 3D* section: the 3-D view itself, on this machine's GPU |
+| **In the window** | *Ray-traced light* in the cube viewer's *Display, 3D* section: the 3-D view itself, on this machine's GPU, or drawn by the backend without one |
 | **Stills and movies** | *Output* under it: rendered by the backend from the full cube, at up to 8K, saved as PNG, a floating-point FITS or an MP4 |
-| **Data** | a FITS cube, or a field of a VBT volume; the colour from the same values or from another field of the volume |
+| **Data** | a FITS cube, or a field of a VBT volume; the colour from the same values, from another field of the volume, or from a spectral cube's velocity |
 
 ---
 
@@ -32,6 +33,8 @@ plane. Its brightness is the logarithm of the column; its colour, the column
 itself or the column-weighted mean of a second quantity. For a spectral cube a
 projection only has a meaning along the velocity axis, which the
 [moment maps](moment-maps) already cover: the map is meant for spatial grids.
+Coloured by velocity and seen along the spectrum, its colour is the
+intensity-weighted mean velocity, the first moment.
 
 ---
 
@@ -48,7 +51,19 @@ check is cleared.
   zoom; while the view moves it keeps the last grading, so the light does not
   jump;
 - the backend prepares the grid once (at most 256³ voxels, sampled with a
-  stride from a larger cube) and sends it to the desktop: 96 MB for 256³.
+  stride from a larger cube) and sends it to the desktop: 96 MB for 256³,
+  compressed from a remote backend, where what lies below the threshold
+  costs almost nothing (a radio cube's grid comes through a tunnel in a
+  second or less);
+- with a cube open on a remote backend, the view starts from the backend
+  view's camera and gives it back when the check is cleared: the backend
+  view goes on from where the ray-traced one was turned to.
+- on a machine without a GPU view (a remote desktop, an old driver) the
+  backend draws the view instead, from the same grid, a frame each time the
+  view stops moving; the box and the colour bar are drawn over it as over the
+  GPU view, and onto the stills and frames. A projected map coloured by its
+  own column shows no colour bar there: its scale is relative to the column the
+  GPU view measures.
 
 ### Settings
 
@@ -58,7 +73,7 @@ check is cleared.
 | **Light** | *Values are log₁₀*: the cube holds the logarithm of its quantity, its light is 10 to it. |
 | **Dark below the threshold** | Values under the 3-D view's *Threshold* (shown above the settings while this is on) emit nothing. A ray sums every channel it crosses, so a radio cube's noise, a little light in each, adds up to a veil over the source: on by default for a cube with negative values (noise), off for a simulation's grid, whose faint gas is light, not noise. |
 | **Contrast** | The light raised to this power: above 1 the faint, diffuse emission fades and the dense structure stands out (2: a gas's density squared). |
-| **Colour by**, **Map**, **Log scale** | The colour: of the light's own values, or of another field of a VBT volume, through a colour map. Its range is that of the quantity where there is light (its 1st to 99.9th percentile), not of an empty background. |
+| **Colour by**, **Map**, **Log scale** | The colour: of the light's own values, of another field of a VBT volume, or, for a cube whose third axis is spectral, of each channel's *Velocity*, through a colour map. Its range is that of the quantity where there is light (its 1st to 99.9th percentile), not of an empty background. A velocity is in km/s (a frequency axis as optical velocity, cz, from the cube's rest frequency), on a linear scale and over the velocities holding 98 % of the light, so that faint noise peaks in every channel do not stretch it over the whole band; choosing it sets the map to *Coolwarm*, approaching blue and receding red. |
 | **Exposure** | In stops over the automatic exposure (the 99.5th percentile of the lit pixels): +1 doubles the light. |
 | *More settings:* **Absorption** | Grey absorption, as the optical depth reached where the light is brightest: 0 is emission only; 1 or more lets dense regions hide what lies behind them. Drawn in the GPU view too. |
 | **Samples** | Samples per voxel along a ray: more, finer and slower. |
