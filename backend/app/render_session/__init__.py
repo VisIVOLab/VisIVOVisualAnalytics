@@ -97,6 +97,10 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
         # Cached on the worker thread; ``None`` until initialise().
         self._render_window = None
         self._renderer = None
+        # The view's camera, copied on the render thread after each command:
+        # a ray-traced render of the view on screen starts from it (issue
+        # #106, GET /v1/render/{id}/camera).
+        self._camera: dict[str, Any] | None = None
         self._volume = None
         self._volume_mapper = None
         self._volume_property = None      # vtkVolumeProperty — TF holder
@@ -242,12 +246,24 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
             "data_min": self._vmin if known else None,
             "data_max": self._vmax if known else None,
             "pending": loading,
+            "camera": self._camera,
         }
+
+    def _camera_on_thread(self) -> dict[str, Any] | None:
+        """The view's camera, in the cube's voxel coordinates."""
+        if self._renderer is None:
+            return None
+        cam = self._renderer.GetActiveCamera()
+        return {"position": list(cam.GetPosition()), "focal_point": list(cam.GetFocalPoint()),
+                "view_up": list(cam.GetViewUp()), "view_angle": cam.GetViewAngle(),
+                "parallel": bool(cam.GetParallelProjection()),
+                "parallel_scale": cam.GetParallelScale()}
 
     async def initialize(self) -> None:
         """Run the VTK pipeline setup on the worker thread."""
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(self._executor, self._init_on_thread)
+        self._camera = await loop.run_in_executor(self._executor, self._camera_on_thread)
 
     def mark_dirty(self) -> None:
         """Mark the scene as needing a fresh render. Cheap; called from
@@ -298,6 +314,7 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
         await loop.run_in_executor(
             self._executor, self._apply_command_on_thread, command,
         )
+        self._camera = await loop.run_in_executor(self._executor, self._camera_on_thread)
         # Every command mutates view state — flag the scene dirty so
         # the next frame is actually rendered. Without this the
         # client would see a stale image until the next non-command

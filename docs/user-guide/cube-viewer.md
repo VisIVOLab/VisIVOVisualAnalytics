@@ -88,6 +88,10 @@ Pick between two complementary 3-D views from the top-right viewer toolbar:
 You can switch render mode at any time. The colour map is shared between
 volume rendering and the slice view.
 
+For figures and movies, *Ray-traced light* in the *Display, 3D* section draws
+the cube as light graded by a tone curve, its colour from its values or from
+another field: see [Ray-traced volumes](raytraced-volumes).
+
 ### Where the rendering happens: Auto / Local / Remote
 
 Independently of *what* is rendered, there is a choice of *where* — the toolbar

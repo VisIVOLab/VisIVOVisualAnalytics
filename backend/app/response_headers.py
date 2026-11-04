@@ -70,6 +70,11 @@ X_PARTICLE_COUNT = "X-Visivo-Particle-Count"
 X_PARTICLE_FIELDS = "X-Visivo-Particle-Fields"
 X_PARTICLE_STEP = "X-Visivo-Particle-Step"
 
+# ── Ray-traced volume grid (issue #106) ─────────────────────────────────────
+X_VOLUME_SHAPE = "X-Visivo-Volume-Shape"
+X_VOLUME_BOX = "X-Visivo-Volume-Box"
+X_COLOUR_RANGE = "X-Visivo-Colour-Range"
+
 # ── Line-width / moment map units (out-of-band because body is binary) ──────
 X_FWHM_UNIT = "X-Fwhm-Unit"
 X_EW_UNIT = "X-Ew-Unit"

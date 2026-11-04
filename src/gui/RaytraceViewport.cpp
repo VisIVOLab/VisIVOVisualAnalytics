@@ -43,8 +43,17 @@ RaytraceViewport::RaytraceViewport(Source source, QWidget *parent)
     m_pages->addWidget(m_image);
     connect(m_gl, &ParticleGLView::failed, this, [this](const QString &reason) {
         m_failed = true;
-        emit message(u"No GPU for the ray-traced view (%1): the backend draws it."_s.arg(reason));
         m_pages->setCurrentWidget(m_image);
+        if (m_source.previewPath.isEmpty()) {
+            // Nothing the backend draws in its place: said where the view was.
+            m_image->setStyleSheet(u"background: black; color: #cbd5e1;"_s);
+            m_image->setWordWrap(true);
+            m_image->setText(u"No GPU view on this machine (%1). Render Still and Movie… "
+                             u"render on the backend."_s.arg(reason));
+            emit message(u"No GPU for the ray-traced view: %1"_s.arg(reason));
+            return;
+        }
+        emit message(u"No GPU for the ray-traced view (%1): the backend draws it."_s.arg(reason));
         fallbackFrame();
     });
     // The statistics a picture is graded by, read when the view stops.
@@ -94,7 +103,8 @@ void RaytraceViewport::showGl()
 
 void RaytraceViewport::fallbackFrame()
 {
-    if (!m_failed || m_camera.isEmpty() || !m_source.request || m_showingStill)
+    if (!m_failed || m_camera.isEmpty() || !m_source.request || m_showingStill
+        || m_source.previewPath.isEmpty())
         return;
     if (m_fallbackReply) {   // one at a time, the latest next
         m_fallbackPending = true;
@@ -110,7 +120,7 @@ void RaytraceViewport::fallbackFrame()
     if (m_source.toneJson)
         req.insert(u"tone"_s, m_source.toneJson(0.0));
     QUrl url(m_source.backendUrl);
-    url.setPath(u"/v1/particle_render/preview"_s);
+    url.setPath(m_source.previewPath);
     QNetworkRequest nreq(url);
     BackendClient::applySessionHeaders(nreq, m_source.backendUrl,
                                        BackendClient(m_source.backendUrl, m_source.token).token(),
@@ -147,7 +157,8 @@ void RaytraceViewport::refresh()
         return;
     }
     const QJsonObject request = m_source.request();
-    const QString key = RaytraceSettingsPanel::particlesKey(request);
+    const QString key = m_source.key ? m_source.key(request)
+                                     : RaytraceSettingsPanel::particlesKey(request);
     if (key == m_key && m_gl->hasParticles()) {
         // Back to the settings on the GPU: a fetch for others is not wanted.
         if (m_reply) {
@@ -186,11 +197,13 @@ void RaytraceViewport::redraw(bool settle)
 
 void RaytraceViewport::fetch(const QString &key, const QJsonObject &request)
 {
+    // A still of what was drawn before is not of these settings: put away.
+    showGl();
     if (m_reply)
         m_reply->abort();
     m_loadingKey = key;
     QUrl url(m_source.backendUrl);
-    url.setPath(u"/v1/particle_render/particles"_s);
+    url.setPath(m_source.dataPath);
     QNetworkRequest req(url);
     // The token BackendClient resolves: with the local backend the window may
     // hold none, and it is in ~/.visivo_token.
@@ -200,7 +213,8 @@ void RaytraceViewport::fetch(const QString &key, const QJsonObject &request)
     req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_s);
     QNetworkReply *reply = m_nam->post(req, QJsonDocument(request).toJson(QJsonDocument::Compact));
     m_reply = reply;
-    emit message(u"Ray-traced view: preparing the particles…"_s);
+    emit message(m_source.grid ? u"Ray-traced view: preparing the cube…"_s
+                               : u"Ray-traced view: preparing the particles…"_s);
     connect(reply, &QNetworkReply::finished, this, [this, reply, key]() {
         reply->deleteLater();
         if (m_reply == reply)
@@ -214,6 +228,15 @@ void RaytraceViewport::fetch(const QString &key, const QJsonObject &request)
                 emit message(u"Ray-traced view: "_s
                              + (detail.isEmpty() ? reply->errorString() : detail));
             }
+            return;
+        }
+        if (m_source.grid) {
+            if (!takeGrid(reply))
+                return;
+            m_key = key;
+            if (!m_showingStill)
+                m_pages->setCurrentWidget(m_gl);
+            redraw(true);
             return;
         }
         const QByteArray rows = reply->readAll();
@@ -233,6 +256,44 @@ void RaytraceViewport::fetch(const QString &key, const QJsonObject &request)
             note += u", one in %1 of the table carrying their light"_s.arg(step);
         emit message(note);
     });
+}
+
+bool RaytraceViewport::takeGrid(QNetworkReply *reply)
+{
+    // The emissivity (float32), the colour index (float16), the table (256
+    // float32 RGB): app/routers/volume_render.py, volume_render_grid.
+    const QList<QByteArray> shape = reply->rawHeader(VisivoHeaders::VOLUME_SHAPE).split(',');
+    const QList<QByteArray> box = reply->rawHeader(VisivoHeaders::VOLUME_BOX).split(',');
+    const QList<QByteArray> range = reply->rawHeader(VisivoHeaders::COLOUR_RANGE).split(',');
+    if (shape.size() != 3 || box.size() != 6)
+        return false;
+    ParticleGLView::Grid grid;
+    grid.nz = shape[0].toInt();
+    grid.ny = shape[1].toInt();
+    grid.nx = shape[2].toInt();
+    for (int i = 0; i < 6; ++i)
+        grid.box[size_t(i)] = box[i].toDouble();
+    const qsizetype n = qsizetype(grid.nx) * grid.ny * grid.nz;
+    const QByteArray body = reply->readAll();
+    const qsizetype lutBytes = 256 * 3 * 4;
+    if (n <= 0 || body.size() != n * 4 + n * 2 + lutBytes)
+        return false;
+    grid.emission = body.left(n * 4);
+    grid.index = body.mid(n * 4, n * 2);
+    const auto *lut = reinterpret_cast<const float *>(body.constData() + n * 6);
+    m_gridLut.clear();
+    for (int i = 0; i < 256; ++i)
+        m_gridLut.emplace_back(lut[3 * i], lut[3 * i + 1], lut[3 * i + 2]);
+    m_gridRange = { range.value(0).toDouble(), range.value(1).toDouble() };
+    m_gridLog = range.value(2) == "1";
+    const bool map = m_source.request
+            && m_source.request().value(u"mode"_s).toString() == u"projected"_s;
+    m_gl->setGrid(std::move(grid), map ? ParticleGLView::Mode::Projected
+                                       : ParticleGLView::Mode::Light);
+    emit message(u"Ray-traced view: a %1 × %2 × %3 grid on the GPU"_s.arg(shape[2].toInt())
+                         .arg(shape[1].toInt()).arg(shape[0].toInt()));
+    emit gridReady();
+    return true;
 }
 
 bool RaytraceViewport::eventFilter(QObject *watched, QEvent *event)

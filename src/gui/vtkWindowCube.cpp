@@ -1812,6 +1812,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                          }
 
                          this->usingHighResCube = true;
+                         this->setDisplayStride(1);   // the cube's own voxels
                          this->m_deferredPreview.reset();   // superseded by the full grid
                          this->applyCubeOpenResult({ true,
                                                      { },
@@ -3226,6 +3227,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             this->remoteDatasetHeight,
             this->remoteDatasetDepth,
             static_cast<double>(targetMb));
+    this->m_previewStride = std::max(1, downsample);
     qDebug().noquote() << QStringLiteral(
             "[preview-debug] launching fetcher requestId=%1 url=%2 dataset=%3 "
             "cube=%4x%5x%6 target=%7MB downsample=%8")
@@ -3805,6 +3807,8 @@ void vtkWindowCube::applyDeferredPreviewWhenLocal()
 
 void vtkWindowCube::applyRemotePreviewResult(const RemoteCubePreviewResult &result)
 {
+    if (result.valid && result.cubeImageData)
+        this->setDisplayStride(this->m_previewStride);   // a strided sample of the cube
     if (!result.valid || !result.cubeImageData) {
         this->m_cube3dLoadingActor->VisibilityOff();
         this->m_slice2dLoadingActor->VisibilityOff();
@@ -7991,6 +7995,32 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         h->addWidget(cb, 1);
         cineRow->setFixedHeight(28);
         disp3d->addWidget(cineRow);
+    }
+    // Ray-traced light (issue #106): its settings and output open under it.
+    {
+        QWidget *rtRow = new QWidget();
+        auto *h = new QHBoxLayout(rtRow);
+        h->setContentsMargins(0, 0, 0, 0);
+        auto *cb = new QCheckBox(u"Ray-traced light"_s, rtRow);
+        cb->setStyleSheet(labelCss);
+        cb->setToolTip(u"The cube as light, accumulated without a ceiling and graded by a tone "
+                       u"curve, so its faint emission and its bright cores both show; its "
+                       u"colour from its values or from another field (a density lit by its "
+                       u"temperature). Drawn on this machine's GPU; stills and movies by the "
+                       u"backend."_s);
+        this->m_rtCheck = cb;
+        QObject::connect(cb, &QCheckBox::toggled, this,
+                         [this](bool on) { this->setRaytraced(on); });
+        h->addWidget(cb, 1);
+        rtRow->setFixedHeight(28);
+        disp3d->addWidget(rtRow);
+        auto *card = new QWidget();
+        card->setObjectName(u"raytraceCard"_s);
+        auto *cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(0, 0, 0, 6);
+        card->hide();
+        this->m_rtCard = card;
+        disp3d->addWidget(card);
     }
     {   // Threshold: label + mono value, then the slider full-width.
         auto *r = new QWidget();
@@ -15650,10 +15680,15 @@ void vtkWindowCube::setSiblingFields(const QList<QPair<QString, QString>> &field
     // One cube per field: the others are listed beside this one, and opening a
     // row opens that field (reopenProductFromFile → its "Output path").
     int index = 0;
+    this->m_rtFields.clear();
     for (const auto &field : fields) {
         ++index;
-        if (field.second == this->filepath)
+        if (field.second == this->filepath) {
+            this->m_rtFieldName = field.first;
             continue;
+        }
+        // The ray-traced light's colour may come from it (index: the VBT's).
+        this->m_rtFields.append({ field.first, index - 1 });
         QVariantMap params;
         params.insert(u"Field"_s, field.first);
         params.insert(u"Output path"_s, field.second);

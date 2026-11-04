@@ -292,7 +292,7 @@ void RaytraceOutput::submit(const QList<QJsonObject> &cameras, bool movie)
     if (m_source.tone)
         req.insert(u"tone"_s, m_source.tone(movie ? (keepExposure > 0.0 ? keepExposure : view)
                                                   : 0.0));
-    QNetworkReply *reply = send(u"POST"_s, u"/v1/tasks/particle_render"_s,
+    QNetworkReply *reply = send(u"POST"_s, m_source.taskPath,
                                 QJsonDocument(req).toJson(QJsonDocument::Compact), appManager());
     setStage(Stage::Rendering,
              movie ? u"Ray-traced: rendering %1 frames of %2 × %3…"_s.arg(cameras.size())

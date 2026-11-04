@@ -139,6 +139,7 @@ backend-api/exports
 backend-api/samp
 backend-api/render
 backend-api/particle-render
+backend-api/volume-render
 backend-api/node-soda
 backend-api/assistant
 backend-api/reproducibility

@@ -5,9 +5,11 @@
 #include <QOpenGLBuffer>
 #include <QOpenGLFramebufferObject>
 #include <QOpenGLShaderProgram>
+#include <QOpenGLPixelTransferOptions>
 #include <QOpenGLTexture>
 #include <QOpenGLVertexArrayObject>
 #include <QPainter>
+#include <QVector2D>
 #include <QDebug>
 #include <QScopeGuard>
 #include <QElapsedTimer>
@@ -145,6 +147,109 @@ void main() {
 }
 )";
 
+// A grid's rays, as backend/app/volume_raytrace.py marches them (_march):
+// the same rays, start offsets, steps and exact integration of each step.
+const char *kMarchFragment = R"(#version 410 core
+out vec4 o;
+uniform sampler3D u_e;
+uniform sampler3D u_c;
+uniform sampler2D u_lut;
+uniform vec3 u_origin;
+uniform vec3 u_forward;
+uniform vec3 u_right;
+uniform vec3 u_up;
+uniform float u_scale;
+uniform int u_parallel;
+uniform vec2 u_size;
+uniform vec3 u_lo;
+uniform vec3 u_hi;
+uniform vec3 u_n;
+uniform float u_step;
+uniform float u_kappa;
+uniform int u_moments;
+uniform int u_grey;
+uniform float u_slabLo;
+uniform float u_slabHi;
+uniform float u_fpDepth;
+const float OPAQUE = 1e-4;
+vec3 tc(vec3 p) {
+    vec3 span = u_hi - u_lo;
+    vec3 g = vec3(span.x > 0.0 ? (p.x - u_lo.x) / span.x * (u_n.x - 1.0) : 0.0,
+                  span.y > 0.0 ? (p.y - u_lo.y) / span.y * (u_n.y - 1.0) : 0.0,
+                  span.z > 0.0 ? (p.z - u_lo.z) / span.z * (u_n.z - 1.0) : 0.0);
+    return (g + 0.5) / u_n;
+}
+void main() {
+    float u = gl_FragCoord.x - u_size.x / 2.0;
+    float v = gl_FragCoord.y - u_size.y / 2.0;
+    vec3 org, dir;
+    if (u_parallel == 1) {
+        org = u_origin + (u * u_right + v * u_up) / u_scale;
+        dir = u_forward;
+    } else {
+        org = u_origin;
+        dir = normalize(u_forward + (u * u_right + v * u_up) / u_scale);
+    }
+    // The box: slab by slab, as the backend's _span.
+    float t0 = -1e30, t1 = 1e30;
+    for (int a = 0; a < 3; ++a) {
+        if (abs(dir[a]) < 1e-30) {
+            if (org[a] < u_lo[a] || org[a] > u_hi[a]) { o = vec4(0.0); return; }
+            continue;
+        }
+        float ta = (u_lo[a] - org[a]) / dir[a], tb = (u_hi[a] - org[a]) / dir[a];
+        t0 = max(t0, min(ta, tb));
+        t1 = min(t1, max(ta, tb));
+    }
+    t0 = max(t0, 0.0);
+    float cosf = dot(dir, u_forward);
+    if (u_slabHi > u_slabLo && cosf > 1e-12) {
+        t0 = max(t0, (u_fpDepth + u_slabLo) / cosf);
+        t1 = min(t1, (u_fpDepth + u_slabHi) / cosf);
+    }
+    if (!(t1 > t0)) { o = vec4(0.0); return; }
+    int px = int(gl_FragCoord.x);
+    int py = int(u_size.y) - 1 - int(gl_FragCoord.y);   // rows from the top, as the backend's
+    float jitter = u_moments == 1 ? 0.5 : float(((px * 73856093) ^ (py * 19349663)) & 1023) / 1024.0;
+    vec3 light = vec3(0.0);
+    float trans = 1.0;
+    float seg = t0;
+    for (int k = 0; k < 8192 && seg < t1; ++k) {
+        float dl = min(u_step, t1 - seg);
+        float t = seg + jitter * dl;
+        seg += u_step;
+        vec3 q = tc(org + t * dir);
+        float e = texture(u_e, q).r;
+        if (e <= 0.0)
+            continue;
+        if (u_grey == 1) {
+            light.r += e * dl;
+            continue;
+        }
+        float c = texture(u_c, q).r;
+        if (u_moments == 1) {
+            light.r += e * dl;
+            light.g += e * c * dl;
+            continue;
+        }
+        float kk = u_kappa * e;
+        float f;
+        if (kk > 0.0) {
+            float lost = 1.0 - exp(-kk * dl);
+            f = trans * e * lost / kk;
+            trans *= 1.0 - lost;
+        } else {
+            f = trans * e * dl;
+        }
+        float i = floor(clamp(c, 0.0, 1.0) * 255.0 + 0.5);
+        light += f * texture(u_lut, vec2((i + 0.5) / 256.0, 0.5)).rgb;
+        if (trans < OPAQUE)
+            break;
+    }
+    o = vec4(light, 0.0);
+}
+)";
+
 QVector3D vec(const QJsonObject &o, const QString &key)
 {
     const QJsonArray a = o.value(key).toArray();
@@ -181,6 +286,10 @@ ParticleGLView::~ParticleGLView()
     m_vbo.reset();
     m_accum.reset();
     m_lutTexture.reset();
+    m_march.reset();
+    m_emissionTexture.reset();
+    m_indexTexture.reset();
+    m_quarter.reset();
     doneCurrent();
 }
 
@@ -206,6 +315,21 @@ void ParticleGLView::setParticles(const QByteArray &rows, int count, Mode mode)
     update();
 }
 
+void ParticleGLView::setGrid(Grid grid, Mode mode)
+{
+    m_grid = std::move(grid);
+    m_mode = mode;
+    m_count = 0;
+    m_rows.clear();
+    m_hasGrid = m_grid.nx > 0 && m_grid.ny > 0 && m_grid.nz > 0;
+    m_hasBounds = m_hasGrid;
+    m_bounds = m_grid.box;
+    m_gridUpload = m_hasGrid;
+    m_kappaStale = true;
+    m_stats = false;
+    update();
+}
+
 void ParticleGLView::setCamera(const QJsonObject &camera)
 {
     m_camera = camera;
@@ -215,7 +339,10 @@ void ParticleGLView::setCamera(const QJsonObject &camera)
 void ParticleGLView::setTone(const Tone &tone)
 {
     const bool hueChanged = tone.hue != m_tone.hue || tone.hueLog != m_tone.hueLog
-            || tone.slab != m_tone.slab;
+            || tone.slab != m_tone.slab || tone.absorption != m_tone.absorption
+            || tone.quality != m_tone.quality;
+    if (tone.absorption != m_tone.absorption || tone.quality != m_tone.quality)
+        m_kappaStale = true;
     m_tone = tone;
     m_lutDirty = true;
     if (hueChanged)
@@ -267,7 +394,7 @@ visivo::RaytraceOverlay ParticleGLView::overlay() const
             o.lo = m_tone.hueLog ? std::pow(10.0, m_hueLo) : m_hueLo;
             o.hi = m_tone.hueLog ? std::pow(10.0, m_hueHi) : m_hueHi;
             o.log = m_tone.hueLog;
-        } else {
+        } else {   // the view's colours, or a grid's table over its quantity
             o.lut = m_tone.lut;
             o.lo = m_tone.hueMin;
             o.hi = m_tone.hueMax;
@@ -321,6 +448,13 @@ void ParticleGLView::initializeGL()
                     + m_tonePass->log());
         return;
     }
+    m_march = std::make_unique<QOpenGLShaderProgram>();
+    if (!m_march->addShaderFromSourceCode(QOpenGLShader::Vertex, kToneVertex)
+        || !m_march->addShaderFromSourceCode(QOpenGLShader::Fragment, kMarchFragment)
+        || !m_march->link()) {
+        emit failed(u"The GPU preview's ray-march did not build: "_s + m_march->log());
+        return;
+    }
     m_vao = std::make_unique<QOpenGLVertexArrayObject>();
     m_vao->create();
     m_quadVao = std::make_unique<QOpenGLVertexArrayObject>();
@@ -348,6 +482,14 @@ void ParticleGLView::ensureTarget(const QSize &size)
 
 void ParticleGLView::accumulate(const QSize &size)
 {
+    if (m_hasGrid) {
+        const double kappa = m_tone.absorption > 0 && m_mode == Mode::Light ? gridKappa(size)
+                                                                              : 0.0;
+        m_accum->bind();
+        march(size, kappa, false);
+        m_accum->release();
+        return;
+    }
     if (m_upload) {
         const int fields = m_mode == Mode::Projected ? 6 : 8;
         m_vao->bind();
@@ -460,6 +602,24 @@ void ParticleGLView::toneTo(GLuint fbo, const QSize &size)
         }
         m_stats = true;
     }
+    ensureLut();
+    double lo, hi;
+    densityWindow(lo, hi);
+    const int curve = m_tone.curve == u"log"_s ? 1 : m_tone.curve == u"exponential"_s ? 2
+                    : m_tone.curve == u"linear"_s ? 3 : 0;
+    double hueLo = m_hueLo, hueHi = m_hueHi;
+    if (m_tone.hue == Hue::ViewColours) {   // the view's own range
+        hueLo = m_tone.hueLog ? std::log10(std::max(m_tone.hueMin, 1e-300)) : m_tone.hueMin;
+        hueHi = m_tone.hueLog ? std::log10(std::max(m_tone.hueMax, 1e-300)) : m_tone.hueMax;
+    } else if (m_tone.hue == Hue::Index) {   // the mean index is the table's place
+        hueLo = 0.0;
+        hueHi = 1.0;
+    }
+    toneWith(fbo, lo, hi, curve, hueLo, hueHi);
+}
+
+void ParticleGLView::ensureLut()
+{
     if (m_lutDirty) {
         std::vector<float> rgb;
         for (const QVector3D &c : m_tone.lut)
@@ -475,16 +635,11 @@ void ParticleGLView::toneTo(GLuint fbo, const QSize &size)
         m_lutTexture->setWrapMode(QOpenGLTexture::ClampToEdge);
         m_lutDirty = false;
     }
-    double lo, hi;
-    densityWindow(lo, hi);
-    const int curve = m_tone.curve == u"log"_s ? 1 : m_tone.curve == u"exponential"_s ? 2
-                    : m_tone.curve == u"linear"_s ? 3 : 0;
-    double hueLo = m_hueLo, hueHi = m_hueHi;
-    if (m_tone.hue == Hue::ViewColours) {   // the view's own range
-        hueLo = m_tone.hueLog ? std::log10(std::max(m_tone.hueMin, 1e-300)) : m_tone.hueMin;
-        hueHi = m_tone.hueLog ? std::log10(std::max(m_tone.hueMax, 1e-300)) : m_tone.hueMax;
-    }
+}
 
+void ParticleGLView::toneWith(GLuint fbo, double lo, double hi, int curve, double hueLo,
+                              double hueHi)
+{
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     m_tonePass->bind();
     glActiveTexture(GL_TEXTURE0);
@@ -503,7 +658,8 @@ void ParticleGLView::toneTo(GLuint fbo, const QSize &size)
     m_tonePass->setUniformValue("u_hi", float(hi));
     m_tonePass->setUniformValue("u_hue", m_tone.hue == Hue::Density ? 0
                                        : m_tone.hue == Hue::NamedMap ? 1 : 2);
-    m_tonePass->setUniformValue("u_hueLog", m_tone.hueLog ? 1 : 0);
+    m_tonePass->setUniformValue("u_hueLog",
+                                m_tone.hueLog && m_tone.hue != Hue::Index ? 1 : 0);
     m_tonePass->setUniformValue("u_hueLo", float(hueLo));
     m_tonePass->setUniformValue("u_hueHi", float(hueHi));
     m_quadVao->bind();
@@ -512,6 +668,134 @@ void ParticleGLView::toneTo(GLuint fbo, const QSize &size)
     m_lutTexture->release(1);
     glActiveTexture(GL_TEXTURE0);
     m_tonePass->release();
+}
+
+void ParticleGLView::march(const QSize &size, double kappa, bool grey)
+{
+    if (m_gridUpload) {
+        const auto upload = [this](std::unique_ptr<QOpenGLTexture> &tex,
+                                   QOpenGLTexture::TextureFormat format,
+                                   QOpenGLTexture::PixelType type, const QByteArray &data) {
+            tex = std::make_unique<QOpenGLTexture>(QOpenGLTexture::Target3D);
+            tex->setSize(m_grid.nx, m_grid.ny, m_grid.nz);
+            tex->setFormat(format);
+            tex->allocateStorage(QOpenGLTexture::Red, type);
+            QOpenGLPixelTransferOptions rows;
+            rows.setAlignment(1);   // float16 rows of an odd width
+            tex->setData(QOpenGLTexture::Red, type, data.constData(), &rows);
+            // Trilinear, as the backend samples; clamped at the box's faces.
+            tex->setMinMagFilters(QOpenGLTexture::Linear, QOpenGLTexture::Linear);
+            tex->setWrapMode(QOpenGLTexture::ClampToEdge);
+        };
+        upload(m_emissionTexture, QOpenGLTexture::R32F, QOpenGLTexture::Float32,
+               m_grid.emission);
+        upload(m_indexTexture, QOpenGLTexture::R16F, QOpenGLTexture::Float16, m_grid.index);
+        m_grid.emission.clear();   // on the GPU now
+        m_grid.index.clear();
+        m_gridUpload = false;
+    }
+    // The camera, as the backend's (_rays); a map without perspective
+    // (parallel_camera).
+    const QVector3D pos = vec(m_camera, u"position"_s), fp = vec(m_camera, u"focal_point"_s);
+    QVector3D forward = (fp - pos).normalized();
+    QVector3D right = QVector3D::crossProduct(forward, vec(m_camera, u"view_up"_s)).normalized();
+    const QVector3D up = QVector3D::crossProduct(right, forward);
+    const double angle = m_camera.value(u"view_angle"_s).toDouble(30.0);
+    const double dist = double((fp - pos).length());
+    bool parallel = m_camera.value(u"parallel"_s).toBool();
+    double half = m_camera.value(u"parallel_scale"_s).toDouble(1.0);
+    if (m_mode == Mode::Projected && !parallel) {
+        parallel = true;
+        half = dist * std::tan(angle * M_PI / 360.0);
+    }
+    const double scale = parallel ? size.height() / (2.0 * std::max(half, 1e-30))
+                                  : (size.height() / 2.0) / std::tan(angle * M_PI / 360.0);
+    const auto &b = m_grid.box;
+    const QVector3D n(float(m_grid.nx), float(m_grid.ny), float(m_grid.nz));
+    // Samples per voxel of this grid (backend: default_step × 2 / quality).
+    std::array<double, 3> side{ (b[1] - b[0]) / std::max(1, m_grid.nx - 1),
+                                (b[3] - b[2]) / std::max(1, m_grid.ny - 1),
+                                (b[5] - b[4]) / std::max(1, m_grid.nz - 1) };
+    double voxel = 1e300;
+    for (double sd : side)
+        if (sd > 0)
+            voxel = std::min(voxel, sd);
+    if (!(voxel < 1e300))
+        voxel = 1.0;
+    // At most 8000 steps across the box: the shader's loop ends at 8192.
+    const double diag = std::sqrt((b[1] - b[0]) * (b[1] - b[0]) + (b[3] - b[2]) * (b[3] - b[2])
+                                  + (b[5] - b[4]) * (b[5] - b[4]));
+    const double step = std::max(voxel / std::max(0.25, m_tone.quality), diag / 8000.0);
+    const bool moments = m_mode == Mode::Projected && !grey;
+    const double slab = m_mode == Mode::Projected ? m_tone.slab : 0.0;
+
+    glViewport(0, 0, size.width(), size.height());
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    m_march->bind();
+    m_emissionTexture->bind(0);
+    m_indexTexture->bind(1);
+    m_lutTexture->bind(2);
+    m_march->setUniformValue("u_e", 0);
+    m_march->setUniformValue("u_c", 1);
+    m_march->setUniformValue("u_lut", 2);
+    m_march->setUniformValue("u_origin", pos);
+    m_march->setUniformValue("u_forward", forward);
+    m_march->setUniformValue("u_right", right);
+    m_march->setUniformValue("u_up", up);
+    m_march->setUniformValue("u_scale", float(scale));
+    m_march->setUniformValue("u_parallel", parallel ? 1 : 0);
+    m_march->setUniformValue("u_size", QVector2D(float(size.width()), float(size.height())));
+    m_march->setUniformValue("u_lo", QVector3D(float(b[0]), float(b[2]), float(b[4])));
+    m_march->setUniformValue("u_hi", QVector3D(float(b[1]), float(b[3]), float(b[5])));
+    m_march->setUniformValue("u_n", n);
+    m_march->setUniformValue("u_step", float(step));
+    m_march->setUniformValue("u_kappa", float(kappa));
+    m_march->setUniformValue("u_moments", moments ? 1 : 0);
+    m_march->setUniformValue("u_grey", grey ? 1 : 0);
+    m_march->setUniformValue("u_slabLo", float(slab > 0 ? -slab / 2.0 : 0.0));
+    m_march->setUniformValue("u_slabHi", float(slab > 0 ? slab / 2.0 : 0.0));
+    m_march->setUniformValue("u_fpDepth", float(dist));
+    m_quadVao->bind();
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    m_quadVao->release();
+    m_lutTexture->release(2);
+    m_indexTexture->release(1);
+    m_emissionTexture->release(0);
+    glActiveTexture(GL_TEXTURE0);
+    m_march->release();
+}
+
+double ParticleGLView::gridKappa(const QSize &size)
+{
+    // Kept while the view turns; measured again when it settles (or the
+    // absorption changes), as the exposure is.
+    if (!m_kappaStale && m_stats)
+        return m_kappa;
+    const QSize quarter(std::max(16, size.width() / 4), std::max(16, size.height() / 4));
+    if (!m_quarter || m_quarter->size() != quarter) {
+        QOpenGLFramebufferObjectFormat fmt;
+        fmt.setAttachment(QOpenGLFramebufferObject::NoAttachment);
+        fmt.setInternalTextureFormat(GL_RGBA32F);
+        m_quarter = std::make_unique<QOpenGLFramebufferObject>(quarter, fmt);
+    }
+    m_quarter->bind();
+    march(quarter, 0.0, true);
+    std::vector<float> rgba(size_t(quarter.width()) * quarter.height() * 4);
+    glReadPixels(0, 0, quarter.width(), quarter.height(), GL_RGBA, GL_FLOAT, rgba.data());
+    m_quarter->release();
+    std::vector<float> lit;
+    for (size_t i = 0; i < rgba.size(); i += 4)
+        if (rgba[i] > 0)
+            lit.push_back(rgba[i]);
+    const double ref = percentile(lit, 99.5);
+    m_kappa = ref > 0 ? m_tone.absorption / ref : 0.0;
+    m_kappaStale = false;
+    return m_kappa;
 }
 
 void ParticleGLView::paintGL()
@@ -540,10 +824,11 @@ void ParticleGLView::paintGL()
     glDisable(GL_SCISSOR_TEST);   // the last frame's overlay painter may have left it on
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
-    if (!m_ready || m_count <= 0 || m_camera.isEmpty())
+    if (!m_ready || !hasParticles() || m_camera.isEmpty())
         return;
     const QRect rect = imageRect();
     ensureTarget(rect.size());
+    ensureLut();   // a grid's light takes its colours from the table
     accumulate(rect.size());
     glBindFramebuffer(GL_FRAMEBUFFER, screen);
     glViewport(rect.x(), rect.y(), rect.width(), rect.height());

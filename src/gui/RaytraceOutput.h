@@ -1,8 +1,9 @@
 #ifndef RAYTRACEOUTPUT_H
 #define RAYTRACEOUTPUT_H
 
-// The pictures of a ray-traced view (issue #101): a still or an orbit movie of
-// it, rendered by the backend (/v1/tasks/particle_render) at up to 8K, graded
+// The pictures of a ray-traced view (issues #101, #106): a still or an orbit
+// movie of it, rendered by the backend (/v1/tasks/particle_render, or
+// /v1/tasks/volume_render for a cube) at up to 8K, graded
 // again without rendering it again, saved as PNG, as the light before the tone
 // curve (FITS), or encoded as an MP4. The box and colour bar shown over the
 // view are drawn onto them. Lives in the point viewer's Ray-traced card.
@@ -51,6 +52,9 @@ public:
         std::function<visivo::RaytraceOverlay()> overlay;
         /// The view's shape, for the "this view" size.
         std::function<QSize()> viewSize;
+        /// The task a render is: particles, or a cube (issue #106). Its
+        /// frames, tone and light are served at /v1/particle_render/{id}/….
+        QString taskPath = QStringLiteral("/v1/tasks/particle_render");
     };
 
     explicit RaytraceOutput(Source source, QWidget *parent = nullptr);

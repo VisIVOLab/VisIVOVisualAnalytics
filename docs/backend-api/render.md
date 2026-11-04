@@ -81,11 +81,12 @@ Errors: 401 (token), 404 (`"Unknown render session_id."`, also for a session own
 
 ### `GET /v1/render/{session_id}/camera`
 
-A point session's camera, after the commands sent before the request:
-`{position, focal_point, view_up, view_angle, parallel, parallel_scale}`. A
-ray-traced still of the view on screen is rendered from it
-([Ray-traced particle rendering](particle-render)). 404 for an unknown session,
-409 for a session with no camera to report.
+A session's camera (points or a cube), after the commands sent before the
+request: `{position, focal_point, view_up, view_angle, parallel,
+parallel_scale}`, a cube's in its voxel coordinates. A ray-traced still of the
+view on screen is rendered from it ([particles](particle-render),
+[volumes](volume-render)). `/levels` carries it too, as `camera`. 404 for an
+unknown session, 409 for a session with no camera to report.
 
 ### `DELETE /v1/render/{session_id}`
 

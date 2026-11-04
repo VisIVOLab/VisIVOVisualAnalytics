@@ -471,12 +471,14 @@ def _moment_map_from_array(
         logger.debug("moment M1: using %s path", "numba" if used_numba else "numpy")
         if used_numba:
             # _moment1_numba expects float32 cube, float64 spectral, bool mask.
-            result_f64 = _moment1_numba(
-                np.ascontiguousarray(subset_np, dtype=np.float32),
-                np.ascontiguousarray(spectral_values_np, dtype=np.float64),
-                np.ascontiguousarray(spectral_delta_np, dtype=np.float64),
-                np.ascontiguousarray(valid_mask, dtype=np.bool_),
-            )
+            from ..numba_parallel import LOCK  # noqa: PLC0415
+            with LOCK:   # one parallel kernel at a time in a process
+                result_f64 = _moment1_numba(
+                    np.ascontiguousarray(subset_np, dtype=np.float32),
+                    np.ascontiguousarray(spectral_values_np, dtype=np.float64),
+                    np.ascontiguousarray(spectral_delta_np, dtype=np.float64),
+                    np.ascontiguousarray(valid_mask, dtype=np.bool_),
+                )
             return result_f64.astype(np.float32)
         # Sequential numpy/cupy fallback.
         weights = spectral_delta_np[:, None, None]
@@ -493,12 +495,14 @@ def _moment_map_from_array(
         used_numba = _NUMBA_OK and subset_np.shape[0] > _NUMBA_THRESHOLD
         logger.debug("moment M2: using %s path", "numba" if used_numba else "numpy")
         if used_numba:
-            result_f64 = _moment2_numba(
-                np.ascontiguousarray(subset_np, dtype=np.float32),
-                np.ascontiguousarray(spectral_values_np, dtype=np.float64),
-                np.ascontiguousarray(spectral_delta_np, dtype=np.float64),
-                np.ascontiguousarray(valid_mask, dtype=np.bool_),
-            )
+            from ..numba_parallel import LOCK  # noqa: PLC0415
+            with LOCK:   # one parallel kernel at a time in a process
+                result_f64 = _moment2_numba(
+                    np.ascontiguousarray(subset_np, dtype=np.float32),
+                    np.ascontiguousarray(spectral_values_np, dtype=np.float64),
+                    np.ascontiguousarray(spectral_delta_np, dtype=np.float64),
+                    np.ascontiguousarray(valid_mask, dtype=np.bool_),
+                )
             return result_f64.astype(np.float32)
         # Sequential numpy fallback.
         weights = spectral_delta_np[:, None, None]

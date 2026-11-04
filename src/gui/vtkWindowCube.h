@@ -19,6 +19,9 @@ class InspectorPanel;
 class MomentMapController;
 class NoiseController;
 class PvController;
+class RaytraceOutput;
+class RaytraceViewport;
+class VolumeRaytracePanel;
 
 #include "CubeViewportGeometry.h"
 
@@ -1128,6 +1131,35 @@ protected:
     void applyCinematicLighting(bool on);
     bool m_cinematicLighting{ false };
     QPointer<QCheckBox> m_cinematicCheck;   ///< local views only (a remote one is not lit)
+
+    // ── Ray-traced light (issue #106), vtkWindowCube_Raytrace.cpp ───────────
+    /// The 3-D view as HDR light, graded by a tone curve, its colour from the
+    /// cube or from another field: a ray-march on this machine's GPU, stills
+    /// and movies by the backend. A presentation style switched on beside the
+    /// analysis rendering, which keeps its controls.
+    void setRaytraced(bool on);
+    /// The 3-D view's camera (the backend view's when that is shown) and the
+    /// world box the cube spans in its coordinates; an empty box: the full
+    /// cube's voxel coordinates, the backend view's.
+    void raytraceCamera(std::function<void(const QJsonObject &camera, const QString &error)> done);
+    QJsonArray raytraceBox() const;
+    QJsonObject raytraceRequest() const;
+    QPointer<QCheckBox> m_rtCheck;
+    QPointer<QWidget> m_rtCard;               ///< settings and output, under the check
+    QPointer<RaytraceViewport> m_rtView;      ///< the render stack's page for it
+    QPointer<VolumeRaytracePanel> m_rtPanel;
+    QPointer<RaytraceOutput> m_rtOutput;
+    int m_rtPreviousPage{ 0 };                ///< the stack's page before it
+    bool m_rtFromRemote{ false };             ///< its camera came from the backend view
+    QList<QPair<QString, int>> m_rtFields;    ///< the volume's other fields, by index
+    QString m_rtFieldName;                    ///< this cube's own field
+    /// The stride of the displayed preview (1: full resolution or a region):
+    /// a displayed voxel i is the cube's voxel i × stride.
+    int m_displayStride{ 1 };
+    int m_previewStride{ 1 };   ///< the preview being fetched
+    /// The displayed cube's stride changed (a preview, the full cube): the
+    /// ray-traced view's camera, in the displayed coordinates, follows it.
+    void setDisplayStride(int stride);
     void updateVolumeModeVisibility(bool volumeActive);
 
     // ── Moment card state machine ─────────────────────────────────────────────
