@@ -10,6 +10,7 @@
 #include "skava/SkavaClient.h"
 
 #include <QFile>
+#include <QFileInfo>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QSettings>
@@ -718,4 +719,37 @@ void TestBackendRouting::findRegisteredBackendMatchesLikeRouting()
     dl.visivoBackends = { descriptor(u"https://a.example/visivo"_s, u"A"_s, {}, /*requiresAuth=*/true) };
     QCOMPARE(findRegisteredBackend(registry, dl.visivoBackends.first()), 0);
     QVERIFY(!routeSkavaDataset(registry, dl, /*autoToken=*/false).valid());
+}
+
+void TestBackendRouting::launchOptions_datasetPathsFollowTheBackend()
+{
+    // A file here, a path that is not, options and their values (issue #108).
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString here = dir.filePath(u"cube.fits"_s);
+    QFile file(here);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.close();
+    const QString remotePath = u"/scratch/node/data/WALLABY.fits"_s;
+    const QStringList args{ u"visivo"_s,
+                            u"--backend"_s, u"http://localhost:18960"_s,
+                            u"--backend-token-file"_s, u"/home/me/.token"_s,
+                            u"--backend-name"_s, u"pleiadi-gpu"_s,
+                            u"--no-backend-autostart"_s,
+                            remotePath, here };
+
+    // On a remote backend every path is the backend's, as it was given.
+    QStringList missing;
+    QCOMPARE(LaunchOptions::datasetPaths(args, true, &missing),
+             QStringList({ remotePath, here }));
+    QVERIFY(missing.isEmpty());
+
+    // On the local backend only what exists here, the rest reported.
+    QCOMPARE(LaunchOptions::datasetPaths(args, false, &missing),
+             QStringList({ QFileInfo(here).absoluteFilePath() }));
+    QCOMPARE(missing, QStringList({ remotePath }));
+
+    // Option values are never files, even when one exists by that name.
+    QCOMPARE(LaunchOptions::datasetPaths({ u"visivo"_s, u"--backend-token-file"_s, here }, false),
+             QStringList());
 }

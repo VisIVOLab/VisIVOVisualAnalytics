@@ -222,6 +222,18 @@ For that run only:
 * an option given without its value, a malformed URL, or an empty or
   unreadable token file stops the launch with an error, rather than starting
   on the local backend.
+* a dataset path after the options is a path on the backend, opened there
+  as *Open…* would open it:
+
+  ```bash
+  VisIVOVisualAnalytics --backend http://localhost:18901 \
+      --backend-token-file ~/.visivo_slurm_token --backend-name PLEIADI \
+      /scratch/me/data/cube.fits
+  ```
+
+  If the backend does not find it, or it lies outside the folders the backend
+  may read, the window says so. On the local backend a path that does not
+  exist on this machine is reported too, rather than ignored.
 
 If the backend does not answer, the start-up screen names it and says what to
 check: the job, the tunnel, and that the token is this job's (a new job has a

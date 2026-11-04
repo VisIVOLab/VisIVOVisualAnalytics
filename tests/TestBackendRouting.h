@@ -26,6 +26,7 @@ private slots:
     void cluster_profilesRoundTrip();
     void cluster_extraOptionsRoundTripThroughTheDialogLine();
     void launchOptions_connectCluster();
+    void launchOptions_datasetPathsFollowTheBackend();
     void recents_recordTheBackendTheyWereOpenedOn();
     void recents_twoWindowsKeepEachOthersEntries();
     void recents_samePathOnTwoBackendsAndOldEntries();

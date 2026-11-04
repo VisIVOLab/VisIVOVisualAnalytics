@@ -723,10 +723,13 @@ void MainWindow::doOpenDataFromUrl(const QString &url, const QString &obsId,
 void MainWindow::openDatasetPath(const QString &path)
 {
     // Entry point for the desktop (Finder / file manager / command line). The
-    // backend opens the file by PATH, so it has to be a readable local file;
-    // saying so here is better than the backend's generic "could not open".
+    // backend opens the file by PATH. On the local backend it has to be a
+    // readable local file; saying so here is better than the backend's
+    // generic "could not open". On a remote backend (--backend) the path is
+    // the backend's: it opens there, and the backend says whether it exists.
+    const bool remote = Settings::sessionBackend() != nullptr;
     const QFileInfo info(path);
-    if (!info.exists() || !info.isFile() || !info.isReadable()) {
+    if (!remote && (!info.exists() || !info.isFile() || !info.isReadable())) {
         QMessageBox::warning(this, u"Cannot open file"_s,
                              u"“%1” is not a readable file."_s.arg(path));
         return;
@@ -740,7 +743,7 @@ void MainWindow::openDatasetPath(const QString &path)
     // answered with "Unsupported file type. Expected FITS (.fits, .fit) or HDF5"
     // although the application opens every one of them from its own Open dialog.
     // Whatever the desktop hands over goes through the same single decision.
-    this->dispatchOpenForPath(info.absoluteFilePath());
+    this->dispatchOpenForPath(remote ? path : info.absoluteFilePath());
 }
 
 void MainWindow::doOpenDataPath(const QString &path)
@@ -1220,6 +1223,18 @@ void MainWindow::dispatchOpenForPath(const QString &path)
         return;
     }
     const BackendClassifyResult verdict = client.classifyFile(path);
+    if (!verdict.valid && verdict.error == u"File not found."_s) {
+        // Missing, or outside the backend's data roots (it answers alike): no
+        // viewer can open it, so the choice of one is not offered.
+        const Settings::SessionBackend *remote = Settings::sessionBackend();
+        QMessageBox box(QMessageBox::Warning, u"Cannot open file"_s,
+                        u"“%1” was not found on %2, or lies outside the folders it "
+                        u"may read."_s.arg(path, remote ? remote->name : u"the backend"_s),
+                        QMessageBox::Ok, this);
+        box.setTextFormat(Qt::PlainText);
+        box.exec();
+        return;
+    }
 
     // A VBT picked by its `.bin` opens through the `.head` beside it: the VBT
     // route parses the header, and handing it the binary would fail on a file
