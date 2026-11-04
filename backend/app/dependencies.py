@@ -566,7 +566,7 @@ __all__ = [
     "_HEALPY_AVAILABLE",
     "_RA_CANDIDATES", "_DEC_CANDIDATES",
     "_default_worker_count", "_pool_initializer", "_error",
-    "_apply_tabular_query",
+    "_apply_tabular_query", "sample_step",
     "data_roots", "hide_hidden_entries", "_normalize_path", "_parse_vbt_header", "_is_fits", "_is_supported_dataset",
     "_normalize_catalogue_field", "_catalogue_field_type",
     "_catalogue_metadata_from_dataframe", "_catalogue_csv_metadata",
@@ -621,8 +621,16 @@ def _apply_tabular_query(
     sort: TabularSortSpec | None,
     limit: int,
     offset: int,
+    even_sample: bool = False,
+    phase: int = 0,
 ) -> tuple["pd.DataFrame", int]:
     """Apply filters, sort, and limit/offset to a DataFrame.
+
+    ``even_sample``: when more rows match than ``limit``, one in every
+    ``sample_step(total, limit)`` of them, from the ``phase``-th, instead of a
+    page (``offset`` then does not apply). A simulation's table is stored by
+    region of space, so its first rows are a few blocks of it; an even sample
+    covers it all, and the next phases fill it in.
 
     Returns ``(result_df, total_rows_before_pagination)``.
     Raises ``ValueError`` for unknown fields or operators.
@@ -632,7 +640,8 @@ def _apply_tabular_query(
     # one boolean mask, then only the page's rows are taken. Filtering the
     # frame instead copied every matching row of every column per request —
     # gigabytes on a table of a hundred million rows.
-    page = _numeric_filter_page(df, filters, sort, limit, offset, _NUMERIC_OPS)
+    page = _numeric_filter_page(df, filters, sort, limit, offset, _NUMERIC_OPS,
+                                even_sample=even_sample, phase=phase)
     if page is not None:
         return page
     for f in filters:
@@ -695,6 +704,9 @@ def _apply_tabular_query(
         )
 
     total = len(df)
+    step = sample_step(total, limit) if even_sample else 1
+    if step > 1:
+        return df.iloc[phase::step].iloc[:limit], total
     if offset:
         df = df.iloc[offset:]
     if limit > 0:
@@ -702,7 +714,13 @@ def _apply_tabular_query(
     return df, total
 
 
-def _numeric_filter_page(df, filters, sort, limit, offset, numeric_ops):
+def sample_step(total: int, limit: int) -> int:
+    """One row in how many makes an even sample of ``limit`` of ``total``."""
+    return max(1, -(-total // limit)) if limit > 0 and total > limit else 1
+
+
+def _numeric_filter_page(df, filters, sort, limit, offset, numeric_ops, *,
+                         even_sample: bool = False, phase: int = 0):
     """``(page, total)`` when every filter compares a numeric column with a
     number and nothing is sorted; None otherwise (the general path)."""
     if sort and sort.field in df.columns:
@@ -724,10 +742,16 @@ def _numeric_filter_page(df, filters, sort, limit, offset, numeric_ops):
         mask = cut if mask is None else (mask & cut)
     if mask is None:
         total = len(df)
+        step = sample_step(total, limit) if even_sample else 1
+        if step > 1:
+            return df.iloc[phase::step].iloc[:limit], total
         stop = total if limit <= 0 else min(total, offset + limit)
         return df.iloc[offset:stop], total
     rows = np.flatnonzero(mask)
     total = int(rows.size)
+    step = sample_step(total, limit) if even_sample else 1
+    if step > 1:
+        return df.iloc[rows[phase::step][:limit]], total
     rows = rows[offset:] if limit <= 0 else rows[offset:offset + limit]
     return df.iloc[rows], total
 

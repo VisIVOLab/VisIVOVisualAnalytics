@@ -60,6 +60,12 @@ class LUTCustomizerDialog;
 class VolumeColorbar;
 class vtkImageData;
 class RemotePointView;
+class RaytraceOutput;
+class RaytraceSettingsPanel;
+class RaytraceViewport;
+class QFrame;
+class QFormLayout;
+class QVBoxLayout;
 class RemoteRenderWidget;
 class vtkPointGaussianMapper;
 class vtkPiecewiseFunction;
@@ -78,6 +84,8 @@ struct Catalogue3DFilterTaskResult
     std::vector<Catalogue3DEntry> entries;
     QString statusMsg;
     int totalRows{ 0 };
+    int step{ 1 };   ///< an even sample: one row in this many
+    int limit{ 0 };  ///< the page size that step was taken for
 };
 
 // Result struct for the background cosmology recalculation task
@@ -153,6 +161,7 @@ private:
         Cross,
         Velocity,   // arrows oriented by vx/vy/vz, scaled by speed
         Gaussian,   // emissive Gaussian splats (a simulation's particles)
+        Raytraced,  // ray-traced on the GPU (RaytraceViewport, issue #101)
     };
 
     enum class SizeMode
@@ -416,6 +425,18 @@ private:
     QFutureWatcher<Catalogue3DFilterTaskResult> filterWatcher;
     // ── Pagination ────────────────────────────────────────────────────────────
     int m_currentOffset{ 0 };
+    // A point table loads an even sample of its rows, not its first ones (a
+    // simulation's table is stored by region of space): one in m_sampleStep,
+    // each "Load more" the next phase of them.
+    int m_sampleStep{ 1 };
+    int m_samplePhase{ 0 };
+    int m_sampleLimit{ 100000 };   ///< the page size the step was taken for
+    /// Rows left to load: phases of the sample, or pages.
+    bool hasMoreRows() const
+    {
+        return this->m_sampleStep > 1 ? this->m_samplePhase < this->m_sampleStep
+                                      : this->m_currentOffset < this->m_totalCount;
+    }
     int m_pageSize{ 50000 };
     int m_totalCount{ -1 };
     bool m_loadingMore{ false };
@@ -507,6 +528,29 @@ private:
     void updateRenderBadge();
     /// The view's state as commands for the backend (sent when changed).
     void pushRemoteState();
+    /// The view's state as the backend's point commands: positions, filters,
+    /// colours, style. ``textFiltersSkipped``: set when a text filter could not
+    /// be sent (the backend filters on numbers).
+    QList<QVariantMap> pointViewCommands(bool *textFiltersSkipped = nullptr) const;
+    /// The view's state in a ray-traced render request's terms.
+    QJsonObject raytraceViewState() const;
+    /// The camera of the view on screen (asks the backend's view for its own).
+    void viewCamera(std::function<void(const QJsonObject &, const QString &)> done);
+    QStringList numericColumns() const;
+    // The "Ray-traced" shape: the view on the GPU, its settings in the sidebar.
+    void setRaytraced(bool on);
+    /// The stack's page for a render mode; the ray-traced view while it is on.
+    void showRenderPage(int index);
+    int m_renderPage{ 0 };
+    QPointer<RaytraceViewport> m_rtView;
+    QPointer<RaytraceSettingsPanel> m_rtPanel;
+    QPointer<RaytraceOutput> m_rtOutput;
+    QPointer<QFrame> m_rtCard;
+    QPointer<QVBoxLayout> m_vizPageLayout;
+    QPointer<QFrame> m_reprCard;
+    // What only the drawn points use, hidden while the view is ray-traced.
+    QPointer<QFrame> m_sceneCard;
+    void showPointOnlyControls(bool visible);
 };
 
 #endif // vtkWindowCatalogue3D_h

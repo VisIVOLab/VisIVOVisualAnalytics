@@ -114,17 +114,6 @@ class PointViewState:
     filters: list[dict] = field(default_factory=list)
 
 
-def _default_axes(names: list[str]) -> tuple[str, str, str]:
-    """X/Y/Z by name when the table has them, else its first three columns —
-    the desktop viewer's choice."""
-    upper = {n.upper(): n for n in names}
-    picks = [upper.get(a) for a in ("X", "Y", "Z")]
-    if all(picks):
-        return picks[0], picks[1], picks[2]
-    first = (names + names[:1] * 3)[:3]
-    return first[0], first[1], first[2]
-
-
 def _sampled_lut(ctf, cmin: float, cmax: float, log: bool):
     """``ctf`` as a 1024-entry vtkLookupTable over [cmin, cmax], as the desktop
     colours its points. A mapper colours every point through its table, and a
@@ -206,6 +195,8 @@ class PointRenderSession:
         self._num_rows = 0
         self._rows = np.empty(0, dtype=np.int64)   # rows drawn (sample ∩ filters)
         self._splat_basis = None   # (bounds, count) of the unfiltered points
+        self._table = None  # app/point_table.py's PointTable
+        self._camera: dict[str, Any] | None = None   # copied on the render thread
         self._sky = None    # (ra, dec) columns of a sky catalogue
         self._frame = None  # the catalogue's table, for its positions
         self._data_range: tuple[float, float] | None = None
@@ -224,10 +215,23 @@ class PointRenderSession:
     def levels(self) -> dict[str, Any]:
         """The colour field's data range, as a cube session reports its own."""
         lo, hi = self._data_range if self._data_range else (None, None)
-        return {"threshold": None, "data_min": lo, "data_max": hi, "pending": False}
+        return {"threshold": None, "data_min": lo, "data_max": hi, "pending": False,
+                "camera": self._camera}
 
     async def initialize(self) -> None:
         await self._run(self._init_on_thread)
+        self._camera = await self._run(self._camera_on_thread)
+
+    def _camera_on_thread(self) -> dict[str, Any] | None:
+        """The view's camera, for a render made elsewhere of the same view (the
+        ray-traced still, app/routers/particle_render.py)."""
+        if self._renderer is None:
+            return None
+        cam = self._renderer.GetActiveCamera()
+        return {"position": list(cam.GetPosition()), "focal_point": list(cam.GetFocalPoint()),
+                "view_up": list(cam.GetViewUp()), "view_angle": cam.GetViewAngle(),
+                "parallel": bool(cam.GetParallelProjection()),
+                "parallel_scale": cam.GetParallelScale()}
 
     def mark_dirty(self) -> None:
         self._scene_dirty = True
@@ -257,6 +261,7 @@ class PointRenderSession:
             logger.warning("[point-render %s] %s refused: %s", self.session_id[:8],
                            command.get("type"), exc)
             return
+        self._camera = await self._run(self._camera_on_thread)
         self.mark_dirty()
         self.changed.set()
 
@@ -311,63 +316,21 @@ class PointRenderSession:
     # ── Worker thread ────────────────────────────────────────────────────
 
     def _open_table(self) -> None:
-        if str(self.dataset_path).startswith("{"):
-            self._open_catalogue(json.loads(self.dataset_path))
-            return
-        from ..volume_source import parse_vbt_header
-        # The header's path (the VBT route registers it); its binary beside it.
-        head = str(self.dataset_path)
-        if not head.endswith(".head"):
-            head += ".head"
-        header = parse_vbt_header(head)
-        if header["kind"] != "point":
-            raise ValueError("Point rendering needs a VBT point table.")
-        binary = head[: -len(".head")]
-        table = np.memmap(binary, dtype=np.dtype(header["np_endian_code"]), mode="r",
-                          shape=(header["field_count"], header["num_rows"]))
-        self._names = list(header["field_names"])
-        self._columns = {n: table[i] for i, n in enumerate(self._names)}
-        self._num_rows = int(header["num_rows"])
-        self.view.x, self.view.y, self.view.z = _default_axes(self._names)
-
-    def _open_catalogue(self, spec: dict) -> None:
-        """A catalogue file (CSV, VOTable, FITS table, IPAC, .speck), or several
-        of one format concatenated, read in this process; its numeric columns
-        are drawn. A sky catalogue's positions are computed as the desktop
-        computes them (app/catalogue_positions.py), in the columns ``@x``,
-        ``@y``, ``@z``."""
-        from pathlib import Path
-
-        from ..dependencies import _catalogue_load_dataframe
-        paths = [Path(p) for p in spec.get("paths") or []]
-        if not paths:
-            raise ValueError("No catalogue file to draw.")
-        fmt = str(spec.get("format", "csv"))
-        frames = [_catalogue_load_dataframe(p, fmt) for p in paths]
-        frame = frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
-        self._frame = frame
-        self._names = [str(c) for c in frame.columns]
-        self._columns = {}
-        for name in self._names:
-            if pd.api.types.is_numeric_dtype(frame[name]) and not pd.api.types.is_bool_dtype(frame[name]):
-                self._columns[name] = frame[name].to_numpy(dtype=float, na_value=np.nan)
-        self._num_rows = len(frame)
-        coords = spec.get("coordinates") or {}
-        if coords.get("system") == "cartesian":
-            self.view.x, self.view.y, self.view.z = coords["x"], coords["y"], coords["z"]
-        else:
-            self._sky = (str(coords.get("ra", "")), str(coords.get("dec", "")))
-            self._compute_sky_positions()
-            self.view.x, self.view.y, self.view.z = "@x", "@y", "@z"
+        """The table, read as app/point_table.py reads it for every point
+        renderer: a VBT in place, or a catalogue (a sky one with its scene
+        positions in ``@x``, ``@y``, ``@z``)."""
+        from ..point_table import open_point_table
+        self._table = open_point_table(self.dataset_path)
+        self._names = self._table.names
+        self._columns = self._table.columns
+        self._num_rows = self._table.num_rows
+        self._frame = self._table.frame
+        self._sky = self._table.sky
+        self.view.x, self.view.y, self.view.z = self._table.axes
 
     def _compute_sky_positions(self) -> None:
-        from ..catalogue_positions import sky_positions
-        ra, dec = self._sky
-        xyz = sky_positions(self._frame, ra, dec, frame_name=self.view.sky_frame,
-                            distance_mode=self.view.distance_mode,
-                            cosmology=self.view.cosmology)
-        for i, axis in enumerate(("@x", "@y", "@z")):
-            self._columns[axis] = xyz[:, i]
+        self._table.set_sky_positions(self.view.sky_frame, self.view.distance_mode,
+                                      self.view.cosmology)
 
     def _sample_rows(self) -> np.ndarray:
         """Every row, or an even sample of MAX_POINTS of them."""

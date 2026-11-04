@@ -385,9 +385,11 @@ void vtkWindowCatalogue3D::applyFilter()
     const int numFilters = nFilters;
     this->pushRemoteState();   // the filters, on the whole table
     const int pageSize = this->m_pageSize;
+    const bool evenSample = this->m_pointTable;
 
     this->filterWatcher.setFuture(QtConcurrent::run(
-            [backendUrl, backendToken, datasetId, sessionId, filters, schema, numFilters, pageSize]()
+            [backendUrl, backendToken, datasetId, sessionId, filters, schema, numFilters, pageSize,
+             evenSample]()
                     -> Catalogue3DFilterTaskResult {
                 Catalogue3DFilterTaskResult out;
 
@@ -400,6 +402,7 @@ void vtkWindowCatalogue3D::applyFilter()
                 qreq.filters = filters;
                 qreq.limit = pageSize;
                 qreq.offset = 0;
+                qreq.evenSample = evenSample;
 
                 const auto subset = client.queryTabularCatalogue(qreq);
                 if (!subset.valid) {
@@ -414,6 +417,8 @@ void vtkWindowCatalogue3D::applyFilter()
 
                 out.entries = parsed.entries;
                 out.totalRows = subset.totalRows;
+                out.step = subset.step;
+                out.limit = pageSize;
                 out.statusMsg =
                         filters.empty()
                                 ? QStringLiteral("Loaded %1 of %2 sources.")
@@ -458,8 +463,11 @@ void vtkWindowCatalogue3D::loadMoreEntries()
     if (this->remoteDatasetId.isEmpty() || this->m_loadingMore || this->filterBusy || this->m_sceneBuilding) {
         return;
     }
-    if (this->m_totalCount >= 0
-        && this->m_currentOffset >= this->m_totalCount) {
+    // A point table's sample: the next phase, the rows between those loaded,
+    // in pages of the size its step was taken for; none left, nothing to do.
+    const bool sampled = this->m_sampleStep > 1;
+    if (sampled ? this->m_samplePhase >= this->m_sampleStep
+                : (this->m_totalCount >= 0 && this->m_currentOffset >= this->m_totalCount)) {
         return;
     }
 
@@ -468,11 +476,15 @@ void vtkWindowCatalogue3D::loadMoreEntries()
         this->btnLoadMore->setEnabled(false);
         this->btnLoadMore->setText(u"Loading…"_s);
     }
+    const int phase = this->m_samplePhase;
     if (this->filterStatusLabel) {
         this->filterStatusLabel->setText(
-                QStringLiteral("Loading rows %1–%2…")
-                        .arg(this->m_currentOffset + 1)
-                        .arg(this->m_currentOffset + this->m_pageSize));
+                sampled ? QStringLiteral("Loading more of the table, evenly (%1 of %2)…")
+                                  .arg(phase + 1)
+                                  .arg(this->m_sampleStep)
+                        : QStringLiteral("Loading rows %1–%2…")
+                                  .arg(this->m_currentOffset + 1)
+                                  .arg(this->m_currentOffset + this->m_pageSize));
     }
 
     const QString backendUrl = this->backendUrl;
@@ -482,10 +494,11 @@ void vtkWindowCatalogue3D::loadMoreEntries()
     const std::vector<BackendTabularFilter> filters = this->activeFilters;
     const Catalogue3DSchema schema = this->schema;
     const int offset = this->m_currentOffset;
-    const int pageSize = this->m_pageSize;
+    const int pageSize = sampled ? this->m_sampleLimit : this->m_pageSize;
 
     this->m_loadMoreWatcher.setFuture(QtConcurrent::run(
-            [backendUrl, backendToken, datasetId, sessionId, filters, schema, offset, pageSize]()
+            [backendUrl, backendToken, datasetId, sessionId, filters, schema, offset, pageSize,
+             sampled, phase]()
                     -> Catalogue3DFilterTaskResult {
                 Catalogue3DFilterTaskResult out;
 
@@ -498,6 +511,8 @@ void vtkWindowCatalogue3D::loadMoreEntries()
                 qreq.filters = filters;
                 qreq.limit = pageSize;
                 qreq.offset = offset;
+                qreq.evenSample = sampled;
+                qreq.phase = phase;
 
                 const auto subset = client.queryTabularCatalogue(qreq);
                 if (!subset.valid) {

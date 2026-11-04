@@ -85,6 +85,25 @@ async def _owned_render_session(session_id: str, token: str | None):
 # ── REST: session lifecycle ──────────────────────────────────────────────────
 
 
+
+def point_table_spec(entry: dict) -> str | None:
+    """What a point renderer opens for a dataset (app/point_table.py), None
+    for one that is not a table of points. Opened by the VBT route, or as a
+    catalogue (the 3-D catalogue viewer): a VBT by its header, any other
+    catalogue by its files and coordinates."""
+    if entry.get("kind") == "vbt" and entry.get("header", {}).get("kind") == "point":
+        return str(entry["head_path"])
+    if entry.get("kind") == "catalogue" and entry.get("format") == "vbt":
+        return str(entry["path"])
+    if entry.get("kind") == "catalogue":
+        coords = entry.get("coordinate_fields") or {}
+        if coords.get("system") not in ("sky", "cartesian"):
+            raise HTTPException(422, "Drawing a catalogue in 3-D needs RA/Dec or X/Y/Z columns.")
+        return json.dumps({"paths": entry.get("paths") or [str(entry["path"])],
+                           "format": entry.get("format", "csv"),
+                           "coordinates": coords})
+    return None
+
 class CreateRenderSessionRequest(BaseModel):
     dataset_id: str
 
@@ -177,21 +196,7 @@ async def create_session(
         raise HTTPException(404, f"Unknown dataset_id {request.dataset_id!r}.")
     # A VBT point table (issue #83): drawn by the point session, from the
     # table where it lies.
-    # Opened by the VBT route, or as a catalogue (the 3-D catalogue viewer):
-    # a VBT by its header, any other catalogue by its files and coordinates.
-    point_head = None
-    if entry.get("kind") == "vbt" and entry.get("header", {}).get("kind") == "point":
-        point_head = str(entry["head_path"])
-    elif entry.get("kind") == "catalogue" and entry.get("format") == "vbt":
-        point_head = str(entry["path"])
-    elif entry.get("kind") == "catalogue":
-        coords = entry.get("coordinate_fields") or {}
-        if coords.get("system") not in ("sky", "cartesian"):
-            raise HTTPException(422, "Server-side rendering of a catalogue needs RA/Dec or "
-                                     "X/Y/Z columns.")
-        point_head = json.dumps({"paths": entry.get("paths") or [str(entry["path"])],
-                                 "format": entry.get("format", "csv"),
-                                 "coordinates": coords})
+    point_head = point_table_spec(entry)
     if entry.get("kind") != "cube" and point_head is None:
         raise HTTPException(422, "Server-side rendering supports cubes and VBT point tables.")
     if point_head is not None:
@@ -254,6 +259,22 @@ async def session_levels(session_id: str, token: str = _auth) -> RenderLevels:
     if hasattr(sess, "refresh_levels"):
         await sess.refresh_levels()
     return _levels(sess)
+
+
+@router.get("/{session_id}/camera")
+async def session_camera(session_id: str, token: str = _auth) -> dict:
+    """The camera of a point session's view, after the commands sent before
+    this request: a ray-traced still of the view on screen is rendered from
+    it (app/routers/particle_render.py)."""
+    sess = await _owned_render_session(session_id, token)
+    if sess is None:
+        raise HTTPException(404, "Unknown render session_id.")
+    if hasattr(sess, "refresh_levels"):
+        await sess.refresh_levels()
+    camera = (sess.levels() or {}).get("camera")
+    if not camera:
+        raise HTTPException(409, "This render session has no camera to report.")
+    return camera
 
 
 @router.delete("/{session_id}")

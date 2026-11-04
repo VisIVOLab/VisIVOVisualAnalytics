@@ -79,6 +79,14 @@ The session's current threshold and data range, as in the answer of `create_sess
 
 Errors: 401 (token), 404 (`"Unknown render session_id."`, also for a session owned by another token).
 
+### `GET /v1/render/{session_id}/camera`
+
+A point session's camera, after the commands sent before the request:
+`{position, focal_point, view_up, view_angle, parallel, parallel_scale}`. A
+ray-traced still of the view on screen is rendered from it
+([Ray-traced particle rendering](particle-render)). 404 for an unknown session,
+409 for a session with no camera to report.
+
 ### `DELETE /v1/render/{session_id}`
 
 Closes a render session and releases its GPU resources.

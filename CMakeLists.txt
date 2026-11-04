@@ -474,6 +474,18 @@ set(PROJECT_SOURCES
         src/gui/BackendLocality.h
         src/gui/RemotePointView.cpp
         src/gui/RemotePointView.h
+        src/gui/RaytraceOutput.cpp
+        src/gui/RaytraceOutput.h
+        src/gui/RaytraceOverlay.cpp
+        src/gui/RaytraceOverlay.h
+        src/gui/OrbitPath.cpp
+        src/gui/OrbitPath.h
+        src/gui/ParticleGLView.cpp
+        src/gui/ParticleGLView.h
+        src/gui/RaytraceSettingsPanel.cpp
+        src/gui/RaytraceSettingsPanel.h
+        src/gui/RaytraceViewport.cpp
+        src/gui/RaytraceViewport.h
         src/gui/VolumeColorbar.cpp
         src/gui/VolumeColorbar.h
         src/gui/CubeVRController.cpp

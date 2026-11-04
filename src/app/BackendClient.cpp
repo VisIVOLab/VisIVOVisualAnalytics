@@ -2594,6 +2594,10 @@ static QJsonObject buildTabularQueryBody(const BackendTabularQueryRequest &req)
         });
     }
     body.insert(QStringLiteral("filters"), filters);
+    if (req.evenSample) {
+        body.insert(QStringLiteral("even_sample"), true);
+        body.insert(QStringLiteral("phase"), req.phase);
+    }
     if (!req.sortField.isEmpty()) {
         body.insert(QStringLiteral("sort"),
                     QJsonObject{
@@ -2622,6 +2626,7 @@ BackendTabularQueryResponse BackendClient::queryTabularCatalogue(
     result.error = object.value(QStringLiteral("error")).toString();
     result.totalRows = object.value(QStringLiteral("total_rows")).toInt();
     result.returnedRows = object.value(QStringLiteral("returned_rows")).toInt();
+    result.step = std::max(1, object.value(QStringLiteral("step")).toInt(1));
     const QJsonArray rows = object.value(QStringLiteral("rows")).toArray();
     for (const QJsonValue &rowValue : rows) {
         result.rows.append(rowValue.toObject().toVariantMap());

@@ -271,12 +271,21 @@ def test_levels_follow_a_colour_change_in_the_session_process(tmp_path):
         try:
             await s.apply_command({"type": "set_color", "field": "Mass", "lut": "Viridis"})
             await s.refresh_levels()
-            return s.levels()
+            before = s.levels()
+            # The camera a ray-traced still of this view is rendered from
+            # follows the view.
+            await s.apply_command({"type": "rotate", "d_azimuth": 90.0})
+            await s.refresh_levels()
+            return before, s.levels()["camera"]
         finally:
             await s.close()
 
-    levels = asyncio.new_event_loop().run_until_complete(scenario())
+    levels, turned = asyncio.new_event_loop().run_until_complete(scenario())
     assert (levels["data_min"], levels["data_max"]) == (1.0, 100.0)
+    camera = levels["camera"]
+    assert set(camera) >= {"position", "focal_point", "view_up", "view_angle", "parallel"}
+    assert turned["focal_point"] == pytest.approx(camera["focal_point"])
+    assert turned["position"] != pytest.approx(camera["position"])
 
 
 def test_a_point_table_opens_as_a_cartesian_catalogue_in_place(tmp_path):

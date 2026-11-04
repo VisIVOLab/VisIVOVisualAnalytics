@@ -228,12 +228,15 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          this->entries = result.entries;
                          // Update pagination state
                          this->m_currentOffset = static_cast<int>(result.entries.size());
+                         this->m_sampleStep = result.step;
+                         this->m_samplePhase = 1;
+                         this->m_sampleLimit = result.limit;
                          this->m_totalCount = result.totalRows;
                          // Auto follows the rows: on the backend while it has
                          // more than are loaded here.
                          QTimer::singleShot(0, this,
                                             [this]() { this->applyRenderMode(this->m_renderMode); });
-                         const bool hasMore = this->m_currentOffset < this->m_totalCount;
+                         const bool hasMore = this->hasMoreRows();
                          if (this->btnLoadAll)
                              this->btnLoadAll->setVisible(hasMore);
                          if (this->btnLoadMore) {
@@ -313,6 +316,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                 this->entries.insert(this->entries.end(),
                                      result.entries.begin(), result.entries.end());
                 this->m_currentOffset = static_cast<int>(this->entries.size());
+                if (this->m_sampleStep > 1)
+                    ++this->m_samplePhase;   // the rows between those loaded
                 this->m_totalCount = result.totalRows;
                 QTimer::singleShot(0, this,
                                    [this]() { this->applyRenderMode(this->m_renderMode); });
@@ -321,7 +326,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                 this->applyFrameToEntries();
                 this->reapplyCosmologyAfterReload();
 
-                const bool hasMore = this->m_currentOffset < this->m_totalCount;
+                const bool hasMore = this->hasMoreRows();
                 if (this->btnLoadAll)
                     this->btnLoadAll->setVisible(hasMore);
                 if (this->btnLoadMore) {
@@ -444,7 +449,11 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
 
         BackendTabularQueryRequest qreq;
         qreq.datasetId = this->remoteDatasetId;
+        qreq.evenSample = this->m_pointTable;
         const auto subset = client.queryTabularCatalogue(qreq);
+        this->m_sampleStep = subset.step;
+        this->m_samplePhase = 1;
+        this->m_sampleLimit = qreq.limit;
         const auto parsed = Catalogue3DParser::parseBackendSubset(this->schema, subset.rows);
         if (!subset.valid || !parsed.valid) {
             const QString error = !subset.valid ? subset.error : parsed.errorMessage;
