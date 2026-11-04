@@ -61,6 +61,7 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/skava/BrokerClient.cpp
     ${VISIVO_ROOT}/src/vtk/ImageLod.cpp
     ${VISIVO_ROOT}/src/gui/PvPathGeometry.cpp
+    ${VISIVO_ROOT}/src/gui/OrbitPath.cpp
 )
 set_target_properties(visivo_test_support PROPERTIES AUTOMOC ON)
 target_include_directories(visivo_test_support
@@ -149,6 +150,8 @@ add_executable(VisIVOTests
     test_skava_client.cpp
     TestPvPathGeometry.h
     test_pv_path_geometry.cpp
+    TestOrbitPath.h
+    test_orbit_path.cpp
     TestProductRecipe.h
     test_product_recipe.cpp
     TestLassoReplay.h

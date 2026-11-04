@@ -33,6 +33,17 @@ def _table(tmp_path, n=4000):
 
 
 _RENDER_PROBE = """
+import sys
+if sys.platform != "win32":
+    # A window refused (macOS without a window server: a sandbox, a login
+    # session over ssh) aborts in VTK: the probe ends with a plain exit
+    # instead, so the system files no crash report and shows no dialog.
+    import ctypes, signal
+    libc = ctypes.CDLL(None)
+    libc.signal.restype = ctypes.c_void_p
+    libc.signal.argtypes = [ctypes.c_int, ctypes.c_void_p]
+    for sig in (signal.SIGABRT, signal.SIGSEGV, signal.SIGBUS):
+        libc.signal(sig, ctypes.cast(libc._exit, ctypes.c_void_p))
 import vtk
 w = vtk.vtkRenderWindow()
 w.SetOffScreenRendering(1)
@@ -271,12 +282,21 @@ def test_levels_follow_a_colour_change_in_the_session_process(tmp_path):
         try:
             await s.apply_command({"type": "set_color", "field": "Mass", "lut": "Viridis"})
             await s.refresh_levels()
-            return s.levels()
+            before = s.levels()
+            # The camera a ray-traced still of this view is rendered from
+            # follows the view.
+            await s.apply_command({"type": "rotate", "d_azimuth": 90.0})
+            await s.refresh_levels()
+            return before, s.levels()["camera"]
         finally:
             await s.close()
 
-    levels = asyncio.new_event_loop().run_until_complete(scenario())
+    levels, turned = asyncio.new_event_loop().run_until_complete(scenario())
     assert (levels["data_min"], levels["data_max"]) == (1.0, 100.0)
+    camera = levels["camera"]
+    assert set(camera) >= {"position", "focal_point", "view_up", "view_angle", "parallel"}
+    assert turned["focal_point"] == pytest.approx(camera["focal_point"])
+    assert turned["position"] != pytest.approx(camera["position"])
 
 
 def test_a_point_table_opens_as_a_cartesian_catalogue_in_place(tmp_path):
@@ -352,9 +372,16 @@ def test_the_clients_own_colours_are_drawn(tmp_path):
         points = [[1.0, 0.0, 0.0, 1.0], [100.0, 1.0, 0.0, 0.0]]
         run(s.apply_command({"type": "set_color", "field": "Mass", "points": points,
                              "log": True, "min": 1.0, "max": 100.0}))
+        # Sampled into a table, as the desktop colours: a log one here.
         lut = s._mappers[("points", False)].GetLookupTable()
-        assert lut.GetSize() == 2 and lut.GetScale() == 1
-        assert lut.GetColor(100.0) == (1.0, 0.0, 0.0)
+        assert lut.GetNumberOfTableValues() == 1024 and lut.GetScale() == 1
+        def colour(value):
+            rgb = [0.0, 0.0, 0.0]
+            lut.GetColor(value, rgb)
+            return rgb
+        assert np.allclose(colour(1.0), (0.0, 0.0, 1.0), atol=0.01)
+        assert np.allclose(colour(100.0), (1.0, 0.0, 0.0), atol=0.01)
+        assert np.allclose(colour(10.0), (0.5, 0.0, 0.5), atol=0.01)
         with pytest.raises(ValueError):
             s._apply_command_on_thread({"type": "set_color", "field": "Mass", "points": "x"})
     finally:
@@ -410,6 +437,34 @@ def test_a_filter_does_not_restyle_the_splats(tmp_path):
         run(s.apply_command({"type": "set_point_style", "mode": "gaussian", "size": 3,
                              "intensity": 36}))
         assert mapper.GetScaleFactor() == pytest.approx(radius)
+    finally:
+        run(s.close())
+        loop.close()
+
+
+def test_a_camera_given_whole_is_the_views(tmp_path):
+    s, run, loop = _session(_table(tmp_path))
+    try:
+        camera = {"position": [3.0, 4.0, 12.0], "focal_point": [0.5, 0.5, 0.5],
+                  "view_up": [0.0, 1.0, 0.0], "view_angle": 25.0, "parallel": True,
+                  "parallel_scale": 2.5}
+        run(s.apply_command({"type": "set_camera", **camera}))
+        got = s._camera_on_thread()
+        assert np.allclose(got["position"], camera["position"])
+        assert np.allclose(got["focal_point"], camera["focal_point"])
+        assert got["view_angle"] == pytest.approx(25.0)
+        assert got["parallel"] and got["parallel_scale"] == pytest.approx(2.5)
+        with pytest.raises(ValueError):
+            s._apply_command_on_thread({"type": "set_camera", "position": [0, 0, 1]})
+        with pytest.raises(ValueError):
+            s._apply_command_on_thread({"type": "set_camera", "position": [1, 1, 1],
+                                        "focal_point": [1, 1, 1], "view_up": [0, 1, 0]})
+        for bad in ({"position": 5, "focal_point": [0, 0, 0], "view_up": [0, 1, 0]},
+                    {**camera, "view_angle": [1, 2]},
+                    {"position": [0, 0, 5], "focal_point": [0, 0, 0], "view_up": [0, 0, 1]}):
+            with pytest.raises(ValueError):
+                s._apply_command_on_thread({"type": "set_camera", **bad})
+        assert np.allclose(s._camera_on_thread()["position"], camera["position"])
     finally:
         run(s.close())
         loop.close()

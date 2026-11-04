@@ -98,16 +98,16 @@ def _min_block_bytes(shape: tuple[int, int, int], brick: int) -> int:
 
 def source_shape(path: str | os.PathLike, hdu: int) -> tuple[int, int, int]:
     """The (z, y, x) shape a pyramid of HDU ``hdu`` of ``path`` has, from the
-    header alone: degenerate axes dropped, the last three kept, and a 2-D image
-    one plane deep (as :class:`_SourceCube` reads it). For a VBT volume,
+    header alone: the last three axes, and a 2-D image one plane deep (as
+    :class:`_SourceCube` and the render session read it). For a VBT volume,
     ``hdu`` is the field (``app.volume_source``)."""
     from .volume_source import volume_shape  # noqa: PLC0415
 
     full, _ = volume_shape(path, hdu)
-    kept = [n for n in full if n > 1]
-    if len(kept) < 2:
+    if sum(1 for n in full if n > 1) < 2:
         raise ValueError(f"HDU {hdu} of {path} is neither an image nor a cube (shape {full}).")
-    return (1, *kept[-2:]) if len(kept) == 2 else tuple(kept[-3:])
+    last = tuple(int(n) for n in full[-3:])
+    return (1, *last) if len(last) == 2 else last
 
 
 def level_shapes(shape: tuple[int, int, int], brick: int) -> list[tuple[int, int, int]]:
@@ -244,9 +244,8 @@ class _SourceCube:
     BZERO apply. Two inputs cannot be read in bounded memory and are refused: a
     whole-file compressed FITS (``.fits.gz``), which astropy decompresses whole,
     and a tile-compressed image whose tiles are larger than ``max_bytes``.
-    Degenerate axes are dropped; of a fourth axis longer than one only the first
-    plane is used, as everywhere else in the backend
-    (``ScientificFitsDataset.squeeze_to_3d``)."""
+    The cube is the last three axes, the first plane of any leading one, as
+    the render session reads it (``volume_source.volume_data``)."""
 
     def __init__(self, path: str, hdu: int, max_bytes: int) -> None:
         import logging  # noqa: PLC0415
@@ -275,16 +274,20 @@ class _SourceCube:
                                  "which can only be read whole: decompress it first.")
             item = self._hdul[hdu]
             full = tuple(int(n) for n in (item.shape or ()))
-            kept = [i for i, n in enumerate(full) if n > 1]
-            if len(kept) < 2:
+            if sum(1 for n in full if n > 1) < 2:
                 raise ValueError(f"HDU {hdu} of {path} is neither an image nor a cube (shape {full}).")
-            if len(kept) > 3:
+            # The last three axes, the first plane of any leading one: the
+            # rule of the render session (render_session/_scene.py), so the
+            # pyramid holds the cube the scene reports and cuts. Dropping the
+            # degenerate axes first picked another cube for (2, 1, Y, X).
+            leading = [n for n in full[:-3] if n > 1]
+            if leading:
                 logging.getLogger(__name__).warning(
                     "brick pyramid of %s: keeping the first plane of the leading axes %s",
-                    path, [full[i] for i in kept[:-3]])
+                    path, leading)
             # A 2-D image is read as a cube one plane deep: its z is not an
             # axis of the file.
-            self._axes = kept[-3:]
+            self._axes = list(range(max(0, len(full) - 3), len(full)))
             self._ndim = len(full)
             self.shape = tuple(full[i] for i in self._axes)
             if len(self.shape) == 2:
@@ -440,13 +443,54 @@ def _worker_task(level: int, box: tuple[int, ...], brick: int, out_name: str,
     return lo, hi
 
 
-def _parallel_ok(cube: "_SourceCube", max_block_bytes: int) -> bool:
+def _shm_slots(workers: int) -> int:
+    return workers + 2
+
+
+def _shm_per_slot(shape0: tuple[int, int, int], brick: int, max_block_bytes: int,
+                  workers: int) -> int:
+    """Each shared buffer's size: a share of ``max_block_bytes``, but never
+    less than a block of a few bricks."""
+    return max(_min_block_bytes(shape0, brick), max_block_bytes // _shm_slots(workers))
+
+
+def shm_buffer_name(tag: str, kind: str, slot: int) -> str:
+    """The name of a build's shared buffer: from a tag the process supervising
+    the build chose (random, not a process id: two builds in containers that
+    share /dev/shm may have the same one), so that it can remove what a build
+    killed outright left (pyramid_builds), which nothing else would until the
+    server exits. Short: macOS allows 31 characters."""
+    return f"vpyr{tag}{kind}{slot}"
+
+
+def new_shm_tag() -> str:
+    import secrets  # noqa: PLC0415
+    return secrets.token_hex(5)
+
+
+def unlink_shm(name: str) -> bool:
+    """Removes the shared buffer ``name`` if it exists; True when it did."""
+    from multiprocessing import shared_memory  # noqa: PLC0415
+    try:
+        buf = shared_memory.SharedMemory(name=name)
+    except (FileNotFoundError, OSError):
+        return False
+    try:
+        buf.close()
+        buf.unlink()
+    except (FileNotFoundError, OSError):
+        return False
+    return True
+
+
+def _parallel_ok(cube: "_SourceCube", max_block_bytes: int, needed_bytes: int | None = None) -> bool:
     """Whether a build can use several processes; otherwise it runs in one.
 
     Not for a tile-compressed cube: its tiles were checked against
     ``max_block_bytes``, and the workers' smaller blocks would decompress each
     tile several times or refuse it. Not when the shared memory cannot hold the
-    buffers (about twice ``max_block_bytes``): Docker gives /dev/shm 64 MiB by
+    buffers (``needed_bytes``: two per slot, each at least a block of a few
+    bricks, so possibly well over twice ``max_block_bytes``): Docker gives /dev/shm 64 MiB by
     default, and writing past it kills the process (SIGBUS) without cleanup.
     Builds running at the same time each see the same free space: the margin
     covers some of that, not every case."""
@@ -456,7 +500,8 @@ def _parallel_ok(cube: "_SourceCube", max_block_bytes: int) -> bool:
         st = os.statvfs("/dev/shm")
     except (AttributeError, OSError):   # macOS, Windows: no such limit
         return True
-    return 2 * max_block_bytes <= 0.8 * st.f_bavail * st.f_frsize
+    needed = needed_bytes if needed_bytes is not None else 2 * max_block_bytes
+    return needed <= 0.8 * st.f_bavail * st.f_frsize
 
 
 def default_workers() -> int:
@@ -472,14 +517,14 @@ def default_workers() -> int:
 
 
 def _fill_levels_parallel(h5, shapes, brick: int, source: str, hdu: int, max_block_bytes: int,
-                          workers: int, progress, should_stop, timings) -> None:
+                          workers: int, progress, should_stop, timings, shm_tag: str) -> None:
     import concurrent.futures as cf  # noqa: PLC0415
     import multiprocessing  # noqa: PLC0415
     from multiprocessing import shared_memory  # noqa: PLC0415
 
-    slots = workers + 2
-    # One buffer pair per slot; their total is about twice max_block_bytes.
-    per_slot = max(_min_block_bytes(shapes[0], brick), max_block_bytes // slots)
+    slots = _shm_slots(workers)
+    # One buffer pair per slot (their total checked by _parallel_ok).
+    per_slot = _shm_per_slot(shapes[0], brick, max_block_bytes, workers)
     outs: list = []
     ins: list = []
     clock = time.perf_counter if timings is not None else None
@@ -490,9 +535,12 @@ def _fill_levels_parallel(h5, shapes, brick: int, source: str, hdu: int, max_blo
         return now
 
     try:
-        for _ in range(slots):
-            outs.append(shared_memory.SharedMemory(create=True, size=per_slot))
-            ins.append(shared_memory.SharedMemory(create=True, size=per_slot))
+        # Never another build's: a name taken fails here, it is not reused.
+        for i in range(slots):
+            outs.append(shared_memory.SharedMemory(
+                name=shm_buffer_name(shm_tag, "o", i), create=True, size=per_slot))
+            ins.append(shared_memory.SharedMemory(
+                name=shm_buffer_name(shm_tag, "i", i), create=True, size=per_slot))
         with cf.ProcessPoolExecutor(max_workers=workers,
                                     mp_context=multiprocessing.get_context("spawn"),
                                     initializer=_worker_init,
@@ -572,7 +620,8 @@ def build_pyramid(source: str | os.PathLike, out: str | os.PathLike | None = Non
                   max_block_bytes: int = DEFAULT_MAX_BLOCK_BYTES,
                   progress: Callable[[str, float], None] | None = None,
                   should_stop: Callable[[], None] | None = None,
-                  timings: dict[str, float] | None = None, workers: int = 1) -> Path:
+                  timings: dict[str, float] | None = None, workers: int = 1,
+                  shm_tag: str | None = None) -> Path:
     """Write the brick pyramid of ``source`` (a FITS cube, or a 2-D image as a
     cube one plane deep) and return its path. ``brick`` defaults to
     :func:`default_brick` of the source's shape.
@@ -595,7 +644,8 @@ def build_pyramid(source: str | os.PathLike, out: str | os.PathLike | None = Non
     and two spare, about twice ``max_block_bytes`` in all; each worker's
     temporaries add up to about as much again (some 4x in all with 8 workers).
     A tile-compressed cube, or a shared memory too small for the buffers, is
-    built by one process.
+    built by one process. ``shm_tag`` names the shared buffers
+    (:func:`shm_buffer_name`; random when not given).
     """
     import h5py  # noqa: PLC0415
 
@@ -666,9 +716,12 @@ def build_pyramid(source: str | os.PathLike, out: str | os.PathLike | None = Non
                     return halved
                 return read
 
-            if workers > 1 and _parallel_ok(cube, max_block_bytes):
+            needed = 2 * _shm_slots(workers) * _shm_per_slot(shapes[0], brick, max_block_bytes,
+                                                              workers)
+            if workers > 1 and _parallel_ok(cube, max_block_bytes, needed):
                 _fill_levels_parallel(h5, shapes, brick, sig.path, hdu, max_block_bytes, workers,
-                                      progress, should_stop, timings)
+                                      progress, should_stop, timings,
+                                      shm_tag or new_shm_tag())
             else:
                 for level, shape in enumerate(shapes):
                     read = read_level0 if level == 0 else read_below(level)

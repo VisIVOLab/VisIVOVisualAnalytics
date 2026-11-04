@@ -124,6 +124,14 @@ Paginated, filtered query.
 ```
 Response: `total_rows`, `returned_rows`, `rows[]` (key-value maps).
 
+`"even_sample": true` (with `"phase"`, default 0): when more rows match than
+`limit`, one in every `step` of them from the `phase`-th, instead of a page;
+`offset` then does not apply and the response gives `step`
+(⌈`total_rows` / `limit`⌉). The phases 0 … `step` − 1 together are every
+matching row once. The desktop loads a point table this way: a simulation's
+table is stored by region of space, so its first rows are a few blocks of it,
+while an even sample covers it all.
+
 Supported filter operators: `<`, `<=`, `>`, `>=`, `=`, `!=`, `contains`, `startswith`, `endswith`.
 
 ---

@@ -304,7 +304,9 @@ class PipelineMixin:
                     self._vmax = float(v_hi)
             elif kind == "complete":
                 complete = True
-                self._cube_complete = True
+                # _cube_complete is set once the final threshold is computed
+                # (below): /levels read in between would report the loading
+                # threshold as final, and the client would stop asking.
                 self._vmin = float(ev.get("vmin", self._vmin))
                 self._vmax = float(ev.get("vmax", self._vmax))
                 logger.info(
@@ -400,43 +402,48 @@ class PipelineMixin:
                 self.request_idr()
                 self.mark_dirty()
         if complete:
-            # Rebuild transfer functions + threshold with the final
-            # accurate min/max — placeholder LUT during loading
-            # rendered with bad scalar range, this is the cutover.
-            # Sampling with a stride keeps np.percentile fast on
-            # multi-GB cubes (a 10 GB cube with stride 8 → ~20 MB
-            # sample, p99 in <100 ms instead of minutes).
-            if self._cube_np is not None:
-                from ..noise_threshold import default_threshold, stride_for
-                stride = stride_for(self._cube_np.size)
-                sample = self._cube_np[::stride, ::stride, ::stride]
-                # The whole cube is in: the threshold from all of it replaces
-                # the one from the first quarter, unless the client chose one.
-                # (Blanks were read as 0: default_threshold leaves zeros out.)
-                self._default_threshold = default_threshold(sample, self._cube_np.size)
-                if not self._threshold_from_client:
-                    self.view.threshold = self._default_threshold
-                self._slice_vmin = float(np.percentile(sample, 1.0))
-                self._slice_vmax = float(np.percentile(sample, 99.0))
-                logger.info(
-                    "[render-session %s] cube complete percentiles "
-                    "(stride=%d sample=%d): threshold=%.4g slice_vmin=%.4g "
-                    "slice_vmax=%.4g",
-                    self.session_id, stride, sample.size,
-                    self.view.threshold, self._slice_vmin, self._slice_vmax,
-                )
-            # Final Modified() so the last chunk is on the GPU before
-            # the next render — overrides the throttle below.
-            if self._image_data is not None:
-                self._image_data.Modified()
-                if self._vtk_intensity_array is not None:
-                    self._vtk_intensity_array.Modified()
-                self._last_modified_wall = time.time()
-                self._pending_modified = False
-            self.mark_dirty()
-            self._rebuild_volume_tfs_on_thread()
-            self._rebuild_slice_lut_on_thread()
-            self.request_idr()
+            # Set even when the cut-over fails: /levels would otherwise say
+            # "loading" for good, and the client poll for ever.
+            try:
+                # Rebuild transfer functions + threshold with the final
+                # accurate min/max — placeholder LUT during loading
+                # rendered with bad scalar range, this is the cutover.
+                # Sampling with a stride keeps np.percentile fast on
+                # multi-GB cubes (a 10 GB cube with stride 8 → ~20 MB
+                # sample, p99 in <100 ms instead of minutes).
+                if self._cube_np is not None:
+                    from ..noise_threshold import default_threshold, stride_for
+                    stride = stride_for(self._cube_np.size)
+                    sample = self._cube_np[::stride, ::stride, ::stride]
+                    # The whole cube is in: the threshold from all of it replaces
+                    # the one from the first quarter, unless the client chose one.
+                    # (Blanks were read as 0: default_threshold leaves zeros out.)
+                    self._default_threshold = default_threshold(sample, self._cube_np.size)
+                    if not self._threshold_from_client:
+                        self.view.threshold = self._default_threshold
+                    self._slice_vmin = float(np.percentile(sample, 1.0))
+                    self._slice_vmax = float(np.percentile(sample, 99.0))
+                    logger.info(
+                        "[render-session %s] cube complete percentiles "
+                        "(stride=%d sample=%d): threshold=%.4g slice_vmin=%.4g "
+                        "slice_vmax=%.4g",
+                        self.session_id, stride, sample.size,
+                        self.view.threshold, self._slice_vmin, self._slice_vmax,
+                    )
+                # Final Modified() so the last chunk is on the GPU before
+                # the next render — overrides the throttle below.
+                if self._image_data is not None:
+                    self._image_data.Modified()
+                    if self._vtk_intensity_array is not None:
+                        self._vtk_intensity_array.Modified()
+                    self._last_modified_wall = time.time()
+                    self._pending_modified = False
+                self.mark_dirty()
+                self._rebuild_volume_tfs_on_thread()
+                self._rebuild_slice_lut_on_thread()
+                self.request_idr()
+            finally:
+                self._cube_complete = True
 
     def _render_rgb_on_thread(self) -> tuple:
         """Render one frame and return ``(rgb_ndarray, render_ms)``.

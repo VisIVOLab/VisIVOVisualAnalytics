@@ -208,3 +208,21 @@ async def test_the_tile_route_serves_averaged_tiles_once_the_pyramid_is_ready(
         assert tile["averaged"] is False                # sampled while it builds
         time.sleep(0.2)
     assert (tile["pyramid"], tile["averaged"]) == ("ready", True)
+
+
+def test_a_failed_image_pyramid_is_used_once_it_exists(tmp_path, monkeypatch):
+    from unittest.mock import patch
+
+    from app import image_pyramid, pyramid_builds
+    from app.brick_pyramid import build_pyramid
+    monkeypatch.setenv("VISIVO_PYRAMID_DIR", str(tmp_path / "pyr"))
+    monkeypatch.setattr(image_pyramid, "_failed", {})
+    monkeypatch.setattr(image_pyramid, "_ready", set())
+    path = tmp_path / "image.fits"
+    fits.PrimaryHDU(np.zeros((32, 32), np.float32)).writeto(path)
+    with patch.object(image_pyramid, "image_pyramid_bytes", return_value=1):
+        with patch.object(pyramid_builds, "ensure_pyramid",
+                          return_value=pyramid_builds.BuildStatus("failed", 0, "build failed")):
+            assert image_pyramid.tile_source(str(path)).state == "failed"
+        build_pyramid(path)
+        assert image_pyramid.tile_source(str(path)).state == "ready"

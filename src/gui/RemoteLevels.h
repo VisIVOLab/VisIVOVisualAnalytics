@@ -15,6 +15,7 @@
 
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QString>
 
 #include <algorithm>
 #include <optional>
@@ -50,6 +51,21 @@ inline RemoteLevels parseRemoteLevels(const QJsonObject &o)
     l.pending = o.value(QLatin1String("pending")).toBool()
             || o.value(QLatin1String("levels_pending")).toBool();
     return l;
+}
+
+/// A threshold as the Threshold field shows it: the shortest text that reads
+/// back as the same float. Not QString::number(v, 'g', Shortest), which takes
+/// a double and shows the float's widening (0.1f as 0.10000000149011612).
+inline QString thresholdText(float v)
+{
+    // Nine significant digits always read back as the float (and
+    // std::to_chars of a float needs macOS 13.3).
+    for (int digits = 6; digits < 9; ++digits) {
+        const QString text = QString::number(double(v), 'g', digits);
+        if (text.toFloat() == v)
+            return text;
+    }
+    return QString::number(double(v), 'g', 9);
 }
 
 /// The bounds of the threshold slider.

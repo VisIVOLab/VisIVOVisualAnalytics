@@ -16,7 +16,9 @@
 #include <QString>
 #include <QVariantMap>
 
+class QJsonObject;
 class QNetworkAccessManager;
+class QNetworkReply;
 class RemoteRenderWidget;
 
 class RemotePointView : public QObject
@@ -34,6 +36,8 @@ public:
     /// Disconnects and deletes the session.
     void stop();
     bool isActive() const { return !m_renderSessionId.isEmpty(); }
+    /// The backend's render session, empty before it starts.
+    QString renderSessionId() const { return m_renderSessionId; }
 
     /// The latest value of a state command (keyed by its "type"). Sent now
     /// when the view is live and it differs from what was sent; otherwise
@@ -51,6 +55,8 @@ signals:
     void liveChanged(bool live);
 
 private:
+    /// create_session answered for the generation asked.
+    void created(QNetworkReply *reply, const QJsonObject &doc);
     void flush();
     void fetchLevels();
 

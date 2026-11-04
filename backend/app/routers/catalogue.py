@@ -129,10 +129,14 @@ async def catalogue_query(
             raise HTTPException(422, "This endpoint requires a catalogue dataset.")
         # Use the DataFrame cached at open time – no disk I/O.
         # _apply_tabular_query operates on a copy so the original is never mutated.
+        if request.phase < 0:
+            raise HTTPException(422, "phase must not be negative.")
         df, total = _apply_tabular_query(
-            entry["dataframe"], request.filters, request.sort, request.limit, request.offset
+            entry["dataframe"], request.filters, request.sort, request.limit, request.offset,
+            even_sample=request.even_sample, phase=request.phase,
         )
         rows = df.replace({np.nan: None}).to_dict(orient="records")
+        step = sample_step(total, request.limit) if request.even_sample else 1
     except HTTPException:
         raise
     except Exception as exc:
@@ -142,5 +146,6 @@ async def catalogue_query(
         error="",
         total_rows=total,
         returned_rows=len(rows),
+        step=step,
         rows=rows,
     )

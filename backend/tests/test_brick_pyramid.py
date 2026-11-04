@@ -480,3 +480,22 @@ def test_a_tile_compressed_cube_is_built_by_one_process(tmp_path, monkeypatch):
     assert not started
     with h5py.File(out) as h:
         assert h["level0/data"].shape == (20, 32, 32)
+
+
+def test_the_pyramid_holds_the_cube_the_render_session_reads(tmp_path):
+    """The last three axes, the first plane of a leading one, as
+    volume_source.volume_data reads it: for (2, 1, Y, X) a cube one plane
+    deep, not the two leading planes taken as its depth."""
+    from app.brick_pyramid import _SourceCube, source_shape
+    from app.volume_source import volume_data
+    path = tmp_path / "stokes.fits"
+    data = np.arange(2 * 1 * 4 * 5, dtype=np.float32).reshape(2, 1, 4, 5)
+    fits.PrimaryHDU(data).writeto(path)
+    src = _SourceCube(str(path), 0, 256 * 1024 ** 2)
+    try:
+        with volume_data(str(path)) as cube:
+            assert src.shape == tuple(cube.shape) == (1, 4, 5)
+        # And the header's answer, which sizes the build and the 2-D tiles.
+        assert source_shape(path, 0) == (1, 4, 5)
+    finally:
+        src.close()

@@ -53,21 +53,49 @@ def _numeric(frame: pd.DataFrame, column: str) -> np.ndarray:
     return pd.to_numeric(frame[column], errors="coerce").to_numpy(dtype=float)
 
 
-def planck18_comoving_mpc(z: np.ndarray) -> np.ndarray:
-    """The desktop's local Planck18 comoving distance: the trapezoid rule with
-    1000 steps from 0 to z (Catalogue3DParser::detail::comovingDistanceMpc)."""
-    z = np.asarray(z, dtype=float)
-    out = np.zeros_like(z)
+_GRID_NODES = 8192          # a distance is smooth in z: interpolated on this grid
+
+
+def _planck18_trapezoid_mpc(zs: np.ndarray) -> np.ndarray:
+    """The desktop's integral itself, for z > 0: the trapezoid rule with 1000
+    steps from 0 to z (Catalogue3DParser::detail::comovingDistanceMpc)."""
+    steps = 1000
+    out = np.empty(len(zs))
+    for start in range(0, len(zs), 4096):          # bounded temporaries
+        chunk = zs[start:start + 4096]
+        grid = chunk[:, None] * (np.arange(steps + 1)[None, :] / steps)
+        e_inv = 1.0 / np.sqrt(_OMEGA_M * (1.0 + grid) ** 3 + (1.0 - _OMEGA_M))
+        integral = (e_inv.sum(axis=1) - 0.5 * (e_inv[:, 0] + e_inv[:, -1])) * (chunk / steps)
+        out[start:start + len(chunk)] = _C_KMS / _H0 * integral
+    return out
+
+
+def _on_a_grid(z: np.ndarray, distance) -> np.ndarray:
+    """``distance`` (z > 0 → Mpc) at each finite z > 0, NaN elsewhere: computed
+    on a grid of z and interpolated, when there are more sources than nodes.
+    A comoving distance is smooth in z. The nodes are even in ln(1 + z), so a
+    far outlier does not coarsen the grid near z = 0: up to z = 3 the linear
+    interpolation differs by less than 100 pc, and by less than 1 kpc with a
+    source at z = 1000 in the table."""
+    out = np.full(len(z), np.nan)
     positive = np.isfinite(z) & (z > 0)
     if not positive.any():
         return out
-    steps = 1000
     zs = z[positive]
-    grid = zs[:, None] * (np.arange(steps + 1)[None, :] / steps)
-    e_inv = 1.0 / np.sqrt(_OMEGA_M * (1.0 + grid) ** 3 + (1.0 - _OMEGA_M))
-    integral = (e_inv.sum(axis=1) - 0.5 * (e_inv[:, 0] + e_inv[:, -1])) * (zs / steps)
-    out[positive] = _C_KMS / _H0 * integral
+    if len(zs) <= _GRID_NODES:
+        out[positive] = distance(zs)
+    else:
+        nodes = np.expm1(np.linspace(0.0, np.log1p(zs.max()), _GRID_NODES))
+        nodes[-1] = zs.max()   # expm1(log1p(z)) may round below z
+        values = np.concatenate([[0.0], distance(nodes[1:])])
+        out[positive] = np.interp(zs, nodes, values)
     return out
+
+
+def planck18_comoving_mpc(z: np.ndarray) -> np.ndarray:
+    """The desktop's local Planck18 comoving distance, 0 where z is not > 0."""
+    return np.nan_to_num(_on_a_grid(np.asarray(z, dtype=float), _planck18_trapezoid_mpc),
+                         nan=0.0)
 
 
 def _model_comoving_mpc(model: str, z: np.ndarray) -> np.ndarray:
@@ -75,11 +103,7 @@ def _model_comoving_mpc(model: str, z: np.ndarray) -> np.ndarray:
     models = _load_cosmology_models()
     if model not in models:
         raise ValueError(f"Unknown cosmology model {model!r}.")
-    out = np.full(len(z), np.nan)
-    positive = np.isfinite(z) & (z > 0)
-    if positive.any():
-        out[positive] = models[model].comoving_distance(z[positive]).to("Mpc").value
-    return out
+    return _on_a_grid(z, lambda zs: models[model].comoving_distance(zs).to("Mpc").value)
 
 
 def distances_mpc(frame: pd.DataFrame, distance_mode: str = "comoving",
@@ -117,18 +141,21 @@ def distances_mpc(frame: pd.DataFrame, distance_mode: str = "comoving",
 def sky_positions(frame: pd.DataFrame, ra_field: str, dec_field: str, *,
                   frame_name: str = "fk5", distance_mode: str = "comoving",
                   cosmology: str = "Planck18") -> np.ndarray:
-    """(N, 3) scene positions, NaN for a source without a finite RA/Dec."""
+    """(N, 3) scene positions, NaN for a source without a finite RA/Dec or
+    with a Dec beyond the poles."""
     if frame_name not in FRAMES:
         raise ValueError(f"Unknown frame {frame_name!r}: one of {FRAMES}.")
     if distance_mode not in DISTANCE_MODES:
         raise ValueError(f"Unknown distance mode {distance_mode!r}: one of {DISTANCE_MODES}.")
     ra = _numeric(frame, ra_field)
     dec = _numeric(frame, dec_field)
-    lon, lat = ra, dec
+    # One row past a pole would make SkyCoord refuse the whole column.
+    with np.errstate(invalid="ignore"):
+        ok = np.isfinite(ra) & (np.abs(dec) <= 90.0)
+    lon, lat = np.where(ok, ra, np.nan), np.where(ok, dec, np.nan)
     if frame_name != "fk5":
         from astropy import units as u  # noqa: PLC0415
         from astropy.coordinates import SkyCoord  # noqa: PLC0415
-        ok = np.isfinite(ra) & np.isfinite(dec)
         lon, lat = np.full(len(ra), np.nan), np.full(len(dec), np.nan)
         if ok.any():
             sky = SkyCoord(ra=ra[ok] * u.deg, dec=dec[ok] * u.deg, frame="fk5", equinox="J2000")

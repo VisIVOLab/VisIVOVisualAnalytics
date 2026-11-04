@@ -28,6 +28,7 @@ inline constexpr const char *DEPTH = "X-Visivo-Depth";
 inline constexpr const char *DIV_MAX = "X-Visivo-Div-Max";
 inline constexpr const char *DIV_MIN = "X-Visivo-Div-Min";
 inline constexpr const char *DOWNSAMPLE_FACTOR = "X-Visivo-Downsample-Factor";
+inline constexpr const char *EXPOSURE = "X-Visivo-Exposure";
 inline constexpr const char *FRAME = "X-Visivo-Frame";
 inline constexpr const char *FROM_CACHE = "X-Visivo-From-Cache";
 inline constexpr const char *FULL_SHAPE = "X-Visivo-Full-Shape";
@@ -36,9 +37,13 @@ inline constexpr const char *FULL_SPEED_MIN = "X-Visivo-Full-Speed-Min";
 inline constexpr const char *HEIGHT = "X-Visivo-Height";
 inline constexpr const char *N_BASINS = "X-Visivo-N-Basins";
 inline constexpr const char *ORIGIN = "X-Visivo-Origin";
+inline constexpr const char *PARTICLE_COUNT = "X-Visivo-Particle-Count";
+inline constexpr const char *PARTICLE_FIELDS = "X-Visivo-Particle-Fields";
+inline constexpr const char *PARTICLE_STEP = "X-Visivo-Particle-Step";
 inline constexpr const char *PEAK = "X-Visivo-Peak";
 inline constexpr const char *RANGE_MAX = "X-Visivo-Range-Max";
 inline constexpr const char *RANGE_MIN = "X-Visivo-Range-Min";
+inline constexpr const char *RENDER_MS = "X-Visivo-Render-Ms";
 inline constexpr const char *ROI_X0 = "X-Visivo-Roi-X0";
 inline constexpr const char *ROI_Y0 = "X-Visivo-Roi-Y0";
 inline constexpr const char *ROI_Z0 = "X-Visivo-Roi-Z0";
@@ -58,7 +63,7 @@ inline constexpr const char *WARNINGS = "X-Visivo-Warnings";
 inline constexpr const char *WIDTH = "X-Visivo-Width";
 
 // Every declared header name, for the contract test to diff against the manifest.
-inline constexpr std::array<const char *, 44> kAll = {
+inline constexpr std::array<const char *, 49> kAll = {
     EW_UNIT,
     FWHM_UNIT,
     MAP_UNIT,
@@ -75,6 +80,7 @@ inline constexpr std::array<const char *, 44> kAll = {
     DIV_MAX,
     DIV_MIN,
     DOWNSAMPLE_FACTOR,
+    EXPOSURE,
     FRAME,
     FROM_CACHE,
     FULL_SHAPE,
@@ -83,9 +89,13 @@ inline constexpr std::array<const char *, 44> kAll = {
     HEIGHT,
     N_BASINS,
     ORIGIN,
+    PARTICLE_COUNT,
+    PARTICLE_FIELDS,
+    PARTICLE_STEP,
     PEAK,
     RANGE_MAX,
     RANGE_MIN,
+    RENDER_MS,
     ROI_X0,
     ROI_Y0,
     ROI_Z0,

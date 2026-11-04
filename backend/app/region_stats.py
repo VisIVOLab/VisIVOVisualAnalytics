@@ -293,7 +293,10 @@ class _Spill:
         self._file = tempfile.TemporaryFile(dir=directory, prefix="visivo-region-")
         try:
             for values in first:
-                self.write(values)
+                # A copy missing values gives wrong ranks: refused, and the
+                # statistics read the source again.
+                if not self.write(values):
+                    raise OSError("the copy of the region's values could not be written")
         except BaseException:
             self._file.close()
             raise
@@ -369,8 +372,12 @@ def _select(read, ranks: list[int], transform, kept_bins: list[tuple[float, floa
         local = [r - below for r in ranks]
         part = np.partition(candidates, local)
         return [float(part[r]) for r in local]
-    if cmin == cmax or not width > 0:
+    if cmin == cmax:
         return [cmin] * len(ranks)          # the candidates are all one value
+    if not width > 0:
+        # The bounds are a few float steps apart and round to one bin edge:
+        # few distinct values remain, so they are counted exactly.
+        return _ranks_of_distinct(read, ranks, transform, kept_bins, below)
     cum = np.cumsum(hist)
     groups: dict[int, list[int]] = {}
     for r in ranks:
@@ -380,6 +387,22 @@ def _select(read, ranks: list[int], transform, kept_bins: list[tuple[float, floa
         out += _select(read, groups[k], transform, kept_bins + [(a, width, k)],
                        below + (int(cum[k - 1]) if k else 0), a + k * width, a + (k + 1) * width)
     return out
+
+
+def _ranks_of_distinct(read, ranks: list[int], transform,
+                       kept_bins: list[tuple[float, float, int]], below: int) -> list[float]:
+    """The values at ``ranks`` among the candidates, counting each distinct
+    value: for candidates whose range a histogram can no longer split."""
+    counts: dict[float, int] = {}
+    for values in read():
+        v = transform(values[np.isfinite(values)])
+        for fa, fw, fk in kept_bins:
+            v = v[_bin(v, fa, fw) == fk]
+        for value, n in zip(*np.unique(v, return_counts=True)):
+            counts[float(value)] = counts.get(float(value), 0) + int(n)
+    keys = sorted(counts)
+    cum = np.cumsum([counts[k] for k in keys])
+    return [keys[int(np.searchsorted(cum, r - below, side="right"))] for r in ranks]
 
 
 def _interval(sample: np.ndarray, ranks: list[int], n: int) -> tuple[float, float]:

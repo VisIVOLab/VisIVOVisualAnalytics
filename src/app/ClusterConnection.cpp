@@ -79,14 +79,27 @@ QString ClusterConnection::redacted(const QString &line)
     return out;
 }
 
-QString ClusterConnection::cancelCommand(const QString &jobId, const QString &jobName)
+QString ClusterConnection::cancelCommand(const QString &jobId, const QString &jobName,
+                                         bool submitting)
 {
     // By the job's unique name when known: that also cancels a job whose id
     // never arrived, and succeeds when the job has already ended (scancel by id
     // fails then). The id serves records that carry no name.
     static const QRegularExpression digits(u"^[0-9]+$"_s);
-    if (!jobName.isEmpty())
-        return u"scancel -u \"$USER\" --name="_s + remoteCommandLine({ jobName });
+    if (!jobName.isEmpty()) {
+        const QString name = remoteCommandLine({ jobName });
+        if (submitting)
+            // sbatch may still be on its way, on the frontend, after the
+            // launcher was cut off here: cancelled again until it has had
+            // time to land, then none must be left. In bash, whatever the
+            // login shell (tcsh has no for/do).
+            return remoteCommandLine(
+                    { u"bash"_s, u"-c"_s,
+                      u"for i in 1 2 3 4 5 6 7 8 9 10; do scancel -u \"$USER\" --name=%1; "
+                      u"sleep 3; done; test -z \"$(squeue -h -u \"$USER\" --name=%1 -o %i)\""_s
+                              .arg(name) });
+        return u"scancel -u \"$USER\" --name="_s + name;
+    }
     if (digits.match(jobId).hasMatch())
         return u"scancel "_s + jobId;
     return {};
@@ -99,6 +112,12 @@ QString ClusterConnection::profileProblem(const ClusterProfile &profile)
         return u"The frontend \"%1\" is not a host name."_s.arg(profile.frontend);
     if (bad.match(profile.user.trimmed()).hasMatch())
         return u"The user \"%1\" is not a login name."_s.arg(profile.user);
+    // The window sets these: a token of its own would sit in the settings in
+    // clear, and another job name would leave the job out of the cancel.
+    for (const QString &arg : profile.extraArgs)
+        for (const QString &owned : { u"--token"_s, u"--job-name"_s })
+            if (arg == owned || arg.startsWith(owned + u'='))
+                return u"The further options cannot set %1: the window sets it."_s.arg(owned);
     return {};
 }
 
@@ -358,6 +377,9 @@ void ClusterConnection::stop()
         return;
     m_stopping = true;
     m_healthTimer.stop();
+    // Cut off while it submits: the job may appear after a cancel now.
+    const bool submitting = m_launcher && m_launcher->state() != QProcess::NotRunning
+            && m_info.jobId.isEmpty();
     if (m_launcher && m_launcher->state() != QProcess::NotRunning) {
         m_launcher->kill();
         m_launcher->waitForFinished(2000);
@@ -369,6 +391,15 @@ void ClusterConnection::stop()
     }
     // By its unique name (also when the launcher was cut off before reporting
     // the id), or by id for a record without a name.
+    if (submitting && !m_jobName.isEmpty() && !m_ssh.isEmpty()) {
+        // Half a minute of cancelling, not waited for here: the record stays,
+        // and the next window for this profile cancels whatever is left.
+        QProcess::startDetached(m_ssh, sshOptions() << m_profile.sshTarget()
+                                                    << cancelCommand(QString(), m_jobName, true));
+        if (m_lock)
+            m_lock->unlock();
+        return;
+    }
     const QString command = cancelCommand(m_info.jobId, m_jobName);
     if (!command.isEmpty() && !m_ssh.isEmpty()) {
         QProcess cancel;

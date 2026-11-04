@@ -53,7 +53,10 @@ they mean, and you are told so rather than guessed at.
 A table of points opens in the **3-D catalogue viewer**, the window every point
 catalogue opens in, so a simulation snapshot and a galaxy catalogue are explored
 with the same controls. Nothing is converted: the backend reads the columns
-where they lie in the binary, and the window loads the rows it shows in pages.
+where they lie in the binary. When the table has more rows than a page (100 000),
+the window loads an even sample of them rather than its first rows, which in a
+snapshot are a few blocks of space; *Load more* fills in the rows between those
+loaded, *Load all* loads every row.
 
 The window is titled *3D Points*, the tag says *VBT · N rows*, and only what
 applies to a table of points is shown: the table lists the file's own columns,
@@ -67,7 +70,11 @@ and there is no sky frame, cosmology or redshift shells.
   more (a density) opens in Log. A colour bar shows the column's colours.
 - **Shape** opens as *Point*, or as *Gaussian splats* above a million rows:
   emissive, so dense regions add up to bright and sparse filaments stay faint
-  but visible. The *Scale* slider sets the point or splat size.
+  but visible. The *Scale* slider sets the point or splat size. *Ray-traced*
+  draws every row as a continuous medium on this machine's GPU, for figures
+  and movies: see [Ray-traced particles](raytraced-particles). (The glyph
+  shapes of object catalogues, ellipsoids, spheres and crosses, are not offered
+  for a point table.)
 - **Filters** restrict the rows by value; several combine.
 - Hovering and clicking a point shows its row; the *Catalogue* dock lists the
   rows loaded.
@@ -162,3 +169,4 @@ isosurfaces are built where the file is.
 - [Getting started](getting-started) — opening your first dataset.
 - [Catalogues and HiPS](catalogues-hips) — for CSV/VOTable catalogues rather than VBT.
 - [Velocity fields](velocity-fields) — for vector-valued grids.
+- [Ray-traced particles](raytraced-particles) — stills, movies and the GPU view of a point table.

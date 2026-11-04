@@ -1,4 +1,5 @@
 #include "vtkWindowCatalogue3D.h"
+#include "ColormapIcon.h"
 #include "ui_vtkWindowCatalogue3D.h"
 
 #include "LutScale.h"
@@ -133,11 +134,16 @@ void vtkWindowCatalogue3D::buildControlPages()
         reprLayout->addWidget(reprHdr);
 
         this->comboGeometry = new QComboBox(reprCard);
-        this->comboGeometry->addItems(
-                { u"Ellipsoid"_s, u"Sphere"_s, u"Point"_s, u"Cross"_s, u"Gaussian splats"_s });
+        this->comboGeometry->addItems({ u"Ellipsoid"_s, u"Sphere"_s, u"Point"_s, u"Cross"_s,
+                                        u"Gaussian splats"_s, u"Ray-traced"_s });
         this->comboGeometry->setItemData(
                 4, u"Emissive Gaussian splats: dense regions add up to bright, sparse ones stay "
                    u"faint but visible (a simulation's particles)"_s,
+                Qt::ToolTipRole);
+        this->comboGeometry->setItemData(
+                5, u"Each particle a cloud of light of its own size, every row of the table, "
+                   u"drawn on this machine's GPU: a 3-D render or a projected density map, its "
+                   u"settings below"_s,
                 Qt::ToolTipRole);
         auto *reprForm = new QFormLayout;
         reprForm->setContentsMargins(0, 0, 0, 0);
@@ -146,6 +152,8 @@ void vtkWindowCatalogue3D::buildControlPages()
         reprLayout->addWidget(ui->chkLabels);
         reprLayout->addWidget(ui->chkMorphColors);
         pageLayout->addWidget(reprCard);
+        this->m_reprCard = reprCard;
+        this->m_vizPageLayout = pageLayout;
 
         // ── Axis Mapping card ─────────────────────────────────────────────────
         auto *axisCard   = new QFrame(pageViz);
@@ -187,10 +195,14 @@ void vtkWindowCatalogue3D::buildControlPages()
         this->comboColormap = new QComboBox(encCard);
         // Named maps only, so that the LUT editor shows and keeps the one in
         // use; Rainbow, this viewer's ramp, first. MinMax is a range mode.
-        this->comboColormap->addItem(u"Rainbow (default)"_s, u"Rainbow"_s);
+        // Each with its gradient, as the image viewer's list shows them.
+        // A short swatch: the name must fit beside it in the sidebar's column.
+        this->comboColormap->setIconSize(QSize(28, 10));
+        this->comboColormap->addItem(makeColormapIcon("Rainbow"), u"Rainbow"_s, u"Rainbow"_s);
         for (const std::string &name : ColorMaps::GetColorMapNames()) {
             if (name != "Rainbow" && name != "MinMax")
-                this->comboColormap->addItem(QString::fromStdString(name),
+                this->comboColormap->addItem(makeColormapIcon(name),
+                                             QString::fromStdString(name),
                                              QString::fromStdString(name));
         }
         this->comboColorScale = new QComboBox(encCard);
@@ -210,17 +222,16 @@ void vtkWindowCatalogue3D::buildControlPages()
         encForm->addRow(u"Color"_s, this->comboMapColor);
         // The colour map, and Edit: its scale and Min..Max, in the LUT editor
         // the cube viewer uses (the scale is chosen there, not in this panel).
-        auto *colormapRow = new QWidget(encCard);
-        auto *colormapLayout = new QHBoxLayout(colormapRow);
-        colormapLayout->setContentsMargins(0, 0, 0, 0);
-        colormapLayout->setSpacing(6);
-        colormapLayout->addWidget(this->comboColormap, 1);
-        auto *editLut = new QPushButton(u"Edit"_s, colormapRow);
+        // The map on a row of its own: its gradient and its name both show.
+        encForm->addRow(u"Colormap"_s, this->comboColormap);
+        auto *editLut = new QPushButton(u"Range and scale…"_s, encCard);
+        // May shrink with the column: a button's text is not a minimum width.
+        editLut->setMinimumWidth(60);
+        editLut->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         editLut->setToolTip(u"Colour range, scale (Linear, Log, Sqrt, Square, Power) and "
                             u"colour map, over the histogram of the colour column"_s);
-        colormapLayout->addWidget(editLut, 0);
         QObject::connect(editLut, &QPushButton::clicked, this, [this]() { this->showLutEditor(); });
-        encForm->addRow(u"Colormap"_s, colormapRow);
+        encForm->addRow(QString(), editLut);
         encForm->addRow(u"Color scale"_s, this->comboColorScale);
         encForm->addRow(u"Power γ"_s, this->spinColorGamma);
         // Kept as the state the editor sets; not shown.
@@ -322,6 +333,7 @@ void vtkWindowCatalogue3D::buildControlPages()
         this->m_sceneForm = sceneForm;
         sceneLayout->addLayout(sceneForm);
         pageLayout->addWidget(sceneCard);
+        this->m_sceneCard = sceneCard;
 
         // ── Cosmology card ────────────────────────────────────────────────────
         // The model and the distance convention decide WHERE every source is,

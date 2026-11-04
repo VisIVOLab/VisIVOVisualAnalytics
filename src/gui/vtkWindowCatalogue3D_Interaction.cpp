@@ -231,9 +231,27 @@ void vtkWindowCatalogue3D::updateHighlightSphere(vtkSphereSource *sphere, vtkAct
         return;
     }
     const auto &position = this->mappedPositions[static_cast<std::size_t>(idx)];
-    double tuple[3] = { defaultGlyphRadius, defaultGlyphRadius, defaultGlyphRadius };
-    this->glyphScaleVectors->GetTuple(idx, tuple);
-    const double r = std::max({ tuple[0], tuple[1], tuple[2] }) * radiusFactor;
+    double r = 0.0;
+    if (this->geometryMode == GeometryMode::Point || this->geometryMode == GeometryMode::Gaussian) {
+        // Points and splats have no glyph of their own: a marker sized by the
+        // particles' mean spacing (∛(volume / N), as the splats are sized), not
+        // the catalogue glyph's size, which round a particle is a large sphere.
+        double b[6];
+        this->sourcePoints->GetBounds(b);
+        const double dims[3] = { b[1] - b[0], b[3] - b[2], b[5] - b[4] };
+        const double longest = std::max({ dims[0], dims[1], dims[2], 1.0e-6 });
+        double volume = 1.0;
+        for (const double d : dims)
+            volume *= std::max(d, longest * 1.0e-3);
+        const double n = std::max<double>(1.0, static_cast<double>(this->entries.size()));
+        // Under one spacing: it marks the particle, it does not cover its
+        // neighbours.
+        r = 0.6 * std::cbrt(volume / n) * radiusFactor;
+    } else {
+        double tuple[3] = { defaultGlyphRadius, defaultGlyphRadius, defaultGlyphRadius };
+        this->glyphScaleVectors->GetTuple(idx, tuple);
+        r = std::max({ tuple[0], tuple[1], tuple[2] }) * radiusFactor;
+    }
     sphere->SetCenter(position[0], position[1], position[2]);
     sphere->SetRadius(r);
     sphere->Update();
@@ -500,11 +518,28 @@ void vtkWindowCatalogue3D::updateGeometryMode()
         this->geometryMode = GeometryMode::Cross;
     else if (shape == u"Gaussian splats"_s)
         this->geometryMode = GeometryMode::Gaussian;
+    else if (shape == u"Ray-traced"_s)
+        this->geometryMode = GeometryMode::Raytraced;
     else if (shape == u"Arrows (velocity)"_s)
         this->geometryMode = GeometryMode::Velocity;
     else
         this->geometryMode = GeometryMode::Ellipsoid;
-    this->updateGlyphPipeline();
+    // Ray-traced: the view is drawn on the GPU, the shapes stay as they were.
+    if (this->geometryMode != GeometryMode::Raytraced)
+        this->updateGlyphPipeline();
+    // Points and splats are all one size, the slider's: no size column, and
+    // the slider called what it sets.
+    const bool particles = this->geometryMode == GeometryMode::Point
+            || this->geometryMode == GeometryMode::Gaussian;
+    if (this->m_encForm && this->comboSizeMode) {
+        this->m_encForm->setRowVisible(this->comboSizeMode,
+                                       !particles && this->geometryMode != GeometryMode::Raytraced);
+        if (auto *label = qobject_cast<QLabel *>(this->m_encForm->labelForField(ui->sliderScale)))
+            label->setText(this->geometryMode == GeometryMode::Point      ? u"Point size"_s
+                           : this->geometryMode == GeometryMode::Gaussian ? u"Splat size"_s
+                                                                          : u"Scale"_s);
+    }
+    this->setRaytraced(this->geometryMode == GeometryMode::Raytraced);
     this->pushRemoteState();
 }
 

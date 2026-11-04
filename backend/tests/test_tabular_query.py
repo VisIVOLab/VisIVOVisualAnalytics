@@ -434,3 +434,38 @@ def test_empty_dataframe_unknown_field_raises():
     empty = pd.DataFrame({"id": pd.Series([], dtype=int)})
     with pytest.raises(ValueError, match="Unknown field"):
         apply(empty.copy(), [flt("nonexistent", "=", "0")])
+
+
+def test_an_even_sample_covers_the_table_and_its_phases_fill_it_in():
+    """A simulation's table is stored by region: its first rows are a few
+    blocks of space. An even sample of a page covers it all; the next phases
+    add the rows between, until every row is there once."""
+    import numpy as np
+    import pandas as pd
+
+    from app.dependencies import _apply_tabular_query, sample_step
+    from app.schemas import TabularFilter
+
+    frame = pd.DataFrame({"X": np.arange(1000.0), "M": np.arange(1000.0) % 7})
+    page, total = _apply_tabular_query(frame, [], None, limit=100, offset=0, even_sample=True)
+    assert total == 1000 and sample_step(total, 100) == 10
+    assert page["X"].tolist() == list(range(0, 1000, 10))
+    seen = set()
+    for phase in range(10):
+        part, _ = _apply_tabular_query(frame, [], None, limit=100, offset=0,
+                                       even_sample=True, phase=phase)
+        seen.update(part["X"].astype(int))
+    assert seen == set(range(1000))
+    # Over the rows a filter keeps (the fast numeric path and the general one).
+    kept = [TabularFilter(field="M", op="=", value="3")]
+    part, total = _apply_tabular_query(frame, kept, None, limit=20, offset=0, even_sample=True)
+    # One in ceil(143 / 20) = 8: a sample never larger than the page.
+    assert total == 143 and len(part) == 18 and (part["M"] == 3).all()
+    assert part["X"].iloc[-1] > 900          # spread over the table, not its start
+    text = [TabularFilter(field="M", op="in", value="3")]
+    part, _ = _apply_tabular_query(frame, text, None, limit=20, offset=0, even_sample=True)
+    assert len(part) == 18 and part["X"].iloc[-1] > 900
+    # Fewer rows than the page: all of them, as before.
+    small, total = _apply_tabular_query(frame.iloc[:50], [], None, limit=100, offset=0,
+                                        even_sample=True)
+    assert total == 50 and len(small) == 50

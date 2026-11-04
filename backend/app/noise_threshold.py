@@ -98,8 +98,14 @@ def noise_threshold(sample: np.ndarray, n_voxels: int,
 def _quantized(s: np.ndarray) -> bool:
     """Whether the values take few distinct levels (integer counts, or BSCALE
     data whose noise spans a few steps): then exact zeros are noise."""
-    head = s[: 100_000]
-    return np.unique(head).size < 0.5 * head.size
+    # From the non-zero values, spread over the whole sample: zeros may be
+    # blanking (a whole slab of them first would make any data look
+    # quantized), and the first values alone depend on the sample's order.
+    nonzero = s[s != 0.0]
+    if nonzero.size == 0:
+        return True
+    probe = nonzero[:: max(1, nonzero.size // 100_000)][:100_000]
+    return np.unique(probe).size < 0.5 * probe.size
 
 
 def default_threshold(sample: np.ndarray, n_voxels: int) -> float:

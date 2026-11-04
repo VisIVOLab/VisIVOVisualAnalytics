@@ -63,6 +63,13 @@ X_CALIBRATED = "X-Visivo-Calibrated"
 X_DENSITY_FACTOR = "X-Visivo-Density-Factor"
 X_WARNINGS = "X-Visivo-Warnings"
 
+# ── Ray-traced particle preview ─────────────────────────────────────────────
+X_EXPOSURE = "X-Visivo-Exposure"
+X_RENDER_MS = "X-Visivo-Render-Ms"
+X_PARTICLE_COUNT = "X-Visivo-Particle-Count"
+X_PARTICLE_FIELDS = "X-Visivo-Particle-Fields"
+X_PARTICLE_STEP = "X-Visivo-Particle-Step"
+
 # ── Line-width / moment map units (out-of-band because body is binary) ──────
 X_FWHM_UNIT = "X-Fwhm-Unit"
 X_EW_UNIT = "X-Ew-Unit"

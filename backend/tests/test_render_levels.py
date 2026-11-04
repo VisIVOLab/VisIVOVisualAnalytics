@@ -203,3 +203,67 @@ def test_a_reader_that_fails_ends_the_wait():
     finally:
         sess._cube_reader = None
         sess._executor.shutdown(wait=False)
+
+
+def test_a_threshold_above_the_data_draws_nothing_as_on_the_desktop():
+    from app.render_session._common import _build_opacity_tf, _opacity_floor
+    tf = _build_opacity_tf(-3.0, 3.0, 3.3)
+    assert tf.GetValue(3.0) == 0.0 and tf.GetValue(0.0) == 0.0
+    assert _opacity_floor(-3.0, 3.0, 3.3) == 3.0      # all of it transparent
+
+
+def test_the_levels_stay_pending_until_the_final_threshold_is_known():
+    # Complete only once the threshold from the whole cube is in: a client
+    # asking in between would take the loading threshold as final.
+    import threading
+    from unittest.mock import patch
+
+    import numpy as np
+    from app.noise_threshold import default_threshold
+    cube = np.random.default_rng(0).normal(size=(40, 40, 40)).astype(np.float32)
+    sess = _streaming_session(cube)
+    sess._volume_revealed = True
+    sess.view.threshold = 1.0
+    sess._cube_reader.events = [{"event": "complete", "vmin": float(cube.min()),
+                                 "vmax": float(cube.max())}]
+    started, release = threading.Event(), threading.Event()
+
+    def slow(*args):
+        started.set()
+        release.wait(5)
+        return default_threshold(*args)
+
+    with patch("app.noise_threshold.default_threshold", slow):
+        worker = threading.Thread(target=sess._poll_cube_chunks)
+        worker.start()
+        assert started.wait(5)
+        assert sess.levels()["pending"] is True
+        release.set()
+        worker.join(5)
+    done = sess.levels()
+    assert done["pending"] is False and done["threshold"] != 1.0
+
+
+def test_the_levels_end_even_when_the_final_cut_over_fails():
+    # /levels would say "loading" for good, and the client poll for ever.
+    from unittest.mock import patch
+
+    import numpy as np
+    import pytest
+    cube = np.random.default_rng(0).normal(size=(40, 40, 40)).astype(np.float32)
+    sess = _streaming_session(cube)
+    sess._volume_revealed = True
+    sess._cube_reader.events = [{"event": "complete", "vmin": float(cube.min()),
+                                 "vmax": float(cube.max())}]
+
+    def broken(*args):
+        raise RuntimeError("no threshold")
+
+    try:
+        with patch("app.noise_threshold.default_threshold", broken), \
+                pytest.raises(RuntimeError):
+            sess._poll_cube_chunks()
+        assert sess.levels()["pending"] is False
+    finally:
+        sess._cube_reader = None
+        sess._executor.shutdown(wait=False)

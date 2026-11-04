@@ -326,7 +326,11 @@ class OutOfCoreCube:
             from ..brick_pyramid import _SourceCube  # noqa: PLC0415
             self._source = _SourceCube(self.dataset_path, self.hdu, 1 << 62)
         _, ny, nx = self.shape
-        return self._source.block(z, z + 1, 0, ny, 0, nx)[0]
+        plane = np.array(self._source.block(z, z + 1, 0, ny, 0, nx)[0], dtype=np.float32)
+        # Blanks as the in-memory cube has them (the minimum): the slice's
+        # colours would otherwise give NaN and infinities colours of their own.
+        plane[~np.isfinite(plane)] = self.vmin
+        return plane
 
     # -- choosing and loading blocks ------------------------------------------
     def update(self, renderer, window_size, threshold, interactive: bool) -> bool:
@@ -343,8 +347,12 @@ class OutOfCoreCube:
             return False
         w, h = (int(window_size[0]) or 1, int(window_size[1]) or 1)
         blend = self.blocks.blend
+        # Everything the frustum the blocks are chosen by depends on: a roll
+        # (view up) or a new near/far plane shows other blocks.
         key = (tuple(round(v, 3) for v in cam.GetPosition()),
                tuple(round(v, 3) for v in cam.GetFocalPoint()),
+               tuple(round(v, 4) for v in cam.GetViewUp()),
+               tuple(round(v, 3) for v in cam.GetClippingRange()),
                round(cam.GetViewAngle(), 3), int(cam.GetParallelProjection()),
                round(cam.GetParallelScale(), 3), w, h, threshold, blend)
         if key != self._view_key:

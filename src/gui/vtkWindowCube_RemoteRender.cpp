@@ -128,6 +128,7 @@
 #include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QLabel>
+#include <QLocale>
 #include <QList>
 #include <QMetaObject>
 #include <QMenu>
@@ -601,7 +602,7 @@ void vtkWindowCube::adoptRemoteLevels(const QJsonObject &answer)
         this->lowerBound = b.lower;
         this->upperBound = b.upper;
         const QSignalBlocker blockLine(ui->lineThreshold);
-        ui->lineThreshold->setText(QString::number(value));
+        ui->lineThreshold->setText(visivo::thresholdText(value));
         this->m_initialThresholdApplied = true;
         qDebug().noquote() << "[remote-render] threshold from the backend:" << value;
     }
@@ -780,8 +781,17 @@ void vtkWindowCube::pushRenderStateToRemote()
 
 void vtkWindowCube::updateRenderModeBadges()
 {
-    if (!this->m_renderModeBadge) return;
     const bool remote = (this->m_effectiveRenderMode == RenderMode::Remote);
+    // Cinematic lighting is drawn here only (issue #101): not offered while the
+    // view on screen is the backend's.
+    if (this->m_cinematicCheck) {
+        this->m_cinematicCheck->setEnabled(!remote);
+        this->m_cinematicCheck->setToolTip(
+                remote ? u"Drawn on this machine only: switch the 3-D view to Local "
+                         u"(View ▸ Rendering) to light it."_s
+                       : this->m_cinematicCheck->property("localTip").toString());
+    }
+    if (!this->m_renderModeBadge) return;
     this->m_renderModeBadge->setText(remote
                                              ? u"Render: REMOTE"_s
                                              : u"Render: LOCAL"_s);

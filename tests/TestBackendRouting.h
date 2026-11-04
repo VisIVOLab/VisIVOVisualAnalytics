@@ -24,6 +24,7 @@ private slots:
     void cluster_cancelByIdOrByName();
     void cluster_profileCannotInjectSshOptions();
     void cluster_profilesRoundTrip();
+    void cluster_extraOptionsRoundTripThroughTheDialogLine();
     void launchOptions_connectCluster();
     void recents_recordTheBackendTheyWereOpenedOn();
     void recents_twoWindowsKeepEachOthersEntries();

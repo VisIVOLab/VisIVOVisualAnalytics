@@ -79,6 +79,14 @@ The session's current threshold and data range, as in the answer of `create_sess
 
 Errors: 401 (token), 404 (`"Unknown render session_id."`, also for a session owned by another token).
 
+### `GET /v1/render/{session_id}/camera`
+
+A point session's camera, after the commands sent before the request:
+`{position, focal_point, view_up, view_angle, parallel, parallel_scale}`. A
+ray-traced still of the view on screen is rendered from it
+([Ray-traced particle rendering](particle-render)). 404 for an unknown session,
+409 for a session with no camera to report.
+
 ### `DELETE /v1/render/{session_id}`
 
 Closes a render session and releases its GPU resources.
@@ -136,6 +144,7 @@ The camera, viewport and encoding commands are those of a cube (`rotate`, `zoom`
 | `set_filters` | `filters`: list of `{field, op, value}`, `op` one of `=`, `!=`, `>`, `>=`, `<`, `<=` | The rows drawn: those passing every filter. |
 | `set_background` | `name` (`"Dark"`, `"Dark gray"`, `"White"`; anything else is dark) | Background, and the colour of the box and of the colour bar's text. |
 | `set_show_outline`, `set_show_axes`, `set_show_colorbar` | `visible` (bool) | Labelled box, orientation marker, colour bar. |
+| `set_camera` | `position`, `focal_point`, `view_up` (three numbers each), optional `view_angle` (degrees), `parallel` (bool), `parallel_scale` | The whole camera, as `GET /v1/render/{id}/camera` returns it: the desktop hands back the camera of its ray-traced view. Refused without the three vectors, or with the position on the focal point. |
 | `set_sky_positions` | `frame` (`"fk5"`, `"galactic"`, `"supergalactic"`), `distance_mode` (`"comoving"`, `"redshift_space"`), `cosmology` (a model of `/v1/cosmology/distance`; `"Planck18"` is the desktop's own integration) | A sky catalogue's positions, recomputed (`@x`, `@y`, `@z`); refused for a VBT or a cartesian catalogue. |
 
 An unknown column or operator is refused: the command is logged and the view unchanged.

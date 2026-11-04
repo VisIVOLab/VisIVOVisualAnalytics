@@ -443,6 +443,10 @@ class TabularQueryRequest(BaseModel):
     offset: int = 0
     filters: list[TabularFilter] = []
     sort: TabularSortSpec | None = None
+    # When more rows match than ``limit``: an even sample of them (one in every
+    # ``step`` of the response, from the ``phase``-th) instead of a page.
+    even_sample: bool = False
+    phase: int = 0
 
 
 class TabularQueryResponse(BaseModel):
@@ -450,6 +454,7 @@ class TabularQueryResponse(BaseModel):
     error: str
     total_rows: int = 0
     returned_rows: int = 0
+    step: int = 1   # an even sample: one row in this many (``phase``-th first)
     # catalogue: row-oriented dicts
     rows: list[dict[str, Any]] = []
     # VBT point: column-oriented base64 float64-LE

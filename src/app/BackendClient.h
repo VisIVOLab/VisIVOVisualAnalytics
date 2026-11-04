@@ -464,6 +464,10 @@ struct BackendTabularQueryRequest
     std::vector<BackendTabularFilter> filters;
     QString sortField;
     QString sortDirection; // "asc" or "desc", empty = no sort
+    /// More rows matching than ``limit``: an even sample of them, from the
+    /// ``phase``-th, instead of a page (``offset`` unused); see the response's step.
+    bool evenSample{ false };
+    int phase{ 0 };
 };
 
 struct BackendTabularQueryResponse
@@ -472,6 +476,7 @@ struct BackendTabularQueryResponse
     QString error;
     int totalRows{ 0 };
     int returnedRows{ 0 };
+    int step{ 1 };   ///< an even sample: one matching row in this many
     // Catalogue: row-oriented
     QList<QVariantMap> rows;
     // VBT point: column-oriented, decoded float64

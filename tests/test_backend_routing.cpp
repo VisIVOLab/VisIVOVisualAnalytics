@@ -307,6 +307,13 @@ void TestBackendRouting::cluster_cancelByIdOrByName()
     // A record that is not a job id is never passed to the remote shell.
     QCOMPARE(ClusterConnection::cancelCommand(u"1; rm -rf ~"_s, QString()), QString());
     QVERIFY(ClusterConnection::cancelCommand(QString(), QString()).isEmpty());
+    // Cut off while sbatch may still be submitting: cancelled again for a
+    // while, and it fails (the record stays) if a job is left.
+    const QString settling = ClusterConnection::cancelCommand(QString(), u"visivo-ab-cd"_s, true);
+    // Run by bash, whatever the login shell: tcsh has no for/do.
+    QVERIFY(settling.startsWith(u"'bash' '-c' "_s));
+    QVERIFY(settling.contains(u"scancel"_s) && settling.contains(u"visivo-ab-cd"_s));
+    QVERIFY(settling.contains(u"squeue"_s) && settling.contains(u"test -z"_s));
 }
 
 void TestBackendRouting::cluster_profileCannotInjectSshOptions()
@@ -323,6 +330,22 @@ void TestBackendRouting::cluster_profileCannotInjectSshOptions()
     QVERIFY(!ClusterConnection::profileProblem(p).isEmpty());
     p.user = u"a b"_s;
     QVERIFY(!ClusterConnection::profileProblem(p).isEmpty());
+    // The token and the job name are the window's.
+    p.user = u"fv"_s;
+    p.extraArgs = { u"--backend-src"_s, u"/scratch/app"_s };
+    QVERIFY(ClusterConnection::profileProblem(p).isEmpty());
+    p.extraArgs = { u"--token"_s, u"abc"_s };
+    QVERIFY(!ClusterConnection::profileProblem(p).isEmpty());
+    p.extraArgs = { u"--job-name=other"_s };
+    QVERIFY(!ClusterConnection::profileProblem(p).isEmpty());
+}
+
+void TestBackendRouting::cluster_extraOptionsRoundTripThroughTheDialogLine()
+{
+    const QStringList args{ u"--backend-src"_s, u"/scratch/my app"_s, u"--version"_s,
+                            u"say \"hi\""_s, u"plain"_s };
+    QCOMPARE(QProcess::splitCommand(ClusterProfile::joinCommand(args)), args);
+    QCOMPARE(ClusterProfile::joinCommand({ u"--a"_s, u"b"_s }), u"--a b"_s);
 }
 
 void TestBackendRouting::cluster_profilesRoundTrip()
