@@ -11,6 +11,8 @@
     "X-Visivo-Bunit",
     "X-Visivo-Byte-Order",
     "X-Visivo-Calibrated",
+    "X-Visivo-Colour-Range",
+    "X-Visivo-Colour-Table",
     "X-Visivo-Components",
     "X-Visivo-Density-Factor",
     "X-Visivo-Depth",
@@ -48,6 +50,8 @@
     "X-Visivo-Token",
     "X-Visivo-Trim-Box",
     "X-Visivo-Unit",
+    "X-Visivo-Volume-Box",
+    "X-Visivo-Volume-Shape",
     "X-Visivo-Warnings",
     "X-Visivo-Width"
   ]

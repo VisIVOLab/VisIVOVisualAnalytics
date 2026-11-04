@@ -111,6 +111,42 @@ _HAND_BUILT_RAMPS = {
 }
 
 
+def set_camera(cam, command: dict[str, Any]) -> None:
+    """Puts ``cam`` where ``command`` says (``set_camera``: position,
+    focal_point, view_up, and optionally view_angle, parallel,
+    parallel_scale): the desktop's ray-traced view hands back the camera it
+    was turned to. Every value is checked before the camera changes; a
+    malformed one is a ValueError (refused, the stream kept), never a
+    TypeError."""
+    try:
+        vectors = [np.asarray(command.get(k), dtype=float).reshape(3)
+                   for k in ("position", "focal_point", "view_up")]
+        angle = command.get("view_angle")
+        angle = None if angle is None else float(angle)
+        scale = command.get("parallel_scale")
+        scale = None if scale is None else float(scale)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("set_camera needs three numbers for position, focal_point "
+                         "and view_up, and numbers for view_angle and "
+                         "parallel_scale.") from exc
+    if not all(np.isfinite(v).all() for v in vectors):
+        raise ValueError("set_camera needs a finite position, focal_point and view_up.")
+    sight = vectors[1] - vectors[0]
+    if not np.linalg.norm(sight) > 0 or not np.linalg.norm(np.cross(sight, vectors[2])) > 0:
+        raise ValueError("set_camera: the position is the focal point, or the view up "
+                         "lies along the line of sight.")
+    cam.SetPosition(*vectors[0])
+    cam.SetFocalPoint(*vectors[1])
+    cam.SetViewUp(*vectors[2])
+    cam.OrthogonalizeViewUp()
+    if angle is not None and 0.0 < angle < 180.0:
+        cam.SetViewAngle(angle)
+    if "parallel" in command:
+        cam.SetParallelProjection(bool(command["parallel"]))
+    if scale is not None and scale > 0:
+        cam.SetParallelScale(scale)
+
+
 def _build_color_tf(name: str, vmin: float, vmax: float):
     """Build a vtkColorTransferFunction named ``name`` over ``[vmin, vmax]``.
 

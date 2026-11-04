@@ -213,6 +213,7 @@ user-guide/cube-viewer
 user-guide/image-viewer
 user-guide/vbt-viewer
 user-guide/raytraced-particles
+user-guide/raytraced-volumes
 user-guide/velocity-fields
 user-guide/moment-maps
 user-guide/spectral-tools

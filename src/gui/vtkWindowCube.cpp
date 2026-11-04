@@ -48,6 +48,7 @@
 #include "PvDiagramWidget.h"
 #include "RemoteLevels.h"
 #include "ThresholdShare.h"
+#include "ColourBarTicks.h"
 #include "VolumeColorbar.h"
 #include "RemoteRenderWidget.h"
 #include "SidebarPanel.h"
@@ -1812,6 +1813,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                          }
 
                          this->usingHighResCube = true;
+                         this->setDisplayStride(1);   // the cube's own voxels
                          this->m_deferredPreview.reset();   // superseded by the full grid
                          this->applyCubeOpenResult({ true,
                                                      { },
@@ -3226,6 +3228,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             this->remoteDatasetHeight,
             this->remoteDatasetDepth,
             static_cast<double>(targetMb));
+    this->m_previewStride = std::max(1, downsample);
     qDebug().noquote() << QStringLiteral(
             "[preview-debug] launching fetcher requestId=%1 url=%2 dataset=%3 "
             "cube=%4x%5x%6 target=%7MB downsample=%8")
@@ -3805,6 +3808,8 @@ void vtkWindowCube::applyDeferredPreviewWhenLocal()
 
 void vtkWindowCube::applyRemotePreviewResult(const RemoteCubePreviewResult &result)
 {
+    if (result.valid && result.cubeImageData)
+        this->setDisplayStride(this->m_previewStride);   // a strided sample of the cube
     if (!result.valid || !result.cubeImageData) {
         this->m_cube3dLoadingActor->VisibilityOff();
         this->m_slice2dLoadingActor->VisibilityOff();
@@ -6150,6 +6155,7 @@ QVTKOpenGLNativeWidget *vtkWindowCube::active2dWidget() const
 
 void vtkWindowCube::applyThresholdToPipeline(double threshold)
 {
+    this->raytraceThresholdChanged();   // the ray-traced light's floor
     // Mirror the new threshold to the remote renderer first so the
     // network call is on its way while the local VTK pipeline updates.
     {
@@ -6231,25 +6237,18 @@ void vtkWindowCube::refreshVolumeColorbar()
         ctf->GetColor(this->volumeScaleValue(static_cast<double>(i) / (kColours - 1), lo, hi), rgb);
         colours << QColor::fromRgbF(rgb[0], rgb[1], rgb[2]);
     }
+    const QVector<double> at{ 0.0, 0.25, 0.5, 0.75, 1.0 };
+    QVector<double> values;
+    for (const double u : at)
+        values << this->volumeScaleValue(u, lo, hi);
+    const QStringList labels = visivo::tickLabels(values);
     QVector<QPair<double, QString>> ticks;
-    bool exponent = false;
-    for (const double u : { 0.0, 0.25, 0.5, 0.75, 1.0 }) {
-        ticks << qMakePair(u, QString::number(this->volumeScaleValue(u, lo, hi), 'g', 3));
-        exponent = exponent || ticks.back().second.contains(u'e');
-    }
-    // One notation down the bar: "0.000183" over "5.31e-06" reads as two scales.
-    if (exponent) {
-        for (auto &tick : ticks)
-            tick.second = QString::number(this->volumeScaleValue(tick.first, lo, hi), 'e', 2);
-    }
+    for (int i = 0; i < at.size(); ++i)
+        ticks << qMakePair(at[i], labels[i]);
     this->m_volumeColorbar->setColours(colours);
     this->m_volumeColorbar->setTicks(ticks);
     // The quantity: the cube's unit, or a VBT field's name.
-    this->m_volumeColorbar->setTitle(
-            !this->m_brightnessUnit.isEmpty() ? this->m_brightnessUnit
-            : visivo::isFieldReference(this->filepath)
-                    ? visivo::fieldNames().value(this->filepath)
-                    : QString());
+    this->m_volumeColorbar->setTitle(this->volumeBarTitle());
     // Below the threshold the opacity is zero, in every blend mode (MIP and
     // MinIP apply it to the value they project). The threshold and Min..Max are
     // apart: the opacity spans the data, so voxels between a threshold and Min
@@ -7940,12 +7939,30 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
     p3->setSpacing(6);
     dispStack->addWidget(page3d);   // index 0
     QVBoxLayout *disp3d = p3;       // the 3D widgets below go into the 3D PAGE, not `disp`
+    // The analysis rendering's controls, above and below the ray-traced light:
+    // hidden while that style is on, as they draw nothing in it.
+    const auto classicBox = [p3](QWidget *&box) {
+        box = new QWidget();
+        auto *l = new QVBoxLayout(box);
+        l->setContentsMargins(0, 0, 0, 0);
+        l->setSpacing(p3->spacing());
+        return l;
+    };
+    QWidget *classicTopBox = nullptr, *classicBottomBox = nullptr;
+    QVBoxLayout *classicTop = classicBox(classicTopBox);
+    QVBoxLayout *classicBottom = classicBox(classicBottomBox);
+    m_classic3dTop = classicTopBox;
+    m_classic3dBottom = classicBottomBox;
+    // The threshold, shared with the ray-traced light when it darkens.
+    QWidget *thresholdBox = nullptr;
+    QVBoxLayout *thresholdRows = classicBox(thresholdBox);
+    m_thresholdBox = thresholdBox;
     SegmentedToggle *modeCombo = m_uiAssembler->renderModeCombo();
     if (modeCombo) {
         rehost(modeCombo);
         modeCombo->setMinimumWidth(0);   // let segments share the narrow dock, never overflow
         modeCombo->setParent(root);
-        disp3d->addWidget(modeCombo);
+        classicTop->addWidget(modeCombo);
     }
     QWidget *volRow = nullptr;
     if (auto *v = m_uiAssembler->volumeModeCombo()) {
@@ -7970,7 +7987,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         // Same fixed step as surfRow, so the block below the selector keeps its
         // height across the swap.
         volRow->setFixedHeight(28);
-        disp3d->addWidget(volRow);
+        classicTop->addWidget(volRow);
     }
     // Cinematic lighting (issue #101), with the blend mode it modifies.
     QWidget *cineRow = new QWidget();
@@ -7990,7 +8007,33 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
                          [this](bool on) { this->applyCinematicLighting(on); });
         h->addWidget(cb, 1);
         cineRow->setFixedHeight(28);
-        disp3d->addWidget(cineRow);
+        classicTop->addWidget(cineRow);
+    }
+    disp3d->addWidget(classicTopBox);
+    // Ray-traced light (issue #106): its settings and output open under it.
+    {
+        QWidget *rtRow = new QWidget();
+        auto *h = new QHBoxLayout(rtRow);
+        h->setContentsMargins(0, 0, 0, 0);
+        auto *cb = new QCheckBox(u"Ray-traced light"_s, rtRow);
+        cb->setStyleSheet(labelCss);
+        cb->setToolTip(u"The cube as light, accumulated without a ceiling and graded by a tone "
+                       u"curve, so its faint emission and its bright cores both show; its "
+                       u"colour from its values or from another field (a density lit by its "
+                       u"temperature). Drawn on this machine's GPU; stills and movies by the "
+                       u"backend."_s);
+        this->m_rtCheck = cb;
+        QObject::connect(cb, &QCheckBox::toggled, this,
+                         [this](bool on) { this->setRaytraced(on); });
+        h->addWidget(cb, 1);
+        rtRow->setFixedHeight(28);
+        disp3d->addWidget(rtRow);
+        auto *card = new QWidget();
+        card->setObjectName(u"raytraceCard"_s);
+        auto *cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(0, 0, 0, 6);
+        card->hide();
+        this->m_rtCard = card;
     }
     {   // Threshold: label + mono value, then the slider full-width.
         auto *r = new QWidget();
@@ -8001,7 +8044,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         l->setStyleSheet(labelCss);
         const QString thresholdTip =
                 u"Voxels below this value are transparent in the volume (in MIP, a ray whose "
-                u"maximum is below it); "
+                u"maximum is below it) and emit no light in the ray-traced view; "
                 u"the isosurface is drawn at it. The slider follows the colour map's scale "
                 u"(Edit)."_s;
         l->setToolTip(thresholdTip);
@@ -8025,7 +8068,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
             h->addWidget(ui->lineThreshold, 0);
         }
         r->setFixedHeight(28);   // deterministic row step (§3.0c density)
-        disp3d->addWidget(r);
+        thresholdRows->addWidget(r);
     }
     if (ui->sliderThreshold) {
         rehost(ui->sliderThreshold);
@@ -8035,7 +8078,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         // slider kept rendering ~39 px and dominated the Threshold→slider step.
         // setFixedHeight forces min==max==22.
         ui->sliderThreshold->setFixedHeight(22);
-        disp3d->addWidget(ui->sliderThreshold);
+        thresholdRows->addWidget(ui->sliderThreshold);
     }
     {   // What the threshold keeps, in voxels (issue #83).
         m_thresholdShareLabel = new QLabel(root);
@@ -8046,8 +8089,13 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
                 u"viewer holds. Voxels below it are transparent in the volume; "
                 u"the isosurface is drawn at it."_s);
         m_thresholdShareLabel->hide();   // until there is a cube to count
-        disp3d->addWidget(m_thresholdShareLabel);
+        thresholdRows->addWidget(m_thresholdShareLabel);
     }
+    disp3d->addWidget(thresholdBox);
+    // The ray-traced settings under the threshold, which both styles share;
+    // the colour map is the analysis rendering's only.
+    disp3d->addWidget(m_rtCard);
+    disp3d->addWidget(classicBottomBox);
     {   // Color map: LUT combo + "Edit" link (no full-width "Advanced…").
         auto *r = new QWidget();
         auto *h = new QHBoxLayout(r);
@@ -8082,7 +8130,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
             h->addWidget(edit, 0);
         }
         r->setFixedHeight(28);   // deterministic row step (§3.0c density)
-        disp3d->addWidget(r);
+        classicBottom->addWidget(r);
     }
     QWidget *surfRow = nullptr;
     if (ui->btnCubeColor) {
@@ -8097,7 +8145,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         ui->btnCubeColor->setParent(surfRow);
         h->addWidget(ui->btnCubeColor, 0);
         surfRow->setFixedHeight(28);   // deterministic row step (§3.0c density)
-        disp3d->addWidget(surfRow);
+        classicBottom->addWidget(surfRow);
     }
     {
         // Slack goes to the bottom, not into the controls.
@@ -9694,10 +9742,12 @@ void vtkWindowCube::updateDisplaySectionForActivePane()
     // for. Below the return, opening in 3-D left every row showing and switching
     // slice → 3-D left the 3-D rows hidden.
     const bool isSlice = (kind == ViewId::Slice2D);
-    if (m_layerRowVolume)        m_layerRowVolume->setVisible(is3d);
-    if (m_layerRowCuttingPlane)  m_layerRowCuttingPlane->setVisible(is3d);
+    // The ray-traced light draws none of the 3-D layers.
+    const bool layers3d = is3d && !raytracedShown();
+    if (m_layerRowVolume)        m_layerRowVolume->setVisible(layers3d);
+    if (m_layerRowCuttingPlane)  m_layerRowCuttingPlane->setVisible(layers3d);
     updateCuttingPlaneOpacityRowVisibility();
-    if (m_layerRow3dWcsAxes)     m_layerRow3dWcsAxes->setVisible(is3d);
+    if (m_layerRow3dWcsAxes)     m_layerRow3dWcsAxes->setVisible(layers3d);
     if (m_layerRowContours)      m_layerRowContours->setVisible(isSlice);
 
     if (!isPane)
@@ -15454,7 +15504,8 @@ void vtkWindowCube::updateCuttingPlaneOpacityRowVisibility()
         return;
     const ViewId kind =
             (m_activePane >= 0 && m_activePane < 4) ? m_slots[m_activePane].view.kind : ViewId::None;
-    m_layerRowCuttingPlaneOpacity->setVisible(kind == ViewId::View3D && actionShowCuttingPlane
+    m_layerRowCuttingPlaneOpacity->setVisible(kind == ViewId::View3D && !raytracedShown()
+                                              && actionShowCuttingPlane
                                               && actionShowCuttingPlane->isChecked());
 }
 
@@ -15645,15 +15696,27 @@ void vtkWindowCube::applyIsosurfaceResult(const AsyncIsosurfaceResult &result)
                        .arg(renderTimer.elapsed());
 }
 
+QString vtkWindowCube::volumeBarTitle() const
+{
+    // The quantity: the cube's unit, or a VBT field's name.
+    return !this->m_brightnessUnit.isEmpty() ? this->m_brightnessUnit
+           : visivo::isFieldReference(this->filepath)
+                   ? visivo::fieldNames().value(this->filepath)
+                   : QString();
+}
+
 void vtkWindowCube::setSiblingFields(const QList<QPair<QString, QString>> &fields)
 {
     // One cube per field: the others are listed beside this one, and opening a
     // row opens that field (reopenProductFromFile → its "Output path").
     int index = 0;
+    this->m_rtFields.clear();
     for (const auto &field : fields) {
         ++index;
         if (field.second == this->filepath)
             continue;
+        // The ray-traced light's colour may come from it (index: the VBT's).
+        this->m_rtFields.append({ field.first, index - 1 });
         QVariantMap params;
         params.insert(u"Field"_s, field.first);
         params.insert(u"Output path"_s, field.second);

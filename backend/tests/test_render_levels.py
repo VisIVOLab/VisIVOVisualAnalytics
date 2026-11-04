@@ -92,7 +92,7 @@ def test_levels_are_withheld_until_a_streaming_cube_is_shown():
         sess._vmin, sess._vmax = -2.0, 30.0
         sess.view.threshold = 1.25
         assert sess.levels() == {"threshold": 1.25, "data_min": -2.0, "data_max": 30.0,
-                                 "pending": False}
+                                 "pending": False, "camera": None}
 
         # The chunked reader: placeholders until the volume is revealed, then
         # the values, still pending until the load completes.
@@ -101,11 +101,11 @@ def test_levels_are_withheld_until_a_streaming_cube_is_shown():
         sess._volume_revealed = False
         sess.view.threshold = 0.0
         assert sess.levels() == {"threshold": None, "data_min": None, "data_max": None,
-                                 "pending": True}
+                                 "pending": True, "camera": None}
         sess._volume_revealed = True
         sess.view.threshold = 1.5
         assert sess.levels() == {"threshold": 1.5, "data_min": -2.0, "data_max": 30.0,
-                                 "pending": True}
+                                 "pending": True, "camera": None}
         sess._cube_complete = True
         assert sess.levels()["pending"] is False
     finally:
@@ -266,4 +266,50 @@ def test_the_levels_end_even_when_the_final_cut_over_fails():
         assert sess.levels()["pending"] is False
     finally:
         sess._cube_reader = None
+        sess._executor.shutdown(wait=False)
+
+
+def test_a_cube_session_reports_its_camera():
+    # A ray-traced render of the view on screen starts from it (issue #106).
+    import vtk
+    sess = RenderSession("cafe0001", "/nonexistent/cube.fits")
+    try:
+        assert sess.levels()["camera"] is None
+        sess._renderer = vtk.vtkRenderer()
+        cam = sess._renderer.GetActiveCamera()
+        cam.SetPosition(10.0, 20.0, 30.0)
+        cam.SetFocalPoint(1.0, 2.0, 3.0)
+        cam.SetParallelScale(7.5)
+        sess._camera = sess._camera_on_thread()
+        got = sess.levels()["camera"]
+        assert got["position"] == [10.0, 20.0, 30.0] and got["focal_point"] == [1.0, 2.0, 3.0]
+        assert got["parallel"] is False and got["parallel_scale"] == 7.5
+    finally:
+        sess._renderer = None
+        sess._executor.shutdown(wait=False)
+
+
+def test_a_cube_session_takes_back_the_ray_traced_views_camera():
+    # Leaving the ray-traced view, the desktop hands back the camera it was
+    # turned to: the backend view goes on from there (issue #106).
+    import vtk
+    sess = RenderSession("cafe0002", "/nonexistent/cube.fits")
+    try:
+        sess._renderer = vtk.vtkRenderer()
+        camera = {"position": [40.0, 50.0, 60.0], "focal_point": [10.0, 12.0, 14.0],
+                  "view_up": [0.0, 0.0, 1.0], "view_angle": 25.0, "parallel": True,
+                  "parallel_scale": 9.0}
+        sess._apply_command_on_thread({"type": "set_camera", **camera})
+        got = sess._camera_on_thread()
+        assert got["position"] == pytest.approx(camera["position"])
+        assert got["focal_point"] == pytest.approx(camera["focal_point"])
+        assert got["view_angle"] == pytest.approx(25.0)
+        assert got["parallel"] is True and got["parallel_scale"] == pytest.approx(9.0)
+        # A malformed camera is refused and changes nothing.
+        with pytest.raises(ValueError):
+            sess._apply_command_on_thread({"type": "set_camera", "position": [1, 1, 1],
+                                           "focal_point": [1, 1, 1], "view_up": [0, 1, 0]})
+        assert sess._camera_on_thread()["position"] == pytest.approx(camera["position"])
+    finally:
+        sess._renderer = None
         sess._executor.shutdown(wait=False)

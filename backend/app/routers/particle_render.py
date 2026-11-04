@@ -317,9 +317,22 @@ def _frame(particles: dict, req: ParticleRenderRequest, camera, width: int, heig
 
 
 def _run(task_id: str, entry: dict, req: ParticleRenderRequest, stop: threading.Event) -> dict:
+    return run_frames(
+        task_id, req, stop, lambda: _prepare(entry, req),
+        lambda particles, cam, exposure: _frame(particles, req, cam, req.width, req.height,
+                                                req.tone, exposure),
+        lambda particles: {"particles": int(len(particles["positions"]))})
+
+
+def run_frames(task_id: str, req, stop: threading.Event, prepare, frame, summary) -> dict:
+    """A render task's work, on a worker thread: ``prepare()`` the data once,
+    then each camera's ``frame(data, camera, exposure)`` (a picture, the data
+    it was made from, the exposure before ``ev``) saved as a PNG; a still
+    keeps its data and request, to be graded again. Shared by the particle
+    and the volume renders (app/routers/volume_render.py)."""
     t0 = time.time()
-    particles = _prepare(entry, req)
-    if stop.is_set():   # cancelled or deleted while the particles were prepared
+    data = prepare()
+    if stop.is_set():   # cancelled or deleted while the data was prepared
         raise asyncio.CancelledError
     out = _render_dir(task_id)
     out.mkdir(parents=True, exist_ok=True)
@@ -330,11 +343,10 @@ def _run(task_id: str, entry: dict, req: ParticleRenderRequest, stop: threading.
             if stop.is_set():
                 raise asyncio.CancelledError
             # The first frame's automatic exposure, for every frame.
-            rgb, data, exposure = _frame(particles, req, cam, req.width, req.height,
-                                         req.tone, exposure)
+            rgb, light, exposure = frame(data, cam, exposure)
             _save_png(rgb, out / f"frame_{i:05d}.png")
             if still:
-                np.save(out / "light.npy", data)
+                np.save(out / "light.npy", light)
                 (out / "request.json").write_text(req.model_dump_json())
             TASKS.update(task_id,
                          progress=min(0.99, 0.05 + 0.95 * (i + 1) / len(req.cameras)))
@@ -347,7 +359,7 @@ def _run(task_id: str, entry: dict, req: ParticleRenderRequest, stop: threading.
         shutil.rmtree(out, ignore_errors=True)
         raise
     return {"frames": len(req.cameras), "width": req.width, "height": req.height,
-            "particles": int(len(particles["positions"])), "exposure": float(exposure),
+            **summary(data), "exposure": float(exposure),
             "seconds": round(time.time() - t0, 2), "hdr": still}
 
 
@@ -509,19 +521,30 @@ async def create_particle_render_task(request: ParticleRenderRequest, token: str
     if point_table_spec(entry) is None:
         raise HTTPException(422, "Ray-traced rendering needs a table of points "
                                  "(a VBT point table or a catalogue).")
-    task = TASKS.create("particle_render", owner_token=token)
+    return start_render_task(
+        "particle_render", token,
+        lambda task_id, stop: _run(task_id, entry, request, stop))
+
+
+# The operations whose results the routes below serve, by task id.
+RENDER_OPERATIONS = ("particle_render", "volume_render")
+
+
+def start_render_task(operation: str, token: str, work) -> TaskCreateResponse:
+    """A render task running ``work(task_id, stop)`` on a worker thread
+    (run_frames), its frames served by the routes below."""
+    task = TASKS.create(operation, owner_token=token)
     TASKS.update(task.task_id, status="running", progress=0.02)
     stop = threading.Event()
     _STOPS[task.task_id] = stop
 
     async def _runner() -> None:
-        work = asyncio.ensure_future(
-            asyncio.to_thread(_run, task.task_id, entry, request, stop))
+        work_future = asyncio.ensure_future(asyncio.to_thread(work, task.task_id, stop))
         # The record lives as long as the thread does, which a cancellation
         # does not stop before the frame it is on is done.
-        TASKS.update(task.task_id, work_handle=work)
+        TASKS.update(task.task_id, work_handle=work_future)
         try:
-            result = await asyncio.shield(work)
+            result = await asyncio.shield(work_future)
             TASKS.update(task.task_id, status="completed", progress=1.0,
                          result={"valid": True, "error": "", **result})
         except asyncio.CancelledError:
@@ -531,9 +554,9 @@ async def create_particle_render_task(request: ParticleRenderRequest, token: str
             # The stop flag stays findable (a delete sets it again) until the
             # thread has ended and removed what it wrote.
             with contextlib.suppress(BaseException):
-                await work
+                await work_future
         except Exception as exc:   # noqa: BLE001 - reported to the client
-            logger.warning("[particle-render] %s failed: %s", task.task_id, exc)
+            logger.warning("[%s] %s failed: %s", operation, task.task_id, exc)
             TASKS.update(task.task_id, status="failed", progress=1.0, error=str(exc))
         finally:
             _STOPS.pop(task.task_id, None)
@@ -546,7 +569,7 @@ async def create_particle_render_task(request: ParticleRenderRequest, token: str
 def _owned_render(task_id: str, token: str) -> Path:
     from .tasks import _owned_task  # noqa: PLC0415
     task = _owned_task(task_id, token)
-    if task is None or task.operation != "particle_render":
+    if task is None or task.operation not in RENDER_OPERATIONS:
         raise HTTPException(404, f"Unknown render task '{task_id}'.")
     if task.status != "completed":
         raise HTTPException(409, f"Render task '{task_id}' is {task.status}.")
@@ -575,6 +598,12 @@ async def particle_render_tone(task_id: str, tone: RaytraceTone, token: str = _a
     from ..particle_raytrace import tone_map  # noqa: PLC0415
     light = _light(task_id, token)
     saved = _owned_render(task_id, token) / "request.json"
+    from .tasks import _owned_task  # noqa: PLC0415
+    if _owned_task(task_id, token).operation == "volume_render":
+        from .volume_render import VolumeRenderRequest, regrade  # noqa: PLC0415
+        req = VolumeRenderRequest.model_validate_json(saved.read_text())
+        rgb = await asyncio.to_thread(regrade, light, req, tone)
+        return Response(_png(rgb), media_type="image/png")
     req = ParticleRenderRequest.model_validate_json(saved.read_text()) if saved.is_file() else None
     if req is not None and req.mode == "projected":
         rgb = await asyncio.to_thread(_projected_image, light, req, tone)
@@ -583,10 +612,14 @@ async def particle_render_tone(task_id: str, tone: RaytraceTone, token: str = _a
         exposure = tone.exposure if tone.exposure is not None else _auto_exposure(light)
         rgb = await asyncio.to_thread(tone_map, light, exposure=exposure * 2.0 ** tone.ev,
                                       **params)
+    return Response(_png(rgb), media_type="image/png")
+
+
+def _png(rgb: np.ndarray) -> bytes:
     buf = io.BytesIO()
     from PIL import Image  # noqa: PLC0415
     Image.fromarray(rgb).save(buf, format="PNG", compress_level=3)
-    return Response(buf.getvalue(), media_type="image/png")
+    return buf.getvalue()
 
 
 @router.get("/v1/particle_render/{task_id}/light.fits")
@@ -612,7 +645,7 @@ async def particle_render_light_fits(task_id: str, token: str = _auth) -> Respon
 def _on_evict(record) -> None:
     # A render nobody deleted: its frames go with its record. Off the
     # registry's lock, which the listener is called under.
-    if record.operation == "particle_render":
+    if record.operation in RENDER_OPERATIONS:
         threading.Thread(target=shutil.rmtree, args=(_render_dir(record.task_id),),
                          kwargs={"ignore_errors": True}, daemon=True).start()
 
@@ -624,7 +657,7 @@ TASKS.add_eviction_listener(_on_evict)
 async def delete_particle_render(task_id: str, token: str = _auth) -> dict:
     from .tasks import _owned_task  # noqa: PLC0415
     task = _owned_task(task_id, token)
-    if task is None or task.operation != "particle_render":
+    if task is None or task.operation not in RENDER_OPERATIONS:
         raise HTTPException(404, f"Unknown render task '{task_id}'.")
     # Still rendering: stopped first, or it would write its frames after this
     # (its own cleanup removes what it wrote).

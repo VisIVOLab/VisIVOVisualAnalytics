@@ -31,6 +31,7 @@
 #include "TestRemoteLevels.h"
 #include "TestRegionFullRes.h"
 #include "TestDatasetName.h"
+#include "TestColourBarTicks.h"
 #include "TestThresholdShare.h"
 #include "TestLayerCardGeometry.h"
 #include "TestRegionReadout.h"
@@ -80,6 +81,7 @@ int main(int argc, char *argv[])
     { TestRegionFullRes    t; status |= QTest::qExec(&t, argc, argv); }
     { TestDatasetName      t; status |= QTest::qExec(&t, argc, argv); }
     { TestThresholdShare   t; status |= QTest::qExec(&t, argc, argv); }
+    { TestColourBarTicks   t; status |= QTest::qExec(&t, argc, argv); }
     { TestLayerCardGeometry t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionReadout    t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendUrlLocality t; status |= QTest::qExec(&t, argc, argv); }

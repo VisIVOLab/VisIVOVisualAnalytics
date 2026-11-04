@@ -282,6 +282,11 @@ void RaytraceOutput::submit(const QList<QJsonObject> &cameras, bool movie)
     m_overlay = m_source.overlay ? m_source.overlay() : visivo::RaytraceOverlay();
     QJsonObject req = m_source.request ? m_source.request() : QJsonObject();
     const QSize px = imageSize();
+    // The bar as large, against the picture, as it is against the view, for
+    // every frame of the render whatever the window does meanwhile.
+    const QSize shown = m_source.viewSize ? m_source.viewSize() : QSize();
+    if (shown.height() > 0)
+        m_overlay.scale = double(px.height()) / shown.height();
     req.insert(u"width"_s, px.width());
     req.insert(u"height"_s, px.height());
     QJsonArray cams;
@@ -292,7 +297,7 @@ void RaytraceOutput::submit(const QList<QJsonObject> &cameras, bool movie)
     if (m_source.tone)
         req.insert(u"tone"_s, m_source.tone(movie ? (keepExposure > 0.0 ? keepExposure : view)
                                                   : 0.0));
-    QNetworkReply *reply = send(u"POST"_s, u"/v1/tasks/particle_render"_s,
+    QNetworkReply *reply = send(u"POST"_s, m_source.taskPath,
                                 QJsonDocument(req).toJson(QJsonDocument::Compact), appManager());
     setStage(Stage::Rendering,
              movie ? u"Ray-traced: rendering %1 frames of %2 × %3…"_s.arg(cameras.size())
@@ -354,8 +359,12 @@ void RaytraceOutput::poll()
 
 void RaytraceOutput::finished(const QJsonObject &result)
 {
-    const QString summary = u"%1 particles, %2 × %3, in %4 s"_s
-                                    .arg(QLocale().toString(result.value(u"particles"_s).toInt()))
+    // A volume's render counts its voxels, a table's its particles.
+    const bool volume = result.contains(u"voxels"_s);
+    const QString summary = (volume ? u"%1 voxels, %2 × %3, in %4 s"_s
+                                    : u"%1 particles, %2 × %3, in %4 s"_s)
+                                    .arg(QLocale().toString(result.value(
+                                            volume ? u"voxels"_s : u"particles"_s).toInteger()))
                                     .arg(result.value(u"width"_s).toInt())
                                     .arg(result.value(u"height"_s).toInt())
                                     .arg(result.value(u"seconds"_s).toDouble());
@@ -404,7 +413,9 @@ void RaytraceOutput::regrade()
     if (m_regradeReply)
         m_regradeReply->abort();
     // The grade and the overlay as they are now.
+    const double scale = m_overlay.scale;   // the still's size has not changed
     m_overlay = m_source.overlay ? m_source.overlay() : m_overlay;
+    m_overlay.scale = scale;
     QNetworkReply *reply = send(u"POST"_s, u"/v1/particle_render/%1/tone"_s.arg(m_taskId),
                                 QJsonDocument(m_source.tone(m_autoExposure))
                                         .toJson(QJsonDocument::Compact));

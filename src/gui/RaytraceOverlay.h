@@ -6,6 +6,7 @@
 // colours. Drawn over the GPU view and onto the stills and movie frames the
 // backend renders, so what is saved is what was shown.
 
+#include <QFont>
 #include <QJsonObject>
 #include <QString>
 #include <QVector3D>
@@ -32,11 +33,16 @@ struct RaytraceOverlay
     double lo = 0.0, hi = 1.0;
     bool log = false;
     QString title;
+    /// The bar's type: the view's, which the window's style sheet sets.
+    QFont font;
+    /// The picture's size over the view's on screen: the bar keeps its size
+    /// relative to the picture.
+    double scale = 1.0;
 };
 
 /// Draws ``overlay`` over ``target`` (a picture of the view through
 /// ``camera``, in the target's coordinates): the box's edges, and the colour
-/// bar at its right, both sized to the target's height.
+/// bar at its right as the 3-D view draws its own.
 void paintRaytraceOverlay(QPainter &painter, const QRectF &target, const QJsonObject &camera,
                           const RaytraceOverlay &overlay);
 

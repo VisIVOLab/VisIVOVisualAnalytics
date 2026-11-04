@@ -263,9 +263,9 @@ async def session_levels(session_id: str, token: str = _auth) -> RenderLevels:
 
 @router.get("/{session_id}/camera")
 async def session_camera(session_id: str, token: str = _auth) -> dict:
-    """The camera of a point session's view, after the commands sent before
-    this request: a ray-traced still of the view on screen is rendered from
-    it (app/routers/particle_render.py)."""
+    """The camera of a session's view (points or a cube), after the commands
+    sent before this request: a ray-traced still of the view on screen is
+    rendered from it (app/routers/particle_render.py, volume_render.py)."""
     sess = await _owned_render_session(session_id, token)
     if sess is None:
         raise HTTPException(404, "Unknown render session_id.")

@@ -33,6 +33,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .numba_parallel import LOCK as PARALLEL
+
 try:   # numba is a backend dependency; the fallback only keeps imports working
     from numba import njit, prange
 except ImportError:   # pragma: no cover
@@ -244,8 +246,9 @@ def render(positions: np.ndarray, radius: np.ndarray, colour: np.ndarray,
         qtx, qty = -(-qw // _TILE), -(-qh // _TILE)
         qcounts, qitems = _bin(qx, qy, qgrown, order, qw, qh, qtx, qty)
         grey = np.repeat(e.astype(np.float32)[:, None], 3, axis=1)
-        column = _composite(qx, qy, qgrown, qweight, grey, np.zeros_like(grey),
-                            qcounts, qitems, qw, qh, qtx, qty)[..., 0]
+        with PARALLEL:   # one parallel kernel at a time (app/numba_parallel.py)
+            column = _composite(qx, qy, qgrown, qweight, grey, np.zeros_like(grey),
+                                qcounts, qitems, qw, qh, qtx, qty)[..., 0]
         lit = column[column > 0]
         ref = float(np.percentile(lit, 99.5)) if lit.size else 0.0
         kappa = float(absorption) / ref if ref > 0 else 0.0
@@ -254,8 +257,9 @@ def render(positions: np.ndarray, radius: np.ndarray, colour: np.ndarray,
     absorb = np.repeat((e * kappa)[:, None], 3, axis=1).astype(np.float32)
     tiles_x, tiles_y = -(-width // _TILE), -(-height // _TILE)
     counts, items = _bin(sx, sy, grown, order, width, height, tiles_x, tiles_y)
-    return _composite(sx, sy, grown, weight, emission, absorb,
-                      counts, items, width, height, tiles_x, tiles_y)
+    with PARALLEL:
+        return _composite(sx, sy, grown, weight, emission, absorb,
+                          counts, items, width, height, tiles_x, tiles_y)
 
 
 def smoothing_lengths(positions: np.ndarray, neighbours: int = 32) -> np.ndarray:

@@ -173,6 +173,7 @@
     "POST /v1/tasks/particle_render",
     "POST /v1/tasks/pv",
     "POST /v1/tasks/sourcefind",
+    "POST /v1/tasks/volume_render",
     "POST /v1/vbt/open",
     "POST /v1/vbt/query",
     "POST /v1/vbt/subset",
@@ -188,6 +189,8 @@
     "POST /v1/vlkb/mcutout/phase",
     "POST /v1/vlkb/mcutout/report",
     "POST /v1/vlkb/mcutout/submit",
-    "POST /v1/vlkb/tap"
+    "POST /v1/vlkb/tap",
+    "POST /v1/volume_render/grid",
+    "POST /v1/volume_render/preview"
   ]
 }

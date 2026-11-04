@@ -81,11 +81,12 @@ Errors: 401 (token), 404 (`"Unknown render session_id."`, also for a session own
 
 ### `GET /v1/render/{session_id}/camera`
 
-A point session's camera, after the commands sent before the request:
-`{position, focal_point, view_up, view_angle, parallel, parallel_scale}`. A
-ray-traced still of the view on screen is rendered from it
-([Ray-traced particle rendering](particle-render)). 404 for an unknown session,
-409 for a session with no camera to report.
+A session's camera (points or a cube), after the commands sent before the
+request: `{position, focal_point, view_up, view_angle, parallel,
+parallel_scale}`, a cube's in its voxel coordinates. A ray-traced still of the
+view on screen is rendered from it ([particles](particle-render),
+[volumes](volume-render)). `/levels` carries it too, as `camera`. 404 for an
+unknown session, 409 for a session with no camera to report.
 
 ### `DELETE /v1/render/{session_id}`
 
@@ -237,6 +238,7 @@ Every other command is applied to the session's view. Each one counts as activit
 | `zoom` | `factor` (default 1.0, clamped to 0.05 to 20) | Zooms the camera by this factor. |
 | `pan` | `dx`, `dy` (default 0) | Accumulates a pan offset in the view state. |
 | `reset` | none | Ends a drag in progress, restores the default view state (keeping the window size; threshold back to the session's default, cutting plane on the middle channel) and resets the camera to fit the cube. |
+| `set_camera` | `position`, `focal_point`, `view_up` (three numbers each), optional `view_angle` (degrees), `parallel` (bool), `parallel_scale` | The whole camera, in the cube's voxel coordinates as `GET /v1/render/{id}/camera` gives it: the desktop hands back the camera its ray-traced view was turned to. Refused (the stream kept) without the three vectors, or with the position on the focal point or the view up along the line of sight. |
 | `set_lut` | `name` (string) | Colour map of the volume (and of the isosurface). Unknown names fall back to Inferno. `colormap` is an accepted alias. |
 | `set_slice_lut` | `name` (string) | Colour map of the cutting-plane slice. |
 | `set_threshold` | `value` (number) | Lower anchor of the opacity transfer function, also the isosurface value. |

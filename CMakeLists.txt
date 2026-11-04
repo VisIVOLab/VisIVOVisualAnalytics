@@ -484,8 +484,11 @@ set(PROJECT_SOURCES
         src/gui/ParticleGLView.h
         src/gui/RaytraceSettingsPanel.cpp
         src/gui/RaytraceSettingsPanel.h
+        src/gui/VolumeRaytracePanel.cpp
+        src/gui/VolumeRaytracePanel.h
         src/gui/RaytraceViewport.cpp
         src/gui/RaytraceViewport.h
+        src/gui/ColourBarTicks.h
         src/gui/VolumeColorbar.cpp
         src/gui/VolumeColorbar.h
         src/gui/CubeVRController.cpp
@@ -576,6 +579,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_Lasso.cpp
         src/gui/vtkWindowCube_Movie.cpp
         src/gui/vtkWindowCube_Link.cpp
+        src/gui/vtkWindowCube_Raytrace.cpp
         src/gui/vtkWindowCube_RegionIO.cpp
         src/gui/Pane2DView.cpp
         src/gui/Pane2DView.h
