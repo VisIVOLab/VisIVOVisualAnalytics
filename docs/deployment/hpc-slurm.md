@@ -179,7 +179,9 @@ screen does the same at any stage. Only one window per profile can be open; a
 job left by a window that did not close normally is cancelled by the next one
 for the same profile (each job is recorded, under its unique name, until a
 cancel succeeds). From a terminal, the same is
-`VisIVOVisualAnalytics --connect-cluster NAME`.
+`VisIVOVisualAnalytics --connect-cluster NAME`; a dataset path after it is a
+path on the cluster, opened once the window is connected
+(`--connect-cluster NAME /scratch/me/data/cube.fits`).
 
 Recent Datasets remembers where each dataset was opened, and marks those
 opened on a cluster with its name. All windows share the list. Clicking an

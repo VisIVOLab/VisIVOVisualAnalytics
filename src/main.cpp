@@ -126,9 +126,9 @@ public:
     }
 
     /// Paths from the command line (Linux / Windows associations pass them this
-    /// way). On a remote backend (@p remote) they are the backend's paths and
-    /// are opened there; on the local one only what exists here, and the rest
-    /// is reported once the window is up.
+    /// way). On a remote backend (@p remote: --backend, --connect-cluster)
+    /// they are the backend's paths and are opened there; on the local one
+    /// only what exists here, and the rest is reported once the window is up.
     void takeCommandLine(const QStringList &args, bool remote)
     {
         m_pending << LaunchOptions::datasetPaths(args, remote, &m_missing);
@@ -494,7 +494,10 @@ int main(int argc, char *argv[])
         }
     }
 
-    openRelay.takeCommandLine(QCoreApplication::arguments(), remoteBackend.has_value());
+    // A window on a cluster (--connect-cluster) is a remote run too: it is
+    // connected, and its backend set, before the window opens the paths.
+    openRelay.takeCommandLine(QCoreApplication::arguments(),
+                              remoteBackend.has_value() || !clusterName.isEmpty());
     if (!openRelay.becomePrimaryOrForward(!remoteBackend && clusterName.isEmpty())) {
         openRelay.reportMissing(nullptr);
         return 0;   // the files went to the instance already running

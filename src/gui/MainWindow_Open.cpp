@@ -725,7 +725,8 @@ void MainWindow::openDatasetPath(const QString &path)
     // Entry point for the desktop (Finder / file manager / command line). The
     // backend opens the file by PATH. On the local backend it has to be a
     // readable local file; saying so here is better than the backend's
-    // generic "could not open". On a remote backend (--backend) the path is
+    // generic "could not open". On a remote backend (--backend,
+    // --connect-cluster) the path is
     // the backend's: it opens there, and the backend says whether it exists.
     const bool remote = Settings::sessionBackend() != nullptr;
     const QFileInfo info(path);
