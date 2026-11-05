@@ -18,6 +18,11 @@ Supported SODA parameters:
 * ``BAND`` — ``<min> <max>`` in metres (wavelength); converted to the
              dataset's spectral axis unit via the spectral equivalency,
              so FREQ / WAVE / ENER axes all work.
+* ``POL``  — one or more polarization states from the ObsCore vocabulary
+             (``I Q U V RR LL RL LR XX YY XY YX POLI POLA``), matched to the
+             planes of the STOKES axis through its WCS and the FITS Stokes
+             codes. A dataset without a STOKES axis is one total-intensity
+             (``I``) plane.
 
 Anything the WCS can't support (e.g. BAND on an image with no spectral
 axis) is skipped rather than fatal; the ``applied`` dict in the return
@@ -45,6 +50,13 @@ logger = logging.getLogger("visivo.soda")
 _LNG_PREFIXES = ("RA--", "GLON", "ELON", "SLON")
 _LAT_PREFIXES = ("DEC-", "GLAT", "ELAT", "SLAT")
 _SPEC_PREFIXES = ("FREQ", "WAVE", "VELO", "VRAD", "VOPT", "ENER", "WAVN", "AWAV", "ZOPT")
+
+# SODA POL values: the ObsCore polarization vocabulary (pol_states).
+POL_STATES = ("I", "Q", "U", "V", "RR", "LL", "RL", "LR", "XX", "YY", "XY", "YX", "POLI", "POLA")
+# FITS Stokes codes (FITS 4.0, Table 29). POLI and POLA have no FITS code: a
+# file never holds them as STOKES planes, so asking for them selects nothing.
+_FITS_STOKES = {1: "I", 2: "Q", 3: "U", 4: "V", -1: "RR", -2: "LL", -3: "RL", -4: "LR",
+                -5: "XX", -6: "YY", -7: "XY", -8: "YX"}
 
 
 class CutoutError(RuntimeError):
@@ -167,6 +179,27 @@ def parse_band(value: str | None) -> Band | None:
     return Band(lo, hi)
 
 
+def parse_pol(values: str | list[str] | tuple[str, ...] | None) -> tuple[str, ...] | None:
+    """SODA POL: the requested states, in request order and without repeats.
+
+    POL is multi-valued (one state per parameter); a value holding several
+    states separated by blanks is accepted too, so a list stored as one
+    string round-trips. Unknown states are a usage error.
+    """
+    if values is None:
+        return None
+    items = [values] if isinstance(values, str) else list(values)
+    states: list[str] = []
+    for item in items:
+        for token in item.replace(",", " ").split():
+            state = token.upper()
+            if state not in POL_STATES:
+                raise CutoutError(f"POL {token!r} is not a polarization state; use {' '.join(POL_STATES)}.")
+            if state not in states:
+                states.append(state)
+    return tuple(states) or None
+
+
 # ── WCS axis discovery ──────────────────────────────────────────────────────
 
 
@@ -181,7 +214,36 @@ def _axis_roles(wcs: WCS) -> dict[str, int]:
             roles["lat"] = i
         elif head in _SPEC_PREFIXES:
             roles["spec"] = i
+        elif (ctype or "").upper() == "STOKES":
+            roles["stokes"] = i
     return roles
+
+
+def stokes_states(header: fits.Header) -> list[str | None] | None:
+    """The polarization state of each plane of the STOKES axis, in pixel order.
+
+    ``None`` when the dataset has no STOKES axis. A plane whose world value is
+    not a FITS Stokes code (fractional, or a non-standard code) is ``None``.
+    """
+    wcs = WCS(header)
+    roles = _axis_roles(wcs)
+    if "stokes" not in roles:
+        return None
+    axis = roles["stokes"]
+    # An axis beyond NAXIS (WCSAXES > NAXIS) is implicit: one plane, pixel 1.
+    n = int(header.get(f"NAXIS{axis + 1}", 1) or 1) if axis < int(header.get("NAXIS", 0) or 0) else 1
+    # Evaluate the whole WCS, the other axes at their reference pixel (always
+    # inside the projection), and read the STOKES world coordinate.
+    pixel = [np.full(n, wcs.wcs.crpix[i] - 1.0) for i in range(wcs.naxis)]
+    pixel[axis] = np.arange(n, dtype=float)
+    world = wcs.pixel_to_world_values(*pixel)      # an array, not a tuple, for a 1-axis WCS
+    codes = np.atleast_1d(world if wcs.naxis == 1 else world[axis])
+    states: list[str | None] = []
+    for code in codes:
+        rounded = int(np.rint(code)) if np.isfinite(code) else None
+        exact = rounded is not None and abs(code - rounded) < 1e-6
+        states.append(_FITS_STOKES.get(rounded) if exact else None)
+    return states
 
 
 def _fits_axis_to_numpy(fits_axis: int, ndim: int) -> int:
@@ -345,6 +407,16 @@ def _range_to_pixel_bbox(cel: WCS, rng: Range, shape: tuple[int, int]):
     return (y0, y1), (x0, x1)
 
 
+def _band_coverage(wcs: WCS, n: int) -> tuple[float, float]:
+    """The wavelength interval (metres) covered by the ``n`` spectral pixels,
+    edges included."""
+    spec = wcs.spectral
+    unit = u.Unit(spec.wcs.cunit[0] or "m")
+    edges = u.Quantity(spec.pixel_to_world_values(np.array([-0.5, n - 0.5])), unit)
+    lo, hi = sorted(edges.to(u.m, equivalencies=u.spectral()).value)
+    return float(lo), float(hi)
+
+
 def _spectral_slice(
     data: np.ndarray,
     wcs: WCS,
@@ -363,8 +435,7 @@ def _spectral_slice(
     # Clip the band (metres, possibly open-ended: SODA allows -Inf/+Inf) to the
     # cube's own wavelength coverage BEFORE converting: an infinite wavelength
     # would become a zero frequency.
-    edges = u.Quantity(spec.pixel_to_world_values(np.array([-0.5, n - 0.5])), unit)
-    cover = sorted(edges.to(u.m, equivalencies=u.spectral()).value)
+    cover = _band_coverage(wcs, n)
     band_lo, band_hi = max(band.lo, cover[0]), min(band.hi, cover[1])
     if band_lo > band_hi:
         raise CutoutNoOverlap("BAND does not overlap the dataset spectral range.")
@@ -382,18 +453,76 @@ def _spectral_slice(
     return {spec_np: slice(i0, i1 + 1)}
 
 
+def _pol_planes(
+    data: np.ndarray,
+    header: fits.Header,
+    roles: dict[str, int],
+    pol: tuple[str, ...],
+) -> tuple[int, list[int], list[str]] | None:
+    """The numpy STOKES axis, the indices of the planes ``pol`` asks for
+    (in the file's order) and their states; ``None`` when the whole dataset
+    matches and nothing is cut along polarization.
+
+    A dataset with no STOKES axis is total intensity: POL including I keeps
+    it whole, any other selection selects nothing. So does a STOKES axis
+    that is only implicit (WCSAXES > NAXIS: one plane, no array axis).
+    """
+    states = stokes_states(header)
+    if states is None:
+        states = ["I"]
+        absent = "the dataset has no STOKES axis (total intensity, I only)"
+    else:
+        absent = f"the dataset has {' '.join(s for s in states if s) or 'no known state'}"
+    picked = [i for i, state in enumerate(states) if state in pol]
+    if not picked:
+        raise CutoutNoOverlap(f"POL does not select any plane ({absent}).")
+    if "stokes" not in roles or roles["stokes"] >= data.ndim:
+        return None
+    axis = _fits_axis_to_numpy(roles["stokes"], data.ndim)
+    return axis, picked, [states[i] or "" for i in picked]
+
+
+def _even_slice(picked: list[int]) -> slice | None:
+    """``picked`` as one slice when its planes are evenly spaced (I and V of
+    IQUV: step 3), else ``None``: a linear STOKES axis cannot list them."""
+    steps = {b - a for a, b in zip(picked, picked[1:])}
+    if len(steps) > 1:
+        return None
+    return slice(picked[0], picked[-1] + 1, steps.pop() if steps else 1)
+
+
 # ── Header bookkeeping ──────────────────────────────────────────────────────
 
 
-def _shift_crpix(header: fits.Header, fits_axis: int, start_pixel: int) -> None:
-    """After slicing a numpy axis at ``start_pixel``, fix the FITS CRPIX.
+def _reslice_axis(header: fits.Header, fits_axis: int, start: int, step: int = 1) -> None:
+    """After slicing a numpy axis as ``start::step``, fix the axis' WCS.
 
-    CRPIX is 1-based; trimming ``start_pixel`` leading pixels moves the
-    reference pixel by the same amount.
+    New pixel ``p'`` (1-based) is old pixel ``start + 1 + (p' - 1) * step``,
+    so CRPIX becomes ``1 + (CRPIX - 1 - start) / step`` and the pixel scale of
+    the axis is multiplied by ``step``: its column of CD when CD is used, its
+    column of PC when PC couples it to another axis, otherwise its CDELT.
     """
-    key = f"CRPIX{fits_axis + 1}"
-    if key in header:
-        header[key] = float(header[key]) - start_pixel
+    n = fits_axis + 1
+    key = f"CRPIX{n}"
+    crpix = float(header.get(key, 0.0))
+    header[key] = crpix - start if step == 1 else 1.0 + (crpix - 1.0 - start) / step
+    if step == 1:
+        return
+    naxis = int(header.get("NAXIS", 0))
+    cd = [f"CD{i}_{n}" for i in range(1, naxis + 1) if f"CD{i}_{n}" in header]
+    if cd:
+        for k in cd:
+            header[k] = float(header[k]) * step
+        return
+    diagonal = f"PC{n}_{n}"
+    coupled = [f"PC{i}_{n}" for i in range(1, naxis + 1)
+               if i != n and float(header.get(f"PC{i}_{n}", 0.0)) != 0.0]
+    if coupled:
+        header[diagonal] = float(header.get(diagonal, 1.0)) * step
+        for k in coupled:
+            header[k] = float(header[k]) * step
+        return
+    header[f"CDELT{n}"] = float(header.get(f"CDELT{n}", 1.0)) * step
 
 
 # ── Public entry point ──────────────────────────────────────────────────────
@@ -405,18 +534,21 @@ def make_cutout(
     pos: str | None = None,
     band: str | None = None,
     time: str | None = None,  # MJD interval, checked against the observation's time
+    pol: str | list[str] | tuple[str, ...] | None = None,
     filename_hint: str = "cutout",
 ) -> CutoutResult:
-    """Open a FITS file and return a spatial/spectral subset as FITS bytes.
+    """Open a FITS file and return a spatial/spectral/polarization subset as FITS bytes.
 
-    Raises :class:`CutoutError` on invalid parameters or non-overlapping
-    regions. When neither POS nor BAND is supplied the full file is
-    returned (a valid, if trivial, SODA response).
+    Raises :class:`CutoutError` on invalid parameters and
+    :class:`CutoutNoOverlap` when a valid request selects nothing. Without
+    any constraint the first image HDU is returned whole (a valid, if
+    trivial, SODA response).
     """
     parsed_pos = parse_pos(pos)
     parsed_band = parse_band(band)
     parsed_time = parse_time(time)
-    applied: dict[str, Any] = {"pos": False, "band": False, "time": False}
+    parsed_pol = parse_pol(pol)
+    applied: dict[str, Any] = {"pos": False, "band": False, "time": False, "pol": False}
 
     try:
         from .volume_source import open_fits  # noqa: PLC0415
@@ -450,33 +582,115 @@ def make_cutout(
         if parsed_band is not None:
             slices.update(_spectral_slice(data, wcs, roles, parsed_band))
             applied["band"] = True
+        # Planes on the STOKES axis that one slice cannot hold: one HDU each.
+        split: tuple[int, list[int], list[str]] | None = None
+        if parsed_pol is not None:
+            planes = _pol_planes(data, header, roles, parsed_pol)
+            if planes is not None:
+                even = _even_slice(planes[1])
+                if even is not None:
+                    slices[planes[0]] = even
+                else:
+                    split = planes
+            applied["pol"] = True
 
-        if slices:
+        for np_axis, sl in slices.items():
+            start, step = sl.start or 0, sl.step or 1
+            if start or step != 1:
+                _reslice_axis(header, _fits_axis_to_numpy(np_axis, data.ndim), start, step)
+        if split is None:
             selector = tuple(slices.get(ax, slice(None)) for ax in range(data.ndim))
             sub = np.asarray(data[selector])
-            for np_axis, sl in slices.items():
-                start = sl.start or 0
-                if start:
-                    _shift_crpix(header, _fits_axis_to_numpy(np_axis, data.ndim), start)
-            out_hdu = fits.PrimaryHDU(data=sub, header=header)
+            out_hdus = [fits.PrimaryHDU(data=sub, header=header)]
             applied["out_shape"] = list(sub.shape)
         else:
-            out_hdu = fits.PrimaryHDU(data=np.asarray(data), header=header)
-            applied["out_shape"] = list(np.asarray(data).shape)
+            # SODA returns the requested states only (one result, "some or all
+            # of these states"): I, Q and V of IQUV cannot share a linear axis
+            # without U, so each state is its own image HDU, the primary first.
+            axis, picked, states = split
+            out_hdus = []
+            for index, state in zip(picked, states):
+                selector = tuple(slice(index, index + 1) if ax == axis else slices.get(ax, slice(None))
+                                 for ax in range(data.ndim))
+                plane_header = header.copy()
+                _reslice_axis(plane_header, _fits_axis_to_numpy(axis, data.ndim), index)
+                plane_header["EXTNAME"] = f"STOKES_{state}"
+                kind = fits.PrimaryHDU if not out_hdus else fits.ImageHDU
+                out_hdus.append(kind(data=np.asarray(data[selector]), header=plane_header))
+            applied["out_shape"] = list(out_hdus[0].data.shape)
+            applied["hdus"] = len(out_hdus)
     finally:
         hdul.close()
 
     buf = io.BytesIO()
-    fits.HDUList([out_hdu]).writeto(buf, overwrite=True)
+    fits.HDUList(out_hdus).writeto(buf, overwrite=True)
     logger.info(
-        "[cutout] path=%s pos=%s band=%s applied=%s shape=%s",
-        path, pos, band, applied, applied.get("out_shape"),
+        "[cutout] path=%s pos=%s band=%s pol=%s applied=%s shape=%s",
+        path, pos, band, parsed_pol, applied, applied.get("out_shape"),
     )
     return CutoutResult(
         fits_bytes=buf.getvalue(),
         filename=f"{filename_hint}_cutout.fits",
         applied=applied,
     )
+
+
+@dataclass
+class CutoutAxes:
+    """What a cutout of one dataset can constrain, for its service descriptor."""
+
+    celestial: bool
+    band_m: tuple[float, float] | None    # wavelength coverage, metres
+    time_mjd: tuple[float, float] | None  # observation time, MJD
+    pol: list[str]                         # states present, in plane order
+
+
+def describe(path: str) -> CutoutAxes:
+    """The constraints ``make_cutout`` can apply to the dataset at ``path``.
+
+    Reads the header only. POL lists the states the STOKES axis holds (the
+    planes with a FITS Stokes code), or ``I`` for a dataset without one,
+    which is what ``make_cutout`` accepts as a non-empty selection.
+    """
+    try:
+        from .volume_source import open_fits  # noqa: PLC0415
+        hdul = open_fits(path, memmap=True)
+    except Exception as exc:  # noqa: BLE001 — surface any astropy/io failure
+        raise CutoutError(f"Could not open FITS at {path!r}: {exc}") from exc
+    try:
+        header = _first_image_header(hdul)
+    finally:
+        hdul.close()
+    if header is None:
+        raise CutoutError("The dataset holds no image to cut.")
+    wcs = WCS(header)
+    roles = _axis_roles(wcs)
+    band = None
+    if "spec" in roles:
+        n = int(header.get(f"NAXIS{roles['spec'] + 1}", 1) or 1)
+        try:
+            band = _band_coverage(wcs, n)
+        except (u.UnitsError, ValueError):   # a spectral axis astropy cannot convert
+            band = None
+        if band is not None and not all(np.isfinite(band)):
+            band = None
+    states = stokes_states(header)
+    pol = ["I"] if states is None else list(dict.fromkeys(s for s in states if s))
+    return CutoutAxes(celestial="lng" in roles and "lat" in roles, band_m=band,
+                      time_mjd=_time_coverage(header), pol=pol)
+
+
+def _first_image_header(hdul: fits.HDUList) -> fits.Header | None:
+    """A copy of the header of the HDU ``_first_image_hdu`` picks, decided
+    from the headers alone: touching ``.data`` would read (or decompress)
+    the whole image just to describe it. ``None`` when no HDU holds an image."""
+    for hdu in hdul:
+        header = hdu.header
+        naxis = int(header.get("NAXIS", 0) or 0)
+        if (getattr(hdu, "is_image", False) and naxis
+                and all(int(header.get(f"NAXIS{i}", 0) or 0) > 0 for i in range(1, naxis + 1))):
+            return header.copy()
+    return None
 
 
 def _first_image_hdu(hdul: fits.HDUList):
