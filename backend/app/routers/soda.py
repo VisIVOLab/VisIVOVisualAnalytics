@@ -5,7 +5,11 @@ the node, only the subset (or the product) does. This router is that service
 for a node running the VisIVO backend.
 
 * ``/soda/sync`` (GET or POST, SODA 1.0 sync): ``ID``, ``POS`` (CIRCLE, RANGE,
-  POLYGON), ``BAND`` (metres), ``TIME``; answers with the FITS cutout.
+  POLYGON), ``BAND`` (metres), ``TIME``, ``POL`` (multi-valued, the STOKES
+  planes); answers with the FITS cutout.
+* ``/soda/links`` (DataLink 1.1 {links}): for each ``ID``, the dataset itself
+  and the two cutout services, with service descriptors whose BAND, TIME and
+  POL values are read from the dataset's header.
 * ``/soda/async`` (UWS 1.1 job list): the same cutout as an asynchronous job,
   plus two operations SODA leaves to the service, selected with the custom
   parameter ``OPERATION``:
@@ -37,7 +41,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, quote
 from xml.sax.saxutils import escape, quoteattr
 
 from fastapi import APIRouter, Depends, Request
@@ -46,7 +50,8 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse,
 from ..auth import verify_token
 from ..dependencies import _FITS_SUFFIXES, _is_supported_dataset, _normalize_path, _run_heavy, get_exports_dir
 from ..skava_client import SkavaResolveError, access_url_to_local_path
-from ..soda_cutout import CutoutError, CutoutNoOverlap, make_cutout
+from ..soda_cutout import CutoutError, CutoutNoOverlap, describe, make_cutout, parse_pol
+from ..soda_datalink import SODA_ASYNC, SODA_SYNC, Link, error_votable, links_votable, service_descriptor
 from ..tasks import TASKS
 from .tasks import _owned_task
 
@@ -62,7 +67,7 @@ _OPERATIONS = ("CUTOUT", "MOMENT", "PV")
 # The parameters each operation understands; anything else is refused, so a
 # mistyped name is a UsageError rather than a silently ignored request.
 _ALLOWED = {
-    "CUTOUT": {"ID", "POS", "CIRCLE", "POLYGON", "BAND", "TIME", "RESPONSEFORMAT"},
+    "CUTOUT": {"ID", "POS", "CIRCLE", "POLYGON", "BAND", "TIME", "POL", "RESPONSEFORMAT"},
     "MOMENT": {"ID", "MOMENT", "CHANNELS", "THRESHOLD", "RESPONSEFORMAT"},
     "PV": {"ID", "PVPATH", "PVWIDTH", "RESPONSEFORMAT"},
 }
@@ -108,6 +113,20 @@ def _one(params: dict[str, list[str]], name: str) -> str | None:
     return values[0].strip() if values else None
 
 
+# Parameters SODA requires to accept several values: every value is part of
+# one selection (all the POL states go into one result).
+_MULTI = {"POL"}
+
+
+def _pol(params: dict[str, list[str]]) -> str | None:
+    """POL's states as one blank-separated string, or None when not given."""
+    try:
+        states = parse_pol([v for v in params.get("POL", []) if v.strip()])
+    except CutoutError as exc:
+        raise SodaError(str(exc)) from exc
+    return " ".join(states) if states else None
+
+
 def _resolve(dataset_id: str | None, *, any_file: bool = False) -> Path:
     """The local file an ID names, inside the node's data roots. ``any_file``
     accepts any regular file there (a compressed FITS, a PSRFITS search file),
@@ -141,15 +160,15 @@ def _whole_file(params: dict[str, list[str]]) -> Path | None:
     """The file an unconstrained cutout asks for, or None when the request
     constrains something (or is not a cutout) and takes the usual route.
 
-    No POS, CIRCLE, POLYGON, BAND or TIME selects the whole dataset, which
-    is the file as stored: every HDU and the original header, not a
+    No POS, CIRCLE, POLYGON, BAND, TIME or POL selects the whole dataset,
+    which is the file as stored: every HDU and the original header, not a
     rewritten copy. This is what a DataLink "#this" link through this
     service fetches. RESPONSEFORMAT, when given, must be the file's own
     format: the node converts nothing.
     """
     if (_one(params, "OPERATION") or "CUTOUT").upper() != "CUTOUT":
         return None
-    if any(_one(params, name) for name in ("POS", "CIRCLE", "POLYGON", "BAND", "TIME")):
+    if any(_one(params, name) for name in ("POS", "CIRCLE", "POLYGON", "BAND", "TIME")) or _pol(params):
         return None
     unknown = set(params) - _ALLOWED["CUTOUT"] - _CONTROL
     if unknown:
@@ -179,7 +198,9 @@ def _validate(params: dict[str, list[str]]) -> tuple[str, Path, dict[str, str]]:
         raise SodaError(f"parameters not understood by OPERATION={operation}: {', '.join(sorted(unknown))}")
     _check_format(params)
     path = _resolve(_one(params, "ID"))
-    values = {name: v for name in _ALLOWED[operation] if (v := _one(params, name)) is not None}
+    values = {name: v for name in _ALLOWED[operation] - _MULTI if (v := _one(params, name)) is not None}
+    if "POL" in _ALLOWED[operation] and (pol := _pol(params)) is not None:
+        values["POL"] = pol
     # SODA's three spatial parameters: POS, or CIRCLE / POLYGON on their own.
     spatial = [name for name in ("POS", "CIRCLE", "POLYGON") if name in values]
     if len(spatial) > 1:
@@ -318,7 +339,7 @@ async def _execute(operation: str, path: Path, values: dict[str, str], out_dir: 
     if operation == "CUTOUT":
         result = await asyncio.to_thread(make_cutout, str(path), pos=values.get("POS"),
                                          band=values.get("BAND"), time=values.get("TIME"),
-                                         filename_hint=path.stem)
+                                         pol=values.get("POL"), filename_hint=path.stem)
         out = _output_path(out_dir, path.stem, "cutout")
         await asyncio.to_thread(out.write_bytes, result.fits_bytes)
         applied = ",".join(k for k, v in result.applied.items() if v is True)
@@ -362,7 +383,7 @@ async def soda_sync(request: Request, token: str = _auth) -> Response:
         _, path, values = _validate(params)
         result = await asyncio.to_thread(make_cutout, str(path), pos=values.get("POS"),
                                          band=values.get("BAND"), time=values.get("TIME"),
-                                         filename_hint=path.stem)
+                                         pol=values.get("POL"), filename_hint=path.stem)
     except SodaError as exc:
         return exc.response()
     except CutoutNoOverlap:
@@ -523,9 +544,16 @@ def _nil(tag: str, value: str | None) -> str:
             else f'<uws:{tag} xsi:nil="true"/>')
 
 
+def _parameter_elements(parameters: dict[str, Any]) -> str:
+    """UWS parameter elements; a multi-valued parameter (POL) repeats, one
+    element per value, as it was sent."""
+    return "".join(f'<uws:parameter id={quoteattr(k)}>{escape(str(item))}</uws:parameter>'
+                   for k, v in parameters.items() if v is not None
+                   for item in (str(v).split() if k in _MULTI else [v]))
+
+
 def _job_xml(view: dict[str, Any]) -> str:
-    params = "".join(f'<uws:parameter id={quoteattr(k)}>{escape(str(v))}</uws:parameter>'
-                     for k, v in view["parameters"].items() if v is not None)
+    params = _parameter_elements(view["parameters"])
     results = "".join(f'<uws:result id="{r["id"]}" xlink:href={quoteattr(r["href"])}/>' for r in view["results"])
     error = (f'<uws:errorSummary type="fatal" hasDetail="true"><uws:message>{escape(view["error"])}</uws:message></uws:errorSummary>'
              if view["error"] and view["phase"] == "ERROR" else "")
@@ -695,8 +723,7 @@ async def soda_async_parameters(job_id: str, request: Request, token: str = _aut
         view = _job_view(request, _job_or_404(job_id, token))
     except SodaError as exc:
         return exc.response()
-    params = "".join(f'<uws:parameter id={quoteattr(k)}>{escape(str(v))}</uws:parameter>'
-                     for k, v in view["parameters"].items() if v is not None)
+    params = _parameter_elements(view["parameters"])
     return Response(content=f'<?xml version="1.0" encoding="UTF-8"?>\n<uws:parameters xmlns:uws="{_UWS}">'
                             f'{params}</uws:parameters>', media_type="text/xml")
 
@@ -750,6 +777,67 @@ async def soda_async_fixed(job_id: str, request: Request, token: str = _auth) ->
     return RedirectResponse(_job_url(request, job_id), status_code=303)
 
 
+# ── DataLink ────────────────────────────────────────────────────────────────
+
+_VOTABLE_FORMATS = {"application/x-votable+xml", "text/xml", "votable"}
+
+
+@router.api_route("/soda/links", methods=["GET", "POST"])
+async def soda_links(request: Request, token: str = _auth) -> Response:
+    """DataLink {links}: for each ID, the dataset as stored and its cutout services.
+
+    The descriptors of the sync and async cutout carry the dataset's own BAND
+    and TIME ranges and its POL states. An ID this node cannot serve gets a
+    row with an ``error_message`` (DataLink faults), not an HTTP error; a file
+    that is not an image (HDF5, a FITS table) gets only its ``#this`` row.
+    """
+    try:
+        params = await _params(request)
+        unknown = set(params) - {"ID", "RESPONSEFORMAT", "REQUEST"}
+        if unknown:
+            raise SodaError(f"parameters not understood by DataLink: {', '.join(sorted(unknown))}")
+        fmt = _one(params, "RESPONSEFORMAT")
+        if fmt and fmt.split(";")[0].strip().lower() not in _VOTABLE_FORMATS:
+            raise SodaError(f"RESPONSEFORMAT {fmt!r} is not supported; use application/x-votable+xml")
+        # No ID is a normal, empty answer (DataLink 1.1 §2.1.1).
+        ids = [v.strip() for v in params.get("ID", []) if v.strip()]
+    except SodaError as exc:
+        # DataLink errors are VOTables (DALI), not SODA's text/plain.
+        return Response(content=error_votable(f"UsageFault: {exc}"), status_code=exc.status,
+                        media_type="application/x-votable+xml")
+    base = str(request.base_url).rstrip("/")
+    sync_url, async_url = base + "/soda/sync", base + "/soda/async"
+    links: list[Link] = []
+    descriptors: list[str] = []
+    for n, dataset_id in enumerate(ids):
+        try:
+            path = _resolve(dataset_id, any_file=True)
+        except SodaError as exc:
+            fault = "NotFoundFault" if exc.status == 404 else "UsageFault"
+            links.append(Link(id=dataset_id, semantics="#this", error_message=f"{fault}: {exc}"))
+            continue
+        links.append(Link(id=dataset_id, semantics="#this",
+                          access_url=f"{sync_url}?ID={quote(dataset_id, safe='')}",
+                          description="The dataset as stored", content_type=_media_type(path),
+                          content_length=path.stat().st_size))
+        if not _is_supported_dataset(path):
+            continue
+        try:
+            axes = await asyncio.to_thread(describe, str(path))
+        except Exception as exc:  # noqa: BLE001 — not cuttable: the file itself is still linked
+            logger.info("[soda] links %s: no cutout descriptor (%s)", path.name, exc)
+            continue
+        for kind, standard, url in (("sync", SODA_SYNC, sync_url), ("async", SODA_ASYNC, async_url)):
+            resource_id = f"soda-{kind}-{n}"
+            links.append(Link(id=dataset_id, semantics="#cutout", service_def=resource_id,
+                              description=f"SODA cutout ({kind}): position, band, time, polarization",
+                              content_type="application/fits"))
+            descriptors.append(service_descriptor(resource_id, standard, url, axes,
+                                                  f"SODA {kind} cutout of {dataset_id}"))
+    return Response(content=links_votable(links, descriptors),
+                    media_type="application/x-votable+xml;content=datalink")
+
+
 # ── VOSI ────────────────────────────────────────────────────────────────────
 
 
@@ -764,6 +852,7 @@ async def soda_capabilities(request: Request) -> Response:
 
     body = (capability("ivo://ivoa.net/std/SODA#sync-1.0", "/soda/sync")
             + capability("ivo://ivoa.net/std/SODA#async-1.0", "/soda/async")
+            + capability("ivo://ivoa.net/std/DataLink#links-1.1", "/soda/links")
             + capability("ivo://ivoa.net/std/VOSI#capabilities", "/soda/capabilities")
             + capability("ivo://ivoa.net/std/VOSI#availability", "/soda/availability"))
     return Response(content=(f'<?xml version="1.0" encoding="UTF-8"?>\n'

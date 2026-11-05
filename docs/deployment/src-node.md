@@ -97,14 +97,15 @@ Parameter names are case-insensitive. Requests need the backend token
 |---|---|
 | `GET` or `POST /soda/sync` | A cutout, streamed as FITS. Only `OPERATION=CUTOUT` (the default) runs synchronously. |
 | `/soda/async` | A UWS 1.1 job list: `POST` creates a job (with `PHASE=RUN` it starts at once) and answers `303` to it; the usual UWS resources follow (`phase`, `results`, `error`, `parameters`, `destruction`, ...), and `DELETE` removes a job. |
-| `GET /soda/capabilities` | VOSI capabilities: the sync and async interfaces. Open. |
+| `GET` or `POST /soda/links` | DataLink `{links}` for one or more `ID`s: the file as stored (`#this`) and the sync and async cutout descriptors, whose `BAND`, `TIME` and `POL` values come from the dataset's header. |
+| `GET /soda/capabilities` | VOSI capabilities: the sync, async and DataLink interfaces. Open. |
 | `GET /soda/availability` | VOSI availability. Open. |
 
 Operations, selected with `OPERATION`:
 
 | `OPERATION` | Parameters | Result |
 |---|---|---|
-| `CUTOUT` (default) | `POS` (`CIRCLE`, `RANGE` or `POLYGON`), or `CIRCLE` / `POLYGON` on their own; `BAND` (metres); `TIME` | The FITS cutout. |
+| `CUTOUT` (default) | `POS` (`CIRCLE`, `RANGE` or `POLYGON`), or `CIRCLE` / `POLYGON` on their own; `BAND` (metres); `TIME`; `POL` (repeatable: `I`, `Q`, `U`, `V`, `RR` ... `YX`, the planes of the `STOKES` axis) | The FITS cutout. |
 | `MOMENT` (async only) | `MOMENT=<order>` (0 to 10); optional `CHANNELS=<first> <last>` (0-based, inclusive) and `THRESHOLD=<value>` (data below it masked) | The 2-D moment map as FITS. |
 | `PV` (async only) | `PVPATH=<ra1> <dec1> <ra2> <dec2> [...]` (ICRS degrees, at least two vertices); optional `PVWIDTH=<pixels>` (default 1) | The position-velocity diagram as FITS. |
 
@@ -113,8 +114,8 @@ operation does not know is refused rather than ignored. Errors follow DALI:
 `text/plain` bodies starting with `UsageError:` or `FatalError:`. A valid
 synchronous cutout that selects nothing answers `204`.
 
-A synchronous request with only `ID` (no `POS`, `CIRCLE`, `POLYGON`, `BAND` or
-`TIME`) returns **the file as stored**, byte for byte, every HDU and the
+A synchronous request with only `ID` (no `POS`, `CIRCLE`, `POLYGON`, `BAND`,
+`TIME` or `POL`) returns **the file as stored**, byte for byte, every HDU and the
 original header, with its own media type (`application/fits` for FITS,
 `application/x-hdf5`, `application/gzip`, otherwise
 `application/octet-stream`). This is what a DataLink `#this` link through the

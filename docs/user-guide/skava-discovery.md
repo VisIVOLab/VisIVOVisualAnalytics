@@ -178,7 +178,10 @@ there.
 * **SODA cutout…**: a POS (CIRCLE or POLYGON), BAND and/or TIME subset,
   submitted to the node's `/soda/async` as a UWS job (`PHASE=RUN`), polled
   until it ends, then opened in place. Without an advertised SODA job
-  service, the backend's own `/v1/datasets/cutout` route is used.
+  service, the backend's own `/v1/datasets/cutout` route is used. The
+  dialog does not select polarization; the node's SODA accepts `POL`
+  (Stokes planes) from any VO client, such as pyvo or TOPCAT, through its
+  DataLink `/soda/links` (see the backend API, *SRC node and SODA*).
 * **Moment map…**: `OPERATION=MOMENT` with the order (0, 1, 2), an optional
   channel range and threshold.
 * **PV diagram…**: `OPERATION=PV` with the path's vertices (degrees) and the
