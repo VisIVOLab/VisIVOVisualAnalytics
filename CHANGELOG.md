@@ -6,6 +6,59 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## 1.0.9 (2026-11-05)
+
+- **Ray-traced particles** (#101). A point table can be drawn as a
+  continuous medium: each particle is a Gaussian kernel the size of its
+  smoothing length, and along each ray the kernels emit and, optionally,
+  absorb, with the light kept in floating point and graded by a tone curve
+  (Dolag et al. 2008). Two styles: *3-D light* in perspective, and a
+  *Projected map* of the column density, coloured by density, a column or
+  the local velocity dispersion. The view is drawn on the desktop's GPU and
+  stays interactive on millions of particles; stills up to 8K, orbit movies
+  and floating-point FITS of the light are rendered by the backend. The
+  3-D volume view also gains gradient shading and ambient occlusion.
+- **Ray-traced volumes** (#106). A cube can be drawn as light in the same
+  way, with *Ray-traced light* in the cube viewer's *Display, 3D* section:
+  faint diffuse emission and bright cores together, with no opacity curve to
+  tune. The colour can come from a second quantity: another field of a VBT
+  volume, or, for a spectral cube, each channel's velocity, so that a
+  projected map seen along the spectrum is the intensity-weighted mean
+  velocity. Values below the threshold emit nothing, so a radio cube's noise
+  does not veil the source. On a remote backend the grid is gzipped (a
+  WALLABY grid through a tunnel: 34 MiB in 8 s became 0.4 MiB in 0.4 s), and
+  a desktop without a GPU view gets frames drawn by the backend.
+- **VBT volumes open as cubes** (#83). Each field of a VisIVO Binary Table
+  volume is read in place and opens in the cube viewer, locally and on any
+  backend, with every tool that applies to a cube whose third axis is
+  spatial. The 3-D view gains a colour bar, a scale chosen in the LUT
+  editor (Linear, Log, Sqrt, Square, Power), and the share of voxels above
+  the threshold; the isosurface is bounded (a 512³ field in 1-2 s instead of
+  200 s). Log colour tables were drawn linearly and are now log-spaced.
+- **Point tables and sky catalogues drawn on the backend** (#83). VBT point
+  tables open in the 3-D catalogue viewer, which gains Gaussian splats,
+  named colour maps, the LUT editor and the colour bar. A table or
+  catalogue larger than what the window loads can be drawn on a backend
+  that renders server-side (*View ▸ Rendering*: Auto, Local, Remote). Sky
+  catalogues are placed there exactly as the desktop places them (frame,
+  distance convention, cosmology).
+- **Command-line datasets on remote backends** (#108). A path given after
+  `--backend` or `--connect-cluster` is the backend's and is opened there;
+  it was dropped because it did not exist on the local machine. A path the
+  backend does not find is reported as such, and missing local paths are
+  reported in a warning.
+- **Faster exact region statistics** (#99). The exact median and MAD of a
+  large region take three passes instead of five, with the same results: a
+  1.1 billion-pixel box on PLEIADI went from 94 s to 50 s of computation.
+  The local copy of the region is no longer written to a temporary directory
+  held in memory (tmpfs) on a cluster.
+- **The sign-in is kept on Linux** (#56). The Linux release is built with
+  libsecret, so the VLKB sign-in survives a restart through the Secret
+  Service; without one the client asks for the login, as before.
+- **Backends started by the desktop exit with it**, instead of being left
+  running after a crash. Values written into a SLURM job script are quoted
+  and validated.
+
 ## 1.0.8 (2026-11-02)
 
 - **2-D images larger than memory** (#85). An image above
