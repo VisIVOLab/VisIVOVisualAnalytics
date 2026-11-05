@@ -41,6 +41,7 @@
 #include <clocale>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vtkNew.h>
 #include <vtkObjectFactory.h>
 #include <vtkOutputWindow.h>
@@ -125,27 +126,33 @@ public:
     }
 
     /// Paths from the command line (Linux / Windows associations pass them this
-    /// way), keeping only what exists — the flags this app accepts are not files.
-    void takeCommandLine(const QStringList &args)
+    /// way). On a remote backend (@p remote: --backend, --connect-cluster)
+    /// they are the backend's paths and are opened there; on the local one
+    /// only what exists here, and the rest is reported once the window is up.
+    void takeCommandLine(const QStringList &args, bool remote)
     {
-        for (int i = 1; i < args.size(); ++i) {
-            const QString a = args.at(i);
-            if (LaunchOptions::backendValueOptions().contains(a)) {
-                ++i;   // its value (a URL, a token file, a name) is not a file to open
-                continue;
-            }
-            if (a.startsWith(QLatin1Char('-')))
-                continue;
-            if (QFileInfo::exists(a))
-                m_pending << QFileInfo(a).absoluteFilePath();
-        }
+        m_pending << LaunchOptions::datasetPaths(args, remote, &m_missing);
     }
 
     /// Called once MainWindow is up: flush the queue and keep forwarding.
     void attach(MainWindow *window)
     {
         m_window = window;
+        if (!m_missing.isEmpty())
+            QTimer::singleShot(0, window, [this, window]() { reportMissing(window); });
         flush();
+    }
+
+    /// The command-line paths that are not files here, said once: over the
+    /// window, or on their own when the other files went to a running
+    /// instance and this one exits.
+    void reportMissing(QWidget *parent)
+    {
+        if (m_missing.isEmpty())
+            return;
+        const QStringList missing = std::exchange(m_missing, {});
+        QMessageBox::warning(parent, u"Cannot open file"_s,
+                             u"Not found on this machine:\n%1"_s.arg(missing.join(u'\n')));
     }
 
     bool hasPending() const { return !m_pending.isEmpty(); }
@@ -391,6 +398,7 @@ private:
 
     QStringList m_pending;
     QPointer<MainWindow> m_window;
+    QStringList m_missing;   ///< command-line paths that are not files here
     QLocalServer *m_server{ nullptr };
     std::unique_ptr<QLockFile> m_lock;   ///< held for this process's lifetime
     QString m_takeoverKey;               ///< set in a secondary, which polls for the seat
@@ -486,9 +494,14 @@ int main(int argc, char *argv[])
         }
     }
 
-    openRelay.takeCommandLine(QCoreApplication::arguments());
-    if (!openRelay.becomePrimaryOrForward(!remoteBackend && clusterName.isEmpty()))
+    // A window on a cluster (--connect-cluster) is a remote run too: it is
+    // connected, and its backend set, before the window opens the paths.
+    openRelay.takeCommandLine(QCoreApplication::arguments(),
+                              remoteBackend.has_value() || !clusterName.isEmpty());
+    if (!openRelay.becomePrimaryOrForward(!remoteBackend && clusterName.isEmpty())) {
+        openRelay.reportMissing(nullptr);
         return 0;   // the files went to the instance already running
+    }
 
     // Set locale to C.UTF-8
     std::setlocale(LC_NUMERIC, "C.UTF-8");

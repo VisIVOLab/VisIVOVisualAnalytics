@@ -179,7 +179,9 @@ screen does the same at any stage. Only one window per profile can be open; a
 job left by a window that did not close normally is cancelled by the next one
 for the same profile (each job is recorded, under its unique name, until a
 cancel succeeds). From a terminal, the same is
-`VisIVOVisualAnalytics --connect-cluster NAME`.
+`VisIVOVisualAnalytics --connect-cluster NAME`; a dataset path after it is a
+path on the cluster, opened once the window is connected
+(`--connect-cluster NAME /scratch/me/data/cube.fits`).
 
 Recent Datasets remembers where each dataset was opened, and marks those
 opened on a cluster with its name. All windows share the list. Clicking an
@@ -222,6 +224,18 @@ For that run only:
 * an option given without its value, a malformed URL, or an empty or
   unreadable token file stops the launch with an error, rather than starting
   on the local backend.
+* a dataset path after the options is a path on the backend, opened there
+  as *Open…* would open it:
+
+  ```bash
+  VisIVOVisualAnalytics --backend http://localhost:18901 \
+      --backend-token-file ~/.visivo_slurm_token --backend-name PLEIADI \
+      /scratch/me/data/cube.fits
+  ```
+
+  If the backend does not find it, or it lies outside the folders the backend
+  may read, the window says so. On the local backend a path that does not
+  exist on this machine is reported too, rather than ignored.
 
 If the backend does not answer, the start-up screen names it and says what to
 check: the job, the tunnel, and that the token is this job's (a new job has a

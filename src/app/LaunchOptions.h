@@ -48,6 +48,15 @@ bool remoteBackend(const QStringList &args, const QProcessEnvironment &env,
 bool clusterToConnect(const QStringList &args, const QProcessEnvironment &env, QString *name,
                       QString *error);
 
+/**
+ * The datasets @p args ask to open: every argument that is neither an option
+ * nor an option's value. On a remote backend (@p remote) a path is the
+ * backend's, taken as it is: it may not exist here, and the backend says
+ * whether it does. On the local backend only what exists here, made absolute;
+ * the rest goes to @p missing, to be reported rather than dropped.
+ */
+QStringList datasetPaths(const QStringList &args, bool remote, QStringList *missing = nullptr);
+
 /// The recent dataset `--reopen-recent ID` asks the window to reopen once it
 /// is up (a window opened on a cluster from another window's history); empty
 /// when not given.

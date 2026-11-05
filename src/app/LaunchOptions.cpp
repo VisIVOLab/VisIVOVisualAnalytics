@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QUrl>
 
 #include <utility>
@@ -123,6 +124,28 @@ bool LaunchOptions::clusterToConnect(const QStringList &args, const QProcessEnvi
     }
     *name = *opt;
     return true;
+}
+
+QStringList LaunchOptions::datasetPaths(const QStringList &args, bool remote,
+                                        QStringList *missing)
+{
+    QStringList paths;
+    for (int i = 1; i < args.size(); ++i) {
+        const QString &a = args.at(i);
+        if (backendValueOptions().contains(a)) {
+            ++i;   // its value (a URL, a token file, a name) is not a file to open
+            continue;
+        }
+        if (a.startsWith(u'-') || a.trimmed().isEmpty())
+            continue;
+        if (remote)
+            paths << a;
+        else if (QFileInfo::exists(a))
+            paths << QFileInfo(a).absoluteFilePath();
+        else if (missing)
+            *missing << a;
+    }
+    return paths;
 }
 
 QString LaunchOptions::recentToReopen(const QStringList &args)
