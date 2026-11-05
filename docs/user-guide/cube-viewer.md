@@ -438,6 +438,13 @@ with the Kinematic Lasso — geometry from its moment 0, a flat and a per-ring d
 fitted to its velocity field — and adds the velocity field, model and residual
 maps and the source's flux, w20/w50 and V_sys to Session Data. See
 [the kinematic model](../kinematic-model) for how each is derived.
+
+The position angle points to the **receding** half of the disc and is measured
+from the top of the image toward the left: on a cube shown north up and east
+left, as most radio cubes are, that is north through east. A rotated WCS is not
+taken into account, and some catalogues quote the approaching side instead (the
+WALLABY catalogue's `kin_pa` is 180° from it). See
+[the PA convention](../kinematic-model) for the details.
 ```
 
 Every entry is available both in the menu bar **and** as a tool button on
