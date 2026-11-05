@@ -208,6 +208,7 @@ jobs:
             libxcb-util1 libxcb-xfixes0 libxcb-xkb1 libxcb1-dev \
             libfontconfig1 libdbus-1-3 \
             libnss3 libxdamage1 libxrandr2 libasound2 libxcomposite1 \
+            libsecret-1-dev \
             file
 
       - name: Install system deps (macOS)
@@ -691,6 +692,17 @@ jobs:
           curl -fsSL -o linuxdeploy-plugin-qt \
             https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
           chmod +x linuxdeploy linuxdeploy-plugin-qt
+
+          # The VLKB sign-in survives a restart only through libsecret, which
+          # CMake links when it finds it and otherwise silently leaves out.
+          # Refuse to ship a build that would ask for the login at every start.
+          # (grep reads all of ldd's output: an early exit under pipefail could
+          # SIGPIPE ldd and reject a good build.)
+          if ! ldd build/VisIVOVisualAnalytics |
+              grep -E '^[[:space:]]*libsecret-1\.so\.0 => /' >/dev/null; then
+            echo "::error::The client does not resolve libsecret-1.so.0"
+            exit 1
+          fi
 
           # linuxdeploy-plugin-qt picks qmake from $QMAKE or PATH; install-qt-action
           # puts qmake on PATH, so set QMAKE explicitly for robustness.
