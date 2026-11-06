@@ -336,6 +336,14 @@ axes to its first plane, so on a cube they describe one channel; to render or
 measure a cube's collapsed emission, compute a moment map first and open that.
 ```
 
+## Structure: power spectrum and skeleton
+
+*Tools ▸ Structure* holds two map-texture tools. **Angular Power Spectrum**
+plots P(ℓ) with its fitted slope. **Skeleton / Voids** traces filaments or
+voids and draws them over the map. Their settings appear in **Inspector ▸
+Parameters**, and each run is a product. See
+[Cosmology tools](cosmology.md#angular-power-spectrum).
+
 ## Pixel histogram
 
 *Tools → Pixel Histogram…* (or the Inspector's *Analysis* list)

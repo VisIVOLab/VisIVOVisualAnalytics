@@ -4,6 +4,7 @@
 #include "Catalogue3DParser.h"
 
 #include "app/BackendClient.h"
+#include "app/CosmologyModel.h"
 
 #include <vtkNew.h>
 #include <vtkSmartPointer.h>
@@ -94,6 +95,12 @@ struct Catalogue3DCosmologyTaskResult
     bool valid{ false };
     QString error;
     QString model;
+    /// The custom model the distances were computed with, when model is "Custom".
+    visivo::cosmology::Model custom;
+    /// Rows with a redshift above the custom-model route's z ≤ 20: they HAVE a
+    /// redshift, so they are not "without a usable one", and they are placed
+    /// by the fallback (catalogue distance, else local Planck18).
+    int beyondRange{ 0 };
     // Computed comoving distances in Mpc, same order as the entries vector at
     // submission time.  Empty on error.
     std::vector<double> distancesMpc;
@@ -284,6 +291,20 @@ private:
     // the local computation), otherwise calls the backend batch endpoint.
     void triggerCosmologyUpdate();
     void onCosmologyFinished();
+    /// The model the selector names, as a full model: a preset, or the custom
+    /// model the user handed over from the calculator (issue #29).
+    visivo::cosmology::Model selectedCosmology() const;
+    /// The backend draws the positions itself (the server-side point view or
+    /// the ray-traced view) and knows the presets only.
+    bool serverDrawsPositions() const;
+    /// Put the selector back on Planck18 when a server-drawn view is turned on
+    /// under the custom model, and say why.
+    void dropCustomCosmologyForServerView(const QString &view);
+    /// Tools ▸ Cosmology Calculator, opened on the model the sources use.
+    void openCosmologyCalculator();
+    /// The custom model the positions on screen were computed with (valid
+    /// when m_appliedCosmologyModel is "Custom").
+    visivo::cosmology::Model m_appliedCustomCosmology;
     // Recompute every source's scene position from entryDistanceMpc() (which now
     // honours schema.distanceMode) and rebuild the scene/labels. Does NOT touch the
     // per-entry distanceMpc overrides — callers clear those first when they must.

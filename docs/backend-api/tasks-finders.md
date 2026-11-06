@@ -33,6 +33,13 @@ Request: the same body as `/v1/products/moment_fits` (`MomentSaveFitsRequest`).
 | `moment2_variance` | bool | false | order 2: variance instead of dispersion |
 | `output_basename` | string | `""` | file name in Workspace Exports; empty gives `<cube stem>_m<order>.fits` |
 
+The output name is reserved when the task starts, as an empty file. The map
+is written under a temporary name in a hidden subdirectory of the workspace,
+which `GET /v1/exports/list` does not enter. On completion it is renamed onto
+the reserved name in one step. So, in the listing, a zero-size entry is an
+export not yet complete, and a non-empty one is whole. A failed or cancelled
+task removes both files.
+
 Answers at once:
 
 - 200 `{valid: true, error: "", task_id, status: "running", cache_hit: false}`;

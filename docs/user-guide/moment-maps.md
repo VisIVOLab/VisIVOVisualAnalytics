@@ -203,6 +203,11 @@ focused:
 - **Tools ▸ Views ▸ Overlay Slice on an Open Image** draws the current 2-D map
   as contours over an image already open in an image viewer.
 
+*Tools ▸ Maps ▸ Angular Power Spectrum of Moment Map* and *Skeleton / Voids of
+Moment Map* analyse the moment on screen. They first write it at full
+resolution to the Workspace Exports. See
+[Cosmology tools](cosmology.md#angular-power-spectrum).
+
 ## Performance & caching
 
 - The computation runs in the backend worker pool. Default `VISIVO_WORKERS=4`

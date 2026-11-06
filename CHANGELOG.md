@@ -59,6 +59,22 @@ are preserved here unedited; the branch names they refer to are historical.
   line says which configuration is active, e.g. "Provider: server's
   configuration (self-hosted, model qwen) · ready".
 
+- **Cosmology tools in the interface** (#29). Every cosmology route of the
+  backend now has a desktop entry or a stated reason:
+  - **Tools ▸ Cosmology Calculator** (main window and 3-D catalogue viewer):
+    one or many redshifts under Planck18, Planck15, Planck13, WMAP9 or a custom
+    ΛCDM (H₀, Ωm, ΩΛ; flat by default, and said in words when it is not).
+    Comoving, luminosity and angular-diameter distances, lookback time, age and
+    kpc per arcsecond, all from the backend; copy, or export as CSV. The
+    custom-model route `GET /v1/cosmology/distances` has its client binding.
+  - The 3-D catalogue viewer's **Model** selector gains **Custom**, the model
+    set in the calculator; the status line names the model the sources were
+    placed with.
+  - **Angular Power Spectrum** and **Skeleton / Voids** on 2-D images
+    (Tools ▸ Structure) and on a cube's moment map (Tools ▸ Maps): P(ℓ) on log
+    axes with its fitted slope, the skeleton as an overlay or a mask map, each
+    a product with its replay record. Until now only the Copilot reached them.
+  See the user guide page *Cosmology tools*.
 - **Truncated FITS files are refused by name** (#118). Opening a FITS file
   shorter than its headers declare now fails at once with "The file … is
   truncated: 697.9 GB on disk, 961.4 GB declared (5644 of 7776 planes
