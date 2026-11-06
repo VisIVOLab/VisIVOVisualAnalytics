@@ -383,8 +383,12 @@ GPUs in the job, the session does not start.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `VISIVO_RENDER_MAX_SESSIONS` | `8` | Remote views the backend accepts at once; beyond it a new one is refused with HTTP 503. |
+| `VISIVO_RENDER_MAX_SESSIONS` | `8` | Remote views the backend renders at once; beyond it a new one waits in the queue (or is refused with HTTP 503 when it did not ask to wait or the queue is full). |
 | `VISIVO_RENDER_IDLE_TTL_SECONDS` | `300` | A view with no command for this long is closed. |
+| `VISIVO_RENDER_QUEUE_MAX` | `16` | Views that may wait for a slot; `0` refuses at the cap, as before. |
+| `VISIVO_RENDER_QUEUE_TIMEOUT_SECONDS` | `600` | Longest wait for a slot. |
+| `VISIVO_RENDER_QUEUE_STALE_SECONDS` | `15` | A waiting client that stops asking for this long loses its place. |
+| `VISIVO_RENDER_DISCONNECT_GRACE_SECONDS` | `30` | While views wait, a view with no client connected for this long gives up its slot. |
 | `VISIVO_RENDER_IN_PROCESS` | unset | `1` renders in the backend's own process instead (slower: rendering then holds the process that serves the WebSocket). |
 | `VTK_EGL_DEVICE_INDEX` | unset | Binds every view to that EGL device instead of spreading them over the job's GPUs. |
 

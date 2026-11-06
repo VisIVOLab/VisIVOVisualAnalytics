@@ -29,6 +29,8 @@
 #include "TestFitsHeaderCard.h"
 #include "TestViewerModeState.h"
 #include "TestRemoteLevels.h"
+#include "TestRemoteRenderQueue.h"
+#include "TestRenderSessionCalls.h"
 #include "TestRegionFullRes.h"
 #include "TestDatasetName.h"
 #include "TestColourBarTicks.h"
@@ -79,6 +81,8 @@ int main(int argc, char *argv[])
     { TestFitsHeaderCard   t; status |= QTest::qExec(&t, argc, argv); }
     { TestViewerModeState  t; status |= QTest::qExec(&t, argc, argv); }
     { TestRemoteLevels     t; status |= QTest::qExec(&t, argc, argv); }
+    { TestRemoteRenderQueue t; status |= QTest::qExec(&t, argc, argv); }
+    { TestRenderSessionCalls t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionFullRes    t; status |= QTest::qExec(&t, argc, argv); }
     { TestDatasetName      t; status |= QTest::qExec(&t, argc, argv); }
     { TestThresholdShare   t; status |= QTest::qExec(&t, argc, argv); }

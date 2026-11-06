@@ -26,6 +26,8 @@ Request body:
 | Field | Type | Description |
 |---|---|---|
 | `dataset_id` | string | Id returned when the dataset was opened. Required. |
+| `queue` | bool | `true`: when every slot is busy, wait in the [queue](#the-queue) (202 with a place) instead of being refused (503). Default `false`. |
+| `queue_id` | string or null | A place given by an earlier 202: asks again for it (implies `queue`). Default `null`. |
 
 Response:
 
@@ -64,10 +66,59 @@ Errors:
 
 - 401: missing or invalid token.
 - 404: unknown `dataset_id` in the caller's session.
+- 410: `queue_id` is no longer in the queue (see [The queue](#the-queue)).
 - 422: the dataset is neither a cube nor a VBT point table.
-- 503: server-side rendering is not available on this backend, or the session cap is reached (`"Server-side rendering capacity reached (N sessions active)."`).
+- 503: server-side rendering is not available on this backend; or every slot is busy and the request has no queue place: it did not ask for one, or the queue is off (`"Server-side rendering capacity reached (N sessions active)."`), the queue is full (`"... (N sessions active, M requests waiting)."`), or it waited past the timeout (`"Server-side rendering capacity reached: waited T s in the queue without a free slot."`).
 
-The cap is `VISIVO_RENDER_MAX_SESSIONS` (default 8) sessions per backend. A session that receives no command for `VISIVO_RENDER_IDLE_TTL_SECONDS` (default 300) is closed by a reaper that runs every 30 s; a client that keeps a still view open sends `keepalive` to stay alive. Closing the WebSocket does not close the session, so a client can reconnect.
+The cap is `VISIVO_RENDER_MAX_SESSIONS` (default 8) sessions per backend, cubes and point tables together. A session that receives no command for `VISIVO_RENDER_IDLE_TTL_SECONDS` (default 300) is closed by a reaper that runs every 5 s; a client that keeps a still view open sends `keepalive` to stay alive. Closing the WebSocket does not close the session, so a client can reconnect, except when requests are waiting (see below). A session whose render process ends (a crash in VTK or the GPU driver, a kill) is removed at once and its slot freed.
+
+#### The queue
+
+A request with `queue: true` that finds every slot busy waits instead of being refused. The answer is **202** with a place in the queue and a `Retry-After` header (seconds):
+
+| Field | Type | Description |
+|---|---|---|
+| `valid` | bool | `false`. |
+| `queued` | bool | `true` (a pyramid build answers 202 with `preparing` instead). |
+| `queue_id` | string | The place: send it back as `queue_id` to ask again. |
+| `position` | int | 1 for the next request to be served. (In the `queue` of `/v1/render/diagnostics`, 0 means a slot is already reserved for it: its next request starts the session, so a 202 never says 0.) |
+| `queue_length` | int | Requests waiting without a slot. |
+| `active_sessions`, `capacity` | int | Sessions running on the backend, and the cap. |
+| `waited_seconds` | float | Time since the place was given. |
+| `wait_timeout_seconds` | float | After this long without a slot the request is refused (503). |
+| `poll_after_seconds` | float | When to ask again (2 s; the `Retry-After` header, rounded up to at least 1). |
+| `expires_after_seconds` | float | A place not asked for within this long is dropped (the client is taken to be gone). |
+| `error` | string | A sentence to show, such as `"All 8 server-side rendering slots are busy: number 2 of 3 in the queue."`. |
+
+```json
+{"valid": false, "queued": true, "queue_id": "5be1...", "position": 2, "queue_length": 3,
+ "active_sessions": 8, "capacity": 8, "waited_seconds": 12.4, "wait_timeout_seconds": 600.0,
+ "poll_after_seconds": 2.0, "expires_after_seconds": 15.0,
+ "error": "All 8 server-side rendering slots are busy: number 2 of 3 in the queue."}
+```
+
+The client asks again with the same request plus `queue_id` every `poll_after_seconds`. Each 202 updates the position; when its turn comes the request is answered like any `create_session` (200 with the session and its first frame). There is no push channel for the position: the request itself is how the client says it is still waiting, so a client that dies or loses the network simply stops asking and its place, or the slot reserved for it, is passed on after `expires_after_seconds`. A client that stops waiting (the view closed, the user went back to local rendering) gives its place up with [`DELETE /v1/render/queue/{queue_id}`](#delete-v1-render-queue-queue-id).
+
+A `queue_id` is bound to the token and the dataset it was given for: asked for with another token or dataset, or after it expired, was cancelled or was used, it answers **410** (`"This request is no longer in the rendering queue. Ask again without queue_id."`); the client then asks without `queue_id` and gets a new place at the end of the queue.
+
+Order: a free slot goes to the waiting request whose token holds the fewest render sessions (running or reserved), ties in order of arrival. With one token, as on the desktop's local backend or a cluster job of one user, this is first come, first served. On a backend shared by several tokens a user with no view is served before a further view of a user who already has some, so a position can grow by one when such a request arrives. A new request never takes a slot reserved for a waiting one.
+
+While requests wait, a session no client is connected to (no WebSocket open, no WebRTC peer) for `VISIVO_RENDER_DISCONNECT_GRACE_SECONDS` (default 30) is closed and its slot passed on, the longest unattended first and only as many as are needed. The grace counts from the last WebSocket closing, or from the last reaper pass (every 5 s) that saw a WebRTC peer, or, for a session nobody connected to, from the end of its start. A request that waited past `wait_timeout_seconds` is given no slot. With nobody waiting only the idle timeout applies, so a view switched to local rendering keeps its session for a quick switch back. A client that reconnects to such a closed session has its WebSocket handshake refused (see [WebSocket](#websocket)) and should create a new session.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `VISIVO_RENDER_QUEUE_MAX` | `16` | Requests that may wait; beyond it 503. `0` turns the queue off (always 503 at the cap). |
+| `VISIVO_RENDER_QUEUE_TIMEOUT_SECONDS` | `600` | Longest wait for a slot; then 503. |
+| `VISIVO_RENDER_QUEUE_STALE_SECONDS` | `15` | A place not asked for this long is dropped (never less than 6 s, three polls). |
+| `VISIVO_RENDER_DISCONNECT_GRACE_SECONDS` | `30` | While requests wait, a session with no client connected this long gives up its slot. |
+
+### `DELETE /v1/render/queue/{queue_id}`
+
+Gives up a place in the queue (or the slot reserved for it).
+
+Response: `{"cancelled": true}`.
+
+Errors: 401 (token), 404 (`"Unknown queue_id."`, also for another token's place).
 
 ### `GET /v1/render/{session_id}/levels`
 
@@ -107,20 +158,28 @@ Response:
 | `active_sessions` | int | Number of sessions in the listing. |
 | `capacity` | int | The session cap (`VISIVO_RENDER_MAX_SESSIONS`). |
 | `idle_ttl_seconds` | float | The idle timeout (`VISIVO_RENDER_IDLE_TTL_SECONDS`). |
+| `queued` | int | Requests waiting in the whole backend (reserved slots included). |
+| `queue_capacity` | int | `VISIVO_RENDER_QUEUE_MAX`. |
+| `queue_timeout_seconds` | float | `VISIVO_RENDER_QUEUE_TIMEOUT_SECONDS`. |
+| `queue` | array | The caller's own places, each as in the 202 answer above (without `valid`, `queued`, `error`). |
 | `sessions` | array | One object per session, see below. |
 | `transports` | array of string | `"jpeg-ws"` and `"jpeg-ws-push"` always; `"h264-webrtc"` and `"h265-webrtc"` added when the WebRTC module imports and its encoder probe succeeds. Both name the same H.264 stream: `"h265-webrtc"` is the earlier name, kept for older clients. |
 
-Each element of `sessions`: `session_id`, `dataset_path`, `frames_rendered`, `bytes_sent`, `commands_received`, `last_render_ms`, `last_jpeg_kb`, `age_seconds`, `idle_seconds`.
+Each element of `sessions`: `session_id`, `dataset_path`, `frames_rendered`, `bytes_sent`, `commands_received`, `last_render_ms`, `last_jpeg_kb`, `age_seconds`, `idle_seconds`, `clients` (WebSockets connected now).
 
 ```json
 {
   "active_sessions": 1,
   "capacity": 8,
   "idle_ttl_seconds": 300.0,
+  "queued": 0,
+  "queue_capacity": 16,
+  "queue_timeout_seconds": 600.0,
+  "queue": [],
   "sessions": [{"session_id": "9f1c...", "dataset_path": "/data/cube.fits",
                 "frames_rendered": 412, "bytes_sent": 51234567, "commands_received": 980,
                 "last_render_ms": 21.4, "last_jpeg_kb": 96.2,
-                "age_seconds": 183.0, "idle_seconds": 1.2}],
+                "age_seconds": 183.0, "idle_seconds": 1.2, "clients": 1}],
   "transports": ["jpeg-ws", "jpeg-ws-push"]
 }
 ```
@@ -200,10 +259,10 @@ Errors:
 
 The interactive channel of a render session: JSON commands from the client, JPEG frames from the server.
 
-**Authentication.** The token is read from the `token` query parameter, or from the `X-Visivo-Token` header when the transport forwards it. Every configured token is accepted. Before the connection is accepted the server closes it with:
+**Authentication.** The token is read from the `token` query parameter, or from the `X-Visivo-Token` header when the transport forwards it. Every configured token is accepted. The server refuses the connection before accepting it, so the handshake fails (with uvicorn, an HTTP 403 answer to the upgrade request; the close code and reason below are not delivered to the client):
 
-- code 1008 (`"invalid token"`) when no token matches;
-- code 1011 (`"unknown session_id"`) when the session does not exist or belongs to another token.
+- close code 1008 (`"invalid token"`) when no token matches;
+- close code 1011 (`"unknown session_id"`) when the session does not exist (closed, for example by the idle timeout or the disconnect grace) or belongs to another token. A client cannot tell the two apart from the handshake; one whose token is valid should create a new session.
 
 ```text
 wss://node.example.org/v1/render/9f1c.../ws?token=<token>

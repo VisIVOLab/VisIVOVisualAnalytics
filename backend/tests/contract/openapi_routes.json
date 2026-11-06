@@ -4,6 +4,7 @@
     "DELETE /soda/async/{job_id}",
     "DELETE /v1/exports/{filename}",
     "DELETE /v1/particle_render/{task_id}",
+    "DELETE /v1/render/queue/{queue_id}",
     "DELETE /v1/render/{session_id}",
     "DELETE /v1/tasks/{task_id}",
     "GET /soda/async",

@@ -321,7 +321,9 @@ backend outwards:
   or driver crash ends that view only; the service and the other views go on.
   `VISIVO_RENDER_IN_PROCESS=1` runs sessions inside the service process instead
   (the earlier behaviour, kept for debugging). `VISIVO_RENDER_MAX_SESSIONS`
-  bounds the number of live sessions.
+  bounds the number of live sessions; a request above it may wait in a queue
+  (`render_manager.py`, polled by the client, places dropped when it stops
+  asking) and a session whose process died frees its slot at once.
 - **Off-screen EGL, one GPU per view.** On Linux the session renders with
   VTK's EGL window, which needs a VTK built with EGL (`apptainer/backend-conda-egl.def`).
   Before building its window, the child maps the EGL devices to CUDA ordinals

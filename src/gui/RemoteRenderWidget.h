@@ -81,6 +81,11 @@ public:
     /// the caller still owns the session lifetime.
     void disconnectFromSession();
 
+    /// Not connected, and why, in the middle of the view: a view waiting for
+    /// a backend slot says so instead of "Disconnected" over an old frame.
+    /// The frame of an earlier session is dropped.
+    void showStatus(const QString &text);
+
     /// Render-quality preference (passed to the server as a JSON
     /// command). 0..100; sensible default 85 — the backend's default
     /// JPEG quality.

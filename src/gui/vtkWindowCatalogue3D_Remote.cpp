@@ -138,8 +138,11 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
     if (!this->wantsRemote()) {
         if (RemotePointView *view = this->m_remoteView) {
             this->m_remoteView = nullptr;
-            view->stop();
+            const bool wasWaiting = !view->isActive();
+            view->stop();   // gives up a place in the backend's queue too
             view->deleteLater();
+            if (wasWaiting)
+                this->statusBar()->clearMessage();   // the queue's line, if any
         }
         if (this->m_renderStack)
             this->showRenderPage(0);
@@ -206,7 +209,14 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
                              this->m_defaultScaleChosen = false;
                              this->updateColorMapping();
                          });
+        // Every backend slot busy (issue #4): the loaded rows stay on screen and
+        // the status bar says where the view is in the queue until it starts.
+        QObject::connect(this->m_remoteView, &RemotePointView::queued, this,
+                         [this](const QString &status) {
+                             this->statusBar()->showMessage(status);
+                         });
         QObject::connect(this->m_remoteView, &RemotePointView::started, this, [this]() {
+            this->statusBar()->clearMessage();
             if (this->m_renderStack)
                 this->showRenderPage(1);
             if (this->m_colorbar)

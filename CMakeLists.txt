@@ -478,6 +478,9 @@ set(PROJECT_SOURCES
         src/gui/BackendLocality.h
         src/gui/RemotePointView.cpp
         src/gui/RemotePointView.h
+        src/gui/RemoteRenderQueue.h
+        src/gui/RenderSessionCalls.cpp
+        src/gui/RenderSessionCalls.h
         src/gui/RaytraceOutput.cpp
         src/gui/RaytraceOutput.h
         src/gui/RaytraceOverlay.cpp

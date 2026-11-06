@@ -4027,6 +4027,8 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
         // A new switch starts without the progress of an earlier one.
         this->m_remotePreparing = false;
         this->m_remotePreparingProgress = 0.0;
+        this->m_remoteReconnectingKept = false;
+        this->m_remoteQueueStatus.clear();
         // Start the elapsed-time counter that drives the progressive
         // status messages. A 1 Hz ticker re-paints the banner text
         // based on how long we've been waiting — the user sees
@@ -4076,9 +4078,17 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
                 // because a multi-GB cube legitimately takes minutes to land in
                 // the backend's GPU.
                 constexpr qint64 kSwitchTimeoutS = 300;
+                // In the backend's queue (issue #4) it counts from the last
+                // answer to a poll, every few seconds while the place is valid:
+                // only a backend that stops answering reaches it.
                 if (secs >= kSwitchTimeoutS) {
                     this->abortRemoteSwitch(
-                            this->m_remotePreparing
+                            !this->m_remoteQueueStatus.isEmpty()
+                                    ? QStringLiteral("The backend stopped answering while this "
+                                                     "view waited for a rendering slot (%1 s) - "
+                                                     "staying local. Retry Remote later.")
+                                              .arg(kSwitchTimeoutS)
+                            : this->m_remotePreparing
                                     ? QStringLiteral("Preparing the cube on the backend stopped "
                                                      "advancing for %1 s - staying local. The "
                                                      "build may go on there; retry Remote later.")
@@ -4090,7 +4100,10 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
                     return;
                 }
                 QString msg;
-                if (this->m_remotePreparing) {
+                if (!this->m_remoteQueueStatus.isEmpty()) {
+                    // Waiting for a slot: the place, as the backend last gave it.
+                    msg = this->m_remoteQueueStatus;
+                } else if (this->m_remotePreparing) {
                     // The backend is building the cube's pyramid: the watchdog
                     // counts from the last progress, so this can take as long as
                     // the build needs while it keeps advancing.
@@ -4142,6 +4155,10 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
             // the previous Local switch, re-open it. Hands the user a
             // live image again without paying for EGL warm-up.
             if (this->m_remoteRenderWidget && !this->m_remoteRenderWidget->isLive()) {
+                // The backend may have closed it meanwhile (idle, or its slot
+                // given to a waiting request): a failure before Live is checked
+                // and a new session made (onRemoteRenderConnectionStateChanged).
+                this->m_remoteReconnectingKept = true;
                 this->connectRemoteRenderWidgetWithTransport(this->m_renderSessionId);
             } else if (this->m_remoteSwitchInProgress) {
                 // Already streaming: no connection is attempted, so no Live
@@ -4180,10 +4197,15 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
         // disabled, with no way to retry.
         if (this->m_remoteSwitchInProgress) {
             this->m_remoteSwitchInProgress = false;
+            this->m_remoteReconnectingKept = false;
+            this->m_remotePreparing = false;
             // Invalidate any create_session reply still in flight: it used to
             // reconnect and flip to Remote regardless, undoing the very
             // cancellation the user just asked for.
             ++this->m_remoteSwitchGeneration;
+            // …and give up a place in the backend's queue (issue #4), or the
+            // next free slot would be held for this view until it expires.
+            this->cancelRemoteQueuePlace();
             if (this->m_remoteSwitchProgressTimer)
                 this->m_remoteSwitchProgressTimer->stop();
             if (this->m_localRecommendRemoteSwitchBtn) {
@@ -4192,6 +4214,10 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
             }
             if (this->m_localRecommendLoadFullBtn)
                 this->m_localRecommendLoadFullBtn->setEnabled(true);
+            // The banner said how the switch was going ("Queued … 1 of 1",
+            // "Loading cube into backend GPU memory…") and its ticker is
+            // stopped: back to what it says about this cube, or hidden.
+            this->refreshRemoteRecommendBanner();
         }
         // For explicit Local clicks, disconnect the WebSocket so we stop
         // burning frames behind a hidden page. We KEEP the session alive
@@ -4199,6 +4225,9 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
         // evicter in RenderManager (300 s idle) will reap it eventually.
         if (this->m_remoteRenderWidget && fromUserAction
             && requested == RenderMode::Local) {
+            // The user's choice, not a failure: its Disconnected must not put
+            // "click Switch to Remote to retry" in the banner.
+            const QScopedValueRollback<bool> quiet(this->m_ignoreSyntheticDisconnect, true);
             this->m_remoteRenderWidget->disconnectFromSession();
         }
     }
@@ -7165,8 +7194,15 @@ void vtkWindowCube::updateDataStatePanel()
                     .arg(std::max(0, this->remoteDatasetDepth - 1));
     const QString degenerateSummary = this->remoteDegenerateAxesSummary;
 
-    // Compact badge: just origin + resolution state + refinement mode.
-    QString badge = u"%1 \u00b7 %2"_s.arg(origin, representation);
+    // Compact badge: where the 3-D view is drawn + resolution state + refinement
+    // mode. The data's origin ("Remote": it lives on the backend) is in the
+    // tooltip: in the badge it read as the rendering mode, and said "Remote"
+    // while the view was drawn here or waiting for a backend slot.
+    const QString drawn = this->m_effectiveRenderMode == RenderMode::Remote
+            ? u"Remote"_s
+            : (!this->m_remoteQueueStatus.isEmpty() ? u"Local, queued for remote"_s
+                                                    : u"Local"_s);
+    QString badge = u"%1 \u00b7 %2"_s.arg(drawn, representation);
     if (this->useCameraRoiRefinement) {
         badge += u" \u00b7 ROI"_s;
     }
@@ -7176,10 +7212,14 @@ void vtkWindowCube::updateDataStatePanel()
 
     // Full provenance in tooltip.
     QString tip =
-            u"Origin: %1\nResolution: %2\nRefinement: %3\nLoaded: %4\nDataset: %5\n"
-            u"WCS frame: %6\nSpectral axis: %7\nProbe/profile: loaded block only"_s
+            u"3-D view drawn: %8\nData: %1 backend\nResolution: %2\nRefinement: %3\n"
+            u"Loaded: %4\nDataset: %5\nWCS frame: %6\nSpectral axis: %7\n"
+            u"Probe/profile: loaded block only"_s
                     .arg(origin, representation, refinement, loadedBounds, datasetBounds,
-                         this->currentWcsFrameLabel(), this->spectralAxisTitle());
+                         this->currentWcsFrameLabel(), this->spectralAxisTitle(),
+                         this->m_effectiveRenderMode == RenderMode::Remote
+                                 ? u"on the backend's GPU"_s
+                                 : u"on this machine"_s);
     if (!degenerateSummary.isEmpty()) {
         tip += u"\n\u26a0 Collapsed axes: %1"_s.arg(degenerateSummary);
     }
