@@ -64,6 +64,48 @@ def test_streaming_moment_stops_between_slabs(tmp_path, monkeypatch):
     assert np.allclose(out, 8.0) and len(seen) == 4
 
 
+def test_dask_moment_stops_between_blocks(tmp_path, monkeypatch):
+    """The block-wise (dask) moment, the service's way for large ranges,
+    polls the stop file before every block: an abort while it runs ends it
+    within one block, and without a stop file the same call completes."""
+    from astropy.io import fits
+
+    from app.compute import moment
+
+    if not moment._DASK_OK:
+        pytest.skip("dask not installed")
+    path = tmp_path / "cube.fits"
+    hdu = fits.PrimaryHDU(np.ones((8, 4, 4), dtype=np.float32))
+    for key, value in dict(CTYPE1="RA---SIN", CTYPE2="DEC--SIN", CTYPE3="FREQ",
+                           CRVAL3=1.0e9, CRPIX3=1.0, CDELT3=1.0e5, CUNIT3="Hz").items():
+        hdu.header[key] = value
+    hdu.writeto(path)
+    monkeypatch.setattr(moment, "_MOMENT_THREADS", 1)          # blocks in order
+    stop = tmp_path / "stop"
+    real = moment._mapped_cube
+    reads = []
+
+    def mapped(*args):
+        reads.append(1)
+        if armed["on"] and len(reads) == 2:
+            stop.touch()          # the client aborts while the second block is read
+        return real(*args)
+
+    armed = {"on": True}
+    monkeypatch.setattr(moment, "_mapped_cube", mapped)
+    with pytest.raises(ComputationAborted):
+        moment._moment_map_dask(str(path), 0, 0, 7, 0.0, False, chunk_z=1, stop_file=str(stop))
+    aborted_reads = len(reads)
+    stop.unlink()
+    armed["on"] = False
+    reads.clear()
+    out = moment._moment_map_dask(str(path), 0, 0, 7, 0.0, False, chunk_z=1, stop_file=str(stop))
+    # Eight one-channel blocks (dask may also read an empty slice for its
+    # metadata); the aborted run stopped right after its second read.
+    assert out["width"] == 4 and len(reads) >= 8
+    assert aborted_reads == 2, "no block was read after the abort"
+
+
 def test_moment_workers_refuse_an_aborted_task(synthetic_fits_cube, tmp_path):
     from app.compute import worker_moment, worker_moment_save_fits
 

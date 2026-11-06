@@ -41,6 +41,8 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--rng", type=int, default=42)
     ap.add_argument("--peak-snr", type=float, default=12.0)
+    ap.add_argument("--spectral", choices=("vrad", "freq"), default="vrad",
+                    help="spectral axis: radio velocity (default) or frequency")
     args = ap.parse_args()
 
     nx, ny, nz = dims_for(args.gb)
@@ -73,9 +75,17 @@ def main() -> None:
     header["CRVAL1"], header["CDELT1"] = 180.0, -2.0e-3
     header["CTYPE2"], header["CRPIX2"] = "DEC--SIN", ny / 2
     header["CRVAL2"], header["CDELT2"] = 0.0, 2.0e-3
-    header["CTYPE3"], header["CRPIX3"] = "VRAD", nz / 2
-    header["CRVAL3"], header["CDELT3"] = 0.0, 5.0e3   # 5 km/s channels
-    header["CUNIT3"] = "m/s"
+    if args.spectral == "freq":
+        # An HI cube as SKA precursors deliver it: frequency axis, 30 kHz
+        # channels (≈6.3 km/s at 1.42 GHz, the SDC2 spacing), centred on the
+        # rest frequency so the disc's line falls inside the band.
+        header["CTYPE3"], header["CRPIX3"] = "FREQ", nz / 2
+        header["CRVAL3"], header["CDELT3"] = 1.420405751786e9, 3.0e4
+        header["CUNIT3"] = "Hz"
+    else:
+        header["CTYPE3"], header["CRPIX3"] = "VRAD", nz / 2
+        header["CRVAL3"], header["CDELT3"] = 0.0, 5.0e3   # 5 km/s channels
+        header["CUNIT3"] = "m/s"
     # Spectral frame keywords so casacore/CARTA can build the spectral coordinate
     # (VRAD needs a rest frequency + reference frame, else the load silently fails).
     header["SPECSYS"] = "LSRK"

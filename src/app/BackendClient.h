@@ -22,9 +22,12 @@
 #include <chrono>
 
 #include <array>
+#include <atomic>
 #include <limits>
 #include <map>
 #include <vector>
+
+namespace visivo { struct BackendTaskControl; }
 
 struct BackendFileEntry
 {
@@ -250,8 +253,10 @@ struct BackendTaskCreateResult
     QString taskId;
     QString status;
     bool cacheHit{ false };
-    /// HTTP status of the create request (0 = no answer); set by
-    /// createSourceFindTask, whose 503 means "finder not installed here".
+    /// HTTP status of the create request (0 = no answer). 404/405 means the
+    /// backend has no such task route, the one case for the sync fallback
+    /// (visivo::isMissingTaskRoute); from createSourceFindTask, 503 means
+    /// "finder not installed here".
     int httpStatus{ 0 };
 };
 
@@ -994,6 +999,8 @@ struct BackendSaveMomentFitsResult
     double rangeMax{ 0. };
     QString bunit;        ///< Moment unit copied into BUNIT
     QString momentUnit;   ///< Same value as bunit, kept for symmetry with /moment
+    /// The user stopped the export (not a failure: report it quietly).
+    bool cancelled{ false };
 };
 
 // ── VLKB catalogue queries (TAP) ─────────────────────────────────────────────
@@ -2355,11 +2362,9 @@ public:
      *  task. True when it accepted; ``error`` says why not (404: no such
      *  task, 409: already finished). Best-effort: the task may still complete. */
     bool cancelTask(const QString &taskId, QString &error) const;
-    BackendTaskStatusResult requestTaskStatus(const QString &taskId) const;
-    BackendTaskStatusResult waitForTaskCompletion(const BackendTaskCreateResult &createResult,
-                                                  const QString &logTag,
-                                                  int maxPollAttempts = 120,
-                                                  int pollIntervalMs = 250) const;
+    /// @p abort: see performGet; a set flag ends the read at once (status empty).
+    BackendTaskStatusResult requestTaskStatus(const QString &taskId,
+                                              const std::atomic_bool *abort = nullptr) const;
     static BackendMomentResult    parseMomentResultObject(const QJsonObject &object);
     static BackendCubePvResult    parsePvResultObject(const QJsonObject &object);
     static BackendCubeNoiseResult parseNoiseResultObject(const QJsonObject &object);
@@ -2613,6 +2618,21 @@ public:
                                                 double thresholdValue,
                                                 const QString &outputBasename = {},
                                                 bool thresholdAuto = false);
+    /** POST /v1/tasks/moment_fits — the same request as saveMomentFits(), as a
+     *  task; its result is the /v1/products/moment_fits payload. */
+    BackendTaskCreateResult createMomentFitsTask(const QString &datasetId, int order,
+                                                 int channelStart, int channelEnd,
+                                                 bool maskEnabled, double thresholdValue,
+                                                 const QString &outputBasename,
+                                                 bool thresholdAuto) const;
+    /** Export a moment as FITS through the task route, followed to its end
+     *  (no time limit; @p control aborts it and cancels the task). Falls back
+     *  to the synchronous saveMomentFits() only on a backend without the task
+     *  route. Blocks: call it on a worker thread. */
+    BackendSaveMomentFitsResult exportMomentFitsFollowingTask(
+            const QString &datasetId, int order, int channelStart, int channelEnd,
+            bool maskEnabled, double thresholdValue, const QString &outputBasename,
+            bool thresholdAuto, visivo::BackendTaskControl *control);
 
     // ── Workspace Exports management ──────────────────────────────────────────
     /** POST /v1/exports/copy_dataset — copy a dataset's FITS file into
@@ -2829,7 +2849,10 @@ private:
     /** Build a QNetworkRequest with auth + session headers pre-applied. */
     QNetworkRequest buildRequest(const QUrl &url) const;
 
-    QByteArray performGet(const QUrl &url, QString &error) const;
+    /// @p abort, when given, is watched while the reply is out: set, the
+    /// request is dropped at once with an error (no 401 retry).
+    QByteArray performGet(const QUrl &url, QString &error,
+                          const std::atomic_bool *abort = nullptr) const;
     /// performPost, retrying while the backend answers 429 (5 attempts, 4 sleeps
     /// of 0.5 / 1 / 2 / 4 s — about 7.5 s of backoff on top of the server's own
     /// bounded wait for a compute slot).

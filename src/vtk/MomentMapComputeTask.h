@@ -6,8 +6,10 @@
 #include <QString>
 
 #include <array>
+#include <memory>
 
 class vtkImageData;
+namespace visivo { struct BackendTaskControl; }
 
 struct MomentMapComputeRequest
 {
@@ -22,6 +24,8 @@ struct MomentMapComputeRequest
     bool maskEnabled{ false };
     double thresholdValue{ 0.0 };
     bool thresholdAuto{ false };
+    /// Abort + phase shared with the progress sheet (may be null).
+    std::shared_ptr<visivo::BackendTaskControl> control;
 };
 
 struct MomentMapComputeResult
@@ -37,6 +41,7 @@ struct MomentMapComputeResult
     QString spectralAxisUnit; // CUNIT3 value
     QString wcsStatus{ QStringLiteral("ok") }; // "ok", "sanitized", or "degraded"
     QString wcsWarningMessage;                  // human-readable WCS warning, empty when ok
+    bool cancelled{ false };   // the user stopped it: report quietly, not as an error
 };
 
 MomentMapComputeResult computeMomentMap(const MomentMapComputeRequest &request);

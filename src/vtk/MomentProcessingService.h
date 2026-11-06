@@ -6,8 +6,10 @@
 #include <QString>
 
 #include <array>
+#include <memory>
 
 class vtkImageData;
+namespace visivo { struct BackendTaskControl; }
 
 struct MomentRequest
 {
@@ -22,6 +24,8 @@ struct MomentRequest
     bool maskEnabled{ false };
     double thresholdValue{ 0.0 };
     bool thresholdAuto{ false };
+    /// Abort + phase shared with the UI (may be null: no cancel, no progress).
+    std::shared_ptr<visivo::BackendTaskControl> control;
 };
 
 struct MomentResult
@@ -37,6 +41,7 @@ struct MomentResult
     QString spectralAxisUnit; // CUNIT3 value
     QString wcsStatus{ QStringLiteral("ok") }; // "ok", "sanitized", or "degraded"
     QString wcsWarningMessage;                  // human-readable WCS warning, empty when ok
+    bool cancelled{ false };   // the user stopped it: not an error
 };
 
 class MomentProcessingService

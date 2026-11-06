@@ -25,7 +25,7 @@ This note documents the current service boundaries, their implementation status,
 | vbt | `openVbt()`, `requestVbtSubset()`, `queryTabularVbt()` |
 | cube | `requestPreview()`, `requestSlice()`, `requestSubvolume()`, `requestPv()`, `requestNoise()` |
 | products | `requestMoment()`, `requestIsosurface()` |
-| tasks | `createMomentTask()`, `createPvTask()`, `requestTaskStatus()`, `waitForTaskCompletion()` |
+| tasks | `createMomentTask()`, `createPvTask()`, `requestTaskStatus()`, `cancelTask()`; `visivo::followBackendTask()` |
 | image | `requestImagePreview()`, `requestImage()` |
 | cosmology | `requestCosmologyDistanceBatch()` |
 | hips | `requestHiPSSurveys()`, `openHiPS()`, `requestHiPSAllsky()`, `requestHiPSTile()`, `requestHiPSTilesForView()`, `requestHiPSCatalogueOverlay()` |
@@ -123,12 +123,12 @@ calls; the throttle lives entirely on the FastAPI side. See
 - `MomentProcessingService::computeMoment(const MomentRequest &)`
 
 ### Current implementation
-- `visivo_shared_vtk`; wraps `BackendClient::requestMoment()` or `waitForTaskCompletion()`
+- `visivo_shared_vtk`; follows the moment task with `visivo::followBackendTask()` (synchronous `requestMoment()` only on a backend without task routes)
 - Authoritative computation always runs on the backend
 - Result is a portable image payload + metadata; the client renders it locally
 
 ### Task-based path
-For long-running moments, the client uses `createMomentTask()` + `waitForTaskCompletion()` via `BackendClient`. `RemoteMomentWindow` uses this path. `vtkWindowCube` uses the synchronous `requestMoment()` path.
+Moments, moment FITS exports and PV diagrams use `createMomentTask()` / `createMomentFitsTask()` / `createPvTask()` and `visivo::followBackendTask()`: no time limit, cancellation on abort, and the synchronous route only on a backend without task routes.
 
 ### Gap before clean split
 - Desktop-local FITS files must be manually opened on the backend first (via `DataHub` / `RemoteFileBrowserDialog`) before moment computation is possible

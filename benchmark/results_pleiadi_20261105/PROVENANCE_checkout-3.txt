@@ -1,0 +1,5 @@
+tree: VisIVO main 8303e71 (Release 1.0.9) + uncommitted changes of branch 3-benchmark-out-of-core-moments-at-ska-scale-on-an-hpc-node (dask M0 blanks empty lines of sight; benchmark/ HPC moment harness)
+image: /mnt/beegfs/fvitello/visivo/backend-egl.sif sha256 aa3f592e32a79d9b7644f2620af4465b8cd89720fb8544fd7e5616cbdf12dc46
+f746ed731e2a5f699582500af88bda2eadd6e05b94e7390099683c669c754e9d  backend/app/compute/moment.py
+4336f142e96017dc8a42e27d6871ae3e97eefabe56d85ef169a31d0720389667  benchmark/moment_ooc_bench.py
+048d823cbb0562f9bc98b434d7954a3bcddac78f1b9c2dbc2cdf331f64b59fa1  benchmark/remote/run_hpc_moment_bench.sh

@@ -782,6 +782,111 @@ def test_dask_moment0_matches_numpy() -> None:
         _os.unlink(tmp_path)
 
 
+def test_dask_moment0_blanks_pixels_without_valid_voxels(tmp_path) -> None:
+    """A masked M0 whose line of sight has no voxel above the threshold is
+    blank (NaN) on the dask path, as on the in-memory and streaming paths;
+    nansum alone reported 0 there (issue #3, measured on SDC2)."""
+    import app.compute.moment as _c
+    from app.compute import worker_moment
+
+    if not _c._DASK_OK:
+        pytest.skip("dask not installed")
+    nz, ny, nx = 24, 6, 7
+    cube = np.full((nz, ny, nx), 0.1, dtype=np.float32)   # below the threshold
+    cube[10:14, 2:4, 3:6] = 5.0                            # the only emission
+    cube[:, 0, 0] = np.nan                                 # a fully blank pixel
+    path = tmp_path / "masked.fits"
+    hdu = fits.PrimaryHDU(cube)
+    for key, value in dict(CTYPE1="RA---SIN", CTYPE2="DEC--SIN", CTYPE3="FREQ",
+                           CRVAL3=1.05e9, CRPIX3=1.0, CDELT3=3.0e4, CUNIT3="Hz").items():
+        hdu.header[key] = value
+    hdu.writeto(path)
+
+    def decode(result):
+        return np.frombuffer(base64.b64decode(result["data_base64"]),
+                             dtype=np.float32).reshape(ny, nx)
+
+    dask_m0 = decode(_c._moment_map_dask(str(path), 0, 0, nz - 1, 1.0, True, chunk_z=8))
+    ref_m0 = decode(worker_moment(str(path), 0, 0, nz - 1, True, 1.0))
+    np.testing.assert_array_equal(np.isfinite(dask_m0), np.isfinite(ref_m0))
+    assert np.isfinite(dask_m0).sum() == 2 * 3
+    np.testing.assert_allclose(dask_m0[2:4, 3:6], ref_m0[2:4, 3:6], rtol=1e-6)
+
+
+def test_moment_chunk_y_bands_only_planes_above_the_budget(monkeypatch) -> None:
+    import app.compute.moment as _c
+
+    monkeypatch.setattr(_c, "_MOMENT_CHUNK_BYTES", 1 << 20)          # 1 MiB
+    assert _c._moment_chunk_y(512, 512, 4) == -1                      # 1 MiB plane: whole
+    rows = _c._moment_chunk_y(1000, 600, 4)                           # 2.4 MB plane
+    assert 1 <= rows < 1000 and rows * 600 * 4 <= 1 << 20
+    assert _c._moment_chunk_y(10, 1 << 20, 4) == 1                    # one row over budget
+
+
+def _large_plane_cube(tmp_path, nz=12, ny=256, nx=192):
+    rng = np.random.default_rng(3)
+    cube = rng.standard_normal((nz, ny, nx)).astype(np.float32)
+    cube[:, 5:9, 7:11] += 6.0                                         # a source
+    cube[:, 0, 0] = np.nan                                            # a blank pixel
+    cube[3, 10, 10] = np.nan
+    path = tmp_path / "large_plane.fits"
+    hdu = fits.PrimaryHDU(cube)
+    for key, value in dict(CTYPE1="RA---SIN", CTYPE2="DEC--SIN", CTYPE3="FREQ",
+                           CRVAL3=1.4e9, CRPIX3=1.0, CDELT3=3.0e4, CUNIT3="Hz").items():
+        hdu.header[key] = value
+    hdu.writeto(path)
+    return path, nz
+
+
+@pytest.mark.parametrize("order", [0, 1, 2, 3])
+def test_dask_moment_in_bands_equals_whole_planes(tmp_path, monkeypatch, order) -> None:
+    """Cutting a large plane into bands of rows changes no bit of the map:
+    each pixel's channels are summed in the same order (issue #3)."""
+    import app.compute.moment as _c
+
+    if not _c._DASK_OK:
+        pytest.skip("dask not installed")
+    path, nz = _large_plane_cube(tmp_path)
+
+    def run(budget):
+        monkeypatch.setattr(_c, "_MOMENT_CHUNK_BYTES", budget)
+        r = _c._moment_map_dask(str(path), order, 0, nz - 1, 1.0, True, chunk_z=1)
+        return np.frombuffer(base64.b64decode(r["data_base64"]), dtype=np.float32)
+
+    whole = run(1 << 30)                       # one block per channel, whole plane
+    bands = run(256 * 192 * 4 // 7)            # about 36 rows per block
+    np.testing.assert_array_equal(np.isnan(whole), np.isnan(bands))
+    np.testing.assert_array_equal(whole[np.isfinite(whole)], bands[np.isfinite(bands)])
+
+
+@pytest.mark.parametrize("order", [1, 2, 3])
+def test_dask_moment_memory_is_bounded_by_the_block_budget(tmp_path, monkeypatch, order) -> None:
+    """With a plane larger than the block budget, the materialised memory of
+    a moment follows the budget, not the plane (measured with tracemalloc,
+    which numpy reports to): bands of rows hold a fraction of what whole
+    planes did. M2 and up also need the centroid map in bands."""
+    import tracemalloc
+
+    import app.compute.moment as _c
+
+    if not _c._DASK_OK:
+        pytest.skip("dask not installed")
+    path, nz = _large_plane_cube(tmp_path, nz=16, ny=1024, nx=1024)   # 4 MiB planes
+    monkeypatch.setattr(_c, "_MOMENT_THREADS", 1)
+
+    def peak(budget):
+        monkeypatch.setattr(_c, "_MOMENT_CHUNK_BYTES", budget)
+        tracemalloc.start()
+        try:
+            _c._moment_map_dask(str(path), order, 0, nz - 1, 1.0, True, chunk_z=1)
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    whole, bands = peak(1 << 30), peak(256 << 10)
+    assert bands < 0.6 * whole, (whole, bands)
+
+
 def test_dask_fallback_when_unavailable() -> None:
     """When _DASK_OK=False the regular numpy path is used without error."""
     import app.compute.moment as _c

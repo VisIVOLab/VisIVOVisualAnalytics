@@ -50,10 +50,11 @@ MomentMapComputeResult computeMomentMap(const MomentMapComputeRequest &request)
                             request.sessionId, request.backendToken,
                             request.momentOrder, request.channelStart, request.channelEnd,
                             request.maskEnabled, request.thresholdValue,
-                            request.thresholdAuto });
+                            request.thresholdAuto, request.control });
     qDebug().noquote()
             << QStringLiteral("[perf][moment] backend compute: %1 ms").arg(computeTimer.elapsed());
     if (!processed.valid || !processed.image) {
+        result.cancelled = processed.cancelled;
         result.errorMessage = processed.error.isEmpty() ? QStringLiteral("Backend moment failed.")
                                                         : processed.error;
         return result;

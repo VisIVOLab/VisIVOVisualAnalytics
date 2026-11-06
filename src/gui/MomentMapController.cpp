@@ -75,6 +75,12 @@ MomentMapController::MomentMapController(
     m_currentConfig.thresholdValue = initialThreshold;
 }
 
+MomentMapController::~MomentMapController()
+{
+    if (m_busy && m_taskControl)
+        m_taskControl->requestAbort();
+}
+
 bool MomentMapController::isBusy() const
 {
     return m_busy;
@@ -153,6 +159,7 @@ void MomentMapController::dispatch(const Config &config)
     }
 
     m_busy = true;
+    m_taskControl = std::make_shared<visivo::BackendTaskControl>();
 
     // Notify immediately so vtkWindowCube can disable moment actions.
     if (m_onRunFinished) {
@@ -165,6 +172,7 @@ void MomentMapController::dispatch(const Config &config)
     const QString datasetId    = m_datasetId;
     const QString sessionId    = m_sessionId;
     const QString backendToken = m_backendToken;
+    const std::shared_ptr<visivo::BackendTaskControl> control = m_taskControl;
 
     QPointer<MomentMapController> self(this);
     auto *watcher = new QFutureWatcher<MomentMapComputeResult>();
@@ -191,6 +199,19 @@ void MomentMapController::dispatch(const Config &config)
             self->m_onRunFinished();
         }
 
+        if (result.cancelled) {
+            // Asked for by the user: said in the status bar and the log, not
+            // raised as an error.
+            self->m_lastError = u"MomentMap M%1: cancelled."_s.arg(config.order);
+            if (auto *win = qobject_cast<QMainWindow *>(self->m_parentWindow))
+                win->statusBar()->showMessage(u"Moment map cancelled. %1"_s.arg(result.errorMessage));
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Info, DiagnosticsCategory::Scientific,
+                    QStringLiteral("MomentMapController"),
+                    u"Moment M%1 cancelled by the user. %2"_s.arg(config.order).arg(result.errorMessage),
+                    self->m_datasetId, self->m_sessionId, QStringLiteral("moment"));
+            return;
+        }
         if (!result.valid || !result.imageData) {
             self->m_lastError = result.errorMessage.isEmpty()
                     ? u"MomentMap M%1: backend returned an error with no detail."_s.arg(config.order)
@@ -277,7 +298,8 @@ void MomentMapController::dispatch(const Config &config)
                                      config.channelEnd,
                                      config.maskEnabled,
                                      config.thresholdValue,
-                                     config.thresholdAuto }));
+                                     config.thresholdAuto,
+                                     control }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -572,9 +594,13 @@ void MomentMapController::openMomentDialog(int defaultOrder, Config config,
         // On the DIALOG, so the work is reported where it was asked for. The
         // sheet is window-modal, which also blocks the controls underneath it
         // for the duration, so nothing else needs disabling.
-        m_progressSheet = visivo::showToolProgressSheet(dlg, u"Computing the moment map"_s);
         emit this->computationStarted(config);
         this->dispatch(config);
+        // After dispatch(), which made this run's task control; the sheet's
+        // Cancel aborts it, and the run's end closes the sheet (no result
+        // handler can run before control returns to the event loop).
+        m_progressSheet = visivo::showTaskProgressSheet(dlg, u"Computing the moment map"_s,
+                                                        m_taskControl);
     });
 
     dlg->show();

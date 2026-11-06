@@ -1,6 +1,7 @@
 #include "MomentProcessingService.h"
 
 #include "app/BackendClient.h"
+#include "app/BackendTaskFollow.h"
 #include "app/DiagnosticsManager.h"
 
 #include <QByteArray>
@@ -36,35 +37,33 @@ MomentResult MomentProcessingService::computeMomentRemote(const MomentRequest &r
         return { nullptr, { 0., 0. }, false, message };
     }
 
+    // The task route, followed to its end: a moment over an SKA-scale cube runs
+    // for tens of minutes, which only a task may do (the synchronous route
+    // stops at the backend's 900 s). The synchronous route is used only by a
+    // backend that has no task route at all; a task that failed, was
+    // cancelled or was lost is never recomputed behind the user's back.
     BackendMomentResult response;
-    const auto taskStatus = client.waitForTaskCompletion(
+    const visivo::TaskFollowResult followed = visivo::followBackendTask(
+            client,
             client.createMomentTask(datasetId, request.order, request.channelStart,
                                     request.channelEnd, request.maskEnabled,
                                     request.thresholdValue, request.thresholdAuto),
-            QStringLiteral("[moment][task]"));
-    if (taskStatus.status == QStringLiteral("completed")) {
-        response = BackendClient::parseMomentResultObject(taskStatus.resultObject);
-    }
-
-    if (!response.valid) {
-        if (!taskStatus.taskId.isEmpty()) {
-            qWarning().noquote()
-                    << QStringLiteral("[moment][task] fallback to sync task_id=%1")
-                               .arg(taskStatus.taskId);
-            DiagnosticsManager::instance()->publish(
-                    DiagnosticsLevel::Warning, DiagnosticsCategory::Task,
-                    QStringLiteral("MomentProcessingService"),
-                    QStringLiteral("Task path failed, falling back to sync moment request."),
-                    datasetId, sessionId, QStringLiteral("moment"));
-        }
+            QStringLiteral("[moment][task]"), request.control.get());
+    if (followed.outcome == visivo::TaskOutcome::Completed) {
+        response = BackendClient::parseMomentResultObject(followed.status.resultObject);
+    } else if (followed.fallBackToSync()) {
+        qWarning().noquote() << QStringLiteral("[moment][task] no task route on this backend, "
+                                               "using the synchronous request");
+        if (request.control)
+            request.control->setPhase(visivo::TaskPhase::Synchronous);
         response = client.requestMoment(datasetId, request.order, request.channelStart,
                                         request.channelEnd, request.maskEnabled,
                                         request.thresholdValue, request.thresholdAuto);
-        if (!taskStatus.taskId.isEmpty()) {
-            qDebug().noquote() << QStringLiteral("[moment][task] sync fallback completed valid=%1")
-                                          .arg(response.valid ? QStringLiteral("true")
-                                                              : QStringLiteral("false"));
-        }
+    } else {
+        MomentResult stopped;
+        stopped.error = followed.error;
+        stopped.cancelled = followed.stoppedByUser();
+        return stopped;
     }
 
     if (!response.valid) {

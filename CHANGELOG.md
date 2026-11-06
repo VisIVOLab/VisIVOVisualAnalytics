@@ -6,6 +6,32 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## Unreleased
+
+- **Moment 0 on large cubes blanks empty lines of sight** (#3). Above
+  512 MB a moment is computed out of core in blocks, and there a masked M0
+  reported 0 where no voxel passed the threshold; it is now blank, as on
+  smaller cubes. Measured on the SDC2 development cube: 707 of 1920 pixels of
+  a 3-sigma M0 over 160 channels changed from 0 to blank.
+- **Out-of-core moments stay within memory on SKA-size planes** (#3). The
+  block-wise moment used for large ranges read a 6082² plane (148 MB) as one
+  block. Its temporaries and partial sums then reached 14 GB on four
+  threads, and M1 and M2 of a 450 GB cube failed under a 16 GB cap. Planes
+  larger than `VISIVO_MOMENT_CHUNK_BYTES` are now read in bands of rows, and
+  the centroid map of M2 and up is split the same way. The maps are
+  bit-identical.
+- **Moment and PV tasks have no time limit** (#3). The 900 s ceiling
+  (`VISIVO_HEAVY_TIMEOUT_S`) now applies only to synchronous requests, and
+  their 504 points to the task routes. Before, a moment task on an SKA-size
+  cube failed at 900 s while its worker ran on. `VISIVO_TASK_TIMEOUT_S` sets a
+  ceiling for tasks if wanted. Cancelling a moment task now stops the
+  block-wise computation used above 512 MB within one block; before, it ran
+  to its end.
+- **Out-of-core moment benchmark for HPC nodes** (#3):
+  `benchmark/moment_ooc_bench.py` and `benchmark/remote/run_hpc_moment_bench.sh`
+  time M0, M1 and M2 under a memory cap on SLURM/Apptainer or any Linux host,
+  and check the streamed and block-wise maps against the in-memory ones.
+
 ## 1.0.9 (2026-11-05)
 
 - **Ray-traced particles** (#101). A point table can be drawn as a

@@ -16,17 +16,28 @@
 // deliberately indeterminate: none of the backend computes report per-chunk
 // progress yet, and a fake percentage is worse than an honest spinner.
 //
-// Cancellation is NOT offered here. A compute that is already running on the
-// backend keeps running whether or not the client stops watching, so a Cancel
-// button that only hides the sheet would be a lie; the dialogs handle an
-// attempted close through visivo::confirmAbandonRunningCompute (ToolDialogClose.h)
-// instead, which says plainly that the result will be discarded.
+// Cancellation is NOT offered by showToolProgressSheet. A synchronous compute
+// that is already running on the backend keeps running whether or not the
+// client stops watching, so a Cancel button that only hides the sheet would be
+// a lie; the dialogs handle an attempted close through
+// visivo::confirmAbandonRunningCompute (ToolDialogClose.h) instead, which says
+// plainly that the result will be discarded.
+//
+// A backend TASK can be cancelled (DELETE /v1/tasks/{id}), so
+// showTaskProgressSheet below does offer Cancel, and shows the task's state
+// and elapsed time: those tasks are the ones that run for tens of minutes.
+
+#include "app/BackendTaskFollow.h"
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QProgressDialog>
 #include <QPointer>
 #include <QString>
+#include <QTimer>
 #include <QWidget>
+
+#include <memory>
 
 namespace visivo {
 
@@ -61,6 +72,48 @@ inline QProgressDialog *showToolProgressSheet(QWidget *parent, const QString &wh
     // hand-rolled QTimer::singleShot(400, …, show) does not: measured, it
     // re-showed a sheet that the completion handler had already closed.
     sheet->setValue(0);
+    return sheet;
+}
+
+/// The progress sheet for a backend task followed by visivo::followBackendTask:
+/// the task's phase and the elapsed time, refreshed every second, and a Cancel
+/// button that asks the worker to abort, which cancels the task on the backend.
+///
+/// The sheet stays up after Cancel (saying it is cancelling) until the worker
+/// returns and the caller closes it through closeToolProgressSheet(): Cancel is
+/// a request the backend answers, not the end of the work.
+inline QProgressDialog *showTaskProgressSheet(QWidget *parent, const QString &what,
+                                              std::shared_ptr<BackendTaskControl> control)
+{
+    QProgressDialog *sheet = showToolProgressSheet(parent, what);
+    sheet->setCancelButtonText(QCoreApplication::translate("ToolProgressSheet", "Cancel"));
+    // QProgressDialog connects canceled() to its own cancel(), which resets
+    // and HIDES the sheet. Hidden, it would tell the user nothing while the
+    // backend is asked to stop. Qt makes that connection string-based, so it
+    // is undone the same way.
+    QObject::disconnect(sheet, SIGNAL(canceled()), sheet, SLOT(cancel()));
+
+    auto clock = std::make_shared<QElapsedTimer>();
+    clock->start();
+    QPointer<QProgressDialog> guard(sheet);
+    auto refresh = [guard, what, control, clock]() {
+        if (guard)
+            guard->setLabelText(describeTaskProgress(what, control->currentPhase(),
+                                                     clock->elapsed()));
+    };
+    QObject::connect(sheet, &QProgressDialog::canceled, sheet, [guard, control, refresh]() {
+        control->requestAbort();
+        // The worker sets Cancelling itself when it acts on the request; say it
+        // at once, and take the button away so it is not pressed twice.
+        control->setPhase(TaskPhase::Cancelling);
+        refresh();
+        if (guard)
+            guard->setCancelButtonText(QString());
+    });
+    auto *timer = new QTimer(sheet);
+    QObject::connect(timer, &QTimer::timeout, sheet, refresh);
+    timer->start(1000);
+    refresh();
     return sheet;
 }
 

@@ -174,7 +174,7 @@ Result structs (all in `BackendClient.h`):
 | `BackendCosmologyBatchResult` | `requestCosmologyDistanceBatch()` |
 | `BackendHiPSCatalogueOverlayResult` | `requestHiPSCatalogueOverlay()` |
 | `BackendTaskCreateResult` | `createMomentTask()`, `createPvTask()` |
-| `BackendTaskStatusResult` | `requestTaskStatus()`, `waitForTaskCompletion()` |
+| `BackendTaskStatusResult` | `requestTaskStatus()`, `visivo::followBackendTask()` |
 | `BackendSampSendResult` | SAMP send / send-fits / send-catalogue |
 | `BackendSampImportResult` | SAMP import-url / upload-file |
 | `BackendCatalogueSubset` | `requestCatalogueSubset()` (legacy bulk fetch) |
@@ -221,8 +221,8 @@ Both `vtkWindowCatalogue3D` and `vtkWindowVbt` support incremental pagination fo
 
 For long-running operations the backend supports a task queue:
 - `createMomentTask()` / `createPvTask()` → returns a `task_id`
-- `waitForTaskCompletion()` polls `GET /v1/tasks/{id}` with exponential back-off
-- `RemoteMomentWindow` uses this path exclusively
+- `visivo::followBackendTask()` (`src/app/BackendTaskFollow.h`) polls `GET /v1/tasks/{id}` with back-off and no time limit, and cancels the task on abort
+- moments, moment FITS exports and PV diagrams use this path
 
 ---
 

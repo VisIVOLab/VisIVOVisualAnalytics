@@ -36,6 +36,7 @@
 #include <QPointer>
 
 #include <functional>
+#include <memory>
 
 class QWidget;
 class QProgressDialog;
@@ -88,6 +89,11 @@ public:
                                const QString &provenanceSummary,
                                const QString &provenanceDetails)> onCompleted,
             QObject *parent = nullptr);
+
+    /// Aborts a run still in flight: the cube window is going away, nobody will
+    /// read the result, and the backend task is cancelled rather than left to
+    /// hold a compute slot for tens of minutes.
+    ~MomentMapController() override;
 
     // True while an async moment computation is in progress.
     // Queried by vtkWindowCube::isBusy() and updateBackendDerivedActionsAvailability().
@@ -165,6 +171,9 @@ private:
     /// The window-modal progress sheet for the INTERACTIVE path only (the
     /// copilot's headless dispatch leaves it null). See ToolProgressSheet.h.
     QPointer<QProgressDialog> m_progressSheet;
+    /// Abort + phase of the run in flight, shared with its worker and sheet.
+    /// A new one per run, so a superseded run's abort cannot hit the next.
+    std::shared_ptr<visivo::BackendTaskControl> m_taskControl;
     /// The settings window, kept alive between runs (WA_DeleteOnClose clears
     /// this QPointer when the user closes it).
     QPointer<QDialog> m_configDialog;

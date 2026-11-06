@@ -17,6 +17,7 @@ from ..sessions import Session, get_session, REGISTRY
 from ..tasks import TASKS
 from ..product_cache import PRODUCT_CACHE
 from ..fits_dataset import ScientificFitsDataset
+from .products import MomentSaveFitsRequest
 import asyncio
 
 router = APIRouter(tags=['tasks'])
@@ -106,6 +107,94 @@ async def create_pv_task(
             TASKS.update(task.task_id, status="cancelled", progress=0.0, error="Cancelled by client.")
         except Exception as exc:  # pragma: no cover - exercised at runtime
             ticker.cancel()
+            TASKS.update(task.task_id, status="failed", progress=1.0, error=str(exc))
+
+    handle = asyncio.create_task(_runner())
+    TASKS.update(task.task_id, asyncio_handle=handle)
+    return TaskCreateResponse(valid=True, error="", task_id=task.task_id, status="running", cache_hit=False)
+
+
+# ── Moment map to FITS as a task ────────────────────────────────────────────
+# The task form of /v1/products/moment_fits: same request, same result. On a
+# large cube the synchronous route runs into VISIVO_HEAVY_TIMEOUT_S, while a
+# task has no time limit, reports progress and can be cancelled: the worker
+# polls the stop file between slabs and writes nothing when it stops.
+
+@router.post("/v1/tasks/moment_fits", response_model=TaskCreateResponse, tags=["tasks"])
+async def create_moment_fits_task(
+    request: MomentSaveFitsRequest,
+    token: str = _auth,
+    session: Session = Depends(get_session),
+) -> TaskCreateResponse:
+    from ..compute import worker_moment_save_fits  # noqa: PLC0415
+
+    entry = _require_dataset(session, request.dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "Moment FITS export requires a spectral cube dataset.")
+    basename = (request.output_basename.strip()
+                or f"{Path(entry['path']).stem}_m{int(request.moment_order)}.fits")
+    # Reserved now (an empty placeholder): the file is written minutes later,
+    # and two exports started meanwhile must not be handed the same name.
+    output_path = str(make_workspace_path(basename, reserve=True))
+
+    def _drop_placeholder() -> None:
+        """Give the reserved name back once the worker has ended: a task that
+        did not complete leaves no file. The worker may outlive a cancelled
+        task (past its last abort check it still writes), so the name stays
+        ours, and the file is removed, only when the work is over."""
+        def _remove(_f: Any = None) -> None:
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
+
+        record = TASKS.peek(task.task_id)
+        work = getattr(record, "work_handle", None)
+        if work is not None and not work.done():
+            work.add_done_callback(_remove)
+        else:
+            _remove()
+
+    task = TASKS.create("moment_fits", owner_token=token)
+    TASKS.update(task.task_id, status="running", progress=0.05)
+
+    async def _runner() -> None:
+        ticker = asyncio.create_task(_progress_ticker(task.task_id))
+        try:
+            result = await _run_heavy(
+                worker_moment_save_fits,
+                entry["path"],
+                output_path,
+                int(request.moment_order),
+                int(request.channel_start),
+                int(request.channel_end),
+                bool(request.mask_enabled),
+                float(request.threshold_value),
+                bool(request.threshold_auto),
+                bool(request.moment2_variance),
+                TASKS.stop_file(task.task_id),
+                task_id=task.task_id,
+            )
+            ticker.cancel()
+            # The same fields as the synchronous route's response.
+            TASKS.update(
+                task.task_id,
+                status="completed",
+                progress=1.0,
+                result={"valid": True, "error": "",
+                        "workspace_filename": Path(result["output_path"]).name,
+                        **{k: result[k] for k in
+                           ("output_path", "width", "height", "range_min", "range_max",
+                            "bunit", "moment_unit")}},
+            )
+        except asyncio.CancelledError:
+            ticker.cancel()
+            _drop_placeholder()
+            TASKS.update(task.task_id, status="cancelled", progress=0.0, error="Cancelled by client.")
+        except Exception as exc:
+            ticker.cancel()
+            _drop_placeholder()
+            logger.warning("[moment_fits][task] failed task_id=%s error=%s", task.task_id, exc)
             TASKS.update(task.task_id, status="failed", progress=1.0, error=str(exc))
 
     handle = asyncio.create_task(_runner())
