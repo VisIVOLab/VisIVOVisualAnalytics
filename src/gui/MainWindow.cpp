@@ -145,7 +145,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     this->m_sampHandler =
             new SampMessageHandler(this->m_sampClient, this->m_sampBackendClient.get(), this);
     QObject::connect(this->settings, &Settings::updated, this, &MainWindow::setApplicationTheme);
-    QObject::connect(this->settings, &Settings::updated, this, &MainWindow::loadPanoramicView);
+    // The panoramic view reloads on a settings change only once it exists.
+    QObject::connect(this->settings, &Settings::updated, this, [this]() {
+        if (this->m_panoramicStarted)
+            this->loadPanoramicView();
+    });
     QObject::connect(this->settings, &Settings::updated, this, &MainWindow::syncDataHubSettings);
     QObject::connect(this->settings, &Settings::updated, this, &MainWindow::syncSampSettings);
 
@@ -267,14 +271,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                      [this]() { if (this->updateNotifier) this->updateNotifier->check(true); });
     this->updateNotifier->scheduleStartupCheck();
 
-    // ── Setup Panoramic View (VLKB tab) ──────────────────────────────────────
-    this->loadPanoramicView();
-    auto webobj = new WebViewProcess(ui->view);
-    auto webChannel = new QWebChannel(ui->view);
-    webChannel->registerObject(u"webobj"_s, webobj);
-    ui->view->page()->setWebChannel(webChannel);
-    QObject::connect(webobj, &WebViewProcess::processJavascript, this,
-                     &MainWindow::skyRegionSelected);
+    // ── Panoramic View (VLKB tab) ────────────────────────────────────────────
+    // Started when the VLKB tab is first shown (startPanoramicView), not here:
+    // it is a web page, and the web engine's first page starts Chromium's
+    // helper processes. A failure there (as in the Linux AppImage run from its
+    // FUSE mount, 1.0.10) must not stop the application from opening; only
+    // the views that need the web engine are affected.
 
     // What these radios do was the single most confusing thing about the panel:
     // they are a DRAWING mode for the sky view, not the shape of the query, and
