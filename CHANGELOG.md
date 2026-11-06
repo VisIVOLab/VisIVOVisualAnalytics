@@ -43,6 +43,17 @@ are preserved here unedited; the branch names they refer to are historical.
   instead of an HTTP status phrase. A file cut only inside its final padding
   block still opens.
 
+## Unreleased
+
+- **Linux: the release opens again** (PR #131). The Linux AppImage crashed
+  at start, inside QtWebEngine, when run from its FUSE mount (Ubuntu 22.04
+  and 24.04, releases up to 1.0.10). The Linux package now holds the
+  application in `./app` with a launcher: extract the tarball and run
+  `./VisIVOVisualAnalytics`. It no longer needs `libfuse2`. The VLKB
+  panoramic view is loaded when its tab is first shown, so a web-engine
+  failure can no longer keep the application from opening, and each release
+  now starts the packaged client before it is published.
+
 ## 1.0.10 (2026-11-06)
 
 - **Suggested SoFiA-2 parameters** (#64). The cube viewer's SoFiA-2 dialog
