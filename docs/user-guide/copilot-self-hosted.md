@@ -94,15 +94,19 @@ in the package README. The **`TOOL_PARSER` must match the model family**
 ## Full stack (backend + LLM together)
 
 `docker-compose.full.yml` runs the VisIVO backend and the LLM on the same server,
-with the backend's copilot variables already pointing at the LLM (see below for
-what that does and does not cover in 1.0.11). The LLM uses the GPU; the backend
+with the backend's copilot variables already pointing at the LLM: desktops on
+the default **Use the server's configuration** use it with no further setup.
+The LLM uses the GPU; the backend
 runs CPU-only compute, so they share the machine fine.
 
 ## Configuring the backend instead of the client
 
-The backend can start each new session already pointed at your server. Set
-these in the backend's environment (the full stack compose file does exactly
-this):
+Instead of entering the URL in every client, the backend can start each new
+session already pointed at your server. Desktops whose copilot provider is
+**Use the server's configuration** (the default) then use it as it is; an
+explicit choice in a desktop's Settings replaces it for that user's session.
+Set these in the backend's environment (the full stack compose file does
+exactly this):
 
 ```bash
 export VISIVO_ASSISTANT_PROVIDER=auto            # or openai, to force it
@@ -120,14 +124,15 @@ export VISIVO_ASSISTANT_MODEL=<served model name>
 | `VISIVO_ASSISTANT_SLOTS` | `2` | Copilot queries the backend runs at once. |
 | `VISIVO_ASSISTANT_TIMEOUT_S` | `120` | Time budget of one query, tool calls included. A slow model on a long question may need more. |
 
-These are only the starting values of a session, and in 1.0.11 the desktop
-replaces them: when its Copilot panel connects, it applies its own provider
-from *Settings ▸ Copilot* (or **Copilot ⚙**), which is **None**
-until you choose another. So on the desktop, choose **Your server** and enter
-the URL and key there as well (the URL is the one the *backend* reaches: with
-the full stack, `http://copilot-llm:8000/v1`). The backend's values are kept by clients that
-never set a provider, such as a script calling `/v1/assistant/query`. Either
-way the choice is per session and does not affect other users. All the backend
+These are the starting values of every session. A desktop on **Use the
+server's configuration** (the default) keeps them, and shows in its Copilot
+panel and in *Settings ▸ Copilot* why the copilot cannot answer when they are
+wrong (a refused URL, no model or several). An explicit choice in a desktop's
+*Settings ▸ Copilot* replaces them for that user's session only; going back to
+**Use the server's configuration** restores them. Up to 1.0.11 the desktop's
+default was **None**, which replaced them, so on those releases choose **Your
+server** and enter the URL the *backend* reaches (with the full stack,
+`http://copilot-llm:8000/v1`). All the backend
 variables are listed in the [Configuration reference](../configuration.md#copilot).
 
 ## Backend requirement

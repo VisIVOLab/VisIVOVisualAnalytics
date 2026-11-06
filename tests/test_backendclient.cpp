@@ -657,3 +657,93 @@ void TestBackendClient::noLocalBackend_aTunnelKeepsItsToken()
     BackendClient::setNoLocalBackend(false);
     QVERIFY(BackendClient::isLocalBackendUrl(QStringLiteral("http://localhost:18910")));
 }
+
+
+// ── Copilot status / config: why the copilot is off ──────────────────────────
+
+void TestBackendClient::parseAssistantStatus_readsProblem()
+{
+    // The refused-VISIVO_LLM_BASE_URL case: null provider, with a reason.
+    const QJsonObject o{ { QStringLiteral("configured"), false },
+                         { QStringLiteral("provider"), QStringLiteral("null") },
+                         { QStringLiteral("problem"),
+                           QStringLiteral("  VISIVO_LLM_BASE_URL is refused: not http(s).\n") },
+                         { QStringLiteral("n_tools"), 25 } };
+    const auto r = BackendClient::parseAssistantStatus(o);
+    QVERIFY(r.valid);
+    QVERIFY(r.error.isEmpty());
+    QVERIFY(!r.configured);
+    QCOMPARE(r.provider, QStringLiteral("null"));
+    QCOMPARE(r.problem, QStringLiteral("VISIVO_LLM_BASE_URL is refused: not http(s)."));
+}
+
+void TestBackendClient::parseAssistantStatus_olderBackendHasNoProblem()
+{
+    // A backend from before the field: everything else reads as before.
+    const QJsonObject o{ { QStringLiteral("configured"), true },
+                         { QStringLiteral("provider"), QStringLiteral("self-hosted") },
+                         { QStringLiteral("n_tools"), 25 } };
+    const auto r = BackendClient::parseAssistantStatus(o);
+    QVERIFY(r.valid);
+    QVERIFY(r.configured);
+    QCOMPARE(r.provider, QStringLiteral("self-hosted"));
+    QVERIFY(r.problem.isEmpty());
+
+    // An empty string means the same: no problem known.
+    QJsonObject cleared = o;
+    cleared.insert(QStringLiteral("problem"), QString());
+    QVERIFY(BackendClient::parseAssistantStatus(cleared).problem.isEmpty());
+}
+
+void TestBackendClient::parseAssistantStatus_rejectsABodyWithoutProvider()
+{
+    const auto r = BackendClient::parseAssistantStatus(
+            QJsonObject{ { QStringLiteral("detail"), QStringLiteral("Not Found") } });
+    QVERIFY(!r.valid);
+    QVERIFY(!r.error.isEmpty());
+    QVERIFY(r.problem.isEmpty());
+}
+
+void TestBackendClient::parseAssistantConfig_readsProblem()
+{
+    const QString why = QStringLiteral(
+            "No model is set and the self-hosted endpoint serves 2: a, b. Set "
+            "VISIVO_ASSISTANT_MODEL on the backend, or the Model field in Settings ▸ "
+            "Scientific Copilot.");
+    const QJsonObject o{ { QStringLiteral("valid"), true },
+                         { QStringLiteral("configured"), true },
+                         { QStringLiteral("provider"), QStringLiteral("self-hosted") },
+                         { QStringLiteral("problem"), why },
+                         { QStringLiteral("config"),
+                           QJsonObject{ { QStringLiteral("model"), QJsonValue::Null } } } };
+    const auto r = BackendClient::parseAssistantConfig(o);
+    QVERIFY(r.valid);
+    QVERIFY(r.configured);
+    QCOMPARE(r.provider, QStringLiteral("self-hosted"));
+    QCOMPARE(r.problem, why);
+    QVERIFY(r.model.isEmpty());   // null: no model set
+
+    QJsonObject withModel = o;
+    withModel.insert(QStringLiteral("config"),
+                     QJsonObject{ { QStringLiteral("model"), QStringLiteral("qwen") } });
+    QCOMPARE(BackendClient::parseAssistantConfig(withModel).model, QStringLiteral("qwen"));
+    QCOMPARE(BackendClient::parseAssistantStatus(withModel).model, QStringLiteral("qwen"));
+
+    // The model the backend picked by itself wins over the configured (none).
+    QJsonObject picked = o;
+    picked.insert(QStringLiteral("model"), QStringLiteral("only-one"));
+    QCOMPARE(BackendClient::parseAssistantStatus(picked).model, QStringLiteral("only-one"));
+    QCOMPARE(BackendClient::parseAssistantConfig(picked).model, QStringLiteral("only-one"));
+}
+
+void TestBackendClient::parseAssistantConfig_olderBackendHasNoProblem()
+{
+    const QJsonObject o{ { QStringLiteral("valid"), true },
+                         { QStringLiteral("configured"), false },
+                         { QStringLiteral("provider"), QStringLiteral("null") } };
+    const auto r = BackendClient::parseAssistantConfig(o);
+    QVERIFY(r.valid);
+    QVERIFY(!r.configured);
+    QCOMPARE(r.provider, QStringLiteral("null"));
+    QVERIFY(r.problem.isEmpty());
+}

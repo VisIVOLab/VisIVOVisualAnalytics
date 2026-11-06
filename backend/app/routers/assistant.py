@@ -73,6 +73,10 @@ class AssistantConfigRequest(BaseModel):
     base_url_key: str | None = None        # key for the self-hosted endpoint (kept
                                            # separate from openai_key for security)
     model: str | None = None
+    # Start again from what the operator configured through the environment,
+    # then apply the fields above. The desktop's "use the server's
+    # configuration" sends this alone.
+    reset: bool = False
 
 
 # Provider config + built provider are PER SESSION so users sharing one backend
@@ -106,6 +110,9 @@ async def assistant_status(_: None = _auth, session: Session = Depends(get_sessi
         "provider": provider.name,
         # Why the copilot cannot answer, when that is known; "" otherwise.
         "problem": provider.problem,
+        # The model in use, including one the backend picked by itself
+        # (config.model is only what was configured); "" if not known yet.
+        "model": provider.model_in_use,
         "n_tools": len(tool_specs()),
         "config": public_config(_session_config(session)),
     }
@@ -117,8 +124,11 @@ async def assistant_config(request: AssistantConfigRequest, _: None = _auth,
     """Choose the LLM back-end at runtime FOR THIS SESSION — Claude, OpenAI/ChatGPT,
     or your own server (base_url of an OpenAI-compatible endpoint). Keys are stored
     in memory on the session only (not persisted, never logged/returned). Rebuilds
-    that session's provider."""
-    cfg = _session_config(session)
+    that session's provider. With ``reset`` the session first goes back to the
+    environment's configuration (a refused VISIVO_LLM_BASE_URL included)."""
+    # A reset is built apart and kept only if the fields are valid, so a 422
+    # leaves the session as it was.
+    cfg = _default_config() if request.reset else _session_config(session)
     try:
         _configure_provider(
             cfg,
@@ -127,6 +137,7 @@ async def assistant_config(request: AssistantConfigRequest, _: None = _auth,
             base_url_key=request.base_url_key, model=request.model)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    session.assistant_config = cfg
     _invalidate_provider(session)
     provider = _get_provider(session)
     return {
@@ -135,6 +146,7 @@ async def assistant_config(request: AssistantConfigRequest, _: None = _auth,
         "provider": provider.name,
         # Why the copilot cannot answer, when that is known; "" otherwise.
         "problem": provider.problem,
+        "model": provider.model_in_use,
         "config": public_config(cfg),
     }
 

@@ -720,33 +720,71 @@ BackendAssistantResult BackendClient::parseAssistantResult(const QJsonObject &o)
     return result;
 }
 
-BackendAssistantConfigResult BackendClient::setAssistantConfig(
-        const QString &provider, const QString &anthropicKey, const QString &openaiKey,
-        const QString &baseUrl, const QString &baseUrlKey, const QString &model)
+BackendAssistantConfigResult BackendClient::setAssistantConfig(const QJsonObject &body)
 {
     BackendAssistantConfigResult result;
     QString error;
-    QJsonObject body;
-    // Every field is sent (empty string == "clear" server-side) so switching
-    // provider fully resets stale state, including the model. The caller
-    // (AssistantPanel) sets exactly the fields relevant to the chosen provider.
-    if (!provider.isEmpty())
-        body.insert(QStringLiteral("provider"), provider);
-    body.insert(QStringLiteral("anthropic_key"), anthropicKey);
-    body.insert(QStringLiteral("openai_key"), openaiKey);
-    body.insert(QStringLiteral("base_url"), baseUrl);
-    body.insert(QStringLiteral("base_url_key"), baseUrlKey);
-    body.insert(QStringLiteral("model"), model);
     const QByteArray payload = performPost(
             QUrl(m_baseUrl + QStringLiteral("/v1/assistant/config")), QJsonDocument(body), error);
     if (!error.isEmpty()) {
         result.error = error;
         return result;
     }
-    const QJsonObject o = QJsonDocument::fromJson(payload).object();
+    return parseAssistantConfig(QJsonDocument::fromJson(payload).object());
+}
+
+namespace {
+// The model questions go to: the backend's top-level "model" (which includes
+// one it picked by itself), else, from a backend older than that field, the
+// configured one. "" when neither is known.
+QString assistantModelInUse(const QJsonObject &o)
+{
+    const QJsonValue inUse = o.value(QStringLiteral("model"));
+    if (inUse.isString())
+        return inUse.toString();
+    // config.model is null when none is set
+    return o.value(QStringLiteral("config")).toObject().value(QStringLiteral("model")).toString();
+}
+}  // namespace
+
+BackendAssistantConfigResult BackendClient::parseAssistantConfig(const QJsonObject &o)
+{
+    BackendAssistantConfigResult result;
     result.valid = o.value(QStringLiteral("valid")).toBool(false);
     result.configured = o.value(QStringLiteral("configured")).toBool(false);
     result.provider = o.value(QStringLiteral("provider")).toString();
+    // Absent on a backend older than the field: no problem is then known.
+    result.problem = o.value(QStringLiteral("problem")).toString().trimmed();
+    result.model = assistantModelInUse(o);
+    return result;
+}
+
+BackendAssistantStatusResult BackendClient::assistantStatus()
+{
+    BackendAssistantStatusResult result;
+    QString error;
+    const QByteArray payload = performGet(
+            QUrl(m_baseUrl + QStringLiteral("/v1/assistant/status")), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    return parseAssistantStatus(QJsonDocument::fromJson(payload).object());
+}
+
+BackendAssistantStatusResult BackendClient::parseAssistantStatus(const QJsonObject &o)
+{
+    BackendAssistantStatusResult result;
+    // The route has no "valid" flag: a body naming the provider is a status.
+    if (!o.contains(QStringLiteral("provider"))) {
+        result.error = QStringLiteral("The backend sent no copilot status.");
+        return result;
+    }
+    result.valid = true;
+    result.configured = o.value(QStringLiteral("configured")).toBool(false);
+    result.provider = o.value(QStringLiteral("provider")).toString();
+    result.problem = o.value(QStringLiteral("problem")).toString().trimmed();
+    result.model = assistantModelInUse(o);
     return result;
 }
 

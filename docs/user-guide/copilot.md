@@ -19,7 +19,8 @@ tab (alongside Properties / Analysis / Provenance). Type in the box at the
 bottom and press **Send**.
 
 The provider status is shown at the bottom of the panel, e.g.
-`Provider: self-hosted (ready)` or `Provider: null (not configured)`.
+`Provider: server's configuration (self-hosted, model qwen) · ready` or
+`Provider: anthropic · ready`.
 
 The Copilot is available in several viewers, each with the analysis tools and
 reversible actions that make sense for its data:
@@ -64,12 +65,12 @@ to the current viewer (a cube offers *"Find the sources"*, an image *"Measure th
 flux at RA … Dec …"*, a catalogue *"What's the redshift range?"*, …) — click one
 to send it and see what the copilot can do.
 
-## Choosing a provider (⚙)
+## Choosing a provider
 
 Natural-language answers need a Large Language Model. The tool catalogue works
 **without** one — but then the copilot just runs the tools and reports the raw
-numbers instead of a prose summary. Click the **⚙ (gear)** in the Copilot panel
-to choose where the language model runs:
+numbers instead of a prose summary. Choose where the language model runs in
+**Settings ▸ Scientific Copilot** (the **Copilot** tab):
 
 ```{list-table}
 :header-rows: 1
@@ -78,6 +79,11 @@ to choose where the language model runs:
 * - Provider
   - What it is
   - You supply
+* - **Use the server's configuration** (the default)
+  - Whatever the backend's operator set up through its environment
+    (see [Configuring the backend](copilot-self-hosted.md#configuring-the-backend-instead-of-the-client)),
+    or no model if nothing was.
+  - Nothing.
 * - **Claude**
   - Anthropic's cloud models.
   - An Anthropic API key.
@@ -90,15 +96,44 @@ to choose where the language model runs:
     per-token cost.
   - The endpoint **URL** (e.g. `http://your-gpu-host:8000/v1`) and, if it
     requires one, its **key**.
-* - **None**
+* - **Off**
   - No LLM — tools still run, answers are raw tool output.
   - Nothing.
 ```
+
+Every choice except the first replaces the server's configuration for your
+session only; other users of the same backend keep theirs. A choice saved by an
+earlier release is kept, except **None**: it was the default those releases
+wrote at first start, so it now reads as **Use the server's configuration**,
+unless a key or a server URL was saved with it, in which case it reads as
+**Off**.
 
 Keys are held in the backend's memory only; they are **never** written to disk
 or returned to the client. The self-hosted endpoint key is kept strictly
 separate from any cloud key, so a stored cloud key can never be redirected to an
 arbitrary URL.
+
+### When the copilot cannot answer
+
+When the backend knows why the copilot cannot answer, the reason is shown in
+red above the conversation, and again under the provider fields in
+**Settings ▸ Scientific Copilot**, where it is fixed. The banner names the
+configuration it is about: the server's or your own choice. Two cases are
+reported:
+
+- **No model, and the server serves none or several.** The message lists the
+  models the server serves. With **Your server**, one of them goes in the
+  **Model** field; with the server's configuration, the operator sets
+  `VISIVO_ASSISTANT_MODEL`, or you choose **Your server** and give the model
+  yourself. The backend asks the server at the first question, so this message
+  appears after that question rather than at connection.
+- **The operator's `VISIVO_LLM_BASE_URL` was refused** (not an http(s) URL, or
+  with credentials, a query string or a fragment in it). This shows at
+  connection, with **Use the server's configuration**. The operator corrects
+  the variable; meanwhile any explicit choice works.
+
+The message goes as soon as the backend no longer reports a problem, for
+example once a model is set and Settings is closed with **OK**.
 
 :::{tip}
 Running your own model? See **[Self-hosted copilot LLM](copilot-self-hosted)**

@@ -64,6 +64,7 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/vtk/ImageLod.cpp
     ${VISIVO_ROOT}/src/gui/PvPathGeometry.cpp
     ${VISIVO_ROOT}/src/gui/OrbitPath.cpp
+    ${VISIVO_ROOT}/src/gui/CopilotStatus.cpp
 )
 set_target_properties(visivo_test_support PROPERTIES AUTOMOC ON)
 target_include_directories(visivo_test_support
@@ -175,6 +176,10 @@ add_executable(VisIVOTests
     TestCosmologyTools.h
     test_cosmology_tools.cpp
     test_backend_task_follow.cpp
+    TestCopilotStatus.h
+    test_copilot_status.cpp
+    TestCopilotChoice.h
+    test_copilot_choice.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

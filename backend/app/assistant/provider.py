@@ -48,6 +48,12 @@ class AssistantProvider:
     #: nothing is known to. Never carries a secret.
     problem: str = ""
 
+    @property
+    def model_in_use(self) -> str:
+        """The model questions go to now, for the status route; "" if none is
+        known yet (a self-hosted server asked only at the first question)."""
+        return getattr(self, "_model", None) or ""
+
     def complete(
         self, system: str, history: list[dict[str, Any]], tools: list[dict[str, Any]]
     ) -> ProviderResponse:
