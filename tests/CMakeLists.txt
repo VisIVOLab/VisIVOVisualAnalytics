@@ -172,6 +172,8 @@ add_executable(VisIVOTests
     TestSourceTable.h
     test_source_table.cpp
     TestBackendTaskFollow.h
+    TestCosmologyTools.h
+    test_cosmology_tools.cpp
     test_backend_task_follow.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)

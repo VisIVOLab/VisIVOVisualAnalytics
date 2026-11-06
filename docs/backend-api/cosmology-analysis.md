@@ -5,11 +5,18 @@ and skeletons.
 
 ## Cosmology
 
+Every route on this page has a desktop entry; the table in
+[Cosmology tools](../user-guide/cosmology.md#what-each-route-is-for) says which.
+
 ### `POST /v1/cosmology/distance`
-Single redshift.
+Single redshift under a named preset.
 ```json
-{ "redshift": 0.5, "model": "Planck18" }
+{ "z": 0.5, "model": "Planck18" }
 ```
+Returns `comoving_Mpc`, `luminosity_Mpc` and `proper_motion_kpc_per_arcsec`
+(the proper transverse scale, kpc per arcsecond; 0 at z = 0). It has no
+angular-diameter distance, lookback time or age: for a preset other than
+Planck18 the desktop calculator leaves those columns empty.
 
 ### `POST /v1/cosmology/distance/batch`
 ```json
@@ -21,10 +28,17 @@ non-finite entry comes back as `null` at its position rather than as 0 Mpc,
 which would be indistinguishable from a genuine z = 0.
 
 ### `GET /v1/cosmology/distances`
-The same quantities for one redshift plus lookback time and the age of the
-universe, for an arbitrary flat-or-open `LambdaCDM` (`H0`, `Om0`, `Ode0` as query
-parameters; omitted ones default to Planck18). No client binding yet — the
-desktop only offers the four named models above.
+Comoving, luminosity and angular-diameter distances (Mpc), lookback time and
+the age of the universe at z (Gyr), for one redshift in `[0, 20]`. With no
+parameters it computes astropy's `Planck18`; with `H0`, `Om0`, `Ode0` as query
+parameters an arbitrary flat-or-open `LambdaCDM` (`H0` in `[40, 120]` km/s/Mpc,
+`Om0` and `Ode0` in `[0, 1.5]`, `Om0 + Ode0 ≤ 1`; omitted ones default to
+Planck18's). That model has `Tcmb0 = 0`, so no radiation term. Unphysical input
+is refused with 422.
+
+Client binding: `BackendClient::requestCosmologyDistances(z, custom)`. The
+desktop calculator uses it for Planck18's D_A, lookback time and age and for
+every custom model; the 3-D catalogue viewer uses it for its Custom model.
 
 ### `POST /v1/cosmology/angular_power/{dataset_id}` · `GET /v1/cosmology/powerspectrum/{dataset_id}`
 Azimuthally averaged 2-D power spectrum of an image plane (the GET is the
@@ -108,6 +122,10 @@ cosmology grouping. Requires scikit-image (503 without it).
 | `mode` | `skeleton` (medial-axis thinning of the bright regions) or `void` (skeleton of the regions below the threshold) |
 | `smooth_sigma_pix` | Gaussian pre-smoothing σ in pixels; 0 disables it |
 | `persistence_threshold` | Drops skeleton pixels whose intensity is below it; `null` disables it |
+
+The desktop calls the JSON route (`BackendClient::requestSkeleton`), because
+it is the one that reports the threshold applied when `null` was sent, which
+the product's replay record needs.
 
 JSON response: `valid`, `error`, `channel`, `width`, `height`, `threshold`
 (the value used), `mode`, `smooth_sigma_pix`, `n_skeleton_pixels`,

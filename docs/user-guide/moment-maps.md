@@ -198,6 +198,11 @@ You can right-click the moment dock and:
 - **Send via SAMP** — broadcast to TOPCAT / Aladin
   ([Catalogues & HiPS](catalogues-hips#samp)).
 
+*Tools ▸ Maps ▸ Angular Power Spectrum of Moment Map* and *Skeleton / Voids of
+Moment Map* analyse the moment on screen. They first write it at full
+resolution to the Workspace Exports. See
+[Cosmology tools](cosmology.md#angular-power-spectrum).
+
 ## Performance & caching
 
 - The computation runs in the backend worker pool. Default `VISIVO_WORKERS=4`

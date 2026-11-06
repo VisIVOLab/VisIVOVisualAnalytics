@@ -222,6 +222,7 @@ user-guide/kinematic-lasso
 user-guide/polarimetry
 user-guide/source-finding
 user-guide/catalogues-hips
+user-guide/cosmology
 user-guide/vlkb-archive
 user-guide/sed-fitting
 user-guide/simulations

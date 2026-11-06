@@ -1,5 +1,6 @@
 #include "BackendClient.h"
 #include "DiagnosticsManager.h"
+#include "SofiaSuggest.h"   // visivo::backendErrorDetail
 
 #include <QByteArray>
 #include <QDataStream>
@@ -242,83 +243,52 @@ BackendRmSynthesisResult BackendClient::requestRmSynthesis(
     return result;
 }
 
+namespace {
+/// The reason a refused request gives in its body (FastAPI's `detail`), else
+/// the transport's own message.
+QString refusalReason(const QByteArray &body, const QString &transportError)
+{
+    const QString detail = body.trimmed().isEmpty()
+            ? QString()
+            : visivo::backendErrorDetail(QString::fromUtf8(body));
+    return detail.isEmpty() ? transportError : detail;
+}
+}   // namespace
+
 BackendAngularPowerResult BackendClient::requestAngularPower(
         const QString &datasetId,
         int channel,
         int nBins)
 {
-    BackendAngularPowerResult result;
     QString error;
     const QJsonDocument body(QJsonObject{
         { QStringLiteral("channel"), channel },
         { QStringLiteral("n_bins"),  nBins },
     });
     const QByteArray raw =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cosmology/angular_power/") + datasetId),
-                        body, error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid      = obj.value(QStringLiteral("valid")).toBool();
-    result.error      = obj.value(QStringLiteral("error")).toString();
-    result.channel    = obj.value(QStringLiteral("channel")).toInt();
-    result.width      = obj.value(QStringLiteral("width")).toInt();
-    result.height     = obj.value(QStringLiteral("height")).toInt();
-    result.nBins      = obj.value(QStringLiteral("n_bins")).toInt();
-    result.kUnit      = obj.value(QStringLiteral("k_unit")).toString();
-    result.powerUnit  = obj.value(QStringLiteral("power_unit")).toString();
-    for (const QJsonValue &v : obj.value(QStringLiteral("k_bins")).toArray())
-        result.kBins.append(v.toDouble());
-    for (const QJsonValue &v : obj.value(QStringLiteral("power")).toArray())
-        result.power.append(v.toDouble());
-    return result;
+            performPostRetryingBackpressure(
+                    QUrl(m_baseUrl + QStringLiteral("/v1/cosmology/angular_power/") + datasetId),
+                    body, error);
+    if (!error.isEmpty()) {
+        BackendAngularPowerResult result;
+        result.error = refusalReason(raw, error);
+        return result;
+    }
+    return parseAngularPowerObject(QJsonDocument::fromJson(raw).object());
 }
 
-BackendSkeletonResult BackendClient::requestSkeleton(
-        const QString &datasetId,
-        int channel,
-        double *threshold,
-        const QString &mode)
+BackendSkeletonResult BackendClient::requestSkeleton(const QString &datasetId,
+                                                     const BackendSkeletonRequest &request)
 {
-    BackendSkeletonResult result;
     QString error;
-    QJsonObject reqObj;
-    reqObj.insert(QStringLiteral("channel"), channel);
-    reqObj.insert(QStringLiteral("mode"), mode);
-    if (threshold)
-        reqObj.insert(QStringLiteral("threshold"), *threshold);
-    else
-        reqObj.insert(QStringLiteral("threshold"), QJsonValue::Null);
-    const QJsonDocument body(reqObj);
-    const QByteArray raw =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/analysis/skeleton/") + datasetId
-                             + QStringLiteral("/binary")),
-                        body, error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-
-    // Try binary parse; if it fails parse as JSON (503 error response)
-    if (raw.size() > 12) {
-        int offset = 0;
-        BinaryArrayResult frame;
-        if (parseBinaryFrame(raw, offset, frame)) {
-            result.valid          = true;
-            result.channel        = channel;
-            result.width          = frame.cols;
-            result.height         = frame.rows;
-            result.mode           = mode;
-            {
-                const int nFloats = frame.data.size() / static_cast<int>(sizeof(float));
-                const float *ptr = reinterpret_cast<const float *>(frame.data.constData());
-                result.nSkeletonPixels = static_cast<int>(
-                    std::count_if(ptr, ptr + nFloats, [](float v) { return v > 0.f; }));
-            }
-            result.data = frame.data;   // QByteArray of raw float32 LE bytes
-            return result;
-        }
+    const QByteArray raw = performPostRetryingBackpressure(
+            QUrl(m_baseUrl + QStringLiteral("/v1/analysis/skeleton/") + datasetId),
+            QJsonDocument(skeletonRequestBody(request)), error);
+    if (!error.isEmpty()) {
+        BackendSkeletonResult result;
+        // 503 when scikit-image is missing on the server: its detail says so.
+        result.error = refusalReason(raw, error);
+        return result;
     }
-    // Fall back to JSON error
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.error   = obj.value(QStringLiteral("error")).toString();
-    result.install = obj.value(QStringLiteral("install")).toString();
-    result.feature = obj.value(QStringLiteral("feature")).toString();
-    return result;
+    return parseSkeletonObject(QJsonDocument::fromJson(raw).object());
 }

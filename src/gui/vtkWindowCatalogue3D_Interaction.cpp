@@ -527,6 +527,8 @@ void vtkWindowCatalogue3D::updateGeometryMode()
     // Ray-traced: the view is drawn on the GPU, the shapes stay as they were.
     if (this->geometryMode != GeometryMode::Raytraced)
         this->updateGlyphPipeline();
+    else
+        this->dropCustomCosmologyForServerView(u"The ray-traced view"_s);
     // Points and splats are all one size, the slider's: no size column, and
     // the slider called what it sets.
     const bool particles = this->geometryMode == GeometryMode::Point

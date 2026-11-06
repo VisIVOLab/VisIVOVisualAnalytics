@@ -3,6 +3,7 @@
 
 #include "AboutDialog.h"
 #include "AuthWrapper.h"
+#include "CosmologyCalculatorDialog.h"
 #include "app/BackendClient.h"
 #include "app/BackendClientFactory.h"
 #include "app/SampClient.h"
@@ -256,6 +257,22 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 
     // ── Science menu ──────────────────────────────────────────────────────────
     this->buildCombineMenu();
+
+    // ── Tools menu ────────────────────────────────────────────────────────────
+    // Tools that need no dataset. The cosmology calculator was reachable only
+    // through the Copilot (issue #29); its numbers all come from the backend.
+    auto *toolsMenu = new QMenu(u"Tools"_s, this);
+    toolsMenu->setToolTipsVisible(true);
+    this->menuBar()->insertMenu(ui->menuHelp->menuAction(), toolsMenu);
+    auto *cosmologyAction = toolsMenu->addAction(u"Cosmology Calculator\u2026"_s);
+    cosmologyAction->setToolTip(
+            u"Comoving, luminosity and angular-diameter distances, lookback time, age "
+            u"and kpc per arcsecond for one or many redshifts, under Planck18, "
+            u"Planck15, Planck13, WMAP9 or a custom \u039bCDM."_s);
+    QObject::connect(cosmologyAction, &QAction::triggered, this, [this]() {
+        CosmologyCalculatorDialog::showCalculator(this, this->settings->getBackendUrl(),
+                                                  this->settings->getBackendToken());
+    });
 
     // ── Setup Menu About ──────────────────────────────────────────────────────
     QObject::connect(ui->actionAbout, &QAction::triggered, this, &MainWindow::openAboutDialog);

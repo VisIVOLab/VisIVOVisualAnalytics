@@ -8,6 +8,8 @@
 #include "LassoReplay.h"
 #include "LinkedWindowRegistry.h"
 #include "ProductRegistry.h"
+#include "PowerSpectrumSlope.h"
+#include "CosmologyReplay.h"
 #include "RemoteRenderQueue.h"
 #include "RemoteSliceCache.h"
 #include "SpectralAxisTypes.h"
@@ -23,6 +25,8 @@ class PvController;
 class RaytraceOutput;
 class RaytraceViewport;
 class VolumeRaytracePanel;
+class AngularPowerSettings;
+class SkeletonSettings;
 
 #include "CubeViewportGeometry.h"
 
@@ -561,7 +565,8 @@ private:
     /// [−a, a], so a diverging colour map puts its neutral colour at zero.
     QString addImageProduct(const QString &kind, const QString &stableKey, const QString &label,
                             vtkImageData *img, const QString &unit, const QVariantMap &params,
-                            const QString &lutName, bool symmetricRange = false);
+                            const QString &lutName, bool symmetricRange = false,
+                            const QList<ReplayStep> &replay = {});
     /// #5: spectrum1d twin of addImageProduct — promote a 1-D generator result (Stack, …) to a
     /// first-class SPEC product: cache it in m_products1d, register it (renderer "spectrum1d"),
     /// mount it in a free pane (no-steal), or refresh every visible copy on a recompute.
@@ -829,8 +834,58 @@ private:
     QPointer<QAction> m_actPinSpectrum;
     QPointer<QAction> m_actOpenInVR;
 
+    // ── Moment-map texture tools (issue #29) ─────────────────────────────────
+    // The image viewer's angular power spectrum and skeleton / void detector,
+    // on the moment map on screen. The backend tools read a dataset, so the
+    // moment is first written to the Workspace Exports and opened there; the
+    // dataset is reused while that moment's pixels are unchanged.
+    QPointer<QAction> m_actMomentPower;
+    QPointer<QAction> m_actMomentSkeleton;
+    QPointer<AngularPowerSettings> m_momentPowerSettings;
+    QPointer<SkeletonSettings> m_momentSkeletonSettings;
+    bool m_momentMapToolBusy{ false };
+    int m_momentPowerRuns{ 0 };
+    int m_momentSkeletonRuns{ 0 };
+    /// A moment written out for the map tools: its dataset on the backend, and
+    /// the recipe (and generation) it was written from.
+    struct MomentDataset
+    {
+        QString datasetId;
+        QString path;
+        int generation{ -1 };
+        visivo::cosmology::MomentSource source;
+    };
+    QHash<QString, MomentDataset> m_momentDatasets;   ///< moment productId → its dataset
+    QHash<QString, std::shared_ptr<BackendAngularPowerResult>> m_momentPowerSpectra;
+    QHash<QString, visivo::PowerSlopeOptions> m_momentPowerFits;
+    QHash<QString, QString> m_momentPowerLabels;
+    void setupMomentMapTextureTools();
+    /// The moment map the tools act on: a visible moment pane, else the moment
+    /// computed last; empty when there is none.
+    QString momentProductForMapTools() const;
+    QString momentMapToolSourceText() const;
+    void refreshMomentMapToolSources();
+    void runMomentAngularPower();
+    void runMomentSkeleton();
+    /// Write the moment out (or reuse the dataset already written), then run
+    /// @p analysis with its dataset id on a pool thread. @p done gets its result
+    /// on the GUI thread.
+    template <typename Result>
+    void withMomentDataset(const QString &title, const QString &momentProductId,
+                           std::function<Result(BackendClient &, const QString &)> analysis,
+                           std::function<void(const Result &, const MomentDataset &,
+                                              const QString &error)> done);
+    void showMomentPowerSpectrum(const QString &productId);
+
     /// Rebuild the Tools menu from cubeTools(), one submenu per group.
     void regroupToolsMenu();
+    /// Which Tools submenu holds each tool (filled by regroupToolsMenu).
+    QHash<QAction *, QPointer<QMenu>> m_toolSubmenu;
+    /// A disabled line under a greyed-out tool saying why, in the menu itself.
+    /// macOS shows no tooltip for a disabled item of its native menu bar, so
+    /// the gate's reason (tooltip + status tip) never reached a menu user.
+    QHash<QAction *, QPointer<QAction>> m_toolGateNotes;
+    void refreshToolMenuGateNotes();
     /// Rebuild the View menu in a deliberate order (Workspace / Display /
     /// Animation / Data, then the developer entries). Runs once, after every
     /// entry exists.

@@ -563,6 +563,14 @@ set(PROJECT_SOURCES
         src/gui/NoiseRegionDialog.h
         src/gui/ToolResultDialog.cpp
         src/gui/ToolResultDialog.h
+        src/gui/CosmologyCalculatorDialog.cpp
+        src/gui/CosmologyCalculatorDialog.h
+        src/gui/CosmologyToolWidgets.cpp
+        src/gui/CosmologyToolWidgets.h
+        src/app/CosmologyModel.h
+        src/app/CosmologyDistanceTable.h
+        src/app/CosmologyReplay.h
+        src/app/PowerSpectrumSlope.h
         src/gui/SidebarPanel.cpp
         src/gui/SidebarPanel.h
         src/gui/vtkWindowCatalogue3D.cpp
@@ -580,6 +588,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_RemoteSlice.cpp
         src/gui/vtkWindowCube_Probe.cpp
         src/gui/vtkWindowCube_Polarisation.cpp
+        src/gui/vtkWindowCube_Cosmology.cpp
         src/gui/vtkWindowCube_Region.cpp
         src/gui/vtkWindowCube_Setup.cpp
         src/gui/vtkWindowCube_Kinematic.cpp
@@ -630,6 +639,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowImage_Contours.cpp
         src/gui/vtkWindowImage_Annotations.cpp
         src/gui/vtkWindowImage_Products.cpp
+        src/gui/vtkWindowImage_Cosmology.cpp
         src/gui/vtkWindowImage_Region.cpp
         src/gui/vtkWindowImage_Setup.cpp
         src/gui/vtkWindowVbt.cpp

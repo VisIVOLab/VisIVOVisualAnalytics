@@ -1,5 +1,6 @@
 #include "BackendClient.h"
 #include "DiagnosticsManager.h"
+#include "SofiaSuggest.h"   // visivo::refusalText
 
 #include <QByteArray>
 #include <QDataStream>
@@ -199,6 +200,43 @@ BackendCosmologyBatchResult BackendClient::requestCosmologyDistanceBatch(
         result.distancesMpc.append(v.isDouble() ? v.toDouble()
                                                 : std::numeric_limits<double>::quiet_NaN());
     return result;
+}
+
+BackendCosmologyDistancesResult BackendClient::requestCosmologyDistances(
+        double z, const BackendCosmologyParams *custom) const
+{
+    QUrl url(m_baseUrl + QStringLiteral("/v1/cosmology/distances"));
+    url.setQuery(cosmologyDistancesQuery(z, custom), QUrl::StrictMode);
+    QString error;
+    const QByteArray payload = performGet(url, error);
+    if (!error.isEmpty()) {
+        BackendCosmologyDistancesResult result;
+        // A refusal's reason is FastAPI's `detail`, when the body made it here.
+        const QJsonObject body = QJsonDocument::fromJson(payload).object();
+        const QString detail = body.value(QStringLiteral("detail")).toString();
+        result.error = detail.isEmpty() ? error : detail;
+        return result;
+    }
+    return parseCosmologyDistancesObject(QJsonDocument::fromJson(payload).object());
+}
+
+BackendCosmologyDistanceResult BackendClient::requestCosmologyDistance(double z,
+                                                                       const QString &model) const
+{
+    const QUrl url(m_baseUrl + QStringLiteral("/v1/cosmology/distance"));
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("z"), z },
+            { QStringLiteral("model"), model },
+    });
+    QString error;
+    int status = 0;
+    const QByteArray payload = performPost(url, body, error, nullptr, &status);
+    if (!error.isEmpty()) {
+        BackendCosmologyDistanceResult result;
+        result.error = visivo::refusalText(status, payload, error);
+        return result;
+    }
+    return parseCosmologyDistanceObject(QJsonDocument::fromJson(payload).object());
 }
 
 BackendTargetResolveResult BackendClient::resolveTarget(const QString &name) const

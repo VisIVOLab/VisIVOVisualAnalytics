@@ -57,6 +57,9 @@ For redshift-derived distances pick one of:
 - **Planck15** / **Planck13** / **WMAP9** — computed by the backend
   (`POST /v1/cosmology/distance/batch`, async). The viewer re-projects
   the cloud automatically when results arrive.
+- **Custom** — the ΛCDM set in *Tools ▸ Cosmology Calculator* (**Use in 3-D
+  Catalogues**), computed by the backend. See
+  [Cosmology tools](cosmology.md#the-cosmology-of-a-3-d-catalogue).
 
 ```{tip}
 For catalogues with explicit redshifts, switching between Planck18 and
