@@ -84,9 +84,24 @@ using namespace Qt::StringLiterals;
 
 // ── MainWindow: Sky (extracted from MainWindow.cpp) ──
 
+void MainWindow::startPanoramicView()
+{
+    if (this->m_panoramicStarted)
+        return;
+    this->m_panoramicStarted = true;
+    auto webobj = new WebViewProcess(ui->view);
+    auto webChannel = new QWebChannel(ui->view);
+    webChannel->registerObject(u"webobj"_s, webobj);
+    ui->view->page()->setWebChannel(webChannel);
+    QObject::connect(webobj, &WebViewProcess::processJavascript, this,
+                     &MainWindow::skyRegionSelected);
+    this->loadPanoramicView();
+}
+
 void MainWindow::revealVLKBTab()
 {
     if (!this->m_tabs || !this->m_vlkbPanel) return;
+    this->startPanoramicView();   // the web page is loaded on first use
 
     // Already in the tab strip → just focus it.
     const int existing = this->m_tabs->indexOf(this->m_vlkbPanel);
