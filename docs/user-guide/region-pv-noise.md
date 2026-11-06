@@ -55,14 +55,14 @@ The plot itself is **mean per channel over the region** across **all
 cube channels** (not just the current slice). The stats bar
 (`N / Min / Max / Mean / RMS / ∫`), channel marker, theme, and CSV
 export all work identically to pixel-probe mode; so do
-[line identification](spectral-tools#line-identification-overlaying-a-line-list)
-and the [Gaussian fit](spectral-tools#gaussian-line-fit).
+[line identification](spectral-tools.md#line-identification-overlaying-a-line-list)
+and the [Gaussian fit](spectral-tools.md#gaussian-line-fit).
 
 To **compare several regions**, click **Compare** in the Inspector's SPECTRUM
 panel before drawing the next region: the current mean spectrum is kept as a
 colour-coded comparison curve and the next region's spectrum overlays on
 the same axes with a legend. See
-[Comparing regions (overlaid spectra)](cube-viewer#comparing-regions-overlaid-spectra).
+[Comparing regions (overlaid spectra)](cube-viewer.md#comparing-regions-overlaid-spectra).
 
 ### Statistics shown
 
@@ -114,10 +114,12 @@ and the ring appeared only after you had already chosen.)
 
 ### Sending the result somewhere
 
-- *Copy* the statistics block to the clipboard (CSV-ish format).
-- *Export PNG* of the region overlay together with the underlying slice
-  / moment.
-- *Send via SAMP* to TOPCAT: the region polygon is broadcast as a VOTable.
+- Select the region's row in **Session Data**: the Inspector shows its
+  numbers, which can be selected and copied (right-click ▸ *Copy*), and
+  **Export recipe as JSON…** saves them with the parameters they were
+  measured with.
+- *Tools ▸ Export Region (CRTF/DS9)…* writes the region itself, for CARTA or
+  DS9.
 
 ---
 
@@ -404,5 +406,5 @@ region restricted to those channels.
 - [Moment maps](moment-maps) — apply the noise as RMS / threshold mask.
 - [Spectral tools](spectral-tools) — baseline subtraction uses line-free
   channels you can identify with the noise tool.
-- Developer reference: [`/v1/cube/noise`](../backend-api#cube),
-  [`/v1/cube/pv`](../backend-api#cube).
+- Developer reference: [`/v1/cube/noise`](../backend-api/cube.md),
+  [`/v1/cube/pv`](../backend-api/cube.md).

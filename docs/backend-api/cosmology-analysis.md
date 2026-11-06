@@ -8,22 +8,26 @@ and skeletons.
 ### `POST /v1/cosmology/distance`
 Single redshift.
 ```json
-{ "redshift": 0.5, "model": "Planck18" }
+{ "z": 0.5, "model": "Planck18" }
 ```
+Returns `{valid, error, z, model, comoving_Mpc, luminosity_Mpc,
+proper_motion_kpc_per_arcsec}`. `model` defaults to `Planck18`; an unknown
+model or a negative `z` is answered with `valid: false`.
 
 ### `POST /v1/cosmology/distance/batch`
 ```json
 { "redshifts": [0.1, 0.5, 1.0], "model": "Planck15" }
 ```
-Returns `distances_Mpc[]` in the same order. Supported models: `Planck18`,
+Returns comoving distances, `distances_Mpc[]`, in the same order. Supported models: `Planck18`,
 `Planck15`, `Planck13`, `WMAP9`. Up to 100 000 redshifts; a negative or
 non-finite entry comes back as `null` at its position rather than as 0 Mpc,
 which would be indistinguishable from a genuine z = 0.
 
 ### `GET /v1/cosmology/distances`
-The same quantities for one redshift plus lookback time and the age of the
-universe, for an arbitrary flat-or-open `LambdaCDM` (`H0`, `Om0`, `Ode0` as query
-parameters; omitted ones default to Planck18). No client binding yet — the
+Comoving, luminosity and angular-diameter distances (`comoving_Mpc`,
+`luminosity_Mpc`, `angular_diameter_Mpc`), lookback time and the age of the
+universe (`lookback_time_Gyr`, `age_Gyr`) for one redshift `z`, for an arbitrary flat-or-open `LambdaCDM` (`H0`, `Om0`, `Ode0` as query
+parameters; omitted ones default to Planck18; unphysical inputs are 422). No client binding yet — the
 desktop only offers the four named models above.
 
 ### `POST /v1/cosmology/angular_power/{dataset_id}` · `GET /v1/cosmology/powerspectrum/{dataset_id}`
@@ -34,8 +38,10 @@ It is a **relative texture spectrum, not a calibrated Cℓ**: a Hann-windowed
 `|FFT|²` with the window's power loss corrected, no mask or beam deconvolution.
 `calibrated` is `false` in every response for that reason.
 
-Returns `k_bins` (pixel⁻¹), `ell`, `cl` / `power`, `cl_err`, `n_modes`,
-`mode_coupling`, plus:
+Request: `channel` (default 0) and `n_bins` (default 64), in the body of the
+POST or as query parameters of the GET. Returns `k_bins` (pixel⁻¹, `k_unit`),
+`ell`, `cl` / `power` (`power_unit`), `cl_err`, `n_modes`, `mode_coupling`,
+`calibrated`, `note`, `channel`, `n_bins`, `width`, `height`, plus:
 
 | field | meaning |
 | --- | --- |

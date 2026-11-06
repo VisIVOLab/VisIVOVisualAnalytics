@@ -17,7 +17,7 @@ block slice scrolling.
 
 How to *get* a spectrum on screen in the first place (probe a pixel, a region
 mean, a 3-D pick) is in [Cube viewer → Extract
-Spectrum](cube-viewer#extract-spectrum-probe-a-single-pixel).
+Spectrum](cube-viewer.md#extract-spectrum-probe-a-single-pixel).
 
 ---
 
@@ -203,7 +203,7 @@ spectral profile:
 
 ### How to use it
 
-1. **Tools → Line-Width Map…** in the cube viewer or main window. The
+1. **Tools → Line-Width Map…** in the cube viewer. The
    dialog accepts:
    - **Channel start / end** — restrict the fit to where the line is. The
      fit is sensitive to including line-free noise channels.
@@ -287,7 +287,7 @@ baseline-subtracted data; it's registered on the backend with a fresh
    - **Fit channels**, how many channels actually contributed.
    - **New dataset ID**, the subtracted cube registered in the session.
    - A **caveat line** at the top of the summary when the fit deserves one, see
-     [Limits & caveats](#limits-caveats) below.
+     [Limits & caveats](#limits--caveats) below.
 
 ### Where the subtracted cube goes, and how to keep it
 
@@ -316,10 +316,10 @@ said `NAXIS = 3` while still describing a Stokes axis.
 ```
 
 ```{tip}
-Estimate the noise once first ([Noise tool](region-pv-noise#noise-estimation))
-to find line-free regions; or look at a spatially averaged spectrum
-(*Tools → Mean Spectrum* in the cube viewer) and pick the channels by
-eye in the Profile window.
+Estimate the noise once first ([Noise tool](region-pv-noise.md#noise-estimation))
+to find line-free regions; or look at a spatially averaged spectrum (draw a
+large Box region in the cube viewer: its mean-per-channel spectrum appears in
+the spectrum pane) and pick the channels by eye.
 ```
 
 ### Why subtract a baseline?
@@ -474,5 +474,5 @@ want their average / median spectrum for population-level analysis.
 - [Moment maps](moment-maps) — derive M0–M10 maps from a cube.
 - [Regions, PV, noise](region-pv-noise) — noise estimation, region
   statistics, PV extraction.
-- Developer reference: [`/v1/spectral/*` API](../backend-api#spectral)
+- Developer reference: [`/v1/spectral/*` API](../backend-api/spectral.md)
   — request/response shapes and binary frame format.

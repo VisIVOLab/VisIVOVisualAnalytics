@@ -10,7 +10,9 @@ catalogue queries).
 ```json
 { "url": "http://alasky.u-strasbg.fr/DSS/DSS2Merged" }
 ```
-Returns `survey_id`, `order_min`, `order_max`, `frame`, `tile_format`, `ra_center`, `dec_center`, `fov`.
+Returns `valid`, `error`, `survey_id`, `session_id`, `base_url`, `title`,
+`frame` (`equatorial`, `galactic` or `ecliptic`), `min_order`, `max_order`,
+`tile_width` and `tile_formats` (for example `["png", "jpeg"]`).
 
 ### `POST /v1/hips/hips2fits`
 Cut a FITS (or a picture) out of any HiPS survey, via the CDS hips2fits service,
@@ -32,7 +34,8 @@ is not a FITS when one was asked for is reported with the service's own
 `description` rather than saved under a `.fits` name.
 
 ### `GET /v1/hips/hips2fits/surveys`
-The starting survey list plus the accepted projections and stretches. The legacy
+`{surveys, projections, stretches, endpoint}`: the starting survey list, the
+accepted projections and stretches, and the hips2fits service the cutouts go to. The legacy
 carried these as a `QStringList` inside the dialog, so correcting a survey id
 meant releasing a client.
 
@@ -72,7 +75,9 @@ route answers `valid: false` with an install hint rather than failing.
 ### `POST /v1/hips/catalogue_overlay`
 Given a HiPS survey viewport and the path of a **CSV/TSV on the backend
 filesystem** (confined to the configured data roots), return the rows falling
-inside the field as `BackendHiPSCatalogueSource[]`. Selection is by angular
+inside the field as `sources` (`BackendHiPSCatalogueSource[]`, at most
+`max_sources`, default 5000), with `total_in_view` and `truncated`. `ra_field`
+and `dec_field` name the position columns; empty, they are detected. Selection is by angular
 separation from the centre, not by a box in RA — near a pole every right
 ascension is in view and no interval says so. `radius_deg` is the radius the
 client measured for its own viewport, corners included; without it the radius
@@ -87,7 +92,8 @@ VizieR — use `/v1/resolve/cone_search` for that and overlay the CSV it writes.
 ```json
 { "name": "M87" }
 ```
-Returns `ra_deg`, `dec_deg`, `resolved_name`.
+Returns `valid`, `error`, `ra_deg`, `dec_deg`, `resolved_name` and `source`
+(the service that resolved it).
 
 ### `POST /v1/resolve/cone_search`
 A VO Simple Cone Search against any service.
@@ -179,6 +185,12 @@ exactly the region the user was shown; it is parsed server-side into the
 service's `{circle}`/`{range}` shape. Returns
 `{valid, error, job_id, phase, count}`.
 
+The five routes answer an archive that cannot be used with an HTTP status
+rather than `valid: false`: 400 when the service URL fails the SSRF guard, 422
+for the archive's own refusal (with its message) and for a refused `job_id` or
+archive member, 502 when the archive answers an HTTP error or cannot be reached.
+A `job_id` must match `^[A-Za-z0-9._:-]{1,128}$` (else 422).
+
 **A submitted job is never lost.** If the submit succeeds but the first phase
 read fails, the route still returns the `job_id` with `phase: "UNKNOWN"` —
 reporting an error without the id would leave the batch running on the archive
@@ -200,10 +212,14 @@ order. `detail` keeps whatever the archive said about a failure — the only clu
 to why one dataset of twenty came back empty.
 
 #### `POST /v1/vlkb/mcutout/fetch`
-→ `{valid, error, archive, files, bytes}`. Downloads the job's `.tar.gz` **and
-unpacks it**, into a staging directory of its own per fetch; `files` are the
-cutouts, ready for the ordinary dataset-open route. Goes through the heavy-task
-throttle.
+→ `{valid, error, archive, directory, files, other, bytes}`. Downloads the
+job's `.tar.gz` **and unpacks it**, into a staging directory of its own per
+fetch (`directory`, under Workspace Exports' `vlkb_cutouts`); `files` are the
+cutouts (FITS), ready for the ordinary dataset-open route, `other` the
+archive's remaining members (the service's bookkeeping); `bytes` is the size
+of the archive downloaded. The archive itself is deleted once unpacked, so
+`archive` is empty. It runs on a thread, outside the
+heavy-task throttle: it is a download, not a computation.
 
 **What is refused, and why.** A `job_id` is interpolated into a URL *and* into
 that directory, so it must be a plain identifier (`.` and `..` included in the

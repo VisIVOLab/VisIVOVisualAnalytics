@@ -2,8 +2,8 @@
 
 VisIVO is not just a viewer for one cube at a time — it's also a workbench
 for putting cubes / images in context: overlay source catalogues, browse
-all-sky HiPS surveys at any zoom level, and exchange data with TOPCAT /
-Aladin / DS9 via SAMP.
+all-sky HiPS surveys at any zoom level, and send images and catalogues to
+TOPCAT / Aladin / DS9 via SAMP.
 
 ## 3-D catalogue viewer
 
@@ -401,32 +401,35 @@ don't need direct internet access from the GUI.
 ```{caution}
 Still missing compared with Aladin: no MOC display, no per-survey colour map
 or stretch controls, and no FITS-HiPS pixel readout. When you need one of
-those, reach for Aladin over SAMP — VisIVO can hand it the current position
-(see [SAMP](#samp)).
+those, reach for Aladin: VisIVO can send it the current image over
+[SAMP](#samp).
 ```
 
 ## SAMP
 
-Send and receive data with TOPCAT, Aladin, DS9, and any other VO-aware
-tool on your machine. The desktop client talks to the bundled
-**SAMP bridge** in the backend (router `/v1/samp/*`, exposed without
-auth so the local SAMP hub can reach it).
+Send data to TOPCAT, Aladin, DS9 and any other VO tool on your machine
+through a running SAMP hub (TOPCAT and Aladin start one). The **SAMP** menu
+is in the Data Hub window, the main window of the application; the same
+actions are in the Command Palette (*SAMP: Connect to Hub*, …).
 
-Capabilities:
+- **Connect To Hub** / **Disconnect From Hub** — join or leave the hub. The
+  connection and the list of peers are logged in the Diagnostics window.
+- **Send Current FITS Dataset** — offers the image or cube opened last to
+  every peer that loads FITS images. TOPCAT does not; use Aladin or DS9.
+- **Send Current Catalogue** — offers the catalogue opened last as a table;
+  TOPCAT loads it.
 
-- **Send a FITS** — share the currently open dataset to all subscribed
-  applications (`/v1/samp/send-fits`).
-- **Send a catalogue** — broadcast a VOTable, e.g. a region selection from
-  the catalogue overlay (`/v1/samp/send-catalogue`).
-- **Import URL / Upload file** — bring an external resource into your
-  session, e.g. a TOPCAT-prepared catalogue
-  (`/v1/samp/import-url`, `/upload-file`).
-- **Receive** — incoming messages from peers are queued in
-  `/v1/samp/inbox`; the client surfaces them as notifications and offers
-  to open the payload.
+The send actions are enabled once the client is connected and a dataset or a
+catalogue is open. The file is handed over by the backend
+(`/v1/samp/send-fits`, `/v1/samp/send-catalogue`), so the peers must be able
+to reach the backend's URL; with a local backend they always can.
 
-You can monitor the hub state from *View → SAMP Status* in the main
-window or via the Command Palette.
+```{note}
+Receiving is not available yet: a table, an image or a sky position sent to
+VisIVO from TOPCAT or Aladin is not opened, and a row selected in another
+tool is not highlighted here. See
+[issue #130](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/130).
+```
 
 ## See also
 
@@ -435,8 +438,8 @@ window or via the Command Palette.
   overlaying a source catalogue on one you already have.
 - [SED fitting](sed-fitting) — turning a band-merged source's fluxes into a
   mass, a dust temperature and a luminosity.
-- Developer reference: [`/v1/catalogue/*`](../backend-api#catalogue),
-  [`/v1/hips/*`](../backend-api#hips), [`/v1/samp/*`](../backend-api#samp).
+- Developer reference: [`/v1/catalogue/*`](../backend-api/datasets.md),
+  [`/v1/hips/*`](../backend-api/sky-services.md), [`/v1/samp/*`](../backend-api/samp.md).
 - [Catalogue 3-D viewer technical reference](../catalogue3d-viewer) — for
   developers customising the geometry / size cards or adding new
   cosmology models.
