@@ -288,8 +288,8 @@ Iso-contour lines can be drawn on top of the image from two sources:
   contour overlay without requiring a FITS export round-trip.
 
 ```{tip}
-The cube viewer's *Tools → Export Moment Map as FITS…* writes the
-moment into the Workspace Exports directory. You can then load that
+The cube viewer's *Tools ▸ Export ▸ Export … as FITS…*, with the moment's
+pane focused, writes the moment into the Workspace Exports directory. You can then load that
 FITS here as an external contour overlay — the most common radio +
 optical comparison workflow.
 ```
@@ -586,7 +586,7 @@ the cubes. Two shortcuts are available depending on what you need:
 
 #### Single-frequency 2-D maps — for P, PA, P/I, P_deb
 
-Use *Tools → Export Current Channel as 2-D FITS…* in the cube viewer
+Use *Tools ▸ Export ▸ Export Current Channel as 2-D FITS…* (2-D slice pane focused) in the cube viewer
 on the **same channel** for I, Q, U (and V if you want). The export
 produces a true 2-D FITS (NAXIS=2) — no degenerate spectral axis —
 ready to be loaded as a layer here. Recommended path for polarimetry
@@ -594,8 +594,8 @@ at one specific frequency.
 
 #### Broadband 2-D maps — for the highest-SNR P/PA/P/I
 
-Use *Tools → Export Moment Map as FITS…* with a moment-0 over **all
-channels** for each Stokes cube. The result averages out frequency
+Compute a moment-0 over **all channels** of each Stokes cube and export it
+with *Tools ▸ Export ▸ Export … as FITS…* (moment pane focused). The result averages out frequency
 detail but maximises SNR — best for visualisation overlays and
 contour comparisons.
 
@@ -755,7 +755,7 @@ Click a row to highlight the source, double-click to zoom to it, and
 right-click for *Fit SED of this source…*. The table shows every column the
 catalogue carries, groups a band-merged catalogue's per-band detections under
 their parent source, and exports to CSV. See
-[Catalogues · Overlay](catalogues-hips#catalogue-overlay-on-cubes--images) for
+[Catalogues · Overlay](catalogues-hips.md#catalogue-overlay-on-cubes--images) for
 the full description and [SED fitting](sed-fitting) for what to do with a
 source's fluxes once you have them.
 

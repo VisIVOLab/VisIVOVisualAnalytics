@@ -10,6 +10,10 @@ Open a FITS file; registers a session.
 ```json
 { "path": "/data/cube.fits" }
 ```
+`path` may also name a VBT volume (its data file or its `.head`), opened as a
+cube of its first field. Any other file type is answered with `valid: false`
+("Unsupported file type. Expected FITS (.fits, .fit) or HDF5 (.h5, .hdf5,
+.bfdata)."); a gzip-compressed `.fits.gz` is not accepted here.
 Response includes `dataset_id`, `session_id`, `kind` (`image`|`cube`), dimensions, WCS metadata (`wcs_status`, `wcs_warning_message`, `wcs_sanitized_axes`, `spacing`, `origin`, `ctype[]`, `cunit[]`, `crval[]`, `crpix[]`, `cdelt[]`), the spectral-axis summary (`spectral_axis_type` = the spectral `CTYPE`, `spectral_axis_unit`), beam (`beam_major`, `beam_minor`, `beam_pa`), `bunit`, and:
 
 | Field | Type | Meaning |
@@ -21,7 +25,9 @@ The other response fields: `valid`, `error`, `active_axes`,
 `recommended_load_mode` (`auto_full` or `preview_only`: a file at or above the
 threshold should open as a preview first), and
 `server_side_rendering_available` (this backend can host a
-[render session](render.md) for the cube). The same response is returned by the
+[render session](render.md) for the cube). For a multi-field source (a VBT
+volume) `field_name` is the field opened and `fields` lists every field as
+`{name, path}`, `path` being what `/v1/datasets/open` takes to open that field. The same response is returned by the
 three routes below.
 
 The open routes take the session from `X-Visivo-Session`; the reply carries the
@@ -52,8 +58,8 @@ it is stored in (rows plus heap, `PCOUNT`), and random groups and `GCOUNT` are
 followed as the FITS standard has them. Not refused: bytes after the declared
 end; a file cut only inside the last 2880-byte padding block (all the data is
 there, and astropy reads it); a truncated HDU after the one being read. Not
-checked: gzip-, bzip2- or zip-compressed FITS (`.fits.gz`), whose headers
-declare the decompressed size; a truncated stream fails in the decompressor
+checked: gzip-, bzip2- or zip-compressed FITS (`.fits.gz`, which only
+`open_url` opens), whose headers declare the decompressed size; a truncated stream fails in the decompressor
 instead. All other open failures still answer 200 with `valid: false`.
 
 ### `POST /v1/datasets/open_url`
@@ -131,14 +137,19 @@ This route needs the token but no session.
 ## Catalogue
 
 ### `POST /v1/catalogue/open`
-Open a remote CSV file.
+Open a catalogue file on the backend.
 ```json
 { "path": "/data/catalogue.csv", "format": "csv" }
 ```
-Returns `dataset_id`, `session_id`, field list with types.
+`format` is `csv` (default), `votable`, `fits`, `ipac`, `speck` or `vbt`.
+`paths` (optional) opens several files of the same format, with identical
+columns, as one catalogue; `path` is then only a label.
+Returns `dataset_id`, `session_id`, `num_rows`, the field list with types
+(`fields`) and the detected sky-coordinate columns (`coordinate_fields`).
+A missing file or one that does not parse is answered with `valid: false`.
 
 ### `POST /v1/catalogue/subset`
-Legacy: return up to `max_rows` rows without filtering.
+Legacy: return up to `max_rows` (default 100000) rows without filtering.
 
 ### `POST /v1/catalogue/query`
 Paginated, filtered query.
@@ -150,8 +161,7 @@ Paginated, filtered query.
   "filters": [
     { "field": "flux", "op": ">", "value": "0.1" }
   ],
-  "sort_field": "flux",
-  "sort_direction": "desc"
+  "sort": { "field": "flux", "direction": "desc" }
 }
 ```
 Response: `total_rows`, `returned_rows`, `rows[]` (key-value maps).
@@ -164,7 +174,10 @@ matching row once. The desktop loads a point table this way: a simulation's
 table is stored by region of space, so its first rows are a few blocks of it,
 while an even sample covers it all.
 
-Supported filter operators: `<`, `<=`, `>`, `>=`, `=`, `!=`, `contains`, `startswith`, `endswith`.
+Supported filter operators: `<`, `<=`, `>`, `>=`, `=`, `!=` (numeric on a numeric
+column, string comparison otherwise), `contains` (case-insensitive substring)
+and `in` (comma-separated values). An unknown field or operator is answered
+with `valid: false`.
 
 ---
 
@@ -179,4 +192,4 @@ Legacy bulk fetch (no filter, `max_rows` cap).
 
 ### `POST /v1/vbt/query`
 Same request shape as `/v1/catalogue/query`.
-Response: `total_rows`, `returned_rows`, `field_names[]`, `columns` (base64-encoded float64 column vectors), `num_rows`.
+Response: `total_rows`, `returned_rows`, `fields[]`, `columns` (base64-encoded float64 column vectors), `num_rows`.

@@ -99,7 +99,7 @@ extraction, MAD-based noise.
 :link-type: doc
 
 3-D catalogue scatter, multi-layer 2-D images, all-sky HiPS surveys,
-SAMP messaging with TOPCAT/Aladin.
+sending images and catalogues to TOPCAT/Aladin over SAMP.
 :::
 
 :::{grid-item-card} 🤖 Scientific Copilot
@@ -290,10 +290,11 @@ server/visivo_utils
 
 ## What you can do with it
 
-Tools are grouped consistently between the *Tools* menu and the *Tools*
-sidebar tab in the cube viewer — same four groups (EXPLORATION,
-ANALYSIS, REGIONS, CATALOGUE) in the same order. The table below lists
-every tool together with the page that documents its scientific use.
+The cube viewer's *Tools* menu and its *Tools* sidebar tab list the same
+tools in the same groups (Spectral, Maps, Statistics, Polarimetry, Regions,
+Sources & Kinematics, Catalogue, Export, Views; see
+[Spectral cube viewer](user-guide/cube-viewer)). The table below lists the
+tools by task, together with the page that documents their scientific use.
 
 ```{list-table}
 :header-rows: 1
@@ -346,19 +347,19 @@ every tool together with the page that documents its scientific use.
 * - Extract a spectrum at a pixel
   - **Tools → Extract Spectrum** (Probe), or *Pick Spectrum on Plane Click* (3-D)
   - Live spectrum in a pane; a pixel you click is kept as a SPEC product
-  - [Cube viewer · Extract Spectrum](user-guide/cube-viewer#extract-spectrum-probe-a-single-pixel)
+  - [Cube viewer · Extract Spectrum](user-guide/cube-viewer.md#extract-spectrum-probe-a-single-pixel)
 * - Identify lines on a spectrum
   - **Inspector ▸ Analysis ▸ SPECTRUM ▸ Load Lines…** (bundled list, or a catalogue export)
   - Rest-frame list shifted by v_sys / z and converted to the axis convention
-  - [Spectral tools · Line identification](user-guide/spectral-tools#line-identification-overlaying-a-line-list)
+  - [Spectral tools · Line identification](user-guide/spectral-tools.md#line-identification-overlaying-a-line-list)
 * - Fit a Gaussian to a line
   - **Inspector ▸ Analysis ▸ SPECTRUM ▸ Fit Gaussian** (**Clear Fit** to remove)
   - Gaussian + linear baseline, peak / centre / FWHM / ∫ with 1σ errors
-  - [Spectral tools · Gaussian line fit](user-guide/spectral-tools#gaussian-line-fit)
+  - [Spectral tools · Gaussian line fit](user-guide/spectral-tools.md#gaussian-line-fit)
 * - Open the cube in a VR headset (Windows / Linux, opt-in build)
   - **Tools → Open in VR**
   - OpenXR stereo render — LUT / threshold / opacity TF synced live
-  - [Cube viewer · Open in VR](user-guide/cube-viewer#open-in-vr)
+  - [Cube viewer · Open in VR](user-guide/cube-viewer.md#open-in-vr)
 * - **ANALYSIS tools**
   -
   -
@@ -366,7 +367,7 @@ every tool together with the page that documents its scientific use.
 * - Estimate the cube noise (per-channel MAD)
   - **Tools → Estimate Noise** + pick a line-free region
   - Per-channel σ vector + scalar median σ
-  - [Regions, PV, noise · Noise estimation](user-guide/region-pv-noise#noise-estimation)
+  - [Regions, PV, noise · Noise estimation](user-guide/region-pv-noise.md#noise-estimation)
 * - Compute a moment map (M0–M10)
   - **Tools → Compute Moment**
   - 2-D map (M0 / M1 / M2 / …)
@@ -374,19 +375,19 @@ every tool together with the page that documents its scientific use.
 * - Per-pixel line-width map
   - **Tools → Line-Width Map…**
   - FWHM + EW maps
-  - [Spectral tools · Line-width](user-guide/spectral-tools#line-width-maps-s-02)
+  - [Spectral tools · Line-width](user-guide/spectral-tools.md#line-width-maps-s-02)
 * - Subtract a polynomial baseline
   - **Tools → Baseline Subtraction…**
   - New cube dataset (registered in the session)
-  - [Spectral tools · Baseline](user-guide/spectral-tools#baseline-subtraction-s-03)
+  - [Spectral tools · Baseline](user-guide/spectral-tools.md#baseline-subtraction-s-03)
 * - Stack multiple cubes
   - **Tools → Stack Cubes to a Spectrum…**
   - 1-D stacked spectrum
-  - [Spectral tools · Stack cubes to a spectrum](user-guide/spectral-tools#stack-cubes-to-a-spectrum-s-04)
+  - [Spectral tools · Stack cubes to a spectrum](user-guide/spectral-tools.md#stack-cubes-to-a-spectrum-s-04)
 * - Position-velocity diagram
   - **Tools → Extract PV Diagram** + polyline on the slice
   - 2-D PV map
-  - [Regions, PV, noise · PV](user-guide/region-pv-noise#position-velocity-diagrams)
+  - [Regions, PV, noise · PV](user-guide/region-pv-noise.md#position-velocity-diagrams)
 * - Select & mask a 3-D object (Kinematic Lasso)
   - **Tools → Kinematic Lasso** + double-click a source in the 3-D view
   - Geodesic PPV selection → isolated / removed new cube
@@ -398,7 +399,7 @@ every tool together with the page that documents its scientific use.
 * - Box / Circle / Polygon / Annulus statistics
   - **Tools → Box / Circle / Polygon / Annulus Region Analysis**
   - Per-region mean / median / σ / sum + spectral profile
-  - [Regions, PV, noise · Region statistics](user-guide/region-pv-noise#region-statistics)
+  - [Regions, PV, noise · Region statistics](user-guide/region-pv-noise.md#region-statistics)
 * - **CATALOGUE overlay** (menu-only state toggles)
   -
   -
@@ -406,23 +407,23 @@ every tool together with the page that documents its scientific use.
 * - Load a source catalogue overlay
   - **Tools → Load Catalogue Overlay** (CSV / VOTable)
   - Sources rendered + table dock
-  - [Catalogues · Overlay](user-guide/catalogues-hips#catalogue-overlay-on-cubes--images)
+  - [Catalogues · Overlay](user-guide/catalogues-hips.md#catalogue-overlay-on-cubes--images)
 * - Show / hide the overlay glyphs and labels
   - **Tools → Show Catalogue Overlay** / **Show Catalogue Labels**
   - Glyph or label visibility toggled (state preserved)
-  - [Catalogues · Overlay](user-guide/catalogues-hips#catalogue-overlay-on-cubes--images)
+  - [Catalogues · Overlay](user-guide/catalogues-hips.md#catalogue-overlay-on-cubes--images)
 * - Drop the overlay
   - **Tools → Clear Catalogue Overlay**
   - Glyphs + table dock removed
-  - [Catalogues · Overlay](user-guide/catalogues-hips#catalogue-overlay-on-cubes--images)
+  - [Catalogues · Overlay](user-guide/catalogues-hips.md#catalogue-overlay-on-cubes--images)
 * - Overlay VLKB compact sources / filaments without a file
   - **Tools → Overlay VLKB Compact Sources** / **Overlay VLKB Filaments**
   - Band-merged sources (all bands) or filament contours over the image footprint
-  - [Catalogues · VLKB](user-guide/catalogues-hips#querying-the-vlkb-directly)
+  - [Catalogues · VLKB](user-guide/catalogues-hips.md#querying-the-vlkb-directly)
 * - Export the overlay on screen
   - **Tools → Export Catalogue…**
   - CSV with the sky frame named in the header
-  - [Catalogues · The catalogue table](user-guide/catalogues-hips#the-catalogue-table)
+  - [Catalogues · The catalogue table](user-guide/catalogues-hips.md#the-catalogue-table)
 * - **VLKB ARCHIVE**
   -
   -
@@ -434,11 +435,11 @@ every tool together with the page that documents its scientific use.
 * - Download several datasets at once
   - Select them in the inventory → **Download & Open**
   - Images stack as layers in one viewer; cubes open in the cube viewer
-  - [VLKB archive · Downloading](user-guide/vlkb-archive#downloading)
+  - [VLKB archive · Downloading](user-guide/vlkb-archive.md#3--downloading)
 * - Ask the archive for a long list as one job
   - Select them → **Request as batch (N)…**
   - One asynchronous job, collected and unpacked in one go; survives closing the window
-  - [VLKB archive · Many datasets at once](user-guide/vlkb-archive#many-datasets-at-once)
+  - [VLKB archive · Many datasets at once](user-guide/vlkb-archive.md#many-datasets-at-once)
 * - **SIMULATIONS**
   -
   -
@@ -458,15 +459,15 @@ every tool together with the page that documents its scientific use.
 * - Rank a source against pre-computed theoretical models
   - **Fit theoretical models** in the SED window
   - VLKB model grid ranked by χ², best overplotted
-  - [SED fitting · Theoretical models](user-guide/sed-fitting#theoretical-models-from-the-vlkb)
+  - [SED fitting · Theoretical models](user-guide/sed-fitting.md#theoretical-models-from-the-vlkb)
 * - **Interop**
   -
   -
   -
-* - SAMP send / receive with TOPCAT / Aladin
-  - Built-in SAMP hub bridge (auto-discovers running hub)
-  - File / catalogue exchange
-  - [Catalogues · SAMP](user-guide/catalogues-hips#samp)
+* - Send the current image, cube or catalogue to TOPCAT / Aladin / DS9
+  - **SAMP** menu of the Data Hub window (connects to the running hub)
+  - Images and cubes to Aladin / DS9, catalogues to TOPCAT; receiving is not available yet (#130)
+  - [Catalogues · SAMP](user-guide/catalogues-hips.md#samp)
 * - Open VBT / volume binary tables produced by the VisIVO Server CLI
   - **File → Open** (or *Data Hub*) — any `.bin` / `.head` VBT pair
   - Particle viewer (`vtkWindowVbt` / `vtkWindowCatalogue3D`)

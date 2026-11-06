@@ -5,7 +5,7 @@ the client: the backend states the cube's size and its own threshold, the
 desktop stops at a decimated preview above it, and full resolution is fetched
 only on request, as the whole cube or as a cropped region. Server-side
 rendering (the 3-D view rendered on the backend's GPU, see
-[Cube viewer](user-guide/cube-viewer.md#where-the-rendering-happens-auto-local-remote))
+[Cube viewer](user-guide/cube-viewer.md#where-the-rendering-happens-auto--local--remote))
 is the other way to full resolution, where the backend has EGL; on a backend
 without it, this path is the only one.
 
@@ -67,7 +67,7 @@ Preview-only mode: cube is 10.27 GB (threshold 4.0 GB). Use View → Load Full R
 
 The same two conditions raise the banner that recommends remote rendering or
 a full-resolution load (described for users in the
-[Cube viewer](user-guide/cube-viewer.md#where-the-rendering-happens-auto-local-remote)).
+[Cube viewer](user-guide/cube-viewer.md#where-the-rendering-happens-auto--local--remote)).
 
 The **View** menu has two actions (`src/gui/vtkWindowCube.cpp`):
 
