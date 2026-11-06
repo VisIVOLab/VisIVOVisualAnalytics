@@ -73,7 +73,7 @@ release for any version tag (`1.0`, `v1.0.0`, …):
 | Platform | Package |
 |---|---|
 | macOS (Apple Silicon / Intel) | `VisIVOVisualAnalytics-macos-{arm64,x86_64}.dmg` |
-| Linux x86-64 | `VisIVOVisualAnalytics-linux-x86_64.tar.gz` (AppImage) |
+| Linux x86-64 | `VisIVOVisualAnalytics-linux-x86_64.tar.gz` (extract, then run `./VisIVOVisualAnalytics`) |
 | Windows x86-64 | `VisIVOVisualAnalytics-windows-x86_64.zip` |
 
 Each package ships its **own Python runtime with the backend's dependencies

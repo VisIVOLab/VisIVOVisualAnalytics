@@ -453,11 +453,12 @@ PythonResolution resolvePythonExe(const QString &settingsPython,
     //             bundle, so the .app stays self-contained in the DMG)
     //    Windows  <pkg>/bin/python/python.exe                (next to the .exe)
     //    Linux    <pkg>/python/bin/python3                   (BESIDE the
-    //             AppImage, not inside it: the AppImage is a read-only
-    //             squashfs built by linuxdeploy, which walks everything in the
-    //             AppDir; keeping the runtime out of its way is simpler than
-    //             arguing with it. $APPIMAGE names the file being run, so its
-    //             directory is where to look.)
+    //             application tree, not inside it: linuxdeploy builds that
+    //             tree and walks everything in it; keeping the runtime out of
+    //             its way is simpler than arguing with it. The package's
+    //             launcher names the package directory in
+    //             $VISIVO_PACKAGE_DIR; an AppImage run directly names itself
+    //             in $APPIMAGE, whose directory is the package.)
     //
     //  The plain appDir/python3 entries stay for a hand-made layout.
     const QString appDir = QCoreApplication::applicationDirPath();
@@ -473,6 +474,8 @@ PythonResolution resolvePythonExe(const QString &settingsPython,
         const QString dir = QFileInfo(appImage).absolutePath();
         bundled.prepend(QDir::cleanPath(dir + u"/python/bin/python3"_s));
     }
+    if (const QString pkg = qEnvironmentVariable("VISIVO_PACKAGE_DIR"); !pkg.isEmpty())
+        bundled.prepend(QDir::cleanPath(pkg + u"/python/bin/python3"_s));
     for (const QString &c : bundled) {
         if (auto r = accept(c, u"bundled backend runtime"_s))
             return *r;
