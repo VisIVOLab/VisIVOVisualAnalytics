@@ -8,6 +8,7 @@
 #include "LassoReplay.h"
 #include "LinkedWindowRegistry.h"
 #include "ProductRegistry.h"
+#include "RemoteRenderQueue.h"
 #include "RemoteSliceCache.h"
 #include "SpectralAxisTypes.h"
 
@@ -2608,6 +2609,17 @@ protected:
     /// answered 202): the switch waits, showing this fraction, and asks again.
     bool                  m_remotePreparing{ false };
     double                m_remotePreparingProgress{ 0.0 };
+    /// Every render slot of the backend is busy (create_session answered 202
+    /// queued, issue #4): the place in the queue, asked for again until a slot
+    /// is free, and the banner's line for it. The watchdog counts from the
+    /// last answer, so a wait of any length is not given up on while the
+    /// backend keeps answering.
+    visivo::RenderQueuePlace m_remoteQueuePlace;
+    QString               m_remoteQueueStatus;
+    visivo::RenderSessionAnswer m_remoteQueueAnswer;   ///< the last 202 queued
+    /// Reconnecting to the session kept across a switch to Local: a failure
+    /// before Live may mean the backend closed it meanwhile.
+    bool                  m_remoteReconnectingKept{ false };
     /// Issue #82: a remote session starts from the backend's threshold and
     /// data range. The field shows them until the user changes the threshold;
     /// only a threshold the user chose is sent to a remote session.
@@ -2645,6 +2657,19 @@ protected:
     void applyDeferredPreviewWhenLocal();
     void requestRemoteRenderSession();
     void releaseRemoteRenderSession();
+    /// Stop waiting in the backend's render queue (issue #4): give the place
+    /// up, so the slot it would get goes to the next request.
+    void cancelRemoteQueuePlace();
+    /// The 3-D pane while waiting in the queue: the remote page, saying where
+    /// the view is in the queue, its banner action "Give up place". False puts
+    /// the banner action back (the page is the caller's to choose).
+    void showRemoteQueueState(bool queued);
+    bool m_remoteQueueUiShown{ false };
+    /// create_session answered with session @p sid: connect to it.
+    void finishRemoteSessionCreated(const QString &sid, const QJsonObject &doc);
+    /// A kept session would not reconnect: ask the backend whether it still
+    /// exists. Gone (closed for a waiting request, or idle): make a new one.
+    void checkKeptRenderSession(const QString &sid);
     /// Connect the RemoteRenderWidget against the given session,
     /// picking the best transport advertised by the backend. The
     /// diagnostics probe is cached: subsequent calls reuse the

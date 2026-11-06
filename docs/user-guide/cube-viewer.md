@@ -124,7 +124,22 @@ segment above the 3-D pane:
   remote view renders in a process of its own, and the views are spread over
   the backend machine's GPUs in turn (with more views than GPUs, some share
   one). On a 2 GB cube on a V100 node behind an SSH tunnel this ran at about
-  28 frames per second while rotating.
+  28 frames per second while rotating. A backend renders at most
+  `VISIVO_RENDER_MAX_SESSIONS` views at once (8 unless its operator set
+  otherwise), cubes and 3-D catalogues together. A view asked for while all
+  are busy waits for a free slot, first come first served (on a backend shared
+  by several users, a user with no remote view goes first); the 3-D pane says
+  *Waiting for a server-side rendering slot (2 of 3)*, the banner shows the
+  place (*Queued for server-side rendering: 2 of 3 (all 8 slots busy)*), the
+  status bar says *Local, queued for remote*, and the view appears by itself
+  when its turn comes. A 3-D catalogue view waiting the same way says so in its
+  status bar. **Give up place** in the banner, going back to Local, or closing
+  the window gives the place up.
+  When the queue is full, or the wait passes the backend's limit (10 minutes
+  unless its operator set otherwise), the view stays local and the banner says
+  why; retry Remote later. A view switched to Local keeps its backend session
+  for a quick switch back, but while others wait the backend may give that
+  slot away: switching back then asks for a new session (and may queue).
 
   The remote view starts with the **backend's threshold** (see *The default
   threshold* below), computed from a sample of the full-resolution data (out of

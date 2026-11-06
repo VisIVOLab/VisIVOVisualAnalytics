@@ -90,8 +90,12 @@ backend, each in a process of its own.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `VISIVO_RENDER_MAX_SESSIONS` | `8` | Remote views accepted at once; beyond it a new view answers HTTP 503. |
+| `VISIVO_RENDER_MAX_SESSIONS` | `8` | Remote views rendering at once; beyond it a new view waits in the queue if it asked to (HTTP 202), else answers HTTP 503. |
 | `VISIVO_RENDER_IDLE_TTL_SECONDS` | `300` | A view that receives no command for this long is closed. |
+| `VISIVO_RENDER_QUEUE_MAX` | `16` | Remote views that may wait for a slot; beyond it HTTP 503. `0` turns the queue off. |
+| `VISIVO_RENDER_QUEUE_TIMEOUT_SECONDS` | `600` | Longest wait in the queue; then HTTP 503. |
+| `VISIVO_RENDER_QUEUE_STALE_SECONDS` | `15` | A waiting view whose client stops asking for this long loses its place. |
+| `VISIVO_RENDER_DISCONNECT_GRACE_SECONDS` | `30` | While views wait, a view with no client connected for this long is closed to free its slot. |
 | `VISIVO_RENDER_IN_PROCESS` | unset | `1` renders inside the backend's own process instead of a child process (slower: rendering then competes with the process that serves the clients). |
 | `VISIVO_RENDER_OUT_OF_CORE_BYTES` | 6 GiB | A cube larger than this (as float32) is not loaded: the view draws it from its brick pyramid, block by block ([Brick pyramid](brick-pyramid.md#rendering-from-the-pyramid)). |
 | `VISIVO_RENDER_OOC_BUDGET_BYTES` | 2 GiB | Out of core: GPU data of the blocks drawn at once. |

@@ -134,6 +134,11 @@ add_executable(VisIVOTests
     test_viewer_mode_state.cpp
     TestRemoteLevels.h
     test_remote_levels.cpp
+    TestRemoteRenderQueue.h
+    test_remote_render_queue.cpp
+    TestRenderSessionCalls.h
+    test_render_session_calls.cpp
+    ${VISIVO_ROOT}/src/gui/RenderSessionCalls.cpp
     TestRegionFullRes.h
     test_region_full_res.cpp
     TestDatasetName.h

@@ -234,12 +234,20 @@ void RemoteRenderWidget::disconnectFromSession()
 {
     m_keepaliveTimer->stop();
     if (m_ws) {
+        // Nothing more from this socket: its own disconnected (or an error)
+        // can arrive after close() returns, once a new connection is already
+        // under way, and would be taken for that connection's state. The
+        // Disconnected below says it once.
+        QObject::disconnect(m_ws, nullptr, this, nullptr);
         m_ws->close();
         m_ws->deleteLater();
         m_ws = nullptr;
     }
 #ifdef VISIVO_HAS_WEBRTC
     if (m_webrtc) {
+        // Same for the WebRTC client: a state it queued before this teardown
+        // (a late Live) would mark this widget live again with no stream.
+        QObject::disconnect(m_webrtc, nullptr, this, nullptr);
         m_webrtc->disconnectFromSession();
         m_webrtc->deleteLater();
         m_webrtc = nullptr;
@@ -254,6 +262,15 @@ void RemoteRenderWidget::disconnectFromSession()
     m_frameRequestPending = false;
     m_status = QStringLiteral("Disconnected");
     emit connectionStateChanged(m_status);
+}
+
+void RemoteRenderWidget::showStatus(const QString &text)
+{
+    if (m_live)
+        return;   // a stream on screen says more than any status
+    m_status = text;
+    m_currentFrame = QImage();
+    update();
 }
 
 void RemoteRenderWidget::setJpegQuality(int q)

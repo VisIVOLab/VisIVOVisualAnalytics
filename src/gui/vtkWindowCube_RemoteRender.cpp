@@ -30,6 +30,7 @@
 #include "PvDiagramWidget.h"
 #include "RemoteLevels.h"
 #include "RemoteRenderWidget.h"
+#include "RenderSessionCalls.h"
 #include "SidebarPanel.h"
 #include "Settings.h"
 #include "app/BackendClient.h"
@@ -180,7 +181,9 @@ void vtkWindowCube::requestRemoteRenderSession()
     // transport to set on the widget before connectToSession fires.
     // Result is cached on m_remoteBackendSupportsWebRTC and reused on
     // subsequent Local↔Remote flips within the same backend session.
-    {
+    // Once per switch: not again on each request of a wait in the queue or
+    // for a pyramid build.
+    if (!this->m_remoteQueuePlace.waiting() && !this->m_remotePreparing) {
         QUrl diagUrl(this->remoteBackendUrl);
         diagUrl.setPath(u"/v1/render/diagnostics"_s);
         QNetworkRequest diagReq(diagUrl);
@@ -218,102 +221,152 @@ void vtkWindowCube::requestRemoteRenderSession()
         });
     }
 
-    QUrl url(this->remoteBackendUrl);
-    url.setPath(u"/v1/render/create_session"_s);
-    QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_s);
-    // create_session is state-bearing and the backend resolves it through
-    // get_session: without the session header it lands in a different session
-    // and cannot see this client's dataset at all under multi-user mode.
-    BackendClient::applySessionHeaders(req, this->remoteBackendUrl,
-                                       this->remoteBackendToken, this->remoteSessionId);
-    QJsonObject body;
-    body[u"dataset_id"_s] = this->remoteDatasetId;
-    const QByteArray payload = QJsonDocument(body).toJson(QJsonDocument::Compact);
-
-    qDebug().noquote() << "[remote-render] POST" << url.toString();
-    QNetworkReply *reply = this->m_renderNam->post(req, payload);
+    // Always willing to wait (issue #4): with every slot busy the backend gives
+    // a place in its queue (202) instead of refusing, and the place goes back
+    // with each request until a slot is free.
+    const QByteArray payload =
+            QJsonDocument(this->m_remoteQueuePlace.requestBody(this->remoteDatasetId))
+                    .toJson(QJsonDocument::Compact);
+    // Through the application's manager, not this window's: a window closed
+    // while the request is in flight must not abort it unanswered, or the
+    // session (or place) the backend makes for it would be nobody's.
+    QNetworkReply *reply = visivo::postCreateRenderSession(
+            this->remoteBackendUrl, this->remoteBackendToken, this->remoteSessionId, payload);
     const quint64 generation = this->m_remoteSwitchGeneration;
-    QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, generation]() {
+    const QPointer<vtkWindowCube> self(this);
+    const QString backendUrl = this->remoteBackendUrl, token = this->remoteBackendToken,
+                  sessionId = this->remoteSessionId;
+    QObject::connect(reply, &QNetworkReply::finished, reply, [=]() {
         reply->deleteLater();
-        this->m_renderBackendProbed = true;
-        if (generation != this->m_remoteSwitchGeneration) {
-            // The user went back to Local, or the watchdog gave up, while this
-            // was in flight. Answering now would reconnect and flip to Remote
-            // behind their back.
+        const QJsonObject doc = QJsonDocument::fromJson(reply->readAll()).object();
+        const visivo::RenderSessionAnswer answer = visivo::parseRenderSessionAnswer(
+                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(),
+                reply->error() != QNetworkReply::NoError, doc);
+        if (!self || generation != self->m_remoteSwitchGeneration) {
+            // The window closed, the user went back to Local, or the watchdog
+            // gave up, while this was in flight. Answering now would reconnect
+            // and flip to Remote behind their back; and what the backend made
+            // for it, a session or a place in the queue, is nobody's.
             qDebug().noquote() << "[remote-render] discarding a stale create_session reply";
+            const visivo::RenderQueuePlace::Decision d =
+                    visivo::RenderQueuePlace().decide(false, answer);
+            visivo::deleteRenderSession(backendUrl, token, sessionId, d.sessionToDelete);
+            visivo::cancelRenderQueuePlace(backendUrl, token, sessionId, d.placeToCancel);
             return;
         }
-        if (reply->error() != QNetworkReply::NoError) {
-            this->m_remotePreparing = false;
-            const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        self->m_renderBackendProbed = true;
+        using Step = visivo::RenderQueuePlace::Step;
+        const visivo::RenderQueuePlace::Decision d = self->m_remoteQueuePlace.decide(true, answer);
+        visivo::cancelRenderQueuePlace(backendUrl, token, sessionId, d.placeToCancel);
+        if (d.step == Step::AskLater) {
+            // Every slot busy: wait for one with the preview on screen. The
+            // watchdog counts from this answer: the backend has its own limit
+            // on the wait (a 503), and a backend that stops answering is still
+            // given up on.
+            self->m_remotePreparing = false;
+            self->m_remoteSwitchElapsed.restart();
+            self->m_remoteQueueStatus = visivo::queueStatusText(answer);
+            self->m_remoteQueueAnswer = answer;
+            self->showRemoteQueueState(true);
+            if (self->m_localRecommendRemoteLabel)
+                self->m_localRecommendRemoteLabel->setText(self->m_remoteQueueStatus);
+            if (self->m_remoteRenderBannerLabel)
+                self->m_remoteRenderBannerLabel->setText(self->m_remoteQueueStatus);
+            qDebug().noquote() << "[remote-render] queued:" << answer.message;
+            QTimer::singleShot(visivo::queuePollDelayMs(answer), self, [self, generation]() {
+                if (self && generation == self->m_remoteSwitchGeneration
+                    && self->m_remoteSwitchInProgress)
+                    self->requestRemoteRenderSession();
+            });
+            return;
+        }
+        if (d.step == Step::AskNow) {
+            // The place was dropped (a poll came too late): to the back of the queue.
+            qDebug().noquote() << "[remote-render] queue place gone, asking again";
+            self->m_remoteQueueStatus.clear();
+            self->requestRemoteRenderSession();
+            return;
+        }
+        self->m_remoteQueueStatus.clear();
+        if (d.step == Step::Preparing) {
+            // 202: the backend is building the cube's brick pyramid (issue #80).
+            // Keep the preview, show the progress, ask again in a moment.
+            const double progress = answer.progress;
+            // The watchdog counts from the last progress, not the last answer:
+            // a build that stops advancing is still given up on.
+            if (!self->m_remotePreparing || progress > self->m_remotePreparingProgress)
+                self->m_remoteSwitchElapsed.restart();
+            self->m_remotePreparing = true;
+            self->m_remotePreparingProgress = progress;
+            QTimer::singleShot(2000, self, [self, generation]() {
+                if (self && generation == self->m_remoteSwitchGeneration
+                    && self->m_remoteSwitchInProgress)
+                    self->requestRemoteRenderSession();
+            });
+            return;
+        }
+        self->m_remotePreparing = false;
+        if (d.step != Step::Connect) {
             // The pyramid build failed: the backend can render, this cube could
             // not be prepared. Say why, and keep Remote available.
-            const QString detail =
-                    QJsonDocument::fromJson(reply->readAll()).object().value(u"detail"_s).toString();
-            if (detail.startsWith(u"Preparing the cube"_s)) {
-                this->abortRemoteSwitch(detail + u" Staying local."_s);
+            if (answer.message.startsWith(u"Preparing the cube"_s)) {
+                self->abortRemoteSwitch(answer.message + u" Staying local."_s);
+                return;
+            }
+            // Every slot busy and no place: the queue is full, or the wait
+            // passed the backend's limit. The backend can render: keep Remote
+            // available and say why.
+            if (answer.kind == visivo::RenderSessionAnswerKind::Refused && answer.capacity) {
+                self->abortRemoteSwitch(answer.message
+                                        + u" Staying local; retry Remote later."_s);
+                return;
+            }
+            if (answer.kind == visivo::RenderSessionAnswerKind::Failed
+                && answer.httpStatus >= 200 && answer.httpStatus < 300) {
+                qWarning() << "[remote-render] create_session returned no session_id";
+                self->abortRemoteSwitch(
+                        u"The backend accepted the request but returned no render session - "
+                        u"staying local."_s);
                 return;
             }
             qWarning().noquote()
                     << "[remote-render] create_session failed:" << reply->errorString()
-                    << "(HTTP" << code << ")";
-            this->m_renderBackendSupportsSsr = false;
+                    << "(HTTP" << answer.httpStatus << ")";
+            self->m_renderBackendSupportsSsr = false;
             // Stay on Local (current page) and tell the user why.
-            if (this->statusBar()) {
-                this->statusBar()->showMessage(
+            if (self->statusBar()) {
+                self->statusBar()->showMessage(
                         u"Remote rendering unavailable on this backend, staying local"_s,
                         5000);
             }
-            this->abortRemoteSwitch(
+            self->abortRemoteSwitch(
                     u"Remote rendering unavailable on this backend (HTTP %1), staying local."_s
-                            .arg(code));
+                            .arg(answer.httpStatus));
             return;
         }
-        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
-        // 202: the backend is building the cube's brick pyramid (issue #80).
-        // Keep the preview, show the progress, ask again in a moment.
-        if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 202
-            && doc.object().value(u"preparing"_s).toBool()) {
-            const double progress = doc.object().value(u"progress"_s).toDouble();
-            // The watchdog counts from the last progress, not the last answer:
-            // a build that stops advancing is still given up on.
-            if (!this->m_remotePreparing || progress > this->m_remotePreparingProgress)
-                this->m_remoteSwitchElapsed.restart();
-            this->m_remotePreparing = true;
-            this->m_remotePreparingProgress = progress;
-            QTimer::singleShot(2000, this, [this, generation]() {
-                if (generation == this->m_remoteSwitchGeneration && this->m_remoteSwitchInProgress)
-                    this->requestRemoteRenderSession();
-            });
-            return;
-        }
-        this->m_remotePreparing = false;
-        const QString sid = doc.object().value(u"session_id"_s).toString();
-        if (sid.isEmpty()) {
-            qWarning() << "[remote-render] create_session returned no session_id";
-            this->abortRemoteSwitch(
-                    u"The backend accepted the request but returned no render session - "
-                    u"staying local."_s);
-            return;
-        }
-        this->m_renderSessionId = sid;
-        this->m_renderBackendSupportsSsr = true;
-        qDebug().noquote() << "[remote-render] session created:" << sid;
-        // The session draws with the backend's threshold (issue #82): show it.
-        this->adoptRemoteLevels(doc.object());
-        if (visivo::parseRemoteLevels(doc.object()).pending)
-            this->pollRemoteLevels(sid);
-
-        if (this->m_remoteRenderWidget) {
-            this->connectRemoteRenderWidgetWithTransport(sid);
-        }
-        if (this->m_renderStack) {
-            this->m_renderStack->setCurrentIndex(1);
-        }
-        this->m_effectiveRenderMode = RenderMode::Remote;
-        this->updateRenderModeBadges();
+        self->finishRemoteSessionCreated(answer.sessionId, doc);
     });
+}
+
+void vtkWindowCube::finishRemoteSessionCreated(const QString &sid, const QJsonObject &doc)
+{
+    this->showRemoteQueueState(false);   // admitted, if it waited
+    this->m_renderSessionId = sid;
+    this->m_renderBackendSupportsSsr = true;
+    qDebug().noquote() << "[remote-render] session created:" << sid;
+    // The session draws with the backend's threshold (issue #82): show it.
+    this->adoptRemoteLevels(doc);
+    if (visivo::parseRemoteLevels(doc).pending)
+        this->pollRemoteLevels(sid);
+
+    if (this->m_remoteRenderWidget) {
+        this->connectRemoteRenderWidgetWithTransport(sid);
+    }
+    if (this->m_renderStack) {
+        this->m_renderStack->setCurrentIndex(1);
+    }
+    this->m_effectiveRenderMode = RenderMode::Remote;
+    this->updateRenderModeBadges();
 }
 
 void vtkWindowCube::abortRemoteSwitch(const QString &reason)
@@ -325,7 +378,9 @@ void vtkWindowCube::abortRemoteSwitch(const QString &reason)
     // disabled — the user could neither retry nor load locally.
     this->m_remoteSwitchInProgress = false;
     this->m_remotePreparing = false;
+    this->m_remoteReconnectingKept = false;
     ++this->m_remoteSwitchGeneration;   // a reply landing later is stale
+    this->cancelRemoteQueuePlace();      // a place nobody waits in any more
     // …and stop the transport itself. The generation check only guards the HTTP
     // completion: a negotiation already under way could still reach Live, hide
     // this very banner and stream on behind the Local page. Its own
@@ -410,7 +465,10 @@ void vtkWindowCube::releaseRemoteRenderSession()
     // — and if the close it came from is then declined (a compute still busy),
     // the surviving window ends up streaming a session it had released.
     this->m_remoteSwitchInProgress = false;
+    this->m_remoteReconnectingKept = false;
     ++this->m_remoteSwitchGeneration;
+    // A view still waiting in the backend's queue gives its place up.
+    this->cancelRemoteQueuePlace();
     if (this->m_remoteSwitchProgressTimer)
         this->m_remoteSwitchProgressTimer->stop();
     if (this->m_remoteRenderWidget) {
@@ -419,18 +477,100 @@ void vtkWindowCube::releaseRemoteRenderSession()
     if (this->m_renderSessionId.isEmpty()) {
         return;
     }
-    if (!this->m_renderNam) {
-        this->m_renderNam = new QNetworkAccessManager(this);
+    // Through the application's manager: this runs as the window closes, and
+    // the window's own manager would abort the DELETE with it.
+    visivo::deleteRenderSession(this->remoteBackendUrl, this->remoteBackendToken,
+                                this->remoteSessionId, this->m_renderSessionId);
+    this->m_renderSessionId.clear();
+}
+
+void vtkWindowCube::showRemoteQueueState(bool queued)
+{
+    if (!queued) {
+        if (!this->m_remoteQueueUiShown)
+            return;
+        this->m_remoteQueueUiShown = false;
+        if (this->m_remoteRenderBannerClose) {
+            this->m_remoteRenderBannerClose->setText(u"✕"_s);
+            this->m_remoteRenderBannerClose->setToolTip(u"Switch to Local rendering"_s);
+        }
+        this->updateDataStatePanel();
+        return;
     }
+    // The page the session will be shown on, saying that it waits: the
+    // "Disconnected" of an idle widget (or the local page's loading text) said
+    // otherwise while the banner said "Queued".
+    this->m_remoteQueueUiShown = true;
+    if (this->m_renderStack)
+        this->m_renderStack->setCurrentIndex(1);
+    // No colour bar over a view that is not drawn yet (a kept session's was
+    // still there); Live attaches it again, with the new session's range.
+    if (this->m_volumeColorbar && ui->vtkCube)
+        this->m_volumeColorbar->attachTo(ui->vtkCube);
+    if (this->m_remoteRenderWidget) {
+        const visivo::RenderSessionAnswer &a = this->m_remoteQueueAnswer;
+        this->m_remoteRenderWidget->showStatus(
+                a.position > 0 ? u"Waiting for a server-side rendering slot (%1 of %2)…"_s
+                                         .arg(a.position)
+                                         .arg(std::max(a.position, a.queueLength))
+                               : u"A server-side rendering slot is free: starting…"_s);
+    }
+    if (this->m_remoteRenderBannerClose) {
+        this->m_remoteRenderBannerClose->setText(u"Give up place"_s);
+        this->m_remoteRenderBannerClose->setToolTip(
+                u"Leave the backend's queue and keep rendering on this machine"_s);
+    }
+    this->updateRenderModeBadges();   // and the data-state panel with it
+}
+
+void vtkWindowCube::cancelRemoteQueuePlace()
+{
+    this->m_remoteQueueStatus.clear();
+    this->showRemoteQueueState(false);
+    visivo::cancelRenderQueuePlace(this->remoteBackendUrl, this->remoteBackendToken,
+                                   this->remoteSessionId, this->m_remoteQueuePlace.take());
+}
+
+void vtkWindowCube::checkKeptRenderSession(const QString &sid)
+{
+    // The backend closes a session nobody is connected to when requests wait
+    // for a slot (the disconnect grace) or after the idle timeout; a WebSocket
+    // to it is then refused ("unknown session_id", which reaches Qt as a failed
+    // handshake, not as a close code). /levels answers 404 for exactly that.
+    if (!this->m_renderNam)
+        this->m_renderNam = new QNetworkAccessManager(this);
     QUrl url(this->remoteBackendUrl);
-    url.setPath(u"/v1/render/"_s + this->m_renderSessionId);
+    url.setPath(u"/v1/render/%1/levels"_s.arg(sid));
     QNetworkRequest req(url);
     BackendClient::applySessionHeaders(req, this->remoteBackendUrl,
                                        this->remoteBackendToken, this->remoteSessionId);
-    qDebug().noquote() << "[remote-render] DELETE" << url.toString();
-    QNetworkReply *reply = this->m_renderNam->deleteResource(req);
-    QObject::connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
-    this->m_renderSessionId.clear();
+    QNetworkReply *reply = this->m_renderNam->get(req);
+    const quint64 generation = this->m_remoteSwitchGeneration;
+    QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, generation, sid]() {
+        reply->deleteLater();
+        if (generation != this->m_remoteSwitchGeneration || !this->m_remoteSwitchInProgress
+            || sid != this->m_renderSessionId)
+            return;   // the switch was cancelled or replaced meanwhile
+        const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (code == 404) {
+            qDebug().noquote() << "[remote-render] kept session" << sid
+                               << "is gone on the backend; creating a new one";
+            this->m_renderSessionId.clear();
+            // Nothing draws remotely until the new session is live: the
+            // badges say Local (or "queued for remote") meanwhile.
+            this->m_effectiveRenderMode = RenderMode::Local;
+            this->updateRenderModeBadges();
+            // The remote page stays; its banner follows the new request (a
+            // place in the queue, if every slot is busy now).
+            this->requestRemoteRenderSession();
+            return;
+        }
+        // The session is there (or the backend did not answer): a transport
+        // failure, as any other. The session is kept for a retry.
+        this->abortRemoteSwitch(
+                u"Remote rendering could not reconnect to the backend's view - "
+                u"click Switch to Remote to retry."_s);
+    });
 }
 
 void vtkWindowCube::onRemoteRenderConnectionStateChanged(const QString &state)
@@ -462,9 +602,29 @@ void vtkWindowCube::onRemoteRenderConnectionStateChanged(const QString &state)
     // banner stuck on Connecting… for good.
     if (this->m_ignoreSyntheticDisconnect && state == QLatin1String("Disconnected"))
         return;
+    if (state == QLatin1String("Live"))
+        this->m_remoteReconnectingKept = false;
+    // The session kept across a switch to Local would not reconnect: the
+    // backend may have closed it meanwhile (issue #4: a session nobody is
+    // connected to gives its slot up to a waiting request). Ask, and make a new
+    // one if it is gone, instead of offering a retry that would fail the same
+    // way for ever.
+    if (this->m_remoteReconnectingKept && this->m_remoteSwitchInProgress
+        && (state == QLatin1String("Disconnected") || state.startsWith(QLatin1String("Error")))) {
+        this->m_remoteReconnectingKept = false;
+        if (this->m_remoteRenderWidget) {
+            // Drop the failed transport now, so its own Disconnected (the
+            // socket's, after this error) is not taken for a second failure.
+            const QScopedValueRollback<bool> quiet(this->m_ignoreSyntheticDisconnect, true);
+            this->m_remoteRenderWidget->disconnectFromSession();
+        }
+        this->checkKeptRenderSession(this->m_renderSessionId);
+        return;
+    }
     if (state == QLatin1String("Disconnected")
         || state.startsWith(QLatin1String("Error"))) {
         this->m_remoteSwitchInProgress = false;
+        this->cancelRemoteQueuePlace();   // nothing polls for it any more
         if (this->m_remoteSwitchProgressTimer) {
             this->m_remoteSwitchProgressTimer->stop();
         }
@@ -782,6 +942,7 @@ void vtkWindowCube::pushRenderStateToRemote()
 void vtkWindowCube::updateRenderModeBadges()
 {
     const bool remote = (this->m_effectiveRenderMode == RenderMode::Remote);
+    this->updateDataStatePanel();   // its badge names where the view is drawn
     // Cinematic lighting is drawn here only (issue #101): not offered while the
     // view on screen is the backend's.
     if (this->m_cinematicCheck) {
