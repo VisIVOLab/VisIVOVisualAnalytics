@@ -17,7 +17,9 @@ Supported SODA parameters:
              reduced to its bounding box.
 * ``BAND`` — ``<min> <max>`` in metres (wavelength); converted to the
              dataset's spectral axis unit via the spectral equivalency,
-             so FREQ / WAVE / ENER axes all work.
+             so FREQ / WAVE / ENER axes all work. On an Obit MFImage
+             cube (``CTYPE = 'SPECLNMF'``) it keeps the sub-bands whose
+             centre frequency (``FREQnnnn``) falls in the interval.
 * ``POL``  — one or more polarization states from the ObsCore vocabulary
              (``I Q U V RR LL RL LR XX YY XY YX POLI POLA``), matched to the
              planes of the STOKES axis through its WCS and the FITS Stokes
@@ -33,6 +35,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import warnings
 from dataclasses import dataclass, field
 from typing import Any
@@ -43,6 +46,8 @@ from astropy.io import fits
 from astropy.nddata import Cutout2D
 from astropy.wcs import WCS
 
+from .fits_dataset import MFImageSubbands, mfimage_subbands
+
 logger = logging.getLogger("visivo.soda")
 
 # FITS CTYPE prefixes (4-char codes, case-insensitive) that identify the
@@ -50,6 +55,10 @@ logger = logging.getLogger("visivo.soda")
 _LNG_PREFIXES = ("RA--", "GLON", "ELON", "SLON")
 _LAT_PREFIXES = ("DEC-", "GLAT", "ELAT", "SLAT")
 _SPEC_PREFIXES = ("FREQ", "WAVE", "VELO", "VRAD", "VOPT", "ENER", "WAVN", "AWAV", "ZOPT")
+# Obit MFImage's sub-band axis: not a WCS spectral axis (wcslib does not know
+# it), its frequencies are per plane in FREQnnnn (fits_dataset.mfimage_subbands).
+_SUBBAND_CTYPE = "SPECLNMF"
+_C_M_S = 299792458.0
 
 # SODA POL values: the ObsCore polarization vocabulary (pol_states).
 POL_STATES = ("I", "Q", "U", "V", "RR", "LL", "RL", "LR", "XX", "YY", "XY", "YX", "POLI", "POLA")
@@ -204,11 +213,14 @@ def parse_pol(values: str | list[str] | tuple[str, ...] | None) -> tuple[str, ..
 
 
 def _axis_roles(wcs: WCS) -> dict[str, int]:
-    """Map 'lng'/'lat'/'spec' to their 0-based FITS axis index, when present."""
+    """Map 'lng'/'lat'/'spec'/'subband'/'stokes' to their 0-based FITS axis
+    index, when present."""
     roles: dict[str, int] = {}
     for i, ctype in enumerate(wcs.wcs.ctype):
         head = (ctype or "")[:4].upper()
-        if head in _LNG_PREFIXES:
+        if (ctype or "").strip().upper().startswith(_SUBBAND_CTYPE):
+            roles["subband"] = i
+        elif head in _LNG_PREFIXES:
             roles["lng"] = i
         elif head in _LAT_PREFIXES:
             roles["lat"] = i
@@ -453,6 +465,67 @@ def _spectral_slice(
     return {spec_np: slice(i0, i1 + 1)}
 
 
+def _subband_axis(header: fits.Header, roles: dict[str, int]) -> tuple[int, MFImageSubbands | None] | None:
+    """(0-based FITS axis, its sub-band table) when the spectral axis is a
+    sub-band axis, else None.
+
+    A SPECLNMF axis always is one; its table is None when NTERM / NSPEC /
+    FREQnnnn do not describe its planes. A WCS spectral axis is one when
+    those keywords describe it: a BAND cut that made the axis ``FREQ``
+    (``_rewrite_subband_header``) keeps them, and cutting that cutout again
+    has to select by sub-band centre and renumber them too.
+    """
+    for role in ("subband", "spec"):
+        if role not in roles:
+            continue
+        axis = roles[role]
+        table = None
+        if axis < int(header.get("NAXIS", 0) or 0):
+            table = mfimage_subbands(header, int(header.get(f"NAXIS{axis + 1}", 0) or 0))
+        return (axis, table) if role == "subband" or table is not None else None
+    return None
+
+
+def _subband_band_m(table: MFImageSubbands) -> tuple[float, float]:
+    """Wavelength interval (metres) the sub-bands cover: their edges when the
+    header gives them, else their centres (what BAND selects on)."""
+    low = table.low_hz if table.low_hz is not None else table.freq_hz
+    high = table.high_hz if table.high_hz is not None else table.freq_hz
+    return _C_M_S / float(np.max(high)), _C_M_S / float(np.min(low))
+
+
+def _subband_slice(
+    data: np.ndarray,
+    axis: int,
+    table: MFImageSubbands | None,
+    band: Band,
+) -> tuple[dict[int, slice], MFImageSubbands, np.ndarray]:
+    """A numpy slice over the sub-bands whose centre frequency lies in ``band``,
+    with the table and the selected sub-band indices (0-based, into it).
+
+    A sub-band is one measurement at one frequency, so it is in or out by its
+    centre: one that the interval only clips at an edge is not returned. The
+    NTERM fitted planes before the sub-bands have no frequency and never are.
+    """
+    if table is None:
+        raise CutoutError(
+            "The SPECLNMF axis carries no usable per-sub-band frequencies "
+            "(NTERM, NSPEC, FREQnnnn); BAND cannot apply.")
+    # Metres to Hz without passing through 1/0 or 1/inf: a non-positive upper
+    # wavelength selects nothing, an open or non-positive lower one no limit.
+    f_lo = _C_M_S / band.hi if band.hi > 0 else np.inf
+    f_hi = _C_M_S / band.lo if band.lo > 0 else np.inf
+    hit = np.flatnonzero((table.freq_hz >= f_lo) & (table.freq_hz <= f_hi))
+    if hit.size == 0:
+        raise CutoutNoOverlap("BAND does not contain the centre of any sub-band.")
+    if np.any(np.diff(hit) != 1):
+        # Only possible when FREQnnnn is not monotonic: one slice cannot
+        # hold the selection, and widening it would return planes outside BAND.
+        raise CutoutError("The sub-band frequencies are not ordered; BAND cannot apply.")
+    spec_np = _fits_axis_to_numpy(axis, data.ndim)
+    return {spec_np: slice(table.offset + int(hit[0]), table.offset + int(hit[-1]) + 1)}, table, hit
+
+
 def _pol_planes(
     data: np.ndarray,
     header: fits.Header,
@@ -525,6 +598,64 @@ def _reslice_axis(header: fits.Header, fits_axis: int, start: int, step: int = 1
     header[f"CDELT{n}"] = float(header.get(f"CDELT{n}", 1.0)) * step
 
 
+def _rewrite_subband_header(header: fits.Header, fits_axis: int,
+                            table: MFImageSubbands, hit: np.ndarray) -> None:
+    """Describe the sub-bands ``hit`` kept by a BAND cut, and nothing else.
+
+    The MFImage keywords are renumbered to the planes the cutout holds
+    (NTERM = 0, NSPEC = len(hit), FREQ/FREL/FREHnnnn from 0001), so Obit and
+    every reader of that convention — this backend's RM synthesis and SODA
+    included — find each plane's frequency. The axis itself becomes a plain
+    ``FREQ`` axis in Hz whenever the kept centres lie on a linear grid (one
+    sub-band, two, or evenly spaced ones), which every FITS reader
+    understands and which then agrees exactly with FREQnnnn. Uneven centres
+    cannot be a linear axis without misplacing the middle planes, so the axis
+    stays ``SPECLNMF`` there, as in the release, with CRVAL/CDELT spanning the
+    first to the last centre.
+    """
+    n = fits_axis + 1
+    old_n_spec = int(header.get("NSPEC", 0) or 0)
+    for i in range(1, max(old_n_spec, len(table.freq_hz)) + 1):
+        for prefix in ("FREQ", "FREL", "FREH"):
+            header.remove(f"{prefix}{i:04d}", ignore_missing=True)
+    freq = table.freq_hz[hit]
+    for j, k in enumerate(hit, start=1):
+        header[f"FREQ{j:04d}"] = float(table.freq_hz[k])
+        if table.low_hz is not None and table.high_hz is not None:
+            header[f"FREL{j:04d}"] = float(table.low_hz[k])
+            header[f"FREH{j:04d}"] = float(table.high_hz[k])
+    header["NTERM"] = (0, "fitted planes: none in this cutout")
+    header["NSPEC"] = (len(hit), "sub-band planes, frequencies in FREQnnnn")
+
+    if len(freq) > 1:
+        step = float(freq[-1] - freq[0]) / (len(freq) - 1)
+    elif table.low_hz is not None and table.high_hz is not None:
+        step = float(table.high_hz[hit[0]] - table.low_hz[hit[0]])   # the sub-band's width
+    else:
+        step = float(header.get(f"CDELT{n}", 0.0) or 0.0) or 1.0
+    linear = freq[0] + step * np.arange(len(freq))
+    even = step != 0.0 and float(np.max(np.abs(freq - linear))) <= 1.0   # to 1 Hz
+    step = step or 1.0                  # a zero increment is not a valid WCS
+    header[f"CTYPE{n}"] = "FREQ" if even else _SUBBAND_CTYPE
+    if even:
+        header[f"CUNIT{n}"] = "Hz"
+    header[f"CRPIX{n}"] = 1.0
+    header[f"CRVAL{n}"] = float(freq[0])
+    # The increment has to be the whole story: whatever the linear
+    # transformation was (CD, or PC with its own scale or couplings), the
+    # axis is now uncoupled with this one step.
+    keys = list(header.keys())
+    uses_cd = any(re.fullmatch(r"CD\d+_\d+", k) for k in keys)
+    for k in keys:
+        match = re.fullmatch(r"(CD|PC)(\d+)_(\d+)", k)
+        if match and n in (int(match.group(2)), int(match.group(3))):
+            header.remove(k, ignore_missing=True)
+    if uses_cd:
+        header[f"CD{n}_{n}"] = step    # a missing diagonal CD element would read as 0
+    else:
+        header[f"CDELT{n}"] = step     # PCn_n defaults to 1
+
+
 # ── Public entry point ──────────────────────────────────────────────────────
 
 
@@ -579,8 +710,16 @@ def make_cutout(
         if parsed_pos is not None:
             slices.update(_spatial_slices(data, wcs, roles, parsed_pos))
             applied["pos"] = True
+        subbands: tuple[int, MFImageSubbands, np.ndarray] | None = None
         if parsed_band is not None:
-            slices.update(_spectral_slice(data, wcs, roles, parsed_band))
+            subband_axis = _subband_axis(header, roles)
+            if subband_axis is not None:
+                cut, table, hit = _subband_slice(data, *subband_axis, parsed_band)
+                slices.update(cut)
+                subbands = (subband_axis[0], table, hit)
+                applied["subbands"] = [int(k) + 1 for k in hit]    # FREQnnnn numbers
+            else:
+                slices.update(_spectral_slice(data, wcs, roles, parsed_band))
             applied["band"] = True
         # Planes on the STOKES axis that one slice cannot hold: one HDU each.
         split: tuple[int, list[int], list[str]] | None = None
@@ -598,6 +737,8 @@ def make_cutout(
             start, step = sl.start or 0, sl.step or 1
             if start or step != 1:
                 _reslice_axis(header, _fits_axis_to_numpy(np_axis, data.ndim), start, step)
+        if subbands is not None:
+            _rewrite_subband_header(header, *subbands)
         if split is None:
             selector = tuple(slices.get(ax, slice(None)) for ax in range(data.ndim))
             sub = np.asarray(data[selector])
@@ -666,7 +807,10 @@ def describe(path: str) -> CutoutAxes:
     wcs = WCS(header)
     roles = _axis_roles(wcs)
     band = None
-    if "spec" in roles:
+    subband_axis = _subband_axis(header, roles)
+    if subband_axis is not None:
+        band = _subband_band_m(subband_axis[1]) if subband_axis[1] is not None else None
+    elif "spec" in roles:
         n = int(header.get(f"NAXIS{roles['spec'] + 1}", 1) or 1)
         try:
             band = _band_coverage(wcs, n)

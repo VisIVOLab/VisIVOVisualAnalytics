@@ -122,7 +122,7 @@ Parameter names are case-insensitive, values are not (except `POL` states, read 
 | | `POLYGON <ra1> <dec1> <ra2> <dec2> <ra3> <dec3> ...` | At least three vertices; reduced to their bounding box. |
 | `CIRCLE` | `<ra> <dec> <radius>` | Same as `POS=CIRCLE ...`. |
 | `POLYGON` | `<ra1> <dec1> ...` | Same as `POS=POLYGON ...`. |
-| `BAND` | `<min> <max>` | Wavelength interval in metres, converted to the dataset's spectral axis (frequency, wavelength or energy axes). |
+| `BAND` | `<min> <max>` | Wavelength interval in metres, converted to the dataset's spectral axis (frequency, wavelength or energy axes). On an Obit MFImage cube (`CTYPE = 'SPECLNMF'`) it selects whole sub-bands; see [Sub-band cubes](#sub-band-cubes-speclnmf). |
 | `TIME` | `<mjd_lo> <mjd_hi>` | MJD interval. A cube has no time axis to cut: the interval is checked against the observation time recorded in the header, and a miss selects nothing. Without a recorded time it is not applied. |
 | `POL` | `I`, `Q`, `U`, `V`, `RR`, `LL`, `RL`, `LR`, `XX`, `YY`, `XY`, `YX`, `POLI`, `POLA` | Polarization states (the ObsCore vocabulary), one per parameter: `POL=Q&POL=U`. All values make one result. See [Polarization](#polarization-pol). |
 
@@ -142,6 +142,21 @@ Only one of `POS`, `CIRCLE` and `POLYGON` may be given. A `POS` on a dataset wit
 ```text
 GET /soda/sync?ID=file:///data/pol/field_IQUV.fits&POL=Q&POL=U&CIRCLE=264.07%20-27.82%200.02
 ```
+
+#### Sub-band cubes (`SPECLNMF`)
+
+Obit MFImage cubes, such as the MeerKAT Milky Way Bulge and MGCLS releases, carry `CTYPE3 = 'SPECLNMF'`: `NTERM` fitted planes (total flux, spectral index, ...) followed by `NSPEC` sub-band planes, each with its centre frequency in `FREQnnnn` and, in recent releases, its edges in `FRELnnnn` and `FREHnnnn` (Hz). The axis keywords `CRVAL3`/`CDELT3` do not describe these planes (on `G000.0+2.5` they give 1284 to 2147 MHz over all 16 planes; the sub-bands run from 908 to 1656 MHz), so `BAND` reads the `FREQnnnn` table instead, the same one RM synthesis uses.
+
+- **Selection.** `BAND` returns the sub-bands whose centre frequency falls inside the interval, ends included. A sub-band whose edge the interval only clips is not returned, and the fitted planes are never returned. An interval that holds no centre (between two sub-bands, or outside them all) selects nothing: 204, as for other cubes. Blank sub-bands (flagged ones, all NaN) are returned as they are.
+- **Header.** The cutout keeps the MFImage convention, renumbered to the planes it holds: `NTERM = 0`, `NSPEC` = the number of sub-bands returned, and `FREQnnnn` from `0001` (with `FRELnnnn`/`FREHnnnn` when the source has edges for every sub-band). When the returned centres are evenly spaced to within 1 Hz (one sub-band, two, or a regular run), axis 3 also becomes a standard linear `FREQ` axis in Hz (`CRPIX3 = 1`, `CRVAL3` the first centre, the increment the spacing, or for a single sub-band its width, or the source's `CDELT3` when there are no edges, 1 Hz when it has none either), which any FITS reader understands and which places each plane at its `FREQnnnn` to within that 1 Hz. The increment is written to `CD3_3` when the header uses a CD matrix, to `CDELT3` otherwise, and any `PC`/`CD` element coupling axis 3 to another axis is removed. When the centres are not evenly spaced, no linear axis can place every plane correctly, so the axis stays `SPECLNMF`, with `CRVAL3` the first centre and the increment the mean spacing, and `FREQnnnn` remains the per-plane reference. A cutout of a cutout reads the same keywords, whichever of the two forms it has.
+- **Without usable keywords.** A `SPECLNMF` axis whose `NTERM` + `NSPEC` does not match its planes, or that lacks a `FREQnnnn`, refuses `BAND` with a `UsageError`, and its descriptor has no `BAND` range.
+- **DataLink.** The descriptor's `BAND` `MIN`/`MAX` span the sub-band edges (`c / FREH` of the highest to `c / FREL` of the lowest), or their centres when the header gives no edges.
+
+```text
+GET /soda/sync?ID=file:///data/meerkat_bulge/G000.0%2B2.5_Q.fits&BAND=0.1999%200.2498&POL=Q&CIRCLE=264.0%20-27.61%200.05
+```
+
+returns the four sub-bands at 1255.8, 1317.2, 1381.2 and 1448.1 MHz (the first one blank in this release).
 
 **Whole file.** A `CUTOUT` request with none of `POS`, `CIRCLE`, `POLYGON`, `BAND`, `TIME` or `POL` returns the dataset as stored on `/soda/sync`: the original file with every HDU and the original header, not a rewritten copy (this is what a DataLink `#this` link through the service fetches). Any regular file inside the data roots can be returned this way, including compressed FITS and HDF5. `RESPONSEFORMAT`, if given, must match the file's own media type (`application/fits` for `.fits`, `.fit`, `.fts`; `application/x-hdf5` for `.h5`, `.hdf5`, `.he5`; `application/gzip` for `.gz`; `application/octet-stream` otherwise), since the node converts nothing. An unconstrained `CUTOUT` submitted as an asynchronous job is not served as stored: it produces a FITS file holding the first image HDU's full data.
 
@@ -271,7 +286,7 @@ For each `ID` the links table has:
 | `#cutout` | `service_def` = `soda-sync-<n>`: the SODA sync descriptor. |
 | `#cutout` | `service_def` = `soda-async-<n>`: the SODA async descriptor. |
 
-Each descriptor (`RESOURCE type="meta" utype="adhoc:service"`, with `standardID` and `accessURL`) lists the input parameters the dataset can use, from its own header: `ID` (`ref` to the table's ID column), `POS`, `CIRCLE` and `POLYGON` only when it has celestial axes, `BAND` with `MIN`/`MAX` (its wavelength coverage in metres) only when it has a spectral axis astropy can convert, `TIME` always (with `MIN`/`MAX` when the header records the observation time; without them the parameter is accepted but not applied, as for `/soda/sync`), and `POL` with one `OPTION` per state the `STOKES` axis holds (`I` for a dataset without one). A file that is not an image (HDF5, a FITS table) gets only its `#this` row.
+Each descriptor (`RESOURCE type="meta" utype="adhoc:service"`, with `standardID` and `accessURL`) lists the input parameters the dataset can use, from its own header: `ID` (`ref` to the table's ID column), `POS`, `CIRCLE` and `POLYGON` only when it has celestial axes, `BAND` with `MIN`/`MAX` (its wavelength coverage in metres) only when it has a spectral axis astropy can convert or a `SPECLNMF` sub-band table, `TIME` always (with `MIN`/`MAX` when the header records the observation time; without them the parameter is accepted but not applied, as for `/soda/sync`), and `POL` with one `OPTION` per state the `STOKES` axis holds (`I` for a dataset without one). A file that is not an image (HDF5, a FITS table) gets only its `#this` row.
 
 An `ID` this node cannot serve gets a `#this` row with an `error_message` (`NotFoundFault: ...` for a missing file, `UsageFault: ...` otherwise) and no other link. No `ID` gives an empty table. An unknown parameter or `RESPONSEFORMAT` gives 400 with a VOTable whose `INFO name="QUERY_STATUS" value="ERROR"` holds `UsageFault: <message>`, followed by the empty links table. Each descriptor carries a `DESCRIPTION` naming its mode and dataset.
 

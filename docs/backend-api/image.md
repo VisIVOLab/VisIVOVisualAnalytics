@@ -9,10 +9,11 @@ reprojection, and photometry.
 ```json
 { "dataset_id": "...", "max_longest_side": 1024 }
 ```
-Returns a downsampled float32 image (base64) + `width`, `height`, `full_width`, `full_height`, `range_min`, `range_max`, `is_preview`, `preview_scale_factor`, `bunit`. **Out-of-core**: reads only the decimated pixels from the memmap (via `np.ix_`), so a multi-GB mosaic is never fully loaded just to preview it.
+Returns a downsampled float32 image (`data_base64`, with `compression` naming its encoding when compressed) + `width`, `height`, `full_width`, `full_height`, `scalar_type`, `range_min`, `range_max`, `is_preview`, `preview_scale_factor`. `max_longest_side` defaults to 1536. **Out-of-core**: reads only the decimated pixels from the memmap (via `np.ix_`), so a multi-GB mosaic is never fully loaded just to preview it.
 
 ### `POST /v1/image/full`
-Same, no size cap. **Loads the whole plane into RAM** — use `/v1/image/tile` (or `/v1/image/preview`) for large mosaics.
+Same response, no size cap; the request is `{dataset_id}` only. A non-image
+dataset is answered `valid: false` here and 422 on `/preview` and `/tile`. **Loads the whole plane into RAM** — use `/v1/image/tile` (or `/v1/image/preview`) for large mosaics.
 
 ### `POST /v1/image/filter`
 Gaussian-smooth and/or shrink a FITS **file** into a new one in the Workspace.
@@ -26,7 +27,9 @@ different instrument.
 ```
 Returns `output_path`, `workspace_filename`, `width`, `height`, `depth`,
 `range_min`, `range_max`, `bunit`, `combine`, `smooth_fwhm_pixels`,
-`smooth_fwhm_arcsec`, `regrid_factor` and `flux_scale`. A truncated FITS file
+`smooth_fwhm_arcsec`, `regrid_factor`, `flux_scale` and `beam_missing`
+(a per-beam map was smoothed but its header has no beam, so the values could
+not be rescaled). A truncated FITS file
 is refused with `valid: false` and the message of the
 [open routes](datasets.md#post-v1datasetsopen).
 
@@ -70,7 +73,7 @@ panned / zoomed without materialising the full plane (unlike `full` /
 - `tile_x` / `tile_y` — tile indices at that level; each tile covers `tile_size` downsampled pixels per axis.
 - `tile_size` — output tile edge in pixels (1–4096, default 256).
 
-Response: `width` / `height` (actual tile dims, smaller at edges), `full_width` / `full_height`, `level`, `num_levels`, `tile_x`, `tile_y`, `tile_size`, `range_min` / `range_max`, `averaged` (the tile comes from the averaged pyramid; `false` at level 0, where both are the same pixels), `pyramid` (`"none"` for an image below the size, `"building"`, `"ready"` or `"failed"`), `pyramid_progress` (0 to 1), `compression`, base64 `data`. Out-of-range tile or `level ≥ num_levels` → 422; non-image dataset → 422.
+Response: `width` / `height` (actual tile dims, smaller at edges), `full_width` / `full_height`, `level`, `num_levels`, `tile_x`, `tile_y`, `tile_size`, `range_min` / `range_max`, `averaged` (the tile comes from the averaged pyramid; `false` at level 0, where both are the same pixels), `pyramid` (`"none"` for an image below the size, `"building"`, `"ready"` or `"failed"`), `pyramid_progress` (0 to 1), `scalar_type`, `compression`, base64 `data_base64`. Out-of-range tile or `level ≥ num_levels` → 422; non-image dataset → 422.
 
 The tiling is the same either way (level `L` is `ceil(n / 2**L)` pixels per axis), so a client can mix levels but should not mix the two kinds of tile in one picture: the desktop assembles a view again when it finds both, and places averaged tiles at the centre of their cells.
 
@@ -110,7 +113,7 @@ Circular-aperture flux with an optional background annulus.
 An annulus of 0/0 (the default) means no background subtraction. Response:
 `valid`, `error`, `flux_jy`, `flux_err_jy`, `flux`, `flux_err`, `flux_unit`,
 `beam_area_pix`, `background_per_pix`, `background_rms_per_pix`, `bunit`,
-`n_pix_aperture`, `channel`, `pix_x`, `pix_y`, `pixel_scale_arcsec`.
+`n_pix_aperture`, `aperture_area_pix`, `channel`, `pix_x`, `pix_y`, `pixel_scale_arcsec`.
 `flux` is always the summed brightness in `flux_unit`; `flux_jy` is the
 beam-corrected flux in Jy and is `null` unless the data are per beam with a
 known beam. Errors: 503 without photutils, 422 without a celestial WCS or for

@@ -13,7 +13,7 @@ A task is not bound by `VISIVO_HEAVY_TIMEOUT_S`, the 900 s ceiling of the
 synchronous routes. It runs until it completes or is cancelled, unless the
 operator sets `VISIVO_TASK_TIMEOUT_S`. Use the task route for a moment or PV
 over a large cube or channel range: on one HPC node an M2 over 450 GB takes
-about 25 minutes (`benchmark/RESULTS.md`).
+about 32 minutes (1924 s, `benchmark/RESULTS.md`).
 
 ### `POST /v1/tasks/moment_fits`
 The task form of `POST /v1/products/moment_fits`: it computes a moment map and

@@ -56,8 +56,10 @@ image tiles, SAMP, WebRTC signalling, interactive scrubbing (`/v1/cube/slice`,
 that was recorded when it was computed. The cosmology BATCH is recorded: it is
 asked for once, when a user picks a different cosmology, and it recomputes the
 position of every source in a catalogue.
-Only `POST`/`PUT`/`PATCH` count. The history holds the last 50 operations and is
-served to admin tokens only, as the rest of the snapshot is.
+Only `POST`/`PUT`/`PATCH` count. The history holds the last 50 operations.
+Once per-user tokens are configured, `recent_tasks` is filled only for the
+operator (primary token), since it names other users' operations; any other
+token gets an empty list and the rest of the snapshot.
 
 ### `POST /v1/sessions/new`
 Mint a fresh backend session owned by the calling token and return its id.
@@ -102,13 +104,13 @@ the desktop client. Returns `404` if the session does not exist or belongs to an
 ## Files
 
 ### `GET /v1/files/list?path=<dir>`
-List backend-side directory. Returns `FileEntry[]` with `name`, `path`, `type`, `size`, `modified_time`, `is_fits`.
+List backend-side directory. Returns `{valid, error, current_path, entries}`, `entries` being `FileEntry[]` with `name`, `path`, `type`, `size`, `modified_time`, `is_fits`. A missing or refused directory is `valid: false` ("Directory not found.").
 
 ### `POST /v1/files/header`
 ```json
 { "path": "/data/cube.fits" }
 ```
-Returns FITS header cards as `string[]`.
+Returns `{valid, error, cards}`, the FITS header cards as `string[]` ("FITS file not found." with `valid: false` for a missing or refused path).
 
 ### `POST /v1/files/header/patch`
 Apply header edits to a **copy** of the file, in the Workspace. The input is
@@ -152,13 +154,15 @@ most one FITS header; nothing is opened, converted or registered.
 
 | Field | Meaning |
 |-------|---------|
-| `kind` | `image`, `cube`, `dynspec`, `fits-table`, `catalogue`, `vbt`, `compressed`, `directory`, `unknown` |
-| `opener` | `dataset` → `/v1/datasets/open`; `catalogue` → `/v1/catalogue/open`; `vbt` → `/v1/vbt/open`; `ask` → the content is ambiguous, let the user choose; `unsupported` → nothing here opens it, say so |
+| `kind` | `image`, `cube`, `dynspec`, `velocity-field`, `fits-table`, `catalogue`, `vbt`, `compressed`, `directory`, `unknown` |
+| `opener` | `dataset` → `/v1/datasets/open`; `catalogue` → `/v1/catalogue/open`; `vbt` → `/v1/vbt/open`; `velocity` → `/v1/velocity/open`; `ask` → the content is ambiguous, let the user choose; `unsupported` → nothing here opens it, say so |
 | `open_path` | The path to hand the opener when it differs from `path`: a VBT chosen by its `.bin` opens through the `.head` beside it. Empty means "use `path`". |
 | `confident` | `false` when the answer is a guess — a FITS whose header would not parse, for instance |
 | `detail` | One sentence naming what was found, shown to the user when we have to ask |
 
-A FITS **table** is reported as `fits-table` / `ask`: it can be a source
+A VBT is classified by its header: a volume as `cube` / `dataset` (each field
+opens as a cube), a table of points as `vbt` / `catalogue` (opened with
+`format: "vbt"`). A FITS **table** is reported as `fits-table` / `ask`: it can be a source
 catalogue or a table to overlay, and only the user knows which. A missing path
 and a refused one answer identically (`"File not found."`), so the classifier
 cannot be used to enumerate what lies outside the allowed data roots.

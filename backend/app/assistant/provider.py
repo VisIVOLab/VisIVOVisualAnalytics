@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,6 +44,9 @@ class ProviderResponse:
 class AssistantProvider:
     name: str = "base"
     configured: bool = False
+    #: What stops this provider from answering, for the status route; "" if
+    #: nothing is known to. Never carries a secret.
+    problem: str = ""
 
     def complete(
         self, system: str, history: list[dict[str, Any]], tools: list[dict[str, Any]]
@@ -54,7 +58,16 @@ class NullProvider(AssistantProvider):
     name = "null"
     configured = False
 
+    def __init__(self, problem: str = "") -> None:
+        # A reason given here (a refused VISIVO_LLM_BASE_URL) replaces the
+        # generic "nothing selected", so the operator is told what to fix.
+        self.problem = problem
+
     def complete(self, system, history, tools) -> ProviderResponse:
+        if self.problem:
+            return ProviderResponse(final_text=(
+                f"The AI copilot is off on this server: {self.problem} The tool "
+                "catalogue and deterministic analysis tools are still available."))
         return ProviderResponse(final_text=(
             "The AI copilot is not configured on this server: no LLM provider is "
             "selected. The tool catalogue and deterministic analysis tools are "
@@ -131,8 +144,65 @@ class OpenAIProvider(AssistantProvider):
         # Self-hosted endpoints often need no real key; pass a placeholder so the
         # SDK is happy while the server ignores it.
         self._client = openai.OpenAI(api_key=api_key or "not-needed", base_url=base_url or None)
-        self._model = model or os.environ.get("VISIVO_ASSISTANT_MODEL", "gpt-4o")
+        self._model = model or os.environ.get("VISIVO_ASSISTANT_MODEL") or None
+        if not self._model and not base_url:
+            # Cloud OpenAI: a model name that exists there.
+            self._model = "gpt-4o"
+        # Self-hosted with no model: NOT "gpt-4o", which such a server rarely
+        # serves (the request then fails with an opaque 404). The server is
+        # asked at the first question instead; see _resolve_model.
         self.name = name
+        # One discovery at a time: the provider is cached on the session and
+        # two questions can arrive together.
+        self._model_lock = threading.Lock()
+
+    def _resolve_model(self) -> tuple[str | None, str]:
+        """The model to request: the configured one, or the server's only one.
+
+        Asked lazily, at the first question, so building the provider (and so
+        the status route and start-up) never waits on a server that may be
+        down. When the server lists exactly one model it is used: that is the
+        usual vLLM deployment, and there is no ambiguity. None or several is a
+        choice the operator has to make; :attr:`problem` says which, with the
+        list, and a failure is not cached, so a fix on the server is picked up
+        at the next question.
+
+        Returns ``(model, "")`` or ``(None, why)``: the reason is this call's
+        own, so a concurrent question cannot change it under the caller.
+        """
+        if self._model:
+            return self._model, ""
+        with self._model_lock:
+            if self._model:          # resolved by a question that held the lock
+                return self._model, ""
+            problem = self._list_problem_or_pick()
+            self.problem = problem
+            return (None, problem) if problem else (self._model, "")
+
+    def _list_problem_or_pick(self) -> str:
+        """Ask the server; set ``_model`` when it serves one, else say why not."""
+        hint = ("Set VISIVO_ASSISTANT_MODEL on the backend, or the Model field "
+                "in Settings ▸ Scientific Copilot.")
+        try:
+            listing = self._client.with_options(
+                timeout=_MODEL_LIST_TIMEOUT_S, max_retries=0).models.list()
+            ids = sorted({str(m.id) for m in listing if getattr(m, "id", None)})
+        except Exception as exc:  # noqa: BLE001 — any failure is reported, not raised
+            # The class name only: an SDK message can quote the request.
+            return ("No model is set for the self-hosted endpoint and its model "
+                    f"list could not be read ({type(exc).__name__}). {hint}")
+        if len(ids) == 1:
+            self._model = ids[0]
+            logger.info("[assistant] no model set; using the endpoint's only model %r",
+                        self._model)
+            return ""
+        if not ids:
+            return f"No model is set and the self-hosted endpoint lists none. {hint}"
+        shown = ", ".join(ids[:_MODEL_LIST_SHOWN])
+        more = (f" and {len(ids) - _MODEL_LIST_SHOWN} more"
+                if len(ids) > _MODEL_LIST_SHOWN else "")
+        return ("No model is set and the self-hosted endpoint serves "
+                f"{len(ids)}: {shown}{more}. {hint}")
 
     @staticmethod
     def _to_messages(system: str, history: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -166,8 +236,13 @@ class OpenAIProvider(AssistantProvider):
         }} for t in tools]
 
     def complete(self, system, history, tools) -> ProviderResponse:
+        model, problem = self._resolve_model()
+        if model is None:
+            # Said as the answer, like NullProvider: the question cannot be put
+            # to a model nobody named.
+            return ProviderResponse(final_text=f"The AI copilot cannot answer: {problem}")
         resp = self._client.chat.completions.create(
-            model=self._model, max_tokens=1024,
+            model=model, max_tokens=1024,
             messages=self._to_messages(system, history),
             tools=self._to_tools(tools), tool_choice="auto")
         choice = resp.choices[0]
@@ -185,6 +260,12 @@ class OpenAIProvider(AssistantProvider):
         return ProviderResponse(tool_calls=calls, final_text=text)
 
 
+#: How long the first question waits for a self-hosted server's model list.
+_MODEL_LIST_TIMEOUT_S = 10.0
+#: Model names quoted when a server lists several.
+_MODEL_LIST_SHOWN = 10
+
+
 # ── User-selectable configuration (runtime-settable, env-initialised) ─────────
 #
 # The CLOUD OpenAI key (``openai_key``) and the SELF-HOSTED endpoint key
@@ -197,34 +278,65 @@ class OpenAIProvider(AssistantProvider):
 def default_config() -> dict[str, Any]:
     """A fresh provider config seeded from the environment. Each SESSION gets its
     own copy so users sharing a backend configure independent providers/keys."""
+    base_url, base_url_error = _env_base_url()
     return {
         "provider": os.environ.get("VISIVO_ASSISTANT_PROVIDER", "auto"),  # auto|anthropic|openai|null
         "anthropic_key": os.environ.get("ANTHROPIC_API_KEY") or None,
         "openai_key": os.environ.get("OPENAI_API_KEY") or None,           # CLOUD OpenAI only
-        "base_url": os.environ.get("VISIVO_LLM_BASE_URL") or None,        # self-hosted / OpenAI-compat
+        "base_url": base_url,                                             # self-hosted / OpenAI-compat
         "base_url_key": os.environ.get("VISIVO_LLM_API_KEY") or None,     # self-hosted endpoint key
         "model": os.environ.get("VISIVO_ASSISTANT_MODEL") or None,
+        # Why VISIVO_LLM_BASE_URL was refused, or None. Not a setting: it keeps
+        # the copilot off (rather than quietly using another provider) until
+        # the client sets or clears base_url for the session.
+        "base_url_error": base_url_error,
     }
+
+
+def _env_base_url() -> tuple[str | None, str | None]:
+    """VISIVO_LLM_BASE_URL, checked like a base URL set from the client.
+
+    A refused value disables the copilot instead of stopping the backend: the
+    copilot is optional, and everything else the backend does is not. The URL
+    itself is never repeated, in the message or the log, because what made it
+    unacceptable may be the credentials inside it.
+    """
+    raw = (os.environ.get("VISIVO_LLM_BASE_URL") or "").strip()
+    if not raw:
+        return None, None
+    try:
+        return _sanitize_base_url(raw, name="VISIVO_LLM_BASE_URL"), None
+    except ValueError as exc:
+        return None, f"{exc}. The self-hosted copilot stays off until it is corrected."
+
+
+def _sanitize_base_url(url: str, name: str = "base_url") -> str:
+    """Validate a self-hosted base URL. Rejects embedded credentials
+    (``user:pass@host``) and query/fragment secrets so a stored URL can be shown
+    back in the UI without leaking secrets, and can't smuggle auth to a proxy.
+    ``name`` is what the message calls the value: the field, or the variable."""
+    from urllib.parse import urlparse  # noqa: PLC0415
+
+    try:
+        p = urlparse(url)
+    except ValueError:
+        # The parser's own message can quote the netloc, credentials and all.
+        raise ValueError(f"{name} is not a valid URL, e.g. http://host:8000/v1") from None
+    if p.scheme not in ("http", "https") or not p.netloc:
+        raise ValueError(f"{name} must be a http(s) URL, e.g. http://host:8000/v1")
+    if p.username or p.password:
+        raise ValueError(f"{name} must not contain embedded credentials (user:pass@); "
+                         "the key belongs in VISIVO_LLM_API_KEY")
+    if p.query or p.fragment:
+        raise ValueError(f"{name} must not contain a query string or fragment")
+    return url.rstrip("/")
 
 
 # Process default (env-based). Per-session configs default to a copy of this.
 _CONFIG: dict[str, Any] = default_config()
-
-
-def _sanitize_base_url(url: str) -> str:
-    """Validate a self-hosted base URL. Rejects embedded credentials
-    (``user:pass@host``) and query/fragment secrets so a stored URL can be shown
-    back in the UI without leaking secrets, and can't smuggle auth to a proxy."""
-    from urllib.parse import urlparse  # noqa: PLC0415
-
-    p = urlparse(url)
-    if p.scheme not in ("http", "https") or not p.netloc:
-        raise ValueError("base_url must be a http(s) URL, e.g. http://host:8000/v1")
-    if p.username or p.password:
-        raise ValueError("base_url must not contain embedded credentials (user:pass@)")
-    if p.query or p.fragment:
-        raise ValueError("base_url must not contain a query string or fragment")
-    return url.rstrip("/")
+if _CONFIG["base_url_error"]:
+    # Once, at start-up; the copilot's answers and status route repeat it.
+    logger.warning("[assistant] %s", _CONFIG["base_url_error"])
 
 
 def configure(config: dict[str, Any] | None = None, **kwargs: Any) -> None:
@@ -241,6 +353,10 @@ def configure(config: dict[str, Any] | None = None, **kwargs: Any) -> None:
             cfg[k] = _sanitize_base_url(str(v))
         else:
             cfg[k] = v
+        if k == "base_url":
+            # The session chose its own endpoint (or none): a refused
+            # VISIVO_LLM_BASE_URL no longer applies to it.
+            cfg["base_url_error"] = None
 
 
 def public_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -255,6 +371,7 @@ def public_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
         "base_url_key_set": bool(cfg["base_url_key"]),
         "model": cfg["model"],
         "available": ["anthropic", "openai", "null"],
+        "base_url_error": cfg.get("base_url_error"),
     }
 
 
@@ -264,7 +381,10 @@ def _resolve_provider_name(config: dict[str, Any] | None = None) -> str:
     if p != "auto":
         return p
     # Auto: prefer a self-hosted/OpenAI endpoint or key, then Anthropic, else null.
-    if cfg.get("base_url") or cfg.get("openai_key"):
+    # A refused VISIVO_LLM_BASE_URL still counts as "a self-hosted endpoint was
+    # meant": falling through to another key would send the questions somewhere
+    # the operator did not choose.
+    if cfg.get("base_url") or cfg.get("base_url_error") or cfg.get("openai_key"):
         return "openai"
     if cfg.get("anthropic_key"):
         return "anthropic"
@@ -282,6 +402,10 @@ def provider_from_env(config: dict[str, Any] | None = None) -> AssistantProvider
                 return NullProvider()
             return AnthropicProvider(cfg["anthropic_key"], cfg.get("model"))
         if name == "openai":
+            if cfg.get("base_url_error") and not cfg.get("base_url"):
+                # Also with an explicit provider=openai: the operator asked for
+                # a self-hosted endpoint, so its cloud key is not a stand-in.
+                return NullProvider(cfg["base_url_error"])
             if cfg.get("base_url"):
                 # Self-hosted: use ONLY the dedicated endpoint key, never the
                 # cloud openai_key (which could otherwise be exfiltrated).

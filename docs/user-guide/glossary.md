@@ -11,13 +11,13 @@ Beam (synthesised beam)
   `BPA` (position angle), all in degrees. VisIVO draws a filled
   semi-transparent ellipse in the bottom-left corner of the 2-D slice
   view when these keywords are present. See
-  [Cube viewer — Beam indicator](cube-viewer#beam-indicator).
+  [Cube viewer — Beam indicator](cube-viewer.md#beam-indicator).
 
 Blink / Compare
   Rapid alternation of visibility between layers 0 and 1 in the image
   viewer, controlled by a configurable timer (50–1000 ms). Standard
   technique for detecting transients, proper motion, or artefact
-  differences. See [Image viewer — Blink / Compare](image-viewer#blink-compare).
+  differences. See [Image viewer — Blink / Compare](image-viewer.md#blink--compare).
 
 BUNIT
   FITS header keyword carrying the brightness / pixel-value unit (e.g.
@@ -28,7 +28,7 @@ Cone search (SCS)
   *Simple Cone Search* — the IVOA protocol for "what is within this radius
   of this position?". A service takes `RA`, `DEC` and `SR` (search radius,
   degrees) and answers with a VOTable. See
-  [Catalogues & HiPS — Cone Search](catalogues-hips#cone-search).
+  [Catalogues & HiPS — Cone Search](catalogues-hips.md#cone-search).
 
 CTYPE
   FITS header keyword that names each WCS axis (e.g. `RA---SIN`,
@@ -53,7 +53,7 @@ dataset_id
 EW
   *Equivalent width* — a model-free width estimate equal to
   `∫ I dv / max(I)`. Use it when the line profile is non-Gaussian. See
-  [Line-width maps](spectral-tools#line-width-maps-s-02).
+  [Line-width maps](spectral-tools.md#line-width-maps-s-02).
 
 FWHM
   *Full width at half maximum* — the spectral width at which the
@@ -75,13 +75,13 @@ Galactic
 HiPS
   *Hierarchical Progressive Survey* — multi-resolution tiled image format
   used by the IVOA to serve all-sky surveys. See
-  [HiPS viewer](catalogues-hips#hips-viewer).
+  [HiPS viewer](catalogues-hips.md#hips-viewer).
 
 hips2fits
   A CDS service that reprojects a HiPS survey onto a WCS you specify and
   returns a FITS (or a picture). It is how a survey becomes a file you can
   measure on, rather than tiles you can only look at. See
-  [Catalogues & HiPS](catalogues-hips#hips-cutout-hips2fits).
+  [Catalogues & HiPS](catalogues-hips.md#hips-cutout-hips2fits).
 
 Isosurface
   A closed 3-D surface where the cube's intensity equals a given
@@ -92,7 +92,7 @@ Line identification (spectral-line overlay)
   Overlay of expected spectral-line positions on the spectrum plot.
   Loaded from a two-column CSV file (`frequency,label`); lines are drawn
   as vertical dashed amber markers with rotated labels. See
-  [Cube viewer — Line identification overlay](cube-viewer#line-identification-overlay).
+  [Cube viewer — Line identification overlay](cube-viewer.md#line-identification-overlay).
 
 LRU cache
   *Least Recently Used* — eviction policy of the backend's
@@ -113,7 +113,7 @@ Measurement tools (Ruler / Angle)
   Interactive distance and angle measurement on the image viewer. Ruler
   shows pixel and angular distance (Haversine); Angle shows the angle
   at the middle vertex of three clicked points. See
-  [Image viewer — Measurement tools](image-viewer#measurement-tools).
+  [Image viewer — Measurement tools](image-viewer.md#measurement-tools).
 
 Moment (M0, M1, M2, …)
   Statistical summary of a spectral line projected on the spatial axes.
@@ -123,12 +123,12 @@ PV
   *Position-Velocity diagram* — 2-D plot of intensity along a path on the
   sky (X) vs. velocity (Y). Standard tool for kinematic inspection. The path
   stays editable and the diagram can be saved as FITS. See
-  [Regions, PV, noise](region-pv-noise#position-velocity-diagrams).
+  [Regions, PV, noise](region-pv-noise.md#position-velocity-diagrams).
 
 Probe
   Click-to-extract spectral profile at a single pixel of the cube's 2-D
   slice (or via 3-D plane click). See
-  [Cube viewer](cube-viewer#probing-a-spectrum).
+  [Cube viewer](cube-viewer.md#extract-spectrum-probe-a-single-pixel).
 
 ROI
   *Region of Interest*. In the cube viewer, the *Camera ROI* is the
@@ -139,7 +139,7 @@ SAMP
   *Simple Application Messaging Protocol* — IVOA standard for inter-VO
   application messaging. Lets VisIVO exchange FITS / catalogues with
   TOPCAT / Aladin / DS9 at runtime. See
-  [SAMP](catalogues-hips#samp).
+  [SAMP](catalogues-hips.md#samp).
 
 Session
   Backend-side container of all the datasets opened in one workflow.
@@ -156,7 +156,7 @@ Spectral smoothing
   *Spectral Profile* window. Available kernels: Hanning, Boxcar (3/5/7
   channels), Gaussian (σ=1/2 channels). The smoothing is NaN-safe and
   affects the stats bar but not CSV export. See
-  [Cube viewer — Spectral smoothing](cube-viewer#spectral-smoothing).
+  [Cube viewer — Spectral smoothing](cube-viewer.md#spectral-smoothing).
 
 Spectral axis
   Third FITS axis carrying frequency / velocity / wavelength information.
@@ -179,7 +179,7 @@ TAP / ADQL
   *Table Access Protocol* and the query language it speaks — SQL with
   astronomy added (`POINT`, `CIRCLE`, `radians()`). The VLKB catalogues
   are queried this way. See
-  [Catalogues & HiPS — VLKB Catalogue Query](catalogues-hips#vlkb-catalogue-query).
+  [Catalogues & HiPS — VLKB Catalogue Query](catalogues-hips.md#vlkb-catalogue-query).
 
 VBT
   *VisIVO Binary Table* — efficient column-oriented binary format used
@@ -203,5 +203,5 @@ worker pool
   Backend process pool that runs the CPU-bound work. Default size 4
   (controlled by `VISIVO_WORKERS`). Heavy tasks are gated by a
   semaphore (`VISIVO_HEAVY_SLOTS`) so interactive requests always have
-  a free worker; see [heavy-task throttle](../async-patterns#heavy-task-throttle-backend-side).
+  a free worker; see [heavy-task throttle](../async-patterns.md#heavy-task-throttle-backend-side).
 ```

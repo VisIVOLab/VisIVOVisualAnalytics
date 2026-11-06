@@ -13,7 +13,7 @@ from typing import Any  # noqa: F401
 
 import numpy as np
 
-from ..fits_dataset import ScientificFitsDataset  # noqa: F401
+from ..fits_dataset import ScientificFitsDataset, mfimage_subbands  # noqa: F401
 from ._common import (  # noqa: F401
     clamped_sqrt,
     logger,
@@ -192,54 +192,22 @@ def _resolve_stokes_sources(
 def _mfimage_subbands(dataset: ScientificFitsDataset) -> tuple[int, np.ndarray] | None:
     """(first sub-band plane, its frequencies in Hz) for an Obit MFImage cube.
 
-    MFImage does not write a linear spectral axis. It writes NTERM fitted
-    planes first — total flux, spectral index, … — then NSPEC sub-band planes,
-    and gives each sub-band's frequency in its own FREQnnnn keyword. The WCS
-    keywords on axis 3 describe none of that.
-    
-    Measured on the real MGCLS release (G000.0+2.5_Q.fits.gz): NAXIS3 = 16 with
-    NTERM = 2 and NSPEC = 14, sub-bands running 908 → 1656 MHz, while CRVAL3 /
-    CDELT3 describe 1284 → 2147 MHz. Taking the WCS grid would put λ² in the
-    wrong place for every channel AND feed two fitted planes, which are not
-    sub-bands at all, into the transform — silently, with a plausible-looking
-    RM map coming out the other end.
+    The layout and why the WCS axis must not be used for it are described in
+    ``fits_dataset.mfimage_subbands``, which the SODA BAND cut reads too.
+    Taking the WCS grid instead would put λ² in the wrong place for every
+    channel AND feed the fitted planes, which are not sub-bands at all, into
+    the transform — silently, with a plausible-looking RM map coming out the
+    other end.
 
     Returns None when the header does not describe this layout, and the caller
     falls back to the WCS axis.
     """
-    header = dataset.header
-    try:
-        n_spec = int(header.get("NSPEC", 0))
-        n_term = int(header.get("NTERM", 0))
-    except (TypeError, ValueError):
+    if "NSPEC" not in dataset.header:
         return None
-    if n_spec <= 0:
-        return None
-
-    freqs: list[float] = []
-    for i in range(1, n_spec + 1):
-        value = header.get(f"FREQ{i:04d}")
-        if value is None:
-            return None            # incomplete: not this layout, or unusable
-        freqs.append(float(value))
-
-    # The planes have to fit: NTERM + NSPEC is the whole spectral axis for a
-    # well-formed MFImage cube. Anything else means the file is not what these
-    # keywords claim, and guessing an offset would be worse than the WCS.
     spectral_axis = dataset.cube_numpy_spectral_fits_axis()
     n_planes = int(dataset.axis_sizes[spectral_axis - 1])
-    offset = max(0, n_term)
-    if offset + n_spec != n_planes:
-        logger.warning(
-            "[rmsynth] %s: NTERM=%s + NSPEC=%s does not match the %s planes on the "
-            "spectral axis; using the WCS axis instead.",
-            dataset.path, n_term, n_spec, n_planes)
-        return None
-
-    freq = np.asarray(freqs, dtype=np.float64)
-    if not np.all(np.isfinite(freq)) or np.any(freq <= 0.0):
-        return None
-    return offset, freq
+    layout = mfimage_subbands(dataset.header, n_planes, source=str(dataset.path))
+    return None if layout is None else (layout.offset, layout.freq_hz)
 
 
 def _require_same_sky_grid(a: ScientificFitsDataset, b: ScientificFitsDataset) -> None:

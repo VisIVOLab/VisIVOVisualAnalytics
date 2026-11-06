@@ -9,24 +9,26 @@
 #   - macOS x86_64: VisIVOVisualAnalytics-macos-x86_64.dmg
 #                  contains: VisIVOVisualAnalytics.app + Setup Backend.command
 #   - Linux x86_64: VisIVOVisualAnalytics-linux-x86_64.tar.gz
-#                   contains: *.AppImage + setup_backend.sh + requirements.txt
+#                   contains: VisIVOVisualAnalytics (launcher) + app/ (the
+#                   application tree linuxdeploy builds) + python/ +
+#                   setup_backend.sh + requirements.txt
 #   - Windows x86_64: VisIVOVisualAnalytics-windows-x86_64.zip
 #                     contains: bin/<exe + DLLs + plugins/ + backend/>
 #                              + setup_backend.bat + requirements.txt
 #
 # The Python backend code is bundled next to the executable:
 #   - macOS:   <App>.app/Contents/Resources/backend/
-#   - Linux:   <AppDir>/usr/bin/backend/  (inside the AppImage)
+#   - Linux:   <pkg>/app/usr/bin/backend/
 #   - Windows: bin\backend\
 #
 # A self-contained Python runtime (python-build-standalone) with the backend's
 # dependencies already installed ships WITH it, so a release runs on a machine
 # that has no Python at all:
 #   - macOS:   <App>.app/Contents/Resources/python/   (inside the bundle)
-#   - Linux:   <pkg>/python/   BESIDE the AppImage — the AppImage is a
-#              read-only squashfs and linuxdeploy rewrites what it finds in the
-#              AppDir, so the runtime is kept out of it; the client resolves it
-#              from $APPIMAGE's directory
+#   - Linux:   <pkg>/python/   BESIDE the application tree: linuxdeploy
+#              rewrites what it finds in the AppDir, so the runtime is kept out
+#              of it; the client resolves it from the launcher's
+#              $VISIVO_PACKAGE_DIR
 #   - Windows: bin\python\
 #
 # The setup scripts remain, now optional: they build a venv in a writable
@@ -720,9 +722,15 @@ jobs:
             -d AppDir/usr/share/applications/visivo.desktop \
             -i AppDir/usr/share/icons/hicolor/256x256/apps/visivo.png
 
-      # Package the AppImage together with the backend setup script and
-      # requirements.txt in a tar.gz. Tester extracts, runs setup_backend.sh
-      # once, then runs the AppImage normally.
+      # Package the application tree (the AppImage's contents, extracted)
+      # with the Python runtime and the backend setup script in a tar.gz.
+      #
+      # Not the AppImage itself: run from its FUSE mount, QtWebEngine's helper
+      # process crashes the client at start (Ubuntu 22.04 and 24.04, releases
+      # up to 1.0.10, intermittently), while the same files run from a plain
+      # directory never did. A plain tree also needs no libfuse2, which Ubuntu
+      # 24.04 no longer installs. The user extracts the tarball and runs
+      # ./VisIVOVisualAnalytics.
       - name: Package Linux release
         if: runner.os == 'Linux'
         shell: bash
@@ -731,15 +739,29 @@ jobs:
           PKG="VisIVOVisualAnalytics-${{ matrix.name }}"
           rm -rf "$PKG"
           mkdir "$PKG"
-          mv VisIVO*Visual*Analytics*.AppImage "$PKG/$PKG.AppImage"
-          chmod +x "$PKG/$PKG.AppImage"
+          APPIMG=$(ls VisIVO*Visual*Analytics*.AppImage)
+          chmod +x "$APPIMG"
+          # Self-extraction needs no FUSE.
+          ./"$APPIMG" --appimage-extract >/dev/null
+          mv squashfs-root "$PKG/app"
+          rm -f "$APPIMG"
+          cat > "$PKG/VisIVOVisualAnalytics" <<'LAUNCHER'
+          #!/bin/sh
+          # VisIVO Visual Analytics launcher: runs the application tree in ./app
+          # and tells it where this package is, so it finds ./python.
+          HERE="$(dirname "$(readlink -f "$0")")"
+          VISIVO_PACKAGE_DIR="$HERE"
+          export VISIVO_PACKAGE_DIR
+          exec "$HERE/app/AppRun" "$@"
+          LAUNCHER
+          chmod +x "$PKG/VisIVOVisualAnalytics"
           cp scripts/setup_backend.sh "$PKG/setup_backend.sh"
           chmod +x "$PKG/setup_backend.sh"
           cp backend/requirements.txt "$PKG/requirements.txt"
-          # The interpreter travels BESIDE the AppImage, not inside it: the
-          # AppImage is a read-only squashfs and linuxdeploy rewrites what it
-          # finds in the AppDir. The client resolves it from $APPIMAGE's
-          # directory, so extracting the tarball is the whole installation.
+          # The interpreter travels BESIDE the application tree, not inside it:
+          # linuxdeploy rewrites what it finds in the AppDir. The client finds
+          # it through the launcher's $VISIVO_PACKAGE_DIR, so extracting the
+          # tarball is the whole installation.
           cp -R pyruntime/python "$PKG/python"
           cat > "$PKG/README.txt" <<README
           VisIVO Visual Analytics
@@ -747,11 +769,11 @@ jobs:
 
           Just run it:
 
-              ./$PKG.AppImage
+              ./VisIVOVisualAnalytics
 
-          Nothing to install. This package carries its own Python runtime with
-          the backend's dependencies in ./python, and the client finds it next
-          to the AppImage — so keep the two together when you move them.
+          Nothing to install. This package carries the application in ./app and
+          its own Python runtime with the backend's dependencies in ./python;
+          the launcher finds both, so keep the folder together when you move it.
 
           Optional, only if you would rather use your own Python: run
           ./setup_backend.sh, which builds a virtual environment in
@@ -784,12 +806,39 @@ jobs:
           case "${{ runner.os }}" in
             macOS)   BE="dmg-staging/VisIVOVisualAnalytics.app/Contents/Resources/backend" ;;
             Windows) BE="VisIVOVisualAnalytics-${{ matrix.name }}/bin/backend" ;;
-            Linux)   BE="" ;;   # inside the AppImage; not reachable from here
+            Linux)   BE="VisIVOVisualAnalytics-${{ matrix.name }}/app/usr/bin/backend" ;;
           esac
           if [ -n "$BE" ]; then
             ( cd "$BE" && "$PYABS" -B -c "import app.main; print('backend imports OK')" )
           else
             "$PYABS" -B -c "import fastapi, uvicorn, vtk, numpy, astropy; print('runtime OK')"
+          fi
+
+      # The client must open, not only build: a crash at start (the 1.0.10
+      # Linux AppImage) passed every earlier check. Run the packaged launcher
+      # on a virtual display; still running when stopped is the pass.
+      - name: Smoke-test the packaged client (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -uo pipefail
+          sudo apt-get install -y -qq xvfb >/dev/null
+          PKG="VisIVOVisualAnalytics-${{ matrix.name }}"
+          export QT_QPA_PLATFORM=xcb
+          # Still running when stopped (124) AND the main window shown: a
+          # client waiting on an error dialog stays alive too.
+          rc=0
+          timeout 90 xvfb-run -a -s "-screen 0 1600x1000x24" "$PKG/VisIVOVisualAnalytics" > client.log 2>&1 || rc=$?
+          pkill -f 'app/usr/bin/VisIVOVisualAnalytics' || true
+          pkill -f 'uvicorn|app.main' || true
+          tail -20 client.log
+          if [ "$rc" -ne 124 ]; then
+            echo "::error::The packaged client exited with $rc during its first 90 s"
+            exit 1
+          fi
+          if ! grep -q "Main window shown" client.log; then
+            echo "::error::The packaged client did not show its main window within 90 s"
+            exit 1
           fi
 
       # ── Upload + attach to release ───────────────────────────────────────

@@ -31,7 +31,7 @@ for interactive requests such as slice scrolling and probing; see
 | `VISIVO_WORKERS` | `4` | Number of worker processes in the pool. The default is a fixed 4, not derived from the CPU count. |
 | `VISIVO_HEAVY_SLOTS` | `max(1, VISIVO_WORKERS - 1)` | Heavy tasks allowed to occupy the pool at once. Set it to `VISIVO_WORKERS` to give up the reserved interactive slot, or to `1` to serialise heavy work. |
 | `VISIVO_HEAVY_TIMEOUT_S` | `900` | Wall-clock ceiling on one heavy computation started by a synchronous request (for example `/v1/products/moment`). Past it, the request answers HTTP 504 and the detail points to the task route. The worker runs on to its end and keeps its slot until then, and its result is discarded. `0` disables the ceiling. It does not apply to tasks. |
-| `VISIVO_TASK_TIMEOUT_S` | `0` (none) | The same ceiling for work started as a task (`/v1/tasks/moment`, `/v1/tasks/pv`, asynchronous SODA jobs). There is none by default: a task holds no request open, reports progress and can be cancelled, and an M2 over a 450 GB cube takes about 25 minutes on one HPC node (`benchmark/RESULTS.md`). When it is set and exceeded, the task fails and its worker is asked to stop through the stop file. |
+| `VISIVO_TASK_TIMEOUT_S` | `0` (none) | The same ceiling for work started as a task (`/v1/tasks/moment`, `/v1/tasks/pv`, asynchronous SODA jobs). There is none by default: a task holds no request open, reports progress and can be cancelled, and an M2 over a 450 GB cube takes about 32 minutes on one HPC node (`benchmark/RESULTS.md`). When it is set and exceeded, the task fails and its worker is asked to stop through the stop file. |
 | `VISIVO_MAX_CONCURRENT_TASKS` | `3` | Compute tasks one session may run at once; further requests wait (see below) and then answer HTTP 429. |
 | `VISIVO_TASK_SLOT_WAIT_S` | `15` | How long a request waits for a free per-session slot before answering 429. `0` refuses immediately. |
 | `VISIVO_MP_START_METHOD` | `spawn` | Start method of the worker processes (`spawn`, `fork` or `forkserver`). `spawn` is required when workers use CUDA. An unknown value falls back to the platform default, with a warning. |
@@ -106,6 +106,8 @@ backend, each in a process of its own.
 | `VISIVO_RENDER_OOC_BUDGET_BYTES` | 2 GiB | Out of core: GPU data of the blocks drawn at once. |
 | `VISIVO_RENDER_OOC_MAX_BLOCKS` | `12` | Out of core: blocks drawn at once (each is one ray-casting pass). |
 | `VISIVO_RENDER_OOC_NODE` | `256` | Out of core: voxels per side of a block. |
+| `VISIVO_POINT_RENDER_MAX_POINTS` | `100000000` | Points a remote point or catalogue view draws at most; a larger table is drawn from an even sample of its rows. |
+| `VISIVO_POINT_RENDER_LOD_POINTS` | `1000000` | Points a remote point or catalogue view draws while it is being dragged. |
 
 ## SRC node
 
@@ -151,6 +153,8 @@ fit together.
 | `VISIVO_HIPS_CACHE_MAX_BYTES` | `2 GiB` | Size cap of the HiPS cache; the least recently used tiles are evicted beyond it. |
 | `VISIVO_HIPS_CACHE_TTL_SECONDS` | `604800` (7 days) | Tiles older than this are deleted. |
 | `VISIVO_HIPS_CACHE_CLEANUP_INTERVAL` | `60` | Minimum seconds between two cleanup passes over the HiPS cache. |
+| `VISIVO_IMAGE_PYRAMID_BYTES` | `256 MiB` | A 2-D image larger than this (as float32) is tiled from an averaged pyramid, built in the background the first time a tile is asked for; until it is ready, tiles are sampled from the file. |
+| `VISIVO_REGION_SPILL_DIR` | the system temporary directory, unless it is held in memory | Where region statistics over a large image copy the region's values to local disk between passes. Unset and with a memory-backed temporary directory (`tmpfs`), no copy is made and every pass reads the file. |
 | `VISIVO_SAMP_FILE_TTL` | `3600` | Files staged for SAMP (in the system temporary directory, `visivo_samp_files`) are deleted after this many seconds. |
 
 ## Copilot
@@ -163,8 +167,8 @@ give every new session its starting configuration. See
 | Variable | Default | Effect |
 |---|---|---|
 | `VISIVO_ASSISTANT_PROVIDER` | `auto` | `auto`, `anthropic`, `openai` or `null`. `auto` picks a self-hosted endpoint or OpenAI key first, then an Anthropic key, else `null` (tools only, no language model). |
-| `VISIVO_ASSISTANT_MODEL` | provider default | Model name sent to the provider. Without it the Anthropic provider uses `claude-opus-4-8` and the OpenAI provider, cloud or self-hosted, uses `gpt-4o`; a self-hosted server usually needs its own served name here. |
-| `VISIVO_LLM_BASE_URL` | unset | Base URL of an OpenAI-compatible server (for example `http://host:8000/v1`). Keep credentials out of it; the key belongs in `VISIVO_LLM_API_KEY`. A URL set from the client must be `http`/`https` with no credentials, query or fragment. |
+| `VISIVO_ASSISTANT_MODEL` | provider default | Model name sent to the provider. Without it the Anthropic provider uses `claude-opus-4-8` and cloud OpenAI `gpt-4o`. A self-hosted server is asked for its models (`GET <base>/models`) at the first question: when it lists exactly one, that one is used; when it lists none or several, or cannot be reached, the copilot answers which variable to set and, if any, the names it serves. |
+| `VISIVO_LLM_BASE_URL` | unset | Base URL of an OpenAI-compatible server (for example `http://host:8000/v1`). It must be `http`/`https` with no credentials, query or fragment, the same check as a URL set from the client; the key belongs in `VISIVO_LLM_API_KEY`. A value that fails the check does not stop the backend: it is logged at start-up (without the URL), and the copilot stays off, with the reason in its answers and in `GET /v1/assistant/status` (`problem`), until it is corrected or a session sets its own URL. |
 | `VISIVO_LLM_API_KEY` | unset | **Secret.** Key sent to `VISIVO_LLM_BASE_URL`, and only there. |
 | `ANTHROPIC_API_KEY` | unset | **Secret.** Key for the Anthropic provider. |
 | `OPENAI_API_KEY` | unset | **Secret.** Key for the cloud OpenAI provider; never sent to a self-hosted URL. |
@@ -183,7 +187,7 @@ refused. Redirects are checked with the same policy.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `VISIVO_VLKB_URL` | `https://vlkb.ia2.inaf.it/vlkb` for TAP queries; none for multi-cutout | Default VLKB service when the client sends none. |
+| `VISIVO_VLKB_URL` | `https://vlkb.ia2.inaf.it` | VLKB service root for TAP queries and multi-cutout batches alike: a request's own `service_url` wins, then this variable, then the public VLKB. `/tap` and `/soda` are appended to it. |
 | `VISIVO_VLKB_ALLOWED_HOSTS` | unset | Allowlist for VLKB TAP, cut-out, multi-cutout and SED-fit requests. |
 | `VISIVO_VLKB_MAX_BYTES` | `8 GiB` | Largest single cut-out download. |
 | `VISIVO_VLKB_MCUTOUT_TIMEOUT` | `300` | Socket timeout of each multi-cutout archive call. |
@@ -239,5 +243,21 @@ refused. Redirects are checked with the same policy.
 | `SLURM_JOB_ID` | Marks the backend as running in a SLURM job, so the memory grant below is taken into account. |
 | `SLURM_MEM_PER_NODE` | Memory granted to the job, in MiB; counts as a memory limit. `0` (the whole node) sets none. |
 | `SLURM_MEM_PER_CPU`, `SLURM_CPUS_ON_NODE` | Used together as the memory grant when `SLURM_MEM_PER_NODE` is absent. |
+| `VISIVO_EXIT_WITH_PID` | Set by the desktop client on the backend it starts: the backend shuts down once that process is gone. A backend started by hand, without it, is not affected. |
 | `ADMIN_SESSION_SECRET` | **Secret.** Fallback for `VISIVO_SNAPSHOT_SECRET`. |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | See [Copilot](#copilot). |
+
+## Desktop client
+
+These variables are read by the desktop client, not by the backend.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_BACKEND_URL` | unset | A remote backend for this run (the same as `--backend URL`); unset, the client runs on its local backend. The command line wins over the environment. See [Running the backend on a cluster](deployment/hpc-slurm.md). |
+| `VISIVO_BACKEND_TOKEN_FILE` | unset | File holding that backend's token (`--backend-token-file`). |
+| `VISIVO_BACKEND_TOKEN` | unset | **Secret.** The token itself, used when no token file is given. |
+| `VISIVO_BACKEND_NAME` | `host:port` | Name shown for that backend (`--backend-name`). |
+| `VISIVO_NO_BACKEND_AUTOSTART` | unset | Any non-empty value stops the client from starting its local backend (the same as `--no-backend-autostart`), to connect to one already running. |
+| `VISIVO_BACKEND_PYTHON` | unset | Python interpreter used to start the local backend, tried before an active virtual environment, the project's `.venv` and the bundled runtime. It must be Python 3.11 or newer. |
+| `VISIVO_PACKAGE_DIR` | set by the Linux launcher | The directory of the extracted Linux package; the client looks for the bundled backend runtime in its `python/` directory first. Set by `./VisIVOVisualAnalytics`, not by hand. |
+| `VISIVO_SUBVOLUME_PARALLEL` | `4` | Parallel requests a full-resolution cube or sub-cube load (`/v1/cube/subvolume_bin`) is split into, along the spectral axis (1 to 16). |

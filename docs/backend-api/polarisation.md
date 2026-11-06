@@ -65,8 +65,11 @@ Bias-corrected polarised intensity and position angle.
 
 `PI = sqrt(max(Q² + U² − σ²_QU, 0))`, `PA = ½·atan2(U, Q)` in degrees
 (−90…+90). σ²_QU is estimated from `line_free_channels` when at least two are
-given, and is 0 otherwise. The binary variant returns **two** frames, PI then
-PA.
+given, and is 0 otherwise. The JSON variant returns the metadata only:
+`{valid, error, pi_dataset_id: "", pa_dataset_id: "", width, height, channel,
+sigma_qu2, line_free_channels_dropped, pi_range_min, pi_range_max,
+pa_range_min, pa_range_max}`. The binary variant (dataset in the body's
+`dataset_id`) returns **two** frames, PI then PA.
 Channels that carry no data (a blank sub-band, NaN or zero-filled) are left out of the estimate and listed in `line_free_channels_dropped`; fewer than two usable ones is an error (422), and a `channel` outside the cube is refused rather than clamped.
 
 ## `POST /v1/polarisation/rmsynthesis/{dataset_id}` · `POST /v1/polarisation/rmsynthesis/{dataset_id}/binary`
@@ -89,8 +92,9 @@ RM synthesis (Brentjens & de Bruyn 2005).
 | `region` | pixel box; the whole image when absent |
 
 `reduce: "peak"` returns peak `|F(φ)|` and the φ at which each pixel peaks — the
-RM map — as two binary frames, plus `phi_peak_min` / `phi_peak_max`. This is
-what the desktop client asks for.
+RM map — as two binary frames; the JSON variant adds `phi_peak_min` /
+`phi_peak_max` and `peak_sigma` (1.4826·MAD of the peak map, `null` when no
+pixel has data). This is what the desktop client asks for.
 
 `reduce: "cube"` returns the whole dispersion cube as one frame of
 `(n_phi · height)` rows × `width` columns. It is refused above **512 MiB**,
@@ -99,4 +103,4 @@ with the message naming the ways out:
 > `The requested FDF cube is 6250 MiB (400000 φ × 64 × 64), over the 512 MiB
 > limit. Ask for reduce='peak', a smaller region, or a coarser φ grid.`
 
-The φ grid is `phi_min, phi_min + dphi, …` up to and including `phi_max` when a whole number of steps reaches it (a step below the numerical resolution of φ is refused with 422). Both variants always return `phi_grid`, `rmsf`, `n_phi` and `n_freq`, plus `dropped_planes` and `dropped_freq_hz`: sub-bands that carry no data in the requested region (a release can flag one out entirely, as NaN or zeros) are left out of the transform and listed by file-plane index and frequency; `n_freq` counts the planes actually used, and fewer than three is an error (422).
+The φ grid is `phi_min, phi_min + dphi, …` up to and including `phi_max` when a whole number of steps reaches it (a step below the numerical resolution of φ is refused with 422). The JSON variant returns the metadata, never the pixels: `{valid, error, reduce, n_phi, n_freq, width, height, phi_min, phi_max, d_phi, phi_grid, rmsf, range_min, range_max}`, plus `dropped_planes` and `dropped_freq_hz`; the binary variant returns only the frames. Dropped planes are the sub-bands that carry no data in the requested region (a release can flag one out entirely, as NaN or zeros): they are left out of the transform and listed by file-plane index and frequency; `n_freq` counts the planes actually used, and fewer than three is an error (422).

@@ -38,7 +38,9 @@ import urllib.error as _urllib_error
 import urllib.request as _urllib_request
 import uuid
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
+
+from .vlkb_service import vlkb_service_url
 
 logger = logging.getLogger("visivo.backend")
 
@@ -423,9 +425,5 @@ def extract_archive(archive: Path, target: Path) -> list[str]:
 
 
 def resolve_service_url(explicit: str = "") -> str:
-    """Where the archive lives: the caller's URL, or the configured default."""
-    url = (explicit or os.environ.get("VISIVO_VLKB_URL", "")).strip()
-    if not url:
-        raise McutoutError(
-            "No VLKB service configured: set VISIVO_VLKB_URL or pass service_url.")
-    return urljoin(url + "/", ".").rstrip("/")
+    """Where the archive lives — the same rule as the TAP queries."""
+    return vlkb_service_url(explicit)
