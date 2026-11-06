@@ -28,13 +28,11 @@ from __future__ import annotations
 import csv
 import io
 import math
-import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-#: Where the VLKB TAP service lives when nothing says otherwise.
-DEFAULT_TAP_BASE = "https://vlkb.ia2.inaf.it/vlkb"
+from .vlkb_service import vlkb_service_url
 
 #: The named queries, each over a Galactic box. `label` is what the user picks.
 PRESETS: tuple[dict[str, str], ...] = (
@@ -58,8 +56,8 @@ class VlkbQueryError(ValueError):
 
 
 def tap_base(explicit: str = "") -> str:
-    return (explicit or "").strip() or os.environ.get("VISIVO_VLKB_URL", "").strip() \
-        or DEFAULT_TAP_BASE
+    """The VLKB the query goes to — the same rule as the batch cutouts."""
+    return vlkb_service_url(explicit)
 
 
 def _box(glon_min: float, glon_max: float, glat_min: float, glat_max: float

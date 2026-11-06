@@ -183,7 +183,7 @@ refused. Redirects are checked with the same policy.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `VISIVO_VLKB_URL` | `https://vlkb.ia2.inaf.it/vlkb` for TAP queries; none for multi-cutout | Default VLKB service when the client sends none. |
+| `VISIVO_VLKB_URL` | `https://vlkb.ia2.inaf.it` | VLKB service root for TAP queries and multi-cutout batches alike: a request's own `service_url` wins, then this variable, then the public VLKB. `/tap` and `/soda` are appended to it. |
 | `VISIVO_VLKB_ALLOWED_HOSTS` | unset | Allowlist for VLKB TAP, cut-out, multi-cutout and SED-fit requests. |
 | `VISIVO_VLKB_MAX_BYTES` | `8 GiB` | Largest single cut-out download. |
 | `VISIVO_VLKB_MCUTOUT_TIMEOUT` | `300` | Socket timeout of each multi-cutout archive call. |

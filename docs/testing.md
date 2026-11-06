@@ -82,10 +82,13 @@ the way files get opened:
   the attribute types that used to break the reply;
 - `test_soda_cutout.py` (20) covers what a VLKB cutout response has to be before
   it is called a FITS file;
-- `test_vlkb_mcutout.py` (39) covers the batch job either side of the wire — the
+- `test_vlkb_mcutout.py` (41) covers the batch job either side of the wire — the
   POS parsing, the job id, the report — and the parts that can do damage: path
   traversal out of the results directory, redirects that would carry the access
   token elsewhere, and an archive that unpacks to more than it downloaded;
+- `test_vlkb_service.py` (8) holds the TAP query and the batch to one VLKB
+  service URL — the request's, `VISIVO_VLKB_URL`, or the public default — so a
+  backend with nothing configured can cut from what it has just found;
 - `test_classify.py` (26) pins what the single **Open…** does with each kind of
   file. Most of it is telling image, cube and table apart from the bytes — a
   length-1 Stokes axis must not make a map into a cube — and the rest is about

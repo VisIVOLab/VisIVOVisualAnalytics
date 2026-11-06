@@ -224,12 +224,11 @@ def _unlink_quiet(path: Path) -> None:
 
 def _mcutout_service(explicit: str) -> str:
     """The archive base URL, checked against SSRF before anything is sent."""
-    from ..vlkb_mcutout import McutoutError, resolve_service_url  # noqa: PLC0415
+    from ..vlkb_mcutout import resolve_service_url  # noqa: PLC0415
 
-    try:
-        base = resolve_service_url(explicit)
-    except McutoutError as exc:
-        raise HTTPException(503, str(exc)) from exc
+    # Always a URL: the request's, VISIVO_VLKB_URL, or the public VLKB, exactly
+    # as for the TAP queries (app/vlkb_service.py).
+    base = resolve_service_url(explicit)
     try:
         assert_safe_fetch_url(base, allowlist_env="VISIVO_VLKB_ALLOWED_HOSTS",
                               block_private=True)
