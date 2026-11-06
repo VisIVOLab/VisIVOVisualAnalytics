@@ -8,6 +8,13 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **SODA `BAND` on MeerKAT sub-band cubes** (#115). Obit MFImage cubes with a
+  `SPECLNMF` spectral axis (the MeerKAT Milky Way Bulge and MGCLS releases)
+  now accept `BAND`: it returns the sub-bands whose centre frequency
+  (`FREQnnnn`) falls in the interval, and 204 when the interval holds none.
+  The cutout's header lists the frequencies of the planes it holds, as a
+  standard `FREQ` axis when they are evenly spaced, and the DataLink
+  descriptor advertises the cube's `BAND` range.
 - **One VLKB service URL for queries and batch cutouts** (#76). With
   `VISIVO_VLKB_URL` unset, the TAP query composer and the multi-cutout batch
   now both use the public VLKB at `https://vlkb.ia2.inaf.it`; the batch used to
