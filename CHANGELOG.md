@@ -6,8 +6,47 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
-## Unreleased
+## 1.0.10 (2026-11-06)
 
+- **Suggested SoFiA-2 parameters** (#64). The cube viewer's SoFiA-2 dialog
+  now starts from parameters suggested from the cube itself, each with the
+  reason it has its value. The backend reads the cube once on a sample (about
+  10 s on a 44 GB cube) and measures:
+  - the noise as SoFiA reads it;
+  - the beam;
+  - the rest-frame channel width;
+  - the channel-to-channel noise correlation;
+  - continuum residuals and the memory SoFiA needs.
+
+  It asks only when the data type or the line widths are ambiguous. Values
+  stay editable, and parameters can be added, each with SoFiA's default
+  shown. The dialog used to send parameter names SoFiA-2 rejects and could
+  not run; it now runs SoFiA as a backend task and opens the mask in MIP. The
+  backend checks every value as SoFiA reads it, since SoFiA itself checks
+  none: `bogus` for a statistic used to run silently with another one. A run
+  with no sources left is an empty result, not a failure. On the held-out
+  SKA SDC2 development cube, scored with the challenge's own scorer, the
+  suggestion passed every criterion fixed before the data
+  (`validation/sofia_suggest_spec.md`, `validation/out/sofia_suggest/RESULTS.md`).
+- **Remote views wait for a rendering slot** (#4). When a backend already
+  renders as many views as `VISIVO_RENDER_MAX_SESSIONS` allows, a new
+  remote cube, point or catalogue view waits in a queue instead of being
+  refused. The view shows its place in the queue, and "Give up place" leaves
+  it. Places are served in order and fairly across users. A view that stops
+  waiting, or whose window closes, gives its place back. While others wait,
+  a view nobody is connected to frees its slot after a grace period.
+- **POL in the SODA service, and DataLink links** (#7). SODA cutouts accept
+  `POL` (Stokes I, Q, U, V and the rest, several at once). `/soda/links`
+  answers a DataLink request with service descriptors whose BAND, TIME and
+  POL ranges come from the dataset, so TOPCAT and pyvo offer the cutout form
+  directly.
+- **Long moments and PV diagrams follow their task** (#3). Moment maps,
+  Export Moment as FITS (now a task too: `POST /v1/tasks/moment_fits`) and
+  PV diagrams are followed until they end, with no time limit on the
+  desktop. The client used to give up after 30 s and start the same
+  computation again synchronously. Cancel stops the task on the backend. A
+  PV whose path is edited while it runs is replaced by the newest path, and
+  closing the cube window stops a PV under way.
 - **Moment 0 on large cubes blanks empty lines of sight** (#3). Above
   512 MB a moment is computed out of core in blocks, and there a masked M0
   reported 0 where no voxel passed the threshold; it is now blank, as on
