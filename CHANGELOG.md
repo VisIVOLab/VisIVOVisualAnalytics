@@ -16,7 +16,6 @@ are preserved here unedited; the branch names they refer to are historical.
   panoramic view is loaded when its tab is first shown, so a web-engine
   failure can no longer keep the application from opening, and each release
   now starts the packaged client before it is published.
-
 - **SODA `BAND` on MeerKAT sub-band cubes** (#115). Obit MFImage cubes with a
   `SPECLNMF` spectral axis (the MeerKAT Milky Way Bulge and MGCLS releases)
   now accept `BAND`: it returns the sub-bands whose centre frequency
