@@ -58,7 +58,8 @@ Response (`VelocityOpenResponse`): `valid`, `error`, `dataset_id`,
 Errors: a path outside the allowed data roots (or a hidden path) returns HTTP
 200 with `valid: false` and `error: "Velocity file not found."`; a missing file, a file that is not a 4-D FITS with a length-3
 component axis, and other load failures, return `valid: false` with the
-message.
+message. A truncated FITS file is refused before it is read, with the message of
+the [dataset open routes](datasets.md#post-v1datasetsopen).
 
 ## `POST /v1/velocity/grid_bin`
 

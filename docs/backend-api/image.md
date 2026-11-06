@@ -26,7 +26,9 @@ different instrument.
 ```
 Returns `output_path`, `workspace_filename`, `width`, `height`, `depth`,
 `range_min`, `range_max`, `bunit`, `combine`, `smooth_fwhm_pixels`,
-`smooth_fwhm_arcsec`, `regrid_factor` and `flux_scale`.
+`smooth_fwhm_arcsec`, `regrid_factor` and `flux_scale`. A truncated FITS file
+is refused with `valid: false` and the message of the
+[open routes](datasets.md#post-v1datasetsopen).
 
 This is the legacy's *Filter FITS*, with three corrections that only show up
 later, in the photometry:

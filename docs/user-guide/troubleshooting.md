@@ -21,6 +21,22 @@ causes:
 - A `BrokenPipeError` / `[Errno 32]` typically means a backend worker
   process crashed mid-response. Restart the backend.
 
+### "The file … is truncated"
+
+The file is shorter than its FITS header says it should be, for example
+"The file Eridanus.fits is truncated: 697.9 GB on disk, 961.4 GB declared
+(5644 of 7776 planes present)." It was cut short by an interrupted copy or
+download, or by a disk that filled up while it was being written. VisIVO
+refuses it when it opens it, instead of failing later with "buffer is too
+small". The numbers tell you how much is missing.
+
+**Fix**: copy or download the file again and compare its size with the
+original's. A file downloaded through *Open URL* is removed from the backend's
+cache when it is refused, so opening the URL again fetches it again.
+
+A file cut only in the last few kilobytes of padding after the data still
+opens: nothing it holds is missing.
+
 ### "Session not found."
 
 You've requested an action (e.g. *Stack Cubes to a Spectrum*) referencing a

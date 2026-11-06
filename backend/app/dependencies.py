@@ -1857,6 +1857,10 @@ def _fits_metadata(path: Path) -> tuple[str, dict[str, Any]]:
         # Reflect the sidecar path so downstream readers see a real FITS.
         geometry["resolved_path"] = str(sidecar)
         return "dynspec", geometry
+    # A truncated FITS is refused here, before the PSRFITS conversion reads
+    # the table (issue #118); ScientificFitsDataset checks the rest again.
+    from .fits_truncation import check_not_truncated  # noqa: PLC0415
+    check_not_truncated(path)
     # PSRFITS: multi-HDU FITS with a SUBINT binary-table extension. We
     # convert to a 2-D dynspec sidecar (Stokes I, phase-averaged for folded
     # data) so the rest of the pipeline treats it like an HDF5 / FITS dynspec.

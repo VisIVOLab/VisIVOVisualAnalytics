@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from ..auth import verify_token
 from ..dependencies import _normalize_path, _run
+from ..fits_truncation import check_not_truncated
 from ..sessions import Session, get_session
 from ..velocity_basins import velocity_basins_worker
 from ..velocity_field import (
@@ -88,6 +89,8 @@ async def velocity_open(
     except PermissionError:
         return VelocityOpenResponse(valid=False, error="Velocity file not found.")
     try:
+        # A truncated FITS grid: refused by name before the worker reads it (#118).
+        check_not_truncated(path)
         summary = await _run(velocity_summary_worker, path, request.box_mpc)
     except Exception as exc:
         return VelocityOpenResponse(valid=False, error=str(exc))
