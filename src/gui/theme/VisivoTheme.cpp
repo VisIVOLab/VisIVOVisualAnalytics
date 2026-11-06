@@ -195,13 +195,24 @@ QPushButton *makeSecondaryButton(const QString &text, QWidget *parent)
                     "}"
                     "QPushButton:pressed {"
                     "  background-color: %6;"
+                    "}"
+                    // Without this a disabled secondary button kept the brand
+                    // colour and border, and read exactly like an enabled one
+                    // (gui test of the SoFiA-2 dialog's Cancel run).
+                    "QPushButton:disabled {"
+                    "  background-color: %7;"
+                    "  color: %8;"
+                    "  border-color: %9;"
                     "}")
                     .arg(QLatin1StringView(kSurfaceContainerHigh()),
                          QLatin1StringView(kPrimary()),
                          QLatin1StringView(kBrandFamily),
                          QLatin1StringView(kSurfaceContainerHighest()),
                          QLatin1StringView(kPrimary()),
-                         QLatin1StringView(kSurfaceBright())));
+                         QLatin1StringView(kSurfaceBright()),
+                         QLatin1StringView(kSurfaceContainerLow()),
+                         QLatin1StringView(kOutline()),
+                         QLatin1StringView(kOutlineVariant())));
     return btn;
 }
 

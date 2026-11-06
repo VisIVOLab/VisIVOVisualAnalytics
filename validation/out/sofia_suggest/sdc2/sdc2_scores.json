@@ -1,0 +1,214 @@
+{
+ "q1_lo/S2_inv": {
+  "status": "completed",
+  "n_det": 118
+ },
+ "q1_lo/D_inv": {
+  "status": "completed",
+  "n_det": 309
+ },
+ "q1_lo/S2": {
+  "n_truth": 482,
+  "n_det": 9,
+  "n_match": 9,
+  "n_false": 0,
+  "score": 6.276615747458362,
+  "completeness": 0.01867219917012448,
+  "reliability": 1.0
+ },
+ "q1_lo/S1": {
+  "n_truth": 482,
+  "n_det": 2,
+  "n_match": 2,
+  "n_false": 0,
+  "score": 1.0958373619779942,
+  "completeness": 0.004149377593360996,
+  "reliability": 1.0
+ },
+ "q1_lo/H": {
+  "n_truth": 482,
+  "n_det": 9,
+  "n_match": 8,
+  "n_false": 1,
+  "score": 4.305715851260369,
+  "completeness": 0.016597510373443983,
+  "reliability": 0.8888888888888888
+ },
+ "q1_lo/D": {
+  "n_truth": 482,
+  "n_det": 351,
+  "n_match": 4,
+  "n_false": 345,
+  "score": -342.30372549658284,
+  "completeness": 0.008298755186721992,
+  "reliability": 0.011396011396011397
+ },
+ "q1_lo/S2nocont": {
+  "n_truth": 482,
+  "n_det": 8,
+  "n_match": 8,
+  "n_false": 0,
+  "score": 5.585673009247835,
+  "completeness": 0.016597510373443983,
+  "reliability": 1.0
+ },
+ "q2_hi/S2_inv": {
+  "status": "completed",
+  "n_det": 147
+ },
+ "q2_hi/D_inv": {
+  "status": "completed",
+  "n_det": 1
+ },
+ "q2_hi/S2": {
+  "n_truth": 424,
+  "n_det": 41,
+  "n_match": 37,
+  "n_false": 4,
+  "score": 22.018293954447714,
+  "completeness": 0.08726415094339622,
+  "reliability": 0.9024390243902439
+ },
+ "q2_hi/S1": {
+  "n_truth": 424,
+  "n_det": 24,
+  "n_match": 20,
+  "n_false": 4,
+  "score": 8.19777557964217,
+  "completeness": 0.04716981132075472,
+  "reliability": 0.8333333333333334
+ },
+ "q2_hi/H": {
+  "n_truth": 424,
+  "n_det": 46,
+  "n_match": 37,
+  "n_false": 8,
+  "score": 17.566961130545216,
+  "completeness": 0.08726415094339622,
+  "reliability": 0.8043478260869565
+ },
+ "q2_hi/D": {
+  "n_truth": 424,
+  "n_det": 37,
+  "n_match": 31,
+  "n_false": 5,
+  "score": 15.731870302421758,
+  "completeness": 0.07311320754716981,
+  "reliability": 0.8378378378378378
+ },
+ "q2_hi/S2nocont": {
+  "n_truth": 424,
+  "n_det": 46,
+  "n_match": 38,
+  "n_false": 8,
+  "score": 19.02485146461908,
+  "completeness": 0.08962264150943396,
+  "reliability": 0.8260869565217391
+ },
+ "q3_lo/S2_inv": {
+  "status": "completed",
+  "n_det": 116
+ },
+ "q3_lo/D_inv": {
+  "status": "completed",
+  "n_det": 312
+ },
+ "q3_lo/S2": {
+  "n_truth": 600,
+  "n_det": 20,
+  "n_match": 19,
+  "n_false": 1,
+  "score": 12.204681337922837,
+  "completeness": 0.03166666666666667,
+  "reliability": 0.95
+ },
+ "q3_lo/S1": {
+  "n_truth": 600,
+  "n_det": 10,
+  "n_match": 10,
+  "n_false": 0,
+  "score": 5.691270844188162,
+  "completeness": 0.016666666666666666,
+  "reliability": 1.0
+ },
+ "q3_lo/H": {
+  "n_truth": 600,
+  "n_det": 15,
+  "n_match": 15,
+  "n_false": 0,
+  "score": 10.539251564527525,
+  "completeness": 0.025,
+  "reliability": 1.0
+ },
+ "q3_lo/D": {
+  "n_truth": 600,
+  "n_det": 332,
+  "n_match": 9,
+  "n_false": 315,
+  "score": -308.66079011624686,
+  "completeness": 0.015,
+  "reliability": 0.02710843373493976
+ },
+ "q3_lo/S2nocont": {
+  "n_truth": 600,
+  "n_det": 20,
+  "n_match": 20,
+  "n_false": 0,
+  "score": 13.86607293876742,
+  "completeness": 0.03333333333333333,
+  "reliability": 1.0
+ },
+ "q4_hi/S2_inv": {
+  "status": "completed",
+  "n_det": 147
+ },
+ "q4_hi/D_inv": {
+  "status": "completed",
+  "n_det": 0
+ },
+ "q4_hi/S2": {
+  "n_truth": 481,
+  "n_det": 54,
+  "n_match": 47,
+  "n_false": 6,
+  "score": 28.008366310682902,
+  "completeness": 0.09771309771309772,
+  "reliability": 0.8703703703703703
+ },
+ "q4_hi/S1": {
+  "n_truth": 481,
+  "n_det": 32,
+  "n_match": 29,
+  "n_false": 3,
+  "score": 15.022065725182209,
+  "completeness": 0.060291060291060294,
+  "reliability": 0.90625
+ },
+ "q4_hi/H": {
+  "n_truth": 481,
+  "n_det": 49,
+  "n_match": 43,
+  "n_false": 6,
+  "score": 24.359862619804613,
+  "completeness": 0.0893970893970894,
+  "reliability": 0.8775510204081632
+ },
+ "q4_hi/D": {
+  "n_truth": 481,
+  "n_det": 50,
+  "n_match": 41,
+  "n_false": 9,
+  "score": 19.784056177350323,
+  "completeness": 0.08523908523908524,
+  "reliability": 0.82
+ },
+ "q4_hi/S2nocont": {
+  "n_truth": 481,
+  "n_det": 55,
+  "n_match": 48,
+  "n_false": 7,
+  "score": 27.749781833619622,
+  "completeness": 0.0997920997920998,
+  "reliability": 0.8727272727272727
+ }
+}

@@ -2827,8 +2827,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // in the list.
     m_actSourceFind = ui->menuTools->addAction(u"Source Finding (SoFiA-2)…"_s);
     m_actSourceFind->setToolTip(
-            u"Run the SoFiA-2 source finder over this cube and overlay the "
-            u"detections; needs sofia2 on the backend's PATH."_s);
+            u"Run the SoFiA-2 source finder over this cube, with parameters "
+            u"suggested from the data; needs SoFiA-2 on the backend."_s);
     QObject::connect(m_actSourceFind, &QAction::triggered, this,
                      [this]() { emit this->sourceFinderRequested(); });
 
@@ -3507,10 +3507,12 @@ void vtkWindowCube::applyColorMapByName(const QString &name)
 
 void vtkWindowCube::applyVolumeBlendMode(int idx)
 {
+    // Tracked for linked-views sync, and recorded even before the volume
+    // exists: the mapper takes it when it is built (vtkWindowCube_Setup).
+    this->m_volumeBlendMode = idx;
     if (!this->volumeMapper) {
         return;
     }
-    this->m_volumeBlendMode = idx;   // tracked for linked-views sync
     switch (idx) {
     case 1:
         this->volumeMapper->SetBlendModeToMaximumIntensity();
@@ -7619,6 +7621,15 @@ QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QStrin
         this->m_workspaceChrome->setSessionRailCount(mine);
     }
     return id;
+}
+
+void vtkWindowCube::recordSourceFindRun(const QString &label, const QVariantMap &params,
+                                        const QList<ReplayStep> &replay)
+{
+    // No window: the dialog is closed long before the row is reopened, and
+    // what reopens is the mask cube named in the params.
+    this->registerAnalysisProduct(u"sourcefind"_s, label, params, nullptr, QString(), QString(),
+                                  /*revealProvenance=*/true, {}, /*selectInSession=*/true, replay);
 }
 
 QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
@@ -13713,8 +13724,8 @@ void vtkWindowCube::setMomentActionsEnabled(bool enabled)
     if (this->m_actSourceFind) {
         this->m_actSourceFind->setEnabled(spectralEnabled);
         this->m_actSourceFind->setToolTip(
-                available ? u"Run the SoFiA-2 source finder over this cube and overlay "
-                            u"the detections; needs sofia2 on the backend's PATH."_s
+                available ? u"Run the SoFiA-2 source finder over this cube, with parameters "
+                            u"suggested from the data; needs SoFiA-2 on the backend."_s
                           : kMomentBackendTooltip);
     }
 }

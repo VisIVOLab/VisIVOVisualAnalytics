@@ -100,7 +100,7 @@ rendering, remote-service allowlists, limits) is documented in the
 | <span id="catalogue"></span>Datasets, catalogues, VBT | `/v1/datasets/*`, `/v1/catalogue/*`, `/v1/vbt/*` | [Datasets, catalogues and VBT](backend-api/datasets.md) |
 | <span id="cube"></span>Cube | `/v1/cube/*`, `/v1/moment/result/binary`, `/v1/pv/result/binary` | [Cube](backend-api/cube.md) |
 | <span id="products"></span>Products | `/v1/products/*` | [Products](backend-api/products.md) |
-| Tasks and finders | `/v1/tasks/*`, `/v1/finders` | [Tasks and source finders](backend-api/tasks-finders.md) |
+| Tasks and finders | `/v1/tasks/*`, `/v1/finders`, `/v1/sofia2/suggest/{dataset_id}` | [Tasks and source finders](backend-api/tasks-finders.md) |
 | Image, astrometry, photometry | `/v1/image/*`, `/v1/astrometry/*`, `/v1/photometry/*` | [Image, astrometry and photometry](backend-api/image.md) |
 | Regions | `/v1/regions/*` | [Regions](backend-api/regions.md) |
 | <span id="spectral"></span>Spectral | `/v1/spectral/*`, `/v1/sourcefind/{dataset_id}` | [Spectral](backend-api/spectral.md) |

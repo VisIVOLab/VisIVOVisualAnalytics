@@ -28,6 +28,7 @@ class QMenu;
 class QProgressDialog;
 class QTabWidget;
 class Settings;
+class SourceFindDialog;
 class VLKBInventoryTree;
 class vtkWindowImage;
 struct BackendNode;
@@ -207,8 +208,10 @@ private:
                                   const QString &path, const QString &displayName);
     /// Open the SoFiA-2 source-finding dialog for a dataset and wire its mask-cube
     /// overlay. Shared by the Science menu action and the copilot's show_sources.
-    void openSourceFinder(const QString &backendUrl, const QString &backendToken,
-                          const QString &sessionId, const QString &datasetId);
+    /// Returns the dialog (deleted on close) so the cube viewer can record its
+    /// runs; null when there is no dataset.
+    SourceFindDialog *openSourceFinder(const QString &backendUrl, const QString &backendToken,
+                                       const QString &sessionId, const QString &datasetId);
     /// Action handlers for the advanced 2-D product use cases.
     /// @p onDone, when given, receives the rendered file's path so the calling
     /// viewer can record the figure as a product of its own.

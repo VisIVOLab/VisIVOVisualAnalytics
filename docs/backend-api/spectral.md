@@ -137,9 +137,17 @@ Run SoFiA-2 on a cube and wait for the result. Body: `{sofia_params}`
 (SoFiA parameters as a dictionary; a `dataset_id` field is accepted and
 ignored, the path parameter is used).
 
+The parameters pass the same checks as the task route's (allowed sections,
+SoFiA-2 2.7 names, no file paths, no line breaks: see
+[`/v1/tasks/sourcefind`](tasks-finders.md#post-v1taskssourcefind)); a refused
+set is answered `valid: false` with the reason, before SoFiA-2 starts.
+
 Response: `valid`, `error`, `n_sources`, `sources`, `mask_path`,
-`catalog_path` (empty when SoFiA did not write them). A non-cube dataset is
-422; no SoFiA-2 executable is 503; a SoFiA failure is `valid: false` with the
-message. A run is limited to `VISIVO_SOFIA_TIMEOUT_S` (default 900 s). The
+`catalog_path` (empty when SoFiA did not write them), `exit_code`, and
+`summary` (the reliability counts read from SoFiA's output, as in the task
+route). A non-cube dataset is 422; no SoFiA-2 executable is 503. SoFiA's exit
+8 ("No sources left after filtering") is `valid: true` with `n_sources` 0;
+any other SoFiA failure is `valid: false` with SoFiA's `ERROR:` messages and
+the end of its output. A run is limited to `VISIVO_SOFIA_TIMEOUT_S` (default 900 s). The
 task-based route [`/v1/tasks/sourcefind`](tasks-finders.md#post-v1taskssourcefind)
 can be polled and cancelled and also offers the photutils finder.
