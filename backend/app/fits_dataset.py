@@ -48,6 +48,75 @@ def image_hdu_index(hdul) -> int:
     return 0
 
 
+@dataclass(frozen=True)
+class MFImageSubbands:
+    """The sub-band planes of an Obit MFImage cube, as its header lists them."""
+
+    offset: int                   # file plane (0-based) of the first sub-band
+    freq_hz: np.ndarray           # FREQnnnn: each sub-band's centre frequency
+    low_hz: np.ndarray | None     # FRELnnnn / FREHnnnn: its edges, when every
+    high_hz: np.ndarray | None    # sub-band has both and they bracket the centre
+
+
+def mfimage_subbands(header, n_planes: int, source: str = "") -> MFImageSubbands | None:
+    """The sub-band table of an Obit MFImage cube whose spectral axis has
+    ``n_planes`` planes, or None when the header does not describe that layout.
+
+    MFImage does not write a linear spectral axis. It writes NTERM fitted
+    planes first — total flux, spectral index, … — then NSPEC sub-band planes,
+    and gives each sub-band's frequency in its own FREQnnnn keyword (with its
+    edges in FRELnnnn / FREHnnnn). The WCS keywords on that axis describe none
+    of it: on the real MeerKAT G000.0+2.5 release, NTERM = 2 and NSPEC = 14
+    with sub-bands running 908 → 1656 MHz, while CRVAL3 / CDELT3 describe
+    1284 → 2147 MHz over all 16 planes. Every reader of these cubes (RM
+    synthesis, the SODA BAND cut) takes the frequencies from here, so they
+    agree with each other and with Obit.
+
+    Header only, no data: ``source`` only names the file in the log.
+    """
+    try:
+        n_spec = int(header.get("NSPEC", 0))
+        n_term = int(header.get("NTERM", 0))
+    except (TypeError, ValueError):
+        return None
+    if n_spec <= 0:
+        return None
+
+    def table(prefix: str) -> np.ndarray | None:
+        values = [header.get(f"{prefix}{i:04d}") for i in range(1, n_spec + 1)]
+        if any(v is None for v in values):
+            return None
+        try:
+            return np.asarray([float(v) for v in values], dtype=np.float64)
+        except (TypeError, ValueError):
+            return None
+
+    freq = table("FREQ")
+    if freq is None:
+        return None            # incomplete: not this layout, or unusable
+
+    # The planes have to fit: NTERM + NSPEC is the whole spectral axis for a
+    # well-formed MFImage cube. Anything else means the file is not what these
+    # keywords claim, and guessing an offset would be worse than the WCS.
+    offset = max(0, n_term)
+    if offset + n_spec != n_planes:
+        logger.warning(
+            "[mfimage] %s: NTERM=%s + NSPEC=%s does not match the %s planes on the "
+            "spectral axis; the sub-band keywords are not used.",
+            source or "header", n_term, n_spec, n_planes)
+        return None
+    if not np.all(np.isfinite(freq)) or np.any(freq <= 0.0):
+        return None
+
+    # Edges are optional (older MFImage writes FREQnnnn only) and dropped
+    # whole when any of them is missing or does not bracket its centre.
+    low, high = table("FREL"), table("FREH")
+    if (low is None or high is None or not np.all(np.isfinite(low) & np.isfinite(high))
+            or np.any(low <= 0.0) or np.any(low > freq) or np.any(high < freq)):
+        low = high = None
+    return MFImageSubbands(offset=offset, freq_hz=freq, low_hz=low, high_hz=high)
+
+
 def _open_fits(path, **kwargs):
     # A FITS file, or a field of a VBT volume read in place (issue #83).
     from .volume_source import open_fits  # noqa: PLC0415

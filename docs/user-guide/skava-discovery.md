@@ -182,6 +182,10 @@ there.
   dialog does not select polarization; the node's SODA accepts `POL`
   (Stokes planes) from any VO client, such as pyvo or TOPCAT, through its
   DataLink `/soda/links` (see the backend API, *SRC node and SODA*).
+  On a MeerKAT/Obit sub-band cube (spectral axis `SPECLNMF`, such as the
+  Milky Way Bulge release) BAND returns the whole sub-bands whose centre
+  frequency falls in the interval; an interval between two sub-bands
+  returns nothing.
 * **Moment map…**: `OPERATION=MOMENT` with the order (0, 1, 2), an optional
   channel range and threshold.
 * **PV diagram…**: `OPERATION=PV` with the path's vertices (degrees) and the
