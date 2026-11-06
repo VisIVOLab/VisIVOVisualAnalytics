@@ -100,8 +100,11 @@ backend runs CPU-only compute, so they share the machine fine.
 ## Configuring the backend instead of the client
 
 Instead of entering the URL in every client, the backend can start each new
-session already pointed at your server. Set these in the backend's
-environment (the full stack compose file does exactly this):
+session already pointed at your server. Desktops whose copilot provider is
+**Use the server's configuration** (the default) then use it as it is; an
+explicit choice in a desktop's Settings replaces it for that user's session.
+Set these in the backend's environment (the full stack compose file does
+exactly this):
 
 ```bash
 export VISIVO_ASSISTANT_PROVIDER=auto            # or openai, to force it

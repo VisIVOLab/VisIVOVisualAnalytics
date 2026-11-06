@@ -20,6 +20,10 @@ Items of this roadmap that are now in the software:
 - [Concurrent remote rendering sessions per backend](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/4) (#4): sessions in their own processes, capped per backend, with a queue above the cap whose place the client shows.
 - [Standard SODA service on the backend](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/7) (#7): sync and UWS async cutouts with `POL`, moments and PV as operations, and DataLink service descriptors, checked with TOPCAT and pyvo; `BAND` also on sub-band (`SPECLNMF`) cubes ([SODA](backend-api/node-soda.md)).
 - [Suggest SoFiA-2 parameters from the data](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/64) (#64): each parameter with its reason, validated on the SKA SDC2 development cube ([Source finding](user-guide/source-finding.md)).
+- [Self-hosted copilot: model default and base URL validation from the environment](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/75) (#75): with no model set, the endpoint's only model is used; a refused `VISIVO_LLM_BASE_URL` keeps the copilot off and says why ([Self-hosted copilot](user-guide/copilot-self-hosted.md)).
+- [VLKB service URL: one default for queries and batch cutouts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/76) (#76): queries and batch cutouts both use the public VLKB unless a service URL is given ([VLKB archive](user-guide/vlkb-archive.md)).
+- [SODA: support BAND on cubes with a SPECLNMF spectral axis](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/115) (#115): `BAND` selects the MeerKAT sub-bands whose centre frequency falls in the interval ([SODA](backend-api/node-soda.md)).
+- [Refuse truncated FITS files with a clear message](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/118) (#118): a FITS file shorter than its headers declare is refused at open, with the sizes and planes present, locally and remotely ([Troubleshooting](user-guide/troubleshooting.md)).
 
 ## SKA and SRCNet
 
@@ -65,7 +69,6 @@ Working across Galactic-plane surveys: aligned multi-band cutouts, compact sourc
 
 **Next**
 
-- [VLKB service URL: one default for queries and batch cutouts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/76) (#76)
 - [Open multi-wavelength cutouts of one source on a common grid](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/16) (#16)
 - [Cross-match compact-source catalogues across surveys in the GUI](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/17) (#17)
 - [Polygon and rotated-box regions for VLKB cutouts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/18) (#18)
@@ -139,10 +142,6 @@ What users expect from any astronomical viewer: linked frames, regions, scaling,
 ## Machine learning
 
 Learned models that assist the user, beyond the copilot: object segmentation, source finding, similarity search, quality checks. Models propose, the user decides; data stay where they are.
-
-**Next**
-
-- [Self-hosted copilot: model default and base URL validation from the environment](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/75) (#75)
 
 **2027**
 

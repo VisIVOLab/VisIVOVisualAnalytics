@@ -16,7 +16,7 @@ use the session from `X-Visivo-Session`.
 The provider active for this session:
 
 ```json
-{ "configured": false, "provider": "null", "problem": "", "n_tools": 25,
+{ "configured": false, "provider": "null", "problem": "", "model": "", "n_tools": 25,
   "config": { "provider": "auto", "anthropic_key_set": false,
               "openai_key_set": false, "base_url": "",
               "base_url_key_set": false, "model": "",
@@ -29,7 +29,10 @@ returned without embedded credentials. `problem` says why the copilot cannot
 answer, when that is known: a `VISIVO_LLM_BASE_URL` refused by the same check
 as `base_url` below (also in `config.base_url_error`), or, after a first
 question, a self-hosted server that was given no model and does not list
-exactly one. It is `""` otherwise. `POST /config` returns it too.
+exactly one. It is `""` otherwise. `model` is the model questions go to,
+including the one the backend picked when a self-hosted server serves exactly
+one (`config.model` stays what was configured); it is `""` until known.
+`POST /config` returns both too.
 
 ## `POST /v1/assistant/config`
 Choose the provider for this session. Every field is optional: an omitted
@@ -47,9 +50,10 @@ field is left unchanged and an empty string clears it.
 | `base_url` | URL of a self-hosted, OpenAI-compatible server |
 | `base_url_key` | Key for that server, kept apart from `openai_key` |
 | `model` | Model name to request |
+| `reset` | `true` starts the session again from the environment's configuration (a refused `VISIVO_LLM_BASE_URL` included) before the other fields are applied. The desktop's "Use the server's configuration" sends it alone. A 422 leaves the session as it was |
 
 Keys are held in memory on the session only: never persisted, logged or
-returned. Response: `{valid, configured, provider, config}`. An invalid value
+returned. Response: `{valid, configured, provider, problem, model, config}`. An invalid value
 is 422.
 
 ## `GET /v1/assistant/tools`

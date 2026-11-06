@@ -31,6 +31,25 @@ are preserved here unedited; the branch names they refer to are historical.
   fragment); a value that fails them keeps the copilot off with the reason in
   its answers and in `/v1/assistant/status` (`problem`), and is never
   contacted, while the rest of the backend starts as usual.
+- **The desktop says why the copilot is off** (#75 follow-up). When the
+  backend reports a `problem` (a self-hosted server with no or several
+  models, a refused base URL), the copilot panel shows it above the
+  conversation and Settings ▸ Scientific Copilot shows it under the provider
+  fields, in place of the generic "No LLM provider is configured" hint. It
+  goes once the backend stops reporting it, for example after a model is set.
+  A backend without the field shows what it showed before.
+- **The desktop keeps the server's copilot configuration by default.**
+  Settings ▸ Scientific Copilot has a new first choice, "Use the server's
+  configuration", and it is the default: the desktop no longer replaces what
+  the backend's operator configured through `VISIVO_ASSISTANT_PROVIDER`,
+  `VISIVO_LLM_BASE_URL` and `VISIVO_ASSISTANT_MODEL`, and a refused
+  `VISIVO_LLM_BASE_URL` now reaches the user. Claude, ChatGPT, Your server and
+  Off still replace it for the user's session. A "None" saved by an earlier
+  release reads as the server's configuration, or as Off when a key or URL
+  was saved with it. `POST /v1/assistant/config` accepts `reset: true`, which
+  returns the session to the environment's configuration. The panel's status
+  line says which configuration is active, e.g. "Provider: server's
+  configuration (self-hosted, model qwen) · ready".
 
 - **Truncated FITS files are refused by name** (#118). Opening a FITS file
   shorter than its headers declare now fails at once with "The file … is

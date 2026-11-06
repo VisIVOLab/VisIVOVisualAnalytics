@@ -814,6 +814,22 @@ struct BackendAssistantConfigResult
     QString error;
     bool configured{ false };
     QString provider;             // active provider after the change
+    QString problem;              // why the copilot cannot answer; "" if none is known
+    QString model;                // model in use, incl. one the backend picked; "" = not known
+};
+
+/// GET /v1/assistant/status: the provider active for this session.
+struct BackendAssistantStatusResult
+{
+    bool valid{ false };
+    QString error;
+    bool configured{ false };
+    QString provider;
+    /// Why the copilot cannot answer, when the backend knows: a refused
+    /// VISIVO_LLM_BASE_URL, or a self-hosted server with no or several models.
+    /// "" otherwise, and always "" from a backend older than the field.
+    QString problem;
+    QString model;                // model in use, incl. one the backend picked; "" = not known
 };
 
 // ── S-03: Baseline subtraction ────────────────────────────────────────────────
@@ -2450,14 +2466,19 @@ public:
      *  paths so both interpret the answer/tool-calls/actions identically. */
     static BackendAssistantResult parseAssistantResult(const QJsonObject &o);
 
-    /** POST /v1/assistant/config — choose the copilot LLM back-end: Claude
-     *  (anthropicKey), ChatGPT/OpenAI (openaiKey), or your own server
-     *  (baseUrl of an OpenAI-compatible endpoint). Empty fields are left
-     *  unchanged server-side; keys are held in server memory only. */
-    BackendAssistantConfigResult setAssistantConfig(
-            const QString &provider, const QString &anthropicKey,
-            const QString &openaiKey, const QString &baseUrl,
-            const QString &baseUrlKey, const QString &model);
+    /** POST /v1/assistant/config — choose the copilot LLM back-end for this
+     *  session. @p body is built by CopilotChoice::configBody: ``reset`` alone
+     *  for the server's own configuration, or every provider field for an
+     *  explicit choice. Keys are held in server memory only. */
+    BackendAssistantConfigResult setAssistantConfig(const QJsonObject &body);
+    /** Parse the /v1/assistant/config response body. */
+    static BackendAssistantConfigResult parseAssistantConfig(const QJsonObject &o);
+
+    /** GET /v1/assistant/status — the provider this session uses and, when
+     *  the backend knows, why it cannot answer (``problem``). */
+    BackendAssistantStatusResult assistantStatus();
+    /** Parse the /v1/assistant/status response body. */
+    static BackendAssistantStatusResult parseAssistantStatus(const QJsonObject &o);
 
     // ── S-03: Baseline subtraction ────────────────────────────────────────────
     /** POST /v1/spectral/baseline/{session_id}/{dataset_id} — subtract a baseline
