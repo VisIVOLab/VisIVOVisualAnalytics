@@ -8,6 +8,14 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **SODA `BAND` on MeerKAT sub-band cubes** (#115). Obit MFImage cubes with a
+  `SPECLNMF` spectral axis (the MeerKAT Milky Way Bulge and MGCLS releases)
+  now accept `BAND`: it returns the sub-bands whose centre frequency
+  (`FREQnnnn`) falls in the interval, and 204 when the interval holds none.
+  The cutout's header lists the frequencies of the planes it holds, as a
+  standard `FREQ` axis when they are evenly spaced, and the DataLink
+  descriptor advertises the cube's `BAND` range.
+
 - **Truncated FITS files are refused by name** (#118). Opening a FITS file
   shorter than its headers declare now fails at once with "The file … is
   truncated: 697.9 GB on disk, 961.4 GB declared (5644 of 7776 planes
