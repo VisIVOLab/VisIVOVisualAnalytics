@@ -186,11 +186,19 @@ class RenderSessionProcess:
         self._loop: asyncio.AbstractEventLoop | None = None
         # The child's key-frame flag, returned with each RGB frame.
         self._idr = False
+        # Called (on the event loop) when the child exits on its own, a crash
+        # or a kill: the manager frees the session's slot then, not at its
+        # idle timeout.
+        self.on_ended = None
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
     async def initialize(self) -> None:
         """Start the child and initialise the session in it."""
+        if self._refusing or self._release_started:
+            # Closed before it started (the manager let it go meanwhile): a
+            # child started now would have nothing left to end it.
+            raise RuntimeError(f"Session {self.session_id} is closed.")
         self._loop = asyncio.get_running_loop()
         ctx = multiprocessing.get_context("spawn")
         parent, child = ctx.Pipe(duplex=True)
@@ -257,6 +265,11 @@ class RenderSessionProcess:
         finally:
             self._released = True
             self._release_done.set()
+
+    @property
+    def ended(self) -> bool:
+        """The session takes no more requests: closed, or its child is gone."""
+        return self._refusing
 
     # ── The session API ──────────────────────────────────────────────────
 
@@ -368,7 +381,8 @@ class RenderSessionProcess:
     def _child_gone(self) -> None:
         """The child exited or crashed: fail what is waiting, refuse the rest,
         and release its resources."""
-        if not self._refusing:
+        unexpected = not self._refusing
+        if unexpected:
             logger.error("[render-process %s] render process ended unexpectedly",
                          self.session_id[:8])
         self._refusing = True
@@ -380,6 +394,11 @@ class RenderSessionProcess:
                     f"Render process for session {self.session_id} ended (exit code {code})."))
         if not self._released:
             self._loop.run_in_executor(None, self._release)
+        if unexpected and self.on_ended is not None:
+            try:
+                self.on_ended()
+            except Exception:   # noqa: BLE001 - the session is gone either way
+                logger.exception("[render-process %s] on_ended failed", self.session_id[:8])
 
 
 # ── The child ────────────────────────────────────────────────────────────────

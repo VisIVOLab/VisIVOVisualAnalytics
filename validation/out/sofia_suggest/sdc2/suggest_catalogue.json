@@ -1,0 +1,327 @@
+{
+ "valid": true,
+ "error": "",
+ "dataset_id": "ds_5582462e2287",
+ "sofia_version": "2.7.0",
+ "data_type": {
+  "value": "emission",
+  "deduced": true,
+  "ambiguous": true,
+  "reason": "Both tails carry signal (159 sample voxels above +5\u03c3, 165 below \u22125\u03c3 (noise alone: 1.1)): emission and absorption, or artefacts (sidelobes, heavy-tailed noise). Please choose.",
+  "options": [
+   "emission",
+   "absorption",
+   "continuum"
+  ],
+  "confidence": "low"
+ },
+ "line": {
+  "value": "hi",
+  "deduced": true,
+  "ambiguous": false,
+  "reason": "HI rest frequency and a 57114 km/s band: extragalactic HI line widths.",
+  "options": [
+   "hi",
+   "galactic"
+  ],
+  "confidence": ""
+ },
+ "parameters": [
+  {
+   "key": "input.invert",
+   "value": "false",
+   "reason": "Emission is positive signal: the cube is searched as it is.",
+   "sofia_default": "false",
+   "changed": false
+  },
+  {
+   "key": "input.region",
+   "value": "114, 1170, 114, 1170, 0, 6667",
+   "reason": "SoFiA-2 needs ~2.3\u00d7 the cube's size (94.6 GB); this node has 64.0 GB. Proposed: the central 1057\u00d71057 pixels (68 % of the field) over the whole band; move or split it as needed.",
+   "sofia_default": null,
+   "changed": true
+  },
+  {
+   "key": "contsub.enable",
+   "value": "true",
+   "reason": "The band (57114 km/s) is 476\u00d7 wider than the widest expected line (120 km/s): a per-spectrum constant cannot remove a line, and removes local continuum residuals the global test cannot see.",
+   "sofia_default": "false",
+   "changed": true
+  },
+  {
+   "key": "contsub.order",
+   "value": "0",
+   "reason": "A constant per spectrum: the least that removes an offset.",
+   "sofia_default": "0",
+   "changed": false
+  },
+  {
+   "key": "scaleNoise.enable",
+   "value": "true",
+   "reason": "Noise varies by 1.15\u00d7 across the band: a single \u03c3 would over-detect in the noisy channels.",
+   "sofia_default": "false",
+   "changed": true
+  },
+  {
+   "key": "scaleNoise.mode",
+   "value": "spectral",
+   "reason": "The variation is from channel to channel.",
+   "sofia_default": "spectral",
+   "changed": false
+  },
+  {
+   "key": "scfind.kernelsXY",
+   "value": "0, 2, 3",
+   "reason": "Beam is 2.5 px. Unsmoothed is the matched filter for point sources; the largest kernel, 3 px (~1.12 beams), keeps the effective resolution near 1.5 beams (\u221a(b\u00b2 + k\u00b2) = 1.56 b here, against 2.24 b for a 2-beam kernel), so nearby sources and faint bridges between them are not blended into one; it gives \u2265 92 % of the best smoothing S/N for sources of observed size up to ~2.5 beams, less for larger ones (83 % at 3, 67 % at 4 beams).",
+   "sofia_default": "0, 3, 6",
+   "changed": true
+  },
+  {
+   "key": "scfind.kernelsZ",
+   "value": "0, 3, 7, 15",
+   "reason": "Channels are 8.57 km/s (rest frame); boxcars of ~15-120 km/s match dwarf to massive-spiral HI line widths; the 15 km/s step (1 channel) is dropped: a boxcar under 3 channels is the unsmoothed cube.",
+   "sofia_default": "0, 3, 7, 15",
+   "changed": false
+  },
+  {
+   "key": "reliability.enable",
+   "value": "true",
+   "reason": "1.05e+09 resolution elements: expect enough negative detections to model the noise.",
+   "sofia_default": "false",
+   "changed": true
+  },
+  {
+   "key": "reliability.threshold",
+   "value": "0.9",
+   "reason": "SoFiA default; lowering trades purity for completeness.",
+   "sofia_default": "0.9",
+   "changed": false
+  },
+  {
+   "key": "linker.positivity",
+   "value": "false",
+   "reason": "Reliability needs the negative detections.",
+   "sofia_default": "false",
+   "changed": false
+  },
+  {
+   "key": "scfind.threshold",
+   "value": "3.5",
+   "reason": "3.5\u03c3: with reliability filtering a lower clip is safe (Serra+2012).",
+   "sofia_default": "5.0",
+   "changed": true
+  },
+  {
+   "key": "scfind.statistic",
+   "value": "mad",
+   "reason": "Robust to the sources in the cube.",
+   "sofia_default": "mad",
+   "changed": false
+  },
+  {
+   "key": "scfind.fluxRange",
+   "value": "negative",
+   "reason": "Noise from the negative side, which bright emission does not reach (faint emission over most of the field still pulls it low).",
+   "sofia_default": "negative",
+   "changed": false
+  },
+  {
+   "key": "scfind.replacement",
+   "value": "2.0",
+   "reason": "SoFiA default.",
+   "sofia_default": "2.0",
+   "changed": false
+  },
+  {
+   "key": "linker.radiusXY",
+   "value": "1",
+   "reason": "Merge fragments closer than ~half a beam.",
+   "sofia_default": "1",
+   "changed": false
+  },
+  {
+   "key": "linker.minSizeXY",
+   "value": "3",
+   "reason": "A real source is at least one beam across.",
+   "sofia_default": "5",
+   "changed": true
+  },
+  {
+   "key": "linker.radiusZ",
+   "value": "1",
+   "reason": "Channels are independent and wide (8.57 km/s): adjacent ones only.",
+   "sofia_default": "1",
+   "changed": false
+  },
+  {
+   "key": "linker.minSizeZ",
+   "value": "3",
+   "reason": "Narrowest HI lines are ~20 km/s (thermal FWHM at 8000 K \u2248 19 km/s).",
+   "sofia_default": "5",
+   "changed": true
+  },
+  {
+   "key": "filter.minSNR",
+   "value": "3.0",
+   "reason": "Drops detections whose integrated S/N < 3.",
+   "sofia_default": "3.0",
+   "changed": false
+  },
+  {
+   "key": "filter.discardNegative",
+   "value": "true",
+   "reason": "Negative detections are noise (or, inverted, emission).",
+   "sofia_default": "true",
+   "changed": false
+  }
+ ],
+ "params": {
+  "input.invert": "false",
+  "input.region": "114, 1170, 114, 1170, 0, 6667",
+  "contsub.enable": "true",
+  "contsub.order": "0",
+  "scaleNoise.enable": "true",
+  "scaleNoise.mode": "spectral",
+  "scfind.kernelsXY": "0, 2, 3",
+  "scfind.kernelsZ": "0, 3, 7, 15",
+  "reliability.enable": "true",
+  "reliability.threshold": "0.9",
+  "linker.positivity": "false",
+  "scfind.threshold": "3.5",
+  "scfind.statistic": "mad",
+  "scfind.fluxRange": "negative",
+  "scfind.replacement": "2.0",
+  "linker.radiusXY": "1",
+  "linker.minSizeXY": "3",
+  "linker.radiusZ": "1",
+  "linker.minSizeZ": "3",
+  "filter.minSNR": "3.0",
+  "filter.discardNegative": "true"
+ },
+ "sofia_defaults": {
+  "pipeline.verbose": "false",
+  "pipeline.pedantic": "true",
+  "pipeline.threads": "0",
+  "input.invert": "false",
+  "input.region": "",
+  "flag.region": "",
+  "flag.radius": "5",
+  "flag.auto": "false",
+  "flag.threshold": "5.0",
+  "flag.log": "false",
+  "contsub.enable": "false",
+  "contsub.order": "0",
+  "contsub.threshold": "2.0",
+  "contsub.shift": "4",
+  "contsub.padding": "3",
+  "scaleNoise.enable": "false",
+  "scaleNoise.mode": "spectral",
+  "scaleNoise.statistic": "mad",
+  "scaleNoise.fluxRange": "negative",
+  "scaleNoise.windowXY": "25",
+  "scaleNoise.windowZ": "15",
+  "scaleNoise.gridXY": "0",
+  "scaleNoise.gridZ": "0",
+  "scaleNoise.interpolate": "false",
+  "scaleNoise.scfind": "false",
+  "scfind.enable": "true",
+  "scfind.kernelsXY": "0, 3, 6",
+  "scfind.kernelsZ": "0, 3, 7, 15",
+  "scfind.threshold": "5.0",
+  "scfind.replacement": "2.0",
+  "scfind.statistic": "mad",
+  "scfind.fluxRange": "negative",
+  "threshold.enable": "false",
+  "threshold.threshold": "5.0",
+  "threshold.mode": "relative",
+  "threshold.statistic": "mad",
+  "threshold.fluxRange": "negative",
+  "linker.enable": "true",
+  "linker.radiusXY": "1",
+  "linker.radiusZ": "1",
+  "linker.minSizeXY": "5",
+  "linker.minSizeZ": "5",
+  "linker.maxSizeXY": "0",
+  "linker.maxSizeZ": "0",
+  "linker.minPixels": "0",
+  "linker.maxPixels": "0",
+  "linker.minFill": "0.0",
+  "linker.maxFill": "0.0",
+  "linker.positivity": "false",
+  "reliability.enable": "false",
+  "reliability.parameters": "peak, sum, mean",
+  "reliability.threshold": "0.9",
+  "reliability.scaleKernel": "0.4",
+  "reliability.autoKernel": "false",
+  "reliability.iterations": "30",
+  "reliability.tolerance": "0.05",
+  "reliability.plot": "true",
+  "reliability.debug": "false",
+  "filter.discardNegative": "true",
+  "filter.minSNR": "3.0",
+  "filter.minPixels": "0",
+  "dilation.enable": "false",
+  "dilation.iterationsXY": "10",
+  "dilation.iterationsZ": "5",
+  "dilation.threshold": "0.001",
+  "parameter.enable": "true",
+  "parameter.wcs": "true",
+  "parameter.physical": "false",
+  "parameter.prefix": "SoFiA",
+  "parameter.offset": "false"
+ },
+ "measurements": {
+  "shape": [
+   6668,
+   1286,
+   1286
+  ],
+  "sample_voxels": 3926208,
+  "stride_xy": 9,
+  "channel_pairs": 96,
+  "sigma": 2.8839917902951126e-05,
+  "noise_side": "negative",
+  "sigma_negative": 2.8839917902951126e-05,
+  "sigma_positive": 2.8840103984475715e-05,
+  "bunit": "Jy/beam",
+  "beam_major_arcsec": 7.000000169508,
+  "beam_minor_arcsec": 7.000000169508,
+  "pixel_arcsec": 2.8000000000008,
+  "b_px": 2.500000060537857,
+  "omega_b_px": 7.081813064579208,
+  "channel_kms": 8.565458012104704,
+  "channel_note": "c\u00b7\u0394\u03bd/\u03bd at the band centre",
+  "band_kms": 57114.47402471417,
+  "rest_frequency_hz": 1420405752.0,
+  "spectral_ctype": "FREQ",
+  "rho": -0.008641887289466021,
+  "l_z": 1,
+  "r_chan": 1.154426197068678,
+  "r_chan_noise": 1.0388900517887771,
+  "r_sky": 1.0165092429933102,
+  "r_sky_noise": 1.0226607820659905,
+  "sky_blocks": 64,
+  "f_nan": 0.0,
+  "f_zero": 0.0,
+  "zero_blanked": false,
+  "n_res": 1557159392.2968426,
+  "finite_voxels": 11027511728.0,
+  "cont_fraction": 4.8902146804244705e-05,
+  "cont_strong_fraction": 0.0,
+  "cont_slope_sigma": null,
+  "channel_offsets": 0.0,
+  "tail_high": 159,
+  "tail_low": 165,
+  "tail_expected": 1.1256438335999999,
+  "cube_bytes": 44110046912,
+  "sofia_memory_bytes": 101587325625,
+  "node_memory_bytes": 68719476736
+ },
+ "warnings": [
+  {
+   "code": "memory",
+   "message": "The cube does not fit SoFiA-2 in this node's memory: a sub-cube (input.region) is proposed, and the rules below are for that sub-cube; review it before running."
+  }
+ ],
+ "_elapsed_s": 9.931496301665902
+}

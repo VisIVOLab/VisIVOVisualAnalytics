@@ -29,6 +29,8 @@
 #include "TestFitsHeaderCard.h"
 #include "TestViewerModeState.h"
 #include "TestRemoteLevels.h"
+#include "TestRemoteRenderQueue.h"
+#include "TestRenderSessionCalls.h"
 #include "TestRegionFullRes.h"
 #include "TestDatasetName.h"
 #include "TestColourBarTicks.h"
@@ -41,6 +43,7 @@
 #include "TestOrbitPath.h"
 #include "TestProductRecipe.h"
 #include "TestLassoReplay.h"
+#include "TestSofiaSuggest.h"
 #include "TestUpdateCheck.h"
 #include "TestSourceTable.h"
 #include "TestBackendTaskFollow.h"
@@ -79,6 +82,8 @@ int main(int argc, char *argv[])
     { TestFitsHeaderCard   t; status |= QTest::qExec(&t, argc, argv); }
     { TestViewerModeState  t; status |= QTest::qExec(&t, argc, argv); }
     { TestRemoteLevels     t; status |= QTest::qExec(&t, argc, argv); }
+    { TestRemoteRenderQueue t; status |= QTest::qExec(&t, argc, argv); }
+    { TestRenderSessionCalls t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionFullRes    t; status |= QTest::qExec(&t, argc, argv); }
     { TestDatasetName      t; status |= QTest::qExec(&t, argc, argv); }
     { TestThresholdShare   t; status |= QTest::qExec(&t, argc, argv); }
@@ -91,6 +96,7 @@ int main(int argc, char *argv[])
     { TestOrbitPath        t; status |= QTest::qExec(&t, argc, argv); }
     { TestProductRecipe    t; status |= QTest::qExec(&t, argc, argv); }
     { TestLassoReplay      t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSofiaSuggest     t; status |= QTest::qExec(&t, argc, argv); }
     { TestUpdateCheck      t; status |= QTest::qExec(&t, argc, argv); }
     { TestSourceTable      t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendTaskFollow t; status |= QTest::qExec(&t, argc, argv); }

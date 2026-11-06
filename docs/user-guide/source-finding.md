@@ -6,7 +6,7 @@ catalogue what it is.
 
 | Task | Tool | Where |
 |------|------|-------|
-| Find sources in a cube | SoFiA-2 | *Analysis → Source Finding (SoFiA-2)…* |
+| Find sources in a cube | SoFiA-2 | *Tools → Sources & Kinematics → Source Finding (SoFiA-2)…* (cube viewer) |
 | Identify a detection | Cross-match | *Tools → Cross-match with Catalogue…* (image viewer) |
 | Segment a source you can see | [Kinematic Lasso](kinematic-lasso) | cube viewer |
 
@@ -20,47 +20,156 @@ detections back as a catalogue and a mask you can render.
 
 ### Requirements
 
-SoFiA-2 must be installed and on the backend's `PATH`. If it is not, the dialog
-says so rather than failing mid-run — check on the machine running the
-**backend**, which may not be the machine running the client.
+SoFiA-2 (version 2.7) must be installed where the backend runs, on its `PATH`
+as `sofia2` or `sofia`, or named by `VISIVO_SOFIA_BIN`. If it is not, the run
+says so ("SoFiA-2 is not available on this backend") — check on the machine
+running the **backend**, which may not be the machine running the client. The
+suggestion below does not need SoFiA-2.
 
 ### Running it
 
+Open the dialog from the cube viewer: *Tools → Sources & Kinematics → Source
+Finding (SoFiA-2)…*. On opening it asks the backend to
+[suggest parameters](#suggested-parameters) from the cube, which takes about a
+second, and shows them:
+
 ```{list-table}
 :header-rows: 1
-:widths: 26 16 58
+:widths: 24 76
 
-* - Control
-  - Default
+* - Part of the dialog
   - What it does
-* - **S+C threshold**
-  - 5 σ
-  - Detection threshold in units of the local noise, after smoothing. Lower it
-    to find fainter sources and more spurious ones; raise it for a clean,
-    conservative list.
-* - **Kernel X / Y (pix)**
-  - 3
-  - Spatial smoothing kernel. Set it near the size of the sources you want —
-    smoothing to the scale of the signal is what makes a faint extended source
-    detectable at all.
-* - **Kernel Z (chan)**
-  - 3
-  - Spectral smoothing, in channels. For HI, roughly the number of channels a
-    line spans.
-* - **Merge sources**
-  - on
-  - Links neighbouring detections into single objects rather than reporting
-    fragments.
+* - **Data type**, **Line widths**
+  - What the suggester deduced: emission, absorption (searched in the
+    inverted cube) or continuum not subtracted; HI (lines of 15-120 km/s) or
+    Galactic lines (2-20 km/s). The line under each says why, and how sure it
+    is. When the evidence is unclear it reads *Please confirm…*, a
+    **Confirm** button appears and **Run** waits for your answer: pick a value
+    or confirm the one shown, and the parameters are suggested again for it.
+* - Measurements
+  - The noise σ, the beam in pixels, the channel width in km/s, the
+    adjacent-channel correlation ρ, the resolution elements N_res, how much the
+    noise varies over the band and across the field, and the cube's shape;
+    then any warning (few resolution elements for the reliability filter,
+    exact-zero blanks, no beam or no channel width in the header, a cube too
+    large for the node's memory).
+* - Parameter table
+  - One row per SoFiA-2 parameter: its **Value** (double-click to edit), its
+    **Status**, SoFiA's own default, and **Why** it has that value. Values that
+    differ from SoFiA's default are bold; your edits are in italics and marked
+    *edited (suggested …)*. A blank value is not sent, so SoFiA's default runs.
+* - **Reset to suggested**
+  - Puts every value you edited back to the suggestion, and drops the rows you
+    added.
+* - **Add parameter…**
+  - Adds a SoFiA-2 parameter the suggestion leaves out, by its `section.key`
+    name and value, e.g. `dilation.enable` = `true` for masks that take in the
+    faint outskirts. It is kept like an edit, with SoFiA's default shown
+    next to it. A name the backend does not accept is refused when you add
+    it; the value is checked when the run starts, and a value SoFiA-2 would
+    misread (a word it does not know, `abc` for a number) stops the run with
+    the reason before SoFiA starts.
+* - **Suggest again**
+  - Asks again, after a busy or failed answer.
 ```
 
-Press **Run SoFiA-2**. The run happens on the backend; the count appears as
-*Detected sources: N*.
+Your edits win: when a new suggestion arrives (another data type or line
+width), the values you typed stay and everything else follows the suggestion.
+
+When the cube is larger than SoFiA-2 can hold in the node's memory (about
+2.3× the cube's size), the table proposes a sub-cube, `input.region`, with a
+check box. It is sent only once you tick it (or type your own region); without
+it SoFiA-2 searches the whole cube.
+
+Press **Run SoFiA-2**. The run is a task of the backend: a bar and the elapsed
+time show it is running, and **Cancel run** (or closing the dialog, after a
+question) asks the backend to stop SoFiA-2; the dialog says whether the
+backend accepted. When it finishes, the dialog lists the
+detected sources and SoFiA's own counts: the negative and positive detections
+the reliability filter worked with, the sources left after filtering, the
+channel correlation SoFiA measured, and SoFiA's warnings and errors. A run
+that leaves nothing after filtering reads *No sources left after filtering.*,
+with the same counts and no mask to open; it is recorded like any other run
+(an empty result is what an inversion test expects). When SoFiA-2 fails, its
+`ERROR` lines and the end of its output are shown in full, in a box that
+scrolls.
+
+Each run is recorded under the cube in *Session Data*, as *SoFiA-2 · 12
+sources · 14:32:05* (with "N edited" when you changed values), so
+two runs stay apart: Inspector ›
+Provenance lists every parameter that ran and whether it was suggested, edited
+by you or (for a sub-cube) confirmed by you, the data type, the
+paths of the mask, catalogue and log, and **Export recipe as JSON…** writes
+the request that reruns it (`POST /v1/tasks/sourcefind`). Double-clicking the
+row opens the mask cube again. A SoFiA-2 mask opens in MIP: it holds a few
+small integer labels on zeros, which the default Composite rendering leaves
+nearly invisible; switch the blend mode in *Volume Rendering* if you prefer.
+
+When the backend refuses the cube, the dialog shows its reason as given and
+offers no run: a 2-D image or a catalogue, a Stokes Q, U or V cube, a volume
+without a spectral axis, fewer than 8 channels, or a file SoFiA-2 cannot read
+as it is (a cube in a FITS extension or tile-compressed, a gzip/bzip2/zip
+file). A busy backend (every compute slot of the session in use) is said as
+such; press **Suggest again** later. A backend older than the suggester runs
+SoFiA-2 with its defaults.
 
 ```{tip}
-Start at the defaults on a sub-cube before running on the whole thing. Kernel
-size matters more than threshold for whether a given source is found at all,
-and it is quicker to learn that on something small.
+Start on a sub-cube before running on the whole thing. Kernel size matters
+more than threshold for whether a given source is found at all, and it is
+quicker to learn that on something small.
 ```
+
+### Suggested parameters
+
+The backend can propose SoFiA-2 parameters from the cube itself, each with
+the reason it has that value. It reads the cube once (a sample of channel
+pairs spread over the band, so it takes about a second even on cubes larger
+than memory) and measures:
+
+- the noise σ, as SoFiA measures it: from the values on the side of zero
+  that holds no signal (below zero for emission, above it for absorption).
+  Faint emission spread over most of the field pulls this σ low, for SoFiA
+  as for the suggestion;
+- the beam in pixels, and the channel width in km/s in the rest frame;
+- how strongly adjacent channels are correlated (Hanning smoothing makes
+  them so);
+- how much the noise varies across the field and across the band, compared
+  with what the measurement's own scatter gives on a cube of that size;
+- the blank (NaN) and exact-zero fractions, and whether the spectra sit off
+  zero (continuum not subtracted);
+- the number of independent resolution elements, which decides whether
+  SoFiA's reliability filter has enough negative detections to work with.
+
+From these it sets the spatial kernels to none, about half a beam and about
+one beam (1.12 beams at most, so the smoothed resolution stays near 1.5 beams
+and neighbouring sources are not merged; sources much larger than 3 beams
+lose some sensitivity), the spectral kernels to HI line widths of 15-120 km/s
+(or 2-20 km/s for Galactic lines, not yet validated), the linker sizes to one
+beam and the narrowest expected line, and the threshold to 4σ with the
+reliability filter or 5σ without it (a small cube gets 5σ and no reliability
+filter). Noise that varies across the field or the band turns on noise
+scaling; a continuum offset, or a band more than 20 times wider than the
+widest expected line, turns on continuum subtraction; absorption is searched
+in the inverted cube. The full rule table
+is in the [API reference](../backend-api/tasks-finders.md#the-rules).
+
+Two things are deduced and may need you: whether the cube holds emission,
+absorption or unsubtracted continuum, and which line widths to expect (a cube
+without a rest frequency does not say). When the evidence is unclear the
+suggestion says so and you choose. The suggestion leaves the masks at the
+clip, with no mask dilation: for total fluxes, which need the faint outskirts,
+set `dilation.enable` (and its iterations) yourself with **Add parameter…**.
+
+A search that finds nothing is a result, not an error: SoFiA-2 ends with "No
+sources left after filtering", and the run is reported as completed with no
+sources, its log kept. When SoFiA-2 does fail, the message shows SoFiA's own
+`ERROR` lines and the end of its output.
+
+The suggestions are a starting point, not an optimum: they are written for
+SoFiA-2 2.7 and are being validated against reference masks on HCG 44 and
+WALLABY. After a run, SoFiA's own counts come back with the result
+("Reliability ran on 33 negative and 53 positive detections"), so you can
+see whether the reliability filter had enough to work with.
 
 ### Reading the result
 

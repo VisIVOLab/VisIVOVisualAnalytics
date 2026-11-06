@@ -51,6 +51,7 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/app/DiagnosticsManager.cpp
     ${VISIVO_ROOT}/src/app/ProductRecipe.cpp
     ${VISIVO_ROOT}/src/app/LassoReplay.cpp
+    ${VISIVO_ROOT}/src/app/SofiaSuggest.cpp
     ${VISIVO_ROOT}/src/app/UpdateCheck.cpp
     ${VISIVO_ROOT}/src/vlkb/SourceTable.cpp
     ${VISIVO_ROOT}/src/AnalysisParamStore.cpp
@@ -135,6 +136,11 @@ add_executable(VisIVOTests
     test_viewer_mode_state.cpp
     TestRemoteLevels.h
     test_remote_levels.cpp
+    TestRemoteRenderQueue.h
+    test_remote_render_queue.cpp
+    TestRenderSessionCalls.h
+    test_render_session_calls.cpp
+    ${VISIVO_ROOT}/src/gui/RenderSessionCalls.cpp
     TestRegionFullRes.h
     test_region_full_res.cpp
     TestDatasetName.h
@@ -159,6 +165,8 @@ add_executable(VisIVOTests
     test_product_recipe.cpp
     TestLassoReplay.h
     test_lasso_replay.cpp
+    TestSofiaSuggest.h
+    test_sofia_suggest.cpp
     TestUpdateCheck.h
     test_update_check.cpp
     TestSourceTable.h

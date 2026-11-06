@@ -95,11 +95,20 @@ GUI labels its fields accordingly:
 | | `channel` | WCS unusable — enter values as channel indices |
 | `X-Visivo-Spectral-Axis-Unit` | e.g. `km/s` | unit the model was built in |
 
-> **PA convention.** `pa_deg` is measured in **image-pixel** coordinates
-> (`PA = 0` → major axis along **+y** of the array, increasing toward **+x**),
-> *not* sky north-through-east. The viewer is meant to tune PA visually against
-> the data, so the UI labels this as an image/viewer PA. Deriving sky PA from
-> the celestial WCS is a planned refinement.
+> **PA convention.** `pa_deg` is measured in **image-pixel** coordinates:
+> `PA = 0` puts the major axis along **+y** of the array, and the angle
+> increases toward **−x**. It points to the **receding** half of the disc
+> (with `vrot > 0`, the fit folds a negative amplitude into the PA) when the
+> model works in velocity; in `native` mode on a frequency axis, higher values
+> are approaching, so the same PA points to the approaching half.
+>
+> For a cube displayed north up and east left (`CDELT1 < 0`, no rotation in
+> the WCS), which is how most radio cubes are written, this is the usual sky
+> convention: **from north through east, on the receding side**. On a cube with
+> a rotated WCS or `CDELT1 > 0` it is not, because the angle is not converted
+> through the celestial WCS. Survey catalogues may quote the other side: the
+> WALLABY catalogue's `kin_pa` points to the approaching half, 180° from this
+> PA.
 
 ---
 

@@ -104,7 +104,7 @@ An asynchronous job belongs to the token that created it. The job list shows onl
 
 ### Parameters
 
-Parameter names are case-insensitive, values are not. Parameters can be sent in the query string or, with `POST`, as an `application/x-www-form-urlencoded` body; a `multipart/` body is refused. Each parameter may appear once (a repeated non-empty value gives `MultiValuedParamNotSupported`). A parameter that the selected operation does not understand is refused with a `UsageError`, so a misspelled name is never ignored silently. `OPERATION`, `PHASE`, `RUNID` and `REQUEST` are accepted with every operation.
+Parameter names are case-insensitive, values are not (except `POL` states, read case-insensitively). Parameters can be sent in the query string or, with `POST`, as an `application/x-www-form-urlencoded` body; a `multipart/` body is refused. `POL` may be repeated, as SODA requires; every other parameter may appear once (a repeated non-empty value gives `MultiValuedParamNotSupported`). A parameter that the selected operation does not understand is refused with a `UsageError`, so a misspelled name is never ignored silently. `OPERATION`, `PHASE`, `RUNID` and `REQUEST` are accepted with every operation.
 
 | Parameter | Value | Description |
 |---|---|---|
@@ -124,10 +124,26 @@ Parameter names are case-insensitive, values are not. Parameters can be sent in 
 | `POLYGON` | `<ra1> <dec1> ...` | Same as `POS=POLYGON ...`. |
 | `BAND` | `<min> <max>` | Wavelength interval in metres, converted to the dataset's spectral axis (frequency, wavelength or energy axes). |
 | `TIME` | `<mjd_lo> <mjd_hi>` | MJD interval. A cube has no time axis to cut: the interval is checked against the observation time recorded in the header, and a miss selects nothing. Without a recorded time it is not applied. |
+| `POL` | `I`, `Q`, `U`, `V`, `RR`, `LL`, `RL`, `LR`, `XX`, `YY`, `XY`, `YX`, `POLI`, `POLA` | Polarization states (the ObsCore vocabulary), one per parameter: `POL=Q&POL=U`. All values make one result. See [Polarization](#polarization-pol). |
 
-Only one of `POS`, `CIRCLE` and `POLYGON` may be given. A `POS` on a dataset with no celestial axes, or a `BAND` on a dataset with no spectral axis, is a `UsageError`. The cutout keeps all axes, cuts the celestial and spectral ones, shifts `CRPIX` accordingly and is written as a single primary HDU.
+Only one of `POS`, `CIRCLE` and `POLYGON` may be given. A `POS` on a dataset with no celestial axes, or a `BAND` on a dataset with no spectral axis, is a `UsageError`. The cutout keeps all axes, cuts the celestial, spectral and STOKES ones, fixes their WCS (`CRPIX`, and the pixel scale for a stepped STOKES selection) and is written as a single primary HDU, except for the uneven polarization selections described below.
 
-**Whole file.** A `CUTOUT` request with none of `POS`, `CIRCLE`, `POLYGON`, `BAND` or `TIME` returns the dataset as stored on `/soda/sync`: the original file with every HDU and the original header, not a rewritten copy (this is what a DataLink `#this` link through the service fetches). Any regular file inside the data roots can be returned this way, including compressed FITS and HDF5. `RESPONSEFORMAT`, if given, must match the file's own media type (`application/fits` for `.fits`, `.fit`, `.fts`; `application/x-hdf5` for `.h5`, `.hdf5`, `.he5`; `application/gzip` for `.gz`; `application/octet-stream` otherwise), since the node converts nothing. An unconstrained `CUTOUT` submitted as an asynchronous job is not served as stored: it produces a FITS file holding the first image HDU's full data.
+#### Polarization (`POL`)
+
+`POL` selects planes of the dataset's `STOKES` axis. The state of each plane is read from the axis WCS (`CRVAL`, `CDELT` or `CD`/`PC`, `CRPIX`) and the FITS Stokes codes: 1 to 4 are `I`, `Q`, `U`, `V`; −1 to −4 are `RR`, `LL`, `RL`, `LR`; −5 to −8 are `XX`, `YY`, `XY`, `YX`. A plane with any other value has no state and is never selected.
+
+- **Order.** Planes come back in the file's order, whatever the order of the `POL` values; a repeated state counts once.
+- **Several states.** When the selected planes are evenly spaced on the axis (`Q` and `U`, or `I` and `V` of an `I Q U V` cube), the result is one HDU whose `STOKES` axis holds exactly those planes (`CDELT` multiplied by the spacing). When they are not (`I`, `Q` and `V` of `I Q U V`), a linear axis cannot list them without the others, so each state is its own image HDU, the first as the primary, named `STOKES_I`, `STOKES_Q`, ... Every HDU carries the same `POS`/`BAND` cut.
+- **No match.** A request whose states are not in the dataset selects nothing: 204 on `/soda/sync`, a `No data:` result for an asynchronous job, with the states the dataset has in the message. `POLI` and `POLA` (polarized intensity and angle) have no FITS Stokes code, so they never match a plane: they are not computed from `Q` and `U`.
+- **No `STOKES` axis.** The dataset is total intensity: `POL` including `I` returns it uncut along polarization, any other state selects nothing. A `STOKES` axis declared only in the WCS (`WCSAXES` larger than `NAXIS`) is one plane, treated the same way with its own state.
+- **One state per file.** Releases that keep each Stokes parameter in its own file (an MFImage `Q` cube with a one-plane `STOKES` axis, `CRVAL4 = 2`) are one state each: `POL=Q` on the `Q` file returns it, `POL=U` selects nothing. SODA cuts the one dataset that `ID` names and does not look for companion files; a client wanting `Q` and `U` finds the companion IDs in the catalogue (for example its ObsCore table) and asks each file separately. `/soda/links` links only the IDs it is given.
+- **Errors.** A value outside the vocabulary is a `UsageError`. `POL` is a `CUTOUT` parameter only; `MOMENT` and `PV` refuse it.
+
+```text
+GET /soda/sync?ID=file:///data/pol/field_IQUV.fits&POL=Q&POL=U&CIRCLE=264.07%20-27.82%200.02
+```
+
+**Whole file.** A `CUTOUT` request with none of `POS`, `CIRCLE`, `POLYGON`, `BAND`, `TIME` or `POL` returns the dataset as stored on `/soda/sync`: the original file with every HDU and the original header, not a rewritten copy (this is what a DataLink `#this` link through the service fetches). Any regular file inside the data roots can be returned this way, including compressed FITS and HDF5. `RESPONSEFORMAT`, if given, must match the file's own media type (`application/fits` for `.fits`, `.fit`, `.fts`; `application/x-hdf5` for `.h5`, `.hdf5`, `.he5`; `application/gzip` for `.gz`; `application/octet-stream` otherwise), since the node converts nothing. An unconstrained `CUTOUT` submitted as an asynchronous job is not served as stored: it produces a FITS file holding the first image HDU's full data.
 
 `MOMENT` parameters:
 
@@ -166,7 +182,7 @@ A valid request that selects nothing (a position, band or time that misses the d
 
 ### `POST /soda/sync`
 
-Synchronous `CUTOUT`. Answers 200 with the FITS cutout (`application/fits`, `Content-Disposition: attachment; filename="<stem>_cutout.fits"`), or the whole file as stored when no constraint is given (see above). The `X-Soda-Applied` header lists the constraints that took effect, comma-separated from `pos`, `band` and `time` (empty for the whole file). `OPERATION=MOMENT` or `PV` is a `UsageError`: use `/soda/async`.
+Synchronous `CUTOUT`. Answers 200 with the FITS cutout (`application/fits`, `Content-Disposition: attachment; filename="<stem>_cutout.fits"`), or the whole file as stored when no constraint is given (see above). The `X-Soda-Applied` header lists the constraints that took effect, comma-separated from `pos`, `band`, `time` and `pol` (empty for the whole file). `OPERATION=MOMENT` or `PV` is a `UsageError`: use `/soda/async`.
 
 ```text
 GET /soda/sync?ID=file:///data/hi/cube.fits&POS=CIRCLE%20150.1%202.2%200.05&BAND=0.2105%200.2112
@@ -232,7 +248,7 @@ All require the token and answer 404 for an unknown job or a job of another toke
 | `GET /soda/async/{job_id}/phase` | The phase as `text/plain`. |
 | `GET /soda/async/{job_id}/results` | A `uws:results` document listing the result link (empty until completed). |
 | `GET /soda/async/{job_id}/error` | The error message as `text/plain` (empty when there is none). Messages start with `UsageError:` or `FatalError:`. |
-| `GET /soda/async/{job_id}/parameters` | A `uws:parameters` document. |
+| `GET /soda/async/{job_id}/parameters` | A `uws:parameters` document; `POL` appears once per state. |
 | `GET /soda/async/{job_id}/quote` | Empty `text/plain`: no completion estimate is made. |
 | `GET /soda/async/{job_id}/executionduration` | `0` (`text/plain`): no limit beyond the backend's own task timeouts. |
 | `POST /soda/async/{job_id}/executionduration` | Ignored: the service keeps its own limits. 303 to the job. |
@@ -240,9 +256,31 @@ All require the token and answer 404 for an unknown job or a job of another toke
 | `POST /soda/async/{job_id}/destruction` | Ignored, as above. 303 to the job. |
 | `GET /soda/async/{job_id}/owner` | Empty `text/plain`: owners are tokens and are never disclosed. |
 
+### `GET /soda/links`
+
+### `POST /soda/links`
+
+DataLink 1.1 `{links}` for datasets on this node, so that a VO client (pyvo, TOPCAT) can discover the cutout service and the values a dataset accepts. Requires the token, like `/soda/sync`. Parameters: `ID` (repeatable, the same `file://` identifiers as SODA), optional `RESPONSEFORMAT` (`application/x-votable+xml`, `text/xml` or `votable`), `REQUEST`. Answers 200 with `application/x-votable+xml;content=datalink`.
+
+For each `ID` the links table has:
+
+| `semantics` | Link |
+|---|---|
+| `#this` | `access_url` = `/soda/sync?ID=...`, the dataset as stored, with its `content_type` and `content_length`. |
+| `#cutout` | `service_def` = `soda-sync-<n>`: the SODA sync descriptor. |
+| `#cutout` | `service_def` = `soda-async-<n>`: the SODA async descriptor. |
+
+Each descriptor (`RESOURCE type="meta" utype="adhoc:service"`, with `standardID` and `accessURL`) lists the input parameters the dataset can use, from its own header: `ID` (`ref` to the table's ID column), `POS`, `CIRCLE` and `POLYGON` only when it has celestial axes, `BAND` with `MIN`/`MAX` (its wavelength coverage in metres) only when it has a spectral axis astropy can convert, `TIME` always (with `MIN`/`MAX` when the header records the observation time; without them the parameter is accepted but not applied, as for `/soda/sync`), and `POL` with one `OPTION` per state the `STOKES` axis holds (`I` for a dataset without one). A file that is not an image (HDF5, a FITS table) gets only its `#this` row.
+
+An `ID` this node cannot serve gets a `#this` row with an `error_message` (`NotFoundFault: ...` for a missing file, `UsageFault: ...` otherwise) and no other link. No `ID` gives an empty table. An unknown parameter or `RESPONSEFORMAT` gives 400 with a VOTable whose `INFO name="QUERY_STATUS" value="ERROR"` holds `UsageFault: <message>`, followed by the empty links table. Each descriptor carries a `DESCRIPTION` naming its mode and dataset.
+
+```text
+GET /soda/links?ID=file:///data/pol/field_IQUV.fits
+```
+
 ### `GET /soda/capabilities`
 
-VOSI capabilities (`text/xml`): the SODA sync (`ivo://ivoa.net/std/SODA#sync-1.0`) and async (`ivo://ivoa.net/std/SODA#async-1.0`) interfaces and the two VOSI endpoints, each with its full access URL on this node. No authentication.
+VOSI capabilities (`text/xml`): the SODA sync (`ivo://ivoa.net/std/SODA#sync-1.0`) and async (`ivo://ivoa.net/std/SODA#async-1.0`) interfaces, the DataLink links interface (`ivo://ivoa.net/std/DataLink#links-1.1`) and the two VOSI endpoints, each with its full access URL on this node. No authentication.
 
 ### `GET /soda/availability`
 

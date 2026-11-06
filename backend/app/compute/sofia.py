@@ -88,20 +88,22 @@ def worker_sofia(cube_path: str, out_dir: str, sofia_params: dict[str, Any] | No
     ``timeout`` (seconds) is given, the SoFiA child is killed and a clear error
     raised if it runs longer — so a caller with its own deadline (e.g. the
     copilot) doesn't leave the finder running unbounded past its response.
+
+    The parameters go through the finder's own checks (``finders.sofia2``:
+    allow-list, known SoFiA-2 names, no file paths, no line breaks), so this
+    route and the task route accept exactly the same set; ValueError names
+    the first one refused.
     """
+    from .finders.sofia2 import (  # noqa: PLC0415
+        EXIT_NO_SOURCES, failure_detail, par_lines, refused, summarise_log)
+
+    params = dict(sofia_params or {})
+    why = refused(params)
+    if why is not None:
+        raise ValueError(why)
     sofia_bin = resolve_sofia_bin() or "sofia2"
-    par_lines = [
-        f"input.data = {cube_path}",
-        f"output.directory = {out_dir}",
-        "output.filename = sofia_out",
-        "output.writeCatXML = true",
-        "output.writeMask = true",
-        "output.overwrite = true",
-    ]
-    for key, val in (sofia_params or {}).items():
-        par_lines.append(f"{key} = {_sofia_value(val)}")
     par_path = Path(out_dir) / "sofia.par"
-    par_path.write_text("\n".join(par_lines) + "\n")
+    par_path.write_text("\n".join(par_lines(cube_path, out_dir, params)) + "\n")
 
     try:
         proc = subprocess.run(
@@ -110,10 +112,16 @@ def worker_sofia(cube_path: str, out_dir: str, sofia_params: dict[str, Any] | No
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
             f"SoFiA-2 exceeded the {timeout:.0f}s time limit and was stopped.") from exc
-    if getattr(proc, "returncode", 1) != 0:
-        raise RuntimeError(
-            f"SoFiA-2 failed (exit {proc.returncode}): "
-            f"{(getattr(proc, 'stderr', '') or '')[:500]}")
+    def _text(name: str) -> str:
+        value = getattr(proc, name, "")
+        return value if isinstance(value, str) else ""
+
+    code = getattr(proc, "returncode", 1)
+    # Exit 8 ("no sources left after filtering") is an empty result, not a
+    # failure; anything else reports SoFiA's own ERROR lines and its tail.
+    if code not in (0, EXIT_NO_SOURCES):
+        raise RuntimeError(f"SoFiA-2 failed (exit {code}): "
+                           f"{failure_detail(_text('stdout'), _text('stderr'))}")
 
     cat_path = Path(out_dir) / "sofia_out_cat.xml"
     sources = _parse_votable_rows(cat_path) if cat_path.exists() else []
@@ -125,6 +133,8 @@ def worker_sofia(cube_path: str, out_dir: str, sofia_params: dict[str, Any] | No
         "sources": sources,
         "mask_path": str(mask_path) if mask_path.exists() else "",
         "catalog_path": str(cat_path) if cat_path.exists() else "",
+        "exit_code": code,
+        "summary": summarise_log(_text("stdout")),
     }
 
 

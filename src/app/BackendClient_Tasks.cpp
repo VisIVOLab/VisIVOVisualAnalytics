@@ -1,6 +1,7 @@
 #include "BackendClient.h"
 #include "BackendTaskFollow.h"
 #include "DiagnosticsManager.h"
+#include "SofiaSuggest.h"
 
 #include <QByteArray>
 #include <QDataStream>
@@ -618,9 +619,12 @@ BackendTaskCreateResult BackendClient::createSourceFindTask(const QString &datas
                                           { QStringLiteral("finder"), finder },
                                           { QStringLiteral("params"), params } });
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/sourcefind")), body, error);
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/sourcefind")), body, error,
+                        nullptr, &result.httpStatus);
     if (!error.isEmpty()) {
-        result.error = error;
+        // A refusal carries its reason in the body as FastAPI's {"detail": …};
+        // `error` is Qt's "server replied: …". The words are what the user reads.
+        result.error = visivo::refusalText(result.httpStatus, payload, error);
         return result;
     }
     const QJsonObject object = QJsonDocument::fromJson(payload).object();
@@ -628,6 +632,28 @@ BackendTaskCreateResult BackendClient::createSourceFindTask(const QString &datas
     result.error = object.value(QStringLiteral("error")).toString();
     result.taskId = object.value(QStringLiteral("task_id")).toString();
     result.status = object.value(QStringLiteral("status")).toString();
+    return result;
+}
+
+BackendSofiaSuggestResult BackendClient::suggestSofia2Parameters(const QString &datasetId,
+                                                                const QJsonObject &request) const
+{
+    BackendSofiaSuggestResult result;
+    QString error;
+    const QString safeSeg = QString::fromUtf8(QUrl::toPercentEncoding(datasetId));
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/sofia2/suggest/") + safeSeg),
+                        QJsonDocument(request), error, nullptr, &result.httpStatus);
+    if (!error.isEmpty()) {
+        result.error = visivo::refusalText(result.httpStatus, payload, error);
+        return result;
+    }
+    const QJsonDocument doc = QJsonDocument::fromJson(payload);
+    if (!doc.isObject()) {
+        result.error = QStringLiteral("The backend's suggestion is not JSON.");
+        return result;
+    }
+    result.body = doc.object();
     return result;
 }
 

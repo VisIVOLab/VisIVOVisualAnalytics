@@ -124,7 +124,22 @@ segment above the 3-D pane:
   remote view renders in a process of its own, and the views are spread over
   the backend machine's GPUs in turn (with more views than GPUs, some share
   one). On a 2 GB cube on a V100 node behind an SSH tunnel this ran at about
-  28 frames per second while rotating.
+  28 frames per second while rotating. A backend renders at most
+  `VISIVO_RENDER_MAX_SESSIONS` views at once (8 unless its operator set
+  otherwise), cubes and 3-D catalogues together. A view asked for while all
+  are busy waits for a free slot, first come first served (on a backend shared
+  by several users, a user with no remote view goes first); the 3-D pane says
+  *Waiting for a server-side rendering slot (2 of 3)*, the banner shows the
+  place (*Queued for server-side rendering: 2 of 3 (all 8 slots busy)*), the
+  status bar says *Local, queued for remote*, and the view appears by itself
+  when its turn comes. A 3-D catalogue view waiting the same way says so in its
+  status bar. **Give up place** in the banner, going back to Local, or closing
+  the window gives the place up.
+  When the queue is full, or the wait passes the backend's limit (10 minutes
+  unless its operator set otherwise), the view stays local and the banner says
+  why; retry Remote later. A view switched to Local keeps its backend session
+  for a quick switch back, but while others wait the backend may give that
+  slot away: switching back then asks for a new session (and may queue).
 
   The remote view starts with the **backend's threshold** (see *The default
   threshold* below), computed from a sample of the full-resolution data (out of
@@ -438,6 +453,13 @@ with the Kinematic Lasso — geometry from its moment 0, a flat and a per-ring d
 fitted to its velocity field — and adds the velocity field, model and residual
 maps and the source's flux, w20/w50 and V_sys to Session Data. See
 [the kinematic model](../kinematic-model) for how each is derived.
+
+The position angle points to the **receding** half of the disc and is measured
+from the top of the image toward the left: on a cube shown north up and east
+left, as most radio cubes are, that is north through east. A rotated WCS is not
+taken into account, and some catalogues quote the approaching side instead (the
+WALLABY catalogue's `kin_pa` is 180° from it). See
+[the PA convention](../kinematic-model) for the details.
 ```
 
 Every entry is available both in the menu bar **and** as a tool button on

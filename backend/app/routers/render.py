@@ -4,6 +4,8 @@ Endpoints
 ---------
 
 * ``POST   /v1/render/create_session`` — start a session for a dataset
+  (above the session cap, optionally wait in a queue: 202 with a place)
+* ``DELETE /v1/render/queue/{queue_id}`` — give up a queue place
 * ``DELETE /v1/render/{session_id}``   — explicit teardown
 * ``GET    /v1/render/{session_id}/levels`` — starting threshold and data range
 * ``WS     /v1/render/{session_id}/ws`` — bidirectional render channel
@@ -51,7 +53,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..auth import verify_token
-from ..render_manager import get_render_manager
+from ..render_manager import (
+    RenderQueued,
+    RenderTicketGone,
+    get_render_manager,
+)
 from ..render_session import server_side_rendering_available
 from ..sessions import Session as VisivoSession, get_session
 
@@ -106,6 +112,13 @@ def point_table_spec(entry: dict) -> str | None:
 
 class CreateRenderSessionRequest(BaseModel):
     dataset_id: str
+    # Above the session cap: wait in the queue (202 with a place) rather than
+    # be refused (503). Off by default, so a client that cannot wait keeps the
+    # refusal it understands.
+    queue: bool = False
+    # A place given by an earlier 202: asking again with it reports the new
+    # position and keeps the place; the session starts when its turn comes.
+    queue_id: str | None = None
 
 
 class CreateRenderSessionResponse(BaseModel):
@@ -176,7 +189,18 @@ async def _pyramid_preparing(path: str, hdu: int | None) -> JSONResponse | None:
 @router.post("/create_session", response_model=CreateRenderSessionResponse, responses={
     202: {"description": "The cube's brick pyramid is being built for out-of-core rendering: "
                          "``{valid: false, preparing: true, progress: 0..1, error}``. Ask again "
-                         "in a moment; the session starts once it is ready."}})
+                         "in a moment; the session starts once it is ready. Or, with ``queue`` "
+                         "or ``queue_id``, every slot is busy and the request waits: "
+                         "``{valid: false, queued: true, queue_id, position, queue_length, "
+                         "active_sessions, capacity, waited_seconds, wait_timeout_seconds, "
+                         "poll_after_seconds, expires_after_seconds, error}`` and a "
+                         "``Retry-After`` header; ask again with ``queue_id``."},
+    410: {"description": "``queue_id`` is no longer in the queue (not asked for within "
+                         "``expires_after_seconds``, cancelled, already used, or another "
+                         "token's or dataset's)."},
+    503: {"description": "Server-side rendering unavailable, or every slot busy and no "
+                         "queue place (not asked for, queue off or full, or waited past "
+                         "``wait_timeout_seconds``)."}})
 async def create_session(
     request: CreateRenderSessionRequest,
     token: str = _auth,
@@ -199,9 +223,12 @@ async def create_session(
     point_head = point_table_spec(entry)
     if entry.get("kind") != "cube" and point_head is None:
         raise HTTPException(422, "Server-side rendering supports cubes and VBT point tables.")
+    wait = {} if not (request.queue or request.queue_id) else {
+        "queue": True, "ticket_id": request.queue_id}
     if point_head is not None:
         return await _start_session(point_head, None, token,
-                                    factory="app.render_session.points:PointRenderSession")
+                                    factory="app.render_session.points:PointRenderSession",
+                                    wait=wait)
     # A FITS cube, or a field of a VBT volume read in place (its path a field
     # reference, app/volume_source.py, issue #83).
     path, hdu = str(entry["path"]), None
@@ -213,19 +240,39 @@ async def create_session(
     if preparing is not None:
         return preparing
 
-    return await _start_session(path, hdu, token)
+    return await _start_session(path, hdu, token, wait=wait)
+
+
+def _queued_response(status: dict) -> JSONResponse:
+    """202 for a request waiting for a render slot (issue #4)."""
+    if status["position"] == 0:
+        message = "A rendering slot is free: the session starts on the next request."
+    else:
+        message = (f"All {status['capacity']} server-side rendering slots are busy: "
+                   f"number {status['position']} of {status['queue_length']} in the queue.")
+    return JSONResponse(
+        status_code=202,
+        content={"valid": False, "queued": True, "error": message, **status},
+        headers={"Retry-After": str(max(1, round(status["poll_after_seconds"])))})
 
 
 async def _start_session(path: str, hdu: int | None, token: str,
-                         factory: str | None = None) -> CreateRenderSessionResponse:
+                         factory: str | None = None,
+                         wait: dict | None = None) -> CreateRenderSessionResponse:
     manager = get_render_manager()
     await manager.start()   # idempotent — reaper coroutine
     try:
-        # ``factory`` only for point data: a cube's session is the default.
+        # ``factory`` only for point data: a cube's session is the default;
+        # ``wait`` only when the client asked to queue.
         sess = await manager.create_session(dataset_path=path, owner_token=token, hdu=hdu,
-                                            **({} if factory is None else {"factory": factory}))
+                                            **({} if factory is None else {"factory": factory}),
+                                            **(wait or {}))
+    except RenderQueued as queued:
+        return _queued_response(queued.status)
+    except RenderTicketGone as gone:
+        raise HTTPException(410, f"{gone} Ask again without queue_id.")
     except RuntimeError as e:
-        # Capacity reached.
+        # Capacity reached (no queue place), or the session failed to start.
         raise HTTPException(503, str(e))
 
     # Render an initial frame so the client has something to show
@@ -285,6 +332,16 @@ async def close_session(session_id: str, token: str = _auth) -> dict[str, Any]:
     if not closed:
         raise HTTPException(404, "Unknown render session_id.")
     return {"closed": True}
+
+
+@router.delete("/queue/{queue_id}")
+async def cancel_queued(queue_id: str, token: str = _auth) -> dict[str, Any]:
+    """Give up a place in the rendering queue: the client stopped waiting (the
+    view closed, the user went back to local rendering). A place not asked
+    for within ``expires_after_seconds`` is dropped anyway."""
+    if not await get_render_manager().cancel_ticket(queue_id, token):
+        raise HTTPException(404, "Unknown queue_id.")
+    return {"cancelled": True}
 
 
 @router.get("/diagnostics")
@@ -580,6 +637,10 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
 
     await websocket.accept()
     logger.info("[render-ws] %s connected", session_id[:8] + "…")
+    # While a client is connected the session keeps its slot even when
+    # requests wait; the last one leaving starts the disconnect grace.
+    manager = get_render_manager()
+    manager.attach(session_id)
 
     # Inner loop. Pattern: receive a JSON command; if it's request_frame,
     # render and send a JPEG; otherwise apply and continue (the next
@@ -645,7 +706,8 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
             # Its outcome (cancelled, or failed and already logged) is
             # collected without hiding a cancellation of this handler.
             await asyncio.gather(push_task, return_exceptions=True)
-        # Disconnect does NOT auto-evict the session — the user might
-        # reconnect quickly (network blip, page reload). TTL eviction
-        # handles real abandonment.
-        pass
+        # Disconnect does NOT evict the session — the user might reconnect
+        # quickly (network blip, page reload, a switch back from Local). The
+        # idle TTL handles real abandonment; while requests wait, so does the
+        # disconnect grace (render_manager).
+        manager.detach(session_id)

@@ -1,9 +1,9 @@
 #include "RemotePointView.h"
 
 #include "RemoteRenderWidget.h"
+#include "RenderSessionCalls.h"
 #include "app/BackendClient.h"
 
-#include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -14,31 +14,6 @@
 #include <QUrl>
 
 using namespace Qt::Literals::StringLiterals;
-
-namespace {
-
-/// A manager owned by the application, not by the view, for the requests that
-/// make and delete sessions: a view deleted meanwhile would take its manager
-/// and the request with it, and a session would hold its GPU until the idle TTL.
-QNetworkAccessManager *sessionManager()
-{
-    static QNetworkAccessManager *nam = new QNetworkAccessManager(QCoreApplication::instance());
-    return nam;
-}
-
-void deleteRenderSession(const QString &backendUrl, const QString &token,
-                         const QString &sessionId, const QString &renderSessionId)
-{
-    QNetworkAccessManager *nam = sessionManager();
-    QUrl url(backendUrl);
-    url.setPath(u"/v1/render/"_s + renderSessionId);
-    QNetworkRequest req(url);
-    BackendClient::applySessionHeaders(req, backendUrl, token, sessionId);
-    QNetworkReply *reply = nam->deleteResource(req);
-    QObject::connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
-}
-
-} // namespace
 
 RemotePointView::RemotePointView(const QString &backendUrl, const QString &token,
                                  const QString &sessionId, const QString &datasetId,
@@ -77,53 +52,87 @@ RemotePointView::~RemotePointView()
 
 void RemotePointView::start()
 {
-    if (isActive() || !m_widget)
+    if (isActive() || m_requesting || !m_widget)
         return;
-    const quint64 generation = ++m_generation;
-    QUrl url(m_backendUrl);
-    url.setPath(u"/v1/render/create_session"_s);
-    QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_s);
-    // The session header: create_session resolves the dataset in this
-    // client's backend session.
-    BackendClient::applySessionHeaders(req, m_backendUrl, m_token, m_sessionId);
+    ++m_generation;
+    m_requesting = true;
+    request();
+}
+
+void RemotePointView::request()
+{
+    const quint64 generation = m_generation;
     const QByteArray body =
-            QJsonDocument(QJsonObject{ { u"dataset_id"_s, m_datasetId } }).toJson(
-                    QJsonDocument::Compact);
-    QNetworkReply *reply = sessionManager()->post(req, body);
+            QJsonDocument(m_place.requestBody(m_datasetId)).toJson(QJsonDocument::Compact);
+    // Through the application's manager: a view deleted meanwhile must not take
+    // the request with it, or the session it makes would be nobody's.
+    QNetworkReply *reply =
+            visivo::postCreateRenderSession(m_backendUrl, m_token, m_sessionId, body);
     const QPointer<RemotePointView> self(this);
     const QString backendUrl = m_backendUrl, token = m_token, sessionId = m_sessionId;
     QObject::connect(reply, &QNetworkReply::finished, reply, [=]() {
         reply->deleteLater();
         const QJsonObject doc = QJsonDocument::fromJson(reply->readAll()).object();
+        const visivo::RenderSessionAnswer answer = visivo::parseRenderSessionAnswer(
+                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(),
+                reply->error() != QNetworkReply::NoError, doc);
         if (!self || generation != self->m_generation) {
-            // Stopped or deleted meanwhile: the session the backend made is nobody's.
-            const QString orphan = doc.value(u"session_id"_s).toString();
-            if (!orphan.isEmpty())
-                deleteRenderSession(backendUrl, token, sessionId, orphan);
+            // Stopped or deleted meanwhile: the session (or the place) the
+            // backend made is nobody's.
+            const visivo::RenderQueuePlace::Decision d =
+                    visivo::RenderQueuePlace().decide(false, answer);
+            visivo::deleteRenderSession(backendUrl, token, sessionId, d.sessionToDelete);
+            visivo::cancelRenderQueuePlace(backendUrl, token, sessionId, d.placeToCancel);
             return;
         }
-        self->created(reply, doc);
+        self->created(answer, doc);
     });
 }
 
-void RemotePointView::created(QNetworkReply *reply, const QJsonObject &doc)
+void RemotePointView::created(const visivo::RenderSessionAnswer &answer, const QJsonObject &doc)
 {
-    if (reply->error() != QNetworkReply::NoError) {
-        const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        const QString detail = doc.value(u"detail"_s).toString();
-        emit failed(detail.isEmpty() ? u"HTTP %1: %2"_s.arg(code).arg(reply->errorString())
-                                     : detail);
+    using Step = visivo::RenderQueuePlace::Step;
+    const visivo::RenderQueuePlace::Decision d = m_place.decide(true, answer);
+    visivo::cancelRenderQueuePlace(m_backendUrl, m_token, m_sessionId, d.placeToCancel);
+    const quint64 generation = m_generation;
+    switch (d.step) {
+    case Step::AskLater:
+        emit queued(visivo::queueStatusText(answer));
+        QTimer::singleShot(visivo::queuePollDelayMs(answer), this, [this, generation]() {
+            if (generation == m_generation)
+                request();
+        });
         return;
-    }
-    const QString sid = doc.value(u"session_id"_s).toString();
-    if (sid.isEmpty()) {
-        emit failed(u"The backend returned no render session."_s);
+    case Step::Preparing:
+        // A point table has no pyramid; a backend that says so anyway is asked
+        // again in a moment, as the cube viewer does.
+        QTimer::singleShot(2000, this, [this, generation]() {
+            if (generation == m_generation)
+                request();
+        });
         return;
+    case Step::AskNow:
+        // The place was dropped (a poll came too late): the back of the queue.
+        request();
+        return;
+    case Step::StayLocal:
+    case Step::Ignore:
+        m_requesting = false;
+        if (!answer.message.isEmpty())
+            emit failed(answer.message);
+        else if (answer.httpStatus >= 200 && answer.httpStatus < 300)
+            emit failed(u"The backend returned no render session."_s);
+        else
+            emit failed(u"HTTP %1"_s.arg(answer.httpStatus));
+        return;
+    case Step::Connect:
+        break;
     }
+    m_requesting = false;
+    const QString sid = answer.sessionId;
     if (!m_widget) {
         // The view it was for is gone: the session is nobody's.
-        deleteRenderSession(m_backendUrl, m_token, m_sessionId, sid);
+        visivo::deleteRenderSession(m_backendUrl, m_token, m_sessionId, sid);
         emit failed(u"The view closed while its render session was made."_s);
         return;
     }
@@ -140,13 +149,17 @@ void RemotePointView::created(QNetworkReply *reply, const QJsonObject &doc)
 void RemotePointView::stop()
 {
     ++m_generation;
+    m_requesting = false;
     m_live = false;
     m_sent.clear();
     if (m_widget)
         m_widget->disconnectFromSession();
+    // Waiting in the queue: give the place up, or the next free slot is held
+    // for nobody until the place expires.
+    visivo::cancelRenderQueuePlace(m_backendUrl, m_token, m_sessionId, m_place.take());
     if (m_renderSessionId.isEmpty())
         return;
-    deleteRenderSession(m_backendUrl, m_token, m_sessionId, m_renderSessionId);
+    visivo::deleteRenderSession(m_backendUrl, m_token, m_sessionId, m_renderSessionId);
     m_renderSessionId.clear();
 }
 

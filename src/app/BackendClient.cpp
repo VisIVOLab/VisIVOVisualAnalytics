@@ -3012,6 +3012,9 @@ const QStringList &heavyComputePaths()
         // Downloading and unpacking a batch of cutouts is minutes of
         // archive time, not an interactive request.
         QStringLiteral("/vlkb/mcutout/fetch"),
+        // A second on a laptop, but it runs under _run_heavy_with_limit: on
+        // slow storage the server's ceiling, not 120 s, is the one to honour.
+        QStringLiteral("/sofia2/suggest"),
     };
     return paths;
 }

@@ -16,6 +16,8 @@
 #include <QString>
 #include <QVariantMap>
 
+#include "RemoteRenderQueue.h"
+
 class QJsonObject;
 class QNetworkAccessManager;
 class QNetworkReply;
@@ -32,8 +34,10 @@ public:
     ~RemotePointView() override;
 
     /// Creates the session and connects the widget; started() or failed().
+    /// With every backend slot busy it waits in the backend's queue first
+    /// (queued(), issue #4).
     void start();
-    /// Disconnects and deletes the session.
+    /// Disconnects and deletes the session, or gives up the place in the queue.
     void stop();
     bool isActive() const { return !m_renderSessionId.isEmpty(); }
     /// The backend's render session, empty before it starts.
@@ -53,10 +57,15 @@ signals:
     void colourRange(double lo, double hi);
     void failed(const QString &reason);
     void liveChanged(bool live);
+    /// Every slot of the backend is busy: the view waits in its queue. The
+    /// sentence says where; sent again each time the backend answers.
+    void queued(const QString &status);
 
 private:
+    /// Asks create_session (again, with the place in the queue if any).
+    void request();
     /// create_session answered for the generation asked.
-    void created(QNetworkReply *reply, const QJsonObject &doc);
+    void created(const visivo::RenderSessionAnswer &answer, const QJsonObject &doc);
     void flush();
     void fetchLevels();
 
@@ -68,6 +77,9 @@ private:
     QNetworkAccessManager *m_nam{ nullptr };
     QString m_renderSessionId;
     quint64 m_generation{ 0 };
+    /// A create_session in flight or a place in the queue: start() waits.
+    bool m_requesting{ false };
+    visivo::RenderQueuePlace m_place;
     bool m_live{ false };
     QHash<QString, QVariantMap> m_state;   ///< latest per type
     QHash<QString, QVariantMap> m_sent;    ///< last sent per type
