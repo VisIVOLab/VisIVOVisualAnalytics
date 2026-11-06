@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 from pydantic import BaseModel
 
 class ErrorDetail(BaseModel):
@@ -654,3 +654,51 @@ class CatalogueOverlayResponse(BaseModel):
     total_in_view: int = 0
     truncated: bool = False
 
+
+
+# ── SoFiA-2 suggested parameters (issue #64) ────────────────────────────────
+
+class Sofia2SuggestRequest(BaseModel):
+    """``data_type`` and ``line`` override what the suggester deduces: send
+    them when the previous answer was ``ambiguous``. (The "goal" field of the
+    first draft is gone with the flux goal; like any unknown field it is
+    ignored, so a client that still sends it is not refused.)"""
+    data_type: Literal["emission", "absorption", "continuum"] | None = None
+    line: Literal["hi", "galactic"] | None = None
+
+
+class Sofia2Choice(BaseModel):
+    """A deduction the user may have to confirm: ask when ``ambiguous``."""
+    value: str
+    deduced: bool
+    ambiguous: bool
+    reason: str
+    options: list[str]
+    confidence: str = ""        # data type only: high | medium | low | user
+
+
+class Sofia2SuggestedParameter(BaseModel):
+    key: str                    # SoFiA-2 name, e.g. "scfind.kernelsXY"
+    value: str                  # as written in the .par, e.g. "0, 5, 10", "true"
+    reason: str
+    sofia_default: str | None   # SoFiA-2 2.7 built-in default; None when it has none
+    changed: bool               # value differs from that default
+
+
+class Sofia2SuggestWarning(BaseModel):
+    code: str                   # memory | no_beam | no_channel_width | reliability_caveat | zero_blanks | blank_footprint | channel_offsets
+    message: str
+
+
+class Sofia2SuggestResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    dataset_id: str = ""
+    sofia_version: str = ""
+    data_type: Sofia2Choice | None = None
+    line: Sofia2Choice | None = None
+    parameters: list[Sofia2SuggestedParameter] = []
+    params: dict[str, str] = {}     # the same, ready for POST /v1/tasks/sourcefind
+    sofia_defaults: dict[str, str] = {}  # SoFiA-2 2.7's default of every key a run accepts ("" when none)
+    measurements: dict[str, Any] = {}
+    warnings: list[Sofia2SuggestWarning] = []

@@ -1210,7 +1210,14 @@ void vtkWindowCube::setupCubeRenderer()
     volumeProperty->SetInterpolationTypeToLinear();
     vtkNew<vtkGPUVolumeRayCastMapper> volumeMapper;
     volumeMapper->SetInputConnection(this->cubeDisplaySource->GetOutputPort());
-    volumeMapper->SetBlendModeToComposite(); // default
+    // The mode chosen so far (Composite unless set before the volume existed,
+    // e.g. MIP for a SoFiA-2 label mask, or picked before a rebuild).
+    if (this->m_volumeBlendMode == 1)
+        volumeMapper->SetBlendModeToMaximumIntensity();
+    else if (this->m_volumeBlendMode == 2)
+        volumeMapper->SetBlendModeToMinimumIntensity();
+    else
+        volumeMapper->SetBlendModeToComposite();
     // Lower sample density during interaction so frames stay responsive
     // immediately after a full-resolution swap (when GPU caches are cold).
     volumeMapper->SetAutoAdjustSampleDistances(1);

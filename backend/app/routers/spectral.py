@@ -660,7 +660,12 @@ async def sourcefind(
     session: Session = Depends(get_session),
 ):
     """Run SoFiA-2 on a node-local cube. Returns the detection catalogue and the
-    path to the binary mask cube (for the desktop's 3D isosurface overlay)."""
+    path to the binary mask cube (for the desktop's 3D isosurface overlay).
+
+    Kept for the callers that wait for the answer; the parameters pass the
+    same checks as the task route's (``finders.sofia2.refused``), and a
+    refused set is answered ``{valid: false, error}`` before SoFiA starts.
+    New clients use ``POST /v1/tasks/sourcefind``, which can be cancelled."""
     import shutil as _shutil  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
 
@@ -668,6 +673,10 @@ async def sourcefind(
     if entry["kind"] != "cube":
         raise HTTPException(422, "Source finding requires a spectral cube dataset.")
     from ..compute import resolve_sofia_bin, worker_sofia  # noqa: PLC0415
+    from ..compute.finders.sofia2 import refused  # noqa: PLC0415
+    why = refused(dict(request.sofia_params or {}))
+    if why is not None:
+        return {"valid": False, "error": why, "n_sources": 0, "sources": []}
     if not resolve_sofia_bin():
         raise HTTPException(
             503,

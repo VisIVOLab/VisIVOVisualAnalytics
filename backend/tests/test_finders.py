@@ -160,9 +160,23 @@ async def test_sofia2_parameters_cannot_name_files_or_escape(client, auth_header
     dataset_id, headers = await _open(client, auth_headers, synthetic_fits_cube)
     created = await client.post("/v1/tasks/sourcefind", headers=headers,
                                 json={"dataset_id": dataset_id, "finder": "sofia2", "params": params})
-    body = await _wait(client, headers, created.json()["task_id"])
-    assert body["status"] == "failed" and "not accepted" in body["error"] or "invalid value" in body["error"] \
-        or "not a SoFiA-2 parameter" in body["error"]
+    # Refused before a task exists: SoFiA-2 never starts.
+    assert created.status_code == 422
+    detail = created.json()["detail"]
+    assert "not accepted" in detail or "invalid value" in detail or "not a SoFiA-2 parameter" in detail
+
+
+@pytest.mark.asyncio
+async def test_sofia2_values_sofia_would_misread_are_refused_at_creation(client, auth_headers,
+                                                                        synthetic_fits_cube, tmp_path,
+                                                                        monkeypatch):
+    monkeypatch.setenv("VISIVO_SOFIA_BIN", _fake_sofia(tmp_path, "exit 0\n"))
+    dataset_id, headers = await _open(client, auth_headers, synthetic_fits_cube)
+    created = await client.post("/v1/tasks/sourcefind", headers=headers,
+                                json={"dataset_id": dataset_id, "finder": "sofia2",
+                                      "params": {"scfind.statistic": "bogus"}})
+    assert created.status_code == 422
+    assert "must be one of std, mad, gauss" in created.json()["detail"]
 
 
 def test_sofia2_allowlist_accepts_the_documented_sections():

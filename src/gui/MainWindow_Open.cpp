@@ -643,13 +643,13 @@ void MainWindow::openBackendProductFits(const QString &backendUrl, const QString
         this->recentMgr->record(path, displayName, opened.kind);
 }
 
-void MainWindow::openSourceFinder(const QString &backendUrl, const QString &backendToken,
-                                  const QString &sessionId, const QString &datasetId)
+SourceFindDialog *MainWindow::openSourceFinder(const QString &backendUrl, const QString &backendToken,
+                                               const QString &sessionId, const QString &datasetId)
 {
     if (datasetId.isEmpty()) {
         QMessageBox::information(this, u"Source Finding"_s,
                 u"Open a spectral cube first."_s);
-        return;
+        return nullptr;
     }
     // Shared ownership: the dialog's async SoFiA run captures a copy of this
     // shared_ptr, so the client survives an early dialog close (no use-after-free)
@@ -668,6 +668,7 @@ void MainWindow::openSourceFinder(const QString &backendUrl, const QString &back
     dlg->show();   // non-modal — consistent with the other tool dialogs
     dlg->raise();
     dlg->activateWindow();
+    return dlg;
 }
 
 
@@ -912,6 +913,13 @@ void MainWindow::openViewerFromOpenedDataset(const QString &openedPath,
         // The other fields of a VBT volume, each a cube of its own.
         cubeWin->setSiblingFields(opened.fields);
         cubeWin->applyAutoRenderModeOnOpen();
+        // A SoFiA-2 label mask is a dozen small integer blobs on zeros: in
+        // Composite it reads as an empty black box, MIP shows every source.
+        // MIP rather than an isosurface: it is the blend switch the viewer
+        // already has (menu, sidebar, remote session), needs no threshold
+        // chosen for labels, and the user can switch back.
+        if (visivo::isSofiaMaskPath(path))
+            cubeWin->setOpenBlendMode(1);
         // Live refresh: when this cube viewer pushes a new FITS into the
         // Workspace Exports, the Data Hub panel updates within frames of
         // the operation instead of on the next backend health tick.
@@ -926,9 +934,21 @@ void MainWindow::openViewerFromOpenedDataset(const QString &openedPath,
         {
             const QString sfUrl = client.baseUrl(), sfToken = client.token(),
                           sfSession = client.sessionId(), sfDataset = opened.datasetId;
+            // Each run is recorded as a product of THIS cube; the window may
+            // close while the dialog stays open, hence the QPointer.
+            const QPointer<vtkWindowCube> sfWin(cubeWin);
             QObject::connect(cubeWin, &vtkWindowCube::sourceFinderRequested, this,
-                             [this, sfUrl, sfToken, sfSession, sfDataset]() {
-                                 this->openSourceFinder(sfUrl, sfToken, sfSession, sfDataset);
+                             [this, sfUrl, sfToken, sfSession, sfDataset, sfWin]() {
+                                 SourceFindDialog *dlg =
+                                         this->openSourceFinder(sfUrl, sfToken, sfSession, sfDataset);
+                                 if (!dlg)
+                                     return;
+                                 QObject::connect(dlg, &SourceFindDialog::runRecorded, this,
+                                                  [sfWin](const QString &label, const QVariantMap &params,
+                                                          const QList<ReplayStep> &replay) {
+                                                      if (sfWin)
+                                                          sfWin->recordSourceFindRun(label, params, replay);
+                                                  });
                              });
         }
         // A product stored as a backend FITS (baseline-subtracted cube, mask,

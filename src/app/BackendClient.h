@@ -250,6 +250,18 @@ struct BackendTaskCreateResult
     QString taskId;
     QString status;
     bool cacheHit{ false };
+    /// HTTP status of the create request (0 = no answer); set by
+    /// createSourceFindTask, whose 503 means "finder not installed here".
+    int httpStatus{ 0 };
+};
+
+/// POST /v1/sofia2/suggest/{id}: the body as it came (valid only on 200),
+/// the HTTP status, and on a refusal the service's reason in words.
+struct BackendSofiaSuggestResult
+{
+    int httpStatus{ 0 };      ///< 0 = no answer
+    QString error;
+    QJsonObject body;
 };
 
 /// A source finder the backend can run (GET /v1/finders): SoFiA-2 for cubes,
@@ -2332,6 +2344,13 @@ public:
      *  ``params`` are the finder's own parameters (its names). */
     BackendTaskCreateResult createSourceFindTask(const QString &datasetId, const QString &finder,
                                                  const QJsonObject &params) const;
+    /** POST /v1/sofia2/suggest/{id} — SoFiA-2 parameters suggested from the
+     *  cube, each with its reason (issue #64; SofiaSuggest.h reads the body).
+     *  ``request`` is visivo::sofiaSuggestRequest(). The HTTP status is kept
+     *  so the caller can tell a refusal (422, the reason in ``error``) from a
+     *  busy session (429) and from a backend without the route (404). */
+    BackendSofiaSuggestResult suggestSofia2Parameters(const QString &datasetId,
+                                                      const QJsonObject &request) const;
     /** DELETE /v1/tasks/{id} — ask the backend to cancel a running or pending
      *  task. True when it accepted; ``error`` says why not (404: no such
      *  task, 409: already finished). Best-effort: the task may still complete. */

@@ -12,6 +12,7 @@
 #include "../skava/SkavaClient.h"
 #include "SkavaSourceFindDialog.h"
 #include "app/BackendClient.h"
+#include "app/FinderTaskRun.h"
 #include "vtkWindowCatalogue3D.h"
 
 #include <QComboBox>
@@ -502,78 +503,26 @@ BackendNode registeredBackendFor(const QList<BackendNode> &registry, const QStri
     return idx >= 0 ? registry[idx] : BackendNode{};
 }
 
-constexpr int kTaskPollMs = 500;
-constexpr int kTaskCancelCheckMs = 100;
-/// Consecutive status requests that may fail before the task is given up
-/// (a backend restarted, the task evicted: asking again changes nothing).
-constexpr int kMaxTaskPollFailures = 10;
-
-/// A finder task on the node's backend, followed to its end. ``log``
-/// receives the progress; ``cancel`` cancels the task on the node.
+/// A finder task on the node's backend, followed to its end
+/// (visivo::runFinderTask, shared with the cube viewer's SoFiA-2 dialog).
+/// ``log`` receives the progress; ``cancel`` cancels the task on the node.
 SkavaFinderOutcome runFinderTask(const BackendClient &client, const QString &datasetId,
                                  const QString &finder, const QJsonObject &params,
                                  std::atomic_bool *cancel,
                                  const std::function<void(const QString &)> &log)
 {
+    const visivo::FinderTaskOutcome run =
+            visivo::runFinderTask(client, datasetId, finder, params, cancel, log);
     SkavaFinderOutcome o;
     o.finder = finder;
-    const BackendTaskCreateResult created = client.createSourceFindTask(datasetId, finder, params);
-    if (!created.valid) {
-        o.error = created.error.isEmpty() ? u"The node did not start the finder."_s : created.error;
-        return o;
+    o.valid = run.valid;
+    o.error = run.error;
+    if (run.valid) {
+        o.nSources = run.result.value(u"n_sources"_s).toInt(-1);
+        o.maskPath = run.result.value(u"mask_path"_s).toString();
+        o.catalogPath = run.result.value(u"catalog_path"_s).toString();
     }
-    log(u"task %1 started on the node"_s.arg(created.taskId));
-    double lastProgress = -1;
-    int failures = 0;
-    auto cancelled = [&]() {
-        QString cancelError;
-        const bool confirmed = client.cancelTask(created.taskId, cancelError);
-        o.error = confirmed ? u"cancelled"_s
-                            : u"cancelled, but the node did not confirm it%1; the task may still be running"_s.arg(
-                                      cancelError.isEmpty() ? QString() : u" ("_s + cancelError + u")"_s);
-        return o;
-    };
-    for (;;) {
-        for (int waited = 0; waited < kTaskPollMs; waited += kTaskCancelCheckMs) {
-            if (cancel && cancel->load())
-                return cancelled();
-            QThread::msleep(kTaskCancelCheckMs);
-        }
-        const BackendTaskStatusResult status = client.requestTaskStatus(created.taskId);
-        if (!status.valid && status.status.isEmpty()) {
-            // A poll that failed is not a task that failed, within bounds;
-            // past them the task is lost to us and stopped if it can be.
-            if (++failures >= kMaxTaskPollFailures) {
-                QString cancelError;
-                const bool stopped = client.cancelTask(created.taskId, cancelError);
-                o.error = u"lost track of task %1 on the node (%2); %3"_s.arg(
-                        created.taskId, status.error,
-                        stopped ? u"the node accepted its cancellation"_s
-                                : u"it could not be cancelled and may still be running%1"_s.arg(
-                                          cancelError.isEmpty() ? QString() : u" ("_s + cancelError + u")"_s));
-                return o;
-            }
-            log(u"(poll) "_s + status.error);
-            continue;
-        }
-        failures = 0;
-        if (status.progress != lastProgress && status.status == "running"_L1) {
-            lastProgress = status.progress;
-            log(u"running… %1%"_s.arg(static_cast<int>(status.progress * 100)));
-        }
-        if (status.status == "completed"_L1) {
-            const QJsonObject r = status.resultObject;
-            o.valid = true;
-            o.nSources = r.value(u"n_sources"_s).toInt(-1);
-            o.maskPath = r.value(u"mask_path"_s).toString();
-            o.catalogPath = r.value(u"catalog_path"_s).toString();
-            return o;
-        }
-        if (status.status == "failed"_L1 || status.status == "cancelled"_L1) {
-            o.error = status.error.isEmpty() ? u"the task %1"_s.arg(status.status) : status.error;
-            return o;
-        }
-    }
+    return o;
 }
 
 }  // namespace

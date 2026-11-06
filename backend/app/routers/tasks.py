@@ -132,6 +132,36 @@ async def list_finders(token: str = _auth) -> dict:
     return {"finders": [f.as_dict() for f in finders.catalogue()]}
 
 
+@router.post("/v1/sofia2/suggest/{dataset_id}", response_model=Sofia2SuggestResponse, tags=["tasks"])
+async def suggest_sofia2_parameters(
+    dataset_id: str,
+    request: Sofia2SuggestRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Sofia2SuggestResponse:
+    """SoFiA-2 parameters suggested from the cube (issue #64), each with its
+    reason, from one strided pass over the cube (app/compute/sofia_suggest).
+
+    Answers whether or not SoFiA-2 is installed here: the suggestion is read
+    from the data, and the run goes to ``POST /v1/tasks/sourcefind`` with
+    ``params``. 422 for a dataset that is not a spectral-line cube of Stokes I
+    (an image, a catalogue, a Stokes Q/U cube, a volume without a spectral
+    axis), with the reason.
+    """
+    from ..compute.sofia_suggest import SuggestRefused, suggest  # noqa: PLC0415
+
+    entry = _require_dataset(session, dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "SoFiA-2 parameters are suggested for spectral-line cubes; "
+                                 f"this dataset is a {entry['kind']}.")
+    try:
+        result = await _run_heavy_with_limit(session, suggest, entry["path"],
+                                             request.data_type, request.line)
+    except SuggestRefused as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return Sofia2SuggestResponse(dataset_id=dataset_id, **result)
+
+
 @router.post("/v1/tasks/sourcefind", response_model=TaskCreateResponse, tags=["tasks"])
 async def create_sourcefind_task(
     request: SourceFindTaskRequest,
@@ -151,6 +181,13 @@ async def create_sourcefind_task(
     if entry["kind"] not in meta.kinds:
         raise HTTPException(422, f"{meta.name} works on {', '.join(meta.kinds)} datasets; "
                                  f"this one is a {entry['kind']}.")
+    if request.finder == "sofia2":
+        # Refused here, before a task exists: the caller knows SoFiA-2 never
+        # started. The run checks again (the synchronous route shares it).
+        from ..compute.finders.sofia2 import refused  # noqa: PLC0415
+
+        if why := refused(dict(request.params or {})):
+            raise HTTPException(422, why)
 
     task = TASKS.create("sourcefind", owner_token=token)
     TASKS.update(task.task_id, status="running", progress=0.05)

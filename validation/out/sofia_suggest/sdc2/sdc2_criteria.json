@@ -1,0 +1,43 @@
+{
+ "P1": {
+  "per_region": {
+   "q1_lo": true,
+   "q2_hi": true,
+   "q3_lo": true,
+   "q4_hi": true
+  },
+  "n_scored": 4,
+  "result": "pass"
+ },
+ "P2": {
+  "per_region": {
+   "q1_lo": true,
+   "q2_hi": true,
+   "q3_lo": true,
+   "q4_hi": true
+  },
+  "n_scored": 4,
+  "result": "pass"
+ },
+ "P3": {
+  "per_region": {
+   "q1_lo": true,
+   "q2_hi": true,
+   "q3_lo": true,
+   "q4_hi": true
+  },
+  "n_scored": 4,
+  "result": "pass"
+ },
+ "P4": {
+  "per_region": {
+   "q1_lo": true,
+   "q2_hi": true,
+   "q3_lo": false,
+   "q4_hi": true
+  },
+  "n_scored": 4,
+  "result": "pass"
+ },
+ "SDC2": "pass"
+}

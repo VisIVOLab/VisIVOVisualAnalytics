@@ -954,6 +954,17 @@ public:
         QStringList missing;              ///< roles no candidate name matched
     };
 
+    /// A SoFiA-2 run of the source-finding dialog (MainWindow owns the dialog,
+    /// this window owns the dataset): registered as a product of this cube, so
+    /// the parameters that ran, suggested or edited, are in Provenance and the
+    /// exported recipe, and the row reopens the mask from "Output path".
+    void recordSourceFindRun(const QString &label, const QVariantMap &params,
+                             const QList<ReplayStep> &replay);
+    /// The volume blend mode to open with (0 Composite, 1 MIP, 2 MinIP), set
+    /// by the host before the volume is built: menu, sidebar and a remote
+    /// session follow it. MIP for a SoFiA-2 label mask (visivo::isSofiaMaskPath).
+    void setOpenBlendMode(int idx) { this->applyCopilotBlendMode(idx); }
+
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;   ///< pane-header click → active
     /// Window activation is when the set of OTHER open windows can have changed
