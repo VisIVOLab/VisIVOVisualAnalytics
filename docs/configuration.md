@@ -163,8 +163,8 @@ give every new session its starting configuration. See
 | Variable | Default | Effect |
 |---|---|---|
 | `VISIVO_ASSISTANT_PROVIDER` | `auto` | `auto`, `anthropic`, `openai` or `null`. `auto` picks a self-hosted endpoint or OpenAI key first, then an Anthropic key, else `null` (tools only, no language model). |
-| `VISIVO_ASSISTANT_MODEL` | provider default | Model name sent to the provider. Without it the Anthropic provider uses `claude-opus-4-8` and the OpenAI provider, cloud or self-hosted, uses `gpt-4o`; a self-hosted server usually needs its own served name here. |
-| `VISIVO_LLM_BASE_URL` | unset | Base URL of an OpenAI-compatible server (for example `http://host:8000/v1`). Keep credentials out of it; the key belongs in `VISIVO_LLM_API_KEY`. A URL set from the client must be `http`/`https` with no credentials, query or fragment. |
+| `VISIVO_ASSISTANT_MODEL` | provider default | Model name sent to the provider. Without it the Anthropic provider uses `claude-opus-4-8` and cloud OpenAI `gpt-4o`. A self-hosted server is asked for its models (`GET <base>/models`) at the first question: when it lists exactly one, that one is used; when it lists none or several, or cannot be reached, the copilot answers which variable to set and, if any, the names it serves. |
+| `VISIVO_LLM_BASE_URL` | unset | Base URL of an OpenAI-compatible server (for example `http://host:8000/v1`). It must be `http`/`https` with no credentials, query or fragment, the same check as a URL set from the client; the key belongs in `VISIVO_LLM_API_KEY`. A value that fails the check does not stop the backend: it is logged at start-up (without the URL), and the copilot stays off, with the reason in its answers and in `GET /v1/assistant/status` (`problem`), until it is corrected or a session sets its own URL. |
 | `VISIVO_LLM_API_KEY` | unset | **Secret.** Key sent to `VISIVO_LLM_BASE_URL`, and only there. |
 | `ANTHROPIC_API_KEY` | unset | **Secret.** Key for the Anthropic provider. |
 | `OPENAI_API_KEY` | unset | **Secret.** Key for the cloud OpenAI provider; never sent to a self-hosted URL. |

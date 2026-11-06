@@ -107,12 +107,25 @@ The environment variables that seed it, and the two that bound `/query`:
 | `OPENAI_API_KEY` (secret) | `openai_key` | unset |
 | `VISIVO_LLM_BASE_URL` | `base_url` | unset |
 | `VISIVO_LLM_API_KEY` (secret) | `base_url_key` | unset |
-| `VISIVO_ASSISTANT_MODEL` | `model` | unset: `AnthropicProvider` then uses `claude-opus-4-8`, `OpenAIProvider` (cloud or self-hosted) `gpt-4o` |
+| `VISIVO_ASSISTANT_MODEL` | `model` | unset: `AnthropicProvider` then uses `claude-opus-4-8`, cloud `OpenAIProvider` `gpt-4o`, and a self-hosted `OpenAIProvider` the server's only model (see below) |
 | `VISIVO_ASSISTANT_SLOTS` | (`_ASSISTANT_SLOTS`) | `2`, at least 1 |
 | `VISIVO_ASSISTANT_TIMEOUT_S` | (`_ASSISTANT_TIMEOUT_S`) | `120` s |
 
-The environment `base_url` is not passed through `_sanitize_base_url`; only
-values set through `/config` are. See the
+The environment `base_url` goes through `_sanitize_base_url`, like a value set
+through `/config`. A refused one is not fatal: `default_config()` keeps
+`base_url` unset and records the reason in `base_url_error`, which makes the
+`openai` path (chosen by `auto` too) build a `NullProvider` carrying that
+reason instead of falling back to another key. The reason is logged once at
+start-up and returned as `problem` by `/status`; the URL itself is never
+repeated. Setting or clearing `base_url` through `/config` clears it for that
+session.
+
+A self-hosted provider with no model does not send `gpt-4o`. At the first
+question `OpenAIProvider._resolve_model` lists the server's models (10 s, no
+retries): exactly one is used and remembered; none, several or an unreachable
+server becomes the answer and the provider's `problem`, naming
+`VISIVO_ASSISTANT_MODEL` and up to ten served names. Building the provider
+makes no request, so `/status` and start-up never wait on the server. See the
 [Configuration reference](configuration.md#copilot) for the other backend
 variables.
 

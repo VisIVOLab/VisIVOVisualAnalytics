@@ -16,15 +16,20 @@ use the session from `X-Visivo-Session`.
 The provider active for this session:
 
 ```json
-{ "configured": false, "provider": "null", "n_tools": 25,
+{ "configured": false, "provider": "null", "problem": "", "n_tools": 25,
   "config": { "provider": "auto", "anthropic_key_set": false,
               "openai_key_set": false, "base_url": "",
               "base_url_key_set": false, "model": "",
-              "available": ["anthropic", "openai", "null"] } }
+              "available": ["anthropic", "openai", "null"],
+              "base_url_error": null } }
 ```
 
 `config` never contains a key, only whether each one is set; `base_url` is
-returned without embedded credentials.
+returned without embedded credentials. `problem` says why the copilot cannot
+answer, when that is known: a `VISIVO_LLM_BASE_URL` refused by the same check
+as `base_url` below (also in `config.base_url_error`), or, after a first
+question, a self-hosted server that was given no model and does not list
+exactly one. It is `""` otherwise. `POST /config` returns it too.
 
 ## `POST /v1/assistant/config`
 Choose the provider for this session. Every field is optional: an omitted

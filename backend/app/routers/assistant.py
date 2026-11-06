@@ -104,6 +104,8 @@ async def assistant_status(_: None = _auth, session: Session = Depends(get_sessi
     return {
         "configured": provider.configured,
         "provider": provider.name,
+        # Why the copilot cannot answer, when that is known; "" otherwise.
+        "problem": provider.problem,
         "n_tools": len(tool_specs()),
         "config": public_config(_session_config(session)),
     }
@@ -131,6 +133,8 @@ async def assistant_config(request: AssistantConfigRequest, _: None = _auth,
         "valid": True,
         "configured": provider.configured,
         "provider": provider.name,
+        # Why the copilot cannot answer, when that is known; "" otherwise.
+        "problem": provider.problem,
         "config": public_config(cfg),
     }
 
