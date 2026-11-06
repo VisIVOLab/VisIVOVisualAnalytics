@@ -54,6 +54,17 @@ def _open_fits(path, **kwargs):
     return open_fits(path, **kwargs)
 
 
+def _refuse_truncated(path: str) -> None:
+    """Raise :class:`app.fits_truncation.FitsTruncatedError` when the file is
+    shorter than its headers declare (issue #118): otherwise it opens, and
+    fails at the first data read as "buffer is too small for requested
+    array". Headers and ``os.stat`` only; a VBT field is not a FITS file."""
+    from .fits_truncation import check_not_truncated  # noqa: PLC0415
+    from .volume_source import split_ref  # noqa: PLC0415
+    if split_ref(path)[1] is None:
+        check_not_truncated(path)
+
+
 class ScientificFitsDataset:
     """
     Minimal backend-side scientific FITS dataset helper.
@@ -70,6 +81,7 @@ class ScientificFitsDataset:
 
     def __init__(self, path: str | Path) -> None:
         self.path = str(Path(path))
+        _refuse_truncated(self.path)
         with _open_fits(self.path, memmap=True, mode="readonly") as hdul:
             self.hdu_index = image_hdu_index(hdul)
             header = hdul[self.hdu_index].header.copy()

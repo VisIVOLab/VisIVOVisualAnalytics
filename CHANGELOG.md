@@ -6,6 +6,19 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## Unreleased
+
+- **Truncated FITS files are refused by name** (#118). Opening a FITS file
+  shorter than its headers declare now fails at once with "The file … is
+  truncated: 697.9 GB on disk, 961.4 GB declared (5644 of 7776 planes
+  present).", instead of "buffer is too small" at the first read. The check
+  reads headers only, covers extensions and tile-compressed HDUs, and is the
+  same on the local and remote backends: HTTP 422 from the open routes and the
+  node cutout, a 422 `Error:` from SODA, `valid: false` from the filter and
+  velocity routes. The desktop shows the backend's message for a refused open
+  instead of an HTTP status phrase. A file cut only inside its final padding
+  block still opens.
+
 ## 1.0.10 (2026-11-06)
 
 - **Suggested SoFiA-2 parameters** (#64). The cube viewer's SoFiA-2 dialog

@@ -763,13 +763,19 @@ void MainWindow::doOpenDataPath(const QString &path)
 
     const auto opened = client.openDataset(path);
     if (!opened.valid) {
-        QMessageBox::critical(
-                this, u"Could not open dataset"_s,
-                u"The backend could not open this dataset.\n\n%1\n\n"
-                u"Supported formats: FITS (image, cube). For HDF5, Gadget, VOTable, "
-                u"or simulation data, convert with VisIVOServer first."_s.arg(
-                        opened.error.isEmpty() ? u"Backend returned no error detail."_s
-                                               : opened.error));
+        // The formats hint only where the format may be the problem: no reason
+        // given, or the backend's own "Unsupported file type." (its start: the
+        // rest of a message may hold a file name such as star_formation.fits).
+        // After a specific reason ("The file … is truncated …") it pointed at
+        // a conversion that would not help.
+        const bool formatMayBeWrong = opened.error.isEmpty()
+                || opened.error.startsWith(u"Unsupported file type"_s);
+        QString text = u"The backend could not open this dataset.\n\n%1"_s.arg(
+                opened.error.isEmpty() ? u"Backend returned no error detail."_s : opened.error);
+        if (formatMayBeWrong)
+            text += u"\n\nSupported formats: FITS (image, cube). For HDF5, Gadget, VOTable, "
+                    u"or simulation data, convert with VisIVOServer first."_s;
+        QMessageBox::critical(this, u"Could not open dataset"_s, text);
         return;
     }
     openViewerFromOpenedDataset(path, opened, client);

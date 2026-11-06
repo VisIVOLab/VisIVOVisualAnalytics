@@ -944,6 +944,7 @@ qt_add_executable(test_remote_render
         # (tests/CMakeLists.txt) — keep the two in step.
         src/app/BackendClient.cpp
         src/app/DiagnosticsManager.cpp
+        src/app/SofiaSuggest.cpp   # visivo::refusalText, used by BackendClient
         src/AnalysisParamStore.cpp
         src/Settings.cpp
         src/skava/BackendRouting.cpp

@@ -27,6 +27,35 @@ three routes below.
 The open routes take the session from `X-Visivo-Session`; the reply carries the
 `session_id` the client must echo from then on.
 
+**Truncated FITS files.** Before a FITS file is opened, its size on disk is
+compared with what its headers declare: every header and every HDU's data with
+its padding, from the start of the file up to and including the image HDU that
+is read. A shorter file is refused on all three open routes with **HTTP 422**
+and the reason as `detail`, rather than opening and failing at the first read
+with numpy's "buffer is too small for requested array":
+
+```json
+{ "detail": "The file Eridanus.fits is truncated: 697.9 GB on disk, 961.4 GB declared (5644 of 7776 planes present)." }
+```
+
+The parenthesis says how much is there: planes of a cube (every axis beyond
+the second counts, degenerate ones included), rows of a 2-D image, or which HDU
+is incomplete when that cannot be counted (a tile-compressed image, a table, an
+HDU before the image). A file cut inside a header says so instead: "The file
+x.fits is truncated: 1.0 kB on disk, ending inside the header of HDU 0." Sizes
+are decimal (kB, MB, GB, TB); when both round to the same figure they are given
+in bytes.
+
+The check reads header blocks and `os.stat` only, never the data, so it costs
+the same on a 1 TB cube. A tile-compressed image is sized as the binary table
+it is stored in (rows plus heap, `PCOUNT`), and random groups and `GCOUNT` are
+followed as the FITS standard has them. Not refused: bytes after the declared
+end; a file cut only inside the last 2880-byte padding block (all the data is
+there, and astropy reads it); a truncated HDU after the one being read. Not
+checked: gzip-, bzip2- or zip-compressed FITS (`.fits.gz`), whose headers
+declare the decompressed size; a truncated stream fails in the decompressor
+instead. All other open failures still answer 200 with `valid: false`.
+
 ### `POST /v1/datasets/open_url`
 Download a FITS or HDF5 file from an `http(s)` URL into the backend's cache and
 open it as a session dataset. Used after a SKAVA discovery, when the dataset
@@ -51,7 +80,8 @@ accepted; otherwise private addresses are refused only when
 `VISIVO_OPENURL_BLOCK_PRIVATE=1` (federated nodes often sit on private
 networks). A refused URL, a remote
 HTTP error or a file that does not classify is answered with `valid: false`
-and the reason.
+and the reason. A truncated download is refused with 422 (see above) and
+removed from the cache, so opening the URL again downloads it again.
 
 ### `POST /v1/datasets/open_skava`
 Open a dataset in place on this node, from the `file://` access URL a SKAVA
@@ -65,7 +95,8 @@ DataLink returned ("compute next to data": nothing is copied).
 `file://` with no host (or `localhost`); an `http(s)` URL is refused with a
 pointer to `/v1/datasets/open_url`. When `VISIVO_DATA_ROOT` or
 `VISIVO_DATA_ROOTS` is set, the resolved path must lie inside one of those
-roots. Failures are answered with `valid: false`.
+roots. Failures are answered with `valid: false`, except a truncated FITS
+file: 422, as above.
 
 ### `POST /v1/datasets/cutout`
 Cut a FITS subset out of a node-local dataset. This is what SKAVA's SODA
@@ -91,7 +122,8 @@ With `save_to_workspace: false` the response is `application/fits` with a
 constraints that were applied. With `true` it is
 `{valid, error, obs_id, path, applied}`, `path` being the backend file to open
 with `/v1/datasets/open`. Errors are HTTP: 400 (missing `obs_id`, refused
-access URL, unusable cutout parameters), 415 (not a supported FITS dataset).
+access URL, unusable cutout parameters), 415 (not a supported FITS dataset),
+422 (a truncated FITS file, with the message of the open routes).
 This route needs the token but no session.
 
 ---

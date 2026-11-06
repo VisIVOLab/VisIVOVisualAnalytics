@@ -21,6 +21,7 @@ from ..sessions import Session, get_session, REGISTRY
 from ..tasks import TASKS
 from ..product_cache import PRODUCT_CACHE
 from ..fits_dataset import ScientificFitsDataset
+from ..fits_truncation import FitsTruncatedError, check_not_truncated
 from ..skava_client import (
     SkavaResolveError,
     access_url_to_local_path,
@@ -45,6 +46,14 @@ def _probe_server_side_rendering() -> bool:
         return bool(server_side_rendering_available())
     except ImportError:
         return False
+
+
+def _refuse_truncated(exc: FitsTruncatedError, suffix: str = "") -> HTTPException:
+    """A truncated FITS (issue #118) is refused with 422 and the message as the
+    detail, on every open route: unlike the other open failures, which answer
+    200 with ``valid=false``, it is a property of the file that no retry
+    fixes, and a 4xx keeps it out of any caller that only checks the status."""
+    return HTTPException(status_code=422, detail=str(exc) + suffix)
 
 
 def _build_open_response(dataset_id: str, session_id: str, kind: str,
@@ -117,6 +126,8 @@ async def open_dataset(
                   "HDF5 (.h5, .hdf5, .bfdata).")
     try:
         kind, geometry = _fits_metadata(path)
+    except FitsTruncatedError as exc:
+        raise _refuse_truncated(exc) from exc
     except Exception as exc:
         return OpenDatasetResponse(valid=False, error=str(exc))
 
@@ -248,6 +259,15 @@ async def open_dataset_from_url(
     # Delegate to the standard FITS / HDF5 / PSRFITS classifier.
     try:
         kind, geometry = _fits_metadata(cached_path)
+    except FitsTruncatedError as exc:
+        # The cached copy is ours: drop it, so opening the URL again fetches
+        # it again rather than finding the same short file in the cache.
+        try:
+            cached_path.unlink()
+        except OSError:
+            pass
+        raise _refuse_truncated(
+            exc, " The downloaded copy was removed; opening the URL again downloads it again.") from exc
     except Exception as exc:
         return OpenDatasetResponse(
             valid=False,
@@ -334,6 +354,8 @@ async def open_dataset_from_skava(
 
     try:
         kind, geometry = _fits_metadata(path)
+    except FitsTruncatedError as exc:
+        raise _refuse_truncated(exc) from exc
     except Exception as exc:
         return OpenDatasetResponse(
             valid=False,
@@ -419,6 +441,12 @@ async def cutout_dataset(
             status_code=415,
             detail=f"Resolved file {str(path)!r} is not a supported FITS dataset.")
 
+    try:
+        # Headers and os.stat only: a truncated cube is refused before the
+        # cutout memory-maps it (issue #118).
+        await asyncio.to_thread(check_not_truncated, str(path))
+    except FitsTruncatedError as exc:
+        raise _refuse_truncated(exc) from exc
     try:
         result = await asyncio.to_thread(
             make_cutout,

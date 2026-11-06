@@ -172,6 +172,7 @@ SODA errors follow DALI: a `text/plain` body that starts with the error type, fo
 |---|---|---|
 | 400 | `UsageError: <message>` | Invalid or missing parameter, unknown parameter, unsupported `RESPONSEFORMAT`, an `ID` that cannot be served (wrong scheme, outside the data roots), a file that is not a supported dataset (FITS or HDF5), a cutout that cannot be made. |
 | 400 | `MultiValuedParamNotSupported: <message>` | A parameter given more than once. |
+| 422 | `Error: The file <name> is truncated: ...` | The dataset is shorter than its headers declare (see [truncated FITS files](datasets.md#post-v1datasetsopen)). Only operations that read the data are refused: a request for the whole file as stored still returns it. |
 | 404 | `UsageError: ID not found on this node: ...` | The `ID` resolves to no file. |
 | 404 | `UsageError: no such job: <job_id>` | Unknown job, or a job of another token. |
 | 401 | JSON `{"detail": ...}` | Missing or invalid token. |

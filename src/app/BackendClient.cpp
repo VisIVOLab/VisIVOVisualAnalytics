@@ -6,6 +6,7 @@
 #include <QThread>
 #include "BackendHeaders.h"
 #include "DiagnosticsManager.h"
+#include "SofiaSuggest.h"
 
 #include <QByteArray>
 #include <QDataStream>
@@ -901,10 +902,14 @@ BackendOpenDatasetResult BackendClient::openDataset(const QString &path)
     BackendOpenDatasetResult result;
     QString error;
     const QJsonDocument body(QJsonObject{ { QStringLiteral("path"), path } });
+    int status = 0;
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/datasets/open")), body, error);
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/datasets/open")), body, error,
+                        nullptr, &status);
     if (!error.isEmpty()) {
-        result.error = error;
+        // A refusal's reason is in the body (a truncated FITS answers 422 with
+        // it, issue #118); performPost's error is only Qt's HTTP phrase.
+        result.error = visivo::refusalText(status, payload, error);
         return result;
     }
     const QJsonObject object = QJsonDocument::fromJson(payload).object();
@@ -929,11 +934,12 @@ BackendOpenDatasetResult BackendClient::openDatasetFromUrl(
             { QStringLiteral("url"), url },
             { QStringLiteral("obs_id"), obsId },
             { QStringLiteral("bearer_token"), remoteBearerToken } });
+    int status = 0;
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/datasets/open_url")),
-                        body, error);
+                        body, error, nullptr, &status);
     if (!error.isEmpty()) {
-        result.error = error;
+        result.error = visivo::refusalText(status, payload, error);   // #118: the 422's detail
         return result;
     }
     const QJsonObject object = QJsonDocument::fromJson(payload).object();
@@ -953,11 +959,12 @@ BackendOpenDatasetResult BackendClient::openSkavaDataset(const QString &obsId,
     const QJsonDocument body(QJsonObject{
             { QStringLiteral("obs_id"), obsId },
             { QStringLiteral("access_url"), accessUrl } });
+    int status = 0;
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/datasets/open_skava")),
-                        body, error);
+                        body, error, nullptr, &status);
     if (!error.isEmpty()) {
-        result.error = error;
+        result.error = visivo::refusalText(status, payload, error);   // #118: the 422's detail
         return result;
     }
     const QJsonObject object = QJsonDocument::fromJson(payload).object();
