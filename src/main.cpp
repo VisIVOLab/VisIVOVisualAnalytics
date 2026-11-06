@@ -623,6 +623,9 @@ int main(int argc, char *argv[])
     // ── Main window ───────────────────────────────────────────────────────────
     MainWindow w;
     w.show();
+    // Once the event loop has painted it: the release's launch check waits for
+    // this line, not only for the process to be alive.
+    QTimer::singleShot(0, &w, []() { qInfo() << "Main window shown"; });
 
     // Whatever the desktop asked for while we were starting up — and everything
     // it asks for from now on. (The command line was taken before the startup

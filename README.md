@@ -52,7 +52,8 @@ rotation-measure synthesis over the frequency axis.
 
 **Images and surveys** — WCS-aware multi-layer 2-D images, all-sky HiPS,
 3-D catalogue scatter, VLKB archive cutouts with compact-source and filament
-overlays, SED fitting, and SAMP messaging with TOPCAT and Aladin.
+overlays, SED fitting, and sending images and catalogues to TOPCAT, Aladin and
+DS9 over SAMP.
 
 **Scientific Copilot** — ask questions in natural language; every number is
 produced by a real backend tool rather than generated text, with provenance and
@@ -73,7 +74,7 @@ release for any version tag (`1.0`, `v1.0.0`, …):
 | Platform | Package |
 |---|---|
 | macOS (Apple Silicon / Intel) | `VisIVOVisualAnalytics-macos-{arm64,x86_64}.dmg` |
-| Linux x86-64 | `VisIVOVisualAnalytics-linux-x86_64.tar.gz` (AppImage) |
+| Linux x86-64 | `VisIVOVisualAnalytics-linux-x86_64.tar.gz` (extract, then run `./VisIVOVisualAnalytics`) |
 | Windows x86-64 | `VisIVOVisualAnalytics-windows-x86_64.zip` |
 
 Each package ships its **own Python runtime with the backend's dependencies
@@ -115,7 +116,7 @@ then start the client with `--no-backend-autostart`.
 ### Against a remote backend
 
 Run the service on the machine that holds the data, then point the client at it
-in **Settings ▸ Backend**: the server URL and the access token the backend
+in **Settings ▸ Backends**: the server URL and the access token the backend
 printed at startup. The client never needs the files themselves.
 
 For clusters, the repository ships an Apptainer definition and a SLURM

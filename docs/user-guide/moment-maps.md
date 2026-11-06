@@ -49,8 +49,8 @@ on the backend (it does not just hide the sheet), and so does closing the cube
 window. If the task fails or is cancelled, the client reports it; it does not
 start the computation again by another route. Only a backend too old to have
 task routes is asked with a single synchronous request instead, which cannot
-be cancelled and is limited by that backend's request timeout. **Export Moment
-as FITS** works the same way.
+be cancelled and is limited by that backend's request timeout. Exporting the
+moment as FITS ([below](#using-a-moment-map-elsewhere)) works the same way.
 ```
 
 You can switch back and forth between *Slice* and *Moment* without
@@ -168,7 +168,7 @@ bounded by construction.
 ```{tip}
 Choosing the channel range matters. Integrating over a channel-wide range
 that includes line-free noise channels makes M0 noisier and biases M1/M2.
-Use the [Probe](cube-viewer#probing-a-spectrum) to find the start/end
+Use the [Probe](cube-viewer.md#extract-spectrum-probe-a-single-pixel) to find the start/end
 channels visually, or extract a noise map first
 ([Noise](region-pv-noise)) and use the *Mask* threshold.
 ```
@@ -183,20 +183,25 @@ The moment dialog displays:
 - **Sanity warnings** if the WCS was sanitised, if the integration range
   is fully blanked, etc.
 
-The result colour map defaults to *Inferno* but you can change it from the
-*2-D View Settings → Moment LUT* combo. Open the *LUT Customizer* for
-fine-grained percentile clamping.
+The colour map follows the order: *Inferno* for M0 (and the orders above 2),
+*CoolWarm* for the velocity field M1, *Viridis* for M2. Change it in the
+**COLOR MAP** card of the 2-D settings while the moment is shown; **Advanced…**
+opens the LUT editor for finer clamping.
 
 ## Using a moment map elsewhere
 
-You can right-click the moment dock and:
+From the cube viewer's **Tools ▸ Export** menu, with the moment's pane
+focused:
 
-- **Export PNG** — current view, with WCS overlay.
-- **Save as new dataset** — registers the moment as a backend dataset and
-  returns a new `dataset_id` you can open in the [Image viewer](image-viewer)
-  for further analysis (regions, photometry, layer comparisons).
-- **Send via SAMP** — broadcast to TOPCAT / Aladin
-  ([Catalogues & HiPS](catalogues-hips#samp)).
+- **Export … as FITS…** (the entry carries the moment's name) writes the
+  moment as a 2-D FITS in Workspace Exports, with the celestial WCS and
+  `BUNIT`. The backend recomputes it at full precision from its recipe. Open
+  that file with *File ▸ Open…* to use it in the [Image viewer](image-viewer)
+  (regions, photometry, layer comparisons), or hand it to another tool. The
+  same entry on another map's pane writes that map, with the parameters it
+  was computed with recorded as `HISTORY` ([FITS exports](cube-viewer.md#fits-exports--workspace)).
+- **Tools ▸ Views ▸ Overlay Slice on an Open Image** draws the current 2-D map
+  as contours over an image already open in an image viewer.
 
 ## Performance & caching
 
@@ -258,4 +263,4 @@ You can right-click the moment dock and:
 
 - [Spectral tools](spectral-tools) — FWHM line-width maps, baseline subtraction.
 - [Regions, PV, noise](region-pv-noise) — for noise estimation and PV diagrams.
-- Developer reference: [`/v1/products/moment` API](../backend-api#products) — request/response shapes, full unit table.
+- Developer reference: [`/v1/products/moment` API](../backend-api/products.md) — request/response shapes, full unit table.

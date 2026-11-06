@@ -6,8 +6,16 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
-## Unreleased
+## 1.0.11 (2026-11-06)
 
+- **Linux: the release opens again** (PR #131). The Linux AppImage crashed
+  at start, inside QtWebEngine, when run from its FUSE mount (Ubuntu 22.04
+  and 24.04, releases up to 1.0.10). The Linux package now holds the
+  application in `./app` with a launcher: extract the tarball and run
+  `./VisIVOVisualAnalytics`. It no longer needs `libfuse2`. The VLKB
+  panoramic view is loaded when its tab is first shown, so a web-engine
+  failure can no longer keep the application from opening, and each release
+  now starts the packaged client before it is published.
 - **SODA `BAND` on MeerKAT sub-band cubes** (#115). Obit MFImage cubes with a
   `SPECLNMF` spectral axis (the MeerKAT Milky Way Bulge and MGCLS releases)
   now accept `BAND`: it returns the sub-bands whose centre frequency

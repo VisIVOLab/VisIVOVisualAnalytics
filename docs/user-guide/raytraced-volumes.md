@@ -87,7 +87,7 @@ the view and onto the stills and frames.
 
 ## Stills and movies: *Output*
 
-As for particles (see [Ray-traced particles](raytraced-particles#stills-and-movies-output)):
+As for particles (see [Ray-traced particles](raytraced-particles.md#stills-and-movies-output)):
 **Render Still** renders the view as it is on screen, from the full cube rather
 than the GPU's grid; **Save Image…** writes it as graded, **Save Light…** the
 light before the tone curve as a floating-point FITS; **Movie…** renders an

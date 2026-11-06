@@ -165,14 +165,9 @@ html_favicon = "_static/visivo_logo_light.svg"
 # Disable Sphinx's noisy warning about Pygments lexers it can't infer from a
 # fenced block language tag (most code blocks here are illustrative).
 #
-# Also suppress `myst.xref_missing` for inter-document `page#anchor` links.
-# MyST emits this warning whenever a link's anchor cannot be statically
-# verified against another document's heading slug (it can't follow them
-# across pages with the current parser settings), but the generated HTML
-# links *do* work because `myst_heading_anchors = 4` creates the matching
-# slugs on the target pages. Suppressing keeps the strict build (`-W`) green
-# without papering over real broken cross-references between Sphinx labels.
+# `myst.xref_missing` is NOT suppressed: a `page#anchor` link without `.md`
+# is written as a same-page anchor (`href="#page#anchor"`) and does not work,
+# and this warning is the only thing that catches it. Write `page.md#anchor`.
 suppress_warnings = [
     "misc.highlighting_failure",
-    "myst.xref_missing",
 ]

@@ -325,6 +325,9 @@ private:
     /// loadFinished handler is already connected (it is connected once, not per
     /// load), and whether what is on screen is our own error page.
     QUrl m_panoramicUrl;
+    /// The panoramic page is set up on the first reveal of the VLKB tab.
+    bool m_panoramicStarted = false;
+    void startPanoramicView();
     bool m_panoramicHandlerConnected = false;
     bool m_panoramicShowingError = false;
     std::unique_ptr<BackendClient>   m_sampBackendClient;

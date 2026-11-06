@@ -92,15 +92,19 @@ docker exec -it visivo-copilot-ollama ollama pull qwen2.5:32b
 Copilot ⚙ → "Your server" → `http://<server>:11434/v1` (leave Key blank).
 
 ## Full stack — backend + LLM together (one command)
-If you want the **VisIVO backend and the LLM on the same server**, pre-wired so
-the copilot works with no extra config:
+If you want the **VisIVO backend and the LLM on the same server**, with the
+backend already pointed at the LLM:
 ```bash
 cd deploy/copilot-llm
 cp .env.example .env               # set VLLM_API_KEY and VISIVO_TOKEN
 DATA_DIR=/path/to/fits docker compose -f docker-compose.full.yml up -d --build
 ```
 Then point the **VisIVO desktop app** at `http://<this-server-ip>:8080` with the
-`VISIVO_TOKEN` you set. The copilot is already connected to the internal LLM.
+`VISIVO_TOKEN` you set. A desktop on the default **"Use the server's
+configuration"** uses this LLM with no further setup. Up to release 1.0.11 the
+desktop's default replaced the backend's copilot: there, choose **"Your server"**
+in **Settings ▸ Copilot** with `http://copilot-llm:8000/v1` and the
+`VLLM_API_KEY`.
 
 **Coexistence:** the LLM uses the GPU; the backend runs **CPU-only** compute
 (moments / spectral / photometry / copilot), so they share the machine fine.

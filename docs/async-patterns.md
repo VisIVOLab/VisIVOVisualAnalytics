@@ -187,8 +187,12 @@ visivo::followBackendTask(client, createResult, logTag, control)
 ```
 
 Used by:
-- `RemoteMomentWindow` — exclusively task-based
-- `vtkWindowCube` — uses synchronous `requestMoment()` for interactive moments; task path available for large cubes
+- `MomentProcessingService` (the cube viewer's moments, through
+  `MomentMapComputeTask`) — `createMomentTask()`; the synchronous
+  `requestMoment()` only when the backend has no task route
+- `BackendClient::exportMomentFitsFollowingTask()` — the moment FITS export
+  (`POST /v1/tasks/moment_fits`)
+- `PvController` — PV diagrams (`createPvTask()`)
 
 ---
 

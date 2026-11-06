@@ -9,39 +9,56 @@ tests/
   CMakeLists.txt                   # visivo_test_support + VisIVOTests
   main.cpp                         # QCoreApplication + QTest::qExec for each class
   Test<Name>.h                     # Q_OBJECT test class declaration (one per area)
-  test_backendclient.cpp           # 34 — result parsing, open response, image tiles
+  test_backendclient.cpp           # 39 — result parsing, open response, image tiles
   test_catalogue_parser.cpp        # 35 — redshift/distance field detection, distances
-  test_backend_routing.cpp         # 13 — Settings backend registry + SKAVA routing
-  test_image_lod.cpp               # 24 — viewport LOD math (level select + visible tiles)
+  test_backend_routing.cpp         # 39 — Settings backend registry + SKAVA routing
+  test_image_lod.cpp               # 25 — viewport LOD math (level select + visible tiles)
   test_analysis_param_store.cpp    #  8 — per-dataset dialog parameter persistence
   test_backend_contract.cpp        #  4 — shared header manifest ↔ client constants
   test_remote_slice_cache.cpp      # 11 — slice cache keying + eviction
   test_linked_window_registry.cpp  #  8 — linked-views registry lifetime
   test_spectral_unit_convert.cpp   # 25 — unit parsing + rest-frame → axis placement
   test_cube_region_geom.cpp        # 20 — ROI hit-testers (box/circle/polygon/annulus)
-  test_cube_tool_gate.cpp          # 11 — CubeToolGate: which tools may act, and why not
+  test_cube_tool_gate.cpp          # 14 — CubeToolGate: which tools may act, and why not
   test_tool_result_record.cpp      #  8 — reopening a tool result exactly as it was
   test_product_origin.cpp          # 15 — where a measurement was taken (region / voxel)
   test_catalogue_csv.cpp           # 11 — quoting, multi-line records, truncated files
   test_fits_header_string.cpp      #  6 — header cards → 80-column FITS header string
-  test_stokes_companion.cpp        #  9 — Stokes Q/U/V companion filename matching
+  test_stokes_companion.cpp        # 11 — Stokes Q/U/V companion filename matching
   test_spectral_axis_infer.cpp     # 16 — spectral-axis descriptor inference
   test_kinematic_level_field.cpp   # 19 — kinematic-lasso level field
   test_ray_voxel_pick.cpp          # 18 — 3-D ray → voxel picking
   test_sed_builder.cpp             # 20 — SED from catalogue rows: band-merged groups, branches, flux columns, units
   test_vlkb_pos_string.cpp         # 11 — VLKB POS strings: longitude wrapping, the box across l = 0
+  test_sky_overlap.cpp             # 12 — whether a FITS overlaps the image on screen (RA wrap)
   test_catalogue_cosmology.cpp     #  8 — local Planck18 distances against astropy, to z = 20
   test_fits_header_card.cpp        # 11 — one header card: types, quoting, refused keywords
+  test_viewer_mode_state.cpp       #  6 — which image-viewer mode the strip shows
+  test_remote_levels.cpp           #  9 — remote view's starting threshold and range
+  test_remote_render_queue.cpp     # 17 — waiting in the backend's render queue
+  test_render_session_calls.cpp    #  6 — what goes on the wire when a queued view closes
+  test_region_full_res.cpp         #  6 — a region drawn on a reduced display, in full-resolution pixels
+  test_dataset_name.cpp            #  5 — how a dataset (or a VBT field) is named
+  test_threshold_share.cpp         #  5 — share of voxels above the 3-D threshold
+  test_colour_bar_ticks.cpp        #  5 — colour-bar tick labels
   test_layer_card_geometry.cpp     #  8 — layer-card hit rectangles in the image viewer
   test_region_readout.cpp          #  8 — what a region reports, and in which units
+  test_backend_url_locality.cpp    # 13 — whether a backend URL is served by this machine
+  test_skava_client.cpp            # 30 — SKAVA client parsers against real SKAVA responses
+  test_pv_path_geometry.cpp        # 10 — PV path hit-testing and editing
+  test_orbit_path.cpp              #  7 — camera orbit paths for movies
+  test_product_recipe.cpp          #  6 — the exported record of an analysis product
+  test_lasso_replay.cpp            #  7 — the lasso grow as the record a cube carries
+  test_sofia_suggest.cpp           # 24 — SoFiA-2 parameter suggestion as the dialog reads it
+  test_update_check.cpp            #  9 — GitHub latest-release reply, version comparison
+  test_source_table.cpp            # 11 — VLKB cutouts for a source table
+  test_backend_task_follow.cpp     # 18 — following a backend task to its end, with back-off
 ```
 
-Total: **379 tests** in one binary, as QTest counts them — each class
-contributes its own `initTestCase` / `cleanupTestCase` to that figure.
+Total: **604 tests** in 44 classes, one binary, as QTest counts them — each
+class contributes its own `initTestCase` / `cleanupTestCase` to that figure.
 The per-file numbers above come from the binary's own totals
 (`./VisIVOTests | grep Totals`), so they can be checked rather than trusted.
-They sum to 361: the remaining 18 are `test_viewer_mode_state.cpp` (6) and
-`test_sky_overlap.cpp` (12), described below rather than listed above.
 `ctest -V` prints the per-class totals.
 
 What belongs here: pure logic lifted out of the GUI classes so it can be
@@ -71,7 +88,8 @@ out of a catalogue is a pile of column-name rules, and a misread column does not
 crash — it produces a fit that runs and is wrong. The rules therefore live in a
 header with no widgets in it, where they can be checked directly.
 
-The **backend** has its own pytest suite under `backend/tests/`. A few of its
+The **backend** has its own pytest suite under `backend/tests/` (2354 tests at
+1.0.11; the numbers in brackets below are per file). A few of its
 files are worth knowing about when touching the science, the archive path or
 the way files get opened:
 
@@ -89,35 +107,35 @@ the way files get opened:
 - `test_vlkb_service.py` (8) holds the TAP query and the batch to one VLKB
   service URL — the request's, `VISIVO_VLKB_URL`, or the public default — so a
   backend with nothing configured can cut from what it has just found;
-- `test_classify.py` (26) pins what the single **Open…** does with each kind of
+- `test_classify.py` (27) pins what the single **Open…** does with each kind of
   file. Most of it is telling image, cube and table apart from the bytes — a
   length-1 Stokes axis must not make a map into a cube — and the rest is about
   refusing to guess: prose with commas is not a catalogue, a FITS table is
   ambiguous on purpose, and a compressed file is refused rather than routed to
   an opener that would reject it;
-- the node and remote-rendering files: `test_render_push.py` (17) checks the
+- the node and remote-rendering files: `test_render_push.py` (18) checks the
   push stream (frames capped by the window of unacknowledged ones, every change
   reaching every stream, the next frame rendered while one is sent) and the
   adaptive drag level (it follows the render time and settles instead of
-  oscillating); `test_render_process.py` (14) the session process (a failure or
+  oscillating); `test_render_process.py` (16) the session process (a failure or
   a crash in the child fails that view only, close ends the child, each
   session takes one of the job's GPUs in turn); `test_node_status.py` (22)
   the memory a node reports under cgroup v2, cgroup v1 and a SLURM grant;
-  `test_soda_service.py` (34) SODA sync and UWS async; `test_finders.py` (15)
+  `test_soda_service.py` (54) SODA sync and UWS async; `test_finders.py` (21)
   the finder registry; `test_telemetry_push.py` (10) the reports a node pushes
-  to a catalogue; `test_abort.py` (13) stopping a moment or PV job between
+  to a catalogue; `test_abort.py` (14) stopping a moment or PV job between
   slabs;
-- `test_operation_history.py` (32) covers "Last 5 jobs": that work is recorded
+- `test_operation_history.py` (35) covers "Last 5 jobs": that work is recorded
   and that browsing, scrubbing and polling are not, and that a route answering
   HTTP 200 with `{"valid": false}` is filed as failed;
-- `test_filter_fits.py` (38) is mostly about the three things the legacy's
+- `test_filter_fits.py` (61) is mostly about the three things the legacy's
   *Filter FITS* got wrong and that only surface later, in the photometry: a
   blank pixel eating its neighbourhood, a beam that no longer describes the map,
   and flux lost by block-averaging a per-pixel unit. It also pins the WCS
   arithmetic — the half-pixel terms in `CRPIX`, and the keywords of a squeezed
   Stokes axis going with it;
-- `test_fits_header_edit.py` (35), `test_hips2fits.py` (33),
-  `test_cone_search.py` (24) and `test_vlkb_tap.py` (27) cover the four archive
+- `test_fits_header_edit.py` (38), `test_hips2fits.py` (33),
+  `test_cone_search.py` (31) and `test_vlkb_tap.py` (27) cover the four archive
   and repair routes. The recurring theme is refusing *first*: a structural
   keyword, a 64-Mpx cutout, a radius of zero, a box of zero width — each with
   the reason, rather than a round trip and somebody else's error page. The other
@@ -247,11 +265,15 @@ nothing but Qt.
 
 Compiled once, linked by all test targets.
 
-Contents:
-- `BackendClient.cpp`
+Contents (the full list is `add_library(visivo_test_support …)` in
+`tests/CMakeLists.txt`), among them:
+- `BackendClient.cpp`, `BackendClient_Tasks.cpp`, `BackendUrl.cpp`, `LaunchOptions.cpp`
 - `DiagnosticsManager.cpp`
 - `Settings.cpp` — for the multi-backend registry tests
 - `skava/BackendRouting.cpp` — the SKAVA → backend routing decision
+- `skava/SkavaClient.cpp`, `skava/VoTable.cpp`, `skava/NodeSoda.cpp`, `skava/BrokerClient.cpp`
+- `ProductRecipe.cpp`, `LassoReplay.cpp`, `SofiaSuggest.cpp`, `UpdateCheck.cpp`, `vlkb/SourceTable.cpp`
+- `vtk/ImageLod.cpp`, `gui/PvPathGeometry.cpp`, `gui/OrbitPath.cpp` — geometry with no VTK or widget dependency
 
 Dependencies: `Qt::Core`, `Qt::Network` only.
 Does **not** pull in Qt::Widgets, VTK, or libwcs.
@@ -260,7 +282,10 @@ Does **not** pull in Qt::Widgets, VTK, or libwcs.
 
 ---
 
-## `TestBackendClient` (30 tests)
+The sections below describe a few classes in more detail. Their tables show a
+selection of each class's tests; the counts are the binary's totals.
+
+## `TestBackendClient` (39 tests)
 
 All tests use `QJsonObject` literals — no network calls. Covers the static
 `parse*Object` methods (moment, PV, noise, save/exports, **image tile**).
@@ -302,7 +327,7 @@ All tests use `QJsonObject` literals — no network calls. Covers the static
 
 ---
 
-## `TestCatalogueParser` (26 tests)
+## `TestCatalogueParser` (35 tests)
 
 ### `detectedRedshiftField`
 | Test | Input schema | Expected result |
@@ -346,7 +371,7 @@ All tests use `QJsonObject` literals — no network calls. Covers the static
 
 ---
 
-## `TestBackendRouting` (13 tests)
+## `TestBackendRouting` (39 tests)
 
 Covers the desktop side of the [distributed backend](distributed-backend-design)
 model: the `Settings` multi-backend registry and the SKAVA → backend routing

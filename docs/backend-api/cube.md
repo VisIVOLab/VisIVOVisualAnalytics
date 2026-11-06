@@ -9,19 +9,29 @@ Downsampled cube for fast initial display.
 ```json
 { "dataset_id": "...", "downsample": 4 }
 ```
-Returns `scalar_type`, `width`, `height`, `depth`, `range_min`, `range_max` + base64 `data`, and `default_threshold`: the cube's default 3-D threshold, from its noise ([The default threshold](../user-guide/cube-viewer.md#the-default-threshold)), computed on the preview (a stride sample, so its noise is the cube's) for the number of voxels of the whole cube; `null` when the preview has no finite value. The desktop starts its local view from it, and a remote view of the same cube starts from the same rule.
+Returns `valid`, `error`, `scalar_type`, `width`, `height`, `depth`, `range_min`, `range_max`, `compression` (`qt-zlib`) + `data_base64` (float32, zlib-compressed in Qt's `qCompress` framing, then base64), and `default_threshold`: the cube's default 3-D threshold, from its noise ([The default threshold](../user-guide/cube-viewer.md#the-default-threshold)), computed on the preview (a stride sample, so its noise is the cube's) for the number of voxels of the whole cube; `null` when the preview has no finite value. The desktop starts its local view from it, and a remote view of the same cube starts from the same rule.
 
 ## `POST /v1/cube/slice`
 Single 2-D slice.
 ```json
 { "dataset_id": "...", "axis": "z", "index": 42 }
 ```
+Only `axis: "z"` is supported (422 otherwise); an `index` outside the cube is
+`valid: false`. Returns `valid`, `error`, `width`, `height`, `scalar_type`,
+`range_min`, `range_max`, `compression` (`qt-zlib`) and `data_base64`, as for
+the preview. The slice takes no per-session compute slot.
 
 ## `POST /v1/cube/subvolume`
 Spatial + spectral sub-region.
 ```json
-{ "dataset_id": "...", "x0": 0, "x1": 255, "y0": 0, "y1": 255, "channel_start": 10, "channel_end": 50 }
+{ "dataset_id": "...", "x0": 0, "x1": 255, "y0": 0, "y1": 255, "z0": 10, "z1": 50 }
 ```
+All six bounds are required (0-indexed, inclusive, clamped to the cube; a box
+empty after clamping is `valid: false`, `Invalid subvolume ROI.`). Returns
+`valid`, `error`, `width`, `height`, `depth`, `scalar_type`, `range_min`,
+`range_max`, `spectral_axis_type`, `spectral_axis_unit`, `bunit`,
+`compression` (empty: not compressed) and `data_base64` (raw float32). For
+large boxes use `/v1/cube/subvolume_bin`.
 
 ## `POST /v1/cube/pv`
 Position-velocity diagram along a polyline.
@@ -42,7 +52,7 @@ Sampling: one sample per step along the path's arc length, in **angular** space
 step = the finer pixel); NaN-aware bilinear interpolation. The cube must have
 its spectral axis last (else 422 / `valid: false`).
 
-Response: `num_samples`, `depth`, `scalar_type`, `compression`,
+Response: `valid`, `error`, `num_samples`, `depth`, `scalar_type`, `compression`,
 `positions_base64` (offsets in steps), `positions_arcsec_base64`,
 `pixel_scale_arcsec_per_pixel` (= arcsec per step), `spatial_unit`,
 `data_base64` (`depth × num_samples` float32, channel-major), `width_pixels`,
@@ -51,14 +61,19 @@ Response: `num_samples`, `depth`, `scalar_type`, `compression`,
 `spectral_coordinates_base64` (float64 little-endian, **channel 0 first**, may
 decrease), `spectral_crval`, `spectral_cdelt`, `sky_matrix_arcsec`
 (row-major 2×2, pixel offset → projection-plane arcsec), `bunit`,
-`beam_major`, `beam_minor`, `beam_pa`.
+`beam_major`, `beam_minor`, `beam_pa`, `computed_on`. A non-cube dataset is
+422; a compute failure is `valid: false`.
 
 ## `POST /v1/cube/noise`
 Noise statistics (MAD and sigma) over a spatial region and channel range.
 ```json
 { "dataset_id": "...", "x0": 0, "x1": 127, "y0": 0, "y1": 127, "channel_start": 0, "channel_end": 63 }
 ```
-Returns `channel_start`, `channel_end`, `num_channels`, `mad[]`, `sigma[]`, `region`.
+`x0`, `x1`, `y0`, `y1` are required; the channels default to 0, 0. Returns
+`valid`, `error`, `channel_start`, `channel_end`, `num_channels`, `mad[]`,
+`sigma[]`, `region`, and `blank_fraction` (fraction of the finite pixels in the
+region that are exactly 0; a high value means the region overlaps blanked
+area and the estimate may be unreliable). An empty region is `valid: false`.
 
 ## Binary and mask routes
 

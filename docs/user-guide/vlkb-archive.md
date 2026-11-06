@@ -8,6 +8,13 @@ you asked for and opens it.
 
 Three steps, and each one tells you what it is doing.
 
+The archive is the public VLKB at `https://vlkb.ia2.inaf.it`, set in
+*Settings ▸ Data Access ▸ VLKB URL*; the desktop sends that address with its
+queries and cutout jobs. Requests that come without one (from a script, for
+example) use the backend's `VISIVO_VLKB_URL`, and the public VLKB when it
+is unset ([Configuration](../configuration.md)). The all-sky view of the tab
+is loaded the first time the tab is shown.
+
 ## 1 · Choosing the region
 
 Fill in the galactic coordinates of the centre, then give the region a size —

@@ -6,9 +6,10 @@
 # and installs the backend dependencies into it. The app's BackendLauncher
 # discovers this venv automatically at runtime.
 #
-# AppImages are read-only at runtime; the venv lives in a user-data dir so it
-# stays writable across upgrades. Re-run this after upgrading the AppImage to
-# refresh dependencies.
+# Optional: the release already carries its own Python in ./python. Use this
+# only to run the backend on your own Python, or to add extras. The venv lives
+# in a user-data dir so it survives upgrades; re-run this after upgrading the
+# release to refresh dependencies.
 
 set -e
 
@@ -16,24 +17,15 @@ VENV_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/VisIVO/.venv"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REQ_FILE="$SCRIPT_DIR/requirements.txt"
 
-# If requirements.txt isn't shipped next to the script, extract it from the
-# AppImage in the same folder.
-if [ ! -f "$REQ_FILE" ]; then
-  APPIMAGE="$(ls -1 "$SCRIPT_DIR"/VisIVOVisualAnalytics-*.AppImage 2>/dev/null | head -n1 || true)"
-  if [ -n "$APPIMAGE" ] && [ -x "$APPIMAGE" ]; then
-    echo "Extracting requirements.txt from AppImage..."
-    TMP_EXTRACT="$(mktemp -d)"
-    (
-      cd "$TMP_EXTRACT"
-      "$APPIMAGE" --appimage-extract usr/bin/backend/requirements.txt >/dev/null
-    )
-    REQ_FILE="$TMP_EXTRACT/squashfs-root/usr/bin/backend/requirements.txt"
-  fi
+# The release ships requirements.txt next to this script, and a copy inside
+# the application tree (./app/usr/bin/backend/).
+if [ ! -f "$REQ_FILE" ] && [ -f "$SCRIPT_DIR/app/usr/bin/backend/requirements.txt" ]; then
+  REQ_FILE="$SCRIPT_DIR/app/usr/bin/backend/requirements.txt"
 fi
 
 if [ ! -f "$REQ_FILE" ]; then
-  echo "Error: requirements.txt not found next to the script and no AppImage"
-  echo "       was found in $SCRIPT_DIR to extract it from."
+  echo "Error: requirements.txt was not found next to the script or in"
+  echo "       $SCRIPT_DIR/app/usr/bin/backend/."
   exit 1
 fi
 
@@ -71,4 +63,4 @@ echo "Installing backend dependencies (this can take several minutes)..."
 
 echo
 echo "Done. The backend is ready."
-echo "Launch the AppImage normally; it will use this venv."
+echo "Start ./VisIVOVisualAnalytics as usual; it prefers this venv over the bundled Python."
