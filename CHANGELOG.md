@@ -6,7 +6,7 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
-## Unreleased
+## 1.0.11 (2026-11-06)
 
 - **Linux: the release opens again** (PR #131). The Linux AppImage crashed
   at start, inside QtWebEngine, when run from its FUSE mount (Ubuntu 22.04
