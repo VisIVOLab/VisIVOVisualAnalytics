@@ -341,3 +341,76 @@ def test_the_backend_starts_with_a_bad_url_and_does_not_log_it(bad, words):
     out = proc.stdout + proc.stderr
     assert f"VISIVO_LLM_BASE_URL {words}" in out
     assert "s3cr3t" not in out
+
+
+def test_reset_goes_back_to_the_environment(monkeypatch):
+    """The desktop's "use the server's configuration": a reset undoes what the
+    session chose and brings back the operator's VISIVO_LLM_BASE_URL, refused
+    or not, with its problem."""
+    os.environ.setdefault("VISIVO_TOKEN", _TEST_TOKEN)
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    monkeypatch.setenv("VISIVO_LLM_BASE_URL", "http://u:s3cr3t@gpu:8000/v1")
+    monkeypatch.setenv("VISIVO_ASSISTANT_PROVIDER", "auto")
+    client = TestClient(app)
+    auth = {"X-Visivo-Token": _TEST_TOKEN}
+    sid = client.post("/v1/sessions/new", headers=auth).json()["session_id"]
+    h = {**auth, "X-Visivo-Session": sid}
+
+    # An explicit choice overrides the environment, and clears its problem.
+    r = client.post("/v1/assistant/config", json={"provider": "null", "base_url": ""},
+                    headers=h)
+    assert r.status_code == 200 and r.json()["problem"] == ""
+
+    # The reset brings the environment back, problem and all.
+    r = client.post("/v1/assistant/config", json={"reset": True}, headers=h)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["configured"] is False
+    assert "embedded credentials" in body["problem"]
+    assert body["config"]["provider"] == "auto"
+    assert "s3cr3t" not in r.text
+    assert "embedded credentials" in client.get(
+        "/v1/assistant/status", headers=h).json()["problem"]
+
+    # A refused field in the same call keeps the session as it was.
+    client.post("/v1/assistant/config", json={"provider": "null", "base_url": ""}, headers=h)
+    r = client.post("/v1/assistant/config",
+                    json={"reset": True, "base_url": "http://u:p@gpu/v1"}, headers=h)
+    assert r.status_code == 422
+    status = client.get("/v1/assistant/status", headers=h).json()
+    assert status["config"]["provider"] == "null" and status["problem"] == ""
+
+    # Without reset, an empty body still keeps everything (the older contract).
+    r = client.post("/v1/assistant/config", json={}, headers=h)
+    assert r.status_code == 200 and r.json()["config"]["provider"] == "null"
+
+
+def test_the_status_route_names_the_model_the_backend_picked(monkeypatch):
+    """config.model is what was configured; ``model`` is what questions go to,
+    including the server's only model once the first question picked it."""
+    os.environ.setdefault("VISIVO_TOKEN", _TEST_TOKEN)
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    monkeypatch.delenv("VISIVO_ASSISTANT_MODEL", raising=False)
+    client = TestClient(app)
+    auth = {"X-Visivo-Token": _TEST_TOKEN}
+    sid = client.post("/v1/sessions/new", headers=auth).json()["session_id"]
+    h = {**auth, "X-Visivo-Session": sid}
+    with _Server(["qwen2.5-7b-instruct"]) as server:
+        r = client.post("/v1/assistant/config",
+                        json={"provider": "openai", "base_url": server.base_url,
+                              "model": ""}, headers=h)
+        assert r.status_code == 200 and r.json()["model"] == ""
+        assert client.post("/v1/assistant/query", json={"question": "hi"},
+                           headers=h).status_code == 200
+        status = client.get("/v1/assistant/status", headers=h).json()
+        assert status["model"] == "qwen2.5-7b-instruct"
+        assert status["config"]["model"] is None
+    # A named model is reported as soon as it is configured.
+    r = client.post("/v1/assistant/config", json={"model": "named"}, headers=h)
+    assert r.json()["model"] == "named"

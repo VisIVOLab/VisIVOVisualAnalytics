@@ -22,8 +22,10 @@ Items of this roadmap that are now in the software:
 - [Suggest SoFiA-2 parameters from the data](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/64) (#64): each parameter with its reason, validated on the SKA SDC2 development cube ([Source finding](user-guide/source-finding.md)).
 - [Brick pyramid for cubes, built out of core](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/69) (#69) and [server-side out-of-core volume rendering from it](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/70) (#70), the first step of #73 ([Brick pyramid](brick-pyramid.md)).
 - [Linux releases: keep the sign-in across restarts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/56) (#56): the Linux release is built with libsecret.
-- [VLKB service URL: one default for queries and batch cutouts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/76) (#76): `https://vlkb.ia2.inaf.it` when `VISIVO_VLKB_URL` is unset ([VLKB archive](user-guide/vlkb-archive.md)).
-- [Self-hosted copilot: model default and base URL validation from the environment](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/75) (#75) ([Self-hosted copilot](user-guide/copilot-self-hosted.md)).
+- [Self-hosted copilot: model default and base URL validation from the environment](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/75) (#75): with no model set, the endpoint's only model is used; a refused `VISIVO_LLM_BASE_URL` keeps the copilot off and says why ([Self-hosted copilot](user-guide/copilot-self-hosted.md)).
+- [VLKB service URL: one default for queries and batch cutouts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/76) (#76): queries and batch cutouts both use the public VLKB unless a service URL is given ([VLKB archive](user-guide/vlkb-archive.md)).
+- [SODA: support BAND on cubes with a SPECLNMF spectral axis](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/115) (#115): `BAND` selects the MeerKAT sub-bands whose centre frequency falls in the interval ([SODA](backend-api/node-soda.md)).
+- [Refuse truncated FITS files with a clear message](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/118) (#118): a FITS file shorter than its headers declare is refused at open, with the sizes and planes present, locally and remotely ([Troubleshooting](user-guide/troubleshooting.md)).
 
 ## SKA and SRCNet
 

@@ -55,6 +55,7 @@ void Settings::resetDefaults()
     this->settings->setValue(Settings::BackendToken.first, Settings::BackendToken.second);
     this->settings->setValue(Settings::PlotTheme.first, Settings::PlotTheme.second);
     this->settings->setValue(Settings::CopilotProvider.first, Settings::CopilotProvider.second);
+    this->settings->setValue(Settings::CopilotChoiceKey.first, Settings::CopilotChoiceKey.second);
     this->settings->setValue(Settings::CopilotKey.first, Settings::CopilotKey.second);
     this->settings->setValue(Settings::CopilotUrl.first, Settings::CopilotUrl.second);
     this->settings->setValue(Settings::CopilotModel.first, Settings::CopilotModel.second);
@@ -394,18 +395,30 @@ const std::pair<QString, QVariant> Settings::SkavaOidcTokenUrl = { u"Skava/oidcT
 const std::pair<QString, QVariant> Settings::SkavaOidcClientId = { u"Skava/oidcClientId"_s, u"visivo"_s };
 const std::pair<QString, QVariant> Settings::SkavaOidcScope = { u"Skava/oidcScope"_s, u"openid profile email"_s };
 const std::pair<QString, QVariant> Settings::CopilotProvider = { u"Copilot/provider"_s, 3 };
+const std::pair<QString, QVariant> Settings::CopilotChoiceKey = { u"Copilot/choice"_s, u"server"_s };
 const std::pair<QString, QVariant> Settings::CopilotKey = { u"Copilot/key"_s, u""_s };
 const std::pair<QString, QVariant> Settings::CopilotUrl = { u"Copilot/url"_s, u""_s };
 const std::pair<QString, QVariant> Settings::CopilotModel = { u"Copilot/model"_s, u""_s };
 
-int Settings::getCopilotProvider() const
+CopilotChoice::Choice Settings::getCopilotChoice() const
 {
-    return this->settings->value(Settings::CopilotProvider.first,
-                                 Settings::CopilotProvider.second).toInt();
+    if (this->settings->contains(Settings::CopilotChoiceKey.first))
+        return CopilotChoice::fromKey(
+                this->settings->value(Settings::CopilotChoiceKey.first).toString());
+    // Written by a release from before the server's configuration was a choice.
+    if (this->settings->contains(Settings::CopilotProvider.first)) {
+        bool ok = false;
+        const int index = this->settings->value(Settings::CopilotProvider.first).toInt(&ok);
+        const bool keyOrUrl = !this->getCopilotKey().isEmpty() || !this->getCopilotUrl().isEmpty();
+        return CopilotChoice::fromLegacy(ok ? index : -1, keyOrUrl);
+    }
+    return CopilotChoice::fromKey(Settings::CopilotChoiceKey.second.toString());
 }
-void Settings::setCopilotProvider(int choice)
+void Settings::setCopilotChoice(CopilotChoice::Choice choice)
 {
-    this->settings->setValue(Settings::CopilotProvider.first, choice);
+    this->settings->setValue(Settings::CopilotChoiceKey.first, CopilotChoice::toKey(choice));
+    // Kept up to date so a downgraded desktop still finds a provider.
+    this->settings->setValue(Settings::CopilotProvider.first, CopilotChoice::toLegacy(choice));
 }
 QString Settings::getCopilotKey() const
 {
