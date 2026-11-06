@@ -8,6 +8,20 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **SODA `BAND` on MeerKAT sub-band cubes** (#115). Obit MFImage cubes with a
+  `SPECLNMF` spectral axis (the MeerKAT Milky Way Bulge and MGCLS releases)
+  now accept `BAND`: it returns the sub-bands whose centre frequency
+  (`FREQnnnn`) falls in the interval, and 204 when the interval holds none.
+  The cutout's header lists the frequencies of the planes it holds, as a
+  standard `FREQ` axis when they are evenly spaced, and the DataLink
+  descriptor advertises the cube's `BAND` range.
+- **One VLKB service URL for queries and batch cutouts** (#76). With
+  `VISIVO_VLKB_URL` unset, the TAP query composer and the multi-cutout batch
+  now both use the public VLKB at `https://vlkb.ia2.inaf.it`; the batch used to
+  answer 503 ("No VLKB service configured") and the query used
+  `https://vlkb.ia2.inaf.it/vlkb`, where the service answers 404. A request's
+  own `service_url` still wins, then the variable. The rule lives in
+  `app/vlkb_service.py`.
 - **Self-hosted copilot: no silent `gpt-4o`, and the environment URL is
   checked** (#75). With `VISIVO_LLM_BASE_URL` set and no
   `VISIVO_ASSISTANT_MODEL`, the backend asks the server for its models at the

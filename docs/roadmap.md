@@ -16,6 +16,10 @@ Items of this roadmap that are now in the software:
 
 - [Backend health and metrics endpoints for node operation](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/2) (#2): `/v1/ping`, `/v1/node/status`, `/v1/metrics` ([The backend as an SRC node](deployment/src-node.md)).
 - [Show which node serves a dataset and fall back to the next replica](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/1) (#1): the *Served by* column, *Open via…*, and the fallback to the next node when one refuses ([SKAVA discovery](user-guide/skava-discovery.md)).
+- [Benchmark out-of-core moments at SKA scale on an HPC node](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/3) (#3): M0/M1/M2 measured up to 450 GB on PLEIADI-GPU under a 16 GB memory cap; long moments and PV diagrams run as tasks with no time limit (`benchmark/RESULTS.md`).
+- [Concurrent remote rendering sessions per backend](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/4) (#4): sessions in their own processes, capped per backend, with a queue above the cap whose place the client shows.
+- [Standard SODA service on the backend](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/7) (#7): sync and UWS async cutouts with `POL`, moments and PV as operations, and DataLink service descriptors, checked with TOPCAT and pyvo; `BAND` also on sub-band (`SPECLNMF`) cubes ([SODA](backend-api/node-soda.md)).
+- [Suggest SoFiA-2 parameters from the data](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/64) (#64): each parameter with its reason, validated on the SKA SDC2 development cube ([Source finding](user-guide/source-finding.md)).
 
 ## SKA and SRCNet
 
@@ -23,13 +27,10 @@ Running VisIVO Visual Analytics as part of the SKA Regional Centre Network: IVOA
 
 **Next**
 
-- [Benchmark out-of-core moments at SKA scale on an HPC node](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/3) (#3)
-- [Concurrent remote rendering sessions per backend](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/4) (#4): sessions in their own processes, capped per backend and spread over the node's GPUs; still to do: a queue above the cap, with its position shown in the client
 
 **2027**
 
 - [SRCNet sign-in through IAM (OIDC)](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/6) (#6): the client signs in to an OIDC provider with configurable endpoints (tested with Keycloak); still to do against the SRCNet IAM
-- [Standard SODA service on the backend, with moments and PV as remote operations](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/7) (#7): sync and UWS async with `OPERATION=MOMENT|PV` are in place; still to do: `POL`, and a check with TOPCAT
 - [Deploy the backend as an SRCNet node service](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/8) (#8)
 - [Plugin registry for source finders (SoFiA-2, PyBDSF, Aegean, photutils)](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/9) (#9): the registry, SoFiA-2 and photutils are in place; PyBDSF and Aegean remain
 - [Kinematic lasso: streaming connected components for very large objects](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/10) (#10)
@@ -142,7 +143,6 @@ Learned models that assist the user, beyond the copilot: object segmentation, so
 **Next**
 
 - [Self-hosted copilot: model default and base URL validation from the environment](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/75) (#75)
-- [Suggest SoFiA-2 parameters from the data](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/64) (#64)
 
 **2027**
 

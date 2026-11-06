@@ -225,7 +225,7 @@ and the totals are capped.
 | `VISIVO_VLKB_MCUTOUT_MAX_EXTRACTED` | 32 GiB | Total unpacked size |
 | `VISIVO_VLKB_MCUTOUT_MAX_MEMBERS` | 2000 | Entries in the archive |
 | `VISIVO_VLKB_MCUTOUT_MAX_REPORT` | 8 MiB | Job report |
-| `VISIVO_VLKB_URL` | *(unset)* | Default archive base URL. The multi-cutout routes have no fallback: without it and without `service_url` they answer 503 |
+| `VISIVO_VLKB_URL` | `https://vlkb.ia2.inaf.it` | Archive root when the request carries no `service_url`; the same rule as the TAP query (`app/vlkb_service.py`) |
 
 ---
 
@@ -256,7 +256,7 @@ a button, a selector and an importer — and no bubble query, because
 query. Only `SELECT` statements are forwarded (TAP sync is a read interface), and
 the service URL goes through the SSRF guard (`VISIVO_VLKB_ALLOWED_HOSTS`). The
 service is the request's own URL, else `VISIVO_VLKB_URL`, else
-`https://vlkb.ia2.inaf.it/vlkb`.
+`https://vlkb.ia2.inaf.it`: the same rule as the multi-cutout routes.
 
 ### `GET /v1/vlkb/tap/presets`
 The presets, the Hi-GAL bands and the configured service URL, so the client does
