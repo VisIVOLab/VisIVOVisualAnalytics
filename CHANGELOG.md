@@ -22,6 +22,16 @@ are preserved here unedited; the branch names they refer to are historical.
   `https://vlkb.ia2.inaf.it/vlkb`, where the service answers 404. A request's
   own `service_url` still wins, then the variable. The rule lives in
   `app/vlkb_service.py`.
+- **Self-hosted copilot: no silent `gpt-4o`, and the environment URL is
+  checked** (#75). With `VISIVO_LLM_BASE_URL` set and no
+  `VISIVO_ASSISTANT_MODEL`, the backend asks the server for its models at the
+  first question and uses the only one; with none or several it answers which
+  names the server serves and which variable to set. `VISIVO_LLM_BASE_URL` now
+  gets the client URL's checks (http(s), no credentials, no query or
+  fragment); a value that fails them keeps the copilot off with the reason in
+  its answers and in `/v1/assistant/status` (`problem`), and is never
+  contacted, while the rest of the backend starts as usual.
+
 - **Truncated FITS files are refused by name** (#118). Opening a FITS file
   shorter than its headers declare now fails at once with "The file … is
   truncated: 697.9 GB on disk, 961.4 GB declared (5644 of 7776 planes

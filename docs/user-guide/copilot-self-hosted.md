@@ -113,9 +113,9 @@ export VISIVO_ASSISTANT_MODEL=<served model name>
 | Variable | Default | Meaning |
 |---|---|---|
 | `VISIVO_ASSISTANT_PROVIDER` | `auto` | `auto`, `anthropic`, `openai` or `null`. `auto` uses `VISIVO_LLM_BASE_URL` (or a cloud OpenAI key) when set, then an Anthropic key, else no model. |
-| `VISIVO_LLM_BASE_URL` | unset | Your server's OpenAI-compatible base URL, ending in `/v1`. Put no credentials, query string or fragment in it: the key goes in `VISIVO_LLM_API_KEY`. |
+| `VISIVO_LLM_BASE_URL` | unset | Your server's OpenAI-compatible base URL, ending in `/v1`. Put no credentials, query string or fragment in it: the key goes in `VISIVO_LLM_API_KEY`. A URL that breaks this rule keeps the copilot off (the backend itself still starts) and the copilot's answer says why. |
 | `VISIVO_LLM_API_KEY` | unset | **Secret.** The key your server expects (`VLLM_API_KEY`). It is sent only to `VISIVO_LLM_BASE_URL`, never to a cloud provider. |
-| `VISIVO_ASSISTANT_MODEL` | `gpt-4o` for OpenAI-compatible servers | The model name to request. Set it to the name your server serves (`SERVED_NAME` in the package); the default only suits cloud OpenAI. |
+| `VISIVO_ASSISTANT_MODEL` | the server's only model | The model name to request (`SERVED_NAME` in the package). Without it the backend asks your server which models it serves: if it serves exactly one, that one is used; otherwise the copilot answers with the names it serves and asks you to set this variable, or the **Model** field in Settings ▸ Scientific Copilot. |
 | `VISIVO_ASSISTANT_SLOTS` | `2` | Copilot queries the backend runs at once. |
 | `VISIVO_ASSISTANT_TIMEOUT_S` | `120` | Time budget of one query, tool calls included. A slow model on a long question may need more. |
 
