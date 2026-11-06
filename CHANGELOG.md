@@ -15,7 +15,13 @@ are preserved here unedited; the branch names they refer to are historical.
   The cutout's header lists the frequencies of the planes it holds, as a
   standard `FREQ` axis when they are evenly spaced, and the DataLink
   descriptor advertises the cube's `BAND` range.
-
+- **One VLKB service URL for queries and batch cutouts** (#76). With
+  `VISIVO_VLKB_URL` unset, the TAP query composer and the multi-cutout batch
+  now both use the public VLKB at `https://vlkb.ia2.inaf.it`; the batch used to
+  answer 503 ("No VLKB service configured") and the query used
+  `https://vlkb.ia2.inaf.it/vlkb`, where the service answers 404. A request's
+  own `service_url` still wins, then the variable. The rule lives in
+  `app/vlkb_service.py`.
 - **Truncated FITS files are refused by name** (#118). Opening a FITS file
   shorter than its headers declare now fails at once with "The file … is
   truncated: 697.9 GB on disk, 961.4 GB declared (5644 of 7776 planes

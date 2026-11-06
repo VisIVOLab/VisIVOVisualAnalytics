@@ -229,15 +229,6 @@ def test_a_corrupt_archive_is_reported_not_raised_raw(tmp_path):
 
 # ── routes ────────────────────────────────────────────────────────────────────
 
-def test_submit_without_a_configured_service_is_503(monkeypatch):
-    client, auth = _client()
-    monkeypatch.delenv("VISIVO_VLKB_URL", raising=False)
-    r = client.post("/v1/vlkb/mcutout/submit",
-                    json={"items": [{"id": "ivo://a/1", "pos": "CIRCLE 40 0 0.3"}]},
-                    headers=auth)
-    assert r.status_code == 503
-
-
 def test_submit_refuses_a_loopback_service():
     client, auth = _client()
     r = client.post("/v1/vlkb/mcutout/submit",
