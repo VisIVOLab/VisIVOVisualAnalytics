@@ -30,7 +30,8 @@ for interactive requests such as slice scrolling and probing; see
 |---|---|---|
 | `VISIVO_WORKERS` | `4` | Number of worker processes in the pool. The default is a fixed 4, not derived from the CPU count. |
 | `VISIVO_HEAVY_SLOTS` | `max(1, VISIVO_WORKERS - 1)` | Heavy tasks allowed to occupy the pool at once. Set it to `VISIVO_WORKERS` to give up the reserved interactive slot, or to `1` to serialise heavy work. |
-| `VISIVO_HEAVY_TIMEOUT_S` | `900` | Wall-clock ceiling for one heavy task; beyond it the request answers HTTP 504 and its slot is released. `0` disables the ceiling. The worker process itself may still run to completion. |
+| `VISIVO_HEAVY_TIMEOUT_S` | `900` | Wall-clock ceiling on one heavy computation started by a synchronous request (for example `/v1/products/moment`). Past it, the request answers HTTP 504 and the detail points to the task route. The worker runs on to its end and keeps its slot until then, and its result is discarded. `0` disables the ceiling. It does not apply to tasks. |
+| `VISIVO_TASK_TIMEOUT_S` | `0` (none) | The same ceiling for work started as a task (`/v1/tasks/moment`, `/v1/tasks/pv`, asynchronous SODA jobs). There is none by default: a task holds no request open, reports progress and can be cancelled, and an M2 over a 450 GB cube takes about 25 minutes on one HPC node (`benchmark/RESULTS.md`). When it is set and exceeded, the task fails and its worker is asked to stop through the stop file. |
 | `VISIVO_MAX_CONCURRENT_TASKS` | `3` | Compute tasks one session may run at once; further requests wait (see below) and then answer HTTP 429. |
 | `VISIVO_TASK_SLOT_WAIT_S` | `15` | How long a request waits for a free per-session slot before answering 429. `0` refuses immediately. |
 | `VISIVO_MP_START_METHOD` | `spawn` | Start method of the worker processes (`spawn`, `fork` or `forkserver`). `spawn` is required when workers use CUDA. An unknown value falls back to the platform default, with a warning. |
@@ -60,7 +61,11 @@ range, `channels × NAXIS1 × NAXIS2 × 4` bytes (float32):
    when `VISIVO_DASK_SCHEDULER` names a reachable one, otherwise with a local
    threaded scheduler once the range reaches `VISIVO_DASK_MIN_BYTES`. Blocks
    are read from disk on demand; each holds at most 64 channels and at most
-   `VISIVO_MOMENT_CHUNK_BYTES`, and at least one channel.
+   `VISIVO_MOMENT_CHUNK_BYTES`, and at least one channel. A plane larger than
+   `VISIVO_MOMENT_CHUNK_BYTES` (6082² float32 is 148 MB) is cut into bands
+   of whole rows, so a block never exceeds the budget whatever the plane. The
+   maps are bit-identical, and the memory a computation materialises follows
+   the budget rather than the plane.
 2. Otherwise the worker keeps the range in memory only when it is no larger
    than `min(VISIVO_MOMENT_STREAM_BYTES, available memory / 12)`. The factor 12
    covers the float64 temporaries of the reduction.
@@ -76,7 +81,7 @@ over the data on both out-of-core paths, so memory stays bounded by one block.
 | Variable | Default | Effect |
 |---|---|---|
 | `VISIVO_MOMENT_STREAM_BYTES` | `2 GiB` | Ceiling of the channel range kept in memory; the effective threshold is the smaller of this and one twelfth of the available memory. |
-| `VISIVO_MOMENT_CHUNK_BYTES` | `64 MiB` | Size of each streamed slab or Dask block, never less than one channel. |
+| `VISIVO_MOMENT_CHUNK_BYTES` | `64 MiB` | Size of each streamed slab or Dask block, never less than one channel; a Dask block of a larger plane is a band of rows within this size. |
 | `VISIVO_MOMENT_SLAB_CHANNELS` | `64` | Upper limit on the channels in a streamed slab. It only caps the slab; the size comes from `VISIVO_MOMENT_CHUNK_BYTES`. |
 | `VISIVO_MOMENT_THREADS` | `0` | Threads for the parallel moment kernels and the local Dask scheduler. `0` means `min(4, CPU count)`. |
 | `VISIVO_DASK_MODE` | `auto` | `auto`: distributed if a scheduler is set, else local threaded Dask for large ranges. `off`: never Dask. `local`: always local threaded Dask. `distributed`: only a cluster, else the plain worker. |

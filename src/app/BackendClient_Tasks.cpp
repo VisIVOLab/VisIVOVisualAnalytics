@@ -1,4 +1,5 @@
 #include "BackendClient.h"
+#include "BackendTaskFollow.h"
 #include "DiagnosticsManager.h"
 
 #include <QByteArray>
@@ -18,10 +19,8 @@
 #include <QThreadStorage>
 #include <QDebug>
 #include <QStandardPaths>
+#include <QThread>
 #include <QTimer>
-#include <QtConcurrent/QtConcurrent>
-#include <QFuture>
-#include <QFutureSynchronizer>
 #include <QUrl>
 #include <QUrlQuery>
 
@@ -231,6 +230,73 @@ BackendSaveMomentFitsResult BackendClient::saveMomentFits(
         return result;
     }
     return parseSaveMomentFitsObject(QJsonDocument::fromJson(raw).object());
+}
+
+BackendTaskCreateResult BackendClient::createMomentFitsTask(const QString &datasetId, int order,
+                                                            int channelStart, int channelEnd,
+                                                            bool maskEnabled,
+                                                            double thresholdValue,
+                                                            const QString &outputBasename,
+                                                            bool thresholdAuto) const
+{
+    BackendTaskCreateResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"),       datasetId },
+            { QStringLiteral("moment_order"),     order },
+            { QStringLiteral("channel_start"),    channelStart },
+            { QStringLiteral("channel_end"),      channelEnd },
+            { QStringLiteral("mask_enabled"),     maskEnabled },
+            { QStringLiteral("threshold_value"),  thresholdValue },
+            { QStringLiteral("threshold_auto"),   thresholdAuto },
+            { QStringLiteral("output_basename"),  outputBasename } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/moment_fits")), body, error,
+                        nullptr, &result.httpStatus);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.taskId = object.value(QStringLiteral("task_id")).toString();
+    result.status = object.value(QStringLiteral("status")).toString();
+    result.cacheHit = object.value(QStringLiteral("cache_hit")).toBool(false);
+    return result;
+}
+
+BackendSaveMomentFitsResult BackendClient::exportMomentFitsFollowingTask(
+        const QString &datasetId, int order, int channelStart, int channelEnd, bool maskEnabled,
+        double thresholdValue, const QString &outputBasename, bool thresholdAuto,
+        visivo::BackendTaskControl *control)
+{
+    const BackendTaskCreateResult created =
+            createMomentFitsTask(datasetId, order, channelStart, channelEnd, maskEnabled,
+                                 thresholdValue, outputBasename, thresholdAuto);
+    const visivo::TaskFollowResult followed = visivo::followBackendTask(
+            *this, created, QStringLiteral("[moment_fits][task]"), control);
+    if (followed.outcome == visivo::TaskOutcome::Completed)
+        return parseSaveMomentFitsObject(followed.status.resultObject);
+    if (followed.fallBackToSync()) {
+        // An older backend: the synchronous route, bounded by its request
+        // timeout and not cancellable. Said so on the progress sheet.
+        if (control)
+            control->setPhase(visivo::TaskPhase::Synchronous);
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Warning, DiagnosticsCategory::Task,
+                QStringLiteral("BackendClient"),
+                QStringLiteral("This backend has no /v1/tasks/moment_fits route; exporting with "
+                               "the synchronous request (no cancel, limited by the backend's "
+                               "request timeout)."),
+                datasetId, m_sessionId, QStringLiteral("moment"));
+        return saveMomentFits(datasetId, order, channelStart, channelEnd, maskEnabled,
+                              thresholdValue, outputBasename, thresholdAuto);
+    }
+    BackendSaveMomentFitsResult result;
+    result.error = followed.error;
+    result.cancelled = followed.stoppedByUser();
+    return result;
 }
 
 BackendHeaderPatchResult BackendClient::patchFitsHeader(
@@ -463,7 +529,8 @@ BackendTaskCreateResult BackendClient::createMomentTask(const QString &datasetId
                          { QStringLiteral("threshold_value"), thresholdValue },
                          { QStringLiteral("threshold_auto"), thresholdAuto } });
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/moment")), body, error);
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/moment")), body, error,
+                        nullptr, &result.httpStatus);
     if (!error.isEmpty()) {
         result.error = error;
         return result;
@@ -490,8 +557,11 @@ BackendTaskCreateResult BackendClient::createPvTask(const QString &datasetId,
     const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
                                           { QStringLiteral("vertices"), vertexArray },
                                           { QStringLiteral("width_pixels"), widthPixels } });
+    // The status tells an older backend with no task route (404/405) from a
+    // refusal: only the first may fall back to the synchronous route.
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/pv")), body, error);
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/pv")), body, error,
+                        nullptr, &result.httpStatus);
     if (!error.isEmpty()) {
         result.error = error;
         return result;
@@ -599,12 +669,13 @@ bool BackendClient::cancelTask(const QString &taskId, QString &error) const
            && QJsonDocument::fromJson(raw).object().value(QStringLiteral("cancelled")).toBool(true);
 }
 
-BackendTaskStatusResult BackendClient::requestTaskStatus(const QString &taskId) const
+BackendTaskStatusResult BackendClient::requestTaskStatus(const QString &taskId,
+                                                         const std::atomic_bool *abort) const
 {
     BackendTaskStatusResult result;
     QString error;
     const QByteArray payload =
-            performGet(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/") + taskId), error);
+            performGet(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/") + taskId), error, abort);
     if (!error.isEmpty()) {
         result.error = error;
         return result;
@@ -621,130 +692,99 @@ BackendTaskStatusResult BackendClient::requestTaskStatus(const QString &taskId) 
     return result;
 }
 
-BackendTaskStatusResult BackendClient::waitForTaskCompletion(const BackendTaskCreateResult &createResult,
-                                                             const QString &logTag,
-                                                             int maxPollAttempts,
-                                                             int pollIntervalMs) const
+// ── Following a long task (issue #3) ─────────────────────────────────────────
+
+visivo::TaskFollowResult visivo::followBackendTask(const BackendClient &client,
+                                                   const BackendTaskCreateResult &created,
+                                                   const QString &logTag,
+                                                   BackendTaskControl *control,
+                                                   const TaskPollPolicy &policy)
 {
-    BackendTaskStatusResult terminal;
-    terminal.taskId = createResult.taskId;
-    QString operationTag;
-    if (logTag.contains(QStringLiteral("moment"), Qt::CaseInsensitive)) {
-        operationTag = QStringLiteral("moment");
-    } else if (logTag.contains(QStringLiteral("pv"), Qt::CaseInsensitive)) {
-        operationTag = QStringLiteral("pv");
-    }
-    if (!createResult.valid || createResult.taskId.isEmpty()) {
-        terminal.error = createResult.error.isEmpty()
-                ? QStringLiteral("Task creation failed.")
-                : createResult.error;
-        qWarning().noquote()
-                << QStringLiteral("%1 create failed error=%2").arg(logTag, terminal.error);
-        DiagnosticsManager::instance()->publish(
-                DiagnosticsLevel::Warning, DiagnosticsCategory::Task,
-                QStringLiteral("BackendClient"),
-                QStringLiteral("Task creation failed: %1").arg(terminal.error), {}, this->m_sessionId,
-                operationTag);
-        return terminal;
+    // The Diagnostics "Operation" column.
+    const QString operation = logTag.contains(QStringLiteral("moment"), Qt::CaseInsensitive)
+            ? QStringLiteral("moment")
+            : logTag.contains(QStringLiteral("pv"), Qt::CaseInsensitive) ? QStringLiteral("pv")
+                                                                         : QString();
+    const QString sessionId = client.sessionId();
+    auto publish = [&](DiagnosticsLevel level, const QString &message) {
+        DiagnosticsManager::instance()->publish(level, DiagnosticsCategory::Task,
+                                                QStringLiteral("BackendClient"), message, {},
+                                                sessionId, operation);
+    };
+
+    if (created.valid && !created.taskId.isEmpty()) {
+        qDebug().noquote() << QStringLiteral("%1 created task_id=%2 status=%3")
+                                      .arg(logTag, created.taskId, created.status);
+        publish(DiagnosticsLevel::Info,
+                QStringLiteral("Task created (%1); following it until it ends.")
+                        .arg(created.taskId));
     }
 
-    qDebug().noquote()
-            << QStringLiteral("%1 created task_id=%2 status=%3 cache_hit=%4")
-                       .arg(logTag, createResult.taskId, createResult.status)
-                       .arg(createResult.cacheHit ? QStringLiteral("true")
-                                                 : QStringLiteral("false"));
-    DiagnosticsManager::instance()->publish(
-            DiagnosticsLevel::Info, DiagnosticsCategory::Task, QStringLiteral("BackendClient"),
-            QStringLiteral("Task created (%1)%2.")
-                    .arg(createResult.taskId,
-                         createResult.cacheHit ? QStringLiteral(", cache hit")
-                                               : QString()),
-            {}, this->m_sessionId, operationTag);
-    DiagnosticsManager::instance()->publish(
-            DiagnosticsLevel::Info, DiagnosticsCategory::Task, QStringLiteral("BackendClient"),
-            QStringLiteral("Polling task status."), {}, this->m_sessionId, operationTag);
+    QElapsedTimer clock;
+    clock.start();
+    QString lastStatus;
+    TaskFollowHooks hooks;
+    // The status read watches the abort flag: the poll that finds the task
+    // completed may take minutes (the product rides in it), and Cancel must
+    // not wait for it before sending the DELETE.
+    hooks.poll = [&client, control](const QString &id) {
+        return client.requestTaskStatus(id, control ? &control->abortRequested : nullptr);
+    };
+    hooks.cancel = [&client](const QString &id, QString &error) {
+        return client.cancelTask(id, error);
+    };
+    // A plain sleep: this runs on a pool thread, which has no event loop of its
+    // own to serve, and the network calls run their own local loops.
+    hooks.sleepMs = [](int ms) { QThread::msleep(static_cast<unsigned long>(ms)); };
+    hooks.nowMs = [&clock]() { return clock.elapsed(); };
+    hooks.observed = [&](const BackendTaskStatusResult &s) {
+        // Log a change of state, not every poll: a 25-minute task polls ~500 times.
+        const QString now = s.status.isEmpty() ? QStringLiteral("(unreadable)") : s.status;
+        if (now != lastStatus) {
+            qDebug().noquote() << QStringLiteral("%1 task_id=%2 status=%3 after %4 s %5")
+                                          .arg(logTag, created.taskId, now)
+                                          .arg(clock.elapsed() / 1000)
+                                          .arg(s.error);
+            lastStatus = now;
+        }
+    };
 
-    for (int attempt = 0; attempt < maxPollAttempts; ++attempt) {
-        // Use a local QEventLoop driven by a single-shot QTimer instead of
-        // QThread::msleep so the thread can process queued Qt events while
-        // waiting. This prevents the thread pool slot from being locked in an
-        // unconditional sleep system call during long-running polls.
-        {
-            QEventLoop waitLoop;
-            QTimer::singleShot(pollIntervalMs, &waitLoop, &QEventLoop::quit);
-            waitLoop.exec();
-        }
-        const auto taskStatus = this->requestTaskStatus(createResult.taskId);
-        if (!taskStatus.valid && !taskStatus.status.isEmpty()
-            && taskStatus.status != QStringLiteral("failed")) {
-            qWarning().noquote()
-                    << QStringLiteral("%1 polling invalid task_id=%2 error=%3")
-                               .arg(logTag, createResult.taskId, taskStatus.error);
-            DiagnosticsManager::instance()->publish(
-                    DiagnosticsLevel::Warning, DiagnosticsCategory::Task,
-                    QStringLiteral("BackendClient"),
-                    QStringLiteral("Task polling failed: %1").arg(taskStatus.error), {},
-                    this->m_sessionId, operationTag);
-            return taskStatus;
-        }
-        qDebug().noquote()
-                << QStringLiteral("%1 poll task_id=%2 status=%3 progress=%4")
-                           .arg(logTag, createResult.taskId, taskStatus.status)
-                           .arg(taskStatus.progress, 0, 'f', 2);
-        if (taskStatus.status == QStringLiteral("completed")) {
-            qDebug().noquote()
-                    << QStringLiteral("%1 completed task_id=%2 cache_hit=%3")
-                               .arg(logTag, createResult.taskId)
-                               .arg(taskStatus.cacheHit ? QStringLiteral("true")
-                                                        : QStringLiteral("false"));
-            DiagnosticsManager::instance()->publish(
-                    DiagnosticsLevel::Info, DiagnosticsCategory::Task,
-                    QStringLiteral("BackendClient"),
-                    QStringLiteral("Task completed (%1)%2.")
-                            .arg(createResult.taskId,
-                                 taskStatus.cacheHit ? QStringLiteral(", cache hit")
-                                                     : QString()),
-                    {}, this->m_sessionId, operationTag);
-            return taskStatus;
-        }
-        if (taskStatus.status == QStringLiteral("failed")) {
-            qWarning().noquote()
-                    << QStringLiteral("%1 failed task_id=%2 error=%3")
-                               .arg(logTag, createResult.taskId, taskStatus.error);
-            DiagnosticsManager::instance()->publish(
-                    DiagnosticsLevel::Error, DiagnosticsCategory::Task,
-                    QStringLiteral("BackendClient"),
-                    QStringLiteral("Task failed (%1): %2")
-                            .arg(createResult.taskId, taskStatus.error),
-                    {}, this->m_sessionId, operationTag);
-            return taskStatus;
-        }
-        if (taskStatus.status == QStringLiteral("cancelled")) {
-            // Cancelled is terminal too. The status route answers valid=true
-            // for a cancelled task, so the invalid-response branch above does
-            // not catch it: without this the client polls a task that will
-            // never change again until the poll times out, and then tells the
-            // user the backend stopped answering.
-            BackendTaskStatusResult cancelled = taskStatus;
-            if (cancelled.error.isEmpty())
-                cancelled.error = QStringLiteral("Task cancelled.");
-            qWarning().noquote()
-                    << QStringLiteral("%1 cancelled task_id=%2").arg(logTag, createResult.taskId);
-            DiagnosticsManager::instance()->publish(
-                    DiagnosticsLevel::Warning, DiagnosticsCategory::Task,
-                    QStringLiteral("BackendClient"),
-                    QStringLiteral("Task cancelled (%1).").arg(createResult.taskId), {},
-                    this->m_sessionId, operationTag);
-            return cancelled;
-        }
+    const TaskFollowResult r = followBackendTask(created, hooks, control, policy);
+    const qint64 seconds = clock.elapsed() / 1000;
+    switch (r.outcome) {
+    case TaskOutcome::Completed:
+        publish(DiagnosticsLevel::Info,
+                QStringLiteral("Task completed (%1) after %2 s%3.")
+                        .arg(r.taskId)
+                        .arg(seconds)
+                        .arg(r.status.cacheHit ? QStringLiteral(", cache hit") : QString()));
+        break;
+    case TaskOutcome::Failed:
+        publish(DiagnosticsLevel::Error,
+                QStringLiteral("Task failed (%1): %2").arg(r.taskId, r.error));
+        break;
+    case TaskOutcome::Cancelled:
+    case TaskOutcome::Aborted:
+        publish(DiagnosticsLevel::Warning, r.error);
+        break;
+    case TaskOutcome::Lost:
+        publish(DiagnosticsLevel::Error, r.error);
+        break;
+    case TaskOutcome::CreateFailed:
+        publish(DiagnosticsLevel::Error,
+                QStringLiteral("Task creation failed: %1").arg(r.error));
+        break;
+    case TaskOutcome::RouteMissing:
+        publish(DiagnosticsLevel::Warning,
+                QStringLiteral("The backend has no task route (HTTP %1); using the synchronous "
+                               "request.")
+                        .arg(created.httpStatus));
+        break;
     }
-
-    terminal.error = QStringLiteral("Task polling timed out.");
-    qWarning().noquote()
-            << QStringLiteral("%1 polling timed out task_id=%2").arg(logTag, createResult.taskId);
-    DiagnosticsManager::instance()->publish(
-            DiagnosticsLevel::Warning, DiagnosticsCategory::Task, QStringLiteral("BackendClient"),
-            QStringLiteral("Task polling timed out (%1).").arg(createResult.taskId), {},
-            this->m_sessionId, operationTag);
-    return terminal;
+    qDebug().noquote() << QStringLiteral("%1 task_id=%2 outcome=%3 polls=%4 after %5 s")
+                                  .arg(logTag, r.taskId)
+                                  .arg(static_cast<int>(r.outcome))
+                                  .arg(r.polls)
+                                  .arg(seconds);
+    return r;
 }

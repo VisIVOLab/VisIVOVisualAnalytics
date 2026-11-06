@@ -3060,7 +3060,21 @@ std::chrono::milliseconds BackendClient::requestTimeoutFor(const QUrl &url) cons
     if (path.endsWith(QStringLiteral("/datasets/open"))) {
         return std::chrono::milliseconds(10000);
     }
-    if (path.endsWith(QStringLiteral("/tasks/moment")) || path.contains(QStringLiteral("/tasks/"))) {
+    if (path.contains(QStringLiteral("/tasks/"))) {
+        // Creating, cancelling or polling a task is quick, EXCEPT the poll that
+        // finds it completed: that answer carries the whole product, and a
+        // moment map of an SKA-scale cube is hundreds of MB of base64. At 10 s
+        // that read timed out through a tunnel, again on every retry, and the
+        // result of a 25-minute task was lost (issue #3). Generous for every
+        // GET of a task: an unreadable status is retried and then given up by
+        // visivo::followBackendTask anyway.
+        // A proxied backend may sit under a path prefix, so match the tail.
+        static const QRegularExpression taskStatus(QStringLiteral("/v1/tasks/([^/]+)$"));
+        static const QStringList creators{ QStringLiteral("moment"), QStringLiteral("moment_fits"),
+                                           QStringLiteral("pv"), QStringLiteral("sourcefind") };
+        const QRegularExpressionMatch m = taskStatus.match(path);
+        if (m.hasMatch() && !creators.contains(m.captured(1)))
+            return std::chrono::milliseconds(300000);   // 5 min
         return std::chrono::milliseconds(10000);
     }
     if (path.endsWith(QStringLiteral("/cube/slice")) || path.endsWith(QStringLiteral("/image/preview"))) {
@@ -3371,7 +3385,8 @@ static bool _isDiagnosticsQuietPath(const QString &path)
         || path == QStringLiteral("/v1/exports/list");
 }
 
-QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
+QByteArray BackendClient::performGet(const QUrl &url, QString &error,
+                                     const std::atomic_bool *abort) const
 {
     // Counted while it runs (RAII), so the status bar can say "N running" for a
     // synchronous compute — and announced when it STARTS, not only when it ends:
@@ -3445,8 +3460,27 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
             loop.quit();
         });
         timeoutTimer.start(static_cast<int>(this->requestTimeoutFor(url).count()));
-        loop.exec();
+        // A caller that may be cancelled (a task followed for tens of minutes)
+        // must not wait out a long read: watch its flag and drop the reply.
+        QTimer abortWatch;
+        if (abort) {
+            QObject::connect(&abortWatch, &QTimer::timeout, &loop, [&]() {
+                if (!abort->load())
+                    return;
+                attemptError = QStringLiteral("Request abandoned: cancelled by the user.");
+                reply->abort();
+                loop.quit();
+            });
+            abortWatch.start(100);
+        }
+        if (!(abort && abort->load()))
+            loop.exec();
+        else
+            attemptError = QStringLiteral("Request abandoned: cancelled by the user.");
+        abortWatch.stop();
         timeoutTimer.stop();
+        if (!attemptError.isEmpty() && abort && abort->load() && !reply->isFinished())
+            reply->abort();
 
         const QByteArray data = reply->readAll();
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();

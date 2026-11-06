@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import struct
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -1250,6 +1251,95 @@ async def test_cancelled_heavy_call_keeps_the_work_counted(heavy_sandbox, monkey
     gate.set()
     await asyncio.wait_for(done.wait(), 1)
     await asyncio.sleep(0)
+    assert registry.snapshot()["running_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_sync_timeout_points_to_the_task_route(heavy_sandbox) -> None:
+    """A synchronous heavy call past VISIVO_HEAVY_TIMEOUT_S answers 504 and
+    says where the same work runs without a limit."""
+    from fastapi import HTTPException
+
+    from app import dependencies
+
+    with pytest.raises(HTTPException) as failure:
+        await dependencies._run_heavy(lambda: None)
+    assert failure.value.status_code == 504
+    assert "/v1/tasks/moment" in failure.value.detail
+    assert "VISIVO_HEAVY_TIMEOUT_S" in failure.value.detail
+
+
+@pytest.mark.asyncio
+async def test_a_task_outlives_the_sync_ceiling(heavy_sandbox, monkeypatch) -> None:
+    """Work started for a task is not bound by the synchronous ceiling: it
+    runs past VISIVO_HEAVY_TIMEOUT_S, returns its result, and gives its slot
+    back (issue #3: an M2 over 450 GB takes about 25 minutes)."""
+    from app import dependencies
+
+    registry, gate, started, _done = heavy_sandbox
+    monkeypatch.setattr(dependencies, "_TASK_TIMEOUT_S", 0.0)
+    record = registry.create("moment", owner_token="t")
+    registry.update(record.task_id, status="running")
+    caller = asyncio.create_task(dependencies._run_heavy(lambda: None, task_id=record.task_id))
+    await asyncio.wait_for(started.wait(), 1)
+    await asyncio.sleep(0.1)                     # ten times the sync ceiling
+    assert not caller.done()
+    gate.set()
+    assert await asyncio.wait_for(caller, 1) == "late"
+    assert dependencies._HEAVY_SEM._value == 2
+
+
+@pytest.mark.asyncio
+async def test_task_ceiling_stops_the_worker(heavy_sandbox, monkeypatch, tmp_path) -> None:
+    """With VISIVO_TASK_TIMEOUT_S set, a task past it fails with 504, its
+    worker is asked to stop (the stop file is touched), and the slot is held
+    until the work really ends."""
+    from fastapi import HTTPException
+
+    from app import dependencies
+
+    registry, gate, started, done = heavy_sandbox
+    registry.stop_dir_provider = lambda: tmp_path / ".abort"
+    monkeypatch.setattr(dependencies, "_TASK_TIMEOUT_S", 0.05)
+    record = registry.create("moment", owner_token="t")
+    registry.update(record.task_id, status="running")
+    stop_file = registry.stop_file(record.task_id)
+    with pytest.raises(HTTPException) as failure:
+        await dependencies._run_heavy(lambda: None, task_id=record.task_id)
+    assert failure.value.status_code == 504
+    assert "VISIVO_TASK_TIMEOUT_S" in failure.value.detail
+    assert Path(stop_file).exists()
+    assert dependencies._HEAVY_SEM._value == 1, "the slot is held while the work runs"
+    gate.set()
+    await asyncio.wait_for(done.wait(), 1)
+    await asyncio.sleep(0)
+    assert dependencies._HEAVY_SEM._value == 2
+    assert not Path(stop_file).exists(), "the stop file goes with the work"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_long_task_frees_its_slot(heavy_sandbox, monkeypatch, tmp_path) -> None:
+    """A task cancelled past the sync ceiling stops its caller at once, keeps
+    the slot until the work ends, then gives it back."""
+    from app import dependencies
+
+    registry, gate, started, done = heavy_sandbox
+    registry.stop_dir_provider = lambda: tmp_path / ".abort"
+    monkeypatch.setattr(dependencies, "_TASK_TIMEOUT_S", 0.0)
+    record = registry.create("moment", owner_token="t")
+    runner = asyncio.create_task(dependencies._run_heavy(lambda: None, task_id=record.task_id))
+    registry.update(record.task_id, status="running", asyncio_handle=runner)
+    registry.stop_file(record.task_id)
+    await asyncio.wait_for(started.wait(), 1)
+    await asyncio.sleep(0.05)                    # past the 0.01 s sync ceiling
+    assert registry.cancel(record.task_id)
+    with pytest.raises(asyncio.CancelledError):
+        await runner
+    assert dependencies._HEAVY_SEM._value == 1
+    gate.set()
+    await asyncio.wait_for(done.wait(), 1)
+    await asyncio.sleep(0)
+    assert dependencies._HEAVY_SEM._value == 2
     assert registry.snapshot()["running_count"] == 0
 
 

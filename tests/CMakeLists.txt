@@ -42,6 +42,7 @@ find_package(Qt6 REQUIRED COMPONENTS Test Core Network)
 # Does NOT depend on Qt::Widgets, VTK, or any UI component.
 add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/app/BackendClient.cpp
+    ${VISIVO_ROOT}/src/app/BackendClient_Tasks.cpp
     ${VISIVO_ROOT}/src/app/BackendUrl.cpp
     ${VISIVO_ROOT}/src/app/LaunchOptions.cpp
     ${VISIVO_ROOT}/src/app/RecentDatasetsManager.cpp
@@ -162,6 +163,8 @@ add_executable(VisIVOTests
     test_update_check.cpp
     TestSourceTable.h
     test_source_table.cpp
+    TestBackendTaskFollow.h
+    test_backend_task_follow.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

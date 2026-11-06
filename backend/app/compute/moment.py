@@ -120,8 +120,13 @@ class _FitsCubeSource:
 
     ndim = 3
 
-    def __init__(self, path: str, hdu_index: int, z0: int, shape: tuple, dtype) -> None:
+    def __init__(self, path: str, hdu_index: int, z0: int, shape: tuple, dtype,
+                 stop_file: str | None = None) -> None:
         self.path = str(path)
+        # Checked before every block is read, so that a cancelled task stops
+        # within one block (app/compute/abort.py). A distributed worker that
+        # does not see the file runs on, as before.
+        self.stop_file = stop_file
         self.hdu_index = int(hdu_index)
         self.z0 = int(z0)
         self.shape = tuple(int(n) for n in shape)
@@ -131,6 +136,7 @@ class _FitsCubeSource:
         self.signature = (int(st.st_size), int(st.st_mtime_ns))
 
     def __getitem__(self, key):
+        check_abort(self.stop_file)
         cube = _mapped_cube(self.path, self.hdu_index, self.signature)
         view = cube[self.z0 : self.z0 + self.shape[0]]
         return np.array(view[key])   # a copy of this block only
@@ -204,6 +210,20 @@ def _moment_chunk_z(plane_bytes: int, requested: int) -> int:
 
 # Higher-order moments that the Dask backend supports out-of-core (R-06 fallback).
 _DASK_MOMENT_ORDERS = frozenset({3, 4, 5, 6, 8, 10})
+
+
+def _moment_chunk_y(ny: int, nx: int, itemsize: int) -> int:
+    """Rows per dask block. A plane within ``_MOMENT_CHUNK_BYTES`` is kept
+    whole (-1); a larger one is cut into bands of whole rows, so that a block,
+    its temporaries and its partial sums stay bounded in bytes whatever the
+    plane. Every moment is a reduction along the spectral axis, pixel by
+    pixel, so the bands change no result. A 6082² plane is 148 MB: whole
+    planes held 14 GB of partials and temporaries over four threads and broke
+    a 16 GB cap (issue #3)."""
+    row_bytes = max(1, int(nx) * int(itemsize))
+    if int(ny) * row_bytes <= _MOMENT_CHUNK_BYTES:
+        return -1
+    return int(max(1, min(int(ny), _MOMENT_CHUNK_BYTES // row_bytes)))
 
 
 def _n_moment_threads() -> int:
@@ -762,8 +782,12 @@ def _moment_map_dask(
     dist_client: Any = None,
     threshold_auto: bool = False,
     moment2_variance: bool = False,
+    stop_file: str | None = None,
 ) -> dict[str, Any]:
     """Out-of-core moment computation via Dask arrays.
+
+    ``stop_file`` (app/compute/abort.py) is checked before every block is
+    read: a cancelled task ends within one block, with ``ComputationAborted``.
 
     Uses ``dask.array.from_array`` so that only the spectral chunks needed for
     each reduction step are loaded from disk at a time.  Designed for cubes
@@ -788,18 +812,22 @@ def _moment_map_dask(
             effective_threshold = _auto_mask_threshold(data, z0, z1)
         spectral = dataset.spectral_axis_metadata(z0, z1)
         # Wrap the memmap slice in a Dask array — data is NOT loaded yet.
+        check_abort(stop_file)
         source = _FitsCubeSource(fits_path, dataset.hdu_index, z0,
                                  (z1 - z0 + 1, int(data.shape[1]), int(data.shape[2])),
-                                 data.dtype)
+                                 data.dtype, stop_file)
         chunk_z = _moment_chunk_z(source.shape[1] * source.shape[2] * source.dtype.itemsize,
                                   chunk_z)
+        chunk_y = _moment_chunk_y(source.shape[1], source.shape[2], source.dtype.itemsize)
         # An explicit name (dask would otherwise tokenise the source object) that
         # changes with anything that changes the blocks: file, version, HDU,
-        # channel range and block size.
+        # channel range and block size; and with the stop file, so that two
+        # requests on a shared distributed scheduler never share a block that
+        # one of them may abort.
         da_cube = _da.from_array(
-            source, chunks=(chunk_z, -1, -1), lock=False, fancy=False,
+            source, chunks=(chunk_z, chunk_y, -1), lock=False, fancy=False,
             name="fits-" + _dask_tokenize(source.path, source.signature, source.hdu_index,
-                                          z0, z1, chunk_z))
+                                          z0, z1, chunk_z, chunk_y, source.stop_file))
         spectral_values = np.asarray(spectral["coordinates"], dtype=np.float64)
         spectral_delta = _integrated_spacing(spectral_values)
         bunit = dataset.bunit
@@ -829,7 +857,12 @@ def _moment_map_dask(
     # centroid was known, i.e. the whole cube.
     with np.errstate(invalid="ignore", divide="ignore"):
         if order == 0:
-            (result,) = compute(_da.nansum(da_safe * da_delta, axis=0))
+            # nansum gives 0 on a line of sight with no valid voxel; it has no
+            # integrated intensity at all, and is blanked as in the in-memory
+            # and streaming paths. Both reductions read each block once.
+            result, any_valid = compute(_da.nansum(da_safe * da_delta, axis=0),
+                                        _da.isfinite(da_safe).any(axis=0))
+            result = np.where(any_valid, result, np.nan)
         elif order == 6:
             (result,) = compute(_da.sqrt(_da.nanmean(da_safe * da_safe, axis=0)))
         elif order == 8:
@@ -845,7 +878,10 @@ def _moment_map_dask(
             if order == 1:
                 result = m1
             else:
-                diff = da_sv - m1[None, :, :]
+                # The centroid map in the same bands as the cube: a plain
+                # array here would make every (v - M1) block a whole plane.
+                da_m1 = _da.from_array(m1[None, :, :], chunks=(1, chunk_y, -1))
+                diff = da_sv - da_m1
                 if order == 2:
                     (m2_num,) = compute(_da.nansum(da_safe * diff * diff * da_delta, axis=0))
                     result = np.where(valid_m0, m2_num / np.where(valid_m0, m0, 1.0), np.nan)
@@ -973,7 +1009,7 @@ def worker_moment(
             # dict (range guard + dispersion applied); the finally: closes hdul.
             return _moment_map_dask(
                 path, order, z0, z1, effective_threshold, mask_enabled,
-                64, None, False, moment2_variance,
+                64, None, False, moment2_variance, stop_file,
             )
         else:
             subset = np.asarray(data[z0 : z1 + 1, :, :], dtype=np.float32)

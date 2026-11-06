@@ -96,7 +96,9 @@ dataset is not a spectral cube. Routes that take a per-session compute slot
 answer 429 when all slots stay busy (`VISIVO_MAX_CONCURRENT_TASKS`, default 3,
 waited for up to `VISIVO_TASK_SLOT_WAIT_S`, default 15 s); routes on the heavy
 pool answer 504 when the computation exceeds `VISIVO_HEAVY_TIMEOUT_S` (default
-900 s). Each entry says which of these apply.
+900 s). For a moment or PV on a large cube, use the task routes
+(`/v1/tasks/moment`, `/v1/tasks/pv`), which have no such limit. Each entry says
+which of these apply.
 
 ### `POST /v1/cube/subvolume_bin`
 

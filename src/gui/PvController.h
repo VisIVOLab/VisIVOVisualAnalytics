@@ -38,9 +38,13 @@
 
 #include <array>
 #include <functional>
+#include <memory>
 #include <vector>
 
 class QWidget;
+namespace visivo {
+struct BackendTaskControl;
+}
 
 class PvController : public QObject
 {
@@ -64,6 +68,13 @@ public:
             std::function<void()> onRunFinished,
             std::function<void(const RemotePvFetchResult &)> onCompleted,
             QObject *parent = nullptr);
+    // Stops the task under way on the backend: nobody is left to show it.
+    ~PvController() override;
+
+    // Stops the PV under way on the backend and drops any queued one; its
+    // result is not shown. For a window that is closing: it waits for the
+    // run to end, which this makes immediate.
+    void cancel();
 
     // True while an async PV extraction is in progress.
     // Queried by vtkWindowCube::isBusy() and
@@ -72,8 +83,9 @@ public:
 
 public slots:
     // Dispatches the async fetch. While one runs, a new request is QUEUED and
-    // replaces any request already queued: the latest path wins, so editing a
-    // path live never piles up computations nor loses the final shape.
+    // replaces any request already queued, and the one running is cancelled
+    // on the backend: the latest path wins, so editing a path live never piles
+    // up computations nor loses the final shape.
     // @p interactive: an error goes to the status bar instead of a message box
     // (a live edit must not throw a dialog at every intermediate shape).
     void startExtraction(const std::vector<std::array<double, 2>> &vertices,
@@ -89,6 +101,9 @@ private:
     std::function<void(const RemotePvFetchResult &)> m_onCompleted;
 
     bool m_busy{ false };
+    // The run under way: shared with its worker, which follows the backend
+    // task and sends the cancellation when asked.
+    std::shared_ptr<visivo::BackendTaskControl> m_control;
     struct Pending
     {
         std::vector<std::array<double, 2>> vertices;

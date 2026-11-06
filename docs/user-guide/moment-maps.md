@@ -40,6 +40,19 @@ In the [cube viewer](cube-viewer):
 4. When ready the result appears in the 2-D dock (replacing the slice
    view); the *2-D mode* combo flips to **Moment**.
 
+```{note}
+**Long computations.** The moment runs as a backend *task*, which has no time
+limit: on an SKA-scale cube (hundreds of GB) an M2 can take 20–25 minutes.
+While it runs, the progress sheet over the Moment dialog says whether the task
+is queued or running and how long it has been going. **Cancel** stops the task
+on the backend (it does not just hide the sheet), and so does closing the cube
+window. If the task fails or is cancelled, the client reports it; it does not
+start the computation again by another route. Only a backend too old to have
+task routes is asked with a single synchronous request instead, which cannot
+be cancelled and is limited by that backend's request timeout. **Export Moment
+as FITS** works the same way.
+```
+
 You can switch back and forth between *Slice* and *Moment* without
 recomputing — the moment map is cached in memory and on the backend's
 LRU `PRODUCT_CACHE` (keyed by `dataset_id + parameters`). Identical

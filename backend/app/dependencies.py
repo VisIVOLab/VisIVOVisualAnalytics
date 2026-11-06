@@ -1345,6 +1345,16 @@ _HEAVY_SEM: asyncio.Semaphore | None = None
 # ceiling should be generous. Set VISIVO_HEAVY_TIMEOUT_S=0 to disable.
 _HEAVY_TIMEOUT_S = float(os.environ.get("VISIVO_HEAVY_TIMEOUT_S", "900"))
 
+# The same ceiling for work started as a task (the /v1/tasks/* routes, which
+# pass a task_id). None by default (0). A task does not hold an HTTP request
+# open: the client polls its progress and can cancel it, and a cancellation
+# reaches the worker through the stop file. A wall-clock limit there throws
+# away valid work on a large cube: an M2 over 450 GB takes about 25 minutes on
+# one HPC node (benchmark/RESULTS.md, issue #3). It frees nothing either,
+# because the worker of a timed-out call runs to its end. Operators who want a
+# ceiling anyway set VISIVO_TASK_TIMEOUT_S; the worker is then asked to stop.
+_TASK_TIMEOUT_S = float(os.environ.get("VISIVO_TASK_TIMEOUT_S", "0"))
+
 
 def _heavy_semaphore() -> asyncio.Semaphore:
     """Lazy-init the semaphore so it binds to the running event loop."""
@@ -1379,7 +1389,10 @@ async def _run_heavy(fn, *args, task_id: str | None = None, dispatch: Any = None
     that was cancelled or deleted while it waited for a slot is not started.
     """
     sem = _heavy_semaphore()
-    timeout = _HEAVY_TIMEOUT_S if (bounded and _HEAVY_TIMEOUT_S and _HEAVY_TIMEOUT_S > 0) else None
+    # A task (task_id given) has its own ceiling, none by default; a
+    # synchronous request keeps VISIVO_HEAVY_TIMEOUT_S.
+    ceiling = _TASK_TIMEOUT_S if task_id is not None else _HEAVY_TIMEOUT_S
+    timeout = ceiling if (bounded and ceiling and ceiling > 0) else None
     # The semaphore is acquired/released MANUALLY (not via `async with`) so
     # that on a timeout or a cancellation the slot is held until the
     # underlying work ACTUALLY finishes; releasing it early would let
@@ -1420,15 +1433,30 @@ async def _run_heavy(fn, *args, task_id: str | None = None, dispatch: Any = None
         # The client gets 504 now; the work runs on, counted, until it ends.
         _abandon()
         fname = getattr(fn, "__name__", str(fn))
-        logger.warning("[heavy] timeout after %.0fs in %s", _HEAVY_TIMEOUT_S, fname)
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail=(
-                f"Compute exceeded the {_HEAVY_TIMEOUT_S:.0f}s time limit. "
-                "Try a smaller channel range / region, or raise "
-                "VISIVO_HEAVY_TIMEOUT_S on the server."
-            ),
-        ) from None
+        logger.warning("[heavy] timeout after %.0fs in %s%s", ceiling, fname,
+                       f" (task {task_id})" if task_id else "")
+        if task_id is not None:
+            # A task past VISIVO_TASK_TIMEOUT_S: ask its worker to stop (it
+            # polls the stop file between slabs or blocks), and fail the task.
+            stop_file = getattr(TASKS.peek(task_id), "stop_file", None)
+            if stop_file:
+                try:
+                    Path(stop_file).touch()
+                except OSError:
+                    logger.warning("[heavy] could not touch stop file %s", stop_file)
+                # As after a cancellation: the file goes when the work ends.
+                task.add_done_callback(lambda _f, p=stop_file: TASKS._unlink_stop(p))
+            detail = (f"The task exceeded VISIVO_TASK_TIMEOUT_S ({ceiling:.0f} s) and "
+                      "was stopped. Raise or unset it on the server.")
+        else:
+            detail = (f"Compute exceeded the {ceiling:.0f} s time limit of a synchronous "
+                      "request (VISIVO_HEAVY_TIMEOUT_S). For a large cube or channel "
+                      "range, run it as a task (POST /v1/tasks/moment, /v1/tasks/pv, "
+                      "or an asynchronous SODA job), which has no time limit, "
+                      "reports progress and can be cancelled; or select a smaller "
+                      "range, or raise VISIVO_HEAVY_TIMEOUT_S on the server.")
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                            detail=detail) from None
     except BaseException:
         # The task itself errored, or the caller was cancelled: release now
         # (or when the shielded pool task settles) so the slot is never leaked.
@@ -1557,8 +1585,8 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
         )
         # The cluster does the work: no local pool slot, no local time limit;
         # the thread that drives it is still the task's work (counted, and
-        # not started for a cancelled task). The Dask reduction itself does
-        # not poll the stop file.
+        # not started for a cancelled task). Each block read polls the stop
+        # file, which a worker sees only when it shares the file system.
         loop = asyncio.get_running_loop()
         result = await _run_heavy(
             _moment_map_dask,
@@ -1572,6 +1600,7 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
             dist_client,            # → distributed cluster
             request.threshold_auto,
             bool(getattr(request, "moment2_variance", False)),
+            stop_file,              # seen by workers that share its file system
             task_id=task_id,
             dispatch=lambda f, *a: loop.run_in_executor(None, f, *a),
             throttle=False, bounded=False,
@@ -1600,6 +1629,7 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
             None,     # dist_client → local threaded scheduler
             request.threshold_auto,
             bool(getattr(request, "moment2_variance", False)),
+            stop_file,  # a cancelled task stops within one block
             task_id=task_id,
             dispatch=_run_in_pool,
         )

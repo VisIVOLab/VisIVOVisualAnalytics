@@ -170,6 +170,7 @@
     "POST /v1/spectral/stack",
     "POST /v1/spectral/stack/binary",
     "POST /v1/tasks/moment",
+    "POST /v1/tasks/moment_fits",
     "POST /v1/tasks/particle_render",
     "POST /v1/tasks/pv",
     "POST /v1/tasks/sourcefind",

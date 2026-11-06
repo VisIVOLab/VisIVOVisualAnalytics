@@ -23,6 +23,9 @@ struct RemotePvFetchResult
 {
     bool valid{ false };
     QString errorMessage;
+    /// Stopped here (a newer path replaced it, or the window went away), not
+    /// failed: nothing to report.
+    bool cancelled{ false };
     QVector<double> positions;        // pixel-distance offset along path
     QVector<double> positionsArcsec;  // angular offset in arcseconds (empty if unavailable)
     QVector<double> values;           // flattened [numSamples × depth] intensity grid

@@ -9,6 +9,7 @@
 #include "PvController.h"
 
 #include "app/BackendClient.h"
+#include "app/BackendTaskFollow.h"
 #include "app/DiagnosticsManager.h"
 
 #include <QFutureWatcher>
@@ -33,39 +34,33 @@ static RemotePvFetchResult fetchRemotePv(const QString &backendUrl,
                                          const std::vector<std::array<double, 2>> &vertices,
                                          int widthPixels,
                                          const QString &sessionId,
-                                         const QString &backendToken)
+                                         const QString &backendToken,
+                                         visivo::BackendTaskControl *control)
 {
     RemotePvFetchResult result;
 
     BackendClient client(backendUrl, backendToken);
     client.setSessionId(sessionId);
 
+    // The task route, followed to its end like a moment's (issue #3): a PV
+    // through an SKA-scale cube reads every channel along the path. The
+    // synchronous route only on a backend with no task route; a task that
+    // failed, was cancelled or was lost is never computed again behind the
+    // user's back.
     BackendCubePvResult response;
-    const auto taskStatus = client.waitForTaskCompletion(
-            client.createPvTask(datasetId, vertices, widthPixels),
-            QStringLiteral("[pv][task]"));
-    if (taskStatus.status == QStringLiteral("completed")) {
-        response = BackendClient::parsePvResultObject(taskStatus.resultObject);
-    }
-
-    if (!response.valid) {
-        if (!taskStatus.taskId.isEmpty()) {
-            qWarning().noquote()
-                    << QStringLiteral("[pv][task] fallback to sync task_id=%1")
-                               .arg(taskStatus.taskId);
-            DiagnosticsManager::instance()->publish(
-                    DiagnosticsLevel::Warning, DiagnosticsCategory::Task,
-                    QStringLiteral("PvController"),
-                    QStringLiteral("Task path failed, falling back to sync PV request."),
-                    datasetId, sessionId, QStringLiteral("pv"));
-        }
+    const visivo::TaskFollowResult followed = visivo::followBackendTask(
+            client, client.createPvTask(datasetId, vertices, widthPixels),
+            QStringLiteral("[pv][task]"), control);
+    if (followed.outcome == visivo::TaskOutcome::Completed) {
+        response = BackendClient::parsePvResultObject(followed.status.resultObject);
+    } else if (followed.fallBackToSync()) {
+        qWarning().noquote() << QStringLiteral("[pv][task] no task route on this backend, "
+                                               "using the synchronous request");
         response = client.requestPv(datasetId, vertices, widthPixels);
-        if (!taskStatus.taskId.isEmpty()) {
-            qDebug().noquote()
-                    << QStringLiteral("[pv][task] sync fallback completed valid=%1")
-                               .arg(response.valid ? QStringLiteral("true")
-                                                   : QStringLiteral("false"));
-        }
+    } else {
+        result.errorMessage = followed.error;
+        result.cancelled = followed.stoppedByUser();
+        return result;
     }
 
     if (!response.valid) {
@@ -159,6 +154,19 @@ PvController::PvController(
 {
 }
 
+PvController::~PvController()
+{
+    if (m_control)
+        m_control->requestAbort();
+}
+
+void PvController::cancel()
+{
+    m_hasPending = false;
+    if (m_control)
+        m_control->requestAbort();
+}
+
 bool PvController::isBusy() const
 {
     return m_busy;
@@ -170,6 +178,10 @@ void PvController::startExtraction(const std::vector<std::array<double, 2>> &ver
     if (m_busy) {
         m_pending = { vertices, widthPixels, interactive };
         m_hasPending = true;
+        // The path under way is out of date: stop it on the backend, so the
+        // newest one starts as soon as it can.
+        if (m_control)
+            m_control->requestAbort();
         return;
     }
 
@@ -178,6 +190,8 @@ void PvController::startExtraction(const std::vector<std::array<double, 2>> &ver
     }
 
     m_busy = true;
+    m_control = std::make_shared<visivo::BackendTaskControl>();
+    const std::shared_ptr<visivo::BackendTaskControl> control = m_control;
 
     // Notify immediately so vtkWindowCube can disable the PV action.
     if (m_onRunFinished) {
@@ -193,8 +207,14 @@ void PvController::startExtraction(const std::vector<std::array<double, 2>> &ver
     QPointer<PvController> self(this);
     auto *watcher = new QFutureWatcher<RemotePvFetchResult>();
     QObject::connect(watcher, &QFutureWatcher<RemotePvFetchResult>::finished,
-                     watcher, [self, watcher, datasetId, sessionId, interactive]() {
-        const auto result = watcher->result();
+                     watcher, [self, watcher, datasetId, sessionId, interactive, control]() {
+        auto result = watcher->result();
+        // Superseded after the worker finished but before this ran: the
+        // result is out of date even though it came back whole.
+        if (control->aborted()) {
+            result.valid = false;
+            result.cancelled = true;
+        }
         watcher->deleteLater();
 
         if (!self) {
@@ -202,6 +222,7 @@ void PvController::startExtraction(const std::vector<std::array<double, 2>> &ver
         }
 
         self->m_busy = false;
+        self->m_control.reset();
         // A newer path was asked for while this one ran: start it now. This
         // result is still shown (it is the latest available) unless it failed.
         const bool superseded = self->m_hasPending;
@@ -216,7 +237,7 @@ void PvController::startExtraction(const std::vector<std::array<double, 2>> &ver
             self->m_onRunFinished();
         }
 
-        if (!result.valid && superseded) {
+        if (!result.valid && (superseded || result.cancelled)) {
             return;   // the newer request will report for itself
         }
         if (!result.valid) {
@@ -243,9 +264,9 @@ void PvController::startExtraction(const std::vector<std::array<double, 2>> &ver
 
     watcher->setFuture(QtConcurrent::run(
             [backendUrl, datasetId, sessionId, backendToken,
-             vertices, widthPixels]() -> RemotePvFetchResult {
+             vertices, widthPixels, control]() -> RemotePvFetchResult {
                 auto result = fetchRemotePv(backendUrl, datasetId, vertices, widthPixels,
-                                            sessionId, backendToken);
+                                            sessionId, backendToken, control.get());
                 // Embed the original request context so the callback can build
                 // provenance strings without touching shared mutable state.
                 result.capturedVertices    = vertices;

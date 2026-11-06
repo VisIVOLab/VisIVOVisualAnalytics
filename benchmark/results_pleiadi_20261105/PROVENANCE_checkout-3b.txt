@@ -1,0 +1,2 @@
+tree: checkout-3 + large-plane band fix (moment._moment_chunk_y, centroid map in bands), task timeout + stop-file polling in the dask path, /v1/tasks/moment_fits
+4c807a5ccafe073f82654b0f7133b6f3310bfa49126467ad507788908cfefec7  backend/app/compute/moment.py

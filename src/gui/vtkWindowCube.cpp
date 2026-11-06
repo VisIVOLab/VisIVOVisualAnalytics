@@ -4264,6 +4264,12 @@ void vtkWindowCube::closeEvent(QCloseEvent *event)
         // disconnected from remote rendering, with nothing to say why.
         event->ignore();
         this->hide();
+        // Nobody will see a PV diagram any more: stop it on the backend rather
+        // than wait for it (the window closes as soon as it has stopped).
+        if (this->m_pvLiveTimer)
+            this->m_pvLiveTimer->stop();   // an edit still waiting to be sent
+        if (this->pvController)
+            this->pvController->cancel();
         if (!this->m_closeWhenIdle) {   // the first deferred close connects the poll
             this->m_closeWhenIdle = true;
             // A linked view would keep driving it (new slice requests), and
@@ -5691,14 +5697,31 @@ void vtkWindowCube::exportMomentMapAsFits(const QString &requestedProductId)
     this->statusBar()->showMessage(
             u"Exporting moment-%1 map to workspace…"_s.arg(order), 0);
 
+    // The export recomputes the moment, so on an SKA-scale cube it runs for
+    // as long as the moment itself (tens of minutes): a backend task with a
+    // progress sheet and Cancel, which cancels the task on the backend.
+    auto control = std::make_shared<visivo::BackendTaskControl>();
+    QPointer<QProgressDialog> sheet = visivo::showTaskProgressSheet(
+            this, u"Exporting the moment-%1 map as FITS"_s.arg(order), control);
     auto *watcher = new QFutureWatcher<BackendSaveMomentFitsResult>(this);
+    // The window going away is an abort too: nobody will read the result, and
+    // the backend task must not hold a compute slot for nothing.
+    const QMetaObject::Connection abortOnClose =
+            QObject::connect(this, &QObject::destroyed, [control]() { control->requestAbort(); });
     QPointer<vtkWindowCube> self(this);
     QObject::connect(watcher, &QFutureWatcher<BackendSaveMomentFitsResult>::finished, this,
-                     [self, watcher, order]() {
+                     [self, watcher, order, sheet, abortOnClose]() mutable {
                          const auto r = watcher->result();
                          watcher->deleteLater();
+                         QObject::disconnect(abortOnClose);
+                         visivo::closeToolProgressSheet(sheet);
                          if (!self) return;
                          self->statusBar()->clearMessage();
+                         if (r.cancelled) {
+                             self->statusBar()->showMessage(
+                                     u"Moment FITS export cancelled. %1"_s.arg(r.error), 8000);
+                             return;
+                         }
                          if (!r.valid) {
                              QMessageBox::warning(self,
                                      u"Export Moment as FITS"_s,
@@ -5723,12 +5746,12 @@ void vtkWindowCube::exportMomentMapAsFits(const QString &requestedProductId)
                      });
     watcher->setFuture(QtConcurrent::run(
             [url, token, sessionId, datasetId, order, chStart, chEnd,
-             maskEnabled, thresholdValue, thresholdAuto, basename]() {
+             maskEnabled, thresholdValue, thresholdAuto, basename, control]() {
                 BackendClient c(url, token);
                 c.setSessionId(sessionId);
-                return c.saveMomentFits(datasetId, order, chStart, chEnd,
-                                        maskEnabled, thresholdValue, basename,
-                                        thresholdAuto);
+                return c.exportMomentFitsFollowingTask(datasetId, order, chStart, chEnd,
+                                                       maskEnabled, thresholdValue, basename,
+                                                       thresholdAuto, control.get());
             }));
 }
 
@@ -5990,9 +6013,9 @@ void vtkWindowCube::schedulePvLiveUpdate(int delayMs)
         this->m_pvLiveTimer = new QTimer(this);
         this->m_pvLiveTimer->setSingleShot(true);
         QObject::connect(this->m_pvLiveTimer, &QTimer::timeout, this, [this]() {
-            if (!this->pvValid || this->pvPolylineVertices.size() < 2 || !this->pvController
-                || this->remoteDatasetId.isEmpty())
-                return;
+            if (this->m_closeWhenIdle || !this->pvValid || this->pvPolylineVertices.size() < 2
+                || !this->pvController || this->remoteDatasetId.isEmpty())
+                return;   // a closing window starts nothing
             this->pvController->startExtraction(this->pvEffectivePath(), this->pvWidthPixels,
                                                 /*interactive=*/true);
         });

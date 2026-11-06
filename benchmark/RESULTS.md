@@ -1,3 +1,168 @@
+# Out-of-core moments at SKA scale on an HPC node (issue #3, 2026-11-05)
+
+M0, M1 and M2 on one PLEIADI-GPU node (INAF-OACT): 2 × 16-core POWER9
+(128 hardware threads), 317 or 334 GB of RAM depending on the node (MemTotal
+recorded per run), one job per node (`--exclusive`). Cubes were read from
+BeeGFS (the shared parallel file system) and from a copy on the node's local
+NVMe disk (`/tmp`, xfs).
+
+**Code measured.** VisIVO `main` at 8303e71 (Release 1.0.9) plus this
+branch's uncommitted changes. Two staged trees were measured:
+
+- `checkout-3`: the dask M0 blanking fix and the benchmark tooling. It
+  produced every row except the "fixed" one.
+- `checkout-3b`: the same tree plus the large-plane fix, the task time limit
+  and the stop-file polling. It produced the "fixed" row and the final
+  equality check. For SDC2 and Sky124 it runs the same code path as
+  `checkout-3`: their planes are under the 64 MiB block budget, and the
+  benchmark gives no stop file.
+
+The checksums of `moment.py` are in
+`results_pleiadi_20261105/PROVENANCE_checkout-3*.txt`. Image `backend-egl.sif`, sha256
+aa3f592e…dc46. To measure a release again from one command, see
+`remote/README.md` (`run_hpc_moment_campaign.sh` with
+`remote/cubes_pleiadi_issue3.txt`).
+
+**Method** (`moment_ooc_bench.py`, `remote/run_hpc_moment_bench.sh`). Each
+measurement runs in a fresh process that calls the backend's own functions:
+
+- *dask* is `_moment_map_dask` on the local threaded scheduler. The service
+  runs it for every range above 512 MB (the default `VISIVO_DASK_MODE=auto`),
+  with 4 threads (the default `VISIVO_MOMENT_THREADS`).
+- *stream* is `worker_moment`'s slab streamer (`VISIVO_DASK_MODE=off`), on a
+  single thread.
+
+The mask is an explicit 3σ threshold: 8.6e-5 Jy/beam for SDC2, 7.3e-3 Jy/beam
+for Sky124 (robust σ 2.45 mJy/beam), 3.0 for the synthetic cube (σ = 1).
+Before every run the cube is dropped from the page cache
+(`posix_fadvise DONTNEED`); a shared node has no `drop_caches`. The first
+run is reported on its own. Then come 3 repeats for SDC2 and 2 for the
+larger cubes, given as median ± 1.4826·MAD. Throughput is the bytes the
+reduction reads (M2 reads the cube twice) divided by the wall time.
+
+**Memory cap.** SLURM on PLEIADI uses cgroup v1 and does not enforce memory,
+and a user cannot create a cgroup. The cap is therefore `RLIMIT_DATA` = 16 GB
+on the measuring process: the kernel refuses private writable memory beyond
+it, while the read-only mapping of the cube is not counted (`RLIMIT_AS` would
+count it and break the memmap). Every run's record shows that the kernel
+enforced the cap. To show that the cap bites, the in-memory way was run once
+on every cube: it fails at once with `MemoryError` ("Unable to allocate
+41.1 GiB" on SDC2). **Anon peak** is the peak of `RssAnon`, the memory the
+computation materialised. The **file-backed** resident set (the mapped cube,
+clean and reclaimable pages) reaches the whole cube when it fits in RAM, and
+about 245 GB on the 450 GB cube. It is the over-count that RSS shows for a
+streaming computation.
+
+**Sizes.** Only the synthetic cube is larger than the node's RAM. SDC2 and
+Sky124 are real cubes that are larger than the 16 GB cap but smaller than
+RAM.
+
+| cube | size | > RAM | > cap |
+|---|---:|:---:|:---:|
+| SDC2 `sky_ldev_v2` (1286² × 6668, FREQ) | 44.1 GB | no | yes (2.8×) |
+| Sky124, WALLABY Eridanus cut-out (2001² × 7776, FREQ) | 124.5 GB | no | yes (7.8×) |
+| synthetic, `make_synthetic_cube.py --gb 450 --spectral freq` (6082² × 3041) | 450.0 GB | yes (1.35–1.42×) | yes (28×) |
+
+The full WALLABY Eridanus cube on BeeGFS (651 GiB) could not be used: the
+file is truncated (697.9 GB on disk against 961.4 GB declared; 5644 of 7776
+planes), and neither astropy nor the backend can map it.
+
+### Results (wall seconds, median ± MAD of the repeats; first run apart)
+
+dask = the service's default way (4 threads); stream = the slab streamer
+(1 thread). Anonymous peak in GB (the cap is 16 GB). Raw records:
+`results_pleiadi_20261105/`.
+
+| cube | file system | way | M0 | M1 | M2 | anon peak |
+|---|---|---|---:|---:|---:|---:|
+| SDC2, 44 GB | BeeGFS | dask | 55.1 ± 0.8 (56.0) | 75.9 ± 0.1 (73.7) | 126 ± 2 (119) | 1.9–2.5 |
+| | BeeGFS | stream | 197 ± 11 (189) | 192 ± 3 (193) | 324 ± 7 (309) | 0.8–1.0 |
+| | local NVMe | dask | 35.6 ± 0.3 (33.6) | 53.8 ± 0.4 (52.5) | 100 ± 0 (100) | 1.9–2.4 |
+| | local NVMe | stream | 103 ± 0 (99.0) | 104 ± 0 (102) | 201 ± 2 (198) | 0.8–1.0 |
+| Sky124, 124.5 GB | BeeGFS | dask | 169 ± 0 (166) | 231 ± 5 (221) | 375 ± 1 (374) | 2.3–2.9 |
+| | BeeGFS | stream | 613 ± 9 (573) | 614 ± 24 (572) | 913 ± 6 (918) | 0.8–1.1 |
+| | local NVMe | dask | 106 ± 0 (104) | 168 ± 0 (168) | 314 ± 2 (310) | 2.3–2.9 |
+| | local NVMe | stream | 308 ± 3 (301) | 311 ± 1 (305) | 633 ± 1 (623) | 0.8–1.1 |
+| synthetic, 450 GB | BeeGFS | dask, before the fix | 776, 756, 751 | **MemoryError** ×3 (14.3 GB) | **MemoryError** ×3 (14.2 GB) | 9.0–10.2 (M0) |
+| | BeeGFS | dask, **fixed** | 727, 740 | 1075, 1078 | 1924, 1926 | 5.0–7.7 |
+| | BeeGFS | stream | 2544 | 2520 | 4856 | 2.2–3.3 |
+
+Cells: median ± MAD of the repeats, with the first run (cache evicted) in
+brackets. SDC2 has 3 repeats, Sky124 2. Every run of the synthetic cube was
+a first run with the cache evicted, and its cells list those runs. Read throughput
+(`results.md` in each directory) is 0.42–0.80 GB/s for dask and 0.18–0.27
+GB/s for stream on BeeGFS, and 0.74–1.24 and 0.39–0.44 GB/s on the local
+disk. The first runs are within a few percent of the repeats, so
+`posix_fadvise` eviction gave cold reads every time.
+
+**Threads** (SDC2, local disk, dask, one run each, cap 16 GB):
+
+| `VISIVO_MOMENT_THREADS` | 1 | 4 (default) | 8 | 16 | 32 | 64 |
+|---|---:|---:|---:|---:|---:|---:|
+| M0, s | 111 | 38.6 | 22.6 | 16.9 | 16.4 | MemoryError |
+| M2, s | 311 | 111 | 61.9 | 42.7 | MemoryError | MemoryError |
+| anon peak M2, GB | 0.9 | 2.4 | 4.0 | 7.2 | 12.7 | 11.6 |
+
+### Correctness
+
+`moment_ooc_bench.py check` on SDC2 channels 3630–3757 (128 channels around
+the brightest source of the band, 3σ mask) computed each map four ways: in
+memory, streamed, with dask, and with an independent float64 reference. The
+criterion is `moment_criterion_ulp.py`. The three backend ways agree **bit for
+bit** on M0, M1 and M2 (largest difference 0, same 251,613 finite pixels).
+Against the float64 reference the largest differences are 0.5 ULP (M0, M1)
+and 0.82 ULP (M2). Every comparison passes, with the final code
+(`checkout-3b`; `results_pleiadi_20261105/check_sdc2.json`).
+Before the fix in this branch, the dask M0 returned 0 instead of blank on
+lines of sight with no voxel above the threshold.
+
+### Reading the numbers
+
+- **Bounded memory, after one fix.** On SDC2 and Sky124 the anonymous peak
+  stays at 0.8–1.1 GB for stream and 1.9–2.9 GB for dask, whatever the cube
+  size. On the 450 GB cube the dask way **failed** M1 and M2 under the 16 GB
+  cap: three runs each, `MemoryError` at 14 GB anon after 6–17 min. M0
+  passed at 9–10 GB. The cause was the block: a 6082² plane (148 MB float32)
+  was read as one block per channel, and the reduction materialises about
+  20 times a block over four threads. Planes larger than
+  `VISIVO_MOMENT_CHUNK_BYTES` are now read in bands of rows, with the M1 map
+  of the second pass split the same way. The maps are bit-identical (tests
+  in `backend/tests/test_compute.py`; the SDC2 check above was re-run with
+  the fixed code and passed). Under the same 16 GB cap, the fixed code
+  completes M0, M1 and M2 on the 450 GB cube in 12, 18 and 32 min, at
+  5.0–7.7 GB anonymous. M0 also halved its memory (10.2 to 5.1 GB) and is
+  3 % faster. Without the cap the failing runs would have taken more of the
+  node's RAM; the cap is what exposed the problem.
+- **Larger than RAM.** The 450 GB cube is 1.35–1.42 times the node's RAM.
+  Both ways complete on it: dask (fixed) in 12 / 18 / 32 min for M0 / M1 /
+  M2, the streamer in 42 / 42 / 81 min. The file-backed resident set
+  levels off at about 245 GB, so the kernel evicts mapped pages as it
+  reads. Only the anonymous memory belongs to the computation.
+- **Where the time goes.** On BeeGFS the streamer is I/O-bound (CPU/wall
+  0.5) at 0.2 GB/s, a tenth of what `dd` reads from the same file
+  (2.5 GB/s). The reads are page faults on the memory map, one plane at a
+  time. dask's four threads overlap them and reach 0.4–0.8 GB/s. On the
+  local disk both ways are CPU-bound: stream on its one core (CPU/wall 1.0),
+  dask on its four (3.4–3.9). More threads help up to 16 (M0 2.3× faster,
+  M2 2.6× faster than with 4). Memory grows by about 0.4 GB per thread, so at
+  32 and 64 threads the dask way no longer fits a 16 GB cap. The default of
+  4 is safe but leaves most of a 128-thread node idle.
+- **M2 costs twice M0.** It reads the cube twice (the second pass after the
+  centroid), by design: it avoids the cancellation of the Σv² − M1²
+  identity on frequency axes.
+- **The service's limit.** At these throughputs an M1 or M2 over a few
+  hundred GB takes longer than `VISIVO_HEAVY_TIMEOUT_S` (900 s). The
+  synchronous `/v1/products/moment` answered 504 there, and so did the task
+  route `/v1/tasks/moment`. Tasks now have no time limit
+  (`VISIVO_TASK_TIMEOUT_S`, default none), a cancelled dask moment stops
+  within one block, and Export Moment as FITS gained a task route
+  (`/v1/tasks/moment_fits`).
+- **Real data on the file system.** The full WALLABY Eridanus cube on BeeGFS
+  is truncated (5644 of 7776 planes). The backend cannot open it and says
+  only "buffer is too small".
+
+---
+
 # Responsiveness campaigns of 2026-10-26 (paper Tables 4 and 5)
 
 Two campaigns, three calls per operation with fresh parameters (the product

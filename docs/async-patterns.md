@@ -177,11 +177,13 @@ For operations that may take minutes, the backend provides a task queue.
 ```
 client.createMomentTask(…) → BackendTaskCreateResult { task_id }
 
-client.waitForTaskCompletion(createResult, timeout, pollInterval)
-    → BackendTaskStatusResult { status, result }
+visivo::followBackendTask(client, createResult, logTag, control)
+    → TaskFollowResult { outcome, status.resultObject, error }
 
-// waitForTaskCompletion polls GET /v1/tasks/{id} with exponential back-off
-// until status == "done" or timeout expires
+// followBackendTask (src/app/BackendTaskFollow.h) polls GET /v1/tasks/{id},
+// backing off from 250 ms to 3 s, with no time limit; control->requestAbort()
+// sends DELETE /v1/tasks/{id}. The synchronous route is used only when the
+// backend has no task route (404/405 on create), never after a task ran.
 ```
 
 Used by:

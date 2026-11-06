@@ -1,0 +1,30 @@
+MemTotal:       326669824 kB
+dims 6082 x 6082 x 3041  = 449.96 GB float32
+  channels 0..63 written  channels 64..127 written  channels 128..191 written  channels 192..255 written  channels 256..319 written  channels 320..383 written  channels 384..447 written  channels 448..511 written  channels 512..575 written  channels 576..639 written  channels 640..703 written  channels 704..767 written  channels 768..831 written  channels 832..895 written  channels 896..959 written  channels 960..1023 written  channels 1024..1087 written  channels 1088..1151 written  channels 1152..1215 written  channels 1216..1279 written  channels 1280..1343 written  channels 1344..1407 written  channels 1408..1471 written  channels 1472..1535 written  channels 1536..1599 written  channels 1600..1663 written  channels 1664..1727 written  channels 1728..1791 written  channels 1792..1855 written  channels 1856..1919 written  channels 1920..1983 written  channels 1984..2047 written  channels 2048..2111 written  channels 2112..2175 written  channels 2176..2239 written  channels 2240..2303 written  channels 2304..2367 written  channels 2368..2431 written  channels 2432..2495 written  channels 2496..2559 written  channels 2560..2623 written  channels 2624..2687 written  channels 2688..2751 written  channels 2752..2815 written  channels 2816..2879 written  channels 2880..2943 written  channels 2944..3007 written  channels 3008..3040 written
+wrote /mnt/beegfs/fvitello/visivo/bench3/syn/cube_450gb_freq.fits
+disk: centre pixel (3041,3041), radius 912 px, PA 30 deg, inc 60 deg, Vrot 456 channels
+	Command being timed: "apptainer exec -B /mnt/beegfs /mnt/beegfs/fvitello/visivo/backend-egl.sif python /mnt/beegfs/fvitello/visivo/checkout-3/benchmark/make_synthetic_cube.py --gb 450 --spectral freq --out /mnt/beegfs/fvitello/visivo/bench3/syn/cube_450gb_freq.fits"
+	User time (seconds): 3509.28
+	System time (seconds): 291.92
+	Percent of CPU this job got: 96%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 1:05:24
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 76393152
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 378
+	Minor (reclaiming a frame) page faults: 101310526
+	Voluntary context switches: 827503
+	Involuntary context switches: 6453
+	Swaps: 0
+	File system inputs: 179125
+	File system outputs: 878818950
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 65536
+	Exit status: 0
+total 439409346
+-rw-rw-r-- 1 fvitello fvitello 449955169920 Nov  5 11:59 cube_450gb_freq.fits

@@ -43,6 +43,7 @@
 #include "TestLassoReplay.h"
 #include "TestUpdateCheck.h"
 #include "TestSourceTable.h"
+#include "TestBackendTaskFollow.h"
 
 #include <QCoreApplication>
 #include <QTest>
@@ -92,5 +93,6 @@ int main(int argc, char *argv[])
     { TestLassoReplay      t; status |= QTest::qExec(&t, argc, argv); }
     { TestUpdateCheck      t; status |= QTest::qExec(&t, argc, argv); }
     { TestSourceTable      t; status |= QTest::qExec(&t, argc, argv); }
+    { TestBackendTaskFollow t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }
