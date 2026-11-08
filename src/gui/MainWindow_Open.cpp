@@ -17,6 +17,7 @@
 #include "BaselineDialog.h"
 #include "CommandPalette.h"
 #include "DataHubWidget.h"
+#include "DecompressBeforeOpen.h"
 #include "DiagnosticsWindow.h"
 #include "LinewidthDialog.h"
 #include "ArepoExtractDialog.h"
@@ -38,6 +39,7 @@
 
 #include <QLabel>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QStatusBar>
 #include "HiPSWindow.h"
 #include "vtkWindowVbt.h"
@@ -748,6 +750,48 @@ void MainWindow::openDatasetPath(const QString &path)
     this->dispatchOpenForPath(remote ? path : info.absoluteFilePath());
 }
 
+QElapsedTimer MainWindow::openRequestedAt(const QString &path) const
+{
+    if (this->m_openRequestClock.isValid() && this->m_openRequestPath == path)
+        return this->m_openRequestClock;
+    QElapsedTimer now;
+    now.start();
+    return now;
+}
+
+bool MainWindow::decompressBeforeOpen(const BackendClient &client, const QString &path)
+{
+    // The Data Hub polls the backend every few seconds; looked at only then,
+    // its job list read "Idle" through the start of a decompression.
+    QPointer<DataHubWidget> hub = this->dataHub;
+    const auto refreshHub = [hub]() {
+        if (hub)
+            QTimer::singleShot(0, hub, &DataHubWidget::refreshStatus);
+    };
+    const visivo::DecompressBeforeOpenResult r = visivo::decompressBeforeOpen(
+            this, client, path, this->openRequestedAt(path), refreshHub);
+    if (r.proceed)
+        return true;
+    if (r.cancelled) {
+        // Asked for: said in the status bar, not raised as an error.
+        this->statusBar()->showMessage(
+                u"Opening %1 cancelled while it was being decompressed."_s.arg(
+                        QFileInfo(path).fileName()),
+                8000);
+        return false;
+    }
+    if (r.busy) {
+        // Not a modal box: its event loop would run inside the first file's
+        // wait, and that file could not open until the box was dismissed.
+        // The first file's progress window has been brought to the front.
+        this->statusBar()->showMessage(r.error, 10000);
+        return false;
+    }
+    QMessageBox::critical(this, u"Could not open dataset"_s,
+                          u"The backend could not decompress this file.\n\n%1"_s.arg(r.error));
+    return false;
+}
+
 bool MainWindow::doOpenDataPath(const QString &path)
 {
     this->setActiveBackendBadge(this->settings->getLocalBackend());
@@ -761,7 +805,9 @@ bool MainWindow::doOpenDataPath(const QString &path)
         return false;
     }
 
-    const auto opened = client.openDataset(path);
+    if (!this->decompressBeforeOpen(client, path))
+        return false;
+    const auto opened = client.openDataset(path, /*alreadyDecompressed=*/true);
     if (!opened.valid) {
         // The formats hint only where the format may be the problem: no reason
         // given, or the backend's own "Unsupported file type." (its start: the
@@ -1037,7 +1083,9 @@ vtkWindowImage *MainWindow::openVlkbImageViewer(const QString &backendPath,
         return nullptr;
     }
 
-    const auto opened = client.openDataset(backendPath);
+    if (!this->decompressBeforeOpen(client, backendPath))
+        return nullptr;
+    const auto opened = client.openDataset(backendPath, /*alreadyDecompressed=*/true);
     if (!opened.valid) {
         QMessageBox::critical(
                 this, u"Could not open VLKB dataset"_s,
@@ -1253,6 +1301,12 @@ void MainWindow::openAnything()
 
 void MainWindow::dispatchOpenForPath(const QString &path)
 {
+    // The click, for the decompression's clock: the health check and the
+    // classification below come before it, and take a second on a busy node.
+    // Kept only while this open runs (one asked for meanwhile replaces it).
+    this->m_openRequestClock.start();
+    this->m_openRequestPath = path;
+    const auto forgetRequest = qScopeGuard([this]() { this->m_openRequestClock.invalidate(); });
     BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
     // Asked here rather than only in openAnything(): the desktop reaches this
     // without going through the browser, and a backend that is down would
@@ -1284,6 +1338,7 @@ void MainWindow::dispatchOpenForPath(const QString &path)
     // route parses the header, and handing it the binary would fail on a file
     // the user chose correctly.
     const QString target = verdict.valid && !verdict.openPath.isEmpty() ? verdict.openPath : path;
+    this->m_openRequestPath = target;
 
     const QString opener = verdict.valid ? verdict.opener : QString();
     if (opener == u"dataset"_s) {
@@ -1336,6 +1391,9 @@ void MainWindow::dispatchOpenForPath(const QString &path)
     box.addButton(QMessageBox::Cancel);
     box.setDefaultButton(isTable ? asCatalogue : asDataset);
     box.exec();
+    // The time spent choosing is not the open's.
+    this->m_openRequestClock.start();
+    this->m_openRequestPath = target;
 
     if (box.clickedButton() == asCatalogue)
         doOpenCataloguePath(target, catalogueSiblingGroup(client, target, this));
@@ -1467,7 +1525,8 @@ void MainWindow::openVelocityField()
     }
 
     RemoteFileBrowserDialog dialog(client.baseUrl(), client.token(), this);
-    dialog.setExtensionFilter({ u".fits"_s, u".fit"_s }, u"FITS velocity fields"_s);
+    dialog.setExtensionFilter({ u".fits"_s, u".fit"_s, u".fits.gz"_s, u".fit.gz"_s, u".fz"_s },
+                              u"FITS velocity fields"_s);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
@@ -1481,6 +1540,8 @@ void MainWindow::openVelocityField()
 void MainWindow::openVelocityFieldPath(const QString &path)
 {
     BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
+    if (!this->decompressBeforeOpen(client, path))
+        return;
 
     // The 64³×3 grid is small; do the two synchronous calls under a wait cursor.
     QApplication::setOverrideCursor(Qt::WaitCursor);
@@ -1488,6 +1549,7 @@ void MainWindow::openVelocityFieldPath(const QString &path)
     const BackendVelocityOpenResult opened = client.openVelocityField(path);
     if (!opened.valid) {
         QApplication::restoreOverrideCursor();
+        this->statusBar()->clearMessage();   // not "Opening…" under the refusal
         QMessageBox::warning(this, u"Velocity Field"_s,
                              u"Open failed: %1"_s.arg(opened.error.isEmpty() ? u"unknown error"_s
                                                                              : opened.error));
@@ -1497,6 +1559,7 @@ void MainWindow::openVelocityFieldPath(const QString &path)
     const BackendVelocityGridResult grid = client.fetchVelocityGrid(opened.datasetId);
     QApplication::restoreOverrideCursor();
     if (!grid.valid) {
+        this->statusBar()->clearMessage();
         QMessageBox::warning(this, u"Velocity Field"_s,
                              u"Grid fetch failed: %1"_s.arg(grid.error.isEmpty()
                                                                     ? u"unknown error"_s

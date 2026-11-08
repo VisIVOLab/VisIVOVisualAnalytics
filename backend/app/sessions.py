@@ -276,6 +276,19 @@ class SessionRegistry:
                 session.touch()
             return session
 
+    def dataset_paths(self) -> set[str]:
+        """Every file an open dataset reads, in every session: the
+        decompression cache (app/compressed_fits.py) never evicts these."""
+        with self._lock:
+            sessions = list(self._sessions.values())
+        paths: set[str] = set()
+        for session in sessions:
+            for entry in list(session.datasets.values()):
+                path = entry.get("path") if isinstance(entry, dict) else None
+                if path:
+                    paths.add(str(path))
+        return paths
+
     def get_or_create_anon(self) -> Session:
         """Return (or lazily create) the anonymous backward-compat session."""
         with self._lock:

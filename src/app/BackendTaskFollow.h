@@ -53,11 +53,15 @@ struct BackendTaskControl
 {
     std::atomic_bool abortRequested{ false };
     std::atomic<int> phase{ static_cast<int>(TaskPhase::Starting) };
+    /// 0-100 for a task whose progress measures its work (see
+    /// TaskPollPolicy::progressIsMeasured); -1 for every other task.
+    std::atomic<int> percent{ -1 };
 
     void requestAbort() { abortRequested.store(true); }
     bool aborted() const { return abortRequested.load(); }
     void setPhase(TaskPhase p) { phase.store(static_cast<int>(p)); }
     TaskPhase currentPhase() const { return static_cast<TaskPhase>(phase.load()); }
+    int currentPercent() const { return percent.load(); }
 };
 
 enum class TaskOutcome {
@@ -83,7 +87,23 @@ struct TaskPollPolicy
     /// (a backend restart forgets its tasks, and asking again changes nothing).
     /// Time, not a count, so it does not depend on the back-off.
     qint64 lostAfterMs{ 120'000 };
+    /// The task's progress measures the work done (a decompression counts the
+    /// compressed bytes read), so the sheet may show it as a percentage. Off
+    /// by default: the moment and PV tasks report a ticker, and a fake
+    /// percentage is worse than an honest clock.
+    bool progressIsMeasured{ false };
+    /// How long the DELETE of a cancellation may take (0: BackendClient's
+    /// default, 15 s). Shorter where the caller waits for it on the way out.
+    int cancelTimeoutMs{ 0 };
 };
+
+/// The percentage a status read's progress (0-1) stands for, 0-100.
+inline int taskPercent(double progress)
+{
+    if (!(progress > 0.0))   // NaN too
+        return 0;
+    return progress >= 1.0 ? 100 : static_cast<int>(progress * 100.0);
+}
 
 struct TaskFollowResult
 {
@@ -285,13 +305,28 @@ inline TaskFollowResult followBackendTask(const BackendTaskCreateResult &created
         // "pending", "running", or a state this client does not know yet:
         // keep following; the user can always cancel.
         setPhase(s.status == QLatin1String("pending") ? TaskPhase::Queued : TaskPhase::Running);
+        if (policy.progressIsMeasured && control && s.status == QLatin1String("running"))
+            control->percent.store(taskPercent(s.progress));
     }
 }
 
+/// How much longer a progress sheet should wait before it shows, so that it
+/// appears @p targetMs after the user asked for the work. The sheet is made
+/// only once the task exists, which on a file open comes after a health check,
+/// a classification and the create request: counted from there, the sheet
+/// appeared late and its clock ran behind the click.
+inline int progressShowDelayMs(qint64 sinceRequestMs, int targetMs = 500)
+{
+    return static_cast<int>(std::clamp<qint64>(targetMs - std::max<qint64>(0, sinceRequestMs), 0,
+                                               std::max(0, targetMs)));
+}
+
 /// The progress sheet's text for a followed task: what is happening and for
-/// how long. No percentage: the backend's task progress is a ticker, not a
-/// measure of the work, and a fake percentage is worse than an honest clock.
-inline QString describeTaskProgress(const QString &what, TaskPhase phase, qint64 elapsedMs)
+/// how long. A percentage only when @p percent is one (0-100) and the task is
+/// running: most tasks report a ticker, not a measure of the work, and a fake
+/// percentage is worse than an honest clock; a decompression counts its bytes.
+inline QString describeTaskProgress(const QString &what, TaskPhase phase, qint64 elapsedMs,
+                                    int percent = -1)
 {
     const qint64 seconds = std::max<qint64>(0, elapsedMs / 1000);
     const QString clock = seconds < 60
@@ -320,6 +355,9 @@ inline QString describeTaskProgress(const QString &what, TaskPhase phase, qint64
                 "cancelled)");
         break;
     }
+    if (percent >= 0 && phase == TaskPhase::Running)
+        return QCoreApplication::translate("BackendTaskFollow", "%1… %2 %\n%3, %4 elapsed.")
+                .arg(what, QString::number(std::min(100, percent)), state, clock);
     return QCoreApplication::translate("BackendTaskFollow", "%1…\n%2, %3 elapsed.")
             .arg(what, state, clock);
 }

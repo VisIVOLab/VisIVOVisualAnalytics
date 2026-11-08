@@ -510,6 +510,8 @@ set(PROJECT_SOURCES
         src/gui/CubeVRController.h
         src/gui/Catalogue3DTableModel.cpp
         src/gui/Catalogue3DTableModel.h
+        src/gui/DecompressBeforeOpen.cpp
+        src/gui/DecompressBeforeOpen.h
         src/gui/DiagnosticsWindow.cpp
         src/gui/DiagnosticsWindow.h
         src/gui/ImageLayerController.cpp
@@ -964,6 +966,7 @@ qt_add_executable(test_remote_render
         src/app/BackendClient.cpp
         src/app/DiagnosticsManager.cpp
         src/app/SofiaSuggest.cpp   # visivo::refusalText, used by BackendClient
+        src/app/BackendClient_Tasks.cpp   # decompressForOpen, used by openDataset
         src/AnalysisParamStore.cpp
         src/Settings.cpp
         src/skava/BackendRouting.cpp

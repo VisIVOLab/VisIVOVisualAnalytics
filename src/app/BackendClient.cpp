@@ -937,8 +937,23 @@ static BackendOpenDatasetResult parseOpenDatasetObject(const QJsonObject &object
 
 BackendOpenDatasetResult BackendClient::openDataset(const QString &path)
 {
+    return openDataset(path, false);
+}
+
+BackendOpenDatasetResult BackendClient::openDataset(const QString &path, bool alreadyDecompressed)
+{
     BackendOpenDatasetResult result;
     QString error;
+    // A compressed FITS is decompressed first, as a task: a large .fits.gz
+    // takes minutes, far beyond the open request's timeout. The open that
+    // follows finds the decompressed copy in the backend's cache (issue #57).
+    if (!alreadyDecompressed && isCompressedFitsName(path)) {
+        const QString refusal = decompressForOpen(path);
+        if (!refusal.isEmpty()) {
+            result.error = refusal;
+            return result;
+        }
+    }
     const QJsonDocument body(QJsonObject{ { QStringLiteral("path"), path } });
     int status = 0;
     const QByteArray payload =
@@ -3150,7 +3165,8 @@ std::chrono::milliseconds BackendClient::requestTimeoutFor(const QUrl &url) cons
         // A proxied backend may sit under a path prefix, so match the tail.
         static const QRegularExpression taskStatus(QStringLiteral("/v1/tasks/([^/]+)$"));
         static const QStringList creators{ QStringLiteral("moment"), QStringLiteral("moment_fits"),
-                                           QStringLiteral("pv"), QStringLiteral("sourcefind") };
+                                           QStringLiteral("pv"), QStringLiteral("sourcefind"),
+                                           QStringLiteral("decompress") };
         const QRegularExpressionMatch m = taskStatus.match(path);
         if (m.hasMatch() && !creators.contains(m.captured(1)))
             return std::chrono::milliseconds(300000);   // 5 min

@@ -24,6 +24,10 @@ private slots:
     void aCancelDuringCreationOnAnOldBackendStartsNothing();
     void aPendingTaskReportsQueued();
     void theProgressTextSaysStateAndTime();
+    void aMeasuredProgressIsShownAsAPercentage();
+    void aTickerProgressIsNeverShownAsAPercentage();
+    void aCachedDecompressionNeedsNoFollowing();
+    void theSheetShowsOnTimeCountedFromTheRequest();
 };
 
 #endif // TestBackendTaskFollow_h

@@ -37,6 +37,14 @@ are preserved here unedited; the branch names they refer to are historical.
   naming and Recent Datasets treatment as tables. Repeated peer lists are no
   longer logged twice. SAMP connect no longer logs two 401 warnings (a stale
   settings token was used instead of the local backend's token file).
+- **Compressed FITS open directly** (#57). Gzipped (`.fits.gz`) and
+  tile-compressed (fpack, `.fz`) images and cubes open like their uncompressed
+  versions: the first open decompresses the file once into the workspace cache
+  (`VISIVO_DECOMPRESS_CACHE_DIR`, capped by `VISIVO_DECOMPRESS_CACHE_MAX_BYTES`),
+  and every viewer, moment, spectrum, SODA cutout and velocity field reads that
+  copy. A large file is decompressed as a task with progress and cancellation
+  (`POST /v1/tasks/decompress`); a truncated or damaged file is refused with
+  its reason. Recent files and provenance keep the original path.
 - **Region flux on multi-beam cubes.** Region statistics now divide by the
   selected channel's beam from a CASA `BEAMS` table instead of the
   primary-header beam (a 4" channel beam under a 2" header beam returned a
