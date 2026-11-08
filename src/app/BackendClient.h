@@ -2052,6 +2052,32 @@ public:
      * so all subsequent calls carry the correct X-Visivo-Session header.
      */
     BackendOpenDatasetResult openDataset(const QString &path);
+    /** What openDataset(path) does, without its decompression task when
+     *  @p alreadyDecompressed: the caller ran it already, behind a progress
+     *  sheet (visivo::decompressBeforeOpen), and a second create request would
+     *  only ask again what was just answered. */
+    BackendOpenDatasetResult openDataset(const QString &path, bool alreadyDecompressed);
+
+    /** Whether @p path names a compressed FITS (``.fits.gz``, ``.fz``…), which
+     *  the backend decompresses into its workspace cache before opening it. */
+    static bool isCompressedFitsName(const QString &path);
+    /** POST /v1/tasks/decompress — decompress a compressed FITS into the
+     *  backend's workspace cache as a task (progress, cancellation). */
+    BackendTaskCreateResult createDecompressTask(const QString &path) const;
+    /** Whether the create response already says the file is ready to open: a
+     *  decompressed copy cached from an earlier open, or a file that needs no
+     *  decompression. Then no task needs following, and a reopen costs what a
+     *  plain open does. */
+    static bool decompressionAlreadyDone(const BackendTaskCreateResult &created)
+    {
+        return created.valid && !created.taskId.isEmpty()
+               && created.status == QLatin1String("completed");
+    }
+    /** Run createDecompressTask() and follow it to its end, waiting in a local
+     *  event loop (safe on the GUI thread, like every request here). Empty on
+     *  success, or when the backend has no such route (the open then says what
+     *  it can); otherwise the reason the file cannot be decompressed. */
+    QString decompressForOpen(const QString &path) const;
 
     /** POST /v1/datasets/open_url — download a FITS / HDF5 from an HTTP(S)
      *  URL, cache it under the backend's exports/skava_cache directory and
@@ -2360,8 +2386,9 @@ public:
                                                       const QJsonObject &request) const;
     /** DELETE /v1/tasks/{id} — ask the backend to cancel a running or pending
      *  task. True when it accepted; ``error`` says why not (404: no such
-     *  task, 409: already finished). Best-effort: the task may still complete. */
-    bool cancelTask(const QString &taskId, QString &error) const;
+     *  task, 409: already finished). Best-effort: the task may still complete.
+     *  @p timeoutMs bounds the wait (0: the default, 15 s). */
+    bool cancelTask(const QString &taskId, QString &error, int timeoutMs = 0) const;
     /// @p abort: see performGet; a set flag ends the read at once (status empty).
     BackendTaskStatusResult requestTaskStatus(const QString &taskId,
                                               const std::atomic_bool *abort = nullptr) const;

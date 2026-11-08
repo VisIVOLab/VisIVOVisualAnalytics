@@ -22,6 +22,7 @@ from ..tasks import TASKS
 from ..product_cache import PRODUCT_CACHE
 from ..fits_dataset import ScientificFitsDataset
 from ..fits_truncation import FitsTruncatedError, check_not_truncated
+from ..compressed_fits import CompressedFitsError
 from ..skava_client import (
     SkavaResolveError,
     access_url_to_local_path,
@@ -122,10 +123,10 @@ async def open_dataset(
     elif field is not None or not _is_supported_dataset(path):
         return OpenDatasetResponse(
             valid=False,
-            error="Unsupported file type. Expected FITS (.fits, .fit) or "
-                  "HDF5 (.h5, .hdf5, .bfdata).")
+            error="Unsupported file type. Expected FITS (.fits, .fit, also "
+                  "compressed: .fits.gz, .fz) or HDF5 (.h5, .hdf5, .bfdata).")
     try:
-        kind, geometry = _fits_metadata(path)
+        kind, geometry = await asyncio.to_thread(_fits_metadata, path)
     except FitsTruncatedError as exc:
         raise _refuse_truncated(exc) from exc
     except Exception as exc:
@@ -220,6 +221,8 @@ async def open_dataset_from_url(
         ext = Path(raw_url).suffix.lower()
     elif lower.endswith(".fits.gz"):
         ext = ".fits.gz"
+    elif lower.endswith(".fz"):
+        ext = ".fits.fz"
     elif lower.endswith(".fits") or lower.endswith(".fit"):
         ext = ".fits"
     else:
@@ -258,7 +261,7 @@ async def open_dataset_from_url(
 
     # Delegate to the standard FITS / HDF5 / PSRFITS classifier.
     try:
-        kind, geometry = _fits_metadata(cached_path)
+        kind, geometry = await asyncio.to_thread(_fits_metadata, cached_path)
     except FitsTruncatedError as exc:
         # The cached copy is ours: drop it, so opening the URL again fetches
         # it again rather than finding the same short file in the cache.
@@ -268,6 +271,16 @@ async def open_dataset_from_url(
             pass
         raise _refuse_truncated(
             exc, " The downloaded copy was removed; opening the URL again downloads it again.") from exc
+    except CompressedFitsError as exc:
+        # A damaged gzip or tile-compressed download: drop it too.
+        try:
+            cached_path.unlink()
+        except OSError:
+            pass
+        return OpenDatasetResponse(
+            valid=False,
+            error=f"{exc} The downloaded copy was removed; opening the URL again "
+                  "downloads it again.")
     except Exception as exc:
         return OpenDatasetResponse(
             valid=False,
@@ -353,7 +366,7 @@ async def open_dataset_from_skava(
                    "(expected FITS / HDF5).")
 
     try:
-        kind, geometry = _fits_metadata(path)
+        kind, geometry = await asyncio.to_thread(_fits_metadata, path)
     except FitsTruncatedError as exc:
         raise _refuse_truncated(exc) from exc
     except Exception as exc:

@@ -3,6 +3,7 @@
 
 #include "app/RecentDatasetsManager.h"
 
+#include <QElapsedTimer>
 #include <QMainWindow>
 #include <functional>
 #include <QPointer>
@@ -140,6 +141,17 @@ private:
 
     // Path-based open helpers (skip the file browser dialog, used for reopen).
     void doOpenDataPath(const QString &path);
+    /// A compressed FITS (.fits.gz, .fz) is decompressed on the backend first,
+    /// behind a progress window with Cancel (issue #57). False when the open
+    /// must stop: cancelled or refused because another file is being
+    /// decompressed (said in the status bar), or failed (said in a box).
+    bool decompressBeforeOpen(const BackendClient &client, const QString &path);
+    /// When the user asked for @p path to open, for the decompression's
+    /// clock: dispatchOpenForPath() notes it before its health check and
+    /// classification; an open that did not come through it starts now.
+    QElapsedTimer openRequestedAt(const QString &path) const;
+    QElapsedTimer m_openRequestClock;   ///< set while dispatchOpenForPath() runs
+    QString m_openRequestPath;
     /// Classify ``path`` on the backend and open it accordingly, asking the
     /// user only when the content itself is ambiguous (a FITS table can be a
     /// catalogue or an overlay) or unrecognised.

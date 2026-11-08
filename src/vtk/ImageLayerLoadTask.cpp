@@ -7,6 +7,7 @@
 
 #include <QDebug>
 #include <QFile>
+#include <QFileInfo>
 
 #include <vtkErrorCode.h>
 #include <QElapsedTimer>
@@ -79,9 +80,15 @@ ImageLayerLoadResult loadImageLayer(const ImageLayerLoadRequest &request)
     // anyway succeeds — the WCS puts it where it belongs, off the edge of the
     // image — so the load reports success and nothing appears on screen.
     if (astroMaster.isSimulation() || astroNewLayer.isSimulation()) {
+        // Name the image: "one of these" sent the user to check the wrong
+        // header. The reader finds no WCS in a header it cannot read either
+        // (a compressed file, which the window routes through the backend).
+        const std::string &which = astroNewLayer.isSimulation() ? request.layerFilepath
+                                                                : request.masterFilepath;
         result.imageData = nullptr;
-        result.errorMessage = "One of these images has no celestial solution in its header (pixel "
-                              "coordinates only), so there is no way to line the two up.";
+        result.errorMessage = "No celestial solution could be read from the header of "
+                + QFileInfo(QString::fromStdString(which)).fileName().toStdString()
+                + " (pixel coordinates only), so there is no way to line the two images up.";
         return result;
     }
     if (!request.ignoreOverlap && !astroMaster.overlap(astroNewLayer)) {

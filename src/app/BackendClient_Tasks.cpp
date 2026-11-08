@@ -545,6 +545,73 @@ BackendTaskCreateResult BackendClient::createMomentTask(const QString &datasetId
     return result;
 }
 
+bool BackendClient::isCompressedFitsName(const QString &path)
+{
+    // The suffixes the backend opens through its decompression cache.
+    static const QStringList suffixes{ QStringLiteral(".fits.gz"), QStringLiteral(".fit.gz"),
+                                       QStringLiteral(".fts.gz"), QStringLiteral(".fz") };
+    for (const QString &suffix : suffixes) {
+        if (path.endsWith(suffix, Qt::CaseInsensitive))
+            return true;
+    }
+    return false;
+}
+
+BackendTaskCreateResult BackendClient::createDecompressTask(const QString &path) const
+{
+    BackendTaskCreateResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{ { QStringLiteral("path"), path } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/decompress")), body, error,
+                        nullptr, &result.httpStatus);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.taskId = object.value(QStringLiteral("task_id")).toString();
+    result.status = object.value(QStringLiteral("status")).toString();
+    result.cacheHit = object.value(QStringLiteral("cache_hit")).toBool(false);
+    return result;
+}
+
+QString BackendClient::decompressForOpen(const QString &path) const
+{
+    const BackendTaskCreateResult created = createDecompressTask(path);
+    // An older backend has no route (it refuses compressed files on open, with
+    // its own message); a missing file is a 404 too, and the open says so.
+    if (!created.valid && (created.httpStatus == 404 || created.httpStatus == 405))
+        return {};
+    // Opened before (the copy is cached) or not compressed after all: the
+    // backend says so in the create response, and there is nothing to follow.
+    if (decompressionAlreadyDone(created))
+        return {};
+    QElapsedTimer clock;
+    clock.start();
+    visivo::TaskFollowHooks hooks;
+    hooks.poll = [this](const QString &id) { return requestTaskStatus(id); };
+    hooks.cancel = [this](const QString &id, QString &error) { return cancelTask(id, error); };
+    // A local event loop rather than a sleep: openDataset() runs on the GUI
+    // thread too, which must keep painting while a large file decompresses.
+    hooks.sleepMs = [](int ms) {
+        QEventLoop loop;
+        QTimer::singleShot(ms, &loop, &QEventLoop::quit);
+        loop.exec();
+    };
+    hooks.nowMs = [&clock]() { return clock.elapsed(); };
+    visivo::TaskPollPolicy policy;
+    policy.maxPollMs = 1000;
+    const visivo::TaskFollowResult r = visivo::followBackendTask(created, hooks, nullptr, policy);
+    if (r.outcome == visivo::TaskOutcome::Completed)
+        return {};
+    qWarning().noquote() << QStringLiteral("[decompress] %1: %2").arg(path, r.error);
+    return r.error.isEmpty() ? QStringLiteral("The backend could not decompress %1.").arg(path)
+                             : r.error;
+}
+
 BackendTaskCreateResult BackendClient::createPvTask(const QString &datasetId,
                                                     const std::vector<std::array<double, 2>> &vertices,
                                                     int widthPixels) const
@@ -657,8 +724,9 @@ BackendSofiaSuggestResult BackendClient::suggestSofia2Parameters(const QString &
     return result;
 }
 
-bool BackendClient::cancelTask(const QString &taskId, QString &error) const
+bool BackendClient::cancelTask(const QString &taskId, QString &error, int timeoutMs) const
 {
+    const int timeout = timeoutMs > 0 ? timeoutMs : kCancelTaskTimeoutMs;
     const QString safeSeg = QString::fromUtf8(QUrl::toPercentEncoding(taskId, "", "/"));
     QNetworkRequest req(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/") + safeSeg));
     // Hand-built, as deleteExport: QNAM has no DELETE helper that takes the
@@ -666,7 +734,7 @@ bool BackendClient::cancelTask(const QString &taskId, QString &error) const
     BackendClient::applySessionHeaders(req, m_baseUrl, m_token, m_sessionId);
     // Bounded: a cancellation is asked for from a worker the user is waiting
     // on, and a backend that does not answer must not hold it.
-    req.setTransferTimeout(kCancelTaskTimeoutMs);
+    req.setTransferTimeout(timeout);
     auto *nam = getThreadLocalNam();
     auto *reply = nam->sendCustomRequest(req, "DELETE");
     QEventLoop loop;
@@ -678,14 +746,14 @@ bool BackendClient::cancelTask(const QString &taskId, QString &error) const
         timedOut = true;
         reply->abort();          // → finished() → loop.quit()
     });
-    deadline.start(kCancelTaskTimeoutMs);
+    deadline.start(timeout);
     loop.exec();
     deadline.stop();
     const QByteArray raw = reply->readAll();
     const bool ok = reply->error() == QNetworkReply::NoError;
     if (timedOut) {
         error = QStringLiteral("the backend did not confirm the cancellation within %1 s")
-                        .arg(kCancelTaskTimeoutMs / 1000);
+                        .arg(qMax(1, timeout / 1000));
     } else if (!ok) {
         const QString detail = QJsonDocument::fromJson(raw).object().value(QStringLiteral("detail")).toString();
         error = detail.isEmpty() ? reply->errorString() : detail;
@@ -756,8 +824,8 @@ visivo::TaskFollowResult visivo::followBackendTask(const BackendClient &client,
     hooks.poll = [&client, control](const QString &id) {
         return client.requestTaskStatus(id, control ? &control->abortRequested : nullptr);
     };
-    hooks.cancel = [&client](const QString &id, QString &error) {
-        return client.cancelTask(id, error);
+    hooks.cancel = [&client, &policy](const QString &id, QString &error) {
+        return client.cancelTask(id, error, policy.cancelTimeoutMs);
     };
     // A plain sleep: this runs on a pool thread, which has no event loop of its
     // own to serve, and the network calls run their own local loops.

@@ -369,3 +369,78 @@ void TestBackendTaskFollow::theProgressTextSaysStateAndTime()
     QVERIFY(visivo::describeTaskProgress(what, TaskPhase::Synchronous, 0)
                     .contains(u"cannot be cancelled"_s));
 }
+
+void TestBackendTaskFollow::aMeasuredProgressIsShownAsAPercentage()
+{
+    // A decompression counts the compressed bytes it has read: its progress
+    // is a measure, and the sheet shows it.
+    FakeBackend backend;
+    QList<int> seen;
+    BackendTaskControl control;
+    backend.statusAt = [&](qint64 t) {
+        seen << control.currentPercent();
+        if (t >= 5'000)
+            return status(u"completed"_s);
+        BackendTaskStatusResult s = status(u"running"_s);
+        s.progress = t / 5'000.0;
+        return s;
+    };
+    visivo::TaskPollPolicy policy;
+    policy.progressIsMeasured = true;
+    const auto r = visivo::followBackendTask(created(), backend.hooks(), &control, policy);
+    QCOMPARE(r.outcome, TaskOutcome::Completed);
+    QCOMPARE(seen.first(), -1);   // nothing measured before the first answer
+    QVERIFY(std::is_sorted(seen.begin(), seen.end()));
+    QVERIFY(seen.last() > 0 && seen.last() < 100);
+
+    QCOMPARE(visivo::taskPercent(0.421), 42);
+    QCOMPARE(visivo::taskPercent(1.7), 100);
+    QCOMPARE(visivo::taskPercent(-0.2), 0);
+    QCOMPARE(visivo::taskPercent(std::nan("")), 0);
+
+    const QString what = u"Decompressing cube%20x.fits.gz"_s;   // a % in the name stays
+    const QString text = visivo::describeTaskProgress(what, TaskPhase::Running, 9'000, 42);
+    QVERIFY2(text.startsWith(what + u"… 42 %"_s), qPrintable(text));
+    QVERIFY2(text.contains(u"9 s elapsed"_s), qPrintable(text));
+    // Cancelling is not "42 % done".
+    QVERIFY(!visivo::describeTaskProgress(what, TaskPhase::Cancelling, 0, 42).contains(u"42 %"_s));
+}
+
+void TestBackendTaskFollow::aTickerProgressIsNeverShownAsAPercentage()
+{
+    // The moment and PV tasks report a ticker: no percentage unless asked for.
+    FakeBackend backend;
+    backend.statusAt = [](qint64 t) {
+        BackendTaskStatusResult s = status(t < 5'000 ? u"running"_s : u"completed"_s);
+        s.progress = 0.5;
+        return s;
+    };
+    BackendTaskControl control;
+    QCOMPARE(visivo::followBackendTask(created(), backend.hooks(), &control).outcome,
+             TaskOutcome::Completed);
+    QCOMPARE(control.currentPercent(), -1);
+}
+
+void TestBackendTaskFollow::aCachedDecompressionNeedsNoFollowing()
+{
+    // A file opened before is answered "completed" by the create request
+    // itself: the reopen must not poll (that cost ~1.5 s per reopen).
+    BackendTaskCreateResult hit = created(u"completed"_s);
+    hit.cacheHit = true;
+    QVERIFY(BackendClient::decompressionAlreadyDone(hit));
+    QVERIFY(!BackendClient::decompressionAlreadyDone(created(u"running"_s)));
+    QVERIFY(!BackendClient::decompressionAlreadyDone(created(u"pending"_s)));
+    QVERIFY(!BackendClient::decompressionAlreadyDone(refused(404, u"File not found."_s)));
+}
+
+void TestBackendTaskFollow::theSheetShowsOnTimeCountedFromTheRequest()
+{
+    // The open's health check, classification and create request come before
+    // the sheet exists: what they took is taken off its delay, not added.
+    QCOMPARE(visivo::progressShowDelayMs(0, 400), 400);
+    QCOMPARE(visivo::progressShowDelayMs(150, 400), 250);
+    QCOMPARE(visivo::progressShowDelayMs(400, 400), 0);
+    QCOMPARE(visivo::progressShowDelayMs(2'000, 400), 0);   // late already: at once
+    QCOMPARE(visivo::progressShowDelayMs(-50, 400), 400);   // never more than the delay
+    QCOMPARE(visivo::progressShowDelayMs(100, -1), 0);
+}

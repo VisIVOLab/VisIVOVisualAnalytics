@@ -8,6 +8,14 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Compressed FITS open directly** (#57). Gzipped (`.fits.gz`) and
+  tile-compressed (fpack, `.fz`) images and cubes open like their uncompressed
+  versions: the first open decompresses the file once into the workspace cache
+  (`VISIVO_DECOMPRESS_CACHE_DIR`, capped by `VISIVO_DECOMPRESS_CACHE_MAX_BYTES`),
+  and every viewer, moment, spectrum, SODA cutout and velocity field reads that
+  copy. A large file is decompressed as a task with progress and cancellation
+  (`POST /v1/tasks/decompress`); a truncated or damaged file is refused with
+  its reason. Recent files and provenance keep the original path.
 - **SODA `BAND` on MeerKAT sub-band cubes** (#115). Obit MFImage cubes with a
   `SPECLNMF` spectral axis (the MeerKAT Milky Way Bulge and MGCLS releases)
   now accept `BAND`: it returns the sub-bands whose centre frequency

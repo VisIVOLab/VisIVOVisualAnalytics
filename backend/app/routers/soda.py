@@ -36,6 +36,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -48,6 +49,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 
 from ..auth import verify_token
+from ..compressed_fits import CompressedFitsError, readable_path
 from ..dependencies import _FITS_SUFFIXES, _is_supported_dataset, _normalize_path, _run_heavy, get_exports_dir
 from ..fits_truncation import FitsTruncatedError, check_not_truncated
 from ..skava_client import SkavaResolveError, access_url_to_local_path
@@ -157,8 +159,8 @@ def _resolve(dataset_id: str | None, *, any_file: bool = False) -> Path:
 def _media_type(path: Path) -> str:
     """The media type of a file served as stored."""
     name = path.name.lower()
-    if path.suffix.lower() in _FITS_SUFFIXES:
-        return "application/fits"
+    if path.suffix.lower() in _FITS_SUFFIXES or name.endswith(".fz"):
+        return "application/fits"   # a tile-compressed file is still FITS
     if name.endswith((".h5", ".hdf5", ".he5")):
         return "application/x-hdf5"
     if name.endswith(".gz"):
@@ -346,6 +348,10 @@ async def _execute(operation: str, path: Path, values: dict[str, str], out_dir: 
         if record is None or record.status == "cancelled":
             raise asyncio.CancelledError("aborted before the computation started")
     stop_file = TASKS.stop_file(task_id) if task_id else None
+    # A compressed dataset is cut from its decompressed copy (issue #57); the
+    # decompression, when the cache does not hold it yet, stops on ABORT too.
+    path = await asyncio.to_thread(
+        readable_path, path, should_stop=(lambda: os.path.exists(stop_file)) if stop_file else None)
     if operation == "CUTOUT":
         result = await asyncio.to_thread(make_cutout, str(path), pos=values.get("POS"),
                                          band=values.get("BAND"), time=values.get("TIME"),
@@ -391,6 +397,7 @@ async def soda_sync(request: Request, token: str = _auth) -> Response:
             return FileResponse(whole, media_type=_media_type(whole), filename=whole.name,
                                 headers={"X-Soda-Applied": ""})
         _, path, values = _validate(params)
+        path = await asyncio.to_thread(readable_path, path)   # compressed: issue #57
         result = await asyncio.to_thread(make_cutout, str(path), pos=values.get("POS"),
                                          band=values.get("BAND"), time=values.get("TIME"),
                                          pol=values.get("POL"), filename_hint=path.stem)
@@ -399,7 +406,10 @@ async def soda_sync(request: Request, token: str = _auth) -> Response:
     except CutoutNoOverlap:
         # SODA: a valid request that selects nothing is an empty answer, not an error.
         return Response(status_code=204)
-    except CutoutError as exc:
+    except FitsTruncatedError as exc:
+        # A gzip of a truncated FITS: whole as a stream, short once decompressed.
+        return SodaError(str(exc), kind="Error", status=422).response()
+    except (CutoutError, CompressedFitsError) as exc:
         return SodaError(str(exc)).response()
     applied = ",".join(k for k, v in result.applied.items() if v is True)
     logger.info("[soda] sync %s applied=%s bytes=%d", path.name, applied, len(result.fits_bytes))
@@ -462,7 +472,7 @@ def _start(task_id: str) -> None:
             _reclaim(task_id)
             TASKS.update(task_id, status="completed", progress=1.0,
                          result={"soda": spec, "no_data": f"No data: {exc}"})
-        except (SodaError, CutoutError) as exc:
+        except (SodaError, CutoutError, CompressedFitsError) as exc:
             spec["end_time"] = _utc_now()
             _reclaim(task_id)
             TASKS.update(task_id, status="failed", progress=1.0, error=f"UsageError: {exc}")

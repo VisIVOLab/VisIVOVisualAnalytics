@@ -74,6 +74,105 @@ async def create_moment_task(
     TASKS.update(task.task_id, asyncio_handle=handle)
     return TaskCreateResponse(valid=True, error="", task_id=task.task_id, status="running", cache_hit=False)
 
+@router.post("/v1/tasks/decompress", response_model=TaskCreateResponse, tags=["tasks"])
+async def create_decompress_task(
+    request: DecompressRequest,
+    token: str = _auth,
+) -> TaskCreateResponse:
+    """Decompress a compressed FITS into the workspace cache, as a task.
+
+    ``/v1/datasets/open`` decompresses on its own, in one request; a large
+    ``.fits.gz`` takes minutes there, without progress and beyond any client's
+    request timeout. This route does the same work as a task the client
+    follows (``progress`` is the fraction decompressed) and can cancel
+    (``DELETE /v1/tasks/{id}`` stops it within one 16 MB chunk and leaves no
+    cache entry). Opening the file afterwards finds the cache entry at once.
+    A file that is not compressed, or whose copy is cached already, is
+    answered ``status: "completed"`` in this response (``cache_hit`` true for
+    a cached copy), with the result in the task; nothing needs following.
+    A file that is not compressed has ``compression: ""``.
+    The result: ``compression``, ``cache_hit``, ``seconds``, ``source_bytes``
+    and ``decompressed_bytes``.
+    """
+    from ..compressed_fits import (  # noqa: PLC0415
+        CompressedFitsError, DecompressionCancelled, cached_copy, compression_of, materialize,
+    )
+    from ..fits_truncation import FitsTruncatedError  # noqa: PLC0415
+
+    try:
+        path = _normalize_path(request.path)
+    except PermissionError:
+        path = None
+    if path is None or not _is_supported_dataset(path):
+        # The same answer for a refused path as for a missing one.
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    def _result(made) -> dict:
+        result = {"valid": True, "error": "", "compression": "", "cache_hit": False,
+                  "seconds": 0.0, "source_bytes": path.stat().st_size,
+                  "decompressed_bytes": 0}
+        if made is not None:
+            result.update(compression=made.compression, cache_hit=made.cache_hit,
+                          seconds=round(made.seconds, 3), source_bytes=made.source_bytes,
+                          decompressed_bytes=made.bytes)
+        return result
+
+    def _ready() -> dict | None:
+        """The result at once, when there is nothing to decompress: the file
+        is not compressed, or its copy is in the cache already."""
+        if compression_of(path) is None:
+            return _result(None)
+        made = cached_copy(path)
+        return _result(made) if made is not None else None
+
+    # A file opened before (the copy is cached) or not compressed is answered
+    # completed in the create response itself, so the client opens it without
+    # following a task: a cached reopen costs what a plain open does.
+    try:
+        ready = await asyncio.to_thread(_ready)
+    except OSError:
+        ready = None   # the task says what is wrong with the file
+    if ready is not None:
+        task = TASKS.create("decompress", owner_token=token)
+        TASKS.update(task.task_id, status="completed", progress=1.0, result=ready,
+                     cache_hit=ready["cache_hit"])
+        return TaskCreateResponse(valid=True, error="", task_id=task.task_id,
+                                  status="completed", cache_hit=ready["cache_hit"])
+
+    task = TASKS.create("decompress", owner_token=token)
+    task_id = task.task_id
+    stop_file = TASKS.stop_file(task_id)
+    TASKS.update(task_id, status="running", progress=0.0)
+
+    def _work():
+        return materialize(
+            path,
+            progress=lambda fraction: TASKS.update(task_id, progress=0.99 * fraction),
+            should_stop=(lambda: os.path.exists(stop_file)) if stop_file else None)
+
+    async def _runner() -> None:
+        work = asyncio.ensure_future(asyncio.to_thread(_work))
+        # A cancelled runner leaves the thread to notice the stop file; its
+        # outcome is taken here so that it is never reported as unretrieved.
+        work.add_done_callback(lambda f: f.cancelled() or f.exception())
+        TASKS.update(task_id, work_handle=work)
+        try:
+            made = await asyncio.shield(work)
+            result = _result(made)
+            TASKS.update(task_id, status="completed", progress=1.0, result=result,
+                         cache_hit=bool(made is not None and made.cache_hit))
+        except (asyncio.CancelledError, DecompressionCancelled):
+            TASKS.update(task_id, status="cancelled", error="Cancelled by client.")
+        except (CompressedFitsError, FitsTruncatedError) as exc:
+            TASKS.update(task_id, status="failed", progress=1.0, error=str(exc))
+        except Exception as exc:  # noqa: BLE001 — reported through the task
+            logger.exception("[decompress] %s failed", path)
+            TASKS.update(task_id, status="failed", progress=1.0, error=str(exc))
+
+    TASKS.update(task_id, asyncio_handle=asyncio.create_task(_runner()))
+    return TaskCreateResponse(valid=True, error="", task_id=task_id, status="running")
+
+
 @router.post("/v1/tasks/pv", response_model=TaskCreateResponse, tags=["tasks"])
 async def create_pv_task(
     request: CubePvRequest,

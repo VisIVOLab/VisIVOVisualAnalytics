@@ -920,8 +920,12 @@ class ScientificFitsDataset:
         return None
 
     def provenance_context(self) -> dict[str, Any]:
+        # A compressed dataset is read from its decompressed copy in the
+        # workspace cache (issue #57); provenance names the file the user
+        # opened, never the cache.
+        from .compressed_fits import source_of  # noqa: PLC0415
         return {
-            "path": self.path,
+            "path": source_of(self.path) or self.path,
             "bunit": self.bunit,
             "beam_major": self.beam.major,
             "beam_minor": self.beam.minor,
