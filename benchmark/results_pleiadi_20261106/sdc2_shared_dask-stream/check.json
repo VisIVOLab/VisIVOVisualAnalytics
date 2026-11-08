@@ -1,0 +1,208 @@
+{
+  "cube": "/mnt/beegfs/fvitello/demo_data/sky_ldev_v2.fits",
+  "channels": [
+    3630,
+    3757
+  ],
+  "mask": "8.6e-5",
+  "criterion": "/mnt/beegfs/fvitello/visivo/bench116/campaign/src/benchmark/moment_criterion_ulp.py",
+  "env": {
+    "host": "r33c1s02",
+    "platform": "Linux-4.18.0-553.34.1.el8_10.ppc64le-ppc64le-with-glibc2.39",
+    "machine": "ppc64le",
+    "python": "3.12.15",
+    "cpus": 128,
+    "slurm_job": "1076",
+    "moment_threads_env": null,
+    "cuda_visible": null,
+    "mem_total_gb": 334.5,
+    "commit": "ca8f335 + issue #116/#117/#119 working tree (uncommitted)",
+    "image": "/mnt/beegfs/fvitello/visivo/backend-egl.sif"
+  },
+  "orders": {
+    "0": {
+      "timing": {
+        "inmem": {
+          "wall_s": 3.93,
+          "moment_unit": "Jy/beam Hz"
+        },
+        "stream": {
+          "wall_s": 3.65,
+          "moment_unit": "Jy/beam Hz"
+        },
+        "dask": {
+          "wall_s": 1.33,
+          "moment_unit": "Jy/beam Hz"
+        }
+      },
+      "stream_vs_inmem": {
+        "ok": true,
+        "nan_mismatch": 0,
+        "finite_ref": 251613,
+        "finite_test": 251613,
+        "max_abs_diff": 0.0,
+        "max_diff_in_ulp": 0.0,
+        "n_out_of_tolerance": 0
+      },
+      "dask_vs_inmem": {
+        "ok": true,
+        "nan_mismatch": 0,
+        "finite_ref": 251613,
+        "finite_test": 251613,
+        "max_abs_diff": 0.0,
+        "max_diff_in_ulp": 0.0,
+        "n_out_of_tolerance": 0
+      },
+      "inmem_vs_float64": {
+        "ok": true,
+        "nan_mismatch": 0,
+        "finite_ref": 251613,
+        "finite_test": 251613,
+        "max_abs_diff": 0.0001143626868724823,
+        "max_diff_in_ulp": 0.5,
+        "n_out_of_tolerance": 0
+      },
+      "stream_vs_float64": {
+        "ok": true,
+        "nan_mismatch": 0,
+        "finite_ref": 251613,
+        "finite_test": 251613,
+        "max_abs_diff": 0.0001143626868724823,
+        "max_diff_in_ulp": 0.5,
+        "n_out_of_tolerance": 0
+      },
+      "dask_vs_float64": {
+        "ok": true,
+        "nan_mismatch": 0,
+        "finite_ref": 251613,
+        "finite_test": 251613,
+        "max_abs_diff": 0.0001143626868724823,
+        "max_diff_in_ulp": 0.5,
+        "n_out_of_tolerance": 0
+      }
+    },
+    "1": {
+      "timing": {
+        "inmem": {
+          "wall_s": 5.93,
+          "moment_unit": "Hz"
+        },
+        "stream": {
+          "wall_s": 3.84,
+          "moment_unit": "Hz"
+        },
+        "dask": {
+          "wall_s": 1.18,
+          "moment_unit": "Hz"
+        }
+      },
+      "stream_vs_inmem": {
+        "ok": true,
+        "nan_mismatch": 0,
+        "finite_ref": 251613,
+        "finite_test": 251613,
+        "max_abs_diff": 0.0,
+        "max_diff_in_ulp": 0.0,
+        "n_out_of_tolerance": 0
+      },
+      "dask_vs_inmem": {
+        "ok": true,
+        "nan_mismatch": 0,
+        "finite_ref": 251613,
+        "finite_test": 251613,
+        "max_abs_diff": 0.0,
+        "max_diff_in_ulp": 0.0,
+        "n_out_of_tolerance": 0
+      },
+      "inmem_vs_float64": {
+        "ok": true,
+        "nan_mismatch": 0,
+        "finite_ref": 251613,
+        "finite_test": 251613,
+        "max_abs_diff": 32.0,
+        "max_diff_in_ulp": 0.5,
+        "n_out_of_tolerance": 0
+      },
+      "stream_vs_float64": {
+        "ok": true,
+        "nan_mismatch": 0,
+        "finite_ref": 251613,
+        "finite_test": 251613,
+        "max_abs_diff": 32.0,
+        "max_diff_in_ulp": 0.5,
+        "n_out_of_tolerance": 0
+      },
+      "dask_vs_float64": {
+        "ok": true,
+        "nan_mismatch": 0,
+        "finite_ref": 251613,
+        "finite_test": 251613,
+        "max_abs_diff": 32.0,
+        "max_diff_in_ulp": 0.5,
+        "n_out_of_tolerance": 0
+      }
+    },
+    "2": {
+      "timing": {
+        "inmem": {
+          "wall_s": 5.57,
+          "moment_unit": "Hz"
+        },
+        "stream": {
+          "wall_s": 7.82,
+          "moment_unit": "Hz"
+        },
+        "dask": {
+          "wall_s": 2.24,
+          "moment_unit": "Hz"
+        }
+      },
+      "stream_vs_inmem": {
+        "ok": true,
+        "nan_mismatch": 0,
+        "finite_ref": 251613,
+        "finite_test": 251613,
+        "max_abs_diff": 0.0,
+        "max_diff_in_ulp": 0.0,
+        "n_out_of_tolerance": 0
+      },
+      "dask_vs_inmem": {
+        "ok": true,
+        "nan_mismatch": 0,
+        "finite_ref": 251613,
+        "finite_test": 251613,
+        "max_abs_diff": 0.0,
+        "max_diff_in_ulp": 0.0,
+        "n_out_of_tolerance": 0
+      },
+      "inmem_vs_float64": {
+        "ok": true,
+        "nan_mismatch": 0,
+        "finite_ref": 251613,
+        "finite_test": 251613,
+        "max_abs_diff": 0.1025839438661933,
+        "max_diff_in_ulp": 0.8224639669060707,
+        "n_out_of_tolerance": 0
+      },
+      "stream_vs_float64": {
+        "ok": true,
+        "nan_mismatch": 0,
+        "finite_ref": 251613,
+        "finite_test": 251613,
+        "max_abs_diff": 0.1025839438661933,
+        "max_diff_in_ulp": 0.8224639669060707,
+        "n_out_of_tolerance": 0
+      },
+      "dask_vs_float64": {
+        "ok": true,
+        "nan_mismatch": 0,
+        "finite_ref": 251613,
+        "finite_test": 251613,
+        "max_abs_diff": 0.1025839438661933,
+        "max_diff_in_ulp": 0.8224639669060707,
+        "n_out_of_tolerance": 0
+      }
+    }
+  },
+  "ok": true
+}

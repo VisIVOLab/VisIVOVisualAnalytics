@@ -6,6 +6,16 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## Unreleased
+
+- **Faster out-of-core moment maps** (#116, #117, #119). Large cubes are
+  read with explicit plane reads and read-ahead, and the number of worker
+  threads is chosen from the CPUs and the memory budget instead of a fixed
+  four. On a PLEIADI-GPU node M0, M1 and M2 on the dask path are 1.6 to 2.6
+  times faster, with the same maps. Export Moment as FITS now uses the same
+  out-of-core path as the moment itself. Measurements are in
+  `benchmark/RESULTS.md`.
+
 ## 1.0.11 (2026-11-06)
 
 - **Linux: the release opens again** (PR #131). The Linux AppImage crashed
