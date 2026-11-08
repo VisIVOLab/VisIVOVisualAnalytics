@@ -1,29 +1,31 @@
 // SampMessageHandler.h – MType handlers for inbound SAMP messages in VisIVO Visual Analytics
 //
-// SampMessageHandler connects to SampClient::messageReceived() and dispatches
-// each SAMP message to the appropriate VisIVO action.
+// SampMessageHandler connects to SampClient::messageReceived() (delivered on
+// the GUI thread) and turns each SAMP message into a request the main window
+// acts on.
 //
 // Supported inbound MTypes:
-//   image.load.fits      → open FITS image/cube via BackendClient
-//   table.load.votable   → open VOTable as catalogue
-//   table.load.fits      → open FITS table as catalogue
-//   coord.pointAt.sky    → emit skyCoordReceived(ra, dec)
+//   image.load.fits      → imageLoadRequested(url, name, replyToken)
+//   table.load.votable   → tableLoadRequested(url, tableId, name, mtype, replyToken)
+//   table.load.fits      → tableLoadRequested(url, tableId, name, mtype, replyToken)
+//   coord.pointAt.sky    → skyCoordReceived(ra, dec)
+//   table.highlight.row  → rowHighlightRequested(tableId, url, row, sender)
+//   table.select.rowList → rowSelectionRequested(tableId, url, rows, sender)
 //   samp.hub.event.*     → internal Hub lifecycle (handled by SampClient itself)
 //
-// Note: actual file loading is delegated to DatasetOpenService and the existing
-// BackendClient API.  SampMessageHandler only orchestrates the routing.
+// SampMessageHandler only routes; staging a file on the backend and finding
+// the viewer a row belongs to is the main window's job.
 
 #ifndef SAMPMESSAGEHANDLER_H
 #define SAMPMESSAGEHANDLER_H
 
 #include "SampClient.h"
 
+#include <QList>
 #include <QObject>
 #include <QString>
-#include <QVariantMap>
 
 class BackendClient;
-class DatasetOpenService;
 
 // ── SampMessageHandler ────────────────────────────────────────────────────────
 
@@ -38,25 +40,33 @@ public:
 
 signals:
     /**
-     * Emitted when a FITS dataset has been opened as a result of an inbound
-     * image.load.fits / table.load.fits message.
-     * Connect this to your DatasetOpenService or main window.
+     * image.load.fits: the image at @p url should open. @p replyToken is set for a
+     * call: answer it with SampClient::replyToCall() once it opened or failed.
      */
-    void fitsDatasetOpened(const QString &backendPath, const QString &mtype);
+    void imageLoadRequested(const QString &url, const QString &name,
+                            const QString &replyToken);
 
     /**
-     * Emitted when a VOTable has been loaded (table.load.votable).
-     * @param url         The original URL from the SAMP message
-     * @param localPath   Path to a locally-cached copy, or empty if the file
-     *                    is already accessible by the backend via its URL.
+     * table.load.votable / table.load.fits: the table at @p url should open.
+     * @p tableId is the sender's table-id (may be empty); keep it with the
+     * opened catalogue so row messages naming it can be matched.
      */
-    void votableLoaded(const QString &url, const QString &localPath);
+    void tableLoadRequested(const QString &url, const QString &tableId, const QString &name,
+                            const QString &mtype, const QString &replyToken);
 
     /**
      * Emitted for coord.pointAt.sky messages.
      * The main window / HiPS viewport should connect to this to re-centre.
      */
     void skyCoordReceived(double raDeg, double decDeg);
+
+    /** table.highlight.row: @p row is 0-based in the original table. */
+    void rowHighlightRequested(const QString &tableId, const QString &url, qint64 row,
+                               const QString &senderId);
+
+    /** table.select.rowList: rows are 0-based in the original table. */
+    void rowSelectionRequested(const QString &tableId, const QString &url,
+                               const QList<qint64> &rows, const QString &senderId);
 
     /**
      * Generic signal for any message that was received but not specifically
@@ -74,21 +84,6 @@ public slots:
     void onMessageReceived(const SampMessage &message);
 
 private:
-    void handleImageLoadFits(const SampMessage &msg);
-    void handleTableLoad(const SampMessage &msg);
-    void handleCoordPointAtSky(const SampMessage &msg);
-
-    /**
-     * Resolve a SAMP URL to a backend-accessible path.
-     *
-     * - file:// URLs: strip the scheme, return the local client path.
-     * - http:// / https:// URLs: return the URL as-is.
-     *
-     * MainWindow is responsible for staging the file on the backend when the
-     * backend cannot access the resolved location directly.
-     */
-    static QString resolveUrl(const QString &url);
-
     BackendClient *m_backend{ nullptr };
     SampClient    *m_samp{ nullptr };
 };

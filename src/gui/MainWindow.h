@@ -2,7 +2,10 @@
 #define MainWindow_h
 
 #include "app/RecentDatasetsManager.h"
+#include "app/SampProtocol.h"
 
+#include <QHash>
+#include <QSet>
 #include <QMainWindow>
 #include <functional>
 #include <QPointer>
@@ -16,6 +19,7 @@
 class AuthWrapper;
 class BackendClient;
 struct BackendMcutoutItem;
+struct BackendSampSendResult;
 class CommandPalette;
 class DataHubWidget;
 class DiagnosticsWindow;
@@ -25,11 +29,13 @@ class SampMessageHandler;
 class QAction;
 class QLabel;
 class QMenu;
+class QNetworkAccessManager;
 class QProgressDialog;
 class QTabWidget;
 class Settings;
 class SourceFindDialog;
 class VLKBInventoryTree;
+class vtkWindowCatalogue3D;
 class vtkWindowImage;
 struct BackendNode;
 struct SkavaRoute;
@@ -132,14 +138,44 @@ private:
     void syncDataHubSettings();
     void syncSampSettings();
     void updateSampActions();
-    void handleSampFitsDataset(const QString &backendPath, const QString &mtype);
-    void handleSampTableLoad(const QString &url, const QString &localPath);
+    void handleSampImageLoad(const QString &url, const QString &name,
+                             const QString &replyToken);
+    void handleSampTableLoad(const QString &url, const QString &tableId, const QString &name,
+                             const QString &mtype, const QString &replyToken);
     void handleSampSkyCoord(double raDeg, double decDeg);
+    void handleSampHighlightRow(const QString &tableId, const QString &url, qint64 row,
+                                const QString &senderId);
+    void handleSampSelectRows(const QString &tableId, const QString &url,
+                              const QList<qint64> &rows, const QString &senderId);
+    /// A row the user selected in a catalogue viewer, for table.highlight.row.
+    void sendSampRowHighlight(const QString &tableKey, qint64 row);
+    /// Make the file at a received SAMP @p url a path the backend can open,
+    /// then call @p done with it (never on failure, which is reported here,
+    /// and answered to the sender when @p replyToken is a call's).
+    /// @p staged: the path is a copy in the backend's SAMP store (which
+    /// cleans it up), not the sender's own file read where it is.
+    /// A hub-local http URL cannot be fetched by a remote backend, so the
+    /// client downloads it and uploads it; a file: URL is used in place by a
+    /// local backend.
+    void stageSampUrl(const QString &url, const QString &mtype, const QString &fileName,
+                      const QString &what, const QString &replyToken,
+                      std::function<void(const QString &backendPath, bool staged)> done);
+    /// Stage a file on the backend off the GUI thread (@p stage runs on a
+    /// worker), then ask every SAMP tool to load it with a call, and report
+    /// who was asked and what each answered. @p what: "catalogue", "image".
+    void sendViaSamp(const QString &what, const QString &name,
+                     std::function<BackendSampSendResult(const BackendClient &)> stage);
+    /// The name a SAMP sender goes by (its samp.name), else its id.
+    QString sampSenderName(const QString &senderId) const;
     void sendCurrentFitsViaSamp();
+    /// The large-table question, then the staging and the send.
+    void sendCatalogueViaSamp(const QString &path, const QString &format, const QString &name);
     void sendCurrentCatalogueViaSamp();
 
     // Path-based open helpers (skip the file browser dialog, used for reopen).
-    void doOpenDataPath(const QString &path);
+    /// False when the backend is unreachable or could not open @p path (the
+    /// user has been told why).
+    bool doOpenDataPath(const QString &path);
     /// Classify ``path`` on the backend and open it accordingly, asking the
     /// user only when the content itself is ambiguous (a FITS table can be a
     /// catalogue or an overlay) or unrecognised.
@@ -147,7 +183,16 @@ private:
     /// A recent dataset from another backend than this window's: offer to open
     /// a window on its cluster, or say where it is.
     void reopenOnItsBackend(const RecentDataset &dataset);
-    void doOpenCataloguePath(const QString &path, const QStringList &paths = QStringList());
+    /// The new viewer (it may hold no rows when the open failed: see
+    /// vtkWindowCatalogue3D::hasLoadedRows()).
+    /// @p displayName (optional): the name to show instead of the file's (a
+    /// table received over SAMP). @p temporaryCopy: the file is a staged copy
+    /// that may be cleaned up, so it is neither shown as a path nor kept
+    /// among the recent datasets.
+    vtkWindowCatalogue3D *doOpenCataloguePath(const QString &path,
+                                              const QStringList &paths = QStringList(),
+                                              const QString &displayName = QString(),
+                                              bool temporaryCopy = false);
     /// Resolve a remote URL → download via VisIVO backend → open. Used by
     /// the SKAVA Discovery tab after a DataLink lookup. ``obsId`` is the
     /// SKAVA-side identifier, used as a filename hint in the cache and as
@@ -355,6 +400,47 @@ private:
     QPointer<QAction> m_actSampDisconnect;
     QPointer<QAction> m_actSampSendCurrentFits;
     QPointer<QAction> m_actSampSendCurrentCatalogue;
+    /// The SAMP menu's first line: connected or not, and whether VisIVO can
+    /// receive. This is where the SAMP status is shown (with Diagnostics).
+    QPointer<QAction> m_actSampStatus;
+    /// Which local catalogue each SAMP table (table-id / url) is.
+    SampTableRegistry m_sampTables;
+    QPointer<QNetworkAccessManager> m_sampNam;   ///< downloads of received SAMP URLs
+    /// A file sent as a SAMP call, until every tool asked has answered.
+    /// Answers can come before the hub says whom it asked (callSent).
+    struct SampSend
+    {
+        QString name;
+        bool recipientsKnown{ false };
+        QStringList asked;
+        QSet<QString> answered;
+        QString lastAnswer;   ///< shown when the last answer came before callSent
+    };
+    QHash<QString, SampSend> m_sampSends;   ///< callAll tag → send
+    /// The status line for @p tag: waiting for whom, or done (then forgotten).
+    void showSampSendProgress(const QString &tag, const QString &lastAnswer);
+    bool m_sampSendInFlight{ false };   ///< a file is being staged for SAMP
+    /// Before a file is staged, the hub is asked whether any tool takes it:
+    /// staging a large table takes tens of seconds, for nothing if none does.
+    struct SampSubscriberCheck
+    {
+        QString name;    ///< the file, as the messages call it
+        QString mtype;
+        QString backendUrl;   ///< where the file is: a send to another backend is dropped
+        std::function<void()> proceed;
+    };
+    QHash<QString, SampSubscriberCheck> m_sampSubscriberChecks;   ///< askSubscribers tag →
+    /// Ask the hub who takes @p mtype; @p proceed runs if any tool does (or
+    /// the hub could not say), otherwise the user is told nobody does.
+    void whenSampToolTakes(const QString &mtype, const QString &name,
+                           std::function<void()> proceed);
+    /// Tables being sent: their identity is recorded in m_sampTables only
+    /// once the table really went out.
+    SampPendingTables m_sampPendingTables;
+    /// The local catalogue a SAMP row message names: a table already
+    /// exchanged, or one whose send is still returning from the hub (a tool
+    /// can highlight a row of it before VisIVO hears the send went out).
+    QString sampLocalKeyFor(const QString &tableId, const QString &url) const;
     QString           m_sampCurrentFitsPath;
     QString           m_sampCurrentFitsName;
     QString           m_sampCurrentCataloguePath;

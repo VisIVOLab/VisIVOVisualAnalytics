@@ -350,12 +350,107 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     this->syncSampSettings();
     this->updateSampActions();
 
-    QObject::connect(this->m_sampHandler, &SampMessageHandler::fitsDatasetOpened,
-                     this, &MainWindow::handleSampFitsDataset);
-    QObject::connect(this->m_sampHandler, &SampMessageHandler::votableLoaded,
+    QObject::connect(this->m_sampHandler, &SampMessageHandler::imageLoadRequested,
+                     this, &MainWindow::handleSampImageLoad);
+    QObject::connect(this->m_sampHandler, &SampMessageHandler::tableLoadRequested,
                      this, &MainWindow::handleSampTableLoad);
     QObject::connect(this->m_sampHandler, &SampMessageHandler::skyCoordReceived,
                      this, &MainWindow::handleSampSkyCoord);
+    QObject::connect(this->m_sampHandler, &SampMessageHandler::rowHighlightRequested,
+                     this, &MainWindow::handleSampHighlightRow);
+    QObject::connect(this->m_sampHandler, &SampMessageHandler::rowSelectionRequested,
+                     this, &MainWindow::handleSampSelectRows);
+    // A table VisIVO sent is known by the URL only once the SAMP thread has
+    // expanded the backend's placeholder in it, and is recorded only then: a
+    // send that failed leaves no identity behind for the row messages.
+    QObject::connect(this->m_sampClient, &SampClient::tableSent, this,
+                     [this](const QString &tableId, const QString &url) {
+                         const QString localKey = this->m_sampPendingTables.take(tableId);
+                         if (!localKey.isEmpty())
+                             this->m_sampTables.remember({ tableId, url }, localKey);
+                         else
+                             this->m_sampTables.setUrlForTableId(tableId, url);
+                     });
+    QObject::connect(this->m_sampClient, &SampClient::subscribersAnswered, this,
+                     [this](const QString &tag, const QStringList &clientIds,
+                            const QString &error) {
+                         const auto it = this->m_sampSubscriberChecks.find(tag);
+                         if (it == this->m_sampSubscriberChecks.end())
+                             return;
+                         const SampSubscriberCheck check = it.value();
+                         this->m_sampSubscriberChecks.erase(it);
+                         this->updateSampActions();
+                         // The path is a path on the backend of the click; on
+                         // another one it is missing, or a different file.
+                         if (this->settings->getBackendUrl() != check.backendUrl) {
+                             this->statusBar()->showMessage(
+                                     u"SAMP: the backend changed while %1 was being checked; "
+                                     u"nothing was sent."_s.arg(check.name), 8000);
+                             return;
+                         }
+                         if (error.isEmpty() && clientIds.isEmpty()) {
+                             const QString message =
+                                     u"SAMP: no running tool takes %1 (none subscribes to %2)."_s
+                                             .arg(check.name, check.mtype);
+                             DiagnosticsManager::instance()->publish(
+                                     DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
+                                     QStringLiteral("SAMP"), message, QString(), QString(),
+                                     QStringLiteral("send"));
+                             this->statusBar()->showMessage(message, 10000);
+                             return;
+                         }
+                         // A hub that could not say is not proof that nobody
+                         // takes it: the send goes ahead, and its own answers
+                         // (callSent) tell.
+                         if (!error.isEmpty())
+                             qWarning() << "[SAMP] could not ask the hub for subscribers:" << error;
+                         this->statusBar()->clearMessage();
+                         if (this->m_sampClient && this->m_sampClient->isConnected())
+                             check.proceed();
+                     });
+    QObject::connect(this->m_sampClient, &SampClient::receivingChanged, this,
+                     [this](bool, const QString &) { this->updateSampActions(); });
+    // What the tools said about a file VisIVO sent (a SAMP call each answers).
+    QObject::connect(this->m_sampClient, &SampClient::callSent, this,
+                     [this](const QString &tag, const QStringList &recipients,
+                            const QString &error) {
+                         const auto it = this->m_sampSends.find(tag);
+                         if (it == this->m_sampSends.end())
+                             return;
+                         if (!error.isEmpty() || recipients.isEmpty()) {
+                             const QString message = error.isEmpty()
+                                     ? u"SAMP: no running tool takes %1 (none subscribes)."_s.arg(it->name)
+                                     : u"SAMP: could not send %1: %2"_s.arg(it->name, error);
+                             this->m_sampSends.erase(it);
+                             DiagnosticsManager::instance()->publish(
+                                     DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
+                                     QStringLiteral("SAMP"), message, QString(), QString(),
+                                     QStringLiteral("send"));
+                             this->statusBar()->showMessage(message, 10000);
+                             return;
+                         }
+                         it->recipientsKnown = true;
+                         it->asked = recipients;
+                         this->showSampSendProgress(tag, QString());
+                     });
+    QObject::connect(this->m_sampClient, &SampClient::callAnswered, this,
+                     [this](const QString &tag, const QString &responderId, const QString &error) {
+                         const auto it = this->m_sampSends.find(tag);
+                         if (it == this->m_sampSends.end())
+                             return;
+                         // May come before callSent: the hub can deliver the
+                         // answer while the call itself is still returning.
+                         it->answered.insert(responderId);
+                         const QString who = this->sampSenderName(responderId);
+                         const QString message = error.isEmpty()
+                                 ? u"SAMP: %1 loaded %2."_s.arg(who, it->name)
+                                 : u"SAMP: %1 could not load %2: %3"_s.arg(who, it->name, error);
+                         DiagnosticsManager::instance()->publish(
+                                 error.isEmpty() ? DiagnosticsLevel::Info : DiagnosticsLevel::Warning,
+                                 DiagnosticsCategory::Remote, QStringLiteral("SAMP"), message,
+                                 QString(), QString(), QStringLiteral("send"));
+                         this->showSampSendProgress(tag, message);
+                     });
     QObject::connect(this->m_sampHandler, &SampMessageHandler::sampConnected, this,
                      [this](const QString &publicId, const QString &hubUrl) {
                          const QString displayName = sampDisplayName(publicId);
@@ -370,11 +465,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                          this->updateSampActions();
                      });
     QObject::connect(this->m_sampHandler, &SampMessageHandler::sampDisconnected, this, [this]() {
+        const bool waiting = this->m_sampClient && this->m_sampClient->isWaitingForHub();
         DiagnosticsManager::instance()->publish(
                 DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("SAMP"),
-                QStringLiteral("Disconnected from SAMP Hub."),
+                waiting ? QStringLiteral("The SAMP Hub went away; VisIVO connects again as soon "
+                                         "as a hub is running.")
+                        : QStringLiteral("Disconnected from SAMP Hub."),
                 QString(), QString(), QStringLiteral("disconnect"));
-        this->statusBar()->showMessage(u"SAMP disconnected"_s, 3000);
+        this->statusBar()->showMessage(
+                waiting ? u"SAMP hub gone: waiting for it to come back"_s : u"SAMP disconnected"_s,
+                waiting ? 8000 : 3000);
+        this->m_sampSends.clear();   // their answers can no longer come
+        this->m_sampSubscriberChecks.clear();
         this->updateSampActions();
     });
     QObject::connect(this->m_sampHandler, &SampMessageHandler::sampError, this,
@@ -557,8 +659,16 @@ void MainWindow::syncSampSettings()
     if (!this->m_sampBackendClient) {
         return;
     }
-    this->m_sampBackendClient->setBaseUrl(this->settings->getBackendUrl());
-    this->m_sampBackendClient->setToken(this->settings->getBackendToken());
+    // Resolved as a new client resolves it: for the local backend the token it
+    // wrote to ~/.visivo_token wins over a stale one in the settings. Set raw,
+    // a stale token cost a 401 and a retry on every SAMP connect (the session
+    // mint, then /v1/health), each a warning in Diagnostics.
+    const QString url = this->settings->getBackendUrl();
+    const BackendClient resolved(url, this->settings->getBackendToken());
+    this->m_sampBackendClient->setBaseUrl(url);
+    this->m_sampBackendClient->setToken(resolved.token());
+    if (this->m_sampClient)
+        this->m_sampClient->refreshBackendEndpoint();
 }
 
 void MainWindow::openDiagnosticsWindow()

@@ -453,6 +453,11 @@ struct BackendSampSendResult
     QString error;
     QString jobId;
     bool sentDirect{ false };
+    /// With returnMessage: the message for the client to send itself.
+    QString mtype;
+    QVariantMap params;
+    qint64 rows{ -1 };       ///< rows of the table sent, when the backend read it
+    qint64 sizeBytes{ 0 };   ///< size of the staged file
 };
 
 struct BackendSampImportResult
@@ -496,6 +501,9 @@ struct BackendTabularQueryResponse
     int step{ 1 };   ///< an even sample: one matching row in this many
     // Catalogue: row-oriented
     QList<QVariantMap> rows;
+    /// Catalogue: the 0-based position of each row in the table as opened
+    /// (before filter, sort or sample). Empty when the backend does not say.
+    QList<qint64> rowIndex;
     // VBT point: column-oriented, decoded float64
     std::map<QString, std::vector<double>> columns;
     QStringList fieldNames;
@@ -2088,14 +2096,23 @@ public:
     /// catalogue (e.g. the spatial subtables of a cosmological snapshot).
     BackendCatalogueInfo openCatalogue(const QStringList &paths,
                                        const QString &format = QStringLiteral("csv"));
+    /// @p returnMessage: stage the file and hand the SAMP message back
+    /// (mtype, params) for the client to send, rather than queueing it.
     BackendSampSendResult sendFitsToSamp(const QString &path,
-                                         const QString &filename = QString()) const;
+                                         const QString &filename = QString(),
+                                         bool returnMessage = false) const;
+    /// @p tableId: the SAMP table-id to send with the table (empty: none).
     BackendSampSendResult sendCatalogueToSamp(const QString &path, const QString &format,
-                                              const QString &filename = QString()) const;
+                                              const QString &filename = QString(),
+                                              const QString &tableId = QString(),
+                                              bool returnMessage = false) const;
     BackendSampImportResult importSampUrl(const QString &url,
                                           const QString &filename = QString()) const;
     BackendSampImportResult uploadFileToSampStorage(const QString &localPath,
                                                     const QString &filename = QString()) const;
+    /// Stage @p data (a file the client downloaded) on the backend as @p filename.
+    BackendSampImportResult uploadDataToSampStorage(const QByteArray &data,
+                                                    const QString &filename) const;
 
     BackendCubePreviewResult requestPreview(const QString &datasetId, int downsample) const;
     BackendCubeSliceResult requestSlice(const QString &datasetId, const QString &axis,

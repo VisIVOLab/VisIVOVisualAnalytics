@@ -102,6 +102,7 @@ public:
                             const QString &backendUrl, const QString &backendToken);
     void clearSecondarySurvey();
     bool hasSecondarySurvey() const { return m_hasSurveySec; }
+    bool hasSurvey() const { return m_hasSurvey; }
     void setOverlayOpacity(double opacity);
     double overlayOpacity() const { return m_overlayOpacity; }
     void setBlendMode(BlendMode mode);

@@ -47,6 +47,7 @@
 #include "TestUpdateCheck.h"
 #include "TestSourceTable.h"
 #include "TestBackendTaskFollow.h"
+#include "TestSamp.h"
 
 #include <QCoreApplication>
 #include <QTest>
@@ -100,5 +101,6 @@ int main(int argc, char *argv[])
     { TestUpdateCheck      t; status |= QTest::qExec(&t, argc, argv); }
     { TestSourceTable      t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendTaskFollow t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSamp             t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }

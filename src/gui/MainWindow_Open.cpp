@@ -748,7 +748,7 @@ void MainWindow::openDatasetPath(const QString &path)
     this->dispatchOpenForPath(remote ? path : info.absoluteFilePath());
 }
 
-void MainWindow::doOpenDataPath(const QString &path)
+bool MainWindow::doOpenDataPath(const QString &path)
 {
     this->setActiveBackendBadge(this->settings->getLocalBackend());
     BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
@@ -758,7 +758,7 @@ void MainWindow::doOpenDataPath(const QString &path)
                 this, u"Backend unavailable"_s,
                 u"Cannot open a dataset: the backend is not reachable.\n\n"
                 u"Error: %1"_s.arg(health.error.isEmpty() ? u"No response"_s : health.error));
-        return;
+        return false;
     }
 
     const auto opened = client.openDataset(path);
@@ -776,9 +776,10 @@ void MainWindow::doOpenDataPath(const QString &path)
             text += u"\n\nSupported formats: FITS (image, cube). For HDF5, Gadget, VOTable, "
                     u"or simulation data, convert with VisIVOServer first."_s;
         QMessageBox::critical(this, u"Could not open dataset"_s, text);
-        return;
+        return false;
     }
     openViewerFromOpenedDataset(path, opened, client);
+    return true;
 }
 
 
@@ -996,7 +997,9 @@ void MainWindow::openViewerFromOpenedDataset(const QString &openedPath,
     this->updateSampActions();
 
     // Record in recent datasets (uses the final kind returned by the backend).
-    if (this->recentMgr) {
+    // Not a copy another application sent: the backend deletes it after a
+    // while, and the sender holds the original.
+    if (this->recentMgr && !visivo::isReceivedCopy(path)) {
         const QString name = visivo::datasetDisplayName(path);
         this->recentMgr->record(path, name, opened.kind);
     }
@@ -1168,7 +1171,10 @@ void MainWindow::openCatalogue3D()
 }
 
 
-void MainWindow::doOpenCataloguePath(const QString &filepath, const QStringList &paths)
+vtkWindowCatalogue3D *MainWindow::doOpenCataloguePath(const QString &filepath,
+                                                       const QStringList &paths,
+                                                       const QString &displayName,
+                                                       bool temporaryCopy)
 {
     this->m_sampCurrentFitsPath.clear();
     this->m_sampCurrentFitsName.clear();
@@ -1177,22 +1183,33 @@ void MainWindow::doOpenCataloguePath(const QString &filepath, const QStringList 
     this->m_sampCurrentCatalogueFormat = catalogueFormatForPath(filepath);
     this->updateSampActions();
     auto *win = new vtkWindowCatalogue3D(filepath, settings->getBackendUrl(),
-                                         settings->getBackendToken(), paths, this);
+                                         settings->getBackendToken(), paths,
+                                         { displayName, temporaryCopy }, this);
     win->setAttribute(Qt::WA_DeleteOnClose);
     // On session expiry the window emits reopenRequested with its current path
     // group (single or multi-file), so the reopened window rebuilds the same
     // combined catalogue.
     QObject::connect(win, &vtkWindowCatalogue3D::reopenRequested, this,
-                     [this](const QString &p, const QStringList &ps) {
-                         this->doOpenCataloguePath(p, ps);
+                     [this, displayName, temporaryCopy](const QString &p, const QStringList &ps) {
+                         this->doOpenCataloguePath(p, ps, displayName, temporaryCopy);
                      });
+    // A row the user picks is highlighted in the SAMP tools that hold the table.
+    QObject::connect(win, &vtkWindowCatalogue3D::sampRowActivated,
+                     this, &MainWindow::sendSampRowHighlight);
     win->showMaximized();
     win->raise();
     win->activateWindow();
 
-    if (this->recentMgr) {
-        this->recentMgr->record(filepath, QFileInfo(filepath).fileName(), u"catalogue"_s);
+    // A temporary copy (a table received over SAMP, staged on the backend) is
+    // not a dataset to come back to: the backend deletes it after a while,
+    // and the sender holds the original. A file read where it is stays, under
+    // the name it was shown with.
+    if (this->recentMgr && !temporaryCopy) {
+        this->recentMgr->record(filepath,
+                                displayName.isEmpty() ? QFileInfo(filepath).fileName() : displayName,
+                                u"catalogue"_s);
     }
+    return win;
 }
 
 

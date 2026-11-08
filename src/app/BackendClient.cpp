@@ -1152,14 +1152,33 @@ BackendCatalogueInfo BackendClient::openCatalogue(const QStringList &paths, cons
     return result;
 }
 
+namespace {
+void readSampSendResult(const QJsonObject &object, BackendSampSendResult &result)
+{
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.jobId = object.value(QStringLiteral("job_id")).toString();
+    result.sentDirect = object.value(QStringLiteral("sent_direct")).toBool(false);
+    const QJsonObject message = object.value(QStringLiteral("message")).toObject();
+    result.mtype = message.value(QStringLiteral("mtype")).toString();
+    result.params = message.value(QStringLiteral("params")).toObject().toVariantMap();
+    result.rows = static_cast<qint64>(object.value(QStringLiteral("rows")).toDouble(-1));
+    result.sizeBytes = static_cast<qint64>(object.value(QStringLiteral("size_bytes")).toDouble(0));
+}
+}  // namespace
+
 BackendSampSendResult BackendClient::sendFitsToSamp(const QString &path,
-                                                    const QString &filename) const
+                                                    const QString &filename,
+                                                    bool returnMessage) const
 {
     BackendSampSendResult result;
     QString error;
     QJsonObject bodyObj{ { QStringLiteral("path"), path } };
     if (!filename.isEmpty()) {
         bodyObj.insert(QStringLiteral("filename"), filename);
+    }
+    if (returnMessage) {
+        bodyObj.insert(QStringLiteral("deliver"), QStringLiteral("return"));
     }
     const QJsonDocument body(bodyObj);
     const QByteArray payload =
@@ -1168,17 +1187,15 @@ BackendSampSendResult BackendClient::sendFitsToSamp(const QString &path,
         result.error = error;
         return result;
     }
-    const QJsonObject object = QJsonDocument::fromJson(payload).object();
-    result.valid = object.value(QStringLiteral("valid")).toBool(false);
-    result.error = object.value(QStringLiteral("error")).toString();
-    result.jobId = object.value(QStringLiteral("job_id")).toString();
-    result.sentDirect = object.value(QStringLiteral("sent_direct")).toBool(false);
+    readSampSendResult(QJsonDocument::fromJson(payload).object(), result);
     return result;
 }
 
 BackendSampSendResult BackendClient::sendCatalogueToSamp(const QString &path,
                                                          const QString &format,
-                                                         const QString &filename) const
+                                                         const QString &filename,
+                                                         const QString &tableId,
+                                                         bool returnMessage) const
 {
     BackendSampSendResult result;
     QString error;
@@ -1189,6 +1206,12 @@ BackendSampSendResult BackendClient::sendCatalogueToSamp(const QString &path,
     if (!filename.isEmpty()) {
         bodyObj.insert(QStringLiteral("filename"), filename);
     }
+    if (!tableId.isEmpty()) {
+        bodyObj.insert(QStringLiteral("table_id"), tableId);
+    }
+    if (returnMessage) {
+        bodyObj.insert(QStringLiteral("deliver"), QStringLiteral("return"));
+    }
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/samp/send-catalogue")),
                         QJsonDocument(bodyObj), error);
@@ -1196,11 +1219,7 @@ BackendSampSendResult BackendClient::sendCatalogueToSamp(const QString &path,
         result.error = error;
         return result;
     }
-    const QJsonObject object = QJsonDocument::fromJson(payload).object();
-    result.valid = object.value(QStringLiteral("valid")).toBool(false);
-    result.error = object.value(QStringLiteral("error")).toString();
-    result.jobId = object.value(QStringLiteral("job_id")).toString();
-    result.sentDirect = object.value(QStringLiteral("sent_direct")).toBool(false);
+    readSampSendResult(QJsonDocument::fromJson(payload).object(), result);
     return result;
 }
 
@@ -1240,10 +1259,15 @@ BackendSampImportResult BackendClient::uploadFileToSampStorage(const QString &lo
     }
     const QByteArray raw = file.readAll();
     file.close();
+    return uploadDataToSampStorage(
+            raw, filename.isEmpty() ? QFileInfo(localPath).fileName() : filename);
+}
 
+BackendSampImportResult BackendClient::uploadDataToSampStorage(const QByteArray &raw,
+                                                               const QString &resolvedName) const
+{
+    BackendSampImportResult result;
     QString error;
-    const QString resolvedName =
-            filename.isEmpty() ? QFileInfo(localPath).fileName() : filename;
     const QJsonDocument body(QJsonObject{
             { QStringLiteral("filename"), resolvedName },
             { QStringLiteral("content_base64"), QString::fromUtf8(raw.toBase64()) } });
@@ -2637,6 +2661,13 @@ BackendTabularQueryResponse BackendClient::queryTabularCatalogue(
     const QJsonArray rows = object.value(QStringLiteral("rows")).toArray();
     for (const QJsonValue &rowValue : rows) {
         result.rows.append(rowValue.toObject().toVariantMap());
+    }
+    // One position per row, or none: a partial list could not be matched up.
+    const QJsonArray rowIndex = object.value(QStringLiteral("row_index")).toArray();
+    if (rowIndex.size() == rows.size()) {
+        result.rowIndex.reserve(rowIndex.size());
+        for (const QJsonValue &v : rowIndex)
+            result.rowIndex.append(static_cast<qint64>(v.toDouble(-1)));
     }
     return result;
 }

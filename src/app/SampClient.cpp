@@ -1,801 +1,244 @@
-// SampClient.cpp – Qt SAMP Standard Profile client implementation
+// SampClient.cpp – the GUI-thread face of the SAMP client
 //
-// SAMP XML-RPC wire format (subset used here):
-//   Hub URL   : http://127.0.0.1:<port>/  (from ~/.samp lockfile)
-//   Content-Type: text/xml
-//   Method calls: samp.hub.register, samp.hub.declareMetadata,
-//                 samp.hub.declareSubscriptions, samp.hub.notify,
-//                 samp.hub.notifyAll, samp.hub.getRegisteredClients,
-//                 samp.hub.getMetadata, samp.hub.getSubscriptions,
-//                 samp.hub.ping, samp.hub.unregister
+// Every method queues work onto the SAMP thread (SampHubWorker) and returns;
+// the worker's signals come back here as queued signals and are re-emitted on
+// the GUI thread. See SampClient.h for the protocol, SampHubWorker.cpp for the
+// network side.
 
 #include "SampClient.h"
 #include "BackendClient.h"
+#include "SampHubWorker.h"
 
 #include <QDebug>
-#include <QDir>
-#include <QDomDocument>
-#include <QDomElement>
-#include <QEventLoop>
-#include <QFile>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonArray>
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
-#include <QNetworkRequest>
-#include <QStandardPaths>
-#include <QTextStream>
+#include <QMetaObject>
 #include <QTimer>
-#include <QUrl>
-#include <QVariantList>
-#include <QVariantMap>
-
-// ── Internal HTTP helpers ──────────────────────────────────────────────────────
-
-namespace {
-
-/// Build a QNetworkRequest for the VisIVO backend (auth + session headers).
-/// The session header matters: SAMP hand-offs address datasets by id, and under
-/// multi-user mode a request without it resolves to a different session that
-/// holds none of them. The base URL is reconstructed from *url* so it matches
-/// the key BackendClient minted the session under.
-QNetworkRequest buildBackendRequest(const QUrl &url, const QString &token)
-{
-    QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::ContentTypeHeader,
-                  QByteArrayLiteral("application/json"));
-    // Strip only the API path, keeping any reverse-proxy prefix (a backend may
-    // live under /visivo): scheme://authority alone would miss the mint key.
-    QString baseUrl = url.toString(QUrl::RemoveQuery | QUrl::RemoveFragment);
-    if (const int api = baseUrl.indexOf(QStringLiteral("/v1/")); api > 0)
-        baseUrl.truncate(api);
-    BackendClient::applySessionHeaders(req, baseUrl, token);
-    return req;
-}
-
-/// Synchronous HTTP GET via *nam* with a 5 s timeout.  Returns response bytes.
-QByteArray syncGet(QNetworkAccessManager *nam, const QUrl &url, const QString &token,
-                   QString &errorOut)
-{
-    QNetworkRequest req = buildBackendRequest(url, token);
-    QEventLoop loop;
-    QNetworkReply *reply = nam->get(req);
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    QTimer t;
-    t.setSingleShot(true);
-    QObject::connect(&t, &QTimer::timeout, &loop, &QEventLoop::quit);
-    t.start(5000);
-    loop.exec();
-    if (!t.isActive()) { reply->abort(); errorOut = "GET timeout"; reply->deleteLater(); return {}; }
-    t.stop();
-    if (reply->error() != QNetworkReply::NoError) { errorOut = reply->errorString(); reply->deleteLater(); return {}; }
-    const QByteArray data = reply->readAll();
-    reply->deleteLater();
-    return data;
-}
-
-/// Synchronous HTTP POST via *nam* with a 5 s timeout.  Returns response bytes.
-QByteArray syncPost(QNetworkAccessManager *nam, const QUrl &url, const QString &token,
-                    const QByteArray &body, QString &errorOut)
-{
-    QNetworkRequest req = buildBackendRequest(url, token);
-    req.setHeader(QNetworkRequest::ContentLengthHeader, body.size());
-    QEventLoop loop;
-    QNetworkReply *reply = nam->post(req, body);
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    QTimer t;
-    t.setSingleShot(true);
-    QObject::connect(&t, &QTimer::timeout, &loop, &QEventLoop::quit);
-    t.start(5000);
-    loop.exec();
-    if (!t.isActive()) { reply->abort(); errorOut = "POST timeout"; reply->deleteLater(); return {}; }
-    t.stop();
-    if (reply->error() != QNetworkReply::NoError) { errorOut = reply->errorString(); reply->deleteLater(); return {}; }
-    const QByteArray data = reply->readAll();
-    reply->deleteLater();
-    return data;
-}
-
-} // namespace
-
-// ── Constructor / Destructor ──────────────────────────────────────────────────
 
 SampClient::SampClient(BackendClient *backend, QObject *parent)
     : QObject(parent)
     , m_backend(backend)
-    , m_nam(new QNetworkAccessManager(this))
-    , m_pollTimer(new QTimer(this))
-    , m_backendPendingTimer(new QTimer(this))
+    , m_worker(new SampHubWorker)
+    , m_retryTimer(new QTimer(this))
 {
-    m_pollTimer->setInterval(kPollIntervalMs);
-    connect(m_pollTimer, &QTimer::timeout, this, &SampClient::onPollTimer);
+    qRegisterMetaType<SampMessage>();
+    qRegisterMetaType<SampClientInfo>();
+    qRegisterMetaType<QList<SampClientInfo>>();
 
-    m_backendPendingTimer->setInterval(kBackendPollIntervalMs);
-    connect(m_backendPendingTimer, &QTimer::timeout,
-            this, &SampClient::onBackendPendingTimer);
+    m_thread.setObjectName(QStringLiteral("SAMP"));
+    m_worker->moveToThread(&m_thread);
+    // The documented pattern: the worker is deleted on its own thread, as the
+    // thread finishes, together with its sockets and timers.
+    connect(&m_thread, &QThread::finished, m_worker, &QObject::deleteLater);
+
+    connect(m_worker, &SampHubWorker::connected, this,
+            [this](const QString &publicId, const QString &hubUrl) {
+                m_connecting = false;
+                m_connected = true;
+                m_reconnect.connected();
+                m_retryTimer->stop();
+                m_publicId = publicId;
+                m_hubUrl = hubUrl;
+                emit connected(publicId, hubUrl);
+            });
+    connect(m_worker, &SampHubWorker::disconnected, this, [this]() {
+        m_connecting = false;
+        m_connected = false;
+        m_receiving = false;
+        m_receiveProblem.clear();
+        m_publicId.clear();
+        m_clients.clear();
+        emit disconnected();
+    });
+    connect(m_worker, &SampHubWorker::error, this, [this](const QString &description) {
+        // A failure while connecting ends the attempt; one while connected
+        // does not change the connection state.
+        const bool attemptFailed = !m_connected && m_connecting;
+        if (!m_connected)
+            m_connecting = false;
+        // While waiting for a hub, the attempts that find none are the
+        // expected outcome, every few seconds: not a warning each time.
+        if (m_reconnect.waiting() && !m_connected) {
+            qDebug() << "[SampClient] no hub yet:" << description;
+            return;
+        }
+        // Connect before the hub runs (TOPCAT not started yet, or a lockfile
+        // left by a hub that was killed): said once, then tried again until
+        // one answers. Set before error(), whose handlers show the state.
+        if (attemptFailed && m_reconnect.attemptFailed()) {
+            m_retryTimer->start();
+            emit error(QStringLiteral("%1. VisIVO keeps trying every few seconds; "
+                                      "Disconnect From Hub stops it.")
+                               .arg(description));
+            return;
+        }
+        emit error(description);
+    });
+    // The hub went away: try again until one answers, unless the user has
+    // disconnected meanwhile (this signal is queued, and may come after).
+    // Set before the disconnected() that follows, so its handlers can say so.
+    connect(m_worker, &SampHubWorker::hubLost, this, [this]() {
+        if (m_reconnect.hubLost())
+            m_retryTimer->start();
+    });
+    m_retryTimer->setInterval(kRetryIntervalMs);
+    connect(m_retryTimer, &QTimer::timeout, this, &SampClient::retryLostHub);
+    connect(m_worker, &SampHubWorker::receivingChanged, this,
+            [this](bool receiving, const QString &problem) {
+                m_receiving = receiving;
+                m_receiveProblem = problem;
+                emit receivingChanged(receiving, problem);
+            });
+    connect(m_worker, &SampHubWorker::messageReceived, this, &SampClient::messageReceived);
+    connect(m_worker, &SampHubWorker::clientListChanged, this,
+            [this](const QList<SampClientInfo> &clients) {
+                m_clients = clients;
+                emit clientListChanged(clients);
+            });
+    connect(m_worker, &SampHubWorker::tableSent, this, &SampClient::tableSent);
+    connect(m_worker, &SampHubWorker::callSent, this, &SampClient::callSent);
+    connect(m_worker, &SampHubWorker::callAnswered, this, &SampClient::callAnswered);
+    connect(m_worker, &SampHubWorker::subscribersAnswered, this, &SampClient::subscribersAnswered);
+
+    m_thread.start();
 }
 
 SampClient::~SampClient()
 {
-    disconnectFromHub();
+    // Unregister while the hub is still there: blocking here is deliberate
+    // (the application is closing) and bounded by the worker's hub timeout.
+    if (m_thread.isRunning()) {
+        QMetaObject::invokeMethod(m_worker, &SampHubWorker::stop, Qt::BlockingQueuedConnection);
+        m_thread.quit();
+        m_thread.wait();
+    }
 }
 
 // ── Connection lifecycle ──────────────────────────────────────────────────────
 
+void SampClient::refreshBackendEndpoint()
+{
+    if (!m_backend)
+        return;
+    QMetaObject::invokeMethod(m_worker, &SampHubWorker::setBackend, Qt::QueuedConnection,
+                              m_backend->baseUrl(), m_backend->token());
+}
+
 void SampClient::connectToHub()
 {
-    if (m_connected) {
-        qDebug() << "[SampClient] Already connected to Hub.";
+    // Asked for by the user: its outcome is reported, whatever it is.
+    m_reconnect.userConnects();
+    m_retryTimer->stop();
+    if (m_connected || m_connecting) {
+        qDebug() << "[SampClient] Already connected or connecting.";
         return;
     }
-
-    QString err;
-    if (!readLockFile(m_hubUrl, m_sampSecret, err)) {
-        qWarning() << "[SampClient] Hub lockfile not found:" << err;
-        emit error(QStringLiteral("SAMP Hub not found: ") + err);
-        return;
-    }
-
-    qDebug() << "[SampClient] Hub URL:" << m_hubUrl;
-
-    if (!registerWithHub(err)) {
-        qWarning() << "[SampClient] Registration failed:" << err;
-        emit error(QStringLiteral("SAMP registration failed: ") + err);
-        return;
-    }
-
-    declareMetadata();
-    declareSubscriptions();
-
-    m_connected = true;
-    m_pollTimer->start();
-    m_backendPendingTimer->start();
-
-    reportStatusToBackend();
-    emit connected(m_publicId, m_hubUrl);
-    qDebug() << "[SampClient] Connected as" << m_publicId;
+    m_connecting = true;
+    refreshBackendEndpoint();
+    QMetaObject::invokeMethod(m_worker, &SampHubWorker::start, Qt::QueuedConnection);
 }
 
 void SampClient::disconnectFromHub()
 {
-    if (!m_connected)
+    m_reconnect.userDisconnects();
+    m_retryTimer->stop();
+    QMetaObject::invokeMethod(m_worker, &SampHubWorker::stop, Qt::QueuedConnection);
+}
+
+void SampClient::retryLostHub()
+{
+    if (!m_reconnect.waiting()) {
+        m_retryTimer->stop();
         return;
-
-    m_pollTimer->stop();
-    m_backendPendingTimer->stop();
-
-    QString err;
-    xmlRpcCall(QStringLiteral("samp.hub.unregister"),
-               { m_privateKey }, err);
-
-    m_connected   = false;
-    m_privateKey  = QString();
-    m_publicId    = QString();
-
-    reportStatusToBackend();
-    emit disconnected();
-    qDebug() << "[SampClient] Disconnected from Hub.";
+    }
+    if (m_connected || m_connecting)
+        return;   // an attempt is still running
+    m_connecting = true;
+    refreshBackendEndpoint();
+    QMetaObject::invokeMethod(m_worker, &SampHubWorker::start, Qt::QueuedConnection);
 }
 
 // ── Sending messages ──────────────────────────────────────────────────────────
 
-void SampClient::notifyAll(const QString &mtype, const QVariantMap &params)
-{
-    if (!m_connected) {
-        qWarning() << "[SampClient] notifyAll called while not connected.";
-        return;
-    }
-    QVariantMap message;
-    message[QStringLiteral("samp.mtype")]  = mtype;
-    message[QStringLiteral("samp.params")] = params;
-
-    QString err;
-    xmlRpcCall(QStringLiteral("samp.hub.notifyAll"),
-               { m_privateKey, message }, err);
-    if (!err.isEmpty())
-        qWarning() << "[SampClient] notifyAll error:" << err;
-}
-
-void SampClient::notify(const QString &recipientId,
-                        const QString &mtype,
+void SampClient::notify(const QString &recipientId, const QString &mtype,
                         const QVariantMap &params)
 {
-    if (!m_connected) return;
-    QVariantMap message;
-    message[QStringLiteral("samp.mtype")]  = mtype;
-    message[QStringLiteral("samp.params")] = params;
+    // Not while connecting either: the worker would drop it, mid-registration.
+    if (!m_connected) {
+        qWarning() << "[SampClient] notify called while not connected:" << mtype;
+        return;
+    }
+    QMetaObject::invokeMethod(m_worker, &SampHubWorker::notify, Qt::QueuedConnection,
+                              recipientId, mtype, params);
+}
 
-    QString err;
-    xmlRpcCall(QStringLiteral("samp.hub.notify"),
-               { m_privateKey, recipientId, message }, err);
-    if (!err.isEmpty())
-        qWarning() << "[SampClient] notify error:" << err;
+void SampClient::notifyAll(const QString &mtype, const QVariantMap &params)
+{
+    notify(QString(), mtype, params);
 }
 
 void SampClient::sendImageFits(const QString &url, const QString &name,
                                const QString &recipientId)
 {
     QVariantMap params;
-    params[QStringLiteral("url")]       = url;
-    params[QStringLiteral("name")]      = name.isEmpty() ? url : name;
+    params[QStringLiteral("url")] = url;
+    params[QStringLiteral("name")] = name.isEmpty() ? url : name;
     params[QStringLiteral("samp.name")] = params[QStringLiteral("name")];
-
-    if (recipientId.isEmpty())
-        notifyAll(QString::fromLatin1(MTYPE_IMAGE_FITS), params);
-    else
-        notify(recipientId, QString::fromLatin1(MTYPE_IMAGE_FITS), params);
+    notify(recipientId, QString::fromLatin1(Samp::kImageLoadFits), params);
 }
 
 void SampClient::sendTableVotable(const QString &url, const QString &name,
-                                  const QString &tableId,
-                                  const QString &recipientId)
+                                  const QString &tableId, const QString &recipientId)
 {
     QVariantMap params;
-    params[QStringLiteral("url")]      = url;
-    params[QStringLiteral("name")]     = name.isEmpty() ? url : name;
+    params[QStringLiteral("url")] = url;
+    params[QStringLiteral("name")] = name.isEmpty() ? url : name;
     params[QStringLiteral("table-id")] = tableId.isEmpty() ? url : tableId;
-
-    if (recipientId.isEmpty())
-        notifyAll(QString::fromLatin1(MTYPE_TABLE_VOTABLE), params);
-    else
-        notify(recipientId, QString::fromLatin1(MTYPE_TABLE_VOTABLE), params);
+    notify(recipientId, QString::fromLatin1(Samp::kTableLoadVotable), params);
 }
 
-void SampClient::sendPointAtSky(double raDeg, double decDeg,
-                                const QString &recipientId)
+void SampClient::sendPointAtSky(double raDeg, double decDeg, const QString &recipientId)
 {
     QVariantMap params;
-    params[QStringLiteral("ra")]  = QString::number(raDeg,  'f', 6);
+    params[QStringLiteral("ra")] = QString::number(raDeg, 'f', 6);
     params[QStringLiteral("dec")] = QString::number(decDeg, 'f', 6);
-
-    if (recipientId.isEmpty())
-        notifyAll(QString::fromLatin1(MTYPE_COORD_SKY), params);
-    else
-        notify(recipientId, QString::fromLatin1(MTYPE_COORD_SKY), params);
+    notify(recipientId, QString::fromLatin1(Samp::kCoordPointAtSky), params);
 }
 
-// ── Hub client list ───────────────────────────────────────────────────────────
-
-QList<SampClientInfo> SampClient::registeredClients() const
+void SampClient::replyToCall(const QString &replyToken, const QString &error)
 {
-    QList<SampClientInfo> result;
-    if (!m_connected)
-        return result;
-
-    QString err;
-    QVariant reg = xmlRpcCall(QStringLiteral("samp.hub.getRegisteredClients"),
-                              { m_privateKey }, err);
-    if (!err.isEmpty() || !reg.isValid())
-        return result;
-
-    const QVariantList ids = reg.toList();
-    for (const QVariant &idv : ids) {
-        const QString id = idv.toString();
-        if (id == m_publicId)
-            continue;   // skip self
-
-        SampClientInfo info;
-        info.id = id;
-
-        QVariant meta = xmlRpcCall(QStringLiteral("samp.hub.getMetadata"),
-                                   { m_privateKey, id }, err);
-        if (err.isEmpty() && meta.isValid()) {
-            const QVariantMap m = meta.toMap();
-            info.name        = m.value(QStringLiteral("samp.name")).toString();
-            info.description = m.value(QStringLiteral("samp.description.text")).toString();
-            info.iconUrl     = m.value(QStringLiteral("samp.icon.url")).toString();
-        }
-
-        QVariant subs = xmlRpcCall(QStringLiteral("samp.hub.getSubscriptions"),
-                                   { m_privateKey, id }, err);
-        if (err.isEmpty() && subs.isValid()) {
-            for (const QString &k : subs.toMap().keys())
-                info.subscriptions << k;
-        }
-
-        result.append(info);
-    }
-    return result;
-}
-
-// ── Timer slots ───────────────────────────────────────────────────────────────
-
-void SampClient::onPollTimer()
-{
-    pollHub();
-}
-
-void SampClient::onBackendPendingTimer()
-{
-    drainBackendPendingQueue();
-}
-
-// ── Polling / inbound ─────────────────────────────────────────────────────────
-
-void SampClient::pollHub()
-{
-    // samp.hub.getCallbacks returns a list of pending calls.
-    // For Standard Profile without a callback URL we use the simpler
-    // samp.hub.getPendingCalls (introduced in SAMP 1.3).
-    // Fall back gracefully if not supported.
-    if (!m_connected) return;
-
-    QString err;
-    QVariant v = xmlRpcCall(QStringLiteral("samp.hub.getPendingCalls"),
-                            { m_privateKey }, err);
-    if (!err.isEmpty()) {
-        // Hub may have shut down
-        if (err.contains(QStringLiteral("connect"), Qt::CaseInsensitive) ||
-            err.contains(QStringLiteral("refused"), Qt::CaseInsensitive)) {
-            qWarning() << "[SampClient] Hub unreachable, disconnecting.";
-            m_connected = false;
-            m_pollTimer->stop();
-            m_backendPendingTimer->stop();
-            reportStatusToBackend();
-            emit disconnected();
-        }
+    if (replyToken.isEmpty())
         return;
-    }
-
-    // Each entry is a map: {msg-id, samp.mtype, samp.params, sender-id}
-    const QVariantList calls = v.toList();
-    for (const QVariant &cv : calls) {
-        const QVariantMap call = cv.toMap();
-        SampMessage msg;
-        msg.msgId    = call.value(QStringLiteral("msg-id")).toString();
-        msg.senderId = call.value(QStringLiteral("sender-id")).toString();
-        const QVariantMap message = call.value(QStringLiteral("message")).toMap();
-        msg.mtype  = message.value(QStringLiteral("samp.mtype")).toString();
-        msg.params = message.value(QStringLiteral("samp.params")).toMap();
-
-        // Reply OK to the Hub (fire-and-forget acknowledgement)
-        if (!msg.msgId.isEmpty()) {
-            QVariantMap reply;
-            reply[QStringLiteral("samp.status")] = QStringLiteral("samp.ok");
-            reply[QStringLiteral("samp.result")] = QVariantMap();
-            xmlRpcCall(QStringLiteral("samp.hub.reply"),
-                       { m_privateKey, msg.msgId, reply }, err);
-        }
-
-        // Hub shutdown event: clean up
-        if (msg.mtype == QString::fromLatin1(MTYPE_HUB_SHUTDOWN)) {
-            m_connected = false;
-            m_pollTimer->stop();
-            m_backendPendingTimer->stop();
-            reportStatusToBackend();
-            emit disconnected();
-            return;
-        }
-
-        qDebug() << "[SampClient] Received mtype=" << msg.mtype
-                 << "from" << msg.senderId;
-
-        emit messageReceived(msg);
-        forwardToBackend(msg);
-    }
+    QMetaObject::invokeMethod(m_worker, &SampHubWorker::replyToCall, Qt::QueuedConnection,
+                              replyToken, error);
 }
 
-void SampClient::forwardToBackend(const SampMessage &msg)
+QString SampClient::callAll(const QString &mtype, const QVariantMap &params)
 {
-    // POST /v1/samp/receive
-    QJsonObject body;
-    body[QStringLiteral("mtype")]     = msg.mtype;
-    body[QStringLiteral("sender_id")] = msg.senderId;
-    body[QStringLiteral("msg_id")]    = msg.msgId;
-
-    QJsonObject paramsObj;
-    for (auto it = msg.params.constBegin(); it != msg.params.constEnd(); ++it)
-        paramsObj[it.key()] = QJsonValue::fromVariant(it.value());
-    body[QStringLiteral("params")] = paramsObj;
-
-    QString err;
-    syncPost(m_nam,
-             QUrl(m_backend->baseUrl() + QStringLiteral("/v1/samp/receive")),
-             m_backend->token(),
-             QJsonDocument(body).toJson(QJsonDocument::Compact),
-             err);
-    if (!err.isEmpty())
-        qWarning() << "[SampClient] forwardToBackend error:" << err;
+    const QString tag = QStringLiteral("call-%1").arg(++m_callCounter);
+    QMetaObject::invokeMethod(m_worker, &SampHubWorker::callAll, Qt::QueuedConnection, tag, mtype,
+                              params);
+    return tag;
 }
 
-// ── Backend outbound queue ────────────────────────────────────────────────────
-
-void SampClient::drainBackendPendingQueue()
+QString SampClient::askSubscribers(const QString &mtype)
 {
-    if (!m_connected) return;
+    const QString tag = QStringLiteral("subscribers-%1").arg(++m_callCounter);
+    QMetaObject::invokeMethod(m_worker, &SampHubWorker::askSubscribers, Qt::QueuedConnection, tag,
+                              mtype);
+    return tag;
+}
 
-    QString err;
-    const QByteArray payload = syncGet(
-        m_nam,
-        QUrl(m_backend->baseUrl() + QStringLiteral("/v1/samp/pending")),
-        m_backend->token(),
-        err);
-    if (!err.isEmpty() || payload.isEmpty())
+void SampClient::sendHighlightRow(const Samp::TableRef &table, qint64 row)
+{
+    if (table.isEmpty() || row < 0)
         return;
-
-    const QJsonObject root = QJsonDocument::fromJson(payload).object();
-    const QJsonArray messages = root.value(QStringLiteral("messages")).toArray();
-    for (const QJsonValue &mv : messages) {
-        const QJsonObject msg = mv.toObject();
-        const QString mtype    = msg.value(QStringLiteral("mtype")).toString();
-        const QString targetId = msg.value(QStringLiteral("target_id")).toString();
-        const QJsonObject rawParams = msg.value(QStringLiteral("params")).toObject();
-
-        QVariantMap params;
-        for (const QString &k : rawParams.keys()) {
-            QString val = rawParams.value(k).toString();
-            // Expand backend URL placeholder so VO tools can fetch the file
-            val = expandBackendUrl(val);
-            params[k] = val;
-        }
-
-        if (targetId.isEmpty())
-            notifyAll(mtype, params);
-        else
-            notify(targetId, mtype, params);
-    }
+    notify(QString(), QString::fromLatin1(Samp::kTableHighlightRow),
+           Samp::highlightRowParams(table, row));
 }
 
-QString SampClient::expandBackendUrl(const QString &tmpl) const
+void SampClient::sendSelectRowList(const Samp::TableRef &table, const QList<qint64> &rows)
 {
-    const QString placeholder = QStringLiteral("__BACKEND_BASE_URL__");
-    if (!tmpl.contains(placeholder))
-        return tmpl;
-    return QString(tmpl).replace(placeholder, m_backend->baseUrl());
-}
-
-// ── Registration helpers ──────────────────────────────────────────────────────
-
-bool SampClient::registerWithHub(QString &errorOut)
-{
-    QVariant result = xmlRpcCall(
-        QStringLiteral("samp.hub.register"),
-        { m_sampSecret },
-        errorOut);
-
-    if (!errorOut.isEmpty() || !result.isValid())
-        return false;
-
-    const QVariantMap map = result.toMap();
-    m_privateKey = map.value(QStringLiteral("samp.private-key")).toString();
-    m_publicId   = map.value(QStringLiteral("samp.self-id")).toString();
-
-    if (m_privateKey.isEmpty() || m_publicId.isEmpty()) {
-        errorOut = QStringLiteral("Hub returned empty private-key or self-id.");
-        return false;
-    }
-    return true;
-}
-
-void SampClient::declareMetadata()
-{
-    const QString displayName = QStringLiteral("VisIVO Visual Analytics");
-    QVariantMap meta;
-    meta[QStringLiteral("samp.name")]             = displayName;
-    meta[QStringLiteral("samp.description.text")] =
-        QStringLiteral("VisIVO Visual Analytics");
-    meta[QStringLiteral("name")]                  = displayName;
-    meta[QStringLiteral("description")]           =
-        QStringLiteral("VisIVO Visual Analytics");
-    meta[QStringLiteral("samp.icon.url")] =
-        m_backend->baseUrl() + QStringLiteral("/static/VisIVO_128.png");
-    meta[QStringLiteral("author.name")]   = QStringLiteral("INAF-OACT VisIVO Team");
-    meta[QStringLiteral("home.page")]     = QStringLiteral("https://visivolab.inaf.it/");
-
-    QString err;
-    xmlRpcCall(QStringLiteral("samp.hub.declareMetadata"),
-               { m_privateKey, meta }, err);
-    if (!err.isEmpty()) {
-        qWarning() << "[SampClient] declareMetadata error:" << err;
-        emit error(QStringLiteral("SAMP metadata declaration failed: %1").arg(err));
+    if (table.isEmpty())
         return;
-    }
-
-    QString verifyErr;
-    const QVariant declared =
-            xmlRpcCall(QStringLiteral("samp.hub.getMetadata"),
-                       { m_privateKey, m_publicId }, verifyErr);
-    if (!verifyErr.isEmpty()) {
-        qWarning() << "[SampClient] getMetadata(self) error:" << verifyErr;
-        emit error(QStringLiteral("SAMP metadata verification failed: %1").arg(verifyErr));
-        return;
-    }
-    const QString echoedName =
-            declared.toMap().value(QStringLiteral("samp.name")).toString().trimmed();
-    if (echoedName != displayName) {
-        const QString message =
-                QStringLiteral("SAMP hub did not persist the expected client name. "
-                               "Expected '%1', got '%2'.")
-                        .arg(displayName, echoedName.isEmpty() ? QStringLiteral("<empty>")
-                                                               : echoedName);
-        qWarning() << "[SampClient]" << message;
-        emit error(message);
-    }
-}
-
-void SampClient::declareSubscriptions()
-{
-    // Each entry in the subscriptions map is mtype → {} (empty params dict)
-    QVariantMap subs;
-    const QStringList supported = {
-        QString::fromLatin1(MTYPE_IMAGE_FITS),
-        QString::fromLatin1(MTYPE_TABLE_VOTABLE),
-        QString::fromLatin1(MTYPE_TABLE_FITS),
-        QString::fromLatin1(MTYPE_COORD_SKY),
-        QString::fromLatin1(MTYPE_HUB_SHUTDOWN),
-    };
-    for (const QString &mt : supported)
-        subs[mt] = QVariantMap();
-
-    QString err;
-    xmlRpcCall(QStringLiteral("samp.hub.declareSubscriptions"),
-               { m_privateKey, subs }, err);
-    if (!err.isEmpty())
-        qWarning() << "[SampClient] declareSubscriptions error:" << err;
-}
-
-void SampClient::reportStatusToBackend()
-{
-    // POST /v1/samp/hub-status
-    const QList<SampClientInfo> clients = m_connected ? registeredClients()
-                                                      : QList<SampClientInfo>{};
-    emit clientListChanged(clients);
-    QJsonArray clientsArr;
-    for (const SampClientInfo &c : clients) {
-        QJsonObject obj;
-        obj[QStringLiteral("id")]   = c.id;
-        obj[QStringLiteral("name")] = c.name;
-        clientsArr.append(obj);
-    }
-
-    QJsonObject body;
-    body[QStringLiteral("connected")]          = m_connected;
-    body[QStringLiteral("hub_url")]            = m_hubUrl;
-    body[QStringLiteral("client_id")]          = m_publicId;
-    body[QStringLiteral("client_name")]        = QStringLiteral("VisIVO");
-    body[QStringLiteral("registered_clients")] = clientsArr;
-
-    QString err;
-    syncPost(m_nam,
-             QUrl(m_backend->baseUrl() + QStringLiteral("/v1/samp/hub-status")),
-             m_backend->token(),
-             QJsonDocument(body).toJson(QJsonDocument::Compact),
-             err);
-    if (!err.isEmpty())
-        qWarning() << "[SampClient] reportStatusToBackend error:" << err;
-}
-
-// ── Hub lockfile ──────────────────────────────────────────────────────────────
-
-bool SampClient::readLockFile(QString &hubUrl, QString &secret, QString &errorOut)
-{
-    // Standard lockfile path: ~/.samp  (SAMP 1.3 §2.1)
-    const QString lockPath =
-        QDir(QStandardPaths::writableLocation(QStandardPaths::HomeLocation))
-            .absoluteFilePath(QStringLiteral(".samp"));
-
-    QFile f(lockPath);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        errorOut = QStringLiteral("Cannot open ~/.samp: ") + f.errorString();
-        return false;
-    }
-
-    QTextStream in(&f);
-    while (!in.atEnd()) {
-        const QString line = in.readLine().trimmed();
-        if (line.startsWith(QLatin1Char('#')) || line.isEmpty())
-            continue;
-        const int eq = line.indexOf(QLatin1Char('='));
-        if (eq < 0) continue;
-        const QString key = line.left(eq).trimmed();
-        const QString val = line.mid(eq + 1).trimmed();
-        if (key == QStringLiteral("samp.hub.xmlrpc.url"))
-            hubUrl = val;
-        else if (key == QStringLiteral("samp.secret"))
-            secret = val;
-    }
-
-    if (hubUrl.isEmpty()) {
-        errorOut = QStringLiteral("samp.hub.xmlrpc.url not found in ~/.samp");
-        return false;
-    }
-    return true;
-}
-
-// ── XML-RPC implementation ────────────────────────────────────────────────────
-
-QVariant SampClient::xmlRpcCall(const QString &method,
-                                const QVariantList &params,
-                                QString &errorOut) const
-{
-    const QByteArray body = buildXmlRpcRequest(method, params);
-
-    QNetworkRequest req{QUrl(m_hubUrl)};
-    req.setHeader(QNetworkRequest::ContentTypeHeader,
-                  QByteArrayLiteral("text/xml"));
-    req.setHeader(QNetworkRequest::ContentLengthHeader, body.size());
-
-    // Perform synchronous call using a local event loop (called from non-main threads only
-    // for the poll timer; the constructor runs on the main thread but timers are OK).
-    QEventLoop loop;
-    QNetworkReply *reply = m_nam->post(req, body);
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-
-    // Timeout: 4 s
-    QTimer timeout;
-    timeout.setSingleShot(true);
-    QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
-    timeout.start(4000);
-
-    loop.exec();
-
-    if (timeout.isActive()) {
-        timeout.stop();
-    } else {
-        reply->abort();
-        errorOut = QStringLiteral("XML-RPC call timed out: ") + method;
-        reply->deleteLater();
-        return {};
-    }
-
-    if (reply->error() != QNetworkReply::NoError) {
-        errorOut = reply->errorString();
-        reply->deleteLater();
-        return {};
-    }
-
-    const QByteArray response = reply->readAll();
-    reply->deleteLater();
-
-    return parseXmlRpcResponse(response, errorOut);
-}
-
-QByteArray SampClient::buildXmlRpcRequest(const QString &method,
-                                          const QVariantList &params)
-{
-    QString xml;
-    xml += QStringLiteral("<?xml version=\"1.0\"?>\n");
-    xml += QStringLiteral("<methodCall>\n");
-    xml += QStringLiteral("  <methodName>") + method +
-           QStringLiteral("</methodName>\n");
-    xml += QStringLiteral("  <params>\n");
-    for (const QVariant &p : params) {
-        xml += QStringLiteral("    <param><value>");
-        xml += variantToXmlRpcValue(p);
-        xml += QStringLiteral("</value></param>\n");
-    }
-    xml += QStringLiteral("  </params>\n");
-    xml += QStringLiteral("</methodCall>\n");
-    return xml.toUtf8();
-}
-
-QString SampClient::variantToXmlRpcValue(const QVariant &v)
-{
-    switch (v.typeId()) {
-    case QMetaType::Bool:
-        return QStringLiteral("<boolean>") +
-               (v.toBool() ? QStringLiteral("1") : QStringLiteral("0")) +
-               QStringLiteral("</boolean>");
-    case QMetaType::Int:
-    case QMetaType::Long:
-    case QMetaType::LongLong:
-        return QStringLiteral("<i4>") + v.toString() + QStringLiteral("</i4>");
-    case QMetaType::Double:
-        return QStringLiteral("<double>") + v.toString() + QStringLiteral("</double>");
-    case QMetaType::QVariantMap: {
-        QString s = QStringLiteral("<struct>");
-        const QVariantMap m = v.toMap();
-        for (auto it = m.constBegin(); it != m.constEnd(); ++it) {
-            s += QStringLiteral("<member><name>") + it.key() +
-                 QStringLiteral("</name><value>") +
-                 variantToXmlRpcValue(it.value()) +
-                 QStringLiteral("</value></member>");
-        }
-        s += QStringLiteral("</struct>");
-        return s;
-    }
-    case QMetaType::QVariantList: {
-        QString s = QStringLiteral("<array><data>");
-        for (const QVariant &item : v.toList())
-            s += QStringLiteral("<value>") + variantToXmlRpcValue(item) +
-                 QStringLiteral("</value>");
-        s += QStringLiteral("</data></array>");
-        return s;
-    }
-    default:
-        // Treat everything else as string, XML-escape the value
-        return QStringLiteral("<string>") +
-               v.toString()
-                   .replace(QStringLiteral("&"),  QStringLiteral("&amp;"))
-                   .replace(QStringLiteral("<"),  QStringLiteral("&lt;"))
-                   .replace(QStringLiteral(">"),  QStringLiteral("&gt;"))
-               + QStringLiteral("</string>");
-    }
-}
-
-QVariant SampClient::parseXmlRpcResponse(const QByteArray &data, QString &errorOut)
-{
-    QDomDocument doc;
-    QString domErr;
-    if (!doc.setContent(data, &domErr)) {
-        errorOut = QStringLiteral("XML-RPC parse error: ") + domErr;
-        return {};
-    }
-
-    const QDomElement root = doc.documentElement(); // <methodResponse>
-
-    // Check for <fault>
-    const QDomElement fault = root.firstChildElement(QStringLiteral("fault"));
-    if (!fault.isNull()) {
-        const QVariant fv = xmlRpcValueToVariant(
-            fault.firstChildElement(QStringLiteral("value")));
-        const QVariantMap fm = fv.toMap();
-        errorOut = fm.value(QStringLiteral("faultString"),
-                            QStringLiteral("Unknown fault")).toString();
-        return {};
-    }
-
-    // Normal response: <params><param><value>…
-    const QDomElement params = root.firstChildElement(QStringLiteral("params"));
-    const QDomElement param  = params.firstChildElement(QStringLiteral("param"));
-    const QDomElement value  = param.firstChildElement(QStringLiteral("value"));
-    if (value.isNull()) {
-        errorOut = QStringLiteral("Empty XML-RPC response.");
-        return {};
-    }
-    return xmlRpcValueToVariant(value);
-}
-
-QVariant SampClient::xmlRpcValueToVariant(const QDomElement &el)
-{
-    // <value> may contain a type child or raw text (implicit string)
-    QDomElement child = el.firstChildElement();
-    if (child.isNull()) {
-        // implicit string
-        return QVariant(el.text());
-    }
-
-    const QString tag = child.tagName();
-
-    if (tag == QStringLiteral("string"))
-        return QVariant(child.text());
-
-    if (tag == QStringLiteral("int") || tag == QStringLiteral("i4") ||
-        tag == QStringLiteral("i8"))
-        return QVariant(child.text().toLongLong());
-
-    if (tag == QStringLiteral("boolean"))
-        return QVariant(child.text().trimmed() == QStringLiteral("1"));
-
-    if (tag == QStringLiteral("double"))
-        return QVariant(child.text().toDouble());
-
-    if (tag == QStringLiteral("struct")) {
-        QVariantMap map;
-        QDomElement member = child.firstChildElement(QStringLiteral("member"));
-        while (!member.isNull()) {
-            const QString name =
-                member.firstChildElement(QStringLiteral("name")).text();
-            const QDomElement val =
-                member.firstChildElement(QStringLiteral("value"));
-            map[name] = xmlRpcValueToVariant(val);
-            member = member.nextSiblingElement(QStringLiteral("member"));
-        }
-        return QVariant(map);
-    }
-
-    if (tag == QStringLiteral("array")) {
-        QVariantList list;
-        const QDomElement data = child.firstChildElement(QStringLiteral("data"));
-        QDomElement val = data.firstChildElement(QStringLiteral("value"));
-        while (!val.isNull()) {
-            list.append(xmlRpcValueToVariant(val));
-            val = val.nextSiblingElement(QStringLiteral("value"));
-        }
-        return QVariant(list);
-    }
-
-    // Nil / unknown
-    return QVariant();
+    notify(QString(), QString::fromLatin1(Samp::kTableSelectRowList),
+           Samp::selectRowListParams(table, rows));
 }

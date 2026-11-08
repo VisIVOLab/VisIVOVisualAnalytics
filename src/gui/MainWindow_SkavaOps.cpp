@@ -633,7 +633,8 @@ void MainWindow::doSkavaSourceFind(const QString &obsId, const SkavaDatalinkResp
                                      // The catalogue window reads the table through the
                                      // backend it is given: the node's, where the file is.
                                      auto *win = new vtkWindowCatalogue3D(o.catalogPath, o.backendUrl,
-                                                                          o.backendToken, QStringList(), this);
+                                                                          o.backendToken, QStringList(),
+                                                                          Catalogue3DLabel(), this);
                                      win->setAttribute(Qt::WA_DeleteOnClose);
                                      win->showMaximized();
                                      win->raise();

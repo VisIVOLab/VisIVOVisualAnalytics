@@ -1081,8 +1081,12 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->setupSidebar();
     this->setupWorkspaceDocks();
     // The file path is shown in the Layout B path-pill toolbar; the OS title
-    // bar carries the brand name to avoid duplicate context.
-    this->setWindowTitle(u"VisIVO Visual Analytics"_s);
+    // bar carries the brand name to avoid duplicate context. A copy another
+    // application sent has no meaningful path: its sender's name is the title.
+    this->setWindowTitle(visivo::isReceivedCopy(this->filepath)
+                                 ? u"%1 - VisIVO Visual Analytics"_s.arg(
+                                           visivo::datasetDisplayName(this->filepath))
+                                 : u"VisIVO Visual Analytics"_s);
     this->setAttribute(Qt::WA_DeleteOnClose);
     qDebug().noquote()
             << QStringLiteral("[wcs] remote metadata loaded ctype=%1,%2,%3 cdelt=%4,%5,%6")
@@ -12717,8 +12721,12 @@ void vtkWindowCube::setupInspector()
 
     panel->addPropertyCaption(u"DATASET"_s);
     {   // Path elided on the LEFT so the filename + extension always show.
-        const QString elided = QFontMetrics(QApplication::font())
-                                       .elidedText(this->filepath, Qt::ElideLeft, 180);
+        // A received copy says what it is first: the row elides it in the
+        // middle, the whole text in the tooltip.
+        const QString elided = visivo::isReceivedCopy(this->filepath)
+                ? visivo::datasetPathLabel(this->filepath)
+                : QFontMetrics(QApplication::font())
+                          .elidedText(this->filepath, Qt::ElideLeft, 180);
         panel->addPropertyRow(u"Path"_s, elided);
     }
     panel->addPropertyRow(u"Session"_s, this->remoteSessionId);

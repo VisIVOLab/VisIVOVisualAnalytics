@@ -137,6 +137,7 @@ async def catalogue_query(
         )
         rows = df.replace({np.nan: None}).to_dict(orient="records")
         step = sample_step(total, request.limit) if request.even_sample else 1
+        row_index = _original_row_positions(entry["dataframe"], df)
     except HTTPException:
         raise
     except Exception as exc:
@@ -148,4 +149,20 @@ async def catalogue_query(
         returned_rows=len(rows),
         step=step,
         rows=rows,
+        row_index=row_index,
     )
+
+
+def _original_row_positions(table: pd.DataFrame, subset: pd.DataFrame) -> list[int]:
+    """Where each row of ``subset`` sits in ``table``, 0-based.
+
+    The query keeps the opened frame's index on the rows it returns, so the
+    positions come from the index, not from the order of the page (which a
+    filter, a sort or an even sample has changed). An index that cannot be
+    looked up unambiguously yields no positions rather than wrong ones."""
+    if not table.index.is_unique:
+        return []
+    positions = table.index.get_indexer(subset.index)
+    if (positions < 0).any():
+        return []
+    return [int(p) for p in positions]

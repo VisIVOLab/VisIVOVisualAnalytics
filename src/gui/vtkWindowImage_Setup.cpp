@@ -1,4 +1,5 @@
 #include "vtkWindowImage.h"
+#include "app/DatasetName.h"
 #include "ui_vtkWindowImage.h"
 #include "CubeViewportGeometry.h"
 
@@ -465,7 +466,7 @@ void vtkWindowImage::showFitsHeaderDialog()
     auto *dlg = new QDialog(this);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
     dlg->setWindowModality(Qt::NonModal);
-    dlg->setWindowTitle(u"FITS Header - %1"_s.arg(QFileInfo(this->filepath).fileName()));
+    dlg->setWindowTitle(u"FITS Header - %1"_s.arg(visivo::datasetDisplayName(this->filepath)));
     dlg->resize(620, 480);
 
     auto *vbox = new QVBoxLayout(dlg);
@@ -970,9 +971,9 @@ void vtkWindowImage::setupInspector()
         return;
 
     panel->setProperties({
-            { u"Dataset"_s, QFileInfo(this->filepath).fileName() },
+            { u"Dataset"_s, visivo::datasetDisplayName(this->filepath) },
             { u"Type"_s, u"IMAGE"_s },
-            { u"Path"_s, this->filepath },
+            { u"Path"_s, visivo::datasetPathLabel(this->filepath) },
             { u"Session"_s, this->remoteSessionId },
             { u"Backend"_s, this->remoteBackendUrl },
     });
@@ -2212,7 +2213,8 @@ void vtkWindowImage::setupSidebar()
         const QFileInfo fi(this->filepath);
         const int nLayers = this->layers ? this->layers->rowCount() : 1;
 
-        addField(u"Active Layer"_s, fi.fileName(), fi.absoluteFilePath(), /*wrap=*/true);
+        addField(u"Active Layer"_s, visivo::datasetDisplayName(this->filepath),
+                 fi.absoluteFilePath(), /*wrap=*/true);
         cl->addSpacing(5);
         addField(u"Layers"_s, QString::number(nLayers));
         cl->addSpacing(5);

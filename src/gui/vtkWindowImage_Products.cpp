@@ -21,6 +21,7 @@
 //                  Activation replays the result window from its record.
 
 #include "vtkWindowImage.h"
+#include "app/DatasetName.h"
 #include "ui_vtkWindowImage.h"
 
 #include "LayerListModel.h"   // src/, not src/gui/
@@ -73,7 +74,7 @@ QString vtkWindowImage::registerAnalysisProduct(const QString &kind, const QStri
     AnalysisProduct p;
     p.productId = stableId;
     p.parentKey = this->filepath;
-    p.parentLabel = QFileInfo(this->filepath).fileName();
+    p.parentLabel = visivo::datasetDisplayName(this->filepath);
     p.kind = kind;
     p.label = label;
     p.renderer = QString();   // single-view window: nothing mounts in a pane
@@ -269,7 +270,7 @@ void vtkWindowImage::recordImageQuality(const QVariantMap &metrics)
 
     const QVariantMap record = ToolResultDialog::makeRecord(
             u"Image Quality / Artifacts"_s,
-            QFileInfo(this->filepath).fileName(),
+            visivo::datasetDisplayName(this->filepath),
             { { u"Metrics"_s, rows } });
     this->registerAnalysisProduct(u"quality"_s, u"Image quality"_s, params,
                                   this->scopedProductId(u"imagequality"_s), record);

@@ -400,6 +400,11 @@ void MainWindow::buildSampMenu()
     this->menuBar()->insertMenu(ui->menuHelp->menuAction(), sampMenu);
     m_sampMenu = sampMenu;
 
+    // The connection state, where the user looks for SAMP (and in Diagnostics).
+    m_actSampStatus = sampMenu->addAction(u"Not connected"_s);
+    m_actSampStatus->setEnabled(false);
+    sampMenu->addSeparator();
+
     m_actSampConnect = sampMenu->addAction(u"Connect To Hub"_s);
     QObject::connect(m_actSampConnect, &QAction::triggered, this, [this]() {
         this->syncSampSettings();
@@ -412,11 +417,16 @@ void MainWindow::buildSampMenu()
             return;
         }
         this->m_sampClient->connectToHub();
+        // "Connecting…", and Disconnect to cancel a slow attempt: no signal
+        // says the attempt started.
+        this->updateSampActions();
     });
 
     m_actSampDisconnect = sampMenu->addAction(u"Disconnect From Hub"_s);
     QObject::connect(m_actSampDisconnect, &QAction::triggered, this, [this]() {
         this->m_sampClient->disconnectFromHub();
+        // Waiting for a lost hub ends here, and no disconnected() follows it.
+        this->updateSampActions();
     });
 
     sampMenu->addSeparator();

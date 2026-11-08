@@ -173,6 +173,9 @@ add_executable(VisIVOTests
     test_source_table.cpp
     TestBackendTaskFollow.h
     test_backend_task_follow.cpp
+    TestSamp.h
+    test_samp.cpp
+    ${VISIVO_ROOT}/src/app/SampCallbackServer.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

@@ -389,6 +389,7 @@ void HiPSWindow::finishOpenSurvey()
     const HiPSOpenTaskResult r = m_openWatcher.result();
 
     if (!r.valid) {
+        m_pendingCenter.reset();
         showStatus(QStringLiteral("Failed: %1").arg(r.error));
         QMessageBox::critical(this, u"HiPS Open Error"_s,
                               QStringLiteral("Could not open HiPS survey:\n\n%1").arg(r.error));
@@ -402,6 +403,14 @@ void HiPSWindow::finishOpenSurvey()
 
     m_viewport->setSurvey(r.survey, m_backendUrl, m_backendToken);
     m_viewport->setFocus();
+    if (!r.survey.baseUrl.isEmpty())
+        s_lastSurveyUrl = r.survey.baseUrl;
+    // setSurvey() reset the view: a position that waited for it goes on now.
+    if (m_pendingCenter) {
+        const auto [ra, dec] = *m_pendingCenter;
+        m_pendingCenter.reset();
+        setCenter(ra, dec);
+    }
 }
 
 void HiPSWindow::finishOpenSurveySec()
@@ -608,6 +617,29 @@ void HiPSWindow::onResetView() { if (m_viewport) m_viewport->resetView(); }
 
 QString HiPSWindow::fmtRa(double ra) const  { return ::fmtRa(ra); }
 QString HiPSWindow::fmtDec(double dec) const { return ::fmtDec(dec); }
+
+QString HiPSWindow::s_lastSurveyUrl;
+
+void HiPSWindow::showSkyPosition(double raDeg, double decDeg)
+{
+    if (!m_viewport)
+        return;
+    // A survey being opened resets the view when it arrives: the position
+    // waits for it, whether or not another survey is shown meanwhile.
+    if (m_openWatcher.isRunning()) {
+        m_pendingCenter = std::make_pair(raDeg, decDeg);
+        return;
+    }
+    if (m_viewport->hasSurvey()) {
+        setCenter(raDeg, decDeg);
+        return;
+    }
+    m_pendingCenter = std::make_pair(raDeg, decDeg);
+    const QString url = s_lastSurveyUrl.isEmpty() ? u"https://alasky.unistra.fr/DSS/DSSColor"_s
+                                                  : s_lastSurveyUrl;
+    showStatus(QStringLiteral("Opening %1 for the position sent over SAMP…").arg(url));
+    openSurveyUrl(url);
+}
 
 void HiPSWindow::openSurveyUrl(const QString &url)
 {

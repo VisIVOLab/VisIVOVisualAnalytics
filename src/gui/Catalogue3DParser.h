@@ -82,6 +82,10 @@ private:
 struct Catalogue3DEntry
 {
     int id{ 0 };
+    // 0-based position of this row in the table as opened on the backend, before
+    // any filter, sort or sample; -1 when unknown. SAMP row messages
+    // (table.highlight.row, table.select.rowList) name rows by it.
+    qint64 sourceRow{ -1 };
     // Row values in schema.headers order. Index access is direct; name access
     // goes through Catalogue3DSchema::indexOf(). This single compact store
     // replaces the old per-row QMap<QString,QVariant> *and* its duplicate
@@ -412,7 +416,14 @@ inline QString entryDisplayName(const Catalogue3DEntry &entry, const Catalogue3D
 {
     const QString nameField = detectedNameField(schema);
     const QString name = fieldString(entry, schema, nameField);
-    return name.isEmpty() ? QStringLiteral("Source %1").arg(entry.id) : name;
+    if (!name.isEmpty())
+        return name;
+    // Unnamed: its row in the original table, counted from 1 as the status
+    // line and TOPCAT count it. entry.id restarts with every page Load more
+    // brings, so row 149998 showed as "Source 49997"; it is the fallback only
+    // for a backend that does not report rows.
+    return entry.sourceRow >= 0 ? QStringLiteral("Row %1").arg(entry.sourceRow + 1)
+                                : QStringLiteral("Source %1").arg(entry.id);
 }
 
 inline QString entryMorphology(const Catalogue3DEntry &entry, const Catalogue3DSchema &schema)
@@ -468,9 +479,14 @@ inline void fillCartesian(Catalogue3DEntry &e, const Catalogue3DSchema &schema)
 
 } // namespace detail
 
+// `rowIndex` (optional) holds each row's position in the original table, as
+// the backend's query returns it; it is kept per entry (sourceRow) even when
+// invalid rows are skipped, which is why it cannot be recomputed afterwards.
 inline Catalogue3DParseResult parseBackendSubset(const Catalogue3DSchema &schema,
-                                                 const QList<QVariantMap> &rows)
+                                                 const QList<QVariantMap> &rows,
+                                                 const QList<qint64> &rowIndex = {})
 {
+    const bool haveRowIndex = rowIndex.size() == rows.size();
     Catalogue3DParseResult result;
     result.schema = schema;
     const bool cartesian = schema.isCartesian();
@@ -480,8 +496,10 @@ inline Catalogue3DParseResult parseBackendSubset(const Catalogue3DSchema &schema
     }
 
     int entryId = 0;
-    for (const QVariantMap &row : rows) {
+    for (qsizetype rowPos = 0; rowPos < rows.size(); ++rowPos) {
+        const QVariantMap &row = rows.at(rowPos);
         Catalogue3DEntry entry;
+        entry.sourceRow = haveRowIndex ? rowIndex.at(rowPos) : -1;
 
         if (cartesian) {
             bool okX = false, okY = false, okZ = false;

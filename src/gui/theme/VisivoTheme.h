@@ -244,6 +244,10 @@ QString sidebarToolButtonStyleSheet();
 struct ViewerToolbarSpec
 {
     QString filePath;       // "/Users/foo/cubehi-clean-m31.fits"
+    // Shown instead of the folder and file name when the file's name means
+    // nothing to the user (a SAMP table staged under a hashed name); the
+    // path is then in the tooltip.
+    QString displayName;
     QString primaryTag;     // "CUBE · 1024×1024×112" (cyan accent)
     QString secondaryTag;   // "remote · full-res" (neutral)
 };
@@ -266,6 +270,10 @@ struct ViewerToolbarWidgets
 // can wire them — Find / Command / Export, the clickable "CUBE · …" primary
 // tag (e.g. opens the FITS header dialog), the dataset switcher, and the live
 // remote/health chip.
+// A tooltip for a long path or name with no spaces in it: plain text broken
+// into lines after its separators (app/ToolTipText.h); a short value as it is.
+QString wrappingToolTip(const QString &text);
+
 QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
                            ViewerToolbarWidgets *out = nullptr,
                            QWidget *parent = nullptr);
