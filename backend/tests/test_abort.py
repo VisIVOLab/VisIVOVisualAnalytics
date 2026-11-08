@@ -82,17 +82,18 @@ def test_dask_moment_stops_between_blocks(tmp_path, monkeypatch):
     hdu.writeto(path)
     monkeypatch.setattr(moment, "_MOMENT_THREADS", 1)          # blocks in order
     stop = tmp_path / "stop"
-    real = moment._mapped_cube
+    # Blocks are read with explicit reads (issue #116): count those.
+    real = moment._raw_cube
     reads = []
 
-    def mapped(*args):
+    def opened(*args):
         reads.append(1)
         if armed["on"] and len(reads) == 2:
             stop.touch()          # the client aborts while the second block is read
         return real(*args)
 
     armed = {"on": True}
-    monkeypatch.setattr(moment, "_mapped_cube", mapped)
+    monkeypatch.setattr(moment, "_raw_cube", opened)
     with pytest.raises(ComputationAborted):
         moment._moment_map_dask(str(path), 0, 0, 7, 0.0, False, chunk_z=1, stop_file=str(stop))
     aborted_reads = len(reads)

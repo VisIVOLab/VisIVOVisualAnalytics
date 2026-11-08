@@ -3,6 +3,7 @@
 
 #include "AuthWrapper.h"
 #include "BackendsSettingsWidget.h"
+#include "CopilotStatus.h"
 #include "Settings.h"
 
 #include <QBoxLayout>
@@ -20,6 +21,7 @@
 #include <QTabBar>
 #include <QTabWidget>
 
+#include <algorithm>
 #include <limits>
 
 using namespace Qt::StringLiterals;
@@ -233,7 +235,8 @@ void SettingsDialog::accept()
         this->backendsWidget->saveTo(this->settings);
     }
     if (this->m_copilotProvider) {
-        this->settings->setCopilotProvider(this->m_copilotProvider->currentIndex());
+        this->settings->setCopilotChoice(CopilotChoice::fromKey(
+                this->m_copilotProvider->currentData().toString()));
         this->settings->setCopilotKey(this->m_copilotKey->text());
         this->settings->setCopilotUrl(this->m_copilotUrl->text().trimmed());
         this->settings->setCopilotModel(this->m_copilotModel->text().trimmed());
@@ -247,10 +250,18 @@ QWidget *SettingsDialog::buildCopilotSection()
     auto *form = new QFormLayout(group);
 
     m_copilotProvider = new QComboBox(group);
-    m_copilotProvider->addItem(tr("Claude (Anthropic)"));               // 0
-    m_copilotProvider->addItem(tr("ChatGPT (OpenAI)"));                 // 1
-    m_copilotProvider->addItem(tr("Your server (OpenAI-compatible)"));  // 2
-    m_copilotProvider->addItem(tr("None"));                            // 3
+    // Each item carries its stored key, so the order is free to change.
+    using CopilotChoice::Choice;
+    m_copilotProvider->addItem(tr("Use the server's configuration"),
+                               CopilotChoice::toKey(Choice::Server));
+    m_copilotProvider->addItem(tr("Claude (Anthropic)"), CopilotChoice::toKey(Choice::Anthropic));
+    m_copilotProvider->addItem(tr("ChatGPT (OpenAI)"), CopilotChoice::toKey(Choice::OpenAI));
+    m_copilotProvider->addItem(tr("Your server (OpenAI-compatible)"),
+                               CopilotChoice::toKey(Choice::SelfHosted));
+    m_copilotProvider->addItem(tr("Off"), CopilotChoice::toKey(Choice::Off));
+    m_copilotProvider->setToolTip(
+            tr("\"Use the server's configuration\" keeps what the backend's operator set up. "
+               "Any other choice replaces it for your session."));
 
     m_copilotKey = new QLineEdit(group);
     m_copilotKey->setEchoMode(QLineEdit::Password);
@@ -265,22 +276,67 @@ QWidget *SettingsDialog::buildCopilotSection()
     form->addRow(tr("Server URL"), m_copilotUrl);
     form->addRow(tr("Model"), m_copilotModel);
 
+    // Why the copilot cannot answer, as the backend told the copilot panels:
+    // this is where the user comes to fix it, so it is said here as well.
+    auto *problem = new QLabel(group);
+    problem->setWordWrap(true);
+    problem->setTextFormat(Qt::RichText);
+    problem->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    form->addRow(problem);
+    auto showProblem = [problem]() {
+        const QMap<QString, QString> problems = CopilotStatus::instance()->problems();
+        if (problems.isEmpty()) {
+            problem->clear();
+            problem->setVisible(false);
+            return;
+        }
+        // The copilot banner's error text colours, so dark mode reads too.
+        const bool dark = problem->palette().color(QPalette::Window).lightness() < 128;
+        problem->setStyleSheet(dark ? u"QLabel { color: #f3b9b9; }"_s
+                                    : u"QLabel { color: #8a1f1f; }"_s);
+        // Worded as the panel's banner: which configuration, then why.
+        auto which = [](const QString &url) {
+            const QString active = CopilotStatus::instance()->active(url);
+            return active.isEmpty() ? QString() : u" <i>(%1)</i>"_s.arg(active.toHtmlEscaped());
+        };
+        QString html;
+        if (problems.size() == 1) {
+            const auto it = problems.cbegin();
+            html = tr("<b>The copilot cannot answer</b>%1. %2")
+                           .arg(which(it.key()), it.value().toHtmlEscaped());
+        } else {
+            // With several backends, say which is which.
+            html = tr("<b>The copilot cannot answer.</b>");
+            for (auto it = problems.cbegin(); it != problems.cend(); ++it)
+                html += u"<br>%1%2: %3"_s.arg(it.key().toHtmlEscaped(), which(it.key()),
+                                              it.value().toHtmlEscaped());
+        }
+        problem->setText(html);
+        problem->setVisible(true);
+    };
+    QObject::connect(CopilotStatus::instance(), &CopilotStatus::changed, problem, showProblem);
+    showProblem();
+
     // Show only the relevant field(s) per provider (cloud → key; own server → URL
-    // + key; none → nothing), matching the Copilot panel's ⚙.
+    // + key; the server's configuration or off → nothing).
     auto refresh = [this, form]() {
-        const int i = m_copilotProvider->currentIndex();
-        m_copilotKey->setVisible(i == 0 || i == 1 || i == 2);
-        m_copilotUrl->setVisible(i == 2);
-        m_copilotModel->setVisible(i != 3);
-        if (auto *l = form->labelForField(m_copilotKey)) l->setVisible(m_copilotKey->isVisible());
-        if (auto *l = form->labelForField(m_copilotUrl)) l->setVisible(m_copilotUrl->isVisible());
-        if (auto *l = form->labelForField(m_copilotModel)) l->setVisible(m_copilotModel->isVisible());
+        const Choice c = CopilotChoice::fromKey(m_copilotProvider->currentData().toString());
+        const bool explicitProvider = c != Choice::Server && c != Choice::Off;
+        m_copilotKey->setVisible(explicitProvider);
+        m_copilotUrl->setVisible(c == Choice::SelfHosted);
+        m_copilotModel->setVisible(explicitProvider);
+        // isHidden(), not isVisible(): before the tab is first shown nothing is
+        // visible yet, which used to hide every label until the combo changed.
+        if (auto *l = form->labelForField(m_copilotKey)) l->setVisible(!m_copilotKey->isHidden());
+        if (auto *l = form->labelForField(m_copilotUrl)) l->setVisible(!m_copilotUrl->isHidden());
+        if (auto *l = form->labelForField(m_copilotModel)) l->setVisible(!m_copilotModel->isHidden());
     };
     QObject::connect(m_copilotProvider, &QComboBox::currentIndexChanged, this,
                      [refresh](int) { refresh(); });
 
     // Pre-fill from the persisted config.
-    m_copilotProvider->setCurrentIndex(this->settings->getCopilotProvider());
+    m_copilotProvider->setCurrentIndex(std::max(0, m_copilotProvider->findData(
+            CopilotChoice::toKey(this->settings->getCopilotChoice()))));
     m_copilotKey->setText(this->settings->getCopilotKey());
     m_copilotUrl->setText(this->settings->getCopilotUrl());
     m_copilotModel->setText(this->settings->getCopilotModel());

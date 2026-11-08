@@ -7,7 +7,7 @@ keeping several views in step while you compare them.
 |------|-------|
 | A single figure with a colour bar and sky grid | *Analysis → Publication Figure…* |
 | An animation | *Tools → Export Movie…* (cube viewer) |
-| Labels and arrows on an image | *Tools → Add Text / Arrow Annotation…* (image viewer) |
+| Labels and arrows on an image | *Tools → Add Text Annotation…* / *Add Arrow Annotation…* (image viewer) |
 | Two views showing the same thing | *Tools → Link Views* |
 | Regions shared with CASA or DS9 | *Tools → Import / Export Region (CRTF/DS9)…* |
 
@@ -142,11 +142,12 @@ Polygons and annuli are the ones most worth checking.
 ## Exports as data, not pictures
 
 For anything you intend to measure again rather than look at, export FITS rather
-than an image:
+than an image. In the cube viewer, *Tools ▸ Export* has one entry that writes
+what the focused pane shows ([FITS exports](cube-viewer.md#fits-exports--workspace)):
 
-- *Export Sub-Cube as FITS…* — the region you selected, with WCS.
-- *Export Current Channel as 2-D FITS…* — one plane.
-- *Export Moment Map as FITS…* — the map with its own units.
+- *Export Sub-Cube as FITS…* (3-D view) — the region you selected, with WCS.
+- *Export Current Channel as 2-D FITS…* (2-D slice) — one plane.
+- *Export … as FITS…* (a moment or another map) — the map with its own units.
 
 All land in the Workspace Exports folder and keep the WCS, so they reopen
 correctly here and anywhere else.

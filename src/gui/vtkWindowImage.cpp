@@ -1598,6 +1598,9 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
         this->requestWcsOverlayRender();
     });
 
+    // ── Map texture: angular power spectrum, skeleton / voids (issue #29) ─
+    this->setupMapTextureTools();
+
     // ── Blink / Compare ─────────────────────────────────────────────────
     ui->menuView->addSeparator();
     m_actBlink = new QAction(u"Blink Layers"_s, this);

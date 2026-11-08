@@ -82,7 +82,7 @@ Loading a cube at full resolution holds about three times its size while it
 arrives (the slabs, the assembled volume, the copy on the GPU). The client
 compares that with the machine's physical memory before fetching and, when it
 does not fit, keeps the decimated proxy and says so with the numbers. Crop the
-region you need (*Tools ▸ Crop Full Resolution*), or render on a remote
+region you need (*View ▸ Crop Full Resolution*), or render on a remote
 backend. A load that fails part-way (a slab the backend could not serve)
 reports the failure instead of retrying through the JSON route, which on a
 multi-GB cube used to multiply the client's memory until the system killed it.
@@ -107,7 +107,7 @@ Mitigations already built in:
 - Per-pixel work (NaN sanitisation, blank-fraction stats) runs on the
   worker thread; the UI thread does only the data swap.
 - A worker-pool slot is always reserved for interactive requests via the
-  [heavy-task throttle](../async-patterns#heavy-task-throttle-backend-side)
+  [heavy-task throttle](../async-patterns.md#heavy-task-throttle-backend-side)
   — slice scroll, probe, ROI still respond immediately.
 
 If the wait is still painful: enable *Use Camera ROI* in the View menu
@@ -247,14 +247,15 @@ tooltip is the answer.
 - *"acts on the 2D Slice — show it in a pane"* / *"acts on the 3D view — …"*:
   the tool is bound to a view, and that view is not currently in any pane. Pick
   it from a pane's ▾ menu (a tool does **not** need its pane to be the selected
-  one — see [Cube viewer](cube-viewer#when-a-tool-is-available-and-where-it-acts)).
+  one — see [Cube viewer](cube-viewer.md#when-a-tool-is-available-and-where-it-acts)).
 - *"probe a pixel first"* (Pin Spectrum), *"draw or import a region first"*
   (Export Region), *"open a 2D image viewer first"* (Overlay Slice on an Open
   Image), *"nothing to link yet"* (Link Views): the tool works on something that
   does not exist yet. **Hover the greyed entry to read the reason** — it is on
   the row in Inspector ▸ Analysis as well as in the Tools menu.
-- *Export Moment Map as FITS* stays disabled until a moment map has actually
-  been computed; *Open in VR* until a VR runtime is available.
+- *Tools ▸ Export* stays disabled while no pane is focused, and reads *Export
+  Selected View…* then; *Open in VR* stays disabled until a VR runtime is
+  available.
 
 ### I armed a tool and cannot switch it off
 
@@ -291,7 +292,7 @@ The tool tells you which of the two happened.
   coordinates on the axis they were computed for, so they are dropped when the
   pane moves to a product on a **different** spectral axis. Load them again.
 
-See [Line identification](spectral-tools#line-identification-overlaying-a-line-list).
+See [Line identification](spectral-tools.md#line-identification-overlaying-a-line-list).
 
 ### I closed a tool window while it was computing
 
@@ -303,6 +304,10 @@ So the dialogs ask first: *Close and Discard* / *Keep Waiting*.
 If you close anyway, watch the status bar: "N running" counts it until it
 finishes, and Diagnostics has the line where it started. Until it does, it holds
 one of the session's compute slots, so another heavy tool may have to wait.
+
+Moment maps, the moment FITS export, PV diagrams and SoFiA-2 are the
+exception: they run as backend tasks, which **Cancel** stops, and closing the
+cube window stops a moment or a PV under way.
 
 ### "Too many concurrent compute tasks" / the backend is busy
 
@@ -341,12 +346,17 @@ If you have multiple cubes open but only one appears in the list:
   opening that output from its Session Data row registers it again), so the
   duplicate is collapsed rather than offered as a second cube to stack.
 
-### Moment dialog says "Computing…" forever
+### A moment map is still "Computing the moment map"
 
-Check the *Diagnostics* panel — a backend exception probably prevented
-the result from arriving. The moment compute is async (you can keep
-using the app), so a frozen "Computing…" state is always a backend
-error. Common causes:
+A moment runs as a backend task with no time limit, and on a cube of hundreds
+of GB an M1 or M2 can take 20–25 minutes. The progress sheet says whether the
+task is queued or running and how long it has been going; **Cancel** stops it
+on the backend ([Moment maps](moment-maps)). If it stays *queued*, other
+computations hold the backend's slots; see "Too many concurrent compute
+tasks" above.
+
+If the task ends with an error, the client reports it and the *Diagnostics*
+panel has the backend's message. Common causes:
 
 - Cube has no spectral axis.
 - Channel range is empty after clamping.
@@ -367,7 +377,7 @@ Diagnostics log attached.
 
 When opening a ticket please include:
 
-1. **Diagnostics log** — *View → Diagnostics → Copy All*.
+1. **Diagnostics log** — *View → Diagnostics*, select the rows (⌘A / Ctrl+A for all) and press **Copy Selected**.
 2. **Backend terminal output** — full traceback if any.
 3. **OS / Qt / VTK versions** — `cmake --version`, `qmake --version`,
    `vtk-config --version` (or the equivalent on Linux).

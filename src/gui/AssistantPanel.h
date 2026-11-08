@@ -60,11 +60,24 @@ private slots:
     void onSend();
     void onSettingsUpdated();   ///< re-apply after the global Settings dialog changes it
     void onClearConversation();   ///< start a fresh conversation (drops follow-up context)
+    /// Show or hide the "cannot answer" banner from what is known of m_url.
+    void refreshProblemBanner();
+
+protected:
+    void changeEvent(QEvent *event) override;
 
 private:
+    void applyStatusColour();   ///< the status line's readable, subdued colour
     /// Push the persisted copilot provider config (Settings) to the backend, so
     /// the user configures the provider once and it auto-applies on every connect.
     void applyProviderFromSettings();
+    /// Record what the backend at @p url said stops the copilot ("" = nothing),
+    /// so this panel, the other viewers' panels and Settings all show it.
+    /// @p ticket is CopilotStatus's number for the request this answers.
+    void reportProblem(const QString &url, const QString &problem, quint64 ticket);
+    /// Ask the backend again after an answer: a self-hosted server with no or
+    /// several models is only found out at the first question.
+    void refreshStatusAfterAnswer();
     /// Run a deferred provider change once no query and no stream is live.
     void maybeApplyPendingProvider();
     /// Abort and detach a stream reply that is still open.
@@ -88,6 +101,9 @@ private:
         QString text;          ///< the message / answer / error text
         QString provider;      ///< assistant only: provider label
         bool configured{ true };
+        /// A specific reason was known for an unconfigured provider, so the
+        /// generic "no provider" hint would only repeat it less precisely.
+        bool problemKnown{ false };
         bool grounded{ false };
         QString repro;         ///< assistant only: reproducibility script
         QString provenance;    ///< assistant only: tool-call provenance HTML
@@ -101,6 +117,13 @@ private:
     /// A Settings change landed while the panel was busy; applied on release.
     bool m_providerApplyPending{ false };
     bool m_providerAutoApplied{ false };   ///< auto-apply the saved config only once
+    /// Bumped per status request, provider POST and backend change; a status
+    /// reply from an older generation is dropped.
+    quint64 m_statusGeneration{ 0 };
+    /// The provider the backend last reported as active, for the banner, and
+    /// whether it is the server's own configuration rather than the user's.
+    QString m_activeName;
+    bool m_activeFromServer{ true };
 
     QList<Entry> m_entries;    ///< everything shown in the transcript, for re-render
     QJsonArray m_turns;        ///< prior user/assistant TEXT turns sent for follow-up context
@@ -112,6 +135,7 @@ private:
     QPushButton *m_send{ nullptr };
     QPushButton *m_clear{ nullptr };
     QLabel *m_status{ nullptr };
+    QLabel *m_problem{ nullptr };   ///< why the copilot cannot answer (hidden if nothing is known)
     QWidget *m_suggestions{ nullptr };        ///< chip container (shown when empty)
     QVBoxLayout *m_suggestionsLayout{ nullptr };
 

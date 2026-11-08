@@ -252,7 +252,9 @@ void MainWindow::rebuildCommandPalette()
                             return;
                         const auto acts = menu->actions();
                         for (QAction *a : acts) {
-                            if (!a || a->isSeparator())
+                            // A gate note ("↳ compute a moment map first") is
+                            // the menu explaining a greyed-out tool, not a command.
+                            if (!a || a->isSeparator() || a->property("visivoGateNote").toBool())
                                 continue;
                             if (a->menu()) {
                                 walk(a->menu(), group + u" \u25b8 "_s + a->menu()->title()

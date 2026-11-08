@@ -64,7 +64,8 @@ except ImportError:
 # ── Parallel moment configuration ────────────────────────────────────────────
 
 _MOMENT_THREADS = int(_os.environ.get("VISIVO_MOMENT_THREADS", "0"))
-# 0 = auto: min(4, cpu_count); positive = explicit count
+# 0 = auto (_moment_threads_choice: the granted CPUs and the memory budget);
+# positive = explicit count.
 
 # Out-of-core moments: above this materialised channel-range size, M0/M1/M2 are
 # computed by streaming spectral slabs from disk (constant memory) instead of
@@ -100,6 +101,47 @@ def _moment_stream_bytes() -> int:
 # a service capped at 8 GB was killed (measured, benchmark/remote). The block is
 # therefore sized in BYTES: at most this many per block, at least one channel.
 _MOMENT_CHUNK_BYTES = int(_os.environ.get("VISIVO_MOMENT_CHUNK_BYTES", str(64 * 1024 ** 2)))
+# Slabs the streamer reads ahead of the one it reduces (issue #116), on one
+# thread: the disk keeps working during the reduction. Each costs one slab of
+# memory; 0 reads in the reducing thread, as before.
+_MOMENT_READ_AHEAD = max(0, int(_os.environ.get("VISIVO_MOMENT_READ_AHEAD", "2")))
+
+
+def _read_ahead(read, spans: list, depth: int):
+    """Yield ``read(*span)`` for each span, in order, with up to ``depth``
+    reads started ahead on one background thread (``depth`` 0: in this
+    thread). A failed read raises when its block is reached. When the
+    consumer stops early, the queued reads are cancelled and the one in
+    progress is waited for: at most one block more is read."""
+    if depth <= 0:
+        for span in spans:
+            yield read(*span)
+        return
+    from collections import deque  # noqa: PLC0415
+
+    pool = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="visivo-moment-read")
+    pending: deque = deque()
+    nxt = 0
+    try:
+        while nxt < len(spans) or pending:
+            while nxt < len(spans) and len(pending) <= depth:
+                pending.append(pool.submit(read, *spans[nxt]))
+                nxt += 1
+            yield pending.popleft().result()
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
+def _cube_reader(path: str, hdu_index: int, shape: tuple):
+    """``read(za, zb)`` of channels [za, zb) of ``path`` by explicit reads, or
+    None when the file must be read through its memory map (``_raw_cube``)."""
+    from ..volume_source import split_ref  # noqa: PLC0415
+
+    st = _os.stat(split_ref(str(path))[0])
+    raw = _raw_cube(str(path), int(hdu_index), (int(st.st_size), int(st.st_mtime_ns)))
+    if raw is None or raw.shape != tuple(int(n) for n in shape):
+        return None
+    return raw.read
 
 
 class _FitsCubeSource:
@@ -137,6 +179,14 @@ class _FitsCubeSource:
 
     def __getitem__(self, key):
         check_abort(self.stop_file)
+        # Explicit reads where the file allows them (issue #116); the memory
+        # map otherwise, and for any key that is not a box of unit-step slices.
+        box = _simple_box(key, self.shape)
+        raw = _raw_cube(self.path, self.hdu_index, self.signature) if box is not None else None
+        if raw is not None and raw.shape[1:] == self.shape[1:]:
+            z0, z1, y0, y1, x0, x1 = box
+            block = raw.read(self.z0 + z0, self.z0 + z1, y0, y1)
+            return block if (x0, x1) == (0, self.shape[2]) else np.array(block[:, :, x0:x1])
         cube = _mapped_cube(self.path, self.hdu_index, self.signature)
         view = cube[self.z0 : self.z0 + self.shape[0]]
         return np.array(view[key])   # a copy of this block only
@@ -201,6 +251,210 @@ def _mapped_cube(path: str, hdu_index: int, signature: tuple[int, int]) -> np.nd
         return hit[2]
 
 
+# ── Explicit reads (issue #116) ──────────────────────────────────────────────
+# Slicing the memory map reads a cube by page faults, a few pages at a time:
+# on BeeGFS the moment paths read 0.2-0.8 GB/s where dd reads the same file at
+# 2.5 GB/s. A block is a contiguous range of the file (whole planes) or one
+# band of rows per channel, so it is read with one positional read per piece
+# into a buffer of its own. The read releases the GIL: several dask threads,
+# or the streamer's read-ahead thread, keep reads in flight while others
+# reduce.
+
+
+def _pread_into(fd: int, view: memoryview, offset: int) -> None:
+    """Fill ``view`` from ``fd`` at ``offset``: a short read is continued, and
+    an end of file before the view is full is an error, never zeros."""
+    while len(view):
+        if hasattr(_os, "preadv"):
+            n = _os.preadv(fd, [view], offset)
+        else:   # macOS before 11: one copy more
+            chunk = _os.pread(fd, len(view), offset)
+            n = len(chunk)
+            view[:n] = chunk
+        if n <= 0:
+            raise OSError(f"unexpected end of file at byte {offset}")
+        view = view[n:]
+        offset += n
+
+
+class _RawCube:
+    """Where a cube's samples are in its file, read by explicit positional
+    reads (issue #116).
+
+    ``offset`` is the byte of sample [0, 0, 0]; the cube is C-ordered,
+    ``shape`` (nz, ny, nx), stored as ``raw_dtype`` (with the file's byte
+    order). ``scale`` is astropy's own conversion of raw samples into the
+    values ``hdu.data`` holds (BSCALE, BZERO, BLANK, unsigned integers), or
+    None when the samples are the values: a block read here equals, value for
+    value, the same slice of the memory-mapped data. ``keep`` holds what
+    ``scale`` needs (the HDU list). The descriptor is closed only when the
+    last reference goes, so a block being read keeps it open.
+    """
+
+    def __init__(self, fh, offset: int, raw_dtype, shape: tuple, scale=None,
+                 keep: Any = None) -> None:
+        self._fh = fh
+        self._keep = keep
+        self.offset = int(offset)
+        self.raw_dtype = np.dtype(raw_dtype)
+        self.shape = tuple(int(n) for n in shape)
+        self._scale = scale
+        self.dtype = self.read(0, 0).dtype
+
+    def read(self, za: int, zb: int, ya: int = 0, yb: int | None = None) -> np.ndarray:
+        """Channels [za, zb) and rows [ya, yb), every column, in the dtype of
+        ``hdu.data`` with the machine's byte order."""
+        _nz, ny, nx = self.shape
+        za, zb, ya = int(za), int(zb), int(ya)
+        yb = ny if yb is None else int(yb)
+        nzb, nyb = max(0, zb - za), max(0, yb - ya)
+        item = self.raw_dtype.itemsize
+        buf = np.empty(nzb * nyb * nx * item, dtype=np.uint8)
+        view = memoryview(buf)
+        fd = self._fh.fileno()
+        if nyb == ny:     # whole planes: one contiguous range of the file
+            _pread_into(fd, view, self.offset + za * ny * nx * item)
+        else:             # a band of rows: one contiguous piece per channel
+            band = nyb * nx * item
+            for k in range(nzb):
+                _pread_into(fd, view[k * band:(k + 1) * band],
+                            self.offset + ((za + k) * ny + ya) * nx * item)
+        out = buf.view(self.raw_dtype).reshape(nzb, nyb, nx)
+        if not out.dtype.isnative:
+            out = out.byteswap(inplace=True).view(out.dtype.newbyteorder("="))
+        if self._scale is not None:
+            out = self._scale(out)
+        return out
+
+
+def _cube_shape_3d(shape: tuple) -> tuple | None:
+    """The shape ``ScientificFitsDataset.squeeze_to_3d`` gives an array of
+    ``shape``: the size-1 axes dropped, then the leading axes beyond three
+    reduced to their first index. That array is the first nz·ny·nx samples
+    of the data, contiguous. None when it is not three-dimensional."""
+    dims = [int(n) for n in shape if int(n) != 1]
+    if len(dims) < 3:
+        return None
+    return tuple(dims[-3:])
+
+
+_FITS_RAW_DTYPES = {8: ">u1", 16: ">i2", 32: ">i4", 64: ">i8", -32: ">f4", -64: ">f8"}
+
+
+def _open_raw_cube(path: str, hdu_index: int, want: tuple[int, int]) -> "_RawCube | None":
+    """A ``_RawCube`` over the file of version ``want`` (size, mtime), or None
+    when the cube cannot be read by explicit reads (a tile- or gzip-compressed
+    file, an unusual layout, a truncated file, a header astropy cannot parse,
+    a platform without ``pread``): the caller then slices the memory map as
+    before, which reports its own errors. A file of another version is an
+    error, as in ``_mapped_cube``."""
+    from ..volume_source import split_ref  # noqa: PLC0415
+
+    if not hasattr(_os, "pread"):        # Windows: the memory map
+        return None
+    base, field = split_ref(path)
+    # Open the descriptor first and check THAT file, as _mapped_cube does.
+    fh = open(base, "rb", buffering=0)  # noqa: SIM115 - owned by the _RawCube
+    raw = None
+    try:
+        st = _os.fstat(fh.fileno())
+        if (int(st.st_size), int(st.st_mtime_ns)) != want:
+            raise RuntimeError(f"{base} changed while a moment was being computed.")
+        try:
+            raw = _raw_cube_of(fh, field, hdu_index, int(st.st_size), base)
+        except Exception as exc:  # noqa: BLE001 - the memory map reports its own errors
+            logger.info("[moment] %s: no explicit reads (%s), memory map", base, exc)
+        return raw
+    finally:
+        if raw is None:
+            fh.close()
+
+
+def _raw_cube_of(fh, field: int | None, hdu_index: int, size: int,
+                 base: str) -> "_RawCube | None":
+    """The ``_RawCube`` of the open, checked file ``fh`` of ``size`` bytes;
+    None when its layout is not one explicit reads can serve."""
+    from astropy.io import fits as _fits  # noqa: PLC0415
+
+    from ..volume_source import vbt_volume_header  # noqa: PLC0415
+
+    if field is not None:
+        # A field of a VBT volume (issue #83): raw samples, no header.
+        header = vbt_volume_header(base)
+        nx, ny, nz = header["dimensions"]
+        dtype = np.dtype(header["np_endian_code"])
+        offset = int(field) * int(header["num_rows"]) * dtype.itemsize
+        if offset + nz * ny * nx * dtype.itemsize > size:
+            return None
+        return _RawCube(fh, offset, dtype, (nz, ny, nx))
+    # Headers only: touching the data of a scaled image converts it whole.
+    hdul = _fits.open(fh, memmap=False, mode="readonly", lazy_load_hdus=True)
+    hdu = hdul[hdu_index]
+    if (getattr(hdul._file, "compression", None)
+            or isinstance(hdu, _fits.CompImageHDU)
+            or not isinstance(hdu, (_fits.PrimaryHDU, _fits.ImageHDU))
+            or getattr(hdu, "_data_offset", None) is None
+            or not hasattr(hdu, "_scale_data")
+            or int(hdu._orig_bitpix) not in _FITS_RAW_DTYPES):
+        return None
+    dtype = np.dtype(_FITS_RAW_DTYPES[int(hdu._orig_bitpix)])
+    shape3 = _cube_shape_3d(hdu.shape or ())
+    if shape3 is None:
+        return None
+    nz, ny, nx = shape3
+    offset = int(hdu._data_offset)
+    if offset + nz * ny * nx * dtype.itemsize > size:
+        return None         # a truncated file: the memory map says why
+    # astropy's own test for "the samples are the values" (_scale_data).
+    plain = hdu._orig_bzero == 0 and hdu._orig_bscale == 1 and hdu._blank is None
+    return _RawCube(fh, offset, dtype, shape3, None if plain else hdu._scale_data,
+                    keep=hdul)
+
+
+_RAW_CUBES: dict[tuple, "_RawCube | None"] = {}
+
+
+def _raw_cube(path: str, hdu_index: int, signature: tuple[int, int]) -> "_RawCube | None":
+    """The ``_RawCube`` of ``path``, opened once per process; None: read the
+    memory map instead. The contract of ``_mapped_cube``: a file that no
+    longer matches ``signature`` is an error, and the cache is shared by the
+    threads of the local scheduler under one lock."""
+    from ..volume_source import split_ref  # noqa: PLC0415
+
+    want = (int(signature[0]), int(signature[1]))
+    key = (path, int(hdu_index), want)
+    with _MAPPED_CUBES_LOCK:
+        if key in _RAW_CUBES:
+            st = _os.stat(split_ref(path)[0])
+            if (int(st.st_size), int(st.st_mtime_ns)) != want:
+                raise RuntimeError(f"{path} changed while a moment was being computed.")
+            return _RAW_CUBES[key]
+        raw = _open_raw_cube(path, hdu_index, want)
+        while len(_RAW_CUBES) >= _MAPPED_CUBES_MAX:
+            # Dropped, not closed: a block another thread is reading keeps the
+            # descriptor open through its own reference.
+            _RAW_CUBES.pop(next(iter(_RAW_CUBES)))
+        _RAW_CUBES[key] = raw
+        return raw
+
+
+def _simple_box(key, shape: tuple) -> tuple[int, int, int, int, int, int] | None:
+    """(z0, z1, y0, y1, x0, x1) of a key made of up to three unit-step
+    slices, as dask asks for its blocks; None for anything else."""
+    if not isinstance(key, tuple):
+        key = (key,)
+    if len(key) > len(shape):
+        return None
+    bounds: list[int] = []
+    for axis, n in enumerate(shape):
+        k = key[axis] if axis < len(key) else slice(None)
+        if not isinstance(k, slice) or k.step not in (None, 1):
+            return None
+        a, b, _ = k.indices(int(n))
+        bounds += [a, max(a, b)]
+    return tuple(bounds)  # type: ignore[return-value]
+
+
 def _moment_chunk_z(plane_bytes: int, requested: int) -> int:
     """Channels per dask block: as many as fit in ``_MOMENT_CHUNK_BYTES``, never
     more than ``requested`` and never fewer than one."""
@@ -226,14 +480,113 @@ def _moment_chunk_y(ny: int, nx: int, itemsize: int) -> int:
     return int(max(1, min(int(ny), _MOMENT_CHUNK_BYTES // row_bytes)))
 
 
-def _n_moment_threads() -> int:
-    """Return the number of threads to use for parallelisable moment orders."""
-    n = _MOMENT_THREADS
-    if n <= 0:
+# The automatic thread count (issue #117). A fixed 4 left most of a 128-thread
+# node idle: on SDC2 (local disk, dask) 16 threads were 2.3-2.6 times faster,
+# while 32 and 64 no longer fitted a 16 GB cap. Each thread holds a block and
+# its temporaries, about 0.4 GB at the default 64 MiB block (M2, measured
+# 0.9 / 2.4 / 4.0 / 7.2 / 12.7 GB anonymous at 1 / 4 / 8 / 16 / 32 threads),
+# and the sampled peak misses short spikes, so the budget counts 8 blocks per
+# thread and uses only part of the memory. Above 32 threads nothing was gained.
+_MOMENT_THREADS_MAX = 32
+_MOMENT_THREAD_BLOCKS = 8          # bytes per thread, in blocks of _MOMENT_CHUNK_BYTES
+_MOMENT_BASE_BYTES = 1 << 30       # interpreter, libraries and result maps
+_MOMENT_BUDGET_SHARE = 0.6         # of the memory budget, for the threads
+_MOMENT_PARTIAL_MAPS = 16          # float64 partial maps the reduction keeps alive
+_THREADS_LOGGED: set = set()
+
+
+def _concurrent_heavy_jobs() -> int:
+    """How many heavy computations the service runs at once: its
+    VISIVO_HEAVY_SLOTS, else VISIVO_WORKERS - 1 (app/dependencies.py). The
+    node's CPUs and memory are shared among them; RLIMIT_DATA is not (it is
+    per process, and each runs in a process of its own)."""
+    def _env_int(name: str) -> int | None:
         try:
-            n = min(4, _os.cpu_count() or 1)
-        except Exception:
-            n = 1
+            return int(_os.environ[name])
+        except (KeyError, ValueError):
+            return None
+
+    slots = _env_int("VISIVO_HEAVY_SLOTS")
+    if slots is None:
+        slots = max(1, (_env_int("VISIVO_WORKERS") or 4) - 1)
+    return max(1, slots)
+
+
+def _moment_memory_budget() -> tuple[int | None, str]:
+    """The memory one moment computation may use, in bytes, and where the
+    figure comes from: the tightest of this process's RLIMIT_DATA, its share
+    of the SLURM grant (cgroup v1 on PLEIADI does not enforce it, so the
+    grant is read from the job), its share of the memory available under the
+    cgroup limit or on the host, and, when none of these can be read, its
+    share of the host's RAM."""
+    from .. import node_status  # noqa: PLC0415
+
+    share = _concurrent_heavy_jobs()
+    candidates: list[tuple[int, str]] = []
+    try:
+        import resource  # noqa: PLC0415 - not on Windows
+        soft = resource.getrlimit(resource.RLIMIT_DATA)[0]
+        if soft not in (resource.RLIM_INFINITY, -1) and soft > 0:
+            candidates.append((int(soft), "RLIMIT_DATA"))
+    except (ImportError, OSError, ValueError, AttributeError):
+        pass
+    grant = node_status.granted_memory_bytes()
+    if grant:
+        candidates.append((grant // share, f"SLURM grant / {share} heavy slots"))
+    available = node_status.available_memory_bytes()
+    if available is not None:          # no headroom left is a budget too
+        candidates.append((available // share, f"available memory / {share} heavy slots"))
+    if not candidates:
+        total = node_status.memory_limit_bytes()
+        if total:
+            candidates.append((total // share, f"host RAM / {share} heavy slots"))
+    if not candidates:
+        return None, "memory unknown"
+    return min(candidates)
+
+
+def _moment_threads_choice(plane_pixels: int | None = None) -> tuple[int, str]:
+    """Threads for a moment computation, and why (issue #117).
+
+    ``VISIVO_MOMENT_THREADS`` > 0 is taken as is. Otherwise: the CPUs this
+    process may use (affinity, cgroup quota) shared among the concurrent
+    heavy jobs, at most as many threads as the memory budget holds at
+    ``_MOMENT_THREAD_BLOCKS`` blocks each (after a fixed base and, when the
+    plane is known, the partial maps the reduction keeps), and at most
+    ``_MOMENT_THREADS_MAX``; never fewer than one.
+    """
+    if _MOMENT_THREADS > 0:
+        return _MOMENT_THREADS, "VISIVO_MOMENT_THREADS"
+    from .. import node_status  # noqa: PLC0415
+
+    share = _concurrent_heavy_jobs()
+    cpus = node_status.granted_cpus()
+    by_cpu = max(1, int(cpus // share))
+    budget, source = _moment_memory_budget()
+    by_memory = None
+    if budget is not None:
+        base = _MOMENT_BASE_BYTES + _MOMENT_PARTIAL_MAPS * 8 * int(plane_pixels or 0)
+        per_thread = _MOMENT_THREAD_BLOCKS * max(1, _MOMENT_CHUNK_BYTES)
+        by_memory = max(1, int((budget * _MOMENT_BUDGET_SHARE - base) // per_thread))
+    n = max(1, min(by_cpu, _MOMENT_THREADS_MAX,
+                   _MOMENT_THREADS_MAX if by_memory is None else by_memory))
+    if n == by_cpu:
+        why = f"{cpus:g} CPUs / {share} heavy slots"
+    elif by_memory is not None and n == by_memory:
+        why = (f"memory: {budget / 1e9:.1f} GB ({source}), "
+               f"{_MOMENT_THREAD_BLOCKS * _MOMENT_CHUNK_BYTES / 1e9:.2f} GB per thread")
+    else:
+        why = f"ceiling {_MOMENT_THREADS_MAX}" + ("" if budget is not None else ", memory unknown")
+    return n, why
+
+
+def _n_moment_threads(plane_pixels: int | None = None) -> int:
+    """The number of threads for the parallel moment paths; the choice and its
+    reason are logged once per distinct outcome."""
+    n, why = _moment_threads_choice(plane_pixels)
+    if (n, why) not in _THREADS_LOGGED:
+        _THREADS_LOGGED.add((n, why))
+        logger.info("[moment] threads=%d (%s)", n, why)
     return n
 
 # ── Numba JIT moment kernels ──────────────────────────────────────────────────
@@ -631,12 +984,19 @@ def _moment_map_streaming(
     mask_enabled: bool,
     threshold_value: float,
     stop_file: str | None = None,
+    reader: Any = None,
 ) -> np.ndarray:
     """Out-of-core M0/M1/M2 — stream spectral slabs and accumulate running sums so
     the whole channel range never sits in RAM (SKA-scale cubes).
 
-    ``stop_file`` (see app/compute/abort.py) is checked before every slab:
-    an aborted task ends within one slab, with ``ComputationAborted``.
+    ``stop_file`` (see app/compute/abort.py) is checked before every slab is
+    read and before it is reduced: an aborted task ends within one slab, with
+    ``ComputationAborted``.
+
+    ``reader(za, zb)`` returns channels [za, zb) of the cube (a ``_RawCube``'s
+    explicit reads, issue #116); without one the slabs are sliced from
+    ``data``. Up to ``_MOMENT_READ_AHEAD`` slabs are read ahead on one thread,
+    so that the disk works while the slab before is reduced.
 
     Matches the in-memory (Numba) path for uniform spacing:
       M0 = Σ I·Δv, blanked where a pixel has no valid voxel;
@@ -660,13 +1020,19 @@ def _moment_map_streaming(
     # temporaries below, which a node limited to a few GB cannot hold.
     slab = _moment_chunk_z(ny * nx * 4, _MOMENT_SLAB_CHANNELS)
 
+    def _read(cs: int, ce: int) -> np.ndarray:
+        check_abort(stop_file)          # no read starts after an abort
+        if reader is not None:
+            return np.asarray(reader(z0 + cs, z0 + ce), dtype=np.float32)
+        return np.asarray(data[z0 + cs : z0 + ce, :, :], dtype=np.float32)
+
     def _slabs():
         """Yield (cs, ce, inten64, valid) for each spectral slab — only that slab
-        is read from disk, so peak memory is O(slab · ny · nx), not O(nz)."""
-        for cs in range(0, nch, slab):
+        and the few read ahead are in memory, so peak memory is O(slab · ny · nx),
+        not O(nz)."""
+        spans = [(cs, min(cs + slab, nch)) for cs in range(0, nch, slab)]
+        for (cs, ce), block in zip(spans, _read_ahead(_read, spans, _MOMENT_READ_AHEAD)):
             check_abort(stop_file)
-            ce = min(cs + slab, nch)
-            block = np.asarray(data[z0 + cs : z0 + ce, :, :], dtype=np.float32)
             valid = np.isfinite(block)
             if mask_enabled:
                 valid &= block >= float(threshold_value)
@@ -841,6 +1207,9 @@ def _moment_map_dask(
         da_safe = _da.where(da_safe >= float(effective_threshold), da_safe, np.nan)
 
     da_delta = _da.from_array(spectral_delta[:, None, None], chunks=(chunk_z, -1, -1))
+    # Chosen from this node's CPUs and memory budget (issue #117); the plane
+    # sets how much the partial maps of the reduction take.
+    n_threads = _n_moment_threads(source.shape[1] * source.shape[2])
 
     def compute(*arrays):
         """Evaluate dask arrays together: on the distributed cluster if one is
@@ -848,7 +1217,7 @@ def _moment_map_dask(
         else on the local threaded scheduler."""
         if dist_client is not None:
             return tuple(dist_client.compute(list(arrays), sync=True))
-        return _da.compute(*arrays, scheduler="threads", num_workers=_n_moment_threads())
+        return _da.compute(*arrays, scheduler="threads", num_workers=n_threads)
 
     # Every reduction below consumes each block as soon as it is read. Moments
     # that need the centroid first are computed in two passes, the second
@@ -919,7 +1288,7 @@ def _moment_map_dask(
         "spectral_axis_unit": str(spectral["axis_unit"]),
         "moment_unit": moment_unit,
         "bunit": bunit,
-        "moment_threads_used": _n_moment_threads(),
+        "moment_threads_used": n_threads,
         "threshold_used": float(effective_threshold) if mask_enabled else None,
         "data_base64": _b64f32(image),
     }
@@ -997,7 +1366,7 @@ def worker_moment(
         if order in (0, 1, 2) and big:
             image = _moment_map_streaming(
                 data, z0, z1, order, spectral["coordinates"], mask_enabled, effective_threshold,
-                stop_file)
+                stop_file, _cube_reader(path, dataset.hdu_index, data.shape))
         elif order in _DASK_MOMENT_ORDERS and big and _DASK_OK:
             # R-06: higher-order moments (3–10) have no bespoke slab streamer;
             # when the subset would OOM the in-memory path AND Dask is available,
@@ -1084,16 +1453,42 @@ def worker_moment_save_fits(
         of a K cube in velocity, ``m/s`` for M1, ``(m/s)^2`` for M2…),
       * adds HISTORY cards recording the source file, order, channel
         range, and masking parameters so the artefact is self-documenting.
-    """
-    from astropy.io import fits as _fits  # noqa: PLC0415
-    from astropy.wcs import WCS as _WCS   # noqa: PLC0415
 
+    The service's routes compute the map the way ``/v1/products/moment``
+    does and only write it here (``write_moment_fits``, issue #119); this
+    one-process form is what a SODA job runs.
+    """
     # Decode the array data once via the canonical moment worker.
     payload = worker_moment(
         src_path, int(order), int(channel_start), int(channel_end),
         bool(mask_enabled), float(threshold_value), bool(threshold_auto),
         bool(moment2_variance), stop_file,
     )
+    return write_moment_fits(src_path, output_path, payload, order, channel_start,
+                             channel_end, mask_enabled, threshold_value, threshold_auto,
+                             stop_file)
+
+
+def write_moment_fits(
+    src_path: str,
+    output_path: str,
+    payload: dict[str, Any],
+    order: int,
+    channel_start: int,
+    channel_end: int,
+    mask_enabled: bool,
+    threshold_value: float,
+    threshold_auto: bool = False,
+    stop_file: str | None = None,
+) -> dict[str, Any]:
+    """Write a computed moment ``payload`` (the dict of ``worker_moment``,
+    ``_moment_map_dask`` or the product cache) as a 2-D FITS file at
+    ``output_path``: the source's celestial WCS, the moment's ``BUNIT`` and
+    HISTORY cards (see ``worker_moment_save_fits``). The pixels are the
+    payload's, bit for bit (issue #119)."""
+    from astropy.io import fits as _fits  # noqa: PLC0415
+    from astropy.wcs import WCS as _WCS   # noqa: PLC0415
+
     check_abort(stop_file)   # not a byte of an aborted job's product is written
     # The base64 round-trip is unnecessary for the FITS path but keeps a
     # single source of truth — the cost is one float32 array decode, dwarfed

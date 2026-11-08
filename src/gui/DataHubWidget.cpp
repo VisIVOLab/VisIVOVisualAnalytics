@@ -258,7 +258,7 @@ void DataHubWidget::buildUi()
 
         // Subtitle — Lato Regular, muted.
         auto *sub = new QLabel(
-                u"Backend-authoritative workflow, scientific operations run on remote nodes."_s,
+                u"Open a dataset, search the archives, or pick up where you left off."_s,
                 content);
         sub->setWordWrap(true);
         {

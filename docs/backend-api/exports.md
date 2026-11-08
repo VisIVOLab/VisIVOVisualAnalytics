@@ -63,3 +63,8 @@ beam carried over, `bunit` overriding the source's, and `history` written as
 Returns `{valid, new_dataset_id, workspace_filename, output_path, width,
 height, range_min, range_max}`; the file is registered as a session dataset, so
 it can be reopened without going through the filesystem.
+An empty `output_basename` gives `<source stem>_map.fits`, and `.fits` is
+appended when the name has no FITS extension. Errors are HTTP: 404 for a
+dataset not open in the session, 422 for a `region_origin` that is not
+`[x0, y0]` or pixels that do not match `width × height`, 500 otherwise; a
+failed export leaves no file.

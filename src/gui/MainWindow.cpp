@@ -3,6 +3,7 @@
 
 #include "AboutDialog.h"
 #include "AuthWrapper.h"
+#include "CosmologyCalculatorDialog.h"
 #include "app/BackendClient.h"
 #include "app/BackendClientFactory.h"
 #include "app/SampClient.h"
@@ -145,7 +146,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     this->m_sampHandler =
             new SampMessageHandler(this->m_sampClient, this->m_sampBackendClient.get(), this);
     QObject::connect(this->settings, &Settings::updated, this, &MainWindow::setApplicationTheme);
-    QObject::connect(this->settings, &Settings::updated, this, &MainWindow::loadPanoramicView);
+    // The panoramic view reloads on a settings change only once it exists.
+    QObject::connect(this->settings, &Settings::updated, this, [this]() {
+        if (this->m_panoramicStarted)
+            this->loadPanoramicView();
+    });
     QObject::connect(this->settings, &Settings::updated, this, &MainWindow::syncDataHubSettings);
     QObject::connect(this->settings, &Settings::updated, this, &MainWindow::syncSampSettings);
 
@@ -257,6 +262,22 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // ── Science menu ──────────────────────────────────────────────────────────
     this->buildCombineMenu();
 
+    // ── Tools menu ────────────────────────────────────────────────────────────
+    // Tools that need no dataset. The cosmology calculator was reachable only
+    // through the Copilot (issue #29); its numbers all come from the backend.
+    auto *toolsMenu = new QMenu(u"Tools"_s, this);
+    toolsMenu->setToolTipsVisible(true);
+    this->menuBar()->insertMenu(ui->menuHelp->menuAction(), toolsMenu);
+    auto *cosmologyAction = toolsMenu->addAction(u"Cosmology Calculator\u2026"_s);
+    cosmologyAction->setToolTip(
+            u"Comoving, luminosity and angular-diameter distances, lookback time, age "
+            u"and kpc per arcsecond for one or many redshifts, under Planck18, "
+            u"Planck15, Planck13, WMAP9 or a custom \u039bCDM."_s);
+    QObject::connect(cosmologyAction, &QAction::triggered, this, [this]() {
+        CosmologyCalculatorDialog::showCalculator(this, this->settings->getBackendUrl(),
+                                                  this->settings->getBackendToken());
+    });
+
     // ── Setup Menu About ──────────────────────────────────────────────────────
     QObject::connect(ui->actionAbout, &QAction::triggered, this, &MainWindow::openAboutDialog);
 
@@ -267,14 +288,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                      [this]() { if (this->updateNotifier) this->updateNotifier->check(true); });
     this->updateNotifier->scheduleStartupCheck();
 
-    // ── Setup Panoramic View (VLKB tab) ──────────────────────────────────────
-    this->loadPanoramicView();
-    auto webobj = new WebViewProcess(ui->view);
-    auto webChannel = new QWebChannel(ui->view);
-    webChannel->registerObject(u"webobj"_s, webobj);
-    ui->view->page()->setWebChannel(webChannel);
-    QObject::connect(webobj, &WebViewProcess::processJavascript, this,
-                     &MainWindow::skyRegionSelected);
+    // ── Panoramic View (VLKB tab) ────────────────────────────────────────────
+    // Started when the VLKB tab is first shown (startPanoramicView), not here:
+    // it is a web page, and the web engine's first page starts Chromium's
+    // helper processes. A failure there (as in the Linux AppImage run from its
+    // FUSE mount, 1.0.10) must not stop the application from opening; only
+    // the views that need the web engine are affected.
 
     // What these radios do was the single most confusing thing about the panel:
     // they are a DRAWING mode for the sky view, not the shape of the query, and

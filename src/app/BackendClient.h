@@ -687,6 +687,43 @@ struct BackendCosmologyBatchResult
     QVector<double> distancesMpc; // same order as the submitted redshifts
 };
 
+/// A custom ΛCDM for GET /v1/cosmology/distances (astropy LambdaCDM, Tcmb0 = 0).
+struct BackendCosmologyParams
+{
+    double h0{ 70.0 };    ///< km/s/Mpc
+    double om0{ 0.3 };
+    double ode0{ 0.7 };
+};
+
+/// GET /v1/cosmology/distances: every distance and time the route computes for
+/// one redshift, under Planck18 or a custom model. NaN for a field absent from
+/// the answer (an older backend), never 0.
+struct BackendCosmologyDistancesResult
+{
+    bool valid{ false };
+    QString error;
+    double z{ std::numeric_limits<double>::quiet_NaN() };
+    double comovingMpc{ std::numeric_limits<double>::quiet_NaN() };
+    double luminosityMpc{ std::numeric_limits<double>::quiet_NaN() };
+    double angularDiameterMpc{ std::numeric_limits<double>::quiet_NaN() };
+    double lookbackGyr{ std::numeric_limits<double>::quiet_NaN() };
+    double ageGyr{ std::numeric_limits<double>::quiet_NaN() };
+};
+
+/// POST /v1/cosmology/distance: one redshift under a named preset. This route
+/// is the one that gives the proper transverse scale; it has no D_A, lookback
+/// time or age.
+struct BackendCosmologyDistanceResult
+{
+    bool valid{ false };
+    QString error;
+    QString model;
+    double z{ std::numeric_limits<double>::quiet_NaN() };
+    double comovingMpc{ std::numeric_limits<double>::quiet_NaN() };
+    double luminosityMpc{ std::numeric_limits<double>::quiet_NaN() };
+    double kpcPerArcsec{ std::numeric_limits<double>::quiet_NaN() };
+};
+
 struct BackendHiPSCatalogueOverlayResult
 {
     bool valid{ false };
@@ -822,6 +859,22 @@ struct BackendAssistantConfigResult
     QString error;
     bool configured{ false };
     QString provider;             // active provider after the change
+    QString problem;              // why the copilot cannot answer; "" if none is known
+    QString model;                // model in use, incl. one the backend picked; "" = not known
+};
+
+/// GET /v1/assistant/status: the provider active for this session.
+struct BackendAssistantStatusResult
+{
+    bool valid{ false };
+    QString error;
+    bool configured{ false };
+    QString provider;
+    /// Why the copilot cannot answer, when the backend knows: a refused
+    /// VISIVO_LLM_BASE_URL, or a self-hosted server with no or several models.
+    /// "" otherwise, and always "" from a backend older than the field.
+    QString problem;
+    QString model;                // model in use, incl. one the backend picked; "" = not known
 };
 
 // ── S-03: Baseline subtraction ────────────────────────────────────────────────
@@ -1654,12 +1707,37 @@ struct BackendAngularPowerResult
     int height{ 0 };
     int nBins{ 0 };
     QVector<double> kBins;        ///< wavenumber bin centres (pixel⁻¹)
-    QVector<double> power;        ///< mean power per bin (counts²)
+    QVector<double> power;        ///< mean power per bin (counts²), = cl
+    /// Angular multipole per bin, 2π k / θ_pix — or k again when the map has no
+    /// celestial pixel scale (ellIsAngular false).
+    QVector<double> ell;
+    /// Standard error per bin, corrected for the window's mode coupling; NaN
+    /// where the backend sent null (fewer than 3 modes).
+    QVector<double> clErr;
+    QVector<int> nModes;          ///< unique Fourier modes per bin
+    bool ellIsAngular{ false };
+    double pixelScaleArcsec{ std::numeric_limits<double>::quiet_NaN() };
+    double modeCoupling{ std::numeric_limits<double>::quiet_NaN() };
+    bool calibrated{ false };     ///< always false today: a relative spectrum
+    QString note;                 ///< the backend's own caveat, shown with the plot
     QString kUnit;
     QString powerUnit;
 };
 
 // ── C-03: Skeleton / void detection ──────────────────────────────────────────
+
+/// The body of POST /v1/analysis/skeleton/{id}, under the route's own names
+/// (SkeletonRequest in backend/app/routers/analysis.py).
+struct BackendSkeletonRequest
+{
+    int channel{ 0 };
+    bool thresholdAuto{ true };   ///< true: null, the server uses the map's mean
+    double threshold{ 0.0 };
+    QString mode{ QStringLiteral("skeleton") };   ///< "skeleton" or "void"
+    double smoothSigmaPix{ 0.0 };                 ///< 0 = no pre-smoothing
+    bool prune{ false };                          ///< false: persistence_threshold null
+    double persistenceThreshold{ 0.0 };
+};
 
 struct BackendSkeletonResult
 {
@@ -1670,12 +1748,15 @@ struct BackendSkeletonResult
     int channel{ 0 };
     int width{ 0 };
     int height{ 0 };
+    /// The threshold actually applied: the server's mean when none was sent.
     double threshold{ 0. };
     QString mode;                 ///< "skeleton" or "void"
+    double smoothSigmaPix{ 0. };
     int nSkeletonPixels{ 0 };
+    int nEndpoints{ 0 };          ///< filament ends (degree-1 skeleton pixels)
     float rangeMin{ 0.f };
     float rangeMax{ 0.f };
-    QByteArray data;              ///< float32 LE 0/255 mask from binary endpoint
+    QByteArray data;              ///< float32 LE 0/255 mask, height × width, row 0 first
 };
 
 // ── R-01: CARTA script export — RETIRED (feature removed). ────────────────────
@@ -2151,6 +2232,19 @@ public:
     /** POST /v1/cosmology/distance/batch – comoving distances for a list of redshifts. */
     BackendCosmologyBatchResult requestCosmologyDistanceBatch(const QVector<double> &redshifts,
                                                               const QString &model) const;
+    /** GET /v1/cosmology/distances – comoving, luminosity and angular-diameter
+     *  distances, lookback time and age at one redshift. @p custom null: the
+     *  server's Planck18; otherwise that LambdaCDM. The server takes z in [0, 20]. */
+    BackendCosmologyDistancesResult requestCosmologyDistances(
+            double z, const BackendCosmologyParams *custom = nullptr) const;
+    /** POST /v1/cosmology/distance – one redshift under a named preset: comoving
+     *  and luminosity distance and the proper scale in kpc per arcsecond. */
+    BackendCosmologyDistanceResult requestCosmologyDistance(double z, const QString &model) const;
+    /// Query string of GET /v1/cosmology/distances; public and static so the
+    /// parameter names the route reads are pinned by a test.
+    static QString cosmologyDistancesQuery(double z, const BackendCosmologyParams *custom);
+    static BackendCosmologyDistancesResult parseCosmologyDistancesObject(const QJsonObject &object);
+    static BackendCosmologyDistanceResult parseCosmologyDistanceObject(const QJsonObject &object);
 
     /** POST /v1/resolve/target – resolve object name → RA/Dec via Sesame. */
     BackendTargetResolveResult resolveTarget(const QString &name) const;
@@ -2467,14 +2561,19 @@ public:
      *  paths so both interpret the answer/tool-calls/actions identically. */
     static BackendAssistantResult parseAssistantResult(const QJsonObject &o);
 
-    /** POST /v1/assistant/config — choose the copilot LLM back-end: Claude
-     *  (anthropicKey), ChatGPT/OpenAI (openaiKey), or your own server
-     *  (baseUrl of an OpenAI-compatible endpoint). Empty fields are left
-     *  unchanged server-side; keys are held in server memory only. */
-    BackendAssistantConfigResult setAssistantConfig(
-            const QString &provider, const QString &anthropicKey,
-            const QString &openaiKey, const QString &baseUrl,
-            const QString &baseUrlKey, const QString &model);
+    /** POST /v1/assistant/config — choose the copilot LLM back-end for this
+     *  session. @p body is built by CopilotChoice::configBody: ``reset`` alone
+     *  for the server's own configuration, or every provider field for an
+     *  explicit choice. Keys are held in server memory only. */
+    BackendAssistantConfigResult setAssistantConfig(const QJsonObject &body);
+    /** Parse the /v1/assistant/config response body. */
+    static BackendAssistantConfigResult parseAssistantConfig(const QJsonObject &o);
+
+    /** GET /v1/assistant/status — the provider this session uses and, when
+     *  the backend knows, why it cannot answer (``problem``). */
+    BackendAssistantStatusResult assistantStatus();
+    /** Parse the /v1/assistant/status response body. */
+    static BackendAssistantStatusResult parseAssistantStatus(const QJsonObject &o);
 
     // ── S-03: Baseline subtraction ────────────────────────────────────────────
     /** POST /v1/spectral/baseline/{session_id}/{dataset_id} — subtract a baseline
@@ -2836,16 +2935,17 @@ public:
             const QString &datasetId,
             int channel = 0,
             int nBins = 64);
+    static BackendAngularPowerResult parseAngularPowerObject(const QJsonObject &object);
 
     // ── C-03: Skeleton / void detection ───────────────────────────────────────
-    /** POST /v1/analysis/skeleton/{dataset_id}/binary
-     *  @param threshold  nullptr → server uses mean.
-     *  @param mode       "skeleton" or "void". */
-    BackendSkeletonResult requestSkeleton(
-            const QString &datasetId,
-            int channel = 0,
-            double *threshold = nullptr,
-            const QString &mode = QStringLiteral("skeleton"));
+    /** POST /v1/analysis/skeleton/{dataset_id} — the JSON form, because it is
+     *  the one that says which threshold was applied when the server chose it,
+     *  which a reproducible record needs. */
+    BackendSkeletonResult requestSkeleton(const QString &datasetId,
+                                          const BackendSkeletonRequest &request);
+    /// The request body, under the route's field names (unit-tested).
+    static QJsonObject skeletonRequestBody(const BackendSkeletonRequest &request);
+    static BackendSkeletonResult parseSkeletonObject(const QJsonObject &object);
 
     // ── R-01: CARTA script export — RETIRED (feature removed). ────────────────
 

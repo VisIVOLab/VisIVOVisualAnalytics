@@ -46,6 +46,7 @@ from .moment import (  # noqa: F401
     _moment_unit,
     worker_moment,
     worker_moment_save_fits,
+    write_moment_fits,
 )
 from .pv_iso import (  # noqa: F401
     worker_isosurface,
@@ -135,6 +136,7 @@ __all__ = [
     "_moment_unit",
     "worker_moment",
     "worker_moment_save_fits",
+    "write_moment_fits",
     "worker_isosurface",
     "worker_pv",
     "worker_pv_save_fits",

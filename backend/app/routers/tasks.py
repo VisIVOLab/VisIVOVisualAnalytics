@@ -118,7 +118,8 @@ async def create_pv_task(
 # The task form of /v1/products/moment_fits: same request, same result. On a
 # large cube the synchronous route runs into VISIVO_HEAVY_TIMEOUT_S, while a
 # task has no time limit, reports progress and can be cancelled: the worker
-# polls the stop file between slabs and writes nothing when it stops.
+# polls the stop file between slabs or blocks and writes nothing when it stops.
+# The map is the moment task's, from the same path and cache (issue #119).
 
 @router.post("/v1/tasks/moment_fits", response_model=TaskCreateResponse, tags=["tasks"])
 async def create_moment_fits_task(
@@ -126,8 +127,6 @@ async def create_moment_fits_task(
     token: str = _auth,
     session: Session = Depends(get_session),
 ) -> TaskCreateResponse:
-    from ..compute import worker_moment_save_fits  # noqa: PLC0415
-
     entry = _require_dataset(session, request.dataset_id)
     if entry["kind"] != "cube":
         raise HTTPException(422, "Moment FITS export requires a spectral cube dataset.")
@@ -136,17 +135,28 @@ async def create_moment_fits_task(
     # Reserved now (an empty placeholder): the file is written minutes later,
     # and two exports started meanwhile must not be handed the same name.
     output_path = str(make_workspace_path(basename, reserve=True))
+    # Written under a temporary name and renamed into place when complete, so
+    # the reserved name stays an EMPTY placeholder until the file is whole: a
+    # reader of the listing (the desktop reuses an earlier export of the same
+    # moment, issue #29) can tell a finished export from one still being
+    # written. The temporary file sits in a hidden subdirectory of the
+    # workspace, which the listing does not enter, on the same filesystem, so
+    # the rename is atomic.
+    partial_dir = get_exports_dir() / ".partial"
+    partial_dir.mkdir(parents=True, exist_ok=True)
+    partial_path = str(partial_dir / f"{uuid.uuid4().hex}_{Path(output_path).name}")
 
     def _drop_placeholder() -> None:
         """Give the reserved name back once the worker has ended: a task that
         did not complete leaves no file. The worker may outlive a cancelled
         task (past its last abort check it still writes), so the name stays
-        ours, and the file is removed, only when the work is over."""
+        ours, and the files are removed, only when the work is over."""
         def _remove(_f: Any = None) -> None:
-            try:
-                os.unlink(output_path)
-            except OSError:
-                pass
+            for path in (output_path, partial_path):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
 
         record = TASKS.peek(task.task_id)
         work = getattr(record, "work_handle", None)
@@ -161,21 +171,14 @@ async def create_moment_fits_task(
     async def _runner() -> None:
         ticker = asyncio.create_task(_progress_ticker(task.task_id))
         try:
-            result = await _run_heavy(
-                worker_moment_save_fits,
-                entry["path"],
-                output_path,
-                int(request.moment_order),
-                int(request.channel_start),
-                int(request.channel_end),
-                bool(request.mask_enabled),
-                float(request.threshold_value),
-                bool(request.threshold_auto),
-                bool(request.moment2_variance),
-                TASKS.stop_file(task.task_id),
-                task_id=task.task_id,
-            )
+            # Computed as the moment task computes it (issue #119), written to
+            # the partial name and published below in one step.
+            result = await _moment_fits_export(entry, request, partial_path, task.task_id)
             ticker.cancel()
+            # Publish: the whole file replaces the empty placeholder in one step.
+            if os.path.exists(partial_path):
+                os.replace(partial_path, output_path)
+            result = {**result, "output_path": output_path}
             # The same fields as the synchronous route's response.
             TASKS.update(
                 task.task_id,

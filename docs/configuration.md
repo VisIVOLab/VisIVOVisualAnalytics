@@ -31,7 +31,7 @@ for interactive requests such as slice scrolling and probing; see
 | `VISIVO_WORKERS` | `4` | Number of worker processes in the pool. The default is a fixed 4, not derived from the CPU count. |
 | `VISIVO_HEAVY_SLOTS` | `max(1, VISIVO_WORKERS - 1)` | Heavy tasks allowed to occupy the pool at once. Set it to `VISIVO_WORKERS` to give up the reserved interactive slot, or to `1` to serialise heavy work. |
 | `VISIVO_HEAVY_TIMEOUT_S` | `900` | Wall-clock ceiling on one heavy computation started by a synchronous request (for example `/v1/products/moment`). Past it, the request answers HTTP 504 and the detail points to the task route. The worker runs on to its end and keeps its slot until then, and its result is discarded. `0` disables the ceiling. It does not apply to tasks. |
-| `VISIVO_TASK_TIMEOUT_S` | `0` (none) | The same ceiling for work started as a task (`/v1/tasks/moment`, `/v1/tasks/pv`, asynchronous SODA jobs). There is none by default: a task holds no request open, reports progress and can be cancelled, and an M2 over a 450 GB cube takes about 25 minutes on one HPC node (`benchmark/RESULTS.md`). When it is set and exceeded, the task fails and its worker is asked to stop through the stop file. |
+| `VISIVO_TASK_TIMEOUT_S` | `0` (none) | The same ceiling for work started as a task (`/v1/tasks/moment`, `/v1/tasks/pv`, asynchronous SODA jobs). There is none by default: a task holds no request open, reports progress and can be cancelled, and an M2 over a 450 GB cube takes about 32 minutes on one HPC node (`benchmark/RESULTS.md`). When it is set and exceeded, the task fails and its worker is asked to stop through the stop file. |
 | `VISIVO_MAX_CONCURRENT_TASKS` | `3` | Compute tasks one session may run at once; further requests wait (see below) and then answer HTTP 429. |
 | `VISIVO_TASK_SLOT_WAIT_S` | `15` | How long a request waits for a free per-session slot before answering 429. `0` refuses immediately. |
 | `VISIVO_MP_START_METHOD` | `spawn` | Start method of the worker processes (`spawn`, `fork` or `forkserver`). `spawn` is required when workers use CUDA. An unknown value falls back to the platform default, with a warning. |
@@ -76,14 +76,46 @@ range, `channels × NAXIS1 × NAXIS2 × 4` bytes (float32):
    on their channel count.
 
 Moments that need the centroid first (M2 to M5) are computed in two passes
-over the data on both out-of-core paths, so memory stays bounded by one block.
+over the data on both out-of-core paths. Memory follows the block size, the
+blocks in flight (one per Dask thread, or the streamed slab and the
+`VISIVO_MOMENT_READ_AHEAD` slabs read ahead) and the reduction's partial maps,
+never the length of the channel range.
+
+Both out-of-core paths read a block with explicit positional reads (whole
+planes in one read, or one read per channel for a band of rows) rather than
+by faulting the memory map page by page; several Dask threads, or the
+streamer's read-ahead thread, keep reads in flight while others reduce. The
+values are those of the memory-mapped data (BSCALE, BZERO, BLANK and unsigned
+integers are applied by astropy's own conversion), so the maps are unchanged.
+Tile-compressed and gzip files, and platforms without `pread` (Windows), are
+read through the memory map as before.
+
+**Threads.** With `VISIVO_MOMENT_THREADS=0` the backend takes the smallest of:
+
+- the CPUs the process may use (its affinity or cgroup cpuset, capped by a
+  cgroup CPU quota; not the host's count), divided by the heavy slots
+  (`VISIVO_HEAVY_SLOTS`, default `VISIVO_WORKERS - 1`), which share them;
+- what the memory budget holds: 60 % of the budget, less 1 GiB and the
+  reduction's partial maps (16 float64 planes), at eight blocks of
+  `VISIVO_MOMENT_CHUNK_BYTES` (0.54 GB at the default) per thread. The budget
+  is the tightest of the process's `RLIMIT_DATA`, its share of the SLURM grant
+  (`SLURM_MEM_PER_NODE`; cgroup v1 may not enforce it), its share of the memory
+  available under the cgroup limit or on the host, and, when none can be read,
+  its share of the host's RAM;
+- 32, beyond which nothing was gained on a 128-thread node.
+
+At least one thread is used. The choice and the limit that set it are logged
+once (`[moment] threads=N (...)`). On a 128-thread POWER9 node under a 16 GB
+`RLIMIT_DATA` this gives about 15 threads for a 1286² plane; on an 18-core
+laptop with the default four workers, 6.
 
 | Variable | Default | Effect |
 |---|---|---|
 | `VISIVO_MOMENT_STREAM_BYTES` | `2 GiB` | Ceiling of the channel range kept in memory; the effective threshold is the smaller of this and one twelfth of the available memory. |
 | `VISIVO_MOMENT_CHUNK_BYTES` | `64 MiB` | Size of each streamed slab or Dask block, never less than one channel; a Dask block of a larger plane is a band of rows within this size. |
 | `VISIVO_MOMENT_SLAB_CHANNELS` | `64` | Upper limit on the channels in a streamed slab. It only caps the slab; the size comes from `VISIVO_MOMENT_CHUNK_BYTES`. |
-| `VISIVO_MOMENT_THREADS` | `0` | Threads for the parallel moment kernels and the local Dask scheduler. `0` means `min(4, CPU count)`. |
+| `VISIVO_MOMENT_THREADS` | `0` | Threads for the parallel moment kernels and the local Dask scheduler. `0` chooses them from the node (below); a positive value is used as is. |
+| `VISIVO_MOMENT_READ_AHEAD` | `2` | Slabs the streamed path reads ahead of the one it reduces, on one thread. `0` reads in the reducing thread. |
 | `VISIVO_DASK_MODE` | `auto` | `auto`: distributed if a scheduler is set, else local threaded Dask for large ranges. `off`: never Dask. `local`: always local threaded Dask. `distributed`: only a cluster, else the plain worker. |
 | `VISIVO_DASK_MIN_BYTES` | `512 MiB` | In `auto` mode, smallest range sent to the local threaded Dask path. |
 | `VISIVO_DASK_SCHEDULER` | unset | Address of a `dask.distributed` scheduler (for example `tcp://host:8786`). When set, moments are computed on that cluster; its workers must see the same files. |
@@ -106,6 +138,8 @@ backend, each in a process of its own.
 | `VISIVO_RENDER_OOC_BUDGET_BYTES` | 2 GiB | Out of core: GPU data of the blocks drawn at once. |
 | `VISIVO_RENDER_OOC_MAX_BLOCKS` | `12` | Out of core: blocks drawn at once (each is one ray-casting pass). |
 | `VISIVO_RENDER_OOC_NODE` | `256` | Out of core: voxels per side of a block. |
+| `VISIVO_POINT_RENDER_MAX_POINTS` | `100000000` | Points a remote point or catalogue view draws at most; a larger table is drawn from an even sample of its rows. |
+| `VISIVO_POINT_RENDER_LOD_POINTS` | `1000000` | Points a remote point or catalogue view draws while it is being dragged. |
 
 ## SRC node
 
@@ -151,6 +185,8 @@ fit together.
 | `VISIVO_HIPS_CACHE_MAX_BYTES` | `2 GiB` | Size cap of the HiPS cache; the least recently used tiles are evicted beyond it. |
 | `VISIVO_HIPS_CACHE_TTL_SECONDS` | `604800` (7 days) | Tiles older than this are deleted. |
 | `VISIVO_HIPS_CACHE_CLEANUP_INTERVAL` | `60` | Minimum seconds between two cleanup passes over the HiPS cache. |
+| `VISIVO_IMAGE_PYRAMID_BYTES` | `256 MiB` | A 2-D image larger than this (as float32) is tiled from an averaged pyramid, built in the background the first time a tile is asked for; until it is ready, tiles are sampled from the file. |
+| `VISIVO_REGION_SPILL_DIR` | the system temporary directory, unless it is held in memory | Where region statistics over a large image copy the region's values to local disk between passes. Unset and with a memory-backed temporary directory (`tmpfs`), no copy is made and every pass reads the file. |
 | `VISIVO_SAMP_FILE_TTL` | `3600` | Files staged for SAMP (in the system temporary directory, `visivo_samp_files`) are deleted after this many seconds. |
 
 ## Copilot
@@ -239,5 +275,21 @@ refused. Redirects are checked with the same policy.
 | `SLURM_JOB_ID` | Marks the backend as running in a SLURM job, so the memory grant below is taken into account. |
 | `SLURM_MEM_PER_NODE` | Memory granted to the job, in MiB; counts as a memory limit. `0` (the whole node) sets none. |
 | `SLURM_MEM_PER_CPU`, `SLURM_CPUS_ON_NODE` | Used together as the memory grant when `SLURM_MEM_PER_NODE` is absent. |
+| `VISIVO_EXIT_WITH_PID` | Set by the desktop client on the backend it starts: the backend shuts down once that process is gone. A backend started by hand, without it, is not affected. |
 | `ADMIN_SESSION_SECRET` | **Secret.** Fallback for `VISIVO_SNAPSHOT_SECRET`. |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | See [Copilot](#copilot). |
+
+## Desktop client
+
+These variables are read by the desktop client, not by the backend.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_BACKEND_URL` | unset | A remote backend for this run (the same as `--backend URL`); unset, the client runs on its local backend. The command line wins over the environment. See [Running the backend on a cluster](deployment/hpc-slurm.md). |
+| `VISIVO_BACKEND_TOKEN_FILE` | unset | File holding that backend's token (`--backend-token-file`). |
+| `VISIVO_BACKEND_TOKEN` | unset | **Secret.** The token itself, used when no token file is given. |
+| `VISIVO_BACKEND_NAME` | `host:port` | Name shown for that backend (`--backend-name`). |
+| `VISIVO_NO_BACKEND_AUTOSTART` | unset | Any non-empty value stops the client from starting its local backend (the same as `--no-backend-autostart`), to connect to one already running. |
+| `VISIVO_BACKEND_PYTHON` | unset | Python interpreter used to start the local backend, tried before an active virtual environment, the project's `.venv` and the bundled runtime. It must be Python 3.11 or newer. |
+| `VISIVO_PACKAGE_DIR` | set by the Linux launcher | The directory of the extracted Linux package; the client looks for the bundled backend runtime in its `python/` directory first. Set by `./VisIVOVisualAnalytics`, not by hand. |
+| `VISIVO_SUBVOLUME_PARALLEL` | `4` | Parallel requests a full-resolution cube or sub-cube load (`/v1/cube/subvolume_bin`) is split into, along the spectral axis (1 to 16). |

@@ -13,12 +13,14 @@ A task is not bound by `VISIVO_HEAVY_TIMEOUT_S`, the 900 s ceiling of the
 synchronous routes. It runs until it completes or is cancelled, unless the
 operator sets `VISIVO_TASK_TIMEOUT_S`. Use the task route for a moment or PV
 over a large cube or channel range: on one HPC node an M2 over 450 GB takes
-about 25 minutes (`benchmark/RESULTS.md`).
+about 32 minutes (1924 s, `benchmark/RESULTS.md`).
 
 ### `POST /v1/tasks/moment_fits`
 The task form of `POST /v1/products/moment_fits`: it computes a moment map and
 writes it to Workspace Exports as a 2-D FITS file, without the synchronous
-route's `VISIVO_HEAVY_TIMEOUT_S` limit. Use it for large cubes.
+route's `VISIVO_HEAVY_TIMEOUT_S` limit. Use it for large cubes. The map comes
+from the same path as `POST /v1/tasks/moment` (and its product cache), so the
+file equals the moment product of the same request bit for bit.
 
 Request: the same body as `/v1/products/moment_fits` (`MomentSaveFitsRequest`).
 
@@ -32,6 +34,13 @@ Request: the same body as `/v1/products/moment_fits` (`MomentSaveFitsRequest`).
 | `threshold_auto` | bool | false | with `mask_enabled`: median + 3σ (MAD) of the range |
 | `moment2_variance` | bool | false | order 2: variance instead of dispersion |
 | `output_basename` | string | `""` | file name in Workspace Exports; empty gives `<cube stem>_m<order>.fits` |
+
+The output name is reserved when the task starts, as an empty file. The map
+is written under a temporary name in a hidden subdirectory of the workspace,
+which `GET /v1/exports/list` does not enter. On completion it is renamed onto
+the reserved name in one step. So, in the listing, a zero-size entry is an
+export not yet complete, and a non-empty one is whole. A failed or cancelled
+task removes both files.
 
 Answers at once:
 

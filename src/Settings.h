@@ -1,6 +1,8 @@
 #ifndef Settings_h
 #define Settings_h
 
+#include "app/CopilotChoice.h"
+
 #include <QDateTime>
 #include <QList>
 #include <QObject>
@@ -288,10 +290,12 @@ public:
     void setSkavaOidcScope(const QString &scope);
 
     // ── Scientific copilot (LLM provider) ────────────────────────────────────
-    // Persisted so the user configures the provider once. providerChoice mirrors
-    // the panel/dialog combo: 0=Claude, 1=ChatGPT, 2=Your server, 3=None.
-    int getCopilotProvider() const;
-    void setCopilotProvider(int choice);
+    // Persisted so the user configures the provider once. The default is the
+    // server's own configuration; a choice stored by an older release (an
+    // index, where None was the default) is read through
+    // CopilotChoice::fromLegacy.
+    CopilotChoice::Choice getCopilotChoice() const;
+    void setCopilotChoice(CopilotChoice::Choice choice);
     QString getCopilotKey() const;        ///< the single key (cloud key or self-hosted key)
     void setCopilotKey(const QString &key);
     QString getCopilotUrl() const;        ///< self-hosted OpenAI-compatible base URL
@@ -382,7 +386,8 @@ private:
     static const std::pair<QString, QVariant> SkavaOidcScope;
 
     // Scientific copilot (LLM provider)
-    static const std::pair<QString, QVariant> CopilotProvider;
+    static const std::pair<QString, QVariant> CopilotProvider;   ///< older index, still written
+    static const std::pair<QString, QVariant> CopilotChoiceKey;
     static const std::pair<QString, QVariant> CopilotKey;
     static const std::pair<QString, QVariant> CopilotUrl;
     static const std::pair<QString, QVariant> CopilotModel;

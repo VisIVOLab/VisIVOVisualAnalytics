@@ -327,7 +327,7 @@ which then opens as a cube of its own.
 It is a *spatial* operation: the spectral axis is left alone, so a line in one
 channel does not appear in its neighbours. Blank pixels stay blank, the beam
 grows with the kernel, and a per-pixel `BUNIT` is summed rather than averaged —
-see [Image viewer — Smoothing and regridding](image-viewer#smoothing-and-regridding)
+see [Image viewer — Smoothing and regridding](image-viewer.md#smoothing-and-regridding)
 for why each of those matters.
 
 The header can be repaired the same way as in the image viewer: the **CUBE**
@@ -392,8 +392,8 @@ A tool is bound to a **view**, not to the pane you happen to have selected:
 - **<kbd>Esc</kbd>** disarms whatever is armed (and, with nothing armed, restores
   a maximized pane).
 - A few tools are gated on **state** rather than on a view, and again say why:
-  *Pin Spectrum* needs a probed spectrum, *Export Region* a drawn region, *Send
-  Slice to Image Viewer* an open image viewer to send contours to, *Link Views*
+  *Pin Spectrum* needs a probed spectrum, *Export Region* a drawn region, *Overlay
+  Slice on an Open Image* an open image viewer to send contours to, *Link Views*
   something to link to (a second pane or a second cube window).
 
 ```{list-table}
@@ -426,10 +426,12 @@ A tool is bound to a **view**, not to the pane you happen to have selected:
 * - **Catalogue**
   - Load / Show / Show Labels / Clear Catalogue Overlay
   - Source overlays drawn on the slice or the moment map. See
-    [Catalogues](catalogues-hips#catalogue-overlay-on-cubes--images).
+    [Catalogues](catalogues-hips.md#catalogue-overlay-on-cubes--images).
 * - **Export**
-  - Export Sub-Cube as FITS, Export Current Channel as 2-D FITS,
-    Export Moment Map as FITS, Export Movie
+  - Export Selected View (it reads *Export Sub-Cube as FITS…*, *Export
+    Current Channel as 2-D FITS…* or *Export … as FITS…* after the focused
+    pane; see [FITS exports](#fits-exports--workspace)), Smooth / Regrid…,
+    Export Movie…
   - Getting results out. See
     [Figures, movies and linked views](publication-output).
 * - **Views**
@@ -630,7 +632,7 @@ pane — or, while a probe tool is armed, the live one it is driving):
 * - **Analysis (Inspector)**
   - Smoothing kernel, *Fit Gaussian* / *Clear Fit*, *Load Lines…* /
     *Clear Lines*, *Compare* / *Clear Overlays* — see [Spectral
-    tools](spectral-tools#line-identification-overlaying-a-line-list).
+    tools](spectral-tools.md#line-identification-overlaying-a-line-list).
 ```
 
 #### Spectral smoothing
@@ -670,13 +672,13 @@ the markers.
 
 The conventions, the file formats, the diagnostics when nothing lands in the
 band, and a worked HI example are in [Spectral tools → Line
-identification](spectral-tools#line-identification-overlaying-a-line-list).
+identification](spectral-tools.md#line-identification-overlaying-a-line-list).
 
 **Why it matters scientifically:** moment maps and region statistics
 average away the per-channel detail. The single-pixel spectrum is what
 you need to identify line shape (Gaussian vs multi-peak vs absorption),
 spot self-absorption dips, hand-pick line-free channels before running
-[Baseline Subtraction](spectral-tools#baseline-subtraction-s-03), or
+[Baseline Subtraction](spectral-tools.md#baseline-subtraction-s-03), or
 visually confirm a [moment-1 velocity gradient](moment-maps) is driven by
 a real shift in line centroid rather than by a noise feature. The CSV
 export is the bridge to downstream analysis tools (Gauss-fit, line
@@ -957,7 +959,7 @@ and *Export Movie…* writes an animation.
   (moment, isosurface, line-width, baseline, stacking) are gated so they
   never starve interactive requests like slice fetches — you can keep
   scrolling and rotating the cube while a heavy compute is running. See
-  the [heavy-task throttle](../async-patterns#heavy-task-throttle-backend-side)
+  the [heavy-task throttle](../async-patterns.md#heavy-task-throttle-backend-side)
   in the developer reference for the gritty details.
 - *Camera ROI* in the View menu limits the full-resolution fetch to the
   current viewport (recommended for cubes > ~2 GB).

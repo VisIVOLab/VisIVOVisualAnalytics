@@ -720,33 +720,71 @@ BackendAssistantResult BackendClient::parseAssistantResult(const QJsonObject &o)
     return result;
 }
 
-BackendAssistantConfigResult BackendClient::setAssistantConfig(
-        const QString &provider, const QString &anthropicKey, const QString &openaiKey,
-        const QString &baseUrl, const QString &baseUrlKey, const QString &model)
+BackendAssistantConfigResult BackendClient::setAssistantConfig(const QJsonObject &body)
 {
     BackendAssistantConfigResult result;
     QString error;
-    QJsonObject body;
-    // Every field is sent (empty string == "clear" server-side) so switching
-    // provider fully resets stale state, including the model. The caller
-    // (AssistantPanel) sets exactly the fields relevant to the chosen provider.
-    if (!provider.isEmpty())
-        body.insert(QStringLiteral("provider"), provider);
-    body.insert(QStringLiteral("anthropic_key"), anthropicKey);
-    body.insert(QStringLiteral("openai_key"), openaiKey);
-    body.insert(QStringLiteral("base_url"), baseUrl);
-    body.insert(QStringLiteral("base_url_key"), baseUrlKey);
-    body.insert(QStringLiteral("model"), model);
     const QByteArray payload = performPost(
             QUrl(m_baseUrl + QStringLiteral("/v1/assistant/config")), QJsonDocument(body), error);
     if (!error.isEmpty()) {
         result.error = error;
         return result;
     }
-    const QJsonObject o = QJsonDocument::fromJson(payload).object();
+    return parseAssistantConfig(QJsonDocument::fromJson(payload).object());
+}
+
+namespace {
+// The model questions go to: the backend's top-level "model" (which includes
+// one it picked by itself), else, from a backend older than that field, the
+// configured one. "" when neither is known.
+QString assistantModelInUse(const QJsonObject &o)
+{
+    const QJsonValue inUse = o.value(QStringLiteral("model"));
+    if (inUse.isString())
+        return inUse.toString();
+    // config.model is null when none is set
+    return o.value(QStringLiteral("config")).toObject().value(QStringLiteral("model")).toString();
+}
+}  // namespace
+
+BackendAssistantConfigResult BackendClient::parseAssistantConfig(const QJsonObject &o)
+{
+    BackendAssistantConfigResult result;
     result.valid = o.value(QStringLiteral("valid")).toBool(false);
     result.configured = o.value(QStringLiteral("configured")).toBool(false);
     result.provider = o.value(QStringLiteral("provider")).toString();
+    // Absent on a backend older than the field: no problem is then known.
+    result.problem = o.value(QStringLiteral("problem")).toString().trimmed();
+    result.model = assistantModelInUse(o);
+    return result;
+}
+
+BackendAssistantStatusResult BackendClient::assistantStatus()
+{
+    BackendAssistantStatusResult result;
+    QString error;
+    const QByteArray payload = performGet(
+            QUrl(m_baseUrl + QStringLiteral("/v1/assistant/status")), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    return parseAssistantStatus(QJsonDocument::fromJson(payload).object());
+}
+
+BackendAssistantStatusResult BackendClient::parseAssistantStatus(const QJsonObject &o)
+{
+    BackendAssistantStatusResult result;
+    // The route has no "valid" flag: a body naming the provider is a status.
+    if (!o.contains(QStringLiteral("provider"))) {
+        result.error = QStringLiteral("The backend sent no copilot status.");
+        return result;
+    }
+    result.valid = true;
+    result.configured = o.value(QStringLiteral("configured")).toBool(false);
+    result.provider = o.value(QStringLiteral("provider")).toString();
+    result.problem = o.value(QStringLiteral("problem")).toString().trimmed();
+    result.model = assistantModelInUse(o);
     return result;
 }
 
@@ -3856,3 +3894,154 @@ QByteArray BackendClient::decodePayload(const QJsonObject &object, const QString
 
 
 
+
+// ── Cosmology (issue #29) ─────────────────────────────────────────────────────
+// The parsers and the request shapes live here, not beside the requests in
+// BackendClient_Discovery.cpp / _Polarisation.cpp, because this file is the one
+// the unit-test binary links: the field names the routes use are pinned there.
+
+namespace {
+/// A number the answer may leave out: NaN, never 0, when it is absent or null.
+double optionalNumber(const QJsonObject &object, const QString &key)
+{
+    const QJsonValue v = object.value(key);
+    return v.isDouble() ? v.toDouble() : std::numeric_limits<double>::quiet_NaN();
+}
+}   // namespace
+
+QString BackendClient::cosmologyDistancesQuery(double z, const BackendCosmologyParams *custom)
+{
+    QUrlQuery query;
+    // 17 significant digits: the redshift and parameters go out as typed, not
+    // rounded to the six figures QString::number gives by default.
+    query.addQueryItem(QStringLiteral("z"), QString::number(z, 'g', 17));
+    if (custom) {
+        query.addQueryItem(QStringLiteral("H0"), QString::number(custom->h0, 'g', 17));
+        query.addQueryItem(QStringLiteral("Om0"), QString::number(custom->om0, 'g', 17));
+        query.addQueryItem(QStringLiteral("Ode0"), QString::number(custom->ode0, 'g', 17));
+    }
+    return query.toString(QUrl::FullyEncoded);
+}
+
+BackendCosmologyDistancesResult BackendClient::parseCosmologyDistancesObject(
+        const QJsonObject &object)
+{
+    BackendCosmologyDistancesResult r;
+    r.valid = object.value(QStringLiteral("valid")).toBool();
+    r.error = object.value(QStringLiteral("error")).toString();
+    // A refusal (HTTP 422) carries FastAPI's `detail`, not `error`.
+    if (!r.valid && r.error.isEmpty())
+        r.error = object.value(QStringLiteral("detail")).toString();
+    r.z = optionalNumber(object, QStringLiteral("z"));
+    r.comovingMpc = optionalNumber(object, QStringLiteral("comoving_Mpc"));
+    r.luminosityMpc = optionalNumber(object, QStringLiteral("luminosity_Mpc"));
+    r.angularDiameterMpc = optionalNumber(object, QStringLiteral("angular_diameter_Mpc"));
+    r.lookbackGyr = optionalNumber(object, QStringLiteral("lookback_time_Gyr"));
+    r.ageGyr = optionalNumber(object, QStringLiteral("age_Gyr"));
+    return r;
+}
+
+BackendCosmologyDistanceResult BackendClient::parseCosmologyDistanceObject(
+        const QJsonObject &object)
+{
+    BackendCosmologyDistanceResult r;
+    r.valid = object.value(QStringLiteral("valid")).toBool();
+    r.error = object.value(QStringLiteral("error")).toString();
+    r.model = object.value(QStringLiteral("model")).toString();
+    r.z = optionalNumber(object, QStringLiteral("z"));
+    r.comovingMpc = optionalNumber(object, QStringLiteral("comoving_Mpc"));
+    r.luminosityMpc = optionalNumber(object, QStringLiteral("luminosity_Mpc"));
+    // Proper transverse kpc per arcsecond; 0 at z = 0, where D_A is 0.
+    r.kpcPerArcsec = optionalNumber(object, QStringLiteral("proper_motion_kpc_per_arcsec"));
+    return r;
+}
+
+BackendAngularPowerResult BackendClient::parseAngularPowerObject(const QJsonObject &obj)
+{
+    BackendAngularPowerResult result;
+    result.valid      = obj.value(QStringLiteral("valid")).toBool();
+    result.error      = obj.value(QStringLiteral("error")).toString();
+    result.channel    = obj.value(QStringLiteral("channel")).toInt();
+    result.width      = obj.value(QStringLiteral("width")).toInt();
+    result.height     = obj.value(QStringLiteral("height")).toInt();
+    result.nBins      = obj.value(QStringLiteral("n_bins")).toInt();
+    result.kUnit      = obj.value(QStringLiteral("k_unit")).toString();
+    result.powerUnit  = obj.value(QStringLiteral("power_unit")).toString();
+    result.note       = obj.value(QStringLiteral("note")).toString();
+    result.calibrated = obj.value(QStringLiteral("calibrated")).toBool(false);
+    result.ellIsAngular = obj.value(QStringLiteral("ell_is_angular")).toBool(false);
+    result.pixelScaleArcsec = optionalNumber(obj, QStringLiteral("pixel_scale_arcsec"));
+    result.modeCoupling = optionalNumber(obj, QStringLiteral("mode_coupling"));
+    for (const QJsonValue &v : obj.value(QStringLiteral("k_bins")).toArray())
+        result.kBins.append(v.toDouble());
+    // `cl` is the current name, `power` its legacy alias: read whichever came.
+    const QJsonArray cl = obj.contains(QStringLiteral("cl"))
+            ? obj.value(QStringLiteral("cl")).toArray()
+            : obj.value(QStringLiteral("power")).toArray();
+    for (const QJsonValue &v : cl)
+        result.power.append(v.toDouble());
+    for (const QJsonValue &v : obj.value(QStringLiteral("ell")).toArray())
+        result.ell.append(v.toDouble());
+    // A bin with too few modes has a null error: NaN, so it is drawn without
+    // a bar rather than with a zero-length one that claims precision.
+    for (const QJsonValue &v : obj.value(QStringLiteral("cl_err")).toArray())
+        result.clErr.append(v.isDouble() ? v.toDouble()
+                                         : std::numeric_limits<double>::quiet_NaN());
+    for (const QJsonValue &v : obj.value(QStringLiteral("n_modes")).toArray())
+        result.nModes.append(v.toInt());
+    // An older backend sent no ell: the wavenumber is the only axis it had.
+    if (result.ell.isEmpty())
+        result.ell = result.kBins;
+    return result;
+}
+
+QJsonObject BackendClient::skeletonRequestBody(const BackendSkeletonRequest &request)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("channel"), request.channel);
+    body.insert(QStringLiteral("mode"), request.mode);
+    body.insert(QStringLiteral("threshold"),
+                request.thresholdAuto ? QJsonValue(QJsonValue::Null)
+                                      : QJsonValue(request.threshold));
+    body.insert(QStringLiteral("smooth_sigma_pix"), request.smoothSigmaPix);
+    body.insert(QStringLiteral("persistence_threshold"),
+                request.prune ? QJsonValue(request.persistenceThreshold)
+                              : QJsonValue(QJsonValue::Null));
+    return body;
+}
+
+BackendSkeletonResult BackendClient::parseSkeletonObject(const QJsonObject &obj)
+{
+    BackendSkeletonResult result;
+    result.valid = obj.value(QStringLiteral("valid")).toBool();
+    result.error = obj.value(QStringLiteral("error")).toString();
+    if (!result.valid && result.error.isEmpty())
+        result.error = obj.value(QStringLiteral("detail")).toString();
+    result.install = obj.value(QStringLiteral("install")).toString();
+    result.feature = obj.value(QStringLiteral("feature")).toString();
+    result.channel = obj.value(QStringLiteral("channel")).toInt();
+    result.width = obj.value(QStringLiteral("width")).toInt();
+    result.height = obj.value(QStringLiteral("height")).toInt();
+    result.threshold = obj.value(QStringLiteral("threshold")).toDouble();
+    result.mode = obj.value(QStringLiteral("mode")).toString();
+    result.smoothSigmaPix = obj.value(QStringLiteral("smooth_sigma_pix")).toDouble();
+    result.nSkeletonPixels = obj.value(QStringLiteral("n_skeleton_pixels")).toInt();
+    result.nEndpoints = static_cast<int>(obj.value(QStringLiteral("endpoints")).toArray().size());
+    result.rangeMin = static_cast<float>(obj.value(QStringLiteral("range_min")).toDouble());
+    result.rangeMax = static_cast<float>(obj.value(QStringLiteral("range_max")).toDouble());
+    if (!result.valid)
+        return result;
+    result.data = QByteArray::fromBase64(
+            obj.value(QStringLiteral("data_base64")).toString().toLatin1());
+    const qsizetype expected = static_cast<qsizetype>(result.width) * result.height
+            * static_cast<qsizetype>(sizeof(float));
+    if (result.width <= 0 || result.height <= 0 || result.data.size() != expected) {
+        result.valid = false;
+        result.error = QStringLiteral("The skeleton mask is %1 bytes for a %2 × %3 map.")
+                               .arg(result.data.size())
+                               .arg(result.width)
+                               .arg(result.height);
+        result.data.clear();
+    }
+    return result;
+}

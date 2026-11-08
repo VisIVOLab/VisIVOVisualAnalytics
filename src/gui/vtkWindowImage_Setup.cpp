@@ -1282,6 +1282,11 @@ QVector<vtkWindowImage::ImageTool> vtkWindowImage::imageTools() const
 
     add(u"Statistics"_s, self->m_actHistogram);
 
+    // Issue #29: the two map-texture tools, which were reachable only through
+    // the Copilot. Settings in Inspector > Parameters, results as products.
+    add(u"Structure"_s, self->m_actAngularPower);
+    add(u"Structure"_s, self->m_actSkeleton);
+
     add(u"Annotations"_s, self->m_actAddText);
     add(u"Annotations"_s, self->m_actAddArrow);
     add(u"Annotations"_s, self->m_actClearAnnot);
