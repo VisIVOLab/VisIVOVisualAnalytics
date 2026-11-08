@@ -6,6 +6,23 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## Unreleased
+
+- **Region flux on multi-beam cubes.** Region statistics now divide by the
+  selected channel's beam from a CASA `BEAMS` table instead of the
+  primary-header beam (a 4" channel beam under a 2" header beam returned a
+  flux 4x too large), and give a flux when only the table defines the beam.
+- **Reprojection keeps unit and beam.** A reprojected image now carries the
+  source's `BUNIT`, `BTYPE` and beam (`BMAJ`/`BMIN`/`BPA`), so a Jy/beam map
+  stays measurable; the target WCS is never overridden. A 4-D cube is
+  reprojected as one plane, as documented.
+- **Skeleton and void smoothing respects blanks.** Pre-smoothing is normalised
+  over the finite pixels and NaN pixels stay invalid; before, an unobserved
+  area was filled with 0 and `void` mode traced false voids inside it.
+- **Power spectrum and skeleton read one plane.** Only the selected plane is
+  cast to float64; peak memory for a 128x128 plane went from 17 MiB on a
+  128-channel cube to 1 MiB, the same as on a 2-channel one.
+
 ## 1.0.11 (2026-11-06)
 
 - **Linux: the release opens again** (PR #131). The Linux AppImage crashed

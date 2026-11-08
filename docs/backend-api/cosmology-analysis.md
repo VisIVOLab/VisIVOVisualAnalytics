@@ -111,7 +111,8 @@ used), `n_channels_in_cube`, `beam_arcsec`, `beam_area_pix`, `mask_enabled`,
 `hi_mass_log10_msun` (`null` without a distance), `optically_thin` (`true`).
 
 ### `POST /v1/analysis/skeleton/{dataset_id}` · `POST /v1/analysis/skeleton/{dataset_id}/binary` · `POST /v1/cosmology/skeleton/{dataset_id}`
-Morphological skeleton (filaments) or void mask of one plane. The three routes
+Morphological skeleton (filaments) or void mask of one plane (only that plane
+is read from the file, so memory does not grow with the cube depth). The three routes
 run the same computation; `/v1/cosmology/skeleton` is an alias kept for the
 cosmology grouping. Requires scikit-image (503 without it).
 
@@ -125,7 +126,7 @@ cosmology grouping. Requires scikit-image (503 without it).
 | `channel` | Plane of a cube to use |
 | `threshold` | Binarisation threshold; `null` = mean of the finite pixels |
 | `mode` | `skeleton` (medial-axis thinning of the bright regions) or `void` (skeleton of the regions below the threshold) |
-| `smooth_sigma_pix` | Gaussian pre-smoothing σ in pixels; 0 disables it |
+| `smooth_sigma_pix` | Gaussian pre-smoothing σ in pixels, normalised over the finite pixels; blank (NaN) pixels stay blank, so no skeleton or void is drawn in an unobserved area. 0 disables it |
 | `persistence_threshold` | Drops skeleton pixels whose intensity is below it; `null` disables it |
 
 The desktop calls the JSON route (`BackendClient::requestSkeleton`), because

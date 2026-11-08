@@ -90,9 +90,13 @@ def worker_region_stats(
 
     # Integrated flux for Jy/beam data when the beam is known. Uses the EXACT
     # pixel solid angle (correct for non-square/skewed pixels), via the shared
-    # beam_area_pixels helper.
+    # beam_area_pixels helper. The beam is the SELECTED channel's: a CASA
+    # multi-beam cube carries one beam per plane in a BEAMS table, and the
+    # primary-header beam (when present at all) is only a representative one, so
+    # using it would scale the flux by the ratio of the two beam areas.
     from ._common import beam_area_pixels, is_per_beam_bunit  # noqa: PLC0415
-    bmaj, bmin = dataset.beam.major, dataset.beam.minor
+    beam = dataset.beam_for_channel(ch)
+    bmaj, bmin = beam.major, beam.minor
     if is_per_beam_bunit(dataset.bunit) and bmaj and bmin:
         beam_area_px = beam_area_pixels(bmaj, bmin, dataset.spatial_pixel_scale_arcsec(),
                                         dataset.spatial_pixel_area_arcsec2())
@@ -212,6 +216,74 @@ def worker_cube_stats(path: str) -> dict[str, Any]:
 # ── A-03: WCS reprojection ────────────────────────────────────────────────────
 
 
+# Source keys that describe what the pixel values ARE (unit, quantity, beam) and
+# where they came from. Reprojection resamples the pixel grid but keeps the
+# surface-brightness unit and the beam (BMAJ/BMIN are angles in degrees, BPA is
+# measured from north: none of them depends on the projection), so without them
+# a Jy/beam image would come out with no unit and no beam, and flux, beam-area
+# and SoFiA-style tools downstream would silently refuse or guess.
+_REPROJECT_CARRIED_KEYS: tuple[str, ...] = (
+    "BUNIT", "BTYPE", "BMAJ", "BMIN", "BPA",
+    "OBJECT", "TELESCOP", "INSTRUME", "OBSERVER", "ORIGIN",
+)
+
+
+def _carry_flux_keys(out_header, src_header, beam) -> None:
+    """Copy the source's unit/beam/provenance keys onto a reprojected header.
+
+    Only keys the target header does not already define are written, so the
+    target WCS (and anything the caller set explicitly) always wins; source WCS
+    keywords are never copied. ``beam`` is the beam of the plane that was
+    reprojected (the per-channel one when the cube has a BEAMS table, else the
+    primary-header one), so the output carries the beam its pixels were
+    actually observed with; the BEAMS table itself is not copied, since the
+    output has a single plane.
+    """
+    beam_keys = ("BMAJ", "BMIN", "BPA")
+    values: dict[str, Any] = {}
+    for key in _REPROJECT_CARRIED_KEYS:
+        if key in src_header and key not in beam_keys:
+            values[key] = src_header[key]
+    # The beam is one object: if the target names any part of it, the target
+    # owns the whole beam (mixing its BMAJ with the source's BMIN would invent a
+    # beam nobody observed with).
+    target_has_beam = any(k in out_header for k in beam_keys)
+    if not target_has_beam and beam is not None and beam.major and beam.minor:
+        values["BMAJ"] = float(beam.major)
+        values["BMIN"] = float(beam.minor)
+        values["BPA"] = float(beam.pa) if beam.pa is not None else 0.0
+    for key, value in values.items():
+        if key in out_header:
+            continue
+        try:
+            out_header[key] = value
+        except Exception:  # noqa: BLE001 - an odd card must not fail the reprojection
+            pass
+
+
+def _celestial_plane_index(header, ndim: int) -> tuple:
+    """NumPy index selecting the first sky plane of an ``ndim`` array.
+
+    The two celestial axes (from the header's WCS) are kept whole and every
+    other axis is fixed at 0. Without a celestial pair, the last two NumPy axes
+    (FITS axes 1 and 2) are taken as the plane, the FITS convention.
+    """
+    from astropy.wcs import WCS as _WCS  # noqa: PLC0415
+
+    keep: set[int] = set()
+    try:
+        w = _WCS(header, relax=True, naxis=ndim)
+        lng, lat = int(w.wcs.lng), int(w.wcs.lat)
+        if lng >= 0 and lat >= 0:
+            # FITS axis k (0-based) is NumPy axis ndim - 1 - k.
+            keep = {ndim - 1 - lng, ndim - 1 - lat}
+    except Exception:  # noqa: BLE001 - an unreadable WCS falls back to FITS order
+        keep = set()
+    if len(keep) != 2:
+        keep = {ndim - 2, ndim - 1}
+    return tuple(slice(None) if ax in keep else 0 for ax in range(ndim))
+
+
 def worker_reproject(
     path: str,
     output_path: str,
@@ -241,13 +313,19 @@ def worker_reproject(
     dataset = ScientificFitsDataset(path)
     hdul, raw = dataset.open_memmap()
     try:
-        if raw.ndim == 2:
-            image = np.asarray(raw, dtype=np.float32)
-        else:
-            # Use first channel of a cube
-            squeezed = np.squeeze(raw)
-            image = squeezed[0] if squeezed.ndim == 3 else np.asarray(squeezed, dtype=np.float32)
-            image = np.asarray(image, dtype=np.float32)
+        # Always ONE 2-D plane: the first channel (first Stokes plane of a 4-D
+        # cube). reproject would otherwise treat leading axes as a stack of
+        # images, and the single beam written below would then be wrong for
+        # every plane but the first. Index 0 is taken on the non-celestial axes
+        # only (never squeezed), so a single-row or single-column image keeps
+        # its two spatial axes and a cube whose spectral axis is not the
+        # slowest one (FREQ as FITS axis 1) still yields its sky plane. The
+        # celestial axes keep their header order, which is the order of the
+        # `.celestial` WCS handed to reproject below.
+        image = raw[_celestial_plane_index(dataset.header, raw.ndim)]
+        if image.ndim != 2:
+            raise ValueError(f"Reprojection needs a 2-D plane, got shape {image.shape}.")
+        image = np.array(image, dtype=np.float32)
         src_header = dataset.header.copy()
     finally:
         hdul.close()
@@ -280,6 +358,9 @@ def worker_reproject(
     out_header["NAXIS"] = 2
     out_header["NAXIS1"] = target_shape_tuple[1]
     out_header["NAXIS2"] = target_shape_tuple[0]
+    # Channel 0 is the plane reprojected; a 2-D image's BEAMS table (if any)
+    # also indexes its single plane as CHAN 0.
+    _carry_flux_keys(out_header, src_header, dataset.beam_for_channel(0))
     out_hdu = _fits.PrimaryHDU(data=result_arr, header=out_header)
     out_hdu.writeto(output_path, overwrite=True)
 

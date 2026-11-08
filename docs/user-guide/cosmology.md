@@ -137,8 +137,9 @@ The settings, in **Inspector ▸ Parameters**:
   - *Voids* gives the skeleton of the regions below it.
 - **Threshold.** By default the server uses the mean of the map. The value it
   used is recorded with the result.
-- **Smoothing σ.** A Gaussian pre-smoothing, in pixels. With smoothing on,
-  blank (NaN) pixels count as 0.
+- **Smoothing σ.** A Gaussian pre-smoothing, in pixels. Each pixel becomes
+  the weighted mean of the valid pixels around it; blank (NaN) pixels stay
+  blank, so no filament or void is traced inside an unobserved area.
 - **Drop where map <.** An intensity cut on individual skeleton pixels. It is
   not a topological-persistence cut: it can split a filament and add end
   points. It applies to filaments only, and values ≤ 0 are ignored by the
