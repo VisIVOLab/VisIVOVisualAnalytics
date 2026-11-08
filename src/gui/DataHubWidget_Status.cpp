@@ -207,6 +207,11 @@ void DataHubWidget::refreshStatus()
         return;
     }
 
+    if (this->m_healthInFlight) {
+        this->m_healthAgain = true;
+        return;
+    }
+
     if (this->btnCheckConnection) {
         this->btnCheckConnection->setEnabled(false);
         this->btnCheckConnection->setText(u"Checking…"_s);
@@ -215,8 +220,53 @@ void DataHubWidget::refreshStatus()
         this->labelStatusDetail->setText(u"Contacting backend…"_s);
     }
 
-    BackendClient client(this->backendUrl, this->backendToken);
-    const BackendHealthResult health = client.health();
+    this->m_healthInFlight = true;
+    const QString url = this->backendUrl;
+    const QString token = this->backendToken;
+    auto *watcher = new QFutureWatcher<BackendHealthResult>(this);
+    QPointer<DataHubWidget> self(this);
+    QObject::connect(watcher, &QFutureWatcher<BackendHealthResult>::finished, this,
+                     [self, watcher, url, token]() {
+                         const BackendHealthResult health = watcher->result();
+                         watcher->deleteLater();
+                         if (!self)
+                             return;
+                         self->m_healthInFlight = false;
+                         self->applyHealth(url, token, health);
+                         if (self->m_healthAgain) {
+                             self->m_healthAgain = false;
+                             QTimer::singleShot(0, self, &DataHubWidget::refreshStatus);
+                         }
+                     });
+    watcher->setFuture(QtConcurrent::run([url, token]() {
+        return BackendClient(url, token).health();
+    }));
+}
+
+
+void DataHubWidget::applyHealth(const QString &url, const QString &token,
+                                const BackendHealthResult &health)
+{
+    const auto restoreButton = [this]() {
+        if (this->btnCheckConnection) {
+            this->btnCheckConnection->setEnabled(true);
+            this->btnCheckConnection->setText(u"Check Connection"_s);
+        }
+    };
+    // The backend or its token changed while the request was out (Settings,
+    // or a cluster connected): this answer is about the old one. Ask again.
+    if (url != this->backendUrl || token != this->backendToken) {
+        restoreButton();
+        if (!this->backendUrl.isEmpty())
+            this->m_healthAgain = true;
+        return;
+    }
+    // A modal dialog came up meanwhile: the same reason as refreshStatus()'s
+    // guard not to touch the hub now. The next poll brings it up to date.
+    if (QApplication::activeModalWidget() != nullptr) {
+        restoreButton();
+        return;
+    }
 
     if (health.ok) {
         if (this->labelStatusBadge) {

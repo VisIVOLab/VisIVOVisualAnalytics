@@ -165,6 +165,27 @@ the backend-side filesystem:
   has (`OBJECT`, the instrument) along with it. The header viewer lists the
   two together, and an edit of a card goes back to the HDU that owns it.
 
+  Compressed FITS open directly: gzipped (`.fits.gz`) and tile-compressed
+  (fpack, `.fz`) images and cubes. The first open decompresses the file once
+  into the backend's workspace cache, which takes a moment for a large file
+  (about 5 s for a 2 GB `.fits.gz` on a laptop SSD, longer on a cold disk or
+  a remote node). Meanwhile a progress window says *Decompressing
+  cube.fits.gz… 42 %* with the elapsed time; **Cancel** stops the
+  decompression on the backend and leaves nothing behind, and so does quitting
+  the application. The window stays above the main window while you work in
+  it, and closing it is the same as **Cancel**. One file is decompressed at a
+  time: opening another compressed file meanwhile brings the progress window
+  to the front and says so in the status bar. Opening the file again,
+  from **Recent** too, is as fast as opening an uncompressed file. A compressed
+  image can also be added as a layer (**+ Add layer…**); its header is read on
+  the backend. The
+  cache needs the file's full uncompressed size on the backend's disk; its
+  place and size limit are set by `VISIVO_DECOMPRESS_CACHE_DIR` and
+  `VISIVO_DECOMPRESS_CACHE_MAX_BYTES` ([Configuration](../configuration.md)).
+  Recent files and provenance keep the compressed file's path. A file fpack
+  compressed with its default float quantisation is lossy by construction:
+  values differ from the original by up to a fraction of the noise.
+
 Under **Archives**:
 
 - **HiPS Viewer** opens the all-sky [HiPS viewer](catalogues-hips).

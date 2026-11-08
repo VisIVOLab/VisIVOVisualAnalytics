@@ -4,6 +4,7 @@ A velocity field is a 3-component vector grid (not a scalar cube), so it gets it
 own open + binary-grid endpoints. The desktop fetches the raw vector grid and
 runs vtkStreamTracer / vtkGlyph3D locally (interactive rendering).
 """
+import asyncio
 import logging
 import uuid
 
@@ -11,6 +12,7 @@ from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel
 
 from ..auth import verify_token
+from ..compressed_fits import readable_path
 from ..dependencies import _normalize_path, _run
 from ..fits_truncation import check_not_truncated
 from ..sessions import Session, get_session
@@ -88,9 +90,12 @@ async def velocity_open(
         path = str(_normalize_path(request.path))
     except PermissionError:
         return VelocityOpenResponse(valid=False, error="Velocity file not found.")
+    source = path
     try:
         # A truncated FITS grid: refused by name before the worker reads it (#118).
         check_not_truncated(path)
+        # A compressed grid is read from its decompressed copy (issue #57).
+        path = str(await asyncio.to_thread(readable_path, path))
         summary = await _run(velocity_summary_worker, path, request.box_mpc)
     except Exception as exc:
         return VelocityOpenResponse(valid=False, error=str(exc))
@@ -100,6 +105,8 @@ async def velocity_open(
         "kind": "velocity",
         "box_mpc": request.box_mpc,
     }
+    if path != source:
+        session.datasets[dataset_id]["source_path"] = source
     logger.info("[velocity] session=%s dataset_id=%s path=%s",
                 session.session_id[:8] + "…", dataset_id, path)
     return VelocityOpenResponse(

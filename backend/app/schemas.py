@@ -61,6 +61,12 @@ class OpenDatasetRequest(BaseModel):
     path: str
 
 
+class DecompressRequest(BaseModel):
+    """A compressed FITS (``.fits.gz``, ``.fz``) to decompress into the
+    workspace cache before opening it (issue #57)."""
+    path: str
+
+
 class DatasetField(BaseModel):
     """A field of a multi-field source, opened as a dataset of its own."""
     name: str

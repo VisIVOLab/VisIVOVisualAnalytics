@@ -68,6 +68,31 @@ Exports until the map is written. If the name
 is already taken, a numeric suffix is added (`cube_m0_1.fits`), so read the
 name from `result.workspace_filename`.
 
+### `POST /v1/tasks/decompress`
+Decompress a compressed FITS (`.fits.gz`, `.fz`) into the workspace cache, as a
+task, before opening it (see [Datasets](datasets.md), *Compressed FITS*).
+```json
+{ "path": "/data/cube.fits.gz" }
+```
+`progress` is the fraction decompressed (of the compressed bytes read, so a
+real measure, unlike the moment task's ticker). `DELETE /v1/tasks/{task_id}`
+stops it within one 16 MB chunk and leaves nothing in the cache.
+
+When there is nothing to decompress, the create response says so itself:
+`"status": "completed"`, with `"cache_hit": true` for a copy already in the
+cache and `false` for a file that is not compressed. Nothing needs polling, so
+a reopen costs what a plain open does. Otherwise the response is
+`"status": "running"`.
+
+The result: `compression` (`gzip`, `tile`, or `""` for a file that needs
+none), `cache_hit`, `seconds`, `source_bytes` and `decompressed_bytes`. A
+missing file, one outside the data roots, or one that is no dataset answers
+404. A damaged file fails the task with the reason as its `error`. Afterwards
+`/v1/datasets/open` on the same path finds the copy. The desktop client runs
+this task before the open, behind a progress sheet with the percentage and
+Cancel; `BackendClient::openDataset()` called without a window runs it too,
+without a sheet.
+
 ### `GET /v1/tasks/{task_id}`
 ```json
 { "valid": true, "error": "", "task_id": "...", "operation": "moment",

@@ -57,10 +57,42 @@ the same on a 1 TB cube. A tile-compressed image is sized as the binary table
 it is stored in (rows plus heap, `PCOUNT`), and random groups and `GCOUNT` are
 followed as the FITS standard has them. Not refused: bytes after the declared
 end; a file cut only inside the last 2880-byte padding block (all the data is
-there, and astropy reads it); a truncated HDU after the one being read. Not
-checked: gzip-, bzip2- or zip-compressed FITS (`.fits.gz`, which only
-`open_url` opens), whose headers declare the decompressed size; a truncated stream fails in the decompressor
-instead. All other open failures still answer 200 with `valid: false`.
+there, and astropy reads it); a truncated HDU after the one being read. A
+gzip-compressed FITS (`.fits.gz`) is checked once decompressed (below); a
+truncated gzip stream is refused there. All other open failures still answer
+200 with `valid: false`.
+
+**Compressed FITS.** `.fits.gz` (`.fit.gz`, `.fts.gz`) and tile-compressed
+files (fpack, `.fz`, or any FITS whose image HDU is a `ZIMAGE` binary table)
+open like their uncompressed versions. Neither can be memory-mapped, so the
+first open decompresses the file once into the workspace cache
+(`VISIVO_DECOMPRESS_CACHE_DIR`, see [Configuration](../configuration.md)) as an
+ordinary FITS file, and every reader (previews, slices, moments, spectra, the
+brick pyramid, render sessions, SODA) reads that copy. Tile-compressed images
+become image HDUs (an fpack primary, `ZSIMPLE = T`, becomes the primary again,
+as funpack does); other HDUs are copied byte for byte. The copy keeps the
+source's name without the compression suffix (`cube.fits.gz` → `cube.fits`), so
+products are named as from the uncompressed file. Opening the same file again
+finds the copy (keyed by path, size and modification time). The dataset keeps
+the original path: the session entry has it as `source_path`, and provenance
+(`/v1/reproducibility/provenance`, product provenance) names it, never the
+cache. Lossy fpack quantisation of floats (`fpack` default, `-q 4`) is
+already in the file; the copy holds exactly what cfitsio/astropy decompress.
+
+A large `.fits.gz` takes a while to decompress (about 5 s for 2 GB on an
+M-series laptop, warm disk): `/v1/datasets/open` does it in one request, off
+the event loop; [`POST /v1/tasks/decompress`](tasks-finders.md) does it as a
+task with progress and cancellation, after which the open is a cache hit. The
+desktop client uses the task, and for a cached copy the task's create response
+already says `completed`, so a reopen costs what a plain open does. The
+headers of a `.fits.gz` (for the classifier and the size estimate) are read
+off the start of the gzip stream, without decompressing the rest of it. Refusals, as `valid: false` with the reason: a truncated
+gzip stream ("x.fits.gz is truncated: the gzip stream ends before its end
+marker …"), a damaged gzip or tile-compressed file, a gzip that does not hold a
+FITS file, a cache disk without room, a cache whose limit cannot be met; a
+gzip of a truncated FITS is refused with HTTP 422 like any truncated FITS. If
+the cached copy is deleted while the dataset is open, the next request on it
+answers **503** with `Retry-After` while the copy is made again.
 
 ### `POST /v1/datasets/open_url`
 Download a FITS or HDF5 file from an `http(s)` URL into the backend's cache and

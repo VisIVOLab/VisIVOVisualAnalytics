@@ -1838,7 +1838,8 @@ void vtkWindowImage::addLayerFromBrowser()
     }
 
     RemoteFileBrowserDialog dialog(this->remoteBackendUrl, this->remoteBackendToken, this);
-    dialog.setExtensionFilter({ u".fits"_s, u".fit"_s }, u"FITS files only"_s);
+    dialog.setExtensionFilter({ u".fits"_s, u".fit"_s, u".fits.gz"_s, u".fit.gz"_s, u".fz"_s },
+                              u"FITS files only"_s);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
@@ -2242,8 +2243,14 @@ void vtkWindowImage::addLayerImage(const std::string &filepath, bool ignoreOverl
             || backendHost == u"127.0.0.1"_s || backendHost == u"::1"_s
             || backendHost == u"0.0.0.0"_s);
     const bool haveBothLocally = QFile::exists(path) && QFile::exists(this->filepath);
+    // A compressed layer (.fits.gz, .fz) always goes through the backend, even
+    // on this machine: the local WCS reader cannot read a compressed header
+    // and took the layer for one without a celestial solution (#57), while
+    // the backend reads its header and its decompressed copy.
+    const bool compressed = BackendClient::isCompressedFitsName(path)
+            || BackendClient::isCompressedFitsName(this->filepath);
     const bool useBackend = !this->remoteBackendUrl.isEmpty()
-            && !(backendIsLocal && haveBothLocally);
+            && (compressed || !(backendIsLocal && haveBothLocally));
     if (useBackend) {
         this->setLayerImportEnabled(false);
         this->showPersistentStatusMessage(

@@ -180,6 +180,8 @@ fit together.
 | Variable | Default | Effect |
 |---|---|---|
 | `VISIVO_EXPORTS_DIR` | `~/.visivo/exports` | The Workspace exports folder: saved cut-outs, moment FITS files and source-finding products. Created if missing. |
+| `VISIVO_DECOMPRESS_CACHE_DIR` | `<exports>/.decompressed` | Where compressed FITS (`.fits.gz`, tile-compressed `.fz`) are decompressed before they are read. One entry per source file version (path, size, modification time); a source that changes is decompressed again. On a cluster, point it at scratch rather than a home with a small quota: a cube needs its full uncompressed size here. Beside the entries the cache keeps one empty `<key>.lock` file per source version ever decompressed: processes opening the same file at once lock it, and it stays (a few bytes) so that a process waiting on it and the next one to create the entry lock the same file. Deleting the whole directory while no backend runs is safe. |
+| `VISIVO_DECOMPRESS_CACHE_MAX_BYTES` | `100 GiB` | Size cap of the decompression cache; `0` for no cap. The least recently used entries are evicted to make room, never one an open dataset reads or one used in the last 10 minutes. A file that cannot fit is refused with a message naming this setting. Independently, a decompression is refused when the disk of the cache lacks its size plus 1 GiB. |
 | `VISIVO_PYRAMID_DIR` | `<exports>/.pyramids` | Where brick pyramids are written and looked for ([Brick pyramid](brick-pyramid.md)). |
 | `VISIVO_HIPS_CACHE` | `~/.cache/visivo/hips` | Directory of the HiPS tile cache. |
 | `VISIVO_HIPS_CACHE_MAX_BYTES` | `2 GiB` | Size cap of the HiPS cache; the least recently used tiles are evicted beyond it. |
