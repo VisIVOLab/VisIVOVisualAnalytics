@@ -6,6 +6,21 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## Unreleased
+
+- **Photometry and polarisation no longer return wrong numbers silently**
+  (#137). Aperture photometry and the 2-D Gaussian fit find a 4-D cube's
+  spectral and Stokes axes from the header and measure Stokes I of the
+  requested channel (a (spectral, Stokes, y, x) cube used to give a Stokes
+  plane of the first frequency; a multi-plane Stokes axis without I is now
+  refused, and a single-plane Q, U or V file is measured as labelled), and
+  report `resolved_channel` and `stokes`.
+  Their ICRS RA/Dec are converted to the image's frame, so Galactic and FK4
+  images work. Polarised intensity/angle and RM synthesis compare the Q and U
+  pixel → sky mapping, refusing a pair rotated by `PC`/`CD` and accepting the
+  same grid written either way; PI/PA refuses a channel that U does not have
+  or that sits at a different frequency in U.
+
 ## 1.0.11 (2026-11-06)
 
 - **Linux: the release opens again** (PR #131). The Linux AppImage crashed

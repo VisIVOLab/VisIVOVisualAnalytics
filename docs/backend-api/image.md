@@ -98,9 +98,25 @@ Reprojects an image plane onto a target WCS/grid, writes a new FITS to the sessi
 
 ## Photometry
 
-Implemented in `backend/app/routers/photometry.py`. Positions are sky
-coordinates (degrees), so the dataset needs a celestial WCS. `channel`
-selects the plane of a cube (`null` = the first).
+Implemented in `backend/app/routers/photometry.py`. Positions are ICRS
+RA/Dec in degrees, so the dataset needs a celestial WCS. They are converted to
+the image's own celestial frame (FK5 or FK4 with the header's equinox,
+Galactic, …) before they become a pixel. The frame is the one astropy reads
+from the header: an equatorial image with neither `RADESYS` nor `EQUINOX` is
+ICRS, one with only `EQUINOX` is FK4 (before 1984) or FK5; one whose frame
+astropy cannot name is taken to be ICRS.
+
+`channel` selects the plane of a cube along its spectral axis (`null` = the
+first; a channel beyond the cube is clamped to the last plane). The spectral and
+Stokes axes are found from the header, so a 4-D cube stored either as
+(Stokes, spectral, y, x) or (spectral, Stokes, y, x) gives the same plane. On a
+Stokes axis Stokes I is measured; a multi-plane Stokes axis without I is
+refused (422), and a single labelled plane (a Q map of a one-file-per-plane
+release) is measured as that plane. A cube with a second non-degenerate axis
+besides the spectral one and Stokes, or whose sky axes are not `NAXIS1`/`NAXIS2`,
+is refused (422). Both responses carry `resolved_channel` (the spectral plane
+actually measured, `null` for an image) and `stokes` (`"I"`, the label of a
+single-plane file, or `null` without a Stokes axis).
 
 ### `POST /v1/photometry/aperture/{dataset_id}`
 Circular-aperture flux with an optional background annulus.
@@ -113,7 +129,8 @@ Circular-aperture flux with an optional background annulus.
 An annulus of 0/0 (the default) means no background subtraction. Response:
 `valid`, `error`, `flux_jy`, `flux_err_jy`, `flux`, `flux_err`, `flux_unit`,
 `beam_area_pix`, `background_per_pix`, `background_rms_per_pix`, `bunit`,
-`n_pix_aperture`, `aperture_area_pix`, `channel`, `pix_x`, `pix_y`, `pixel_scale_arcsec`.
+`n_pix_aperture`, `aperture_area_pix`, `channel`, `resolved_channel`, `stokes`,
+`pix_x`, `pix_y`, `pixel_scale_arcsec`.
 `flux` is always the summed brightness in `flux_unit`; `flux_jy` is the
 beam-corrected flux in Jy and is `null` unless the data are per beam with a
 known beam. Errors: 503 without photutils, 422 without a celestial WCS or for
@@ -135,7 +152,9 @@ data with a known beam), `integrated_flux`, `integrated_flux_err`,
 `deconvolved_major_arcsec`, `deconvolved_minor_arcsec`,
 `deconvolved_pa_deg`, `fit_rms`, `error_method`, `error_trials`,
 `diagnostic_covariance_err`, `diagnostic_covariance_integrated_err`,
-`center_pix_x`, `center_pix_y`, `background`.
+`resolved_channel`, `stokes`, `center_pix_x`, `center_pix_y`, `background`.
+The beam position angle is read in the image's own frame (Galactic North on a
+GLON/GLAT image).
 
 `error_method` says how the error bars were obtained: `empirical` (the model
 injected into source-free parts of the image and refitted, which accounts for
