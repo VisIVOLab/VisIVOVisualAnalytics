@@ -64,6 +64,13 @@ a sequential map the wrap at ±90° reads as a real gradient.
 σ²_QU is the de-bias term. It is zero unless line-free channels are supplied,
 in which case it is estimated from the variance of Q and U over them.
 
+When Q and U are separate files they have to describe the same pixels: the
+same sky grid (a pair rotated with respect to each other is refused, however
+alike their keywords look) and, for every channel used, the same frequency when
+both files state one (a plain 2-D map without a spectral axis is only checked
+for having the channel). A channel that one of the two files does not have is
+refused rather than paired with that file's last plane.
+
 ## 3. RM synthesis
 
 *Tools → **Rotation Measure Synthesis…*** computes the Faraday dispersion
@@ -205,5 +212,7 @@ Four things in these files are worth knowing before you trust a header:
 | Mislabelled single-plane companion | same, `test_mislabelled_single_plane_companion_is_trusted` |
 | λ² taken from the Q file, not the primary | `TestPerFileRmSynthesis::test_peak_is_at_the_injected_rm` |
 | Mismatched Q/U frequency grids refused | `test_mismatched_frequency_grids_are_refused` |
+| Q/U rotated by PC or CD refused, PC vs CD of one grid accepted | `backend/tests/test_photometry_polarisation_axes.py` |
+| PI/PA channel missing from U, or at another frequency, refused | same file |
 | Oversized FDF cube refused with a way out | `test_oversized_cube_is_refused_with_a_way_out` |
 | `SPECLNMF`, and unit inference | `TestSpectralAxisUnits` |
