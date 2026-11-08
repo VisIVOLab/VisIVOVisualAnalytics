@@ -92,7 +92,7 @@ Response: `{ valid, error, n_sources, sources, truncated, centre_ra_deg, centre_
 ```json
 { "target_wcs": { "...": "FITS WCS header cards" }, "target_shape": [ny, nx], "order": 1 }
 ```
-Reprojects an image plane onto a target WCS/grid, writes a new FITS to the session workspace, and registers it. Response: `{ valid, new_dataset_id, width, height, range_min, range_max, output_path, order }`. Missing `reproject` package → 503.
+Reprojects one image plane (the first channel of a cube, first Stokes plane of a 4-D cube) onto a target WCS/grid, writes a new FITS to the session workspace, and registers it. The output header is the target WCS plus the source's `BUNIT`, `BTYPE`, beam (`BMAJ`/`BMIN`/`BPA`, taken from the `BEAMS` table entry of the reprojected channel when there is one) and provenance keys (`OBJECT`, `TELESCOP`, `INSTRUME`, `OBSERVER`, `ORIGIN`); a key the target already defines is never overwritten, and a target naming any beam key keeps its own beam whole. Response: `{ valid, new_dataset_id, width, height, range_min, range_max, output_path, order }`. Missing `reproject` package → 503.
 
 ---
 

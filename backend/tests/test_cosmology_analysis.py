@@ -502,5 +502,93 @@ class TestSkeletonEndpoint(unittest.TestCase):
                 self.fail(f"Unexpected status code {r.status_code}")
 
 
+# ============================================================================
+# Plane-first reads and NaN-aware smoothing
+# ============================================================================
+
+def _make_deep_cube(path: str, nz: int, n: int = 128) -> None:
+    from astropy.io import fits
+    rng = np.random.default_rng(nz)
+    cube = rng.standard_normal((nz, n, n)).astype(np.float32)
+    hdu = fits.PrimaryHDU(cube)
+    h = hdu.header
+    h["CTYPE1"] = "RA---SIN"; h["CRPIX1"] = n / 2; h["CRVAL1"] = 83.8
+    h["CDELT1"] = -1e-4;       h["CUNIT1"] = "deg"
+    h["CTYPE2"] = "DEC--SIN"; h["CRPIX2"] = n / 2; h["CRVAL2"] = -5.4
+    h["CDELT2"] = 1e-4;        h["CUNIT2"] = "deg"
+    h["CTYPE3"] = "FREQ";     h["CRPIX3"] = 1.0; h["CRVAL3"] = 1.4e9
+    h["CDELT3"] = 1e6;         h["CUNIT3"] = "Hz"
+    hdu.writeto(path, overwrite=True)
+
+
+class TestOnePlanePeakMemory(unittest.TestCase):
+    """Analysing one plane must not cost memory proportional to the cube depth:
+    the plane is sliced from the memmap before it is cast to float64."""
+
+    def _peak(self, fn) -> int:
+        import gc
+        import tracemalloc
+        fn()  # warm imports and caches outside the measurement
+        gc.collect()
+        tracemalloc.start()
+        try:
+            fn()
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    def _assert_flat(self, call):
+        with tempfile.TemporaryDirectory() as tmp:
+            shallow = os.path.join(tmp, "shallow.fits")
+            deep = os.path.join(tmp, "deep.fits")
+            _make_deep_cube(shallow, 2)
+            _make_deep_cube(deep, 128)
+            p_shallow = self._peak(lambda: call(shallow))
+            p_deep = self._peak(lambda: call(deep))
+        # A float64 copy of the 128-deep cube is 16 MiB; one plane is 128 KiB.
+        # Before the fix the deep run peaked ~15 MiB above the shallow one.
+        self.assertLess(p_deep - p_shallow, 1 * 1024 * 1024,
+                        f"peak grew {p_shallow} -> {p_deep} bytes with cube depth")
+
+    def test_power_spectrum_peak_independent_of_depth(self):
+        from app.compute import worker_angular_power_spectrum
+        self._assert_flat(lambda p: worker_angular_power_spectrum(p, 1, 32))
+
+    def test_skeleton_peak_independent_of_depth(self):
+        try:
+            import skimage  # noqa: F401
+        except ImportError:
+            self.skipTest("scikit-image not installed")
+        from app.compute import worker_skeleton
+        self._assert_flat(lambda p: worker_skeleton(p, 1, None, "skeleton", 0.0, None))
+
+
+class TestSkeletonSmoothingKeepsBlanks(unittest.TestCase):
+    """Smoothing must not turn an unobserved (NaN) area into data: filling it
+    with 0 made it a deep flat minimum that `void` mode skeletonised."""
+
+    def test_void_skeleton_avoids_nan_footprint(self):
+        try:
+            import skimage  # noqa: F401
+        except ImportError:
+            self.skipTest("scikit-image not installed")
+        from app.compute import worker_skeleton
+        rng = np.random.default_rng(11)
+        ny, nx = 96, 96
+        data = (5.0 + 0.3 * rng.standard_normal((ny, nx))).astype(np.float32)
+        blank = np.zeros((ny, nx), dtype=bool)
+        blank[:, 60:] = True           # unobserved strip
+        data[blank] = np.nan
+        path = _make_2d_fits(data)
+        try:
+            for sigma in (0.0, 2.0):
+                res = worker_skeleton(path, 0, None, "void", sigma, None)
+                skel = _b64_to_f32(res["data_base64"], (ny, nx)) > 0
+                self.assertEqual(int(skel[blank].sum()), 0,
+                                 f"skeleton pixels inside the NaN area at sigma={sigma}")
+        finally:
+            os.unlink(path)
+
+
 if __name__ == "__main__":
     unittest.main()
