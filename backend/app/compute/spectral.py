@@ -807,6 +807,27 @@ def worker_baseline(
 # ── S-04: Spectral stacking ────────────────────────────────────────────────────
 
 
+def _weighted_channel_mean(stack: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """Weighted mean of ``stack`` (N spectra, n_chan) over its spectra,
+    channel by channel, normalised by the weights of the samples that are
+    finite in THAT channel. Normalising once over all spectra and then
+    dropping the blanks pulls a channel some cubes do not cover towards zero
+    (equal weights, samples [1, NaN]: 0.5, not 1); a channel no cube covers,
+    or whose finite samples all weigh zero, is NaN, not an artificial 0.
+    The weights are first scaled to a maximum of 1: only their ratios count,
+    and a weight of 1e308 (or 1e-300) must not overflow (or flush) a sample."""
+    finite = np.isfinite(stack)
+    weights = np.asarray(weights, dtype=np.float64)
+    if weights.size and weights.max() > 0:
+        weights = weights / weights.max()
+    w = np.broadcast_to(weights[:, None], stack.shape)
+    w_sum = np.where(finite, w, 0.0).sum(axis=0)
+    num = (np.where(finite, stack, 0.0) * w).sum(axis=0)
+    out = np.full(stack.shape[1], np.nan, dtype=np.float64)
+    np.divide(num, w_sum, out=out, where=w_sum > 0)
+    return out
+
+
 def worker_stack(
     paths: list[str],
     method: str,
@@ -864,8 +885,14 @@ def worker_stack(
     if method == "median":
         result_1d = np.nanmedian(stack, axis=0)
     elif method == "weighted_mean":
-        # Use explicit weights if provided; otherwise auto-compute from weight_by strategy
-        if weights and len(weights) == len(paths):
+        # Use explicit weights if provided; otherwise auto-compute from weight_by
+        # strategy. A list of the wrong length is an error, not a silent switch
+        # to automatic weights the caller did not ask for.
+        if weights and len(weights) != len(paths):
+            raise ValueError(
+                f"Got {len(weights)} stacking weights for {len(paths)} cubes; "
+                "give one per cube, or none for automatic weights.")
+        if weights:
             w = np.array(weights, dtype=np.float64)
         elif weight_by == "rms":
             # Weight ∝ 1/RMS² (higher-SNR cubes get more weight)
@@ -879,8 +906,9 @@ def worker_stack(
             w = peak
         else:  # "uniform"
             w = np.ones(len(paths), dtype=np.float64)
-        w = w / w.sum()
-        result_1d = np.nansum(stack * w[:, None], axis=0)
+        if not np.all(np.isfinite(w)) or np.any(w < 0) or not w.sum() > 0:
+            raise ValueError("Stacking weights must be finite, non-negative and not all zero.")
+        result_1d = _weighted_channel_mean(stack, w)
     else:  # "mean"
         result_1d = np.nanmean(stack, axis=0)
 

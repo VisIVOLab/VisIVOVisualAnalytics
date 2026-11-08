@@ -30,7 +30,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Res
 from fastapi.responses import JSONResponse
 from .auth import verify_token, multi_user_mode
 from .fits_dataset import ScientificFitsDataset
-from .product_cache import PRODUCT_CACHE
+from .product_cache import PRODUCT_CACHE, file_identity
 from .sessions import REGISTRY, Session, get_session
 from .tasks import TASKS
 from .schemas import *
@@ -2255,8 +2255,10 @@ def clear_resolver_cache() -> None:
 
 
 @functools.lru_cache(maxsize=32)
-def _load_overlay_csv(path: str) -> pd.DataFrame:
-    """Read and parse a catalogue CSV, caching up to 32 files (LRU eviction)."""
+def _load_overlay_csv(path: str, version: str = "") -> pd.DataFrame:
+    """Read and parse a catalogue CSV, caching up to 32 files (LRU eviction).
+    ``version`` is the file's :func:`file_identity`: part of the cache key
+    only, so a catalogue rewritten on disk is read again, not served stale."""
     return pd.read_csv(path)
 
 
@@ -2267,7 +2269,8 @@ def _catalogue_overlay_sync(
     try:
         # Client-supplied path: confine it like every other filesystem read
         # (data_roots), or a shared backend would serve any readable CSV.
-        df = _load_overlay_csv(str(_normalize_path(path)))
+        csv_path = str(_normalize_path(path))
+        df = _load_overlay_csv(csv_path, file_identity(csv_path))
     except Exception as exc:
         return {"valid": False, "error": f"Cannot read CSV '{path}': {exc}",
                 "sources": [], "total_in_view": 0, "truncated": False}

@@ -423,6 +423,72 @@ class TestWorkerCubeMask:
             assert np.isnan(data[0, 0, 0])
             assert np.all(np.isfinite(data[3:8, 3:8, 3:8]))
 
+    @staticmethod
+    def _extension_cube(path) -> "np.ndarray":
+        """An ESO/APEX-style file: empty primary, the cube in DATA_EXT and a
+        variance cube in STAT_EXT after it."""
+        from astropy.io import fits
+        import numpy as np
+        data = np.arange(6 * 8 * 10, dtype=np.float32).reshape(6, 8, 10) + 1.0
+        ext = fits.ImageHDU(data, name="DATA_EXT")
+        ext.header["CTYPE3"] = "FREQ"
+        ext.header["CRVAL3"] = 1.4e9
+        ext.header["CDELT3"] = 1e6
+        ext.header["CRPIX3"] = 1.0
+        stat = fits.ImageHDU(np.ones_like(data), name="STAT_EXT")
+        fits.HDUList([fits.PrimaryHDU(), ext, stat]).writeto(str(path), overwrite=True)
+        return data
+
+    def test_mask_cube_in_extension(self, tmp_path):
+        """The cube the dataset found in an extension is the one masked: the
+        primary was written before and failed as "requires a 3D cube"."""
+        from app.compute import worker_cube_mask
+        from astropy.io import fits
+        import numpy as np
+        src = tmp_path / "ext_cube.fits"
+        data = self._extension_cube(src)
+        for mode in ("blank_inside", "blank_outside"):
+            out = tmp_path / f"ext_{mode}.fits"
+            result = worker_cube_mask(str(src), str(out), 2, 4, 1, 3, 1, 2, mode)
+            assert (result["depth"], result["height"], result["width"]) == data.shape
+            with fits.open(str(out)) as hdul:
+                assert hdul[0].data is None
+                masked = hdul["DATA_EXT"].data
+                box = masked[1:3, 1:4, 2:5]
+                if mode == "blank_inside":
+                    assert np.all(np.isnan(box))
+                    assert masked[0, 0, 0] == data[0, 0, 0]
+                else:
+                    np.testing.assert_array_equal(box, data[1:3, 1:4, 2:5])
+                    assert np.isnan(masked[0, 0, 0])
+                assert "VisIVO 3D mask" in str(hdul["DATA_EXT"].header["HISTORY"])
+                np.testing.assert_array_equal(hdul["STAT_EXT"].data, 1.0)
+
+    def test_lasso_writers_cube_in_extension(self, tmp_path):
+        """The Kinematic Lasso writers share the copy-and-update pattern and
+        the same HDU: both mask the DATA_EXT cube."""
+        from app.compute.selection import worker_cube_mask_apply, worker_cube_mask_selection
+        from astropy.io import fits
+        import numpy as np
+        src = tmp_path / "ext_cube_lasso.fits"
+        data = self._extension_cube(src)
+        roi = np.zeros((2, 2, 2), dtype="<f4")
+        roi[0, 0, 0] = roi[1, 1, 1] = 1.0
+        out = tmp_path / "ext_apply.fits"
+        worker_cube_mask_apply(str(src), str(out), roi.tobytes(), 3, 2, 1, 2, 2, 2,
+                               "blank_inside", recipe="seed=1")
+        with fits.open(str(out)) as hdul:
+            masked = hdul["DATA_EXT"].data
+            assert np.isnan(masked[1, 2, 3]) and np.isnan(masked[2, 3, 4])
+            assert masked[1, 2, 4] == data[1, 2, 4]
+            assert "Lasso seed=1" in str(hdul["DATA_EXT"].header["HISTORY"])
+        out = tmp_path / "ext_select.fits"
+        worker_cube_mask_selection(str(src), str(out), [(3, 4, 5)], [], 3.0, 1.0, 0.0,
+                                   4, 0.0, "blank_inside")
+        with fits.open(str(out)) as hdul:
+            assert np.isnan(hdul["DATA_EXT"].data[3, 4, 5])
+            assert "Kinematic Lasso" in str(hdul["DATA_EXT"].header["HISTORY"])
+
     def test_mask_bad_mode_raises(self, freq_cube_path, tmp_path):
         from app.compute import worker_cube_mask
         with pytest.raises(ValueError):

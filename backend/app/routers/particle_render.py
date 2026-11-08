@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 
 from ..auth import verify_token
 from ..dependencies import _require_dataset, get_exports_dir
+from ..product_cache import dataset_identity
 from ..response_headers import (X_EXPOSURE, X_PARTICLE_COUNT, X_PARTICLE_FIELDS,
                                 X_PARTICLE_STEP, X_RENDER_MS)
 from ..schemas import TaskCreateResponse
@@ -390,7 +391,9 @@ _PARTICLE_FIELDS = ("dataset_id", "x", "y", "z", "sky", "filters", "colour", "ra
 
 def _prepared(entry: dict, req: ParticleRenderRequest, token: str) -> dict:
     fields = req.model_dump(include=set(_PARTICLE_FIELDS))
-    key = token + json.dumps(fields, sort_keys=True, default=str)
+    # The files' version too: a table rewritten under the same dataset id is
+    # prepared again rather than drawn from the particles of the old one.
+    key = token + dataset_identity(entry) + json.dumps(fields, sort_keys=True, default=str)
     if key in _PREPARED:
         _PREPARED.move_to_end(key)
         return _PREPARED[key]
