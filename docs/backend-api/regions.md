@@ -108,6 +108,8 @@ reaches beyond the pixels it has loaded (issue #95). Response: `valid`, `error`,
 deviation), `sum`, `median`, `mad_sigma` (1.4826 × MAD), `bunit`, `channel`,
 `flux_jy`, and `beam_area_pix` when a flux was computed. `flux_jy` is the sum
 divided by the beam area in pixels, set only for per-beam data with a known
-beam (otherwise `null`). A region of blank pixels only is an answer:
+beam (otherwise `null`). The beam is the selected channel's: on a cube with a
+CASA `BEAMS` table (one beam per plane) that table's entry for `channel`, and
+the primary-header `BMAJ`/`BMIN` only when there is no table entry. A region of blank pixels only is an answer:
 `valid_count` 0, and the statistics `null`. A region with no pixel of the
 image at all is 422.
