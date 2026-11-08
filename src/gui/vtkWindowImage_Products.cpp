@@ -68,7 +68,8 @@ QString vtkWindowImage::registerAnalysisProduct(const QString &kind, const QStri
                                                 const QString &stableId,
                                                 const QVariantMap &resultView,
                                                 int layerIndex,
-                                                const QVariantMap &origin)
+                                                const QVariantMap &origin,
+                                                const QList<ReplayStep> &replay)
 {
     AnalysisProduct p;
     p.productId = stableId;
@@ -80,6 +81,7 @@ QString vtkWindowImage::registerAnalysisProduct(const QString &kind, const QStri
     p.params = params;
     p.resultView = resultView;
     p.origin = origin;
+    p.replay = replay;
     p.sourceDatasetId = this->remoteDatasetId;
     p.sessionId = this->remoteSessionId;
     p.ownerId = this->m_windowScope;
@@ -155,6 +157,9 @@ void vtkWindowImage::openProduct(const QString &productId)
         if (!where.isEmpty())
             this->statusBar()->showMessage(u"Showing %1"_s.arg(where), 6000);
     }
+    // A power spectrum or a skeleton: the plot, or the overlay, again.
+    if (this->openMapTextureProduct(productId))
+        return;
     // A SPECTRUM this window extracted: replot the curve. The record alone would
     // give the summary of a measurement whose point is its shape.
     if (const auto curve = m_extractedSpectra.constFind(productId);

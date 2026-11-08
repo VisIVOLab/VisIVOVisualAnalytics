@@ -23,7 +23,7 @@ session token.
 | `slab` | A map's thickness around the focal plane, in world units. |
 | `quality` | Samples per voxel along a ray, 0.25 to 16 (default 2). |
 | `max_voxels` | Larger cubes are read with one stride along every axis to at most this many voxels (default 512³, at most 1024³). The grid's box then ends at its last point, the cube's voxel (m − 1) × stride. |
-| `width`, `height`, `cameras`, `tone` | As for [particles](particle-render#the-request). |
+| `width`, `height`, `cameras`, `tone` | As for [particles](particle-render.md#the-request). |
 
 ## Routes
 

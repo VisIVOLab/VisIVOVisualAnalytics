@@ -21,11 +21,11 @@ Synchronous moment map computation (small datasets / fast moments).
 - `threshold_value` — the manual threshold, used only when `mask_enabled` and not `threshold_auto`.
 - `moment2_variance` (default `false`) — for order 2, return the variance σ² instead of the dispersion σ. Ignored for other orders.
 
-Response: `valid`, `width`, `height`, `scalar_type`, `range_min`, `range_max`, `spectral_axis_type`, `spectral_axis_unit`, `moment_unit`, `bunit`, `threshold_used` (the resolved threshold, `null` when no mask was applied), `wcs_status`, `wcs_warning_message`, base64 `data`.
+Response: `valid`, `error`, `width`, `height`, `scalar_type`, `range_min`, `range_max`, `spectral_axis_type`, `spectral_axis_unit`, `moment_unit`, `bunit`, `threshold_used` (the resolved threshold, `null` when no mask was applied), `data_base64` (float32). A non-cube dataset is 422; a compute failure is `valid: false`.
 
 **Physical-range guard (M1/M2).** Regardless of masking, the backend blanks M1 pixels outside the sampled spectral axis `[vmin, vmax]` and M2 pixels outside `[0, span²]`. These can only arise from mixed-sign (noise) weights and would otherwise produce non-physical (e.g. super-luminal) values; the guard never removes a legitimate positive-weight voxel.
 
-Supported `order` values and their definitions:
+Supported `moment_order` values and their definitions (any other is `valid: false`, "Unsupported moment order"):
 
 | Order | Name | Formula | Unit |
 |-------|------|---------|------|
@@ -52,7 +52,7 @@ Axis 1 is `OFFSET` (arcsec, 0 at the first vertex, `CDELT1` = step); axis 2 is
 the cube's own spectral axis WCS (CTYPE/CUNIT/CRPIX/CRVAL, CDELT×PC or CD,
 `PVn_m`/`PSn_m`). `BUNIT`, beam, `RESTFRQ`/`RESTWAV`, `SPECSYS` are copied;
 `PVWIDTH`, `PVSTEP` and the vertices (`HISTORY`, pixel and sky) are recorded.
-An existing file is never overwritten (the name is suffixed). Response:
+An empty `output_basename` becomes `<cube stem>_pv.fits`; an existing file is never overwritten (the name is suffixed). A non-cube dataset is 422; a compute failure is `valid: false`. Response:
 `valid`, `error`, `output_path`, `workspace_filename`, `width` (samples),
 `height` (channels), `range_min`, `range_max`, `bunit`.
 
@@ -60,7 +60,14 @@ An existing file is never overwritten (the name is suffixed). Response:
 ```json
 { "dataset_id": "...", "threshold": 0.05 }
 ```
-Returns base64-encoded mesh data + bounds.
+Returns `{valid, error, compression: "qt-zlib", points_base64, polys_base64,
+num_points, num_polys}`: float32 xyz points in the cube's voxel coordinates
+and the int32 VTK polygon connectivity, each zlib-compressed in Qt's
+`qCompress` framing, then base64. A large cube is sampled with per-axis
+strides (at most 256³ voxels) and coarsened while the surface has more than
+4 M triangles. A non-cube dataset is 422; an empty surface, a surface still
+too large at the coarsest stride, or a server without the VTK Python
+bindings is `valid: false`.
 
 ### `POST /v1/products/moment_fits`
 Compute a moment and save it as a 2-D FITS file in the Workspace Exports. The

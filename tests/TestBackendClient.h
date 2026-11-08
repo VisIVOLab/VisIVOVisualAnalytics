@@ -58,4 +58,11 @@ private slots:
     void parseImageTile_happyPath();
     void parseImageTile_errorResponse();
     void parseImageTile_missingFields_defaults();
+
+    // ── Copilot status / config: why the copilot is off ──────────────────────
+    void parseAssistantStatus_readsProblem();
+    void parseAssistantStatus_olderBackendHasNoProblem();
+    void parseAssistantStatus_rejectsABodyWithoutProvider();
+    void parseAssistantConfig_readsProblem();
+    void parseAssistantConfig_olderBackendHasNoProblem();
 };

@@ -17,19 +17,24 @@ Per-pixel line-width map. Returns both FWHM (Gaussian fit) and equivalent-width 
   "mask_enabled": false,
   "threshold_value": 0.0,
   "method": null,
-  "rest_freq_hz": null
+  "rest_freq_hz": null,
+  "fast": false
 }
 ```
-`method`: `null` = both maps (JSON path); `"fwhm"` or `"ew"` selects one (binary path).
+`dataset_id` is required; the other fields default to 0, `false`, `null`.
+`method`: ignored by the JSON route, which always returns both maps; on the binary route `"fwhm"` or `"ew"` selects one.
 `rest_freq_hz`: rest frequency in Hz for velocity-axis conversion (FWHM only).
+`fast`: a vectorised moment-dispersion FWHM instead of the per-pixel Gaussian fit, much faster on dense bright cubes.
 
-Response: `valid`, `width`, `height`, `scalar_type`, `fwhm_unit`, `ew_unit`, `bunit`, `fwhm_range_min/max`, `ew_range_min/max`, `fwhm_base64`, `ew_base64`.
+A non-cube dataset is 422; a failed computation is `valid: false` with the reason.
+
+Response: `valid`, `error`, `width`, `height`, `scalar_type`, `fwhm_unit`, `ew_unit`, `bunit`, `fwhm_range_min/max`, `ew_range_min/max`, `fwhm_base64`, `ew_base64`.
 
 ### `POST /v1/spectral/linewidth/binary`
-Same request. Returns a binary payload: with `method` `"fwhm"` or `"ew"` one frame, otherwise two concatenated frames (FWHM then EW). Each frame is a 12-byte big-endian header of three `uint32` values (rows, columns, flags = 0) followed by little-endian `float32` pixels in row-major order, NaN for masked pixels. Use `BackendClient::parseBinaryFrame()` to decode.
+Same request. Returns a binary payload: with `method` `"fwhm"` or `"ew"` one frame, otherwise two concatenated frames (FWHM then EW). Each frame is a 12-byte big-endian header of three `uint32` values (rows, columns, flags = 0) followed by little-endian `float32` pixels in row-major order, NaN for masked pixels. Use `BackendClient::parseBinaryFrame()` to decode. The units ride in the headers `X-Fwhm-Unit` and `X-Ew-Unit`, plus `X-Map-Unit` for a single-frame answer. A failed computation is 500.
 
 ### `GET /v1/spectral/linewidth/{dataset_id}`
-Retrieve a previously computed linewidth result by dataset ID.
+One line-width map as a single binary frame, with the same unit headers. Query: `method` (`"fwhm"`, the default, or `"ew"`), `rest_freq_hz`, `fast`, `channel_start`, `channel_end` (0, 0); no threshold mask. It shares the cache with the POST routes, so a map computed there is not computed again.
 
 ---
 
@@ -49,13 +54,14 @@ Fit and subtract a per-pixel polynomial or median baseline from a spectral cube.
 ```
 `method`: `"polynomial"` or `"median"`.
 `line_free_channels`: flat list `[5, 6, 7]` or list of ranges `[[5, 15], [80, 120]]`.
+`session_id` and `dataset_id` are required in the body; the cube is the body's `dataset_id`, looked up in the session of the `X-Visivo-Session` header (the path segments are not used). A non-cube dataset is 422; a failed fit is `valid: false`.
 
-Response: `valid`, `new_dataset_id` (registered in session — use it directly for moment computation), `width`, `height`, `depth`, `range_min/max`, `poly_order`, `method`, `fit_channels`, `rms_before`, `rms_after`, `output_path`.
+Response: `valid`, `error`, `new_dataset_id` (registered in session — use it directly for moment computation), `width`, `height`, `depth`, `range_min/max`, `poly_order`, `method`, `fit_channels`, `rms_before`, `rms_after`, `output_path`, `warning`.
 
 ---
 
 ### `POST /v1/spectral/stack`
-Stack N open cubes into a single combined spectrum map.
+Stack N open cubes into one spectrum: each cube is averaged over its pixels, and the N mean spectra are combined channel by channel. The cubes must share their spatial shape and channel count.
 
 ```json
 {
@@ -69,10 +75,10 @@ Stack N open cubes into a single combined spectrum map.
 `weight_by`: `"uniform"`, `"rms"`, `"peak"` (used when `method="weighted_mean"` and `weights` is empty).
 `weights`: explicit per-cube weights (used only for `"weighted_mean"`).
 
-Response: `valid`, `rows`, `cols`, `scalar_type`, `method`, `n_cubes`, `range_min/max`, `data_base64`.
+Response: `valid`, `error`, `rows` (1), `cols` (channels), `scalar_type`, `method`, `n_cubes`, `range_min/max`, `data_base64`. A dataset that is not a cube is 422; any other failure is `valid: false`.
 
 ### `POST /v1/spectral/stack/binary`
-Same request. Returns a single binary frame (same format as `/linewidth/binary`).
+Same request. Returns a single binary frame of 1 × channels (same format as `/linewidth/binary`); a failure is 500.
 
 ---
 

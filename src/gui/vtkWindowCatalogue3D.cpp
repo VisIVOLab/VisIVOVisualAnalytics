@@ -1,5 +1,8 @@
 #include "CatalogueFormat.h"
+#include "CosmologyCalculatorDialog.h"
 #include "vtkWindowCatalogue3D.h"
+#include <QMenu>
+#include <QMenuBar>
 #include <QTimer>
 #include "ui_vtkWindowCatalogue3D.h"
 
@@ -609,6 +612,21 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             ui->menuView->addAction(this->catalogueDock->toggleViewAction());
         }
 
+        // ── Tools menu: the cosmology calculator (issue #29) ─────────────────
+        // Opened on the model the sources are placed with; it is also where
+        // the Custom entry of the Model selector is defined.
+        {
+            auto *toolsMenu = new QMenu(u"Tools"_s, this);
+            toolsMenu->setToolTipsVisible(true);
+            this->menuBar()->insertMenu(ui->menuView->menuAction(), toolsMenu);
+            auto *actionCalculator = toolsMenu->addAction(u"Cosmology Calculator…"_s);
+            actionCalculator->setToolTip(
+                    u"Distances, lookback time, age and kpc per arcsecond for any "
+                    u"redshift under this window's cosmology, or a custom one."_s);
+            QObject::connect(actionCalculator, &QAction::triggered, this,
+                             &vtkWindowCatalogue3D::openCosmologyCalculator);
+        }
+
         // ── Diagnostics + Command Palette (replicated across windows) ────────
         ui->menuView->addSeparator();
         auto *actionDiagnostics = new QAction(u"Diagnostics"_s, this);
@@ -675,8 +693,30 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     });
     QObject::connect(this->comboCosmology, &QComboBox::currentIndexChanged, this,
                      [this](int) {
-                         this->m_cosmologyModel = this->comboCosmology->currentText();
+                         const QString chosen = this->comboCosmology->currentText();
+                         if (chosen == visivo::cosmology::customName()
+                             && this->serverDrawsPositions()) {
+                             // The backend places these sources itself and has
+                             // no custom model: refuse rather than draw one
+                             // universe here and another there.
+                             const QSignalBlocker block(this->comboCosmology);
+                             this->comboCosmology->setCurrentText(this->m_appliedCosmologyModel);
+                             this->statusBar()->showMessage(
+                                     u"The custom cosmology is not available while the backend "
+                                     u"draws the points (ray-traced or server-side view): it "
+                                     u"knows Planck18, Planck15, Planck13 and WMAP9 only."_s,
+                                     8000);
+                             return;
+                         }
+                         this->m_cosmologyModel = chosen;
                          this->triggerCosmologyUpdate();
+                     });
+    // A custom model handed over from the calculator: a window placed with the
+    // custom model re-places its sources under the new one.
+    QObject::connect(&CosmologyChoiceHub::instance(), &CosmologyChoiceHub::customModelChanged,
+                     this, [this]() {
+                         if (this->m_cosmologyModel == visivo::cosmology::customName())
+                             this->triggerCosmologyUpdate();
                      });
     QObject::connect(this->comboDistanceMode, &QComboBox::currentIndexChanged, this,
                      [this](int idx) {

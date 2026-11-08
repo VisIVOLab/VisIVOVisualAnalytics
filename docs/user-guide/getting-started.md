@@ -17,6 +17,23 @@ about five minutes.
 For full build flags and dependency notes see the repository
 [`BUILDING.md`](https://github.com/VisIVOLab/VisIVOVisualAnalytics/blob/main/BUILDING.md).
 
+## Installing a release
+
+The [GitHub releases](https://github.com/VisIVOLab/VisIVOVisualAnalytics/releases)
+hold a package per platform. Each carries its own Python runtime with the
+backend's dependencies installed, so no Python, compiler, Qt or VTK is needed:
+
+| Platform | Package | To start it |
+|---|---|---|
+| macOS (Apple Silicon / Intel) | `VisIVOVisualAnalytics-macos-{arm64,x86_64}.dmg` | Drag the application to *Applications*; the first time, right-click ▸ *Open* (the builds are unsigned). |
+| Linux x86-64 | `VisIVOVisualAnalytics-linux-x86_64.tar.gz` | Extract it and run `./VisIVOVisualAnalytics` in the extracted folder. Keep the folder together: the launcher finds the application in `./app` and the runtime in `./python`. No `libfuse2` is needed. |
+| Windows x86-64 | `VisIVOVisualAnalytics-windows-x86_64.zip` | Extract it and run `VisIVOVisualAnalytics.exe` in `bin\`. |
+
+Up to 1.0.10 the Linux package was an AppImage, which could crash at start
+inside QtWebEngine; use the tarball of 1.0.11 or later. With a release you can
+skip to [Launching the client](#launching-the-client): the rest of this
+section and the build commands below are for running from source.
+
 ## Starting the backend
 
 The backend is a small FastAPI service that does the data-intensive work
@@ -162,10 +179,13 @@ be staged on the backend automatically.
 
 ### From the desktop: double-click a file
 
-VisIVO registers itself as a FITS viewer, so a `.fits` (`.fit`, `.fts`, `.fz`)
-file can be opened from the file manager or the command line — and so can
+VisIVO registers itself as a FITS viewer, so a `.fits` (`.fit`, `.fts`) file
+can be opened from the file manager or the command line — and so can
 anything else the application opens: a catalogue (CSV, VOTable, IPAC `.tbl`,
-`.speck`) or a VisIVO Binary Table.
+`.speck`) or a VisIVO Binary Table. The file associations also list
+tile-compressed `.fz` files, but these are not opened yet
+([#57](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/57)):
+decompress them first (`funpack`), as you would a `.fits.gz`.
 
 ```bash
 VisIVOVisualAnalytics /data/WALLABY.fits      # also works with several paths
@@ -229,23 +249,26 @@ hunting through menus. It works from inside the viewer windows too.
 
 Searchable groups:
 
-- **File** — Open…, Open 3D Catalogue, Open VBT, HiPS Viewer, VLKB
-  Inventory. (**Open…** takes any supported file; the two named entries are
-  there for when you would rather say which opener to use.)
+- **File** — Open…, Open 3D Catalogue…, Open VBT…, HiPS Viewer…, HiPS
+  Cutout (hips2fits)…, Cone Search…, VLKB Inventory. (**Open…** takes any
+  supported file; the two named openers are there for when you would rather
+  say which one to use.)
 - **Recent datasets** — last six datasets opened in this session
   (refreshed each time the palette is opened).
 - **Application** — Open Settings (⌘,), About, Quit VisIVO Visual
   Analytics (⌘Q).
 - **View** — Open Diagnostics Window.
-- **Science** — Line-Width Map, Baseline Subtraction, Spectral
-  Stacking, Source Finding (SoFiA-2). These mirror the **Science**
-  menu and respect its enabled state (open a dataset first — running
-  one with no cube loaded silently no-ops, matching the menu).
+- **Combine** — Pixel Math / Spectral Index…, Mosaic (noise-weighted)….
+  These mirror the **Combine** menu, the operations that take several of the
+  session's datasets.
 - **SAMP** — Connect to / Disconnect from Hub, Send Current FITS
   Dataset, Send Current Catalogue. Mirrors the **SAMP** menu.
+- **This window** — opened from a viewer, the palette also lists every entry
+  of that viewer's own menus (*This window · Tools*, …), so a cube's tools
+  (line-width map, baseline subtraction, SoFiA-2, …) are found the same way.
 
-Try search terms like *"stack"*, *"samp"*, *"quit"* or *"sofia"* to
-jump straight to the action.
+Try search terms like *"mosaic"*, *"samp"*, *"quit"* or, in a cube viewer,
+*"sofia"* to jump straight to the action.
 
 ## Diagnostics
 

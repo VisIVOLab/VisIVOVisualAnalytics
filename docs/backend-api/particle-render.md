@@ -24,7 +24,7 @@ A **render request** is shared by all the routes:
 | `mode` | `light` (a 3-D render) or `projected` (a map: no perspective, log density). |
 | `slab`, `colour_by`, `velocity` | A map's thickness around the focal plane; its hue (`density`, `colour` for the view's column, `velocity_dispersion` from `velocity` or the columns named VX/VY/VZ). |
 | `width`, `height` | Pixels, 16 to 8192. |
-| `cameras` | `[{position, focal_point, view_up, view_angle, parallel, parallel_scale}]`, VTK's camera. |
+| `cameras` | `[{position, focal_point, view_up, view_angle, parallel, parallel_scale}]`, VTK's camera; 1 to 7200 (one: a still). |
 | `tone` | `{exposure, ev, curve, stretch, gamma, saturation, decades}`: `exposure` null is automatic (the 99.5th percentile of the lit pixels' luminance); `ev` stops over it; `curve` `asinh`, `log`, `exponential` or `linear`; `decades` a map's brightness range. |
 
 ## Routes
@@ -49,10 +49,12 @@ Body: a `tone`. The still graded again (PNG), nothing rendered again.
 
 The still before the tone curve, float32: three planes (red, green, blue), or
 for a projected map two (`CTYPE3 = MAP`: the density and its weighted mean).
+Only a still (one camera) keeps its light: a movie's task answers 404.
 
 ### `DELETE /v1/particle_render/{task_id}`
 
-Removes the task's files.
+Removes the task's files, stopping a render still running first:
+`{"deleted": true}`. 404 for an unknown task or another token's.
 
 ### `POST /v1/particle_render/preview`
 

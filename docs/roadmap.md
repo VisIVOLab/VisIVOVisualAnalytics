@@ -16,27 +16,29 @@ Items of this roadmap that are now in the software:
 
 - [Backend health and metrics endpoints for node operation](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/2) (#2): `/v1/ping`, `/v1/node/status`, `/v1/metrics` ([The backend as an SRC node](deployment/src-node.md)).
 - [Show which node serves a dataset and fall back to the next replica](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/1) (#1): the *Served by* column, *Open via…*, and the fallback to the next node when one refuses ([SKAVA discovery](user-guide/skava-discovery.md)).
+- [Benchmark out-of-core moments at SKA scale on an HPC node](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/3) (#3): M0/M1/M2 measured up to 450 GB on PLEIADI-GPU under a 16 GB memory cap; long moments and PV diagrams run as tasks with no time limit (`benchmark/RESULTS.md`).
+- [Concurrent remote rendering sessions per backend](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/4) (#4): sessions in their own processes, capped per backend, with a queue above the cap whose place the client shows.
+- [Standard SODA service on the backend](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/7) (#7): sync and UWS async cutouts with `POL`, moments and PV as operations, and DataLink service descriptors, checked with TOPCAT and pyvo; `BAND` also on sub-band (`SPECLNMF`) cubes ([SODA](backend-api/node-soda.md)).
+- [Suggest SoFiA-2 parameters from the data](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/64) (#64): each parameter with its reason, validated on the SKA SDC2 development cube ([Source finding](user-guide/source-finding.md)).
+- [Brick pyramid for cubes, built out of core](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/69) (#69) and [server-side out-of-core volume rendering from it](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/70) (#70), the first step of #73 ([Brick pyramid](brick-pyramid.md)).
+- [Linux releases: keep the sign-in across restarts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/56) (#56): the Linux release is built with libsecret.
+- [Self-hosted copilot: model default and base URL validation from the environment](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/75) (#75): with no model set, the endpoint's only model is used; a refused `VISIVO_LLM_BASE_URL` keeps the copilot off and says why ([Self-hosted copilot](user-guide/copilot-self-hosted.md)).
+- [VLKB service URL: one default for queries and batch cutouts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/76) (#76): queries and batch cutouts both use the public VLKB unless a service URL is given ([VLKB archive](user-guide/vlkb-archive.md)).
+- [SODA: support BAND on cubes with a SPECLNMF spectral axis](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/115) (#115): `BAND` selects the MeerKAT sub-bands whose centre frequency falls in the interval ([SODA](backend-api/node-soda.md)).
+- [Refuse truncated FITS files with a clear message](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/118) (#118): a FITS file shorter than its headers declare is refused at open, with the sizes and planes present, locally and remotely ([Troubleshooting](user-guide/troubleshooting.md)).
 
 ## SKA and SRCNet
 
 Running VisIVO Visual Analytics as part of the SKA Regional Centre Network: IVOA discovery and access, node services, source finders near the data, scale.
 
-**Next**
-
-- [Benchmark out-of-core moments at SKA scale on an HPC node](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/3) (#3)
-- [Concurrent remote rendering sessions per backend](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/4) (#4): sessions in their own processes, capped per backend and spread over the node's GPUs; still to do: a queue above the cap, with its position shown in the client
-
 **2027**
 
 - [SRCNet sign-in through IAM (OIDC)](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/6) (#6): the client signs in to an OIDC provider with configurable endpoints (tested with Keycloak); still to do against the SRCNet IAM
-- [Standard SODA service on the backend, with moments and PV as remote operations](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/7) (#7): sync and UWS async with `OPERATION=MOMENT|PV` are in place; still to do: `POL`, and a check with TOPCAT
 - [Deploy the backend as an SRCNet node service](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/8) (#8)
 - [Plugin registry for source finders (SoFiA-2, PyBDSF, Aegean, photutils)](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/9) (#9): the registry, SoFiA-2 and photutils are in place; PyBDSF and Aegean remain
 - [Kinematic lasso: streaming connected components for very large objects](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/10) (#10)
 - [Kinematic lasso: multi-scale selection, 2-D edit growth and velocity conventions](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/11) (#11)
-- [Scaling remote 3-D rendering beyond one GPU and one node](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/73) (#73), one step at a time, each measured before the next:
-  - [Brick pyramid for cubes, built out of core](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/69) (#69)
-  - [Server-side out-of-core volume rendering from the brick pyramid](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/70) (#70)
+- [Scaling remote 3-D rendering beyond one GPU and one node](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/73) (#73), one step at a time, each measured before the next: the brick pyramid and out-of-core rendering (#69, #70) are done; multi-GPU (#71) and distributed rendering (#72) are below
 
 **Long term**
 
@@ -64,7 +66,6 @@ Working across Galactic-plane surveys: aligned multi-band cutouts, compact sourc
 
 **Next**
 
-- [VLKB service URL: one default for queries and batch cutouts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/76) (#76)
 - [Open multi-wavelength cutouts of one source on a common grid](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/16) (#16)
 - [Cross-match compact-source catalogues across surveys in the GUI](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/17) (#17)
 - [Polygon and rotated-box regions for VLKB cutouts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/18) (#18)
@@ -139,11 +140,6 @@ What users expect from any astronomical viewer: linked frames, regions, scaling,
 
 Learned models that assist the user, beyond the copilot: object segmentation, source finding, similarity search, quality checks. Models propose, the user decides; data stay where they are.
 
-**Next**
-
-- [Self-hosted copilot: model default and base URL validation from the environment](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/75) (#75)
-- [Suggest SoFiA-2 parameters from the data](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/64) (#64)
-
 **2027**
 
 - [Click-to-segment: learned object masks in cubes](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/60) (#60)
@@ -164,7 +160,6 @@ Infrastructure shared by all areas.
 - [Common framework for asynchronous jobs: progress, cancel, outlive the dialog](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/53) (#53)
 - [Asynchronous movie export with chosen resolution](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/54) (#54)
 - [Documentation gaps: RM synthesis and time-series data](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/55) (#55)
-- [Linux releases: keep the sign-in across restarts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/56) (#56): the code is in place; still to do: libsecret in the Linux release build
 - [Publish a backend container image for HPC and SRC nodes](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/66) (#66)
 - [Contributing guide and developer onboarding](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/67) (#67)
 

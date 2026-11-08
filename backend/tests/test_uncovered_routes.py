@@ -566,8 +566,9 @@ async def test_moment_fits_task_reserves_its_name_and_frees_it_on_failure(
     seen = {}
 
     def failing(src, out, *args, **kwargs):
-        seen["out"] = out
-        seen["reserved"] = os.path.exists(out)
+        # The worker writes a temporary file; the reserved name is the final one.
+        seen["out"] = str(dependencies.get_exports_dir() / "reserved_m0.fits")
+        seen["reserved"] = os.path.exists(seen["out"])
         raise RuntimeError("no valid voxels")
 
     async def inline(fn, *args):
@@ -605,8 +606,9 @@ async def test_cancelled_moment_fits_task_keeps_its_name_until_the_worker_ends(
         return fn(*args)
 
     async def held(fn, *args):
-        out = args[1]
-        seen["out"] = out
+        out = args[1]                        # the temporary file the worker writes
+        seen["partial"] = out
+        seen["out"] = str(dependencies.get_exports_dir() / "cancelled_m0.fits")
         entered.set()
         await release.wait()
         with open(out, "wb") as fh:          # written after the cancellation
@@ -633,6 +635,50 @@ async def test_cancelled_moment_fits_task_keeps_its_name_until_the_worker_ends(
         if not os.path.exists(seen["out"]):
             break
     assert not os.path.exists(seen["out"]), "a cancelled task leaves no file"
+    assert not os.path.exists(seen["partial"]), "nor a temporary one"
+
+
+@pytest.mark.asyncio
+async def test_moment_fits_task_publishes_its_file_only_when_complete(
+        client: AsyncClient, opened_cube: dict, monkeypatch) -> None:
+    """While the worker writes, the reserved name stays an empty placeholder and
+    the temporary file is not in the exports listing; on completion the whole
+    file takes the name in one rename. The desktop reuses a non-empty export of
+    the same moment (issue #29), so a half-written one must never look done."""
+    from app import dependencies
+
+    seen = {}
+
+    async def writing(fn, *args):
+        out = args[1]
+        final = dependencies.get_exports_dir() / "published_m0.fits"
+        seen["partial"] = out
+        seen["final_size_while_writing"] = final.stat().st_size
+        with open(out, "wb") as fh:
+            fh.write(b"half")
+        listing = (await client.get("/v1/exports/list", headers=opened_cube["headers"])).json()
+        seen["listed_while_writing"] = {e["filename"]: e["size"] for e in listing["entries"]}
+        with open(out, "ab") as fh:
+            fh.write(b" and the rest")
+        return {"output_path": out, "width": 1, "height": 1, "range_min": 0.0,
+                "range_max": 0.0, "bunit": "", "moment_unit": ""}
+
+    monkeypatch.setattr(dependencies, "_run", writing)
+    created = await client.post("/v1/tasks/moment_fits",
+                                json={"dataset_id": opened_cube["dataset_id"], "moment_order": 0,
+                                      "output_basename": "published_m0.fits"},
+                                headers=opened_cube["headers"])
+    task = await _wait_task(client, created.json()["task_id"], opened_cube["headers"])
+    assert task["status"] == "completed", task.get("error")
+    final = dependencies.get_exports_dir() / "published_m0.fits"
+    assert seen["final_size_while_writing"] == 0
+    assert seen["listed_while_writing"].get("published_m0.fits") == 0
+    assert not any(name.endswith("published_m0.fits") and name != "published_m0.fits"
+                   for name in seen["listed_while_writing"])
+    assert task["result"]["output_path"] == str(final)
+    assert task["result"]["workspace_filename"] == "published_m0.fits"
+    assert final.read_bytes() == b"half and the rest"
+    assert not os.path.exists(seen["partial"])
 
 
 # ── the binary subvolume path the desktop loads slabs through ────────────────

@@ -3,6 +3,8 @@
 
 #include "CatalogueOverlayUtils.h"
 #include "ImageLayerLoadTask.h"
+#include "ProductRegistry.h"   // ReplayStep
+#include "PowerSpectrumSlope.h"
 
 #include <vtkNew.h>
 #include <vtkSmartPointer.h>
@@ -41,6 +43,9 @@ class QProgressDialog;
 class QFrame;
 class QLabel;
 class ToolResultDialog;
+class AngularPowerSettings;
+class SkeletonSettings;
+struct BackendAngularPowerResult;
 class QTableView;
 class QTreeView;
 class SegmentedToggle;
@@ -802,7 +807,8 @@ protected:
                                     const QString &stableId,
                                     const QVariantMap &resultView = {},
                                     int layerIndex = -1,
-                                    const QVariantMap &origin = {});
+                                    const QVariantMap &origin = {},
+                                    const QList<ReplayStep> &replay = {});
     /// Redraw the region a product was measured on. Returns false when the
     /// product carries no geometry.
     bool restoreProductOrigin(const QVariantMap &origin);
@@ -838,6 +844,41 @@ protected:
     /// The curve behind each extracted-spectrum product, so reopening its row
     /// replots it instead of showing only the summary.
     QHash<QString, QPair<QVector<double>, QVector<double>>> m_extractedSpectra;
+
+    // ── Map texture tools (issue #29): angular power spectrum, skeleton/voids ──
+    // Both read this window's backend dataset, so they are what a cube's moment
+    // map gets too once written out (vtkWindowCube_Cosmology.cpp).
+    QPointer<QAction> m_actAngularPower;
+    QPointer<QAction> m_actSkeleton;
+    QPointer<AngularPowerSettings> m_angularPowerSettings;
+    QPointer<SkeletonSettings> m_skeletonSettings;
+    bool m_angularPowerBusy{ false };
+    bool m_skeletonBusy{ false };
+    int m_powerSpectrumRuns{ 0 };
+    int m_skeletonRuns{ 0 };
+    /// One skeleton or void mask, as the backend returned it (full resolution).
+    struct SkeletonMask
+    {
+        QByteArray data;   ///< float32, 0 or 255, height × width, row 0 = pixel y 0
+        int width{ 0 };
+        int height{ 0 };
+        QString mode;
+    };
+    /// productId → what reopening its Session Data row puts back on screen.
+    QHash<QString, std::shared_ptr<BackendAngularPowerResult>> m_powerSpectra;
+    QHash<QString, visivo::PowerSlopeOptions> m_powerSpectrumFits;
+    QHash<QString, SkeletonMask> m_skeletonMasks;
+    vtkSmartPointer<vtkActor> m_skeletonActor;
+    QString m_skeletonShownProduct;
+    void setupMapTextureTools();
+    void setMapToolOn(QAction *action, const QString &toolName, QWidget *settings, bool on);
+    void runAngularPower();
+    void runSkeleton();
+    void showPowerSpectrum(const QString &productId);
+    void showSkeletonOverlay(const QString &productId);
+    void clearSkeletonOverlay();
+    /// Put a map-texture product back on screen; false when it is not one.
+    bool openMapTextureProduct(const QString &productId);
 
     QHash<QString, int> m_productLayer;
     /// Layer display name per product: the row index above is not an identity,

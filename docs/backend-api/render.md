@@ -40,7 +40,7 @@ Response:
 | `width`, `height` | int | Size of the render window, in pixels (1920 x 1080 until the client sends `resize`). |
 | `threshold` | float or null | The threshold the session renders with, until a `set_threshold` changes it: the cube's default threshold from its noise ([issue #93](../user-guide/cube-viewer.md#the-default-threshold): about 100 noise voxels of the whole cube above it), from a regular sample of its voxels (out of core, from a sample of full-resolution bricks). A client shows it rather than sending a default of its own. |
 | `data_min`, `data_max` | float or null | The cube's data range, at full resolution. |
-| `levels_pending` | bool | `true` while a cube read in the background (above 256 MB, in core) is still arriving: `threshold` and the range are null until the volume is shown (after a quarter of the cube, with the threshold from the part loaded), and change once more when the cube is complete (the threshold from all of it), unless a `set_threshold` came first; a `set_threshold` is kept, even 0. Ask [`GET /v1/render/{session_id}/levels`](#get-v1-render-session-id-levels) until it is `false`. |
+| `levels_pending` | bool | `true` while a cube read in the background (above 256 MB, in core) is still arriving: `threshold` and the range are null until the volume is shown (after a quarter of the cube, with the threshold from the part loaded), and change once more when the cube is complete (the threshold from all of it), unless a `set_threshold` came first; a `set_threshold` is kept, even 0. Ask [`GET /v1/render/{session_id}/levels`](#get-v1rendersession_idlevels) until it is `false`. |
 
 A cube larger than `VISIVO_RENDER_OUT_OF_CORE_BYTES` is drawn from its brick pyramid ([Brick pyramid](../brick-pyramid.md#rendering-from-the-pyramid)). When the pyramid is missing or out of date, the backend starts building it in a separate process and answers **202** without creating a session:
 
@@ -67,7 +67,7 @@ Errors:
 - 401: missing or invalid token.
 - 404: unknown `dataset_id` in the caller's session.
 - 410: `queue_id` is no longer in the queue (see [The queue](#the-queue)).
-- 422: the dataset is neither a cube nor a VBT point table.
+- 422: the dataset is neither a cube nor a VBT point table (`"Server-side rendering supports cubes and VBT point tables."`), or a catalogue without RA/Dec or X/Y/Z columns (`"Drawing a catalogue in 3-D needs RA/Dec or X/Y/Z columns."`).
 - 503: server-side rendering is not available on this backend; or every slot is busy and the request has no queue place: it did not ask for one, or the queue is off (`"Server-side rendering capacity reached (N sessions active)."`), the queue is full (`"... (N sessions active, M requests waiting)."`), or it waited past the timeout (`"Server-side rendering capacity reached: waited T s in the queue without a free slot."`).
 
 The cap is `VISIVO_RENDER_MAX_SESSIONS` (default 8) sessions per backend, cubes and point tables together. A session that receives no command for `VISIVO_RENDER_IDLE_TTL_SECONDS` (default 300) is closed by a reaper that runs every 5 s; a client that keeps a still view open sends `keepalive` to stay alive. Closing the WebSocket does not close the session, so a client can reconnect, except when requests are waiting (see below). A session whose render process ends (a crash in VTK or the GPU driver, a kill) is removed at once and its slot freed.
@@ -97,7 +97,7 @@ A request with `queue: true` that finds every slot busy waits instead of being r
  "error": "All 8 server-side rendering slots are busy: number 2 of 3 in the queue."}
 ```
 
-The client asks again with the same request plus `queue_id` every `poll_after_seconds`. Each 202 updates the position; when its turn comes the request is answered like any `create_session` (200 with the session and its first frame). There is no push channel for the position: the request itself is how the client says it is still waiting, so a client that dies or loses the network simply stops asking and its place, or the slot reserved for it, is passed on after `expires_after_seconds`. A client that stops waiting (the view closed, the user went back to local rendering) gives its place up with [`DELETE /v1/render/queue/{queue_id}`](#delete-v1-render-queue-queue-id).
+The client asks again with the same request plus `queue_id` every `poll_after_seconds`. Each 202 updates the position; when its turn comes the request is answered like any `create_session` (200 with the session and its first frame). There is no push channel for the position: the request itself is how the client says it is still waiting, so a client that dies or loses the network simply stops asking and its place, or the slot reserved for it, is passed on after `expires_after_seconds`. A client that stops waiting (the view closed, the user went back to local rendering) gives its place up with [`DELETE /v1/render/queue/{queue_id}`](#delete-v1renderqueuequeue_id).
 
 A `queue_id` is bound to the token and the dataset it was given for: asked for with another token or dataset, or after it expired, was cancelled or was used, it answers **410** (`"This request is no longer in the rendering queue. Ask again without queue_id."`); the client then asks without `queue_id` and gets a new place at the end of the queue.
 
@@ -136,8 +136,10 @@ A session's camera (points or a cube), after the commands sent before the
 request: `{position, focal_point, view_up, view_angle, parallel,
 parallel_scale}`, a cube's in its voxel coordinates. A ray-traced still of the
 view on screen is rendered from it ([particles](particle-render),
-[volumes](volume-render)). `/levels` carries it too, as `camera`. 404 for an
-unknown session, 409 for a session with no camera to report.
+[volumes](volume-render)). (`/levels` does not return it: its answer has only
+the four fields above.) 404 for an unknown session (`"Unknown render
+session_id."`), 409 for a session with no camera to report (`"This render
+session has no camera to report."`).
 
 ### `DELETE /v1/render/{session_id}`
 
@@ -300,6 +302,7 @@ Every other command is applied to the session's view. Each one counts as activit
 | `set_camera` | `position`, `focal_point`, `view_up` (three numbers each), optional `view_angle` (degrees), `parallel` (bool), `parallel_scale` | The whole camera, in the cube's voxel coordinates as `GET /v1/render/{id}/camera` gives it: the desktop hands back the camera its ray-traced view was turned to. Refused (the stream kept) without the three vectors, or with the position on the focal point or the view up along the line of sight. |
 | `set_lut` | `name` (string) | Colour map of the volume (and of the isosurface). Unknown names fall back to Inferno. `colormap` is an accepted alias. |
 | `set_slice_lut` | `name` (string) | Colour map of the cutting-plane slice. |
+| `set_transfer_functions` | `color`: list of `[x, r, g, b]`, `opacity`: list of `[x, a]` (1 to 4096 finite points each), optional `blend_mode` (int, as `set_blend_mode`) | The client's own transfer functions, point by point (a VBT volume on a log scale). A malformed list is refused (logged, view unchanged). A later `set_lut` or `set_threshold` goes back to the colour map and threshold. |
 | `set_threshold` | `value` (number) | Lower anchor of the opacity transfer function, also the isosurface value. |
 | `set_blend_mode` | `mode` (int: 0 composite, 1 maximum intensity, 2 minimum intensity; default 0) | Ray-casting blend mode. |
 | `set_cube_render_mode` | `mode` (`"volume"` or `"isosurface"`, default `"volume"`) | Volume rendering or isosurface. Any other value means `"volume"`. |

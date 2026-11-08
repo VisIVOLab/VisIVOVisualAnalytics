@@ -17,6 +17,7 @@ from ..sessions import Session, get_session, REGISTRY
 from ..tasks import TASKS
 from ..product_cache import PRODUCT_CACHE
 from ..fits_dataset import ScientificFitsDataset
+from ..fits_truncation import check_not_truncated
 import asyncio
 from ..image_pyramid import tile_source
 
@@ -176,6 +177,8 @@ async def filter_fits(
         source = _normalize_path(request.path)
         if not source.is_file():
             return FilterFitsResponse(valid=False, error="File not found.")
+        # A truncated FITS: refused by name, before the worker reads it (#118).
+        check_not_truncated(source)
         basename = request.output_basename.strip() or _filtered_basename(
             source, float(request.smooth_fwhm_pixels), int(request.regrid_factor))
         output_path = str(make_workspace_path(basename))

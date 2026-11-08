@@ -167,6 +167,8 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
         return;
     }
     if (!this->m_remoteView) {
+        // Before the view is told the cosmology: it has none for a custom model.
+        this->dropCustomCosmologyForServerView(u"The server-side view"_s);
         this->m_remoteView = new RemotePointView(this->backendUrl, this->backendToken,
                                                  this->remoteSessionId, this->remoteDatasetId,
                                                  this->m_remoteWidget, this);
@@ -279,7 +281,14 @@ QList<QVariantMap> vtkWindowCatalogue3D::pointViewCommands(bool *textFiltersSkip
                 this->schema.distanceMode == CatalogueDistanceMode::RedshiftSpace
                         ? u"redshift_space"_s
                         : u"comoving"_s },
-              { u"cosmology"_s, this->m_appliedCosmologyModel } });
+              // The backend knows the presets only. Custom never reaches it:
+              // turning a server view on resets the selector to Planck18
+              // (dropCustomCosmologyForServerView), and the local rows follow
+              // as soon as any request still running for Custom has returned.
+              { u"cosmology"_s,
+                this->m_appliedCosmologyModel == visivo::cosmology::customName()
+                        ? u"Planck18"_s
+                        : this->m_appliedCosmologyModel } });
     }
     add({ { u"type"_s, u"set_point_fields"_s },
           { u"x"_s, column(this->mapXKey, position(this->mapXKey, u'x')) },

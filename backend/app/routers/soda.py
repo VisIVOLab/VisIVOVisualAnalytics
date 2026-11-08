@@ -49,6 +49,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse,
 
 from ..auth import verify_token
 from ..dependencies import _FITS_SUFFIXES, _is_supported_dataset, _normalize_path, _run_heavy, get_exports_dir
+from ..fits_truncation import FitsTruncatedError, check_not_truncated
 from ..skava_client import SkavaResolveError, access_url_to_local_path
 from ..soda_cutout import CutoutError, CutoutNoOverlap, describe, make_cutout, parse_pol
 from ..soda_datalink import SODA_ASYNC, SODA_SYNC, Link, error_votable, links_votable, service_descriptor
@@ -141,6 +142,15 @@ def _resolve(dataset_id: str | None, *, any_file: bool = False) -> Path:
         raise SodaError(f"ID not found on this node: {dataset_id}", status=404)
     if not any_file and not _is_supported_dataset(path):
         raise SodaError(f"ID is not a supported dataset: {dataset_id}")
+    if not any_file:
+        # Every operation that reads the data: a truncated cube is refused
+        # here, from its headers, instead of failing in the middle of the job
+        # as "buffer is too small" (issue #118). The file as stored is still
+        # served whole (any_file), truncated or not: nothing reads it.
+        try:
+            check_not_truncated(path)
+        except FitsTruncatedError as exc:
+            raise SodaError(str(exc), kind="Error", status=422) from exc
     return path
 
 

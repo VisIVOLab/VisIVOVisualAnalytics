@@ -94,14 +94,19 @@ in the package README. The **`TOOL_PARSER` must match the model family**
 ## Full stack (backend + LLM together)
 
 `docker-compose.full.yml` runs the VisIVO backend and the LLM on the same server,
-pre-wired so the copilot works with no extra config. The LLM uses the GPU; the
-backend runs CPU-only compute, so they share the machine fine.
+with the backend's copilot variables already pointing at the LLM: desktops on
+the default **Use the server's configuration** use it with no further setup.
+The LLM uses the GPU; the backend
+runs CPU-only compute, so they share the machine fine.
 
 ## Configuring the backend instead of the client
 
 Instead of entering the URL in every client, the backend can start each new
-session already pointed at your server. Set these in the backend's
-environment (the full stack compose file does exactly this):
+session already pointed at your server. Desktops whose copilot provider is
+**Use the server's configuration** (the default) then use it as it is; an
+explicit choice in a desktop's Settings replaces it for that user's session.
+Set these in the backend's environment (the full stack compose file does
+exactly this):
 
 ```bash
 export VISIVO_ASSISTANT_PROVIDER=auto            # or openai, to force it
@@ -113,15 +118,22 @@ export VISIVO_ASSISTANT_MODEL=<served model name>
 | Variable | Default | Meaning |
 |---|---|---|
 | `VISIVO_ASSISTANT_PROVIDER` | `auto` | `auto`, `anthropic`, `openai` or `null`. `auto` uses `VISIVO_LLM_BASE_URL` (or a cloud OpenAI key) when set, then an Anthropic key, else no model. |
-| `VISIVO_LLM_BASE_URL` | unset | Your server's OpenAI-compatible base URL, ending in `/v1`. Put no credentials, query string or fragment in it: the key goes in `VISIVO_LLM_API_KEY`. |
+| `VISIVO_LLM_BASE_URL` | unset | Your server's OpenAI-compatible base URL, ending in `/v1`. Put no credentials, query string or fragment in it: the key goes in `VISIVO_LLM_API_KEY`. A URL that breaks this rule keeps the copilot off (the backend itself still starts) and the copilot's answer says why. |
 | `VISIVO_LLM_API_KEY` | unset | **Secret.** The key your server expects (`VLLM_API_KEY`). It is sent only to `VISIVO_LLM_BASE_URL`, never to a cloud provider. |
-| `VISIVO_ASSISTANT_MODEL` | `gpt-4o` for OpenAI-compatible servers | The model name to request. Set it to the name your server serves (`SERVED_NAME` in the package); the default only suits cloud OpenAI. |
+| `VISIVO_ASSISTANT_MODEL` | the server's only model | The model name to request (`SERVED_NAME` in the package). Without it the backend asks your server which models it serves: if it serves exactly one, that one is used; otherwise the copilot answers with the names it serves and asks you to set this variable, or the **Model** field in Settings ▸ Copilot. |
 | `VISIVO_ASSISTANT_SLOTS` | `2` | Copilot queries the backend runs at once. |
 | `VISIVO_ASSISTANT_TIMEOUT_S` | `120` | Time budget of one query, tool calls included. A slow model on a long question may need more. |
 
-These are only the starting values: a user can still change the provider for
-their own session in **Copilot ⚙**, without affecting other sessions. All the
-backend variables are listed in the [Configuration reference](../configuration.md#copilot).
+These are the starting values of every session. A desktop on **Use the
+server's configuration** (the default) keeps them, and shows in its Copilot
+panel and in *Settings ▸ Copilot* why the copilot cannot answer when they are
+wrong (a refused URL, no model or several). An explicit choice in a desktop's
+*Settings ▸ Copilot* replaces them for that user's session only; going back to
+**Use the server's configuration** restores them. Up to 1.0.11 the desktop's
+default was **None**, which replaced them, so on those releases choose **Your
+server** and enter the URL the *backend* reaches (with the full stack,
+`http://copilot-llm:8000/v1`). All the backend
+variables are listed in the [Configuration reference](../configuration.md#copilot).
 
 ## Backend requirement
 
