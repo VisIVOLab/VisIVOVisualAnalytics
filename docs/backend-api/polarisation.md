@@ -38,6 +38,14 @@ Two rules are worth knowing because published data needs them:
   the I cube and the Q/U cubes of the same field are on different frequency
   grids (1.3426 vs 1.2838 GHz), and using the wrong one biases every rotation
   measure. Q and U on grids that disagree are refused.
+- **Separate Q and U files must be on the same sky grid.** The pixel → sky
+  mapping is compared, not the keywords: a 5 × 5 lattice of pixels of Q
+  (corners and centre included) is taken to the sky and back through U's WCS
+  and must land within 0.1 pixel of where it started. Two maps rotated with
+  respect to each other (through `PC` or `CD`) are refused; the same grid
+  written as `CDELT` + `PC` in one file and as `CD` in the other is accepted.
+  A file with no pixel scale (`CDELTi` or `CDi_j`) on a sky axis is refused.
+  This applies to polarised intensity/angle and to RM synthesis.
 
 ## `GET /v1/stokes/{dataset_id}` · `GET /v1/stokes/{dataset_id}/binary`
 One Stokes plane as a 2-D float32 image.
@@ -70,7 +78,7 @@ given, and is 0 otherwise. The JSON variant returns the metadata only:
 sigma_qu2, line_free_channels_dropped, pi_range_min, pi_range_max,
 pa_range_min, pa_range_max}`. The binary variant (dataset in the body's
 `dataset_id`) returns **two** frames, PI then PA.
-Channels that carry no data (a blank sub-band, NaN or zero-filled) are left out of the estimate and listed in `line_free_channels_dropped`; fewer than two usable ones is an error (422), and a `channel` outside the cube is refused rather than clamped.
+Channels that carry no data (a blank sub-band, NaN or zero-filled) are left out of the estimate and listed in `line_free_channels_dropped`; fewer than two usable ones is an error (422), and a `channel` outside the cube is refused rather than clamped. When Q and U come from different files, every plane read — `channel`, and the line-free channels when at least two are used — must exist in both: a 3-plane Q with a 1-plane U refuses channel 2 (`Channel 2 is outside the 1 plane(s) of the Stokes U data.`). Where both files have an identifiable spectral axis the planes must also sit at the same coordinate: within 1 % of the median channel width (with a floor at float precision), or one part in 10⁶ for a single-plane axis; otherwise `Stokes Q and U are at different spectral coordinates on plane …`. Obit MFImage cubes are compared instead on their `FREQnnnn` sub-band keywords (one part in 10⁶) for the planes used, the fitted planes before the sub-bands excepted. A file with no identifiable spectral axis (a plain 2-D map) is checked for its plane count only.
 
 ## `POST /v1/polarisation/rmsynthesis/{dataset_id}` · `POST /v1/polarisation/rmsynthesis/{dataset_id}/binary`
 RM synthesis (Brentjens & de Bruyn 2005).

@@ -76,14 +76,46 @@ range, `channels × NAXIS1 × NAXIS2 × 4` bytes (float32):
    on their channel count.
 
 Moments that need the centroid first (M2 to M5) are computed in two passes
-over the data on both out-of-core paths, so memory stays bounded by one block.
+over the data on both out-of-core paths. Memory follows the block size, the
+blocks in flight (one per Dask thread, or the streamed slab and the
+`VISIVO_MOMENT_READ_AHEAD` slabs read ahead) and the reduction's partial maps,
+never the length of the channel range.
+
+Both out-of-core paths read a block with explicit positional reads (whole
+planes in one read, or one read per channel for a band of rows) rather than
+by faulting the memory map page by page; several Dask threads, or the
+streamer's read-ahead thread, keep reads in flight while others reduce. The
+values are those of the memory-mapped data (BSCALE, BZERO, BLANK and unsigned
+integers are applied by astropy's own conversion), so the maps are unchanged.
+Tile-compressed and gzip files, and platforms without `pread` (Windows), are
+read through the memory map as before.
+
+**Threads.** With `VISIVO_MOMENT_THREADS=0` the backend takes the smallest of:
+
+- the CPUs the process may use (its affinity or cgroup cpuset, capped by a
+  cgroup CPU quota; not the host's count), divided by the heavy slots
+  (`VISIVO_HEAVY_SLOTS`, default `VISIVO_WORKERS - 1`), which share them;
+- what the memory budget holds: 60 % of the budget, less 1 GiB and the
+  reduction's partial maps (16 float64 planes), at eight blocks of
+  `VISIVO_MOMENT_CHUNK_BYTES` (0.54 GB at the default) per thread. The budget
+  is the tightest of the process's `RLIMIT_DATA`, its share of the SLURM grant
+  (`SLURM_MEM_PER_NODE`; cgroup v1 may not enforce it), its share of the memory
+  available under the cgroup limit or on the host, and, when none can be read,
+  its share of the host's RAM;
+- 32, beyond which nothing was gained on a 128-thread node.
+
+At least one thread is used. The choice and the limit that set it are logged
+once (`[moment] threads=N (...)`). On a 128-thread POWER9 node under a 16 GB
+`RLIMIT_DATA` this gives about 15 threads for a 1286² plane; on an 18-core
+laptop with the default four workers, 6.
 
 | Variable | Default | Effect |
 |---|---|---|
 | `VISIVO_MOMENT_STREAM_BYTES` | `2 GiB` | Ceiling of the channel range kept in memory; the effective threshold is the smaller of this and one twelfth of the available memory. |
 | `VISIVO_MOMENT_CHUNK_BYTES` | `64 MiB` | Size of each streamed slab or Dask block, never less than one channel; a Dask block of a larger plane is a band of rows within this size. |
 | `VISIVO_MOMENT_SLAB_CHANNELS` | `64` | Upper limit on the channels in a streamed slab. It only caps the slab; the size comes from `VISIVO_MOMENT_CHUNK_BYTES`. |
-| `VISIVO_MOMENT_THREADS` | `0` | Threads for the parallel moment kernels and the local Dask scheduler. `0` means `min(4, CPU count)`. |
+| `VISIVO_MOMENT_THREADS` | `0` | Threads for the parallel moment kernels and the local Dask scheduler. `0` chooses them from the node (below); a positive value is used as is. |
+| `VISIVO_MOMENT_READ_AHEAD` | `2` | Slabs the streamed path reads ahead of the one it reduces, on one thread. `0` reads in the reducing thread. |
 | `VISIVO_DASK_MODE` | `auto` | `auto`: distributed if a scheduler is set, else local threaded Dask for large ranges. `off`: never Dask. `local`: always local threaded Dask. `distributed`: only a cluster, else the plain worker. |
 | `VISIVO_DASK_MIN_BYTES` | `512 MiB` | In `auto` mode, smallest range sent to the local threaded Dask path. |
 | `VISIVO_DASK_SCHEDULER` | unset | Address of a `dask.distributed` scheduler (for example `tcp://host:8786`). When set, moments are computed on that cluster; its workers must see the same files. |

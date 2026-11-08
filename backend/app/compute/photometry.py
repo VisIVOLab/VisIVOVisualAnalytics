@@ -60,6 +60,134 @@ def _require_position_inside(
         )
 
 
+def _select_image_plane(
+    dataset: ScientificFitsDataset, raw: np.ndarray, channel: int | None,
+) -> tuple[np.ndarray, int | None, str | None]:
+    """The 2-D plane to measure: (image, spectral channel used, Stokes plane used).
+
+    Axes are identified from the header, never from their position. A 4-D
+    radio cube may be stored (Stokes, spectral, y, x) or (spectral, Stokes,
+    y, x); indexing ``raw[0, ch]`` assumed the first and, on the second,
+    measured a Stokes plane of the first frequency instead of the requested
+    channel, with nothing in the number to show it.
+
+    * The spectral axis is the dataset's own (``cube_numpy_spectral_fits_axis``,
+      as spectra and moments use). `channel` indexes it, clamped to the axis as
+      before; the plane actually used is returned so the caller can report it.
+    * A Stokes axis is resolved through ``stokes_planes``, the decoding the
+      polarisation workers use, and Stokes I is taken: flux and source size
+      are total-intensity quantities. A multi-plane Stokes axis without I is
+      refused rather than measured on Q or V; a single labelled plane is the
+      only thing to measure and is reported by name.
+    * Any other axis must be degenerate; a second non-degenerate extra axis
+      would make "the channel" ambiguous.
+
+    The image plane is FITS axes 1 and 2 (numpy's last two), as everywhere in
+    the backend; a cube whose celestial axes are elsewhere is refused.
+    """
+    naxis = raw.ndim
+    if naxis == 2:
+        return np.asarray(raw, dtype=np.float64), None, None
+    if naxis not in (3, 4) or naxis != dataset.naxis:
+        raise ValueError(f"Unsupported FITS dimensionality: {raw.ndim}")
+    wcs = dataset.wcs
+    if wcs is not None and wcs.has_celestial and sorted((wcs.wcs.lng, wcs.wcs.lat)) != [0, 1]:
+        raise ValueError(
+            "Photometry needs the celestial axes to be the image's first two axes "
+            "(NAXIS1, NAXIS2); this dataset's sky axes are elsewhere.")
+
+    sizes = dataset.axis_sizes
+    stokes_numpy = dataset.stokes_numpy_axis()
+    stokes_fits = None if stokes_numpy is None else naxis - stokes_numpy
+    extra = [axis for axis in range(3, naxis + 1) if axis != stokes_fits]
+
+    spectral_fits: int | None = None
+    # A labelled spectral axis wins even when it is degenerate: the dataset's
+    # own lookup scans only active axes, so a (time, freq=1, y, x) cube would
+    # otherwise fall back to TIME and index it as if it were the channel.
+    labelled = [axis for axis in extra
+                if str(dataset.header.get(f"CTYPE{axis}", "")).strip().upper()
+                .startswith(ScientificFitsDataset._SPECTRAL_CTYPE_PREFIXES)]
+    if labelled:
+        spectral_fits = labelled[0]
+    elif len(dataset.active_axes) >= 3:
+        candidate = dataset.cube_numpy_spectral_fits_axis()
+        if candidate in extra:
+            spectral_fits = candidate
+    if spectral_fits is None:
+        # cube_numpy_spectral_fits_axis falls back to the LAST active axis when
+        # no CTYPE names a spectral coordinate, which may be the Stokes axis.
+        # The plane axis is then the one non-degenerate axis that is not Stokes.
+        non_degenerate = [axis for axis in extra if sizes[axis - 1] > 1]
+        if len(non_degenerate) > 1:
+            raise ValueError(
+                f"The dataset has {len(non_degenerate)} non-degenerate axes besides the "
+                f"image plane and none is labelled spectral; the channel is ambiguous.")
+        spectral_fits = non_degenerate[0] if non_degenerate else (extra[0] if extra else None)
+    for axis in extra:
+        if axis != spectral_fits and sizes[axis - 1] > 1:
+            raise ValueError(
+                f"Axis {axis} ({dataset.header.get(f'CTYPE{axis}', '')}) has "
+                f"{sizes[axis - 1]} planes; photometry can only select along the "
+                f"spectral axis and Stokes.")
+
+    index: list[int | slice] = [0] * naxis
+    index[-1] = index[-2] = slice(None)
+    resolved_channel: int | None = None
+    if spectral_fits is not None:
+        depth = sizes[spectral_fits - 1]
+        resolved_channel = max(0, min(0 if channel is None else int(channel), depth - 1))
+        index[naxis - spectral_fits] = resolved_channel
+    stokes: str | None = None
+    if stokes_fits is not None:
+        planes = dataset.stokes_planes
+        if "I" in planes:
+            index[stokes_numpy] = planes["I"]
+            stokes = "I"
+        elif sizes[stokes_fits - 1] > 1:
+            raise ValueError(
+                f"The dataset's Stokes axis holds {sorted(planes) or 'no known plane'} but "
+                f"no Stokes I; photometry measures total intensity.")
+        elif planes:
+            # A single-plane file that says what it is (a Q map of a one-file-per-
+            # plane release): there is no choice to make, so it is measured, and
+            # the response says which Stokes it was.
+            stokes = next(iter(planes))
+        # A single plane with no I/Q/U/V label (RR, LL, …) is the image itself.
+    return np.asarray(raw[tuple(index)], dtype=np.float64), resolved_channel, stokes
+
+
+def _image_frame_position(celestial, ra_deg: float, dec_deg: float):
+    """(x, y, position) for an ICRS (ra_deg, dec_deg) on this image.
+
+    `position` is the same point as a SkyCoord in the IMAGE's celestial frame
+    (ICRS, FK5/FK4 with the header's equinox, Galactic, ...), taken from the
+    WCS by astropy. Handing RA/Dec straight to ``all_world2pix`` read them as
+    the image's native longitude and latitude: on a GLON/GLAT image the
+    equatorial position of the image centre was refused as off the image.
+
+    A WCS astropy cannot name a frame for (no recognised celestial CTYPE pair)
+    is taken to be ICRS already, which is what the request coordinates are;
+    that is the only reading that keeps such images usable at all.
+    """
+    from astropy import units as u  # noqa: PLC0415
+    from astropy.coordinates import SkyCoord  # noqa: PLC0415
+    from astropy.wcs.utils import skycoord_to_pixel, wcs_to_celestial_frame  # noqa: PLC0415
+
+    icrs = SkyCoord(ra_deg * u.deg, dec_deg * u.deg, frame="icrs")
+    try:
+        frame = wcs_to_celestial_frame(celestial)
+    except ValueError:
+        frame = None
+    if frame is None:
+        # No celestial frame astropy recognises: assume the image is ICRS.
+        pix = celestial.all_world2pix([[ra_deg, dec_deg]], 0)[0]
+        return float(pix[0]), float(pix[1]), icrs
+    position = icrs.transform_to(frame)
+    x, y = skycoord_to_pixel(position, celestial, origin=0, mode="all")
+    return float(x), float(y), position
+
+
 def worker_aperture_photometry(
     path: str,
     channel: int | None,
@@ -93,22 +221,8 @@ def worker_aperture_photometry(
     hdul, raw = dataset.open_memmap()
     # Resolved plane index actually used for the image — also drives the
     # per-channel beam lookup so image and beam never disagree.
-    resolved_channel: int | None = None
     try:
-        if raw.ndim == 2:
-            image = np.asarray(raw, dtype=np.float64)
-        elif raw.ndim == 3:
-            ch = 0 if channel is None else int(channel)
-            ch = max(0, min(ch, raw.shape[0] - 1))
-            resolved_channel = ch
-            image = np.asarray(raw[ch], dtype=np.float64)
-        elif raw.ndim == 4:
-            ch = 0 if channel is None else int(channel)
-            ch = max(0, min(ch, raw.shape[1] - 1))
-            resolved_channel = ch
-            image = np.asarray(raw[0, ch], dtype=np.float64)
-        else:
-            raise ValueError(f"Unsupported FITS dimensionality: {raw.ndim}")
+        image, resolved_channel, stokes = _select_image_plane(dataset, raw, channel)
     finally:
         hdul.close()
 
@@ -123,8 +237,7 @@ def worker_aperture_photometry(
     celestial = dataset.wcs.celestial
     if celestial is None:
         raise ValueError("No celestial WCS axes found in this dataset.")
-    pix = celestial.all_world2pix([[ra_deg, dec_deg]], 0)[0]
-    pix_x, pix_y = float(pix[0]), float(pix[1])
+    pix_x, pix_y, _position = _image_frame_position(celestial, ra_deg, dec_deg)
     _require_position_inside(pix_x, pix_y, image.shape, ra_deg, dec_deg)
 
     r_ap   = aperture_arcsec   / pixel_scale_arcsec
@@ -244,6 +357,11 @@ def worker_aperture_photometry(
         # subtraction; n_pix_aperture is its truncated whole-pixel count.
         "aperture_area_pix": _area,
         "channel": channel,
+        # The planes actually measured: the spectral channel after clamping to
+        # the cube (None for an image) and the Stokes plane (None when the
+        # dataset has no Stokes axis).
+        "resolved_channel": resolved_channel,
+        "stokes": stokes,
         "pix_x": pix_x,
         "pix_y": pix_y,
         "pixel_scale_arcsec": pixel_scale_arcsec,
@@ -437,8 +555,7 @@ def _deconvolve_gaussian_beam(
     return deconv_maj_pix, deconv_min_pix, deconv_pa_rad
 
 
-def _beam_pa_in_pixel_frame(celestial, ra_deg: float, dec_deg: float,
-                            bpa_sky_deg: float) -> float:
+def _beam_pa_in_pixel_frame(celestial, position, bpa_sky_deg: float) -> float:
     """Convert a beam position angle (BPA, degrees East of North on the sky) to
     the fitter's PIXEL frame (radians, CCW from +x), using the actual WCS.
 
@@ -446,18 +563,35 @@ def _beam_pa_in_pixel_frame(celestial, ra_deg: float, dec_deg: float,
     small sky offsets through the WCS, so it is correct for rotated/skewed/parity-
     flipped images — not just north-up ones. The fitted source PA is already in
     this pixel frame, so both go into the deconvolution consistently.
+
+    `position` is a SkyCoord in the image's own frame, so North and East are
+    those of the image's coordinate system (Galactic North on a GLON/GLAT
+    image), which is the system the header's BPA is written in.
     """
-    d = 1.0 / 3600.0  # 1-arcsec offsets
-    p0 = celestial.all_world2pix([[ra_deg, dec_deg]], 0)[0]
-    p_n = celestial.all_world2pix([[ra_deg, dec_deg + d]], 0)[0]
-    cosd = max(1e-6, abs(np.cos(np.radians(dec_deg))))
-    p_e = celestial.all_world2pix([[ra_deg + d / cosd, dec_deg]], 0)[0]
+    from astropy import units as u  # noqa: PLC0415
+    from astropy.wcs.utils import skycoord_to_pixel  # noqa: PLC0415
+
+    d = 1.0 * u.arcsec
+    zero = 0.0 * u.arcsec
+
+    def pixel(coord):
+        try:
+            x, y = skycoord_to_pixel(coord, celestial, origin=0, mode="all")
+        except ValueError:
+            # No frame astropy recognises: the coordinates are taken as the
+            # image's native ones, as _image_frame_position does.
+            sph = coord.spherical
+            x, y = celestial.all_world2pix([[sph.lon.deg, sph.lat.deg]], 0)[0]
+        return float(x), float(y)
+
+    p0 = pixel(position)
+    p_n = pixel(position.spherical_offsets_by(zero, d))
+    p_e = pixel(position.spherical_offsets_by(d, zero))
     ang_north = np.arctan2(p_n[1] - p0[1], p_n[0] - p0[0])
     ang_east = np.arctan2(p_e[1] - p0[1], p_e[0] - p0[0])
     # Handedness: is East +90° (CCW) or −90° (CW) from North in pixel space?
     sign = 1.0 if np.sin(ang_east - ang_north) >= 0 else -1.0
     return float(ang_north + sign * np.radians(bpa_sky_deg))
-
 
 def worker_gauss_fit_2d(
     path: str,
@@ -480,22 +614,8 @@ def worker_gauss_fit_2d(
     hdul, raw = dataset.open_memmap()
     # Resolved plane index actually used for the image — also drives the
     # per-channel beam lookup so image and beam never disagree.
-    resolved_channel: int | None = None
     try:
-        if raw.ndim == 2:
-            image = np.asarray(raw, dtype=np.float64)
-        elif raw.ndim == 3:
-            ch = 0 if channel is None else int(channel)
-            ch = max(0, min(ch, raw.shape[0] - 1))
-            resolved_channel = ch
-            image = np.asarray(raw[ch], dtype=np.float64)
-        elif raw.ndim == 4:
-            ch = 0 if channel is None else int(channel)
-            ch = max(0, min(ch, raw.shape[1] - 1))
-            resolved_channel = ch
-            image = np.asarray(raw[0, ch], dtype=np.float64)
-        else:
-            raise ValueError(f"Unsupported FITS dimensionality: {raw.ndim}")
+        image, resolved_channel, stokes = _select_image_plane(dataset, raw, channel)
     finally:
         hdul.close()
 
@@ -509,8 +629,7 @@ def worker_gauss_fit_2d(
     if pixel_scale <= 0:
         raise ValueError("Pixel scale is zero or negative.")
 
-    pix = celestial.all_world2pix([[ra_deg, dec_deg]], 0)[0]
-    cx, cy = float(pix[0]), float(pix[1])
+    cx, cy, position = _image_frame_position(celestial, ra_deg, dec_deg)
     _require_position_inside(cx, cy, image.shape, ra_deg, dec_deg)
 
     half_box = int(np.ceil(box_arcsec / (2.0 * pixel_scale)))
@@ -698,7 +817,7 @@ def worker_gauss_fit_2d(
         bm_min_pix = (beam.minor * 3600.0) / pixel_scale
         # Convert BPA (sky, E of N) into the fitter's pixel frame via the WCS so
         # it's consistent with the source's fitted PA (both CCW from +x).
-        bm_pa_rad  = _beam_pa_in_pixel_frame(celestial, ra_deg, dec_deg, beam.pa or 0.0)
+        bm_pa_rad  = _beam_pa_in_pixel_frame(celestial, position, beam.pa or 0.0)
         dm, dn, dpa = _deconvolve_gaussian_beam(
             major_pix, minor_pix, pa_rad,
             bm_maj_pix, bm_min_pix, bm_pa_rad,
@@ -742,6 +861,8 @@ def worker_gauss_fit_2d(
         # be mistaken for a calibrated uncertainty.
         "diagnostic_covariance_err": covariance_only_err,
         "diagnostic_covariance_integrated_err": diagnostic_integrated_err,
+        "resolved_channel": resolved_channel,
+        "stokes": stokes,
         "center_pix_x": float(x0_fit),
         "center_pix_y": float(y0_fit),
         "background": float(bg_fit),

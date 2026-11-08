@@ -111,37 +111,31 @@ async def moment_save_fits(
 ) -> MomentSaveFitsResponse:
     """Compute the requested moment and persist it in the **Workspace
     Exports** dir as a 2-D FITS file (celestial WCS + ``BUNIT`` derived
-    from the cube). Collisions are resolved with a numeric suffix."""
-    from ..compute import worker_moment_save_fits  # noqa: PLC0415
-    try:
-        entry = _require_dataset(session, request.dataset_id)
-        if entry["kind"] != "cube":
-            raise HTTPException(422, "Moment FITS export requires a spectral cube dataset.")
+    from the cube). Collisions are resolved with a numeric suffix.
 
+    The map is computed as ``/v1/products/moment`` computes it for the same
+    request (issue #119): same backend, thresholds, memory bound and product
+    cache, so the file holds the map the viewer shows."""
+    entry = _require_dataset(session, request.dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "Moment FITS export requires a spectral cube dataset.")
+    # One of the session's heavy slots, as for /v1/products/moment.
+    if not await acquire_task_slot(session):
+        raise task_slot_busy_error()
+    try:
         src_stem = Path(entry["path"]).stem
         default_basename = f"{src_stem}_m{int(request.moment_order)}.fits"
         basename = request.output_basename.strip() or default_basename
         output_path = str(make_workspace_path(basename))
-
-        result = await _run_heavy_with_limit(
-            session,
-            worker_moment_save_fits,
-            entry["path"],
-            output_path,
-            int(request.moment_order),
-            int(request.channel_start),
-            int(request.channel_end),
-            bool(request.mask_enabled),
-            float(request.threshold_value),
-            bool(request.threshold_auto),
-            bool(request.moment2_variance),
-        )
+        result = await _moment_fits_export(entry, request, output_path)
     except HTTPException:
         raise
     except Exception as exc:
         logger.warning("[moment_fits] failed dataset_id=%s error=%s",
                        request.dataset_id, exc)
         return MomentSaveFitsResponse(valid=False, error=str(exc))
+    finally:
+        session.release_task_slot()
     workspace_filename = Path(result["output_path"]).name
     return MomentSaveFitsResponse(
         valid=True, workspace_filename=workspace_filename,

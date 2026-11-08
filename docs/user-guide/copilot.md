@@ -176,7 +176,12 @@ them; it cannot fabricate their outputs.
   (per-channel σ), then a `set_threshold` action at a few × σ.
 - *"Measure the flux of the source at RA 10.0 Dec 20.0."* → `aperture_photometry`
   (raw sum + Jy when beam-corrected); *"and fit it"* → `source_gaussfit` (peak,
-  integrated flux, FWHM, position angle, beam-deconvolved size).
+  integrated flux, FWHM, position angle, beam-deconvolved size). The RA/Dec are
+  ICRS and are converted to the image's own frame first, so the same position
+  works on a Galactic or FK4 image. On a cube with a Stokes axis both measure
+  Stokes I of the requested channel, whether the cube stores Stokes before or
+  after the spectral axis (a single-plane Q, U or V file is measured as that
+  plane, and the answer says so).
 - *"Fit the line at RA 10.0 Dec 20.0 over a 5-arcsec aperture."* → `fit_line`
   extracts the aperture spectrum and fits a Gaussian (center/σ/FWHM in the axis
   unit, integrated flux, equivalent width).

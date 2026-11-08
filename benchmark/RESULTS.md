@@ -1,4 +1,134 @@
-# Out-of-core moments at SKA scale on an HPC node (issue #3, 2026-11-05)
+# Faster out-of-core moments (issues #116, #117, #119, 2026-11-06)
+
+The #3 campaign below, run again with the same protocol, cubes, node type,
+image and 16 GB `RLIMIT_DATA` cap, on code that:
+
+- reads each block with explicit positional reads (whole planes in one read,
+  or one read per channel for a band of rows) instead of faulting the memory
+  map; the streamer reads two slabs ahead on a thread (#116);
+- chooses `VISIVO_MOMENT_THREADS` from the CPUs the process may use and its
+  memory budget, here the 16 GB cap: 15 threads for SDC2, 14 for Sky124, 7 for
+  the 450 GB cube, against a fixed 4 before (#117);
+- computes Export Moment as FITS on the `/v1/products/moment` path (#119; not
+  exercised by this benchmark, which calls the computation directly).
+
+**Code measured.** `main` at ca8f335 plus the uncommitted changes of these
+issues, copied with `run_hpc_moment_campaign.sh SRC_TREE=...`; sha256 of every
+file in `results_pleiadi_20261106/src.sha256` (`moment.py` 3f729d07…51a8).
+Image `backend-egl.sif` aa3f592e…dc46, as on 2026-11-05. Node r33c1s02.
+Raw records: `results_pleiadi_20261106/`.
+
+### Results (wall seconds, median ± MAD of the repeats; first run in brackets)
+
+Before = the 2026-11-05 table (dask with 4 threads, the streamer on 1).
+dask now uses the automatic thread count.
+
+| cube | file system | way | M0 before → now | M1 before → now | M2 before → now | anon peak now |
+|---|---|---|---:|---:|---:|---:|
+| SDC2, 44 GB | BeeGFS | dask | 55.1 → **21.5** ± 0.3 (22.1) | 75.9 → **31.9** ± 0.4 (32.3) | 126 → **56.9** ± 0.5 (57.1) | 5.1–7.2 |
+| | BeeGFS | stream | 197 → **114** ± 7 (113) | 192 → **99.7** ± 2.8 (101) | 324 → **221** ± 2 (220) | 0.9–1.1 |
+| | local NVMe | dask | 35.6 → **22.1** ± 0.0 (22.2) | 53.8 → **32.6** ± 0.1 (32.9) | 100 → **58.5** ± 0.3 (58.6) | 4.8–7.0 |
+| | local NVMe | stream | 103 → 104 ± 10 (115) | 104 → 104 ± 0 (116) | 201 → 213 ± 1 (210) | 0.9–1.1 |
+| Sky124, 124.5 GB | BeeGFS | dask | 169 → **64.4** ± 0.1 (70.2) | 231 → **96.6** ± 0.4 (96.3) | 375 → **172** ± 1 (173) | 4.7–6.8 |
+| | BeeGFS | stream | 613 → **291** ± 25 (284) | 614 → **273** ± 3 (280) | 913 → **569** ± 8 (553) | 1.0–1.2 |
+| | local NVMe | dask | 106 → **64.8** ± 0.1 (65.8) | 168 → **97.7** ± 0.1 (98.1) | 314 → **176** ± 0 (176) | 4.8–6.7 |
+| | local NVMe | stream | 308 → 291 ± 12 (286) | 311 → 302 ± 9 (286) | 633 → 606 ± 8 (620) | 1.0–1.2 |
+| synthetic, 450 GB | BeeGFS | dask | 727, 740 → **334** ± 7 (365) | 1075, 1078 → **522** ± 3 (554) | 1924, 1926 → **917** ± 0 (922) | 6.8–9.8 |
+| | BeeGFS | stream | 2544 → **1199** | 2520 → **1192** | 4856 → **2318** | 2.5–3.6 |
+
+SDC2 has 3 repeats, Sky124 2; the 450 GB cube 2 repeats for dask and one run
+for the streamer, as on 2026-11-05. The cube is evicted from the page cache
+before every run. The cap was enforced in every run, and the in-memory way
+failed under it on every cube (`cap_proof.jsonl`: "Unable to allocate 41.1
+GiB" on SDC2, 419 GiB on the 450 GB cube).
+
+**Read throughput** (bytes the reduction reads per second of wall time; `dd`
+reads these files at 2.5 GB/s):
+
+| | dask before | dask now | stream before | stream now |
+|---|---:|---:|---:|---:|
+| BeeGFS | 0.42–0.80 | 0.86–2.05 | 0.18–0.27 | 0.38–0.46 |
+| local NVMe | 0.74–1.24 | 1.27–1.99 | 0.39–0.44 | 0.41–0.43 |
+
+**Threads** (SDC2, dask, one run each, cap 16 GB; job `sweep_1082`):
+
+| `VISIVO_MOMENT_THREADS` | 1 | 4 | 8 | 16 | 32 | 64 |
+|---|---:|---:|---:|---:|---:|---:|
+| M0 local, s (before) | 111 | 38.6 | 22.6 | 16.9 | 16.4 | MemoryError |
+| M0 local, s (now) | 110 | 35.5 | 24.3 | 17.7 | 17.0 | MemoryError |
+| M2 local, s (before) | 311 | 111 | 61.9 | 42.7 | MemoryError | MemoryError |
+| M2 local, s (now) | 298 | 104 | 60.3 | 43.0 | MemoryError | MemoryError |
+| anon peak M2 now, GB | 0.99 | 2.39 | 3.75 | 6.70 | 12.6 (failed) | 12.6 (failed) |
+
+With 4 threads on BeeGFS (the old default, so the explicit reads alone) SDC2
+took 45.5 s for M0 and 108 s for M2, against 55.1 and 126 s before. The job
+is marked FAILED by SLURM only because the 32- and 64-thread points end in
+the expected `MemoryError`; every point ran.
+
+The campaign's default runs on the local disk (15 threads: 22.1 s M0, 58.5 s
+M2) were slower than the sweep's 16 threads (17.7 and 43.0 s). One more job
+(`t15_1086`, 2026-11-08, same node, two runs each, dask only) ran explicit 15,
+explicit 16 and the default one after another:
+
+| threads | M0, s | M2, s | anon peak M2, GB |
+|---|---:|---:|---:|
+| default (chose 15, memory) | 17.6, 17.4 | 43.6, 43.5 | 6.7 |
+| 15 | 17.5, 17.9 | 42.8, 43.0 | 7.1 |
+| 16 | 16.9, 17.0 | 42.0, 41.6 | 7.5 |
+
+So the default is within 5 % of 16 threads, and the gap is not the thread
+choice. Why the campaign job ran slower is not established (there each dask
+run alternated with a streamer run on the same copy); its numbers are kept
+as measured, and are the conservative ones.
+
+### Correctness
+
+- `moment_ooc_bench.py check` on SDC2 channels 3630–3757 with
+  `moment_criterion_ulp.py`: in memory, streamed and dask agree bit for bit
+  on M0, M1 and M2, and every comparison with the float64 reference passes
+  (`sdc2_shared_dask-stream/check.json`, `pilot_1075/check.json`).
+- Every measured map, whole cube, has the same `map_sum` and the same number
+  of finite pixels as the 2026-11-05 run of the same way: 18 of 18 (3 cubes ×
+  3 moments × 2 ways). On the 450 GB cube the streamer's M1 and M2 sums differ
+  from dask's in the 13th to 15th significant digit, as they already did on
+  2026-11-05; that difference is between the two ways, not between the old
+  and new code.
+- Backend tests: blocks read by explicit reads equal the memory-mapped slices
+  for big-endian floats, 32- and 64-bit floats, plain and scaled integers,
+  BLANK, unsigned 8- and 16-bit, degenerate and non-degenerate Stokes axes, an
+  image extension and VBT fields of both byte orders; dask and streamed maps
+  are bit-identical with explicit reads and through the memory map, with
+  whole planes, bands of rows and single-channel blocks
+  (`backend/tests/test_moment_reads.py`).
+
+### Reading the numbers
+
+- **dask, the service's way for large ranges, is 1.6–2.6 times faster** on
+  every cube and file system: M2 over 450 GB on BeeGFS takes 15 min instead
+  of 32, M0 5.6 min instead of 12. It now reads SDC2 at 2.05 GB/s on BeeGFS,
+  82 % of `dd`. Most of the gain is the thread count: the reads alone (4
+  threads) give 1.17–1.21 times on BeeGFS and nothing on the local disk,
+  where dask was already CPU-bound.
+- **The streamer** gains 1.5–2.3 times on BeeGFS, where it was waiting on
+  page faults (CPU/wall 0.5 before, 1.1–1.2 now), and nothing on the local
+  disk, where it was and is bound by its one core.
+- **The thread default lands near the fastest point that fits.** Under the
+  16 GB cap it chose 15 threads for SDC2 (the sweep's fastest point that
+  completes M2 is 16), 14 for Sky124 and 7 for the 450 GB cube, whose
+  6082² plane makes each partial map 0.3 GB. Peaks stayed at 4.7–7.2 GB on
+  SDC2 and Sky124 and 6.8–9.8 GB on the 450 GB cube, within the cap. On an
+  18-core laptop with the default four workers it chooses 6, against 4 before
+  (local check on an 8 GB cube, warm cache: M0 1.8 s and M2 4.7 s, against
+  1.9 and 4.5 s; the streamer 3.9 and 8.1 s against 4.8 and 9.3 s).
+- **Throughput is still under `dd`.** At 7 threads on the 450 GB cube
+  dask reads 0.86–1.35 GB/s, CPU/wall 5.7–6.1: the reduction, not the
+  reads, is now the limit. More threads would need a larger memory budget
+  than 16 GB, or a cheaper reduction.
+- **The cube moved during the campaign.** SDC2 moved from
+  `/mnt/beegfs/fvitello/demo_data/` to
+  `/mnt/beegfs/fvitello/visivo/data/demo_data/` (same size) after the
+  campaign had read it; `remote/cubes_pleiadi_issue3.txt` now names the
+  new path.
 
 M0, M1 and M2 on one PLEIADI-GPU node (INAF-OACT): 2 × 16-core POWER9
 (128 hardware threads), 317 or 334 GB of RAM depending on the node (MemTotal

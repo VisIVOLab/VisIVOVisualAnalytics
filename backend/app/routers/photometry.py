@@ -47,7 +47,12 @@ async def aperture_photometry(
 
     Returns ``{valid, flux_jy, flux_err_jy, flux, flux_err, flux_unit,
     beam_area_pix, background_per_pix, background_rms_per_pix, bunit,
-    n_pix_aperture, channel, pix_x, pix_y, pixel_scale_arcsec}``. ``flux_jy`` is
+    n_pix_aperture, channel, resolved_channel, stokes, pix_x, pix_y,
+    pixel_scale_arcsec}``. ``ra_deg``/``dec_deg`` are ICRS and are converted to
+    the image's frame. On a cube the requested spectral channel is measured,
+    and on a Stokes axis its Stokes I (a single labelled Q/U/V plane is
+    measured as that plane; a multi-plane axis without I is refused, 422);
+    ``resolved_channel``/``stokes`` say which plane that was. ``flux_jy`` is
     the beam-corrected physical flux (Jy) and is ``null`` unless the data are
     Jy/beam with a known beam; ``flux`` is always the raw summed brightness in
     ``flux_unit``. Requires ``photutils`` (→503) and celestial WCS (→422).
@@ -79,8 +84,10 @@ async def gauss_fit(
 ):
     """Fit a 2-D elliptical Gaussian to a source in a box around (ra, dec).
 
-    Returns peak/integrated flux, fitted + deconvolved FWHM, PA, fit RMS and the
-    centre pixel. Bad WCS / too-small box → 422; a failed fit → 500.
+    Returns peak/integrated flux, fitted + deconvolved FWHM, PA, fit RMS, the
+    centre pixel and the plane measured (``resolved_channel``, ``stokes``).
+    Position and plane are chosen as for the aperture route. Bad WCS / axes /
+    too-small box → 422; a failed fit → 500.
     """
     from ..compute import worker_gauss_fit_2d  # noqa: PLC0415
 
