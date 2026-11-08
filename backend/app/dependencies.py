@@ -582,7 +582,7 @@ __all__ = [
     "_get_dask_client", "_run", "_run_io", "_run_interactive", "_run_with_limit",
     "acquire_task_slot", "task_slot_busy_error",
     "_run_heavy", "_run_heavy_with_limit",
-    "_moment_product_payload", "_pv_product_payload",
+    "_moment_product_payload", "_moment_fits_export", "_pv_product_payload",
     "_require_dataset", "_require_cube_path", "_fits_metadata", "record_history",
     "assert_safe_fetch_url",
     "_progress_ticker",
@@ -1675,6 +1675,38 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
         provenance_metadata=dataset.provenance_context(),
     )
     return result, False
+
+
+async def _moment_fits_export(entry: dict[str, Any], request: Any, output_path: str,
+                              task_id: str | None = None) -> dict[str, Any]:
+    """Export Moment as FITS (issue #119): the map of ``/v1/products/moment``
+    for the same request, computed the same way (backend selection, memory
+    bound, cancellation, product cache), then written by the pool next to
+    nothing else. The file therefore holds, bit for bit, the map the viewer
+    shows. ``request`` carries the moment fields of MomentProductRequest."""
+    from .compute import write_moment_fits
+
+    product_request = MomentProductRequest(
+        dataset_id=request.dataset_id,
+        moment_order=int(request.moment_order),
+        channel_start=int(request.channel_start),
+        channel_end=int(request.channel_end),
+        mask_enabled=bool(request.mask_enabled),
+        threshold_value=float(request.threshold_value),
+        threshold_auto=bool(request.threshold_auto),
+        moment2_variance=bool(getattr(request, "moment2_variance", False)),
+    )
+    payload, _cache_hit = await _moment_product_payload(entry, product_request, task_id)
+    stop_file = TASKS.stop_file(task_id) if task_id else None
+    # On this node's pool even with a distributed cluster: the Workspace is
+    # this node's. A task's writer is its work handle, so a cancelled task
+    # removes its reserved name only once nothing can write it any more.
+    return await _run_heavy(
+        write_moment_fits, entry["path"], output_path, payload,
+        product_request.moment_order, product_request.channel_start,
+        product_request.channel_end, product_request.mask_enabled,
+        product_request.threshold_value, product_request.threshold_auto, stop_file,
+        task_id=task_id, dispatch=_run_in_pool)
 
 
 async def _pv_product_payload(entry: dict[str, Any], request: CubePvRequest,

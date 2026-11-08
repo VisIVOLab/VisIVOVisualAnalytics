@@ -16,6 +16,36 @@ are preserved here unedited; the branch names they refer to are historical.
   copy. A large file is decompressed as a task with progress and cancellation
   (`POST /v1/tasks/decompress`); a truncated or damaged file is refused with
   its reason. Recent files and provenance keep the original path.
+- **Photometry and polarisation no longer return wrong numbers silently**
+  (#137). Aperture photometry and the 2-D Gaussian fit find a 4-D cube's
+  spectral and Stokes axes from the header and measure Stokes I of the
+  requested channel (a (spectral, Stokes, y, x) cube used to give a Stokes
+  plane of the first frequency; a multi-plane Stokes axis without I is now
+  refused, and a single-plane Q, U or V file is measured as labelled), and
+  report `resolved_channel` and `stokes`.
+  Their ICRS RA/Dec are converted to the image's frame, so Galactic and FK4
+  images work. Polarised intensity/angle and RM synthesis compare the Q and U
+  pixel → sky mapping, refusing a pair rotated by `PC`/`CD` and accepting the
+  same grid written either way; PI/PA refuses a channel that U does not have
+  or that sits at a different frequency in U.
+- **Faster out-of-core moment maps** (#116, #117, #119). Large cubes are
+  read with explicit plane reads and read-ahead, and the number of worker
+  threads is chosen from the CPUs and the memory budget instead of a fixed
+  four. On a PLEIADI-GPU node M0, M1 and M2 on the dask path are 1.6 to 2.6
+  times faster, with the same maps. Export Moment as FITS now uses the same
+  out-of-core path as the moment itself. Measurements are in
+  `benchmark/RESULTS.md`.
+
+## 1.0.11 (2026-11-06)
+
+- **Linux: the release opens again** (PR #131). The Linux AppImage crashed
+  at start, inside QtWebEngine, when run from its FUSE mount (Ubuntu 22.04
+  and 24.04, releases up to 1.0.10). The Linux package now holds the
+  application in `./app` with a launcher: extract the tarball and run
+  `./VisIVOVisualAnalytics`. It no longer needs `libfuse2`. The VLKB
+  panoramic view is loaded when its tab is first shown, so a web-engine
+  failure can no longer keep the application from opening, and each release
+  now starts the packaged client before it is published.
 - **SODA `BAND` on MeerKAT sub-band cubes** (#115). Obit MFImage cubes with a
   `SPECLNMF` spectral axis (the MeerKAT Milky Way Bulge and MGCLS releases)
   now accept `BAND`: it returns the sub-bands whose centre frequency
@@ -39,7 +69,42 @@ are preserved here unedited; the branch names they refer to are historical.
   fragment); a value that fails them keeps the copilot off with the reason in
   its answers and in `/v1/assistant/status` (`problem`), and is never
   contacted, while the rest of the backend starts as usual.
+- **The desktop says why the copilot is off** (#75 follow-up). When the
+  backend reports a `problem` (a self-hosted server with no or several
+  models, a refused base URL), the copilot panel shows it above the
+  conversation and Settings ▸ Scientific Copilot shows it under the provider
+  fields, in place of the generic "No LLM provider is configured" hint. It
+  goes once the backend stops reporting it, for example after a model is set.
+  A backend without the field shows what it showed before.
+- **The desktop keeps the server's copilot configuration by default.**
+  Settings ▸ Scientific Copilot has a new first choice, "Use the server's
+  configuration", and it is the default: the desktop no longer replaces what
+  the backend's operator configured through `VISIVO_ASSISTANT_PROVIDER`,
+  `VISIVO_LLM_BASE_URL` and `VISIVO_ASSISTANT_MODEL`, and a refused
+  `VISIVO_LLM_BASE_URL` now reaches the user. Claude, ChatGPT, Your server and
+  Off still replace it for the user's session. A "None" saved by an earlier
+  release reads as the server's configuration, or as Off when a key or URL
+  was saved with it. `POST /v1/assistant/config` accepts `reset: true`, which
+  returns the session to the environment's configuration. The panel's status
+  line says which configuration is active, e.g. "Provider: server's
+  configuration (self-hosted, model qwen) · ready".
 
+- **Cosmology tools in the interface** (#29). Every cosmology route of the
+  backend now has a desktop entry or a stated reason:
+  - **Tools ▸ Cosmology Calculator** (main window and 3-D catalogue viewer):
+    one or many redshifts under Planck18, Planck15, Planck13, WMAP9 or a custom
+    ΛCDM (H₀, Ωm, ΩΛ; flat by default, and said in words when it is not).
+    Comoving, luminosity and angular-diameter distances, lookback time, age and
+    kpc per arcsecond, all from the backend; copy, or export as CSV. The
+    custom-model route `GET /v1/cosmology/distances` has its client binding.
+  - The 3-D catalogue viewer's **Model** selector gains **Custom**, the model
+    set in the calculator; the status line names the model the sources were
+    placed with.
+  - **Angular Power Spectrum** and **Skeleton / Voids** on 2-D images
+    (Tools ▸ Structure) and on a cube's moment map (Tools ▸ Maps): P(ℓ) on log
+    axes with its fitted slope, the skeleton as an overlay or a mask map, each
+    a product with its replay record. Until now only the Copilot reached them.
+  See the user guide page *Cosmology tools*.
 - **Truncated FITS files are refused by name** (#118). Opening a FITS file
   shorter than its headers declare now fails at once with "The file … is
   truncated: 697.9 GB on disk, 961.4 GB declared (5644 of 7776 planes

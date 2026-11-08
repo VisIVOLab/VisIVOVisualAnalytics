@@ -1856,7 +1856,7 @@ the zero-width interval two independently normalised edges would give.
 
 **The response is checked, not assumed.** `/v1/vlkb/fetch_cutout` validates the
 downloaded bytes before calling the file a FITS (see
-[Backend API · VLKB](backend-api#vlkb)). Without that, a service error saved as
+[Backend API · VLKB](backend-api/sky-services.md)). Without that, a service error saved as
 `.fits` surfaced as *"No SIMPLE card found"* from the FITS reader — an error
 about the file's syntax standing in for the archive's own explanation of what
 had gone wrong, which was inside that very file.

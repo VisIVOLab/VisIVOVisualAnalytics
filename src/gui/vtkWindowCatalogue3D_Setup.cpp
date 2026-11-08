@@ -12,6 +12,7 @@
 #include "theme/VisivoTheme.h"
 #include "WorkspaceChrome.h"
 #include "InspectorPanel.h"
+#include "CosmologyCalculatorDialog.h"
 #include <QToolButton>
 #include <QTableWidget>
 
@@ -308,11 +309,16 @@ void vtkWindowCatalogue3D::buildControlPages()
                 u"Supergalactic (SGL, SGB): de Vaucouleurs frame of the local "
                 u"supercluster plane (the natural frame for cosmic-flow figures)."_s);
         this->comboCosmology = new QComboBox(sceneCard);
-        this->comboCosmology->addItems(
-                { u"Planck18"_s, u"Planck15"_s, u"Planck13"_s, u"WMAP9"_s });
+        this->comboCosmology->addItems(visivo::cosmology::presetNames());
+        // The custom model is the one set in the calculator ("Use in 3-D
+        // Catalogues"), so there is one definition of it, not one per window.
+        this->comboCosmology->addItem(visivo::cosmology::customName());
         this->comboCosmology->setToolTip(
                 u"Cosmology model for redshift → comoving distance.\n"
-                u"Distances are computed on the backend via astropy."_s);
+                u"Planck18 is integrated here (it matches astropy's to 0.06 %); the other\n"
+                u"presets are computed on the backend with astropy.\n"
+                u"Custom: the \u039bCDM set in Tools \u25b8 Cosmology Calculator, also computed\n"
+                u"on the backend. The ray-traced and server-side views know the presets only."_s);
 
         // R-14: real-space (comoving) vs redshift-space (naive cz/H0) placement.
         this->comboDistanceMode = new QComboBox(sceneCard);
@@ -355,6 +361,12 @@ void vtkWindowCatalogue3D::buildControlPages()
         cosmoForm->addRow(u"Model"_s, this->comboCosmology);
         cosmoForm->addRow(u"Distance"_s, this->comboDistanceMode);
         cosmoLayout->addLayout(cosmoForm);
+        auto *calcButton = new QPushButton(u"Cosmology Calculator\u2026"_s, cosmoCard);
+        calcButton->setToolTip(u"Distances, times and scales for any redshift under this "
+                               u"model, and where the Custom model is defined."_s);
+        QObject::connect(calcButton, &QPushButton::clicked, this,
+                         &vtkWindowCatalogue3D::openCosmologyCalculator);
+        cosmoLayout->addWidget(calcButton);
 
         this->m_cosmologyStatus = new QLabel(cosmoCard);
         this->m_cosmologyStatus->setWordWrap(true);
@@ -922,9 +934,14 @@ void vtkWindowCatalogue3D::refreshViewerChrome()
                 u"without a usable redshift keeps its catalogue distance"_s.arg(count));
         return;
     }
-    const QString model = this->m_cosmologyModel.isEmpty() ? u"Planck18"_s : this->m_cosmologyModel;
+    // The model the rows were PLACED with, not the one the selector shows: while
+    // a request is out the two differ, and the line describes the scene.
+    const QString model =
+            this->m_appliedCosmologyModel.isEmpty() ? u"Planck18"_s : this->m_appliedCosmologyModel;
     const bool backendComputed = model != u"Planck18"_s;
-    const QString source = backendComputed ? model : u"Planck18 (local)"_s;
+    const QString source = model == visivo::cosmology::customName()
+            ? visivo::cosmology::describe(this->m_appliedCustomCosmology)
+            : (backendComputed ? model : u"Planck18 (local)"_s);
     QString line = u"%1 · %2 sources"_s.arg(source).arg(count);
     if (!distanceField.isEmpty()) {
         line += backendComputed

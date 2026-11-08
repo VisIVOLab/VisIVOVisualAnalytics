@@ -199,8 +199,8 @@ use the cluster backend instead, start it with the command the helper prints:
 # macOS
 open -n -a VisIVOVisualAnalytics --args --backend http://localhost:18901 \
     --backend-token-file ~/.visivo_slurm_token --backend-name PLEIADI
-# Linux
-VisIVOVisualAnalytics --backend http://localhost:18901 \
+# Linux, from the extracted package
+./VisIVOVisualAnalytics --backend http://localhost:18901 \
     --backend-token-file ~/.visivo_slurm_token --backend-name PLEIADI
 ```
 
@@ -405,7 +405,7 @@ view. To skip that wait, build it beforehand in a job of its own
 
 How the view streams frames and lowers its quality while you rotate is
 described for users in the
-[Cube viewer](../user-guide/cube-viewer.md#where-the-rendering-happens-auto-local-remote)
+[Cube viewer](../user-guide/cube-viewer.md#where-the-rendering-happens-auto--local--remote)
 page. On PLEIADI-GPU (POWER9, V100), through an SSH tunnel, a 2540 x 1560 view
 of a 2 GB cube ran at about 26 frames per second once the drag level had
 settled; four views at once ran at 20.0 frames per second each when spread over

@@ -220,7 +220,7 @@ isolating a compact source out of a 1.5 GB cube gives you another 1.5 GB file in
 which all but a few thousand voxels are NaN. That is deliberate: identical pixel
 coordinates and WCS mean the result overlays the original channel for channel,
 and anything you compute on it stays comparable without re-alignment. When you
-want the small file instead, follow up with *Tools → Export Sub-Cube as FITS…*,
+want the small file instead, follow up with *Tools ▸ Export ▸ Export Sub-Cube as FITS…* (3-D view focused),
 which does crop and shifts ``CRPIX`` accordingly.
 ```
 

@@ -1,9 +1,11 @@
 #include "AssistantPanel.h"
 
 #include "CopilotActionRouter.h"
+#include "CopilotStatus.h"
 #include "Settings.h"
 #include "app/BackendClient.h"
 #include "app/BackendClientFactory.h"
+#include "app/CopilotChoice.h"
 
 #include <QClipboard>
 #include <QGuiApplication>
@@ -71,6 +73,17 @@ AssistantPanel::AssistantPanel(QWidget *parent) : QWidget(parent)
     titleRow->addWidget(m_clear);
     root->addLayout(titleRow);
 
+    // Why the copilot cannot answer, when the backend says. Above the
+    // transcript so it is read before a question is typed, not after.
+    m_problem = new QLabel(this);
+    m_problem->setWordWrap(true);
+    m_problem->setTextFormat(Qt::RichText);
+    m_problem->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_problem->setVisible(false);
+    root->addWidget(m_problem);
+    connect(CopilotStatus::instance(), &CopilotStatus::changed, this,
+            &AssistantPanel::refreshProblemBanner);
+
     m_transcript = new QTextBrowser(this);
     m_transcript->setOpenExternalLinks(false);
     m_transcript->setOpenLinks(false);   // handle the "Undo" anchor ourselves
@@ -110,7 +123,7 @@ AssistantPanel::AssistantPanel(QWidget *parent) : QWidget(parent)
 
     m_status = new QLabel(this);
     m_status->setWordWrap(true);
-    m_status->setStyleSheet(u"color: palette(mid);"_s);
+    applyStatusColour();
     root->addWidget(m_status);
 
     auto *row = new QHBoxLayout();
@@ -185,6 +198,13 @@ void AssistantPanel::setBackend(const QString &url, const QString &token)
     m_url = url;
     m_token = token;
     if (endpointChanged) {
+        // What another backend said no longer applies, and this panel no
+        // longer uses it, even if the provider POST below fails; that POST's
+        // answer registers the new backend.
+        CopilotStatus::instance()->forget(this);
+        ++m_statusGeneration;   // a status still on its way is the old backend's
+        m_activeName.clear();   // known again from the new backend's reply
+        refreshProblemBanner();
         m_providerAutoApplied = false;   // a new endpoint must get the saved provider
         // A new backend = a new session/datasets — the follow-up context no longer
         // applies. (Harmless on the first connect: nothing to clear.)
@@ -237,33 +257,26 @@ void AssistantPanel::applyProviderFromSettings()
         return;
     }
     m_providerApplyPending = false;
-    const int idx = s->getCopilotProvider();
-    const QString key = s->getCopilotKey();
-    const QString model = s->getCopilotModel();
-    // Default "null" so a persisted None explicitly resets the backend provider.
-    QString prov = u"null"_s, anthropicKey, openaiKey, baseUrl, baseUrlKey;
-    if (idx == 0) {
-        prov = u"anthropic"_s;
-        anthropicKey = key;
-    } else if (idx == 1) {
-        prov = u"openai"_s;
-        openaiKey = key;
-    } else if (idx == 2) {
-        prov = u"openai"_s;
-        baseUrl = s->getCopilotUrl();
-        baseUrlKey = key;
-    }
+    // The server's configuration sends only a reset, so the backend keeps what
+    // its operator set up; an explicit choice (Off included) replaces it.
+    const CopilotChoice::Choice choice = s->getCopilotChoice();
+    const bool fromServer = choice == CopilotChoice::Choice::Server;
+    const QJsonObject body = CopilotChoice::configBody(choice, s->getCopilotKey(),
+                                                       s->getCopilotUrl(), s->getCopilotModel());
     // The panel is busy until the backend has taken the provider: a question
     // asked in between would be answered by whatever provider the server still
     // had. A failure is reported and the flag is cleared, so the next connect or
     // Settings change tries again instead of silently keeping the old provider.
     m_providerAutoApplied = true;
+    // A status asked of the old provider is now stale.
+    const quint64 generation = ++m_statusGeneration;
+    const quint64 ticket = CopilotStatus::instance()->nextTicket();
     setBusy(true);
     m_status->setText(u"Applying provider…"_s);
     const QString url0 = m_url, token0 = m_token;
     auto *watcher = new QFutureWatcher<BackendAssistantConfigResult>(this);
     connect(watcher, &QFutureWatcher<BackendAssistantConfigResult>::finished, this,
-            [this, watcher]() {
+            [this, watcher, url0, token0, generation, ticket, fromServer]() {
                 const BackendAssistantConfigResult r = watcher->result();
                 watcher->deleteLater();
                 setBusy(false);
@@ -272,16 +285,22 @@ void AssistantPanel::applyProviderFromSettings()
                     appendError(r.error);
                     return;
                 }
-                m_status->setText(r.configured
-                        ? u"Provider: %1 (ready)"_s.arg(r.provider)
-                        : u"Provider: %1 (not configured)"_s.arg(r.provider));
+                // A new provider starts with what the backend knows of it now;
+                // "" (or a backend without the field) clears an older problem.
+                // Not after a change of backend or token: this reply is about
+                // the session left behind.
+                if (m_url != url0 || m_token != token0 || generation != m_statusGeneration)
+                    return;
+                m_activeFromServer = fromServer;
+                m_activeName = CopilotChoice::activeName(fromServer, r.provider, r.model);
+                reportProblem(url0, r.problem, ticket);
+                m_status->setText(CopilotChoice::activeLine(fromServer, r.provider, r.model,
+                                                            r.configured, !r.problem.isEmpty()));
             });
-    watcher->setFuture(QtConcurrent::run(
-            [url0, token0, prov, anthropicKey, openaiKey, baseUrl, baseUrlKey, model]() {
-                BackendClient client(url0, token0);
-                return client.setAssistantConfig(prov, anthropicKey, openaiKey, baseUrl,
-                                                 baseUrlKey, model);
-            }));
+    watcher->setFuture(QtConcurrent::run([url0, token0, body]() {
+        BackendClient client(url0, token0);
+        return client.setAssistantConfig(body);
+    }));
 }
 
 void AssistantPanel::setDatasetId(const QString &datasetId)
@@ -374,7 +393,7 @@ void AssistantPanel::renderConversation()
                 inner += u" · %1"_s.arg(esc(e.provider));
             inner += u"</span><br><span style='color:%1;'>%2</span>"_s
                              .arg(t.botFg, esc(e.text).replace(u"\n"_s, u"<br>"_s));
-            if (!e.configured) {
+            if (!e.configured && !e.problemKnown) {
                 inner += u"<br><span style='color:%1;font-size:small;'><i>No LLM provider is "
                          u"configured on the server - the analysis tools still work; choose one "
                          u"in Settings ▸ Scientific Copilot to enable "
@@ -390,7 +409,8 @@ void AssistantPanel::renderConversation()
             }
             if (!e.repro.isEmpty()) {
                 inner += u"<div style='margin-top:4px;'><span style='color:%1;font-size:small;'>"
-                         u"Reproducibility</span><pre style='color:%1;font-size:small;margin:2px 0;'>"
+                         u"Reproducibility</span><pre style='color:%1;font-size:small;margin:2px 0;"
+                         u"white-space:pre-wrap;'>"
                          u"%2</pre></div>"_s.arg(t.meta, esc(e.repro));
             }
             // Copy affordances (handled via anchorClicked, like the Undo link).
@@ -648,6 +668,8 @@ void AssistantPanel::applyResult(const BackendAssistantResult &r, const QString 
     a.text = r.answer;
     a.provider = r.provider;
     a.configured = r.configured;
+    // The banner already says why, and the answer repeats it.
+    a.problemKnown = !CopilotStatus::instance()->problem(m_url).isEmpty();
     a.grounded = r.toolCallsRecorded;
     a.repro = r.reproducibilityScript;
     a.provenance = prov;
@@ -680,6 +702,111 @@ void AssistantPanel::applyResult(const BackendAssistantResult &r, const QString 
     while (m_turns.size() > 20)
         m_turns.removeFirst();
     renderConversation();
+    refreshStatusAfterAnswer();
+}
+
+void AssistantPanel::reportProblem(const QString &url, const QString &problem,
+                                   quint64 ticket)
+{
+    // A reply from a backend this panel has since left says nothing about the
+    // current one.
+    if (url != m_url)
+        return;
+    CopilotStatus::instance()->report(this, url, problem, ticket, m_activeName);
+    refreshProblemBanner();   // also when nothing changed for the store
+}
+
+void AssistantPanel::refreshStatusAfterAnswer()
+{
+    if (m_url.isEmpty())
+        return;
+    const QString url0 = m_url, token0 = m_token;
+    // Only the newest request may answer: two answers in a row start two
+    // checks, and the first one's late reply must not undo the second's.
+    const quint64 generation = ++m_statusGeneration;
+    const quint64 ticket = CopilotStatus::instance()->nextTicket();
+    auto *watcher = new QFutureWatcher<BackendAssistantStatusResult>(this);
+    connect(watcher, &QFutureWatcher<BackendAssistantStatusResult>::finished, this,
+            [this, watcher, url0, token0, generation, ticket]() {
+                const BackendAssistantStatusResult r = watcher->result();
+                watcher->deleteLater();
+                // A failed or stale check leaves what is shown alone: the
+                // answer itself already went through. Stale includes a newer
+                // check, a provider applied meanwhile (its own reply is the
+                // newer word) and a change of backend.
+                if (!r.valid || m_url != url0 || m_token != token0
+                    || generation != m_statusGeneration)
+                    return;
+                m_activeName = CopilotChoice::activeName(m_activeFromServer, r.provider, r.model);
+                reportProblem(url0, r.problem, ticket);
+                if (!m_busy)
+                    m_status->setText(CopilotChoice::activeLine(m_activeFromServer, r.provider,
+                                                                r.model, r.configured,
+                                                                !r.problem.isEmpty()));
+                // The answer just shown came from the provider this status
+                // describes: drop its generic hint now that the reason is known.
+                if (!r.problem.isEmpty()) {
+                    for (int i = m_entries.size() - 1; i >= 0; --i) {
+                        Entry &e = m_entries[i];
+                        if (e.kind != Entry::Assistant)
+                            continue;
+                        if (!e.configured && !e.problemKnown) {
+                            e.problemKnown = true;
+                            renderConversation();
+                        }
+                        break;
+                    }
+                }
+            });
+    watcher->setFuture(QtConcurrent::run([url0, token0]() {
+        BackendClient client(url0, token0);
+        return client.assistantStatus();
+    }));
+}
+
+void AssistantPanel::applyStatusColour()
+{
+    // Subdued but readable: palette(mid) was light grey on either theme. Two
+    // thirds of the way from the background to the text keeps well over 4.5:1.
+    // A stylesheet, not setPalette(): the app theme's QLabel colour rule would
+    // override a palette.
+    const QColor text = this->palette().color(QPalette::WindowText);
+    const QColor back = this->palette().color(QPalette::Window);
+    auto mix = [](int t, int b) { return (2 * t + b) / 3; };
+    const QColor subdued(mix(text.red(), back.red()), mix(text.green(), back.green()),
+                         mix(text.blue(), back.blue()));
+    m_status->setStyleSheet(u"QLabel { color: %1; }"_s.arg(subdued.name()));
+}
+
+void AssistantPanel::changeEvent(QEvent *event)
+{
+    QWidget::changeEvent(event);
+    // A switch between light and dark: recolour what was picked from the palette.
+    if (event->type() == QEvent::PaletteChange && m_status) {
+        applyStatusColour();
+        refreshProblemBanner();
+    }
+}
+
+void AssistantPanel::refreshProblemBanner()
+{
+    if (!m_problem)
+        return;
+    const QString problem =
+            m_url.isEmpty() ? QString() : CopilotStatus::instance()->problem(m_url);
+    if (problem.isEmpty()) {
+        m_problem->clear();
+        m_problem->setVisible(false);
+        return;
+    }
+    const BubbleTheme t = bubbleTheme(this->palette());
+    m_problem->setStyleSheet(u"QLabel { background: %1; color: %2; padding: 6px 8px; "
+                             u"border-radius: 6px; }"_s.arg(t.errBg, t.errFg));
+    // Say which configuration it is about: the operator's or the user's own.
+    const QString which = m_activeName.isEmpty() ? QString()
+                                                 : u" <i>(%1)</i>"_s.arg(esc(m_activeName));
+    m_problem->setText(u"<b>The copilot cannot answer</b>%1. %2"_s.arg(which, esc(problem)));
+    m_problem->setVisible(true);
 }
 
 void AssistantPanel::refreshSendButton()

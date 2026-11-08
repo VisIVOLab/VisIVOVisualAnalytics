@@ -346,6 +346,24 @@ def memory_limit_bytes() -> int | None:
         return None
 
 
+def granted_cpus() -> float:
+    """The CPUs this process may use: its affinity (or the cgroup's cpuset),
+    never more than the cgroup's CPU quota; the host's count when neither
+    can be read. Not the host's count on a shared node: a SLURM job, a
+    container or a ``taskset`` sees only its own CPUs."""
+    quota = _cpu_quota()
+    cpus = float(_cpuset_count() or os.cpu_count() or 1)
+    if quota is not None:
+        cpus = min(cpus, quota)
+    return cpus
+
+
+def granted_memory_bytes() -> int | None:
+    """The memory SLURM granted this job, in bytes; None outside a job or
+    with ``--mem=0``. A grant binds even where cgroup v1 does not enforce it."""
+    return _granted_memory()
+
+
 def _declared_gpu() -> bool | None:
     raw = (os.environ.get("VISIVO_NODE_GPU") or "").strip().lower()
     if raw in ("1", "true", "yes"):
@@ -363,9 +381,7 @@ def collect(*, workers: int, running_tasks: int, queued_tasks: int,
     quota = _cpu_quota()
     cpuset = _cpuset_count()
     # Granted CPUs: the quota, never more than the CPUs the node may run on.
-    cpus = float(cpuset or os.cpu_count() or 1)
-    if quota is not None:
-        cpus = min(cpus, quota)
+    cpus = granted_cpus()
     try:
         load_1m = os.getloadavg()[0]
     except (OSError, AttributeError):

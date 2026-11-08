@@ -2730,6 +2730,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                          &vtkWindowCube::pinCurrentSpectrum);
     }
 
+    // ANALYSIS: angular power spectrum and skeleton of the moment map (#29).
+    this->setupMomentMapTextureTools();
+
     // ANALYSIS: Channel Maps mosaic (N × M grid of consecutive slice panels).
     this->m_actChannelMaps = ui->menuTools->addAction(u"Channel Maps…"_s);
     QAction *actChannelMaps = this->m_actChannelMaps;
@@ -7724,6 +7727,10 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
 
     add(u"Maps"_s, ui->actionComputeMoment);
     add(u"Maps"_s, self->m_actChannelMaps);
+    // Issue #29: texture of the moment map on screen. Gated on a moment
+    // existing (applyMomentToolGate), settings in Inspector > Parameters.
+    add(u"Maps"_s, self->m_actMomentPower);
+    add(u"Maps"_s, self->m_actMomentSkeleton);
 
     add(u"Statistics"_s, self->actionEstimateNoise);
     add(u"Statistics"_s, self->m_actSliceHistogram);
@@ -7798,6 +7805,12 @@ void vtkWindowCube::regroupToolsMenu()
 
     QString current;
     QMenu *sub = nullptr;
+    // The notes lived in the submenus just detached: start them again.
+    for (const QPointer<QAction> &note : std::as_const(m_toolGateNotes))
+        if (note)
+            note->deleteLater();
+    m_toolGateNotes.clear();
+    m_toolSubmenu.clear();
     for (const CubeTool &t : tools) {
         if (!t.action)
             continue;
@@ -7810,8 +7823,49 @@ void vtkWindowCube::regroupToolsMenu()
             if (sub)
                 sub->setToolTipsVisible(ui->menuTools->toolTipsVisible());
         }
-        if (sub)
+        if (sub) {
             sub->addAction(t.action);
+            m_toolSubmenu.insert(t.action.data(), sub);
+        }
+    }
+    refreshToolMenuGateNotes();
+}
+
+void vtkWindowCube::refreshToolMenuGateNotes()
+{
+    // A tool the gate greyed out carries its reason as tooltip and status tip.
+    // Neither shows for a disabled entry of the macOS menu bar, so the menu
+    // says it on a line of its own under the tool: disabled, never a command
+    // (the command palette skips it by the property), shown only while the
+    // reason holds. Updated in place: deleting an action of a menu that is
+    // open is not safe, hiding one is.
+    for (auto it = m_toolSubmenu.cbegin(); it != m_toolSubmenu.cend(); ++it) {
+        QAction *tool = it.key();
+        QMenu *menu = it.value();
+        if (!tool || !menu)
+            continue;
+        const QString base = m_toolBaseTooltips.value(tool);
+        const bool gated = !tool->isEnabled() && m_toolBaseTooltips.contains(tool)
+                && !tool->toolTip().isEmpty() && tool->toolTip() != base;
+        QPointer<QAction> &note = m_toolGateNotes[tool];
+        if (!gated) {
+            if (note)
+                note->setVisible(false);
+            continue;
+        }
+        if (!note) {
+            note = new QAction(menu);
+            note->setEnabled(false);
+            note->setProperty("visivoGateNote", true);
+            const auto acts = menu->actions();
+            const qsizetype at = acts.indexOf(tool);
+            QAction *before = (at >= 0 && at + 1 < acts.size()) ? acts.at(at + 1) : nullptr;
+            menu->insertAction(before, note);
+        }
+        QString reason = tool->toolTip();
+        reason[0] = reason.at(0).toUpper();
+        note->setText(u"    \u21b3 "_s + reason);
+        note->setVisible(true);
     }
 }
 
@@ -10959,7 +11013,8 @@ QString vtkWindowCube::productRenderer(const QString &productId) const
 QString vtkWindowCube::addImageProduct(const QString &kind, const QString &stableKey,
                                        const QString &label, vtkImageData *img,
                                        const QString &unit, const QVariantMap &params,
-                                       const QString &lutName, bool symmetricRange)
+                                       const QString &lutName, bool symmetricRange,
+                                       const QList<ReplayStep> &replay)
 {
     if (!img)
         return QString();
@@ -11002,7 +11057,9 @@ QString vtkWindowCube::addImageProduct(const QString &kind, const QString &stabl
         if (this->sliceWin)
             this->sliceWin->Render();
     }
-    this->registerAnalysisProduct(kind, label, params, this, productId, u"image2d"_s);
+    this->registerAnalysisProduct(kind, label, params, this, productId, u"image2d"_s,
+                                  /*revealProvenance=*/true, /*origin=*/{},
+                                  /*selectInSession=*/true, replay);
 
     auto visible = [&](int i) { return m_slots[i].frame && m_slots[i].frame->isVisible(); };
     int target = -1;
@@ -13840,6 +13897,11 @@ void vtkWindowCube::reopenProductFromFile(const QString &productId)
     // Double-click on a product whose tool window is gone. If it left a FITS on
     // the backend, that is what "open" means; otherwise say so rather than
     // doing nothing at all, which is what the row did before (user report).
+    // A power spectrum of a moment map: the plot, not its numbers.
+    if (m_momentPowerSpectra.contains(productId)) {
+        this->showMomentPowerSpectrum(productId);
+        return;
+    }
     const AnalysisProduct p = ProductRegistry::instance().product(productId);
     const QString fitsPath = p.params.value(u"Output path"_s).toString();
     if (!fitsPath.isEmpty()) {
@@ -14221,11 +14283,14 @@ void vtkWindowCube::applyMomentToolGate()
             u"open a 2D image viewer first - the slice overlays there as contours"_s;
     static const QString reasonNoLinkTargets =
             u"nothing to link yet, split into 2 panes or open a second cube viewer"_s;
+    static const QString reasonNoMoment =
+            u"compute a moment map first (Tools \u25b8 Maps \u25b8 Compute Moment)"_s;
     // Every reason this function writes, so a tooltip of ours is never mistaken
     // for the tool's own sentence and cached over it.
     static const QSet<QString> ourReasons{ reasonNoSlice,      reasonNo3d,
                                            reasonNoProbe,      reasonNoRegion,
-                                           reasonNoImageView,  reasonNoLinkTargets };
+                                           reasonNoImageView,  reasonNoLinkTargets,
+                                           reasonNoMoment };
 
     // enabled=false with a reason disables + explains; otherwise the action goes
     // back to its own baseline and its own tooltip.
@@ -14409,6 +14474,13 @@ void vtkWindowCube::applyMomentToolGate()
     applyGate(m_actSendSliceToImage.data(), m_cubeActionsEnabled && sd.sendSliceToImageViewer,
               reasonNoImageView);
     applyGate(m_actLinkViews.data(), sd.linkViews, reasonNoLinkTargets);
+    // The moment-map texture tools need a moment to act on; which one, and
+    // whether it is still there, is shown in their settings too.
+    const bool haveMoment = !this->momentProductForMapTools().isEmpty();
+    applyGate(m_actMomentPower.data(), m_cubeActionsEnabled && haveMoment, reasonNoMoment);
+    applyGate(m_actMomentSkeleton.data(), m_cubeActionsEnabled && haveMoment, reasonNoMoment);
+    this->refreshMomentMapToolSources();
+    this->refreshToolMenuGateNotes();
 }
 
 void vtkWindowCube::setCubeOpenActionsEnabled(bool enabled)

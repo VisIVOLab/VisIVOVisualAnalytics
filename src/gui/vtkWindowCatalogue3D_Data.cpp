@@ -6,6 +6,8 @@
 #include "DiagnosticsWindow.h"
 #include "Catalogue3DTableModel.h"
 #include "Catalogue3DParser.h"
+#include "CosmologyCalculatorDialog.h"
+#include "app/CosmologyDistanceTable.h"
 #include "theme/VisivoTheme.h"
 
 // ── VTK ──────────────────────────────────────────────────────────────────────
@@ -170,6 +172,111 @@ void vtkWindowCatalogue3D::recomputeScenePositionsAndRebuild()
     this->renderWindow->Render();
 }
 
+namespace {
+
+/// Comoving distances under a custom LambdaCDM for every catalogue redshift (-1
+/// for a row without one). The backend's only custom-model route takes one
+/// redshift per request, so a catalogue with up to kTableNodes distinct
+/// redshifts asks for each; a larger one asks for kTableNodes nodes across its
+/// range and reads every source off them (CosmologyDistanceTable.h: < 1e-4
+/// relative error). Runs on a pool thread.
+Catalogue3DCosmologyTaskResult computeCustomCosmologyDistances(
+        const QString &backendUrl, const QString &backendToken,
+        const visivo::cosmology::Model &custom, const QVector<double> &redshifts)
+{
+    namespace cosmo = visivo::cosmology;
+    Catalogue3DCosmologyTaskResult out;
+    out.model = cosmo::customName();
+    out.custom = custom;
+    out.distancesMpc.assign(static_cast<size_t>(redshifts.size()),
+                            std::numeric_limits<double>::quiet_NaN());
+
+    // The route covers z <= 20; a source beyond keeps its catalogue distance.
+    // Counted first, so a catalogue lying wholly beyond still says why.
+    for (double z : redshifts)
+        if (std::isfinite(z) && z > cosmo::kRedshiftMaxCustom)
+            ++out.beyondRange;
+    QVector<double> usable;
+    for (double z : cosmo::distinctUsable(redshifts))
+        if (z <= cosmo::kRedshiftMaxCustom)
+            usable.append(z);
+    if (usable.isEmpty()) {
+        out.valid = true;
+        return out;
+    }
+    const bool exact = usable.size() <= cosmo::kTableNodes;
+    const QVector<double> nodes =
+            exact ? usable : cosmo::tableNodes(usable.first(), usable.last());
+
+    BackendClient client(backendUrl, backendToken);
+    BackendCosmologyParams params;
+    params.h0 = custom.h0;
+    params.om0 = custom.om0;
+    params.ode0 = custom.ode0;
+    QVector<double> nodeDistances;
+    nodeDistances.reserve(nodes.size());
+    for (double z : nodes) {
+        const auto r = client.requestCosmologyDistances(z, &params);
+        if (!r.valid || !std::isfinite(r.comovingMpc)) {
+            out.error = r.error.isEmpty()
+                    ? QStringLiteral("The backend gave no comoving distance at z = %1.").arg(z)
+                    : r.error;
+            return out;
+        }
+        nodeDistances.append(r.comovingMpc);
+    }
+
+    for (int i = 0; i < redshifts.size(); ++i) {
+        const double z = redshifts[i];
+        if (!(std::isfinite(z) && z > 0.0 && z <= cosmo::kRedshiftMaxCustom))
+            continue;   // NaN: no usable redshift, as the batch route answers null
+        // The exact table holds every distinct redshift, so interpolate()
+        // finds each on a node; the coarse one interpolates between nodes.
+        out.distancesMpc[static_cast<size_t>(i)] = cosmo::interpolate(nodes, nodeDistances, z);
+    }
+    out.valid = true;
+    return out;
+}
+
+}   // namespace
+
+visivo::cosmology::Model vtkWindowCatalogue3D::selectedCosmology() const
+{
+    if (this->m_cosmologyModel == visivo::cosmology::customName())
+        return CosmologyChoiceHub::instance().customModel();
+    return visivo::cosmology::Model::fromPreset(
+            this->m_cosmologyModel.isEmpty() ? u"Planck18"_s : this->m_cosmologyModel);
+}
+
+bool vtkWindowCatalogue3D::serverDrawsPositions() const
+{
+    return this->m_remoteView || this->geometryMode == GeometryMode::Raytraced;
+}
+
+void vtkWindowCatalogue3D::dropCustomCosmologyForServerView(const QString &view)
+{
+    if (this->m_cosmologyModel != visivo::cosmology::customName()
+        && this->m_appliedCosmologyModel != visivo::cosmology::customName())
+        return;
+    if (this->comboCosmology)
+        this->comboCosmology->setCurrentText(u"Planck18"_s);   // re-places the rows
+    this->statusBar()->showMessage(
+            u"%1 is drawn by the backend, which knows the preset cosmologies only: the "
+            u"model is back to Planck18."_s.arg(view),
+            10000);
+}
+
+void vtkWindowCatalogue3D::openCosmologyCalculator()
+{
+    const visivo::cosmology::Model model =
+            this->m_appliedCosmologyModel == visivo::cosmology::customName()
+            ? this->m_appliedCustomCosmology
+            : visivo::cosmology::Model::fromPreset(this->m_appliedCosmologyModel.isEmpty()
+                                                           ? u"Planck18"_s
+                                                           : this->m_appliedCosmologyModel);
+    CosmologyCalculatorDialog::showCalculator(this, this->backendUrl, this->backendToken, &model);
+}
+
 void vtkWindowCatalogue3D::triggerCosmologyUpdate()
 {
     // Cartesian (.speck / XYZ) catalogues have explicit positions — there is no
@@ -229,10 +336,36 @@ void vtkWindowCatalogue3D::triggerCosmologyUpdate()
         redshifts.append((ok && std::isfinite(z) && z > 0.0) ? z : -1.0);
     }
 
+    if (model == visivo::cosmology::customName()) {
+        const visivo::cosmology::Model custom = this->selectedCosmology();
+        const QString problem = visivo::cosmology::validate(custom);
+        if (!problem.isEmpty()) {
+            // Cannot happen through the calculator, which refuses to hand over
+            // such a model; a hand-edited settings file can. Fail as a request
+            // would, so the selector goes back to the model in use.
+            this->m_cosmologyWatcher.setFuture(QtConcurrent::run([problem]() {
+                Catalogue3DCosmologyTaskResult out;
+                out.model = visivo::cosmology::customName();
+                out.error = problem;
+                return out;
+            }));
+            return;
+        }
+        this->m_cosmologyWatcher.setFuture(QtConcurrent::run(
+                [backendUrl, backendToken, custom, redshifts]() -> Catalogue3DCosmologyTaskResult {
+                    return computeCustomCosmologyDistances(backendUrl, backendToken, custom,
+                                                           redshifts);
+                }));
+        return;
+    }
+
     this->m_cosmologyWatcher.setFuture(QtConcurrent::run(
             [backendUrl, backendToken, model, redshifts]()
                     -> Catalogue3DCosmologyTaskResult {
                 Catalogue3DCosmologyTaskResult out;
+                // The model ASKED for, on failure too: onCosmologyFinished
+                // tells a superseded answer from the current one by it.
+                out.model = model;
                 BackendClient client(backendUrl, backendToken);
                 const auto res = client.requestCosmologyDistanceBatch(redshifts, model);
                 if (!res.valid) {
@@ -242,7 +375,8 @@ void vtkWindowCatalogue3D::triggerCosmologyUpdate()
                     return out;
                 }
                 out.valid = true;
-                out.model = res.model;
+                if (!res.model.isEmpty())
+                    out.model = res.model;
                 out.distancesMpc.reserve(static_cast<size_t>(res.distancesMpc.size()));
                 for (double d : res.distancesMpc)
                     out.distancesMpc.push_back(d);
@@ -275,6 +409,14 @@ void vtkWindowCatalogue3D::onCosmologyFinished()
         return;
 
     const auto result = this->m_cosmologyWatcher.result();
+    // The selector moved while this was computed (triggerCosmologyUpdate
+    // returns early while busy) — e.g. a server-drawn view put it back on
+    // Planck18 under a running Custom request. Applying the old answer would
+    // place the rows in a model nobody selects now: compute the current one.
+    if (!result.model.isEmpty() && result.model != this->m_cosmologyModel) {
+        QTimer::singleShot(0, this, [this]() { this->triggerCosmologyUpdate(); });
+        return;
+    }
     if (!result.valid) {
         // The rows stay where the last model placed them: so do the selector
         // and what the backend is told.
@@ -315,6 +457,8 @@ void vtkWindowCatalogue3D::onCosmologyFinished()
         this->entries[static_cast<size_t>(i)].distanceMpc = d;
     }
     this->m_appliedCosmologyModel = result.model.isEmpty() ? this->m_cosmologyModel : result.model;
+    if (this->m_appliedCosmologyModel == visivo::cosmology::customName())
+        this->m_appliedCustomCosmology = result.custom;
     // Recompute positions from the applied overrides and rebuild — the shared
     // helper also reapplies the shells toggle and refreshes the table, so a
     // backend cosmology change keeps them consistent (R-14 follow-up).
@@ -323,20 +467,43 @@ void vtkWindowCatalogue3D::onCosmologyFinished()
     // One status line, written once. An earlier version set the refused-count
     // message here and then had it overwritten by this one two lines later.
     QString statusMsg = QStringLiteral("Cosmology: %1 – %2 sources.")
-            .arg(result.model)
+            .arg(this->m_appliedCosmologyModel == visivo::cosmology::customName()
+                         ? visivo::cosmology::describe(this->m_appliedCustomCosmology)
+                         : result.model)
             .arg(this->entries.size());
+    // Rows past the custom route's z ≤ 20 got no distance either, but for a
+    // different reason: they are reported apart, as what they are.
+    const int beyond = std::min(result.beyondRange, refused);
+    refused -= beyond;
     if (refused > 0) {
         statusMsg += u" %1 with no usable redshift kept their catalogue distance."_s
                              .arg(refused);
+    }
+    if (beyond > 0) {
+        statusMsg += u" %1 at z > %2 (beyond the custom-model route) are placed with "
+                     u"their catalogue distance, or with Planck18 where they have none."_s
+                             .arg(beyond)
+                             .arg(visivo::cosmology::kRedshiftMaxCustom);
     }
     ui->labelStatus->setText(statusMsg);
     if (this->filterStatusLabel)
         this->filterStatusLabel->setText(statusMsg);
     this->refreshViewerChrome();
+    // The custom model changed while this one was being computed (the hub's
+    // notice found the window busy): place the rows under the current one.
+    if (this->m_cosmologyModel == visivo::cosmology::customName()
+        && this->m_appliedCustomCosmology != CosmologyChoiceHub::instance().customModel())
+        QTimer::singleShot(0, this, [this]() { this->triggerCosmologyUpdate(); });
     if (refused > 0 && this->m_cosmologyStatus) {
         this->m_cosmologyStatus->setText(
                 this->m_cosmologyStatus->text()
                 + QStringLiteral(" · %1 without a usable redshift").arg(refused));
+    }
+    if (beyond > 0 && this->m_cosmologyStatus) {
+        this->m_cosmologyStatus->setText(
+                this->m_cosmologyStatus->text()
+                + u" · %1 at z > 20 not placed with this model (catalogue distance or "
+                  u"Planck18)"_s.arg(beyond));
     }
 }
 

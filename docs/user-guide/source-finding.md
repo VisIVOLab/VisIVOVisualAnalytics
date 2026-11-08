@@ -211,7 +211,7 @@ They answer different questions and the results are not interchangeable.
 
 Integrated fluxes from the two will differ by a few percent on the same source,
 because they include different voxels — see
-[Kinematic Lasso](kinematic-lasso#comparing-fluxes-with-another-mask) before
+[Kinematic Lasso](kinematic-lasso.md#comparing-fluxes-with-another-mask) before
 treating that as an error.
 
 ---

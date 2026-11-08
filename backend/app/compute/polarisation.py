@@ -210,6 +210,21 @@ def _mfimage_subbands(dataset: ScientificFitsDataset) -> tuple[int, np.ndarray] 
     return None if layout is None else (layout.offset, layout.freq_hz)
 
 
+#: How far, in pixels, a point of one Stokes file may land from the same pixel
+#: of the other before the two are not one grid. A tenth of a pixel at the
+#: corners: a CDELT printed to 7 significant figures (-4.166667E-04 against
+#: -4.1667E-04) drifts by 0.03 pixel at the corner of a 7500-pixel MGCLS field.
+_SKY_GRID_TOLERANCE_PIXELS = 0.1
+
+
+def _image_plane_wcs(dataset: ScientificFitsDataset):
+    """The WCS of FITS axes 1 and 2 — the pixel grid Q and U are combined on."""
+    if dataset.wcs is None:
+        raise ValueError(f"{dataset.path} has no usable WCS; it cannot be checked "
+                         f"against the other Stokes file.")
+    return dataset.wcs.sub([1, 2])
+
+
 def _require_same_sky_grid(a: ScientificFitsDataset, b: ScientificFitsDataset) -> None:
     """Refuse two files that are the same SHAPE but not the same place on the sky.
 
@@ -218,15 +233,18 @@ def _require_same_sky_grid(a: ScientificFitsDataset, b: ScientificFitsDataset) -
     per-pixel would give a polarisation map of two different patches of sky,
     with nothing in the numbers to show for it.
 
-    The comparison is in PIXELS, not in header values. Sibling files written by
-    the same pipeline can carry CDELT to different precision — -4.166667E-04
-    against -4.1667E-04 — and demanding equal floats would reject a perfectly
-    co-registered pair over how a number was printed. What matters is whether
-    the two grids land on the same sky to well within a pixel.
+    The comparison is of the pixel → sky MAPPING, not of keywords. The four
+    corners and the centre of `a` are taken to the sky through a's WCS and back
+    to pixels through b's, and must land on the same pixels. Comparing CDELT,
+    CRVAL and CRPIX alone accepted a pair rotated by 90° through PC or CD (the
+    reference point is the same, every other pixel is not), and refused the same
+    grid written as a CD matrix in one file and CDELT in the other. Going
+    through the sky also accepts the same grid labelled in two frames (FK5 and
+    ICRS). The tolerance is in pixels so that CDELT printed to different
+    precision by sibling files does not reject a co-registered pair.
     """
     if a.path == b.path:
         return
-    tolerance_pixels = 0.01
     for axis in (1, 2):
         ctype_a = str(a.header.get(f"CTYPE{axis}", "")).strip().upper()
         ctype_b = str(b.header.get(f"CTYPE{axis}", "")).strip().upper()
@@ -235,33 +253,56 @@ def _require_same_sky_grid(a: ScientificFitsDataset, b: ScientificFitsDataset) -
                 f"The Stokes files use different projections on axis {axis} "
                 f"({ctype_a or 'none'} vs {ctype_b or 'none'}); they cannot be combined "
                 f"pixel by pixel.")
-        try:
-            cdelt_a = float(a.header.get(f"CDELT{axis}", 0.0))
-            cdelt_b = float(b.header.get(f"CDELT{axis}", 0.0))
-            crval_a = float(a.header.get(f"CRVAL{axis}", 0.0))
-            crval_b = float(b.header.get(f"CRVAL{axis}", 0.0))
-            crpix_a = float(a.header.get(f"CRPIX{axis}", 1.0))
-            crpix_b = float(b.header.get(f"CRPIX{axis}", 1.0))
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"The Stokes files have unreadable WCS on axis {axis}: {exc}") from exc
-
-        scale = abs(cdelt_a) or abs(cdelt_b)
-        if scale == 0.0:
-            raise ValueError(f"The Stokes files have no pixel scale on axis {axis}.")
-        if abs(cdelt_a - cdelt_b) > 1e-6 * scale:
-            raise ValueError(
-                f"The Stokes files have different pixel scales on axis {axis} "
-                f"(CDELT {cdelt_a:g} vs {cdelt_b:g}); they are not on the same grid.")
-        # Offset of b's reference point from a's, measured in pixels of a.
-        offset_pixels = abs((crval_a - crval_b) / scale) + abs(crpix_a - crpix_b)
-        if offset_pixels > tolerance_pixels:
-            raise ValueError(
-                f"The Stokes files are not on the same sky grid: their reference points "
-                f"differ by {offset_pixels:.3g} pixels on axis {axis} "
-                f"({a.path} vs {b.path}). Combining them per pixel would mix different "
-                f"positions on the sky.")
-
+        # astropy builds an identity WCS for a header with no coordinates at
+        # all, so "has a WCS" proves nothing: the file must state its scale.
+        for ds in (a, b):
+            if not any(key in ds.header for key in
+                       (f"CDELT{axis}", f"CD{axis}_1", f"CD{axis}_2")):
+                raise ValueError(f"The Stokes files have no pixel scale on axis {axis}.")
+    wcs_a, wcs_b = _image_plane_wcs(a), _image_plane_wcs(b)
+    nx, ny = (a.axis_sizes + [1, 1])[:2]
+    # A 5 x 5 lattice, corners and centre included. Corners alone are not
+    # enough: on an all-sky projection they lie off the sky and only the centre
+    # survives, which cannot see a rotation about it.
+    gx, gy = np.meshgrid(np.linspace(0.0, nx - 1.0, 5), np.linspace(0.0, ny - 1.0, 5))
+    xs, ys = gx.ravel(), gy.ravel()
+    try:
+        if wcs_a.has_celestial and wcs_b.has_celestial:
+            from astropy.wcs.utils import pixel_to_skycoord, skycoord_to_pixel  # noqa: PLC0415
+            try:
+                sky = pixel_to_skycoord(xs, ys, wcs_a, origin=0, mode="all")
+                bx, by = skycoord_to_pixel(sky, wcs_b, origin=0, mode="all")
+            except ValueError:
+                # A celestial pair astropy cannot name a frame for: compare the
+                # world values directly, the CTYPEs having been checked equal.
+                bx, by = wcs_b.all_world2pix(*wcs_a.all_pix2world(xs, ys, 0), 0)
+        else:
+            bx, by = wcs_b.all_world2pix(*wcs_a.all_pix2world(xs, ys, 0), 0)
+    except Exception as exc:  # noqa: BLE001 – astropy raises several kinds here
+        raise ValueError(
+            f"The Stokes files have WCS that cannot be compared ({a.path} vs {b.path}): "
+            f"{exc}") from exc
+    bx, by = np.asarray(bx, dtype=np.float64), np.asarray(by, dtype=np.float64)
+    # A sample off the projection's valid sky in `a` (an all-sky corner) says
+    # nothing; one that is valid in `a` but not in `b` is a mismatch.
+    world_ok = np.isfinite(np.asarray(wcs_a.all_pix2world(xs, ys, 0), dtype=np.float64)).all(axis=0)
+    # Agreement needs three valid samples that are not on one line (an image
+    # one pixel wide or tall has no other kind, and is checked along its line).
+    design = np.column_stack([xs[world_ok], ys[world_ok], np.ones(int(world_ok.sum()))])
+    needed = min(3, int(np.linalg.matrix_rank(np.column_stack([xs, ys, np.ones(xs.size)]))))
+    if not world_ok.any() or np.linalg.matrix_rank(design) < needed:
+        raise ValueError(
+            f"Too few pixels of {a.path} map to the sky to check its grid against "
+            f"{b.path}.")
+    offset = np.hypot(bx - xs, by - ys)
+    offset = np.where(np.isfinite(offset), offset, np.inf)[world_ok]
+    worst = int(np.argmax(offset))
+    if offset[worst] > _SKY_GRID_TOLERANCE_PIXELS:
+        px, py = xs[world_ok][worst], ys[world_ok][worst]
+        raise ValueError(
+            f"The Stokes files are not on the same sky grid: pixel ({px:g}, {py:g}) of "
+            f"{a.path} falls {offset[worst]:.3g} pixels away from the same pixel of "
+            f"{b.path}. Combining them per pixel would mix different positions on the sky.")
 
 def _frequencies_hz(dataset: ScientificFitsDataset, n_freq: int) -> np.ndarray:
     """Spectral axis of `dataset` in Hz, or a ValueError explaining why it cannot be.
@@ -369,8 +410,13 @@ def worker_polarisation_pi_pa(
     (q_ds, q_auth), (u_ds, u_auth) = sources["Q"], sources["U"]
     depth = _plane_count(q_ds, "Q", authoritative=q_auth)
     ch = 0 if channel is None else int(channel)
-    if not 0 <= ch < depth:
-        raise ValueError(f"Channel {ch} is outside the {depth} plane(s) of the Stokes Q data.")
+    # Line-free channels beyond Q are dropped as before; they are read only when
+    # at least two remain. Every plane that IS read, the map's own included,
+    # must exist in U too and be the same channel there.
+    wanted = sorted({int(i) for i in (line_free_channels or []) if 0 <= int(i) < depth})
+    if not (depth > 1 and len(wanted) >= 2):
+        wanted = []
+    _require_same_spectral_planes(q_ds, q_auth, u_ds, u_auth, [ch, *wanted])
     Q = _read_stokes_cube(q_ds, "Q", authoritative=q_auth, channel=ch)[0]
     U = _read_stokes_cube(u_ds, "U", authoritative=u_auth, channel=ch)[0]
     if Q.shape != U.shape:
@@ -388,8 +434,7 @@ def worker_polarisation_pi_pa(
     # sits in memory for it. Per pixel over its finite samples, as nanvar would.
     sigma_qu2 = 0.0
     line_free_dropped: list[int] = []
-    wanted = sorted({int(i) for i in (line_free_channels or []) if 0 <= int(i) < depth})
-    if depth > 1 and len(wanted) >= 2:
+    if wanted:
         count = {k: np.zeros(Q.shape, dtype=np.int32) for k in "qu"}
         total = {k: np.zeros(Q.shape, dtype=np.float64) for k in ("q", "qq", "u", "uu")}
         used = 0
@@ -481,6 +526,121 @@ def _plane_count(dataset: ScientificFitsDataset, role: str, *, authoritative: bo
     1×1 region, so the answer costs one memmap open and n pixels."""
     return int(_read_stokes_cube(dataset, role, authoritative=authoritative, region=(0, 0, 1, 1)).shape[0])
 
+
+def _spectral_axis_world(dataset: ScientificFitsDataset, n_planes: int):
+    """(CTYPE, unit, coordinates of planes 0..n_planes-1) of the dataset's spectral
+    axis, or None when it has none that can be identified.
+
+    The axis is the one whose CTYPE names a spectral coordinate (the prefixes
+    ``cube_numpy_spectral_fits_axis`` recognises), looked for over EVERY axis so
+    that a single-channel file with a degenerate FREQ axis still states its
+    frequency. Without such a CTYPE, the one non-Stokes axis beyond the image
+    plane with ``n_planes`` planes is used, as the cube helpers fall back to.
+    """
+    stokes_numpy = dataset.stokes_numpy_axis()
+    stokes_fits = None if stokes_numpy is None else dataset.naxis - stokes_numpy
+    extra = [axis for axis in range(3, dataset.naxis + 1) if axis != stokes_fits]
+    named = [axis for axis in extra
+             if str(dataset.header.get(f"CTYPE{axis}", "")).strip().upper()
+             .startswith(ScientificFitsDataset._SPECTRAL_CTYPE_PREFIXES)]
+    if named:
+        axis = named[0]
+    else:
+        sized = [a for a in extra if n_planes > 1 and dataset.axis_sizes[a - 1] == n_planes]
+        if len(sized) != 1:
+            return None
+        axis = sized[0]
+    if dataset.wcs is None:
+        return None
+    sub = dataset.wcs.sub([axis])
+    coords = np.asarray(sub.all_pix2world(np.arange(n_planes, dtype=np.float64), 0)[0],
+                        dtype=np.float64)
+    return (str(sub.wcs.ctype[0]).strip().upper()[:4], str(sub.world_axis_units[0] or ""),
+            coords)
+
+
+def _require_same_spectral_planes(
+    q: ScientificFitsDataset, q_auth: bool, u: ScientificFitsDataset, u_auth: bool,
+    planes: list[int],
+) -> None:
+    """Refuse a Q/U pair whose `planes` are not the same spectral channels.
+
+    PI and PA combine Q[i] with U[i]. Reading U used to CLAMP i to U's last
+    plane, so a 3-plane Q against a 1-plane U paired Q[2] with U[0] and
+    returned a valid-looking map; and two files with the same plane count on
+    different frequency grids were paired with no check at all. Each plane
+    used must exist in both files and sit at the same spectral coordinate.
+
+    An Obit MFImage cube states its sub-band frequencies in its own keywords,
+    which are compared instead of the WCS axis (see ``_mfimage_subbands``). A
+    file with no identifiable spectral axis — a plain 2-D map — has nothing to
+    compare; only the plane count is checked then.
+    """
+    depth = {"Q": _plane_count(q, "Q", authoritative=q_auth),
+             "U": _plane_count(u, "U", authoritative=u_auth)}
+    for role in ("Q", "U"):
+        outside = [p for p in planes if not 0 <= p < depth[role]]
+        if outside:
+            raise ValueError(
+                f"Channel {outside[0]} is outside the {depth[role]} plane(s) of the "
+                f"Stokes {role} data.")
+    if q.path == u.path:
+        return
+    q_layout, u_layout = _mfimage_subbands(q), _mfimage_subbands(u)
+    if (q_layout is None) != (u_layout is None):
+        raise ValueError(
+            "One of the Stokes Q and U files is an MFImage cube (NSPEC sub-bands) and "
+            "the other is not; their planes do not correspond.")
+    if q_layout is not None and u_layout is not None:
+        # Only the planes used are compared: sub-band k is file plane offset + k,
+        # and the fitted planes before it carry no frequency of their own.
+        if q_layout[0] != u_layout[0]:
+            raise ValueError(
+                "Stokes Q and U have their sub-bands at different file planes; their "
+                "planes are not the same spectral channels.")
+        offset = q_layout[0]
+        for p in planes:
+            k = p - offset
+            if k < 0:
+                continue
+            if k >= len(q_layout[1]) or k >= len(u_layout[1]) or not np.isclose(
+                    q_layout[1][k], u_layout[1][k], rtol=1e-6, atol=0.0):
+                raise ValueError(
+                    f"Stokes Q and U declare different sub-band frequencies for plane "
+                    f"{p}; PI and PA would combine channels that were not measured "
+                    f"together.")
+        return
+    q_axis = _spectral_axis_world(q, depth["Q"])
+    u_axis = _spectral_axis_world(u, depth["U"])
+    if q_axis is None or u_axis is None:
+        return
+    (q_type, q_unit, q_coord), (u_type, u_unit, u_coord) = q_axis, u_axis
+    if q_type != u_type:
+        raise ValueError(
+            f"Stokes Q and U have different spectral axes ({q_type} vs {u_type}); "
+            f"their planes cannot be paired.")
+    if q_unit != u_unit:
+        try:
+            import astropy.units as au  # noqa: PLC0415
+            u_coord = (u_coord * au.Unit(u_unit)).to_value(au.Unit(q_unit))
+        except Exception as exc:  # noqa: BLE001 – unknown or incompatible unit strings
+            raise ValueError(
+                f"Stokes Q and U give their spectral axes in units that cannot be "
+                f"compared ({q_unit or 'none'} vs {u_unit or 'none'}).") from exc
+    # Same channel = within a hundredth of a channel width, with a floor at
+    # float precision. A part per million of the coordinate (the RM check's
+    # rtol) is a whole channel of a 1 kHz-wide cube at 1.4 GHz, so it is only
+    # the fallback for a single plane, which has no width to measure.
+    step = float(np.median(np.abs(np.diff(q_coord)))) if len(q_coord) > 1 else 0.0
+    for p in planes:
+        a, b = float(q_coord[p]), float(u_coord[p])
+        scale = max(abs(a), abs(b))
+        tolerance = (max(1e-2 * step, 1e-12 * scale) if step > 0.0 else 1e-6 * scale)
+        if abs(a - b) > tolerance:
+            raise ValueError(
+                f"Stokes Q and U are at different spectral coordinates on plane {p} "
+                f"({a:.9g} vs {b:.9g} {q_unit}); PI and PA would combine channels "
+                f"that were not measured together.")
 
 def _planes_with_data(q_cube: np.ndarray, u_cube: np.ndarray) -> np.ndarray:
     """`_plane_has_data` per plane, one plane at a time: the temporaries are a plane, not a cube."""

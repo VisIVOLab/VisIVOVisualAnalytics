@@ -1,0 +1,10 @@
+# Cube list of the issue #3 campaign on PLEIADI-GPU (INAF-OACT), for
+# run_hpc_moment_campaign.sh. Columns: label fs path mask repeats ways [options]
+# Masks are explicit 3-sigma thresholds (Jy/beam): SDC2 sigma 28.5 uJy/beam,
+# Sky124 robust sigma 2.45 mJy/beam, the synthetic cube sigma 1.
+sdc2    shared  /mnt/beegfs/fvitello/demo_data/sky_ldev_v2.fits                 8.6e-5  3  dask,stream  check=3630:3757
+sdc2    local   /mnt/beegfs/fvitello/demo_data/sky_ldev_v2.fits                 8.6e-5  3  dask,stream
+sky124  shared  /mnt/beegfs/astrodata/FITS/Sky124/sky124.fits                   7.3e-3  2  dask,stream
+sky124  local   /mnt/beegfs/astrodata/FITS/Sky124/sky124.fits                   7.3e-3  2  dask,stream
+syn450  shared  /mnt/beegfs/fvitello/visivo/bench3/syn/cube_450gb_freq.fits     3.0     2  dask         make=450
+syn450  shared  /mnt/beegfs/fvitello/visivo/bench3/syn/cube_450gb_freq.fits     3.0     0  stream
