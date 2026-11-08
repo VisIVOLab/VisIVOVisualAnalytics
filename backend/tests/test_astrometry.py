@@ -416,6 +416,63 @@ class TestPerChannelBeam:
         assert a0 and a3 and a3 > a0  # larger beam at higher channel → larger area
 
 
+class TestRegionStatsPerChannelBeam:
+    """Region flux on a CASA multi-beam cube uses the SELECTED channel's beam
+    from the BEAMS table, not the primary-header one (which is only a
+    representative beam, or absent)."""
+
+    @staticmethod
+    def _write(path, header_beam_arcsec, channel_beam_arcsec, nz=3):
+        data = np.ones((nz, 32, 32), dtype=np.float32)
+        h = fits.Header()
+        h["CTYPE1"] = "RA---SIN"; h["CTYPE2"] = "DEC--SIN"; h["CTYPE3"] = "FREQ"
+        h["CRVAL1"] = 10.0; h["CRVAL2"] = 20.0; h["CRVAL3"] = 1.4e9
+        h["CRPIX1"] = 16.0; h["CRPIX2"] = 16.0; h["CRPIX3"] = 1.0
+        h["CDELT1"] = -1.0 / 3600.0; h["CDELT2"] = 1.0 / 3600.0; h["CDELT3"] = 1e6
+        h["CUNIT1"] = "deg"; h["CUNIT2"] = "deg"; h["CUNIT3"] = "Hz"
+        h["BUNIT"] = "Jy/beam"
+        if header_beam_arcsec is not None:
+            h["BMAJ"] = header_beam_arcsec / 3600.0
+            h["BMIN"] = header_beam_arcsec / 3600.0
+            h["BPA"] = 0.0
+        primary = fits.PrimaryHDU(data, header=h)
+        size = np.full(nz, channel_beam_arcsec, dtype=np.float32)
+        cols = fits.ColDefs([
+            fits.Column(name="BMAJ", format="E", unit="arcsec", array=size),
+            fits.Column(name="BMIN", format="E", unit="arcsec", array=size),
+            fits.Column(name="BPA", format="E", unit="deg", array=np.zeros(nz, np.float32)),
+            fits.Column(name="CHAN", format="J", array=np.arange(nz, dtype=np.int32)),
+        ])
+        beams = fits.BinTableHDU.from_columns(cols)
+        beams.header["EXTNAME"] = "BEAMS"
+        fits.HDUList([primary, beams]).writeto(path, overwrite=True)
+
+    _REGION = {"shape": "box", "frame": "image", "center": [15.5, 15.5],
+               "size": [10.0, 10.0], "angle_deg": 0.0}
+
+    def _expected_flux(self, stats, beam_arcsec):
+        from app.compute._common import beam_area_pixels
+        area = beam_area_pixels(beam_arcsec / 3600.0, beam_arcsec / 3600.0, 1.0, 1.0)
+        return stats["sum"] / area
+
+    def test_channel_beam_wins_over_header_beam(self, tmp_path):
+        from app.compute import worker_region_stats
+        path = str(tmp_path / "multibeam_hdr.fits")
+        self._write(path, header_beam_arcsec=2.0, channel_beam_arcsec=4.0)
+        stats = worker_region_stats(path, dict(self._REGION), channel=1)
+        assert stats["flux_jy"] is not None
+        # The 4" channel beam has 4x the area of the 2" header beam: using the
+        # header one returned a flux 4x too large.
+        assert stats["flux_jy"] == pytest.approx(self._expected_flux(stats, 4.0), rel=1e-6)
+
+    def test_flux_available_from_beams_table_alone(self, tmp_path):
+        from app.compute import worker_region_stats
+        path = str(tmp_path / "multibeam_nohdr.fits")
+        self._write(path, header_beam_arcsec=None, channel_beam_arcsec=4.0)
+        stats = worker_region_stats(path, dict(self._REGION), channel=2)
+        assert stats["flux_jy"] == pytest.approx(self._expected_flux(stats, 4.0), rel=1e-6)
+
+
 class TestReproject:
 
     @pytest.fixture(autouse=True)
@@ -457,6 +514,144 @@ class TestReproject:
         out_path = str(tmp_path / "reprojected_exists.fits")
         worker_reproject(self.path, out_path, self._identity_header_dict(), [64, 64], 1)
         assert Path(out_path).exists()
+
+    def test_reproject_carries_unit_and_beam(self, tmp_path):
+        """BUNIT and the beam describe the pixel values, not the grid, so they
+        survive reprojection; the target's WCS keys are never overridden by the
+        source's."""
+        from app.compute import worker_reproject
+        src = str(tmp_path / "jybeam_src.fits")
+        h = _wcs_image_header()
+        h["BUNIT"] = "Jy/beam"
+        h["BMAJ"] = 5.0 / 3600.0
+        h["BMIN"] = 3.0 / 3600.0
+        h["BPA"] = 30.0
+        h["TELESCOP"] = "MeerKAT"
+        rng = np.random.default_rng(3)
+        fits.PrimaryHDU(rng.standard_normal((64, 64)).astype(np.float32),
+                        header=h).writeto(src, overwrite=True)
+        target = self._identity_header_dict()
+        target["CRVAL1"] = 83.83  # shifted target centre
+        target["CDELT1"] = -3.0e-4
+        out_path = str(tmp_path / "jybeam_out.fits")
+        worker_reproject(src, out_path, target, [48, 48], 1)
+        out = fits.getheader(out_path)
+        assert out["BUNIT"] == "Jy/beam"
+        assert out["BMAJ"] == pytest.approx(5.0 / 3600.0)
+        assert out["BMIN"] == pytest.approx(3.0 / 3600.0)
+        assert out["BPA"] == pytest.approx(30.0)
+        assert out["TELESCOP"] == "MeerKAT"
+        assert out["CRVAL1"] == pytest.approx(83.83)
+        assert out["CDELT1"] == pytest.approx(-3.0e-4)
+        assert out["NAXIS1"] == 48
+
+    def test_reproject_target_unit_wins(self, tmp_path):
+        from app.compute import worker_reproject
+        src = str(tmp_path / "unit_src.fits")
+        h = _wcs_image_header()
+        h["BUNIT"] = "Jy/beam"
+        fits.PrimaryHDU(np.ones((64, 64), np.float32), header=h).writeto(src)
+        target = self._identity_header_dict()
+        target["BUNIT"] = "K"
+        out_path = str(tmp_path / "unit_out.fits")
+        worker_reproject(src, out_path, target, [64, 64], 1)
+        assert fits.getheader(out_path)["BUNIT"] == "K"
+
+    def test_reproject_4d_uses_one_plane_and_its_beam(self, tmp_path):
+        """A (Stokes, freq) cube is reprojected as ONE plane (first Stokes,
+        first channel) and carries that channel's BEAMS-table beam."""
+        from app.compute import worker_reproject
+        src = str(tmp_path / "four_d.fits")
+        h = _wcs_image_header()
+        h["CTYPE3"] = "FREQ"; h["CRVAL3"] = 1.4e9; h["CRPIX3"] = 1.0; h["CDELT3"] = 1e6
+        h["CTYPE4"] = "STOKES"; h["CRVAL4"] = 1.0; h["CRPIX4"] = 1.0; h["CDELT4"] = 1.0
+        h["BUNIT"] = "Jy/beam"
+        h["BMAJ"] = 9.0 / 3600.0; h["BMIN"] = 9.0 / 3600.0; h["BPA"] = 0.0
+        data = np.ones((2, 3, 64, 64), dtype=np.float32)
+        data[0, 0] = 7.0
+        size = np.array([2.0, 4.0, 6.0], dtype=np.float32)
+        beams = fits.BinTableHDU.from_columns(fits.ColDefs([
+            fits.Column(name="BMAJ", format="E", unit="arcsec", array=size),
+            fits.Column(name="BMIN", format="E", unit="arcsec", array=size),
+            fits.Column(name="BPA", format="E", unit="deg", array=np.zeros(3, np.float32)),
+            fits.Column(name="CHAN", format="J", array=np.arange(3, dtype=np.int32)),
+        ]))
+        beams.header["EXTNAME"] = "BEAMS"
+        fits.HDUList([fits.PrimaryHDU(data, header=h), beams]).writeto(src)
+        out_path = str(tmp_path / "four_d_out.fits")
+        worker_reproject(src, out_path, self._identity_header_dict(), [64, 64], 1)
+        with fits.open(out_path) as hdul:
+            assert hdul[0].data.shape == (64, 64)
+            assert np.nanmedian(hdul[0].data) == pytest.approx(7.0)
+            assert hdul[0].header["BMAJ"] == pytest.approx(2.0 / 3600.0)
+
+    def test_reproject_2d_beam_from_table_only(self, tmp_path):
+        from app.compute import worker_reproject
+        src = str(tmp_path / "two_d_table.fits")
+        h = _wcs_image_header()
+        h["BUNIT"] = "Jy/beam"
+        beams = fits.BinTableHDU.from_columns(fits.ColDefs([
+            fits.Column(name="BMAJ", format="E", unit="arcsec", array=np.array([5.0], np.float32)),
+            fits.Column(name="BMIN", format="E", unit="arcsec", array=np.array([3.0], np.float32)),
+            fits.Column(name="BPA", format="E", unit="deg", array=np.array([10.0], np.float32)),
+            fits.Column(name="CHAN", format="J", array=np.array([0], np.int32)),
+        ]))
+        beams.header["EXTNAME"] = "BEAMS"
+        fits.HDUList([fits.PrimaryHDU(np.ones((64, 64), np.float32), header=h),
+                      beams]).writeto(src)
+        out_path = str(tmp_path / "two_d_table_out.fits")
+        worker_reproject(src, out_path, self._identity_header_dict(), [64, 64], 1)
+        out = fits.getheader(out_path)
+        assert out["BMAJ"] == pytest.approx(5.0 / 3600.0)
+        assert out["BMIN"] == pytest.approx(3.0 / 3600.0)
+        assert out["BPA"] == pytest.approx(10.0)
+
+    def test_reproject_partial_target_beam_not_mixed(self, tmp_path):
+        """A target that names any beam key owns the whole beam."""
+        from app.compute import worker_reproject
+        src = str(tmp_path / "beam_src.fits")
+        h = _wcs_image_header()
+        h["BUNIT"] = "Jy/beam"
+        h["BMAJ"] = 8.0 / 3600.0; h["BMIN"] = 4.0 / 3600.0; h["BPA"] = 30.0
+        fits.PrimaryHDU(np.ones((64, 64), np.float32), header=h).writeto(src)
+        target = self._identity_header_dict()
+        target["BMAJ"] = 6.0 / 3600.0
+        out_path = str(tmp_path / "beam_out.fits")
+        worker_reproject(src, out_path, target, [64, 64], 1)
+        out = fits.getheader(out_path)
+        assert out["BMAJ"] == pytest.approx(6.0 / 3600.0)
+        assert "BMIN" not in out and "BPA" not in out
+        assert out["BUNIT"] == "Jy/beam"
+
+    @pytest.mark.parametrize("shape", [(1, 16), (16, 1), (1, 1)])
+    def test_reproject_keeps_singleton_spatial_axes(self, tmp_path, shape):
+        from app.compute import worker_reproject
+        src = str(tmp_path / "thin.fits")
+        h = _wcs_image_header(nx=shape[1], ny=shape[0])
+        fits.PrimaryHDU(np.ones(shape, np.float32), header=h).writeto(src)
+        target = {k: h[k] for k in h.keys()
+                  if k.startswith(("CTYPE", "CRVAL", "CRPIX", "CDELT", "CUNIT"))}
+        out_path = str(tmp_path / "thin_out.fits")
+        result = worker_reproject(src, out_path, target, list(shape), 1)
+        assert (result["height"], result["width"]) == shape
+
+    def test_reproject_spectral_axis_first(self, tmp_path):
+        """FREQ as FITS axis 1 (NumPy last): the sky plane is still the one
+        reprojected, not a row of it."""
+        from app.compute import worker_reproject
+        w = WCS(naxis=3)
+        w.wcs.ctype = ["FREQ", "RA---TAN", "DEC--TAN"]
+        w.wcs.crval = [1.4e9, 80.0, -5.0]
+        w.wcs.crpix = [1.0, 8.0, 8.0]
+        w.wcs.cdelt = [1e6, -0.001, 0.001]
+        raw = np.arange(256, dtype=np.float32).reshape(16, 16, 1)
+        src = str(tmp_path / "freq_first.fits")
+        fits.writeto(src, raw, w.to_header())
+        out_path = str(tmp_path / "freq_first_out.fits")
+        worker_reproject(src, out_path, dict(w.celestial.to_header()), [16, 16], 1)
+        out = fits.getdata(out_path)
+        assert np.isfinite(out).sum() > 200
+        assert np.nanmedian(out) == pytest.approx(127.5, abs=1.0)
 
     def test_reproject_missing_raises_importerror(self, tmp_path):
         from app.compute import worker_reproject

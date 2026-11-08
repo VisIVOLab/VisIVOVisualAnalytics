@@ -27,6 +27,34 @@ from ._common import (  # noqa: F401
 )
 
 
+def _read_plane(dataset: ScientificFitsDataset, channel: int) -> np.ndarray:
+    """One 2-D plane of ``dataset`` as float64, reading only that plane.
+
+    The plane is sliced from the memory-mapped array BEFORE the cast: casting
+    the whole HDU first made the peak memory of a one-plane analysis grow with
+    the cube depth (a full float64 copy of the cube for a 128x128 plane). The
+    squeeze and the slice are views on the memmap, so only the selected plane is
+    read from disk. Axis handling is unchanged: degenerate axes are dropped, a
+    3-D cube is indexed on its leading (spectral) axis and a 4-D one takes the
+    first Stokes plane of the given channel.
+    """
+    hdul, raw = dataset.open_memmap()
+    try:
+        view = np.squeeze(raw)
+        if view.ndim == 3:
+            view = view[channel, :, :]
+        elif view.ndim == 4:
+            # (stokes, freq, ny, nx) or similar – take first stokes, given channel
+            view = view[0, channel, :, :]
+        if view.ndim != 2:
+            raise ValueError(f"Expected 2-D plane after slicing, got shape {view.shape}.")
+        # np.array (not asarray) so the plane owns its memory and survives the
+        # file being closed.
+        return np.array(view, dtype=np.float64)
+    finally:
+        hdul.close()
+
+
 def worker_angular_power_spectrum(
     path: str,
     channel: int = 0,
@@ -79,21 +107,7 @@ def worker_angular_power_spectrum(
                 n_modes.
     """
     dataset = ScientificFitsDataset(path)
-    hdul, raw = dataset.open_memmap()
-    try:
-        data = np.asarray(raw, dtype=np.float64)
-    finally:
-        hdul.close()
-
-    # Squeeze degenerate axes; select channel from spectral axis if 3-D
-    data = np.squeeze(data)
-    if data.ndim == 3:
-        data = data[channel, :, :]
-    elif data.ndim == 4:
-        # (stokes, freq, ny, nx) or similar – take first stokes, given channel
-        data = data[0, channel, :, :]
-    if data.ndim != 2:
-        raise ValueError(f"Expected 2-D plane after slicing, got shape {data.shape}.")
+    data = _read_plane(dataset, channel)
 
     ny, nx = data.shape
 
@@ -317,31 +331,25 @@ def worker_skeleton(
         ) from exc
 
     dataset = ScientificFitsDataset(path)
-    hdul, raw = dataset.open_memmap()
-    try:
-        data = np.asarray(raw, dtype=np.float64)
-    finally:
-        hdul.close()
-
-    data = np.squeeze(data)
-    if data.ndim == 3:
-        data = data[channel, :, :]
-    elif data.ndim == 4:
-        data = data[0, channel, :, :]
-    if data.ndim != 2:
-        raise ValueError(f"Expected 2-D plane, got shape {data.shape}.")
+    data = _read_plane(dataset, channel)
 
     ny, nx = data.shape
     finite = np.isfinite(data)
     if not finite.any():
         raise ValueError("All pixels are NaN.")
 
-    # Optional Gaussian pre-smoothing
+    # Optional Gaussian pre-smoothing, NORMALISED over the finite pixels
+    # (smooth_plane: (G*(d·m))/(G*m)). Filling blanks with 0 and calling the
+    # whole map valid afterwards turned an unobserved area into a deep, flat
+    # minimum, which `void` mode then skeletonised as a void that was never
+    # observed. The blank footprint stays blank, so no skeleton pixel can land
+    # in it.
     if smooth_sigma_pix and smooth_sigma_pix > 0:
-        from scipy.ndimage import gaussian_filter as _gf  # noqa: PLC0415
-        filled = np.where(finite, data, 0.0)
-        data = _gf(filled, sigma=smooth_sigma_pix)
-        finite = np.ones_like(data, dtype=bool)
+        from .imutils import smooth_plane  # noqa: PLC0415
+        data = smooth_plane(data, float(smooth_sigma_pix))
+        finite = np.isfinite(data)
+        if not finite.any():
+            raise ValueError("All pixels are NaN.")
 
     if threshold is None:
         threshold = float(np.nanmean(data[finite]))
