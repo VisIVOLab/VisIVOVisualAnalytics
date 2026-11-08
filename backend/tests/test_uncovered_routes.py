@@ -646,11 +646,11 @@ async def test_moment_fits_task_publishes_its_file_only_when_complete(
     file takes the name in one rename. The desktop reuses a non-empty export of
     the same moment (issue #29), so a half-written one must never look done."""
     from app import dependencies
+    from app.routers import tasks as tasks_router
 
     seen = {}
 
-    async def writing(fn, *args):
-        out = args[1]
+    async def writing(entry, request, out, task_id=None):
         final = dependencies.get_exports_dir() / "published_m0.fits"
         seen["partial"] = out
         seen["final_size_while_writing"] = final.stat().st_size
@@ -663,7 +663,9 @@ async def test_moment_fits_task_publishes_its_file_only_when_complete(
         return {"output_path": out, "width": 1, "height": 1, "range_min": 0.0,
                 "range_max": 0.0, "bunit": "", "moment_unit": ""}
 
-    monkeypatch.setattr(dependencies, "_run", writing)
+    # The export (issue #119) computes the map and writes it; replace it with
+    # a writer that pauses half-way, to look at what is published meanwhile.
+    monkeypatch.setattr(tasks_router, "_moment_fits_export", writing)
     created = await client.post("/v1/tasks/moment_fits",
                                 json={"dataset_id": opened_cube["dataset_id"], "moment_order": 0,
                                       "output_basename": "published_m0.fits"},

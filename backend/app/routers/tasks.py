@@ -171,25 +171,9 @@ async def create_moment_fits_task(
     async def _runner() -> None:
         ticker = asyncio.create_task(_progress_ticker(task.task_id))
         try:
-<<<<<<< HEAD
-            # Computed as the moment task computes it (issue #119), then written.
-            result = await _moment_fits_export(entry, request, output_path, task.task_id)
-=======
-            result = await _run_heavy(
-                worker_moment_save_fits,
-                entry["path"],
-                partial_path,
-                int(request.moment_order),
-                int(request.channel_start),
-                int(request.channel_end),
-                bool(request.mask_enabled),
-                float(request.threshold_value),
-                bool(request.threshold_auto),
-                bool(request.moment2_variance),
-                TASKS.stop_file(task.task_id),
-                task_id=task.task_id,
-            )
->>>>>>> origin/main
+            # Computed as the moment task computes it (issue #119), written to
+            # the partial name and published below in one step.
+            result = await _moment_fits_export(entry, request, partial_path, task.task_id)
             ticker.cancel()
             # Publish: the whole file replaces the empty placeholder in one step.
             if os.path.exists(partial_path):
