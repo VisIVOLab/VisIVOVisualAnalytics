@@ -20,6 +20,13 @@ are preserved here unedited; the branch names they refer to are historical.
   pixel → sky mapping, refusing a pair rotated by `PC`/`CD` and accepting the
   same grid written either way; PI/PA refuses a channel that U does not have
   or that sits at a different frequency in U.
+- **Faster out-of-core moment maps** (#116, #117, #119). Large cubes are
+  read with explicit plane reads and read-ahead, and the number of worker
+  threads is chosen from the CPUs and the memory budget instead of a fixed
+  four. On a PLEIADI-GPU node M0, M1 and M2 on the dask path are 1.6 to 2.6
+  times faster, with the same maps. Export Moment as FITS now uses the same
+  out-of-core path as the moment itself. Measurements are in
+  `benchmark/RESULTS.md`.
 
 ## 1.0.11 (2026-11-06)
 

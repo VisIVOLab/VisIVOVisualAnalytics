@@ -18,7 +18,9 @@ about 32 minutes (1924 s, `benchmark/RESULTS.md`).
 ### `POST /v1/tasks/moment_fits`
 The task form of `POST /v1/products/moment_fits`: it computes a moment map and
 writes it to Workspace Exports as a 2-D FITS file, without the synchronous
-route's `VISIVO_HEAVY_TIMEOUT_S` limit. Use it for large cubes.
+route's `VISIVO_HEAVY_TIMEOUT_S` limit. Use it for large cubes. The map comes
+from the same path as `POST /v1/tasks/moment` (and its product cache), so the
+file equals the moment product of the same request bit for bit.
 
 Request: the same body as `/v1/products/moment_fits` (`MomentSaveFitsRequest`).
 

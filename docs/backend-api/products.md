@@ -84,7 +84,12 @@ name gets a numeric suffix. The file carries the celestial WCS and a `BUNIT`
 derived from the cube. Response: `valid`, `error`, `output_path`,
 `workspace_filename`, `width`, `height`, `range_min`, `range_max`, `bunit`,
 `moment_unit`. A non-cube dataset is 422; a compute failure is `valid: false`.
-Runs in the heavy tier (see [Worker pool](../backend-api.md#worker-pool-and-heavy-task-throttle)).
+The map is computed exactly as `/v1/products/moment` computes it for the same
+request (same backend selection, Dask path for large ranges, memory bound and
+product cache), then written: the file holds, bit for bit, the map the viewer
+shows. It takes one of the session's heavy slots, as `/v1/products/moment`
+does (HTTP 429 when they are all busy), and runs in the heavy tier (see
+[Worker pool](../backend-api.md#worker-pool-and-heavy-task-throttle)).
 
 ## Advanced 2-D products
 

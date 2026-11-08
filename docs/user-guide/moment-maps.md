@@ -50,7 +50,10 @@ window. If the task fails or is cancelled, the client reports it; it does not
 start the computation again by another route. Only a backend too old to have
 task routes is asked with a single synchronous request instead, which cannot
 be cancelled and is limited by that backend's request timeout. Exporting the
-moment as FITS ([below](#using-a-moment-map-elsewhere)) works the same way.
+moment as FITS ([below](#using-a-moment-map-elsewhere)) works the same way, and
+computes the map exactly as the moment itself is computed: the exported file
+holds the map you see, value for value, and an export right after the moment is
+served from the backend's cache.
 ```
 
 You can switch back and forth between *Slice* and *Moment* without
