@@ -503,27 +503,48 @@ async def test_moment_fits_task_refuses_a_non_cube(client: AsyncClient, opened_c
     assert resp.status_code == 404
 
 
+def _no_product_cache(monkeypatch) -> None:
+    """A faked moment must not reach the product cache other tests read."""
+    from app.product_cache import PRODUCT_CACHE
+
+    monkeypatch.setattr(PRODUCT_CACHE, "get", lambda key: None)
+    monkeypatch.setattr(PRODUCT_CACHE, "put", lambda **kwargs: None)
+
+
+_FAKE_MOMENT = {"width": 1, "height": 1, "scalar_type": "float32", "range_min": 0.0,
+                "range_max": 0.0, "spectral_axis_type": "", "spectral_axis_unit": "",
+                "moment_unit": "", "bunit": "", "moment_threads_used": 1,
+                "threshold_used": None, "data_base64": ""}
+
+
 @pytest.mark.asyncio
 async def test_moment_fits_task_hands_its_worker_a_stop_file(
         client: AsyncClient, opened_cube: dict, monkeypatch) -> None:
-    """The worker gets the task's stop file, so that DELETE /v1/tasks/{id}
-    stops it between slabs (it then writes nothing)."""
+    """The computation and the writer get the task's stop file, so that
+    DELETE /v1/tasks/{id} stops them between slabs (nothing is written)."""
     import app.compute as compute
     from app import dependencies
     from app.tasks import TASKS
 
     given = {}
 
-    def fake(src, out, order, z0, z1, mask, thr, auto=False, var=False, stop_file=None):
-        given["stop_file"] = stop_file
+    def fake_moment(*args):
+        given["compute_stop_file"] = args[-1]
+        return dict(_FAKE_MOMENT)
+
+    def fake_write(src, out, payload, *args):
+        given["stop_file"] = args[-1]
         return {"output_path": out, "width": 1, "height": 1, "range_min": 0.0,
                 "range_max": 0.0, "bunit": "", "moment_unit": ""}
 
     async def inline(fn, *args):
         return fn(*args)
 
-    monkeypatch.setattr(compute, "worker_moment_save_fits", fake)
+    _no_product_cache(monkeypatch)
+    monkeypatch.setattr(compute, "worker_moment", fake_moment)
+    monkeypatch.setattr(compute, "write_moment_fits", fake_write)
     monkeypatch.setattr(dependencies, "_run", inline)
+    monkeypatch.setattr(dependencies, "_run_in_pool", inline)
     created = await client.post("/v1/tasks/moment_fits",
                                 json={"dataset_id": opened_cube["dataset_id"], "moment_order": 0},
                                 headers=opened_cube["headers"])
@@ -531,7 +552,7 @@ async def test_moment_fits_task_hands_its_worker_a_stop_file(
     task = await _wait_task(client, task_id, opened_cube["headers"])
     assert task["status"] == "completed"
     assert given["stop_file"] and given["stop_file"].endswith(task_id)
-    assert given["stop_file"] == TASKS.peek(task_id).stop_file
+    assert given["stop_file"] == TASKS.peek(task_id).stop_file == given["compute_stop_file"]
 
 
 @pytest.mark.asyncio
@@ -552,8 +573,11 @@ async def test_moment_fits_task_reserves_its_name_and_frees_it_on_failure(
     async def inline(fn, *args):
         return fn(*args)
 
-    monkeypatch.setattr(compute, "worker_moment_save_fits", failing)
+    _no_product_cache(monkeypatch)
+    monkeypatch.setattr(compute, "worker_moment", lambda *a: dict(_FAKE_MOMENT))
+    monkeypatch.setattr(compute, "write_moment_fits", failing)
     monkeypatch.setattr(dependencies, "_run", inline)
+    monkeypatch.setattr(dependencies, "_run_in_pool", inline)
     created = await client.post("/v1/tasks/moment_fits",
                                 json={"dataset_id": opened_cube["dataset_id"], "moment_order": 0,
                                       "output_basename": "reserved_m0.fits"},
@@ -567,14 +591,18 @@ async def test_moment_fits_task_reserves_its_name_and_frees_it_on_failure(
 @pytest.mark.asyncio
 async def test_cancelled_moment_fits_task_keeps_its_name_until_the_worker_ends(
         client: AsyncClient, opened_cube: dict, monkeypatch) -> None:
-    """A worker past its last abort check still writes after the cancel: the
+    """A writer past its last abort check still writes after the cancel: the
     name stays reserved until it ends (no other export can get it), and then
     the cancelled task's file is removed."""
     import asyncio
 
+    import app.compute as compute
     from app import dependencies
 
     release, entered, seen = asyncio.Event(), asyncio.Event(), {}
+
+    async def inline(fn, *args):
+        return fn(*args)
 
     async def held(fn, *args):
         out = args[1]
@@ -586,7 +614,10 @@ async def test_cancelled_moment_fits_task_keeps_its_name_until_the_worker_ends(
         return {"output_path": out, "width": 1, "height": 1, "range_min": 0.0,
                 "range_max": 0.0, "bunit": "", "moment_unit": ""}
 
-    monkeypatch.setattr(dependencies, "_run", held)
+    _no_product_cache(monkeypatch)
+    monkeypatch.setattr(compute, "worker_moment", lambda *a: dict(_FAKE_MOMENT))
+    monkeypatch.setattr(dependencies, "_run", inline)          # the computation
+    monkeypatch.setattr(dependencies, "_run_in_pool", held)    # the writer
     created = await client.post("/v1/tasks/moment_fits",
                                 json={"dataset_id": opened_cube["dataset_id"], "moment_order": 0,
                                       "output_basename": "cancelled_m0.fits"},
@@ -595,7 +626,7 @@ async def test_cancelled_moment_fits_task_keeps_its_name_until_the_worker_ends(
     await asyncio.wait_for(entered.wait(), 2)
     assert (await client.delete(f"/v1/tasks/{task_id}", headers=opened_cube["headers"])).status_code == 200
     await _wait_task(client, task_id, opened_cube["headers"], wanted=("cancelled",))
-    assert os.path.exists(seen["out"]), "the name is still ours while the worker runs"
+    assert os.path.exists(seen["out"]), "the name is still ours while the writer runs"
     release.set()
     for _ in range(100):
         await asyncio.sleep(0.01)

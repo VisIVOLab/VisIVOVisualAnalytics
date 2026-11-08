@@ -1,0 +1,9 @@
+campaign  /mnt/beegfs/fvitello/visivo/bench116/campaign
+created   2026-11-06T12:25:19+01:00 on pleiadi-gpu by fvitello
+commit    ca8f335 + issue #116/#117/#119 working tree (uncommitted)
+code      copy of /mnt/beegfs/fvitello/visivo/checkout-116 in src/ (backend/app, benchmark); sha256 in src.sha256
+image     /mnt/beegfs/fvitello/visivo/backend-egl.sif
+image_sha256 aa3f592e32a79d9b7644f2620af4465b8cd89720fb8544fd7e5616cbdf12dc46
+cap       RLIMIT_DATA 16 GB per measuring process (see benchmark/remote/README.md)
+slurm     partition gpu, --gres=gpu:1 -c 32 --exclusive, time 06:00:00, jobs chained (afterany)
+local_dir /tmp  binds /mnt/beegfs  moment threads 0

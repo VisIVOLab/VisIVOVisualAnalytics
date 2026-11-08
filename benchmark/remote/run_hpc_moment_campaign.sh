@@ -34,6 +34,11 @@
 # Environment knobs (defaults in brackets):
 #   SIF (required)     Apptainer image providing the backend's Python stack
 #   COMMIT [HEAD]      commit, tag or branch to measure
+#   SRC_TREE []        measure this directory's backend/app and benchmark as they
+#                      are (an uncommitted tree, e.g. rsynced to the cluster)
+#                      instead of COMMIT; the sha256 of every file copied goes
+#                      to CAMPAIGN_DIR/src.sha256
+#   SRC_LABEL [tree]   what that tree is (e.g. "ca8f335 + issue #116 changes")
 #   CAP_GB [16]        RLIMIT_DATA cap per measuring process
 #   PARTITION [gpu]    SBATCH_ARGS ["--gres=gpu:1 -c 32 --exclusive"]   TIME [04:00:00]
 #   BINDS []           host paths bound into the image (the shared file system)
@@ -50,6 +55,8 @@ CAMPAIGN=${1:?campaign directory (on a file system the compute nodes see)}
 CUBES=${2:?cube list}
 SIF=${SIF:?SIF: the Apptainer image}
 COMMIT=${COMMIT:-HEAD}
+SRC_TREE=${SRC_TREE:-}
+SRC_LABEL=${SRC_LABEL:-tree}
 CAP_GB=${CAP_GB:-16}
 PARTITION=${PARTITION:-gpu}
 SBATCH_ARGS=${SBATCH_ARGS:---gres=gpu:1 -c 32 --exclusive}
@@ -61,8 +68,15 @@ AFTER=${AFTER:-}
 DRY_RUN=${DRY_RUN:-0}
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-REPO=$(git -C "$HERE" rev-parse --show-toplevel)
-SHA=$(git -C "$REPO" rev-parse --verify "$COMMIT^{commit}")
+if [ -n "$SRC_TREE" ]; then
+    SRC_TREE=$(cd "$SRC_TREE" && pwd)
+    [ -d "$SRC_TREE/backend/app" ] && [ -d "$SRC_TREE/benchmark" ] \
+        || { echo "no backend/app and benchmark under $SRC_TREE" >&2; exit 2; }
+    SHA="$SRC_LABEL"
+else
+    REPO=$(git -C "$HERE" rev-parse --show-toplevel)
+    SHA=$(git -C "$REPO" rev-parse --verify "$COMMIT^{commit}")
+fi
 # The jobs start in LOCAL_DIR: every path they use must be absolute.
 absolute() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s' "$PWD/$1" ;; esac; }
 SIF=$(absolute "$SIF")
@@ -74,22 +88,47 @@ if [ -e "$CAMPAIGN/src" ]; then
     echo "$CAMPAIGN/src exists: use a new campaign directory" >&2
     exit 2
 fi
+if [ -n "$SRC_TREE" ]; then
+    # The copy must not contain itself (paths compared canonical: "." and
+    # symbolic links resolved).
+    canon() { realpath -m "$1" 2>/dev/null || absolute "$1"; }
+    SRC_TREE=$(canon "$SRC_TREE")
+    case "$(canon "$CAMPAIGN")/" in
+        "$SRC_TREE"/backend/app/*|"$SRC_TREE"/benchmark/*)
+            echo "the campaign directory must lie outside $SRC_TREE/backend/app and benchmark" >&2
+            exit 2 ;;
+    esac
+fi
 
 mkdir -p "$CAMPAIGN/src" "$CAMPAIGN/jobs"
 CAMPAIGN=$(cd "$CAMPAIGN" && pwd)
-git -C "$REPO" archive "$SHA" backend/app benchmark | tar -x -C "$CAMPAIGN/src"
+if [ -n "$SRC_TREE" ]; then
+    mkdir -p "$CAMPAIGN/src/backend"
+    cp -R "$SRC_TREE/backend/app" "$CAMPAIGN/src/backend/app"
+    cp -R "$SRC_TREE/benchmark" "$CAMPAIGN/src/benchmark"
+    find "$CAMPAIGN/src" -name __pycache__ -prune -exec rm -rf {} +
+else
+    git -C "$REPO" archive "$SHA" backend/app benchmark | tar -x -C "$CAMPAIGN/src"
+fi
 cp "$CUBES" "$CAMPAIGN/cubes.txt"
 {
     echo "campaign  $CAMPAIGN"
     echo "created   $(date -Is) on $(hostname) by $(id -un)"
-    echo "commit    $SHA ($(git -C "$REPO" describe --tags --always "$SHA" 2>/dev/null))"
-    echo "code      git archive of that commit in src/ (backend/app, benchmark)"
+    if [ -n "$SRC_TREE" ]; then
+        echo "commit    $SHA"
+        echo "code      copy of $SRC_TREE in src/ (backend/app, benchmark); sha256 in src.sha256"
+    else
+        echo "commit    $SHA ($(git -C "$REPO" describe --tags --always "$SHA" 2>/dev/null))"
+        echo "code      git archive of that commit in src/ (backend/app, benchmark)"
+    fi
     echo "image     $SIF"
     echo "image_sha256 $(sha256sum "$SIF" | cut -d' ' -f1)"
     echo "cap       RLIMIT_DATA $CAP_GB GB per measuring process (see benchmark/remote/README.md)"
     echo "slurm     partition $PARTITION, $SBATCH_ARGS, time $TIME, jobs chained (afterany)"
     echo "local_dir $LOCAL_DIR  binds ${BINDS:-none}  moment threads $THREADS"
 } > "$CAMPAIGN/PROVENANCE.txt"
+(cd "$CAMPAIGN/src" && find backend/app benchmark -type f -print0 | sort -z \
+    | xargs -0 sha256sum) > "$CAMPAIGN/src.sha256"
 
 prev=$AFTER
 : > "$CAMPAIGN/jobs.txt"

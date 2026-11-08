@@ -262,6 +262,16 @@ def _mem_total_gb() -> float | None:
     return None
 
 
+def _threads(moment, plane_pixels: int) -> tuple[int, str | None]:
+    """The threads the dask way uses for this plane and why, from one decision
+    (issue #117); older backends chose from the CPU count only, no reason."""
+    choice = getattr(moment, "_moment_threads_choice", None)
+    if choice is not None:
+        n, why = choice(plane_pixels)
+        return int(n), why
+    return int(moment._n_moment_threads()), None
+
+
 # What each way runs in the backend, recorded with every measurement.
 FUNCTIONS = {"dask": "compute.moment._moment_map_dask (local threaded scheduler)",
              "stream": "compute.moment.worker_moment -> _moment_map_streaming",
@@ -292,10 +302,12 @@ def cmd_measure(args) -> None:
     finally:
         hdul.close()
     nch = z1 - z0 + 1
+    threads, threads_reason = _threads(moment, ny * nx)
     rec.update(channels=[z0, z1], shape=[nch, ny, nx],
                range_gb=round(nch * ny * nx * 4 / GB, 2),
                file_gb=round(os.path.getsize(args.cube) / GB, 2),
-               moment_threads=moment._n_moment_threads(),
+               moment_threads=threads,
+               moment_threads_reason=threads_reason,
                chunk_bytes=moment._MOMENT_CHUNK_BYTES,
                channels_per_block=moment._moment_chunk_z(ny * nx * 4, 64),
                env=environment(args))
@@ -322,6 +334,14 @@ def cmd_measure(args) -> None:
     if result is not None:
         img = decode_map(result)
         finite = np.isfinite(img)
+        if args.path == "dask" and result.get("moment_threads_used") is not None:
+            # The count the computation itself used. The reason comes from the
+            # preflight choice just before it; when the two differ (the free
+            # memory moved) the reason is dropped rather than misattributed.
+            used = int(result["moment_threads_used"])
+            if used != rec["moment_threads"]:
+                rec["moment_threads_reason"] = None
+            rec["moment_threads"] = used
         rec.update(threshold_used=result.get("threshold_used"),
                    moment_unit=result.get("moment_unit"),
                    finite_pixels=int(finite.sum()),
