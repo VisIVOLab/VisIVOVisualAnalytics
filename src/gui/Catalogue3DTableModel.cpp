@@ -77,6 +77,14 @@ QVariant Catalogue3DTableModel::data(const QModelIndex &index, int role) const
 
 QVariant Catalogue3DTableModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
+    // Rows are numbered as in the original table (from 1, as the status line
+    // and TOPCAT count them), not by their place among the rows loaded here:
+    // a filtered, sampled or paged-in subset skips numbers.
+    if (orientation == Qt::Vertical && role == Qt::DisplayRole && this->entries && section >= 0
+        && section < static_cast<int>(this->entries->size())) {
+        const qint64 row = this->entries->at(static_cast<std::size_t>(section)).sourceRow;
+        return row >= 0 ? QVariant(row + 1) : QVariant(section + 1);
+    }
     if (orientation != Qt::Horizontal || role != Qt::DisplayRole) {
         return QAbstractTableModel::headerData(section, orientation, role);
     }

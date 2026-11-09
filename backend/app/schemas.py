@@ -463,6 +463,10 @@ class TabularQueryResponse(BaseModel):
     step: int = 1   # an even sample: one row in this many (``phase``-th first)
     # catalogue: row-oriented dicts
     rows: list[dict[str, Any]] = []
+    # catalogue: the 0-based position of each returned row in the table as it
+    # was opened, before any filter, sort or sample. SAMP names rows by it
+    # (table.highlight.row), so a client that loaded a subset can map them.
+    row_index: list[int] = []
     # VBT point: column-oriented base64 float64-LE
     num_rows: int = 0
     fields: list[str] = []

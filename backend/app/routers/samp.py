@@ -14,11 +14,11 @@ These routes allow the Qt client (and any REST caller) to:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import mimetypes
 import time
 import urllib.parse
-import urllib.request
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -62,6 +62,11 @@ class SAMPSendResponse(BaseModel):
     error: str = ""
     job_id: str = ""
     sent_direct: bool = False      # True if sent via direct astropy connection
+    # deliver="return": the message for the caller to send itself (it is then
+    # neither queued nor sent here). {"mtype": ..., "params": {...}}
+    message: dict[str, Any] | None = None
+    rows: int = -1                 # rows of the table sent, when known
+    size_bytes: int = 0            # size of the staged file
 
 
 class SAMPReceiveRequest(BaseModel):
@@ -95,6 +100,10 @@ class SAMPFitsRequest(BaseModel):
     """Register a local FITS file path for SAMP URL sharing."""
     path: str
     filename: str = ""
+    # "queue": send it (direct connection, else the Qt client's outbound queue).
+    # "return": hand the message back in the response; the caller sends it,
+    # and can then ask the recipients for an answer (a SAMP call).
+    deliver: str = "queue"
 
 
 class SAMPFitsResponse(BaseModel):
@@ -126,6 +135,11 @@ class SAMPCatalogueRequest(BaseModel):
     path: str
     format: str = "csv"
     filename: str = ""
+    # The SAMP table-id the client chose for this table. It is sent with the
+    # table.load message so that later table.highlight.row / table.select.rowList
+    # messages can name the table (SAMP 1.3: by table-id and/or url).
+    table_id: str = ""
+    deliver: str = "queue"   # as SAMPFitsRequest.deliver
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -300,10 +314,24 @@ async def samp_import_url(
     request: SAMPImportUrlRequest,
     _: str = _operator,
 ) -> SAMPImportResponse:
-    """Download a remote URL into the backend SAMP temp store."""
+    """Download a remote URL into the backend SAMP temp store.
+
+    The URL comes from the caller, so it goes through the guarded fetch: the
+    SSRF check on the URL and on every redirect. A SAMP hub's own URLs
+    (``http://127.0.0.1:…``) are therefore refused here; the desktop client
+    downloads those itself and stages them with ``/v1/samp/upload-file``.
+    Trusted hosts can be listed in ``VISIVO_SAMP_ALLOWED_HOSTS``.
+    """
+    from ..safe_fetch import safe_urlopen  # noqa: PLC0415
+
+    def fetch() -> bytes:
+        with safe_urlopen(request.url, allowlist_env="VISIVO_SAMP_ALLOWED_HOSTS",
+                          timeout=30) as handle:
+            return handle.read()
+
     try:
-        with urllib.request.urlopen(request.url, timeout=30) as handle:
-            data = handle.read()
+        # Off the event loop: a slow archive must not stall every other route.
+        data = await asyncio.to_thread(fetch)
         parsed = urllib.parse.urlparse(request.url)
         filename = request.filename or Path(parsed.path).name or "samp-import.bin"
         token = store_samp_file(data, filename)
@@ -367,6 +395,28 @@ async def samp_serve_file(
     )
 
 
+def _dispatch(mtype: str, params: dict[str, Any], target_id: str | None, deliver: str,
+              rows: int = -1, size_bytes: int = 0) -> SAMPSendResponse:
+    """Send a staged file's message, or return it for the caller to send."""
+    if deliver.strip().lower() == "return":
+        return SAMPSendResponse(valid=True, message={"mtype": mtype, "params": params},
+                                rows=rows, size_bytes=size_bytes)
+    sent = SAMP.send_direct(mtype, params, target_id)
+    if sent:
+        return SAMPSendResponse(valid=True, sent_direct=True, job_id="direct",
+                                rows=rows, size_bytes=size_bytes)
+    job_id = SAMP.enqueue_for_qt_client(mtype, params, target_id)
+    return SAMPSendResponse(valid=True, job_id=job_id, rows=rows, size_bytes=size_bytes)
+
+
+def _staged_size(token: str) -> int:
+    path = get_samp_file_path(token)
+    try:
+        return path.stat().st_size if path is not None else 0
+    except OSError:
+        return 0
+
+
 # ── Convenience: build a standard image.load.fits send from a dataset path ───
 
 @router.post("/v1/samp/send-fits", response_model=SAMPSendResponse, tags=["samp"])
@@ -385,7 +435,9 @@ async def samp_send_fits(
         return SAMPSendResponse(valid=False, error=f"File not found: {request.path}")
     try:
         fname = request.filename or src.name
-        token = store_samp_file_from_path(src, fname)
+        # A copy of a large FITS takes seconds: off the event loop, which
+        # serves /v1/health and the client's other requests meanwhile.
+        token = await asyncio.to_thread(store_samp_file_from_path, src, fname)
     except Exception as exc:
         return SAMPSendResponse(valid=False, error=str(exc))
 
@@ -397,11 +449,8 @@ async def samp_send_fits(
         "name": fname,
         "samp.name": fname,
     }
-    sent = SAMP.send_direct(MTYPE_IMAGE_LOAD_FITS, params, target_id)
-    if sent:
-        return SAMPSendResponse(valid=True, sent_direct=True, job_id="direct")
-    job_id = SAMP.enqueue_for_qt_client(MTYPE_IMAGE_LOAD_FITS, params, target_id)
-    return SAMPSendResponse(valid=True, job_id=job_id)
+    return _dispatch(MTYPE_IMAGE_LOAD_FITS, params, target_id, request.deliver,
+                     size_bytes=_staged_size(token))
 
 
 @router.post("/v1/samp/send-catalogue", response_model=SAMPSendResponse, tags=["samp"])
@@ -410,48 +459,52 @@ async def samp_send_catalogue(
     target_id: str | None = Query(None),
     _: str = _operator,
 ) -> SAMPSendResponse:
-    """Stage a catalogue and enqueue a SAMP table.load message."""
+    """Stage a catalogue and enqueue (or return) a SAMP table.load message.
+
+    Staging reads and converts the whole table, which for millions of rows
+    takes tens of seconds: it runs off the event loop. A table converted to
+    VOTable is written in the BINARY2 serialization, several times smaller and
+    faster to parse than TABLEDATA XML for every SAMP table tool.
+    """
     src = Path(request.path)
     if not src.exists() or not src.is_file():
         return SAMPSendResponse(valid=False, error=f"File not found: {request.path}")
 
     fmt = request.format.strip().lower()
-    try:
+
+    def as_votable(dataframe: pd.DataFrame, filename: str) -> str:
+        table = Table.from_pandas(dataframe)
+        buffer = BytesIO()
+        table.write(buffer, format="votable", tabledata_format="binary2")
+        return store_samp_file(buffer.getvalue(), filename)
+
+    def stage() -> tuple[str, str, str, int]:
+        """(token, filename, mtype, rows); rows is -1 when not read."""
         if fmt == "csv":
             dataframe = pd.read_csv(src)
-            table = Table.from_pandas(dataframe)
-            buffer = BytesIO()
-            table.write(buffer, format="votable")
             filename = request.filename or f"{src.stem}.vot"
-            token = store_samp_file(buffer.getvalue(), filename)
-            mtype = MTYPE_TABLE_LOAD_VOTABLE
-        elif fmt in {"votable", "vot", "xml"}:
+            return as_votable(dataframe, filename), filename, MTYPE_TABLE_LOAD_VOTABLE, len(dataframe)
+        if fmt in {"votable", "vot", "xml"}:
             filename = request.filename or src.name
-            token = store_samp_file_from_path(src, filename)
-            mtype = MTYPE_TABLE_LOAD_VOTABLE
-        elif fmt in {"fits", "fit", "fits-table"}:
+            return (store_samp_file_from_path(src, filename), filename,
+                    MTYPE_TABLE_LOAD_VOTABLE, -1)
+        if fmt in {"fits", "fit", "fits-table"}:
             filename = request.filename or src.name
-            token = store_samp_file_from_path(src, filename)
-            mtype = MTYPE_TABLE_LOAD_FITS
-        elif fmt in {"ipac", "tbl", "speck"}:
+            return store_samp_file_from_path(src, filename), filename, MTYPE_TABLE_LOAD_FITS, -1
+        if fmt in {"ipac", "tbl", "speck"}:
             # No native SAMP mtype for these — load via the catalogue reader and
             # re-emit as VOTable (same path as CSV).
             from ..dependencies import _catalogue_load_dataframe  # noqa: PLC0415
 
             dataframe = _catalogue_load_dataframe(src, fmt)
-            table = Table.from_pandas(dataframe)
-            buffer = BytesIO()
-            table.write(buffer, format="votable")
             # Force a .vot name — the bytes are VOTable now, not the source format.
             stem = Path(request.filename).stem if request.filename else src.stem
             filename = f"{stem}.vot"
-            token = store_samp_file(buffer.getvalue(), filename)
-            mtype = MTYPE_TABLE_LOAD_VOTABLE
-        else:
-            return SAMPSendResponse(
-                valid=False,
-                error=f"Unsupported catalogue format: {request.format}",
-            )
+            return as_votable(dataframe, filename), filename, MTYPE_TABLE_LOAD_VOTABLE, len(dataframe)
+        raise ValueError(f"Unsupported catalogue format: {request.format}")
+
+    try:
+        token, filename, mtype, rows = await asyncio.to_thread(stage)
     except Exception as exc:
         return SAMPSendResponse(valid=False, error=str(exc))
 
@@ -461,8 +514,7 @@ async def samp_send_catalogue(
         "name": filename,
         "samp.name": filename,
     }
-    sent = SAMP.send_direct(mtype, params, target_id)
-    if sent:
-        return SAMPSendResponse(valid=True, sent_direct=True, job_id="direct")
-    job_id = SAMP.enqueue_for_qt_client(mtype, params, target_id)
-    return SAMPSendResponse(valid=True, job_id=job_id)
+    if request.table_id.strip():
+        params["table-id"] = request.table_id.strip()
+    return _dispatch(mtype, params, target_id, request.deliver, rows=rows,
+                     size_bytes=_staged_size(token))

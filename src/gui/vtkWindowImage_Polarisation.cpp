@@ -1,4 +1,5 @@
 #include "vtkWindowImage.h"
+#include "app/DatasetName.h"
 #include "ui_vtkWindowImage.h"
 #include "CubeViewportGeometry.h"
 
@@ -1000,7 +1001,7 @@ void vtkWindowImage::addDerivedLayer(vtkSmartPointer<vtkImageData> data,
     // list, with nothing in Session Data to say where it came from. The product
     // is bound to the layer, so opening its row selects that layer.
     QVariantMap params;
-    params.insert(u"Derived from"_s, QFileInfo(this->filepath).fileName());
+    params.insert(u"Derived from"_s, visivo::datasetDisplayName(this->filepath));
     params.insert(u"Layer"_s, name);
     params.insert(u"Value range"_s, u"%1 … %2"_s.arg(rangeMin, 0, 'g', 6).arg(rangeMax, 0, 'g', 6));
     params.insert(u"Colour map"_s, colorMap);

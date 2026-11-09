@@ -1,4 +1,5 @@
 #include "LayerListModel.h"
+#include "app/DatasetName.h"
 #include "ImageLayerSet.h"
 #include "ImageLayerLoadTask.h"
 
@@ -166,7 +167,8 @@ QVariant LayerListModel::data(const QModelIndex &index, int role) const
         if (m_displayNameOverrides.contains(index.row()))
             return m_displayNameOverrides.value(index.row());
         const auto full = QString::fromStdString(this->layerSet->filepath(index.row()));
-        return QFileInfo(full).fileName();
+        // The sender's name for a copy another application sent over SAMP.
+        return visivo::datasetDisplayName(full);
     }
     case Qt::ToolTipRole: {
         if (m_displayNameOverrides.contains(index.row()))

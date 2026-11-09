@@ -384,6 +384,26 @@ void vtkWindowCatalogue3D::buildScene()
     selectActor->VisibilityOff();
     renderer->AddActor(selectActor);
 
+    // ── SAMP selection marks (orange wireframe, table.select.rowList) ─────────
+    // The entries may be new (a filter, another page): the original-row map is
+    // rebuilt, and the last selection a SAMP tool sent is marked again on them.
+    this->m_sampRowMapDirty = true;
+    this->m_sampSubsetSphere->SetRadius(1.0);
+    this->m_sampSubsetSphere->SetPhiResolution(10);
+    this->m_sampSubsetSphere->SetThetaResolution(10);
+    this->m_sampSubsetMapper->SetSourceConnection(this->m_sampSubsetSphere->GetOutputPort());
+    this->m_sampSubsetMapper->SetInputData(this->m_sampSubsetData);
+    this->m_sampSubsetMapper->SetScaleArray("SampMarkRadius");
+    this->m_sampSubsetMapper->SetScaleModeToScaleByMagnitude();
+    this->m_sampSubsetMapper->ScalarVisibilityOff();
+    this->m_sampSubsetActor->SetMapper(this->m_sampSubsetMapper);
+    this->m_sampSubsetActor->GetProperty()->SetRepresentationToWireframe();
+    this->m_sampSubsetActor->GetProperty()->SetColor(1.0, 0.55, 0.0);   // orange
+    this->m_sampSubsetActor->GetProperty()->SetLineWidth(1.6);
+    this->m_sampSubsetActor->SetPickable(false);
+    renderer->AddActor(this->m_sampSubsetActor);
+    this->updateSampSubset(false);
+
     // ── Bounding-box coordinate axes ──────────────────────────────────────────
     const double bounds[6] = { xMin, xMax, yMin, yMax, zMin, zMax };
     cubeAxesActor->SetBounds(bounds);
@@ -677,6 +697,7 @@ void vtkWindowCatalogue3D::updatePointPositions()
     this->renderer->ResetCameraClippingRange();
     this->updateHighlightSphere(this->hoverSphere.Get(), this->hoverActor.Get(), this->hoveredIndex, 1.35);
     this->updateHighlightSphere(this->selectSphere.Get(), this->selectActor.Get(), this->selectedIndex, 1.18);
+    this->updateSampSubset(false);
     qInfo() << "[catalogue3d] axis mapping updated"
             << "X=" << this->mapXKey << "resolved=" << resolvedXKey
             << "Y=" << this->mapYKey << "resolved=" << resolvedYKey
@@ -1043,6 +1064,7 @@ void vtkWindowCatalogue3D::updateGlyphScales()
 
     updateHighlightSphere(hoverSphere.Get(), hoverActor.Get(), hoveredIndex, 1.45);
     updateHighlightSphere(selectSphere.Get(), selectActor.Get(), selectedIndex, 1.28);
+    this->updateSampSubset(false);
     qInfo() << "[catalogue3d] size mapping:" << this->mapSizeKey
             << "visual range:" << minVisual << maxVisual;
 }

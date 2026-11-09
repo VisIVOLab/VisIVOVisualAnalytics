@@ -4,6 +4,7 @@
 #include "Catalogue3DParser.h"
 
 #include "app/BackendClient.h"
+#include "app/SampProtocol.h"
 #include "app/CosmologyModel.h"
 
 #include <vtkNew.h>
@@ -85,6 +86,9 @@ struct Catalogue3DFilterTaskResult
     std::vector<Catalogue3DEntry> entries;
     QString statusMsg;
     int totalRows{ 0 };
+    /// Rows the backend returned, before invalid ones were skipped: what a
+    /// page consumed, which is what the next page's offset moves by.
+    int returnedRows{ 0 };
     int step{ 1 };   ///< an even sample: one row in this many
     int limit{ 0 };  ///< the page size that step was taken for
 };
@@ -106,6 +110,15 @@ struct Catalogue3DCosmologyTaskResult
     std::vector<double> distancesMpc;
 };
 
+// How to name a catalogue that is not a file the user picked: a table
+// received over SAMP is staged on the backend under a hashed name, which means
+// nothing to the user. Empty: the file's own name.
+struct Catalogue3DLabel
+{
+    QString displayName;          ///< shown wherever the file's name would be
+    bool temporaryCopy{ false };  ///< a staged copy: its path is not shown as the data's
+};
+
 // ---------------------------------------------------------------------------
 // vtkWindowCatalogue3D
 //
@@ -122,11 +135,35 @@ public:
     // `paths` (optional) opens several catalogue files of the same format as ONE
     // concatenated catalogue; `filepath` is the primary/label path. Empty or
     // single-element `paths` behaves as a normal single-file open.
+    // `label` (optional) names a catalogue whose file name means nothing to
+    // the user (one received over SAMP).
     explicit vtkWindowCatalogue3D(const QString &filepath, const QString &backendUrl,
                                   const QString &backendToken,
                                   const QStringList &paths = QStringList(),
+                                  const Catalogue3DLabel &label = Catalogue3DLabel(),
                                   QWidget *parent = nullptr);
     ~vtkWindowCatalogue3D() override;
+
+    // ── SAMP row linking (issue #130, vtkWindowCatalogue3D_Samp.cpp) ──────────
+    /// The key SAMP row messages are matched on: the backend path of a
+    /// single-file catalogue. Empty for a combined (multi-file) one: its rows
+    /// are numbered across all its files, which no other tool's table is.
+    QString sampTableKey() const;
+    /// Rows of the whole table on the backend (not only those loaded here).
+    qint64 tableRowCount() const
+    {
+        return this->m_tableRows > 0 ? this->m_tableRows : static_cast<qint64>(this->m_totalCount);
+    }
+    QString cataloguePath() const { return this->filepath; }
+    /// The catalogue opened on the backend and some rows loaded.
+    bool hasLoadedRows() const { return !this->remoteDatasetId.isEmpty() && !this->entries.empty(); }
+    /// table.highlight.row: select the source of original-table row @p row and
+    /// fly to it, as a click on it would. False (and a status line saying so)
+    /// when that row is not among the rows loaded here.
+    bool highlightSampRow(qint64 row, const QString &from);
+    /// table.select.rowList: mark the sources of @p rows (original-table
+    /// rows) and say how many there are; an empty list clears the marks.
+    void selectSampRows(const QList<qint64> &rows, const QString &from);
 
 private slots:
     void toggleLabels(bool checked);
@@ -149,6 +186,9 @@ private slots:
 
 signals:
     void sourceSelectionChanged(int index);
+    /// The user selected the source of original-table row @p row (a click in
+    /// the view or the table, never a SAMP message): for table.highlight.row.
+    void sampRowActivated(const QString &tableKey, qint64 row);
     /// Emitted when a session-expiry error is detected and the user requests
     /// that the dataset be reopened.  Connect to MainWindow::doOpenCataloguePath.
     void reopenRequested(const QString &filepath, const QStringList &paths = QStringList());
@@ -203,6 +243,13 @@ private:
     /// CURRENT state. Both were written once at startup, so a filter or another
     /// page of sources left the bar claiming the number the window opened with.
     void refreshViewerChrome();
+    /// "3D Catalogue, <name>  (100000 of 150000 sources)".
+    void updateWindowTitle();
+    Catalogue3DLabel m_label;
+    /// The catalogue's name as shown: the label's, else the file's.
+    QString shownName() const;
+    /// Show Load more / Load all when the backend holds more rows than loaded.
+    void updateLoadMoreButtons();
     QPointer<QToolButton> m_kindTag;
     /// The two Inspector rows that do not stay put: the count changes with a
     /// filter or another page of sources, and the session changes when an
@@ -485,6 +532,39 @@ private:
     QString mapZKey{ QStringLiteral("computed:z") };
     QString mapSizeKey{ QStringLiteral("builtin:fixed") };
     QString mapColorKey{ QStringLiteral("builtin:morphology") };
+
+    // ── SAMP row linking ──────────────────────────────────────────────────────
+    /// Original-table row ↔ entry; rebuilt when the entries change.
+    SampRowMap m_sampRowMap;
+    bool m_sampRowMapDirty{ true };
+    std::size_t m_sampRowMapSize{ 0 };
+    void ensureSampRowMap();
+    /// False while the streamed (backend) or ray-traced view is on screen.
+    bool sampShowsLocalView() const;
+    /// Appended to a SAMP status line when the view on screen is not the
+    /// local one: how to get back to it, which depends on what replaced it.
+    QString sampLocalViewNote() const;
+    /// The status line a selection last wrote (SAMP's or a click's): a newer
+    /// selection replaces it, any other status is left alone.
+    QString m_selectionStatus;
+    void showSelectionStatus(const QString &text);
+    /// Set while a SAMP message drives the selection, so it is not sent back.
+    bool m_applyingSampSelection{ false };
+    /// The last table.select.rowList, as original rows: re-marked after a
+    /// filter or another page of rows changes what is loaded.
+    QList<qint64> m_sampSubsetRows;
+    QString m_sampSubsetFrom;
+    vtkNew<vtkPoints> m_sampSubsetPoints;
+    vtkNew<vtkFloatArray> m_sampSubsetScales;
+    vtkNew<vtkPolyData> m_sampSubsetData;
+    vtkNew<vtkSphereSource> m_sampSubsetSphere;
+    vtkNew<vtkGlyph3DMapper> m_sampSubsetMapper;
+    vtkNew<vtkActor> m_sampSubsetActor;
+    /// Rebuild the marks of m_sampSubsetRows on the current positions;
+    /// @p report: also write the count in the status line.
+    void updateSampSubset(bool report);
+    /// Radius of a highlight on source @p idx (the selection sphere's).
+    double highlightRadius(int idx, double radiusFactor);
 
     // Interaction state
     int hoveredIndex{ -1 };

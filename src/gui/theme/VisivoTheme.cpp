@@ -1,5 +1,6 @@
 #include "VisivoTheme.h"
 #include "app/DatasetName.h"
+#include "app/ToolTipText.h"
 
 #include <QApplication>
 #include <QEvent>
@@ -15,6 +16,7 @@
 #include <QPalette>
 #include <QPixmap>
 #include <QPushButton>
+#include <QScreen>
 #include <QStyleFactory>
 #include <QSvgRenderer>
 #include <QPainter>
@@ -480,6 +482,11 @@ QToolButton *makeGlyphButton(const QString &glyph, QWidget *parent)
 
 } // namespace
 
+QString wrappingToolTip(const QString &text)
+{
+    return visivo::wrappedToolTip(text);
+}
+
 QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
                            ViewerToolbarWidgets *out,
                            QWidget *parent)
@@ -544,12 +551,18 @@ QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
     // Split file path: dim directory + bright filename (Layout B aesthetic).
     // A field of a VBT volume: its file's folder, and "volume · field".
     const QFileInfo fi(visivo::datasetFilePath(spec.filePath));
-    const QString dirText = spec.filePath.isEmpty()
+    // A name given, or a copy another application sent (staged under a hashed
+    // name): the name alone, the path in the tooltip.
+    const bool named = !spec.displayName.trimmed().isEmpty()
+            || visivo::isReceivedCopy(spec.filePath);
+    const QString dirText = spec.filePath.isEmpty() || named
             ? QString()
             : (fi.absolutePath().endsWith(QLatin1Char('/'))
                        ? fi.absolutePath()
                        : fi.absolutePath() + QLatin1Char('/'));
-    const QString fileText = visivo::datasetDisplayName(spec.filePath);
+    const QString fileText = spec.displayName.trimmed().isEmpty()
+            ? visivo::datasetDisplayName(spec.filePath)
+            : spec.displayName.trimmed();
 
     if (!dirText.isEmpty()) {
         // Long paths are elided in the middle, and the label is given a hard
@@ -566,7 +579,7 @@ QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
         constexpr int kMaxPathWidth = 340;
         auto *dir = new QLabel(pill);
         dir->setMaximumWidth(kMaxPathWidth);
-        dir->setToolTip(spec.filePath);
+        dir->setToolTip(wrappingToolTip(spec.filePath));
         dir->setStyleSheet(
                 QStringLiteral(
                         "color: %1; font-family: 'JetBrains Mono', 'SF Mono', monospace; "
@@ -591,6 +604,8 @@ QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
                     "font-size: 11px; font-weight: 600;")
                     .arg(QLatin1StringView(kOnSurface())));
     file->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    if (named)
+        file->setToolTip(wrappingToolTip(spec.filePath));
     pillLayout->addWidget(file);
 
     hbox->addWidget(pill);
@@ -1244,12 +1259,40 @@ protected:
             if (auto *w = qobject_cast<QWidget *>(watched)) {
                 if (w->styleSheet() != m_css)
                     w->setStyleSheet(m_css);   // guarded: setStyleSheet repolishes
+                if (event->type() == QEvent::Show)
+                    fitOnScreen(w);
             }
         }
         return QObject::eventFilter(watched, event);
     }
 
 private:
+    // The tip label is sized before it is styled: with the font of the sheet it
+    // inherits from the widget it belongs to (an Inspector value: 11px
+    // monospace), while the sheet above draws it at 12px. Every such tooltip
+    // lost its last glyphs and, when wrapped, its bottom line. Measured with an
+    // offscreen harness: 134x51 for a text needing 141x52. So on Show it is
+    // given the size of the font it is drawn with (never smaller than Qt made
+    // it), and kept on the screen: Qt placed it for the size it had.
+    static void fitOnScreen(QWidget *w)
+    {
+        w->ensurePolished();
+        w->resize(w->size().expandedTo(w->sizeHint() + QSize(1, 0)));
+        const QScreen *screen = w->screen();
+        if (!screen)
+            return;
+        const QRect area = screen->availableGeometry();
+        // Frame coordinates, as pos() and move() use: geometry() is inside
+        // the frame, and moving to it shifts the window by the frame margin.
+        QRect r = w->frameGeometry();
+        r.moveRight(std::min(r.right(), area.right()));
+        r.moveBottom(std::min(r.bottom(), area.bottom()));
+        r.moveLeft(std::max(r.left(), area.left()));
+        r.moveTop(std::max(r.top(), area.top()));
+        if (const QPoint shift = r.topLeft() - w->frameGeometry().topLeft(); !shift.isNull())
+            w->move(w->pos() + shift);
+    }
+
     QString m_css;
 };
 

@@ -174,7 +174,7 @@ static std::optional<BackendTabularFilter> showAddFilterDialog(
 
 vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QString &backendUrl,
                                            const QString &backendToken, const QStringList &paths,
-                                           QWidget *parent)
+                                           const Catalogue3DLabel &label, QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::vtkWindowCatalogue3D)
     , filepath(filepath)
@@ -182,6 +182,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     , backendToken(backendToken)
     , m_cataloguePaths(paths)
 {
+    // Before anything shows a name: the title and the chrome are built from it.
+    this->m_label = label;
+    this->m_label.displayName = this->m_label.displayName.trimmed();
     ui->setupUi(this);
     this->buildControlPages();
 
@@ -230,7 +233,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
 
                          this->entries = result.entries;
                          // Update pagination state
-                         this->m_currentOffset = static_cast<int>(result.entries.size());
+                         // By rows consumed: rows skipped for bad coordinates
+                         // must not be fetched again by the next page.
+                         this->m_currentOffset = result.returnedRows;
                          this->m_sampleStep = result.step;
                          this->m_samplePhase = 1;
                          this->m_sampleLimit = result.limit;
@@ -318,7 +323,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                 // Append new entries
                 this->entries.insert(this->entries.end(),
                                      result.entries.begin(), result.entries.end());
-                this->m_currentOffset = static_cast<int>(this->entries.size());
+                this->m_currentOffset += result.returnedRows;   // rows consumed, skipped ones too
                 if (this->m_sampleStep > 1)
                     ++this->m_samplePhase;   // the rows between those loaded
                 this->m_totalCount = result.totalRows;
@@ -457,34 +462,39 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         this->m_sampleStep = subset.step;
         this->m_samplePhase = 1;
         this->m_sampleLimit = qreq.limit;
-        const auto parsed = Catalogue3DParser::parseBackendSubset(this->schema, subset.rows);
+        const auto parsed = Catalogue3DParser::parseBackendSubset(this->schema, subset.rows, subset.rowIndex);
         if (!subset.valid || !parsed.valid) {
             const QString error = !subset.valid ? subset.error : parsed.errorMessage;
             QMessageBox::critical(this, u"Catalogue Error"_s, error);
             ui->labelStatus->setText(u"Load error: "_s + error);
         } else {
             this->entries = parsed.entries;
+            // The first page is a page like any other: what the backend holds
+            // beyond it is what Load more brings, and what a row message for
+            // a row not loaded yet is told about. Without the total the window
+            // believed it held the whole table.
+            this->m_currentOffset = subset.returnedRows > 0
+                    ? subset.returnedRows
+                    : static_cast<int>(subset.rows.size());
+            this->m_totalCount = subset.totalRows;
             // Apply the active coordinate frame (FK5_J2000 is the parser default;
             // this is a no-op on startup since comboFrame defaults to FK5_J2000).
             this->applyFrameToEntries();
+            const QString loaded = this->m_totalCount > static_cast<int>(entries.size())
+                    ? QStringLiteral("Loaded %1 of %2 sources").arg(entries.size()).arg(this->m_totalCount)
+                    : QStringLiteral("Loaded %1 sources").arg(entries.size());
             if (parsed.skippedEntries > 0) {
-                ui->labelStatus->setText(
-                        QStringLiteral("Loaded %1 sources (%2 rows skipped).")
-                                .arg(entries.size())
-                                .arg(parsed.skippedEntries));
+                ui->labelStatus->setText(QStringLiteral("%1 (%2 rows skipped).")
+                                                 .arg(loaded)
+                                                 .arg(parsed.skippedEntries));
             } else {
-                ui->labelStatus->setText(QStringLiteral("Loaded %1 sources.").arg(entries.size()));
+                ui->labelStatus->setText(loaded + u'.');
             }
         }
     }
 
-    setWindowTitle(this->m_pointTable
-                           ? QStringLiteral("3D Points, %1  (%L2 rows)")
-                                     .arg(QFileInfo(filepath).fileName())
-                                     .arg(this->m_tableRows)
-                           : QStringLiteral("3D Catalogue, %1  (%2 sources)")
-                                     .arg(QFileInfo(filepath).fileName())
-                                     .arg(entries.size()));
+    this->updateWindowTitle();
+    this->updateLoadMoreButtons();
 
     // The same command bar and status rail as the image and cube viewers. Built
     // here rather than in setupUi() because the kind tag names the number of

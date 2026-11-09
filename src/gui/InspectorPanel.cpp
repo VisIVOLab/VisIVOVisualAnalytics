@@ -225,7 +225,9 @@ void InspectorPanel::applyValueStyle(QLabel *label, const QString &value)
                     .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
     label->setTextInteractionFlags(Qt::TextSelectableByMouse);
     label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    label->setToolTip(value);
+    // A long path has no spaces, and a one-line tooltip cut its end off: it is
+    // broken into lines; a short value is left exactly as it is.
+    label->setToolTip(VisivoTheme::wrappingToolTip(value));
     // A long value — a path or a session UUID — used to widen the whole
     // Properties page: the panel is a fixed 320 px, so the page then scrolled
     // sideways and every SHORT value was pushed out of sight beyond the right

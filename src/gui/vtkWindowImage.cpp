@@ -1,4 +1,5 @@
 #include "vtkWindowImage.h"
+#include "app/DatasetName.h"
 #include "Settings.h"
 #include "ui_vtkWindowImage.h"
 #include "CubeWcsUtil.h"
@@ -1006,8 +1007,12 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                        .arg(this->remoteDatasetCtype[0], this->remoteDatasetCtype[1])
                        .arg(this->remoteDatasetCdelt[0], 0, 'g', 12)
                        .arg(this->remoteDatasetCdelt[1], 0, 'g', 12);
-    // The file path is shown in the Layout B path-pill toolbar.
-    this->setWindowTitle(u"VisIVO Visual Analytics"_s);
+    // The file path is shown in the Layout B path-pill toolbar. A copy another
+    // application sent has no meaningful path: its sender's name is the title.
+    this->setWindowTitle(visivo::isReceivedCopy(this->filepath)
+                                 ? u"%1 - VisIVO Visual Analytics"_s.arg(
+                                           visivo::datasetDisplayName(this->filepath))
+                                 : u"VisIVO Visual Analytics"_s);
     this->setAttribute(Qt::WA_DeleteOnClose);
     this->hoverReadoutLabel = new QLabel(this);
     this->hoverReadoutLabel->setStyleSheet(u"QLabel { padding-left: 8px; }"_s);
@@ -1034,7 +1039,7 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     if (this->m_workspaceChrome) {
         this->m_workspaceChrome->installStatusRail();
         this->m_workspaceChrome->installSessionDock(
-                this->filepath, QFileInfo(this->filepath).fileName(), u"image"_s,
+                this->filepath, visivo::datasetDisplayName(this->filepath), u"image"_s,
                 this->m_windowScope);
         // The dock was installed and an owner scope minted, but nothing here ever
         // registered a product: this window's Session Data listed the dataset and

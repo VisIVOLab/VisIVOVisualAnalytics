@@ -196,7 +196,10 @@ Paginated, filtered query.
   "sort": { "field": "flux", "direction": "desc" }
 }
 ```
-Response: `total_rows`, `returned_rows`, `rows[]` (key-value maps).
+Response: `total_rows`, `returned_rows`, `rows[]` (key-value maps), and
+`row_index[]`: for each returned row, its 0-based position in the catalogue as
+opened, before any filter, sort or sample (empty if the table's index cannot
+say). SAMP row messages use these numbers.
 
 `"even_sample": true` (with `"phase"`, default 0): when more rows match than
 `limit`, one in every `step` of them from the `phase`-th, instead of a page;

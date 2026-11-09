@@ -176,6 +176,9 @@ add_executable(VisIVOTests
     TestCosmologyTools.h
     test_cosmology_tools.cpp
     test_backend_task_follow.cpp
+    TestSamp.h
+    test_samp.cpp
+    ${VISIVO_ROOT}/src/app/SampCallbackServer.cpp
     TestCopilotStatus.h
     test_copilot_status.cpp
     TestCopilotChoice.h

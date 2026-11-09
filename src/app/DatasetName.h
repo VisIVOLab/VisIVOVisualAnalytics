@@ -45,9 +45,44 @@ inline void rememberFieldNames(const QList<QPair<QString, QString>> &fields)
         fieldNames().insert(f.second, f.first);
 }
 
-/// The name a dataset is shown with: its file name, or "volume · field".
+/// Datasets another application sent (SAMP), staged on the backend under a
+/// hashed name that means nothing to the user: path → the sender's name for
+/// it (GUI thread). They are temporary copies the backend deletes later.
+inline QHash<QString, QString> &receivedNames()
+{
+    static QHash<QString, QString> names;
+    return names;
+}
+
+/// Record @p path as a received copy; @p name may be empty (a sender that
+/// gave none), and then the file's name is shown.
+inline void rememberReceivedName(const QString &path, const QString &name)
+{
+    if (!path.isEmpty())
+        receivedNames().insert(path, name.trimmed());
+}
+
+inline bool isReceivedCopy(const QString &path)
+{
+    return receivedNames().contains(path);
+}
+
+/// What an Inspector's Path row says: the path, or for a received copy what
+/// it is, then the path (elided in the middle, whole in the tooltip).
+inline QString datasetPathLabel(const QString &path)
+{
+    return isReceivedCopy(path)
+            ? QStringLiteral("temporary copy received over SAMP: %1").arg(path)
+            : path;
+}
+
+/// The name a dataset is shown with: the sender's for a received copy, its
+/// file name, or "volume · field".
 inline QString datasetDisplayName(const QString &path)
 {
+    if (const auto it = receivedNames().constFind(path);
+        it != receivedNames().constEnd() && !it.value().isEmpty())
+        return it.value();
     if (!isFieldReference(path))
         return QFileInfo(path).fileName();
     QString volume = QFileInfo(datasetFilePath(path)).fileName();

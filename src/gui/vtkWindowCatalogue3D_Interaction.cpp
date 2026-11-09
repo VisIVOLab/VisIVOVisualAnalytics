@@ -96,10 +96,12 @@ void vtkWindowCatalogue3D::onMouseEvent(unsigned long eid)
         const int idx = entries.empty() ? -1 : pickNearestSource(x, y);
         qInfo() << "[catalogue3d] double-click observer fired, picked source:" << idx;
         if (idx >= 0) {
-            const int newSelection = (idx == selectedIndex) ? -1 : idx;
-            qInfo() << "[catalogue3d] double-click selection index:" << newSelection
+            // The gesture's first click has already selected (or deselected)
+            // it; the double-click selects it, not toggle it a second time.
+            qInfo() << "[catalogue3d] double-click selection index:" << idx
                     << "(no zoom action executed)";
-            setSelectedSource(newSelection);
+            if (idx != selectedIndex)
+                setSelectedSource(idx);
         } else {
             qInfo() << "[catalogue3d] double-click miss; clearing selection"
                     << "(no zoom action executed)";
@@ -158,6 +160,12 @@ void vtkWindowCatalogue3D::onMouseEvent(unsigned long eid)
     // projection), so it can run on motion — but throttle it so a flood of move
     // events can't saturate the pick on a multi-million-point catalogue.
     if (leftButtonDown) {
+        // A drag past the threshold is a camera move, even if it comes back
+        // to where it started: the release must not count as a click.
+        const int dx = x - pressX;
+        const int dy = y - pressY;
+        if (dx * dx + dy * dy > clickDragThresholdPx * clickDragThresholdPx)
+            this->leftClickCandidate = false;
         // Don't trail a stale highlight while rotating the camera.
         setHoveredSource(-1);
         return;
@@ -223,15 +231,8 @@ int vtkWindowCatalogue3D::pickNearestSource(int displayX, int displayY) const
     return bestIdx;
 }
 
-void vtkWindowCatalogue3D::updateHighlightSphere(vtkSphereSource *sphere, vtkActor *actor,
-                                                  int idx, double radiusFactor)
+double vtkWindowCatalogue3D::highlightRadius(int idx, double radiusFactor)
 {
-    if (idx < 0) {
-        actor->VisibilityOff();
-        return;
-    }
-    const auto &position = this->mappedPositions[static_cast<std::size_t>(idx)];
-    double r = 0.0;
     if (this->geometryMode == GeometryMode::Point || this->geometryMode == GeometryMode::Gaussian) {
         // Points and splats have no glyph of their own: a marker sized by the
         // particles' mean spacing (∛(volume / N), as the splats are sized), not
@@ -246,14 +247,24 @@ void vtkWindowCatalogue3D::updateHighlightSphere(vtkSphereSource *sphere, vtkAct
         const double n = std::max<double>(1.0, static_cast<double>(this->entries.size()));
         // Under one spacing: it marks the particle, it does not cover its
         // neighbours.
-        r = 0.6 * std::cbrt(volume / n) * radiusFactor;
-    } else {
-        double tuple[3] = { defaultGlyphRadius, defaultGlyphRadius, defaultGlyphRadius };
-        this->glyphScaleVectors->GetTuple(idx, tuple);
-        r = std::max({ tuple[0], tuple[1], tuple[2] }) * radiusFactor;
+        return 0.6 * std::cbrt(volume / n) * radiusFactor;
     }
+    double tuple[3] = { defaultGlyphRadius, defaultGlyphRadius, defaultGlyphRadius };
+    if (idx >= 0 && idx < this->glyphScaleVectors->GetNumberOfTuples())
+        this->glyphScaleVectors->GetTuple(idx, tuple);
+    return std::max({ tuple[0], tuple[1], tuple[2] }) * radiusFactor;
+}
+
+void vtkWindowCatalogue3D::updateHighlightSphere(vtkSphereSource *sphere, vtkActor *actor,
+                                                  int idx, double radiusFactor)
+{
+    if (idx < 0) {
+        actor->VisibilityOff();
+        return;
+    }
+    const auto &position = this->mappedPositions[static_cast<std::size_t>(idx)];
     sphere->SetCenter(position[0], position[1], position[2]);
-    sphere->SetRadius(r);
+    sphere->SetRadius(this->highlightRadius(idx, radiusFactor));
     sphere->Update();
     actor->VisibilityOn();
 }
@@ -279,6 +290,32 @@ void vtkWindowCatalogue3D::setSelectedSource(int idx)
     qInfo() << "[catalogue3d] selected source index:" << idx;
     emit this->sourceSelectionChanged(idx);
     renderWindow->Render();
+    // A selection the user made is told to the other SAMP tools by the row it
+    // has in the original table; one a SAMP message made is not sent back.
+    if (idx >= 0 && !this->m_applyingSampSelection) {
+        const QString key = this->sampTableKey();
+        this->ensureSampRowMap();
+        const qint64 row = this->m_sampRowMap.rowFor(idx);
+        if (!key.isEmpty() && row >= 0)
+            emit this->sampRowActivated(key, row);
+        // A line about an earlier selection ("TOPCAT highlighted row 12.")
+        // would now describe a source that is no longer the selected one.
+        if (!this->m_selectionStatus.isEmpty()
+            && ui->labelStatus->text() == this->m_selectionStatus) {
+            namespace cp = Catalogue3DParser::detail;
+            const Catalogue3DEntry &e = this->entries[static_cast<std::size_t>(idx)];
+            const bool named =
+                    !cp::fieldString(e, this->schema, cp::detectedNameField(this->schema)).isEmpty();
+            const QString name = cp::entryDisplayName(e, this->schema);   // "Row N" unnamed
+            this->showSelectionStatus(named && row >= 0
+                                              ? u"Selected %1 (row %2)."_s.arg(name).arg(row + 1)
+                                              : u"Selected %1."_s.arg(name));
+        }
+    } else if (idx < 0 && !this->m_selectionStatus.isEmpty()
+               && ui->labelStatus->text() == this->m_selectionStatus) {
+        // Deselected: the line must not keep naming the old source.
+        this->showSelectionStatus(u"No source selected."_s);
+    }
 }
 
 void vtkWindowCatalogue3D::updateInfoPanel()
@@ -307,6 +344,13 @@ void vtkWindowCatalogue3D::updateInfoPanel()
             Catalogue3DParser::detail::entryFluxMJy(e, this->schema);
     QString html;
     html += QStringLiteral("<b>%1</b>").arg(displayName.toHtmlEscaped());
+    // Which row of the table it is, as the status line and TOPCAT number it
+    // (an unnamed source is already called by it).
+    if (e.sourceRow >= 0
+        && !Catalogue3DParser::detail::fieldString(
+                    e, this->schema, Catalogue3DParser::detail::detectedNameField(this->schema))
+                    .isEmpty())
+        html += QStringLiteral("<br>Row: %1").arg(e.sourceRow + 1);
     html += QStringLiteral("<br>RA: %1°").arg(e.raDeg, 0, 'f', 4);
     html += QStringLiteral("<br>Dec: %1°").arg(e.decDeg, 0, 'f', 4);
     if (redshift > 0.0)
@@ -621,7 +665,16 @@ void vtkWindowCatalogue3D::syncTableSelection(int index)
     if (index < 0 || index >= this->catalogueTableModel->rowCount()) {
         this->catalogueTableView->clearSelection();
     } else {
-        const QModelIndex modelIndex = this->catalogueTableModel->index(index, 0);
+        // A column the view shows: QTableView::scrollTo() does nothing for an
+        // index in a hidden column, and column 0 (Name) is hidden for a table
+        // without names (applyPointTableLayout), so the table never scrolled.
+        int column = 0;
+        const int columns = this->catalogueTableModel->columnCount();
+        while (column < columns && this->catalogueTableView->isColumnHidden(column))
+            ++column;
+        if (column >= columns)
+            column = 0;
+        const QModelIndex modelIndex = this->catalogueTableModel->index(index, column);
         this->catalogueTableView->selectionModel()->setCurrentIndex(
                 modelIndex, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
         this->catalogueTableView->scrollTo(modelIndex, QAbstractItemView::PositionAtCenter);

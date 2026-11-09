@@ -410,29 +410,108 @@ those, reach for Aladin: VisIVO can send it the current image over
 
 ## SAMP
 
-Send data to TOPCAT, Aladin, DS9 and any other VO tool on your machine
-through a running SAMP hub (TOPCAT and Aladin start one). The **SAMP** menu
-is in the Data Hub window, the main window of the application; the same
-actions are in the Command Palette (*SAMP: Connect to Hub*, …).
+Send and receive data with TOPCAT, Aladin, DS9 and any other VO tool on your
+machine, through a SAMP hub. TOPCAT and Aladin start one when they run; any
+hub using the Standard Profile works. The **SAMP** menu is in the Data Hub
+window, the main window of the application; the same actions are in the
+Command Palette (*SAMP: Connect to Hub*, …).
 
-- **Connect To Hub** / **Disconnect From Hub** — join or leave the hub. The
-  connection and the list of peers are logged in the Diagnostics window.
-- **Send Current FITS Dataset** — offers the image or cube opened last to
-  every peer that loads FITS images. TOPCAT does not; use Aladin or DS9.
-- **Send Current Catalogue** — offers the catalogue opened last as a table;
-  TOPCAT loads it.
+**Connecting.** *SAMP → Connect To Hub* registers VisIVO with the hub. VisIVO
+then appears in the other tools as a target (TOPCAT's *Send table to…* and
+*Send Sky Coordinates*, for example). The first line of the **SAMP** menu says
+where things stand: *Not connected*, *Connected as VisIVO [c3], receiving*, or
+*Connected as VisIVO [c3], cannot receive* (its tooltip gives the reason). Every
+connection, failure and received message is also listed in **Diagnostics**
+(*View → Diagnostics*).
 
-The send actions are enabled once the client is connected and a dataset or a
-catalogue is open. The file is handed over by the backend
-(`/v1/samp/send-fits`, `/v1/samp/send-catalogue`), so the peers must be able
-to reach the backend's URL; with a local backend they always can.
+If no hub answers when you connect (TOPCAT not started yet, or a hub that was
+killed and left its `~/.samp` behind), VisIVO says so once, shows *Not
+connected: waiting for a hub*, and keeps trying every few seconds: start TOPCAT
+and VisIVO connects by itself. The same happens when the hub disappears while
+connected (TOPCAT quit or crashed): VisIVO notices within a few seconds and
+reconnects as soon as a hub is running again. *Disconnect From Hub* stops the
+waiting. VisIVO does not reconnect after *Disconnect From Hub*, nor when the
+hub itself disconnects VisIVO.
 
-```{note}
-Receiving is not available yet: a table, an image or a sky position sent to
-VisIVO from TOPCAT or Aladin is not opened, and a row selected in another
-tool is not highlighted here. See
-[issue #130](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/130).
-```
+**Sending.**
+
+- *SAMP → Send Current FITS Dataset* broadcasts the last opened image or cube
+  (`image.load.fits`). Only image viewers take it: run **Aladin** or **DS9**.
+  TOPCAT does not load images, so with TOPCAT alone nothing visible happens.
+- *SAMP → Send Current Catalogue* broadcasts the last opened catalogue as a
+  VOTable (`table.load.votable`); TOPCAT loads it. A table that is not a
+  VOTable already is converted to a binary VOTable (BINARY2), which TOPCAT
+  reads several times faster than the text form. Above a million rows VisIVO
+  asks first: TOPCAT holds the whole table in memory.
+
+"Current" is the last dataset opened, not the window in front.
+
+VisIVO first asks the hub whether any running tool takes that kind of data;
+if none does, it says so at once (*No running tool takes …*) instead of
+preparing the file. Otherwise it asks every tool that takes the data and
+reports what each one answered, in the status bar and in Diagnostics, under
+the name the tool was given: *SAMP: topcat loaded NKATZ_2.3M.vot* (a table
+converted to VOTable is sent with a `.vot` name), or the tool's own error.
+Preparing a large file takes a while (about 40 s for 2.3 million rows); VisIVO
+and the backend stay usable meanwhile.
+
+**Receiving.** VisIVO accepts:
+
+| From the other tool | What VisIVO does |
+|---|---|
+| a table (`table.load.votable`, `table.load.fits`) | opens it in the 3-D catalogue viewer |
+| an image (`image.load.fits`) | opens it in the image or cube viewer |
+| a sky position (`coord.pointAt.sky`) | centres the HiPS viewer on it, opening one (with the last survey you opened, else DSS colour) if needed |
+| a row highlight (`table.highlight.row`) | selects that source, as a click would |
+| a row selection (`table.select.rowList`) | marks those sources |
+
+VisIVO fetches the file the other tool offers itself and hands it to the
+backend, so this works with a remote backend too: the address a hub gives
+(`http://127.0.0.1:…`) only means something on your machine. When the other
+tool asks for an answer (TOPCAT does), it is told whether the data opened, and
+why not when it did not.
+
+A received table or image is shown under the name the sender gave it
+(TOPCAT's table name, for example), in the title, the path bar, Session Data
+and the Inspector; the copy the backend keeps is a temporary file, whose path is
+in the tooltips of the path bar and of the Inspector's *Path* row. Because the
+backend deletes that copy after a while, data received this way is not added to
+*Recent Datasets*: send it again from the other tool. (A local file the sender
+names by path, read where it is, is added.)
+
+**Linking rows with TOPCAT.** A table that went from one application to the
+other, in either direction, stays linked:
+
+- clicking a row in TOPCAT selects the same source in VisIVO's 3-D catalogue
+  view and its table, and centres the view on it;
+- clicking a source in VisIVO's view, or a row in its table, highlights that
+  row in TOPCAT: in the table VisIVO received and in every copy VisIVO sent
+  back (*Send Current Catalogue*), since they hold the same rows;
+- a subset selected in TOPCAT (*Transmit Subset*) is marked in VisIVO with
+  orange circles, and the status line says how many rows were marked.
+
+The status line, the row numbers down the side of VisIVO's table and the *Row*
+line of Source Info count rows of the original table from 1, as TOPCAT shows
+them (SAMP itself counts from 0); a source without a name is called by its row
+(*Row 149998*). Rows are matched by their place in the original table, so a filter, a sort or
+the even sample VisIVO loads for a large table ("100000 of 3931546 rows") does
+not break the link. A row that is not loaded in VisIVO cannot be shown: the
+status line says so (filtered out, or not loaded yet: *Load more* or *Load all*
+may bring it). The link is kept for a catalogue opened from one file; a
+catalogue combined from several files is not linked. The selection and the
+orange marks are drawn by the local view: while a large table is drawn on the
+backend, choose *View → Rendering → Local* to see them; while it is ray-traced,
+choose another *Shape* than *Ray-traced*. A click of your own replaces the
+status line about the last highlight.
+
+VisIVO does not yet send a subset of its own, a clicked position, or spectra.
+
+**Security.** All `/v1/samp/*` routes need the backend's operator token, except
+`GET /v1/samp/files/{token}`: the other tools fetch the files VisIVO sends from
+there, with no token, so that route is open. Each file is reachable only by its
+random token, for one hour (`VISIVO_SAMP_FILE_TTL`). VisIVO's own SAMP endpoint
+listens on the loopback interface only, and refuses any call that does not
+carry the key the hub gave it.
 
 ## See also
 
