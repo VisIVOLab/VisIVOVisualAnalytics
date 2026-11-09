@@ -679,7 +679,7 @@ def worker_cube_mask_selection(
     shutil.copyfile(path, output_path)
     out_hdul = _fits.open(output_path, mode="update", memmap=True)
     try:
-        arr = ScientificFitsDataset.squeeze_to_3d(out_hdul[0].data)
+        arr = ScientificFitsDataset.squeeze_to_3d(out_hdul[dataset.hdu_index].data)
         if arr.shape != mask.shape:
             raise ValueError("Masked cube shape does not match the selection.")
         if mode == "blank_inside":
@@ -689,7 +689,7 @@ def worker_cube_mask_selection(
         else:  # blank_outside — isolate the selection
             arr[~mask] = np.nan
             kept = arr[mask]
-        out_hdul[0].header.add_history(
+        out_hdul[dataset.hdu_index].header.add_history(
             f"VisIVO Kinematic Lasso mask ({mode}) from {Path(path).name}: "
             f"{len(seeds)} add + {len(sub_seeds)} subtract seeds, "
             f"reach={reach}, lambda_v={lambda_v}"
@@ -754,7 +754,7 @@ def worker_cube_mask_apply(
     shutil.copyfile(path, output_path)
     out_hdul = _fits.open(output_path, mode="update", memmap=True)
     try:
-        arr = ScientificFitsDataset.squeeze_to_3d(out_hdul[0].data)
+        arr = ScientificFitsDataset.squeeze_to_3d(out_hdul[dataset.hdu_index].data)
         if arr.shape != (nz, ny, nx):
             raise ValueError("Masked cube shape does not match the source.")
         roi = arr[oz:oz + rd, oy:oy + rh, ox:ox + rw]
@@ -766,7 +766,7 @@ def worker_cube_mask_apply(
             arr[:] = np.nan                              # blank the whole cube (memmap I/O)
             arr[oz:oz + rd, oy:oy + rh, ox:ox + rw] = saved
             kept = saved[roi_mask]
-        out_hdul[0].header.add_history(
+        out_hdul[dataset.hdu_index].header.add_history(
             f"VisIVO Kinematic Lasso mask ({mode}) from {Path(path).name}: "
             f"explicit {int(roi_mask.sum())}-voxel mask at ({ox},{oy},{oz})")
         # How the mask was made (seed, reach, coupling, threshold, smoothing,
@@ -775,7 +775,7 @@ def worker_cube_mask_apply(
         # cut: astropy continues a value longer than a card onto further HISTORY
         # cards, and a seed list is exactly the item that must survive whole.
         for item in [part.strip() for part in str(recipe).split(";") if part.strip()]:
-            out_hdul[0].header.add_history(f"Lasso {item}")
+            out_hdul[dataset.hdu_index].header.add_history(f"Lasso {item}")
         range_min, range_max = _finite_range(kept)
         out_hdul.flush()
     finally:

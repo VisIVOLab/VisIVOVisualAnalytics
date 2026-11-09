@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from ..auth import verify_token
 from ..dependencies import _require_dataset, record_history
+from ..product_cache import file_identity
 from ..sessions import Session, get_session
 from .spectral import _array_to_binary
 
@@ -34,7 +35,7 @@ class SkeletonRequest(BaseModel):
 #    decimated preview) ─────────────────────────────────────────────────────────
 # Small in-process cache keyed by (path, size, mtime): the client requests cube
 # stats once per open, and a full-res scan of a large cube is not free.
-_CUBE_STATS_CACHE: dict[tuple[str, int, int], dict] = {}
+_CUBE_STATS_CACHE: dict[tuple[str, str], dict] = {}
 _CUBE_STATS_CACHE_MAX = 64
 
 
@@ -48,18 +49,15 @@ async def cube_stats(
 
     Returns min / max / mean / median / std / rms / sum + finite/blank counts
     (and ``median_exact``). Streamed out-of-core in z-slab chunks, so it is safe
-    on cubes far larger than RAM. Cached per file (path + size + mtime).
+    on cubes far larger than RAM. Cached per file version (``file_identity``: a
+    replaced or rewritten file is a miss).
     """
-    import os  # noqa: PLC0415
     from ..compute import worker_cube_stats  # noqa: PLC0415
 
     entry = _require_dataset(session, dataset_id)
     path = entry["path"]
-    try:
-        st = os.stat(path)
-        key = (path, int(st.st_size), int(st.st_mtime_ns))
-    except OSError:
-        key = None
+    identity = file_identity(path)
+    key = (path, identity) if identity else None
     if key is not None and key in _CUBE_STATS_CACHE:
         record_history(session, operation="cube-stats", dataset_id=dataset_id,   # E-06
                        endpoint="/v1/analysis/cube-stats", params={"cached": True})

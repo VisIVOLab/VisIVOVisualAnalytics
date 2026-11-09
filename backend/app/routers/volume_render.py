@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 
 from ..auth import verify_token
 from ..dependencies import _require_dataset
+from ..product_cache import dataset_identity
 from ..response_headers import (X_COLOUR_RANGE, X_COLOUR_TABLE, X_EXPOSURE, X_RENDER_MS,
                                 X_VOLUME_BOX, X_VOLUME_SHAPE)
 from ..schemas import TaskCreateResponse
@@ -381,8 +382,10 @@ def _loopback(host: str) -> bool:
 def _cached(entry: dict, req: VolumeGridRequest, token: str) -> dict:
     """The grids ``req`` shapes, prepared once per client (under
     ``_PREPARE_WORK``)."""
-    key = token + json.dumps(req.model_dump(include=set(_GRID_FIELDS)), sort_keys=True,
-                             default=str)
+    # The file's version too: a volume rewritten under the same dataset id is
+    # prepared again rather than drawn from the grids of the old one.
+    key = (token + dataset_identity(entry)
+           + json.dumps(req.model_dump(include=set(_GRID_FIELDS)), sort_keys=True, default=str))
     grids = _PREPARED.get(key)
     if grids is None:
         grids = _prepare(entry, req)

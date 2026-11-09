@@ -73,7 +73,9 @@ Stack N open cubes into one spectrum: each cube is averaged over its pixels, and
 ```
 `method`: `"mean"` (default), `"median"`, `"weighted_mean"`.
 `weight_by`: `"uniform"`, `"rms"`, `"peak"` (used when `method="weighted_mean"` and `weights` is empty).
-`weights`: explicit per-cube weights (used only for `"weighted_mean"`).
+`weights`: explicit per-cube weights (used only for `"weighted_mean"`); when given there must be one per cube, finite, non-negative and not all zero, otherwise the response is `valid: false`.
+
+Blank (NaN) channels are left out channel by channel: `"mean"` and `"median"` use the cubes that have a value there, and `"weighted_mean"` divides by the weights of those cubes only, so a channel one cube does not cover is not pulled towards zero. A channel no cube covers (or whose only values weigh zero) is NaN.
 
 Response: `valid`, `error`, `rows` (1), `cols` (channels), `scalar_type`, `method`, `n_cubes`, `range_min/max`, `data_base64`. A dataset that is not a cube is 422; any other failure is `valid: false`.
 

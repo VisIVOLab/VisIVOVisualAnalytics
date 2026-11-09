@@ -407,7 +407,9 @@ def worker_cube_mask(
         # Same 3-D reduction the geometry read (and the viewer) use, so a
         # degenerate-or-non-degenerate 4D source is treated consistently. Returns
         # a view onto the update-mode memmap, so assignments write back on flush.
-        arr = ScientificFitsDataset.squeeze_to_3d(out_hdul[0].data)
+        # The HDU the dataset read, which the copy has at the same index: an
+        # ESO/APEX product keeps the primary empty and the cube in DATA_EXT.
+        arr =ScientificFitsDataset.squeeze_to_3d(out_hdul[dataset.hdu_index].data)
         if arr.ndim != 3:
             raise ValueError("3D masking requires a 3D cube dataset.")
         if mode == "blank_inside":
@@ -420,7 +422,7 @@ def worker_cube_mask(
             if y1c + 1 < height: inbox[:, y1c + 1:, :] = np.nan
             if x0c > 0:          inbox[:, :, :x0c] = np.nan
             if x1c + 1 < width:  inbox[:, :, x1c + 1:] = np.nan
-        out_hdul[0].header.add_history(
+        out_hdul[dataset.hdu_index].header.add_history(
             f"VisIVO 3D mask ({mode}) from {Path(src_path).name}: "
             f"box x={x0c}..{x1c} y={y0c}..{y1c} z={z0c}..{z1c} (0-indexed, inclusive)"
         )

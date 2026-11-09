@@ -1165,6 +1165,78 @@ class TestStackWorker:
         arr_m = _decode_f32(result_m["data_base64"], (1, self.nz))[0]
         np.testing.assert_allclose(arr_w, arr_m, rtol=1e-5)
 
+    def _blank_cubes(self, values_per_cube: list[list[float]]) -> list[str]:
+        """One 4x2x2 cube per entry, every pixel of channel c set to
+        ``values[c]`` (NaN blanks the whole channel of that cube)."""
+        paths = []
+        for i, values in enumerate(values_per_cube):
+            data = np.empty((len(values), 2, 2), dtype=np.float32)
+            data[:] = np.asarray(values, dtype=np.float32)[:, None, None]
+            path = str(self.tmp_path / f"blank_{i}.fits")
+            _write_simple_cube(path, data)
+            paths.append(path)
+        return paths
+
+    def test_weighted_mean_renormalises_per_channel(self):
+        """A channel one cube does not cover is the weighted mean of the cubes
+        that do: [1, NaN] with equal weights is 1, not 0.5; a channel no cube
+        covers is NaN, not 0."""
+        import warnings
+        from app.compute import worker_stack
+        paths = self._blank_cubes([[1.0, 1.0, np.nan, 2.0],
+                                   [np.nan, 3.0, np.nan, 4.0]])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)   # nanmean of blanks
+            for weights in ([1.0, 1.0], None):
+                result = worker_stack(paths, "weighted_mean", weights)
+                arr = _decode_f32(result["data_base64"], (1, 4))[0]
+                assert arr[0] == pytest.approx(1.0)
+                assert arr[1] == pytest.approx(2.0)
+                assert np.isnan(arr[2])
+                assert arr[3] == pytest.approx(3.0)
+            # Unequal weights: only the finite samples share the weight.
+            result = worker_stack(paths, "weighted_mean", [3.0, 1.0])
+            arr = _decode_f32(result["data_base64"], (1, 4))[0]
+            assert arr[0] == pytest.approx(1.0)
+            assert arr[1] == pytest.approx((3 * 1.0 + 1 * 3.0) / 4)
+            assert np.isnan(arr[2])
+            # The unweighted methods already ignore blanks channel by channel.
+            for method in ("mean", "median"):
+                arr = _decode_f32(worker_stack(paths, method, None)["data_base64"], (1, 4))[0]
+                assert arr[0] == pytest.approx(1.0)
+                assert np.isnan(arr[2])
+
+    def test_weighted_mean_zero_weight_channel_is_nan(self):
+        """A channel whose only finite sample weighs zero has no estimate."""
+        from app.compute import worker_stack
+        import warnings
+        paths = self._blank_cubes([[1.0, np.nan], [5.0, 6.0]])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)   # nanmean of blanks
+            result = worker_stack(paths, "weighted_mean", [1.0, 0.0])
+        arr = _decode_f32(result["data_base64"], (1, 2))[0]
+        assert arr[0] == pytest.approx(1.0)
+        assert np.isnan(arr[1])
+
+    def test_weighted_channel_mean_is_scale_invariant(self):
+        """Only the weights' ratios count: extreme but finite weights neither
+        overflow nor flush the samples."""
+        from app.compute.spectral import _weighted_channel_mean
+        stack = np.array([[2.0, 1e-30, np.nan], [4.0, np.nan, np.nan]])
+        for scale in (1.0, 1e308, 1e-300):
+            out = _weighted_channel_mean(stack, np.array([1.0, 1.0]) * scale)
+            assert out[0] == pytest.approx(3.0)
+            assert out[1] == pytest.approx(1e-30, rel=1e-6, abs=0)
+            assert np.isnan(out[2])
+
+    @pytest.mark.parametrize("weights", [[1.0, -1.0], [0.0, 0.0], [1.0, float("nan")],
+                                         [-1.0], [1.0, 1.0, 1.0]])
+    def test_weighted_mean_rejects_bad_weights(self, weights):
+        from app.compute import worker_stack
+        paths = self._blank_cubes([[1.0, 2.0], [3.0, 4.0]])
+        with pytest.raises(ValueError, match="weights"):
+            worker_stack(paths, "weighted_mean", weights)
+
     def test_shape_rows_one(self):
         """Output must always have rows=1."""
         from app.compute import worker_stack

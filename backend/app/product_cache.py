@@ -13,6 +13,47 @@ from typing import Any
 logger = logging.getLogger("visivo.cache")
 
 
+def file_identity(path: str | os.PathLike) -> str:
+    """The version of the file ``path`` names, as a short string for a cache key.
+
+    A product cached for a path must not be served once the file has been
+    replaced or rewritten (a re-reduced cube saved over the old one, a FITS
+    edited in place): the key therefore carries device, inode, size and the
+    modification and change times of the file. ``ctime`` is there for a
+    rewrite that restores ``mtime`` (``touch -r``, some copy tools); a chmod
+    or a rename also moves it, which costs only a recomputation. A VBT field
+    reference (``data::field``) is the data file, and a ``.head`` beside the
+    data is part of its version: its values are read as the header says.
+    Empty for a path that cannot be stat'ed (an in-memory or remote source),
+    which keys as before.
+    """
+    from .volume_source import split_ref, vbt_head  # noqa: PLC0415
+
+    base, _field = split_ref(path)
+    parts = []
+    for candidate, required in ((base, True), (vbt_head(base), False)):
+        try:
+            st = os.stat(candidate)
+        except OSError:
+            if required:
+                return ""
+            continue
+        parts.append(f"{st.st_dev}.{st.st_ino}.{st.st_size}."
+                     f"{st.st_mtime_ns}.{st.st_ctime_ns}")
+    return "|".join(parts)
+
+
+def dataset_identity(entry: dict[str, Any]) -> str:
+    """:func:`file_identity` of every file a registered dataset reads: its
+    ``path``, the ``paths`` of a catalogue opened from several files and the
+    ``head_path`` and ``bin_path`` of a VBT opened by /v1/vbt/open. For a
+    cache keyed by dataset id rather than path, which otherwise keeps serving
+    what an earlier version of the file gave."""
+    names = [entry.get("path"), *(entry.get("paths") or []),
+             entry.get("head_path"), entry.get("bin_path")]
+    return "|".join(file_identity(str(name)) for name in names if name)
+
+
 @dataclass
 class CachedProductRecord:
     key: str
@@ -33,9 +74,15 @@ class ProductCache:
 
     @staticmethod
     def make_key(dataset_path: str, operation: str, params: dict[str, Any]) -> tuple[str, str]:
+        """``(key, parameter hash)`` of a product. The key carries the file's
+        version (:func:`file_identity`), so a file replaced on disk is a miss;
+        it is taken before the computation, so a result of a file changed
+        while it was computed is stored under a version no request asks for.
+        """
         encoded = json.dumps(params, sort_keys=True, separators=(",", ":"), default=str)
         param_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
-        return f"{operation}:{dataset_path}:{param_hash}", param_hash
+        version = hashlib.sha256(file_identity(dataset_path).encode("utf-8")).hexdigest()[:16]
+        return f"{operation}:{dataset_path}:{version}:{param_hash}", param_hash
 
     def get(self, key: str) -> CachedProductRecord | None:
         with self._lock:
