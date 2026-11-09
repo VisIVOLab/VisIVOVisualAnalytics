@@ -1,4 +1,5 @@
 #include "vtkWindowVbtVolume.h"
+#include "WindowCloseShortcut.h"
 #include "app/BackendClient.h"
 #include "app/ThemeManager.h"
 #include "DiagnosticsWindow.h"
@@ -88,6 +89,8 @@ vtkWindowVbtVolume::vtkWindowVbtVolume(BackendVbtOpenResult openResult,
     , backendToken(backendToken)
     , sessionId(sessionId)
 {
+    // Cmd+W closes it, as the title bar's button does (WindowCloseShortcut.h).
+    visivo::installCloseWindowShortcut(this);
     qDebug().noquote()
             << QStringLiteral("[vbt-volume] type=%1 fields=%2 dims=%3x%4x%5 spacing=%6,%7,%8 selected_field=%9")
                        .arg(this->openResult.scalarType)

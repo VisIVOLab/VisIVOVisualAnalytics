@@ -1,4 +1,5 @@
 #include "ScienceMapWindow.h"
+#include "WindowCloseShortcut.h"
 #include "ColorMaps.h"
 
 #include <QVTKOpenGLNativeWidget.h>
@@ -30,6 +31,8 @@ ScienceMapWindow::ScienceMapWindow(const QString &title,
                                    QWidget *parent)
     : QMainWindow(parent)
 {
+    // Cmd+W closes it, as the title bar's button does (WindowCloseShortcut.h).
+    visivo::installCloseWindowShortcut(this);
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowTitle(title);
     resize(800, 600);

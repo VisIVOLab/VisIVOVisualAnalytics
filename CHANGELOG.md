@@ -8,6 +8,63 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Small desktop fixes from the GUI tests (#133).**
+  - *Live spectrum on a preview.* On a cube above the full-resolution
+    threshold the live spectrum under the cursor stayed empty and *Pin
+    Spectrum* greyed out: the curve was read out of the decimated preview at
+    the slice's full-resolution pixel, outside the preview's extent for most
+    of the image, and from the wrong line of sight in its lower-left corner.
+    The line of sight is now asked of the backend (`/v1/spectral/probe`),
+    asynchronously, one request at a time with only the latest pixel queued,
+    and a reply for a pixel the cursor has left is dropped. A pick in the 3-D
+    view of a preview is converted to the cube's voxels (preview voxel i is
+    the cube's i × stride), and its marker stays on that voxel when the full
+    resolution replaces the preview.
+  - *Galactic latitude axis.* The 2-D views read every tick of both axes on
+    the image diagonal. On HCG 44 shown in Galactic coordinates the latitude
+    axis therefore printed the latitude of points far to the right of it
+    (54.59 at the top to 55.54 at the bottom, where astropy gives 56.02 and
+    55.58 along the left edge), against a hover readout that is right at the
+    reference pixel and, measured against astropy over the field, off by up
+    to 0.07° in b and 0.09° in l towards the corners (the viewer's WCS is
+    linear per axis and ignores the NCP projection; not changed here). Each
+    axis is now read along its own edge, in the cube's slice and moment
+    panes, the image viewer and the pane views; the same linear WCS applies
+    to the labels.
+  - *Inspector statistics.* The 3-D cube's Min, Max, Mean and RMS lost their
+    left side ("00124432 JY/BEAM" for "-0.00124432 JY/BEAM"): the read-only
+    fields kept the width of 17 characters and scrolled a longer value to its
+    end. They are now sized to their text.
+  - *⌘W* (Ctrl+W, Ctrl+F4) closes the cube window and every other viewer
+    window, as its close button does.
+  - *Quit during a long task.* The moment, moment FITS export and moment-map
+    power spectrum / skeleton progress sheets were window-modal, which on
+    macOS greys out the application menu: Quit did nothing until the task
+    ended. Like the decompression window (#57) they are now non-modal tool
+    windows, and quitting cancels the task on the backend. Every quit path
+    (the Quit menu and Cmd+Q, the Dock) cancels every followed task and waits
+    for its worker while the application still exists (as long as the
+    cancellation takes, three seconds at most for one sent by the quit; no
+    new task is started meanwhile):
+    a worker left for the application's destructor sent its DELETE with no
+    event loop to run it, and the exit hung. The Dock's Quit now asks "Do you
+    want to exit?" as the Quit menu does: it used to close every window
+    first, and a cube computing a moment, which defers its close, cancelled
+    the whole quit after its moment had been stopped. The moment's progress window
+    belongs to the cube window, so closing the Moment dialog no longer takes
+    its Cancel away.
+  - *Last 5 jobs.* A failed open is answered by a message box, and the Data
+    Hub does not poll while a dialog is up: closing the box left the failure
+    out of the list until the next poll, up to four seconds later. The list is
+    now refreshed as soon as an open returns. Failed opens read "1ms" because
+    the backend times only its `datasets/open` request, which refuses a bad
+    file at once. The client now records its own opens (in memory) and the
+    panel shows an open's end-to-end time, from the request to the viewer,
+    the error or the cancellation, matched to the backend's job by time, with
+    the backend's part in the tooltip. Opens refused before reaching the
+    backend (file not found, unsupported, backend unreachable) are listed as
+    failed entries too, as is a path given on the command line at launch
+    that is not a file on this machine.
 - **Imported regions are moved between sky frames.** A region was handed to
   the image's WCS in whatever frame the file used, so a galactic circle at
   (l, b) = (0, 0) on an FK5 map centred on the Galactic centre came back at

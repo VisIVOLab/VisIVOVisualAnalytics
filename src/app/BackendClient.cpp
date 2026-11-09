@@ -7,6 +7,7 @@
 #include "BackendHeaders.h"
 #include "DiagnosticsManager.h"
 #include "SofiaSuggest.h"
+#include "TaskQuitDrain.h"
 
 #include <QByteArray>
 #include <QDataStream>
@@ -360,6 +361,11 @@ BackendClient::SessionMint BackendClient::ensureSessionFor(const QString &baseUr
     if (sessionId)
         *sessionId = sessionIdForUrl(baseUrl, client.token());
     return outcome;
+}
+
+bool BackendClient::mintInFlightOnThisThread()
+{
+    return t_mintInFlight;
 }
 
 BackendClient::SessionMint BackendClient::ensureSessionMinted() const
@@ -1409,6 +1415,44 @@ BackendCubeSliceResult BackendClient::requestSlice(const QString &datasetId, con
 // Returns the body; ``statusOut`` is the HTTP status code (0 on transport
 // error), ``headersOut`` is a snapshot of the response headers (lowercased
 // names → raw values), ``error`` is set on transport/timeout failures.
+/// How long a request already out may still take once the application quits.
+/// Nothing, but for a task's CREATE (POST …/v1/tasks/…, also behind a proxy
+/// path prefix): the backend may have started the task already, and only the
+/// answer carries the id its DELETE needs. That one keeps its own timeout
+/// (well inside the drain's ceiling), and the follower, aborted as it
+/// registers, then cancels the task.
+static int quitGraceMsFor(const QNetworkReply *reply)
+{
+    const bool create = reply->operation() == QNetworkAccessManager::PostOperation
+            && reply->url().path().contains(QStringLiteral("/v1/tasks/"));
+    return create ? std::numeric_limits<int>::max() : 0;
+}
+
+/// Drop @p reply and end @p loop once the application is quitting
+/// (TaskQuitDrain::drain) and the request's grace (quitGraceMsFor) is over,
+/// setting @p abandoned. A worker's request must end while the application
+/// still exists: its loop cannot run after, and the application's destructor
+/// waits for the worker (#133). Any request, the session mint included; the
+/// cancellation DELETE (cancelTask) is let through, bounded on its own.
+static void abandonWhenQuitting(QTimer &watch, QEventLoop &loop, QNetworkReply *reply,
+                                bool &abandoned)
+{
+    const int graceMs = quitGraceMsFor(reply);
+    auto quitSeen = std::make_shared<QElapsedTimer>();
+    QObject::connect(&watch, &QTimer::timeout, &loop, [&loop, reply, &abandoned, graceMs, quitSeen]() {
+        if (!visivo::TaskQuitDrain::instance().quitting())
+            return;
+        if (!quitSeen->isValid())
+            quitSeen->start();
+        if (quitSeen->elapsed() < graceMs)
+            return;
+        abandoned = true;
+        reply->abort();
+        loop.quit();
+    });
+    watch.start(50);
+}
+
 /// POST a binary body and return the raw reply. Refuses to send when the
 /// session is still unresolved because the backend never answered — putting
 /// state under the fallback id would let a later successful mint split this
@@ -1447,15 +1491,28 @@ static QByteArray performBinaryPost(QNetworkAccessManager *nam,
         loop.quit();
     });
     timeoutTimer.start(timeoutMs);
-    loop.exec();
+    QTimer quitWatch;
+    bool abandoned = false;
+    abandonWhenQuitting(quitWatch, loop, reply, abandoned);
+    if (visivo::TaskQuitDrain::instance().quitting())   // dropped before this loop sends it
+        abandoned = true;
+    else
+        loop.exec();
+    quitWatch.stop();
     timeoutTimer.stop();
+    if (visivo::TaskQuitDrain::instance().quitting() && !reply->isFinished())
+        abandoned = true;   // exit() ended the loop before the watch fired
+    if (abandoned && !reply->isFinished())
+        reply->abort();
 
     const QByteArray body = reply->readAll();
     statusOut = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     for (const auto &header : reply->rawHeaderPairs()) {
         headersOut.insert(header.first.toLower(), header.second);
     }
-    if (timedOut) {
+    if (abandoned) {
+        error = QStringLiteral("Request abandoned: the application is quitting.");
+    } else if (timedOut) {
         error = QStringLiteral("Backend binary request timed out after %1 ms").arg(timeoutMs);
     } else if (reply->error() != QNetworkReply::NoError && statusOut < 400) {
         error = reply->errorString();
@@ -3568,12 +3625,29 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error,
             });
             abortWatch.start(100);
         }
-        if (!(abort && abort->load()))
+        QTimer quitWatch;
+        bool abandoned = false;
+        abandonWhenQuitting(quitWatch, loop, reply, abandoned);
+        // Quitting already: the reply is dropped before this loop serves it
+        // (the GET itself may already be on its way; nobody reads the answer).
+        if (visivo::TaskQuitDrain::instance().quitting())
+            abandoned = true;
+        else if (!(abort && abort->load()))
             loop.exec();
         else
             attemptError = QStringLiteral("Request abandoned: cancelled by the user.");
+        quitWatch.stop();
         abortWatch.stop();
         timeoutTimer.stop();
+        // On the application thread, exit() ends this loop at once, before the
+        // watch has fired: an unanswered reply is then no empty success.
+        if (visivo::TaskQuitDrain::instance().quitting() && !reply->isFinished())
+            abandoned = true;
+        if (abandoned) {
+            attemptError = QStringLiteral("Request abandoned: the application is quitting.");
+            if (!reply->isFinished())
+                reply->abort();
+        }
         if (!attemptError.isEmpty() && abort && abort->load() && !reply->isFinished())
             reply->abort();
 
@@ -3586,7 +3660,9 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error,
         }
         reply->deleteLater();
 
-        if (status == 401 && attempt + 1 < tokenCandidates.size()) {
+        // No second token while quitting: the exit waits for this worker.
+        if (status == 401 && attempt + 1 < tokenCandidates.size()
+            && !visivo::TaskQuitDrain::instance().quitting()) {
             DiagnosticsManager::instance()->publish(
                     DiagnosticsLevel::Warning, DiagnosticsCategory::Backend,
                     QStringLiteral("BackendClient"),
@@ -3652,8 +3728,8 @@ QByteArray BackendClient::performPostRetryingBackpressure(const QUrl &url,
         error.clear();
         const QByteArray data = performPost(url, body, error, responseHeaders, &status,
                                             /*announceStart=*/attempt == 1);
-        if (status != 429)
-            return data;   // success, or a failure that retrying cannot fix
+        if (status != 429 || visivo::TaskQuitDrain::instance().quitting())
+            return data;   // success, a failure that retrying cannot fix, or quitting
         if (attempt >= std::max(1, attempts)) {
             // Out of attempts: say what happened in words, not as the server's
             // JSON body — this is what the user reads.
@@ -3760,8 +3836,28 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
             loop.quit();
         });
         timeoutTimer.start(static_cast<int>(this->requestTimeoutFor(url).count()));
-        loop.exec();
+        QTimer quitWatch;
+        bool abandoned = false;
+        abandonWhenQuitting(quitWatch, loop, reply, abandoned);
+        // Quitting already: dropped before this loop sends it, a task create
+        // included. Only a create already out when the quit came keeps its
+        // grace (the watch).
+        if (visivo::TaskQuitDrain::instance().quitting())
+            abandoned = true;
+        else
+            loop.exec();
+        quitWatch.stop();
         timeoutTimer.stop();
+        // On the application thread, exit() ends this loop at once, before the
+        // watch has fired: an unanswered reply is then no empty success (and
+        // no token is adopted from it).
+        if (visivo::TaskQuitDrain::instance().quitting() && !reply->isFinished())
+            abandoned = true;
+        if (abandoned) {
+            attemptError = QStringLiteral("Request abandoned: the application is quitting.");
+            if (!reply->isFinished())
+                reply->abort();
+        }
 
         const QByteArray data = reply->readAll();
         // Capture response headers (lower-cased keys) before the reply is deleted, so a caller
@@ -3783,7 +3879,9 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
         }
         reply->deleteLater();
 
-        if (status == 401 && attempt + 1 < tokenCandidates.size()) {
+        // No second token while quitting: the exit waits for this worker.
+        if (status == 401 && attempt + 1 < tokenCandidates.size()
+            && !visivo::TaskQuitDrain::instance().quitting()) {
             DiagnosticsManager::instance()->publish(
                     DiagnosticsLevel::Warning, DiagnosticsCategory::Backend,
                     QStringLiteral("BackendClient"),

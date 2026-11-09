@@ -1,6 +1,7 @@
 // ConeSearchWindow.cpp — see ConeSearchWindow.h.
 
 #include "ConeSearchWindow.h"
+#include "WindowCloseShortcut.h"
 
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -19,6 +20,8 @@ ConeSearchWindow::ConeSearchWindow(const QString &backendUrl, const QString &bac
                                    QWidget *parent)
     : QWidget(parent, Qt::Window), m_backendUrl(backendUrl), m_backendToken(backendToken)
 {
+    // Cmd+W closes it, as the title bar's button does (WindowCloseShortcut.h).
+    visivo::installCloseWindowShortcut(this);
     setWindowTitle(u"Cone search"_s);
     setAttribute(Qt::WA_DeleteOnClose);
     resize(860, 560);

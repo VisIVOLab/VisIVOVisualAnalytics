@@ -1,4 +1,6 @@
 #include "CatalogueFormat.h"
+#include "WindowCloseShortcut.h"
+#include <QDateTime>
 #include "CosmologyCalculatorDialog.h"
 #include "vtkWindowCatalogue3D.h"
 #include <QMenu>
@@ -182,6 +184,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     , backendToken(backendToken)
     , m_cataloguePaths(paths)
 {
+    // Cmd+W closes it, as the title bar's button does (WindowCloseShortcut.h).
+    visivo::installCloseWindowShortcut(this);
     // Before anything shows a name: the title and the chrome are built from it.
     this->m_label = label;
     this->m_label.displayName = this->m_label.displayName.trimmed();
@@ -416,6 +420,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             ? client.openCatalogue(this->m_cataloguePaths, catFormat)
             : client.openCatalogue(filepath, catFormat);
     if (!opened.valid) {
+        // Before the box: its reading time is not the open's ("Last 5 jobs").
+        this->m_openFailedAtMs = QDateTime::currentMSecsSinceEpoch();
         QMessageBox::critical(this, u"Catalogue Error"_s, opened.error);
         ui->labelStatus->setText(u"Load error: "_s + opened.error);
     } else {
@@ -465,6 +471,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         const auto parsed = Catalogue3DParser::parseBackendSubset(this->schema, subset.rows, subset.rowIndex);
         if (!subset.valid || !parsed.valid) {
             const QString error = !subset.valid ? subset.error : parsed.errorMessage;
+            this->m_openFailedAtMs = QDateTime::currentMSecsSinceEpoch();
             QMessageBox::critical(this, u"Catalogue Error"_s, error);
             ui->labelStatus->setText(u"Load error: "_s + error);
         } else {

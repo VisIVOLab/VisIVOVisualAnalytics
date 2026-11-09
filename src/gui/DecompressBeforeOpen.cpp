@@ -79,17 +79,9 @@ DecompressBeforeOpenResult decompressBeforeOpen(QWidget *parent, const BackendCl
     auto control = std::make_shared<BackendTaskControl>();
     QPointer<QProgressDialog> sheet = showTaskProgressSheet(
             parent, u"Decompressing %1"_s.arg(QFileInfo(path).fileName()), control, requestedAt);
-    // Not modal: on macOS a modal sheet disables the application menu, so
-    // Quit (and Cmd+Q, and the Dock's Quit) did nothing until the
-    // decompression ended. Quitting now ends the wait below, and the task is
-    // stopped as Cancel stops it.
-    sheet->setWindowModality(Qt::NonModal);
-    // A non-modal dialog is an ordinary window on macOS: one click on the
-    // Data Hub put it behind the main window, out of reach. A tool window
-    // stays above its application's windows there (and hides with the
-    // application, not above other ones), and above its parent on X11 and
-    // Wayland, without blocking either. Set before it is first shown.
-    sheet->setWindowFlags((sheet->windowFlags() & ~Qt::WindowType_Mask) | Qt::Tool);
+    // The sheet is not modal (showTaskProgressSheet), so Quit stays reachable
+    // on macOS: quitting ends the wait below, and the task is stopped as
+    // Cancel stops it.
     runningSheet() = sheet;
     if (onTaskStarted)
         onTaskStarted();

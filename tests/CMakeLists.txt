@@ -35,7 +35,7 @@ endif()
 include(CTest)
 enable_testing()
 
-find_package(Qt6 REQUIRED COMPONENTS Test Core Network)
+find_package(Qt6 REQUIRED COMPONENTS Test Core Network Concurrent)
 
 # ── Shared support: BackendClient + DiagnosticsManager ──────────────────────
 # Compiled once and reused by every test target that needs backend parsing.
@@ -52,6 +52,7 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/app/ProductRecipe.cpp
     ${VISIVO_ROOT}/src/app/LassoReplay.cpp
     ${VISIVO_ROOT}/src/app/SofiaSuggest.cpp
+    ${VISIVO_ROOT}/src/app/FinderTaskRun.cpp
     ${VISIVO_ROOT}/src/app/UpdateCheck.cpp
     ${VISIVO_ROOT}/src/vlkb/SourceTable.cpp
     ${VISIVO_ROOT}/src/AnalysisParamStore.cpp
@@ -183,6 +184,16 @@ add_executable(VisIVOTests
     test_copilot_status.cpp
     TestCopilotChoice.h
     test_copilot_choice.cpp
+    TestProbeSpectrumFetch.h
+    test_probe_spectrum_fetch.cpp
+    TestWcsAxisTicks.h
+    test_wcs_axis_ticks.cpp
+    TestOpenJobMerge.h
+    test_open_job_merge.cpp
+    TestTaskQuitDrain.h
+    test_task_quit_drain.cpp
+    TestSystemQuitRedirect.h
+    test_system_quit_redirect.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE
@@ -195,6 +206,7 @@ target_include_directories(VisIVOTests PRIVATE
 target_link_libraries(VisIVOTests PRIVATE
     visivo_test_support
     Qt::Test
+    Qt::Concurrent   # the quit drain's test of a worker waiting on a queued job
 )
 # Let the contract test locate the shared header manifest in both build layouts.
 target_compile_definitions(VisIVOTests PRIVATE
@@ -206,3 +218,13 @@ target_compile_definitions(VisIVOTests PRIVATE
 # Both test classes live in the same binary; run them all in a single CTest entry.
 # Verbose output is opt-in: CTEST_OUTPUT_ON_FAILURE=1  or  ctest -V
 add_test(NAME VisIVOUnitTests COMMAND VisIVOTests)
+
+# A process of its own: QCoreApplication::exit() inside it would end the event
+# loops of every later test in VisIVOTests (TaskQuitDrain, issue #133).
+add_executable(VisIVOQuitExitTest test_quit_exit_main.cpp)
+target_include_directories(VisIVOQuitExitTest PRIVATE ${VISIVO_ROOT}/src ${PROJECT_BINARY_DIR})
+target_link_libraries(VisIVOQuitExitTest PRIVATE visivo_test_support Qt::Concurrent)
+add_test(NAME VisIVOQuitExit COMMAND VisIVOQuitExitTest)
+set_tests_properties(VisIVOQuitExit PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+add_test(NAME VisIVOQuitExitGuiFollower COMMAND VisIVOQuitExitTest --gui-follower)
+set_tests_properties(VisIVOQuitExitGuiFollower PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)

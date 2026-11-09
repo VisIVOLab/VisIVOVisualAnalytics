@@ -1,6 +1,7 @@
 #include "FinderTaskRun.h"
 
 #include "BackendClient.h"
+#include "TaskQuitDrain.h"
 
 #include <QThread>
 
@@ -37,11 +38,22 @@ FinderTaskOutcome runFinderTask(const BackendClient &client, const QString &data
     }
     o.taskId = created.taskId;
     say(u"task %1 started on the backend"_s.arg(created.taskId));
+    // Under the quit drain, as followBackendTask is (TaskQuitDrain.h): quitting
+    // aborts this run, which cancels the task with the quit's short DELETE,
+    // while the application still exists. Without it the quit only dropped the
+    // status reads, and the DELETE came after the "lost track" polls, with the
+    // ordinary 15 s bound: past the drain's ceiling.
+    BackendTaskControl quitControl;
+    const TaskQuitDrain::Follow follow(TaskQuitDrain::instance(), &quitControl);
+    const auto stopAsked = [&]() { return (cancel && cancel->load()) || quitControl.aborted(); };
+    const auto cancelTimeoutMs = []() {
+        return TaskQuitDrain::instance().quitting() ? kQuitCancelTimeoutMs : 0;
+    };
     double lastProgress = -1;
     int failures = 0;
     auto cancelled = [&]() {
         QString cancelError;
-        const bool confirmed = client.cancelTask(created.taskId, cancelError);
+        const bool confirmed = client.cancelTask(created.taskId, cancelError, cancelTimeoutMs());
         o.cancelled = true;
         o.error = confirmed ? u"cancelled"_s
                             : u"cancelled, but the backend did not confirm it%1; the task may still be running"_s.arg(
@@ -50,17 +62,21 @@ FinderTaskOutcome runFinderTask(const BackendClient &client, const QString &data
     };
     for (;;) {
         for (int waited = 0; waited < kTaskPollMs; waited += kTaskCancelCheckMs) {
-            if (cancel && cancel->load())
+            if (stopAsked())
                 return cancelled();
             QThread::msleep(kTaskCancelCheckMs);
         }
-        const BackendTaskStatusResult status = client.requestTaskStatus(created.taskId);
+        const BackendTaskStatusResult status =
+                client.requestTaskStatus(created.taskId, &quitControl.abortRequested);
+        if (stopAsked())
+            return cancelled();   // the read was dropped for it
         if (!status.valid && status.status.isEmpty()) {
             // A poll that failed is not a task that failed, within bounds;
             // past them the task is lost to us and stopped if it can be.
             if (++failures >= kMaxTaskPollFailures) {
                 QString cancelError;
-                const bool stopped = client.cancelTask(created.taskId, cancelError);
+                const bool stopped =
+                        client.cancelTask(created.taskId, cancelError, cancelTimeoutMs());
                 o.error = u"lost track of task %1 on the backend (%2); %3"_s.arg(
                         created.taskId, status.error,
                         stopped ? u"the backend accepted its cancellation"_s

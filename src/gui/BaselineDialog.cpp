@@ -1,4 +1,5 @@
 #include "BaselineDialog.h"
+#include "WindowCloseShortcut.h"
 #include "BackendClient.h"
 #include "DiagnosticsManager.h"
 #include "theme/ToolDialogStyle.h"
@@ -45,6 +46,8 @@ BaselineDialog::BaselineDialog(const QString &backendUrl,
     , m_datasetId(datasetId)
     , m_depth(std::max(1, depth))
 {
+    // Cmd+W closes it, as the title bar's button does (WindowCloseShortcut.h).
+    visivo::installCloseWindowShortcut(this);
     setWindowTitle(u"Spectral Baseline Subtraction"_s);
     setMinimumWidth(520);
     // Shared input theme (chevron dropdown, consistent border/hover/focus

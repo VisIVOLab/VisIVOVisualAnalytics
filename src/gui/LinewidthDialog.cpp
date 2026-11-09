@@ -1,4 +1,5 @@
 #include "LinewidthDialog.h"
+#include "WindowCloseShortcut.h"
 #include "ScienceMapWindow.h"
 #include "BackendClient.h"
 #include "DiagnosticsManager.h"
@@ -94,6 +95,8 @@ LinewidthDialog::LinewidthDialog(const QString &backendUrl,
     , m_spectralAxisType(classifySpectralAxis(spectralAxisType, spectralAxisUnit))
     , m_spectralAxisUnit(spectralAxisUnit.trimmed())
 {
+    // Cmd+W closes it, as the title bar's button does (WindowCloseShortcut.h).
+    visivo::installCloseWindowShortcut(this);
     setWindowTitle(u"Line-Width Map"_s);
     setMinimumWidth(500);
     // Shared input theme — see ToolDialogStyle.

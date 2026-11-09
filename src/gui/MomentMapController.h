@@ -98,6 +98,9 @@ public:
     // True while an async moment computation is in progress.
     // Queried by vtkWindowCube::isBusy() and updateBackendDerivedActionsAvailability().
     bool isBusy() const;
+    /// Stop the moment under way on the backend, for a window that is closing:
+    /// its result would have nowhere to go. The run then ends as cancelled.
+    void cancel();
 
     // Returns the configuration that was accepted in the last successful dialog.
     // Valid only after startComputation() returns with isBusy() == true.

@@ -3,6 +3,7 @@
 #include <QPointer>
 #include <QSignalBlocker>
 
+#include <algorithm>
 #include <functional>
 
 #include "AssistantPanel.h"
@@ -26,6 +27,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QTabBar>
@@ -48,6 +50,34 @@ QLabel *sectionCaption(const QString &text, QWidget *parent)
     return lbl;
 }
 
+/// The widest a Properties value may be: the panel is a fixed 320 px, and the
+/// key beside it needs the rest.
+constexpr int kMaxValueWidth = 190;
+
+/// Size a re-hosted read-only QLineEdit (the 3-D cube statistics) to its text.
+///
+/// A QLineEdit keeps the width of about 17 characters whatever it holds, and a
+/// longer value is scrolled to its END, where the cursor is: "-0.00124432
+/// JY/BEAM" read "00124432 JY/BEAM", sign and leading digits gone. Sized to the
+/// text, up to the width a value label may take, it shows the whole value; a
+/// value wider still shows from its start, with the full text in the tooltip.
+void fitLineEditToText(QLineEdit *edit)
+{
+    const auto refit = [edit]() {
+        edit->ensurePolished();
+        const QFontMetrics fm = edit->fontMetrics();
+        const QString text = edit->text();
+        // sizeHint() is 17 'x' wide plus the frame, the margins and the text
+        // margins; that overhead is kept, and the text replaces the 17 x.
+        const int overhead = edit->sizeHint().width() - 17 * fm.horizontalAdvance(u'x');
+        const int wanted = overhead + fm.horizontalAdvance(text) + 1;   // +1: the cursor
+        edit->setFixedWidth(std::min(wanted, kMaxValueWidth));
+        edit->setCursorPosition(0);
+        edit->setToolTip(VisivoTheme::wrappingToolTip(text));
+    };
+    refit();
+    QObject::connect(edit, &QLineEdit::textChanged, edit, refit);
+}
 
 } // namespace
 
@@ -233,7 +263,6 @@ void InspectorPanel::applyValueStyle(QLabel *label, const QString &value)
     // sideways and every SHORT value was pushed out of sight beyond the right
     // edge. The rows looked empty. Elided with the label's own metrics, full
     // text in the tooltip.
-    constexpr int kMaxValueWidth = 190;
     label->setMaximumWidth(kMaxValueWidth);
     label->ensurePolished();
     label->setText(label->fontMetrics().elidedText(value, Qt::ElideMiddle, kMaxValueWidth));
@@ -264,6 +293,8 @@ void InspectorPanel::addPropertyRow(const QString &key, QWidget *valueWidget)
                 l->removeWidget(valueWidget);
         valueWidget->setParent(row);
         h->addWidget(valueWidget, 0, Qt::AlignRight);
+        if (auto *edit = qobject_cast<QLineEdit *>(valueWidget))
+            fitLineEditToText(edit);
     }
     m_propsLayout->insertWidget(m_propsLayout->count() - 1, row);
 }

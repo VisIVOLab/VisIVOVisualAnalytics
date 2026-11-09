@@ -2,6 +2,7 @@
 #include "ui_vtkWindowImage.h"
 #include "CubeWcsUtil.h"
 #include "CubeViewportGeometry.h"
+#include "WcsAxisTicks.h"
 
 #include "app/BackendClient.h"
 #include "app/DiagnosticsManager.h"
@@ -295,21 +296,28 @@ void vtkWindowImage::updateWcsOverlay()
     this->overlayYAxis->VisibilityOn();
     this->overlayXTitleActor->VisibilityOn();
     this->overlayYTitleActor->VisibilityOn();
+    // Each axis is read along its own edge, not on the diagonal: in another
+    // frame than the native one both pixel axes move both coordinates
+    // (WcsAxisTicks.h).
+    const auto frameAt = [this](const visivo::AxisVoxel &at, int axis) {
+        bool okX = false;
+        bool okY = false;
+        const double nativeX = this->remoteVoxelToWcs(0, at.x, &okX);
+        const double nativeY = this->remoteVoxelToWcs(1, at.y, &okY);
+        double fx = nativeX;
+        double fy = nativeY;
+        if (okX && okY && this->remoteHasCelestialAxes())
+            this->convertRemoteCelestialCoordinates(nativeX, nativeY, fx, fy);
+        return axis == 0 ? fx : fy;
+    };
     for (int i = 0; i < overlayTickCount; ++i) {
         const double t = overlayTickCount == 1 ? 0.0
                                                : static_cast<double>(i)
                         / static_cast<double>(overlayTickCount - 1);
-        const double voxelX = visible.xmin + t * (visible.xmax - visible.xmin);
-        const double voxelY = visible.ymin + t * (visible.ymax - visible.ymin);
-        bool tickXOk = false;
-        bool tickYOk = false;
-        double tickX = this->remoteVoxelToWcs(0, voxelX, &tickXOk);
-        double tickY = this->remoteVoxelToWcs(1, voxelY, &tickYOk);
-        double frameX = tickX;
-        double frameY = tickY;
-        if (tickXOk && tickYOk && this->remoteHasCelestialAxes()) {
-            this->convertRemoteCelestialCoordinates(tickX, tickY, frameX, frameY);
-        }
+        const double frameX =
+                frameAt(visivo::xAxisTickVoxel(t, visible.xmin, visible.xmax, visible.ymin), 0);
+        const double frameY =
+                frameAt(visivo::yAxisTickVoxel(t, visible.ymin, visible.ymax, visible.xmin), 1);
 
         this->overlayXTickActors[static_cast<std::size_t>(i)]->SetInput(
                 this->formatRemoteOverlayCoordinate(0, frameX).toStdString().c_str());

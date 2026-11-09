@@ -4,7 +4,10 @@
 #include "app/RecentDatasetsManager.h"
 #include "app/SampProtocol.h"
 
+#include <QDateTime>
 #include <QElapsedTimer>
+
+#include <optional>
 #include <QHash>
 #include <QSet>
 #include <QMainWindow>
@@ -49,6 +52,40 @@ QT_END_NAMESPACE
 
 class UpdateNotifier;
 
+/// One open as it runs, for the Data Hub's "Last 5 jobs" (#133): how it ended
+/// and whether it reached the backend. Owned by the open's entry point and
+/// handed explicitly to the steps that continue it, so an open started from
+/// another one's nested event loop, or a callback of another open, cannot
+/// write into it. Times in ms since the epoch.
+struct OpenRecord
+{
+    QString path;
+    QString status{ QStringLiteral("failed") };   ///< until it is shown or cancelled
+    bool reachedBackend{ false };
+    bool record{ true };           ///< false: not a job (a dismissed chooser, async VBT)
+    qint64 requestedMs{ 0 };       ///< when the user asked
+    qint64 endedMs{ -1 };          ///< when the result was presented (-1: at the record's end)
+    qint64 excludedMs{ 0 };        ///< time the user spent choosing a viewer
+    QString backendUrl;            ///< the backend it was opened on
+    QString backendToken;
+};
+
+/// The open's result is on screen (a viewer) or about to be (an error box):
+/// its status, and its end, so a box's reading time is not counted.
+inline void noteOpenEnded(OpenRecord *record, const QString &status)
+{
+    if (!record)
+        return;
+    record->status = status;
+    record->endedMs = QDateTime::currentMSecsSinceEpoch();
+}
+
+inline void noteOpenReachedBackend(OpenRecord *record, bool reached = true)
+{
+    if (record)
+        record->reachedBackend = reached;
+}
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -56,6 +93,11 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
+    /// An open refused before anything was asked of the backend, outside the
+    /// open functions (a command-line path that is not a file here): listed
+    /// in the Data Hub's "Last 5 jobs" as failed. @p requestedMs: when it was
+    /// asked for (ms since the epoch; -1: now).
+    void recordOpenRefusedHere(const QString &path, qint64 requestedMs = -1);
 
     /// Recent-datasets model, shared with viewer windows (dataset switcher).
     RecentDatasetsManager *recentDatasetsManager() const { return recentMgr; }
@@ -93,7 +135,7 @@ private slots:
     /// Open the velocity field at @p path (a backend path) in the vector-field viewer:
     /// what the menu entry does once a file is chosen, and what Open… does when the
     /// classifier recognises one.
-    void openVelocityFieldPath(const QString &path);
+    void openVelocityFieldPath(const QString &path, OpenRecord *record = nullptr);
     void openHiPS();
     /// Data ▸ HiPS Cutout — a FITS out of any HiPS survey (CDS hips2fits).
     void openHips2Fits();
@@ -176,18 +218,29 @@ private:
     // Path-based open helpers (skip the file browser dialog, used for reopen).
     /// False when the backend is unreachable or could not open @p path (the
     /// user has been told why).
-    bool doOpenDataPath(const QString &path);
+    /// @p record: the open this continues (dispatchOpenForPath), or null
+    /// for an open of its own, which then records itself.
+    bool doOpenDataPath(const QString &path, OpenRecord *record = nullptr);
     /// A compressed FITS (.fits.gz, .fz) is decompressed on the backend first,
     /// behind a progress window with Cancel (issue #57). False when the open
     /// must stop: cancelled or refused because another file is being
     /// decompressed (said in the status bar), or failed (said in a box).
-    bool decompressBeforeOpen(const BackendClient &client, const QString &path);
+    bool decompressBeforeOpen(const BackendClient &client, const QString &path,
+                              OpenRecord *record = nullptr);
+    /// Ask the backend for the Data Hub's activity now, once the current open
+    /// has returned (see the call sites).
+    void refreshDataHubAfterOpen();
     /// When the user asked for @p path to open, for the decompression's
     /// clock: dispatchOpenForPath() notes it before its health check and
     /// classification; an open that did not come through it starts now.
     QElapsedTimer openRequestedAt(const QString &path) const;
     QElapsedTimer m_openRequestClock;   ///< set while dispatchOpenForPath() runs
     QString m_openRequestPath;
+    /// A record of the open under way, for "Last 5 jobs", from the request
+    /// at @p requestedAt (invalid: now), against the configured backend.
+    OpenRecord startOpenRecord(const QString &path, const QElapsedTimer &requestedAt) const;
+    /// Hand the record to the Data Hub and refresh its list.
+    void endOpenRecord(const OpenRecord &record);
     /// Classify ``path`` on the backend and open it accordingly, asking the
     /// user only when the content itself is ambiguous (a FITS table can be a
     /// catalogue or an overlay) or unrecognised.
@@ -300,7 +353,8 @@ private:
                              const QString &spectralAxisUnit);
     void openViewerFromOpenedDataset(const QString &path,
                                        const struct BackendOpenDatasetResult &opened,
-                                       const class BackendClient &client);
+                                       const class BackendClient &client,
+                                       OpenRecord *record = nullptr);
     void doOpenVbtPath(const QString &path);
 
     /// Open a VLKB 2D cutout (backend path) in a new vtkWindowImage, label its

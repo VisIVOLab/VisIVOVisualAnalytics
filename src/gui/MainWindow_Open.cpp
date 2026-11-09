@@ -56,6 +56,7 @@
 #include <QCloseEvent>
 #include <QDebug>
 #include <QDir>
+#include <QDateTime>
 #include <QFileInfo>
 #include <QDoubleValidator>
 #include <QFileDialog>
@@ -759,7 +760,76 @@ QElapsedTimer MainWindow::openRequestedAt(const QString &path) const
     return now;
 }
 
-bool MainWindow::decompressBeforeOpen(const BackendClient &client, const QString &path)
+void MainWindow::refreshDataHubAfterOpen()
+{
+    // "Last 5 jobs" is polled every 4 s, and not at all while a dialog is up
+    // (DataHubWidget::refreshStatus). A failed open is answered by a message
+    // box, so the polls during the open listed nothing yet and the ones while
+    // the box was up were skipped: closing the box left the failure out of the
+    // list until the next poll came round, which read as the job not having
+    // been recorded at all (#133). Queued, so it runs once the open (and its
+    // box) has returned.
+    QPointer<DataHubWidget> hub = this->dataHub;
+    if (hub)
+        QTimer::singleShot(0, hub, &DataHubWidget::refreshStatus);
+}
+
+namespace {
+
+/// A catalogue's open ends inside its window's constructor: the viewer is on
+/// screen when it returns, or the first load failed and said so in a box,
+/// whose reading time is not the open's.
+void noteCatalogueOpenEnded(OpenRecord *record, const vtkWindowCatalogue3D *win)
+{
+    if (!record)
+        return;
+    const bool opened = win && win->catalogueOpened();
+    noteOpenEnded(record, opened ? u"done"_s : u"failed"_s);
+    if (win && win->openFailedAtMs() >= 0)
+        record->endedMs = win->openFailedAtMs();
+}
+
+}   // namespace
+
+OpenRecord MainWindow::startOpenRecord(const QString &path, const QElapsedTimer &requestedAt) const
+{
+    OpenRecord record;
+    record.path = path;
+    record.requestedMs = QDateTime::currentMSecsSinceEpoch()
+            - (requestedAt.isValid() ? requestedAt.elapsed() : 0);
+    record.backendUrl = this->settings->getBackendUrl();
+    record.backendToken = this->settings->getBackendToken();
+    return record;
+}
+
+void MainWindow::recordOpenRefusedHere(const QString &path, qint64 requestedMs)
+{
+    OpenRecord record = this->startOpenRecord(path, QElapsedTimer());
+    if (requestedMs >= 0)
+        record.requestedMs = std::min(requestedMs, record.requestedMs);
+    noteOpenEnded(&record, u"failed"_s);
+    this->endOpenRecord(record);
+}
+
+void MainWindow::endOpenRecord(const OpenRecord &record)
+{
+    if (record.record && this->dataHub) {
+        visivo::ClientOpen open;
+        open.path = record.path;
+        open.status = record.status;
+        open.finishedMs = record.endedMs >= 0 ? record.endedMs : QDateTime::currentMSecsSinceEpoch();
+        // Less the time spent choosing a viewer, which is not the open's.
+        open.requestedMs = std::min(open.finishedMs, record.requestedMs + record.excludedMs);
+        open.reachedBackend = record.reachedBackend;
+        open.backendUrl = record.backendUrl;
+        open.backendToken = record.backendToken;
+        this->dataHub->recordClientOpen(open);
+    }
+    this->refreshDataHubAfterOpen();
+}
+
+bool MainWindow::decompressBeforeOpen(const BackendClient &client, const QString &path,
+                                      OpenRecord *record)
 {
     // The Data Hub polls the backend every few seconds; looked at only then,
     // its job list read "Idle" through the start of a decompression.
@@ -768,10 +838,20 @@ bool MainWindow::decompressBeforeOpen(const BackendClient &client, const QString
         if (hub)
             QTimer::singleShot(0, hub, &DataHubWidget::refreshStatus);
     };
+    // A compressed file is decompressed by a backend task, which the backend
+    // lists as "decompress": the open has reached it.
+    if (BackendClient::isCompressedFitsName(path))
+        noteOpenReachedBackend(record);
     const visivo::DecompressBeforeOpenResult r = visivo::decompressBeforeOpen(
             this, client, path, this->openRequestedAt(path), refreshHub);
     if (r.proceed)
         return true;
+    if (r.cancelled)
+        noteOpenEnded(record, u"cancelled"_s);
+    if (r.busy) {
+        noteOpenReachedBackend(record, false);   // refused here, before any task
+        noteOpenEnded(record, u"failed"_s);
+    }
     if (r.cancelled) {
         // Asked for: said in the status bar, not raised as an error.
         this->statusBar()->showMessage(
@@ -787,17 +867,29 @@ bool MainWindow::decompressBeforeOpen(const BackendClient &client, const QString
         this->statusBar()->showMessage(r.error, 10000);
         return false;
     }
+    noteOpenEnded(record, u"failed"_s);
     QMessageBox::critical(this, u"Could not open dataset"_s,
                           u"The backend could not decompress this file.\n\n%1"_s.arg(r.error));
     return false;
 }
 
-bool MainWindow::doOpenDataPath(const QString &path)
+bool MainWindow::doOpenDataPath(const QString &path, OpenRecord *continued)
 {
+    // Succeeded or failed, the job list should say so at once. Continuing the
+    // dispatcher's open, that open records (from its click); called on its
+    // own, this one does, from now (not from another open's clock, which may
+    // be on the same path).
+    OpenRecord own = this->startOpenRecord(path, QElapsedTimer());
+    OpenRecord *const record = continued ? continued : &own;
+    const auto refreshJobs = qScopeGuard([this, continued, &own]() {
+        if (!continued)
+            this->endOpenRecord(own);
+    });
     this->setActiveBackendBadge(this->settings->getLocalBackend());
     BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
     const auto health = client.health();
     if (!health.ok) {
+        noteOpenEnded(record, u"failed"_s);
         QMessageBox::critical(
                 this, u"Backend unavailable"_s,
                 u"Cannot open a dataset: the backend is not reachable.\n\n"
@@ -805,8 +897,9 @@ bool MainWindow::doOpenDataPath(const QString &path)
         return false;
     }
 
-    if (!this->decompressBeforeOpen(client, path))
+    if (!this->decompressBeforeOpen(client, path, record))
         return false;
+    noteOpenReachedBackend(record);
     const auto opened = client.openDataset(path, /*alreadyDecompressed=*/true);
     if (!opened.valid) {
         // The formats hint only where the format may be the problem: no reason
@@ -821,10 +914,11 @@ bool MainWindow::doOpenDataPath(const QString &path)
         if (formatMayBeWrong)
             text += u"\n\nSupported formats: FITS (image, cube). For HDF5, Gadget, VOTable, "
                     u"or simulation data, convert with VisIVOServer first."_s;
+        noteOpenEnded(record, u"failed"_s);
         QMessageBox::critical(this, u"Could not open dataset"_s, text);
         return false;
     }
-    openViewerFromOpenedDataset(path, opened, client);
+    openViewerFromOpenedDataset(path, opened, client, record);
     return true;
 }
 
@@ -896,7 +990,8 @@ void MainWindow::adoptSessionContext(const QString &backendUrl, const QString &b
 
 void MainWindow::openViewerFromOpenedDataset(const QString &openedPath,
                                               const BackendOpenDatasetResult &opened,
-                                              const BackendClient &client)
+                                              const BackendClient &client,
+                                              OpenRecord *record)
 {
     // A field of a VBT volume (issue #83): the viewer is given the field's
     // reference, the path every backend call reads that field by, and shows it
@@ -1026,6 +1121,7 @@ void MainWindow::openViewerFromOpenedDataset(const QString &openedPath,
         });
         win = cubeWin;
     } else {
+        noteOpenEnded(record, u"failed"_s);
         QMessageBox::information(
                 this, u"Unsupported dataset"_s,
                 u"The backend reported an unsupported dataset kind: '%1'.\n\n"
@@ -1057,6 +1153,7 @@ void MainWindow::openViewerFromOpenedDataset(const QString &openedPath,
     win->showMaximized();
     win->raise();
     win->activateWindow();
+    noteOpenEnded(record, u"done"_s);   // the end of an open, for "Last 5 jobs"
 }
 
 
@@ -1307,6 +1404,12 @@ void MainWindow::dispatchOpenForPath(const QString &path)
     this->m_openRequestClock.start();
     this->m_openRequestPath = path;
     const auto forgetRequest = qScopeGuard([this]() { this->m_openRequestClock.invalidate(); });
+    // Every kind of open is a job the Data Hub lists, timed from this click to
+    // its result (OpenJobMerge.h), and the list is refreshed when it returns.
+    // Declared after forgetRequest, so it ends first, while the clock is valid.
+    OpenRecord own = this->startOpenRecord(path, this->m_openRequestClock);
+    OpenRecord *const record = &own;
+    const auto refreshJobs = qScopeGuard([this, &own]() { this->endOpenRecord(own); });
     BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
     // Asked here rather than only in openAnything(): the desktop reaches this
     // without going through the browser, and a backend that is down would
@@ -1314,6 +1417,7 @@ void MainWindow::dispatchOpenForPath(const QString &path)
     // by a dialog asking the user to choose a viewer that cannot open anything.
     const auto health = client.health();
     if (!health.ok) {
+        noteOpenEnded(record, u"failed"_s);
         QMessageBox::critical(
                 this, u"Backend unavailable"_s,
                 u"Cannot open a file: the backend is not reachable.\n\n"
@@ -1325,6 +1429,7 @@ void MainWindow::dispatchOpenForPath(const QString &path)
         // Missing, or outside the backend's data roots (it answers alike): no
         // viewer can open it, so the choice of one is not offered.
         const Settings::SessionBackend *remote = Settings::sessionBackend();
+        noteOpenEnded(record, u"failed"_s);
         QMessageBox box(QMessageBox::Warning, u"Cannot open file"_s,
                         u"“%1” was not found on %2, or lies outside the folders it "
                         u"may read."_s.arg(path, remote ? remote->name : u"the backend"_s),
@@ -1339,29 +1444,38 @@ void MainWindow::dispatchOpenForPath(const QString &path)
     // the user chose correctly.
     const QString target = verdict.valid && !verdict.openPath.isEmpty() ? verdict.openPath : path;
     this->m_openRequestPath = target;
+    record->path = target;
 
     const QString opener = verdict.valid ? verdict.opener : QString();
     if (opener == u"dataset"_s) {
-        doOpenDataPath(target);
+        doOpenDataPath(target, record);
         return;
     }
     if (opener == u"catalogue"_s) {
-        doOpenCataloguePath(target, catalogueSiblingGroup(client, target, this));
+        noteOpenReachedBackend(record);
+        const vtkWindowCatalogue3D *win =
+                doOpenCataloguePath(target, catalogueSiblingGroup(client, target, this));
+        noteCatalogueOpenEnded(record, win);
         return;
     }
     if (opener == u"vbt"_s) {
+        // It ends later, on a pool thread's answer: the backend's own time
+        // for /v1/vbt/open is what the list shows.
+        record->record = false;
         doOpenVbtPath(target);
         return;
     }
     if (opener == u"velocity"_s) {
+        noteOpenReachedBackend(record);
         // A 3-component vector field: the 2-D image viewer would show one plane
         // of one component, which reads as an empty picture.
-        openVelocityFieldPath(target);
+        openVelocityFieldPath(target, record);
         return;
     }
     if (opener == u"unsupported"_s) {
         // We know what it is and nothing here opens it. Offering the three
         // viewers would only move the failure one dialog later.
+        noteOpenEnded(record, u"failed"_s);
         QMessageBox box(QMessageBox::Information, u"Cannot open this file"_s,
                         u"%1\n\n%2"_s.arg(QFileInfo(path).fileName(), verdict.detail),
                         QMessageBox::Ok, this);
@@ -1390,17 +1504,25 @@ void MainWindow::dispatchOpenForPath(const QString &path)
                                                  QMessageBox::AcceptRole);
     box.addButton(QMessageBox::Cancel);
     box.setDefaultButton(isTable ? asCatalogue : asDataset);
+    QElapsedTimer choosing;
+    choosing.start();
     box.exec();
     // The time spent choosing is not the open's.
     this->m_openRequestClock.start();
     this->m_openRequestPath = target;
+    record->excludedMs += choosing.elapsed();
 
-    if (box.clickedButton() == asCatalogue)
-        doOpenCataloguePath(target, catalogueSiblingGroup(client, target, this));
-    else if (box.clickedButton() == asDataset)
-        doOpenDataPath(target);
-    else if (asVbt && box.clickedButton() == asVbt)
-        doOpenCataloguePath(target);   // a table of points (issue #83)
+    if (box.clickedButton() == asCatalogue || (asVbt && box.clickedButton() == asVbt)) {
+        noteOpenReachedBackend(record);
+        const vtkWindowCatalogue3D *win = box.clickedButton() == asCatalogue
+                ? doOpenCataloguePath(target, catalogueSiblingGroup(client, target, this))
+                : doOpenCataloguePath(target);   // a table of points (issue #83)
+        noteCatalogueOpenEnded(record, win);
+    } else if (box.clickedButton() == asDataset) {
+        doOpenDataPath(target, record);
+    } else {
+        record->record = false;   // dismissed: nothing was asked
+    }
 }
 
 
@@ -1537,10 +1659,10 @@ void MainWindow::openVelocityField()
     this->openVelocityFieldPath(path);
 }
 
-void MainWindow::openVelocityFieldPath(const QString &path)
+void MainWindow::openVelocityFieldPath(const QString &path, OpenRecord *record)
 {
     BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
-    if (!this->decompressBeforeOpen(client, path))
+    if (!this->decompressBeforeOpen(client, path, record))
         return;
 
     // The 64³×3 grid is small; do the two synchronous calls under a wait cursor.
@@ -1550,6 +1672,7 @@ void MainWindow::openVelocityFieldPath(const QString &path)
     if (!opened.valid) {
         QApplication::restoreOverrideCursor();
         this->statusBar()->clearMessage();   // not "Opening…" under the refusal
+        noteOpenEnded(record, u"failed"_s);
         QMessageBox::warning(this, u"Velocity Field"_s,
                              u"Open failed: %1"_s.arg(opened.error.isEmpty() ? u"unknown error"_s
                                                                              : opened.error));
@@ -1560,6 +1683,7 @@ void MainWindow::openVelocityFieldPath(const QString &path)
     QApplication::restoreOverrideCursor();
     if (!grid.valid) {
         this->statusBar()->clearMessage();
+        noteOpenEnded(record, u"failed"_s);
         QMessageBox::warning(this, u"Velocity Field"_s,
                              u"Grid fetch failed: %1"_s.arg(grid.error.isEmpty()
                                                                     ? u"unknown error"_s
@@ -1572,6 +1696,7 @@ void MainWindow::openVelocityFieldPath(const QString &path)
     win->setAttribute(Qt::WA_DeleteOnClose);
     win->resize(1100, 760);
     win->show();
+    noteOpenEnded(record, u"done"_s);
     // Recorded as "velocity" so the Recent list reopens it here; recording it
     // also replaces a stale "image" entry for the same path (same id).
     if (this->recentMgr)

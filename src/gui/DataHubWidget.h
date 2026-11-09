@@ -2,6 +2,7 @@
 #define DataHubWidget_h
 
 #include "app/RecentDatasetsManager.h"
+#include "OpenJobMerge.h"
 
 #include <QWidget>
 #include <QPointer>
@@ -39,6 +40,11 @@ public:
     // Called by MainWindow after construction to wire the recent-datasets panel.
     // The manager must outlive DataHubWidget. DataHubWidget does NOT take ownership.
     void setRecentDatasetsManager(RecentDatasetsManager *manager);
+
+    /// An open has ended, as the client saw it (MainWindow): merged into
+    /// "Last 5 jobs" with its end-to-end time (OpenJobMerge.h). Kept in memory
+    /// only, the last few.
+    void recordClientOpen(const visivo::ClientOpen &open);
 
 public slots:
     // Health check → updates status badge + system-insights panel. The request
@@ -112,7 +118,12 @@ QFrame *makeActionCard(const QString &iconKind, const QString &title,
     /// The answer of refreshStatus()'s health request, asked of @p url with @p token.
     void applyHealth(const QString &url, const QString &token, const BackendHealthResult &health);
     void updateSystemInsights(const BackendHealthResult &health);
+    /// The client's last opens, oldest first (recordClientOpen).
+    QList<visivo::ClientOpen> m_clientOpens;
     void clearRecentTasksUi();
+    /// "Last 5 jobs" from @p backend (empty when the backend is unreachable)
+    /// with the client's own opens merged in.
+    void renderJobRows(const std::vector<BackendRecentTask> &backend);
 
     // Tear down + rebuild the entire hub UI when ThemeManager reports a
     // theme switch — needed because most widgets cache theme hex values

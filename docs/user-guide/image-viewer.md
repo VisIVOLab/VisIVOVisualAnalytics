@@ -179,7 +179,10 @@ so a wrong guess was only discovered by reopening the copy.
 ## WCS overlay and frame
 
 - **Show WCS Axes** in the *View* menu paints ticks along the image axes
-  according to its WCS metadata.
+  according to its WCS metadata. Each tick gives the coordinate at the tick:
+  the x axis along the bottom edge, the y axis along the left edge, also in a
+  frame other than the image's own, where both coordinates change across both
+  pixel axes.
 - **Coordinate format** — a **Sexagesimal | Decimal** segmented toggle in
   *Tools ▸ WCS Display*.
 - **Coordinate frame** — a **Galactic | FK5 | Ecliptic** segmented toggle

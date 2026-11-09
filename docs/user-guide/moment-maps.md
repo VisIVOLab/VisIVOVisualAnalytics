@@ -43,10 +43,13 @@ In the [cube viewer](cube-viewer):
 ```{note}
 **Long computations.** The moment runs as a backend *task*, which has no time
 limit: on an SKA-scale cube (hundreds of GB) an M2 can take 20–25 minutes.
-While it runs, the progress sheet over the Moment dialog says whether the task
+While it runs, a progress window above the cube window says whether the task
 is queued or running and how long it has been going. **Cancel** stops the task
-on the backend (it does not just hide the sheet), and so does closing the cube
-window. If the task fails or is cancelled, the client reports it; it does not
+on the backend (it does not just hide the window), and so does closing the cube
+window, or quitting the application: the window does not block the rest of the
+application, so **Quit** (⌘Q, the Dock's *Quit*) stays available on macOS while
+a moment runs. The Moment dialog can be closed meanwhile; a second *Compute*
+waits for the first to end. If the task fails or is cancelled, the client reports it; it does not
 start the computation again by another route. Only a backend too old to have
 task routes is asked with a single synchronous request instead, which cannot
 be cancelled and is limited by that backend's request timeout. Exporting the

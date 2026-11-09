@@ -156,6 +156,15 @@ public:
     }
     QString cataloguePath() const { return this->filepath; }
     /// The catalogue opened on the backend and some rows loaded.
+    /// The catalogue opened and its first rows loaded (a failed open leaves a
+    /// window saying so).
+    bool catalogueOpened() const
+    {
+        return !this->remoteDatasetId.isEmpty() && this->m_openFailedAtMs < 0;
+    }
+    /// When the first load failed, just before its error box (ms since the
+    /// epoch; -1: it did not fail).
+    qint64 openFailedAtMs() const { return this->m_openFailedAtMs; }
     bool hasLoadedRows() const { return !this->remoteDatasetId.isEmpty() && !this->entries.empty(); }
     /// table.highlight.row: select the source of original-table row @p row and
     /// fly to it, as a click on it would. False (and a status line saying so)
@@ -364,6 +373,7 @@ private:
     QString backendUrl;
     QString backendToken;
     QString remoteDatasetId;
+    qint64 m_openFailedAtMs{ -1 };
     QString remoteSessionId;
     std::vector<Catalogue3DEntry> entries;
     Catalogue3DSchema schema;

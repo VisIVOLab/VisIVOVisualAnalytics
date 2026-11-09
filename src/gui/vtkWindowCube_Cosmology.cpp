@@ -152,6 +152,10 @@ void vtkWindowCube::withMomentDataset(
         std::function<Result(BackendClient &, const QString &)> analysis,
         std::function<void(const Result &, const MomentDataset &, const QString &)> done)
 {
+    // One at a time: the progress sheet is not modal (showTaskProgressSheet),
+    // so this window stays usable while a run goes on.
+    if (m_momentMapToolBusy)
+        return;
     const auto pit = m_products2d.constFind(momentProductId);
     if (pit == m_products2d.cend())
         return;

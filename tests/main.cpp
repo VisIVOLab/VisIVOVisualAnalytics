@@ -34,6 +34,11 @@
 #include "TestRegionFullRes.h"
 #include "TestDatasetName.h"
 #include "TestColourBarTicks.h"
+#include "TestProbeSpectrumFetch.h"
+#include "TestWcsAxisTicks.h"
+#include "TestOpenJobMerge.h"
+#include "TestTaskQuitDrain.h"
+#include "TestSystemQuitRedirect.h"
 #include "TestThresholdShare.h"
 #include "TestLayerCardGeometry.h"
 #include "TestRegionReadout.h"
@@ -92,6 +97,11 @@ int main(int argc, char *argv[])
     { TestDatasetName      t; status |= QTest::qExec(&t, argc, argv); }
     { TestThresholdShare   t; status |= QTest::qExec(&t, argc, argv); }
     { TestColourBarTicks   t; status |= QTest::qExec(&t, argc, argv); }
+    { TestProbeSpectrumFetch t; status |= QTest::qExec(&t, argc, argv); }
+    { TestWcsAxisTicks     t; status |= QTest::qExec(&t, argc, argv); }
+    { TestOpenJobMerge     t; status |= QTest::qExec(&t, argc, argv); }
+    { TestTaskQuitDrain    t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSystemQuitRedirect t; status |= QTest::qExec(&t, argc, argv); }
     { TestLayerCardGeometry t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionReadout    t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendUrlLocality t; status |= QTest::qExec(&t, argc, argv); }

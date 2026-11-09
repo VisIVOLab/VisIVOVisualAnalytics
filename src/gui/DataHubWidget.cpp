@@ -864,6 +864,10 @@ QFrame *DataHubWidget::makeActionCard(const QString &iconKind, const QString &ti
 
 void DataHubWidget::setBackendUrl(const QString &url, const QString &token)
 {
+    // The client's record of its opens is matched to the backend's jobs by
+    // time: another backend's jobs are not its opens.
+    if (url != this->backendUrl || token != this->backendToken)
+        this->m_clientOpens.clear();
     this->backendUrl   = url;
     this->backendToken = token;
 

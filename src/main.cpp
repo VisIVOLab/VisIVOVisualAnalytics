@@ -2,6 +2,8 @@
 #include "Version.h"
 #include "app/BackendClient.h"
 #include "app/BackendLauncher.h"
+#include "app/TaskQuitDrain.h"
+#include "gui/SystemQuitRedirect.h"
 #include "app/BackendUrl.h"
 #include "app/ClusterConnection.h"
 #include "app/LaunchOptions.h"
@@ -19,6 +21,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
+#include <QDateTime>
 #include <QFileOpenEvent>
 #include <QCryptographicHash>
 #include <QDeadlineTimer>
@@ -132,6 +135,8 @@ public:
     void takeCommandLine(const QStringList &args, bool remote)
     {
         m_pending << LaunchOptions::datasetPaths(args, remote, &m_missing);
+        if (!m_missing.isEmpty() && m_missingSinceMs < 0)
+            m_missingSinceMs = QDateTime::currentMSecsSinceEpoch();   // the request: the launch
     }
 
     /// Called once MainWindow is up: flush the queue and keep forwarding.
@@ -151,6 +156,13 @@ public:
         if (m_missing.isEmpty())
             return;
         const QStringList missing = std::exchange(m_missing, {});
+        // A failed open like any other, refused before the backend: listed in
+        // the Data Hub's "Last 5 jobs" (#133: "a failed first open after
+        // start"). Before the box, whose reading time is not the open's.
+        if (auto *window = qobject_cast<MainWindow *>(parent))
+            for (const QString &path : missing)
+                window->recordOpenRefusedHere(path, m_missingSinceMs);
+        m_missingSinceMs = -1;
         QMessageBox::warning(parent, u"Cannot open file"_s,
                              u"Not found on this machine:\n%1"_s.arg(missing.join(u'\n')));
     }
@@ -399,6 +411,7 @@ private:
     QStringList m_pending;
     QPointer<MainWindow> m_window;
     QStringList m_missing;   ///< command-line paths that are not files here
+    qint64 m_missingSinceMs{ -1 };   ///< when they were asked for (ms since the epoch)
     QLocalServer *m_server{ nullptr };
     std::unique_ptr<QLockFile> m_lock;   ///< held for this process's lifetime
     QString m_takeoverKey;               ///< set in a secondary, which polls for the seat
@@ -431,6 +444,18 @@ int main(int argc, char *argv[])
     }
 
     QApplication app(argc, argv);
+    // Before any other aboutToQuit handler (they run in the order connected:
+    // the cluster connection closes its tunnel on it): every followed backend
+    // task is cancelled, and its worker waited for, while the application
+    // still exists. A worker left for ~QApplication to wait on starts its
+    // DELETE's event loop with no application, and hangs the exit (#133).
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, &app,
+                     []() {
+                         if (!visivo::TaskQuitDrain::instance().drain(visivo::kQuitDrainTimeoutMs))
+                             qWarning().noquote()
+                                     << "[quit] backend work still running after the drain's "
+                                        "ceiling; the exit waits for it";
+                     });
 
     // Build the diagnostics singleton here, on the main thread, rather than
     // wherever the first diagnostic happens to be published. It is a
@@ -622,6 +647,12 @@ int main(int argc, char *argv[])
 
     // ── Main window ───────────────────────────────────────────────────────────
     MainWindow w;
+    // The Dock's Quit (and any system quit) the way the Quit menu goes: the
+    // question, then exitApplication's cancel-and-wait. Left to Qt it closed
+    // every window first, and a busy cube's refusal cancelled the quit after
+    // its moment had been stopped (SystemQuitRedirect.h, #133).
+    visivo::SystemQuitRedirect systemQuit([&w]() { w.close(); });
+    app.installEventFilter(&systemQuit);
     w.show();
     // Once the event loop has painted it: the release's launch check waits for
     // this line, not only for the process to be alive.

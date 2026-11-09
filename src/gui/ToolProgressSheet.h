@@ -116,6 +116,13 @@ protected:
 /// returns and the caller closes it through closeToolProgressSheet(): Cancel is
 /// a request the backend answers, not the end of the work.
 ///
+/// Unlike showToolProgressSheet, it is not modal. On macOS a window-modal sheet
+/// greys out the application menu while it is up, so Quit (Cmd+Q, the Dock's
+/// Quit) did nothing for as long as the task ran, which for a moment over an
+/// SKA-scale cube is tens of minutes (#57, #133). Quitting now stops the task
+/// on the backend, as Cancel does. The caller guards against starting the same
+/// work twice while it runs, since the window underneath stays usable.
+///
 /// @p requestedAt, when valid, is when the user asked for the work (the click
 /// on Open, say), which can be a second or more before the task was created.
 /// The elapsed time counts from it, and the sheet shows kProgressSheetDelayMs
@@ -137,6 +144,19 @@ inline QProgressDialog *showTaskProgressSheet(QWidget *parent, const QString &wh
     // is undone the same way.
     QObject::disconnect(sheet, SIGNAL(canceled()), sheet, SLOT(cancel()));
     sheet->installEventFilter(new TaskSheetCloseGuard(sheet));
+    sheet->setWindowModality(Qt::NonModal);
+    // A non-modal dialog is an ordinary window on macOS: one click on the
+    // window underneath put it behind that window, out of reach. A tool window
+    // stays above its application's windows there (and hides with the
+    // application, not above other ones), and above its parent on X11 and
+    // Wayland, without blocking either. Set before it is first shown: the
+    // delayed show armed above has not fired yet.
+    sheet->setWindowFlags((sheet->windowFlags() & ~Qt::WindowType_Mask) | Qt::Tool);
+    // Quitting ends the work nobody will collect: the worker sees the abort
+    // within one check and sends the DELETE, as for Cancel. The application
+    // waits for its pool threads on the way out, so the request leaves first.
+    QObject::connect(qApp, &QCoreApplication::aboutToQuit, sheet,
+                     [control]() { control->requestAbort(); });
 
     auto clock = std::make_shared<QElapsedTimer>(requestedAt);
     if (!clock->isValid())

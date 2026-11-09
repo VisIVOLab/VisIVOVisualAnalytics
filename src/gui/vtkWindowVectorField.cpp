@@ -1,4 +1,5 @@
 #include "vtkWindowVectorField.h"
+#include "WindowCloseShortcut.h"
 
 #include "ColorMaps.h"
 #include "ColormapIcon.h"
@@ -70,6 +71,8 @@ vtkWindowVectorField::vtkWindowVectorField(const QString &path, BackendVelocityG
     : QMainWindow(parent), m_path(path), m_grid(std::move(grid)), m_datasetId(datasetId),
       m_backendUrl(backendUrl), m_backendToken(backendToken), m_sessionId(sessionId)
 {
+    // Cmd+W closes it, as the title bar's button does (WindowCloseShortcut.h).
+    visivo::installCloseWindowShortcut(this);
     this->setWindowTitle(u"Velocity Field - %1"_s.arg(QFileInfo(path).fileName()));
     this->lut = vtkSmartPointer<vtkLookupTable>::New();
     this->axesWidget = vtkSmartPointer<vtkOrientationMarkerWidget>::New();

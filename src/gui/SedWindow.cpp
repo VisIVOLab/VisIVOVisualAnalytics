@@ -1,6 +1,7 @@
 // SedWindow.cpp — see SedWindow.h.
 
 #include "SedWindow.h"
+#include "WindowCloseShortcut.h"
 
 #include "qcustomplot.h"
 #include "theme/VisivoTheme.h"
@@ -168,6 +169,8 @@ SedWindow::SedWindow(const visivo::SedBuildResult &sed, const QString &backendUr
       m_backendUrl(backendUrl),
       m_backendToken(backendToken)
 {
+    // Cmd+W closes it, as the title bar's button does (WindowCloseShortcut.h).
+    visivo::installCloseWindowShortcut(this);
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowTitle(m_sed.sourceLabel.isEmpty() ? u"SED"_s
                                                : u"SED — %1"_s.arg(m_sed.sourceLabel));

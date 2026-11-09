@@ -2,8 +2,13 @@
 #include "BackendTaskFollow.h"
 #include "DiagnosticsManager.h"
 #include "SofiaSuggest.h"
+#include "TaskQuitDrain.h"
 
 #include <QByteArray>
+#include <QCoreApplication>
+
+#include <atomic>
+#include <thread>
 #include <QDataStream>
 #include <QDir>
 #include <QElapsedTimer>
@@ -241,6 +246,9 @@ BackendTaskCreateResult BackendClient::createMomentFitsTask(const QString &datas
                                                             bool thresholdAuto) const
 {
     BackendTaskCreateResult result;
+    // Not while quitting: the quit would have to cancel it (TaskQuitDrain.h).
+    if (visivo::refuseTaskWhileQuitting(result.error))
+        return result;
     QString error;
     const QJsonDocument body(QJsonObject{
             { QStringLiteral("dataset_id"),       datasetId },
@@ -436,7 +444,21 @@ BackendWorkspaceDeleteResult BackendClient::deleteExport(const QString &filename
     auto *reply = nam->sendCustomRequest(req, "DELETE");
     QEventLoop loop;
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec();
+    // Not past the start of a quit (TaskQuitDrain.h): the loop cannot run
+    // once the application is gone.
+    QTimer quitWatch;
+    QObject::connect(&quitWatch, &QTimer::timeout, &loop, [reply, &loop]() {
+        if (visivo::TaskQuitDrain::instance().quitting()) {
+            reply->abort();
+            loop.quit();
+        }
+    });
+    quitWatch.start(50);
+    if (!visivo::TaskQuitDrain::instance().quitting())
+        loop.exec();
+    else
+        reply->abort();
+    quitWatch.stop();
     if (reply->error() != QNetworkReply::NoError) {
         result.error = reply->errorString();
         reply->deleteLater();
@@ -520,6 +542,9 @@ BackendTaskCreateResult BackendClient::createMomentTask(const QString &datasetId
                                                         bool thresholdAuto) const
 {
     BackendTaskCreateResult result;
+    // Not while quitting: the quit would have to cancel it (TaskQuitDrain.h).
+    if (visivo::refuseTaskWhileQuitting(result.error))
+        return result;
     QString error;
     const QJsonDocument body(
             QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
@@ -559,7 +584,63 @@ bool BackendClient::isCompressedFitsName(const QString &path)
 
 BackendTaskCreateResult BackendClient::createDecompressTask(const QString &path) const
 {
+    // On the application thread (DecompressBeforeOpen asks from there), the
+    // request runs on a thread of its own while this one keeps painting in a
+    // local loop. A quit's exit() ends that loop at once, and with it a
+    // request still out on this thread: the backend may have created the
+    // task, and its id, the one thing its DELETE needs, would be lost. Here the
+    // answer is still waited for (join: bounded by the request's own timeout),
+    // and the follower that comes next cancels the task (TaskQuitDrain.h).
+    const QCoreApplication *app = QCoreApplication::instance();
+    if (!app || QThread::currentThread() != app->thread())
+        return postDecompressTask(path);
+    // The session first, on THIS thread: a mint already in flight lower in
+    // this stack (a slow open's) holds the mint lock, which a sender thread
+    // would wait on for ever while this thread waits for the sender. Here the
+    // in-flight mint answers "not yet", and the request is made (and refused)
+    // on this thread, as it always was.
+    if (ensureSessionMinted() == SessionMint::Deferred) {
+        if (mintInFlightOnThisThread())
+            return postDecompressTask(path);   // refused at once, as before
+        // The backend never answered the mint: say so, rather than mint again
+        // inside the create (a second wait as long as the first).
+        BackendTaskCreateResult refused;
+        refused.error = QStringLiteral("Backend session not established yet: %1 is unreachable.")
+                                .arg(m_baseUrl);
+        return refused;
+    }
+    const BackendClient client = *this;
+    BackendTaskCreateResult made;
+    std::atomic_bool done{ false };
+    std::thread sender([&client, &path, &made, &done]() {
+        made = client.postDecompressTask(path);
+        done = true;
+    });
+    {
+        QEventLoop loop;
+        QTimer poll;
+        QObject::connect(&poll, &QTimer::timeout, &loop, [&loop, &done]() {
+            if (done)
+                loop.quit();
+        });
+        poll.start(20);
+        if (!done)
+            loop.exec();
+    }
+    sender.join();
+    // A token the sender's copy adopted (a 401 retry with the token file) is
+    // this client's from now on too.
+    if (client.token() != m_token)
+        const_cast<BackendClient *>(this)->m_token = client.token();
+    return made;
+}
+
+BackendTaskCreateResult BackendClient::postDecompressTask(const QString &path) const
+{
     BackendTaskCreateResult result;
+    // Not while quitting: the quit would have to cancel it (TaskQuitDrain.h).
+    if (visivo::refuseTaskWhileQuitting(result.error))
+        return result;
     QString error;
     const QJsonDocument body(QJsonObject{ { QStringLiteral("path"), path } });
     const QByteArray payload =
@@ -591,9 +672,34 @@ QString BackendClient::decompressForOpen(const QString &path) const
         return {};
     QElapsedTimer clock;
     clock.start();
+    // Under the quit drain like every follower (TaskQuitDrain.h): quitting
+    // aborts it, and it cancels the decompression instead of retrying status
+    // reads the quit abandons until the task counts as lost.
+    visivo::BackendTaskControl control;
+    const visivo::TaskQuitDrain::Follow follow(visivo::TaskQuitDrain::instance(), &control);
     visivo::TaskFollowHooks hooks;
-    hooks.poll = [this](const QString &id) { return requestTaskStatus(id); };
-    hooks.cancel = [this](const QString &id, QString &error) { return cancelTask(id, error); };
+    hooks.poll = [this, &control](const QString &id) {
+        return requestTaskStatus(id, &control.abortRequested);
+    };
+    hooks.cancel = [this](const QString &id, QString &error) {
+        const int timeoutMs =
+                visivo::TaskQuitDrain::instance().quitting() ? visivo::kQuitCancelTimeoutMs : 0;
+        if (!visivo::TaskQuitDrain::instance().quitting())
+            return cancelTask(id, error, timeoutMs);
+        // Quitting: this may be the GUI thread, under an exit() already
+        // asked for, where an event loop returns at once and the DELETE would
+        // be dropped. It is sent from a thread of its own, joined here (not a
+        // pool job: waiting on that could run it right here).
+        const BackendClient client = *this;
+        bool ok = false;
+        QString threadError;
+        std::thread sender([&client, &id, &ok, &threadError, timeoutMs]() {
+            ok = client.cancelTask(id, threadError, timeoutMs);
+        });
+        sender.join();
+        error = threadError;
+        return ok;
+    };
     // A local event loop rather than a sleep: openDataset() runs on the GUI
     // thread too, which must keep painting while a large file decompresses.
     hooks.sleepMs = [](int ms) {
@@ -604,7 +710,7 @@ QString BackendClient::decompressForOpen(const QString &path) const
     hooks.nowMs = [&clock]() { return clock.elapsed(); };
     visivo::TaskPollPolicy policy;
     policy.maxPollMs = 1000;
-    const visivo::TaskFollowResult r = visivo::followBackendTask(created, hooks, nullptr, policy);
+    const visivo::TaskFollowResult r = visivo::followBackendTask(created, hooks, &control, policy);
     if (r.outcome == visivo::TaskOutcome::Completed)
         return {};
     qWarning().noquote() << QStringLiteral("[decompress] %1: %2").arg(path, r.error);
@@ -617,6 +723,9 @@ BackendTaskCreateResult BackendClient::createPvTask(const QString &datasetId,
                                                     int widthPixels) const
 {
     BackendTaskCreateResult result;
+    // Not while quitting: the quit would have to cancel it (TaskQuitDrain.h).
+    if (visivo::refuseTaskWhileQuitting(result.error))
+        return result;
     QString error;
     QJsonArray vertexArray;
     for (const auto &v : vertices) {
@@ -681,6 +790,9 @@ BackendTaskCreateResult BackendClient::createSourceFindTask(const QString &datas
                                                             const QJsonObject &params) const
 {
     BackendTaskCreateResult result;
+    // Not while quitting: the quit would have to cancel it (TaskQuitDrain.h).
+    if (visivo::refuseTaskWhileQuitting(result.error))
+        return result;
     QString error;
     const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
                                           { QStringLiteral("finder"), finder },
@@ -749,9 +861,17 @@ bool BackendClient::cancelTask(const QString &taskId, QString &error, int timeou
     deadline.start(timeout);
     loop.exec();
     deadline.stop();
+    // The loop can end without the reply: on the application thread after
+    // QCoreApplication::exit(), a new event loop returns at once. The DELETE
+    // was then never answered, and is no success.
+    const bool answered = reply->isFinished();
+    if (!answered)
+        reply->abort();
     const QByteArray raw = reply->readAll();
-    const bool ok = reply->error() == QNetworkReply::NoError;
-    if (timedOut) {
+    const bool ok = answered && reply->error() == QNetworkReply::NoError;
+    if (!answered) {
+        error = QStringLiteral("the cancellation was not sent: the event loop had ended");
+    } else if (timedOut) {
         error = QStringLiteral("the backend did not confirm the cancellation within %1 s")
                         .arg(qMax(1, timeout / 1000));
     } else if (!ok) {
@@ -814,6 +934,14 @@ visivo::TaskFollowResult visivo::followBackendTask(const BackendClient &client,
                         .arg(created.taskId));
     }
 
+    // Followed under the quit drain (TaskQuitDrain.h): quitting aborts it and
+    // waits for this worker while the application still exists. A follow
+    // without a control gets one, so that it can be aborted too.
+    BackendTaskControl ownControl;
+    if (!control)
+        control = &ownControl;
+    const TaskQuitDrain::Follow follow(TaskQuitDrain::instance(), control);
+
     QElapsedTimer clock;
     clock.start();
     QString lastStatus;
@@ -825,7 +953,12 @@ visivo::TaskFollowResult visivo::followBackendTask(const BackendClient &client,
         return client.requestTaskStatus(id, control ? &control->abortRequested : nullptr);
     };
     hooks.cancel = [&client, &policy](const QString &id, QString &error) {
-        return client.cancelTask(id, error, policy.cancelTimeoutMs);
+        // While quitting, the DELETE is bounded short: the exit waits for it.
+        int timeoutMs = policy.cancelTimeoutMs;
+        if (TaskQuitDrain::instance().quitting())
+            timeoutMs = timeoutMs > 0 ? std::min(timeoutMs, kQuitCancelTimeoutMs)
+                                      : kQuitCancelTimeoutMs;
+        return client.cancelTask(id, error, timeoutMs);
     };
     // A plain sleep: this runs on a pool thread, which has no event loop of its
     // own to serve, and the network calls run their own local loops.

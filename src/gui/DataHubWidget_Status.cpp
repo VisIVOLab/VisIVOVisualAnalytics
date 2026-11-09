@@ -355,7 +355,9 @@ void DataHubWidget::applyHealth(const QString &url, const QString &token,
         if (this->labelRunningTasks)   this->labelRunningTasks->setText(u"-"_s);
         if (this->labelRunningCaption) this->labelRunningCaption->setText(u"Backend unreachable"_s);
         if (this->labelCapacity)       this->labelCapacity->setText(u"Backend capacity: -"_s);
-        this->clearRecentTasksUi();
+        // Nothing from the backend, but the opens this client refused (the
+        // backend being unreachable among them) are still worth listing.
+        this->renderJobRows({});
 
         // Bottom status bar: dataset count is still meaningful even when the
         // backend is unreachable; the running-jobs cell becomes "-" and the
@@ -402,6 +404,20 @@ void DataHubWidget::clearRecentTasksUi()
 }
 
 
+void DataHubWidget::recordClientOpen(const visivo::ClientOpen &open)
+{
+    // More than the five shown: an open is matched against the backend's
+    // list, which may still hold one the panel has not caught up with.
+    constexpr int kKeep = 10;
+    // An open that began on another backend (the settings changed while it
+    // ran) is not this one's: its jobs are elsewhere.
+    if (open.backendUrl != this->backendUrl || open.backendToken != this->backendToken)
+        return;
+    m_clientOpens.push_back(open);
+    while (m_clientOpens.size() > kKeep)
+        m_clientOpens.removeFirst();
+}
+
 void DataHubWidget::updateSystemInsights(const BackendHealthResult &health)
 {
     // Running counter + caption switching between "Idle" and "in flight…".
@@ -430,6 +446,11 @@ void DataHubWidget::updateSystemInsights(const BackendHealthResult &health)
         this->labelCapacity->setText(text);
     }
 
+    this->renderJobRows(health.recentTasks);
+}
+
+void DataHubWidget::renderJobRows(const std::vector<BackendRecentTask> &backend)
+{
     // Recent operations list — rebuild from scratch each refresh so order
     // and ages stay accurate. Backend caps the list at 5 entries.
     if (!this->recentTasksContainer) return;
@@ -440,12 +461,17 @@ void DataHubWidget::updateSystemInsights(const BackendHealthResult &health)
         delete item;
     }
 
-    const bool hasItems = !health.recentTasks.empty();
+    // The backend's jobs with the client's own opens merged in: an open reads
+    // the time the user waited, and one refused before reaching the backend
+    // is listed too (OpenJobMerge.h). The ages are relative to this answer.
+    const QVector<visivo::HubJobRow> jobs = visivo::mergeOpenJobs(
+            backend, m_clientOpens, QDateTime::currentMSecsSinceEpoch());
+    const bool hasItems = !jobs.isEmpty();
     if (this->labelRecentEmpty)  this->labelRecentEmpty->setVisible(!hasItems);
     if (this->labelRecentHeader) this->labelRecentHeader->setVisible(hasItems);
     this->recentTasksContainer->setVisible(hasItems);
 
-    for (const auto &task : health.recentTasks) {
+    for (const visivo::HubJobRow &task : jobs) {
         auto *row = new QWidget(this->recentTasksContainer);
         row->setStyleSheet(u"background: transparent;"_s);
         auto *rowLayout = new QHBoxLayout(row);
@@ -473,6 +499,16 @@ void DataHubWidget::updateSystemInsights(const BackendHealthResult &health)
                                      .arg(formatDurationShort(task.durationSeconds),
                                           formatAgoShort(task.ageSeconds));
         auto *metaLbl = new QLabel(meta, row);
+        if (task.clientMeasured) {
+            QString tip = u"%1\nTime from request to result, measured by the client."_s.arg(
+                    QFileInfo(task.path).fileName());
+            if (task.backendSeconds >= 0.0)
+                tip += u"\nThe backend's own part: %1."_s.arg(
+                        formatDurationShort(task.backendSeconds));
+            else
+                tip += u"\nRefused before reaching the backend."_s;
+            row->setToolTip(tip);
+        }
         metaLbl->setStyleSheet(
                 QStringLiteral("color: %1; font-size: 10px; background: transparent;")
                         .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));

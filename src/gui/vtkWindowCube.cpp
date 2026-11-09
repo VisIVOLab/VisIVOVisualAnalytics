@@ -1,4 +1,5 @@
 #include "vtkWindowCube.h"
+#include "WindowCloseShortcut.h"
 
 #include "FilterFitsDialog.h"
 #include "FitsHeaderEditorDialog.h"
@@ -1049,6 +1050,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
       profileWidget(nullptr),
       level(15)
 {
+    // Cmd+W closes it, as the title bar's button does (WindowCloseShortcut.h).
+    visivo::installCloseWindowShortcut(this);
     // #5: mint this window's product scope BEFORE any product can be registered — it salts
     // every product id and tags each product's ownerId (see scopedProductId).
     this->m_windowScope = ProductRegistry::instance().newOwnerScope();
@@ -4308,6 +4311,10 @@ void vtkWindowCube::closeEvent(QCloseEvent *event)
             this->m_pvLiveTimer->stop();   // an edit still waiting to be sent
         if (this->pvController)
             this->pvController->cancel();
+        // Nor a moment map: stopped on the backend, so the deferred close
+        // does not wait twenty minutes for a map nobody will see.
+        if (this->momentController)
+            this->momentController->cancel();
         if (!this->m_closeWhenIdle) {   // the first deferred close connects the poll
             this->m_closeWhenIdle = true;
             // A linked view would keep driving it (new slice requests), and
@@ -5668,6 +5675,17 @@ void vtkWindowCube::exportDisplayedMapAsFits(const QString &requestedProductId)
 void vtkWindowCube::exportMomentMapAsFits(const QString &requestedProductId)
 {
     if (!this->momentController) return;
+    if (this->m_momentFitsExportSheet) {
+        // One already runs; its sheet does not block this window. Point at it
+        // (only once it is on screen: show() would bypass its delayed show).
+        if (this->m_momentFitsExportSheet->isVisible()) {
+            this->m_momentFitsExportSheet->raise();
+            this->m_momentFitsExportSheet->activateWindow();
+        }
+        this->statusBar()->showMessage(
+                u"A moment FITS export is already running; wait for it or cancel it."_s, 6000);
+        return;
+    }
     // §3.2: export the recipe of the moment currently DISPLAYED — with several moments
     // cached they differ. Prefer a VISIBLE Product pane's moment; else the most recently
     // computed one; else the controller's last accepted config (single-moment case).
@@ -5741,6 +5759,7 @@ void vtkWindowCube::exportMomentMapAsFits(const QString &requestedProductId)
     auto control = std::make_shared<visivo::BackendTaskControl>();
     QPointer<QProgressDialog> sheet = visivo::showTaskProgressSheet(
             this, u"Exporting the moment-%1 map as FITS"_s.arg(order), control);
+    this->m_momentFitsExportSheet = sheet;
     auto *watcher = new QFutureWatcher<BackendSaveMomentFitsResult>(this);
     // The window going away is an abort too: nobody will read the result, and
     // the backend task must not hold a compute slot for nothing.
@@ -6871,6 +6890,8 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     this->refreshLassoAfterDisplaySwap();
     // …and so was any amber ROI preview box (Export Sub-Cube / Mask 3-D / noise).
     this->refreshRegionPreviewAfterDisplaySwap();
+    // …and so was the 3-D pick marker.
+    this->refreshPick3dMarkerAfterDisplaySwap();
     this->remoteIsosurfaceReady = false;
     this->setCubeRenderModeLocally(false);
     if (result.momentImageData) {
@@ -11473,11 +11494,12 @@ void vtkWindowCube::removeImageProduct(const QString &stableKey)
 
 void vtkWindowCube::updateLiveSpectrumPane(const QVector<double> &key,
                                            const QVector<double> &values,
-                                           const QString &pixelLabel)
+                                           const QString &pixelLabel,
+                                           bool evenIfFrozen)
 {
     // #5b: push the current probe spectrum into the live product + its pane (real-time on
     // hover), unless frozen. The pane header's qualifier shows the current pixel.
-    if (m_spectrumLiveId.isEmpty() || this->probeFrozen)
+    if (m_spectrumLiveId.isEmpty() || (this->probeFrozen && !evenIfFrozen))
         return;
     Spectrum1D &s = m_products1d[m_spectrumLiveId];
     s.key = key;
@@ -15416,9 +15438,21 @@ void vtkWindowCube::showPick3dMarker(const double world[3])
     }
     m_pick3dMarkerSource->SetRadius(radius);
     m_pick3dMarkerSource->SetCenter(world[0], world[1], world[2]);
+    const double stride = std::max(1, this->m_displayStride);
+    m_pick3dMarkerCubeVoxel = { world[0] * stride, world[1] * stride, world[2] * stride };
     m_pick3dMarkerSource->Modified();
     m_pick3dMarkerActor->VisibilityOn();
     ui->vtkCube->renderWindow()->Render();
+}
+
+void vtkWindowCube::refreshPick3dMarkerAfterDisplaySwap()
+{
+    if (!m_pick3dMarkerActor || !m_pick3dMarkerActor->GetVisibility())
+        return;
+    const double stride = std::max(1, this->m_displayStride);
+    const std::array<double, 3> voxel = m_pick3dMarkerCubeVoxel;
+    const double world[3] = { voxel[0] / stride, voxel[1] / stride, voxel[2] / stride };
+    this->showPick3dMarker(world);   // the radius follows the new cube too
 }
 
 void vtkWindowCube::hidePick3dMarker()
@@ -15547,12 +15581,14 @@ void vtkWindowCube::handle3dPickEvent(const std::array<int, 2> &eventPos)
 
     double world[3] = { 0., 0., 0. };
     bool haveWorld = false;
+    bool planeHit = false;
     int rayChannel = -1;   // the channel the ray was picked AT, when it came from the volume
 
     if (hitProp && picker->GetViewProp() == this->remoteCuttingPlaneActor.GetPointer()) {
         // Clicked the cutting plane itself: the voxel is on the displayed slice.
         picker->GetPickPosition(world);
         haveWorld = true;
+        planeHit = true;
     } else if (hitProp && this->currentIsosurfaceActor
                && picker->GetViewProp() == this->currentIsosurfaceActor.GetPointer()) {
         // Clicked the isosurface: the surface point IS the feature, exactly.
@@ -15593,15 +15629,13 @@ void vtkWindowCube::handle3dPickEvent(const std::array<int, 2> &eventPos)
     // extent[0] + (world - origin)/spacing gives the index within the ROI. On a
     // ROI starting at channel 100, a hit seven planes in was being reported as
     // channel 8, with channel 8's velocity.
-    const int voxelX = static_cast<int>(std::lround(world[0] / spacing[0]));
-    const int voxelY = static_cast<int>(std::lround(world[1] / spacing[1]));
+    int voxelX = static_cast<int>(std::lround(world[0] / spacing[0]));
+    int voxelY = static_cast<int>(std::lround(world[1] / spacing[1]));
     // The channel the ray actually hit, when it hit the volume or the isosurface.
     // Falling back to the displayed slice would be a lie for a volume pick: the
     // feature you clicked may live nowhere near the channel currently on the
     // cutting plane, which is the whole reason for picking in 3-D.
-    const int voxelZ = (rayChannel >= 0)
-            ? this->clampRemoteSliceIndex(static_cast<int>(std::lround(world[2] / spacing[2])))
-            : this->clampRemoteSliceIndex(ui->spinSlice->value() - 1);
+    const int rayZ = static_cast<int>(std::lround(world[2] / spacing[2]));
     // Bounds are checked against the DATASET, since the indices are now dataset
     // ones: origin + extent gives the ROI's span in dataset voxels.
     const int dsX0 = static_cast<int>(std::lround(origin[0] / spacing[0])) + extent[0];
@@ -15612,6 +15646,35 @@ void vtkWindowCube::handle3dPickEvent(const std::array<int, 2> &eventPos)
         this->statusBar()->showMessage(u"Pick outside cube bounds."_s, 1500);
         return;
     }
+    // A strided preview is drawn in its own voxels: voxel i of it is the
+    // cube's i × stride. The probe works in the cube's voxels (the slice is
+    // full resolution), so the pick is converted, and its spectrum is the
+    // cube's line of sight, read on the backend (updateProbePlot).
+    const int stride = std::max(1, this->m_displayStride);
+    int hitZ = rayZ;
+    if (stride > 1 && planeHit) {
+        // The cutting plane spans the preview's bounds and wears the
+        // FULL-resolution slice as its texture: the pixel is the texel under
+        // the hit, not a preview voxel (whose last one is the cube's
+        // (n - 1) - (n - 1) mod stride, short of the texture's right edge).
+        double bounds[6];
+        cubeImage->GetBounds(bounds);
+        const auto texel = [](double w, double lo, double hi, int count) {
+            if (count <= 1 || !(hi > lo))
+                return 0;
+            const double u = std::clamp((w - lo) / (hi - lo), 0.0, 1.0);
+            return std::clamp(static_cast<int>(std::floor(u * count)), 0, count - 1);
+        };
+        voxelX = texel(world[0], bounds[0], bounds[1], this->remoteDatasetWidth);
+        voxelY = texel(world[1], bounds[2], bounds[3], this->remoteDatasetHeight);
+    } else if (stride > 1) {
+        voxelX = visivo::previewToFullIndex(voxelX, stride, this->remoteDatasetWidth);
+        voxelY = visivo::previewToFullIndex(voxelY, stride, this->remoteDatasetHeight);
+        hitZ = visivo::previewToFullIndex(rayZ, stride, this->remoteDatasetDepth);
+    }
+    const int voxelZ = (rayChannel >= 0)
+            ? this->clampRemoteSliceIndex(hitZ)
+            : this->clampRemoteSliceIndex(ui->spinSlice->value() - 1);
 
     this->probeValid = true;
     // updateProbePlot() early-returns if probeModeActive==false; the 3D pick is an explicit
@@ -15650,6 +15713,12 @@ void vtkWindowCube::handle3dPickEvent(const std::array<int, 2> &eventPos)
                       .arg(voxelX).arg(voxelY).arg(voxelZ + 1);
     this->statusBar()->showMessage(where, 6000);
     this->showPick3dMarker(world);   // mark WHERE the click landed, in the 3-D view
+    if (planeHit && stride > 1) {
+        // On the cutting plane the cube voxel is the slice texel under the
+        // click, not world × stride (showPick3dMarker's rule for the volume):
+        // keep it, so the marker lands on it once the full cube is shown.
+        m_pick3dMarkerCubeVoxel = { double(voxelX), double(voxelY), double(voxelZ) };
+    }
 }
 
 void vtkWindowCube::updateCuttingPlaneOpacityRowVisibility()

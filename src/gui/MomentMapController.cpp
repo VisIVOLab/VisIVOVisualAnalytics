@@ -81,6 +81,12 @@ MomentMapController::~MomentMapController()
         m_taskControl->requestAbort();
 }
 
+void MomentMapController::cancel()
+{
+    if (m_busy && m_taskControl)
+        m_taskControl->requestAbort();
+}
+
 bool MomentMapController::isBusy() const
 {
     return m_busy;
@@ -562,7 +568,7 @@ void MomentMapController::openMomentDialog(int defaultOrder, Config config,
                       maskCheck, autoCheck, thresholdSpin, noiseCheck, noiseThreshold,
                       noiseWhere]() mutable {
         if (m_busy)
-            return;   // the sheet blocks the dialog, but be explicit
+            return;   // the sheet is not modal: one run at a time
         const int channelStart = channelStartSpin->value() - 1;
         const int channelEnd   = channelEndSpin->value() - 1;
         if (channelStart > channelEnd) {
@@ -591,15 +597,17 @@ void MomentMapController::openMomentDialog(int defaultOrder, Config config,
                 { u"thresholdAuto"_s, config.thresholdAuto },
                 { u"thresholdValue"_s, config.thresholdValue } });
 
-        // On the DIALOG, so the work is reported where it was asked for. The
-        // sheet is window-modal, which also blocks the controls underneath it
-        // for the duration, so nothing else needs disabling.
         emit this->computationStarted(config);
         this->dispatch(config);
         // After dispatch(), which made this run's task control; the sheet's
         // Cancel aborts it, and the run's end closes the sheet (no result
         // handler can run before control returns to the event loop).
-        m_progressSheet = visivo::showTaskProgressSheet(dlg, u"Computing the moment map"_s,
+        // The sheet is not modal (Quit stays reachable on macOS, #133), so the
+        // dialog can be closed while the moment runs: the sheet belongs to the
+        // cube window, which receives the map, and outlives the dialog with
+        // its Cancel. A second Compute meanwhile is refused above.
+        QWidget *sheetParent = m_parentWindow ? m_parentWindow : static_cast<QWidget *>(dlg);
+        m_progressSheet = visivo::showTaskProgressSheet(sheetParent, u"Computing the moment map"_s,
                                                         m_taskControl);
     });
 
