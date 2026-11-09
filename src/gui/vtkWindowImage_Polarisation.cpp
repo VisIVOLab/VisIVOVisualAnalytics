@@ -367,11 +367,11 @@ void vtkWindowImage::onStokesListingReady(const StokesListing &result)
                 // a local chooser would show the wrong filesystem entirely.
                 RemoteFileBrowserDialog dialog(this->remoteBackendUrl, this->remoteBackendToken,
                                                this);
-                // .fits.gz too: auto-detection matches gzipped companions, so the
-                // manual chooser must not hide the very files it suggests.
-                dialog.setExtensionFilter({ u".fits"_s, u".fit"_s, u".fits.gz"_s, u".fit.gz"_s },
-                                          u"FITS files only"_s);
-                dialog.setWindowTitle(QStringLiteral("Locate Stokes %1  (%2 of %3)")
+                // Compressed FITS too: auto-detection matches gzipped companions,
+                // so the manual chooser must not hide the very files it suggests.
+                dialog.setFileTypes({ visivo::FileType::Fits }, visivo::FileType::Fits,
+                                    u"stokes"_s);
+                dialog.setPurpose(QStringLiteral("Locate Stokes %1  (%2 of %3)")
                                               .arg(missing.at(i))
                                               .arg(i + 1)
                                               .arg(missing.size()));

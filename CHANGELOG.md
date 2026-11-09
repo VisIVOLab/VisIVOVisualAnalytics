@@ -6,6 +6,27 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## Unreleased
+
+- **A file-type drop-down in the file browser (#153).** The backend's file
+  browser, used by *Open…* with the local backend as well as a remote one, had
+  a single *FITS only* checkbox from when the application opened only FITS;
+  callers that wanted another kind relabelled it, and their six lists of
+  extensions had drifted apart (the Stokes companions missed `.fz`). It is now
+  a **File type** drop-down beside *Cancel* and *Open*, as in the native
+  dialogs: *All supported files*, *FITS images and cubes* (`.fits .fit .fts`,
+  their `.gz`, `.fz`), *Catalogues* (`.csv .txt .vot .votable .xml .tbl
+  .speck`, FITS tables), *VisIVO Binary Tables* (`.bin.head .head .bin`),
+  *HDF5* (`.h5 .hdf5 .hdf .bfdata`) and *All files*. The lists come from one
+  table in the client (`src/app/SupportedFormats.h`), following what the
+  backend classifies and opens. Folders are always listed; hidden files and
+  folders such as `.DS_Store` only under *All files*. Each entry that opens
+  one kind of file starts on that kind (velocity field, Stokes companions,
+  image layer, catalogue, galaxy catalogue overlay, VBT, AREPO snapshot, HiPS
+  catalogue overlay) and remembers the type chosen last. The title says what
+  the browser opens and on which backend (*Open Dataset — Backend: Local*, or
+  the cluster's name), instead of "Browse Remote FITS Files".
+
 ## 1.0.12 (2026-11-09)
 
 - **Small desktop fixes from the GUI tests (#133).**

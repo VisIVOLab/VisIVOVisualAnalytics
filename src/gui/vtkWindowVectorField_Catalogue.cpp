@@ -182,10 +182,9 @@ void vtkWindowVectorField::overlayCatalogue()
     }
 
     RemoteFileBrowserDialog dialog(this->m_backendUrl, this->m_backendToken, this);
-    dialog.setExtensionFilter(
-            { u".csv"_s, u".vot"_s, u".votable"_s, u".xml"_s, u".fits"_s, u".fit"_s,
-              u".speck"_s, u".tbl"_s },
-            u"Galaxy catalogues"_s);
+    dialog.setPurpose(u"Overlay Galaxy Catalogue"_s);
+    dialog.setFileTypes({ visivo::FileType::Catalogue }, visivo::FileType::Catalogue,
+                        u"galaxy-catalogue"_s);
     if (dialog.exec() != QDialog::Accepted)
         return;
     const QString path = dialog.selectedFilePath();

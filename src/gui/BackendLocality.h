@@ -13,4 +13,9 @@ namespace visivo {
 /// the backends registry reached through a tunnel, another host).
 bool backendIsLocal(const QString &backendUrl);
 
+/// How the user knows this backend: "Local", this run's remote backend by the
+/// name the status bar shows, a node of the backends registry by its name,
+/// else the URL's host:port.
+QString backendDisplayName(const QString &backendUrl);
+
 } // namespace visivo

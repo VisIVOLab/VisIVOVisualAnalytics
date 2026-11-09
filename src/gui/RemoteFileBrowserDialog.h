@@ -2,15 +2,15 @@
 #define RemoteFileBrowserDialog_h
 
 #include "app/BackendClient.h"
+#include "app/SupportedFormats.h"
 
 #include <QDialog>
 #include <QFutureWatcher>
-#include <QStringList>
+#include <QList>
 
 #include <memory>
 #include <vector>
 
-class QCheckBox;
 class QComboBox;
 class QLineEdit;
 class QPushButton;
@@ -30,11 +30,16 @@ public:
 
     QString selectedFilePath() const;
 
-    // Optional: restrict visible files to those whose names end with one of
-    // the given suffixes (case-insensitive).  Pass an empty list to clear.
-    // Also updates the filter checkbox label.
-    void setExtensionFilter(const QStringList &suffixes,
-                            const QString &label = QString());
+    /// The kinds of file the type drop-down offers (All files is always added),
+    /// the one it starts on, and the name under which the user's last choice
+    /// for this kind of open is remembered (empty: not remembered). Without a
+    /// call the dialog offers every kind and starts on All supported files.
+    void setFileTypes(const QList<visivo::FileType> &offered, visivo::FileType preferred,
+                      const QString &rememberKey = QString());
+
+    /// What the user is choosing a file for ("Open Catalogue"): the title,
+    /// followed by the backend whose files are listed. "Open Dataset" by default.
+    void setPurpose(const QString &purpose);
 
 private:
     void loadPath(const QString &path);
@@ -43,17 +48,22 @@ private:
     void clearDetails();
     void updateDetails(const BackendFileEntry *entry);
     void updateSelectionState();
-    /// Can this row be opened: the caller's extension filter if there is one,
-    /// any file if there is not (the unified "Open…" classifies afterwards).
+    /// Can this row be opened: a file listed under the chosen type.
     bool isSelectable(const QTreeWidgetItem *item) const;
+    /// Whether an entry is listed under the chosen type: folders always (bar
+    /// hidden ones), files by name (SupportedFormats.h).
+    bool isListed(const BackendFileEntry &entry) const;
+    visivo::FileType currentFileType() const;
     QString humanReadableSize(qint64 size) const;
     void refreshEntriesView();
 
     std::unique_ptr<BackendClient> client;
+    QString backendName;
+    QString rememberKey;
     QLineEdit *pathEdit;
     QTreeWidget *entriesTree;
     QPushButton *openButton;
-    QCheckBox *fitsOnlyCheck;
+    QComboBox *typeCombo;
     QComboBox *sortCombo;
     QLabel *nameValue;
     QLabel *pathValue;
@@ -65,7 +75,6 @@ private:
     QString selectedPath;
     QString currentDirectory;
     std::vector<BackendFileEntry> currentEntries;
-    QStringList m_extensionFilter;  // empty = use isFits; non-empty = filter by suffix
 };
 
 #endif

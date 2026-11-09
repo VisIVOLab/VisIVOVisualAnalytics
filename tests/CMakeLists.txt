@@ -194,6 +194,8 @@ add_executable(VisIVOTests
     test_task_quit_drain.cpp
     TestSystemQuitRedirect.h
     test_system_quit_redirect.cpp
+    TestSupportedFormats.h
+    test_supported_formats.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

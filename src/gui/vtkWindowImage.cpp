@@ -1846,8 +1846,8 @@ void vtkWindowImage::addLayerFromBrowser()
     }
 
     RemoteFileBrowserDialog dialog(this->remoteBackendUrl, this->remoteBackendToken, this);
-    dialog.setExtensionFilter({ u".fits"_s, u".fit"_s, u".fits.gz"_s, u".fit.gz"_s, u".fz"_s },
-                              u"FITS files only"_s);
+    dialog.setPurpose(u"Add Image Layer"_s);
+    dialog.setFileTypes({ visivo::FileType::Fits }, visivo::FileType::Fits, u"image-layer"_s);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }

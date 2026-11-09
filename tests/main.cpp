@@ -39,6 +39,7 @@
 #include "TestOpenJobMerge.h"
 #include "TestTaskQuitDrain.h"
 #include "TestSystemQuitRedirect.h"
+#include "TestSupportedFormats.h"
 #include "TestThresholdShare.h"
 #include "TestLayerCardGeometry.h"
 #include "TestRegionReadout.h"
@@ -102,6 +103,7 @@ int main(int argc, char *argv[])
     { TestOpenJobMerge     t; status |= QTest::qExec(&t, argc, argv); }
     { TestTaskQuitDrain    t; status |= QTest::qExec(&t, argc, argv); }
     { TestSystemQuitRedirect t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSupportedFormats t; status |= QTest::qExec(&t, argc, argv); }
     { TestLayerCardGeometry t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionReadout    t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendUrlLocality t; status |= QTest::qExec(&t, argc, argv); }

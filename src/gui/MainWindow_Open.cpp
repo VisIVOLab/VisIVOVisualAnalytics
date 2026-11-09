@@ -420,9 +420,9 @@ void MainWindow::openData()
     // Reachable only from the Data Hub's old action grid, which nothing builds
     // any more (the quick-actions list offers one "Open…" instead). It is kept
     // wired rather than half-deleted, so it has to behave like the others: its
-    // browser has no extension filter, and since any file can be picked there,
-    // the selection goes through the classifier rather than straight to the
-    // FITS/HDF5 route.
+    // browser offers every kind of file, and since any file can be picked
+    // there, the selection goes through the classifier rather than straight to
+    // the FITS/HDF5 route.
     BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
     const auto health = client.health();
     if (!health.ok) {
@@ -437,6 +437,8 @@ void MainWindow::openData()
     }
 
     RemoteFileBrowserDialog dialog(client.baseUrl(), client.token(), this);
+    // The same choice as File ▸ Open…, remembered under the same name.
+    dialog.setFileTypes(visivo::openableFileTypes(), visivo::FileType::AllSupported, u"open"_s);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
@@ -1302,9 +1304,9 @@ void MainWindow::openCatalogue3D()
     }
 
     RemoteFileBrowserDialog dialog(client.baseUrl(), client.token(), this);
-    dialog.setExtensionFilter({u".csv"_s, u".vot"_s, u".votable"_s, u".xml"_s,
-                               u".fits"_s, u".fit"_s, u".speck"_s, u".tbl"_s},
-                              u"Catalogue tables"_s);
+    dialog.setPurpose(u"Open Catalogue"_s);
+    dialog.setFileTypes({ visivo::FileType::Catalogue }, visivo::FileType::Catalogue,
+                        u"catalogue"_s);
     if (dialog.exec() != QDialog::Accepted)
         return;
 
@@ -1382,9 +1384,10 @@ void MainWindow::openAnything()
         return;
     }
 
-    // No extension filter: the whole point is that the user does not have to
-    // decide what kind of file this is before picking it.
+    // Every kind of file at first: the whole point is that the user does not
+    // have to decide what kind of file this is before picking it.
     RemoteFileBrowserDialog dialog(client.baseUrl(), client.token(), this);
+    dialog.setFileTypes(visivo::openableFileTypes(), visivo::FileType::AllSupported, u"open"_s);
     if (dialog.exec() != QDialog::Accepted)
         return;
 
@@ -1548,7 +1551,8 @@ void MainWindow::openVbt()
     // Either half of the pair: the classifier resolves a picked `.bin` to the
     // `.head` beside it, and a user who sees both in the folder should not have
     // to know which one the application wants.
-    dialog.setExtensionFilter({u".bin.head"_s, u".head"_s, u".bin"_s}, u"VBT files only"_s);
+    dialog.setPurpose(u"Open VisIVO Binary Table"_s);
+    dialog.setFileTypes({ visivo::FileType::Vbt }, visivo::FileType::Vbt, u"vbt"_s);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
@@ -1616,7 +1620,8 @@ void MainWindow::openArepoSnapshot()
     // gigabytes and lives where the compute is. The extraction reads it there
     // and writes the cube there too.
     RemoteFileBrowserDialog browser(client.baseUrl(), client.token(), this);
-    browser.setExtensionFilter({ u".hdf5"_s, u".h5"_s }, u"HDF5 snapshots"_s);
+    browser.setPurpose(u"Open AREPO Snapshot"_s);
+    browser.setFileTypes({ visivo::FileType::Hdf5 }, visivo::FileType::Hdf5, u"arepo"_s);
     if (browser.exec() != QDialog::Accepted) {
         return;
     }
@@ -1647,8 +1652,9 @@ void MainWindow::openVelocityField()
     }
 
     RemoteFileBrowserDialog dialog(client.baseUrl(), client.token(), this);
-    dialog.setExtensionFilter({ u".fits"_s, u".fit"_s, u".fits.gz"_s, u".fit.gz"_s, u".fz"_s },
-                              u"FITS velocity fields"_s);
+    // A velocity field is a FITS; the classifier tells it by its axes.
+    dialog.setPurpose(u"Open Velocity Field"_s);
+    dialog.setFileTypes({ visivo::FileType::Fits }, visivo::FileType::Fits, u"velocity"_s);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
