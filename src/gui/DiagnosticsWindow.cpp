@@ -1,4 +1,5 @@
 #include "DiagnosticsWindow.h"
+#include "WindowCloseShortcut.h"
 
 #include "app/DiagnosticsManager.h"
 
@@ -65,6 +66,8 @@ DiagnosticsWindow *DiagnosticsWindow::showSingleton()
 DiagnosticsWindow::DiagnosticsWindow(QWidget *parent, Qt::WindowFlags flags)
     : QWidget(parent, flags)
 {
+    // Cmd+W closes it, as the title bar's button does (WindowCloseShortcut.h).
+    visivo::installCloseWindowShortcut(this);
     this->setWindowTitle(QStringLiteral("Diagnostics"));
     this->resize(1100, 480);
     this->setAttribute(Qt::WA_DeleteOnClose, false);

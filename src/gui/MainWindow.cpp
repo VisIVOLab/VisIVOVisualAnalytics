@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "ui_MainWindow.h"
+#include "app/TaskQuitDrain.h"
 
 #include "AboutDialog.h"
 #include "AuthWrapper.h"
@@ -178,7 +179,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // dataset and lands in a cube / image viewer just like any other
     // dataset.
     QObject::connect(this->dataHub, &DataHubWidget::openWorkspaceExportRequested,
-                     this, &MainWindow::doOpenDataPath);
+                     this, [this](const QString &path) { this->doOpenDataPath(path); });
 
     // ── SKAVA Discovery tab ───────────────────────────────────────────
     // Persistent tab next to Data Hub. The panel handles its own state
@@ -727,6 +728,12 @@ void MainWindow::exitApplication()
     const auto topLevel = QApplication::topLevelWidgets();
     for (QWidget *w : topLevel)
         w->hide();
+    // Every backend task under way is cancelled, and its worker waited for,
+    // before the event loop ends: the same drain aboutToQuit runs (main.cpp),
+    // done here as well so that the windows are already gone while it waits.
+    if (!visivo::TaskQuitDrain::instance().drain(visivo::kQuitDrainTimeoutMs))
+        qWarning().noquote() << "[quit] backend work still running after the drain's ceiling; "
+                                "the exit waits for it";
     QCoreApplication::exit(0);
 }
 

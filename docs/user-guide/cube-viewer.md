@@ -154,6 +154,10 @@ segment above the 3-D pane:
   Remote by itself; a smaller one is drawn here. On the **local** backend it
   starts local and lets the recommendation below appear.
 
+Like every viewer window, a cube window closes with **⌘W** (Ctrl+W on Linux
+and Windows) as well as with its title-bar button; a window still computing
+closes the same way its button would close it.
+
 A cube whose full resolution exceeds `Cube/local_full_threshold_mb`
 (`~/VisIVO Visual Analytics/Settings.ini`, default **256 MB**), or one the
 backend has tagged `preview_only`, is shown as a **decimated preview proxy**
@@ -485,7 +489,13 @@ line of sight, drawn in a *Spectral Profile* window.
    pane and saying so. A borrowed pane goes back to what it was showing when
    the tool ends.
 2. **Hover** the slice → the curve follows the cursor. The pane header reads
-   *pixel (83, 116) · 🟢 live*.
+   *pixel (83, 116) · 🟢 live*. On a cube shown as a decimated preview (above
+   the full-resolution threshold) the curve is the cube's own line of sight,
+   at full spectral and spatial resolution: the viewer asks the backend for
+   it (`POST /v1/spectral/probe`), as it asks for the slice. One request is
+   under way at a time; while it is out, only the pixel the cursor last
+   reached is remembered and asked next, and a reply for a pixel the cursor
+   has left is not shown. *Pin Spectrum* works on that curve as on any other.
 3. **Click** a pixel → the spectrum freezes there; moving the mouse no longer
    overwrites it. The header becomes *🔒 pinned — click again to resume*.
 4. **Click again** → resumes tracking and moves to the new pixel. (This is why
@@ -863,7 +873,12 @@ distribution is enough to identify what it represents:
 
 - *View → Sky Grid on the 2-D Panes* paints sky-coordinate ticks on the 2-D slice and
   moment maps. Toggle between **sexagesimal** (HMS / DMS) and **decimal**
-  with the *WCS format* radio in the same menu.
+  with the *WCS format* radio in the same menu. Each axis is labelled with the
+  coordinate *along that axis*: the bottom axis along the bottom edge of the
+  image, the left axis along its left edge. In a frame other than the cube's
+  own (an equatorial cube shown in Galactic coordinates) both sky coordinates
+  change across both pixel axes, so the left axis gives the latitude at the left
+  edge, which is what the hover readout says for a pixel there.
 - *View → WCS Box in the 3-D View* draws a labelled bounding box in the 3-D view
   with RA / Dec / Velocity ticks derived from the cube WCS. Useful as a
   spatial reference when rotating the camera.

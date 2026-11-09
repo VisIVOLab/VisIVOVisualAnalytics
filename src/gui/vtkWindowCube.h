@@ -9,6 +9,7 @@
 #include "LinkedWindowRegistry.h"
 #include "ProductRegistry.h"
 #include "PowerSpectrumSlope.h"
+#include "ProbeSpectrumFetch.h"
 #include "CosmologyReplay.h"
 #include "RemoteRenderQueue.h"
 #include "RemoteSliceCache.h"
@@ -590,8 +591,10 @@ private:
     void updateLiveSpectrumHeader();
     void startLiveSpectrum();   ///< place a live spectrum pane + tree entry
     void stopLiveSpectrum();    ///< drop the live pane + tree entry
+    /// @p evenIfFrozen: the curve IS the frozen pixel's (a backend reply that
+    /// arrived after the click that froze the probe), so it is shown anyway.
     void updateLiveSpectrumPane(const QVector<double> &key, const QVector<double> &values,
-                                const QString &pixelLabel);
+                                const QString &pixelLabel, bool evenIfFrozen = false);
     // Last probe spectrum captured for pinning (filled on every probe update).
     QVector<double> m_lastProbeKey;
     QVector<double> m_lastProbeValues;
@@ -1464,6 +1467,9 @@ protected:
     bool m_maskRegionBusy{ false };
     QPointer<QDialog> m_kinematicDialog;
     QPointer<QProgressDialog> m_kinematicSheet;
+    // The moment FITS export under way, if any: its sheet is not modal, so the
+    // export could otherwise be asked for again while it runs.
+    QPointer<QProgressDialog> m_momentFitsExportSheet;
     /// Edit ▸ Undo: reverses the copilot's last batch of DISPLAY changes. Enabled
     /// only while a snapshot exists to go back to.
     QPointer<QAction> m_actUndoCopilot;
@@ -1858,6 +1864,18 @@ protected:
     bool catalogueWorldToPixel(double raDeg, double decDeg, std::array<double, 2> &pixel) const;
     void updateProbeReadout(vtkImageData *imageData);
     void updateProbePlot();
+    /// The line of sight under the probe from the backend, when the window's
+    /// cube is a strided preview (or a region without the pixel): coalesced,
+    /// one request in flight, a stale reply dropped (ProbeSpectrumFetch.h).
+    void requestProbeSpectrumFromBackend();
+    void startProbeSpectrumFetch(const visivo::ProbeFetchGate::Start &start);
+    /// Show @p values (along @p spectral) as the probe's spectrum at @p voxel:
+    /// the live pane, and what Pin Spectrum keeps.
+    /// @p fetched: a backend reply, which may land after the probe was frozen
+    /// on its pixel; it is shown all the same (it is that pixel's curve).
+    void applyProbeSpectrum(const QVector<double> &spectral, const QVector<double> &values,
+                            const std::array<int, 3> &voxel, bool fetched = false);
+    visivo::ProbeFetchGate m_probeFetch;
     QString formatSpatialPointSummary(const std::array<int, 2> &voxel) const;
     QString formatSpatialPointSummary(const std::array<double, 2> &pixel) const;
     /// The path the cut follows: the control vertices, or the smooth curve through them.
@@ -1914,6 +1932,12 @@ protected:
     vtkSmartPointer<vtkActor> currentIsosurfaceActor;
     vtkSmartPointer<vtkActor> m_pick3dMarkerActor;        ///< where the last 3-D pick landed
     vtkSmartPointer<vtkSphereSource> m_pick3dMarkerSource;
+    /// Where the marker is, in the CUBE's voxels: the 3-D view draws a strided
+    /// preview in its own voxels (cube voxel / stride), so after Load full
+    /// resolution the same world point is another voxel. Re-placed from this.
+    std::array<double, 3> m_pick3dMarkerCubeVoxel{ 0., 0., 0. };
+    /// Put the marker back on its voxel after the displayed cube changed.
+    void refreshPick3dMarkerAfterDisplaySwap();
     // Kinematic-model overlay (F2). The contoured tilted-ring model actor added
     // over the cube renderer; null when no overlay is shown.
     vtkSmartPointer<vtkActor> m_kinematicModelActor;
@@ -2217,6 +2241,10 @@ protected:
     bool remoteHasCelestialAxes() const;
     bool convertRemoteCelestialCoordinates(double nativeX, double nativeY, double &frameX,
                                            double &frameY) const;
+    // Coordinate @p axis (0 or 1) of voxel (@p voxelX, @p voxelY) in the selected
+    // frame: both pixel axes feed both sky coordinates once the frame differs
+    // from the native one. Without WCS, the voxel index (as remoteVoxelToWcs).
+    double remoteFrameCoordinate(int axis, double voxelX, double voxelY) const;
     QString formatRemoteOverlayCoordinate(int axis, double value, double axisSpan = -1.0) const;
     QString remoteOverlayAxisTitle(int axis) const;
     QString formatDegreeCoordinate(double value, double axisSpan = -1.0) const;

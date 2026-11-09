@@ -113,6 +113,8 @@
 #include <QDoubleValidator>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
+#include <QFutureWatcher>
+#include <QtConcurrentRun>
 #include "ChannelMapsDialog.h"
 #include "ChannelMapsWindow.h"
 
@@ -408,6 +410,7 @@ void vtkWindowCube::refreshProbeOverlay()
 void vtkWindowCube::clearProbe()
 {
     this->probeValid = false;
+    this->m_probeFetch.reset();   // a spectrum still on its way is for no pixel now
     if (this->hoverReadoutLabel) {
         this->hoverReadoutLabel->clear();
     }
@@ -497,20 +500,27 @@ void vtkWindowCube::updateProbePlot()
     }
 
     auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
-    if (!cubeImage) {
-        return;
+    int extent[6] = { 0, -1, 0, -1, 0, -1 };
+    double origin[3] = { 0., 0., 0. };
+    double spacing[3] = { 1., 1., 1. };
+    if (cubeImage) {
+        cubeImage->GetExtent(extent);
+        cubeImage->GetOrigin(origin);
+        cubeImage->GetSpacing(spacing);
     }
-
-    int extent[6];
-    cubeImage->GetExtent(extent);
-    double origin[3];
-    double spacing[3];
-    cubeImage->GetOrigin(origin);
-    cubeImage->GetSpacing(spacing);
-
+    // probeVoxel is a FULL-resolution pixel (the slice is fetched at full
+    // resolution). The window's cube holds that line of sight only when it is
+    // the cube's own voxels: the whole cube, or a cropped region containing the
+    // pixel. A preview samples the cube with a stride (m_displayStride): its
+    // voxel at the same index is another line of sight, and most pixels lie
+    // outside its smaller extent, where the pane stayed empty. The backend
+    // reads the line of sight instead (ProbeSpectrumFetch.h).
+    const bool fullResolution = cubeImage && this->m_displayStride == 1;
     const int localX = std::lround(extent[0] + (this->probeVoxel[0] - origin[0]) / spacing[0]);
     const int localY = std::lround(extent[2] + (this->probeVoxel[1] - origin[1]) / spacing[1]);
-    if (localX < extent[0] || localX > extent[1] || localY < extent[2] || localY > extent[3]) {
+    if (!fullResolution || localX < extent[0] || localX > extent[1] || localY < extent[2]
+        || localY > extent[3]) {
+        this->requestProbeSpectrumFromBackend();
         return;
     }
 
@@ -527,18 +537,92 @@ void vtkWindowCube::updateProbePlot()
         }
         values[idx] = cubeImage->GetScalarComponentAsFloat(localX, localY, localZ, 0);
     }
+    // A local curve is current: a backend reply still on its way is not.
+    this->m_probeFetch.reset();
+    this->applyProbeSpectrum(spectral, values, this->probeVoxel);
+}
 
+void vtkWindowCube::requestProbeSpectrumFromBackend()
+{
+    if (this->remoteDatasetId.isEmpty() || this->remoteBackendUrl.isEmpty())
+        return;   // nothing to ask: the window's own cube is all there is
+    // The curve kept for Pin Spectrum (and for the promotion when the tool
+    // ends on a frozen probe) is another pixel's until the reply lands: it is
+    // dropped, so neither can save pixel A's spectrum for a click on B.
+    if (!this->m_lastProbeValues.isEmpty()
+        && (this->m_lastProbeVoxel[0] != this->probeVoxel[0]
+            || this->m_lastProbeVoxel[1] != this->probeVoxel[1])) {
+        this->m_lastProbeKey.clear();
+        this->m_lastProbeValues.clear();
+        this->applyMomentToolGate();   // Pin Spectrum waits for the reply
+    }
+    if (const auto start = this->m_probeFetch.request({ this->probeVoxel[0], this->probeVoxel[1] }))
+        this->startProbeSpectrumFetch(*start);
+}
+
+void vtkWindowCube::startProbeSpectrumFetch(const visivo::ProbeFetchGate::Start &start)
+{
+    const QString url = this->remoteBackendUrl;
+    const QString token = this->remoteBackendToken;
+    const QString sessionId = this->remoteSessionId;
+    const QString datasetId = this->remoteDatasetId;
+    // Owned by the window: deleted with it if it closes first, and then the
+    // reply is never read.
+    auto *watcher = new QFutureWatcher<BackendSpectrumResult>(this);
+    QObject::connect(watcher, &QFutureWatcher<BackendSpectrumResult>::finished, this,
+                     [this, watcher, start]() {
+        const BackendSpectrumResult r = watcher->result();
+        watcher->deleteLater();
+        std::optional<visivo::ProbePixel> wanted;
+        if (this->probeValid && this->probeModeActive)
+            wanted = visivo::ProbePixel{ this->probeVoxel[0], this->probeVoxel[1] };
+        const visivo::ProbeFetchGate::Done done = this->m_probeFetch.finished(start, wanted);
+        if (done.next)
+            this->startProbeSpectrumFetch(*done.next);
+        if (!done.apply)
+            return;   // the cursor has moved on: the next reply is the one to show
+        if (!r.valid || r.values.isEmpty()) {
+            this->statusBar()->showMessage(
+                    u"No spectrum at pixel (%1, %2): %3"_s.arg(start.pixel[0]).arg(start.pixel[1])
+                            .arg(r.error.isEmpty() ? u"the backend sent none."_s : r.error),
+                    4000);
+            return;
+        }
+        // The same spectral axis as a spectrum read from the window's own
+        // cube, so a curve does not change units when the full cube arrives.
+        QVector<double> spectral(r.values.size());
+        for (int z = 0; z < spectral.size(); ++z) {
+            bool ok = false;
+            spectral[z] = this->spectralAxisValue(z, &ok);
+            if (!ok)
+                spectral[z] = z;
+        }
+        this->applyProbeSpectrum(spectral, r.values,
+                                 { start.pixel[0], start.pixel[1], this->probeVoxel[2] },
+                                 /*fetched=*/true);
+    });
+    watcher->setFuture(QtConcurrent::run([url, token, sessionId, datasetId, start]() {
+        BackendClient client(url, token);
+        client.setSessionId(sessionId);
+        return client.spectralProbe(datasetId, start.pixel[0], start.pixel[1]);
+    }));
+}
+
+void vtkWindowCube::applyProbeSpectrum(const QVector<double> &spectral,
+                                       const QVector<double> &values,
+                                       const std::array<int, 3> &voxel, bool fetched)
+{
     // #5b: the live preview is rendered IN A PANE (the "Spectrum (live)" product), never a
     // floating window that would cover the very slice being hovered. Build the WCS pixel
     // label for the pane header + provenance, then push the data into the live pane.
     QString wcsLabel;
     {
-        QString axis0 = this->remoteFormatAxisCoordinate(0, this->probeVoxel[0]);
-        QString axis1 = this->remoteFormatAxisCoordinate(1, this->probeVoxel[1]);
+        QString axis0 = this->remoteFormatAxisCoordinate(0, voxel[0]);
+        QString axis1 = this->remoteFormatAxisCoordinate(1, voxel[1]);
         if (this->remoteHasCelestialAxes()) {
             bool ok0 = false, ok1 = false;
-            const double nativeX = this->remoteVoxelToWcs(0, this->probeVoxel[0], &ok0);
-            const double nativeY = this->remoteVoxelToWcs(1, this->probeVoxel[1], &ok1);
+            const double nativeX = this->remoteVoxelToWcs(0, voxel[0], &ok0);
+            const double nativeY = this->remoteVoxelToWcs(1, voxel[1], &ok1);
             double frameX = nativeX, frameY = nativeY;
             if (ok0 && ok1
                 && this->convertRemoteCelestialCoordinates(nativeX, nativeY, frameX, frameY)) {
@@ -565,16 +649,17 @@ void vtkWindowCube::updateProbePlot()
     this->m_lastProbeYLabel = m_brightnessUnit.trimmed().isEmpty()
             ? u"Intensity"_s : u"Intensity (%1)"_s.arg(m_brightnessUnit.trimmed());
     this->m_lastProbeContext = wcsLabel;
-    this->m_lastProbeVoxel = this->probeVoxel;
+    this->m_lastProbeVoxel = voxel;
 
     // Pin Spectrum is gated on there BEING a probed spectrum; re-gate only when
     // that flipped, since this runs on every probe update (2-D moves and 3-D picks).
     if (hadProbeSpectrum != !this->m_lastProbeValues.isEmpty())
         this->applyMomentToolGate();
 
-    const QString pixelLabel =
-            u"px (%1, %2)"_s.arg(this->probeVoxel[0]).arg(this->probeVoxel[1]);
-    this->updateLiveSpectrumPane(spectral, values, pixelLabel);
+    const QString pixelLabel = u"px (%1, %2)"_s.arg(voxel[0]).arg(voxel[1]);
+    this->updateLiveSpectrumPane(spectral, values, pixelLabel, /*evenIfFrozen=*/fetched);
+    if (fetched && this->probeFrozen)
+        this->updateLiveSpectrumHeader();   // the header named the pixel before its curve came
 }
 
 void vtkWindowCube::extractSpectrumAtCurrentProbe()
@@ -629,6 +714,7 @@ void vtkWindowCube::setProbeModeActive(bool active)
         this->probeFrozen = false;
 
     if (!active) {
+        this->m_probeFetch.reset();
         this->sliceProbeHorizontalActor->VisibilityOff();
         this->sliceProbeVerticalActor->VisibilityOff();
         this->momentProbeHorizontalActor->VisibilityOff();

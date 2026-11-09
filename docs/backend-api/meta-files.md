@@ -43,6 +43,25 @@ same tool run on twenty datasets reads as twenty runs of one operation rather
 than twenty different ones. `status` is `failed` both for an HTTP error and for
 the `{"valid": false}` envelope that most routes return with HTTP 200.
 
+`duration_seconds` is the backend's own time for that request, from its arrival
+to the end of its response. A file refused at once (a truncated FITS, a file
+that is not FITS) takes a millisecond or two, however long the client spent
+before asking (its health check, the classification, a decompression, which
+is listed as its own `decompress` task). A file the backend never received,
+because the client refused it first (not found, a format nothing opens), is
+not in this list.
+
+The desktop client fills both gaps itself (`src/gui/OpenJobMerge.h`). It keeps
+an in-memory record of its last opens (when the user asked, when the open
+ended, how, whether it reached the backend) and merges it into the panel: an
+open whose backend job finished inside the client's open, from request to
+result (an `…/open` route preferred over a `decompress` task, then the one
+closest to the client's end), is shown with the client's end-to-end time and
+outcome, the backend's time in its tooltip; an open refused before the backend
+is added as an entry of its own. The response names no file, so the match is
+by time: each job finished `age_seconds` before the response arrived, which
+needs no agreement between the two clocks.
+
 A finished job reads `done` when the middleware recorded it and `completed` when
 it came from the task registry — the task API's own terminal status. Both are
 successes; a client that treats anything other than `done` as a failure marks

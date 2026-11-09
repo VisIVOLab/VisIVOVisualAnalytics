@@ -2048,6 +2048,9 @@ public:
     /// yet — a strict backend would reject it).
     enum class SessionMint { Ready, Unsupported, Deferred };
     SessionMint ensureSessionMinted() const;
+    /// True while this thread's own session mint request is out (a request
+    /// made from inside it, a nested event loop's, is answered Deferred).
+    static bool mintInFlightOnThisThread();
 
     /// The session id to send to @p baseUrl: the id that backend minted for us if
     /// there is one, else the process-wide local default. Use this when building a
@@ -2990,6 +2993,9 @@ public:
             const QVariantMap &params = {});
 
 private:
+    /// createDecompressTask's request itself, on the calling thread.
+    BackendTaskCreateResult postDecompressTask(const QString &path) const;
+
     /** Build a QNetworkRequest with auth + session headers pre-applied. */
     QNetworkRequest buildRequest(const QUrl &url) const;
 

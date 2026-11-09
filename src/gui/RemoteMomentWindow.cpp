@@ -1,4 +1,5 @@
 #include "RemoteMomentWindow.h"
+#include "WindowCloseShortcut.h"
 
 #include "ColorMaps.h"
 #include "DiagnosticsWindow.h"
@@ -49,6 +50,8 @@ RemoteMomentWindow::RemoteMomentWindow(const QString &backendUrl, const QString 
     : QMainWindow(parent), backendUrl(backendUrl), datasetId(datasetId), datasetPath(datasetPath),
       sessionId(sessionId), backendToken(backendToken)
 {
+    // Cmd+W closes it, as the title bar's button does (WindowCloseShortcut.h).
+    visivo::installCloseWindowShortcut(this);
     this->setAttribute(Qt::WA_DeleteOnClose);
     this->setWindowTitle(u"%1 [remote moment]"_s.arg(datasetPath));
 

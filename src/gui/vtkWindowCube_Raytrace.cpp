@@ -107,6 +107,8 @@ void vtkWindowCube::setDisplayStride(int stride)
 {
     stride = std::max(1, stride);
     const int before = std::exchange(this->m_displayStride, stride);
+    if (before != stride)
+        this->refreshPick3dMarkerAfterDisplaySwap();   // drawn in the displayed voxels
     if (before == stride || !this->m_rtView || this->m_rtFromRemote
         || this->m_rtView->camera().isEmpty())
         return;

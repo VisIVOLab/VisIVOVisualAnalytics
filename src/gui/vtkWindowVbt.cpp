@@ -1,4 +1,5 @@
 #include "vtkWindowVbt.h"
+#include "WindowCloseShortcut.h"
 
 #include "ColormapIcon.h"
 #include "app/DiagnosticsManager.h"
@@ -169,6 +170,8 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
     , sessionId(sessionId)
     , m_headerPath(headerPath)
 {
+    // Cmd+W closes it, as the title bar's button does (WindowCloseShortcut.h).
+    visivo::installCloseWindowShortcut(this);
     this->xFieldName = findCoordField(this->openResult.fields, u"x"_s);
     this->yFieldName = findCoordField(this->openResult.fields, u"y"_s);
     this->zFieldName = findCoordField(this->openResult.fields, u"z"_s);

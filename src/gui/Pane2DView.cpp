@@ -3,6 +3,7 @@
 #include "ColorMaps.h"
 #include "CubeViewportGeometry.h"
 #include "CubeWcsUtil.h"
+#include "WcsAxisTicks.h"
 
 #include <QDebug>
 #include <QScopedValueRollback>
@@ -913,9 +914,13 @@ void Pane2DView::updateWcsOverlay()
     if (m_wcs.voxelToFrame && hasCelestial) {
         double fx0 = 0., fy0 = 0., fx1 = 0., fy1 = 0.;
         bool a = false, b = false, c = false, e = false;
+        // Each axis along its own edge, as its ticks are read below.
+        double fxTop = 0., fyRight = 0.;
+        bool f = false, g = false;
         frameAt(rxMin, ryMin, fx0, fy0, a, b);
-        frameAt(rxMax, ryMax, fx1, fy1, c, e);
-        if (a && b && c && e) {
+        frameAt(rxMax, ryMin, fx1, fyRight, c, e);
+        frameAt(rxMin, ryMax, fxTop, fy1, f, g);
+        if (a && b && c && e && f && g) {
             spanX = std::fabs(fx1 - fx0);
             spanY = std::fabs(fy1 - fy0);
         }
@@ -924,13 +929,20 @@ void Pane2DView::updateWcsOverlay()
         const double t = kOverlayTickCount == 1
                 ? 0.0
                 : static_cast<double>(i) / static_cast<double>(kOverlayTickCount - 1);
-        const double voxelX = rxMin + t * (rxMax - rxMin);
-        const double voxelY = ryMin + t * (ryMax - ryMin);
+        // The x axis is read along the bottom edge and the y axis along the
+        // left one, where they are drawn; read on the diagonal, a Galactic
+        // latitude axis over an equatorial cube printed the latitude of points
+        // far from it (WcsAxisTicks.h).
+        const visivo::AxisVoxel atX = visivo::xAxisTickVoxel(t, rxMin, rxMax, ryMin);
+        const visivo::AxisVoxel atY = visivo::yAxisTickVoxel(t, ryMin, ryMax, rxMin);
         bool tickXOk = false;
         bool tickYOk = false;
         double frameX = 0.0;
         double frameY = 0.0;
-        frameAt(voxelX, voxelY, frameX, frameY, tickXOk, tickYOk);
+        double unusedX = 0.0;
+        double unusedY = 0.0;
+        frameAt(atX.x, atX.y, frameX, unusedY, tickXOk, tickYOk);
+        frameAt(atY.x, atY.y, unusedX, frameY, tickXOk, tickYOk);
         // NOTE on frames: the original moment overlay does a PAIRED celestial
         // conversion (convertRemoteCelestialCoordinates(x,y,...)) because e.g.
         // FK5<->Galactic mixes both axes. This class's required API is per-axis

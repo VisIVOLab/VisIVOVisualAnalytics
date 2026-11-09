@@ -1,4 +1,5 @@
 #include "vtkWindowImage.h"
+#include "WindowCloseShortcut.h"
 #include "app/DatasetName.h"
 #include "Settings.h"
 #include "ui_vtkWindowImage.h"
@@ -994,6 +995,8 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
       layers(nullptr),
       importService(std::make_unique<ImageLayerImportService>())
 {
+    // Cmd+W closes it, as the title bar's button does (WindowCloseShortcut.h).
+    visivo::installCloseWindowShortcut(this);
     // Per-window product scope (session-wide registry): so this image window's Session tree
     // ignores products a sibling cube/image window registered for the same dataset.
     this->m_windowScope = ProductRegistry::instance().newOwnerScope();

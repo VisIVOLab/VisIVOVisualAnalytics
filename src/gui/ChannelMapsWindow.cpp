@@ -1,4 +1,5 @@
 #include "ChannelMapsWindow.h"
+#include "WindowCloseShortcut.h"
 
 #include "qcustomplot/qcustomplot.h"
 #include "theme/VisivoTheme.h"
@@ -67,6 +68,8 @@ ChannelMapsWindow::ChannelMapsWindow(
     , m_cubeWidth(cubeWidth), m_cubeHeight(cubeHeight), m_cubeDepth(cubeDepth)
     , m_filepath(filepath)
 {
+    // Cmd+W closes it, as the title bar's button does (WindowCloseShortcut.h).
+    visivo::installCloseWindowShortcut(this);
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowFlag(Qt::Window);
     setWindowTitle(u"Channel Maps - %1"_s

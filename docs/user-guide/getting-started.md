@@ -198,6 +198,21 @@ see [VLKB archive](vlkb-archive).
 You can also drag-and-drop a local FITS file onto the Data Hub — it will
 be staged on the backend automatically.
 
+**Last 5 jobs** lists what the backend did most recently: moments, PV
+diagrams, opens, exports, with how long each took and how long ago it ended.
+An open is timed by the client, from the moment you asked (the health check,
+the identification of the file and a decompression included) to its result:
+the viewer on screen, the error reported or the open cancelled (the time spent
+choosing a viewer for an ambiguous file, or reading the error, is not
+counted). The tooltip
+of such an entry says so and gives the backend's own part, which for a file
+refused at once is a millisecond or two. An open refused before it reached
+the backend (the file not found, a format nothing opens, the backend not
+reachable) is listed too, as *open name.fits*, failed. The list is refreshed
+as soon as an open returns. The client's record is kept in memory for the
+session only; a VBT open, which ends after a background request, shows the
+backend's time.
+
 ### From the desktop: double-click a file
 
 VisIVO registers itself as a FITS viewer, so a `.fits` (`.fit`, `.fts`) file

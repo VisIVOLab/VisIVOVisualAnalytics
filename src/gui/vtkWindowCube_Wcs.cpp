@@ -3,6 +3,7 @@
 #include "CubeWcsUtil.h"
 #include "CubeViewportGeometry.h"
 #include "SpectralAxisInfer.h"
+#include "WcsAxisTicks.h"
 
 #include "qcustomplot.h"
 #include "ColorMaps.h"
@@ -497,6 +498,19 @@ bool vtkWindowCube::convertRemoteCelestialCoordinates(double nativeX, double nat
     return true;
 }
 
+double vtkWindowCube::remoteFrameCoordinate(int axis, double voxelX, double voxelY) const
+{
+    bool okX = false;
+    bool okY = false;
+    const double nativeX = this->remoteVoxelToWcs(0, voxelX, &okX);
+    const double nativeY = this->remoteVoxelToWcs(1, voxelY, &okY);
+    double frameX = nativeX;
+    double frameY = nativeY;
+    if (okX && okY && this->remoteHasCelestialAxes())
+        this->convertRemoteCelestialCoordinates(nativeX, nativeY, frameX, frameY);
+    return axis == 0 ? frameX : frameY;
+}
+
 QString vtkWindowCube::formatRemoteOverlayCoordinate(int axis, double value, double axisSpan) const
 {
     if (!this->remoteHasCelestialAxes()) {
@@ -889,37 +903,21 @@ void vtkWindowCube::updateSliceWcsOverlay()
     this->sliceOverlayYTitleActor->SetVisibility(!narrowAxis);
     // (b) axis WCS span (from the tick extremes, honouring the paired celestial conversion)
     // so the degree formatter uses enough precision that adjacent ticks never coincide.
-    auto frameAt = [&](double tt, double &fx, double &fy) {
-        const double vx = rxMin + tt * (rxMax - rxMin);
-        const double vy = ryMin + tt * (ryMax - ryMin);
-        bool ox = false, oy = false;
-        double tx = this->remoteVoxelToWcs(0, vx, &ox);
-        double ty = this->remoteVoxelToWcs(1, vy, &oy);
-        fx = tx;
-        fy = ty;
-        if (ox && oy && this->remoteHasCelestialAxes())
-            this->convertRemoteCelestialCoordinates(tx, ty, fx, fy);
-    };
-    double fx0 = 0., fy0 = 0., fx1 = 0., fy1 = 0.;
-    frameAt(0.0, fx0, fy0);
-    frameAt(1.0, fx1, fy1);
-    const double sliceSpanX = std::fabs(fx1 - fx0);
-    const double sliceSpanY = std::fabs(fy1 - fy0);
+    // Each axis is read along its own edge (WcsAxisTicks.h): in another frame
+    // than the native one, b changes along x as well, and the y axis read on the
+    // diagonal printed the latitude of points far from it.
+    const double sliceSpanX = std::fabs(this->remoteFrameCoordinate(0, rxMax, ryMin)
+                                        - this->remoteFrameCoordinate(0, rxMin, ryMin));
+    const double sliceSpanY = std::fabs(this->remoteFrameCoordinate(1, rxMin, ryMax)
+                                        - this->remoteFrameCoordinate(1, rxMin, ryMin));
     for (int i = 0; i < overlayTickCount; ++i) {
         const double t = overlayTickCount == 1 ? 0.0
                                                : static_cast<double>(i)
                         / static_cast<double>(overlayTickCount - 1);
-        const double voxelX = rxMin + t * (rxMax - rxMin);
-        const double voxelY = ryMin + t * (ryMax - ryMin);
-        bool tickXOk = false;
-        bool tickYOk = false;
-        double tickX = this->remoteVoxelToWcs(0, voxelX, &tickXOk);
-        double tickY = this->remoteVoxelToWcs(1, voxelY, &tickYOk);
-        double frameX = tickX;
-        double frameY = tickY;
-        if (tickXOk && tickYOk && this->remoteHasCelestialAxes()) {
-            this->convertRemoteCelestialCoordinates(tickX, tickY, frameX, frameY);
-        }
+        const visivo::AxisVoxel atX = visivo::xAxisTickVoxel(t, rxMin, rxMax, ryMin);
+        const visivo::AxisVoxel atY = visivo::yAxisTickVoxel(t, ryMin, ryMax, rxMin);
+        const double frameX = this->remoteFrameCoordinate(0, atX.x, atX.y);
+        const double frameY = this->remoteFrameCoordinate(1, atY.x, atY.y);
         this->sliceOverlayXTickActors[static_cast<std::size_t>(i)]->SetInput(
                 this->formatRemoteOverlayCoordinate(0, frameX, sliceSpanX).toStdString().c_str());
         this->sliceOverlayXTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
@@ -1068,17 +1066,11 @@ void vtkWindowCube::updateMomentWcsOverlay()
         const double t = overlayTickCount == 1 ? 0.0
                                                : static_cast<double>(i)
                         / static_cast<double>(overlayTickCount - 1);
-        const double voxelX = rxMin + t * (rxMax - rxMin);
-        const double voxelY = ryMin + t * (ryMax - ryMin);
-        bool tickXOk = false;
-        bool tickYOk = false;
-        double tickX = this->remoteVoxelToWcs(0, voxelX, &tickXOk);
-        double tickY = this->remoteVoxelToWcs(1, voxelY, &tickYOk);
-        double frameX = tickX;
-        double frameY = tickY;
-        if (tickXOk && tickYOk && this->remoteHasCelestialAxes()) {
-            this->convertRemoteCelestialCoordinates(tickX, tickY, frameX, frameY);
-        }
+        // Each axis along its own edge, as on the slice (WcsAxisTicks.h).
+        const visivo::AxisVoxel atX = visivo::xAxisTickVoxel(t, rxMin, rxMax, ryMin);
+        const visivo::AxisVoxel atY = visivo::yAxisTickVoxel(t, ryMin, ryMax, rxMin);
+        const double frameX = this->remoteFrameCoordinate(0, atX.x, atX.y);
+        const double frameY = this->remoteFrameCoordinate(1, atY.x, atY.y);
         this->momentOverlayXTickActors[static_cast<std::size_t>(i)]->SetInput(
                 this->formatRemoteOverlayCoordinate(0, frameX).toStdString().c_str());
         this->momentOverlayXTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
