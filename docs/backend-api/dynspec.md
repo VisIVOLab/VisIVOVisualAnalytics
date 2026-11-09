@@ -2,10 +2,15 @@
 
 These routes analyse dynamic spectra and beamformed data: datasets of kind
 `dynspec`, a 2-D FITS image with time on `NAXIS1` and frequency on `NAXIS2`
-(HDF5 inputs are converted to such a FITS sidecar when opened). Any degenerate
-leading axes are dropped. The sampling is read from the header: `CDELT1` is the
-time step in seconds and `CRVAL2`, `CRPIX2`, `CDELT2` give the channel
-frequencies in Hz.
+(HDF5 and PSRFITS inputs are converted to such a FITS sidecar when opened; see
+[Supported PSRFITS](../user-guide/image-viewer.md#supported-psrfits) for how
+PSRFITS fold and search layouts, `DAT_SCL`/`DAT_OFFS` and zero `DAT_WTS` are
+read). Any degenerate leading axes are dropped. The sampling is read from the
+header: `CRVAL1`, `CRPIX1`, `CDELT1` give the time of each sample in seconds
+and `CRVAL2`, `CRPIX2`, `CDELT2` give the channel frequencies in Hz. `CDELT1`
+keeps its sign: a time axis stored in decreasing order (`CDELT1 < 0`) gives
+the same sample times, dispersion shifts and folded profile as the same data
+stored forwards.
 
 All three routes return HTTP 404 for an unknown `dataset_id`, 422 when the
 dataset is not of kind `dynspec`, and 429 when the session's compute slots stay
