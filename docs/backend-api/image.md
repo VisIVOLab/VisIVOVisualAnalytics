@@ -46,7 +46,12 @@ The WCS is moved onto the new grid: `CRPIX' = (CRPIX − 0.5)/f + 0.5` (the
 half-pixel terms are the difference between FITS' 1-based pixel centres and the
 block edges — dropping them puts the map half a block off), `CDELT` and any
 `CD`/`PC` matrix scaled by `f`, and the WCS keywords of axes squeezed out of the
-data are dropped and the rest renumbered.
+data are dropped and the rest renumbered. SIP distortion coefficients, which are
+polynomials in pixel offsets, are rescaled with the grid: `A_p_q`, `B_p_q`,
+`AP_p_q` and `BP_p_q` by `f^(p+q−1)`, `A_DMAX`/`B_DMAX` by `1/f`, so each
+output pixel keeps the sky position of the centre of its block (to 10⁻³ pixel in
+the tests; left unscaled, a cubic SIP put block centres 0.44 pixel off at ×2).
+Lookup-table distortions (`CPDIS`, `D2IM`) are not rescaled.
 
 ### `POST /v1/image/tile`
 Out-of-core pyramid tile of a 2-D image mosaic, so multi-GB mosaics can be

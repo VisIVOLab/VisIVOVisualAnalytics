@@ -225,6 +225,32 @@ def regrid_header(header: fits.Header, factor: int) -> None:
             key = f"CD{i}_{j}"
             if key in header:
                 header[key] = float(header[key]) * factor
+    _regrid_sip(header, factor)
+
+
+def _regrid_sip(header: fits.Header, factor: int) -> None:
+    """Rescale SIP distortion coefficients for a ×``factor`` downsample.
+
+    SIP works in pixel offsets from CRPIX: x = CD·(u + Σ A_pq u^p v^q). The
+    regrid makes u' = u/f and CD' = f·CD, so the same sky position needs
+    f·Σ A'_pq u'^p v'^q = Σ A_pq u^p v^q, i.e. A'_pq = A_pq · f^(p+q−1)
+    (B likewise). The inverse polynomials AP/BP map the undistorted offset U
+    (= CD⁻¹x, which also shrinks by f) to u = U + Σ AP_pq U^p V^q; dividing by
+    f gives the same rule AP'_pq = AP_pq · f^(p+q−1). The linear terms
+    (p+q = 1) are scale-free and AP_0_0 shrinks by f, as an offset in pixels
+    must. A_DMAX/B_DMAX are maximum corrections in pixels, so they shrink by f.
+    Left unscaled, the distortion is off by f^(p+q−1): on the 64-pixel cubic
+    SIP of the tests a block centre lands 0.44 input pixels off at ×2 and 0.61
+    at ×4. Lookup-table distortions (CPDIS/D2IM) are not rescaled.
+    """
+    import re as _re  # noqa: PLC0415
+    for name in list(header.keys()):
+        match = _re.match(r"^(A|B|AP|BP)_(\d+)_(\d+)$", str(name))
+        if match:
+            power = int(match.group(2)) + int(match.group(3)) - 1
+            header[name] = float(header[name]) * float(factor) ** power
+        elif name in ("A_DMAX", "B_DMAX"):
+            header[name] = float(header[name]) / factor
 
 
 def is_per_beam(bunit: str) -> bool:

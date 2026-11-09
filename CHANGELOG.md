@@ -8,6 +8,29 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Pixel Math reprojects maps that are on different sky grids**, not only
+  maps of different size. Two 64×64 maps of the same source, one with its grid
+  shifted by 4 pixels, used to be subtracted pixel by pixel (residual 0.86 of
+  the peak); B is now reprojected onto A's grid (`reproject_interp`,
+  bilinear, as `/v1/image/reproject` does at order 1) and the residual is 0.
+  Maps whose WCS agree within 0.01 pixel are combined exactly as before. The
+  response says so in `info.reprojected` and the output carries a `HISTORY`
+  card. A map with a sky WCS and one without are refused instead of combined
+  blindly, and so is a map whose sky WCS cannot be read. SIP cubes keep their
+  sky WCS when loaded (astropy refuses SIP on a 3-D header, and they used to
+  look WCS-less), and lookup-table distortions are read and carried into the
+  output.
+- **A spectral index from two negative fluxes is now blank.** Pixel Math's
+  `spectral_index` took the log of the ratio, so −2 and −1 at 2 and 1 GHz gave
+  α = 1; α is now NaN unless both fluxes are finite and positive, and equal
+  frequencies are refused.
+- **Regridding keeps SIP astrometry.** The ×f block average now rescales the
+  SIP coefficients (`A`/`B`/`AP`/`BP` by f^(p+q−1)): on a cubic SIP, block
+  centres were 0.44 pixel off at ×2 and 0.61 at ×4, now under 10⁻³.
+- **Image Quality flags perfectly uniform stripes.** An image of pure
+  horizontal bands had `striping_metric` 0 and no `striping` flag, because one
+  of the two variances was zero; it is now the metric's ceiling, 10⁶ (all
+  ratios are capped there), and flagged. A flat image stays 0.
 - **Cached products follow the file on disk.** Moment, PV, isosurface and
   line-width products (and Export Moment as FITS) were cached by path and
   parameters only, so a cube replaced or rewritten under the same name came
