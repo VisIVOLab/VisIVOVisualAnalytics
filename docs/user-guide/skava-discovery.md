@@ -33,7 +33,8 @@ to a node only through the VisIVO backend registered for it
 
 The box at the top of the tab (saved in the settings, shared with the
 Settings dialog) has two rows, the service and the token; the endpoints a
-default deployment never sets are folded under **Advanced**:
+default deployment never sets are folded under **Advanced: TAP, DataLink,
+Computing Broker**:
 
 | Field | Meaning |
 |---|---|
@@ -220,7 +221,7 @@ images and server-side rendering on the node's GPUs, is described in
 
 ## Common failure modes
 
-* **`SKAVA base URL is not configured`**: fill the URL before searching.
+* **"Set the SKAVA base URL before searching."**: fill the URL first.
 * **`… requires a sign-in`**: the service answered `401`. Sign in, or paste
   a token.
 * **`no_available_nodes - No available nodes for dataset …`**: the catalogue
@@ -233,6 +234,6 @@ images and server-side rendering on the node's GPUs, is described in
   backend running there"**: no registered backend matches the nodes
   holding the dataset. Register the node's backend (the dialog offers to),
   or check its token.
-* **"SKAVA advertises no moment service"**: the dataset is not a cube, or
+* **"SKAVA advertises no moment service for …"** (or *no PV service*): the dataset is not a cube, or
   the node's backend predates the operation; open the dataset and compute
   in the viewer instead.

@@ -239,6 +239,7 @@ refused. Redirects are checked with the same policy.
 | `VISIVO_CONE_SEARCH_ALLOWED_HOSTS` | unset | Allowlist for cone-search requests. |
 | `VISIVO_OPENURL_ALLOWED_HOSTS` | unset | Allowlist for `/v1/datasets/open_url` (opening a dataset by URL, as SKAVA access URLs do). |
 | `VISIVO_OPENURL_BLOCK_PRIVATE` | off | `1`/`true`/`yes` refuses private and loopback addresses on the open-URL route too. Off by default because federated data nodes often sit on private networks. |
+| `VISIVO_SAMP_ALLOWED_HOSTS` | unset | Allowlist for `/v1/samp/import-url`, the route that downloads a URL received over SAMP into the backend's SAMP store. A hub's own loopback URLs are refused there; the desktop client downloads those itself and uploads them. |
 | `VISIVO_SAMP_DIRECT` | `0` | `1` lets the backend register with a SAMP hub on its own machine and send messages directly. Without it, SAMP goes through the desktop client, which is the only way when the backend is remote. |
 
 ## Analysis limits
@@ -294,4 +295,5 @@ These variables are read by the desktop client, not by the backend.
 | `VISIVO_NO_BACKEND_AUTOSTART` | unset | Any non-empty value stops the client from starting its local backend (the same as `--no-backend-autostart`), to connect to one already running. |
 | `VISIVO_BACKEND_PYTHON` | unset | Python interpreter used to start the local backend, tried before an active virtual environment, the project's `.venv` and the bundled runtime. It must be Python 3.11 or newer. |
 | `VISIVO_PACKAGE_DIR` | set by the Linux launcher | The directory of the extracted Linux package; the client looks for the bundled backend runtime in its `python/` directory first. Set by `./VisIVOVisualAnalytics`, not by hand. |
+| `SAMP_HUB` | `~/.samp` | The standard SAMP variable: `std-lockurl:<url>` (a `file:` or `http(s):` URL) names the hub lockfile the client reads; otherwise it reads `~/.samp`. |
 | `VISIVO_SUBVOLUME_PARALLEL` | `4` | Parallel requests a full-resolution cube or sub-cube load (`/v1/cube/subvolume_bin`) is split into, along the spectral axis (1 to 16). |

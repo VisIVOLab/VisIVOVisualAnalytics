@@ -25,7 +25,7 @@ Pick a shape from *Tools → Regions* in the viewer:
 | **Box** | Click + drag the two opposite corners | Axis-aligned. Fast and predictable. |
 | **Circle** | Click + drag from centre to edge | Diameter snaps to integer pixel. |
 | **Polygon** | Click each vertex, double-click to close | Arbitrary shape. Concave polygons are supported. |
-| **Annulus** | Click centre, drag outer radius, then inner | Useful for background subtraction around a source. |
+| **Annulus** | Click centre, drag the outer radius, then type the inner one | Useful for background subtraction around a source. |
 
 While drawing, the live preview is rendered in red on the slice. Once
 released, the region becomes selectable; right-click to remove it.
@@ -66,7 +66,10 @@ the same axes with a legend. See
 
 ### Statistics shown
 
-For each region the *Region Info* card shows:
+In the **cube viewer** the region's Provenance lists **Valid pixels**,
+**Blanked / NaN**, **Min**, **Max**, **Mean**, **Median** and **Std Dev**,
+computed on the plane the region was drawn on. In the **image viewer** a
+*Region Analysis* window shows them, and adds:
 
 ```{list-table}
 :header-rows: 1
@@ -74,28 +77,28 @@ For each region the *Region Info* card shows:
 
 * - Field
   - Meaning
-* - **Pixels (N)**
-  - Number of valid (non-NaN) pixels in the region.
-* - **Mean / Median**
-  - Standard summary; median is robust to outliers.
 * - **σ (MAD)**
   - Median absolute deviation × 1.4826 (robust 1σ estimate). Use this for
     background-noise estimates; less affected by faint sources than the
     sample standard deviation.
-* - **Min / Max**
-  - Extrema, useful for sanity checks against the colour-map range.
-* - **Sum**
-  - Pixel-value sum × pixel area (BUNIT-dependent). For moment-0 maps this
-    is the integrated flux of the region.
+* - **Integrated flux** (*Radio (beam-aware)*)
+  - Pixel sum ÷ beam area in pixels, in Jy for a Jy/beam image. Shown only
+    when the header has a beam (`BMAJ`/`BMIN`), together with the beam, its
+    area in pixels and the **Peak SNR** (peak / σ_MAD).
+* - **Stokes (per-layer)**
+  - With a Stokes set loaded, the same region measured on each Stokes and
+    derived layer (flux for I/Q/U/V/P, mean for angle, fraction, α and RM).
 ```
 
-If your image carries a BUNIT all the numbers are reported in the same
-unit; otherwise they're in raw counts.
+Pixels that are blank (NaN) are left out of every number. The backend's
+`POST /v1/regions/stats/{dataset_id}` also returns a flux; on a cube with a
+per-channel `BEAMS` table it uses the beam of the requested channel, and the
+header beam otherwise.
 
 ```{tip}
-For **annulus** regions, the inner ring values represent the local
-background and the outer-vs-inner difference is shown automatically —
-useful for aperture photometry.
+An **annulus** measures the ring between its inner and outer radius, so it is
+the shape for the local background around a source: subtract its mean, times
+the source aperture's pixel count, from the aperture's sum.
 ```
 
 Every region analysis leaves a row in **Session Data** carrying both its numbers
@@ -118,8 +121,14 @@ and the ring appeared only after you had already chosen.)
   numbers, which can be selected and copied (right-click ▸ *Copy*), and
   **Export recipe as JSON…** saves them with the parameters they were
   measured with.
-- *Tools ▸ Export Region (CRTF/DS9)…* writes the region itself, for CARTA or
-  DS9.
+- *Tools ▸ Regions ▸ Export Region (CRTF/DS9)…* writes the region itself, for
+  CARTA, CASA or DS9, in sky (FK5) or pixel coordinates; FK5 is written
+  whatever the image's own frame. *Import Region (CRTF/DS9)…* reads one back:
+  FK5, ICRS, FK4 (B1950), galactic and ecliptic regions are converted to the
+  image's frame through its WCS, each size keeps its own unit (`1'`, `30"`,
+  `0.01d`, …), and a frame the backend cannot convert (ds9 `linear` or
+  `detector`, CRTF `SUPERGAL`) or a region that does not land on the image is
+  refused with the reason.
 
 ---
 
@@ -133,7 +142,7 @@ expansion.
 
 ### Drawing the path
 
-1. In the cube viewer choose **Tools → Extract PV Diagram**. The cursor
+1. In the cube viewer choose **Tools → Spectral → Extract PV Diagram…**. The cursor
    becomes a cross.
 2. Click on the 2-D slice to place the vertices of the path, as many as you
    like. Vertices are kept at sub-pixel precision.
@@ -275,19 +284,19 @@ region and channel range.
 
 ### How to use it
 
-1. **Tools → Estimate Noise** in the cube viewer.
-2. The *Noise Region — Select Region* dialog appears with six spinboxes:
-   - **Spatial region** — `x min / x max`, `y min / y max` in slice pixel
-     coordinates. Defaults to the full cube extent. *Reset to Full Extent*
-     restores the defaults.
-   - **Channel range** — `Channel start / end`. Defaults to all channels.
+1. **Tools → Statistics → Estimate Noise...** in the cube viewer.
+2. The *Noise Estimation, Select Region* dialog appears with six spinboxes:
+   - **Spatial region (pixels)** — *X (columns)* and *Y (rows)*, each a
+     start → end range in slice pixel coordinates. Defaults to the full cube
+     extent. **Reset to Full Extent** restores the defaults.
+   - **Spectral range (channels)** — *Start → End*. Defaults to all channels.
      For per-channel σ across the full cube, leave defaults; for a single
      scalar σ over a specific line-free band, narrow to those channels.
 
    The region you pick is **remembered per dataset**: the next time you open
    this cube the dialog re-opens pre-filled with your last noise region, so you
    don't have to hunt for the same line-free box again.
-3. Click **OK**. The dialog closes and the backend starts computing.
+3. Click **Estimate**. The dialog closes and the backend starts computing.
 4. The result panel shows summary stats over the per-channel arrays:
    - **σ per channel** = 1.4826 × MAD (robust 1σ for Gaussian noise),
      summarised as *Mean / Median / Min / Max*.
@@ -320,7 +329,7 @@ region and channel range.
 
 ### Live preview overlays
 
-While the *Noise Region* dialog is open — and through the result dialog's
+While the *Noise Estimation* dialog is open — and through the result dialog's
 lifetime — the cube viewer paints two synchronised amber overlays so you
 can see exactly where σ is being sampled:
 
@@ -394,8 +403,8 @@ The region should be:
   level).
 
 ```{tip}
-A common workflow: open the cube, do a *Mean Spectrum* (Tools menu) to
-spot the line-free channels, then estimate noise over a generous spatial
+A common workflow: open the cube, draw a large Box region (its mean spectrum
+appears in a pane) to spot the line-free channels, then estimate noise over a generous spatial
 region restricted to those channels.
 ```
 

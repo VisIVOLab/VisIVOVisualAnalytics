@@ -35,7 +35,10 @@ with kind `velocity` (dataset ids start with `vf_`).
 
 Request (`VelocityOpenRequest`): `path` (server-side path, confined to the
 backend's allowed data roots) and `box_mpc` (default `null`: physical box size
-in Mpc; without it the grid uses unit spacing).
+in Mpc; without it the grid uses unit spacing). A compressed FITS
+(`.fits.gz`, `.fz`) is read from its decompressed copy in the workspace cache
+(see [Datasets](datasets.md)); the session entry keeps the original path as
+its `source_path`.
 
 ```json
 { "path": "/data/cf4/CF4_new_64-z008_velocity.fits", "box_mpc": 1000.0 }

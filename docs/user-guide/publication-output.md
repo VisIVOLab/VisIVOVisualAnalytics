@@ -5,24 +5,32 @@ keeping several views in step while you compare them.
 
 | Task | Where |
 |------|-------|
-| A single figure with a colour bar and sky grid | *Analysis → Publication Figure…* |
-| An animation | *Tools → Export Movie…* (cube viewer) |
-| Labels and arrows on an image | *Tools → Add Text Annotation…* / *Add Arrow Annotation…* (image viewer) |
-| Two views showing the same thing | *Tools → Link Views* |
-| Regions shared with CASA or DS9 | *Tools → Import / Export Region (CRTF/DS9)…* |
+| A single figure with a colour bar and sky grid | *Tools ▸ Products ▸ Publication Figure…* (image viewer) |
+| An animation | *Tools ▸ Export ▸ Export Movie…* (cube viewer) |
+| Labels and arrows on an image | *Tools ▸ Annotations ▸ Add Text Annotation…* / *Add Arrow Annotation…* (image viewer) |
+| Two views showing the same thing | *Tools ▸ Views ▸ Link Views* (cube viewer) |
+| Regions shared with CASA or DS9 | *Tools ▸ Regions ▸ Import / Export Region (CRTF/DS9)…* (cube viewer); *Export Region (CRTF/DS9)…* and *Load Catalogue Overlay…* (image viewer) |
 
 ---
 
 ## Publication figures
 
-*Publication Figure…* renders the current dataset with the elements a figure
-needs rather than the ones an interactive session needs:
+*Publication Figure…* (image viewer) renders the current dataset on the
+backend with the elements a figure needs rather than the ones an interactive
+session needs. The dialog asks for:
 
-- a **colormap** from the perceptually uniform set — `viridis`, `inferno`,
-  `magma` — with a linear or non-linear stretch;
-- a **colorbar** labelled with the data's own `BUNIT`, so the reader knows the
-  units without being told in the caption;
-- a **WCS sky grid**, so positions are readable off the figure itself.
+- a **Stretch** — `linear`, `log`, `sqrt`, `asinh` or `power`;
+- a **Colormap** — `inferno`, `viridis`, `magma`, `gray`, `hot` or
+  `cubehelix`;
+- an optional **Title**;
+- **WCS sky grid**, so positions are readable off the figure itself (on by
+  default);
+- **Colorbar (BUNIT)**, labelled with the data's own `BUNIT`, so the reader
+  knows the units without being told in the caption (on by default).
+
+**Render** writes a PNG at 200 dpi into the backend's Workspace Exports and offers to open it (which
+works when the backend shares this machine's filesystem); the figure is also
+listed among the image's products.
 
 ```{tip}
 Prefer a perceptually uniform colormap for anything a reader will judge
@@ -88,7 +96,7 @@ point at when you zoom or change the stretch.
 
 ## Linked views
 
-*Link Views (sync camera / channel / colour)* keeps several cube viewers showing
+*Link Views* keeps several cube viewers showing
 the same thing — the same region, the same velocity, the same colours — which is
 what makes a genuine comparison possible between two cubes of the same field.
 
@@ -130,14 +138,17 @@ known line lands at the same place in both before believing a comparison — see
 
 ## Regions in and out
 
-*Import / Export Region (CRTF/DS9)* reads and writes the two formats CASA and
-DS9 use, so a region defined in either tool can be measured here and vice versa.
+*Import / Export Region (CRTF/DS9)* in the cube viewer reads and writes the two
+formats CASA and DS9 use, so a region defined in either tool can be measured
+here and vice versa. The image viewer writes regions with *Export Region
+(CRTF/DS9)…* and reads `.reg` / `.crtf` files with *Load Catalogue Overlay…*.
 A region saved in another sky frame than the image's (a galactic region on an
 FK5 map, say) is moved onto the image through its WCS, and its angle is turned
 with it; sizes keep the unit written for each of them (`1'` and `30"` in one
-ellipse are 1 and 0.5 arcmin). ds9 files in `fk5`, `fk4`, `icrs`, `galactic`,
-`ecliptic` or `image` are read; one saved in ds9's `wcs`, `linear` or
-`detector` systems is refused, so save it again in one of those.
+ellipse are 1 and 0.5 arcmin). ds9 files in `fk5` (`j2000`), `fk4` (`b1950`), `icrs`,
+`galactic`, `ecliptic`, `image` or `physical` are read; one saved in ds9's
+`wcs` (`wcsa`…`wcsz`), `linear`, `amplifier` or `detector` systems is refused, so
+save it again in one of those that are read.
 
 Round-trip a region you care about before relying on it: export it, reopen it in
 the tool that wrote the original, and check the shape and position survived.

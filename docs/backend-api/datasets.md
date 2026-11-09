@@ -11,9 +11,10 @@ Open a FITS file; registers a session.
 { "path": "/data/cube.fits" }
 ```
 `path` may also name a VBT volume (its data file or its `.head`), opened as a
-cube of its first field. Any other file type is answered with `valid: false`
-("Unsupported file type. Expected FITS (.fits, .fit) or HDF5 (.h5, .hdf5,
-.bfdata)."); a gzip-compressed `.fits.gz` is not accepted here.
+cube of its first field. A compressed FITS (`.fits.gz`, `.fz`) is accepted
+(see *Compressed FITS* below). Any other file type is answered with
+`valid: false` ("Unsupported file type. Expected FITS (.fits, .fit, also
+compressed: .fits.gz, .fz) or HDF5 (.h5, .hdf5, .bfdata).").
 Response includes `dataset_id`, `session_id`, `kind` (`image`|`cube`), dimensions, WCS metadata (`wcs_status`, `wcs_warning_message`, `wcs_sanitized_axes`, `spacing`, `origin`, `ctype[]`, `cunit[]`, `crval[]`, `crpix[]`, `cdelt[]`), the spectral-axis summary (`spectral_axis_type` = the spectral `CTYPE`, `spectral_axis_unit`), beam (`beam_major`, `beam_minor`, `beam_pa`), `bunit`, and:
 
 | Field | Type | Meaning |
@@ -119,7 +120,8 @@ accepted; otherwise private addresses are refused only when
 networks). A refused URL, a remote
 HTTP error or a file that does not classify is answered with `valid: false`
 and the reason. A truncated download is refused with 422 (see above) and
-removed from the cache, so opening the URL again downloads it again.
+removed from the cache, so opening the URL again downloads it again; so is a
+damaged gzip or tile-compressed download (`valid: false`).
 
 ### `POST /v1/datasets/open_skava`
 Open a dataset in place on this node, from the `file://` access URL a SKAVA
@@ -177,7 +179,10 @@ Open a catalogue file on the backend.
 `paths` (optional) opens several files of the same format, with identical
 columns, as one catalogue; `path` is then only a label.
 Returns `dataset_id`, `session_id`, `num_rows`, the field list with types
-(`fields`) and the detected sky-coordinate columns (`coordinate_fields`).
+(`fields`), the detected coordinate columns (`coordinate_fields`: `ra`,
+`dec`, `glon`, `glat`, `x`, `y`, `z` and `system`, one of `sky`, `galactic`,
+`cartesian`) and `server_side_rendering_available` (a VBT point table on a
+backend that renders server-side).
 A missing file or one that does not parse is answered with `valid: false`.
 
 ### `POST /v1/catalogue/subset`
@@ -196,6 +201,8 @@ Paginated, filtered query.
   "sort": { "field": "flux", "direction": "desc" }
 }
 ```
+`limit` defaults to 100000 and `offset` to 0; `sort.direction` is `asc`
+(default) or `desc`.
 Response: `total_rows`, `returned_rows`, `rows[]` (key-value maps), and
 `row_index[]`: for each returned row, its 0-based position in the catalogue as
 opened, before any filter, sort or sample (empty if the table's index cannot
@@ -220,7 +227,7 @@ with `valid: false`.
 
 ### `POST /v1/vbt/open`
 Open a VBT file.
-Returns `dataset_id`, `session_id`, `kind` (`point`|`volume`), `fields[]`, `num_rows`, `scalar_type`.
+Returns `dataset_id`, `session_id`, `kind` (`point`|`volume`), `fields[]`, `num_rows`, `scalar_type`, and for a volume `dimensions` (`[nx, ny, nz]`) and `spacing`.
 
 ### `POST /v1/vbt/subset`
 Legacy bulk fetch (no filter, `max_rows` cap).

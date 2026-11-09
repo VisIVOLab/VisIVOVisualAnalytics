@@ -9,19 +9,22 @@ It also handles **dynamic-spectrum / beamformed** datasets — FITS files
 with `CTYPE` = `TIME` + `FREQ` (or HDF5 LOFAR BFData files). The viewer
 auto-detects them, relabels the axes as *Time* / *Frequency*, hides the
 celestial-WCS tools (catalogue overlay, beam, Stokes polarimetry, frame
-switch), and surfaces a placeholder **Time-Series Tools** card in the
-sidebar for future specialist tools (pulse profile, dedispersion, RFI
-flagging). See *Dynamic spectrum / beamformed mode* below.
+switch), and adds a **Time-Series Tools** card with three backend tools
+(dedispersion, pulse profile, RFI mask). See *Dynamic spectrum / beamformed
+mode* below.
 
 ## Layout
 
-Single 2-D dock with the image and a side panel for:
+The image in the centre, with a column on the left and the Inspector on the
+right:
 
-- **Layers** — stacked images and overlays (multiple FITS files can be
-  composited).
-- **Display** — color map, scaling, contrast / brightness, WCS overlay.
-- **Tools** — region statistics, profile / probe, WCS frame switch.
-- **Info / Stats** — pixel-value summary, BUNIT, image extent.
+- **Left column (LAYERS)** — the colour map and its **Edit** (which also holds
+  the stretch), the layer opacity, the stacked layers (multiple FITS files can be
+  composited) with **＋ Add layer…**, and the **OVERLAYS** list.
+- **Inspector** — *Properties* (dataset, path, and the *INFO / STATS* summary:
+  pixel values, BUNIT, image extent), *Analysis* (every tool, grouped as in the
+  Tools menu), *Parameters* (see below) and, on a backend-served dataset,
+  *Copilot*. *View ▸ Inspector Panel* shows or hides it.
 
 Tools that have settings do not each open their own panel. Picking one mounts
 its controls in a single contextual **Parameters** tab in the Inspector, and
@@ -93,7 +96,7 @@ decompressed copy the backend keeps in its cache.
 
 You can overlay or compare multiple images in the same window:
 
-- **Add Image Layer…** (*File* menu, ⌘L, or the **+ Add…** beside the
+- **Add Image Layer…** (*File* menu, ⌘L, or **＋ Add layer…** under the
   *Layers* list) — pick another FITS image from the *remote file browser*.
 - Each layer is a **card**: the visibility box, its name, and — on the second
   line — a strip of that layer's own colour map with its stretch and opacity.
@@ -104,7 +107,6 @@ You can overlay or compare multiple images in the same window:
   visibility box toggles the layer without changing which one the settings above
   act on.
 - **＋ Add layer…** sits under the stack, and **Overlays** under that.
-- You can also drop a `.fits` from the OS file browser onto the window.
 
 ### A layer has to cover the same sky
 
@@ -184,10 +186,9 @@ so a wrong guess was only discovered by reopening the copy.
   the x axis along the bottom edge, the y axis along the left edge, also in a
   frame other than the image's own, where both coordinates change across both
   pixel axes.
-- **Coordinate format** — a **Sexagesimal | Decimal** segmented toggle in
-  *Tools ▸ WCS Display*.
-- **Coordinate frame** — a **Galactic | FK5 | Ecliptic** segmented toggle
-  in the same card. Conversions go through `wcscon()` from libwcs. The
+- **Coordinate format** — **Sexagesimal** or **Decimal**, in the *WCS* menu.
+- **Coordinate frame** — **Galactic**, **FK5** or **Ecliptic**, in the same
+  menu. Conversions go through `wcscon()` from libwcs. The
   current frame label is shown in the bottom status bar.
 
 ### Beam indicator
@@ -219,7 +220,7 @@ either.
 
 ## Color map & contrast
 
-The *Layer Settings* sidebar exposes:
+The left column's *LAYER SETTINGS* card exposes:
 
 - **Color map** — the combo (Inferno, Viridis, Magma, Plasma, Cividis, …)
   with gradient preview icons, and an inline **Edit** beside it, as in the
@@ -332,7 +333,7 @@ take the single 2-D map this window shows:
   matplotlib on the backend: choose the stretch (linear / log / sqrt / asinh /
   power), the colormap, an optional title, and whether to draw the WCS sky grid
   and a colorbar labelled with BUNIT. The file lands in Workspace Exports.
-- **Image Quality / Artifacts…** reports the diagnostics you want before
+- **Image Quality / Artifacts** reports the diagnostics you want before
   trusting a map: blanked fraction, dynamic range, noise, and indicators for
   striping and negative-bowl artefacts. The striping metric is the ratio of the
   spread of row means to that of column means (or the reverse); perfectly
@@ -357,7 +358,7 @@ Parameters**, and each run is a product. See
 
 ## Pixel histogram
 
-*Tools → Pixel Histogram…* (or the Inspector's *Analysis* list)
+*Tools → Statistics → Pixel Histogram* (or the Inspector's *Analysis* list)
 opens a window showing the pixel-value distribution of the master layer as a
 256-bin bar chart.
 
@@ -379,19 +380,20 @@ Two checkboxes decide whether the histogram is readable at all:
 
 ## Annotations
 
-Text and arrow annotations can be placed interactively on the image:
+Text and arrow annotations can be placed interactively on the image, from
+*Tools ▸ Annotations* (or the mode strip's **Annotate** for text):
 
-- **Add Text…** — a dialog asks for the text, then the cursor changes
+- **Add Text Annotation…** — a dialog asks for the text, then the cursor changes
   to a crosshair. Click anywhere on the image to place the label.
-- **Add Arrow…** — a dialog asks for an optional label, then the
+- **Add Arrow Annotation…** — a dialog asks for an optional label, then the
   cursor changes to a crosshair. **First click** sets the arrow tip;
   a live preview follows the mouse showing the shaft and arrowhead.
   **Second click** sets the label position.
 - Right-click cancels placement without adding the annotation.
-- **Clear All** removes every annotation.
-- **Save** — opens a native Save dialog (default name
+- **Clear Annotations** removes every annotation.
+- **Save Annotations…** — opens a native Save dialog (default name
   `<fits-name>.annotations.json`) so you can choose any location.
-- **Load** — opens a native Open dialog to pick an annotation JSON
+- **Load Annotations…** — opens a native Open dialog to pick an annotation JSON
   file.
 
 Annotation text is rendered as bold yellow `vtkTextActor` labels;
@@ -401,9 +403,8 @@ for very short arrows) so the indicator stays readable at any zoom.
 ## Blink / Compare
 
 When two or more layers are loaded, the **Blink Layers** toggle
-(*View* menu or sidebar **Blink / Compare** card) rapidly alternates
-the visibility of layers 0 and 1 at a configurable speed
-(50 – 1000 ms, adjustable via the sidebar slider).
+(*View* menu) rapidly alternates the visibility of layers 0 and 1, every
+250 ms.
 
 This is a standard technique for detecting transient sources, proper
 motion, or artefact differences between two epochs or bands.
@@ -419,8 +420,8 @@ See [Polarimetry (Stokes Q, U, V)](polarimetry).
 ```
 
 For continuum radio data with full polarimetry (Stokes I, Q, U, V), the
-image viewer has a dedicated **Stokes Analysis** workflow card in the
-*Tools* sidebar (also available under *Tools* menu):
+image viewer has a **Polarisation** group in the *Tools* menu (also in the
+Inspector's *Analysis* list):
 
 ### Loading a Stokes set
 
@@ -471,14 +472,15 @@ can:
 
 Toggle **Show Polarization Vectors** (or the menu action of the same
 name) to draw short line segments at every Nth pixel, oriented along
-PA and with length proportional to P. Parameters in the sidebar:
+PA and with length proportional to P. Parameters, in Inspector ▸
+Parameters while the overlay is on:
 
-- **Vector grid step (px)** — sampling step on the image grid
+- **Grid step (px)** — sampling step on the image grid
   (default 12). Smaller = denser overlay; larger = clearer view.
-- **SNR threshold (σ_MAD multiples)** — vectors are drawn only where
-  P exceeds N × robust σ of the P distribution (default 3.0). Higher
+- **SNR threshold** — vectors are drawn only where
+  P exceeds N × robust σ (MAD) of the P distribution (default 3.0). Higher
   values filter out noise-only pixels.
-- **Vector length scale** — global scale factor (10 % to 300 %) so
+- **Length scale** — global scale factor (10 % to 300 %) so
   you can adapt the visual density of the field to the colour image
   underneath.
 
@@ -597,8 +599,8 @@ The result is added as a layer with the Spectrum LUT clamped to
 ```{warning}
 **No PA unwrapping** is performed. The naive linear fit is only
 correct in the low-RM regime where `|RM · Δλ²| < π/2` between
-consecutive frequencies. For aggressive RM use the upcoming
-backend-side RM-synthesis tool (not yet available).
+consecutive frequencies. For large RM use *Rotation Measure Synthesis…* in
+the cube viewer, which runs on the backend ([Polarimetry](polarimetry)).
 ```
 
 The user typically obtains the 3+ Q/U pairs by extracting moment-0
@@ -673,13 +675,10 @@ manually afterwards if needed.
   instead of running the celestial-WCS checks (which would always
   complain about missing RA / Dec).
 - **Beam indicator** is hidden (no synthesised beam concept).
-- **Catalogue overlay**, **WCS Display** (Galactic / FK5 / Ecliptic
-  frame & sexagesimal / decimal format), and **Stokes Analysis** cards
-  are hidden in the sidebar; the corresponding menu actions are also
-  disabled.
-- A **Time-Series Tools** card appears in the sidebar with a
-  placeholder describing what tools will arrive in a follow-up
-  (dedispersion, pulse profile, RFI flagging).
+- The catalogue overlay, the Galactic / FK5 / Ecliptic frame switch and
+  the Stokes polarimetry tools are disabled.
+- A **Time-Series Tools** card appears with the three tools described
+  below (dedispersion, pulse profile, RFI mask).
 
 ### What still works
 
@@ -697,7 +696,7 @@ manually afterwards if needed.
 
 ### Time-Series Tools card
 
-Three analysis tools live in the **Time-Series Tools** sidebar card
+Three analysis tools live in the **Time-Series Tools** card
 (only visible in dynspec mode). All three run on the backend and
 return either a workspace file or in-memory data.
 
@@ -796,7 +795,9 @@ dedisperses to the same result as the same data stored forwards.
 
 ## Saving and exporting
 
-- **Export** in the top-right toolbar saves a PNG of the current view.
+- *Tools ▸ Products ▸ Publication Figure…* renders the map as a PNG on the
+  backend (see *Products from this map* above).
+
 - **Tools → Export to Workspace as FITS…** copies the dataset's FITS
   file into the persistent Workspace Exports directory. From there you
   can download it to your computer, re-open it in VisIVO, or delete it

@@ -25,6 +25,9 @@ Items of this roadmap that are now in the software:
 - [Self-hosted copilot: model default and base URL validation from the environment](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/75) (#75): with no model set, the endpoint's only model is used; a refused `VISIVO_LLM_BASE_URL` keeps the copilot off and says why ([Self-hosted copilot](user-guide/copilot-self-hosted.md)).
 - [VLKB service URL: one default for queries and batch cutouts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/76) (#76): queries and batch cutouts both use the public VLKB unless a service URL is given ([VLKB archive](user-guide/vlkb-archive.md)).
 - [SODA: support BAND on cubes with a SPECLNMF spectral axis](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/115) (#115): `BAND` selects the MeerKAT sub-bands whose centre frequency falls in the interval ([SODA](backend-api/node-soda.md)).
+- [Interactive placement advisor for SRCNet sessions](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/13) (#13): SKAVA ranks the replicas of a dataset by each node's measured state and gives the reason; the client opens on that order, falls back to the next node and shows the reason ([SKAVA discovery](user-guide/skava-discovery.md)).
+- [Make the cosmology tools reachable from the GUI](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/29) (#29): the cosmology calculator, a 3-D catalogue's cosmology, the angular power spectrum, skeleton and voids ([Cosmology tools](user-guide/cosmology.md)).
+- [Open compressed FITS directly](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/57) (#57): gzipped (`.fits.gz`) and tile-compressed (`.fz`) files open like uncompressed ones, decompressed once into a cache ([Getting started](user-guide/getting-started.md)).
 - [Refuse truncated FITS files with a clear message](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/118) (#118): a FITS file shorter than its headers declare is refused at open, with the sizes and planes present, locally and remotely ([Troubleshooting](user-guide/troubleshooting.md)).
 
 ## SKA and SRCNet
@@ -55,10 +58,6 @@ SKA Visual Analytics (SKAVA): finding SKA data across SRC nodes and choosing the
 **2027**
 
 - [IVOA discovery provider: TAP ObsCore and DataLink](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/5) (#5): the client queries SKAVA through TAP ObsCore and DataLink; still to do against other TAP services
-
-**Long term**
-
-- [Interactive placement advisor for SRCNet sessions](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/13) (#13)
 
 ## Galactic plane and multi-wavelength (ECOGAL)
 
@@ -92,7 +91,6 @@ Simulation formats, particle data at scale, flow visualisation, kinematic models
 **Next**
 
 - [Open a velocity field from three vx/vy/vz files in one step](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/28) (#28)
-- [Make the cosmology tools reachable from the GUI](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/29) (#29)
 - [Kinematic model: several overlays and sky position angle](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/30) (#30)
 
 **2027**
@@ -166,7 +164,6 @@ Infrastructure shared by all areas.
 **2027**
 
 - [One convention for shapes and bounds across the binary volume routes](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/74) (#74)
-- [Open compressed FITS directly](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/57) (#57)
 - [VR off the UI thread; server-side rendering on macOS and CPU-only hosts](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/58) (#58)
 - [Evaluate the scientific copilot](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/59) (#59)
 - [User study of the main analysis workflows](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/68) (#68)

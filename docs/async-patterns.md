@@ -193,6 +193,17 @@ Used by:
 - `BackendClient::exportMomentFitsFollowingTask()` — the moment FITS export
   (`POST /v1/tasks/moment_fits`)
 - `PvController` — PV diagrams (`createPvTask()`)
+- `DecompressBeforeOpen` and `BackendClient::openDataset()` — a `.fits.gz` or
+  tile-compressed FITS is decompressed as a task (`POST /v1/tasks/decompress`)
+  before it opens
+- `FinderTaskRun` — source finders (`POST /v1/tasks/sourcefind`), with its own
+  polling loop under the same quit rule
+
+Their progress windows (`showTaskProgressSheet()`) are non-modal tool windows
+with Cancel. On quit, `TaskQuitDrain` (`src/app/TaskQuitDrain.h`) aborts every
+followed task and waits, within one deadline, until each `DELETE` has gone out
+and the thread pool is idle, while the application object still exists; once
+the drain has begun no task is created and unsent requests are dropped.
 
 ---
 

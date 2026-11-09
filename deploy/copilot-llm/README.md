@@ -53,8 +53,8 @@ podman logs -f visivo-copilot-llm        # wait for "Application startup complet
 ./validate.sh
 ```
 
-Then point the copilot ⚙ → "Your server" at `http://<server-ip>:8000/v1` with your
-`VLLM_API_KEY`.
+Then, in **Settings ▸ Copilot**, choose **Your server (OpenAI-compatible)** with
+`http://<server-ip>:8000/v1` and your `VLLM_API_KEY`.
 
 **Two `.env` notes that bit us:**
 - **`HUGGING_FACE_HUB_TOKEN`** — set it (free HF account → Settings → Access
@@ -77,7 +77,7 @@ docker compose up -d          # first run downloads the model into ./hf-cache
 docker compose logs -f        # watch until "Application startup complete"
 ./validate.sh                 # confirms /models, a chat completion, AND a tool call
 ```
-Then in **VisIVO → Copilot panel → ⚙ → "Your server"**:
+Then in **VisIVO → Settings ▸ Copilot → Provider: "Your server (OpenAI-compatible)"**:
 - **URL:** `http://<this-server-ip>:8000/v1`
 - **Key:** the `VLLM_API_KEY` you set
 
@@ -89,7 +89,7 @@ cd deploy/copilot-llm
 docker compose -f docker-compose.ollama.yml up -d
 docker exec -it visivo-copilot-ollama ollama pull qwen2.5:32b
 ```
-Copilot ⚙ → "Your server" → `http://<server>:11434/v1` (leave Key blank).
+Settings ▸ Copilot → "Your server (OpenAI-compatible)" → `http://<server>:11434/v1` (leave Key blank).
 
 ## Full stack — backend + LLM together (one command)
 If you want the **VisIVO backend and the LLM on the same server**, with the

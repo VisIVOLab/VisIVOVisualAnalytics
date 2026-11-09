@@ -113,7 +113,8 @@ Pixel statistics inside one region.
 An `image` region is in 0-based pixels; a sky-frame region (or an `image`
 region with angular sizes) is converted to pixels through the dataset's WCS
 first, as above. `channel` selects the plane of a cube
-(default 0). A pixel is in the region when its centre is: inside a circle,
+(default 0, clamped to the cube's channels; the response's `channel` is the
+plane used). A pixel is in the region when its centre is: inside a circle,
 ellipse or (rotated) box, between the radii of an annulus (both edges
 included), inside a polygon (even-odd rule), or nearest a point.
 
@@ -139,8 +140,10 @@ common on clusters and in containers, where the copy would count against the
 job's memory). It is deleted when the statistics are done; without a place or
 room for it, the passes read the file. A region of 1.07 G pixels takes about
 9 s on a laptop SSD (it took 16 to 23 s with the histogram passes), and a
-region of 81 M pixels about 1 s. A file compressed
-as a whole (`.fits.gz`) cannot be read in parts: its plane is read whole. The
+region of 81 M pixels about 1 s. A compressed dataset (`.fits.gz`, `.fz`) is
+read from its decompressed copy in the workspace cache (see
+[Datasets](datasets.md)), in parts like any FITS file; a file compressed as a
+whole that is read directly has its plane read whole. The
 image viewer asks for them when it displays a reduced level, or when a region
 reaches beyond the pixels it has loaded (issue #95). Response: `valid`, `error`, `shape`, `total_count`,
 `valid_count`, `blanked_count`, `min`, `max`, `mean`, `rms` (standard
@@ -150,5 +153,5 @@ divided by the beam area in pixels, set only for per-beam data with a known
 beam (otherwise `null`). The beam is the selected channel's: on a cube with a
 CASA `BEAMS` table (one beam per plane) that table's entry for `channel`, and
 the primary-header `BMAJ`/`BMIN` only when there is no table entry. A region of blank pixels only is an answer:
-`valid_count` 0, and the statistics `null`. A region with no pixel of the
+`valid_count` 0, `sum` 0, and the other statistics and `flux_jy` `null`. A region with no pixel of the
 image at all is 422.

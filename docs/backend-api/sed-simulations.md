@@ -9,7 +9,7 @@ of pre-computed theoretical models. Wavelengths are µm and fluxes Jy throughout
 The fit lives here rather than in the desktop client on purpose: the legacy
 ViaLactea client shelled out to `python sedfit_main.py` with `eval()`-ed argv
 strings, so the result depended on the user's own Python. See
-[SED fitting](../user-guide/sed-fitting) for the science and the workflow.
+[SED fitting](../user-guide/sed-fitting.md) for the science and the workflow.
 
 ### `GET /v1/sed/defaults`
 The fit ranges and constants the server suggests, so the client does not carry a
@@ -113,7 +113,7 @@ fails or answers something that is not a model table.
 ## Simulations
 
 AREPO snapshots: browse one, cost an extraction, run it. See
-[Simulation snapshots](../user-guide/simulations).
+[Simulation snapshots](../user-guide/simulations.md).
 
 ### `POST /v1/simulations/arepo/inspect`
 `{path}` → `{valid, error, path, tree, box_size_kpc, unit_length_cm,

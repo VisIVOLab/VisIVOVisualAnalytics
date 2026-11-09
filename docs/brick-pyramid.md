@@ -107,7 +107,11 @@ scaled block by block (BLANK to NaN, then BSCALE and BZERO, unsigned integers
 restored exactly), and tile-compressed images are decompressed one tile at a
 time. Two inputs cannot be read in bounded memory and are refused: a FITS file
 compressed as a whole (`.fits.gz`, `.bz2`, `.zip`) and a tile-compressed image
-whose tiles are larger than the block size.
+whose tiles are larger than the block size. A compressed FITS opened in the
+application is first decompressed into the backend's cache
+(`VISIVO_DECOMPRESS_CACHE_DIR`, see [Configuration](configuration.md)), and its
+pyramid is built from that uncompressed copy; the refusal applies when the
+builder is given the compressed file itself.
 
 **Several processes.** With `--workers N`, by default the CPUs available up
 to 8, N processes read the cube and compute the averages and per-brick

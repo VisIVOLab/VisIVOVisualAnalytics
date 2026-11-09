@@ -102,7 +102,10 @@ The spectrum at one pixel.
 `x`, `y` are 0-based pixels, rounded to the nearest integer. Response:
 `valid`, `error`, `x`, `y`, `spectral_axis`, `spectral_unit`,
 `spectral_type`, `values`. A pixel outside the image, or a dataset that is
-not a 3-D cube, is 400; a non-cube dataset entry is 422.
+not a 3-D cube, is 400; a non-cube dataset entry is 422. The desktop client
+reads the live spectrum and Pin Spectrum of a cube opened as a preview from
+this route (one request at a time, at the latest pixel), since the decimated
+preview does not hold the full-resolution spectra.
 
 ### `POST /v1/spectral/aperture`
 The mean spectrum over a circular aperture (NaN-aware mean per channel).

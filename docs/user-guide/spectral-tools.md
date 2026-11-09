@@ -7,7 +7,7 @@ the whole cube; two work on a spectrum you already have on screen.
 |------|--------------|--------|
 | [Line identification](#line-identification-overlaying-a-line-list) | Overlay a rest-frame line list on a spectrum, shifted to the source | Markers on the plot |
 | [Gaussian line fit](#gaussian-line-fit) | Single Gaussian + linear baseline, with uncertainties | Fitted curve + summary |
-| [Line-width map](#line-width-maps-s-02) | Per-pixel FWHM (Gaussian fit) + equivalent width | Two 2-D maps |
+| [Line-width map](#line-width-maps-s-02) | Per-pixel FWHM (Gaussian fit or moment-2) or equivalent width | A 2-D map |
 | [Baseline subtraction](#baseline-subtraction-s-03) | Polynomial / median baseline fit and subtract | New cube dataset |
 | [Stack cubes to a spectrum](#stack-cubes-to-a-spectrum-s-04) | Mean spectrum of each cube, then combine those into ONE spectrum (not a merged cube) | 1-D spectrum |
 
@@ -203,16 +203,19 @@ spectral profile:
 
 ### How to use it
 
-1. **Tools → Line-Width Map…** in the cube viewer. The
+1. **Tools → Spectral → Line-width Map…** in the cube viewer. The
    dialog accepts:
-   - **Channel start / end** — restrict the fit to where the line is. The
-     fit is sensitive to including line-free noise channels.
-   - **Mask threshold** — only fit pixels above this intensity (a quick way
-     to skip background voxels). After *Tools → Estimate Noise* the mask is on
-     at 3σ of the estimate, which the map's provenance records; edit the value
-     to override it.
-   - **Rest frequency** — for a frequency cube, prefilled from the header's
-     `RESTFRQ` so the widths come out in km/s.
+   - **Method** — *FWHM, Gaussian fit (slow, exact)*, *FWHM, moment-2
+     dispersion (fast)* or *Equivalent width (fast, no fit)*.
+   - **Start channel / End channel** — restrict the fit to where the line is.
+     The fit is sensitive to including line-free noise channels.
+   - **Mask** (*Enable threshold mask*) and **Threshold** — only fit pixels
+     above this intensity (a quick way to skip background voxels). After
+     *Tools → Statistics → Estimate Noise...* the mask is on at 3σ of the
+     estimate, which the map's provenance records; edit the value to override
+     it.
+   - **Rest frequency** (GHz) — required for a frequency or wavelength axis,
+     prefilled from the header's `RESTFRQ` so the widths come out in km/s.
 2. Click **Compute**. A progress overlay appears in the dialog (the rest
    of the app stays interactive).
 3. The map (FWHM or EW, as chosen) is added to Session Data and shown in a pane,
@@ -229,7 +232,9 @@ spectral profile:
   cube is background, so the actual fit cost is much lower than naïve
   pixel count.
 - Results are cached in the backend `PRODUCT_CACHE`: re-clicking
-  *Compute* with the same parameters returns in sub-milliseconds.
+  *Compute* with the same parameters returns in sub-milliseconds. The cache
+  key includes the file's identity (size, modification time), so a FITS file
+  replaced in place is computed again.
 
 ### Interpreting the maps
 
@@ -262,24 +267,23 @@ baseline-subtracted data; it's registered on the backend with a fresh
 
 ### How to use it
 
-1. **Tools → Baseline Subtraction…**
+1. **Tools → Spectral → Baseline Subtraction…**
 2. Fill in:
-   - **Channel start / end** — overall range to process (defaults to full
-     cube).
-   - **Method**: *Polynomial* or *Median*.
+   - **Fit**: *Polynomial* or *Median*.
      - *Polynomial* fits a `poly_order` polynomial (typically 1–3) to the
        line-free channels and subtracts it from every channel in the
        range.
      - *Median* subtracts the median of the line-free channels (constant
        per pixel; equivalent to *poly_order = 0*).
-   - **Polynomial order** — order of the fit (1 = linear, 2 = quadratic,
-     3 = cubic). Higher orders fit instrumental ripples but overfit
-     emission if `line_free_channels` is too aggressive.
-   - **Line-free channels** — required. Either a flat list
-     `[5, 6, 7, 80, 81]` or a list of ranges `[[5, 7], [80, 90]]`. These
-     must NOT contain emission lines, otherwise the fit absorbs your
-     signal.
-3. Click **Compute**. A progress sheet appears on the dialog while the cube is
+   - **Polynomial order** — order of the fit (0-10, default 1; 1 = linear,
+     2 = quadratic, 3 = cubic). Higher orders fit instrumental ripples but
+     overfit emission if the line-free selection is too aggressive. Disabled
+     for *Median*.
+   - **Line-free channels ▸ Ranges** — required. Comma-separated 1-based,
+     inclusive ranges or single channels, e.g. `1-50, 200-300`. These must
+     NOT contain emission lines, otherwise the fit absorbs your signal. The
+     whole spectrum is subtracted.
+3. Click **Subtract Baseline**. A progress sheet appears on the dialog while the cube is
    processed (the same sheet every long-running tool uses). On success you get:
    - **RMS before / after**, the residual RMS in the line-free channels before
      and after subtraction. After should be similar to or below before,
@@ -406,7 +410,7 @@ want their average / median spectrum for population-level analysis.
 
 1. Open **two or more cubes** in the session. Each `Open…`
    from the same client instance shares the same session.
-2. **Tools → Stack Cubes to a Spectrum…** The dialog lists the cubes
+2. **Tools → Spectral → Stack Cubes to a Spectrum…** The dialog lists the cubes
    currently open in the session, each labelled with the file basename and
    shape `(W × H × D)`:
    - The cube of the window from which you opened the dialog is
@@ -420,16 +424,20 @@ want their average / median spectrum for population-level analysis.
      duplicates are collapsed.
 3. Tick the cubes you want to include (≥ 2 required).
 4. Choose:
-   - **Method**: *Mean*, *Median*, or *Weighted mean*.
-   - **Weight by** (only for *Weighted mean*): *Uniform*, *RMS*,
+   - **Method**: *Mean*, *Median*, or *Weighted Mean*.
+   - **Weight by** (only for *Weighted Mean*): *Uniform*, *RMS*,
      or *Peak*. With *Uniform*, all cubes get weight 1; with *RMS* the
-     cubes are weighted by 1/σ² (their noise level), with *Peak* by
-     `peak_intensity`.
-   - Or pass **explicit weights** as a list (e.g. for unequal exposure
-     times).
-5. Click **Stack**. The result opens in a QCustomPlot 1-D spectrum window
-   with the combined spectrum, the method used, and the number of
-   contributing cubes.
+     cubes are weighted by 1/σ², σ being the RMS of each cube's mean
+     spectrum; with *Peak* by the largest absolute value of that spectrum.
+     Explicit per-cube weights (e.g. for unequal exposure times) can be
+     passed only through the API (`POST /v1/spectral/stack`).
+   - In a weighted mean, each channel is divided only by the weights of the
+     cubes that have finite data there, so a channel blank in one cube is not
+     diluted, and a channel blank in every cube stays blank.
+5. Click **Stack**. The combined spectrum lands in Session Data as a SPEC
+   product, *Stacked (method, N=…)*, and is shown in a spectrum pane; its
+   provenance lists the method, the weighting, the cubes and the number of
+   channels.
 
 ### When to use which method
 
@@ -447,7 +455,7 @@ want their average / median spectrum for population-level analysis.
     RFI, or strong residual baselines.
 * - **Weighted mean**
   - When cubes have noticeably different noise levels (different
-    integration time). With `weight_by="rms"`, lower-noise cubes contribute
+    integration time). With *Weight by: RMS*, lower-noise cubes contribute
     more, improving final SNR over plain mean.
 ```
 

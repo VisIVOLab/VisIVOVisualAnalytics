@@ -15,7 +15,7 @@ Beam (synthesised beam)
 
 Blink / Compare
   Rapid alternation of visibility between layers 0 and 1 in the image
-  viewer, controlled by a configurable timer (50–1000 ms). Standard
+  viewer, every 250 ms (*View ▸ Blink Layers*). Standard
   technique for detecting transients, proper motion, or artefact
   differences. See [Image viewer — Blink / Compare](image-viewer.md#blink--compare).
 
@@ -90,8 +90,10 @@ Isosurface
 
 Line identification (spectral-line overlay)
   Overlay of expected spectral-line positions on the spectrum plot.
-  Loaded from a two-column CSV file (`frequency,label`); lines are drawn
-  as vertical dashed amber markers with rotated labels. See
+  Loaded with *Load Lines…* from the bundled list of common radio / mm
+  transitions or from a file of your own, and shifted from the rest frame
+  with the source's systemic velocity (or z); lines are drawn as vertical
+  dashed amber markers with rotated labels. See
   [Cube viewer — Line identification overlay](cube-viewer.md#line-identification-overlay).
 
 LRU cache
@@ -152,8 +154,8 @@ SNR
   line-width Gauss fit.
 
 Spectral smoothing
-  Display-only 1-D convolution applied to the spectrum plot in the
-  *Spectral Profile* window. Available kernels: Hanning, Boxcar (3/5/7
+  Display-only 1-D convolution applied to the spectrum plot (the
+  **Smooth:** menu of the Inspector's SPECTRUM panel). Available kernels: Hanning, Boxcar (3/5/7
   channels), Gaussian (σ=1/2 channels). The smoothing is NaN-safe and
   affects the stats bar but not CSV export. See
   [Cube viewer — Spectral smoothing](cube-viewer.md#spectral-smoothing).
@@ -165,8 +167,8 @@ Spectral axis
   bar.
 
 SPECVAL (SPECTYPE, SPECUNIT)
-  Non-standard FITS keywords written by VisIVO when *Tools → Export
-  Current Channel as 2-D FITS…* extracts a single channel of a spectral
+  Non-standard FITS keywords written by VisIVO when *Tools ▸ Export ▸
+  Export Current Channel as 2-D FITS…* extracts a single channel of a spectral
   cube. Since the output drops the spectral axis (NAXIS=2), VisIVO
   preserves the channel's spectral coordinate as a scalar:
   `SPECVAL` stores the value (e.g. `1.284e+09` for 1.284 GHz),
@@ -188,7 +190,8 @@ VBT
 
 VLKB
   *Via Lactea Knowledge Base* — VisIVO's data catalogue / cutout service.
-  Reachable via the OIDC PKCE flow from the Startup Dialog.
+  Signed in to with the OIDC PKCE flow from *Settings ▸ Data Access ▸ VLKB ▸
+  Sign in*.
 
 VTK
   *Visualization Toolkit* — the open-source 3-D rendering library

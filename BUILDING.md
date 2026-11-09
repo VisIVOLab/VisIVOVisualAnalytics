@@ -11,7 +11,7 @@ This document covers how to obtain dependencies, configure, and compile the desk
 | CMake | 3.22 | |
 | C++ compiler | C++17 | GCC 11+, Clang 14+, or MSVC 2022 |
 | Qt | 6.10 | Modules: Concurrent, Widgets, Xml, Svg, Network, NetworkAuth, PrintSupport, WebEngineWidgets, WebSockets |
-| VTK | 9.5 | Modules: CommonColor, FiltersModeling, FiltersStatistics, GUISupportQt, InteractionStyle, RenderingAnnotation, RenderingImage, RenderingVolumeOpenGL2 |
+| VTK | 9.5 | Modules: CommonColor, FiltersFlowPaths, FiltersModeling, FiltersStatistics, GUISupportQt, ImagingGeneral, InteractionStyle, InteractionWidgets, RenderingAnnotation, RenderingImage, RenderingVolumeOpenGL2 |
 | cfitsio | any recent | Provides FITS I/O |
 
 Qt 6.10 and VTK 9.5 are the pinned minimums enforced in `CMakeLists.txt`. Older versions will not configure.
@@ -298,4 +298,4 @@ export LD_LIBRARY_PATH="$HOME/Qt/6.10.x/gcc_64/lib:$HOME/opt/vtk/lib:$LD_LIBRARY
 
 ## Backend
 
-The Python backend is in `backend/`. See the "Setup" section in [README.md](README.md) for pip, conda, Apptainer, and SLURM deployment instructions.
+The Python backend is in `backend/`. See "Running it" in [README.md](README.md) for a pip setup and the Apptainer and SLURM launch, and [Running the backend on a cluster](docs/deployment/hpc-slurm.md) for the cluster details.

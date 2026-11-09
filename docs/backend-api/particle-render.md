@@ -2,7 +2,7 @@
 
 Stills, movie frames and the desktop's GPU view of a table of points rendered
 as a continuous medium (issue #101; user guide:
-[Ray-traced particles](../user-guide/raytraced-particles)). The renderer is
+[Ray-traced particles](../user-guide/raytraced-particles.md)). The renderer is
 `app/particle_raytrace.py` (numba, no GPU needed); the routes are
 `app/routers/particle_render.py`. Every route takes the session token.
 
@@ -77,5 +77,5 @@ sample, the step in `X-Visivo-Particle-Step`.
 
 ### Camera of a point session
 
-`GET /v1/render/{session_id}/camera` (see [Render](render)) returns the camera
+`GET /v1/render/{session_id}/camera` (see [Render](render.md)) returns the camera
 of a point session's view, for a still of the view on screen.

@@ -8,14 +8,15 @@ automatically when you open a FITS file that the backend classifies as a
 
 ## Layout
 
-The window is split into two synchronised dock areas plus a side panel:
+The window has a grid of panes in the centre, a dock on each side and a
+command bar on top:
 
-| Dock | What it shows |
+| Area | What it shows |
 |------|---------------|
-| **3-D view** | Volume / isosurface rendering of the whole cube, with an orientation marker and the *cutting plane* indicator. |
-| **2-D view** | The currently selected slice along the spectral axis (or a moment map, see below). |
-| **Sidebar** | Tabs for *3-D View Settings*, *2-D View Settings*, *Tools*, *Info / Stats*. |
-| **Toolbar (top)** | Dataset path pill, tag chips (resolution, mode), and the **Find / Command / Export** buttons. |
+| **Panes** | One, two or four panes, each showing a view chosen from its ▾ menu: the **3D View** (volume or isosurface rendering of the whole cube, with an orientation marker and the *cutting plane*), the **2D Slice** (the selected channel, or a moment map, see below), a spectrum or another product. |
+| **Left dock** | *Session Data* (the dataset's views and the products made from it) above the display controls: **DISPLAY** (titled after the active pane, *DISPLAY, 3D* for the 3-D view), **LAYERS**, **INTERACTION**, **SLICE ANIMATION**. |
+| **Inspector (right)** | Tabs *Properties*, *Analysis* (the tools), *Parameters* (the settings of the armed tool and the provenance of the selected product) and, when the copilot is available, *Copilot*. *View ▸ Inspector Panel* shows or hides it. |
+| **Command bar (top)** | The dataset path pill (▼ switches to a recent dataset), the ⌘K search field, the **CUBE · W×H×D** tag (click it for the FITS header) and the backend chip. |
 
 The bottom **status bar** carries three live indicators: the **data state**
 (*Preview*, *Loading full resolution…*, *Full resolution*), the **WCS
@@ -31,7 +32,7 @@ swaps it in. The transition is asynchronous: you can rotate the camera and
 scrub through slices while the upgrade is in flight.
 
 You can constrain the full-resolution fetch to the **viewport ROI** of the
-3-D camera (toggle *View → Use Camera ROI*). This is useful for very large
+3-D camera (toggle *Camera → Use Camera ROI*). This is useful for very large
 cubes when you only want detail in the region you're inspecting.
 
 ## Slice navigation
@@ -44,8 +45,8 @@ time.
 ```{tip}
 The cutting plane is **textured with the live slice contents** — what you
 see on the plane is exactly what is shown in the 2-D dock. Its opacity is
-adjustable from *View → Cutting Plane Opacity* (or the **CUTTING PLANE**
-section of the *3-D View Settings* sidebar): lower opacity to see the
+adjustable from *View → Cutting Plane Opacity* (or the *Opacity* slider under
+*Cutting plane* in the left dock's **LAYERS** section): lower opacity to see the
 volume behind, higher opacity to emphasise the slice.
 ```
 
@@ -55,7 +56,7 @@ Auto-advance the slice axis as a movie — useful for spotting coherent
 structures across velocity channels:
 
 - **Play / Pause** — the **SLICE ANIMATION** section of the left dock, or
-  *View → Play Slice Animation* (or <kbd>Space</kbd>).
+  *View → Play Slices*.
 - **Speed** — preset only: 2, 5, 10, 15, 30 fps (picked from the dropdown
   to stay in sync with *View → Animation Speed*).
 - **Mode** — *Loop*, *Bounce* (back and forth), or *Stop at End*.
@@ -67,17 +68,19 @@ these play them.
 
 ## 3-D rendering modes
 
-Pick between two complementary 3-D views from the top-right viewer toolbar:
+Pick between two complementary 3-D views with the *Isosurface / Volume* toggle
+in the left dock's *DISPLAY, 3D* section, or *View → 3D Rendering*:
 
 - **Volume rendering** — semi-transparent rendering of the whole cube using
-  `vtkGPUVolumeRayCastMapper`. Sub-modes (*View → Volume Rendering*):
+  `vtkGPUVolumeRayCastMapper`. Sub-modes (*Blend* in the dock, or *View →
+  Volume Rendering*):
   - *Composite* — opacity-weighted ray casting (default).
   - *MIP* (maximum intensity projection) — emphasises the brightest emission
     along each ray; great for finding line peaks.
   - *MinIP* (minimum intensity) — symmetric to MIP; useful on absorption.
 - **Isosurface** — extracts a closed surface at a user-given threshold
-  (`vtkFlyingEdges3D` server-side). Adjust the threshold with the slider in
-  the *3-D View Settings* sidebar. The compute is asynchronous; the volume
+  (`vtkFlyingEdges3D` server-side). Adjust the threshold with the *Threshold*
+  slider in the left dock's *DISPLAY, 3D* section. The compute is asynchronous; the volume
   stays visible until the mesh is ready. On a large cube the surface is
   extracted from a sampled grid of at most 256³ voxels (each axis sampled on
   its own, so a cube with few channels keeps them all) and coarsened further
@@ -94,8 +97,8 @@ another field: see [Ray-traced volumes](raytraced-volumes).
 
 ### Where the rendering happens: Auto / Local / Remote
 
-Independently of *what* is rendered, there is a choice of *where* — the toolbar
-segment above the 3-D pane:
+Independently of *what* is rendered, there is a choice of *where* — the
+*Auto / Local / Remote* segment in the 3-D pane's header, or *View ▸ Rendering*:
 
 - **Local** — the cube is loaded into this machine's GPU through VTK's volume
   mapper. Full interactivity, and the whole volume has to fit in GPU memory as a
@@ -183,6 +186,7 @@ second option **when the backend can do it at all** (on a local macOS backend it
 cannot, and the button is not shown) — worth taking when you would rather not have the cube resident in
 the viewer process. Dismissing the banner with ✕ is remembered for that cube, and
 raising `Cube/local_full_threshold_mb` stops it being raised at all.
+```
 
 ```{tip}
 Server-side rendering earns its keep when the backend is on **another** machine:
@@ -250,7 +254,7 @@ threshold to see MIP's projection of the whole field.
 
 ## Color maps and transfer function
 
-- The active **color map** is picked from the *3-D View Settings* sidebar
+- The active **color map** is picked in the left dock's *DISPLAY, 3D* section
   (Inferno, Viridis, Magma, Plasma, Cividis, …).
 - **Edit**, next to it, opens the 3-D LUT editor: a histogram of the cube with
   the colour range drawn on it (drag the cyan Min or orange Max line, or type
@@ -262,8 +266,8 @@ threshold to see MIP's projection of the whole field.
 - A cube whose values are all positive and span at least three decades (a
   simulation's density) opens in **Log**: in Linear such data shows only its
   brightest voxels.
-- For the slice / moment maps, the **2-D LUT editor** opens from the
-  *2-D View Settings* sidebar. Both editors are non-modal: keep them open
+- For the slice / moment maps, the **2-D LUT editor** opens from the *DISPLAY*
+  section while a 2-D pane is the active one. Both editors are non-modal: keep them open
   while you scrub through slices to fine-tune in real time.
 
 ### One colour range for every channel
@@ -343,7 +347,7 @@ The left panel's tree is a **table of contents**, and the two gestures do
 different things:
 
 - **Click** a row — the dataset's views (*3D Volume*, *2D Slice*) or any product
-  — to *inspect* it: the Inspector's Properties / Provenance follow the
+  — to *inspect* it: the Inspector's Properties / Parameters follow the
   selection, and if a pane is already showing that row it becomes the **active**
   one. Nothing is mounted and no pane changes what it shows; a row that is not on
   screen anywhere simply leaves the panes alone.
@@ -408,15 +412,21 @@ A tool is bound to a **view**, not to the pane you happen to have selected:
   - Tools
   - When you reach for them
 * - **Spectral**
-  - Extract Spectrum, Pin Spectrum, Extract PV Diagram, Line-Width Map,
-    Baseline Subtraction, Stack Cubes to a Spectrum
+  - Extract Spectrum, Pick Spectrum on Plane Click, Pin Spectrum, Extract PV
+    Diagram, Line-width Map, Baseline Subtraction, Stack Cubes to a Spectrum
   - Anything along the velocity axis, from a single line of sight to a stack.
 * - **Maps**
-  - Compute Moment Map, Channel Maps
-  - Collapse the cube to a 2-D map you can measure.
+  - Compute Moment, Channel Maps, Angular Power Spectrum of Moment Map,
+    Skeleton / Voids of Moment Map
+  - Collapse the cube to a 2-D map you can measure, and measure its texture
+    ([Cosmology tools](cosmology)); the last two need a moment map.
 * - **Statistics**
   - Estimate Noise, Pixel Histogram (current slice)
   - What the numbers in this cube look like before you trust them.
+* - **Polarimetry**
+  - Load Stokes Q/U/V Companions, Polarised Intensity & Angle (current
+    channel), Rotation Measure Synthesis
+  - Full-Stokes cubes, see [Polarimetry](polarimetry).
 * - **Regions**
   - Box / Circle / Polygon / Annulus Region Analysis, Mask 3-D Region,
     Import / Export Region (CRTF/DS9)
@@ -468,11 +478,9 @@ WALLABY catalogue's `kin_pa` is 180° from it). See
 [the PA convention](../kinematic-model) for the details.
 ```
 
-Every entry is available both in the menu bar **and** as a tool button on
-the *Tools* sidebar tab — same action under the hood, so checked state and
-enable/disable propagate automatically between the two surfaces. Catalogue
-overlay management is menu-only (the four entries are state toggles, not
-"do-this-action" buttons).
+Every entry is available both in the menu bar **and** as a button in
+Inspector ▸ Analysis — same action under the hood, so checked state and
+enable/disable propagate automatically between the two surfaces.
 
 ### Extract Spectrum (probe a single pixel)
 
@@ -502,8 +510,7 @@ line of sight, drawn in a *Spectral Profile* window.
    a second click "changes" the spectrum you had just fixed.)
 5. **Ending the tool keeps a frozen spectrum.** Switch *Extract Spectrum* off
    (or press <kbd>Esc</kbd>) and the spectrum you deliberately picked is
-   promoted to a permanent **SPEC** product in Session Data, with its pixel in
-   the Provenance tab; once it is saved the header says *💾 saved as "Spectrum
+   promoted to a permanent **SPEC** product in Session Data, with its pixel in the Inspector's Parameters tab; once it is saved the header says *💾 saved as "Spectrum
    2"*. A curve that was still tracking the cursor is a preview and goes with
    the tool — otherwise every arm/disarm would leave a row nobody asked for.
    **Tools ▸ Pin Spectrum** does the same saving at any moment, so you can keep
@@ -647,7 +654,7 @@ pane — or, while a probe tool is armed, the live one it is driving):
 
 #### Spectral smoothing
 
-The **Smooth:** combo box in the spectrum header lets you apply a 1-D
+The **Smooth:** combo box in the Inspector's SPECTRUM panel lets you apply a 1-D
 convolution kernel to the displayed profile without altering the
 underlying data. Available kernels:
 
@@ -666,7 +673,7 @@ Smoothing is also active during **live probe hover**, so you can compare
 kernels in real time as you move across the slice.
 
 ```{note}
-Smoothing is **display-only**. *Save spectrum as CSV…* always exports
+Smoothing is **display-only**. *Save CSV…* always exports
 the raw (unsmoothed) data so downstream analysis tools receive the
 original channel values.
 ```
@@ -700,8 +707,7 @@ which pixel of which cube that spectrum came from.
 A region spectrum (Box / Circle / Polygon / Annulus — see [Regions, PV,
 noise](region-pv-noise)) is the same plot, in the same kind of pane, but it is a
 **one-shot mean over the region** rather than a live probe: there is no
-live / pinned state, and its region descriptor and 2-D statistics live in the
-product's Provenance. Plot, stats bar, channel marker, smoothing, fit, line
+live / pinned state, and its region descriptor and 2-D statistics live in the product's provenance (Inspector ▸ Parameters). Plot, stats bar, channel marker, smoothing, fit, line
 overlay and CSV export behave identically.
 ```
 
@@ -758,8 +764,8 @@ view.
    running and the HMD is detected by it.
 2. Open a cube and wait for the full-resolution swap to complete (the
    bottom-status indicator goes green).
-3. **Tools → Open in VR** in the cube window (or *Open in VR* in the
-   *Tools* sidebar).
+3. **Tools → Views → Open in VR** in the cube window (or *Open in VR* in
+   Inspector ▸ Analysis).
 4. Put the headset on. The cube appears in front of you, sized to a
    comfortable arm-reach by default.
 
@@ -793,11 +799,12 @@ lobes, expanding shells, velocity gradients, and cloud morphology.
 
 **How to use it:**
 
-1. **Tools → Channel Maps…** in the cube viewer (also available in the
-   *Tools* sidebar under ANALYSIS).
-2. Set the **start** and **end** channel, the **stride** (skip every
-   N-th channel), the number of **columns** in the grid (default 8),
-   and the **colour map** (with gradient preview in the dropdown).
+1. **Tools → Maps → Channel Maps…** in the cube viewer (also in
+   Inspector ▸ Analysis, *Maps*).
+2. Set the **Start channel** and **End channel** (by default the current
+   channel and the 63 after it), the **Stride** (keep every N-th channel), the
+   number of **Columns** in the grid (default 8), and the **colour map** (with
+   gradient preview in the dropdown).
 3. Click **Generate**. The backend fetches the entire z-range in one
    shot; the mosaic window renders all panels within a few seconds even
    for 64+ channels.
@@ -824,14 +831,14 @@ faint emission and strong peaks are directly comparable.
 
 #### Stokes polarimetry
 
-*Tools → Load Stokes Q/U/V Companions… / Polarised Intensity & Angle /
+*Tools → Polarimetry → Load Stokes Q/U/V Companions… / Polarised Intensity & Angle /
 Rotation Measure Synthesis…* work on full-Stokes cubes — including surveys that
 publish one cube per Stokes plane, such as MeerKAT MGCLS and ASKAP/POSSUM. The
 companion cubes are opened on the backend and never loaded into the viewer,
 which is what makes 7500² × 16 per plane workable; the results come back as
 ordinary 2-D products.
 
-Full workflow, naming rules and a worked MGCLS example:
+Full workflow, naming rules and a worked MeerKAT example:
 [Polarimetry (Stokes Q, U, V)](polarimetry).
 
 ## Regions, PV diagrams, noise
@@ -841,7 +848,7 @@ These are all explained on a dedicated page:
 
 ## Pixel histogram (current slice)
 
-*Tools → Pixel Histogram (current slice)…* opens a floating
+*Tools → Statistics → Pixel Histogram (current slice)* opens a floating
 QCustomPlot window with a 256-bin distribution of the **currently
 displayed channel** of the cube. Two draggable cursors (red = low,
 green = high) live-clip the slice LUT range:
@@ -872,8 +879,8 @@ distribution is enough to identify what it represents:
 ## WCS axes and overlays
 
 - *View → Sky Grid on the 2-D Panes* paints sky-coordinate ticks on the 2-D slice and
-  moment maps. Toggle between **sexagesimal** (HMS / DMS) and **decimal**
-  with the *WCS format* radio in the same menu. Each axis is labelled with the
+  moment maps. The frame (*Galactic*, *FK5*, *Ecliptic*) and the format,
+  **Sexagesimal** (HMS / DMS) or **Decimal**, are chosen in the *WCS* menu. Each axis is labelled with the
   coordinate *along that axis*: the bottom axis along the bottom edge of the
   image, the left axis along its left edge. In a frame other than the cube's
   own (an equatorial cube shown in Galactic coordinates) both sky coordinates
@@ -907,8 +914,10 @@ caution.
 
 ## Saving and exporting
 
-- **Export** in the top-right toolbar saves a PNG of the current 2-D view
-  or a PNG snapshot of the 3-D view (camera position respected).
+- Pictures of the views come from *Tools ▸ Export ▸ Export Movie…* (an MP4 or
+  a PNG frame sequence, see [Figures, movies and linked
+  views](publication-output)); a spectrum pane has *Save PNG…* in the Inspector.
+
 - Moment-map results can be re-opened as a new dataset (the backend
   registers them in the same session); see [Moment maps](moment-maps).
 - Baseline-subtracted cubes are also registered as a new `dataset_id` you
@@ -961,7 +970,7 @@ Two neighbours in the same group are **not** exports of the view:
 *Smooth / Regrid…* writes a new, processed cube rather than saving this one,
 and *Export Movie…* writes an animation.
 
-- **Tools → Overlay Slice on an Open Image…** — draw the current 2-D slice
+- **Tools → Views → Overlay Slice on an Open Image** — draw the current 2-D slice
   to the first open image viewer as a contour overlay. No FITS round-trip —
   the data travels in memory via the ``contourDataReady`` signal. Useful for
   quick radio + optical comparisons without persisting intermediate files.
@@ -976,5 +985,5 @@ and *Export Movie…* writes an animation.
   scrolling and rotating the cube while a heavy compute is running. See
   the [heavy-task throttle](../async-patterns.md#heavy-task-throttle-backend-side)
   in the developer reference for the gritty details.
-- *Camera ROI* in the View menu limits the full-resolution fetch to the
+- *Use Camera ROI* in the Camera menu limits the full-resolution fetch to the
   current viewport (recommended for cubes > ~2 GB).
