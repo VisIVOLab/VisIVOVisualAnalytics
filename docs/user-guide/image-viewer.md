@@ -807,8 +807,11 @@ dedisperses to the same result as the same data stored forwards.
 
 ## Catalogue overlay
 
-Same machinery as the cube viewer: load a CSV / VOTable from
-*Tools → Load Catalogue Overlay*, or query the VLKB directly with
+Same machinery as the cube viewer: load a comma-, tab- or
+semicolon-separated table (`.csv`, `.tsv`, `.txt`), a DS9 region file or a
+CASA CRTF file from *Tools → Load Catalogue Overlay* (the file is read by its
+content: see
+[Overlay file formats](catalogues-hips.md#overlay-file-formats)), or query the VLKB directly with
 *Tools → Overlay VLKB Compact Sources* / *Overlay VLKB Filaments*. The sources are projected
 through the image WCS, drawn as glyphs, and listed in a table dock at the
 bottom of the window.

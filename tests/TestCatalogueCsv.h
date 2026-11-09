@@ -1,7 +1,8 @@
 #pragma once
 // TestCatalogueCsv.h
-// QTest class for the catalogue CSV reader: quoting, multi-line records and
-// truncated files. Header-only parsing; no GUI, no VTK.
+// QTest class for the catalogue CSV reader: quoting, multi-line records,
+// truncated files, and tab/semicolon tables told from DS9 regions by content.
+// Header-only parsing; no GUI, no VTK.
 
 #include <QObject>
 
@@ -19,4 +20,25 @@ private slots:
     void anUnterminatedQuoteInTheHeaderIsAnError();
     void aTruncatedLastRowIsSkippedAndReported();
     void duplicateFieldNamesBothSurvive();
+    // Delimited text by content (issue #155).
+    void sniffTriesCommaThenTabThenSemicolon();
+    void quotedFieldsMayHoldTheOtherSeparators();
+    void aTabTableIsReadAsATable();
+    void aSemicolonTableWithDecimalCommasReadsNumbers();
+    void commentsAndBlankLinesAreNotRows();
+    void ds9FilesAreStillRegions();
+    void aCsvOrTsvThatIsNoTableSaysSo();
+    void aHashLineNamesTheColumnsOfANumericFirstRow();
+    void aDescriptiveHashLineAboveARealHeaderIsAComment();
+    void aHashRowWithTheTablesFieldCountIsData();
+    void aHashLineInsideAQuotedFieldIsPartOfIt();
+    void oneCommaListColumnIsNotADecimalComma();
+    void raggedTrailingCommaAndOneColumnFilesReadAsComma();
+    void aByteOrderMarkIsNotPartOfTheFirstLine();
+    void columnsNamedLikeRegionWordsAreStillTables();
+    void aQuoteOpensAFieldOnlyAtItsStart();
+    void aLongFileIsReadInLinearTime();
+    void decimalCommasAreJudgedPerColumn();
+    void theCommaFallbackTakesNaNAndInfinityAsNumbers();
+    void aLoneCarriageReturnEndsALine();
 };

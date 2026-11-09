@@ -2,7 +2,6 @@ import asyncio
 import contextlib
 import asyncio as _asyncio
 import base64
-import csv
 import hashlib
 import functools
 import logging
@@ -31,6 +30,7 @@ from fastapi.responses import JSONResponse
 from .auth import verify_token, multi_user_mode
 from .fits_dataset import ScientificFitsDataset
 from .product_cache import PRODUCT_CACHE, file_identity
+from .text_table import read_delimited_table
 from .sessions import REGISTRY, Session, get_session
 from . import compressed_fits as _compressed_fits
 from .tasks import TASKS
@@ -934,12 +934,9 @@ def _catalogue_metadata_from_dataframe(frame: pd.DataFrame, fmt: str) -> dict[st
 
 
 def _catalogue_csv_metadata(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.reader(handle)
-        headers = next(reader, [])
-    if not headers:
-        raise ValueError("CSV catalogue is empty.")
-    frame = pd.read_csv(path)
+    # Comma, tab or semicolon, as the classifier saw it (issue #155); an empty
+    # file or one that is not a table is reported by the reader.
+    frame = read_delimited_table(path)
     return _catalogue_metadata_from_dataframe(frame, "csv")
 
 
@@ -1093,7 +1090,8 @@ def _ipac_rows_complete(path: Path, header_lines: int, ncols: int) -> bool:
 def _catalogue_load_dataframe(path: Path, fmt: str) -> pd.DataFrame:
     fmt_lower = fmt.strip().lower()
     if fmt_lower == "csv":
-        return pd.read_csv(path)
+        # "csv" is any delimited text: comma, tab or semicolon (issue #155).
+        return read_delimited_table(path)
     if fmt_lower in {"votable", "vot", "xml"}:
         return Table.read(path, format="votable").to_pandas()
     if fmt_lower in {"fits", "fit", "fits-table"}:
@@ -2346,8 +2344,9 @@ def clear_resolver_cache() -> None:
 def _load_overlay_csv(path: str, version: str = "") -> pd.DataFrame:
     """Read and parse a catalogue CSV, caching up to 32 files (LRU eviction).
     ``version`` is the file's :func:`file_identity`: part of the cache key
-    only, so a catalogue rewritten on disk is read again, not served stale."""
-    return pd.read_csv(path)
+    only, so a catalogue rewritten on disk is read again, not served stale.
+    Comma, tab or semicolon separated, as the classifier saw it (issue #155)."""
+    return read_delimited_table(path)
 
 
 def _catalogue_overlay_sync(

@@ -17,10 +17,13 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from .text_table import SNIFF_BYTES, sniff_separator
+
 logger = logging.getLogger("visivo.backend")
 
-#: How much of a text file to look at when deciding whether it is a table.
-_SNIFF_BYTES = 8192
+#: How much of a text file to look at when deciding whether it is a table:
+#: the readers judge the separator on the same bytes (app.text_table).
+_SNIFF_BYTES = SNIFF_BYTES
 
 #: What the client should do with the file.
 #:   "dataset"     → POST /v1/datasets/open  (image, cube, dynamic spectrum)
@@ -119,7 +122,10 @@ def classify_path(path: str | Path) -> dict:
         return _result("catalogue", "catalogue", True, "VOTable.")
     if text.startswith(("|", "\\")):
         return _result("catalogue", "catalogue", True, "IPAC table.")
-    if _looks_like_delimited_text(text):
+    # Judged on the text as read, not stripped: a leading tab is an empty
+    # first field (a pandas index column), and the readers see it too.
+    if _looks_like_delimited_text(head.decode("utf-8", errors="replace"),
+                                  truncated=size > _SNIFF_BYTES):
         return _result("catalogue", "catalogue", True,
                        "Delimited text — opened as a catalogue.")
 
@@ -225,35 +231,20 @@ def _classify_hdus(hdul) -> dict:
                    f"FITS image ({' × '.join(str(n) for n in significant)}).")
 
 
-def _looks_like_delimited_text(text: str) -> bool:
+def _looks_like_delimited_text(text: str, truncated: bool = False) -> bool:
     """Whether this reads as a table: several lines with the same field count.
 
     One line with commas is a sentence; ten lines that parse into the same
-    number of fields is a catalogue.
+    number of fields is a catalogue. The test is the catalogue readers' own
+    (:func:`app.text_table.sniff_separator`), so a file called a catalogue here
+    is read with the separator seen here (issue #155).
 
     The fields are PARSED, not counted as characters. A quoted field containing
     the separator — an object name with a comma, a contour written as
     "10.4_10.6,0.0_0.2" — makes the raw counts differ between the header and the
     rows, and a character count then calls a perfectly ordinary CSV unknown.
     """
-    import csv  # noqa: PLC0415
-    import io  # noqa: PLC0415
-
-    lines = [line for line in text.splitlines() if line.strip()
-             and not line.lstrip().startswith("#")]
-    if len(lines) < 2:
-        return False
-    # The last line of a truncated read is usually half a row.
-    sample = lines[:10] if len(lines) > 10 else lines
-    for separator in (",", "\t", ";"):
-        try:
-            rows = list(csv.reader(io.StringIO("\n".join(sample)), delimiter=separator))
-        except csv.Error:
-            continue
-        counts = [len(row) for row in rows if row]
-        if len(counts) >= 2 and counts[0] >= 2 and len(set(counts)) == 1:
-            return True
-    return False
+    return sniff_separator(text, truncated) is not None
 
 
 def _result(kind: str, opener: str, confident: bool, detail: str,

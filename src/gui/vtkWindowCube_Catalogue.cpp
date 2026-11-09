@@ -205,7 +205,8 @@ void vtkWindowCube::loadCatalogueOverlay()
 {
     const QString path = QFileDialog::getOpenFileName(
             this, u"Load Catalogue Overlay"_s, QString(),
-            u"Catalogue files (*.reg *.csv);;DS9 region (*.reg);;CSV (*.csv)"_s);
+            u"Catalogue / region files (*.reg *.csv *.tsv *.txt);;DS9 region (*.reg);;"
+            u"Delimited text tables (*.csv *.tsv *.txt);;All files (*)"_s);
     if (path.isEmpty()) {
         return;
     }

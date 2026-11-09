@@ -1,6 +1,8 @@
 #ifndef CatalogueOverlayUtils_h
 #define CatalogueOverlayUtils_h
 
+#include "DelimitedText.h"
+
 #include <QFile>
 #include <QFileInfo>
 #include <QMap>
@@ -9,6 +11,7 @@
 #include <QStringList>
 #include <QTextStream>
 
+#include <algorithm>
 #include <array>
 #include <vector>
 
@@ -106,33 +109,7 @@ namespace CatalogueOverlayUtils {
 /// cells. RFC 4180 quoting: "" inside a quoted field is a literal quote.
 inline QStringList splitSimpleCsvLine(const QString &line)
 {
-    QStringList out;
-    QString field;
-    bool inQuotes = false;
-    for (int i = 0; i < line.size(); ++i) {
-        const QChar c = line.at(i);
-        if (inQuotes) {
-            if (c == u'"') {
-                if (i + 1 < line.size() && line.at(i + 1) == u'"') {
-                    field.append(u'"');
-                    ++i;
-                } else {
-                    inQuotes = false;
-                }
-            } else {
-                field.append(c);
-            }
-        } else if (c == u'"') {
-            inQuotes = true;
-        } else if (c == u',') {
-            out.append(field);
-            field.clear();
-        } else {
-            field.append(c);
-        }
-    }
-    out.append(field);
-    return out;
+    return DelimitedText::splitLine(line, u',');
 }
 
 /// True when the line leaves a quoted field open, so the next physical line is
@@ -195,43 +172,52 @@ inline int findHeaderIndex(const QStringList &headers, const QStringList &aliase
     return -1;
 }
 
-inline CatalogueOverlayParseResult parseCsv(const QString &path)
+/// A delimited text table (comma, tab or semicolon, as @p layout says) with RA
+/// and DEC columns in degrees, as catalogue entries.
+inline CatalogueOverlayParseResult parseDelimited(const QString &path,
+                                                  const DelimitedText::Layout &layout)
 {
     CatalogueOverlayParseResult result;
+    // "CSV" at the start of a sentence and inside one; the others in lower case
+    // inside one.
+    const QString kind = DelimitedText::tableKind(layout.separator);
+    const QString kindInText = kind == QStringLiteral("CSV") ? kind : kind.toLower();
+    // Not QIODevice::Text: it drops a lone "\r", the line end of an old Mac
+    // file, which the reader splits on as the backend does.
     QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    if (!file.open(QIODevice::ReadOnly)) {
         result.errorMessage = QStringLiteral("Unable to open catalogue file.");
         return result;
     }
 
     QTextStream stream(&file);
-    QString headerLine;
+    DelimitedText::RecordReader reader(stream, layout);
+    // The header obeys the same quoting rules as the rows: a column name
+    // containing a newline used to cut the header in two and misalign every
+    // field after it. Blank and comment lines before it are not the header,
+    // unless a `#` line names the columns of a numeric first row
+    // (DelimitedText::headerFromComment).
+    QStringList headers;
     bool headerUnterminated = false;
-    while (!stream.atEnd() && headerLine.trimmed().isEmpty()) {
-        // The header obeys the same quoting rules as the rows: a column name
-        // containing a newline used to cut the header in two and misalign every
-        // field after it.
-        headerLine = readCsvRecord(stream, &headerUnterminated);
+    if (!reader.header(&headers, &headerUnterminated)) {
+        result.errorMessage = QStringLiteral("%1 catalogue is empty.").arg(kind);
+        return result;
     }
     if (headerUnterminated) {
         result.errorMessage = QStringLiteral(
-                "CSV catalogue header ends inside a quoted field: the file is truncated "
-                "or its quoting is broken.");
-        return result;
-    }
-    if (headerLine.trimmed().isEmpty()) {
-        result.errorMessage = QStringLiteral("CSV catalogue is empty.");
+                "%1 catalogue header ends inside a quoted field: the file is truncated "
+                "or its quoting is broken.").arg(kind);
         return result;
     }
 
-    const QStringList headers = splitSimpleCsvLine(headerLine);
     const int raIndex = findHeaderIndex(headers, { QStringLiteral("RA") });
     const int decIndex = findHeaderIndex(headers, { QStringLiteral("DEC"), QStringLiteral("DEC_DEG") });
     const int labelIndex = findHeaderIndex(headers, { QStringLiteral("LABEL"), QStringLiteral("ID"),
                                                       QStringLiteral("NAME") });
     if (raIndex < 0 || decIndex < 0) {
         result.errorMessage =
-                QStringLiteral("CSV catalogue requires RA and DEC header columns in degrees.");
+                QStringLiteral("%1 catalogue requires RA and DEC header columns in degrees.")
+                        .arg(kind);
         return result;
     }
 
@@ -248,30 +234,47 @@ inline CatalogueOverlayParseResult parseCsv(const QString &path)
         result.extraFields.append(unique);
     }
 
+    // The rows first, then the entries: whether a column holds decimal-comma
+    // numbers is a property of the whole column.
     bool truncatedTail = false;
-    while (!stream.atEnd()) {
+    QList<QStringList> rows;
+    {
+        QStringList cols;
         bool unterminated = false;
-        QString line = readCsvRecord(stream, &unterminated);
-        if (unterminated) {
-            // A row that never closes its quote is not a row: count it as skipped
-            // and stop, rather than inventing fields from the fragment.
-            truncatedTail = true;
-            ++result.skippedEntries;
-            break;
+        while (reader.next(&cols, &unterminated)) {
+            if (unterminated) {
+                // A row that never closes its quote is not a row: count it as
+                // skipped and stop, rather than inventing fields from the fragment.
+                truncatedTail = true;
+                ++result.skippedEntries;
+                break;
+            }
+            rows.append(cols);
         }
-        line = line.trimmed();
-        if (line.isEmpty()) {
-            continue;
-        }
-        const QStringList cols = splitSimpleCsvLine(line);
+    }
+
+    // A decimal comma ("12,5") is read as the number it is, here and in the
+    // extra fields a SED fit reads its fluxes from, but only in a column that
+    // is all numbers: a note reading "1,2" stays the text it is.
+    const QList<bool> commaColumns = layout.decimalComma
+            ? DelimitedText::decimalCommaColumns(rows, headers.size())
+            : QList<bool>();
+    const auto cell = [&commaColumns](const QStringList &cols, int index) {
+        const QString value = cols.at(index).trimmed();
+        return index < commaColumns.size() && commaColumns.at(index)
+                ? DelimitedText::normaliseDecimalComma(value)
+                : value;
+    };
+
+    for (const QStringList &cols : std::as_const(rows)) {
         if (cols.size() <= std::max(raIndex, decIndex)) {
             ++result.skippedEntries;
             continue;
         }
         bool okRa = false;
         bool okDec = false;
-        const double ra = cols.at(raIndex).trimmed().toDouble(&okRa);
-        const double dec = cols.at(decIndex).trimmed().toDouble(&okDec);
+        const double ra = cell(cols, raIndex).toDouble(&okRa);
+        const double dec = cell(cols, decIndex).toDouble(&okDec);
         if (!okRa || !okDec) {
             ++result.skippedEntries;
             continue;
@@ -288,7 +291,7 @@ inline CatalogueOverlayParseResult parseCsv(const QString &path)
             if (c == raIndex || c == decIndex || c == labelIndex)
                 continue;
             const QString rawKey = headers.at(c).trimmed();
-            const QString value = cols.at(c).trimmed();
+            const QString value = cell(cols, c);
             if (rawKey.isEmpty() || value.isEmpty())
                 continue;
             // Stable per COLUMN, not per row: every row must use the same name
@@ -302,7 +305,8 @@ inline CatalogueOverlayParseResult parseCsv(const QString &path)
     }
 
     if (result.entries.empty()) {
-        result.errorMessage = QStringLiteral("No valid RA/DEC rows were found in the CSV catalogue.");
+        result.errorMessage =
+                QStringLiteral("No valid RA/DEC rows were found in the %1 catalogue.").arg(kindInText);
         return result;
     }
 
@@ -316,6 +320,12 @@ inline CatalogueOverlayParseResult parseCsv(const QString &path)
                 "truncated.");
     }
     return result;
+}
+
+/// A comma-separated catalogue, whatever its first lines would sniff as.
+inline CatalogueOverlayParseResult parseCsv(const QString &path)
+{
+    return parseDelimited(path, DelimitedText::layoutFor(path, u','));
 }
 
 inline CatalogueOverlayParseResult parseDs9(const QString &path)
@@ -481,13 +491,120 @@ inline CatalogueOverlayParseResult parseDs9(const QString &path)
     return result;
 }
 
+/// Whether one line is a DS9 region statement: a coordinate system on its own
+/// (`fk5`), a `global` line, or a shape whose keyword is followed directly by
+/// its parenthesis (`circle(`, `-box(`), optionally after a coordinate system
+/// (`fk5;point(`). Strict on purpose: a column called `global_id`, `Box
+/// (arcsec)` or `Line (GHz)` is not a region.
+inline bool isDs9Statement(QStringView raw)
+{
+    static const QRegularExpression shapeRe(
+            QStringLiteral("^[+-]?(point|circle|ellipse|box|polygon|line|text|annulus|"
+                           "vector|ruler|compass|projection|panda|epanda|bpanda|composite)\\("),
+            QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression globalRe(QStringLiteral("^global(\\s|$)"),
+                                             QRegularExpression::CaseInsensitiveOption);
+    static const QStringList frames = { QStringLiteral("fk4"), QStringLiteral("fk5"),
+                                        QStringLiteral("icrs"), QStringLiteral("image"),
+                                        QStringLiteral("physical"), QStringLiteral("galactic"),
+                                        QStringLiteral("ecliptic"), QStringLiteral("linear"),
+                                        QStringLiteral("amplifier"), QStringLiteral("detector"),
+                                        QStringLiteral("wcs") };
+    // What follows "#" on a region line is its attributes (text={…}).
+    QString body = DelimitedText::withoutBom(raw).trimmed().toString().section(u'#', 0, 0).trimmed();
+    const QString first = body.section(u';', 0, 0).trimmed().toLower();
+    if (frames.contains(first)) {
+        if (!body.contains(u';'))
+            return true;   // a coordinate-system line on its own
+        body = body.section(u';', 1).trimmed();
+    }
+    return globalRe.match(body).hasMatch() || shapeRe.match(body).hasMatch();
+}
+
+/// The first significant lines of @p text (blank and `#` lines aside), up to
+/// the sample the table sniff looks at.
+inline QStringList ds9SampleLines(const QString &text)
+{
+    QStringList out;
+    for (const QString &line : DelimitedText::physicalLines(text, true)) {
+        if (!DelimitedText::isSignificantLine(line))
+            continue;
+        out.append(line);
+        if (out.size() >= DelimitedText::kSampleLines)
+            break;
+    }
+    return out;
+}
+
+/// Whether @p text, which no separator makes a table, reads as DS9 regions:
+/// it starts with ds9's `# Region file format` comment, or one of its first
+/// lines is a region statement.
+inline bool looksLikeDs9Regions(const QString &text)
+{
+    for (const QString &raw : DelimitedText::physicalLines(text, true)) {
+        QStringView line = DelimitedText::withoutBom(raw).trimmed();
+        if (!line.startsWith(u'#'))
+            continue;
+        line = line.mid(1).trimmed();
+        if (line.startsWith(QStringLiteral("Region file format"), Qt::CaseInsensitive))
+            return true;
+    }
+    const QStringList sample = ds9SampleLines(text);
+    return std::any_of(sample.cbegin(), sample.cend(),
+                       [](const QString &line) { return isDs9Statement(line); });
+}
+
+/// Whether @p text, although it splits like a table, is every line a region
+/// statement: a file of bare `fk5;point(10.1,20.2)` lines splits on its commas
+/// into two fields per line, the shape of a two-column table.
+inline bool isAllDs9Statements(const QString &text)
+{
+    const QStringList sample = ds9SampleLines(text);
+    return !sample.isEmpty()
+            && std::all_of(sample.cbegin(), sample.cend(),
+                           [](const QString &line) { return isDs9Statement(line); });
+}
+
+/// Read a catalogue overlay file by what it holds, not only by its name, as
+/// the backend reads delimited text (issue #155):
+///   - a `.reg` file is regions;
+///   - a file whose first lines make a comma, tab or semicolon table is that
+///     table, whatever it is called (`.csv`, `.tsv`, `.txt`…), unless every one
+///     of those lines is a region statement;
+///   - otherwise a file that reads as DS9 regions is regions;
+///   - a `.csv` or `.tsv` that is neither is an error saying so, not a silent
+///     attempt at regions;
+///   - anything else is regions, as before.
 inline CatalogueOverlayParseResult parseFile(const QString &path)
 {
     const QString suffix = QFileInfo(path).suffix().trimmed().toLower();
-    if (suffix == QStringLiteral("csv")) {
-        return parseCsv(path);
+    if (suffix == QStringLiteral("reg"))
+        return parseDs9(path);
+    const DelimitedText::Head head = DelimitedText::readHead(path);
+    if (!head.opened) {
+        CatalogueOverlayParseResult result;
+        result.errorMessage = QStringLiteral("Unable to open catalogue file.");
+        return result;
     }
-    return parseDs9(path);
+    const DelimitedText::Detection table = DelimitedText::detect(path);
+    if (!table.layout.separator.isNull()) {
+        if (isAllDs9Statements(head.text))
+            return parseDs9(path);
+        return parseDelimited(path, table.layout);
+    }
+    if (looksLikeDs9Regions(head.text))
+        return parseDs9(path);
+    if (suffix == QStringLiteral("csv") || suffix == QStringLiteral("tsv")) {
+        CatalogueOverlayParseResult result;
+        result.errorMessage = table.error;
+        return result;
+    }
+    CatalogueOverlayParseResult regions = parseDs9(path);
+    if (!regions.valid && !table.error.isEmpty()) {
+        // Neither: say both, since the name did not tell which was meant.
+        regions.errorMessage += QStringLiteral("\n\nNor is it a table: %1").arg(table.error);
+    }
+    return regions;
 }
 
 } // namespace CatalogueOverlayUtils

@@ -17,6 +17,7 @@ private slots:
     void dotfilesAreListedOnlyUnderAllFiles();
     void allFilesListsAnything();
     void otherKindsAreNotListed();
+    void tabSeparatedTextIsACatalogue();
     void displayLabelShowsPatterns();
     void allFilesIsAlwaysOffered();
     void initialTypePrefersTheRememberedOne();
