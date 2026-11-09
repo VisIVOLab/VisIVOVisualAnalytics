@@ -392,6 +392,12 @@ set(PROJECT_SOURCES
         src/app/UpdateCheck.h
         src/app/SampClient.cpp
         src/app/SampClient.h
+        src/app/SampCallbackServer.cpp
+        src/app/SampCallbackServer.h
+        src/app/SampHubWorker.cpp
+        src/app/SampHubWorker.h
+        src/app/SampProtocol.h
+        src/app/SampXmlRpc.h
         src/app/SampMessageHandler.cpp
         src/app/SampMessageHandler.h
         src/gui/RemoteFileBrowserDialog.cpp
@@ -582,6 +588,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCatalogue3D_Scene.cpp
         src/gui/vtkWindowCatalogue3D_Remote.cpp
         src/gui/vtkWindowCatalogue3D_Interaction.cpp
+        src/gui/vtkWindowCatalogue3D_Samp.cpp
         src/gui/vtkWindowCatalogue3D_Data.cpp
         src/gui/vtkWindowCatalogue3D.h
         src/gui/vtkWindowCube.cpp

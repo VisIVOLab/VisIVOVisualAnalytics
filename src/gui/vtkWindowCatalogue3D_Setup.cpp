@@ -527,6 +527,11 @@ void vtkWindowCatalogue3D::setupRenderer()
         static_cast<vtkWindowCatalogue3D *>(clientData)->onMouseEvent(eid);
     });
     cb->SetClientData(this);
+    // Passive: called whatever has the interactor's focus. The trackball style
+    // grabs focus on a button press (to rotate), and an ordinary observer then
+    // never saw the release, so a single click never selected anything; only
+    // a double-click, whose second press the style does not grab, did.
+    cb->PassiveObserverOn();
 
     auto *inter = ui->vtk->interactor();
     inter->AddObserver(vtkCommand::MouseMoveEvent,         cb);
@@ -560,7 +565,9 @@ void vtkWindowCatalogue3D::ensureCatalogueDock()
     this->catalogueTableView->setAlternatingRowColors(true);
     this->catalogueTableView->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     this->catalogueTableView->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
-    this->catalogueTableView->verticalHeader()->setVisible(false);
+    // The table's own row numbers (Catalogue3DTableModel::headerData), the
+    // ones SAMP row messages and the status line use.
+    this->catalogueTableView->verticalHeader()->setVisible(true);
     this->catalogueTableView->horizontalHeader()->setStretchLastSection(false);
     this->catalogueTableView->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     dockLayout->addWidget(this->catalogueTableView, 1);
@@ -760,6 +767,7 @@ void vtkWindowCatalogue3D::setupViewerChrome()
 {
     VisivoTheme::ViewerToolbarSpec spec;
     spec.filePath = this->filepath;
+    spec.displayName = this->m_label.displayName;
     spec.primaryTag = this->m_pointTable
             ? QStringLiteral("VBT · %L1 rows").arg(this->m_tableRows)
             : QStringLiteral("CAT · %1 sources").arg(this->entries.size());
@@ -803,8 +811,7 @@ void vtkWindowCatalogue3D::setupWorkspaceDocks()
     if (!chrome)
         return;
 
-    const QFileInfo info(this->filepath);
-    chrome->installSessionDock(this->filepath, info.fileName(),
+    chrome->installSessionDock(this->filepath, this->shownName(),
                                this->m_pointTable ? u"vbt"_s : u"catalogue"_s);
     // Design #1d: what is drawn and how it is drawn lives in the LEFT column,
     // under the dataset it belongs to.
@@ -828,12 +835,20 @@ void vtkWindowCatalogue3D::setupWorkspaceDocks()
         return label;
     };
     panel->clearProperties();
-    panel->addPropertyRow(u"Dataset"_s, info.fileName());
+    panel->addPropertyRow(u"Dataset"_s, this->shownName());
     panel->addPropertyRow(u"Type"_s, u"CATALOGUE"_s);
     this->m_propSources = valueLabel(QString::number(this->entries.size()));
     panel->addPropertyRow(u"Sources"_s, this->m_propSources);
     panel->addPropertyRow(u"Columns"_s, QString::number(this->schema.fields.size()));
-    panel->addPropertyRow(u"Path"_s, this->filepath);
+    if (this->m_label.temporaryCopy) {
+        // The staged copy's hashed name says nothing, and the file goes away
+        // with the backend's clean-up: say what it is, the path on hover.
+        QLabel *path = valueLabel(u"temporary copy, received over SAMP"_s);
+        path->setToolTip(VisivoTheme::wrappingToolTip(this->filepath));
+        panel->addPropertyRow(u"Path"_s, path);
+    } else {
+        panel->addPropertyRow(u"Path"_s, this->filepath);
+    }
     this->m_propSession = valueLabel(this->remoteSessionId);
     panel->addPropertyRow(u"Session"_s, this->m_propSession);
     panel->addPropertyRow(u"Backend"_s, this->backendUrl);
@@ -893,8 +908,44 @@ void vtkWindowCatalogue3D::setupWorkspaceDocks()
     });
 }
 
+void vtkWindowCatalogue3D::updateWindowTitle()
+{
+    const QString name = this->shownName();
+    if (this->m_pointTable) {
+        this->setWindowTitle(u"3D Points, %1  (%L2 rows)"_s.arg(name).arg(this->m_tableRows));
+        return;
+    }
+    const int loaded = static_cast<int>(this->entries.size());
+    this->setWindowTitle(this->m_totalCount > loaded
+                                 ? u"3D Catalogue, %1  (%2 of %3 sources)"_s.arg(name)
+                                           .arg(loaded)
+                                           .arg(this->m_totalCount)
+                                 : u"3D Catalogue, %1  (%2 sources)"_s.arg(name).arg(loaded));
+}
+
+QString vtkWindowCatalogue3D::shownName() const
+{
+    return this->m_label.displayName.isEmpty() ? QFileInfo(this->filepath).fileName()
+                                               : this->m_label.displayName;
+}
+
+void vtkWindowCatalogue3D::updateLoadMoreButtons()
+{
+    const bool hasMore = this->hasMoreRows();
+    if (this->btnLoadAll)
+        this->btnLoadAll->setVisible(hasMore);
+    if (this->btnLoadMore) {
+        this->btnLoadMore->setVisible(hasMore);
+        this->btnLoadMore->setEnabled(true);
+        this->btnLoadMore->setText(QStringLiteral("Load more (%1 remaining)")
+                                           .arg(this->m_totalCount - this->m_currentOffset));
+    }
+}
+
 void vtkWindowCatalogue3D::refreshViewerChrome()
 {
+    // The title counts what is loaded too, and follows a filter or a page.
+    this->updateWindowTitle();
     const int count = static_cast<int>(this->entries.size());
     if (this->m_kindTag)
         this->m_kindTag->setText(this->m_pointTable
@@ -958,7 +1009,7 @@ void vtkWindowCatalogue3D::showCatalogueFieldsDialog()
     auto *dlg = new QDialog(this);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
     dlg->setWindowModality(Qt::NonModal);
-    dlg->setWindowTitle(u"Catalogue Fields - %1"_s.arg(QFileInfo(this->filepath).fileName()));
+    dlg->setWindowTitle(u"Catalogue Fields - %1"_s.arg(this->shownName()));
     dlg->resize(560, 460);
 
     auto *layout = new QVBoxLayout(dlg);

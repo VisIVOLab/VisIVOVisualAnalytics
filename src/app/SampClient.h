@@ -1,68 +1,46 @@
 // SampClient.h – Qt SAMP client for VisIVO Visual Analytics
 //
-// This class implements a lightweight SAMP Standard Profile client using
-// Qt's own networking stack (QNetworkAccessManager + QDomDocument for XML-RPC).
-// No external XML-RPC library is required.
+// A SAMP Standard Profile (SAMP 1.3) client built on Qt's own networking
+// stack; no external XML-RPC library is required.
 //
 // Architecture
 // ------------
 // The SAMP Hub runs on the user's desktop (started by TOPCAT, Aladin, or
-// `samp_hub`).  SampClient connects to it via XML-RPC and:
+// `samp_hub`). VisIVO is a *callable* client:
 //
-//  1. Registers VisIVO as a SAMP client (obtains a private key + public ID).
-//  2. Declares its metadata (name, description, icon, supported MTypes).
-//  3. Subscribes to the MTypes it can handle (image.load.fits, etc.).
-//  4. Polls the Hub for pending notifications (Standard Profile requires client
-//     polling because the Hub cannot push to a client that has no callback URL;
-//     alternatively we start a minimal HTTP callback server on a random local
-//     port—see SAMP_USE_CALLBACK_SERVER define).
-//  5. Forwards inbound messages to the backend via BackendClient.
-//  6. Picks up outbound messages from the backend (GET /v1/samp/pending) and
-//     sends them to the Hub.
+//  1. It registers with the hub (private key + public id).
+//  2. It runs a small XML-RPC callback server on 127.0.0.1 and an ephemeral
+//     port, and hands its URL to samp.hub.setXmlrpcCallback.
+//  3. It declares its metadata and subscriptions (table and image loads,
+//     coord.pointAt.sky, table.highlight.row, table.select.rowList, hub
+//     events). TOPCAT and other tools then list it as a target.
+//  4. The hub calls samp.client.receiveNotification / receiveCall on the
+//     callback server; calls are answered through samp.hub.reply.
+//  5. Outbound messages the backend queues (GET /v1/samp/pending) are sent on
+//     to the hub, with the backend URL placeholder expanded.
 //
-// Thread-safety
-// -------------
-// All Hub XML-RPC calls are made from a dedicated QThread to avoid blocking
-// the Qt main event loop.  Qt signals are used to deliver results back to the
-// main thread.
+// Threads
+// -------
+// All of that network work runs on a dedicated thread (SampHubWorker). This
+// object lives on the GUI thread: its methods only queue work, and it
+// re-emits the worker's signals there, so the GUI never waits on the hub and
+// every handler of messageReceived() runs on the GUI thread, from its event
+// loop.
 
 #ifndef SAMPCLIENT_H
 #define SAMPCLIENT_H
 
-#include <QJsonArray>
-#include <QJsonObject>
+#include "SampProtocol.h"
+
+#include <QList>
 #include <QObject>
 #include <QString>
-#include <QStringList>
-#include <QTimer>
+#include <QThread>
 #include <QVariantMap>
-#include <memory>
 
-class QNetworkAccessManager;
-class QNetworkReply;
 class BackendClient;
-class QDomElement;
-
-// ── Data types ────────────────────────────────────────────────────────────────
-
-/// A single SAMP client registered in the Hub.
-struct SampClientInfo
-{
-    QString id;           ///< Hub-assigned public ID (e.g. "c1")
-    QString name;         ///< samp.name metadata string
-    QString description;
-    QString iconUrl;
-    QStringList subscriptions;  ///< List of subscribed MTypes
-};
-
-/// An inbound SAMP message.
-struct SampMessage
-{
-    QString mtype;
-    QVariantMap params;
-    QString senderId;
-    QString msgId;
-};
+class QTimer;
+class SampHubWorker;
 
 // ── SampClient ────────────────────────────────────────────────────────────────
 
@@ -82,32 +60,51 @@ class SampClient : public QObject
     Q_OBJECT
 
 public:
-    /// MType string constants.
-    static constexpr const char *MTYPE_IMAGE_FITS    = "image.load.fits";
-    static constexpr const char *MTYPE_TABLE_VOTABLE = "table.load.votable";
-    static constexpr const char *MTYPE_TABLE_FITS    = "table.load.fits";
-    static constexpr const char *MTYPE_COORD_SKY     = "coord.pointAt.sky";
-    static constexpr const char *MTYPE_HUB_SHUTDOWN  = "samp.hub.event.shutdown";
+    /// MType string constants (kept for existing callers; see Samp::k*).
+    static constexpr const char *MTYPE_IMAGE_FITS    = Samp::kImageLoadFits;
+    static constexpr const char *MTYPE_TABLE_VOTABLE = Samp::kTableLoadVotable;
+    static constexpr const char *MTYPE_TABLE_FITS    = Samp::kTableLoadFits;
+    static constexpr const char *MTYPE_COORD_SKY     = Samp::kCoordPointAtSky;
+    static constexpr const char *MTYPE_HUB_SHUTDOWN  = Samp::kHubShutdown;
 
     explicit SampClient(BackendClient *backend, QObject *parent = nullptr);
     ~SampClient() override;
 
     // ── Connection lifecycle ──────────────────────────────────────────────────
 
-    /** Find the Hub lockfile and attempt registration.  Emits connected() on success. */
+    /** Find the Hub lockfile and register. Asynchronous: emits connected() or error(). */
     void connectToHub();
 
-    /** Unregister from the Hub and stop polling. */
+    /** Unregister from the Hub. Asynchronous: emits disconnected(). It also
+     *  stops waiting for a lost hub to come back. */
     void disconnectFromHub();
+
+    /** No hub to talk to, and VisIVO is trying every few seconds, quietly,
+     *  until one answers: the hub went away (shut down, stopped answering),
+     *  or none was running when connectToHub() was called. Not after
+     *  disconnectFromHub(), nor when the hub disconnected VisIVO itself. */
+    bool isWaitingForHub() const { return m_reconnect.waiting(); }
 
     /** @return true if currently registered with the Hub. */
     bool isConnected() const { return m_connected; }
+
+    /** True between connectToHub() and its outcome. */
+    bool isConnecting() const { return m_connecting; }
+
+    /** True when the hub can call VisIVO back (it receives messages). */
+    bool isReceiving() const { return m_receiving; }
+
+    /** Why VisIVO cannot receive, when connected but not receiving. */
+    QString receiveProblem() const { return m_receiveProblem; }
 
     /** Public SAMP ID assigned by the Hub (empty when not connected). */
     QString publicId() const { return m_publicId; }
 
     /** URL of the Hub XML-RPC endpoint (from lockfile). */
     QString hubUrl() const { return m_hubUrl; }
+
+    /** Push the backend URL and token (from the BackendClient) to the SAMP thread. */
+    void refreshBackendEndpoint();
 
     // ── Sending messages ──────────────────────────────────────────────────────
 
@@ -147,10 +144,39 @@ public:
     void sendPointAtSky(double raDeg, double decDeg,
                         const QString &recipientId = QString());
 
+    /**
+     * Answer a load call (table.load.*, image.load.fits) once it is done:
+     * samp.ok when @p error is empty, samp.error with it otherwise.
+     * @p replyToken is SampMessage::replyToken (empty for a notification:
+     * then this does nothing). The SAMP thread answers
+     * every other call itself.
+     */
+    void replyToCall(const QString &replyToken, const QString &error = QString());
+
+    /**
+     * Ask every subscriber of @p mtype (samp.hub.callAll) and report each
+     * answer: callSent() says who was asked, callAnswered() what each said.
+     * Returns the tag both signals carry. "__BACKEND_BASE_URL__" in a string
+     * parameter is replaced by the backend URL.
+     */
+    QString callAll(const QString &mtype, const QVariantMap &params);
+
+    /**
+     * Which other clients take @p mtype (samp.hub.getSubscribedClients):
+     * subscribersAnswered() carries the answer under the tag returned.
+     */
+    QString askSubscribers(const QString &mtype);
+
+    /** Broadcast table.highlight.row (@p row: 0-based, in the original table). */
+    void sendHighlightRow(const Samp::TableRef &table, qint64 row);
+
+    /** Broadcast table.select.rowList (rows: 0-based, in the original table). */
+    void sendSelectRowList(const Samp::TableRef &table, const QList<qint64> &rows);
+
     // ── Hub client list ───────────────────────────────────────────────────────
 
-    /** Synchronously fetch registered clients from the Hub. */
-    QList<SampClientInfo> registeredClients() const;
+    /** The other clients, as last reported (clientListChanged()). */
+    QList<SampClientInfo> registeredClients() const { return m_clients; }
 
 signals:
     /** Emitted when registration with the Hub succeeds. */
@@ -165,85 +191,44 @@ signals:
     /** Emitted when the client list in the Hub changes. */
     void clientListChanged(const QList<SampClientInfo> &clients);
 
-    /** Emitted on any Hub communication error. */
+    /** Emitted on any Hub communication error the user should see. */
     void error(const QString &description);
 
-private slots:
-    void onPollTimer();
-    void onBackendPendingTimer();
+    /** Whether the hub can call VisIVO back changed. */
+    void receivingChanged(bool receiving, const QString &problem);
+
+    /** A table.load.* message left with this table-id and url. */
+    void tableSent(const QString &tableId, const QString &url);
+
+    /** callAll(@p tag) went out to @p recipients (ids), or failed (@p error). */
+    void callSent(const QString &tag, const QStringList &recipients, const QString &error);
+
+    /** One recipient's answer to callAll(@p tag); @p error is empty for samp.ok. */
+    void callAnswered(const QString &tag, const QString &responderId, const QString &error);
+
+    /** askSubscribers(@p tag): the other clients' ids, or @p error. */
+    void subscribersAnswered(const QString &tag, const QStringList &clientIds,
+                             const QString &error);
 
 private:
-    // ── XML-RPC helpers ───────────────────────────────────────────────────────
+    /** One quiet attempt to register with a hub that came back. */
+    void retryLostHub();
 
-    /**
-     * Perform a synchronous XML-RPC call to the Hub.
-     * Returns the parsed response value, or an invalid QVariant on failure.
-     * Sets @p errorOut on failure.
-     */
-    QVariant xmlRpcCall(const QString &method,
-                        const QVariantList &params,
-                        QString &errorOut) const;
-
-    /** Build a minimal XML-RPC request body. */
-    static QByteArray buildXmlRpcRequest(const QString &method, const QVariantList &params);
-
-    /** Parse an XML-RPC response and return the <value> as a QVariant. */
-    static QVariant parseXmlRpcResponse(const QByteArray &data, QString &errorOut);
-
-    /** Convert a QVariant to an XML-RPC <value> element string. */
-    static QString variantToXmlRpcValue(const QVariant &v);
-
-    /** Parse an XML-RPC <value> element into a QVariant. */
-    static QVariant xmlRpcValueToVariant(const QDomElement &el);
-
-    // ── Hub lockfile ──────────────────────────────────────────────────────────
-
-    /** Locate ~/.samp lockfile and parse hub.xmlrpc.url + samp.secret. */
-    static bool readLockFile(QString &hubUrl, QString &secret, QString &errorOut);
-
-    // ── Registration helpers ──────────────────────────────────────────────────
-
-    bool registerWithHub(QString &errorOut);
-    void declareMetadata();
-    void declareSubscriptions();
-    void reportStatusToBackend();
-
-    // ── Polling / inbound ─────────────────────────────────────────────────────
-
-    /** Poll Hub for pending notifications (samp.hub.getCallbacks / getNotifications). */
-    void pollHub();
-
-    /** Forward a received message to the backend inbox. */
-    void forwardToBackend(const SampMessage &msg);
-
-    // ── Backend outbound queue ────────────────────────────────────────────────
-
-    /** Fetch pending outbound messages from the backend and dispatch to Hub. */
-    void drainBackendPendingQueue();
-
-    /** Replace the __BACKEND_BASE_URL__ placeholder with the real backend URL. */
-    QString expandBackendUrl(const QString &urlTemplate) const;
-
-    // ── State ─────────────────────────────────────────────────────────────────
-
-    BackendClient   *m_backend{ nullptr };
-    QNetworkAccessManager *m_nam{ nullptr };
-
-    QString  m_hubUrl;
-    QString  m_sampSecret;      ///< samp.secret from lockfile (used for registration)
-    QString  m_privateKey;      ///< Private key returned by samp.hub.register
-    QString  m_publicId;        ///< Our public client ID in the Hub
+    BackendClient *m_backend{ nullptr };
+    QThread m_thread;
+    SampHubWorker *m_worker{ nullptr };   ///< lives on m_thread
 
     bool m_connected{ false };
-
-    /// Poll Hub every 500 ms for inbound notifications.
-    QTimer *m_pollTimer{ nullptr };
-
-    /// Poll backend every 600 ms for outbound messages to forward to Hub.
-    QTimer *m_backendPendingTimer{ nullptr };
-
-    static constexpr int kPollIntervalMs        = 500;
-    static constexpr int kBackendPollIntervalMs = 600;
+    bool m_connecting{ false };
+    bool m_receiving{ false };
+    QString m_receiveProblem;
+    QString m_publicId;
+    QString m_hubUrl;
+    QList<SampClientInfo> m_clients;
+    quint64 m_callCounter{ 0 };
+    SampReconnectPolicy m_reconnect;
+    QTimer *m_retryTimer{ nullptr };
+    static constexpr int kRetryIntervalMs = 3000;
 };
 
 #endif // SAMPCLIENT_H

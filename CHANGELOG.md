@@ -27,6 +27,35 @@ are preserved here unedited; the branch names they refer to are historical.
   Kinematic Lasso mask writers edited the primary HDU of the copy, so a file
   with an empty primary and the cube in `DATA_EXT` failed with "3D masking
   requires a 3D cube dataset". They now mask the HDU the dataset reads.
+- **SAMP: VisIVO receives, and links rows with TOPCAT** (#130, steps 1, 2 and
+  6). VisIVO is now a callable SAMP client: a loopback XML-RPC endpoint, run
+  with the hub traffic on a thread of its own, takes tables, images, sky
+  positions, row highlights and row selections, and answers calls once the
+  data opened or failed. TOPCAT lists VisIVO as a target. A received file is
+  downloaded by the client and staged with `/v1/samp/upload-file`, so remote
+  backends work; `/v1/samp/import-url` now uses the guarded fetch. Rows are
+  linked both ways by their place in the original table (new `row_index` in
+  `/v1/catalogue/query`, new `table_id` in `/v1/samp/send-catalogue`). The
+  SAMP menu shows whether VisIVO is connected and receiving, and a failed
+  callback or subscription is reported in the status bar and Diagnostics.
+  Sending a file is now a SAMP call: VisIVO reports what each tool answered
+  instead of assuming success. Staging runs off the backend's event loop
+  (`deliver`, `rows`, `size_bytes` on `/v1/samp/send-*`), and a converted
+  table is a BINARY2 VOTable. A single click now selects a source in the 3-D
+  catalogue view (it needed a double-click), and its first page of rows knows
+  the table's total, so *Load more* appears. A received table is shown under
+  the sender's name (title, path bar, Session Data, Inspector) and, being a
+  temporary copy, is not added to Recent Datasets. Before staging a file
+  VisIVO asks the hub whether any tool takes it (`getSubscribedClients`), and
+  reports answers under the name actually sent. A click highlights the row in
+  the table VisIVO received and in every copy it sent back. Unnamed sources
+  and the table's row header use the original table's row number, also after
+  *Load more*, and the table scrolls to the selected row. Connect with no hub
+  running, or a hub going away, leaves VisIVO waiting and retrying every few
+  seconds until one runs (Disconnect stops it). Received images get the same
+  naming and Recent Datasets treatment as tables. Repeated peer lists are no
+  longer logged twice. SAMP connect no longer logs two 401 warnings (a stale
+  settings token was used instead of the local backend's token file).
 - **Compressed FITS open directly** (#57). Gzipped (`.fits.gz`) and
   tile-compressed (fpack, `.fz`) images and cubes open like their uncompressed
   versions: the first open decompresses the file once into the workspace cache

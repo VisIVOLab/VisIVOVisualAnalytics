@@ -7,6 +7,9 @@
 #include <QFutureWatcher>
 #include <QPointer>
 
+#include <optional>
+#include <utility>
+
 class QComboBox;
 #include <QString>
 #include <QWidget>
@@ -50,6 +53,11 @@ public:
 
     void openSurveyUrl(const QString &url);
     void setCenter(double raDeg, double decDeg);
+    /// Centre on a position from another tool (SAMP). With no survey shown
+    /// yet, the last survey opened (else DSS colour) is opened first and
+    /// the position applied once it is there: a centre on an empty viewer
+    /// would be a black panel, and opening a survey resets the view.
+    void showSkyPosition(double raDeg, double decDeg);
 
 private slots:
     // Primary survey
@@ -96,6 +104,10 @@ private:
     QString m_backendUrl;
     QString m_backendToken;
     BackendHiPSSurveyInfo m_currentSurvey;
+    /// A SAMP position waiting for the survey that is being opened.
+    std::optional<std::pair<double, double>> m_pendingCenter;
+    /// The last primary survey opened in this session (any HiPS window).
+    static QString s_lastSurveyUrl;
     BackendHiPSSurveyInfo m_currentSurveySec;
 
     // ── Widgets ───────────────────────────────────────────────────────────

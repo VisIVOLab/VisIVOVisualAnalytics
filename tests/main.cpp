@@ -47,6 +47,7 @@
 #include "TestUpdateCheck.h"
 #include "TestSourceTable.h"
 #include "TestBackendTaskFollow.h"
+#include "TestSamp.h"
 #include "TestCosmologyTools.h"
 #include "TestCopilotStatus.h"
 #include "TestCopilotChoice.h"
@@ -103,6 +104,7 @@ int main(int argc, char *argv[])
     { TestUpdateCheck      t; status |= QTest::qExec(&t, argc, argv); }
     { TestSourceTable      t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendTaskFollow t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSamp             t; status |= QTest::qExec(&t, argc, argv); }
     { TestCosmologyTools   t; status |= QTest::qExec(&t, argc, argv); }
     { TestCopilotStatus    t; status |= QTest::qExec(&t, argc, argv); }
     { TestCopilotChoice    t; status |= QTest::qExec(&t, argc, argv); }

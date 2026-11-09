@@ -576,7 +576,7 @@ void vtkWindowCatalogue3D::applyFilter()
                     out.error = subset.error;
                     return out;
                 }
-                const auto parsed = Catalogue3DParser::parseBackendSubset(schema, subset.rows);
+                const auto parsed = Catalogue3DParser::parseBackendSubset(schema, subset.rows, subset.rowIndex);
                 if (!parsed.valid) {
                     out.error = parsed.errorMessage;
                     return out;
@@ -584,6 +584,8 @@ void vtkWindowCatalogue3D::applyFilter()
 
                 out.entries = parsed.entries;
                 out.totalRows = subset.totalRows;
+                out.returnedRows = subset.returnedRows > 0 ? subset.returnedRows
+                                                           : static_cast<int>(subset.rows.size());
                 out.step = subset.step;
                 out.limit = pageSize;
                 out.statusMsg =
@@ -686,7 +688,7 @@ void vtkWindowCatalogue3D::loadMoreEntries()
                     out.error = subset.error;
                     return out;
                 }
-                const auto parsed = Catalogue3DParser::parseBackendSubset(schema, subset.rows);
+                const auto parsed = Catalogue3DParser::parseBackendSubset(schema, subset.rows, subset.rowIndex);
                 if (!parsed.valid) {
                     out.error = parsed.errorMessage;
                     return out;
@@ -694,6 +696,8 @@ void vtkWindowCatalogue3D::loadMoreEntries()
 
                 out.entries = parsed.entries;
                 out.totalRows = subset.totalRows;
+                out.returnedRows = subset.returnedRows > 0 ? subset.returnedRows
+                                                           : static_cast<int>(subset.rows.size());
                 out.valid = true;
                 return out;
             }));
