@@ -220,7 +220,11 @@ Blanks (sets to NaN) the voxels inside or outside a box and registers the
 result as a new cube dataset, persisted in Workspace Exports. The output keeps
 the full cube dimensions, header and WCS: the source file is copied and the
 copy is edited in place through a memory map, so masking does not load the
-cube into memory. A `HISTORY` card records the mode and the box.
+cube into memory. A `HISTORY` card records the mode and the box. The masked
+HDU is the one the dataset reads its cube from: in a file with an empty
+primary and the cube in an extension (ESO/APEX `DATA_EXT`), that extension is
+masked and every other HDU is copied unchanged. The same holds for
+`mask_selection` and `mask_apply_bin`.
 
 Request (`CubeMaskRequest`): `dataset_id`, `x0`, `x1`, `y0`, `y1`, `z0`, `z1`
 (int, inclusive, clamped), `mode` (`"blank_outside"`, the default, isolates

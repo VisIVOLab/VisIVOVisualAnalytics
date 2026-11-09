@@ -8,6 +8,25 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Cached products follow the file on disk.** Moment, PV, isosurface and
+  line-width products (and Export Moment as FITS) were cached by path and
+  parameters only, so a cube replaced or rewritten under the same name came
+  back with the old values and `cache_hit: true`. The cache key now carries
+  the file's version (device, inode, size, modification and change times, and
+  a VBT's `.head`); the cube statistics, catalogue overlay and ray-traced
+  preview caches use the same version.
+- **Weighted spectral stacking ignores blank channels correctly.** The
+  weights were normalised once over all cubes, so a channel blank in one cube
+  was pulled towards zero (equal weights, values [1, NaN] gave 0.5) and a
+  channel blank in every cube came out as 0. Each channel is now divided by
+  the weights of the cubes that have a value there, and a channel without any
+  is NaN. Explicit weights must be one per cube, finite, non-negative and not
+  all zero (a list of the wrong length used to fall back to automatic
+  weights silently).
+- **3-D masks of cubes stored in a FITS extension.** Box masking and the
+  Kinematic Lasso mask writers edited the primary HDU of the copy, so a file
+  with an empty primary and the cube in `DATA_EXT` failed with "3D masking
+  requires a 3D cube dataset". They now mask the HDU the dataset reads.
 - **SAMP: VisIVO receives, and links rows with TOPCAT** (#130, steps 1, 2 and
   6). VisIVO is now a callable SAMP client: a loopback XML-RPC endpoint, run
   with the hub traffic on a thread of its own, takes tables, images, sky

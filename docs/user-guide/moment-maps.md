@@ -58,8 +58,9 @@ served from the backend's cache.
 
 You can switch back and forth between *Slice* and *Moment* without
 recomputing — the moment map is cached in memory and on the backend's
-LRU `PRODUCT_CACHE` (keyed by `dataset_id + parameters`). Identical
-re-requests return instantly.
+LRU `PRODUCT_CACHE` (keyed by the file, its version on disk and the
+parameters). Identical re-requests return instantly; a file replaced or
+rewritten on disk since is computed again.
 
 ```{note}
 **Why M1/M2 are masked by default.** An intensity-weighted mean velocity (M1)
