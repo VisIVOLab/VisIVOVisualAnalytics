@@ -2,9 +2,9 @@
 
 Interop, not a new analysis capability: regions drawn in CARTA/CASA/ds9 can be
 loaded into VisIVO and vice-versa. Parsing/serialising lives in ``app.regions``;
-this router adds the HTTP surface and the optional pixel↔world conversion that
-turns a sky-frame CARTA region into the pixel coordinates the desktop overlay
-draws in (and back).
+this router adds the HTTP surface and the optional frame conversion that turns
+a sky-frame CARTA region into the pixel coordinates the desktop overlay draws
+in (and back), or moves it to another sky frame.
 
   * POST /v1/regions/parse   {format?, text, dataset_id?, to_frame?}
   * POST /v1/regions/export  {format, regions, dataset_id?, to_frame?}
@@ -44,15 +44,10 @@ class RegionStatsRequest(BaseModel):
     channel: int | None = None    # for cubes; defaults to 0
 
 
-def _wcs_transforms(path: str, origin: int = 1):
-    """Build (sky_to_pix, pix_to_sky, pixel_scale_arcsec, world_frame) from a
-    dataset's celestial WCS. ``origin`` is the pixel-coordinate base: 1 for the
-    FITS/ds9/CRTF file convention (parse/export), 0 for numpy-indexed analysis
-    (region statistics).
-    """
-    from astropy.io import fits  # noqa: PLC0415
+def _celestial_wcs(path: str):
+    """The dataset's 2-D celestial WCS, or 422 when it has none."""
+    from astropy.io import fits  # noqa: PLC0415,F401
     from astropy.wcs import WCS  # noqa: PLC0415
-    from astropy.wcs.utils import proj_plane_pixel_scales  # noqa: PLC0415
 
     from ..fits_dataset import image_hdu_index  # noqa: PLC0415
 
@@ -61,39 +56,36 @@ def _wcs_transforms(path: str, origin: int = 1):
     wcs = WCS(header)
     if not wcs.has_celestial:
         raise HTTPException(422, "Dataset has no celestial WCS; cannot convert region frames.")
-    cel = wcs.celestial
-    scales_deg = proj_plane_pixel_scales(cel)
-    pixel_scale_arcsec = float(sum(scales_deg) / len(scales_deg) * 3600.0)
-    frame_name = "fk5"
-    radesys = str(header.get("RADESYS", "")).lower()
-    if "icrs" in radesys:
-        frame_name = "icrs"
-    elif "gal" in str(header.get("CTYPE1", "")).lower():
-        frame_name = "galactic"
+    return wcs.celestial
 
-    def sky_to_pix(ra_deg, dec_deg):
-        x, y = cel.all_world2pix(ra_deg, dec_deg, origin)
-        return float(x), float(y)
 
-    def pix_to_sky(x, y):
-        ra, dec = cel.all_pix2world(x, y, origin)
-        return float(ra), float(dec)
-
-    return sky_to_pix, pix_to_sky, pixel_scale_arcsec, frame_name
+def _convert(regions, to_frame, wcs, origin):
+    try:
+        return R.convert_regions(regions, to_frame=to_frame, wcs=wcs, origin=origin)
+    except (R.RegionParseError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 def _maybe_convert(regions, to_frame, session, dataset_id):
+    """Reframe regions for parse/export (1-based pixels, as in region files).
+
+    A sky-to-sky conversion needs no dataset; anything touching pixels, or a
+    ``to_frame`` that names no sky frame (meaning "the dataset's own"), does.
+    """
     if not to_frame:
         return regions
-    if not dataset_id:
-        raise HTTPException(422, "to_frame requires dataset_id for the WCS conversion.")
-    entry = _require_dataset(session, dataset_id)
-    sky_to_pix, pix_to_sky, scale, world_frame = _wcs_transforms(entry["path"])
-    target = "image" if to_frame == "image" else (to_frame if to_frame in R._WORLD_FRAMES else world_frame)
-    return R.convert_regions(
-        regions, to_frame=target, sky_to_pix=sky_to_pix, pix_to_sky=pix_to_sky,
-        pixel_scale_arcsec=scale, world_frame=world_frame,
-    )
+    wcs = None
+    if dataset_id:
+        entry = _require_dataset(session, dataset_id)
+        wcs = _celestial_wcs(entry["path"])
+    if to_frame != "image" and to_frame not in R._WORLD_FRAMES:
+        if wcs is None:
+            raise HTTPException(422, "to_frame requires dataset_id for the WCS conversion.")
+        try:
+            to_frame = R.native_frame_name(wcs)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+    return _convert(regions, to_frame, wcs, origin=1)
 
 
 @router.post("/v1/regions/parse", tags=["regions"])
@@ -148,11 +140,8 @@ async def region_stats(
     """
     entry = _require_dataset(session, dataset_id)
     region = request.region
-    if region.get("frame", "image") != "image":
-        sky_to_pix, pix_to_sky, scale, world_frame = _wcs_transforms(entry["path"], origin=0)
-        region = R.convert_regions(
-            [region], to_frame="image", sky_to_pix=sky_to_pix, pix_to_sky=pix_to_sky,
-            pixel_scale_arcsec=scale, world_frame=world_frame)[0]
+    if region.get("frame", "image") != "image" or region.get("unit", "pix") != "pix":
+        region = _convert([region], "image", _celestial_wcs(entry["path"]), origin=0)[0]
     from ..compute import worker_region_stats  # noqa: PLC0415
     import asyncio  # noqa: PLC0415
     try:

@@ -100,6 +100,37 @@ def _finite_range(arr: np.ndarray) -> tuple[float, float]:
 _DISP_CONST_MHZ2_S = 4.148808e3  # such that delay_s = K * DM / freq_MHz²
 
 
+def _signed_time_step(meta: dict[str, float]) -> float:
+    """``CDELT1`` with its sign: seconds from one time sample to the next.
+
+    Negative when the time axis is stored in decreasing order. Every time
+    computed from it (sample times, dispersion shifts in samples) has to
+    keep that sign, or a reversed file folds and dedisperses as if time ran
+    forwards.
+    """
+    dt_s = float(meta["t_step"])
+    if not np.isfinite(dt_s) or dt_s == 0.0:
+        raise ValueError("Time sampling CDELT1 is zero or invalid.")
+    return dt_s
+
+
+def _dispersion_shifts(freqs_mhz: np.ndarray, f_ref_mhz: float,
+                       dm_pc_cm3: float, dt_s: float) -> np.ndarray:
+    """Per-channel delay in samples (signed, like ``dt_s``) relative to
+    ``f_ref_mhz``. Rolling channel ``i`` by ``-shift[i]`` moves a late
+    arrival back to the reference time on either time-axis order."""
+    delays_s = (_DISP_CONST_MHZ2_S * float(dm_pc_cm3)
+                * (1.0 / freqs_mhz ** 2 - 1.0 / f_ref_mhz ** 2))
+    return np.round(delays_s / dt_s).astype(np.int64)
+
+
+def _roll_channels(data: np.ndarray, shifts: np.ndarray) -> np.ndarray:
+    out = np.empty_like(data)
+    for i in range(data.shape[0]):
+        out[i, :] = np.roll(data[i, :], -int(shifts[i]))
+    return out
+
+
 def worker_dynspec_dedisperse(
     src_path: str,
     output_path: str,
@@ -133,17 +164,9 @@ def worker_dynspec_dedisperse(
     if f_ref_mhz <= 0.0:
         f_ref_mhz = float(freqs_mhz.max())
 
-    dt_s = abs(meta["t_step"])
-    if dt_s <= 0.0:
-        raise ValueError("Time sampling CDELT1 is zero or invalid.")
-
-    delays_s = (_DISP_CONST_MHZ2_S * float(dm_pc_cm3)
-                * (1.0 / freqs_mhz ** 2 - 1.0 / f_ref_mhz ** 2))
-    shifts = np.round(delays_s / dt_s).astype(np.int64)
-
-    dedispersed = np.empty_like(data)
-    for i in range(meta["n_freq"]):
-        dedispersed[i, :] = np.roll(data[i, :], -int(shifts[i]))
+    dt_s = _signed_time_step(meta)
+    shifts = _dispersion_shifts(freqs_mhz, f_ref_mhz, dm_pc_cm3, dt_s)
+    dedispersed = _roll_channels(data, shifts)
 
     new_header = header.copy()
     new_header.add_history(
@@ -206,20 +229,13 @@ def worker_dynspec_pulse_profile(
     data, header = _open_dynspec(src_path)
     meta = _axis_metadata(header)
     freqs_mhz = _channel_frequencies_mhz(meta)
-    dt_s = abs(meta["t_step"])
-    if dt_s <= 0.0:
-        raise ValueError("Time sampling CDELT1 is zero or invalid.")
+    dt_s = _signed_time_step(meta)
 
     # Optional in-memory dedispersion
     if dm_pc_cm3 != 0.0:
         f_ref_mhz = float(freqs_mhz.max())
-        delays_s = (_DISP_CONST_MHZ2_S * float(dm_pc_cm3)
-                    * (1.0 / freqs_mhz ** 2 - 1.0 / f_ref_mhz ** 2))
-        shifts = np.round(delays_s / dt_s).astype(np.int64)
-        dedispersed = np.empty_like(data)
-        for i in range(meta["n_freq"]):
-            dedispersed[i, :] = np.roll(data[i, :], -int(shifts[i]))
-        data = dedispersed
+        shifts = _dispersion_shifts(freqs_mhz, f_ref_mhz, dm_pc_cm3, dt_s)
+        data = _roll_channels(data, shifts)
 
     # Frequency band selection
     if freq_start_mhz > 0.0 and freq_end_mhz > 0.0 and freq_end_mhz > freq_start_mhz:
@@ -233,7 +249,9 @@ def worker_dynspec_pulse_profile(
     if not np.any(np.isfinite(time_series)):
         raise ValueError("No finite samples after frequency averaging.")
 
-    # Fold: assign each sample to a phase bin
+    # Fold: assign each sample to a phase bin. The signed step matters: a
+    # time axis written in decreasing order (CDELT1 < 0) must give the same
+    # sample times, hence the same profile, as the increasing one.
     n_samples = time_series.size
     times_s = meta["t_ref"] + (np.arange(n_samples, dtype=np.float64) + 1.0
                                 - meta["t_pix"]) * dt_s

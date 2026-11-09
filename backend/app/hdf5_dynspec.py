@@ -208,7 +208,7 @@ def convert_hdf5_to_sidecar_fits(hdf5_path: str | Path) -> Path:
         header["CDELT1"] = float(sampling["tsamp_s"])
         header["CDELT2"] = float(sampling["freq_step_hz"])
         header["BUNIT"]  = "arb"
-        header["ORIGIN"] = "VisIVO HDF5→FITS dynspec converter"
+        header["ORIGIN"] = "VisIVO HDF5 to FITS dynspec converter"
         header.add_history(
             f"Converted from HDF5 source {hdf5_path.name} dataset path "
             f"{ds_path} on demand."

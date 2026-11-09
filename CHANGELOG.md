@@ -65,7 +65,61 @@ are preserved here unedited; the branch names they refer to are historical.
     backend (file not found, unsupported, backend unreachable) are listed as
     failed entries too, as is a path given on the command line at launch
     that is not a file on this machine.
+- **Imported regions are moved between sky frames.** A region was handed to
+  the image's WCS in whatever frame the file used, so a galactic circle at
+  (l, b) = (0, 0) on an FK5 map centred on the Galactic centre came back at
+  [NaN, NaN] instead of the centre pixel [32, 32], and an explicit FK5 to
+  galactic conversion left both frame and coordinates as they were. Positions
+  now go through astropy from the region's frame to the image's (and to any
+  requested sky frame, with no dataset needed for sky to sky), and ellipse
+  and box angles turn with the frame: by 58.6° between FK5 and galactic at
+  the Galactic centre, and with the pixel grid's rotation, mirror,
+  unequal scales and skew. `fk4` (B1950) and `ecliptic` are new frames; CRTF
+  `B1950`, read as J2000 before, is FK4, and `global coord=` is honoured. A
+  region off the WCS projection is a 422 instead of NaN.
+- **Each region size keeps its own unit.** `ellipse(10,20,1',30",0)` had
+  semi-axes 1 and 30 arcmin (the second size took the first's unit, a factor
+  of 60); it is now 1 and 0.5 arcmin, and the same holds for boxes, annuli
+  and CRTF. Pixel sizes in a sky frame (`6i`) and angular sizes in the image
+  frame (`10"`) are read and converted; a region mixing the two is refused.
+- **ds9 files written in degrees reimport.** The exporter wrote `0.01d` and
+  the parser rejected it ("Cannot parse size token"); every ds9 suffix (`d`,
+  `r`, `p`, `i`, `'`, `"`), `fk5;circle(...)` on one line and exponents such
+  as `1e-05` are now read. Export then import is exact to 10⁻⁹ for all six
+  shapes in every frame and unit, in both formats; positions are written
+  with 12 significant digits (6 before: an RA above 100° was rounded to 0.001°, up to 1.8").
 
+- **PSRFITS and HDF5 dynamic spectra open again.** Both converters wrote a
+  `→` into the sidecar's `ORIGIN` card, which astropy refuses (FITS values
+  are ASCII), so every conversion failed before writing the file. The cards
+  are ASCII now, and a test scans the backend for non-ASCII literals written
+  to any FITS header.
+- **PSRFITS samples are converted to physical values.** The converter used
+  `DATA` as stored; it now applies `DATA × DAT_SCL + DAT_OFFS` per row,
+  channel and polarisation (`(DATA − ZERO_OFF) × DAT_SCL + DAT_OFFS` for
+  search data), so a sample of 10 with scale 2 and offset 100 reads 120, not
+  10. Channels with a zero `DAT_WTS` weight become NaN, which the averages,
+  the pulse profile and the RFI mask already treat as flagged; Stokes I is
+  `AA + BB` for `AABB`/`AABBCRCI` data instead of `AA` alone.
+- **PSRFITS layout comes from the headers.** Fold or search is read from
+  `OBS_MODE` and the row shape from `NBIN`, `NCHAN`, `NPOL`, `NSBLK` and
+  `NBITS`, instead of guessed from which axis has length 1, 2 or 4. A search
+  file of 2 sub-integrations × 16 samples × 1 polarisation × 3 channels was
+  refused (`Unrecognised PSRFITS DATA shape: (2, 16, 1, 3)`) and now gives 32
+  time samples of `TBIN`; a search row of 2 samples × 1 pol × 2 channels was
+  read as a folded row and gave one wrong pixel. 1-, 2- and 4-bit packed
+  search samples are unpacked and `SIGNINT = 1` samples read as signed
+  (byte 255 is −1); other widths, or an `NBITS` that disagrees with the
+  stored type, are refused by name. A folded file's time step is its
+  `TSUBINT` (10 s in the test file), not `TBIN × NBIN` (0.002 s, one pulse
+  period). Rows are placed by `OFFS_SUB`, so times count from the start of
+  the observation and a dropped sub-integration is a blank column: rows
+  centred at 5 s and 25 s used to become two adjacent columns from 0 s.
+- **Folding and dedispersion respect a decreasing time axis.** Both tools
+  took `|CDELT1|`, so the same observation stored backwards folded to
+  `[0, 0, 1, 0]` instead of `[1, 0, 0, 0]` and was dedispersed in the wrong
+  direction; sample times and dispersion shifts now keep the sign of
+  `CDELT1`.
 - **Pixel Math reprojects maps that are on different sky grids**, not only
   maps of different size. Two 64×64 maps of the same source, one with its grid
   shifted by 4 pixels, used to be subtracted pixel by pixel (residual 0.86 of
