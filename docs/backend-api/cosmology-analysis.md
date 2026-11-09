@@ -80,7 +80,8 @@ failure.
 Whole-dataset pixel statistics on the full-resolution data (the client's own
 statistics are computed on the decimated preview). Streamed out-of-core in
 z-slabs, so it is safe on cubes larger than memory, and cached per file
-(path, size, modification time; up to 64 files).
+version (path, device, inode, size, modification and change times, so a file
+replaced or rewritten in place is computed again; up to 64 files).
 
 Response: `valid`, `error`, `cached`, `total_count`, `valid_count`,
 `blanked_count`, `min`, `max`, `mean`, `median`, `std`, `rms`, `mad_sigma`

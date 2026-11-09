@@ -22,7 +22,8 @@ on your desktop, with the heavy computation wherever the data lives.**
 ---
 
 VisIVO Visual Analytics is a desktop application for exploring FITS spectral
-cubes, 2-D maps and 3-D catalogues. It pairs a native Qt/VTK client with a
+cubes, 2-D maps and 3-D catalogues. FITS files open as they are, gzipped
+(`.fits.gz`) and tile-compressed (`.fz`) ones included. It pairs a native Qt/VTK client with a
 Python compute service, so the same interface works whether your data sits on
 the laptop in front of you or on an HPC cluster on another continent — the
 client renders, the service computes next to the data, and only the result
@@ -52,8 +53,8 @@ rotation-measure synthesis over the frequency axis.
 
 **Images and surveys** — WCS-aware multi-layer 2-D images, all-sky HiPS,
 3-D catalogue scatter, VLKB archive cutouts with compact-source and filament
-overlays, SED fitting, and sending images and catalogues to TOPCAT, Aladin and
-DS9 over SAMP.
+overlays, SED fitting, and SAMP with TOPCAT, Aladin and DS9: images and
+catalogues are sent and received, and selected rows are linked both ways.
 
 **Scientific Copilot** — ask questions in natural language; every number is
 produced by a real backend tool rather than generated text, with provenance and
@@ -182,8 +183,10 @@ Release notes and the development history are in [CHANGELOG.md](CHANGELOG.md).
 
 If VisIVO Visual Analytics contributes to work you publish, please cite the
 software and this repository. A paper describing the architecture and the
-kinematic-lasso selection method is in preparation; this section will carry the
-reference once it is available.
+kinematic-lasso selection method, *VisIVO Visual Analytics: a hybrid
+desktop-service platform for SKA-era data cubes*, has been submitted to
+Astronomy and Computing; this section will carry the reference once it is
+published.
 
 ## Licence
 

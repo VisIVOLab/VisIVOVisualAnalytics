@@ -121,12 +121,12 @@ The client talks to it exclusively through `BackendClient` (REST/HTTP, bearer-to
 | `cube` | `POST /v1/cube/preview`, `/slice`, `/subvolume`, `/pv`, `/noise`, `/save_subregion` | cube data slices, PV diagram, noise stats; `save_subregion` writes a cropped FITS into the Workspace Exports dir |
 | `products` | `POST /v1/products/moment`, `/isosurface`, `/moment_fits` | synchronous moment / isosurface computation; `moment_fits` persists a 2-D moment FITS into the Workspace Exports dir |
 | `exports` | `GET /v1/exports/list`, `GET /v1/exports/download?filename=…`, `DELETE /v1/exports/{filename}` | Workspace Exports lifecycle: enumerate, stream-download, remove. All operations are path-traversal-safe; absolute paths and `..` segments are refused with HTTP 400 |
-| `tasks` | `POST /v1/tasks/moment`, `/pv`; `GET`/`DELETE /v1/tasks/{id}` | async task queue; client polls for completion |
+| `tasks` | `POST /v1/tasks/moment`, `/moment_fits`, `/pv`, `/sourcefind`, `/decompress` (and `/volume_render`, `/particle_render` in their own routers); `GET`/`DELETE /v1/tasks/{id}` | async task queue; client polls for completion and cancels with `DELETE` |
 | `image` | `POST /v1/image/full`, `/preview` | 2-D image export/preview |
-| `cosmology` | `POST /v1/cosmology/distance`, `/distance/batch` | redshift → comoving distance (astropy) |
+| `cosmology` | `POST /v1/cosmology/distance`, `/distance/batch`, `/angular_power/{dataset_id}`, `/skeleton/{dataset_id}`; `GET /v1/cosmology/distances`, `/powerspectrum/{dataset_id}` | redshift → distances (astropy), the cosmology calculator, angular power spectrum, skeleton / voids |
 | `hips` | `POST /v1/hips/open`; `GET /v1/hips/surveys`, `/v1/hips/{id}/allsky`, `/tile/…`; `POST /query_tiles`, `/catalogue_overlay` | the CDS survey registry, HiPS sky survey tiles + source overlay |
 | `resolve` | `POST /v1/resolve/target` | astronomical name → sky coordinates |
-| `samp` | `POST /v1/samp/send`/`receive`/`connect`/`files/register`/`import-url`/`upload-file`/`send-fits`/`send-catalogue`; `GET /v1/samp/pending`/`inbox`/`status`/`files/{token}` | SAMP messaging + file sharing; **no auth dependency** so the local SAMP hub can reach it directly |
+| `samp` | `POST /v1/samp/send`/`receive`/`connect`/`files/register`/`import-url`/`upload-file`/`send-fits`/`send-catalogue`; `GET /v1/samp/pending`/`inbox`/`status`/`hub-status`/`files/{token}` | SAMP messaging + file sharing; **no auth dependency** so the local SAMP hub can reach it directly |
 | `spectral` | `POST /v1/spectral/linewidth`, `/linewidth/binary`, `/baseline/{sid}/{did}`, `/stack`, `/stack/binary`; `GET /v1/spectral/linewidth/{ds_id}` | per-pixel FWHM + EW maps (S-02), polynomial / median baseline subtraction (S-03), spectral stacking (S-04) |
 
 ### Backend session model
@@ -222,7 +222,8 @@ Both `vtkWindowCatalogue3D` and `vtkWindowVbt` support incremental pagination fo
 For long-running operations the backend supports a task queue:
 - `createMomentTask()` / `createPvTask()` → returns a `task_id`
 - `visivo::followBackendTask()` (`src/app/BackendTaskFollow.h`) polls `GET /v1/tasks/{id}` with back-off and no time limit, and cancels the task on abort
-- moments, moment FITS exports and PV diagrams use this path
+- moments, moment FITS exports, PV diagrams and the decompression of a compressed FITS before it opens use this path; source finders use the same loop through `FinderTaskRun`
+- on quit, `TaskQuitDrain` (`src/app/TaskQuitDrain.h`) aborts every followed task and waits, with a bound, until each `DELETE` has gone out, while the application object still exists
 
 ---
 
@@ -481,6 +482,12 @@ Three properties of the sheet are deliberate:
   put a modal sheet in the user's way. It is closed *after* the staleness check,
   so a superseded result cannot close the sheet of the request that replaced it.
 
+A backend **task** gets a different sheet, `showTaskProgressSheet()`: the work
+can be stopped (`DELETE /v1/tasks/{id}`), so it has a Cancel button and shows
+the task's state and elapsed time, and it is a non-modal tool window, so the
+application menu, Quit included, stays usable while it runs. The decompression
+of a `.fits.gz` counts its bytes and is the one sheet with a determinate bar.
+
 It is armed with `setValue(0)`, **not** `show()`. `show()` puts the sheet up at
 once, which defeats `minimumDuration` and flashes a sheet at every fast compute
 (measured: visible after 50 ms). `setValue()` arms QProgressDialog's own delayed
@@ -718,8 +725,9 @@ It did find these:
   and the matching viewer opens. The user is asked only when the *content* is
   ambiguous — a FITS table is a source catalogue or an overlay, and nothing in
   the file distinguishes them — and told, rather than asked, when nothing here
-  opens the file (a `.fits.gz`: no open route accepts a compressed file, so
-  offering the three viewers would only move the failure one dialog later). The
+  opens the file (offering the three viewers would only move the failure one
+  dialog later). A `.fits.gz` was such a file until 1.0.12; compressed FITS
+  now classify as their uncompressed selves and open. The
   distinction the old menu buried — a *file* versus a *service* — is now the one
   the panel makes: **Open…**, then an **Archives** group for HiPS and VLKB.
   `openAnything()` / `dispatchOpenForPath()` in `MainWindow_Open.cpp` hold the

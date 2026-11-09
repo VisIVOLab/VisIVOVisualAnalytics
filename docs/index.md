@@ -99,7 +99,8 @@ extraction, MAD-based noise.
 :link-type: doc
 
 3-D catalogue scatter, multi-layer 2-D images, all-sky HiPS surveys,
-sending images and catalogues to TOPCAT/Aladin over SAMP.
+images and catalogues exchanged with TOPCAT, Aladin and DS9 over SAMP, with
+selected rows linked both ways.
 :::
 
 :::{grid-item-card} 🤖 Scientific Copilot
@@ -309,7 +310,7 @@ tools by task, together with the page that documents their scientific use.
   -
   -
   -
-* - Open a remote FITS cube / image
+* - Open a remote FITS cube / image (plain, `.fits.gz` or tile-compressed `.fz`)
   - **Data Hub → Open…** (or ⌘O)
   - Cube viewer or Image viewer
   - [Getting started](user-guide/getting-started)
@@ -449,6 +450,10 @@ tools by task, together with the page that documents their scientific use.
   - **Data → Extract from AREPO Snapshot…**
   - One FITS cube per field, with a physical WCS in parsec
   - [Simulation snapshots](user-guide/simulations)
+* - Distances, ages and scales for a redshift; P(ℓ), skeleton and voids of a map
+  - **Tools → Cosmology Calculator…**; **Tools → Structure** in the image viewer
+  - Tables and maps computed by the backend with astropy
+  - [Cosmology tools](user-guide/cosmology)
 * - **SED FITTING**
   -
   -
@@ -465,9 +470,9 @@ tools by task, together with the page that documents their scientific use.
   -
   -
   -
-* - Send the current image, cube or catalogue to TOPCAT / Aladin / DS9
+* - Exchange images, cubes and catalogues with TOPCAT / Aladin / DS9
   - **SAMP** menu of the Data Hub window (connects to the running hub)
-  - Images and cubes to Aladin / DS9, catalogues to TOPCAT; receiving is not available yet (#130)
+  - Images and cubes to Aladin / DS9, catalogues to TOPCAT; tables and images they send open in VisIVO; selected rows are linked with TOPCAT
   - [Catalogues · SAMP](user-guide/catalogues-hips.md#samp)
 * - Open VBT / volume binary tables produced by the VisIVO Server CLI
   - **File → Open** (or *Data Hub*) — any `.bin` / `.head` VBT pair
@@ -489,7 +494,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 # A bearer token is printed at startup (and saved to ~/.visivo_token)
 
-# 2. desktop client (Qt 6.5+ / VTK 9.5+ / C++17)
+# 2. desktop client (Qt 6.10+ / VTK 9.5+ / C++17)
 cmake -B build -S .
 cmake --build build
 ./build/VisIVOVisualAnalytics.app/Contents/MacOS/VisIVOVisualAnalytics
@@ -502,7 +507,7 @@ cmake --build build
 | | |
 |---|---|
 | Active branch | `main` |
-| Backend | FastAPI + Python 3.12+ |
-| Client | Qt 6.5+ / VTK 9.5+ / C++17 |
+| Backend | FastAPI + Python 3.11+ |
+| Client | Qt 6.10+ / VTK 9.5+ / C++17 |
 | License | See repository `LICENSE` |
 | Repo | <https://github.com/VisIVOLab/VisIVOVisualAnalytics> |

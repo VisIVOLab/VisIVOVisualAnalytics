@@ -33,7 +33,7 @@ question, a self-hosted server that was given no model and does not list
 exactly one. It is `""` otherwise. `model` is the model questions go to,
 including the one the backend picked when a self-hosted server serves exactly
 one (`config.model` stays what was configured); it is `""` until known.
-`POST /config` returns both too.
+`POST /v1/assistant/config` returns both too.
 
 ## `POST /v1/assistant/config`
 Choose the provider for this session. Every field is optional: an omitted

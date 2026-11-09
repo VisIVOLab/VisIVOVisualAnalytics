@@ -15,7 +15,7 @@ produced it, and the exact tool call is shown.
 ## Where it is
 
 Open a cube, then in the **Inspector** (right panel) switch to the **Copilot**
-tab (alongside Properties / Analysis / Provenance). Type in the box at the
+tab (alongside Properties / Analysis / Parameters). Type in the box at the
 bottom and press **Send**.
 
 The provider status is shown at the bottom of the panel, e.g.
@@ -70,7 +70,8 @@ to send it and see what the copilot can do.
 Natural-language answers need a Large Language Model. The tool catalogue works
 **without** one — but then the copilot just runs the tools and reports the raw
 numbers instead of a prose summary. Choose where the language model runs in
-**Settings ▸ Scientific Copilot** (the **Copilot** tab):
+**Settings ▸ Copilot** (the *Scientific Copilot* group), with the **Provider**
+menu and its **API key**, **Server URL** and **Model** fields:
 
 ```{list-table}
 :header-rows: 1
@@ -84,13 +85,13 @@ numbers instead of a prose summary. Choose where the language model runs in
     (see [Configuring the backend](copilot-self-hosted.md#configuring-the-backend-instead-of-the-client)),
     or no model if nothing was.
   - Nothing.
-* - **Claude**
+* - **Claude (Anthropic)**
   - Anthropic's cloud models.
   - An Anthropic API key.
-* - **ChatGPT**
+* - **ChatGPT (OpenAI)**
   - OpenAI's cloud models.
   - An OpenAI API key.
-* - **Your server**
+* - **Your server (OpenAI-compatible)**
   - Any **OpenAI-compatible** endpoint you run yourself (vLLM / Ollama / …),
     so your data and prompts never leave your infrastructure and there is no
     per-token cost.
@@ -145,16 +146,16 @@ server.
 
 Every copilot answer carries its evidence. Below the prose you get:
 
-- **Provenance** — an expandable panel listing each tool call and its JSON
-  result, e.g.
+- **Provenance** — a block under the answer listing each tool call and its
+  JSON result, e.g.
 
   ```text
   dataset_metadata({}) → {"bunit":"Jy/beam","beam_major":0.00836…, "ctype":["RA---SIN","DEC--SIN","VOPT"], …}
   cube_statistics({})  → {"min":-0.0100…,"max":0.0692…,"mean":0.000165…,"rms":0.00262…,"valid_count":5918292, …}
   ```
 
-  The header reads `Provenance (<provider>) · <configured|not configured> · with
-  tool call(s)`.
+  The block starts with *✓ provenance · grounded in tool call(s):* (without
+  the tick when the answer is not fully grounded in them).
 
 - **Reproducibility script** — a short Python snippet that regenerates every
   number **deterministically, with no LLM involved**, by calling the same

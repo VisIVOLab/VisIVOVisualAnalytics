@@ -97,6 +97,11 @@ opened:
   six;
 - **cubes** open in the spectral cube viewer.
 
+Right-click a dataset for the other choices: **Open as a Layer** (the
+default above, *Open* for a cube), **Open in a New Window** (an image in a
+viewer of its own, to compare two datasets side by side) and **Save File…**,
+which downloads the cutout and keeps the file without opening it.
+
 The viewer loads one layer at a time, so a batch queues and goes in one after
 another — the status line says how many are waiting. A download that fails does
 not cancel the rest.

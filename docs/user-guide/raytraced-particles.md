@@ -56,7 +56,7 @@ The particles are prepared by the backend once (sizes, light, colours), then
 sent to the desktop: about 120 MB for 3.7 million particles. Above 8 million an
 even sample is sent, each particle carrying the light of those it stands for.
 With a backend far away and a large table, the backend's own rendering
-(*View → Rendering → Remote*) is the better choice.
+(*View → Rendering → Remote (GPU on backend)*) is the better choice.
 
 ### Settings
 

@@ -15,34 +15,38 @@ its scientific metadata.
 
 In the [cube viewer](cube-viewer):
 
-1. **Tools → Compute Moment** (or the menu shortcut in the Tools sidebar).
-2. The Moment dialog appears (non-modal — keep cubing while it computes):
-   - **Order** — see the table below.
-   - **Channel start / end** — the spectral range to integrate over.
+1. **Tools → Maps → Compute Moment…** (or *Compute Moment* in Inspector ▸
+   Analysis).
+2. The *Moment Map Settings* dialog appears (non-modal — keep working while it
+   computes):
+   - **Moment order** — see the table below.
+   - **Start → End** — the channel range to integrate over.
      Defaults to the full cube. Restrict it to the channels containing the
      line to avoid integrating background.
-   - **Mask** — **on by default**. Only voxels above the threshold contribute,
+      - **Enable threshold mask** — **on by default**. Only voxels above the threshold contribute,
      which is what keeps M1/M2 physically clean (see the note below).
    - **3σ of the noise estimate** — shown, and chosen by default, once you have
      run *Tools → Estimate Noise* in this session: the threshold is 3σ of the σ
      you measured on a line-free region (the tooltip says where), and the
      product's provenance records it as such.
-   - **Auto threshold (≈ 3 σ)** — the default when there is no estimate. The
+      - **Auto threshold (≈ 3σ from MAD)** — the default when there is no estimate. The
      backend derives the mask threshold from the data itself (median + 3 · σ,
      with σ from the MAD over the cube), the same convention CASA/SoFiA use.
-     Untick both to type a value by hand in **Mask threshold**; untick **Mask**
-     entirely to compute an unmasked moment.
-3. Click **Compute**. The Moment card in the sidebar tracks the state
-   (`Computing… → Ready` or `Error`). The channel range and mask settings are
+          Untick both to type a value by hand in **Mask threshold**; untick **Enable
+     threshold mask** to compute an unmasked moment.
+3. Click **Compute**. The status bar says *Computing moment map...* and then
+   gives the result's order, unit, channel range and mask. The channel range and mask settings are
    **remembered per dataset**, so re-opening the dialog for the same cube (this
    session or later) restores your last-used range and threshold rather than
    the full-cube default.
-4. When ready the result appears in the 2-D dock (replacing the slice
-   view); the *2-D mode* combo flips to **Moment**.
+4. When ready the map is shown in the 2-D Slice pane in place of the
+   channels and added to Session Data; *2D Slice* in the pane's ▾ menu brings
+   the channels back.
 
 ```{note}
 **Long computations.** The moment runs as a backend *task*, which has no time
-limit: on an SKA-scale cube (hundreds of GB) an M2 can take 20–25 minutes.
+limit: on an SKA-scale cube an M2 takes minutes (about 15 for a 450 GB cube
+on a cluster file system).
 While it runs, a progress window above the cube window says whether the task
 is queued or running and how long it has been going. **Cancel** stops the task
 on the backend (it does not just hide the window), and so does closing the cube
@@ -182,18 +186,19 @@ channels visually, or extract a noise map first
 
 ## Reading the result
 
-The moment dialog displays:
+The status bar sums the result up (*Moment map: … | Unit: … | Ch: … | Mask:
+… | Scope: …*), and its tooltip and the product's provenance (Inspector ▸
+Parameters) give the details:
 
-- **Value range** (min / max) over finite pixels
-- **BUNIT** (carried from the cube header)
-- **Spectral axis unit** (used for orders 1, 2, etc.)
-- **Sanity warnings** if the WCS was sanitised, if the integration range
-  is fully blanked, etc.
+- the moment's **unit** and the cube's **BUNIT**
+- the **spectral axis** type and unit (used for orders 1, 2, etc.)
+- the **channel range**, the **mask** and its **threshold**
+- a transient **warning** if the WCS was sanitised or degraded.
 
 The colour map follows the order: *Inferno* for M0 (and the orders above 2),
-*CoolWarm* for the velocity field M1, *Viridis* for M2. Change it in the
-**COLOR MAP** card of the 2-D settings while the moment is shown; **Advanced…**
-opens the LUT editor for finer clamping.
+*CoolWarm* for the velocity field M1, *Viridis* for M2. Change it with *Color map* in the left dock's DISPLAY section while the
+moment's pane is the active one; **Edit** beside it opens the LUT editor for
+finer clamping.
 
 ## Using a moment map elsewhere
 
@@ -222,7 +227,7 @@ resolution to the Workspace Exports. See
   you can scroll slices, probe spectra, rotate the cube during a moment
   compute.
 - Results are LRU-cached on the backend (`PRODUCT_CACHE`, default 32
-  entries). Identical recomputes (same dataset + params) return in
+  entries, `VISIVO_PRODUCT_CACHE_ENTRIES`). Identical recomputes (same dataset + params) return in
   sub-milliseconds.
 - **In memory only when it fits.** The selected channel range (channels ×
   width × height × 4 bytes) is held in memory only when it is no larger than

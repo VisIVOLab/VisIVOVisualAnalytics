@@ -130,6 +130,9 @@ List backend-side directory. Returns `{valid, error, current_path, entries}`, `e
 { "path": "/data/cube.fits" }
 ```
 Returns `{valid, error, cards}`, the FITS header cards as `string[]` ("FITS file not found." with `valid: false` for a missing or refused path).
+The cards are the image HDU's, followed by the primary header's descriptive
+cards it does not repeat. For a `.fits.gz` they are read off the start of the
+gzip stream, without decompressing the rest.
 
 ### `POST /v1/files/header/patch`
 Apply header edits to a **copy** of the file, in the Workspace. The input is
@@ -181,7 +184,11 @@ most one FITS header; nothing is opened, converted or registered.
 
 A VBT is classified by its header: a volume as `cube` / `dataset` (each field
 opens as a cube), a table of points as `vbt` / `catalogue` (opened with
-`format: "vbt"`). A FITS **table** is reported as `fits-table` / `ask`: it can be a source
+`format: "vbt"`). A gzip-compressed FITS is classified by what it holds
+(read through the start of the gzip stream) and a tile-compressed one like
+any FITS, the `detail` adding that it is decompressed into the workspace cache
+when opened; `compressed` / `unsupported` is a compressed file that holds no
+FITS (a gzipped CSV, say). A FITS **table** is reported as `fits-table` / `ask`: it can be a source
 catalogue or a table to overlay, and only the user knows which. A missing path
 and a refused one answer identically (`"File not found."`), so the classifier
 cannot be used to enumerate what lies outside the allowed data roots.

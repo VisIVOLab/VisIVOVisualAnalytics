@@ -7,7 +7,7 @@ answers a different question from the cube viewer: not *what is here* but
 
 | | |
 |---|---|
-| **Open** | *File → Open Velocity Field…*, or *Open…* on the file: a FITS with a length-3 component axis is recognised and opened here |
+| **Open** | *Data → Open Velocity Field…*, or *Open…* on the file: a FITS with a length-3 component axis is recognised and opened here |
 | **Input** | a FITS grid with three velocity components (km s⁻¹) |
 | **Overlay** | a galaxy catalogue, to compare the reconstruction against observed motions |
 
@@ -20,25 +20,28 @@ answers a different question from the cube viewer: not *what is here* but
 :widths: 22 78
 
 * - **Streamlines**
-  - Traces that follow the flow. The clearest way to see where matter is going:
-    convergent bundles mark attractors, divergent ones mark voids.
+  - Traces that follow the flow, from *Seeds* starting points. The clearest
+    way to see where matter is going: convergent bundles mark attractors,
+    divergent ones mark voids.
 * - **Arrows**
-  - Vectors sampled on the grid, with an adjustable *Arrow scale*. Good for
-    reading local direction and speed; cluttered over a large volume.
-* - **Basins**
+  - Vectors sampled on the grid, at most *Max arrows* of them, with an
+    adjustable *Arrow scale*. Good for reading local direction and speed;
+    cluttered over a large volume.
+* - **Show basins**
   - Watershed regions of the flow — the volumes that drain into the same
     attractor. Switch *Basin type* between **Attraction (superclusters)** and
-    **Void (+∇·v)** to segment either the sinks or the sources.
-* - **Density**
-  - Structure inferred from the velocity **divergence**: converging flow implies
-    mass. Adjust with *Density level %*.
-* - **Vorticity**
-  - Colour the field by curl instead of speed, to pick out shear and rotation
-    that speed alone hides.
+    **Repulsion (voids)** to segment either the sinks or the sources.
+* - **Overdensity (−∇·v)**, **Void (+∇·v)**
+  - Structure inferred from the velocity **divergence**: an isosurface of the
+    converging cores (overdensity) or of the diverging ones (voids,
+    repellers). *∇·v level %* sets the isosurface, as a percentage of the peak.
+* - **Colour by vorticity**
+  - Colour the streamlines by curl |∇×v| instead of speed, to pick out shear
+    and rotation that speed alone hides.
 ```
 
-Colour source is chosen with *Colour by* — **Speed |v|**, **Divergence**,
-**Vorticity** or **Structure** — with the usual colormap picker.
+These are in the *Flow* and *Structure* groups of the side panel; *Colormap*
+picks the colour map of the streamlines and arrows.
 
 ---
 
@@ -49,42 +52,50 @@ approach the cube viewer uses.
 
 - The initial view is a decimated version of the grid, so a large field opens
   quickly.
-- **Define ROI** selects a sub-volume and fetches it at **full resolution**. The
-  status line reports the extent it retrieved, e.g. `Full-res ROI: 128×128×128
-  at [64,64,64]`.
-- On a field small enough to load whole, the button reads *Define ROI (n/a —
+- **Define ROI** shows a box you drag to choose a sub-volume; **Load full-res
+  ROI** fetches it at **full resolution**. The status line reports the extent
+  it retrieved, e.g. `Full-res ROI: 128×128×128 at [64,64,64]`.
+- On a field small enough to load whole, the check reads *Define ROI (n/a,
   full res)*: there is nothing to refine.
 
-*Box size (Mpc)* sets the physical extent the grid covers, which is what turns
-grid indices into distances — check it against your data's own convention before
+*Box size (Mpc)* sets the physical extent the grid covers (0 means grid units),
+which is what turns grid indices into distances — check it against your data's own convention before
 reading any number in Mpc off the screen.
 
 ---
 
 ## Overlaying a galaxy catalogue
 
-*Overlay Catalogue* places observed galaxies in the same volume as the
+*Overlay galaxy catalogue…* places observed galaxies in the same volume as the
 reconstruction. This is where the viewer earns its keep: a reconstruction is a
-model, and the galaxies are the observations it is meant to explain.
+model, and the galaxies are the observations it is meant to explain. The
+catalogue must be Cartesian (X/Y/Z in Mpc) in the field's own frame and
+origin; a sky catalogue is placed too, with a note that it may not align.
+*Remove overlay* takes it away again.
 
-Each galaxy can be drawn by *Galaxy shape*, *Galaxy size* and *Galaxy color*,
-and coloured by:
+*Galaxy size* sets the point size. *Galaxy shape* draws each galaxy as:
 
 ```{list-table}
 :header-rows: 1
 :widths: 30 70
 
-* - **Uniform**
-  - One colour. Use when position is all you want to read.
+* - **Points**
+  - Position only.
 * - **Velocity arrows**
-  - The galaxy's own measured peculiar velocity.
-* - **Reconstruction (at galaxies)**
-  - The field's prediction sampled at each galaxy's position.
-* - **Residual arrows** / **Residual |v|**
-  - Observed minus reconstructed. This is the diagnostic view: a good
-    reconstruction leaves small, unstructured residuals, while a coherent
-    residual pattern means the model is missing something real.
+  - The galaxy's own measured peculiar velocity (when the catalogue has
+    vx/vy/vz).
+* - **Residual arrows**
+  - Observed minus reconstructed, v_galaxy − v_field. This is the diagnostic
+    view: a good reconstruction leaves small, unstructured residuals, while a
+    coherent residual pattern means the model is missing something real. Both
+    arrow modes share one physical scale.
 ```
+
+*Galaxy color* is **Uniform** or any numeric column of the catalogue, plus
+**Speed |v|** (from vx/vy/vz), **Field agreement** (the cosine of the angle
+between the galaxy's velocity and the field's at its position) and
+**Residual |v|**. *Galaxy density* bins the galaxies into a density field and
+shows an isosurface of it, at *Density level %* of its peak.
 
 ```{caution}
 Galaxy distances come from the catalogue, and a redshift column holding `0`
@@ -96,14 +107,16 @@ distances are recomputed.
 
 ### Bulk flow
 
-*Bulk flow vs radius…* plots the mean velocity of galaxies within a growing
-sphere, and *Field bulk flow vs radius…* does the same for the reconstruction.
-Plotted together they are a direct test of the model: the two curves should
+*Bulk flow vs radius…* plots the mean velocity of the galaxies within a
+growing sphere about the observer, together with *Reconstruction (at
+galaxies)*, the field sampled at the same galaxies. *Field bulk flow vs
+radius…* plots the reconstruction's own bulk flow, without a catalogue. The
+galaxy and reconstruction curves are a direct test of the model: they should
 agree within the errors out to the radius where the reconstruction is
 constrained, and diverge beyond it.
 
-*Field agreement* summarises how well the reconstruction matches the observed
-motions where both exist.
+After an overlay the status line reports the mean field agreement, residual
+and bulk flow (km/s) over the galaxies.
 
 ```{tip}
 Bulk flow needs galaxies at a range of distances. If the plot is empty or flat,

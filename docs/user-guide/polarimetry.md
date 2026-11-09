@@ -5,8 +5,8 @@ both — but by two different routes, because they are not the same problem.
 
 | Your data | Where to work | Why |
 |---|---|---|
-| One 2-D image per Stokes plane | [Image viewer](image-viewer) → *Stokes Analysis* | Small enough to combine in the viewer, pixel by pixel |
-| One **cube** per Stokes plane (or one cube with a Stokes axis) | **Cube viewer → Tools** | Too large to hold; the backend does the arithmetic |
+| One 2-D image per Stokes plane | [Image viewer](image-viewer) → *Tools ▸ Polarisation* | Small enough to combine in the viewer, pixel by pixel |
+| One **cube** per Stokes plane (or one cube with a Stokes axis) | **Cube viewer → Tools ▸ Polarimetry** | Too large to hold; the backend does the arithmetic |
 
 This page is about the second case. A single MeerKAT MGCLS field is
 7500 × 7500 × 16 per Stokes plane — 3.4 GB each uncompressed — so Q and U are
@@ -19,7 +19,7 @@ map.
 ## 1. Load the Stokes companions
 
 Open the cube you have — normally Stokes I — then
-*Tools → **Load Stokes Q/U/V Companions…***.
+*Tools → Polarimetry → **Load Stokes Q/U/V Companions…***.
 
 The viewer lists the directory **on the backend** (not on your machine: with a
 remote backend they are different filesystems) and looks for siblings of the
@@ -47,7 +47,7 @@ already enabled.
 
 ## 2. Polarised intensity and angle
 
-*Tools → **Polarised Intensity & Angle (current channel)*** computes, for the
+*Tools → Polarimetry → **Polarised Intensity & Angle (current channel)*** computes, for the
 channel currently on screen:
 
 $$PI = \sqrt{\max(Q^2 + U^2 - \sigma_{QU}^2,\ 0)} \qquad
@@ -73,7 +73,7 @@ refused rather than paired with that file's last plane.
 
 ## 3. RM synthesis
 
-*Tools → **Rotation Measure Synthesis…*** computes the Faraday dispersion
+*Tools → Polarimetry → **Rotation Measure Synthesis…*** computes the Faraday dispersion
 function over the cube's frequency axis (Brentjens & de Bruyn 2005):
 
 $$F(\varphi) = \frac{1}{N}\sum_i P(\lambda_i^2)\, e^{-2i\varphi\lambda_i^2},
@@ -85,7 +85,7 @@ Both ends are sampled: −80 to 80 at a step of 1 is 161 samples. A range that i
 not a whole number of steps stops at the last sample before φ max.
 If a region is drawn on the 2-D slice you can restrict the computation to it.
 
-Two maps come back:
+Three maps come back:
 
 - **Peak |F(φ)|** — how polarised each pixel is at its strongest Faraday depth;
 - **Faraday depth (RM)** — the φ at which it peaks, i.e. the rotation-measure
@@ -104,7 +104,8 @@ peak maps (what the viewer asks for) or a smaller region.
 
 λ² is derived from the frequency axis of the file that supplies **Stokes Q**,
 not from the cube you opened, and from its `FREQnnnn` keywords when it is an
-MFImage product. Both rules matter for MGCLS, in different ways. The sub-band
+MFImage product. Both rules matter for the MeerKAT Milky Way Bulge cubes of
+the worked example below, in different ways. The sub-band
 keywords of a field's I, Q and U cubes agree with each other, but none of them
 agrees with the WCS axis: the keywords say 908–1656 MHz over 14 planes, the
 axis says 1284–2147 MHz over 16. Deriving λ² from the axis — which also drags
@@ -145,9 +146,9 @@ The action reports "no 2-D map is on screen" rather than doing nothing if no
 product is mounted in a visible pane. Show the map first.
 ```
 
-## Worked example: MeerKAT MGCLS
+## Worked example: MeerKAT Milky Way Bulge
 
-The MeerKAT Galactic-plane full-Stokes release
+The MeerKAT 1.3 GHz Milky Way Bulge full-Stokes release (Cotton et al. 2025)
 ([doi:10.48479/f2a2-qw16](https://archive-gw-1.kat.ac.za/public/repository/10.48479/f2a2-qw16/index.html))
 is the reference dataset for this workflow.
 
@@ -162,9 +163,10 @@ G000.0+2.5_Q.fits.gz    2531 MB   →  3433 MB
 G000.0+2.5_U.fits.gz    2531 MB
 ```
 
-**Unpack them all, into one directory.** The backend only accepts `.fits`,
-`.fit` and `.fts`, and gzip would defeat memory mapping anyway: every read would
-decompress 3.4 GB.
+**Keep them in one directory.** The backend opens the `.fits.gz` files
+directly, decompressing each once into its cache (about 3.4 GB of disk per
+file, and a wait the first time; later opens reuse the copy). Unpacking them
+yourself first works as well and saves that cache space.
 
 Then open `G000.0+2.5_I.fits`, load the companions, and the two tools above are
 enabled. The archive also ships `G000.0+2.5_RM.fits.gz`, an independently

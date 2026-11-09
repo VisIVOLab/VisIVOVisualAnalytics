@@ -124,7 +124,7 @@ SIP on a 3-D header); lookup-table distortions are read from the file's
 extension HDUs. A map whose header names sky axes but whose WCS cannot be read
 at all is refused.
 Otherwise B is reprojected onto A's grid with `reproject_interp` (bilinear,
-the convention of `/v1/image/reproject` at order 1) — an interpolation, which
+the convention of `/v1/astrometry/reproject/{dataset_id}` at order 1) — an interpolation, which
 keeps a surface brightness (Jy/beam, MJy/sr, K) per beam or solid angle, not a
 flux-conserving per-pixel resampling — and B pixels outside its footprint are
 NaN. The beams are not matched: for a spectral index, convolve the maps to a

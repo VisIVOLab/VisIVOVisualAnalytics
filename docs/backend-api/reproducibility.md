@@ -28,7 +28,8 @@ whole history, as for `GET`.
 ## `GET /v1/reproducibility/provenance`
 The session as a W3C PROV-JSON document: `{valid, error, prov}`. Each open
 dataset is an `entity` (`visivo:<dataset_id>` with `visivo:path` and
-`visivo:kind`), each history entry an `activity` (`prov:startTime`,
+`visivo:kind`; `visivo:path` is the file the user opened, for a compressed
+FITS the `.fits.gz` or `.fz` itself, never its decompressed copy), each history entry an `activity` (`prov:startTime`,
 `visivo:operation`, `visivo:params`); `used` links an activity to its input
 dataset, `wasGeneratedBy` a produced dataset to its activity, and
 `wasDerivedFrom` a produced dataset to its source.
@@ -37,7 +38,7 @@ dataset, `wasGeneratedBy` a produced dataset to its activity, and
 Freeze the session state into a named snapshot signed with HMAC-SHA256.
 Request: `{label}`. Response: `{valid, error, snapshot_id, hmac, state}`,
 `state` being `{label, created_at, datasets, history}` (datasets as
-`{path, kind}` per id).
+`{path, kind}` per id, `path` again the file opened).
 
 The signing key is `VISIVO_SNAPSHOT_SECRET` (or `ADMIN_SESSION_SECRET`);
 without either, a random key is generated per process, so signatures do not

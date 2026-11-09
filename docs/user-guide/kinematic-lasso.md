@@ -13,7 +13,7 @@ whatever happens to be spatially adjacent.
 
 | | |
 |---|---|
-| **Where** | *Tools → Kinematic Lasso (click to select)* in the cube viewer |
+| **Where** | *Tools → Sources & Kinematics → Kinematic Lasso (click to select)* in the cube viewer, or Inspector ▸ Analysis |
 | **Select** | **double-click** a source in the 3-D view |
 | **Add** | ⇧ double-click a second source |
 | **Carve** | ⌥ double-click a region to remove |
@@ -289,7 +289,7 @@ all of it — is in `validation/README.md` in the repository.
 * - My 2-D edits vanished.
   - You changed Reach afterwards. Refine last.
 * - Nothing happens on double-click.
-  - The tool is not enabled (*Tools → Kinematic Lasso*), or the cube is still
+  - The tool is not enabled (*Tools → Sources & Kinematics → Kinematic Lasso*), or the cube is still
     loading its preview.
 ```
 

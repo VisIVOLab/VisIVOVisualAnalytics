@@ -21,7 +21,7 @@ is installed on their laptops.
 ## Opening a SED
 
 1. Load a catalogue overlay on an image — either from a file
-   (*Tools → Load Catalogue Overlay*) or from the VLKB
+   (*Tools → Load Catalogue Overlay…*) or from the VLKB
    (*Tools → Overlay VLKB Compact Sources*, which queries
    `compactsources.sed_view_final` over the image footprint).
 2. In the catalogue table at the bottom of the window, **right-click a source**

@@ -16,8 +16,9 @@ causes:
 - The FITS file path the backend tried to open doesn't exist or is
   unreadable from the backend host (different mount points, network
   share not mounted, etc.).
-- The cube has a non-standard scalar type (e.g. complex). VisIVO supports
-  float32 cubes only.
+- The cube has a non-standard scalar type (e.g. complex). VisIVO reads the
+  standard FITS types: 8-, 16- and 32-bit integers (scaled by `BSCALE` and
+  `BZERO` when present) and 32- and 64-bit floats.
 - A `BrokenPipeError` / `[Errno 32]` typically means a backend worker
   process crashed mid-response. Restart the backend.
 
@@ -123,8 +124,10 @@ settings is normal. Mitigations:
 - Cached on the backend; re-clicking *Compute* with the same parameters
   returns instantly.
 
-To go faster you can raise `VISIVO_LINEWIDTH_SNR` (skips more pixels) or
-restrict the channel range to just the line.
+To go faster you can choose one of the fast methods in the dialog
+(*FWHM, moment-2 dispersion* or *Equivalent width*, no fit), raise
+`VISIVO_LINEWIDTH_SNR` (skips more pixels) or restrict the channel range to
+just the line.
 
 ### Slice scrolling stutters during a heavy compute
 
@@ -189,7 +192,7 @@ fix the source file (e.g. via `astropy.io.fits`) if you want them gone.
 
 The cube has no celestial axes (only the spectral axis is recognised),
 or the `CRVAL` / `CRPIX` are missing. Check the FITS header
-(*View → Show FITS Header* in the cube viewer).
+(click the *CUBE · W×H×D* tag in the cube viewer's toolbar).
 
 If the keywords are simply missing or wrong — a `CTYPE1` that never got
 written, a `CDELT` saved as a quoted string — **Edit…** in that header
@@ -307,7 +310,10 @@ one of the session's compute slots, so another heavy tool may have to wait.
 
 Moment maps, the moment FITS export, PV diagrams and SoFiA-2 are the
 exception: they run as backend tasks, which **Cancel** stops, and closing the
-cube window stops a moment or a PV under way.
+cube window stops a moment or a PV under way. Their progress windows do not
+block the rest of the application, so you can also quit (⌘Q, or the Dock's
+*Quit* on macOS): the app asks once, then cancels these tasks on the backend
+before it exits. Answering *No* leaves them running.
 
 ### "Too many concurrent compute tasks" / the backend is busy
 
@@ -349,8 +355,9 @@ If you have multiple cubes open but only one appears in the list:
 ### A moment map is still "Computing the moment map"
 
 A moment runs as a backend task with no time limit, and on a cube of hundreds
-of GB an M1 or M2 can take 20–25 minutes. The progress sheet says whether the
-task is queued or running and how long it has been going; **Cancel** stops it
+of GB an M1 or M2 can take 10–15 minutes (a 450 GB cube on a cluster file
+system). The progress window says whether the task is queued or running and
+how long it has been going; **Cancel** stops it
 on the backend ([Moment maps](moment-maps)). If it stays *queued*, other
 computations hold the backend's slots; see "Too many concurrent compute
 tasks" above.

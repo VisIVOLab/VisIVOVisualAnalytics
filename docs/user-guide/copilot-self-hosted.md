@@ -29,8 +29,9 @@ docker compose logs -f        # wait for "Application startup complete"
 ./validate.sh                 # checks /models, a chat completion, AND a tool call
 ```
 
-Then in **Copilot ⚙ → "Your server"**: URL `http://<server-ip>:8000/v1`, Key = the
-`VLLM_API_KEY` you set.
+Then in **Settings ▸ Copilot**, set **Provider** to **Your server
+(OpenAI-compatible)**: **Server URL** `http://<server-ip>:8000/v1`, **API key** =
+the `VLLM_API_KEY` you set.
 
 ## Rootless Podman on RHEL / AlmaLinux — the setup that actually works ⭐
 
@@ -131,7 +132,7 @@ wrong (a refused URL, no model or several). An explicit choice in a desktop's
 *Settings ▸ Copilot* replaces them for that user's session only; going back to
 **Use the server's configuration** restores them. Up to 1.0.11 the desktop's
 default was **None**, which replaced them, so on those releases choose **Your
-server** and enter the URL the *backend* reaches (with the full stack,
+server (OpenAI-compatible)** and enter the URL the *backend* reaches (with the full stack,
 `http://copilot-llm:8000/v1`). All the backend
 variables are listed in the [Configuration reference](../configuration.md#copilot).
 
@@ -151,7 +152,7 @@ server. Without it the "Your server" / ChatGPT providers silently fall back to
 
 * - Symptom
   - Fix
-* - Copilot shows **Provider: null** after configuring
+* - Copilot shows **Provider: off** (or *server's configuration (off)*) after configuring
   - Install `openai` in the backend venv and restart the backend.
 * - Model download **stalls** at a few MB
   - Set `HUGGING_FACE_HUB_TOKEN` (HuggingFace rate-limits unauthenticated bulk downloads).

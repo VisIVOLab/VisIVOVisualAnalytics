@@ -40,7 +40,11 @@ datasets. Get one with `POST /v1/sessions/new` (or take the `session_id`
 returned by an open call) and send it on every dataset-scoped request. With a
 single token an absent header falls back to a shared anonymous session; with
 several tokens the header is mandatory (400 without it) and a session is
-visible only to the token that created it (404 for any other).
+visible only to the token that created it (404 for any other). A session id
+of the client's own must be high-entropy (at least 32 URL-safe characters,
+such as a UUID; 400 otherwise), except the `anonymous` id the backend hands
+out in single-token mode; a token that already holds its quota of sessions is
+answered 429.
 
 ---
 
@@ -66,7 +70,7 @@ are classified into two tiers:
 | Tier | Helper | Examples |
 |------|--------|----------|
 | **Interactive** | `_run` / `_run_with_limit` | `/v1/cube/preview`, `/slice`, `/subvolume`, `/noise`, `/image/*` |
-| **Heavy** | `_run_heavy` / `_run_heavy_with_limit` | `/v1/products/moment`, `/products/isosurface`, `/v1/cube/pv`, `/v1/spectral/*` |
+| **Heavy** | `_run_heavy` / `_run_heavy_with_limit` | `/v1/products/moment`, `/products/isosurface`, `/v1/cube/pv`, `/v1/spectral/linewidth`, `/stack`, `/baseline` |
 
 Heavy invocations are gated by a global `asyncio.Semaphore` (`_HEAVY_SEM`)
 with capacity `VISIVO_HEAVY_SLOTS` (default `max(1, VISIVO_WORKERS-1)`),
@@ -100,7 +104,7 @@ rendering, remote-service allowlists, limits) is documented in the
 | <span id="catalogue"></span>Datasets, catalogues, VBT | `/v1/datasets/*`, `/v1/catalogue/*`, `/v1/vbt/*` | [Datasets, catalogues and VBT](backend-api/datasets.md) |
 | <span id="cube"></span>Cube | `/v1/cube/*`, `/v1/moment/result/binary`, `/v1/pv/result/binary` | [Cube](backend-api/cube.md) |
 | <span id="products"></span>Products | `/v1/products/*` | [Products](backend-api/products.md) |
-| Tasks and finders | `/v1/tasks/*`, `/v1/finders`, `/v1/sofia2/suggest/{dataset_id}` | [Tasks and source finders](backend-api/tasks-finders.md) |
+| Tasks and finders | `/v1/tasks/*` (moment, PV, moment FITS, decompress, source finding), `/v1/finders`, `/v1/sofia2/suggest/{dataset_id}` | [Tasks and source finders](backend-api/tasks-finders.md) |
 | Image, astrometry, photometry | `/v1/image/*`, `/v1/astrometry/*`, `/v1/photometry/*` | [Image, astrometry and photometry](backend-api/image.md) |
 | Regions | `/v1/regions/*` | [Regions](backend-api/regions.md) |
 | <span id="spectral"></span>Spectral | `/v1/spectral/*`, `/v1/sourcefind/{dataset_id}` | [Spectral](backend-api/spectral.md) |
@@ -113,6 +117,8 @@ rendering, remote-service allowlists, limits) is documented in the
 | Exports | `/v1/exports/*` | [Exports](backend-api/exports.md) |
 | <span id="samp"></span>SAMP | `/v1/samp/*` | [SAMP](backend-api/samp.md) |
 | Server-side rendering | `/v1/render/*` | [Server-side rendering](backend-api/render.md) |
+| Ray-traced particles | `/v1/particle_render/*`, `/v1/tasks/particle_render` | [Ray-traced particle rendering](backend-api/particle-render.md) |
+| Ray-traced volumes | `/v1/volume_render/*`, `/v1/tasks/volume_render` | [Ray-traced volume rendering](backend-api/volume-render.md) |
 | SRC node and SODA | `/v1/ping`, `/v1/node/status`, `/v1/metrics`, `/soda/*` | [SRC node and SODA](backend-api/node-soda.md) |
 | Assistant | `/v1/assistant/*` | [Assistant](backend-api/assistant.md) |
 | Reproducibility | `/v1/reproducibility/*` | [Reproducibility](backend-api/reproducibility.md) |

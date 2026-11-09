@@ -135,8 +135,8 @@ Errors: 401 (token), 404 (`"Unknown render session_id."`, also for a session own
 A session's camera (points or a cube), after the commands sent before the
 request: `{position, focal_point, view_up, view_angle, parallel,
 parallel_scale}`, a cube's in its voxel coordinates. A ray-traced still of the
-view on screen is rendered from it ([particles](particle-render),
-[volumes](volume-render)). (`/levels` does not return it: its answer has only
+view on screen is rendered from it ([particles](particle-render.md),
+[volumes](volume-render.md)). (`/levels` does not return it: its answer has only
 the four fields above.) 404 for an unknown session (`"Unknown render
 session_id."`), 409 for a session with no camera to report (`"This render
 session has no camera to report."`).

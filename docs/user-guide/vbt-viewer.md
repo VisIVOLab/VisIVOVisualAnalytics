@@ -55,7 +55,7 @@ catalogue opens in, so a simulation snapshot and a galaxy catalogue are explored
 with the same controls. Nothing is converted: the backend reads the columns
 where they lie in the binary. When the table has more rows than a page (100 000),
 the window loads an even sample of them rather than its first rows, which in a
-snapshot are a few blocks of space; *Load more* fills in the rows between those
+snapshot are a few blocks of space; *Load more…* fills in the rows between those
 loaded, *Load all* loads every row.
 
 The window is titled *3D Points*, the tag says *VBT · N rows*, and only what
@@ -149,11 +149,11 @@ isosurfaces are built where the file is.
   - The header is missing a line. The order is fixed: scalar type, field count,
     row count (plus geometry for a volume), byte order, then one name per field.
 * - The cloud is a featureless blob.
-  - Point size too large for the density, or no filter applied. Try solid colour
-    and a smaller point size first, then add the colour field back.
+  - Point size too large for the density, or no filter applied. Try *Single
+    colour* and a smaller *Scale* first, then add the colour column back.
 * - Colours differ between two datasets you meant to compare.
-  - Autoscale is on, so each is normalised to itself. Turn it off and set the
-    same range on both.
+  - Each window takes its colour range from its own data. Set the same Min and
+    Max (and scale) in *Edit*, beside the colour map, in both.
 * - A volume looks almost empty.
   - The threshold is high for the scale in use. On a Linear scale a density
     field shows only its peaks; choose Log in the LUT editor (*Edit*) and read

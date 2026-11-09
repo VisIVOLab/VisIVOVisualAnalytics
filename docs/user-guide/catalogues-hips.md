@@ -11,8 +11,9 @@ A dedicated 3-D scatter viewer (`vtkWindowCatalogue3D`) renders large
 catalogues — millions of entries — as glyphs in Cartesian (RA / Dec /
 distance) space.
 
-Opens from **File → Open 3-D Catalogue…** (CSV or VOTable on the backend
-filesystem) or from the Command Palette (⌘K → "open 3d catalogue"). A
+Opens from **Data → Open 3D Catalogue (CSV)…** (⌘⇧O; CSV, VOTable, FITS,
+speck or IPAC on the backend filesystem), from **File → Open…** when the file
+is a catalogue, or from the Command Palette (⌘K → "open 3d catalogue"). A
 **VisIVO Binary Table of points** (a simulation snapshot, a mock catalogue)
 opens here too, from any route: its X/Y/Z columns are the positions, read in
 place from the binary ([VBT tables](vbt-viewer.md#point-clouds)).
@@ -26,7 +27,8 @@ The viewer needs both a sky frame and a distance for each entry:
 :widths: 28 72
 
 * - Frame combo
-  - FK5 / J2000 (default) or Galactic (l, b). Conversion is done with
+  - FK5 / J2000 (default), Galactic (l, b) or Supergalactic (SGL, SGB).
+    Conversion is done with
     `wcscon()` from libwcs the moment you switch frame.
 * - Distance mode
   - **Real-space (comoving)**, the default, or **redshift-space (cz/H₀)**,
@@ -77,11 +79,13 @@ check before drawing conclusions about clustering or LSS.
   - Options
   - When to use
 * - Geometry
-  - Ellipsoid, Sphere, Point, Cross, Gaussian splats
+  - Ellipsoid, Sphere, Point, Cross, Gaussian splats, Ray-traced
   - Ellipsoid for axis-aware sources; Point for very dense fields where
     glyph overhead matters; Gaussian splats for a simulation's particles —
     emissive, so dense regions add up to bright and sparse filaments stay
-    faint but visible (the *Scale* slider sets their size).
+    faint but visible (the *Scale* slider sets their size); Ray-traced for
+    figures of a simulation, drawn on the backend ([Ray-traced
+    particles](raytraced-particles)).
 * - Size
   - Fixed, Major axis, LLS, Flux
   - "Major axis" scales each glyph by the catalogue's morphology size;
@@ -143,8 +147,8 @@ For million-row catalogues the backend exposes a paginated query API:
 
 In any **cube viewer** or **image viewer** you can overlay a catalogue on
 the 2-D slice / moment / image. The whole feature is driven by four menu
-entries under *Tools → Catalogue* (in the cube viewer) — three checkable
-state toggles plus one one-shot loader:
+entries under *Tools → Catalogue* — two checkable state toggles and two
+one-shot actions:
 
 ```{list-table}
 :header-rows: 1
@@ -184,10 +188,11 @@ regardless of the active frame.
 
 ### Querying the VLKB directly
 
-In the image viewer you do not need a file at all. Two actions — *Tools →
-**Overlay VLKB Compact Sources*** and *Tools → **Overlay VLKB Filaments*** (also
-in the Inspector's tool list) — query the VLKB over the footprint of the image,
-or over a rectangle you drag on it, and overlay the result:
+In the image viewer you do not need a file at all. *Tools → Catalogue →
+**Overlay VLKB Compact Sources***, ***Overlay VLKB Filaments*** and ***Overlay
+VLKB Bubbles*** (also in the Inspector's tool list) query the VLKB over the
+footprint of the image, or over a rectangle you drag on it, and overlay the
+result (bubbles: see [VLKB Catalogue Query](#vlkb-catalogue-query)):
 
 - **Compact sources** → `compactsources.sed_view_final`, the Hi-GAL band-merged
   catalogue. One query brings back every band; per-band ellipses are centred on
@@ -233,7 +238,7 @@ Interaction:
   - Highlights the matching row.
 * - Right-click a row
   - *Fit SED of this source…* and *Zoom to this source*.
-* - *Tools → Export Catalogue…*
+* - *Tools → Catalogue → Export Catalogue…* (image viewer)
   - Writes what is on screen to CSV — names, positions in the overlay's own sky
     frame (named in the header rather than implied), pixel coordinates, shapes
     and every extra field.
@@ -366,13 +371,13 @@ Workflow:
    survey's AllSky mosaic — a single request that covers the entire sphere.
    That same mosaic is what makes a deep zoom fill in immediately rather than
    from nothing.
-3. **Target resolution** — type a name ("M31", "NGC 1068") in *Target* and
+4. **Target resolution** — type a name ("M31", "NGC 1068") in *Target* and
    press **Go**; the backend resolves it through Sesame
    (`/v1/resolve/target`) and centres the view on it.
-4. **Grid** overlays an RA/Dec graticule whose spacing adapts to the field. It
+5. **Grid** overlays an RA/Dec graticule whose spacing adapts to the field. It
    follows whichever projection is selected, so on an all-sky map the meridians
    curve in to the poles rather than being switched off.
-5. **Cat** overlays a catalogue, from either of two sources:
+6. **Cat** overlays a catalogue, from either of two sources:
 
    - **a VO cone search over the field on screen** — pick a service (VizieR,
      NED, or any cone-search URL you paste), and the search is centred on the
@@ -391,7 +396,7 @@ Workflow:
    from the centre rather than by a range of right ascension, which says
    nothing near a pole. Resizing the window refetches, because a taller window
    sees further.
-6. **Overlay** opens a second survey on top of the first. The slider sets
+7. **Overlay** opens a second survey on top of the first. The slider sets
    its opacity, and **⧸⧸** switches from alpha blending to a side-by-side
    split so you can compare the two halves of the field.
 
@@ -557,7 +562,7 @@ where it can be filtered, coloured and overlaid like any other catalogue.
 
 ### VLKB Catalogue Query
 
-*Tools → VLKB Catalogue Query…* in the image viewer runs the VLKB catalogue
+*Tools → Catalogue → VLKB Catalogue Query…* in the image viewer runs the VLKB catalogue
 queries over a Galactic box — prefilled with the footprint of the image you are
 looking at:
 

@@ -292,6 +292,7 @@ Compound names like `flux_z` normalise to `FLUXZ` and do not match `Z`.
 | Left click + drag | camera trackball rotate (VTK), hover suppressed |
 | Click selected source again | deselect |
 | `syncTableSelection()` | table row → camera center on source |
+| SAMP `table.highlight.row` / `table.select.rowList` | sent on a selection and received from TOPCAT (`vtkWindowCatalogue3D_Samp.cpp`); rows are matched through the row each entry came from (`Catalogue3DEntry::sourceRow`), so filtered, sampled or partly loaded tables stay linked, and a row not loaded is reported |
 
 Hover highlighting runs the accelerated `pickNearestSource()` on mouse motion,
 leading-edge throttled (`m_hoverThrottle`, ~30 ms) so a flood of move events

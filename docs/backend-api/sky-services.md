@@ -24,7 +24,9 @@ into the Workspace.
   "coordsys": "icrs", "rotation_angle": 0.0, "format": "fits" }
 ```
 Returns `output_path`, `workspace_filename`, `bytes`, `is_fits` and `url` — the
-request as sent, so a cutout is reproducible outside the application.
+request as sent, so a cutout is reproducible outside the application. Defaults:
+`width`/`height` 512, `fov` 1.0, `min_cut` 0.5, `max_cut` 99.5, `stretch`
+`linear`; `output_basename` empty gives `hips2fits_<survey>.<format>`.
 
 Every parameter is checked before the request leaves: an empty survey, a field
 of view of zero, a declination off the sky or a cutout over 30 Mpx is refused
@@ -58,7 +60,8 @@ AllSky mosaic PNG/JPEG bytes.
 Single HiPS tile bytes.
 
 ### `POST /v1/hips/{survey_id}/query_tiles`
-Given a viewport (RA/Dec center + FOV), return the HEALPix tiles covering it —
+Given a viewport (`{survey_id, ra_center, dec_center, fov_deg, order,
+radius_deg}`, degrees, `radius_deg` default 0), return the HEALPix tiles covering it —
 NESTED pixel index, centre and four corners per tile — at the requested order,
 clamped to the survey's `max_order`. A field of 360° means the whole sphere and
 returns every tile of the order (`12 × 4^order` of them), which is what the
@@ -105,7 +108,8 @@ A VO Simple Cone Search against any service.
 Returns `url`, `columns`, `rows` (capped at `max_rows`), `total_rows`,
 `truncated`, `position_columns` (`{"ra": …, "dec": …}` when they could be
 identified) and `output_path` — **the whole result saved as CSV**, which is what
-lets a search end in a catalogue the viewers can open.
+lets a search end in a catalogue the viewers can open. `output_basename` names
+the CSV in the Workspace (default `cone_search.csv`).
 
 Two documents are refused before astropy sees them: one carrying a `STREAM`
 with an `href` — the parser would fetch that address itself, outside every
@@ -256,7 +260,9 @@ ADQL of your own — and save the result as a CSV catalogue in the Workspace.
 Returns `url`, `query` (the ADQL actually run — a preset is built on the backend,
 so this is how the user sees what it asked for), `columns`, `rows` (a preview),
 `total_rows`, `truncated`, `output_path`, `workspace_filename` and
-`hit_row_limit`.
+`hit_row_limit`. `query` (ADQL) is used when `preset` is empty; `service_url`
+empty means the backend's configured VLKB; `output_basename` empty gives
+`vlkb_<preset or "query">.csv`.
 
 | Preset | Table |
 |--------|-------|

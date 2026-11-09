@@ -9,7 +9,7 @@ tests/
   CMakeLists.txt                   # visivo_test_support + VisIVOTests
   main.cpp                         # QCoreApplication + QTest::qExec for each class
   Test<Name>.h                     # Q_OBJECT test class declaration (one per area)
-  test_backendclient.cpp           # 39 — result parsing, open response, image tiles
+  test_backendclient.cpp           # 44 — result parsing, open response, image tiles
   test_catalogue_parser.cpp        # 35 — redshift/distance field detection, distances
   test_backend_routing.cpp         # 39 — Settings backend registry + SKAVA routing
   test_image_lod.cpp               # 25 — viewport LOD math (level select + visible tiles)
@@ -41,6 +41,11 @@ tests/
   test_dataset_name.cpp            #  5 — how a dataset (or a VBT field) is named
   test_threshold_share.cpp         #  5 — share of voxels above the 3-D threshold
   test_colour_bar_ticks.cpp        #  5 — colour-bar tick labels
+  test_probe_spectrum_fetch.cpp    #  9 — live spectrum on a preview: one request in flight, no stale reply
+  test_wcs_axis_ticks.cpp          #  5 — WCS axis ticks read along each edge, not the diagonal
+  test_open_job_merge.cpp          # 13 — "Last 5 jobs" with the client's own opens merged in
+  test_task_quit_drain.cpp         # 20 — quitting cancels every followed task and waits for it
+  test_system_quit_redirect.cpp    #  4 — only the platform's own Quit goes the Quit menu's way
   test_layer_card_geometry.cpp     #  8 — layer-card hit rectangles in the image viewer
   test_region_readout.cpp          #  8 — what a region reports, and in which units
   test_backend_url_locality.cpp    # 13 — whether a backend URL is served by this machine
@@ -52,14 +57,28 @@ tests/
   test_sofia_suggest.cpp           # 24 — SoFiA-2 parameter suggestion as the dialog reads it
   test_update_check.cpp            #  9 — GitHub latest-release reply, version comparison
   test_source_table.cpp            # 11 — VLKB cutouts for a source table
-  test_backend_task_follow.cpp     # 18 — following a backend task to its end, with back-off
+  test_backend_task_follow.cpp     # 22 — following a backend task to its end, with back-off
+  test_samp.cpp                    # 30 — SAMP: XML-RPC codec, callback server, row identity and linking
+  test_cosmology_tools.cpp         # 38 — cosmology tools: custom models, distance table, P(ℓ) slope, bindings
+  test_copilot_status.cpp          #  8 — why the copilot cannot answer, as the panels show it
+  test_copilot_choice.cpp          # 10 — the copilot provider choice and the config it sends
+  test_quit_exit_main.cpp          # separate executable VisIVOQuitExitTest (see below)
 ```
 
-Total: **604 tests** in 44 classes, one binary, as QTest counts them — each
-class contributes its own `initTestCase` / `cleanupTestCase` to that figure.
-The per-file numbers above come from the binary's own totals
-(`./VisIVOTests | grep Totals`), so they can be checked rather than trusted.
-`ctest -V` prints the per-class totals.
+Total: **750 tests** in 53 classes in the `VisIVOTests` binary at 1.0.12, as
+QTest counts them — each class contributes its own `initTestCase` /
+`cleanupTestCase` to that figure. The per-file numbers above come from the
+binary's own totals (`./VisIVOTests | grep Totals`), so they can be checked
+rather than trusted. `ctest -V` prints the per-class totals.
+
+`ctest` runs three tests: `VisIVOUnitTests` (the binary above) and two runs of
+a second executable, `VisIVOQuitExitTest` (`test_quit_exit_main.cpp`), as
+`VisIVOQuitExit` and `VisIVOQuitExitGuiFollower` (`--gui-follower`). It is a
+process of its own because it calls `QCoreApplication::exit()`, which would end
+the event loops of every later class in `VisIVOTests`. It checks that a backend
+task created, or followed, on the application thread while the application
+quits is still cancelled on the backend: exactly one `DELETE` must reach a
+loopback stand-in backend (exit code 77, skipped, when there is no loopback).
 
 What belongs here: pure logic lifted out of the GUI classes so it can be
 checked without a display — parsers, geometry, unit conversions, and decision
@@ -88,8 +107,8 @@ out of a catalogue is a pile of column-name rules, and a misread column does not
 crash — it produces a fit that runs and is wrong. The rules therefore live in a
 header with no widgets in it, where they can be checked directly.
 
-The **backend** has its own pytest suite under `backend/tests/` (2354 tests at
-1.0.11; the numbers in brackets below are per file). A few of its
+The **backend** has its own pytest suite under `backend/tests/` (2584 tests at
+1.0.12; the numbers in brackets below are per file). A few of its
 files are worth knowing about when touching the science, the archive path or
 the way files get opened:
 
@@ -107,12 +126,12 @@ the way files get opened:
 - `test_vlkb_service.py` (8) holds the TAP query and the batch to one VLKB
   service URL — the request's, `VISIVO_VLKB_URL`, or the public default — so a
   backend with nothing configured can cut from what it has just found;
-- `test_classify.py` (27) pins what the single **Open…** does with each kind of
+- `test_classify.py` (33) pins what the single **Open…** does with each kind of
   file. Most of it is telling image, cube and table apart from the bytes — a
-  length-1 Stokes axis must not make a map into a cube — and the rest is about
-  refusing to guess: prose with commas is not a catalogue, a FITS table is
-  ambiguous on purpose, and a compressed file is refused rather than routed to
-  an opener that would reject it;
+  length-1 Stokes axis must not make a map into a cube, and a gzipped or
+  tile-compressed FITS is classified as its uncompressed self — and the rest is
+  about refusing to guess: prose with commas is not a catalogue, a FITS table is
+  ambiguous on purpose, and a gzipped file that is not a FITS is still refused;
 - the node and remote-rendering files: `test_render_push.py` (18) checks the
   push stream (frames capped by the window of unacknowledged ones, every change
   reaching every stream, the next frame rendered while one is sent) and the
@@ -128,7 +147,7 @@ the way files get opened:
 - `test_operation_history.py` (35) covers "Last 5 jobs": that work is recorded
   and that browsing, scrubbing and polling are not, and that a route answering
   HTTP 200 with `{"valid": false}` is filed as failed;
-- `test_filter_fits.py` (61) is mostly about the three things the legacy's
+- `test_filter_fits.py` (64) is mostly about the three things the legacy's
   *Filter FITS* got wrong and that only surface later, in the photometry: a
   blank pixel eating its neighbourhood, a beam that no longer describes the map,
   and flux lost by block-averaging a per-pixel unit. It also pins the WCS
@@ -285,7 +304,7 @@ Does **not** pull in Qt::Widgets, VTK, or libwcs.
 The sections below describe a few classes in more detail. Their tables show a
 selection of each class's tests; the counts are the binary's totals.
 
-## `TestBackendClient` (39 tests)
+## `TestBackendClient` (44 tests)
 
 All tests use `QJsonObject` literals — no network calls. Covers the static
 `parse*Object` methods (moment, PV, noise, save/exports, **image tile**).

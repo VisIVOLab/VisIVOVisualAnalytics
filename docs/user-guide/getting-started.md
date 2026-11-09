@@ -105,19 +105,23 @@ On Windows the dependencies (zlib, cfitsio, VTK with Qt) are built from source
 first and the executable needs its DLLs beside it; follow the step-by-step
 Windows section of `BUILDING.md`, which is what the release workflow runs.
 
-The first window you see is the **Startup Dialog**:
+The first window you see is the **Startup Dialog**. It goes through three
+steps on its own and opens the main window when they are done:
 
-1. **Backend check** — the client pings the backend health endpoint and
-   shows green when it is reachable.
+1. **Backend** — the client checks the backend health endpoint, starting the
+   backend first if nothing is listening, and shows *Connected* or *Started*.
 2. **Authentication** — the token in `~/.visivo_token` is loaded
    automatically, and is sent only to the backend configured as the local
    one. Backends on other machines use the token they were registered with
-   (see *Connecting to a remote backend* below).
-3. **Optional VLKB sign-in** — if you plan to use VLKB-protected services
-   (catalogue search, cutout staging) you can complete the OIDC sign-in here.
-   Otherwise just continue.
+   (see *Connecting to a remote backend* below). If no token is found, a field
+   asks you to paste one: **Save & Continue** stores it in `~/.visivo_token`,
+   **Skip (no VLKB)** goes on without it.
+3. **Loading application** — the main window opens.
 
-Click **Continue** to enter the main window.
+If the backend cannot be reached, **Retry** tries again and **Show Logs** shows
+the launcher's output. The VLKB sign-in (OIDC) is not part of this sequence: it
+is in *Settings ▸ Data Access ▸ VLKB ▸ Sign in*, and is needed only for
+VLKB-protected services (catalogue search, cutout staging).
 
 ## Connecting to a remote backend
 
@@ -195,9 +199,6 @@ Beside it sits the **VLKB** tab, which queries the ViaLactea Knowledge Base over
 a region of the Galactic plane and cuts out the images and cubes that cover it —
 see [VLKB archive](vlkb-archive).
 
-You can also drag-and-drop a local FITS file onto the Data Hub — it will
-be staged on the backend automatically.
-
 **Last 5 jobs** lists what the backend did most recently: moments, PV
 diagrams, opens, exports, with how long each took and how long ago it ended.
 An open is timed by the client, from the moment you asked (the health check,
@@ -266,18 +267,18 @@ line if the binary lives elsewhere.
 ```
 
 ```{caution}
-The file is opened **by path, through the backend** — the same route as *Open
-Remote Dataset*, and the classification happens there too, so with the backend
+The file is opened **by path, through the backend** — the same route as *File ▸
+Open…*, and the classification happens there too, so with the backend
 down you are told that rather than asked to choose a viewer. A double-clicked
 file therefore has to be readable by the backend process: with a local auto-started backend that is anything you can
-read, but with a remote backend the path must exist *there*. Use the Data Hub's
-drag-and-drop instead, which stages the file server-side.
+read, but with a remote backend the path must exist *there*: copy the file to
+the backend's machine first.
 ```
 
 ## The ⌘K Command Palette
 
 Almost every action in the app is searchable from a single launcher.
-Press <kbd>⌘K</kbd> (or <kbd>Ctrl</kbd>+<kbd>K</kbd> on Linux) anywhere
+Press <kbd>⌘K</kbd> (<kbd>Ctrl</kbd>+<kbd>K</kbd> on Linux and Windows) anywhere
 in the application and start typing — *"open"*, *"diagnostics"*,
 *"settings"*, *"hips"* — to jump to actions and recent datasets without
 hunting through menus. It works from inside the viewer windows too.

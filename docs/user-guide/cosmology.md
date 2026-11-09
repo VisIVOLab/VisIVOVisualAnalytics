@@ -104,7 +104,7 @@ cannot be chosen.
 moment map on screen (or the moment computed last).
 
 Turning the tool on shows its settings in **Inspector ▸ Parameters**: the
-number of bins, and **Compute P(ℓ)**. The result opens in a window with these
+number of **Bins**, and **Compute P(ℓ)**. The result opens in a window with these
 parts:
 
 - **The plot.** The spectrum is drawn on log axes with its error bars. The
@@ -135,17 +135,18 @@ The settings, in **Inspector ▸ Parameters**:
   - *Filaments* gives the morphological skeleton (thinning) of the regions
     above the threshold.
   - *Voids* gives the skeleton of the regions below it.
-- **Threshold.** By default the server uses the mean of the map. The value it
+- **Threshold.** With *Mean of the map* ticked (the default) the server uses
+  the mean of the map; untick it to type a value in the map's units. The value it
   used is recorded with the result.
 - **Smoothing σ.** A Gaussian pre-smoothing, in pixels. Each pixel becomes
   the weighted mean of the valid pixels around it; blank (NaN) pixels stay
   blank, so no filament or void is traced inside an unobserved area.
-- **Drop where map <.** An intensity cut on individual skeleton pixels. It is
+- **Drop where map <** (*Skeleton pixels*). An intensity cut on individual skeleton pixels. It is
   not a topological-persistence cut: it can split a filament and add end
   points. It applies to filaments only, and values ≤ 0 are ignored by the
   server.
 
-The result is shown in two ways:
+**Trace** runs it. The result is shown in two ways:
 
 - **On an image**, the skeleton is drawn over the map, cyan for filaments and
   magenta for voids. **Clear** removes it from the view.
@@ -154,7 +155,7 @@ The result is shown in two ways:
 ## Products and provenance
 
 Each run is a product in **Session Data**, labelled with its result and finish time, for example `n = -3.64 · 14:32:05 · Moment 0` or `Filaments · 412 px · 14:32:05`. Opening its row puts the plot, the
-overlay or the mask back on screen. **Inspector ▸ Provenance** shows its
+overlay or the mask back on screen. **Inspector ▸ Parameters** shows its
 parameters, including the threshold actually applied and the fit range of the
 slope.
 
@@ -175,7 +176,7 @@ A later run on the same moment of the same file opens that file instead of
 writing a new one, in this session or a later one. A cube replaced at the same
 path gets a new name, so an old moment is never reused for it. An export that
 is still being written, or that does not open, is never reused or deleted: the
-run writes its own. The recipe and Provenance name the same file.
+run writes its own. The recipe and the provenance name the same file.
 
 ## What each route is for
 

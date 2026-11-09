@@ -1,11 +1,11 @@
 # Ray-traced volume rendering
 
 Stills, movie frames and the desktop's GPU view of a cube rendered as light
-(issue #106; user guide: [Ray-traced volumes](../user-guide/raytraced-volumes)).
+(issue #106; user guide: [Ray-traced volumes](../user-guide/raytraced-volumes.md)).
 The renderer is `app/volume_raytrace.py` (numba, no GPU needed); the routes are
 `app/routers/volume_render.py`. A render is a task of the particles' kind: its
 frames, tone, light and deletion are the routes of
-[particle rendering](particle-render), by task id. Every route takes the
+[particle rendering](particle-render.md), by task id. Every route takes the
 session token.
 
 ## The request
@@ -67,6 +67,6 @@ what the desktop draws over the frame as over its GPU view:
 
 ## See also
 
-- [Render sessions](render) — `GET /v1/render/{id}/camera` gives a cube
+- [Render sessions](render.md) — `GET /v1/render/{id}/camera` gives a cube
   session's camera, in the cube's voxel coordinates, for a still of the backend
   view.

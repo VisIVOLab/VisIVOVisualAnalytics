@@ -1,13 +1,13 @@
 # Source finding and cross-matching
 
 Two complementary jobs. **SoFiA-2** searches a whole cube and tells you what is
-in it. **Cross-match** takes what you already have and asks an external
-catalogue what it is.
+in it. **Cross-match** asks an external catalogue what it already lists on an
+image.
 
 | Task | Tool | Where |
 |------|------|-------|
 | Find sources in a cube | SoFiA-2 | *Tools → Sources & Kinematics → Source Finding (SoFiA-2)…* (cube viewer) |
-| Identify a detection | Cross-match | *Tools → Cross-match with Catalogue…* (image viewer) |
+| See which catalogued sources lie on an image | Cross-match | *Tools → Cross-match with Catalogue…* (image viewer) |
 | Segment a source you can see | [Kinematic Lasso](kinematic-lasso) | cube viewer |
 
 ---
@@ -84,7 +84,8 @@ it SoFiA-2 searches the whole cube.
 Press **Run SoFiA-2**. The run is a task of the backend: a bar and the elapsed
 time show it is running, and **Cancel run** (or closing the dialog, after a
 question) asks the backend to stop SoFiA-2; the dialog says whether the
-backend accepted. When it finishes, the dialog lists the
+backend accepted. Quitting the application during a run asks once, then
+cancels the run on the backend before the app exits. When it finishes, the dialog lists the
 detected sources and SoFiA's own counts: the negative and positive detections
 the reliability filter worked with, the sources left after filtering, the
 channel correlation SoFiA measured, and SoFiA's warnings and errors. A run
@@ -107,9 +108,10 @@ nearly invisible; switch the blend mode in *Volume Rendering* if you prefer.
 
 When the backend refuses the cube, the dialog shows its reason as given and
 offers no run: a 2-D image or a catalogue, a Stokes Q, U or V cube, a volume
-without a spectral axis, fewer than 8 channels, or a file SoFiA-2 cannot read
-as it is (a cube in a FITS extension or tile-compressed, a gzip/bzip2/zip
-file). A busy backend (every compute slot of the session in use) is said as
+without a spectral axis, fewer than 8 channels, a cube whose sky is not on
+axes 1-2 and spectrum on axis 3, or a cube in a FITS extension (SoFiA-2 reads
+the primary HDU only). A `.fits.gz` or tile-compressed cube is decompressed
+when VisIVO opens it, and SoFiA-2 reads that plain copy. A busy backend (every compute slot of the session in use) is said as
 such; press **Suggest again** later. A backend older than the suggester runs
 SoFiA-2 with its defaults.
 
@@ -173,13 +175,13 @@ see whether the reliability filter had enough to work with.
 
 ### Reading the result
 
-**Open mask in 3D** renders the detection mask as an isosurface over the cube,
-one region per source. This is the fastest way to see whether the parameters did
+**Open mask in 3D** opens the detection mask cube in a new cube viewer window
+(in MIP), one integer label per source. This is the fastest way to see whether the parameters did
 what you meant: fragments where you expected one object mean the kernels are too
 small, and a mask covering the whole field means the threshold is too low.
 
-The detection catalogue can be overlaid on images and cross-matched like any
-other catalogue.
+The detection catalogue (its path is in Inspector › Provenance) can be loaded
+and overlaid like any other catalogue.
 
 ```{caution}
 Detections near the edge of a cube, or in a region of elevated noise, are the
@@ -218,37 +220,40 @@ treating that as an error.
 
 ## Cross-matching against an external catalogue
 
-In the image viewer, *Tools → Cross-match with Catalogue…* takes the sources you
-have on screen and looks for counterparts in an external catalogue within a
-search radius.
+In the image viewer, *Tools → Cross-match with Catalogue…* asks an external
+catalogue which of its sources fall on the image, and overlays them as markers
+labelled with their names. The dialog has two fields: **Catalogue** (`simbad`,
+`2MASS`, `NVSS` or `FIRST`, the last three queried through VizieR) and
+**Search radius** (1-3600 arcsec, default 60). The query runs on the backend,
+which needs `astroquery` and network access.
 
 Requires **celestial WCS** — the tool says so and stops if the image has none,
 rather than matching against meaningless coordinates.
 
-### Choosing a radius
+### What the radius does
 
-The right radius is a physical judgement, not a default:
-
-- Too small and you miss real counterparts whose position differs because they
-  were measured at another wavelength, or because your astrometry has an offset.
-- Too large and you accumulate chance associations, especially in a crowded
-  field or against a deep catalogue.
-
-A useful sanity check is to run the match at two radii. If the number of matches
-grows roughly with the area of the search circle, most of the new ones are
-chance associations rather than counterparts.
+The backend queries a cone around the image centre whose radius is the larger
+of the **Search radius** and half the image diagonal, so on most images the
+whole field is searched whatever the radius. The sources returned are then
+cropped to the image: those outside the pixel grid, or on blank (NaN) pixels,
+are dropped. At most 500 are kept; in a denser field they are sub-sampled
+evenly over the field rather than taken nearest the centre, and the nearest
+one is always kept.
 
 ```{tip}
-Before concluding that your sources have no counterparts, check
-[astrometry](../user-guide/image-viewer) first: a systematic offset shows up as
-"no matches" just as convincingly as a genuinely new population does. Match one
-source you are certain about and see whether the offset is systematic.
+Before concluding that a source has no counterpart, check
+[astrometry](../user-guide/image-viewer) first: a systematic offset between
+your image and the catalogue markers shows up as "no counterpart" just as
+convincingly as a genuinely new population does. Look at one source you are
+certain about and see whether the offset is systematic.
 ```
 
 ### Working with the result
 
-Matches are overlaid on the image and can be labelled. The match table travels
-with the catalogue, so you can filter and sort on it like any other column set.
+The catalogue sources are overlaid on the image as markers with their names.
+Each run is recorded in *Session Data* as *Cross-match with simbad* (or the catalogue you chose), with
+the catalogue, the radius and the number of sources; a run that finds nothing
+in the footprint is recorded too, with 0.
 
 ---
 
@@ -260,7 +265,7 @@ with the catalogue, so you can filter and sort on it like any other column set.
 
 * - Symptom
   - Cause / fix
-* - *"SoFiA-2 Not Available"*
+* - *"SoFiA-2 is not available on this backend"*
   - Not installed, or not on the `PATH` of the machine running the **backend**.
     Restart the backend after installing.
 * - The run finds thousands of sources.
@@ -268,13 +273,15 @@ with the catalogue, so you can filter and sort on it like any other column set.
     Raise the threshold and check the cube has line-free channels to measure
     noise in.
 * - One galaxy comes back as several detections.
-  - Kernels too small, or merging off. Raise Kernel Z first for HI — a line
-    broken across channels is the usual cause.
+  - Kernels too small, or linker radii too small. Widen `scfind.kernelsZ`
+    first for HI (a line broken across channels is the usual cause), then
+    `linker.radiusXY` / `linker.radiusZ`.
 * - *"Cross-match requires celestial WCS information."*
   - The image has no sky coordinates (a raw detector frame, or a header with
     only linear axes). Nothing to match against.
-* - Every source matches something.
-  - Radius too large. Halve it and see how many survive.
+* - *"Cross-match failed"* naming astroquery.
+  - `astroquery` is not installed where the backend runs, or the backend has
+    no network access to SIMBAD / VizieR.
 ```
 
 ## See also

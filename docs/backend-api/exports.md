@@ -27,7 +27,10 @@ Workspace, for datasets that have no dedicated export path.
 
 An empty `output_basename` keeps the source file name; a collision gets a
 numeric suffix. Response: `{valid, error, workspace_filename, output_path}`.
-An unknown dataset or a missing source file is `valid: false`.
+An unknown dataset or a missing source file is `valid: false`. The file copied
+is the one the dataset is read from: for a compressed FITS (`.fits.gz`, `.fz`)
+that is its decompressed copy from the workspace cache (see
+[Datasets](datasets.md)), so the export is an uncompressed `.fits`.
 
 ## `DELETE /v1/exports/{filename}`
 Remove one Workspace file. Response: `{valid, error, deleted_filename}`.
