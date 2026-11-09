@@ -93,14 +93,25 @@ def classify_path(path: str | Path) -> dict:
 
     # ── FITS ─────────────────────────────────────────────────────────────────
     if head.startswith(b"SIMPLE"):
-        return _classify_fits(path, head)
+        verdict = _classify_fits(path, head)
+        if verdict["opener"] == "dataset" and _image_is_tile_compressed(path):
+            verdict["detail"] += (" Tile-compressed: decompressed into the workspace "
+                                  "cache when opened.")
+        return verdict
     if head[:2] == b"\x1f\x8b" or stem_suffixes.endswith((".fits.gz", ".fit.gz", ".fts.gz")):
-        # Astropy would read a gzipped FITS, but none of the open routes accept
-        # one (`_is_supported_dataset` matches on the suffix), so classifying it
-        # as an image would only move the failure one dialog later.
+        # A gzipped FITS opens from its decompressed copy (issue #57): classified
+        # by what it holds, read through the gzip stream (one header, at its
+        # start). Anything else gzipped (a CSV, a VOTable) no opener takes.
+        if _gunzip_head(path).startswith(b"SIMPLE"):
+            verdict = _classify_fits(path, head, gzipped=True)
+            if verdict["opener"] in ("dataset", "velocity"):
+                verdict["detail"] += (" gzip-compressed: decompressed once into the "
+                                      "workspace cache when opened.")
+            # A table is read whole by the catalogue opener, which reads gzip.
+            return verdict
         return _result("compressed", "unsupported", True,
                        "Compressed file. Decompress it first — the backend opens "
-                       "uncompressed FITS, HDF5, catalogues and VBT.")
+                       "FITS (also .fits.gz and .fz), HDF5, catalogues and VBT.")
 
     # ── Text tables ──────────────────────────────────────────────────────────
     text = head.decode("utf-8", errors="replace").lstrip()
@@ -116,7 +127,23 @@ def classify_path(path: str | Path) -> dict:
                    "The content does not identify itself; choose how to open it.")
 
 
-def _classify_fits(path: Path, head: bytes) -> dict:
+def _gunzip_head(path: Path) -> bytes:
+    """The first bytes of what a gzip file holds; empty when it is unreadable."""
+    import gzip  # noqa: PLC0415
+    import zlib  # noqa: PLC0415
+    try:
+        with gzip.open(path, "rb") as stream:
+            return stream.read(80)
+    except (OSError, EOFError, zlib.error):
+        return b""
+
+
+def _image_is_tile_compressed(path: Path) -> bool:
+    from .compressed_fits import _image_is_tile_compressed as tiled  # noqa: PLC0415
+    return tiled(path)
+
+
+def _classify_fits(path: Path, head: bytes, gzipped: bool = False) -> dict:
     """Image, cube or table — from the header alone, without reading data."""
     try:
         from astropy.io import fits  # noqa: PLC0415
@@ -124,64 +151,78 @@ def _classify_fits(path: Path, head: bytes) -> dict:
         return _result("image", "dataset", False, "FITS (astropy unavailable to look closer).")
 
     try:
+        if gzipped:
+            # Read off the gzip stream: astropy would decompress all of it to
+            # skip the image's data (#57). None: a stream this cannot read
+            # (a gzipped fpack file, damage), which astropy is asked about.
+            from .compressed_fits import gzip_image_headers  # noqa: PLC0415
+            hdus = gzip_image_headers(path)
+            if hdus is not None:
+                return _classify_hdus(hdus)
         with fits.open(path, memmap=False, lazy_load_hdus=True) as hdul:
-            # The same choice the opener makes: the primary when it holds an
-            # image, else the first image extension (an ESO phase-3 or APEX
-            # product keeps the primary empty and the cube in DATA_EXT), so a
-            # file is never classified from one HDU and opened from another.
-            from .fits_dataset import image_hdu_index  # noqa: PLC0415
-            header = hdul[image_hdu_index(hdul)].header
-            naxis = int(header.get("NAXIS", 0))
-            # The real axes: FITS routinely carries degenerate ones (a Stokes
-            # axis of length 1), and counting those would call a map a cube.
-            axes = [int(header.get(f"NAXIS{i}", 0)) for i in range(1, naxis + 1)]
-            significant = [n for n in axes if n > 1]
-
-            if naxis == 0 or not significant:
-                # No image anywhere: the content is a table, or nothing we read.
-                for hdu in hdul[1:]:
-                    kind = str(hdu.header.get("XTENSION", "")).strip().upper()
-                    if kind in ("BINTABLE", "TABLE"):
-                        return _result(
-                            "fits-table", "ask", True,
-                            "FITS table — it can be a source catalogue, or a table "
-                            "to overlay on an image.")
-                return _result("unknown", "ask", False,
-                               "FITS with no image and no table in it.")
-
-            ctypes = [str(header.get(f"CTYPE{i}", "")).upper() for i in range(1, naxis + 1)]
-            # A velocity field: three components (vx, vy, vz) on a 3-D grid, the
-            # layout the vector-field viewer reads. A Stokes or spectral axis of
-            # length 3 is something else, so only an axis that names neither.
-            # The fourth axis must not name anything but a component: an unlabelled
-            # axis (the CF4 reconstructions carry none) or one that says so; a TIME,
-            # STOKES or spectral axis of length 3 is a cube of something else. The
-            # three grid axes must not be spectral, Stokes or time either.
-            from .fits_dataset import ScientificFitsDataset  # noqa: PLC0415
-            not_grid = tuple(ScientificFitsDataset._SPECTRAL_CTYPE_PREFIXES) + (
-                "STOKES", "TIME", "UTC", "MJD")
-            fourth = ctypes[3].strip() if naxis == 4 else "?"
-            fourth_is_component = fourth == "" or "COMP" in fourth or fourth in ("V", "VEC",
-                                                                                  "VECTOR")
-            if (naxis == 4 and axes[3] == 3 and all(n > 1 for n in axes[:3])
-                    and fourth_is_component
-                    and not any(c.startswith(not_grid) for c in ctypes[:3])):
-                return _result("velocity-field", "velocity", True,
-                               f"Velocity field: 3 components on a "
-                               f"{axes[0]} × {axes[1]} × {axes[2]} grid.")
-            if any(c.startswith(("TIME", "UTC")) for c in ctypes) \
-                    and any(c.startswith("FREQ") for c in ctypes):
-                return _result("dynspec", "dataset", True,
-                               "FITS with time and frequency axes — a dynamic spectrum.")
-            if len(significant) >= 3:
-                return _result("cube", "dataset", True,
-                               f"FITS cube ({' × '.join(str(n) for n in significant)}).")
-            return _result("image", "dataset", True,
-                           f"FITS image ({' × '.join(str(n) for n in significant)}).")
+            return _classify_hdus(hdul)
     except Exception as exc:  # noqa: BLE001 — a malformed header is a fact, not a crash
         logger.info("[classify] %s: %s", path, exc)
         return _result("image", "dataset", False,
                        f"FITS, but its header could not be read ({exc}).")
+
+
+def _classify_hdus(hdul) -> dict:
+    """Image, cube, velocity field or table, from the headers of ``hdul``
+    (an astropy HDUList, or the headers read off a gzip stream)."""
+    # The same choice the opener makes: the primary when it holds an
+    # image, else the first image extension (an ESO phase-3 or APEX
+    # product keeps the primary empty and the cube in DATA_EXT), so a
+    # file is never classified from one HDU and opened from another.
+    from .fits_dataset import image_hdu_index  # noqa: PLC0415
+    header = hdul[image_hdu_index(hdul)].header
+    naxis = int(header.get("NAXIS", 0))
+    # The real axes: FITS routinely carries degenerate ones (a Stokes
+    # axis of length 1), and counting those would call a map a cube.
+    axes = [int(header.get(f"NAXIS{i}", 0)) for i in range(1, naxis + 1)]
+    significant = [n for n in axes if n > 1]
+
+    if naxis == 0 or not significant:
+        # No image anywhere: the content is a table, or nothing we read.
+        for hdu in hdul[1:]:
+            kind = str(hdu.header.get("XTENSION", "")).strip().upper()
+            if kind in ("BINTABLE", "TABLE"):
+                return _result(
+                    "fits-table", "ask", True,
+                    "FITS table — it can be a source catalogue, or a table "
+                    "to overlay on an image.")
+        return _result("unknown", "ask", False,
+                       "FITS with no image and no table in it.")
+
+    ctypes = [str(header.get(f"CTYPE{i}", "")).upper() for i in range(1, naxis + 1)]
+    # A velocity field: three components (vx, vy, vz) on a 3-D grid, the
+    # layout the vector-field viewer reads. A Stokes or spectral axis of
+    # length 3 is something else, so only an axis that names neither.
+    # The fourth axis must not name anything but a component: an unlabelled
+    # axis (the CF4 reconstructions carry none) or one that says so; a TIME,
+    # STOKES or spectral axis of length 3 is a cube of something else. The
+    # three grid axes must not be spectral, Stokes or time either.
+    from .fits_dataset import ScientificFitsDataset  # noqa: PLC0415
+    not_grid = tuple(ScientificFitsDataset._SPECTRAL_CTYPE_PREFIXES) + (
+        "STOKES", "TIME", "UTC", "MJD")
+    fourth = ctypes[3].strip() if naxis == 4 else "?"
+    fourth_is_component = fourth == "" or "COMP" in fourth or fourth in ("V", "VEC",
+                                                                          "VECTOR")
+    if (naxis == 4 and axes[3] == 3 and all(n > 1 for n in axes[:3])
+            and fourth_is_component
+            and not any(c.startswith(not_grid) for c in ctypes[:3])):
+        return _result("velocity-field", "velocity", True,
+                       f"Velocity field: 3 components on a "
+                       f"{axes[0]} × {axes[1]} × {axes[2]} grid.")
+    if any(c.startswith(("TIME", "UTC")) for c in ctypes) \
+            and any(c.startswith("FREQ") for c in ctypes):
+        return _result("dynspec", "dataset", True,
+                       "FITS with time and frequency axes — a dynamic spectrum.")
+    if len(significant) >= 3:
+        return _result("cube", "dataset", True,
+                       f"FITS cube ({' × '.join(str(n) for n in significant)}).")
+    return _result("image", "dataset", True,
+                   f"FITS image ({' × '.join(str(n) for n in significant)}).")
 
 
 def _looks_like_delimited_text(text: str) -> bool:

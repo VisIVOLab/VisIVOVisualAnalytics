@@ -84,13 +84,54 @@ def test_truncated_fits_still_routes_to_the_dataset_opener(tmp_path):
     assert not verdict["confident"]
 
 
-def test_a_compressed_file_is_refused_rather_than_routed(tmp_path):
-    """No open route accepts a `.gz`, so classifying it as an image would only
-    move the failure one dialog later."""
+def test_a_gzipped_fits_image_is_routed_to_the_dataset_opener(tmp_path):
+    """The dataset opener decompresses a `.fits.gz` (issue #57): it is
+    classified by what it holds, like the uncompressed file."""
     path = tmp_path / "map.fits.gz"
     buffer = tmp_path / "plain.fits"
     fits.PrimaryHDU(np.zeros((8, 8), dtype=np.float32)).writeto(buffer)
     path.write_bytes(gzip.compress(buffer.read_bytes()))
+    verdict = classify_path(path)
+    assert (verdict["kind"], verdict["opener"]) == ("image", "dataset")
+    assert "gzip" in verdict["detail"]
+
+
+def test_a_tile_compressed_cube_is_a_cube(tmp_path):
+    path = tmp_path / "cube.fits.fz"
+    fits.HDUList([fits.PrimaryHDU(), fits.CompImageHDU(
+        np.zeros((4, 8, 8), dtype=np.float32))]).writeto(path)
+    verdict = classify_path(path)
+    assert (verdict["kind"], verdict["opener"]) == ("cube", "dataset")
+    assert "Tile-compressed" in verdict["detail"]
+
+
+@pytest.mark.parametrize("layout", ["cube", "velocity", "eso", "table"])
+def test_a_gzipped_fits_is_classified_as_its_plain_self(tmp_path, layout):
+    """The gzip verdict is read off the stream's headers, not through astropy
+    (which decompresses the whole stream to skip one HDU's data): it must be
+    the plain file's verdict all the same."""
+    plain = tmp_path / "x.fits"
+    cube = np.zeros((4, 8, 8), dtype=np.float32)
+    table = fits.BinTableHDU.from_columns([fits.Column("a", "E", array=np.arange(3.0))])
+    if layout == "cube":
+        fits.PrimaryHDU(cube).writeto(plain)
+    elif layout == "velocity":
+        fits.PrimaryHDU(np.zeros((3, 4, 5, 6), dtype=np.float32)).writeto(plain)
+    elif layout == "eso":
+        fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(cube, name="DATA_EXT")]).writeto(plain)
+    else:
+        fits.HDUList([fits.PrimaryHDU(), table]).writeto(plain)
+    gz = tmp_path / "x.fits.gz"
+    gz.write_bytes(gzip.compress(plain.read_bytes()))
+    expected, got = classify_path(plain), classify_path(gz)
+    assert (got["kind"], got["opener"], got["confident"]) == (
+        expected["kind"], expected["opener"], expected["confident"])
+    assert got["detail"].startswith(expected["detail"])
+
+
+def test_a_gzipped_file_that_is_not_fits_is_still_refused(tmp_path):
+    path = tmp_path / "table.csv.gz"
+    path.write_bytes(gzip.compress(b"a,b\n1,2\n3,4\n"))
     verdict = classify_path(path)
     assert verdict["opener"] == "unsupported"
     assert "decompress" in verdict["detail"].lower()

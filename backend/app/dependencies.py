@@ -32,6 +32,7 @@ from .auth import verify_token, multi_user_mode
 from .fits_dataset import ScientificFitsDataset
 from .product_cache import PRODUCT_CACHE, file_identity
 from .sessions import REGISTRY, Session, get_session
+from . import compressed_fits as _compressed_fits
 from .tasks import TASKS
 from .schemas import *
 logger = logging.getLogger('visivo.backend')
@@ -440,6 +441,12 @@ def get_exports_dir() -> _Path:
 # which every worker process sees, in a hidden directory the listings skip.
 TASKS.stop_dir_provider = lambda: get_exports_dir() / ".abort"
 
+# Compressed FITS are decompressed into the workspace too (issue #57), hidden
+# from the listings like the stop files; a dataset a session holds open is
+# never evicted from that cache.
+_compressed_fits.cache_dir_provider = lambda: get_exports_dir() / ".decompressed"
+_compressed_fits.in_use_provider = REGISTRY.dataset_paths
+
 
 def make_workspace_path(basename: str, reserve: bool = False) -> _Path:
     """Resolve a user-provided basename into a safe workspace path,
@@ -567,7 +574,8 @@ __all__ = [
     "_RA_CANDIDATES", "_DEC_CANDIDATES",
     "_default_worker_count", "_pool_initializer", "_error",
     "_apply_tabular_query", "sample_step",
-    "data_roots", "hide_hidden_entries", "_normalize_path", "_parse_vbt_header", "_is_fits", "_is_supported_dataset",
+    "data_roots", "hide_hidden_entries", "_normalize_path", "_parse_vbt_header", "_is_fits", "_has_fits_name",
+    "_is_supported_dataset",
     "_normalize_catalogue_field", "_catalogue_field_type",
     "_catalogue_metadata_from_dataframe", "_catalogue_csv_metadata",
     "_catalogue_load_dataframe", "_catalogue_metadata",
@@ -839,16 +847,20 @@ def _normalize_path(raw: str) -> Path:
 from .volume_source import parse_vbt_header as _parse_vbt_header  # noqa: E402
 
 
+def _has_fits_name(path: Path) -> bool:
+    """A FITS name, compressed ones included (``.fits.gz``, ``.fz``; #57)."""
+    return (path.suffix.lower() in _FITS_SUFFIXES
+            or _compressed_fits.has_compressed_name(path))
+
+
 def _is_fits(path: Path) -> bool:
-    return path.is_file() and path.suffix.lower() in _FITS_SUFFIXES
+    return path.is_file() and _has_fits_name(path)
 
 
 def _is_supported_dataset(path: Path) -> bool:
-    """Accept FITS and HDF5 beamformed / dynamic-spectrum files."""
+    """Accept FITS (compressed too) and HDF5 beamformed / dynamic-spectrum files."""
     from .hdf5_dynspec import is_hdf5_path  # noqa: PLC0415 (lazy h5py import)
-    return path.is_file() and (
-            path.suffix.lower() in _FITS_SUFFIXES
-            or is_hdf5_path(path))
+    return path.is_file() and (_has_fits_name(path) or is_hdf5_path(path))
 
 
 def _normalize_catalogue_field(raw: str) -> str:
@@ -1840,7 +1852,65 @@ def _require_dataset(session: Session, dataset_id: str) -> dict[str, Any]:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Unknown dataset_id '{dataset_id}'. Open the dataset first via /v1/datasets/open.",
         )
+    _ensure_decompressed(entry)
     return entry
+
+
+def _ensure_decompressed(entry: dict[str, Any]) -> None:
+    """A compressed dataset reads its decompressed copy (issue #57). The cache
+    never evicts a copy a session holds, but somebody may delete it by hand:
+    then it is made again from the source rather than every reader failing
+    with "file not found". The source itself gone: the readers say so.
+
+    On the event loop's thread (the async routes) the decompression must not
+    run inline, it can take minutes: it starts in the background and the
+    request is answered 503 with Retry-After. The copy comes back at the same
+    path (the cache key is the source's path, size and time)."""
+    source = entry.get("source_path")
+    if not source or Path(entry["path"]).exists() or not Path(source).exists():
+        return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        entry["path"] = _decompress_again(source, entry["path"])  # a worker thread: inline
+        return
+    with _REDECOMPRESSING_GUARD:
+        starting = source not in _REDECOMPRESSING
+        _REDECOMPRESSING.add(source)
+    if starting:
+        def _again() -> None:
+            try:
+                entry["path"] = _decompress_again(source, entry["path"])
+                logger.info("[decompress] %s was missing; decompressed again", source)
+            except Exception:  # noqa: BLE001 — the next request tries again
+                logger.exception("[decompress] could not decompress %s again", source)
+            finally:
+                with _REDECOMPRESSING_GUARD:
+                    _REDECOMPRESSING.discard(source)
+        threading.Thread(target=_again, name="visivo-redecompress", daemon=True).start()
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=f"The decompressed copy of {Path(source).name} was removed from the cache; "
+               f"it is being decompressed again. Retry in a moment.",
+        headers={"Retry-After": "10"})
+
+
+def _decompress_again(source: str, lost: str) -> str:
+    """The path a dataset whose copy was lost reads now. Usually the same one
+    (the cache key is the source's path, size and time); another when the
+    source was touched meanwhile. A PSRFITS dataset reads the dynamic-spectrum
+    sidecar made from the copy, which is made again with it."""
+    made = _compressed_fits.materialize(source)
+    if made is None:
+        return lost
+    if Path(lost).name == made.path.name:
+        return str(made.path)
+    _kind, geometry = _plain_fits_metadata(made.path)
+    return str(geometry.get("resolved_path") or made.path)
+
+
+_REDECOMPRESSING: set[str] = set()
+_REDECOMPRESSING_GUARD = threading.Lock()
 
 
 def _require_cube_path(session: Session, dataset_id: str) -> str:
@@ -1875,9 +1945,6 @@ def _fits_metadata(path: Path) -> tuple[str, dict[str, Any]]:
     from .hdf5_dynspec import (  # noqa: PLC0415 (lazy h5py import)
         convert_hdf5_to_sidecar_fits, is_hdf5_path,
     )
-    from .psrfits import (  # noqa: PLC0415
-        convert_psrfits_to_sidecar_fits, is_psrfits,
-    )
     if is_hdf5_path(path):
         sidecar = convert_hdf5_to_sidecar_fits(path)
         dataset = ScientificFitsDataset(sidecar)
@@ -1891,8 +1958,29 @@ def _fits_metadata(path: Path) -> tuple[str, dict[str, Any]]:
         return "dynspec", geometry
     # A truncated FITS is refused here, before the PSRFITS conversion reads
     # the table (issue #118); ScientificFitsDataset checks the rest again.
+    # A tile-compressed file is checked as the table it is on disk.
     from .fits_truncation import check_not_truncated  # noqa: PLC0415
     check_not_truncated(path)
+    # A compressed FITS (gzip, or tile-compressed by fpack) is read from its
+    # decompressed copy in the workspace cache (issue #57), which every reader
+    # can memory-map; the dataset keeps the original as its source_path.
+    source = path
+    made = _compressed_fits.materialize(path)
+    if made is not None:
+        path = made.path
+    kind, geometry = _plain_fits_metadata(path)
+    if made is not None:
+        geometry.setdefault("resolved_path", str(made.path))
+        geometry["source_path"] = str(source)
+        geometry["compression"] = made.compression
+    return kind, geometry
+
+
+def _plain_fits_metadata(path: Path) -> tuple[str, dict[str, Any]]:
+    """``_fits_metadata`` of an uncompressed FITS file: PSRFITS or not."""
+    from .psrfits import (  # noqa: PLC0415
+        convert_psrfits_to_sidecar_fits, is_psrfits,
+    )
     # PSRFITS: multi-HDU FITS with a SUBINT binary-table extension. We
     # convert to a 2-D dynspec sidecar (Stokes I, phase-averaged for folded
     # data) so the rest of the pipeline treats it like an HDF5 / FITS dynspec.

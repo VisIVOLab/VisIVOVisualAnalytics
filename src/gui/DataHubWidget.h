@@ -41,7 +41,11 @@ public:
     void setRecentDatasetsManager(RecentDatasetsManager *manager);
 
 public slots:
-    // Synchronous health-check → updates status badge + system-insights panel.
+    // Health check → updates status badge + system-insights panel. The request
+    // runs on a pool thread and the answer is applied here when it arrives:
+    // asked from inside a local event loop (a decompression's wait, issue
+    // #57), a synchronous request nested its own loop there and held that
+    // wait's end until the request returned.
     void refreshStatus();
     /// Re-fetch the Workspace Exports list from the backend asynchronously
     /// and rebuild the panel rows. Public so cube viewers can request an
@@ -105,6 +109,8 @@ QFrame *makeActionCard(const QString &iconKind, const QString &title,
                        const QString &desc, QWidget *parent = nullptr);
 
     // System Insights live-activity helpers.
+    /// The answer of refreshStatus()'s health request, asked of @p url with @p token.
+    void applyHealth(const QString &url, const QString &token, const BackendHealthResult &health);
     void updateSystemInsights(const BackendHealthResult &health);
     void clearRecentTasksUi();
 
@@ -140,6 +146,11 @@ QFrame *makeActionCard(const QString &iconKind, const QString &title,
 
     // Periodic refresh of System Insights while the widget is visible.
     QPointer<QTimer> insightsTimer;
+    /// A health request is on its way: the timer does not stack another.
+    bool m_healthInFlight{ false };
+    /// Asked for while one was on its way: ask again when it answers, so a
+    /// refresh requested for a reason (a task just started) is not lost.
+    bool m_healthAgain{ false };
 
     // Recent datasets — manager pointer (not owned), layout for dynamic items.
     RecentDatasetsManager *recentMgr{ nullptr };

@@ -27,6 +27,14 @@ are preserved here unedited; the branch names they refer to are historical.
   Kinematic Lasso mask writers edited the primary HDU of the copy, so a file
   with an empty primary and the cube in `DATA_EXT` failed with "3D masking
   requires a 3D cube dataset". They now mask the HDU the dataset reads.
+- **Compressed FITS open directly** (#57). Gzipped (`.fits.gz`) and
+  tile-compressed (fpack, `.fz`) images and cubes open like their uncompressed
+  versions: the first open decompresses the file once into the workspace cache
+  (`VISIVO_DECOMPRESS_CACHE_DIR`, capped by `VISIVO_DECOMPRESS_CACHE_MAX_BYTES`),
+  and every viewer, moment, spectrum, SODA cutout and velocity field reads that
+  copy. A large file is decompressed as a task with progress and cancellation
+  (`POST /v1/tasks/decompress`); a truncated or damaged file is refused with
+  its reason. Recent files and provenance keep the original path.
 - **Region flux on multi-beam cubes.** Region statistics now divide by the
   selected channel's beam from a CASA `BEAMS` table instead of the
   primary-header beam (a 4" channel beam under a 2" header beam returned a

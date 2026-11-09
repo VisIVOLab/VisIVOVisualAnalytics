@@ -108,7 +108,9 @@ async def provenance(_: None = _auth, session: Session = Depends(get_session)):
     entity: dict[str, Any] = {}
     for ds_id, entry in session.datasets.items():
         entity[f"visivo:{ds_id}"] = {
-            "visivo:path": entry.get("path", ""),
+            # The file the user opened: a compressed one's, not the
+            # decompressed copy the readers use (issue #57).
+            "visivo:path": entry.get("source_path") or entry.get("path", ""),
             "visivo:kind": entry.get("kind", ""),
         }
 
@@ -165,7 +167,7 @@ def _snapshot_state(session: Session, label: str) -> dict[str, Any]:
         "label": label,
         "created_at": _now_iso(),
         "datasets": {
-            ds_id: {"path": e.get("path", ""), "kind": e.get("kind", "")}
+            ds_id: {"path": e.get("source_path") or e.get("path", ""), "kind": e.get("kind", "")}
             for ds_id, e in session.datasets.items()
         },
         "history": list(session.history),

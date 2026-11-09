@@ -17,6 +17,7 @@ from ..sessions import Session, get_session, REGISTRY
 from ..tasks import TASKS
 from ..product_cache import PRODUCT_CACHE
 from ..fits_dataset import ScientificFitsDataset, image_hdu_index
+from ..compressed_fits import compression_of, gzip_image_headers
 import asyncio
 
 router = APIRouter(tags=['files'])
@@ -71,6 +72,27 @@ async def list_files(
 
     return FilesListResponse(valid=True, error="", current_path=str(directory), entries=entries)
 
+def _preview_cards(hdul) -> list[str]:
+    """The image's own header (WCS, BUNIT) — the extension's, on a
+    multi-extension product — followed by the primary's descriptive cards it
+    does not repeat (OBJECT, the ESO hierarchy). Structural cards and
+    duplicates stay out: the header editor needs every keyword once, and
+    edits go to the image HDU. ``hdul`` is an HDUList, or the headers read off
+    a gzip stream (``gzip_image_headers``)."""
+    index = image_hdu_index(hdul)
+    image_header = hdul[index].header
+    cards = [str(card) for card in image_header.cards]
+    if index != 0:
+        skip = {"SIMPLE", "BITPIX", "NAXIS", "EXTEND", "PCOUNT", "GCOUNT",
+                "XTENSION", "EXTNAME", "EXTVER", "END", "COMMENT", "HISTORY", ""}
+        for card in hdul[0].header.cards:
+            key = card.keyword
+            if key in skip or key.startswith("NAXIS") or key in image_header:
+                continue
+            cards.append(str(card))
+    return cards
+
+
 @router.post("/v1/files/header", response_model=FileHeaderResponse, tags=["files"])
 async def file_header(request: FileHeaderRequest, _: None = _auth) -> FileHeaderResponse:
     from ..volume_source import open_fits, split_ref, vbt_dataset_path  # noqa: PLC0415
@@ -82,23 +104,17 @@ async def file_header(request: FileHeaderRequest, _: None = _auth) -> FileHeader
         ref = vbt_dataset_path(path, field) if field is not None else None
         if ref is None and not _is_fits(path):
             raise ValueError("FITS file not found.")
-        with open_fits(ref or str(path), memmap=True) as hdul:
-            # The image's own header (WCS, BUNIT) — the extension's, on a
-            # multi-extension product — followed by the primary's descriptive
-            # cards it does not repeat (OBJECT, the ESO hierarchy). Structural
-            # cards and duplicates stay out: the header editor needs every
-            # keyword once, and edits go to the image HDU.
-            index = image_hdu_index(hdul)
-            image_header = hdul[index].header
-            cards = [str(card) for card in image_header.cards]
-            if index != 0:
-                skip = {"SIMPLE", "BITPIX", "NAXIS", "EXTEND", "PCOUNT", "GCOUNT",
-                        "XTENSION", "EXTNAME", "EXTVER", "END", "COMMENT", "HISTORY", ""}
-                for card in hdul[0].header.cards:
-                    key = card.keyword
-                    if key in skip or key.startswith("NAXIS") or key in image_header:
-                        continue
-                    cards.append(str(card))
+        # A .fits.gz: the headers off the start of the gzip stream (#57).
+        # astropy would decompress the whole stream to skip the image's data,
+        # 4.5 s for a 2 GB cube, and the file browser waits for this preview.
+        hdus = None
+        if ref is None and compression_of(path) == "gzip":
+            hdus = await asyncio.to_thread(gzip_image_headers, path)
+        if hdus is not None:
+            cards = _preview_cards(hdus)
+        else:
+            with open_fits(ref or str(path), memmap=True) as hdul:
+                cards = _preview_cards(hdul)
     except PermissionError:
         # Same answer as a genuinely absent file: echoing the refusal reason
         # would tell the caller that the path exists but is out of bounds.
