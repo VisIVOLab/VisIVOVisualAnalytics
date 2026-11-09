@@ -17,25 +17,63 @@ Every route speaks the same JSON region model:
 | Field | Meaning |
 |---|---|
 | `shape` | `circle`, `ellipse`, `box`, `polygon`, `point` or `annulus` |
-| `frame` | `image` or a world frame: `icrs`, `fk5`, `galactic` |
-| `center` | Pixels when `frame` is `image`, otherwise decimal degrees |
+| `frame` | `image` or a sky frame: `icrs`, `fk5` (J2000), `fk4` (B1950), `galactic`, `ecliptic` (mean ecliptic of J2000) |
+| `center` | Pixels when `frame` is `image`, otherwise decimal degrees in that frame |
 | `radius` | Circle |
 | `radii` | Annulus, `[inner, outer]` |
 | `semi_axes` | Ellipse, `[major, minor]` |
 | `size` | Box, `[width, height]` |
-| `angle_deg` | Ellipse and box position angle |
+| `angle_deg` | Ellipse and box angle, as ds9 writes it: counter-clockwise from pixel +x in the `image` frame, from the longitude axis in a sky frame |
 | `points` | Polygon vertices, pixels or degrees according to `frame` |
-| `unit` | Unit of the sizes and radii: `pix`, `deg`, `arcsec` or `arcmin` (always `pix` in the `image` frame) |
+| `unit` | Unit of the sizes and radii: `pix`, `deg`, `arcsec` or `arcmin`. One unit per region; pixels in a sky frame and angles in the `image` frame are allowed, as ds9 and CRTF allow them |
 | `props` | Optional cosmetics such as `color` and `text` |
+
+## Reading sizes and frames
+
+Every size in a file carries its own unit, so `ellipse(10,20,1',30",0)` is
+read as semi-axes of 1 and 0.5 arcmin; angular sizes of one region are
+expressed in the unit of its first size. A size without a unit is in pixels
+in the image frame and in degrees in a sky frame, as in ds9. ds9 suffixes
+`d` (degrees), `r` (radians), `p` and `i` (pixels), `'` and `"` are read, and
+CRTF's `deg`, `rad`, `arcmin`, `arcsec`, `mas` and `pix`. A region that mixes
+pixel and angular sizes is refused (422), since only a WCS relates them.
+
+ds9 files may use `image`, `physical`, `fk5`/`J2000`, `fk4`/`B1950`, `icrs`,
+`galactic` and `ecliptic`, also on one line (`fk5;circle(...)`); `wcs`,
+`linear`, `amplifier` and `detector` are refused rather than read in the
+wrong frame. CRTF takes `coord=` per region or on a `global` line: `J2000`,
+`B1950` (FK4), `ICRS`, `GALACTIC`, `ECLIPTIC`; other systems are refused.
+A CRTF sky region with no `coord` is read as J2000. Sexagesimal positions are
+hours only for the RA of an equatorial frame.
 
 ## Frame conversion
 
 `parse` and `export` take an optional `to_frame`: empty keeps each region in
-its own frame, `image` converts to pixels, and a world frame converts to that
-frame (any other value means the dataset's own world frame). A conversion
-needs `dataset_id`, whose celestial WCS is used (422 without `dataset_id`, or
-when the dataset has no celestial WCS). These two routes use the 1-based pixel
-convention of FITS and of the region files.
+its own frame, `image` converts to pixels, and a sky frame converts to that
+frame (any other value means the dataset's own sky frame). Positions are
+transformed with astropy from the region's frame to the frame of the
+dataset's celestial WCS, then to pixels, so a galactic region lands in the
+right place on an equatorial image and vice versa; a sky-to-sky conversion
+(for example FK5 to galactic) moves the coordinates and writes the new frame.
+Sizes are angles on the sky and do not change between sky frames; pixels and
+angles are related by the WCS's mean pixel scale.
+
+An angle is measured from the axes of the region's frame, so when the frame
+changes it is rotated by the angle between the two frames' north directions
+at the region's centre (measured numerically from a 1" step north: about
+58.6° between FK5 and galactic at the Galactic centre). To or from pixels
+the axis is followed one pixel along the sky and read on the grid, so the
+grid's rotation, parity (east to the right mirrors it), unequal pixel scales
+and skew are all taken from the WCS; on a north-up, east-left grid with
+square pixels the number is unchanged. An ellipse or box without an angle is
+at 0 and turns the same way. Sizes use the mean pixel scale, so on a grid
+with unequal scales a converted ellipse is approximate.
+
+A conversion involving pixels needs `dataset_id`, whose celestial WCS is used
+(422 without `dataset_id`, or when the dataset has no celestial WCS); a
+sky-to-sky conversion does not. A region that does not project onto the WCS
+is 422. These two routes use the 1-based pixel convention of FITS and of the
+region files. Positions are written with 12 significant digits.
 
 ## Routes
 
@@ -72,8 +110,9 @@ Pixel statistics inside one region.
   "channel": null }
 ```
 
-An `image` region is in 0-based pixels; a world-frame region is converted to
-pixels through the dataset's WCS first. `channel` selects the plane of a cube
+An `image` region is in 0-based pixels; a sky-frame region (or an `image`
+region with angular sizes) is converted to pixels through the dataset's WCS
+first, as above. `channel` selects the plane of a cube
 (default 0). A pixel is in the region when its centre is: inside a circle,
 ellipse or (rotated) box, between the radii of an annulus (both edges
 included), inside a polygon (even-odd rule), or nearest a point.

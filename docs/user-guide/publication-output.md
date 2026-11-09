@@ -132,6 +132,12 @@ known line lands at the same place in both before believing a comparison — see
 
 *Import / Export Region (CRTF/DS9)* reads and writes the two formats CASA and
 DS9 use, so a region defined in either tool can be measured here and vice versa.
+A region saved in another sky frame than the image's (a galactic region on an
+FK5 map, say) is moved onto the image through its WCS, and its angle is turned
+with it; sizes keep the unit written for each of them (`1'` and `30"` in one
+ellipse are 1 and 0.5 arcmin). ds9 files in `fk5`, `fk4`, `icrs`, `galactic`,
+`ecliptic` or `image` are read; one saved in ds9's `wcs`, `linear` or
+`detector` systems is refused, so save it again in one of those.
 
 Round-trip a region you care about before relying on it: export it, reopen it in
 the tool that wrote the original, and check the shape and position survived.
