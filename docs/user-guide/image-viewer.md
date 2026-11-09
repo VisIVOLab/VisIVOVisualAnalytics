@@ -754,10 +754,41 @@ You can chain operations:
 
 The backend also recognises **PSRFITS** files (multi-HDU FITS with a
 `SUBINT` binary-table extension). On open they are converted to a 2-D
-sidecar dynspec (Stokes I; phase-averaged when the source is folded
-PSRFITS) so the viewer treats them like any other dynamic spectrum.
+sidecar dynspec named `<source>.dynspec.fits`, so the viewer treats them
+like any other dynamic spectrum. The layout is read from the headers, not
+guessed from the array sizes:
+
+- **Folded** files (`OBS_MODE` = `PSR` or `CAL`) give one time column per
+  sub-integration, `TSUBINT` seconds wide, averaged across the `NBIN`
+  phase bins.
+- **Search** files (`OBS_MODE` = `SEARCH`) give `NSUB × NSBLK` time
+  columns of `TBIN` seconds. 8-, 16- and 32-bit samples are read as they
+  are; 1-, 2- and 4-bit packed samples are unpacked; `SIGNINT = 1` reads
+  them as signed. Other bit widths, or an `NBITS` that does not match how
+  `DATA` is stored, are refused with a message naming `NBITS`.
+
+Rows are placed on the time axis by `OFFS_SUB`, so the axis counts
+seconds from the start of the observation and a dropped sub-integration
+leaves a blank (NaN) column instead of shifting every later time. When
+`OFFS_SUB` is missing or not on a regular grid, or the gaps would make the
+time axis more than four times longer than the data it holds, the rows are
+joined end to end, and a `HISTORY` card in the sidecar says why and that
+the times after a gap are approximate.
+
+Stored samples are converted to physical values with the per-channel,
+per-polarisation `DAT_SCL` and `DAT_OFFS` (and `ZERO_OFF` for search
+data). Channels with a zero `DAT_WTS` weight become NaN (blank), so they
+are skipped by averages and the pulse profile and are flagged by the RFI
+mask; other weights are not applied. Stokes I is `AA + BB` when
+`POL_TYPE` is `AABB` or `AABBCRCI`, otherwise the first polarisation.
 Per-channel central frequencies come from the `DAT_FREQ` column when
-available, otherwise from `OBSFREQ` / `OBSBW`.
+available, otherwise from `OBSFREQ` / `OBSBW`. A file whose headers do
+not match its data (for example a `DATA` row of the wrong size) is
+refused with the reason, rather than read in a guessed order.
+
+The dynspec tools work on time axes stored in either order: a file whose
+`CDELT1` is negative (time decreasing along the axis) folds and
+dedisperses to the same result as the same data stored forwards.
 
 ## Saving and exporting
 
