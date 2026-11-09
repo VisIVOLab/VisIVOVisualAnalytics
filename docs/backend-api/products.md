@@ -111,14 +111,35 @@ Workspace.
 | `log10`, `abs`, `square` | map A | applied to A |
 | `add`, `subtract`, `multiply` | A and B | A + B, A − B, A × B |
 | `divide`, `ratio` | A and B | A / B |
-| `spectral_index` | A, B, `freq_a`, `freq_b` (Hz, positive) | α = log10(A/B) / log10(ν_a/ν_b) |
+| `spectral_index` | A, B, `freq_a`, `freq_b` (Hz, positive and different) | α = log10(A/B) / log10(ν_a/ν_b); NaN wherever A or B is not finite and > 0 |
 
-Map B is reprojected onto A's grid (`reproject_interp`) when the shapes
-differ. The output keeps A's header; `BUNIT` is cleared for `divide`, `ratio`
-and `spectral_index`, and a `HISTORY` card names the operation. The default
+**Alignment.** The maps are combined pixel by pixel only when they are on the
+same sky grid: same shape, and a grid of up to 33 × 33 of A's pixels (edges
+included) falls within 0.01 pixel of the same pixels of B (compared on the sky,
+so a CD matrix and the equivalent CDELT, or ICRS and Galactic, count as the
+same grid; SIP distortion is included, and a map with a lookup-table
+distortion is always reprojected). The sky WCS of a cube's first plane is read
+from its first two axes when the full header cannot be parsed (astropy refuses
+SIP on a 3-D header); lookup-table distortions are read from the file's
+extension HDUs. A map whose header names sky axes but whose WCS cannot be read
+at all is refused.
+Otherwise B is reprojected onto A's grid with `reproject_interp` (bilinear,
+the convention of `/v1/image/reproject` at order 1) — an interpolation, which
+keeps a surface brightness (Jy/beam, MJy/sr, K) per beam or solid angle, not a
+flux-conserving per-pixel resampling — and B pixels outside its footprint are
+NaN. The beams are not matched: for a spectral index, convolve the maps to a
+common resolution first. If one map has a celestial WCS and the other has
+none, the request fails (`valid: false`) rather than combine unrelated pixels;
+two maps without a WCS are combined by shape alone and must have the same
+shape.
+
+The output keeps A's header; `BUNIT` is cleared for `divide`, `ratio`
+and `spectral_index`, and a `HISTORY` card names the operation (and a second
+one the reprojection, when there was one). The default
 file name is `<A stem>_<op>.fits`. Response (`ProductFitsResponse`):
 `valid`, `error`, `output_path`, `workspace_filename`, `width`, `height`,
-`range_min`, `range_max`, `info` (`{op}`).
+`range_min`, `range_max`, `info` (`{op, reprojected}`; `reprojected` is
+`true` when B was resampled onto A's grid).
 
 ### `POST /v1/products/mosaic`
 Reproject two or more images onto a common optimal celestial WCS and co-add
@@ -163,5 +184,5 @@ Response: `{valid, error, metrics}` with
 | `min`, `max`, `mean`, `median`, `robust_std` | `robust_std` = 1.4826 × MAD |
 | `dynamic_range` | `max / robust_std` |
 | `negative_bowl` | `min < −8 × robust_std` |
-| `striping_metric` | Ratio of the larger to the smaller variance of row means and column means |
+| `striping_metric` | Ratio of the larger to the smaller variance of row means and column means, capped at 10⁶. Perfect stripes (one variance zero, the other not) are 10⁶; a flat image (both zero) is 0 |
 | `flags` | Any of `high_blanked_fraction` (> 0.2), `negative_bowl`, `striping` (metric > 5), `low_dynamic_range` (< 5), `all_blanked` |

@@ -153,6 +153,10 @@ Three things it does that the legacy did not:
   loses flux by the square of the factor; `BUNIT` decides, and the result says
   which rule was used.
 
+A regridded image with SIP distortion (common in optical and infrared
+pipelines) keeps its astrometry: the distortion coefficients are rescaled with
+the pixel size.
+
 The same entry exists in the cube viewer, where every plane is filtered — a
 spatial operation, so the spectral axis is left alone.
 
@@ -326,7 +330,10 @@ take the single 2-D map this window shows:
   and a colorbar labelled with BUNIT. The file lands in Workspace Exports.
 - **Image Quality / Artifacts…** reports the diagnostics you want before
   trusting a map: blanked fraction, dynamic range, noise, and indicators for
-  striping and negative-bowl artefacts.
+  striping and negative-bowl artefacts. The striping metric is the ratio of the
+  spread of row means to that of column means (or the reverse); perfectly
+  uniform bands, where one of the two has no spread at all, show the ceiling
+  value 1 000 000 and are flagged.
 
 ```{note}
 Both were previously in the Data Hub's *Science* menu, where they ran against
@@ -560,6 +567,15 @@ thermal/free-free (α ≈ +2) regimes.
 extent). Typical workflow: open two FITS mosaics at different
 frequencies, or two Stokes I moment-0 maps extracted from the same
 sub-cube spectral range.
+
+Maps on *different* grids go through **Combine → Pixel Math / Spectral
+Index…** on the Data Hub instead, which runs on the backend
+(`POST /v1/products/map_math`). There the second map is reprojected onto the
+first one's grid whenever their sky coordinates differ, even if the two have
+the same size (bilinear interpolation, which keeps a surface brightness such as
+Jy/beam), and the file's history says so. α is blank wherever either flux is
+not positive. A map with a sky WCS cannot be combined with one without; the
+beams are not matched, so smooth both to a common resolution first.
 
 #### Faraday rotation measure (RM)
 

@@ -493,3 +493,94 @@ async def test_the_route_hides_whether_a_path_exists(client, auth_headers, tmp_p
     # Nothing was computed, so nothing is reported.
     assert body["output_path"] == "" and body["workspace_filename"] == ""
     assert (body["width"], body["height"]) == (0, 0)
+
+
+# ── SIP distortion survives a regrid ────────────────────────────────────────
+
+_SIP_TERMS = [(p, q) for p in range(4) for q in range(4) if p + q <= 3]
+
+
+def _sip_header(nx=64, ny=64):
+    """A TAN-SIP header with quadratic and cubic terms and a fitted inverse."""
+    h = fits.Header()
+    h["NAXIS"], h["NAXIS1"], h["NAXIS2"] = 2, nx, ny
+    h["CTYPE1"], h["CTYPE2"] = "RA---TAN-SIP", "DEC--TAN-SIP"
+    h["CRVAL1"], h["CRVAL2"] = 150.0, 2.0
+    h["CRPIX1"], h["CRPIX2"] = 30.3, 33.7
+    h["CD1_1"], h["CD1_2"] = -2.0e-4, 1.0e-5
+    h["CD2_1"], h["CD2_2"] = 1.2e-5, 2.0e-4
+    forward_a = {(2, 0): 4.0e-4, (1, 1): -2.0e-4, (0, 2): 1.5e-4, (3, 0): 2.0e-6, (1, 2): -1.0e-6}
+    forward_b = {(2, 0): -1.0e-4, (1, 1): 3.0e-4, (0, 2): 2.5e-4, (0, 3): 1.5e-6, (2, 1): 1.0e-6}
+    h["A_ORDER"] = h["B_ORDER"] = 3
+    for (p, q), value in forward_a.items():
+        h[f"A_{p}_{q}"] = value
+    for (p, q), value in forward_b.items():
+        h[f"B_{p}_{q}"] = value
+    # Inverse AP/BP by least squares, as a pipeline would write them:
+    # u = U + Σ AP U^p V^q where U = u + Σ A u^p v^q.
+    vv, uu = np.mgrid[0:ny, 0:nx].astype(float)
+    u = uu.ravel() + 1 - h["CRPIX1"]
+    v = vv.ravel() + 1 - h["CRPIX2"]
+    big_u = u + sum(c * u ** p * v ** q for (p, q), c in forward_a.items())
+    big_v = v + sum(c * u ** p * v ** q for (p, q), c in forward_b.items())
+    design = np.column_stack([big_u ** p * big_v ** q for p, q in _SIP_TERMS])
+    ap = np.linalg.lstsq(design, u - big_u, rcond=None)[0]
+    bp = np.linalg.lstsq(design, v - big_v, rcond=None)[0]
+    h["AP_ORDER"] = h["BP_ORDER"] = 3
+    for (p, q), ca, cb in zip(_SIP_TERMS, ap, bp):
+        h[f"AP_{p}_{q}"] = float(ca)
+        h[f"BP_{p}_{q}"] = float(cb)
+    return h
+
+
+@pytest.mark.parametrize("factor", [2, 4])
+def test_regrid_rescales_sip_so_block_centres_keep_their_sky_position(factor):
+    from astropy.wcs import WCS  # noqa: PLC0415
+    original = _sip_header()
+    regridded = original.copy()
+    regrid_header(regridded, factor)
+    n = original["NAXIS1"] // factor
+    regridded["NAXIS1"] = regridded["NAXIS2"] = n
+    w0, w1 = WCS(original), WCS(regridded)
+
+    # Output pixel i (0-based) averages input pixels i·f … i·f+f−1, whose
+    # centre is input pixel i·f + (f−1)/2.
+    jj, ii = (g.ravel().astype(float) for g in np.mgrid[0:n, 0:n])
+    centre_x = ii * factor + (factor - 1) / 2.0
+    centre_y = jj * factor + (factor - 1) / 2.0
+
+    # Forward (A/B): the regridded pixel lands where its block centre was.
+    ra, dec = w1.all_pix2world(ii, jj, 0)
+    back_x, back_y = w0.all_world2pix(ra, dec, 0, tolerance=1e-12, maxiter=200)
+    assert np.hypot(back_x - centre_x, back_y - centre_y).max() < 1e-3  # input px
+
+    # Inverse (AP/BP): from the sky of each block centre back to the output
+    # pixel through the inverse polynomials. A fitted inverse is itself only
+    # good to ~1e-3 px, so the regridded inverse must reproduce the original
+    # inverse's own answer (in input pixels), not the exact centre.
+    ra0, dec0 = w0.all_pix2world(centre_x, centre_y, 0)
+
+    def inverse(w, header, ra, dec):
+        lin_x, lin_y = w.wcs_world2pix(ra, dec, 1)
+        # astropy's sip_foc2pix takes offsets from CRPIX, returns 1-based pixels.
+        x, y = w.sip_foc2pix(lin_x - header["CRPIX1"], lin_y - header["CRPIX2"], 1)
+        return x - 1, y - 1
+
+    x0, y0 = inverse(w0, original, ra0, dec0)
+    x1, y1 = inverse(w1, regridded, ra0, dec0)
+    as_input_x = x1 * factor + (factor - 1) / 2.0
+    as_input_y = y1 * factor + (factor - 1) / 2.0
+    assert np.hypot(as_input_x - x0, as_input_y - y0).max() < 1e-6
+
+
+def test_regrid_scales_sip_coefficients_by_f_to_the_order_minus_one():
+    header = _sip_header()
+    header["A_DMAX"] = 1.0
+    before = header.copy()
+    regrid_header(header, 2)
+    assert header["A_2_0"] == pytest.approx(before["A_2_0"] * 2)
+    assert header["A_3_0"] == pytest.approx(before["A_3_0"] * 4)
+    assert header["AP_1_0"] == pytest.approx(before["AP_1_0"])
+    assert header["AP_0_0"] == pytest.approx(before["AP_0_0"] / 2)
+    assert header["A_DMAX"] == pytest.approx(0.5)
+    assert header["A_ORDER"] == 3
