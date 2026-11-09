@@ -218,10 +218,9 @@ backend's time.
 VisIVO registers itself as a FITS viewer, so a `.fits` (`.fit`, `.fts`) file
 can be opened from the file manager or the command line — and so can
 anything else the application opens: a catalogue (CSV, VOTable, IPAC `.tbl`,
-`.speck`) or a VisIVO Binary Table. The file associations also list
-tile-compressed `.fz` files, but these are not opened yet
-([#57](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/57)):
-decompress them first (`funpack`), as you would a `.fits.gz`.
+`.speck`) or a VisIVO Binary Table. Compressed FITS files (`.fits.gz` and
+tile-compressed `.fz`) open directly: the backend decompresses them once into
+its cache, behind a progress window with *Cancel*.
 
 ```bash
 VisIVOVisualAnalytics /data/WALLABY.fits      # also works with several paths

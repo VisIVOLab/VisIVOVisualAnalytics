@@ -6,7 +6,7 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
-## Unreleased
+## 1.0.12 (2026-11-09)
 
 - **Small desktop fixes from the GUI tests (#133).**
   - *Live spectrum on a preview.* On a cube above the full-resolution

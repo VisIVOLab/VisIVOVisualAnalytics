@@ -85,8 +85,9 @@ them by hand beforehand works as for a cube.
 They take disk space: about 4/3 of the image's size as float32, so about 2.7
 times a 16-bit file and 5.3 times an 8-bit one. They are not removed by
 themselves, and an image that changes gets new ones; delete the files in
-`.pyramids` to reclaim the space (the next view builds them again). An image
-compressed as a whole (`.fits.gz`) cannot have them: decompress it first.
+`.pyramids` to reclaim the space (the next view builds them again). A
+compressed image (`.fits.gz`, `.fz`) gets them too: they are built from the
+decompressed copy the backend keeps in its cache.
 
 ## Adding layers
 
