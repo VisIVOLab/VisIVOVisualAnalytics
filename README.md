@@ -183,8 +183,10 @@ Release notes and the development history are in [CHANGELOG.md](CHANGELOG.md).
 
 If VisIVO Visual Analytics contributes to work you publish, please cite the
 software and this repository. A paper describing the architecture and the
-kinematic-lasso selection method is in preparation; this section will carry the
-reference once it is published.
+kinematic-lasso selection method, *VisIVO Visual Analytics: a hybrid
+desktop-service platform for SKA-era data cubes*, has been submitted to
+Astronomy and Computing; this section will carry the reference once it is
+published.
 
 ## Licence
 
