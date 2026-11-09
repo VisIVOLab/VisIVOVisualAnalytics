@@ -209,7 +209,11 @@ void HiPSCatalogueDialog::updateControls()
 void HiPSCatalogueDialog::onBrowseFile()
 {
     RemoteFileBrowserDialog browser(m_backendUrl, m_backendToken, this);
-    browser.setExtensionFilter({ u".csv"_s, u".tsv"_s, u".txt"_s }, u"Catalogues (CSV)"_s);
+    // The overlay reads comma-separated text and nothing else
+    // (/v1/hips/catalogue_overlay).
+    browser.setPurpose(u"Choose Catalogue for the Overlay"_s);
+    browser.setFileTypes({ visivo::FileType::CommaSeparated }, visivo::FileType::CommaSeparated,
+                         u"hips-catalogue"_s);
     if (browser.exec() != QDialog::Accepted) return;
     const QString path = browser.selectedFilePath();
     if (path.isEmpty()) return;

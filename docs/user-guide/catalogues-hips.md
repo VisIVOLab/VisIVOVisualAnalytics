@@ -385,8 +385,9 @@ Workflow:
      Workspace and overlaid, using the position columns the backend identifies.
      A wide field starts at 5° and says so, rather than quietly searching less
      than you can see; what a given service will actually answer varies.
-   - **a CSV/TSV already on the backend filesystem**, chosen with the remote
-     file browser.
+   - **a comma-separated CSV already on the backend filesystem**, chosen with
+     the backend's file browser (it starts on *Comma-separated tables*,
+     `.csv` and `.txt`).
 
    Either way the backend returns only the rows inside the visible field
    (`/v1/hips/catalogue_overlay`) and the count is shown in the status bar.

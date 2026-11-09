@@ -1,6 +1,7 @@
 #include "RemoteFileBrowserDialog.h"
 
-#include <QCheckBox>
+#include "BackendLocality.h"
+
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -11,6 +12,8 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSettings>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSplitter>
 #include <QStyle>
@@ -66,10 +69,11 @@ RemoteFileBrowserDialog::RemoteFileBrowserDialog(const QString &backendUrl,
                                                  QWidget *parent)
     : QDialog(parent),
       client(std::make_unique<BackendClient>(backendUrl, backendToken)),
+      backendName(visivo::backendDisplayName(backendUrl)),
       pathEdit(new QLineEdit(this)),
       entriesTree(new QTreeWidget(this)),
       openButton(new QPushButton(u"Open"_s, this)),
-      fitsOnlyCheck(new QCheckBox(u"FITS only"_s, this)),   // a VIEW filter; off unless a caller asks
+      typeCombo(new QComboBox(this)),   // a VIEW filter: the backend classifies by content
       sortCombo(new QComboBox(this)),
       nameValue(new QLabel(this)),
       pathValue(new QLabel(this)),
@@ -78,7 +82,7 @@ RemoteFileBrowserDialog::RemoteFileBrowserDialog(const QString &backendUrl,
       modifiedValue(new QLabel(this)),
       headerView(new QTextEdit(this))
 {
-    this->setWindowTitle(u"Browse Remote FITS Files"_s);
+    this->setPurpose(u"Open Dataset"_s);
     this->resize(980, 620);
 
     auto *layout = new QVBoxLayout(this);
@@ -100,7 +104,6 @@ RemoteFileBrowserDialog::RemoteFileBrowserDialog(const QString &backendUrl,
     this->sortCombo->addItem(u"Name"_s);
     this->sortCombo->addItem(u"Size"_s);
     this->sortCombo->addItem(u"Modified"_s);
-    optionsRow->addWidget(this->fitsOnlyCheck);
     optionsRow->addStretch(1);
     optionsRow->addWidget(new QLabel(u"Sort by"_s, this));
     optionsRow->addWidget(this->sortCombo);
@@ -160,9 +163,18 @@ RemoteFileBrowserDialog::RemoteFileBrowserDialog(const QString &backendUrl,
     splitter->setStretchFactor(1, 2);
     splitter->setSizes({ 640, 320 });
 
+    // The type drop-down sits beside Cancel and Open, where the native open
+    // dialogs put theirs: it is the last thing looked at before choosing.
+    auto *bottomRow = new QHBoxLayout;
+    auto *typeLabel = new QLabel(u"File type"_s, this);
+    typeLabel->setBuddy(this->typeCombo);
+    this->typeCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    bottomRow->addWidget(typeLabel);
+    bottomRow->addWidget(this->typeCombo);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, this);
     buttons->addButton(this->openButton, QDialogButtonBox::AcceptRole);
-    layout->addWidget(buttons);
+    bottomRow->addWidget(buttons, 1);
+    layout->addLayout(bottomRow);
 
     this->openButton->setEnabled(false);
     this->clearDetails();
@@ -184,8 +196,16 @@ RemoteFileBrowserDialog::RemoteFileBrowserDialog(const QString &backendUrl,
         const QDir dir(this->pathEdit->text());
         this->loadPath(dir.absoluteFilePath(u".."_s));
     });
-    QObject::connect(this->fitsOnlyCheck, &QCheckBox::toggled, this,
-                     [this]() { this->refreshEntriesView(); });
+    QObject::connect(this->typeCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        // Only the user's choices land here (setFileTypes blocks the
+        // combo's signals), so only those are remembered.
+        if (!this->rememberKey.isEmpty()) {
+            QSettings settings;
+            settings.setValue(u"FileBrowser/lastType/%1"_s.arg(this->rememberKey),
+                              QString(visivo::fileTypeInfo(this->currentFileType()).key));
+        }
+        this->refreshEntriesView();
+    });
     QObject::connect(this->sortCombo, &QComboBox::currentIndexChanged, this,
                      [this](int) { this->refreshEntriesView(); });
     QObject::connect(this->entriesTree, &QTreeWidget::currentItemChanged, this,
@@ -243,7 +263,8 @@ RemoteFileBrowserDialog::RemoteFileBrowserDialog(const QString &backendUrl,
                      });
 
     this->pathEdit->setClearButtonEnabled(true);
-    this->pathEdit->setPlaceholderText(u"Enter a remote path"_s);
+    this->pathEdit->setPlaceholderText(u"Enter a path on the backend"_s);
+    this->setFileTypes(visivo::openableFileTypes(), visivo::FileType::AllSupported);
     this->loadPath(g_lastVisitedRemoteDirectory);
 }
 
@@ -258,8 +279,8 @@ void RemoteFileBrowserDialog::loadPath(const QString &path)
 {
     const auto result = this->client->listFiles(path);
     if (!result.valid) {
-        QMessageBox::warning(this, u"Remote Files"_s,
-                             result.error.isEmpty() ? u"Could not list remote directory."_s
+        QMessageBox::warning(this, u"Cannot list folder"_s,
+                             result.error.isEmpty() ? u"Could not list the folder."_s
                                                     : result.error);
         return;
     }
@@ -270,8 +291,6 @@ void RemoteFileBrowserDialog::loadPath(const QString &path)
     this->currentEntries = result.entries;
     this->pathEdit->setText(result.currentPath);
     this->refreshEntriesView();
-    this->clearDetails();
-    this->updateSelectionState();
 }
 
 void RemoteFileBrowserDialog::populateEntries()
@@ -285,24 +304,8 @@ void RemoteFileBrowserDialog::populateEntries()
     std::vector<BackendFileEntry> visibleEntries;
     visibleEntries.reserve(this->currentEntries.size());
     for (const auto &entry : this->currentEntries) {
-        if (this->fitsOnlyCheck->isChecked() && entry.type == u"file"_s) {
-            if (!this->m_extensionFilter.isEmpty()) {
-                // Extension-based filter (e.g. VBT .bin.head files)
-                bool matched = false;
-                for (const QString &suffix : this->m_extensionFilter) {
-                    if (entry.name.endsWith(suffix, Qt::CaseInsensitive)) {
-                        matched = true;
-                        break;
-                    }
-                }
-                if (!matched)
-                    continue;
-            } else if (!entry.isFits) {
-                // Default: FITS-only filter
-                continue;
-            }
-        }
-        visibleEntries.push_back(entry);
+        if (this->isListed(entry))
+            visibleEntries.push_back(entry);
     }
 
     const int sortIndex = this->sortCombo->currentIndex();
@@ -398,22 +401,29 @@ bool RemoteFileBrowserDialog::isSelectable(const QTreeWidgetItem *item) const
 {
     if (!item || item->data(0, TypeRole).toString() != u"file"_s)
         return false;
-    // A caller that asked for one kind of file gets exactly that kind.
-    if (!this->m_extensionFilter.isEmpty()) {
-        const QString name = item->text(0);
-        for (const QString &suffix : this->m_extensionFilter) {
-            if (name.endsWith(suffix, Qt::CaseInsensitive))
-                return true;
-        }
-        return false;
-    }
-    // Otherwise ANY file can be picked. This dialog is also the unified
-    // "Open…", whose whole point is that the user does not have to decide what
-    // kind of file this is before choosing it — the backend classifies it
-    // afterwards and says so when it cannot. Enabling Open only for FITS meant
-    // a catalogue, a .speck or a VisIVO Binary Table could be seen in the list
-    // and not opened, with no explanation: the button simply stayed grey.
-    return true;
+    // Whatever file is listed can be picked. Enabling Open for only some of
+    // the files on show meant a catalogue, a .speck or a VisIVO Binary Table
+    // could be seen in the list and not opened, with no explanation: the
+    // button simply stayed grey. Under All files that is any file, and the
+    // backend classifies it afterwards and says so when it cannot.
+    return visivo::fileTypeMatches(item->text(0), this->currentFileType());
+}
+
+bool RemoteFileBrowserDialog::isListed(const BackendFileEntry &entry) const
+{
+    const visivo::FileType type = this->currentFileType();
+    // Folders are always there to walk into; hidden ones (.git, .cache) only
+    // under All files, as the native dialogs do.
+    if (entry.type == u"directory"_s)
+        return type == visivo::FileType::AllFiles || !visivo::isHiddenFileName(entry.name);
+    return visivo::fileTypeMatches(entry.name, type);
+}
+
+visivo::FileType RemoteFileBrowserDialog::currentFileType() const
+{
+    const QVariant data = this->typeCombo->currentData();
+    return data.isValid() ? static_cast<visivo::FileType>(data.toInt())
+                          : visivo::FileType::AllFiles;
 }
 
 void RemoteFileBrowserDialog::updateSelectionState()
@@ -424,19 +434,49 @@ void RemoteFileBrowserDialog::updateSelectionState()
     this->openButton->setEnabled(selectable);
 }
 
-void RemoteFileBrowserDialog::setExtensionFilter(const QStringList &suffixes,
-                                                 const QString &label)
+void RemoteFileBrowserDialog::setFileTypes(const QList<visivo::FileType> &offered,
+                                           visivo::FileType preferred,
+                                           const QString &rememberKey)
 {
-    this->m_extensionFilter = suffixes;
-    if (!label.isEmpty())
-        this->fitsOnlyCheck->setText(label);
-    this->fitsOnlyCheck->setChecked(!suffixes.isEmpty());
+    this->rememberKey = rememberKey;
+    QString remembered;
+    if (!rememberKey.isEmpty()) {
+        QSettings settings;
+        remembered = settings.value(u"FileBrowser/lastType/%1"_s.arg(rememberKey)).toString();
+    }
+    const QList<visivo::FileType> types = visivo::offeredFileTypes(offered);
+    const visivo::FileType initial = visivo::initialFileType(types, preferred, remembered);
+
+    {
+        const QSignalBlocker blocker(this->typeCombo);
+        this->typeCombo->clear();
+        for (const visivo::FileType type : types) {
+            this->typeCombo->addItem(visivo::fileTypeDisplayLabel(type), static_cast<int>(type));
+            // The catch-all's patterns are too many for the drop-down itself.
+            const QStringList suffixes = visivo::fileTypeSuffixes(type);
+            if (!suffixes.isEmpty()) {
+                this->typeCombo->setItemData(this->typeCombo->count() - 1,
+                                             suffixes.join(u' '), Qt::ToolTipRole);
+            }
+        }
+        this->typeCombo->setCurrentIndex(this->typeCombo->findData(static_cast<int>(initial)));
+    }
     this->refreshEntriesView();
+}
+
+void RemoteFileBrowserDialog::setPurpose(const QString &purpose)
+{
+    this->setWindowTitle(u"%1 — Backend: %2"_s.arg(purpose, this->backendName));
 }
 
 void RemoteFileBrowserDialog::refreshEntriesView()
 {
     this->populateEntries();
+    // QTreeWidget::clear() drops the current item without currentItemChanged,
+    // so the details pane would keep describing a file no longer selected,
+    // and Open would stay enabled for it.
+    this->clearDetails();
+    this->updateSelectionState();
 }
 
 QString RemoteFileBrowserDialog::humanReadableSize(qint64 size) const

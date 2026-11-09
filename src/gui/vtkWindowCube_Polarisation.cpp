@@ -441,11 +441,10 @@ QString vtkWindowCube::askForStokesCompanionPath(const QString &role, int index,
     // is also how the caller learns the window is gone.
     QPointer<RemoteFileBrowserDialog> dialog(
             new RemoteFileBrowserDialog(this->remoteBackendUrl, this->remoteBackendToken, this));
-    // .fits.gz too, because auto-detection matches gzipped companions and a
-    // chooser that hides them would contradict the names it just suggested.
-    dialog->setExtensionFilter({ u".fits"_s, u".fit"_s, u".fits.gz"_s, u".fit.gz"_s },
-                               u"FITS files only"_s);
-    dialog->setWindowTitle(u"Locate Stokes %1  (%2 of %3)"_s.arg(role).arg(index).arg(total));
+    // Compressed FITS too, because auto-detection matches gzipped companions
+    // and a chooser that hides them would contradict the names it just suggested.
+    dialog->setFileTypes({ visivo::FileType::Fits }, visivo::FileType::Fits, u"stokes"_s);
+    dialog->setPurpose(u"Locate Stokes %1  (%2 of %3)"_s.arg(role).arg(index).arg(total));
     const int outcome = dialog->exec();
     if (!dialog)
         return {};                      // the window went away, taking it with it

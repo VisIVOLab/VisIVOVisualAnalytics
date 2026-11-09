@@ -97,7 +97,9 @@ decompressed copy the backend keeps in its cache.
 You can overlay or compare multiple images in the same window:
 
 - **Add Image Layer…** (*File* menu, ⌘L, or **＋ Add layer…** under the
-  *Layers* list) — pick another FITS image from the *remote file browser*.
+  *Layers* list) — pick another FITS image from the backend's file browser,
+  which starts on *FITS images and cubes* (compressed `.fits.gz` and `.fz`
+  included).
 - Each layer is a **card**: the visibility box, its name, and — on the second
   line — a strip of that layer's own colour map with its stretch and opacity.
   Before, those three were visible only in the panel above the list and only for

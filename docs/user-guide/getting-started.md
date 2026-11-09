@@ -157,6 +157,26 @@ the backend-side filesystem:
   - VisIVO Binary Table (`.bin` + `.head`) → points in the 3-D catalogue viewer,
     a volume as a cube per field ([VBT tables](vbt-viewer))
 
+  The browser's title says what it opens and on which backend (*Open Dataset —
+  Backend: Local*, or the name of the cluster or remote backend). The **File
+  type** drop-down beside *Cancel* and *Open* chooses what is listed:
+
+  | File type | Names |
+  |---|---|
+  | All supported files (default) | every name below |
+  | FITS images and cubes | `.fits .fit .fts`, `.fits.gz .fit.gz .fts.gz`, `.fz` |
+  | Catalogues | `.csv .txt .vot .votable .xml .tbl .speck`, and `.fits .fit` (FITS tables) |
+  | VisIVO Binary Tables | `.bin.head`, `.head`, `.bin` |
+  | HDF5 | `.h5 .hdf5 .hdf .bfdata` |
+  | All files | everything, hidden files included |
+
+  Folders are always listed; hidden files and folders (`.DS_Store`, `.git`)
+  only under *All files*. The list goes by name only: the backend identifies a
+  file by its contents, so a FITS or a CSV under another name opens from *All
+  files*. The menu entries that open one kind of file (*Open 3D Catalogue…*,
+  *Open VBT…*, *Open Velocity Field…*, *Add Image Layer…*, the Stokes
+  companions) start on that kind, and each remembers the type you chose last.
+
   You are asked only when the file itself is ambiguous. A FITS **table** is the
   usual case: it can be a source catalogue or a table to overlay on an image,
   and nothing in the file says which — so the client asks instead of guessing.
