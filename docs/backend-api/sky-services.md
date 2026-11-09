@@ -76,8 +76,9 @@ coordinates as RA/Dec puts the imagery nowhere near the field asked for. Require
 route answers `valid: false` with an install hint rather than failing.
 
 ### `POST /v1/hips/catalogue_overlay`
-Given a HiPS survey viewport and the path of a **CSV/TSV on the backend
-filesystem** (confined to the configured data roots), return the rows falling
+Given a HiPS survey viewport and the path of a **delimited text table on the
+backend filesystem** (confined to the configured data roots; comma, tab or
+semicolon separated, read as `/v1/catalogue/open` reads `format: "csv"`), return the rows falling
 inside the field as `sources` (`BackendHiPSCatalogueSource[]`, at most
 `max_sources`, default 5000), with `total_in_view` and `truncated`. `ra_field`
 and `dec_field` name the position columns; empty, they are detected. Selection is by angular

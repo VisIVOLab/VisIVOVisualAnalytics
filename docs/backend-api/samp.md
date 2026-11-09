@@ -65,7 +65,9 @@ it is set.
 
 `send-fits` and `send-catalogue` stage the file off the event loop (a 2.3
 million-row table takes about 40 s; `/v1/health` keeps answering). A table
-converted to VOTable (CSV, IPAC, `.speck`) is written as BINARY2.
+converted to VOTable (CSV, IPAC, `.speck`) is written as BINARY2. A `csv`
+table is any delimited text, read with the separator `/v1/catalogue/open`
+detects (comma, tab or semicolon).
 
 With `"deliver": "return"` the file is staged but the message is neither sent
 nor queued: the response carries it as `message` (`{"mtype", "params"}`), with

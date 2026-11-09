@@ -481,7 +481,11 @@ async def samp_send_catalogue(
     def stage() -> tuple[str, str, str, int]:
         """(token, filename, mtype, rows); rows is -1 when not read."""
         if fmt == "csv":
-            dataframe = pd.read_csv(src)
+            # Any delimited text the catalogue viewer opened: comma, tab or
+            # semicolon (issue #155).
+            from ..text_table import read_delimited_table  # noqa: PLC0415
+
+            dataframe = read_delimited_table(src)
             filename = request.filename or f"{src.stem}.vot"
             return as_votable(dataframe, filename), filename, MTYPE_TABLE_LOAD_VOTABLE, len(dataframe)
         if fmt in {"votable", "vot", "xml"}:

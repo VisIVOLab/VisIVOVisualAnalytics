@@ -11,9 +11,21 @@ A dedicated 3-D scatter viewer (`vtkWindowCatalogue3D`) renders large
 catalogues — millions of entries — as glyphs in Cartesian (RA / Dec /
 distance) space.
 
-Opens from **Data → Open 3D Catalogue (CSV)…** (⌘⇧O; CSV, VOTable, FITS,
-speck or IPAC on the backend filesystem), from **File → Open…** when the file
-is a catalogue, or from the Command Palette (⌘K → "open 3d catalogue"). A
+Opens from **Data → Open 3D Catalogue (CSV)…** (⌘⇧O; delimited text,
+VOTable, FITS, speck or IPAC on the backend filesystem), from **File → Open…**
+when the file is a catalogue, or from the Command Palette (⌘K → "open 3d
+catalogue"). Delimited text (`.csv`, `.tsv`, `.txt`) may be separated by
+commas, tabs or semicolons: the backend reads it with the separator it saw
+when it identified the file, so a tab-separated table has the same columns as
+its comma version. A quoted field may contain any of the separators. Blank
+lines are skipped, and so are `#` comment lines, with two exceptions: a header
+written as a comment (`#id,ra,dec` right above the first row of numbers) is
+the header, and a `#` line with as many fields as the table is a row (a
+source named `#S5`). A semicolon table whose numbers are written with a
+decimal comma (`12,5`, as spreadsheets export them in many European locales)
+is read as numbers when at least two columns are written that way. A comma
+file with uneven rows opens as it always did. A text file that is not a table
+is refused with a message saying so. A
 **VisIVO Binary Table of points** (a simulation snapshot, a mock catalogue)
 opens here too, from any route: its X/Y/Z columns are the positions, read in
 place from the binary ([VBT tables](vbt-viewer.md#point-clouds)).
@@ -159,10 +171,12 @@ one-shot actions:
   - What it does
 * - **Load Catalogue Overlay**
   - One-shot
-  - Open a file picker (or paste a backend path) for a CSV / VOTable.
-    The backend parses it (`/v1/catalogue/open`), returns the source
-    list, and the client renders the glyphs immediately on the slice.
-    Each call replaces the currently-loaded overlay.
+  - Open a file picker for a delimited text table (`.csv`, `.tsv`,
+    `.txt`) with `RA` and `DEC` columns in degrees, or a DS9 region file
+    (`.reg`); the image viewer also takes CASA CRTF (`.crtf`). See
+    [Overlay file formats](#overlay-file-formats). The glyphs are drawn
+    immediately on the slice. Each call replaces the currently-loaded
+    overlay.
 * - **Show Catalogue Overlay**
   - Toggle
   - Show / hide the glyph layer without unloading the catalogue. Useful
@@ -185,6 +199,54 @@ one-shot actions:
 The overlay respects the viewer's WCS frame (J2000 / Galactic / Ecliptic);
 each source is projected through `wcscon()` so you see the same point
 regardless of the active frame.
+
+### Overlay file formats
+
+The file is read by what it holds, not only by its name, with the same rule
+the backend applies to delimited text (see
+[3-D catalogue viewer](#3-d-catalogue-viewer)):
+
+- A **`.reg`** file is read as **DS9 regions**: `fk5` / `icrs` points and
+  circles, and `image` ellipses.
+- A file whose first lines (up to ten, `#` comment lines and blank lines
+  aside) split into the same number of fields, two or more, with a **comma**,
+  a **tab** or a **semicolon** (tried in that order) is read as a **table**
+  with that separator, whatever its extension. It needs `RA` and `DEC` (or
+  `DEC_DEG`) columns in degrees; a `LABEL`, `ID` or `NAME` column names the
+  sources, and every other column becomes a field of the source. Fields are
+  read as the backend reads them: a field that starts with `"` is quoted and
+  may contain any of the separators, a line break, or `""` for a quote; a
+  `"` anywhere else is an ordinary character (`3"`). Lines may end in
+  `\n`, `\r\n` or a lone `\r`.
+  - The header is the first line that does not start with `#`, unless the `#`
+    line right above it names as many columns as it has (none of them a
+    number) and that first line holds numbers: then `#ID,RA,DEC` or
+    `# ID, RA, DEC` over `1,10,20` is the header, and `1,10,20` the first
+    source. A title such as `# Sources, v2, J2000` above a real header stays a
+    comment.
+  - Below the header, a `#` line is a comment unless it has as many fields as
+    the table: then it is a source (one named `#S5`). A `#` line inside a
+    quoted field that spans lines is part of that field.
+  - A semicolon table whose sampled rows use a decimal comma (`10,5`) in at
+    least two columns, with no decimal point among them, is a decimal-comma
+    table. In it, a column whose every value is a number (`10,5`, `11` or
+    `20.5`) is read as numbers, in the extra fields too, so a SED fit reads
+    its fluxes; a column with any text in it, such as a note reading `1,2`,
+    stays as written.
+  - A comma file with uneven rows (short rows, a trailing comma on each row, a
+    single column) is still read as comma-separated when some column holds
+    numbers (`NaN` and `inf` count, as in the backend).
+  - The one exception is a file whose every one of those lines is a DS9
+    region statement: bare `fk5;point(10.1,20.2)` lines split on their commas
+    like a two-column table, and are read as regions.
+- A file that is not a table is read as DS9 regions when it looks like one:
+  ds9's `# Region file format` comment, a `global` line, a coordinate system
+  such as `fk5` on its own line, or a shape written as `circle(…)`. A column
+  called `global_id`, `Box (arcsec)` or `Line (GHz)` does not make a table a
+  region file.
+- A `.csv` or `.tsv` file that is neither is refused with a message saying
+  why, rather than being tried as regions. A file with any other name falls
+  back to the DS9 reader, and its message says it is not a table either.
 
 ### Querying the VLKB directly
 
@@ -251,8 +313,8 @@ children and stays exactly the flat table it always was, with no expander
 column.
 
 ```{note}
-The CSV reader is quote-aware and reads **records**, not lines: a quoted
-comma does not shift the columns, and a value — or a header — that spans
+The table reader is quote-aware and reads **records**, not lines: a quoted
+separator does not shift the columns, and a value — or a header — that spans
 several lines stays one field. A truncated last row is skipped and
 counted, and the count is reported rather than folded into the "loaded"
 message, so a file that lost rows does not look like one that did not.
@@ -385,9 +447,10 @@ Workflow:
      Workspace and overlaid, using the position columns the backend identifies.
      A wide field starts at 5° and says so, rather than quietly searching less
      than you can see; what a given service will actually answer varies.
-   - **a comma-separated CSV already on the backend filesystem**, chosen with
-     the backend's file browser (it starts on *Comma-separated tables*,
-     `.csv` and `.txt`).
+   - **a delimited text table already on the backend filesystem** (comma,
+     tab or semicolon separated, read as the 3-D catalogue viewer reads it),
+     chosen with the backend's file browser (it starts on *Delimited text
+     tables*, `.csv`, `.tsv` and `.txt`).
 
    Either way the backend returns only the rows inside the visible field
    (`/v1/hips/catalogue_overlay`) and the count is shown in the status bar.

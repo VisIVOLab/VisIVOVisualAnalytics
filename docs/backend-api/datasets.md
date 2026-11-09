@@ -176,6 +176,28 @@ Open a catalogue file on the backend.
 { "path": "/data/catalogue.csv", "format": "csv" }
 ```
 `format` is `csv` (default), `votable`, `fits`, `ipac`, `speck` or `vbt`.
+`csv` is any delimited text table: the separator (comma, tab or semicolon) is
+detected as `/v1/files/classify` detects it, on the same first 8 KB — the
+first one that splits the first lines (up to ten, `#` comments and blank lines
+left out) into the same number of fields, two or more. Quoted fields may hold
+any separator. With N the field count of the first line not starting with `#`:
+
+- the header is that line, unless the `#` line just above it (blank lines
+  allowed between), with the `#` and the spaces around it removed, splits into
+  N non-empty names none of which is a number while that first line holds a
+  number: then the `#` line is the header (`#id,ra,dec` over `1,10,20`);
+- below the header, a line starting with `#` is a comment, and skipped, only
+  when it does not split into N fields; one that does is a row (a source named
+  `#S5`). A `#` inside a quoted field spanning lines is part of the field;
+- a semicolon table is read with decimal commas when at least two columns of
+  its first rows are entirely numbers written that way (`12,5`) and no number
+  in them has a decimal point; a single column such as `1,2` is left as text.
+
+A file no separator makes consistent is read as a plain comma-separated file
+was always read (short rows padded, a trailing comma, a single column) when
+that gives a number somewhere; otherwise it answers `valid: false` with an
+error saying it is not a delimited text table. A header with no rows opens as
+an empty catalogue.
 `paths` (optional) opens several files of the same format, with identical
 columns, as one catalogue; `path` is then only a label.
 Returns `dataset_id`, `session_id`, `num_rows`, the field list with types

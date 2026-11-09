@@ -153,7 +153,8 @@ the backend-side filesystem:
   - 2-D FITS image → [Image viewer](image-viewer)
   - 3-D spectral cube → [Spectral cube viewer](cube-viewer)
   - FITS with time and frequency axes, or HDF5 → the dynamic-spectrum viewer
-  - CSV / VOTable / IPAC / speck → [3-D catalogue viewer](catalogues-hips)
+  - delimited text (comma, tab or semicolon) / VOTable / IPAC / speck →
+    [3-D catalogue viewer](catalogues-hips)
   - VisIVO Binary Table (`.bin` + `.head`) → points in the 3-D catalogue viewer,
     a volume as a cube per field ([VBT tables](vbt-viewer))
 
@@ -165,7 +166,7 @@ the backend-side filesystem:
   |---|---|
   | All supported files (default) | every name below |
   | FITS images and cubes | `.fits .fit .fts`, `.fits.gz .fit.gz .fts.gz`, `.fz` |
-  | Catalogues | `.csv .txt .vot .votable .xml .tbl .speck`, and `.fits .fit` (FITS tables) |
+  | Catalogues | `.csv .tsv .txt .vot .votable .xml .tbl .speck`, and `.fits .fit` (FITS tables) |
   | VisIVO Binary Tables | `.bin.head`, `.head`, `.bin` |
   | HDF5 | `.h5 .hdf5 .hdf .bfdata` |
   | All files | everything, hidden files included |

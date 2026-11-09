@@ -889,8 +889,10 @@ distribution is enough to identify what it represents:
 - *View → WCS Box in the 3-D View* draws a labelled bounding box in the 3-D view
   with RA / Dec / Velocity ticks derived from the cube WCS. Useful as a
   spatial reference when rotating the camera.
-- *Tools → Load Catalogue Overlay* lets you overlay sources from a CSV /
-  VOTable on the slice; see [Catalogues](catalogues-hips).
+- *Tools → Load Catalogue Overlay* lets you overlay sources from a comma-,
+  tab- or semicolon-separated table (`.csv`, `.tsv`, `.txt`) or a DS9 region
+  file on the slice; see
+  [Overlay file formats](catalogues-hips.md#overlay-file-formats).
 
 ### Beam indicator
 

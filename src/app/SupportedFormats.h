@@ -13,9 +13,9 @@
 //     fields are FITS too; the classifier tells them apart by their axes.
 //   - Catalogues: what /v1/catalogue/open reads (CSV, VOTable, IPAC `.tbl`,
 //     `.speck`, FITS tables) under the names CatalogueFormat.h maps to those
-//     readers. `.txt` is there because the classifier takes delimited text by
-//     content; the catalogue reader itself reads comma-separated text, which is
-//     why `.tsv` is not offered.
+//     readers. Delimited text is `.csv`, `.tsv` or `.txt`: the classifier takes
+//     it by content and the reader splits it on the separator the classifier
+//     saw, comma, tab or semicolon (backend/app/text_table.py, issue #155).
 //   - VisIVO Binary Tables: the `.bin.head` header, or either half of the pair
 //     (the classifier resolves a picked `.bin` to the header beside it).
 //   - HDF5: the names hdf5_dynspec.is_hdf5_path accepts.
@@ -40,7 +40,7 @@ enum class FileType {
     Catalogue,
     Vbt,
     Hdf5,
-    CommaSeparated,   ///< plain CSV only, for readers that take nothing else
+    DelimitedText,    ///< comma, tab or semicolon text tables, for readers that take nothing else
     AllFiles,         ///< every file, dotfiles included; stays LAST (the tests walk up to it)
 };
 
@@ -67,14 +67,15 @@ inline const QList<FileTypeInfo> &fileTypes()
           { u".fits"_s, u".fit"_s, u".fts"_s, u".fits.gz"_s, u".fit.gz"_s, u".fts.gz"_s,
             u".fz"_s } },
         { FileType::Catalogue, "catalogue"_L1, u"Catalogues"_s,
-          { u".csv"_s, u".txt"_s, u".vot"_s, u".votable"_s, u".xml"_s, u".tbl"_s, u".speck"_s,
+          { u".csv"_s, u".tsv"_s, u".txt"_s, u".vot"_s, u".votable"_s, u".xml"_s, u".tbl"_s, u".speck"_s,
             u".fits"_s, u".fit"_s } },
         { FileType::Vbt, "vbt"_L1, u"VisIVO Binary Tables"_s,
           { u".bin.head"_s, u".head"_s, u".bin"_s } },
         { FileType::Hdf5, "hdf5"_L1, u"HDF5"_s,
           { u".h5"_s, u".hdf5"_s, u".hdf"_s, u".bfdata"_s } },
-        { FileType::CommaSeparated, "csv"_L1, u"Comma-separated tables"_s,
-          { u".csv"_s, u".txt"_s } },
+        // The key stays "csv": it is the remembered choice in QSettings.
+        { FileType::DelimitedText, "csv"_L1, u"Delimited text tables"_s,
+          { u".csv"_s, u".tsv"_s, u".txt"_s } },
         { FileType::AllFiles, "all-files"_L1, u"All files"_s, {} },
     };
     return table;
@@ -157,7 +158,7 @@ inline QString fileTypeDisplayLabel(FileType type)
 }
 
 /// The kinds the unified Open offers: every kind the application opens.
-/// CommaSeparated is left out, a subset of Catalogue kept for readers that
+/// DelimitedText is left out, a subset of Catalogue kept for readers that
 /// take nothing else.
 inline QList<FileType> openableFileTypes()
 {

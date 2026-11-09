@@ -41,7 +41,7 @@ void TestSupportedFormats::allSupportedIsTheUnionWithoutRepeats()
 {
     const QStringList all = visivo::fileTypeSuffixes(FileType::AllSupported);
     for (const FileType type : { FileType::Fits, FileType::Catalogue, FileType::Vbt,
-                                 FileType::Hdf5, FileType::CommaSeparated }) {
+                                 FileType::Hdf5, FileType::DelimitedText }) {
         for (const QString &suffix : visivo::fileTypeSuffixes(type))
             QVERIFY2(all.contains(suffix), qPrintable(suffix));
     }
@@ -76,7 +76,8 @@ void TestSupportedFormats::matchingIgnoresCase()
     QVERIFY(visivo::fileTypeMatches(u"Gaia.VOT", FileType::Catalogue));
     QVERIFY(visivo::fileTypeMatches(u"Snap.Bin.Head", FileType::Vbt));
     QVERIFY(visivo::fileTypeMatches(u"PSR.H5", FileType::Hdf5));
-    QVERIFY(visivo::fileTypeMatches(u"SOURCES.CSV", FileType::CommaSeparated));
+    QVERIFY(visivo::fileTypeMatches(u"SOURCES.CSV", FileType::DelimitedText));
+    QVERIFY(visivo::fileTypeMatches(u"Sources.TSV", FileType::DelimitedText));
 }
 
 void TestSupportedFormats::dotfilesAreListedOnlyUnderAllFiles()
@@ -85,7 +86,7 @@ void TestSupportedFormats::dotfilesAreListedOnlyUnderAllFiles()
     QVERIFY(!visivo::isHiddenFileName(u"m31.fits"));
     // macOS resource forks keep the name they shadow.
     for (const FileType type : { FileType::AllSupported, FileType::Fits, FileType::Catalogue,
-                                 FileType::Vbt, FileType::Hdf5, FileType::CommaSeparated }) {
+                                 FileType::Vbt, FileType::Hdf5, FileType::DelimitedText }) {
         QVERIFY(!visivo::fileTypeMatches(u"._m31.fits", type));
         QVERIFY(!visivo::fileTypeMatches(u".DS_Store", type));
         QVERIFY(!visivo::fileTypeMatches(u".fits", type));
@@ -106,13 +107,21 @@ void TestSupportedFormats::otherKindsAreNotListed()
     QVERIFY(!visivo::fileTypeMatches(u"sources.csv", FileType::Fits));
     QVERIFY(!visivo::fileTypeMatches(u"m31.fits", FileType::Vbt));
     QVERIFY(!visivo::fileTypeMatches(u"m31.fits", FileType::Hdf5));
-    QVERIFY(!visivo::fileTypeMatches(u"m31.fits", FileType::CommaSeparated));
-    QVERIFY(!visivo::fileTypeMatches(u"gaia.vot", FileType::CommaSeparated));
+    QVERIFY(!visivo::fileTypeMatches(u"m31.fits", FileType::DelimitedText));
+    QVERIFY(!visivo::fileTypeMatches(u"gaia.vot", FileType::DelimitedText));
     QVERIFY(!visivo::fileTypeMatches(u"README", FileType::AllSupported));
     QVERIFY(!visivo::fileTypeMatches(u"run.log", FileType::AllSupported));
     QVERIFY(!visivo::fileTypeMatches(u"", FileType::AllSupported));
-    // The 3-D catalogue reader takes commas only.
-    QVERIFY(!visivo::fileTypeMatches(u"data.tsv", FileType::Catalogue));
+}
+
+void TestSupportedFormats::tabSeparatedTextIsACatalogue()
+{
+    // The backend reads comma, tab or semicolon text with the separator the
+    // classifier saw (issue #155), so .tsv is offered wherever .csv is.
+    QVERIFY(visivo::fileTypeMatches(u"data.tsv", FileType::Catalogue));
+    QVERIFY(visivo::fileTypeMatches(u"data.tsv", FileType::DelimitedText));
+    QVERIFY(visivo::fileTypeMatches(u"data.tsv", FileType::AllSupported));
+    QVERIFY(!visivo::fileTypeMatches(u"data.tsv.gz", FileType::DelimitedText));
 }
 
 void TestSupportedFormats::displayLabelShowsPatterns()
@@ -120,6 +129,8 @@ void TestSupportedFormats::displayLabelShowsPatterns()
     QCOMPARE(visivo::fileTypeDisplayLabel(FileType::Vbt),
              u"VisIVO Binary Tables (*.bin.head *.head *.bin)"_s);
     QVERIFY(visivo::fileTypeDisplayLabel(FileType::Fits).contains(u"*.fz"));
+    QCOMPARE(visivo::fileTypeDisplayLabel(FileType::DelimitedText),
+             u"Delimited text tables (*.csv *.tsv *.txt)"_s);
     QCOMPARE(visivo::fileTypeDisplayLabel(FileType::AllSupported), u"All supported files"_s);
     QCOMPARE(visivo::fileTypeDisplayLabel(FileType::AllFiles), u"All files"_s);
 }
@@ -136,7 +147,7 @@ void TestSupportedFormats::allFilesIsAlwaysOffered()
     const QList<FileType> open = visivo::offeredFileTypes(visivo::openableFileTypes());
     QCOMPARE(open.front(), FileType::AllSupported);
     QCOMPARE(open.back(), FileType::AllFiles);
-    QVERIFY(!open.contains(FileType::CommaSeparated));
+    QVERIFY(!open.contains(FileType::DelimitedText));
 }
 
 void TestSupportedFormats::initialTypePrefersTheRememberedOne()

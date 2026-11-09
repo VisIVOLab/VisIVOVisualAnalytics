@@ -292,14 +292,15 @@ void vtkWindowImage::loadCatalogueOverlay()
 {
     const QString path = QFileDialog::getOpenFileName(
             this, u"Load Catalogue Overlay"_s, QString(),
-            u"Catalogue / region files (*.reg *.crtf *.csv);;DS9 region (*.reg);;"
-            u"CASA CRTF (*.crtf);;CSV (*.csv)"_s);
+            u"Catalogue / region files (*.reg *.crtf *.csv *.tsv *.txt);;DS9 region (*.reg);;"
+            u"CASA CRTF (*.crtf);;Delimited text tables (*.csv *.tsv *.txt);;All files (*)"_s);
     if (path.isEmpty()) {
         return;
     }
 
-    // DS9 (.reg) and CSV are parsed locally; CASA CRTF is parsed by the backend
-    // (the only place with a CRTF parser) and converted to catalogue entries.
+    // DS9 regions and comma/tab/semicolon tables are parsed locally, told apart
+    // by content (parseFile); CASA CRTF is parsed by the backend (the only place
+    // with a CRTF parser) and converted to catalogue entries.
     CatalogueOverlayParseResult parsed;
     if (path.endsWith(u".crtf"_s, Qt::CaseInsensitive)) {
         QFile crtfFile(path);

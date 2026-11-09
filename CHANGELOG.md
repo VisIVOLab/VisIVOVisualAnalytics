@@ -8,6 +8,40 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Tab- and semicolon-separated catalogues (#155).** The classifier took a
+  text table separated by commas, tabs or semicolons as a catalogue, but the
+  3-D catalogue viewer, the catalogue overlays and the SAMP table export then
+  read it with a comma-only reader, so a `.tsv` opened as one column or failed
+  with no useful message. One reader (`backend/app/text_table.py`) now serves
+  all of them and the classifier: the separator is judged on the same first
+  8 KB the classifier looks at, so what is called a catalogue is read with the
+  separator that made it one. Quoted fields may contain any separator; blank
+  lines and `#` comment lines are skipped, also between rows, except that a
+  header written as a comment (`#id,ra,dec` above the first row) is the header
+  and a `#` line with the table's field count is a row (a source named `#S5`);
+  a semicolon table with decimal commas in two columns or more reads as
+  numbers; a comma file with uneven rows opens as it always did; and a text
+  file that is not a table is refused with a message saying so. The
+  classifier no longer strips the leading whitespace of the text it judges, so
+  a table whose header starts with a tab (a pandas index column) is a
+  catalogue for both. `.tsv` is listed again in the file browser,
+  under *Catalogues* and under *Delimited text tables* (formerly
+  *Comma-separated tables*), where the HiPS catalogue overlay starts.
+  *Load Catalogue Overlay* in the image and cube viewers, which reads the file
+  in the client, sent `.csv` to its table reader and every other name to the
+  DS9 region reader, so a `.tsv` found "no supported entries". It now decides
+  by content with the same rule (`src/gui/DelimitedText.h`): a `.reg` file is
+  regions; a file whose first lines make a comma, tab or semicolon table is
+  that table, whatever its name, with the usual RA/DEC columns (unless every
+  one of those lines is a region statement such as `fk5;point(…)`); a file
+  that is no table but looks like DS9 is regions; and a `.csv` or `.tsv` that
+  is neither is refused with a message saying why instead of being tried as
+  regions. Fields follow the csv rules the backend reads with (a `"` opens a
+  quoted field only at the start of a field, so `3"` is three arcseconds),
+  lines may end in a lone `\r`, and comment lines (and a `#` header or `#`
+  row), decimal commas (column by column) and uneven comma rows are handled
+  as in the backend. Both file pickers now list `.tsv` and
+  `.txt` beside `.csv`.
 - **A file-type drop-down in the file browser (#153).** The backend's file
   browser, used by *Open…* with the local backend as well as a remote one, had
   a single *FITS only* checkbox from when the application opened only FITS;
