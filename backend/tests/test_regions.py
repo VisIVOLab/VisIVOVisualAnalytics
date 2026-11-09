@@ -11,6 +11,36 @@ from app import regions as R
 
 _TEST_TOKEN = "test-token-visivo-12345"
 
+# The Galactic centre (l, b) = (0, 0) in FK5 J2000.
+_GC_FK5 = (266.4049962340225, -28.93617240339179)
+
+
+def _wcs_header(crval=(202.0, 47.0), crpix=(32, 32), scale_arcsec=1.0, rot_deg=0.0,
+                mirror=False, ctype=("RA---TAN", "DEC--TAN"), radesys="FK5"):
+    """A synthetic celestial header: ``scale_arcsec`` per pixel, the sky
+    rotated by ``rot_deg`` on the grid, and east to the right when ``mirror``."""
+    from astropy.io import fits
+    import math as _m
+    h = fits.Header()
+    h["NAXIS"] = 2; h["NAXIS1"] = 64; h["NAXIS2"] = 64
+    h["CTYPE1"], h["CTYPE2"] = ctype
+    h["CRPIX1"], h["CRPIX2"] = crpix
+    h["CRVAL1"], h["CRVAL2"] = crval
+    d = scale_arcsec / 3600.0
+    h["CDELT1"] = d if mirror else -d
+    h["CDELT2"] = d
+    c, s_ = _m.cos(_m.radians(rot_deg)), _m.sin(_m.radians(rot_deg))
+    h["PC1_1"], h["PC1_2"], h["PC2_1"], h["PC2_2"] = c, -s_, s_, c
+    h["CUNIT1"] = h["CUNIT2"] = "deg"
+    if radesys:
+        h["RADESYS"] = radesys
+    return h
+
+
+def _wcs(**kw):
+    from astropy.wcs import WCS
+    return WCS(_wcs_header(**kw)).celestial
+
 
 # ── unit: parse / export / round-trip ────────────────────────────────────────
 
@@ -111,24 +141,16 @@ class TestCrossFormatAndConvert(unittest.TestCase):
         self.assertEqual([r["shape"] for r in regs], [r["shape"] for r in back])
         self.assertEqual(regs[1]["frame"], "image")
 
-    def test_convert_world_to_image_with_fake_wcs(self):
-        # Fake linear WCS: 1 arcsec/pix, ref pixel (50,50) at (200deg, 0deg).
-        scale_deg = 1.0 / 3600.0
-
-        def sky_to_pix(ra, dec):
-            return (50 + (ra - 200.0) / scale_deg, 50 + (dec - 0.0) / scale_deg)
-
-        def pix_to_sky(x, y):
-            return (200.0 + (x - 50) * scale_deg, 0.0 + (y - 50) * scale_deg)
-
+    def test_convert_world_to_image_with_real_wcs(self):
+        # TAN WCS: 1 arcsec/pix, reference pixel (50,50) (1-based) at (200deg, 0deg).
+        wcs = _wcs(crval=(200.0, 0.0), crpix=(50, 50))
         world = [{"shape": "circle", "frame": "fk5", "center": [200.0, 0.0],
                   "radius": 10.0, "unit": "arcsec", "props": {}}]
-        img = R.convert_regions(world, to_frame="image", sky_to_pix=sky_to_pix,
-                                pix_to_sky=pix_to_sky, pixel_scale_arcsec=1.0)
+        img = R.convert_regions(world, to_frame="image", wcs=wcs, origin=1)
         self.assertEqual(img[0]["frame"], "image")
         self.assertEqual(img[0]["unit"], "pix")
-        self.assertAlmostEqual(img[0]["center"][0], 50.0, places=3)
-        self.assertAlmostEqual(img[0]["radius"], 10.0, places=3)  # 10 arcsec / 1 arcsec/pix
+        self.assertAlmostEqual(img[0]["center"][0], 50.0, places=6)
+        self.assertAlmostEqual(img[0]["radius"], 10.0, places=6)  # 10 arcsec / 1 arcsec/pix
 
 
 # ── HTTP endpoints ───────────────────────────────────────────────────────────

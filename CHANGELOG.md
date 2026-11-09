@@ -8,6 +8,30 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Imported regions are moved between sky frames.** A region was handed to
+  the image's WCS in whatever frame the file used, so a galactic circle at
+  (l, b) = (0, 0) on an FK5 map centred on the Galactic centre came back at
+  [NaN, NaN] instead of the centre pixel [32, 32], and an explicit FK5 to
+  galactic conversion left both frame and coordinates as they were. Positions
+  now go through astropy from the region's frame to the image's (and to any
+  requested sky frame, with no dataset needed for sky to sky), and ellipse
+  and box angles turn with the frame: by 58.6° between FK5 and galactic at
+  the Galactic centre, and with the pixel grid's rotation, mirror,
+  unequal scales and skew. `fk4` (B1950) and `ecliptic` are new frames; CRTF
+  `B1950`, read as J2000 before, is FK4, and `global coord=` is honoured. A
+  region off the WCS projection is a 422 instead of NaN.
+- **Each region size keeps its own unit.** `ellipse(10,20,1',30",0)` had
+  semi-axes 1 and 30 arcmin (the second size took the first's unit, a factor
+  of 60); it is now 1 and 0.5 arcmin, and the same holds for boxes, annuli
+  and CRTF. Pixel sizes in a sky frame (`6i`) and angular sizes in the image
+  frame (`10"`) are read and converted; a region mixing the two is refused.
+- **ds9 files written in degrees reimport.** The exporter wrote `0.01d` and
+  the parser rejected it ("Cannot parse size token"); every ds9 suffix (`d`,
+  `r`, `p`, `i`, `'`, `"`), `fk5;circle(...)` on one line and exponents such
+  as `1e-05` are now read. Export then import is exact to 10⁻⁹ for all six
+  shapes in every frame and unit, in both formats; positions are written
+  with 12 significant digits (6 before: an RA above 100° was rounded to 0.001°, up to 1.8").
+
 - **PSRFITS and HDF5 dynamic spectra open again.** Both converters wrote a
   `→` into the sidecar's `ORIGIN` card, which astropy refuses (FITS values
   are ASCII), so every conversion failed before writing the file. The cards
