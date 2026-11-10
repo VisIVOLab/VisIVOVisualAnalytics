@@ -154,12 +154,14 @@ public:
     void replyToCall(const QString &replyToken, const QString &error = QString());
 
     /**
-     * Ask every subscriber of @p mtype (samp.hub.callAll) and report each
-     * answer: callSent() says who was asked, callAnswered() what each said.
-     * Returns the tag both signals carry. "__BACKEND_BASE_URL__" in a string
-     * parameter is replaced by the backend URL.
+     * Ask every subscriber of @p mtype (samp.hub.callAll), or only
+     * @p recipientId (samp.hub.call), and report each answer: callSent()
+     * says who was asked, callAnswered() what each said. Returns the tag both
+     * signals carry. "__BACKEND_BASE_URL__" in a string parameter is
+     * replaced by the backend URL.
      */
-    QString callAll(const QString &mtype, const QVariantMap &params);
+    QString callAll(const QString &mtype, const QVariantMap &params,
+                    const QString &recipientId = QString());
 
     /**
      * Which other clients take @p mtype (samp.hub.getSubscribedClients):
@@ -172,6 +174,12 @@ public:
 
     /** Broadcast table.select.rowList (rows: 0-based, in the original table). */
     void sendSelectRowList(const Samp::TableRef &table, const QList<qint64> &rows);
+
+    /** The other clients that take @p mtype, by name, as last reported. */
+    QList<Samp::Recipient> recipientsFor(const QString &mtype) const
+    {
+        return Samp::recipientsFor(m_clients, mtype);
+    }
 
     // ── Hub client list ───────────────────────────────────────────────────────
 

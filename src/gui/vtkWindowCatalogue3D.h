@@ -56,6 +56,8 @@ class QToolButton;
 class QTextEdit;
 class QTableView;
 class Catalogue3DTableModel;
+class MainWindow;
+class QMenu;
 class QStackedWidget;
 class QFormLayout;
 class LUTCustomizerDialog;
@@ -543,6 +545,9 @@ private:
     bool m_cosmologyBusy{ false };
     QFutureWatcher<Catalogue3DCosmologyTaskResult> m_cosmologyWatcher;
     bool syncingTableSelection{ false };
+    /// Set while a click in the table drives the selected source: the
+    /// table's (multi-row) selection is then left as the user made it.
+    bool tableDrivenSelection{ false };
     bool updatingMappingControls{ false };
     QString mapXKey{ QStringLiteral("computed:x") };
     QString mapYKey{ QStringLiteral("computed:y") };
@@ -582,6 +587,29 @@ private:
     void updateSampSubset(bool report);
     /// Radius of a highlight on source @p idx (the selection sphere's).
     double highlightRadius(int idx, double radiusFactor);
+
+    // ── SAMP actions (issue #130, vtkWindowCatalogue3D_Samp.cpp) ─────────────
+    /// The SAMP menu of this window, and the table's context menu.
+    void setupSampMenu();
+    /// Send this catalogue, a selection of it, or a source's position.
+    /// @p selectionOnly: the table's context menu (no whole-table items).
+    void fillSampMenu(QMenu *menu, MainWindow *host, bool selectionOnly);
+    /// Original rows of the rows selected in the table, ascending; the
+    /// selected source's when the table has no selection.
+    QList<qint64> sampSelectedRows();
+    /// Original rows of every source loaded here (a filter, a sample or a
+    /// partial load make that fewer than the table's).
+    QList<qint64> sampShownRows();
+    /// How many rows sampSelectedRows() would list, without listing them.
+    qsizetype sampSelectedCount() const;
+    bool sampShowsFewerRows() const;
+    /// coord.pointAt.sky of the selected source; @p quiet: from a click,
+    /// so nothing is said when it cannot be sent.
+    void sendSelectedSourcePosition(const QString &recipientId, bool quiet);
+    /// Send coord.pointAt.sky for every source the user clicks (off by default).
+    bool m_sampBroadcastClicks{ false };
+    /// The positions are RA/Dec columns (not X/Y/Z, not l/b).
+    bool m_skyCoordinates{ false };
 
     // Interaction state
     int hoveredIndex{ -1 };

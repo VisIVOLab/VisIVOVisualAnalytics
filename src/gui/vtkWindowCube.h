@@ -108,6 +108,11 @@ class vtkGenericOpenGLRenderWindow;
 class vtkRenderWindowInteractor;
 class vtkCubeSource;
 class vtkImageData;
+class vtkRenderWindow;
+class MainWindow;
+namespace visivo::samp {
+struct SkyPosition;
+}
 class vtkImageMapToColors;
 class vtkLegendScaleActorWCS;
 class vtkLineSource;
@@ -1664,6 +1669,33 @@ protected:
     // dialogs are open) so Region IO export still knows the shape to serialise.
     RegionMode m_exportableRegionShape{ RegionMode::None };
     bool pvModeActive{ false };
+
+    // ── SAMP actions (issue #130, vtkWindowCube_Samp.cpp) ────────────────────
+    /// The SAMP menu (this cube, the clicked position) and the click watch on
+    /// the channel map and the moment map.
+    void setupSamp();
+    void fillSampMenu(QMenu *menu, MainWindow *host);
+    void sampSlicePressed();
+    void sampSliceReleased();
+    void sampMomentPressed();
+    void sampMomentReleased();
+    void sampPressIn(vtkRenderWindow *win);
+    void sampReleaseIn(vtkRenderWindow *win, vtkImageData *imageData);
+    /// ICRS position of cube pixel (@p pixelX, @p pixelY), 0-based.
+    std::optional<visivo::samp::SkyPosition> sampSkyAt(double pixelX, double pixelY) const;
+    /// coord.pointAt.sky of the last pixel clicked; @p quiet: from the click.
+    void sendClickedPosition(const QString &recipientId, bool quiet);
+    std::array<int, 2> m_sampPressPos{ -1, -1 };   ///< display position of the left press
+    /// A tool took the press (seen before the tools' own handlers run).
+    bool m_sampPressTaken{ false };
+    quint64 m_sampClickSerial{ 0 };   ///< the latest position asked of the backend
+    int m_sampClickChannel{ 0 };      ///< the channel shown when the pixel was clicked
+    /// A tool whose clicks place or pick something is on: a click there is
+    /// not a position to send.
+    bool isInteractionToolActive() const;
+    bool m_sampHasClick{ false };
+    std::array<double, 2> m_sampClickPixel{ 0.0, 0.0 };
+    bool m_sampBroadcastClicks{ false };   ///< send every click (off by default)
     bool pvDragging{ false };
     bool pvValid{ false };
     bool pvCursorValid{ false };

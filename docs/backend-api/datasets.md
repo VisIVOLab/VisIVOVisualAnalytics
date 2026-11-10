@@ -95,6 +95,11 @@ gzip of a truncated FITS is refused with HTTP 422 like any truncated FITS. If
 the cached copy is deleted while the dataset is open, the next request on it
 answers **503** with `Retry-After` while the copy is made again.
 
+### `POST /v1/datasets/pixel_to_sky`
+
+The ICRS position of a pixel of an open image or cube, from the file's full
+WCS; used for SAMP `coord.pointAt.sky`. See [SAMP](samp.md), "Pixel positions".
+
 ### `POST /v1/datasets/open_url`
 Download a FITS or HDF5 file from an `http(s)` URL into the backend's cache and
 open it as a session dataset. Used after a SKAVA discovery, when the dataset

@@ -577,7 +577,9 @@ void vtkWindowCatalogue3D::ensureCatalogueDock()
     this->catalogueTableModel = new Catalogue3DTableModel(this->catalogueDock);
     this->catalogueTableView->setModel(this->catalogueTableModel);
     this->catalogueTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
-    this->catalogueTableView->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Several rows can be selected (Shift, Cmd/Ctrl, Select All) and sent
+    // over SAMP as a subset; the current row is still the selected source.
+    this->catalogueTableView->setSelectionMode(QAbstractItemView::ExtendedSelection);
     this->catalogueTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
     this->catalogueTableView->setAlternatingRowColors(true);
     this->catalogueTableView->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
@@ -598,7 +600,28 @@ void vtkWindowCatalogue3D::ensureCatalogueDock()
         if (this->syncingTableSelection) {
             return;
         }
+        // The user's own click in the table: its selection (several rows,
+        // with Shift or Cmd/Ctrl) stays as they made it.
+        this->tableDrivenSelection = true;
         this->setSelectedSource(current.isValid() ? current.row() : -1);
+        this->tableDrivenSelection = false;
+    });
+    // Cmd/Ctrl-click on the selected source's row deselects it without moving
+    // the current row: it is no longer the selected source then.
+    QObject::connect(this->catalogueTableView->selectionModel(), &QItemSelectionModel::selectionChanged,
+                     this, [this](const QItemSelection &, const QItemSelection &deselected) {
+        if (this->syncingTableSelection || this->selectedIndex < 0)
+            return;
+        bool lost = false;
+        for (const QItemSelectionRange &range : deselected) {
+            if (range.top() <= this->selectedIndex && this->selectedIndex <= range.bottom())
+                lost = true;
+        }
+        if (!lost || this->catalogueTableView->selectionModel()->isRowSelected(this->selectedIndex))
+            return;
+        this->tableDrivenSelection = true;
+        this->setSelectedSource(-1);
+        this->tableDrivenSelection = false;
     });
     QObject::connect(this->catalogueTableView, &QTableView::doubleClicked, this,
                      [this](const QModelIndex &index) {

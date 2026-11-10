@@ -47,4 +47,15 @@ private slots:
     void hubStatusKey_ignoresOrderAndSeesChanges();
     void receivedCopies_showTheSendersName();
     void toolTip_breaksLongValuesAndLeavesShortOnes();
+
+    // Viewer actions: recipients, subsets, positions
+    void recipients_followSubscriptionsAndWildcards();
+    void subset_mapsRowsBothWays();
+    void rowMap_turnsASelectionIntoSortedRows();
+    void pointAt_paramsAreDegreesInRange();
+    void skyPosition_framesRotateToIcrs();
+    void skyPosition_pixelsProjectAsTheHeaderSays();
+    void backendAcks_deduplicateAcknowledgeAndGiveUp();
+    void pendingTables_forgetFailedAndStaleSends();
+    void skyPosition_fallbackHandlesSipSwapAndSign();
 };

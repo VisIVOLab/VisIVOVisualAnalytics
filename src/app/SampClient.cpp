@@ -197,10 +197,12 @@ void SampClient::sendTableVotable(const QString &url, const QString &name,
 
 void SampClient::sendPointAtSky(double raDeg, double decDeg, const QString &recipientId)
 {
-    QVariantMap params;
-    params[QStringLiteral("ra")] = QString::number(raDeg, 'f', 6);
-    params[QStringLiteral("dec")] = QString::number(decDeg, 'f', 6);
-    notify(recipientId, QString::fromLatin1(Samp::kCoordPointAtSky), params);
+    const auto params = Samp::pointAtSkyParams(raDeg, decDeg);
+    if (!params) {
+        qWarning() << "[SampClient] not a sky position:" << raDeg << decDeg;
+        return;
+    }
+    notify(recipientId, QString::fromLatin1(Samp::kCoordPointAtSky), *params);
 }
 
 void SampClient::replyToCall(const QString &replyToken, const QString &error)
@@ -211,11 +213,12 @@ void SampClient::replyToCall(const QString &replyToken, const QString &error)
                               replyToken, error);
 }
 
-QString SampClient::callAll(const QString &mtype, const QVariantMap &params)
+QString SampClient::callAll(const QString &mtype, const QVariantMap &params,
+                            const QString &recipientId)
 {
     const QString tag = QStringLiteral("call-%1").arg(++m_callCounter);
     QMetaObject::invokeMethod(m_worker, &SampHubWorker::callAll, Qt::QueuedConnection, tag, mtype,
-                              params);
+                              params, recipientId);
     return tag;
 }
 

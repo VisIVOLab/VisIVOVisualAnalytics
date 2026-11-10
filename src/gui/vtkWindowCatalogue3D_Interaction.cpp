@@ -345,6 +345,8 @@ void vtkWindowCatalogue3D::setSelectedSource(int idx)
         const qint64 row = this->m_sampRowMap.rowFor(idx);
         if (!key.isEmpty() && row >= 0)
             emit this->sampRowActivated(key, row);
+        if (this->m_sampBroadcastClicks)
+            this->sendSelectedSourcePosition(QString(), /*quiet=*/true);
         // A line about an earlier selection ("TOPCAT highlighted row 12.")
         // would now describe a source that is no longer the selected one.
         if (!this->m_selectionStatus.isEmpty()
@@ -719,6 +721,12 @@ void vtkWindowCatalogue3D::syncTableSelection(int index)
     if (!this->catalogueTableView || !this->catalogueTableView->selectionModel() || !this->catalogueTableModel) {
         return;
     }
+    // The table's own click: its selection (several rows, with Shift or
+    // Cmd/Ctrl) is the user's, and collapsing it to the current row would
+    // undo it. A pick from anywhere else (the 3-D view, a SAMP highlight)
+    // replaces it with that one row.
+    if (this->tableDrivenSelection)
+        return;
     this->syncingTableSelection = true;
     if (index < 0 || index >= this->catalogueTableModel->rowCount()) {
         this->catalogueTableView->clearSelection();

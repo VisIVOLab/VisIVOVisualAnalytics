@@ -8,6 +8,43 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **SAMP from the viewer windows (#130).** The image, cube and 3-D catalogue
+  windows have a **SAMP** menu that acts on that window's data, not on the
+  last dataset opened, with a *Send … To* choice of recipient: all the tools
+  that take it, or one of them by name (from the hub's list, two copies of one
+  tool told apart by id; a call to one tool is a `samp.hub.call`). The Data
+  Hub's SAMP menu is unchanged.
+  - *Send Image To*, *Send Cube To*, *Send Catalogue To*; the progress and
+    each tool's answer show in the status bar of the window sent from.
+  - **Subsets:** rows selected in the catalogue table (it now takes several:
+    Shift, Cmd/Ctrl, Select All), or every row the window holds after a
+    filter, a sample or a partial load, go out as a new VOTable
+    (`row_indices` on `POST /v1/samp/send-catalogue`, which keeps units and
+    UCDs and says `subset: true`; an older backend that would send the whole
+    table instead is refused). The subset stays linked: its rows are mapped
+    to the catalogue's in highlights and selections, both ways. *Select These
+    Rows in Other Tools* sends `table.select.rowList` to the tables the other
+    tools already hold of the catalogue. Also in the table's context menu.
+  - **Positions:** *Send Clicked Position To* sends the last pixel clicked on
+    an image, a cube's channel map or its moment map as `coord.pointAt.sky`
+    in ICRS, placed by the backend with the file's full WCS (new `POST
+    /v1/datasets/pixel_to_sky`: rotation, CD/PC, SIP, every projection, the
+    frame); an older backend gets the client's own TAN/SIN/linear conversion,
+    without rotation or distortion, and the status bar says so. *Send Source
+    Position To* sends the selected catalogue source's RA/Dec. *Send
+    Positions of Clicked Pixels/Sources*, off by default, sends every click
+    that no tool (region, PV, lasso, probe, measurement, annotation,
+    catalogue pick) takes.
+  - **The backend's outbound queue no longer loses messages.** `GET
+    /v1/samp/pending?lease=true` keeps each message until the client
+    acknowledges it (`POST /v1/samp/pending/ack`) once the hub has taken it;
+    one the client fetched and failed to send comes back after 60 s, so
+    delivery is at least once. Without `lease` the queue drains as before,
+    for older clients.
+  - New user-guide page, [Working with TOPCAT, Aladin and
+    DS9](docs/user-guide/interoperability.md). Spectra
+    (`spectrum.load.*`) are not exchanged yet.
+
 - **Saying when a backend is older than the client.** A backend that predates
   a feature answers its routes with FastAPI's bare `404 {"detail":"Not Found"}`,
   which the ray-traced views showed as it was ("No camera for the ray-traced

@@ -492,8 +492,11 @@ those, reach for Aladin: VisIVO can send it the current image over
 Send and receive data with TOPCAT, Aladin, DS9 and any other VO tool on your
 machine, through a SAMP hub. TOPCAT and Aladin start one when they run; any
 hub using the Standard Profile works. The **SAMP** menu is in the Data Hub
-window, the main window of the application; the same actions are in the
-Command Palette (*SAMP: Connect to Hub*, …).
+window, the main window of the application, and in every image, cube and 3-D
+catalogue window, where it acts on that window's data; the Data Hub's actions
+are also in the Command Palette (*SAMP: Connect to Hub*, …). The whole
+workflow, from connecting to troubleshooting, is in
+[Working with TOPCAT, Aladin and DS9](interoperability.md).
 
 **Connecting.** *SAMP → Connect To Hub* registers VisIVO with the hub. VisIVO
 then appears in the other tools as a target (TOPCAT's *Send table to…* and
@@ -512,7 +515,11 @@ reconnects as soon as a hub is running again. *Disconnect From Hub* stops the
 waiting. VisIVO does not reconnect after *Disconnect From Hub*, nor when the
 hub itself disconnects VisIVO.
 
-**Sending.**
+**Sending.** From a viewer window, its **SAMP** menu sends that window's image,
+cube or catalogue, a selection of a catalogue's rows, or a clicked sky
+position, to every tool that takes it or to one tool by name (see
+[Send from a viewer](interoperability.md#send-from-a-viewer)). The Data Hub's
+SAMP menu sends the last dataset opened:
 
 - *SAMP → Send Current FITS Dataset* broadcasts the last opened image or cube
   (`image.load.fits`). Only image viewers take it: run **Aladin** or **DS9**.
@@ -523,7 +530,7 @@ hub itself disconnects VisIVO.
   reads several times faster than the text form. Above a million rows VisIVO
   asks first: TOPCAT holds the whole table in memory.
 
-"Current" is the last dataset opened, not the window in front.
+There, "current" is the last dataset opened, not the window in front.
 
 VisIVO first asks the hub whether any running tool takes that kind of data;
 if none does, it says so at once (*No running tool takes …*) instead of
@@ -565,7 +572,8 @@ other, in either direction, stays linked:
   view and its table, and centres the view on it;
 - clicking a source in VisIVO's view, or a row in its table, highlights that
   row in TOPCAT: in the table VisIVO received and in every copy VisIVO sent
-  back (*Send Current Catalogue*), since they hold the same rows;
+  back (*Send Catalogue To*), since they hold the same rows, and in a subset
+  VisIVO sent (*Send N Selected Rows To*) when it has that row;
 - a subset selected in TOPCAT (*Transmit Subset*) is marked in VisIVO with
   orange circles, and the status line says how many rows were marked.
 
@@ -583,7 +591,10 @@ backend, choose *View → Rendering → Local* to see them; while it is ray-trac
 choose another *Shape* than *Ray-traced*. A click of your own replaces the
 status line about the last highlight.
 
-VisIVO does not yet send a subset of its own, a clicked position, or spectra.
+Rows selected in VisIVO's table can be sent as a new table or selected in
+the tools that hold the catalogue
+([Send a selection of rows](interoperability.md#send-a-selection-of-rows)).
+Spectra are not exchanged yet.
 
 **Security.** All `/v1/samp/*` routes need the backend's operator token, except
 `GET /v1/samp/files/{token}`: the other tools fetch the files VisIVO sends from

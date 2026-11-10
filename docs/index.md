@@ -223,6 +223,7 @@ user-guide/kinematic-lasso
 user-guide/polarimetry
 user-guide/source-finding
 user-guide/catalogues-hips
+user-guide/interoperability
 user-guide/cosmology
 user-guide/vlkb-archive
 user-guide/sed-fitting
@@ -471,9 +472,9 @@ tools by task, together with the page that documents their scientific use.
   -
   -
 * - Exchange images, cubes and catalogues with TOPCAT / Aladin / DS9
-  - **SAMP** menu of the Data Hub window (connects to the running hub)
-  - Images and cubes to Aladin / DS9, catalogues to TOPCAT; tables and images they send open in VisIVO; selected rows are linked with TOPCAT
-  - [Catalogues · SAMP](user-guide/catalogues-hips.md#samp)
+  - **SAMP** menu of the Data Hub window (connects to the running hub) and of each viewer window (sends that window's data, to all tools or one)
+  - Images and cubes to Aladin / DS9, catalogues and selections of rows to TOPCAT, clicked positions to all; tables and images they send open in VisIVO; selected rows are linked with TOPCAT
+  - [Working with TOPCAT, Aladin and DS9](user-guide/interoperability.md)
 * - Open VBT / volume binary tables produced by the VisIVO Server CLI
   - **File → Open** (or *Data Hub*) — any `.bin` / `.head` VBT pair
   - Particle viewer (`vtkWindowVbt` / `vtkWindowCatalogue3D`)

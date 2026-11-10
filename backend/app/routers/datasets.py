@@ -28,6 +28,7 @@ from ..skava_client import (
     access_url_to_local_path,
 )
 import asyncio
+import functools
 
 router = APIRouter(tags=['datasets'])
 
@@ -143,6 +144,82 @@ async def open_dataset(
         session.session_id[:8] + "…", dataset_id, kind, path,
     )
     return _build_open_response(dataset_id, session.session_id, kind, geometry)
+
+
+# ── Pixel → sky (SAMP coord.pointAt.sky, issue #130) ────────────────────────
+
+class PixelToSkyRequest(BaseModel):
+    dataset_id: str
+    # 0-based pixel along the viewer's axes (the dataset's non-degenerate
+    # axes, as /v1/datasets/open reports them): x, y and, for a cube, the
+    # channel.
+    x: float
+    y: float
+    z: float = 0.0
+
+
+class PixelToSkyResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    ra_deg: float = 0.0        # ICRS
+    dec_deg: float = 0.0
+    frame: str = ""            # the image's own celestial frame (icrs, fk5, galactic, …)
+    lon_deg: float = 0.0       # the position in that frame
+    lat_deg: float = 0.0
+
+
+@functools.lru_cache(maxsize=32)
+def _celestial_wcs_for(path: str, mtime_ns: int):
+    """(WCS, viewer axis → FITS axis) of a dataset, read once per file version."""
+    dataset = ScientificFitsDataset(path)
+    return dataset.wcs, dict(dataset.client_axis_to_fits_axis)
+
+
+def _pixel_to_sky(path: str, x: float, y: float, z: float) -> PixelToSkyResponse:
+    from astropy.coordinates import SkyCoord  # noqa: PLC0415
+    from astropy.wcs.utils import wcs_to_celestial_frame  # noqa: PLC0415
+    import astropy.units as u  # noqa: PLC0415
+
+    wcs, axis_map = _celestial_wcs_for(path, Path(path).stat().st_mtime_ns)
+    if wcs is None or not wcs.has_celestial:
+        return PixelToSkyResponse(valid=False, error="The dataset has no sky coordinates.")
+    # Every FITS axis gets a pixel: the viewer's x, y, z where they map, 0 on
+    # a degenerate axis. The full WCS is used (SIP and other distortions,
+    # rotation, CD/PC), not its celestial axes alone, so a cube whose sky
+    # axes depend on the channel is handled too.
+    pixel = [0.0] * wcs.pixel_n_dim
+    for client_axis, value in ((1, x), (2, y), (3, z)):
+        fits_axis = axis_map.get(client_axis)
+        if fits_axis is not None and fits_axis - 1 < len(pixel):
+            pixel[fits_axis - 1] = float(value)
+    world = wcs.all_pix2world(np.array([pixel], dtype=np.float64), 0)[0]
+    lon = float(world[wcs.wcs.lng])
+    lat = float(world[wcs.wcs.lat])
+    if not (np.isfinite(lon) and np.isfinite(lat)):
+        return PixelToSkyResponse(valid=False, error="That pixel is off the projection.")
+    frame = wcs_to_celestial_frame(wcs.celestial)
+    sky = SkyCoord(lon * u.deg, lat * u.deg, frame=frame).icrs
+    return PixelToSkyResponse(valid=True, ra_deg=float(sky.ra.deg), dec_deg=float(sky.dec.deg),
+                              frame=frame.name, lon_deg=lon % 360.0, lat_deg=lat)
+
+
+@router.post("/v1/datasets/pixel_to_sky", response_model=PixelToSkyResponse, tags=["datasets"])
+async def pixel_to_sky(
+    request: PixelToSkyRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> PixelToSkyResponse:
+    """The ICRS position of a pixel of an open image or cube, from the file's
+    full WCS (projection, rotation, distortions, frame): what the desktop
+    sends as SAMP coord.pointAt.sky for a clicked pixel."""
+    entry = _require_dataset(session, request.dataset_id)
+    if entry.get("kind") not in ("image", "cube"):
+        return PixelToSkyResponse(valid=False, error="Only images and cubes have pixels on the sky.")
+    try:
+        return await asyncio.to_thread(_pixel_to_sky, entry["path"], request.x, request.y,
+                                       request.z)
+    except Exception as exc:
+        return PixelToSkyResponse(valid=False, error=str(exc))
 
 
 # ── Open from URL (SKAVA discovery → access) ────────────────────────────────

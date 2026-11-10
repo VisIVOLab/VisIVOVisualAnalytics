@@ -460,6 +460,23 @@ struct BackendSampSendResult
     QVariantMap params;
     qint64 rows{ -1 };       ///< rows of the table sent, when the backend read it
     qint64 sizeBytes{ 0 };   ///< size of the staged file
+    /// send-catalogue staged only the rows asked for. A backend that predates
+    /// row_indices says nothing, and has staged the whole table.
+    bool subset{ false };
+};
+
+/// POST /v1/datasets/pixel_to_sky: a pixel's ICRS position from the file's
+/// full WCS (SAMP coord.pointAt.sky).
+struct BackendPixelSkyResult
+{
+    bool valid{ false };
+    QString error;
+    /// The backend has no such route (older than the client): the caller
+    /// falls back to its own, simpler, conversion.
+    bool routeMissing{ false };
+    double raDeg{ 0.0 };
+    double decDeg{ 0.0 };
+    QString frame;   ///< the image's own celestial frame (icrs, fk5, galactic, …)
 };
 
 struct BackendSampImportResult
@@ -2219,10 +2236,17 @@ public:
                                          const QString &filename = QString(),
                                          bool returnMessage = false) const;
     /// @p tableId: the SAMP table-id to send with the table (empty: none).
+    /// @p rowIndices: only these rows (0-based, in the table as opened), as a
+    /// new VOTable; empty: the whole table. Check BackendSampSendResult::subset.
     BackendSampSendResult sendCatalogueToSamp(const QString &path, const QString &format,
                                               const QString &filename = QString(),
                                               const QString &tableId = QString(),
-                                              bool returnMessage = false) const;
+                                              bool returnMessage = false,
+                                              const QList<qint64> &rowIndices = {}) const;
+    /// The ICRS position of 0-based pixel (@p x, @p y) of an open image or
+    /// cube (@p z: the channel), from the file's full WCS.
+    BackendPixelSkyResult pixelToSky(const QString &datasetId, double x, double y,
+                                     double z = 0.0) const;
     BackendSampImportResult importSampUrl(const QString &url,
                                           const QString &filename = QString()) const;
     BackendSampImportResult uploadFileToSampStorage(const QString &localPath,

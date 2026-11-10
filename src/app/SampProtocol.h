@@ -22,6 +22,7 @@
 
 #include <QHash>
 #include <QList>
+#include <QSet>
 #include <QMetaType>
 #include <QString>
 #include <QStringList>
@@ -30,8 +31,10 @@
 #include <QVariantList>
 #include <QVariantMap>
 
+#include <algorithm>
 #include <cmath>
 #include <initializer_list>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -101,6 +104,76 @@ inline bool isLoadMType(const QString &mtype)
 {
     return mtype == QLatin1String(kTableLoadVotable) || mtype == QLatin1String(kTableLoadFits)
            || mtype == QLatin1String(kImageLoadFits);
+}
+
+/// Does subscription @p pattern take @p mtype? SAMP 1.3 §3.4: an MType, or a
+/// wildcard that ends a run of atoms with "*" ("table.*", or "*" for all).
+inline bool mtypeMatches(const QString &pattern, const QString &mtype)
+{
+    if (pattern == u"*")
+        return true;
+    if (pattern.endsWith(u".*"))
+        return mtype.startsWith(pattern.chopped(1));   // keeps the dot: "table."
+    return pattern == mtype;
+}
+
+inline bool subscribes(const SampClientInfo &client, const QString &mtype)
+{
+    for (const QString &pattern : client.subscriptions) {
+        if (mtypeMatches(pattern, mtype))
+            return true;
+    }
+    return false;
+}
+
+/// One tool a viewer can send to, as a "Send to" menu names it.
+struct Recipient
+{
+    QString id;
+    QString label;
+};
+
+/// The tools among @p clients that take @p mtype, by name. Two tools of one
+/// name (two TOPCATs) are told apart by their hub ids.
+inline QList<Recipient> recipientsFor(const QList<SampClientInfo> &clients, const QString &mtype)
+{
+    QList<Recipient> out;
+    QHash<QString, int> nameCount;
+    for (const SampClientInfo &c : clients) {
+        if (subscribes(c, mtype))
+            ++nameCount[c.name.trimmed()];
+    }
+    for (const SampClientInfo &c : clients) {
+        if (!subscribes(c, mtype))
+            continue;
+        const QString name = c.name.trimmed();
+        QString label = name.isEmpty() ? c.id : name;
+        if (!name.isEmpty() && nameCount.value(name) > 1)
+            label += QStringLiteral(" [%1]").arg(c.id);
+        out.append({ c.id, label });
+    }
+    std::stable_sort(out.begin(), out.end(), [](const Recipient &a, const Recipient &b) {
+        return a.label.compare(b.label, Qt::CaseInsensitive) < 0;
+    });
+    return out;
+}
+
+/// coord.pointAt.sky's parameters: ICRS degrees as strings, RA in [0, 360).
+/// Nullopt for a position that is not one (not finite, |Dec| > 90).
+inline std::optional<QVariantMap> pointAtSkyParams(double raDeg, double decDeg)
+{
+    if (!std::isfinite(raDeg) || !std::isfinite(decDeg) || std::abs(decDeg) > 90.0)
+        return std::nullopt;
+    double ra = std::fmod(raDeg, 360.0);
+    if (ra < 0.0)
+        ra += 360.0;
+    if (ra >= 360.0)
+        ra = 0.0;   // fmod of a value just below 0 can round up to 360
+    QVariantMap p;
+    // Eight decimals of a degree: 0.04 mas, below any catalogue's precision.
+    p.insert(QStringLiteral("ra"), QString::number(ra, 'f', 8));
+    p.insert(QStringLiteral("dec"), QString::number(decDeg, 'f', 8));
+    return p;
 }
 
 /// The hub's location and the registration secret, from a Standard Profile
@@ -593,6 +666,85 @@ private:
 
 // ── Table identity ────────────────────────────────────────────────────────────
 
+/// The rows a table VisIVO sent as a subset holds: row k of that table is
+/// row rows[k] of the catalogue it was cut from (both 0-based). A table sent
+/// whole has none, and its rows are the catalogue's own.
+class SampSubset
+{
+public:
+    explicit SampSubset(std::vector<qint64> rows) : m_rows(std::move(rows))
+    {
+        m_positionOf.reserve(static_cast<qsizetype>(m_rows.size()));
+        for (std::size_t k = 0; k < m_rows.size(); ++k) {
+            if (!m_positionOf.contains(m_rows[k]))
+                m_positionOf.insert(m_rows[k], static_cast<qint64>(k));
+        }
+    }
+    /// The catalogue row of row @p k of the subset table, or -1.
+    qint64 catalogueRow(qint64 k) const
+    {
+        return k >= 0 && static_cast<std::size_t>(k) < m_rows.size()
+                ? m_rows[static_cast<std::size_t>(k)] : -1;
+    }
+    /// Where catalogue row @p row is in the subset table, or -1 (not in it).
+    qint64 subsetRow(qint64 row) const { return m_positionOf.value(row, -1); }
+    std::size_t size() const { return m_rows.size(); }
+
+private:
+    std::vector<qint64> m_rows;
+    QHash<qint64, qint64> m_positionOf;
+};
+using SampSubsetPtr = std::shared_ptr<const SampSubset>;
+
+namespace Samp {
+
+/// A row of a table in another tool, as a row of the local catalogue
+/// (@p subset: what that table holds, null for the whole catalogue).
+inline qint64 toCatalogueRow(const SampSubsetPtr &subset, qint64 row)
+{
+    return subset ? subset->catalogueRow(row) : row;
+}
+
+/// A row of the local catalogue as a row of a table in another tool; -1 when
+/// that table, a subset, does not hold it.
+inline qint64 toTableRow(const SampSubsetPtr &subset, qint64 row)
+{
+    return subset ? subset->subsetRow(row) : row;
+}
+
+/// The rows of @p rows that table holds, renumbered as it numbers them.
+inline QList<qint64> toTableRows(const SampSubsetPtr &subset, const QList<qint64> &rows)
+{
+    if (!subset)
+        return rows;
+    QList<qint64> out;
+    out.reserve(rows.size());
+    for (const qint64 r : rows) {
+        const qint64 k = subset->subsetRow(r);
+        if (k >= 0)
+            out.append(k);
+    }
+    return out;
+}
+
+/// The other way: rows a tool named in its table, as catalogue rows (rows
+/// it does not hold are dropped).
+inline QList<qint64> toCatalogueRows(const SampSubsetPtr &subset, const QList<qint64> &rows)
+{
+    if (!subset)
+        return rows;
+    QList<qint64> out;
+    out.reserve(rows.size());
+    for (const qint64 k : rows) {
+        const qint64 r = subset->catalogueRow(k);
+        if (r >= 0)
+            out.append(r);
+    }
+    return out;
+}
+
+}  // namespace Samp
+
 /// Which local catalogue each SAMP table is. A local catalogue is keyed by the
 /// path its viewer opened on the backend. A table VisIVO sent is recorded
 /// with the table-id it chose and, once the client has expanded it, the URL;
@@ -605,6 +757,7 @@ public:
     {
         Samp::TableRef ref;
         QString localKey;
+        SampSubsetPtr subset;   ///< set for a table VisIVO sent as a subset
     };
 
     /// The most identities kept; the oldest go first.
@@ -614,7 +767,8 @@ public:
     /// catalogue is kept (a table sent twice, a url under two table-ids: the
     /// other tool may use any of them); a table-id or url that named ANOTHER
     /// catalogue now names @p localKey.
-    void remember(const Samp::TableRef &ref, const QString &localKey)
+    void remember(const Samp::TableRef &ref, const QString &localKey,
+                  const SampSubsetPtr &subset = {})
     {
         if (ref.isEmpty() || localKey.isEmpty())
             return;
@@ -628,7 +782,7 @@ public:
             if (reassigned || duplicate)
                 m_entries.removeAt(i);
         }
-        m_entries.append({ ref, localKey });
+        m_entries.append({ ref, localKey, subset });
         while (m_entries.size() > kMaxEntries)
             m_entries.removeFirst();
     }
@@ -645,20 +799,27 @@ public:
         }
     }
 
-    /// The local catalogue a SAMP message names, or an empty string.
-    QString localKeyFor(const Samp::TableRef &ref) const
+    /// The entry a SAMP message names (table-id first, then url), or nullopt.
+    std::optional<Entry> find(const Samp::TableRef &ref) const
     {
         for (qsizetype i = m_entries.size() - 1; i >= 0; --i) {
             const Entry &e = m_entries.at(i);
             if (!ref.tableId.isEmpty() && e.ref.tableId == ref.tableId)
-                return e.localKey;
+                return e;
         }
         for (qsizetype i = m_entries.size() - 1; i >= 0; --i) {
             const Entry &e = m_entries.at(i);
             if (!ref.url.isEmpty() && e.ref.url == ref.url)
-                return e.localKey;
+                return e;
         }
-        return {};
+        return std::nullopt;
+    }
+
+    /// The local catalogue a SAMP message names, or an empty string.
+    QString localKeyFor(const Samp::TableRef &ref) const
+    {
+        const auto e = find(ref);
+        return e ? e->localKey : QString();
     }
 
     /// How SAMP knows @p localKey (its latest identity), or nullopt when it
@@ -679,11 +840,20 @@ public:
     QList<Samp::TableRef> refsFor(const QString &localKey) const
     {
         QList<Samp::TableRef> refs;
+        for (const Entry &e : entriesFor(localKey))
+            refs.append(e.ref);
+        return refs;
+    }
+
+    /// As refsFor(), with the subset each table holds.
+    QList<Entry> entriesFor(const QString &localKey) const
+    {
+        QList<Entry> out;
         for (const Entry &e : m_entries) {
             if (e.localKey == localKey)
-                refs.append(e.ref);
+                out.append(e);
         }
-        return refs;
+        return out;
     }
 
     qsizetype size() const { return m_entries.size(); }
@@ -698,11 +868,31 @@ private:
 class SampPendingTables
 {
 public:
-    void add(const QString &tableId, const QString &localKey)
+    /// A send of @p localKey under @p tableId began at @p nowMs (ms since the
+    /// epoch; sends older than kMaxAgeMs are dropped then: a send whose
+    /// table never went out must not keep its identity for ever).
+    void add(const QString &tableId, const QString &localKey, const SampSubsetPtr &subset = {},
+             qint64 nowMs = 0)
     {
+        expire(nowMs);
         if (!tableId.isEmpty() && !localKey.isEmpty())
-            m_tables.insert(tableId, { localKey, QString() });
+            m_tables.insert(tableId, { localKey, QString(), subset, nowMs });
     }
+    /// A staging can take minutes (millions of rows): an hour is far past it.
+    static constexpr qint64 kMaxAgeMs = 3600LL * 1000;
+    /// Drop the sends begun more than kMaxAgeMs before @p nowMs.
+    void expire(qint64 nowMs)
+    {
+        for (auto it = m_tables.begin(); it != m_tables.end();) {
+            if (nowMs - it->startedMs > kMaxAgeMs)
+                it = m_tables.erase(it);
+            else
+                ++it;
+        }
+    }
+    /// A send that failed: forget it.
+    void remove(const QString &tableId) { m_tables.remove(tableId); }
+    qsizetype size() const { return m_tables.size(); }
     /// The URL the tools fetch it from, once the backend staged it.
     void setUrl(const QString &tableId, const QString &url)
     {
@@ -710,26 +900,110 @@ public:
         if (it != m_tables.end())
             it->url = url;
     }
-    /// The catalogue of a send that went out (and forget it), or empty.
-    QString take(const QString &tableId) { return m_tables.take(tableId).localKey; }
-    /// The catalogue a message names, matched on table-id or url, or empty.
-    QString localKeyFor(const Samp::TableRef &ref) const
-    {
-        for (auto it = m_tables.cbegin(); it != m_tables.cend(); ++it) {
-            if ((!ref.tableId.isEmpty() && it.key() == ref.tableId)
-                || (!ref.url.isEmpty() && it->url == ref.url))
-                return it->localKey;
-        }
-        return {};
-    }
-
-private:
     struct Pending
     {
         QString localKey;
         QString url;
+        SampSubsetPtr subset;
+        qint64 startedMs{ 0 };
     };
+    /// The catalogue of a send that went out (and forget it), or empty.
+    QString take(const QString &tableId) { return m_tables.take(tableId).localKey; }
+    /// As take(), with the subset the table holds.
+    Pending takeEntry(const QString &tableId) { return m_tables.take(tableId); }
+    /// The send a message names, matched on table-id or url, or nullopt.
+    std::optional<Pending> find(const Samp::TableRef &ref) const
+    {
+        for (auto it = m_tables.cbegin(); it != m_tables.cend(); ++it) {
+            if ((!ref.tableId.isEmpty() && it.key() == ref.tableId)
+                || (!ref.url.isEmpty() && it->url == ref.url))
+                return it.value();
+        }
+        return std::nullopt;
+    }
+    /// The catalogue a message names, matched on table-id or url, or empty.
+    QString localKeyFor(const Samp::TableRef &ref) const
+    {
+        const auto p = find(ref);
+        return p ? p->localKey : QString();
+    }
+
+private:
     QHash<QString, Pending> m_tables;
+};
+
+// ── The backend's outbound queue ──────────────────────────────────────────────
+
+/// Messages the client fetched from a backend's leased queue
+/// (GET /v1/samp/pending?lease=true): which are still waiting to be sent, and
+/// which were sent and must be acknowledged (POST /v1/samp/pending/ack). A
+/// message not acknowledged comes back when its lease runs out, so delivery is
+/// at least once; this keeps the repeats down without holding acks for ever.
+class SampBackendAcks
+{
+public:
+    /// Attempts at posting one batch of acks before it is given up (the
+    /// messages are then sent again when their leases run out).
+    static constexpr int kMaxAttempts = 5;
+    /// The most acks kept per backend; the oldest go first.
+    static constexpr qsizetype kMaxPending = 1024;
+
+    /// A fetched message: false when it is already waiting to be sent (a
+    /// lease that ran out during a slow send hands it out again), so it is
+    /// not queued twice.
+    bool fetched(const QString &jobId)
+    {
+        if (jobId.isEmpty())
+            return true;
+        if (m_inFlight.contains(jobId))
+            return false;
+        m_inFlight.insert(jobId);
+        return true;
+    }
+    /// The message left the outbox: @p delivered when the hub took it (or
+    /// refused it for good), and it is then acknowledged to @p backend.
+    void finished(const QString &backend, const QString &jobId, bool delivered)
+    {
+        if (jobId.isEmpty())
+            return;
+        m_inFlight.remove(jobId);
+        if (!delivered)
+            return;   // left to the lease: the backend hands it out again
+        QStringList &acks = m_acks[backend];
+        acks.append(jobId);
+        while (acks.size() > kMaxPending)
+            acks.removeFirst();
+    }
+    /// The connection is gone: nothing is in the outbox any more.
+    void clearInFlight() { m_inFlight.clear(); }
+    /// The acks to post to @p backend now (they are taken).
+    QStringList take(const QString &backend) { return m_acks.take(backend); }
+    /// How posting @p jobs to @p backend went. A backend without the ack
+    /// route (404) has drained its queue already; any other failure puts the
+    /// batch back, up to kMaxAttempts in a row.
+    void posted(const QString &backend, const QStringList &jobs, bool ok, int httpStatus)
+    {
+        if (ok || httpStatus == 404) {
+            m_failures.remove(backend);
+            return;
+        }
+        const int failures = ++m_failures[backend];
+        if (failures >= kMaxAttempts) {
+            m_failures.remove(backend);
+            return;
+        }
+        QStringList &acks = m_acks[backend];
+        acks = jobs + acks;
+        while (acks.size() > kMaxPending)
+            acks.removeFirst();
+    }
+    qsizetype pending(const QString &backend) const { return m_acks.value(backend).size(); }
+    bool inFlight(const QString &jobId) const { return m_inFlight.contains(jobId); }
+
+private:
+    QHash<QString, QStringList> m_acks;   ///< by backend URL
+    QHash<QString, int> m_failures;
+    QSet<QString> m_inFlight;
 };
 
 // ── Row mapping ───────────────────────────────────────────────────────────────
@@ -778,6 +1052,28 @@ public:
         QList<int> entries;   ///< loaded entries, in the order of the rows given
         int missing{ 0 };     ///< rows that are not loaded here
     };
+
+    /// The original rows of @p entries, ascending and each once: what a
+    /// selection of loaded entries sends. Entries with no known row are left
+    /// out (and counted in @p unknown, when given).
+    QList<qint64> rowsForEntries(const QList<int> &entries, int *unknown = nullptr) const
+    {
+        QList<qint64> rows;
+        rows.reserve(entries.size());
+        int missing = 0;
+        for (const int e : entries) {
+            const qint64 r = rowFor(e);
+            if (r >= 0)
+                rows.append(r);
+            else
+                ++missing;
+        }
+        std::sort(rows.begin(), rows.end());
+        rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+        if (unknown)
+            *unknown = missing;
+        return rows;
+    }
 
     /// The loaded entries of @p rows, and how many of them are not loaded.
     Split entriesFor(const QList<qint64> &rows) const

@@ -48,9 +48,11 @@ public slots:
     /// opened, samp.error with @p error when it did not).
     void replyToCall(const QString &replyToken, const QString &error);
     /// samp.hub.callAll: every subscriber is asked, and each answers through
-    /// receiveResponse (callAnswered). @p tag names the call for the GUI.
+    /// receiveResponse (callAnswered); with @p recipientId, samp.hub.call asks
+    /// that one only. @p tag names the call for the GUI.
     /// "__BACKEND_BASE_URL__" in a string parameter becomes the backend URL.
-    void callAll(const QString &tag, const QString &mtype, const QVariantMap &params);
+    void callAll(const QString &tag, const QString &mtype, const QVariantMap &params,
+                 const QString &recipientId);
     /// samp.hub.getSubscribedClients: which other clients take @p mtype
     /// (subscribersAnswered, under @p tag). Asked before a file is staged,
     /// so that nobody waits for a send no tool can take.
@@ -111,9 +113,15 @@ private:
         QString fromBackend;
         /// Set for a callAll(): the GUI's tag for it.
         QString callTag;
+        /// Set for a message from the backend's queue: its job id there, to
+        /// acknowledge once it has been sent.
+        QString backendJobId;
     };
     void processOutbox();
-    void sendNow(const QString &recipientId, const QString &mtype, const QVariantMap &params,
+    /// False when the message was not delivered and should be tried again
+    /// later (the hub is gone, or the connection changed during the send);
+    /// true when the hub took it, or refused it for good.
+    bool sendNow(const QString &recipientId, const QString &mtype, const QVariantMap &params,
                  const QString &callTag = QString());
 
     QByteArray handleCallback(const SampXmlRpc::Call &call);
@@ -128,6 +136,11 @@ private:
     void pingHub();
     void forwardToBackend(const SampMessage &msg);
     void drainBackendPendingQueue();
+    /// Tell the backend which of its queued messages were sent (they stay
+    /// queued, and come back after a while, until it is told).
+    void ackBackendMessages();
+    /// Backend messages in the outbox, and sent ones not acknowledged yet.
+    SampBackendAcks m_backendAcks;
     static QString expandBackendUrl(const QString &urlTemplate, const QString &backendUrl);
 
     /// Drop the connection; @p unregister when the hub is still listening,

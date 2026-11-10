@@ -28,6 +28,7 @@ SAMP_ROUTES = [
     ("post", "/v1/samp/send", {}),
     ("post", "/v1/samp/receive", {}),
     ("get", "/v1/samp/pending", None),
+    ("post", "/v1/samp/pending/ack", {"job_ids": []}),
     ("get", "/v1/samp/inbox", None),
     ("get", "/v1/samp/status", None),
     ("post", "/v1/samp/hub-status", {}),
