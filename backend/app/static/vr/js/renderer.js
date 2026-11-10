@@ -33,6 +33,23 @@ uniform sampler2D uLut;
 uniform vec3 uCamTex, uBoxMin, uBoxMax, uVoxDims, uCellDims, uTexScale;
 uniform float uCell, uThr, uCmin, uCmax, uGamma, uOpacity, uSpv;
 uniform int uEnc, uMaxSteps, uMode, uSkip;
+// A selection on the drawn grid (issue #171): 255 where a reduced voxel holds a
+// selected full-resolution voxel, over the box [uMaskOrigin, uMaskOrigin + uMaskDims).
+uniform highp sampler3D uMask;
+uniform int uMaskOn;
+uniform ivec3 uMaskOrigin, uMaskDims;
+const vec3 MASK_COLOR = vec3(0.25, 1.0, 0.45);
+
+float maskAt(vec3 p, vec3 vox) {
+  ivec3 iv = ivec3(floor(p * vox)) - uMaskOrigin;
+  if (any(lessThan(iv, ivec3(0))) || any(greaterThanEqual(iv, uMaskDims))) return 0.0;
+  return texelFetch(uMask, iv, 0).r;
+}
+
+bool cellMeetsMask(vec3 cf) {
+  ivec3 lo = ivec3(cf * uCell), hi = ivec3((cf + 1.0) * uCell);
+  return all(lessThan(lo, uMaskOrigin + uMaskDims)) && all(greaterThan(hi, uMaskOrigin));
+}
 
 // p is a box coordinate (0..1 over the cube's full-resolution extent); the
 // texture covers whole blocks, so a partial last block makes the texture a
@@ -59,6 +76,7 @@ void main() {
   float t = tn + dt * jit;
   vec4 acc = vec4(0.0);
   float best = -1.0;
+  float bestMask = 0.0;
   int i = 0;
   for (; i < ${MAX_LOOP}; i++) {
     if (i >= uMaxSteps || t > tf) break;
@@ -67,7 +85,9 @@ void main() {
       vec3 cf = clamp(floor(p * vox / uCell), vec3(0.0), uCellDims - 1.0);
       float m = texelFetch(uMacro, ivec3(cf), 0).r;
       float need = uMode == 1 ? max(uThr, best) : uThr;
-      if (m < need) {
+      // A selected voxel is drawn below the threshold too (the lasso grows into
+      // the faint margin), so the cells it meets are never skipped.
+      if (m < need && !(uMaskOn == 1 && cellMeetsMask(cf))) {
         vec3 a = (cf * uCell / vox - o) * inv;
         vec3 b = ((cf + 1.0) * uCell / vox - o) * inv;
         float texit = min(min(max(a.x, b.x), max(a.y, b.y)), max(a.z, b.z));
@@ -76,13 +96,18 @@ void main() {
       }
     }
     float v = normAt(p);
+    float sel = uMaskOn == 1 ? maskAt(p, vox) : 0.0;
     if (uMode == 1) {
-      best = max(best, v);
-    } else if (v >= uThr) {
+      if (v > best) { best = v; bestMask = sel; }
+    } else if (v >= uThr || sel > 0.5) {
       float x = clamp((v - uCmin) / max(uCmax - uCmin, 1e-6), 0.0, 1.0);
       x = pow(x, uGamma);
       vec3 col = texture(uLut, vec2(x, 0.5)).rgb;
       float a = 1.0 - exp(-uOpacity * (0.04 + x) * stepVox);
+      if (sel > 0.5) {
+        col = mix(col, MASK_COLOR, 0.7);
+        a = max(a, 1.0 - exp(-uOpacity * 0.25 * stepVox));
+      }
       acc.rgb += (1.0 - acc.a) * a * col;
       acc.a += (1.0 - acc.a) * a;
       if (acc.a > 0.98) break;
@@ -97,7 +122,9 @@ void main() {
     if (best < uThr) discard;
     float x = pow(clamp((best - uCmin) / max(uCmax - uCmin, 1e-6), 0.0, 1.0), uGamma);
     float a = clamp(0.25 + 0.75 * x, 0.0, 1.0);
-    outColor = vec4(texture(uLut, vec2(x, 0.5)).rgb * a, a);
+    vec3 col = texture(uLut, vec2(x, 0.5)).rgb;
+    if (bestMask > 0.5) col = mix(col, MASK_COLOR, 0.7);
+    outColor = vec4(col * a, a);
     return;
   }
   if (acc.a < 0.002) discard;
@@ -215,6 +242,7 @@ export class Renderer {
     };
     this.boxLines = lineVao();     // box, ticks: rebuilt when the clip box changes
     this.tmpLines = lineVao();     // controllers: rebuilt every frame
+    this.selLines = lineVao();     // selections (model space): rebuilt when they change
 
     this.labelVao = gl.createVertexArray();
     this.labelBuf = gl.createBuffer();
@@ -246,6 +274,11 @@ export class Renderer {
     this.setColormap('viridis');
     this.volTex = null;
     this.macroTex = null;
+    // The selection overlay: a 1-voxel placeholder until a mask is set, so the
+    // sampler is never unbound.
+    this.maskTex = gl.createTexture();
+    this.mask = null;
+    this._uploadMask(new Uint8Array(1), [1, 1, 1]);
     this.timer = gl.getExtension('EXT_disjoint_timer_query_webgl2');
     this.queries = [];
     this.gpuMs = -1;
@@ -298,6 +331,29 @@ export class Renderer {
     this.macroDims = macro.dims;
     this.textureBytes = w * h * d * (encoding === 'uint8' ? 1 : 2);
     return { uploadMs: t1 - t0, macroMs: t2 - t1, textureBytes: this.textureBytes };
+  }
+
+  _uploadMask(data, dims) {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_3D, this.maskTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, dims[0], dims[1], dims[2], 0, gl.RED, gl.UNSIGNED_BYTE, data);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    for (const k of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) {
+      gl.texParameteri(gl.TEXTURE_3D, k, gl.CLAMP_TO_EDGE);
+    }
+  }
+
+  /** The selection on the drawn grid (selection.reduceMask's answer), or null
+   *  to clear it. */
+  setMask(reduced) {
+    if (!reduced || !reduced.count) {
+      this.mask = null;
+      return;
+    }
+    this._uploadMask(reduced.data, reduced.dims);
+    this.mask = { origin: reduced.origin, dims: reduced.dims, bytes: reduced.data.length };
   }
 
   /** Segments: array of {a: [x,y,z], b: [x,y,z], color: [r,g,b,a]} in model space. */
@@ -443,6 +499,12 @@ export class Renderer {
     gl.uniform1i(u.uMacro, 1);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.lut);
     gl.uniform1i(u.uLut, 2);
+    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_3D, this.maskTex);
+    gl.uniform1i(u.uMask, 3);
+    const mk = p.showMask !== false ? this.mask : null;
+    gl.uniform1i(u.uMaskOn, mk ? 1 : 0);
+    gl.uniform3i(u.uMaskOrigin, ...(mk ? mk.origin : [0, 0, 0]));
+    gl.uniform3i(u.uMaskDims, ...(mk ? mk.dims : [0, 0, 0]));
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.FRONT);             // back faces: works with the eye inside the box
     gl.disable(gl.DEPTH_TEST);

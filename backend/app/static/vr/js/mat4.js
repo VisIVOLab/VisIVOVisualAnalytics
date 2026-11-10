@@ -1,5 +1,6 @@
 // Column-major 4x4 matrices (the WebGL / WebXR layout), as Float32Array(16).
-// Pure functions: no DOM, no GL, so node runs the tests (backend/tests/vr).
+// Pure functions: no DOM, no GL, so node runs the tests:
+// node --test backend/tests/vr/*.test.mjs (Node 26 takes files, not a directory).
 
 export function identity() {
   const m = new Float32Array(16);

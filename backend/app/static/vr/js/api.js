@@ -102,6 +102,66 @@ export class Backend {
     return r;
   }
 
+  // ── Analysis on the full cube (issue #171) ────────────────────────────────
+
+  async _binary(path, body, contentType = 'application/json') {
+    const headers = this.headers(false);
+    headers['Content-Type'] = contentType;
+    const resp = await fetch(path, { method: 'POST', headers, body });
+    if (!resp.ok) throw new Error(`${resp.status}: ${(await resp.text()).slice(0, 300)}`);
+    return { resp, buf: await resp.arrayBuffer() };
+  }
+
+  /** Full-resolution voxels x0..x1, y0..y1, z0..z1 (inclusive), float32. */
+  async subvolume(datasetId, x0, x1, y0, y1, z0, z1) {
+    const { resp, buf } = await this._binary('/v1/cube/subvolume_bin',
+      JSON.stringify({ dataset_id: datasetId, x0, x1, y0, y1, z0, z1 }));
+    const h = (k) => Number(resp.headers.get(k));
+    return { values: new Float32Array(buf), dims: [h('X-Visivo-Width'), h('X-Visivo-Height'), h('X-Visivo-Depth')], origin: [x0, y0, z0] };
+  }
+
+  /** The Kinematic Lasso (the desktop's kinematic_select_bin): the mask over
+   *  the selection's bounding box, its origin and the voxel count. */
+  async kinematicSelect(datasetId, growRequest) {
+    const t0 = performance.now();
+    const { resp, buf } = await this._binary('/v1/cube/kinematic_select_bin',
+      JSON.stringify({ dataset_id: datasetId, ...growRequest }));
+    const h = (k) => resp.headers.get(k);
+    const dims = [Number(h('X-Visivo-Width')), Number(h('X-Visivo-Height')), Number(h('X-Visivo-Depth'))];
+    const origin = (h('X-Visivo-Origin') || '0,0,0').split(',').map(Number);
+    return {
+      mask: new Float32Array(buf), bytes: buf, dims, origin,
+      count: Number(h('X-Visivo-Selected-Count')),
+      trimBox: Number(h('X-Visivo-Trim-Box') || 0),
+      ms: performance.now() - t0,
+    };
+  }
+
+  /** Statistics of an explicit mask on the full cube (mask_stats_bin). */
+  maskStats(datasetId, maskBytes, origin, dims) {
+    const q = new URLSearchParams({
+      dataset_id: datasetId, origin_x: origin[0], origin_y: origin[1], origin_z: origin[2],
+      width: dims[0], height: dims[1], depth: dims[2],
+    });
+    return this._binary(`/v1/cube/mask_stats_bin?${q}`, maskBytes, 'application/octet-stream')
+      .then(({ buf }) => JSON.parse(new TextDecoder().decode(buf)));
+  }
+
+  /** Statistics of every voxel of a box (mask_stats_bin with box=true). */
+  boxStats(datasetId, boxRequest) {
+    const q = new URLSearchParams({ dataset_id: datasetId, ...boxRequest });
+    return this._binary(`/v1/cube/mask_stats_bin?${q}`, new Uint8Array(0), 'application/octet-stream')
+      .then(({ buf }) => JSON.parse(new TextDecoder().decode(buf)));
+  }
+
+  spectralProbe(datasetId, probeRequest) {
+    return this._json('POST', '/v1/spectral/probe', { dataset_id: datasetId, ...probeRequest });
+  }
+
+  pixelToSky(datasetId, x, y, z) {
+    return this._json('POST', '/v1/datasets/pixel_to_sky', { dataset_id: datasetId, x, y, z });
+  }
+
   reducedInfo(req) {
     return this._json('POST', '/v1/cube/reduced_info', req);
   }

@@ -35,3 +35,6 @@ pre { margin: 0; white-space: pre-wrap; font: 12px/1.35 ui-monospace, Menlo, mon
 #files li.dir::before { content: "▸ "; color: var(--muted); }
 #clip label { flex-direction: row; align-items: center; gap: 6px; }
 #clip input { flex: 1; }
+#sel-panel canvas { width: 100%; height: auto; border-radius: 4px; }
+input[type=number] { background: #11151d; color: var(--fg); border: 1px solid var(--line);
+  border-radius: 4px; padding: 4px 6px; font: inherit; width: 6em; }
