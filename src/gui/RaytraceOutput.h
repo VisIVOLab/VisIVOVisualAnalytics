@@ -9,6 +9,7 @@
 // view are drawn onto them. Lives in the point viewer's Ray-traced card.
 
 #include "RaytraceOverlay.h"
+#include "app/TaskQuitDrain.h"
 
 #include <QByteArray>
 #include <QImage>
@@ -19,6 +20,7 @@
 #include <QWidget>
 
 #include <functional>
+#include <memory>
 
 class QComboBox;
 class QNetworkAccessManager;
@@ -28,6 +30,10 @@ class QProgressBar;
 class QPushButton;
 class QTemporaryDir;
 class QTimer;
+
+namespace visivo {
+class RenderTaskHandle;
+}
 
 class RaytraceOutput : public QWidget
 {
@@ -91,9 +97,7 @@ private:
     void setStage(Stage stage, const QString &message = QString());
     /// ``png`` with the box and colour bar of ``camera``'s view drawn on it.
     QImage annotated(const QByteArray &png, const QJsonObject &camera) const;
-    /// ``nam``: this widget's manager when null.
-    QNetworkReply *send(const QString &verb, const QString &path, const QByteArray &body = {},
-                        QNetworkAccessManager *nam = nullptr);
+    QNetworkReply *send(const QString &verb, const QString &path, const QByteArray &body = {});
 
     Source m_source;
     QNetworkAccessManager *m_nam{ nullptr };
@@ -101,8 +105,13 @@ private:
     QTimer *m_regradeTimer{ nullptr };
     Stage m_stage{ Stage::Idle };
 
-    QString m_taskId;
+    /// The task held, shared with the worker creating it and the quit drain,
+    /// which cancels it (#149); registered with the drain for this widget's life.
+    std::shared_ptr<visivo::RenderTaskHandle> m_task;
+    visivo::TaskQuitDrain::Registration m_quitRegistration;
+    QString m_taskId;               ///< m_task's, once its create has answered
     quint64 m_generation{ 0 };      ///< the task's: a reply of an earlier one is dropped
+    quint64 m_taskGeneration{ 0 };  ///< m_task's, for the create under way
     bool m_taskIsMovie{ false };
     double m_autoExposure{ 0.0 };   ///< the still's automatic exposure, 0 before one
     QList<QJsonObject> m_cameras;   ///< of the frames rendered

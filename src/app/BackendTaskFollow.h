@@ -30,7 +30,9 @@
 #include "BackendClient.h"
 
 #include <QCoreApplication>
+#include <QRegularExpression>
 #include <QString>
+#include <QStringList>
 
 #include <algorithm>
 #include <atomic>
@@ -140,6 +142,36 @@ struct TaskFollowHooks
 /// unknown path and 405 for a path that exists with other methods. A 404 for
 /// an unknown dataset is caught here too; the sync route then answers the same
 /// 404 at once, so the fallback costs nothing in that case.
+/// The task kinds the backend creates with POST /v1/tasks/<kind>: every
+/// route of the backend's (TestBackendTaskFollow reads them from its routers).
+inline const QStringList &taskCreateKinds()
+{
+    static const QStringList kinds{ QStringLiteral("moment"),      QStringLiteral("moment_fits"),
+                                    QStringLiteral("pv"),          QStringLiteral("sourcefind"),
+                                    QStringLiteral("decompress"),  QStringLiteral("particle_render"),
+                                    QStringLiteral("volume_render") };
+    return kinds;
+}
+
+/// How long a request to a task route (@p path containing "/tasks/") may
+/// take. Creating, cancelling or polling a task is quick, EXCEPT the poll that
+/// finds it completed: that answer carries the whole product, and a moment
+/// map of an SKA-scale cube is hundreds of MB of base64. At 10 s that read
+/// timed out through a tunnel, again on every retry, and the result of a
+/// 25-minute task was lost (issue #3). Generous for every GET of a task: an
+/// unreadable status is retried and then given up by followBackendTask.
+/// A create keeps 10 s: while quitting, a create already sent is let run to
+/// its timeout (BackendClient's quit grace), and the exit waits for it (#149).
+/// A proxied backend may sit under a path prefix, so the tail is matched.
+inline int taskRequestTimeoutMs(const QString &path)
+{
+    static const QRegularExpression taskStatus(QStringLiteral("/v1/tasks/([^/]+)$"));
+    const QRegularExpressionMatch m = taskStatus.match(path);
+    if (m.hasMatch() && !taskCreateKinds().contains(m.captured(1)))
+        return 300000;   // 5 min: a status read
+    return 10000;
+}
+
 inline bool isMissingTaskRoute(const BackendTaskCreateResult &created)
 {
     return !created.valid && created.taskId.isEmpty()

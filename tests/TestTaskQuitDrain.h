@@ -28,4 +28,10 @@ private slots:
     void aSourceFinderRunIsCancelledOnQuit();
     void aTaskWhoseCreateIsStillAnsweringIsCancelled_data();
     void aTaskWhoseCreateIsStillAnsweringIsCancelled();
+    // Ray-traced renders, followed on the GUI thread (RenderTaskHandle, #149).
+    void aRunningRenderGetsOneDeleteOnQuit();
+    void aRenderAnsweringAtQuitIsDeletedByItsWorker();
+    void aRenderRequestedWhileQuittingSendsNothing();
+    void aRenderForgottenWhileCreatingIsDeleted();
+    void aCancellerIsCalledOnEveryDrainAndUnregisters();
 };

@@ -3,6 +3,9 @@
 #include "BackendLocality.h"
 #include "OrbitPath.h"
 #include "app/BackendClient.h"
+#include "app/FilePreview.h"   // replyErrorText
+#include "app/MissingRoute.h"
+#include "app/RenderTaskHandle.h"
 
 #include <QComboBox>
 #include <QCoreApplication>
@@ -13,6 +16,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFormLayout>
+#include <QFutureWatcher>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -32,6 +36,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QtConcurrentRun>
 
 #include <algorithm>
 #include <cmath>
@@ -40,8 +45,8 @@ using namespace Qt::Literals::StringLiterals;
 
 namespace {
 
-/// A manager owned by the application, for the requests that make and delete
-/// renders: the widget may be going, and a render made for nobody would run on.
+/// A manager owned by the application, for the requests that delete renders:
+/// the widget may be going, and a render made for nobody would run on.
 QNetworkAccessManager *appManager()
 {
     static QNetworkAccessManager *nam = new QNetworkAccessManager(QCoreApplication::instance());
@@ -86,10 +91,23 @@ QString ffmpegPath()
     return path;
 }
 
+/// The client of @p source's backend, its session included.
+BackendClient renderClient(const RaytraceOutput::Source &source)
+{
+    BackendClient client(source.backendUrl, source.token);
+    if (!source.sessionId.isEmpty())
+        client.setSessionId(source.sessionId);
+    return client;
+}
+
 } // namespace
 
 RaytraceOutput::RaytraceOutput(Source source, QWidget *parent)
-    : QWidget(parent), m_source(std::move(source)), m_nam(new QNetworkAccessManager(this))
+    : QWidget(parent),
+      m_source(std::move(source)),
+      m_nam(new QNetworkAccessManager(this)),
+      m_task(std::make_shared<visivo::RenderTaskHandle>(renderClient(m_source))),
+      m_quitRegistration(visivo::TaskQuitDrain::instance(), m_task)
 {
     m_pollTimer = new QTimer(this);
     m_pollTimer->setInterval(500);
@@ -170,10 +188,9 @@ QSize RaytraceOutput::imageSize() const
 }
 
 QNetworkReply *RaytraceOutput::send(const QString &verb, const QString &path,
-                                    const QByteArray &body, QNetworkAccessManager *nam)
+                                    const QByteArray &body)
 {
-    if (!nam)
-        nam = m_nam;
+    QNetworkAccessManager *nam = m_nam;
     QUrl url(m_source.backendUrl);
     url.setPath(path);
     QNetworkRequest req(url);
@@ -302,43 +319,51 @@ void RaytraceOutput::submit(const QList<QJsonObject> &cameras, bool movie)
     if (m_source.tone)
         req.insert(u"tone"_s, m_source.tone(movie ? (keepExposure > 0.0 ? keepExposure : view)
                                                   : 0.0));
-    QNetworkReply *reply = send(u"POST"_s, m_source.taskPath,
-                                QJsonDocument(req).toJson(QJsonDocument::Compact), appManager());
     setStage(Stage::Rendering,
              movie ? u"Ray-traced: rendering %1 frames of %2 × %3…"_s.arg(cameras.size())
                              .arg(px.width()).arg(px.height())
                    : u"Ray-traced: rendering %1 × %2…"_s.arg(px.width()).arg(px.height()));
-    const QPointer<RaytraceOutput> self(this);
+    // Created on a worker, not on this thread's manager: a create still
+    // answering when the application quits is waited for by the quit drain,
+    // and its task cancelled (RenderTaskHandle.h, #149). The handle deletes a
+    // render this widget forgot meanwhile (Cancel, a new one, closed).
     const quint64 generation = m_generation;
-    const QString backendUrl = m_source.backendUrl, token = m_source.token,
-                  sessionId = m_source.sessionId;
-    connect(reply, &QNetworkReply::finished, reply, [=]() {
-        reply->deleteLater();
-        const QString taskId = reply->error() == QNetworkReply::NoError
-                ? QJsonDocument::fromJson(reply->readAll()).object().value(u"task_id"_s).toString()
-                : QString();
-        if (!self || generation != self->m_generation) {
-            // Cancelled, replaced or closed before it existed: stopped and
-            // removed there.
-            if (!taskId.isEmpty())
-                deleteRender(backendUrl, token, sessionId, taskId);
+    const QString backendUrl = m_source.backendUrl;
+    auto *watcher = new QFutureWatcher<BackendTaskCreateResult>(this);
+    connect(watcher, &QFutureWatcher<BackendTaskCreateResult>::finished, this,
+            [this, watcher, generation, backendUrl]() {
+        watcher->deleteLater();
+        const BackendTaskCreateResult created = watcher->result();
+        if (generation != m_generation)
+            return;   // cancelled or replaced: the handle removed it there
+        // Quitting: the windows are hidden and the render (if any) is the
+        // drain's to delete; nothing to say, nothing to poll.
+        if (visivo::TaskQuitDrain::instance().quitting())
             return;
-        }
-        if (reply->error() != QNetworkReply::NoError) {
+        if (!created.valid) {
             // A backend older than the render task (a cube's came after a
             // table's): said so, not its bare "Not Found".
-            const QByteArray body = reply->readAll();
-            const QString missing = visivo::missingRouteMessage(
-                    backendUrl, reply, body, u"ray-traced stills and movies"_s);
-            self->setStage(Stage::Idle, !missing.isEmpty()
-                                                ? missing
-                                                : u"The render could not start: "_s
-                                                          + errorOf(reply, body));
+            const QString missing = visivo::isMissingRouteReply(created.httpStatus,
+                                                                created.errorBody)
+                    ? visivo::missingFeatureMessage(visivo::backendDisplayName(backendUrl),
+                                                    u"ray-traced stills and movies"_s)
+                    : QString();
+            const QString why = created.httpStatus >= 400
+                    ? visivo::replyErrorText(created.errorBody)
+                    : QString();
+            setStage(Stage::Idle, !missing.isEmpty()
+                                          ? missing
+                                          : u"The render could not start: "_s
+                                                    + (why.isEmpty() ? created.error : why));
             return;
         }
-        self->m_taskId = taskId;
-        self->m_pollTimer->start();
+        m_taskId = created.taskId;
+        m_pollTimer->start();
     });
+    watcher->setFuture(QtConcurrent::run(
+            [task = m_task, taskGeneration = m_taskGeneration, path = m_source.taskPath, req]() {
+                return task->create(taskGeneration, path, req);
+            }));
 }
 
 void RaytraceOutput::poll()
@@ -572,8 +597,13 @@ void RaytraceOutput::cancel()
 void RaytraceOutput::forgetTask()
 {
     ++m_generation;   // the replies on their way are of the task forgotten
-    if (!m_taskId.isEmpty())
-        deleteRender(m_source.backendUrl, m_source.token, m_source.sessionId, m_taskId);
+    // The handle's id, not m_taskId: the quit drain may have taken (and
+    // deleted) it already, and a create still answering is deleted by its
+    // worker.
+    QString taken;
+    m_taskGeneration = m_task->forget(&taken);
+    if (!taken.isEmpty())
+        deleteRender(m_source.backendUrl, m_source.token, m_source.sessionId, taken);
     m_taskId.clear();
     m_still = QImage();
     m_showingStill = false;

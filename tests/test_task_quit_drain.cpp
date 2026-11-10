@@ -3,6 +3,7 @@
 #include "app/BackendClient.h"
 #include "app/DiagnosticsManager.h"
 #include "app/FinderTaskRun.h"
+#include "app/RenderTaskHandle.h"
 #include "app/TaskQuitDrain.h"
 
 #include <QElapsedTimer>
@@ -39,6 +40,8 @@ public:
     std::atomic<int> statusDelayMs{ 0 };
     std::atomic<int> deleteDelayMs{ 0 };
     std::atomic<int> statusReads{ 0 };
+    /// DELETE /v1/particle_render/{id}: a ray-traced render stopped and removed.
+    std::atomic<int> renderDeletes{ 0 };
 
     /// Started and listening (false: could not listen, or no answer in 5 s).
     bool startAndWait()
@@ -78,6 +81,10 @@ protected:
                 } else if (method == "DELETE" && path.contains("/v1/tasks/")) {
                     ++deletes;
                     body = R"({"valid":true,"status":"cancelled"})";
+                    delayMs = deleteDelayMs;
+                } else if (method == "DELETE" && path.contains("/v1/particle_render/")) {
+                    ++renderDeletes;
+                    body = R"({"deleted":true})";
                     delayMs = deleteDelayMs;
                 } else if (method == "POST" && path.contains("/v1/tasks/")) {
                     ++creates;   // the task exists on the backend from here
@@ -520,4 +527,146 @@ void TestTaskQuitDrain::noTaskIsCreatedWhileQuitting()
     QVERIFY(TaskQuitDrain::instance().drain(100));
     QVERIFY(visivo::refuseTaskWhileQuitting(error));
     QVERIFY(!error.isEmpty());
+}
+
+// ── Ray-traced renders (RenderTaskHandle, #149) ──────────────────────────────
+
+namespace {
+
+/// A view's render handle on @p backend, registered with the drain as
+/// RaytraceOutput registers it.
+std::shared_ptr<visivo::RenderTaskHandle> renderHandle(const FakeTaskBackend &backend)
+{
+    return std::make_shared<visivo::RenderTaskHandle>(
+            BackendClient(u"http://127.0.0.1:%1"_s.arg(backend.port.load()), u"tok"_s));
+}
+
+QFuture<BackendTaskCreateResult> startRender(const std::shared_ptr<visivo::RenderTaskHandle> &task)
+{
+    const quint64 generation = task->forget(nullptr);
+    return QtConcurrent::run([task, generation]() {
+        return task->create(generation, u"/v1/tasks/particle_render"_s,
+                            QJsonObject{ { u"dataset_id"_s, u"d1"_s } });
+    });
+}
+
+bool waitFor(const std::function<bool()> &done, int ms = 5000)
+{
+    QElapsedTimer t;
+    t.start();
+    while (!done() && t.elapsed() < ms)
+        QThread::msleep(2);
+    return done();
+}
+
+}   // namespace
+
+void TestTaskQuitDrain::aRunningRenderGetsOneDeleteOnQuit()
+{
+    // The render has started and the view polls it (on the GUI thread, which
+    // the quit stops): the drain sends its DELETE, once, before it returns,
+    // and the view, destroyed after, has nothing left to delete.
+    DiagnosticsManager::instance();
+    FakeTaskBackend backend;
+    if (!backend.startAndWait())
+        QSKIP("No loopback listener here.");
+    const auto task = renderHandle(backend);
+    const TaskQuitDrain::Registration registration(TaskQuitDrain::instance(), task);
+    QFuture<BackendTaskCreateResult> created = startRender(task);
+    QVERIFY(waitFor([&]() { return created.isFinished(); }));
+    QVERIFY(created.result().valid);
+    QCOMPARE(task->taskId(), u"t9"_s);
+    QCOMPARE(backend.renderDeletes.load(), 0);
+
+    QVERIFY(TaskQuitDrain::instance().drain(10'000));
+    QCOMPARE(backend.renderDeletes.load(), 1);   // before the drain returned
+    QVERIFY(task->taskId().isEmpty());
+    QVERIFY(TaskQuitDrain::instance().drain(10'000));   // aboutToQuit's, after exitApplication's
+    QString left;
+    task->forget(&left);   // ~RaytraceOutput
+    QVERIFY(left.isEmpty());
+    QCOMPARE(backend.renderDeletes.load(), 1);
+    QCOMPARE(backend.deletes.load(), 0);
+}
+
+void TestTaskQuitDrain::aRenderAnsweringAtQuitIsDeletedByItsWorker()
+{
+    // The quit lands after the backend made the render, before its id came
+    // back: the create's worker sees the quit and deletes it, while the drain
+    // waits for the pool.
+    DiagnosticsManager::instance();
+    FakeTaskBackend backend;
+    if (!backend.startAndWait())
+        QSKIP("No loopback listener here.");
+    backend.createDelayMs = 600;
+    const auto task = renderHandle(backend);
+    const TaskQuitDrain::Registration registration(TaskQuitDrain::instance(), task);
+    QFuture<BackendTaskCreateResult> created = startRender(task);
+    QVERIFY(waitFor([&]() { return backend.creates == 1; }));
+    QVERIFY(TaskQuitDrain::instance().drain(10'000));
+    QVERIFY(created.isFinished());
+    QVERIFY(!created.result().valid);
+    QVERIFY(task->taskId().isEmpty());
+    QCOMPARE(backend.renderDeletes.load(), 1);
+}
+
+void TestTaskQuitDrain::aRenderRequestedWhileQuittingSendsNothing()
+{
+    DiagnosticsManager::instance();
+    FakeTaskBackend backend;
+    if (!backend.startAndWait())
+        QSKIP("No loopback listener here.");
+    const auto task = renderHandle(backend);
+    const TaskQuitDrain::Registration registration(TaskQuitDrain::instance(), task);
+    QVERIFY(TaskQuitDrain::instance().drain(100));
+    QFuture<BackendTaskCreateResult> created = startRender(task);
+    QVERIFY(waitFor([&]() { return created.isFinished(); }));
+    QVERIFY(!created.result().valid);
+    QCOMPARE(created.result().httpStatus, 0);
+    QVERIFY2(created.result().error.contains(u"quitting"_s),
+             qPrintable(created.result().error));   // the refusal, not a lost request
+    QVERIFY(TaskQuitDrain::instance().drain(100));
+    QCOMPARE(backend.requests.load(), 0);
+}
+
+void TestTaskQuitDrain::aRenderForgottenWhileCreatingIsDeleted()
+{
+    // Cancel (or a new render) while the create is still answering, no quit:
+    // the worker deletes the render the view no longer wants, and keeps no id.
+    DiagnosticsManager::instance();
+    FakeTaskBackend backend;
+    if (!backend.startAndWait())
+        QSKIP("No loopback listener here.");
+    backend.createDelayMs = 300;
+    const auto task = renderHandle(backend);
+    QFuture<BackendTaskCreateResult> created = startRender(task);
+    QVERIFY(waitFor([&]() { return backend.creates == 1; }));
+    QString taken;
+    task->forget(&taken);
+    QVERIFY(taken.isEmpty());   // nothing held yet
+    QVERIFY(waitFor([&]() { return created.isFinished(); }));
+    QVERIFY(!created.result().valid);
+    QVERIFY(task->taskId().isEmpty());
+    QCOMPARE(backend.renderDeletes.load(), 1);
+}
+
+namespace {
+struct CountingCanceller : visivo::QuitCanceller
+{
+    std::atomic<int> calls{ 0 };
+    void cancelForQuit() override { ++calls; }
+};
+}   // namespace
+
+void TestTaskQuitDrain::aCancellerIsCalledOnEveryDrainAndUnregisters()
+{
+    const auto canceller = std::make_shared<CountingCanceller>();
+    {
+        const TaskQuitDrain::Registration registration(TaskQuitDrain::instance(), canceller);
+        QVERIFY(TaskQuitDrain::instance().drain(1000));
+        QVERIFY(TaskQuitDrain::instance().drain(1000));
+        QCOMPARE(canceller->calls.load(), 2);
+    }
+    QVERIFY(TaskQuitDrain::instance().drain(1000));
+    QCOMPARE(canceller->calls.load(), 2);   // gone with its registration
 }
