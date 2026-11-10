@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import io
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import numpy as np
@@ -27,6 +26,7 @@ from ._common import (
 from ._scene import SceneMixin
 from ._modes import ModesMixin
 from ._pipeline import PipelineMixin
+from ._window import RenderThreadError, offscreen_kind, render_executor
 
 
 # ── Capability probe (used by the dataset open endpoint to set the flag) ─────
@@ -40,27 +40,16 @@ _EGL_AVAILABLE: bool | None = None
 def server_side_rendering_available() -> bool:
     """Return True iff this backend can actually run a RenderSession.
 
-    Cached because the probe imports a non-trivial module, which is
-    wasted work past the first call. Re-probe by setting
-    ``app.render_session._EGL_AVAILABLE = None`` (e.g. in tests).
-
-    In VTK 9.3 ``vtkEGLRenderWindow`` lives inside
-    ``vtkRenderingOpenGL2``; in VTK 9.0/9.1 it was in a standalone
-    ``vtkRenderingEGL`` submodule. We probe both for forward+backward
-    compatibility across the deployed range.
+    True with an EGL build of VTK (Linux, any GPU node), or on a Mac whose
+    process reaches the user's window server session (a hidden Cocoa window,
+    issue #168; see ``_window.py``). Cached because the probe imports a
+    non-trivial module, which is wasted work past the first call. Re-probe by
+    setting ``app.render_session._EGL_AVAILABLE = None`` (e.g. in tests); the
+    name is kept from when EGL was the only way.
     """
     global _EGL_AVAILABLE
-    if _EGL_AVAILABLE is not None:
-        return _EGL_AVAILABLE
-    _EGL_AVAILABLE = False
-    for path in ("vtkmodules.vtkRenderingOpenGL2", "vtkmodules.vtkRenderingEGL"):
-        try:
-            mod = __import__(path, fromlist=["vtkEGLRenderWindow"])
-            if getattr(mod, "vtkEGLRenderWindow", None) is not None:
-                _EGL_AVAILABLE = True
-                break
-        except ImportError:
-            continue
+    if _EGL_AVAILABLE is None:
+        _EGL_AVAILABLE = offscreen_kind() is not None
     return _EGL_AVAILABLE
 
 
@@ -90,10 +79,10 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
         self.view = SessionViewState()
         self.stats = SessionStats()
         # Single-thread executor so every VTK call hits the same thread
-        # → same EGL context → same CUDA context (if cupy is used).
-        self._executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix=f"vtk-{session_id[:8]}",
-        )
+        # → same EGL context → same CUDA context (if cupy is used). On a Mac
+        # the caller's thread instead: Cocoa windows live on the main thread.
+        self._window_kind = offscreen_kind()
+        self._executor = render_executor(self._window_kind, f"vtk-{session_id[:8]}")
         # Cached on the worker thread; ``None`` until initialise().
         self._render_window = None
         self._renderer = None
@@ -410,8 +399,33 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
         loop = asyncio.get_event_loop()
         try:
             await loop.run_in_executor(self._executor, self._close_on_thread)
+        except RenderThreadError:
+            # A Cocoa session closed from another thread: its VTK objects may
+            # not be touched (nor freed) here, but the reader process, the
+            # shared memory and the pyramid's files are released all the same.
+            logger.warning("[render-session %s] closed off the main thread: VTK "
+                           "left to the process exit", self.session_id)
+            self._release_data_off_thread()
         finally:
             self._executor.shutdown(wait=False, cancel_futures=True)
+
+    def _release_data_off_thread(self) -> None:
+        """The non-VTK part of ``_close_on_thread``. The VTK objects are kept
+        referenced on purpose: dropping the last reference would destroy them,
+        their window included, on this thread."""
+        if self._ooc is not None:
+            try:
+                self._ooc.release_files()
+            except Exception as e:   # noqa: BLE001 - closing anyway
+                logger.warning("[render-session %s] pyramid close raised: %s",
+                               self.session_id, e)
+        if self._cube_reader is not None:
+            try:
+                self._cube_reader.close()
+            except Exception as e:   # noqa: BLE001 - closing anyway
+                logger.warning("[render-session %s] CubeReader close raised: %s",
+                               self.session_id, e)
+            self._cube_reader = None
 
     # ── Worker-thread methods (NEVER call from outside the executor) ─────
 

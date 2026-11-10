@@ -486,6 +486,11 @@ class OutOfCoreCube:
     def close(self) -> None:
         if self.blocks is not None:
             self.blocks.clear()
+        self.release_files()
+
+    def release_files(self) -> None:
+        """Close the pyramid and the source file only, leaving the VTK
+        blocks alone: for a close from a thread that may not touch them."""
         if self._source is not None:
             self._source.close()
         self.pyramid.close()

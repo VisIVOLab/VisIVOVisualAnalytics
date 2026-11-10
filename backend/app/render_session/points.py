@@ -41,7 +41,6 @@ import logging
 import math
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -50,6 +49,8 @@ import pandas as pd
 from PIL import Image
 
 from ._common import SessionStats, _build_color_tf, _parse_tf_points, set_camera
+from ._window import (RenderThreadError, new_offscreen_window, offscreen_kind,
+                      render_executor)
 
 logger = logging.getLogger("visivo.render")
 
@@ -67,22 +68,6 @@ _SOLID = (0.8, 0.85, 1.0)
 _NUMERIC_OPS = {"=", "!=", ">", ">=", "<", "<="}
 
 
-def _egl_window_class():
-    """vtkEGLRenderWindow, from wherever this VTK has it (as
-    app.render_session.server_side_rendering_available probes), or None."""
-    for path in ("vtkmodules.vtkRenderingOpenGL2", "vtkmodules.vtkRenderingEGL"):
-        try:
-            cls = getattr(__import__(path, fromlist=["vtkEGLRenderWindow"]),
-                          "vtkEGLRenderWindow", None)
-        except ImportError:
-            continue
-        if cls is not None:
-            return cls
-    return None
-
-
-_EGL_WINDOW = _egl_window_class()
-_HAS_EGL = _EGL_WINDOW is not None
 
 
 @dataclass
@@ -180,8 +165,10 @@ class PointRenderSession:
         self.view = PointViewState()
         self.stats = SessionStats()
         self.changed = asyncio.Event()
-        self._executor = ThreadPoolExecutor(max_workers=1,
-                                            thread_name_prefix=f"vtk-pts-{session_id[:8]}")
+        # A thread of its own for EGL; on a Mac the caller's, which must be the
+        # main thread (render_session/_window.py).
+        self._window_kind = offscreen_kind()
+        self._executor = render_executor(self._window_kind, f"vtk-pts-{session_id[:8]}")
         self._render_lock = asyncio.Lock()
         self._closed = False
         self._scene_version = 1
@@ -298,15 +285,16 @@ class PointRenderSession:
         self._closed = True
         try:
             await self._run(self._close_on_thread)
+        except RenderThreadError:
+            # Nothing but VTK to release, and it may not be touched from here.
+            logger.warning("[point-render %s] closed off the main thread: VTK left "
+                           "to the process exit", self.session_id[:8])
         finally:
             self._executor.shutdown(wait=False, cancel_futures=True)
 
     async def _run(self, fn, *args):
-        """``fn`` on the render thread. Without EGL (a desktop running the
-        tests: Cocoa draws only on the thread that made the window) on the
-        calling thread."""
-        if not _HAS_EGL:
-            return fn(*args)
+        """``fn`` on the render thread: the session's own (EGL), or on a Mac
+        the calling one, refused unless it is the main thread."""
         return await asyncio.get_event_loop().run_in_executor(self._executor, fn, *args)
 
     def _check_open(self) -> None:
@@ -342,11 +330,11 @@ class PointRenderSession:
 
     def _make_window(self):
         import vtk
-        if _HAS_EGL:
-            window = _EGL_WINDOW()
-        else:   # no EGL (tests on a desktop): an offscreen window
+        if self._window_kind is not None:   # EGL, or a hidden Cocoa window on a Mac
+            window = new_offscreen_window(self._window_kind)
+        else:   # neither (tests on a desktop): VTK's own offscreen window
             window = vtk.vtkRenderWindow()
-        window.SetOffScreenRendering(1)
+            window.SetOffScreenRendering(1)
         window.SetSize(self.view.width, self.view.height)
         return window
 

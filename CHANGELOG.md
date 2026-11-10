@@ -8,6 +8,24 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Server-side rendering on a macOS backend (#168, first step).** A backend
+  on a Mac now renders cube and point-table views on the Mac's GPU, as a
+  Linux backend does with EGL: each render session draws into a hidden
+  `vtkCocoaRenderWindow` (Apple's OpenGL 4.1 over Metal) in its render
+  process, on that process's main thread (Cocoa refuses windows made on any
+  other), and the process stays out of the Dock. `server_side_rendering_available`
+  is true there when the backend can reach the logged-in user's window
+  server; started over ssh with nobody logged in, or as a system service, it
+  stays false. Measured on an M5 Max, 2540 × 1560 frames: the 2 GB Apertif
+  cube rotates at 82 FPS in one session (29.5 on a V100 of PLEIADI-GPU, same
+  script) and 45 FPS each with four at once; through the push stream to a
+  client on the same Mac, 56 FPS against the 60 FPS cap. The log names the
+  OpenGL renderer each session draws with. A session reached from any other
+  thread (a backend embedded off its main thread with
+  `VISIVO_RENDER_IN_PROCESS=1`) is refused before a window is made, and
+  closing it still frees its reader process and shared memory. The desktop's
+  "cannot render server-side" tooltips now give the real reason (no EGL, or a
+  Mac without a logged-in user session).
 - **SAMP from the viewer windows (#130).** The image, cube and 3-D catalogue
   windows have a **SAMP** menu that acts on that window's data, not on the
   last dataset opened, with a *Send … To* choice of recipient: all the tools
