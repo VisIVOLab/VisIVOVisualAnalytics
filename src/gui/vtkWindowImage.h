@@ -22,6 +22,7 @@
 #include <QTimer>
 
 #include <array>
+#include <optional>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -72,6 +73,12 @@ class vtkScalarBarActor;
 class vtkTextActor;
 
 QT_BEGIN_NAMESPACE
+class MainWindow;
+class QMenu;
+namespace visivo::samp {
+struct SkyPosition;
+}
+
 namespace Ui {
 class vtkWindowImage;
 }
@@ -716,6 +723,27 @@ protected:
     void runVlkbCatalogueQuery(double glonMin, double glonMax, double glatMin, double glatMax);
     void runVlkbCatalogueQueryWholeImage(VlkbOverlayKind kind);   ///< click-without-drag fallback
     bool m_vlkbSelectActive{ false };
+
+    // ── SAMP actions (issue #130, vtkWindowImage_Samp.cpp) ──────────────────
+    /// The SAMP menu (this image, the clicked position) and the click watch.
+    void setupSamp();
+    void fillSampMenu(QMenu *menu, MainWindow *host);
+    void sampMousePressed();
+    void sampMouseReleased();
+    /// ICRS position of full-resolution pixel (@p fullX, @p fullY), 0-based.
+    std::optional<visivo::samp::SkyPosition> sampSkyAt(double fullX, double fullY) const;
+    /// coord.pointAt.sky of the last pixel clicked; @p quiet: from the click.
+    void sendClickedPosition(const QString &recipientId, bool quiet);
+    std::array<int, 2> m_sampPressPos{ -1, -1 };   ///< display position of the left press
+    /// A tool took the press (seen before the tools' own handlers run).
+    bool m_sampPressTaken{ false };
+    quint64 m_sampClickSerial{ 0 };   ///< the latest position asked of the backend
+    /// A tool whose clicks place or pick something is on: a click there is
+    /// not a position to send.
+    bool isInteractionToolActive() const;
+    bool m_sampHasClick{ false };
+    std::array<double, 2> m_sampClickPixel{ 0.0, 0.0 };   ///< full-resolution pixel
+    bool m_sampBroadcastClicks{ false };   ///< send every click (off by default)
     bool m_vlkbSelectDragging{ false };
     QString m_vlkbBand{ QStringLiteral("250") };
     int m_vlkbSelStart[2]{ 0, 0 };

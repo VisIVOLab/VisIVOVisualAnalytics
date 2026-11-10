@@ -6,12 +6,17 @@
 #include "app/SampCallbackServer.h"
 #include "app/ToolTipText.h"
 #include "app/SampProtocol.h"
+#include "app/SampSkyPosition.h"
 #include "app/SampXmlRpc.h"
 #include "gui/Catalogue3DParser.h"
 
 #include <QSignalSpy>
 #include <QTcpSocket>
 #include <QTest>
+
+#include <algorithm>
+#include <cmath>
+#include <memory>
 
 using namespace Qt::StringLiterals;
 
@@ -799,4 +804,303 @@ void TestSamp::toolTip_breaksLongValuesAndLeavesShortOnes()
     // Text with its own lines is left to them.
     const QString multi = u"line one\n"_s + QString(100, u'y');
     QCOMPARE(visivo::wrappedToolTip(multi), multi);
+}
+
+// ── Viewer actions: recipients, subsets, positions (issue #130) ──────────────
+
+void TestSamp::recipients_followSubscriptionsAndWildcards()
+{
+    QVERIFY(Samp::mtypeMatches(u"*"_s, u"image.load.fits"_s));
+    QVERIFY(Samp::mtypeMatches(u"table.*"_s, u"table.load.votable"_s));
+    QVERIFY(Samp::mtypeMatches(u"table.load.*"_s, u"table.load.fits"_s));
+    QVERIFY(!Samp::mtypeMatches(u"table.*"_s, u"tablex.load"_s));   // atoms, not a prefix
+    QVERIFY(!Samp::mtypeMatches(u"table.load.votable"_s, u"table.load.fits"_s));
+    QVERIFY(Samp::mtypeMatches(u"coord.pointAt.sky"_s, u"coord.pointAt.sky"_s));
+
+    QList<SampClientInfo> clients;
+    clients.append({ u"c1"_s, u"topcat"_s, {}, {}, { u"table.load.votable"_s, u"coord.*"_s } });
+    clients.append({ u"c2"_s, u"Aladin"_s, {}, {}, { u"image.load.fits"_s, u"coord.pointAt.sky"_s } });
+    clients.append({ u"c3"_s, QString(), {}, {}, { u"*"_s } });
+    clients.append({ u"c4"_s, u"topcat"_s, {}, {}, { u"table.load.votable"_s } });
+
+    // Sorted by name; the two TOPCATs told apart by id; a nameless tool by id.
+    const QList<Samp::Recipient> tables = Samp::recipientsFor(clients, u"table.load.votable"_s);
+    QCOMPARE(tables.size(), 3);
+    QCOMPARE(tables.at(0).label, u"c3"_s);
+    QCOMPARE(tables.at(1).label, u"topcat [c1]"_s);
+    QCOMPARE(tables.at(2).label, u"topcat [c4]"_s);
+    QCOMPARE(tables.at(2).id, u"c4"_s);
+
+    const QList<Samp::Recipient> positions = Samp::recipientsFor(clients, u"coord.pointAt.sky"_s);
+    QCOMPARE(positions.size(), 3);
+    QCOMPARE(positions.at(0).label, u"Aladin"_s);
+    // Only one TOPCAT takes positions: no id needed.
+    QCOMPARE(positions.at(2).label, u"topcat"_s);
+
+    QVERIFY(Samp::recipientsFor(clients, u"spectrum.load.ssa-generic"_s).size() == 1);   // "*"
+    QVERIFY(Samp::recipientsFor({}, u"image.load.fits"_s).isEmpty());
+}
+
+void TestSamp::subset_mapsRowsBothWays()
+{
+    // A subset VisIVO sent: its row k is catalogue row rows[k].
+    auto subset = std::make_shared<const SampSubset>(std::vector<qint64>{ 40, 7, 12 });
+    QCOMPARE(Samp::toCatalogueRow(subset, 0), qint64(40));
+    QCOMPARE(Samp::toCatalogueRow(subset, 2), qint64(12));
+    QCOMPARE(Samp::toCatalogueRow(subset, 3), qint64(-1));
+    QCOMPARE(Samp::toCatalogueRow(subset, -1), qint64(-1));
+    QCOMPARE(Samp::toTableRow(subset, 7), qint64(1));
+    QCOMPARE(Samp::toTableRow(subset, 8), qint64(-1));   // not in the subset
+    QCOMPARE(Samp::toTableRows(subset, { 12, 99, 40 }), (QList<qint64>{ 2, 0 }));
+    QCOMPARE(Samp::toCatalogueRows(subset, { 1, 5, 0 }), (QList<qint64>{ 7, 40 }));
+
+    // The whole table: rows are the catalogue's own.
+    const SampSubsetPtr whole;
+    QCOMPARE(Samp::toCatalogueRow(whole, 5), qint64(5));
+    QCOMPARE(Samp::toTableRow(whole, 5), qint64(5));
+    QCOMPARE(Samp::toTableRows(whole, { 3, 1 }), (QList<qint64>{ 3, 1 }));
+
+    // The registry keeps which table is a subset; the pending send hands it on.
+    SampPendingTables pending;
+    pending.add(u"visivo-sub"_s, u"/data/a.csv"_s, subset);
+    pending.setUrl(u"visivo-sub"_s, u"http://backend/v1/samp/files/s"_s);
+    const auto found = pending.find({ QString(), u"http://backend/v1/samp/files/s"_s });
+    QVERIFY(found.has_value());
+    QCOMPARE(found->subset, subset);
+    const auto sent = pending.takeEntry(u"visivo-sub"_s);
+    QCOMPARE(sent.localKey, u"/data/a.csv"_s);
+
+    SampTableRegistry reg;
+    reg.remember({ u"topcat-1"_s, u"http://hub/t1"_s }, u"/data/a.csv"_s);
+    reg.remember({ u"visivo-sub"_s, u"http://backend/v1/samp/files/s"_s }, u"/data/a.csv"_s,
+                 sent.subset);
+    const auto entries = reg.entriesFor(u"/data/a.csv"_s);
+    QCOMPARE(entries.size(), 2);
+    QVERIFY(!entries.at(0).subset);
+    QCOMPARE(entries.at(1).subset, subset);
+    QCOMPARE(reg.find({ u"visivo-sub"_s, QString() })->subset, subset);
+    QCOMPARE(reg.localKeyFor({ u"visivo-sub"_s, QString() }), u"/data/a.csv"_s);
+}
+
+void TestSamp::rowMap_turnsASelectionIntoSortedRows()
+{
+    SampRowMap map;
+    // Entries of a filtered, sorted view: entry 3 has no known row.
+    map.reset({ 9, 4, 4, -1, 0 });
+    int unknown = -1;
+    // Rows of the original table, ascending and each once (entries 1 and 2
+    // are the same row), the unknown one left out and counted.
+    QCOMPARE(map.rowsForEntries({ 0, 1, 2, 3, 4 }, &unknown), (QList<qint64>{ 0, 4, 9 }));
+    QCOMPARE(unknown, 1);
+    QCOMPARE(map.rowsForEntries({ 7, -2 }, &unknown), QList<qint64>());
+    QCOMPARE(unknown, 2);
+    QCOMPARE(map.rowsForEntries({}), QList<qint64>());
+}
+
+void TestSamp::pointAt_paramsAreDegreesInRange()
+{
+    const auto p = Samp::pointAtSkyParams(-10.5, 41.25);
+    QVERIFY(p.has_value());
+    QCOMPARE(p->value(u"ra"_s).toString(), u"349.50000000"_s);
+    QCOMPARE(p->value(u"dec"_s).toString(), u"41.25000000"_s);
+    QCOMPARE(Samp::pointAtSkyParams(720.0, 0.0)->value(u"ra"_s).toString(), u"0.00000000"_s);
+    QVERIFY(!Samp::pointAtSkyParams(10.0, 91.0));
+    QVERIFY(!Samp::pointAtSkyParams(qQNaN(), 0.0));
+    QVERIFY(!Samp::pointAtSkyParams(0.0, qInf()));
+}
+
+namespace {
+bool near(double a, double b, double tol) { return std::abs(a - b) <= tol; }
+/// Angular separation in degrees.
+double separation(const visivo::samp::SkyPosition &a, double ra, double dec)
+{
+    const double d2r = M_PI / 180.0;
+    const double c = std::sin(a.decDeg * d2r) * std::sin(dec * d2r)
+            + std::cos(a.decDeg * d2r) * std::cos(dec * d2r) * std::cos((a.raDeg - ra) * d2r);
+    return std::acos(std::clamp(c, -1.0, 1.0)) / d2r;
+}
+}  // namespace
+
+void TestSamp::skyPosition_framesRotateToIcrs()
+{
+    using visivo::samp::SkyFrame;
+    using visivo::samp::toIcrs;
+    // Galactic centre and north galactic pole (ICRS, Hipparcos frame).
+    const auto gc = toIcrs(SkyFrame::Galactic, 0.0, 0.0);
+    QVERIFY2(separation(gc, 266.40499, -28.93617) < 1e-4, qPrintable(visivo::samp::describe(gc)));
+    const auto ngp = toIcrs(SkyFrame::Galactic, 123.0, 90.0);
+    QVERIFY(separation(ngp, 192.85948, 27.12825) < 1e-4);
+    // The ecliptic north pole is at RA 18h, Dec 90° − ε.
+    const auto enp = toIcrs(SkyFrame::Ecliptic, 0.0, 90.0);
+    QVERIFY(separation(enp, 270.0, 66.5607089) < 1e-6);
+    // Equatorial is itself, with RA wrapped.
+    const auto eq = toIcrs(SkyFrame::Equatorial, -1.0, 10.0);
+    QVERIFY(near(eq.raDeg, 359.0, 1e-9) && near(eq.decDeg, 10.0, 1e-9));
+
+    QCOMPARE(visivo::samp::skyFrameOf({ u"RA---TAN"_s, u"DEC--TAN"_s }), SkyFrame::Equatorial);
+    QCOMPARE(visivo::samp::skyFrameOf({ u"GLON-CAR"_s, u"GLAT-CAR"_s }), SkyFrame::Galactic);
+    QCOMPARE(visivo::samp::skyFrameOf({ u"DEC--SIN"_s, u"RA---SIN"_s }), SkyFrame::Equatorial);
+    QVERIFY(!visivo::samp::skyFrameOf({ u"GLON-CAR"_s, u"DEC--TAN"_s }));   // mixed frames
+    QVERIFY(!visivo::samp::skyFrameOf({ u"FREQ"_s, u"STOKES"_s }));
+}
+
+void TestSamp::skyPosition_pixelsProjectAsTheHeaderSays()
+{
+    visivo::samp::ImageSkyWcs tan;
+    tan.ctype = { u"RA---TAN"_s, u"DEC--TAN"_s };
+    tan.crval = { 150.0, 2.0 };
+    tan.crpix = { 101.0, 51.0 };   // 1-based: 0-based pixel (100, 50)
+    tan.cdelt = { -0.001, 0.001 };
+    // The reference pixel is CRVAL.
+    const auto centre = visivo::samp::pixelToIcrs(tan, 100.0, 50.0);
+    QVERIFY(centre.has_value());
+    QVERIFY(near(centre->raDeg, 150.0, 1e-12) && near(centre->decDeg, 2.0, 1e-12));
+    // 1000 pixels north on a gnomonic grid: the angle is atan(1°), not 1°.
+    const auto north = visivo::samp::pixelToIcrs(tan, 100.0, 1050.0);
+    const double expected = std::atan(1.0 * M_PI / 180.0) * 180.0 / M_PI;
+    QVERIFY(near(separation(*north, 150.0, 2.0), expected, 1e-9));
+    // East is to the left (CDELT1 < 0): RA grows towards smaller pixel x.
+    QVERIFY(visivo::samp::pixelToIcrs(tan, 0.0, 50.0)->raDeg > 150.0);
+
+    // SIN: off the projection beyond the horizon.
+    visivo::samp::ImageSkyWcs sin = tan;
+    sin.ctype = { u"RA---SIN"_s, u"DEC--SIN"_s };
+    sin.cdelt = { -0.1, 0.1 };
+    const auto sinNorth = visivo::samp::pixelToIcrs(sin, 100.0, 150.0);   // 10° of x
+    QVERIFY(near(separation(*sinNorth, 150.0, 2.0), std::asin(10.0 * M_PI / 180.0) * 180.0 / M_PI,
+                 1e-9));
+    QVERIFY(!visivo::samp::pixelToIcrs(sin, 100.0, 50.0 + 600.0));   // 60° in x: rho > 1
+
+    // CAR and anything else: the viewers' linear model, then into ICRS.
+    visivo::samp::ImageSkyWcs car;
+    car.ctype = { u"GLON-CAR"_s, u"GLAT-CAR"_s };
+    car.crval = { 0.0, 0.0 };
+    car.crpix = { 11.0, 11.0 };
+    car.cdelt = { -0.01, 0.01 };
+    const auto gc = visivo::samp::pixelToIcrs(car, 10.0, 10.0);
+    QVERIFY(separation(*gc, 266.40499, -28.93617) < 1e-4);
+    const auto native = visivo::samp::pixelToNative(car, 20.0, 15.0);
+    QVERIFY(near((*native)[0], -0.1, 1e-12) && near((*native)[1], 0.05, 1e-12));
+
+    // Not a sky image, or no scale: nothing.
+    visivo::samp::ImageSkyWcs pv = tan;
+    pv.ctype = { u"OFFSET"_s, u"VRAD"_s };
+    QVERIFY(!visivo::samp::pixelToIcrs(pv, 1.0, 1.0));
+    visivo::samp::ImageSkyWcs flat = tan;
+    flat.cdelt = { 0.0, 0.001 };
+    QVERIFY(!visivo::samp::pixelToIcrs(flat, 1.0, 1.0));
+    QVERIFY(!visivo::samp::pixelToIcrs(tan, qQNaN(), 1.0));
+}
+
+void TestSamp::backendAcks_deduplicateAcknowledgeAndGiveUp()
+{
+    SampBackendAcks acks;
+    const QString backend = u"http://backend"_s;
+    // Fetched once; a second lease of the same job while it waits is skipped.
+    QVERIFY(acks.fetched(u"j1"_s));
+    QVERIFY(!acks.fetched(u"j1"_s));
+    QVERIFY(acks.fetched(u"j2"_s));
+    QVERIFY(acks.fetched(QString()));   // no job id: nothing to track
+    // j1 went out, j2 did not (the hub went away): only j1 is acknowledged,
+    // j2 comes back with its lease and may be fetched again.
+    acks.finished(backend, u"j1"_s, true);
+    acks.finished(backend, u"j2"_s, false);
+    QVERIFY(!acks.inFlight(u"j1"_s) && !acks.inFlight(u"j2"_s));
+    QVERIFY(acks.fetched(u"j2"_s));
+    QCOMPARE(acks.take(backend), QStringList{ u"j1"_s });
+    QCOMPARE(acks.pending(backend), qsizetype(0));
+
+    // A failed post puts the batch back, ahead of newer acks.
+    acks.finished(backend, u"j2"_s, true);
+    QStringList batch = acks.take(backend);
+    acks.finished(backend, u"j3"_s, true);
+    acks.posted(backend, batch, false, 503);
+    QCOMPARE(acks.take(backend), (QStringList{ u"j2"_s, u"j3"_s }));
+    // An older backend without the ack route (404) drained its queue already.
+    acks.posted(backend, { u"j4"_s }, false, 404);
+    QCOMPARE(acks.pending(backend), qsizetype(0));
+    // Not re-posted for ever: after kMaxAttempts failures in a row the batch
+    // is dropped (the lease brings the messages back).
+    for (int i = 0; i < SampBackendAcks::kMaxAttempts; ++i) {
+        batch = i == 0 ? QStringList{ u"j5"_s } : acks.take(backend);
+        QCOMPARE(batch, QStringList{ u"j5"_s });
+        acks.posted(backend, batch, false, 0);
+    }
+    QCOMPARE(acks.pending(backend), qsizetype(0));
+    // Another backend's acks are its own.
+    acks.finished(u"http://other"_s, u"k1"_s, true);
+    QVERIFY(acks.take(backend).isEmpty());
+    QCOMPARE(acks.take(u"http://other"_s), QStringList{ u"k1"_s });
+    // A teardown empties the outbox: nothing is in flight any more.
+    QVERIFY(acks.fetched(u"j9"_s));
+    acks.clearInFlight();
+    QVERIFY(acks.fetched(u"j9"_s));
+}
+
+void TestSamp::pendingTables_forgetFailedAndStaleSends()
+{
+    SampPendingTables pending;
+    const qint64 t0 = 1'000'000;
+    pending.add(u"visivo-a"_s, u"/data/a.csv"_s, {}, t0);
+    pending.add(u"visivo-b"_s, u"/data/b.csv"_s, {}, t0 + 10);
+    pending.remove(u"visivo-a"_s);   // staging failed
+    QVERIFY(pending.localKeyFor({ u"visivo-a"_s, QString() }).isEmpty());
+    QCOMPARE(pending.size(), qsizetype(1));
+    // A send whose table never went out is dropped once it is an hour old.
+    pending.add(u"visivo-c"_s, u"/data/c.csv"_s, {}, t0 + SampPendingTables::kMaxAgeMs + 11);
+    QVERIFY(pending.localKeyFor({ u"visivo-b"_s, QString() }).isEmpty());
+    QCOMPARE(pending.localKeyFor({ u"visivo-c"_s, QString() }), u"/data/c.csv"_s);
+}
+
+void TestSamp::skyPosition_fallbackHandlesSipSwapAndSign()
+{
+    // "RA---TAN-SIP" is TAN (without its distortion), not the linear model.
+    visivo::samp::ImageSkyWcs sip;
+    sip.ctype = { u"RA---TAN-SIP"_s, u"DEC--TAN-SIP"_s };
+    sip.crval = { 150.0, 60.0 };
+    sip.crpix = { 512.0, 512.0 };
+    sip.cdelt = { -0.01, 0.01 };
+    visivo::samp::ImageSkyWcs tan = sip;
+    tan.ctype = { u"RA---TAN"_s, u"DEC--TAN"_s };
+    const auto a = visivo::samp::pixelToIcrs(sip, 0.0, 1023.0);
+    const auto b = visivo::samp::pixelToIcrs(tan, 0.0, 1023.0);
+    QVERIFY(a && b);
+    QVERIFY(separation(*a, b->raDeg, b->decDeg) < 1e-12);
+
+    // Sign of the longitude term. Pixel x larger than CRPIX with CDELT1 < 0
+    // is WEST (smaller RA); with CDELT1 > 0, east. One degree off the
+    // reference on the equator: |ΔRA| = atan(1°) in TAN.
+    const double step = std::atan(1.0 * M_PI / 180.0) * 180.0 / M_PI;
+    visivo::samp::ImageSkyWcs eq;
+    eq.ctype = { u"RA---TAN"_s, u"DEC--TAN"_s };
+    eq.crval = { 100.0, 0.0 };
+    eq.crpix = { 1.0, 1.0 };   // 0-based pixel (0, 0)
+    eq.cdelt = { -0.01, 0.01 };
+    const auto west = visivo::samp::pixelToIcrs(eq, 100.0, 0.0);
+    QVERIFY(near(west->raDeg, 100.0 - step, 1e-9));
+    QVERIFY(near(west->decDeg, 0.0, 1e-9));
+    eq.cdelt = { 0.01, 0.01 };
+    const auto east = visivo::samp::pixelToIcrs(eq, 100.0, 0.0);
+    QVERIFY(near(east->raDeg, 100.0 + step, 1e-9));
+
+    // Swapped axes (DEC first): the same sky position as the usual order.
+    visivo::samp::ImageSkyWcs usual;
+    usual.ctype = { u"RA---TAN"_s, u"DEC--TAN"_s };
+    usual.crval = { 150.0, 20.0 };
+    usual.crpix = { 100.0, 100.0 };
+    usual.cdelt = { -0.01, 0.01 };
+    visivo::samp::ImageSkyWcs swapped;
+    swapped.ctype = { u"DEC--TAN"_s, u"RA---TAN"_s };
+    swapped.crval = { 20.0, 150.0 };
+    swapped.crpix = { 100.0, 100.0 };
+    swapped.cdelt = { 0.01, -0.01 };
+    // Pixel (x, y) of the usual image is pixel (y, x) of the swapped one.
+    const auto u1 = visivo::samp::pixelToIcrs(usual, 10.0, 170.0);
+    const auto s1 = visivo::samp::pixelToIcrs(swapped, 170.0, 10.0);
+    QVERIFY(u1 && s1);
+    QVERIFY2(separation(*u1, s1->raDeg, s1->decDeg) < 1e-9,
+             qPrintable(visivo::samp::describe(*u1) + u" vs "_s + visivo::samp::describe(*s1)));
+    // …and the RA term has the usual sign: x < CRPIX with CDELT1 < 0 is east.
+    QVERIFY(u1->raDeg > 150.0);
+    QVERIFY(u1->decDeg > 20.0);
 }

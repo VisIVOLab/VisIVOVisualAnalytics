@@ -397,6 +397,7 @@ set(PROJECT_SOURCES
         src/app/SampHubWorker.cpp
         src/app/SampHubWorker.h
         src/app/SampProtocol.h
+        src/app/SampSkyPosition.h
         src/app/SampXmlRpc.h
         src/app/SampMessageHandler.cpp
         src/app/SampMessageHandler.h
@@ -531,6 +532,8 @@ set(PROJECT_SOURCES
         src/gui/MainWindow_SkavaOps.cpp
         src/gui/MainWindow_Science.cpp
         src/gui/MainWindow_Samp.cpp
+        src/gui/SampViewerMenu.cpp
+        src/gui/SampViewerMenu.h
         src/gui/MainWindow_Sky.cpp
         src/gui/MainWindow.h
         src/gui/ProfileWidget.cpp
@@ -603,6 +606,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_Catalogue.cpp
         src/gui/vtkWindowCube_RemoteRender.cpp
         src/gui/vtkWindowCube_Wcs.cpp
+        src/gui/vtkWindowCube_Samp.cpp
         src/gui/vtkWindowCube_RemoteSlice.cpp
         src/gui/vtkWindowCube_Probe.cpp
         src/gui/vtkWindowCube_Polarisation.cpp
@@ -650,6 +654,7 @@ set(PROJECT_SOURCES
         src/gui/SedWindow.h
         src/gui/SedBuilder.h
         src/gui/vtkWindowImage_Wcs.cpp
+        src/gui/vtkWindowImage_Samp.cpp
         src/gui/vtkWindowImage_Polarisation.cpp
         src/gui/vtkWindowImage_Probe.cpp
         src/gui/vtkWindowImage_Dynspec.cpp

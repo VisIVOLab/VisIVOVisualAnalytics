@@ -10,7 +10,18 @@
 #include "vtkWindowCatalogue3D.h"
 #include "ui_vtkWindowCatalogue3D.h"
 
+#include "CatalogueFormat.h"
+#include "MainWindow.h"
+#include "SampViewerMenu.h"
+#include "app/SampSkyPosition.h"
+
+#include <QAction>
+#include <QItemSelectionModel>
 #include <QLabel>
+#include <QMenu>
+#include <QPointer>
+#include <QStatusBar>
+#include <QTableView>
 #include <QStackedWidget>
 #include <QScopeGuard>
 
@@ -157,4 +168,229 @@ void vtkWindowCatalogue3D::updateSampSubset(bool report)
                         .arg(split.missing)
                 + note);
     }
+}
+
+// ── SAMP actions (issue #130) ────────────────────────────────────────────────
+//
+// What this window sends: the catalogue (the backend's file), a selection of
+// its rows as a new VOTable (rows picked in the table, or every row loaded
+// here when a filter, a sample or a partial load shows fewer than the table
+// has), the selection as table.select.rowList to the tools that already hold
+// the table, and the selected source's RA/Dec as coord.pointAt.sky.
+
+void vtkWindowCatalogue3D::setupSampMenu()
+{
+    visivo::installSampMenu(this, [this](QMenu *menu, MainWindow *host) {
+        this->fillSampMenu(menu, host, /*selectionOnly=*/false);
+    });
+    if (!this->catalogueTableView)
+        return;
+    // The rows picked in the table are what its context menu acts on.
+    this->catalogueTableView->setContextMenuPolicy(Qt::CustomContextMenu);
+    QObject::connect(this->catalogueTableView, &QWidget::customContextMenuRequested, this,
+                     [this](const QPoint &pos) {
+                         QMenu menu(this->catalogueTableView);
+                         menu.setToolTipsVisible(true);
+                         MainWindow *host = visivo::sampHost(this);
+                         visivo::addSampConnectionLine(&menu, host);
+                         this->fillSampMenu(&menu, host, /*selectionOnly=*/true);
+                         menu.exec(this->catalogueTableView->viewport()->mapToGlobal(pos));
+                     });
+}
+
+QList<qint64> vtkWindowCatalogue3D::sampSelectedRows()
+{
+    this->ensureSampRowMap();
+    QList<int> picked;
+    if (this->catalogueTableView && this->catalogueTableView->selectionModel()) {
+        for (const QModelIndex &index : this->catalogueTableView->selectionModel()->selectedRows())
+            picked.append(index.row());
+    }
+    if (picked.isEmpty() && this->selectedIndex >= 0)
+        picked.append(this->selectedIndex);
+    return this->m_sampRowMap.rowsForEntries(picked);
+}
+
+qsizetype vtkWindowCatalogue3D::sampSelectedCount() const
+{
+    // From the selection's ranges, not its rows: a menu opened over a
+    // selection of a million rows must not list them all to count them.
+    qsizetype count = 0;
+    if (this->catalogueTableView && this->catalogueTableView->selectionModel()) {
+        for (const QItemSelectionRange &range : this->catalogueTableView->selectionModel()->selection())
+            count += range.height();
+    }
+    return count > 0 ? count : (this->selectedIndex >= 0 ? 1 : 0);
+}
+
+QList<qint64> vtkWindowCatalogue3D::sampShownRows()
+{
+    this->ensureSampRowMap();
+    QList<int> all;
+    all.reserve(static_cast<qsizetype>(this->entries.size()));
+    for (std::size_t i = 0; i < this->entries.size(); ++i)
+        all.append(static_cast<int>(i));
+    return this->m_sampRowMap.rowsForEntries(all);
+}
+
+bool vtkWindowCatalogue3D::sampShowsFewerRows() const
+{
+    return !this->activeFilters.empty() || this->hasMoreRows()
+           || static_cast<qint64>(this->entries.size()) < this->tableRowCount();
+}
+
+void vtkWindowCatalogue3D::sendSelectedSourcePosition(const QString &recipientId, bool quiet)
+{
+    MainWindow *host = visivo::sampHost(this);
+    const int idx = this->selectedIndex;
+    QString problem;
+    if (!this->m_skyCoordinates)
+        problem = u"this catalogue has no RA/Dec columns"_s;
+    else if (idx < 0 || static_cast<std::size_t>(idx) >= this->entries.size())
+        problem = u"select a source first"_s;
+    else if (!host || !host->sampConnected())
+        problem = u"not connected to a SAMP hub"_s;
+    if (!problem.isEmpty()) {
+        if (!quiet)
+            this->statusBar()->showMessage(u"SAMP: no position sent: %1."_s.arg(problem), 6000);
+        return;
+    }
+    const Catalogue3DEntry &e = this->entries[static_cast<std::size_t>(idx)];
+    // The catalogue's RA/Dec, as read: J2000 (FK5 and ICRS agree to 25 mas).
+    if (!host->sendSkyPositionViaSamp(e.raDeg, e.decDeg, recipientId)) {
+        if (!quiet)
+            this->statusBar()->showMessage(u"SAMP: the source has no valid position."_s, 6000);
+        return;
+    }
+    const QString name = Catalogue3DParser::detail::entryDisplayName(e, this->schema);
+    this->statusBar()->showMessage(
+            u"SAMP: sent the position of %1 (%2)."_s.arg(
+                    name, visivo::samp::describe({ e.raDeg, e.decDeg })),
+            6000);
+}
+
+void vtkWindowCatalogue3D::fillSampMenu(QMenu *menu, MainWindow *host, bool selectionOnly)
+{
+    const QString key = this->sampTableKey();
+    const QString name = this->shownName();
+    const bool combined = key.isEmpty();
+    const bool busy = host && host->sampSendBusy();
+    const QString busyWhy = u"A file is still being prepared for sending."_s;
+    const QString combinedWhy =
+            u"A catalogue combined from several files has no one table to send."_s;
+    const QString format = visivo::catalogueFormatForPath(this->filepath);
+    const QString wholeMType = Samp::catalogueLoadMType(format);
+    const QString votable = QString::fromLatin1(Samp::kTableLoadVotable);
+    QPointer<vtkWindowCatalogue3D> self = this;
+
+    if (!selectionOnly) {
+        visivo::addSampSendTo(menu, host, u"Send Catalogue To"_s, wholeMType,
+                              combined ? combinedWhy : (busy ? busyWhy : QString()),
+                              [self, name](const QString &to) {
+                                  MainWindow *mw = self ? visivo::sampHost(self) : nullptr;
+                                  if (mw)
+                                      mw->sendCatalogueFileViaSamp(self->filepath, name, to, self);
+                              });
+    }
+
+    // Rows picked in the table (or the selected source). Counted only: the
+    // rows themselves are listed when an item is chosen.
+    const qsizetype selectedCount = this->sampSelectedCount();
+    this->ensureSampRowMap();
+    const bool noRowNumbers = this->m_sampRowMap.isEmpty() && !this->entries.empty();
+    const QString noRowsWhy =
+            u"The backend does not report row numbers; update it to send a selection."_s;
+    QString selectedWhy;
+    if (combined)
+        selectedWhy = combinedWhy;
+    else if (noRowNumbers)
+        selectedWhy = noRowsWhy;
+    else if (selectedCount == 0)
+        selectedWhy = u"Select rows in the table first (Shift or Cmd/Ctrl for several)."_s;
+    else if (busy)
+        selectedWhy = busyWhy;
+    const QString selectedTitle = selectedCount == 1
+            ? u"Send Selected Row To"_s
+            : u"Send %L1 Selected Rows To"_s.arg(selectedCount);
+    // Sends a list of rows, or says there is none (rows of no known number).
+    const auto sendRows = [self, name](const QList<qint64> &rows, const QString &to) {
+        MainWindow *mw = self ? visivo::sampHost(self) : nullptr;
+        if (!mw)
+            return;
+        if (rows.isEmpty()) {
+            self->statusBar()->showMessage(u"SAMP: none of those rows has a row number."_s, 6000);
+            return;
+        }
+        mw->sendCatalogueRowsViaSamp(self->filepath, name, rows, to, self);
+    };
+    visivo::addSampSendTo(menu, host, selectedCount == 0 ? u"Send Selected Rows To"_s : selectedTitle,
+                          votable, selectedWhy, [self, sendRows](const QString &to) {
+                              if (self)
+                                  sendRows(self->sampSelectedRows(), to);
+                          });
+
+    if (!selectionOnly && this->sampShowsFewerRows()) {
+        const qsizetype shownCount = static_cast<qsizetype>(this->entries.size());
+        visivo::addSampSendTo(menu, host, u"Send the %L1 Rows Shown To"_s.arg(shownCount), votable,
+                              combined         ? combinedWhy
+                              : noRowNumbers   ? noRowsWhy
+                              : shownCount == 0 ? u"No rows are shown."_s
+                              : busy            ? busyWhy
+                                                : QString(),
+                              [self, sendRows](const QString &to) {
+                                  if (self)
+                                      sendRows(self->sampShownRows(), to);
+                              });
+    }
+
+    // The same rows, selected in the table the other tools already hold.
+    QAction *select = menu->addAction(selectedCount > 1
+                                              ? u"Select These %L1 Rows in Other Tools"_s.arg(
+                                                        selectedCount)
+                                              : u"Select These Rows in Other Tools"_s);
+    const bool held = host && host->sampToolsHoldTable(key);
+    select->setEnabled(host && host->sampConnected() && held && selectedCount > 0
+                       && !noRowNumbers);
+    select->setToolTip(
+            held ? u"table.select.rowList: the tools that hold this table (it came from them, "
+                   u"or VisIVO sent it) select the same rows."_s
+                 : u"No other tool holds this table yet: send it first (Send Catalogue To), "
+                   u"or open it from TOPCAT."_s);
+    QObject::connect(select, &QAction::triggered, this, [self, key]() {
+        MainWindow *mw = self ? visivo::sampHost(self) : nullptr;
+        if (!mw)
+            return;
+        const QList<qint64> selected = self->sampSelectedRows();
+        const int tables = mw->selectRowsInSampTools(key, selected);
+        self->statusBar()->showMessage(
+                tables > 0 ? u"SAMP: selected %L1 rows in the other tools."_s.arg(selected.size())
+                           : u"SAMP: no other tool holds this table."_s,
+                6000);
+    });
+
+    menu->addSeparator();
+    QString positionWhy;
+    if (!this->m_skyCoordinates)
+        positionWhy = u"This catalogue has no RA/Dec columns."_s;
+    else if (this->selectedIndex < 0)
+        positionWhy = u"Select a source first."_s;
+    visivo::addSampSendTo(menu, host, u"Send Source Position To"_s,
+                          QString::fromLatin1(Samp::kCoordPointAtSky), positionWhy,
+                          [self](const QString &to) {
+                              if (self)
+                                  self->sendSelectedSourcePosition(to, /*quiet=*/false);
+                          });
+    if (selectionOnly)
+        return;
+    QAction *broadcast = menu->addAction(u"Send Positions of Clicked Sources"_s);
+    broadcast->setCheckable(true);
+    broadcast->setChecked(this->m_sampBroadcastClicks);
+    broadcast->setEnabled(this->m_skyCoordinates);
+    broadcast->setToolTip(
+            u"While on, every source you select is sent to all SAMP tools as "
+            u"coord.pointAt.sky (Aladin and DS9 recentre on it)."_s);
+    QObject::connect(broadcast, &QAction::toggled, this, [self](bool on) {
+        if (self)
+            self->m_sampBroadcastClicks = on;
+    });
 }

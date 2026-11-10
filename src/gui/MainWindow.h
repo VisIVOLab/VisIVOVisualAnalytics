@@ -111,6 +111,40 @@ public:
     /// Recent-datasets model, shared with viewer windows (dataset switcher).
     RecentDatasetsManager *recentDatasetsManager() const { return recentMgr; }
 
+    // ── SAMP for the viewer windows (issue #130, MainWindow_Samp.cpp) ────────
+    // One hub connection for the application, held here; a viewer sends ITS
+    // data through these, naming itself as @p from so that the progress and
+    // the answers show in its own status bar. An empty @p recipientId sends to
+    // every tool that takes it, else to that tool only (a hub client id).
+    bool sampConnected() const;
+    /// The other tools that take @p mtype, as the hub last listed them.
+    QList<Samp::Recipient> sampRecipients(const QString &mtype) const;
+    /// SAMP ▸ Connect To Hub.
+    void connectSampHub();
+    /// A file is being staged, or the hub asked who takes one: one at a time.
+    bool sampSendBusy() const;
+    /// image.load.fits of the backend FITS @p path, named @p name.
+    void sendFitsViaSamp(const QString &path, const QString &name, const QString &recipientId,
+                         QMainWindow *from);
+    /// table.load.* of the whole catalogue at @p path.
+    void sendCatalogueFileViaSamp(const QString &path, const QString &name,
+                                  const QString &recipientId, QMainWindow *from);
+    /// A new VOTable of rows @p rows (0-based, in the table as opened) of the
+    /// catalogue at @p path. Its rows stay linked to the catalogue's: a
+    /// highlight in either tool is mapped through the subset.
+    void sendCatalogueRowsViaSamp(const QString &path, const QString &name,
+                                  const QList<qint64> &rows, const QString &recipientId,
+                                  QMainWindow *from);
+    /// Do other tools hold the catalogue @p tableKey (sent or received)?
+    bool sampToolsHoldTable(const QString &tableKey) const;
+    /// table.select.rowList of @p rows (catalogue rows) to every table the
+    /// other tools hold of @p tableKey, renumbered for a subset copy. Returns
+    /// how many tables were named.
+    int selectRowsInSampTools(const QString &tableKey, const QList<qint64> &rows);
+    /// coord.pointAt.sky. False (nothing sent) when not connected or not a
+    /// sky position.
+    bool sendSkyPositionViaSamp(double raDeg, double decDeg, const QString &recipientId);
+
 public slots:
     /// Open a local dataset the DESKTOP asked for: a double-clicked FITS file, a
     /// drop on the Dock icon, a path on the command line. Public because the
@@ -215,13 +249,20 @@ private:
     /// Stage a file on the backend off the GUI thread (@p stage runs on a
     /// worker), then ask every SAMP tool to load it with a call, and report
     /// who was asked and what each answered. @p what: "catalogue", "image".
-    void sendViaSamp(const QString &what, const QString &name,
-                     std::function<BackendSampSendResult(const BackendClient &)> stage);
+    /// @p pendingTableId: the table-id a table send was registered under in
+    /// m_sampPendingTables; forgotten again on every path where it fails.
+    void sendViaSamp(const QString &what, const QString &name, const QString &recipientId,
+                     QMainWindow *from,
+                     std::function<BackendSampSendResult(const BackendClient &)> stage,
+                     const QString &pendingTableId = QString());
+    /// Show a SAMP send's progress here and in the viewer it came from.
+    void showSampStatus(QMainWindow *from, const QString &text, int timeoutMs = 0);
     /// The name a SAMP sender goes by (its samp.name), else its id.
     QString sampSenderName(const QString &senderId) const;
     void sendCurrentFitsViaSamp();
     /// The large-table question, then the staging and the send.
-    void sendCatalogueViaSamp(const QString &path, const QString &format, const QString &name);
+    void sendCatalogueViaSamp(const QString &path, const QString &format, const QString &name,
+                              const QString &recipientId, QMainWindow *from);
     void sendCurrentCatalogueViaSamp();
 
     // Path-based open helpers (skip the file browser dialog, used for reopen).
@@ -501,6 +542,8 @@ private:
         QStringList asked;
         QSet<QString> answered;
         QString lastAnswer;   ///< shown when the last answer came before callSent
+        QPointer<QMainWindow> from;   ///< the viewer it was sent from (null: here)
+        QString pendingTableId;       ///< a table's, until the hub says it went out
     };
     QHash<QString, SampSend> m_sampSends;   ///< callAll tag → send
     /// The status line for @p tag: waiting for whom, or done (then forgotten).
@@ -514,12 +557,14 @@ private:
         QString mtype;
         QString backendUrl;   ///< where the file is: a send to another backend is dropped
         std::function<void()> proceed;
+        QPointer<QMainWindow> from;
     };
     QHash<QString, SampSubscriberCheck> m_sampSubscriberChecks;   ///< askSubscribers tag →
     /// Ask the hub who takes @p mtype; @p proceed runs if any tool does (or
     /// the hub could not say), otherwise the user is told nobody does.
-    void whenSampToolTakes(const QString &mtype, const QString &name,
-                           std::function<void()> proceed);
+    /// With @p recipientId, only that tool is checked, from the client list.
+    void whenSampToolTakes(const QString &mtype, const QString &name, const QString &recipientId,
+                           QMainWindow *from, std::function<void()> proceed);
     /// Tables being sent: their identity is recorded in m_sampTables only
     /// once the table really went out.
     SampPendingTables m_sampPendingTables;
@@ -527,6 +572,9 @@ private:
     /// exchanged, or one whose send is still returning from the hub (a tool
     /// can highlight a row of it before VisIVO hears the send went out).
     QString sampLocalKeyFor(const QString &tableId, const QString &url) const;
+    /// As sampLocalKeyFor(), with the subset that table holds (none: whole).
+    std::optional<SampTableRegistry::Entry> sampTableFor(const QString &tableId,
+                                                         const QString &url) const;
     QString           m_sampCurrentFitsPath;
     QString           m_sampCurrentFitsName;
     QString           m_sampCurrentCataloguePath;

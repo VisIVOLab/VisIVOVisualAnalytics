@@ -432,6 +432,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         this->remoteSessionId = opened.sessionId;
         // A VBT point table can be drawn on the backend (issue #83).
         this->m_cartesian = opened.coordSystem == u"cartesian"_s;
+        this->m_skyCoordinates = opened.coordSystem == u"sky"_s && !opened.raField.isEmpty()
+                                 && !opened.decField.isEmpty();
         this->m_pointTable = catalogueFormatForPath(filepath) == u"vbt"_s;
         // Any catalogue the backend can draw (sky or cartesian), issue #83.
         this->m_serverSideRendering = opened.serverSideRenderingAvailable;
@@ -647,6 +649,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             QObject::connect(actionCalculator, &QAction::triggered, this,
                              &vtkWindowCatalogue3D::openCosmologyCalculator);
         }
+
+        // ── SAMP menu: this catalogue, a selection of it, a position ─────────
+        this->setupSampMenu();
 
         // ── Diagnostics + Command Palette (replicated across windows) ────────
         ui->menuView->addSeparator();

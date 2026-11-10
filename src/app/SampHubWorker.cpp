@@ -48,7 +48,9 @@ QNetworkRequest buildBackendRequest(const QUrl &url, const QString &token)
 }
 
 /// Wait for @p reply with a timeout, on this (the SAMP) thread only.
-QByteArray waitForReply(QNetworkReply *reply, int timeoutMs, QString &errorOut)
+/// @p httpStatus (optional): the HTTP status, 0 when none came back.
+QByteArray waitForReply(QNetworkReply *reply, int timeoutMs, QString &errorOut,
+                        int *httpStatus = nullptr)
 {
     QEventLoop loop;
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
@@ -59,6 +61,8 @@ QByteArray waitForReply(QNetworkReply *reply, int timeoutMs, QString &errorOut)
     if (!reply->isFinished())
         loop.exec();
     QByteArray data;
+    if (httpStatus)
+        *httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     if (!reply->isFinished()) {
         reply->abort();
         errorOut = QStringLiteral("timed out");
@@ -78,9 +82,10 @@ QByteArray backendGet(QNetworkAccessManager *nam, const QUrl &url, const QString
 }
 
 QByteArray backendPost(QNetworkAccessManager *nam, const QUrl &url, const QString &token,
-                       const QByteArray &body, QString &errorOut)
+                       const QByteArray &body, QString &errorOut, int *httpStatus = nullptr)
 {
-    return waitForReply(nam->post(buildBackendRequest(url, token), body), 5000, errorOut);
+    return waitForReply(nam->post(buildBackendRequest(url, token), body), 5000, errorOut,
+                        httpStatus);
 }
 
 }  // namespace
@@ -245,6 +250,8 @@ void SampHubWorker::teardown(bool unregister, bool lost)
     m_hubId.clear();
     m_inbox.clear();
     m_outbox.clear();
+    // Those were not sent: the backend hands them out again (leases).
+    m_backendAcks.clearInFlight();
     m_pendingCalls.clear();
     m_outstandingCalls.clear();
     m_outstandingOrder.clear();
@@ -288,11 +295,13 @@ void SampHubWorker::notify(const QString &recipientId, const QString &mtype,
         qWarning() << "[SampClient] notify called while not connected:" << mtype;
         return;
     }
-    m_outbox.append({ recipientId, mtype, params, QString(), QString(), QString(), QString() });
+    m_outbox.append({ recipientId, mtype, params, QString(), QString(), QString(), QString(),
+                      QString() });
     processOutbox();
 }
 
-void SampHubWorker::callAll(const QString &tag, const QString &mtype, const QVariantMap &params)
+void SampHubWorker::callAll(const QString &tag, const QString &mtype, const QVariantMap &params,
+                            const QString &recipientId)
 {
     if (!m_connected) {
         emit callSent(tag, {}, QStringLiteral("not connected to a SAMP hub"));
@@ -305,7 +314,8 @@ void SampHubWorker::callAll(const QString &tag, const QString &mtype, const QVar
                                                                       m_backendUrl))
                                           : it.value());
     }
-    m_outbox.append({ QString(), mtype, expanded, QString(), QString(), QString(), tag });
+    m_outbox.append({ recipientId, mtype, expanded, QString(), QString(), QString(), tag,
+                      QString() });
     processOutbox();
 }
 
@@ -353,14 +363,21 @@ void SampHubWorker::processOutbox()
     const auto done = qScopeGuard([this]() { m_processingOutbox = false; });
     while (!m_outbox.isEmpty()) {
         const Outgoing next = m_outbox.takeFirst();
-        if (!next.replyMsgId.isEmpty())
+        if (!next.replyMsgId.isEmpty()) {
             reply(next.replyMsgId, Samp::response(next.replyError));   // checks the key
-        else if (m_connected && (next.fromBackend.isEmpty() || next.fromBackend == m_backendUrl))
-            sendNow(next.recipientId, next.mtype, next.params, next.callTag);
+            continue;
+        }
+        const bool sendable =
+                m_connected && (next.fromBackend.isEmpty() || next.fromBackend == m_backendUrl);
+        const bool delivered =
+                sendable && sendNow(next.recipientId, next.mtype, next.params, next.callTag);
+        // Not delivered: left unacknowledged, the backend hands it out again
+        // once its lease runs out.
+        m_backendAcks.finished(next.fromBackend, next.backendJobId, delivered);
     }
 }
 
-void SampHubWorker::sendNow(const QString &recipientId, const QString &mtype,
+bool SampHubWorker::sendNow(const QString &recipientId, const QString &mtype,
                             const QVariantMap &params, const QString &callTag)
 {
     QVariantMap message;
@@ -383,8 +400,12 @@ void SampHubWorker::sendNow(const QString &recipientId, const QString &mtype,
         // A tool that never answers must not keep its call for ever.
         while (m_outstandingOrder.size() > kMaxOutstandingCalls)
             forgetCall(m_outstandingOrder.first());
-        callResult = xmlRpcCall(QStringLiteral("samp.hub.callAll"), { m_privateKey, msgTag, message },
-                                err, &transportFailed);
+        callResult = recipientId.isEmpty()
+                ? xmlRpcCall(QStringLiteral("samp.hub.callAll"), { m_privateKey, msgTag, message },
+                             err, &transportFailed)
+                : xmlRpcCall(QStringLiteral("samp.hub.call"),
+                             { m_privateKey, recipientId, msgTag, message }, err,
+                             &transportFailed);
     } else if (recipientId.isEmpty())
         xmlRpcCall(QStringLiteral("samp.hub.notifyAll"), { m_privateKey, message }, err,
                    &transportFailed);
@@ -392,10 +413,14 @@ void SampHubWorker::sendNow(const QString &recipientId, const QString &mtype,
         xmlRpcCall(QStringLiteral("samp.hub.notify"), { m_privateKey, recipientId, message }, err,
                    &transportFailed);
     if (generation != m_generation)
-        return;   // the connection this was sent on is gone; its outcome is moot
+        return false;   // the connection this was sent on is gone; its outcome is moot
     if (!callTag.isEmpty()) {
-        // callAll answers with {recipient id: msg-id}: who was asked.
-        const QStringList recipients = err.isEmpty() ? callResult.toMap().keys() : QStringList();
+        // callAll answers with {recipient id: msg-id}: who was asked; call,
+        // with the msg-id alone, asked the one recipient.
+        QStringList recipients;
+        if (err.isEmpty())
+            recipients = recipientId.isEmpty() ? callResult.toMap().keys()
+                                               : QStringList{ recipientId };
         const auto it = m_outstandingCalls.find(msgTag);
         if (it != m_outstandingCalls.end()) {
             it->recipientsKnown = true;
@@ -414,16 +439,19 @@ void SampHubWorker::sendNow(const QString &recipientId, const QString &mtype,
         // hub ends the connection.
         if (transportFailed && isHubGone(err)) {
             teardown(false, /*lost=*/true);
-            return;
+            return false;
         }
         emit error(QStringLiteral("SAMP send of %1 failed: %2").arg(mtype, err));
-        return;
+        // An answer from the hub (no such recipient, …): trying again would
+        // get the same one.
+        return !transportFailed;
     }
     if (mtype.startsWith(QStringLiteral("table.load."))) {
         const Samp::TableRef ref = Samp::tableRefFrom(params);
         if (!ref.tableId.isEmpty() && !ref.url.isEmpty())
             emit tableSent(ref.tableId, ref.url);
     }
+    return true;
 }
 
 // ── Receiving ─────────────────────────────────────────────────────────────────
@@ -611,9 +639,20 @@ void SampHubWorker::drainBackendPendingQueue()
     // The files were registered on THIS backend: its URL goes into them even
     // if the backend is changed while the GET waits (then they are dropped).
     const QString backendUrl = m_backendUrl;
+    // Messages sent since the last poll first: until the backend hears of
+    // them it keeps them, and hands them out again when their lease ends.
+    ackBackendMessages();
+    if (!m_connected || generation != m_generation || backendUrl != m_backendUrl)
+        return;
+
     QString err;
-    const QByteArray payload = backendGet(
-            m_nam, QUrl(backendUrl + QStringLiteral("/v1/samp/pending")), m_backendToken, err);
+    // lease=true: the backend keeps each message until it is acknowledged, so
+    // one this client fetched and then failed to send (a crash, a lost
+    // answer, a hub that went away) is not lost. A backend without leases
+    // ignores the parameter and drains the queue as before.
+    QUrl pendingUrl(backendUrl + QStringLiteral("/v1/samp/pending"));
+    pendingUrl.setQuery(QStringLiteral("lease=true"));
+    const QByteArray payload = backendGet(m_nam, pendingUrl, m_backendToken, err);
     if (!err.isEmpty() || payload.isEmpty() || generation != m_generation
         || backendUrl != m_backendUrl)
         return;
@@ -626,6 +665,11 @@ void SampHubWorker::drainBackendPendingQueue()
         const QJsonObject msg = mv.toObject();
         const QString mtype = msg.value(QStringLiteral("mtype")).toString();
         const QString targetId = msg.value(QStringLiteral("target_id")).toString();
+        const QString jobId = msg.value(QStringLiteral("job_id")).toString();
+        // Handed out again while the first copy still waits in the outbox
+        // (a lease that ran out during a slow send): it is sent once.
+        if (!m_backendAcks.fetched(jobId))
+            continue;
         const QJsonObject rawParams = msg.value(QStringLiteral("params")).toObject();
 
         QVariantMap params;
@@ -635,9 +679,34 @@ void SampHubWorker::drainBackendPendingQueue()
                     ? QVariant(expandBackendUrl(it.value().toString(), backendUrl))
                                                      : it.value().toVariant();
         }
-        m_outbox.append({ targetId, mtype, params, QString(), QString(), backendUrl, QString() });
+        m_outbox.append({ targetId, mtype, params, QString(), QString(), backendUrl, QString(),
+                          jobId });
         processOutbox();
     }
+    ackBackendMessages();
+}
+
+void SampHubWorker::ackBackendMessages()
+{
+    // Called from inside the drain only (m_draining): one at a time.
+    const QString backendUrl = m_backendUrl;
+    const QStringList jobs = m_backendAcks.take(backendUrl);
+    // Another backend's: it is not the one polled now, and is told if it is
+    // chosen again (its messages come back meanwhile, and are sent then).
+    if (jobs.isEmpty() || backendUrl.isEmpty())
+        return;
+    QJsonArray ids;
+    for (const QString &id : std::as_const(jobs))
+        ids.append(id);
+    QString err;
+    int status = 0;
+    backendPost(m_nam, QUrl(backendUrl + QStringLiteral("/v1/samp/pending/ack")), m_backendToken,
+                QJsonDocument(QJsonObject{ { QStringLiteral("job_ids"), ids } })
+                        .toJson(QJsonDocument::Compact),
+                err, &status);
+    // A backend without leases (404) drained them already. Another failure
+    // keeps them for the next poll, a few times (SampBackendAcks).
+    m_backendAcks.posted(backendUrl, jobs, err.isEmpty(), status);
 }
 
 QString SampHubWorker::expandBackendUrl(const QString &tmpl, const QString &backendUrl)

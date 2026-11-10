@@ -1247,6 +1247,7 @@ void readSampSendResult(const QJsonObject &object, BackendSampSendResult &result
     result.params = message.value(QStringLiteral("params")).toObject().toVariantMap();
     result.rows = static_cast<qint64>(object.value(QStringLiteral("rows")).toDouble(-1));
     result.sizeBytes = static_cast<qint64>(object.value(QStringLiteral("size_bytes")).toDouble(0));
+    result.subset = object.value(QStringLiteral("subset")).toBool(false);
 }
 }  // namespace
 
@@ -1278,7 +1279,8 @@ BackendSampSendResult BackendClient::sendCatalogueToSamp(const QString &path,
                                                          const QString &format,
                                                          const QString &filename,
                                                          const QString &tableId,
-                                                         bool returnMessage) const
+                                                         bool returnMessage,
+                                                         const QList<qint64> &rowIndices) const
 {
     BackendSampSendResult result;
     QString error;
@@ -1292,6 +1294,12 @@ BackendSampSendResult BackendClient::sendCatalogueToSamp(const QString &path,
     if (!tableId.isEmpty()) {
         bodyObj.insert(QStringLiteral("table_id"), tableId);
     }
+    if (!rowIndices.isEmpty()) {
+        QJsonArray rows;
+        for (const qint64 r : rowIndices)
+            rows.append(r);
+        bodyObj.insert(QStringLiteral("row_indices"), rows);
+    }
     if (returnMessage) {
         bodyObj.insert(QStringLiteral("deliver"), QStringLiteral("return"));
     }
@@ -1303,6 +1311,34 @@ BackendSampSendResult BackendClient::sendCatalogueToSamp(const QString &path,
         return result;
     }
     readSampSendResult(QJsonDocument::fromJson(payload).object(), result);
+    return result;
+}
+
+BackendPixelSkyResult BackendClient::pixelToSky(const QString &datasetId, double x, double y,
+                                                double z) const
+{
+    BackendPixelSkyResult result;
+    QString error;
+    int status = 0;
+    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
+                                          { QStringLiteral("x"), x },
+                                          { QStringLiteral("y"), y },
+                                          { QStringLiteral("z"), z } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/datasets/pixel_to_sky")), body,
+                        error, nullptr, &status);
+    if (!error.isEmpty()) {
+        result.routeMissing = visivo::isMissingRouteReply(status, payload);
+        const QString why = status >= 400 ? visivo::replyErrorText(payload) : QString();
+        result.error = why.isEmpty() ? error : why;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.raDeg = object.value(QStringLiteral("ra_deg")).toDouble();
+    result.decDeg = object.value(QStringLiteral("dec_deg")).toDouble();
+    result.frame = object.value(QStringLiteral("frame")).toString();
     return result;
 }
 

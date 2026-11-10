@@ -1677,6 +1677,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->setupCubeRenderer();
     this->setupSliceRenderer();
     this->setupMomentRenderer();
+    // SAMP: send this cube, or the sky position of a clicked pixel.
+    this->setupSamp();
     // §3.0: bind the moment host widget now that momentWin has its renderer +
     // (manual) QVTKInteractor with the probe/region/PV observers — same order as the
     // pre-§3.0 changeImageRenderer swap, which is known to preserve the interactor.

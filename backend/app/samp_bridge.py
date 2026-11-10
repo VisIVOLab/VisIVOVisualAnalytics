@@ -343,10 +343,42 @@ class SAMPBridge:
         return job_id
 
     def drain_pending(self) -> list[dict[str, Any]]:
-        """Drain the outbound queue (called by Qt client via GET /v1/samp/pending)."""
+        """Drain the outbound queue (GET /v1/samp/pending without ``lease``).
+
+        Kept for older desktop clients: a message is gone as soon as it is
+        answered, so a client that fails before sending it loses it.
+        """
         with self._pending_lock:
             batch, self._pending_send = list(self._pending_send), []
+        return [self._public(m) for m in batch]
+
+    def lease_pending(self, lease_seconds: float) -> list[dict[str, Any]]:
+        """The messages no client holds, now held for ``lease_seconds``.
+
+        They stay queued until acknowledged (``ack_pending``): a client that
+        crashes, or loses the answer, between this fetch and the send gets
+        them again once the lease runs out, instead of losing them.
+        """
+        now = time.time()
+        batch: list[dict[str, Any]] = []
+        with self._pending_lock:
+            for message in self._pending_send:
+                if message.get("leased_until", 0.0) <= now:
+                    message["leased_until"] = now + lease_seconds
+                    batch.append(self._public(message))
         return batch
+
+    def ack_pending(self, job_ids: list[str]) -> int:
+        """Remove the messages a client has sent; returns how many were queued."""
+        wanted = set(job_ids)
+        with self._pending_lock:
+            before = len(self._pending_send)
+            self._pending_send = [m for m in self._pending_send if m["job_id"] not in wanted]
+            return before - len(self._pending_send)
+
+    @staticmethod
+    def _public(message: dict[str, Any]) -> dict[str, Any]:
+        return {k: v for k, v in message.items() if k != "leased_until"}
 
     # ── Hub status (proxied from Qt client reports) ───────────────────────────
 

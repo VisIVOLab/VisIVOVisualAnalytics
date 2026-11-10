@@ -5,6 +5,7 @@ These routes allow the Qt client (and any REST caller) to:
   • POST /v1/samp/send      – Enqueue a SAMP message to be sent by the Qt client
   • POST /v1/samp/receive   – Qt client forwards an inbound SAMP message here
   • GET  /v1/samp/pending   – Qt client polls for outbound messages to forward to Hub
+  • POST /v1/samp/pending/ack – Qt client confirms the ones it sent (lease mode)
   • GET  /v1/samp/status    – Connection/inbox status
   • GET  /v1/samp/clients   – Hub client list (reported by Qt client)
   • POST /v1/samp/hub-status – Qt client reports its Hub connection state
@@ -67,6 +68,7 @@ class SAMPSendResponse(BaseModel):
     message: dict[str, Any] | None = None
     rows: int = -1                 # rows of the table sent, when known
     size_bytes: int = 0            # size of the staged file
+    subset: bool = False           # send-catalogue: only the row_indices asked for
 
 
 class SAMPReceiveRequest(BaseModel):
@@ -140,6 +142,21 @@ class SAMPCatalogueRequest(BaseModel):
     # messages can name the table (SAMP 1.3: by table-id and/or url).
     table_id: str = ""
     deliver: str = "queue"   # as SAMPFitsRequest.deliver
+    # Send only these rows (0-based positions in the table as opened, as
+    # /v1/catalogue/query reports them in row_index), in this order, as a new
+    # VOTable. None: the whole table.
+    row_indices: list[int] | None = None
+
+
+class SAMPPendingAckRequest(BaseModel):
+    job_ids: list[str]
+
+
+# A leased message the client has not acknowledged by then is handed out again.
+_PENDING_LEASE_SECONDS = 60.0
+
+# The most rows a subset may name: the list travels as JSON.
+_MAX_SUBSET_ROWS = 5_000_000
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -206,15 +223,30 @@ async def samp_receive(
 
 @router.get("/v1/samp/pending", tags=["samp"])
 async def samp_pending(
+    lease: bool = Query(False),
     _: str = _operator,
 ) -> dict:
-    """Return and drain the outbound SAMP message queue.
+    """The outbound SAMP message queue, polled by the desktop client.
 
-    The Qt client calls this endpoint periodically (e.g., every 500 ms) to pick
-    up messages that the backend wants to broadcast to the Hub.
+    With ``lease=true`` the messages stay queued: they are held for the caller
+    for ``lease_seconds`` and removed only by ``POST /v1/samp/pending/ack``, so
+    a client that fails between this answer and the send gets them again.
+    Without it the queue is drained as it is answered (older clients).
     """
+    if lease:
+        batch = SAMP.lease_pending(_PENDING_LEASE_SECONDS)
+        return {"count": len(batch), "messages": batch, "lease_seconds": _PENDING_LEASE_SECONDS}
     batch = SAMP.drain_pending()
     return {"count": len(batch), "messages": batch}
+
+
+@router.post("/v1/samp/pending/ack", tags=["samp"])
+async def samp_pending_ack(
+    request: SAMPPendingAckRequest,
+    _: str = _operator,
+) -> dict:
+    """Remove the leased messages the desktop client has sent (by ``job_id``)."""
+    return {"acked": SAMP.ack_pending(request.job_ids)}
 
 
 @router.get("/v1/samp/inbox", tags=["samp"])
@@ -471,15 +503,55 @@ async def samp_send_catalogue(
         return SAMPSendResponse(valid=False, error=f"File not found: {request.path}")
 
     fmt = request.format.strip().lower()
+    subset = request.row_indices
+    if subset is not None:
+        if not subset:
+            return SAMPSendResponse(valid=False, error="No rows to send.")
+        if len(subset) > _MAX_SUBSET_ROWS:
+            return SAMPSendResponse(
+                valid=False,
+                error=f"Too many rows for a subset ({len(subset)}; at most {_MAX_SUBSET_ROWS}): "
+                      f"send the whole table instead.")
 
-    def as_votable(dataframe: pd.DataFrame, filename: str) -> str:
-        table = Table.from_pandas(dataframe)
+    def write_votable(table: Table, filename: str) -> str:
         buffer = BytesIO()
         table.write(buffer, format="votable", tabledata_format="binary2")
         return store_samp_file(buffer.getvalue(), filename)
 
+    def as_votable(dataframe: pd.DataFrame, filename: str) -> str:
+        return write_votable(Table.from_pandas(dataframe), filename)
+
+    def stage_subset() -> tuple[str, str, str, int]:
+        """The rows asked for, as a new VOTable, read as /v1/catalogue/open
+        reads the table, so that a row index means the same row."""
+        import numpy as np  # noqa: PLC0415
+
+        rows = np.asarray(subset, dtype=np.int64)
+        if fmt in {"votable", "vot", "xml", "fits", "fit", "fits-table"}:
+            # Read as a Table, not through pandas: the columns keep their
+            # units, UCDs and descriptions. Same row order as to_pandas().
+            table = Table.read(src, format="fits" if fmt.startswith("fit") else "votable")
+            count = len(table)
+        else:
+            from ..dependencies import _catalogue_load_dataframe  # noqa: PLC0415
+
+            dataframe = _catalogue_load_dataframe(src, fmt)
+            table = None
+            count = len(dataframe)
+        if rows.min() < 0 or rows.max() >= count:
+            raise ValueError(f"Row indices must lie in 0..{count - 1}; the table has {count} rows.")
+        stem = Path(request.filename).stem if request.filename else src.stem
+        filename = f"{stem}.vot"
+        if table is not None:
+            token = write_votable(table[rows], filename)
+        else:
+            token = as_votable(dataframe.iloc[rows].reset_index(drop=True), filename)
+        return token, filename, MTYPE_TABLE_LOAD_VOTABLE, int(len(rows))
+
     def stage() -> tuple[str, str, str, int]:
         """(token, filename, mtype, rows); rows is -1 when not read."""
+        if subset is not None:
+            return stage_subset()
         if fmt == "csv":
             # Any delimited text the catalogue viewer opened: comma, tab or
             # semicolon (issue #155).
@@ -520,5 +592,9 @@ async def samp_send_catalogue(
     }
     if request.table_id.strip():
         params["table-id"] = request.table_id.strip()
-    return _dispatch(mtype, params, target_id, request.deliver, rows=rows,
-                     size_bytes=_staged_size(token))
+    response = _dispatch(mtype, params, target_id, request.deliver, rows=rows,
+                         size_bytes=_staged_size(token))
+    # Says the rows were honoured: a backend without row_indices sends the
+    # whole table, and the client must not take that for the subset.
+    response.subset = subset is not None
+    return response

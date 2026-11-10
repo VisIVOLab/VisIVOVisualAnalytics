@@ -1236,6 +1236,8 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
 
     this->setupRenderer();
     this->setupContourPipeline();
+    // SAMP: send this image, or the sky position of a clicked pixel.
+    this->setupSamp();
     this->applyInitialAutoscale(this->layers->getImageData(this->layers->getMasterIndex()),
                                 this->layers->getLookupTable(this->layers->getMasterIndex()),
                                 "initial master");

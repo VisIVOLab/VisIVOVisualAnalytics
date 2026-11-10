@@ -382,9 +382,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // send that failed leaves no identity behind for the row messages.
     QObject::connect(this->m_sampClient, &SampClient::tableSent, this,
                      [this](const QString &tableId, const QString &url) {
-                         const QString localKey = this->m_sampPendingTables.take(tableId);
-                         if (!localKey.isEmpty())
-                             this->m_sampTables.remember({ tableId, url }, localKey);
+                         const auto sent = this->m_sampPendingTables.takeEntry(tableId);
+                         if (!sent.localKey.isEmpty())
+                             this->m_sampTables.remember({ tableId, url }, sent.localKey,
+                                                         sent.subset);
                          else
                              this->m_sampTables.setUrlForTableId(tableId, url);
                      });
@@ -400,7 +401,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                          // The path is a path on the backend of the click; on
                          // another one it is missing, or a different file.
                          if (this->settings->getBackendUrl() != check.backendUrl) {
-                             this->statusBar()->showMessage(
+                             this->showSampStatus(
+                                     check.from,
                                      u"SAMP: the backend changed while %1 was being checked; "
                                      u"nothing was sent."_s.arg(check.name), 8000);
                              return;
@@ -413,7 +415,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                                      DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
                                      QStringLiteral("SAMP"), message, QString(), QString(),
                                      QStringLiteral("send"));
-                             this->statusBar()->showMessage(message, 10000);
+                             this->showSampStatus(check.from, message, 10000);
                              return;
                          }
                          // A hub that could not say is not proof that nobody
@@ -422,6 +424,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                          if (!error.isEmpty())
                              qWarning() << "[SAMP] could not ask the hub for subscribers:" << error;
                          this->statusBar()->clearMessage();
+                         if (check.from && check.from->statusBar())
+                             check.from->statusBar()->clearMessage();
                          if (this->m_sampClient && this->m_sampClient->isConnected())
                              check.proceed();
                      });
@@ -438,12 +442,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                              const QString message = error.isEmpty()
                                      ? u"SAMP: no running tool takes %1 (none subscribes)."_s.arg(it->name)
                                      : u"SAMP: could not send %1: %2"_s.arg(it->name, error);
+                             const QPointer<QMainWindow> from = it->from;
+                             // The hub took no message: no tool holds the table.
+                             this->m_sampPendingTables.remove(it->pendingTableId);
                              this->m_sampSends.erase(it);
                              DiagnosticsManager::instance()->publish(
                                      DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
                                      QStringLiteral("SAMP"), message, QString(), QString(),
                                      QStringLiteral("send"));
-                             this->statusBar()->showMessage(message, 10000);
+                             this->showSampStatus(from, message, 10000);
                              return;
                          }
                          it->recipientsKnown = true;
