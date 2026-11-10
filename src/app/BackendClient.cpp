@@ -816,6 +816,29 @@ BackendFileHeaderResult BackendClient::fileHeader(const QString &path) const
     return result;
 }
 
+visivo::FilePreview BackendClient::filePreview(const QString &path, int maxBytes,
+                                              int maxLines) const
+{
+    QString error;
+    int status = 0;
+    const QJsonDocument body(QJsonObject{ { QStringLiteral("path"), path },
+                                          { QStringLiteral("max_bytes"), maxBytes },
+                                          { QStringLiteral("max_lines"), maxLines } });
+    const QByteArray payload = performPost(QUrl(m_baseUrl + QStringLiteral("/v1/files/preview")),
+                                           body, error, nullptr, &status);
+    if (!error.isEmpty()) {
+        visivo::FilePreview failed;
+        failed.path = path;
+        // On an HTTP error performPost returns the reply's body, and the error
+        // text is Qt's ("server replied: Not Found"): the body says why.
+        failed.routeMissing = visivo::isMissingRouteReply(status, payload);
+        const QString why = status >= 400 ? visivo::replyErrorText(payload) : QString();
+        failed.error = why.isEmpty() ? error : why;
+        return failed;
+    }
+    return visivo::parseFilePreviewReply(payload);
+}
+
 namespace {
 
 /// Shared parser for the OpenDatasetResponse JSON shape produced by both

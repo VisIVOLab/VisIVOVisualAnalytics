@@ -71,6 +71,7 @@
 #include <cmath>
 
 #include "app/DiagnosticsManager.h"
+#include "BusyStatus.h"
 
 #include <vtkImageData.h>
 
@@ -117,12 +118,18 @@ void MainWindow::runPublicationFigure(const QString &backendUrl, const QString &
     const QString url = backendUrl, token = backendToken, ds = datasetId;
     const QString s = stretch->currentText(), cm = cmap->currentText(), t = title->text();
     const bool g = grid->isChecked(), c = cbar->isChecked();
+    // The render can take a while: the busy indicator of the window that
+    // asked, besides the cursor (#159).
+    auto busy = std::make_shared<visivo::BusyStatus>(
+            visivo::busyWindowFor(this), visivo::taskTexts(u"Rendering the publication figure"_s),
+            visivo::BusyStatus::Scope::Detached);
     auto *watcher = new QFutureWatcher<BackendPublicationFigureResult>(this);
     QObject::connect(watcher, &QFutureWatcher<BackendPublicationFigureResult>::finished, this,
-                     [this, watcher, onDone]() {
+                     [this, watcher, onDone, busy]() {
         QApplication::restoreOverrideCursor();
         watcher->deleteLater();
         const auto r = watcher->result();
+        busy->finish(r.valid ? visivo::BusyOutcome::Done : visivo::BusyOutcome::Failed);
         if (!r.valid) {
             QMessageBox::critical(this, u"Publication Figure failed"_s,
                     r.error.isEmpty() ? u"No detail."_s : r.error);
@@ -159,12 +166,16 @@ void MainWindow::runImageQuality(const QString &backendUrl, const QString &backe
         return;
     }
     const QString url = backendUrl, token = backendToken, ds = datasetId;
+    auto busy = std::make_shared<visivo::BusyStatus>(
+            visivo::busyWindowFor(this), visivo::taskTexts(u"Measuring the image quality"_s),
+            visivo::BusyStatus::Scope::Detached);
     auto *watcher = new QFutureWatcher<BackendImageQualityResult>(this);
     QObject::connect(watcher, &QFutureWatcher<BackendImageQualityResult>::finished, this,
-                     [this, watcher, onDone]() {
+                     [this, watcher, onDone, busy]() {
         QApplication::restoreOverrideCursor();
         watcher->deleteLater();
         const auto r = watcher->result();
+        busy->finish(r.valid ? visivo::BusyOutcome::Done : visivo::BusyOutcome::Failed);
         if (!r.valid) {
             QMessageBox::critical(this, u"Image Quality failed"_s,
                     r.error.isEmpty() ? u"No detail."_s : r.error);
@@ -281,13 +292,17 @@ void MainWindow::runPixelMath()
         const double fA = freqA->text().toDouble();
         const double fB = freqB->text().toDouble();
 
+        auto busy = std::make_shared<visivo::BusyStatus>(
+                self, visivo::taskTexts(u"Computing pixel math (%1)"_s.arg(o)),
+                visivo::BusyStatus::Scope::Detached);
         auto *w2 = new QFutureWatcher<BackendProductFitsResult>(self);
         QObject::connect(w2, &QFutureWatcher<BackendProductFitsResult>::finished, self,
-                         [self, w2, url, token, o]() {
+                         [self, w2, url, token, o, busy]() {
             QApplication::restoreOverrideCursor();
             w2->deleteLater();
             if (!self) return;
             const auto r = w2->result();
+            busy->finish(r.valid ? visivo::BusyOutcome::Done : visivo::BusyOutcome::Failed);
             if (!r.valid) {
                 QMessageBox::critical(self, u"Pixel Math failed"_s,
                         r.error.isEmpty() ? u"No detail."_s : r.error);
@@ -366,13 +381,17 @@ void MainWindow::runMosaic()
         }
         const QString wmode = weight->currentData().toString();
 
+        auto busy = std::make_shared<visivo::BusyStatus>(
+                self, visivo::taskTexts(u"Building the mosaic"_s),
+                visivo::BusyStatus::Scope::Detached);
         auto *w2 = new QFutureWatcher<BackendProductFitsResult>(self);
         QObject::connect(w2, &QFutureWatcher<BackendProductFitsResult>::finished, self,
-                         [self, w2, url, token]() {
+                         [self, w2, url, token, busy]() {
             QApplication::restoreOverrideCursor();
             w2->deleteLater();
             if (!self) return;
             const auto r = w2->result();
+            busy->finish(r.valid ? visivo::BusyOutcome::Done : visivo::BusyOutcome::Failed);
             if (!r.valid) {
                 QMessageBox::critical(self, u"Mosaic failed"_s,
                         r.error.isEmpty() ? u"No detail."_s : r.error);

@@ -133,6 +133,10 @@ void MainWindow::rebuildCommandPalette()
                 {u"◑"_s, u"VLKB Inventory"_s,
                  u"File · browse remote VLKB sources"_s, QString(), u"File"_s,
                  [this]() { this->revealVLKBTab(); }});
+        this->m_commandPalette->addAction(
+                {u"◇"_s, u"SKAVA Discovery"_s,
+                 u"File · find datasets across SKA Regional Centres"_s, QString(), u"File"_s,
+                 [this]() { this->revealSkavaTab(); }});
 
         // ── Application ─────────────────────────────────────────────────────
         this->m_commandPalette->addAction(
@@ -393,6 +397,11 @@ void MainWindow::buildDataMenu()
     auto *actHiPS = dataMenu->addAction(u"HiPS Viewer…"_s);
     actHiPS->setToolTip(u"Open the HiPS panoramic sky viewer."_s);
     QObject::connect(actHiPS, &QAction::triggered, this, &MainWindow::openHiPS);
+
+    auto *actSkava = dataMenu->addAction(u"SKAVA Discovery"_s);
+    actSkava->setToolTip(u"Find datasets across SKA Regional Centres and open them on "
+                         u"the node that holds them."_s);
+    QObject::connect(actSkava, &QAction::triggered, this, &MainWindow::revealSkavaTab);
 }
 
 

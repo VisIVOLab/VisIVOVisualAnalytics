@@ -5,6 +5,7 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QFontDatabase>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -80,6 +81,7 @@ RemoteFileBrowserDialog::RemoteFileBrowserDialog(const QString &backendUrl,
       typeValue(new QLabel(this)),
       sizeValue(new QLabel(this)),
       modifiedValue(new QLabel(this)),
+      previewCaption(new QLabel(u"Preview"_s, this)),
       headerView(new QTextEdit(this))
 {
     this->setPurpose(u"Open Dataset"_s);
@@ -149,6 +151,12 @@ RemoteFileBrowserDialog::RemoteFileBrowserDialog(const QString &backendUrl,
     this->pathValue->setTextInteractionFlags(Qt::TextSelectableByMouse);
     this->headerView->setReadOnly(true);
     this->headerView->setLineWrapMode(QTextEdit::NoWrap);
+    // Monospace, for header cards and table columns to line up. Through the
+    // style sheet as well: the application's sheet would override setFont.
+    this->headerView->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    this->headerView->setStyleSheet(
+            u"QTextEdit { font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace; }"_s);
+    this->previewCaption->setWordWrap(true);
 
     detailsForm->addRow(u"Name"_s, this->nameValue);
     detailsForm->addRow(u"Path"_s, this->pathValue);
@@ -157,7 +165,7 @@ RemoteFileBrowserDialog::RemoteFileBrowserDialog(const QString &backendUrl,
     detailsForm->addRow(u"Modified"_s, this->modifiedValue);
     detailsLayout->addWidget(detailsTitle);
     detailsLayout->addLayout(detailsForm);
-    detailsLayout->addWidget(new QLabel(u"FITS Header"_s, detailsPane));
+    detailsLayout->addWidget(this->previewCaption);
     detailsLayout->addWidget(this->headerView, 1);
     splitter->setStretchFactor(0, 5);
     splitter->setStretchFactor(1, 2);
@@ -243,23 +251,23 @@ RemoteFileBrowserDialog::RemoteFileBrowserDialog(const QString &backendUrl,
                              this->accept();
                          }
                      });
-    QObject::connect(&this->headerWatcher, &QFutureWatcher<BackendFileHeaderResult>::finished, this,
+    QObject::connect(&this->previewWatcher, &QFutureWatcher<visivo::FilePreview>::finished, this,
                      [this]() {
-                         const QString expectedPath = this->headerWatcher.property("path").toString();
-                         const auto result = this->headerWatcher.result();
-                         auto *current = this->entriesTree->currentItem();
-                         if (!current || current->data(0, PathRole).toString() != expectedPath) {
-                             return;
+                         this->previewInFlight = false;
+                         const bool current = this->previewWatcher.property("serial").toULongLong()
+                                 == this->previewSerial;
+                         // The latest selection waited behind this one: its turn.
+                         if (this->pendingPreview) {
+                             const auto [entry, serial] = *this->pendingPreview;
+                             this->pendingPreview.reset();
+                             if (serial == this->previewSerial) {
+                                 this->startPreview(entry, serial);
+                                 return;
+                             }
                          }
-
-                         if (!result.valid) {
-                             this->headerView->setPlainText(result.error.isEmpty()
-                                                                    ? u"Could not load FITS header."_s
-                                                                    : result.error);
-                             return;
-                         }
-
-                         this->headerView->setPlainText(result.cards.join(u"\n"_s));
+                         // A reply for an earlier selection: dropped.
+                         if (current)
+                             this->showPreview(this->previewWatcher.result());
                      });
 
     this->pathEdit->setClearButtonEnabled(true);
@@ -352,15 +360,70 @@ void RemoteFileBrowserDialog::populateEntries()
     this->entriesTree->sortItems(this->sortCombo->currentIndex(), Qt::AscendingOrder);
 }
 
-void RemoteFileBrowserDialog::requestHeaderPreview(const QString &path)
+void RemoteFileBrowserDialog::requestPreview(const BackendFileEntry &entry)
 {
-    if (this->headerWatcher.isRunning()) {
-        this->headerWatcher.cancel();
+    this->previewCaption->setText(u"Preview"_s);
+    this->headerView->setPlainText(u"Loading preview…"_s);
+    const quint64 serial = ++this->previewSerial;
+    // One request out at a time: arrowing down a slow remote listing must not
+    // queue a request per row ahead of the one wanted (they block a pool
+    // thread each). The latest selection waits; earlier waiting ones go.
+    if (this->previewInFlight) {
+        this->pendingPreview = std::make_pair(entry, serial);
+        return;
     }
+    this->startPreview(entry, serial);
+}
 
-    this->headerView->setPlainText(u"Loading FITS header..."_s);
-    this->headerWatcher.setProperty("path", path);
-    this->headerWatcher.setFuture(QtConcurrent::run([this, path]() { return this->client->fileHeader(path); }));
+void RemoteFileBrowserDialog::startPreview(const BackendFileEntry &entry, quint64 serial)
+{
+    this->previewInFlight = true;
+    this->previewWatcher.setProperty("serial", QVariant::fromValue(serial));
+
+    // A client of its own in the worker, not the dialog's: the dialog can be
+    // closed while the request is out, and the worker must not outlive what it
+    // uses.
+    const QString url = this->client->baseUrl();
+    const QString token = this->client->token();
+    const QString path = entry.path;
+    const bool isFits = entry.isFits;
+    const bool isFolder = entry.type == u"directory"_s;
+    this->previewWatcher.setFuture(QtConcurrent::run([url, token, path, isFits, isFolder]() {
+        const BackendClient worker(url, token);
+        visivo::FilePreview preview = worker.filePreview(path);
+        switch (visivo::previewFallback(preview.routeMissing, isFolder, isFits)) {
+        case visivo::PreviewFallback::None:
+            return preview;
+        case visivo::PreviewFallback::Folder:
+            return visivo::folderPlaceholder(path);
+        case visivo::PreviewFallback::Unsupported:
+            return visivo::unsupportedOnOldBackend(path);
+        case visivo::PreviewFallback::FitsHeader:
+            break;
+        }
+        // An older backend: it can still show a FITS header.
+        const BackendFileHeaderResult header = worker.fileHeader(path);
+        if (!header.valid) {
+            visivo::FilePreview failed;
+            failed.path = path;
+            failed.error = header.error.isEmpty() ? u"Could not load the FITS header."_s
+                                                  : header.error;
+            return failed;
+        }
+        return visivo::previewFromHeaderCards(path, header.cards);
+    }));
+}
+
+void RemoteFileBrowserDialog::showPreview(const visivo::FilePreview &preview)
+{
+    if (!preview.valid) {
+        this->previewCaption->setText(u"Preview"_s);
+        this->headerView->setPlainText(preview.error.isEmpty() ? u"No preview available."_s
+                                                               : preview.error);
+        return;
+    }
+    this->previewCaption->setText(visivo::filePreviewCaption(preview));
+    this->headerView->setPlainText(visivo::filePreviewBody(preview));
 }
 
 void RemoteFileBrowserDialog::clearDetails()
@@ -370,6 +433,9 @@ void RemoteFileBrowserDialog::clearDetails()
     this->typeValue->clear();
     this->sizeValue->clear();
     this->modifiedValue->clear();
+    // Whatever preview is still out describes a selection that is gone.
+    ++this->previewSerial;
+    this->previewCaption->setText(u"Preview"_s);
     this->headerView->setPlainText(u"Select a file to preview its details."_s);
 }
 
@@ -388,13 +454,8 @@ void RemoteFileBrowserDialog::updateDetails(const BackendFileEntry *entry)
     this->sizeValue->setText(entry->type == u"directory"_s ? u"_"_s : this->humanReadableSize(entry->size));
     this->modifiedValue->setText(entry->modifiedTime);
 
-    if (entry->isFits) {
-        this->requestHeaderPreview(entry->path);
-    } else {
-        this->headerView->setPlainText(entry->type == u"directory"_s
-                                               ? u"Directory selected."_s
-                                               : u"Header preview is available only for FITS files."_s);
-    }
+    // Folders too: the backend lists what is in them.
+    this->requestPreview(*entry);
 }
 
 bool RemoteFileBrowserDialog::isSelectable(const QTreeWidgetItem *item) const
@@ -462,6 +523,11 @@ void RemoteFileBrowserDialog::setFileTypes(const QList<visivo::FileType> &offere
         this->typeCombo->setCurrentIndex(this->typeCombo->findData(static_cast<int>(initial)));
     }
     this->refreshEntriesView();
+}
+
+void RemoteFileBrowserDialog::setMainOpenFileTypes()
+{
+    this->setFileTypes(visivo::openableFileTypes(), visivo::FileType::AllSupported);
 }
 
 void RemoteFileBrowserDialog::setPurpose(const QString &purpose)

@@ -9,6 +9,8 @@
 #include <QList>
 
 #include <memory>
+#include <optional>
+#include <utility>
 #include <vector>
 
 class QComboBox;
@@ -37,6 +39,13 @@ public:
     void setFileTypes(const QList<visivo::FileType> &offered, visivo::FileType preferred,
                       const QString &rememberKey = QString());
 
+    /// The types of the main *Open…* (File menu, Data Hub, command palette,
+    /// ⌘O): every kind, starting on All supported files each time. Unlike
+    /// the single-purpose opens, it does not remember the last choice: a type
+    /// picked once to find one file would otherwise hide every other kind the
+    /// next time, in the one dialog meant to open anything.
+    void setMainOpenFileTypes();
+
     /// What the user is choosing a file for ("Open Catalogue"): the title,
     /// followed by the backend whose files are listed. "Open Dataset" by default.
     void setPurpose(const QString &purpose);
@@ -44,7 +53,13 @@ public:
 private:
     void loadPath(const QString &path);
     void populateEntries();
-    void requestHeaderPreview(const QString &path);
+    /// Ask the backend for the start of @p entry (any kind of file); the
+    /// reply lands only if the same file is still selected.
+    void requestPreview(const BackendFileEntry &entry);
+    /// Sends @p entry's request now (requestPreview queues it behind the one
+    /// out: at most one request in flight, and only the latest waiting).
+    void startPreview(const BackendFileEntry &entry, quint64 serial);
+    void showPreview(const visivo::FilePreview &preview);
     void clearDetails();
     void updateDetails(const BackendFileEntry *entry);
     void updateSelectionState();
@@ -70,8 +85,14 @@ private:
     QLabel *typeValue;
     QLabel *sizeValue;
     QLabel *modifiedValue;
+    QLabel *previewCaption;
     QTextEdit *headerView;
-    QFutureWatcher<BackendFileHeaderResult> headerWatcher;
+    QFutureWatcher<visivo::FilePreview> previewWatcher;
+    /// Bumped by every request and by every change of selection, so a reply
+    /// for a file no longer selected (or selected again since) is dropped.
+    quint64 previewSerial{ 0 };
+    bool previewInFlight{ false };
+    std::optional<std::pair<BackendFileEntry, quint64>> pendingPreview;
     QString selectedPath;
     QString currentDirectory;
     std::vector<BackendFileEntry> currentEntries;

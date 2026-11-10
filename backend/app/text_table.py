@@ -115,6 +115,25 @@ def sniff_separator(text: str, truncated: bool = False) -> str | None:
     return None
 
 
+def describe_table(text: str, truncated: bool = False) -> tuple[str, int] | None:
+    """``(separator, columns)`` when ``text`` is a delimited table, else None.
+
+    The file browser's preview names the table it shows with the separator the
+    readers would use (:func:`sniff_separator`) and the field count of the
+    first line that votes, so preview and reader cannot disagree.
+    """
+    # Judge the same head the classifier and the readers judge (SNIFF_BYTES),
+    # even when the preview shows more of the file.
+    head = text.encode("utf-8")
+    if len(head) > SNIFF_BYTES:
+        text = head[:SNIFF_BYTES].decode("utf-8", errors="ignore")
+        truncated = True
+    separator = sniff_separator(text, truncated)
+    if separator is None:
+        return None
+    return separator, len(_fields(_significant_lines(text, truncated)[0], separator))
+
+
 def _open_text(path: Path):
     """A binary stream of the file's content, through its compression.
 

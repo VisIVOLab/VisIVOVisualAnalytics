@@ -378,6 +378,12 @@ void MainWindow::reopenDataset(const RecentDataset &datasetRef)
         return;
     }
 
+    // From here on everything waits on the backend (the classifier, then the
+    // open), and a large table takes a while: the main window says so (#159).
+    // Each open below holds a scope of its own; this one covers the checks
+    // before them and the catalogue path, which reports its end itself.
+    visivo::BusyStatus busy(this, visivo::openingTexts(dataset.displayName));
+
     // A file that is no longer there is said to be missing, before any route
     // is tried: the open route answered a deleted file with "Unsupported file
     // type…", which pointed at a format problem (#150). On the local backend
@@ -396,6 +402,7 @@ void MainWindow::reopenDataset(const RecentDataset &datasetRef)
                 // Perhaps there, behind a folder we may not search: not
                 // "deleted", and not worth an open that cannot read it.
                 this->recordOpenRefusedHere(dataset.id);
+                busy.finish(visivo::BusyOutcome::Failed, u"it cannot be read"_s);
                 QMessageBox box(QMessageBox::Warning, u"Cannot read file"_s,
                                 u"“%1” cannot be read: a folder on the way to\n%2\n"
                                 u"cannot be opened (permissions)."_s.arg(dataset.displayName, file),
@@ -412,6 +419,7 @@ void MainWindow::reopenDataset(const RecentDataset &datasetRef)
             missing = visivo::classifierSaysNotFound(classified->valid, classified->error);
         }
         if (missing) {
+            busy.finish(visivo::BusyOutcome::Failed, u"the file is no longer there"_s);
             this->offerToForgetMissingRecent(dataset, remote ? remote->name : QString());
             return;
         }
@@ -445,7 +453,9 @@ void MainWindow::reopenDataset(const RecentDataset &datasetRef)
         dispatchOpenForPath(dataset.id);
     } else if (dataset.type == u"hips"_s) {
         openHiPS();
+        busy.finish(visivo::BusyOutcome::Done);
     } else {
+        busy.finish(visivo::BusyOutcome::Failed);
         QMessageBox::information(
                 this, u"Cannot reopen"_s,
                 QStringLiteral("Reopening '%1' (type: %2) is not yet supported.")
@@ -504,8 +514,8 @@ void MainWindow::openData()
     }
 
     RemoteFileBrowserDialog dialog(client.baseUrl(), client.token(), this);
-    // The same choice as File ▸ Open…, remembered under the same name.
-    dialog.setFileTypes(visivo::openableFileTypes(), visivo::FileType::AllSupported, u"open"_s);
+    // The same types as File ▸ Open…, starting on All supported files.
+    dialog.setMainOpenFileTypes();
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
@@ -923,8 +933,13 @@ bool MainWindow::decompressBeforeOpen(const BackendClient &client, const QString
     // lists as "decompress": the open has reached it.
     if (BackendClient::isCompressedFitsName(path))
         noteOpenReachedBackend(record);
+    // Its own progress window (with Cancel) says what happens meanwhile.
+    std::optional<visivo::BusyPause> ownProgress;
+    if (BackendClient::isCompressedFitsName(path))
+        ownProgress.emplace();
     const visivo::DecompressBeforeOpenResult r = visivo::decompressBeforeOpen(
             this, client, path, this->openRequestedAt(path), refreshHub);
+    ownProgress.reset();
     if (r.proceed)
         return true;
     if (r.cancelled)
@@ -960,8 +975,17 @@ bool MainWindow::doOpenDataPath(const QString &path, OpenRecord *continued)
     // dispatcher's open, that open records (from its click); called on its
     // own, this one does, from now (not from another open's clock, which may
     // be on the same path).
+    // Declared before the record it is attached to, so it outlives it.
+    visivo::BusyStatus busy(this, visivo::openingTexts(visivo::datasetDisplayName(path)));
     OpenRecord own = this->startOpenRecord(path, QElapsedTimer());
     OpenRecord *const record = continued ? continued : &own;
+    if (!record->busy)
+        record->busy = &busy;
+    // A caller's record must not keep pointing at this frame's indicator.
+    const auto detachBusy = qScopeGuard([record, &busy]() {
+        if (record->busy == &busy)
+            record->busy = nullptr;
+    });
     const auto refreshJobs = qScopeGuard([this, continued, &own]() {
         if (!continued)
             this->endOpenRecord(own);
@@ -1408,9 +1432,16 @@ vtkWindowCatalogue3D *MainWindow::doOpenCataloguePath(const QString &filepath,
     this->m_sampCurrentCatalogueName = QFileInfo(filepath).fileName();
     this->m_sampCurrentCatalogueFormat = catalogueFormatForPath(filepath);
     this->updateSampActions();
+    // The window reads the table on the backend and builds its scene before it
+    // is shown: with nothing on screen for that while, a large CSV looked like
+    // a click that did nothing (#159).
+    visivo::BusyStatus busy(this, visivo::openingTexts(
+                                          displayName.isEmpty() ? QFileInfo(filepath).fileName()
+                                                                : displayName));
     auto *win = new vtkWindowCatalogue3D(filepath, settings->getBackendUrl(),
                                          settings->getBackendToken(), paths,
                                          { displayName, temporaryCopy }, this);
+    busy.finish(win->catalogueOpened() ? visivo::BusyOutcome::Done : visivo::BusyOutcome::Failed);
     win->setAttribute(Qt::WA_DeleteOnClose);
     // On session expiry the window emits reopenRequested with its current path
     // group (single or multi-file), so the reopened window rebuilds the same
@@ -1466,7 +1497,7 @@ void MainWindow::openAnything()
     // Every kind of file at first: the whole point is that the user does not
     // have to decide what kind of file this is before picking it.
     RemoteFileBrowserDialog dialog(client.baseUrl(), client.token(), this);
-    dialog.setFileTypes(visivo::openableFileTypes(), visivo::FileType::AllSupported, u"open"_s);
+    dialog.setMainOpenFileTypes();
     if (dialog.exec() != QDialog::Accepted)
         return;
 
@@ -1489,8 +1520,12 @@ void MainWindow::dispatchOpenForPath(const QString &path)
     // Every kind of open is a job the Data Hub lists, timed from this click to
     // its result (OpenJobMerge.h), and the list is refreshed when it returns.
     // Declared after forgetRequest, so it ends first, while the clock is valid.
+    // The main window's busy indicator, from the click to the viewer or the
+    // error (#159): the health check and the classifier wait on the backend.
+    visivo::BusyStatus busy(this, visivo::openingTexts(visivo::datasetDisplayName(path)));
     OpenRecord own = this->startOpenRecord(path, this->m_openRequestClock);
     OpenRecord *const record = &own;
+    record->busy = &busy;
     const auto refreshJobs = qScopeGuard([this, &own]() { this->endOpenRecord(own); });
     BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
     // Asked here rather than only in openAnything(): the desktop reaches this
@@ -1588,7 +1623,10 @@ void MainWindow::dispatchOpenForPath(const QString &path)
     box.setDefaultButton(isTable ? asCatalogue : asDataset);
     QElapsedTimer choosing;
     choosing.start();
-    box.exec();
+    {
+        const visivo::BusyPause asking;   // the question is what to read now
+        box.exec();
+    }
     // The time spent choosing is not the open's.
     this->m_openRequestClock.start();
     this->m_openRequestPath = target;
@@ -1750,13 +1788,22 @@ void MainWindow::openVelocityFieldPath(const QString &path, OpenRecord *record)
     if (!this->decompressBeforeOpen(client, path, record))
         return;
 
-    // The 64³×3 grid is small; do the two synchronous calls under a wait cursor.
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    this->statusBar()->showMessage(u"Opening velocity field…"_s);
+    // The 64³×3 grid is small, but the two calls wait on the backend: the
+    // window's busy indicator (it stops at the outcome, before any box).
+    visivo::BusyStatus busy(this, visivo::openingTexts(QFileInfo(path).fileName()));
+    OpenRecord own;
+    if (!record) {
+        own.record = false;   // only for the indicator: the caller keeps no job
+        record = &own;
+    }
+    if (!record->busy)
+        record->busy = &busy;
+    const auto detachBusy = qScopeGuard([record, &busy]() {
+        if (record->busy == &busy)
+            record->busy = nullptr;
+    });
     const BackendVelocityOpenResult opened = client.openVelocityField(path);
     if (!opened.valid) {
-        QApplication::restoreOverrideCursor();
-        this->statusBar()->clearMessage();   // not "Opening…" under the refusal
         noteOpenEnded(record, u"failed"_s);
         QMessageBox::warning(this, u"Velocity Field"_s,
                              u"Open failed: %1"_s.arg(opened.error.isEmpty() ? u"unknown error"_s
@@ -1765,9 +1812,7 @@ void MainWindow::openVelocityFieldPath(const QString &path, OpenRecord *record)
     }
     client.setSessionId(opened.sessionId);
     const BackendVelocityGridResult grid = client.fetchVelocityGrid(opened.datasetId);
-    QApplication::restoreOverrideCursor();
     if (!grid.valid) {
-        this->statusBar()->clearMessage();
         noteOpenEnded(record, u"failed"_s);
         QMessageBox::warning(this, u"Velocity Field"_s,
                              u"Grid fetch failed: %1"_s.arg(grid.error.isEmpty()
@@ -1810,21 +1855,27 @@ void MainWindow::doOpenVbtPath(const QString &headerPath)
     if (ui->actionOpenVbt) {
         ui->actionOpenVbt->setEnabled(false);
     }
-    this->statusBar()->showMessage(u"Opening VBT dataset…"_s);
+    // Busy until the worker answers: held by the callback, which says the
+    // outcome before any box.
+    QString vbtName = QFileInfo(headerPath).fileName();
+    if (vbtName.endsWith(u".bin.head"_s))
+        vbtName.chop(9);
+    auto busy = std::make_shared<visivo::BusyStatus>(this, visivo::openingTexts(vbtName),
+                                                     visivo::BusyStatus::Scope::Detached);
 
     auto *watcher = new QFutureWatcher<VbtOpenTaskResult>(this);
     QObject::connect(
             watcher, &QFutureWatcher<VbtOpenTaskResult>::finished, this,
-            [this, watcher, headerPath]() {
+            [this, watcher, headerPath, busy]() {
                 watcher->deleteLater();
 
                 if (ui->actionOpenVbt) {
                     ui->actionOpenVbt->setEnabled(true);
                 }
-                this->statusBar()->clearMessage();
 
                 const auto result = watcher->result();
                 if (!result.valid) {
+                    busy->finish(visivo::BusyOutcome::Failed);
                     QMessageBox::critical(this, u"Could not open VBT"_s, result.error);
                     return;
                 }
@@ -1850,6 +1901,7 @@ void MainWindow::doOpenVbtPath(const QString &headerPath)
                 win->showMaximized();
                 win->raise();
                 win->activateWindow();
+                busy->finish(visivo::BusyOutcome::Done);
 
                 // Record after successful open (inside the watcher callback
                 // because kind is only known after the async open completes).

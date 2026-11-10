@@ -111,6 +111,7 @@
     "POST /v1/files/classify",
     "POST /v1/files/header",
     "POST /v1/files/header/patch",
+    "POST /v1/files/preview",
     "POST /v1/hips/catalogue_overlay",
     "POST /v1/hips/hips2fits",
     "POST /v1/hips/open",

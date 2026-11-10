@@ -8,6 +8,61 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **A preview for every file in the file browser (#159, item 3), backend.**
+  `POST /v1/files/preview` describes any selected file from its first bytes:
+  the HDU summary and header of a FITS file (also `.fits.gz`, read off the
+  stream, and `.fz`), the first lines of a text file with the separator and
+  column count of a delimited table (sniffed from the content, UTF-8 or
+  Latin-1), the `.head` of a VisIVO Binary Table (for a `.bin`, the one beside
+  it), the group/dataset tree of an HDF5 file (at most 200 objects, no data
+  read), the start of a gzip/bzip2/xz/zip that is not FITS, a hex dump of
+  anything else, and the entries of a directory. The file is read at most
+  `max_bytes` (16 KiB by default, 64 KiB at most), so it works the same through
+  a remote backend.
+- **Desktop findings from testing (#159, client).**
+  - *SKAVA as an archive.* SKAVA Discovery was a Data Hub tab made at start-up,
+    and once closed there was no way back to it. It is now an entry of the Data
+    Hub's *Archives* section, beside HiPS and VLKB, and of *Data* and the
+    command palette; it opens as a tab on demand, and a closed tab reopens
+    with its filters and results.
+  - *Open starts on All supported files.* The main *Open…* remembered the type
+    last chosen, so a type picked once hid every other kind of file the next
+    time. Every entry point (File menu and ⌘O, Data Hub, command palette)
+    now goes through one call that starts on *All supported files*; the
+    single-purpose opens still remember their last type.
+  - *A preview for every file.* The file browser said "Header preview is
+    available only for FITS files". It now asks the backend's
+    `POST /v1/files/preview` for the start of any file (FITS HDUs and cards,
+    the first lines of a text table, a VBT's `.head`, an HDF5 file's tree, a
+    folder's contents, type and size otherwise), monospace, with the format
+    as a caption and a note when only the start is shown. A reply for a file
+    no longer selected is dropped; on an older backend without the route a
+    FITS file still shows its header.
+  - *Feedback during opens.* Reopening a large CSV from *Recent Datasets* showed
+    nothing for a while: the catalogue window reads the table and builds its
+    scene before it appears. Every open (Open and Recent, for cubes, images,
+    catalogues, VBT tables, velocity fields and HDF5 files, local or remote)
+    now shows a busy indicator in the main window's status bar, a moving bar
+    with *Opening name…* and a busy cursor, and says *Opened* or *Could not
+    open* before any error box. Publication figure, image quality, pixel math,
+    mosaic and the vector field's backend divergence show it too, in the
+    window that asked. One helper (`BusyStatus`) does it for all of them.
+  - *Ray-traced light is not a shape.* In the 3-D catalogue viewer it was the
+    last item of *Shape*. It is now a separate **Ray-traced light** check under
+    the shape, as in the cube viewer; the shape is kept for when it is cleared,
+    and the controls that do not apply to the ray-traced view are greyed out
+    rather than hidden. A table not open on the backend clears the check again.
+  - *No box behind the colour bar.* The 3-D colour bar (catalogue and cube 3-D
+    view, ray-traced overlay) was drawn on a dark box; it is now drawn straight
+    on the view like the image and cube viewers' colour bars, with a dark halo
+    under its labels, ticks and outline so that it also reads on a white
+    background (saved stills included).
+  - *Selection marker and deselection.* Selecting a point could show a sphere
+    covering much of the view. The marker now starts from the data (the glyph
+    it wraps, or a fraction of the mean particle spacing) and is kept to a few
+    pixels on screen, re-sized as the camera moves; Esc and *View ▸ Clear
+    Selection* deselect, besides a click on empty space.
+
 - **Three small desktop defects (#150).**
   - *Preview statistics.* On a cube opened as a preview (above the
     full-resolution threshold) the Inspector's *3D cube* rows showed Mean and

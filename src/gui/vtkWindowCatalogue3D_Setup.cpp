@@ -136,20 +136,24 @@ void vtkWindowCatalogue3D::buildControlPages()
 
         this->comboGeometry = new QComboBox(reprCard);
         this->comboGeometry->addItems({ u"Ellipsoid"_s, u"Sphere"_s, u"Point"_s, u"Cross"_s,
-                                        u"Gaussian splats"_s, u"Ray-traced"_s });
+                                        u"Gaussian splats"_s });
         this->comboGeometry->setItemData(
                 4, u"Emissive Gaussian splats: dense regions add up to bright, sparse ones stay "
                    u"faint but visible (a simulation's particles)"_s,
-                Qt::ToolTipRole);
-        this->comboGeometry->setItemData(
-                5, u"Each particle a cloud of light of its own size, every row of the table, "
-                   u"drawn on this machine's GPU: a 3-D render or a projected density map, its "
-                   u"settings below"_s,
                 Qt::ToolTipRole);
         auto *reprForm = new QFormLayout;
         reprForm->setContentsMargins(0, 0, 0, 0);
         reprForm->addRow(u"Shape"_s, this->comboGeometry);
         reprLayout->addLayout(reprForm);
+        // Ray-traced light is a way of drawing the table, not a shape: a check
+        // of its own, named and placed as in the cube viewer (under the
+        // drawing controls, its settings opening below).
+        this->m_rtLightCheck = new QCheckBox(u"Ray-traced light"_s, reprCard);
+        this->m_rtLightCheck->setToolTip(
+                u"Each particle a cloud of light of its own size, every row of the table, "
+                u"drawn on this machine's GPU: a 3-D render or a projected density map, its "
+                u"settings below. The shape is kept for when it is turned off."_s);
+        reprLayout->addWidget(this->m_rtLightCheck);
         reprLayout->addWidget(ui->chkLabels);
         reprLayout->addWidget(ui->chkMorphColors);
         pageLayout->addWidget(reprCard);
@@ -538,6 +542,19 @@ void vtkWindowCatalogue3D::setupRenderer()
     inter->AddObserver(vtkCommand::LeftButtonPressEvent,   cb);
     inter->AddObserver(vtkCommand::LeftButtonReleaseEvent, cb);
     inter->AddObserver(vtkCommand::LeftButtonDoubleClickEvent, cb);
+    // Before each render, the hover and selection markers are re-sized for the
+    // camera, so they keep a few pixels on screen through zoom and rotation.
+    // Setting the same radius again does not modify the source: a render with
+    // no camera change re-executes nothing.
+    auto markerCb = vtkSmartPointer<vtkCallbackCommand>::New();
+    markerCb->SetCallback([](vtkObject *, unsigned long, void *clientData, void *) {
+        static_cast<vtkWindowCatalogue3D *>(clientData)->refreshHighlightSizes();
+    });
+    markerCb->SetClientData(this);
+    // Removed in the destructor: the renderer is a member, but a render during
+    // the window's destruction must not reach a half-destroyed window.
+    this->m_markerObserverTag = this->renderer->AddObserver(vtkCommand::StartEvent, markerCb);
+
     qInfo() << "[catalogue3d] observer registration complete;"
             << "hover observer is separate from camera interaction";
 }
@@ -732,12 +749,19 @@ void vtkWindowCatalogue3D::populateMappingControls()
         if (hasVelocity && arrowsIdx < 0) {
             this->comboGeometry->addItem(arrowsLabel);
         } else if (!hasVelocity && arrowsIdx >= 0) {
-            QSignalBlocker blk(this->comboGeometry);
-            if (this->comboGeometry->currentIndex() == arrowsIdx) {
-                this->comboGeometry->setCurrentIndex(0);
-                this->geometryMode = GeometryMode::Ellipsoid;   // keep model in sync
+            const bool wasCurrent = this->comboGeometry->currentIndex() == arrowsIdx;
+            {
+                QSignalBlocker blk(this->comboGeometry);
+                if (wasCurrent)
+                    this->comboGeometry->setCurrentIndex(0);
+                this->comboGeometry->removeItem(arrowsIdx);
             }
-            this->comboGeometry->removeItem(arrowsIdx);
+            // The mode from the shape now shown (item 0 is Point on a point
+            // table, not Ellipsoid), and through the one place that knows
+            // about Ray-traced light: setting the mode here left a ray-traced
+            // view up under a mode that said otherwise.
+            if (wasCurrent)
+                this->updateGeometryMode();
         }
     }
 

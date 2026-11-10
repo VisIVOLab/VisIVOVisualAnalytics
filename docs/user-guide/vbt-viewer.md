@@ -70,14 +70,16 @@ and there is no sky frame, cosmology or redshift shells.
   more (a density) opens in Log. A colour bar shows the column's colours.
 - **Shape** opens as *Point*, or as *Gaussian splats* above a million rows:
   emissive, so dense regions add up to bright and sparse filaments stay faint
-  but visible. The *Scale* slider sets the point or splat size. *Ray-traced*
-  draws every row as a continuous medium on this machine's GPU, for figures
-  and movies: see [Ray-traced particles](raytraced-particles). (The glyph
+  but visible. The *Scale* slider sets the point or splat size. The
+  **Ray-traced light** check under it draws every row as a continuous medium
+  on this machine's GPU, for figures and movies: see
+  [Ray-traced particles](raytraced-particles). (The glyph
   shapes of object catalogues, ellipsoids, spheres and crosses, are not offered
   for a point table.)
 - **Filters** restrict the rows by value; several combine.
-- Hovering and clicking a point shows its row; the *Catalogue* dock lists the
-  rows loaded.
+- Hovering and clicking a point shows its row, marked by a small ring; Esc, a
+  click on empty space or *View ▸ Clear Selection* deselects it. The
+  *Catalogue* dock lists the rows loaded.
 
 See [3-D catalogue viewer](catalogues-hips.md#3-d-catalogue-viewer) for the
 details, and [Drawn on the backend](catalogues-hips.md#drawn-on-the-backend)

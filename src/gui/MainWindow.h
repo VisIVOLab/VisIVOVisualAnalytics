@@ -3,6 +3,7 @@
 
 #include "app/RecentDatasetsManager.h"
 #include "app/SampProtocol.h"
+#include "BusyStatus.h"
 
 #include <QDateTime>
 #include <QElapsedTimer>
@@ -68,6 +69,10 @@ struct OpenRecord
     qint64 excludedMs{ 0 };        ///< time the user spent choosing a viewer
     QString backendUrl;            ///< the backend it was opened on
     QString backendToken;
+    /// The window's busy indicator for this open (BusyStatus.h): told the
+    /// outcome with the record, so it stops before an error box comes up.
+    /// Not owned; null for an open that shows none.
+    visivo::BusyStatus *busy{ nullptr };
 };
 
 /// The open's result is on screen (a viewer) or about to be (an error box):
@@ -78,6 +83,10 @@ inline void noteOpenEnded(OpenRecord *record, const QString &status)
         return;
     record->status = status;
     record->endedMs = QDateTime::currentMSecsSinceEpoch();
+    if (record->busy)
+        record->busy->finish(status == QLatin1StringView("done")        ? visivo::BusyOutcome::Done
+                             : status == QLatin1StringView("cancelled") ? visivo::BusyOutcome::Cancelled
+                                                                        : visivo::BusyOutcome::Failed);
 }
 
 inline void noteOpenReachedBackend(OpenRecord *record, bool reached = true)
@@ -406,6 +415,7 @@ private:
     // close/reopen so the inventory state is not lost. Held here so we can
     // distinguish it from genuinely-disposable tabs in the close handler.
     QPointer<QWidget>                m_vlkbPanel;
+    QPointer<QWidget>                m_skavaPanel;   ///< created on first revealSkavaTab()
     QPointer<CommandPalette>         m_commandPalette;
     /// Palette groups contributed by the active viewer's menus. Cleared and
     /// rebuilt on every open, so a viewer that has been closed since leaves
@@ -433,6 +443,10 @@ private:
     // closed it. Used by both the Data Hub Quick action and the command
     // palette entry.
     void revealVLKBTab();
+    // Brings the SKAVA discovery panel to focus, creating it on first use and
+    // re-adding the tab when the user closed it (the panel is kept, with its
+    // filters and results).
+    void revealSkavaTab();
     /// Point the panoramic view at the Galactic plane once its page has loaded.
     void frameGalacticPlane();
     /// Panoramic-view load state: the URL last asked for, whether the

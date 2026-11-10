@@ -64,6 +64,19 @@ QString actionCardSvg(const QString &kind, const QString &stroke)
                        "</svg>")
                 .arg(stroke);
     }
+    if (kind == u"skava"_s) {
+        // A magnifier over linked nodes: finding data across sites.
+        return QString(
+                       "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48' fill='none'>"
+                       "<circle cx='10' cy='12' r='2.6' fill='%1'/>"
+                       "<circle cx='26' cy='8' r='2.6' fill='%1'/>"
+                       "<circle cx='8' cy='28' r='2.6' fill='%1'/>"
+                       "<path d='M10 12 26 8M10 12 8 28' stroke='%1' stroke-width='2' stroke-linecap='round'/>"
+                       "<circle cx='26' cy='26' r='9' stroke='%1' stroke-width='2.6'/>"
+                       "<path d='M32.5 32.5 40 40' stroke='%1' stroke-width='3' stroke-linecap='round'/>"
+                       "</svg>")
+                .arg(stroke);
+    }
     if (kind == u"vbt"_s) {
         return QString(
                        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48' fill='none'>"
@@ -534,7 +547,7 @@ QFrame *DataHubWidget::buildQuickActionsList()
     // the file before opening it; two of them accepted `.fits`, so the question
     // was often unanswerable. The backend classifies it now (/v1/files/classify)
     // and only asks when the content is genuinely ambiguous.
-    const std::array<Spec, 3> specs{
+    const std::array<Spec, 4> specs{
             Spec{u"dataset"_s,   u"Open…"_s,
                  u"FITS image or cube, catalogue, VBT — identified on open"_s, u"⌘O"_s,
                  "openAnythingRequested", QString()},
@@ -545,6 +558,11 @@ QFrame *DataHubWidget::buildQuickActionsList()
             Spec{u"hips"_s,      u"VLKB Inventory"_s,
                  u"Browse VLKB sources & add as image layers"_s, QString(),
                  "openVLKBRequested", QString()},
+            // SKAVA finds datasets across the Regional Centres; it opens as a
+            // tab on demand, like the two above, and can be reopened.
+            Spec{u"skava"_s,     u"SKAVA Discovery"_s,
+                 u"Find datasets across SKA Regional Centres"_s, QString(),
+                 "openSkavaRequested", QString()},
     };
 
     for (const auto &s : specs) {
@@ -914,6 +932,7 @@ bool DataHubWidget::eventFilter(QObject *watched, QEvent *event)
             else if (sig == u"openVbtRequested"_s)       emit openVbtRequested();
             else if (sig == u"openHiPSRequested"_s)      emit openHiPSRequested();
             else if (sig == u"openVLKBRequested"_s)      emit openVLKBRequested();
+            else if (sig == u"openSkavaRequested"_s)     emit openSkavaRequested();
             return true;
         }
     }

@@ -1,5 +1,6 @@
 #include "CatalogueFormat.h"
 #include "WindowCloseShortcut.h"
+#include "BusyStatus.h"
 #include <QDateTime>
 #include "CosmologyCalculatorDialog.h"
 #include "vtkWindowCatalogue3D.h"
@@ -422,6 +423,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     if (!opened.valid) {
         // Before the box: its reading time is not the open's ("Last 5 jobs").
         this->m_openFailedAtMs = QDateTime::currentMSecsSinceEpoch();
+        // The opener's busy indicator is not up behind the box (#159).
+        const visivo::BusyPause box;
         QMessageBox::critical(this, u"Catalogue Error"_s, opened.error);
         ui->labelStatus->setText(u"Load error: "_s + opened.error);
     } else {
@@ -472,6 +475,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         if (!subset.valid || !parsed.valid) {
             const QString error = !subset.valid ? subset.error : parsed.errorMessage;
             this->m_openFailedAtMs = QDateTime::currentMSecsSinceEpoch();
+            const visivo::BusyPause box;
             QMessageBox::critical(this, u"Catalogue Error"_s, error);
             ui->labelStatus->setText(u"Load error: "_s + error);
         } else {
@@ -685,8 +689,26 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                      &QAction::setChecked);
     QObject::connect(ui->actionResetCamera, &QAction::triggered, this,
                      &vtkWindowCatalogue3D::resetCamera);
+    // Deselecting: this, Esc, or a click on empty space (onMouseEvent). Also
+    // on the window itself, not only in the menu: the macOS menu bar does not
+    // take Esc as a key equivalent.
+    {
+        auto *clear = new QAction(u"Clear Selection"_s, this);
+        clear->setShortcut(QKeySequence(Qt::Key_Escape));
+        clear->setShortcutContext(Qt::WindowShortcut);
+        clear->setToolTip(u"Deselect the selected source (Esc, or click on empty space)"_s);
+        clear->setEnabled(false);
+        ui->menuView->insertAction(ui->menuView->actions().value(1), clear);
+        this->addAction(clear);
+        QObject::connect(clear, &QAction::triggered, this,
+                         [this]() { this->setSelectedSource(-1); });
+        QObject::connect(this, &vtkWindowCatalogue3D::sourceSelectionChanged, clear,
+                         [clear](int idx) { clear->setEnabled(idx >= 0); });
+    }
     QObject::connect(this->comboGeometry, &QComboBox::currentIndexChanged, this,
                      [this](int) { this->updateGeometryMode(); });
+    QObject::connect(this->m_rtLightCheck, &QCheckBox::toggled, this,
+                     [this](bool) { this->updateGeometryMode(); });
     QObject::connect(this->comboSizeMode, &QComboBox::currentIndexChanged, this,
                      [this](int) { this->updateSizeMode(); });
     QObject::connect(this->comboFrame, &QComboBox::currentIndexChanged, this, [this](int idx) {
@@ -764,6 +786,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
 
 vtkWindowCatalogue3D::~vtkWindowCatalogue3D()
 {
+    if (this->m_markerObserverTag)
+        this->renderer->RemoveObserver(this->m_markerObserverTag);
     delete ui;
 }
 

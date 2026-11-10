@@ -648,7 +648,7 @@ QStringList vtkWindowCatalogue3D::numericColumns() const
     return names;
 }
 
-// ── The "Ray-traced" shape: the view on the GPU (issue #101) ────────────────
+// ── Ray-traced light: the view on the GPU (issues #101, #159) ───────────────
 
 void vtkWindowCatalogue3D::showRenderPage(int index)
 {
@@ -663,7 +663,7 @@ void vtkWindowCatalogue3D::showRenderPage(int index)
 
 void vtkWindowCatalogue3D::setRaytraced(bool on)
 {
-    this->showPointOnlyControls(!on);
+    this->enablePointOnlyControls(!on);
     if (!on) {
         if (this->m_rtCard)
             this->m_rtCard->hide();
@@ -707,6 +707,8 @@ void vtkWindowCatalogue3D::setRaytraced(bool on)
         this->statusBar()->showMessage(
                 u"The ray-traced view is prepared by the backend, and this table is not open "
                 u"there."_s, 6000);
+        // Not reached from updateGeometryMode, which clears the check for such
+        // a table before it gets here.
         return;
     }
     if (!this->m_rtPanel) {
@@ -839,24 +841,27 @@ void vtkWindowCatalogue3D::setRaytraced(bool on)
         this->m_rtView->refresh();
 }
 
-void vtkWindowCatalogue3D::showPointOnlyControls(bool visible)
+void vtkWindowCatalogue3D::enablePointOnlyControls(bool enabled)
 {
-    // The ray-traced view has its own size and light, and draws neither labels,
-    // axes nor the box: the rows that set them would do nothing there.
-    if (this->m_encForm) {
-        for (QWidget *w : std::initializer_list<QWidget *>{ ui->sliderScale,
-                                                            this->comboRenderBudget })
-            if (w)
-                this->m_encForm->setRowVisible(w, visible);
-        // The size column: only for the glyph shapes (updateGeometryMode).
-        if (this->comboSizeMode)
-            this->m_encForm->setRowVisible(
-                    this->comboSizeMode,
-                    visible && this->geometryMode != GeometryMode::Point
-                            && this->geometryMode != GeometryMode::Gaussian);
-    }
+    // The ray-traced view has its own size and light, and draws neither the
+    // shapes, labels, axes nor the box: the rows that set them would do nothing
+    // there. Disabled rather than hidden, so the sidebar does not jump and they
+    // are where they were when the view is drawn again.
+    const auto enableRow = [this, enabled](QWidget *field) {
+        if (!field)
+            return;
+        field->setEnabled(enabled);
+        if (this->m_encForm)
+            if (QWidget *label = this->m_encForm->labelForField(field))
+                label->setEnabled(enabled);
+    };
+    enableRow(ui->sliderScale);
+    enableRow(this->comboRenderBudget);
+    enableRow(this->comboSizeMode);
+    if (this->comboGeometry)
+        this->comboGeometry->setEnabled(enabled);
     if (ui->chkLabels)
-        ui->chkLabels->setVisible(visible);
+        ui->chkLabels->setEnabled(enabled);
     if (this->m_sceneCard)
-        this->m_sceneCard->setVisible(visible);
+        this->m_sceneCard->setEnabled(enabled);
 }

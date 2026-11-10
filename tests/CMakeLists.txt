@@ -200,6 +200,10 @@ add_executable(VisIVOTests
     test_system_quit_redirect.cpp
     TestSupportedFormats.h
     test_supported_formats.cpp
+    TestFilePreview.h
+    test_file_preview.cpp
+    TestBusyFeedback.h
+    test_busy_feedback.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

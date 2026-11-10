@@ -1,6 +1,12 @@
 # SKAVA Discovery tab
 
-The **SKAVA** tab in the Data Hub queries a data discovery service of the
+**SKAVA Discovery** is an archive, like the HiPS viewer and the VLKB
+inventory: open it from the Data Hub's **Archives** section, from
+*Data ▸ SKAVA Discovery* or from the command palette (⌘K). It opens as a tab
+of the main window; closing the tab keeps its filters and results, and
+opening it again brings them back.
+
+The **SKAVA** tab queries a data discovery service of the
 SKA Regional Centre network, SKAVA ([VisIVOLab/SKAVA](https://github.com/VisIVOLab/SKAVA))
 or any service that speaks the IVOA standards, and opens the datasets it
 finds where they are: on the VisIVO backend of the node that holds the

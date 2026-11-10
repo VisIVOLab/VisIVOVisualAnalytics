@@ -4,6 +4,7 @@
 #include "ColorMaps.h"
 #include "ColormapIcon.h"
 #include "ToolProgressSheet.h"
+#include "BusyStatus.h"
 
 #include <QVTKOpenGLNativeWidget.h>
 #include <vtkActor.h>
@@ -944,9 +945,13 @@ void vtkWindowVectorField::buildFieldDensity()
     // the ∇·v cores — get a higher-res divergence from the backend. For a
     // full-res display, compute locally (no round-trip).
     if (this->m_grid.downsampleFactor > 1 && !this->m_datasetId.isEmpty()) {
+        // A round trip to the backend: said in the status bar too (#159).
+        visivo::BusyStatus busy(this, visivo::taskTexts(u"Computing the divergence on the backend"_s));
         QApplication::setOverrideCursor(Qt::WaitCursor);
         const bool ok = this->buildFieldDensityFromBackend();
         QApplication::restoreOverrideCursor();
+        busy.finish(ok ? visivo::BusyOutcome::Done : visivo::BusyOutcome::Failed,
+                    ok ? QString() : u"computed here instead"_s);
         if (ok)
             return;
         // else fall through to the local computation

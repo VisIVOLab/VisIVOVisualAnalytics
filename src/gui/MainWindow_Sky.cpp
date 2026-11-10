@@ -121,6 +121,31 @@ void MainWindow::revealVLKBTab()
     this->frameGalacticPlane();
 }
 
+void MainWindow::revealSkavaTab()
+{
+    if (!this->m_tabs) return;
+
+    if (!this->m_skavaPanel) {
+        // The panel handles its own state (filters, results, provenance) and
+        // hands back two requests: open a dataset (routed next to the data by
+        // doOpenSkavaDataset) and run an operation on the node that holds it.
+        auto *skava = new SkavaSearchPanel(this->settings, this->m_tabs);
+        QObject::connect(skava, &SkavaSearchPanel::openSkavaDatasetRequested,
+                         this, &MainWindow::doOpenSkavaDataset);
+        QObject::connect(skava, &SkavaSearchPanel::nodeOperationRequested,
+                         this, &MainWindow::doSkavaNodeOperation);
+        this->m_skavaPanel = skava;
+    }
+
+    const int existing = this->m_tabs->indexOf(this->m_skavaPanel);
+    if (existing >= 0) {
+        this->m_tabs->setCurrentIndex(existing);
+        return;
+    }
+    this->m_skavaPanel->show();
+    const int idx = this->m_tabs->addTab(this->m_skavaPanel, u"SKAVA"_s);
+    this->m_tabs->setCurrentIndex(idx);
+}
 
 void MainWindow::openHiPS()
 {

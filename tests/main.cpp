@@ -42,6 +42,8 @@
 #include "TestTaskQuitDrain.h"
 #include "TestSystemQuitRedirect.h"
 #include "TestSupportedFormats.h"
+#include "TestFilePreview.h"
+#include "TestBusyFeedback.h"
 #include "TestThresholdShare.h"
 #include "TestLayerCardGeometry.h"
 #include "TestRegionReadout.h"
@@ -108,6 +110,8 @@ int main(int argc, char *argv[])
     { TestTaskQuitDrain    t; status |= QTest::qExec(&t, argc, argv); }
     { TestSystemQuitRedirect t; status |= QTest::qExec(&t, argc, argv); }
     { TestSupportedFormats t; status |= QTest::qExec(&t, argc, argv); }
+    { TestFilePreview      t; status |= QTest::qExec(&t, argc, argv); }
+    { TestBusyFeedback     t; status |= QTest::qExec(&t, argc, argv); }
     { TestLayerCardGeometry t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionReadout    t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendUrlLocality t; status |= QTest::qExec(&t, argc, argv); }
