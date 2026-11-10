@@ -490,6 +490,86 @@ QString BackendClient::defaultSessionId()
 
 // ── API calls ─────────────────────────────────────────────────────────────────
 
+BackendSuperResolutionResult BackendClient::superResolveVbt(
+    const QString &datasetId,
+    const QString &kind,
+    int upsampleFactor,
+    const QString &cosmology,
+    double particleMass) const
+{
+    BackendSuperResolutionResult out;
+
+    QString error;
+    const QJsonDocument body(QJsonObject{
+        { QStringLiteral("dataset_id"), datasetId },
+        { QStringLiteral("kind"), kind },
+        { QStringLiteral("upsample_factor"), upsampleFactor },
+        { QStringLiteral("cosmology"), cosmology },
+        { QStringLiteral("particle_mass"), particleMass }
+    });
+
+    const QByteArray raw = performPost(
+        QUrl(m_baseUrl + QStringLiteral("/v1/vbt/super_resolution")),
+        body,
+        error);
+
+    if (!error.isEmpty()) {
+        out.error = error;
+        return out;
+    }
+
+    const QJsonObject o = QJsonDocument::fromJson(raw).object();
+    out.valid = o.value(QStringLiteral("valid")).toBool(false);
+    out.error = o.value(QStringLiteral("error")).toString();
+    if (!out.valid) {
+        return out;
+    }
+
+    out.datasetId = o.value(QStringLiteral("dataset_id")).toString();
+    out.statusMsg = o.value(QStringLiteral("status_msg")).toString();
+    out.totalRows = o.value(QStringLiteral("total_rows")).toInt(0);
+
+    const QJsonObject subsetObj = o.value(QStringLiteral("subset")).toObject();
+    BackendVbtSubsetResult &subset = out.subsetResult;
+    subset.valid = subsetObj.value(QStringLiteral("valid")).toBool(true);
+    subset.error = subsetObj.value(QStringLiteral("error")).toString();
+    subset.kind = subsetObj.value(QStringLiteral("kind")).toString();
+    subset.numRows = subsetObj.value(QStringLiteral("num_rows")).toInt();
+    for (const QJsonValue &field : subsetObj.value(QStringLiteral("fields")).toArray()) {
+        subset.fieldNames.append(field.toString());
+    }
+    const QJsonArray dimensions = subsetObj.value(QStringLiteral("dimensions")).toArray();
+    if (dimensions.size() == 3) {
+        subset.dimensions = { dimensions[0].toInt(), dimensions[1].toInt(),
+                              dimensions[2].toInt() };
+    }
+    const QJsonArray spacing = subsetObj.value(QStringLiteral("spacing")).toArray();
+    if (spacing.size() == 3) {
+        subset.spacing = { spacing[0].toDouble(), spacing[1].toDouble(),
+                           spacing[2].toDouble() };
+    }
+    if (subset.kind == QStringLiteral("point")) {
+        const QJsonObject columns = subsetObj.value(QStringLiteral("columns")).toObject();
+        for (const QString &fieldName : subset.fieldNames) {
+            const QByteArray raw =
+                    QByteArray::fromBase64(columns.value(fieldName).toString().toLatin1());
+            const std::size_t count =
+                    static_cast<std::size_t>(raw.size()) / sizeof(double);
+            std::vector<double> values(count);
+            if (!raw.isEmpty()) {
+                memcpy(values.data(), raw.constData(), count * sizeof(double));
+            }
+            subset.columns[fieldName] = std::move(values);
+        }
+    } else {
+        subset.fieldName = subsetObj.value(QStringLiteral("field_name")).toString();
+        subset.block =
+                QByteArray::fromBase64(subsetObj.value(QStringLiteral("block")).toString().toLatin1());
+    }
+
+    return out;
+}
+
 BackendHealthResult BackendClient::health() const
 {
     BackendHealthResult result;

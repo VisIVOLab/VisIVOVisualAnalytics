@@ -39,3 +39,4 @@ h5py>=3.10            # LOFAR / generic beamformed HDF5 dynamic-spectrum reader
 #   * Your own server (vLLM/Ollama, OpenAI-compatible): also the `openai` SDK
 # anthropic>=0.40
 openai>=1.40
+torch>=1.13

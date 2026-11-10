@@ -549,6 +549,16 @@ struct BackendVbtSubsetResult
     std::array<double, 3> spacing{ 1.0, 1.0, 1.0 };
 };
 
+struct BackendSuperResolutionResult
+{
+    bool valid{ false };
+    QString error;
+    QString datasetId;
+    QString statusMsg;
+    BackendVbtSubsetResult subsetResult;
+    int totalRows{ 0 };
+};
+
 struct BackendImageResult
 {
     bool valid{ false };
@@ -2242,6 +2252,12 @@ public:
     BackendVbtSubsetResult requestVbtSubset(const QString &datasetId, int maxRows = 0,
                                             const QString &fieldName = QString()) const;
     BackendTabularQueryResponse queryTabularVbt(const BackendTabularQueryRequest &req) const;
+    BackendSuperResolutionResult superResolveVbt(
+            const QString &datasetId,
+            const QString &kind,
+            int upsampleFactor,
+            const QString &cosmology,
+            double particleMass) const;
     // ── HiPS endpoints ────────────────────────────────────────────────────────
     BackendHiPSSurveyInfo openHiPS(const QString &url);
 

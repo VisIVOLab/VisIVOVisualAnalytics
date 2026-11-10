@@ -50,6 +50,24 @@ struct VbtFilterTaskResult
     int totalRows{ 0 }; // backend-reported total (before limit/offset)
 };
 
+struct SuperResolutionTaskResult
+{
+    bool valid{ false };
+    QString error;
+    QString datasetId;
+    QString statusMsg;
+    BackendVbtSubsetResult subsetResult;
+    int totalRows{ 0 };
+};
+
+struct SuperResolutionConfig
+{
+    int upsampleFactor{ 4 };
+    QString kind{ QStringLiteral("datacube") };
+    QString cosmology{ QStringLiteral("LCDM") };
+    double particleMass{ 1.0 };
+};
+
 class WorkspaceChrome;
 
 class vtkWindowVbt : public QMainWindow
@@ -74,6 +92,8 @@ private:
     void buildPointCloud();
     void rebuildCoordinates();
     void applyFilter();
+    void runSuperResolutionDialog();
+    void launchSuperResolution(const SuperResolutionConfig &cfg);
     void updateColorMapping();
     void updateScalarBar();
     void updateSummary();
@@ -110,6 +130,7 @@ private:
     /// RIGHT Inspector — the arrangement every other viewer uses.
     QPointer<QWidget> m_pageDisplay;
     QPointer<QWidget> m_pageFilters;
+    QPointer<QWidget> m_pageTransformations;
     QPointer<QWidget> m_pageInfo;
     QPointer<QAction> m_actionSessionPanel;
     QPointer<QLabel> m_propSession;   ///< Inspector row; replaced on recovery
@@ -160,6 +181,9 @@ private:
     std::vector<BackendTabularFilter> activeFilters;
     bool filterBusy{ false };
     QFutureWatcher<VbtFilterTaskResult> filterWatcher;
+    QPointer<QPushButton> btnTransformationSuperResolution;
+    QFutureWatcher<SuperResolutionTaskResult> superResolutionWatcher;
+    QPointer<QLabel> transformationStatusLabel;
     // ── Pagination ────────────────────────────────────────────────────────────
     int m_currentOffset{ 0 };
     int m_pageSize{ 50000 };

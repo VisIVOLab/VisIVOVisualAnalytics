@@ -88,6 +88,169 @@ static bool isSessionExpiryError(const QString &errorText)
         || lower.contains(u"expired"_s)
         || lower.contains(u"not found"_s);
 }
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared helper – "Super-resolution" dialog and run
+// ─────────────────────────────────────────────────────────────────────────────
+void vtkWindowVbt::launchSuperResolution(const SuperResolutionConfig &cfg)
+{
+    if (this->openResult.datasetId.isEmpty()) {
+        return;
+    }
+
+    if (this->transformationStatusLabel) {
+        this->transformationStatusLabel->setText(u"Running super-resolution…"_s);
+    }
+    if (this->btnTransformationSuperResolution) {
+        this->btnTransformationSuperResolution->setEnabled(false);
+    }
+
+    const QString url = this->backendUrl;
+    const QString token = this->backendToken;
+    const QString datasetId = this->openResult.datasetId;
+    const QString sessionId = this->sessionId;
+
+    this->superResolutionWatcher.setFuture(QtConcurrent::run(
+        [url, token, datasetId, sessionId, cfg]() -> SuperResolutionTaskResult {
+            SuperResolutionTaskResult out;
+
+            BackendClient client(url, token);
+            if (!sessionId.isEmpty()) {
+                client.setSessionId(sessionId);
+            }
+
+            const auto result = client.superResolveVbt(
+                datasetId,
+                cfg.kind,
+                cfg.upsampleFactor,
+                cfg.cosmology,
+                cfg.particleMass);
+
+            if (!result.valid) {
+                out.valid = false;
+                out.error = result.error;
+                return out;
+            }
+
+            out.valid = true;
+            out.datasetId = result.datasetId;
+            out.statusMsg = result.statusMsg;
+            out.subsetResult = result.subsetResult;
+            out.totalRows = result.totalRows;
+            return out;
+        }));
+}
+
+class SuperResolutionDialog : public QDialog
+{
+public:
+    explicit SuperResolutionDialog(QWidget *parent = nullptr)
+        : QDialog(parent)
+    {
+        setWindowTitle(u"Super-resolution"_s);
+        setModal(true);
+        resize(420, 240);
+
+        auto *layout = new QVBoxLayout(this);
+
+        auto *factorLabel = new QLabel(u"Upsample factor"_s, this);
+        factorLabel->setStyleSheet(QStringLiteral("font-weight: 600;"));
+        layout->addWidget(factorLabel);
+
+        m_factorCombo = new QComboBox(this);
+        m_factorCombo->addItem(u"2"_s, 2);
+        m_factorCombo->addItem(u"4"_s, 4);
+        m_factorCombo->addItem(u"8"_s, 8);
+        m_factorCombo->setCurrentIndex(1); // 4 di default
+        layout->addWidget(m_factorCombo);
+
+        auto *kindLabel = new QLabel(u"Data type"_s, this);
+        kindLabel->setStyleSheet(QStringLiteral("font-weight: 600;"));
+        layout->addWidget(kindLabel);
+
+        m_kindCombo = new QComboBox(this);
+        m_kindCombo->addItem(u"datacube"_s, QStringLiteral("datacube"));
+        m_kindCombo->addItem(u"dark matter only simulation"_s, QStringLiteral("dark_matter_only"));
+        layout->addWidget(m_kindCombo);
+
+        m_cosmologyGroup = new QGroupBox(u"Dark-matter options"_s, this);
+        auto *cosmoLayout = new QFormLayout(m_cosmologyGroup);
+
+        m_cosmologyCombo = new QComboBox(this);
+        m_cosmologyCombo->addItem(u"LCDM"_s, QStringLiteral("LCDM"));
+        m_cosmologyCombo->addItem(u"DDE"_s, QStringLiteral("DDE"));
+        cosmoLayout->addRow(u"Cosmology"_s, m_cosmologyCombo);
+
+        m_particleMassSpin = new QDoubleSpinBox(this);
+        m_particleMassSpin->setRange(0.0, 1e9);
+        m_particleMassSpin->setDecimals(6);
+        m_particleMassSpin->setValue(1.0);
+        cosmoLayout->addRow(u"Particle mass"_s, m_particleMassSpin);
+
+        layout->addWidget(m_cosmologyGroup);
+        m_cosmologyGroup->setVisible(false);
+
+        connect(m_kindCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this](int) { updateDarkMatterOptions(); });
+
+        auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                              Qt::Horizontal, this);
+        layout->addWidget(buttonBox);
+
+        connect(buttonBox, &QDialogButtonBox::accepted, this, &QDialog::accept);
+        connect(buttonBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
+
+        updateDarkMatterOptions();
+    }
+
+    SuperResolutionConfig config() const
+    {
+        SuperResolutionConfig c;
+        c.upsampleFactor = m_factorCombo->currentData().toInt();
+        c.kind = m_kindCombo->currentData().toString();
+        if (c.kind == QLatin1String("dark_matter_only")) {
+            c.cosmology = m_cosmologyCombo->currentData().toString();
+            c.particleMass = m_particleMassSpin->value();
+        }
+        return c;
+    }
+
+private:
+    void updateDarkMatterOptions()
+    {
+        const bool darkMatter = m_kindCombo->currentData().toString() ==
+                                QLatin1String("dark_matter_only");
+
+        m_cosmologyGroup->setVisible(darkMatter);
+    }
+
+    QComboBox *m_factorCombo{ nullptr };
+    QComboBox *m_kindCombo{ nullptr };
+    QComboBox *m_cosmologyCombo{ nullptr };
+    QDoubleSpinBox *m_particleMassSpin{ nullptr };
+    QGroupBox *m_cosmologyGroup{ nullptr };
+};
+
+
+void vtkWindowVbt::runSuperResolutionDialog()
+{
+    if (this->openResult.datasetId.isEmpty()) {
+        if (this->transformationStatusLabel) {
+            this->transformationStatusLabel->setText(u"No dataset loaded for super-resolution."_s);
+        }
+        return;
+    }
+
+    auto *dlg = new SuperResolutionDialog(this);
+    if (dlg->exec() != QDialog::Accepted) {
+        delete dlg;
+        return;
+    }
+
+    const auto cfg = dlg->config();
+    delete dlg;
+
+    this->launchSuperResolution(cfg);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared helper – "Add Filter" dialog
@@ -196,6 +359,14 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
                              this->filterStatusLabel->setText({});
                          }
 
+                         if (this->transformationStatusLabel) {
+                             this->transformationStatusLabel->setText({});
+                         }
+
+                         if (this->btnTransformationSuperResolution) {
+                             this->btnTransformationSuperResolution->setEnabled(true);
+                         }
+
                          const auto result = this->filterWatcher.result();
                          if (!result.valid) {
                              DiagnosticsManager::instance()->publish(
@@ -242,6 +413,11 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
 
                          if (this->filterStatusLabel) {
                              this->filterStatusLabel->setText(result.statusMsg);
+                         }
+
+                         
+                         if (this->transformationStatusLabel) {
+                             this->transformationStatusLabel->setText(result.statusMsg);
                          }
 
                          if (this->actor) {
@@ -545,6 +721,51 @@ void vtkWindowVbt::setupUi()
     // Filter: Apply
     QObject::connect(this->btnFilterApply, &QPushButton::clicked, this, &vtkWindowVbt::applyFilter);
 
+    // Transformation: Super-resolution
+    QObject::connect(this->btnTransformationSuperResolution, &QPushButton::clicked,
+                 this, &vtkWindowVbt::runSuperResolutionDialog);
+    QObject::connect(&this->superResolutionWatcher,
+                 &QFutureWatcher<SuperResolutionTaskResult>::finished,
+                 this, [this]() {
+    if (this->btnTransformationSuperResolution) {
+        this->btnTransformationSuperResolution->setEnabled(true);
+    }
+
+    const auto result = this->superResolutionWatcher.result();
+
+    if (!result.valid) {
+        if (this->transformationStatusLabel) {
+            this->transformationStatusLabel->setText(
+                u"Super-resolution failed: "_s + result.error);
+        }
+        return;
+    }
+
+    if (!result.datasetId.isEmpty()) {
+        this->openResult.datasetId = result.datasetId;
+    }
+
+    this->subsetResult = result.subsetResult;
+    this->openResult.kind = QStringLiteral("point");
+    this->openResult.numRows = result.totalRows;
+    this->m_currentOffset = result.totalRows;
+    this->m_totalCount = result.totalRows;
+
+    if (this->transformationStatusLabel) {
+        this->transformationStatusLabel->setText(
+            result.statusMsg.isEmpty()
+                ? u"Super-resolution complete."_s
+                : result.statusMsg);
+    }
+
+    // Reload scene
+    this->buildPointCloud();
+    this->rebuildCoordinates();
+    this->updateSummary();
+    this->updateBoundsContext();
+    this->renderWindow->Render();
+    });
+
     // ── View menu ─────────────────────────────────────────────────────────────
     auto *viewMenu = this->menuBar()->addMenu(u"View"_s);
     this->m_actionSessionPanel = new QAction(u"Session Data Panel"_s, this);
@@ -833,7 +1054,44 @@ void vtkWindowVbt::setupSidebarUi()
     }
     pageFiltersLayout->addStretch(1);
 
-    // ── Page 2: Info / Stats ──────────────────────────────────────────────────
+    // ── Page 2: Transformations (same structure as catalogue viewer) ─────────────────
+    auto *pageTransformations = new QWidget;
+    auto *pageTransformationsLayout = new QVBoxLayout(pageTransformations);
+    pageTransformationsLayout->setContentsMargins(8, 8, 8, 8);
+    pageTransformationsLayout->setSpacing(8);
+
+    {
+        auto *hdr = new QLabel(u"TRANSFORMATIONS"_s, pageTransformations);
+        hdr->setStyleSheet(hdrStyle);
+        pageTransformationsLayout->addWidget(hdr);
+    }
+    // Card 1: Transformations
+    {
+        auto *card = new QFrame(pageTransformations);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
+
+        auto *listHdr = new QLabel(u"AI"_s, card);
+        listHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(listHdr);
+
+        this->btnTransformationSuperResolution      = new QPushButton(u"Super-resolution"_s,      card);
+        cl->addWidget(this->btnTransformationSuperResolution);
+
+        this->transformationStatusLabel = new QLabel(card);
+        this->transformationStatusLabel->setWordWrap(true);
+        this->transformationStatusLabel->setStyleSheet(
+                QStringLiteral("QLabel { color: %1; font-size: 9px; }")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        cl->addWidget(this->transformationStatusLabel);
+
+        pageTransformationsLayout->addWidget(card);
+    }
+    pageTransformationsLayout->addStretch(1);
+
+    // ── Page 3: Info / Stats ──────────────────────────────────────────────────
     auto *pageInfo = new QWidget;
     auto *pageInfoLayout = new QVBoxLayout(pageInfo);
     pageInfoLayout->setContentsMargins(8, 8, 8, 8);
@@ -1017,6 +1275,7 @@ void vtkWindowVbt::setupSidebarUi()
     // constructor right after this.
     this->m_pageDisplay = pageDisplay;
     this->m_pageFilters = pageFilters;
+    this->m_pageTransformations = pageTransformations;
     this->m_pageInfo = pageInfo;
     for (QWidget *page : { pageDisplay, pageFilters, pageInfo }) {
         page->setParent(this);
@@ -1879,6 +2138,10 @@ void vtkWindowVbt::setupWorkspaceDocks()
     if (this->m_pageInfo) {
         this->m_pageInfo->show();
         panel->addPropertiesSection(this->m_pageInfo);
+    }
+    if (this->m_pageTransformations) {
+        this->m_pageTransformations->show();
+        panel->addAnalysisSection(this->m_pageTransformations);
     }
     // Filtering the table is an analysis of it, not a view setting.
     if (this->m_pageFilters) {

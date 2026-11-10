@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import base64
 import numpy as np
 import pandas as pd
+import torch
 from astropy.io import fits
 from ..schemas import *
 from ..dependencies import *
@@ -18,6 +19,19 @@ from ..tasks import TASKS
 from ..product_cache import PRODUCT_CACHE
 from ..fits_dataset import ScientificFitsDataset
 import asyncio
+from ..dependencies import _require_dataset
+from ..services.super_resolution.super_resolution import *
+
+
+class VbtSuperResolutionRequest(BaseModel):
+    dataset_id: str
+    kind: str = "datacube"
+    upsample_factor: int = 4
+    cosmology: str = "LCDM"
+    particle_mass: float = 1.0
+
+super_resolution_model = None
+device = "cpu" if not torch.cuda.is_available() else "cuda"
 
 router = APIRouter(tags=['vbt'])
 
@@ -274,3 +288,124 @@ async def vbt_query(
         fields=field_names,
         columns=columns,
     )
+
+@router.post("/v1/vbt/super_resolution")
+async def vbt_super_resolution(
+    request: VbtSuperResolutionRequest,
+    _: None = Depends(verify_token),
+    session: Session = Depends(get_session),
+):
+    global super_resolution_model, device
+
+    entry = _require_dataset(session, request.dataset_id)
+    if entry.get("kind") != "vbt":
+        raise HTTPException(422, "This endpoint requires a VBT dataset.")
+
+    data = entry["memmap"]
+    header = entry["header"]
+    field_names: list[str] = header["field_names"]
+
+    if len(field_names) != 3 or data.shape[0] != 3:
+        raise HTTPException(
+            422,
+            "Super-resolution requires a VBT dataset with exactly three fields.",
+        )
+
+    data_array = np.asarray(data)
+    logger.info("[vbt-superresolution] data_array shape: %s", data_array.shape)
+    Ng = round(data_array.shape[1] ** (1 / 3))  # NOTE: hardcoded for now
+    if Ng <= 0 or Ng**3 != data_array.shape[1]:
+        raise HTTPException(
+            422,
+            "Super-resolution requires a cubic dataset with the same number of "
+            "samples along each axis.",
+        )
+    data_array = data_array.reshape(3, Ng, Ng, Ng)
+    data_array = data_array[np.newaxis, :]
+    logger.info("[vbt-superresolution] data_array shape after reshape: %s", data_array.shape)
+
+    if super_resolution_model is None:
+        try:
+            super_resolution_model = load_sr_model("F:/INAF/borsa_23_03_2026/SR_tool_visivo/VisIVO-next-1.0.2-superresolution/backend/app/services/super_resolution/models/baseline.pt", device=device)
+        except Exception as exc:
+            raise HTTPException(500, f"Super-resolution model loading failed: {exc}") from exc
+
+
+    result = run_sr_on_nbody(  # NOTE: hardcoded for now
+        arr=data_array,
+        model = super_resolution_model,
+        device=device,
+        kind=request.kind,
+        upsample_fac=request.upsample_factor,
+        cosmology=request.cosmology,
+        particle_mass=request.particle_mass,
+    )
+    if torch.is_tensor(result):
+        result = result.detach().cpu().numpy()
+    result_array = np.asarray(result)
+    if (
+        result_array.ndim != 5
+        or result_array.shape[0] != 1
+        or result_array.shape[1] != len(field_names)
+        or any(size <= 0 for size in result_array.shape[2:])
+    ):
+        raise HTTPException(
+            500,
+            "Super-resolution returned an invalid tensor shape; expected "
+            "(1, 3, nx, ny, nz).", #TODO: remove batchsize
+        )
+
+    logger.info("[vbt-superresolution] inference done. Result shape: %s", result_array.shape)
+
+    total_rows = int(np.prod(result_array.shape[2:], dtype=np.int64))
+    payload_bytes = ((total_rows * len(field_names) * 8 + 2) // 3) * 4
+    if payload_bytes > _POINT_SUBSET_LIMIT_BYTES:
+        raise HTTPException(
+            413,
+            f"The generated dataset would exceed the "
+            f"{_POINT_SUBSET_LIMIT_BYTES >> 20} MiB response limit. "
+            "Use a smaller upsample factor or a smaller input dataset.",
+        )
+
+    # VBT point columns are float64 little-endian, matching /v1/vbt/subset.
+    generated_data = np.ascontiguousarray(result_array[0], dtype=np.float32)
+    columns = {
+        field_name: base64.b64encode(
+            generated_data[index].astype("<f8", copy=False).reshape(-1).tobytes()
+        ).decode("ascii")
+        for index, field_name in enumerate(field_names)
+    }
+
+    # Keep the generated data in the session so subsequent filters and pages
+    # operate on the transformed dataset rather than the original input.
+    result_dataset_id = f"vbt_{uuid.uuid4().hex[:12]}"
+    result_header = dict(header)
+    result_header.update(
+        kind="point",
+        field_count=len(field_names),
+        num_rows=total_rows,
+        scalar_type="float32",
+        np_endian_code="<f4",
+        dimensions=list(result_array.shape[2:]),
+    )
+    session.datasets[result_dataset_id] = {
+        "kind": "vbt",
+        "head_path": entry.get("head_path"),
+        "bin_path": entry.get("bin_path"),
+        "header": result_header,
+        "memmap": generated_data.reshape(len(field_names), total_rows),
+    }
+
+    return {
+        "valid": True,
+        "error": "",
+        "dataset_id": result_dataset_id,
+        "status_msg": "Super-resolution complete",
+        "total_rows": total_rows,
+        "subset": {
+            "kind": "point",
+            "num_rows": total_rows,
+            "fields": field_names,
+            "columns": columns,
+        },
+    }
