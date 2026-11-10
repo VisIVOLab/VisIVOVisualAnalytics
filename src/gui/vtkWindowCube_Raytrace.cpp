@@ -8,6 +8,7 @@
 #include "vtkWindowCube.h"
 #include "ui_vtkWindowCube.h"
 
+#include "BackendLocality.h"
 #include "CubeUiAssembler.h"
 #include "RaytraceOutput.h"
 #include "RaytraceViewport.h"
@@ -62,7 +63,7 @@ void vtkWindowCube::raytraceCamera(
         vtkRenderWindow *win = ui->vtkCube->renderWindow();
         vtkRenderer *ren = win ? win->GetRenderers()->GetFirstRenderer() : nullptr;
         if (!ren) {
-            done({}, u"no 3-D view"_s);
+            done({}, u"No camera for the ray-traced view: no 3-D view"_s);
             return;
         }
         vtkCamera *cam = ren->GetActiveCamera();
@@ -92,9 +93,17 @@ void vtkWindowCube::raytraceCamera(
     QNetworkReply *reply = nam->get(req);
     QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, done]() {
         reply->deleteLater();
-        const QJsonObject body = QJsonDocument::fromJson(reply->readAll()).object();
+        const QByteArray raw = reply->readAll();
+        const QJsonObject body = QJsonDocument::fromJson(raw).object();
         if (reply->error() != QNetworkReply::NoError) {
-            done({}, body.value(u"detail"_s).toString(reply->errorString()));
+            // A backend older than the ray-traced views has no camera route:
+            // its bare "Not Found" would say nothing.
+            const QString missing = visivo::missingRouteMessage(this->remoteBackendUrl, reply, raw,
+                                                                u"ray-traced views"_s);
+            done({}, !missing.isEmpty()
+                             ? missing
+                             : u"No camera for the ray-traced view: "_s
+                                       + body.value(u"detail"_s).toString(reply->errorString()));
             return;
         }
         // The backend view's coordinates: the cube's own voxels.
@@ -212,6 +221,11 @@ void vtkWindowCube::setRaytraced(bool on)
     // The card and the controls follow the check, whichever way this returns.
     const auto sync = qScopeGuard([this]() { this->syncRaytracedControls(); });
     if (!on) {
+        // Once the view shown again has taken it, the camera is forgotten.
+        const auto forget = qScopeGuard([this]() {
+            if (this->m_rtView)
+                this->m_rtView->clearCamera();
+        });
         if (this->m_rtView && this->m_renderStack
             && this->m_renderStack->currentWidget() == this->m_rtView) {
             // Back to the view the camera was turned to: this window's, or
@@ -351,6 +365,14 @@ void vtkWindowCube::setRaytraced(bool on)
                          [this](const QString &text) {
                              this->statusBar()->showMessage(text, 8000);
                          });
+        // A backend without the grid route draws nothing: the view goes off
+        // rather than stay black, and the line says why.
+        QObject::connect(this->m_rtView, &RaytraceViewport::unavailable, this,
+                         [this](const QString &text) {
+                             if (this->m_rtCheck && this->m_rtCheck->isChecked())
+                                 this->m_rtCheck->setChecked(false);
+                             this->statusBar()->showMessage(text, 10000);
+                         });
         // A grid's colours arrive with it: the tone takes them.
         QObject::connect(this->m_rtView, &RaytraceViewport::gridReady, this->m_rtView,
                          &RaytraceViewport::retone);
@@ -381,14 +403,18 @@ void vtkWindowCube::setRaytraced(bool on)
         return;
     }
     this->m_rtPreviousPage = this->m_renderStack->currentIndex();
-    this->raytraceCamera([self = QPointer<vtkWindowCube>(this)](const QJsonObject &camera,
-                                                                const QString &error) {
+    // An answer to an earlier request (the check cleared and ticked again
+    // while it was on its way) is not this one's: its failure must not clear it.
+    const quint64 request = ++this->m_rtCameraRequest;
+    this->raytraceCamera([self = QPointer<vtkWindowCube>(this), request](
+                                 const QJsonObject &camera, const QString &error) {
         // Cleared while the backend view's camera was on its way: stay off.
-        if (!self || !self->m_rtView || !self->m_rtCheck || !self->m_rtCheck->isChecked())
+        if (!self || !self->m_rtView || !self->m_rtCheck || !self->m_rtCheck->isChecked()
+            || request != self->m_rtCameraRequest)
             return;
         if (camera.isEmpty()) {
-            self->statusBar()->showMessage(u"No camera for the ray-traced view: "_s + error, 8000);
             self->m_rtCheck->setChecked(false);   // the analysis view and its controls back
+            self->statusBar()->showMessage(error, 10000);
             return;
         }
         self->m_rtView->setCamera(camera);

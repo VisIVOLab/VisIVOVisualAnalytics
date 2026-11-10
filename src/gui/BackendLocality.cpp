@@ -1,6 +1,7 @@
 #include "BackendLocality.h"
 
 #include "Settings.h"
+#include "app/MissingRoute.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -8,6 +9,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QSettings>
 #include <QUrl>
 
@@ -139,6 +142,16 @@ QString backendDisplayName(const QString &backendUrl)
             return id;
     }
     return hostPort;
+}
+
+QString missingRouteMessage(const QString &backendUrl, const QNetworkReply *reply,
+                            const QByteArray &body, const QString &feature)
+{
+    const int status =
+            reply ? reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() : 0;
+    if (!isMissingRouteReply(status, body))
+        return {};
+    return missingFeatureMessage(backendDisplayName(backendUrl), feature);
 }
 
 } // namespace visivo

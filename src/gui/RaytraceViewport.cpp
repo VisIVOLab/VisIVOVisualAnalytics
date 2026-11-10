@@ -1,5 +1,6 @@
 #include "RaytraceViewport.h"
 
+#include "BackendLocality.h"
 #include "OrbitPath.h"
 #include "RaytraceSettingsPanel.h"
 #include "app/BackendClient.h"
@@ -165,6 +166,12 @@ void RaytraceViewport::fallbackFrame()
     connect(reply, &QNetworkReply::finished, this, [this, reply, camera, projected, tone]() {
         reply->deleteLater();
         m_fallbackReply.clear();
+        if (reply->error() != QNetworkReply::NoError
+            && reply->error() != QNetworkReply::OperationCanceledError
+            && routeMissing(reply, reply->readAll())) {
+            m_fallbackPending = false;   // the next frame would be refused too
+            return;
+        }
         if (reply->error() == QNetworkReply::NoError && !m_showingStill) {
             QImage image;
             image.loadFromData(reply->readAll());
@@ -265,8 +272,11 @@ void RaytraceViewport::fetch(const QString &key, const QJsonObject &request)
             m_loadingKey.clear();
         if (reply->error() != QNetworkReply::NoError) {
             if (reply->error() != QNetworkReply::OperationCanceledError) {
-                const QString detail = QJsonDocument::fromJson(reply->readAll())
-                                               .object().value(u"detail"_s).toString();
+                const QByteArray body = reply->readAll();
+                if (routeMissing(reply, body))
+                    return;
+                const QString detail =
+                        QJsonDocument::fromJson(body).object().value(u"detail"_s).toString();
                 emit message(u"Ray-traced view: "_s
                              + (detail.isEmpty() ? reply->errorString() : detail));
             }
@@ -298,6 +308,17 @@ void RaytraceViewport::fetch(const QString &key, const QJsonObject &request)
             note += u", one in %1 of the table carrying their light"_s.arg(step);
         emit message(note);
     });
+}
+
+bool RaytraceViewport::routeMissing(QNetworkReply *reply, const QByteArray &body)
+{
+    const QString text =
+            visivo::missingRouteMessage(m_source.backendUrl, reply, body, u"ray-traced views"_s);
+    if (text.isEmpty())
+        return false;
+    emit message(text);
+    emit unavailable(text);
+    return true;
 }
 
 void RaytraceViewport::takeFallbackGrid(QNetworkReply *reply, bool projected,

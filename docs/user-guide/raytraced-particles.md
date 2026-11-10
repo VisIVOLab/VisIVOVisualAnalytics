@@ -62,6 +62,10 @@ even sample is sent, each particle carrying the light of those it stands for.
 With a backend far away and a large table, the backend's own rendering
 (*View → Rendering → Remote (GPU on backend)*) is the better choice.
 
+A backend older than the ray-traced views has none of their routes: the check
+clears itself, the table goes back to its shape, and the status bar names the
+backend and says it needs updating.
+
 ### Settings
 
 The card shows the essentials; **More settings** opens the rest.

@@ -511,6 +511,7 @@ set(PROJECT_SOURCES
         src/gui/BusyTracker.h
         src/gui/SelectionMarkerSize.h
         src/app/FilePreview.h
+        src/app/MissingRoute.h
         src/gui/CubeVRController.cpp
         src/gui/CubeVRController.h
         src/gui/Catalogue3DTableModel.cpp
