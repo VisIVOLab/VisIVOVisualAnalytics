@@ -94,6 +94,8 @@
     "POST /v1/cube/noise",
     "POST /v1/cube/preview",
     "POST /v1/cube/pv",
+    "POST /v1/cube/reduced_bin",
+    "POST /v1/cube/reduced_info",
     "POST /v1/cube/save_channel_2d",
     "POST /v1/cube/save_subregion",
     "POST /v1/cube/slice",

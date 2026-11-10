@@ -19,6 +19,8 @@ inline constexpr const char *REQUEST_ID = "X-Request-ID";
 inline constexpr const char *SODA_APPLIED = "X-Soda-Applied";
 inline constexpr const char *TRUNCATED = "X-Truncated";
 inline constexpr const char *BBOX = "X-Visivo-Bbox";
+inline constexpr const char *BIN_FACTORS = "X-Visivo-Bin-Factors";
+inline constexpr const char *BIN_MODE = "X-Visivo-Bin-Mode";
 inline constexpr const char *BUNIT = "X-Visivo-Bunit";
 inline constexpr const char *BYTEORDER = "X-Visivo-Byte-Order";
 inline constexpr const char *CALIBRATED = "X-Visivo-Calibrated";
@@ -58,6 +60,7 @@ inline constexpr const char *SPECTRAL_AXIS_UNIT = "X-Visivo-Spectral-Axis-Unit";
 inline constexpr const char *SPECTRAL_MODE = "X-Visivo-Spectral-Mode";
 inline constexpr const char *SPEED_MAX = "X-Visivo-Speed-Max";
 inline constexpr const char *SPEED_MIN = "X-Visivo-Speed-Min";
+inline constexpr const char *THRESHOLD = "X-Visivo-Threshold";
 inline constexpr const char *TOKEN = "X-Visivo-Token";
 inline constexpr const char *TRIM_BOX = "X-Visivo-Trim-Box";
 inline constexpr const char *UNIT = "X-Visivo-Unit";
@@ -67,7 +70,7 @@ inline constexpr const char *WARNINGS = "X-Visivo-Warnings";
 inline constexpr const char *WIDTH = "X-Visivo-Width";
 
 // Every declared header name, for the contract test to diff against the manifest.
-inline constexpr std::array<const char *, 53> kAll = {
+inline constexpr std::array<const char *, 56> kAll = {
     EW_UNIT,
     FWHM_UNIT,
     MAP_UNIT,
@@ -75,6 +78,8 @@ inline constexpr std::array<const char *, 53> kAll = {
     SODA_APPLIED,
     TRUNCATED,
     BBOX,
+    BIN_FACTORS,
+    BIN_MODE,
     BUNIT,
     BYTEORDER,
     CALIBRATED,
@@ -114,6 +119,7 @@ inline constexpr std::array<const char *, 53> kAll = {
     SPECTRAL_MODE,
     SPEED_MAX,
     SPEED_MIN,
+    THRESHOLD,
     TOKEN,
     TRIM_BOX,
     UNIT,

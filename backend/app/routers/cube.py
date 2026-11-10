@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, model_validator
-from typing import Any
+from typing import Any, Literal
 import math
 import uuid
 import logging
@@ -179,6 +179,92 @@ async def cube_subvolume_bin(
         media_type="application/octet-stream",
         headers=headers,
     )
+
+
+# ── Reduced cube for a headset (issue #167) ─────────────────────────────────
+# The WebXR page (app/static/vr) renders a reduced copy of the cube on the
+# headset's own GPU, so head and controller motion never wait for the network;
+# the analysis stays on the full cube. /reduced_info answers the shape, the
+# factors, the default threshold and the world coordinates of the reduced
+# voxels (JSON); /reduced_bin streams the reduced cube as an 8- or 16-bit 3-D
+# texture. The rules are in app/cube_reduce.py.
+
+class CubeReducedRequest(BaseModel):
+    dataset_id: str
+    #: Integer binning of both spatial axes; 0 picks the smallest factor that
+    #: brings both to at most ``max_dim`` reduced voxels.
+    factor_xy: int = Field(default=0, ge=0, le=64)
+    #: Integer binning of the spectral axis; 0 picks it the same way.
+    factor_z: int = Field(default=0, ge=0, le=64)
+    max_dim: int = Field(default=256, ge=16, le=2048)
+    #: ``mean`` (over each block's finite voxels) or ``max`` (largest finite value).
+    mode: Literal["mean", "max"] = "mean"
+    #: ``uint8`` (0 = blank, 1..255 = the range) or ``float16`` (normalised, < 0 = blank).
+    encoding: Literal["uint8", "float16"] = "uint8"
+
+
+@router.post("/v1/cube/reduced_info", tags=["cube"])
+async def cube_reduced_info(
+    request: CubeReducedRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Shape, factors, default threshold and world axes of the reduced cube the
+    VR page renders, without reducing it."""
+    from ..compute import worker_cube_reduced_info
+    path = _require_cube_path(session, request.dataset_id)
+    try:
+        return await _run(worker_cube_reduced_info, path, request.factor_xy,
+                          request.factor_z, request.max_dim, request.encoding)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/v1/cube/reduced_bin", tags=["cube"])
+async def cube_reduced_bin(
+    request: CubeReducedRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """The reduced cube as raw 8- or 16-bit voxels (x fastest), with its value
+    range and its default threshold in headers (mean: the noise rule on the
+    reduced cube; max: the full cube's threshold). Reads the whole cube, so it
+    takes a compute slot."""
+    from ..compute import worker_cube_reduced
+    path = _require_cube_path(session, request.dataset_id)
+    try:
+        result = await _run_with_limit(
+            session, worker_cube_reduced, path, request.factor_xy, request.factor_z,
+            request.max_dim, request.mode, request.encoding)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        return Response(content=str(exc).encode("utf-8"), media_type="text/plain",
+                        status_code=422)
+    except Exception as exc:  # noqa: BLE001 - the binary routes answer text/plain
+        return Response(content=str(exc).encode("utf-8"), media_type="text/plain",
+                        status_code=500)
+    raw: bytes = result["raw_bytes"]
+    fx, fy, fz = result["factors"]
+    fw, fh, fd = result["full_shape"]
+    headers = {
+        "X-Visivo-Width": str(result["width"]),
+        "X-Visivo-Height": str(result["height"]),
+        "X-Visivo-Depth": str(result["depth"]),
+        "X-Visivo-Scalar-Type": result["encoding"],
+        "X-Visivo-Byte-Order": "little",
+        "X-Visivo-Range-Min": repr(float(result["range_min"])),
+        "X-Visivo-Range-Max": repr(float(result["range_max"])),
+        "X-Visivo-Full-Shape": f"{fw},{fh},{fd}",
+        "X-Visivo-Bin-Factors": f"{fx},{fy},{fz}",
+        "X-Visivo-Bin-Mode": result["mode"],
+        "X-Visivo-Threshold": ("" if result["threshold"] is None
+                               else repr(float(result["threshold"]))),
+        "X-Visivo-Bunit": str(result.get("bunit", "")),
+        "Content-Length": str(len(raw)),
+    }
+    return Response(content=raw, media_type="application/octet-stream", headers=headers)
+
 
 # ── Tilted-ring kinematic model (F2) ────────────────────────────────────────
 # Build a model PPV cube of a regularly rotating disk from a compact tilted-ring

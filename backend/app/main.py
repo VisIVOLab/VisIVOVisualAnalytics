@@ -147,6 +147,25 @@ _samp_static_dir = _repo_root / "icons"
 if _samp_static_dir.exists():
     app.mount("/static", StaticFiles(directory=str(_samp_static_dir)), name="static")
 
+
+class _RevalidatedStaticFiles(StaticFiles):
+    """Static files the browser must revalidate on every load (ETag), so a
+    headset does not keep running yesterday's page after an update."""
+
+    def file_response(self, *args, **kwargs):  # type: ignore[override]
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+# The WebXR page (issue #167). Open like any static file: it holds no data and
+# no token. The page sends the token on its own API requests, read from the
+# URL fragment (never sent to the server, so never in an access log) or typed.
+_vr_static_dir = Path(__file__).resolve().parent / "static" / "vr"
+if _vr_static_dir.is_dir():
+    app.mount("/vr", _RevalidatedStaticFiles(directory=str(_vr_static_dir), html=True),
+              name="vr")
+
 # ── Middleware: X-Request-ID (R8) ─────────────────────────────────────────────
 @app.middleware("http")
 async def attach_request_id(request: Request, call_next):
