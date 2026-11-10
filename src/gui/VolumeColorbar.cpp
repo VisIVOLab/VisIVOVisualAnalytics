@@ -128,11 +128,32 @@ void VolumeColorbar::paint(QPainter &painter, const QRect &rect, const QFontMetr
         return;
     painter.save();
     painter.translate(rect.topLeft());
-    const int width = rect.width(), height = rect.height();
+    const int height = rect.height();
     painter.setRenderHint(QPainter::Antialiasing);
-    QPainterPath backdrop;
-    backdrop.addRoundedRect(QRectF(0, 0, width, height), 6, 6);
-    painter.fillPath(backdrop, QColor(0, 0, 0, 140));
+    // No box behind the bar: the image and cube viewers' colour bars (VTK's
+    // scalar bar) are drawn straight on the view, and this one matches them
+    // (issue #159). Instead every light stroke (labels, ticks, outline) has a
+    // dark halo under it, so the bar reads on a white background as well as
+    // on the usual dark one: a still saved on white keeps its scale.
+    const QColor textColour(235, 235, 235);
+    const QColor halo(0, 0, 0, 190);
+    const auto label = [&painter, textColour, halo](int x, int y, const QString &text) {
+        painter.setPen(halo);
+        for (int dx = -1; dx <= 1; ++dx)
+            for (int dy = -1; dy <= 1; ++dy)
+                if (dx != 0 || dy != 0)
+                    painter.drawText(x + dx, y + dy, text);
+        painter.setPen(textColour);
+        painter.drawText(x, y, text);
+    };
+    // A light line on a wider dark one.
+    const auto haloLine = [&painter, halo](const QPointF &a, const QPointF &b, const QColor &c,
+                                           double width) {
+        painter.setPen(QPen(halo, width + 2.0, Qt::SolidLine, Qt::RoundCap));
+        painter.drawLine(a, b);
+        painter.setPen(QPen(c, width, Qt::SolidLine, Qt::RoundCap));
+        painter.drawLine(a, b);
+    };
 
     const int titleHeight = look.title.isEmpty() ? 0 : fm.height() + 4;
     const int captionHeight = look.thresholdCaption.isEmpty() ? 0 : fm.height() + 4;
@@ -152,26 +173,27 @@ void VolumeColorbar::paint(QPainter &painter, const QRect &rect, const QFontMetr
             c = QColor(c.red() / 4, c.green() / 4, c.blue() / 4);
         painter.fillRect(kPad, y, kBarWidth, 1, c);
     }
-    painter.setPen(QColor(255, 255, 255, 90));
+    painter.setPen(QPen(halo, 3.0));
+    painter.drawRect(kPad, top, kBarWidth, span);
+    painter.setPen(QColor(255, 255, 255, 160));
     painter.drawRect(kPad, top, kBarWidth, span);
 
-    painter.setPen(QColor(235, 235, 235));
     if (!look.title.isEmpty())
-        painter.drawText(kPad, kPad + fm.ascent(), look.title);
+        label(kPad, kPad + fm.ascent(), look.title);
     if (!look.thresholdCaption.isEmpty())
-        painter.drawText(kPad, height - kPad - fm.descent(), look.thresholdCaption);
+        label(kPad, height - kPad - fm.descent(), look.thresholdCaption);
     const int tickX = kPad + kBarWidth;
     for (const auto &[position, text] : look.ticks) {
         const int y = yAt(position);
-        painter.drawLine(tickX, y, tickX + kTickLength, y);
-        painter.drawText(tickX + kTickLength + 4, y + fm.ascent() / 2 - 1, text);
+        haloLine(QPointF(tickX, y), QPointF(tickX + kTickLength, y), textColour, 1.0);
+        label(tickX + kTickLength + 4, y + fm.ascent() / 2 - 1, text);
     }
 
     if (look.threshold) {
         // The threshold across the bar, with a notch on its left.
         const int y = yAt(*look.threshold);
-        painter.setPen(QPen(QColor(255, 255, 255), 1.5));
-        painter.drawLine(kPad - 3, y, kPad + kBarWidth + 1, y);
+        haloLine(QPointF(kPad - 3, y), QPointF(kPad + kBarWidth + 1, y), QColor(255, 255, 255),
+                 1.5);
         QPainterPath notch;
         notch.moveTo(kPad - 3, y - 3);
         notch.lineTo(kPad, y);

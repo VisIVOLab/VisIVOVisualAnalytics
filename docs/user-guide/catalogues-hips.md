@@ -91,13 +91,15 @@ check before drawing conclusions about clustering or LSS.
   - Options
   - When to use
 * - Geometry
-  - Ellipsoid, Sphere, Point, Cross, Gaussian splats, Ray-traced
+  - Ellipsoid, Sphere, Point, Cross, Gaussian splats; and the separate
+    *Ray-traced light* check below them
   - Ellipsoid for axis-aware sources; Point for very dense fields where
     glyph overhead matters; Gaussian splats for a simulation's particles —
     emissive, so dense regions add up to bright and sparse filaments stay
-    faint but visible (the *Scale* slider sets their size); Ray-traced for
-    figures of a simulation, drawn on the backend ([Ray-traced
-    particles](raytraced-particles)).
+    faint but visible (the *Scale* slider sets their size). *Ray-traced
+    light* draws a simulation for figures on this machine's GPU, prepared by
+    the backend ([Ray-traced particles](raytraced-particles)); the shape is
+    kept for when it is cleared.
 * - Size
   - Fixed, Major axis, LLS, Flux
   - "Major axis" scales each glyph by the catalogue's morphology size;
@@ -116,6 +118,14 @@ check before drawing conclusions about clustering or LSS.
 
 A colour bar at the right of the view shows the colours over the column's
 range (or the editor's Min..Max) on the scale in use, titled with the column.
+It is drawn straight on the view, with no box behind it, as in the image and
+cube viewers.
+
+Clicking a source selects it: a ring marks it and the *Source Info* page shows
+its row. The ring wraps the glyph of an ellipsoid, sphere or cross, and is a
+small ring of a few pixels around a point, a splat or an arrow; it keeps that
+size on screen as you zoom. To deselect, press **Esc**, click on empty space,
+click the selected source again, or choose *View ▸ Clear Selection*.
 
 ### Drawn on the backend
 

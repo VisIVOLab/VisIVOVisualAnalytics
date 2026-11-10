@@ -66,6 +66,7 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QStatusBar>
 #include <QTableView>
 #include <QTextEdit>
 #include <QVBoxLayout>
@@ -81,6 +82,7 @@
 #include <limits>
 
 #include "CatalogueWcsUtil.h"
+#include "SelectionMarkerSize.h"
 
 using namespace Qt::StringLiterals;
 
@@ -233,7 +235,52 @@ int vtkWindowCatalogue3D::pickNearestSource(int displayX, int displayY) const
 
 double vtkWindowCatalogue3D::highlightRadius(int idx, double radiusFactor)
 {
-    if (this->geometryMode == GeometryMode::Point || this->geometryMode == GeometryMode::Gaussian) {
+    // Ellipsoids, spheres and crosses are wrapped by the marker; points,
+    // splats and arrows have no body of their own to wrap.
+    const bool wrapsGlyph = this->geometryMode == GeometryMode::Ellipsoid
+            || this->geometryMode == GeometryMode::Sphere
+            || this->geometryMode == GeometryMode::Cross;
+    const double inData = this->highlightRadiusInData(idx, radiusFactor, wrapsGlyph);
+
+    // Then kept to a few pixels on screen, at the source's depth: sized by the
+    // data alone it could cover half the view (a few particles in a large box,
+    // a bright source's glyph) or shrink to nothing.
+    vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
+    const int *size = this->renderer ? this->renderer->GetSize() : nullptr;
+    if (!camera || !size || idx < 0 || static_cast<std::size_t>(idx) >= this->mappedPositions.size())
+        return inData;
+    const auto &p = this->mappedPositions[static_cast<std::size_t>(idx)];
+    double eye[3], dir[3];
+    camera->GetPosition(eye);
+    camera->GetDirectionOfProjection(dir);
+    const double depth = (p[0] - eye[0]) * dir[0] + (p[1] - eye[1]) * dir[1]
+            + (p[2] - eye[2]) * dir[2];
+    const double perPixel = visivo::worldPerPixel(camera->GetParallelProjection() != 0,
+                                                  camera->GetViewAngle(),
+                                                  camera->GetParallelScale(), depth, size[1]);
+    // The hover ring a little larger than the selection's, as in data units.
+    visivo::MarkerPixelRange range = visivo::markerPixelRange(wrapsGlyph);
+    const double ringScale = radiusFactor / 1.18;
+    range.minPx *= ringScale;
+    range.maxPx *= ringScale;
+    return visivo::clampMarkerRadius(inData, perPixel, range);
+}
+
+void vtkWindowCatalogue3D::refreshHighlightSizes()
+{
+    // The camera moved: the markers keep their size on screen.
+    if (this->selectedIndex >= 0)
+        this->updateHighlightSphere(this->selectSphere.Get(), this->selectActor.Get(),
+                                    this->selectedIndex, 1.18);
+    if (this->hoveredIndex >= 0)
+        this->updateHighlightSphere(this->hoverSphere.Get(), this->hoverActor.Get(),
+                                    this->hoveredIndex, 1.35);
+}
+
+double vtkWindowCatalogue3D::highlightRadiusInData(int idx, double radiusFactor,
+                                                   bool wrapsGlyph) const
+{
+    if (!wrapsGlyph) {
         // Points and splats have no glyph of their own: a marker sized by the
         // particles' mean spacing (∛(volume / N), as the splats are sized), not
         // the catalogue glyph's size, which round a particle is a large sphere.
@@ -258,7 +305,7 @@ double vtkWindowCatalogue3D::highlightRadius(int idx, double radiusFactor)
 void vtkWindowCatalogue3D::updateHighlightSphere(vtkSphereSource *sphere, vtkActor *actor,
                                                   int idx, double radiusFactor)
 {
-    if (idx < 0) {
+    if (idx < 0 || static_cast<std::size_t>(idx) >= this->mappedPositions.size()) {
         actor->VisibilityOff();
         return;
     }
@@ -562,28 +609,39 @@ void vtkWindowCatalogue3D::updateGeometryMode()
         this->geometryMode = GeometryMode::Cross;
     else if (shape == u"Gaussian splats"_s)
         this->geometryMode = GeometryMode::Gaussian;
-    else if (shape == u"Ray-traced"_s)
-        this->geometryMode = GeometryMode::Raytraced;
     else if (shape == u"Arrows (velocity)"_s)
         this->geometryMode = GeometryMode::Velocity;
     else
         this->geometryMode = GeometryMode::Ellipsoid;
+    // Ray-traced light overrides the shape while it is on; the combo keeps the
+    // shape to return to. A table not open on the backend cannot have it: the
+    // check goes back off here, before anything is changed for it (a custom
+    // cosmology dropped for a view that will not come).
+    if (this->m_rtLightCheck && this->m_rtLightCheck->isChecked()) {
+        if (this->remoteDatasetId.isEmpty() || !this->m_renderStack) {
+            const QSignalBlocker block(this->m_rtLightCheck);
+            this->m_rtLightCheck->setChecked(false);
+            this->statusBar()->showMessage(
+                    u"The ray-traced view is prepared by the backend, and this table is not "
+                    u"open there."_s, 6000);
+        } else {
+            this->geometryMode = GeometryMode::Raytraced;
+        }
+    }
     // Ray-traced: the view is drawn on the GPU, the shapes stay as they were.
     if (this->geometryMode != GeometryMode::Raytraced)
         this->updateGlyphPipeline();
     else
         this->dropCustomCosmologyForServerView(u"The ray-traced view"_s);
     // Points and splats are all one size, the slider's: no size column, and
-    // the slider called what it sets.
-    const bool particles = this->geometryMode == GeometryMode::Point
-            || this->geometryMode == GeometryMode::Gaussian;
+    // the slider called what it sets. By the shape chosen, ray-traced or not:
+    // while it is, these rows are only disabled (enablePointOnlyControls).
+    const bool points = shape == u"Point"_s;
+    const bool splats = shape == u"Gaussian splats"_s;
     if (this->m_encForm && this->comboSizeMode) {
-        this->m_encForm->setRowVisible(this->comboSizeMode,
-                                       !particles && this->geometryMode != GeometryMode::Raytraced);
+        this->m_encForm->setRowVisible(this->comboSizeMode, !points && !splats);
         if (auto *label = qobject_cast<QLabel *>(this->m_encForm->labelForField(ui->sliderScale)))
-            label->setText(this->geometryMode == GeometryMode::Point      ? u"Point size"_s
-                           : this->geometryMode == GeometryMode::Gaussian ? u"Splat size"_s
-                                                                          : u"Scale"_s);
+            label->setText(points ? u"Point size"_s : splats ? u"Splat size"_s : u"Scale"_s);
     }
     this->setRaytraced(this->geometryMode == GeometryMode::Raytraced);
     this->pushRemoteState();

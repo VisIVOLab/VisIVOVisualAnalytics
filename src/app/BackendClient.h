@@ -1,6 +1,8 @@
 #ifndef BackendClient_h
 #define BackendClient_h
 
+#include "FilePreview.h"
+
 #include <QByteArray>
 #include <QHash>
 #include <QSet>
@@ -2125,6 +2127,11 @@ public:
     /// POST /v1/files/classify — what is this file? Feeds the single "Open…".
     BackendClassifyResult classifyFile(const QString &path) const;
     BackendFileHeaderResult fileHeader(const QString &path) const;
+    /// POST /v1/files/preview — the start of any file, byte- and line-capped
+    /// on the backend (issue #159). On a backend without the route the result
+    /// has routeMissing set, for the caller to fall back to fileHeader().
+    visivo::FilePreview filePreview(const QString &path, int maxBytes = 16384,
+                                    int maxLines = 60) const;
 
     /// GET /v1/sessions/{session_id}/datasets — enumerate datasets currently
     /// open in a backend session. Used by cross-dataset tools (Spectral

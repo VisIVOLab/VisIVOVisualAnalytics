@@ -288,9 +288,10 @@ Compound names like `flux_z` normalise to `FLUXZ` and do not match `Z`.
 | Event | Effect |
 |-------|--------|
 | Mouse move | `pickNearestSource()` within 14 px → yellow wireframe sphere (throttled to ~30 ms; hover cleared while dragging) |
-| Left click (no drag) | select source → red wireframe sphere + info panel |
+| Left click (no drag) | select source → red wireframe sphere + info panel. Its radius starts from the data (the glyph it wraps; a fraction of the mean particle spacing for points, splats and arrows) and is kept to 6–48 px on screen for glyphs, 5–12 px otherwise (`SelectionMarkerSize.h`), re-sized before each render for the camera |
 | Left click + drag | camera trackball rotate (VTK), hover suppressed |
 | Click selected source again | deselect |
+| Click on empty space, Esc, *View ▸ Clear Selection* | deselect (the action is enabled only while a source is selected, so Esc reaches other widgets otherwise) |
 | `syncTableSelection()` | table row → camera center on source |
 | SAMP `table.highlight.row` / `table.select.rowList` | sent on a selection and received from TOPCAT (`vtkWindowCatalogue3D_Samp.cpp`); rows are matched through the row each entry came from (`Catalogue3DEntry::sourceRow`), so filtered, sampled or partly loaded tables stay linked, and a row not loaded is reported |
 

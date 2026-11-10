@@ -330,6 +330,13 @@ private:
     // ── UI helpers ──────────────────────────────────────────────────────────
     void updateInfoPanel();
     // Reposition and resize a highlight sphere to sit on source[idx].
+    /// The marker's radius from the data alone: the glyph it wraps, or a
+    /// fraction of the particles' mean spacing (highlightRadius then keeps it
+    /// to a few pixels on screen, SelectionMarkerSize.h).
+    double highlightRadiusInData(int idx, double radiusFactor, bool wrapsGlyph) const;
+    /// Re-sizes the hover and selection markers for the current camera.
+    void refreshHighlightSizes();
+    unsigned long m_markerObserverTag{ 0 };   ///< renderer StartEvent → refreshHighlightSizes
     void updateHighlightSphere(vtkSphereSource *sphere, vtkActor *actor, int idx,
                                double radiusFactor);
 
@@ -648,8 +655,11 @@ private:
     /// The camera of the view on screen (asks the backend's view for its own).
     void viewCamera(std::function<void(const QJsonObject &, const QString &)> done);
     QStringList numericColumns() const;
-    // The "Ray-traced" shape: the view on the GPU, its settings in the sidebar.
+    // Ray-traced light: the view on the GPU, its settings in the sidebar. A
+    // way of drawing, not a shape: its own check under the Shape, as in the
+    // cube viewer; the shape is kept for when it is turned off.
     void setRaytraced(bool on);
+    QPointer<QCheckBox> m_rtLightCheck;
     /// The stack's page for a render mode; the ray-traced view while it is on.
     void showRenderPage(int index);
     int m_renderPage{ 0 };
@@ -659,9 +669,9 @@ private:
     QPointer<QFrame> m_rtCard;
     QPointer<QVBoxLayout> m_vizPageLayout;
     QPointer<QFrame> m_reprCard;
-    // What only the drawn points use, hidden while the view is ray-traced.
+    // What only the drawn points use, disabled while the view is ray-traced.
     QPointer<QFrame> m_sceneCard;
-    void showPointOnlyControls(bool visible);
+    void enablePointOnlyControls(bool enabled);
 };
 
 #endif // vtkWindowCatalogue3D_h

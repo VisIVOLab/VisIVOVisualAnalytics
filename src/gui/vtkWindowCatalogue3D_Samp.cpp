@@ -34,11 +34,11 @@ QString vtkWindowCatalogue3D::sampLocalViewNote() const
     if (this->sampShowsLocalView())
         return {};
     // The selection and the marks are drawn by the local view only. The
-    // ray-traced picture replaces it through the Shape, not the Rendering
+    // ray-traced picture replaces it through its own check, not the Rendering
     // menu, so that is the control named there.
     if (this->geometryMode == GeometryMode::Raytraced)
-        return u" Marks and recentring show with the other shapes "
-               u"(Source Representation ▸ Shape, not Ray-traced)."_s;
+        return u" Marks and recentring show once the view is not ray-traced "
+               u"(Source Representation ▸ Ray-traced light off)."_s;
     return u" Marks and recentring show in the local view (View ▸ Rendering ▸ Local)."_s;
 }
 

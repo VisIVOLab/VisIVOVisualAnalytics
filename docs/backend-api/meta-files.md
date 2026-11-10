@@ -134,6 +134,42 @@ The cards are the image HDU's, followed by the primary header's descriptive
 cards it does not repeat. For a `.fits.gz` they are read off the start of the
 gzip stream, without decompressing the rest.
 
+### `POST /v1/files/preview`
+What the file browser shows for any selected file or directory. Only the start
+of the file is read, so the preview is as quick through a remote backend as on
+this machine.
+
+```json
+{ "path": "/data/catalogue.csv", "max_bytes": 16384, "max_lines": 60 }
+```
+`max_bytes` (default 16384) bounds both the file content read and the UTF-8
+size of `text`; `max_lines` (default 60) bounds the lines of `text`. Values
+above the caps (65536 bytes, 400 lines) are clamped; values below 1, or
+not integers, are `422`.
+
+Returns
+```json
+{ "path": "/data/catalogue.csv", "size_bytes": 81234, "kind": "text",
+  "format": "Comma-separated table, 5 columns",
+  "text": "id,ra,dec,flux,z\n0,0.0,0.0,0.0,0.00\n…", "truncated": true }
+```
+`path` echoes the request. `truncated` is true when the file holds more than
+`text` shows. The kind is decided from the bytes, not the name:
+
+| `kind` | `format` (examples) | `text` |
+|---|---|---|
+| `fits` | `FITS image 700×700×158`, `FITS image 9×8 (tile-compressed)`, `FITS image 7×5×6 (gzip)`, `FITS table, 2 columns, 4 rows` | One line per HDU (first 10), a blank line, then the cards `/v1/files/header` gives. A `.fits.gz` is read off the gzip stream, skipping at most 64 MiB of decompressed HDU data to reach later headers (the headers before that point are shown); a stream whose first header has no `END` card within 1000 blocks is reported as unreadable. |
+| `text` | `Comma-separated table, 5 columns`, `Tab-separated table, 3 columns`, `Semicolon-separated table, …`, `VOTable`, `XML`, `JSON`, `IPAC table`, `speck point catalogue`, `Text`, `Empty file`; ` (Latin-1)` appended when the bytes are not UTF-8 | The first lines (a line cut by the byte bound is dropped). The separator and column count are the ones the catalogue reader uses. |
+| `vbt` | `VisIVO Binary Table, volume 64×64×64, 2 fields`, `VisIVO Binary Table, 1000 points, 3 fields` | The `.head`. For a `.bin`, the `x.bin.head` (else `x.head`) beside it, when it is inside the data roots. A `.head` that is not a VBT header is `text`. |
+| `hdf5` | `HDF5, 3 groups, 12 datasets` (`+` when the walk stopped) | The group/dataset tree, indented, with shapes and dtypes; at most 200 objects (and `max_lines`); no data read, external links not followed. |
+| `compressed` | `Comma-separated table, 5 columns (gzip-compressed)`, `bzip2-compressed data`, `ZIP archive, 4 files`, `Text (zip: notes.txt)` | gzip/bzip2/xz: the first lines of the decompressed stream when it is text (at most `max_bytes` decompressed). zip: the member list, or the only member's first lines. |
+| `binary` | `Binary data`, `Empty file`, `Special file (not read)` | A hex/ASCII dump of the first 256 bytes (none for a FIFO or device). |
+| `directory` | `Directory, 12 entries` (`1000+` past 1000) | Folders first, then files, one name per line. |
+
+Errors: `403` for a path outside the allowed data roots (existing or not, and
+also for a symlink that resolves outside them) or a hidden path on a shared
+backend, `404` for a missing path, `422` for bad arguments (including a path with a null byte).
+
 ### `POST /v1/files/header/patch`
 Apply header edits to a **copy** of the file, in the Workspace. The input is
 never modified.

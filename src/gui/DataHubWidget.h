@@ -76,6 +76,8 @@ signals:
     void openHiPSRequested();
     /// Switch to the existing VLKB tab in MainWindow.
     void openVLKBRequested();
+    /// Show the SKAVA discovery tab (created on first use, reopenable).
+    void openSkavaRequested();
 
     /// User clicked the global search bar — host should open the command palette.
     void commandPaletteRequested();

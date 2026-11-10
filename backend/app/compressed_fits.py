@@ -159,7 +159,14 @@ def _has_two_long_axes(header) -> bool:
                               for k in range(1, naxis + 1)) >= 2
 
 
-def gzip_image_headers(path: str | Path) -> list[HeaderOnlyHdu] | None:
+# A FITS header is a few blocks; 1000 blocks (36000 cards, 2.9 MB) is far more
+# than any real one. Without a cap, a crafted stream with no END card is read
+# into memory whole (a 4 MB .fits.gz decompresses to gigabytes).
+_MAX_HEADER_BLOCKS = 1000
+
+
+def gzip_image_headers(path: str | Path,
+                       max_skip_bytes: int | None = None) -> list[HeaderOnlyHdu] | None:
     """The HDU headers of a gzipped FITS, read off the gzip stream up to the
     HDU :func:`~app.fits_dataset.image_hdu_index` picks (all of them when none
     qualifies). None when the stream does not hold a FITS this can read
@@ -169,16 +176,25 @@ def gzip_image_headers(path: str | Path) -> list[HeaderOnlyHdu] | None:
     Why not astropy: ``fits.open`` on a ``.gz`` seeks past the first HDU's
     data to find the next header, and a gzip stream can only seek by
     decompressing; on a 2 GB cube that is the whole file, about 5 s, to read
-    one header. Here a primary image costs one header block."""
+    one header. Here a primary image costs one header block.
+
+    ``max_skip_bytes`` bounds the HDU data decompressed to reach later
+    headers (the file browser's preview passes it): past it the headers read
+    so far are returned. None keeps reading to the image HDU."""
     from astropy.io import fits  # noqa: PLC0415
 
     hdus: list[HeaderOnlyHdu] = []
+    skipped = 0
     try:
         with gzip.open(path, "rb") as stream:
             while True:
                 raw = bytearray()
                 ended = False
+                blocks = 0
                 while not ended:
+                    blocks += 1
+                    if blocks > _MAX_HEADER_BLOCKS:
+                        return None   # no END card in sight: not a FITS header
                     block = stream.read(_BLOCK)
                     if len(block) < _BLOCK:
                         # The end of the stream: after the last HDU, or a
@@ -202,6 +218,9 @@ def gzip_image_headers(path: str | Path) -> list[HeaderOnlyHdu] | None:
                     return hdus   # the first that qualifies is the one picked
                 skip = _padded(_hdu_data_bytes(header))
                 if skip:
+                    skipped += skip
+                    if max_skip_bytes is not None and skipped > max_skip_bytes:
+                        return hdus
                     stream.seek(skip, os.SEEK_CUR)
     except (OSError, EOFError, zlib.error, ValueError):
         return None

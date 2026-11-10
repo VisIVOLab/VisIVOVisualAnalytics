@@ -174,9 +174,28 @@ the backend-side filesystem:
   Folders are always listed; hidden files and folders (`.DS_Store`, `.git`)
   only under *All files*. The list goes by name only: the backend identifies a
   file by its contents, so a FITS or a CSV under another name opens from *All
-  files*. The menu entries that open one kind of file (*Open 3D Catalogue…*,
-  *Open VBT…*, *Open Velocity Field…*, *Add Image Layer…*, the Stokes
-  companions) start on that kind, and each remembers the type you chose last.
+  files*. *Open…* starts on *All supported files* every time, from the menu,
+  the Data Hub and the command palette alike. The menu entries
+  that open one kind of file (*Open 3D Catalogue…*, *Open VBT…*, *Open
+  Velocity Field…*, *Add Image Layer…*, the Stokes companions) start on that
+  kind, and each remembers the type you chose last.
+
+  The **Preview** beside the list shows the start of the selected file, read
+  by the backend (so it works on a remote backend too, and only the first few
+  kilobytes travel): a FITS file's HDUs and header cards, the first lines of
+  a CSV, TSV or other text file, the `.head` of a VisIVO Binary Table, the
+  groups and datasets of an HDF5 file, a folder's contents, and the type and
+  size of anything else. Its caption names the format (*FITS image
+  700×700×158*, *Comma-separated table, 5 columns*); *start of the file only*
+  follows it when the file goes on beyond what is shown. An older backend
+  previews FITS headers only.
+
+  While a file opens, the main window's status bar shows a moving bar and
+  *Opening stars.csv…*, and the window has a busy cursor; the status bar then
+  says *Opened stars.csv.* or *Could not open stars.csv.*, before any error
+  message. This covers *Open…* and *Recent Datasets* for every kind of file.
+  Steps that report their progress (decompressing a compressed FITS, the
+  backend tasks of the tools) show a progress window with **Cancel** instead.
 
   You are asked only when the file itself is ambiguous. A FITS **table** is the
   usual case: it can be a source catalogue or a table to overlay on an image,

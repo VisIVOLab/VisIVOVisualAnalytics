@@ -181,20 +181,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     QObject::connect(this->dataHub, &DataHubWidget::openWorkspaceExportRequested,
                      this, [this](const QString &path) { this->doOpenDataPath(path); });
 
-    // ── SKAVA Discovery tab ───────────────────────────────────────────
-    // Persistent tab next to Data Hub. The panel handles its own state
-    // (filters, results, provenance) and emits one signal on Open:
-    //   - openSkavaDatasetRequested → backend-aware routing via
-    //     doOpenSkavaDataset() which checks visivo-backend service
-    //     descriptors against the registry (compute next to data)
-    {
-        auto *skava = new SkavaSearchPanel(this->settings, tabs);
-        tabs->addTab(skava, u"SKAVA"_s);
-        QObject::connect(skava, &SkavaSearchPanel::openSkavaDatasetRequested,
-                         this, &MainWindow::doOpenSkavaDataset);
-        QObject::connect(skava, &SkavaSearchPanel::nodeOperationRequested,
-                         this, &MainWindow::doSkavaNodeOperation);
-    }
+    // The SKAVA discovery panel is an archive like HiPS and VLKB: it opens on
+    // demand from the Data Hub's Archives section, the Data menu or the
+    // command palette (revealSkavaTab), not at start-up.
 
     // Detach the .ui-defined central widget (the VLKB sky panel) but DO NOT
     // add it to the tab strip on startup. VLKB now opens on demand only —
@@ -222,6 +211,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
             // Keep the VLKB panel alive (just hide it) so reopening preserves
             // the user's inventory tree expansion / selection.
             w->setParent(nullptr);
+            w->hide();
+        } else if (w == this->m_skavaPanel) {
+            // Same for SKAVA: reopening brings back the filters and results.
+            // Parented to the window rather than to nothing, so it is still
+            // destroyed with it; hidden, it does not draw over anything.
+            w->setParent(this);
             w->hide();
         } else {
             w->deleteLater();
@@ -350,6 +345,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                      this, &MainWindow::openHiPS);
     QObject::connect(this->dataHub, &DataHubWidget::openVLKBRequested,
                      this, [this]() { this->revealVLKBTab(); });
+    QObject::connect(this->dataHub, &DataHubWidget::openSkavaRequested,
+                     this, [this]() { this->revealSkavaTab(); });
     QObject::connect(this->dataHub, &DataHubWidget::commandPaletteRequested,
                      this, &MainWindow::openCommandPalette);
     QObject::connect(this->dataHub, &DataHubWidget::clusterRequested, this, [this]() {

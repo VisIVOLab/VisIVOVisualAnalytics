@@ -8,7 +8,7 @@ splats, filters, colours) stays as it is and is what the rendering starts from.
 
 | | |
 |---|---|
-| **In the window** | *Shape → Ray-traced* in a [point table's window](vbt-viewer.md#point-clouds): the view itself, every row of the table, on this machine's GPU |
+| **In the window** | *Ray-traced light* in a [point table's window](vbt-viewer.md#point-clouds): the view itself, every row of the table, on this machine's GPU |
 | **Stills and movies** | *Output* in the same card: rendered by the backend, at up to 8K, saved as PNG, a floating-point FITS or an MP4 |
 | **Data** | any table of points: a VBT point table, a cartesian or sky catalogue |
 
@@ -37,18 +37,22 @@ local velocity dispersion.
 
 ---
 
-## In the window: *Shape → Ray-traced*
+## In the window: *Ray-traced light*
 
-Choosing *Ray-traced* in *Source representation* replaces the 3-D view with
-the ray-traced one and shows its settings in a **RAY-TRACED** card below the
-shape. The view uses every row of the table (the window itself loads a
+Checking **Ray-traced light**, under *Shape* in *Source representation* (as
+in the cube viewer, where it sits under the 3-D rendering controls), replaces
+the 3-D view with the ray-traced one and shows its settings in a
+**RAY-TRACED** card below. It is a way of drawing the table, not a shape: the
+shape stays chosen, greyed out with the other controls that do not apply to
+the ray-traced view (the scale, the render budget, the size column, labels
+and the scene card), and is drawn again when the check is cleared. The view uses every row of the table (the window itself loads a
 sample), drawn on this machine's GPU:
 
 - **drag** to turn, **Shift-drag** or the right button to move, **scroll** to
   zoom, as in the 3-D views; while the view moves it keeps the last grading,
   so the light does not jump;
 - the camera starts from the 3-D view's, and the 3-D view takes the ray-traced
-  camera back when another shape is chosen;
+  camera back when *Ray-traced light* is cleared;
 - the column and colour map of *Visual encoding*, and the filters, set the
   particles' colours and which rows are drawn, as for the other shapes.
 

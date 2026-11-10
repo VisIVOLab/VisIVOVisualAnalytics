@@ -506,6 +506,11 @@ set(PROJECT_SOURCES
         src/gui/ColourBarTicks.h
         src/gui/VolumeColorbar.cpp
         src/gui/VolumeColorbar.h
+        src/gui/BusyStatus.cpp
+        src/gui/BusyStatus.h
+        src/gui/BusyTracker.h
+        src/gui/SelectionMarkerSize.h
+        src/app/FilePreview.h
         src/gui/CubeVRController.cpp
         src/gui/CubeVRController.h
         src/gui/Catalogue3DTableModel.cpp
