@@ -439,6 +439,7 @@ set(PROJECT_SOURCES
         src/app/LassoReplay.h
         src/app/SofiaSuggest.h
         src/app/FinderTaskRun.h
+        src/app/RenderTaskHandle.h
         src/app/ThumbnailCache.cpp
         src/app/ThumbnailCache.h
         src/gui/CatalogueTableModel.cpp

@@ -8,6 +8,25 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Quitting cancels a ray-traced render (#149).** A still or movie being
+  rendered by the backend (`POST /v1/tasks/volume_render`,
+  `/v1/tasks/particle_render`) kept running after the application quit: its
+  DELETE was sent from the viewer's destructor, after the event loop had
+  ended, and never left, so on a remote or cluster backend the render ran to
+  its end. The render task is now held by a handle registered with the quit
+  drain (`src/app/RenderTaskHandle.h`; `TaskQuitDrain` gains `QuitCanceller`
+  for followers that run on the GUI thread's event loop): on ⌘Q or the Dock's
+  *Quit* the drain sends `DELETE /v1/particle_render/{id}` from a thread of
+  its own, bounded to 3 s, before the application exits, exactly once; a
+  completed still held for regrading is removed the same way. The create now
+  runs on a worker, so a create still answering at quit is waited for and its
+  render deleted, and no render is created once quitting has begun. The
+  render creates had the 5-minute timeout of a task status read (their
+  paths look like one), which a quit lets run out; every task create now
+  keeps 10 s, checked against the backend's routers. Tests:
+  `TestTaskQuitDrain` (fake backend) and `VisIVOQuitExitRender` /
+  `VisIVOQuitExitRenderWhileQuitting` (a process of their own, `exit()` while
+  the render is polled on the application thread).
 - **Cosmology and skeleton fixes from the scientific review (#129).**
   `GET /v1/cosmology/distances` under de Sitter (Ωm = 0, ΩΛ = 1) answered
   HTTP 500 because its age is infinite; a non-finite quantity is now `null`
