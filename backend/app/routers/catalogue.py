@@ -35,13 +35,35 @@ async def open_catalogue(
     for p in paths:
         if not p.exists() or not p.is_file():
             return CatalogueOpenResponse(valid=False, error=f"Catalogue file not found: {p}")
+    is_vbt = request.format.strip().lower() == "vbt"
+    if request.byte_order is not None and not is_vbt:
+        return CatalogueOpenResponse(
+            valid=False, error="byte_order applies to a VisIVO Binary Table only.")
+    orders: dict[str, Any] = {}
+    read_as = [str(p) for p in paths]
+
     def load() -> tuple[pd.DataFrame, dict[str, Any]]:
+        if is_vbt:
+            # Before any value is read: the order asked for, else a check of
+            # the order the header declares (issue #165).
+            from ..vbt_byte_order import open_with_byte_order  # noqa: PLC0415
+            from ..volume_source import with_order  # noqa: PLC0415
+            for i, p in enumerate(paths):
+                found = open_with_byte_order(p, request.byte_order,
+                                             by=f"session {session.session_id[:8]}")
+                # Read in that order, not the store's of a moment later.
+                read_as[i] = with_order(p, found["byte_order"])
+                changed = orders.get("changed", False) or found["changed"]
+                if not orders or (found["byte_order_warning"]
+                                  and not orders["byte_order_warning"]):
+                    orders.update(found)
+                orders["changed"] = changed
         if len(paths) == 1:
-            return _catalogue_metadata(paths[0], request.format)
+            return _catalogue_metadata(Path(read_as[0]), request.format)
         # Multi-file: load each (same format) and concatenate into one
         # catalogue. Require identical columns so a silent NaN-fill can't
         # corrupt "same catalogue split into files".
-        frames = [_catalogue_load_dataframe(p, request.format) for p in paths]
+        frames = [_catalogue_load_dataframe(Path(p), request.format) for p in read_as]
         base_cols = list(frames[0].columns)
         for src, frame in zip(paths[1:], frames[1:]):
             if list(frame.columns) != base_cols:
@@ -60,11 +82,19 @@ async def open_catalogue(
         dataframe, metadata = await asyncio.to_thread(load)
     except Exception as exc:
         return CatalogueOpenResponse(valid=False, error=str(exc))
+    if is_vbt and orders.get("changed"):
+        from ..vbt_byte_order import close_render_sessions_read_otherwise  # noqa: PLC0415
+        for p in paths:
+            await close_render_sessions_read_otherwise(p, orders["byte_order"])
 
     path = paths[0]
     dataset_id = f"cat_{uuid.uuid4().hex[:12]}"
     session.datasets[dataset_id] = {"path": str(path), "paths": [str(p) for p in paths],
                                     "dataframe": dataframe, **metadata}
+    if is_vbt:
+        # Provenance: the order the values were read in, and the header's.
+        session.datasets[dataset_id]["byte_order"] = orders.get("byte_order", "")
+        session.datasets[dataset_id]["byte_order_declared"] = orders.get("byte_order_declared", "")
     logger.info(
         "[catalogue-open] session=%s dataset_id=%s rows=%d cols=%d path=%s",
         session.session_id[:8] + "…",
@@ -85,6 +115,9 @@ async def open_catalogue(
         server_side_rendering_available=(
             metadata.get("coordinate_fields", {}).get("system") in ("sky", "cartesian")
             and _server_side_rendering()),
+        byte_order=orders.get("byte_order", ""),
+        byte_order_declared=orders.get("byte_order_declared", ""),
+        byte_order_warning=orders.get("byte_order_warning"),
     )
 
 

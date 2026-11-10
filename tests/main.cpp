@@ -33,6 +33,7 @@
 #include "TestRenderSessionCalls.h"
 #include "TestRegionFullRes.h"
 #include "TestDatasetName.h"
+#include "TestVbtByteOrder.h"
 #include "TestCubeStatRows.h"
 #include "TestRecentReopen.h"
 #include "TestColourBarTicks.h"
@@ -101,6 +102,7 @@ int main(int argc, char *argv[])
     { TestRenderSessionCalls t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionFullRes    t; status |= QTest::qExec(&t, argc, argv); }
     { TestDatasetName      t; status |= QTest::qExec(&t, argc, argv); }
+    { TestVbtByteOrder     t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeStatRows     t; status |= QTest::qExec(&t, argc, argv); }
     { TestRecentReopen     t; status |= QTest::qExec(&t, argc, argv); }
     { TestThresholdShare   t; status |= QTest::qExec(&t, argc, argv); }

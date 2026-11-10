@@ -1,4 +1,6 @@
 #include "vtkWindowCatalogue3D.h"
+#include "app/DatasetUsers.h"
+#include "app/TaskQuitDrain.h"
 #include "ui_vtkWindowCatalogue3D.h"
 
 #include "LutScale.h"
@@ -175,6 +177,22 @@ void vtkWindowCatalogue3D::closeEvent(QCloseEvent *event)
         event->ignore();   // closing now would delete the window mid-buildScene()
         return;
     }
+    // The last window on the dataset closes it on the backend: its table (a
+    // VBT's memory map) is not kept for a window that is gone. Fire and
+    // forget, and never once the application quits (TaskQuitDrain.h).
+    if (visivo::DatasetUsers::instance().release(this->backendUrl, this->remoteSessionId,
+                                                 this->remoteDatasetId)
+        && !visivo::TaskQuitDrain::instance().quitting()) {
+        const QString url = this->backendUrl, token = this->backendToken;
+        const QString session = this->remoteSessionId, dataset = this->remoteDatasetId;
+        (void)QtConcurrent::run([url, token, session, dataset]() {
+            BackendClient client(url, token);
+            client.setSessionId(session);
+            QString error;
+            client.closeDataset(dataset, error);
+        });
+    }
+    this->remoteDatasetId.clear();
     QMainWindow::closeEvent(event);
 }
 

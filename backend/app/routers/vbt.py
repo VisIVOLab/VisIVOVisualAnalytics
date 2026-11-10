@@ -45,7 +45,24 @@ async def vbt_open(
         return VbtOpenResponse(valid=False, error=f"VBT binary file not found: {bin_path.name}")
 
     try:
-        header = _parse_vbt_header(head_path)
+        # Before any value is read (issue #165): the byte order asked for,
+        # else a check of the one the header declares.
+        # A header not named <data>.head (accepted here as the data itself)
+        # has no data file beside it to key the choice by: not checked.
+        from ..vbt_byte_order import open_with_byte_order  # noqa: PLC0415
+        orders = {"byte_order": "", "byte_order_declared": "", "byte_order_warning": None,
+                  "changed": False}
+        if str(head_path).endswith(".head"):
+            orders = await asyncio.to_thread(open_with_byte_order, head_path, request.byte_order,
+                                             f"session {session.session_id[:8]}")
+        elif request.byte_order is not None:
+            return VbtOpenResponse(valid=False,
+                                   error="byte_order needs a header named <data>.head.")
+        # In the order the open settled on, not the store's of a moment later.
+        header = _parse_vbt_header(head_path, orders["byte_order"] or None)
+        if orders["changed"]:
+            from ..vbt_byte_order import close_render_sessions_read_otherwise  # noqa: PLC0415
+            await close_render_sessions_read_otherwise(head_path, orders["byte_order"])
     except Exception as exc:
         return VbtOpenResponse(valid=False, error=str(exc))
 
@@ -79,6 +96,9 @@ async def vbt_open(
         "bin_path": str(bin_path),
         "header": header,
         "memmap": memmap,  # shape (field_count, num_rows), read-only
+        # Provenance: the order the values were read in, and the header's.
+        "byte_order": orders["byte_order"],
+        "byte_order_declared": orders["byte_order_declared"],
     }
     logger.info(
         "[vbt-open] session=%s dataset_id=%s kind=%s fields=%d rows=%d path=%s (memmap)",
@@ -102,6 +122,9 @@ async def vbt_open(
         scalar_type=header["scalar_type"],
         dimensions=header["dimensions"] or [],
         spacing=header["spacing"] or [],
+        byte_order=orders["byte_order"],
+        byte_order_declared=orders["byte_order_declared"],
+        byte_order_warning=orders["byte_order_warning"],
     )
 
 #: Budget for one point-table reply, encoded. 256 MiB is already far past what

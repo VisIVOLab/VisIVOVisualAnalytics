@@ -2,6 +2,7 @@
   "_comment": "Snapshot of (METHOD PATH) routes from app.openapi(). test_contract.py fails on drift. Regenerate with backend/scripts/gen_contract.py after an intentional API change.",
   "routes": [
     "DELETE /soda/async/{job_id}",
+    "DELETE /v1/datasets/{dataset_id}",
     "DELETE /v1/exports/{filename}",
     "DELETE /v1/particle_render/{task_id}",
     "DELETE /v1/render/queue/{queue_id}",

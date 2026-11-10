@@ -12,6 +12,7 @@
 // In-memory and session-scoped (products live for the app run); nothing is
 // persisted here — parameter recipes are already persisted by AnalysisParamStore.
 
+#include "VbtByteOrder.h"
 #include <QObject>
 #include <QPointer>
 #include <QString>
@@ -70,7 +71,24 @@ struct AnalysisProduct
     /// back to the geometry that produced it instead of only being described.
     /// Empty when the product has no geometry (a whole-image metric, a file).
     QVariantMap origin;
+    /// A product of a VBT (issue #165): the byte order the backend read it in
+    /// when the product was made, and the one its header declares. Taken by
+    /// registerProduct (snapshotParentByteOrder) when left empty; a later
+    /// reopen in another order does not change it.
+    QString parentByteOrder;
+    QString parentByteOrderDeclared;
 };
+
+/// Fill @p p's parentByteOrder from what the last open of its dataset on its
+/// backend session answered (app/VbtByteOrder.h), unless it is already set.
+inline void snapshotParentByteOrder(AnalysisProduct &p)
+{
+    if (!p.parentByteOrder.isEmpty())
+        return;
+    const auto [readIn, declared] = visivo::vbtReadOrder(p.sessionId, p.parentKey);
+    p.parentByteOrder = readIn;
+    p.parentByteOrderDeclared = declared;
+}
 
 class ProductRegistry : public QObject
 {

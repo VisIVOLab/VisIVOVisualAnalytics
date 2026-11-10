@@ -24,7 +24,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Path as FPath, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Path as FPath, Query
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 import pandas as pd
@@ -485,10 +485,29 @@ async def samp_send_fits(
                      size_bytes=_staged_size(token))
 
 
+def _vbt_as_opened(src: Path, session_id: str | None) -> str:
+    """``src`` (a VBT point table) with the byte order the session's dataset
+    of it was opened in (issue #165); as it is when the session has none."""
+    from ..sessions import REGISTRY  # noqa: PLC0415
+    from ..vbt_byte_order_store import data_key  # noqa: PLC0415
+    from ..volume_source import with_order  # noqa: PLC0415
+
+    session = REGISTRY.peek(session_id) if session_id else None
+    if session is None:
+        return str(src)
+    key = data_key(src)
+    for entry in list(session.datasets.values()):
+        if (isinstance(entry, dict) and entry.get("format") == "vbt" and entry.get("byte_order")
+                and entry.get("path") and data_key(str(entry["path"])) == key):
+            return with_order(src, entry["byte_order"])
+    return str(src)
+
+
 @router.post("/v1/samp/send-catalogue", response_model=SAMPSendResponse, tags=["samp"])
 async def samp_send_catalogue(
     request: SAMPCatalogueRequest,
     target_id: str | None = Query(None),
+    x_visivo_session: str | None = Header(None),
     _: str = _operator,
 ) -> SAMPSendResponse:
     """Stage a catalogue and enqueue (or return) a SAMP table.load message.
@@ -504,6 +523,11 @@ async def samp_send_catalogue(
 
     fmt = request.format.strip().lower()
     subset = request.row_indices
+    # A VBT is read in the byte order the sender's dataset was opened in
+    # (issue #165), so that a row means the values the window shows.
+    read_src: str | Path = src
+    if fmt == "vbt":
+        read_src = _vbt_as_opened(src, x_visivo_session)
     if subset is not None:
         if not subset:
             return SAMPSendResponse(valid=False, error="No rows to send.")
@@ -535,7 +559,7 @@ async def samp_send_catalogue(
         else:
             from ..dependencies import _catalogue_load_dataframe  # noqa: PLC0415
 
-            dataframe = _catalogue_load_dataframe(src, fmt)
+            dataframe = _catalogue_load_dataframe(Path(read_src), fmt)
             table = None
             count = len(dataframe)
         if rows.min() < 0 or rows.max() >= count:
@@ -545,7 +569,9 @@ async def samp_send_catalogue(
         if table is not None:
             token = write_votable(table[rows], filename)
         else:
-            token = as_votable(dataframe.iloc[rows].reset_index(drop=True), filename)
+            # A big-endian VBT column cannot be indexed by pandas (issue #165).
+            from ..dependencies import _take_rows  # noqa: PLC0415
+            token = as_votable(_take_rows(dataframe, rows).reset_index(drop=True), filename)
         return token, filename, MTYPE_TABLE_LOAD_VOTABLE, int(len(rows))
 
     def stage() -> tuple[str, str, str, int]:

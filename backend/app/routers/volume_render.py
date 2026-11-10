@@ -95,8 +95,8 @@ class VolumeGridRequest(VolumeRenderRequest):
 
 def _paths(entry: dict, req: VolumeRenderRequest) -> tuple[str, str | None]:
     """The brightness's volume and the colour's (None: the brightness)."""
-    from ..volume_source import (resolve_vbt, vbt_field_ref, vbt_volume_header,  # noqa: PLC0415
-                                 volume_shape)
+    from ..volume_source import (ref_order, resolve_vbt, vbt_field_ref,  # noqa: PLC0415
+                                 vbt_volume_header, volume_shape, with_order)
     path = str(entry.get("path") or "")
     if entry.get("kind") != "cube" or not path:
         raise HTTPException(422, "Ray-traced volume rendering needs a cube.")
@@ -121,7 +121,10 @@ def _paths(entry: dict, req: VolumeRenderRequest) -> tuple[str, str | None]:
     count = vbt_volume_header(vbt[0])["field_count"]
     if not req.colour_field < count:
         raise HTTPException(422, f"The volume has {count} fields; no field {req.colour_field}.")
-    return path, vbt_field_ref(vbt[0], req.colour_field)
+    # In the byte order the dataset was opened in, as the brightness (#165).
+    colour = vbt_field_ref(vbt[0], req.colour_field)
+    order = ref_order(path)
+    return path, (with_order(colour, order) if order else colour)
 
 
 def _velocities(path: str, depth: int) -> np.ndarray:

@@ -923,6 +923,17 @@ bool BackendClient::deleteRender(const QString &taskId, QString &error, int time
                              error);
 }
 
+bool BackendClient::closeDataset(const QString &datasetId, QString &error) const
+{
+    if (visivo::TaskQuitDrain::instance().quitting()) {
+        error = QStringLiteral("not sent: the application is quitting");
+        return false;
+    }
+    const QString safeSeg = QString::fromUtf8(QUrl::toPercentEncoding(datasetId, "", "/"));
+    QByteArray raw;
+    return sendBoundedDelete(QStringLiteral("/v1/datasets/") + safeSeg, 5000, raw, error);
+}
+
 BackendTaskStatusResult BackendClient::requestTaskStatus(const QString &taskId,
                                                          const std::atomic_bool *abort) const
 {

@@ -97,10 +97,15 @@ def point_table_spec(entry: dict) -> str | None:
     for one that is not a table of points. Opened by the VBT route, or as a
     catalogue (the 3-D catalogue viewer): a VBT by its header, any other
     catalogue by its files and coordinates."""
+    # A VBT carries the byte order it was opened in (issue #165): the render
+    # process reads that, whatever the store says by then.
+    from ..volume_source import with_order  # noqa: PLC0415
     if entry.get("kind") == "vbt" and entry.get("header", {}).get("kind") == "point":
-        return str(entry["head_path"])
+        head = str(entry["head_path"])
+        return with_order(head, entry["byte_order"]) if entry.get("byte_order") else head
     if entry.get("kind") == "catalogue" and entry.get("format") == "vbt":
-        return str(entry["path"])
+        path = str(entry["path"])
+        return with_order(path, entry["byte_order"]) if entry.get("byte_order") else path
     if entry.get("kind") == "catalogue":
         coords = entry.get("coordinate_fields") or {}
         if coords.get("system") not in ("sky", "cartesian"):

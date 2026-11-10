@@ -57,8 +57,27 @@ class FileClassifyResponse(BaseModel):
     detail: str = ""
 
 
+#: A VBT's byte order chosen against its header (issue #165): "little" or
+#: "big"; None keeps what this backend already reads the file in (the header's
+#: order, or an earlier choice).
+VbtByteOrder = Literal["little", "big"] | None
+
+
+class VbtByteOrderWarning(BaseModel):
+    """A VBT whose values look like the other byte order than its header
+    declares (app/vbt_byte_order.py). ``confidence`` is "overwhelming" or
+    "strong"; ``evidence`` the scores of both orders and, per field, its
+    first value read either way."""
+    declared: str
+    suggested: str
+    confidence: str
+    evidence: dict[str, Any] = {}
+
+
 class OpenDatasetRequest(BaseModel):
     path: str
+    # A VBT volume field only: read the file in this byte order (issue #165).
+    byte_order: VbtByteOrder = None
 
 
 class DecompressRequest(BaseModel):
@@ -113,6 +132,11 @@ class OpenDatasetResponse(BaseModel):
     # field shown, and every field of the file with the path that opens it.
     field_name: str = ""
     fields: list[DatasetField] = []
+    # A VBT volume (issue #165): the byte order its values are read in, the
+    # one its header declares, and a warning when they look like the other.
+    byte_order: str = ""
+    byte_order_declared: str = ""
+    byte_order_warning: VbtByteOrderWarning | None = None
     # True iff this backend can host server-side rendering for the
     # opened cube (EGL build + GPU detected). Backend-agnostic: any
     # client connecting to any backend (SKAVA-discovered, manually
@@ -385,6 +409,8 @@ class CatalogueOpenRequest(BaseModel):
     # (e.g. the 27 spatial subtables of a cosmological snapshot). When non-empty
     # these are concatenated; `path` is then a fallback label only.
     paths: list[str] = []
+    # A VBT point table only: read it in this byte order (issue #165).
+    byte_order: VbtByteOrder = None
 
 
 class CatalogueFieldInfo(BaseModel):
@@ -419,6 +445,10 @@ class CatalogueOpenResponse(BaseModel):
     # The points can be drawn on this backend (/v1/render, issue #83): a VBT
     # point table, on a backend that renders server-side.
     server_side_rendering_available: bool = False
+    # A VBT point table (issue #165): as for OpenDatasetResponse.
+    byte_order: str = ""
+    byte_order_declared: str = ""
+    byte_order_warning: VbtByteOrderWarning | None = None
 
 
 class CatalogueSubsetRequest(BaseModel):
@@ -476,6 +506,7 @@ class TabularQueryResponse(BaseModel):
 class VbtOpenRequest(BaseModel):
     path: str
     format: str = ""
+    byte_order: VbtByteOrder = None   # issue #165, as for /v1/catalogue/open
 
 
 class VbtFieldInfo(BaseModel):
@@ -494,6 +525,9 @@ class VbtOpenResponse(BaseModel):
     scalar_type: str = ""
     dimensions: list[int] = []    # [nx, ny, nz] for volume
     spacing: list[float] = []     # [sx, sy, sz] for volume
+    byte_order: str = ""          # issue #165, as for /v1/catalogue/open
+    byte_order_declared: str = ""
+    byte_order_warning: VbtByteOrderWarning | None = None
 
 
 class VbtSubsetRequest(BaseModel):
