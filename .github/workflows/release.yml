@@ -851,6 +851,10 @@ jobs:
             VisIVOVisualAnalytics-*.tar.gz
             VisIVOVisualAnalytics-*.zip
           if-no-files-found: error
+          # The packages are attached to the GitHub Release below; the
+          # artifact only carries them to the release job, so keep it briefly
+          # (each release is about 2.5 GB of Actions storage).
+          retention-days: 2
 
   # Single release-publishing job that runs once after the whole matrix is
   # complete. Doing the upload inside each matrix job races on the same release
