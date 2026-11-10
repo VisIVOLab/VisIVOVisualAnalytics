@@ -1,5 +1,6 @@
 #include "RaytraceOutput.h"
 
+#include "BackendLocality.h"
 #include "OrbitPath.h"
 #include "app/BackendClient.h"
 
@@ -63,11 +64,15 @@ void deleteRender(const QString &backendUrl, const QString &token, const QString
     QObject::connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
 }
 
+QString errorOf(QNetworkReply *reply, const QByteArray &body)
+{
+    const QString detail = QJsonDocument::fromJson(body).object().value(u"detail"_s).toString();
+    return detail.isEmpty() ? reply->errorString() : detail;
+}
+
 QString errorOf(QNetworkReply *reply)
 {
-    const QString detail =
-            QJsonDocument::fromJson(reply->readAll()).object().value(u"detail"_s).toString();
-    return detail.isEmpty() ? reply->errorString() : detail;
+    return errorOf(reply, reply->readAll());
 }
 
 QString ffmpegPath()
@@ -320,7 +325,15 @@ void RaytraceOutput::submit(const QList<QJsonObject> &cameras, bool movie)
             return;
         }
         if (reply->error() != QNetworkReply::NoError) {
-            self->setStage(Stage::Idle, u"The render could not start: "_s + errorOf(reply));
+            // A backend older than the render task (a cube's came after a
+            // table's): said so, not its bare "Not Found".
+            const QByteArray body = reply->readAll();
+            const QString missing = visivo::missingRouteMessage(
+                    backendUrl, reply, body, u"ray-traced stills and movies"_s);
+            self->setStage(Stage::Idle, !missing.isEmpty()
+                                                ? missing
+                                                : u"The render could not start: "_s
+                                                          + errorOf(reply, body));
             return;
         }
         self->m_taskId = taskId;

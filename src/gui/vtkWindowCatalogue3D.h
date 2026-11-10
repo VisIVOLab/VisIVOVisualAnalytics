@@ -653,13 +653,20 @@ private:
     /// The view's state in a ray-traced render request's terms.
     QJsonObject raytraceViewState() const;
     /// The camera of the view on screen (asks the backend's view for its own).
+    /// Without one, the string is the line for the status bar.
     void viewCamera(std::function<void(const QJsonObject &, const QString &)> done);
     QStringList numericColumns() const;
     // Ray-traced light: the view on the GPU, its settings in the sidebar. A
     // way of drawing, not a shape: its own check under the Shape, as in the
     // cube viewer; the shape is kept for when it is turned off.
     void setRaytraced(bool on);
+    /// The view cannot be drawn (no camera, or a backend without the routes):
+    /// turned off, with `why` in the status bar.
+    void leaveRaytraced(const QString &why);
     QPointer<QCheckBox> m_rtLightCheck;
+    /// The camera request the ray-traced view waits for: an answer to an
+    /// earlier one (the check cleared and ticked again meanwhile) is dropped.
+    quint64 m_rtCameraRequest{ 0 };
     /// The stack's page for a render mode; the ray-traced view while it is on.
     void showRenderPage(int index);
     int m_renderPage{ 0 };

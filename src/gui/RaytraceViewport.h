@@ -58,6 +58,9 @@ public:
 
     void setCamera(const QJsonObject &camera);
     QJsonObject camera() const { return m_camera; }
+    /// The view was turned off: its camera is of the past, and the next time
+    /// it is turned on it starts from the view on screen then.
+    void clearCamera() { m_camera = QJsonObject(); }
     /// The request or the settings changed: fetches the particles when what
     /// shapes them changed, else draws them again.
     void refresh();
@@ -83,6 +86,9 @@ signals:
     void stillDismissed();
     /// A grid arrived: its colour table and range (gridLut, gridRange).
     void gridReady();
+    /// The backend has no route for the view (it is older than this client):
+    /// `text` says so. Nothing will be drawn; the window turns the view off.
+    void unavailable(const QString &text);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -97,6 +103,9 @@ private:
     /// The backend's last frame, with the overlay drawn over it.
     void showFallback();
     bool takeGrid(QNetworkReply *reply);
+    /// A reply of a backend without the route: says so (unavailable) and
+    /// returns true.
+    bool routeMissing(QNetworkReply *reply, const QByteArray &body);
     /// A grid's box and colours from a backend frame's headers, read with the
     /// settings the frame was asked with.
     void takeFallbackGrid(QNetworkReply *reply, bool projected,

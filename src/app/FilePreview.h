@@ -15,6 +15,8 @@
 // then the browser falls back to the FITS header route for a FITS file, as it
 // did before. Widget-free, so the parsing is unit-tested.
 
+#include "MissingRoute.h"   // isMissingRouteReply
+
 #include <QByteArray>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -39,23 +41,6 @@ struct FilePreview
     /// may fall back to the FITS header route.
     bool routeMissing{ false };
 };
-
-/// A 404 or 405 that is not the preview route's own answer: the route is not
-/// there. FastAPI says so with "Not Found" / "Method Not Allowed"; a proxy or
-/// tunnel in front of an older backend may say it with an HTML page or
-/// nothing. The route itself answers a missing file with a JSON detail of its
-/// own ("File not found."), which must not be taken for an old backend.
-inline bool isMissingRouteReply(int httpStatus, const QByteArray &body)
-{
-    if (httpStatus != 404 && httpStatus != 405)
-        return false;
-    const QJsonDocument doc = QJsonDocument::fromJson(body);
-    const QJsonValue detail = doc.isObject() ? doc.object().value(u"detail") : QJsonValue();
-    if (!detail.isString())
-        return true;   // not the route's JSON error
-    const QString text = detail.toString();
-    return text == u"Not Found" || text == u"Method Not Allowed";
-}
 
 /// What the browser does when the backend has no preview route.
 enum class PreviewFallback {

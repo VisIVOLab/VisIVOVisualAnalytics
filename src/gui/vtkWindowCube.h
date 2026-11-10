@@ -1230,7 +1230,8 @@ protected:
     QPointer<QTimer> m_rtFloorTimer;
     /// The 3-D view's camera (the backend view's when that is shown) and the
     /// world box the cube spans in its coordinates; an empty box: the full
-    /// cube's voxel coordinates, the backend view's.
+    /// cube's voxel coordinates, the backend view's. Without a camera,
+    /// `error` is the line for the status bar.
     void raytraceCamera(std::function<void(const QJsonObject &camera, const QString &error)> done);
     QJsonArray raytraceBox() const;
     QJsonObject raytraceRequest() const;
@@ -1241,6 +1242,7 @@ protected:
     QPointer<RaytraceOutput> m_rtOutput;
     int m_rtPreviousPage{ 0 };                ///< the stack's page before it
     bool m_rtFromRemote{ false };             ///< its camera came from the backend view
+    quint64 m_rtCameraRequest{ 0 };           ///< the camera request the view waits for
     QList<QPair<QString, int>> m_rtFields;    ///< the volume's other fields, by index
     /// The stride of the displayed preview (1: full resolution or a region):
     /// a displayed voxel i is the cube's voxel i × stride.

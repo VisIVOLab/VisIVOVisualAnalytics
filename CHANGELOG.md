@@ -8,6 +8,25 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Saying when a backend is older than the client.** A backend that predates
+  a feature answers its routes with FastAPI's bare `404 {"detail":"Not Found"}`,
+  which the ray-traced views showed as it was ("No camera for the ray-traced
+  view: Not Found" on a cluster, "Ray-traced view: Not Found" with the local
+  backend, the check left on over a black view). They now say *The backend on
+  <name> does not have ray-traced views (it is older than this client); update
+  it.*, with the backend's name as the status bar gives it, and turn the view
+  off. Covered: the camera (`GET /v1/render/{id}/camera`), the grid and the
+  particles for the GPU view and the frames without one
+  (`/v1/volume_render/grid|preview`, `/v1/particle_render/particles|preview`)
+  in the cube and point viewers, and the start of a still or movie
+  (`/v1/tasks/volume_render`, `/v1/tasks/particle_render`). A route's own 404
+  (an unknown render session, a missing file) is not taken for an old
+  backend. The point viewer now shows the ray-traced view only once its
+  camera has arrived, as the cube viewer does, so a failed camera request no
+  longer puts back the camera of an earlier time the view was on; in both
+  viewers only the latest camera request counts. One shared, tested check (`src/app/MissingRoute.h`), which the file
+  preview's fallback now uses too.
+
 - **A preview for every file in the file browser (#159, item 3), backend.**
   `POST /v1/files/preview` describes any selected file from its first bytes:
   the HDU summary and header of a FITS file (also `.fits.gz`, read off the

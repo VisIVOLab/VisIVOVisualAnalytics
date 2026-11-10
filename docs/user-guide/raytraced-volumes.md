@@ -64,6 +64,11 @@ check is cleared.
   GPU view, and onto the stills and frames. A projected map coloured by its
   own column shows no colour bar there: its scale is relative to the column the
   GPU view measures.
+- a backend older than the ray-traced volumes (a cluster's not yet updated)
+  has none of their routes: the check clears itself and the status bar says
+  so, *The backend on PLEIADI does not have ray-traced views (it is older than
+  this client); update it.*, naming the backend; *Render Still* says the same
+  for stills and movies.
 
 ### Settings
 

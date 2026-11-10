@@ -202,6 +202,9 @@ add_executable(VisIVOTests
     test_supported_formats.cpp
     TestFilePreview.h
     test_file_preview.cpp
+    TestMissingRoute.h
+    test_missing_route.cpp
+    ${VISIVO_ROOT}/src/gui/BackendLocality.cpp
     TestBusyFeedback.h
     test_busy_feedback.cpp
 )

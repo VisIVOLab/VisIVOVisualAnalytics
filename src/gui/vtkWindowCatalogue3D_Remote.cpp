@@ -629,13 +629,22 @@ void vtkWindowCatalogue3D::viewCamera(
                                        BackendClient(this->backendUrl, this->backendToken).token(),
                                        this->remoteSessionId);
     QNetworkReply *reply = nam->get(req);
-    QObject::connect(reply, &QNetworkReply::finished, this, [reply, done]() {
+    QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, done]() {
         reply->deleteLater();
-        const QJsonObject body = QJsonDocument::fromJson(reply->readAll()).object();
-        if (reply->error() != QNetworkReply::NoError)
-            done({}, body.value(u"detail"_s).toString(reply->errorString()));
-        else
+        const QByteArray raw = reply->readAll();
+        const QJsonObject body = QJsonDocument::fromJson(raw).object();
+        if (reply->error() == QNetworkReply::NoError) {
             done(body, QString());
+            return;
+        }
+        // A backend older than the ray-traced views has no camera route: its
+        // bare "Not Found" would say nothing.
+        const QString missing =
+                visivo::missingRouteMessage(this->backendUrl, reply, raw, u"ray-traced views"_s);
+        done({}, !missing.isEmpty()
+                         ? missing
+                         : u"No camera for the ray-traced view: "_s
+                                   + body.value(u"detail"_s).toString(reply->errorString()));
     });
 }
 
@@ -655,10 +664,21 @@ void vtkWindowCatalogue3D::showRenderPage(int index)
     this->m_renderPage = index;
     if (!this->m_renderStack)
         return;
-    if (this->geometryMode == GeometryMode::Raytraced && this->m_rtView)
+    // The ray-traced view once it has its camera (it is asked for when the
+    // view is turned on, and the page changes when it is in).
+    if (this->geometryMode == GeometryMode::Raytraced && this->m_rtView
+        && !this->m_rtView->camera().isEmpty())
         this->m_renderStack->setCurrentWidget(this->m_rtView);
     else
         this->m_renderStack->setCurrentIndex(index);
+}
+
+void vtkWindowCatalogue3D::leaveRaytraced(const QString &why)
+{
+    // Unchecked as the user would: updateGeometryMode puts the shape back.
+    if (this->m_rtLightCheck && this->m_rtLightCheck->isChecked())
+        this->m_rtLightCheck->setChecked(false);
+    this->statusBar()->showMessage(why, 10000);
 }
 
 void vtkWindowCatalogue3D::setRaytraced(bool on)
@@ -701,6 +721,9 @@ void vtkWindowCatalogue3D::setRaytraced(bool on)
             this->showRenderPage(this->m_renderPage);
             this->refreshColorbar();
         }
+        // Taken by the view shown again, if it was on show: forgotten.
+        if (this->m_rtView)
+            this->m_rtView->clearCamera();
         return;
     }
     if (this->remoteDatasetId.isEmpty() || !this->m_renderStack) {
@@ -811,6 +834,10 @@ void vtkWindowCatalogue3D::setRaytraced(bool on)
                          [this](const QString &text) {
                              this->statusBar()->showMessage(text, 8000);
                          });
+        // A backend without the particle routes draws nothing: the view goes
+        // off (back to the shape) rather than stay black, and the line says why.
+        QObject::connect(this->m_rtView, &RaytraceViewport::unavailable, this,
+                         [this](const QString &text) { this->leaveRaytraced(text); });
         QObject::connect(this->m_rtPanel, &RaytraceSettingsPanel::particlesChanged,
                          this->m_rtView, &RaytraceViewport::refresh);
         QObject::connect(this->m_rtPanel, &RaytraceSettingsPanel::toneChanged, this, [this]() {
@@ -821,24 +848,28 @@ void vtkWindowCatalogue3D::setRaytraced(bool on)
     this->m_rtCard->show();
     if (this->m_colorbar)
         this->m_colorbar->hide();   // the picture is graded, not a colour scale
+    if (this->m_renderStack->currentWidget() == this->m_rtView) {
+        this->m_rtView->refresh();
+        return;
+    }
     // The camera of the view on screen before it is replaced: the backend
-    // view's, when that is the one shown.
-    const bool alreadyOn = this->m_renderStack->currentWidget() == this->m_rtView;
-    if (!alreadyOn)
-        this->viewCamera([self = QPointer<vtkWindowCatalogue3D>(this)](const QJsonObject &camera,
-                                                                        const QString &error) {
-        if (!self || !self->m_rtView)
-            return;
+    // view's, when that is the one shown. The page changes once it is in, so
+    // a failed request leaves the view shown as it was, and turning the check
+    // off meanwhile finds no ray-traced page to take an older camera from.
+    const quint64 request = ++this->m_rtCameraRequest;
+    this->viewCamera([self = QPointer<vtkWindowCatalogue3D>(this), request](
+                             const QJsonObject &camera, const QString &error) {
+        if (!self || !self->m_rtView || request != self->m_rtCameraRequest
+            || self->geometryMode != GeometryMode::Raytraced)
+            return;   // turned off, or asked again, while it was on its way
         if (camera.isEmpty()) {
-            self->statusBar()->showMessage(u"No camera for the ray-traced view: "_s + error, 8000);
+            self->leaveRaytraced(error);   // nothing to draw it from
             return;
         }
         self->m_rtView->setCamera(camera);
         self->m_rtView->refresh();
+        self->m_renderStack->setCurrentWidget(self->m_rtView);
     });
-    this->m_renderStack->setCurrentWidget(this->m_rtView);
-    if (alreadyOn)
-        this->m_rtView->refresh();
 }
 
 void vtkWindowCatalogue3D::enablePointOnlyControls(bool enabled)
