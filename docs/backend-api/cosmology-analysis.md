@@ -14,10 +14,14 @@ Single redshift under a named preset.
 { "z": 0.5, "model": "Planck18" }
 ```
 Returns `{valid, error, z, model, comoving_Mpc, luminosity_Mpc,
-proper_motion_kpc_per_arcsec}`; `proper_motion_kpc_per_arcsec` is the proper
-transverse scale, kpc per arcsecond (0 at z = 0). `model` defaults to
-`Planck18`; an unknown model or a negative `z` is answered with
-`valid: false`. It has no angular-diameter distance, lookback time or age: for
+scale_kpc_per_arcsec, proper_motion_kpc_per_arcsec}`. `scale_kpc_per_arcsec`
+is the proper transverse scale, kpc of proper length per arcsecond (D_A per
+arcsecond; 0 at z = 0). `proper_motion_kpc_per_arcsec` carries the same number
+under its old name, which wrongly suggested a proper motion: it is
+**deprecated** (marked so in the OpenAPI schema), kept for one release so
+existing clients keep working, and will then be removed; read
+`scale_kpc_per_arcsec`. `model` defaults to `Planck18`; an unknown model, or a
+negative, non-finite or larger than 10 000 `z` (where the integrals return 0 Mpc), is answered with `valid: false`. It has no angular-diameter distance, lookback time or age: for
 a preset other than Planck18 the desktop calculator leaves those columns empty.
 
 ### `POST /v1/cosmology/distance/batch`
@@ -25,8 +29,8 @@ a preset other than Planck18 the desktop calculator leaves those columns empty.
 { "redshifts": [0.1, 0.5, 1.0], "model": "Planck15" }
 ```
 Returns comoving distances, `distances_Mpc[]`, in the same order. Supported models: `Planck18`,
-`Planck15`, `Planck13`, `WMAP9`. Up to 100 000 redshifts; a negative or
-non-finite entry comes back as `null` at its position rather than as 0 Mpc,
+`Planck15`, `Planck13`, `WMAP9`. Up to 100 000 redshifts; a negative,
+non-finite or larger than 10 000 entry comes back as `null` at its position rather than as 0 Mpc,
 which would be indistinguishable from a genuine z = 0.
 
 ### `GET /v1/cosmology/distances`
@@ -38,6 +42,15 @@ as query parameters an arbitrary flat-or-open `LambdaCDM` (`H0` in `[40, 120]`
 km/s/Mpc, `Om0` and `Ode0` in `[0, 1.5]`, `Om0 + Ode0 ≤ 1`; omitted ones
 default to Planck18's). That model has `Tcmb0 = 0`, so no radiation term.
 Unphysical input is refused with 422.
+
+A quantity with no finite value for the model is answered as `null`, and the
+rest of the answer is kept. The case that occurs is de Sitter (`Om0=0`,
+`Ode0=1`): it has no Big Bang, so `age_Gyr` is `null` while the distances
+(`D_C = c z / H0`) and the lookback time (`ln(1 + z) / H0`) are numbers. The
+same rule holds on every cosmology route: no answer carries `NaN` or
+`Infinity`, which JSON cannot encode. A request body carrying the JSON literal
+`NaN` or `Infinity` in a field that refuses it gets the usual 422, with the
+echoed value as `null`.
 
 Client binding: `BackendClient::requestCosmologyDistances(z, custom)`. The
 desktop calculator uses it for Planck18's D_A, lookback time and age and for
@@ -122,20 +135,24 @@ cosmology grouping. Requires scikit-image (503 without it).
   "smooth_sigma_pix": 0.0, "persistence_threshold": null }
 ```
 
+Numbers must be finite: `NaN` or `Infinity` in `threshold`,
+`smooth_sigma_pix` or `persistence_threshold` is refused with 422.
+
 | Field | Meaning |
 |---|---|
 | `channel` | Plane of a cube to use |
 | `threshold` | Binarisation threshold; `null` = mean of the finite pixels |
 | `mode` | `skeleton` (medial-axis thinning of the bright regions) or `void` (skeleton of the regions below the threshold) |
 | `smooth_sigma_pix` | Gaussian pre-smoothing σ in pixels, normalised over the finite pixels; blank (NaN) pixels stay blank, so no skeleton or void is drawn in an unobserved area. 0 disables it |
-| `persistence_threshold` | Drops skeleton pixels whose intensity is below it; `null` disables it |
+| `persistence_threshold` | An **intensity cut**, not a topological persistence: after thinning, skeleton pixels whose intensity (on the smoothed map when smoothing is on) is below it are dropped, which can split a filament and add end points. Any finite value is honoured, 0 and negative ones included (a map with negative values needs a negative cut); `null` disables it. Before #129 a value ≤ 0 was silently ignored. The name is kept because the desktop's replay records carry exactly these fields |
 
 The desktop calls the JSON route (`BackendClient::requestSkeleton`), because
 it is the one that reports the threshold applied when `null` was sent, which
 the product's replay record needs.
 
 JSON response: `valid`, `error`, `channel`, `width`, `height`, `threshold`
-(the value used), `mode`, `smooth_sigma_pix`, `n_skeleton_pixels`,
+(the value used), `mode`, `smooth_sigma_pix`, `persistence_threshold` (the
+intensity cut applied, `null` for none), `n_skeleton_pixels`,
 `range_min`, `range_max`, `data_base64` (float32 mask, 0 or 255) and
 `endpoints` (`[row, col]` pairs). `/binary` returns the mask as one Visivo
 binary frame (`application/octet-stream`: a 12-byte big-endian header of

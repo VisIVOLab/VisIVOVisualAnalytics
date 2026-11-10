@@ -4088,8 +4088,12 @@ BackendCosmologyDistanceResult BackendClient::parseCosmologyDistanceObject(
     r.z = optionalNumber(object, QStringLiteral("z"));
     r.comovingMpc = optionalNumber(object, QStringLiteral("comoving_Mpc"));
     r.luminosityMpc = optionalNumber(object, QStringLiteral("luminosity_Mpc"));
-    // Proper transverse kpc per arcsecond; 0 at z = 0, where D_A is 0.
-    r.kpcPerArcsec = optionalNumber(object, QStringLiteral("proper_motion_kpc_per_arcsec"));
+    // Proper transverse kpc per arcsecond; 0 at z = 0, where D_A is 0. The
+    // backend names it scale_kpc_per_arcsec since #129; a backend from before
+    // only sends the old, deprecated proper_motion_kpc_per_arcsec.
+    r.kpcPerArcsec = optionalNumber(object, QStringLiteral("scale_kpc_per_arcsec"));
+    if (!std::isfinite(r.kpcPerArcsec))
+        r.kpcPerArcsec = optionalNumber(object, QStringLiteral("proper_motion_kpc_per_arcsec"));
     return r;
 }
 
