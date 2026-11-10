@@ -142,6 +142,80 @@ Errors: 404, 422 (not a cube, or a box that is empty after clamping:
 `Invalid subvolume ROI.` as `text/plain`), 500 (`text/plain`) for other
 failures.
 
+### `POST /v1/cube/reduced_info` and `POST /v1/cube/reduced_bin`
+
+The reduced cube the [VR page](../user-guide/vr-headset.md) renders on the
+headset ([#167](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/167)):
+the cube binned by an integer factor on each axis and sent as an 8- or 16-bit
+3-D texture. The rules are in `backend/app/cube_reduce.py`; the analysis routes
+keep working on the full cube.
+
+Request (`CubeReducedRequest`, shared by both routes):
+
+| Field | Default | Limits | Meaning |
+|---|---|---|---|
+| `dataset_id` | | | an open cube |
+| `factor_xy` | 0 | 0 to 64 | binning of both spatial axes (one factor, so a reduced pixel stays square); 0 picks the smallest factor that brings both to at most `max_dim` |
+| `factor_z` | 0 | 0 to 64 | binning of the spectral axis; 0 picks it the same way |
+| `max_dim` | 256 | 16 to 2048 | reduced voxels per side the automatic factors aim at |
+| `mode` | `mean` | `mean`, `max` | `mean`: the mean of each block over its finite voxels (the brick pyramid's rule); `max`: the largest finite value. A block with no finite voxel is blank. A partial block at the end of an axis is reduced over the voxels it holds |
+| `encoding` | `uint8` | `uint8`, `float16` | see below (`reduced_bin` only) |
+
+A reduced cube larger than 2048 voxels on a side, 64 Mi voxels in all, or
+64 MiB of texture in the requested encoding (so 32 Mi voxels in `float16`) is
+refused with 422 before the cube is read.
+
+**`reduced_info`** answers JSON, without reducing the cube: `full_shape` and
+`reduced_shape` (`[width, height, depth]`), `factors` (`[fx, fy, fz]`),
+`default_threshold` (the full cube's default 3-D threshold, the rule of
+[the desktop's view](../user-guide/cube-viewer.md#the-default-threshold), from a
+stride sample, `null` when the cube has no finite value), `bunit`,
+`pixel_scale_arcsec`, and `axes`: for `x`, `y` and `z`, `name` (the CTYPE
+before its first `-`), `ctype`, `unit` and `world`, the world coordinate of
+each reduced voxel's centre (`null` where undefined). `x` and `y` are read with
+the file's full WCS along the central row (for `x`) and column (for `y`) of the
+field, `method: "wcs"`, or from the header's linear axis when the WCS cannot
+be evaluated, `method: "linear"`; the spatial labels of a projected field are
+therefore exact on those lines, not the linear approximation of the desktop's
+cursor readout. `z` adds `velocity_kms` (velocity per reduced channel, or
+`null` when the axis cannot be expressed so), `velocity_convention` (a velocity
+axis keeps its own convention; a frequency axis with `RESTFRQ` becomes optical
+velocity, cz = c (ν₀/ν − 1), as in the kinematic fit), `channel_width_kms` and
+`specsys`. Channel 0 comes first: a frequency-ordered cube has a decreasing
+velocity axis.
+
+**`reduced_bin`** answers the reduced cube as raw voxels in the volume layout
+above (x fastest), with headers `X-Visivo-Width`, `X-Visivo-Height`,
+`X-Visivo-Depth`, `X-Visivo-Scalar-Type` (`uint8` or `float16`),
+`X-Visivo-Byte-Order: little`, `X-Visivo-Range-Min` and `X-Visivo-Range-Max`
+(the finite range of the reduced cube, which the encoding spans),
+`X-Visivo-Full-Shape` (`width,height,depth` of the cube),
+`X-Visivo-Bin-Factors` (`fx,fy,fz`), `X-Visivo-Bin-Mode`,
+`X-Visivo-Threshold` (the default threshold for this binning: for `mean`, the
+default-threshold rule applied to the reduced cube itself, whose noise is
+lower; for `max`, the full cube's default threshold, since a block maximum is
+above it exactly when one of its voxels is; empty when there is no finite
+value) and `X-Visivo-Bunit`.
+
+- `uint8`: code 0 is blank; codes 1 to 255 map the range linearly,
+  value = min + (code − 1) / 254 · (max − min). With a large dynamic range the
+  steps near the noise are coarse (one peak at 1000 σ: about 1.3 σ per code);
+  `float16` is the remedy.
+- `float16`: value = min + stored · (max − min); a blank voxel is stored as −1.
+
+The route reads the whole cube in slabs of whole blocks (bounded memory) and
+takes a compute slot (429 when all stay busy). Errors: 404, 422 (not a cube,
+an invalid field, a reduced cube too large; computation errors as
+`text/plain`), 500 (`text/plain`).
+
+```json
+{ "dataset_id": "ds_1a2b3c4d5e6f", "factor_xy": 3, "factor_z": 1, "mode": "mean", "encoding": "uint8" }
+```
+
+On HCG 44 (700 × 700 × 158) the automatic factors are 3 × 3 × 1, giving
+234 × 234 × 158 voxels, 8.7 MB in 8 bits; the reduction takes 0.6 s on an
+M-series Mac.
+
 ### `POST /v1/cube/kinematic_model_bin`
 
 Builds a tilted-ring model PPV cube of a rotating disc with the same spatial

@@ -76,6 +76,11 @@ X_VOLUME_BOX = "X-Visivo-Volume-Box"
 X_COLOUR_RANGE = "X-Visivo-Colour-Range"
 X_COLOUR_TABLE = "X-Visivo-Colour-Table"
 
+# ── Reduced cube for a headset (issue #167) ─────────────────────────────────
+X_BIN_FACTORS = "X-Visivo-Bin-Factors"
+X_BIN_MODE = "X-Visivo-Bin-Mode"
+X_THRESHOLD = "X-Visivo-Threshold"
+
 # ── Line-width / moment map units (out-of-band because body is binary) ──────
 X_FWHM_UNIT = "X-Fwhm-Unit"
 X_EW_UNIT = "X-Ew-Unit"

@@ -102,6 +102,10 @@ from .cosmology import (  # noqa: F401
     _skeleton_endpoints,
     worker_skeleton,
 )
+from .reduced import (  # noqa: F401
+    worker_cube_reduced_info,
+    worker_cube_reduced,
+)
 from .sofia import (  # noqa: F401
     _sofia_value,
     _parse_votable_rows,
@@ -179,6 +183,8 @@ __all__ = [
     "_parse_votable_rows",
     "resolve_sofia_bin",
     "worker_sofia",
+    "worker_cube_reduced_info",
+    "worker_cube_reduced",
     "_qt_zlib_compress",
     "_b64f32",
     "_b64i32",

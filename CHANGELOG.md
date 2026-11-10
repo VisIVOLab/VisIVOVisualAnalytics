@@ -8,6 +8,27 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Cubes in a VR headset from a Mac (#167, first step of #166).** The backend
+  serves a WebXR page at `/vr/` that a Meta Quest 3 opens in its browser
+  (over `adb reverse`, so the page is `localhost` and needs no certificate;
+  over Wi-Fi with adb connected wirelessly). The headset's GPU ray-marches a
+  reduced copy of the cube (WebGL2, front to back with early termination,
+  empty-space skipping, a frame-rate governor), with threshold, colour map,
+  clipping box and a velocity slab on the controllers, and grab to move,
+  turn and scale. Axes in world coordinates and the velocity axis in km/s
+  with its scale against the sky written out; the binning in use is written
+  over the cube. A panel shows FPS, frame times, GPU time, steps per ray and
+  the eye-buffer size; a built-in benchmark measures four cube sizes at three
+  sampling rates. The same page works in a desktop browser without a
+  headset. The token is read from the URL fragment, which is never sent to
+  the server.
+  - New routes `POST /v1/cube/reduced_info` (factors, default threshold, world
+    coordinates of the reduced voxels) and `POST /v1/cube/reduced_bin` (the
+    cube binned by mean or max, in 8 or 16 bits, read in bounded memory).
+  - `validation/vr_reduction_fidelity.py` measures, on HCG 44 and WALLABY
+    NGC 3137 against their reference masks, the flux and voxels each binning
+    still draws above the threshold. See *Cubes in a VR headset* in the user
+    guide.
 - **Server-side rendering on a macOS backend (#168, first step).** A backend
   on a Mac now renders cube and point-table views on the Mac's GPU, as a
   Linux backend does with EGL: each render session draws into a hidden

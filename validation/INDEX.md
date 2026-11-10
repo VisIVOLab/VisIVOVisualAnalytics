@@ -15,6 +15,7 @@ Heavy/regenerable outputs are git-ignored; reproduce via the commands below.
 | §5 lasso on synthetic discs (S/N, extent, neighbour) — Fig. "lasso synthetic" | [README.md](README.md#the-method-on-its-own-synthetic-discs) | `lasso_synthetic.py` | `out/lasso_synthetic.{md,csv,png}` |
 | §5 comparator's fit on discs of known kinematics | [README.md](README.md#the-method-on-its-own-synthetic-discs) | `kinematic_fit_synthetic.py` | `out/kinematic_fit_synthetic.{md,csv}` |
 | Default 3-D threshold from the noise (issue #93) | `out/threshold_from_noise.md` | `threshold_from_noise.py [--extra CUBE ...]` | `out/threshold_from_noise.{md,csv}` |
+| Fidelity of the headset's reduced cube (issue #167) | `out/vr_reduction_fidelity.md` | `vr_reduction_fidelity.py [--sofia-out DIR]` | `out/vr_reduction_fidelity.{md,csv}` |
 | **Figure 3** panels b/c/e/f (lasso on real HI galaxy) | — | `figure3_lasso_hgc44.py` | `out/figure3_lasso.png` |
 | **Figure 7** (cosmic flows: streamlines + basins) | [velocity_field.md](velocity_field.md) | `velocity_field_demo.py` | `out/velocity_field.png` |
 
