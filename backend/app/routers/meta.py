@@ -104,12 +104,16 @@ async def session_datasets(session_id: str, token: str = _auth) -> dict:
     session = session_for_owner(session_id, token)
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+    from ..volume_source import split_order  # noqa: PLC0415
     datasets = []
     for ds_id, entry in session.datasets.items():
         datasets.append({
             "dataset_id": ds_id,
             "kind": entry.get("kind", ""),
-            "path": entry.get("path", ""),
+            # The path as the client opened it; a VBT's byte order apart (#165).
+            "path": split_order(entry.get("path", ""))[0],
+            "byte_order": entry.get("byte_order", ""),
+            "byte_order_declared": entry.get("byte_order_declared", ""),
             "width": int(entry.get("width", 0) or 0),
             "height": int(entry.get("height", 0) or 0),
             "depth": int(entry.get("depth", 0) or 0),

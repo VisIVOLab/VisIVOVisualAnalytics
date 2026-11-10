@@ -1110,9 +1110,10 @@ def _read_vbt_points(path: Path) -> pd.DataFrame:
     per field, each a view of the binary where it lies (no copy: a table of
     hundreds of millions of rows costs no memory until its rows are read).
     ``path`` is the ``.head`` or the binary beside it."""
-    from .volume_source import parse_vbt_header  # noqa: PLC0415
-    head = Path(str(path) if str(path).endswith(".head") else str(path) + ".head")
-    header = parse_vbt_header(head)
+    from .volume_source import parse_vbt_header, split_order  # noqa: PLC0415
+    text, order = split_order(path)   # an order to read it in (issue #165)
+    head = Path(text if text.endswith(".head") else text + ".head")
+    header = parse_vbt_header(head, order or None)
     if header["kind"] != "point":
         raise ValueError("A VBT volume opens as a cube, not as a catalogue.")
     binary = Path(str(head)[: -len(".head")])

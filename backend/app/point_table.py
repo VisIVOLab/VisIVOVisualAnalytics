@@ -57,12 +57,13 @@ def default_axes(names: list[str]) -> tuple[str, str, str]:
 def open_point_table(dataset_path: str) -> PointTable:
     if str(dataset_path).startswith("{"):
         return _open_catalogue(json.loads(dataset_path))
-    from .volume_source import parse_vbt_header   # noqa: PLC0415
+    from .volume_source import parse_vbt_header, split_order   # noqa: PLC0415
     # The header's path (the VBT route registers it); its binary beside it.
-    head = str(dataset_path)
+    # It may carry the byte order the dataset was opened in (issue #165).
+    head, order = split_order(dataset_path)
     if not head.endswith(".head"):
         head += ".head"
-    header = parse_vbt_header(head)
+    header = parse_vbt_header(head, order or None)
     if header["kind"] != "point":
         raise ValueError("Point rendering needs a VBT point table.")
     binary = head[: -len(".head")]

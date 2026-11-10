@@ -50,6 +50,13 @@ QJsonObject productRecipe(const AnalysisProduct &p, const QString &application,
     QJsonObject dataset;
     dataset.insert(u"label"_s, p.parentLabel);
     dataset.insert(u"path"_s, p.parentKey);
+    // A VBT (issue #165): the byte order the backend read it in when this
+    // product was made, and the one its header declares. A replay opens it with this
+    // `byte_order` in the open request.
+    if (!p.parentByteOrder.isEmpty()) {
+        dataset.insert(u"byte_order"_s, p.parentByteOrder);
+        dataset.insert(u"byte_order_declared"_s, p.parentByteOrderDeclared);
+    }
     // Volatile ids: valid for the session that made the product, kept because
     // they tie the record to the service's own job log. A replay opens `path`
     // again and uses the dataset id that open returns.

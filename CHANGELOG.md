@@ -29,6 +29,17 @@ are preserved here unedited; the branch names they refer to are historical.
     NGC 3137 against their reference masks, the flux and voxels each binning
     still draws above the threshold. See *Cubes in a VR headset* in the user
     guide.
+- **VBT tables with the wrong byte order in their header (#165).** Opening a
+  VBT (points or a volume) now samples a few thousand values per field and
+  compares both byte orders; when the values are absurd as declared and
+  plausible the other way, the open answer carries `byte_order_warning` and
+  the desktop asks "This table's header says little-endian, but its values
+  look big-endian." with *Open as big-endian* / *Open as declared*. The open
+  routes (`/v1/catalogue/open`, `/v1/datasets/open`, `/v1/vbt/open`) take
+  `byte_order`; the choice is kept per file in a store every backend process
+  reads (render sessions, worker pools, pyramid builds), datasets open in the
+  other order are closed, pyramids and cached products are kept apart,
+  provenance and exported recipes record it, and the file is never rewritten.
 
 - **SAMP from the viewer windows (#130).** The image, cube and 3-D catalogue
   windows have a **SAMP** menu that acts on that window's data, not on the

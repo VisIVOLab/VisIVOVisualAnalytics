@@ -2,6 +2,7 @@
 #define BackendClient_h
 
 #include "FilePreview.h"
+#include "VbtByteOrder.h"
 
 #include <QByteArray>
 #include <QHash>
@@ -210,6 +211,11 @@ struct BackendOpenDatasetResult
     /// it (empty for any other dataset).
     QString fieldName;
     QList<QPair<QString, QString>> fields;   ///< (name, path)
+    /// A VBT volume (issue #165): the byte order its values are read in, the
+    /// one its header declares, and the warning when they look like the other.
+    QString byteOrder;
+    QString byteOrderDeclared;
+    visivo::VbtByteOrderWarning byteOrderWarning;
 };
 
 struct BackendFileHeaderResult
@@ -443,6 +449,10 @@ struct BackendCatalogueInfo
     /// The points can be drawn on the backend (/v1/render, issue #83): a VBT
     /// point table on a backend that renders server-side.
     bool serverSideRenderingAvailable{ false };
+    /// A VBT point table (issue #165): as for BackendOpenDatasetResult.
+    QString byteOrder;
+    QString byteOrderDeclared;
+    visivo::VbtByteOrderWarning byteOrderWarning;
 };
 
 struct BackendCatalogueSubset
@@ -553,6 +563,9 @@ struct BackendVbtOpenResult
     // volume only:
     std::array<int, 3> dimensions{ 0, 0, 0 };
     std::array<double, 3> spacing{ 1.0, 1.0, 1.0 };
+    QString byteOrder;           // issue #165, as for BackendCatalogueInfo
+    QString byteOrderDeclared;
+    visivo::VbtByteOrderWarning byteOrderWarning;
 };
 
 struct BackendVbtSubsetResult
@@ -2228,6 +2241,11 @@ public:
      *  matched a remote backend. */
     BackendOpenDatasetResult openSkavaDataset(const QString &obsId,
                                                 const QString &accessUrl);
+    /// Whether a VBT open sends the byte order chosen for the file earlier
+    /// (issue #165, app/VbtByteOrder.h): yes by default, for the opens that
+    /// follow on their own; no for an open the user starts, so that the
+    /// backend warns again and the choice can be reconsidered.
+    void setUseRememberedVbtByteOrder(bool use) { m_useRememberedVbtByteOrder = use; }
     BackendCatalogueInfo openCatalogue(const QString &path, const QString &format = QStringLiteral("csv"));
     /// Open SEVERAL catalogue files of the same format as ONE concatenated
     /// catalogue (e.g. the spatial subtables of a cosmological snapshot).
@@ -2547,6 +2565,11 @@ public:
      *  runs and remove its frames; any render task, a cube's too. Bounded as
      *  cancelTask (@p timeoutMs, 0: 15 s). */
     bool deleteRender(const QString &taskId, QString &error, int timeoutMs = 0) const;
+    /** DELETE /v1/datasets/{id} — close a dataset of this client's session
+     *  when the last window on it closes. Bounded (5 s); refused once the
+     *  application quits (TaskQuitDrain.h). True when the backend answered;
+     *  a dataset already gone (expired session) is no error. */
+    bool closeDataset(const QString &datasetId, QString &error) const;
     /// @p abort: see performGet; a set flag ends the read at once (status empty).
     BackendTaskStatusResult requestTaskStatus(const QString &taskId,
                                               const std::atomic_bool *abort = nullptr) const;
@@ -3084,6 +3107,7 @@ private:
     QString m_baseUrl;
     QString m_token;
     QString m_sessionId;
+    bool m_useRememberedVbtByteOrder{ true };   ///< issue #165
 
     static QString s_defaultSessionId;
     /// Minted sessions are cached per (base URL + token): a session belongs to one

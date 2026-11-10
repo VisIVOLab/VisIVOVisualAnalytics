@@ -960,6 +960,10 @@ static BackendOpenDatasetResult parseOpenDatasetObject(const QJsonObject &object
         result.fields.append({ field.value(QStringLiteral("name")).toString(),
                                field.value(QStringLiteral("path")).toString() });
     }
+    result.byteOrder = object.value(QStringLiteral("byte_order")).toString();
+    result.byteOrderDeclared = object.value(QStringLiteral("byte_order_declared")).toString();
+    result.byteOrderWarning =
+            visivo::parseVbtByteOrderWarning(object.value(QStringLiteral("byte_order_warning")));
     return result;
 }
 
@@ -984,7 +988,13 @@ BackendOpenDatasetResult BackendClient::openDataset(const QString &path, bool al
             return result;
         }
     }
-    const QJsonDocument body(QJsonObject{ { QStringLiteral("path"), path } });
+    QJsonObject bodyObj{ { QStringLiteral("path"), path } };
+    // A VBT the user chose to read against its header's byte order (#165).
+    const QString byteOrder = m_useRememberedVbtByteOrder
+            ? visivo::rememberedVbtByteOrder(m_baseUrl, path) : QString();
+    if (!byteOrder.isEmpty())
+        bodyObj.insert(QStringLiteral("byte_order"), byteOrder);
+    const QJsonDocument body(bodyObj);
     int status = 0;
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/datasets/open")), body, error,
@@ -1003,6 +1013,9 @@ BackendOpenDatasetResult BackendClient::openDataset(const QString &path, bool al
     if (result.valid && !sessionId.isEmpty()) {
         m_sessionId = sessionId;
     }
+    if (result.valid)
+        visivo::noteVbtReadOrder(result.sessionId, path, result.byteOrder,
+                                 result.byteOrderDeclared);
     return result;
 }
 
@@ -1198,9 +1211,15 @@ BackendCatalogueInfo BackendClient::openCatalogue(const QStringList &paths, cons
     QJsonArray pathsArr;
     for (const QString &p : paths)
         pathsArr.append(p);
-    const QJsonDocument body(QJsonObject{ { QStringLiteral("path"), paths.value(0) },
-                                          { QStringLiteral("format"), format },
-                                          { QStringLiteral("paths"), pathsArr } });
+    QJsonObject bodyObj{ { QStringLiteral("path"), paths.value(0) },
+                         { QStringLiteral("format"), format },
+                         { QStringLiteral("paths"), pathsArr } };
+    // A VBT the user chose to read against its header's byte order (#165).
+    const QString byteOrder = format == QLatin1String("vbt") && m_useRememberedVbtByteOrder
+            ? visivo::rememberedVbtByteOrder(m_baseUrl, paths.value(0)) : QString();
+    if (!byteOrder.isEmpty())
+        bodyObj.insert(QStringLiteral("byte_order"), byteOrder);
+    const QJsonDocument body(bodyObj);
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/catalogue/open")), body, error);
     if (!error.isEmpty()) {
@@ -1225,6 +1244,13 @@ BackendCatalogueInfo BackendClient::openCatalogue(const QStringList &paths, cons
     result.coordSystem = coord.value(QStringLiteral("system")).toString(QStringLiteral("sky"));
     result.serverSideRenderingAvailable =
             object.value(QStringLiteral("server_side_rendering_available")).toBool(false);
+    result.byteOrder = object.value(QStringLiteral("byte_order")).toString();
+    result.byteOrderDeclared = object.value(QStringLiteral("byte_order_declared")).toString();
+    result.byteOrderWarning =
+            visivo::parseVbtByteOrderWarning(object.value(QStringLiteral("byte_order_warning")));
+    if (result.valid)
+        visivo::noteVbtReadOrder(result.sessionId, paths.value(0), result.byteOrder,
+                                 result.byteOrderDeclared);
     const QJsonArray fields = object.value(QStringLiteral("fields")).toArray();
     result.fields.reserve(fields.size());
     for (const QJsonValue &fieldValue : fields) {
@@ -2688,6 +2714,10 @@ BackendVbtOpenResult BackendClient::openVbt(const QString &path, const QString &
     if (!format.isEmpty()) {
         bodyObj.insert(QStringLiteral("format"), format);
     }
+    const QString byteOrder = m_useRememberedVbtByteOrder   // #165
+            ? visivo::rememberedVbtByteOrder(m_baseUrl, path) : QString();
+    if (!byteOrder.isEmpty())
+        bodyObj.insert(QStringLiteral("byte_order"), byteOrder);
     const QJsonDocument body(bodyObj);
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/vbt/open")), body, error);
@@ -2721,6 +2751,13 @@ BackendVbtOpenResult BackendClient::openVbt(const QString &path, const QString &
     if (spacing.size() == 3) {
         result.spacing = { spacing[0].toDouble(), spacing[1].toDouble(), spacing[2].toDouble() };
     }
+    result.byteOrder = object.value(QStringLiteral("byte_order")).toString();
+    result.byteOrderDeclared = object.value(QStringLiteral("byte_order_declared")).toString();
+    result.byteOrderWarning =
+            visivo::parseVbtByteOrderWarning(object.value(QStringLiteral("byte_order_warning")));
+    if (result.valid)
+        visivo::noteVbtReadOrder(result.sessionId, path, result.byteOrder,
+                                 result.byteOrderDeclared);
     return result;
 }
 

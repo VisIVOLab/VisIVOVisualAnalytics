@@ -27,7 +27,7 @@ def file_identity(path: str | os.PathLike) -> str:
     Empty for a path that cannot be stat'ed (an in-memory or remote source),
     which keys as before.
     """
-    from .volume_source import split_ref, vbt_head  # noqa: PLC0415
+    from .volume_source import byte_order_override, split_ref, vbt_head  # noqa: PLC0415
 
     base, _field = split_ref(path)
     parts = []
@@ -40,6 +40,12 @@ def file_identity(path: str | os.PathLike) -> str:
             continue
         parts.append(f"{st.st_dev}.{st.st_ino}.{st.st_size}."
                      f"{st.st_mtime_ns}.{st.st_ctime_ns}")
+    # A VBT read against its header's byte order (issue #165) has other
+    # values: another version, whichever of its names (data, .head, field
+    # reference) the key was made from.
+    order = byte_order_override(path)
+    if order:
+        parts.append(f"byte-order={order}")
     return "|".join(parts)
 
 
