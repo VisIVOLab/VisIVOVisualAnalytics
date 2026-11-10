@@ -113,15 +113,35 @@ async def open_dataset(
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> OpenDatasetResponse:
-    from ..volume_source import split_ref, vbt_dataset_path  # noqa: PLC0415
+    from ..volume_source import split_ref, vbt_dataset_path, with_order  # noqa: PLC0415
 
     # A field of a VBT volume: the file checked as any path, the field kept.
     base, field = split_ref(request.path)
     path = _normalize_path(base)
     vbt = vbt_dataset_path(path, field)
+    orders: dict = {}
     if vbt is not None:
         path = Path(vbt)
-    elif field is not None or not _is_supported_dataset(path):
+        # Before any value is read (issue #165): the byte order asked for,
+        # else a check of the one the header declares.
+        from ..vbt_byte_order import open_with_byte_order  # noqa: PLC0415
+        try:
+            orders = await asyncio.to_thread(open_with_byte_order, vbt, request.byte_order,
+                                             f"session {session.session_id[:8]}")
+        except (OSError, ValueError) as exc:
+            return OpenDatasetResponse(valid=False, error=str(exc))
+        if orders["changed"]:
+            from ..vbt_byte_order import close_render_sessions_read_otherwise  # noqa: PLC0415
+            await close_render_sessions_read_otherwise(vbt, orders["byte_order"])
+        # The dataset is read in this order for as long as it is open, by every
+        # reader and process, whatever the store says later.
+        path = Path(with_order(vbt, orders["byte_order"]))
+    elif request.byte_order is not None:
+        return OpenDatasetResponse(
+            valid=False, error=("byte_order applies to a VisIVO Binary Table volume here; "
+                                "a VBT table of points opens with /v1/catalogue/open "
+                                "(format vbt)."))
+    if vbt is None and (field is not None or not _is_supported_dataset(path)):
         return OpenDatasetResponse(
             valid=False,
             error="Unsupported file type. Expected FITS (.fits, .fit, also "
@@ -139,11 +159,21 @@ async def open_dataset(
     # FITS, so we register the resolved path with the session.
     registered_path = str(geometry.get("resolved_path") or path)
     session.datasets[dataset_id] = {"path": registered_path, "kind": kind, **geometry}
+    if orders:
+        # Provenance: the order the values were read in, and the header's.
+        session.datasets[dataset_id]["byte_order"] = orders["byte_order"]
+        session.datasets[dataset_id]["byte_order_declared"] = orders["byte_order_declared"]
     logger.info(
         "[open] session=%s dataset_id=%s kind=%s path=%s",
         session.session_id[:8] + "…", dataset_id, kind, path,
     )
-    return _build_open_response(dataset_id, session.session_id, kind, geometry)
+    response = _build_open_response(dataset_id, session.session_id, kind, geometry)
+    if orders:
+        response.byte_order = orders["byte_order"]
+        response.byte_order_declared = orders["byte_order_declared"]
+        if orders["byte_order_warning"]:
+            response.byte_order_warning = VbtByteOrderWarning(**orders["byte_order_warning"])
+    return response
 
 
 # ── Pixel → sky (SAMP coord.pointAt.sky, issue #130) ────────────────────────

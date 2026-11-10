@@ -31,6 +31,11 @@ volume) `field_name` is the field opened and `fields` lists every field as
 `{name, path}`, `path` being what `/v1/datasets/open` takes to open that field. The same response is returned by the
 three routes below.
 
+**VBT byte order (issue #165).** For a VBT volume the request may carry
+`byte_order` (`"little"` or `"big"`), and the response carries `byte_order`
+(the order the values are read in), `byte_order_declared` (the `.head`'s) and
+`byte_order_warning`; see [VBT byte order](#vbt-byte-order) below.
+
 The open routes take the session from `X-Visivo-Session`; the reply carries the
 `session_id` the client must echo from then on.
 
@@ -211,6 +216,10 @@ Returns `dataset_id`, `session_id`, `num_rows`, the field list with types
 `cartesian`) and `server_side_rendering_available` (a VBT point table on a
 backend that renders server-side).
 A missing file or one that does not parse is answered with `valid: false`.
+With `format: "vbt"` the request may carry `byte_order` and the response
+carries `byte_order`, `byte_order_declared` and `byte_order_warning`
+([VBT byte order](#vbt-byte-order)); `byte_order` with any other format is
+answered with `valid: false`.
 
 ### `POST /v1/catalogue/subset`
 Legacy: return up to `max_rows` (default 100000) rows without filtering.
@@ -255,6 +264,98 @@ with `valid: false`.
 ### `POST /v1/vbt/open`
 Open a VBT file.
 Returns `dataset_id`, `session_id`, `kind` (`point`|`volume`), `fields[]`, `num_rows`, `scalar_type`, and for a volume `dimensions` (`[nx, ny, nz]`) and `spacing`.
+Takes `byte_order` and returns `byte_order`, `byte_order_declared` and
+`byte_order_warning` as below.
+
+### VBT byte order
+
+Some converters write a VBT's data in one byte order and its `.head` in the
+other (ChaNGa/Tipsy snapshots are big-endian; tables converted from them were
+found declaring `little`). Read as declared, every value is absurd. The three
+open routes that take a VBT (`/v1/catalogue/open` with `format: "vbt"`,
+`/v1/datasets/open` on a VBT volume field, `/v1/vbt/open`) check it before
+answering:
+
+- Up to 16 chunks of 128 values per field are read, spread from the first row
+  to the last (at most 256 reads and 64 fields in all; a few milliseconds even
+  on a 51-million-point table). Tables of fewer than 64 rows are not checked.
+- Both byte orders are scored on the same bytes: the share of the non-NaN
+  values that are infinite, subnormal, or more than 20 decades from the
+  field's median magnitude. No absolute magnitude counts, so cgs values
+  (masses of 1e33 g, densities of 1e-24 g/cm³) are as plausible as Mpc
+  positions, and a density spanning 30 decades is plausible too. NaN is left
+  out (a masked field is full of it; read the other way those NaNs are
+  subnormals, which count there). A field that scores 0 both ways (constant,
+  all zero) gives no evidence and is left out.
+- The two orders are compared with each other: the declared one is flagged
+  when its mean score exceeds the other's by at least 0.2 and the other's is
+  at most a quarter of it. A table read in the wrong order scores about
+  0.45–1.0, one read in the right order 0.
+
+The warning is
+
+```json
+{"declared": "little", "suggested": "big", "confidence": "overwhelming",
+ "evidence": {"implausible_declared": 0.62, "implausible_suggested": 0.0,
+              "sampled_values": 18432, "informative_fields": 7,
+              "fields": [{"name": "MASS", "implausible_declared": 0.0,
+                          "implausible_suggested": 0.0,
+                          "first_declared": "-1.273e+24",
+                          "first_suggested": "2.45e-05"}]}}
+```
+
+`confidence` is `overwhelming` when at least 40% of the sampled values are
+absurd as declared, at most one in a hundred in the other order, over two or
+more fields; `strong` otherwise. `fields` lists at most twelve fields. The
+warning describes the FILE (its header against its values): it is given
+whenever `byte_order` is left out, also when the file is already read in the
+other order, so that a client can ask again on a fresh open.
+
+`byte_order` in a request reads the file in that order from then on, for
+every reader of that file (catalogue queries, point and ray-traced renders,
+volume fields, cube tools, pyramids, moments, previews), in every process of
+the backend; the file is never rewritten. Asking for the declared order drops
+the choice; leaving `byte_order` out keeps whatever the backend already reads
+the file in.
+
+- **Where it is kept.** The byte order is a property of the header and its
+  data, so the choice is per backend installation (and per store: backends
+  sharing a workspace share it), not per session. It is kept in
+  `$VISIVO_VBT_BYTE_ORDERS`, by default `.vbt-byte-orders.json` in the
+  workspace (`$VISIVO_EXPORTS_DIR`), which every backend process finds from
+  its environment. An entry is keyed by the real path of the `.head` the
+  header parser reads (the one beside the path given, so a symlinked data
+  file with its own `.head` works) and holds the order, the declared order,
+  the size, modification time and inode of the `.head` and its data, when it
+  was set and by which session. Correcting the `.head` or rewriting the data
+  retires it; a rewrite that keeps size, modification time and inode
+  (`touch -r` after an in-place edit) does not. An entry whose files cannot
+  be stat'ed for the moment (an offline mount) is kept. Asking for an order
+  that cannot be kept (the header or its data cannot be read) is answered
+  with `valid: false`.
+- **Writing.** Atomically (temporary file, fsync, rename), under an exclusive
+  lock: `flock`, `msvcrt.locking` on Windows, a lock directory with a 30 s
+  stale timeout where the file system refuses `flock` (Lustre without it,
+  some SMB/NFS mounts); failing all of them the write goes ahead unlocked
+  and says so in the log. Every change is logged (`[vbt-byte-order]`).
+- **Open datasets keep their order.** The store decides how a file is read
+  when it is OPENED. An open dataset carries that order in its path
+  (`…::vbt-order=big`), so every reader of it, in any process, a task
+  running while the choice changes, a cached product, a render session,
+  reads that order whatever the store says later, also when another backend
+  sharing the store changes it.
+- **Datasets and render sessions already open.** When an open changes the
+  order, every dataset open on that file in another order, in any session of
+  this backend, is closed, and so are this backend's render sessions drawing
+  it in the other order (logged): one `dataset_id` never serves two sets of
+  values. A request on such a dataset is answered as for any unknown dataset;
+  a client finds its render session gone, as after an expiry, and opens
+  again. Another backend sharing the store keeps its open datasets in the
+  order they were opened in.
+- **Caches.** Pyramids and cached products of a file read against its header
+  are kept apart from those of the declared order.
+- **Provenance.** The dataset's entry in `/v1/reproducibility/provenance`
+  records `visivo:byte_order` and `visivo:byte_order_declared`.
 
 ### `POST /v1/vbt/subset`
 Legacy bulk fetch (no filter, `max_rows` cap).

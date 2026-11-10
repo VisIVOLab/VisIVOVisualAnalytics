@@ -182,14 +182,15 @@ def remote(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_field_opened_as_a_cube_is_rendered_from_the_file(client, auth_headers, tmp_path,
                                                                   remote):
-    from app.volume_source import vbt_field_ref
+    from app.volume_source import vbt_field_ref, with_order
 
     path = _write_vbt(tmp_path, _fields(), names=["Density", "Temperature"])
     cube = await _open_cube(client, auth_headers, vbt_field_ref(path, 1))
     resp = await client.post("/v1/render/create_session", headers=cube["headers"],
                              json={"dataset_id": cube["dataset_id"]})
     assert resp.status_code == 200, resp.text
-    assert remote["path"] == vbt_field_ref(path, 1)
+    # In the byte order it was opened in (issue #165): the header's here.
+    assert remote["path"] == with_order(vbt_field_ref(path, 1), "little")
     # The session reads that field; out of core, from the field's pyramid.
     assert volume_shape(remote["path"]) == ((20, 24, 28), 1)
     assert default_pyramid_path(remote["path"], 0) == default_pyramid_path(path, 1)

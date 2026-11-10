@@ -18,6 +18,7 @@
 #include "CommandPalette.h"
 #include "DataHubWidget.h"
 #include "DecompressBeforeOpen.h"
+#include "VbtByteOrderPrompt.h"
 #include "DiagnosticsWindow.h"
 #include "LinewidthDialog.h"
 #include "ArepoExtractDialog.h"
@@ -123,13 +124,15 @@ struct VbtOpenTaskResult
 static VbtOpenTaskResult runVbtOpenTask(const QString &headerPath,
                                         const QString &backendUrl,
                                         const QString &backendToken,
-                                        int maxPointRows)
+                                        int maxPointRows, bool userStarted)
 {
     VbtOpenTaskResult out;
     out.backendUrl = backendUrl;
     out.backendToken = backendToken;
 
     BackendClient client(backendUrl, backendToken);
+    // An open the user started sends no remembered byte order (issue #165).
+    client.setUseRememberedVbtByteOrder(!userStarted);
 
     DiagnosticsManager::instance()->publish(
             DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("VBT"),
@@ -1005,7 +1008,21 @@ bool MainWindow::doOpenDataPath(const QString &path, OpenRecord *continued)
     if (!this->decompressBeforeOpen(client, path, record))
         return false;
     noteOpenReachedBackend(record);
-    const auto opened = client.openDataset(path, /*alreadyDecompressed=*/true);
+    // An open the user starts: a VBT is read as the backend was last told,
+    // and warned again when its header looks wrong (issue #165).
+    client.setUseRememberedVbtByteOrder(false);
+    auto opened = client.openDataset(path, /*alreadyDecompressed=*/true);
+    client.setUseRememberedVbtByteOrder(true);
+    // A VBT volume whose values look like the other byte order than its header
+    // says (issue #165): ask, and open it again in the order chosen (remembered:
+    // the volume's other fields open the same way).
+    if (opened.valid
+        && visivo::askVbtByteOrder(this, client.baseUrl(), path, opened.byteOrderWarning,
+                                   opened.byteOrder)) {
+        // The first answer's dataset is closed by the backend as the order
+        // changes: no orphan is left behind.
+        opened = client.openDataset(path, /*alreadyDecompressed=*/true);
+    }
     if (!opened.valid) {
         // The formats hint only where the format may be the problem: no reason
         // given, or the backend's own "Unsupported file type." (its start: the
@@ -1836,7 +1853,7 @@ void MainWindow::openVelocityFieldPath(const QString &path, OpenRecord *record)
 }
 
 
-void MainWindow::doOpenVbtPath(const QString &headerPath)
+void MainWindow::doOpenVbtPath(const QString &headerPath, bool userStarted)
 {
     this->m_sampCurrentFitsPath.clear();
     this->m_sampCurrentFitsName.clear();
@@ -1879,6 +1896,16 @@ void MainWindow::doOpenVbtPath(const QString &headerPath)
                     QMessageBox::critical(this, u"Could not open VBT"_s, result.error);
                     return;
                 }
+                // Values that look like the other byte order than the header
+                // says (issue #165): ask; a changed answer opens it again (the
+                // answer is remembered, so that open is not asked again).
+                if (visivo::askVbtByteOrder(this, result.backendUrl, headerPath,
+                                            result.openResult.byteOrderWarning,
+                                            result.openResult.byteOrder)) {
+                    busy->finish(visivo::BusyOutcome::Cancelled);
+                    this->doOpenVbtPath(headerPath, /*userStarted=*/false);
+                    return;
+                }
 
                 QWidget *win = nullptr;
                 const QString vbtType = result.openResult.kind == u"volume"_s
@@ -1895,7 +1922,9 @@ void MainWindow::doOpenVbtPath(const QString &headerPath)
                             result.sessionId, headerPath, this);
                     // On session expiry the window emits reopenRequested; reuse normal open flow.
                     QObject::connect(vbtWin, &vtkWindowVbt::reopenRequested,
-                                     this, &MainWindow::doOpenVbtPath);
+                                     this, [this](const QString &path) {
+                                         this->doOpenVbtPath(path, /*userStarted=*/false);
+                                     });
                     win = vbtWin;
                 }
                 win->showMaximized();
@@ -1917,5 +1946,5 @@ void MainWindow::doOpenVbtPath(const QString &headerPath)
 
     watcher->setFuture(
             QtConcurrent::run(&runVbtOpenTask, headerPath, backendUrl, backendToken,
-                              maxPointRows));
+                              maxPointRows, userStarted));
 }

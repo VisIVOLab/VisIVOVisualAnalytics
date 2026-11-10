@@ -160,11 +160,55 @@ isosurfaces are built where the file is.
   - The threshold is high for the scale in use. On a Linear scale a density
     field shows only its peaks; choose Log in the LUT editor (*Edit*) and read
     the share of voxels under the threshold slider while lowering it.
+* - *"This table's header says little-endian, but its values look big-endian."*
+  - The header declares the wrong byte order. See
+    [Wrong byte order in the header](#wrong-byte-order-in-the-header).
 * - Numbers look scrambled.
   - Byte order. A big-endian file read as little-endian produces finite,
     plausible-looking nonsense rather than an error — check the header's fourth
     line against how the file was written.
 ```
+
+### Wrong byte order in the header
+
+Some converters write a table's values in one byte order and its `.head` in
+the other. Read as the header says, every value is absurd: masses of −1e24 on
+every row, positions from 1e−26 to 1e30, and a ray-traced view that stays
+black.
+
+When a table (points or a volume) opens, the backend reads a few thousand
+values of each field, spread over the file, and looks at them both ways. If
+they are absurd read as declared and plausible read the other way, you are
+asked:
+
+> This table's header says little-endian, but its values look big-endian.
+
+The box shows the share of absurd values each way and the first value of the
+first field read both ways. **Open as big-endian** (or little-endian) reads
+the table in the other order; **Open as declared** keeps the header's. The
+file is not changed either way.
+
+- The suggested order is the default button when the evidence is
+  overwhelming (at least 40% of the sampled values absurd as declared, at
+  most one in a hundred the other way, over two or more fields), or when you
+  chose it before. Otherwise the header stays the default. *Escape* answers
+  nothing: the table opens as it is read now, and nothing is remembered.
+- Your answer is kept by the backend for that file (its `.head` and data as
+  they are), in every window and for every user of that backend, until it is
+  changed or the `.head` is corrected. Its other fields and a reconnect after a session expiry read it
+  the same way without asking. Opening the file again yourself (a new window,
+  *Recent*) asks again, so a choice can be undone. Windows already showing the
+  file in the other order reconnect and read it the new way.
+- An exported recipe records the order the backend read the dataset in as
+  its `byte_order` (and the header's as `byte_order_declared`).
+- Large physical values are not mistaken for a wrong byte order: the check
+  compares each field with its own typical magnitude, so cgs masses (1e33 g)
+  or densities (1e−24 g/cm³) are fine.
+- A table whose fields are all constant cannot be judged, and opens without
+  a question.
+
+To fix the file for good, correct the fourth line of its `.head`.
+
 
 ## See also
 

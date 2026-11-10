@@ -408,7 +408,11 @@ private:
                                        const struct BackendOpenDatasetResult &opened,
                                        const class BackendClient &client,
                                        OpenRecord *record = nullptr);
-    void doOpenVbtPath(const QString &path);
+    /// @p userStarted: an open the user asked for (the byte order chosen for
+    /// the file earlier is not sent, so the backend can warn again, issue
+    /// #165); false for the automatic ones (a reopen after a session expiry,
+    /// the reopen after the byte-order question).
+    void doOpenVbtPath(const QString &path, bool userStarted = true);
 
     /// Open a VLKB 2D cutout (backend path) in a new vtkWindowImage, label its
     /// master layer with @p displayName, and associate the window with @p tree

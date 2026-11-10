@@ -26,6 +26,11 @@ from httpx import ASGITransport, AsyncClient
 # ── Patch VISIVO_TOKEN before the app module is imported ─────────────────────
 _TEST_TOKEN = "test-token-visivo-12345"
 os.environ["VISIVO_TOKEN"] = _TEST_TOKEN
+# The VBT byte-order store (issue #165) is found from the environment by every
+# process, worker pools and render sessions included: set before any of them
+# starts, so no test reads or writes the user's own workspace store.
+os.environ["VISIVO_VBT_BYTE_ORDERS"] = os.path.join(
+    __import__("tempfile").mkdtemp(prefix="visivo-vbt-orders-"), "orders.json")
 
 
 @pytest.fixture(autouse=True)
