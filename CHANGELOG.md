@@ -27,6 +27,25 @@ are preserved here unedited; the branch names they refer to are historical.
   `TestTaskQuitDrain` (fake backend) and `VisIVOQuitExitRender` /
   `VisIVOQuitExitRenderWhileQuitting` (a process of their own, `exit()` while
   the render is polled on the application thread).
+- **Cosmology and skeleton fixes from the scientific review (#129).**
+  `GET /v1/cosmology/distances` under de Sitter (Ωm = 0, ΩΛ = 1) answered
+  HTTP 500 because its age is infinite; a non-finite quantity is now `null`
+  and the rest of the answer is kept, on every cosmology route. A request body
+  carrying `NaN`/`Infinity` into a field that refuses it now gets its 422
+  instead of a 500. `POST /v1/cosmology/distance` names the proper transverse
+  scale `scale_kpc_per_arcsec`; `proper_motion_kpc_per_arcsec` is a deprecated
+  alias with the same value for one release. The skeleton's
+  `persistence_threshold` (an intensity cut, not a topological persistence,
+  as the API docs now say) is honoured at 0 and below instead
+  of being ignored, and the response echoes the cut applied (a recipe
+  recorded by an earlier desktop with a ticked cut ≤ 0 now replays with that
+  cut applied). `POST /v1/cosmology/distance` and its batch refuse z above
+  10 000, where the integrals returned 0 Mpc. The skeleton's
+  smoothing was already normalised over the finite pixels (#140); a test now
+  pins that a blank area draws no false void along its edge. The desktop
+  reads the new scale field (falling back to the old one), computes de Sitter
+  instead of refusing it, and its skeleton tooltips no longer say that blanks
+  count as 0 or that cuts ≤ 0 are ignored.
 
 - **Saying when a backend is older than the client.** A backend that predates
   a feature answers its routes with FastAPI's bare `404 {"detail":"Not Found"}`,

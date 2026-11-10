@@ -896,7 +896,8 @@ async def test_cosmology_planck18_z1(client: AsyncClient, auth_headers: dict) ->
     # Planck18: D_C(z=1) ≈ 3303 Mpc, D_L(z=1) ≈ 6607 Mpc
     assert 3000 < data["comoving_Mpc"] < 3700, "Comoving distance at z=1 out of expected range"
     assert 6000 < data["luminosity_Mpc"] < 7200, "Luminosity distance at z=1 out of expected range"
-    assert data["proper_motion_kpc_per_arcsec"] > 0
+    assert data["scale_kpc_per_arcsec"] > 0
+    assert data["proper_motion_kpc_per_arcsec"] == data["scale_kpc_per_arcsec"]  # deprecated alias
 
 
 @pytest.mark.asyncio

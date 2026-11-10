@@ -10,7 +10,7 @@ import logging
 
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, FiniteFloat
 
 from ..auth import verify_token
 from ..dependencies import _require_dataset, record_history
@@ -24,11 +24,22 @@ _auth = Depends(verify_token)
 
 
 class SkeletonRequest(BaseModel):
+    """Skeleton / void request.
+
+    ``persistence_threshold`` is an INTENSITY cut applied after thinning — a
+    skeleton pixel whose (smoothed) intensity is below it is dropped — not a
+    topological persistence. Any finite value is honoured, 0 and negative ones
+    included (a map with negative values needs a negative cut); null disables
+    it. The name stays: the desktop's replay records (visivo-recipe/1) carry
+    exactly these fields, so an alias would be a second contract to keep.
+    """
     channel: int = 0
-    threshold: float | None = None
+    # Finite numbers only: NaN/Infinity are legal JSON literals for the parser
+    # but give no binarisation, and an echoed NaN could not be encoded back.
+    threshold: FiniteFloat | None = None
     mode: str = "skeleton"
-    smooth_sigma_pix: float = 0.0
-    persistence_threshold: float | None = None
+    smooth_sigma_pix: FiniteFloat = 0.0
+    persistence_threshold: FiniteFloat | None = None
 
 
 # ── Full-cube statistics (out-of-core; the client's local stats are only the

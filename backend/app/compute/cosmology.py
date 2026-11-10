@@ -314,8 +314,11 @@ def worker_skeleton(
                                (skeleton of low-emission regions).
         smooth_sigma_pix:      sigma (pixels) for Gaussian pre-smoothing.
                                0 disables smoothing.
-        persistence_threshold: secondary threshold applied after skeleton
-                               extraction to prune faint branches.  None disables.
+        persistence_threshold: intensity cut applied after skeleton
+                               extraction: skeleton pixels whose (smoothed)
+                               intensity is below it are dropped. Any finite
+                               value is honoured, 0 and negative included;
+                               None disables. Not a topological persistence.
 
     Returns:
         data_base64:      float32 binary mask (0 or 255) base64-encoded
@@ -361,11 +364,17 @@ def worker_skeleton(
 
     skel = _skeletonize(binary)           # bool array
 
-    # Optional persistence-based branch pruning
-    if persistence_threshold is not None and persistence_threshold > 0:
-        # Prune skeleton pixels whose underlying intensity is below threshold
-        prune_mask = (data < persistence_threshold) & skel
-        skel = skel & ~prune_mask
+    # Optional intensity cut on the skeleton. Every finite value is a cut: 0
+    # keeps the branches above zero and a negative one is meaningful on a map
+    # with negative values. Ignoring `<= 0` silently answered with no cut at
+    # all (#129). Compared with the map the skeleton was drawn on (smoothed
+    # when smoothing is on); blank pixels carry no skeleton, so NaN never
+    # reaches the comparison.
+    if persistence_threshold is not None:
+        cut = float(persistence_threshold)
+        if not np.isfinite(cut):
+            raise ValueError("persistence_threshold must be a finite intensity, or null.")
+        skel = skel & ~(data < cut)
 
     skel_f32 = skel.astype(np.float32) * 255.0   # 0 or 255
 
@@ -378,6 +387,8 @@ def worker_skeleton(
         "threshold": float(threshold),
         "mode": mode,
         "smooth_sigma_pix": float(smooth_sigma_pix),
+        "persistence_threshold": (None if persistence_threshold is None
+                                  else float(persistence_threshold)),
         "n_skeleton_pixels": int(skel.sum()),
         "range_min": float(range_min),
         "range_max": float(range_max),
