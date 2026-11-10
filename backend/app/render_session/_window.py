@@ -6,20 +6,25 @@ of their own.
 
 macOS (issue #168): the VTK wheels have no EGL and their OSMesa window is a
 stub ("VTK does not support OSMesa for your operating system"), so the window
-is a ``vtkCocoaRenderWindow`` drawn offscreen and never shown, on the Mac's
-GPU through Apple's OpenGL 4.1 (on top of Metal). Cocoa imposes two rules:
+is a ``vtkCocoaRenderWindow`` drawn offscreen, on the Mac's GPU through Apple's
+OpenGL 4.1 (on top of Metal). It is not connected to an ``NSView``
+(``SetConnectContextToNSView(False)``): VTK then makes an OpenGL context only,
+no ``NSWindow``, and does not turn the process into a regular app. Cocoa still
+imposes two rules:
 
-* an ``NSWindow`` may only be made on the process's main thread (made on a
-  worker thread, AppKit throws and the process aborts), so the session's VTK
+* AppKit may only be used from the process's main thread (an ``NSWindow``
+  made on a worker thread throws and aborts the process), so the session's VTK
   calls run on the thread that asks for them (:class:`CallerThreadExecutor`)
   — in a render child that is its main thread, which does nothing else;
 * it needs the user's window server session: a backend started over ssh with
   nobody logged in at the Mac, or as a LaunchDaemon, has none, and reports no
   server-side rendering rather than crashing the first session.
 
-A Cocoa window makes its process a regular app with a Dock icon; the render
-child drops back to a background process after its window exists
-(:func:`hide_from_dock`).
+A framework Python (Homebrew's, python.org's) runs as ``Python.app``, which
+LaunchServices checks in as a regular app — a Dock tile per render process
+for its whole life — as soon as the process has an ``NSApplication``, whatever
+activation policy is set afterwards. The render child declares itself a
+background-only app before that (:func:`hide_from_dock`).
 """
 from __future__ import annotations
 
@@ -99,46 +104,72 @@ def new_offscreen_window(kind: str):
     if kind == "egl":
         window = egl_window_class()()
     elif kind == "cocoa":
+        # Before VTK makes the NSApplication (its first Render): afterwards the
+        # Dock tile is there for good.
+        hide_from_dock()
         window = cocoa_window_class()()
-        # Offscreen alone still makes a window; never put it on screen.
+        # A context only: no NSWindow, so no regular-app policy and nothing
+        # that could ever be put on screen.
+        window.SetConnectContextToNSView(False)
         window.SetShowWindow(False)
     else:
         raise RuntimeError("No offscreen OpenGL window on this backend.")
     window.SetOffScreenRendering(1)
-    if kind == "cocoa":
-        # Before: it holds for any later window of this process. After: VTK
-        # makes the process a regular app (Dock icon) when it builds its first
-        # NSWindow, whatever the policy was, so the window and its context are
-        # built now and the icon taken away again before anything is drawn.
-        hide_from_dock()
-        window.Initialize()
-        hide_from_dock()
     return window
 
 
+def _objc():
+    """objc_msgSend with the three signatures used here, and the selector and
+    class lookups."""
+    objc = ctypes.cdll.LoadLibrary(_OBJC)
+    objc.objc_getClass.restype = ctypes.c_void_p
+    objc.objc_getClass.argtypes = [ctypes.c_char_p]
+    objc.sel_registerName.restype = ctypes.c_void_p
+    objc.sel_registerName.argtypes = [ctypes.c_char_p]
+    send = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(
+        ("objc_msgSend", objc))
+    send_ptr = ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p,
+                                ctypes.c_void_p)(("objc_msgSend", objc))
+    send_long = ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p,
+                                 ctypes.c_long)(("objc_msgSend", objc))
+    send_set = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                                ctypes.c_void_p)(("objc_msgSend", objc))
+    return objc, send, send_ptr, send_long, send_set
+
+
 def hide_from_dock() -> None:
-    """Make this process a background one (no Dock icon). VTK makes it a
-    regular app when it builds its first Cocoa window, so this is needed after
-    that window too (see :func:`new_offscreen_window`). Best effort."""
+    """Make this process a background-only app: no Dock tile, no menu bar.
+
+    Before the process has an NSApplication, ``LSBackgroundOnly`` goes into its
+    main bundle's info dictionary, which is what LaunchServices reads when the
+    application checks in; an interpreter that is not in a bundle (the
+    standalone Python of the release builds) has no tile anyway. Once there is
+    an NSApplication only its activation policy can still change, which hides
+    the tile only from then on. Best effort."""
     if sys.platform != "darwin":
         return
     try:
-        objc = ctypes.cdll.LoadLibrary(_OBJC)
-        ctypes.cdll.LoadLibrary(_APPKIT)
-        objc.objc_getClass.restype = ctypes.c_void_p
-        objc.objc_getClass.argtypes = [ctypes.c_char_p]
-        objc.sel_registerName.restype = ctypes.c_void_p
-        objc.sel_registerName.argtypes = [ctypes.c_char_p]
-        get = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(
-            ("objc_msgSend", objc))
-        set_policy = ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p,
-                                      ctypes.c_long)(("objc_msgSend", objc))
-        app = get(objc.objc_getClass(b"NSApplication"),
-                  objc.sel_registerName(b"sharedApplication"))
+        appkit = ctypes.cdll.LoadLibrary(_APPKIT)
+        cf = ctypes.cdll.LoadLibrary(_COREFOUNDATION)
+        objc, send, send_ptr, send_long, send_set = _objc()
+        sel = objc.sel_registerName
+        if not ctypes.c_void_p.in_dll(appkit, "NSApp").value:
+            cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+            cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p,
+                                                     ctypes.c_uint32]
+            bundle = send(objc.objc_getClass(b"NSBundle"), sel(b"mainBundle"))
+            info = send(bundle, sel(b"infoDictionary")) if bundle else None
+            # The bundle's dictionary is a mutable one; a selector it does not
+            # answer would abort the process, so ask first.
+            if info and send_ptr(info, sel(b"respondsToSelector:"), sel(b"setObject:forKey:")):
+                utf8 = 0x08000100
+                send_set(info, sel(b"setObject:forKey:"),
+                         cf.CFStringCreateWithCString(None, b"1", utf8),
+                         cf.CFStringCreateWithCString(None, b"LSBackgroundOnly", utf8))
+        app = send(objc.objc_getClass(b"NSApplication"), sel(b"sharedApplication"))
         if app:
-            set_policy(app, objc.sel_registerName(b"setActivationPolicy:"),
-                       _POLICY_PROHIBITED)
-    except (OSError, AttributeError) as exc:
+            send_long(app, sel(b"setActivationPolicy:"), _POLICY_PROHIBITED)
+    except (OSError, AttributeError, ValueError) as exc:
         logger.debug("[render] could not hide the render process from the Dock: %s", exc)
 
 

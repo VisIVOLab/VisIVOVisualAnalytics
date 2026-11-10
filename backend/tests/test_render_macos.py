@@ -71,27 +71,29 @@ def test_the_backend_reports_rendering_where_a_window_can_be_made(monkeypatch):
     assert rs.server_side_rendering_available() is False
 
 
-def test_a_cocoa_window_is_hidden_offscreen_and_out_of_the_dock(monkeypatch):
+def test_a_cocoa_window_is_a_context_only_and_out_of_the_dock(monkeypatch):
     calls = []
 
     class FakeCocoa:
+        def __init__(self):
+            calls.append(("new",))
+
+        def SetConnectContextToNSView(self, value):
+            calls.append(("nsview", value))
+
         def SetShowWindow(self, value):
             calls.append(("show", value))
 
         def SetOffScreenRendering(self, value):
             calls.append(("offscreen", value))
 
-        def Initialize(self):
-            calls.append(("initialize",))
-
     monkeypatch.setattr(_window, "cocoa_window_class", lambda: FakeCocoa)
     monkeypatch.setattr(_window, "hide_from_dock", lambda: calls.append(("hide",)))
     _window.new_offscreen_window("cocoa")
-    assert calls.index(("show", False)) < calls.index(("initialize",))
-    assert ("offscreen", 1) in calls
-    # Once before (later windows) and once after VTK made it a regular app.
-    assert calls[calls.index(("initialize",)) + 1] == ("hide",)
-    assert calls.count(("hide",)) == 2
+    # Declared background-only before VTK can make the NSApplication; no
+    # NSWindow (no NSView), never shown, offscreen.
+    assert calls[0] == ("hide",) and calls[1] == ("new",)
+    assert {("nsview", False), ("show", False), ("offscreen", 1)} <= set(calls)
 
 
 def _in_a_thread(coro_factory):

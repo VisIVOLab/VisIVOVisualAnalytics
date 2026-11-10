@@ -533,12 +533,41 @@ class _PushState:
         self.acked.set()
 
 
-async def _window_room(push: _PushState) -> None:
-    """Wait until fewer than ``window`` frames are unacknowledged."""
+async def _window_room(push: _PushState, sess=None) -> None:
+    """Wait until fewer than ``window`` frames are unacknowledged, or until
+    ``sess`` has ended (the caller then closes the stream)."""
     while push.in_flight >= push.window:
         push.acked.clear()
         if push.in_flight >= push.window:
-            await push.acked.wait()
+            try:
+                await asyncio.wait_for(push.acked.wait(), timeout=_PUSH_POLL_S)
+            except asyncio.TimeoutError:
+                pass
+            if sess is not None and _session_ended(sess):
+                return
+
+
+#: The close reason when the session itself has ended (its render process
+#: exited or was killed, or it was closed): reconnecting to it is refused, the
+#: client has to create a new session (docs/backend-api/render.md).
+SESSION_ENDED_REASON = "session ended"
+
+
+def _session_ended(sess) -> bool:
+    """Whether ``sess`` takes no more requests: a session in a process of its
+    own whose child is gone or which was closed, or an in-process one closed."""
+    return bool(getattr(sess, "ended", False) or getattr(sess, "_closed", False))
+
+
+async def _close_ended(websocket: WebSocket, session_id: str) -> None:
+    """The session ended under a connected client: one line, no traceback (the
+    manager has logged why), and a close the client can tell from a failure."""
+    logger.info("[render-ws] %s: the session ended, closing its stream",
+                session_id[:8] + "…")
+    try:
+        await websocket.close(code=1011, reason=SESSION_ENDED_REASON)
+    except Exception:   # noqa: BLE001 - already closed
+        pass
 
 
 async def _push_frames(websocket: WebSocket, sess, send_lock: asyncio.Lock,
@@ -557,10 +586,15 @@ async def _push_frames(websocket: WebSocket, sess, send_lock: asyncio.Lock,
     ahead: asyncio.Future | None = None   # the next frame, rendering while one is sent
     try:
         while True:
+            # A session that ended (its render process gone) is noticed here
+            # within a poll, whether or not the client sends anything.
+            if _session_ended(sess):
+                await _close_ended(websocket, getattr(sess, "session_id", "?"))
+                return
             if ahead is None:
                 # Nothing rendered while the window is full: a frame made now
                 # would wait for acks and arrive stale.
-                await _window_room(push)
+                await _window_room(push, sess)
                 try:
                     await asyncio.wait_for(sess.changed.wait(), timeout=_PUSH_POLL_S)
                 except asyncio.TimeoutError:
@@ -577,7 +611,9 @@ async def _push_frames(websocket: WebSocket, sess, send_lock: asyncio.Lock,
             if sess.changed.is_set() and push.in_flight + 1 < push.window:
                 sess.changed.clear()
                 ahead = asyncio.ensure_future(sess.render_frame_if_changed(version))
-            await _window_room(push)
+            await _window_room(push, sess)
+            if _session_ended(sess):
+                continue   # closed at the top of the loop
             delay = last_sent + 1.0 / push.max_fps - loop.time()
             if delay > 0:
                 await asyncio.sleep(delay)
@@ -591,6 +627,9 @@ async def _push_frames(websocket: WebSocket, sess, send_lock: asyncio.Lock,
     except asyncio.CancelledError:
         raise
     except Exception:
+        if _session_ended(sess):
+            await _close_ended(websocket, getattr(sess, "session_id", "?"))
+            return
         # A failed render or send. The receive loop would go on taking
         # commands with nothing coming back, so end the connection: the
         # client sees it close and can reconnect.
@@ -700,11 +739,14 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
     except WebSocketDisconnect:
         logger.info("[render-ws] %s disconnected", session_id[:8] + "…")
     except Exception:
-        logger.exception("[render-ws] %s error, closing", session_id[:8] + "…")
-        try:
-            await websocket.close(code=1011, reason="server error")
-        except RuntimeError:
-            pass
+        if _session_ended(sess):
+            await _close_ended(websocket, session_id)
+        else:
+            logger.exception("[render-ws] %s error, closing", session_id[:8] + "…")
+            try:
+                await websocket.close(code=1011, reason="server error")
+            except RuntimeError:
+                pass
     finally:
         if push_task is not None:
             push_task.cancel()
