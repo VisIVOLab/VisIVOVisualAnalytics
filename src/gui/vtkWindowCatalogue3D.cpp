@@ -1,6 +1,7 @@
 #include "CatalogueFormat.h"
 #include "WindowCloseShortcut.h"
 #include "BusyStatus.h"
+#include "VbtByteOrderPrompt.h"
 #include <QDateTime>
 #include "CosmologyCalculatorDialog.h"
 #include "vtkWindowCatalogue3D.h"
@@ -417,9 +418,27 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
 
     BackendClient client(backendUrl, backendToken);
     const QString catFormat = catalogueFormatForPath(filepath);
-    const auto opened = this->m_cataloguePaths.size() > 1
+    // A window the user opens: a VBT is read as the backend was last told,
+    // and warned again when its header looks wrong (issue #165).
+    client.setUseRememberedVbtByteOrder(false);
+    auto opened = this->m_cataloguePaths.size() > 1
             ? client.openCatalogue(this->m_cataloguePaths, catFormat)
             : client.openCatalogue(filepath, catFormat);
+    // A VBT whose values look like the other byte order than its header says
+    // (issue #165): ask, and open it again in the order chosen. A button's
+    // answer is remembered, and the automatic reopen after a session expiry
+    // (autoReopenThenLoadMore, a client left at its default) sends it; after
+    // Escape nothing is sent, and the backend reads the file as it does now.
+    if (opened.valid
+        && visivo::askVbtByteOrder(this, backendUrl, filepath, opened.byteOrderWarning,
+                                   opened.byteOrder)) {
+        // The first answer's dataset is closed by the backend as the order
+        // changes: no orphan is left behind.
+        client.setUseRememberedVbtByteOrder(true);
+        opened = this->m_cataloguePaths.size() > 1
+                ? client.openCatalogue(this->m_cataloguePaths, catFormat)
+                : client.openCatalogue(filepath, catFormat);
+    }
     if (!opened.valid) {
         // Before the box: its reading time is not the open's ("Last 5 jobs").
         this->m_openFailedAtMs = QDateTime::currentMSecsSinceEpoch();

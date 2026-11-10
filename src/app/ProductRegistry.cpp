@@ -21,6 +21,7 @@ int ProductRegistry::indexOf(const QString &productId) const
 
 QString ProductRegistry::registerProduct(AnalysisProduct p)
 {
+    snapshotParentByteOrder(p);   // the order its dataset is read in now (#165)
     if (p.productId.isEmpty()) {
         const QString kind = p.kind.isEmpty() ? QStringLiteral("product") : p.kind;
         p.productId = QStringLiteral("%1-%2").arg(kind).arg(++m_counter);

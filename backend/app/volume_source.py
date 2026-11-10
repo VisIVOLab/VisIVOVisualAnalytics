@@ -19,8 +19,86 @@ from typing import Iterator
 import numpy as np
 
 
-def parse_vbt_header(head_path: str | Path) -> dict:
-    """Parse a VisIVO Binary Table .head file and return metadata dict."""
+# ── The byte order a VBT is read in (issue #165) ─────────────────────────────
+#
+# A header may declare the wrong byte order (a converter wrote big-endian data
+# and a "little" header). The user can then open the table in the other order:
+# the file is never rewritten, the choice is kept in a small store every
+# backend process reads (app/vbt_byte_order_store.py: render sessions, worker
+# pools, pyramid builds are other processes), and parse_vbt_header() hands it
+# to every reader (catalogue, render sessions, ray-traced particles, field
+# memory maps, pyramids, moments, previews). Pyramids and cached products key
+# on it too (brick_pyramid.SourceSignature, product_cache.file_identity).
+
+BYTE_ORDERS = ("little", "big")
+
+
+def set_byte_order_override(path: str | Path, order: str | None, declared: str,
+                            by: str = "") -> tuple[str, str]:
+    """Read the VBT ``path`` (data, ``.head`` or field reference) in byte
+    order ``order`` from now on, in every process; ``order`` equal to the
+    ``declared`` one, or None, drops the choice. Returns the order read in
+    before and after."""
+    from .vbt_byte_order_store import set_override  # noqa: PLC0415
+    return set_override(path, order, declared, by)
+
+
+def byte_order_override(path: str | Path) -> str:
+    """The byte order the VBT ``path`` is read in against its header, or "":
+    the order an open dataset's path carries (:func:`with_order`), else the
+    store's choice for the file. "" when it is the header's own."""
+    frozen = ref_order(path)
+    if frozen:
+        from .vbt_byte_order_store import head_of  # noqa: PLC0415
+        declared = parse_vbt_header(head_of(path), frozen)["declared_endian"]
+        return "" if frozen == declared else frozen
+    from .vbt_byte_order_store import override  # noqa: PLC0415
+    return override(path)
+
+
+def read_order(path: str | Path) -> str:
+    """The byte order the VBT ``path`` is read in: its frozen order, else the
+    store's, else the header's."""
+    from .vbt_byte_order_store import head_of  # noqa: PLC0415
+    return parse_vbt_header(head_of(path), ref_order(path) or None)["file_endian"]
+
+
+#: An open dataset's path ends in ORDER_SEP + the order it was opened in: every
+#: reader of that dataset (other processes, a task running while the choice
+#: changes, another backend sharing the store) reads that order, whatever the
+#: store says later. The store decides only new opens.
+ORDER_SEP = "::vbt-order="
+
+
+def split_order(path: str | Path) -> tuple[str, str]:
+    """``(path without its order, order)``; ``(path, "")`` when it has none."""
+    text = str(path)
+    base, sep, order = text.rpartition(ORDER_SEP)
+    if sep and order in BYTE_ORDERS:
+        return base, order
+    return text, ""
+
+
+def ref_order(path: str | Path) -> str:
+    """The order ``path`` was frozen in (:func:`with_order`), or ""."""
+    return split_order(path)[1]
+
+
+def with_order(path: str | Path, order: str) -> str:
+    """``path`` (a field reference, a ``.head``) frozen in byte order ``order``."""
+    return f"{split_order(path)[0]}{ORDER_SEP}{order}"
+
+
+def parse_vbt_header(head_path: str | Path, order: str | None = None) -> dict:
+    """Parse a VisIVO Binary Table .head file and return metadata dict.
+
+    ``file_endian`` (and ``np_endian_code``) is the order the values are READ
+    in: ``order`` when given (an open dataset's), else the header's, unless
+    the user chose the other one for this file (:func:`set_byte_order_override`);
+    ``declared_endian`` is the header's and ``byte_order_override`` says
+    whether they differ. ``head_path`` may carry an order (:func:`with_order`)."""
+    head_path, frozen = split_order(head_path)
+    order = order or frozen or None
     with open(head_path, "r") as fh:
         lines = [ln.strip() for ln in fh.readlines() if ln.strip()]
     if len(lines) < 4:
@@ -76,6 +154,10 @@ def parse_vbt_header(head_path: str | Path) -> dict:
     # and a big-endian one came back as garbage — NaNs and values at the
     # float32 limit, with nothing to say why. The header line exists precisely
     # to be obeyed.
+    declared_endian = file_endian
+    if order is not None and order not in BYTE_ORDERS:
+        raise ValueError(f"byte order must be 'little' or 'big', not {order!r}")
+    file_endian = order or byte_order_override(head_path) or declared_endian
     np_endian_code = ("<" if file_endian == "little" else ">") + np_itemcode
 
     if len(lines) < 4 + field_count:
@@ -88,7 +170,9 @@ def parse_vbt_header(head_path: str | Path) -> dict:
         "kind": kind,
         "scalar_type": scalar_type,
         "np_endian_code": np_endian_code,  # numpy dtype string including endian mark
-        "file_endian": file_endian,
+        "file_endian": file_endian,          # the order the values are read in
+        "declared_endian": declared_endian,  # the order the .head declares
+        "byte_order_override": file_endian != declared_endian,
         "field_count": field_count,
         "num_rows": num_rows,
         "dimensions": dimensions,
@@ -113,17 +197,18 @@ def is_vbt(path: str | Path) -> bool:
         return False
 
 
-def vbt_volume_header(path: str | Path) -> dict:
-    header = parse_vbt_header(vbt_head(path))
+def vbt_volume_header(path: str | Path, order: str | None = None) -> dict:
+    header = parse_vbt_header(vbt_head(path), order)
     if header["kind"] != "volume":
         raise ValueError(f"{path} is a VBT of points, not a volume.")
     return header
 
 
-def vbt_field(path: str | Path, field: int) -> np.memmap:
+def vbt_field(path: str | Path, field: int, order: str | None = None) -> np.memmap:
     """Field ``field`` of the VBT volume ``path``, memory-mapped in place as a
-    (z, y, x) array of the file's own type and byte order."""
-    header = vbt_volume_header(path)
+    (z, y, x) array of the file's own type, in byte order ``order`` (an open
+    dataset's, :func:`ref_order`) or else as the header and the store say."""
+    header = vbt_volume_header(path, order or None)
     if not 0 <= field < header["field_count"]:
         raise ValueError(f"field {field} outside 0..{header['field_count'] - 1} of {path}")
     nx, ny, nz = header["dimensions"]
@@ -149,12 +234,19 @@ REF_SEP = "::vbt-field="
 
 
 def vbt_field_ref(path: str | Path, field: int) -> str:
-    return f"{path}{REF_SEP}{int(field)}"
+    """The reference to field ``field`` of the VBT ``path``; an order ``path``
+    carries (:func:`with_order`) stays at the end, where it is read."""
+    base, order = split_order(path)
+    base = split_ref(base)[0]
+    ref = f"{base}{REF_SEP}{int(field)}"
+    return with_order(ref, order) if order else ref
 
 
 def split_ref(path: str | Path) -> tuple[str, int | None]:
-    """``(data path, field)`` of a field reference; ``(path, None)`` else."""
-    text = str(path)
+    """``(data path, field)`` of a field reference; ``(path, None)`` else.
+    An order the reference carries (:func:`with_order`) is dropped: read it
+    with :func:`ref_order`."""
+    text = split_order(path)[0]
     base, sep, field = text.rpartition(REF_SEP)
     if sep and field.isdigit():
         return base, int(field)
@@ -167,8 +259,8 @@ def resolve_vbt(path: str | Path, hdu: int | None = None) -> tuple[str, int] | N
     base, field = split_ref(path)
     if field is not None:
         return base, field
-    if is_vbt(path):
-        return str(path), 0 if hdu is None else int(hdu)
+    if is_vbt(base):
+        return base, 0 if hdu is None else int(hdu)
     return None
 
 
@@ -226,7 +318,8 @@ def open_fits(path: str | Path, **kwargs):
     base, field = split_ref(path)
     if field is None:
         return fits.open(str(path), **kwargs)
-    hdu = fits.PrimaryHDU(data=vbt_field(base, field), header=vbt_fits_header(base, field),
+    hdu = fits.PrimaryHDU(data=vbt_field(base, field, ref_order(path)),
+                          header=vbt_fits_header(base, field),
                           do_not_scale_image_data=True)
     return fits.HDUList([hdu])
 
@@ -260,7 +353,7 @@ def volume_data(path: str | Path, hdu: int | None = None) -> Iterator[np.ndarray
         # Not closed on the way out: an array read from it without a copy (the
         # file's own type) is still a view of the map, and numpy closes the
         # map when the last view is gone.
-        yield vbt_field(*vbt)
+        yield vbt_field(*vbt, order=ref_order(path))
         return
     from astropy.io import fits  # noqa: PLC0415
 

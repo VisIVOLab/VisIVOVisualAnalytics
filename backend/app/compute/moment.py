@@ -209,7 +209,7 @@ def _mapped_cube(path: str, hdu_index: int, signature: tuple[int, int]) -> np.nd
     """
     from astropy.io import fits as _fits  # noqa: PLC0415
 
-    from ..volume_source import split_ref, vbt_field  # noqa: PLC0415
+    from ..volume_source import ref_order, split_ref, vbt_field  # noqa: PLC0415
 
     want = (int(signature[0]), int(signature[1]))
     base, field = split_ref(path)
@@ -218,7 +218,8 @@ def _mapped_cube(path: str, hdu_index: int, signature: tuple[int, int]) -> np.nd
         st = _os.stat(base)
         if (int(st.st_size), int(st.st_mtime_ns)) != want:
             raise RuntimeError(f"{base} changed while a moment was being computed.")
-        return vbt_field(base, field)
+        # In the order the dataset was opened in (its path carries it).
+        return vbt_field(base, field, ref_order(path))
     key = (path, int(hdu_index), want)
     with _MAPPED_CUBES_LOCK:
         hit = _MAPPED_CUBES.get(key)
@@ -348,7 +349,7 @@ def _open_raw_cube(path: str, hdu_index: int, want: tuple[int, int]) -> "_RawCub
     a platform without ``pread``): the caller then slices the memory map as
     before, which reports its own errors. A file of another version is an
     error, as in ``_mapped_cube``."""
-    from ..volume_source import split_ref  # noqa: PLC0415
+    from ..volume_source import ref_order, split_ref  # noqa: PLC0415
 
     if not hasattr(_os, "pread"):        # Windows: the memory map
         return None
@@ -361,7 +362,8 @@ def _open_raw_cube(path: str, hdu_index: int, want: tuple[int, int]) -> "_RawCub
         if (int(st.st_size), int(st.st_mtime_ns)) != want:
             raise RuntimeError(f"{base} changed while a moment was being computed.")
         try:
-            raw = _raw_cube_of(fh, field, hdu_index, int(st.st_size), base)
+            raw = _raw_cube_of(fh, field, hdu_index, int(st.st_size), base,
+                               order=ref_order(path))
         except Exception as exc:  # noqa: BLE001 - the memory map reports its own errors
             logger.info("[moment] %s: no explicit reads (%s), memory map", base, exc)
         return raw
@@ -371,7 +373,7 @@ def _open_raw_cube(path: str, hdu_index: int, want: tuple[int, int]) -> "_RawCub
 
 
 def _raw_cube_of(fh, field: int | None, hdu_index: int, size: int,
-                 base: str) -> "_RawCube | None":
+                 base: str, order: str = "") -> "_RawCube | None":
     """The ``_RawCube`` of the open, checked file ``fh`` of ``size`` bytes;
     None when its layout is not one explicit reads can serve."""
     from astropy.io import fits as _fits  # noqa: PLC0415
@@ -380,7 +382,7 @@ def _raw_cube_of(fh, field: int | None, hdu_index: int, size: int,
 
     if field is not None:
         # A field of a VBT volume (issue #83): raw samples, no header.
-        header = vbt_volume_header(base)
+        header = vbt_volume_header(base, order or None)
         nx, ny, nz = header["dimensions"]
         dtype = np.dtype(header["np_endian_code"])
         offset = int(field) * int(header["num_rows"]) * dtype.itemsize
@@ -419,10 +421,13 @@ def _raw_cube(path: str, hdu_index: int, signature: tuple[int, int]) -> "_RawCub
     memory map instead. The contract of ``_mapped_cube``: a file that no
     longer matches ``signature`` is an error, and the cache is shared by the
     threads of the local scheduler under one lock."""
-    from ..volume_source import split_ref  # noqa: PLC0415
+    from ..volume_source import byte_order_override, split_ref  # noqa: PLC0415
 
     want = (int(signature[0]), int(signature[1]))
-    key = (path, int(hdu_index), want)
+    # A VBT field read against its header's byte order (issue #165) is read
+    # with another dtype: not the reader cached for the declared one.
+    order = byte_order_override(path) if split_ref(path)[1] is not None else ""
+    key = (path, int(hdu_index), want, order)
     with _MAPPED_CUBES_LOCK:
         if key in _RAW_CUBES:
             st = _os.stat(split_ref(path)[0])

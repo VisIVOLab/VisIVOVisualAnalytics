@@ -318,7 +318,10 @@ def _list_datasets(_path: str | None, _params: dict[str, Any],
         # bin_path and a header dict instead.
         path = entry.get("path") or entry.get("head_path") or entry.get("bin_path")
         if path:
-            info["label"] = os.path.basename(path)
+            from ..volume_source import split_order  # noqa: PLC0415
+            info["label"] = os.path.basename(split_order(path)[0])
+            if entry.get("byte_order_declared"):
+                info["byte_order"] = entry.get("byte_order", "")
         for k in ("width", "height", "depth", "num_rows"):
             v = entry.get(k)
             if v is not None:

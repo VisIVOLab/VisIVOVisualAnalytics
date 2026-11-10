@@ -289,6 +289,20 @@ class SessionRegistry:
                     paths.add(str(path))
         return paths
 
+    def drop_datasets(self, predicate) -> list[tuple[str, str]]:
+        """Remove, in every session, the datasets whose entry ``predicate``
+        accepts; ``(session_id, dataset_id)`` of each. A VBT now read in
+        another byte order (issue #165) is no longer what they hold."""
+        with self._lock:
+            sessions = list(self._sessions.values())
+        dropped = []
+        for session in sessions:
+            for dataset_id, entry in list(session.datasets.items()):
+                if predicate(entry):
+                    session.datasets.pop(dataset_id, None)
+                    dropped.append((session.session_id, dataset_id))
+        return dropped
+
     def get_or_create_anon(self) -> Session:
         """Return (or lazily create) the anonymous backward-compat session."""
         with self._lock:

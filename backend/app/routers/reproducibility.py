@@ -109,10 +109,16 @@ async def provenance(_: None = _auth, session: Session = Depends(get_session)):
     for ds_id, entry in session.datasets.items():
         entity[f"visivo:{ds_id}"] = {
             # The file the user opened: a compressed one's, not the
-            # decompressed copy the readers use (issue #57).
-            "visivo:path": entry.get("source_path") or entry.get("path", ""),
+            # decompressed copy the readers use (issue #57); a VBT's without
+            # the byte order its path carries (recorded below).
+            "visivo:path": _opened_path(entry),
             "visivo:kind": entry.get("kind", ""),
         }
+        if entry.get("byte_order_declared"):
+            # A VBT (issue #165): the order its values were read in, which a
+            # user may have chosen against the one its header declares.
+            entity[f"visivo:{ds_id}"]["visivo:byte_order"] = entry.get("byte_order", "")
+            entity[f"visivo:{ds_id}"]["visivo:byte_order_declared"] = entry["byte_order_declared"]
 
     activity: dict[str, Any] = {}
     used: dict[str, Any] = {}
@@ -162,14 +168,28 @@ class NamedSnapshotRequest(BaseModel):
     label: str = ""
 
 
+def _opened_path(entry: dict[str, Any]) -> str:
+    """The path a dataset was opened by: a compressed file's own, a VBT's
+    without the byte order its path carries (issue #165)."""
+    from ..volume_source import split_order  # noqa: PLC0415
+    return split_order(entry.get("source_path") or entry.get("path", ""))[0]
+
+
+def _snapshot_dataset(entry: dict[str, Any]) -> dict[str, Any]:
+    """A dataset as a snapshot records it: what reopens it as it was read,
+    a VBT's byte order included (sent back as the open's ``byte_order``)."""
+    out = {"path": _opened_path(entry), "kind": entry.get("kind", "")}
+    if entry.get("byte_order_declared"):
+        out["byte_order"] = entry.get("byte_order", "")
+        out["byte_order_declared"] = entry["byte_order_declared"]
+    return out
+
+
 def _snapshot_state(session: Session, label: str) -> dict[str, Any]:
     return {
         "label": label,
         "created_at": _now_iso(),
-        "datasets": {
-            ds_id: {"path": e.get("source_path") or e.get("path", ""), "kind": e.get("kind", "")}
-            for ds_id, e in session.datasets.items()
-        },
+        "datasets": {ds_id: _snapshot_dataset(e) for ds_id, e in session.datasets.items()},
         "history": list(session.history),
     }
 

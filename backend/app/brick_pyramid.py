@@ -63,11 +63,22 @@ class SourceSignature:
     hdu: int
     size: int
     mtime_ns: int
+    #: A VBT read against its header's byte order (issue #165): that order,
+    #: else "". Its values differ, so its pyramid is another one.
+    byte_order: str = ""
+
+    @property
+    def key(self) -> str:
+        """What the pyramid's file name is hashed from; a source read in its
+        header's order keeps the name it always had."""
+        text = f"{self.path}|{self.hdu}|{self.size}|{self.mtime_ns}"
+        return text + (f"|{self.byte_order}" if self.byte_order else "")
 
     @classmethod
     def of(cls, path: str | os.PathLike, hdu: int) -> "SourceSignature":
-        from .volume_source import resolve_vbt, vbt_head  # noqa: PLC0415
+        from .volume_source import byte_order_override, resolve_vbt, vbt_head  # noqa: PLC0415
 
+        order = byte_order_override(path) if resolve_vbt(path, hdu) is not None else ""
         vbt = resolve_vbt(path, hdu)
         if vbt is not None:
             # A field reference names the data and the field: the same
@@ -80,7 +91,7 @@ class SourceSignature:
             # grid): a header edited beside the same data is another source.
             head = os.stat(vbt_head(path))
             size, mtime = size + int(head.st_size), max(mtime, int(head.st_mtime_ns))
-        return cls(str(Path(path).resolve()), int(hdu), size, mtime)
+        return cls(str(Path(path).resolve()), int(hdu), size, mtime, order)
 
 
 def default_brick(shape: tuple[int, int, int]) -> int:
@@ -133,7 +144,7 @@ def default_pyramid_path(source: str | os.PathLike, hdu: int = 0) -> Path:
     else:
         from .dependencies import get_exports_dir  # noqa: PLC0415
         directory = get_exports_dir() / ".pyramids"
-    key = hashlib.sha256(f"{sig.path}|{sig.hdu}|{sig.size}|{sig.mtime_ns}".encode()).hexdigest()[:16]
+    key = hashlib.sha256(sig.key.encode()).hexdigest()[:16]
     return directory / f"{Path(sig.path).stem}-{key}.pyr.h5"
 
 
@@ -251,7 +262,7 @@ class _SourceCube:
         import logging  # noqa: PLC0415
         from astropy.io import fits  # noqa: PLC0415
 
-        from .volume_source import resolve_vbt, vbt_field  # noqa: PLC0415
+        from .volume_source import ref_order, resolve_vbt, vbt_field  # noqa: PLC0415
 
         vbt = resolve_vbt(path, hdu)
         if vbt is not None:
@@ -259,7 +270,7 @@ class _SourceCube:
             # memory-mapped in place, already (z, y, x) and unscaled
             # (app/volume_source.py, issue #83).
             self._hdul = None
-            self._read = vbt_field(*vbt)
+            self._read = vbt_field(*vbt, order=ref_order(path))
             self._axes, self._ndim = [0, 1, 2], 3
             self.shape = tuple(int(n) for n in self._read.shape)
             self._tile = None
@@ -663,7 +674,14 @@ def build_pyramid(source: str | os.PathLike, out: str | os.PathLike | None = Non
         raise ValueError("the pyramid cannot be written over its source")
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    cube = _SourceCube(sig.path, hdu, max_block_bytes)
+    # A VBT is read in ONE byte order for the whole build, its workers'
+    # included (issue #165): the order the signature names, whatever the store
+    # says while the build runs.
+    from .volume_source import read_order, resolve_vbt, with_order  # noqa: PLC0415
+    read_path = sig.path
+    if resolve_vbt(source, hdu) is not None:
+        read_path = with_order(sig.path, read_order(source))
+    cube = _SourceCube(read_path, hdu, max_block_bytes)
     fd, tmp_name = tempfile.mkstemp(prefix=out_path.name + ".", suffix=".part", dir=out_path.parent)
     os.close(fd)
     try:
@@ -676,6 +694,7 @@ def build_pyramid(source: str | os.PathLike, out: str | os.PathLike | None = Non
                                else "mean of 2x2x2 over finite voxels"),
                 "source_path": sig.path, "source_hdu": sig.hdu,
                 "source_size": sig.size, "source_mtime_ns": sig.mtime_ns,
+                "source_byte_order": sig.byte_order,
             })
             for level, shape in enumerate(shapes):
                 group = h5.create_group(f"level{level}")
@@ -719,7 +738,7 @@ def build_pyramid(source: str | os.PathLike, out: str | os.PathLike | None = Non
             needed = 2 * _shm_slots(workers) * _shm_per_slot(shapes[0], brick, max_block_bytes,
                                                               workers)
             if workers > 1 and _parallel_ok(cube, max_block_bytes, needed):
-                _fill_levels_parallel(h5, shapes, brick, sig.path, hdu, max_block_bytes, workers,
+                _fill_levels_parallel(h5, shapes, brick, read_path, hdu, max_block_bytes, workers,
                                       progress, should_stop, timings,
                                       shm_tag or new_shm_tag())
             else:
@@ -785,13 +804,17 @@ class BrickPyramid:
             self.brick = int(attrs["brick"])
             self.levels = int(attrs["levels"])
             self.source = SourceSignature(str(attrs["source_path"]), int(attrs["source_hdu"]),
-                                          int(attrs["source_size"]), int(attrs["source_mtime_ns"]))
+                                          int(attrs["source_size"]), int(attrs["source_mtime_ns"]),
+                                          str(attrs.get("source_byte_order", "")))
             if source is not None:
                 current = SourceSignature.of(source, self.source.hdu)
                 if current.path != self.source.path:
                     raise StalePyramid(f"{self.path} was built from {self.source.path}, not {current.path}.")
                 if (current.size, current.mtime_ns) != (self.source.size, self.source.mtime_ns):
                     raise StalePyramid(f"{source} has changed since {self.path} was built.")
+                if current.byte_order != self.source.byte_order:
+                    raise StalePyramid(f"{self.path} was built from {source} read in another "
+                                       "byte order.")
         except BaseException:
             self._h5.close()
             raise

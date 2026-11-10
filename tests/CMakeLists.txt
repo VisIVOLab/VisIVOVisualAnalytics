@@ -147,6 +147,8 @@ add_executable(VisIVOTests
     test_region_full_res.cpp
     TestDatasetName.h
     test_dataset_name.cpp
+    TestVbtByteOrder.h
+    test_vbt_byte_order.cpp
     TestCubeStatRows.h
     test_cube_stat_rows.cpp
     TestRecentReopen.h
