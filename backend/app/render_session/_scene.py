@@ -41,8 +41,8 @@ class SceneMixin:
         """
         t0 = time.time()
         import vtk
-        from vtkmodules.vtkRenderingOpenGL2 import vtkEGLRenderWindow
         from vtk.util.numpy_support import numpy_to_vtk
+        from ._window import new_offscreen_window
         from ..cube_reader import CubeReader
         from ..volume_source import volume_data, volume_shape
 
@@ -315,8 +315,8 @@ class SceneMixin:
         # an image-to-colours pipeline, a texture, and an actor.
         self._build_cutting_plane_on_thread()
 
-        self._render_window = vtkEGLRenderWindow()
-        self._render_window.SetOffScreenRendering(1)
+        # EGL, or on a Mac a hidden Cocoa window (render_session/_window.py).
+        self._render_window = new_offscreen_window(self._window_kind)
         self._render_window.SetSize(self.view.width, self.view.height)
         # The EGL device is the one the window's constructor took from
         # VTK_DEFAULT_EGL_DEVICE_INDEX, which the render process sets to this
@@ -339,6 +339,12 @@ class SceneMixin:
         # cold V100 contexts (the first Render does shader compilation
         # + GPU upload; subsequent frames just bind+draw).
         self._render_window.Render()
+        # Which GPU (or software renderer) the frames come from.
+        renderer = next((line.split(":", 1)[1].strip()
+                         for line in (self._render_window.ReportCapabilities() or "").splitlines()
+                         if line.startswith("OpenGL renderer string")), "unknown")
+        logger.info("[render-session %s] %s window, OpenGL renderer %s",
+                    self.session_id, self._window_kind, renderer)
 
         logger.info(
             "[render-session %s] init OK in %.2f s (warm-up render done)",

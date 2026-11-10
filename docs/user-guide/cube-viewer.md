@@ -116,10 +116,12 @@ Independently of *what* is rendered, there is a choice of *where* — the
 - **Local** — the cube is loaded into this machine's GPU through VTK's volume
   mapper. Full interactivity, and the whole volume has to fit in GPU memory as a
   3-D texture (roughly `width × height × depth × 4` bytes).
-- **Remote** — the backend renders with EGL and streams frames over a
-  WebSocket. **Only if the backend has it**: the dataset-open response carries
-  `server_side_rendering_available`, and a CPU-only backend — or any backend on
-  **macOS**, where there is no EGL — reports false. The mode entry is then
+- **Remote** — the backend renders on its GPU (EGL on Linux, a hidden
+  offscreen window on macOS) and streams frames over a WebSocket. **Only if
+  the backend has it**: the dataset-open response carries
+  `server_side_rendering_available`, and a CPU-only backend — or a backend on
+  macOS started with nobody logged in at the Mac (over ssh, or as a system
+  service), which has no window server to draw with — reports false. The mode entry is then
   disabled with that reason and the recommendation banner does not offer the
   switch, because `/v1/render/*` would refuse the request. Up to
   6 GiB (`VISIVO_RENDER_OUT_OF_CORE_BYTES`) the backend loads the whole cube,

@@ -435,7 +435,11 @@ def _serve(conn, session_id: str, dataset_path: str, factory: str, gpu_slot: int
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        _egl_device_for(gpu_slot)
+        # GPU choice by EGL device: only where the window is an EGL one (on a
+        # Mac there is one GPU and no EGL to ask).
+        from ._window import egl_window_class
+        if egl_window_class() is not None:
+            _egl_device_for(gpu_slot)
         # Only when there is one: a FITS file's first image HDU is the
         # session's own choice.
         session = _load(factory)(session_id, dataset_path,

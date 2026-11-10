@@ -1042,8 +1042,8 @@ void vtkWindowCube::refreshRemoteRecommendBanner()
         } else if (local) {
             why = QStringLiteral(
                     "This view is capped at a decimated proxy above the %1 MB threshold, and "
-                    "this backend cannot render server-side (no EGL context - a CPU-only or "
-                    "macOS backend), so loading it here is the only way to the full grid. It "
+                    "this backend cannot render server-side (no offscreen GPU context: no EGL, "
+                    "or a Mac without a logged-in user session), so loading it here is the only way to the full grid. It "
                     "needs ~%2 GB resident, in RAM and as a 3-D GPU texture.\n\n"
                     "Raise Cube/local_full_threshold_mb in Settings.ini to stop being asked.")
                           .arg(thresholdMb)
@@ -1056,8 +1056,8 @@ void vtkWindowCube::refreshRemoteRecommendBanner()
                           .arg(sizeGb, 0, 'f', 2);
         } else {
             why = QStringLiteral(
-                    "This backend cannot render server-side (no EGL context - a CPU-only or "
-                    "macOS backend), so there is no streaming alternative: loading the full "
+                    "This backend cannot render server-side (no offscreen GPU context: no EGL, "
+                    "or a Mac without a logged-in user session), so there is no streaming alternative: loading the full "
                     "grid means pulling %1 GB across the link and keeping it resident here. "
                     "For a region only, use View ▸ Crop Full Resolution.")
                           .arg(sizeGb, 0, 'f', 2);
