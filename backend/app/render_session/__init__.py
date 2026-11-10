@@ -26,6 +26,7 @@ from ._common import (
 from ._scene import SceneMixin
 from ._modes import ModesMixin
 from ._pipeline import PipelineMixin
+from ._stereo import StereoMixin
 from ._window import RenderThreadError, offscreen_kind, render_executor
 
 
@@ -53,7 +54,7 @@ def server_side_rendering_available() -> bool:
     return _EGL_AVAILABLE
 
 
-class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
+class RenderSession(SceneMixin, ModesMixin, PipelineMixin, StereoMixin):
     """One client × one cube × one dedicated render thread.
 
     Lifecycle:
@@ -137,6 +138,15 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin):
         self._slice_lut_ctf = None         # vtkColorTransferFunction for slice
         self._cutting_plane_slice_index = -1   # invalidates first update
         self._closed = False
+        # The headset's stereo mode (_stereo.py, issue #169): the latest pose
+        # (None: the mono view), a refused one waiting to be reported, and
+        # the camera the eyes are drawn with.
+        self._xr_pose = None
+        self._xr_error = None
+        self._xr_camera = None
+        # False once the volume mapper could not render to an image (stereo
+        # frames then come from the window, without a volume depth).
+        self._xr_render_to_image = True
         # Phase 4 Path 1 — background FITS reader. ``None`` on the
         # legacy synchronous path (small cubes < 256 MB); a CubeReader
         # instance for large cubes that fill in progressively.

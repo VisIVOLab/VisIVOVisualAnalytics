@@ -70,6 +70,17 @@ class PipelineMixin:
         newer than the server.
         """
         ctype = command.get("type", "")
+        if ctype in ("xr_pose", "xr_stop"):
+            # The headset's stereo mode (_stereo.py, issue #169).
+            self._apply_xr_command_on_thread(command)
+            return
+        if ctype == "set_interactive" and getattr(self, "_xr_pose", None) is not None:
+            # The drag level of detail is the mono view's: in stereo it would
+            # save the eye's window size as the view's and give it back on
+            # release. A stereo frame has its own fixed sampling.
+            logger.info("[render-session %s] set_interactive ignored in stereo",
+                        self.session_id)
+            return
 
         # ── Camera / interaction ─────────────────────────────────────
         # All camera mutations go directly to vtkCamera so the next
@@ -610,6 +621,11 @@ class PipelineMixin:
         numpy flip-and-drop it replaces took ~10 ms of a ~21 ms drag frame
         (1270×780 on PLEIADI-GPU), holding the GIL; the image is the same.
         """
+        # Between an xr_pose and an xr_stop: the headset's stereo frame. Looked
+        # up, not assumed: the mixin works without the stereo one.
+        xr_active = getattr(self, "_xr_active", None)
+        if xr_active is not None and xr_active():
+            return self._render_xr_frame_on_thread()
         rgba, render_ms = self._render_rgb_on_thread()
         h, w = rgba.shape[:2]
         img = Image.frombuffer("RGBX", (w, h), rgba, "raw", "RGBX", 0, -1)
