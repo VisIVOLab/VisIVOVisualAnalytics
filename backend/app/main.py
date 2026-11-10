@@ -15,6 +15,8 @@ import time
 import uuid
 from pathlib import Path
 from fastapi import FastAPI, Depends, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -313,6 +315,19 @@ async def _permission_denied_handler(request: Request, exc: PermissionError) -> 
         status_code=404,
         content={"error": "Path not found.", "error_code": "path_not_found"},
     )
+
+
+@app.exception_handler(RequestValidationError)
+async def _request_validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI's own 422, with non-finite numbers in it answered as null.
+
+    The error echoes the offending ``input``; a body carrying the JSON literal
+    ``NaN`` or ``Infinity`` (which the parser accepts) into a field that refuses
+    it made that echo unencodable, so the refusal itself became an HTTP 500.
+    """
+    from .compute.kinematic_fit import _json_safe  # noqa: PLC0415
+    return JSONResponse(status_code=422,
+                        content={"detail": _json_safe(jsonable_encoder(exc.errors()))})
 
 
 @app.exception_handler(Exception)

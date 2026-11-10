@@ -23,8 +23,9 @@ starts on the model the sources are placed with.
      set ΩΛ yourself.
 
    A model with Ωm + ΩΛ < 1 is open. The window says so in words, and gives
-   Ωk. The server does not support closed models (Ωm + ΩΛ > 1). It also does
-   not support Ωm = 0 with ΩΛ = 1 (de Sitter), whose age is infinite.
+   Ωk. The server does not support closed models (Ωm + ΩΛ > 1). Ωm = 0 with
+   ΩΛ = 1 (de Sitter) is computed: it has no Big Bang, so its age column stays
+   empty and the row's note says the age is not finite.
 3. Type one or many **redshifts**, separated by commas, spaces or new lines. A
    column pasted from a spreadsheet also works. One run takes up to 1000
    redshifts.
@@ -143,8 +144,8 @@ The settings, in **Inspector ▸ Parameters**:
   blank, so no filament or void is traced inside an unobserved area.
 - **Drop where map <** (*Skeleton pixels*). An intensity cut on individual skeleton pixels. It is
   not a topological-persistence cut: it can split a filament and add end
-  points. It applies to filaments only, and values ≤ 0 are ignored by the
-  server.
+  points. It applies to filaments only. Any value is a cut, 0 and negative
+  ones included (a negative cut is what a map with negative values needs).
 
 **Trace** runs it. The result is shown in two ways:
 
