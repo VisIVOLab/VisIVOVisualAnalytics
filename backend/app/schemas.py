@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 class ErrorDetail(BaseModel):
     error: str
@@ -546,7 +546,13 @@ class CosmologyDistanceResponse(BaseModel):
     model: str = ""
     comoving_Mpc: float | None = None
     luminosity_Mpc: float | None = None
-    proper_motion_kpc_per_arcsec: float | None = None
+    # Proper transverse scale at z (kpc per arcsecond, from D_A).
+    scale_kpc_per_arcsec: float | None = None
+    # DEPRECATED alias of scale_kpc_per_arcsec (#129): the old name, which is
+    # not a proper motion. Same value; to be removed after one release.
+    proper_motion_kpc_per_arcsec: float | None = Field(
+        default=None, deprecated=True,
+        description="Deprecated alias of scale_kpc_per_arcsec; removed after one release.")
 
 
 class CosmologyBatchRequest(BaseModel):

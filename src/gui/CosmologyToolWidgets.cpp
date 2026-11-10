@@ -122,7 +122,7 @@ SkeletonSettings::SkeletonSettings(QWidget *parent) : QWidget(parent)
     m_thresholdAuto = new QCheckBox(u"Mean of the map"_s, this);
     m_thresholdAuto->setChecked(true);
     m_thresholdAuto->setToolTip(u"Let the server use the mean of the finite pixels (after "
-                                u"smoothing; with smoothing on, blank (NaN) pixels count as 0). "
+                                u"smoothing, which averages over the finite pixels only). "
                                 u"The value it used is recorded with the result."_s);
     m_threshold = new QLineEdit(this);
     // C locale on both sides: the value is read with QString::toDouble, which
@@ -152,7 +152,7 @@ SkeletonSettings::SkeletonSettings(QWidget *parent) : QWidget(parent)
     m_prune->setToolTip(u"Removes individual skeleton pixels where the (smoothed) map is "
                         u"below this value. This is an intensity cut, not a "
                         u"topological-persistence cut: it can split a filament and add end "
-                        u"points. Values \u2264 0 are ignored by the server. Filaments only: "
+                        u"points. Any value is a cut, 0 and negative included. Filaments only: "
                         u"a void skeleton lies below the threshold by construction."_s);
     m_pruneValue = new QLineEdit(this);
     auto *pruneValidator = new QDoubleValidator(m_pruneValue);

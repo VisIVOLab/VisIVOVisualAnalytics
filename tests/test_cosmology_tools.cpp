@@ -102,8 +102,8 @@ void TestCosmologyTools::customModelIsValidatedLikeTheBackend()
     // Closed: the backend refuses Ωm + ΩΛ > 1, and so does the form.
     const QString closed = cosmo::validate(cosmo::Model::custom(70.0, 0.4, 0.7));
     QVERIFY(closed.contains(u"closed"_s));
-    // de Sitter: an infinite age, which the server answers with HTTP 500.
-    QVERIFY(cosmo::validate(cosmo::Model::custom(70.0, 0.0, 1.0)).contains(u"de Sitter"_s));
+    // de Sitter: an infinite age, which the server answers as null (#129).
+    QVERIFY(cosmo::validate(cosmo::Model::custom(70.0, 0.0, 1.0)).isEmpty());
     QVERIFY(cosmo::validate(cosmo::Model::custom(70.0, 0.0, 0.9)).isEmpty());   // finite age
     // The bounds are the route's own.
     const QString route = backendSource(u"routers/cosmology.py"_s);
@@ -451,11 +451,15 @@ void TestCosmologyTools::parsePresetDistanceReadsTheScale()
     const auto r = BackendClient::parseCosmologyDistanceObject(fromLiteral(R"({
         "valid": true, "error": "", "z": 0.5, "model": "WMAP9",
         "comoving_Mpc": 1888.62, "luminosity_Mpc": 2832.93,
-        "proper_motion_kpc_per_arcsec": 6.105 })"));
+        "scale_kpc_per_arcsec": 6.105, "proper_motion_kpc_per_arcsec": 9.999 })"));
     QVERIFY(r.valid);
     QCOMPARE(r.model, u"WMAP9"_s);
-    QCOMPARE(r.kpcPerArcsec, 6.105);
-    QVERIFY(backendSource(u"routers/cosmology.py"_s).contains(u"proper_motion_kpc_per_arcsec"_s));
+    QCOMPARE(r.kpcPerArcsec, 6.105);   // the new name wins
+    QVERIFY(backendSource(u"routers/cosmology.py"_s).contains(u"scale_kpc_per_arcsec"_s));
+    // A backend from before #129 sends only the deprecated name.
+    const auto old = BackendClient::parseCosmologyDistanceObject(fromLiteral(R"({
+        "valid": true, "error": "", "z": 0.5, "proper_motion_kpc_per_arcsec": 6.105 })"));
+    QCOMPARE(old.kpcPerArcsec, 6.105);
     const auto refused = BackendClient::parseCosmologyDistanceObject(
             fromLiteral(R"({"valid": false, "error": "Redshift z must be >= 0."})"));
     QVERIFY(!refused.valid);

@@ -111,11 +111,8 @@ inline QString validate(const Model &m)
         return QStringLiteral("Ωm must be between 0 and %1.").arg(kOmegaMax);
     if (!std::isfinite(m.ode0) || m.ode0 < 0.0 || m.ode0 > kOmegaMax)
         return QStringLiteral("ΩΛ must be between 0 and %1.").arg(kOmegaMax);
-    // Ωm = 0 with ΩΛ = 1 is de Sitter: no Big Bang, an infinite age, and the
-    // server answers it with HTTP 500 (it cannot encode the infinity).
-    if (m.om0 <= 0.0 && m.ode0 >= 1.0 - 1e-6)
-        return QStringLiteral("\u03a9m = 0 with \u03a9\u039b = 1 is a de Sitter universe with "
-                              "no Big Bang: its age is infinite. Use \u03a9m > 0.");
+    // Ωm = 0 with ΩΛ = 1 (de Sitter) is accepted: the server answers its
+    // infinite age as null and the distances as numbers (#129).
     // The backend refuses Ωm + ΩΛ > 1: closed models are not supported there.
     if (m.om0 + m.ode0 > 1.0 + 1e-6)
         return QStringLiteral("Ωm + ΩΛ = %1 is a closed universe, which the "

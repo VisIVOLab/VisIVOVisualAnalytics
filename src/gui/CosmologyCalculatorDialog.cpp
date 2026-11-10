@@ -94,6 +94,10 @@ QList<cosmo::Row> computeRows(const QString &url, const QString &token, const co
                 row.lookbackGyr = r.lookbackGyr;
                 row.ageGyr = r.ageGyr;
                 row.kpcPerArcsec = cosmo::kpcPerArcsecFromAngularDiameter(r.angularDiameterMpc);
+                // The server answers a quantity with no finite value as null:
+                // with no matter (de Sitter) there is no Big Bang to count from.
+                if (!std::isfinite(r.ageGyr))
+                    row.error = u"age is not finite for this model (no Big Bang)"_s;
             }
             rows.append(row);
             continue;
@@ -519,7 +523,7 @@ void CosmologyCalculatorDialog::showRows(const cosmo::Model &model,
                                                       : u"—"_s);
             item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
             if (!std::isfinite(v))
-                item->setToolTip(u"Not computed by the server for this model."_s);
+                item->setToolTip(u"Not finite for this model (e.g. the age of a universe with no Big Bang), or not given by the server."_s);
             m_table->setItem(r, c + 1, item);
         }
         m_table->setItem(r, cols.size() + 1, new QTableWidgetItem(row.error));
