@@ -98,7 +98,8 @@ than the GPU's grid; **Save Image…** writes it as graded, **Save Light…** th
 light before the tone curve as a floating-point FITS; **Movie…** renders an
 orbit about the view's up axis, encoded as an MP4 with `ffmpeg` when it is
 installed. A 512³ cube renders in about a second at 1920 × 1080 on a laptop
-(Apple M-series).
+(Apple M-series). Quitting the application while a render runs stops it on
+the backend, a cluster's included, before the application exits.
 
 ---
 

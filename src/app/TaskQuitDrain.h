@@ -32,6 +32,11 @@
 // since only its answer carries the id the DELETE needs. What is left for the
 // bound is CPU work already under way (decoding a reply), which ends.
 //
+// A task followed with no worker of its own (a ray-traced render, polled by a
+// timer on the GUI thread, #149) registers a QuitCanceller instead: drain()
+// calls each one, every one from a thread of its own and all at once, and
+// waits for them. Each sends its task's DELETE, bounded, and returns.
+//
 // Header-only and widget-free (TestTaskQuitDrain).
 
 #include "BackendTaskFollow.h"
@@ -43,10 +48,25 @@
 
 #include <algorithm>
 #include <atomic>
+#include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 namespace visivo {
+
+/// A task the quit must cancel that no worker follows: its follower is driven
+/// by the GUI thread's event loop, which stops at the quit (RenderTaskHandle).
+class QuitCanceller
+{
+public:
+    virtual ~QuitCanceller() = default;
+    /// Send the cancellation (bounded by kQuitCancelTimeoutMs) and return.
+    /// Called from a thread of the drain's (never the GUI thread: an event
+    /// loop there returns at once after exit()), maybe once per drain: a
+    /// second call finds nothing left to cancel.
+    virtual void cancelForQuit() = 0;
+};
 
 class TaskQuitDrain
 {
@@ -75,6 +95,24 @@ public:
         BackendTaskControl *m_control;
     };
 
+    /// Held for as long as @p canceller may have a task to cancel at quit.
+    class Registration
+    {
+    public:
+        Registration(TaskQuitDrain &drain, std::shared_ptr<QuitCanceller> canceller)
+            : m_drain(drain), m_canceller(std::move(canceller))
+        {
+            m_drain.addCanceller(m_canceller);
+        }
+        ~Registration() { m_drain.removeCanceller(m_canceller.get()); }
+        Registration(const Registration &) = delete;
+        Registration &operator=(const Registration &) = delete;
+
+    private:
+        TaskQuitDrain &m_drain;
+        std::shared_ptr<QuitCanceller> m_canceller;
+    };
+
     /// Whether a drain has begun: a cancellation's DELETE is then kept short.
     bool quitting() const { return m_quitting.load(); }
 
@@ -86,8 +124,10 @@ public:
     /// Safe to call twice: the second finds nothing to wait for.
     bool drain(int timeoutMs)
     {
+        std::vector<std::shared_ptr<QuitCanceller>> cancellers;
         {
             std::lock_guard<std::mutex> lock(m_mutex);
+            cancellers = m_cancellers;
             m_quitting.store(true);
             for (const Entry &entry : m_controls)
                 entry.control->requestAbort();
@@ -110,6 +150,15 @@ public:
         // registers, and the wait below covers both.
         QElapsedTimer waited;
         waited.start();
+        // The followers without a worker: their DELETEs, side by side, each
+        // bounded on its own (kQuitCancelTimeoutMs), so not cut by the
+        // deadline; they go out while the workers below cancel theirs.
+        std::vector<std::thread> senders;
+        senders.reserve(cancellers.size());
+        for (const std::shared_ptr<QuitCanceller> &canceller : cancellers)
+            senders.emplace_back([canceller]() { canceller->cancelForQuit(); });
+        for (std::thread &sender : senders)
+            sender.join();
         // Not for a follower on THIS thread: it sits further down the stack
         // (a decompression followed in a local event loop on the GUI thread,
         // which the quit interrupted) and can only go on once the drain
@@ -161,6 +210,23 @@ private:
         if (m_quitting.load())
             control->requestAbort();   // asked for while the application quits
     }
+    void addCanceller(std::shared_ptr<QuitCanceller> canceller)
+    {
+        // Added after a drain began: called by the next one, if any. Its
+        // owner starts no task by then (refuseTaskWhileQuitting), and one it
+        // was creating sees the quit itself.
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_cancellers.push_back(std::move(canceller));
+    }
+    void removeCanceller(const QuitCanceller *canceller)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_cancellers.erase(std::remove_if(m_cancellers.begin(), m_cancellers.end(),
+                                          [canceller](const std::shared_ptr<QuitCanceller> &c) {
+                                              return c.get() == canceller;
+                                          }),
+                           m_cancellers.end());
+    }
     void remove(BackendTaskControl *control)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -174,6 +240,7 @@ private:
 
     mutable std::mutex m_mutex;
     std::vector<Entry> m_controls;
+    std::vector<std::shared_ptr<QuitCanceller>> m_cancellers;
     std::atomic_bool m_quitting{ false };
     bool m_deadlineSet{ false };   ///< under m_mutex
     QElapsedTimer m_deadline;

@@ -5,6 +5,7 @@
 #include <QDateTime>
 #include <QThread>
 #include "BackendHeaders.h"
+#include "BackendTaskFollow.h"
 #include "DiagnosticsManager.h"
 #include "SofiaSuggest.h"
 #include "TaskQuitDrain.h"
@@ -3270,24 +3271,8 @@ std::chrono::milliseconds BackendClient::requestTimeoutFor(const QUrl &url) cons
     if (path.endsWith(QStringLiteral("/datasets/open"))) {
         return std::chrono::milliseconds(10000);
     }
-    if (path.contains(QStringLiteral("/tasks/"))) {
-        // Creating, cancelling or polling a task is quick, EXCEPT the poll that
-        // finds it completed: that answer carries the whole product, and a
-        // moment map of an SKA-scale cube is hundreds of MB of base64. At 10 s
-        // that read timed out through a tunnel, again on every retry, and the
-        // result of a 25-minute task was lost (issue #3). Generous for every
-        // GET of a task: an unreadable status is retried and then given up by
-        // visivo::followBackendTask anyway.
-        // A proxied backend may sit under a path prefix, so match the tail.
-        static const QRegularExpression taskStatus(QStringLiteral("/v1/tasks/([^/]+)$"));
-        static const QStringList creators{ QStringLiteral("moment"), QStringLiteral("moment_fits"),
-                                           QStringLiteral("pv"), QStringLiteral("sourcefind"),
-                                           QStringLiteral("decompress") };
-        const QRegularExpressionMatch m = taskStatus.match(path);
-        if (m.hasMatch() && !creators.contains(m.captured(1)))
-            return std::chrono::milliseconds(300000);   // 5 min
-        return std::chrono::milliseconds(10000);
-    }
+    if (path.contains(QStringLiteral("/tasks/")))
+        return std::chrono::milliseconds(visivo::taskRequestTimeoutMs(path));
     if (path.endsWith(QStringLiteral("/cube/slice")) || path.endsWith(QStringLiteral("/image/preview"))) {
         return std::chrono::milliseconds(30000);
     }

@@ -3,6 +3,10 @@
 #include "app/BackendClient.h"
 #include "app/BackendTaskFollow.h"
 
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QRegularExpression>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QtTest>
@@ -443,4 +447,30 @@ void TestBackendTaskFollow::theSheetShowsOnTimeCountedFromTheRequest()
     QCOMPARE(visivo::progressShowDelayMs(2'000, 400), 0);   // late already: at once
     QCOMPARE(visivo::progressShowDelayMs(-50, 400), 400);   // never more than the delay
     QCOMPARE(visivo::progressShowDelayMs(100, -1), 0);
+}
+
+void TestBackendTaskFollow::everyTaskCreateGetsTheShortTimeout()
+{
+    // A create mistaken for a status read had 5 minutes, which the quit lets
+    // run out (#149). Every POST /v1/tasks/<kind> of the backend's routers is
+    // a create here.
+    QDir routers(QStringLiteral(VISIVO_REPO_ROOT "/backend/app/routers"));
+    QVERIFY(routers.exists());
+    const QRegularExpression route(QStringLiteral(R"(\.post\(\s*"/v1/tasks/([A-Za-z0-9_]+)\")"));
+    QStringList found;
+    for (const QFileInfo &info : routers.entryInfoList({ QStringLiteral("*.py") }, QDir::Files)) {
+        QFile file(info.filePath());
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const QString text = QString::fromUtf8(file.readAll());
+        for (auto it = route.globalMatch(text); it.hasNext();)
+            found << it.next().captured(1);
+    }
+    QVERIFY2(found.size() >= 7, qPrintable(found.join(u',')));
+    for (const QString &kind : found) {
+        QVERIFY2(visivo::taskCreateKinds().contains(kind), qPrintable(kind));
+        QCOMPARE(visivo::taskRequestTimeoutMs(u"/v1/tasks/"_s + kind), 10000);
+        QCOMPARE(visivo::taskRequestTimeoutMs(u"/visivo/v1/tasks/"_s + kind), 10000);
+    }
+    QCOMPARE(visivo::taskRequestTimeoutMs(u"/v1/tasks/3f2a9c"_s), 300000);   // a status read
+    QCOMPARE(visivo::taskRequestTimeoutMs(u"/v1/tasks/3f2a9c/extra"_s), 10000);
 }

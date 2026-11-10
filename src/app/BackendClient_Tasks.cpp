@@ -836,11 +836,11 @@ BackendSofiaSuggestResult BackendClient::suggestSofia2Parameters(const QString &
     return result;
 }
 
-bool BackendClient::cancelTask(const QString &taskId, QString &error, int timeoutMs) const
+bool BackendClient::sendBoundedDelete(const QString &path, int timeoutMs, QByteArray &raw,
+                                      QString &error) const
 {
     const int timeout = timeoutMs > 0 ? timeoutMs : kCancelTaskTimeoutMs;
-    const QString safeSeg = QString::fromUtf8(QUrl::toPercentEncoding(taskId, "", "/"));
-    QNetworkRequest req(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/") + safeSeg));
+    QNetworkRequest req(QUrl(m_baseUrl + path));
     // Hand-built, as deleteExport: QNAM has no DELETE helper that takes the
     // session headers.
     BackendClient::applySessionHeaders(req, m_baseUrl, m_token, m_sessionId);
@@ -867,7 +867,7 @@ bool BackendClient::cancelTask(const QString &taskId, QString &error, int timeou
     const bool answered = reply->isFinished();
     if (!answered)
         reply->abort();
-    const QByteArray raw = reply->readAll();
+    raw = reply->readAll();
     const bool ok = answered && reply->error() == QNetworkReply::NoError;
     if (!answered) {
         error = QStringLiteral("the cancellation was not sent: the event loop had ended");
@@ -879,8 +879,48 @@ bool BackendClient::cancelTask(const QString &taskId, QString &error, int timeou
         error = detail.isEmpty() ? reply->errorString() : detail;
     }
     reply->deleteLater();
-    return ok && !timedOut
+    return ok && !timedOut;
+}
+
+bool BackendClient::cancelTask(const QString &taskId, QString &error, int timeoutMs) const
+{
+    const QString safeSeg = QString::fromUtf8(QUrl::toPercentEncoding(taskId, "", "/"));
+    QByteArray raw;
+    return sendBoundedDelete(QStringLiteral("/v1/tasks/") + safeSeg, timeoutMs, raw, error)
            && QJsonDocument::fromJson(raw).object().value(QStringLiteral("cancelled")).toBool(true);
+}
+
+BackendTaskCreateResult BackendClient::createRenderTask(const QString &taskPath,
+                                                        const QJsonObject &request) const
+{
+    BackendTaskCreateResult result;
+    // Not while quitting: the quit would have to cancel it (TaskQuitDrain.h).
+    if (visivo::refuseTaskWhileQuitting(result.error))
+        return result;
+    QString error;
+    const QByteArray payload = performPost(QUrl(m_baseUrl + taskPath), QJsonDocument(request),
+                                           error, nullptr, &result.httpStatus);
+    if (!error.isEmpty()) {
+        // On an HTTP error performPost returns the reply's body: the reason
+        // ("detail"), or FastAPI's bare "Not Found" of an older backend.
+        result.error = error;
+        result.errorBody = payload;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.taskId = object.value(QStringLiteral("task_id")).toString();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false) && !result.taskId.isEmpty();
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.status = object.value(QStringLiteral("status")).toString();
+    return result;
+}
+
+bool BackendClient::deleteRender(const QString &taskId, QString &error, int timeoutMs) const
+{
+    const QString safeSeg = QString::fromUtf8(QUrl::toPercentEncoding(taskId, "", "/"));
+    QByteArray raw;
+    return sendBoundedDelete(QStringLiteral("/v1/particle_render/") + safeSeg, timeoutMs, raw,
+                             error);
 }
 
 BackendTaskStatusResult BackendClient::requestTaskStatus(const QString &taskId,

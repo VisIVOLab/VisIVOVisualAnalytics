@@ -117,6 +117,9 @@ camera, settings, box and colour bar.
   brightness does not flicker. They are encoded as an MP4 (H.264) with `ffmpeg`
   when it is installed, otherwise saved as a numbered PNG sequence.
 - A render in progress shows its progress below the buttons, with *Cancel*.
+  Quitting the application (⌘Q, the Dock's *Quit*) cancels it too: the
+  render stops on the backend, a cluster's included, before the application
+  exits, and its frames there are removed.
 
 Without a GPU view on this machine the backend draws the view too, a frame
 each time it stops moving.

@@ -260,6 +260,9 @@ struct BackendTaskCreateResult
     /// (visivo::isMissingTaskRoute); from createSourceFindTask, 503 means
     /// "finder not installed here".
     int httpStatus{ 0 };
+    /// The reply's body on an HTTP error (createRenderTask): the reason, or
+    /// an older backend's bare "Not Found" (visivo::isMissingRouteReply).
+    QByteArray errorBody;
 };
 
 /// POST /v1/sofia2/suggest/{id}: the body as it came (valid only on 200),
@@ -2534,6 +2537,16 @@ public:
      *  task, 409: already finished). Best-effort: the task may still complete.
      *  @p timeoutMs bounds the wait (0: the default, 15 s). */
     bool cancelTask(const QString &taskId, QString &error, int timeoutMs = 0) const;
+    /** POST @p taskPath (/v1/tasks/particle_render or /v1/tasks/volume_render)
+     *  — start a ray-traced render of @p request (issues #101, #106); refused
+     *  once the application quits (TaskQuitDrain.h). Blocking: from a worker
+     *  (RenderTaskHandle). */
+    BackendTaskCreateResult createRenderTask(const QString &taskPath,
+                                             const QJsonObject &request) const;
+    /** DELETE /v1/particle_render/{id} — stop a ray-traced render if it still
+     *  runs and remove its frames; any render task, a cube's too. Bounded as
+     *  cancelTask (@p timeoutMs, 0: 15 s). */
+    bool deleteRender(const QString &taskId, QString &error, int timeoutMs = 0) const;
     /// @p abort: see performGet; a set flag ends the read at once (status empty).
     BackendTaskStatusResult requestTaskStatus(const QString &taskId,
                                               const std::atomic_bool *abort = nullptr) const;
@@ -3051,6 +3064,11 @@ private:
                                                QMap<QString, QString> *responseHeaders = nullptr,
                                                int attempts = 5,
                                                int firstDelayMs = 500) const;
+
+    /// DELETE m_baseUrl + @p path, bounded by @p timeoutMs (0: 15 s), on this
+    /// thread's manager; @p raw is the answer. True when it was answered 2xx.
+    bool sendBoundedDelete(const QString &path, int timeoutMs, QByteArray &raw,
+                           QString &error) const;
 
     QByteArray performPost(const QUrl &url, const QJsonDocument &body, QString &error,
                            QMap<QString, QString> *responseHeaders = nullptr,

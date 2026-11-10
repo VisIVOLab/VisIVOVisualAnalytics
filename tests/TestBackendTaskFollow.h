@@ -28,6 +28,7 @@ private slots:
     void aTickerProgressIsNeverShownAsAPercentage();
     void aCachedDecompressionNeedsNoFollowing();
     void theSheetShowsOnTimeCountedFromTheRequest();
+    void everyTaskCreateGetsTheShortTimeout();
 };
 
 #endif // TestBackendTaskFollow_h
