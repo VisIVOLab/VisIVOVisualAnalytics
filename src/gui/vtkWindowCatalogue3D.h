@@ -167,6 +167,9 @@ public:
     /// When the first load failed, just before its error box (ms since the
     /// epoch; -1: it did not fail).
     qint64 openFailedAtMs() const { return this->m_openFailedAtMs; }
+    /// Time the byte-order question (issue #165) was up during the open: the
+    /// user's, not the open's ("Last 5 jobs").
+    qint64 byteOrderPromptMs() const { return this->m_byteOrderPromptMs; }
     bool hasLoadedRows() const { return !this->remoteDatasetId.isEmpty() && !this->entries.empty(); }
     /// table.highlight.row: select the source of original-table row @p row and
     /// fly to it, as a click on it would. False (and a status line saying so)
@@ -383,6 +386,7 @@ private:
     QString backendToken;
     QString remoteDatasetId;
     qint64 m_openFailedAtMs{ -1 };
+    qint64 m_byteOrderPromptMs{ 0 };
     QString remoteSessionId;
     std::vector<Catalogue3DEntry> entries;
     Catalogue3DSchema schema;

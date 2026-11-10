@@ -8,6 +8,7 @@
 #include "BusyStatus.h"
 #include "app/VbtByteOrder.h"
 
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QMessageBox>
 #include <QPushButton>
@@ -18,18 +19,22 @@ namespace visivo {
 /// remembered for @p backendUrl (the opens that follow send it); Escape or
 /// closing the box keeps the order @p readIn the table was just opened in, and
 /// remembers nothing. Returns true when the answer is not @p readIn: the
-/// caller opens it again. Without a warning, nothing is asked.
+/// caller opens it again. Without a warning, nothing is asked. @p askedMs,
+/// when given, gets the time the box was up added to it: the user's time, not
+/// the open's (the Data Hub's "Last 5 jobs", as the viewer chooser does).
 inline bool askVbtByteOrder(QWidget *parent, const QString &backendUrl, const QString &path,
-                            const VbtByteOrderWarning &warning, const QString &readIn)
+                            const VbtByteOrderWarning &warning, const QString &readIn,
+                            qint64 *askedMs = nullptr)
 {
     if (!warning.present)
         return false;
+    const QString name = QFileInfo(vbtDataPath(path)).fileName();
     QMessageBox box(parent);
-    box.setWindowTitle(QStringLiteral("Byte order of %1").arg(QFileInfo(vbtDataPath(path)).fileName()));
+    box.setWindowTitle(QStringLiteral("Byte order of %1").arg(name));   // not shown on macOS
     box.setIcon(QMessageBox::Warning);
-    box.setTextFormat(Qt::PlainText);
-    box.setText(vbtByteOrderQuestion(warning));
-    box.setInformativeText(vbtByteOrderEvidence(warning));
+    box.setTextFormat(Qt::RichText);   // escaped: a file name is never markup
+    box.setText(vbtByteOrderBoxText(warning, name));
+    box.setInformativeText(vbtByteOrderEvidenceHtml(warning));
     QPushButton *asSuggested = box.addButton(
             QStringLiteral("Open as %1-endian").arg(warning.suggested), QMessageBox::AcceptRole);
     QPushButton *asDeclared =
@@ -43,7 +48,11 @@ inline bool askVbtByteOrder(QWidget *parent, const QString &backendUrl, const QS
     box.setEscapeButton(keep);
     {
         const BusyPause asking;   // the question is what is read now
+        QElapsedTimer up;
+        up.start();
         box.exec();
+        if (askedMs)
+            *askedMs += up.elapsed();
     }
     QString order;
     if (box.clickedButton() == asSuggested)

@@ -93,6 +93,22 @@ inline QString vbtByteOrderEvidence(const VbtByteOrderWarning &w)
     return text;
 }
 
+/// The question as the box shows it, as rich text: the file's name on a bold
+/// first line (a macOS message box shows no window title, so the title alone
+/// would never be seen), then the question.
+inline QString vbtByteOrderBoxText(const VbtByteOrderWarning &w, const QString &fileName)
+{
+    return QStringLiteral("<b>Byte order of %1</b><br>%2")
+            .arg(fileName.toHtmlEscaped(), vbtByteOrderQuestion(w).toHtmlEscaped());
+}
+
+/// The evidence as rich text, for the same box.
+inline QString vbtByteOrderEvidenceHtml(const VbtByteOrderWarning &w)
+{
+    return vbtByteOrderEvidence(w).toHtmlEscaped().replace(QLatin1Char('\n'),
+                                                           QStringLiteral("<br>"));
+}
+
 /// Whether the suggested order is the default answer: on overwhelming
 /// evidence (at least 40% of the sampled values absurd as declared, at most
 /// one in a hundred in the other order, over two or more fields), or when the
