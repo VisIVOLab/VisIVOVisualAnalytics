@@ -330,15 +330,16 @@ void vtkWindowCube::applyAutoRenderModeOnOpen()
 void vtkWindowCube::setServerSideRenderingAvailable(bool available)
 {
     this->m_serverSideRenderingAvailable = available;
-    // The render-mode choice is a capability, not a preference: with no EGL on
-    // the backend, Remote cannot start and the menu entry must say so instead of
+    // The render-mode choice is a capability, not a preference: with no offscreen
+    // GPU context on the backend, Remote cannot start and the menu entry must say so instead of
     // failing on click.
     if (this->m_actionRenderRemote) {
         this->m_actionRenderRemote->setEnabled(available);
         if (!available) {
             const QString why =
-                    u"This backend cannot render server-side (no EGL context - a CPU-only "
-                    u"or macOS backend). Rendering happens here."_s;
+                    u"This backend cannot render server-side (no offscreen GPU context on "
+                    u"the backend: no EGL, or a Mac without a logged-in user session). "
+                    u"Rendering happens here."_s;
             this->m_actionRenderRemote->setToolTip(why);
             this->m_actionRenderRemote->setStatusTip(why);
         }

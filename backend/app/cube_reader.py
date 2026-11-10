@@ -264,13 +264,16 @@ class CubeReader:
             self._process.terminate()
             self._process.join(timeout=5.0)
         self._process = None
-        try:
-            # ``close`` on this side; ``unlink`` removes the segment
-            # from /dev/shm so it doesn't leak.
-            self.shm.close()
-            self.shm.unlink()
-        except Exception as e:
-            logger.warning("[reader] shm cleanup failed: %s", e)
+        # ``close`` on this side; ``unlink`` removes the segment from
+        # /dev/shm so it doesn't leak. Apart: a view still exported (a VTK
+        # array not released, BufferError) must not keep the segment alive.
+        for step in (self.shm.close, self.shm.unlink):
+            try:
+                step()
+            except FileNotFoundError:
+                pass   # already unlinked: close() is idempotent
+            except Exception as e:
+                logger.warning("[reader] shm cleanup failed: %s", e)
 
     def __enter__(self) -> "CubeReader":
         self.start()
