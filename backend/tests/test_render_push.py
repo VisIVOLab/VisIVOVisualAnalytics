@@ -142,6 +142,81 @@ async def test_an_ack_during_the_send_is_not_lost():
     assert push.in_flight == 0
 
 
+async def test_a_session_that_ended_closes_its_stream_cleanly(caplog):
+    """Its render process killed: one log line, no traceback, and a close
+    reason that tells the client to create a new session."""
+    class Ended(_PushSession):
+        session_id = "deadbeef" * 4
+        ended = True
+
+        async def render_frame_if_changed(self, since: int):
+            raise RuntimeError(f"Session {self.session_id} is closed.")
+
+    class Socket:
+        closed_with = None
+
+        async def close(self, code=1000, reason=""):
+            self.closed_with = (code, reason)
+
+    sess, sock = Ended(), Socket()
+    sess.changed.set()
+    with caplog.at_level("INFO", logger="visivo.render"):
+        await render_router._push_frames(sock, sess, asyncio.Lock(), render_router._PushState())
+    assert sock.closed_with == (1011, render_router.SESSION_ENDED_REASON)
+    assert not any(r.exc_info for r in caplog.records)
+    assert any("the session ended" in r.getMessage() for r in caplog.records)
+
+
+async def test_an_idle_stream_notices_its_session_ended():
+    """Nothing changes and the client sends nothing: the push loop still
+    closes within a poll once the session has ended."""
+    class Idle(_PushSession):
+        session_id = "cafe" * 8
+        ended = False
+
+    class Socket:
+        closed_with = None
+        sent: list = []
+
+        async def send_bytes(self, data):
+            self.sent.append(data)
+
+        async def close(self, code=1000, reason=""):
+            self.closed_with = (code, reason)
+
+    sess, sock = Idle(), Socket()
+    push = render_router._PushState()
+    task = asyncio.create_task(render_router._push_frames(sock, sess, asyncio.Lock(), push))
+    await asyncio.sleep(0.1)
+    assert sock.closed_with is None
+    sess.ended = True     # its render process was killed
+    await asyncio.wait_for(task, timeout=2.0)
+    assert sock.closed_with == (1011, render_router.SESSION_ENDED_REASON)
+
+
+def test_pull_mode_closes_an_ended_session_cleanly(ws_session, caplog):
+    """request_frame on a session whose render process is gone: the close says
+    "session ended", with no traceback in the log."""
+    from starlette.websockets import WebSocketDisconnect
+
+    client, sess = ws_session
+    sess.ended = False
+
+    async def gone():
+        sess.ended = True
+        raise RuntimeError("Session s1 is closed.")
+
+    sess.render_frame = gone
+    with caplog.at_level("INFO", logger="visivo.render"):
+        with _connect(client) as ws:
+            ws.send_text(json.dumps({"type": "request_frame"}))
+            with pytest.raises(WebSocketDisconnect) as closed:
+                ws.receive_bytes()
+    assert closed.value.code == 1011
+    assert closed.value.reason == render_router.SESSION_ENDED_REASON
+    assert not any(r.exc_info for r in caplog.records if r.name == "visivo.render")
+
+
 async def test_a_failed_render_closes_the_connection(caplog):
     class Broken(_PushSession):
         async def render_frame_if_changed(self, since: int):

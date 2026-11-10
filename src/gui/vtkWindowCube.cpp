@@ -4039,6 +4039,9 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
         // so they know the click registered while the 3-5 s WebRTC
         // negotiation happens.
         this->m_remoteSwitchInProgress = true;
+        // Retry belongs to a stream that dropped; this switch replaces it.
+        if (this->m_remoteRenderBannerRetry)
+            this->m_remoteRenderBannerRetry->hide();
         // A new switch starts without the progress of an earlier one.
         this->m_remotePreparing = false;
         this->m_remotePreparingProgress = 0.0;
@@ -4181,6 +4184,7 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
                 // have aborted a perfectly good stream 300 s later.
                 // Nothing to wait for, so end the switch here.
                 this->m_remoteSwitchInProgress = false;
+                this->m_remoteReplacement.ended();
                 if (this->m_remoteSwitchProgressTimer)
                     this->m_remoteSwitchProgressTimer->stop();
                 if (this->m_localRecommendRemoteBanner)
@@ -4214,6 +4218,7 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
             this->m_remoteSwitchInProgress = false;
             this->m_remoteReconnectingKept = false;
             this->m_remotePreparing = false;
+            this->m_remoteReplacement.ended();   // a replacement the user gave up
             // Invalidate any create_session reply still in flight: it used to
             // reconnect and flip to Remote regardless, undoing the very
             // cancellation the user just asked for.
