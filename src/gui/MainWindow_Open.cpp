@@ -881,6 +881,9 @@ void noteCatalogueOpenEnded(OpenRecord *record, const vtkWindowCatalogue3D *win)
     noteOpenEnded(record, opened ? u"done"_s : u"failed"_s);
     if (win && win->openFailedAtMs() >= 0)
         record->endedMs = win->openFailedAtMs();
+    // The byte-order question's time is the user's (issue #165).
+    if (win)
+        record->excludedMs += win->byteOrderPromptMs();
 }
 
 }   // namespace
@@ -1018,7 +1021,7 @@ bool MainWindow::doOpenDataPath(const QString &path, OpenRecord *continued)
     // the volume's other fields open the same way).
     if (opened.valid
         && visivo::askVbtByteOrder(this, client.baseUrl(), path, opened.byteOrderWarning,
-                                   opened.byteOrder)) {
+                                   opened.byteOrder, &record->excludedMs)) {
         // The first answer's dataset is closed by the backend as the order
         // changes: no orphan is left behind.
         opened = client.openDataset(path, /*alreadyDecompressed=*/true);

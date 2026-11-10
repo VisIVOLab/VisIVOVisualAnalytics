@@ -107,6 +107,24 @@ def _build_open_response(dataset_id: str, session_id: str, kind: str,
     )
 
 
+@router.delete("/v1/datasets/{dataset_id}", tags=["datasets"])
+async def close_dataset(
+    dataset_id: str,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Close a dataset of this session (any kind: an image, a cube, a
+    catalogue, a VBT): its entry, and what it holds (a catalogue's table, a
+    VBT's memory map), are dropped. The client sends it when the last window
+    showing the dataset closes. ``closed`` is false when the session had no
+    such dataset (already closed, or expired): not an error."""
+    entry = session.datasets.pop(dataset_id, None)
+    if entry is not None:
+        logger.info("[close] session=%s dataset_id=%s kind=%s",
+                    session.session_id[:8] + "…", dataset_id, entry.get("kind", ""))
+    return {"valid": True, "error": "", "closed": entry is not None}
+
+
 @router.post("/v1/datasets/open", response_model=OpenDatasetResponse, tags=["datasets"])
 async def open_dataset(
     request: OpenDatasetRequest,

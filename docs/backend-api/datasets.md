@@ -105,6 +105,13 @@ answers **503** with `Retry-After` while the copy is made again.
 The ICRS position of a pixel of an open image or cube, from the file's full
 WCS; used for SAMP `coord.pointAt.sky`. See [SAMP](samp.md), "Pixel positions".
 
+### `DELETE /v1/datasets/{dataset_id}`
+Close a dataset of the session (any kind: image, cube, catalogue, VBT); what it
+holds (a catalogue's table, a VBT's memory map) is dropped. The desktop sends
+it when the last window showing a 3-D catalogue closes. Answers
+`{"valid": true, "error": "", "closed": true}`, or `closed: false` when the
+session has no such dataset (already closed or expired), which is not an error.
+
 ### `POST /v1/datasets/open_url`
 Download a FITS or HDF5 file from an `http(s)` URL into the backend's cache and
 open it as a session dataset. Used after a SKAVA discovery, when the dataset

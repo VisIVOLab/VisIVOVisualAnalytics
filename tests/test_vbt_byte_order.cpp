@@ -8,6 +8,7 @@
 #include "ProductRecipe.h"
 #include "ProductRegistry.h"
 #include "VbtByteOrder.h"
+#include "DatasetUsers.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -135,4 +136,29 @@ void TestVbtByteOrder::theRecipeRecordsTheChosenOrder()
     QCOMPARE(datasetOf().value(u"byte_order"_s).toString(), u"big"_s);
     visivo::rememberVbtByteOrder(u"http://127.0.0.1:18900"_s, u"/scratch/sim/gas.bin.head"_s,
                                  QString());
+}
+
+void TestVbtByteOrder::theBoxTextNamesTheFileItself()
+{
+    const auto w = visivo::parseVbtByteOrderWarning(darkWarning());
+    // macOS shows no window title: the name is in the text, escaped.
+    QCOMPARE(visivo::vbtByteOrderBoxText(w, u"a<b>.bin"_s),
+             u"<b>Byte order of a&lt;b&gt;.bin</b><br>This table's header says little-endian, "
+             u"but its values look big-endian."_s);
+    QVERIFY(visivo::vbtByteOrderEvidenceHtml(w).contains(u"<br>First MASS"_s));
+}
+
+void TestVbtByteOrder::theLastWindowOnADatasetClosesIt()
+{
+    auto &users = visivo::DatasetUsers::instance();
+    const QString url = u"http://127.0.0.1:18900"_s;
+    users.acquire(url, u"s1"_s, u"cat_1"_s);
+    users.acquire(url, u"s1"_s, u"cat_1"_s);
+    users.acquire(url, u"s2"_s, u"cat_1"_s);   // the same id in another session
+    QVERIFY(!users.release(url, u"s1"_s, u"cat_1"_s));   // one window still on it
+    QVERIFY(users.release(url, u"s1"_s, u"cat_1"_s));    // the last: close it
+    QVERIFY(!users.release(url, u"s1"_s, u"cat_1"_s));   // not held any more
+    QCOMPARE(users.users(url, u"s2"_s, u"cat_1"_s), 1);
+    QVERIFY(users.release(url, u"s2"_s, u"cat_1"_s));
+    QVERIFY(!users.release(url, u"s9"_s, u""_s));        // a window that never opened one
 }

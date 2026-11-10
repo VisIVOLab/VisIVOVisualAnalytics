@@ -2,6 +2,7 @@
 #include "WindowCloseShortcut.h"
 #include "BusyStatus.h"
 #include "VbtByteOrderPrompt.h"
+#include "app/DatasetUsers.h"
 #include <QDateTime>
 #include "CosmologyCalculatorDialog.h"
 #include "vtkWindowCatalogue3D.h"
@@ -396,8 +397,14 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                              }
                              return;
                          }
+                         // The old dataset went with its expired session:
+                         // nothing to close, only no longer held here.
+                         visivo::DatasetUsers::instance().release(
+                                 this->backendUrl, this->remoteSessionId, this->remoteDatasetId);
                          this->remoteDatasetId = result.datasetId;
                          this->remoteSessionId = result.sessionId;
+                         visivo::DatasetUsers::instance().acquire(
+                                 this->backendUrl, this->remoteSessionId, this->remoteDatasetId);
                          if (this->m_copilot) {
                              this->m_copilot->setDatasetId(this->remoteDatasetId);
                              CopilotActionRouter::instance()->registerTarget(
@@ -431,7 +438,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     // Escape nothing is sent, and the backend reads the file as it does now.
     if (opened.valid
         && visivo::askVbtByteOrder(this, backendUrl, filepath, opened.byteOrderWarning,
-                                   opened.byteOrder)) {
+                                   opened.byteOrder, &this->m_byteOrderPromptMs)) {
         // The first answer's dataset is closed by the backend as the order
         // changes: no orphan is left behind.
         client.setUseRememberedVbtByteOrder(true);
@@ -449,6 +456,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     } else {
         this->remoteDatasetId = opened.datasetId;
         this->remoteSessionId = opened.sessionId;
+        // Held until the window closes (closeEvent releases it).
+        visivo::DatasetUsers::instance().acquire(this->backendUrl, this->remoteSessionId,
+                                                 this->remoteDatasetId);
         // A VBT point table can be drawn on the backend (issue #83).
         this->m_cartesian = opened.coordSystem == u"cartesian"_s;
         this->m_skyCoordinates = opened.coordSystem == u"sky"_s && !opened.raField.isEmpty()

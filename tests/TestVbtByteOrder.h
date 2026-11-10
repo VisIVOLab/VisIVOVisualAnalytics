@@ -17,4 +17,6 @@ private slots:
     void onlyOverwhelmingEvidenceDefaultsToTheSuggestedOrder();
     void theChoiceIsRememberedPerBackendAndDataFile();
     void theRecipeRecordsTheChosenOrder();
+    void theBoxTextNamesTheFileItself();
+    void theLastWindowOnADatasetClosesIt();
 };

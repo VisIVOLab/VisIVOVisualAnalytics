@@ -597,6 +597,23 @@ async def test_a_samp_subset_is_read_in_the_order_the_window_opened(client, auth
     np.testing.assert_allclose(np.asarray(table["MASS"]), fields["MASS"][[0, 5]], rtol=1e-6)
 
 
+@pytest.mark.asyncio
+async def test_a_closed_window_closes_its_dataset(client, auth_headers, tmp_path):
+    """DELETE /v1/datasets/{id}: the client's close of a catalogue window."""
+    data = _write(tmp_path, _sph_fields(300), "big", "big")
+    body = (await client.post("/v1/catalogue/open",
+                              json={"path": str(data) + ".head", "format": "vbt"},
+                              headers=auth_headers)).json()
+    headers = {**auth_headers, "X-Visivo-Session": body["session_id"]}
+    closed = (await client.delete(f"/v1/datasets/{body['dataset_id']}", headers=headers)).json()
+    assert closed == {"valid": True, "error": "", "closed": True}
+    again = (await client.delete(f"/v1/datasets/{body['dataset_id']}", headers=headers)).json()
+    assert again["closed"] is False
+    resp = await client.post("/v1/catalogue/query",
+                             json={"dataset_id": body["dataset_id"], "limit": 1}, headers=headers)
+    assert resp.status_code == 404
+
+
 def test_an_unknown_order_is_refused(tmp_path):
     data = _write(tmp_path, _sph_fields(100), "big", "little")
     with pytest.raises(ValueError, match="little"):
