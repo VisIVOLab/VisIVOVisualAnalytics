@@ -220,6 +220,16 @@ Beside it sits the **VLKB** tab, which queries the ViaLactea Knowledge Base over
 a region of the Galactic plane and cuts out the images and cubes that cover it —
 see [VLKB archive](vlkb-archive).
 
+**Recent Datasets** lists what you opened, newest first; click an entry to
+open it again, or ✕ to remove it from the list (the file is not touched). An
+entry whose file has been moved or deleted since is reported as **not found**
+(looked for on this machine with the local backend, asked of the backend with
+a remote one) rather than tried, and the message offers to remove that entry
+from the list (*Keep* is the default). A file behind a folder you may not open
+is reported as unreadable, not as deleted. A SODA cutout or a product computed
+on a SKAVA node lives on that node and is not looked for here. The attempt is
+listed in **Last 5 jobs** as a failed open.
+
 **Last 5 jobs** lists what the backend did most recently: moments, PV
 diagrams, opens, exports, with how long each took and how long ago it ended.
 An open is timed by the client, from the moment you asked (the health check,
@@ -259,9 +269,18 @@ to use rather than guessed at.
 If VisIVO is not running the startup sequence happens first — backend, then
 authentication — and the file opens as soon as the main window appears. If it is
 already running the file opens **in that same instance**, in a new viewer
-window: on macOS the double-click reaches the running app directly, and on
-Linux / Windows (where the desktop starts a new process for every double-click)
-the new process hands the file over and exits. A launch with no file always
+window: on macOS the double-click reaches the running app directly, and a
+launch from the command line (or, on Linux / Windows, where the desktop starts
+a new process for every double-click) hands its files over and exits. A path
+that is not there is handed over too: the running instance says it is not
+found and lists it in **Last 5 jobs** as a failed open.
+
+The hand-over happens only between launches on the **same backend**. A second
+launch with `--backend URL` goes to the instance already running on that URL,
+and one with `--connect-cluster NAME` to the window on that cluster (without
+submitting a second backend job); a launch on another backend, or on the local
+one while only a `--backend` window runs, starts its own instance, because a
+path means something only to its own backend. A launch with no file always
 starts its own instance, so running two VisIVOs against two backends is still
 possible. Several files opened at once are opened one after another, never on
 top of each other's dialogs.

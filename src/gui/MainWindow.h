@@ -248,6 +248,9 @@ private:
     /// A recent dataset from another backend than this window's: offer to open
     /// a window on its cluster, or say where it is.
     void reopenOnItsBackend(const RecentDataset &dataset);
+    /// The entry's file is gone (on this machine, or on the remote backend
+    /// @p where names): say so, list it as a failed open, offer to forget it.
+    void offerToForgetMissingRecent(const RecentDataset &dataset, const QString &where);
     /// The new viewer (it may hold no rows when the open failed: see
     /// vtkWindowCatalogue3D::hasLoadedRows()).
     /// @p displayName (optional): the name to show instead of the file's (a

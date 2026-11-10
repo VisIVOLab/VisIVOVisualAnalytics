@@ -45,6 +45,8 @@ struct RecentDataset
     // Origin tag, used by the DataHub UI for a visual badge and by
     // ``MainWindow::reopenDataset`` to pick a re-routing path:
     //   * "remote"  — opened via the local backend with an absolute path
+    //   * "soda"    — a SODA cutout, on the SKAVA node that cut it.
+    //   * "node"    — a product computed on a SKAVA node, which holds it.
     //   * "skava"   — opened via the SKAVA discovery + visivo-backend routing.
     //                 ``obsId`` carries the discovery identifier so we can
     //                 re-query SKAVA on reopen rather than dead-linking
@@ -121,6 +123,9 @@ public:
     // Removes the entry with the given id (no-op if not found).
     // With @p backend, only the entry on that backend (and one of unknown backend).
     void remove(const QString &id, const std::optional<QString> &backend = std::nullopt);
+    // Removes exactly @p entry: the same id on the same backend, or, for an
+    // entry of unknown backend, that entry only.
+    void removeEntry(const RecentDataset &entry);
 
     // Removes all entries.
     void clear();

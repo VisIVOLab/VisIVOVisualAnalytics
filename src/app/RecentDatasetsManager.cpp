@@ -151,6 +151,21 @@ void RecentDatasetsManager::remove(const QString &id, const std::optional<QStrin
     }
 }
 
+void RecentDatasetsManager::removeEntry(const RecentDataset &entry)
+{
+    const auto lock = lockList(m_settingsPath);
+    load();
+    const int before = m_datasets.size();
+    m_datasets.removeIf([&entry](const RecentDataset &e) {
+        return e.id == entry.id && e.backendKnown == entry.backendKnown
+                && (!e.backendKnown || e.backend == entry.backend);
+    });
+    if (m_datasets.size() != before) {
+        save();
+        emit changed();
+    }
+}
+
 void RecentDatasetsManager::clear()
 {
     const auto lock = lockList(m_settingsPath);

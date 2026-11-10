@@ -4,6 +4,7 @@
 #include "BackendClient.h"
 #include "CatalogueOverlayUtils.h"
 #include "CubeOpenPreviewTask.h"
+#include "CubeStatRows.h"
 #include "LutScale.h"
 #include "LassoReplay.h"
 #include "LinkedWindowRegistry.h"
@@ -544,12 +545,17 @@ private:
 
     // Full-resolution 3-D cube statistics from the backend (the local block is only the decimated
     // preview). Fetched once per open; the Inspector "3D cube" rows are refreshed when it lands.
-    // (The result type stays in the .cpp so this header remains decoupled from BackendClient.h.)
     QPointer<QLabel> m_cubeStatMedian;
     QPointer<QLabel> m_cubeStatStd;
     QPointer<QLabel> m_cubeStatSum;
     bool m_cubeStatsRequested{ false };   ///< guard: fetch only once per window
+    bool m_cubeStatsFailed{ false };      ///< the backend answered without statistics
+    std::optional<BackendCubeStatsResult> m_fullCubeStats;   ///< the backend's whole-cube scan
+    /// What the loaded grid measured itself; empty until a grid is shown.
+    std::optional<visivo::CubeGridStats> m_cubeGridStats;
     void fetchCubeStatsAsync();
+    /// Fills the Inspector "3D cube" rows from the best numbers known so far.
+    void refreshCubeStatRows();
 
     /// The renderer a product uses: "spectrum1d" (m_products1d) / "image2d" (m_products2d) / "".
     QString productRenderer(const QString &productId) const;

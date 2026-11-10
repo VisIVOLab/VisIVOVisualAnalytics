@@ -33,6 +33,8 @@
 #include "TestRenderSessionCalls.h"
 #include "TestRegionFullRes.h"
 #include "TestDatasetName.h"
+#include "TestCubeStatRows.h"
+#include "TestRecentReopen.h"
 #include "TestColourBarTicks.h"
 #include "TestProbeSpectrumFetch.h"
 #include "TestWcsAxisTicks.h"
@@ -96,6 +98,8 @@ int main(int argc, char *argv[])
     { TestRenderSessionCalls t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionFullRes    t; status |= QTest::qExec(&t, argc, argv); }
     { TestDatasetName      t; status |= QTest::qExec(&t, argc, argv); }
+    { TestCubeStatRows     t; status |= QTest::qExec(&t, argc, argv); }
+    { TestRecentReopen     t; status |= QTest::qExec(&t, argc, argv); }
     { TestThresholdShare   t; status |= QTest::qExec(&t, argc, argv); }
     { TestColourBarTicks   t; status |= QTest::qExec(&t, argc, argv); }
     { TestProbeSpectrumFetch t; status |= QTest::qExec(&t, argc, argv); }

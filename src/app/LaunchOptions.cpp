@@ -1,5 +1,6 @@
 #include "LaunchOptions.h"
 
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -143,7 +144,9 @@ QStringList LaunchOptions::datasetPaths(const QStringList &args, bool remote,
         else if (QFileInfo::exists(a))
             paths << QFileInfo(a).absoluteFilePath();
         else if (missing)
-            *missing << a;
+            // Absolute, as the files that exist: the list may be handed to a
+            // running instance, whose working directory is not this one.
+            *missing << QFileInfo(a).absoluteFilePath();
     }
     return paths;
 }
@@ -151,4 +154,29 @@ QStringList LaunchOptions::datasetPaths(const QStringList &args, bool remote,
 QString LaunchOptions::recentToReopen(const QStringList &args)
 {
     return optionValue(args, u"--reopen-recent"_s).value_or(QString());
+}
+
+QString LaunchOptions::instanceSeat(const std::optional<Settings::SessionBackend> &remote,
+                                    const QString &cluster)
+{
+    if (!cluster.isEmpty())
+        return u"cluster:"_s + cluster;
+    if (!remote)
+        return QString();
+    // Scheme and host are case-insensitive; remoteBackend() already dropped
+    // trailing slashes.
+    QUrl url(remote->url);
+    url.setScheme(url.scheme().toLower());
+    url.setHost(url.host().toLower());
+    return u"backend:"_s + url.toString(QUrl::StripTrailingSlash);
+}
+
+QString LaunchOptions::instanceKey(const QString &homePath, const QString &seat)
+{
+    // The local backend's key is the one every earlier release used, so an
+    // older instance still running is found.
+    const QByteArray seed = seat.isEmpty() ? homePath.toUtf8()
+                                           : (homePath + u'\n' + seat).toUtf8();
+    const QByteArray digest = QCryptographicHash::hash(seed, QCryptographicHash::Sha256);
+    return QStringLiteral("visivo-va-") + QString::fromLatin1(digest.toHex().left(16));
 }

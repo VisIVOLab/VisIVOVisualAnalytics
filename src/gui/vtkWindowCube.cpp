@@ -9,6 +9,7 @@
 #include "CubeViewportGeometry.h"
 #include "Pane2DView.h"
 #include "CubeStatsUtil.h"
+#include "CubeStatRows.h"
 #include "CubeToolGate.h"
 
 #include "qcustomplot.h"
@@ -3854,15 +3855,17 @@ void vtkWindowCube::applyRemotePreviewResult(const RemoteCubePreviewResult &resu
     // applyCubeOpenResult() sets currentCubeVisibleRange from the real data.
     // The initial threshold must be applied AFTER this, so that
     // applyThresholdToPipeline() sees correct range control points.
-    this->applyCubeOpenResult({ true,
-                                { },
-                                result.cubeImageData,
-                                nullptr,
-                                result.cubeRange,
-                                { 0., 0. },
-                                result.dataExtent,
-                                0.,
-                                0. });
+    CubeOpenStageResult stage{ true,
+                               { },
+                               result.cubeImageData,
+                               nullptr,
+                               result.cubeRange,
+                               { 0., 0. },
+                               result.dataExtent,
+                               0.,
+                               0. };
+    stage.meanRmsKnown = false;   // the strided preview carries no mean/RMS of its own
+    this->applyCubeOpenResult(stage);
 
     // ── Data-driven initial threshold (first load only) ──
     // The backend's default, from the cube's noise (issue #93): about 100
@@ -6932,14 +6935,21 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
 
     QElapsedTimer cubeFieldsTimer;
     cubeFieldsTimer.start();
-    // Append the brightness unit (BUNIT, e.g. "Jy/beam") so the 3D-cube stats read with units
-    // like the 2D-image block, instead of bare numbers.
-    const QString bu = this->m_brightnessUnit.isEmpty() ? QString()
-                                                        : (u" "_s + this->m_brightnessUnit);
-    ui->lineCubeMin->setText(QString::number(this->currentCubeVisibleRange[0]) + bu);
-    ui->lineCubeMax->setText(QString::number(this->currentCubeVisibleRange[1]) + bu);
-    ui->lineCubeMean->setText(QString::number(result.cubeMean) + bu);
-    ui->lineCubeRms->setText(QString::number(result.cubeRms) + bu);
+    {
+        visivo::CubeGridStats grid;
+        grid.range = this->currentCubeVisibleRange;
+        if (result.meanRmsKnown) {
+            grid.meanRms = std::array<double, 2>{ result.cubeMean, result.cubeRms };
+            // A full-resolution grid is the whole cube unless it is a camera
+            // ROI. (A cube with no backend geometry is taken whole.)
+            const std::array<int, 6> whole{ 0, this->remoteDatasetWidth - 1,
+                                            0, this->remoteDatasetHeight - 1,
+                                            0, this->remoteDatasetDepth - 1 };
+            grid.wholeCube = this->remoteDatasetWidth <= 0 || result.dataExtent == whole;
+        }
+        this->m_cubeGridStats = grid;
+    }
+    this->refreshCubeStatRows();
     ui->lineSpectral->setText(this->formatSpectralAxisValue(clampedSlice));
     this->refreshSpectralAxisUi();
     qDebug().noquote()
@@ -13172,6 +13182,41 @@ void vtkWindowCube::updateSpectrumInspectorControls()
     m_specInspStats->setText(stats.isEmpty() ? u"-"_s : stats);
 }
 
+void vtkWindowCube::refreshCubeStatRows()
+{
+    // The rows describe the whole cube: the backend's scan once it landed,
+    // the loaded grid's own numbers before (CubeStatRows.h, #150).
+    // Append the brightness unit (BUNIT, e.g. "Jy/beam") so the 3D-cube stats
+    // read with units like the 2D-image block, instead of bare numbers.
+    const QString bu = this->m_brightnessUnit.isEmpty() ? QString()
+                                                        : (u" "_s + this->m_brightnessUnit);
+    const auto fmt = [&bu](double v) { return CubeStats::fmtStat(v) + bu; };
+    std::optional<std::array<double, 4>> full;
+    if (m_fullCubeStats)
+        full = std::array<double, 4>{ m_fullCubeStats->min, m_fullCubeStats->max,
+                                      m_fullCubeStats->mean, m_fullCubeStats->rms };
+    const visivo::CubeStatTexts t =
+            visivo::cubeStatTexts(full, m_cubeGridStats, m_cubeStatsFailed, fmt);
+    const std::pair<QLineEdit *, const QString *> rows[] = {
+        { ui->lineCubeMin, &t.min }, { ui->lineCubeMax, &t.max },
+        { ui->lineCubeMean, &t.mean }, { ui->lineCubeRms, &t.rms } };
+    for (const auto &[row, text] : rows) {
+        if (!row)
+            continue;
+        row->setText(*text);
+        row->setToolTip(*text == u"-"_s ? t.toolTip : QString());
+    }
+    if (!m_fullCubeStats)
+        return;
+    const BackendCubeStatsResult &s = *m_fullCubeStats;
+    if (m_cubeStatMedian)
+        m_cubeStatMedian->setText(fmt(s.median) + (s.medianExact ? QString() : u"  (approx)"_s));
+    if (m_cubeStatStd)
+        m_cubeStatStd->setText(fmt(s.std));
+    if (m_cubeStatSum)
+        m_cubeStatSum->setText(fmt(s.sum));
+}
+
 void vtkWindowCube::fetchCubeStatsAsync()
 {
     // Ask the backend for FULL-resolution whole-cube stats (out-of-core) and overwrite the
@@ -13190,21 +13235,15 @@ void vtkWindowCube::fetchCubeStatsAsync()
                      [this, watcher]() {
                          const BackendCubeStatsResult s = watcher->result();
                          watcher->deleteLater();
-                         if (!s.valid)
-                             return;   // keep the preview stats on failure
-                         const QString bu = this->m_brightnessUnit.isEmpty()
-                                 ? QString() : (u" "_s + this->m_brightnessUnit);
-                         auto fmt = [&](double v) { return CubeStats::fmtStat(v) + bu; };
-                         if (ui->lineCubeMin)  ui->lineCubeMin->setText(fmt(s.min));
-                         if (ui->lineCubeMax)  ui->lineCubeMax->setText(fmt(s.max));
-                         if (ui->lineCubeMean) ui->lineCubeMean->setText(fmt(s.mean));
-                         if (ui->lineCubeRms)  ui->lineCubeRms->setText(fmt(s.rms));
-                         if (m_cubeStatMedian)
-                             m_cubeStatMedian->setText(
-                                     fmt(s.median)
-                                     + (s.medianExact ? QString() : u"  (approx)"_s));
-                         if (m_cubeStatStd) m_cubeStatStd->setText(fmt(s.std));
-                         if (m_cubeStatSum) m_cubeStatSum->setText(fmt(s.sum));
+                         if (!s.valid) {
+                             // Keep what the loaded grid measured; rows it
+                             // cannot fill read "-" with the reason.
+                             m_cubeStatsFailed = true;
+                             this->refreshCubeStatRows();
+                             return;
+                         }
+                         m_fullCubeStats = s;
+                         this->refreshCubeStatRows();
                      });
     watcher->setFuture(QtConcurrent::run([url, token, session, datasetId]() {
         BackendClient c(url, token);
