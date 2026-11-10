@@ -28,6 +28,10 @@ struct CubeOpenStageResult
     // Fraction of NaN/inf voxels found during sanitization (0..1). Cached so
     // the sanity panel does not need to rescan the volume on the GUI thread.
     double blankFraction{ 0. };
+    // False when the grid comes without its own mean/RMS (the backend's strided
+    // preview): the Inspector then waits for the full-cube statistics instead
+    // of showing the 0 placeholders as if they were measured (#150).
+    bool meanRmsKnown{ true };
 };
 
 CubeOpenStageResult loadCubeOpenPreview(const QString &filepath);

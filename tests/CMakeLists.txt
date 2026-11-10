@@ -147,6 +147,10 @@ add_executable(VisIVOTests
     test_region_full_res.cpp
     TestDatasetName.h
     test_dataset_name.cpp
+    TestCubeStatRows.h
+    test_cube_stat_rows.cpp
+    TestRecentReopen.h
+    test_recent_reopen.cpp
     TestThresholdShare.h
     test_threshold_share.cpp
     TestColourBarTicks.h

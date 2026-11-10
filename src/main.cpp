@@ -23,7 +23,6 @@
 #include <QFileInfo>
 #include <QDateTime>
 #include <QFileOpenEvent>
-#include <QCryptographicHash>
 #include <QDeadlineTimer>
 #include <QLocalServer>
 #include <QLocalSocket>
@@ -42,6 +41,11 @@
 #include <QWebEngineUrlScheme>
 
 #include <clocale>
+#include <climits>
+#if defined(Q_OS_UNIX)
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #include <memory>
 #include <optional>
 #include <utility>
@@ -148,9 +152,8 @@ public:
         flush();
     }
 
-    /// The command-line paths that are not files here, said once: over the
-    /// window, or on their own when the other files went to a running
-    /// instance and this one exits.
+    /// The command-line paths that are not files here, said once over the
+    /// window. Handed to a running instance they are said there instead.
     void reportMissing(QWidget *parent)
     {
         if (m_missing.isEmpty())
@@ -172,6 +175,9 @@ public:
 
     /// Decide what this process is, and act on it. Returns false when the files
     /// were handed to an already-running instance and this one should exit.
+    /// @p seat is LaunchOptions::instanceSeat(): one running instance per
+    /// backend receives files, so a launch on another backend than the running
+    /// one's finds its own seat free and starts its own instance.
     ///
     /// Linux and Windows deliver a double-click as a new PROCESS with the path in
     /// argv, so "is there already a VisIVO?" has to be answered before the
@@ -180,27 +186,25 @@ public:
     /// other's live endpoint, and on Windows several QLocalServers may listen on
     /// one pipe name, so `listen()` succeeding proves nothing about ownership
     ///. Only the lock holder listens.
-    bool becomePrimaryOrForward(bool mayForward = true)
+    bool becomePrimaryOrForward(const QString &seat)
     {
-        if (!mayForward) {
-            // A run on a remote backend: its files open here, and it never takes
-            // the seat, so a later plain launch never sends its files to it.
-            return true;
-        }
-        const QString base = instanceKey();
-        m_lock = std::make_unique<QLockFile>(
-                QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
-                        .absoluteFilePath(base + QStringLiteral(".lock")));
+        const QString base = LaunchOptions::instanceKey(QDir::homePath(), seat);
+        m_lock = std::make_unique<QLockFile>(lockPath(base));
         m_lock->setStaleLockTime(0);   // never steal by age; a live holder answers
         if (m_lock->tryLock(300)) {
             // Primary. Any socket left by a crash is ours to clear, and doing it
             // under the lock is what makes that safe.
-            QLocalServer::removeServer(base);
+            QLocalServer::removeServer(serverName(base));
             startListening(base);
             return true;
         }
         m_lock.reset();
-        if (m_pending.isEmpty()) {
+        // The paths that are not files here go too: the running instance says
+        // so in its own window and lists them in its "Last 5 jobs" (#150). A
+        // launch with only missing paths used to count as a bare launch and
+        // started a second instance to report them.
+        const QStringList handover = m_pending + m_missing;
+        if (handover.isEmpty()) {
             // A bare second launch: a normal, independent instance.
             startTakeoverPolling(base);
             return true;
@@ -208,8 +212,10 @@ public:
         // Files to hand over. The primary may still be starting up, so retry a
         // little before falling back to opening them here.
         for (int attempt = 0; attempt < 3; ++attempt) {
-            if (forwardToRunningInstance(base, m_pending))
+            if (forwardToRunningInstance(serverName(base), handover)) {
+                m_missing.clear();   // reported there
                 return false;
+            }
             QThread::msleep(200);
         }
         // The handover failed — most likely the primary died mid-flight — so
@@ -240,14 +246,12 @@ private:
     {
         if (m_takeoverKey.isEmpty() || m_lock)
             return true;
-        auto lock = std::make_unique<QLockFile>(
-                QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
-                        .absoluteFilePath(m_takeoverKey + QStringLiteral(".lock")));
+        auto lock = std::make_unique<QLockFile>(lockPath(m_takeoverKey));
         lock->setStaleLockTime(0);
         if (!lock->tryLock(0))
             return false;
         m_lock = std::move(lock);
-        QLocalServer::removeServer(m_takeoverKey);
+        QLocalServer::removeServer(serverName(m_takeoverKey));
         startListening(m_takeoverKey);
         return true;
     }
@@ -256,7 +260,7 @@ private:
     /// not newline-separated text: a Unix filename may contain a newline or end
     /// in a space, and readyRead delivers arbitrary fragments — half a path, or
     /// half a UTF-8 character. A stream transaction consumes only whole frames.
-    void startListening(const QString &name)
+    void startListening(const QString &base)
     {
         m_server = new QLocalServer(this);
         QObject::connect(m_server, &QLocalServer::newConnection, this, [this]() {
@@ -279,9 +283,14 @@ private:
                     *stream >> paths;
                     if (!stream->commitTransaction())
                         return;   // incomplete frame — wait for the rest
+                    // As sent: made absolute by the sender (a local path), or a
+                    // remote backend's own path. One that is not there is
+                    // refused by openDatasetPath, which says so and lists it
+                    // in the Data Hub's "Last 5 jobs"; dropping it here left
+                    // the request without any answer (#150).
                     for (const QString &p : paths)
-                        if (QFileInfo::exists(p))
-                            m_pending << QFileInfo(p).absoluteFilePath();
+                        if (!p.trimmed().isEmpty())
+                            m_pending << p;
                     // Accepted. The sender waits for this before exiting: RDY
                     // only proved the transport was being read, and a primary
                     // that died between RDY and here would have lost the files
@@ -293,7 +302,9 @@ private:
                 QObject::connect(c, &QLocalSocket::disconnected, c, &QObject::deleteLater);
             }
         });
-        m_server->listen(name);
+        if (!m_server->listen(serverName(base)))
+            qWarning().noquote() << "[instance] cannot receive files from later launches:"
+                                 << m_server->errorString();
     }
 
     /// Read until @p token appears, or the deadline passes. A single
@@ -395,17 +406,59 @@ private:
                 Qt::QueuedConnection);
     }
 
-    /// Socket + lock name, one per account. NOT from the environment ($USER is
-    /// unset in a Finder/launchd-started macOS app, $USERNAME is not unique
-    /// across Windows accounts) and NOT from qHash, whose algorithm is not
-    /// stable across Qt versions — two builds would derive different names
-    ///. A SHA-256 digest of the home path is stable everywhere, and
-    /// truncating it keeps the name inside the ~104-byte Unix-socket path limit.
-    static QString instanceKey()
+    /// Where the lock and the socket live: a folder that is the same for every
+    /// launch of this account, however it was started. Not $TMPDIR, which
+    /// is what QStandardPaths::TempLocation and QDir::tempPath() read: a launch
+    /// from a terminal, a script or a tool that sets its own TMPDIR looked for
+    /// the running instance in another folder, did not find it and started a
+    /// second one (#150). macOS: the per-user folder launchd assigns, which
+    /// TMPDIR normally points at. Other Unix: not $XDG_RUNTIME_DIR either,
+    /// which sudo, cron and some ssh sessions leave unset, but the folder it
+    /// names, /run/user/<uid>, when it exists and is ours; else a private
+    /// /tmp/visivo-va-<uid> (0700, ours, not a symlink). Windows: the
+    /// temporary folder as before.
+    static QString instanceDir()
     {
-        const QByteArray digest = QCryptographicHash::hash(QDir::homePath().toUtf8(),
-                                                           QCryptographicHash::Sha256);
-        return QStringLiteral("visivo-va-") + QString::fromLatin1(digest.toHex().left(16));
+#if defined(Q_OS_MACOS)
+        char buf[PATH_MAX];
+        const size_t n = confstr(_CS_DARWIN_USER_TEMP_DIR, buf, sizeof buf);
+        if (n > 0 && n <= sizeof buf && QFileInfo(QString::fromLocal8Bit(buf)).isDir())
+            return QString::fromLocal8Bit(buf);
+#elif defined(Q_OS_UNIX)
+        const uid_t uid = getuid();
+        const auto privateDirOfOurs = [uid](const QByteArray &path) {
+            struct stat st{};
+            return lstat(path.constData(), &st) == 0 && S_ISDIR(st.st_mode) && st.st_uid == uid
+                    && (st.st_mode & (S_IRWXG | S_IRWXO)) == 0;
+        };
+        const QByteArray runtime = "/run/user/" + QByteArray::number(uid);
+        if (privateDirOfOurs(runtime))
+            return QString::fromLocal8Bit(runtime);
+        const QByteArray own = "/tmp/visivo-va-" + QByteArray::number(uid);
+        mkdir(own.constData(), 0700);   // fails harmlessly when it exists
+        if (privateDirOfOurs(own))
+            return QString::fromLocal8Bit(own);
+        // Squatted by someone else, or /tmp unusable: the old place.
+#endif
+        return QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    }
+
+    static QString lockPath(const QString &base)
+    {
+        return QDir(instanceDir()).absoluteFilePath(base + QStringLiteral(".lock"));
+    }
+
+    /// The socket a QLocalServer listens on. On Unix a full path (a bare name
+    /// would be resolved in QDir::tempPath(), that is in $TMPDIR). On Windows
+    /// a pipe name: named pipes are machine-global, and the home-path hash in
+    /// the key is what keeps it per user.
+    static QString serverName(const QString &base)
+    {
+#if defined(Q_OS_UNIX)
+        return QDir(instanceDir()).absoluteFilePath(base);
+#else
+        return base;
+#endif
     }
 
     QStringList m_pending;
@@ -523,10 +576,12 @@ int main(int argc, char *argv[])
     // connected, and its backend set, before the window opens the paths.
     openRelay.takeCommandLine(QCoreApplication::arguments(),
                               remoteBackend.has_value() || !clusterName.isEmpty());
-    if (!openRelay.becomePrimaryOrForward(!remoteBackend && clusterName.isEmpty())) {
-        openRelay.reportMissing(nullptr);
+    // One instance per backend receives the files of later launches: a second
+    // launch on the same backend hands its paths over, one on another backend
+    // (or on the local one, while only a --backend window runs) starts its own.
+    if (!openRelay.becomePrimaryOrForward(
+                LaunchOptions::instanceSeat(remoteBackend, clusterName)))
         return 0;   // the files went to the instance already running
-    }
 
     // Set locale to C.UTF-8
     std::setlocale(LC_NUMERIC, "C.UTF-8");

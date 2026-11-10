@@ -45,6 +45,7 @@
 #include "vtkWindowVbt.h"
 #include "vtkWindowVbtVolume.h"
 #include "app/DatasetName.h"
+#include "app/RecentReopen.h"
 #include "VLKBInventoryTree.h"
 #include "SkavaSearchPanel.h"
 #include "../skava/SkavaClient.h"
@@ -377,6 +378,45 @@ void MainWindow::reopenDataset(const RecentDataset &datasetRef)
         return;
     }
 
+    // A file that is no longer there is said to be missing, before any route
+    // is tried: the open route answered a deleted file with "Unsupported file
+    // type…", which pointed at a format problem (#150). On the local backend
+    // the file is looked for here; a remote backend's classifier says whether
+    // the path exists there. Only for entries whose file lives on that
+    // backend: a SODA cutout or a node product is on its SKAVA node, and
+    // "not found" here would be a confident wrong answer.
+    std::optional<BackendClassifyResult> classified;
+    if (visivo::recentEntryNamesAFile(dataset.type, dataset.source, dataset.displayName)) {
+        const Settings::SessionBackend *remote = Settings::sessionBackend();
+        bool missing = false;
+        if (!remote) {
+            const QString file = visivo::recentEntryFile(dataset.id);
+            const visivo::LocalFileState state = visivo::localFileState(file);
+            if (state == visivo::LocalFileState::Unreadable) {
+                // Perhaps there, behind a folder we may not search: not
+                // "deleted", and not worth an open that cannot read it.
+                this->recordOpenRefusedHere(dataset.id);
+                QMessageBox box(QMessageBox::Warning, u"Cannot read file"_s,
+                                u"“%1” cannot be read: a folder on the way to\n%2\n"
+                                u"cannot be opened (permissions)."_s.arg(dataset.displayName, file),
+                                QMessageBox::Ok, this);
+                box.setTextFormat(Qt::PlainText);
+                box.exec();
+                return;
+            }
+            missing = state == visivo::LocalFileState::Missing;
+        } else {
+            BackendClient client(this->settings->getBackendUrl(),
+                                 this->settings->getBackendToken());
+            classified = client.classifyFile(dataset.id);
+            missing = visivo::classifierSaysNotFound(classified->valid, classified->error);
+        }
+        if (missing) {
+            this->offerToForgetMissingRecent(dataset, remote ? remote->name : QString());
+            return;
+        }
+    }
+
     if (dataset.type == u"cube"_s || dataset.type == u"image"_s) {
         // The stored type is what the file was opened as at the time, not what
         // it is: an entry written before the classifier knew a 3-component
@@ -384,9 +424,12 @@ void MainWindow::reopenDataset(const RecentDataset &datasetRef)
         // image viewer shows one plane of one component as an empty picture.
         // Ask the classifier again; only a velocity field changes route, so
         // every cube and image reopens exactly as before.
-        BackendClient client(this->settings->getBackendUrl(),
-                             this->settings->getBackendToken());
-        const BackendClassifyResult verdict = client.classifyFile(dataset.id);
+        if (!classified) {
+            BackendClient client(this->settings->getBackendUrl(),
+                                 this->settings->getBackendToken());
+            classified = client.classifyFile(dataset.id);
+        }
+        const BackendClassifyResult &verdict = *classified;
         if (verdict.valid && verdict.opener == u"velocity"_s) {
             openVelocityFieldPath(dataset.id);
         } else {
@@ -408,6 +451,30 @@ void MainWindow::reopenDataset(const RecentDataset &datasetRef)
                 QStringLiteral("Reopening '%1' (type: %2) is not yet supported.")
                         .arg(dataset.displayName, dataset.type));
     }
+}
+
+
+void MainWindow::offerToForgetMissingRecent(const RecentDataset &dataset, const QString &where)
+{
+    // A failed open like any other, refused before any route: listed in the
+    // Data Hub's "Last 5 jobs", before the box, whose reading time is not the
+    // open's.
+    this->recordOpenRefusedHere(dataset.id);
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(u"File not found"_s);
+    box.setTextFormat(Qt::PlainText);
+    box.setText(visivo::recentMissingText(dataset.displayName, dataset.id, where));
+    box.setInformativeText(u"Remove it from Recent Datasets?"_s);
+    auto *forget = box.addButton(u"Remove from Recent Datasets"_s, QMessageBox::DestructiveRole);
+    // Keep by default: removing is not undone, and Return should not do it.
+    box.setDefaultButton(box.addButton(u"Keep"_s, QMessageBox::RejectRole));
+    box.exec();
+    if (box.clickedButton() != forget || !this->recentMgr)
+        return;
+    // Only the entry clicked: the same path recorded on another backend is
+    // another file, and an old entry of unknown backend is one entry too.
+    this->recentMgr->removeEntry(dataset);
 }
 
 
@@ -643,9 +710,18 @@ void MainWindow::openBackendProductFits(const QString &backendUrl, const QString
         return;
     }
     openViewerFromOpenedDataset(path, opened, client);
-    // A field of a VBT volume was recorded there as "volume · field".
-    if (this->recentMgr && opened.fieldName.isEmpty())
-        this->recentMgr->record(path, displayName, opened.kind);
+    // A field of a VBT volume was recorded there as "volume · field". A
+    // product computed on a SKAVA node lives there, not on this window's
+    // backend: recorded as such, so a reopen does not look for it here.
+    if (this->recentMgr && opened.fieldName.isEmpty()) {
+        const auto trimmed = [](QString u) {
+            while (u.endsWith(u'/'))
+                u.chop(1);
+            return u;
+        };
+        const bool here = trimmed(backendUrl) == trimmed(this->settings->getBackendUrl());
+        this->recentMgr->record(path, displayName, opened.kind, here ? u"remote"_s : u"node"_s);
+    }
 }
 
 SourceFindDialog *MainWindow::openSourceFinder(const QString &backendUrl, const QString &backendToken,
@@ -737,6 +813,9 @@ void MainWindow::openDatasetPath(const QString &path)
     const bool remote = Settings::sessionBackend() != nullptr;
     const QFileInfo info(path);
     if (!remote && (!info.exists() || !info.isFile() || !info.isReadable())) {
+        // A failed open like any other: listed in the Data Hub's "Last 5 jobs",
+        // also when a later launch handed the path over (#150).
+        this->recordOpenRefusedHere(path);
         QMessageBox::warning(this, u"Cannot open file"_s,
                              u"“%1” is not a readable file."_s.arg(path));
         return;
@@ -1428,7 +1507,7 @@ void MainWindow::dispatchOpenForPath(const QString &path)
         return;
     }
     const BackendClassifyResult verdict = client.classifyFile(path);
-    if (!verdict.valid && verdict.error == u"File not found."_s) {
+    if (visivo::classifierSaysNotFound(verdict.valid, verdict.error)) {
         // Missing, or outside the backend's data roots (it answers alike): no
         // viewer can open it, so the choice of one is not offered.
         const Settings::SessionBackend *remote = Settings::sessionBackend();

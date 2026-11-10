@@ -35,6 +35,19 @@ You can constrain the full-resolution fetch to the **viewport ROI** of the
 3-D camera (toggle *Camera → Use Camera ROI*). This is useful for very large
 cubes when you only want detail in the region you're inspecting.
 
+The **3D cube** statistics in Inspector ▸ Properties (Min, Max, Mean, Median,
+Std, RMS, Sum) are those of the **whole cube at full resolution**: the backend
+scans the file in the background, without loading it into the viewer, and fills
+the rows when it is done. They do not change when the full resolution, or a
+camera ROI of it, is loaded. Until the scan lands, the rows show what the
+grid on screen measured, when that grid is the whole cube: a cube shown as a
+preview (above the full-resolution threshold) has no Mean and RMS of its own,
+so those two rows read *-*, and a camera-ROI load is only part of the cube, so
+all four do. The tooltip of a *-* row says why (the statistics being computed,
+or the backend unable to compute them). When the backend cannot compute them,
+*Load full resolution* without a camera ROI fills the rows from the loaded
+cube.
+
 ## Slice navigation
 
 Use the **channel bar** at the bottom of the 2-D Slice, or the identical one at

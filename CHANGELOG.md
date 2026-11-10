@@ -8,6 +8,44 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Three small desktop defects (#150).**
+  - *Preview statistics.* On a cube opened as a preview (above the
+    full-resolution threshold) the Inspector's *3D cube* rows showed Mean and
+    RMS as `0`: the preview path passed placeholders for the two numbers the
+    strided preview does not measure, and wrote them over the backend's
+    full-resolution statistics whenever the preview landed after them (Std,
+    Median and Sum, which only the backend fills, were right). The rows now
+    show the backend's whole-cube scan once it has answered, and a preview
+    refresh or a sub-cube load no longer overwrites it; until it answers,
+    Mean and RMS of a preview read `-`, with a tooltip saying they are being
+    computed (or that the backend could not compute them), and a camera-ROI
+    load no longer puts its own numbers in rows that stand for the whole cube.
+  - *Deleted Recent Datasets file.* Reopening an entry whose file had been
+    deleted sent the path to the open route, whose supported-type check
+    answered "Unsupported file type…". The file is now looked for first (on
+    this machine with the local backend, through the backend's classifier
+    with a remote one); when it is gone the message says it is not found,
+    offers to remove that one entry (*Keep* is the default), and the attempt
+    is listed in *Last 5 jobs* as a failed open. A file behind a folder that
+    cannot be opened is reported as unreadable, not deleted. SODA cutouts and
+    node products are now recorded as living on their SKAVA node (sources
+    `soda`, `node`) and are not looked for on the window's backend.
+  - *Second launch with a path.* A second launch started its own instance
+    when its only paths did not exist (they were not counted as files to hand
+    over), and whenever it ran with another `$TMPDIR` than the running
+    instance (the lock and the socket were looked for in the temporary
+    folder, which a terminal, a script or a tool may set differently): the
+    lock and the socket now live in the per-user folder macOS assigns
+    (on Linux `/run/user/<uid>`, else a private `/tmp/visivo-va-<uid>`,
+    whether or not `$XDG_RUNTIME_DIR` is set), and missing paths are handed
+    over too,
+    reported and listed in *Last 5 jobs* by the running instance. A window on
+    a remote backend or a cluster used to take no part in the hand-over; there
+    is now one seat per backend, so a second launch with the same `--backend`
+    URL or `--connect-cluster` profile hands its paths to that window, while a
+    launch on another backend (or on the local one) still starts its own
+    instance rather than being merged into one on a different backend.
+
 - **Tab- and semicolon-separated catalogues (#155).** The classifier took a
   text table separated by commas, tabs or semicolons as a catalogue, but the
   3-D catalogue viewer, the catalogue overlays and the SAMP table export then

@@ -352,7 +352,9 @@ void MainWindow::doSkavaSodaSubset(const QString &obsId, const SkavaDatalinkResp
                 client.setSessionId(o.opened.sessionId);
                 openViewerFromOpenedDataset(o.path, o.opened, client);
                 if (this->recentMgr)
-                    this->recentMgr->record(o.path, u"%1 [SODA cutout]"_s.arg(obsId), o.opened.kind);
+                    // On the node that cut it, not on this window's backend.
+                    this->recentMgr->record(o.path, u"%1 [SODA cutout]"_s.arg(obsId),
+                                            o.opened.kind, u"soda"_s);
             });
 }
 

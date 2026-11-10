@@ -1,6 +1,8 @@
 #include "app/BackendClient.h"
 #include "TestBackendRouting.h"
 
+#include <QCryptographicHash>
+
 #include "Settings.h"
 #include "app/ClusterConnection.h"
 #include "app/ClusterProfile.h"
@@ -721,6 +723,38 @@ void TestBackendRouting::findRegisteredBackendMatchesLikeRouting()
     QVERIFY(!routeSkavaDataset(registry, dl, /*autoToken=*/false).valid());
 }
 
+void TestBackendRouting::launchOptions_oneInstanceSeatPerBackend()
+{
+    // A second launch hands its files to the running instance on the SAME
+    // backend only (#150): a path means something to its own backend.
+    const QString home = u"/Users/me"_s;
+    QCOMPARE(LaunchOptions::instanceSeat(std::nullopt, QString()), QString());
+    const Settings::SessionBackend a{ u"http://Node-A:18960"_s, u"t"_s, u"a"_s };
+    const Settings::SessionBackend aAgain{ u"http://node-a:18960"_s, u"other"_s, u"renamed"_s };
+    const Settings::SessionBackend b{ u"http://node-b:18960"_s, u"t"_s, u"b"_s };
+    // Same address, whatever the token, the name or the host's case.
+    QCOMPARE(LaunchOptions::instanceSeat(a, QString()),
+             LaunchOptions::instanceSeat(aAgain, QString()));
+    QVERIFY(LaunchOptions::instanceSeat(a, QString()) != LaunchOptions::instanceSeat(b, QString()));
+    // A cluster window is its own seat, by profile name.
+    QCOMPARE(LaunchOptions::instanceSeat(std::nullopt, u"pleiadi"_s), u"cluster:pleiadi"_s);
+
+    const QString local = LaunchOptions::instanceKey(home, QString());
+    const QString remote =
+            LaunchOptions::instanceKey(home, LaunchOptions::instanceSeat(a, QString()));
+    const QString cluster = LaunchOptions::instanceKey(home, u"cluster:pleiadi"_s);
+    QVERIFY(local != remote && local != cluster && remote != cluster);
+    // The local seat keeps the key earlier releases used, so a running older
+    // instance is still found: "visivo-va-" + 16 hex digits of SHA-256(home).
+    QCOMPARE(local, u"visivo-va-"_s
+                     + QString::fromLatin1(QCryptographicHash::hash(home.toUtf8(),
+                                                                    QCryptographicHash::Sha256)
+                                                   .toHex()
+                                                   .left(16)));
+    QCOMPARE(remote.size(), local.size());
+    QVERIFY(LaunchOptions::instanceKey(u"/Users/other"_s, QString()) != local);
+}
+
 void TestBackendRouting::launchOptions_datasetPathsFollowTheBackend()
 {
     // A file here, a path that is not, options and their values (issue #108).
@@ -748,6 +782,11 @@ void TestBackendRouting::launchOptions_datasetPathsFollowTheBackend()
     QCOMPARE(LaunchOptions::datasetPaths(args, false, &missing),
              QStringList({ QFileInfo(here).absoluteFilePath() }));
     QCOMPARE(missing, QStringList({ remotePath }));
+    // A missing relative path is reported absolute: it may be handed to a
+    // running instance, whose working directory is another (#150).
+    missing.clear();
+    LaunchOptions::datasetPaths({ u"visivo"_s, u"gone/cube.fits"_s }, false, &missing);
+    QCOMPARE(missing, QStringList({ QDir::current().absoluteFilePath(u"gone/cube.fits"_s) }));
 
     // Option values are never files, even when one exists by that name.
     QCOMPARE(LaunchOptions::datasetPaths({ u"visivo"_s, u"--backend-token-file"_s, here }, false),
