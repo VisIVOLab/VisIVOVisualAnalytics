@@ -88,6 +88,7 @@ void RemoteRenderWidget::connectToSession(const QString &baseUrl,
                                           const QString &token)
 {
     disconnectFromSession();
+    m_close.connecting();   // either transport: nothing of an earlier stream
 
 #ifdef VISIVO_HAS_WEBRTC
     // ── H.264-over-WebRTC branch ─────────────────────────────────
@@ -118,6 +119,10 @@ void RemoteRenderWidget::connectToSession(const QString &baseUrl,
         connect(m_webrtc, &RemoteRenderWebRTCClient::connectionStateChanged,
                 this, [this](const QString &state) {
             m_status = state;
+            // How this stream ended, read by the viewer on the state below.
+            m_close.webrtcState(state, m_live);
+            if (visivo::StreamCloseRecorder::isTerminal(state))
+                m_live = false;
             // Flip ``m_live`` here, BEFORE emitting connectionStateChanged.
             // vtkWindowCube hooks the same signal and runs the bootstrap
             // (LUT / threshold / blend / cutting-plane) when it sees
@@ -260,6 +265,7 @@ void RemoteRenderWidget::disconnectFromSession()
     m_push = false;
     m_frameInFlight = false;
     m_frameRequestPending = false;
+    m_close.connecting();   // a teardown asked for, not a stream that dropped
     m_status = QStringLiteral("Disconnected");
     emit connectionStateChanged(m_status);
 }
@@ -356,6 +362,9 @@ void RemoteRenderWidget::onWebSocketConnected()
 void RemoteRenderWidget::onWebSocketDisconnected()
 {
     m_keepaliveTimer->stop();
+    // Read before the state below is reset: the viewer decides from them
+    // whether to ask for a new session (RemoteSessionRecovery.h).
+    m_close.closed(m_live, m_ws ? m_ws->closeReason() : QString());
     m_live = false;
     m_push = false;
     m_frameInFlight = false;
@@ -410,6 +419,7 @@ void RemoteRenderWidget::onBinaryMessageReceived(const QByteArray &bytes)
 
     if (!m_live) {
         m_live = true;
+        m_close.markLive();
         m_status = QStringLiteral("Live");
         emit connectionStateChanged(m_status);
     }

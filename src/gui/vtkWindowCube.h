@@ -1,6 +1,7 @@
 #ifndef vtkWindowCube_H
 #define vtkWindowCube_H
 
+#include "RemoteSessionRecovery.h"
 #include "BackendClient.h"
 #include "CatalogueOverlayUtils.h"
 #include "CubeOpenPreviewTask.h"
@@ -2713,6 +2714,7 @@ protected:
     RemoteRenderWidget   *m_remoteRenderWidget{ nullptr };
     QLabel               *m_remoteRenderBannerLabel{ nullptr };
     QToolButton          *m_remoteRenderBannerClose{ nullptr };
+    QToolButton          *m_remoteRenderBannerRetry{ nullptr };   // after a drop
     // Soft "Remote rendering recommended" banner shown on the Local
     // page when the cube exceeds LocalFullThresholdMb. Visibility is
     // toggled by ``updateLocalRecommendRemoteBanner``; the banner
@@ -2761,6 +2763,13 @@ protected:
     /// Reconnecting to the session kept across a switch to Local: a failure
     /// before Live may mean the backend closed it meanwhile.
     bool                  m_remoteReconnectingKept{ false };
+    // Whether a live stream that dropped gets a new session or Retry
+    // (RemoteSessionRecovery.h).
+    visivo::RemoteRecovery m_remoteRecovery;
+    // The session asked for now replaces one that dropped (automatically or
+    // by Retry): its failure is a failed replacement, answered with Retry on
+    // the remote page, not a fall back to Local.
+    visivo::RemoteReplacement m_remoteReplacement;
     /// Issue #82: a remote session starts from the backend's threshold and
     /// data range. The field shows them until the user changes the threshold;
     /// only a threshold the user chose is sent to a remote session.
@@ -2811,6 +2820,21 @@ protected:
     /// A kept session would not reconnect: ask the backend whether it still
     /// exists. Gone (closed for a waiting request, or idle): make a new one.
     void checkKeptRenderSession(const QString &sid);
+    /// The live session ended (or the user asked to retry): give it back and
+    /// ask for a new one, the remote page staying meanwhile.
+    void replaceRemoteRenderSession();
+    /// The stream dropped and is not coming back by itself: say why, offer Retry.
+    void offerRemoteRetry(const QString &why);
+    /// A live stream dropped: act on m_remoteRecovery's answer. Without a close
+    /// reason (WebRTC, a backend gone without a close frame) asks the backend
+    /// first whether the session is still there.
+    void handleRemoteDrop(visivo::RemoteDrop drop, bool askBackend);
+    /// The replacement's create failed: stay in Remote, on the remote page,
+    /// with Retry and @p why.
+    void failRemoteReplacement(const QString &why);
+    /// The Auto / Local / Remote choice shown (menu and segmented toggle) set
+    /// to @p mode without applying it.
+    void showRenderModeChoice(RenderMode mode);
     /// Connect the RemoteRenderWidget against the given session,
     /// picking the best transport advertised by the backend. The
     /// diagnostics probe is cached: subsequent calls reuse the

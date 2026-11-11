@@ -251,3 +251,8 @@ add_test(NAME VisIVOQuitExitRenderAboutToQuit COMMAND VisIVOQuitExitTest --rende
 set_tests_properties(VisIVOQuitExitRenderAboutToQuit PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
 add_test(NAME VisIVOQuitExitRenderWhileQuitting COMMAND VisIVOQuitExitTest --render-quitting)
 set_tests_properties(VisIVOQuitExitRenderWhileQuitting PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+add_test(NAME VisIVOQuitExitRenderSessions COMMAND VisIVOQuitExitTest --render-sessions)
+set_tests_properties(VisIVOQuitExitRenderSessions PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+add_test(NAME VisIVOQuitExitRenderSessionsAboutToQuit
+         COMMAND VisIVOQuitExitTest --render-sessions-about-to-quit)
+set_tests_properties(VisIVOQuitExitRenderSessionsAboutToQuit PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)

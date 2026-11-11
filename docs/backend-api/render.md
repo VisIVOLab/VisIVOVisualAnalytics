@@ -277,7 +277,9 @@ wss://node.example.org/v1/render/9f1c.../ws?token=<token>
 
 Commands do not render by themselves. In the default (pull) mode a frame is rendered and sent only in answer to `request_frame`, so a client typically sends its camera commands and then one `request_frame` per display tick. In push mode (after `stream`) the server sends frames on its own, see [Push mode](#push-mode).
 
-The server closes the connection with code 1011 on an unexpected server error (`"server error"`) or when the push stream fails to render or send (`"render failed"`).
+The server closes the connection with code 1011 on an unexpected server error (`"server error"`), when the push stream fails to render or send (`"render failed"`), or when the session itself has ended under the connection, its render process having exited or been killed (`"session ended"`). After `"session ended"` a reconnect is refused (`"unknown session_id"`): the client creates a new session. The push stream notices an ended session within a poll (0.25 s) even when the client sends nothing. The desktop's cube and point-table views create the new session by themselves, once: a replacement that ends again before it has streamed for 10 s is not replaced again, and the cube view offers Retry (a point table goes back to its loaded rows). After any other close the view offers Retry. A WebRTC stream has no close reason: the desktop then asks `GET /v1/render/{session_id}/levels`, which answers 404 for a session that has ended. The new session starts from the default camera.
+
+A local backend started by hand must listen where the client's WebSocket goes: Qt resolves `localhost` to `::1` first for WebSockets (HTTP falls back to IPv4), so a backend bound to `127.0.0.1` alone answers the REST calls while every render WebSocket fails. Start it with `--host localhost`, as the desktop's own launcher does.
 
 #### Client commands
 
