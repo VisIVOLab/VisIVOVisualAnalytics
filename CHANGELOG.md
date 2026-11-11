@@ -8,6 +8,31 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Selections in the VR headset, analysis on the backend (#171, step 5 of
+  #166).** On the `/vr/` page the right trigger (or a mouse click in a desktop
+  browser) picks on the reduced cube the headset draws, with the renderer's
+  own values, threshold and clipping, and maps the pick to a pixel and channel
+  of the full cube through its block (the seed is the brightest full voxel of
+  that block). Three tools, cycled with the left trigger: a spectrum along the
+  line of sight (`/v1/spectral/probe`), the Kinematic Lasso with the desktop's
+  route and parameters (`/v1/cube/kinematic_select_bin`), its mask drawn in
+  green on the reduced cube (a drawn voxel is marked when any of its voxels is
+  selected), and a box region from two corners (one `mask_stats_bin` call in
+  box mode). A results panel in the headset and on the
+  page gives the ICRS position, the channel's velocity, the spectrum, and the
+  selection's voxels, flux in Jy km/s and velocity range. Each action is
+  recorded as a `visivo-recipe/1` record with the desktop's requests and
+  labels, downloadable or copied from the page.
+  - New route `POST /v1/cube/mask_stats_bin`: statistics of an explicit
+    selection mask (the `mask_apply_bin` wire) or, with `box=true`, of every
+    voxel of a box, reading only the box one channel at a time.
+  - `POST /v1/cube/reduced_info` adds `full_velocity_kms` and
+    `full_channel_width_kms` for every channel of the cube.
+  - `validation/vr_selection_identity.py`: on HCG 44, the selection made from
+    the page's pick on NGC 3187 equals the desktop's (Dice 1.0 against the
+    level field it shows and against its recipe's grow), the spectrum is the
+    desktop's, and the selection scores Dice 0.610 against Serra et al. (2013)
+    and 0.844 against SoFiA-2, the paper's values for that source.
 - **Cubes in a VR headset from a Mac (#167, first step of #166).** The backend
   serves a WebXR page at `/vr/` that a Meta Quest 3 opens in its browser
   (over `adb reverse`, so the page is `localhost` and needs no certificate;

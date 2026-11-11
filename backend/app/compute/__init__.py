@@ -106,6 +106,9 @@ from .reduced import (  # noqa: F401
     worker_cube_reduced_info,
     worker_cube_reduced,
 )
+from .mask_stats import (  # noqa: F401
+    worker_cube_mask_stats,
+)
 from .sofia import (  # noqa: F401
     _sofia_value,
     _parse_votable_rows,
@@ -185,6 +188,7 @@ __all__ = [
     "worker_sofia",
     "worker_cube_reduced_info",
     "worker_cube_reduced",
+    "worker_cube_mask_stats",
     "_qt_zlib_compress",
     "_b64f32",
     "_b64i32",
