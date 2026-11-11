@@ -19,11 +19,23 @@ import os
 import signal
 import sys
 import threading
+import time
 
 logger = logging.getLogger("visivo.backend")
 
 #: Seconds between two looks at the client.
 _INTERVAL_S = 2.0
+#: Seconds the graceful shutdown is given before the process exits anyway.
+#: uvicorn first waits for open connections, without limit; then the lifespan
+#: hook needs at most about 7 s (render sessions 3 s, then the pool 4 s).
+_HARD_EXIT_S = 10.0
+#: How much longer a lifespan shutdown already under way is waited for at that
+#: point, so that the exit never cuts a render child's GPU teardown short.
+_LIFESPAN_MAX_S = 8.0
+
+#: Set by the lifespan hook (app/main.py) when its shutdown starts and ends.
+SHUTDOWN_STARTED = threading.Event()
+SHUTDOWN_DONE = threading.Event()
 
 
 def process_alive(pid: int) -> bool:
@@ -61,6 +73,18 @@ def start(stop=None) -> threading.Thread | None:
 
     def terminate() -> None:
         os.kill(os.getpid(), signal.SIGTERM)
+        # uvicorn's graceful shutdown waits for open connections (a render
+        # stream, a long request) with no limit of its own: a backend whose
+        # client is gone must not wait on them for ever (#176). Its children
+        # end with it (app/exit_with_parent.py).
+        time.sleep(_HARD_EXIT_S)
+        if SHUTDOWN_STARTED.is_set() and not SHUTDOWN_DONE.is_set():
+            # Connections held it past the limit, and the lifespan hook is now
+            # closing render sessions and the pool: let it finish (it is bounded).
+            SHUTDOWN_DONE.wait(_LIFESPAN_MAX_S)
+        logger.warning("[shutdown] still running %.0f s after the client went: exiting",
+                       _HARD_EXIT_S)
+        os._exit(1)
 
     action = stop or terminate
     halt = threading.Event()

@@ -294,6 +294,11 @@ def _build_child(dataset_path: str, out: str, hdu: int, progress_file: str,
     # SIGTERM (the server shutting down, the job ending) unwinds through
     # build_pyramid's cleanup, which removes its partial file.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    # A backend killed outright runs no exit hook: the build ends with it all
+    # the same, the polite way first so that the partial file goes too (#176).
+    # No Linux parent-death signal, which would skip that cleanup.
+    from .exit_with_parent import install as exit_with_parent  # noqa: PLC0415
+    exit_with_parent(grace_s=5.0)
     out_path = Path(out)
     lock = _try_lock(_lock_path(out_path))
     if lock is None:

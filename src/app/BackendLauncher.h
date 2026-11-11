@@ -11,6 +11,13 @@
 #include <QProcess>
 #include <QTimer>
 
+#include <memory>
+
+namespace visivo {
+class BackendProcessTree;
+class RetiredProcessTrees;
+}
+
 /**
  * Manages the lifecycle of the bundled backend process.
  *
@@ -108,9 +115,14 @@ private:
     void startPolling();
     void onPollTick();
     void onPollHealthDone();
-    void onProcessError(QProcess::ProcessError error);
-    void onProcessFinished(int exitCode, QProcess::ExitStatus status);
+    void onProcessError(QProcess *process, QProcess::ProcessError error);
+    void onProcessFinished(QProcess *process, int exitCode, QProcess::ExitStatus status);
+    /// Take the current backend process and its tree out of service (a new
+    /// launch replaces it, or it has exited): its tree is retired, and the
+    /// QProcess is deleted once it has finished.
+    void retireCurrentProcess();
     void appendLog(const QString &text);
+    void onRetiredTick();
 
     QString m_backendUrl;
     QString m_backendToken;
@@ -123,6 +135,16 @@ private:
     bool m_processFinishedUnexpectedly{ false };
 
     QProcess *m_process{ nullptr };
+    /// The backend and everything it starts (#176): stopped as one. Held by
+    /// pointer so that <windows.h>, which the Windows job needs, stays out of
+    /// every file that includes this one.
+    std::unique_ptr<visivo::BackendProcessTree> m_tree;
+    /// Trees of servers that exited by themselves or were replaced by a new
+    /// launch, while their workers have their grace; looked at every
+    /// kLeftoverPollMs until empty or killed.
+    std::unique_ptr<visivo::RetiredProcessTrees> m_retired;
+    QTimer m_leftoverTimer;
+    bool m_stopping{ false };   ///< inside stopBackendProcess()
     QTimer m_pollTimer;
     QElapsedTimer m_elapsed;
     QFutureWatcher<BackendHealthResult> m_initialHealthWatcher;
@@ -138,7 +160,10 @@ private:
     QString m_capturedLogs;
 
     static constexpr int kMaxWaitMs      = 30'000;
+    /// How long the backend tree has to end by itself before it is killed.
+    static constexpr int kTreeGraceMs    =  3'000;
     static constexpr int kPollIntervalMs =    600;
+    static constexpr int kLeftoverPollMs =     50;
 };
 
 #endif // BackendLauncher_h

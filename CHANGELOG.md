@@ -8,6 +8,37 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **The desktop leaves no local backend process behind (#176, desktop part).**
+  The local backend the client starts runs in a process tree of its own (a
+  process group on macOS and Linux, a job object that kills its processes when
+  the client exits on Windows). At quit, after the render sessions are closed,
+  the client stops the whole tree: `SIGTERM` to the group, up to 3 s for it to
+  empty — the workers, not only the server — then `SIGKILL` for the rest.
+  Workers the backend left running when it exited by itself are ended too.
+  Before, the client waited only for the server process, so pool workers and
+  the resource tracker could outlive it with parent PID 1.
+- **The backend's child processes end with it, even when it is killed
+  (#176, backend half).** Compute-pool workers and the resource tracker were
+  found running nine days after their backend was gone. Every child the
+  backend starts (compute pool, render-session processes, cube readers,
+  pyramid builds and their workers) now runs a small watcher thread that
+  exits the process once its parent is gone: the parent's multiprocessing
+  sentinel (a pipe on POSIX, a process handle on Windows) plus a once-a-second
+  parent-PID check (a change from the PID seen at start, so it also holds
+  under the `forkserver` start method), and on Linux the parent-death signal
+  for children started from the main thread. A pyramid build is asked to stop
+  first and gets 5 s, so its partial file goes too. A child inside a native
+  call that holds the interpreter lock ends when the call returns. Once the
+  children are gone the resource tracker ends and removes leftover shared
+  memory. Measured by hand on a Mac with `kill -9` of a uvicorn backend with
+  three busy pool workers and a render session: all five children, the
+  resource tracker included, gone within 2.2 s. On shutdown the render
+  sessions now close in parallel, each within 2.5 s (1.5 s to close its
+  session, then it is ended and if need be killed). A backend whose desktop
+  client (`VISIVO_EXIT_WITH_PID`) is gone exits outright if uvicorn is still
+  waiting on connections 10 s later, but lets a shutdown already under way
+  finish first (up to 8 s more).
+
 - **VR headset, final version: the desktop's cube in the same session, a
   panel in the headset, settings kept (#172, step 6 of #166).** The `/vr/`
   page reads the desktop's pairing link (`#token=…&session=…&dataset=…&path=…`,
