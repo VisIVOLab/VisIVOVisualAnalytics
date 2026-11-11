@@ -24,10 +24,16 @@
 // drain from aboutToQuit, where an event loop on this thread returns at once,
 // so the DELETE must go from a thread of the drain's. With --render-quitting,
 // a render asked for once the quit has begun is refused and sends nothing.
+//
+// With --render-sessions (and --render-sessions-about-to-quit), two
+// server-side render sessions are open (OpenRenderSessions, #168) and a third
+// was given back before the quit: the drain must close the two, one DELETE
+// /v1/render/{id} each, and nothing else.
 
 #include "app/BackendClient.h"
 #include "app/BackendTaskFollow.h"
 #include "app/DiagnosticsManager.h"
+#include "app/OpenRenderSessions.h"
 #include "app/RenderTaskHandle.h"
 #include "app/TaskQuitDrain.h"
 
@@ -58,6 +64,7 @@ public:
     std::atomic<int> deletes{ 0 };
     std::atomic<int> statusReads{ 0 };
     std::atomic<int> renderDeletes{ 0 };
+    std::atomic<int> sessionDeletes{ 0 };   ///< DELETE /v1/render/{id}
     std::atomic<int> requests{ 0 };
     std::atomic<int> createDelayMs{ 600 };
     std::atomic<quint16> port{ 0 };
@@ -88,6 +95,9 @@ protected:
                 ++requests;
                 if (path.contains("/v1/sessions/new")) {
                     body = R"({"valid":true,"session_id":"s1"})";
+                } else if (method == "DELETE" && path.contains("/v1/render/")) {
+                    ++sessionDeletes;
+                    body = R"({"closed":true})";
                 } else if (method == "DELETE" && path.contains("/v1/particle_render/")) {
                     ++renderDeletes;
                     body = R"({"deleted":true})";
@@ -235,6 +245,39 @@ int render(QCoreApplication &app, SlowCreateBackend &backend, RenderQuit how)
     return ok ? 0 : 1;
 }
 
+/// --render-sessions*: the open render sessions are closed by the drain.
+int renderSessions(QCoreApplication &app, SlowCreateBackend &backend, bool exitFirst)
+{
+    const QString url = u"http://127.0.0.1:%1"_s.arg(backend.port.load());
+    auto &open = visivo::OpenRenderSessions::instance();
+    open.opened(url, u"tok"_s, u"s1"_s, u"cube1"_s);
+    open.opened(url, u"tok"_s, u"s1"_s, u"points1"_s);
+    open.opened(url, u"tok"_s, u"s1"_s, u"given-back"_s);
+    open.closed(url, u"given-back"_s);   // its DELETE answered before the quit
+    bool drainedOnAboutToQuit = false;
+    if (exitFirst)
+        QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, [&]() {
+            drainedOnAboutToQuit = true;
+            visivo::TaskQuitDrain::instance().drain(visivo::kQuitDrainTimeoutMs);
+        });
+    QElapsedTimer took;
+    QTimer::singleShot(0, &app, [&]() {
+        took.start();
+        if (!exitFirst)
+            visivo::TaskQuitDrain::instance().drain(visivo::kQuitDrainTimeoutMs);
+        QCoreApplication::exit(0);
+    });
+    app.exec();
+    const qint64 ms = took.elapsed();
+    std::printf("render sessions: session deletes=%d requests=%d in %lld ms\n",
+                backend.sessionDeletes.load(), backend.requests.load(),
+                static_cast<long long>(ms));
+    const bool ok = backend.sessionDeletes == 2 && backend.requests == 2
+            && (!exitFirst || drainedOnAboutToQuit);
+    std::puts(ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 }   // namespace
 
 int main(int argc, char **argv)
@@ -253,6 +296,10 @@ int main(int argc, char **argv)
     }
     if (app.arguments().contains(u"--gui-follower"_s))
         return guiFollower(app, backend);
+    if (app.arguments().contains(u"--render-sessions"_s))
+        return renderSessions(app, backend, false);
+    if (app.arguments().contains(u"--render-sessions-about-to-quit"_s))
+        return renderSessions(app, backend, true);
     if (app.arguments().contains(u"--render"_s))
         return render(app, backend, RenderQuit::DrainThenExit);
     if (app.arguments().contains(u"--render-about-to-quit"_s))
