@@ -45,8 +45,14 @@ if sys.platform != "win32":
     for sig in (signal.SIGABRT, signal.SIGSEGV, signal.SIGBUS):
         libc.signal(sig, ctypes.cast(libc._exit, ctypes.c_void_p))
 import vtk
-w = vtk.vtkRenderWindow()
-w.SetOffScreenRendering(1)
+# The backend's own offscreen window: on a Mac it hides this process from the
+# Dock before AppKit starts; a bare vtkRenderWindow would leave a Python tile
+# behind in the Dock after every run of the suite.
+from app.render_session._window import new_offscreen_window, offscreen_kind
+kind = offscreen_kind()
+if kind is None:
+    sys.exit(1)
+w = new_offscreen_window(kind)
 w.SetSize(8, 8)
 w.AddRenderer(vtk.vtkRenderer())
 w.Render()
@@ -59,8 +65,10 @@ def can_render():
     crashes the process creating one, so ask a child process first."""
     import subprocess
     import sys
+    from pathlib import Path
+    backend = Path(__file__).resolve().parent.parent   # so the probe imports app
     probe = subprocess.run([sys.executable, "-c", _RENDER_PROBE], capture_output=True,
-                           timeout=60)
+                           timeout=60, cwd=backend)
     if probe.returncode != 0:
         pytest.skip("no offscreen OpenGL here (no GPU or display)")
 
