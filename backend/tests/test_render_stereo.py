@@ -12,6 +12,7 @@ import asyncio
 import io
 import json
 import math
+import os
 
 import numpy as np
 import pytest
@@ -456,9 +457,21 @@ def test_a_run_of_poses_is_merged_into_its_newest():
 
 
 def _can_render() -> bool:
+    """A real render child can start here.
+
+    On a Mac this needs a logged-in user (window server session). Elsewhere
+    the VTK wheel ships the EGL window class even on hosts with no usable EGL
+    device (CI runners), where the child dies at init; so EGL hosts run this
+    only when VISIVO_TEST_EGL_RENDER=1 says the GPU is real.
+    """
     try:
-        from app.render_session._window import offscreen_kind
-        return offscreen_kind() is not None
+        from app.render_session import _window
+        kind = _window.offscreen_kind()
+        if kind == "cocoa":          # already means a logged-in user
+            return True
+        if kind == "egl":
+            return os.environ.get("VISIVO_TEST_EGL_RENDER") == "1"
+        return False
     except Exception:   # noqa: BLE001 - no VTK at all
         return False
 
@@ -486,8 +499,8 @@ def expected_distance(size: int, eye_x: float, dist: float = DIST) -> np.ndarray
     return t * -d[..., 2]
 
 
-@pytest.mark.skipif(not _can_render(), reason="needs an offscreen render window "
-                    "(EGL, or macOS with a logged-in user)")
+@pytest.mark.skipif(not _can_render(), reason="needs macOS with a logged-in user, or "
+                    "VISIVO_TEST_EGL_RENDER=1 on a host with a real EGL GPU")
 async def test_a_cube_session_renders_both_eyes_with_their_depth(tmp_path):
     from PIL import Image
     from app.render_session._process import RenderSessionProcess
