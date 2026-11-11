@@ -356,6 +356,25 @@ async def test_vr_page_is_served_without_a_token(client: AsyncClient) -> None:
     assert (await client.get("/vr/js/missing.js")).status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_vr_page_modules_are_all_served(client: AsyncClient) -> None:
+    """Every module a page module imports is served (a missing one would stop
+    the page loading in the headset with no message), at a relative address:
+    the page works on whatever port or tunnel the backend is reached by."""
+    import re
+    root = Path(__file__).resolve().parents[1] / "app" / "static" / "vr" / "js"
+    seen = set()
+    for path in sorted(root.glob("*.js")):
+        text = path.read_text(encoding="utf-8")
+        assert "localhost:8000" not in text and "127.0.0.1:8000" not in text, path.name
+        for name in re.findall(r"""from\s+['"]\./([\w.-]+\.js)['"]""", text):
+            seen.add(name)
+    assert {"pairing.js", "settings.js", "vr-panel.js"} <= seen
+    for name in sorted(seen):
+        r = await client.get(f"/vr/js/{name}")
+        assert r.status_code == 200, name
+
+
 def test_vr_javascript_unit_tests():
     node = shutil.which("node")
     if node is None:

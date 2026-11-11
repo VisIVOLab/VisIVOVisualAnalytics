@@ -120,3 +120,43 @@ test('an out-of-core refusal on the socket closes the session', async () => {
   assert.equal(sockets[0].readyState, 3);
   assert.equal(sockets.length, 1);
 });
+
+test('suspended (passthrough) closes the render session; resuming makes a new one', async () => {
+  sockets.length = 0; deleted.length = 0;
+  const b = slowBackend();
+  const r = new Refiner(null, () => b, { draw: stubDraw });
+  r.setEnabled(true);
+  await r.setDataset('A');
+  await tick();
+  b.pending[0].resolve({ valid: true, session_id: 'sP' });
+  await tick(); await tick();
+  sockets[0].open();
+  r.setSuspended('in passthrough');
+  r.setSuspended('in passthrough');                // every frame: one close only
+  await tick();
+  assert.deepEqual(deleted, ['/v1/render/sP']);
+  assert.equal(sockets[0].readyState, 3);
+  await new Promise((res) => setTimeout(res, 20));
+  assert.equal(b.pending.length, 1);               // nothing asked while suspended
+  assert.equal(sockets.length, 1);                 // and no reconnect
+  assert.match(r.hudLines()[0], /passthrough/);
+  r.setSuspended('');
+  await tick();
+  assert.equal(b.pending.length, 2);
+  assert.equal(b.pending[1].body.dataset_id, 'A');
+});
+
+test('a stale failed attempt does not write the error of the session on show', async () => {
+  const b = slowBackend();
+  const r = new Refiner(null, () => b, { draw: stubDraw });
+  r.setEnabled(true);
+  await r.setDataset('A');
+  await tick();
+  const first = b.pending[0];
+  await r.setDataset('B');                         // A's attempt is now stale
+  await tick();
+  first.resolve(Promise.reject(new Error('500: boom')));   // A fails late
+  await tick(); await tick();
+  assert.equal(r.error, '');
+  assert.equal(r.unavailable, '');
+});

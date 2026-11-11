@@ -209,6 +209,8 @@ add_executable(VisIVOTests
     ${VISIVO_ROOT}/src/gui/BackendLocality.cpp
     TestBusyFeedback.h
     test_busy_feedback.cpp
+    TestVrLink.h
+    test_vr_link.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

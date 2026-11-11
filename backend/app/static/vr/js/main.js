@@ -4,12 +4,15 @@
 
 import * as M from './mat4.js';
 import { Renderer } from './renderer.js';
-import { Backend, takeToken, saveToken, tokenError } from './api.js';
+import { Backend, takeToken, saveToken, tokenError, takePairing, forgetPairing } from './api.js';
 import * as V from './volume.js';
 import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
 import { createSelection, TOOLS, TOOL_NAMES } from './select-ui.js';
 import { Refiner, desktopEyes } from './refine-client.js';
 import { transferFunction, cropBox, cropError } from './refine.js';
+import { pairingFallback } from './pairing.js';
+import { loadSettings, saveSettings, clampPanelOffset } from './settings.js';
+import * as P from './vr-panel.js';
 
 const $ = (id) => document.getElementById(id);
 const query = new URLSearchParams(window.location.search);
@@ -88,6 +91,11 @@ function refineFrame(t, eyes, centreView, background) {
     zStretch: state.zStretch, look: look.look, lookKey: look.key, background });
 }
 
+// ── Settings kept in this browser (issue #172) ──────────────────────────────
+const settingsStore = (() => { try { return window.localStorage; } catch { return null; } })();
+const settings = loadSettings(settingsStore, { colormaps: COLORMAP_NAMES, tools: TOOLS });
+function persist() { saveSettings(settingsStore, settings); }
+
 // ── Panel wiring ────────────────────────────────────────────────────────────
 for (const name of COLORMAP_NAMES) {
   const o = document.createElement('option');
@@ -95,6 +103,20 @@ for (const name of COLORMAP_NAMES) {
   $('cmap').appendChild(o);
 }
 
+/** The colour map, from the page, the A button or the in-VR panel. */
+function setColormap(name) {
+  state.colormap = name;
+  R.setColormap(name);
+  $('cmap').value = name;
+  if (settings.colormap !== name) { settings.colormap = name; persist(); }
+}
+setColormap(settings.colormap);
+$('thr-source').value = settings.thrSource;
+
+// The pairing from the desktop's "Open in VR Headset…" (read before the token:
+// both come from the same fragment, which is then removed from the address).
+const pairing = takePairing();
+if (pairing.path) $('path').value = pairing.path;
 const tokenField = $('token');
 tokenField.value = takeToken();
 if (tokenError()) setTimeout(() => setStatus(tokenError()), 0);
@@ -142,16 +164,23 @@ $('browse').addEventListener('click', async () => {
   } catch (err) { setStatus(String(err.message || err)); }
 });
 
-$('load').addEventListener('click', () => loadFromBackend().catch((err) => setStatus(`Failed: ${err.message || err}`)));
+$('load').addEventListener('click', () => {
+  forgetPairing();      // a reload of this tab now opens nothing by itself
+  loadFromBackend().catch((err) => setStatus(`Failed: ${err.message || err}`));
+});
 $('synthetic').addEventListener('click', () => loadSynthetic(Number($('synthetic-size').value)));
 
 function readNumber(id) { return Number($(id).value); }
 
 $('thr').addEventListener('input', () => { state.thrNorm = sliderToNorm(readNumber('thr')); updateLabels(); });
 $('cmax').addEventListener('input', () => { state.cmaxNorm = sliderToNorm(readNumber('cmax')); updateLabels(); });
-$('thr-source').addEventListener('change', () => resetThreshold());
+$('thr-source').addEventListener('change', () => {
+  settings.thrSource = $('thr-source').value;
+  persist();
+  resetThreshold();
+});
 $('thr-reset').addEventListener('click', () => resetThreshold());
-$('cmap').addEventListener('change', () => { state.colormap = $('cmap').value; R.setColormap(state.colormap); });
+$('cmap').addEventListener('change', () => setColormap($('cmap').value));
 $('gamma').addEventListener('change', () => { state.gamma = readNumber('gamma'); });
 $('opacity').addEventListener('input', () => { state.opacity = readNumber('opacity') / 100; });
 $('rmode').addEventListener('change', () => { state.mode = readNumber('rmode'); });
@@ -212,14 +241,31 @@ for (const t of TOOLS) {
 }
 
 // Refinement controls (issue #170).
-$('refine').checked = query.get('refine') !== '0';
+// Stored settings first; ?refine=0 / ?refine=1 in the address override them.
+$('refine').checked = query.get('refine') === '0' ? false : query.get('refine') === '1' ? true : settings.refine.enabled;
+$('refine-scale').value = String(settings.refine.scale);
+$('refine-quality').value = String(settings.refine.quality);
+$('refine-depth').checked = settings.refine.depth;
+function saveRefine() {
+  settings.refine = { enabled: $('refine').checked, scale: readNumber('refine-scale'),
+    quality: readNumber('refine-quality'), depth: $('refine-depth').checked };
+  persist();
+}
+/** Refinement on or off, from the page or the in-VR panel. */
+function setRefine(on) {
+  $('refine').checked = on;
+  refiner.setEnabled(on);
+  saveRefine();
+}
 refiner.setEnabled($('refine').checked);
-$('refine').addEventListener('change', () => refiner.setEnabled($('refine').checked));
-$('refine-scale').addEventListener('change', () => { refiner.o.scale = readNumber('refine-scale'); });
-$('refine-quality').addEventListener('change', () => { refiner.o.quality = readNumber('refine-quality'); });
-$('refine-depth').addEventListener('change', () => { refiner.useDepth = $('refine-depth').checked; });
+$('refine').addEventListener('change', () => setRefine($('refine').checked));
+$('refine-scale').addEventListener('change', () => { refiner.o.scale = readNumber('refine-scale'); saveRefine(); });
+$('refine-quality').addEventListener('change', () => { refiner.o.quality = readNumber('refine-quality'); saveRefine(); });
+$('refine-depth').addEventListener('change', () => { refiner.useDepth = $('refine-depth').checked; saveRefine(); });
 refiner.o.scale = readNumber('refine-scale');
 refiner.o.quality = readNumber('refine-quality');
+refiner.useDepth = $('refine-depth').checked;
+selection.setTool(settings.tool);
 window.addEventListener('pagehide', () => refiner.closeNow());
 // Back from the back-forward cache: pagehide closed the session, open a new one.
 window.addEventListener('pageshow', (e) => { if (e.persisted) refiner.resume(); });
@@ -301,6 +347,14 @@ function resetThreshold() {
 }
 
 // ── Loading ─────────────────────────────────────────────────────────────────
+function reducedRequest(datasetId) {
+  return {
+    dataset_id: datasetId,
+    factor_xy: readNumber('fxy'), factor_z: readNumber('fz'), max_dim: readNumber('maxdim'),
+    mode: $('mode').value, encoding: $('encoding').value,
+  };
+}
+
 async function loadFromBackend() {
   const b = ensureBackend();
   const path = $('path').value.trim();
@@ -308,13 +362,56 @@ async function loadFromBackend() {
   const t0 = performance.now();
   setStatus('Opening…');
   const open = await b.open(path);
-  const req = {
-    dataset_id: open.dataset_id,
-    factor_xy: readNumber('fxy'), factor_z: readNumber('fz'), max_dim: readNumber('maxdim'),
-    mode: $('mode').value, encoding: $('encoding').value,
-  };
+  state.sessionNote = state.sessionNote || 'own session';
   setStatus('Reading the axes…');
-  const info = await b.reducedInfo(req);
+  const info = await b.reducedInfo(reducedRequest(open.dataset_id));
+  await loadReduced(b, open, info, t0);
+}
+
+/**
+ * The cube the desktop has open (issue #172), loaded with nothing typed: in
+ * the desktop's session, the desktop's dataset when that session still holds
+ * it, else its path opened again (in that session, or in a new one when the
+ * session is not available here). Without a token, the page says so.
+ */
+async function loadPaired() {
+  if (!pairing.dataset && !pairing.path) return;
+  if (!tokenField.value.trim()) {
+    setStatus('The link from the desktop has no token: paste it, then press "Open and load".');
+    return;
+  }
+  const b = ensureBackend();
+  const t0 = performance.now();
+  if (pairing.session) b.adoptSession(pairing.session);
+  let open = null, info = null, err = null;
+  if (pairing.dataset && pairing.session) {
+    setStatus('Opening the desktop\'s cube…');
+    try {
+      info = await b.reducedInfo(reducedRequest(pairing.dataset));
+      open = { dataset_id: pairing.dataset, kind: 'cube', valid: true };
+      state.sessionNote = 'the desktop\'s session';
+    } catch (e) { err = e; }
+  } else {
+    err = new Error(pairing.session ? '404: no dataset in the link' : '404: Session not found.');
+  }
+  if (!open) {
+    const next = pairingFallback(err, !!pairing.path);
+    if (next === 'fail') throw err;
+    if (next === 'new-session') {
+      await b.newSession();
+      state.sessionNote = 'a new session (the desktop\'s is not available here)';
+    } else {
+      state.sessionNote = 'the desktop\'s session (cube opened again)';
+    }
+    setStatus('Opening the desktop\'s cube by its path…');
+    open = await b.open(pairing.path);
+    info = await b.reducedInfo(reducedRequest(open.dataset_id));
+  }
+  await loadReduced(b, open, info, t0);
+}
+
+async function loadReduced(b, open, info, t0) {
+  const req = reducedRequest(open.dataset_id);
   const t1 = performance.now();
   // The backend caps voxels and bytes; the GPU caps each side. Refuse before
   // reading the cube rather than after.
@@ -357,6 +454,7 @@ function installCube(info, cube, open) {
     `${cube.dims.join('×')} ${cube.encoding}, binned ${cube.factors.join('×')} (${cube.mode}) from ${cube.fullShape.join('×')}`,
     l.reduceMs !== undefined ? `reduce ${l.reduceMs.toFixed(0)} ms, transfer ${l.transferMs.toFixed(0)} ms (${l.mb.toFixed(1)} MB)` : `generated in ${l.generateMs.toFixed(0)} ms`,
     `upload ${l.uploadMs.toFixed(0)} ms, skip grid ${l.macroMs.toFixed(0)} ms`,
+    ...(open ? [`in ${state.sessionNote || 'own session'}`] : []),
   ].join('\n'));
 }
 
@@ -472,6 +570,7 @@ function syncSelection() {
   selection.refreshDom();
   const s = selection.sel;
   $('sel-tool').value = s.tool;
+  if (settings.tool !== s.tool) { settings.tool = s.tool; persist(); }
   $('sel-recipes').textContent = s.recipes.length
     ? `${s.recipes.length} recorded: ${s.recipes.map((r) => r.product.kind).join(', ')}` : 'nothing recorded yet';
   $('sel-export').disabled = $('sel-copy').disabled = !s.recipes.length;
@@ -498,6 +597,9 @@ function hudLines(targetHz) {
   }
   lines.push(...selection.hudLines());
   if (state.cube) lines.push(...refiner.hudLines());
+  if (vrPanel.draws) {
+    lines.push(`panel redraw ${median(vrPanel.drawMs).toFixed(2)} ms + upload ${median(vrPanel.uploadMs).toFixed(2)} ms (${vrPanel.draws} redraws)`);
+  }
   if (xr) {
     const L = xr.layer;
     lines.push(`eye buffer ${L.framebufferWidth}×${L.framebufferHeight}  scale ${xr.fbScale}  foveation ${'fixedFoveation' in L ? L.fixedFoveation : 'n/a'}`);
@@ -519,28 +621,220 @@ function drawHudCanvas(lines) {
   lines.forEach((l, i) => ctx.fillText(l, 14, 12 + i * 31));
 }
 
+// ── The in-VR panel (issue #172) ────────────────────────────────────────────
+// The page's main controls on a quad in the room, used with the right ray and
+// trigger. It stays where it was put (left of the cube by default; drag its
+// title bar to move it, the place is kept); left stick click hides it. In a
+// desktop browser it is shown in the 3-D view with ?panel3d (or the box on
+// the page) and used with the mouse, through the same ray code.
+const DESKTOP_ANCHOR = { p: [0, 0, 0], yaw: 0 };
+const DESKTOP_OFFSET = { right: 0.95, up: 0, fwd: -0.3, yaw: -0.45 };   // right: the page's panel is on the left
+const vrPanel = {
+  layout: P.panelLayout(),
+  canvas: Object.assign(document.createElement('canvas'), { width: P.PANEL_PX[0], height: P.PANEL_PX[1] }),
+  tex: null, key: '', drawnAt: 0,
+  visible: true,
+  desktop: query.has('panel3d'),
+  offset: settings.panel || { ...P.DEFAULT_OFFSET },
+  desktopOffset: { ...DESKTOP_OFFSET },
+  hit: null, drag: null,
+  drawMs: [], uploadMs: [], draws: 0,
+};
+vrPanel.pointer = new P.PanelPointer(vrPanel.layout, { rangeValue: () => [state.clip.min[2], state.clip.max[2]] });
+$('panel3d').checked = vrPanel.desktop;
+$('panel3d').addEventListener('change', () => { vrPanel.desktop = $('panel3d').checked; });
+
+function panelAnchor() { return xr ? xr.place : DESKTOP_ANCHOR; }
+function panelOffset() { return xr ? vrPanel.offset : vrPanel.desktopOffset; }
+function panelWorld() { return P.panelModel(panelAnchor(), panelOffset()); }
+
+/** What the panel shows, as plain values (its key decides a redraw). */
+function panelView() {
+  const c = state.cube, info = state.info;
+  const unit = c && c.bunit ? ` ${c.bunit}` : '';
+  const name = state.openPath ? state.openPath.split('/').pop()
+    : c ? (c.mode === 'synthetic' ? 'synthetic cube' : `dataset ${state.open ? state.open.dataset_id : ''}`) : 'no cube';
+  const v = {
+    title: `VisIVO VR · ${name}`,
+    info: c ? [
+      `${(info.full_shape || c.fullShape).join('×')} → ${c.dims.join('×')}, binned ${c.factors.join('×')} (${c.mode}), ${c.encoding === 'float16' ? '16' : '8'}-bit`,
+      c.mode === 'synthetic' ? 'no backend: selections need a cube from the backend' : `in ${state.sessionNote || 'own session'}`,
+    ] : ['No cube yet: open one from the desktop or on the page.', ''],
+    cmap: state.colormap, mode: state.mode, thrSource: $('thr-source').value, tool: selection.sel.tool,
+    thr: { f: normToSlider(state.thrNorm) / 1000, text: c ? `${fmt(dataValue(state.thrNorm))}${unit}` : '' },
+    cmax: { f: normToSlider(state.cmaxNorm) / 1000, text: c ? `${fmt(dataValue(state.cmaxNorm))}${unit}` : '' },
+    opacity: { f: state.opacity / 2, text: state.opacity.toFixed(2) },
+    slab: { lo: state.clip.min[2], hi: state.clip.max[2], text: '', world: '' },
+    refine: { on: refiner.enabled, text: refineShort(), warn: !!(refiner.unavailable || refiner.suspended) },
+    status: selection.sel.busy || selection.sel.error || '',
+    statusError: !selection.sel.busy && !!selection.sel.error,
+    hint: 'Right trigger: use   Left trigger: next tool   Left stick click: hide',
+  };
+  if (info && info.full_shape) {
+    const nz = info.full_shape[2];
+    const a = Math.min(nz - 1, Math.round(state.clip.min[2] * nz));
+    const b = Math.max(a, Math.round(state.clip.max[2] * nz) - 1);
+    v.slab.text = `ch ${a}–${b} of ${nz}`;
+    const axis = info.axes && info.axes.z;
+    if (axis) {
+      const arr = axis.velocity_kms || axis.world;
+      const at = (t) => V.texToWorld(arr, V.boxToTex(t, nz, info.factors[2]));
+      const lo = at(state.clip.min[2]), hi = at(state.clip.max[2]);
+      const u = axis.velocity_kms ? 'km/s' : axis.unit || '';
+      if (lo !== null && lo !== undefined && hi !== null && hi !== undefined) {
+        v.slab.world = `${fmt(lo)} to ${fmt(hi)} ${u}${axis.velocity_kms && axis.velocity_convention ? `, ${axis.velocity_convention}` : ''}`;
+      }
+    }
+  }
+  return v;
+}
+
+function refineShort() {
+  if (!refiner.enabled) return 'the headset\'s own rendering only';
+  if (refiner.suspended) return `paused ${refiner.suspended}`;
+  if (refiner.unavailable) return `unavailable: ${refiner.unavailable}`;
+  return refiner.status === 'refined' ? 'refined (still view)' : refiner.status;
+}
+
+/** The panel's texture, redrawn when what it shows changed (at most 30 times a second). */
+function panelTexture(now) {
+  if (!vrPanel.tex) vrPanel.tex = R.createPanel();
+  const view = panelView();
+  const ui = { hover: vrPanel.pointer.hover, active: vrPanel.pointer.active ? vrPanel.pointer.active.id : null };
+  const key = JSON.stringify([view, ui]);
+  if (key !== vrPanel.key && (now - vrPanel.drawnAt >= 33 || !vrPanel.draws)) {
+    const t0 = performance.now();
+    P.drawPanel(vrPanel.canvas.getContext('2d'), vrPanel.layout, view, ui);
+    const t1 = performance.now();
+    R.updatePanel(vrPanel.tex, vrPanel.canvas);
+    const t2 = performance.now();
+    vrPanel.drawMs.push(t1 - t0); vrPanel.uploadMs.push(t2 - t1);
+    if (vrPanel.drawMs.length > 60) { vrPanel.drawMs.shift(); vrPanel.uploadMs.shift(); }
+    vrPanel.key = key; vrPanel.drawnAt = now; vrPanel.draws++;
+  }
+  return vrPanel.tex;
+}
+
+const median = (a) => { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+
+/**
+ * The pointer on the panel for this frame: `ray` {o, d} in world space (or
+ * null), `pressed` the trigger (or mouse button), `eye` the viewer's position
+ * (a dragged panel turns to face it). Returns whether the panel takes the
+ * ray (the selection tool then neither hovers nor fires).
+ */
+function panelPointer(ray, pressed, eye) {
+  const show = vrPanel.visible && (xr ? !xr.bench : vrPanel.desktop);
+  let hit = show && ray ? P.rayPanel(panelWorld(), P.PANEL_SIZE, ray.o, ray.d) : null;
+  // The cube in front of the panel takes the ray (a slider already held keeps it).
+  if (hit && state.cube && !vrPanel.pointer.active
+      && P.panelBehindCube(hit.t, state.model, state.extent, ray.o, ray.d, state.clip.min, state.clip.max)) {
+    hit = null;
+  }
+  vrPanel.hit = hit;
+  for (const a of vrPanel.pointer.update(hit, pressed && show)) applyPanel(a, ray, eye);
+  return show && (vrPanel.pointer.takesRay() || vrPanel.pointer.owns);
+}
+
+function applyPanel(a, ray, eye) {
+  if (a.type === 'press') {
+    const id = a.id;
+    if (id === 'cmap-prev' || id === 'cmap-next') {
+      const n = COLORMAP_NAMES.length, i = COLORMAP_NAMES.indexOf(state.colormap);
+      setColormap(COLORMAP_NAMES[(i + (id === 'cmap-next' ? 1 : n - 1)) % n]);
+    } else if (a.widget.group === 'mode') {
+      state.mode = a.widget.value; $('rmode').value = String(state.mode);
+    } else if (id === 'thr-reset') {
+      resetThreshold();
+    } else if (a.widget.group === 'thrsrc') {
+      $('thr-source').value = a.widget.value;
+      settings.thrSource = a.widget.value; persist();
+      resetThreshold();
+    } else if (id === 'slab-all') {
+      state.clip.min[2] = 0; state.clip.max[2] = 1;
+      if (xr) xr.slab = { c: 0.5, w: 0.5 };
+      decorationsChanged();
+    } else if (id === 'refine') {
+      setRefine(!refiner.enabled);
+    } else if (a.widget.group === 'tool') {
+      selection.setTool(a.widget.value);
+    } else if (id === 'sel-clear') {
+      selection.clear();
+    }
+  } else if (a.type === 'slide') {
+    if (a.id === 'thr') state.thrNorm = Math.min(state.cmaxNorm - 1e-3, sliderToNorm(a.value * 1000));
+    else if (a.id === 'cmax') state.cmaxNorm = Math.max(state.thrNorm + 1e-3, sliderToNorm(a.value * 1000));
+    else if (a.id === 'opacity') { state.opacity = Math.max(0.01, a.value * 2); $('opacity').value = Math.round(state.opacity * 100); }
+    labelsChanged();
+  } else if (a.type === 'range') {
+    [state.clip.min[2], state.clip.max[2]] = a.value;
+    if (xr) xr.slab = { c: (a.value[0] + a.value[1]) / 2, w: (a.value[1] - a.value[0]) / 2 };
+    decorationsChanged();
+  } else if (a.type === 'drag-start') {
+    const m = panelWorld();
+    vrPanel.drag = { t: a.hit.t, rel: M.sub(M.position(m), a.hit.point) };
+  } else if ((a.type === 'drag' || a.type === 'drag-end') && vrPanel.drag && ray && eye) {
+    const p = M.add(M.add(ray.o, M.scale3(ray.d, vrPanel.drag.t)), vrPanel.drag.rel);
+    // Within the limits the settings keep, so a panel let go far away is
+    // saved where it stops, not silently dropped on the next load.
+    const off = clampPanelOffset(P.offsetFor(panelAnchor(), p, eye));
+    if (xr) vrPanel.offset = off; else vrPanel.desktopOffset = off;
+  }
+  if (a.type === 'drag-end') {
+    // Kept for the next sessions in the headset only (the desktop's place is
+    // a development view), even when the controller was lost at the release.
+    if (vrPanel.drag && xr) { settings.panel = { ...vrPanel.offset }; persist(); }
+    vrPanel.drag = null;
+  }
+}
+
+/** The clipping box changed: its lines and labels (throttled in VR). */
+function decorationsChanged() {
+  if (xr) { xr.slabDirty = true; xr.labelsDirty = true; } else { rebuildDecorations(); updateLabels(); }
+}
+function labelsChanged() {
+  if (xr) xr.labelsDirty = true; else updateLabels();
+}
+
 // ── Desktop mode ────────────────────────────────────────────────────────────
 const cam = { yaw: -0.5, pitch: 0.35, dist: 2.0, turn: 0 };   // turn: a head turn about the eye (debug)
 const DESKTOP_BG = [0.043, 0.051, 0.07];
 let dragging = null;
 let pressAt = null;
+let mouseOnPanel = false;
 canvas.addEventListener('pointerdown', (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  if (!xr && panelPointer(mouseWorldRay(e), true, camEye())) {
+    // On the panel (?panel3d): its widget, not the camera or a selection.
+    mouseOnPanel = true;
+    return;
+  }
   dragging = { x: e.clientX, y: e.clientY };
   pressAt = { x: e.clientX, y: e.clientY, t: performance.now() };
-  canvas.setPointerCapture(e.pointerId);
   state.moving = true;
 });
 canvas.addEventListener('pointermove', (e) => {
-  if (!dragging) {
-    if (!xr && state.cube) selection.hover(mouseRay(e));   // where a click would land
+  if (!xr && (mouseOnPanel || !dragging)) {
+    const onPanel = panelPointer(mouseWorldRay(e), mouseOnPanel, camEye());
+    if (mouseOnPanel) return;
+    if (state.cube) selection.hover(onPanel ? null : mouseRay(e));   // where a click would land
     selectionDirty = true;
     return;
   }
+  if (!dragging) return;
   cam.yaw -= (e.clientX - dragging.x) * 0.008;
   cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch - (e.clientY - dragging.y) * 0.008));
   dragging = { x: e.clientX, y: e.clientY };
 });
 canvas.addEventListener('pointerup', (e) => {
+  if (mouseOnPanel) {
+    mouseOnPanel = false;
+    if (!xr) { panelPointer(mouseWorldRay(e), false, camEye()); panelPointer(mouseWorldRay(e), false, camEye()); }
+    return;
+  }
+  // The press began off the panel, but the panel's pointer saw it down: let it
+  // go, or the next click on the panel without moving the mouse is lost.
+  if (!xr) panelPointer(mouseWorldRay(e), false, camEye());
   dragging = null;
   state.moving = false;
   // A click (no drag) is the desktop's trigger: the current selection tool at
@@ -563,6 +857,23 @@ function mouseRay(e) {
   const a = M.transformPoint(inv, [nx, ny, -1]);
   const b = M.transformPoint(inv, [nx, ny, 1]);
   return selection.modelRayToBox(a, M.sub(b, a));
+}
+/** The world-space ray under the mouse (the panel's; the cube's model is the identity here). */
+function mouseWorldRay(e) {
+  const rect = canvas.getBoundingClientRect();
+  const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  const ny = 1 - ((e.clientY - rect.top) / rect.height) * 2;
+  const v = lastDesktopView || desktopView();
+  const inv = M.invert(M.multiply(v.proj, v.view));
+  const a = M.transformPoint(inv, [nx, ny, -1]);
+  const b = M.transformPoint(inv, [nx, ny, 1]);
+  return { o: a, d: M.sub(b, a) };
+}
+
+/** The desktop camera's position (a dragged panel turns to face it). */
+function camEye() {
+  const v = lastDesktopView || desktopView();
+  return M.position(M.invert(v.view));
 }
 canvas.addEventListener('wheel', (e) => { cam.dist = Math.max(0.3, Math.min(8, cam.dist * Math.exp(e.deltaY * 0.001))); e.preventDefault(); }, { passive: false });
 
@@ -593,9 +904,12 @@ function desktopFrame(time) {
   syncSelection();
   R.beginFrame();
   lastDesktopView = desktopView();
-  refiner.suspended = '';
+  refiner.setSuspended('');
   refineFrame(time, desktopEyes(lastDesktopView, w, h), lastDesktopView.view, DESKTOP_BG);
   if (state.cube) drawScene(lastDesktopView, undefined, 0);
+  if (vrPanel.visible && vrPanel.desktop) {
+    R.drawPanel(lastDesktopView, panelWorld(), panelTexture(time), P.PANEL_SIZE);
+  }
   R.endFrame();
   const interval = lastDesktop ? time - lastDesktop : 0;
   lastDesktop = time;
@@ -650,7 +964,11 @@ async function enterXR(mode, bench) {
   governor.max = state.spv; governor.value = state.spv;
   session.addEventListener('end', () => {
     const b = xr && xr.bench;
+    if (vrPanel.drag) { settings.panel = { ...vrPanel.offset }; persist(); }
     xr = null;
+    // A press held on the panel when the session ended is released.
+    vrPanel.pointer.update(null, false); vrPanel.pointer.update(null, false);
+    vrPanel.hit = null; vrPanel.drag = null;
     if (b) showBench(b);
     startDesktop();
   });
@@ -696,14 +1014,18 @@ function handleInput(frame, dtS) {
   xr.hands = hands;
   const sq = (h) => hands[h] && hands[h].g.buttons[1] && hands[h].g.buttons[1].pressed;
   const L = sq('left'), Rr = sq('right');
-  if (xr.bench) { xr.grab = null; state.moving = false; return; }
+  if (xr.bench) { xr.grab = null; state.moving = false; vrPanel.hit = null; return; }
 
   // Triggers (issue #171): right = the selection tool along the right ray,
   // left = the next tool. The pick runs on the reduced cube in this frame;
   // what it asks of the backend never holds a frame back.
   const trig = (h) => hands[h] && hands[h].g.buttons[0] && hands[h].g.buttons[0].pressed;
-  const rightRay = hands.right && hands.right.ray && state.cube
+  // The in-VR panel first (issue #172): a ray on it, or a press that began on
+  // it, is the panel's, not a selection.
+  const onPanel = panelPointer(hands.right ? hands.right.ray : null, !!trig('right'), xr.headPos);
+  const rightRay = hands.right && hands.right.ray && state.cube && !onPanel
     ? selection.worldRayToBox(state.model, hands.right.ray.o, hands.right.ray.d) : null;
+  if (onPanel && selection.sel.hover) { selection.hover(null); selectionDirty = true; }
   if (rightRay && (xr.hoverFrame = (xr.hoverFrame || 0) + 1) % 2 === 0) {
     selection.hover(rightRay);
     selectionDirty = true;
@@ -736,10 +1058,7 @@ function handleInput(frame, dtS) {
     if (sy) { state.thrNorm = Math.max(0, Math.min(state.cmaxNorm - 1e-3, state.thrNorm - sy * dtS * 0.25 * Math.max(0.02, state.thrNorm))); changed = true; }
     if (sx) { state.opacity = Math.max(0.01, Math.min(3, state.opacity * Math.exp(sx * dtS))); }
     if (pressedEdge('rA', g.buttons[4] && g.buttons[4].pressed)) {
-      const i = (COLORMAP_NAMES.indexOf(state.colormap) + 1) % COLORMAP_NAMES.length;
-      state.colormap = COLORMAP_NAMES[i];
-      R.setColormap(state.colormap);
-      $('cmap').value = state.colormap;
+      setColormap(COLORMAP_NAMES[(COLORMAP_NAMES.indexOf(state.colormap) + 1) % COLORMAP_NAMES.length]);
     }
     if (pressedEdge('rB', g.buttons[5] && g.buttons[5].pressed)) {
       state.clip = { min: [0, 0, 0], max: [1, 1, 1] };
@@ -766,6 +1085,7 @@ function handleInput(frame, dtS) {
       state.mode = state.mode === 1 ? 0 : 1; $('rmode').value = String(state.mode);
     }
     if (pressedEdge('lY', g.buttons[5] && g.buttons[5].pressed)) state.hud = !state.hud;
+    if (pressedEdge('lStick', g.buttons[3] && g.buttons[3].pressed)) vrPanel.visible = !vrPanel.visible;
   }
   if (xr.slabDirty && (performance.now() - (xr.slabBuilt || 0) > 100)) {
     rebuildDecorations(); xr.slabDirty = false; xr.slabBuilt = performance.now();
@@ -782,7 +1102,18 @@ function controllerSegments() {
     segs.push({ a: p(0, 0, 0), b: p(0, 0, -0.08), color: col });
     segs.push({ a: p(-0.015, 0, 0), b: p(0.015, 0, 0), color: col });
     segs.push({ a: p(0, -0.015, 0), b: p(0, 0.015, 0), color: col });
-    if (hand === 'right' && h.ray && state.cube) {
+    if (hand === 'right' && h.ray && vrPanel.hit) {
+      // On the panel: the ray to the point it points at, and a small cross there.
+      const q = vrPanel.hit.point;
+      segs.push({ a: h.ray.o, b: q, color: [1, 1, 1, 0.6] });
+      const pm = panelWorld();
+      const ax = M.normalize(M.sub(M.transformPoint(pm, [1, 0, 0]), M.position(pm)));
+      const ay = M.normalize(M.sub(M.transformPoint(pm, [0, 1, 0]), M.position(pm)));
+      const az = M.normalize(M.sub(M.transformPoint(pm, [0, 0, 1]), M.position(pm)));
+      const lift = M.add(q, M.scale3(az, 0.002));   // just in front of the panel
+      segs.push({ a: M.add(lift, M.scale3(ax, -0.008)), b: M.add(lift, M.scale3(ax, 0.008)), color: [1, 0.85, 0.3, 1] });
+      segs.push({ a: M.add(lift, M.scale3(ay, -0.008)), b: M.add(lift, M.scale3(ay, 0.008)), color: [1, 0.85, 0.3, 1] });
+    } else if (hand === 'right' && h.ray && state.cube) {
       // The selection ray, to the point the trigger would pick (or 1.5 m).
       const hv = selection.sel.hover;
       let end = M.add(h.ray.o, M.scale3(M.normalize(h.ray.d), 1.5));
@@ -829,6 +1160,8 @@ function onXRFrame(time, frame) {
     state.model = placedModel(xr.place);
     xr.placed = true;
   }
+  const hp = pose.transform.position;
+  xr.headPos = [hp.x, hp.y, hp.z];
   handleInput(frame, dtS);
   if (xr.bench) benchStep(xr.bench, time, interval);
 
@@ -843,19 +1176,24 @@ function onXRFrame(time, frame) {
     const lines = hudLines(xr.targetHz);
     drawHudCanvas(lines);
     R.updatePanel(hudTex, hudCanvas);
-    if (xr.labelsDirty) { updateLabels(); xr.labelsDirty = false; }
     $('hud-text').textContent = lines.join('\n');
   }
+  // The page's labels (DOM) four times a second at most, HUD shown or not.
+  if (xr.labelsDirty && time - (xr.labelsAt || 0) > 250) { xr.labelsAt = time; updateLabels(); xr.labelsDirty = false; }
   const hm = state.hud ? hudModel() : null;
   syncSelection();
   const selTex = state.cube && !xr.bench ? selection.panelTexture() : null;
   const sm = selTex ? selectionPanelModel() : null;
+  const ctlTex = vrPanel.visible && !xr.bench ? panelTexture(time) : null;
+  const cm = ctlTex ? panelWorld() : null;
   // No refinement during the benchmark, nor in passthrough: the backend's frame
   // has no alpha (it is composited over black), so over the room it would
   // either darken it where the headset draws emission the full cube has not,
   // or glow where only the full cube has emission. The headset's own
   // rendering is shown there (docs/user-guide/vr-headset.md).
-  refiner.suspended = xr.bench ? 'during the benchmark' : xr.mode === 'immersive-ar' ? 'in passthrough' : '';
+  // Suspended, the page's render session is closed (no render slot held) and
+  // made again on resume.
+  refiner.setSuspended(xr.bench ? 'during the benchmark' : xr.mode === 'immersive-ar' ? 'in passthrough' : '');
   if (!refiner.suspended) {
     refineFrame(time, pose.views.map((view) => {
       const vp = layer.getViewport(view);
@@ -868,9 +1206,10 @@ function onXRFrame(time, frame) {
     gl.viewport(vp.x, vp.y, vp.width, vp.height);
     const v = { proj: view.projectionMatrix, view: view.transform.inverse.matrix };
     if (state.cube) drawScene(v, undefined, view.eye === 'right' ? 1 : 0);
-    R.drawWorldLines(v);
     if (hm) R.drawPanel(v, hm, hudTex, [0.16, 0.15]);
     if (sm) R.drawPanel(v, sm, selTex, [0.34, 0.248]);
+    if (cm) R.drawPanel(v, cm, ctlTex, P.PANEL_SIZE);
+    R.drawWorldLines(v);      // the controllers and their rays over the panels
   }
   R.endFrame();
   const cpu = performance.now() - t0;
@@ -1087,6 +1426,58 @@ if (query.has('debug')) {
     ctx.putImageData(img, 0, 0);
     return c2.toDataURL('image/png');
   };
+  // The in-VR panel in the desktop view (?panel3d): canvas pixel -> page
+  // pixel through the panel's quad, and a click there through the same ray
+  // code the controllers use; its redraw cost.
+  const panelPagePixel = (x, y) => {
+    const v = lastDesktopView || desktopView();
+    const local = [(x / P.PANEL_PX[0] - 0.5) * P.PANEL_SIZE[0], (0.5 - y / P.PANEL_PX[1]) * P.PANEL_SIZE[1], 0];
+    const c = M.transformPoint(M.multiply(v.proj, M.multiply(v.view, panelWorld())), local);
+    const rect = canvas.getBoundingClientRect();
+    return [rect.left + (c[0] + 1) / 2 * rect.width, rect.top + (1 - c[1]) / 2 * rect.height];
+  };
+  const panelRayAt = (px, py) => mouseWorldRay({ clientX: px, clientY: py });
+  window.__vrPanel = {
+    layout: vrPanel.layout, state: vrPanel, view: panelView, settings: () => JSON.parse(JSON.stringify(settings)),
+    pagePixel: panelPagePixel,
+    /** Where the ray through page pixel (px, py) meets the panel (canvas pixels), or null. */
+    hitAt: (px, py) => { const r = panelRayAt(px, py); const h = P.rayPanel(panelWorld(), P.PANEL_SIZE, r.o, r.d); return h && { x: h.x, y: h.y }; },
+    /** Press at canvas pixel (x, y) (optionally drag to (x2, y2)) and release, through page pixels and rays. */
+    click(x, y, x2 = x, y2 = y) {
+      const [p0, q0] = panelPagePixel(x, y), [p1, q1] = panelPagePixel(x2, y2);
+      const took = panelPointer(panelRayAt(p0, q0), true, camEye());
+      panelPointer(panelRayAt(p1, q1), true, camEye());
+      panelPointer(panelRayAt(p1, q1), false, camEye());
+      panelPointer(panelRayAt(p1, q1), false, camEye());
+      return took;
+    },
+    /** Times n forced redraws: drawPanel (CPU), texImage2D (CPU side), and both
+     *  with a GPU sync (one-pixel readPixels) after the upload. */
+    bench(n = 60) {
+      const ctx2 = vrPanel.canvas.getContext('2d');
+      const draw = [], upload = [], synced = [];
+      const px = new Uint8Array(4);
+      if (!vrPanel.tex) vrPanel.tex = R.createPanel();
+      for (let i = 0; i < n; i++) {
+        const view = panelView();
+        view.thr = { ...view.thr, f: (i % 50) / 50 };      // a slider moving: a real change each time
+        gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        const t0 = performance.now();
+        P.drawPanel(ctx2, vrPanel.layout, view, { hover: 'thr', active: 'thr' });
+        const t1 = performance.now();
+        R.updatePanel(vrPanel.tex, vrPanel.canvas);
+        const t2 = performance.now();
+        R.drawPanel(lastDesktopView || desktopView(), panelWorld(), vrPanel.tex, P.PANEL_SIZE);
+        gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        const t3 = performance.now();
+        draw.push(t1 - t0); upload.push(t2 - t1); synced.push(t3 - t0);
+      }
+      vrPanel.key = '';
+      const q = (a, f) => { const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(f * s.length))]; };
+      const sum = (a) => ({ p50: q(a, 0.5), p95: q(a, 0.95), max: Math.max(...a) });
+      return { n, draw: sum(draw), upload: sum(upload), drawUploadSynced: sum(synced), px: P.PANEL_PX };
+    },
+  };
   window.__vrRefine = {
     refiner,
     setMode: (m) => { refineMode = m; },
@@ -1167,4 +1558,7 @@ if (query.has('bench')) {
 } else {
   startDesktop();
   if (query.has('synthetic')) loadSynthetic(Number(query.get('synthetic')) || 256);
+  else if (pairing.dataset || pairing.path) {
+    loadPaired().catch((err) => setStatus(`The desktop's cube could not be opened: ${err.message || err}`));
+  }
 }

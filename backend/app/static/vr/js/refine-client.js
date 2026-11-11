@@ -102,7 +102,26 @@ export class Refiner {
   /** After the page comes back from the back-forward cache (pagehide closed the session). */
   resume() { this._connect(); }
 
-  _wanted() { return this.enabled && !!this.datasetId && !this.unavailable; }
+  /**
+   * Why no refined frame can be shown now (passthrough, the benchmark), or ''
+   * to resume. Suspended, the render session is closed, so it holds no
+   * render slot (nor GPU memory) on the backend; resuming creates a new one.
+   * Cheap to call every frame with the same reason.
+   */
+  setSuspended(reason) {
+    reason = reason || '';
+    if (reason === this.suspended) return;
+    const was = this.suspended;
+    this.suspended = reason;
+    if (reason && !was) {
+      this._closeSession();
+    } else if (!reason) {
+      this.lastSentA = null;
+      this._connect();
+    }
+  }
+
+  _wanted() { return this.enabled && !!this.datasetId && !this.unavailable && !this.suspended; }
 
   _retryLater(ms) {
     clearTimeout(this._retry);
@@ -195,11 +214,14 @@ export class Refiner {
         }
       });
     } catch (err) {
+      // An attempt made stale meanwhile (a cube change, off, suspended) says
+      // nothing about the session on show now.
+      if (gen !== this.gen) return;
       this.error = String(err.message || err);
       if (err.giveUp || /^(404|503): .*not available|^404/.test(this.error)) {
         // No render sessions on this backend, or none this cube can use.
-        if (gen === this.gen) this._giveUp(err.giveUp ? this.error : `no render sessions on this backend (${this.error})`);
-      } else if (gen === this.gen && this._wanted() && datasetId === this.datasetId && this.error !== 'cancelled') {
+        this._giveUp(err.giveUp ? this.error : `no render sessions on this backend (${this.error})`);
+      } else if (this._wanted() && datasetId === this.datasetId && this.error !== 'cancelled') {
         this.status = 'unavailable';
         this._retryLater(5000);
       }

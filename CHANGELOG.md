@@ -8,6 +8,32 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR headset, final version: the desktop's cube in the same session, a
+  panel in the headset, settings kept (#172, step 6 of #166).** The `/vr/`
+  page reads the desktop's pairing link (`#token=…&session=…&dataset=…&path=…`,
+  each value decoded once), removes all of it from the address bar and the
+  history entry, keeps it for the tab only (session storage), uses the
+  desktop's session for every request and loads the desktop's dataset with
+  nothing typed; when the session no longer holds it, the page opens the path
+  again in that session, and when the session is refused, in a new one, and
+  says which. In the headset a control panel stands in the room left of the
+  cube (it never follows the head; its title bar drags it): colour map,
+  emission or maximum intensity, threshold and its source, colour maximum,
+  opacity, the channel range with its velocities, refinement on or off with
+  its state, the selection tool and Clear, and the cube's shape, binning and
+  session; used with the right controller's ray and trigger, a trigger on it
+  never starts a selection. A desktop browser shows the same panel in the 3-D
+  view (`?panel3d`) and uses it with the mouse through the same ray code. The
+  colour map, threshold source, refinement settings, the panel's place and
+  the last tool are kept in the browser's local storage (never the token
+  unless asked, nor the session). In passthrough and during the benchmark the
+  page now closes its render session (no render slot held) and opens a new
+  one on resume; a stale failed connection attempt no longer overwrites the
+  refinement's error. Pairing, panel layout, hit-testing, pointer and settings
+  are unit-tested (`backend/tests/vr/pairing.test.mjs`, `vr-panel.test.mjs`).
+  The user guide (`docs/user-guide/vr-headset.md`) starts from the desktop,
+  covers the panel and the settings, cluster backends through a tunnel, a
+  Quest 3 checklist and the known limits.
 - **Refinement in the VR headset: full-cube frames from the Mac blended in
   when the view is still (#170, step 4 of #166).** The `/vr/` page keeps
   drawing its reduced cube every frame; when the eye is still or moving slowly
@@ -71,6 +97,19 @@ are preserved here unedited; the branch names they refer to are historical.
     level field it shows and against its recipe's grow), the spectrum is the
     desktop's, and the selection scores Dice 0.610 against Serra et al. (2013)
     and 0.844 against SoFiA-2, the paper's values for that source.
+- **Open in VR Headset from the cube viewer (#172, part of #166).**
+  *Tools → Views → Open in VR Headset…* continues with the open cube in a
+  Meta Quest connected with adb (USB or adb over Wi-Fi), in the same backend
+  session: it forwards the backend's port with `adb reverse` and opens the
+  WebXR page in the Quest Browser with the token, session, dataset id and
+  cube path in the link's fragment (never sent to the server, never written
+  to the application's log). The dialog finds adb outside the `PATH` too
+  (Homebrew, the Android SDK), says whether a headset is missing, waiting for
+  *Allow USB debugging*, offline or ready, lets the user choose among several
+  devices, and offers *Copy Link* for opening it by hand. A cluster backend
+  works through its local tunnel; a backend at a network address is refused
+  with the reason. The link builder and the adb helpers are unit-tested
+  (`tests/test_vr_link.cpp`).
 - **Cubes in a VR headset from a Mac (#167, first step of #166).** The backend
   serves a WebXR page at `/vr/` that a Meta Quest 3 opens in its browser
   (over `adb reverse`, so the page is `localhost` and needs no certificate;
