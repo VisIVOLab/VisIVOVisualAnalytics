@@ -224,6 +224,22 @@ want the small file instead, follow up with *Tools ▸ Export ▸ Export Sub-Cub
 which does crop and shifts ``CRPIX`` accordingly.
 ```
 
+### Showing a selection in the VR headset
+
+With the cube open in a Meta Quest through *Tools → Views → Open in VR
+Headset…*, **Show in VR Headset** in the lasso's panel sends the selection on
+screen to the headset's page, which draws it; a Kinematic Lasso or a box made
+in the headset appears here by itself, as this panel's selection, with a note
+giving its voxels and flux. *Isolate* and *Remove* apply it as shown; the
+product records the headset's grow (*Made in: VR headset*), or its box, or,
+for a selection received without its grow, the mask alone with a caveat. A
+box's apply is the one replay step that records its region (`origin_*`,
+`width`, `height`, `depth`): for a box the region is the selection itself and
+there is no grow response to take it from; every other apply takes its region
+from a response (the grow's, or the shared mask's `X-Visivo-Origin`, `-Width`,
+`-Height`, `-Depth` headers). See
+[Selections shared with the desktop](vr-headset.md#selections-shared-with-the-desktop).
+
 ---
 
 ## What it is good at, and what it is not

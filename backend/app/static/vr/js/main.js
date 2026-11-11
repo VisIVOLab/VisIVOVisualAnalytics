@@ -13,6 +13,7 @@ import { transferFunction, cropBox, cropError } from './refine.js';
 import { pairingFallback } from './pairing.js';
 import { loadSettings, saveSettings, clampPanelOffset } from './settings.js';
 import * as P from './vr-panel.js';
+import { createShare, boxGeometry, lassoMeta, boxMeta } from './share.js';
 
 const $ = (id) => document.getElementById(id);
 const query = new URLSearchParams(window.location.search);
@@ -53,8 +54,27 @@ const selection = createSelection({
   backend: () => (state.open ? backend : null),
   path: () => state.openPath || '',
   onChange: () => { selectionDirty = true; },
+  onSelection: (s) => publishSelection(s),
+  onClear: () => share.dismiss(),   // only called after the share controller exists
 });
 let selectionDirty = true;
+
+// Selections shared with the desktop's cube viewer (issue #188): what is made
+// here is published to the session's hub, what the desktop sends is drawn.
+const share = createShare({
+  backend: () => (state.open ? backend : null),
+  datasetId: () => (state.open ? state.open.dataset_id : ''),
+  fullShape: () => (state.info ? state.info.full_shape : null),
+  onReceive: (info, m, own) => selection.showShared(info, m, own),   // false: the cube is not drawn yet
+  onChange: () => { selectionDirty = true; },
+});
+function publishSelection(s) {
+  if (s.kind === 'lasso') {
+    share.publish('lasso', { bytes: s.bytes, origin: s.origin, dims: s.dims, meta: lassoMeta(s.request, s.parameters, s.trimBox) });
+  } else if (s.kind === 'box') {
+    share.publish('box', { ...boxGeometry(s.range), meta: boxMeta(s.range, s.parameters) });
+  }
+}
 
 // Refinement (issue #170): the backend's full-quality stereo frames, blended in
 // while the view is still or slow. The page's own rendering is always drawn.
@@ -444,6 +464,7 @@ function installCube(info, cube, open) {
   state.open = open;
   state.openPath = open ? $('path').value.trim() : '';
   selection.clear();
+  if (open) share.start(open.dataset_id); else share.stop();
   refiner.setDataset(open ? open.dataset_id : null, { outOfCore: !!(info && info.render_out_of_core) });
   state.load = { ...state.load, uploadMs: up.uploadMs, macroMs: up.macroMs, textureMB: up.textureBytes / 1e6 };
   state.clip = { min: [0, 0, 0], max: [1, 1, 1] };
@@ -596,6 +617,7 @@ function hudLines(targetHz) {
     lines.push(`threshold ${fmt(dataValue(state.thrNorm))} ${c.bunit || ''}  (${$('thr-source').selectedOptions[0].text})`);
   }
   lines.push(...selection.hudLines());
+  lines.push(...share.hudLines());
   if (state.cube) lines.push(...refiner.hudLines());
   if (vrPanel.draws) {
     lines.push(`panel redraw ${median(vrPanel.drawMs).toFixed(2)} ms + upload ${median(vrPanel.uploadMs).toFixed(2)} ms (${vrPanel.draws} redraws)`);
@@ -1301,6 +1323,7 @@ function finishBench(b) {
     R.setVolume(b.saved.cube);
     state.cube = b.saved.cube; state.info = b.saved.info; state.open = b.saved.open;
     applyExtent(); resetThreshold();
+    if (b.saved.open) share.start(b.saved.open.dataset_id);   // the synthetic cubes stopped it
   }
 }
 
@@ -1409,6 +1432,7 @@ async function desktopBench() {
 // with ?debug in the address.
 if (query.has('debug')) {
   window.__vrSelection = selection;
+  window.__vrShare = share;
   window.__vrClick = (x, y) => selection.act(mouseRay({ clientX: x, clientY: y }));
   window.__vrProject = (p) => {      // box coordinate -> page pixel, desktop camera
     const v = lastDesktopView || desktopView();

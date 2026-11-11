@@ -2724,6 +2724,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(this->m_actOpenInVrHeadset, &QAction::triggered, this,
                      &vtkWindowCube::openInVrHeadset);
     ui->menuTools->addAction(this->m_actOpenInVrHeadset);
+    this->setupShowInHeadsetAction();   // issue #188, vtkWindowCube_VrShare.cpp
 
     // ANALYSIS: Estimate Noise goes at the head of the group (before Compute
     // Moment), to match the sidebar's "Estimate Noise → Moment Map" order.
@@ -7832,6 +7833,7 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Views"_s, self->m_actLinkViews);
     add(u"Views"_s, self->m_actOpenInVR);
     add(u"Views"_s, self->m_actOpenInVrHeadset);
+    add(u"Views"_s, self->m_actShowInHeadset);
     return t;
 }
 

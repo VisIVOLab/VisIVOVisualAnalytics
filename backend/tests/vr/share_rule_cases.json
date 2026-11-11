@@ -1,0 +1,62 @@
+{
+  "_about": "Issue #188: the rule both clients follow to show the hub's latest selection. Read by backend/tests/vr/share.test.mjs (the page, share.js) and tests/test_shared_selection.cpp (the desktop, SharedSelection.h). A state's full is null when the cube's shape is not known yet. An entry's fields not given are those of base.",
+  "base": {
+    "seq": 5, "kind": "lasso", "source": "desktop", "client": "other", "dataset_id": "ds_a",
+    "origin": [3, 4, 5], "dims": [2, 2, 1], "full_shape": [10, 12, 8], "count": 3,
+    "stats": {"valid": true, "flux_jy_kms": 6.0614}, "meta": {"nonce": "n-x"}
+  },
+  "state": {"client": "me", "shown": "n-shown", "local": "n-local", "floor": 4, "full": [10, 12, 8]},
+  "decision": [
+    {"name": "no entry", "latest": null, "expect": "none"},
+    {"name": "another client's, newer", "latest": {}, "expect": "fetch"},
+    {"name": "the one on screen", "latest": {"meta": {"nonce": "n-shown"}}, "expect": "none"},
+    {"name": "at the floor", "latest": {"seq": 4}, "expect": "none"},
+    {"name": "below the floor", "latest": {"seq": 2}, "expect": "none"},
+    {"name": "an older own one", "latest": {"client": "me", "meta": {"nonce": "n-old"}}, "expect": "skip"},
+    {"name": "our latest own, not shown", "latest": {"client": "me", "meta": {"nonce": "n-local"}}, "expect": "own"},
+    {"name": "our own, shown", "latest": {"client": "me", "meta": {"nonce": "n-shown"}}, "expect": "none"},
+    {"name": "own, below the floor, latest own", "latest": {"seq": 2, "client": "me", "meta": {"nonce": "n-local"}}, "expect": "own"},
+    {"name": "no nonce, nothing shown", "latest": {"meta": {}}, "state": {"shown": ""}, "expect": "fetch"},
+    {"name": "another cube's shape", "latest": {"full_shape": [10, 12, 9]}, "expect": "none"},
+    {"name": "shape not known yet", "latest": {}, "state": {"full": null}, "expect": "fetch"},
+    {"name": "shape not known, box outside the entry's cube", "latest": {"origin": [9, 4, 5]}, "state": {"full": null}, "expect": "none"},
+    {"name": "box outside the cube", "latest": {"origin": [9, 4, 5]}, "expect": "none"},
+    {"name": "negative origin", "latest": {"origin": [-1, 4, 5]}, "expect": "none"},
+    {"name": "empty dims", "latest": {"dims": [0, 2, 1]}, "expect": "none"},
+    {"name": "unknown kind", "latest": {"kind": "sphere"}, "expect": "none"},
+    {"name": "incomplete origin", "latest": {"origin": [3, 4]}, "expect": "none"},
+    {"name": "fractional dims", "latest": {"dims": [2, 2.5, 1]}, "expect": "none"},
+    {"name": "no seq", "latest": {"seq": null}, "expect": "none"},
+    {"name": "unreadable, from this client", "latest": {"client": "me", "kind": "sphere", "meta": {"nonce": "n-local"}}, "expect": "none"},
+    {"name": "a box", "latest": {"kind": "box"}, "expect": "fetch"}
+  ],
+  "confirm": [
+    {"name": "still the latest, nothing local", "now": {"seq": 5}, "fetched": 5, "before": {"shown": "a", "floor": 4}, "after": {"shown": "a", "floor": 4}, "expect": true},
+    {"name": "replaced meanwhile", "now": {"seq": 6}, "fetched": 5, "before": {"shown": "a", "floor": 4}, "after": {"shown": "a", "floor": 4}, "expect": false},
+    {"name": "cleared meanwhile", "now": null, "fetched": 5, "before": {"shown": "a", "floor": 4}, "after": {"shown": "a", "floor": 4}, "expect": false},
+    {"name": "a local publish meanwhile", "now": {"seq": 5}, "fetched": 5, "before": {"shown": "a", "floor": 4}, "after": {"shown": "b", "floor": 5}, "expect": false},
+    {"name": "a local lasso or Clear meanwhile", "now": {"seq": 5}, "fetched": 5, "before": {"shown": "a", "floor": 4}, "after": {"shown": "", "floor": 5}, "expect": false}
+  ],
+  "note_local": [
+    {"name": "raises the floor to what was read", "state": {"shown": "a", "local": "a", "floor": 3}, "seen": 7, "expect": {"shown": "", "local": "", "floor": 7}},
+    {"name": "never lowers it", "state": {"shown": "a", "local": "", "floor": 9}, "seen": 7, "expect": {"shown": "", "local": "", "floor": 9}}
+  ],
+  "publish_outcome": [
+    {"status": 200, "expect": "kept"},
+    {"status": 409, "expect": "stale"},
+    {"status": 429, "expect": "retry"},
+    {"status": 422, "expect": "refused"},
+    {"status": 413, "expect": "refused"},
+    {"status": 404, "expect": "refused"},
+    {"status": 401, "expect": "refused"},
+    {"status": 500, "expect": "unknown"},
+    {"status": 502, "expect": "unknown"},
+    {"status": 0, "expect": "unknown"}
+  ],
+  "instance": [
+    {"known": "", "seen": "a1", "expect": "adopt"},
+    {"known": "a1", "seen": "a1", "expect": "same"},
+    {"known": "a1", "seen": "b2", "expect": "reset"},
+    {"known": "a1", "seen": "", "expect": "same"}
+  ]
+}

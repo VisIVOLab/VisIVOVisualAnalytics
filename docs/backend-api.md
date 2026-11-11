@@ -116,6 +116,7 @@ rendering, remote-service allowlists, limits) is documented in the
 | SED and simulations | `/v1/sed/*`, `/v1/simulations/*` | [SED fitting and simulations](backend-api/sed-simulations.md) |
 | Exports | `/v1/exports/*` | [Exports](backend-api/exports.md) |
 | <span id="samp"></span>SAMP | `/v1/samp/*` | [SAMP](backend-api/samp.md) |
+| Shared selections (VR headset and desktop) | `/v1/share/*` | [Shared selections](backend-api/share.md) |
 | Server-side rendering | `/v1/render/*` | [Server-side rendering](backend-api/render.md) |
 | Ray-traced particles | `/v1/particle_render/*`, `/v1/tasks/particle_render` | [Ray-traced particle rendering](backend-api/particle-render.md) |
 | Ray-traced volumes | `/v1/volume_render/*`, `/v1/tasks/volume_render` | [Ray-traced volume rendering](backend-api/volume-render.md) |
@@ -143,6 +144,7 @@ backend-api/sky-services
 backend-api/sed-simulations
 backend-api/exports
 backend-api/samp
+backend-api/share
 backend-api/render
 backend-api/particle-render
 backend-api/volume-render
