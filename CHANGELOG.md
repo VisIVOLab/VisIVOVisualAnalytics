@@ -8,6 +8,33 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR headset: more of the desktop's analysis, and hand tracking (part of
+  #166, #191).** In the `/vr/` page, an analysis panel hangs under the
+  control panel: Kinematic Lasso seeds that **add** a source or **carve** a
+  region (the grow with `add_seeds`/`sub_seeds`, as the desktop's Shift and
+  Alt double-clicks), **Isolate** and **Remove** (the mask shown, posted to
+  `mask_apply_bin`; *Show that cube* loads the new cube), the **moment maps
+  M0-M2 of the selection** (its isolated cube through `/v1/products/moment`,
+  shown on a plane in the room with its colour bar and unit), and a **PV
+  slice along a path** drawn with the trigger (`/v1/cube/pv`, the desktop's
+  request and row orientation, live as the path grows). Every action is
+  recorded in the page's `visivo-recipe/1` records: seeds, Isolate and Remove
+  as the desktop records them; moments and PV diagrams by the page (the
+  desktop records no replay steps for them), the moment chained to its
+  isolated cube by a `{new_dataset_id}` placeholder and a `replay_caveat`. A
+  moment uses the cube Isolate made, or a temporary
+  `<cube>_vr-moment-tmp-<tag>.fits` deleted when the selection changes.
+  **Hand tracking**: a pinch is the trigger (panels, sliders, tools), a
+  closed hand the grip (one or two hands); controllers and hands switch
+  without a reload. `validation/vr_analysis_identity.py` checks every tool
+  against the desktop's calls on HCG 44 (seeds Dice 1.000, Isolate/Remove
+  cubes identical, moments bit for bit with Σ M0/beam = 6.0607 Jy km/s, PV
+  rows equal to a port of the desktop's row ordering and unchanged on a
+  reversed spectral axis). New modules
+  `tools-lasso.js`, `tools-moment.js`, `tools-pv.js`, `tools-panel.js`,
+  `product-canvas.js`, `analysis.js`, `hands.js`, with node tests. Hand
+  tracking has not been tried on a headset yet.
+
 - **VR headset, final version: the desktop's cube in the same session, a
   panel in the headset, settings kept (#172, step 6 of #166).** The `/vr/`
   page reads the desktop's pairing link (`#token=…&session=…&dataset=…&path=…`,
