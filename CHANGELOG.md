@@ -31,6 +31,21 @@ are preserved here unedited; the branch names they refer to are historical.
     SSIM against the backend's full-quality reference), reprojection error,
     stop-to-refined time and compositing cost, on HCG 44 in a headless
     browser against a local backend.
+- **Stereo frames for a headset's pose (#169, step 3 of #166).** A cube render
+  session takes `xr_pose` messages on its WebSocket (each eye's view and
+  projection, the eye buffer size, the cube's placement in the headset's
+  world) and renders both eyes on its one GPU copy of the cube, side by side
+  in one JPEG, with a small 16-bit depth image for reprojection (the first
+  sample above the threshold, within a voxel of the surface on a synthetic
+  sphere) and the server's timings, all tagged with the pose id. They go out
+  over the existing push stream, now up to 120 frames per second; `xr_stop`,
+  or closing the connection, brings the mono view back. The desktop is not
+  affected. `benchmark/remote_render/stereo_pose_latency.py` drives a session
+  with synthetic poses at 72/90 Hz and reports rate and latency. On the
+  M5 Max, 1024 x 1024 per eye: HCG 44 at 45 frames/s, pose to frame 29 ms
+  median (59 frames/s without depth); a 2 GB Apertif cube at 24 frames/s,
+  49 ms. Point tables and cubes drawn out of core are refused for now. See
+  *Stereo frames for a headset* in `docs/backend-api/render.md`.
 - **Selections in the VR headset, analysis on the backend (#171, step 5 of
   #166).** On the `/vr/` page the right trigger (or a mouse click in a desktop
   browser) picks on the reduced cube the headset draws, with the renderer's
@@ -56,21 +71,6 @@ are preserved here unedited; the branch names they refer to are historical.
     level field it shows and against its recipe's grow), the spectrum is the
     desktop's, and the selection scores Dice 0.610 against Serra et al. (2013)
     and 0.844 against SoFiA-2, the paper's values for that source.
-- **Stereo frames for a headset's pose (#169, step 3 of #166).** A cube render
-  session takes `xr_pose` messages on its WebSocket (each eye's view and
-  projection, the eye buffer size, the cube's placement in the headset's
-  world) and renders both eyes on its one GPU copy of the cube, side by side
-  in one JPEG, with a small 16-bit depth image for reprojection (the first
-  sample above the threshold, within a voxel of the surface on a synthetic
-  sphere) and the server's timings, all tagged with the pose id. They go out
-  over the existing push stream, now up to 120 frames per second; `xr_stop`,
-  or closing the connection, brings the mono view back. The desktop is not
-  affected. `benchmark/remote_render/stereo_pose_latency.py` drives a session
-  with synthetic poses at 72/90 Hz and reports rate and latency. On the
-  M5 Max, 1024 x 1024 per eye: HCG 44 at 45 frames/s, pose to frame 29 ms
-  median (59 frames/s without depth); a 2 GB Apertif cube at 24 frames/s,
-  49 ms. Point tables and cubes drawn out of core are refused for now. See
-  *Stereo frames for a headset* in `docs/backend-api/render.md`.
 - **Cubes in a VR headset from a Mac (#167, first step of #166).** The backend
   serves a WebXR page at `/vr/` that a Meta Quest 3 opens in its browser
   (over `adb reverse`, so the page is `localhost` and needs no certificate;
@@ -109,7 +109,14 @@ are preserved here unedited; the branch names they refer to are historical.
   `VISIVO_RENDER_IN_PROCESS=1`) is refused before a window is made, and
   closing it still frees its reader process and shared memory. The desktop's
   "cannot render server-side" tooltips now give the real reason (no EGL, or a
-  Mac without a logged-in user session).
+  Mac without a logged-in user session). The render processes never show in
+  the Dock (a context with no window, declared background-only before AppKit
+  starts). Quitting closes every render session the desktop holds, one
+  bounded DELETE each, all at once, instead of leaving them to the five-minute
+  idle timeout. A view whose session ends under it (its render process
+  killed) asks for a new one by itself, once, and then offers Retry; the
+  backend closes such a stream with the reason `session ended` and logs one
+  line instead of a traceback.
 - **VBT tables with the wrong byte order in their header (#165).** Opening a
   VBT (points or a volume) now samples a few thousand values per field and
   compares both byte orders; when the values are absurd as declared and

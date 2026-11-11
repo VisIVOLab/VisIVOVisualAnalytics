@@ -5,6 +5,7 @@
 #include "TestRemoteRenderQueue.h"
 
 #include "RemoteRenderQueue.h"
+#include "RemoteSessionRecovery.h"
 
 #include <QJsonDocument>
 #include <QTest>
@@ -254,4 +255,155 @@ void TestRemoteRenderQueue::theBannerSaysWhereTheViewIs()
     // A position past the length (it can grow by one): never "4 of 3".
     QVERIFY(visivo::queueStatusText(queued("q", 4, 3)).contains(QStringLiteral("4 of 4")));
     QVERIFY(visivo::queueStatusText(queued("q", 0, 0)).contains(QStringLiteral("slot is free")));
+}
+
+namespace {
+
+using Action = visivo::RemoteDropAction;
+const QString kEnded = QStringLiteral("session ended");
+
+visivo::RemoteDrop liveDrop(const QString &reason, qint64 liveMs)
+{
+    visivo::RemoteDrop d;
+    d.showingRemote = true;
+    d.wasLive = true;
+    d.closeReason = reason;
+    d.liveMs = liveMs;
+    return d;
+}
+
+}   // namespace
+
+void TestRemoteRenderQueue::aKilledSessionIsReplacedThenRetryIsOffered()
+{
+    visivo::RemoteRecovery recovery;
+    // Live for a minute, then its render process is killed: a new session.
+    QCOMPARE(recovery.onDrop(liveDrop(kEnded, 60'000)), Action::NewSession);
+    // The new one goes live and dies at once (its first full-resolution
+    // frame, say): not replaced again, or it would cycle for ever.
+    QCOMPARE(recovery.onDrop(liveDrop(kEnded, 1'500)), Action::OfferRetry);
+    QCOMPARE(recovery.onDrop(liveDrop(kEnded, 200)), Action::OfferRetry);
+    // The user retries; that one dies quickly too: Retry again, no loop.
+    recovery.userRetried();
+    QCOMPARE(recovery.onDrop(liveDrop(kEnded, 3'000)), Action::OfferRetry);
+    // A retry that then streams for a while is a success: its own later
+    // death is replaced again.
+    recovery.userRetried();
+    QCOMPARE(recovery.onDrop(liveDrop(kEnded, visivo::kStableLiveMs)), Action::NewSession);
+    QCOMPARE(recovery.replacements(), 1);
+}
+
+void TestRemoteRenderQueue::anotherDropOffersRetry()
+{
+    visivo::RemoteRecovery recovery;
+    // The backend went away (no close frame, WebRTC with no answer to the
+    // check), or failed to render: the session may still be there.
+    QCOMPARE(recovery.onDrop(liveDrop(QString(), 60'000)), Action::OfferRetry);
+    QCOMPARE(recovery.onDrop(liveDrop(QStringLiteral("render failed"), 60'000)),
+             Action::OfferRetry);
+    QCOMPARE(recovery.onDrop(liveDrop(QStringLiteral("server error"), 60'000)),
+             Action::OfferRetry);
+    QCOMPARE(recovery.replacements(), 0);
+}
+
+void TestRemoteRenderQueue::aDropThatWasNotLiveIsLeftToTheSwitch()
+{
+    visivo::RemoteRecovery recovery;
+    visivo::RemoteDrop negotiating = liveDrop(kEnded, 0);
+    negotiating.wasLive = false;   // a connection that never had a frame
+    QCOMPARE(recovery.onDrop(negotiating), Action::Ignore);
+    visivo::RemoteDrop local = liveDrop(kEnded, 60'000);
+    local.showingRemote = false;   // the user went to Local, or a switch is under way
+    QCOMPARE(recovery.onDrop(local), Action::Ignore);
+    QCOMPARE(recovery.replacements(), 0);
+}
+
+void TestRemoteRenderQueue::bothTransportsSayHowTheStreamEnded()
+{
+    visivo::StreamCloseRecorder ws;
+    // WebSocket: live at the first frame, the server's reason at the close.
+    ws.connecting();
+    ws.markLive();
+    ws.closed(true, kEnded);
+    QVERIFY(ws.wasLive());
+    QCOMPARE(ws.reason(), kEnded);
+    QVERIFY(ws.liveMs() >= 0);
+    // The next connection starts clean: an earlier drop's facts never decide
+    // for a later one.
+    ws.connecting();
+    QVERIFY(!ws.wasLive());
+    QVERIFY(ws.reason().isEmpty());
+    QCOMPARE(ws.liveMs(), 0);
+
+    // WebRTC: its states, no close reason.
+    visivo::StreamCloseRecorder rtc;
+    rtc.connecting();
+    rtc.webrtcState(QStringLiteral("Connecting…"), false);
+    rtc.webrtcState(QStringLiteral("Live"), false);
+    rtc.webrtcState(QStringLiteral("Disconnected"), true);
+    QVERIFY(rtc.wasLive());
+    QVERIFY(rtc.reason().isEmpty());
+    rtc.connecting();
+    rtc.webrtcState(QStringLiteral("Error: ICE failed"), false);   // never live
+    QVERIFY(!rtc.wasLive());
+    QVERIFY(visivo::StreamCloseRecorder::isTerminal(QStringLiteral("Failed")));
+    QVERIFY(!visivo::StreamCloseRecorder::isTerminal(QStringLiteral("Live")));
+}
+
+void TestRemoteRenderQueue::aFailedReplacementSaysWhyWithoutBlamingTheBackend()
+{
+    // Retry while the backend is down: no HTTP status at all.
+    const RenderSessionAnswer down = parseRenderSessionAnswer(0, true, QJsonObject());
+    QCOMPARE(down.kind, Kind::Failed);
+    QCOMPARE(visivo::replacementFailure(down.httpStatus, down.message),
+             QStringLiteral("the backend could not be reached"));
+    // The replacement's own render process ended while it started (a 503).
+    const RenderSessionAnswer ended = parseRenderSessionAnswer(
+            503, true, json(R"({"detail": "render process ended unexpectedly"})"));
+    QCOMPARE(ended.kind, Kind::Refused);
+    QVERIFY(!ended.capacity);
+    const QString why = visivo::replacementFailure(ended.httpStatus, ended.message);
+    QVERIFY2(why.contains(QStringLiteral("render process ended unexpectedly")), qPrintable(why));
+    QVERIFY(!why.contains(QStringLiteral("unavailable")));
+    QCOMPARE(visivo::replacementFailure(500, QString()),
+             QStringLiteral("the backend could not start a new view (HTTP 500)"));
+}
+
+void TestRemoteRenderQueue::onlyAReplacementsFailureOffersRetry()
+{
+    visivo::RemoteReplacement r;
+    // The session ends, a replacement starts, and the user presses ✕ while
+    // it is still being made: the replacement is over.
+    QVERIFY(visivo::RemoteReplacement::mayStart(false, false));
+    r.started();
+    QVERIFY(r.active());
+    r.ended();   // ✕ (Local), or the window releasing its session
+    // Later the user asks for Remote and that first create fails: a failed
+    // switch (the backend may not render), not a failed replacement.
+    QVERIFY(!r.failed());
+
+    // A replacement created whose stream fails before its first frame:
+    // Retry, once; whatever fails next is the next switch's.
+    r.started();
+    QVERIFY(r.failed());
+    QVERIFY(!r.failed());
+
+    // One that goes live is over too: a later failure is not its.
+    r.started();
+    r.ended();   // Live
+    QVERIFY(!r.failed());
+}
+
+void TestRemoteRenderQueue::aDropCheckAfterLocalChangesNothing()
+{
+    // A WebRTC stream dropped and GET .../levels is under way; the user
+    // presses ✕ (Local) before its 404: no new session behind their back.
+    QVERIFY(!visivo::dropCheckStillWanted(/*showingRemote=*/false, true, false));
+    QVERIFY(!visivo::RemoteReplacement::mayStart(/*userChoseLocal=*/true, false));
+    // Another switch under way, or another session by now: ignored too.
+    QVERIFY(!visivo::dropCheckStillWanted(true, true, true));
+    QVERIFY(!visivo::dropCheckStillWanted(true, false, false));
+    QVERIFY(!visivo::RemoteReplacement::mayStart(false, true));
+    // Still the same remote view: acted on.
+    QVERIFY(visivo::dropCheckStillWanted(true, true, false));
 }
