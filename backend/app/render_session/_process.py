@@ -410,6 +410,20 @@ def _load(factory: str):
     return getattr(mod, name)
 
 
+def _is_pose(message: tuple) -> bool:
+    return (message[0] == _COMMAND and isinstance(message[1], dict)
+            and message[1].get("type") == "xr_pose")
+
+
+def merge_poses(messages: list[tuple]) -> list[tuple]:
+    """``messages`` with each pose dropped that another pose follows directly:
+    a pose replaces the one before it, so only the last of a run is applied.
+    Everything else keeps its place, ``xr_stop`` and frame requests between
+    poses included."""
+    return [m for i, m in enumerate(messages)
+            if not (_is_pose(m) and i + 1 < len(messages) and _is_pose(messages[i + 1]))]
+
+
 def _refuse_all(conn, message: str) -> None:
     """The session could not be built: answer each request with the error,
     so the init waiting for it fails with the reason, then end."""
@@ -454,11 +468,23 @@ def _serve(conn, session_id: str, dataset_path: str, factory: str, gpu_slot: int
         levels = session.levels() if hasattr(session, "levels") else None
         conn.send((status, value, asdict(session.stats), size, levels))
 
+    backlog: collections.deque = collections.deque()
     while True:
-        try:
-            message = conn.recv()
-        except (EOFError, OSError):
-            break   # the backend went away
+        if not backlog:
+            try:
+                backlog.append(conn.recv())
+            except (EOFError, OSError):
+                break   # the backend went away
+            # Whatever else has arrived meanwhile (a headset's poses, at 72 or
+            # 90 Hz, pile up while a frame renders): only the newest pose of a
+            # run is applied.
+            try:
+                while conn.poll(0):
+                    backlog.append(conn.recv())
+            except (EOFError, OSError):
+                pass    # the next recv ends the loop
+            backlog = collections.deque(merge_poses(list(backlog)))
+        message = backlog.popleft()
         kind, args = message[0], message[1:]
         try:
             if kind == _COMMAND:
