@@ -37,6 +37,9 @@ uniform int uEnc, uMaxSteps, uMode, uSkip;
 // selected full-resolution voxel, over the box [uMaskOrigin, uMaskOrigin + uMaskDims).
 uniform highp sampler3D uMask;
 uniform int uMaskOn;
+// Only the selection (issue #170): drawn over a refined frame from the backend,
+// which has no selection in it.
+uniform int uMaskOnly;
 uniform ivec3 uMaskOrigin, uMaskDims;
 const vec3 MASK_COLOR = vec3(0.25, 1.0, 0.45);
 
@@ -84,7 +87,7 @@ void main() {
     if (uSkip == 1) {
       vec3 cf = clamp(floor(p * vox / uCell), vec3(0.0), uCellDims - 1.0);
       float m = texelFetch(uMacro, ivec3(cf), 0).r;
-      float need = uMode == 1 ? max(uThr, best) : uThr;
+      float need = uMaskOnly == 1 ? 2.0 : (uMode == 1 ? max(uThr, best) : uThr);
       // A selected voxel is drawn below the threshold too (the lasso grows into
       // the faint margin), so the cells it meets are never skipped.
       if (m < need && !(uMaskOn == 1 && cellMeetsMask(cf))) {
@@ -99,7 +102,7 @@ void main() {
     float sel = uMaskOn == 1 ? maskAt(p, vox) : 0.0;
     if (uMode == 1) {
       if (v > best) { best = v; bestMask = sel; }
-    } else if (v >= uThr || sel > 0.5) {
+    } else if ((uMaskOnly == 0 && v >= uThr) || sel > 0.5) {
       float x = clamp((v - uCmin) / max(uCmax - uCmin, 1e-6), 0.0, 1.0);
       x = pow(x, uGamma);
       vec3 col = texture(uLut, vec2(x, 0.5)).rgb;
@@ -503,6 +506,7 @@ export class Renderer {
     gl.uniform1i(u.uMask, 3);
     const mk = p.showMask !== false ? this.mask : null;
     gl.uniform1i(u.uMaskOn, mk ? 1 : 0);
+    gl.uniform1i(u.uMaskOnly, p.maskOnly && mk ? 1 : 0);
     gl.uniform3i(u.uMaskOrigin, ...(mk ? mk.origin : [0, 0, 0]));
     gl.uniform3i(u.uMaskDims, ...(mk ? mk.dims : [0, 0, 0]));
     gl.enable(gl.CULL_FACE);

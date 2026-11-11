@@ -170,7 +170,10 @@ refused with 422 before the cube is read.
 `default_threshold` (the full cube's default 3-D threshold, the rule of
 [the desktop's view](../user-guide/cube-viewer.md#the-default-threshold), from a
 stride sample, `null` when the cube has no finite value), `bunit`,
-`pixel_scale_arcsec`, and `axes`: for `x`, `y` and `z`, `name` (the CTYPE
+`pixel_scale_arcsec`, `render_out_of_core` (`true` when a render session would
+draw this cube out of core from its brick pyramid, above
+`VISIVO_RENDER_OUT_OF_CORE_BYTES` as 32-bit floats: the VR page then asks for
+no refined frames, which such a session cannot give yet), and `axes`: for `x`, `y` and `z`, `name` (the CTYPE
 before its first `-`), `ctype`, `unit` and `world`, the world coordinate of
 each reduced voxel's centre (`null` where undefined). `x` and `y` are read with
 the file's full WCS along the central row (for `x`) and column (for `y`) of the

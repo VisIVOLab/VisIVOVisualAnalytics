@@ -1,0 +1,122 @@
+// The refinement's session lifecycle (issue #170), without GL or a backend:
+// node --test backend/tests/vr/refine-client.test.mjs
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+// The page's globals, as stand-ins: the address, the socket, fetch (DELETE).
+const sockets = [];
+class FakeSocket {
+  static OPEN = 1;
+  constructor(url) { this.url = url; this.readyState = 0; this.sent = []; this.l = {}; sockets.push(this); }
+  addEventListener(k, f) { (this.l[k] ||= []).push(f); }
+  send(m) { this.sent.push(JSON.parse(m)); }
+  close() { this.readyState = 3; for (const f of this.l.close || []) f({ code: 1000 }); }
+  open() { this.readyState = 1; for (const f of this.l.open || []) f({}); }
+}
+globalThis.window = { location: { protocol: 'http:', host: 'localhost:8000' } };
+globalThis.WebSocket = FakeSocket;
+const deleted = [];
+globalThis.fetch = async (url, init) => { if (init && init.method === 'DELETE') deleted.push(url); return { ok: true }; };
+
+const { Refiner } = await import('../../app/static/vr/js/refine-client.js');
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
+const stubDraw = { forget() {}, shown: null, upload() { return 0; }, draw() { return false; } };
+
+/** A backend whose create_session answers when the test says so. */
+function slowBackend() {
+  const pending = [];
+  return {
+    token: 't', headers: () => ({}), pending,
+    _json(method, path, body) {
+      if (method === 'DELETE') return Promise.resolve({ cancelled: true });
+      return new Promise((resolve) => pending.push({ body, resolve }));
+    },
+  };
+}
+
+test('a cube change while its session is being created connects the new cube', async () => {
+  sockets.length = 0; deleted.length = 0;
+  const b = slowBackend();
+  const r = new Refiner(null, () => b, { draw: stubDraw });
+  r.setEnabled(true);
+  await r.setDataset('A');
+  await tick();
+  assert.equal(b.pending.length, 1);
+  assert.equal(b.pending[0].body.dataset_id, 'A');
+  // B arrives while A's create_session is still running.
+  await r.setDataset('B');
+  await tick();
+  b.pending[0].resolve({ valid: true, session_id: 'sA' });
+  await tick(); await tick();
+  // A's session is not wanted any more: deleted; B's is asked for.
+  assert.ok(deleted.includes('/v1/render/sA'), JSON.stringify(deleted));
+  assert.equal(b.pending.length, 2);
+  assert.equal(b.pending[1].body.dataset_id, 'B');
+  b.pending[1].resolve({ valid: true, session_id: 'sB' });
+  await tick(); await tick();
+  assert.equal(sockets.length, 1);
+  assert.match(sockets[0].url, /\/v1\/render\/sB\/ws\?token=t$/);
+});
+
+test('turning refinement off frees the render slot; on again makes a new session', async () => {
+  sockets.length = 0; deleted.length = 0;
+  const b = slowBackend();
+  const r = new Refiner(null, () => b, { draw: stubDraw });
+  r.setEnabled(true);
+  await r.setDataset('A');
+  await tick();
+  b.pending[0].resolve({ valid: true, session_id: 's1' });
+  await tick(); await tick();
+  sockets[0].open();
+  r.lastSentA = new Float32Array(16);
+  r.setEnabled(false);
+  await tick();
+  assert.ok(deleted.includes('/v1/render/s1'));
+  assert.equal(sockets[0].readyState, 3);
+  assert.equal(sockets.length, 1);                 // no reconnect after the close
+  r.setEnabled(true);
+  assert.equal(r.lastSentA, null);                 // a still view asks for a frame again
+  await tick();
+  assert.equal(b.pending.length, 2);
+});
+
+test('a cube drawn out of core asks for no session at all', async () => {
+  const b = slowBackend();
+  const r = new Refiner(null, () => b, { draw: stubDraw });
+  r.setEnabled(true);
+  await r.setDataset('big', { outOfCore: true });
+  await tick();
+  assert.equal(b.pending.length, 0);
+  assert.match(r.hudLines()[0], /out of core/);
+});
+
+test('a backend that starts preparing a pyramid is not followed', async () => {
+  const b = slowBackend();
+  const r = new Refiner(null, () => b, { draw: stubDraw });
+  r.setEnabled(true);
+  await r.setDataset('big');
+  await tick();
+  b.pending[0].resolve({ valid: false, preparing: true, progress: 0 });
+  await tick(); await tick();
+  assert.match(r.unavailable, /out of core/);
+  await new Promise((res) => setTimeout(res, 20));
+  assert.equal(b.pending.length, 1);                // not asked again
+});
+
+test('an out-of-core refusal on the socket closes the session', async () => {
+  sockets.length = 0; deleted.length = 0;
+  const b = slowBackend();
+  const r = new Refiner(null, () => b, { draw: stubDraw });
+  r.setEnabled(true);
+  await r.setDataset('A');
+  await tick();
+  b.pending[0].resolve({ valid: true, session_id: 's9' });
+  await tick(); await tick();
+  sockets[0].open();
+  r._onMessage(JSON.stringify({ type: 'xr_error', pose_id: 1, error: 'Stereo frames are not available yet for a cube drawn out of core.' }));
+  await tick();
+  assert.ok(deleted.includes('/v1/render/s9'));
+  assert.equal(sockets[0].readyState, 3);
+  assert.equal(sockets.length, 1);
+});

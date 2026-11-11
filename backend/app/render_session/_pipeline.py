@@ -26,8 +26,54 @@ from ._common import (
 _LOD_JPEG_QUALITY = 60
 
 
+def crop_planes(box: Any, shape_xyz: tuple[int, int, int]) -> tuple[float, ...] | None:
+    """VTK cropping planes ``(x0, x1, y0, y1, z0, z1)`` in voxel coordinates
+    (voxel i at i) for the VR page's clipping box: ``{"min": [3], "max": [3]}``,
+    fractions 0..1 of the cube along x (NAXIS1), y (NAXIS2), z (spectral), the
+    faces at the outer pixel edges. None (no cropping) for ``None`` or the
+    whole cube; ValueError for anything else malformed."""
+    if box is None:
+        return None
+    if not isinstance(box, dict):
+        raise ValueError("box must be {\"min\": [x, y, z], \"max\": [x, y, z]} or null")
+    lo, hi = box.get("min"), box.get("max")
+    is_number = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)  # noqa: E731
+    if not isinstance(lo, (list, tuple)) or not isinstance(hi, (list, tuple)) or \
+            not all(is_number(v) for v in (*lo, *hi)):
+        raise ValueError("box.min and box.max must be three numbers each")
+    lo, hi = [float(v) for v in lo], [float(v) for v in hi]
+    if len(lo) != 3 or len(hi) != 3 or not all(np.isfinite(lo + hi)):
+        raise ValueError("box.min and box.max must be three finite numbers each")
+    if not all(0.0 <= a < b <= 1.0 for a, b in zip(lo, hi)):
+        raise ValueError("the box needs 0 <= min < max <= 1 on every axis")
+    if all(a <= 0.0 for a in lo) and all(b >= 1.0 for b in hi):
+        return None
+    planes: list[float] = []
+    for a, b, n in zip(lo, hi, shape_xyz):
+        planes += [a * n - 0.5, b * n - 0.5]
+    return tuple(planes)
+
+
 class PipelineMixin:
     """Command-apply, chunk-poll, frame-render and close worker methods."""
+
+    def _apply_crop_on_thread(self, planes: tuple[float, ...] | None) -> None:
+        """Crop the in-core volume to ``planes`` (None: the whole cube). A cube
+        drawn out of core crops its blocks itself, and is left alone."""
+        if getattr(self, "_ooc", None) is not None:
+            if planes is not None:
+                logger.warning("[render-session %s] set_crop ignored out of core",
+                               self.session_id)
+            return
+        mapper = self._volume_mapper
+        if mapper is None or not hasattr(mapper, "SetCropping"):
+            return
+        if planes is None:
+            mapper.SetCropping(0)
+        else:
+            mapper.SetCroppingRegionPlanes(*planes)
+            mapper.SetCroppingRegionFlagsToSubVolume()
+            mapper.SetCropping(1)
 
     def _apply_command_on_thread(self, command: dict[str, Any]) -> None:
         """Apply one client command to ``self.view``.
@@ -129,6 +175,7 @@ class PipelineMixin:
             self._rebuild_volume_tfs_on_thread()
             self._rebuild_slice_lut_on_thread()
             self._apply_blend_mode_on_thread(self.view.blend_mode)
+            self._apply_crop_on_thread(None)
             if self._outline_actor is not None:
                 self._outline_actor.SetVisibility(1 if self.view.show_outline else 0)
             if self._axes_actor is not None:
@@ -179,6 +226,16 @@ class PipelineMixin:
         elif ctype == "set_blend_mode":
             self.view.blend_mode = int(command.get("mode", 0))
             self._apply_blend_mode_on_thread(self.view.blend_mode)
+            self.request_idr()
+        elif ctype == "set_crop":
+            # The VR page's clipping box (issue #170): its refined frames must
+            # show what the headset's own rendering shows.
+            try:
+                planes = crop_planes(command.get("box"), (self._nx, self._ny, self._nz))
+            except ValueError as exc:
+                logger.warning("[render-session %s] set_crop refused: %s", self.session_id, exc)
+                return
+            self._apply_crop_on_thread(planes)
             self.request_idr()
         elif ctype == "set_cube_render_mode":
             mode = str(command.get("mode", "volume")).lower()
