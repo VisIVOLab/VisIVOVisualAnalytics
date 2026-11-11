@@ -1,0 +1,150 @@
+#pragma once
+
+// VrLink.h
+// The address that opens the backend's WebXR page (/vr/) on a headset in the
+// SAME backend session as the desktop, with the cube the desktop has open
+// (issue #172).
+//
+// The headset reaches the backend as http://localhost:<port>: `adb reverse`
+// forwards the headset's own localhost:<port> to this machine's, and only a
+// localhost page is a secure context for WebXR without a certificate. So the
+// link is built from the PORT of the client's backend URL, never its host,
+// and it can only work when that URL is served on this machine's loopback —
+// the local backend, or a remote one reached through a local tunnel
+// (localhost:18960 for a cluster). A backend at another address is not
+// reachable through `adb reverse` at all, and the builder says so instead of
+// producing a link that would fail on the headset.
+//
+// Everything the page needs rides the fragment (#token=…&session=…&dataset=…
+// &path=…): a browser never sends the fragment to the server, so the token is
+// in no access log, and the page removes it from the address bar. Every value
+// is percent-encoded completely, so the link holds no character a shell or
+// the fragment parser would read as syntax ('&', '#', '=', quotes, spaces).
+//
+// Widget-free and header-only: unit-tested in tests/test_vr_link.cpp.
+
+#include <QHostAddress>
+#include <QString>
+#include <QStringList>
+#include <QUrl>
+
+namespace VrLink {
+
+struct Inputs
+{
+    QString baseUrl;     ///< the client's backend base URL (http://127.0.0.1:8000, a tunnel…)
+    QString token;       ///< the token that authenticates on that backend
+    QString sessionId;   ///< X-Visivo-Session the desktop's requests carry
+    QString datasetId;   ///< the cube open in the viewer
+    QString path;        ///< the cube's path on the backend
+};
+
+struct Link
+{
+    bool ok{ false };
+    QString error;      ///< why there is no link, for the user (no secrets in it)
+    int port{ 0 };      ///< the port to forward with `adb reverse`
+    QString url;        ///< the full link: CONTAINS THE TOKEN, never log it
+    QString pageUrl;    ///< the page without the fragment: safe to show and log
+};
+
+/// Percent-encode everything but RFC 3986's unreserved characters, so a value
+/// cannot end its fragment parameter early or be read by a shell.
+inline QString encodeValue(const QString &value)
+{
+    return QString::fromLatin1(QUrl::toPercentEncoding(value));
+}
+
+/// The hosts `adb reverse tcp:P tcp:P` reaches: it connects to this
+/// computer's 127.0.0.1 / ::1, so a backend bound to another 127/8 address
+/// (127.0.0.2) or under another name is not behind it.
+inline bool isLoopbackHost(const QString &host)
+{
+    using namespace Qt::StringLiterals;
+    QString h = host.trimmed().toLower();
+    if (h.startsWith(u'[') && h.endsWith(u']'))
+        h = h.mid(1, h.size() - 2);
+    if (h == u"localhost")
+        return true;
+    const QHostAddress address(h);
+    return address == QHostAddress(QHostAddress::LocalHost)
+            || address == QHostAddress(QHostAddress::LocalHostIPv6);
+}
+
+inline Link build(const Inputs &in)
+{
+    using namespace Qt::StringLiterals;
+    Link link;
+    const QUrl base(in.baseUrl.trimmed());
+    const QString scheme = base.scheme().toLower();
+    if (!base.isValid() || base.host().isEmpty() || (scheme != u"http" && scheme != u"https")) {
+        link.error = QStringLiteral("The backend address is not an http(s) URL.");
+        return link;
+    }
+    if (!isLoopbackHost(base.host())) {
+        link.error = QStringLiteral(
+                "This backend is at %1, not on this computer's localhost, so the headset "
+                "cannot reach it through adb. Connect to it through a local tunnel "
+                "(as for a cluster) and open the cube again.")
+                             .arg(base.host());
+        return link;
+    }
+    // The page is mounted at the backend's root and calls /v1 from there, so
+    // a backend behind a path prefix (a proxy's /visivo) would serve neither.
+    QString prefix = base.path();
+    while (prefix.endsWith(u'/'))
+        prefix.chop(1);
+    if (!prefix.isEmpty()) {
+        link.error = QStringLiteral(
+                "This backend is served under %1, and the headset's page works only with a "
+                "backend at the root of its address. Connect to the backend's own port "
+                "through a local tunnel.")
+                             .arg(prefix);
+        return link;
+    }
+    if (in.datasetId.isEmpty()) {
+        link.error = QStringLiteral("The cube has no backend dataset yet: wait for it to load.");
+        return link;
+    }
+    link.port = base.port(scheme == u"https" ? 443 : 80);
+
+    // Host forced to localhost: on the headset 127.0.0.1 would work too, but
+    // localhost is what browsers treat as a secure context by name, and what
+    // the guide tells the user to type.
+    QUrl page;
+    page.setScheme(scheme);
+    page.setHost(QStringLiteral("localhost"));
+    page.setPort(link.port);
+    page.setPath(QStringLiteral("/vr/"));
+    link.pageUrl = page.toString(QUrl::FullyEncoded);
+
+    QStringList fragment;
+    if (!in.token.isEmpty())
+        fragment << u"token="_s + encodeValue(in.token);
+    if (!in.sessionId.isEmpty())
+        fragment << u"session="_s + encodeValue(in.sessionId);
+    fragment << u"dataset="_s + encodeValue(in.datasetId);
+    if (!in.path.isEmpty())
+        fragment << u"path="_s + encodeValue(in.path);
+    // Appended by hand: QUrl::setFragment would re-encode the '%' of the
+    // values (or decode them, depending on the mode) and the page decodes once.
+    link.url = link.pageUrl + u'#' + fragment.join(u'&');
+    link.ok = true;
+    return link;
+}
+
+/// @p text with every secret (as written, and as encoded in a link) replaced
+/// by a placeholder: for anything shown to the user or logged that may echo
+/// the link back, such as adb's own output.
+inline QString redact(QString text, const QStringList &secrets)
+{
+    for (const QString &secret : secrets) {
+        if (secret.isEmpty())
+            continue;
+        text.replace(encodeValue(secret), QStringLiteral("<redacted>"));
+        text.replace(secret, QStringLiteral("<redacted>"));
+    }
+    return text;
+}
+
+}   // namespace VrLink

@@ -71,6 +71,19 @@ are preserved here unedited; the branch names they refer to are historical.
   median (59 frames/s without depth); a 2 GB Apertif cube at 24 frames/s,
   49 ms. Point tables and cubes drawn out of core are refused for now. See
   *Stereo frames for a headset* in `docs/backend-api/render.md`.
+- **Open in VR Headset from the cube viewer (#172, part of #166).**
+  *Tools → Views → Open in VR Headset…* continues with the open cube in a
+  Meta Quest connected with adb (USB or adb over Wi-Fi), in the same backend
+  session: it forwards the backend's port with `adb reverse` and opens the
+  WebXR page in the Quest Browser with the token, session, dataset id and
+  cube path in the link's fragment (never sent to the server, never written
+  to the application's log). The dialog finds adb outside the `PATH` too
+  (Homebrew, the Android SDK), says whether a headset is missing, waiting for
+  *Allow USB debugging*, offline or ready, lets the user choose among several
+  devices, and offers *Copy Link* for opening it by hand. A cluster backend
+  works through its local tunnel; a backend at a network address is refused
+  with the reason. The link builder and the adb helpers are unit-tested
+  (`tests/test_vr_link.cpp`).
 - **Cubes in a VR headset from a Mac (#167, first step of #166).** The backend
   serves a WebXR page at `/vr/` that a Meta Quest 3 opens in its browser
   (over `adb reverse`, so the page is `localhost` and needs no certificate;
