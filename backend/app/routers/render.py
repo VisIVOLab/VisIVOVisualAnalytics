@@ -800,6 +800,16 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
                     sess.changed.set()     # the client gets the current view first
                     push_task = asyncio.create_task(
                         _push_frames(websocket, sess, send_lock, push))
+                else:
+                    # Streaming already: a new ack window or rate cap (the
+                    # headset's page widens its window over a slow link,
+                    # issue #187). A wider window lets a waiting frame go.
+                    push.configure(command)
+                    push.acked.set()
+                    async with send_lock:
+                        await websocket.send_text(json.dumps(
+                            {"stream": "on", "window": push.window, "max_fps": push.max_fps},
+                            separators=(",", ":")))
             elif ctype == "frame_ack":
                 push.ack()
             elif ctype == "xr_pose":

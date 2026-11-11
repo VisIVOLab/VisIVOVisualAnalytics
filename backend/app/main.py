@@ -56,6 +56,7 @@ from .routers import (
     simulations,
     particle_render,
     volume_render,
+    vr_backend_check,
 )
 from .diagnostics_buffer import install_logging_handler
 
@@ -91,6 +92,11 @@ async def _lifespan(_app: "FastAPI"):
     # Started by the desktop client: end with it (app/parent_watch.py).
     from . import parent_watch  # noqa: PLC0415
     parent_watch.start()
+    # What a headset gets from here: a stale cluster overlay shows (#187).
+    try:
+        vr_backend_check.log_startup(_app)
+    except Exception as exc:  # noqa: BLE001 - a log line must not stop the start
+        logging.getLogger("visivo.backend").warning("[startup] VR backend check: %s", exc)
     yield
     if push_task is not None:
         push_task.cancel()
@@ -402,6 +408,7 @@ app.include_router(sed.router, dependencies=[_auth])
 app.include_router(simulations.router, dependencies=[_auth])
 app.include_router(particle_render.router, dependencies=[_auth])
 app.include_router(volume_render.router, dependencies=[_auth])
+app.include_router(vr_backend_check.router, dependencies=[_auth])
 # SAMP: /v1/samp/files/{token} is public (no auth) for VO tool access;
 # all other /v1/samp/* routes use per-route auth declared in the router itself.
 app.include_router(samp.router)

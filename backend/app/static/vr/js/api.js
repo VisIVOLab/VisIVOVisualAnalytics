@@ -1,4 +1,5 @@
-// The VR page's calls to the backend that serves it (same origin).
+// The VR page's calls to the backend that serves it (same origin, under the
+// page's own path prefix: base-path.js).
 //
 // The token: read once from the URL fragment (#token=...), which a browser
 // never sends to the server, so it is not in any access log; then removed from
@@ -10,6 +11,7 @@
 // takePairing.
 
 import { parsePairing, strippedAddress } from './pairing.js';
+import { apiUrl } from './base-path.js';
 
 const KEY = 'visivo-vr-token';
 
@@ -100,7 +102,7 @@ export class Backend {
   }
 
   async _json(method, path, body) {
-    const resp = await fetch(path, {
+    const resp = await fetch(apiUrl(path), {
       method, headers: this.headers(body !== undefined),
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -115,7 +117,7 @@ export class Backend {
   }
 
   async ping() {
-    const resp = await fetch('/v1/ping');
+    const resp = await fetch(apiUrl('/v1/ping'));
     return resp.ok;
   }
 
@@ -147,7 +149,7 @@ export class Backend {
   async _binary(path, body, contentType = 'application/json') {
     const headers = this.headers(false);
     headers['Content-Type'] = contentType;
-    const resp = await fetch(path, { method: 'POST', headers, body });
+    const resp = await fetch(apiUrl(path), { method: 'POST', headers, body });
     if (!resp.ok) throw new Error(`${resp.status}: ${(await resp.text()).slice(0, 300)}`);
     return { resp, buf: await resp.arrayBuffer() };
   }
@@ -209,7 +211,7 @@ export class Backend {
   /** The reduced cube: {data: Uint8Array | Uint16Array, dims, lo, hi, ...}. */
   async reducedCube(req, onProgress) {
     const t0 = performance.now();
-    const resp = await fetch('/v1/cube/reduced_bin', {
+    const resp = await fetch(apiUrl('/v1/cube/reduced_bin'), {
       method: 'POST', headers: this.headers(true), body: JSON.stringify(req),
     });
     if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`);

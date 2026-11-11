@@ -118,6 +118,41 @@ the desktop client. Returns `404` if the session does not exist or belongs to an
 }
 ```
 
+### `GET /v1/vr/backend_check`
+Whether this backend can serve the desktop's VR headset (issue #187), so that
+a backend running older code than the desktop (on a cluster, typically a
+`--backend-src` overlay copied weeks ago) is visible before the headset's page
+fails on a missing route. Needs the token. *Open in VR Headset…* asks it
+before pairing (without following redirects) and shows the page build and any
+warning.
+
+```json
+{
+  "vr_api": 2,
+  "page": { "present": true, "build": "c09cce3dcfba" },
+  "missing_routes": [],
+  "stereo": { "depth": "auto" }
+}
+```
+
+`vr_api` is the headset protocol level (2: stereo frame headers carry
+`reprojection` and `depth_unavailable`, a running push stream takes a new ack
+window). `page.build` is a hash of the files under `app/static/vr`.
+`missing_routes` names the routes the page calls that this backend does not
+serve, among ping, sessions/new, files/list, datasets/open, the cube routes
+the page uses (`reduced_info`, `reduced_bin`, `subvolume_bin`,
+`kinematic_select_bin`, `mask_stats_bin`), spectral probe, pixel_to_sky, and
+the render routes (`create_session`, the queue's DELETE, the session's DELETE,
+its WebSocket), which are missing on a backend without server-side rendering.
+`stereo.depth` is `"off"` when `VISIVO_XR_DEPTH=0` makes the backend send
+stereo frames without depth, else `"auto"`.
+
+The details for an operator are in one line of the backend's startup log, not
+in the answer: `[startup] VR page c09cce3dcfba (20 files, newest …) at /vr/;
+backend code newest … in /app/app; VR routes all present; stereo depth auto`.
+The dates are those of the newest page file and of the newest Python file of
+the backend's code: a copy made weeks ago shows there.
+
 ---
 
 ## Files

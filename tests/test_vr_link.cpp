@@ -1,6 +1,7 @@
 #include "TestVrLink.h"
 
 #include "app/AdbHeadset.h"
+#include "app/VrBackendCheck.h"
 #include "app/VrLink.h"
 
 #include <QDir>
@@ -115,6 +116,109 @@ void TestVrLink::portComesFromTheBackendUrl()
     QCOMPARE(link.pageUrl, pageUrl);
 }
 
+void TestVrLink::aPathPrefixIsKeptInThePageAndInfoUrls_data()
+{
+    QTest::addColumn<QString>("baseUrl");
+    QTest::addColumn<QString>("prefix");
+    QTest::addColumn<QString>("pageUrl");
+    QTest::addColumn<QString>("checkUrl");
+    QTest::newRow("root") << u"http://127.0.0.1:8000"_s << QString()
+                          << u"http://localhost:8000/vr/"_s << u"http://127.0.0.1:8000/v1/vr/backend_check"_s;
+    // A reverse proxy that strips its prefix (an HPC portal) behind a tunnel.
+    QTest::newRow("prefix") << u"http://localhost:18900/visivo"_s << u"/visivo"_s
+                            << u"http://localhost:18900/visivo/vr/"_s
+                            << u"http://localhost:18900/visivo/v1/vr/backend_check"_s;
+    QTest::newRow("trailing slashes") << u"http://127.0.0.1:9000/node/r33/proxy/8000//"_s
+                                      << u"/node/r33/proxy/8000"_s
+                                      << u"http://localhost:9000/node/r33/proxy/8000/vr/"_s
+                                      << u"http://127.0.0.1:9000/node/r33/proxy/8000/v1/vr/backend_check"_s;
+    QTest::newRow("dot segments") << u"http://127.0.0.1:9000/a/./b/../c/"_s << u"/a/c"_s
+                                  << u"http://localhost:9000/a/c/vr/"_s
+                                  << u"http://127.0.0.1:9000/a/c/v1/vr/backend_check"_s;
+    QTest::newRow("encoded") << u"http://127.0.0.1:9000/my%20portal"_s << u"/my%20portal"_s
+                             << u"http://localhost:9000/my%20portal/vr/"_s
+                             << u"http://127.0.0.1:9000/my%20portal/v1/vr/backend_check"_s;
+}
+
+void TestVrLink::aPathPrefixIsKeptInThePageAndInfoUrls()
+{
+    QFETCH(QString, baseUrl);
+    QFETCH(QString, prefix);
+    QFETCH(QString, pageUrl);
+    QFETCH(QString, checkUrl);
+    VrLink::Inputs in = localInputs();
+    in.baseUrl = baseUrl;
+    const VrLink::Link link = VrLink::build(in);
+    QVERIFY2(link.ok, qPrintable(link.error));
+    QCOMPARE(link.prefix, prefix);
+    QCOMPARE(link.pageUrl, pageUrl);
+    QCOMPARE(link.checkUrl, checkUrl);
+    QVERIFY(link.url.startsWith(pageUrl + u"#token="_s));
+    QVERIFY(!link.checkUrl.contains(in.token));
+}
+
+void TestVrLink::aTunnelledRemoteBackendIsLabelledRemote()
+{
+    VrLink::Inputs in = localInputs();
+    in.baseUrl = u"http://localhost:18900"_s;
+    in.token = u"cluster-token"_s;
+    in.remote = true;
+    const VrLink::Link link = VrLink::build(in);
+    QVERIFY(link.ok);
+    QVERIFY(link.remote);
+    QCOMPARE(link.port, 18900);
+    QCOMPARE(fragmentOf(link.url).value(u"token"_s), u"cluster-token"_s);
+    QVERIFY(!VrLink::build(localInputs()).remote);
+}
+
+void TestVrLink::backendCheckReadsTheAnswer()
+{
+    using VrBackendCheck::Severity;
+    const QByteArray good = R"({"vr_api": 2, "page": {"present": true, "build": "abc123def456"},
+        "missing_routes": [], "stereo": {"depth": "auto"}})";
+    auto r = VrBackendCheck::interpret(200, good, true);
+    QCOMPARE(r.severity, Severity::Ok);
+    QVERIFY(r.message.isEmpty());
+    QCOMPARE(r.build, u"abc123def456"_s);
+    // An overlay older than the route: a warning naming the overlay, not a refusal.
+    r = VrBackendCheck::interpret(404, R"({"detail":"Not Found"})", true);
+    QCOMPARE(r.severity, Severity::Warning);
+    QVERIFY(r.message.contains(u"--backend-src"_s));
+    QVERIFY(!VrBackendCheck::interpret(404, {}, false).message.contains(u"--backend-src"_s));
+    r = VrBackendCheck::interpret(200, R"({"vr_api": 2, "page": {"present": true},
+        "missing_routes": ["mask_stats_bin", "render_ws"]})", true);
+    QCOMPARE(r.severity, Severity::Warning);
+    QVERIFY(r.message.contains(u"mask_stats_bin, render_ws"_s));
+    r = VrBackendCheck::interpret(200, R"({"vr_api": 1, "page": {"present": true}, "missing_routes": []})", false);
+    QCOMPARE(r.severity, Severity::Warning);
+    QVERIFY(r.message.contains(u"older headset protocol"_s));
+    // No page at all, or the token refused: the headset cannot work.
+    QCOMPARE(VrBackendCheck::interpret(200, R"({"vr_api": 2, "page": {"present": false}})", true).severity,
+             Severity::Error);
+    QCOMPARE(VrBackendCheck::interpret(401, {}, true).severity, Severity::Error);
+    QCOMPARE(VrBackendCheck::interpret(403, {}, true).severity, Severity::Error);
+    // Not understood is never a refusal: a sign-in page, another shape, no page
+    // object; a page without an explicit "present": false is not refused either.
+    QCOMPARE(VrBackendCheck::interpret(200, "<html>Sign in</html>", true).severity,
+             Severity::Warning);
+    QCOMPARE(VrBackendCheck::interpret(200, R"({"token_ok": true, "build": "x"})", true).severity,
+             Severity::Warning);
+    QCOMPARE(VrBackendCheck::interpret(200, R"([1, 2])", true).severity, Severity::Warning);
+    QCOMPARE(VrBackendCheck::interpret(
+                     200, R"({"vr_api": 2, "page": {"build": "b"}, "missing_routes": []})", true)
+                     .severity,
+             Severity::Ok);
+    r = VrBackendCheck::interpret(302, {}, true);
+    QCOMPARE(r.severity, Severity::Warning);
+    QVERIFY(r.message.contains(u"redirected"_s));
+    QCOMPARE(VrBackendCheck::interpret(0, {}, true).severity, Severity::Warning);
+    QCOMPARE(VrBackendCheck::interpret(502, {}, true).severity, Severity::Warning);
+    r = VrBackendCheck::interpret(200, R"({"vr_api": 2, "page": {"present": true}, "missing_routes": [],
+        "stereo": {"depth": "off"}})", true);
+    QCOMPARE(r.severity, Severity::Ok);
+    QVERIFY(r.depthOff && r.message.contains(u"without depth"_s));
+}
+
 void TestVrLink::aBackendNotOnLoopbackHasNoLink_data()
 {
     QTest::addColumn<QString>("baseUrl");
@@ -124,8 +228,7 @@ void TestVrLink::aBackendNotOnLoopbackHasNoLink_data()
     QTest::newRow("dot localhost") << u"http://visivo.localhost:8000"_s;
     // adb reverse reaches 127.0.0.1 / ::1 only, not the rest of 127/8.
     QTest::newRow("other loopback") << u"http://127.0.0.2:8000"_s;
-    // The page lives at the root and calls /v1 there: a prefixed backend has neither.
-    QTest::newRow("path prefix") << u"http://127.0.0.1:9000/visivo/"_s;
+    QTest::newRow("query") << u"http://127.0.0.1:9000/?x=1"_s;
     QTest::newRow("not a url") << u"127.0.0.1:8000"_s;
     QTest::newRow("websocket") << u"ws://127.0.0.1:8000"_s;
     QTest::newRow("empty") << QString();
