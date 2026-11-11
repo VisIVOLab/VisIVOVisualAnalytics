@@ -847,6 +847,59 @@ async def cube_mask_apply_bin(
            ("output_path", "width", "height", "depth", "range_min", "range_max")})
 
 
+@router.post("/v1/cube/mask_stats_bin", tags=["cube"])
+async def cube_mask_stats_bin(
+    request: Request,
+    dataset_id: str = Query(...),
+    origin_x: int = Query(..., ge=0), origin_y: int = Query(..., ge=0),
+    origin_z: int = Query(..., ge=0),
+    width: int = Query(..., ge=1), height: int = Query(..., ge=1), depth: int = Query(..., ge=1),
+    # true: no mask, every voxel of the box (the headset's box region).
+    box: bool = Query(False),
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Statistics of an EXPLICIT selection (the mask in the body, as for
+    mask_apply_bin), or with ``box=true`` and an empty body of the whole box:
+    voxels, sum/mean/rms/min/max, integrated flux in Jy km/s, channel and
+    velocity range, the integrated spectrum. Reads only the box, one channel at
+    a time (issue #171: the headset's lasso and box panels)."""
+    from ..compute import worker_cube_mask_stats  # noqa: PLC0415
+    from ..compute.mask_stats import check_box  # noqa: PLC0415
+    try:
+        check_box(int(width), int(height), int(depth))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    # The dataset is checked before any body is buffered.
+    entry = _require_dataset(session, dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "Selection statistics require a spectral cube dataset.")
+    expected = 0 if box else int(width) * int(height) * int(depth) * 4
+    # A wrong size is refused from the declared length, before the body is read,
+    # and the body is never read past the expected size.
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) != expected:
+        raise HTTPException(422, f"mask body is {declared} bytes; expected {expected}")
+    chunks, got = [], 0
+    async for chunk in request.stream():
+        got += len(chunk)
+        if got > expected:
+            raise HTTPException(422, f"mask body exceeds the expected {expected} bytes")
+        chunks.append(chunk)
+    if got != expected:
+        raise HTTPException(422, f"mask body is {got} bytes; expected {expected}")
+    mask_bytes = None if box else b"".join(chunks)
+    try:
+        result = await _run_heavy_with_limit(
+            session, worker_cube_mask_stats, entry["path"], mask_bytes,
+            origin_x, origin_y, origin_z, width, height, depth)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"valid": True, "error": "", **result}
+
+
 # ── Kinematic fit of a selection ─────────────────────────────────────────────
 
 @router.post("/v1/cube/kinematic_fit_bin", tags=["cube"])

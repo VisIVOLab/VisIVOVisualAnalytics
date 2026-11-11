@@ -7,6 +7,7 @@ import { Renderer } from './renderer.js';
 import { Backend, takeToken, saveToken, tokenError } from './api.js';
 import * as V from './volume.js';
 import { COLORMAP_NAMES } from './colormaps.js';
+import { createSelection, TOOLS, TOOL_NAMES } from './select-ui.js';
 
 const $ = (id) => document.getElementById(id);
 const query = new URLSearchParams(window.location.search);
@@ -40,6 +41,15 @@ const state = {
 const governor = new V.Governor({ start: 1, max: 1 });
 const stats = new V.FrameStats(240);
 let backend = null;
+
+// Selections on the full cube (issue #171): the triggers, or a mouse click.
+const selection = createSelection({
+  state, renderer: R,
+  backend: () => (state.open ? backend : null),
+  path: () => state.openPath || '',
+  onChange: () => { selectionDirty = true; },
+});
+let selectionDirty = true;
 
 // ── Panel wiring ────────────────────────────────────────────────────────────
 for (const name of COLORMAP_NAMES) {
@@ -119,6 +129,50 @@ $('zstretch').addEventListener('input', () => {
   state.zStretch = readNumber('zstretch') / 100;
   applyExtent();
 });
+
+// Selection controls (issue #171).
+if (selection.domCanvas) $('sel-panel').appendChild(selection.domCanvas);
+$('sel-tool').addEventListener('change', () => selection.setTool($('sel-tool').value));
+$('sel-clear').addEventListener('click', () => selection.clear());
+$('sel-seedat').addEventListener('change', () => { selection.sel.seedAt = $('sel-seedat').value; });
+$('sel-snap').addEventListener('change', () => { selection.sel.snap = $('sel-snap').checked; });
+function readLassoParams() {
+  const p = selection.sel.params;
+  const num = (id, lo, hi, dflt) => {
+    const v = Number($(id).value);
+    return Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : dflt;
+  };
+  p.reach = Math.round(num('lasso-reach', 1, 64, 8));
+  p.lambda_v = num('lasso-lambda', 0.1, 5, 1);
+  p.nsigma = num('lasso-nsigma', 0.5, 10, 2.5);
+  p.sigma = num('lasso-sigma', 0, Infinity, 0);
+  const [sv, sxy] = $('lasso-smooth').value.split(',').map(Number);
+  p.smooth_v = sv; p.smooth_xy = sxy;
+}
+for (const id of ['lasso-reach', 'lasso-lambda', 'lasso-nsigma', 'lasso-sigma', 'lasso-smooth']) {
+  $(id).addEventListener('change', readLassoParams);
+}
+readLassoParams();
+$('sel-export').addEventListener('click', () => {
+  const blob = new Blob([selection.recipesJson('all')], { type: 'application/json' });
+  const a = Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(blob),
+    download: `visivo-vr-recipes-${new Date().toISOString().replace(/[:.]/g, '-')}.json`,
+  });
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+});
+$('sel-copy').addEventListener('click', async () => {
+  const text = selection.recipesJson('last');
+  try { await navigator.clipboard.writeText(text); setStatus('Last recipe copied.'); }
+  catch { setStatus(text); }
+});
+for (const t of TOOLS) {
+  const o = $('sel-tool').querySelector(`option[value="${t}"]`);
+  if (o) o.title = TOOL_NAMES[t];
+}
 
 // Clipping box sliders (texture coordinates 0..1 per axis).
 const clipInputs = [];
@@ -241,6 +295,8 @@ function installCube(info, cube, open) {
   state.info = info;
   state.cube = cube;
   state.open = open;
+  state.openPath = open ? $('path').value.trim() : '';
+  selection.clear();
   state.load = { ...state.load, uploadMs: up.uploadMs, macroMs: up.macroMs, textureMB: up.textureBytes / 1e6 };
   state.clip = { min: [0, 0, 0], max: [1, 1, 1] };
   applyExtent();
@@ -345,7 +401,21 @@ function volParams(override = {}) {
 function drawScene(view, override) {
   R.drawVolume(view, state.model, volParams(override));
   R.drawLines(view, state.model);
+  R.drawLines(view, state.model, R.selLines);
   R.drawLabels(view, state.model, M.uniformScale(state.model));
+}
+
+/** Rebuild what changes with the selections: their lines, the page's panel. */
+function syncSelection() {
+  if (!selectionDirty) return;
+  selectionDirty = false;
+  R.setLines(selection.segments(), R.selLines);
+  selection.refreshDom();
+  const s = selection.sel;
+  $('sel-tool').value = s.tool;
+  $('sel-recipes').textContent = s.recipes.length
+    ? `${s.recipes.length} recorded: ${s.recipes.map((r) => r.product.kind).join(', ')}` : 'nothing recorded yet';
+  $('sel-export').disabled = $('sel-copy').disabled = !s.recipes.length;
 }
 
 // ── HUD (frame-rate and latency overlay) ─────────────────────────────────────
@@ -367,6 +437,7 @@ function hudLines(targetHz) {
     lines.push(c.mode === 'synthetic' ? 'synthetic cube' : `binning ${c.factors.join('×')} ${c.mode} of ${c.fullShape.join('×')}`);
     lines.push(`threshold ${fmt(dataValue(state.thrNorm))} ${c.bunit || ''}  (${$('thr-source').selectedOptions[0].text})`);
   }
+  lines.push(...selection.hudLines());
   if (xr) {
     const L = xr.layer;
     lines.push(`eye buffer ${L.framebufferWidth}×${L.framebufferHeight}  scale ${xr.fbScale}  foveation ${'fixedFoveation' in L ? L.fixedFoveation : 'n/a'}`);
@@ -391,14 +462,47 @@ function drawHudCanvas(lines) {
 // ── Desktop mode ────────────────────────────────────────────────────────────
 const cam = { yaw: -0.5, pitch: 0.35, dist: 2.0 };
 let dragging = null;
-canvas.addEventListener('pointerdown', (e) => { dragging = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); state.moving = true; });
+let pressAt = null;
+canvas.addEventListener('pointerdown', (e) => {
+  dragging = { x: e.clientX, y: e.clientY };
+  pressAt = { x: e.clientX, y: e.clientY, t: performance.now() };
+  canvas.setPointerCapture(e.pointerId);
+  state.moving = true;
+});
 canvas.addEventListener('pointermove', (e) => {
-  if (!dragging) return;
+  if (!dragging) {
+    if (!xr && state.cube) selection.hover(mouseRay(e));   // where a click would land
+    selectionDirty = true;
+    return;
+  }
   cam.yaw -= (e.clientX - dragging.x) * 0.008;
   cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch - (e.clientY - dragging.y) * 0.008));
   dragging = { x: e.clientX, y: e.clientY };
 });
-canvas.addEventListener('pointerup', () => { dragging = null; state.moving = false; });
+canvas.addEventListener('pointerup', (e) => {
+  dragging = null;
+  state.moving = false;
+  // A click (no drag) is the desktop's trigger: the current selection tool at
+  // the pointer, through the same ray pick as the controllers.
+  const p = pressAt;
+  pressAt = null;
+  if (p && !xr && state.cube && Math.hypot(e.clientX - p.x, e.clientY - p.y) < 5
+      && performance.now() - p.t < 600) {
+    selection.act(mouseRay(e));
+  }
+});
+
+/** The box-space ray under the mouse, from the desktop camera. */
+function mouseRay(e) {
+  const rect = canvas.getBoundingClientRect();
+  const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  const ny = 1 - ((e.clientY - rect.top) / rect.height) * 2;
+  const v = lastDesktopView || desktopView();
+  const inv = M.invert(M.multiply(v.proj, M.multiply(v.view, state.model)));
+  const a = M.transformPoint(inv, [nx, ny, -1]);
+  const b = M.transformPoint(inv, [nx, ny, 1]);
+  return selection.modelRayToBox(a, M.sub(b, a));
+}
 canvas.addEventListener('wheel', (e) => { cam.dist = Math.max(0.3, Math.min(8, cam.dist * Math.exp(e.deltaY * 0.001))); e.preventDefault(); }, { passive: false });
 
 function desktopView() {
@@ -410,6 +514,7 @@ function desktopView() {
 }
 
 let lastDesktop = 0;
+let lastDesktopView = null;
 let desktopRunning = false;
 function desktopFrame(time) {
   if (xr) { desktopRunning = false; return; }
@@ -423,8 +528,10 @@ function desktopFrame(time) {
   gl.clearColor(0.043, 0.051, 0.07, 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   state.model = M.identity();
+  syncSelection();
   R.beginFrame();
-  if (state.cube) drawScene(desktopView());
+  lastDesktopView = desktopView();
+  if (state.cube) drawScene(lastDesktopView);
   R.endFrame();
   const interval = lastDesktop ? time - lastDesktop : 0;
   lastDesktop = time;
@@ -514,12 +621,34 @@ function handleInput(frame, dtS) {
     const gp = frame.getPose(src.gripSpace, xr.ref);
     if (!gp) continue;
     const m = gp.transform.matrix;
-    hands[src.handedness] = { m: new Float32Array(m), pos: [m[12], m[13], m[14]], g: src.gamepad };
+    const hand = { m: new Float32Array(m), pos: [m[12], m[13], m[14]], g: src.gamepad, ray: null };
+    const rp = src.targetRaySpace && frame.getPose(src.targetRaySpace, xr.ref);
+    if (rp) {
+      const r = rp.transform.matrix;
+      hand.ray = { o: [r[12], r[13], r[14]], d: [-r[8], -r[9], -r[10]] };
+    }
+    hands[src.handedness] = hand;
   }
   xr.hands = hands;
   const sq = (h) => hands[h] && hands[h].g.buttons[1] && hands[h].g.buttons[1].pressed;
   const L = sq('left'), Rr = sq('right');
   if (xr.bench) { xr.grab = null; state.moving = false; return; }
+
+  // Triggers (issue #171): right = the selection tool along the right ray,
+  // left = the next tool. The pick runs on the reduced cube in this frame;
+  // what it asks of the backend never holds a frame back.
+  const trig = (h) => hands[h] && hands[h].g.buttons[0] && hands[h].g.buttons[0].pressed;
+  const rightRay = hands.right && hands.right.ray && state.cube
+    ? selection.worldRayToBox(state.model, hands.right.ray.o, hands.right.ray.d) : null;
+  if (rightRay && (xr.hoverFrame = (xr.hoverFrame || 0) + 1) % 2 === 0) {
+    selection.hover(rightRay);
+    selectionDirty = true;
+  }
+  if (pressedEdge('rTrig', trig('right')) && rightRay) {
+    // The controller's tip, for a box corner placed inside the cube.
+    selection.act(rightRay, rightRay.o);
+  }
+  if (pressedEdge('lTrig', trig('left'))) selection.cycleTool();
   if (L && Rr) {
     if (!xr.grab || xr.grab.kind !== 'two') {
       xr.grab = { kind: 'two', model0: state.model, l0: hands.left.pos, r0: hands.right.pos };
@@ -589,6 +718,13 @@ function controllerSegments() {
     segs.push({ a: p(0, 0, 0), b: p(0, 0, -0.08), color: col });
     segs.push({ a: p(-0.015, 0, 0), b: p(0.015, 0, 0), color: col });
     segs.push({ a: p(0, -0.015, 0), b: p(0, 0.015, 0), color: col });
+    if (hand === 'right' && h.ray && state.cube) {
+      // The selection ray, to the point the trigger would pick (or 1.5 m).
+      const hv = selection.sel.hover;
+      let end = M.add(h.ray.o, M.scale3(M.normalize(h.ray.d), 1.5));
+      if (hv) end = M.transformPoint(state.model, hv.p.map((t, i) => (t - 0.5) * state.extent[i]));
+      segs.push({ a: h.ray.o, b: end, color: [1, 1, 1, 0.35] });
+    }
   }
   return segs;
 }
@@ -603,6 +739,15 @@ function hudModel() {
   const right = [Math.cos(pl.yaw), 0, -Math.sin(pl.yaw)];
   const p = M.add(pl.p, M.add(M.scale3(right, -0.5), [0, 0.0, 0]));
   return M.multiply(M.translation(...p), M.rotation([0, 1, 0], pl.yaw + 0.5));
+}
+
+/** The selection panel: to the right of where the cube was placed, turned
+ *  toward the viewer; it stays when the cube is moved. */
+function selectionPanelModel() {
+  const pl = xr.place;
+  const right = [Math.cos(pl.yaw), 0, -Math.sin(pl.yaw)];
+  const p = M.add(pl.p, M.add(M.scale3(right, 0.55), [0, 0.12, 0]));
+  return M.multiply(M.translation(...p), M.rotation([0, 1, 0], pl.yaw - 0.5));
 }
 
 function onXRFrame(time, frame) {
@@ -638,6 +783,9 @@ function onXRFrame(time, frame) {
     $('hud-text').textContent = lines.join('\n');
   }
   const hm = state.hud ? hudModel() : null;
+  syncSelection();
+  const selTex = state.cube && !xr.bench ? selection.panelTexture() : null;
+  const sm = selTex ? selectionPanelModel() : null;
   for (const view of pose.views) {
     const vp = layer.getViewport(view);
     gl.viewport(vp.x, vp.y, vp.width, vp.height);
@@ -645,6 +793,7 @@ function onXRFrame(time, frame) {
     if (state.cube) drawScene(v);
     R.drawWorldLines(v);
     if (hm) R.drawPanel(v, hm, hudTex, [0.16, 0.1]);
+    if (sm) R.drawPanel(v, sm, selTex, [0.34, 0.248]);
   }
   R.endFrame();
   const cpu = performance.now() - t0;
@@ -837,6 +986,21 @@ async function desktopBench() {
   $('bench-out').textContent = text;
   window.__vrBench = { gpu: gpuName, rows, text };
   document.title = 'BENCH DONE';
+}
+
+// For checks driven from outside (headless browser over CDP): the selection
+// state, and a pick through a page-pixel position as a click makes it. Only
+// with ?debug in the address.
+if (query.has('debug')) {
+  window.__vrSelection = selection;
+  window.__vrClick = (x, y) => selection.act(mouseRay({ clientX: x, clientY: y }));
+  window.__vrProject = (p) => {      // box coordinate -> page pixel, desktop camera
+    const v = lastDesktopView || desktopView();
+    const m = p.map((t, i) => (t - 0.5) * state.extent[i]);
+    const c = M.transformPoint(M.multiply(v.proj, M.multiply(v.view, state.model)), m);
+    const rect = canvas.getBoundingClientRect();
+    return [rect.left + (c[0] + 1) / 2 * rect.width, rect.top + (1 - c[1]) / 2 * rect.height];
+  };
 }
 
 // ── Start ───────────────────────────────────────────────────────────────────

@@ -88,6 +88,7 @@ def _spectral_axis(dataset: ScientificFitsDataset, shape_zyx, centres) -> dict[s
     out: dict[str, Any] = {"name": _short_ctype(ctype) or "z", "ctype": ctype,
                            "unit": "", "world": [], "velocity_kms": None,
                            "velocity_convention": "", "channel_width_kms": None,
+                           "full_velocity_kms": None, "full_channel_width_kms": None,
                            "specsys": str(dataset.header.get("SPECSYS", "") or "").strip()}
     if dataset.cube_numpy_spectral_fits_axis() != fits_axis:
         # A transposed cube: the third numpy axis is not the spectral one.
@@ -123,6 +124,14 @@ def _spectral_axis(dataset: ScientificFitsDataset, shape_zyx, centres) -> dict[s
         finite = vel_full[np.isfinite(vel_full)]
         if finite.size > 1:
             out["channel_width_kms"] = float(np.mean(np.abs(np.diff(finite))))
+        # Every full-resolution channel too (issue #171: the velocity of a picked
+        # channel, of a spectrum, of a selection's channel range), with each
+        # channel's own width from its half-channel edges, the widths the
+        # kinematic fit and the selection statistics integrate with.
+        from .kinematic_fit import channel_edges  # noqa: PLC0415
+        edges, _, _ = velocity_axis_kms(channel_edges(coords), unit, ctype, float(rest))
+        out["full_velocity_kms"] = _finite_list(vel_full)
+        out["full_channel_width_kms"] = _finite_list(np.abs(np.diff(edges)))
     return out
 
 

@@ -182,7 +182,12 @@ cursor readout. `z` adds `velocity_kms` (velocity per reduced channel, or
 axis keeps its own convention; a frequency axis with `RESTFRQ` becomes optical
 velocity, cz = c (ν₀/ν − 1), as in the kinematic fit), `channel_width_kms` and
 `specsys`. Channel 0 comes first: a frequency-ordered cube has a decreasing
-velocity axis.
+velocity axis. For the full-resolution channels it adds `full_velocity_kms` (the velocity
+of every channel of the cube, `null` when there is none) and
+`full_channel_width_kms` (each channel's own width from its half-channel
+edges, the widths the kinematic fit and `mask_stats_bin` integrate with), so
+the page can label a picked channel, a spectrum or a selection's channel range
+without another call ([#171](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/171)).
 
 **`reduced_bin`** answers the reduced cube as raw voxels in the volume layout
 above (x fastest), with headers `X-Visivo-Width`, `X-Visivo-Height`,
@@ -461,6 +466,49 @@ Errors: 422 for an invalid `mode` or a body whose length is not
 404, 422 (not a cube), 429, 504. An all-zero mask, a box that does not fit
 inside the cube, and other worker failures return HTTP 200 with
 `valid: false`.
+
+### `POST /v1/cube/mask_stats_bin`
+
+Statistics of a selection on the full cube, for the VR page's Kinematic Lasso
+and box panels ([#171](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/171)).
+With `box=true` and an empty body it measures every voxel of the box given by
+the origin and dimensions.
+The request is the `mask_apply_bin` wire: query parameters `dataset_id`,
+`origin_x`, `origin_y`, `origin_z` (each `>= 0`), `width`, `height`, `depth`
+(each `>= 1`), and the mask in the body as raw little-endian `float32` values
+(`> 0.5` selected), x fastest, so the body of a `kinematic_select_bin`
+response is posted back unchanged with the origin and dimensions of its
+`X-Visivo-Origin`, `-Width`, `-Height`, `-Depth` headers. Only the mask's box
+is read from the file, one channel at a time (at most 64 Mi voxels; the box
+size and the declared `Content-Length` are checked before the body is read,
+and the body is never read past the expected size). It runs in the session's
+compute slots (429 when all stay busy). A cube whose spectral axis is not its
+third numpy axis is refused (422), as the kinematic fit refuses it.
+
+Response (JSON): `selected_voxels`, `valid_voxels`, `blank_voxels`, `bunit`,
+`sum`, `mean`, `rms` (population standard deviation, as region statistics give
+it), `min`, `max` of the finite selected values (`null` when none is finite), `peak_voxel`
+(`[x, y, z]`), `bbox` (`[x0, x1, y0, y1, z0, z1]`, inclusive), `channel_min`,
+`channel_max`, `velocity_min_kms` and `velocity_max_kms` (the velocities of
+the first and last selected channel, the convention in
+`velocity_convention`), `flux_jy_kms`, and the selection's integrated spectrum
+(`spectrum` per channel over `spectrum_channels`, with
+`spectrum_velocity_kms` and `spectrum_unit`).
+
+The flux follows the kinematic fit's measures: per channel, the selected sum
+over the beam area in pixels (each channel's own beam when the cube has a
+BEAMS table, as region statistics use), times the channel's own width in km/s,
+summed over channels. It is `null`, and `flux_note` says why, when `BUNIT` is
+not per beam, the header has no beam, or the spectral axis has no velocity; the
+spectrum is then the plain sum per channel. A channel with no finite selected
+voxel is `null` in the spectrum, and a selection with none at all has a `null`
+flux. On HCG 44 the selection grown at
+NGC 3187's peak (13 216 voxels) gives 6.061 Jy km/s, the paper's F_Lasso for
+that source, in 30 ms.
+
+Errors: 422 for a body whose length is not `width × height × depth × 4` bytes,
+an empty selection, a box outside the cube or too large, or a dataset that is
+not a cube; 404 for an unknown dataset; 401 without the token.
 
 ### `POST /v1/cube/kinematic_fit_bin`
 
