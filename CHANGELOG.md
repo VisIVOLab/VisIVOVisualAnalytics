@@ -8,6 +8,32 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR headset, final version: the desktop's cube in the same session, a
+  panel in the headset, settings kept (#172, step 6 of #166).** The `/vr/`
+  page reads the desktop's pairing link (`#token=…&session=…&dataset=…&path=…`,
+  each value decoded once), removes all of it from the address bar and the
+  history entry, keeps it for the tab only (session storage), uses the
+  desktop's session for every request and loads the desktop's dataset with
+  nothing typed; when the session no longer holds it, the page opens the path
+  again in that session, and when the session is refused, in a new one, and
+  says which. In the headset a control panel stands in the room left of the
+  cube (it never follows the head; its title bar drags it): colour map,
+  emission or maximum intensity, threshold and its source, colour maximum,
+  opacity, the channel range with its velocities, refinement on or off with
+  its state, the selection tool and Clear, and the cube's shape, binning and
+  session; used with the right controller's ray and trigger, a trigger on it
+  never starts a selection. A desktop browser shows the same panel in the 3-D
+  view (`?panel3d`) and uses it with the mouse through the same ray code. The
+  colour map, threshold source, refinement settings, the panel's place and
+  the last tool are kept in the browser's local storage (never the token
+  unless asked, nor the session). In passthrough and during the benchmark the
+  page now closes its render session (no render slot held) and opens a new
+  one on resume; a stale failed connection attempt no longer overwrites the
+  refinement's error. Pairing, panel layout, hit-testing, pointer and settings
+  are unit-tested (`backend/tests/vr/pairing.test.mjs`, `vr-panel.test.mjs`).
+  The user guide (`docs/user-guide/vr-headset.md`) starts from the desktop,
+  covers the panel and the settings, cluster backends through a tunnel, a
+  Quest 3 checklist and the known limits.
 - **Refinement in the VR headset: full-cube frames from the Mac blended in
   when the view is still (#170, step 4 of #166).** The `/vr/` page keeps
   drawing its reduced cube every frame; when the eye is still or moving slowly
