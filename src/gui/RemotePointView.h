@@ -18,6 +18,8 @@
 
 #include "RemoteRenderQueue.h"
 
+#include "RemoteSessionRecovery.h"
+
 class QJsonObject;
 class QNetworkAccessManager;
 class QNetworkReply;
@@ -81,6 +83,9 @@ private:
     bool m_requesting{ false };
     visivo::RenderQueuePlace m_place;
     bool m_live{ false };
+    /// A live stream whose session ended: a new session once, else failed()
+    /// and the window shows its loaded rows (RemoteSessionRecovery.h).
+    visivo::RemoteRecovery m_recovery;
     QHash<QString, QVariantMap> m_state;   ///< latest per type
     QHash<QString, QVariantMap> m_sent;    ///< last sent per type
 };

@@ -23,6 +23,31 @@ are preserved here unedited; the branch names they refer to are historical.
   median (59 frames/s without depth); a 2 GB Apertif cube at 24 frames/s,
   49 ms. Point tables and cubes drawn out of core are refused for now. See
   *Stereo frames for a headset* in `docs/backend-api/render.md`.
+- **Selections in the VR headset, analysis on the backend (#171, step 5 of
+  #166).** On the `/vr/` page the right trigger (or a mouse click in a desktop
+  browser) picks on the reduced cube the headset draws, with the renderer's
+  own values, threshold and clipping, and maps the pick to a pixel and channel
+  of the full cube through its block (the seed is the brightest full voxel of
+  that block). Three tools, cycled with the left trigger: a spectrum along the
+  line of sight (`/v1/spectral/probe`), the Kinematic Lasso with the desktop's
+  route and parameters (`/v1/cube/kinematic_select_bin`), its mask drawn in
+  green on the reduced cube (a drawn voxel is marked when any of its voxels is
+  selected), and a box region from two corners (one `mask_stats_bin` call in
+  box mode). A results panel in the headset and on the
+  page gives the ICRS position, the channel's velocity, the spectrum, and the
+  selection's voxels, flux in Jy km/s and velocity range. Each action is
+  recorded as a `visivo-recipe/1` record with the desktop's requests and
+  labels, downloadable or copied from the page.
+  - New route `POST /v1/cube/mask_stats_bin`: statistics of an explicit
+    selection mask (the `mask_apply_bin` wire) or, with `box=true`, of every
+    voxel of a box, reading only the box one channel at a time.
+  - `POST /v1/cube/reduced_info` adds `full_velocity_kms` and
+    `full_channel_width_kms` for every channel of the cube.
+  - `validation/vr_selection_identity.py`: on HCG 44, the selection made from
+    the page's pick on NGC 3187 equals the desktop's (Dice 1.0 against the
+    level field it shows and against its recipe's grow), the spectrum is the
+    desktop's, and the selection scores Dice 0.610 against Serra et al. (2013)
+    and 0.844 against SoFiA-2, the paper's values for that source.
 - **Cubes in a VR headset from a Mac (#167, first step of #166).** The backend
   serves a WebXR page at `/vr/` that a Meta Quest 3 opens in its browser
   (over `adb reverse`, so the page is `localhost` and needs no certificate;
@@ -61,7 +86,14 @@ are preserved here unedited; the branch names they refer to are historical.
   `VISIVO_RENDER_IN_PROCESS=1`) is refused before a window is made, and
   closing it still frees its reader process and shared memory. The desktop's
   "cannot render server-side" tooltips now give the real reason (no EGL, or a
-  Mac without a logged-in user session).
+  Mac without a logged-in user session). The render processes never show in
+  the Dock (a context with no window, declared background-only before AppKit
+  starts). Quitting closes every render session the desktop holds, one
+  bounded DELETE each, all at once, instead of leaving them to the five-minute
+  idle timeout. A view whose session ends under it (its render process
+  killed) asks for a new one by itself, once, and then offers Retry; the
+  backend closes such a stream with the reason `session ended` and logs one
+  line instead of a traceback.
 - **VBT tables with the wrong byte order in their header (#165).** Opening a
   VBT (points or a volume) now samples a few thousand values per field and
   compares both byte orders; when the values are absurd as declared and

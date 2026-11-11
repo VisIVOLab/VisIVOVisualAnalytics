@@ -15,4 +15,5 @@ private slots:
     void aLateSessionIsDeleted();
     void nothingToGiveBackSendsNothing();
     void theRequestsOutliveTheViewer();
+    void aCreatedSessionIsListedUntilItsDeleteIsAnswered();
 };

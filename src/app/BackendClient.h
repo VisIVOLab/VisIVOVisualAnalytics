@@ -2565,6 +2565,12 @@ public:
      *  runs and remove its frames; any render task, a cube's too. Bounded as
      *  cancelTask (@p timeoutMs, 0: 15 s). */
     bool deleteRender(const QString &taskId, QString &error, int timeoutMs = 0) const;
+    /** DELETE /v1/render/{id} — close a server-side render session (a cube's
+     *  or a point table's view, docs/backend-api/render.md). Blocking and
+     *  bounded as cancelTask (@p timeoutMs, 0: 15 s): the quit drain closes
+     *  the sessions still open with it (OpenRenderSessions.h). */
+    bool closeRenderSession(const QString &renderSessionId, QString &error,
+                            int timeoutMs = 0) const;
     /** DELETE /v1/datasets/{id} — close a dataset of this client's session
      *  when the last window on it closes. Bounded (5 s); refused once the
      *  application quits (TaskQuitDrain.h). True when the backend answered;

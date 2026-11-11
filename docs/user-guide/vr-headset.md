@@ -10,8 +10,11 @@ Lasso, spectra) still runs on the full cube on the backend.
 This is the first step of the immersive work
 ([#166](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/166),
 [#167](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/167)): the
-headset renders; selections in the headset and full-quality frames from the
-Mac's GPU come in later steps.
+headset renders, and selections made in the headset (a spectrum, the
+Kinematic Lasso, a box region) are computed on the full cube by the backend
+([#171](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/171), see
+[Selections in the headset](#selections-in-the-headset)); full-quality frames
+from the Mac's GPU come in later steps.
 
 | | |
 |---|---|
@@ -136,9 +139,8 @@ API to the network, protected only by the token). Prefer adb over Wi-Fi.
 | X | emission / maximum intensity |
 | Y | show or hide the panel on the left controller |
 | Right stick press | frame-rate governor on/off |
-
-The triggers do nothing yet: they are kept for selections (step 5,
-[#171](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/171)).
+| Right trigger | the selection tool along the right controller's ray (see below) |
+| Left trigger | next selection tool: spectrum probe, Kinematic Lasso, box region |
 
 The spatial clipping box, the colour range, the stretch and the velocity
 stretch are set on the page before entering VR.
@@ -170,6 +172,104 @@ stretch are set on the page before entering VR.
   rate asked of the headset (72, 90 or 120 Hz, if it offers it). Set them
   before entering VR.
 
+## Selections in the headset
+
+The right controller casts a ray (a thin white line); a small white cross
+shows where the trigger would land. On the Mac the same tools work with the
+mouse: a click (press and release without dragging) is the trigger, a drag
+still turns the cube. The tool is chosen with the left trigger or on the page
+(*Selection tool*). Everything below is computed by the backend on the full
+cube, through the routes the desktop uses; the headset only draws.
+
+**Where a pick lands.** The ray is marched through the reduced cube the
+headset draws, with the same values, threshold and clipping box as the
+renderer: in *emission* mode the pick is the first sample the renderer draws
+(the first at or above the threshold); in *maximum intensity* mode it is the
+brightest sample of the ray, which is what that mode shows. From there the
+seed is, by default, the brightest sample of the object the ray entered (the
+run of samples above the threshold that starts at the first one, not an
+object behind it), then the brightest full-resolution voxel of the reduced
+voxel it is in (for *max* binning, the voxel the drawn value came from). The
+page offers *Seed at: first drawn sample* and can turn off *brightest voxel of
+its block*. The reduced voxel is mapped to the full cube through its block (a
+partial last block covers only the pixels it holds), so the seed is always a
+pixel and channel of the full cube. When a reduced voxel stands for more than
+27 voxels (for example 8 × 8 × 4), the seed is the voxel with the brightest
+3 × 3 spatial mean of its block instead, so a lone noise spike at the block's
+edge cannot win; the panel says which rule was used (*its brightest* or *its
+brightest 3×3 mean*).
+
+The results panel (to the right of the cube in the headset, under the page's
+controls on the Mac) shows the seed's position: right ascension and
+declination in ICRS from the file's full WCS (`/v1/datasets/pixel_to_sky`,
+what the desktop sends over SAMP), the velocity of its channel in km/s with its
+convention, the pixel and channel, and the reduced voxel.
+
+| Tool | Trigger | What the backend computes | Panel |
+|---|---|---|---|
+| Spectrum probe | once, on the emission | the spectrum along the line of sight at the seed's pixel (`/v1/spectral/probe`, the desktop's probe) | the spectrum against velocity, the seed's channel marked |
+| Kinematic Lasso | once, on a source | the selection grown from the seed on the full cube (`/v1/cube/kinematic_select_bin`, with the desktop's parameters), then its statistics (`/v1/cube/mask_stats_bin`) | voxels selected, flux in Jy km/s, sum, velocity and channel range, peak, the selection's integrated spectrum |
+| Box region | twice, one per corner | the statistics of every voxel of the box, in one call (`/v1/cube/mask_stats_bin` with `box=true`) | voxels, blanks, mean, rms, min, max, sum, flux in Jy km/s |
+
+The lasso's mask comes back at full resolution and is drawn in **green** on the
+reduced cube: a drawn voxel is green when any full-resolution voxel of its
+block is selected, so nothing selected disappears, and selected voxels below
+the display threshold (the lasso grows into the faint margin) are drawn too;
+its bounding box is outlined. The lasso's parameters are the desktop's
+defaults (reach 8, velocity coupling 1, threshold 2.5 σ, the noise measured by
+the backend, the Reach slider's level-field budget 64, no smoothing) and can be
+changed on the page (*Kinematic Lasso parameters*). The same seed and
+parameters give the same mask as the desktop, voxel for voxel (see below).
+
+A box corner is placed at the right controller's tip when the tip is inside
+the cube (reach into it): two such corners make a 3-D box. A corner placed by
+pointing from outside the cube, or with the mouse, takes the right ascension
+and declination of the point the ray picks (the first drawn sample, or the
+middle of the ray inside the box when nothing is drawn) and no depth; the box
+then spans the channels of the velocity slab (the clipping range on the
+spectral axis, left stick). The sky rectangle is therefore exactly the one you
+pointed at only when you look down the spectral axis; from an oblique view the
+two picked points may lie at other depths than you meant. The box measured is
+outlined in pink after the answer, and the panel gives its pixel and channel
+range: check it there. The box is measured in one call on the full cube (every
+voxel, read one channel at a time): 22 ms for a 66 × 29 × 158 box of HCG 44.
+The rms is the population standard deviation, as the region statistics give
+it; no median; the flux is each channel's sum over its own beam area times its
+own width.
+
+The lasso's green overlay stays while the other tools are used (the panel
+says so); *Clear*, a new lasso or a new cube removes it. Switching tool drops a
+request still in flight: it neither draws nor records.
+
+**Recipes.** Each spectrum, lasso selection and box is recorded as the desktop
+records its products (`visivo-recipe/1`, see
+[Kinematic Lasso](kinematic-lasso.md)): the dataset's path, the calls with their
+requests under the API's field names (for the lasso, the grow with exactly the
+request the desktop's recipe holds, then the statistics of the mask it
+returns), the parameters as the desktop's Provenance tab labels them, and where
+it was measured. *Download recipes (.json)* saves all of them, *Copy last
+recipe* copies the latest. A replay opens the path and posts the same
+requests: the selection is the one the desktop shows for that seed.
+
+**Identity with the desktop.** `validation/vr_selection_identity.py` runs the
+page's own picking code (under node) on the reduced cube of HCG 44 and the
+requests it builds, and compares them with the desktop's two paths for
+NGC 3187 (the level field the Reach slider thresholds, and its recipe's grow).
+Result (`validation/out/vr_selection_identity.md`): for rays along the
+spectral axis and from the page's default view, with either seed rule, the VR
+selection is the desktop's (Dice 1.000 against both, 13 216 voxels, the same
+as from the paper's seed at the source's peak); the spectrum is the desktop's
+and the cube's own line of sight; against the references the selection scores
+Dice 0.610 with the published mask of Serra et al. (2013) and 0.844 with our
+SoFiA-2 run, the paper's values for this source; flux 6.061 Jy km/s.
+
+**Timings** (backend on an Apple M5 Max, page in Chrome on the same Mac,
+HCG 44 binned 3 × 3 × 1): pick and seed 40 ms (the ray pick itself takes under
+0.1 ms, so the cross follows the ray every other frame), spectrum 45-85 ms,
+lasso 570-710 ms plus 40-80 ms of statistics, box over 158 channels 22 ms.
+The green overlay costs GPU time: 0.64 ms without it, 0.84 ms with it, for one
+1600 × 1000 view on that Mac; the headset's own numbers are on its panel.
+
 ## The numbers on the panel
 
 The panel (on the left controller, or next to the cube without controllers)
@@ -182,7 +282,9 @@ and the page show, updated four times a second:
   when the browser offers timer queries (n/a otherwise);
 - **samples/voxel** in use and the **max steps/ray** it allows;
 - the **volume**, its texture size, the **binning**, the **threshold**;
-- the **eye buffer** size, the resolution scale and the foveation level.
+- the **eye buffer** size, the resolution scale and the foveation level;
+- the **selection tool** in use and the time of the last pick, lasso,
+  statistics, spectrum and box requests.
 
 ## Measuring the headset: the benchmark
 
@@ -252,7 +354,7 @@ How to read it:
 The defaults (mean, threshold for this binning, 3×3×1 on HCG 44) keep much of
 the faint emission for little noise and blur; max binning is the choice for
 compact sources that mean binning dilutes. A selection made in the headset
-will be computed on the full cube, not on what is drawn.
+is computed on the full cube, not on what is drawn.
 
 ## Limits
 
@@ -261,8 +363,11 @@ will be computed on the full cube, not on what is drawn.
   16 bits), for what a headset browser can allocate; the backend refuses a
   larger reduced cube before reading anything, and the page checks its GPU's
   limit before asking. Choose a larger binning.
-- No selections, spectra or moments in the headset yet (step 5); no
-  full-quality frames from the Mac (steps 2 to 4).
+- In the headset: a spectrum, the Kinematic Lasso (one seed: no add or carve
+  seeds, no hand refinement, no Isolate or Remove, which stay on the desktop)
+  and a box region; no moments yet, and no full-quality frames from the Mac
+  (steps 2 to 4). The desktop has no recipe import: a VR recipe is replayed by
+  posting its requests, as a desktop recipe is.
 - The labels follow the central row and column of the field; far from them on
   a wide projected field the true coordinate of a pixel differs a little.
 - The page reads the whole cube once to reduce it (0.6 s for HCG 44); a cube

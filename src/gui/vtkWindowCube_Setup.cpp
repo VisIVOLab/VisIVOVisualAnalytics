@@ -903,6 +903,13 @@ void vtkWindowCube::setupWorkspaceDocks()
             u"Remote rendering (GPU on backend) - click ✕ to switch to Local"_s,
             banner);
     bannerLayout->addWidget(this->m_remoteRenderBannerLabel, 1);
+    // Shown only after a stream dropped for good (offerRemoteRetry).
+    this->m_remoteRenderBannerRetry = new QToolButton(banner);
+    this->m_remoteRenderBannerRetry->setText(u"Retry"_s);
+    this->m_remoteRenderBannerRetry->setToolTip(
+            u"Ask the backend for a new remote view of this cube"_s);
+    this->m_remoteRenderBannerRetry->hide();
+    bannerLayout->addWidget(this->m_remoteRenderBannerRetry);
     this->m_remoteRenderBannerClose = new QToolButton(banner);
     this->m_remoteRenderBannerClose->setText(u"✕"_s);
     this->m_remoteRenderBannerClose->setToolTip(u"Switch to Local rendering"_s);
@@ -1134,6 +1141,13 @@ void vtkWindowCube::setupRenderModeUi()
                      [this]() { this->applyRenderMode(RenderMode::Local, true); });
     QObject::connect(this->m_actionRenderRemote, &QAction::triggered, this,
                      [this]() { this->applyRenderMode(RenderMode::Remote, true); });
+
+    if (this->m_remoteRenderBannerRetry) {
+        QObject::connect(this->m_remoteRenderBannerRetry, &QToolButton::clicked, this, [this]() {
+            this->m_remoteRecovery.userRetried();
+            this->replaceRemoteRenderSession();
+        });
+    }
 
     // Banner close ("✕") → drop back to Local without tearing the session.
     if (this->m_remoteRenderBannerClose) {

@@ -92,6 +92,7 @@
     "POST /v1/cube/mask",
     "POST /v1/cube/mask_apply_bin",
     "POST /v1/cube/mask_selection",
+    "POST /v1/cube/mask_stats_bin",
     "POST /v1/cube/noise",
     "POST /v1/cube/preview",
     "POST /v1/cube/pv",
