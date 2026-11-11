@@ -152,6 +152,13 @@ class _RevalidatedStaticFiles(StaticFiles):
     """Static files the browser must revalidate on every load (ETag), so a
     headset does not keep running yesterday's page after an update."""
 
+    async def get_response(self, path, scope):  # type: ignore[override]
+        # Dotfiles (an editor's or Finder's) are not part of the page.
+        if any(part.startswith(".") for part in Path(path).parts):
+            from starlette.exceptions import HTTPException as _StarletteHTTPException
+            raise _StarletteHTTPException(status_code=404)
+        return await super().get_response(path, scope)
+
     def file_response(self, *args, **kwargs):  # type: ignore[override]
         response = super().file_response(*args, **kwargs)
         response.headers["Cache-Control"] = "no-cache"
@@ -162,6 +169,10 @@ class _RevalidatedStaticFiles(StaticFiles):
 # no token. The page sends the token on its own API requests, read from the
 # URL fragment (never sent to the server, so never in an access log) or typed.
 _vr_static_dir = Path(__file__).resolve().parent / "static" / "vr"
+# Before the mount (routes match in order): /vr/ itself, served with this
+# build's asset addresses, /vr/b/<build>/…, /v1/vr/info and /v1/vr/log (#166).
+from .routers import vr as vr_routes  # noqa: E402
+app.include_router(vr_routes.router)
 if _vr_static_dir.is_dir():
     app.mount("/vr", _RevalidatedStaticFiles(directory=str(_vr_static_dir), html=True),
               name="vr")
@@ -197,6 +208,7 @@ _HISTORY_SKIP_PREFIXES = (
     "/v1/render/",         # WebRTC signalling and per-frame interaction
     "/v1/samp/",           # interoperability messaging
     "/v1/diagnostics",
+    "/v1/vr/",             # the VR page's version polls and log lines (#166)
     "/v1/assistant/config",
     "/v1/assistant/stream",  # a chat stream, not a job (and /query is recorded)
 )

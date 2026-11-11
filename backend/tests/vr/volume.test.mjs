@@ -147,3 +147,58 @@ test('matrices: inverse, ray-box, grabs', () => {
   const x = M.transformPoint(turned, [1, 1, 0]);
   close(x[0], 0, 1e-6); close(x[2], -1, 1e-6);
 });
+
+// ── Longitudes across 0° ──────────────────────────────────────────────────
+
+test('an RA axis crossing 0° is interpolated and ticked through 0, not 180', () => {
+  const world = [359.8, 359.9, 0, 0.1, 0.2];
+  const axis = { name: 'RA', ctype: 'RA---SIN', unit: 'deg', world };
+  assert.ok(V.isLongitudeAxis(axis));
+  assert.deepEqual(V.unwrapDegrees(world).map((v) => +v.toFixed(6)), [359.8, 359.9, 360, 360.1, 360.2]);
+  // Halfway between the 2nd and 3rd voxel centres: 359.95, not 179.95.
+  const t = (1.5 + 0.5) / 5;
+  close(V.axisTexToWorld(axis, world, t), 359.95, 1e-9);
+  close(V.axisTexToWorld(axis, world, (2 + 0.5) / 5), 0, 1e-9);
+  close(V.axisTexToWorld(axis, world, (3.5 + 0.5) / 5), 0.15, 1e-9);
+  const ax = V.axisTicks(axis, 'x', 5);
+  const values = ax.ticks.map((k) => +k.value.toFixed(6));
+  assert.ok(values.every((v) => v >= 0 && v < 360), values.join());
+  assert.ok(values.every((v) => v > 359.7 || v < 0.3), `no tick far from the field: ${values.join()}`);
+  assert.ok(values.includes(0), values.join());
+  // Ticks in order along the box, and each one where its value is.
+  for (let i = 1; i < ax.ticks.length; i++) assert.ok(ax.ticks[i].t > ax.ticks[i - 1].t);
+  for (const k of ax.ticks) close(V.axisTexToWorld(axis, world, k.t), k.value, 1e-6);
+  assert.equal(ax.ticks.find((k) => k.value === 0).label.replace(/0/g, '').replace('.', ''), '');
+});
+
+test('decreasing RA across 0° (CDELT1 < 0), and axes that are not longitudes', () => {
+  const world = [0.2, 0.1, 0, 359.9, 359.8];
+  const axis = { name: 'RA', unit: 'deg', world };
+  close(V.axisTexToWorld(axis, world, (2.5 + 0.5) / 5), 359.95, 1e-9);
+  const ticks = V.axisTicks(axis, 'x', 5).ticks;
+  assert.ok(ticks.length >= 3);
+  assert.ok(ticks.every((k) => k.value > 359.7 || k.value < 0.3));
+  // Dec, a velocity axis and an RA away from 0° are unchanged.
+  const dec = { name: 'DEC', unit: 'deg', world: [-0.2, -0.1, 0, 0.1, 0.2] };
+  assert.ok(!V.isLongitudeAxis(dec));
+  close(V.axisTexToWorld(dec, dec.world, 0.5), 0, 1e-12);
+  const ra = { name: 'RA', unit: 'deg', world: [150.2, 150.1, 150.0, 149.9] };
+  close(V.axisTexToWorld(ra, ra.world, 0.5), V.texToWorld(ra.world, 0.5), 1e-12);
+  assert.deepEqual(V.axisTicks(ra, 'x', 4), (() => { const a = { ...ra, name: 'X' }; const r = V.axisTicks(a, 'x', 4); return { ...r, title: 'RA' }; })());
+  const vel = { name: 'VRAD', unit: 'km/s', world: [350, 10] };
+  assert.ok(!V.isLongitudeAxis(vel));
+  assert.ok(!V.isLongitudeAxis({ name: 'RA', unit: 'rad', world: [6.2, 0.1] }));
+  assert.equal(V.wrap360(-0.1).toFixed(6), '359.900000');
+  assert.equal(V.wrap360(360), 0);
+  assert.equal(V.wrap360(720.5), 0.5);
+});
+
+test('a pixel picked across 0° gets its RA through 0 (selection.js worldOfPixel)', async () => {
+  const S = await import('../../app/static/vr/js/selection.js');
+  const info = { axes: { x: { name: 'RA', unit: 'deg', world: [359.8, 359.9, 0, 0.1, 0.2] },
+    y: { name: 'DEC', unit: 'deg', world: [1, 2, 3, 4, 5] }, z: { name: 'VRAD', unit: 'm/s', world: [1, 2, 3, 4, 5] } },
+  factors: [1, 1, 1], full_shape: [5, 5, 5] };
+  const w = S.worldOfPixel(info, [2, 2, 2]);
+  close(w.x, 0, 1e-9);
+  close(S.worldOfPixel(info, [1, 2, 2]).x, 359.9, 1e-9);
+});

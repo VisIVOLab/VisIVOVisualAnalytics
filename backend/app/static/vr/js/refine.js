@@ -365,3 +365,19 @@ export class Rolling {
     return (recent.length - 1) / ((recent[recent.length - 1] - recent[0]) / 1000);
   }
 }
+
+/** A token a WebSocket subprotocol can carry (RFC 6455: an HTTP token). */
+export function subprotocolSafe(token) {
+  return typeof token === 'string' && /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(token);
+}
+
+/**
+ * Does this create_session error mean "no render sessions here" (give up for
+ * this cube) rather than "try again" ? 404/503 "… not available", or a bare
+ * 404 "Not Found" (a backend without the render routes). A 404 "Unknown
+ * dataset_id" is not: the dataset is reopened and the refiner connects again.
+ */
+export function renderUnavailable(message) {
+  const m = String(message || '');
+  return /^(404|503):.*not available/i.test(m) || /^404: (Not Found)?$/.test(m.trim());
+}

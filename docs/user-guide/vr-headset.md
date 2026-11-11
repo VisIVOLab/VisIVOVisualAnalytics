@@ -33,12 +33,25 @@ is listed under [Known limits](#known-limits).
 | **Without a headset** | the same page in a desktop browser, with the mouse (for development and checks) |
 | **Data** | a FITS cube the backend can open |
 
-**In short.** Open the cube in the desktop application, connect the Quest
-with a USB-C cable, choose **Tools → Views → Open in VR Headset…** and press
-**Open on Headset**. Put the headset on: the cube is loading in the Quest
-Browser; press **Enter VR**. Point the right controller at the panel to the
-left of the cube to change the colour map, threshold or channels, or at the
-cube and pull the right trigger for a spectrum (left trigger: next tool).
+## Quickstart
+
+1. **Once:** install adb (`brew install android-platform-tools` on a Mac) and
+   turn on **developer mode** for the headset in the Meta Horizon app on your
+   phone (Devices → your headset → Headset settings → Developer mode).
+2. Open the cube in the desktop application and connect the Quest with a
+   USB-C data cable.
+3. **Tools → Views → Open in VR Headset…**. The dialog says what is missing,
+   step by step; the first time, put the headset on and accept **Allow USB
+   debugging** (tick *Always allow from this computer*).
+4. Press **Open on Headset**, put the headset on: the cube loads in the Quest
+   Browser. Press **Enter VR**.
+5. The first time, a short controls guide stands in front of you (*Next*,
+   *Close*; the **?** on the panel shows it again). Grip moves the cube, the
+   right stick sets threshold and opacity, the left stick the velocity slab,
+   the right trigger the tool; the panel to the left of the cube has the rest.
+
+If something goes wrong, the page says so in the headset and offers the way
+out: see [Troubleshooting](#troubleshooting).
 
 ---
 
@@ -115,10 +128,18 @@ sends the desktop's own 3-D view to an OpenXR runtime on this computer (see
 1. Connect the headset with a USB-C cable (or connect adb over Wi-Fi, see
    [below](#on-the-quest-3-over-wi-fi)) and put it on.
 2. In the cube window, **Tools → Views → Open in VR Headset…**. The dialog
-   says what it finds, and checks again every few seconds while no headset
-   is ready:
-   - *adb was not found*: install it (step 1 above);
-   - *No headset connected*: the cable, or developer mode;
+   says what it finds and the next steps, numbered, with a link to this
+   guide; it checks again every few seconds, and **Retry** checks at once:
+   - *adb was not found*: the exact command that installs it on this system
+     (`brew install android-platform-tools`, `sudo apt install adb`,
+     `winget install Google.PlatformTools`);
+   - *The Quest is connected by USB, but adb does not see it: developer mode
+     or USB debugging is off on the headset* (macOS: the dialog also looks at
+     the Mac's USB devices, for Meta's vendor id 0x2833, when adb lists
+     nothing): turn developer mode on, restart the headset, reconnect;
+   - *No headset on USB* (macOS) or *No headset connected*: the cable (a
+     data cable, not a charge-only one), the headset switched on, or
+     developer mode;
    - *The headset has not allowed this computer yet*: in the headset, accept
      **Allow USB debugging** (tick *Always allow from this computer* so it is
      not asked again);
@@ -126,7 +147,10 @@ sends the desktop's own 3-D view to an OpenXR runtime on this computer (see
      connecting; accept the prompt in the headset if it shows one;
    - *The headset is offline*: wake it up, or reconnect the cable;
    - *Ready*: the headset's model. With several devices attached, choose the
-     headset in the list.
+     headset in the list; the one used last time is chosen first.
+
+   When a step fails, **Copy Error** copies the error, the state and the adb
+   found (never the token) for a support request.
 3. Press **Open on Headset**. The application forwards the backend's port to
    the headset (`adb reverse tcp:<port> tcp:<port>`) and opens the page in
    the Quest Browser (`am start` with a view intent; in the headset's default
@@ -301,15 +325,19 @@ around you), the panel does.
 
 | Row | What it does |
 |---|---|
-| title bar | the cube's file name; pull the trigger on it and move the controller to **move the panel** (it turns to face you); the place is kept for next time |
+| title bar | the cube's file name; pull the trigger on it and move the controller to **move the panel** (it turns to face you); the place is kept for next time. **?** at its right end shows the controls guide again |
 | (two lines) | the cube's shape, the reduced shape, the binning and texture; the session (*the desktop's session*, *own session*, …) |
 | Colour map | ◀ ▶ the previous or next colour map; *emission* or *max intensity* |
 | Threshold | a slider (fine steps near the noise, as on the page) with its value in the cube's unit; *Reset* puts back the default threshold and colour range |
 | from | the default threshold *for this binning* or that of the *full cube* (the desktop's) |
 | Colour max, Opacity | sliders |
 | Channels | the velocity slab: a range with two ends (the nearer end moves); the channel range and its velocities in km/s with their convention below it; *All channels* |
-| Refine | refinement on or off, and its state (*refined (still view)*, *waiting*, *paused in passthrough*, *unavailable: …*) |
+| Refine | refinement on or off, and its state (*refined (still view)*, *waiting*, *paused in passthrough*, *lost: retrying in N s*, *unavailable: …*) |
 | Tool | spectrum, lasso or box; *Clear* removes the selection and the marks |
+
+Under the rows, a line says when the page lowered the quality to hold the
+frame rate (*Quality lowered to hold 90 Hz: 0.50 samples/voxel (of 1), eye
+buffer 0.85× (of 1×)*), or what a selection is doing.
 
 A slider pressed keeps following the controller until the trigger is released,
 even when the ray slips off its row. The results of a selection (numbers and
@@ -337,7 +365,8 @@ browser only (the headset's browser and the Mac's keep their own): the
 **colour map**, the **threshold source** (*for this binning* or *full cube*),
 the **refinement** settings (on or off, refined size, JPEG quality, reproject
 with depth), the **panel's place** in the headset (relative to where the cube
-first appears), and the **last selection tool**. Nothing else is stored there:
+first appears), the **last selection tool**, and whether the **controls
+guide** was seen (it is shown at the first entry into VR only). Nothing else is stored there:
 not the token (unless *remember on this device* is ticked), not the session,
 not any result. If the browser refuses storage (a private window), the page
 works with the defaults. `?refine=0` or `?refine=1` in the address overrides
@@ -362,9 +391,24 @@ the stored refinement setting for that visit.
   exactly when one of the block's voxels is (the noise rule, read from the
   lower tail, would set too low a cut on block maxima and draw noise).
 - **Samples / voxel**: samples per reduced voxel along each ray (1 by default).
-  With *hold the frame rate* on, the page lowers it when frames are missed and
-  raises it back slowly, never above this value; while you hold the cube it
-  drops to 60 %.
+  With *hold the frame rate* on (the default; right stick press toggles it in
+  the headset), the page lowers it when frames are missed and raises it back
+  slowly, never above this value; while you hold the cube it drops to 60 %.
+  When the governor has already lowered it to 0.5 or less (or to its own
+  floor, 0.25) and more than 10 % of the frames are
+  still missed over 3 s, the page makes the **eye buffer** smaller, one step
+  at a time through the scale factors 1.25, 1, 0.85 and 0.7 (absolute
+  values of *Resolution*, starting below the one chosen; never below 0.7),
+  and does not raise it again in that VR session (each change costs a hitch);
+  the next *Enter VR* starts from the chosen resolution. The panel and the
+  numbers say so.
+- **Memory budget**: before the reduced cube is read, the page checks that it
+  fits: the GPU's 3-D texture side, and the texture's size against what this
+  device gives one cube (a headset: 256 MiB with 8 GB of memory, 128 MiB with
+  4 GB; a computer's browser: 1 GiB). A cube over it is refused with the
+  reason (*… needs 300 MiB of texture (900 MiB while loading); this headset
+  allows 256 MiB for one cube*): choose a larger binning. The headset's limit
+  is a conservative figure, not yet measured on a Quest 3.
 - **Resolution**: the headset's eye-buffer scale (`framebufferScaleFactor`),
   **Foveation**: the Quest's fixed foveated rendering, **Refresh**: the display
   rate asked of the headset (72, 90 or 120 Hz, if it offers it). Set them
@@ -841,7 +885,97 @@ value and whether each step behaves as described.
     cube there and repeat 1, then hold still and note **pose->frame** and
     **stop->refined**.
 
+## Troubleshooting
+
+The page watches the backend (one small request every 5 s, and every 1 to
+5 s while it does not answer) and says what went wrong where you are: on a
+card in front of you in the headset (point the right ray at its buttons and
+pull the trigger), and in a banner on the 2-D page. Nothing waits on it: the
+cube stays on show and moves with your hands, and the card never stays in
+the way. A card that lasts (the backend not reachable, the token refused, an
+out-of-date page) follows your gaze for 6 s, then moves aside, 40° to the
+left and lower, and stays there. **Hide** folds it into a line on the panel
+(*⚠ Backend not reachable: retrying — "?" shows it*) until its state
+changes; **?** on the panel brings it back. The card is redrawn only when its
+text changes (at most once per check, every 1 to 5 s).
+
+| Message | What happened | The way out |
+|---|---|---|
+| **Backend not reachable**, *the headset cannot reach the backend on the computer* | in the headset over USB: the cable was unplugged, or the headset or adb restarted, so the port forwarding (`adb reverse`) is gone; or the backend is restarting | the page retries by itself (*Trying again by itself every few seconds*); if it does not clear, on the computer press **Open on Headset** again (it restores the forwarding). *Retry now*, *Hide*, *Exit VR* |
+| **Backend not reachable**, *the backend does not answer* | in a desktop browser or over the LAN: the backend stopped or the network is down | start the desktop application (it starts the backend); the page retries by itself |
+| **The backend is not answering behind its proxy** / **answered with an error** | the address answers with an HTTP error (a proxy's 502, a 500) | the page retries by itself; *Retry now*, *Hide* |
+| **The backend restarted** | it came back with its sessions gone | nothing: the page opened the cube again by its path, the view is kept; repeat the last selection if it did not finish |
+| **The cube was opened again** | a request found the cube's dataset gone (the desktop's session ended) | nothing: the page opened it again; repeat the selection |
+| **The cube could not be opened again** | the file moved or changed shape | *Try again*, or open it again from the desktop |
+| **The backend refused the token** | the backend was restarted with a new token, or the token expired | on the computer: **Open in VR Headset… → Open on Headset** (a fresh link); or paste the token on the page, then *Check again*; *Hide* meanwhile |
+| **The backend was updated** | the backend serves a newer version of this page than the one open (a tab kept from before an upgrade) | *Reload page* (the cube from the desktop opens again by itself) |
+| **This page is out of date** / **Update the application** | the page and the backend speak different versions of the page API (or the backend is older than the page: it has no `/v1/vr/info`) | *Reload page*; if that does not help, update VisIVO Visual Analytics on the computer |
+| **The graphics were reset** | the browser took the GPU away (memory pressure, another app) | the page waits for it and uploads the cube again by itself (*Graphics restored*); a VR session cannot outlive it, so press *Enter VR* again |
+| **The graphics did not come back** | not restored after 10 s | *Reload page* |
+| **The VR session ended** (on the 2-D page) | the headset or the browser ended it: the system menu, the headset taken off for a while | *Enter VR*: the cube and the settings are kept |
+| **This cube is too large for this device** | the reduced cube would not fit the [memory budget](#the-settings-on-the-page) | a larger *Spatial bin* or *Spectral bin*, or a smaller *Max side* |
+| Refine: *lost: retrying in N s, the headset's own rendering meanwhile* | the render session's connection dropped | nothing: the headset shows its own rendering, and the page reconnects (2, 4, 8 … 30 s) and refines again; if the backend no longer holds the cube, the page opens it again first |
+
+**Upgrades.** The page's code is served from addresses that change with every
+version (`/vr/b/<build>/…`) and the page itself is always revalidated, so
+after an upgrade a reload always gets the new code. A tab left open across an
+upgrade may run a mix of old and new code until it reloads; it notices the
+upgrade at its next check and says *The backend was updated*.
+
+**Diagnostics for support.** The page sends its errors and the key events
+(page errors, context loss, the end of a VR session, reconnections, the frame
+rate once a minute in VR) to the backend's log, a few at a time (lines
+`[vr <build>] <event>: …`, logger `visivo.vr`). Before it leaves the page, and
+again on the backend, each message is scrubbed: `%`-escapes decoded, tokens
+replaced, the value of any key containing *token* or *session* redacted
+when it looks like a secret, render session ids replaced, paths cut to their
+file name (spaces inside directory names up to a file name with an extension;
+`file://`, URLs with a host, Windows `C:\`, `C:/` and `\\server\` paths), and
+control and format characters (newlines, bidirectional overrides,
+zero-width characters) turned into spaces; the full list is in the
+[backend API](../backend-api/meta-files.md#post-v1vrlog). **Copy diagnostics** on the page puts the versions, the GPU and
+its limits, WebXR, the cube, the frame rate, the quality, the settings and the
+last events on the clipboard (or shows them, when the clipboard is not
+available): paste them into a support request.
+
+**Checked so far** in a desktop Chrome (headless, ANGLE Metal on an M5 Max,
+and SwiftShader) against a local backend, with each failure driven by
+`validation/vr_lifecycle.mjs`: the backend killed (the notice within 0–5 s,
+retries every 1–5 s, the cube opened again about 10 s after the backend is
+back), the token changed under the page, the cube's dataset deleted, the
+render session deleted (the page's own rendering at once, refined again
+about 8 s later), the WebGL context lost and restored with
+`WEBGL_lose_context` (the cube drawn again 0.6 s later), a stale page build
+and API, the guide's buttons pressed through a ray. Not yet on a Quest 3:
+the checks below.
+
+**What to check on the Quest 3** (and the numbers to report):
+
+1. Enter VR for the first time: the controls guide stands in front of you;
+   *Next*, *Back* and *Close* work with the right trigger; enter VR again: it
+   is not shown; **?** on the panel shows it again.
+2. In VR, unplug the USB cable: within 5 s the card says *Backend not
+   reachable* and names *adb reverse* and *Open on Headset*, while the cube
+   still moves with your hands. Plug it back and press *Open on Headset* on
+   the Mac: the card goes by itself (how many seconds?).
+3. Quit and restart the desktop application while in VR: *The backend
+   restarted*, the cube stays, a spectrum works afterwards; refinement comes
+   back (*Refine* row).
+4. Press the Quest's system button and quit the VR session: the 2-D page says
+   *The VR session ended* with *Enter VR*.
+5. Load a large cube (*Max side* 512, 16-bit) and stay still, then move:
+   does the panel say *Quality lowered to hold … Hz*? Read the numbers (Y):
+   FPS, samples/voxel, eye buffer size before and after.
+6. **Copy diagnostics** on the 2-D page: does the clipboard work over
+   `localhost` (paste the text in the report)?
+
 ## Known limits
+
+- **Tokens in the access log.** The VR page sends its token in request
+  headers and, on the render WebSocket, as a subprotocol: it is in no URL.
+  The desktop's remote 3-D view still puts it in its WebSocket address
+  (`/v1/render/<id>/ws?token=…`), and uvicorn's access log records that
+  address, so the backend's log can hold the token: keep that log private.
 
 - **Checks on the headset are pending.** Everything above was measured in a
   desktop browser on the Mac (Chrome, the same code path with the mouse); the

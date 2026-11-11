@@ -20,7 +20,9 @@ const SLAB_TEXT_Y = 580;
 export function panelLayout() {
   const w = [];
   const row = (i) => ROWS[i];
-  w.push({ id: 'drag', kind: 'drag', rect: [0, 0, PANEL_PX[0], 72] });
+  // The title bar drags the panel; its right end recalls the controls guide (#166).
+  w.push({ id: 'drag', kind: 'drag', rect: [0, 0, PANEL_PX[0] - 96, 72] });
+  w.push({ id: 'guide', kind: 'button', rect: [PANEL_PX[0] - 88, 8, 72, WH], label: '?' });
   // Row 0: colour map, render mode.
   w.push({ id: 'cmap-prev', kind: 'button', rect: [X0, row(0), 64, WH], label: '◀' });
   w.push({ id: 'cmap-next', kind: 'button', rect: [X0 + 264, row(0), 64, WH], label: '▶' });
@@ -262,11 +264,11 @@ export function drawPanel(c, layout, view, ui = {}) {
   c.textBaseline = 'middle';
   c.fillStyle = C.fg;
   c.font = 'bold 32px -apple-system, system-ui, sans-serif';
-  c.fillText(fit(c, view.title || 'VisIVO VR', W - 230), 20, 37);
+  c.fillText(fit(c, view.title || 'VisIVO VR', W - 330), 20, 37);
   c.font = '22px -apple-system, system-ui, sans-serif';
   c.fillStyle = C.muted;
   c.textAlign = 'right';
-  c.fillText('⠿ drag to move', W - 20, 37);
+  c.fillText('⠿ drag to move', W - 108, 37);
   c.textAlign = 'left';
   c.font = '24px ui-monospace, Menlo, monospace';
   (view.info || []).slice(0, 2).forEach((l, i) => { c.fillStyle = i ? C.muted : C.fg; c.fillText(fit(c, l, W - 40), 20, 92 + i * 28); });

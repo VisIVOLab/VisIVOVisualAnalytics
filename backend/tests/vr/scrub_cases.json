@@ -1,0 +1,395 @@
+{
+  "about": "What the VR log scrubbing must remove (absent), keep (present), and, where given, the exact output (expected). Read by backend/tests/test_vr_lifecycle.py (vr.py scrub) and backend/tests/vr/diagnostics.test.mjs (diagnostics.js scrubText): both sides follow the same rules.",
+  "cases": [
+    {
+      "name": "known token",
+      "input": "failed with Zx81secretTOKEN in it",
+      "secrets": [
+        "Zx81secretTOKEN"
+      ],
+      "absent": [
+        "Zx81secretTOKEN"
+      ],
+      "present": [
+        "<token>"
+      ]
+    },
+    {
+      "name": "token= in a query",
+      "input": "ws://localhost:8000/v1/render/abc/ws?token=AbC123xyz&x=1",
+      "absent": [
+        "AbC123xyz"
+      ],
+      "present": [
+        "localhost:8000",
+        "token=<redacted>"
+      ]
+    },
+    {
+      "name": "session_id=",
+      "input": "open failed session_id=s3cr3tsess",
+      "absent": [
+        "s3cr3tsess"
+      ],
+      "present": [
+        "session_id=<redacted>"
+      ]
+    },
+    {
+      "name": "sessionId:",
+      "input": "{sessionId: deadbeefcafe}",
+      "absent": [
+        "deadbeefcafe"
+      ]
+    },
+    {
+      "name": "access_token=",
+      "input": "url?access_token=ya29.long-value&y=2",
+      "absent": [
+        "ya29.long-value"
+      ]
+    },
+    {
+      "name": "JSON token",
+      "input": "{\"token\": \"jsonsecret99\", \"a\": 1}",
+      "absent": [
+        "jsonsecret99"
+      ],
+      "present": [
+        "\"a\": 1"
+      ]
+    },
+    {
+      "name": "header form",
+      "input": "X-Visivo-Token: hdrsecret77 sent",
+      "absent": [
+        "hdrsecret77"
+      ]
+    },
+    {
+      "name": "render route id",
+      "input": "DELETE /v1/render/0123abcd4567ef89aa/ws closed",
+      "absent": [
+        "0123abcd4567ef89aa"
+      ],
+      "present": [
+        "/v1/render/<id>/ws"
+      ]
+    },
+    {
+      "name": "render route keeps create_session",
+      "input": "POST /v1/render/create_session 404",
+      "present": [
+        "/v1/render/create_session"
+      ]
+    },
+    {
+      "name": "POSIX path",
+      "input": "open /Users/alice/proj/cube.fits failed",
+      "absent": [
+        "alice",
+        "proj"
+      ],
+      "present": [
+        "cube.fits",
+        "failed"
+      ]
+    },
+    {
+      "name": "POSIX path with spaces",
+      "input": "open /Users/John Doe/data/cube.fits",
+      "absent": [
+        "John",
+        "Doe",
+        "data/"
+      ],
+      "present": [
+        "cube.fits"
+      ]
+    },
+    {
+      "name": "home path",
+      "input": "see ~/Library/secret dir/x.log",
+      "absent": [
+        "Library",
+        "secret"
+      ],
+      "present": [
+        "x.log"
+      ]
+    },
+    {
+      "name": "Windows backslash with spaces",
+      "input": "C:\\Users\\John Doe\\cubes\\m33.fits missing",
+      "absent": [
+        "John",
+        "Doe",
+        "cubes"
+      ],
+      "present": [
+        "m33.fits"
+      ]
+    },
+    {
+      "name": "Windows forward slash",
+      "input": "C:/Users/bob/m33.fits",
+      "absent": [
+        "bob"
+      ],
+      "present": [
+        "m33.fits"
+      ]
+    },
+    {
+      "name": "UNC",
+      "input": "\\\\fileserver\\share\\team\\hcg44.fits",
+      "absent": [
+        "fileserver",
+        "share",
+        "team"
+      ],
+      "present": [
+        "hcg44.fits"
+      ]
+    },
+    {
+      "name": "file URL",
+      "input": "file:///Users/carol/data/n.fits",
+      "absent": [
+        "carol",
+        "data"
+      ],
+      "present": [
+        "n.fits"
+      ]
+    },
+    {
+      "name": "URL with a host and a path",
+      "input": "GET https://example.org/home/dave/private/c.fits",
+      "absent": [
+        "dave",
+        "private"
+      ],
+      "present": [
+        "example.org",
+        "c.fits"
+      ]
+    },
+    {
+      "name": "URL to the backend's own routes",
+      "input": "GET http://127.0.0.1:8000/v1/cube/reduced_info failed",
+      "present": [
+        "127.0.0.1:8000/v1/cube/reduced_info"
+      ]
+    },
+    {
+      "name": "page route kept",
+      "input": "at http://localhost:8000/vr/b/abc123/js/main.js:12:5",
+      "present": [
+        "/vr/b/abc123/js/main.js:12:5"
+      ]
+    },
+    {
+      "name": "API route kept",
+      "input": "POST /v1/cube/subvolume_bin failed",
+      "present": [
+        "POST /v1/cube/subvolume_bin failed"
+      ]
+    },
+    {
+      "name": "encoded pairing path",
+      "input": "#path=%2FUsers%2Feve%2Fdata%2Fcube.fits&dataset=ds",
+      "absent": [
+        "eve",
+        "%2F"
+      ],
+      "present": [
+        "cube.fits"
+      ]
+    },
+    {
+      "name": "encoded token",
+      "input": "token%3Denc0dedsecret",
+      "absent": [
+        "enc0dedsecret"
+      ]
+    },
+    {
+      "name": "user agent kept",
+      "input": "Mozilla/5.0 (X11; Linux x86_64) Chrome/132",
+      "present": [
+        "Mozilla/5.0 (X11; Linux x86_64) Chrome/132"
+      ]
+    },
+    {
+      "name": "newline and CR",
+      "input": "a\nb\rc",
+      "absent": [
+        "\n",
+        "\r"
+      ],
+      "present": [
+        "a b c"
+      ]
+    },
+    {
+      "name": "line and paragraph separators",
+      "input": "x y z",
+      "absent": [
+        " ",
+        " "
+      ]
+    },
+    {
+      "name": "NEL and C1 CSI",
+      "input": "xy31mz",
+      "absent": [
+        "",
+        ""
+      ]
+    },
+    {
+      "name": "bidi overrides",
+      "input": "abc‮dcba⁦x⁩",
+      "absent": [
+        "‮",
+        "⁦",
+        "⁩"
+      ]
+    },
+    {
+      "name": "zero-width",
+      "input": "a​b﻿c",
+      "absent": [
+        "​",
+        "﻿"
+      ]
+    },
+    {
+      "name": "keeps the sentence after a path",
+      "input": "open /data/c.fits failed: HTTP 500 at 12/11 retry 3/5",
+      "expected": "open …/c.fits failed: HTTP 500 at 12/11 retry 3/5"
+    },
+    {
+      "name": "keeps the words after a path with an extension",
+      "input": "Failed: 404: File not found: /Users/fv/x.fits (session ended); refine 2/4 ok",
+      "expected": "Failed: 404: File not found: …/x.fits (session ended); refine 2/4 ok"
+    },
+    {
+      "name": "a spaced slash is no path",
+      "input": "ratio 1 / 2 / 3 done",
+      "expected": "ratio 1 / 2 / 3 done"
+    },
+    {
+      "name": "two render routes, each id replaced, the rest kept",
+      "input": "GET /v1/render/0123abcd-ef/ws closed, then /v1/render/queue/deadbeef99 gone",
+      "expected": "GET /v1/render/<id>/ws closed, then /v1/render/queue/<id> gone"
+    },
+    {
+      "name": "small counts after token and session words are prose",
+      "input": "sessions: 3, tokens: 2 accepted",
+      "expected": "sessions: 3, tokens: 2 accepted"
+    },
+    {
+      "name": "a path without an extension ends at the first space",
+      "input": "cd /Users/fv/data then run",
+      "expected": "cd …/data then run"
+    },
+    {
+      "name": "a path with spaces then more text",
+      "input": "open /Users/John Doe/data/cube.fits failed at 1/2",
+      "expected": "open …/cube.fits failed at 1/2"
+    },
+    {
+      "name": "a home directory with a space, no file name",
+      "input": "Not a directory: /Users/John Doe/data",
+      "expected": "Not a directory: …/data"
+    },
+    {
+      "name": "a file URL with a space in a directory name",
+      "input": "file:///Users/John Doe/cube.fits",
+      "expected": "file://…/cube.fits"
+    },
+    {
+      "name": "a file URL followed by text",
+      "input": "load file:///home/ann/c.fits failed 3/5",
+      "expected": "load file://…/c.fits failed 3/5"
+    },
+    {
+      "name": "a home path without an extension, then a sentence",
+      "input": "missing /home/ann/data now",
+      "expected": "missing …/data now"
+    },
+    {
+      "name": "extensionless file URL to a spaced home path",
+      "input": "file:///Users/John Doe/data",
+      "expected": "file://…/data"
+    },
+    {
+      "name": "Windows home with a space, backslashes",
+      "input": "C:\\Users\\John Doe\\data",
+      "expected": "…\\data"
+    },
+    {
+      "name": "Windows home with a space, slashes",
+      "input": "C:/Users/John Doe/data",
+      "expected": "…\\data"
+    },
+    {
+      "name": "a path ending at a spaced home directory",
+      "input": "Not found: /Users/John Doe",
+      "expected": "Not found: …/<user>"
+    },
+    {
+      "name": "a path ending at a home directory",
+      "input": "/home/alice",
+      "expected": "…/<user>"
+    },
+    {
+      "name": "spaced names elsewhere are removed",
+      "input": "/mnt/Shared Drive/Alice Smith/x",
+      "expected": "…/x"
+    },
+    {
+      "name": "a home directory with a dot in its name",
+      "input": "cd /home/alice.smith",
+      "expected": "cd …/<user>"
+    },
+    {
+      "name": "a Windows home directory alone",
+      "input": "C:\\Users\\bob",
+      "expected": "…\\<user>"
+    }
+  ],
+  "adversarial": {
+    "about": "Units repeated to 4000 characters; each must scrub in under 50 ms on both sides (no regex may backtrack badly).",
+    "length": 4000,
+    "max_ms": 50,
+    "units": [
+      "xtoken",
+      "session-",
+      "token=a",
+      "\"token\"",
+      "token: ",
+      "x-token-",
+      "/a",
+      "/a a",
+      "a/",
+      "C:\\a ",
+      "C:\\a a\\",
+      "\\\\a",
+      "%41",
+      "file:///",
+      "http://a/",
+      "/Users/a a",
+      "/home/a ",
+      "/a.b ",
+      "a.",
+      "/v1/render/",
+      "a ",
+      "a=",
+      "'a'",
+      "~/a b/"
+    ]
+  }
+}

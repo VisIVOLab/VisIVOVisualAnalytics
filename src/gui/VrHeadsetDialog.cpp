@@ -16,6 +16,7 @@
 #include <QLabel>
 #include <QProcess>
 #include <QPushButton>
+#include <QSettings>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -31,12 +32,16 @@ constexpr int kCommandTimeoutMs = 15000;
 // here without pressing Refresh, rarely enough to cost nothing.
 constexpr int kPollIntervalMs = 3000;
 
-const QString kGuideUrl = u"https://visivo.readthedocs.io/en/latest/user-guide/vr-headset.html"
-                          u"#open-a-cube-from-the-desktop"_s;
+const QString kGuideBase = u"https://visivo.readthedocs.io/en/latest/user-guide/vr-headset.html"_s;
+const QString kGuideUrl = kGuideBase + u"#open-a-cube-from-the-desktop"_s;
+// The headset used last time, selected first when it is there again.
+const QString kLastSerialKey = u"vrHeadset/lastSerial"_s;
+// A USB probe answer stays good this long (the dialog checks every 3 s).
+constexpr qint64 kUsbProbeMaxAgeMs = 6000;
 
-QString guideLink(const QString &text)
+QString guideLink(const QString &text, const QString &anchor = u"open-a-cube-from-the-desktop"_s)
 {
-    return u"<a href=\"%1\">%2</a>"_s.arg(kGuideUrl, text);
+    return u"<a href=\"%1#%2\">%3</a>"_s.arg(kGuideBase, anchor, text);
 }
 
 }   // namespace
@@ -71,8 +76,9 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     m_deviceCombo->setToolTip(u"More than one device is connected: choose the headset."_s);
     m_deviceCombo->setVisible(false);
     deviceRow->addWidget(m_deviceCombo, 1);
-    m_refreshButton = new QPushButton(u"Refresh"_s, this);
-    m_refreshButton->setToolTip(u"Look for adb and the connected headsets again."_s);
+    m_refreshButton = new QPushButton(u"Retry"_s, this);
+    m_refreshButton->setToolTip(u"Look for adb and the connected headsets again (this window also "
+                                u"checks by itself every few seconds)."_s);
     deviceRow->addStretch();
     deviceRow->addWidget(m_refreshButton);
     root->addLayout(deviceRow);
@@ -83,6 +89,14 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     m_resultLabel->setWordWrap(true);
     m_resultLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     root->addWidget(m_resultLabel);
+    m_copyErrorButton = new QPushButton(u"Copy Error"_s, this);
+    m_copyErrorButton->setToolTip(u"Copy the error and the state, without the token, for a support "
+                                  u"request."_s);
+    m_copyErrorButton->setVisible(false);
+    auto *errorRow = new QHBoxLayout;
+    errorRow->addStretch();
+    errorRow->addWidget(m_copyErrorButton);
+    root->addLayout(errorRow);
 
     auto *warning = new QLabel(
             u"The link carries this backend's access token: anyone who has it can use the "
@@ -108,6 +122,7 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     connect(m_refreshButton, &QPushButton::clicked, this, &VrHeadsetDialog::refreshDevices);
     connect(m_openButton, &QPushButton::clicked, this, &VrHeadsetDialog::openOnHeadset);
     connect(m_copyButton, &QPushButton::clicked, this, &VrHeadsetDialog::copyLink);
+    connect(m_copyErrorButton, &QPushButton::clicked, this, &VrHeadsetDialog::copyError);
     connect(close, &QPushButton::clicked, this, &QDialog::close);
     connect(m_deviceCombo, &QComboBox::currentIndexChanged, this, [this]() { setBusy(false); });
 
@@ -143,6 +158,11 @@ VrHeadsetDialog::~VrHeadsetDialog()
         m_process->disconnect(this);
         m_process->kill();
         m_process->waitForFinished(1000);
+    }
+    if (m_usbProbe) {
+        m_usbProbe->disconnect(this);
+        m_usbProbe->kill();
+        m_usbProbe->waitForFinished(1000);
     }
 }
 
@@ -203,6 +223,84 @@ void VrHeadsetDialog::setResult(const QString &text, bool error)
 {
     m_resultLabel->setText(text);
     m_resultLabel->setStyleSheet(error ? u"color: #e5534b;"_s : QString());
+    m_errorText = error ? text : QString();
+    m_copyErrorButton->setVisible(error || m_stateProblem);
+}
+
+void VrHeadsetDialog::setGuidance(const AdbHeadset::Guidance &g, const QString &extraHtml)
+{
+    QString html = u"<b>%1</b>"_s.arg(g.headline.toHtmlEscaped());
+    if (!extraHtml.isEmpty())
+        html += u" "_s + extraHtml;
+    if (!g.steps.isEmpty()) {
+        html += u"<ol style=\"margin-left: -20px\">"_s;
+        for (const QString &step : g.steps)
+            html += u"<li>%1</li>"_s.arg(step.toHtmlEscaped());
+        html += u"</ol>"_s;
+    }
+    if (g.problem)
+        html += guideLink(u"Help: the guide's troubleshooting"_s, g.anchor);
+    m_stateLabel->setText(html);
+    m_stateText = g.headline + u"\n"_s + g.steps.join(u"\n"_s);
+    // A problem state is itself something to copy for support.
+    m_stateProblem = g.problem;
+    m_copyErrorButton->setVisible(g.problem || !m_errorText.isEmpty());
+}
+
+void VrHeadsetDialog::probeUsb()
+{
+    if (AdbHeadset::currentPlatform() != AdbHeadset::Platform::MacOS || m_usbProbe || m_closed)
+        return;
+    if (m_usbProbedAt.isValid() && m_usbProbedAt.elapsed() < kUsbProbeMaxAgeMs)
+        return;
+    auto *probe = new QProcess(this);
+    m_usbProbe = probe;
+    auto *timer = new QTimer(probe);
+    timer->setSingleShot(true);
+    connect(timer, &QTimer::timeout, probe, [probe]() { probe->kill(); });
+    connect(probe, &QProcess::finished, this, [this, probe](int exitCode, QProcess::ExitStatus st) {
+        const QByteArray out = probe->readAllStandardOutput();
+        probe->deleteLater();
+        m_usbProbe.clear();
+        m_usbProbedAt.start();
+        const AdbHeadset::UsbQuest was = m_usbQuest;
+        m_usbQuest = st == QProcess::NormalExit && exitCode == 0 ? AdbHeadset::usbQuestFromProfiler(out)
+                                                                 : AdbHeadset::UsbQuest::Unknown;
+        // Only while adb still lists nothing: otherwise adb's own state is the news.
+        if (m_noDevice && was != m_usbQuest && !m_closed)
+            setGuidance(AdbHeadset::guidanceFor(AdbHeadset::Status::NoDevice, m_usbQuest));
+    });
+    connect(probe, &QProcess::errorOccurred, this, [this, probe](QProcess::ProcessError e) {
+        if (e != QProcess::FailedToStart)
+            return;
+        probe->deleteLater();
+        m_usbProbe.clear();
+        m_usbProbedAt.start();
+        m_usbQuest = AdbHeadset::UsbQuest::Unknown;
+    });
+    timer->start(5000);
+    probe->start(AdbHeadset::usbProbeProgram(), AdbHeadset::usbProbeArgs());
+}
+
+void VrHeadsetDialog::copyError()
+{
+    QStringList lines;
+    lines << u"Open in VR Headset: what the dialog says"_s;
+    if (!m_errorText.isEmpty())
+        lines << u"Error: "_s + m_errorText;
+    lines << u"State: "_s + m_stateText;
+    lines << u"adb: "_s + (m_adb.isEmpty() ? u"not found"_s : AdbHeadset::homeShortened(m_adb, QDir::homePath()));
+    lines << u"Backend port: %1"_s.arg(m_link.port);
+    if (AdbHeadset::currentPlatform() == AdbHeadset::Platform::MacOS)
+        lines << u"Quest on USB: "_s
+                        + (m_usbQuest == AdbHeadset::UsbQuest::Present ? u"yes"_s
+                           : m_usbQuest == AdbHeadset::UsbQuest::Absent ? u"no"_s
+                                                                        : u"unknown"_s);
+    QGuiApplication::clipboard()->setText(redacted(lines.join(u'\n')));
+    // Said once, however often the button is pressed.
+    const QString note = u"\n(Copied, without the token.)"_s;
+    if (!m_resultLabel->text().endsWith(note))
+        m_resultLabel->setText(m_resultLabel->text() + note);
 }
 
 void VrHeadsetDialog::runAdb(const QStringList &args, int timeoutMs, Done done, bool background)
@@ -291,13 +389,10 @@ void VrHeadsetDialog::refreshDevices(bool background)
                                 QProcessEnvironment::systemEnvironment());
     if (m_adb.isEmpty()) {
         m_deviceReady = false;
+        m_noDevice = false;
         m_deviceCombo->clear();
         m_deviceCombo->setVisible(false);
-        m_stateLabel->setText(
-                u"<b>adb was not found.</b> Install the Android platform tools "
-                u"(on a Mac: <code>brew install android-platform-tools</code>), see %1. "
-                u"This window checks again every few seconds."_s
-                        .arg(guideLink(u"Installing adb"_s)));
+        setGuidance(AdbHeadset::adbMissingGuidance(AdbHeadset::currentPlatform()));
         setBusy(false);
         return;
     }
@@ -305,13 +400,18 @@ void VrHeadsetDialog::refreshDevices(bool background)
            [this](Outcome outcome, int exitCode, const QString &output) {
                if (outcome != Outcome::Finished || exitCode != 0) {
                    m_deviceReady = false;
+                   m_noDevice = false;
                    m_deviceCombo->clear();
                    m_deviceCombo->setVisible(false);
-                   m_stateLabel->setText(
-                           outcome == Outcome::Finished
-                                   ? u"<b>adb failed:</b> %1"_s.arg(
-                                             redacted(output.trimmed()).toHtmlEscaped())
-                                   : adbFailure(outcome).toHtmlEscaped());
+                   const QString why = outcome == Outcome::Finished
+                           ? u"adb failed: %1"_s.arg(redacted(output.trimmed()))
+                           : adbFailure(outcome);
+                   AdbHeadset::Guidance g;
+                   g.headline = why;
+                   g.steps << u"Run  adb kill-server  in a terminal, then press Retry."_s;
+                   g.anchor = u"troubleshooting"_s;
+                   setGuidance(g);
+                   m_errorText = why;
                    setBusy(false);
                    return;
                }
@@ -342,9 +442,15 @@ void VrHeadsetDialog::showDevices(const QList<AdbHeadset::Device> &devices)
         const QString previous = selectedSerial();
         m_deviceCombo->blockSignals(true);
         m_deviceCombo->clear();
-        for (const auto &item : items)
+        QStringList serials;
+        for (const auto &item : items) {
             m_deviceCombo->addItem(item.first, item.second);
-        const int keep = m_deviceCombo->findData(previous);
+            serials << item.second;
+        }
+        // The user's choice when still there, else the headset used last time.
+        int keep = m_deviceCombo->findData(previous);
+        if (keep < 0)
+            keep = AdbHeadset::preferredIndex(serials, QSettings().value(kLastSerialKey).toString());
         if (keep >= 0)
             m_deviceCombo->setCurrentIndex(keep);
         m_deviceCombo->blockSignals(false);
@@ -355,40 +461,18 @@ void VrHeadsetDialog::showDevices(const QList<AdbHeadset::Device> &devices)
     for (const AdbHeadset::Device &d : ready)
         m_readySerials << d.serial;
 
-    switch (status) {
-    case Status::NoDevice:
-        m_stateLabel->setText(
-                u"<b>No headset connected.</b> Turn on developer mode on the Quest, connect it "
-                u"with a USB-C cable (or connect adb over Wi-Fi) and put it on."_s);
-        break;
-    case Status::Unauthorized:
-        m_stateLabel->setText(
-                u"<b>The headset has not allowed this computer yet.</b> Put it on and accept "
-                u"<i>Allow USB debugging</i> (tick <i>Always allow from this computer</i>)."_s);
-        break;
-    case Status::NoPermissions:
-        m_stateLabel->setText(
-                u"<b>adb may not open the headset's USB device.</b> Add the udev rule for "
-                u"Android devices, see %1."_s.arg(guideLink(u"the guide"_s)));
-        break;
-    case Status::Authorizing:
-        m_stateLabel->setText(
-                u"<b>Waiting for the headset to authorise this computer…</b> If it asks, accept "
-                u"<i>Allow USB debugging</i> in the headset."_s);
-        break;
-    case Status::Offline:
-        m_stateLabel->setText(
-                u"<b>The headset is offline.</b> Wake it up, or unplug and reconnect the "
-                u"cable."_s);
-        break;
-    case Status::Ready: {
+    m_noDevice = status == Status::NoDevice;
+    if (m_noDevice)
+        probeUsb();      // the answer updates the label when it comes
+    if (status == Status::Ready) {
         const AdbHeadset::Device &d = ready.first();
-        m_stateLabel->setText(
-                ready.size() > 1 ? u"<b>%1 devices ready.</b> Choose the headset."_s.arg(ready.size())
-                                 : u"<b>Ready:</b> %1"_s.arg(
-                                           (d.model.isEmpty() ? d.serial : d.model).toHtmlEscaped()));
-        break;
-    }
+        AdbHeadset::Guidance g = AdbHeadset::guidanceFor(Status::Ready);
+        g.headline = ready.size() > 1 ? u"%1 devices ready: choose the headset."_s.arg(ready.size())
+                                      : u"Ready: %1"_s.arg(d.model.isEmpty() ? d.serial : d.model);
+        setGuidance(g);
+    } else {
+        setGuidance(AdbHeadset::guidanceFor(
+                status, m_noDevice ? m_usbQuest : AdbHeadset::UsbQuest::Unknown));
     }
     setBusy(false);
 }
@@ -418,13 +502,15 @@ void VrHeadsetDialog::startOpen(const QString &serial)
                   true);
         return;
     }
+    m_lastOpenSerial = serial;
     setResult(u"Forwarding port %1 to the headset…"_s.arg(m_link.port), false);
     runAdb(AdbHeadset::reverseArgs(serial, m_link.port), kCommandTimeoutMs,
            [this, serial](Outcome outcome, int exitCode, const QString &output) {
                if (outcome != Outcome::Finished || exitCode != 0) {
-                   setResult(outcome == Outcome::Finished
-                                     ? u"adb reverse failed: %1"_s.arg(redacted(output.trimmed()))
-                                     : adbFailure(outcome),
+                   setResult((outcome == Outcome::Finished
+                                      ? u"adb reverse failed: %1"_s.arg(redacted(output.trimmed()))
+                                      : adbFailure(outcome))
+                                     + u" Press Retry, then Open on Headset again."_s,
                              true);
                    return;
                }
@@ -464,6 +550,7 @@ void VrHeadsetDialog::openPage(const QString &serial, const QString &package)
                              true);
                    return;
                }
+               QSettings().setValue(kLastSerialKey, m_lastOpenSerial);
                setResult(u"Opened on the headset. Put it on: the cube loads on the page, then "
                          u"press Enter VR. Repeat after unplugging the cable or restarting the "
                          u"headset (the port forwarding ends then)."_s,

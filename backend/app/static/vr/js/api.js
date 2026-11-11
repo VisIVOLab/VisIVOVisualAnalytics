@@ -86,6 +86,48 @@ export function saveToken(token, remember) {
   } catch { /* storage refused: the token lives in memory only */ }
 }
 
+/** An Error for a request: "<status>: <detail>", with `status` and `detail`;
+ *  `network` when nothing answered (the backend down, the link lost). */
+export function requestError(status, detail) {
+  const e = new Error(status ? `${status}: ${detail}` : `network: ${detail}`);
+  e.status = status;
+  e.detail = detail;
+  e.network = !status;
+  return e;
+}
+
+/** Every Backend's failures and successes go to these hooks (lifecycle.js
+ *  watches them): (err, path) and (path). Set by the page. */
+export const requestHooks = { onFailure: null, onSuccess: null };
+
+/** fetch(), with a rejected fetch turned into a `network` requestError and
+ *  both outcomes reported to requestHooks. Non-ok responses are returned. */
+export async function hookedFetch(path, init) {
+  let resp;
+  try {
+    resp = await fetch(path, init);
+  } catch (err) {
+    const e = requestError(0, 'the backend did not answer');
+    e.cause = err;
+    if (requestHooks.onFailure) requestHooks.onFailure(e, path);
+    throw e;
+  }
+  if (resp.ok && requestHooks.onSuccess) requestHooks.onSuccess(path);
+  return resp;
+}
+
+async function failed(resp, path) {
+  const text = await resp.text().catch(() => '');
+  let detail = text;
+  try {
+    const data = JSON.parse(text);
+    detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail ?? data);
+  } catch { /* plain text */ }
+  const e = requestError(resp.status, String(detail).slice(0, 300));
+  if (requestHooks.onFailure) requestHooks.onFailure(e, path);
+  return e;
+}
+
 export class Backend {
   constructor(token) {
     this.token = token;
@@ -100,18 +142,28 @@ export class Backend {
   }
 
   async _json(method, path, body) {
-    const resp = await fetch(path, {
+    const resp = await hookedFetch(path, {
       method, headers: this.headers(body !== undefined),
       body: body === undefined ? undefined : JSON.stringify(body),
     });
+    if (!resp.ok) throw await failed(resp, path);
     const text = await resp.text();
-    let data;
-    try { data = JSON.parse(text); } catch { data = { detail: text }; }
-    if (!resp.ok) {
-      const detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail ?? data);
-      throw new Error(`${resp.status}: ${detail}`);
-    }
-    return data;
+    try { return JSON.parse(text); } catch { return { detail: text }; }
+  }
+
+  /** GET /v1/vr/info (public; with the token, also whether it is accepted). */
+  async info() {
+    const resp = await hookedFetch('/v1/vr/info', { headers: this.token ? { 'X-Visivo-Token': this.token } : {}, cache: 'no-store' });
+    if (!resp.ok) throw await failed(resp, '/v1/vr/info');
+    return resp.json();
+  }
+
+  /** POST /v1/vr/log: {status, retryAfterS}, never throws for an HTTP error. */
+  async log(body) {
+    // Not keepalive: a log line is not worth outliving the page, and keepalive
+    // requests go through the browser process with a small shared quota.
+    const resp = await fetch('/v1/vr/log', { method: 'POST', headers: this.headers(true), body: JSON.stringify(body) });
+    return { status: resp.status, retryAfterS: Number(resp.headers.get('Retry-After')) || 0 };
   }
 
   async ping() {
@@ -147,8 +199,8 @@ export class Backend {
   async _binary(path, body, contentType = 'application/json') {
     const headers = this.headers(false);
     headers['Content-Type'] = contentType;
-    const resp = await fetch(path, { method: 'POST', headers, body });
-    if (!resp.ok) throw new Error(`${resp.status}: ${(await resp.text()).slice(0, 300)}`);
+    const resp = await hookedFetch(path, { method: 'POST', headers, body });
+    if (!resp.ok) throw await failed(resp, path);
     return { resp, buf: await resp.arrayBuffer() };
   }
 
@@ -209,10 +261,10 @@ export class Backend {
   /** The reduced cube: {data: Uint8Array | Uint16Array, dims, lo, hi, ...}. */
   async reducedCube(req, onProgress) {
     const t0 = performance.now();
-    const resp = await fetch('/v1/cube/reduced_bin', {
+    const resp = await hookedFetch('/v1/cube/reduced_bin', {
       method: 'POST', headers: this.headers(true), body: JSON.stringify(req),
     });
-    if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`);
+    if (!resp.ok) throw await failed(resp, '/v1/cube/reduced_bin');
     const h = (k) => resp.headers.get(k);
     const total = Number(h('Content-Length')) || 0;
     const tHeaders = performance.now();
