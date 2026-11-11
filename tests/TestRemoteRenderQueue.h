@@ -27,4 +27,11 @@ private slots:
     void stoppingGivesThePlaceUpOnce();
     void pollDelayStaysWithinTheExpiry();
     void theBannerSaysWhereTheViewIs();
+    void aKilledSessionIsReplacedThenRetryIsOffered();
+    void anotherDropOffersRetry();
+    void aDropThatWasNotLiveIsLeftToTheSwitch();
+    void bothTransportsSayHowTheStreamEnded();
+    void aFailedReplacementSaysWhyWithoutBlamingTheBackend();
+    void onlyAReplacementsFailureOffersRetry();
+    void aDropCheckAfterLocalChangesNothing();
 };

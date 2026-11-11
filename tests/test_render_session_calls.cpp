@@ -8,6 +8,7 @@
 
 #include "RemoteRenderQueue.h"
 #include "RenderSessionCalls.h"
+#include "app/OpenRenderSessions.h"
 
 #include <QCoreApplication>
 #include <QJsonDocument>
@@ -38,8 +39,10 @@ public:
                     lines << buffer->left(buffer->indexOf("\r\n"));
                     headers << buffer->left(end);
                     delete buffer;
-                    s->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-                             "Content-Length: 2\r\nConnection: close\r\n\r\n{}");
+                    s->write("HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\n"
+                             "Content-Length: "
+                             + QByteArray::number(body.size())
+                             + "\r\nConnection: close\r\n\r\n" + body);
                     s->disconnectFromHost();
                 });
             }
@@ -48,6 +51,8 @@ public:
     QString url() const { return u"http://127.0.0.1:%1"_s.arg(server.serverPort()); }
 
     QTcpServer server;
+    QByteArray body{ "{}" };   ///< every answer's body
+    QByteArray status{ "200 OK" };
     QList<QByteArray> lines;
     QList<QByteArray> headers;
 };
@@ -118,4 +123,34 @@ void TestRenderSessionCalls::theRequestsOutliveTheViewer()
     QVERIFY(nam);
     QCOMPARE(nam->parent(), QCoreApplication::instance());
     QCOMPARE(visivo::renderSessionManager(), nam);
+}
+
+void TestRenderSessionCalls::aCreatedSessionIsListedUntilItsDeleteIsAnswered()
+{
+    // Listed from the create's answer, so a quit closes it (OpenRenderSessions.h);
+    // the caller still reads the whole answer.
+    auto &open = visivo::OpenRenderSessions::instance();
+    open.clearForTest();
+    OneLineServer backend;
+    backend.body = R"({"session_id": "s42", "width": 64, "height": 64})";
+    QNetworkReply *reply = visivo::postCreateRenderSession(backend.url(), kToken, kSession,
+                                                           QByteArray("{}"));
+    QByteArray seenByCaller;
+    QObject::connect(reply, &QNetworkReply::finished, reply, [reply, &seenByCaller]() {
+        seenByCaller = reply->readAll();
+        reply->deleteLater();
+    });
+    QTRY_COMPARE(open.count(), 1);
+    QTRY_VERIFY(seenByCaller.contains("s42"));
+    // A DELETE refused for its token: the session may be there, the quit
+    // tries again.
+    backend.status = "401 Unauthorized";
+    visivo::deleteRenderSession(backend.url(), kToken, kSession, u"s42"_s);
+    QTRY_COMPARE(backend.lines.size(), 2);
+    QTest::qWait(100);
+    QCOMPARE(open.count(), 1);
+    backend.status = "200 OK";
+    visivo::deleteRenderSession(backend.url(), kToken, kSession, u"s42"_s);
+    QTRY_COMPARE(open.count(), 0);
+    QCOMPARE(backend.lines.last(), QByteArray("DELETE /v1/render/s42 HTTP/1.1"));
 }
