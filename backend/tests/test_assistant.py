@@ -77,6 +77,30 @@ def test_moment_summary_defaults_to_full_depth(tmp_path):
     assert out["n_channels_in_cube"] == 16
 
 
+def test_moment_summary_single_channel_is_not_the_whole_cube(tmp_path):
+    """(k, k) is one channel; it used to be read as 'unset', i.e. the whole cube."""
+    path = str(tmp_path / "c1ch.fits")
+    _write_cube(path, nz=16)
+    out = TOOLS["moment_map_summary"].executor(
+        path, {"order": 0, "channel_start": 3, "channel_end": 3})
+    assert (out["channel_start"], out["channel_end"]) == (3, 3)
+    with pytest.raises(ValueError, match="channel"):
+        TOOLS["moment_map_summary"].executor(
+            path, {"order": 0, "channel_start": 9, "channel_end": 3})
+
+
+def test_hi_products_tool_single_channel(tmp_path):
+    from tests.test_hi import _write_uniform_hi_cube  # noqa: PLC0415
+    path = str(tmp_path / "hi1.fits")
+    _write_uniform_hi_cube(path, nz=8)
+    one = TOOLS["hi_products"].executor(path, {"channel_start": 3, "channel_end": 3})
+    full = TOOLS["hi_products"].executor(path, {})
+    assert (one["channel_start"], one["channel_end"]) == (3, 3)
+    assert (full["channel_start"], full["channel_end"]) == (0, 7)
+    assert full["integrated_flux_jy_kms"] == pytest.approx(
+        8.0 * one["integrated_flux_jy_kms"], rel=1e-6)
+
+
 def test_moment_summary_rejects_bad_order(tmp_path):
     path = str(tmp_path / "cbo.fits")
     _write_cube(path)

@@ -1942,7 +1942,12 @@ struct BackendVelocityGridResult
     double fullSpeedMin = 0.0, fullSpeedMax = 0.0; // full-resolution field range (for LUT/scale)
     QString unit;
     QString frame;
-    int downsampleFactor = 1;              // 1 = full res; >1 = LOD block-average factor
+    int downsampleFactor = 1;              // 1 = full res; >1 = LOD block-average factor (largest axis)
+    // Per-axis factors (x, y, z) from X-Visivo-Downsample-Factors: a thin axis is
+    // reduced less than the others. `hasAxisFactors` is false for an older backend,
+    // which sent one factor and kept the full-resolution origin.
+    int factorX = 1, factorY = 1, factorZ = 1;
+    bool hasAxisFactors = false;
     int fullNx = 0, fullNy = 0, fullNz = 0; // full-resolution grid dims (pre-LOD)
     int roiX0 = 0, roiY0 = 0, roiZ0 = 0;   // sub-grid start (subgrid_bin only)
     QByteArray vectors;
@@ -2012,6 +2017,13 @@ struct BackendVelocityBasinsResult
     QString error;
     int nx = 0, ny = 0, nz = 0;
     int nBasins = 0;
+    // Geometry of the basin grid (x, y, z) from X-Visivo-Spacing, -Origin and
+    // -Downsample-Factors. `hasGeometry` is false for an older backend that sent
+    // none of them; the viewer then works the factors out itself.
+    double spacing[3] = { 1.0, 1.0, 1.0 };
+    double origin[3] = { 0.0, 0.0, 0.0 };
+    int factors[3] = { 1, 1, 1 };
+    bool hasGeometry = false;
     QByteArray labels;
 };
 
@@ -2347,13 +2359,20 @@ public:
                                                    int z0, int z1) const;
     /// Gravitational-basin (watershed) segmentation label volume. `direction`:
     /// +1 = basins of attraction (superclusters), -1 = repulsion (voids).
+    /// `boxMpc` is the box the viewer shows the field in (0 = unit cells), always
+    /// sent as `box_mpc` so the backend segments in the same cells the viewer
+    /// draws: on a non-cubic grid the basins depend on it.
     BackendVelocityBasinsResult fetchVelocityBasins(const QString &datasetId,
                                                     int basinMaxDim = 64,
-                                                    int direction = 1) const;
+                                                    int direction = 1,
+                                                    double boxMpc = 0.0) const;
     /// Density-from-divergence (∇·v) scalar grid. `maxDim`: 0 = full resolution,
     /// >0 block-averages first (LOD). ∇·v < 0 = overdensity, > 0 = void.
+    /// `boxMpc` as for fetchVelocityBasins: always sent, so ∇·v is computed in
+    /// the viewer's cells (and matches the viewer's local fallback).
     BackendVelocityDensityResult fetchVelocityDensity(const QString &datasetId,
-                                                      int maxDim = 0) const;
+                                                      int maxDim = 0,
+                                                      double boxMpc = 0.0) const;
     /// Tilted-ring kinematic model cube (F2). Builds a regularly-rotating-disk
     /// model on the cube's own grid; Vsys/Vrot/sigma are in the cube's spectral
     /// unit (km/s when the axis converts — see result.spectralMode).

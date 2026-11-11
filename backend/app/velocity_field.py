@@ -274,38 +274,65 @@ def to_vtk_image(field: "VelocityField"):
     return img
 
 
-def _block_average(a: np.ndarray, factor: int) -> np.ndarray:
-    """Block-average a 3-D array by an integer factor per axis (crop to a
-    multiple). Preserves the field far better than stride-decimation."""
-    if factor <= 1:
+def lod_factors(shape: tuple[int, int, int], max_dim: int) -> tuple[int, int, int]:
+    """Per-axis block-average factors ``(fz, fy, fx)`` for a display LOD.
+
+    The overall factor ``F = ceil(largest / max_dim)`` brings the largest axis
+    under ``max_dim``. Every axis is reduced by ``F`` too, so cells stay as
+    isotropic as the source, EXCEPT an axis too short for it: that one gets the
+    largest factor that still leaves two samples (``n // 2``), or 1. A single
+    shared factor used to make the block average skip the whole array whenever
+    one axis was shorter than ``F`` (a (2, 128, 128) grid came back unreduced)
+    while the caller still multiplied every spacing by ``F``. Because no axis is
+    ever reduced below two samples, ``max_dim`` < 3 is not honoured exactly.
+    """
+    biggest = max(shape)
+    if max_dim <= 0 or biggest <= max_dim:
+        return (1, 1, 1)
+    factor = -(-int(biggest) // int(max_dim))  # ceil without float rounding
+    fz, fy, fx = (max(1, min(factor, int(n) // 2)) for n in shape)
+    return (fz, fy, fx)
+
+
+def _block_average(a: np.ndarray, factors: tuple[int, int, int]) -> np.ndarray:
+    """Block-average a 3-D array by an integer factor PER AXIS ``(fz, fy, fx)``,
+    cropping each axis to a multiple of its factor. Preserves the field far
+    better than stride-decimation. Every factor must leave at least one block
+    (see :func:`lod_factors`)."""
+    fz, fy, fx = (int(f) for f in factors)
+    if fz <= 1 and fy <= 1 and fx <= 1:
         return a
     nz, ny, nx = a.shape
-    cz, cy, cx = (nz // factor) * factor, (ny // factor) * factor, (nx // factor) * factor
-    if cz == 0 or cy == 0 or cx == 0:
-        return a
-    a = a[:cz, :cy, :cx]
-    return a.reshape(cz // factor, factor, cy // factor, factor, cx // factor, factor).mean(
-        axis=(1, 3, 5)
-    )
+    bz, by, bx = nz // fz, ny // fy, nx // fx
+    if bz == 0 or by == 0 or bx == 0:
+        raise ValueError(f"block factors {factors} exceed the grid shape {a.shape}")
+    a = a[:bz * fz, :by * fy, :bx * fx]
+    return a.reshape(bz, fz, by, fy, bx, fx).mean(axis=(1, 3, 5))
 
 
 def downsample(field: "VelocityField", max_dim: int) -> "VelocityField":
     """Return a display-resolution copy whose largest dimension is <= max_dim,
-    block-averaging the vector components. Spacing grows by the same factor so
-    the physical extent is preserved. No-op when already small enough."""
-    nz, ny, nx = field.shape
-    biggest = max(nx, ny, nz)
-    if max_dim <= 0 or biggest <= max_dim:
+    block-averaging the vector components (per-axis factors, see
+    :func:`lod_factors`). No-op when already small enough.
+
+    The grid is point-centred: ``origin`` is the first sample and ``spacing``
+    the distance between samples. A block mean of ``f`` samples therefore sits
+    at the block centre, so the reduced grid has spacing ``f * spacing`` and its
+    first sample at ``origin + (f - 1) / 2 * spacing`` per axis. Keeping the old
+    origin (as this used to) shifted the whole reduced field by half a block.
+    """
+    fz, fy, fx = lod_factors(field.shape, max_dim)
+    if (fz, fy, fx) == (1, 1, 1):
         return field
-    import math
-    factor = int(math.ceil(biggest / max_dim))
     sx, sy, sz = field.spacing
+    ox, oy, oz = field.origin
+    factors = (fz, fy, fx)
     return VelocityField(
-        _block_average(field.vx, factor).astype(np.float32),
-        _block_average(field.vy, factor).astype(np.float32),
-        _block_average(field.vz, factor).astype(np.float32),
-        (sx * factor, sy * factor, sz * factor),
-        field.origin,
+        _block_average(field.vx, factors).astype(np.float32),
+        _block_average(field.vy, factors).astype(np.float32),
+        _block_average(field.vz, factors).astype(np.float32),
+        (sx * fx, sy * fy, sz * fz),
+        (ox + 0.5 * (fx - 1) * sx, oy + 0.5 * (fy - 1) * sy, oz + 0.5 * (fz - 1) * sz),
         field.unit,
         field.frame,
         field.box_known,
@@ -462,7 +489,11 @@ def velocity_grid_worker(path: str, box_mpc: float | None = None,
         field = downsample(field, max_dim)
     payload = grid_raw_payload(field)
     payload["full_shape"] = [int(s) for s in full]            # (nz, ny, nx) before LOD
-    payload["downsample_factor"] = int(round(full[0] / field.shape[0])) if field.shape[0] else 1
+    # Per-axis factors (x, y, z): a thin axis is reduced less than the others.
+    # ``downsample_factor`` stays the largest one, as it was for a cube.
+    fz, fy, fx = lod_factors(full, max_dim) if (max_dim and max_dim > 0) else (1, 1, 1)
+    payload["downsample_factors"] = [int(fx), int(fy), int(fz)]
+    payload["downsample_factor"] = int(max(fx, fy, fz))
     payload["full_speed_min"] = full_speed_min
     payload["full_speed_max"] = full_speed_max
     return payload
