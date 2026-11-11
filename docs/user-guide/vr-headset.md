@@ -7,17 +7,24 @@ cube, so turning your head or moving the cube with the controllers never
 waits for the network. Everything computed (moments, masks, the Kinematic
 Lasso, spectra) still runs on the full cube on the backend.
 
-This is the first step of the immersive work
-([#166](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/166),
-[#167](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/167)): the
-headset renders, and selections made in the headset (a spectrum, the
-Kinematic Lasso, a box region) are computed on the full cube by the backend
+The work is tracked in
+[#166](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/166): the
+headset renders
+([#167](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/167));
+selections made in the headset (a spectrum, the Kinematic Lasso, a box
+region) are computed on the full cube by the backend
 ([#171](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/171), see
-[Selections in the headset](#selections-in-the-headset)), and while the view
-is still the Mac's GPU renders the full cube for the headset's eyes and the
-page blends those frames in
+[Selections in the headset](#selections-in-the-headset)); while the view is
+still, the Mac's GPU renders the full cube for the headset's eyes and the page
+blends those frames in
 ([#170](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/170), see
-[Refinement](#refinement-full-quality-frames-from-the-backend)).
+[Refinement](#refinement-full-quality-frames-from-the-backend)); and a cube
+open on the desktop continues in the headset in the same backend session, with
+a panel in the headset for the controls
+([#172](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/172), see
+[Open a cube from the desktop](#open-a-cube-from-the-desktop) and
+[The panel in the headset](#the-panel-in-the-headset)). What is not done yet
+is listed under [Known limits](#known-limits).
 
 | | |
 |---|---|
@@ -25,6 +32,13 @@ page blends those frames in
 | **Headset** | Meta Quest 3 (Quest Browser, WebXR); any WebXR browser should work |
 | **Without a headset** | the same page in a desktop browser, with the mouse (for development and checks) |
 | **Data** | a FITS cube the backend can open |
+
+**In short.** Open the cube in the desktop application, connect the Quest
+with a USB-C cable, choose **Tools → Views → Open in VR Headset…** and press
+**Open on Headset**. Put the headset on: the cube is loading in the Quest
+Browser; press **Enter VR**. Point the right controller at the panel to the
+left of the cube to change the colour map, threshold or channels, or at the
+cube and pull the right trigger for a spectrum (left trigger: next tool).
 
 ---
 
@@ -69,6 +83,128 @@ drawn voxel covers only the pixels that block holds.
 
 *Synthetic* draws a generated cube of the chosen size without any backend, for
 checking the page and measuring frame rates.
+
+## Open a cube from the desktop
+
+With a cube open in the desktop application, **Tools → Views → Open in VR
+Headset…** (or the same entry in Inspector ▸ Analysis) opens it on a Quest
+connected to the Mac, in the same backend session: the headset's page
+receives the token, the session, the dataset and the cube's path, so there is
+nothing to paste or type on the headset. This is not *Open in VR*, which
+sends the desktop's own 3-D view to an OpenXR runtime on this computer (see
+[Open in VR](cube-viewer.md#open-in-vr)); it needs no VR runtime here.
+
+**Once, before the first time:**
+
+1. **Install adb**, the Android platform tools. On a Mac:
+   `brew install android-platform-tools`; on Linux, the distribution's
+   `android-tools` / `adb` package; on Windows, the *SDK Platform-Tools*
+   from developer.android.com, unpacked anywhere. The application finds adb
+   on the `PATH`, in Homebrew's `/opt/homebrew/bin` and `/usr/local/bin`, in
+   the Android SDK (`$ANDROID_HOME/platform-tools`,
+   `~/Library/Android/sdk/platform-tools`, `~/Android/Sdk/platform-tools`,
+   `%LOCALAPPDATA%\Android\Sdk\platform-tools`), even when it was started
+   from the Dock with a short `PATH`.
+2. **Turn on developer mode** on the headset (Meta Horizon app on the phone:
+   *Devices → Headset settings → Developer mode*).
+3. On Linux, adb may need the udev rule for Android devices to open the
+   headset's USB device; the dialog says so when it is missing.
+
+**Each time:**
+
+1. Connect the headset with a USB-C cable (or connect adb over Wi-Fi, see
+   [below](#on-the-quest-3-over-wi-fi)) and put it on.
+2. In the cube window, **Tools → Views → Open in VR Headset…**. The dialog
+   says what it finds, and checks again every few seconds while no headset
+   is ready:
+   - *adb was not found*: install it (step 1 above);
+   - *No headset connected*: the cable, or developer mode;
+   - *The headset has not allowed this computer yet*: in the headset, accept
+     **Allow USB debugging** (tick *Always allow from this computer* so it is
+     not asked again);
+   - *Waiting for the headset to authorise this computer*: adb is still
+     connecting; accept the prompt in the headset if it shows one;
+   - *The headset is offline*: wake it up, or reconnect the cable;
+   - *Ready*: the headset's model. With several devices attached, choose the
+     headset in the list.
+3. Press **Open on Headset**. The application forwards the backend's port to
+   the headset (`adb reverse tcp:<port> tcp:<port>`) and opens the page in
+   the Quest Browser (`am start` with a view intent; in the headset's default
+   browser if the Quest Browser is not installed). The cube loads on the
+   page; press **Enter VR**.
+
+Repeat *Open on Headset* after unplugging the cable or restarting the
+headset: the port forwarding ends then.
+
+**Copy Link** copies the same address for opening it by hand: forward the
+port first (`adb reverse tcp:<port> tcp:<port>`, the port is the one in the
+link), then open the link in the headset's browser.
+
+The address is `http://localhost:<port>/vr/#token=…&session=…&dataset=…&path=…`.
+Everything after `#` is never sent to the server, so neither the token nor
+the cube's path is in any server log, and the page removes the whole pairing
+(token, session, dataset and path) from the address bar and from the
+browser's history entry as soon as it has read it.
+
+**On the headset**, the page then, with nothing to type:
+
+1. takes the token as if it had been pasted (kept for this tab only, in the
+   browser's session storage; in its local storage only if you tick
+   *remember on this device*);
+2. uses the desktop's **session** for every request (`X-Visivo-Session`), so
+   the headset works on the datasets the desktop has open, and every recipe
+   it records names that session;
+3. loads the cube: the desktop's **dataset** itself when the session still
+   holds it, with the binning set on the page (*auto* by default). The status
+   line and the panel in the headset say *in the desktop's session*.
+
+When that is not possible the page falls back and says so:
+
+| What happened | What the page does | It says |
+|---|---|---|
+| The session no longer holds the dataset (the backend was restarted, or the cube was closed) | opens the cube's **path** again, in the same session | *in the desktop's session (cube opened again)* |
+| The backend does not know or refuses the session id (another token's session, a strict multi-user backend after a restart) | opens the path in a **new session** of its own | *in a new session (the desktop's is not available here)* |
+| The link has no token, or a malformed one | nothing is loaded | asks for the token: paste it and press *Open and load* |
+| A value of the link is malformed (a broken `%` escape) | that value is ignored; the others are used | names the value |
+
+The session id, the dataset and the path are kept for this tab only, like the
+token: reloading the page in the headset loads the same cube again; opening
+another cube on the page with *Open and load* forgets them.
+
+```{caution}
+The link carries the backend's access token: whoever has it can use the
+backend as you. The application never writes it to its log, but *Open on
+Headset* passes it on the command line of the `adb` process on this computer
+and of `am` on the headset, where other programs of the same user can read
+it, and *Copy Link* leaves it on the clipboard. Use it with your own computer
+and headset.
+```
+
+**Remote and cluster backends.** The headset reaches the backend as
+`localhost:<port>` through adb, so the client's backend address must be
+`localhost`, `127.0.0.1` or `[::1]` with no path after the port (the page
+lives at the backend's root): the local backend, or a remote one reached through a
+local tunnel, as a cluster connection is (for example `localhost:18960`).
+The port forwarded is the tunnel's, and the headset's requests travel
+through the same tunnel. A backend the client reaches at another address (a
+machine on the network at `http://192.168.x.y:8000`) cannot be reached from
+the headset this way, and the dialog says so: connect to it through an ssh
+tunnel (`ssh -L 8000:localhost:8000 host`) and open the cube from there.
+
+The page itself is served by whichever backend the link points at, and it
+calls that backend only by relative addresses (`/v1/…`, and its render
+session's WebSocket on the page's own host and port): nothing in it assumes
+port 8000. With a cluster backend, therefore:
+
+- the backend on the cluster must be a version that serves `/vr/` (this
+  release or later); an older one answers 404 for the page;
+- the reduced cube and every selection cross the tunnel (HCG 44 at the
+  default binning: 8.7 MB once, then a few kB per request);
+- refinement uses a render session **on the cluster** (its GPU, one of its
+  render slots), and its frames cross the tunnel and then adb: expect longer
+  pose-to-frame times than with a local backend, and turn refinement off on
+  the panel if the link is slow (the headset's own rendering never waits for
+  it).
 
 ## On the Quest 3, over USB (recommended)
 
@@ -140,13 +276,72 @@ API to the network, protected only by the token). Prefer adb over Wi-Fi.
 | A | next colour map |
 | B | reset the clipping box |
 | X | emission / maximum intensity |
-| Y | show or hide the panel on the left controller |
+| Y | show or hide the numbers (frame rate, latency) on the left controller |
+| Left stick press | show or hide the panel in the headset |
 | Right stick press | frame-rate governor on/off |
-| Right trigger | the selection tool along the right controller's ray (see below) |
+| Right trigger, pointing at the panel | press a button, or drag a slider (see [The panel in the headset](#the-panel-in-the-headset)) |
+| Right trigger, pointing at the cube | the selection tool along the right controller's ray (see [Selections](#selections-in-the-headset)) |
 | Left trigger | next selection tool: spectrum probe, Kinematic Lasso, box region |
 
-The spatial clipping box, the colour range, the stretch and the velocity
-stretch are set on the page before entering VR.
+The spatial clipping box, the stretch, the velocity stretch, the binning and
+the eye-buffer settings are set on the page before entering VR; the rest is on
+the panel in the headset too.
+
+## The panel in the headset
+
+A panel floats in the room to the left of the cube, turned toward you, about
+0.8 m away (0.48 × 0.39 m, text 1.0 to 1.5 cm high). It does **not** follow
+your head: it stays where it is when you look around or move the cube.
+Point the right controller at it: the ray ends on the panel with a small
+yellow cross, the widget under it lights up, and the trigger uses it. While
+the ray is on the panel, or the trigger was pulled on it, the selection tool
+does not fire. When the cube stands between the controller and the panel, the
+cube takes the ray; with the controller inside the cube (a cube scaled up
+around you), the panel does.
+
+| Row | What it does |
+|---|---|
+| title bar | the cube's file name; pull the trigger on it and move the controller to **move the panel** (it turns to face you); the place is kept for next time |
+| (two lines) | the cube's shape, the reduced shape, the binning and texture; the session (*the desktop's session*, *own session*, …) |
+| Colour map | ◀ ▶ the previous or next colour map; *emission* or *max intensity* |
+| Threshold | a slider (fine steps near the noise, as on the page) with its value in the cube's unit; *Reset* puts back the default threshold and colour range |
+| from | the default threshold *for this binning* or that of the *full cube* (the desktop's) |
+| Colour max, Opacity | sliders |
+| Channels | the velocity slab: a range with two ends (the nearer end moves); the channel range and its velocities in km/s with their convention below it; *All channels* |
+| Refine | refinement on or off, and its state (*refined (still view)*, *waiting*, *paused in passthrough*, *unavailable: …*) |
+| Tool | spectrum, lasso or box; *Clear* removes the selection and the marks |
+
+A slider pressed keeps following the controller until the trigger is released,
+even when the ray slips off its row. The results of a selection (numbers and
+spectrum) are on the second panel, to the right of the cube. The left stick
+press hides or shows the control panel; the numbers on the left controller
+(frame rate, latency) are toggled with Y.
+
+**Without a headset**, the same panel is drawn in the page's 3-D view with
+*show the headset's panel here* (or `?panel3d` in the address) and used with
+the mouse through the same ray code: a click presses, a drag moves a slider
+or, on the title bar, the panel.
+
+The panel is redrawn only when what it shows changes, at most 30 times a
+second. On the Mac (M5 Max, headless Chrome) a redraw of its 1024 × 832
+canvas takes 0.10 ms (0.20 ms 95th percentile) and its upload as a texture
+under 0.1 ms on the CPU; redraw, upload and drawing it, waited for on the
+GPU, 0.8 ms (1.2 ms). A frame with the panel shown costs 0.03 ms more CPU and
+no measurable GPU time than without it. The Quest 3's own figures are on its
+numbers panel (*panel redraw … ms + upload … ms*).
+
+## Settings kept in this browser
+
+The page keeps a few conveniences in the browser's local storage, for this
+browser only (the headset's browser and the Mac's keep their own): the
+**colour map**, the **threshold source** (*for this binning* or *full cube*),
+the **refinement** settings (on or off, refined size, JPEG quality, reproject
+with depth), the **panel's place** in the headset (relative to where the cube
+first appears), and the **last selection tool**. Nothing else is stored there:
+not the token (unless *remember on this device* is ticked), not the session,
+not any result. If the browser refuses storage (a private window), the page
+works with the defaults. `?refine=0` or `?refine=1` in the address overrides
+the stored refinement setting for that visit.
 
 ## The settings on the page
 
@@ -239,11 +434,14 @@ by the reduced cube) the refined frame shows none. Outside the frame (after
 a head turn, at the edges) the headset's own picture shows.
 
 **Not in passthrough.** In *Enter passthrough* the page shows its own
-rendering only (the panel says *refine off in passthrough*). The backend's
+rendering only (the panel says *paused in passthrough*). The backend's
 frame has no transparency (it is composited over black), so over the room it
 would either darken the room where the headset draws emission that the full
 cube does not have, or glow where only the full cube has emission. Refinement
-is also off while the headset benchmark runs.
+is also off while the headset benchmark runs. In both cases the page **closes
+its render session** (so it holds no render slot or GPU memory on the backend
+meanwhile) and opens a new one when you leave passthrough or the benchmark
+ends.
 
 **Selections stay visible.** The backend's frame has no selection in it: the
 box outline, the axes, the labels, the controller rays and the panels are
@@ -255,9 +453,11 @@ emission in front of it, as it is in the reduced rendering.
 
 **The render session.** The page opens a render session of its own for the
 cube (`POST /v1/render/create_session`, waiting in the queue if every slot
-is busy), on one WebSocket; the desktop's sessions are not used. It is closed,
-and its render slot freed, when another cube is loaded, when refinement is
-turned off (turning it on again opens a new one) and when the page is closed
+is busy), on one WebSocket; the desktop's render sessions are not used (the
+page shares the desktop's *backend* session, its datasets, when opened from
+the desktop). It is closed, and its render slot freed, when another cube is
+loaded, when refinement is turned off (turning it on again opens a new one),
+in passthrough and during the benchmark, and when the page is closed
 or left (it is opened again when the browser brings the page back); otherwise
 the backend's idle timeout closes it. A synthetic cube has no session
 (*refine unavailable: no backend cube*). A cube the backend would draw out of
@@ -268,10 +468,11 @@ built for it; the panel says *refine unavailable: the backend draws this cube
 out of core*. A clipping box the backend would refuse is not sent (nor any
 pose with it), and the panel says why.
 
-**Settings** (on the page, section above *Selection tool*):
+**Settings** (on the page, section above *Selection tool*; on or off also on
+the panel in the headset; all kept in this browser):
 
 - **refine with the backend's full cube**: on by default (`?refine=0` in the
-  address turns it off at start).
+  address turns it off for that visit).
 - **Refined size**: the size of each refined eye image relative to the eye
   buffer (headset) or the window (desktop browser): 1× by default, the eye
   buffer's own resolution (about 1680 × 1760 per eye on a Quest 3 at
@@ -406,7 +607,7 @@ the panel shows both.
 The right controller casts a ray (a thin white line); a small white cross
 shows where the trigger would land. On the Mac the same tools work with the
 mouse: a click (press and release without dragging) is the trigger, a drag
-still turns the cube. The tool is chosen with the left trigger or on the page
+still turns the cube. The tool is chosen with the left trigger, on the panel in the headset or on the page
 (*Selection tool*). Everything below is computed by the backend on the full
 cube, through the routes the desktop uses; the headset only draws.
 
@@ -499,10 +700,11 @@ lasso 570-710 ms plus 40-80 ms of statistics, box over 158 channels 22 ms.
 The green overlay costs GPU time: 0.64 ms without it, 0.84 ms with it, for one
 1600 × 1000 view on that Mac; the headset's own numbers are on its panel.
 
-## The numbers on the panel
+## The numbers on the left controller
 
-The panel (on the left controller, or next to the cube without controllers)
-and the page show, updated four times a second:
+The small panel of numbers (on the left controller, or next to the cube
+without controllers; Y hides it) and the page show, updated four times a
+second:
 
 - **FPS** and the **frame** interval (mean and 95th percentile), from the
   headset's frame callbacks, and the share of **missed** frames (an interval
@@ -513,7 +715,9 @@ and the page show, updated four times a second:
 - the **volume**, its texture size, the **binning**, the **threshold**;
 - the **eye buffer** size, the resolution scale and the foveation level;
 - the **selection tool** in use and the time of the last pick, lasso,
-  statistics, spectrum and box requests.
+  statistics, spectrum and box requests;
+- **panel redraw**: the time to redraw the panel in the headset and to upload
+  it as a texture (medians of the last 60 redraws), and how many redraws.
 
 ## Measuring the headset: the benchmark
 
@@ -585,21 +789,97 @@ the faint emission for little noise and blur; max binning is the choice for
 compact sources that mean binning dilutes. A selection made in the headset
 is computed on the full cube, not on what is drawn.
 
-## Limits
+## What to check on the Quest 3: from the desktop to the headset
 
-- One cube at a time: at most 2048 reduced voxels on a side (the GPU's 3-D
+These checks need the headset; the page shows the numbers to read. Note each
+value and whether each step behaves as described.
+
+1. **Pairing over USB.** On the Mac, open HCG 44 in the desktop application.
+   Connect the Quest 3 with a USB-C cable, choose *Tools → Views → Open in VR
+   Headset…*: the dialog must say *Ready* with the headset's model. Press
+   *Open on Headset* and put the headset on. Within about 10 s the Quest
+   Browser must show the page with the cube loaded and the status ending in
+   *in the desktop's session*, without typing anything. Note the time from
+   the press to the cube drawn.
+2. **Nothing left in the address.** Tap the Quest Browser's address bar: it
+   must read `http://localhost:<port>/vr/` with nothing after `#`. Open the
+   browser's history: the entry must not contain `token=` or `session=`.
+3. **Enter VR.** The control panel must stand to the left of the cube, about
+   arm's length away, turned toward you, and stay put when you turn your head
+   or walk a step. Read its text at a comfortable distance (0.5 to 1 m): note
+   whether every line is readable without leaning in, and which is not.
+4. **Pointing.** Point the right controller at the panel: a yellow cross must
+   follow the ray on it and the widget under it must light up; the cube's
+   white pick cross must disappear meanwhile. Press ▶ (next colour map),
+   *max intensity* then *emission*, *Reset*, *full cube (desktop)*; drag the
+   *Threshold* and *Opacity* sliders and the two ends of *Channels*: the cube
+   must change at once, the slider follow the controller without visible lag,
+   and the velocities under *Channels* match the slab on the cube's axis.
+   Note the numbers panel's **FPS**, **missed %** and **panel redraw … ms +
+   upload … ms** while dragging a slider, and FPS with the panel hidden
+   (left stick press): they should be the same.
+5. **Selections from the panel.** Choose *spectrum* on the panel and pull the
+   trigger on NGC 3187: the spectrum must appear on the results panel to the
+   right. Choose *lasso* and select the galaxy: the green mask and the
+   numbers must appear; *Clear* must remove them. A trigger pulled on the
+   panel must never start a selection on the cube behind it.
+6. **Same session.** Back on the Mac (headset still on, or after), *Download
+   recipes (.json)* on the page or copy the last recipe: its `dataset.path` is
+   the desktop's file, and its `backend_session_id` the desktop's session (do
+   not paste it anywhere public).
+7. **Moving the panel.** Pull the trigger on the panel's title bar, move the
+   controller, release: the panel must follow and turn toward you. Leave VR,
+   enter again: the panel must be back where you put it, the colour map and
+   the tool must be the last ones used. Reload the page (it loads the same cube
+   again) and check the same.
+8. **Passthrough.** Enter passthrough: the panel must say *paused in
+   passthrough*; leave it and enter VR: within a few seconds the refinement
+   must work again (*refined (still view)* when you hold still).
+9. **Wi-Fi.** Repeat 1 and 4 with adb connected over Wi-Fi; note the time to
+   load and the refinement's **pose->frame** on the numbers panel.
+10. **A cluster backend** (if you use one): connect the desktop to it, open a
+    cube there and repeat 1, then hold still and note **pose->frame** and
+    **stop->refined**.
+
+## Known limits
+
+- **Checks on the headset are pending.** Everything above was measured in a
+  desktop browser on the Mac (Chrome, the same code path with the mouse); the
+  frame rates, latencies, panel readability and controller handling on a
+  Quest 3 come from the checks listed in this page and are not yet recorded
+  here.
+- **One cube at a time**: at most 2048 reduced voxels on a side (the GPU's 3-D
   texture limit), 64 Mi voxels and 64 MiB of texture (so 32 Mi voxels in
   16 bits), for what a headset browser can allocate; the backend refuses a
   larger reduced cube before reading anything, and the page checks its GPU's
   limit before asking. Choose a larger binning.
-- In the headset: a spectrum, the Kinematic Lasso (one seed: no add or carve
-  seeds, no hand refinement, no Isolate or Remove, which stay on the desktop)
-  and a box region; no moments yet. Refined frames need a cube the backend
-  holds in core (not one drawn out of core from its brick pyramid), and are
-  not cropped in isosurface mode (the page does not use it). The desktop has no recipe import: a VR recipe is replayed by
-  posting its requests, as a desktop recipe is.
+- **Tools in the headset**: a spectrum, the Kinematic Lasso (one seed: no add
+  or carve seeds, no hand refinement, no Isolate or Remove, which stay on the
+  desktop) and a box region; no moments, no PV slice. The desktop has no
+  recipe import: a VR recipe is replayed by posting its requests, as a desktop
+  recipe is. The selection made in the headset is not shown in the desktop's
+  views (they share the session's datasets, not the selections on screen).
+- **Refinement**: needs a cube the backend holds in core: a cube drawn out of
+  core from its brick pyramid is not refined (the panel says so). Refined
+  frames travel as JPEG over the render session's WebSocket: there is **no
+  WebRTC (H.264) stereo stream** yet, so a slow link lowers their rate. They
+  are **off in passthrough** and during the benchmark. The opacity of the
+  refined frame is matched to the headset's by path length, which is
+  **approximate**: with coarse binning the refined image can look a little
+  denser or fainter than the reduced one. Not cropped in isosurface mode (the
+  page does not use it).
+- **Pairing**: *Open in VR Headset…* needs adb and a headset in developer mode,
+  and opens the page through `adb reverse` only (USB or adb over Wi-Fi), not by
+  the Mac's network address; a backend at a network address must be reached
+  through a local tunnel. The link carries the token (see the caution above).
+  The settings kept in the browser are per browser: the Mac's and the
+  headset's are separate.
+- **The panel in the headset** has the main controls only: the spatial clipping
+  box, stretch, velocity stretch, binning, texture, Kinematic Lasso parameters
+  and eye-buffer settings are on the page (before entering VR). The panel is
+  used with the right controller; hand tracking is not supported.
 - The labels follow the central row and column of the field; far from them on
   a wide projected field the true coordinate of a pixel differs a little.
-- The page reads the whole cube once to reduce it (0.6 s for HCG 44); a cube
-  of hundreds of GB takes correspondingly long.
+- The page reads the whole cube once to reduce it (0.6 s for HCG 44, 1.1 s
+  with a cold cache); a cube of hundreds of GB takes correspondingly long.
 - Comfort: prefer short, seated sessions; passthrough mode helps.

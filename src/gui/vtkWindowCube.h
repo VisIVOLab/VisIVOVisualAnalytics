@@ -133,6 +133,7 @@ class vtkTrivialProducer;
 class vtkVolume;
 
 class CubeVRController;
+class VrHeadsetDialog;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -848,6 +849,12 @@ private:
 
     QPointer<QAction> m_actPinSpectrum;
     QPointer<QAction> m_actOpenInVR;
+    /// Tools ▸ Views ▸ Open in VR Headset…: the backend's WebXR page on a Quest
+    /// through adb, in this window's backend session (issue #172). Not the
+    /// OpenXR offload above, which needs a VR runtime on this computer.
+    QPointer<QAction> m_actOpenInVrHeadset;
+    QPointer<VrHeadsetDialog> m_vrHeadsetDialog;
+    void openInVrHeadset();
 
     // ── Moment-map texture tools (issue #29) ─────────────────────────────────
     // The image viewer's angular power spectrum and skeleton / void detector,

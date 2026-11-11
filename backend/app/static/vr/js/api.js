@@ -4,7 +4,12 @@
 // never sends to the server, so it is not in any access log; then removed from
 // the address bar and history entry. It is kept in sessionStorage (this tab
 // only), or in localStorage when "remember on this device" is ticked. It can
-// also be typed. It travels only in the X-Visivo-Token header.
+// also be typed. It travels only in the X-Visivo-Token header (and in the
+// render session's WebSocket address, as the backend requires there). The
+// desktop's pairing link (issue #172) adds the session, dataset and path: see
+// takePairing.
+
+import { parsePairing, strippedAddress } from './pairing.js';
 
 const KEY = 'visivo-vr-token';
 
@@ -16,26 +21,58 @@ let fragmentError = '';
 /** Why the token in the fragment could not be read ('' when it could). */
 export function tokenError() { return fragmentError; }
 
-/** Token from the fragment, else from storage. Clears the fragment. */
-export function takeToken() {
-  const hash = window.location.hash || '';
-  const m = hash.match(/(?:^#|&)token=([^&]+)/);
-  if (m) {
-    let token = '';
-    try {
-      token = decodeURIComponent(m[1]);
-    } catch {
+const PAIR_KEY = 'visivo-vr-pairing';
+let pairingCache = null;
+
+/**
+ * The pairing from the desktop (#token=…&session=…&dataset=…&path=…, issue
+ * #172), read once: every pairing key is removed from the address bar and
+ * the history entry. The token goes where a typed one goes; the session,
+ * dataset and path are kept in sessionStorage (this tab only: a reload of
+ * the tab continues, another tab or a later visit does not). Without a
+ * pairing in the address, the one this tab kept. {token, session, dataset,
+ * path, fromAddress}.
+ */
+export function takePairing() {
+  if (pairingCache) return pairingCache;
+  const p = parsePairing(window.location.hash || '');
+  if (p.present) {
+    if (p.errors.length) {
       // A malformed %-escape must not stop the page loading.
-      fragmentError = 'The token in the address (#token=…) is malformed: paste it into the field.';
+      fragmentError = p.errors.includes('token')
+        ? 'The token in the address (#token=…) is malformed: paste it into the field.'
+        : `The link's ${p.errors.join(', ')} ${p.errors.length > 1 ? 'are' : 'is'} malformed: open the cube by hand.`;
     }
-    if (token) {
-      try { store('session')?.setItem(KEY, token); } catch { /* private mode */ }
+    window.history.replaceState(null, '', strippedAddress(window.location.pathname,
+      window.location.search, window.location.hash));
+    if (p.token) {
+      try { store('session')?.setItem(KEY, p.token); } catch { /* private mode */ }
     }
-    const rest = hash.replace(/(?:^#|&)token=[^&]+/, '').replace(/^&/, '');
-    window.history.replaceState(null, '', window.location.pathname + window.location.search
-      + (rest ? `#${rest}` : ''));
-    return token;
+    const kept = { session: p.session, dataset: p.dataset, path: p.path };
+    try {
+      if (kept.session || kept.dataset || kept.path) store('session')?.setItem(PAIR_KEY, JSON.stringify(kept));
+      else store('session')?.removeItem(PAIR_KEY);
+    } catch { /* storage refused: this load only */ }
+    pairingCache = { token: p.token, ...kept, fromAddress: true };
+    return pairingCache;
   }
+  let kept = {};
+  try { kept = JSON.parse(store('session')?.getItem(PAIR_KEY) || '{}') || {}; } catch { kept = {}; }
+  const str = (v) => (typeof v === 'string' ? v : '');
+  pairingCache = { token: '', session: str(kept.session), dataset: str(kept.dataset), path: str(kept.path), fromAddress: false };
+  return pairingCache;
+}
+
+/** Forgets the tab's pairing (the user opened another cube by hand). */
+export function forgetPairing() {
+  try { store('session')?.removeItem(PAIR_KEY); } catch { /* nothing kept */ }
+  pairingCache = { token: '', session: '', dataset: '', path: '', fromAddress: false };
+}
+
+/** Token from the fragment, else from storage. Clears the pairing keys from the address. */
+export function takeToken() {
+  const p = takePairing();
+  if (p.token) return p.token;
   try {
     return store('session')?.getItem(KEY) || store('local')?.getItem(KEY) || '';
   } catch { return ''; }
@@ -81,6 +118,9 @@ export class Backend {
     const resp = await fetch('/v1/ping');
     return resp.ok;
   }
+
+  /** Uses the desktop's session (the pairing) for every request. */
+  adoptSession(id) { this.session = id || ''; }
 
   async newSession() {
     const r = await this._json('POST', '/v1/sessions/new', {});

@@ -464,7 +464,7 @@ A tool is bound to a **view**, not to the pane you happen to have selected:
   - Getting results out. See
     [Figures, movies and linked views](publication-output).
 * - **Views**
-  - Overlay Slice on an Open Image, Link Views, Open in VR
+  - Overlay Slice on an Open Image, Link Views, Open in VR, Open in VR Headset…
   - Move the data to another view, or keep several in step.
 ```
 
@@ -757,6 +757,13 @@ rotating disk — without exporting each one and replotting externally.
 ### Open in VR
 
 Open the current cube in a VR headset and explore the volume in stereo.
+
+```{note}
+For a Meta Quest connected to a Mac (or any computer with adb), use
+**Tools → Views → Open in VR Headset…** instead: it needs no OpenXR runtime
+and opens the cube in the headset's browser, in the same backend session. See
+[Open a cube from the desktop](vr-headset.md#open-a-cube-from-the-desktop).
+```
 The same `vtkVolume` actor used by the desktop renderer is shared with
 the OpenXR render window, so the LUT, threshold and opacity transfer
 function you've tuned on the desktop are mirrored live into the headset
