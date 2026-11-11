@@ -4,6 +4,12 @@
 #   - push of a tag matching v* (e.g. v0.0.3) → builds + attaches to the GitHub release
 #   - workflow_dispatch                       → manual run for testing the pipeline
 #
+# A tag push drafts the release first (setup), every platform uploads its
+# package straight onto the draft, and the release job publishes it once all
+# four are there. No Actions artifacts: they cost ~2.7 GB of the account's
+# Actions storage per release. A manual run has no release, so its package is
+# kept as a short-lived artifact instead.
+#
 # Outputs (per matrix entry)
 #   - macOS arm64: VisIVOVisualAnalytics-macos-arm64.dmg
 #   - macOS x86_64: VisIVOVisualAnalytics-macos-x86_64.dmg
@@ -97,9 +103,34 @@ jobs:
     if: github.repository == 'VisIVOLab/VisIVOVisualAnalytics'
     name: choose platforms
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write     # drafts the release
     outputs:
       matrix: ${{ steps.pick.outputs.matrix }}
     steps:
+      # Created once, here, before the matrix starts: the platforms then only
+      # upload assets onto it, which is safe in parallel (creating or updating
+      # the same release from four jobs is what failed with "HttpError: Server
+      # Error"). A draft is invisible to users, so a release whose build fails
+      # half way is never published with packages missing.
+      - name: Draft the GitHub release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if draft=$(gh release view "$TAG" --json isDraft -q .isDraft 2> /dev/null); then
+            echo "Release $TAG already exists: the packages are attached to it."
+            if [ "$draft" != "true" ]; then
+              echo "::warning::Release $TAG is already published: each package is replaced in place, and missing while it uploads"
+            fi
+          else
+            gh release create "$TAG" --draft --verify-tag --generate-notes --title "$TAG"
+          fi
+
       - id: pick
         shell: bash
         env:
@@ -142,9 +173,15 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write     # uploads the package onto the drafted release
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The job's token can write releases: not left in .git/config for
+          # the hour of third-party build steps that follow.
+          persist-credentials: false
 
       # ── System dependencies ──────────────────────────────────────────────
       # ── Self-contained Python runtime ────────────────────────────────────
@@ -842,7 +879,37 @@ jobs:
           fi
 
       # ── Upload + attach to release ───────────────────────────────────────
+      # A tag: straight onto the release drafted by setup (no Actions storage).
+      - name: Attach to the GitHub release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(VisIVOVisualAnalytics-*.dmg VisIVOVisualAnalytics-*.tar.gz VisIVOVisualAnalytics-*.zip)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::No package to attach"
+            exit 1
+          fi
+          # A 500-750 MB upload can drop; --clobber makes a retry replace the
+          # partial asset.
+          for attempt in 1 2 3; do
+            if gh release upload "$TAG" "${files[@]}" --clobber; then
+              exit 0
+            fi
+            echo "Upload attempt $attempt failed; retrying in 30 s"
+            sleep 30
+          done
+          echo "::error::Could not attach ${files[*]} to release $TAG"
+          exit 1
+
+      # A manual run has no release: the package is downloaded from the run.
       - name: Upload artifact
+        if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
         uses: actions/upload-artifact@v4
         with:
           name: VisIVOVisualAnalytics-${{ matrix.name }}
@@ -851,36 +918,37 @@ jobs:
             VisIVOVisualAnalytics-*.tar.gz
             VisIVOVisualAnalytics-*.zip
           if-no-files-found: error
-          # The packages are attached to the GitHub Release below; the
-          # artifact only carries them to the release job, so keep it briefly
-          # (each release is about 2.5 GB of Actions storage).
+          # About 0.5-0.75 GB per platform of Actions storage: keep it briefly.
           retention-days: 2
 
-  # Single release-publishing job that runs once after the whole matrix is
-  # complete. Doing the upload inside each matrix job races on the same release
-  # via the Releases API and produces "HttpError: Server Error" intermittently.
+  # Publishes the drafted release once every platform has attached its
+  # package. If a platform failed, this job does not run and the release
+  # stays a draft: fix and re-run the failed job, which re-uploads (--clobber),
+  # then this job publishes it.
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Flatten artifact tree
+      - name: Publish the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
         run: |
-          mkdir -p release
-          find artifacts -type f \( -name '*.dmg' -o -name '*.tar.gz' -o -name '*.zip' \) \
-            -exec cp -v {} release/ \;
-          ls -la release/
-
-      - name: Attach to GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: release/*
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+          set -euo pipefail
+          assets=$(gh release view "$TAG" --json assets \
+            -q '[.assets[] | select(.state == "uploaded" and .size > 0) | .name] | join(" ")')
+          echo "Assets on $TAG: $assets"
+          missing=0
+          for name in linux-x86_64.tar.gz macos-arm64.dmg macos-x86_64.dmg windows-x86_64.zip; do
+            case " $assets " in
+              *" VisIVOVisualAnalytics-$name "*) ;;
+              *) echo "::error::VisIVOVisualAnalytics-$name is not on the release"; missing=1 ;;
+            esac
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          gh release edit "$TAG" --draft=false
