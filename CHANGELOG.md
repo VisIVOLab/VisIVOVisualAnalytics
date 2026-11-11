@@ -46,7 +46,14 @@ are preserved here unedited; the branch names they refer to are historical.
   `VISIVO_RENDER_IN_PROCESS=1`) is refused before a window is made, and
   closing it still frees its reader process and shared memory. The desktop's
   "cannot render server-side" tooltips now give the real reason (no EGL, or a
-  Mac without a logged-in user session).
+  Mac without a logged-in user session). The render processes never show in
+  the Dock (a context with no window, declared background-only before AppKit
+  starts). Quitting closes every render session the desktop holds, one
+  bounded DELETE each, all at once, instead of leaving them to the five-minute
+  idle timeout. A view whose session ends under it (its render process
+  killed) asks for a new one by itself, once, and then offers Retry; the
+  backend closes such a stream with the reason `session ended` and logs one
+  line instead of a traceback.
 - **VBT tables with the wrong byte order in their header (#165).** Opening a
   VBT (points or a volume) now samples a few thousand values per field and
   compares both byte orders; when the values are absurd as declared and

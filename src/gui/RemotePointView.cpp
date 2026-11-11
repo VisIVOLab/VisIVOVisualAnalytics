@@ -1,6 +1,8 @@
 #include "RemotePointView.h"
 
 #include "RemoteRenderWidget.h"
+
+#include <QDebug>
 #include "RenderSessionCalls.h"
 #include "app/BackendClient.h"
 
@@ -32,7 +34,37 @@ RemotePointView::RemotePointView(const QString &backendUrl, const QString &token
                              const bool live = state == QLatin1String("Live");
                              if (live == m_live)
                                  return;
+                             const bool dropped = m_live && !live && m_widget
+                                     && visivo::StreamCloseRecorder::isTerminal(state);
                              m_live = live;
+                             if (dropped) {
+                                 visivo::RemoteDrop drop;
+                                 drop.showingRemote = isActive();
+                                 drop.wasLive = m_widget->wasLiveAtClose();
+                                 drop.closeReason = m_widget->lastCloseReason();
+                                 drop.liveMs = m_widget->liveMsAtClose();
+                                 switch (m_recovery.onDrop(drop)) {
+                                 case visivo::RemoteDropAction::NewSession:
+                                     // The state kept (m_state) goes to the new
+                                     // session when it is live; the camera starts
+                                     // from the default view.
+                                     qDebug().noquote()
+                                             << "[point-render] session" << m_renderSessionId
+                                             << "ended on the backend; asking for a new one";
+                                     emit liveChanged(false);
+                                     stop();
+                                     start();
+                                     return;
+                                 case visivo::RemoteDropAction::OfferRetry:
+                                     emit liveChanged(false);
+                                     emit failed(visivo::sessionEnded(drop)
+                                                         ? u"its render session ended again"_s
+                                                         : u"the connection to the backend was lost"_s);
+                                     return;
+                                 case visivo::RemoteDropAction::Ignore:
+                                     break;
+                                 }
+                             }
                              if (live) {
                                  // A new stream knows nothing of what was sent to
                                  // the session before; the session does, but a
