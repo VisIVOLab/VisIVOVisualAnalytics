@@ -64,6 +64,87 @@ drawn voxel covers only the pixels that block holds.
 *Synthetic* draws a generated cube of the chosen size without any backend, for
 checking the page and measuring frame rates.
 
+## Open a cube from the desktop
+
+With a cube open in the desktop application, **Tools → Views → Open in VR
+Headset…** (or the same entry in Inspector ▸ Analysis) opens it on a Quest
+connected to the Mac, in the same backend session: the headset's page
+receives the token, the session, the dataset and the cube's path, so there is
+nothing to paste or type on the headset. This is not *Open in VR*, which
+sends the desktop's own 3-D view to an OpenXR runtime on this computer (see
+[Open in VR](cube-viewer.md#open-in-vr)); it needs no VR runtime here.
+
+**Once, before the first time:**
+
+1. **Install adb**, the Android platform tools. On a Mac:
+   `brew install android-platform-tools`; on Linux, the distribution's
+   `android-tools` / `adb` package; on Windows, the *SDK Platform-Tools*
+   from developer.android.com, unpacked anywhere. The application finds adb
+   on the `PATH`, in Homebrew's `/opt/homebrew/bin` and `/usr/local/bin`, in
+   the Android SDK (`$ANDROID_HOME/platform-tools`,
+   `~/Library/Android/sdk/platform-tools`, `~/Android/Sdk/platform-tools`,
+   `%LOCALAPPDATA%\Android\Sdk\platform-tools`), even when it was started
+   from the Dock with a short `PATH`.
+2. **Turn on developer mode** on the headset (Meta Horizon app on the phone:
+   *Devices → Headset settings → Developer mode*).
+3. On Linux, adb may need the udev rule for Android devices to open the
+   headset's USB device; the dialog says so when it is missing.
+
+**Each time:**
+
+1. Connect the headset with a USB-C cable (or connect adb over Wi-Fi, see
+   [below](#on-the-quest-3-over-wi-fi)) and put it on.
+2. In the cube window, **Tools → Views → Open in VR Headset…**. The dialog
+   says what it finds, and checks again every few seconds while no headset
+   is ready:
+   - *adb was not found*: install it (step 1 above);
+   - *No headset connected*: the cable, or developer mode;
+   - *The headset has not allowed this computer yet*: in the headset, accept
+     **Allow USB debugging** (tick *Always allow from this computer* so it is
+     not asked again);
+   - *Waiting for the headset to authorise this computer*: adb is still
+     connecting; accept the prompt in the headset if it shows one;
+   - *The headset is offline*: wake it up, or reconnect the cable;
+   - *Ready*: the headset's model. With several devices attached, choose the
+     headset in the list.
+3. Press **Open on Headset**. The application forwards the backend's port to
+   the headset (`adb reverse tcp:<port> tcp:<port>`) and opens the page in
+   the Quest Browser (`am start` with a view intent; in the headset's default
+   browser if the Quest Browser is not installed). The cube loads on the
+   page; press **Enter VR**.
+
+Repeat *Open on Headset* after unplugging the cable or restarting the
+headset: the port forwarding ends then.
+
+**Copy Link** copies the same address for opening it by hand: forward the
+port first (`adb reverse tcp:<port> tcp:<port>`, the port is the one in the
+link), then open the link in the headset's browser.
+
+The address is `http://localhost:<port>/vr/#token=…&session=…&dataset=…&path=…`.
+Everything after `#` is never sent to the server, so neither the token nor
+the cube's path is in any server log, and the page removes the token from the
+address bar.
+
+```{caution}
+The link carries the backend's access token: whoever has it can use the
+backend as you. The application never writes it to its log, but *Open on
+Headset* passes it on the command line of the `adb` process on this computer
+and of `am` on the headset, where other programs of the same user can read
+it, and *Copy Link* leaves it on the clipboard. Use it with your own computer
+and headset.
+```
+
+**Remote and cluster backends.** The headset reaches the backend as
+`localhost:<port>` through adb, so the client's backend address must be
+`localhost`, `127.0.0.1` or `[::1]` with no path after the port (the page
+lives at the backend's root): the local backend, or a remote one reached through a
+local tunnel, as a cluster connection is (for example `localhost:18960`).
+The port forwarded is the tunnel's, and the headset's requests travel
+through the same tunnel. A backend the client reaches at another address (a
+machine on the network at `http://192.168.x.y:8000`) cannot be reached from
+the headset this way, and the dialog says so: connect to it through an ssh
+tunnel (`ssh -L 8000:localhost:8000 host`) and open the cube from there.
+
 ## On the Quest 3, over USB (recommended)
 
 WebXR needs a **secure context**: an `https` page, or `http://localhost`.
@@ -263,6 +344,8 @@ will be computed on the full cube, not on what is drawn.
   limit before asking. Choose a larger binning.
 - No selections, spectra or moments in the headset yet (step 5); no
   full-quality frames from the Mac (steps 2 to 4).
+- *Open in VR Headset…* needs adb and a headset in developer mode; it
+  opens the page through `adb reverse` only, not over the network.
 - The labels follow the central row and column of the field; far from them on
   a wide projected field the true coordinate of a pixel differs a little.
 - The page reads the whole cube once to reduce it (0.6 s for HCG 44); a cube

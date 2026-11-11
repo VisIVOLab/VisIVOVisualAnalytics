@@ -516,6 +516,10 @@ set(PROJECT_SOURCES
         src/app/MissingRoute.h
         src/gui/CubeVRController.cpp
         src/gui/CubeVRController.h
+        src/gui/VrHeadsetDialog.cpp
+        src/gui/VrHeadsetDialog.h
+        src/app/VrLink.h
+        src/app/AdbHeadset.h
         src/gui/Catalogue3DTableModel.cpp
         src/gui/Catalogue3DTableModel.h
         src/gui/DecompressBeforeOpen.cpp
@@ -617,6 +621,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_Lasso.cpp
         src/gui/vtkWindowCube_Movie.cpp
         src/gui/vtkWindowCube_Link.cpp
+        src/gui/vtkWindowCube_VrHeadset.cpp
         src/gui/vtkWindowCube_Raytrace.cpp
         src/gui/vtkWindowCube_RegionIO.cpp
         src/gui/Pane2DView.cpp

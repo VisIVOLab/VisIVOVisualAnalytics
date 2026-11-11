@@ -28,6 +28,7 @@
 #include <QEvent>
 #include <QIcon>
 #include "CubeVRController.h"
+#include "VrHeadsetDialog.h"
 #include "DiagnosticsWindow.h"
 #include "theme/SegmentedToggle.h"
 #include "CatalogueOverlayUtils.h"
@@ -2711,6 +2712,18 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         // menu too, so "Open in VR" vanished from all three lists at once.
         this->m_actOpenInVR = actOpenInVR;
     }
+
+    // Views: the headset path that needs no VR runtime here — the backend's
+    // WebXR page opened on a Quest through adb (issue #172). Its place in the
+    // menu and the Inspector comes from cubeTools(), like every other tool.
+    this->m_actOpenInVrHeadset = new QAction(u"Open in VR Headset…"_s, ui->menuTools);
+    this->m_actOpenInVrHeadset->setToolTip(
+            u"Continue with this cube in a Meta Quest connected with adb (USB or Wi-Fi): the "
+            u"headset's browser opens the backend's VR page in this window's session. No VR "
+            u"runtime is needed on this computer."_s);
+    QObject::connect(this->m_actOpenInVrHeadset, &QAction::triggered, this,
+                     &vtkWindowCube::openInVrHeadset);
+    ui->menuTools->addAction(this->m_actOpenInVrHeadset);
 
     // ANALYSIS: Estimate Noise goes at the head of the group (before Compute
     // Moment), to match the sidebar's "Estimate Noise → Moment Map" order.
@@ -7813,6 +7826,7 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Views"_s, self->m_actSendSliceToImage);
     add(u"Views"_s, self->m_actLinkViews);
     add(u"Views"_s, self->m_actOpenInVR);
+    add(u"Views"_s, self->m_actOpenInVrHeadset);
     return t;
 }
 
