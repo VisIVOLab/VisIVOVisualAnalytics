@@ -559,6 +559,15 @@ struct BackendSuperResolutionResult
     int totalRows{ 0 };
 };
 
+struct BackendCatalogueSuperResolutionResult
+{
+    bool valid{ false };
+    QString error;
+    QString datasetId;
+    QString statusMsg;
+    std::vector<std::array<double, 3>> positions;
+};
+
 struct BackendImageResult
 {
     bool valid{ false };
@@ -2254,6 +2263,13 @@ public:
     BackendTabularQueryResponse queryTabularVbt(const BackendTabularQueryRequest &req) const;
     BackendSuperResolutionResult superResolveVbt(
             const QString &datasetId,
+            const QString &kind,
+            int upsampleFactor,
+            const QString &cosmology,
+            double particleMass) const;
+    BackendCatalogueSuperResolutionResult superResolveCatalogue(
+            const QString &datasetId,
+            const std::vector<std::array<double, 3>> &positions,
             const QString &kind,
             int upsampleFactor,
             const QString &cosmology,

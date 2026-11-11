@@ -591,8 +591,10 @@ void vtkWindowCatalogue3D::updateGeometryMode()
 
 void vtkWindowCatalogue3D::updateSizeMode()
 {
-    this->mapSizeKey = this->comboSizeMode ? this->comboSizeMode->currentData().toString()
-                                           : QStringLiteral("builtin:fixed");
+    if (!this->comboSizeMode || this->updatingMappingControls) { //guard so updateSizeMode ignores dropdown-change signals while populateMappingControls() is rebuilding the controls. That prevents it from reading an empty mapping and calling updateGlyphScales() mid-refresh—the path that produced a warning and to crash "invalid size mapping "" -> fallback to fixed size"
+        return;
+    }
+    this->mapSizeKey = this->comboSizeMode->currentData().toString();
     if (this->mapSizeKey == QStringLiteral("builtin:major")) {
         this->sizeMode = SizeMode::MajorAxis;
     } else if (this->mapSizeKey == QStringLiteral("builtin:lls")) {

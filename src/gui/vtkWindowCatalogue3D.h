@@ -110,6 +110,23 @@ struct Catalogue3DCosmologyTaskResult
     std::vector<double> distancesMpc;
 };
 
+struct Catalogue3DSuperResolutionConfig
+{
+    int upsampleFactor{ 4 };
+    QString kind{ QStringLiteral("datacube") };
+    QString cosmology{ QStringLiteral("LCDM") };
+    double particleMass{ 1.0 };
+};
+
+struct Catalogue3DSuperResolutionTaskResult
+{
+    bool valid{ false };
+    QString error;
+    QString datasetId;
+    QString statusMsg;
+    std::vector<std::array<double, 3>> positions;
+};
+
 // How to name a catalogue that is not a file the user picked: a table
 // received over SAMP is staged on the backend under a hashed name, which means
 // nothing to the user. Empty: the file's own name.
@@ -236,6 +253,7 @@ private:
     // their own that existed nowhere else in the application.
     QPointer<QWidget> m_pageViz;
     QPointer<QWidget> m_pageFilters;
+    QPointer<QWidget> m_pageTransformations;
     QPointer<QAction> actionShowControlsSidebar;   ///< "Inspector Panel"
     QPointer<QAction> m_actionSessionPanel;        ///< "Session Data Panel"
     void buildControlPages();
@@ -347,6 +365,9 @@ private:
     // the local computation), otherwise calls the backend batch endpoint.
     void triggerCosmologyUpdate();
     void onCosmologyFinished();
+    void runSuperResolutionDialog();
+    void launchSuperResolution(const Catalogue3DSuperResolutionConfig &config);
+    void onSuperResolutionFinished();
     /// The model the selector names, as a full model: a preset, or the custom
     /// model the user handed over from the calculator (issue #29).
     visivo::cosmology::Model selectedCosmology() const;
@@ -535,6 +556,9 @@ private:
     void reapplyCosmologyAfterReload();
     bool m_cosmologyBusy{ false };
     QFutureWatcher<Catalogue3DCosmologyTaskResult> m_cosmologyWatcher;
+    QPointer<QPushButton> btnSuperResolution;
+    QPointer<QLabel> superResolutionStatusLabel;
+    QFutureWatcher<Catalogue3DSuperResolutionTaskResult> superResolutionWatcher;
     bool syncingTableSelection{ false };
     bool updatingMappingControls{ false };
     QString mapXKey{ QStringLiteral("computed:x") };
@@ -615,6 +639,7 @@ private:
     bool m_pointTable{ false };   ///< a VBT of points
     bool m_defaultScaleChosen{ false };   ///< the opening Log/Linear choice, made once
     bool m_cartesian{ false };    ///< positions are X/Y/Z columns
+    bool m_generatedSuperResolution{ false };
     /// A table of points without classes: colour means a column, or one
     /// colour for all (no morphology checkbox).
     bool m_noMorphology{ false };

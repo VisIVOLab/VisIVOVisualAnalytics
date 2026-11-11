@@ -20,11 +20,20 @@ from ..product_cache import PRODUCT_CACHE
 from ..fits_dataset import ScientificFitsDataset
 import asyncio
 from ..dependencies import _require_dataset
+from ..dependencies import _catalogue_metadata_from_dataframe
 from ..services.super_resolution.super_resolution import *
 
 
 class VbtSuperResolutionRequest(BaseModel):
     dataset_id: str
+    kind: str = "datacube"
+    upsample_factor: int = 4
+    cosmology: str = "LCDM"
+    particle_mass: float = 1.0
+
+class CatalogueSuperResolutionRequest(BaseModel):
+    dataset_id: str
+    positions: list[list[float]]
     kind: str = "datacube"
     upsample_factor: int = 4
     cosmology: str = "LCDM"
@@ -408,4 +417,127 @@ async def vbt_super_resolution(
             "fields": field_names,
             "columns": columns,
         },
+    }
+
+
+@router.post("/v1/catalogue/super_resolution", tags=["catalogue"])
+async def catalogue_super_resolution(
+    request: CatalogueSuperResolutionRequest,
+    _: None = Depends(verify_token),
+    session: Session = Depends(get_session),
+):
+    global super_resolution_model, device
+
+    logger.info("[router] catalogue super-resolution start")
+
+    entry = _require_dataset(session, request.dataset_id)
+    if entry.get("kind") != "catalogue":
+        raise HTTPException(422, "This endpoint requires a catalogue dataset.")
+    if request.upsample_factor not in (2, 4, 8):
+        raise HTTPException(422, "Upsample factor must be 2, 4, or 8.")
+
+    if not request.positions or any(len(position) != 3 for position in request.positions):
+        raise HTTPException(422, "Super-resolution requires a non-empty list of XYZ positions.")
+
+    data_array = np.asarray(request.positions, dtype=np.float64)
+    if not np.isfinite(data_array).all():
+        raise HTTPException(422, "Super-resolution positions must all be finite.")
+
+    grid_size = round(len(data_array) ** (1 / 3))
+    if grid_size <= 0 or grid_size**3 != len(data_array):
+        raise HTTPException(
+            422,
+            "Super-resolution requires the loaded catalogue rows to form a cubic grid "
+            "with the same number of samples along each axis.",
+        )
+    expected_rows = len(data_array) * request.upsample_factor**3
+    expected_payload_bytes = ((expected_rows * 3 * 8 + 2) // 3) * 4
+    if expected_payload_bytes > _POINT_SUBSET_LIMIT_BYTES:
+        raise HTTPException(
+            413,
+            f"The generated dataset would exceed the "
+            f"{_POINT_SUBSET_LIMIT_BYTES >> 20} MiB response limit. "
+            "Use a smaller upsample factor or a smaller input dataset.",
+        )
+
+    # Keep the model's existing three-channel cubic tensor contract.
+    model_input = data_array.astype(np.float32).T.reshape(1, 3, grid_size, grid_size, grid_size)
+    if not np.isfinite(model_input).all():
+        raise HTTPException(422, "Super-resolution positions exceed the model's numeric range.")
+
+    if super_resolution_model is None:
+        try:
+            super_resolution_model = load_sr_model(
+                "F:/INAF/borsa_23_03_2026/SR_tool_visivo/"
+                "VisIVO-next-1.0.2-superresolution/backend/app/services/"
+                "super_resolution/models/baseline.pt",
+                device=device,
+            )
+        except Exception as exc:
+            raise HTTPException(500, f"Super-resolution model loading failed: {exc}") from exc
+
+    result = run_sr_on_nbody(
+        arr=model_input,
+        model=super_resolution_model,
+        device=device,
+        kind=request.kind,
+        upsample_fac=request.upsample_factor,
+        cosmology=request.cosmology,
+        particle_mass=request.particle_mass,
+    )
+    if torch.is_tensor(result):
+        result = result.detach().cpu().numpy()
+    result_array = np.asarray(result)
+    if (
+        result_array.ndim != 5
+        or result_array.shape[0] != 1
+        or result_array.shape[1] != 3
+        or any(size <= 0 for size in result_array.shape[2:])
+    ):
+        raise HTTPException(
+            500,
+            "Super-resolution returned an invalid tensor shape; expected (1, 3, nx, ny, nz).",
+        )
+
+    generated_data = np.ascontiguousarray(result_array[0], dtype=np.float32)
+    if not np.isfinite(generated_data).all():
+        raise HTTPException(500, "Super-resolution returned non-finite coordinates.")
+    total_rows = int(np.prod(generated_data.shape[1:], dtype=np.int64))
+    payload_bytes = ((total_rows * 3 * 8 + 2) // 3) * 4
+    if payload_bytes > _POINT_SUBSET_LIMIT_BYTES:
+        raise HTTPException(
+            413,
+            f"The generated dataset would exceed the "
+            f"{_POINT_SUBSET_LIMIT_BYTES >> 20} MiB response limit. "
+            "Use a smaller upsample factor or a smaller input dataset.",
+        )
+
+    columns = {
+        axis: base64.b64encode(
+            generated_data[index].astype("<f8", copy=False).reshape(-1).tobytes()
+        ).decode("ascii")
+        for index, axis in enumerate(("x", "y", "z"))
+    }
+
+    frame = pd.DataFrame({
+        axis: generated_data[index].reshape(-1)
+        for index, axis in enumerate(("x", "y", "z"))
+    })
+    metadata = _catalogue_metadata_from_dataframe(frame, "generated")
+    result_dataset_id = f"cat_{uuid.uuid4().hex[:12]}"
+    session.datasets[result_dataset_id] = {
+        "kind": "catalogue",
+        "path": None,
+        "paths": [],
+        "dataframe": frame,
+        **metadata,
+    }
+
+    return {
+        "valid": True,
+        "error": "",
+        "dataset_id": result_dataset_id,
+        "status_msg": "Super-resolution complete",
+        "total_rows": total_rows,
+        "columns": columns,
     }

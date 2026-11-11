@@ -93,6 +93,90 @@
 
 using namespace Qt::StringLiterals;
 
+namespace {
+
+class CatalogueSuperResolutionDialog : public QDialog
+{
+public:
+    explicit CatalogueSuperResolutionDialog(QWidget *parent = nullptr)
+        : QDialog(parent)
+    {
+        setWindowTitle(u"Super-resolution"_s);
+        setModal(true);
+        resize(420, 240);
+
+        auto *layout = new QVBoxLayout(this);
+        auto *factorLabel = new QLabel(u"Upsample factor"_s, this);
+        factorLabel->setStyleSheet(QStringLiteral("font-weight: 600;"));
+        layout->addWidget(factorLabel);
+
+        m_factorCombo = new QComboBox(this);
+        m_factorCombo->addItem(u"2"_s, 2);
+        m_factorCombo->addItem(u"4"_s, 4);
+        m_factorCombo->addItem(u"8"_s, 8);
+        m_factorCombo->setCurrentIndex(1);
+        layout->addWidget(m_factorCombo);
+
+        auto *kindLabel = new QLabel(u"Data type"_s, this);
+        kindLabel->setStyleSheet(QStringLiteral("font-weight: 600;"));
+        layout->addWidget(kindLabel);
+
+        m_kindCombo = new QComboBox(this);
+        m_kindCombo->addItem(u"datacube"_s, QStringLiteral("datacube"));
+        m_kindCombo->addItem(u"dark matter only simulation"_s,
+                             QStringLiteral("dark_matter_only"));
+        layout->addWidget(m_kindCombo);
+
+        auto *cosmologyGroup = new QGroupBox(u"Dark-matter options"_s, this);
+        auto *cosmologyLayout = new QFormLayout(cosmologyGroup);
+        m_cosmologyCombo = new QComboBox(cosmologyGroup);
+        m_cosmologyCombo->addItem(u"LCDM"_s, QStringLiteral("LCDM"));
+        m_cosmologyCombo->addItem(u"DDE"_s, QStringLiteral("DDE"));
+        cosmologyLayout->addRow(u"Cosmology"_s, m_cosmologyCombo);
+
+        m_particleMassSpin = new QDoubleSpinBox(cosmologyGroup);
+        m_particleMassSpin->setRange(0.0, 1e9);
+        m_particleMassSpin->setDecimals(6);
+        m_particleMassSpin->setValue(1.0);
+        cosmologyLayout->addRow(u"Particle mass"_s, m_particleMassSpin);
+        layout->addWidget(cosmologyGroup);
+        cosmologyGroup->setVisible(false);
+
+        connect(m_kindCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this, cosmologyGroup](int) {
+                    cosmologyGroup->setVisible(
+                            this->m_kindCombo->currentData().toString()
+                            == QLatin1String("dark_matter_only"));
+                });
+
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                             Qt::Horizontal, this);
+        layout->addWidget(buttons);
+        connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    }
+
+    Catalogue3DSuperResolutionConfig config() const
+    {
+        Catalogue3DSuperResolutionConfig result;
+        result.upsampleFactor = m_factorCombo->currentData().toInt();
+        result.kind = m_kindCombo->currentData().toString();
+        if (result.kind == QLatin1String("dark_matter_only")) {
+            result.cosmology = m_cosmologyCombo->currentData().toString();
+            result.particleMass = m_particleMassSpin->value();
+        }
+        return result;
+    }
+
+private:
+    QComboBox *m_factorCombo{ nullptr };
+    QComboBox *m_kindCombo{ nullptr };
+    QComboBox *m_cosmologyCombo{ nullptr };
+    QDoubleSpinBox *m_particleMassSpin{ nullptr };
+};
+
+} // namespace
+
 // ── Setup ──
 // Extracted verbatim from vtkWindowCatalogue3D.cpp.
 
@@ -463,6 +547,53 @@ void vtkWindowCatalogue3D::buildControlPages()
         pageFilters->setParent(this);
         pageFilters->hide();
     }
+
+    // ── Transformations page (mounted in the Inspector's Analysis tab) ───────
+    {
+        auto *pageTransformations = new QWidget;
+        auto *pageLayout = new QVBoxLayout(pageTransformations);
+        pageLayout->setContentsMargins(8, 8, 8, 8);
+        pageLayout->setSpacing(8);
+
+        auto *header = new QLabel(u"TRANSFORMATIONS"_s, pageTransformations);
+        header->setStyleSheet(hdrStyle);
+        pageLayout->addWidget(header);
+
+        auto *transformationsCard = new QFrame(pageTransformations);
+        transformationsCard->setStyleSheet(cardStyle);
+        auto *cardLayout = new QVBoxLayout(transformationsCard);
+        cardLayout->setContentsMargins(8, 8, 8, 8);
+        cardLayout->setSpacing(6);
+
+        auto *aiHeader = new QLabel(u"AI"_s, transformationsCard);
+        aiHeader->setStyleSheet(subHdrStyle);
+        cardLayout->addWidget(aiHeader);
+
+        this->btnSuperResolution = new QPushButton(u"Super-resolution"_s, transformationsCard);
+        this->btnSuperResolution->setToolTip(
+                u"Upsample the loaded scene positions. The loaded source count must form a cubic "
+                u"grid (N × N × N)."_s);
+        cardLayout->addWidget(this->btnSuperResolution);
+
+        this->superResolutionStatusLabel = new QLabel(transformationsCard);
+        this->superResolutionStatusLabel->setWordWrap(true);
+        this->superResolutionStatusLabel->setStyleSheet(
+                QStringLiteral("QLabel { color: %1; font-size: 9px; }")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        cardLayout->addWidget(this->superResolutionStatusLabel);
+        pageLayout->addWidget(transformationsCard);
+        pageLayout->addStretch(1);
+
+        this->m_pageTransformations = pageTransformations;
+        pageTransformations->setParent(this);
+        pageTransformations->hide();
+    }
+
+    QObject::connect(this->btnSuperResolution, &QPushButton::clicked,
+                     this, &vtkWindowCatalogue3D::runSuperResolutionDialog);
+    QObject::connect(&this->superResolutionWatcher,
+                     &QFutureWatcher<Catalogue3DSuperResolutionTaskResult>::finished,
+                     this, &vtkWindowCatalogue3D::onSuperResolutionFinished);
 
     // ── Scientific copilot page ───────────────────────────────────────────────
     // Grounded Q&A over the loaded catalogue (catalogue_summary + cosmology_distance
@@ -856,6 +987,11 @@ void vtkWindowCatalogue3D::setupWorkspaceDocks()
     // "what am I looking at", which is what the Properties tab is for.
     if (ui->pageInfo)
         panel->addPropertiesSection(ui->pageInfo);
+
+    if (this->m_pageTransformations) {
+        this->m_pageTransformations->show();
+        panel->addAnalysisSection(this->m_pageTransformations);
+    }
     // Filtering is an analysis of the catalogue, not a view setting.
     if (this->m_pageFilters) {
         this->m_pageFilters->show();
@@ -1058,4 +1194,199 @@ void vtkWindowCatalogue3D::showCatalogueFieldsDialog()
     QObject::connect(buttons, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
     layout->addWidget(buttons);
     dlg->show();
+}
+
+void vtkWindowCatalogue3D::runSuperResolutionDialog()
+{
+    const std::size_t count = this->entries.size();
+    if (count == 0 || this->remoteDatasetId.isEmpty()) {
+        this->superResolutionStatusLabel->setText(
+                u"No loaded catalogue positions are available for super-resolution."_s);
+        return;
+    }
+    if (this->filterBusy || this->m_loadingMore || this->m_cosmologyBusy
+        || this->m_sceneBuilding || this->superResolutionWatcher.isRunning()) {
+        this->superResolutionStatusLabel->setText(
+                u"Wait for the current catalogue operation to finish before starting "
+                u"super-resolution."_s);
+        return;
+    }
+
+    auto *dialog = new CatalogueSuperResolutionDialog(this);
+    if (dialog->exec() != QDialog::Accepted) {
+        delete dialog;
+        return;
+    }
+    const Catalogue3DSuperResolutionConfig config = dialog->config();
+    delete dialog;
+    this->launchSuperResolution(config);
+}
+
+void vtkWindowCatalogue3D::launchSuperResolution(
+        const Catalogue3DSuperResolutionConfig &config)
+{
+    const std::size_t count = this->entries.size();
+    const auto gridSize = static_cast<quint64>(std::llround(std::cbrt(
+            static_cast<double>(count))));
+    if (gridSize == 0 || gridSize * gridSize * gridSize != count) {
+        this->superResolutionStatusLabel->setText(
+                QStringLiteral("Super-resolution requires a cubic number of loaded positions "
+                               "(N × N × N); %1 rows are currently loaded.")
+                        .arg(count));
+        return;
+    }
+
+    std::vector<std::array<double, 3>> positions;
+    positions.reserve(count);
+    for (const Catalogue3DEntry &entry : this->entries) {
+        const std::array<double, 3> position{ entry.sceneX, entry.sceneY, entry.sceneZ };
+        if (!std::isfinite(position[0]) || !std::isfinite(position[1])
+            || !std::isfinite(position[2])) {
+            this->superResolutionStatusLabel->setText(
+                    u"Super-resolution requires finite XYZ coordinates for every loaded source."_s);
+            return;
+        }
+        positions.push_back(position);
+    }
+
+    this->btnSuperResolution->setEnabled(false);
+    this->superResolutionStatusLabel->setText(u"Running super-resolution…"_s);
+    const QString backendUrl = this->backendUrl;
+    const QString backendToken = this->backendToken;
+    const QString datasetId = this->remoteDatasetId;
+    const QString sessionId = this->remoteSessionId;
+    this->superResolutionWatcher.setFuture(QtConcurrent::run(
+            [backendUrl, backendToken, datasetId, sessionId, positions, config]()
+                    -> Catalogue3DSuperResolutionTaskResult {
+                Catalogue3DSuperResolutionTaskResult task;
+                BackendClient client(backendUrl, backendToken);
+                if (!sessionId.isEmpty())
+                    client.setSessionId(sessionId);
+                const auto result = client.superResolveCatalogue(
+                        datasetId, positions, config.kind, config.upsampleFactor,
+                        config.cosmology, config.particleMass);
+                task.valid = result.valid;
+                task.error = result.error;
+                task.datasetId = result.datasetId;
+                task.statusMsg = result.statusMsg;
+                task.positions = result.positions;
+                return task;
+            }));
+}
+
+void vtkWindowCatalogue3D::onSuperResolutionFinished()
+{
+    if (this->btnSuperResolution)
+        this->btnSuperResolution->setEnabled(true);
+
+    const auto result = this->superResolutionWatcher.result();
+    if (!result.valid) {
+        const QString message = u"Super-resolution failed: "_s + result.error;
+        if (this->superResolutionStatusLabel)
+            this->superResolutionStatusLabel->setText(message);
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
+                u"Catalogue3D"_s, message, this->remoteDatasetId,
+                this->remoteSessionId, u"super-resolution"_s);
+        return;
+    }
+
+    this->remoteDatasetId = result.datasetId;
+    this->schema = Catalogue3DSchema{};
+    this->schema.headers = { u"x"_s, u"y"_s, u"z"_s };
+    this->schema.fields = {
+        { u"x"_s, u"float"_s }, { u"y"_s, u"float"_s }, { u"z"_s, u"float"_s }
+    };
+    this->schema.xFieldName = u"x"_s;
+    this->schema.yFieldName = u"y"_s;
+    this->schema.zFieldName = u"z"_s;
+    this->rawHeaders = this->schema.headers;
+    this->m_cartesian = true;
+    this->m_pointTable = false;
+    this->m_noMorphology = true;
+    this->m_generatedSuperResolution = true;
+    this->m_serverSideRendering = false;
+    this->m_totalCount = static_cast<int>(result.positions.size());
+    this->m_currentOffset = this->m_totalCount;
+    this->m_tableRows = this->m_totalCount;
+    this->m_sampleStep = 1;
+    this->m_samplePhase = 0;
+    this->m_sampleLimit = this->m_pageSize;
+    this->activeFilters.clear();
+    if (this->filterList)
+        this->filterList->clear();
+
+    this->entries.clear();
+    this->entries.reserve(result.positions.size());
+    for (std::size_t index = 0; index < result.positions.size(); ++index) {
+        const auto &position = result.positions[index];
+        Catalogue3DEntry entry;
+        entry.id = static_cast<int>(index);
+        entry.sourceRow = static_cast<qint64>(index);
+        entry.fields = { position[0], position[1], position[2] };
+        entry.sceneX = position[0];
+        entry.sceneY = position[1];
+        entry.sceneZ = position[2];
+        this->entries.push_back(std::move(entry));
+    }
+
+    this->mapXKey = QStringLiteral("computed:x");
+    this->mapYKey = QStringLiteral("computed:y");
+    this->mapZKey = QStringLiteral("computed:z");
+    this->mapSizeKey = QStringLiteral("builtin:fixed");
+    this->mapColorKey = QStringLiteral("builtin:morphology");
+    this->m_colorUserRange[0] = this->m_colorUserRange[1] = 0.0;
+    this->m_colorRemoteRange[0] = this->m_colorRemoteRange[1] = 0.0;
+    this->m_defaultScaleChosen = false;
+    this->activeFrame = CoordFrame::FK5_J2000;
+    if (this->ui->chkMorphColors)
+        this->ui->chkMorphColors->hide();
+    if (this->comboFrame) {
+        const QSignalBlocker block(this->comboFrame);
+        this->comboFrame->setCurrentIndex(0);
+    }
+    if (this->chkShowShells)
+        this->chkShowShells->setChecked(false);
+    if (this->m_cosmologyStatus)
+        this->m_cosmologyStatus->setText(
+                u"Generated Cartesian XYZ positions; no redshift conversion."_s);
+   
+    this->m_sampRowMapDirty = true;
+    this->populateMappingControls();
+    this->applyRenderMode(RenderMode::Local);    
+    this->renderer->RemoveAllViewProps();   
+    this->morphologyNames.clear();  
+    this->morphologyIndexOf.clear();    
+    this->labelActors.clear();   
+    this->shellActors.clear();    
+    this->mappedPositions.clear();    
+    this->hoveredIndex = -1;
+    this->selectedIndex = -1;
+    this->buildScene();    
+    this->buildLabels();    
+    this->updatePointPositions();   
+    this->refreshCatalogueTable();   
+    this->updateLoadMoreButtons();    
+    this->refreshViewerChrome();    
+    this->renderWindow->Render();
+
+
+    const QString message = result.statusMsg.isEmpty()
+            ? QStringLiteral("Super-resolution complete: %1 sources.")
+                      .arg(this->entries.size())
+            : result.statusMsg + QStringLiteral(" · %1 sources").arg(this->entries.size());
+    if (this->superResolutionStatusLabel)
+        this->superResolutionStatusLabel->setText(message);
+    if (this->ui->labelStatus)
+        this->ui->labelStatus->setText(message);
+    DiagnosticsManager::instance()->publish(
+            DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
+            u"Catalogue3D"_s, message, this->remoteDatasetId,
+            this->remoteSessionId, u"super-resolution"_s);
+    if (this->m_copilot)
+        this->m_copilot->setDatasetId(this->remoteDatasetId);
+    CopilotActionRouter::instance()->registerTarget(
+            this->remoteDatasetId, this,
+            [this](const QList<QJsonObject> &actions) { this->applyCopilotActions(actions); },
+            [this]() { this->undoCopilotActions(); });
 }

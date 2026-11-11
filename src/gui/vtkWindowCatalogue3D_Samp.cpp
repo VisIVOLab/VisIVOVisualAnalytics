@@ -50,7 +50,9 @@ void vtkWindowCatalogue3D::showSelectionStatus(const QString &text)
 
 QString vtkWindowCatalogue3D::sampTableKey() const
 {
-    return this->m_cataloguePaths.size() > 1 ? QString() : this->filepath;
+    return this->m_generatedSuperResolution || this->m_cataloguePaths.size() > 1
+            ? QString()
+            : this->filepath;
 }
 
 void vtkWindowCatalogue3D::ensureSampRowMap()

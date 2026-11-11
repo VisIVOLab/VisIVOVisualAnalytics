@@ -279,6 +279,8 @@ void vtkWindowCatalogue3D::openCosmologyCalculator()
 
 void vtkWindowCatalogue3D::triggerCosmologyUpdate()
 {
+    if (this->superResolutionWatcher.isRunning())
+        return;
     // Cartesian (.speck / XYZ) catalogues have explicit positions — there is no
     // redshift→distance to recompute, and doing so would clobber the X/Y/Z scene.
     if (this->schema.isCartesian())
@@ -509,7 +511,8 @@ void vtkWindowCatalogue3D::onCosmologyFinished()
 
 void vtkWindowCatalogue3D::applyFilter()
 {
-    if (this->remoteDatasetId.isEmpty() || this->filterBusy || this->m_sceneBuilding) {
+    if (this->remoteDatasetId.isEmpty() || this->filterBusy || this->m_sceneBuilding
+        || this->superResolutionWatcher.isRunning()) {
         return;
     }
 
@@ -604,7 +607,8 @@ void vtkWindowCatalogue3D::applyFilter()
 
 void vtkWindowCatalogue3D::loadAllEntries()
 {
-    if (this->remoteDatasetId.isEmpty() || this->m_loadingMore || this->filterBusy || this->m_sceneBuilding)
+    if (this->remoteDatasetId.isEmpty() || this->m_loadingMore || this->filterBusy
+        || this->m_sceneBuilding || this->superResolutionWatcher.isRunning())
         return;
     const int total = this->m_totalCount;
     if (total <= 0 || this->m_currentOffset >= total)
@@ -629,7 +633,8 @@ void vtkWindowCatalogue3D::loadAllEntries()
 
 void vtkWindowCatalogue3D::loadMoreEntries()
 {
-    if (this->remoteDatasetId.isEmpty() || this->m_loadingMore || this->filterBusy || this->m_sceneBuilding) {
+    if (this->remoteDatasetId.isEmpty() || this->m_loadingMore || this->filterBusy
+        || this->m_sceneBuilding || this->superResolutionWatcher.isRunning()) {
         return;
     }
     // A point table's sample: the next phase, the rows between those loaded,

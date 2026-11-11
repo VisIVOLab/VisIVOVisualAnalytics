@@ -38,6 +38,8 @@
 #include <QUrlQuery>
 
 #include <limits>
+#include <cmath>
+#include <cstring>
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
@@ -567,6 +569,95 @@ BackendSuperResolutionResult BackendClient::superResolveVbt(
                 QByteArray::fromBase64(subsetObj.value(QStringLiteral("block")).toString().toLatin1());
     }
 
+    return out;
+}
+
+BackendCatalogueSuperResolutionResult BackendClient::superResolveCatalogue(
+    const QString &datasetId,
+    const std::vector<std::array<double, 3>> &positions,
+    const QString &kind,
+    int upsampleFactor,
+    const QString &cosmology,
+    double particleMass) const
+{
+    BackendCatalogueSuperResolutionResult out;
+    QJsonArray positionArray;
+    for (const auto &position : positions) {
+        positionArray.append(QJsonArray{position[0], position[1], position[2]});
+    }
+
+    const QJsonDocument body(QJsonObject{
+        { QStringLiteral("dataset_id"), datasetId },
+        { QStringLiteral("positions"), positionArray },
+        { QStringLiteral("kind"), kind },
+        { QStringLiteral("upsample_factor"), upsampleFactor },
+        { QStringLiteral("cosmology"), cosmology },
+        { QStringLiteral("particle_mass"), particleMass }
+    });
+
+    QString error;
+    const QByteArray raw = performPost(
+        QUrl(m_baseUrl + QStringLiteral("/v1/catalogue/super_resolution")),
+        body,
+        error);
+    if (!error.isEmpty()) {
+        out.error = error;
+        return out;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument response = QJsonDocument::fromJson(raw, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !response.isObject()) {
+        out.error = QStringLiteral("Invalid super-resolution response from the backend.");
+        return out;
+    }
+
+    const QJsonObject object = response.object();
+    out.valid = object.value(QStringLiteral("valid")).toBool(false);
+    out.error = object.value(QStringLiteral("error")).toString();
+    if (!out.valid) {
+        return out;
+    }
+
+    out.datasetId = object.value(QStringLiteral("dataset_id")).toString();
+    out.statusMsg = object.value(QStringLiteral("status_msg")).toString();
+    const int totalRows = object.value(QStringLiteral("total_rows")).toInt(-1);
+    const QJsonObject columns = object.value(QStringLiteral("columns")).toObject();
+    std::array<std::vector<double>, 3> coordinateColumns;
+    const std::array<QString, 3> fieldNames{
+        QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("z")
+    };
+    for (std::size_t axis = 0; axis < fieldNames.size(); ++axis) {
+        const QByteArray bytes =
+            QByteArray::fromBase64(columns.value(fieldNames[axis]).toString().toLatin1());
+        if (totalRows < 0
+            || bytes.size() != static_cast<qsizetype>(totalRows) * sizeof(double)) {
+            out.error = QStringLiteral("Super-resolution response has invalid coordinate data.");
+            return out;
+        }
+        coordinateColumns[axis].resize(static_cast<std::size_t>(totalRows));
+        if (!bytes.isEmpty()) {
+            std::memcpy(coordinateColumns[axis].data(), bytes.constData(),
+                        static_cast<std::size_t>(bytes.size()));
+        }
+    }
+
+    out.positions.resize(static_cast<std::size_t>(totalRows));
+    for (int row = 0; row < totalRows; ++row) {
+        for (std::size_t axis = 0; axis < fieldNames.size(); ++axis) {
+            const double value = coordinateColumns[axis][static_cast<std::size_t>(row)];
+            if (!std::isfinite(value)) {
+                out.positions.clear();
+                out.error = QStringLiteral("Super-resolution response contains non-finite coordinates.");
+                return out;
+            }
+            out.positions[static_cast<std::size_t>(row)][axis] = value;
+        }
+    }
+    out.valid = !out.datasetId.isEmpty() && !out.positions.empty();
+    if (!out.valid && out.error.isEmpty()) {
+        out.error = QStringLiteral("Super-resolution response is missing its generated dataset.");
+    }
     return out;
 }
 
