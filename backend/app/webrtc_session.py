@@ -430,6 +430,11 @@ class WebRTCSession:
         if ctype == "request_frame":
             # WebRTC transports continuous video; ignore.
             return
+        if ctype.startswith("xr_"):
+            # Stereo frames are for the WebSocket that owns the session's
+            # stereo mode (routers/render.py); a video track cannot carry them.
+            logger.warning("[webrtc] %s ignored: stereo frames go over the WebSocket", ctype)
+            return
         await self._render.apply_command(cmd)
 
     async def add_ice_candidate(

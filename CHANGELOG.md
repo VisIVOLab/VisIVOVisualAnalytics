@@ -8,6 +8,44 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Refinement in the VR headset: full-cube frames from the Mac blended in
+  when the view is still (#170, step 4 of #166).** The `/vr/` page keeps
+  drawing its reduced cube every frame; when the eye is still or moving slowly
+  relative to the cube (below 15 °/s and 6 cm/s, with hysteresis up to 30 °/s
+  and 15 cm/s), it asks its own render session for stereo frames of the full
+  cube at the current eye poses, with the page's look (colour map, threshold,
+  opacity per path length, clipping box and velocity slab), and blends them
+  in over 120 ms, reprojected to the current pose through their depth. Any
+  faster motion fades them out within 60 ms, so motion never waits for the
+  network. The selection mask, box outline and labels stay drawn on top. The
+  desktop-browser mode runs the same path with the mouse camera; the panel
+  shows the refinement state, frame age, remote frame rate, pose-to-frame
+  latency and the time from "view stopped" to "refined shown".
+  - New render-session command `set_crop`: the volume cropped to a box given
+    in fractions of the cube (the VR page's clipping box).
+  - `POST /v1/cube/reduced_info` adds `render_out_of_core`: the page asks no
+    refined frames (and starts no pyramid build) for a cube a render session
+    would draw out of core. Refinement is off in passthrough; turning it off
+    closes the page's render session.
+  - `validation/vr_refinement.mjs` and `vr_refinement.py`: quality (PSNR,
+    SSIM against the backend's full-quality reference), reprojection error,
+    stop-to-refined time and compositing cost, on HCG 44 in a headless
+    browser against a local backend.
+- **Stereo frames for a headset's pose (#169, step 3 of #166).** A cube render
+  session takes `xr_pose` messages on its WebSocket (each eye's view and
+  projection, the eye buffer size, the cube's placement in the headset's
+  world) and renders both eyes on its one GPU copy of the cube, side by side
+  in one JPEG, with a small 16-bit depth image for reprojection (the first
+  sample above the threshold, within a voxel of the surface on a synthetic
+  sphere) and the server's timings, all tagged with the pose id. They go out
+  over the existing push stream, now up to 120 frames per second; `xr_stop`,
+  or closing the connection, brings the mono view back. The desktop is not
+  affected. `benchmark/remote_render/stereo_pose_latency.py` drives a session
+  with synthetic poses at 72/90 Hz and reports rate and latency. On the
+  M5 Max, 1024 x 1024 per eye: HCG 44 at 45 frames/s, pose to frame 29 ms
+  median (59 frames/s without depth); a 2 GB Apertif cube at 24 frames/s,
+  49 ms. Point tables and cubes drawn out of core are refused for now. See
+  *Stereo frames for a headset* in `docs/backend-api/render.md`.
 - **Selections in the VR headset, analysis on the backend (#171, step 5 of
   #166).** On the `/vr/` page the right trigger (or a mouse click in a desktop
   browser) picks on the reduced cube the headset draws, with the renderer's

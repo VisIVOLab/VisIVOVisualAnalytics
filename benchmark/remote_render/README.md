@@ -8,6 +8,7 @@ GUI, so the numbers can be reproduced.
 | `push_stream_fps.py` | where the desktop would run | frames per second a client receives while the view is rotated, through whatever network lies between (an SSH tunnel to a cluster node, for instance) |
 | `multi_gpu_sessions.py` | on the backend's node, inside its image | frames per second of several views rotated at once, spread over the node's GPUs or all on one |
 | `out_of_core_views.py` | on the backend's node, inside its image | the same views drawn in core and out of core from the brick pyramid: frames, their difference, time to settle, frames per second while dragging, the render process's memory |
+| `stereo_pose_latency.py` | where the headset's page would run | a headset's stereo frames (issue #169): synthetic head poses at 72/90 Hz, frames per second, pose to frame latency (client clock) and its server-side parts |
 | `make_synthetic_cube.py` | anywhere | writes a cube of any size (noise and 40 sources) plane by plane, to test views of cubes larger than a GPU |
 
 Both use a 2540 × 1560 frame (the 3-D pane of a Retina desktop), the
@@ -73,6 +74,34 @@ Build the pyramid first (`python -m app.brick_pyramid build`, same
 `VISIVO_PYRAMID_DIR`) or the first session builds it, and its time and memory
 then count in the run. `--mode both` on a cube that fits the GPU compares the
 two paths.
+
+### Headset stereo frames
+
+On the Mac (a backend started by the desktop or by hand, port 18900 here):
+
+```bash
+backend/.venv/bin/python benchmark/remote_render/stereo_pose_latency.py \
+    --path <dir>/cube.fits --base-url http://127.0.0.1:18900 \
+    --token-file ~/.visivo_token --rates 72,90 --eye 1024 \
+    --out benchmark/remote_render/results/stereo_mac.json
+```
+
+Against a cluster node, through the tunnel the SLURM script opens (the
+server's timings are the node's; the client's pose to frame latency then
+includes the tunnel):
+
+```bash
+bash scripts/visivo_slurm_tunnel.sh --frontend <frontend> --user <user> \
+    --partition gpu --gres gpu:1 --cpus 16 --mem 64G \
+    --sif <dir>/backend-egl.sif --data-root <dir>/data --port 18960
+backend/.venv/bin/python benchmark/remote_render/stereo_pose_latency.py \
+    --path <dir>/data/cube.fits --base-url http://localhost:18960 \
+    --token-file ~/.visivo_slurm_token --rates 72,90 --eye 1024 \
+    --out benchmark/remote_render/results/stereo_<site>.json
+bash scripts/visivo_slurm_tunnel.sh --stop      # ends the job and the tunnel
+```
+
+`--depth-scale 0` leaves the depth image out, to measure what it costs.
 
 ## Results
 

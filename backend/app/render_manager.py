@@ -336,6 +336,10 @@ class RenderManager:
             self._attached[session_id] += 1
             self._detached_at.pop(session_id, None)
 
+    def clients(self, session_id: str) -> int:
+        """WebSockets connected to the session now."""
+        return self._attached.get(session_id, 0)
+
     def detach(self, session_id: str) -> None:
         """A client went away; the last one starts the disconnect grace."""
         if self._attached.get(session_id, 0) <= 0:

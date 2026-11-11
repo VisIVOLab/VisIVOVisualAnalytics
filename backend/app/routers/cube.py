@@ -214,10 +214,17 @@ async def cube_reduced_info(
     from ..compute import worker_cube_reduced_info
     path = _require_cube_path(session, request.dataset_id)
     try:
-        return await _run(worker_cube_reduced_info, path, request.factor_xy,
+        info = await _run(worker_cube_reduced_info, path, request.factor_xy,
                           request.factor_z, request.max_dim, request.encoding)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Whether a render session would draw this cube out of core (from its brick
+    # pyramid): the page then asks for no refined frames, which such a session
+    # cannot give yet, and so starts no pyramid build (issue #170).
+    from ..render_session._ooc import wants_out_of_core
+    nx, ny, nz = info["full_shape"]
+    info["render_out_of_core"] = bool(wants_out_of_core(int(nx) * int(ny) * int(nz) * 4))
+    return info
 
 
 @router.post("/v1/cube/reduced_bin", tags=["cube"])
