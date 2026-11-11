@@ -7,6 +7,8 @@
 #include <QUrl>
 #include <QVariantMap>
 #include <QWidget>
+
+#include "RemoteSessionRecovery.h"
 #include <chrono>
 
 class QPaintEvent;
@@ -105,6 +107,14 @@ public:
     /// "loading…" → "ready" UI transitions.
     bool isLive() const { return m_live; }
 
+    /// How the last connection ended, on either transport: whether it had
+    /// frames on screen, for how long, and the server's close reason ("session
+    /// ended" when the session itself is gone; none over WebRTC). Reset by
+    /// connectToSession() and disconnectFromSession() (RemoteSessionRecovery.h).
+    bool wasLiveAtClose() const { return m_close.wasLive(); }
+    QString lastCloseReason() const { return m_close.reason(); }
+    qint64 liveMsAtClose() const { return m_close.liveMs(); }
+
     /// §5.1b: the same "not active ⇒ no input" gate the VTK interactor gets. When false the
     /// widget swallows mouse/wheel input (it renders a server stream through its own QWidget
     /// handlers, so the Qt-level pane swallow alone can't stop it). Driven by
@@ -164,6 +174,7 @@ private:
     QImage m_currentFrame;
     QString m_status{ QStringLiteral("Idle") };
     bool m_live{ false };
+    visivo::StreamCloseRecorder m_close;
     bool m_interactive{ true };   // §5.1b: false on a non-active pane → swallow input
     // Last viewport size we POSTed via the WebRTC "resize" command. We
     // dedupe the double-fire (immediate + 250 ms deferred) against this

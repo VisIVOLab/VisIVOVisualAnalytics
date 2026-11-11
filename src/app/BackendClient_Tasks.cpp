@@ -923,6 +923,14 @@ bool BackendClient::deleteRender(const QString &taskId, QString &error, int time
                              error);
 }
 
+bool BackendClient::closeRenderSession(const QString &renderSessionId, QString &error,
+                                       int timeoutMs) const
+{
+    const QString safeSeg = QString::fromUtf8(QUrl::toPercentEncoding(renderSessionId, "", "/"));
+    QByteArray raw;
+    return sendBoundedDelete(QStringLiteral("/v1/render/") + safeSeg, timeoutMs, raw, error);
+}
+
 bool BackendClient::closeDataset(const QString &datasetId, QString &error) const
 {
     if (visivo::TaskQuitDrain::instance().quitting()) {
