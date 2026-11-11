@@ -6,8 +6,10 @@ import * as M from './mat4.js';
 import { Renderer } from './renderer.js';
 import { Backend, takeToken, saveToken, tokenError } from './api.js';
 import * as V from './volume.js';
-import { COLORMAP_NAMES } from './colormaps.js';
+import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
 import { createSelection, TOOLS, TOOL_NAMES } from './select-ui.js';
+import { Refiner, desktopEyes } from './refine-client.js';
+import { transferFunction, cropBox, cropError } from './refine.js';
 
 const $ = (id) => document.getElementById(id);
 const query = new URLSearchParams(window.location.search);
@@ -50,6 +52,41 @@ const selection = createSelection({
   onChange: () => { selectionDirty = true; },
 });
 let selectionDirty = true;
+
+// Refinement (issue #170): the backend's full-quality stereo frames, blended in
+// while the view is still or slow. The page's own rendering is always drawn.
+const refiner = new Refiner(gl, () => backend);
+let refineMode = 'auto';      // 'auto' | 'off' (debug: the local picture alone)
+let lookCache = { key: null, look: null };
+
+/** The page's look as the session's commands, and its key (a change of key
+ *  makes every refined frame stale). */
+function currentLook() {
+  const c = state.cube;
+  const key = JSON.stringify([state.thrNorm, state.cmaxNorm, state.gamma, state.opacity, state.mode,
+    state.colormap, state.clip, state.zStretch, c ? [c.lo, c.hi, c.factors] : null]);
+  if (lookCache.key !== key && c) {
+    lookCache = {
+      key,
+      look: {
+        tf: transferFunction({ thrNorm: state.thrNorm, cmaxNorm: state.cmaxNorm, gamma: state.gamma,
+          opacity: state.opacity, mode: state.mode, lo: c.lo, hi: c.hi, factors: c.factors,
+          lut: colormapTable(state.colormap) }),
+        crop: cropBox(state.clip),
+        cropError: cropError(state.clip),
+      },
+    };
+  }
+  return lookCache;
+}
+
+/** Once per displayed frame: the eyes this frame is drawn for. */
+function refineFrame(t, eyes, centreView, background) {
+  if (!state.cube) return;
+  const look = currentLook();
+  refiner.frame({ t, eyes, aCentre: M.multiply(centreView, state.model), model: state.model,
+    zStretch: state.zStretch, look: look.look, lookKey: look.key, background });
+}
 
 // ── Panel wiring ────────────────────────────────────────────────────────────
 for (const name of COLORMAP_NAMES) {
@@ -174,6 +211,19 @@ for (const t of TOOLS) {
   if (o) o.title = TOOL_NAMES[t];
 }
 
+// Refinement controls (issue #170).
+$('refine').checked = query.get('refine') !== '0';
+refiner.setEnabled($('refine').checked);
+$('refine').addEventListener('change', () => refiner.setEnabled($('refine').checked));
+$('refine-scale').addEventListener('change', () => { refiner.o.scale = readNumber('refine-scale'); });
+$('refine-quality').addEventListener('change', () => { refiner.o.quality = readNumber('refine-quality'); });
+$('refine-depth').addEventListener('change', () => { refiner.useDepth = $('refine-depth').checked; });
+refiner.o.scale = readNumber('refine-scale');
+refiner.o.quality = readNumber('refine-quality');
+window.addEventListener('pagehide', () => refiner.closeNow());
+// Back from the back-forward cache: pagehide closed the session, open a new one.
+window.addEventListener('pageshow', (e) => { if (e.persisted) refiner.resume(); });
+
 // Clipping box sliders (texture coordinates 0..1 per axis).
 const clipInputs = [];
 for (const [i, axis] of ['x', 'y', 'z'].entries()) {
@@ -297,6 +347,7 @@ function installCube(info, cube, open) {
   state.open = open;
   state.openPath = open ? $('path').value.trim() : '';
   selection.clear();
+  refiner.setDataset(open ? open.dataset_id : null, { outOfCore: !!(info && info.render_out_of_core) });
   state.load = { ...state.load, uploadMs: up.uploadMs, macroMs: up.macroMs, textureMB: up.textureBytes / 1e6 };
   state.clip = { min: [0, 0, 0], max: [1, 1, 1] };
   applyExtent();
@@ -398,8 +449,16 @@ function volParams(override = {}) {
   };
 }
 
-function drawScene(view, override) {
-  R.drawVolume(view, state.model, volParams(override));
+function drawScene(view, override, eye = 0) {
+  // With a refined frame on show (fading in or out included) the selection is
+  // left out of the headset's own volume and drawn once, over the refined
+  // frame (the backend's frame has none); then the box, ticks and labels.
+  const refined = refineMode !== 'off' && refiner.showing;
+  R.drawVolume(view, state.model, volParams(refined ? { ...override, showMask: false } : override));
+  if (refined) {
+    refiner.composite(view, state.model, eye);
+    if (R.mask) R.drawVolume(view, state.model, volParams({ ...override, mode: 0, maskOnly: true }));
+  }
   R.drawLines(view, state.model);
   R.drawLines(view, state.model, R.selLines);
   R.drawLabels(view, state.model, M.uniformScale(state.model));
@@ -419,7 +478,7 @@ function syncSelection() {
 }
 
 // ── HUD (frame-rate and latency overlay) ─────────────────────────────────────
-const hudCanvas = Object.assign(document.createElement('canvas'), { width: 640, height: 400 });
+const hudCanvas = Object.assign(document.createElement('canvas'), { width: 640, height: 600 });
 const hudTex = R.createPanel();
 let hudLast = 0;
 
@@ -438,6 +497,7 @@ function hudLines(targetHz) {
     lines.push(`threshold ${fmt(dataValue(state.thrNorm))} ${c.bunit || ''}  (${$('thr-source').selectedOptions[0].text})`);
   }
   lines.push(...selection.hudLines());
+  if (state.cube) lines.push(...refiner.hudLines());
   if (xr) {
     const L = xr.layer;
     lines.push(`eye buffer ${L.framebufferWidth}×${L.framebufferHeight}  scale ${xr.fbScale}  foveation ${'fixedFoveation' in L ? L.fixedFoveation : 'n/a'}`);
@@ -460,7 +520,8 @@ function drawHudCanvas(lines) {
 }
 
 // ── Desktop mode ────────────────────────────────────────────────────────────
-const cam = { yaw: -0.5, pitch: 0.35, dist: 2.0 };
+const cam = { yaw: -0.5, pitch: 0.35, dist: 2.0, turn: 0 };   // turn: a head turn about the eye (debug)
+const DESKTOP_BG = [0.043, 0.051, 0.07];
 let dragging = null;
 let pressAt = null;
 canvas.addEventListener('pointerdown', (e) => {
@@ -510,6 +571,7 @@ function desktopView() {
   let camM = M.translation(0, 0, cam.dist);
   camM = M.multiply(M.rotation([1, 0, 0], -cam.pitch), camM);
   camM = M.multiply(M.rotation([0, 1, 0], cam.yaw), camM);
+  if (cam.turn) camM = M.multiply(camM, M.rotation([0, 1, 0], cam.turn));
   return { proj: M.perspective(50 * Math.PI / 180, w / h, 0.02, 50), view: M.invert(camM) };
 }
 
@@ -525,13 +587,15 @@ function desktopFrame(time) {
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, w, h);
-  gl.clearColor(0.043, 0.051, 0.07, 1);
+  gl.clearColor(...DESKTOP_BG, 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   state.model = M.identity();
   syncSelection();
   R.beginFrame();
   lastDesktopView = desktopView();
-  if (state.cube) drawScene(lastDesktopView);
+  refiner.suspended = '';
+  refineFrame(time, desktopEyes(lastDesktopView, w, h), lastDesktopView.view, DESKTOP_BG);
+  if (state.cube) drawScene(lastDesktopView, undefined, 0);
   R.endFrame();
   const interval = lastDesktop ? time - lastDesktop : 0;
   lastDesktop = time;
@@ -786,13 +850,26 @@ function onXRFrame(time, frame) {
   syncSelection();
   const selTex = state.cube && !xr.bench ? selection.panelTexture() : null;
   const sm = selTex ? selectionPanelModel() : null;
+  // No refinement during the benchmark, nor in passthrough: the backend's frame
+  // has no alpha (it is composited over black), so over the room it would
+  // either darken it where the headset draws emission the full cube has not,
+  // or glow where only the full cube has emission. The headset's own
+  // rendering is shown there (docs/user-guide/vr-headset.md).
+  refiner.suspended = xr.bench ? 'during the benchmark' : xr.mode === 'immersive-ar' ? 'in passthrough' : '';
+  if (!refiner.suspended) {
+    refineFrame(time, pose.views.map((view) => {
+      const vp = layer.getViewport(view);
+      return { eye: view.eye === 'right' ? 'right' : 'left', view: view.transform.inverse.matrix,
+        proj: view.projectionMatrix, width: vp.width, height: vp.height };
+    }), pose.transform.inverse.matrix, [0, 0, 0]);
+  }
   for (const view of pose.views) {
     const vp = layer.getViewport(view);
     gl.viewport(vp.x, vp.y, vp.width, vp.height);
     const v = { proj: view.projectionMatrix, view: view.transform.inverse.matrix };
-    if (state.cube) drawScene(v);
+    if (state.cube) drawScene(v, undefined, view.eye === 'right' ? 1 : 0);
     R.drawWorldLines(v);
-    if (hm) R.drawPanel(v, hm, hudTex, [0.16, 0.1]);
+    if (hm) R.drawPanel(v, hm, hudTex, [0.16, 0.15]);
     if (sm) R.drawPanel(v, sm, selTex, [0.34, 0.248]);
   }
   R.endFrame();
@@ -1000,6 +1077,85 @@ if (query.has('debug')) {
     const c = M.transformPoint(M.multiply(v.proj, M.multiply(v.view, state.model)), m);
     const rect = canvas.getBoundingClientRect();
     return [rect.left + (c[0] + 1) / 2 * rect.width, rect.top + (1 - c[1]) / 2 * rect.height];
+  };
+  // Refinement measurements (issue #170, validation/vr_refinement.mjs).
+  const pixelsToPng = (px, w, h) => {
+    const c2 = Object.assign(document.createElement('canvas'), { width: w, height: h });
+    const ctx = c2.getContext('2d');
+    const img = ctx.createImageData(w, h);
+    for (let y = 0; y < h; y++) img.data.set(px.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);
+    ctx.putImageData(img, 0, 0);
+    return c2.toDataURL('image/png');
+  };
+  window.__vrRefine = {
+    refiner,
+    setMode: (m) => { refineMode = m; },
+    setCam: (c) => Object.assign(cam, c),
+    cam: () => ({ ...cam }),
+    stats: () => stats.summary(0),
+    resetStats: () => { stats.buf.length = stats.cpu.length = stats.gpu.length = 0; },
+    /** One desktop frame drawn now, without the refinement's per-frame update:
+     *  'local' (the page alone) or 'refined' (the frame shown, weight 1, with
+     *  depth or as a plane), no box or labels; a PNG data URL. */
+    snapshot(mode = 'local', useDepth = true) {
+      const w = canvas.width, h = canvas.height;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, w, h);
+      gl.clearColor(...DESKTOP_BG, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      const v = desktopView();
+      R.drawVolume(v, state.model, volParams());
+      let drew = false;
+      if (mode === 'refined') drew = refiner.draw.draw(v, state.model, 0, 1, useDepth);
+      const px = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      return { png: pixelsToPng(px, w, h), drew, w, h };
+    },
+    /** The backend's frame for the current desktop view with other settings,
+     *  never shown: the left eye as a PNG data URL, and its header. */
+    async reference(extra = {}, scale = 1) {
+      const w = canvas.width, h = canvas.height;
+      const v = desktopView();
+      const sz = [Math.round(w * scale), Math.round(h * scale)];
+      const f = await refiner.requestOnce({ eyes: desktopEyes(v, w, h), aCentre: M.multiply(v.view, state.model),
+        model: state.model, zStretch: state.zStretch, background: DESKTOP_BG }, extra, sz);
+      const bm = await createImageBitmap(new Blob([f.color], { type: 'image/jpeg' }));
+      const c2 = Object.assign(document.createElement('canvas'), { width: sz[0], height: sz[1] });
+      c2.getContext('2d').drawImage(bm, 0, 0, sz[0], sz[1], 0, 0, sz[0], sz[1]);
+      return { png: c2.toDataURL('image/png'), header: f.header };
+    },
+    /** Turns the desktop camera at `degPerS` for `ms`, then holds it; resolves
+     *  with the refinement's stop-to-refined times (or a timeout). */
+    sweep(degPerS, ms, timeoutMs = 5000) {
+      return new Promise((resolve) => {
+        const t0 = performance.now();
+        let last = t0, first = null;
+        const step = (t) => {
+          if (t - t0 < ms) {
+            cam.yaw += (degPerS * Math.PI / 180) * (t - last) / 1000;
+            last = t;
+            requestAnimationFrame(step);
+            return;
+          }
+          const tStop = performance.now();
+          // Times from the camera's stop (the HUD's count from the detector's).
+          const handler = (name, d) => {
+            if (name === 'refined-first') first = { ms: d.ms, sinceStop: performance.now() - tStop };
+            if (name === 'refined-full') {
+              refiner.onEvent = null;
+              resolve({ first: first && first.ms, full: d.ms, firstSinceStop: first && first.sinceStop, fullSinceStop: performance.now() - tStop });
+            }
+          };
+          refiner.onEvent = handler;
+          setTimeout(() => {
+            if (refiner.onEvent !== handler) return;      // resolved, or another sweep's
+            refiner.onEvent = null;
+            resolve({ first: first && first.ms, full: null, timeout: true });
+          }, timeoutMs);
+        };
+        requestAnimationFrame(step);
+      });
+    },
   };
 }
 

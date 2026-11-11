@@ -171,6 +171,7 @@ async def test_reduced_info_gives_factors_threshold_and_world_axes(
     assert resp.status_code == 200, resp.text
     info = resp.json()
     assert info["full_shape"] == [64, 64, 32]
+    assert info["render_out_of_core"] is False      # 512 KB, far below the in-core limit
     assert info["factors"] == [2, 2, 1]
     assert info["reduced_shape"] == [32, 32, 32]
     assert info["default_threshold"] is not None and info["default_threshold"] > 0

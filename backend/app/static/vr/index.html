@@ -89,6 +89,19 @@
     </details>
   </section>
 
+  <section id="refinement">
+    <div class="row">
+      <label class="inline" title="While the view is still or slow, full-quality frames rendered by the backend on the whole cube are blended in"><input id="refine" type="checkbox" checked> refine with the backend's full cube</label>
+    </div>
+    <div class="row">
+      <label>Refined size <select id="refine-scale">
+        <option value="0.4">0.4×</option><option value="0.6">0.6×</option><option value="0.8">0.8×</option><option value="1" selected>1×</option></select></label>
+      <label>JPEG <select id="refine-quality">
+        <option>70</option><option>85</option><option selected>95</option></select></label>
+      <label class="inline" title="Off: the frame is moved as a plane through the cube's centre"><input id="refine-depth" type="checkbox" checked> reproject with depth</label>
+    </div>
+  </section>
+
   <section id="selection">
     <div class="row">
       <label>Selection tool <select id="sel-tool">

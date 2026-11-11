@@ -13,8 +13,11 @@ This is the first step of the immersive work
 headset renders, and selections made in the headset (a spectrum, the
 Kinematic Lasso, a box region) are computed on the full cube by the backend
 ([#171](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/171), see
-[Selections in the headset](#selections-in-the-headset)); full-quality frames
-from the Mac's GPU come in later steps.
+[Selections in the headset](#selections-in-the-headset)), and while the view
+is still the Mac's GPU renders the full cube for the headset's eyes and the
+page blends those frames in
+([#170](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/170), see
+[Refinement](#refinement-full-quality-frames-from-the-backend)).
 
 | | |
 |---|---|
@@ -171,6 +174,232 @@ stretch are set on the page before entering VR.
   **Foveation**: the Quest's fixed foveated rendering, **Refresh**: the display
   rate asked of the headset (72, 90 or 120 Hz, if it offers it). Set them
   before entering VR.
+
+## Refinement: full-quality frames from the backend
+
+The headset always draws its reduced cube, every frame, so turning your head
+or moving the cube never waits for the network. When the view is **still or
+moving slowly**, the page also asks the backend to render the **full cube**
+for the headset's current eye poses (both eyes, on the Mac's GPU, issue
+[#170](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/170); the
+protocol is [Stereo frames for a headset](../backend-api/render.md#stereo-frames-for-a-headset)),
+and blends the frame that comes back over its own picture. When you move
+again, the refined frame fades out within 60 ms and the reduced cube carries
+the motion alone.
+
+**What is refined.** The backend draws with the page's own look: the colour
+map, threshold, colour maximum, stretch, opacity, emission or maximum
+intensity, the clipping box and the velocity slab, and the velocity stretch.
+The page sends them as the session's transfer function and crop on the full
+cube's values (`set_transfer_functions`, `set_crop`), so a refined frame
+differs from the headset's only by what the binning and the headset's ray
+step take away. The opacity is matched per path length: a full-resolution
+voxel absorbs 1/f of a reduced one, f the geometric mean of the binning
+factors. Any change of the look makes the refined frames in flight and on show
+stale: they are dropped, and the next still pose is rendered with the new
+look.
+
+**When it asks.** The page measures how fast the eye moves *relative to the
+cube* (head motion and moving the cube with the controllers count alike),
+smoothed over 35 ms:
+
+| State | Angular speed | Speed | Refinement |
+|---|---|---|---|
+| moving | above 30 °/s, or | above 0.15 m/s | none asked; the refined frame fades out |
+| slow | below 15 °/s and (for 60 ms) | below 0.06 m/s | asked for the current pose, at most two in flight |
+| still | below 3 °/s and (for 60 ms) | below 1 cm/s | asked once the pose has changed by 0.2° or 1.5 mm |
+
+Head tracking held still jitters at a few degrees per second at most; slow
+looking around is 5–20 °/s; a turn of the head is 50–300 °/s. Between 15 and
+30 °/s the previous state is kept (hysteresis), so the image does not flicker
+at the boundary. When the view is still and its refined frame is on show, no
+new pose is sent and the backend renders nothing.
+
+**How it is drawn.** Each frame from the backend carries the pose it was
+rendered for and a small depth image (the first sample above the threshold
+along each ray, one value per 4 × 4 pixels). The page reprojects it to the
+current eye pose: a mesh with a vertex per depth sample is unprojected
+through the frame's projection, moved by the change of the eye relative to
+the cube since the frame's pose, and projected again; rays with no sample
+take the depth of the cube's centre. A pure head turn needs no depth (any
+depth gives the same picture); a head translation does, because the near and
+far parts of the cube shift by different amounts (parallax: 1 cm sideways at
+0.75 m moves the front of a 0.6 m cube about 0.7° more than its back, about 12
+pixels on the headset). A frame is shown while the eye is within 6° and 4 cm
+of the frame's pose; beyond that it fades out until a new one arrives. The
+measured gain of depth over a plane is in the table below.
+
+The backend composites its frame over black (over the page's own background
+colour in a desktop browser). Where the reprojected frame lands, it
+**replaces** the headset's picture of the volume, with a weight that fades in
+over 120 ms (out over 60 ms): `w · refined + (1 − w) · reduced`. It is a
+replacement, not an additive blend, because both are pictures of the same
+emission; where the backend saw no emission (fog of the binning, noise drawn
+by the reduced cube) the refined frame shows none. Outside the frame (after
+a head turn, at the edges) the headset's own picture shows.
+
+**Not in passthrough.** In *Enter passthrough* the page shows its own
+rendering only (the panel says *refine off in passthrough*). The backend's
+frame has no transparency (it is composited over black), so over the room it
+would either darken the room where the headset draws emission that the full
+cube does not have, or glow where only the full cube has emission. Refinement
+is also off while the headset benchmark runs.
+
+**Selections stay visible.** The backend's frame has no selection in it: the
+box outline, the axes, the labels, the controller rays and the panels are
+drawn after it. While a refined frame is on show (fading included), the
+selection mask (green) is left out of the headset's own volume and drawn
+once, by the headset, on top of the refined frame (only the selected
+voxels). The mask shown over a refined frame is therefore not hidden by
+emission in front of it, as it is in the reduced rendering.
+
+**The render session.** The page opens a render session of its own for the
+cube (`POST /v1/render/create_session`, waiting in the queue if every slot
+is busy), on one WebSocket; the desktop's sessions are not used. It is closed,
+and its render slot freed, when another cube is loaded, when refinement is
+turned off (turning it on again opens a new one) and when the page is closed
+or left (it is opened again when the browser brings the page back); otherwise
+the backend's idle timeout closes it. A synthetic cube has no session
+(*refine unavailable: no backend cube*). A cube the backend would draw out of
+core (larger than its in-core limit, `VISIVO_RENDER_OUT_OF_CORE_BYTES`)
+cannot give stereo frames yet: the page learns it from `reduced_info`
+(`render_out_of_core`) and asks for no session at all, so no brick pyramid is
+built for it; the panel says *refine unavailable: the backend draws this cube
+out of core*. A clipping box the backend would refuse is not sent (nor any
+pose with it), and the panel says why.
+
+**Settings** (on the page, section above *Selection tool*):
+
+- **refine with the backend's full cube**: on by default (`?refine=0` in the
+  address turns it off at start).
+- **Refined size**: the size of each refined eye image relative to the eye
+  buffer (headset) or the window (desktop browser): 1× by default, the eye
+  buffer's own resolution (about 1680 × 1760 per eye on a Quest 3 at
+  resolution 1×), at most 2560 pixels a side. A smaller frame comes sooner
+  and lets the backend follow slow motion at a higher rate (the Mac renders
+  1024 × 1024 per eye at about 45 frames per second on HCG 44,
+  [#169](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/169)), but it
+  is blurred when stretched over the eye: at 0.6× the refined image is
+  *less* similar to the full-quality reference than the headset's own
+  rendering in SSIM (see the measurements), so 0.6× is for slow networks or
+  large cubes only.
+- **JPEG**: 95 by default.
+- **reproject with depth**: on by default; off moves the frame as a plane
+  through the cube's centre (for comparisons).
+
+In a desktop browser the same path runs with the mouse camera as both eyes
+(the left eye's image is shown), so all of this can be checked without a
+headset.
+
+**On the panel** (the line starting *refine*):
+
+- the state: *off*, *connecting*, *waiting* (no usable refined frame),
+  *refined NN %* (the fade weight), or *unavailable* with the reason; then
+  the motion state (*moving*, *slow*, *still*);
+- **age**: time since the pose of the frame on show was sent, in ms;
+- **remote**: refined frames received per second;
+- **pose->frame**: from sending a pose to its frame decoded, median and 95th
+  percentile;
+- **stop->refined**: from the view leaving *moving* to the first refined frame
+  of a pose sent after that moment shown, and to it fully faded in (*full*);
+- **server**: the backend's render and total time for the last frame, its
+  size, and the page's texture upload time.
+
+### Measured on the Mac (desktop browser, local backend)
+
+HCG 44 (700 × 700 × 158), headless Chrome on an M5 Max (ANGLE Metal), a
+1600 × 913 window, the backend on the same Mac
+(`validation/vr_refinement.mjs`, metrics by `validation/vr_refinement.py`,
+images and numbers in `validation/out/vr_refinement/` and
+`validation/out/vr_refinement.md`).
+
+**Image quality** at one still view, against the backend's own reference of
+the full cube (full window size, JPEG 100, rays sampled every quarter voxel),
+on the pixels of the emission:
+
+| Page draws | Shown | PSNR | SSIM |
+|---|---|---|---|
+| 3 × 3 × 1 (auto, 234 × 234 × 158) | page alone | 33.0 dB | 0.965 |
+| | refined, 1×, JPEG 95 (default) | **46.0 dB** | **0.988** |
+| | refined, 0.6×, JPEG 85 | 37.8 dB | 0.957 |
+| 2 × 2 × 1 (350 × 350 × 158) | page alone | 36.7 dB | 0.982 |
+| | refined, 1×, JPEG 95 (default) | **45.0 dB** | **0.986** |
+| | refined, 0.6×, JPEG 85 | 36.6 dB | 0.950 |
+
+At 0.6× the refined image has a better PSNR than the page's but a worse SSIM:
+stretched over the window, it loses fine structure.
+
+**Reprojection**: a refined frame for one pose drawn at another, against the
+backend's frame for the second pose (PSNR on the emission, 3 × 3 × 1). An
+*orbit* turns the eye about the cube's centre at 1 m (1.7 cm of translation
+per degree); a *turn* turns the head in place.
+
+| Motion | Frame as it was | Moved as a plane | Moved with depth | Page alone |
+|---|---|---|---|---|
+| orbit 0.5° | 37.6 dB | 36.6 dB | **42.6 dB** | 31.5 dB |
+| orbit 1° | 32.4 | 31.4 | **38.8** | 31.4 |
+| orbit 2° (3.5 cm) | 27.8 | 26.7 | **34.8** | 31.7 |
+| orbit 4° (7 cm) | 24.3 | 23.3 | 30.4 | **32.0** |
+| head turn 2° | 19.4 | **46.0** | 45.9 | 33.7 |
+| head turn 5° | 19.9 | **46.1** | 46.0 | 34.0 |
+
+A head turn needs no depth; a translation does: with depth the reprojected
+frame stays better than the page's own picture up to about 3.5 cm of eye
+motion relative to the cube, and is worse at 7 cm, hence the 4 cm limit.
+(With 2 × 2 × 1 the page's own picture is better than the reprojected frame
+from 2° of orbit on: 35.5 against 37.7 dB at 2°, 35.7 against 33.2 at 4°.)
+
+**Times** (15 turns of the view at 90 °/s for 0.6 s, then still):
+
+- camera stopped to the refined frame first shown: **268 ms** median
+  (270 ms 95th percentile), fully faded in **383 ms**; of this, the page takes
+  about 185 ms to decide the view has stopped (smoothing and hold), and the
+  frame about 80 ms (the panel's *stop->refined* counts from the decision:
+  83 ms and 200 ms). A second run, with the Mac busier (server 108 ms render
+  instead of 37 ms), gave 408 ms and 516 ms;
+- pose sent to frame decoded: 72 ms median, 83 ms 95th percentile (two eyes
+  of 1600 × 913: render 37 ms, depth 5 ms, JPEG 18 ms on the backend; 65 KB a
+  frame); JPEG and depth decode in the browser 4.4 ms (off the frame loop),
+  texture upload 1.3 ms in the frame;
+- the page's own frame: GPU 1.31 ms without, 1.47 ms with the refined frame
+  composited (+0.16 ms for a 400 × 229 mesh per eye), CPU 0.10 ms either way:
+  compositing does not slow the headset's own rendering measurably here.
+
+On the Quest 3 the eye buffer at resolution 1× is 1680 × 1760, about twice
+the pixels of this window for both eyes: expect the backend to take about
+twice as long per frame (pose to frame around 130 ms over USB), and the
+upload and the mesh (420 × 440 per eye) to cost more on the headset's GPU;
+the panel shows both.
+
+### What to check on the Quest 3
+
+1. Start the backend on the Mac and connect the headset over USB
+   (`adb reverse tcp:8000 tcp:8000`), open `http://localhost:8000/vr/` with
+   the token, load HCG 44 (auto binning) and check that *refine with the
+   backend's full cube* is ticked. Enter VR.
+2. Hold your head still for a second: the panel on the left controller must
+   go from *waiting* to *refined 100 %*. Read **stop->refined** (both values),
+   **pose->frame** (median, p95), **remote** fps, **server** render ms and
+   **upload** ms. Do this five times and note the values.
+3. Look at the cube while it refines: the image should get sharper (finer
+   structure, no binning blocks) **without jumping**: if it shifts or doubles
+   when it fades in, note in which direction and how much (that is a pose or
+   axis mismatch).
+4. Turn your head quickly left and right: there must be **no lag and no
+   smearing** of the cube: the refined frame must disappear at once and the
+   reduced cube follow your head. Read **FPS** and **missed %** on the panel
+   while turning, with refinement on and off (untick it on the page, or
+   compare with `?refine=0`): they must be the same.
+5. Move your head slowly sideways (a few cm per second) while looking at the
+   cube: the refined frame should stay and follow the cube without visible
+   swimming; untick *reproject with depth* on the page and repeat, and note
+   which looks steadier.
+6. Make a Kinematic Lasso selection, then hold still: the green mask must
+   stay visible over the refined frame; the box outline and labels too.
+7. Move the velocity slab with the left stick, then hold still: the refined
+   frame must show the same slab (no emission outside it).
+8. Repeat 2 and 4 over Wi-Fi (adb connected wirelessly) and note
+   **pose->frame** and **stop->refined**.
 
 ## Selections in the headset
 
@@ -365,8 +594,9 @@ is computed on the full cube, not on what is drawn.
   limit before asking. Choose a larger binning.
 - In the headset: a spectrum, the Kinematic Lasso (one seed: no add or carve
   seeds, no hand refinement, no Isolate or Remove, which stay on the desktop)
-  and a box region; no moments yet, and no full-quality frames from the Mac
-  (steps 2 to 4). The desktop has no recipe import: a VR recipe is replayed by
+  and a box region; no moments yet. Refined frames need a cube the backend
+  holds in core (not one drawn out of core from its brick pyramid), and are
+  not cropped in isosurface mode (the page does not use it). The desktop has no recipe import: a VR recipe is replayed by
   posting its requests, as a desktop recipe is.
 - The labels follow the central row and column of the field; far from them on
   a wide projected field the true coordinate of a pixel differs a little.

@@ -21,6 +21,9 @@ WebSocket protocol
   ``{"type": "keepalive"}``
 * Server → client: binary frames are JPEG bytes (one frame per message).
   Text frames are diagnostic / error JSON.
+* Headset (issue #169): ``xr_pose`` switches the session to stereo frames for
+  that pose, ``xr_stop`` back to the mono view. A stereo frame is one binary
+  message starting with ``VXR1`` (see ``render_session/_stereo.py``).
 
 Frame production rule
 ---------------------
@@ -46,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
@@ -59,6 +63,7 @@ from ..render_manager import (
     get_render_manager,
 )
 from ..render_session import server_side_rendering_available
+from ..render_session._stereo import XRFrame, parse_pose
 from ..sessions import Session as VisivoSession, get_session
 
 router = APIRouter(prefix="/v1/render", tags=["render"])
@@ -426,6 +431,9 @@ async def webrtc_offer(
     sess = await _owned_render_session(session_id, token)
     if sess is None:
         raise HTTPException(404, "Unknown render session_id.")
+    if session_id in _stereo_owners:
+        # Its frames are a headset's stereo pair (see _stereo_owners).
+        raise HTTPException(409, STEREO_BUSY)
 
     logger.info(
         "[webrtc] /sdp/offer received for session %s (offer type=%s, %d chars)",
@@ -510,6 +518,11 @@ logger = logging.getLogger("visivo.render")
 _PUSH_POLL_S = 0.25
 
 
+# Highest frame rate a push stream may ask for: a headset refreshes at 72, 90
+# or 120 Hz (the desktop asks for 30 or 60).
+_MAX_PUSH_FPS = 120.0
+
+
 class _PushState:
     """Flow control of one push stream: frames sent but not yet acknowledged."""
 
@@ -522,7 +535,8 @@ class _PushState:
     def configure(self, command: dict) -> None:
         try:
             self.window = max(1, min(8, int(command.get("window", self.window))))
-            self.max_fps = max(1.0, min(60.0, float(command.get("max_fps", self.max_fps))))
+            self.max_fps = max(1.0, min(_MAX_PUSH_FPS,
+                                        float(command.get("max_fps", self.max_fps))))
         except (TypeError, ValueError):
             pass   # keep the defaults
 
@@ -531,6 +545,53 @@ class _PushState:
         # acknowledged too: never count below zero.
         self.in_flight = max(0, self.in_flight - 1)
         self.acked.set()
+
+
+# Sessions in the headset's stereo mode -> the WebSocket that drives them. The
+# mode is the session's (its render process draws every frame in it), so it is
+# given to one connection alone: no other WebSocket may attach and no WebRTC
+# peer may connect meanwhile, and a pose is refused while another client is
+# there. Every other client would otherwise get stereo frames, or a volume
+# drawn with the stereo settings, instead of the mono view.
+_stereo_owners: dict[str, object] = {}
+STEREO_BUSY = "This render session is in use by a headset (stereo frames)."
+
+
+def _stereo_conflict(session_id: str, connection: object) -> str | None:
+    """Why ``connection`` may not drive the session in stereo, or None."""
+    from ..render_manager import _webrtc_attached
+    owner = _stereo_owners.get(session_id)
+    if owner is not None and owner is not connection:
+        return STEREO_BUSY
+    if get_render_manager().clients(session_id) > 1 or _webrtc_attached(session_id):
+        return ("Another client is viewing this render session: stereo frames need a "
+                "session of their own.")
+    return None
+
+
+def _supports_stereo(sess) -> bool:
+    """Cube sessions draw the headset's stereo frames; point sessions not yet."""
+    factory = getattr(sess, "_factory", None)
+    if factory is not None:     # a session in a render process of its own
+        return factory == "app.render_session:RenderSession"
+    return hasattr(sess, "_render_xr_frame_on_thread")
+
+
+async def _send_frame(websocket: WebSocket, send_lock: asyncio.Lock, frame,
+                      ready: float | None = None) -> bool:
+    """Send a frame: JPEG bytes as they are, a stereo frame with the time it
+    came back from the renderer and the time it is handed to the socket, or a
+    stereo frame's error as text. True when a frame (not an error) went out."""
+    if isinstance(frame, XRFrame):
+        async with send_lock:
+            if frame.error is not None:
+                await websocket.send_text(frame.error_message())
+                return False
+            await websocket.send_bytes(frame.to_bytes(ready=ready, sent=time.time()))
+        return True
+    async with send_lock:
+        await websocket.send_bytes(frame)
+    return True
 
 
 async def _window_room(push: _PushState, sess=None) -> None:
@@ -604,8 +665,13 @@ async def _push_frames(websocket: WebSocket, sess, send_lock: asyncio.Lock,
                 sess.changed.clear()
                 ahead = asyncio.ensure_future(sess.render_frame_if_changed(version))
             jpeg, version = await ahead
+            ready = time.time()
             ahead = None
             if jpeg is None:
+                continue
+            if isinstance(jpeg, XRFrame) and jpeg.error is not None:
+                # Nothing to acknowledge: the client is told why, as text.
+                await _send_frame(websocket, send_lock, jpeg)
                 continue
             # Room for one more after this frame: start the next one now.
             if sess.changed.is_set() and push.in_flight + 1 < push.window:
@@ -621,8 +687,7 @@ async def _push_frames(websocket: WebSocket, sess, send_lock: asyncio.Lock,
             # the frame while send_bytes() is still waiting on the transport,
             # and an ack counted before its frame would be lost for good.
             push.in_flight += 1
-            async with send_lock:
-                await websocket.send_bytes(jpeg)
+            await _send_frame(websocket, send_lock, jpeg, ready)
             last_sent = loop.time()
     except asyncio.CancelledError:
         raise
@@ -680,6 +745,14 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
         return
 
     await websocket.accept()
+    if session_id in _stereo_owners:
+        # The session draws a headset's stereo frames: this client would get
+        # them instead of its view (1013: try again later). Checked after the
+        # accept and with no await before the attach below, so an xr_pose
+        # cannot take the session between the check and the attach; closing
+        # after the accept lets the client see the code.
+        await websocket.close(code=1013, reason="session in stereo use")
+        return
     logger.info("[render-ws] %s connected", session_id[:8] + "…")
     # While a client is connected the session keeps its slot even when
     # requests wait; the last one leaving starts the disconnect grace.
@@ -695,6 +768,7 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
     send_lock = asyncio.Lock()   # the push task and this loop both send
     push = _PushState()
     push_task: asyncio.Task | None = None
+    stereo = False               # this connection owns the session's stereo mode
     try:
         while True:
             raw = await websocket.receive_text()
@@ -715,8 +789,7 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
                     sess.changed.set()
                     continue
                 jpeg = await sess.render_frame()
-                async with send_lock:
-                    await websocket.send_bytes(jpeg)
+                await _send_frame(websocket, send_lock, jpeg, time.time())
             elif ctype == "stream":
                 if push_task is None:
                     push.configure(command)
@@ -729,6 +802,34 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
                         _push_frames(websocket, sess, send_lock, push))
             elif ctype == "frame_ack":
                 push.ack()
+            elif ctype == "xr_pose":
+                # Checked here, so a bad pose is answered at once and never
+                # reaches the renderer; stamped with its arrival, the start
+                # of the frame's server timings.
+                received = time.time()
+                conflict = None if stereo else _stereo_conflict(session_id, websocket)
+                if not _supports_stereo(sess):
+                    reply = {"type": "xr_error", "pose_id": command.get("pose_id"),
+                             "error": "Stereo frames are drawn for cubes only."}
+                elif conflict is not None:
+                    reply = {"type": "xr_error", "pose_id": command.get("pose_id"),
+                             "error": conflict}
+                else:
+                    try:
+                        parse_pose(command)
+                        reply = None
+                    except ValueError as exc:
+                        reply = {"type": "xr_error", "pose_id": command.get("pose_id"),
+                                 "error": str(exc)}
+                if reply is not None:
+                    async with send_lock:
+                        await websocket.send_text(json.dumps(reply, separators=(",", ":")))
+                    continue
+                command["t_received"] = received
+                if not stereo:
+                    _stereo_owners[session_id] = websocket
+                    stereo = True
+                await sess.apply_command(command)
             elif ctype == "keepalive":
                 # Touches stats.last_command_at via apply_command's bookkeeping.
                 await sess.apply_command({"type": "keepalive"})
@@ -748,13 +849,34 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
             except RuntimeError:
                 pass
     finally:
-        if push_task is not None:
-            push_task.cancel()
-            # Its outcome (cancelled, or failed and already logged) is
-            # collected without hiding a cancellation of this handler.
-            await asyncio.gather(push_task, return_exceptions=True)
-        # Disconnect does NOT evict the session — the user might reconnect
-        # quickly (network blip, page reload, a switch back from Local). The
-        # idle TTL handles real abandonment; while requests wait, so does the
-        # disconnect grace (render_manager).
-        manager.detach(session_id)
+        try:
+            if push_task is not None:
+                push_task.cancel()
+                # Its outcome (cancelled, or failed and already logged) is
+                # collected without hiding a cancellation of this handler.
+                await asyncio.gather(push_task, return_exceptions=True)
+        finally:
+            # Even when this handler is cancelled at the wait above.
+            try:
+                if stereo:
+                    await _leave_stereo(session_id, sess)
+            finally:
+                # Disconnect does NOT evict the session — the user might
+                # reconnect quickly (network blip, page reload, a switch back
+                # from Local). The idle TTL handles real abandonment; while
+                # requests wait, so does the disconnect grace (render_manager).
+                manager.detach(session_id)
+
+
+async def _leave_stereo(session_id: str, sess) -> None:
+    """The headset's connection is gone: the session goes back to its mono
+    view and may be attached again. The xr_stop is shielded: a cancellation
+    of the closing handler does not leave the session in stereo."""
+    _stereo_owners.pop(session_id, None)
+    stop = asyncio.ensure_future(sess.apply_command({"type": "xr_stop"}))
+    try:
+        await asyncio.shield(stop)
+    except asyncio.CancelledError:
+        raise                 # the xr_stop goes on; the handler's cancellation does too
+    except Exception:   # noqa: BLE001 - the session may be gone already
+        logger.debug("[render-ws] xr_stop on leave failed", exc_info=True)

@@ -288,7 +288,7 @@ Commands handled by the WebSocket handler itself:
 | `type` | Fields | Effect |
 |---|---|---|
 | `request_frame` | none | Pull mode: renders the current view and sends it as a JPEG. Push mode: only wakes the push loop; nothing is sent if the scene has not changed. |
-| `stream` | `window` (int, 1 to 8, default 3), `max_fps` (number, 1 to 60, default 30) | Switches the connection to push mode. Values outside the ranges are clamped; a value that is not a number leaves the default. A second `stream` on the same connection is ignored. |
+| `stream` | `window` (int, 1 to 8, default 3), `max_fps` (number, 1 to 120, default 30) | Switches the connection to push mode. Values outside the ranges are clamped; a value that is not a number leaves the default. A second `stream` on the same connection is ignored. |
 | `frame_ack` | none | Push mode: acknowledges one received frame, freeing one place in the window. Never counts below zero. |
 | `keepalive` | none | Resets the idle timer, changes nothing else. |
 | `close` | none | Ends the WebSocket loop (the render session stays open; use `DELETE` to close it). |
@@ -306,6 +306,7 @@ Every other command is applied to the session's view. Each one counts as activit
 | `set_slice_lut` | `name` (string) | Colour map of the cutting-plane slice. |
 | `set_transfer_functions` | `color`: list of `[x, r, g, b]`, `opacity`: list of `[x, a]` (1 to 4096 finite points each), optional `blend_mode` (int, as `set_blend_mode`) | The client's own transfer functions, point by point (a VBT volume on a log scale). A malformed list is refused (logged, view unchanged). A later `set_lut` or `set_threshold` goes back to the colour map and threshold. |
 | `set_threshold` | `value` (number) | Lower anchor of the opacity transfer function, also the isosurface value. |
+| `set_crop` | `box`: `{"min": [x, y, z], "max": [x, y, z]}` or `null` | Crops the volume to a box given as fractions 0 to 1 of the cube along x (NAXIS1), y (NAXIS2) and z (the spectral axis), its faces at the outer pixel edges: the VR page's clipping box, so that its refined frames show what the headset draws ([issue #170](../user-guide/vr-headset.md#refinement-full-quality-frames-from-the-backend)). `null`, or the whole cube, removes the crop; `reset` removes it too. A malformed box is refused (logged, crop unchanged). The isosurface is not cropped; a cube drawn out of core ignores it. |
 | `set_blend_mode` | `mode` (int: 0 composite, 1 maximum intensity, 2 minimum intensity; default 0) | Ray-casting blend mode. |
 | `set_cube_render_mode` | `mode` (`"volume"` or `"isosurface"`, default `"volume"`) | Volume rendering or isosurface. Any other value means `"volume"`. |
 | `set_interactive` | `value` (bool, default `false`) | `true` when a drag starts, `false` when it ends: switches the drag level of detail on or off (see [Server side](#server-side)). |
@@ -346,6 +347,66 @@ From then on:
 - `request_frame` sends nothing by itself in this mode.
 
 Push mode lasts until the connection closes.
+
+#### Stereo frames for a headset
+
+A cube session (FITS cube or VBT volume field; not yet a point table, nor a cube drawn out of core) can render the two eyes of a VR headset for the pose the headset sends, issue #169. The desktop's mono view is not affected: a session renders stereo frames only between an `xr_pose` and an `xr_stop`, and a connection that sent `xr_pose` sends `xr_stop` itself when it closes, so the next client gets the mono view back.
+
+The stereo mode belongs to the session, so it is given to one connection alone. An `xr_pose` is refused (`xr_error`) while another WebSocket or a WebRTC peer is connected to the session; once a connection has the stereo mode, another WebSocket is accepted and closed at once (close code 1013, `"session in stereo use"`), a WebRTC offer gets 409, and `xr_*` commands over a WebRTC data channel are ignored. A headset uses a render session of its own; the desktop's sessions never receive stereo frames. While in stereo, `set_interactive` is ignored (the drag level of detail is the mono view's).
+
+| `type` | Fields | Effect |
+|---|---|---|
+| `xr_pose` | see below | Renders both eyes for this pose from now on. Checked on arrival: a malformed pose is answered at once with `{"type": "xr_error", "pose_id": ..., "error": "..."}` (text) and never reaches the renderer. |
+| `xr_stop` | none | Back to the mono view. |
+
+Matrices are 16 numbers in column-major order, as WebGL and WebXR give them; distances in metres.
+
+| Field | Type | Description |
+|---|---|---|
+| `pose_id` | int, 0 to 2^53 | The client's id of this pose, echoed in the frame rendered for it. Required. |
+| `t_client` | number | Optional; echoed (the probe script sends its clock, seconds, to measure the round trip). |
+| `model` | 16 numbers | The cube's placement: model space to world. A rotation, a translation and a uniform scale (refused otherwise). Model space is the VR page's: the box centred on the origin, its longest side 1, x along NAXIS1, y along NAXIS2, z along the spectral axis times `z_stretch`, its faces at the outer pixel edges. Required. |
+| `z_stretch` | number, (0, 100] | Spectral stretch, as on the VR page. Default 1. |
+| `views` | list of two objects | One per eye, any order: `eye` (`"left"` or `"right"`), `view` (16 numbers, world to eye, rigid), either `projection` (16 numbers, OpenGL perspective, the WebXR view's `projectionMatrix`) or `fov` (`left`, `right`, `up`, `down` half angles in radians, OpenXR style with `left` and `down` negative, and `near`, `far`), and `width`, `height` (one eye's frame, 16 to 2560 pixels, the same for both eyes). Required. |
+| `depth` | object or `false` | `{"scale": n}` (1 to 16, default 4): the depth image reduced n times on both axes; `false`: no depth image. Default `{"scale": 4}`. |
+| `quality` | int, 1 to 100 | JPEG quality. Default: the session's (`jpeg_quality`, 95). |
+| `background` | three numbers, 0 to 1 | Colour behind the volume. Default black, which is what a headset that blends the frame over its own rendering wants. |
+| `sample_distance` | number, 0.25 to 4 | Ray step in voxels. Default 0.5 (see below). |
+
+```json
+{"type": "xr_pose", "pose_id": 1812, "t_client": 1794348308.2,
+ "model": [0.6,0,0,0, 0,0.6,0,0, 0,0,0.6,0, 0,1.48,-0.75,1],
+ "views": [
+   {"eye": "left",  "view": [...16], "projection": [...16], "width": 1024, "height": 1024},
+   {"eye": "right", "view": [...16], "projection": [...16], "width": 1024, "height": 1024}],
+ "depth": {"scale": 4}}
+```
+
+Frames go out as any other frame does: over the push stream after `stream` (a headset asks for `max_fps` 72 or 90), or one per `request_frame`. Poses arriving faster than frames are rendered are merged: the render process applies only the newest of the poses waiting for it (other commands, `xr_stop` included, keep their order), so a frame is rendered for the newest pose, carries its `pose_id`, and older poses never queue up behind a slow frame. A stereo frame is one binary message:
+
+| Bytes | Content |
+|---|---|
+| 0 to 3 | `VXR1` |
+| 4 to 7 | header length n, little-endian uint32 |
+| 8 to 8+n | header, UTF-8 JSON |
+| then | payloads, at the offsets the header gives from the end of the header |
+
+A binary message that does not start with `VXR1` is a mono JPEG. The header:
+
+| Field | Description |
+|---|---|
+| `v` | 1 |
+| `pose_id`, `t_client` | Those of the pose the frame was rendered for. |
+| `eyes` | `[{"eye": "left", "x": 0, "y": 0, "width": w, "height": h}, {"eye": "right", "x": w, ...}]`: each eye's rectangle in the image. |
+| `color` | `{"format": "jpeg", "width": 2w, "height": h, "offset", "length"}`: the two eyes side by side, left first, rows top first. |
+| `depth` | `null`, or `{"format": "u16-zlib", "width", "height", "scale", "z_near", "z_far", "source", "units", "offset", "length"}`: deflated (zlib) little-endian uint16 rows, top first, both eyes side by side like the colour. 0 is no sample; a value q is the distance `z_near + (q - 1) / 65534 * (z_far - z_near)` metres along the eye's -z axis. `z_near` and `z_far` are the frame's own nearest and farthest samples. Each value is the nearest sample of its `scale` x `scale` block. On the silhouette of the emission a few pixels (12, about 2% of the hits, for a synthetic sphere at 192 x 192 per eye) report a sample where the exact surface has none, because interpolation spreads the surface by up to a voxel. `source`: `"volume-first-hit"` (the first sample along the ray whose opacity is above zero, that is the first above the threshold), or `"surface"` in isosurface mode. Absent (`null`) when no depth was asked for, or none can be read (a GL that cannot render the volume to an image). |
+| `timing` | Seconds since the epoch, on the backend machine's clock: `received` (the pose reached the WebSocket), `render_start`, `render_end` (both eyes drawn and read back), `depth_end`, `encode_end` (JPEG), `ready` (the frame back in the backend from its render process), `sent` (handed to the socket). |
+| `timing_ms` | The same as durations: `wait` (received to render start: the frame before was still rendering), `render`, `depth`, `encode`, `handoff`, `queue` (ack window and rate cap), `total` (received to sent). |
+| `eye_ms` | Per eye: `render` (the GL draw) and `readback`. |
+
+A frame the session cannot render (a cube drawn out of core) is answered with an `xr_error` text message instead.
+
+Both eyes are drawn on the session's one GPU copy of the cube, one camera after the other into a window of one eye's size. The scene stays in the cube's voxel coordinates and the camera moves: the placement is folded into each eye's view and projection (`render_session/_stereo.py`). The volume's colour and its depth come from the volume mapper's render-to-image output, composited over `background`; it matches the window's own picture (measured: identical over black, at most 4 levels apart over a grey). Rays start half a voxel in front of the eye (or at the headset's near plane, if nearer), not at the headset's near plane: VTK's ray caster loses the volume when the camera is inside its box and the near plane is several voxels away, which is the case when the viewer leans into the cube (a 0.1 m near plane is 80 voxels of a 400-voxel cube 0.5 m wide). The picture is the headset's; emission nearer than its near plane is drawn rather than clipped, and with the eye inside the emission the whole view is lit from the first sample. The far plane is just past the box's farthest corner. The ray step is fixed at `sample_distance` for the stereo frame and the mono view's sampling is restored after it: at half a voxel the depth of a synthetic sphere is within half a voxel of its surface (median; 95th percentile 0.9 voxel), where the mono view's adaptive step of about one voxel gives 0.7 and 1.4. The probe `benchmark/remote_render/stereo_pose_latency.py` measures rate and latency (see its docstring).
 
 ## Server side
 
