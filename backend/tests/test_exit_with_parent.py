@@ -22,6 +22,8 @@ _BACKEND = Path(__file__).resolve().parents[1]
 # ── The watcher ──────────────────────────────────────────────────────────────
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="a pipe descriptor is no waitable handle on Windows; see the process test")
 def test_the_parent_pipe_closing_is_the_parent_gone():
     r, w = os.pipe()
     try:
@@ -51,11 +53,72 @@ def test_with_nothing_to_watch_it_only_waits():
     assert time.monotonic() - started >= 0.04
 
 
+def test_a_process_sentinel_ending_is_the_parent_gone():
+    # The form the sentinel takes on every platform, Windows included (a
+    # process handle there, a pipe end on POSIX).
+    import multiprocessing  # noqa: PLC0415
+
+    ctx = multiprocessing.get_context("spawn")
+    ev = ctx.Event()
+    proc = ctx.Process(target=ev.wait, args=(30,))
+    proc.start()
+    try:
+        assert not exit_with_parent.parent_gone(proc.sentinel, None, 0.05)
+        ev.set()
+        started = time.monotonic()
+        assert exit_with_parent.parent_gone(proc.sentinel, None, 10.0)
+        assert time.monotonic() - started < 5.0
+    finally:
+        ev.set()
+        proc.join(10)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a pipe descriptor is no waitable handle on Windows")
 def test_an_unusable_sentinel_falls_back_on_the_pid():
     r, w = os.pipe()
     os.close(r)
     os.close(w)                                       # r is now a closed descriptor
     assert not exit_with_parent.parent_gone(r, os.getppid(), 0.01)
+
+
+class _Exited(Exception):
+    pass
+
+
+def test_a_full_stderr_pipe_does_not_hold_the_exit(monkeypatch):
+    # stderr inherited from the dead backend may be a full pipe: a write to it
+    # blocks for ever. The exit must happen regardless.
+    release = threading.Event()
+
+    class Stuck:
+        def write(self, _text):
+            release.wait(30)
+
+        def flush(self):
+            release.wait(30)
+
+    def fake_exit(code):
+        raise _Exited(code)
+
+    monkeypatch.setattr(sys, "stderr", Stuck())
+    monkeypatch.setattr(exit_with_parent.os, "_exit", fake_exit)
+    seen = []
+
+    def run():
+        try:
+            exit_with_parent._leave("child", 0.0)
+        except _Exited as e:
+            seen.append(e.args[0])
+
+    t = threading.Thread(target=run, daemon=True)
+    started = time.monotonic()
+    t.start()
+    t.join(5)
+    try:
+        assert seen == [exit_with_parent.EXIT_CODE]
+        assert time.monotonic() - started < 2.0
+    finally:
+        release.set()
 
 
 def test_a_process_that_is_no_child_installs_nothing():

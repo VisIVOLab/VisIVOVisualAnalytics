@@ -7,7 +7,7 @@
 // frame at most: cardPointer (the controller's ray on the card first),
 // cardForFrame (the card to draw) and xrFrame (the frame-rate summary).
 
-import { Lifecycle, PAGE_VR_API, classifyFailure, noticeFor, isLoopback, isHeadsetBrowser } from './lifecycle.js';
+import { Lifecycle, PAGE_VR_API, classifyFailure, keepRecoveryPending, noticeFor, isLoopback, isHeadsetBrowser } from './lifecycle.js';
 import { NoticeCenter, cardLayout, drawCard, cardModel, cardNeedsMove, parkedCardModel, renderDom, CARD_PX, CARD_SIZE } from './notice.js';
 import { guideNotice, guideStep, guideText } from './onboarding.js';
 import { DiagLog, LogSender, diagnosticsReport, fpsSummary } from './diagnostics.js';
@@ -27,9 +27,9 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
   let recovering = null;
   let lastRecoverAt = 0;
   let loggedVersion = '';
-  let pendingRecover = false;     // the backend restarted: reopen once it is possible
-  let pendingReason = 'restarted';  // why the pending reopen started (its notice says so)
-  let pendingGen = 0;             // the load generation when it restarted
+  let pendingRecover = false;     // the backend restarted, or a reopen failed for now: reopen once it is possible
+  let pendingGen = 0;             // the load generation when it was set
+  let pendingReason = 'restarted';   // why the pending reopen started (its notice says so)
 
   // ── Sending the log ─────────────────────────────────────────────────────
   const sender = new LogSender({
@@ -97,7 +97,8 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
     if (pendingRecover && state === 'ok') {
       // Kept until a recovery actually starts: a load under way or the
       // throttle only postpones it to a later check. A load finished since the
-      // restart has replaced the cube: nothing to reopen then.
+      // restart has replaced the cube: nothing to reopen then. A reopen that
+      // fails for now sets it again (keepRecoveryPending).
       if (!ctx.hasBackendCube() || (ctx.loadGen() !== pendingGen && !ctx.loading())) pendingRecover = false;
       else if (recover(pendingReason)) pendingRecover = false;
     }
@@ -110,13 +111,25 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
     if (recovering) return recovering;
     if (reason !== 'user' && Date.now() - lastRecoverAt < 10000) return null;
     lastRecoverAt = Date.now();
+    // The cube this reopen is for, read before any await.
+    const gen = ctx.loadGen();
     recovering = (async () => {
       let r;
-      try { r = await ctx.recoverDataset(reason); } catch (err) { r = { ok: false, detail: String(err.message || err) }; }
+      let kind = '';   // classifyFailure's, when the reopen threw
+      try { r = await ctx.recoverDataset(reason); } catch (err) {
+        kind = classifyFailure(err);
+        r = { ok: false, detail: String(err.message || err) };
+      }
       recovering = null;
+      // A failure that settles after a load replaced the cube says nothing
+      // about the cube on show now: superseded, like an answer that saw it.
+      if (!r.ok && !r.superseded && ctx.loadGen() !== gen) {
+        r = { ok: false, superseded: true, detail: `superseded by a newer load (${r.detail || ''})` };
+      }
       if (r.superseded) {
         // A load replaced the cube while it was being reopened: that load's
-        // cube is the one on show, nothing to say.
+        // cube is the one on show, nothing to say, nothing left to reopen.
+        pendingRecover = false;
         log('info', 'cube-reopen-superseded', reason);
       } else if (r.preparing) {
         // The cube's brick pyramid is being built: tried again at a later
@@ -125,15 +138,27 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
         pendingRecover = true; pendingGen = ctx.loadGen();
         pendingReason = r.reason || reason;
       } else if (r.ok) {
+        pendingRecover = false;
         notices.clear('reopen-failed');
         log('info', 'cube-reopened', `${reason}: ${r.detail || ''}`);
         const why = r.reason || reason;
         notices.show(noticeFor(why === 'restarted' ? 'restarted' : 'reopened'), { force: true });
       } else {
         log('error', 'cube-reopen-failed', r.detail || '');
+        const auth = kind === 'auth' || /^40[13]:/.test(r.detail || '');
+        // What time mends (a refused token, a timeout, a busy or failing
+        // server) is tried again at a later healthy check, after the
+        // throttle: the cube on show still points at the lost dataset. A file
+        // that changed waits for the user (open it again). This latest
+        // answer decides, whatever an earlier failure left pending.
+        pendingRecover = keepRecoveryPending(r, auth ? 'auth' : kind);
+        if (pendingRecover) {
+          pendingGen = gen;
+          // A retry is never the user's: it keeps to the throttle.
+          pendingReason = reason === 'user' ? 'dataset-gone' : reason;
+        }
         // A refused token is the auth notice's to explain; the reopen waits for it.
-        if (/^40[13]:/.test(r.detail || '')) { pendingRecover = true; pendingGen = ctx.loadGen(); }
-        else notices.show(noticeFor('reopen-failed', { detail: r.detail, inVR: inVR() }), { force: true });
+        if (!auth) notices.show(noticeFor('reopen-failed', { detail: r.detail, inVR: inVR() }), { force: true });
       }
       render();
       return r;
@@ -169,7 +194,7 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
   let guidePage = 0;
   function showGuide(i = 0) {
     guidePage = i;
-    notices.show(guideNotice(i), { force: true });
+    notices.show(guideNotice(i, ctx.guideOptions ? ctx.guideOptions() : {}), { force: true });
     render();
   }
 
@@ -180,8 +205,8 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
     if (id === 'guide-next' || id === 'guide-back') { showGuide(guideStep(guidePage, id)); return; }
     if (id === 'guide-close') { notices.clear('guide'); ctx.onGuideSeen(); render(); return; }
     if (id === 'dismiss') { if (cur) notices.dismiss(cur.id); render(); return; }
-    // A sticky notice folded into a line on the panel until its state changes
-    // ("?" on the panel brings it back).
+    // A sticky notice folded into a line on the menu until its state changes
+    // (the menu's Help → Guide brings it back).
     if (id === 'hide') { if (cur) { notices.hide(cur.id); log('debug', 'notice-hidden', cur.id); } render(); return; }
     if (id === 'retry') { life.retryNow(); ctx.onRetry(); return; }
     if (id === 'reload') { win.location.reload(); return; }
@@ -277,14 +302,15 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
 
   return {
     notices, diag, life, log, showGuide, act, render, recover, requestFailed,
-    cardForFrame, cardPointer, xrFrame, xrStarted, diagnostics, guideText,
+    cardForFrame, cardPointer, xrFrame, xrStarted, diagnostics,
+    guideText: () => guideText(ctx.guideOptions ? ctx.guideOptions() : {}),
     get cardHit() { return card.hit; },
     /** The card on show: its model (world), layout and notice (debug hooks). */
     get card() { return card; },
     get cardOnShow() { return !!card.model; },
     /** The line the panel shows for a hidden sticky notice, or ''. */
     badge() { return notices.badge(); },
-    /** "?" on the panel: a hidden notice first, else the guide. */
+    /** The menu's Help → Guide: a hidden notice first, else the guide. */
     help() { if (notices.unhideAll()) render(); else showGuide(0); },
     start() { life.start(); },
     /** Messages the page shows for its own events (context loss, XR end, budget). */

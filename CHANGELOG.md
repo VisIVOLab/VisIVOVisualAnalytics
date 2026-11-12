@@ -44,6 +44,94 @@ are preserved here unedited; the branch names they refer to are historical.
   135 ms median (HCG 44 in core: 88 ms), stop to refined 83 ms. New
   `validation/vr_large_cube*.py|mjs`; docs in the VR guide (Large cubes) and
   the cube and render API pages.
+- **VR: clearer controls and one hand menu (#201, part of #166).** The
+  headset's controls follow fixed roles: the primary hand (right, or left with
+  the new *left-handed* setting, kept in the browser) points and acts with its
+  trigger; the secondary hand holds the menu; either grip grabs and both grips
+  move, turn and scale the cube. Three explicit modes, Explore (stick:
+  threshold and opacity; trigger pins a cursor readout), Select (spectrum,
+  Kinematic Lasso, box region) and Clip (velocity slab, clipping box with a
+  face dragged by the controller), give each stick one meaning; the buttons
+  keep global actions only (A next mode, B undo, hold X the menu, Y reset
+  view). Holding X opens one hand menu by the wrist, with Mode, Look (the
+  former control panel), Analysis (the former analysis panel), Layers (the
+  former strip), Settings and Help tabs; the always-shown panels and strip are
+  gone. Labels above the controllers say what each control does in the
+  current mode (on at first use, can be turned off); a cursor readout follows
+  the ray with RA/Dec, velocity, channel and value with its unit; haptic pulses
+  confirm presses and results and signal errors; spectrum and statistics,
+  moment and PV results stand in windows moved by their title bar and closed
+  with ×, their places kept. Tracked hands keep the roles: pinch acts, a fist
+  grabs, the secondary palm turned up opens the menu. The first-run guide is
+  rebuilt for this scheme and the menu's Help tab shows the control map of
+  each mode. In a desktop browser the same menu and windows are used with the
+  mouse (`?panel3d`), and a click does what the trigger does in the chosen
+  mode. Node tests cover the control map, the left-handed setting, hand
+  tracking (palm up included), the menu, the windows and the readout;
+  `validation/vr_menu.mjs` drives the menu with real mouse events in CI
+  (`vr_lifecycle.mjs --regressions`, or `--menu`). The VR guide is now a
+  section, `docs/user-guide/vr/` (overview, quickstart, controls and the hand
+  menu, analysis, data types, cluster backends, troubleshooting, technical
+  reference with every Quest 3 check list); `vr-headset.md` stays as a short
+  page whose anchors lead there.
+- **Backend review fixes (#192, #193, #196, #197, #198, #199).**
+  - An orphaned child's farewell line on stderr can no longer hold its exit:
+    the line is written from a thread of its own and the exit waits for it
+    at most 0.2 s (a full stderr pipe inherited from the dead backend used to
+    block the watcher for ever).
+  - A shutdown's budget now shortens a render-session release already under
+    way: the release's stage deadlines are shared, so a bounded close moves
+    them earlier and the child is terminated, then killed, within the
+    shutdown's budget instead of the 5 + 5 + 2 s of the first release.
+  - Velocity basins: a saddle rotated off the grid axes (eigenvalues -1, -1,
+    +0.02 along (1,1,1)/√3) was one basin of 8293/15625 voxels. A candidate
+    attractor is now rejected when the flow's local Jacobian has an
+    eigenvalue with a positive real part beyond 10⁻³ of its largest modulus,
+    before the axis probes.
+  - Shared selections: a publish reserves its body's bytes from a 128 MiB
+    budget before reading the body, and frees them once the body is packed
+    (even when the request was cancelled meanwhile); the selection is
+    measured from the packed bits, 1/32 of the body, which a measurement
+    that outlives its request keeps. Concurrent publishes no longer each
+    buffer up to 64 MiB. A `meta` number out of the range of a double
+    (`1e999`) is refused (422) instead of being kept as infinity and failing
+    every later read of the selection.
+  - VR page: the log's event name is scrubbed of tokens like the other
+    fields, and a page file is served as `immutable` only when its bytes,
+    read once, are the ones the requested build was hashed from (an upgrade
+    could cache new bytes under the old build's address).
+  - Stereo WebRTC: every caller of a link's close waits for the same close,
+    so the old link's encoder off always reaches the session before a
+    replacement link turns it on.
+  - Points sampled for the headset keep coordinates far from 0 apart (1e9,
+    1e9 + 1 and 1e9 + 2 were one point): positions are read as float64
+    offsets from a value of their own axis, and bounds and codes worked in
+    float64; an axis whose offsets would lose precision (overflow, a
+    reference far from the rows kept, a span under 1e-30) is read again as
+    fractions of its range. The colour column is read in float64 too (1e9 +
+    k was one colour; a colour range wider than the largest double is
+    scaled first). Rows beyond float32's range (3.4e38) are still left out,
+    as the remote point session leaves them out. Peak memory unchanged:
+    0.41 GB at 10 M rows.
+  - Catalogue RA/Dec and GLON/GLAT columns are read in the unit the table
+    declares (VOTable, FITS, IPAC, or the column name), for cube overlays and
+    point tables: RA in hours is no longer read as degrees. FITS `DEG`, `RAD`
+    and `HOURS` are accepted in any case; a unit that is not an angle is
+    refused with 422.
+  - Tests that assumed POSIX now hold on Windows too (a process sentinel in
+    the parent-watch test, the killed exit code per platform).
+- **Review fixes for #193, #196, #197 and #199.** The velocity viewer drops
+  a backend divergence reply that a newer box change superseded, instead of
+  showing the old box's density at the new box's placement (and does not
+  fall back to the local computation for it). The VR page and the desktop
+  retry a publish answered 429 only while it is still their latest own
+  selection on the same cube and link, so a late retry can no longer replace
+  a newer selection in the hub and split the clients. The VR page keeps the
+  automatic reopen of the cube pending after a timeout, a busy or a failing
+  backend, and tries again at the next healthy check after the 10 s throttle;
+  a file that changed still waits for the user. When the WebRTC video is
+  given up, a still view asks for its pose again as JPEG.
+
 - **VR: keep recovery and asynchronous layers on the correct dataset (#166).**
   Reopening a cube verifies its file revision before reusing its texture and
   coordinates; a changed file requires an explicit reload. Selection sharing

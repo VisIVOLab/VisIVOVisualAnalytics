@@ -3,6 +3,7 @@
 
 #include "app/BackendClient.h"
 #include "Catalogue3DParser.h"
+#include "VelocityLodGeometry.h"
 
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkNew.h>
@@ -96,7 +97,8 @@ private:
     // flow (∇·v < 0) marks overdensities. An isosurface of the overdense cores.
     void showFieldDensity(bool on);
     void buildFieldDensity();          // ∇·v on the grid → cached field (both signs)
-    bool buildFieldDensityFromBackend();  // higher-res ∇·v from the backend (LOD fields)
+    // higher-res ∇·v from the backend (LOD fields), for request generation `gen`
+    velocitylod::DensityReply buildFieldDensityFromBackend(int gen);
     void updateFieldDensityContour();  // (re)contour the convergent (overdense) cores
     void showFieldVoid(bool on);       // divergent side (∇·v > 0): voids / repellers
     void updateFieldVoidContour();
@@ -177,6 +179,9 @@ private:
     double m_divMax = 0.0;                          // most-positive ∇·v (peak void/divergence)
     bool m_divFromBackend = false;                  // divergenceGrid came from density_bin
     double m_divBoxMpc = 0.0;                       // box that backend ∇·v was asked for
+    // Bumped by each ∇·v request and each box change: a backend reply of an
+    // older generation is dropped (velocitylod::densityReplyAction).
+    int m_divGen = 0;
 
     vtkSmartPointer<vtkActor> catalogueActor;    // overlaid galaxy point cloud
     vtkSmartPointer<vtkPolyData> cataloguePoly;  // the galaxy points + attribute arrays

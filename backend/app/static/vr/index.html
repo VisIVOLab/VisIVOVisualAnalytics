@@ -118,6 +118,8 @@
 
   <section id="selection">
     <div class="row">
+      <label title="What a click (or the headset's trigger) does: Explore pins the readout, Select runs the tool, Clip moves the velocity slab">Mode <select id="ui-mode">
+        <option value="explore" selected>Explore</option><option value="select">Select</option><option value="clip">Clip</option></select></label>
       <label>Selection tool <select id="sel-tool">
         <option value="probe" selected>spectrum probe</option><option value="lasso">Kinematic Lasso</option>
         <option value="box">box region</option></select></label>
@@ -161,7 +163,11 @@
         <option>72</option><option selected>90</option><option>120</option></select></label>
     </div>
     <div class="row">
-      <label class="inline" title="The panel the headset shows, in this view, used with the mouse (?panel3d)"><input id="panel3d" type="checkbox"> show the headset's panel here</label>
+      <label class="inline" title="The menu and the result windows the headset shows, in this view, used with the mouse (?panel3d)"><input id="panel3d" type="checkbox"> show the headset's menu here</label>
+    </div>
+    <div class="row">
+      <label class="inline" title="The left hand points and acts, the right hand holds the menu (kept in this browser)"><input id="left-handed" type="checkbox"> left-handed</label>
+      <label class="inline" title="What each button does now, next to the controllers (kept in this browser)"><input id="labels" type="checkbox" checked> labels by the controllers</label>
     </div>
     <div class="row">
       <button id="enter-vr" class="primary" disabled>Enter VR</button>
@@ -180,6 +186,7 @@
   </section>
 
   <section id="stats">
+    <pre id="cursor-readout" class="muted" title="Under the mouse: sky position, velocity, the value drawn there"></pre>
     <pre id="hud-text"></pre>
     <div id="scale-text" class="muted"></div>
     <pre id="bench-out" hidden></pre>

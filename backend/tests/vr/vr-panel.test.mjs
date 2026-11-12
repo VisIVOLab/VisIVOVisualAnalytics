@@ -231,17 +231,21 @@ test('settings round-trip and fall back to the defaults', () => {
   const st = new MemStore();
   assert.deepEqual(S.loadSettings(st), S.sanitizeSettings(null));
   const s = { colormap: 'magma', thrSource: 'cube', thrSourceChosen: true, refine: { enabled: false, scale: 0.6, quality: 85, depth: false },
-    panel: { right: -0.4, up: 0.1, fwd: -0.2, yaw: 0.5 }, tool: 'box', guideSeen: true };
+    tool: 'box', guideSeen: true, leftHanded: true, labels: false, haptics: false,
+    windows: { result: { right: -0.4, up: 0.1, fwd: -0.2, yaw: 0.5 } } };
   assert.ok(S.saveSettings(st, s));
   assert.deepEqual(S.loadSettings(st, { colormaps: ['viridis', 'magma'], tools: ['probe', 'lasso', 'box'] }), s);
   // Unknown or broken values: replaced one by one, never thrown.
   st.setItem(S.SETTINGS_KEY, JSON.stringify({ v: 1, s: { colormap: 'nope', thrSource: 'x', refine: { scale: 7, enabled: 'yes' },
-    panel: { right: 1e9, up: 0, fwd: 0, yaw: 0 }, tool: 'wand', token: 'secret' } }));
+    windows: { result: { right: 1e9, up: 0, fwd: 0, yaw: 0 }, other: { right: 0, up: 0, fwd: 0, yaw: 0 } },
+    leftHanded: 'yes', labels: 1, tool: 'wand', token: 'secret' } }));
   const got = S.loadSettings(st, { colormaps: ['viridis'], tools: ['probe'] });
   assert.equal(got.colormap, 'viridis');
   assert.equal(got.thrSource, 'reduced');
   assert.deepEqual(got.refine, S.DEFAULT_SETTINGS.refine);
-  assert.equal(got.panel, null);
+  assert.deepEqual(got.windows, {});
+  assert.equal(got.leftHanded, false);
+  assert.equal(got.labels, true, 'the labels are on at first use');
   assert.equal(got.tool, 'probe');
   assert.equal(got.guideSeen, false);           // the guide is shown once more rather than never
   assert.ok(!('token' in got));
@@ -251,17 +255,17 @@ test('settings round-trip and fall back to the defaults', () => {
   assert.equal(S.loadSettings(st).colormap, 'viridis');
 });
 
-test('a panel let go far away is clamped and then kept, not dropped', () => {
+test('a window let go far away is clamped and then kept, not dropped', () => {
   const st = new MemStore();
   const far = { right: -7.5, up: 4, fwd: 0.3, yaw: 9 };
   const off = S.clampPanelOffset(far);
   assert.deepEqual(off, { right: -S.PANEL_LIMITS.right, up: S.PANEL_LIMITS.up, fwd: 0.3, yaw: S.PANEL_LIMITS.yaw });
   assert.deepEqual(S.clampPanelOffset({ right: NaN, up: 0.1 }), { right: 0, up: 0.1, fwd: 0, yaw: 0 });
   // Unclamped, the saved place would be lost on the next load; clamped, it is kept.
-  S.saveSettings(st, { ...S.DEFAULT_SETTINGS, panel: far });
-  assert.equal(S.loadSettings(st).panel, null);
-  S.saveSettings(st, { ...S.DEFAULT_SETTINGS, panel: off });
-  assert.deepEqual(S.loadSettings(st).panel, off);
+  S.saveSettings(st, { ...S.DEFAULT_SETTINGS, windows: { pv: far } });
+  assert.equal(S.loadSettings(st).windows.pv, undefined);
+  S.saveSettings(st, { ...S.DEFAULT_SETTINGS, windows: { pv: off } });
+  assert.deepEqual(S.loadSettings(st).windows.pv, off);
 });
 
 test('settings: a storage that throws or is missing is not an error', () => {

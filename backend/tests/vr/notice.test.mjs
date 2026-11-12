@@ -127,26 +127,33 @@ test('the guide: pages, buttons, first time only', () => {
   assert.ok(G.shouldShowGuide(null));
   assert.ok(!G.shouldShowGuide({ guideSeen: true }));
   assert.ok(!G.shouldShowGuide({ guideSeen: false }, { bench: true }));
-  assert.match(G.guideText(), /Grip/);
+  assert.match(G.guideText(), /grip/);
+  assert.match(G.guideText({ leftHanded: true }), /Hold A \(right hand\)/);
 });
 
-test('the guide lists the controls main.js binds', () => {
+test('the guide names the buttons of the control map, for either hand', async () => {
+  const C = await import('../../app/static/vr/js/controls.js');
   const main = readFileSync(new URL('../../app/static/vr/js/main.js', import.meta.url), 'utf8');
-  const text = G.GUIDE_PAGES.flatMap((p) => p.lines).join('\n');
-  // Each control bound in handleInput, and the words the guide uses for it.
-  const pairs = [["pressedEdge('rA'", /\bA: next colour map/], ["pressedEdge('rB'", /\bB: all channels/],
-    ["pressedEdge('lX'", /\bX: emission/], ["pressedEdge('lY'", /\bY: the numbers/],
-    ["pressedEdge('lStick'", /Left stick click/], ["pressedEdge('rStick'", /Right stick click/],
-    ["pressedEdge('rTrig'", /Right trigger/], ["pressedEdge('lTrig'", /Left trigger/],
-    ['grabTwo', /Both grips/], ['grabOne', /Grip \(either hand\)/]];
-  for (const [code, words] of pairs) {
-    assert.ok(main.includes(code), `main.js no longer has ${code}: update the guide`);
-    assert.match(text, words);
+  for (const leftHanded of [false, true]) {
+    const text = G.guidePages({ leftHanded }).flatMap((p) => p.lines).join('\n');
+    const map = C.controlMap({ mode: 'explore', leftHanded });
+    const r = C.roles(leftHanded), P = C.buttonNames(r.primary), S = C.buttonNames(r.secondary);
+    // The menu button, next mode, undo and reset view: as the map binds them.
+    assert.equal(C.actionFor(map, 'secondary', 'lower'), 'menu');
+    assert.match(text, new RegExp(`Hold ${S.lower} \\(${r.secondary} hand\\)`));
+    assert.match(text, new RegExp(`${P.lower}: next mode`));
+    assert.match(text, new RegExp(`${P.upper}: undo`));
+    assert.match(text, new RegExp(`${S.upper}: reset the view`));
+    assert.match(text, new RegExp(`Your ${r.primary} hand points and acts`));
+    for (const w of [/threshold/, /opacity/, /slab/, /pinch/, /fist/, /palm up/, /Settings/, /Help/]) assert.match(text, w);
   }
-  assert.match(text, /threshold/i);
-  assert.match(text, /opacity/i);
-  assert.match(text, /slab/i);
-  assert.match(text, /"\?"/);
+  // main.js dispatches through the map, not through fixed buttons.
+  for (const code of ["act('secondary', 'lower') === 'menu'", "act('primary', 'lower') === 'next-mode'",
+    "act('primary', 'upper') === 'undo'", "act('secondary', 'upper') === 'reset-view'", "primaryAct(act('primary', 'trigger')",
+    'grabTwo', 'grabOne']) {
+    assert.ok(main.includes(code), `main.js no longer has ${code}: update the guide`);
+  }
+  assert.ok(!/pressedEdge\('(rA|rB|lX|lY|lStick|rStick|lTrig)'/.test(main), 'no fixed per-button bindings left');
 });
 
 test('a sticky notice can be hidden into a badge until its state changes', () => {

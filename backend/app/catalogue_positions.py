@@ -147,8 +147,12 @@ def sky_positions(frame: pd.DataFrame, ra_field: str, dec_field: str, *,
         raise ValueError(f"Unknown frame {frame_name!r}: one of {FRAMES}.")
     if distance_mode not in DISTANCE_MODES:
         raise ValueError(f"Unknown distance mode {distance_mode!r}: one of {DISTANCE_MODES}.")
-    ra = _numeric(frame, ra_field)
-    dec = _numeric(frame, dec_field)
+    # In the unit the table declares (hours of RA, radians...), as the cube
+    # overlay reads it (app/cube_catalogue.py angle_degrees); else degrees.
+    from .cube_catalogue import angle_degrees  # noqa: PLC0415
+    units = (getattr(frame, "attrs", {}) or {}).get("units") or {}
+    ra = angle_degrees(_numeric(frame, ra_field), ra_field, units.get(ra_field))
+    dec = angle_degrees(_numeric(frame, dec_field), dec_field, units.get(dec_field))
     # One row past a pole would make SkyCoord refuse the whole column.
     with np.errstate(invalid="ignore"):
         ok = np.isfinite(ra) & (np.abs(dec) <= 90.0)

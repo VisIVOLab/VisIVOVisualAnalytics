@@ -1,6 +1,6 @@
 // Messages that must reach the user wherever they are (epic #166): on the 2-D
 // page as a banner, and in the headset as a card in front of the viewer, with
-// buttons used by the right controller's ray and trigger (or the mouse, in
+// buttons used by the primary controller's ray and trigger (or the mouse, in
 // the desktop view with ?panel3d). The lifecycle's notices (lifecycle.js) and
 // the first-run controls guide (onboarding.js) are shown here.
 //
@@ -165,7 +165,7 @@ export class NoticeCenter {
     const ids = [...this.hidden].filter((id) => this.items.has(id));
     if (!ids.length) return '';
     const ns = ids.map((id) => this.items.get(id).notice).sort((a, b) => (PRIORITY[a.level] ?? 2) - (PRIORITY[b.level] ?? 2));
-    return `⚠ ${ns[0].badge || ns[0].title} — "?" shows it`;
+    return `⚠ ${ns[0].badge || ns[0].title} — Help → Guide shows it`;
   }
 
   /** The notice on show, or null (expired ones are dropped first). */

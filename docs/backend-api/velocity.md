@@ -103,10 +103,15 @@ attractor they reach. `direction: 1` gives basins of attraction
 integrated with a fixed step of half a cell along the flow direction, so the
 segmentation depends only on the direction of the flow: scaling every velocity
 by a constant gives the same labels. A path ends at any critical point; each
-candidate attractor is then kept only if probes started one cell away from it
-along ±x, ±y and ±z all flow back to it, so a saddle (for example the
-separatrix plane between two wells) is not a basin and the points that ended
-there stay 0. NaN voxels are left out of the interpolation; a path whose
+candidate attractor is then tested as a sink twice. First the local Jacobian
+of the flow (central differences one cell either side) must have no
+eigenvalue whose real part is positive beyond 10⁻³ of its largest eigenvalue
+modulus: this finds an unstable direction in any orientation, including a
+saddle rotated off the grid axes (eigenvalues -1, -1, +0.02 along
+(1,1,1)/√3), which the axis probes alone took for a sink. Then probes started
+one cell away along ±x, ±y and ±z must all flow back to it. So a saddle (for
+example the separatrix plane between two wells) is not a basin and the points
+that ended there stay 0. NaN voxels are left out of the interpolation; a path whose
 sample has less than half of its weight on valid voxels has run into missing
 data and stays 0. A probe that runs into missing data farther from the
 candidate than it started has escaped, and the candidate is rejected; one that

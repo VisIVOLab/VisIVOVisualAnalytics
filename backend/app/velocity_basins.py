@@ -29,7 +29,8 @@ logger = logging.getLogger("visivo.velocitybasins")
 
 def compute_basins(field: VelocityField, direction: int = 1, n_steps: int = 500,
                    step: float = 0.5, eps_frac: float = 1e-3,
-                   attractor_min_voxels: int = 8) -> tuple[np.ndarray, int]:
+                   attractor_min_voxels: int = 8,
+                   jacobian_tol: float = 1e-3) -> tuple[np.ndarray, int]:
     """Segment the field into basins. Returns (labels (nz,ny,nx) int32, n_basins).
 
     Label 0 = unassigned (streamline never ended at a sink); labels 1..n_basins
@@ -49,13 +50,24 @@ def compute_basins(field: VelocityField, direction: int = 1, n_steps: int = 500,
 
     Those rules end a path at ANY critical point, a saddle included (a path on
     a saddle's stable manifold, e.g. the separatrix between two wells, runs into
-    it). So each candidate attractor is then tested as a sink: probes started
-    ``probe_offset`` cells away from it along ±x, ±y, ±z are traced for a few
-    more cells, and the attractor is kept only if every probe ends back within
-    ``probe_radius`` cells. A saddle sheds the probes along its unstable
-    direction however weak that direction is (the step follows the unit
-    direction), so it is rejected and the paths that ended there stay
-    unassigned (label 0); they are NOT handed to a neighbouring basin.
+    it). So each candidate attractor is then tested as a sink, twice:
+
+    * the local Jacobian of the flow at the candidate, from central
+      differences one cell either side, must have no eigenvalue whose real part
+      is positive beyond ``jacobian_tol`` times its largest eigenvalue modulus.
+      This sees an unstable direction in ANY orientation. The probes below only
+      look along the grid axes, and on a saddle rotated off them (v = (-I +
+      1.02 u u^T) q, u = (1,1,1)/sqrt(3): eigenvalues -1, -1, +0.02) every axis
+      probe has a strong stable component that brings it back: such a saddle
+      used to come out as one basin of 8293/15625 voxels;
+    * probes started ``probe_offset`` cells away from it along ±x, ±y, ±z are
+      traced for a few more cells, and the attractor is kept only if every
+      probe ends back within ``probe_radius`` cells. This one also judges a
+      candidate whose Jacobian cannot be taken (missing data around it) and
+      a nonlinear saddle whose Jacobian is degenerate there.
+
+    A rejected saddle's paths stay unassigned (label 0); they are NOT handed to
+    a neighbouring basin.
 
     NaN voxels (a masked or blank region) are excluded from the interpolation;
     a sample whose valid interpolation weight is below 0.5 is missing data and
@@ -195,8 +207,13 @@ def compute_basins(field: VelocityField, direction: int = 1, n_steps: int = 500,
         cells_zyx = np.argwhere(attractor_mask)              # (M, 3) z, y, x
         cell_comp = attr_labels[tuple(cells_zyx.T)]
         cells_xyz = cells_zyx[:, ::-1].astype(np.float64)
+        def flow(p: np.ndarray) -> np.ndarray:
+            return sample(p) * sign
+
         for k in range(1, n_found + 1):
             centre = ends[comp == k].mean(axis=0)
+            if _has_unstable_direction(centre, flow, (nx, ny, nz), jacobian_tol):
+                continue
             if _is_sink(centre, cells_xyz[cell_comp == k], trace, (nx, ny, nz),
                         step=step):
                 n_basins += 1
@@ -210,6 +227,52 @@ def compute_basins(field: VelocityField, direction: int = 1, n_steps: int = 500,
                 100.0 * float((voxel_labels > 0).mean()),
                 100.0 * float(valid.mean()), 100.0 * float(dead.mean()))
     return voxel_labels.reshape(nz, ny, nx), int(n_basins)
+
+
+def flow_jacobian(centre: np.ndarray, flow, shape_xyz: tuple[int, int, int],
+                  h: float = 1.0) -> np.ndarray | None:
+    """The Jacobian d v_i / d x_j (3, 3) of ``flow`` at ``centre`` (x, y, z, in
+    cells), by central differences ``h`` cells either side, one-sided where the
+    grid ends. A column for an axis the grid does not have (size 1) is zero.
+    None when a sample is missing data (NaN)."""
+    jac = np.zeros((3, 3), dtype=np.float64)
+    pts, cols, spans = [], [], []
+    for axis, n in enumerate(shape_xyz):
+        if n < 2:
+            continue
+        lo, hi = centre.copy(), centre.copy()
+        lo[axis] = max(centre[axis] - h, 0.0)
+        hi[axis] = min(centre[axis] + h, n - 1.0)
+        if hi[axis] - lo[axis] <= 0:
+            continue
+        pts += [lo, hi]
+        cols.append(axis)
+        spans.append(hi[axis] - lo[axis])
+    if not cols:
+        return jac
+    v = flow(np.array(pts, dtype=np.float64))
+    if not np.isfinite(v).all():
+        return None
+    for i, (axis, span) in enumerate(zip(cols, spans)):
+        jac[:, axis] = (v[2 * i + 1] - v[2 * i]) / span
+    return jac
+
+
+def _has_unstable_direction(centre: np.ndarray, flow, shape_xyz: tuple[int, int, int],
+                            tol: float) -> bool:
+    """True when the flow's Jacobian at ``centre`` has an eigenvalue whose real
+    part is positive beyond ``tol`` times the largest eigenvalue modulus: some
+    direction, aligned with the grid or not, leads away. Relative, so scaling
+    the field changes nothing. False when the Jacobian cannot be taken or
+    vanishes (left to the probes)."""
+    jac = flow_jacobian(centre, flow, shape_xyz)
+    if jac is None:
+        return False
+    eig = np.linalg.eigvals(jac)
+    scale = float(np.max(np.abs(eig)))
+    if not np.isfinite(scale) or scale <= 0:
+        return False
+    return bool(np.any(eig.real > tol * scale))
 
 
 def _is_sink(centre: np.ndarray, cells_xyz: np.ndarray, trace,

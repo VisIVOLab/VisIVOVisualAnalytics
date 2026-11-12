@@ -1,10 +1,11 @@
 // The headset's analysis tools beyond the selections (issue #191), put
 // together: lasso seeds and Isolate/Remove (tools-lasso.js), the moment of
-// the selection (tools-moment.js), the PV path (tools-pv.js), their panel in
-// the headset (tools-panel.js) and on the page, and the product planes. main.js
-// calls it through a few hooks: segments, act, pointer, draw, reset.
+// the selection (tools-moment.js), the PV path (tools-pv.js), their page of
+// the hand menu (tools-panel.js's layout and drawing; issue #201) and their
+// section on the page, and the product textures shown in result windows.
+// main.js calls it through a few hooks: segments, act, press, view,
+// productTexture, reset.
 
-import * as P from './vr-panel.js';
 import * as PC from './product-canvas.js';
 import * as TP from './tools-panel.js';
 import { createLassoTools, SEED_MODE_NAMES } from './tools-lasso.js';
@@ -27,13 +28,9 @@ export function createAnalysis(ctx) {
   const pv = createPvTool({ ...base, state: st });
   const show = { moment: true, pv: true };
 
-  // ── The panel in the headset ──────────────────────────────────────────────
+  // ── The menu's Analysis page (tools-panel.js layout) ──────────────────────
   const layout = TP.toolsLayout();
-  const pointer = new P.PanelPointer(layout);
-  const canvas = PC.makeCanvas(...TP.TOOLS_PX);
-  const tex = { tools: null, moment: null, pv: null };
-  let toolsKey = '';
-  let lastHit = null;
+  const tex = { moment: null, pv: null };
 
   function view() {
     const sel = ctx.selection.sel;
@@ -61,33 +58,8 @@ export function createAnalysis(ctx) {
     else if (id === 'pv-hide') { show.pv = false; changed(); }
   }
 
-  /**
-   * The ray on the tools panel this frame (world space), `controlModel` the
-   * control panel's pose, `blocked(t)` whether the cube hides a hit at t.
-   * Returns {hit, takes}: the hit (for the cross drawn there) and whether the
-   * panel takes the ray.
-   */
-  function pointerUpdate(ray, pressed, controlModel, visible, blocked, otherHit) {
-    let hit = visible && ray ? P.rayPanel(TP.toolsModel(controlModel), TP.TOOLS_SIZE, ray.o, ray.d, TP.TOOLS_PX) : null;
-    if (hit && blocked && blocked(hit.t)) hit = null;
-    if (hit && otherHit && otherHit.t < hit.t) hit = null;
-    for (const a of pointer.update(hit, pressed && visible)) if (a.type === 'press') press(a.id, a.widget);
-    lastHit = hit;
-    return { hit, takes: visible && (pointer.takesRay() || pointer.owns) };
-  }
-
-  function toolsTexture() {
-    const R = ctx.renderer;
-    if (!tex.tools) tex.tools = R.createPanel();
-    const v = view();
-    const key = JSON.stringify([v, pointer.hover]);
-    if (key !== toolsKey && canvas) {
-      TP.drawTools(canvas.getContext('2d'), layout, v, { hover: pointer.hover });
-      R.updatePanel(tex.tools, canvas);
-      toolsKey = key;
-    }
-    return tex.tools;
-  }
+  /** A product's window shown or closed (closing is the page's Hide). */
+  function setShown(which, on) { if (show[which] !== on) { show[which] = on; changed(); } }
 
   function productTexture(which) {
     const tool = which === 'moment' ? moment : pv;
@@ -99,16 +71,6 @@ export function createAnalysis(ctx) {
       tool.state.uploaded = tool.state.result;
     }
     return tex[which];
-  }
-
-  /** Draw the tools panel (under the control panel) and the product planes. */
-  function draw(v, controlModel, anchor, panelVisible, desktop = false) {
-    const R = ctx.renderer;
-    if (panelVisible) R.drawPanel(v, TP.toolsModel(controlModel), toolsTexture(), TP.TOOLS_SIZE);
-    for (const which of ['moment', 'pv']) {
-      const t = productTexture(which);
-      if (t) R.drawPanel(v, TP.productModel(anchor, which, desktop), t, PC.PLANE_SIZE);
-    }
   }
 
   /** The trigger or a click: true when the PV path took it. */
@@ -123,6 +85,7 @@ export function createAnalysis(ctx) {
   function act(ray) {
     sync();
     if (!pv.state.armed || !st().cube) return false;
+    show.pv = true;           // a point added opens the PV window again
     pv.act(ray);
     return true;
   }
@@ -226,6 +189,6 @@ export function createAnalysis(ctx) {
     return out.length ? [out.join('  ')] : [];
   }
 
-  return { lasso, moment, pv, sync, act, segments, pointer: pointerUpdate, draw, reset, refreshDom, hudLines,
-    lastHit: () => lastHit, layout, toolsPointer: pointer, isDirty: () => dirty };
+  return { lasso, moment, pv, sync, act, segments, press, view, productTexture, setShown,
+    shown: (which) => !!show[which], reset, refreshDom, hudLines, layout, isDirty: () => dirty };
 }

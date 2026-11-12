@@ -246,3 +246,80 @@ test('a late close of the old socket does not stop the new stream', async () => 
   assert.notEqual(r.status, 'reconnecting');
   r.setEnabled(false);                  // no keepalive timer left behind
 });
+
+/** A VXR1 message carrying only a header whose colour comes as video. */
+function videoHeader(id) {
+  const header = { v: 1, pose_id: id, depth: null, timing_ms: { total: 4 }, video: { id },
+    eyes: [], color: { format: 'h264-webrtc', width: 128, height: 64, offset: 0, length: 0,
+      stripe: { y: 64, rows: 16, cells: 48, cell: 2, id_bits: 32 } } };
+  const json = new TextEncoder().encode(JSON.stringify(header));
+  const buf = new Uint8Array(8 + json.length);
+  buf.set([0x56, 0x58, 0x52, 0x31]);
+  new DataView(buf.buffer).setUint32(4, json.length, true);
+  buf.set(json, 8);
+  return buf.buffer;
+}
+
+/** A refiner streaming over WebRTC video, with a still view to drive. */
+async function stillOverVideo() {
+  sockets.length = 0; deleted.length = 0;
+  const b = slowBackend();
+  const r = new Refiner(null, () => b, { draw: stubDraw, transport: 'webrtc' });
+  r.setEnabled(true);
+  await r.setDataset('A');
+  await tick();
+  b.pending[0].resolve({ valid: true, session_id: 'sA' });
+  await tick(); await tick();
+  const ws = sockets[0];
+  ws.open();
+  for (const f of ws.l.message || []) f({ data: JSON.stringify({ stream: 'on' }) });
+  r.rtc.state = 'video';                         // the link is up
+  r.rtc.tick = () => {};                         // its watchdogs are driven by hand here
+  const ident = () => new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -0.75, 1]);
+  const eye = (e) => ({ eye: e, view: ident(), proj: ident(), width: 64, height: 64 });
+  const ctx = (t) => ({ t, eyes: [eye('left'), eye('right')], aCentre: ident(), model: ident(), zStretch: 1,
+    lookKey: 'k', look: { tf: { type: 'set_transfer_functions' }, crop: { type: 'set_crop' } } });
+  let t = 1000;
+  return {
+    r, ws,
+    poses: () => ws.sent.filter((m) => m.type === 'xr_pose'),
+    still: (n) => { for (let i = 0; i < n; i++, t += 16) r.frame(ctx(t)); },
+  };
+}
+
+test('a video given up asks a still view for a fresh pose, as JPEG', async () => {
+  const { r, ws, poses, still } = await stillOverVideo();
+  still(120);                                    // two seconds still: one pose asked
+  assert.equal(poses().length, 1);
+  // Its header comes as video: the record is taken, the header waits for the frame.
+  const id = poses()[0].pose_id;
+  r._onMessage(videoHeader(id));
+  assert.equal(r.book.take(id), null, 'the pose record went with its header');
+  still(30);
+  assert.equal(poses().length, 1, 'a still view asks nothing more while the video may come');
+  // The video never decodes: given up, back to JPEG. The JPEG of that same
+  // pose would find no record; the still view must ask again.
+  r.rtc._fail('no video frame decoded for 3 s');
+  assert.ok(ws.sent.some((m) => m.type === 'xr_rtc_stop'));
+  still(30);
+  assert.equal(poses().length, 2, 'a fresh pose is asked after the fallback');
+  r.setEnabled(false);
+});
+
+test('a video header that arrives after the video was given up asks again too', async () => {
+  const { r, poses, still } = await stillOverVideo();
+  still(120);
+  assert.equal(poses().length, 1);
+  const id = poses()[0].pose_id;
+  r.rtc._fail('WebRTC failed');
+  still(30);
+  const asked = poses().length;                  // asked again at the failure
+  assert.equal(asked, 2);
+  // The header of the pose in flight at the failure comes late: the video
+  // no longer takes it, and that pose is never shown.
+  r._onMessage(videoHeader(id));
+  assert.equal(r.book.take(id), null);
+  still(30);
+  assert.equal(poses().length, asked + 1, 'the still view asks again');
+  r.setEnabled(false);
+});

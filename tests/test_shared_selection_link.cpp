@@ -14,10 +14,15 @@
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
+#include <QJsonArray>
 #include <QSignalSpy>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTest>
+#include <QUrlQuery>
 
 #include <cstring>
+#include <memory>
 
 using namespace Qt::StringLiterals;
 
@@ -39,7 +44,116 @@ QJsonObject postJson(QNetworkAccessManager &nam, const QString &url, const QStri
     return o;
 }
 
+// A hub of one session: the first publish is answered 429 (the session's slots
+// are busy), the next ones are kept with the next seq; GET ?wait=0 answers the
+// latest entry; the long poll is held open; no mask is asked for here.
+class FakeHub : public QObject
+{
+public:
+    FakeHub()
+    {
+        server.listen(QHostAddress::LocalHost);
+        QObject::connect(&server, &QTcpServer::newConnection, this, [this]() {
+            while (QTcpSocket *s = server.nextPendingConnection()) {
+                QObject::connect(s, &QTcpSocket::disconnected, s, &QObject::deleteLater);
+                auto received = std::make_shared<QByteArray>();
+                QObject::connect(s, &QTcpSocket::readyRead, this, [this, s, received]() {
+                    *received += s->readAll();
+                    const qsizetype end = received->indexOf("\r\n\r\n");
+                    if (end < 0) return;
+                    qsizetype length = 0;
+                    for (const QByteArray &line : received->left(end).split('\n')) {
+                        if (line.toLower().startsWith("content-length:"))
+                            length = line.mid(15).trimmed().toLongLong();
+                    }
+                    if (received->size() < end + 4 + length) return;
+                    const QByteArray requestLine = received->left(received->indexOf("\r\n"));
+                    received->clear();
+                    answer(s, requestLine);
+                });
+            }
+        });
+    }
+    QString url() const { return u"http://127.0.0.1:%1"_s.arg(server.serverPort()); }
+
+    QTcpServer server;
+    int posts = 0;
+    qint64 seq = 0;
+    QString latestNonce;
+    QJsonObject latest;
+
+private:
+    static void reply(QTcpSocket *s, const QByteArray &status, const QByteArray &body)
+    {
+        s->write("HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\nContent-Length: "
+                 + QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n" + body);
+        s->disconnectFromHost();
+    }
+
+    void answer(QTcpSocket *s, const QByteArray &requestLine)
+    {
+        const QList<QByteArray> parts = requestLine.split(' ');
+        const QUrl u(QString::fromUtf8(parts.value(1)));
+        const QUrlQuery q(u);
+        if (parts.value(0) == "POST") {
+            if (++posts == 1) {
+                reply(s, "429 Too Many Requests", R"({"detail":"busy"})");
+                return;
+            }
+            const QJsonObject meta = QJsonDocument::fromJson(
+                    q.queryItemValue(u"meta"_s, QUrl::FullyDecoded).toUtf8()).object();
+            latestNonce = meta.value(u"nonce"_s).toString();
+            latest = { { u"seq"_s, ++seq }, { u"kind"_s, u"lasso"_s }, { u"source"_s, u"desktop"_s },
+                       { u"client"_s, q.queryItemValue(u"client"_s, QUrl::FullyDecoded) },
+                       { u"dataset_id"_s, u"ds_a"_s }, { u"origin"_s, QJsonArray{ 0, 0, 0 } },
+                       { u"dims"_s, QJsonArray{ 1, 1, 1 } }, { u"full_shape"_s, QJsonArray{ 10, 12, 8 } },
+                       { u"count"_s, 1 }, { u"meta"_s, meta }, { u"instance"_s, u"i1"_s } };
+            const QJsonObject kept{ { u"valid"_s, true }, { u"seq"_s, seq }, { u"count"_s, 1 },
+                                    { u"instance"_s, u"i1"_s } };
+            reply(s, "200 OK", QJsonDocument(kept).toJson(QJsonDocument::Compact));
+            return;
+        }
+        if (q.queryItemValue(u"wait"_s) == u"0"_s) {
+            if (latest.isEmpty()) reply(s, "204 No Content", {});
+            else reply(s, "200 OK", QJsonDocument(latest).toJson(QJsonDocument::Compact));
+            return;
+        }
+        // The long poll: held open until the link stops.
+    }
+};
+
 } // namespace
+
+void TestSharedSelectionLink::theDelayedRetryOfAnOlderSelectionIsDropped()
+{
+    // Publish A is answered 429; B, made while A waits for its retry, is kept.
+    // A's late retry would take a fresh seq and replace B in the hub: the
+    // other clients would show A while this window, which skips its own older
+    // entry, keeps B. It must be dropped.
+    FakeHub hub;
+    SharedSelectionLink link;
+    link.start(hub.url(), u"t"_s, u"s"_s, u"ds_a"_s, 10, 12, 8);
+    QSignalSpy pub(&link, &SharedSelectionLink::published);
+    QByteArray one(4, '\0');
+    const float v = 1.0f;
+    std::memcpy(one.data(), &v, 4);
+    link.publish(u"lasso"_s, one, { 0, 0, 0 }, { 1, 1, 1 }, {});
+    QTRY_COMPARE_WITH_TIMEOUT(hub.posts, 1, 5000);
+    link.publish(u"lasso"_s, one, { 0, 0, 0 }, { 1, 1, 1 }, {});
+    QTRY_COMPARE_WITH_TIMEOUT(pub.size(), 1, 5000);
+    QVERIFY(pub.first().at(0).toLongLong() > 0);
+    const QString b = link.viewState().localNonce;
+    QCOMPARE(hub.latestNonce, b);
+
+    // Past A's retry delay: nothing more was posted, and the hub still holds B.
+    QTest::qWait(SharedSelectionLink::kRetry429Ms + 700);
+    QCOMPARE(hub.posts, 2);
+    QCOMPARE(hub.latestNonce, b);
+    QCOMPARE(link.viewState().localNonce, b);
+    QCOMPARE(link.viewState().shownNonce, b);
+    QCOMPARE(pub.size(), 1);   // B's word stays the last one said
+    link.stop();
+}
 
 void TestSharedSelectionLink::aPublishedSelectionReachesTheOtherClientWithItsRecord()
 {

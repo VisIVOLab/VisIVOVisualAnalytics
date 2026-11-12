@@ -37,7 +37,7 @@ export class Refiner {
     this.o = { ...REFINE_DEFAULTS, ...settings };
     this.draw = opts.draw || new RefineDraw(gl);   // opts.draw: a stand-in, for tests without GL
     this.rtc = new RtcStereo({ send: (c) => this._send(c), onFrame: (f) => this._onVideoFrame(f),
-      mode: this.o.transport });
+      onFailed: () => this._videoLost(), mode: this.o.transport });
     this.motion = new F.MotionDetector();
     this.book = new F.PoseBook();
     this.enabled = false;
@@ -376,8 +376,9 @@ export class Refiner {
     this.stats.lastKB = (parsed.color.byteLength + (parsed.depth ? parsed.depth.byteLength : 0)) / 1024;
     if (h.color && h.color.format === 'h264-webrtc') {
       // The colour comes as video (refine-webrtc.js): this header and its
-      // depth wait there for the frame of their pose id.
-      this.rtc.onHeader(parsed, rec, tRecv);
+      // depth wait there for the frame of their pose id. A header the video
+      // no longer takes (given up meanwhile) leaves its pose unshown.
+      if (!this.rtc.onHeader(parsed, rec, tRecv)) this._videoLost();
       return;
     }
     this.stats.arrivals.push(tRecv);
@@ -388,6 +389,17 @@ export class Refiner {
     this.decoding++;
     this._decode(parsed, rec, tRecv).catch((err) => { this.error = `decode: ${err.message || err}`; })
       .finally(() => { this.decoding--; });
+  }
+
+  /**
+   * The video was given up (back to JPEG), or a video header came after it
+   * was: the poses whose headers waited for their video frame were taken
+   * from the book when the headers arrived, so a JPEG of the same pose would
+   * be dropped, and a still view sends no new pose by itself. Forgetting the
+   * last pose sent makes the next still frame ask again, now as a JPEG.
+   */
+  _videoLost() {
+    this.lastSentA = null;
   }
 
   /** A frame of the video, paired with its header (refine-webrtc.js). */
