@@ -447,6 +447,23 @@ API to the network, protected only by the token). Prefer adb over Wi-Fi.
 | Right trigger, pointing at the cube | the selection tool along the right controller's ray (see [Selections](#selections-in-the-headset)) |
 | Left trigger | next selection tool: spectrum probe, Kinematic Lasso, box region |
 
+**With your hands** (hand tracking, no controllers): put the controllers down
+and the page switches to your hands within a frame; pick them up again and it
+switches back. A **pinch** (thumb tip to index tip) is the right trigger: it
+presses the panels' buttons, drags their sliders and fires the selection tool
+along the hand's ray (the headset's own pointing ray; the ray is held still
+while the fingers close, so the pinch does not move what it points at). A
+**closed hand** (middle, ring and little finger curled) is the grip (after
+a grip, and for a hand just seen, a pinch counts only once the fingertips have
+parted, so opening a fist with the thumb still on the index, or a hand that
+appears already pinched, does not press anything): one hand
+carries the cube, both hands move, turn and scale it. The sticks and the
+A/B/X/Y buttons have no hand gesture: their controls are on the panels (the
+panel itself stays shown). A left pinch does not change the tool (it happens
+while grabbing); choose the tool on the panel. The fingertips are drawn as
+small crosses, the pinch as a line that turns yellow when it closes, the palm
+as a cross that grows when the hand grips.
+
 The spatial clipping box, the stretch, the velocity stretch, the binning and
 the eye-buffer settings are set on the page before entering VR; the rest is on
 the panel in the headset too.
@@ -497,6 +514,24 @@ under 0.1 ms on the CPU; redraw, upload and drawing it, waited for on the
 GPU, 0.8 ms (1.2 ms). A frame with the panel shown costs 0.03 ms more CPU and
 no measurable GPU time than without it. The Quest 3's own figures are on its
 numbers panel (*panel redraw … ms + upload … ms*).
+
+### The analysis panel
+
+Under the control panel hangs a second panel, moved and hidden with it, used
+the same way (ray and trigger, or pinch):
+
+| Row | What it does |
+|---|---|
+| Lasso seeds | *new*: the next lasso seed starts a new selection; *add*: it adds a source to the selection shown; *carve*: it cuts a region out of it (the desktop's plain, Shift and Alt double-clicks) |
+| Selection | *Isolate* (a new cube with everything outside the selection blanked), *Remove* (the selection blanked), *Show that cube* (load the cube just made in its place) |
+| Moment | *M0*, *M1*, *M2*: the moment map of the selection on a plane in the room; *Hide* |
+| PV path | *Draw*: the trigger adds the path's points; *Undo*, *New*, *w −*/*w +* (the slit width in pixels), *Hide* |
+
+Below the buttons: the slit width and the tools' state (seeds, the last cube
+made, the moment's range, the path being drawn). On the page the same tools
+are under the selection controls (*Lasso seed*, *Isolate*, *Remove*, *Show
+that cube*, *M0 M1 M2*, *Draw PV path*, *Width*), and the moment map and PV
+diagram are shown there as well.
 
 ## Settings kept in this browser
 
@@ -865,6 +900,143 @@ it was measured. *Download recipes (.json)* saves all of them, *Copy last
 recipe* copies the latest. A replay opens the path and posts the same
 requests: the selection is the one the desktop shows for that seed.
 
+### Refining the selection: add, carve, Isolate, Remove
+
+The lasso's seed mode (*new*, *add*, *carve*, on the analysis panel or the
+page) decides what the next lasso trigger does, as the desktop's plain, Shift
+and Alt double-clicks do: *add* grows a second source into the selection
+(union), *carve* removes the region the grow from that seed reaches; the
+primary seed stays. Each press is one grow on the full cube
+(`/v1/cube/kinematic_select_bin` with `add_seeds` and `sub_seeds`, the
+desktop's request), so the selection is always the one its seeds and
+parameters make; the extra seeds are drawn as green (added) and red (carved)
+crosses, and the results panel counts them.
+
+*Isolate* and *Remove* post the mask shown, exactly (not a re-grow), to
+`/v1/cube/mask_apply_bin` with `blank_outside` or `blank_inside`, as the
+desktop's buttons do: the new cube goes to the Workspace Exports with the
+selection's recipe in its FITS HISTORY, and is registered in the session.
+*Show that cube* loads it in the headset in place of the cube shown. Each
+mode makes one cube per selection: pressing *Isolate* or *Remove* again, or
+both at once, reuses the cube already made (or being made), and a moment uses
+the cube *Isolate* made for the selection. The seeds are read from the
+selection's own grow request, so a selection that arrives from elsewhere (a
+shared one) continues with its own seeds. A selection is applied with its own
+mask whenever it has one (even beside a grow request: a shared mask is
+authoritative, and may have been edited by hand); one that arrives with only
+its grow is grown again
+from its request, and applied only if the grow gives back its voxel count,
+box origin and size (else the page refuses and says what differs); one edited
+by hand and arriving without its mask is refused (its grow is not it: apply it
+on the desktop). Isolate, Remove and a moment belong to the cube they started
+on: if another cube is loaded while they run, nothing is applied to it (a
+cube already made from the previous one is deleted if temporary, or kept and
+not recorded), and the panel says so, even after the new cube's reset. A
+shared mask edited by hand is recorded as the desktop records one: *Hand-edited*
+yes, `hand_edited=yes` in the new cube's HISTORY, the apply step's
+hand-edited body and the desktop's caveat (the parameters regrow only its
+geodesic part; the cube itself is the exact record). A selection received from the
+session's selection hub is recorded as the desktop records one it received:
+a box as one `mask_apply_bin` step over the box (its origin and size, the
+only apply step that records its ROI, since the box is the selection); a
+selection that came without its grow request as the mask only, with the
+desktop's caveat that no call regenerates it; one with its creator's grow as
+that grow and the apply. *Made in* says where it was made, and the moment of
+such a selection records the same steps before its own. No recipe ever has a
+grow step without a request.
+
+### The moment of the selection
+
+*M0*, *M1*, *M2* compute the moment map of the selection the desktop's way:
+the selection is isolated (as *Isolate*, reused when it was already made for
+this mask) and the moment is that cube's, through `/v1/products/moment` with
+the fields the desktop sends, over the whole channel range (the desktop
+dialog's default) and with the threshold mask **off**: the desktop dialog
+starts with an automatic ~3σ mask, but on an isolated selection the
+selection is the mask, and a further cut would drop the faint margin the lasso
+grew into. No backend route computes a moment from a mask without writing a
+cube (`kinematic_fit_bin` returns only a noise-cut velocity field, with a
+fit), so an isolated cube is written to the Workspace Exports: the one
+*Isolate* made for this selection, or else a **temporary** one named
+`<cube>_vr-moment-tmp-<tag>.fits` (never the `_lasso-outside` name an Isolate
+gets). The temporary cube is **deleted** when the selection changes (a new
+grow, *Clear*, a new cube), file and session entry, and the analysis panel
+says so (or says why it stays, for example when the token may not delete
+Workspace Exports); the page deletes only files carrying that marker. It is
+named temporary in the moment's recipe too. While it exists it is an ordinary
+dataset of the session: the desktop's lists of the session's datasets show
+it, and a desktop tool opened on it in that time would lose it when the
+headset's selection changes (the backend has no way to mark a dataset as
+hidden). A moment of a selection no longer shown is removed from the room. The map is shown cropped to the selection's
+bounding box (plus a tenth of its size, at least 3 pixels), x and y in pixels
+of the cube, on a plane above the cube's right side with its colour bar and
+unit. Colours as on the desktop: inferno for M0, a diverging cool-warm for
+M1 on the desktop's range (median ± 4 robust sigma, values outside it
+transparent, as the desktop draws a velocity field), viridis for M2. A
+velocity in m/s (also written `m s-1`, `m.s**-1`) is shown in km/s (the numbers
+divided by 1000); the recipe keeps the backend's unit.
+
+### A PV slice along a path
+
+*Draw* arms the PV path: each trigger press (or click on the page) adds a
+point where the ray picks the cube (the first drawn sample, else the middle of
+the ray inside the box), as a fractional pixel of the full cube (pixel
+centres at integers, as the desktop's path). From two points on, the diagram
+is computed on the full cube (`/v1/cube/pv`, the desktop's request:
+`vertices` and `width_pixels`, default 1) and follows the path as it grows, as
+the desktop's editable path does (one request at a time, the newest path next).
+The path is drawn on the cube as orange lines on both faces of the velocity
+slab, with a post at each point and, while drawing, a line to the ray. The
+diagram hangs above the cube's left side: offset along the path in arcsec
+across, the rows in the order of the channels' spectral coordinate, lowest at
+the bottom (the desktop's orientation, so a cube with CDELT3 < 0 is not
+mirrored), labelled with the channels' velocities (the caption says whether
+they increase or decrease upward: on a frequency cube they decrease; the ticks
+are placed between the rows' own velocities, since an optical velocity is not
+linear in frequency), colour bar in the cube's unit. One row per channel: for
+a non-linear spectral axis the desktop resamples onto a finer uniform grid,
+the page does not. Choosing a
+selection tool stops the drawing.
+
+**Recipes** (`visivo-recipe/1`). The seeds, Isolate and Remove are recorded as
+the desktop records them: the grow with its seed lists; an isolated or removed
+cube as the grow and the apply step (the mode only: the mask is the grow's
+answer), with the desktop's Provenance (*Mode*, *Selected voxels*, *File*),
+once per cube. Moments and PV diagrams are **recorded by the page**: the
+desktop registers them with their Provenance but records no replay steps for
+them. A moment is the grow, the isolate and the moment request, whose
+`dataset_id` is the placeholder `{new_dataset_id}` (the isolate's answer), with
+a `replay_caveat` saying that posting the opened dataset's id there would
+measure the whole cube; its parameters use the desktop's *Order*,
+*Channels*, *Mask*, *Scope*, *Unit*. One product per order and selection (M0
+pressed again is recorded again in place); a cube isolated only for a moment
+is not recorded as a product of its own. A PV diagram is its request, with
+*Path*, *Width*, *From*, *To* and the desktop's `pvpath` origin; a path that
+grows is one product, recorded again with its new points.
+
+**The same numbers as the desktop.** `validation/vr_analysis_identity.py`
+places the seeds and the path's points with the page's own pick (node runs
+its modules) on HCG 44 and compares every call with the desktop's
+(`validation/out/vr_analysis_identity.md`; the requests against the keys the
+desktop's C++ sends, read from its source, the PV rows against a port of its
+row ordering and the page's own drawn pixels against those rows): seed on NGC 3187, 13 216 voxels,
+6.061 Jy km/s; add NGC 3190, 23 891 voxels, 9.191 Jy km/s; carve inside
+NGC 3187, 10 675 voxels, 3.131 Jy km/s; each the desktop's displayed and
+replayed selection (Dice 1.000) and the desktop's request. Isolate and Remove
+make the desktop's cubes, voxel for voxel. M0, M1, M2 are the desktop's maps
+bit for bit; the sum of M0 over the map divided by the beam (30.66 pixels) is
+the selection's flux (6.0607 = 6.0607 Jy km/s), and the M0-weighted M1 is its
+spectrum's flux-weighted velocity (1572.44 km/s both). The PV diagram along a
+three-point path across NGC 3187 is the desktop's, its emission at
+1515 km/s, and the same path on a copy of the cube with the spectral axis
+reversed (CDELT3 < 0) gives the same picture row for row.
+
+**Timings** (Apple M5 Max, Chrome, HCG 44, the mouse on the page): a grow with
+seeds 0.6-0.7 s as before, Isolate 0.18 s, Remove 0.12 s, a moment 0.13-0.38 s
+(isolate reused), a PV of 50 samples × 158 channels 0.06 s. Redrawing the
+analysis panel takes 0.4 ms and a product plane 0.15 ms of CPU, only when they
+change; with the panels and both planes shown the page holds 60 fps.
+
 **Identity with the desktop.** `validation/vr_selection_identity.py` runs the
 page's own picking code (under node) on the reduced cube of HCG 44 and the
 requests it builds, and compares them with the desktop's two paths for
@@ -1205,6 +1377,35 @@ the checks below.
 6. **Copy diagnostics** on the 2-D page: does the clipboard work over
    `localhost` (paste the text in the report)?
 
+## What to check on the Quest 3: analysis and hands (#191)
+
+1. Load HCG 44 and enter VR. Lasso tool, seed mode *new*: pull the trigger on
+   NGC 3187. The panel says 13 216 voxels and 6.06 Jy km/s.
+2. Seed mode *add* (analysis panel, under the control panel), trigger on
+   NGC 3190 (the source left of NGC 3187 at the same velocity): about 23 900
+   voxels, a green cross at the added seed. *carve*, trigger inside NGC 3187:
+   the count drops, a red cross. Report the counts and the lasso ms on the
+   left controller's numbers.
+3. *Isolate*, then *M0*: a map appears above the cube's right side. Read its
+   title, colour bar and unit (JY/BEAM km/s): are the labels readable from
+   where you stand? *M1*, *M2*. Then *Show that cube*: the isolated cube
+   replaces the cube.
+4. *Draw*, then trigger at three places across NGC 3187: the orange path on
+   the cube and the PV diagram above the cube's left side, velocity up
+   (888 at the bottom, 2183 at the top for HCG 44). *w +* twice, *Undo*.
+5. *Download recipes* afterwards (on the page, out of VR): one record per
+   seed press, Isolate, moment and PV path.
+6. Hands: put the controllers down. Pinch with the right hand while pointing
+   at the analysis panel's buttons: does one pinch press once, and only
+   once? Drag the threshold slider on the control panel with a held pinch.
+   Point at the cube and pinch: does the cross stay where you pointed? Close
+   a hand on the cube and move it; close both hands and pull them apart.
+   Pick a controller up again mid-way: the ray and grip go on without
+   reloading. Report any missed or double press, and the FPS while a hand
+   grabs the cube.
+7. With the two product planes shown, the FPS and GPU ms on the left
+   controller, against the same view without them (*Hide*).
+
 ## Known limits
 
 - **Tokens in the access log.** The VR page sends its token in request
@@ -1223,9 +1424,14 @@ the checks below.
   16 bits), for what a headset browser can allocate; the backend refuses a
   larger reduced cube before reading anything, and the page checks its GPU's
   limit before asking. Choose a larger binning.
-- **Tools in the headset**: a spectrum, the Kinematic Lasso (one seed: no add
-  or carve seeds, no hand refinement, no Isolate or Remove, which stay on the
-  desktop) and a box region; no moments, no PV slice. The desktop has no
+- **Tools in the headset**: a spectrum, the Kinematic Lasso with add and
+  carve seeds, Isolate and Remove, the moment maps M0-M2 of the selection, a
+  PV slice along a path, and a box region. No hand refinement of the mask on
+  a channel (the desktop's polygon edit), no kinematic fit; the moment is
+  always over the whole channel range with no threshold mask, the PV path
+  is not edited point by point (*Undo* removes the last point), and the PV
+  path is drawn with points, not a curve. The product planes stay where they
+  are put (above the cube's sides); they cannot be moved. The desktop has no
   recipe import: a VR recipe is replayed by posting its requests, as a desktop
   recipe is.
 - **Shared selections**: the desktop follows the headset's selections once
@@ -1254,7 +1460,11 @@ the checks below.
 - **The panel in the headset** has the main controls only: the spatial clipping
   box, stretch, velocity stretch, binning, texture, Kinematic Lasso parameters
   and eye-buffer settings are on the page (before entering VR). The panel is
-  used with the right controller; hand tracking is not supported.
+  used with the right controller or the right hand's pinch. **Hand tracking
+  has not been tried on a headset**: the pinch and grip thresholds (pinch
+  closes under 1.2 cm between the fingertips' surfaces, opens over 2.8 cm;
+  grip under 0.72 of the palm's length, opens over 0.95) were set and tested
+  on synthetic hands; see the checks below.
 - The labels follow the central row and column of the field; far from them on
   a wide projected field the true coordinate of a pixel differs a little.
 - The page reads the whole cube once to reduce it (0.6 s for HCG 44, 1.1 s

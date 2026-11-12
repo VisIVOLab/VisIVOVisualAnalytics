@@ -13,6 +13,9 @@ import { transferFunction, cropBox, cropError } from './refine.js';
 import { pairingFallback } from './pairing.js';
 import { loadSettings, saveSettings, clampPanelOffset } from './settings.js';
 import * as P from './vr-panel.js';
+import { createAnalysis } from './analysis.js';
+import * as TP from './tools-panel.js';
+import { HandTracker, handSegments } from './hands.js';
 import { createShare, boxGeometry, lassoMeta, boxMeta } from './share.js';
 import { RefineDraw } from './refine-gl.js';
 // Lifecycle, notices, guide, diagnostics, quality (epic #166).
@@ -68,6 +71,17 @@ const selection = createSelection({
 });
 let selectionDirty = true;
 
+// More analysis in the headset (issue #191): lasso seeds, Isolate/Remove, the
+// moment of the selection, the PV path; their panel hangs under the control panel.
+const analysis = createAnalysis({
+  state, selection, renderer: R,
+  backend: () => (state.open ? backend : null),
+  onChange: () => { selectionDirty = true; },
+  showDataset: (id, path) => showDataset(id, path),
+  mount: $('selection'),
+});
+// Hand tracking (issue #191): a pinch is the trigger, a closed hand the grip.
+const handTracker = new HandTracker();
 // Selections shared with the desktop's cube viewer (issue #188): what is made
 // here is published to the session's hub, what the desktop sends is drawn.
 const share = createShare({
@@ -253,7 +267,7 @@ $('zstretch').addEventListener('input', () => {
 // Selection controls (issue #171).
 if (selection.domCanvas) $('sel-panel').appendChild(selection.domCanvas);
 $('sel-tool').addEventListener('change', () => selection.setTool($('sel-tool').value));
-$('sel-clear').addEventListener('click', () => selection.clear());
+$('sel-clear').addEventListener('click', () => { selection.clear(); analysis.sync(); });
 $('sel-seedat').addEventListener('change', () => { selection.sel.seedAt = $('sel-seedat').value; });
 $('sel-snap').addEventListener('change', () => { selection.sel.snap = $('sel-snap').checked; });
 function readLassoParams() {
@@ -510,6 +524,20 @@ async function loadPaired() {
   await loadReduced(b, open, info, t0, ticket);
 }
 
+/** A cube made in the headset (issue #191: Isolate, Remove), shown in its place. */
+async function showDataset(id, path) {
+  return withLoading(async () => {
+    const ticket = loads.begin(path || '');
+    const b = loadHandle();
+    const t0 = performance.now();
+    if (path) $('path').value = path;
+    setStatus('Reading the axes…');
+    const info = await b.reducedInfo(reducedRequest(id));
+    stillCurrent(ticket);
+    await loadReduced(b, { dataset_id: id, kind: 'cube', valid: true }, info, t0, ticket);
+  });
+}
+
 async function loadReduced(b, open, info, t0, ticket) {
   const req = reducedRequest(open.dataset_id);
   const t1 = performance.now();
@@ -602,6 +630,7 @@ function installCube(info, cube, open, path = '') {
   state.open = open;
   state.openPath = open ? path : '';
   selection.clear();
+  analysis.reset();
   if (open) share.start(open.dataset_id); else share.stop();
   refiner.setDataset(open ? open.dataset_id : null, { outOfCore: !!(info && info.render_out_of_core) });
   state.load = { ...state.load, uploadMs: up.uploadMs, macroMs: up.macroMs, textureMB: up.textureBytes / 1e6 };
@@ -725,8 +754,9 @@ function drawScene(view, override, eye = 0) {
 function syncSelection() {
   if (!selectionDirty) return;
   selectionDirty = false;
-  R.setLines(selection.segments(), R.selLines);
+  R.setLines([...selection.segments(), ...analysis.segments()], R.selLines);
   selection.refreshDom();
+  analysis.refreshDom();
   const s = selection.sel;
   $('sel-tool').value = s.tool;
   if (settings.tool !== s.tool) { settings.tool = s.tool; persist(); }
@@ -792,6 +822,7 @@ function hudLines(targetHz) {
     lines.push(`threshold ${fmt(dataValue(state.thrNorm))} ${c.bunit || ''}  (${$('thr-source').selectedOptions[0].text})`);
   }
   lines.push(...selection.hudLines());
+  lines.push(...analysis.hudLines());
   lines.push(...share.hudLines());
   const qn = currentQualityNote();
   if (qn) lines.push(qn.slice(0, 60));
@@ -936,9 +967,14 @@ function panelPointer(ray, pressed, eye) {
       && P.panelBehindCube(hit.t, state.model, state.extent, ray.o, ray.d, state.clip.min, state.clip.max)) {
     hit = null;
   }
-  vrPanel.hit = hit;
+  // The analysis panel under it (issue #191): the nearer of the two takes the
+  // ray; a slider held on this one keeps it.
+  const blocked = (t) => !!state.cube && P.panelBehindCube(t, state.model, state.extent, ray.o, ray.d, state.clip.min, state.clip.max);
+  const tools = analysis.pointer(ray, pressed, panelWorld(), show && !!state.cube, blocked, vrPanel.pointer.active ? { t: -Infinity } : hit);
+  if (tools.hit) hit = null;
+  vrPanel.hit = hit || tools.hit;
   for (const a of vrPanel.pointer.update(hit, pressed && show)) applyPanel(a, ray, eye);
-  return show && (vrPanel.pointer.takesRay() || vrPanel.pointer.owns);
+  return show && (vrPanel.pointer.takesRay() || vrPanel.pointer.owns || tools.takes);
 }
 
 function applyPanel(a, ray, eye) {
@@ -965,6 +1001,7 @@ function applyPanel(a, ray, eye) {
       selection.setTool(a.widget.value);
     } else if (id === 'sel-clear') {
       selection.clear();
+      analysis.sync();      // the moment and the implicit cube of the cleared selection go
     } else if (id === 'guide') {
       shell.help();
     }
@@ -1058,7 +1095,8 @@ canvas.addEventListener('pointerup', (e) => {
   pressAt = null;
   if (p && !xr && state.cube && Math.hypot(e.clientX - p.x, e.clientY - p.y) < 5
       && performance.now() - p.t < 600) {
-    selection.act(mouseRay(e));
+    const r = mouseRay(e);
+    if (!analysis.act(r)) selection.act(r);   // a PV path being drawn takes the click
   }
 });
 
@@ -1125,6 +1163,7 @@ function desktopFrame(time) {
   if (state.cube) drawScene(lastDesktopView, undefined, 0);
   if (vrPanel.visible && vrPanel.desktop) {
     R.drawPanel(lastDesktopView, panelWorld(), panelTexture(time), P.PANEL_SIZE);
+    if (state.cube) analysis.draw(lastDesktopView, panelWorld(), DESKTOP_ANCHOR, true, true);   // planes on the left here
   }
   // The headset's message card, in front of the desktop camera (?panel3d).
   const card = vrPanel.desktop ? shell.cardForFrame(M.invert(lastDesktopView.view)) : null;
@@ -1161,7 +1200,7 @@ $('enter-ar').addEventListener('click', () => enterXR('immersive-ar', false).cat
 $('bench-xr').addEventListener('click', () => enterXR('immersive-vr', true).catch((e) => setStatus(`XR: ${e.message}`)));
 
 async function enterXR(mode, bench) {
-  const session = await navigator.xr.requestSession(mode, { optionalFeatures: ['local-floor'] });
+  const session = await navigator.xr.requestSession(mode, { optionalFeatures: ['local-floor', 'hand-tracking'] });
   await gl.makeXRCompatible();
   const fbScale = readNumber('fbscale');
   const layer = new XRWebGLLayer(session, gl, { framebufferScaleFactor: fbScale, antialias: false, alpha: mode === 'immersive-ar' });
@@ -1233,7 +1272,16 @@ function pressedEdge(key, pressed) {
 
 function handleInput(frame, dtS) {
   const hands = {};
+  const handKeys = new Set();
   for (const src of xr.session.inputSources) {
+    if (src.hand) {
+      // A tracked hand (issue #191): the same hand object as a controller's,
+      // button 0 the pinch, button 1 the closed hand (hands.js).
+      handKeys.add(src.handedness);
+      const h = handTracker.update(frame, src, xr.ref, performance.now(), xr.headPos, xr.headRight);
+      if (h) hands[src.handedness] = h;
+      continue;
+    }
     if (!src.gripSpace || !src.gamepad) continue;
     const gp = frame.getPose(src.gripSpace, xr.ref);
     if (!gp) continue;
@@ -1247,6 +1295,7 @@ function handleInput(frame, dtS) {
     hands[src.handedness] = hand;
   }
   xr.hands = hands;
+  handTracker.keep(handKeys);
   const sq = (h) => hands[h] && hands[h].g.buttons[1] && hands[h].g.buttons[1].pressed;
   const L = sq('left'), Rr = sq('right');
   if (xr.bench) { xr.grab = null; state.moving = false; vrPanel.hit = null; return; }
@@ -1270,9 +1319,10 @@ function handleInput(frame, dtS) {
   }
   if (pressedEdge('rTrig', trig('right')) && rightRay) {
     // The controller's tip, for a box corner placed inside the cube.
-    selection.act(rightRay, rightRay.o);
+    if (!analysis.act(rightRay)) selection.act(rightRay, rightRay.o);   // a PV path being drawn takes it
   }
-  if (pressedEdge('lTrig', trig('left'))) selection.cycleTool();
+  // A left pinch does not change the tool (it happens while grabbing); the panel does.
+  if (pressedEdge('lTrig', trig('left')) && !(hands.left && hands.left.isHand)) selection.cycleTool();
   if (L && Rr) {
     if (!xr.grab || xr.grab.kind !== 'two') {
       xr.grab = { kind: 'two', model0: state.model, l0: hands.left.pos, r0: hands.right.pos };
@@ -1337,9 +1387,13 @@ function controllerSegments() {
     const m = h.m;
     const p = (x, y, z) => M.transformPoint(m, [x, y, z]);
     const col = hand === 'left' ? [0.5, 0.8, 1, 1] : [1, 0.75, 0.4, 1];
-    segs.push({ a: p(0, 0, 0), b: p(0, 0, -0.08), color: col });
-    segs.push({ a: p(-0.015, 0, 0), b: p(0.015, 0, 0), color: col });
-    segs.push({ a: p(0, -0.015, 0), b: p(0, 0.015, 0), color: col });
+    if (h.isHand) {
+      segs.push(...handSegments(h, col));
+    } else {
+      segs.push({ a: p(0, 0, 0), b: p(0, 0, -0.08), color: col });
+      segs.push({ a: p(-0.015, 0, 0), b: p(0.015, 0, 0), color: col });
+      segs.push({ a: p(0, -0.015, 0), b: p(0, 0.015, 0), color: col });
+    }
     if (hand === 'right' && h.ray && shell.cardHit) {
       segs.push({ a: h.ray.o, b: shell.cardHit.point, color: [1, 1, 1, 0.7] });
     } else if (hand === 'right' && h.ray && vrPanel.hit) {
@@ -1402,6 +1456,7 @@ function onXRFrame(time, frame) {
   }
   const hp = pose.transform.position;
   xr.headPos = [hp.x, hp.y, hp.z];
+  { const hm = pose.transform.matrix; xr.headRight = M.normalize([hm[0], 0, hm[2]]); }
   handleInput(frame, dtS);
   if (xr.bench) benchStep(xr.bench, time, interval);
 
@@ -1450,6 +1505,7 @@ function onXRFrame(time, frame) {
     if (hm) R.drawPanel(v, hm, hudTex, [0.16, 0.15]);
     if (sm) R.drawPanel(v, sm, selTex, [0.34, 0.248]);
     if (cm) R.drawPanel(v, cm, ctlTex, P.PANEL_SIZE);
+    if (!xr.bench && state.cube) analysis.draw(v, panelWorld(), xr.place, !!cm);
     if (card) R.drawPanel(v, card.model, card.tex, card.size);
     R.drawWorldLines(v);      // the controllers and their rays over the panels
   }
@@ -1718,6 +1774,7 @@ if (query.has('debug')) {
     return { fraction: n / (w * h), w, h, lost: gl.isContextLost() };
   };
   window.__vrSelection = selection;
+  window.__vrAnalysis = analysis;
   window.__vrShare = share;
   window.__vrClick = (x, y) => selection.act(mouseRay({ clientX: x, clientY: y }));
   window.__vrProject = (p) => {      // box coordinate -> page pixel, desktop camera
@@ -1747,6 +1804,18 @@ if (query.has('debug')) {
     return [rect.left + (c[0] + 1) / 2 * rect.width, rect.top + (1 - c[1]) / 2 * rect.height];
   };
   const panelRayAt = (px, py) => mouseWorldRay({ clientX: px, clientY: py });
+  // The analysis panel under it (issue #191): canvas pixel -> page pixel.
+  window.__vrTools = {
+    layout: analysis.layout,
+    pagePixel(x, y) {
+      const v = lastDesktopView || desktopView();
+      const tm = TP.toolsModel(panelWorld());
+      const local = [(x / TP.TOOLS_PX[0] - 0.5) * TP.TOOLS_SIZE[0], (0.5 - y / TP.TOOLS_PX[1]) * TP.TOOLS_SIZE[1], 0];
+      const c = M.transformPoint(M.multiply(v.proj, M.multiply(v.view, tm)), local);
+      const rect = canvas.getBoundingClientRect();
+      return [rect.left + (c[0] + 1) / 2 * rect.width, rect.top + (1 - c[1]) / 2 * rect.height];
+    },
+  };
   window.__vrPanel = {
     layout: vrPanel.layout, state: vrPanel, view: panelView, settings: () => JSON.parse(JSON.stringify(settings)),
     pagePixel: panelPagePixel,

@@ -6,6 +6,7 @@
 import * as S from './selection.js';
 import * as Rc from './recipe.js';
 import * as M from './mat4.js';
+import { nextSeeds, seedsOf } from './tools-lasso.js';
 
 export const TOOLS = ['probe', 'lasso', 'box'];
 export const TOOL_NAMES = { probe: 'Spectrum probe', lasso: 'Kinematic Lasso', box: 'Box region' };
@@ -31,7 +32,8 @@ export function createSelection(ctx) {
     hover: null,       // {p, px} where the trigger would land now
     pick: null,        // the last pick: {p, px, seed, reduced, world, sky, snapped}
     corner: null,      // first corner of a box being made (box coordinates)
-    lasso: null,       // {request, count, origin, dims, ms, stats, statsMs, reduced, trimBox}
+    lasso: null,       // {request, count, origin, dims, ms, stats, statsMs, reduced, trimBox, bytes}
+    seedMode: 'new',   // the next lasso seed (issue #191): 'new', 'add' (a source joins), 'carve'
     spectrum: null,    // {x, y, values, axis, axisLabel, unit, ms, channel}
     box: null,         // {range, stats, ms}
     recipes: [],
@@ -147,13 +149,17 @@ export function createSelection(ctx) {
     };
   }
 
-  function record(product, parameters, origin) {
+  /** A product's recipe; with `replaceId` the record of that product is
+   *  replaced (a product the desktop re-registers under the same id, such as a
+   *  PV diagram whose path was extended). */
+  function record(product, parameters, origin, replaceId = '') {
+    const at = replaceId ? sel.recipes.findIndex((x) => x.product.id === replaceId) : -1;
     const r = Rc.makeRecipe({
       application: APPLICATION, exported: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
-      product: { id: `vr-${product.kind}-${sel.recipes.length + 1}`, ...product },
+      product: { id: at >= 0 ? replaceId : `vr-${product.kind}-${sel.recipes.length + 1}`, ...product },
       dataset: datasetRecord(), parameters, origin,
     });
-    sel.recipes.push(r);
+    if (at >= 0) sel.recipes[at] = r; else sel.recipes.push(r);
     return r;
   }
 
@@ -191,7 +197,11 @@ export function createSelection(ctx) {
   async function runLasso(gen, pick) {
     needBackend();
     const [x, y, z] = pick.seed;
-    const req = Rc.lassoGrowRequest([z, y, x], sel.params);
+    // Add and carve seeds join the selection shown (issue #191), as the
+    // desktop's Shift and Alt double-clicks do; the seeds are kept only with
+    // the mask they grew.
+    const seeds = nextSeeds(sel.lasso ? seedsOf(sel.lasso.request) : null, sel.seedMode, [z, y, x]);
+    const req = Rc.lassoGrowRequest(seeds.seed, sel.params, seeds.add, seeds.sub);
     const b = ctx.backend();
     const r = await b.kinematicSelect(datasetId(), req);
     if (stale(gen)) return;
@@ -216,7 +226,7 @@ export function createSelection(ctx) {
       params['Domain trimmed'] = `yes: one or more grows exceeded the graph budget and were cut to a seed-centred box, largest half-width ${r.trimBox} voxels`;
     }
     record({ kind: 'lasso', label: 'Lasso: selection', replay: Rc.lassoReplay(req) }, params,
-      { kind: 'probe', voxel: [x, y, z] });
+      { kind: 'probe', voxel: [seeds.seed[2], seeds.seed[1], seeds.seed[0]] });
     // Shared with the desktop (issue #188), with the record it was made with.
     if (ctx.onSelection) ctx.onSelection({ kind: 'lasso', bytes: r.bytes, origin: r.origin, dims: r.dims, request: req, parameters: params, trimBox: r.trimBox });
   }
@@ -407,6 +417,12 @@ export function createSelection(ctx) {
     if (sel.pick) cross(S.fullPixelToBox(sel.pick.seed, s.info.full_shape), 0.02, [1, 0.9, 0.1, 1]);
     if (sel.corner) cross(sel.corner.p, 0.025, [1, 0.5, 0.9, 1]);
     if (sel.box) { const [lo, hi] = fullBox(sel.box.range); boxLines(lo, hi, [1, 0.5, 0.9, 0.95]); }
+    const extra = sel.lasso ? seedsOf(sel.lasso.request) : null;
+    if (extra) {
+      // The extra seeds (from the selection's own request): green added, red carved.
+      for (const z of extra.add) cross(S.fullPixelToBox([z[2], z[1], z[0]], s.info.full_shape), 0.018, [0.3, 1, 0.5, 1]);
+      for (const z of extra.sub) cross(S.fullPixelToBox([z[2], z[1], z[0]], s.info.full_shape), 0.018, [1, 0.35, 0.35, 1]);
+    }
     if (sel.lasso && sel.lasso.stats && sel.lasso.stats.bbox) {
       const bb = sel.lasso.stats.bbox;
       const [lo, hi] = fullBox([[bb[0], bb[1]], [bb[2], bb[3]], [bb[4], bb[5]]]);
@@ -493,6 +509,10 @@ export function createSelection(ctx) {
       line(L.shared
         ? `${L.count} voxels from the ${L.shared.source} (${L.reduced.count} drawn)`
         : `${L.count} voxels selected (${L.reduced.count} drawn), ${L.ms.toFixed(0)} ms`, '#7dffa0');
+      const sd = seedsOf(L.request);
+      if (sd && (sd.add.length || sd.sub.length)) {
+        line(`seeds: 1 + ${sd.add.length} added, ${sd.sub.length} carved`, '#9aa3b2');
+      }
       if (s) {
         line(`flux ${fmt(s.flux_jy_kms)} Jy km/s   sum ${fmt(s.sum)} ${s.bunit}`);
         line(s.velocity_min_kms !== null
@@ -567,7 +587,7 @@ export function createSelection(ctx) {
 
   return {
     sel, act, hover, cycleTool, setTool, clear, segments, showShared, panelTexture, refreshDom, hudLines,
-    recipesJson, worldRayToBox, modelRayToBox, domCanvas,
+    recipesJson, worldRayToBox, modelRayToBox, domCanvas, record, pickBox,
     isDirty: () => panelDirty,
   };
 }
