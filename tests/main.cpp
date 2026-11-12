@@ -46,6 +46,7 @@
 #include "TestFilePreview.h"
 #include "TestMissingRoute.h"
 #include "TestVrLink.h"
+#include "TestBackendProcessTree.h"
 #include "TestBusyFeedback.h"
 #include "TestThresholdShare.h"
 #include "TestLayerCardGeometry.h"
@@ -117,6 +118,7 @@ int main(int argc, char *argv[])
     { TestFilePreview      t; status |= QTest::qExec(&t, argc, argv); }
     { TestMissingRoute     t; status |= QTest::qExec(&t, argc, argv); }
     { TestVrLink           t; status |= QTest::qExec(&t, argc, argv); }
+    { TestBackendProcessTree t; status |= QTest::qExec(&t, argc, argv); }
     { TestBusyFeedback     t; status |= QTest::qExec(&t, argc, argv); }
     { TestLayerCardGeometry t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionReadout    t; status |= QTest::qExec(&t, argc, argv); }
