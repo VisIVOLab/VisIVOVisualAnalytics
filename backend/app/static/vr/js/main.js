@@ -4,7 +4,7 @@
 
 import * as M from './mat4.js';
 import { Renderer } from './renderer.js';
-import { Backend, takeToken, saveToken, tokenError, takePairing, forgetPairing } from './api.js';
+import { Backend, takeToken, saveToken, tokenError, takePairing, forgetPairing, requestHooks } from './api.js';
 import * as V from './volume.js';
 import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
 import { createSelection, TOOLS, TOOL_NAMES } from './select-ui.js';
@@ -13,6 +13,13 @@ import { transferFunction, cropBox, cropError } from './refine.js';
 import { pairingFallback } from './pairing.js';
 import { loadSettings, saveSettings, clampPanelOffset } from './settings.js';
 import * as P from './vr-panel.js';
+import { RefineDraw } from './refine-gl.js';
+// Lifecycle, notices, guide, diagnostics, quality (epic #166).
+import { createShell } from './shell.js';
+import { CARD_PX, CARD_SIZE } from './notice.js';
+import { pageBuild, PAGE_VR_API, isHeadsetBrowser, reopenCube, LoadTracker, supersededLoad } from './lifecycle.js';
+import { shouldShowGuide } from './onboarding.js';
+import { EyeBufferGovernor, qualityNote, cubeBudget, spvAtFloor } from './quality.js';
 
 const $ = (id) => document.getElementById(id);
 const query = new URLSearchParams(window.location.search);
@@ -42,6 +49,8 @@ const state = {
   moving: false,
   hud: true,
   load: {},            // load timings
+  loading: 0,          // loads under way (a 404 then is the load's own business)
+  loadGen: 0,          // bumped by every load: a recovery started before it is superseded
 };
 const governor = new V.Governor({ start: 1, max: 1 });
 const stats = new V.FrameStats(240);
@@ -95,6 +104,31 @@ function refineFrame(t, eyes, centreView, background) {
 const settingsStore = (() => { try { return window.localStorage; } catch { return null; } })();
 const settings = loadSettings(settingsStore, { colormaps: COLORMAP_NAMES, tools: TOOLS });
 function persist() { saveSettings(settingsStore, settings); }
+
+// ── The shell: lifecycle, notices, guide, diagnostics (epic #166) ──────────
+const PAGE = { build: pageBuild(import.meta.url), api: PAGE_VR_API };
+const eyeGovernor = new EyeBufferGovernor();
+const shell = createShell({
+  page: PAGE,
+  renderer: () => R,
+  backend: () => { const t = tokenField.value.trim(); return t ? (backend && backend.token === t ? backend : ensureBackend()) : null; },
+  token: () => tokenField.value.trim(),
+  ctx: {
+    inVR: () => !!xr,
+    exitVR: () => endXR('the user'),
+    enterVR: () => { if (!$('enter-vr').disabled) enterXR('immersive-vr', false).catch((e) => setStatus(`XR: ${e.message}`)); },
+    recoverDataset: (reason) => recoverDataset(reason),
+    hasBackendCube: () => !!(state.open && state.openPath),
+    loading: () => state.loading > 0,
+    loadGen: () => state.loadGen,
+    onGuideSeen: () => { if (!settings.guideSeen) { settings.guideSeen = true; persist(); } },
+    onRetry: () => refiner.retrySoon(),
+    publicInfo: (opts) => new Backend('').info(opts),
+    summary: () => diagnosticsSummary(),
+  },
+});
+requestHooks.onFailure = (err, path) => shell.requestFailed(err, path);
+refiner.onLifecycle = (name, detail) => shell.log('warning', name, detail);
 
 // ── Panel wiring ────────────────────────────────────────────────────────────
 for (const name of COLORMAP_NAMES) {
@@ -166,7 +200,7 @@ $('browse').addEventListener('click', async () => {
 
 $('load').addEventListener('click', () => {
   forgetPairing();      // a reload of this tab now opens nothing by itself
-  loadFromBackend().catch((err) => setStatus(`Failed: ${err.message || err}`));
+  withLoading(loadFromBackend).catch((err) => { if (!err.superseded) setStatus(`Failed: ${err.message || err}`); });
 });
 $('synthetic').addEventListener('click', () => loadSynthetic(Number($('synthetic-size').value)));
 
@@ -323,7 +357,7 @@ function updateLabels() {
     let w = '';
     if (axis) {
       const arr = ci.i === 2 && axis.velocity_kms ? axis.velocity_kms : axis.world;
-      const val = V.texToWorld(arr, V.boxToTex(t, state.info.full_shape[ci.i], state.info.factors[ci.i]));
+      const val = V.axisTexToWorld(axis, arr, V.boxToTex(t, state.info.full_shape[ci.i], state.info.factors[ci.i]));
       w = val === null || val === undefined ? '' : ` ${fmt(val)} ${ci.i === 2 && axis.velocity_kms ? 'km/s' : axis.unit || ''}`;
     }
     ci.span.textContent = w;
@@ -355,17 +389,57 @@ function reducedRequest(datasetId) {
   };
 }
 
+async function withLoading(fn) {
+  // A recovery under way (recoverDataset) sees the generation change and
+  // leaves the cube of this load alone. Bumped when a load starts and when a
+  // cube goes on show (installCube), never when a load ends: one that failed
+  // installed nothing, and a recovery started after it is still valid.
+  state.loading++;
+  state.loadGen++;
+  try { return await fn(); } finally { state.loading--; }
+}
+
+/**
+ * A backend handle of the page's own for one load or recovery: the same
+ * token and, to begin with, the same session. It may adopt or create
+ * sessions freely; they become the page's only when this load wins
+ * (commitHandle, right before its cube goes on show). A superseded load
+ * never changes the session the page and the newer load are using.
+ */
+function loadHandle() {
+  const h = new Backend(ensureBackend().token);
+  h.adoptSession(ensureBackend().session);
+  return h;
+}
+/** False (nothing changed) when the token was changed during the load: its
+ *  session belongs to the old token, so the load counts as superseded. */
+function commitHandle(h) {
+  const page = ensureBackend();
+  if (h.token !== page.token) return false;
+  page.adoptSession(h.session);
+  if (h.sessionNote) state.sessionNote = h.sessionNote;
+  return true;
+}
+
+// The newest load wins; each carries the path it was started for.
+const loads = new LoadTracker();
+function stillCurrent(ticket) { if (!loads.isCurrent(ticket)) throw supersededLoad(); }
+
 async function loadFromBackend() {
-  const b = ensureBackend();
+  ensureBackend();
   const path = $('path').value.trim();
   if (!path) throw new Error('Give the path of a cube on the backend.');
+  const ticket = loads.begin(path);
+  const b = loadHandle();
   const t0 = performance.now();
   setStatus('Opening…');
   const open = await b.open(path);
-  state.sessionNote = state.sessionNote || 'own session';
+  stillCurrent(ticket);
+  b.sessionNote = state.sessionNote || 'own session';
   setStatus('Reading the axes…');
   const info = await b.reducedInfo(reducedRequest(open.dataset_id));
-  await loadReduced(b, open, info, t0);
+  stillCurrent(ticket);
+  await loadReduced(b, open, info, t0, ticket);
 }
 
 /**
@@ -380,7 +454,9 @@ async function loadPaired() {
     setStatus('The link from the desktop has no token: paste it, then press "Open and load".');
     return;
   }
-  const b = ensureBackend();
+  ensureBackend();
+  const ticket = loads.begin(pairing.path);
+  const b = loadHandle();          // the desktop's session is adopted here, the page's only if this load wins
   const t0 = performance.now();
   if (pairing.session) b.adoptSession(pairing.session);
   let open = null, info = null, err = null;
@@ -389,7 +465,7 @@ async function loadPaired() {
     try {
       info = await b.reducedInfo(reducedRequest(pairing.dataset));
       open = { dataset_id: pairing.dataset, kind: 'cube', valid: true };
-      state.sessionNote = 'the desktop\'s session';
+      b.sessionNote = 'the desktop\'s session';
     } catch (e) { err = e; }
   } else {
     err = new Error(pairing.session ? '404: no dataset in the link' : '404: Session not found.');
@@ -397,52 +473,114 @@ async function loadPaired() {
   if (!open) {
     const next = pairingFallback(err, !!pairing.path);
     if (next === 'fail') throw err;
+    stillCurrent(ticket);
     if (next === 'new-session') {
       await b.newSession();
-      state.sessionNote = 'a new session (the desktop\'s is not available here)';
+      stillCurrent(ticket);
+      b.sessionNote = 'a new session (the desktop\'s is not available here)';
     } else {
-      state.sessionNote = 'the desktop\'s session (cube opened again)';
+      b.sessionNote = 'the desktop\'s session (cube opened again)';
     }
     setStatus('Opening the desktop\'s cube by its path…');
     open = await b.open(pairing.path);
+    stillCurrent(ticket);
     info = await b.reducedInfo(reducedRequest(open.dataset_id));
   }
-  await loadReduced(b, open, info, t0);
+  stillCurrent(ticket);
+  await loadReduced(b, open, info, t0, ticket);
 }
 
-async function loadReduced(b, open, info, t0) {
+async function loadReduced(b, open, info, t0, ticket) {
   const req = reducedRequest(open.dataset_id);
   const t1 = performance.now();
-  // The backend caps voxels and bytes; the GPU caps each side. Refuse before
-  // reading the cube rather than after.
-  if (Math.max(...info.reduced_shape) > R.maxTex3D) {
-    throw new Error(`${info.reduced_shape.join('×')} exceeds this GPU's 3-D texture limit `
-      + `(${R.maxTex3D} per side): choose a larger binning.`);
-  }
+  // The backend caps voxels and bytes; the GPU caps each side and this
+  // device its memory. Refuse before reading the cube rather than after.
+  checkBudget(info.reduced_shape, req.encoding);
   setStatus(`Reducing ${info.full_shape.join('×')} by ${info.factors.join('×')} (${req.mode})…`);
   const cube = await b.reducedCube({ ...req, factor_xy: info.factors[0], factor_z: info.factors[2] },
-    (f) => setStatus(`Transferring… ${(100 * f).toFixed(0)} %`));
+    (f) => { if (loads.isCurrent(ticket)) setStatus(`Transferring… ${(100 * f).toFixed(0)} %`); });
+  // A load started meanwhile owns the page: this cube is not shown.
+  stillCurrent(ticket);
+  // This load won: its session becomes the page's (unless the token changed).
+  if (!commitHandle(b)) throw supersededLoad();
   state.load = { openInfoMs: t1 - t0, reduceMs: cube.timing.serverMs, transferMs: cube.timing.totalMs - cube.timing.serverMs, mb: cube.bytes / 1e6 };
-  installCube(info, cube, open);
+  installCube(info, cube, open, ticket.path);
+}
+
+/** Throws (and says so on the card) when a cube of `dims` would not fit this device. */
+function checkBudget(dims, encoding) {
+  const b = cubeBudget({ dims, encoding }, { maxTex3D: R.maxTex3D, headset: isHeadsetBrowser(navigator.userAgent),
+    deviceMemoryGB: navigator.deviceMemory });
+  if (!b.ok) {
+    shell.notify('budget', { detail: b.reason });
+    shell.log('warning', 'cube-refused', b.reason);
+    throw new Error(`${b.reason} Choose a larger binning.`);
+  }
+  return b;
+}
+
+/**
+ * The backend lost the cube's dataset (it restarted, or the desktop's session
+ * ended): the same file is opened again, in this session or a new one, and
+ * the cube on show is kept (nothing is transferred again) when the backend
+ * describes it as before. {ok, detail} ({superseded: true} when a load
+ * replaced the cube meanwhile: then nothing is changed).
+ */
+/** The deadline of each request of a recovery (opening a large cube can take a while). */
+const RECOVERY_TIMEOUT_MS = 30000;
+
+async function recoverDataset(reason) {
+  const path = state.openPath;
+  if (!path || !state.open || !state.info || !state.cube) return { ok: false, detail: 'no cube from the backend on show' };
+  // Everything read from the page before the first await (lifecycle.js reopenCube).
+  const c = state.cube;
+  const snap = { path, fullShape: state.info.full_shape, gen: state.loadGen };
+  const req = { factor_xy: c.factors[0], factor_z: c.factors[2], max_dim: readNumber('maxdim'), mode: c.mode, encoding: c.encoding };
+  // Its own handle: a new session it makes becomes the page's only if it wins.
+  // And a deadline on each of its requests (datasets/open, sessions/new,
+  // reduced_info): a hung connection must not stall the recovery; the next
+  // check of the lifecycle tries again.
+  const b = loadHandle();
+  b.timeoutMs = RECOVERY_TIMEOUT_MS;
+  const r = await reopenCube(snap, {
+    open: (p) => b.open(p),
+    newSession: () => b.newSession(),
+    reducedInfo: (o) => b.reducedInfo({ dataset_id: o.dataset_id, ...req }),
+    classify: (err) => shell.classifyFailure(err),
+    loadGen: () => state.loadGen,
+  });
+  if (!r.ok) return r;
+  const { open, info } = r;
+  if (!commitHandle(b)) return { ok: false, superseded: true, detail: 'the token changed during the reopen' };
+  state.open = open;
+  state.sessionNote = reason === 'restarted' ? 'a new session (the backend restarted)' : 'a new session (the old one ended)';
+  refiner.setDataset(open.dataset_id, { outOfCore: !!info.render_out_of_core });
+  return { ok: true, detail: `dataset ${open.dataset_id}` };
 }
 
 function loadSynthetic(n) {
+  loads.begin('');              // a newer load than any backend load under way
   const t0 = performance.now();
+  checkBudget([n, n, n], 'uint8');
   const data = V.syntheticCube(n);
   const info = V.syntheticInfo(n);
   state.load = { generateMs: performance.now() - t0, mb: data.length / 1e6 };
   installCube(info, {
     data, dims: [n, n, n], encoding: 'uint8', lo: 0, hi: 1, factors: [1, 1, 1], mode: 'synthetic',
     reducedThreshold: 0.25, bunit: '', fullShape: [n, n, n],
-  }, null);
+  }, null, '');
 }
 
-function installCube(info, cube, open) {
+/** `path`: the file the load was started for (never the path field now). */
+function installCube(info, cube, open, path = '') {
+  // Every cube put on show (from the backend, synthetic, the benchmark's)
+  // supersedes a recovery under way for the previous one (reopenCube).
+  state.loadGen++;
   const up = R.setVolume(cube);
   state.info = info;
   state.cube = cube;
   state.open = open;
-  state.openPath = open ? $('path').value.trim() : '';
+  state.openPath = open ? path : '';
   selection.clear();
   refiner.setDataset(open ? open.dataset_id : null, { outOfCore: !!(info && info.render_out_of_core) });
   state.load = { ...state.load, uploadMs: up.uploadMs, macroMs: up.macroMs, textureMB: up.textureBytes / 1e6 };
@@ -576,6 +714,43 @@ function syncSelection() {
   $('sel-export').disabled = $('sel-copy').disabled = !s.recipes.length;
 }
 
+// ── Quality and diagnostics (epic #166) ─────────────────────────────────────
+function currentQualityNote() {
+  return qualityNote({ governorOn: state.governorOn, spv: governor.value, spvChosen: state.spv,
+    eyeScale: xr ? xr.fbScale : undefined, eyeChosen: xr ? xr.fbChosen : undefined, targetHz: xr ? xr.targetHz : 0 });
+}
+
+function gpuInfo() {
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  return {
+    renderer: gl.isContextLost() ? 'context lost' : dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
+    maxTex3D: R.maxTex3D, maxTexture: gl.getParameter(gl.MAX_TEXTURE_SIZE), timerQuery: !!R.timer,
+    deviceMemoryGB: navigator.deviceMemory,
+  };
+}
+
+function diagnosticsSummary() {
+  const c = state.cube;
+  const s = stats.summary(xr ? 1000 / xr.targetHz : 0);
+  return {
+    gpu: gpuInfo(),
+    xr: xr ? `${xr.mode}, ${xr.targetHz} Hz, eye buffer ${xr.layer.framebufferWidth}×${xr.layer.framebufferHeight} (scale ${xr.fbScale} of ${xr.fbChosen}), foveation ${'fixedFoveation' in xr.layer ? xr.layer.fixedFoveation : 'n/a'}`
+      : `not in VR; ${$('xr-status').textContent}`,
+    cube: c ? `${c.dims.join('×')} ${c.encoding}, binned ${c.factors.join('×')} (${c.mode}) of ${c.fullShape.join('×')}, texture ${(R.textureBytes / 1e6).toFixed(1)} MB, ${state.open ? `dataset ${state.open.dataset_id}` : 'no backend dataset'}` : 'none',
+    fps: `${s.fps.toFixed(1)} fps, frame ${s.interval ? s.interval.mean.toFixed(2) : 'n/a'} ms mean, missed ${(100 * s.missedFraction).toFixed(1)} %, CPU ${s.cpu ? s.cpu.mean.toFixed(2) : 'n/a'} ms, GPU ${s.gpu ? s.gpu.mean.toFixed(2) : 'n/a'} ms`,
+    quality: `${currentQualityNote() || 'as chosen'}; samples/voxel ${governor.value.toFixed(2)} of ${state.spv}, governor ${state.governorOn ? 'on' : 'off'}`,
+    refine: refineShort(),
+    settings,
+  };
+}
+
+/** Leaves VR on purpose (the card's Exit VR, the benchmark's end): no "ended" notice. */
+function endXR(why) {
+  if (!xr) return;
+  xr.endedBy = why || 'the page';
+  xr.session.end().catch(() => {});
+}
+
 // ── HUD (frame-rate and latency overlay) ─────────────────────────────────────
 const hudCanvas = Object.assign(document.createElement('canvas'), { width: 640, height: 600 });
 const hudTex = R.createPanel();
@@ -596,6 +771,8 @@ function hudLines(targetHz) {
     lines.push(`threshold ${fmt(dataValue(state.thrNorm))} ${c.bunit || ''}  (${$('thr-source').selectedOptions[0].text})`);
   }
   lines.push(...selection.hudLines());
+  const qn = currentQualityNote();
+  if (qn) lines.push(qn.slice(0, 60));
   if (state.cube) lines.push(...refiner.hudLines());
   if (vrPanel.draws) {
     lines.push(`panel redraw ${median(vrPanel.drawMs).toFixed(2)} ms + upload ${median(vrPanel.uploadMs).toFixed(2)} ms (${vrPanel.draws} redraws)`);
@@ -666,8 +843,10 @@ function panelView() {
     opacity: { f: state.opacity / 2, text: state.opacity.toFixed(2) },
     slab: { lo: state.clip.min[2], hi: state.clip.max[2], text: '', world: '' },
     refine: { on: refiner.enabled, text: refineShort(), warn: !!(refiner.unavailable || refiner.suspended) },
-    status: selection.sel.busy || selection.sel.error || '',
-    statusError: !selection.sel.busy && !!selection.sel.error,
+    // A hidden lifecycle notice first: it is the state of the backend now,
+    // a selection's error may be older than it.
+    status: shell.badge() || selection.sel.busy || selection.sel.error || currentQualityNote(),
+    statusError: !!shell.badge() || (!selection.sel.busy && !!selection.sel.error),
     hint: 'Right trigger: use   Left trigger: next tool   Left stick click: hide',
   };
   if (info && info.full_shape) {
@@ -693,6 +872,10 @@ function refineShort() {
   if (!refiner.enabled) return 'the headset\'s own rendering only';
   if (refiner.suspended) return `paused ${refiner.suspended}`;
   if (refiner.unavailable) return `unavailable: ${refiner.unavailable}`;
+  if (refiner.retryAt && (refiner.status === 'reconnecting' || refiner.status === 'unavailable')) {
+    const s = Math.max(0, Math.ceil((refiner.retryAt - performance.now()) / 1000));
+    return `lost: retrying in ${s} s, the headset's own rendering meanwhile`;
+  }
   return refiner.status === 'refined' ? 'refined (still view)' : refiner.status;
 }
 
@@ -760,6 +943,8 @@ function applyPanel(a, ray, eye) {
       selection.setTool(a.widget.value);
     } else if (id === 'sel-clear') {
       selection.clear();
+    } else if (id === 'guide') {
+      shell.help();
     }
   } else if (a.type === 'slide') {
     if (a.id === 'thr') state.thrNorm = Math.min(state.cmaxNorm - 1e-3, sliderToNorm(a.value * 1000));
@@ -802,8 +987,14 @@ const DESKTOP_BG = [0.043, 0.051, 0.07];
 let dragging = null;
 let pressAt = null;
 let mouseOnPanel = false;
+let mouseOnCard = false;
+/** The message card in the desktop view (?panel3d) takes the mouse first. */
+function cardMouse(e, pressed) {
+  return !xr && vrPanel.desktop && shell.cardPointer(mouseWorldRay(e), pressed);
+}
 canvas.addEventListener('pointerdown', (e) => {
   canvas.setPointerCapture(e.pointerId);
+  if (cardMouse(e, true)) { mouseOnCard = true; return; }
   if (!xr && panelPointer(mouseWorldRay(e), true, camEye())) {
     // On the panel (?panel3d): its widget, not the camera or a selection.
     mouseOnPanel = true;
@@ -814,6 +1005,7 @@ canvas.addEventListener('pointerdown', (e) => {
   state.moving = true;
 });
 canvas.addEventListener('pointermove', (e) => {
+  if (cardMouse(e, mouseOnCard) || mouseOnCard) return;
   if (!xr && (mouseOnPanel || !dragging)) {
     const onPanel = panelPointer(mouseWorldRay(e), mouseOnPanel, camEye());
     if (mouseOnPanel) return;
@@ -827,6 +1019,7 @@ canvas.addEventListener('pointermove', (e) => {
   dragging = { x: e.clientX, y: e.clientY };
 });
 canvas.addEventListener('pointerup', (e) => {
+  if (mouseOnCard) { mouseOnCard = false; cardMouse(e, false); cardMouse(e, false); return; }
   if (mouseOnPanel) {
     mouseOnPanel = false;
     if (!xr) { panelPointer(mouseWorldRay(e), false, camEye()); panelPointer(mouseWorldRay(e), false, camEye()); }
@@ -892,6 +1085,7 @@ let desktopRunning = false;
 function desktopFrame(time) {
   if (xr) { desktopRunning = false; return; }
   requestAnimationFrame(desktopFrame);
+  if (gl.isContextLost()) return;      // until it is restored (epic #166)
   const t0 = performance.now();
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const w = Math.floor(canvas.clientWidth * dpr), h = Math.floor(canvas.clientHeight * dpr);
@@ -910,6 +1104,9 @@ function desktopFrame(time) {
   if (vrPanel.visible && vrPanel.desktop) {
     R.drawPanel(lastDesktopView, panelWorld(), panelTexture(time), P.PANEL_SIZE);
   }
+  // The headset's message card, in front of the desktop camera (?panel3d).
+  const card = vrPanel.desktop ? shell.cardForFrame(M.invert(lastDesktopView.view)) : null;
+  if (card) R.drawPanel(lastDesktopView, card.model, card.tex, card.size);
   R.endFrame();
   const interval = lastDesktop ? time - lastDesktop : 0;
   lastDesktop = time;
@@ -958,14 +1155,30 @@ async function enterXR(mode, bench) {
     try { await session.updateTargetFrameRate(pick); } catch { /* keep the default */ }
   }
   targetHz = session.frameRate || readNumber('rate');
-  xr = { session, ref, layer, mode, fbScale, targetHz, placed: false, last: 0, hands: {}, grab: null,
-    buttons: {}, slab: { c: 0.5, w: 0.5 }, bench: bench ? makeBench() : null, place: null };
+  xr = { session, ref, layer, mode, fbScale, fbChosen: fbScale, targetHz, placed: false, last: 0, hands: {}, grab: null,
+    buttons: {}, slab: { c: 0.5, w: 0.5 }, bench: bench ? makeBench() : null, place: null, endedBy: '' };
   stats.buf.length = stats.cpu.length = stats.gpu.length = 0;
   governor.max = state.spv; governor.value = state.spv;
+  eyeGovernor.reset(fbScale);
+  shell.xrStarted();
+  shell.clearNotice('xr-ended');
+  shell.log('info', 'xr-start', `${mode}${bench ? ' (benchmark)' : ''}, ${targetHz} Hz, eye buffer ${layer.framebufferWidth}×${layer.framebufferHeight}`);
+  // The controls guide, the first time in VR (kept in the settings).
+  if (shouldShowGuide(settings, { bench })) shell.showGuide(0);
   session.addEventListener('end', () => {
     const b = xr && xr.bench;
+    const endedBy = xr ? xr.endedBy : '';
+    const summary = `${fpsLine()}; ${currentQualityNote() || 'quality as chosen'}`;
     if (vrPanel.drag) { settings.panel = { ...vrPanel.offset }; persist(); }
     xr = null;
+    if (endedBy) {
+      shell.log('info', 'xr-end', `by ${endedBy}; ${summary}`);
+    } else {
+      // Not asked for by the page: the system menu, the headset taken off, the
+      // browser. The 2-D page (which the headset shows next) says so.
+      shell.log('warning', 'xr-ended', `unexpectedly; ${summary}`);
+      if (!gl.isContextLost()) shell.notify('xr-ended');
+    }
     // A press held on the panel when the session ended is released.
     vrPanel.pointer.update(null, false); vrPanel.pointer.update(null, false);
     vrPanel.hit = null; vrPanel.drag = null;
@@ -1022,7 +1235,10 @@ function handleInput(frame, dtS) {
   const trig = (h) => hands[h] && hands[h].g.buttons[0] && hands[h].g.buttons[0].pressed;
   // The in-VR panel first (issue #172): a ray on it, or a press that began on
   // it, is the panel's, not a selection.
-  const onPanel = panelPointer(hands.right ? hands.right.ray : null, !!trig('right'), xr.headPos);
+  // The message card before everything (epic #166): a notice or the guide.
+  const onCard = shell.cardPointer(hands.right ? hands.right.ray : null, !!trig('right'));
+  const onPanel = onCard ? (panelPointer(null, false, xr.headPos), true)
+    : panelPointer(hands.right ? hands.right.ray : null, !!trig('right'), xr.headPos);
   const rightRay = hands.right && hands.right.ray && state.cube && !onPanel
     ? selection.worldRayToBox(state.model, hands.right.ray.o, hands.right.ray.d) : null;
   if (onPanel && selection.sel.hover) { selection.hover(null); selectionDirty = true; }
@@ -1102,7 +1318,9 @@ function controllerSegments() {
     segs.push({ a: p(0, 0, 0), b: p(0, 0, -0.08), color: col });
     segs.push({ a: p(-0.015, 0, 0), b: p(0.015, 0, 0), color: col });
     segs.push({ a: p(0, -0.015, 0), b: p(0, 0.015, 0), color: col });
-    if (hand === 'right' && h.ray && vrPanel.hit) {
+    if (hand === 'right' && h.ray && shell.cardHit) {
+      segs.push({ a: h.ray.o, b: shell.cardHit.point, color: [1, 1, 1, 0.7] });
+    } else if (hand === 'right' && h.ray && vrPanel.hit) {
       // On the panel: the ray to the point it points at, and a small cross there.
       const q = vrPanel.hit.point;
       segs.push({ a: h.ray.o, b: q, color: [1, 1, 1, 0.6] });
@@ -1186,6 +1404,7 @@ function onXRFrame(time, frame) {
   const sm = selTex ? selectionPanelModel() : null;
   const ctlTex = vrPanel.visible && !xr.bench ? panelTexture(time) : null;
   const cm = ctlTex ? panelWorld() : null;
+  const card = xr.bench ? null : shell.cardForFrame(pose.transform.matrix);
   // No refinement during the benchmark, nor in passthrough: the backend's frame
   // has no alpha (it is composited over black), so over the room it would
   // either darken it where the headset draws emission the full cube has not,
@@ -1209,14 +1428,44 @@ function onXRFrame(time, frame) {
     if (hm) R.drawPanel(v, hm, hudTex, [0.16, 0.15]);
     if (sm) R.drawPanel(v, sm, selTex, [0.34, 0.248]);
     if (cm) R.drawPanel(v, cm, ctlTex, P.PANEL_SIZE);
+    if (card) R.drawPanel(v, card.model, card.tex, card.size);
     R.drawWorldLines(v);      // the controllers and their rays over the panels
   }
   R.endFrame();
   const cpu = performance.now() - t0;
   stats.push(interval, cpu, R.gpuMs);
   if (xr.bench) xr.bench.record(interval, cpu, R.gpuMs);
-  if (state.governorOn && !xr.bench) governor.update(interval, 1000 / xr.targetHz);
+  if (state.governorOn && !xr.bench) {
+    governor.update(interval, 1000 / xr.targetHz);
+    // Second stage (epic #166): samples per voxel at 0.5 or less and frames
+    // still missed: a smaller eye buffer, one step at a time.
+    const scale = eyeGovernor.update(interval, 1000 / xr.targetHz, spvAtFloor(governor));
+    if (scale < xr.fbScale - 1e-6) setEyeBufferScale(scale);
+  }
   if (session.frameRate) xr.targetHz = session.frameRate;
+  if (!xr.bench) shell.xrFrame(time, stats.buf, xr.targetHz, currentQualityNote());
+}
+
+/** The eye buffer made smaller in the running session (a new base layer). */
+function setEyeBufferScale(scale) {
+  const old = xr.layer;
+  try {
+    const layer = new XRWebGLLayer(xr.session, gl, { framebufferScaleFactor: scale, antialias: false, alpha: xr.mode === 'immersive-ar' });
+    if ('fixedFoveation' in layer) layer.fixedFoveation = 'fixedFoveation' in old ? old.fixedFoveation : readNumber('foveation');
+    xr.session.updateRenderState({ baseLayer: layer });
+    xr.layer = layer;
+    xr.fbScale = scale;
+    shell.log('info', 'quality-eye-buffer', `scale ${scale} (${layer.framebufferWidth}×${layer.framebufferHeight}) at ${governor.value.toFixed(2)} samples/voxel, ${fpsLine()}`);
+  } catch (err) {
+    eyeGovernor.scale = xr.fbScale;      // not lowered: no further try in this session
+    eyeGovernor.disabled = true;
+    shell.log('warning', 'quality-eye-buffer-failed', String(err.message || err));
+  }
+}
+
+function fpsLine() {
+  const s = stats.summary(xr ? 1000 / xr.targetHz : 0);
+  return `${s.fps.toFixed(1)} fps, missed ${(100 * s.missedFraction).toFixed(1)} %, GPU ${s.gpu ? `${s.gpu.mean.toFixed(2)} ms` : 'n/a'}`;
 }
 
 // ── Benchmarks ──────────────────────────────────────────────────────────────
@@ -1232,7 +1481,7 @@ function benchPlan(includeLoaded) {
 }
 
 function makeBench() {
-  const saved = state.cube ? { info: state.info, cube: state.cube, open: state.open } : null;
+  const saved = state.cube ? { info: state.info, cube: state.cube, open: state.open, openPath: state.openPath } : null;
   const b = {
     plan: benchPlan(!!saved), i: -1, t0: 0, saved, results: [], status: 'benchmark starting',
     intervals: [], gpu: [], cpu: [], currentN: -1,
@@ -1275,7 +1524,7 @@ function benchStep(b, time) {
     if (b.i >= b.plan.length) {
       b.status = 'benchmark done: take the headset off and read the page';
       finishBench(b);
-      xr.session.end();
+      endXR('the benchmark');
       return;
     }
     const next = b.plan[b.i];
@@ -1299,7 +1548,7 @@ function finishBench(b) {
   state.skip = b.savedParams.skip;
   if (b.saved) {
     R.setVolume(b.saved.cube);
-    state.cube = b.saved.cube; state.info = b.saved.info; state.open = b.saved.open;
+    state.cube = b.saved.cube; state.info = b.saved.info; state.open = b.saved.open; state.openPath = b.saved.openPath;
     applyExtent(); resetThreshold();
   }
 }
@@ -1408,6 +1657,43 @@ async function desktopBench() {
 // state, and a pick through a page-pixel position as a click makes it. Only
 // with ?debug in the address.
 if (query.has('debug')) {
+  window.__vrShell = shell;
+  window.__vrState = state;
+  window.__vrGL = gl;
+  // The message card (in the desktop view with ?panel3d): press one of its
+  // buttons through a ray from the camera, as a controller would.
+  window.__vrCard = {
+    current: () => shell.notices.current(),
+    press(action) {
+      const c = shell.card;
+      const w = c.model && c.layout.find((x) => x.action === action);
+      if (!w) return false;
+      const [x, y, ww, hh] = w.rect;
+      const local = [((x + ww / 2) / CARD_PX[0] - 0.5) * CARD_SIZE[0], (0.5 - (y + hh / 2) / CARD_PX[1]) * CARD_SIZE[1], 0];
+      const eye = camEye();
+      const ray = { o: eye, d: M.sub(M.transformPoint(c.model, local), eye) };
+      const took = shell.cardPointer(ray, true);
+      shell.cardPointer(ray, false); shell.cardPointer(ray, false);
+      return took;
+    },
+  };
+  /** The share of canvas pixels the cube draws over the background, now. */
+  window.__vrDrawnFraction = () => {
+    const w = canvas.width, h = canvas.height;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, w, h);
+    gl.clearColor(...DESKTOP_BG, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    R.drawVolume(desktopView(), state.model, volParams());
+    const px = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const bg = DESKTOP_BG.map((v) => Math.round(v * 255));
+    let n = 0;
+    for (let i = 0; i < px.length; i += 4) {
+      if (Math.abs(px[i] - bg[0]) + Math.abs(px[i + 1] - bg[1]) + Math.abs(px[i + 2] - bg[2]) > 12) n++;
+    }
+    return { fraction: n / (w * h), w, h, lost: gl.isContextLost() };
+  };
   window.__vrSelection = selection;
   window.__vrClick = (x, y) => selection.act(mouseRay({ clientX: x, clientY: y }));
   window.__vrProject = (p) => {      // box coordinate -> page pixel, desktop camera
@@ -1550,7 +1836,69 @@ if (query.has('debug')) {
   };
 }
 
+// ── WebGL context loss (epic #166) ──────────────────────────────────────────
+// The browser may take the GPU away (memory pressure, another app): every GL
+// object is gone. The page asks for it back (preventDefault), stops drawing,
+// says so, and on restore makes every object again from what it still holds
+// (the cube's voxels, masks, lines, panels). A VR session cannot outlive its
+// layer, so it is ended; Enter VR goes back in.
+let contextTimer = null;
+let contextLostInVR = false;
+canvas.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();
+  const wasInVR = !!xr;
+  shell.log('error', 'webgl-context-lost', wasInVR ? 'in VR' : 'on the page');
+  shell.notify('context-lost');
+  if (xr) { contextLostInVR = true; endXR('a WebGL context loss'); }
+  clearTimeout(contextTimer);
+  contextTimer = setTimeout(() => {
+    if (gl.isContextLost()) {
+      shell.log('error', 'webgl-context-not-restored', 'after 10 s');
+      shell.clearNotice('context-lost');
+      shell.notify('context-failed', { detail: 'not restored after 10 s' });
+    }
+  }, 10000);
+});
+canvas.addEventListener('webglcontextrestored', () => {
+  clearTimeout(contextTimer);
+  const t0 = performance.now();
+  try {
+    R.restore();
+    refiner.draw = new RefineDraw(gl);
+    refiner.weight = 0;
+    vrPanel.key = '';
+    hudLast = 0;
+    selectionDirty = true;
+    rebuildDecorations();
+    shell.clearNotice('context-lost');
+    shell.clearNotice('context-failed');
+    shell.notify('context-restored', { wasInVR: contextLostInVR });
+    shell.log('info', 'webgl-context-restored', `rebuilt in ${(performance.now() - t0).toFixed(0)} ms`);
+  } catch (err) {
+    shell.clearNotice('context-lost');
+    shell.notify('context-failed', { detail: String(err.message || err) });
+    shell.log('error', 'webgl-context-restore-failed', String(err.message || err));
+  }
+  contextLostInVR = false;
+  startDesktop();
+});
+
+// ── Guide and diagnostics on the page (epic #166) ───────────────────────────
+$('show-guide').addEventListener('click', () => {
+  const box = $('guide-text');
+  box.textContent = shell.guideText();
+  box.hidden = !box.hidden;
+});
+$('copy-diag').addEventListener('click', async () => {
+  const text = shell.diagnostics();
+  $('diag-out').hidden = false;
+  $('diag-out').textContent = text;
+  try { await navigator.clipboard.writeText(text); setStatus('Diagnostics copied: paste them into the support request.'); }
+  catch { setStatus('Diagnostics shown below the buttons: select and copy them (the clipboard needs https or localhost).'); }
+});
+
 // ── Start ───────────────────────────────────────────────────────────────────
+shell.start();
 checkXR();
 updateLabels();
 if (query.has('bench')) {
@@ -1559,6 +1907,8 @@ if (query.has('bench')) {
   startDesktop();
   if (query.has('synthetic')) loadSynthetic(Number(query.get('synthetic')) || 256);
   else if (pairing.dataset || pairing.path) {
-    loadPaired().catch((err) => setStatus(`The desktop's cube could not be opened: ${err.message || err}`));
+    withLoading(loadPaired).catch((err) => {
+      if (!err.superseded) setStatus(`The desktop's cube could not be opened: ${err.message || err}`);
+    });
   }
 }

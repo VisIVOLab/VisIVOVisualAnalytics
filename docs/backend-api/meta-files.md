@@ -266,3 +266,122 @@ only the operator (primary token) may read it; another token gets 403.
 
 ### `GET /v1/diagnostics/stats`
 Buffer occupancy for monitoring: `{entries, capacity, last_id}`. Any valid token.
+
+---
+
+## The VR page
+
+The WebXR page of [Cubes in a VR headset](../user-guide/vr-headset.md) and its
+lifecycle routes (`backend/app/routers/vr.py`, epic #166).
+
+### `GET /vr/` and `GET /vr/b/<build>/…`
+The page, public like any static file (it holds no data and no token).
+`/vr/` is always revalidated (`Cache-Control: no-cache`) and loads its
+modules from `/vr/b/<build>/…`, where `<build>` is a 12-character hash of the
+page's files (dotfiles are neither hashed nor served): an upgraded backend
+serves the page from new addresses, so a fresh load never mixes yesterday's
+modules with today's. The current build's files are cached for good
+(`immutable`). Another build's address (a tab older than the backend) gets
+today's file, revalidated: such a tab can run a mix of old cached modules and
+new ones until it reloads, which its version check asks it to do. The
+unversioned `/vr/js/…` addresses keep working, revalidated.
+
+### `GET /v1/vr/info`
+Public, like `/v1/ping`; `Cache-Control: no-store`. The page calls it at
+start, every 5 s, and with a backoff (1, 2, 4, 5, 5… s) while nothing answers.
+Each check gives up after 4 s (a connection that hangs counts as no answer, and
+the next check is scheduled as usual); *Retry* cancels a check still pending and
+makes a new one. The requests a recovery makes (datasets/open, sessions/new,
+reduced_info) give up after 30 s each.
+
+```json
+{ "vr_api": 1, "vr_api_min": 1, "build": "8cc84c409df0",
+  "instance": "2ba71142538a", "token_ok": true, "backend_version": "1.0.12" }
+```
+
+`vr_api` and `vr_api_min` bound the page API this backend serves (a page
+outside them is told to reload, or to update the application); `build` is the
+page build it serves; `instance` changes at every backend start (the page then
+knows the backend's sessions and datasets are gone and opens its cube again);
+`token_ok` says whether the `X-Visivo-Token` header sent is accepted (`null`
+when none was sent). Token checks are limited to 20 a minute per client
+(the last 256 clients are tracked) and 200 a minute in all: beyond that
+`token_ok` is `null` and `"token_check": "rate-limited"` is added, and
+repeated refused tokens from one client are logged (at 5, 20 and 100 in a
+minute). A client is its socket address, except that every request carrying
+`X-Forwarded-For`, `Forwarded` or `X-Real-IP` counts as one client: uvicorn
+trusts those headers from 127.0.0.1 by default, which is how adb reverse and
+ssh tunnels arrive, so they cannot be used to pick a fresh bucket. Locally
+all clients are loopback, so the limit is in effect shared by all of them;
+that is harmless, since a skipped check answers `null` and the page keeps the
+state it knew.
+`backend_version` is present only for an accepted token. A token with
+non-ASCII characters is refused like any wrong token (401 on the other
+routes), never an error.
+
+### `POST /v1/vr/log`
+The page's errors and lifecycle events, written to the backend log
+(logger `visivo.vr`, one line per event: `[vr <build>] <event>: <message>`).
+Needs the token.
+
+```json
+{ "build": "8cc84c409df0", "user_agent": "…",
+  "events": [{ "level": "error", "event": "webgl-context-lost", "message": "in VR", "t": 1762873000000 }] }
+```
+
+| Limit | Value | Beyond it |
+|---|---|---|
+| Body | 16 KiB | 413 |
+| Events per request | 25 | 422 |
+| `level` | `debug`, `info`, `warning`, `error` | 422 |
+| `event` | 1–64 of `A–Z a–z 0–9 _ . : -` | 422 |
+| Per token, per sliding minute | 20 requests, 60 events | 429 with `Retry-After` |
+
+Each message is scrubbed before it is written, in a worker thread (never on the
+event loop), in this order. Steps 1 and 2 run over the whole message; the
+pattern rules (3 to 5) only over its first 1200 characters, and every rule is
+linear (a 4000-character adversarial message scrubs in a few milliseconds):
+
+1. `%`-escapes are decoded first (a pairing link writes `path=%2FUsers%2F…`);
+2. every accepted token, and the caller's own, becomes `<token>`;
+3. the value of any key that contains `token` or `session` (`token=`,
+   `session_id=`, `sessionId:`, `access_token=`, `X-Visivo-Token:`, JSON
+   `"token": "…"`), quoted or not, before `=` or `:`, becomes `<redacted>`
+   when it looks like a secret (6 or more characters with a digit, 8 or more
+   hex characters, or 16 or more of any kind), so `sessions: 3` stays as it is;
+4. the id in `/v1/render/<id>/…` (a render session) becomes `<id>`;
+5. paths keep only their last component (`…/cube.fits`): `file://` URLs, the
+   path of a URL with a host (the backend's own `/v1/…` and `/vr/…` routes
+   are kept whole), Windows paths (`C:\…`, `C:/…`, `\\server\share\…`) and
+   POSIX paths (`/…`, `~/…`). Directory names may hold single spaces
+   (`/Users/John Doe/data/cube.fits` → `…/cube.fits`) only up to the first
+   file name with an extension (also in a `file://` URL); otherwise
+   directory names may hold single spaces when another `/` follows
+   (`/mnt/Shared Drive/Alice Smith/x` → `…/x`: better too much than a name
+   left behind), the last component never does, so the rest of the message is
+   kept (`open /data/c.fits failed at 12/11` → `open …/c.fits failed at
+   12/11`), and `3/5` or `1 / 2` are no paths. A home directory (`/Users/…`,
+   `/home/…`, `C:\Users\…`, `C:/Users/…`, in a `file://` URL too) is never
+   shown: `/Users/John Doe/data` → `…/data`, and a path that ends at the home
+   directory gives `…/<user>` (`/home/alice` → `…/<user>`);
+6. control and format characters (Unicode categories Cc, Cf, Zl and Zp:
+   newlines, NEL, C1 controls such as CSI, bidirectional overrides, zero-width
+   characters, U+2028/2029) become spaces;
+7. a message is cut at 600 characters.
+
+Not redacted: a known token shorter than 6 characters, and a short value
+without a digit after a token key (`token=letmein`): they cannot be told from
+ordinary words. Use generated tokens (the backend makes one when none is set;
+`python -c "import secrets; print(secrets.token_urlsafe(32))"`).
+
+The page applies the same rules before sending (`diagnostics.js`
+`scrubText`); both are tested against the same cases
+(`backend/tests/vr/scrub_cases.json`). Answer: `{"accepted": <n>}`.
+
+### The render WebSocket's token (the VR page)
+The page opens `/v1/render/<id>/ws` with the subprotocols `visivo.v1` and
+`visivo-token.<token>`; the backend takes the token from there and answers
+`visivo.v1` only, so the token is in no URL and no access log. A token with
+characters a subprotocol cannot carry falls back to `?token=`. The desktop's
+remote 3-D view still sends `?token=` (see the render API).
+

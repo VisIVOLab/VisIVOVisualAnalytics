@@ -63,6 +63,15 @@ export class Refiner {
     this.waiters = new Map();  // pose id -> resolve, for one-off frames (measurements)
     this.suspended = '';       // why the page draws no refined frame now (passthrough), or ''
     this._retry = null;
+    this.failures = 0;         // connection attempts failed in a row: the retry backs off (#166)
+    this.retryAt = 0;          // when the next attempt is due (performance.now()), 0 = none
+    this.onLifecycle = null;   // optional hook: (name, detail) for the page's diagnostics
+  }
+
+  /** The wait before the next attempt: 2, 4, 8, 16, 30, 30… s. */
+  _backoffMs() {
+    this.failures++;
+    return Math.min(30000, 2000 * 2 ** (this.failures - 1));
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -125,7 +134,13 @@ export class Refiner {
 
   _retryLater(ms) {
     clearTimeout(this._retry);
-    this._retry = setTimeout(() => { this._retry = null; this._connect(); }, ms);
+    this.retryAt = performance.now() + ms;
+    this._retry = setTimeout(() => { this._retry = null; this.retryAt = 0; this._connect(); }, ms);
+  }
+
+  /** Try now (the backend is back): the wait is cut short, the count kept. */
+  retrySoon() {
+    if (this._retry && this._wanted()) { clearTimeout(this._retry); this._retry = null; this.retryAt = 0; this._connect(); }
   }
 
   /** Gives refinement up for this cube: the session is closed, nothing retried. */
@@ -183,13 +198,24 @@ export class Refiner {
       }
       const b = this.backend();
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const url = `${proto}://${window.location.host}/v1/render/${this.sessionId}/ws?token=${encodeURIComponent(b.token)}`;
-      const ws = new WebSocket(url);
+      // The token as a subprotocol ("visivo-token.<token>", the backend answers
+      // "visivo.v1"), so it is in no access log; in the address only when it
+      // has characters a subprotocol may not carry.
+      const base = `${proto}://${window.location.host}/v1/render/${this.sessionId}/ws`;
+      const ws = F.subprotocolSafe(b.token)
+        ? new WebSocket(base, ['visivo.v1', `visivo-token.${b.token}`])
+        : new WebSocket(`${base}?token=${encodeURIComponent(b.token)}`);
       ws.binaryType = 'arraybuffer';
       this.ws = ws;
       let opened = false;
+      // Every handler first: a socket that is no longer the refiner's (closed
+      // for a new cube, replaced by a reconnection) must not touch the state
+      // of the one that replaced it, whatever order the events arrive in.
       ws.addEventListener('open', () => {
+        if (ws !== this.ws) return;
         opened = true;
+        if (this.failures && this.onLifecycle) this.onLifecycle('refine-reconnected', `after ${this.failures} failed attempt(s)`);
+        this.failures = 0;
         this.status = 'waiting';
         ws.send(JSON.stringify({ type: 'stream', window: 2, max_fps: 72 }));
         this.sentKey = null;
@@ -197,20 +223,25 @@ export class Refiner {
         clearInterval(this._keepalive);
         this._keepalive = setInterval(() => this._send({ type: 'keepalive' }), 60000);
       });
-      ws.addEventListener('message', (e) => this._onMessage(e.data));
+      ws.addEventListener('message', (e) => { if (ws === this.ws) this._onMessage(e.data); });
       ws.addEventListener('close', (e) => {
-        if (this.ws === ws) {
-          this.ws = null;
-          clearInterval(this._keepalive);
-        }
+        if (ws !== this.ws) return;
+        this.ws = null;
+        clearInterval(this._keepalive);
         this.streaming = false;
         this.book.clear();
         if (e.code === 1013) this.error = 'the render session is in use by another client';
         // A handshake refused: the session is gone (idle timeout) or not ours.
         if (!opened && gen === this.gen) this.sessionId = null;
         if (gen === this.gen && this._wanted() && this.datasetId === datasetId) {
+          // The frame on show was rendered for a stream that is gone: the
+          // headset's own rendering is shown until a new one arrives.
+          this.draw.forget();
+          this.weight = 0;
           this.status = 'reconnecting';
-          this._retryLater(2000);
+          const ms = this._backoffMs();
+          if (this.onLifecycle) this.onLifecycle('refine-ws-closed', `code ${e.code}${opened ? '' : ' (handshake refused)'}, retry in ${(ms / 1000).toFixed(0)} s`);
+          this._retryLater(ms);
         }
       });
     } catch (err) {
@@ -218,12 +249,14 @@ export class Refiner {
       // nothing about the session on show now.
       if (gen !== this.gen) return;
       this.error = String(err.message || err);
-      if (err.giveUp || /^(404|503): .*not available|^404/.test(this.error)) {
-        // No render sessions on this backend, or none this cube can use.
+      if (err.giveUp || F.renderUnavailable(this.error)) {
+        // No render sessions on this backend, or none this cube can use. (A
+        // dataset the backend no longer holds is not that: the page reopens
+        // it, setDataset() then connects for the new id; until then, retries.)
         this._giveUp(err.giveUp ? this.error : `no render sessions on this backend (${this.error})`);
       } else if (this._wanted() && datasetId === this.datasetId && this.error !== 'cancelled') {
         this.status = 'unavailable';
-        this._retryLater(5000);
+        this._retryLater(this._backoffMs());
       }
     } finally {
       this._connecting = false;
@@ -233,10 +266,11 @@ export class Refiner {
     }
   }
 
-  async _closeSession() {
+  async _closeSession({ unloading = false } = {}) {
     this.gen++;
     clearTimeout(this._retry);
     this._retry = null;
+    this.retryAt = 0;
     clearInterval(this._keepalive);
     const ws = this.ws, sid = this.sessionId;
     this.ws = null;
@@ -245,20 +279,29 @@ export class Refiner {
     this.book.clear();
     this.draw.forget();
     this.weight = 0;
+    // A frame decoded for the session closed here is not shown afterwards.
+    if (this.incoming) { if (this.incoming.bitmap) this.incoming.bitmap.close(); this.incoming = null; }
     if (ws) { try { ws.close(); } catch { /* closed */ } }
-    await this._deleteSession(sid);
+    await this._deleteSession(sid, { keepalive: unloading });
   }
 
-  async _deleteSession(sid) {
+  /**
+   * Frees the render slot. `keepalive` only when the page is going away (the
+   * request must outlive it): a keepalive request goes through the browser
+   * process, and to a backend that is going down it was seen to stall a
+   * headless page; otherwise a plain request, which the backend's idle
+   * timeout backs up if it fails.
+   */
+  async _deleteSession(sid, { keepalive = false } = {}) {
     const b = this.backend();
     if (!sid || !b) return;
     try {
-      await fetch(`/v1/render/${sid}`, { method: 'DELETE', headers: b.headers(false), keepalive: true });
+      await fetch(`/v1/render/${sid}`, { method: 'DELETE', headers: b.headers(false), keepalive });
     } catch { /* the idle timeout closes it */ }
   }
 
   /** On page unload: the session is closed without waiting. */
-  closeNow() { this._closeSession(); }
+  closeNow() { this._closeSession({ unloading: true }); }
 
   _send(cmd) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -301,7 +344,7 @@ export class Refiner {
     }
     const rec = this.book.take(h.pose_id);
     this.stats.received++;
-    if (!rec || rec.version !== this.version) { this.stats.dropped++; return; }
+    if (!this._sameRequest(rec)) { this.stats.dropped++; return; }
     this.stats.arrivals.push(tRecv);
     this.stats.network.push(tRecv - rec.tSent);
     this.stats.lastServer = h.timing_ms || null;
@@ -309,6 +352,12 @@ export class Refiner {
     this.decoding++;
     this._decode(parsed, rec, tRecv).catch((err) => { this.error = `decode: ${err.message || err}`; })
       .finally(() => { this.decoding--; });
+  }
+
+  /** Was `rec` asked for the look, cube and session on show now? */
+  _sameRequest(rec) {
+    return !!rec && rec.version === this.version && rec.gen === this.gen
+      && rec.datasetId === this.datasetId && rec.sessionId === this.sessionId;
   }
 
   async _decode(parsed, rec, tRecv) {
@@ -326,7 +375,9 @@ export class Refiner {
     }
     const bitmap = bm.value, depth = dp.value;
     const tDone = performance.now();
-    if (rec.id < this.newestDecoded || rec.version !== this.version) { bitmap.close(); return; }
+    // Checked again after the decode: the cube, the session or the look may
+    // have changed while it ran.
+    if (rec.id < this.newestDecoded || !this._sameRequest(rec)) { bitmap.close(); this.stats.dropped++; return; }
     this.newestDecoded = rec.id;
     if (this.incoming && this.incoming.bitmap) this.incoming.bitmap.close();
     this.incoming = { bitmap, depth, header: h, rec, tRecv, tDone };
@@ -431,6 +482,9 @@ export class Refiner {
     const id = this.book.add({
       tSent: t, version: this.version, eyes, model: Float32Array.from(ctx.model),
       aCentre: Float32Array.from(ctx.aCentre),
+      // Which session asked: a frame decoded after a cube change or a new
+      // session (gen bumped by _closeSession) is never shown.
+      gen: this.gen, datasetId: this.datasetId, sessionId: this.sessionId,
     });
     const ok = this._send({
       type: 'xr_pose', pose_id: id, t_client: Date.now() / 1000,

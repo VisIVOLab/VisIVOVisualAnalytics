@@ -4,6 +4,7 @@ JavaScript unit tests (run with node when it is installed)."""
 from __future__ import annotations
 
 import math
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -349,7 +350,9 @@ async def test_vr_page_is_served_without_a_token(client: AsyncClient) -> None:
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
     assert r.headers["cache-control"] == "no-cache"
-    assert 'src="js/main.js"' in r.text
+    # The modules under this build's address (epic #166), never the placeholder.
+    assert re.search(r'src="b/[0-9a-f]{12}/js/main\.js"', r.text)
+    assert "__VR_BUILD__" not in r.text
     js = await client.get("/vr/js/renderer.js")
     assert js.status_code == 200
     assert "javascript" in js.headers["content-type"]

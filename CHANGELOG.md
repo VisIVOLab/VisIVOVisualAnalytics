@@ -8,6 +8,53 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR headset: no dead ends, safe upgrades, a first-run guide, diagnostics
+  (part of #166).** The `/vr/` page now loads its code from addresses that
+  change with every version (`/vr/b/<build>/…`, cached for good; the page
+  itself is always revalidated), and checks the backend's page build and page
+  API at start and at every reconnection (`GET /v1/vr/info`, public): an open
+  tab older than the backend says *The backend was updated: reload*, a page
+  outside the backend's API range says *reload* or *update the application*.
+  The page watches the backend every 5 s (1 to 5 s while it does not answer)
+  and says what went wrong on a card in front of the viewer in the headset
+  and in a banner on the page, each with its way out: the backend unreachable
+  (in a headset over USB: the `adb reverse` link lost, *Open on Headset*
+  restores it), the backend restarted (the cube is opened again by its path,
+  the view kept), the cube's dataset gone after the desktop's session ended
+  (opened again), the token refused (re-open from the desktop, or paste it),
+  the render session's socket dropped (the headset's own rendering meanwhile,
+  reconnection with a backoff, the panel says so), a WebGL context lost (every
+  GL object made again from what the page holds; the VR session is ended, and
+  *Enter VR* goes back in), the VR session ended by the headset. The first
+  entry into VR shows a three-page controls guide on the card (kept as seen
+  in the browser's settings; **?** on the panel recalls it). The frame-rate
+  governor, on by default, now also makes the eye buffer smaller (down to
+  0.7×) when the samples per voxel are already at 0.5 and frames are still
+  missed, and the panel says *Quality lowered to hold 90 Hz: …*; a cube over
+  the device's memory budget (256 MiB of texture on a headset with 8 GB) is
+  refused before it is read. A lasting error card moves aside after 6 s and
+  **Hide** folds it into a line on the panel. Page errors and lifecycle events
+  go to the backend log through `POST /v1/vr/log` (token needed, 16 KiB, 25
+  events per request, 60 events a minute per token; tokens, token and session
+  values, render ids, path directories and control characters scrubbed, on
+  the page and again on the backend); `/v1/vr/info` limits token checks per
+  client address; a non-ASCII token gets a 401 instead of a 500 on every
+  route; the page's render WebSocket carries its token as a subprotocol, not
+  in the URL;
+  **Copy diagnostics** gathers versions, GPU limits, settings and the last
+  events. *Open in VR Headset…* gives numbered next steps for each state with
+  the install command for adb on this system, says on macOS when the Quest is
+  on USB but adb lists nothing (*developer mode or USB debugging is off on
+  the headset*), offers **Retry** and **Copy Error**, and selects the headset
+  used last time. CI runs the page's JavaScript tests and a headless-Chrome
+  smoke of the page against a backend (`validation/vr_lifecycle.mjs --smoke`).
+  Fixed on the page at the same time: a load now records the file it was
+  started for (the path field edited during a transfer no longer renames the
+  cube in the recipes), and of two loads the newest is shown even when the
+  older one finishes last; a refined frame of the previous cube decoded after
+  a cube change is dropped instead of fading in over the new one; a late close
+  of the old render socket no longer stops the new stream; a right ascension
+  crossing 0° is interpolated and ticked through 0 (it ran back through 180°).
 - **A single channel is one channel in the HI products and the copilot's
   moment summary.** `POST /v1/analysis/hi-products` and the copilot tools
   `hi_products` and `moment_map_summary` read `channel_end <= channel_start`

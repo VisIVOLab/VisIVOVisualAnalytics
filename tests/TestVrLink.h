@@ -35,4 +35,10 @@ private slots:
     void packageListedNeedsTheExactName();
     void viewStartedReadsAmOutput();
     void findsAdbOnPathThenInSdk();
+
+    // Next-step guidance (epic #166)
+    void installCommandPerPlatform();
+    void readsQuestOnUsbFromSystemProfiler();
+    void guidanceNamesTheNextStep();
+    void prefersTheLastHeadset();
 };

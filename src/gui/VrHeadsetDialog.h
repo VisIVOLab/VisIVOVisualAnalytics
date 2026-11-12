@@ -4,6 +4,7 @@
 #include "app/VrLink.h"
 
 #include <QDialog>
+#include <QElapsedTimer>
 #include <QPointer>
 
 #include <functional>
@@ -61,6 +62,14 @@ private:
     /// device list alone unless what adb reports has changed.
     void refreshDevices(bool background = false);
     void showDevices(const QList<AdbHeadset::Device> &devices);
+    /// The state label from @p g: the headline, the numbered steps, the guide link.
+    void setGuidance(const AdbHeadset::Guidance &g, const QString &extraHtml = QString());
+    /// macOS: is the Quest on USB even though adb lists nothing? Run off the
+    /// GUI thread (an asynchronous system_profiler), at most every few seconds;
+    /// the state label is updated when it answers.
+    void probeUsb();
+    /// Copies the last error, the state and the adb found, redacted.
+    void copyError();
     void openOnHeadset();
     /// Open on @p serial, the device chosen when Open was clicked: refused,
     /// never redirected, when that device is no longer ready.
@@ -91,9 +100,18 @@ private:
     QPushButton *m_refreshButton{ nullptr };
     QPushButton *m_openButton{ nullptr };
     QPushButton *m_copyButton{ nullptr };
+    QPushButton *m_copyErrorButton{ nullptr };
     QLabel *m_resultLabel{ nullptr };
     QTimer *m_pollTimer{ nullptr };
     QPointer<QProcess> m_process;
+    QPointer<QProcess> m_usbProbe;   ///< system_profiler, independent of the adb runs
+    AdbHeadset::UsbQuest m_usbQuest{ AdbHeadset::UsbQuest::Unknown };
+    QElapsedTimer m_usbProbedAt;
+    bool m_noDevice{ false };        ///< the last check listed nothing (the USB probe matters then)
+    QString m_stateText;             ///< the state label as plain text, for Copy Error
+    QString m_errorText;             ///< the last error shown, plain text ('' when none)
+    bool m_stateProblem{ false };    ///< the state label shows a problem (Copy Error offered)
+    QString m_lastOpenSerial;       ///< the device of the open under way (remembered when it works)
     bool m_deviceReady{ false };
     bool m_backgroundRun{ false };   ///< m_process is the periodic device check
     bool m_openQueued{ false };      ///< Open clicked during that check
