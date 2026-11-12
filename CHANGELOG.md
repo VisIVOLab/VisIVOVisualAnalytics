@@ -8,6 +8,99 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **A single channel is one channel in the HI products and the copilot's
+  moment summary.** `POST /v1/analysis/hi-products` and the copilot tools
+  `hi_products` and `moment_map_summary` read `channel_end <= channel_start`
+  as "no range", so a request for channel 3 alone (3, 3) integrated the whole
+  cube: on an 8-channel cube the flux and HI mass came out 8 times too large.
+  The range is now inclusive with `null` as the only "not given" marker:
+  omitting both ends still integrates the whole cube, `(k, k)` is channel k,
+  and a reversed range is refused (422). An explicit `0, 0` now means channel
+  0. The desktop client does not call this route; the copilot tools are told
+  to omit both ends for the whole cube.
+- **Gaussian line fit without a baseline fits 3 parameters, not 5.**
+  `POST /v1/spectral/linefit` with `with_baseline: false` kept the two
+  baseline terms as free parameters that the model then ignored: 4 samples
+  could not be fitted and with more samples every uncertainty came back
+  unavailable because the covariance was singular. Only the peak, centre and
+  width are fitted now; the response is unchanged in shape, with `baseline`
+  `[0, 0]` (it used to echo the starting guess) and `continuum` 0. Every fit
+  now needs one sample more than its parameters (4 without a baseline, 6
+  with): 5 samples with a baseline used to "fit" with zero degrees of freedom
+  and no uncertainty at all. A fit that lands on a negative width now converts
+  its covariance to `|sigma|`, so the integrated-flux error no longer uses the
+  amplitude-width covariance with the wrong sign (0.97 instead of 0.51 on a
+  test line). The desktop always fits with a baseline: its dialog asked for
+  4 finite channels, the backend in effect needed 5 (4 failed inside the
+  fit), and both now need 6.
+- **Velocity-field display grid: right spacing on thin grids, samples at
+  their block centres.** When one axis was shorter than the block-averaging
+  factor, `grid_bin` (and the basin, density and difference LODs) returned the
+  grid unreduced while multiplying its spacing by the factor, so a
+  (2, 128, 128) grid kept its size but its spacing went from 1 to 4. The
+  factor is now per axis (a short axis is reduced only as far as two samples
+  survive) and the spacing follows each axis's factor; the new header
+  `X-Visivo-Downsample-Factors` gives them as `x,y,z`
+  (`X-Visivo-Downsample-Factor` is still the largest). The origin of the
+  reduced grid is now the centre of the first block,
+  `origin + (f - 1) / 2 · spacing`, instead of the original first sample,
+  which shifted the reduced field by half a block. The desktop viewer now
+  follows this geometry (next entry).
+- **Desktop velocity viewer: reduced grids are drawn where the backend put
+  them.** The viewer rebuilt the display LOD from the full shape times one
+  factor with the full-resolution origin, so glyphs and streamlines sat half a
+  block off a full-resolution ROI and the two slices of a (2, 512, 512) field
+  were drawn four cells apart; the basins and the backend density were
+  stretched end to end over the box, a third placement. Each reduced product
+  is now placed from what its route sends, rescaled to the viewer's box size,
+  with each sample at its block centre (`src/gui/VelocityLodGeometry.h`):
+  glyphs and streamlines from the `grid_bin` factors
+  (`X-Visivo-Downsample-Factors`), origin and spacing; basins from the
+  `basins_bin` factors, origin and spacing; the backend density from the
+  `density_bin` origin and spacing, with factors recomputed from the request
+  (that route sends none). With an older backend that sends no per-axis
+  factors, the viewer works them out from the single factor (`grid_bin`) or
+  from the request and the size that came back (`basins_bin`), and places
+  every sample at its block centre. The viewer now always sends its current
+  box as `box_mpc` (0 for unit cells) with `basins_bin` and `density_bin`, so
+  the backend works in the same cells the viewer draws: the basins follow the
+  flow in cells, box/(n_i - 1) per axis, and the backend ∇·v matches the local
+  fallback (`vtkGradientFilter` on the viewer's spacing). When the box size
+  changes, both follow one rule: on a non-cubic grid, a change to or from
+  "no box" changes the ratio of the cells, so the basins and the backend ∇·v
+  are asked for again; a change between two boxes, and any change on a cubic
+  grid, scales every cell by one factor k, so the cached basin labels are
+  re-placed and the cached ∇·v is rescaled in place (positions by k, values by
+  1/k). The Gaussian line fit's minimum is now one rule: the dialog asked for
+  4; the backend in effect needed 5; both now need 6.
+- **Basins of attraction no longer depend on the flow's speed.** The basin
+  segmentation stepped each streamline by `min(0.5 cell, |v|)`, comparing a
+  speed with a length, and counted a path that stayed in one cell for 5 steps
+  as converged: a slow but regular flow was declared converged everywhere. A
+  one-attractor field gave 1 basin over all 4913 voxels, but the same field
+  times 0.001 gave 8 basins over 64 voxels, and a two-attractor field times
+  0.001 gave none. Streamlines are now integrated with a fixed half-cell step
+  along the flow direction (velocities converted to cells per axis), so the
+  labels are identical at any speed scale. Saddles are no longer basins:
+  every candidate attractor is probed one cell away along each axis and kept
+  only if the probes flow back to it, so the separatrix between two wells
+  (625 voxels on a 25³ double well) stays unassigned instead of forming a
+  third basin, and a pure saddle gives none instead of one. NaN voxels are
+  left out of the interpolation; a path whose sample is mostly missing data
+  is dropped rather than counted as stuck, so a blank region cannot become a
+  false basin, and a sink one or two cells from a small blank patch keeps its
+  basin (it used to keep only 68.7% of the grid at two cells, and nothing at
+  one). On a non-cubic grid the segmentation uses the physical cell size per
+  axis, so it changes with the box size; on a cubic grid it does not.
+  `basins_bin` and `density_bin` take an optional `box_mpc` to compute with
+  the box the viewer shows instead of the one the field was opened with (`0`
+  = unit cells, omitted = the dataset's box, negative = 422), and their
+  `X-Visivo-Spacing`/`X-Visivo-Origin` follow the box actually used;
+  `basins_bin` now also sends them, with `X-Visivo-Downsample-Factors`. A
+  probe that runs into blank voxels while moving away counts as escaped, so a
+  saddle with blank voxels on its unstable axis is not a basin either (a 33³
+  double well with two small blank patches gave its 1089-voxel separatrix as
+  a third basin).
 - **The desktop leaves no local backend process behind (#176, desktop part).**
   The local backend the client starts runs in a process tree of its own (a
   process group on macOS and Linux, a job object that kills its processes when

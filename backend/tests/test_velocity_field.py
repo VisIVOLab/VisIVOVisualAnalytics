@@ -126,6 +126,7 @@ def test_velocity_router_open_and_grid_bin(tmp_path):
     assert g.status_code == 200, g.text
     assert g.headers["X-Visivo-Components"] == "3"
     assert g.headers["X-Visivo-Width"] == str(n)
+    assert g.headers["X-Visivo-Downsample-Factors"] == "1,1,1"
     assert len(g.content) == n * n * n * 3 * 4  # float32 × 3 components
 
     # unknown dataset → 404

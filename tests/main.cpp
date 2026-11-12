@@ -41,6 +41,7 @@
 #include "TestWcsAxisTicks.h"
 #include "TestOpenJobMerge.h"
 #include "TestTaskQuitDrain.h"
+#include "TestVelocityLodGeometry.h"
 #include "TestSystemQuitRedirect.h"
 #include "TestSupportedFormats.h"
 #include "TestFilePreview.h"
@@ -136,5 +137,6 @@ int main(int argc, char *argv[])
     { TestCosmologyTools   t; status |= QTest::qExec(&t, argc, argv); }
     { TestCopilotStatus    t; status |= QTest::qExec(&t, argc, argv); }
     { TestCopilotChoice    t; status |= QTest::qExec(&t, argc, argv); }
+    { TestVelocityLodGeometry t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }
