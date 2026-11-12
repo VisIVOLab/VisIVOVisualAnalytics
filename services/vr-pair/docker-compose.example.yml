@@ -2,6 +2,7 @@
 # coturn TURN server. Copy it, set the values marked CHANGE, then:
 #
 #   openssl rand -hex 32 > turn_secret.txt
+#   openssl rand -hex 32 > pair_secret.txt
 #   docker compose -f docker-compose.example.yml up -d                  # the service only
 #   docker compose -f docker-compose.example.yml --profile turn up -d   # with TURN
 #
@@ -21,8 +22,10 @@ services:
       VR_PAIR_STUN_URLS: "stun:turn.example.org:3478"       # CHANGE, or remove
       VR_PAIR_TURN_URLS: "turn:turn.example.org:3478?transport=udp,turn:turn.example.org:3478?transport=tcp"  # CHANGE, or remove
       VR_PAIR_TURN_SECRET_FILE: /run/secrets/turn_secret
+      VR_PAIR_SECRET_FILE: /run/secrets/pair_secret       # resume codes survive a restart
     secrets:
       - turn_secret
+      - pair_secret
 
   # Optional TURN relay, for networks that keep devices from reaching each
   # other. Its static-auth-secret is the service's TURN secret.
@@ -47,3 +50,5 @@ services:
 secrets:
   turn_secret:
     file: ./turn_secret.txt
+  pair_secret:
+    file: ./pair_secret.txt

@@ -475,6 +475,31 @@ def test_turn_credentials_are_bounded_per_address():
                                  stun_urls=("stun:s.test",)), clock=Clock())
     assert [len(svc.ice_servers("1.2.3.4")) for _ in range(3)] == [2, 2, 1]   # then STUN only
     assert len(svc.ice_servers("5.6.7.8")) == 2
+    for _ in range(1000):
+        svc.ice_servers("1.2.3.4")
+    assert svc.turn_handouts.count("1.2.3.4", svc.clock()) == 2      # refusals keep no history
+
+
+def test_a_resume_code_stays_its_hosts_after_the_service_forgot_it():
+    clock = Clock()
+    svc = S.PairService(S.Config(secret="s3"), clock=clock)
+    owner_host = S.HostConn(ws=None, ip="10.0.0.1")
+    reply, _ = svc.issue(owner_host, "resume", None)
+    svc.host_gone(owner_host)
+    clock.t += svc.config.tombstone_s + 12 * 3600 + 10
+    svc.sweep(force=True)
+    assert reply["code"] not in svc.codes                            # forgotten
+    thief = S.HostConn(ws=None, ip="10.0.0.66")
+    assert svc.issue(thief, "resume", None, reply["code"])[1] == "code-taken"
+    assert svc.issue(thief, "resume", None, reply["code"], "x" * 43)[1] == "code-taken"
+    # A restarted service with the same secret takes it back from its owner.
+    again = S.PairService(S.Config(secret="s3"), clock=Clock())
+    back, reason = again.issue(S.HostConn(ws=None, ip="10.0.0.1"), "resume", None, reply["code"], reply["owner"])
+    assert reason is None and back["owner"] == reply["owner"]
+    # Without the secret, a restart cannot check the key: refused.
+    other = S.PairService(S.Config(), clock=Clock())
+    assert other.issue(S.HostConn(ws=None, ip="10.0.0.1"), "resume", None, reply["code"],
+                       reply["owner"])[1] == "code-taken"
 
 
 def test_hosts_may_be_required_to_present_a_key():

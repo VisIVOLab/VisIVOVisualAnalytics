@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 *.sif
 turn_secret.txt
+pair_secret.txt

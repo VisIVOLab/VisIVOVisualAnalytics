@@ -13,7 +13,8 @@ offer and the answer.
 
 - One Python file, `vr_pair_service.py`, with one dependency (`websockets`).
 - State in memory only: a restart drops the pending codes. A backend
-  registers its headsets' resume codes again when it reconnects.
+  registers its headsets' resume codes again when it reconnects (after a
+  restart, only when `VR_PAIR_SECRET` is set).
 - No host name is built in. The service reads its settings from `VR_PAIR_*`
   variables; a backend finds it through `VISIVO_VR_PAIR_URL` (see
   [Moving the service](#moving-the-service)).
@@ -33,9 +34,11 @@ open with pings:
 | `answer {peer, sdp}`, `ice {peer, candidate}`, `reject {peer, reason}` | `join {peer, offer, kind, code}`, `ice {peer, candidate}` |
 
 `req` is echoed so a host can match answers to requests. A resume code
-comes with an `owner` key, which only the host knows. After a reconnection
-the host sends `new_code` with that `code` and `owner` to register the code
-again; whoever else knows the code (its page does) cannot register it. `join`
+comes with an `owner` key, which only the host knows (an HMAC of the code
+under `VR_PAIR_SECRET`). After a reconnection the host sends `new_code` with
+that `code` and `owner` to register the code again; whoever else knows the
+code (its page does) cannot register it. With `VR_PAIR_SECRET` set, this
+works across a restart of the service too. `join`
 names the code the page typed, so a host with several pending codes knows
 which one was used.
 
@@ -100,6 +103,7 @@ candidate, a code or a TURN credential.
 | `VR_PAIR_HOST_KEYS` / `VR_PAIR_HOST_KEYS_FILE` | *(none: any host)* | Keys a backend must present to connect as a host (comma-separated, or one per line in the file). A backend gives its key in `VISIVO_VR_PAIR_URL` as `?key=…`, or as `Authorization: Bearer …` |
 | `VR_PAIR_JOIN_FAILS_PER_IP` | `20` | Failed joins per address per 10 minutes |
 | `VR_PAIR_GLOBAL_FAILS_PER_MIN` | `600` | Failed joins per minute over all addresses |
+| `VR_PAIR_SECRET` / `VR_PAIR_SECRET_FILE` | *(random per start)* | Signs the owner keys of resume codes; set it (e.g. `openssl rand -hex 32`) so a backend's headsets can resume after the service restarts |
 | `VR_PAIR_TLS_CERT`, `VR_PAIR_TLS_KEY` | *(none)* | Serve `wss://` directly, without a proxy |
 | `VR_PAIR_LOG_LEVEL` | `INFO` | Log level |
 

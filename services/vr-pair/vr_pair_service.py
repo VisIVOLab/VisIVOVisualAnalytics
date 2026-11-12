@@ -40,7 +40,8 @@ A ``pair`` code is 6 characters from a 32-symbol alphabet without 0/O/1/I
 (30 bits), single use, 300 s by default. A ``resume`` code holds 192 random
 bits (url-safe), may be used again until it expires or is revoked, 12 h by
 default. Codes are held in memory only: a restart drops them, and a backend
-registers its resume codes again when it reconnects.
+registers its resume codes again when it reconnects (after a restart, only
+when ``VR_PAIR_SECRET`` is set: it signs the owner keys).
 
 Never logged: offers, answers, candidates, codes, TURN credentials. Only
 counts and reasons.
@@ -176,6 +177,9 @@ class Config:
     global_fails_per_min: int = 600
     tls_cert: str = ""
     tls_key: str = ""
+    #: Signs the owner keys of resume codes. Random per start when unset:
+    #: then resume codes cannot be registered again after a restart.
+    secret: str = ""
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> "Config":
@@ -218,10 +222,20 @@ class Config:
             global_fails_per_min=_env_num(env, "VR_PAIR_GLOBAL_FAILS_PER_MIN", cls.global_fails_per_min),
             tls_cert=env.get("VR_PAIR_TLS_CERT", "").strip(),
             tls_key=env.get("VR_PAIR_TLS_KEY", "").strip(),
+            secret=_secret_from(env),
         )
         if bool(c.tls_cert) != bool(c.tls_key):
             raise SystemExit("VR_PAIR_TLS_CERT and VR_PAIR_TLS_KEY go together")
         return c
+
+
+def _secret_from(env: dict) -> str:
+    secret = env.get("VR_PAIR_SECRET", "")
+    path = env.get("VR_PAIR_SECRET_FILE", "").strip()
+    if path:
+        with open(path, encoding="utf-8") as fh:
+            secret = fh.read().strip()
+    return secret
 
 
 def normalize_code(raw: str) -> str:
@@ -280,9 +294,6 @@ class Code:
     expires: float                  # service clock
     state: str = "live"             # live | used | expired | revoked | host-gone
     forget_at: float = 0.0          # when a code that is no longer live is dropped
-    #: SHA-256 of a resume code's owner key: only the host holding the key
-    #: may register the code again (the page knows the code, not the key).
-    owner_hash: str = ""
 
 
 @dataclass
@@ -353,6 +364,7 @@ class PairService:
         self.ip_codes = SlidingCount(60.0)
         self.turn_handouts = SlidingCount(config.turn_window_s)
         self.stats: Counter[str] = Counter()
+        self._secret = (config.secret or secrets.token_urlsafe(32)).encode()
         self._swept = 0.0
 
     # ── Configuration-derived answers ────────────────────────────────────
@@ -378,9 +390,14 @@ class PairService:
         if c.stun_urls:
             out.append({"urls": list(c.stun_urls)})
         turn = bool(c.turn_urls)
-        if turn and ip is not None and self.turn_handouts.hit(ip, self.clock()) > c.turn_per_ip:
-            self.stats["turn_withheld"] += 1
-            turn = False
+        if turn and ip is not None:
+            now = self.clock()
+            # Counted only when handed out: refusals keep no history.
+            if self.turn_handouts.count(ip, now) >= c.turn_per_ip:
+                self.stats["turn_withheld"] += 1
+                turn = False
+            else:
+                self.turn_handouts.hit(ip, now)
         if turn:
             if c.turn_secret:
                 user, cred = turn_credentials(c.turn_secret, c.turn_ttl, c.turn_user)
@@ -403,6 +420,13 @@ class PairService:
         return str(addr[0]) if addr else "?"
 
     # ── Codes ─────────────────────────────────────────────────────────────
+
+    def owner_key(self, code: str) -> str:
+        """The owner key of a resume code: given to the host that issued it,
+        needed to register it again, and never to the page (which knows the
+        code). An HMAC of the code, so it needs no record to be checked."""
+        digest = hmac.new(self._secret, code.encode(), hashlib.sha256).digest()
+        return base64.urlsafe_b64encode(digest).decode().rstrip("=")
 
     def sweep(self, now: float | None = None, force: bool = False) -> None:
         """Live codes past their expiry become ``expired``; codes no longer
@@ -457,18 +481,19 @@ class PairService:
         if (sum(1 for c in live_all if c.host is host) >= cfg.live_codes_per_host
                 or len(live_all) >= cfg.max_codes):
             return None, "too-many-codes"
-        owner_hash = ""
         if wanted is not None:
             if kind != "resume" or not isinstance(wanted, str) or not RESUME_RE.match(wanted):
                 return None, "bad-request"
-            held = self.codes.get(wanted)
-            given = hashlib.sha256(owner.encode()).hexdigest() if isinstance(owner, str) and owner else ""
-            if held is not None and held.owner_hash and not hmac.compare_digest(held.owner_hash, given):
+            # The owner key is checked against the code itself, so it holds
+            # whatever the service remembers (a forgotten record, a restart
+            # with the same VR_PAIR_SECRET).
+            given = owner if isinstance(owner, str) else ""
+            if not hmac.compare_digest(self.owner_key(wanted).encode(), given.encode()):
                 return None, "code-taken"
+            held = self.codes.get(wanted)
             if held is not None and held.state == "live" and held.host is not host and held.host.alive:
                 return None, "code-taken"
             code = wanted
-            owner_hash = given
         else:
             for _ in range(32):
                 code = ("".join(secrets.choice(PAIR_ALPHABET) for _ in range(PAIR_LEN))
@@ -479,15 +504,10 @@ class PairService:
                 return None, "too-many-codes"
         answer: dict = {"code": code, "kind": kind, "expires_in": ttl}
         if kind == "resume":
-            if owner_hash:
-                answer["owner"] = owner
-            else:
-                key = secrets.token_urlsafe(24)
-                owner_hash = hashlib.sha256(key.encode()).hexdigest()
-                answer["owner"] = key
+            answer["owner"] = self.owner_key(code)
         host.issued.append(now)
         self.ip_codes.hit(host.ip, now)
-        self.codes[code] = Code(code=code, kind=kind, host=host, expires=now + ttl, owner_hash=owner_hash)
+        self.codes[code] = Code(code=code, kind=kind, host=host, expires=now + ttl)
         self._cap_tombstones()
         self.stats[f"issued_{kind}"] += 1
         return answer, None
