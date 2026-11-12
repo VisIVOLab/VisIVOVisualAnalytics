@@ -187,7 +187,7 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
   let guidePage = 0;
   function showGuide(i = 0) {
     guidePage = i;
-    notices.show(guideNotice(i), { force: true });
+    notices.show(guideNotice(i, ctx.guideOptions ? ctx.guideOptions() : {}), { force: true });
     render();
   }
 
@@ -198,8 +198,8 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
     if (id === 'guide-next' || id === 'guide-back') { showGuide(guideStep(guidePage, id)); return; }
     if (id === 'guide-close') { notices.clear('guide'); ctx.onGuideSeen(); render(); return; }
     if (id === 'dismiss') { if (cur) notices.dismiss(cur.id); render(); return; }
-    // A sticky notice folded into a line on the panel until its state changes
-    // ("?" on the panel brings it back).
+    // A sticky notice folded into a line on the menu until its state changes
+    // (the menu's Help → Guide brings it back).
     if (id === 'hide') { if (cur) { notices.hide(cur.id); log('debug', 'notice-hidden', cur.id); } render(); return; }
     if (id === 'retry') { life.retryNow(); ctx.onRetry(); return; }
     if (id === 'reload') { win.location.reload(); return; }
@@ -295,14 +295,15 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
 
   return {
     notices, diag, life, log, showGuide, act, render, recover, requestFailed,
-    cardForFrame, cardPointer, xrFrame, xrStarted, diagnostics, guideText,
+    cardForFrame, cardPointer, xrFrame, xrStarted, diagnostics,
+    guideText: () => guideText(ctx.guideOptions ? ctx.guideOptions() : {}),
     get cardHit() { return card.hit; },
     /** The card on show: its model (world), layout and notice (debug hooks). */
     get card() { return card; },
     get cardOnShow() { return !!card.model; },
     /** The line the panel shows for a hidden sticky notice, or ''. */
     badge() { return notices.badge(); },
-    /** "?" on the panel: a hidden notice first, else the guide. */
+    /** The menu's Help → Guide: a hidden notice first, else the guide. */
     help() { if (notices.unhideAll()) render(); else showGuide(0); },
     start() { life.start(); },
     /** Messages the page shows for its own events (context loss, XR end, budget). */

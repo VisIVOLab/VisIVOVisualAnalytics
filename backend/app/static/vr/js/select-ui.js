@@ -71,12 +71,15 @@ export function createSelection(ctx) {
     return modelRayToBox(mo, M.sub(m1, mo));
   }
 
-  function pickBox(ray, stepVox = 0.25) {
+  /** The pick along a box-space ray inside the clipping box (or `box`
+   *  {min, max}: Clip's slab tool looks along every channel, issue #201). */
+  function pickBox(ray, stepVox = 0.25, box = null) {
     const v = vol();
     if (!v) return null;
     const s = st();
+    const b = box || s.clip;
     return S.pickRay(v, ray.o, ray.d, {
-      thr: s.thrNorm, boxMin: s.clip.min, boxMax: s.clip.max, mode: s.mode === 1 ? 1 : 0, stepVox,
+      thr: s.thrNorm, boxMin: b.min, boxMax: b.max, mode: s.mode === 1 ? 1 : 0, stepVox,
     });
   }
 
@@ -543,8 +546,8 @@ export function createSelection(ctx) {
       const marker = sp.axis[sp.channel];
       drawSpectrum(c, 60, y + 4, W - 90, H - y - 40, sp.axis, sp.values, marker, '#4fa3ff', sp.unit, sp.axisLabel);
     } else if (!sel.pick) {
-      line('Trigger (or click): ' + (sel.tool === 'box' ? 'two corners of a box' : 'point at the emission'), '#9aa3b2');
-      line('Left trigger (or the page): next tool', '#9aa3b2');
+      line('Select mode, trigger (or click): ' + (sel.tool === 'box' ? 'two corners of a box' : 'point at the emission'), '#9aa3b2');
+      line('Secondary stick ←/→ (or the menu\'s Mode tab): next tool', '#9aa3b2');
     }
     if (domCanvas) {
       const d = domCanvas.getContext('2d');

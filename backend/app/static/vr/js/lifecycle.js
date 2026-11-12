@@ -111,7 +111,7 @@ export function isHeadsetBrowser(ua) {
  * sticky, badge}. `actions` are {id, label} the page wires: 'retry',
  * 'reload', 'exit-vr', 'dismiss', 'hide', 'reopen', 'enter-vr'. A sticky
  * notice stays while its condition lasts; 'hide' folds it into `badge`, a
- * short line on the panel, until the condition changes. `ctx`: {loopback,
+ * short line on the hand menu, until the condition changes. `ctx`: {loopback,
  * headset, inVR, attempts, why, detail, status}.
  */
 export function noticeFor(kind, ctx = {}) {

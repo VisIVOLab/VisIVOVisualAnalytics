@@ -1,6 +1,8 @@
-// The in-VR control panel (issue #172): a canvas drawn to a texture on a quad
-// that stays where it was put in the room (never with the head), used with
-// the right controller's ray and trigger (or the mouse in a desktop browser).
+// The in-VR control panel (issue #172): a canvas drawn to a texture, used with
+// the controller's ray and trigger (or the mouse in a desktop browser). Since
+// issue #201 it is the Look page of the hand menu (hand-menu.js), drawn there
+// with `embedded`; the ray-quad hit and the pointer serve the menu and the
+// result windows (windows.js) too.
 // The layout, the ray-quad hit and the pointer logic are pure and unit-tested
 // (backend/tests/vr/vr-panel.test.mjs); drawPanel needs only a 2-D context.
 
@@ -252,7 +254,7 @@ function fit(c, text, maxW) {
  * thrSource, cmax: {f, text}, opacity: {f, text}, slab: {lo, hi, text},
  * refine: {on, text}, tool, status, hint}; `ui`: {hover, active}.
  */
-export function drawPanel(c, layout, view, ui = {}) {
+export function drawPanel(c, layout, view, ui = {}, { embedded = false } = {}) {
   const [W, H] = PANEL_PX;
   c.clearRect(0, 0, W, H);
   c.fillStyle = C.bg;
@@ -267,9 +269,12 @@ export function drawPanel(c, layout, view, ui = {}) {
   c.fillText(fit(c, view.title || 'VisIVO VR', W - 330), 20, 37);
   c.font = '22px -apple-system, system-ui, sans-serif';
   c.fillStyle = C.muted;
-  c.textAlign = 'right';
-  c.fillText('⠿ drag to move', W - 108, 37);
-  c.textAlign = 'left';
+  // In the hand menu (issue #201) the panel is a page: nothing to drag.
+  if (!embedded) {
+    c.textAlign = 'right';
+    c.fillText('⠿ drag to move', W - 108, 37);
+    c.textAlign = 'left';
+  }
   c.font = '24px ui-monospace, Menlo, monospace';
   (view.info || []).slice(0, 2).forEach((l, i) => { c.fillStyle = i ? C.muted : C.fg; c.fillText(fit(c, l, W - 40), 20, 92 + i * 28); });
 

@@ -1,7 +1,8 @@
 // Per-viewer conveniences of the VR page (issue #172), kept in this browser's
-// localStorage: colour map, threshold source, refinement settings, the in-VR
-// panel's position, the last selection tool and whether the controls guide
-// was seen. Nothing here is a result or a
+// localStorage: colour map, threshold source, refinement settings, the last
+// selection tool, whether the controls guide was seen, and the controls'
+// preferences of issue #201 (left-handed, the labels by the controllers,
+// haptics) and where the result windows were moved to. Nothing here is a result or a
 // secret (the token and the pairing are never stored here). Every access is
 // guarded: storage may be missing, full or refused (private mode, a headset
 // browser's settings), and the page then works with the defaults.
@@ -14,17 +15,22 @@ export const DEFAULT_SETTINGS = {
   colormap: 'viridis',
   thrSource: 'reduced',          // 'reduced' (for this binning) | 'cube' (the full cube's, as on the desktop)
   refine: { enabled: true, scale: 1, quality: 95, depth: true },
-  panel: null,                   // {right, up, fwd, yaw}: offset from the cube's first placement (metres, radians)
   tool: 'probe',
   guideSeen: false,              // the first-run controls guide was shown (epic #166)
+  leftHanded: false,             // the left hand points and acts, the right holds the menu (#201)
+  labels: true,                  // the labels by the controllers' buttons, on at first use (#201)
+  haptics: true,                 // pulses on a press, a result, an error (#201)
+  windows: {},                   // {result|moment|pv: {right, up, fwd, yaw}}: offsets from the cube's first placement
 };
+
+export const WINDOW_IDS = ['result', 'moment', 'pv'];
 
 const finite = (v, lo, hi) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
 
-/** How far the panel may be kept from the cube's first placement (metres, radians). */
+/** How far a window may be kept from the cube's first placement (metres, radians). */
 export const PANEL_LIMITS = { right: 3, up: 2, fwd: 3, yaw: 2 * Math.PI };
 
-/** A panel offset brought within PANEL_LIMITS (a drag may end farther away),
+/** A window offset brought within PANEL_LIMITS (a drag may end farther away),
  *  so what is saved is always what sanitizeSettings keeps. */
 export function clampPanelOffset(off) {
   const out = {};
@@ -39,7 +45,8 @@ export function clampPanelOffset(off) {
 export function sanitizeSettings(raw, { colormaps = null, tools = null } = {}) {
   const d = DEFAULT_SETTINGS;
   const s = raw && typeof raw === 'object' ? raw : {};
-  const out = { colormap: d.colormap, thrSource: d.thrSource, refine: { ...d.refine }, panel: null, tool: d.tool, guideSeen: d.guideSeen };
+  const out = { colormap: d.colormap, thrSource: d.thrSource, refine: { ...d.refine }, tool: d.tool, guideSeen: d.guideSeen,
+    leftHanded: d.leftHanded, labels: d.labels, haptics: d.haptics, windows: {} };
   if (typeof s.colormap === 'string' && (!colormaps || colormaps.includes(s.colormap))) out.colormap = s.colormap;
   if (s.thrSource === 'reduced' || s.thrSource === 'cube') out.thrSource = s.thrSource;
   const r = s.refine && typeof s.refine === 'object' ? s.refine : {};
@@ -47,12 +54,15 @@ export function sanitizeSettings(raw, { colormaps = null, tools = null } = {}) {
   if ([0.4, 0.6, 0.8, 1].includes(r.scale)) out.refine.scale = r.scale;
   if ([70, 85, 95].includes(r.quality)) out.refine.quality = r.quality;
   if (typeof r.depth === 'boolean') out.refine.depth = r.depth;
-  const p = s.panel;
   const lim = PANEL_LIMITS;
-  if (p && typeof p === 'object' && finite(p.right, -lim.right, lim.right) && finite(p.up, -lim.up, lim.up)
-      && finite(p.fwd, -lim.fwd, lim.fwd) && finite(p.yaw, -lim.yaw, lim.yaw)) {
-    out.panel = { right: p.right, up: p.up, fwd: p.fwd, yaw: p.yaw };
+  const okOffset = (p) => p && typeof p === 'object' && finite(p.right, -lim.right, lim.right) && finite(p.up, -lim.up, lim.up)
+      && finite(p.fwd, -lim.fwd, lim.fwd) && finite(p.yaw, -lim.yaw, lim.yaw);
+  const w = s.windows && typeof s.windows === 'object' ? s.windows : {};
+  for (const id of WINDOW_IDS) {
+    const p = w[id];
+    if (okOffset(p)) out.windows[id] = { right: p.right, up: p.up, fwd: p.fwd, yaw: p.yaw };
   }
+  for (const k of ['leftHanded', 'labels', 'haptics']) if (typeof s[k] === 'boolean') out[k] = s[k];
   if (typeof s.tool === 'string' && (!tools || tools.includes(s.tool))) out.tool = s.tool;
   if (typeof s.guideSeen === 'boolean') out.guideSeen = s.guideSeen;
   return out;

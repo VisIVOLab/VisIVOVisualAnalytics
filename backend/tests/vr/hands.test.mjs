@@ -218,7 +218,8 @@ test('the WebXR layer: a tracked hand is the page\'s hand object, button 0 the p
   assert.equal(h.g.buttons[0].pressed, true);
   assert.equal(h.g.buttons[1].pressed, false);
   assert.deepEqual(h.g.axes, []);
-  assert.equal(h.g.buttons[4], undefined, 'no A/B/X/Y on a hand');
+  assert.equal(h.g.buttons[4].pressed, h.palmUp, 'button 4 is the palm up (the menu on the secondary hand)');
+  assert.equal(h.g.buttons[5].pressed, false, 'no upper face button on a hand');
   // The system's ray (targetRaySpace): -z of its pose.
   assert.deepEqual(h.ray.d.map((v) => Math.round(v * 1e6) / 1e6 + 0), [0, 0, -1]);
   close(h.pos[1], 1.2, 0.05);
@@ -234,4 +235,33 @@ test('the WebXR layer: a tracked hand is the page\'s hand object, button 0 the p
   assert.ok(H.handSegments(h, [1, 1, 1, 1]).length >= 5 * 3 + 1 + 3);
   tr.keep(new Set());
   assert.equal(tr.hands.size, 0);
+});
+
+test('palm up (issue #201): either hand, any heading, with hysteresis; never in a fist', () => {
+  const rand = rng(7);
+  const mirror = (j) => Object.fromEntries(Object.entries(j).map(([k, v]) => [k, { ...v, p: [-v.p[0], v.p[1], v.p[2]] }]));
+  // The synthetic hand is a right hand, palm toward +z; mirrored in x, a left hand.
+  const palmUp = M.rotation([1, 0, 0], -Math.PI / 2);       // +z (the palm) to +y
+  const palmDown = M.rotation([1, 0, 0], Math.PI / 2);
+  for (const handed of ['right', 'left']) {
+    const shape = (tips, pose) => {
+      const j = hand(tips, M.identity());
+      const jj = handed === 'left' ? mirror(j) : j;
+      return Object.fromEntries(Object.entries(jj).map(([k, v]) => [k, { ...v, p: M.transformPoint(pose, v.p) }]));
+    };
+    for (let i = 0; i < 50; i++) {
+      const turn = M.multiply(M.translation(0, 1.1, -0.3), M.rotation([0, 1, 0], rand() * 6.28));
+      assert.ok(H.palmUpness(shape(OPEN_TIPS, M.multiply(turn, palmUp)), handed) > 0.95, `${handed} up`);
+      assert.ok(H.palmUpness(shape(OPEN_TIPS, M.multiply(turn, palmDown)), handed) < -0.95, `${handed} down`);
+    }
+    const p = new H.PalmUp();
+    const tilt = (deg) => shape(OPEN_TIPS, M.multiply(M.rotation([1, 0, 0], (deg * Math.PI) / 180), palmUp));
+    // Up at 30° off vertical; still up at 55°; off at 70°; not again until within about 45°.
+    assert.deepEqual([30, 55, 70, 55, 40].map((d) => p.update(tilt(d), handed)), [true, true, false, false, true]);
+    assert.equal(p.update(tilt(10), handed, true), false, 'a closed hand is not the menu');
+  }
+  // On the page's hand object, button 4 (the menu's place on a controller).
+  const o = H.handObject(hand(OPEN_TIPS), { pinch: false, grip: false }, null, true);
+  assert.equal(o.g.buttons[4].pressed, true);
+  assert.equal(o.palmUp, true);
 });

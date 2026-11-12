@@ -1,6 +1,7 @@
 // VisIVO VR page (issue #167): a reduced cube rendered on the headset's GPU.
 // Desktop mode (no XR) for development; WebXR immersive-vr / immersive-ar on
-// the Quest. See docs/user-guide/vr-headset.md.
+// the Quest. Controls: fixed hand roles, one hand menu, explicit modes
+// (issue #201). See docs/user-guide/vr/.
 
 import * as M from './mat4.js';
 import { Renderer } from './renderer.js';
@@ -11,11 +12,16 @@ import { createSelection, TOOLS, TOOL_NAMES } from './select-ui.js';
 import { Refiner, desktopEyes } from './refine-client.js';
 import { transferFunction, cropBox, cropError } from './refine.js';
 import { pairingFallback } from './pairing.js';
-import { loadSettings, saveSettings, clampPanelOffset } from './settings.js';
+import { loadSettings, saveSettings, clampPanelOffset, WINDOW_IDS } from './settings.js';
 import * as P from './vr-panel.js';
 import { createLayers, pairedMode } from './layers.js';
 import { createAnalysis } from './analysis.js';
-import * as TP from './tools-panel.js';
+import { PLANE_SIZE } from './product-canvas.js';
+// The controls of issue #201: roles and modes, the hand menu, result windows, readout.
+import * as C from './controls.js';
+import * as HM from './hand-menu.js';
+import * as W from './windows.js';
+import * as RO from './readout.js';
 import { HandTracker, handSegments } from './hands.js';
 import { createShare, boxGeometry, lassoMeta, boxMeta } from './share.js';
 import { RefineDraw } from './refine-gl.js';
@@ -73,7 +79,7 @@ const selection = createSelection({
 let selectionDirty = true;
 
 // More analysis in the headset (issue #191): lasso seeds, Isolate/Remove, the
-// moment of the selection, the PV path; their panel hangs under the control panel.
+// moment of the selection, the PV path; their page is the menu's Analysis tab.
 const analysis = createAnalysis({
   state, selection, renderer: R,
   backend: () => (state.open ? backend : null),
@@ -159,6 +165,7 @@ const shell = createShell({
     loading: () => state.loading > 0,
     loadGen: () => state.loadGen,
     onGuideSeen: () => { if (!settings.guideSeen) { settings.guideSeen = true; persist(); } },
+    guideOptions: () => ({ leftHanded: settings.leftHanded }),
     onRetry: () => refiner.retrySoon(),
     publicInfo: (opts) => new Backend('').info(opts),
     summary: () => diagnosticsSummary(),
@@ -178,7 +185,7 @@ for (const name of COLORMAP_NAMES) {
 // once the page's controls exist (below).
 let layers = null;
 
-/** The colour map, from the page, the A button or the in-VR panel. */
+/** The colour map, from the page, the secondary stick or the menu. */
 function setColormap(name) {
   state.colormap = name;
   R.setColormap(name);
@@ -274,7 +281,7 @@ $('zstretch').addEventListener('input', () => {
 
 // Selection controls (issue #171).
 if (selection.domCanvas) $('sel-panel').appendChild(selection.domCanvas);
-$('sel-tool').addEventListener('change', () => selection.setTool($('sel-tool').value));
+$('sel-tool').addEventListener('change', () => { setMode('select'); selection.setTool($('sel-tool').value); });
 $('sel-clear').addEventListener('click', () => { selection.clear(); analysis.sync(); });
 $('sel-seedat').addEventListener('change', () => { selection.sel.seedAt = $('sel-seedat').value; });
 $('sel-snap').addEventListener('change', () => { selection.sel.snap = $('sel-snap').checked; });
@@ -327,7 +334,7 @@ function saveRefine() {
     quality: readNumber('refine-quality'), depth: $('refine-depth').checked };
   persist();
 }
-/** Refinement on or off, from the page or the in-VR panel. */
+/** Refinement on or off, from the page or the menu. */
 function setRefine(on) {
   $('refine').checked = on;
   refiner.setEnabled(on);
@@ -712,6 +719,9 @@ function installCube(info, cube, open, path = '') {
   refiner.setDataset(open ? open.dataset_id : null, { outOfCore: !!(info && info.render_out_of_core) });
   state.load = { ...state.load, uploadMs: up.uploadMs, macroMs: up.macroMs, textureMB: up.textureBytes / 1e6 };
   state.clip = { min: [0, 0, 0], max: [1, 1, 1] };
+  ui.undo.clear();
+  ui.pin = null;
+  ui.clipDrag = null;
   applyExtent();
   resetThreshold();
   const l = state.load;
@@ -907,9 +917,10 @@ function hudLines(targetHz) {
   const qn = currentQualityNote();
   if (qn) lines.push(qn.slice(0, 60));
   if (state.cube || layers.mode === 'points') lines.push(...refiner.hudLines());
-  if (vrPanel.draws) {
-    lines.push(`panel redraw ${median(vrPanel.drawMs).toFixed(2)} ms + upload ${median(vrPanel.uploadMs).toFixed(2)} ms (${vrPanel.draws} redraws)`);
+  if (menu.draws) {
+    lines.push(`menu redraw ${median(menu.drawMs).toFixed(2)} ms + upload ${median(menu.uploadMs).toFixed(2)} ms (${menu.draws} redraws)`);
   }
+  if (readout.ms.length) lines.push(`readout redraw ${median(readout.ms).toFixed(2)} ms   mode ${modeText()}`);
   if (xr) {
     const L = xr.layer;
     lines.push(`eye buffer ${L.framebufferWidth}×${L.framebufferHeight}  scale ${xr.fbScale}  foveation ${'fixedFoveation' in L ? L.fixedFoveation : 'n/a'}`);
@@ -931,39 +942,138 @@ function drawHudCanvas(lines) {
   lines.forEach((l, i) => ctx.fillText(l, 14, 12 + i * 31));
 }
 
-// ── The in-VR panel (issue #172) ────────────────────────────────────────────
-// The page's main controls on a quad in the room, used with the right ray and
-// trigger. It stays where it was put (left of the cube by default; drag its
-// title bar to move it, the place is kept); left stick click hides it. In a
-// desktop browser it is shown in the 3-D view with ?panel3d (or the box on
-// the page) and used with the mouse, through the same ray code.
+// ── The hand menu, result windows, labels and readout (issue #201) ──────────
+// One menu, held open by the secondary hand's lower button (or its palm turned
+// up) next to that wrist, used with the primary ray and trigger: modes and
+// tools, the look (the former panel), analysis (the former analysis panel),
+// layers (the former strip), settings and help. The results stand in windows
+// that the ray moves by their title bar and closes with ×. In a desktop
+// browser the menu and the windows are drawn in the 3-D view with ?panel3d (or
+// the box on the page) and used with the mouse, through the same ray code.
 const DESKTOP_ANCHOR = { p: [0, 0, 0], yaw: 0 };
-const DESKTOP_OFFSET = { right: 0.95, up: 0, fwd: -0.3, yaw: -0.45 };   // right: the page's panel is on the left
-const vrPanel = {
-  layout: P.panelLayout(),
-  canvas: Object.assign(document.createElement('canvas'), { width: P.PANEL_PX[0], height: P.PANEL_PX[1] }),
-  tex: null, key: '', drawnAt: 0,
-  visible: true,
+const DESKTOP_MENU = { right: 0.95, up: 0, fwd: -0.3, yaw: -0.45 };   // right: the page's panel is on the left
+const ui = {
+  mode: 'explore', clipTool: 'slab', page: 'mode', helpMode: null,
+  menu: { pinned: false, armed: false, wasHeld: false, open: false },
+  menuModel: null,     // the menu's pose when it was last shown (a kept menu stays there)
   desktop: query.has('panel3d'),
-  offset: settings.panel || { ...P.DEFAULT_OFFSET },
-  desktopOffset: { ...DESKTOP_OFFSET },
-  hit: null, drag: null,
-  drawMs: [], uploadMs: [], draws: 0,
+  undo: new C.UndoStack(),
+  pin: null,           // the pinned readout: {p} (box coordinates)
+  sliding: null,       // the menu slider held: one undo step per drag
+  clipDrag: null,      // a face of the clipping box dragged (Clip, box tool)
+  hit: null,           // where the primary ray meets the menu or a window: {point, model}
+  busy: { busy: '', error: '' },   // the tools' state last frame, for the haptics
 };
-vrPanel.pointer = new P.PanelPointer(vrPanel.layout, { rangeValue: () => [state.clip.min[2], state.clip.max[2]] });
-$('panel3d').checked = vrPanel.desktop;
-$('panel3d').addEventListener('change', () => { vrPanel.desktop = $('panel3d').checked; });
+const menu = {
+  canvas: Object.assign(document.createElement('canvas'), { width: HM.MENU_PX[0], height: HM.MENU_PX[1] }),
+  tex: null, key: '', drawnAt: 0, draws: 0, drawMs: [], uploadMs: [], pageLayout: [],
+  pointer: new P.PanelPointer([], { rangeValue: () => [state.clip.min[2], state.clip.max[2]] }),
+};
+$('panel3d').checked = ui.desktop;
+$('panel3d').addEventListener('change', () => { ui.desktop = $('panel3d').checked; });
+$('left-handed').checked = settings.leftHanded;
+$('left-handed').addEventListener('change', () => setSetting('leftHanded', $('left-handed').checked));
+$('labels').checked = settings.labels;
+$('labels').addEventListener('change', () => setSetting('labels', $('labels').checked));
+$('ui-mode').addEventListener('change', () => setMode($('ui-mode').value));
 
-function panelAnchor() { return xr ? xr.place : DESKTOP_ANCHOR; }
-function panelOffset() { return xr ? vrPanel.offset : vrPanel.desktopOffset; }
-function panelWorld() { return P.panelModel(panelAnchor(), panelOffset()); }
+function setSetting(key, value) {
+  settings[key] = value;
+  persist();
+  if (key === 'leftHanded') {
+    $('left-handed').checked = value;
+    // Pressed on the menu, which the old secondary hand holds open: kept open
+    // (the next press of the new menu button closes it).
+    if (xr && ui.menu.open) Object.assign(ui.menu, { pinned: true, armed: false });
+  }
+  if (key === 'labels') $('labels').checked = value;
+}
 
-/** What the panel shows, as plain values (its key decides a redraw). */
-function panelView() {
+/** The tool of the mode: the selection tool in Select, slab or box in Clip. */
+function currentSub() {
+  return ui.mode === 'select' ? selection.sel.tool : ui.mode === 'clip' ? ui.clipTool : null;
+}
+function inputKinds() {
+  const r = C.roles(settings.leftHanded);
+  const kind = (h) => (xr && xr.hands[h] && xr.hands[h].isHand ? 'hand' : 'controller');
+  return { primary: kind(r.primary), secondary: kind(r.secondary) };
+}
+function mapOpts(mode = ui.mode, sub = currentSub()) {
+  return { mode, sub, leftHanded: settings.leftHanded, pvArmed: analysis.pv.state.armed, input: inputKinds() };
+}
+function modeText() { return C.modeLine(ui.mode, currentSub(), { pvArmed: analysis.pv.state.armed }); }
+
+function setMode(m) {
+  if (!C.MODES.includes(m) || m === ui.mode) return;
+  ui.mode = m;
+  $('ui-mode').value = m;
+  ui.clipDrag = null;
+  ui.pin = null;
+}
+function setClipTool(t) { ui.clipTool = t; ui.clipDrag = null; }
+
+/** Haptics on the hand in `role` (issue #201): 'press', 'done' or 'error'. */
+function buzz(role, kind) {
+  if (!xr || !settings.haptics) return;
+  const r = C.roles(settings.leftHanded);
+  const h = xr.hands[role === 'primary' || role === 'secondary' ? r[role] : role];
+  if (h && !h.isHand) C.pulse(h.g, kind);
+}
+
+// ── Undo: the look before each change ──────────────────────────────────────
+function lookSnapshot() {
+  return { thrNorm: state.thrNorm, cmaxNorm: state.cmaxNorm, opacity: state.opacity, colormap: state.colormap,
+    mode: state.mode, gamma: state.gamma, thrSource: $('thr-source').value,
+    clip: { min: [...state.clip.min], max: [...state.clip.max] } };
+}
+function pushUndo() { if (state.cube) ui.undo.push(lookSnapshot()); }
+function undo() {
+  const s = ui.undo.pop();
+  if (!s) { buzz('primary', 'error'); return false; }
+  ui.clipDrag = null;
+  if (s.thrSource && s.thrSource !== $('thr-source').value) {
+    $('thr-source').value = s.thrSource;
+    settings.thrSource = s.thrSource; persist();
+  }
+  Object.assign(state, { thrNorm: s.thrNorm, cmaxNorm: s.cmaxNorm, opacity: s.opacity, mode: s.mode, gamma: s.gamma,
+    clip: { min: [...s.clip.min], max: [...s.clip.max] } });
+  setColormap(s.colormap);
+  $('rmode').value = String(state.mode);
+  $('opacity').value = Math.round(state.opacity * 100);
+  $('gamma').value = String(state.gamma);
+  decorationsChanged();
+  labelsChanged();
+  return true;
+}
+
+/** The view back to its start: in the headset the cube in front of you again
+ *  (at its first size; the windows follow it), on the page the camera. */
+function resetView() {
+  if (xr && xr.pose) {
+    xr.place = placeInFront(xr.pose);
+    state.model = placedModel(xr.place);
+    xr.grab = null;
+  } else if (!xr) {
+    Object.assign(cam, { yaw: -0.5, pitch: 0.35, dist: 2.0, turn: 0 });
+  }
+}
+
+const slabOf = () => ({ c: (state.clip.min[2] + state.clip.max[2]) / 2, w: (state.clip.max[2] - state.clip.min[2]) / 2 });
+function setSlab(s) {
+  const k = C.clampSlab(s.c, s.w);
+  state.clip.min[2] = k.c - k.w;
+  state.clip.max[2] = k.c + k.w;
+  decorationsChanged();
+}
+
+// ── The Look page: what it shows (the former panel's view) ─────────────────
+/** What the Look page shows, as plain values. */
+function lookView() {
   const c = state.cube, info = state.info;
   const unit = c && c.bunit ? ` ${c.bunit}` : '';
   const name = state.openPath ? state.openPath.split('/').pop()
     : c ? (c.mode === 'synthetic' ? 'synthetic cube' : `dataset ${state.open ? state.open.dataset_id : ''}`) : 'no cube';
+  const r = C.roles(settings.leftHanded), S = C.buttonNames(r.secondary), Pb = C.buttonNames(r.primary);
   const v = {
     title: `VisIVO VR · ${name}`,
     info: c ? [
@@ -980,7 +1090,7 @@ function panelView() {
     // a selection's error may be older than it.
     status: shell.badge() || selection.sel.busy || selection.sel.error || currentQualityNote(),
     statusError: !!shell.badge() || (!selection.sel.busy && !!selection.sel.error),
-    hint: 'Right trigger: use   Left trigger: next tool   Left stick click: hide',
+    hint: `Hold ${S.lower}: menu   ${Pb.lower}: next mode   ${Pb.upper}: undo   ${S.upper}: reset view`,
   };
   if (info && info.full_shape) {
     const nz = info.full_shape[2];
@@ -1012,56 +1122,265 @@ function refineShort() {
   return refiner.status === 'refined' ? 'refined (still view)' : refiner.status;
 }
 
-/** The panel's texture, redrawn when what it shows changed (at most 30 times a second). */
-function panelTexture(now) {
-  if (!vrPanel.tex) vrPanel.tex = R.createPanel();
-  const view = panelView();
-  const ui = { hover: vrPanel.pointer.hover, active: vrPanel.pointer.active ? vrPanel.pointer.active.id : null };
-  const key = JSON.stringify([view, ui]);
-  if (key !== vrPanel.key && (now - vrPanel.drawnAt >= 33 || !vrPanel.draws)) {
-    const t0 = performance.now();
-    P.drawPanel(vrPanel.canvas.getContext('2d'), vrPanel.layout, view, ui);
-    const t1 = performance.now();
-    R.updatePanel(vrPanel.tex, vrPanel.canvas);
-    const t2 = performance.now();
-    vrPanel.drawMs.push(t1 - t0); vrPanel.uploadMs.push(t2 - t1);
-    if (vrPanel.drawMs.length > 60) { vrPanel.drawMs.shift(); vrPanel.uploadMs.shift(); }
-    vrPanel.key = key; vrPanel.drawnAt = now; vrPanel.draws++;
+/** The Help page's lines for mode `m`: its controls, its tools, the hands. */
+function helpPage(m) {
+  const subs = C.SUBTOOLS[m];
+  const out = [];
+  for (const sub of subs.length ? subs : [null]) {
+    const lines = C.helpLines(mapOpts(m, sub));
+    out.push([lines[0], '#9fd0ff'], ...lines.slice(1).map((l) => [l, '#e6e9ef']));
   }
-  return vrPanel.tex;
+  const r = C.roles(settings.leftHanded);
+  out.push(`Hands without controllers: pinch = trigger, fist = grip, ${r.secondary} palm up = the menu.`);
+  out.push('Result windows: point at the title bar and hold the trigger to move one; × closes it.');
+  return out;
+}
+
+function menuView() {
+  const lp = layers.menuPage();
+  const hm = ui.helpMode || ui.mode;
+  const look = lookView();
+  return {
+    look, analysis: analysis.view(),
+    mode: { mode: ui.mode, selectTool: selection.sel.tool, clipTool: ui.clipTool, pinned: ui.menu.pinned, canUndo: ui.undo.size > 0,
+      modeLine: modeText(), map: ui.page === 'mode' ? C.helpLines(mapOpts()).slice(1) : null,
+      status: look.status, statusError: look.statusError },
+    layers: { title: lp.title, note: lp.note, buttons: ui.page === 'layers' ? lp.buttons : null },
+    settings: { leftHanded: settings.leftHanded, labels: settings.labels, haptics: settings.haptics, hud: state.hud,
+      governor: state.governorOn, refine: refiner.enabled, refineDepth: refiner.useDepth, refineScaleText: `${refiner.o.scale}×` },
+    help: ui.page === 'help' ? { helpMode: hm, helpLines: helpPage(hm) } : null,
+  };
+}
+
+/** The menu's widgets for the page on show (the Layers page's depend on what is shown). */
+function menuLayout() {
+  const lp = ui.page === 'layers' ? layers.menuPage() : { buttons: [] };
+  menu.pageLayout = HM.pageLayout(ui.page, { layerButtons: lp.buttons });
+  menu.pointer.layout = HM.menuLayout(ui.page, { layerButtons: lp.buttons });
+  return menu.pointer.layout;
+}
+
+/** The menu's texture, redrawn when what it shows changed (at most 30 times a second). */
+function menuTexture(now) {
+  if (!menu.tex) menu.tex = R.createPanel();
+  menuLayout();      // the page may have changed since the pointer's update
+  const view = menuView();
+  const uiState = { hover: menu.pointer.hover, active: menu.pointer.active ? menu.pointer.active.id : null };
+  const key = JSON.stringify([ui.page, view, uiState]);
+  if (key !== menu.key && (now - menu.drawnAt >= 33 || !menu.draws)) {
+    const t0 = performance.now();
+    HM.drawMenu(menu.canvas.getContext('2d'), ui.page, menu.pageLayout, view, uiState);
+    const t1 = performance.now();
+    R.updatePanel(menu.tex, menu.canvas);
+    const t2 = performance.now();
+    menu.drawMs.push(t1 - t0); menu.uploadMs.push(t2 - t1);
+    if (menu.drawMs.length > 60) { menu.drawMs.shift(); menu.uploadMs.shift(); }
+    menu.key = key; menu.drawnAt = now; menu.draws++;
+  }
+  return menu.tex;
 }
 
 const median = (a) => { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
 
-/**
- * The pointer on the panel for this frame: `ray` {o, d} in world space (or
- * null), `pressed` the trigger (or mouse button), `eye` the viewer's position
- * (a dragged panel turns to face it). Returns whether the panel takes the
- * ray (the selection tool then neither hovers nor fires).
- */
-function panelPointer(ray, pressed, eye) {
-  const show = vrPanel.visible && (xr ? !xr.bench : vrPanel.desktop);
-  let hit = show && ray ? P.rayPanel(panelWorld(), P.PANEL_SIZE, ray.o, ray.d) : null;
-  // The cube in front of the panel takes the ray (a slider already held keeps it).
-  if (hit && state.cube && !vrPanel.pointer.active
-      && P.panelBehindCube(hit.t, state.model, state.extent, ray.o, ray.d, state.clip.min, state.clip.max)) {
-    hit = null;
+/** Is the menu on show (held in the headset, or in the desktop's 3-D view)? */
+function menuShown() { return xr ? (!xr.bench && ui.menu.open && !!ui.menuModel) : ui.desktop; }
+/** The menu's pose: by the secondary hand while held, where it was when kept open. */
+function menuWorld() {
+  if (!xr) return P.panelModel(DESKTOP_ANCHOR, DESKTOP_MENU);
+  return ui.menuModel;
+}
+function updateMenuPose() {
+  if (!xr || !ui.menu.open || ui.menu.pinned && ui.menuModel) return;
+  const r = C.roles(settings.leftHanded);
+  const h = xr.hands[r.secondary];
+  if (h && xr.headPos) {
+    ui.menuModel = HM.menuModel(h.pos, xr.headPos, xr.headRight || [1, 0, 0], r.secondary === 'left' ? 1 : -1);
+  } else if (!ui.menuModel && xr.pose) {
+    // No secondary hand tracked: in front of the head, a little low.
+    const m = xr.pose.transform.matrix;
+    const p = M.transformPoint(m, [0, -0.15, -0.5]);
+    ui.menuModel = RO.faceEye(p, xr.headPos);
   }
-  // The analysis panel under it (issue #191): the nearer of the two takes the
-  // ray; a slider held on this one keeps it.
-  const blocked = (t) => !!state.cube && P.panelBehindCube(t, state.model, state.extent, ray.o, ray.d, state.clip.min, state.clip.max);
-  const tools = analysis.pointer(ray, pressed, panelWorld(), show && !!state.cube, blocked, vrPanel.pointer.active ? { t: -Infinity } : hit);
-  if (tools.hit) hit = null;
-  const strip = layers.stripPointer(show && ray && !hit && !tools.takes && !vrPanel.pointer.active ? ray : null,
-    pressed && show && !tools.takes && !vrPanel.pointer.active, panelWorld());
-  vrPanel.hit = hit || tools.hit || (strip ? layers.stripHit() : null);
-  for (const a of vrPanel.pointer.update(hit, pressed && show)) applyPanel(a, ray, eye);
-  return show && (vrPanel.pointer.takesRay() || vrPanel.pointer.owns || tools.takes || strip);
 }
 
-function applyPanel(a, ray, eye) {
+// ── The result windows ──────────────────────────────────────────────────────
+const wins = Object.fromEntries(WINDOW_IDS.map((id) => [id, {
+  id, def: W.WINDOWS[id], pointer: new W.WindowPointer(), drag: null, closedKey: null, model: null, size: null,
+  bar: Object.assign(document.createElement('canvas'), { width: W.BAR_PX[0], height: W.BAR_PX[1] }), barTex: null, barKey: '',
+  offset: settings.windows[id] || { ...W.WINDOWS[id].place }, desktopOffset: { ...W.WINDOWS[id].desktop },
+}]));
+
+/** A window's content this frame: {tex, size}, or null when it has nothing to show or was closed. */
+function windowContent(w) {
+  if (!state.cube || (xr && xr.bench)) return null;
+  if (w.id === 'result') {
+    const s = selection.sel;
+    const has = s.pick || s.lasso || s.spectrum || s.box || s.busy || s.error || s.corner;
+    if (!has && ui.mode !== 'select') return null;
+    const k = resultKey();
+    if (w.closedKey && k.every((v, i) => v === w.closedKey[i])) return null;
+    return { tex: selection.panelTexture(), size: w.def.size };
+  }
+  const tex = analysis.productTexture(w.id);
+  return tex ? { tex, size: PLANE_SIZE } : null;
+}
+/** What the Selection window shows: a new pick, result, state or error opens it again. */
+function resultKey() {
+  const s = selection.sel;
+  return [s.pick, s.spectrum, s.lasso, s.box, s.corner, s.busy, s.error];
+}
+function closeWindow(w) {
+  if (w.id === 'result') w.closedKey = resultKey();
+  else analysis.setShown(w.id, false);
+}
+function windowAnchor() { return xr ? xr.place : DESKTOP_ANCHOR; }
+/** The windows on show, with their poses for this frame. */
+function shownWindows() {
+  if (!xr && !ui.desktop) return [];
+  const out = [];
+  for (const w of Object.values(wins)) {
+    const c = windowContent(w);
+    if (!c) { w.model = null; continue; }
+    w.size = c.size; w.tex = c.tex;
+    w.model = W.windowModel(windowAnchor(), xr ? w.offset : w.desktopOffset);
+    out.push(w);
+  }
+  return out;
+}
+function barTexture(w) {
+  if (!w.barTex) w.barTex = R.createPanel();
+  const uiState = { hover: w.pointer.bar.hover, active: w.pointer.bar.active ? w.pointer.bar.active.id : null };
+  const key = JSON.stringify([w.def.title, uiState]);
+  if (key !== w.barKey) {
+    W.drawBar(w.bar.getContext('2d'), w.def.title, uiState);
+    R.updatePanel(w.barTex, w.bar);
+    w.barKey = key;
+  }
+  return w.barTex;
+}
+function drawWindows(v, list) {
+  for (const w of list) {
+    R.drawPanel(v, w.model, w.tex, w.size);
+    R.drawPanel(v, W.barModel(w.model, w.size), barTexture(w), W.barSize(w.size[0]));
+  }
+}
+
+function applyWindow(w, a, ray, eye) {
+  if (a.type === 'press' && a.id === 'close') { closeWindow(w); buzz('primary', 'press'); return; }
+  if (a.type === 'drag-start') {
+    w.drag = { t: a.hit.t, rel: M.sub(M.position(w.model), a.hit.point) };
+    buzz('primary', 'press');
+  } else if ((a.type === 'drag' || a.type === 'drag-end') && w.drag && ray && eye) {
+    const p = M.add(M.add(ray.o, M.scale3(ray.d, w.drag.t)), w.drag.rel);
+    // Within the limits the settings keep, so a window let go far away is
+    // saved where it stops, not silently dropped on the next load.
+    const off = clampPanelOffset(P.offsetFor(windowAnchor(), p, eye));
+    if (xr) w.offset = off; else w.desktopOffset = off;
+  }
+  if (a.type === 'drag-end') {
+    // Kept for the next sessions in the headset only (the desktop's place is a development view).
+    if (w.drag && xr) { settings.windows = { ...settings.windows, [w.id]: { ...w.offset } }; persist(); }
+    w.drag = null;
+  }
+}
+
+/**
+ * The primary ray on the menu and the windows this frame (world space, or
+ * null), `pressed` the trigger (or the mouse button), `eye` the viewer's
+ * position (a dragged window turns to face it). The nearest surface takes the
+ * ray; one holding a press keeps it. Returns whether they take the ray (the
+ * selection tool then neither hovers nor fires).
+ */
+function uiPointer(ray, pressed, eye) {
+  const surfaces = [];
+  if (menuShown()) {
+    menuLayout();
+    const m = menuWorld();
+    surfaces.push({ kind: 'menu', model: m, hit: ray ? P.rayPanel(m, HM.MENU_SIZE, ray.o, ray.d, HM.MENU_PX) : null,
+      captured: !!menu.pointer.active });
+  }
+  const list = shownWindows();
+  for (const w of list) {
+    const h = W.windowHits(w.model, w.size, ray);
+    let hit = h.t !== null ? { t: h.t, point: h.point } : null;
+    // The cube in front of a window takes the ray (a window held keeps it).
+    if (hit && state.cube && !w.pointer.captured
+        && P.panelBehindCube(hit.t, state.model, state.extent, ray.o, ray.d, state.clip.min, state.clip.max)) hit = null;
+    surfaces.push({ kind: 'window', w, hits: hit ? h : { bar: null, content: null }, hit, captured: w.pointer.captured });
+  }
+  const cap = surfaces.findIndex((s) => s.captured);
+  const win = W.pickSurface(surfaces.map((s) => s.hit), cap);
+  ui.hit = null;
+  let takes = false;
+  surfaces.forEach((s, i) => {
+    const mine = i === win;
+    if (s.kind === 'menu') {
+      for (const a of menu.pointer.update(mine ? s.hit : null, pressed)) applyMenu(a);
+      if (mine && s.hit) ui.hit = { point: s.hit.point, model: s.model };
+      takes = takes || menu.pointer.takesRay() || menu.pointer.owns;
+    } else {
+      for (const a of s.w.pointer.update(mine ? s.hits : { bar: null, content: null }, pressed)) applyWindow(s.w, a, ray, eye);
+      if (mine && s.hit) ui.hit = { point: s.hit.point, model: s.w.model };
+      takes = takes || s.w.pointer.takesRay();
+    }
+  });
+  // Surfaces not on show follow the trigger, so one shown again under a held
+  // trigger does not take that press as a new one.
+  if (!menuShown()) menu.pointer.update(null, pressed);
+  for (const w of Object.values(wins)) if (!list.includes(w)) { w.pointer.update({ bar: null, content: null }, pressed); w.drag = null; }
+  if (!menu.pointer.active) ui.sliding = null;
+  return takes;
+}
+
+/** A press, slide or range on the menu. */
+function applyMenu(a) {
+  if (a.type === 'drag-start' || a.type === 'drag' || a.type === 'drag-end') return;
+  if (a.type === 'press') buzz('primary', 'press');
+  const id = a.id, w = a.widget || {};
+  if (a.type === 'press' && w.group === 'tab') { ui.page = w.value; ui.helpMode = null; return; }
+  const page = ui.page;
+  if (page === 'look') applyLook(a);
+  else if (page === 'analysis' && a.type === 'press') {
+    // A seed mode is for the lasso: Select with the Kinematic Lasso.
+    if (w.group === 'seed') { setMode('select'); if (selection.sel.tool !== 'lasso') selection.setTool('lasso'); }
+    analysis.press(id, w);
+  }
+  else if (page === 'layers' && a.type === 'press') layers.pressStrip(id);
+  else if (page === 'mode' && a.type === 'press') {
+    if (w.group === 'mode') setMode(w.value);
+    else if (w.group === 'sub-select') { setMode('select'); selection.setTool(w.value); }
+    else if (w.group === 'sub-clip') { setMode('clip'); setClipTool(w.value); }
+    else if (id === 'sel-clear') { selection.clear(); analysis.sync(); }
+    else if (id === 'clip-all') { pushUndo(); state.clip.min[2] = 0; state.clip.max[2] = 1; decorationsChanged(); }
+    else if (id === 'clip-reset') { pushUndo(); state.clip = { min: [0, 0, 0], max: [1, 1, 1] }; decorationsChanged(); }
+    else if (id === 'undo') undo();
+    else if (id === 'reset-view') resetView();
+    else if (id === 'menu-pin') { ui.menu.pinned = !ui.menu.pinned; ui.menu.armed = false; }
+  } else if (page === 'settings' && a.type === 'press') {
+    const k = w.key;
+    if (k === 'leftHanded' || k === 'labels' || k === 'haptics') setSetting(k, !settings[k]);
+    else if (k === 'hud') state.hud = !state.hud;
+    else if (k === 'governor') { state.governorOn = !state.governorOn; $('governor').checked = state.governorOn; governor.value = state.spv; }
+    else if (k === 'refine') setRefine(!refiner.enabled);
+    else if (k === 'refineDepth') { $('refine-depth').checked = !refiner.useDepth; refiner.useDepth = $('refine-depth').checked; saveRefine(); }
+    else if (k === 'refineScale') {
+      const steps = [0.4, 0.6, 0.8, 1];
+      const next = steps[(steps.indexOf(refiner.o.scale) + 1) % steps.length];
+      $('refine-scale').value = String(next); refiner.o.scale = next; saveRefine();
+    }
+  } else if (page === 'help' && a.type === 'press') {
+    if (w.group === 'help-mode') ui.helpMode = w.value;
+    else if (id === 'help-guide') shell.help();
+  }
+}
+
+/** The Look page: the former panel's widgets, one undo step per change. */
+function applyLook(a) {
   if (a.type === 'press') {
     const id = a.id;
+    const changesLook = id === 'cmap-prev' || id === 'cmap-next' || a.widget.group === 'mode' || id === 'thr-reset'
+      || a.widget.group === 'thrsrc' || id === 'slab-all';
+    if (changesLook) pushUndo();
     if (id === 'cmap-prev' || id === 'cmap-next') {
       const n = COLORMAP_NAMES.length, i = COLORMAP_NAMES.indexOf(state.colormap);
       setColormap(COLORMAP_NAMES[(i + (id === 'cmap-next' ? 1 : n - 1)) % n]);
@@ -1075,42 +1394,28 @@ function applyPanel(a, ray, eye) {
       resetThreshold();
     } else if (id === 'slab-all') {
       state.clip.min[2] = 0; state.clip.max[2] = 1;
-      if (xr) xr.slab = { c: 0.5, w: 0.5 };
       decorationsChanged();
     } else if (id === 'refine') {
       setRefine(!refiner.enabled);
     } else if (a.widget.group === 'tool') {
+      setMode('select');
       selection.setTool(a.widget.value);
     } else if (id === 'sel-clear') {
       selection.clear();
       analysis.sync();      // the moment and the implicit cube of the cleared selection go
-    } else if (id === 'guide') {
-      shell.help();
     }
-  } else if (a.type === 'slide') {
+    return;
+  }
+  // A slider or the channel range held: one undo step for the whole drag.
+  if (ui.sliding !== a.id) { pushUndo(); ui.sliding = a.id; }
+  if (a.type === 'slide') {
     if (a.id === 'thr') state.thrNorm = Math.min(state.cmaxNorm - 1e-3, sliderToNorm(a.value * 1000));
     else if (a.id === 'cmax') state.cmaxNorm = Math.max(state.thrNorm + 1e-3, sliderToNorm(a.value * 1000));
     else if (a.id === 'opacity') { state.opacity = Math.max(0.01, a.value * 2); $('opacity').value = Math.round(state.opacity * 100); }
     labelsChanged();
   } else if (a.type === 'range') {
     [state.clip.min[2], state.clip.max[2]] = a.value;
-    if (xr) xr.slab = { c: (a.value[0] + a.value[1]) / 2, w: (a.value[1] - a.value[0]) / 2 };
     decorationsChanged();
-  } else if (a.type === 'drag-start') {
-    const m = panelWorld();
-    vrPanel.drag = { t: a.hit.t, rel: M.sub(M.position(m), a.hit.point) };
-  } else if ((a.type === 'drag' || a.type === 'drag-end') && vrPanel.drag && ray && eye) {
-    const p = M.add(M.add(ray.o, M.scale3(ray.d, vrPanel.drag.t)), vrPanel.drag.rel);
-    // Within the limits the settings keep, so a panel let go far away is
-    // saved where it stops, not silently dropped on the next load.
-    const off = clampPanelOffset(P.offsetFor(panelAnchor(), p, eye));
-    if (xr) vrPanel.offset = off; else vrPanel.desktopOffset = off;
-  }
-  if (a.type === 'drag-end') {
-    // Kept for the next sessions in the headset only (the desktop's place is
-    // a development view), even when the controller was lost at the release.
-    if (vrPanel.drag && xr) { settings.panel = { ...vrPanel.offset }; persist(); }
-    vrPanel.drag = null;
   }
 }
 
@@ -1122,22 +1427,208 @@ function labelsChanged() {
   if (xr) xr.labelsDirty = true; else updateLabels();
 }
 
+// ── The cursor readout and the controller labels ───────────────────────────
+const readout = {
+  live: { canvas: Object.assign(document.createElement('canvas'), { width: RO.READOUT_PX[0], height: RO.READOUT_PX[1] }), tex: null, key: '', at: 0 },
+  pin: { canvas: Object.assign(document.createElement('canvas'), { width: RO.READOUT_PX[0], height: RO.READOUT_PX[1] }), tex: null, key: '', at: 0 },
+  ms: [],
+};
+const labelCards = {
+  primary: { canvas: Object.assign(document.createElement('canvas'), { width: RO.LABEL_PX[0], height: RO.LABEL_PX[1] }), tex: null, key: '' },
+  secondary: { canvas: Object.assign(document.createElement('canvas'), { width: RO.LABEL_PX[0], height: RO.LABEL_PX[1] }), tex: null, key: '' },
+};
+
+/** The readout's lines at box point p (or the mode alone). */
+function readoutAt(p) {
+  return RO.readoutLines(modeText(), p, { info: state.info, cube: state.cube, texScale: state.texScale });
+}
+/** The same, kept while the point, the mode and the cube's look are the same (per frame in VR). */
+function readoutCached(card, p) {
+  const mt = modeText();
+  if (card.p !== p || card.mt !== mt || card.cube !== state.cube || card.thr !== state.thrNorm) {
+    Object.assign(card, { p, mt, cube: state.cube, thr: state.thrNorm, lines: readoutAt(p) });
+  }
+  return card.lines;
+}
+/** A readout card's texture, redrawn when its text changed (at most 15 times a second). */
+function readoutTexture(card, lines, pinned, now) {
+  if (!card.tex) card.tex = R.createPanel();
+  if (lines === card.shown) return card.tex;       // the same text as drawn (readoutCached)
+  const key = JSON.stringify(lines);
+  if (key !== card.key && (now - card.at >= 66 || !card.key)) {
+    const t0 = performance.now();
+    RO.drawReadout(card.canvas.getContext('2d'), lines, pinned);
+    R.updatePanel(card.tex, card.canvas);
+    readout.ms.push(performance.now() - t0);
+    if (readout.ms.length > 60) readout.ms.shift();
+    card.key = key; card.at = now; card.shown = lines;
+  }
+  return card.tex;
+}
+const boxToWorld = (p) => M.transformPoint(state.model, p.map((t, i) => (t - 0.5) * state.extent[i]));
+
+function labelTexture(role, title, rows) {
+  const card = labelCards[role];
+  if (!card.tex) card.tex = R.createPanel();
+  const key = JSON.stringify([title, rows]);
+  if (key !== card.key) {
+    RO.drawLabels(card.canvas.getContext('2d'), title, rows);
+    R.updatePanel(card.tex, card.canvas);
+    card.key = key;
+  }
+  return card.tex;
+}
+
+/** What to draw by the hands this frame: [{model, tex, size}]. */
+function handCards(now) {
+  const out = [];
+  if (!xr || xr.bench) return out;
+  const r = C.roles(settings.leftHanded);
+  const map = C.controlMap(mapOpts());
+  const eye = xr.headPos;
+  const ph = xr.hands[r.primary], sh = xr.hands[r.secondary];
+  // The mode is always shown by the primary hand; the labels when they are on.
+  if (ph) {
+    const rows = settings.labels ? C.labelLines(map, 'primary') : [];
+    const size = settings.labels ? RO.LABEL_SIZE : [RO.LABEL_SIZE[0], RO.LABEL_SIZE[1] * 0.2];
+    const m = RO.labelModel(ph.m, eye, settings.labels ? 0 : -0.024);
+    // Only the title row of the texture when the labels are off: a quad over
+    // its top fifth (the texture is drawn whole, so it is a card of its own).
+    out.push({ model: m, tex: settings.labels ? labelTexture('primary', modeText(), rows) : modeTagTexture(), size });
+  }
+  if (sh && settings.labels && !ui.menu.open) {
+    out.push({ model: RO.labelModel(sh.m, eye, 0), tex: labelTexture('secondary', '', C.labelLines(map, 'secondary')), size: RO.LABEL_SIZE });
+  }
+  // The live readout where the primary ray meets the emission, and the pinned one.
+  const hv = selection.sel.hover;
+  if (state.cube && hv && !ui.hit) {
+    out.push({ model: RO.readoutModel(boxToWorld(hv.p), eye), tex: readoutTexture(readout.live, readoutCached(readout.live, hv.p), false, now),
+      size: RO.READOUT_SIZE });
+  }
+  if (state.cube && ui.pin) {
+    out.push({ model: RO.readoutModel(boxToWorld(ui.pin.p), eye), tex: readoutTexture(readout.pin, readoutCached(readout.pin, ui.pin.p), true, now),
+      size: RO.READOUT_SIZE });
+  }
+  return out;
+}
+const modeTag = { canvas: Object.assign(document.createElement('canvas'), { width: RO.LABEL_PX[0], height: Math.round(RO.LABEL_PX[1] * 0.2) }), tex: null, key: '' };
+function modeTagTexture() {
+  if (!modeTag.tex) modeTag.tex = R.createPanel();
+  const t = modeText();
+  if (t !== modeTag.key) {
+    const c = modeTag.canvas.getContext('2d');
+    c.clearRect(0, 0, modeTag.canvas.width, modeTag.canvas.height);
+    c.fillStyle = 'rgba(10, 14, 22, 0.78)';
+    c.fillRect(0, 0, modeTag.canvas.width, modeTag.canvas.height);
+    c.fillStyle = '#ffd27a';
+    c.font = 'bold 30px -apple-system, system-ui, sans-serif';
+    c.textBaseline = 'middle';
+    c.fillText(t, 12, modeTag.canvas.height / 2);
+    R.updatePanel(modeTag.tex, modeTag.canvas);
+    modeTag.key = t;
+  }
+  return modeTag.tex;
+}
+
+/** The primary trigger (or a click on the page) on the cube, by the mode. */
+function primaryAct(action, boxRay) {
+  if (!state.cube || !boxRay) return;
+  if (action === 'pin-readout') {
+    const r = selection.pickBox(boxRay, 0.6);
+    ui.pin = r ? { p: r.hit.p } : null;
+    buzz('primary', r ? 'press' : 'error');
+  } else if (action === 'select' || action === 'pv-point') {
+    buzz('primary', 'press');
+    // The controller's tip, for a box corner placed inside the cube; a PV path being drawn takes it.
+    if (!analysis.act(boxRay)) selection.act(boxRay, xr ? boxRay.o : null);
+  } else if (action === 'slab-at') {
+    // Along every channel (the slab hides the others): the emission the ray
+    // meets first, its brightest channel becomes the slab's centre.
+    const all = { min: [state.clip.min[0], state.clip.min[1], 0], max: [state.clip.max[0], state.clip.max[1], 1] };
+    const r = selection.pickBox(boxRay, 0.25, all);
+    if (!r) { buzz('primary', 'error'); return; }
+    pushUndo();
+    setSlab({ c: r.peak.p[2], w: slabOf().w });
+    buzz('primary', 'press');
+  } else if (action === 'clip-drag') {
+    const tip = boxRay.o;
+    const inside = tip.every((v, i) => v >= state.clip.min[i] && v <= state.clip.max[i]);
+    let point = inside ? tip : null;
+    if (!point) { const r = selection.pickBox(boxRay, 0.6); if (r) point = r.hit.p; }
+    if (!point) { buzz('primary', 'error'); return; }
+    const face = C.nearestFace(point, state.clip);
+    pushUndo();
+    ui.clipDrag = { face, start: tip[face.axis], v0: state.clip[face.end][face.axis] };
+    buzz('primary', 'press');
+  }
+}
+
+/** A stick's continuous action, `v` (-1..1, dead zone applied) over dtS seconds. */
+function stickAction(action, v, dtS) {
+  if (!v || !action) return false;
+  if (action === 'threshold') {
+    state.thrNorm = Math.max(0, Math.min(state.cmaxNorm - 1e-3, state.thrNorm - v * dtS * 0.25 * Math.max(0.02, state.thrNorm)));
+  } else if (action === 'opacity') {
+    state.opacity = Math.max(0.01, Math.min(3, state.opacity * Math.exp(v * dtS)));
+  } else if (action === 'cmax') {
+    state.cmaxNorm = Math.max(state.thrNorm + 1e-3, Math.min(1, state.cmaxNorm * Math.exp(-v * dtS * 0.5)));
+  } else if (action === 'slab-move') {
+    const s = slabOf();
+    setSlab({ c: s.c - v * dtS * 0.3, w: s.w });
+  } else if (action === 'slab-width') {
+    const s = slabOf();
+    setSlab({ c: s.c, w: s.w * Math.exp(v * dtS) });
+  } else if (action === 'clip-size') {
+    state.clip = C.scaleClip(state.clip, Math.exp(-v * dtS * 0.5));
+    decorationsChanged();
+  } else {
+    return false;
+  }
+  labelsChanged();
+  return true;
+}
+
+/** A stick pushed sideways as a step: the colour map, or the mode's next tool. */
+function stickStep(action, step) {
+  if (!step || !action) return;
+  if (action === 'colormap') {
+    pushUndo();
+    const n = COLORMAP_NAMES.length, i = COLORMAP_NAMES.indexOf(state.colormap);
+    setColormap(COLORMAP_NAMES[(i + step + n) % n]);
+  } else if (action === 'next-tool') {
+    const next = C.nextSub(ui.mode, currentSub(), step);
+    if (ui.mode === 'select') selection.setTool(next); else if (ui.mode === 'clip') setClipTool(next);
+  } else {
+    return;
+  }
+  buzz('secondary', 'press');
+}
+
+/** The tools' work in progress and errors, for a pulse when it ends or fails. */
+function toolsBusy() {
+  const s = selection.sel, a = analysis;
+  return {
+    busy: s.busy || a.lasso.state.busy || a.moment.state.busy || a.pv.state.busy || '',
+    error: s.error || a.lasso.state.error || a.moment.state.error || a.pv.state.error || '',
+  };
+}
+
 // ── Desktop mode ────────────────────────────────────────────────────────────
 const cam = { yaw: -0.5, pitch: 0.35, dist: 2.0, turn: 0 };   // turn: a head turn about the eye (debug)
 const DESKTOP_BG = [0.043, 0.051, 0.07];
 let dragging = null;
 let pressAt = null;
-let mouseOnPanel = false;
+let mouseOnPanel = false;      // a press on the menu or a window (?panel3d)
 let mouseOnCard = false;
 /** The message card in the desktop view (?panel3d) takes the mouse first. */
 function cardMouse(e, pressed) {
-  return !xr && vrPanel.desktop && shell.cardPointer(mouseWorldRay(e), pressed);
+  return !xr && ui.desktop && shell.cardPointer(mouseWorldRay(e), pressed);
 }
 canvas.addEventListener('pointerdown', (e) => {
   canvas.setPointerCapture(e.pointerId);
   if (cardMouse(e, true)) { mouseOnCard = true; return; }
-  if (!xr && panelPointer(mouseWorldRay(e), true, camEye())) {
-    // On the panel (?panel3d): its widget, not the camera or a selection.
+  if (!xr && uiPointer(mouseWorldRay(e), true, camEye())) {
+    // On the menu or a window (?panel3d): its widget, not the camera or a selection.
     mouseOnPanel = true;
     return;
   }
@@ -1148,10 +1639,11 @@ canvas.addEventListener('pointerdown', (e) => {
 canvas.addEventListener('pointermove', (e) => {
   if (cardMouse(e, mouseOnCard) || mouseOnCard) return;
   if (!xr && (mouseOnPanel || !dragging)) {
-    const onPanel = panelPointer(mouseWorldRay(e), mouseOnPanel, camEye());
+    const onPanel = uiPointer(mouseWorldRay(e), mouseOnPanel, camEye());
     if (mouseOnPanel) return;
     if (state.cube) selection.hover(onPanel ? null : mouseRay(e));   // where a click would land
     selectionDirty = true;
+    showReadout();
     return;
   }
   if (!dragging) return;
@@ -1163,24 +1655,35 @@ canvas.addEventListener('pointerup', (e) => {
   if (mouseOnCard) { mouseOnCard = false; cardMouse(e, false); cardMouse(e, false); return; }
   if (mouseOnPanel) {
     mouseOnPanel = false;
-    if (!xr) { panelPointer(mouseWorldRay(e), false, camEye()); panelPointer(mouseWorldRay(e), false, camEye()); }
+    if (!xr) { uiPointer(mouseWorldRay(e), false, camEye()); uiPointer(mouseWorldRay(e), false, camEye()); }
     return;
   }
-  // The press began off the panel, but the panel's pointer saw it down: let it
-  // go, or the next click on the panel without moving the mouse is lost.
-  if (!xr) panelPointer(mouseWorldRay(e), false, camEye());
+  // The press began off the menu, but its pointer saw it down: let it go, or
+  // the next click on the menu without moving the mouse is lost.
+  if (!xr) uiPointer(mouseWorldRay(e), false, camEye());
   dragging = null;
   state.moving = false;
-  // A click (no drag) is the desktop's trigger: the current selection tool at
-  // the pointer, through the same ray pick as the controllers.
+  // A click (no drag) is the desktop's trigger: the mode's action at the
+  // pointer (issue #201), through the same ray pick as the controllers. A face
+  // of the clipping box is not dragged with the mouse (a drag turns the view).
   const p = pressAt;
   pressAt = null;
   if (p && !xr && state.cube && Math.hypot(e.clientX - p.x, e.clientY - p.y) < 5
       && performance.now() - p.t < 600) {
     const r = mouseRay(e);
-    if (!analysis.act(r)) selection.act(r);   // a PV path being drawn takes the click
+    const action = C.actionFor(C.controlMap(mapOpts()), 'primary', 'trigger');
+    if (action !== 'clip-drag') primaryAct(action, r);
+    showReadout();
   }
 });
+
+/** The cursor readout on the page (desktop mode): under the mouse, and the pinned one. */
+function showReadout() {
+  const hv = selection.sel.hover;
+  const live = readoutAt(hv ? hv.p : null);
+  const pin = ui.pin ? readoutAt(ui.pin.p).slice(1) : null;
+  $('cursor-readout').textContent = `${live.join('   ')}${pin ? `\npinned: ${pin.join('   ')}` : ''}`;
+}
 
 /** The box-space ray under the mouse, from the desktop camera. */
 function mouseRay(e) {
@@ -1244,13 +1747,14 @@ function desktopFrame(time) {
   refineFrame(time, desktopEyes(lastDesktopView, w, h), lastDesktopView.view, DESKTOP_BG);
   if (state.cube) drawScene(lastDesktopView, undefined, 0);
   else if (layers.hasScene()) layers.drawScene(lastDesktopView, 0, h);
-  if (vrPanel.visible && vrPanel.desktop) {
-    R.drawPanel(lastDesktopView, panelWorld(), panelTexture(time), P.PANEL_SIZE);
-    layers.drawStrip(lastDesktopView, panelWorld());
-    if (state.cube) analysis.draw(lastDesktopView, panelWorld(), DESKTOP_ANCHOR, true, true);   // planes on the left here
+  if (ui.desktop) {
+    // The headset's menu and result windows (issue #201), used with the mouse.
+    menuLayout();
+    R.drawPanel(lastDesktopView, menuWorld(), menuTexture(time), HM.MENU_SIZE);
+    drawWindows(lastDesktopView, shownWindows());
   }
   // The headset's message card, in front of the desktop camera (?panel3d).
-  const card = vrPanel.desktop ? shell.cardForFrame(M.invert(lastDesktopView.view)) : null;
+  const card = ui.desktop ? shell.cardForFrame(M.invert(lastDesktopView.view)) : null;
   if (card) R.drawPanel(lastDesktopView, card.model, card.tex, card.size);
   R.endFrame();
   const interval = lastDesktop ? time - lastDesktop : 0;
@@ -1301,7 +1805,9 @@ async function enterXR(mode, bench) {
   }
   targetHz = session.frameRate || readNumber('rate');
   xr = { session, ref, layer, mode, fbScale, fbChosen: fbScale, targetHz, placed: false, last: 0, hands: {}, grab: null,
-    buttons: {}, slab: { c: 0.5, w: 0.5 }, bench: bench ? makeBench() : null, place: null, endedBy: '' };
+    buttons: {}, bench: bench ? makeBench() : null, place: null, endedBy: '' };
+  Object.assign(ui.menu, { open: false, pinned: false, armed: false, wasHeld: false });
+  ui.menuModel = null;
   stats.buf.length = stats.cpu.length = stats.gpu.length = 0;
   governor.max = state.spv; governor.value = state.spv;
   eyeGovernor.reset(fbScale);
@@ -1314,7 +1820,11 @@ async function enterXR(mode, bench) {
     const b = xr && xr.bench;
     const endedBy = xr ? xr.endedBy : '';
     const summary = `${fpsLine()}; ${currentQualityNote() || 'quality as chosen'}`;
-    if (vrPanel.drag) { settings.panel = { ...vrPanel.offset }; persist(); }
+    const dragged = Object.values(wins).filter((w) => w.drag);
+    if (dragged.length) {
+      settings.windows = { ...settings.windows, ...Object.fromEntries(dragged.map((w) => [w.id, { ...w.offset }])) };
+      persist();
+    }
     xr = null;
     if (endedBy) {
       shell.log('info', 'xr-end', `by ${endedBy}; ${summary}`);
@@ -1324,9 +1834,11 @@ async function enterXR(mode, bench) {
       shell.log('warning', 'xr-ended', `unexpectedly; ${summary}`);
       if (!gl.isContextLost()) shell.notify('xr-ended');
     }
-    // A press held on the panel when the session ended is released.
-    vrPanel.pointer.update(null, false); vrPanel.pointer.update(null, false);
-    vrPanel.hit = null; vrPanel.drag = null;
+    // A press held on the menu or a window when the session ended is released.
+    menu.pointer.update(null, false); menu.pointer.update(null, false);
+    for (const w of Object.values(wins)) { w.pointer.update({ bar: null, content: null }, false); w.drag = null; }
+    ui.hit = null; ui.clipDrag = null; ui.sliding = null;
+    Object.assign(ui.menu, { open: false, pinned: false, armed: false, wasHeld: false });
     if (b) showBench(b);
     startDesktop();
   });
@@ -1360,7 +1872,7 @@ function handleInput(frame, dtS) {
   for (const src of xr.session.inputSources) {
     if (src.hand) {
       // A tracked hand (issue #191): the same hand object as a controller's,
-      // button 0 the pinch, button 1 the closed hand (hands.js).
+      // button 0 the pinch, button 1 the closed hand, button 4 the palm up (hands.js).
       handKeys.add(src.handedness);
       const h = handTracker.update(frame, src, xr.ref, performance.now(), xr.headPos, xr.headRight);
       if (h) hands[src.handedness] = h;
@@ -1380,33 +1892,56 @@ function handleInput(frame, dtS) {
   }
   xr.hands = hands;
   handTracker.keep(handKeys);
-  const sq = (h) => hands[h] && hands[h].g.buttons[1] && hands[h].g.buttons[1].pressed;
-  const L = sq('left'), Rr = sq('right');
-  if (xr.bench) { xr.grab = null; state.moving = false; vrPanel.hit = null; return; }
+  // Fixed roles (issue #201): the primary hand points and acts, the secondary
+  // holds the menu; both grab. A change of hands forgets the buttons held.
+  const roles = C.roles(settings.leftHanded);
+  const Ph = hands[roles.primary], Sh = hands[roles.secondary];
+  const btn = (h, k) => { const b = h && h.g.buttons[C.BUTTON_INDEX[k]]; return !!(b && b.pressed); };
+  if (!xr.roles || xr.roles.primary !== roles.primary) {
+    // What the hands hold at the swap is not a new press in their new roles.
+    xr.buttons = { pTrig: btn(Ph, 'trigger'), pLower: btn(Ph, 'lower'), pUpper: btn(Ph, 'upper'), sUpper: btn(Sh, 'upper') };
+    xr.roles = roles;
+    ui.clipDrag = null;
+  }
+  const L = btn(hands.left, 'grip'), Rr = btn(hands.right, 'grip');
+  if (xr.bench) { xr.grab = null; state.moving = false; ui.hit = null; return; }
 
-  // Triggers (issue #171): right = the selection tool along the right ray,
-  // left = the next tool. The pick runs on the reduced cube in this frame;
-  // what it asks of the backend never holds a frame back.
-  const trig = (h) => hands[h] && hands[h].g.buttons[0] && hands[h].g.buttons[0].pressed;
-  // The in-VR panel first (issue #172): a ray on it, or a press that began on
-  // it, is the panel's, not a selection.
-  // The message card before everything (epic #166): a notice or the guide.
-  const onCard = shell.cardPointer(hands.right ? hands.right.ray : null, !!trig('right'));
-  const onPanel = onCard ? (panelPointer(null, false, xr.headPos), true)
-    : panelPointer(hands.right ? hands.right.ray : null, !!trig('right'), xr.headPos);
-  const rightRay = hands.right && hands.right.ray && state.cube && !onPanel
-    ? selection.worldRayToBox(state.model, hands.right.ray.o, hands.right.ray.d) : null;
-  if (onPanel && selection.sel.hover) { selection.hover(null); selectionDirty = true; }
-  if (rightRay && (xr.hoverFrame = (xr.hoverFrame || 0) + 1) % 2 === 0) {
-    selection.hover(rightRay);
+  // One meaning per control in this mode (controls.js): the same map draws the labels.
+  const map = C.controlMap(mapOpts());
+  const act = (role, control) => C.actionFor(map, role, control);
+  // The menu: held open by the secondary hand's lower button (or its palm up).
+  const was = ui.menu.open;
+  Object.assign(ui.menu, HM.menuOpenState(ui.menu, act('secondary', 'lower') === 'menu' && btn(Sh, 'lower')));
+  if (ui.menu.open && !was) buzz('secondary', 'press');
+  updateMenuPose();
+
+  // The message card first (epic #166), then the menu and the windows: a ray
+  // on them, or a press that began on them, is theirs, not the cube's.
+  const pTrig = btn(Ph, 'trigger');
+  const pRay = Ph ? Ph.ray : null;
+  const onCard = shell.cardPointer(pRay, pTrig);
+  const onUi = onCard ? (uiPointer(null, pTrig, xr.headPos), true) : uiPointer(pRay, pTrig, xr.headPos);
+  const boxRay = pRay && state.cube && !onUi ? selection.worldRayToBox(state.model, pRay.o, pRay.d) : null;
+  if (onUi && selection.sel.hover) { selection.hover(null); selectionDirty = true; }
+  if (boxRay && (xr.hoverFrame = (xr.hoverFrame || 0) + 1) % 2 === 0) {
+    selection.hover(boxRay);
     selectionDirty = true;
   }
-  if (pressedEdge('rTrig', trig('right')) && rightRay) {
-    // The controller's tip, for a box corner placed inside the cube.
-    if (!analysis.act(rightRay)) selection.act(rightRay, rightRay.o);   // a PV path being drawn takes it
+  // The trigger on the cube, by the mode. The pick runs on the reduced cube in
+  // this frame; what it asks of the backend never holds a frame back.
+  if (pressedEdge('pTrig', pTrig) && boxRay) primaryAct(act('primary', 'trigger'), boxRay);
+  if (ui.clipDrag) {
+    // A face of the clipping box follows the controller while the trigger is held.
+    if (pTrig && pRay && state.cube && act('primary', 'trigger') === 'clip-drag') {
+      const tip = selection.worldRayToBox(state.model, pRay.o, pRay.d).o;
+      const d = ui.clipDrag;
+      state.clip = C.moveFace(state.clip, d.face, d.v0 + tip[d.face.axis] - d.start);
+      decorationsChanged();
+    } else {
+      ui.clipDrag = null;
+    }
   }
-  // A left pinch does not change the tool (it happens while grabbing); the panel does.
-  if (pressedEdge('lTrig', trig('left')) && !(hands.left && hands.left.isHand)) selection.cycleTool();
+
   if (L && Rr) {
     if (!xr.grab || xr.grab.kind !== 'two') {
       xr.grab = { kind: 'two', model0: state.model, l0: hands.left.pos, r0: hands.right.pos };
@@ -1422,55 +1957,45 @@ function handleInput(frame, dtS) {
   state.moving = !!xr.grab;
 
   const stick = (g) => (g.axes.length >= 4 ? [g.axes[2], g.axes[3]] : [g.axes[0] || 0, g.axes[1] || 0]);
-  const dead = (v) => (Math.abs(v) < 0.15 ? 0 : v);
-  let changed = false;
-  if (hands.right) {
-    const g = hands.right.g;
-    const [sx, sy] = stick(g).map(dead);
-    if (sy) { state.thrNorm = Math.max(0, Math.min(state.cmaxNorm - 1e-3, state.thrNorm - sy * dtS * 0.25 * Math.max(0.02, state.thrNorm))); changed = true; }
-    if (sx) { state.opacity = Math.max(0.01, Math.min(3, state.opacity * Math.exp(sx * dtS))); }
-    if (pressedEdge('rA', g.buttons[4] && g.buttons[4].pressed)) {
-      setColormap(COLORMAP_NAMES[(COLORMAP_NAMES.indexOf(state.colormap) + 1) % COLORMAP_NAMES.length]);
-    }
-    if (pressedEdge('rB', g.buttons[5] && g.buttons[5].pressed)) {
-      state.clip = { min: [0, 0, 0], max: [1, 1, 1] };
-      xr.slab = { c: 0.5, w: 0.5 };
-      rebuildDecorations(); changed = true;
-    }
-    if (pressedEdge('rStick', g.buttons[3] && g.buttons[3].pressed)) {
-      state.governorOn = !state.governorOn; $('governor').checked = state.governorOn; governor.value = state.spv;
-    }
+  const [px, py] = Ph ? stick(Ph.g).map(C.dead) : [0, 0];
+  const [sx, sy] = Sh ? stick(Sh.g).map(C.dead) : [0, 0];
+  // One undo step per push of a stick (from rest to rest).
+  const continuous = [[act('primary', 'stickY'), py], [act('primary', 'stickX'), px], [act('secondary', 'stickY'), sy]]
+    .filter(([a, v]) => a && v);
+  if (continuous.length && !xr.stickMoving) pushUndo();
+  xr.stickMoving = continuous.length > 0;
+  for (const [a, v] of continuous) stickAction(a, v, dtS);
+  if (!xr.flick) xr.flick = new C.Flick();
+  stickStep(act('secondary', 'stickX'), xr.flick.update(sx));
+
+  if (pressedEdge('pLower', btn(Ph, 'lower')) && act('primary', 'lower') === 'next-mode') {
+    setMode(C.nextMode(ui.mode));
+    buzz('primary', 'press');
   }
-  if (hands.left) {
-    const g = hands.left.g;
-    const [sx, sy] = stick(g).map(dead);
-    if (sx || sy) {
-      // The velocity slab: up/down moves it along the spectral axis, left/right widens it.
-      xr.slab.w = Math.max(0.01, Math.min(0.5, xr.slab.w * Math.exp(sx * dtS)));
-      xr.slab.c = Math.max(xr.slab.w, Math.min(1 - xr.slab.w, xr.slab.c - sy * dtS * 0.3));
-      state.clip.min[2] = xr.slab.c - xr.slab.w;
-      state.clip.max[2] = xr.slab.c + xr.slab.w;
-      xr.slabDirty = true;
-      changed = true;
-    }
-    if (pressedEdge('lX', g.buttons[4] && g.buttons[4].pressed)) {
-      state.mode = state.mode === 1 ? 0 : 1; $('rmode').value = String(state.mode);
-    }
-    if (pressedEdge('lY', g.buttons[5] && g.buttons[5].pressed)) state.hud = !state.hud;
-    if (pressedEdge('lStick', g.buttons[3] && g.buttons[3].pressed)) vrPanel.visible = !vrPanel.visible;
+  if (pressedEdge('pUpper', btn(Ph, 'upper')) && act('primary', 'upper') === 'undo') {
+    if (undo()) buzz('primary', 'press');
   }
+  if (pressedEdge('sUpper', btn(Sh, 'upper')) && act('secondary', 'upper') === 'reset-view') {
+    resetView();
+    buzz('secondary', 'press');
+  }
+  // A pulse when the tools' work ends, two when it fails.
+  const now = toolsBusy();
+  const kind = C.selectionPulse(ui.busy, now);
+  if (kind) buzz('primary', kind);
+  ui.busy = now;
   if (xr.slabDirty && (performance.now() - (xr.slabBuilt || 0) > 100)) {
     rebuildDecorations(); xr.slabDirty = false; xr.slabBuilt = performance.now();
   }
-  if (changed) xr.labelsDirty = true;
 }
 
 function controllerSegments() {
   const segs = [];
+  const primary = C.roles(settings.leftHanded).primary;
   for (const [hand, h] of Object.entries(xr.hands)) {
     const m = h.m;
     const p = (x, y, z) => M.transformPoint(m, [x, y, z]);
-    const col = hand === 'left' ? [0.5, 0.8, 1, 1] : [1, 0.75, 0.4, 1];
+    const col = hand === primary ? [1, 0.75, 0.4, 1] : [0.5, 0.8, 1, 1];
     if (h.isHand) {
       segs.push(...handSegments(h, col));
     } else {
@@ -1478,49 +2003,44 @@ function controllerSegments() {
       segs.push({ a: p(-0.015, 0, 0), b: p(0.015, 0, 0), color: col });
       segs.push({ a: p(0, -0.015, 0), b: p(0, 0.015, 0), color: col });
     }
-    if (hand === 'right' && h.ray && shell.cardHit) {
+    if (hand !== primary || !h.ray) continue;
+    if (shell.cardHit) {
       segs.push({ a: h.ray.o, b: shell.cardHit.point, color: [1, 1, 1, 0.7] });
-    } else if (hand === 'right' && h.ray && vrPanel.hit) {
-      // On the panel: the ray to the point it points at, and a small cross there.
-      const q = vrPanel.hit.point;
+    } else if (ui.hit) {
+      // On the menu or a window: the ray to the point it points at, and a small cross there.
+      const q = ui.hit.point, pm = ui.hit.model;
       segs.push({ a: h.ray.o, b: q, color: [1, 1, 1, 0.6] });
-      const pm = panelWorld();
       const ax = M.normalize(M.sub(M.transformPoint(pm, [1, 0, 0]), M.position(pm)));
       const ay = M.normalize(M.sub(M.transformPoint(pm, [0, 1, 0]), M.position(pm)));
       const az = M.normalize(M.sub(M.transformPoint(pm, [0, 0, 1]), M.position(pm)));
-      const lift = M.add(q, M.scale3(az, 0.002));   // just in front of the panel
+      const lift = M.add(q, M.scale3(az, 0.002));   // just in front of it
       segs.push({ a: M.add(lift, M.scale3(ax, -0.008)), b: M.add(lift, M.scale3(ax, 0.008)), color: [1, 0.85, 0.3, 1] });
       segs.push({ a: M.add(lift, M.scale3(ay, -0.008)), b: M.add(lift, M.scale3(ay, 0.008)), color: [1, 0.85, 0.3, 1] });
-    } else if (hand === 'right' && h.ray && state.cube) {
-      // The selection ray, to the point the trigger would pick (or 1.5 m).
+    } else if (state.cube) {
+      // The ray, to the point the trigger would pick (or 1.5 m).
       const hv = selection.sel.hover;
       let end = M.add(h.ray.o, M.scale3(M.normalize(h.ray.d), 1.5));
-      if (hv) end = M.transformPoint(state.model, hv.p.map((t, i) => (t - 0.5) * state.extent[i]));
+      if (hv) end = boxToWorld(hv.p);
       segs.push({ a: h.ray.o, b: end, color: [1, 1, 1, 0.35] });
     }
   }
   return segs;
 }
 
+/** The numbers (frame rate, latency) above the secondary hand, over its labels;
+ *  next to the cube without a hand. */
 function hudModel() {
-  if (xr.hands.left) {
-    let m = M.translation(0, 0.085, 0.01);
+  const r = C.roles(settings.leftHanded);
+  const h = xr.hands[r.secondary];
+  if (h) {
+    let m = M.translation(0, 0.085 + (settings.labels ? 0.075 : 0), 0.01);
     m = M.multiply(m, M.rotation([1, 0, 0], -0.6));
-    return M.multiply(xr.hands.left.m, m);
+    return M.multiply(h.m, m);
   }
   const pl = xr.place;
   const right = [Math.cos(pl.yaw), 0, -Math.sin(pl.yaw)];
   const p = M.add(pl.p, M.add(M.scale3(right, -0.5), [0, 0.0, 0]));
   return M.multiply(M.translation(...p), M.rotation([0, 1, 0], pl.yaw + 0.5));
-}
-
-/** The selection panel: to the right of where the cube was placed, turned
- *  toward the viewer; it stays when the cube is moved. */
-function selectionPanelModel() {
-  const pl = xr.place;
-  const right = [Math.cos(pl.yaw), 0, -Math.sin(pl.yaw)];
-  const p = M.add(pl.p, M.add(M.scale3(right, 0.55), [0, 0.12, 0]));
-  return M.multiply(M.translation(...p), M.rotation([0, 1, 0], pl.yaw - 0.5));
 }
 
 function onXRFrame(time, frame) {
@@ -1538,6 +2058,7 @@ function onXRFrame(time, frame) {
     state.model = placedModel(xr.place);
     xr.placed = true;
   }
+  xr.pose = pose;
   const hp = pose.transform.position;
   xr.headPos = [hp.x, hp.y, hp.z];
   { const hm = pose.transform.matrix; xr.headRight = M.normalize([hm[0], 0, hm[2]]); }
@@ -1559,18 +2080,19 @@ function onXRFrame(time, frame) {
   }
   // The page's labels (DOM) four times a second at most, HUD shown or not.
   if (xr.labelsDirty && time - (xr.labelsAt || 0) > 250) { xr.labelsAt = time; updateLabels(); xr.labelsDirty = false; }
-  const hm = state.hud ? hudModel() : null;
+  // The numbers sit where the menu opens: hidden while it is open.
+  const hm = state.hud && !ui.menu.open ? hudModel() : null;
   syncSelection();
-  const selTex = state.cube && !xr.bench ? selection.panelTexture() : null;
-  const sm = selTex ? selectionPanelModel() : null;
-  const ctlTex = vrPanel.visible && !xr.bench ? panelTexture(time) : null;
-  const cm = ctlTex ? panelWorld() : null;
+  const winList = xr.bench ? [] : shownWindows();
+  const menuTex = menuShown() ? menuTexture(time) : null;
+  const menuM = menuTex ? menuWorld() : null;
+  const cards = handCards(time);
   const card = xr.bench ? null : shell.cardForFrame(pose.transform.matrix);
   // No refinement during the benchmark, nor in passthrough: the backend's frame
   // has no alpha (it is composited over black), so over the room it would
   // either darken it where the headset draws emission the full cube has not,
   // or glow where only the full cube has emission. The headset's own
-  // rendering is shown there (docs/user-guide/vr-headset.md).
+  // rendering is shown there (docs/user-guide/vr/reference.md).
   // Suspended, the page's render session is closed (no render slot held) and
   // made again on resume.
   refiner.setSuspended(xr.bench ? 'during the benchmark' : xr.mode === 'immersive-ar' ? 'in passthrough' : '');
@@ -1588,9 +2110,9 @@ function onXRFrame(time, frame) {
     if (state.cube) drawScene(v, undefined, view.eye === 'right' ? 1 : 0);
     else if (layers.hasScene()) layers.drawScene(v, view.eye === 'right' ? 1 : 0, vp.height);
     if (hm) R.drawPanel(v, hm, hudTex, [0.16, 0.15]);
-    if (sm) R.drawPanel(v, sm, selTex, [0.34, 0.248]);
-    if (cm) { R.drawPanel(v, cm, ctlTex, P.PANEL_SIZE); layers.drawStrip(v, cm); }
-    if (!xr.bench && state.cube) analysis.draw(v, panelWorld(), xr.place, !!cm);
+    drawWindows(v, winList);
+    for (const k of cards) R.drawPanel(v, k.model, k.tex, k.size);
+    if (menuM) R.drawPanel(v, menuM, menuTex, HM.MENU_SIZE);
     if (card) R.drawPanel(v, card.model, card.tex, card.size);
     R.drawWorldLines(v);      // the controllers and their rays over the panels
   }
@@ -1880,70 +2402,72 @@ if (query.has('debug')) {
     ctx.putImageData(img, 0, 0);
     return c2.toDataURL('image/png');
   };
-  // The in-VR panel in the desktop view (?panel3d): canvas pixel -> page
-  // pixel through the panel's quad, and a click there through the same ray
-  // code the controllers use; its redraw cost.
-  const panelPagePixel = (x, y) => {
+  // The hand menu in the desktop view (?panel3d, issue #201): a widget's
+  // centre as a page pixel (to drive it with real mouse events), and a press
+  // through the same ray code the controllers use; its redraw cost.
+  const quadPagePixel = (model, size, px, x, y) => {
     const v = lastDesktopView || desktopView();
-    const local = [(x / P.PANEL_PX[0] - 0.5) * P.PANEL_SIZE[0], (0.5 - y / P.PANEL_PX[1]) * P.PANEL_SIZE[1], 0];
-    const c = M.transformPoint(M.multiply(v.proj, M.multiply(v.view, panelWorld())), local);
+    const local = [(x / px[0] - 0.5) * size[0], (0.5 - y / px[1]) * size[1], 0];
+    const c = M.transformPoint(M.multiply(v.proj, M.multiply(v.view, model)), local);
     const rect = canvas.getBoundingClientRect();
     return [rect.left + (c[0] + 1) / 2 * rect.width, rect.top + (1 - c[1]) / 2 * rect.height];
   };
-  const panelRayAt = (px, py) => mouseWorldRay({ clientX: px, clientY: py });
-  // The analysis panel under it (issue #191): canvas pixel -> page pixel.
-  window.__vrTools = {
-    layout: analysis.layout,
-    pagePixel(x, y) {
-      const v = lastDesktopView || desktopView();
-      const tm = TP.toolsModel(panelWorld());
-      const local = [(x / TP.TOOLS_PX[0] - 0.5) * TP.TOOLS_SIZE[0], (0.5 - y / TP.TOOLS_PX[1]) * TP.TOOLS_SIZE[1], 0];
-      const c = M.transformPoint(M.multiply(v.proj, M.multiply(v.view, tm)), local);
-      const rect = canvas.getBoundingClientRect();
-      return [rect.left + (c[0] + 1) / 2 * rect.width, rect.top + (1 - c[1]) / 2 * rect.height];
-    },
+  const widgetCentre = (id) => {
+    const w = menuLayout().find((x) => x.id === id);
+    return w ? [w.rect[0] + w.rect[2] / 2, w.rect[1] + w.rect[3] / 2] : null;
   };
-  window.__vrPanel = {
-    layout: vrPanel.layout, state: vrPanel, view: panelView, settings: () => JSON.parse(JSON.stringify(settings)),
-    pagePixel: panelPagePixel,
-    /** Where the ray through page pixel (px, py) meets the panel (canvas pixels), or null. */
-    hitAt: (px, py) => { const r = panelRayAt(px, py); const h = P.rayPanel(panelWorld(), P.PANEL_SIZE, r.o, r.d); return h && { x: h.x, y: h.y }; },
-    /** Press at canvas pixel (x, y) (optionally drag to (x2, y2)) and release, through page pixels and rays. */
-    click(x, y, x2 = x, y2 = y) {
-      const [p0, q0] = panelPagePixel(x, y), [p1, q1] = panelPagePixel(x2, y2);
-      const took = panelPointer(panelRayAt(p0, q0), true, camEye());
-      panelPointer(panelRayAt(p1, q1), true, camEye());
-      panelPointer(panelRayAt(p1, q1), false, camEye());
-      panelPointer(panelRayAt(p1, q1), false, camEye());
-      return took;
+  window.__vrMenu = {
+    ui, menu, wins, settings: () => JSON.parse(JSON.stringify(settings)), view: menuView,
+    layout: () => menuLayout().map((w) => ({ id: w.id, kind: w.kind, rect: w.rect })),
+    controlMap: () => C.controlMap(mapOpts()),
+    /** The page pixel of widget `id`'s centre (or of canvas pixel [x, y]) in the desktop view. */
+    pagePixel(id, at = null) {
+      const c = at || widgetCentre(id);
+      return c ? quadPagePixel(menuWorld(), HM.MENU_SIZE, HM.MENU_PX, c[0], c[1]) : null;
     },
-    /** Times n forced redraws: drawPanel (CPU), texImage2D (CPU side), and both
-     *  with a GPU sync (one-pixel readPixels) after the upload. */
+    /** The page pixel of a window's bar widget ('drag' or 'close'), or null when it is not shown. */
+    windowPixel(id, widget = 'close') {
+      const w = wins[id];
+      if (!w.model) return null;
+      const b = W.barLayout().find((x) => x.id === widget);
+      return quadPagePixel(W.barModel(w.model, w.size), W.barSize(w.size[0]), W.BAR_PX, b.rect[0] + b.rect[2] / 2, b.rect[1] + b.rect[3] / 2);
+    },
+    /** Times n forced redraws of the menu's current page: drawMenu (CPU), the upload, both with a GPU sync. */
     bench(n = 60) {
-      const ctx2 = vrPanel.canvas.getContext('2d');
+      const ctx2 = menu.canvas.getContext('2d');
       const draw = [], upload = [], synced = [];
       const px = new Uint8Array(4);
-      if (!vrPanel.tex) vrPanel.tex = R.createPanel();
+      if (!menu.tex) menu.tex = R.createPanel();
+      menuLayout();
       for (let i = 0; i < n; i++) {
-        const view = panelView();
-        view.thr = { ...view.thr, f: (i % 50) / 50 };      // a slider moving: a real change each time
+        const view = menuView();
+        view.look.thr = { ...view.look.thr, f: (i % 50) / 50 };      // a slider moving: a real change each time
         gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
         const t0 = performance.now();
-        P.drawPanel(ctx2, vrPanel.layout, view, { hover: 'thr', active: 'thr' });
+        HM.drawMenu(ctx2, ui.page, menu.pageLayout, view, { hover: 'thr', active: 'thr' });
         const t1 = performance.now();
-        R.updatePanel(vrPanel.tex, vrPanel.canvas);
+        R.updatePanel(menu.tex, menu.canvas);
         const t2 = performance.now();
-        R.drawPanel(lastDesktopView || desktopView(), panelWorld(), vrPanel.tex, P.PANEL_SIZE);
+        R.drawPanel(lastDesktopView || desktopView(), menuWorld(), menu.tex, HM.MENU_SIZE);
         gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
         const t3 = performance.now();
         draw.push(t1 - t0); upload.push(t2 - t1); synced.push(t3 - t0);
       }
-      vrPanel.key = '';
+      menu.key = '';
       const q = (a, f) => { const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(f * s.length))]; };
       const sum = (a) => ({ p50: q(a, 0.5), p95: q(a, 0.95), max: Math.max(...a) });
-      return { n, draw: sum(draw), upload: sum(upload), drawUploadSynced: sum(synced), px: P.PANEL_PX };
+      return { n, page: ui.page, draw: sum(draw), upload: sum(upload), drawUploadSynced: sum(synced), px: HM.MENU_PX };
+    },
+    /** The readout's text at box point p, and its cost (n computations). */
+    readout(p, n = 1000) {
+      const t0 = performance.now();
+      let lines = null;
+      for (let i = 0; i < n; i++) lines = readoutAt(p);
+      return { lines, usPerCall: (1000 * (performance.now() - t0)) / n };
     },
   };
+  // Kept for the lifecycle run: the settings and the Look page's values.
+  window.__vrPanel = { settings: () => JSON.parse(JSON.stringify(settings)), view: lookView };
   window.__vrRefine = {
     refiner,
     setMode: (m) => { refineMode = m; },
@@ -2047,7 +2571,9 @@ canvas.addEventListener('webglcontextrestored', () => {
     layers.restore();
     refiner.draw = new RefineDraw(gl);
     refiner.weight = 0;
-    vrPanel.key = '';
+    menu.key = '';
+    for (const w of Object.values(wins)) w.barKey = '';
+    for (const k of [readout.live, readout.pin, labelCards.primary, labelCards.secondary, modeTag]) k.key = '';
     hudLast = 0;
     selectionDirty = true;
     rebuildDecorations();

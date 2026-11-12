@@ -238,7 +238,7 @@ box's apply is the one replay step that records its region (`origin_*`,
 there is no grow response to take it from; every other apply takes its region
 from a response (the grow's, or the shared mask's `X-Visivo-Origin`, `-Width`,
 `-Height`, `-Depth` headers). See
-[Selections shared with the desktop](vr-headset.md#selections-shared-with-the-desktop).
+[Selections shared with the desktop](vr/analysis.md#selections-shared-with-the-desktop).
 
 ---
 

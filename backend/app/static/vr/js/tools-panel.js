@@ -1,8 +1,9 @@
 // The analysis panel in the headset (issue #191): lasso seeds, Isolate and
-// Remove, the moment of the selection, the PV path. A second quad hung under
-// the control panel (vr-panel.js), moved and hidden with it, used with the
-// same ray, trigger or pinch through vr-panel's PanelPointer. Pure layout and
-// placement, tested by node (backend/tests/vr/tools-pv.test.mjs).
+// Remove, the moment of the selection, the PV path. Since issue #201 it is the
+// Analysis page of the hand menu (hand-menu.js), used with the same ray,
+// trigger or pinch through vr-panel's PanelPointer; toolsModel and
+// productModel are the earlier placements, kept for their tests. Pure layout,
+// tested by node (backend/tests/vr/tools-pv.test.mjs).
 
 import * as M from './mat4.js';
 import { PANEL_SIZE } from './vr-panel.js';

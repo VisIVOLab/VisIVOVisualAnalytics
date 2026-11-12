@@ -78,6 +78,30 @@ export class Gesture {
   }
 }
 
+/** Palm up: the palm's normal within about 45° of straight up turns it on,
+ *  beyond about 63° off; a closed hand is never palm up. */
+export const PALM_ON = 0.7;
+export const PALM_OFF = 0.45;
+
+/** The palm's normal (out of the palm) · world up, -1..1. The hand frame's z
+ *  (handFrame) leaves the palm of a right hand and the back of a left one. */
+export function palmUpness(j, handedness = 'right') {
+  const f = handFrame(j);
+  const z = f[9];          // the frame's z axis, its world y component
+  return handedness === 'left' ? -z : z;
+}
+
+/** Palm up with hysteresis. update(joints, handedness, grip) -> boolean. */
+export class PalmUp {
+  constructor() { this.on = false; }
+  update(j, handedness, grip = false) {
+    const u = palmUpness(j, handedness);
+    if (grip || !(Number.isFinite(u))) this.on = false;
+    else if (this.on) { if (u < PALM_OFF) this.on = false; } else if (u > PALM_ON) this.on = true;
+    return this.on;
+  }
+}
+
 /**
  * A rigid frame of the hand (column-major 4×4): origin at the palm's centre,
  * y along the fingers (wrist to the middle knuckle), x across the knuckles
@@ -157,12 +181,14 @@ export function readJoints(frame, hand, ref) {
 }
 
 /** The page's hand object for a tracked hand: m (grip frame), pos, g (a
- *  gamepad-like object: button 0 the pinch, button 1 the grip), ray. */
-export function handObject(joints, gesture, ray) {
+ *  gamepad-like object: button 0 the pinch, button 1 the grip, button 4 the
+ *  palm up, as a controller's lower face button), ray. */
+export function handObject(joints, gesture, ray, palmUp = false) {
   const m = handFrame(joints);
+  const b = (on) => ({ pressed: !!on, value: on ? 1 : 0 });
   return {
-    m, pos: [m[12], m[13], m[14]], ray, isHand: true, joints, gesture,
-    g: { buttons: [{ pressed: gesture.pinch, value: gesture.pinch ? 1 : 0 }, { pressed: gesture.grip, value: gesture.grip ? 1 : 0 }], axes: [] },
+    m, pos: [m[12], m[13], m[14]], ray, isHand: true, joints, gesture, palmUp: !!palmUp,
+    g: { buttons: [b(gesture.pinch), b(gesture.grip), b(false), b(false), b(palmUp), b(false)], axes: [] },
   };
 }
 
@@ -176,8 +202,9 @@ export class HandTracker {
     const joints = readJoints(frame, src.hand, ref);
     if (!joints) { this.hands.delete(key); return null; }
     let h = this.hands.get(key);
-    if (!h) { h = { gesture: new Gesture(), stab: new RayStabilizer(), wasPinch: false }; this.hands.set(key, h); }
+    if (!h) { h = { gesture: new Gesture(), palm: new PalmUp(), stab: new RayStabilizer(), wasPinch: false }; this.hands.set(key, h); }
     const g = h.gesture.update(joints);
+    const up = h.palm.update(joints, key, g.grip);
     let ray = null;
     const rp = src.targetRaySpace && frame.getPose(src.targetRaySpace, ref);
     if (rp) {
@@ -188,7 +215,7 @@ export class HandTracker {
     }
     const ray2 = h.stab.update(ray, t, g.pinch && !h.wasPinch);
     h.wasPinch = g.pinch;
-    return handObject(joints, g, ray2);
+    return handObject(joints, g, ray2, up);
   }
 
   /** Forget the hands that are no longer input sources. */
