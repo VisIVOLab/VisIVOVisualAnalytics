@@ -15,6 +15,7 @@
 // the page's controller.
 
 import { apiUrl } from './base-path.js';
+import { pageFetch } from './transport.js';
 
 /** The longest a poll waits on the backend (seconds); the backend caps it at 25. */
 export const POLL_WAIT_S = 20;
@@ -231,7 +232,7 @@ export const RETRY_429_MS = 1000;
  * than 409 and 429) stays local; it is no longer this page's "latest own".
  */
 export function createShare(ctx) {
-  const doFetch = ctx.fetch || ((...a) => fetch(...a));
+  const doFetch = ctx.fetch || ((...a) => pageFetch(...a));
   const later = ctx.setTimeout || ((f, ms) => setTimeout(f, ms));
   const cancel = ctx.clearTimeout || ((t) => clearTimeout(t));
   const makeNonce = ctx.nonce || (() => newNonce());
