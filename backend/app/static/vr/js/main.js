@@ -123,7 +123,7 @@ const shell = createShell({
     loadGen: () => state.loadGen,
     onGuideSeen: () => { if (!settings.guideSeen) { settings.guideSeen = true; persist(); } },
     onRetry: () => refiner.retrySoon(),
-    publicInfo: () => new Backend('').info(),
+    publicInfo: (opts) => new Backend('').info(opts),
     summary: () => diagnosticsSummary(),
   },
 });
@@ -526,6 +526,9 @@ function checkBudget(dims, encoding) {
  * describes it as before. {ok, detail} ({superseded: true} when a load
  * replaced the cube meanwhile: then nothing is changed).
  */
+/** The deadline of each request of a recovery (opening a large cube can take a while). */
+const RECOVERY_TIMEOUT_MS = 30000;
+
 async function recoverDataset(reason) {
   const path = state.openPath;
   if (!path || !state.open || !state.info || !state.cube) return { ok: false, detail: 'no cube from the backend on show' };
@@ -534,7 +537,11 @@ async function recoverDataset(reason) {
   const snap = { path, fullShape: state.info.full_shape, gen: state.loadGen };
   const req = { factor_xy: c.factors[0], factor_z: c.factors[2], max_dim: readNumber('maxdim'), mode: c.mode, encoding: c.encoding };
   // Its own handle: a new session it makes becomes the page's only if it wins.
+  // And a deadline on each of its requests (datasets/open, sessions/new,
+  // reduced_info): a hung connection must not stall the recovery; the next
+  // check of the lifecycle tries again.
   const b = loadHandle();
+  b.timeoutMs = RECOVERY_TIMEOUT_MS;
   const r = await reopenCube(snap, {
     open: (p) => b.open(p),
     newSession: () => b.newSession(),

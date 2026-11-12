@@ -442,3 +442,102 @@ test('main.js passes the started path to installCube, never the field', async ()
   const lr = main.slice(main.indexOf('async function loadReduced('));
   assert.ok(lr.indexOf('stillCurrent(ticket)') < lr.indexOf('installCube('));
 });
+
+// ── A check that hangs ────────────────────────────────────────────────────
+
+test('a check that never answers ends, the next one is scheduled, and Retry asks again', async () => {
+  const timers = fakeTimers();
+  const events = [];
+  let calls = 0;
+  // A fetch that never settles and ignores its signal: the worst case.
+  const life = new L.Lifecycle({ timers, page: { build: 'b', api: 1 }, probeTimeoutMs: 5000,
+    fetchInfo: () => { calls++; return new Promise(() => {}); }, onChange: (ev) => events.push(ev) });
+  life.start();
+  assert.equal(calls, 1);
+  assert.ok(life.inFlight, 'one check pending');
+  // Retry while it hangs: cancelled, and a new request made at once.
+  const retried = life.retryNow();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 2, 'Retry made a new request');
+  assert.equal(events.length, 0, 'the cancelled check reports nothing (no backoff counted)');
+  // The guard of the new check ends it: "nothing answered", the next check scheduled.
+  const guard = timers.q.find((h) => h.ms === 5000);
+  assert.ok(guard, 'the check has a deadline');
+  timers.q.splice(timers.q.indexOf(guard), 1);
+  guard.f();
+  await retried;
+  assert.equal(life.state, 'down');
+  assert.equal(events.at(-1).status, 0);
+  assert.equal(life.inFlight, null);
+  assert.ok(timers.q.some((h) => h.ms === 1000), 'the next check is scheduled (backoff 1 s)');
+  // And it is a real check: firing it asks again.
+  const next = timers.q.find((h) => h.ms === 1000);
+  timers.q.splice(timers.q.indexOf(next), 1);
+  next.f();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 3);
+  life.stop();
+});
+
+test('Retry with nothing pending checks at once; the signal reaches fetchInfo', async () => {
+  const timers = fakeTimers();
+  const signals = [];
+  const life = new L.Lifecycle({ timers, page: { build: 'b', api: 1 },
+    fetchInfo: async ({ signal }) => { signals.push(signal); return { build: 'b', vr_api: 1, vr_api_min: 1, instance: 'i', token_ok: true }; } });
+  await life.retryNow();
+  assert.equal(signals.length, 1);
+  assert.ok(signals[0] && typeof signals[0].aborted === 'boolean');
+  assert.equal(life.state, 'ok');
+  assert.ok(!timers.q.some((h) => h.ms === 5000), 'the deadline is cleared once answered');
+  life.stop();
+});
+
+test('requests: /v1/vr/info and a recovery handle give up on a hung connection', async () => {
+  const realFetch = globalThis.fetch;
+  const seen = [];
+  requestHooks.onFailure = (e, path) => seen.push([e.message, path]);
+  try {
+    // 1. Nothing answers (the request hangs until aborted).
+    globalThis.fetch = (url, init) => new Promise((_, reject) => {
+      init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    });
+    const b = new Backend('tok');
+    const t0 = Date.now();
+    await assert.rejects(b.info({ timeoutMs: 40 }), (e) => e.network === true && /in time/.test(e.message));
+    assert.ok(Date.now() - t0 < 1000);
+    // 2. The headers come, the body never does (and the fetch does not abort it).
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: () => new Promise(() => {}), text: () => new Promise(() => {}) });
+    await assert.rejects(b.info({ timeoutMs: 40 }), (e) => e.network === true);
+    // 3. A recovery handle's requests (datasets/open, sessions/new, reduced_info) have the same deadline.
+    b.timeoutMs = 40;
+    await assert.rejects(b._json('POST', '/v1/datasets/open', { path: 'x' }), (e) => e.network === true);
+    await assert.rejects(b.newSession(), (e) => e.network === true);
+    await assert.rejects(b.reducedInfo({ dataset_id: 'd' }), (e) => e.network === true);
+    // 4. Cancelled by the page (Retry): an aborted error, not reported as a failure.
+    globalThis.fetch = (url, init) => new Promise((_, reject) => {
+      init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    });
+    const ctl = new AbortController();
+    const p = b.info({ signal: ctl.signal, timeoutMs: 10000 });
+    const n = seen.length;
+    ctl.abort('retry');
+    await assert.rejects(p, (e) => e.aborted === true);
+    assert.equal(seen.length, n, 'a cancelled check is not a failure');
+    // 5. A page load has no deadline by default (a large cube may take long to open).
+    assert.equal(new Backend('t').timeoutMs, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+    requestHooks.onFailure = null;
+  }
+});
+
+test('main.js gives the recovery its deadline and passes the signal to the check', async () => {
+  const { readFileSync } = await import('node:fs');
+  const main = readFileSync(new URL('../../app/static/vr/js/main.js', import.meta.url), 'utf8');
+  const i = main.indexOf('async function recoverDataset(');
+  const body = main.slice(i, main.indexOf('\n}\n', i));
+  assert.ok(body.indexOf('b.timeoutMs = RECOVERY_TIMEOUT_MS') < body.indexOf('reopenCube('));
+  assert.match(main, /publicInfo: \(opts\) => new Backend\(''\)\.info\(opts\)/);
+  const shell = readFileSync(new URL('../../app/static/vr/js/shell.js', import.meta.url), 'utf8');
+  assert.match(shell, /fetchInfo: \(opts\) => .*\.info\(opts\)/);
+});

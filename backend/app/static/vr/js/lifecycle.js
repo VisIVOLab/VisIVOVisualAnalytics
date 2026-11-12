@@ -264,7 +264,7 @@ export async function reopenCube(snap, io) {
  * the backoff at once instead of at the next heartbeat.
  */
 export class Lifecycle {
-  constructor({ fetchInfo, page, onChange = () => {}, timers = globalThis, heartbeatMs = 5000, backoff } = {}) {
+  constructor({ fetchInfo, page, onChange = () => {}, timers = globalThis, heartbeatMs = 5000, backoff, probeTimeoutMs = 5000 } = {}) {
     this.fetchInfo = fetchInfo;
     this.page = page || { build: '', api: PAGE_VR_API };
     this.onChange = onChange;
@@ -279,6 +279,10 @@ export class Lifecycle {
     this.stopped = true;
     this.nextAt = 0;
     this.lastVersion = { ok: true };
+    // A check fetchInfo does not end by itself in this long (it has its own,
+    // shorter, deadline) is ended here: the watch never waits on one.
+    this.probeTimeoutMs = probeTimeoutMs;
+    this.controller = null;
   }
 
   start() { this.stopped = false; this.probe(); }
@@ -303,8 +307,14 @@ export class Lifecycle {
     return kind;
   }
 
-  /** The user pressed Retry: check now, the backoff kept (not reset). */
-  retryNow() { return this.probe(); }
+  /** The user pressed Retry: a check now, the backoff kept (not reset). A
+   *  check still pending is cancelled and a new one made: Retry always asks
+   *  again. */
+  retryNow() {
+    if (!this.inFlight) return this.probe();
+    if (this.controller) this.controller.abort('retry');
+    return this.inFlight.then(() => this.probe());
+  }
 
   _set(state, extra = {}) {
     const prev = this.state;
@@ -331,11 +341,34 @@ export class Lifecycle {
     if (this.inFlight) return this.inFlight;
     let settle;
     this.inFlight = new Promise((resolve) => { settle = resolve; });
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    this.controller = controller;
     const run = async () => {
       let info;
+      let guard = null;
       try {
-        info = await this.fetchInfo();
+        // fetchInfo gets the signal; whatever it does with it, the check
+        // ends after probeTimeoutMs as "nothing answered".
+        info = await Promise.race([
+          this.fetchInfo({ signal: controller ? controller.signal : null }),
+          new Promise((_, reject) => {
+            guard = this.timers.setTimeout(() => {
+              if (controller) controller.abort('timeout');
+              const e = new Error('network: no answer in time');
+              e.network = true; e.status = 0;
+              reject(e);
+            }, this.probeTimeoutMs);
+          }),
+          ...(controller ? [new Promise((_, reject) => {
+            controller.signal.addEventListener('abort', () => {
+              if (controller.signal.reason === 'retry') { const e = new Error('cancelled for a retry'); e.cancelled = true; reject(e); }
+            }, { once: true });
+          })] : []),
+        ]);
+        this.timers.clearTimeout(guard);
       } catch (err) {
+        if (guard) this.timers.clearTimeout(guard);
+        if (err && err.cancelled) return;              // Retry: a new check follows at once
         const status = err && err.status > 0 ? err.status : 0;
         if (status === 404) {
           this._schedule(this.heartbeatMs);
@@ -366,7 +399,8 @@ export class Lifecycle {
       else if (info.token_ok === null && this.state === 'auth') state = 'auth';
       this._set(state, { restarted, version });
     };
-    run().catch(() => {}).finally(() => { this.inFlight = null; settle(); });
+    const clear = () => { if (this.controller === controller) this.controller = null; };
+    run().catch(() => {}).finally(() => { clear(); this.inFlight = null; settle(); });
     return this.inFlight;
   }
 }

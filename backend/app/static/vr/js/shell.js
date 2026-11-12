@@ -45,7 +45,7 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
   // ── The lifecycle ───────────────────────────────────────────────────────
   const life = new Lifecycle({
     page,
-    fetchInfo: () => (backend() || { info: () => ctx.publicInfo() }).info(),
+    fetchInfo: (opts) => (backend() || { info: (o) => ctx.publicInfo(o) }).info(opts),
     onChange: (ev) => onLife(ev),
   });
 

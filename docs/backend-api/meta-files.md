@@ -289,6 +289,10 @@ unversioned `/vr/js/…` addresses keep working, revalidated.
 ### `GET /v1/vr/info`
 Public, like `/v1/ping`; `Cache-Control: no-store`. The page calls it at
 start, every 5 s, and with a backoff (1, 2, 4, 5, 5… s) while nothing answers.
+Each check gives up after 4 s (a connection that hangs counts as no answer, and
+the next check is scheduled as usual); *Retry* cancels a check still pending and
+makes a new one. The requests a recovery makes (datasets/open, sessions/new,
+reduced_info) give up after 30 s each.
 
 ```json
 { "vr_api": 1, "vr_api_min": 1, "build": "8cc84c409df0",
