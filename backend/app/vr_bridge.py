@@ -39,6 +39,7 @@ import json
 import logging
 import struct
 import zlib
+from collections import deque
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qsl, unquote, urlencode
 
@@ -50,8 +51,13 @@ HIGH_WATER = 1024 * 1024
 #: Requests in flight on one ``api`` channel, and the largest request body.
 MAX_REQUESTS = 64
 MAX_REQUEST_BODY = 64 * 1024 * 1024
-#: Largest WebSocket message the page may send through a ``ws`` channel.
+#: Largest WebSocket message the page may send through a ``ws`` channel,
+#: and what the page's messages and request bodies may hold in memory while
+#: the routes have not read them yet (per channel; beyond, the socket is
+#: closed with 1009, or the request cancelled).
 MAX_WS_MESSAGE = 64 * 1024 * 1024
+MAX_WS_QUEUED = 64 * 1024 * 1024
+MAX_API_QUEUED = 64 * 1024 * 1024
 
 WS_TEXT, WS_BINARY, WS_OPEN, WS_CLOSE = 0x01, 0x02, 0x03, 0x04
 LAST = 0x01
@@ -288,6 +294,7 @@ class _Request:
         self.body: asyncio.Queue = asyncio.Queue()
         self.body_done = not has_body
         self.body_size = 0
+        self.queued = 0
         self.task: asyncio.Task | None = None
         self.disconnected = asyncio.Event()
         if not has_body:
@@ -305,14 +312,24 @@ class ApiBridge:
         self.token = token
         self.client = client
         self.requests: dict[int, _Request] = {}
+        #: Request body bytes received and not yet read by their routes.
+        self.queued = 0
         channel.on("message", self._on_message)
         channel.on("close", self.close)
 
     def close(self) -> None:
         for r in list(self.requests.values()):
-            if r.task is not None:
-                r.task.cancel()
+            self._drop(r)
         self.requests.clear()
+
+    def _drop(self, r: _Request) -> None:
+        """Stops a request: its task cancelled (possibly before it ever ran,
+        so the body it holds is let go here, not in the task)."""
+        self.queued -= r.queued
+        r.queued = 0
+        r.disconnected.set()
+        if r.task is not None:
+            r.task.cancel()
 
     def _on_message(self, data) -> None:
         try:
@@ -330,9 +347,8 @@ class ApiBridge:
             return
         if t == "cancel":
             r = self.requests.pop(req_id, None)
-            if r is not None and r.task is not None:
-                r.disconnected.set()
-                r.task.cancel()
+            if r is not None:
+                self._drop(r)
             return
         if t != "req":
             return
@@ -361,14 +377,15 @@ class ApiBridge:
         if r is None or r.body_done:
             return
         r.body_size += len(payload)
-        if r.body_size > MAX_REQUEST_BODY:
+        if r.body_size > MAX_REQUEST_BODY or self.queued + len(payload) > MAX_API_QUEUED:
             self.requests.pop(req_id, None)
-            if r.task is not None:
-                r.task.cancel()
+            self._drop(r)
             _send_json(self.channel, {"t": "cancel", "id": req_id})
             _send_json(self.channel, {"t": "err", "id": req_id, "message": "request body too large"})
             return
         r.body_done = last
+        self.queued += len(payload)
+        r.queued += len(payload)
         r.body.put_nowait((payload, not last))
 
     async def _serve(self, r: _Request, method: str, path: str, query: bytes, headers) -> None:
@@ -389,6 +406,8 @@ class ApiBridge:
                 await r.disconnected.wait()
                 return {"type": "http.disconnect"}
             payload, more = await r.body.get()
+            self.queued -= len(payload)
+            r.queued -= len(payload)
             if not more:
                 state["body_sent"] = True
             return {"type": "http.request", "body": payload, "more_body": more}
@@ -438,6 +457,8 @@ class ApiBridge:
             if not state["started"] or not state["ended"]:
                 logger.warning("[vr-bridge] %s %s failed: %s", method, path, type(exc).__name__)
         finally:
+            self.queued -= r.queued          # what the route never read
+            r.queued = 0
             if self.requests.get(r.id) is r:
                 del self.requests[r.id]
 
@@ -461,6 +482,10 @@ class WsBridge:
         self.client = client
         self.incoming: asyncio.Queue = asyncio.Queue()
         self.assembler = WsAssembler()
+        #: Bytes of the page's messages the route has not read yet, and the
+        #: size of each, in the order they wait.
+        self.queued = 0
+        self._sizes: deque[int] = deque()
         self.closed_by_page = False
         self.closed_by_app = False
         self.task: asyncio.Task | None = None
@@ -517,6 +542,17 @@ class WsBridge:
         if done is None:
             return
         kind, payload = done
+        if kind in (WS_TEXT, WS_BINARY) and self.queued + len(payload) > MAX_WS_QUEUED:
+            # The route reads slower than the page sends: closed rather than
+            # held without bound.
+            self._page_closed(1009, "too much unread")
+            if not self.closed_by_app:
+                self.closed_by_app = True
+                self._fail(1009, "too much unread")
+            return
+        if kind in (WS_TEXT, WS_BINARY):
+            self.queued += len(payload)
+            self._sizes.append(len(payload))
         if kind == WS_TEXT:
             try:
                 self.incoming.put_nowait({"type": "websocket.receive", "text": payload.decode("utf-8")})
@@ -551,7 +587,10 @@ class WsBridge:
         accepted = False
 
         async def receive() -> dict:
-            return await self.incoming.get()
+            message = await self.incoming.get()
+            if message["type"] == "websocket.receive" and self._sizes:
+                self.queued -= self._sizes.popleft()
+            return message
 
         async def send(message: dict) -> None:
             nonlocal accepted

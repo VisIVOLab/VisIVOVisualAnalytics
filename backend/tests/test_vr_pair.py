@@ -207,6 +207,105 @@ async def test_an_encoded_body_reaches_the_page_decoded():
     assert all(len(f) <= B.CHUNK + 5 for f in ch.sent[1:])
 
 
+async def test_what_the_page_sends_and_the_route_does_not_read_is_bounded(monkeypatch):
+    monkeypatch.setattr(B, "MAX_WS_QUEUED", 100_000)
+    monkeypatch.setattr(B, "MAX_API_QUEUED", 100_000)
+
+    async def never_reads(scope, receive, send):
+        if scope["type"] == "websocket":
+            await receive()                               # the connect
+            await send({"type": "websocket.accept"})
+        await asyncio.Event().wait()
+
+    ch = _FakeChannel()
+    ch.protocol = json.dumps({"path": "/slow", "protocols": []})
+    ws = B.WsBridge(ch, never_reads, "tok")
+    await asyncio.sleep(0.02)
+    for _ in range(10):
+        ch.emit("message", bytes([B.WS_BINARY, B.LAST]) + b"x" * 16384)
+    closes = [f for f in ch.sent if isinstance(f, bytes) and f[0] == B.WS_CLOSE]
+    assert closes and json.loads(closes[0][2:])["code"] == 1009
+    assert ws.queued <= 100_000
+    ws.close()
+
+    api = _FakeChannel()
+    bridge = B.ApiBridge(api, never_reads, "tok")
+    for rid in (1, 3):
+        api.emit("message", json.dumps({"t": "req", "id": rid, "method": "POST", "path": "/u", "body": True}))
+        for _ in range(4):
+            api.emit("message", B.api_chunk(rid, b"y" * 16384, False))
+    texts = [json.loads(m) for m in api.sent if isinstance(m, str)]
+    assert {"t": "cancel", "id": 3} in texts and bridge.queued <= 100_000
+    bridge.close()
+    await asyncio.sleep(0.02)
+    assert bridge.queued == 0
+
+
+class _FakePC:
+    def __init__(self, *_a) -> None:
+        self.handlers: dict = {}
+        self.connectionState = "new"
+        self.closed = False
+        self.localDescription = SimpleNamespace(sdp="v=0 answer")
+
+    def on(self, event):
+        def add(fn):
+            self.handlers[event] = fn
+            return fn
+        return add
+
+    async def setRemoteDescription(self, _d):
+        pass
+
+    async def createAnswer(self):
+        return None
+
+    async def setLocalDescription(self, _d):
+        pass
+
+    async def close(self):
+        self.closed = True
+        self.connectionState = "closed"
+
+
+async def test_a_disconnected_headset_cannot_come_back_and_resumes_replace_each_other(monkeypatch):
+    monkeypatch.setitem(sys.modules, "aiortc", SimpleNamespace(
+        RTCPeerConnection=_FakePC, RTCSessionDescription=lambda **_k: None))
+    host = H.PairHost("ws://test")
+    host._rtc_configuration = lambda: None
+
+    async def send(_m):
+        pass
+    host._send = send
+
+    async def up(peer):
+        peer.pc.connectionState = "connected"
+        await peer.pc.handlers["connectionstatechange"]()
+
+    # Disconnected while a resume negotiates: the resume never comes up.
+    h = H.Headset("h1", "tok", {}, None)
+    host.headsets[h.id] = h
+    peer = H._Peer(headset=h)
+    host.peers["p"] = peer
+    await host._answer("p", peer, h, "v=0 offer")
+    await host.disconnect(h, "disconnected")
+    await up(peer)
+    await asyncio.sleep(0)
+    assert peer.pc.closed and not h.connected and h.pc is None
+
+    # Two resumes coming up together: the last one is kept, the others closed.
+    h = H.Headset("h2", "tok", {}, None)
+    host.headsets[h.id] = h
+    peers = [H._Peer(headset=h) for _ in range(3)]
+    for i, p in enumerate(peers):
+        host.peers[f"q{i}"] = p
+        await host._answer(f"q{i}", p, h, "v=0 offer")
+    await asyncio.gather(*(up(p) for p in peers))
+    assert h.pc is peers[-1].pc and not peers[-1].pc.closed
+    assert all(p.pc.closed for p in peers[:-1])
+    await host.close()
+
+
 # ── Routes without a pairing service ──────────────────────────────────────────
 
 

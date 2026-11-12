@@ -128,6 +128,8 @@ class Headset:
     pc: Any = None
     ctl: Any = None
     bridges: list = field(default_factory=list)
+    #: Disconnected by the desktop: no connection of it may come up again.
+    revoked: bool = False
 
 
 @dataclass
@@ -389,7 +391,15 @@ class PairHost:
             pass
 
     async def disconnect(self, h: Headset, reason: str) -> None:
+        # Marked before any await: a resume still negotiating must not come
+        # up after this (its state callback and channels check the mark).
+        h.revoked = True
         self.headsets.pop(h.id, None)
+        for peer_id, peer in list(self.peers.items()):
+            if peer.headset is h:
+                self.peers.pop(peer_id, None)
+                if peer.pc is not None:
+                    self._spawn(peer.pc.close())
         if h.resume_code:
             await self._revoke(h.resume_code)
         if h.ctl is not None:
@@ -501,19 +511,25 @@ class PairHost:
         async def on_state() -> None:
             state = pc.connectionState
             if state == "connected":
-                if h.pc is not None and h.pc is not pc:
+                self.peers.pop(peer_id, None)
+                if h.revoked or self.headsets.get(h.id) is not h:
+                    await pc.close()            # disconnected meanwhile
+                    return
+                # Installed before any await, so two resumes coming up at
+                # once each replace the one before, and none is left open
+                # untracked.
+                old, old_bridges = h.pc, h.bridges
+                h.pc, h.bridges = pc, bridges
+                h.connected, h.since, h.transport = True, time.time(), _transport(pc)
+                logger.info("[vr-pair] headset %s connected (%s)", h.id, h.transport)
+                if old is not None and old is not pc:
                     # A resumed headset: its old connection gives way.
-                    old = h.pc
-                    for b in h.bridges:
+                    for b in old_bridges:
                         b.close()
                     try:
                         await old.close()
                     except Exception:  # noqa: BLE001
                         pass
-                h.pc, h.bridges = pc, bridges
-                h.connected, h.since, h.transport = True, time.time(), _transport(pc)
-                self.peers.pop(peer_id, None)
-                logger.info("[vr-pair] headset %s connected (%s)", h.id, h.transport)
             elif state in ("failed", "closed"):
                 self.peers.pop(peer_id, None)
                 if h.pc is pc:
@@ -553,6 +569,9 @@ class PairHost:
         from . import vr_bridge  # noqa: PLC0415
 
         label = channel.label
+        if h.revoked:
+            channel.close()
+            return
         if label == "ctl":
             # On a resumed headset, the ctl of the connection that replaces
             # the old one: the bye goes where the page now listens.

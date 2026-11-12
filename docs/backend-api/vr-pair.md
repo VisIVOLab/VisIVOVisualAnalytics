@@ -115,8 +115,10 @@ desktop) or `backend-stopping`.
   headers, body}`, `res {id, status, headers}`, `cancel {id}` and `err {id,
   message}`. The `path` is relative to the backend root, with its query
   string.
-- **Headers.** Response `headers` are a list of `[name, value]` pairs, the
-  names in lower case. Request headers may be an object or such a list.
+- **Headers.** Response `headers` are a JSON object, the names in lower
+  case and repeated headers joined with `, `. Request headers may be an
+  object or a list of `[name, value]` pairs. The backend drops the page's
+  `X-Visivo-Token` and adds its own.
 - **Bodies.** A body travels as binary chunks: a 4-byte big-endian id, a
   flag byte (bit 0 = last) and at most 16 KiB of payload.
 - **Dispatch.** Every request is served by this backend's own app,
@@ -124,12 +126,17 @@ desktop) or `backend-stopping`.
   piece is not read while the channel holds more than 1 MiB, so a large
   response does not accumulate in memory.
 - **Cancel.** A `cancel` stops the route.
-- **Limits.** At most 64 requests can be in flight per channel, and a
-  request body can be at most 64 MiB.
+- **Limits.** At most 64 requests can be in flight per channel. A request
+  body can be at most 64 MiB, and request bodies that the routes have not
+  read yet can hold at most 64 MiB per channel. A request over either limit
+  is cancelled (`cancel`, then `err`).
 - **Pairing routes.** `/v1/vr/pair` is not reachable through the channel:
   403.
-- **Compression.** The page decides whether to send `Accept-Encoding`. A
-  route that compresses (gzip) does so only when it is asked to.
+- **Decoded bodies.** The page always receives the decoded bytes. The
+  bridge drops the page's `Accept-Encoding`. If a route encodes its body
+  anyway (gzip or deflate), the bridge decodes it as it streams and drops
+  `content-encoding` and `content-length`. Otherwise `content-length` is the
+  length of the bytes that follow.
 
 **`ws`.** There is one channel per page WebSocket. Its `protocol` is
 `{"path", "protocols"}`, for example `/v1/render/<id>/ws` with
@@ -145,6 +152,10 @@ desktop) or `backend-stopping`.
   browsers.
 - **Refusal.** A socket the route refuses (an unknown render session, for
   example) is closed with the route's own code.
+- **Closing.** When the page sends a close, the bridge echoes it, as a
+  WebSocket server does, and the route sees the disconnect.
+- **Unread messages.** Messages that the route has not read yet can hold at
+  most 64 MiB. Beyond that the socket is closed with 1009.
 - **Stereo video.** The stereo video of
   [#189](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/189)
   negotiates its peer connection over the bridged render socket, as it does
@@ -165,6 +176,7 @@ one process on a MacBook over loopback:
 | Time from join to the first API byte | about 80 ms |
 | A 100 MiB streamed response | 6 s (17 MiB/s) |
 | Python memory traced during that transfer | 2.1 MiB at peak |
+| The VR page's 8.4 MB reduced cube, from Chrome on the same Mac (median of 7 runs) | 0.45 to 0.51 s (16 to 19 MB/s) paired, 0.28 to 0.32 s direct over HTTP |
 
 The throughput is limited by aiortc's SCTP, which is pure Python, and here
 both ends share one CPU core. Between a headset and a Mac on the local
