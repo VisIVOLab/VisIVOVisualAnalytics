@@ -119,12 +119,16 @@ private:
     void pollPairing();
     void disconnectHeadsets();
     /// DELETE /v1/vr/pair/{code_or_id} for each of @p ids, off the GUI
-    /// thread; @p then (may be empty) runs on the GUI thread after.
-    void revoke(const QStringList &ids, std::function<void()> then = {});
+    /// thread, even if the dialog is deleted meanwhile.
+    void revoke(const QStringList &ids);
     /// Run @p work on a copy of the pairing client off the GUI thread; @p done
-    /// gets its answer unless the dialog is gone or a newer code was asked for.
+    /// gets its answer unless the dialog is gone or a newer code was asked
+    /// for, in which case @p obsolete (if any) gets it, on the GUI thread,
+    /// with the client copy the request used.
     void runPairRequest(std::function<BackendVrPairReply(const BackendClient &)> work,
-                        std::function<void(const BackendVrPairReply &)> done);
+                        std::function<void(const BackendVrPairReply &)> done,
+                        std::function<void(const BackendVrPairReply &, const BackendClient &)>
+                                obsolete = {});
     /// Everything on the pairing panel, from m_pair.
     void showPairing();
     void showQr(const QString &payload);

@@ -319,47 +319,58 @@ void VrHeadsetDialog::setAdvancedOpen(bool open, const QString &reason)
 
 // ── Pairing by code ─────────────────────────────────────────────────────────
 
+namespace {
+
+/// DELETE each of @p ids on a worker, whatever becomes of the dialog.
+void revokeDetached(const BackendClient &client, const QStringList &ids)
+{
+    if (ids.isEmpty())
+        return;
+    (void)QtConcurrent::run([client, ids]() {
+        for (const QString &id : ids) {
+            QString error;
+            // Neither the id (it may be the code) nor the error (Qt's words
+            // can hold the URL, code included) is logged.
+            if (!client.revokeVrPair(id, error))
+                qWarning().noquote() << "VR headset: a pairing code or headset could not be "
+                                        "revoked; it ends by itself when it expires.";
+        }
+    });
+}
+
+}   // namespace
+
 void VrHeadsetDialog::runPairRequest(std::function<BackendVrPairReply(const BackendClient &)> work,
-                                     std::function<void(const BackendVrPairReply &)> done)
+                                     std::function<void(const BackendVrPairReply &)> done,
+                                     std::function<void(const BackendVrPairReply &,
+                                                        const BackendClient &)> obsolete)
 {
     // Its own copy of the client for each request: a poll and a revoke may
     // run at once, and a client adopting a refreshed token is not shared.
     const BackendClient client = m_pairClient;
     const int serial = m_pairSerial;
     QPointer<VrHeadsetDialog> self(this);
-    auto *watcher = new QFutureWatcher<BackendVrPairReply>(this);
-    connect(watcher, &QFutureWatcher<BackendVrPairReply>::finished, watcher,
-            [self, watcher, serial, done]() {
-                const BackendVrPairReply reply = watcher->result();
-                watcher->deleteLater();
-                if (!self || self->m_closed || serial != self->m_pairSerial)
-                    return;
-                done(reply);
-            });
+    // Not parented to the dialog: an answer that arrives after the dialog is
+    // gone must still reach @p obsolete (a code issued meanwhile is revoked).
+    auto *watcher = new QFutureWatcher<BackendVrPairReply>;
+    QObject::connect(watcher, &QFutureWatcher<BackendVrPairReply>::finished, watcher,
+                     [self, watcher, serial, done, obsolete, client]() {
+                         const BackendVrPairReply reply = watcher->result();
+                         watcher->deleteLater();
+                         if (!self || self->m_closed || serial != self->m_pairSerial) {
+                             if (obsolete)
+                                 obsolete(reply, client);
+                             return;
+                         }
+                         done(reply);
+                     });
     watcher->setFuture(QtConcurrent::run([client, work]() { return work(client); }));
 }
 
-void VrHeadsetDialog::revoke(const QStringList &ids, std::function<void()> then)
+void VrHeadsetDialog::revoke(const QStringList &ids)
 {
-    if (ids.isEmpty())
-        return;
     // Not tied to the dialog: it is sent on close too, and must still go.
-    const BackendClient client = m_pairClient;
-    QPointer<VrHeadsetDialog> self(this);
-    auto *watcher = new QFutureWatcher<void>(this);
-    connect(watcher, &QFutureWatcher<void>::finished, watcher, [self, watcher, then]() {
-        watcher->deleteLater();
-        if (self && !self->m_closed && then)
-            then();
-    });
-    watcher->setFuture(QtConcurrent::run([client, ids]() {
-        for (const QString &id : ids) {
-            QString error;
-            // The id may be the code: only the failure's reason is logged.
-            if (!client.revokeVrPair(id, error))
-                qWarning().noquote() << "VR headset: revoke failed:" << error;
-        }
-    }));
+    revokeDetached(m_pairClient, ids);
 }
 
 void VrHeadsetDialog::newCode()
@@ -392,6 +403,19 @@ void VrHeadsetDialog::newCode()
                        showPairing();
                        if (m_pair.polling())
                            m_pairTimer->start();
+                   },
+                   [](const BackendVrPairReply &reply, const BackendClient &client) {
+                       // The dialog closed, or New Code was pressed, while the
+                       // code was being issued: nobody will see it, so it goes.
+                       if (reply.httpStatus < 200 || reply.httpStatus >= 300)
+                           return;
+                       const QString code = QJsonDocument::fromJson(reply.body)
+                                                    .object()
+                                                    .value(u"code"_s)
+                                                    .toString()
+                                                    .trimmed();
+                       if (!code.isEmpty())
+                           revokeDetached(client, { code });
                    });
 }
 
@@ -458,7 +482,7 @@ void VrHeadsetDialog::showPairing()
     using VrPair::State;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     const State state = m_pair.state();
-    const bool codeShown = state == State::Waiting;
+    const bool codeShown = state == State::Waiting && m_pair.msLeft(now) > 0;
     m_codeLabel->setText(codeShown ? VrPair::displayCode(m_pair.code().code) : QString());
     m_codeLabel->setVisible(codeShown);
     m_pairHint->setVisible(codeShown);
@@ -468,7 +492,9 @@ void VrHeadsetDialog::showPairing()
             || state == State::Unavailable;
     m_pairStatus->setStyleSheet(
             problem ? u"color: %1;"_s.arg(QString::fromLatin1(VisivoTheme::kError())) : QString());
-    m_disconnectButton->setVisible(state == State::Connected);
+    // Also while waiting, for a headset paired before that is still there.
+    m_disconnectButton->setVisible(!m_pair.connections().isEmpty()
+                                   && (state == State::Connected || state == State::Waiting));
     m_newCodeButton->setVisible(state != State::Requesting && state != State::Connected
                                 && state != State::Connecting);
     m_newCodeButton->setText(state == State::Failed || state == State::Unavailable

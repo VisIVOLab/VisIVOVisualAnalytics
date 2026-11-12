@@ -50,6 +50,8 @@ on the headset.
   connected** with a **Disconnect** button. A code that runs out says *The
   code expired*; **New Code** asks for another one. A code that was used but
   brought no headset within 45 seconds says so, with **New Code** as well.
+  A headset paired earlier that is still connected is named under the new
+  code, with **Disconnect**.
 - The headset joins the desktop's backend session, on the same dataset and
   path (and, for a point table, a catalogue or a velocity field, the same kind
   and box), as the USB link does.

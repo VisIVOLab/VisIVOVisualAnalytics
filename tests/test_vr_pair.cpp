@@ -418,13 +418,67 @@ void TestVrPair::unusedCodeExpires()
     VrPair::Tracker t = waitingTracker();
     t.tick(kNow + 299'000);
     QCOMPARE(t.state(), State::Waiting);
+    QVERIFY(t.codeOutstanding(kNow + 299'000));
+    // Run out: no longer outstanding, but still polled for a little while.
     t.tick(kNow + 300'000);
+    QCOMPARE(t.state(), State::Waiting);
+    QVERIFY(!t.codeOutstanding(kNow + 300'000));
+    QVERIFY(t.polling());
+    t.tick(kNow + 300'000 + VrPair::kLateUseGraceMs);
     QCOMPARE(t.state(), State::Expired);
     QVERIFY(!t.polling());
-    // The backend dropping the code from the list at its expiry: also expired.
+
+    // The backend dropping the code from the list at its expiry: checked for
+    // a late use, then expired (not "lost").
     VrPair::Tracker u = waitingTracker();
     u.polled(status(true, {}), kNow + 300'500);
+    QCOMPARE(u.state(), State::Connecting);
+    QVERIFY(u.lateUse());
+    u.tick(kNow + 300'500 + VrPair::kLateUseGraceMs + 1);
     QCOMPARE(u.state(), State::Expired);
+
+    // Polls missed for long: expired at once.
+    VrPair::Tracker v = waitingTracker();
+    v.polled(status(true, {}), kNow + 300'000 + VrPair::kLateUseGraceMs);
+    QCOMPARE(v.state(), State::Expired);
+}
+
+void TestVrPair::codeUsedJustBeforeExpiryStillConnects()
+{
+    // Last poll at T-1 s saw the code; the headset used it right then; the
+    // next poll, after the expiry, finds it gone and then the headset.
+    VrPair::Tracker t = waitingTracker();
+    t.polled(status(true, { u"K7Q4MX"_s }), kNow + 299'000);
+    t.tick(kNow + 300'200);
+    QCOMPARE(t.state(), State::Waiting);
+    t.polled(status(true, {}), kNow + 301'000);
+    QCOMPARE(t.state(), State::Connecting);
+    t.tick(kNow + 305'000);
+    QCOMPARE(t.state(), State::Connecting);
+    t.polled(status(true, {}, { headset(u"h1"_s) }), kNow + 307'000);
+    QCOMPARE(t.state(), State::Connected);
+}
+
+void TestVrPair::codeStillWaitingBesideAnEarlierHeadset()
+{
+    // A headset paired from this window before is still connected when the
+    // dialog shows a new code: the code stays shown, and revoked on close.
+    VrPair::Tracker t = waitingTracker();
+    t.polled(status(true, { u"K7Q4MX"_s }, { headset(u"old"_s) }), kNow + 2000);
+    QCOMPARE(t.state(), State::Waiting);
+    QCOMPARE(t.connections().size(), 1);
+    QVERIFY(t.codeOutstanding(kNow + 2000));
+    QVERIFY(VrPair::statusText(t, kNow + 2000).contains(u"still connected"_s));
+    // The code used and a second headset there: connected, both listed.
+    t.polled(status(true, {}, { headset(u"old"_s), headset(u"new"_s) }), kNow + 4000);
+    QCOMPARE(t.state(), State::Connected);
+    QCOMPARE(t.connections().size(), 2);
+    // Disconnect while waiting lets the earlier headset go, the code stays.
+    VrPair::Tracker u = waitingTracker();
+    u.polled(status(true, { u"K7Q4MX"_s }, { headset(u"old"_s) }), kNow + 2000);
+    u.disconnecting();
+    QCOMPARE(u.state(), State::Waiting);
+    QVERIFY(u.connections().isEmpty());
 }
 
 void TestVrPair::usedCodeWithoutHeadsetIsLost()
@@ -519,8 +573,12 @@ void TestVrPair::statusTextFollowsTheState()
     t.polled(status(true, {}), kNow + 6000);
     QVERIFY(VrPair::statusText(t, kNow).contains(u"New Code"_s));
     VrPair::Tracker e = waitingTracker();
-    e.tick(kNow + 300'000);
+    QVERIFY(VrPair::statusText(e, kNow + 300'000).contains(u"expiring"_s));
+    e.tick(kNow + 300'000 + VrPair::kLateUseGraceMs);
     QVERIFY(VrPair::statusText(e, kNow).contains(u"expired"_s));
+    VrPair::Tracker late = waitingTracker();
+    late.polled(status(true, {}), kNow + 300'500);
+    QVERIFY(VrPair::statusText(late, kNow).contains(u"ran out"_s));
 }
 
 void TestVrPair::serviceSettingsReachTheBackendUnlessTheEnvironmentSetsThem()

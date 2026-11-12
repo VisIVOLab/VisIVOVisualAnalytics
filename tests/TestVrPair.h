@@ -28,6 +28,8 @@ private slots:
     void qrEncodesThePayload();
     void waitingThenConnectedThenDisconnected();
     void unusedCodeExpires();
+    void codeUsedJustBeforeExpiryStillConnects();
+    void codeStillWaitingBesideAnEarlierHeadset();
     void usedCodeWithoutHeadsetIsLost();
     void usedCodeThenHeadsetConnects();
     void otherDatasetsHeadsetIsNotOurs();
