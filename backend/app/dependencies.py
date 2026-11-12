@@ -127,6 +127,11 @@ def _worker_init(counter, visible_gpus) -> None:  # pragma: no cover
     """
     import logging as _l
     import os as _os
+    # First: a worker whose backend is killed must not wait for tasks for ever
+    # (issue #176). No Linux parent-death signal here: the pool starts its
+    # workers from whichever thread submits, and that thread may end first.
+    from .exit_with_parent import install as _exit_with_parent
+    _exit_with_parent()
     _l.getLogger("vtkmodules").setLevel(_l.ERROR)
     if counter is None or not visible_gpus:
         return

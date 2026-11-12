@@ -21,6 +21,7 @@
     "X-Visivo-Div-Max",
     "X-Visivo-Div-Min",
     "X-Visivo-Downsample-Factor",
+    "X-Visivo-Downsample-Factors",
     "X-Visivo-Exposure",
     "X-Visivo-Frame",
     "X-Visivo-From-Cache",

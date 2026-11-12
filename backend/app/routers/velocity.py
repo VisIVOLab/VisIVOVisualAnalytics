@@ -9,7 +9,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..auth import verify_token
 from ..compressed_fits import readable_path
@@ -65,11 +65,31 @@ class VelocityBasinsRequest(BaseModel):
     dataset_id: str
     basin_max_dim: int = 64   # basins are segmented on a grid this size (coarse, like the science)
     direction: int = 1        # +1 = basins of attraction (superclusters); -1 = repulsion (voids)
+    # Box size (Mpc) to segment with, overriding the one the field was opened
+    # with. On a non-cubic grid the per-axis cell size box/(n_i - 1) changes the
+    # flow direction in cells and hence the basins; the viewer sends the box it
+    # shows. See _effective_box for the values.
+    box_mpc: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
 class VelocityDensityRequest(BaseModel):
     dataset_id: str
     max_dim: int = 0          # 0 = full-res ∇·v density; >0 block-averages first (LOD)
+    # As for basins: ∇·v depends on the per-axis cell sizes, so the viewer sends
+    # the box it shows. See _effective_box.
+    box_mpc: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+def _effective_box(requested: float | None, entry: dict) -> float | None:
+    """Box size a basins/density request computes with.
+
+    ``None`` (omitted) → the box the dataset was opened with; ``0`` → unit
+    cells explicitly (no box); ``> 0`` → that box. Negative or non-finite values
+    are rejected (422) by the request model.
+    """
+    if requested is None:
+        return entry.get("box_mpc")
+    return float(requested) if requested > 0 else None
 
 
 class VelocityDifferenceRequest(BaseModel):
@@ -139,6 +159,10 @@ async def velocity_grid_bin(
         "X-Visivo-Depth": str(payload["nz"]),
         "X-Visivo-Full-Shape": ",".join(str(int(s)) for s in full),  # (nz,ny,nx) pre-LOD
         "X-Visivo-Downsample-Factor": str(payload.get("downsample_factor", 1)),
+        # Per-axis x,y,z factors: a thin axis is reduced less than the others,
+        # so the single factor above is only the largest one.
+        "X-Visivo-Downsample-Factors": ",".join(
+            str(int(f)) for f in payload.get("downsample_factors", [1, 1, 1])),
         "X-Visivo-Components": "3",
         "X-Visivo-Spacing": ",".join(repr(float(s)) for s in payload["spacing"]),
         "X-Visivo-Origin": ",".join(repr(float(o)) for o in payload["origin"]),
@@ -167,7 +191,8 @@ async def velocity_basins_bin(
         return Response(content=b"unknown velocity dataset",
                         media_type="text/plain", status_code=404)
     try:
-        payload = await _run(velocity_basins_worker, entry["path"], entry.get("box_mpc"),
+        payload = await _run(velocity_basins_worker, entry["path"],
+                             _effective_box(request.box_mpc, entry),
                              request.basin_max_dim, request.direction)
     except Exception as exc:
         return Response(content=str(exc).encode("utf-8"),
@@ -181,6 +206,12 @@ async def velocity_basins_bin(
         "X-Visivo-Components": "1",
         "X-Visivo-Scalar-Type": "int32",
         "X-Visivo-N-Basins": str(payload["n_basins"]),
+        # The basin grid's own geometry (x,y,z): the block-averaged field's
+        # spacing and first-sample origin, and the per-axis factors used.
+        "X-Visivo-Spacing": ",".join(repr(float(s)) for s in payload["spacing"]),
+        "X-Visivo-Origin": ",".join(repr(float(o)) for o in payload["origin"]),
+        "X-Visivo-Downsample-Factors": ",".join(
+            str(int(f)) for f in payload.get("downsample_factors", [1, 1, 1])),
         "X-Visivo-Byte-Order": "little",
         "Content-Length": str(len(raw)),
     }
@@ -201,8 +232,8 @@ async def velocity_density_bin(
         return Response(content=b"unknown velocity dataset",
                         media_type="text/plain", status_code=404)
     try:
-        payload = await _run(velocity_density_worker, entry["path"], entry.get("box_mpc"),
-                             request.max_dim)
+        payload = await _run(velocity_density_worker, entry["path"],
+                             _effective_box(request.box_mpc, entry), request.max_dim)
     except Exception as exc:
         return Response(content=str(exc).encode("utf-8"),
                         media_type="text/plain", status_code=500)

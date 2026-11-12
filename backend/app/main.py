@@ -92,6 +92,17 @@ async def _lifespan(_app: "FastAPI"):
     from . import parent_watch  # noqa: PLC0415
     parent_watch.start()
     yield
+    # The client-gone exit waits for this shutdown once it has begun.
+    parent_watch.SHUTDOWN_STARTED.set()
+    try:
+        await _shutdown(push_task)
+    finally:
+        parent_watch.SHUTDOWN_DONE.set()
+
+
+async def _shutdown(push_task) -> None:
+    """The lifespan's shutdown half: every step bounded and none fatal."""
+    import asyncio  # noqa: PLC0415
     if push_task is not None:
         push_task.cancel()
         try:
@@ -102,9 +113,19 @@ async def _lifespan(_app: "FastAPI"):
         # Release all open EGL contexts cleanly on uvicorn shutdown. Without this
         # the EGL display handle is leaked and the next backend start may fail to
         # acquire it on the same GPU.
+        # Bounded: the client kills the backend three seconds after asking it
+        # to stop. Each render child gets 2.5 s, closing at the same time:
+        # 1.5 s to close its session (the GPU context is released in a few
+        # milliseconds), the rest to exit, after which it is killed. The outer
+        # 3 s limit is for in-process sessions; a child the backend could not
+        # reach in time ends by itself once the backend is gone
+        # (exit_with_parent).
         try:
             from .render_manager import get_render_manager  # noqa: PLC0415
-            await get_render_manager().stop()
+            await asyncio.wait_for(get_render_manager().stop(budget_s=2.5), timeout=3.0)
+        except TimeoutError:
+            logging.getLogger("visivo.backend").warning(
+                "[shutdown] render sessions did not close in time; ending them at exit")
         except Exception as exc:  # noqa: BLE001
             logging.getLogger("visivo.backend").warning(
                 "[shutdown] render manager stop failed: %s", exc)

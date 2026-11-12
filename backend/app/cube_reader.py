@@ -47,6 +47,8 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+from .exit_with_parent import install as _exit_with_parent, spawned_from_main_thread
+
 logger = logging.getLogger("visivo.render.reader")
 
 
@@ -57,6 +59,7 @@ def _reader_main(
     chunks: list[Tuple[int, int]],
     progress_q: "Queue",
     hdu: Optional[int] = None,
+    pdeathsig: bool = False,
 ) -> None:
     """Reader-process entry point.
 
@@ -85,6 +88,9 @@ def _reader_main(
         {"event": "complete", "vmin": ..., "vmax": ...}
         {"event": "error",    "message": "..."}
     """
+    # Its parent (a render child) may be killed mid-read: the reader must not
+    # keep paging the cube in for nobody (issue #176).
+    _exit_with_parent(pdeathsig=pdeathsig)
     try:
         # A FITS HDU or a VBT volume's field (app/volume_source.py, #83).
         from .volume_source import volume_data  # noqa: PLC0415
@@ -237,7 +243,7 @@ class CubeReader:
         self._process = self._MP_CTX.Process(
             target=_reader_main,
             args=(self.path, self.shm.name, self.shape, self.chunks,
-                  self.progress_q, self.hdu),
+                  self.progress_q, self.hdu, spawned_from_main_thread()),
             daemon=True,
             name=f"visivo-cube-reader-{self.shm.name[-8:]}",
         )
