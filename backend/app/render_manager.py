@@ -188,8 +188,12 @@ class RenderManager:
         if self._reaper_task is None or self._reaper_task.done():
             self._reaper_task = asyncio.create_task(self._reap_loop())
 
-    async def stop(self) -> None:
-        """Cancel the reaper and close every active session. App shutdown only."""
+    async def stop(self, budget_s: float | None = None) -> None:
+        """Cancel the reaper and close every active session. App shutdown only.
+
+        ``budget_s`` bounds the close of each session in a child process (they
+        close at the same time, so it bounds the whole stop for them); an
+        in-process session closes as it always does."""
         if self._reaper_task is not None:
             self._reaper_task.cancel()
         async with self._lock:
@@ -198,11 +202,15 @@ class RenderManager:
             self._tickets.clear()
             self._attached.clear()
             self._detached_at.clear()
-        for s in sessions:
-            try:
-                await s.close()
-            except Exception:
-                logger.exception("[render-manager] close on shutdown raised")
+        # All at once: one after the other, a few slow children add up to a
+        # shutdown the client kills half-done.
+        results = await asyncio.gather(
+            *(s.close(budget_s=budget_s) if isinstance(s, RenderSessionProcess) else s.close()
+              for s in sessions),
+            return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                logger.error("[render-manager] close on shutdown raised", exc_info=result)
 
     async def create_session(self, dataset_path: str,
                              owner_token: str | None = None,
