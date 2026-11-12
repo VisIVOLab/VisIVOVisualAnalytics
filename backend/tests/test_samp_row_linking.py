@@ -170,3 +170,16 @@ def test_import_url_refuses_file_scheme(client):
     body = r.json()
     assert body["valid"] is False
     assert "http" in body["error"]
+
+
+def test_query_random_sample_keeps_original_samp_rows(client, tmp_path):
+    dataset_id = _open(client, _csv(tmp_path, rows=103))
+    seen = set()
+    for phase in range(11):
+        body = _query(client, dataset_id, limit=10, random_sample=True, phase=phase)
+        assert body["valid"] and body["step"] == 11
+        positions = body["row_index"]
+        assert seen.isdisjoint(positions)
+        assert [r["name"] for r in body["rows"]] == [f"s{i}" for i in positions]
+        seen.update(positions)
+    assert seen == set(range(103))

@@ -2899,8 +2899,10 @@ static QJsonObject buildTabularQueryBody(const BackendTabularQueryRequest &req)
         });
     }
     body.insert(QStringLiteral("filters"), filters);
-    if (req.evenSample) {
-        body.insert(QStringLiteral("even_sample"), true);
+    if (req.randomSample)
+        body.insert(QStringLiteral("random_sample"), true);
+    if (req.evenSample || req.randomSample) {
+        body.insert(QStringLiteral("even_sample"), req.evenSample);
         body.insert(QStringLiteral("phase"), req.phase);
     }
     if (!req.sortField.isEmpty()) {

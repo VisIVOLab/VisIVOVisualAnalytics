@@ -92,7 +92,7 @@ struct Catalogue3DFilterTaskResult
     /// Rows the backend returned, before invalid ones were skipped: what a
     /// page consumed, which is what the next page's offset moves by.
     int returnedRows{ 0 };
-    int step{ 1 };   ///< an even sample: one row in this many
+    int step{ 1 };   ///< number of disjoint sample phases
     int limit{ 0 };  ///< the page size that step was taken for
 };
 
@@ -519,9 +519,8 @@ private:
     QFutureWatcher<Catalogue3DFilterTaskResult> filterWatcher;
     // ── Pagination ────────────────────────────────────────────────────────────
     int m_currentOffset{ 0 };
-    // A point table loads an even sample of its rows, not its first ones (a
-    // simulation's table is stored by region of space): one in m_sampleStep,
-    // each "Load more" the next phase of them.
+    // Every catalogue loads a stable randomized sample spanning all rows.
+    // Each "Load more" adds a disjoint phase, until every row is loaded.
     int m_sampleStep{ 1 };
     int m_samplePhase{ 0 };
     int m_sampleLimit{ 100000 };   ///< the page size the step was taken for
@@ -536,6 +535,8 @@ private:
     bool m_loadingMore{ false };
     QPointer<QPushButton> btnLoadMore;
     QPointer<QPushButton> btnLoadAll;
+    QPointer<QWidget> m_loadIndicator;
+    QPointer<QLabel> m_loadMessage;
     QFutureWatcher<Catalogue3DFilterTaskResult> m_loadMoreWatcher;
     void loadMoreEntries();
     void loadAllEntries();   // load every remaining row in one query (no paging)

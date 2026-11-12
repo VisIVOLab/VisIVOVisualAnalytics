@@ -518,6 +518,10 @@ void vtkWindowCatalogue3D::applyFilter()
     this->m_totalCount = -1;
 
     this->filterBusy = true;
+    if (this->m_loadMessage)
+        this->m_loadMessage->setText(u"Loading catalogue sources…"_s);
+    if (this->m_loadIndicator)
+        this->m_loadIndicator->show();
     if (this->btnFilterApply) {
         this->btnFilterApply->setEnabled(false);
     }
@@ -552,11 +556,9 @@ void vtkWindowCatalogue3D::applyFilter()
     const int numFilters = nFilters;
     this->pushRemoteState();   // the filters, on the whole table
     const int pageSize = this->m_pageSize;
-    const bool evenSample = this->m_pointTable;
 
     this->filterWatcher.setFuture(QtConcurrent::run(
-            [backendUrl, backendToken, datasetId, sessionId, filters, schema, numFilters, pageSize,
-             evenSample]()
+            [backendUrl, backendToken, datasetId, sessionId, filters, schema, numFilters, pageSize]()
                     -> Catalogue3DFilterTaskResult {
                 Catalogue3DFilterTaskResult out;
 
@@ -569,7 +571,7 @@ void vtkWindowCatalogue3D::applyFilter()
                 qreq.filters = filters;
                 qreq.limit = pageSize;
                 qreq.offset = 0;
-                qreq.evenSample = evenSample;
+                qreq.randomSample = true;
 
                 const auto subset = client.queryTabularCatalogue(qreq);
                 if (!subset.valid) {
@@ -625,6 +627,10 @@ void vtkWindowCatalogue3D::loadAllEntries()
     this->m_pageSize = total;
     this->applyFilter();
     this->m_pageSize = savedPageSize;
+    if (this->filterBusy && this->m_loadMessage)
+        this->m_loadMessage->setText(
+                u"Loading all %L1 sources… The scene will update when loading finishes."_s
+                        .arg(total));
 }
 
 void vtkWindowCatalogue3D::loadMoreEntries()
@@ -648,7 +654,7 @@ void vtkWindowCatalogue3D::loadMoreEntries()
     const int phase = this->m_samplePhase;
     if (this->filterStatusLabel) {
         this->filterStatusLabel->setText(
-                sampled ? QStringLiteral("Loading more of the table, evenly (%1 of %2)…")
+                sampled ? QStringLiteral("Loading random sample (%1 of %2)…")
                                   .arg(phase + 1)
                                   .arg(this->m_sampleStep)
                         : QStringLiteral("Loading rows %1–%2…")
@@ -680,7 +686,7 @@ void vtkWindowCatalogue3D::loadMoreEntries()
                 qreq.filters = filters;
                 qreq.limit = pageSize;
                 qreq.offset = offset;
-                qreq.evenSample = sampled;
+                qreq.randomSample = sampled;
                 qreq.phase = phase;
 
                 const auto subset = client.queryTabularCatalogue(qreq);

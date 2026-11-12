@@ -167,9 +167,10 @@ async def catalogue_query(
         df, total = _apply_tabular_query(
             entry["dataframe"], request.filters, request.sort, request.limit, request.offset,
             even_sample=request.even_sample, phase=request.phase,
+            random_sample=request.random_sample,
         )
         rows = df.replace({np.nan: None}).to_dict(orient="records")
-        step = sample_step(total, request.limit) if request.even_sample else 1
+        step = sample_step(total, request.limit) if (request.even_sample or request.random_sample) else 1
         row_index = _original_row_positions(entry["dataframe"], df)
     except HTTPException:
         raise
