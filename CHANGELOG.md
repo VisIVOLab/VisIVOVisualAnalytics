@@ -22,6 +22,13 @@ are preserved here unedited; the branch names they refer to are historical.
   environment takes precedence. The QR code is drawn with Project Nayuki's QR
   Code generator (MIT), vendored in `src/thirdparty/qrcodegen`.
 
+- **Third-party notices ship with the application.** The notices of the code
+  compiled into the executable (the QR Code generator, MIT; QCustomPlot,
+  GPL-3.0 with its licence text) are installed in `licenses/` next to the
+  bundled backend: `VisIVOVisualAnalytics.app/Contents/Resources/licenses` on
+  macOS, `bin/licenses` on Windows and `app/usr/bin/licenses` in the Linux
+  package.
+
 - **Remote point rendering keeps points far from zero apart (#206, part of
   #166).** The backend's point render session drew float32 positions, so
   1e9, 1e9 + 1 and 1e9 + 2 merged into one point in remote and remote stereo

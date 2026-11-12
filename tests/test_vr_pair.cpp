@@ -1,6 +1,7 @@
 #include "TestVrPair.h"
 
 #include "app/BackendClient.h"
+#include "app/DiagnosticsManager.h"
 #include "app/VrPair.h"
 #include "app/VrPairQr.h"
 
@@ -100,8 +101,8 @@ public:
                         payload = postBody;
                         extra = "Date: Thu, 12 Nov 2026 10:00:00 GMT\r\n";
                     } else if (line.startsWith("GET /v1/vr/pair ")) {
-                        code = 200;
-                        payload = getBody;
+                        code = getStatus;
+                        payload = getStatus == 200 ? getBody : QByteArray(R"({"detail":"boom"})");
                     } else if (line.startsWith("DELETE /v1/vr/pair/")) {
                         code = 200;
                         payload = R"({"revoked":true})";
@@ -127,6 +128,7 @@ public:
 
     QTcpServer server;
     int postStatus{ 200 };
+    int getStatus{ 200 };
     QByteArray postBody;
     QByteArray getBody;
     QStringList lines;
@@ -258,7 +260,7 @@ void TestVrPair::conflictReasonsOpenTheUsbWay()
     VrPair::Tracker t(u"ds1"_s);
     t.created(r, kNow);
     QCOMPARE(t.state(), State::Unavailable);
-    QVERIFY(!t.polling());
+    QVERIFY(!t.polling(kNow));
 }
 
 void TestVrPair::otherRefusalsAreFailures_data()
@@ -393,16 +395,16 @@ void TestVrPair::waitingThenConnectedThenDisconnected()
 {
     VrPair::Tracker t = waitingTracker();
     QCOMPARE(t.state(), State::Waiting);
-    QVERIFY(t.polling());
+    QVERIFY(t.polling(kNow));
     t.polled(status(true, { u"K7Q4MX"_s }), kNow + 2000);
     QCOMPARE(t.state(), State::Waiting);
     t.polled(status(true, {}, { headset(u"h1"_s) }), kNow + 4000);
     QCOMPARE(t.state(), State::Connected);
     QCOMPARE(t.connections().size(), 1);
-    QVERIFY(t.polling());   // to notice the headset leaving
+    QVERIFY(t.polling(kNow + 4000));   // to notice the headset leaving
     t.polled(status(true, {}), kNow + 6000);
     QCOMPARE(t.state(), State::Disconnected);
-    QVERIFY(!t.polling());
+    QVERIFY(!t.polling(kNow + 6000));
 
     // Disconnect pressed: what it acts on is gone at once.
     VrPair::Tracker u = waitingTracker();
@@ -419,44 +421,45 @@ void TestVrPair::unusedCodeExpires()
     t.tick(kNow + 299'000);
     QCOMPARE(t.state(), State::Waiting);
     QVERIFY(t.codeOutstanding(kNow + 299'000));
-    // Run out: no longer outstanding, but still polled for a little while.
     t.tick(kNow + 300'000);
-    QCOMPARE(t.state(), State::Waiting);
-    QVERIFY(!t.codeOutstanding(kNow + 300'000));
-    QVERIFY(t.polling());
-    t.tick(kNow + 300'000 + VrPair::kLateUseGraceMs);
     QCOMPARE(t.state(), State::Expired);
-    QVERIFY(!t.polling());
+    QVERIFY(!t.codeOutstanding(kNow + 300'000));
+    // Polled quietly for a used code's connect window after the last time
+    // the code was seen unused (here: when it was issued, so already over).
+    QVERIFY(!t.polling(kNow + 300'000));
 
-    // The backend dropping the code from the list at its expiry: checked for
-    // a late use, then expired (not "lost").
+    // Seen unused at T-1 s: the quiet polls go on until T-1 s + 45 s.
     VrPair::Tracker u = waitingTracker();
-    u.polled(status(true, {}), kNow + 300'500);
-    QCOMPARE(u.state(), State::Connecting);
-    QVERIFY(u.lateUse());
-    u.tick(kNow + 300'500 + VrPair::kLateUseGraceMs + 1);
+    u.polled(status(true, { u"K7Q4MX"_s }), kNow + 299'000);
+    u.tick(kNow + 300'000);
+    QCOMPARE(u.state(), State::Expired);
+    QVERIFY(u.polling(kNow + 299'000 + VrPair::kConnectGraceMs));
+    QVERIFY(!u.polling(kNow + 299'000 + VrPair::kConnectGraceMs + 1));
+    // Nothing comes: it stays expired.
+    u.polled(status(true, {}), kNow + 310'000);
     QCOMPARE(u.state(), State::Expired);
 
-    // Polls missed for long: expired at once.
+    // The backend dropping the code at its expiry before our clock did.
     VrPair::Tracker v = waitingTracker();
-    v.polled(status(true, {}), kNow + 300'000 + VrPair::kLateUseGraceMs);
+    v.polled(status(true, {}), kNow + 300'500);
     QCOMPARE(v.state(), State::Expired);
 }
 
 void TestVrPair::codeUsedJustBeforeExpiryStillConnects()
 {
     // Last poll at T-1 s saw the code; the headset used it right then; the
-    // next poll, after the expiry, finds it gone and then the headset.
+    // code expires, and the headset takes 30 s to connect: within the 45 s
+    // a used code gets, counted from when it was last seen unused.
     VrPair::Tracker t = waitingTracker();
     t.polled(status(true, { u"K7Q4MX"_s }), kNow + 299'000);
-    t.tick(kNow + 300'200);
-    QCOMPARE(t.state(), State::Waiting);
+    t.tick(kNow + 300'000);
+    QCOMPARE(t.state(), State::Expired);
     t.polled(status(true, {}), kNow + 301'000);
-    QCOMPARE(t.state(), State::Connecting);
-    t.tick(kNow + 305'000);
-    QCOMPARE(t.state(), State::Connecting);
-    t.polled(status(true, {}, { headset(u"h1"_s) }), kNow + 307'000);
+    QCOMPARE(t.state(), State::Expired);
+    QVERIFY(t.polling(kNow + 329'000));
+    t.polled(status(true, {}, { headset(u"h1"_s) }), kNow + 329'000);
     QCOMPARE(t.state(), State::Connected);
+    QVERIFY(t.polling(kNow + 400'000));
 }
 
 void TestVrPair::codeStillWaitingBesideAnEarlierHeadset()
@@ -470,6 +473,12 @@ void TestVrPair::codeStillWaitingBesideAnEarlierHeadset()
     QVERIFY(t.codeOutstanding(kNow + 2000));
     QVERIFY(VrPair::statusText(t, kNow + 2000).contains(u"still connected"_s));
     // The code used and a second headset there: connected, both listed.
+    // The code used, the earlier headset alone: still connecting, not
+    // connected (the earlier one is not taken for the new one).
+    VrPair::Tracker w = t;
+    w.polled(status(true, {}, { headset(u"old"_s) }), kNow + 4000);
+    QCOMPARE(w.state(), State::Connecting);
+    // Then the new one: connected, both listed.
     t.polled(status(true, {}, { headset(u"old"_s), headset(u"new"_s) }), kNow + 4000);
     QCOMPARE(t.state(), State::Connected);
     QCOMPARE(t.connections().size(), 2);
@@ -486,7 +495,7 @@ void TestVrPair::usedCodeWithoutHeadsetIsLost()
     VrPair::Tracker t = waitingTracker();
     t.polled(status(true, {}), kNow + 10'000);   // gone from pending, nobody connected
     QCOMPARE(t.state(), State::Connecting);
-    QVERIFY(t.polling());
+    QVERIFY(t.polling(kNow + 10'000));
     QVERIFY(!t.codeOutstanding(kNow + 10'000));   // used: closing must not revoke it
     t.polled(status(true, {}), kNow + 12'000);
     QCOMPARE(t.state(), State::Connecting);
@@ -494,7 +503,7 @@ void TestVrPair::usedCodeWithoutHeadsetIsLost()
     QCOMPARE(t.state(), State::Connecting);
     t.tick(kNow + 10'000 + VrPair::kConnectGraceMs + 1);
     QCOMPARE(t.state(), State::Lost);
-    QVERIFY(!t.polling());
+    QVERIFY(!t.polling(kNow + 10'000 + VrPair::kConnectGraceMs + 1));
 }
 
 void TestVrPair::usedCodeThenHeadsetConnects()
@@ -573,12 +582,55 @@ void TestVrPair::statusTextFollowsTheState()
     t.polled(status(true, {}), kNow + 6000);
     QVERIFY(VrPair::statusText(t, kNow).contains(u"New Code"_s));
     VrPair::Tracker e = waitingTracker();
-    QVERIFY(VrPair::statusText(e, kNow + 300'000).contains(u"expiring"_s));
-    e.tick(kNow + 300'000 + VrPair::kLateUseGraceMs);
-    QVERIFY(VrPair::statusText(e, kNow).contains(u"expired"_s));
-    VrPair::Tracker late = waitingTracker();
-    late.polled(status(true, {}), kNow + 300'500);
-    QVERIFY(VrPair::statusText(late, kNow).contains(u"ran out"_s));
+    e.tick(kNow + 300'000);
+    QVERIFY(VrPair::statusText(e, kNow + 300'000).contains(u"expired"_s));
+}
+
+void TestVrPair::silentBackendIsSaid()
+{
+    VrPair::Tracker t = waitingTracker();
+    t.polled(status(true, {}, { headset(u"h1"_s) }), kNow + 2000);
+    QCOMPARE(t.state(), State::Connected);
+    // Polls failing (no answer understood): said after kSilenceMs.
+    for (qint64 at = kNow + 4000; at <= kNow + 30'000; at += 2000)
+        t.polled(VrPair::Status(), at);
+    QVERIFY(!t.silent(kNow + 2000 + VrPair::kSilenceMs));
+    QVERIFY(t.silent(kNow + 2000 + VrPair::kSilenceMs + 1));
+    QVERIFY(VrPair::statusText(t, kNow + 30'000).contains(u"not answering"_s));
+    QCOMPARE(t.state(), State::Connected);   // the state itself is kept
+    // An answer again: back to the state.
+    t.polled(status(true, {}, { headset(u"h1"_s) }), kNow + 32'000);
+    QVERIFY(!t.silent(kNow + 32'000));
+    QCOMPARE(VrPair::statusText(t, kNow + 32'000), u"Headset connected."_s);
+    // Nothing to say once nothing is polled.
+    VrPair::Tracker e = waitingTracker();
+    e.tick(kNow + 400'000);
+    QVERIFY(!e.silent(kNow + 400'000));
+}
+
+void TestVrPair::pollGateLetsOnePollOutAndResets()
+{
+    VrPair::PollGate gate;
+    const int first = gate.start();
+    QVERIFY(first != 0);
+    QVERIFY(gate.busy());
+    QCOMPARE(gate.start(), 0);           // one at a time
+    QVERIFY(gate.finish(first));
+    QVERIFY(!gate.busy());
+    QVERIFY(!gate.finish(first));        // answered once
+
+    // Hidden while a poll is out: its answer is never delivered here. The
+    // reset lets the next poll start, and the old answer, if it comes, does
+    // not count.
+    const int lost = gate.start();
+    gate.reset();
+    const int next = gate.start();
+    QVERIFY(next != 0);
+    QVERIFY(next != lost);
+    QVERIFY(!gate.finish(lost));
+    QVERIFY(gate.busy());
+    QVERIFY(gate.finish(next));
+    QVERIFY(!gate.finish(0));
 }
 
 void TestVrPair::serviceSettingsReachTheBackendUnlessTheEnvironmentSetsThem()
@@ -655,4 +707,66 @@ void TestVrPair::clientCallsTheThreeRoutes()
                                      refused.date, kNow)
                      .unavailable,
              VrPair::Unavailable::NotConfigured);
+}
+
+void TestVrPair::aFailingPollIsLoggedOncePerOutage()
+{
+    FakeBackend fake;
+    QVERIFY(fake.server.isListening());
+    fake.getBody = R"({"enabled":true,"pending":[],"connected":[]})";
+    BackendClient client(fake.url(), u"tok"_s);
+    client.setSessionId(u"sess-1"_s);
+    const auto errorsAboutPair = []() {
+        int n = 0;
+        for (const DiagnosticEntry &e : DiagnosticsManager::instance()->entries())
+            if (e.level == DiagnosticsLevel::Error && e.message.contains(u"/v1/vr/pair"_s))
+                ++n;
+        return n;
+    };
+    const int before = errorsAboutPair();
+    fake.getStatus = 500;
+    for (int i = 0; i < 3; ++i)
+        QCOMPARE(client.vrPairStatus().httpStatus, 500);
+    QCOMPARE(errorsAboutPair(), before + 1);
+    // It answers again, then fails again: a new outage, logged once more.
+    fake.getStatus = 200;
+    QCOMPARE(client.vrPairStatus().httpStatus, 200);
+    fake.getStatus = 500;
+    QCOMPARE(client.vrPairStatus().httpStatus, 500);
+    QCOMPARE(client.vrPairStatus().httpStatus, 500);
+    QCOMPARE(errorsAboutPair(), before + 2);
+}
+
+void TestVrPair::headsetConnectedBeforeTheCodeIsNotTheNewOne()
+{
+    // Connected before the code was asked for, and the code used before the
+    // first poll: the first poll sees the code gone and that headset only.
+    VrPair::Tracker t(u"ds1"_s);
+    t.requesting();
+    VrPair::CreateResult r;
+    r.ok = true;
+    r.code = codeFor(u"K7Q4MX"_s);
+    t.created(r, kNow, status(true, {}, { headset(u"old"_s) }));
+    t.polled(status(true, {}, { headset(u"old"_s) }), kNow + 2000);
+    QCOMPARE(t.state(), State::Connecting);
+    t.polled(status(true, {}, { headset(u"old"_s), headset(u"new"_s) }), kNow + 4000);
+    QCOMPARE(t.state(), State::Connected);
+    // A New Code forgets them: requesting() starts from no headset.
+    t.requesting();
+    t.created(r, kNow + 10'000);
+    t.polled(status(true, {}, { headset(u"old"_s) }), kNow + 12'000);
+    QCOMPARE(t.state(), State::Connected);
+}
+
+void TestVrPair::onlyARealRefreshOfTheCurrentTokenIsKept()
+{
+    // A request refreshed A to B, and the client still holds A: B is kept.
+    QCOMPARE(VrPair::tokenToKeep(u"A"_s, u"A"_s, u"B"_s), u"B"_s);
+    // No refresh, or no answer: nothing to change.
+    QVERIFY(VrPair::tokenToKeep(u"A"_s, u"A"_s, u"A"_s).isEmpty());
+    QVERIFY(VrPair::tokenToKeep(u"A"_s, u"A"_s, QString()).isEmpty());
+    // Out of order: a newer request already moved the client to C; an older
+    // one that started with A (refreshed or not) must not put back B or A.
+    QVERIFY(VrPair::tokenToKeep(u"C"_s, u"A"_s, u"B"_s).isEmpty());
+    QVERIFY(VrPair::tokenToKeep(u"C"_s, u"A"_s, u"A"_s).isEmpty());
 }

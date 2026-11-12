@@ -52,6 +52,8 @@ on the headset.
   brought no headset within 45 seconds says so, with **New Code** as well.
   A headset paired earlier that is still connected is named under the new
   code, with **Disconnect**.
+  If the backend stops answering for more than 15 seconds, the dialog says
+  so and keeps trying.
 - The headset joins the desktop's backend session, on the same dataset and
   path (and, for a point table, a catalogue or a velocity field, the same kind
   and box), as the USB link does.

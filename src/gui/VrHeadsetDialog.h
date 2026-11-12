@@ -145,7 +145,7 @@ private:
     BackendClient m_pairClient;       ///< template: each request runs on its own copy
     VrPair::Tracker m_pair;
     int m_pairSerial{ 0 };            ///< bumped by New Code: older answers are dropped
-    bool m_pollInFlight{ false };
+    VrPair::PollGate m_pollGate;      ///< one status poll at a time
     qint64 m_lastPollMs{ 0 };
     QTimer *m_pairTimer{ nullptr };   ///< the countdown, and the poll every few seconds
     QWidget *m_pairPanel{ nullptr };

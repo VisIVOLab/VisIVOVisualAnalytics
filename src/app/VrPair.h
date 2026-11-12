@@ -35,6 +35,7 @@
 #include <QJsonValue>
 #include <QList>
 #include <QProcessEnvironment>
+#include <QSet>
 #include <QString>
 #include <QTimeZone>
 #include <QUrl>
@@ -51,10 +52,9 @@ inline constexpr qint64 kDefaultTtlMs = 300 * 1000;
 /// connecting (the WebRTC offer, answer and ICE) before the dialog says it
 /// did not.
 inline constexpr qint64 kConnectGraceMs = 45 * 1000;
-/// A code typed in its last seconds leaves the pending list at about the
-/// time it expires: polling goes on this long past the expiry before the
-/// dialog says it expired, so a headset that used it in time is still seen.
-inline constexpr qint64 kLateUseGraceMs = 10 * 1000;
+/// No understood answer to the status polls for this long: the dialog says
+/// the backend is not answering (and keeps trying).
+inline constexpr qint64 kSilenceMs = 15 * 1000;
 
 /// Why pairing cannot be used, in which case the dialog opens on the USB
 /// (adb) way instead and says why.
@@ -343,6 +343,18 @@ inline QString qrPayload(const Code &code)
     return code.pageUrl;
 }
 
+/// The token to keep after a request that started with @p started and ended
+/// with @p ended, the dialog's client holding @p current: the refreshed one
+/// when the request really refreshed it and nothing replaced @p started
+/// meanwhile (an older request finishing late must not put an old token
+/// back); empty when there is nothing to change.
+inline QString tokenToKeep(const QString &current, const QString &started, const QString &ended)
+{
+    if (ended.isEmpty() || ended == started || current != started)
+        return {};
+    return ended;
+}
+
 /// What the dialog shows, and what it offers.
 enum class State {
     Requesting,     ///< asking the backend for a code
@@ -370,13 +382,15 @@ public:
     /// The headsets on this dataset (Disconnect acts on these). They may be
     /// there while this window's code is still waiting: paired before.
     const QList<Connection> &connections() const { return m_connections; }
-    /// Connecting, but the code left the list only around its expiry: it may
-    /// have run out rather than been used.
-    bool lateUse() const { return m_lateUse; }
     qint64 msLeft(qint64 nowMs) const { return m_code.expiresAtMs - nowMs; }
-    /// Polling is worth it: something can still change by itself.
-    bool polling() const
+    /// Polling is worth it: something can still change by itself. That
+    /// includes an expired code for a while: one typed in its last seconds
+    /// leaves the pending list just as it expires, and its headset may still
+    /// be connecting (it gets the same window as any used code).
+    bool polling(qint64 nowMs) const
     {
+        if (m_state == State::Expired)
+            return m_lastSeenPendingMs >= 0 && nowMs - m_lastSeenPendingMs <= kConnectGraceMs;
         return m_state == State::Waiting || m_state == State::Connecting
                 || m_state == State::Connected;
     }
@@ -384,6 +398,12 @@ public:
     bool codeOutstanding(qint64 nowMs) const
     {
         return m_state == State::Waiting && msLeft(nowMs) > 0;
+    }
+    /// The polls have had no understood answer for kSilenceMs.
+    bool silent(qint64 nowMs) const
+    {
+        return polling(nowMs) && m_state != State::Expired && m_lastAnswerMs >= 0
+                && nowMs - m_lastAnswerMs > kSilenceMs;
     }
 
     void requesting()
@@ -393,29 +413,40 @@ public:
         m_message.clear();
         m_unavailable = Unavailable::None;
         m_connections.clear();
+        m_earlier.clear();
         m_codeGoneAtMs = -1;
-        m_lateUse = false;
+        m_lastSeenPendingMs = -1;
+        m_lastAnswerMs = -1;
         m_everConnected = false;
     }
 
-    void created(const CreateResult &r, qint64 nowMs)
+    /// @p before: the status read just before the code was asked for; the
+    /// headsets connected then are never taken for the one using the code.
+    void created(const CreateResult &r, qint64 nowMs, const Status &before = Status())
     {
         m_unavailable = r.unavailable;
+        if (before.valid)
+            for (const Connection &c : before.connected)
+                m_earlier.insert(c.id);
         m_message = r.message;
         if (!r.ok) {
             m_state = r.unavailable == Unavailable::None ? State::Failed : State::Unavailable;
             return;
         }
         m_code = r.code;
+        m_lastAnswerMs = nowMs;
+        m_lastSeenPendingMs = nowMs;
         m_state = msLeft(nowMs) > 0 ? State::Waiting : State::Expired;
     }
 
-    /// A poll's answer. An answer not understood (a dropped poll) changes nothing.
+    /// A poll's answer. An answer not understood (a failed poll) changes
+    /// nothing but the silence count.
     void polled(const Status &s, qint64 nowMs)
     {
         using namespace Qt::StringLiterals;
-        if (!s.valid || !polling())
+        if (!s.valid || !polling(nowMs))
             return;
+        m_lastAnswerMs = nowMs;
         if (!s.enabled) {
             // The backend restarted without a pairing service.
             m_state = State::Unavailable;
@@ -433,33 +464,40 @@ public:
         for (const Pending &p : s.pending)
             pending = pending || p.code == m_code.code;
         // This window's code first: while it waits, it is shown (and revoked
-        // on close) even with a headset paired earlier still connected.
+        // on close) even with a headset paired earlier still connected,
+        // which is remembered so that it is not taken for the new one.
         if (pending && !m_everConnected) {
-            m_state = State::Waiting;
-            m_codeGoneAtMs = -1;
-            m_lateUse = false;
+            if (m_state == State::Waiting) {
+                for (const Connection &c : m_connections)
+                    m_earlier.insert(c.id);
+                m_lastSeenPendingMs = nowMs;
+                m_codeGoneAtMs = -1;
+            }
             tick(nowMs);
             return;
         }
-        if (!m_connections.isEmpty()) {
+        if (m_everConnected) {
+            m_state = m_connections.isEmpty() ? State::Disconnected : State::Connected;
+            return;
+        }
+        bool fresh = false;
+        for (const Connection &c : m_connections)
+            fresh = fresh || !m_earlier.contains(c.id);
+        if (fresh) {
             m_state = State::Connected;
             m_everConnected = true;
             return;
         }
-        if (m_everConnected) {
-            m_state = State::Disconnected;
+        // Gone from the pending list without a new headset. Expired: it may
+        // still have been used at the last moment, and the quiet polls go on.
+        if (m_state == State::Expired)
             return;
-        }
-        // Gone from the pending list without a headset: used and still
-        // connecting, or run out. Around the expiry it can be either, and
-        // the polls go on a little longer to tell.
         if (m_codeGoneAtMs < 0) {
-            if (msLeft(nowMs) <= -kLateUseGraceMs) {
+            if (msLeft(nowMs) <= 0) {
                 m_state = State::Expired;
                 return;
             }
             m_codeGoneAtMs = nowMs;
-            m_lateUse = msLeft(nowMs) <= 0;
         }
         m_state = State::Connecting;
         tick(nowMs);
@@ -468,10 +506,7 @@ public:
     /// The clock moved: the countdown, and a headset that never came.
     void tick(qint64 nowMs)
     {
-        if (m_state == State::Waiting && msLeft(nowMs) <= -kLateUseGraceMs)
-            m_state = State::Expired;
-        else if (m_state == State::Connecting && m_codeGoneAtMs >= 0 && m_lateUse
-                 && nowMs - m_codeGoneAtMs > kLateUseGraceMs)
+        if (m_state == State::Waiting && msLeft(nowMs) <= 0)
             m_state = State::Expired;
         else if (m_state == State::Connecting && m_codeGoneAtMs >= 0
                  && nowMs - m_codeGoneAtMs > kConnectGraceMs)
@@ -493,15 +528,51 @@ private:
     QString m_message;
     Unavailable m_unavailable{ Unavailable::None };
     QList<Connection> m_connections;
+    QSet<QString> m_earlier;          ///< headsets already connected while the code waited
     qint64 m_codeGoneAtMs{ -1 };
-    bool m_lateUse{ false };
+    qint64 m_lastSeenPendingMs{ -1 };   ///< the last time the code was known to be unused
+    qint64 m_lastAnswerMs{ -1 };
     bool m_everConnected{ false };
+};
+
+/// One status poll at a time. Each poll gets a ticket; an answer counts only
+/// with the ticket of the poll out now. reset() (the dialog hidden, a new
+/// code) forgets the poll out, so the next one can start whatever becomes of
+/// the old one's answer.
+class PollGate
+{
+public:
+    /// A ticket for a new poll, or 0 when one is already out.
+    int start()
+    {
+        if (m_out != 0)
+            return 0;
+        m_out = ++m_last;
+        return m_out;
+    }
+    /// The answer to the poll with @p ticket: true when it is the one out.
+    bool finish(int ticket)
+    {
+        if (ticket == 0 || ticket != m_out)
+            return false;
+        m_out = 0;
+        return true;
+    }
+    void reset() { m_out = 0; }
+    bool busy() const { return m_out != 0; }
+
+private:
+    int m_last{ 0 };
+    int m_out{ 0 };
 };
 
 /// The status line for @p t at @p nowMs (plain text).
 inline QString statusText(const Tracker &t, qint64 nowMs)
 {
     using namespace Qt::StringLiterals;
+    if (t.silent(nowMs))
+        return u"The backend is not answering the pairing checks, so this may be out of "
+               u"date. Still trying…"_s;
     switch (t.state()) {
     case State::Requesting:
         return u"Asking the backend for a pairing code…"_s;
@@ -509,14 +580,11 @@ inline QString statusText(const Tracker &t, qint64 nowMs)
         const QString also = t.connections().isEmpty()
                 ? QString()
                 : u" A headset paired before is still connected."_s;
-        if (t.msLeft(nowMs) <= 0)
-            return u"The code is expiring…"_s + also;
         return u"Waiting for the headset. The code expires in %1."_s.arg(countdown(t.msLeft(nowMs)))
                 + also;
     }
     case State::Connecting:
-        return t.lateUse() ? u"The code ran out: checking whether the headset used it in time…"_s
-                           : u"The code was entered: the headset is connecting…"_s;
+        return u"The code was entered: the headset is connecting…"_s;
     case State::Connected: {
         const int n = static_cast<int>(t.connections().size());
         return n > 1 ? u"%1 headsets connected."_s.arg(n) : u"Headset connected."_s;

@@ -3689,6 +3689,40 @@ static bool _isDiagnosticsQuietPath(const QString &path)
         || path.endsWith(QStringLiteral("/v1/vr/pair"));
 }
 
+// A route polled every few seconds by a window left open (the headset pairing
+// status): with the backend gone, one Error line per poll would bury the log.
+// Its failures are reported once per outage: the first failure, then nothing
+// until the route has answered again.
+static bool _isOncePerOutagePath(const QString &path)
+{
+    return path.endsWith(QStringLiteral("/v1/vr/pair"));
+}
+
+static QMutex s_outageMutex;
+static QSet<QString> s_outages;   ///< base URL + path of the routes failing now
+
+/// True for the first failure since @p key last answered.
+static bool _firstFailureOfOutage(const QString &key)
+{
+    QMutexLocker lock(&s_outageMutex);
+    if (s_outages.contains(key))
+        return false;
+    s_outages.insert(key);
+    return true;
+}
+
+static bool _inOutage(const QString &key)
+{
+    QMutexLocker lock(&s_outageMutex);
+    return s_outages.contains(key);
+}
+
+static void _outageOver(const QString &key)
+{
+    QMutexLocker lock(&s_outageMutex);
+    s_outages.remove(key);
+}
+
 QByteArray BackendClient::performGet(const QUrl &url, QString &error,
                                      const std::atomic_bool *abort, int *statusOut) const
 {
@@ -3756,12 +3790,15 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error,
             attemptError = QStringLiteral("Backend request timed out after %1 ms: %2")
                                    .arg(this->requestTimeoutFor(url).count())
                                    .arg(url.path());
-            qWarning().noquote() << attemptError;
-            DiagnosticsManager::instance()->publish(
-                    DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
-                    QStringLiteral("BackendClient"), attemptError,
-                    _datasetIdForRequest(QJsonDocument(), url), this->m_sessionId,
-                    BackendClient::operationTagForPath(url.path()));
+            // A once-per-outage route reports it below, with the outage.
+            if (!_isOncePerOutagePath(url.path())) {
+                qWarning().noquote() << attemptError;
+                DiagnosticsManager::instance()->publish(
+                        DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
+                        QStringLiteral("BackendClient"), attemptError,
+                        _datasetIdForRequest(QJsonDocument(), url), this->m_sessionId,
+                        BackendClient::operationTagForPath(url.path()));
+            }
             reply->abort();
             loop.quit();
         });
@@ -3819,12 +3856,15 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error,
         // No second token while quitting: the exit waits for this worker.
         if (status == 401 && attempt + 1 < tokenCandidates.size()
             && !visivo::TaskQuitDrain::instance().quitting()) {
-            DiagnosticsManager::instance()->publish(
-                    DiagnosticsLevel::Warning, DiagnosticsCategory::Backend,
-                    QStringLiteral("BackendClient"),
-                    QStringLiteral("Backend GET for %1 returned 401. Retrying with refreshed token.")
-                            .arg(url.path()),
-                    {}, this->m_sessionId);
+            // Not again and again for a polled route already failing.
+            if (!(_isOncePerOutagePath(url.path()) && _inOutage(m_baseUrl + url.path())))
+                DiagnosticsManager::instance()->publish(
+                        DiagnosticsLevel::Warning, DiagnosticsCategory::Backend,
+                        QStringLiteral("BackendClient"),
+                        QStringLiteral(
+                                "Backend GET for %1 returned 401. Retrying with refreshed token.")
+                                .arg(url.path()),
+                        {}, this->m_sessionId);
             continue;
         }
 
@@ -3832,6 +3872,8 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error,
             if (token != this->m_token) {
                 const_cast<BackendClient *>(this)->m_token = token;
             }
+            if (_isOncePerOutagePath(url.path()))
+                _outageOver(m_baseUrl + url.path());
             if (!_isDiagnosticsQuietPath(url.path())) {
                 DiagnosticsManager::instance()->publish(
                         DiagnosticsLevel::Info, DiagnosticsCategory::Backend,
@@ -3854,6 +3896,13 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error,
     }
 
     error = lastError;
+    // A polled route's repeated failure is not news: the first one was logged.
+    if (!error.isEmpty() && _isOncePerOutagePath(url.path())
+        && !_firstFailureOfOutage(m_baseUrl + url.path()))
+        return finalData;
+    if (!error.isEmpty() && _isOncePerOutagePath(url.path()))
+        qWarning().noquote() << "Backend GET failed for" << url.path()
+                             << "(reported once until it answers again)";
     if (lastStatus >= 400) {
         DiagnosticsManager::instance()->publish(
                 DiagnosticsLevel::Error, DiagnosticsCategory::Backend,

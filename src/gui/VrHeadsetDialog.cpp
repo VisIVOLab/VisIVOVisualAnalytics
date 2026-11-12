@@ -259,7 +259,7 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     connect(m_pairTimer, &QTimer::timeout, this, [this]() {
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         m_pair.tick(now);
-        if (m_pair.polling() && now - m_lastPollMs >= kPairPollIntervalMs)
+        if (m_pair.polling(now) && now - m_lastPollMs >= kPairPollIntervalMs)
             pollPairing();
         showPairing();
     });
@@ -348,23 +348,48 @@ void VrHeadsetDialog::runPairRequest(std::function<BackendVrPairReply(const Back
     // Its own copy of the client for each request: a poll and a revoke may
     // run at once, and a client adopting a refreshed token is not shared.
     const BackendClient client = m_pairClient;
+    const QString startToken = client.token();
     const int serial = m_pairSerial;
     QPointer<VrHeadsetDialog> self(this);
     // Not parented to the dialog: an answer that arrives after the dialog is
     // gone must still reach @p obsolete (a code issued meanwhile is revoked).
     auto *watcher = new QFutureWatcher<BackendVrPairReply>;
     QObject::connect(watcher, &QFutureWatcher<BackendVrPairReply>::finished, watcher,
-                     [self, watcher, serial, done, obsolete, client]() {
+                     [self, watcher, serial, done, obsolete, client, startToken]() {
                          const BackendVrPairReply reply = watcher->result();
                          watcher->deleteLater();
+                         // A token the request really refreshed (the local
+                         // backend restarted with a new one) is kept, so the
+                         // next requests skip the 401. Only over the token
+                         // it started from: an older request finishing late
+                         // must not put back a token already replaced.
+                         const bool refreshed =
+                                 !reply.token.isEmpty() && reply.token != startToken;
+                         if (self) {
+                             const QString keep = VrPair::tokenToKeep(
+                                     self->m_pairClient.token(), startToken, reply.token);
+                             if (!keep.isEmpty()) {
+                                 self->m_pairClient.setToken(keep);
+                                 self->m_secrets.append(keep);
+                             }
+                         }
                          if (!self || self->m_closed || serial != self->m_pairSerial) {
-                             if (obsolete)
-                                 obsolete(reply, client);
+                             if (obsolete) {
+                                 // Cleaned up with the token that worked.
+                                 BackendClient cleanup = client;
+                                 if (refreshed)
+                                     cleanup.setToken(reply.token);
+                                 obsolete(reply, cleanup);
+                             }
                              return;
                          }
                          done(reply);
                      });
-    watcher->setFuture(QtConcurrent::run([client, work]() { return work(client); }));
+    watcher->setFuture(QtConcurrent::run([client, work]() {
+        BackendVrPairReply reply = work(client);
+        reply.token = client.token();   // as the request ended up using it
+        return reply;
+    }));
 }
 
 void VrHeadsetDialog::revoke(const QStringList &ids)
@@ -379,29 +404,39 @@ void VrHeadsetDialog::newCode()
     if (m_pair.codeOutstanding(now))
         revoke({ m_pair.code().code });
     ++m_pairSerial;
-    m_pollInFlight = false;
+    m_pollGate.reset();
     m_pair.requesting();
     showPairing();
     if (m_inputs.datasetId.isEmpty()) {
+        // The dataset id was taken when the dialog opened; asking again here
+        // would not change it.
         VrPair::CreateResult r;
-        r.message = u"The cube has no backend dataset yet: wait for it to load, then press "
-                    u"Try Again."_s;
+        r.message = u"The cube has no backend dataset yet: close this window and open it "
+                    u"again once the cube has loaded."_s;
         m_pair.created(r, now);
         showPairing();
         return;
     }
     const QJsonObject body = VrPair::requestBody(m_inputs);
-    runPairRequest([body](const BackendClient &c) { return c.createVrPairCode(body); },
+    runPairRequest([body](const BackendClient &c) {
+                       // The headsets connected before the code exists, so
+                       // that none of them is taken for the one using it.
+                       const BackendVrPairReply before = c.vrPairStatus();
+                       BackendVrPairReply reply = c.createVrPairCode(body);
+                       if (before.httpStatus == 200)
+                           reply.statusBefore = before.body;
+                       return reply;
+                   },
                    [this](const BackendVrPairReply &reply) {
                        const qint64 at = QDateTime::currentMSecsSinceEpoch();
                        m_pair.created(VrPair::interpretCreate(reply.httpStatus, reply.body,
                                                               reply.error, reply.date, at),
-                                      at);
+                                      at, VrPair::parseStatus(200, reply.statusBefore));
                        m_lastPollMs = at;
                        if (m_pair.state() == VrPair::State::Unavailable)
                            setAdvancedOpen(true, m_pair.message());
                        showPairing();
-                       if (m_pair.polling())
+                       if (m_pair.polling(at))
                            m_pairTimer->start();
                    },
                    [](const BackendVrPairReply &reply, const BackendClient &client) {
@@ -421,13 +456,16 @@ void VrHeadsetDialog::newCode()
 
 void VrHeadsetDialog::pollPairing()
 {
-    if (m_pollInFlight || m_closed)
+    if (m_closed)
         return;
-    m_pollInFlight = true;
+    const int ticket = m_pollGate.start();
+    if (ticket == 0)
+        return;   // the previous poll is still out
     m_lastPollMs = QDateTime::currentMSecsSinceEpoch();
     runPairRequest([](const BackendClient &c) { return c.vrPairStatus(); },
-                   [this](const BackendVrPairReply &reply) {
-                       m_pollInFlight = false;
+                   [this, ticket](const BackendVrPairReply &reply) {
+                       if (!m_pollGate.finish(ticket))
+                           return;
                        const VrPair::State was = m_pair.state();
                        m_pair.polled(VrPair::parseStatus(reply.httpStatus, reply.body),
                                      QDateTime::currentMSecsSinceEpoch());
@@ -489,19 +527,20 @@ void VrHeadsetDialog::showPairing()
     showQr(codeShown ? VrPair::qrPayload(m_pair.code()) : QString());
     m_pairStatus->setText(VrPair::statusText(m_pair, now));
     const bool problem = state == State::Failed || state == State::Lost
-            || state == State::Unavailable;
+            || state == State::Unavailable || m_pair.silent(now);
     m_pairStatus->setStyleSheet(
             problem ? u"color: %1;"_s.arg(QString::fromLatin1(VisivoTheme::kError())) : QString());
     // Also while waiting, for a headset paired before that is still there.
     m_disconnectButton->setVisible(!m_pair.connections().isEmpty()
                                    && (state == State::Connected || state == State::Waiting));
+    // No Try Again without a dataset: the id was taken when the dialog opened.
     m_newCodeButton->setVisible(state != State::Requesting && state != State::Connected
-                                && state != State::Connecting);
+                                && state != State::Connecting && !m_inputs.datasetId.isEmpty());
     m_newCodeButton->setText(state == State::Failed || state == State::Unavailable
                                      ? u"Try Again"_s
                                      : u"New Code"_s);
     // Nothing changes by itself any more: the countdown and the polls stop.
-    if (!m_pair.polling())
+    if (!m_pair.polling(now))
         m_pairTimer->stop();
 }
 
@@ -572,6 +611,11 @@ void VrHeadsetDialog::stopAll()
     m_openQueued = false;
     m_pollTimer->stop();
     m_pairTimer->stop();
+    // Answers still out belong to the window as it was: dropped (a code
+    // issued meanwhile is revoked), and the next poll after a re-show is not
+    // held up by one that will never be answered here.
+    ++m_pairSerial;
+    m_pollGate.reset();
 }
 
 void VrHeadsetDialog::closeEvent(QCloseEvent *event)

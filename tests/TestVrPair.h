@@ -37,6 +37,11 @@ private slots:
     void pairingSwitchedOffOpensTheUsbWay();
     void closingRevokesOnlyAnUnusedCode();
     void statusTextFollowsTheState();
+    void silentBackendIsSaid();
+    void pollGateLetsOnePollOutAndResets();
+    void headsetConnectedBeforeTheCodeIsNotTheNewOne();
+    void onlyARealRefreshOfTheCurrentTokenIsKept();
     void serviceSettingsReachTheBackendUnlessTheEnvironmentSetsThem();
     void clientCallsTheThreeRoutes();
+    void aFailingPollIsLoggedOncePerOutage();
 };

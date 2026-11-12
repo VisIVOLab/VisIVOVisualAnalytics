@@ -288,6 +288,12 @@ struct BackendVrPairReply
     QString error;            ///< Qt's words when there was no answer
     QByteArray body;
     QString date;             ///< the reply's Date header, to place expires_at on our clock
+    /// The token the client ended up sending (a 401 retry may adopt the local
+    /// token file's): for the caller to keep. Never shown or logged.
+    QString token;
+    /// Filled by the pairing dialog, not by BackendClient: the GET /v1/vr/pair
+    /// body read just before the code was asked for (empty if it failed).
+    QByteArray statusBefore;
 };
 
 /// A source finder the backend can run (GET /v1/finders): SoFiA-2 for cubes,
