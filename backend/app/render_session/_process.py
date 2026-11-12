@@ -143,6 +143,19 @@ def _egl_device_for(slot: int) -> None:
              slot, index, ordinals[index])
 
 
+# How often a release in progress looks again at its deadlines.
+_RELEASE_STEP_S = 0.05
+
+
+def _release_deadlines(now: float, budget_s: float | None) -> list[float]:
+    """When a release stops waiting for the child to exit by itself, after
+    SIGTERM, and after SIGKILL: 5, 5 and 2 s apart, or 50/30/20 % of
+    ``budget_s``."""
+    waits = (5.0, 5.0, 2.0) if budget_s is None else (
+        0.5 * budget_s, 0.3 * budget_s, 0.2 * budget_s)
+    return list(itertools.accumulate(waits, initial=now))[1:]
+
+
 class _View:
     """The part of the session's view state the main process reads."""
 
@@ -174,6 +187,9 @@ class RenderSessionProcess:
         self._release_lock = threading.Lock()
         self._release_started = False
         self._release_done = threading.Event()
+        # When each stage of the running release gives up waiting (see
+        # _release): a later caller with a tighter budget moves them earlier.
+        self._release_deadlines: list[float] | None = None
         self._process: multiprocessing.process.BaseProcess | None = None
         self._conn = None
         self._pending: collections.deque[asyncio.Future] = collections.deque()
@@ -281,28 +297,34 @@ class RenderSessionProcess:
         killed if that fails) and free the pipe and the writer, within
         ``budget_s`` when given. Idempotent; never on the event loop thread
         while the child may still be running."""
+        deadlines = _release_deadlines(time.monotonic(), budget_s)
         with self._release_lock:
             first = not self._release_started
             self._release_started = True
+            if first:
+                self._release_deadlines = deadlines
+            elif self._release_deadlines is not None:
+                # A release is already running, maybe without a budget (the
+                # child-gone path, the exit hook): a shutdown must not wait
+                # out its 5+5+2 s beside it, so it moves the stages earlier.
+                self._release_deadlines = [min(a, b) for a, b in
+                                           zip(self._release_deadlines, deadlines)]
         if not first:
             self._release_done.wait(timeout=15 if budget_s is None else budget_s)
             return
-        # Waits for: the child to exit by itself, after SIGTERM, after SIGKILL.
-        waits = (5.0, 5.0, 2.0) if budget_s is None else (
-            0.5 * budget_s, 0.3 * budget_s, 0.2 * budget_s)
         self._refusing = True
         try:
             proc = self._process
             if proc is not None:
-                proc.join(timeout=waits[0])
+                self._join_until(proc, 0)
                 if proc.is_alive():
                     proc.terminate()
-                    proc.join(timeout=waits[1])
+                    self._join_until(proc, 1)
                 if proc.is_alive():
                     # Inside a native call that ignores SIGTERM (a driver, a
                     # long VTK pass): a shutdown must not leave it behind.
                     proc.kill()
-                    proc.join(timeout=waits[2])
+                    self._join_until(proc, 2)
             self._outbox.put(None)   # ends the writer
             try:
                 if self._conn is not None:
@@ -313,6 +335,16 @@ class RenderSessionProcess:
         finally:
             self._released = True
             self._release_done.set()
+
+    def _join_until(self, proc, stage: int) -> None:
+        """Wait for ``proc`` to exit until the release's deadline for
+        ``stage``, read again at each short step: a later caller may move it."""
+        while proc.is_alive():
+            with self._release_lock:
+                left = self._release_deadlines[stage] - time.monotonic()
+            if left <= 0:
+                return
+            proc.join(timeout=min(left, _RELEASE_STEP_S))
 
     @property
     def ended(self) -> bool:

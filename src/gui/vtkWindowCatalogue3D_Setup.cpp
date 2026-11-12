@@ -71,6 +71,7 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QProgressBar>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QTableView>
@@ -123,6 +124,40 @@ void vtkWindowCatalogue3D::buildControlPages()
         auto *vizHdr = new QLabel(u"VISUALIZATION"_s, pageViz);
         vizHdr->setStyleSheet(hdrStyle);
         pageLayout->addWidget(vizHdr);
+
+        // Query and scene preparation can take time before the source count changes.
+        this->m_loadIndicator = new QWidget(pageViz);
+        auto *loadLayout = new QVBoxLayout(this->m_loadIndicator);
+        loadLayout->setContentsMargins(0, 0, 0, 0);
+        loadLayout->setSpacing(4);
+        this->m_loadMessage = new QLabel(this->m_loadIndicator);
+        this->m_loadMessage->setWordWrap(true);
+        loadLayout->addWidget(this->m_loadMessage);
+        auto *loadProgress = new QProgressBar(this->m_loadIndicator);
+        loadProgress->setRange(0, 0);   // No byte/row progress is available yet.
+        loadProgress->setTextVisible(false);
+        loadLayout->addWidget(loadProgress);
+        this->m_loadIndicator->hide();
+        pageLayout->addWidget(this->m_loadIndicator);
+
+        // Loading belongs to the scene, independently of whether filters are open.
+        this->btnLoadMore = new QPushButton(u"Load more…"_s, pageViz);
+        this->btnLoadMore->setVisible(false);
+        this->btnLoadMore->setToolTip(
+                u"Add another random sample from the full catalogue, without duplicating "
+                u"sources already loaded."_s);
+        pageLayout->addWidget(this->btnLoadMore);
+        QObject::connect(this->btnLoadMore, &QPushButton::clicked,
+                         this, &vtkWindowCatalogue3D::loadMoreEntries);
+
+        this->btnLoadAll = new QPushButton(u"Load all"_s, pageViz);
+        this->btnLoadAll->setVisible(false);
+        this->btnLoadAll->setToolTip(
+                u"Load every remaining source at once (no paging). May use significant "
+                u"memory for very large catalogues."_s);
+        pageLayout->addWidget(this->btnLoadAll);
+        QObject::connect(this->btnLoadAll, &QPushButton::clicked,
+                         this, &vtkWindowCatalogue3D::loadAllEntries);
 
         // ── Source Representation card ────────────────────────────────────────
         auto *reprCard   = new QFrame(pageViz);
@@ -425,23 +460,6 @@ void vtkWindowCatalogue3D::buildControlPages()
                 QStringLiteral("QLabel { color: %1; font-size: 9px; }")
                         .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         filtersCardLayout->addWidget(this->filterStatusLabel);
-
-        this->btnLoadMore = new QPushButton(u"Load more…"_s, filtersCard);
-        this->btnLoadMore->setVisible(false);
-        this->btnLoadMore->setToolTip(
-                u"Fetch the next page of results and append them to the current scene."_s);
-        filtersCardLayout->addWidget(this->btnLoadMore);
-        QObject::connect(this->btnLoadMore, &QPushButton::clicked,
-                         this, &vtkWindowCatalogue3D::loadMoreEntries);
-
-        this->btnLoadAll = new QPushButton(u"Load all"_s, filtersCard);
-        this->btnLoadAll->setVisible(false);
-        this->btnLoadAll->setToolTip(
-                u"Load every remaining source at once (no paging). May use significant "
-                u"memory for very large catalogues."_s);
-        filtersCardLayout->addWidget(this->btnLoadAll);
-        QObject::connect(this->btnLoadAll, &QPushButton::clicked,
-                         this, &vtkWindowCatalogue3D::loadAllEntries);
 
         pageLayout->addWidget(filtersCard);
 

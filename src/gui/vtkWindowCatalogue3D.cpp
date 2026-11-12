@@ -212,6 +212,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
 
                          const auto result = this->filterWatcher.result();
                          if (!result.valid) {
+                             if (this->m_loadIndicator)
+                                 this->m_loadIndicator->hide();
                              DiagnosticsManager::instance()->publish(
                                      DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
                                      u"Catalogue3D"_s,
@@ -279,6 +281,11 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                          .arg(result.totalRows),
                                  this->remoteDatasetId, this->remoteSessionId, u"filter"_s);
 
+                         if (this->m_loadMessage)
+                             this->m_loadMessage->setText(
+                                     u"Preparing the scene for %L1 sources…"_s
+                                             .arg(this->entries.size()));
+
                          // Rebuild the VTK scene with the filtered data
                          this->renderer->RemoveAllViewProps();
                          this->morphologyNames.clear();
@@ -298,6 +305,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          // the window opened with.
                          this->refreshViewerChrome();
                          this->renderWindow->Render();
+                         if (this->m_loadIndicator)
+                             this->m_loadIndicator->hide();
                      });
 
     // ── Connect "load more" watcher ───────────────────────────────────────────
@@ -332,7 +341,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                      result.entries.begin(), result.entries.end());
                 this->m_currentOffset += result.returnedRows;   // rows consumed, skipped ones too
                 if (this->m_sampleStep > 1)
-                    ++this->m_samplePhase;   // the rows between those loaded
+                    ++this->m_samplePhase;   // the next disjoint sample
                 this->m_totalCount = result.totalRows;
                 QTimer::singleShot(0, this,
                                    [this]() { this->applyRenderMode(this->m_renderMode); });
@@ -497,7 +506,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
 
         BackendTabularQueryRequest qreq;
         qreq.datasetId = this->remoteDatasetId;
-        qreq.evenSample = this->m_pointTable;
+        qreq.randomSample = true;
         const auto subset = client.queryTabularCatalogue(qreq);
         this->m_sampleStep = subset.step;
         this->m_samplePhase = 1;

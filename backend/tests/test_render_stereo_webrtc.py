@@ -747,3 +747,95 @@ def test_a_size_change_tries_every_encoder_again():
     assert enc.encode(W.video_image(_scene(300, 64, 0), 2), 1) and enc.name == "libx264"
     assert enc.last_keyframe                       # a new size starts with a keyframe
     assert enc.encode(W.video_image(_scene(200, 64, 0), 3), 2) and enc.name == "libx264"
+
+
+def test_every_close_waits_for_the_encoder_off_before_a_new_link_turns_it_on():
+    """The peer failing closes the link (connectionstatechange) while the
+    connection's own close comes too. The second close returned at once while
+    the first still awaited the encoder's off, so a replacement offer could
+    turn the encoder on before the old link turned it off. Both callers now
+    await the same close: the old off always comes first."""
+    async def run():
+        order = []
+        off_may_finish = asyncio.Event()
+
+        async def slow_off(cmd):
+            order.append(("start", cmd))
+            await off_may_finish.wait()
+            order.append(("done", cmd))
+
+        link = W.StereoRtcLink("s", send_command=slow_off)
+        first = asyncio.create_task(link.close())        # the peer failed
+        await asyncio.sleep(0)
+
+        async def replacement():
+            await link.close()                           # the connection's close
+            order.append(("on", "new"))                  # the new link's encoder on
+
+        second = asyncio.create_task(replacement())
+        await asyncio.sleep(0.05)
+        assert ("on", "new") not in order                # still waiting for the off
+        assert link.closed
+        off_may_finish.set()
+        await asyncio.gather(first, second)
+        off = {"type": "xr_video", "off": True}
+        assert order == [("start", off), ("done", off), ("on", "new")]
+        await link.close()                               # once closed, at once
+        assert order.count(("start", off)) == 1
+    asyncio.run(run())
+
+
+def test_a_cancelled_caller_does_not_cut_the_close_short():
+    async def run():
+        done = []
+        gate = asyncio.Event()
+
+        async def off(cmd):
+            await gate.wait()
+            done.append(cmd)
+
+        link = W.StereoRtcLink("s", send_command=off)
+        t = asyncio.create_task(link.close())
+        await asyncio.sleep(0)
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+        gate.set()
+        await link.close()                               # the same close, finished
+        assert done == [{"type": "xr_video", "off": True}]
+    asyncio.run(run())
+
+
+def test_a_second_connection_close_waits_for_the_link_another_caller_took():
+    """The frame sender closes the link after an encoder error (taking it off
+    the connection); a replacement offer's own close then found no link and
+    turned its encoder on before the old link's off was applied."""
+    async def run():
+        gate, started = asyncio.Event(), asyncio.Event()
+        order = []
+
+        async def slow_off(cmd):
+            started.set()
+            await gate.wait()
+            order.append("old off applied")
+
+        link = W.StereoRtcLink("s", send_command=slow_off)
+        push = type("P", (), {})()
+        push.rtc, push.rtc_closing = link, set()
+        first = asyncio.create_task(render_router._xr_rtc_close(push))   # the frame sender
+        await started.wait()
+
+        async def replacement():
+            await render_router._xr_rtc_close(push)                       # the new offer
+            order.append("replacement on")
+
+        second = asyncio.create_task(replacement())
+        await asyncio.sleep(0.05)
+        assert order == []
+        first.cancel()                       # the first caller gone: the close goes on
+        gate.set()
+        await second
+        assert order == ["old off applied", "replacement on"]
+        await asyncio.sleep(0)
+        assert push.rtc_closing == set()
+    asyncio.run(run())

@@ -268,7 +268,8 @@ fails, when the backend's encoder fails, when 3 s pass after a frame's header
 arrived with no video frame paired since (however many headers came in
 between), or after 10 video frames in a row whose stripe
 does not read (or 5 that fail to be read at all); it tries again a
-minute later. `?refine_transport=webrtc` in the address uses the video at
+minute later. On falling back, a still view asks for its pose again, now as
+JPEG, so the refined frame does not stay missing. `?refine_transport=webrtc` in the address uses the video at
 once, `?refine_transport=jpeg` never. The video goes over UDP straight
 between the headset and the Mac, so it needs the Mac reachable on the local
 network: through `adb reverse` alone (USB, no Wi-Fi) it cannot connect, and the

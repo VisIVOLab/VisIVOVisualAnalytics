@@ -521,6 +521,8 @@ struct BackendTabularQueryRequest
     /// More rows matching than ``limit``: an even sample of them, from the
     /// ``phase``-th, instead of a page (``offset`` unused); see the response's step.
     bool evenSample{ false };
+    /// Stable random stratified pages spanning all matches, with disjoint phases.
+    bool randomSample{ false };
     int phase{ 0 };
 };
 

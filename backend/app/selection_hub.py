@@ -20,7 +20,14 @@ Bounds: masks of at most ``MAX_SHARE_VOXELS``; at most ``MAX_ENTRIES_PER_SESSION
 cubes per session (the oldest is dropped); ``MAX_TOTAL_BYTES`` of masks over
 all sessions (the oldest selections go first); at most ``MAX_WAITERS_PER_SESSION``
 long polls waiting at once; at most ``MAX_MASK_READS`` masks unpacked at once,
-off the event loop, the latest one kept unpacked. A selection lives as long as
+off the event loop, the latest one kept unpacked; at most
+``MAX_PUBLISH_BYTES`` of mask bodies being received and measured at once over
+all sessions (``PUBLISH_BUDGET``: a publish takes its body's bytes from it
+BEFORE it reads the body, and gives them back once the packing thread is done
+with the body, even when the request was cancelled meanwhile, all but the
+packed bits, which the measurement works from and which stay counted until it
+has its compute slot and ends. So publishes waiting for their turn wait
+unread instead of each buffering up to 64 MiB). A selection lives as long as
 its session and the cube stays open in it: the hubs are held by a weak
 reference to their session, so a session evicted after its idle time
 (VISIVO_SESSION_TTL) takes its selections along, and a selection of a cube no
@@ -39,6 +46,7 @@ The one mask kept unpacked (at most 64 MiB of float32) is not counted in
 from __future__ import annotations
 
 import asyncio
+import collections
 import itertools
 import uuid
 import time
@@ -60,6 +68,72 @@ MAX_WAIT_SECONDS = 25.0
 MAX_MASK_READS = 2
 #: A client's meta record (JSON text), at most.
 MAX_META_CHARS = 6000
+#: Mask bodies received and being measured at once, over all sessions: two
+#: of the largest (64 MiB each on the wire).
+MAX_PUBLISH_BYTES = 2 * 4 * MAX_SHARE_VOXELS
+
+
+class ByteBudget:
+    """At most ``capacity`` bytes held at once, granted in arrival order (a
+    small request does not overtake a large one waiting, which would starve
+    it). A request above the capacity is granted the whole capacity, alone.
+
+    The publish route's permit (see the module doc). asyncio's Semaphore
+    counts permits, not bytes; this one weighs each publish by its body.
+    """
+
+    def __init__(self, capacity: int) -> None:
+        self.capacity = int(capacity)
+        self.held = 0
+        self._waiters: collections.deque[tuple[int, asyncio.Future]] = collections.deque()
+
+    @property
+    def waiting(self) -> int:
+        return sum(1 for _, f in self._waiters if not f.done())
+
+    async def acquire(self, nbytes: int) -> int:
+        """Wait until ``nbytes`` (capped at the capacity) fit; returns what was
+        taken, to hand back to :meth:`release`."""
+        n = max(0, min(int(nbytes), self.capacity))
+        if not self._waiters and self.held + n <= self.capacity:
+            self.held += n
+            return n
+        fut = asyncio.get_running_loop().create_future()
+        entry = (n, fut)
+        self._waiters.append(entry)
+        try:
+            await fut
+        except BaseException:
+            if fut.done() and not fut.cancelled():
+                self.release(n)          # granted, then cancelled before resuming
+            else:
+                try:
+                    self._waiters.remove(entry)
+                except ValueError:
+                    pass
+                self._wake()             # the head left: the next may fit now
+            raise
+        return n
+
+    def release(self, n: int) -> None:
+        self.held = max(0, self.held - n)
+        self._wake()
+
+    def _wake(self) -> None:
+        while self._waiters:
+            n, fut = self._waiters[0]
+            if fut.done():
+                self._waiters.popleft()
+                continue
+            if self.held + n > self.capacity:
+                return
+            self._waiters.popleft()
+            self.held += n
+            fut.set_result(None)
+
+
+#: The publish permit (see the module doc).
+PUBLISH_BUDGET = ByteBudget(MAX_PUBLISH_BYTES)
 
 
 _seq = itertools.count(1)   # global, so a seq never repeats across hubs

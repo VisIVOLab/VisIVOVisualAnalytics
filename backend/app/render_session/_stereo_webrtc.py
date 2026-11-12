@@ -591,6 +591,7 @@ class StereoRtcLink:
         self.track = None
         self.frames = 0
         self.closed = False
+        self._closing: asyncio.Future | None = None   # the one close, shared (see close)
         self._last_keyframe_request = -KEYFRAME_REQUEST_S
         self._retry = None                     # a keyframe request held back by the rate limit
         self.clock = time.monotonic
@@ -733,9 +734,23 @@ class StereoRtcLink:
         return dict(self.track.stats) if self.track is not None else {}
 
     async def close(self) -> None:
-        if self.closed:
-            return
-        self.closed = True
+        """Close the link; every caller waits for the same close to finish.
+
+        Two callers are usual (the peer failing, the connection or a new offer
+        replacing the link). One that returned while the other was still
+        awaiting the encoder's off let a replacement link turn the encoder on
+        before this one turned it off. The close runs as one task, shielded,
+        so a caller cancelled meanwhile does not cut it short either."""
+        await asyncio.shield(self.close_task())
+
+    def close_task(self) -> asyncio.Future:
+        """The link's one close, started on the first call (see :meth:`close`)."""
+        if self._closing is None:
+            self.closed = True
+            self._closing = asyncio.ensure_future(self._close())
+        return self._closing
+
+    async def _close(self) -> None:
         if self._retry is not None:
             self._retry.cancel()
             self._retry = None

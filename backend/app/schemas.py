@@ -482,6 +482,9 @@ class TabularQueryRequest(BaseModel):
     # When more rows match than ``limit``: an even sample of them (one in every
     # ``step`` of the response, from the ``phase``-th) instead of a page.
     even_sample: bool = False
+    # Reproducible randomized stratified pages; phases are disjoint and together
+    # cover all matches. Overrides even_sample; offset is unused while sampled.
+    random_sample: bool = False
     phase: int = 0
 
 
@@ -490,7 +493,7 @@ class TabularQueryResponse(BaseModel):
     error: str
     total_rows: int = 0
     returned_rows: int = 0
-    step: int = 1   # an even sample: one row in this many (``phase``-th first)
+    step: int = 1   # number of sample phases (legacy even or randomized)
     # catalogue: row-oriented dicts
     rows: list[dict[str, Any]] = []
     # catalogue: the 0-based position of each returned row in the table as it

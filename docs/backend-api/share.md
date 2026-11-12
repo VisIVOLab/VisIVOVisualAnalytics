@@ -29,7 +29,12 @@ made it, and the creator's record.
 **Bounds.** A selection's box holds at most 16 Mi voxels (a 64 MiB float32
 body); a session keeps at most 4 cubes' selections (the oldest goes); the
 masks of all sessions together take at most 64 MiB (the oldest selections go
-first); at most 8 long polls of a session wait at once (429 beyond). A
+first); at most 8 long polls of a session wait at once (429 beyond); mask
+bodies being received and packed take at most 128 MiB over all sessions (a
+publish reserves its body's size before reading it and frees it once the body
+is packed, even when the request was cancelled meanwhile, all but the packed
+bits, which the selection is measured from and which stay counted until the
+measurement ends), so publishes beyond it wait unread. A
 selection lives as long as its session and its cube: a session evicted after
 its idle time (`VISIVO_SESSION_TTL`, 1800 s by default) takes its selections
 along, and the selection of a cube closed in the session is dropped at the
@@ -43,7 +48,8 @@ default, or `box`); `source` (`headset` or `desktop`); `client` (the
 publisher's own id, 1-64 characters, which it uses to ignore its echo);
 `origin_x`, `origin_y`, `origin_z` (`>= 0`) and `width`, `height`, `depth`
 (`>= 1`), the box in cube voxels; `meta`, the creator's record as a JSON
-object (at most 6000 characters; `NaN` and `Infinity` are refused).
+object (at most 6000 characters; `NaN`, `Infinity` and numbers out of the
+range of a double, such as `1e999`, are refused).
 
 The body of a lasso is its mask as `kinematic_select_bin` returns it: raw
 little-endian `float32` (a voxel is selected when its value is > 0.5, as
@@ -167,7 +173,11 @@ shared:* with the reason, and it is no longer the client's "latest own" (so
 its older own entry in the hub is skipped, not drawn back). Nothing else
 changes: an entry another client publishes later still replaces it. A 429
 (the session's compute slots busy) is retried once after 1 s, then treated
-the same way.
+the same way. The retry is sent only if, after that second, the selection is
+still the client's latest own (its nonce) and the client follows the same cube
+in the same link: otherwise it is dropped, since a late retry would take a new
+seq and replace the newer selection in the hub, leaving the other clients on
+the older one.
 
 **A backend restart.** When an answer names another `instance`, the client
 forgets its cursor, floor and nonces (they counted the old instance's seqs)

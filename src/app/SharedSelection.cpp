@@ -295,6 +295,14 @@ InstanceVerdict instanceVerdict(const QString &known, const QString &seen)
     return known == seen ? InstanceVerdict::Same : InstanceVerdict::Reset;
 }
 
+bool publishRetryStillWanted(const QString &nonce, const QString &localNonce,
+                             const QString &datasetThen, const QString &datasetNow,
+                             quint64 genThen, quint64 genNow)
+{
+    return !nonce.isEmpty() && nonce == localNonce && !datasetThen.isEmpty()
+            && datasetThen == datasetNow && genThen == genNow;
+}
+
 bool confirmShareDraw(const SharedSelectionInfo *latestNow, qint64 fetchedSeq,
                       const QString &shownBefore, qint64 floorBefore,
                       const QString &shownNow, qint64 floorNow)

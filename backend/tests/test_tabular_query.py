@@ -469,3 +469,67 @@ def test_an_even_sample_covers_the_table_and_its_phases_fill_it_in():
     small, total = _apply_tabular_query(frame.iloc[:50], [], None, limit=100, offset=0,
                                         even_sample=True)
     assert total == 50 and len(small) == 50
+
+
+@pytest.mark.parametrize("total,limit", [(1000, 100), (103, 10), (11, 10)])
+@pytest.mark.parametrize("path", ["unfiltered", "numeric", "text", "sorted"])
+def test_random_sample_is_stable_disjoint_and_covers_all_matches(total, limit, path):
+    import numpy as np
+    from app.dependencies import _apply_tabular_query, sample_step
+    from app.schemas import TabularFilter, TabularSortSpec
+
+    frame = pd.DataFrame({"X": np.arange(total * 2),
+                          "keep": np.arange(total * 2) % 2,
+                          "label": ["yes", "no"] * total})
+    filters, sort = [], None
+    if path == "unfiltered":
+        frame = frame.iloc[:total]
+    elif path == "numeric":
+        filters = [TabularFilter(field="keep", op="=", value="0")]
+    elif path == "text":
+        filters = [TabularFilter(field="label", op="contains", value="yes")]
+    else:
+        filters = [TabularFilter(field="keep", op="=", value="0")]
+        sort = TabularSortSpec(field="X", direction="desc")
+    seen = set()
+    for phase in range(sample_step(total, limit)):
+        args = dict(filters=filters, sort=sort, limit=limit, offset=0,
+                    random_sample=True, phase=phase)
+        page, count = _apply_tabular_query(frame, **args)
+        assert count == total and 0 < len(page) <= limit
+        pd.testing.assert_frame_equal(page, _apply_tabular_query(frame, **args)[0])
+        assert seen.isdisjoint(page.index)
+        seen.update(page.index)
+        if phase == 0:
+            assert len(page) == limit
+    expected = set(range(total)) if path == "unfiltered" else set(range(0, total * 2, 2))
+    assert seen == expected
+    empty, _ = _apply_tabular_query(frame, filters, sort, limit, 0,
+                                    random_sample=True, phase=sample_step(total, limit))
+    assert empty.empty
+
+
+def test_random_sample_breaks_periodic_order_and_preserves_small_tables():
+    import numpy as np
+    from app.dependencies import _apply_tabular_query
+
+    frame = pd.DataFrame({"X": np.arange(10000), "periodic": np.arange(10000) % 100})
+    page, _ = _apply_tabular_query(frame, [], None, 100, 0, random_sample=True)
+    # Every row-order stratum contributes, unlike prefix loading; random offsets
+    # also avoid aliasing the same position in every 100-row period.
+    assert (page["X"].to_numpy() // 100 == np.arange(100)).all()
+    assert page["periodic"].nunique() > 40
+    small, _ = _apply_tabular_query(frame.iloc[:5], [], None, 100, 0, random_sample=True)
+    pd.testing.assert_frame_equal(small, frame.iloc[:5])
+
+
+def test_random_sample_handles_big_endian_without_copying_the_whole_table():
+    import numpy as np
+    from app.dependencies import _apply_tabular_query
+    from app.schemas import TabularFilter
+
+    frame = pd.DataFrame({"X": np.arange(100, dtype=">f8")})
+    for filters in ([], [TabularFilter(field="X", op=">", value="10")]):
+        page, _ = _apply_tabular_query(frame, filters, None, 10, 0, random_sample=True)
+        assert len(page) == 10
+        np.testing.assert_array_equal(page["X"], page.index.to_numpy())

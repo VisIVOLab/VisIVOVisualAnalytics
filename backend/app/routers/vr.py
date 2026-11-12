@@ -27,6 +27,7 @@ import unicodedata
 from collections import OrderedDict, deque
 from urllib.parse import unquote
 import logging
+import mimetypes
 import os
 import re
 import secrets
@@ -36,7 +37,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, ValidationError
 
 from ..auth import accepted_tokens, token_equal, verify_token
@@ -58,7 +59,7 @@ STARTED_AT = time.time()
 
 _BUILD_PLACEHOLDER = "__VR_BUILD__"
 _build_lock = threading.Lock()
-_build_cache: dict = {"sig": None, "build": "none"}
+_build_cache: dict = {"sig": None, "build": "none", "digests": {}}
 
 
 def _page_signature(root: Path) -> tuple:
@@ -93,22 +94,32 @@ def page_build(root: Path = STATIC_DIR) -> str:
     when a file's size or modification time changed, so a page edited while
     the backend runs gets a new build without a restart. Blocking (stat calls,
     and reads when something changed): async routes call it in a thread."""
+    return page_files(root)[0]
+
+
+def page_files(root: Path = STATIC_DIR) -> tuple[str, dict[str, str]]:
+    """The build (see :func:`page_build`) and the SHA-256 of each file's
+    bytes as they went into it, by relative path (``js/main.js``): what a
+    file must still hold to be served as that build's."""
     sig = _page_signature(root)
     with _build_lock:
         if _build_cache["sig"] == sig and _build_cache.get("root") == str(root):
-            return _build_cache["build"]
+            return _build_cache["build"], _build_cache["digests"]
         h = hashlib.sha256()
+        digests: dict[str, str] = {}
         for rel, _mt, _sz in sig:
             h.update(rel.encode())
             h.update(b"\0")
             try:
-                h.update((root / rel).read_bytes())
+                data = (root / rel).read_bytes()
+                h.update(data)
+                digests[rel] = hashlib.sha256(data).hexdigest()
             except OSError:
                 h.update(b"<missing>")
             h.update(b"\0")
         build = h.hexdigest()[:12] if sig else "none"
-        _build_cache.update(sig=sig, build=build, root=str(root))
-        return build
+        _build_cache.update(sig=sig, build=build, root=str(root), digests=digests)
+        return build, digests
 
 
 async def page_build_async() -> str:
@@ -239,23 +250,45 @@ async def vr_index() -> HTMLResponse:
     return HTMLResponse(await _index_html(), headers={"Cache-Control": "no-cache"})
 
 
+def _read_asset(root: Path, target: Path) -> tuple[bytes, str, dict[str, str]] | None:
+    """The file's bytes, read once, with the build of the page and its files'
+    digests taken AFTER the read (None when it vanished meanwhile)."""
+    try:
+        data = target.read_bytes()
+    except OSError:
+        return None
+    build, digests = page_files(STATIC_DIR)
+    return data, build, digests
+
+
 @router.get("/vr/b/{build}/{path:path}", include_in_schema=False)
-async def vr_versioned_asset(build: str, path: str) -> FileResponse:
+async def vr_versioned_asset(build: str, path: str) -> Response:
     """A page file under a build address. The current build's files are cached
     for good. Another build's address (a tab older than the backend) gets
     today's file, revalidated: such a tab may run a mix of old cached modules
     and new ones until it reloads, which its version check asks it to do.
-    The hash is taken just before the file is served, so a file replaced in
-    between is served once under the previous build's address; the next
-    request revalidates it. Harmless, and not worth a lock."""
+
+    The bytes served are read once, and marked ``immutable`` only when they
+    are the very bytes the requested build was hashed from (their SHA-256 is
+    that file's digest in the build). Checking the build first and opening the
+    file after let an upgrade replacing the files in between cache the new
+    bytes, for a year, under the old build's address."""
     root = STATIC_DIR.resolve()
     target = (root / path).resolve()
     if (root not in target.parents or not target.is_file() or target.name == "index.html"
             or any(part.startswith(".") for part in target.relative_to(root).parts)):
         raise HTTPException(status_code=404, detail="Not found")
-    current = build == await page_build_async()
+    read = await asyncio.to_thread(_read_asset, root, target)
+    if read is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    data, current_build, digests = read
+    digest = hashlib.sha256(data).hexdigest()
+    rel = target.relative_to(root).as_posix()
+    current = build == current_build and digests.get(rel) == digest
     cache = "public, max-age=31536000, immutable" if current else "no-cache"
-    return FileResponse(target, headers={"Cache-Control": cache})
+    media = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    return Response(content=data, media_type=media,
+                    headers={"Cache-Control": cache, "ETag": f'"{digest[:32]}"'})
 
 
 # ── The page's log ──────────────────────────────────────────────────────────
@@ -484,17 +517,21 @@ async def vr_log(request: Request, token: str = Depends(verify_token)) -> dict:
                             headers={"Retry-After": str(int(retry + 0.999))})
     known = tuple(accepted_tokens()) + (token,)
 
-    def scrubbed() -> tuple[str, list[str], str]:
-        return (scrub(body.build, known)[:16] or "?", [scrub(ev.message, known) for ev in body.events],
+    def scrubbed() -> tuple[str, list[tuple[str, str]], str]:
+        # Every field that reaches the log, the event's name too: its pattern
+        # lets a token through (64 characters of [A-Za-z0-9_.:-]).
+        return (scrub(body.build, known)[:16] or "?",
+                [(scrub(ev.event, known)[:64] or "?", scrub(ev.message, known))
+                 for ev in body.events],
                 scrub(body.user_agent, known) if body.user_agent else "")
 
     # In a thread: scrubbing is regex work on up to 16 KiB, which must never
     # hold the event loop.
-    build, messages, agent = await asyncio.to_thread(scrubbed)
-    for ev, message in zip(body.events, messages):
+    build, lines, agent = await asyncio.to_thread(scrubbed)
+    for ev, (event, message) in zip(body.events, lines):
         level = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING,
                  "error": logging.ERROR}[ev.level]
-        logger.log(level, "[vr %s] %s: %s", build, ev.event, message)
+        logger.log(level, "[vr %s] %s: %s", build, event, message)
     if agent:
         logger.debug("[vr %s] user agent: %s", build, agent)
     return {"accepted": len(body.events)}

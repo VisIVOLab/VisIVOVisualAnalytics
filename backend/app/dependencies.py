@@ -636,6 +636,7 @@ def _apply_tabular_query(
     offset: int,
     even_sample: bool = False,
     phase: int = 0,
+    random_sample: bool = False,
 ) -> tuple["pd.DataFrame", int]:
     """Apply filters, sort, and limit/offset to a DataFrame.
 
@@ -644,6 +645,11 @@ def _apply_tabular_query(
     page (``offset`` then does not apply). A simulation's table is stored by
     region of space, so its first rows are a few blocks of it; an even sample
     covers it all, and the next phases fill it in.
+
+    ``random_sample`` uses reproducible random picks in contiguous row strata
+    spanning all matches. Successive phases visit each stratum without replacement;
+    only page-sized index arrays are allocated, even for very large tables.
+    It takes precedence over the legacy fixed-stride ``even_sample``.
 
     Returns ``(result_df, total_rows_before_pagination)``.
     Raises ``ValueError`` for unknown fields or operators.
@@ -654,7 +660,7 @@ def _apply_tabular_query(
     # frame instead copied every matching row of every column per request —
     # gigabytes on a table of a hundred million rows.
     page = _numeric_filter_page(df, filters, sort, limit, offset, _NUMERIC_OPS,
-                                even_sample=even_sample, phase=phase)
+                                even_sample=even_sample, phase=phase, random_sample=random_sample)
     if page is not None:
         return page
     for f in filters:
@@ -717,6 +723,8 @@ def _apply_tabular_query(
         )
 
     total = len(df)
+    if random_sample and sample_step(total, limit) > 1:
+        return _take_rows(df, _random_sample_rows(total, limit, phase)), total
     step = sample_step(total, limit) if even_sample else 1
     if step > 1:
         return df.iloc[phase::step].iloc[:limit], total
@@ -730,6 +738,27 @@ def _apply_tabular_query(
 def sample_step(total: int, limit: int) -> int:
     """One row in how many makes an even sample of ``limit`` of ``total``."""
     return max(1, -(-total // limit)) if limit > 0 and total > limit else 1
+
+
+def _random_sample_rows(total: int, limit: int, phase: int) -> np.ndarray:
+    """Randomized stratified pages, stable and disjoint for unchanged queries.
+
+    Divide the matching row positions into ``limit`` almost-equal strata. A
+    fixed local RNG chooses the first position within each; later phases cycle
+    through its remaining positions. Unlike a prefix or a fixed stride this
+    covers the entire input without locking onto periodic file ordering.
+    Memory is O(limit), independent of the number of rows/columns in the table.
+    These are row-order strata, not spatial bins or a density equalization.
+    """
+    if phase < 0:
+        raise ValueError("phase must not be negative")
+    if phase >= sample_step(total, limit):
+        return np.empty(0, dtype=np.int64)
+    bounds = np.arange(limit + 1, dtype=np.int64) * total // limit
+    widths = np.diff(bounds)
+    offsets = np.random.default_rng(166).integers(widths)
+    active = phase < widths
+    return bounds[:-1][active] + (offsets[active] + phase) % widths[active]
 
 
 def _take_rows(df, rows):
@@ -751,7 +780,8 @@ def _take_rows(df, rows):
 
 
 def _numeric_filter_page(df, filters, sort, limit, offset, numeric_ops, *,
-                         even_sample: bool = False, phase: int = 0):
+                         even_sample: bool = False, phase: int = 0,
+                         random_sample: bool = False):
     """``(page, total)`` when every filter compares a numeric column with a
     number and nothing is sorted; None otherwise (the general path)."""
     if sort and sort.field in df.columns:
@@ -773,6 +803,8 @@ def _numeric_filter_page(df, filters, sort, limit, offset, numeric_ops, *,
         mask = cut if mask is None else (mask & cut)
     if mask is None:
         total = len(df)
+        if random_sample and sample_step(total, limit) > 1:
+            return _take_rows(df, _random_sample_rows(total, limit, phase)), total
         step = sample_step(total, limit) if even_sample else 1
         if step > 1:
             return df.iloc[phase::step].iloc[:limit], total
@@ -780,6 +812,8 @@ def _numeric_filter_page(df, filters, sort, limit, offset, numeric_ops, *,
         return df.iloc[offset:stop], total
     rows = np.flatnonzero(mask)
     total = int(rows.size)
+    if random_sample and sample_step(total, limit) > 1:
+        return _take_rows(df, rows[_random_sample_rows(total, limit, phase)]), total
     step = sample_step(total, limit) if even_sample else 1
     if step > 1:
         return _take_rows(df, rows[phase::step][:limit]), total

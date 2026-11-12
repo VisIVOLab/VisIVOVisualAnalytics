@@ -51,6 +51,25 @@ def check_box(width: int, height: int, depth: int) -> None:
                          f"{MAX_BOX_VOXELS}-voxel limit of these statistics.")
 
 
+def worker_cube_packed_mask_stats(path: str, packed: bytes | None,
+                                  origin_x: int, origin_y: int, origin_z: int,
+                                  roi_width: int, roi_height: int, roi_depth: int
+                                  ) -> dict[str, Any]:
+    """:func:`worker_cube_mask_stats` of a bit-packed mask (one bit per voxel,
+    x fastest, as ``np.packbits`` of ``mask > 0.5``), or of the whole box when
+    ``packed`` is None. The shared-selection publish hands over these n / 8
+    bytes instead of its float32 body, and the worker unpacks them."""
+    if packed is None:
+        return worker_cube_mask_stats(path, None, origin_x, origin_y, origin_z,
+                                      roi_width, roi_height, roi_depth)
+    n = int(roi_width) * int(roi_height) * int(roi_depth)
+    if len(packed) != (n + 7) // 8:
+        raise ValueError(f"Packed mask is {len(packed)} bytes; expected {(n + 7) // 8}.")
+    bits = np.unpackbits(np.frombuffer(packed, dtype=np.uint8), count=n)
+    return worker_cube_mask_stats(path, bits.astype("<f4").tobytes(), origin_x, origin_y,
+                                  origin_z, roi_width, roi_height, roi_depth)
+
+
 def worker_cube_mask_stats(path: str, mask_bytes: bytes | None,
                            origin_x: int, origin_y: int, origin_z: int,
                            roi_width: int, roi_height: int, roi_depth: int) -> dict[str, Any]:

@@ -20,7 +20,9 @@ The token is the usual ``X-Visivo-Token`` header, the session the usual
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import math
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -29,7 +31,7 @@ from ..auth import verify_token
 from ..dependencies import _require_dataset, _run_heavy_with_limit
 from ..selection_hub import (
     INSTANCE, MAX_META_CHARS, MAX_SHARE_VOXELS, MAX_WAIT_SECONDS, MAX_WAITERS_PER_SESSION,
-    SharedSelection, hub_for, mask_bytes, next_seq, pack_mask_async,
+    PUBLISH_BUDGET, SharedSelection, hub_for, mask_bytes, next_seq, pack_mask_async,
 )
 from ..sessions import Session, get_session
 
@@ -58,6 +60,49 @@ def _hub(session: Session):
     return hub
 
 
+def _finite_float(text: str) -> float:
+    """``parse_float`` for the meta record: a number too large for a float
+    (``1e999``) parses to inf without ever reaching ``parse_constant``, and an
+    inf kept in the record made every later read of the selection fail
+    (``allow_nan=False``)."""
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"{text} is out of range of a JSON number")
+    return value
+
+
+def _no_constants(name: str):
+    raise ValueError(f"{name} is not a number JSON allows")
+
+
+def parse_meta(meta: str) -> dict[str, Any]:
+    """The creator's record: a JSON object of finite numbers, else 422."""
+    try:
+        meta_obj = json.loads(meta, parse_constant=_no_constants, parse_float=_finite_float)
+    except (ValueError, RecursionError) as exc:
+        raise HTTPException(422, f"meta is not JSON: {exc}") from exc
+    if not isinstance(meta_obj, dict):
+        raise HTTPException(422, "meta must be a JSON object")
+    return meta_obj
+
+
+def _release_after(work: asyncio.Future | None, permit: int) -> None:
+    """Give ``permit`` back to the publish budget now, or once ``work`` (the
+    packing thread, which holds the body) is done, whatever became of the
+    request that started it."""
+    if work is None or work.done():
+        if work is not None and not work.cancelled():
+            work.exception()            # retrieved: the request saw it, or is gone
+        PUBLISH_BUDGET.release(permit)
+        return
+
+    def done(fut: asyncio.Future) -> None:
+        if not fut.cancelled():
+            fut.exception()
+        PUBLISH_BUDGET.release(permit)
+    work.add_done_callback(done)
+
+
 def _full_shape(entry: dict[str, Any]) -> tuple[int, int, int]:
     return int(entry.get("width", 0)), int(entry.get("height", 0)), int(entry.get("depth", 0))
 
@@ -78,7 +123,7 @@ async def share_publish(
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> dict:
-    from ..compute import worker_cube_mask_stats  # noqa: PLC0415
+    from ..compute import worker_cube_packed_mask_stats  # noqa: PLC0415
     # The order of selections is the order their publishes ARRIVE: the seq is
     # taken now, before the body is read and the selection measured, so a slow
     # earlier publish cannot replace a later one (the hub keeps the higher seq).
@@ -87,14 +132,7 @@ async def share_publish(
     if n > MAX_SHARE_VOXELS:
         raise HTTPException(422, f"The selection's box holds {n} voxels, over the "
                                  f"{MAX_SHARE_VOXELS}-voxel limit of a shared selection.")
-    def _no_constants(name: str):
-        raise ValueError(f"{name} is not a number JSON allows")
-    try:
-        meta_obj = json.loads(meta, parse_constant=_no_constants)
-    except ValueError as exc:
-        raise HTTPException(422, f"meta is not JSON: {exc}") from exc
-    if not isinstance(meta_obj, dict):
-        raise HTTPException(422, "meta must be a JSON object")
+    meta_obj = parse_meta(meta)
     box_range = [[origin_x, origin_x + width - 1], [origin_y, origin_y + height - 1],
                  [origin_z, origin_z + depth - 1]]
     if kind == "box" and "box" in meta_obj and meta_obj["box"] != box_range:
@@ -109,31 +147,57 @@ async def share_publish(
     declared = request.headers.get("content-length")
     if declared is not None and declared.isdigit() and int(declared) != expected:
         raise HTTPException(422, f"mask body is {declared} bytes; expected {expected}")
-    chunks, got = [], 0
-    async for chunk in request.stream():
-        got += len(chunk)
-        if got > expected:
-            raise HTTPException(422, f"mask body exceeds the expected {expected} bytes")
-        chunks.append(chunk)
-    if got != expected:
-        raise HTTPException(422, f"mask body is {got} bytes; expected {expected}")
-    body = b"".join(chunks)
-    if kind == "box":
-        packed, count = None, n
-    else:
-        packed, count = await pack_mask_async(body, n)   # off the event loop
+    # The body's bytes are taken from the publish budget BEFORE it is read and
+    # held until nothing holds the body any more (it is packed): publishes
+    # waiting for a compute slot would otherwise each buffer up to 64 MiB,
+    # unbounded in number.
+    permit = await PUBLISH_BUDGET.acquire(expected)
+    packing: asyncio.Future | None = None
+    keep = -1          # what stays taken once packed: the packed bits
+    try:
+        chunks, got = [], 0
+        async for chunk in request.stream():
+            got += len(chunk)
+            if got > expected:
+                raise HTTPException(422, f"mask body exceeds the expected {expected} bytes")
+            chunks.append(chunk)
+        if got != expected:
+            raise HTTPException(422, f"mask body is {got} bytes; expected {expected}")
+        body = b"".join(chunks)
+        del chunks
+        if kind == "box":
+            packed, count = None, n
+        else:
+            # Off the event loop, in a thread that a cancelled request cannot
+            # stop: the bytes go back to the budget when the thread is done
+            # with the body, not when this request is (see finally).
+            packing = asyncio.ensure_future(pack_mask_async(body, n))
+            del body
+            packed, count = await asyncio.shield(packing)
+        keep = min(permit, len(packed or b""))
+    finally:
+        if keep >= 0:
+            PUBLISH_BUDGET.release(permit - keep)    # the body is gone, its bits stay
+        else:
+            _release_after(packing, permit)
+    # Measured here, on the full cube, so both sides show the same numbers.
+    # From the packed bits (n / 8 bytes), not the body: a measurement outlives
+    # a request that times out or is cancelled (_run_heavy), holding its
+    # arguments, and only its compute slot bounds it then. While it waits for
+    # a slot, its bits stay counted in the budget.
+    try:
         if count == 0:
             raise HTTPException(422, "The selection is empty.")
-    # Measured here, on the full cube, so both sides show the same numbers.
-    try:
         stats = await _run_heavy_with_limit(
-            session, worker_cube_mask_stats, entry["path"], None if kind == "box" else body,
+            session, worker_cube_packed_mask_stats, entry["path"], packed,
             origin_x, origin_y, origin_z, width, height, depth)
         stats = {"valid": True, "error": "", **stats}
     except HTTPException:
         raise
     except ValueError as exc:
         stats = {"valid": False, "error": str(exc)}
+    finally:
+        PUBLISH_BUDGET.release(keep)
     sel = SharedSelection(
         seq=seq, kind=kind, source=source, client=client,
         dataset_key=_key(entry), dataset_id=dataset_id,

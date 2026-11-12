@@ -157,6 +157,19 @@ export function publishOutcomeOf(status, detail = '') {
   return 'unknown';
 }
 
+/** Whether the one retry of a publish answered 429 is still wanted when its
+ *  delay is over: only while its selection is still this client's latest own
+ *  (`nonce` === `localNonce`) and the link follows the same cube in the same
+ *  link generation. Otherwise a newer selection was made (or the cube
+ *  changed) meanwhile: a late retry would take a fresh seq and replace the
+ *  newer entry in the hub, so the other clients would show the old selection
+ *  while this one, which skips its own older entry, keeps the newer. The
+ *  cases are shared with the desktop's tests (share_rule_cases.json). */
+export function retryStillWanted({ nonce, localNonce, datasetThen, datasetNow, genThen, genNow }) {
+  return !!nonce && nonce === localNonce && !!datasetThen && datasetThen === datasetNow
+    && genThen === genNow;
+}
+
 /** The hub's backend instance against the one this client knows: 'adopt'
  *  (none known yet), 'same', or 'reset' (the backend restarted: seqs began
  *  again at 1, so the cursor, floor and nonces of the old one mean nothing). */
@@ -300,6 +313,7 @@ export function createShare(ctx) {
     h['Content-Type'] = 'application/octet-stream';
     const url = `/v1/share/selection?${publishQuery({ datasetId: ds, kind, client: st.client, origin, dims, meta: { ...(meta || {}), nonce } })}`;
     const t0 = performance.now();
+    const linkGen = loopId;   // start() and stop() bump it
     const attempt = async (retried) => {
       let resp, text;
       try {
@@ -317,7 +331,15 @@ export function createShare(ctx) {
       const outcome = publishOutcomeOf(resp.status, detail);
       if (outcome === 'retry' && !retried) {
         await new Promise((r) => later(r, RETRY_429_MS));
-        return attempt(true);
+        if (retryStillWanted({ nonce, localNonce: st.localNonce, datasetThen: ds,
+          datasetNow: ctx.datasetId(), genThen: linkGen, genNow: loopId })) {
+          return attempt(true);
+        }
+        // Superseded while it waited: a late retry would replace the newer
+        // selection in the hub. Dropped without a word: what replaced it (a
+        // newer publish, a clear, another cube) says its own, and the note
+        // and outcome stay that one's.
+        return null;
       }
       st.publishOutcome = outcome;
       if (outcome === 'kept') {

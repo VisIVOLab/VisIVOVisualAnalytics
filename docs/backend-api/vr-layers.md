@@ -17,6 +17,13 @@ sky or Cartesian positions (`/v1/catalogue/open`). Answers `valid`,
 `sky` (positions computed from RA/Dec, `@x`, `@y`, `@z`). 422 for a dataset
 that is not a table of points.
 
+RA/Dec (and GLON/GLAT in `catalogue_pixels`) are read in the unit the table
+declares: a VOTable or FITS column unit, an IPAC header unit, or a unit in the
+column name (`RA (h)`). Hours of angle, radians, arcseconds and so on are
+converted to degrees, in any case (FITS `DEG`, `RAD`, `HOURS`); a column with
+no unit is in degrees. A declared unit that is not an angle (`km/s`) is
+refused with 422.
+
 ## `POST /v1/points/sample_bin`
 
 An even sample of the table within a budget.
@@ -48,8 +55,13 @@ takes 0.9 s here.
 
 The body is little-endian `uint16`: the positions, three per row, quantised
 over the sample's bounding box (`X-Visivo-Bounds`: code 0 is the minimum, 65535
-the maximum of each axis), then one colour code per row when a colour column
-is given (code 0 also for a non-finite value). Headers: `X-Visivo-Count`,
+the maximum of each axis; bounds and codes are worked from float64 offsets, so
+coordinates far from 0, such as 1e9, 1e9 + 1 and 1e9 + 2, stay distinct;
+the bounds are within float32 rounding of the true extremes; a row whose
+position is not finite or lies beyond float32's range, 3.4e38, on any axis is
+left out, as the remote point session leaves it out), then one colour code per row when a colour column
+is given (code 0 also for a non-finite value; the column is read in float64,
+so values far from 0 keep distinct colours). Headers: `X-Visivo-Count`,
 `X-Visivo-Total-Rows`, `X-Visivo-Step` (table rows per sampled row),
 `X-Visivo-Bounds` (`xmin,xmax,ymin,ymax,zmin,zmax`), `X-Visivo-Axes`,
 `X-Visivo-Scalar-Type: uint16`, and with a colour column
