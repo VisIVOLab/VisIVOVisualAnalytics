@@ -35,4 +35,6 @@ void vtkWindowCube::openInVrHeadset()
     inputs.remote = !BackendClient::isLocalBackendUrl(url);
     m_vrHeadsetDialog = new VrHeadsetDialog(inputs, this);
     m_vrHeadsetDialog->show();
+    // From now on the headset's selections appear here (issue #188).
+    this->startSelectionShare();
 }

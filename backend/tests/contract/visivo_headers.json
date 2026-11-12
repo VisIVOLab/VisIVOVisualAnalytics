@@ -43,6 +43,8 @@
     "X-Visivo-Roi-Z0",
     "X-Visivo-Scalar-Type",
     "X-Visivo-Selected-Count",
+    "X-Visivo-Selection-Kind",
+    "X-Visivo-Selection-Seq",
     "X-Visivo-Session",
     "X-Visivo-Spacing",
     "X-Visivo-Spectral-Axis-Type",

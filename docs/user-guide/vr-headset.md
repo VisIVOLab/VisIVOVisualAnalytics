@@ -23,8 +23,12 @@ open on the desktop continues in the headset in the same backend session, with
 a panel in the headset for the controls
 ([#172](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/172), see
 [Open a cube from the desktop](#open-a-cube-from-the-desktop) and
-[The panel in the headset](#the-panel-in-the-headset)). What is not done yet
-is listed under [Known limits](#known-limits).
+[The panel in the headset](#the-panel-in-the-headset)); a selection made in the
+headset appears in the desktop's cube viewer and a desktop lasso can be sent
+to the headset
+([#188](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/188), see
+[Selections shared with the desktop](#selections-shared-with-the-desktop)).
+What is not done yet is listed under [Known limits](#known-limits).
 
 | | |
 |---|---|
@@ -880,6 +884,103 @@ lasso 570-710 ms plus 40-80 ms of statistics, box over 158 channels 22 ms.
 The green overlay costs GPU time: 0.64 ms without it, 0.84 ms with it, for one
 1600 × 1000 view on that Mac; the headset's own numbers are on its panel.
 
+## Selections shared with the desktop
+
+A Kinematic Lasso or a box made in the headset appears in the desktop's cube
+viewer, and a lasso made on the desktop can be sent to the headset
+([#188](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/188)): one
+person in the headset and others at the screen look at the same object. It
+needs the headset's page to work in the desktop's session, which is what
+*Open in VR Headset…* (or its *Copy Link*) gives it.
+
+**From the headset to the desktop.** Every lasso and box made in the page is
+published to the session's selection hub on the backend
+([Shared selections](../backend-api/share.md)), which measures it on the full
+cube. Once *Open in VR Headset…* has been used in a cube window, that window
+follows the hub (a long poll, nothing to press): the headset's selection is
+shown at once as the Kinematic Lasso's own selection, the mask on the 2-D
+channel map, the isosurface in the 3-D view and the channel profile, with
+its voxel count in the lasso's panel, and a note in the status bar and under
+*Show in VR Headset* in the panel, for example *Kinematic Lasso from the
+headset: 13216 voxels, flux 6.061 Jy km/s, 1240.4 to 1500.9 km/s*. Nothing has
+to be dismissed. A box arrives as a selection of every voxel of the box. The
+desktop's Reach and Velocity coupling sliders act on selections made on the
+desktop: they do not regrow a selection received from the headset, and a
+double-click starts a new one there. *Isolate → new cube* and *Remove → new
+cube* apply a received selection as shown.
+
+**From the desktop to the headset.** With a Kinematic Lasso selection on the
+desktop, press **Show in VR Headset** in the lasso's panel (or *Tools → Views →
+Show Selection in VR Headset*). The page draws it in green as its own lasso, with
+its statistics on the results panel, which says *voxels from the desktop*; the
+status bar says *Shown in the VR headset*. A hand-refined mask is sent as it is
+shown.
+
+**The same numbers.** Both sides show the statistics the backend measured on
+the full cube when the selection was shared, from the same mask: the voxel
+count and the flux in Jy km/s are the same on the page and on the desktop.
+
+**The latest wins.** The hub keeps one selection per cube, the latest,
+whichever side made it, in the order the selections were sent (a selection
+sent earlier but measured later does not replace a later one), and each
+side keeps reading the hub until what it shows is the hub's selection, so both
+end on the same one; a selection
+that arrives while one is being grown on the other side replaces it (the grow
+in flight is dropped when it lands). When a page loads, or a cube window opens
+the headset, the selection already in the hub is not shown: only those made
+from then on are.
+
+**Recorded once.** The side that makes a selection records it: the page
+records its lasso or box in its recipes, the desktop records nothing until a
+selection is applied. The side that receives a selection draws it with the
+creator's record attached and records no step of its own: the page adds no
+recipe for a desktop lasso; on the desktop, *Isolate* or *Remove* of a
+headset lasso records the headset's grow (the request under the API's names,
+its seed and parameters, with *Made in: VR headset* in the Provenance tab and
+`made_in=VR headset` in the FITS `HISTORY`), and of a headset box the box
+itself (`mask_apply_bin` with a mask of ones over it, its pixel and channel
+range in the Provenance tab and the `HISTORY`). A lasso received without the
+request it was grown with is recorded as the mask alone (*Recorded as: the
+mask only*, with a replay caveat: the cube and its `HISTORY` are the exact
+record), never as a request it was not grown with. Applying never records an
+ROI of its own, as before.
+
+**Measured** (backend on an Apple M5 Max, the page in headless Chrome on the
+same Mac, HCG 44, `validation/vr_share_e2e.mjs`): NGC 3187's lasso made in the
+page (13 216 voxels, 6.061 Jy km/s) reaches a client waiting on the hub
+48-98 ms after the page's lasso ended (three runs; the publish with the
+backend's statistics is 45-94 ms of it), with the same voxels, the same flux, the same mask
+(Dice 1.000 with a regrow of the recorded request) and the page's request as
+its record; a desktop lasso of 10 684 voxels is drawn by the page 53 ms after
+the desktop starts sending it, and the page adds no recipe; a 56 × 43 × 158
+box made in the page reaches the desktop with the same 380 464 voxels and
+flux. The desktop's own client (`SharedSelectionLink`) receives a selection
+another client of the session publishes in about 100 ms.
+
+**What to check** (desktop and headset together):
+
+1. On the Mac, open HCG 44, *Tools → Views → Open in VR Headset…*, *Open on
+   Headset*, and enter VR.
+2. In the headset, choose the Kinematic Lasso and select NGC 3187. Note the
+   voxels and the flux on the results panel. On the Mac (ask someone, or look
+   after taking the headset off), the cube window must show the selection
+   within about a second without any click, and the status bar and the
+   lasso's panel must say *Kinematic Lasso from the headset: … voxels, flux …
+   Jy km/s* with the same two numbers.
+3. In the headset, make a box (two corners). The desktop must show it as a
+   selection with the same voxel count as the panel's *voxels … valid / …*.
+4. On the Mac, double-click another galaxy of HCG 44, wait for the selection,
+   press *Show in VR Headset*. In the headset the green mask must move to that
+   galaxy within about a second and the results panel must say *voxels from
+   the desktop*. *Download recipes (.json)* on the page must not have a new
+   entry for it.
+5. Back on the Mac, press *Isolate → new cube* on a headset lasso: a new cube
+   must be made, and its product's Provenance must say *Made in: VR headset*
+   and list the headset's seed; do the same on a headset box: its Provenance
+   gives the box's pixels and channels. Note the numbers panel's **share** line in the headset (sent,
+   received, publish and receive ms), and the times of steps 2 and 4.
+6. Repeat 2 and 4 over Wi-Fi.
+
 ## The numbers on the left controller
 
 The small panel of numbers (on the left controller, or next to the cube
@@ -1126,8 +1227,14 @@ the checks below.
   or carve seeds, no hand refinement, no Isolate or Remove, which stay on the
   desktop) and a box region; no moments, no PV slice. The desktop has no
   recipe import: a VR recipe is replayed by posting its requests, as a desktop
-  recipe is. The selection made in the headset is not shown in the desktop's
-  views (they share the session's datasets, not the selections on screen).
+  recipe is.
+- **Shared selections**: the desktop follows the headset's selections once
+  *Open in VR Headset…* was used in that cube window (or a selection was sent
+  from it), in the desktop's session only; one selection per cube is shared,
+  the latest, of at most 16 Mi voxels in its bounding box (a larger box made
+  in the headset is measured there but not shared, and the page says so). The
+  desktop sends a selection only when asked (*Show in VR Headset*); its
+  sliders do not regrow a selection received from the headset.
 - **Refinement**: needs a cube the backend holds in core: a cube drawn out of
   core from its brick pyramid is not refined (the panel says so). Refined
   frames travel as JPEG over the render session's WebSocket: there is **no

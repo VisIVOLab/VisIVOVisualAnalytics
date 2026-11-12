@@ -58,6 +58,8 @@
 #include "TestOrbitPath.h"
 #include "TestProductRecipe.h"
 #include "TestLassoReplay.h"
+#include "TestSharedSelection.h"
+#include "TestSharedSelectionLink.h"
 #include "TestSofiaSuggest.h"
 #include "TestUpdateCheck.h"
 #include "TestSourceTable.h"
@@ -129,6 +131,8 @@ int main(int argc, char *argv[])
     { TestOrbitPath        t; status |= QTest::qExec(&t, argc, argv); }
     { TestProductRecipe    t; status |= QTest::qExec(&t, argc, argv); }
     { TestLassoReplay      t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSharedSelection  t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSharedSelectionLink t; status |= QTest::qExec(&t, argc, argv); }
     { TestSofiaSuggest     t; status |= QTest::qExec(&t, argc, argv); }
     { TestUpdateCheck      t; status |= QTest::qExec(&t, argc, argv); }
     { TestSourceTable      t; status |= QTest::qExec(&t, argc, argv); }

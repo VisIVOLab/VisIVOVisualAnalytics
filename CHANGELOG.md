@@ -8,6 +8,28 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR headset: selections shared with the desktop (part of #166, #188).** A
+  session's selection hub on the backend (`/v1/share/selection`, with its
+  mask route) keeps the latest Kinematic Lasso or box per cube, bit-packed and
+  measured on the full cube when it is published, with the side and client
+  that made it and the creator's record; clients wait for a newer one with a
+  long poll (token and session headers as for any route; at most 16 Mi voxels
+  per selection, 4 cubes per session, 64 MiB of masks overall, 8 waiting polls
+  per session; it goes with the session and with the cube; the latest is the
+  last to arrive, a slower earlier publish is answered 409). A client starting
+  to follow the hub takes its current selection as the cursor without showing
+  it. The `/vr/` page publishes each
+  lasso and box it makes and draws a desktop selection as its own lasso, with
+  the backend's statistics and no recipe step of its own (`share.js`). The cube
+  viewer follows the hub once *Open in VR Headset…* was used: a headset
+  selection appears as the lasso's selection (overlay, isosurface, channel
+  profile, count) with a note giving its voxels and flux; **Show in VR
+  Headset** (lasso panel, and *Tools → Views*) sends the lasso on screen to the
+  headset. Isolate and Remove apply a received selection: a headset lasso is
+  recorded as the headset's grow (*Made in: VR headset*), a headset box as the
+  box, a lasso received without its grow as the mask alone with a caveat. On HCG 44 NGC 3187's lasso made in the page reaches the
+  desktop's poll 48-98 ms after it ends with the same 13 216 voxels and
+  6.061 Jy km/s (`validation/vr_share_e2e.mjs`).
 - **VR headset with a backend on a cluster (part of #166, #187).** *Open in
   VR Headset…* names the backend it pairs with (local, or remote through this
   computer's tunnel, whose port `adb reverse` forwards) and asks it the new
