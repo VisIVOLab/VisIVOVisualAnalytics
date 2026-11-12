@@ -477,3 +477,59 @@ test('a frame that cannot be copied (or has no format) is read through an image,
   assert.equal(readStripe(await r2._stripeOfVideoFrame(opaque)), 9);
   assert.equal(opaque.rects.length, 0);
 });
+
+test('headers at 20 Hz with no video at all fall back within about 3 s (the pairer keeps only 8)', () => {
+  let now = 1000;
+  const sent = [];
+  const r = new RtcStereo({ send: (c) => sent.push(c), onFrame: () => {}, mode: 'webrtc', now: () => now });
+  r.state = 'video';
+  r.lastVideoAt = now;
+  let failedAt = null;
+  for (let i = 0; i < 200 && failedAt === null; i++) {       // 10 s of headers, 50 ms apart
+    now += 50;
+    r.onHeader({ header: { pose_id: i + 1, video: { id: i + 1 } }, depth: null }, {}, now);
+    r.tick(now);
+    if (r.state === 'failed') failedAt = now;
+  }
+  assert.ok(r.pairer.waiting <= 8);                          // the old headers were evicted
+  assert.notEqual(failedAt, null, 'never fell back');
+  assert.ok(failedAt - 1050 >= 3000 && failedAt - 1050 <= 3100, `fell back after ${failedAt - 1050} ms`);
+  assert.match(r.chooser.reason, /no video frame decoded for 3 s/);
+  assert.deepEqual(sent, [{ type: 'xr_rtc_stop' }]);
+});
+
+test('a pair restarts the watchdog: frames pairing now and then keep the video up', async () => {
+  let now = 1000;
+  const r = new RtcStereo({ send: () => {}, onFrame: () => {}, mode: 'webrtc', now: () => now });
+  r.state = 'video';
+  // 10 s of headers at 20 Hz; one frame in ten arrives and pairs (every 0.5 s).
+  for (let i = 1; i <= 200; i++) {
+    now += 50;
+    const header = { pose_id: i, video: { id: i }, color: { width: 1024, height: 100, stripe: { rows: 16 } } };
+    r.onHeader({ header, depth: null }, {}, now);
+    if (i % 10 === 0) await r._handle({ width: 1024, height: 116, close() {} }, drawRow(i, 1024), r.gen);
+    r.tick(now);
+  }
+  assert.equal(r.state, 'video');
+  assert.equal(r.pairer.stats.paired, 20);
+});
+
+test('a header still waiting after a pair keeps the watchdog running (still view, video broken)', async () => {
+  let now = 1000;
+  const r = new RtcStereo({ send: () => {}, onFrame: () => {}, mode: 'webrtc', now: () => now });
+  r.state = 'video';
+  const header = (i) => ({ pose_id: i, video: { id: i }, color: { width: 1024, height: 100, stripe: { rows: 16 } } });
+  now += 50; r.onHeader({ header: header(5), depth: null }, {}, now);
+  now += 50; r.onHeader({ header: header(6), depth: null }, {}, now);
+  const sixAt = now;
+  await r._handle({ width: 1024, height: 116, close() {} }, drawRow(5, 1024), r.gen);   // 5 pairs
+  assert.equal(r.firstUnpairedAt, sixAt);                    // 6 is still waiting: timed from it
+  // The view is still: no new header; the video never brings 6.
+  let failedAt = null;
+  for (let k = 0; k < 100 && failedAt === null; k++) {
+    now += 50; r.tick(now);
+    if (r.state === 'failed') failedAt = now;
+  }
+  assert.notEqual(failedAt, null, 'never fell back with header 6 waiting');
+  assert.ok(failedAt - sixAt >= 3000 && failedAt - sixAt <= 3100, `fell back after ${failedAt - sixAt} ms`);
+});

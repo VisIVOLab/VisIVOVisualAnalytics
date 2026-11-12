@@ -530,8 +530,9 @@ own time). When the median of the last eight is above **40 ms** it offers the
 backend a WebRTC link, and stays on video while it works. It falls back to
 JPEG when the browser or the backend has no WebRTC (the backend needs the
 optional `aiortc` package), when the link does not connect within 5 s, when it
-fails, when the backend's encoder fails, when a frame's header waits 3 s with
-no video frame paired to it, or after 10 video frames in a row whose stripe
+fails, when the backend's encoder fails, when 3 s pass after a frame's header
+arrived with no video frame paired since (however many headers came in
+between), or after 10 video frames in a row whose stripe
 does not read (or 5 that fail to be read at all); it tries again a
 minute later. `?refine_transport=webrtc` in the address uses the video at
 once, `?refine_transport=jpeg` never. The video goes over UDP straight

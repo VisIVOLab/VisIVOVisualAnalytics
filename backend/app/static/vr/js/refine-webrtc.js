@@ -183,12 +183,6 @@ export class FramePairer {
   /** Waiting headers. */
   get waiting() { return this.headers.size; }
 
-  /** When the oldest waiting header arrived (its `tRecv`), or null. */
-  get oldestHeaderAt() {
-    const first = this.headers.values().next();
-    return first.done ? null : first.value.tRecv ?? null;
-  }
-
   clear() {
     this.headers.clear();
     if (this.video) { this.close(this.video.frame); this.video = null; }
@@ -287,6 +281,10 @@ export class RtcStereo {
     this.errors = 0;             // frames that threw while read or shown
     this.lastError = '';
     this.lastPairedAt = 0;
+    // When the first header arrived that is still waiting for its frame, with
+    // no pair since (null: none waits). Kept apart from the pairer, which
+    // holds only its 8 newest headers: evicting one does not reset it.
+    this.firstUnpairedAt = null;
     this.lagMs = [];
     this._stats = null;
     this.encoder = '';
@@ -377,6 +375,7 @@ export class RtcStereo {
     if (this.state !== 'video') return;
     const h = parsed.header;
     if (!this.firstHeaderAt) this.firstHeaderAt = tRecv;
+    if (this.firstUnpairedAt === null) this.firstUnpairedAt = tRecv;
     const entry = { key: h.video ? h.video.id : videoKey(h.pose_id), header: h,
       depthBytes: parsed.depth ? parsed.depth.slice() : null, rec, tRecv };
     const pair = this.pairer.addHeader(entry, tRecv);
@@ -512,6 +511,11 @@ export class RtcStereo {
     }
     this.badInARow = 0;
     this.lastPairedAt = this.now();
+    // Headers newer than the one just paired may still be waiting: time
+    // from the oldest of them (a still view sends no new header that would
+    // start the clock again).
+    const waiting = this.pairer.headers.values().next().value;
+    this.firstUnpairedAt = waiting ? waiting.tRecv : null;
     // How much later than its header the frame was decoded (the video's own
     // delay beyond the WebSocket's: encode, RTP, jitter buffer, decode).
     this.lagMs.push(t - entry.tRecv);
@@ -523,11 +527,12 @@ export class RtcStereo {
   /** Called every displayed frame: the watchdogs and the link's numbers. */
   tick(t) {
     if (this.state === 'connecting' && t - this.connectingSince > 5000) this._fail('WebRTC did not connect within 5 s');
-    // Headers come but no frame pairs with them for 3 s: no H.264 decoder,
-    // blocked UDP, or frames whose stripe does not read.
-    const oldest = this.pairer.oldestHeaderAt;
-    if (this.state === 'video' && oldest !== null && t - oldest > 3000 && this.lastPairedAt < oldest) {
-      this._fail(this.lastVideoAt < oldest ? 'no video frame decoded for 3 s' : 'no video frame paired for 3 s');
+    // Headers come but no frame pairs for 3 s: no H.264 decoder, blocked
+    // UDP, or frames whose stripe does not read. Timed from the first header
+    // left unpaired, however many headers came after it.
+    const since = this.firstUnpairedAt;
+    if (this.state === 'video' && since !== null && t - since > 3000) {
+      this._fail(this.lastVideoAt < since ? 'no video frame decoded for 3 s' : 'no video frame paired for 3 s');
     }
     if (this.state === 'off') this.maybeStart();
     if (this.state === 'failed' && this.chooser.wantVideo(t)) this.state = 'off';
@@ -574,6 +579,7 @@ export class RtcStereo {
     if (this.pc) { try { this.pc.close(); } catch { /* closed */ } this.pc = null; }
     this.pairer.clear();
     this.firstHeaderAt = 0;
+    this.firstUnpairedAt = null;
     this.badInARow = 0;
     this.errors = 0;
     if (this.state !== 'failed') this.state = 'off';
