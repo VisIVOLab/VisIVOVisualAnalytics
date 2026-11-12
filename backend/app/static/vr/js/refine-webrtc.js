@@ -263,9 +263,12 @@ export class RtcStereo {
   /** Frames that threw while read or shown before the video is given up. */
   static MAX_ERRORS = 5;
 
-  constructor({ send, onFrame, mode = 'auto', now = () => performance.now(), crf, maxKbps } = {}) {
+  constructor({ send, onFrame, onFailed = null, mode = 'auto', now = () => performance.now(), crf, maxKbps } = {}) {
     this.send = send;
     this.onFrame = onFrame;
+    // Told when the video is given up (back to JPEG): the poses whose headers
+    // waited for their video frame will never be shown.
+    this.onFailed = onFailed;
     this.now = now;
     this.chooser = new TransportChooser(mode);
     this.settings = { crf, max_kbps: maxKbps };
@@ -311,6 +314,7 @@ export class RtcStereo {
     this.close();
     this.state = 'failed';
     this.send({ type: 'xr_rtc_stop' });
+    if (this.onFailed) this.onFailed(reason);
   }
 
   async start() {
@@ -369,10 +373,11 @@ export class RtcStereo {
   /**
    * A VXR1 header of a video frame (its colour "h264-webrtc"): waits for
    * the frame with its pose id. `rec`: the pose (refine-client's PoseBook).
-   * Ignored unless the link is up (a header racing the link's own state).
+   * Ignored unless the link is up (a header racing the link's own state):
+   * returns false then, and its pose will never be shown.
    */
   onHeader(parsed, rec, tRecv) {
-    if (this.state !== 'video') return;
+    if (this.state !== 'video') return false;
     const h = parsed.header;
     if (!this.firstHeaderAt) this.firstHeaderAt = tRecv;
     if (this.firstUnpairedAt === null) this.firstUnpairedAt = tRecv;
@@ -380,6 +385,7 @@ export class RtcStereo {
       depthBytes: parsed.depth ? parsed.depth.slice() : null, rec, tRecv };
     const pair = this.pairer.addHeader(entry, tRecv);
     if (pair) this._deliver(pair).catch((err) => this._error(err));
+    return true;
   }
 
   /** A frame that could not be read or shown; repeated, the video is given up. */
