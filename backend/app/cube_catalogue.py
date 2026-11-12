@@ -434,6 +434,62 @@ def frame_warnings(wcs, column: str, catalogue_specsys: str | None) -> list[str]
     return out
 
 
+#: Angle unit spellings, compared case-insensitively (FITS TUNIT 'DEG',
+#: 'RAD', 'HOURS'; IPAC 'h').
+_ANGLE_ALIASES = {"h": "hourangle", "hr": "hourangle", "hrs": "hourangle", "hour": "hourangle",
+                  "hours": "hourangle", "hms": "hourangle", "hourangle": "hourangle",
+                  "deg": "deg", "degree": "deg", "degrees": "deg", "d": "deg",
+                  "rad": "rad", "radian": "rad", "radians": "rad",
+                  "arcsec": "arcsec", "arcmin": "arcmin", "mas": "mas",
+                  # VizieR's sexagesimal columns (text: not numbers, read as NaN).
+                  "h:m:s": "hourangle", "d:m:s": "deg", "\"h:m:s\"": "hourangle",
+                  "\"d:m:s\"": "deg"}
+
+
+def parse_angle_unit(text: str):
+    """The astropy unit of a unit spelling, or None: the angle aliases (any
+    case), then astropy's own spelling, its FITS one, and lower case."""
+    import astropy.units as u   # noqa: PLC0415
+    t = str(text or "").strip()
+    if not t:
+        return None
+    alias = _ANGLE_ALIASES.get(t.lower())
+    for cand, fmt in ((alias, None), (t, None), (t, "fits"), (t.lower(), None)):
+        if not cand:
+            continue
+        try:
+            return (u.Unit(cand, format=fmt, parse_strict="raise") if fmt
+                    else u.Unit(cand, parse_strict="raise"))
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def angle_degrees(values: np.ndarray, column: str, unit: str | None) -> np.ndarray:
+    """A sky coordinate column in degrees, from the unit the table declares
+    (VOTable, FITS, IPAC: ``attrs["units"]``) or its name gives (``RA (h)``):
+    hours of angle, radians, arcseconds... are converted (any case: FITS
+    'DEG', 'RAD', 'HOURS'); no unit is degrees. RA in hours used to be read as
+    degrees, 15 times too small. A declared unit that is not an angle is
+    refused (ValueError, a 422 at the routes), with the column named; a
+    bracket in a name that is no angle unit ("dec (J2000)") leaves the column
+    in degrees."""
+    import astropy.units as u   # noqa: PLC0415
+    from_name = not unit
+    unit = unit or name_and_unit(column)[1]
+    if not unit:
+        return np.asarray(values, dtype=float)
+    q = parse_angle_unit(unit)
+    if q is None or q.physical_type != "angle":
+        if from_name:
+            return np.asarray(values, dtype=float)
+        if q is None:
+            raise ValueError(f"The sky column {column!r} is in {unit!r}, not an angle unit "
+                             "this backend reads (deg, hourangle, rad, arcsec...).")
+        raise ValueError(f"The sky column {column!r} is in {unit!r}, which is not an angle.")
+    return (np.asarray(values, dtype=float) * q).to_value(u.deg)
+
+
 def place_table(frame, coordinates: dict, cel, wcs, shape: tuple[int, int, int],
                 label_field: str | None = None, spectral_field: str | None = None,
                 spectral_unit: str | None = None, spectral_convention: str | None = None,
@@ -452,8 +508,11 @@ def place_table(frame, coordinates: dict, cel, wcs, shape: tuple[int, int, int],
     if lon_col not in frame.columns or lat_col not in frame.columns:
         raise ValueError(f"Sky columns {lon_col!r}, {lat_col!r} not found.")
     import pandas as pd   # noqa: PLC0415
-    lon = pd.to_numeric(frame[lon_col], errors="coerce").to_numpy(dtype=float)
-    lat = pd.to_numeric(frame[lat_col], errors="coerce").to_numpy(dtype=float)
+    units = (getattr(frame, "attrs", {}) or {}).get("units") or {}
+    lon = angle_degrees(pd.to_numeric(frame[lon_col], errors="coerce").to_numpy(dtype=float),
+                        lon_col, units.get(lon_col))
+    lat = angle_degrees(pd.to_numeric(frame[lat_col], errors="coerce").to_numpy(dtype=float),
+                        lat_col, units.get(lat_col))
     out = Placed(n_input=len(frame))
     x, y = sky_to_pixel(cel, lon, lat, sky_frame)
     z = np.full(len(frame), np.nan)

@@ -130,16 +130,35 @@ def _set_pdeathsig(parent_pid: int | None) -> bool:
     return True
 
 
-def _leave(name: str, grace_s: float) -> None:
-    """End this process: ``os._exit``, after asking it to stop politely first
-    when ``grace_s`` is given (its SIGTERM handler unwinds, removing partial
-    files)."""
+#: How long the exit waits for its farewell line to reach stderr.
+NOTE_WAIT_S = 0.2
+
+
+def _note_exit(name: str) -> None:
+    """Say on stderr why this process ends. May block (see :func:`_leave`)."""
     try:
         sys.stderr.write(f"[visivo] {name} (pid {os.getpid()}): the backend that started it "
                          "is gone; exiting\n")
         sys.stderr.flush()
     except Exception:  # noqa: BLE001 - stderr may be a pipe nobody reads any more
         pass
+
+
+def _leave(name: str, grace_s: float) -> None:
+    """End this process: ``os._exit``, after asking it to stop politely first
+    when ``grace_s`` is given (its SIGTERM handler unwinds, removing partial
+    files).
+
+    The farewell line goes out from a thread of its own that nobody waits on
+    for more than :data:`NOTE_WAIT_S`. stderr is often a pipe inherited from
+    the dead backend: once it is full a write blocks for ever, and so does
+    ``sys.stderr``'s lock when another thread is stuck in such a write. The
+    exit must not depend on it; ``os._exit`` ends that thread with the rest.
+    """
+    note = threading.Thread(target=_note_exit, args=(name,),
+                            name="visivo-exit-note", daemon=True)
+    note.start()
+    note.join(NOTE_WAIT_S)
     if grace_s > 0 and sys.platform != "win32":
         try:
             os.kill(os.getpid(), signal.SIGTERM)

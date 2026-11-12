@@ -5,6 +5,7 @@ records the commands it applied and renders them as the frame's bytes.
 """
 from __future__ import annotations
 
+import signal
 import subprocess
 import sys
 import time
@@ -259,7 +260,39 @@ async def test_a_bounded_close_kills_a_child_that_will_not_stop():
     elapsed = time.monotonic() - started
     assert elapsed < 1.6, elapsed
     assert not s._process.is_alive()
-    assert s._process.exitcode == -9                            # killed, not terminated
+    assert s._process.exitcode == _KILLED                       # killed, not terminated
+
+
+# What a killed child's exitcode reads: SIGKILL on POSIX. On Windows kill()
+# is terminate(), which multiprocessing reports as -SIGTERM.
+_KILLED = -signal.SIGTERM if sys.platform == "win32" else -signal.SIGKILL
+
+
+async def test_a_bounded_close_shortens_a_release_already_running():
+    """A release begun without a budget (the child-gone path, the exit hook)
+    waits 5+5+2 s. A shutdown's close arriving meanwhile must not just wait out
+    its budget beside it: it shortens the running release, which then ends the
+    child within the shutdown's budget."""
+    import asyncio
+    import threading
+    s = RenderSessionProcess("feedc0de0b", "/data/cube.fits", factory=_FAKE)
+    await s.initialize()
+    await s.apply_command({"type": "ignore_sigterm"})
+    await s.apply_command({"type": "hang"})
+    s._refusing = True                     # as the child-gone path leaves it
+    first = threading.Thread(target=s._release)
+    first.start()
+    await asyncio.sleep(0.2)
+    assert s._process.is_alive()
+    started = time.monotonic()
+    await s.close(budget_s=1.0)
+    elapsed = time.monotonic() - started
+    assert elapsed < 1.6, elapsed
+    assert not s._process.is_alive()
+    assert s._process.exitcode == _KILLED
+    first.join(2.0)
+    assert not first.is_alive()            # the first release ended with it
+    assert s._released
 
 
 async def test_the_manager_stops_every_child_within_its_budget():

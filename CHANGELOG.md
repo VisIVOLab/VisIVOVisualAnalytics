@@ -8,6 +8,52 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Backend review fixes (#192, #193, #196, #197, #198, #199).**
+  - An orphaned child's farewell line on stderr can no longer hold its exit:
+    the line is written from a thread of its own and the exit waits for it
+    at most 0.2 s (a full stderr pipe inherited from the dead backend used to
+    block the watcher for ever).
+  - A shutdown's budget now shortens a render-session release already under
+    way: the release's stage deadlines are shared, so a bounded close moves
+    them earlier and the child is terminated, then killed, within the
+    shutdown's budget instead of the 5 + 5 + 2 s of the first release.
+  - Velocity basins: a saddle rotated off the grid axes (eigenvalues -1, -1,
+    +0.02 along (1,1,1)/√3) was one basin of 8293/15625 voxels. A candidate
+    attractor is now rejected when the flow's local Jacobian has an
+    eigenvalue with a positive real part beyond 10⁻³ of its largest modulus,
+    before the axis probes.
+  - Shared selections: a publish reserves its body's bytes from a 128 MiB
+    budget before reading the body, and frees them once the body is packed
+    (even when the request was cancelled meanwhile); the selection is
+    measured from the packed bits, 1/32 of the body, which a measurement
+    that outlives its request keeps. Concurrent publishes no longer each
+    buffer up to 64 MiB. A `meta` number out of the range of a double
+    (`1e999`) is refused (422) instead of being kept as infinity and failing
+    every later read of the selection.
+  - VR page: the log's event name is scrubbed of tokens like the other
+    fields, and a page file is served as `immutable` only when its bytes,
+    read once, are the ones the requested build was hashed from (an upgrade
+    could cache new bytes under the old build's address).
+  - Stereo WebRTC: every caller of a link's close waits for the same close,
+    so the old link's encoder off always reaches the session before a
+    replacement link turns it on.
+  - Points sampled for the headset keep coordinates far from 0 apart (1e9,
+    1e9 + 1 and 1e9 + 2 were one point): positions are read as float64
+    offsets from a value of their own axis, and bounds and codes worked in
+    float64; an axis whose offsets would lose precision (overflow, a
+    reference far from the rows kept, a span under 1e-30) is read again as
+    fractions of its range. The colour column is read in float64 too (1e9 +
+    k was one colour; a colour range wider than the largest double is
+    scaled first). Rows beyond float32's range (3.4e38) are still left out,
+    as the remote point session leaves them out. Peak memory unchanged:
+    0.41 GB at 10 M rows.
+  - Catalogue RA/Dec and GLON/GLAT columns are read in the unit the table
+    declares (VOTable, FITS, IPAC, or the column name), for cube overlays and
+    point tables: RA in hours is no longer read as degrees. FITS `DEG`, `RAD`
+    and `HOURS` are accepted in any case; a unit that is not an angle is
+    refused with 422.
+  - Tests that assumed POSIX now hold on Windows too (a process sentinel in
+    the parent-watch test, the killed exit code per platform).
 - **Review fixes for #193, #196, #197 and #199.** The velocity viewer drops
   a backend divergence reply that a newer box change superseded, instead of
   showing the old box's density at the new box's placement (and does not

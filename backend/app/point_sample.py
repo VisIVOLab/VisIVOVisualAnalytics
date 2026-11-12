@@ -40,6 +40,11 @@ import numpy as np
 MAX_SAMPLE = 10_000_000
 #: Rows read at a time when a filter runs over the whole table.
 _CHUNK = 4_000_000
+#: Rows of positions read, and quantised, in float64 at a time.
+_POS_CHUNK = 1_000_000
+#: Rows of the colour column read, or scanned for its range, at a time: its
+#: float64 copy is whole, so the temporaries are kept smaller.
+_STAT_CHUNK = 262_144
 #: A positive colour column spanning more decades than this is put on a log
 #: scale when the request leaves the scale to the backend (color_log null).
 AUTO_LOG_DECADES = 3.0
@@ -118,6 +123,149 @@ def quantise(values: np.ndarray, lo: float, hi: float) -> np.ndarray:
     return q.astype(np.uint16)
 
 
+def quantise64(values: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """:func:`quantise` in float64 (positions and colours, a chunk at a time).
+    A range wider than the largest double (-1.7e308 to 1.7e308) is worked on
+    values scaled by its largest magnitude, as hi - lo would be infinite."""
+    lo, hi = float(lo), float(hi)
+    scale = 1.0
+    if hi > lo and not math.isfinite(hi - lo):
+        scale = max(abs(lo), abs(hi))
+        lo, hi = lo / scale, hi / scale
+    span = hi - lo if hi > lo else 1.0
+    q = np.array(values, dtype=np.float64)            # a copy, worked in place
+    with np.errstate(invalid="ignore", over="ignore"):
+        if scale != 1.0:
+            q /= scale
+        q -= lo
+        q *= _Q / span
+        np.rint(q, out=q)
+        np.clip(q, 0, _Q, out=q)
+    q[~np.isfinite(q)] = 0
+    return q.astype(np.uint16)
+
+
+def read_offsets(column, rows: np.ndarray,
+                 finite: np.ndarray | None = None) -> tuple[np.ndarray, float]:
+    """``column[rows]`` as float32 offsets from a reference value of the
+    column (read in float64), and that reference. ``finite`` (bool, one per
+    row), when given, is cleared where the value read is not finite or beyond
+    float32's range (3.4e38, as the remote point session and the page draw
+    in float32): judged on the float64 value, not on the offset, which may
+    overflow float32 even for values within it (see :func:`sample_points`). The reference is the first row finite here and
+    on the axes read before (``finite``), so that it is usually a row the
+    sample keeps.
+
+    Kept in float32 so that 10 M rows stay at 40 MB an axis, yet without the
+    float32 cast of the values themselves, which merged distinct points far
+    from 0: 1e9, 1e9 + 1 and 1e9 + 2 are one float32 value, so equal bounds and
+    codes [0, 0, 0]. The difference is taken in float64 a chunk at a time;
+    with the reference among (or near) the rows kept, every offset is a few
+    spans of the column at most and float32 keeps it to about 6e-8 of a span
+    per span, far below one 16-bit step (1.5e-5 of it): :func:`offsets_hold`
+    checks that. Non-finite values stay non-finite."""
+    out = np.empty(len(rows), dtype=np.float32)
+    ref = None
+    for start in range(0, len(rows), _POS_CHUNK):
+        # A read by an index array is a copy of its own: worked in place.
+        v = np.asarray(column[rows[start:start + _POS_CHUNK]], dtype=np.float64)
+        # Beyond float32's range is no position: the page and the remote
+        # point session (float32 points, a model matrix from the bounds)
+        # cannot draw it, so such a row is dropped as a non-finite one is.
+        with np.errstate(invalid="ignore"):
+            ok = np.abs(v) <= _F32_MAX
+        if finite is not None:
+            ok &= finite[start:start + _POS_CHUNK]
+        if ref is None:
+            first = int(np.argmax(ok))
+            if ok.size and ok[first]:
+                ref = float(v[first])
+        if finite is not None:
+            finite[start:start + _POS_CHUNK] = ok
+        del ok
+        with np.errstate(invalid="ignore", over="ignore"):
+            v -= ref or 0.0
+            out[start:start + _POS_CHUNK] = v
+    return out, (ref or 0.0)
+
+
+#: The largest position kept (float32's largest value).
+_F32_MAX = float(np.finfo(np.float32).max)
+#: Offsets up to this many spans from their reference keep 16 x 6e-8 of the
+#: span, under a tenth of a 16-bit step.
+_REF_SPANS = 16.0
+#: Below this span float32 offsets are subnormal or near it (resolution lost).
+_MIN_SPAN = 1e-30
+
+
+def offsets_hold(lo_off: float, hi_off: float) -> bool:
+    """Whether float32 offsets with this range kept the 16-bit precision: all
+    finite (none overflowed float32: a span beyond 3.4e38), the reference no
+    farther than ``_REF_SPANS`` spans from them (it may be a row dropped for
+    another axis's NaN, outside the rows kept), and a span that is zero or
+    above ``_MIN_SPAN``."""
+    if not (math.isfinite(lo_off) and math.isfinite(hi_off)):
+        return False
+    span = hi_off - lo_off
+    if 0.0 < span < _MIN_SPAN:
+        return False
+    return max(abs(lo_off), abs(hi_off)) <= _REF_SPANS * span or (lo_off == hi_off == 0.0)
+
+
+def read_normalised(column, rows: np.ndarray) -> tuple[np.ndarray, float, float]:
+    """``column[rows]`` (every one finite) as float32 fractions of their
+    range, 0 at the minimum and 1 at the maximum, and that range in float64.
+    Two reads: the fallback of :func:`sample_points` for an axis whose
+    offsets would not keep their precision or overflow float32. The values
+    are scaled by their largest magnitude first, so nothing overflows even
+    for a span beyond the largest double."""
+    lo, hi = math.inf, -math.inf
+    for start in range(0, len(rows), _POS_CHUNK):
+        v = np.asarray(column[rows[start:start + _POS_CHUNK]], dtype=np.float64)
+        if v.size:
+            lo, hi = min(lo, float(v.min())), max(hi, float(v.max()))
+    out = np.zeros(len(rows), dtype=np.float32)
+    if not hi > lo:
+        return out, lo, hi
+    s = max(abs(lo), abs(hi))
+    span = hi / s - lo / s
+    for start in range(0, len(rows), _POS_CHUNK):
+        v = np.asarray(column[rows[start:start + _POS_CHUNK]], dtype=np.float64)
+        v /= s
+        v -= lo / s
+        v /= span
+        np.clip(v, 0.0, 1.0, out=v)
+        out[start:start + _POS_CHUNK] = v
+    return out, lo, hi
+
+
+def _quantise_chunked(values: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """:func:`quantise64` a chunk at a time (one float64 temporary of a chunk)."""
+    out = np.empty(len(values), dtype=np.uint16)
+    for start in range(0, len(values), _STAT_CHUNK):
+        out[start:start + _STAT_CHUNK] = quantise64(values[start:start + _STAT_CHUNK], lo, hi)
+    return out
+
+
+def _colour_stats(values: np.ndarray) -> tuple[float, float, float]:
+    """(min, max) of the finite values ((0, 1) when none) and the smallest
+    positive one (inf when none), a chunk at a time (no temporary the size of
+    the column)."""
+    lo, hi, pos = math.inf, -math.inf, math.inf
+    for start in range(0, len(values), _STAT_CHUNK):
+        v = values[start:start + _STAT_CHUNK]
+        ok = np.isfinite(v)
+        if ok.any():
+            f = v[ok]
+            lo, hi = min(lo, float(f.min())), max(hi, float(f.max()))
+            p = f[f > 0]
+            if p.size:
+                pos = min(pos, float(p.min()))
+    if not (math.isfinite(lo) and math.isfinite(hi)):
+        lo, hi = 0.0, 1.0
+    return lo, hi, pos
+
+
 def dequantise(codes: np.ndarray, lo: float, hi: float) -> np.ndarray:
     """Inverse of :func:`quantise` (tests, and the page's own rule)."""
     return lo + (np.asarray(codes, dtype=np.float64) / _Q) * (hi - lo)
@@ -141,32 +289,53 @@ def sample_points(table, limit: int, axes: tuple[str, str, str] | None = None,
         rows = candidates[even_rows(len(candidates), limit)]
     else:
         rows = even_rows(table.num_rows, limit)
-    # float32 positions: 16-bit codes need no more, and 10 M rows stay at 120 MB.
+    # Positions as float32 offsets from a value of their own axis (see
+    # read_offsets): 10 M rows stay at 120 MB, and a coordinate far from 0
+    # keeps its separations. Bounds and codes are then worked in float64.
     xyz = np.empty((len(rows), 3), dtype=np.float32)
+    ref = np.zeros(3)
+    placed = np.ones(len(rows), dtype=bool)        # finite in float64 on every axis
     for i, name in enumerate(axes):
-        xyz[:, i] = np.asarray(table.columns[name][rows], dtype=np.float32)
-    placed = np.isfinite(xyz).all(axis=1)
+        xyz[:, i], ref[i] = read_offsets(table.columns[name], rows, placed)
     if not placed.all():
         rows, xyz = rows[placed], xyz[placed]
     if not len(rows):
         raise ValueError("No row has a finite position.")
+    # The bounds are ref + the float32 offsets of the extreme rows: within
+    # float32 rounding of the true minimum and maximum (6e-8 of the span when
+    # the offsets are trusted below), the scale the codes are measured on.
+    bounds = [0.0] * 6
+    lo_off, hi_off = np.zeros(3), np.zeros(3)
+    for i, name in enumerate(axes):
+        with np.errstate(invalid="ignore"):
+            lo_off[i], hi_off[i] = float(xyz[:, i].min()), float(xyz[:, i].max())
+        if offsets_hold(lo_off[i], hi_off[i]):
+            bounds[2 * i:2 * i + 2] = [float(ref[i] + lo_off[i]), float(ref[i] + hi_off[i])]
+            continue
+        # The offsets cannot be trusted (see offsets_hold): this axis is read
+        # again as fractions of its range (rare).
+        xyz[:, i], lo, hi = read_normalised(table.columns[name], rows)
+        lo_off[i], hi_off[i] = 0.0, 1.0
+        bounds[2 * i:2 * i + 2] = [lo, hi]
     order = prefix_order(len(rows))
     xyz = xyz[order]          # the columns are read in file order, then reordered
-    lo, hi = xyz.min(axis=0), xyz.max(axis=0)
-    bounds = [float(v) for pair in zip(lo, hi) for v in pair]
-    positions = np.stack([quantise(xyz[:, i], lo[i], hi[i]) for i in range(3)], axis=1)
+    positions = np.empty((len(rows), 3), dtype=np.uint16)
+    for start in range(0, len(rows), _POS_CHUNK):
+        part = xyz[start:start + _POS_CHUNK]
+        for i in range(3):
+            positions[start:start + _POS_CHUNK, i] = quantise64(part[:, i], lo_off[i], hi_off[i])
+    del xyz
     out = PointSample(positions, None, bounds, axes, int(table.num_rows),
                       table.num_rows / max(1, len(rows)), names=list(table.columns))
     if colour_field is not None:
-        # Read once, in float32, in the sample's order; no copy of the finite ones.
-        values = np.asarray(table.columns[colour_field][rows], dtype=np.float32)[order]
-        with np.errstate(invalid="ignore"):
-            any_finite = bool(np.isfinite(values).any())
-            dlo = float(np.nanmin(values)) if any_finite else 0.0
-            dhi = float(np.nanmax(values)) if any_finite else 1.0
-        if not (math.isfinite(dlo) and math.isfinite(dhi)):
-            fin = values[np.isfinite(values)]
-            dlo, dhi = (float(fin.min()), float(fin.max())) if fin.size else (0.0, 1.0)
+        # Read once, in float64 (a float32 copy merged 1e9 and 1e9 + 1 into
+        # one colour), in file order; the 16-bit codes are put in the sample's
+        # order, not the values (2 bytes a row moved instead of 8).
+        column = table.columns[colour_field]
+        values = np.empty(len(rows), dtype=np.float64)
+        for start in range(0, len(rows), _STAT_CHUNK):
+            values[start:start + _STAT_CHUNK] = column[rows[start:start + _STAT_CHUNK]]
+        dlo, dhi, smallest_positive = _colour_stats(values)
         out.data_range = (dlo, dhi)
         cmin = dlo if colour_min is None else float(colour_min)
         cmax = dhi if colour_max is None else float(colour_max)
@@ -180,19 +349,19 @@ def sample_points(table, limit: int, axes: tuple[str, str, str] | None = None,
             # As the ray-traced render does (routers/particle_render.py): a
             # log scale starts at the smallest positive value.
             if colour_min is None or cmin <= 0:
-                with np.errstate(invalid="ignore"):
-                    pos = np.where(values > 0, values, np.inf).min() if values.size else np.inf
-                cmin = float(pos) if math.isfinite(float(pos)) else 1.0
+                cmin = smallest_positive if math.isfinite(smallest_positive) else 1.0
             if not cmax > cmin:
                 cmax = cmin * 10.0
             with np.errstate(divide="ignore", invalid="ignore"):
-                np.maximum(values, np.float32(cmin), out=values)
+                np.maximum(values, cmin, out=values)
                 np.log10(values, out=values)
-            out.colour = quantise(values, math.log10(cmin), math.log10(cmax))
+            codes = _quantise_chunked(values, math.log10(cmin), math.log10(cmax))
         else:
             if not cmax > cmin:
                 cmax = cmin + 1.0
-            out.colour = quantise(values, cmin, cmax)
+            codes = _quantise_chunked(values, cmin, cmax)
+        del values
+        out.colour = codes[order]
         out.colour_field, out.colour_range, out.colour_log = colour_field, (cmin, cmax), log
     return out
 

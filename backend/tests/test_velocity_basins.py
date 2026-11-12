@@ -355,3 +355,62 @@ def test_basins_router(tmp_path):
     assert r.headers["X-Visivo-Downsample-Factors"] == "2,2,2"
     assert [float(s) for s in r.headers["X-Visivo-Spacing"].split(",")] == [2.0, 2.0, 2.0]
     assert [float(o) for o in r.headers["X-Visivo-Origin"].split(",")] == [-9.0, -9.0, -9.0]
+
+
+def _linear(matrix, n=25):
+    """v(q) = M q about the grid centre."""
+    q = np.stack(_centred(n))
+    return tuple(np.einsum("ij,jzyx->izyx", np.asarray(matrix, float), q))
+
+
+_OFF_AXIS = [np.array(u, float) / np.linalg.norm(u) for u in ((1, 1, 1), (1, 2, 0), (0, 1, 1))]
+
+
+@pytest.mark.parametrize("weak", [0.02, 0.005])
+@pytest.mark.parametrize("u", _OFF_AXIS, ids=["111", "120", "011"])
+def test_rotated_saddle_with_a_weak_unstable_axis_has_no_basin(u, weak):
+    """v = (-I + (1 + w) u u^T) q: eigenvalues -1, -1, +w along u, off the grid
+    axes. Every axis probe has a strong stable component and came back, so
+    with u = (1,1,1)/sqrt(3), w = 0.02 this saddle was one basin of 8293/15625
+    voxels; the axis-aligned one gave none. The Jacobian sees it either way, at
+    any field scale and as a repeller (direction -1 on the reversed field)."""
+    m = -np.eye(3) + (1 + weak) * np.outer(u, u)
+    for scale in (1e-3, 1.0, 1e3):
+        _, nb = compute_basins(_field_from(*(c * scale for c in _linear(m))))
+        assert nb == 0, scale
+    _, nb = compute_basins(_field_from(*(-c for c in _linear(m))), direction=-1)
+    assert nb == 0
+
+
+@pytest.mark.parametrize("u", _OFF_AXIS, ids=["111", "120", "011"])
+def test_rotated_anisotropic_sink_and_spiral_sink_stay_one_basin(u):
+    """The same rotation with a weak STABLE axis (eigenvalue -0.02), and a
+    spiral sink (complex eigenvalues with negative real part), are still sinks."""
+    weak_sink = -np.eye(3) + 0.98 * np.outer(u, u)
+    # Contraction plus rotation about u: eigenvalues -1 +- 0.3i, -1.
+    k = np.array([[0, -u[2], u[1]], [u[2], 0, -u[0]], [-u[1], u[0], 0]])
+    spiral = -np.eye(3) + 0.3 * k
+    for m in (weak_sink, spiral):
+        lab, nb = compute_basins(_field_from(*_linear(m)))
+        assert nb == 1
+        assert (lab > 0).mean() > 0.9
+
+
+def test_flow_jacobian_is_the_linear_map():
+    from scipy.ndimage import map_coordinates
+
+    from app.velocity_basins import flow_jacobian
+    rng = np.random.default_rng(3)
+    m = rng.normal(size=(3, 3))
+    f = _field_from(*_linear(m, 9))
+    vx, vy, vz = (np.asarray(a, float) for a in (f.vx, f.vy, f.vz))
+
+    def flow(p):
+        coords = np.vstack([p[:, 2], p[:, 1], p[:, 0]])
+        return np.stack([map_coordinates(a, coords, order=1) for a in (vx, vy, vz)], axis=1)
+
+    np.testing.assert_allclose(flow_jacobian(np.array([4.0, 4.0, 4.0]), flow, (9, 9, 9)),
+                               m, atol=1e-5)
+    # At the grid's edge the difference is one-sided, still exact for a linear map.
+    np.testing.assert_allclose(flow_jacobian(np.array([0.0, 8.0, 4.0]), flow, (9, 9, 9)),
+                               m, atol=1e-5)
