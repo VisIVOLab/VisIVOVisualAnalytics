@@ -120,7 +120,17 @@ def _install_nvenc_encoder() -> bool:
                 logger.warning("[webrtc] could not raise %s: %s",
                                const_name, e)
 
-    original_create = h264_mod.create_encoder_context
+    original_create = getattr(h264_mod, "create_encoder_context", None)
+    if original_create is None:
+        # aiortc 1.10 and later build their libx264 context inside
+        # H264Encoder, with no factory to replace: the stream is encoded by
+        # aiortc's own software encoder (the cluster image pins aiortc < 1.10
+        # for NVENC). WebRTC still works, as it does on a machine without
+        # NVENC.
+        _NVENC_INSTALLED = True
+        logger.info("[webrtc] aiortc %s has no encoder factory to patch; "
+                    "H.264 is encoded in software.", getattr(__import__("aiortc"), "__version__", "?"))
+        return True
 
     class _NvencCodecProxy:
         """Forwards every codec attribute except ``bit_rate``, which is

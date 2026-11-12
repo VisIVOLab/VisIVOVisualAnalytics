@@ -141,6 +141,21 @@ backend, each in a process of its own.
 | `VISIVO_POINT_RENDER_MAX_POINTS` | `100000000` | Points a remote point or catalogue view draws at most; a larger table is drawn from an even sample of its rows. |
 | `VISIVO_POINT_RENDER_LOD_POINTS` | `1000000` | Points a remote point or catalogue view draws while it is being dragged. |
 
+## VR headset pairing
+
+A headset's page can reach this backend through a pairing code instead of a
+direct HTTP address ([Headset pairing by code](backend-api/vr-pair.md)). The
+pairing service is configured with its own `VR_PAIR_*` variables
+(`services/vr-pair/README.md`).
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_VR_PAIR_URL` | unset (off) | The pairing service, `wss://…`. The backend connects out to its `/v1/host` when a code is first asked for, and reconnects with backoff. Read once: a change takes effect when the backend restarts. |
+| `VISIVO_VR_PAGE_URL` | unset | The public loader page; the desktop is given it with `#pair=<code>`. |
+
+Pairing needs `aiortc` and PyAV (`backend/requirements-webrtc.txt`, part of
+the release bundles); without them the routes answer 409 `not-configured`.
+
 ## SRC node
 
 Settings for a backend that runs as a node of the SKA Regional Centre network

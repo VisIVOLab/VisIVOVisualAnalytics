@@ -218,6 +218,10 @@ jobs:
           # than a silent source build that works on the runner and not on the
           # user's machine.
           "$PY" -m pip install --only-binary=:all: -r backend/requirements.txt
+          # WebRTC (headset pairing #212, stereo video #189): wheels exist for
+          # every platform built here. Kept apart from requirements.txt, which
+          # the cluster images install (no PyAV wheel on ppc64le).
+          "$PY" -m pip install --only-binary=:all: -r backend/requirements-webrtc.txt
           # Trim what no end user needs. pip stays: the copilot's optional SDKs
           # and a user's own extras are installed into this same tree.
           find pyruntime -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
@@ -225,7 +229,7 @@ jobs:
           rm -rf pyruntime/python/lib/python*/test pyruntime/python/lib/python*/idlelib \
                  pyruntime/python/lib/python*/tkinter pyruntime/python/lib/python*/turtledemo \
                  2>/dev/null || true
-          "$PY" -B -c "import fastapi, uvicorn, numpy, astropy, vtk, scipy, pandas; print('runtime imports OK')"
+          "$PY" -B -c "import fastapi, uvicorn, numpy, astropy, vtk, scipy, pandas, aiortc, av, websockets; print('runtime imports OK')"
           du -sh pyruntime || true
 
       - name: Install system deps (Linux)
@@ -529,7 +533,7 @@ jobs:
           BACKEND_DEST="dist/VisIVOVisualAnalytics.app/Contents/Resources/backend"
           mkdir -p "$BACKEND_DEST"
           cp -R backend/app "$BACKEND_DEST/"
-          cp backend/__init__.py backend/requirements.txt "$BACKEND_DEST/"
+          cp backend/__init__.py backend/requirements.txt backend/requirements-webrtc.txt "$BACKEND_DEST/"
           [ -f backend/pytest.ini ] && cp backend/pytest.ini "$BACKEND_DEST/" || true
           find "$BACKEND_DEST" -name __pycache__ -type d -prune -exec rm -rf {} +
 
@@ -640,7 +644,7 @@ jobs:
           BACKEND_DEST="$BIN/backend"
           mkdir -p "$BACKEND_DEST"
           cp -R backend/app "$BACKEND_DEST/"
-          cp backend/__init__.py backend/requirements.txt "$BACKEND_DEST/"
+          cp backend/__init__.py backend/requirements.txt backend/requirements-webrtc.txt "$BACKEND_DEST/"
           [ -f backend/pytest.ini ] && cp backend/pytest.ini "$BACKEND_DEST/" || true
           find "$BACKEND_DEST" -name __pycache__ -type d -prune -exec rm -rf {} +
 
@@ -701,7 +705,7 @@ jobs:
           BACKEND_DEST="$APPDIR/usr/bin/backend"
           mkdir -p "$BACKEND_DEST"
           cp -R backend/app "$BACKEND_DEST/"
-          cp backend/__init__.py backend/requirements.txt "$BACKEND_DEST/"
+          cp backend/__init__.py backend/requirements.txt backend/requirements-webrtc.txt "$BACKEND_DEST/"
           [ -f backend/pytest.ini ] && cp backend/pytest.ini "$BACKEND_DEST/" || true
           find "$BACKEND_DEST" -name __pycache__ -type d -prune -exec rm -rf {} +
 
