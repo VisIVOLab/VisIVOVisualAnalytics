@@ -100,6 +100,7 @@ SettingsDialog::SettingsDialog(Settings *settings, AuthWrapper *auth, QWidget *p
     // re-applies it to the backend on Settings::updated). Both this and the
     // remote-backends widget are placed by buildTabs() below.
     QWidget *copilotSection = this->buildCopilotSection();
+    QWidget *vrPairingSection = this->buildVrPairingSection();
 
     // Restore defaults
     QObject::connect(ui->buttonBox, &QDialogButtonBox::clicked, this,
@@ -124,13 +125,13 @@ SettingsDialog::SettingsDialog(Settings *settings, AuthWrapper *auth, QWidget *p
     // keeps its own scroll area, so a tab that still overflows (a long list of
     // remote backends) stays reachable, and the button box is pinned outside
     // them all.
-    this->buildTabs(copilotSection);
+    this->buildTabs(copilotSection, vrPairingSection);
 }
 
 // Move the sections built by the .ui file (plus the two built in code) into a
 // QTabWidget. The widgets are reparented, never recreated, so every pointer the
 // rest of this class holds — ui->lineVLKBUrl, m_copilotKey, … — stays valid.
-void SettingsDialog::buildTabs(QWidget *copilotSection)
+void SettingsDialog::buildTabs(QWidget *copilotSection, QWidget *vrPairingSection)
 {
     auto *outer = qobject_cast<QVBoxLayout *>(this->layout());
     if (!outer)
@@ -174,7 +175,7 @@ void SettingsDialog::buildTabs(QWidget *copilotSection)
     QWidget *first = addTab(tr("General"), { ui->groupUI, ui->groupPython,
                                              ui->groupVisualization });
     addTab(tr("Data Access"), { ui->groupVLKB, ui->groupPanoramicView });
-    addTab(tr("Backends"), { ui->groupBackend, this->backendsWidget });
+    addTab(tr("Backends"), { ui->groupBackend, this->backendsWidget, vrPairingSection });
     addTab(tr("Copilot"), { copilotSection });
 
     // Anything the .ui grew that no tab claimed (and the spacer it ends with).
@@ -240,6 +241,10 @@ void SettingsDialog::accept()
         this->settings->setCopilotKey(this->m_copilotKey->text());
         this->settings->setCopilotUrl(this->m_copilotUrl->text().trimmed());
         this->settings->setCopilotModel(this->m_copilotModel->text().trimmed());
+    }
+    if (this->m_vrPairUrl) {
+        this->settings->setVrPairUrl(this->m_vrPairUrl->text());
+        this->settings->setVrPageUrl(this->m_vrPageUrl->text());
     }
     QDialog::accept();   // emits accepted → Settings::updated (the Copilot panel re-applies)
 }
@@ -341,6 +346,32 @@ QWidget *SettingsDialog::buildCopilotSection()
     m_copilotUrl->setText(this->settings->getCopilotUrl());
     m_copilotModel->setText(this->settings->getCopilotModel());
     refresh();
+    return group;
+}
+
+QWidget *SettingsDialog::buildVrPairingSection()
+{
+    auto *group = new QGroupBox(tr("Headset Pairing"), this);
+    auto *form = new QFormLayout(group);
+    // No built-in addresses: the server that hosts the pairing service is the
+    // operator's choice, and moving it is changing these two fields.
+    m_vrPairUrl = new QLineEdit(group);
+    m_vrPairUrl->setPlaceholderText(u"wss://pairing-server/"_s);
+    m_vrPageUrl = new QLineEdit(group);
+    m_vrPageUrl->setPlaceholderText(u"https://pairing-server/vr/"_s);
+    form->addRow(tr("Pairing service"), m_vrPairUrl);
+    form->addRow(tr("Headset page"), m_vrPageUrl);
+    auto *note = new QLabel(
+            tr("Used by Open in VR Headset to pair a headset by code. Passed to the backend "
+               "this desktop starts, at its next start; VISIVO_VR_PAIR_URL and "
+               "VISIVO_VR_PAGE_URL in the environment take precedence. Empty: pairing is off "
+               "and the headset connects through a USB cable. A remote backend uses its own "
+               "configuration."),
+            group);
+    note->setWordWrap(true);
+    form->addRow(note);
+    m_vrPairUrl->setText(this->settings->getVrPairUrl());
+    m_vrPageUrl->setText(this->settings->getVrPageUrl());
     return group;
 }
 

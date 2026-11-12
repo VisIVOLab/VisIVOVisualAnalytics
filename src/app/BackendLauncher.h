@@ -81,6 +81,18 @@ public:
      */
     void setRemoteBackendName(const QString &name) { m_remoteName = name; }
 
+    /**
+     * The headset pairing service and public page a backend started here is
+     * given (Settings ▸ Backends ▸ Headset pairing, issue #214), as
+     * VISIVO_VR_PAIR_URL / VISIVO_VR_PAGE_URL unless the environment already
+     * sets them. Call before startAsync(); empty passes nothing.
+     */
+    void setVrPairing(const QString &serviceUrl, const QString &pageUrl)
+    {
+        m_vrPairUrl = serviceUrl;
+        m_vrPageUrl = pageUrl;
+    }
+
     /** stdout + stderr captured from the backend process (usable after any state). */
     QString capturedLogs() const;
 
@@ -128,6 +140,8 @@ private:
     QString m_backendToken;
     QString m_pythonExe;
     bool m_noAutostart{ false };
+    QString m_vrPairUrl;    ///< setVrPairing
+    QString m_vrPageUrl;
     QString m_remoteName;   ///< non-empty: a remote backend chosen for this run
     bool m_cancelled{ false };
     bool m_ready{ false };

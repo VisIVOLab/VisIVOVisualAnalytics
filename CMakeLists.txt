@@ -523,6 +523,8 @@ set(PROJECT_SOURCES
         src/gui/VrHeadsetDialog.cpp
         src/gui/VrHeadsetDialog.h
         src/app/VrLink.h
+        src/app/VrPair.h
+        src/app/VrPairQr.h
         src/app/VrBackendCheck.h
         src/app/AdbHeadset.h
         src/gui/Catalogue3DTableModel.cpp
@@ -803,6 +805,8 @@ add_subdirectory(src/libwcs)
 
 add_subdirectory(src/qcustomplot)
 
+add_subdirectory(src/thirdparty/qrcodegen)
+
 add_subdirectory(src/core)
 
 add_subdirectory(src/vtk)
@@ -910,6 +914,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         visivo_shared_vtk
         ${qt_modules}
         QCustomPlot
+        qrcodegen
 )
 
 # The VLKB sign-in survives a restart through the platform's secure store

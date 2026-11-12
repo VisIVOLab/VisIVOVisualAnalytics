@@ -3684,12 +3684,16 @@ static bool _isDiagnosticsQuietPath(const QString &path)
     // in the qWarning stream on failure; they just stop narrating success.
     return path.startsWith(QStringLiteral("/v1/diagnostics/"))
         || path == QStringLiteral("/v1/health")
-        || path == QStringLiteral("/v1/exports/list");
+        || path == QStringLiteral("/v1/exports/list")
+        // The headset pairing dialog polls it every few seconds.
+        || path.endsWith(QStringLiteral("/v1/vr/pair"));
 }
 
 QByteArray BackendClient::performGet(const QUrl &url, QString &error,
-                                     const std::atomic_bool *abort) const
+                                     const std::atomic_bool *abort, int *statusOut) const
 {
+    if (statusOut)
+        *statusOut = 0;
     // Counted while it runs (RAII), so the status bar can say "N running" for a
     // synchronous compute — and announced when it STARTS, not only when it ends:
     // the log used to be silent for the whole of a multi-minute job (user report).
@@ -3803,6 +3807,8 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error,
 
         const QByteArray data = reply->readAll();
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (statusOut)
+            *statusOut = status;   // 0 = transport failure
         if (attemptError.isEmpty() && reply->error() != QNetworkReply::NoError) {
             attemptError = reply->errorString();
         } else if (attemptError.isEmpty() && status >= 400) {

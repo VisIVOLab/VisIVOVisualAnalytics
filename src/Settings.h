@@ -303,6 +303,16 @@ public:
     QString getCopilotModel() const;
     void setCopilotModel(const QString &model);
 
+    // ── Headset pairing (issue #214) ──────────────────────────────────────────
+    // The pairing service (wss://…) and the public loader page (https://…) a
+    // backend this desktop starts is given, as VISIVO_VR_PAIR_URL and
+    // VISIVO_VR_PAGE_URL (VrPair::applyServiceSettings; the environment wins).
+    // Empty by default: no host is built in. Read at the backend's start.
+    QString getVrPairUrl() const;
+    void setVrPairUrl(const QString &url);
+    QString getVrPageUrl() const;
+    void setVrPageUrl(const QString &url);
+
     // ── Multi-backend registry (distributed VisIVO backend) ──────────────────
     //
     // See docs/distributed-backend-design.md. The desktop holds a list of
@@ -391,6 +401,10 @@ private:
     static const std::pair<QString, QVariant> CopilotKey;
     static const std::pair<QString, QVariant> CopilotUrl;
     static const std::pair<QString, QVariant> CopilotModel;
+
+    // Headset pairing
+    static const std::pair<QString, QVariant> VrPairUrl;
+    static const std::pair<QString, QVariant> VrPageUrl;
 
     // Multi-backend registry (Backends/nodes is a JSON array of objects,
     // Backends/default is the chosen default backend id).

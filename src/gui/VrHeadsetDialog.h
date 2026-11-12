@@ -1,7 +1,9 @@
 #pragma once
 
 #include "app/AdbHeadset.h"
+#include "app/BackendClient.h"
 #include "app/VrLink.h"
+#include "app/VrPair.h"
 
 #include <QDialog>
 #include <QElapsedTimer>
@@ -18,11 +20,26 @@ class QCloseEvent;
 class QHideEvent;
 class QShowEvent;
 class QTimer;
+class QToolButton;
+class QWidget;
 
 /**
- * Tools ▸ Views ▸ Open in VR Headset… (issue #172).
+ * Tools ▸ Views ▸ Open in VR Headset… (issues #172, #214).
  *
- * Opens the backend's WebXR page (/vr/) on a Meta Quest attached to this
+ * By default it pairs the headset by code (issue #214): the backend asks its
+ * pairing service for a short code (POST /v1/vr/pair), shown here large with
+ * its countdown and a QR code of the public page that carries it. The user
+ * types the code on the headset, and the backend connects to the headset
+ * itself, with no cable and no address to type. The dialog polls
+ * GET /v1/vr/pair for the state (waiting, connected, expired) and offers
+ * Disconnect and New Code. The token never leaves the backend; the code is
+ * not logged. Closing the dialog revokes a code nobody used.
+ *
+ * Under "Advanced (USB cable)" is the adb way below, opened by itself (with
+ * the reason) when the backend has no pairing service or cannot reach it.
+ * adb is only run once that section is open.
+ *
+ * The USB way opens the backend's WebXR page (/vr/) on a Meta Quest attached to this
  * computer with adb, over USB or adb over Wi-Fi, carrying the desktop's token,
  * backend session, dataset id and cube path in the link's fragment, so the
  * headset continues on the same cube in the same session.
@@ -96,10 +113,49 @@ private:
     /// #187), so an old cluster overlay shows here, not as a 404 in the headset.
     void checkBackend();
     void setResult(const QString &text, bool error);
+    // ── Pairing by code (issue #214) ──────────────────────────────────────
+    /// Ask for a code; a previous one still pending is revoked first.
+    void newCode();
+    void pollPairing();
+    void disconnectHeadsets();
+    /// DELETE /v1/vr/pair/{code_or_id} for each of @p ids, off the GUI
+    /// thread; @p then (may be empty) runs on the GUI thread after.
+    void revoke(const QStringList &ids, std::function<void()> then = {});
+    /// Run @p work on a copy of the pairing client off the GUI thread; @p done
+    /// gets its answer unless the dialog is gone or a newer code was asked for.
+    void runPairRequest(std::function<BackendVrPairReply(const BackendClient &)> work,
+                        std::function<void(const BackendVrPairReply &)> done);
+    /// Everything on the pairing panel, from m_pair.
+    void showPairing();
+    void showQr(const QString &payload);
+    /// Open or close the USB section; the first opening starts adb.
+    void setAdvancedOpen(bool open, const QString &reason = QString());
+    void startUsb();
     /// What to tell the user when adb itself did not run to the end.
     static QString adbFailure(Outcome outcome);
     QString redacted(const QString &text) const;
     QString selectedSerial() const;
+
+    // Pairing by code
+    VrLink::Inputs m_inputs;          ///< for the POST body (the token is not sent in it)
+    BackendClient m_pairClient;       ///< template: each request runs on its own copy
+    VrPair::Tracker m_pair;
+    int m_pairSerial{ 0 };            ///< bumped by New Code: older answers are dropped
+    bool m_pollInFlight{ false };
+    qint64 m_lastPollMs{ 0 };
+    QTimer *m_pairTimer{ nullptr };   ///< the countdown, and the poll every few seconds
+    QWidget *m_pairPanel{ nullptr };
+    QLabel *m_codeLabel{ nullptr };
+    QLabel *m_qrLabel{ nullptr };
+    QLabel *m_pairHint{ nullptr };
+    QLabel *m_pairStatus{ nullptr };
+    QPushButton *m_newCodeButton{ nullptr };
+    QPushButton *m_disconnectButton{ nullptr };
+    QString m_qrPayload;              ///< what the QR shows now ('' none)
+    QToolButton *m_advancedToggle{ nullptr };
+    QWidget *m_advancedPanel{ nullptr };
+    QLabel *m_advancedReason{ nullptr };
+    bool m_usbStarted{ false };
 
     VrLink::Link m_link;
     QStringList m_secrets;   ///< token and session id: redacted from all output

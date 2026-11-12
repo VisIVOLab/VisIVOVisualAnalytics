@@ -8,6 +8,20 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Open in VR Headset pairs by code (#214, part of #210).** The dialog now
+  opens on a pairing code: a large code with its countdown, a QR code of the
+  public headset page that carries it, and the live state polled from the
+  backend (waiting, *Headset connected* with *Disconnect*, expired with *New
+  Code*). It uses the backend's new `/v1/vr/pair` routes; the token never
+  leaves the backend, the code is not logged, and closing the dialog revokes
+  an unused code. The adb flow moves under *Advanced (USB cable)*, opened by
+  itself with the reason when the backend answers 409 `not-configured` or
+  `unreachable`, or has no pairing route. The pairing service and page a
+  locally started backend gets (`VISIVO_VR_PAIR_URL`, `VISIVO_VR_PAGE_URL`)
+  are set in Settings ▸ Backends ▸ Headset Pairing, empty by default; the
+  environment takes precedence. The QR code is drawn with Project Nayuki's QR
+  Code generator (MIT), vendored in `src/thirdparty/qrcodegen`.
+
 - **Remote point rendering keeps points far from zero apart (#206, part of
   #166).** The backend's point render session drew float32 positions, so
   1e9, 1e9 + 1 and 1e9 + 2 merged into one point in remote and remote stereo
