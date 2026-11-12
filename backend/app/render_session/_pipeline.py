@@ -116,7 +116,7 @@ class PipelineMixin:
         newer than the server.
         """
         ctype = command.get("type", "")
-        if ctype in ("xr_pose", "xr_stop"):
+        if ctype in ("xr_pose", "xr_stop") or ctype.startswith("xr_video"):
             # The headset's stereo mode (_stereo.py, issue #169).
             self._apply_xr_command_on_thread(command)
             return

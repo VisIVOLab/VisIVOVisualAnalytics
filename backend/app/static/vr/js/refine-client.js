@@ -7,9 +7,11 @@
 import * as M from './mat4.js';
 import * as F from './refine.js';
 import { RefineDraw } from './refine-gl.js';
+import { RtcStereo } from './refine-webrtc.js';
 import { apiUrl, wsUrl } from './base-path.js';
 import { showLimits, reprojectionHud, frameReprojection } from './depth-mode.js';
 import { LinkPolicy } from './link-policy.js';
+
 
 export const REFINE_DEFAULTS = {
   scale: 1,            // remote eye size / the eye buffer (XR) or canvas (desktop)
@@ -18,8 +20,10 @@ export const REFINE_DEFAULTS = {
   sampleDistance: 0.5, // voxels
   maxOutstanding: 2,
   maxEyePx: 2560,
+  transport: 'auto',   // 'auto' | 'webrtc' | 'jpeg': the colour as H.264 video (issue #189)
   adaptLink: true,     // the window (and, if `link` asks, the eye size) from the measured round trip
   link: {},            // LinkPolicy options (link-policy.js LINK_DEFAULTS)
+
 };
 
 export class Refiner {
@@ -32,6 +36,8 @@ export class Refiner {
     const { draw: _draw, ...settings } = opts;
     this.o = { ...REFINE_DEFAULTS, ...settings };
     this.draw = opts.draw || new RefineDraw(gl);   // opts.draw: a stand-in, for tests without GL
+    this.rtc = new RtcStereo({ send: (c) => this._send(c), onFrame: (f) => this._onVideoFrame(f),
+      mode: this.o.transport });
     this.motion = new F.MotionDetector();
     this.book = new F.PoseBook();
     this.enabled = false;
@@ -226,6 +232,8 @@ export class Refiner {
         this.failures = 0;
         this.status = 'waiting';
         ws.send(JSON.stringify({ type: 'stream', window: this._window(), max_fps: 72 }));
+        this.rtc.connected();
+
         this.sentKey = null;
         this.lastSentA = null;
         clearInterval(this._keepalive);
@@ -238,6 +246,7 @@ export class Refiner {
         clearInterval(this._keepalive);
         this.streaming = false;
         this.book.clear();
+        if (this.ws === null) this.rtc.close();
         if (e.code === 1013) this.error = 'the render session is in use by another client';
         // A handshake refused: the session is gone (idle timeout) or not ours.
         if (!opened && gen === this.gen) this.sessionId = null;
@@ -285,6 +294,7 @@ export class Refiner {
     this.sessionId = null;
     this.streaming = false;
     this.book.clear();
+    this.rtc.close();
     this.draw.forget();
     this.weight = 0;
     // A new session is measured afresh (it may be another backend's).
@@ -329,6 +339,7 @@ export class Refiner {
       let m;
       try { m = JSON.parse(data); } catch { return; }
       if (m.stream === 'on') { this.streaming = true; return; }
+      if (typeof m.type === 'string' && m.type.startsWith('xr_rtc_')) { this.rtc.onMessage(m); return; }
       if (m.type === 'xr_error') {
         if (Number.isInteger(m.pose_id)) this.book.take(m.pose_id);
         this.error = m.error || 'stereo frame refused';
@@ -356,8 +367,7 @@ export class Refiner {
     const rec = this.book.take(h.pose_id);
     this.stats.received++;
     if (!this._sameRequest(rec)) { this.stats.dropped++; return; }
-    this.stats.arrivals.push(tRecv);
-    this.stats.network.push(tRecv - rec.tSent);
+
     this.stats.lastServer = h.timing_ms || null;
     if (this.o.adaptLink) {
       this.link.push(tRecv - rec.tSent, h.timing_ms);
@@ -365,8 +375,30 @@ export class Refiner {
       if (this.linkState.changed) this._send({ type: 'stream', window: this._window(), max_fps: 72 });
     }
     this.stats.lastKB = (parsed.color.byteLength + (parsed.depth ? parsed.depth.byteLength : 0)) / 1024;
+    if (h.color && h.color.format === 'h264-webrtc') {
+      // The colour comes as video (refine-webrtc.js): this header and its
+      // depth wait there for the frame of their pose id.
+      this.rtc.onHeader(parsed, rec, tRecv);
+      return;
+    }
+    this.stats.arrivals.push(tRecv);
+    this.stats.network.push(tRecv - rec.tSent);
+    // Network time of a JPEG frame (what it took beside the backend's own
+    // work): it decides whether the video is worth it.
+    this.rtc.observeJpeg(tRecv - rec.tSent - ((h.timing_ms && h.timing_ms.total) || 0));
     this.decoding++;
     this._decode(parsed, rec, tRecv).catch((err) => { this.error = `decode: ${err.message || err}`; })
+      .finally(() => { this.decoding--; });
+  }
+
+  /** A frame of the video, paired with its header (refine-webrtc.js). */
+  _onVideoFrame({ bitmap, vScale, header, depthBytes, rec, tRecv }) {
+    const tVideo = performance.now();
+    this.stats.arrivals.push(tVideo);
+    this.stats.network.push(tVideo - rec.tSent);
+    this.decoding++;
+    this._decode({ header, color: null, depth: depthBytes }, rec, tRecv, bitmap, vScale)
+      .catch((err) => { this.error = `decode: ${err.message || err}`; })
       .finally(() => { this.decoding--; });
   }
 
@@ -376,11 +408,14 @@ export class Refiner {
       && rec.datasetId === this.datasetId && rec.sessionId === this.sessionId;
   }
 
-  async _decode(parsed, rec, tRecv) {
+  /** The frame's JPEG (or its video frame, `bitmap`, whose top `vScale` is
+   *  the eyes) and its depth decoded, then shown. */
+  async _decode(parsed, rec, tRecv, bitmap0 = null, vScale = 1) {
+
     const h = parsed.header;
-    const blob = new Blob([parsed.color], { type: 'image/jpeg' });
     const [bm, dp] = await Promise.allSettled([
-      createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' }),
+      bitmap0 || createImageBitmap(new Blob([parsed.color], { type: 'image/jpeg' }),
+        { premultiplyAlpha: 'none', colorSpaceConversion: 'none' }),
       parsed.depth && h.depth
         ? F.inflate(parsed.depth).then((raw) => F.decodeDepth(raw, h.depth.width, h.depth.height, h.depth.z_near, h.depth.z_far))
         : Promise.resolve(null),
@@ -396,7 +431,7 @@ export class Refiner {
     if (rec.id < this.newestDecoded || !this._sameRequest(rec)) { bitmap.close(); this.stats.dropped++; return; }
     this.newestDecoded = rec.id;
     if (this.incoming && this.incoming.bitmap) this.incoming.bitmap.close();
-    this.incoming = { bitmap, depth, header: h, rec, tRecv, tDone };
+    this.incoming = { bitmap, depth, header: h, rec, tRecv, tDone, vScale };
     this.stats.decode.push(tDone - tRecv);
     this.stats.latency.push(tDone - rec.tSent);
   }
@@ -429,6 +464,7 @@ export class Refiner {
       if (this.incoming) { if (this.incoming.bitmap) this.incoming.bitmap.close(); this.incoming = null; }
     }
     const active = this.enabled && this.ws && this.streaming && !this.unavailable;
+    if (active) this.rtc.tick(t);
     if (active && this.sentKey !== this.key && t - this.keySentAt > 100) {
       // At most ten looks a second while a slider moves; the last always goes.
       // A clipping box the backend would refuse is not sent: no pose either
@@ -531,7 +567,8 @@ export class Refiner {
   requestOnce(ctx, extra = {}, size = null, timeoutMs = 20000) {
     return new Promise((resolve, reject) => {
       if (!(this.ws && this.streaming) || this.sentKey !== this.key) { reject(new Error('not connected, or the look not sent yet')); return; }
-      const id = this._sendPose(ctx, performance.now(), extra, size);
+      // As a JPEG even while the colour goes as video: handed over whole.
+      const id = this._sendPose(ctx, performance.now(), { frame_color: 'jpeg', ...extra }, size);
       this.lastSentA = null;
       this.waiters.set(id, resolve);
       setTimeout(() => { if (this.waiters.delete(id)) reject(new Error('no frame')); }, timeoutMs);
@@ -568,8 +605,11 @@ export class Refiner {
     ];
     const srv = s.lastServer;
     if (srv) lines.push(`  server ${f0(srv.render)} ms render  ${f0(srv.total)} total  ${s.lastKB.toFixed(0)} KB  upload ${s.upload.quantile(0.5).toFixed(1)} ms`);
+    const via = this.rtc.hudLine();
+    if (via) lines.push(via);
     if (this.o.adaptLink) lines.push(this.link.hudLine(this.linkState));
     if (shown) lines.push(...reprojectionHud(shown.header));
+
     if (this.error && this.status !== 'refined') lines.push(`  ${this.error}`.slice(0, 60));
     return lines;
   }
@@ -583,9 +623,10 @@ export class Refiner {
       remoteFps: s.arrivals.rate(t), latency: q(s.latency), network: q(s.network), decode: q(s.decode),
       upload: q(s.upload), stopFirst: q(s.stopFirst), stopFull: q(s.stopFull),
       lastServer: s.lastServer, lastKB: s.lastKB, sent: s.sent, received: s.received, dropped: s.dropped,
-      skipped: this.book.skipped, error: this.error,
+      skipped: this.book.skipped, error: this.error, transport: this.rtc.summary(),
       reprojection: this.draw.shown ? frameReprojection(this.draw.shown.header) : null,
       link: { ...this.linkState, maxEyePx: Number.isFinite(this.linkState.maxEyePx) ? this.linkState.maxEyePx : null },
+
     };
   }
 }

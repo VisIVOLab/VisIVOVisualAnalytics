@@ -103,6 +103,9 @@ class XRPose:
     background: tuple[float, float, float]
     t_received: float | None   # stamped by the backend when the pose arrived
     sample_distance: float = DEFAULT_SAMPLE_DISTANCE   # voxels between ray samples
+    # "jpeg", or "h264": the eyes encoded for the connection's WebRTC video
+    # (issue #189, _stereo_webrtc.py); set by the backend while its link is up.
+    frame_color: str = "jpeg"
 
 
 def _matrix(value: Any, name: str) -> np.ndarray:
@@ -248,8 +251,12 @@ def parse_pose(command: dict) -> XRPose:
     if not MIN_SAMPLE_DISTANCE <= step <= MAX_SAMPLE_DISTANCE:
         raise ValueError(f"sample_distance must be in {MIN_SAMPLE_DISTANCE:g}.."
                          f"{MAX_SAMPLE_DISTANCE:g} voxels.")
+    frame_color = command.get("frame_color", "jpeg")
+    if frame_color not in ("jpeg", "h264"):
+        raise ValueError("frame_color must be 'jpeg' or 'h264'.")
     return XRPose(pose_id, t_client, model, z_stretch, [eyes["left"], eyes["right"]],
-                  width, height, depth_scale, quality, background, t_received, step)
+                  width, height, depth_scale, quality, background, t_received, step,
+                  frame_color)
 
 
 # ── Geometry ─────────────────────────────────────────────────────────────────
@@ -632,6 +639,9 @@ class StereoMixin:
             self._xr_pose = None
             self._xr_error = None
             self._set_render_to_image(False)
+        elif command.get("type", "").startswith("xr_video"):
+            from ._stereo_webrtc import apply_video_command
+            apply_video_command(self, command)
 
     def _xr_active(self) -> bool:
         return self._xr_pose is not None or self._xr_error is not None
@@ -695,18 +705,32 @@ class StereoMixin:
         rgba = np.concatenate([c for c, _, _ in eyes], axis=1)
         if from_mapper:
             rgba = over_background(rgba, pose.background)
-        img = Image.frombuffer("RGBX", (2 * w, h), rgba, "raw", "RGBX", 0, -1)
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=pose.quality or self.view.jpeg_quality,
-                 optimize=False, progressive=False)
-        jpeg = buf.getvalue()
+        video = video_error = None
+        if pose.frame_color == "h264":
+            # The connection's WebRTC video (_stereo_webrtc.py): encoded here,
+            # the pose id drawn under the eyes; None: a JPEG after all (and,
+            # when the encoder failed, why: the backend tells the page).
+            from ._stereo_webrtc import encode_eyes, take_video_error
+            video = encode_eyes(self, rgba, pose.pose_id)
+            video_error = take_video_error(self) if video is None else None
+        if video is not None:
+            jpeg, color_extra = video
+            color_format = "h264"
+        else:
+            color_extra = {}
+            img = Image.frombuffer("RGBX", (2 * w, h), rgba, "raw", "RGBX", 0, -1)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=pose.quality or self.view.jpeg_quality,
+                     optimize=False, progressive=False)
+            jpeg = buf.getvalue()
+            color_format = "jpeg"
         t_encode = time.time()
 
         header = dict(base)
         header.update({
             "eyes": [{"eye": "left", "x": 0, "y": 0, "width": w, "height": h},
                      {"eye": "right", "x": w, "y": 0, "width": w, "height": h}],
-            "color": {"format": "jpeg", "width": 2 * w, "height": h},
+            "color": {"format": color_format, "width": 2 * w, "height": h, **color_extra},
             "depth": depth_info,
             # How the page may warp this frame to a later pose (issue #187):
             # through its depth, or by the pose alone; without depth, why.
@@ -716,6 +740,8 @@ class StereoMixin:
                        "render_end": t_render, "depth_end": t_depth, "encode_end": t_encode},
             "eye_ms": per_eye,
         })
+        if video_error:
+            header["video_error"] = video_error   # taken off by the backend
         self.stats.frames_rendered += 1
         self.stats.last_render_ms = 1000.0 * (t_render - t_start)
         self.stats.last_jpeg_kb = len(jpeg) / 1024.0

@@ -727,6 +727,87 @@ headset.
   of a pose sent after that moment shown, and to it fully faded in (*full*);
 - **server**: the backend's render and total time for the last frame, its
   size, and the page's texture upload time.
+- **via**: how the refined colour travels: *via JPEG* with the median network
+  time of the JPEG frames (and the threshold above which the video is tried),
+  *via JPEG (WebRTC: reason)* after the video failed, or *via WebRTC* with the
+  video's bit rate, its decode time and the frames paired so far.
+
+### Over Wi-Fi: refined frames as video (WebRTC)
+
+Over a slow link the JPEG frames limit how soon and how often a refined frame
+arrives. The page can then receive the colour of the refined frames as H.264
+video over WebRTC instead
+([#189](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/189); the
+protocol is [Stereo frames as WebRTC video](../backend-api/render.md#stereo-frames-as-webrtc-video)):
+both eyes side by side in one video frame, encoded by the backend's render
+process, while the frame's pose and depth image still come over the
+WebSocket. Each video frame carries its pose id in a thin stripe of black and
+white cells under the eyes; the page reads it after decoding and shows the
+frame only with the pose it was rendered for (a stripe that does not read is
+dropped), so the reprojection is the same as with JPEG frames.
+
+**When.** By default (*auto*) the page starts with JPEG and measures the
+network time of its frames (pose sent to frame received, less the backend's
+own time). When the median of the last eight is above **40 ms** it offers the
+backend a WebRTC link, and stays on video while it works. It falls back to
+JPEG when the browser or the backend has no WebRTC (the backend needs the
+optional `aiortc` package), when the link does not connect within 5 s, when it
+fails, when the backend's encoder fails, when 3 s pass after a frame's header
+arrived with no video frame paired since (however many headers came in
+between), or after 10 video frames in a row whose stripe
+does not read (or 5 that fail to be read at all); it tries again a
+minute later. `?refine_transport=webrtc` in the address uses the video at
+once, `?refine_transport=jpeg` never. The video goes over UDP straight
+between the headset and the Mac, so it needs the Mac reachable on the local
+network: through `adb reverse` alone (USB, no Wi-Fi) it cannot connect, and the
+page stays on JPEG.
+
+**What it costs and gains** (HCG 44, auto binning, headless Chrome on the
+M5 Max against a local backend, `validation/vr_refine_webrtc.mjs`; the view
+turning slowly at 2.5 °/s, so a new pose is asked continuously). *15 Mbit/s
+(WebSocket only)* throttles the page's network through the DevTools protocol
+(`Network.emulateNetworkConditions`). That slows the WebSocket (poses, the
+JPEG frames, the video frames' headers and depth images) but **not** the WebRTC
+video, which goes over UDP: it is not a Wi-Fi link, and it favours the video.
+On real Wi-Fi both share the link; the 3–4 Mbit/s of the video would fit a
+15 Mbit/s link, but its latency there is not measured yet (the Quest 3 check
+below). The 1600 × 913 rows were measured on 2026-11-12; the Quest-size rows on
+2026-11-11 with the same page code for reading and drawing the video (a run
+on 2026-11-12 was not usable: the Mac was busy with other GPU work, and the
+backend's render took 58–177 ms instead of 37).
+
+| Eye size | Link | Path | pose->frame p50 / p95 | refined fps | Mbit/s | kB per frame | stop->refined p50 | PSNR on emission |
+|---|---|---|---|---|---|---|---|---|
+| 1600 × 913 | local | JPEG 95 | 48 / 51 ms | 19.8 | 10.8 | 67 | 251 ms | 41.9 dB |
+| | | WebRTC | 43 / 53 ms | 19.6 | 2.9 | 18 | 250 ms | 39.2 dB |
+| | 15 Mbit/s (WebSocket only) | JPEG 95 | 90 / 95 ms | 19.6 | 10.7 | 67 | 317 ms | 41.9 dB |
+| | | WebRTC | 51 / 62 ms | 19.8 | 2.9 | 18 | 267 ms | 39.0 dB |
+| | | auto (chose WebRTC) | 62 / 77 ms | 19.6 | 2.9 | 18 | 285 ms | 39.1 dB |
+| 1700 × 1813 (a Quest 3 eye) | local | JPEG 95 | 149 / 157 ms | 13.3 | 14.9 | 136 | 304 ms | 44.7 dB |
+| | | WebRTC | 153 / 167 ms | 13.0 | 4.0 | 37 | 300 ms | 41.7 dB |
+| | 15 Mbit/s (WebSocket only) | JPEG 95 | 176 / 182 ms | 11.2 | 12.5 | 136 | 405 ms | 44.7 dB |
+| | | WebRTC | 142 / 153 ms | 13.1 | 4.0 | 37 | 316 ms | 41.6 dB |
+| | | auto (chose WebRTC) | 149 / 162 ms | 13.6 | 4.1 | 37 | 367 ms | 41.7 dB |
+
+The page's own picture is 26 dB on the same pixels: either refined frame is far
+closer to the full cube. The video takes a quarter of the bandwidth of the
+JPEG frames (most of what is left is the depth image, on the WebSocket) and
+costs about 3 dB of PSNR on the emission (4:2:0 chroma on small coloured
+structures; x264 at constant quality 14). On an unthrottled link
+pose->frame is the same within a few milliseconds either way: the page reads
+the stripe in 1.2–1.7 ms by copying two rows of the decoded frame's visible
+rectangle (`VideoFrame.copyTo`; Chrome on the Mac decodes to NV12) and draws
+the frame itself, no copy. Where a decoder's frames cannot be copied (a
+headset's hardware decoder may give frames without a format, or refuse the
+copy) the page reads the stripe through an image instead: 5.6 ms at Quest
+size, pose->frame 156 against 153 ms (`--stripe-fallback` in the harness).
+With the WebSocket throttled the video arrives sooner than the JPEG, but see
+above for what that throttle does and does not slow. In every run each video frame was shown
+with the header of its own pose: every stripe read (none unreadable, none
+dropped), and, checked independently of the stripe, the shown frame is
+38–42 dB from a JPEG the backend rendered for the same pose and 17–20 dB from
+one of the pose before (3° away). The backend's render and the wait for the
+frame before it remain the largest part of pose->frame.
 
 ### Measured on the Mac (desktop browser, local backend)
 
@@ -823,6 +904,18 @@ the panel shows both.
    frame must show the same slab (no emission outside it).
 8. Repeat 2 and 4 over Wi-Fi (adb connected wirelessly) and note
    **pose->frame** and **stop->refined**.
+9. Over Wi-Fi, compare JPEG and video: open the page with
+   `?refine_transport=jpeg`, then with `?refine_transport=webrtc` (and once
+   with neither, *auto*). Each time, hold still five times and move your head
+   slowly for ten seconds, and note from the panel **pose->frame** (median,
+   p95), **stop->refined**, **remote** fps and the *via* line (*via WebRTC N
+   Mbit/s*, decode ms, paired; or *via JPEG* and why). With *webrtc* the line
+   must read *via WebRTC* within a few seconds; if it says *via JPEG (WebRTC:
+   …)*, note the reason (a Mac firewall that blocks incoming UDP for Python is
+   the likely one). Look at the refined image with video: it must sit exactly
+   where the JPEG one did (no jump when it fades in) and show no blocks or
+   smearing; note any colour difference. With *auto*, note which path it
+   chose (the *via* line).
 
 ## Selections in the headset
 
