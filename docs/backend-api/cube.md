@@ -155,11 +155,64 @@ Request (`CubeReducedRequest`, shared by both routes):
 | Field | Default | Limits | Meaning |
 |---|---|---|---|
 | `dataset_id` | | | an open cube |
-| `factor_xy` | 0 | 0 to 64 | binning of both spatial axes (one factor, so a reduced pixel stays square); 0 picks the smallest factor that brings both to at most `max_dim` |
-| `factor_z` | 0 | 0 to 64 | binning of the spectral axis; 0 picks it the same way |
+| `factor_xy` | 0 | 0 or more | binning of both spatial axes (one factor, so a reduced pixel stays square); 0 picks the smallest factor that brings both to at most `max_dim` |
+| `factor_z` | 0 | 0 or more | binning of the spectral axis; 0 picks it the same way |
 | `max_dim` | 256 | 16 to 2048 | reduced voxels per side the automatic factors aim at |
 | `mode` | `mean` | `mean`, `max` | `mean`: the mean of each block over its finite voxels (the brick pyramid's rule); `max`: the largest finite value. A block with no finite voxel is blank. A partial block at the end of an axis is reduced over the voxels it holds |
 | `encoding` | `uint8` | `uint8`, `float16` | see below (`reduced_bin` only) |
+| `source` | `auto` | `auto`, `pyramid`, `cube` | where the reduced cube is read from: `cube`, a pass over the whole cube; `pyramid`, a level of the cube's brick pyramid ([Brick pyramid](../brick-pyramid.md)), built first when missing, `mean` only; `auto`, the pyramid for a cube larger than `VISIVO_VR_PYRAMID_BYTES` (default: the render sessions' in-core limit, `VISIVO_RENDER_OUT_OF_CORE_BYTES`, 6 GiB as 32-bit floats) binned by the mean, else the cube |
+
+**From the brick pyramid.** Level K of the pyramid is the cube halved K times
+on every axis (rounded up), so its voxel i covers the pixels
+[i·2^K, (i+1)·2^K) of an axis, clipped to the cube: the block of a factor 2^K.
+The level is binned further by integer factors (a, a, b), giving the factors
+(2^K·a, 2^K·a, 2^K·b), and each reduced voxel covers exactly the block of
+those factors, the geometry of the whole-cube reduction (what the VR page's
+selections are mapped with). Its value is the full cube's block mean: the
+level's voxels are weighted by the pixels under them, and every finite level
+voxel with a blank one among its 26 neighbours is recomputed from level 0
+(exact sum and count). The repair is all or none: the level-0 voxels it
+reads are counted from the border voxels' coordinates (one box per brick)
+before any read, and when they exceed `VISIVO_VR_PYRAMID_REPAIR_BYTES`
+(1 GiB), or there are more than 2 Mi border voxels, none is repaired. Left
+as the level has them: blank pixels with no blank level voxel
+beside them, and the equal weights of a partial last level voxel's
+sub-blocks. `reduced_bin`'s header `X-Visivo-Border-Voxels` gives `border,repaired`
+(level voxels next to blanks, and how many were recomputed: all or 0).
+
+The level:
+
+- the coarsest one whose 2^K divides both factors (automatic or given), when
+  it holds at most `VISIVO_VR_PYRAMID_READ_BYTES` (1 GiB of 32-bit floats);
+- else, for given factors, the coarsest level within that size that divides
+  them; when none does, **422** naming the nearest factors that would fit.
+  An automatic factor beside a given one keeps the 2-times cap below, from a
+  finer level that still divides the given one (up to the 16 GiB bound);
+- else, for automatic factors, the coarser of the finest level within that
+  size and the coarsest one not coarser than the smaller factor, the factors
+  rounded up to multiples of 2^K, but by at most 2 times on any axis: past
+  that, the finest level that keeps them within it, if it holds at most
+  `VISIVO_VR_PYRAMID_MAX_READ_BYTES` (16 GiB). Only beyond that is an axis
+  inflated more (up to 2^K times: `pyramid.asked_factors` against `factors`
+  shows it).
+
+On a 2400 × 2400 × 520 cube (11.2 GiB) the automatic factors for 256 per side
+are 12 × 12 × 4, read from level 2 (600 × 600 × 130) binned 3 × 3 × 1. Max
+binning, and a cube whose pyramid would not hold its spectral cube (axes
+beyond the third not one plane), need `cube`. With `auto`, a pyramid that
+cannot be built (a directory that cannot be written, a build that failed)
+falls back to the whole cube and `reduced_info` says why in `source_note`;
+with `pyramid` it is an error (500) saying to use `cube`.
+
+Every read is bounded, whatever the factors: the cube (or the level) is read
+in pieces of at most 256 MiB (128 MiB from the pyramid), a block larger than a
+piece being read in parts and accumulated.
+
+While the pyramid is built, both routes answer **202** with
+`{"valid": false, "preparing": true, "progress": 0..1, "error": "..."}`; ask
+again (the VR page asks every second and shows the progress). Every request
+for the same cube shares one build, the one a render session would use
+(`backend/app/pyramid_builds.py`).
 
 A reduced cube larger than 2048 voxels on a side, 64 Mi voxels in all, or
 64 MiB of texture in the requested encoding (so 32 Mi voxels in `float16`) is
@@ -171,11 +224,18 @@ refused with 422 before the cube is read.
 header and byte order for a VBT volume; not a content checksum),
 `default_threshold` (the full cube's default 3-D threshold, the rule of
 [the desktop's view](../user-guide/cube-viewer.md#the-default-threshold), from a
-stride sample, `null` when the cube has no finite value), `bunit`,
-`pixel_scale_arcsec`, `render_out_of_core` (`true` when a render session would
-draw this cube out of core from its brick pyramid, above
-`VISIVO_RENDER_OUT_OF_CORE_BYTES` as 32-bit floats: the VR page then asks for
-no refined frames, which such a session cannot give yet), and `axes`: for `x`, `y` and `z`, `name` (the CTYPE
+stride sample; from the pyramid, from a sample of full-resolution bricks, as
+the out-of-core render session takes it; `null` when the cube has no finite
+value), `bunit`,
+`pixel_scale_arcsec`, `render_out_of_core` (`true` when a render session draws
+this cube out of core from its brick pyramid, above
+`VISIVO_RENDER_OUT_OF_CORE_BYTES` as 32-bit floats; its stereo frames then
+come from one pyramid level, see
+[Stereo frames for a headset](render.md#stereo-frames-for-a-headset)), `source`
+(`cube` or `pyramid`), `pyramid` (`null`, or `level`, `levels`, `level_shape`
+`[width, height, depth]`, `extra_factors`, `asked_factors`, `brick`, `reduction`), `modes`
+(`["mean"]` from the pyramid), `source_note` (why the whole cube was read
+instead of the pyramid with `auto`, else empty), and `axes`: for `x`, `y` and `z`, `name` (the CTYPE
 before its first `-`), `ctype`, `unit` and `world`, the world coordinate of
 each reduced voxel's centre (`null` where undefined). `x` and `y` are read with
 the file's full WCS along the central row (for `x`) and column (for `y`) of the
@@ -205,7 +265,8 @@ above (x fastest), with headers `X-Visivo-Width`, `X-Visivo-Height`,
 default-threshold rule applied to the reduced cube itself, whose noise is
 lower; for `max`, the full cube's default threshold, since a block maximum is
 above it exactly when one of its voxels is; empty when there is no finite
-value) and `X-Visivo-Bunit`.
+value), `X-Visivo-Bunit`, `X-Visivo-Source` (`cube` or `pyramid`) and
+`X-Visivo-Pyramid-Level` (empty from the cube) and `X-Visivo-File-Revision` (the revision of the file read, as `reduced_info`'s `file_revision`: the VR page refuses a cube of another revision). An identical request in flight is joined only for the same file revision.
 
 - `uint8`: code 0 is blank; codes 1 to 255 map the range linearly,
   value = min + (code − 1) / 254 · (max − min). With a large dynamic range the
@@ -213,8 +274,15 @@ value) and `X-Visivo-Bunit`.
   `float16` is the remedy.
 - `float16`: value = min + stored · (max − min); a blank voxel is stored as −1.
 
-The route reads the whole cube in slabs of whole blocks (bounded memory) and
-takes a compute slot (429 when all stay busy). Errors: 404, 422 (not a cube,
+From the cube, the route reads the whole cube; from the pyramid, one level
+and the level-0 boxes of the border voxels; in bounded pieces either way. It
+runs as a heavy task (a reduction takes seconds) and takes a compute slot (429
+when all stay busy). The VR page gives it 30 minutes, shows the seconds
+elapsed meanwhile, and sends it once more after a network error (no answer at
+all) only when that error came within 2 s of sending, i.e. before the request
+went out (`reduced_info` is sent again after any network error). An identical
+request (same session, cube and fields) arriving while one is being computed
+waits for that one's result instead of computing it again. Errors: 404, 422 (not a cube,
 an invalid field, a reduced cube too large; computation errors as
 `text/plain`), 500 (`text/plain`).
 

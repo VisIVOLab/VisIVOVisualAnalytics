@@ -533,8 +533,9 @@ class XRFrame:
     color: bytes = b""
     depth: bytes | None = None
     error: str | None = None
-    #: Why, for a client to act on without reading the text: "out_of_core",
-    #: "unsupported" (no stereo frames from this session), or None.
+    #: Why, for a client to act on without reading the text: "out_of_core"
+    #: (out of core, no pyramid level fits the GPU budget or its 3-D texture
+    #: side), "unsupported" (no stereo frames from this session), or None.
     code: str | None = None
 
     def error_message(self) -> str:
@@ -603,6 +604,39 @@ def _vtk_matrix(m: np.ndarray):
     return out
 
 
+#: Poses in a row whose pyramid level could not be shown before stereo
+#: frames are given up for the session (out_of_core).
+STEREO_SHOW_TRIES = 3
+
+#: The 3-D texture side assumed while the GPU's cannot be read (WebGL's, and
+#: most desktop GPUs' at least).
+FALLBACK_3D_SIDE = 2048
+
+
+def max_3d_texture_side(window) -> int | None:
+    """The GPU's largest 3-D texture side for ``window``'s context, or None
+    when it cannot be read (no context yet, or no such query)."""
+    try:
+        import vtk
+        tex = vtk.vtkTextureObject()
+        tex.SetContext(window)
+        n = int(tex.GetMaximumTextureSize3D())
+        return n if n > 0 else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _drawn_step(mapper) -> float | None:
+    """The sample distance of the mapper that draws the volume: the one block's
+    out of core (BlockVolumes), else the mapper's own."""
+    single = getattr(mapper, "_single_mapper", None)
+    real = single() if single is not None else mapper
+    try:
+        return round(float(real.GetSampleDistance()), 6) if real is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class _NoRenderToImage(RuntimeError):
     """The volume mapper gave no image back (a GL without the readback it
     needs): the frame is drawn again from the window."""
@@ -638,6 +672,8 @@ class StereoMixin:
         elif command.get("type") == "xr_stop":
             self._xr_pose = None
             self._xr_error = None
+            # A new stereo use starts with its own count of levels not shown.
+            self._xr_show_failures = 0
             self._set_render_to_image(False)
         elif command.get("type", "").startswith("xr_video"):
             from ._stereo_webrtc import apply_video_command
@@ -662,13 +698,40 @@ class StereoMixin:
             return XRFrame({"pose_id": pose_id}, error=message)
         pose = self._xr_pose
         base = {"v": 1, "pose_id": pose.pose_id, "t_client": pose.t_client}
-        if self._ooc is not None:
-            self._xr_pose = None
-            return XRFrame(base, error="Stereo frames are not available yet for a cube "
-                                       "drawn out of core (larger than the in-core limit).",
-                           code="out_of_core")
         t_start = time.time()
+        level = None
+        if self._ooc is not None:
+            # Out of core: the eyes are drawn from one whole pyramid level, the
+            # finest within the GPU budget (read once, the first time; then
+            # kept until the mono view chooses its blocks again).
+            try:
+                # Asked until it is read (the window may have no context before
+                # its first render); the fallback is used meanwhile, not kept.
+                if getattr(self, "_xr_max_3d", None) is None:
+                    self._xr_max_3d = max_3d_texture_side(self._render_window)
+                side = self._xr_max_3d or FALLBACK_3D_SIDE
+                level = self._ooc.show_whole_level(self._renderer, (pose.width, pose.height), side)
+                self._xr_show_failures = 0
+            except ValueError as exc:
+                # No pyramid level fits: none ever will for this session.
+                self._xr_pose = None
+                return XRFrame(base, error=f"No stereo frames for this cube: {exc}.",
+                               code="out_of_core")
+            except RuntimeError as exc:
+                # This time only: the next pose tries again (no code: the
+                # page keeps its session); after STEREO_SHOW_TRIES in a row,
+                # given up as for a level that fits nowhere.
+                self._xr_pose = None
+                self._xr_show_failures = getattr(self, "_xr_show_failures", 0) + 1
+                if self._xr_show_failures >= STEREO_SHOW_TRIES:
+                    return XRFrame(base, error=f"No stereo frames for this cube: {exc} "
+                                               f"({self._xr_show_failures} times).",
+                                   code="out_of_core")
+                return XRFrame(base, error=f"No stereo frame for this pose: {exc}.")
         self._poll_cube_chunks()
+        # The ray step is in voxels of the volume drawn: a pyramid level's are
+        # 2^level of the cube's.
+        self._xr_voxel = float(2 ** level) if level is not None else 1.0
         self._xr_depth_check_mode()
         try:
             eyes, depth_src, per_eye, from_mapper, depth_problem = self._render_eyes_on_thread(pose)
@@ -740,6 +803,10 @@ class StereoMixin:
                        "render_end": t_render, "depth_end": t_depth, "encode_end": t_encode},
             "eye_ms": per_eye,
         })
+        if level is not None:
+            # Out of core: the pyramid level drawn, for the page to show.
+            header["volume"] = {"out_of_core": True, "level": level,
+                                "levels": len(self._ooc.layout.shapes)}
         if video_error:
             header["video_error"] = video_error   # taken off by the backend
         self.stats.frames_rendered += 1
@@ -810,7 +877,7 @@ class StereoMixin:
             self._set_render_to_image(use_volume)
             if sampling is not None:
                 mapper.SetAutoAdjustSampleDistances(0)
-                mapper.SetSampleDistance(pose.sample_distance)
+                mapper.SetSampleDistance(pose.sample_distance * getattr(self, "_xr_voxel", 1.0))
                 mapper.SetImageSampleDistance(1.0)
             for eye, geometry in zip(pose.eyes, cameras):
                 position, focal, up = camera_from_view(geometry["view"])
@@ -842,7 +909,10 @@ class StereoMixin:
                 out.append((np.array(rgba), None if depth is None else
                             np.array(depth, dtype=np.float32), geometry["depth_projection"]))
                 per_eye.append({"eye": eye.eye, "render": round(1000 * (t1 - t0), 3),
-                                "readback": round(1000 * (t2 - t1), 3)})
+                                "readback": round(1000 * (t2 - t1), 3),
+                                # The ray step the volume was drawn with, in the
+                                # cube's voxels, as the drawing mapper holds it.
+                                "sample_distance": _drawn_step(mapper)})
         finally:
             if sampling is not None:
                 mapper.SetAutoAdjustSampleDistances(sampling[0])

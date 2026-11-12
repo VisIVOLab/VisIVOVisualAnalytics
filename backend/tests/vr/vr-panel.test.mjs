@@ -230,7 +230,7 @@ class MemStore {
 test('settings round-trip and fall back to the defaults', () => {
   const st = new MemStore();
   assert.deepEqual(S.loadSettings(st), S.sanitizeSettings(null));
-  const s = { colormap: 'magma', thrSource: 'cube', refine: { enabled: false, scale: 0.6, quality: 85, depth: false },
+  const s = { colormap: 'magma', thrSource: 'cube', thrSourceChosen: true, refine: { enabled: false, scale: 0.6, quality: 85, depth: false },
     panel: { right: -0.4, up: 0.1, fwd: -0.2, yaw: 0.5 }, tool: 'box', guideSeen: true };
   assert.ok(S.saveSettings(st, s));
   assert.deepEqual(S.loadSettings(st, { colormaps: ['viridis', 'magma'], tools: ['probe', 'lasso', 'box'] }), s);
@@ -270,4 +270,21 @@ test('settings: a storage that throws or is missing is not an error', () => {
   assert.equal(S.saveSettings(bad, S.DEFAULT_SETTINGS), false);
   assert.deepEqual(S.loadSettings(null), S.sanitizeSettings(null));
   assert.equal(S.saveSettings(null, S.DEFAULT_SETTINGS), false);
+});
+
+test('the threshold starts from the full cube for large or refined cubes, unless chosen', () => {
+  const unchosen = S.sanitizeSettings({ thrSource: 'reduced' });     // saved before #186
+  assert.equal(unchosen.thrSourceChosen, false);
+  assert.equal(S.thresholdSourceFor(unchosen, { source: 'pyramid' }), 'cube');
+  assert.equal(S.thresholdSourceFor(unchosen, { outOfCore: true }), 'cube');
+  assert.equal(S.thresholdSourceFor(unchosen, { refine: true }), 'cube');
+  assert.equal(S.thresholdSourceFor(unchosen, { source: 'cube', refine: false }), 'reduced');
+  assert.equal(S.thresholdSourceFor(unchosen, { synthetic: true, refine: true }), 'reduced');
+  const chosen = S.sanitizeSettings({ thrSource: 'reduced', thrSourceChosen: true });
+  assert.equal(S.thresholdSourceFor(chosen, { source: 'pyramid', refine: true }), 'reduced');
+  // Kept across a save and a load.
+  const store = new Map();
+  const st = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) };
+  S.saveSettings(st, chosen);
+  assert.equal(S.loadSettings(st).thrSourceChosen, true);
 });

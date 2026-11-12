@@ -92,18 +92,17 @@ export class Refiner {
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   /**
-   * The cube on show changed: its dataset id (null for a synthetic one), and
-   * whether the backend would draw it out of core (reduced_info's
-   * render_out_of_core): such a session gives no stereo frames yet, and asking
-   * for one would start building the cube's brick pyramid, so none is asked.
+   * The cube on show changed: its dataset id (null for a synthetic one). A
+   * cube the backend draws out of core gives stereo frames too, drawn from
+   * one level of its brick pyramid (the frames say which: outOfCoreLevel).
    */
-  async setDataset(datasetId, { outOfCore = false } = {}) {
+  async setDataset(datasetId) {
     // The new cube first, so an attempt still running for the old one sees
     // the change when it ends (its gen and dataset are both stale).
     const closing = this._closeSession();
     this.datasetId = datasetId || null;
-    this.unavailable = !datasetId ? 'no backend cube (synthetic)'
-      : outOfCore ? 'the backend draws this cube out of core: no refined frames yet' : '';
+    this.outOfCoreLevel = null;
+    this.unavailable = !datasetId ? 'no backend cube (synthetic)' : '';
     this.error = '';
     this.sentKey = null;
     await closing;
@@ -175,12 +174,10 @@ export class Refiner {
         this.status = `queued (${r.position} of ${r.queue_length})`;
         body = { ...body, queue_id: r.queue_id };
       } else if (r.preparing) {
-        // Out of core (a backend that does not say so in reduced_info): a
-        // pyramid build has started, but its session could give no stereo
-        // frames; not followed.
-        const e = new Error('the backend draws this cube out of core: no refined frames yet');
-        e.giveUp = true;
-        throw e;
+        // Out of core: the cube's brick pyramid is being built (the reduced
+        // cube from the whole cube does not need it); the session starts
+        // when it is ready.
+        this.status = `preparing the cube (${(100 * (r.progress || 0)).toFixed(0)} %)`;
       } else {
         throw new Error(r.error || 'no render session');
       }
@@ -369,6 +366,8 @@ export class Refiner {
     if (!this._sameRequest(rec)) { this.stats.dropped++; return; }
 
     this.stats.lastServer = h.timing_ms || null;
+    // Out of core, the backend draws one level of the cube's brick pyramid.
+    this.outOfCoreLevel = h.volume && h.volume.out_of_core ? h.volume.level : null;
     if (this.o.adaptLink) {
       this.link.push(tRecv - rec.tSent, h.timing_ms);
       this.linkState = this.link.decide();
@@ -604,7 +603,10 @@ export class Refiner {
         + `  stop->refined ${f0(s.lastStopFirst)} ms (full ${f0(s.lastStopFull)})`,
     ];
     const srv = s.lastServer;
-    if (srv) lines.push(`  server ${f0(srv.render)} ms render  ${f0(srv.total)} total  ${s.lastKB.toFixed(0)} KB  upload ${s.upload.quantile(0.5).toFixed(1)} ms`);
+    if (srv) {
+      lines.push(`  server ${f0(srv.render)} ms render  ${f0(srv.total)} total  ${s.lastKB.toFixed(0)} KB  upload ${s.upload.quantile(0.5).toFixed(1)} ms`
+        + (Number.isInteger(this.outOfCoreLevel) ? `  pyramid level ${this.outOfCoreLevel}` : ''));
+    }
     const via = this.rtc.hudLine();
     if (via) lines.push(via);
     if (this.o.adaptLink) lines.push(this.link.hudLine(this.linkState));
@@ -624,6 +626,7 @@ export class Refiner {
       upload: q(s.upload), stopFirst: q(s.stopFirst), stopFull: q(s.stopFull),
       lastServer: s.lastServer, lastKB: s.lastKB, sent: s.sent, received: s.received, dropped: s.dropped,
       skipped: this.book.skipped, error: this.error, transport: this.rtc.summary(),
+      outOfCoreLevel: this.outOfCoreLevel ?? null,
       reprojection: this.draw.shown ? frameReprojection(this.draw.shown.header) : null,
       link: { ...this.linkState, maxEyePx: Number.isFinite(this.linkState.maxEyePx) ? this.linkState.maxEyePx : null },
 

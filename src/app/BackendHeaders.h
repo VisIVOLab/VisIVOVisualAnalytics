@@ -23,6 +23,7 @@ inline constexpr const char *AXES = "X-Visivo-Axes";
 inline constexpr const char *BBOX = "X-Visivo-Bbox";
 inline constexpr const char *BIN_FACTORS = "X-Visivo-Bin-Factors";
 inline constexpr const char *BIN_MODE = "X-Visivo-Bin-Mode";
+inline constexpr const char *BORDER_VOXELS = "X-Visivo-Border-Voxels";
 inline constexpr const char *BOUNDS = "X-Visivo-Bounds";
 inline constexpr const char *BOX_MPC = "X-Visivo-Box-Mpc";
 inline constexpr const char *BUNIT = "X-Visivo-Bunit";
@@ -43,6 +44,7 @@ inline constexpr const char *DIV_MIN = "X-Visivo-Div-Min";
 inline constexpr const char *DOWNSAMPLE_FACTOR = "X-Visivo-Downsample-Factor";
 inline constexpr const char *DOWNSAMPLE_FACTORS = "X-Visivo-Downsample-Factors";
 inline constexpr const char *EXPOSURE = "X-Visivo-Exposure";
+inline constexpr const char *FILE_REVISION = "X-Visivo-File-Revision";
 inline constexpr const char *FRAME = "X-Visivo-Frame";
 inline constexpr const char *FROM_CACHE = "X-Visivo-From-Cache";
 inline constexpr const char *FULL_SHAPE = "X-Visivo-Full-Shape";
@@ -58,6 +60,7 @@ inline constexpr const char *PARTICLE_COUNT = "X-Visivo-Particle-Count";
 inline constexpr const char *PARTICLE_FIELDS = "X-Visivo-Particle-Fields";
 inline constexpr const char *PARTICLE_STEP = "X-Visivo-Particle-Step";
 inline constexpr const char *PEAK = "X-Visivo-Peak";
+inline constexpr const char *PYRAMID_LEVEL = "X-Visivo-Pyramid-Level";
 inline constexpr const char *RANGE_MAX = "X-Visivo-Range-Max";
 inline constexpr const char *RANGE_MIN = "X-Visivo-Range-Min";
 inline constexpr const char *RENDER_MS = "X-Visivo-Render-Ms";
@@ -71,6 +74,7 @@ inline constexpr const char *SELECTED_COUNT = "X-Visivo-Selected-Count";
 inline constexpr const char *SELECTION_KIND = "X-Visivo-Selection-Kind";
 inline constexpr const char *SELECTION_SEQ = "X-Visivo-Selection-Seq";
 inline constexpr const char *SESSION = "X-Visivo-Session";
+inline constexpr const char *SOURCE = "X-Visivo-Source";
 inline constexpr const char *SPACING = "X-Visivo-Spacing";
 inline constexpr const char *SPECTRAL_AXIS_TYPE = "X-Visivo-Spectral-Axis-Type";
 inline constexpr const char *SPECTRAL_AXIS_UNIT = "X-Visivo-Spectral-Axis-Unit";
@@ -89,7 +93,7 @@ inline constexpr const char *WARNINGS = "X-Visivo-Warnings";
 inline constexpr const char *WIDTH = "X-Visivo-Width";
 
 // Every declared header name, for the contract test to diff against the manifest.
-inline constexpr std::array<const char *, 75> kAll = {
+inline constexpr std::array<const char *, 79> kAll = {
     EW_UNIT,
     FWHM_UNIT,
     MAP_UNIT,
@@ -101,6 +105,7 @@ inline constexpr std::array<const char *, 75> kAll = {
     BBOX,
     BIN_FACTORS,
     BIN_MODE,
+    BORDER_VOXELS,
     BOUNDS,
     BOX_MPC,
     BUNIT,
@@ -121,6 +126,7 @@ inline constexpr std::array<const char *, 75> kAll = {
     DOWNSAMPLE_FACTOR,
     DOWNSAMPLE_FACTORS,
     EXPOSURE,
+    FILE_REVISION,
     FRAME,
     FROM_CACHE,
     FULL_SHAPE,
@@ -136,6 +142,7 @@ inline constexpr std::array<const char *, 75> kAll = {
     PARTICLE_FIELDS,
     PARTICLE_STEP,
     PEAK,
+    PYRAMID_LEVEL,
     RANGE_MAX,
     RANGE_MIN,
     RENDER_MS,
@@ -149,6 +156,7 @@ inline constexpr std::array<const char *, 75> kAll = {
     SELECTION_KIND,
     SELECTION_SEQ,
     SESSION,
+    SOURCE,
     SPACING,
     SPECTRAL_AXIS_TYPE,
     SPECTRAL_AXIS_UNIT,

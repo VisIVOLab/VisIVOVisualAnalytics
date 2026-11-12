@@ -28,6 +28,7 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
   let lastRecoverAt = 0;
   let loggedVersion = '';
   let pendingRecover = false;     // the backend restarted: reopen once it is possible
+  let pendingReason = 'restarted';  // why the pending reopen started (its notice says so)
   let pendingGen = 0;             // the load generation when it restarted
 
   // ── Sending the log ─────────────────────────────────────────────────────
@@ -92,13 +93,13 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
     if (ev.restarted) log('warning', 'backend-restarted', `instance ${ev.info && ev.info.instance}`);
     // The cube is opened again once the token is accepted (with a refused
     // token the attempt could only fail, and say less than the auth notice).
-    if (ev.restarted) { pendingRecover = true; pendingGen = ctx.loadGen(); }
+    if (ev.restarted) { pendingRecover = true; pendingGen = ctx.loadGen(); pendingReason = 'restarted'; }
     if (pendingRecover && state === 'ok') {
       // Kept until a recovery actually starts: a load under way or the
       // throttle only postpones it to a later check. A load finished since the
       // restart has replaced the cube: nothing to reopen then.
       if (!ctx.hasBackendCube() || (ctx.loadGen() !== pendingGen && !ctx.loading())) pendingRecover = false;
-      else if (recover('restarted')) pendingRecover = false;
+      else if (recover(pendingReason)) pendingRecover = false;
     }
     render();
   }
@@ -117,10 +118,17 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
         // A load replaced the cube while it was being reopened: that load's
         // cube is the one on show, nothing to say.
         log('info', 'cube-reopen-superseded', reason);
+      } else if (r.preparing) {
+        // The cube's brick pyramid is being built: tried again at a later
+        // check (with the reason it started for), not reported as a failure.
+        log('info', 'cube-reopen-waiting', r.detail || '');
+        pendingRecover = true; pendingGen = ctx.loadGen();
+        pendingReason = r.reason || reason;
       } else if (r.ok) {
         notices.clear('reopen-failed');
         log('info', 'cube-reopened', `${reason}: ${r.detail || ''}`);
-        notices.show(noticeFor(reason === 'restarted' ? 'restarted' : 'reopened'), { force: true });
+        const why = r.reason || reason;
+        notices.show(noticeFor(why === 'restarted' ? 'restarted' : 'reopened'), { force: true });
       } else {
         log('error', 'cube-reopen-failed', r.detail || '');
         // A refused token is the auth notice's to explain; the reopen waits for it.

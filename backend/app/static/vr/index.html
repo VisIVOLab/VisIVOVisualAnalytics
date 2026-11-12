@@ -57,6 +57,11 @@
       <label>Max side <select id="maxdim">
         <option>128</option><option selected>256</option><option>384</option><option>512</option></select></label>
     </div>
+    <div class="row">
+      <label title="Where the backend reads the reduced cube from: a level of the cube's brick pyramid (built first if missing) or a pass over the whole cube. Auto: the pyramid for a cube the backend draws out of core, binned by the mean.">Read from <select id="source">
+        <option value="auto" selected>auto</option><option value="pyramid">brick pyramid</option>
+        <option value="cube">whole cube</option></select></label>
+    </div>
     <button id="load" class="primary">Open and load</button>
     <div id="load-status" class="muted"></div>
   </section>

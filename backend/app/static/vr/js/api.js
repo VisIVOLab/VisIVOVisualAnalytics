@@ -103,19 +103,27 @@ export function requestError(status, detail) {
  *  watches them): (err, path) and (path). Set by the page. */
 export const requestHooks = { onFailure: null, onSuccess: null };
 
-/** fetch(), with a rejected fetch turned into a `network` requestError and
- *  both outcomes reported to requestHooks. Non-ok responses are returned. */
-export async function hookedFetch(path, init) {
+/** fetch(), with a rejected fetch turned into a `network` requestError
+ *  (`timedOut` when its deadline ended it, `aborted` when the page cancelled
+ *  it) and both outcomes reported to requestHooks. Non-ok responses are
+ *  returned. `quiet`: a network failure is not reported here but marked
+ *  `unreported` (with its `path`), for a caller that may send it again and
+ *  reports only the failure that stays (retryOnNetworkError). */
+export async function hookedFetch(path, init, quiet = false) {
   let resp;
   try {
     // Behind a reverse proxy the page's own path prefix goes first (#187).
     resp = await fetch(apiUrl(path), init);
   } catch (err) {
-    const timedOut = init && init.signal && init.signal.aborted && init.signal.reason === TIMED_OUT;
+    const timedOut = !!(init && init.signal && init.signal.aborted && init.signal.reason === TIMED_OUT);
     const e = requestError(0, timedOut ? 'the backend did not answer in time' : 'the backend did not answer');
     e.cause = err;
+    e.timedOut = timedOut;
+    e.path = path;
     if (init && init.signal && init.signal.aborted && !timedOut) e.aborted = true;   // cancelled by the page
-    if (requestHooks.onFailure && !e.aborted) requestHooks.onFailure(e, path);
+    if (requestHooks.onFailure && !e.aborted) {
+      if (quiet) e.unreported = true; else requestHooks.onFailure(e, path);
+    }
     throw e;
   }
   if (resp.ok && requestHooks.onSuccess) requestHooks.onSuccess(path);
@@ -131,9 +139,9 @@ const TIMED_OUT = 'timeout';
  * whenever the browser gives up. `signal` (optional) cancels it too (then the
  * error has `aborted`). `read(resp)` reads the body inside the deadline.
  */
-export async function boundedRequest(path, init, timeoutMs, signal, read) {
+export async function boundedRequest(path, init, timeoutMs, signal, read, quiet = false) {
   if (!(timeoutMs > 0) && !signal) {
-    const resp = await hookedFetch(path, init);
+    const resp = await hookedFetch(path, init, quiet);
     return read(resp);
   }
   const ctl = new AbortController();
@@ -141,7 +149,7 @@ export async function boundedRequest(path, init, timeoutMs, signal, read) {
   if (signal) { if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }); }
   const timer = timeoutMs > 0 ? setTimeout(() => ctl.abort(TIMED_OUT), timeoutMs) : null;
   try {
-    const resp = await hookedFetch(path, { ...init, signal: ctl.signal });
+    const resp = await hookedFetch(path, { ...init, signal: ctl.signal }, quiet);
     try {
       // The deadline holds for the body too, whether or not this fetch
       // aborts a body read by itself.
@@ -153,9 +161,13 @@ export async function boundedRequest(path, init, timeoutMs, signal, read) {
       if (err && err.status !== undefined) throw err;            // an HTTP error, as read() made it
       // The body did not come: the same as no answer at all.
       const e = requestError(0, ctl.signal.reason === TIMED_OUT ? 'the backend did not answer in time' : 'the backend did not answer');
+      e.timedOut = ctl.signal.reason === TIMED_OUT;
+      e.path = path;
       if (ctl.signal.aborted && ctl.signal.reason !== TIMED_OUT) e.aborted = true;
       e.cause = err;
-      if (requestHooks.onFailure && !e.aborted) requestHooks.onFailure(e, path);
+      if (requestHooks.onFailure && !e.aborted) {
+        if (quiet) e.unreported = true; else requestHooks.onFailure(e, path);
+      }
       throw e;
     }
   } finally {
@@ -178,6 +190,56 @@ async function failed(resp, path) {
   if (requestHooks.onFailure) requestHooks.onFailure(e, path);
   return e;
 }
+/**
+ * ``attempt(quiet)`` again, once, after a network error: nothing answered and
+ * no deadline or cancellation ended it (the fetch's TypeError, as is or as
+ * hookedFetch's `network` error; e.g. a keep-alive connection the server
+ * closed as the request went out). Only for requests that change nothing on
+ * the backend: on the Mac, the request for the reduced cube right after a
+ * pyramid build failed so in one of three cold loads, and succeeded when sent
+ * again. ``withinMs``: resend only when the error came that soon after
+ * sending, i.e. before or while the request went out; a connection lost while
+ * a long computation runs is not resent (the backend is still working on the
+ * first; it also joins an identical second one). The first attempt runs
+ * `quiet` (its failure is not reported to requestHooks); a failure that stays
+ * is reported once, as hookedFetch would have. ``now`` is the clock (tests).
+ */
+export async function retryOnNetworkError(attempt, { waitMs = 500, withinMs = Infinity, now = () => performance.now() } = {}) {
+  const report = (e) => {
+    if (e && e.unreported) {
+      e.unreported = false;
+      if (requestHooks.onFailure) requestHooks.onFailure(e, e.path);
+    }
+    return e;
+  };
+  const t0 = now();
+  try {
+    return await attempt(true);
+  } catch (e) {
+    const cause = e && e.network ? e.cause : e;
+    const resend = cause instanceof TypeError && !(e && (e.aborted || e.timedOut)) && now() - t0 <= withinMs;
+    if (!resend) throw report(e);
+    await new Promise((res) => setTimeout(res, waitMs));
+    try {
+      return await attempt(false);
+    } catch (e2) {
+      throw report(e2);
+    }
+  }
+}
+
+/** The error reduced_info answers with while the cube's brick pyramid is
+ *  being built (HTTP 202): `preparing`, with `progress` (0..1). No caller can
+ *  take that answer for the cube's description by mistake. */
+export function preparingError(progress) {
+  const e = new Error(`the backend is preparing the cube's brick pyramid (${(100 * (progress || 0)).toFixed(0)} %)`);
+  e.preparing = true;
+  e.progress = Number.isFinite(progress) ? progress : 0;
+  return e;
+}
+
+/** How soon a failed reduced_bin may be resent (its error came before it was sent). */
+export const RESEND_WITHIN_MS = 2000;
 
 export class Backend {
   constructor(token) {
@@ -314,17 +376,60 @@ export class Backend {
     return this._json('POST', '/v1/datasets/pixel_to_sky', { dataset_id: datasetId, x, y, z });
   }
 
-  reducedInfo(req) {
-    return this._json('POST', '/v1/cube/reduced_info', req);
+  /** reduced_info; while a pyramid builds the page asks again every second,
+   *  so one request is given at most 2 minutes. */
+  /** reduced_info. While the cube's brick pyramid is built the backend
+   *  answers 202: that throws preparingError (`preparing`, `progress`), never
+   *  returned as the cube's description. The deadline is the handle's
+   *  (`timeoutMs`, none by default: opening a large cube can take long), or
+   *  `opts.timeoutMs` (the page's polls during a build). */
+  reducedInfo(req, opts = {}) {
+    const timeoutMs = opts.timeoutMs > 0 ? opts.timeoutMs : this.timeoutMs;
+    return retryOnNetworkError((quiet) => boundedRequest('/v1/cube/reduced_info', {
+      method: 'POST', headers: this.headers(true), body: JSON.stringify(req),
+    }, timeoutMs, null, async (resp) => {
+      if (!resp.ok) throw await failed(resp, '/v1/cube/reduced_info');
+      const text = await resp.text();
+      let data;
+      try { data = JSON.parse(text); } catch { data = { detail: text }; }
+      if (resp.status === 202 || (data && data.preparing)) throw preparingError(data && data.progress);
+      return data;
+    }, quiet));
   }
 
-  /** The reduced cube: {data: Uint8Array | Uint16Array, dims, lo, hi, ...}. */
-  async reducedCube(req, onProgress) {
+  /** The reduced cube: {data: Uint8Array | Uint16Array, dims, lo, hi, ...}.
+   *  At most `timeoutMs` until its headers (30 min: a whole-cube pass of a
+   *  large cube takes minutes), so a request that never answers ends the
+   *  load with a message (a `timedOut` network error, reported to the
+   *  lifecycle like any other); the body then streams without a deadline.
+   *  Sent once more only when it failed within RESEND_WITHIN_MS (before it
+   *  went out). */
+  async reducedCube(req, onProgress, timeoutMs = 1800000) {
     const t0 = performance.now();
-    const resp = await hookedFetch('/v1/cube/reduced_bin', {
-      method: 'POST', headers: this.headers(true), body: JSON.stringify(req),
-    });
+    let resp;
+    try {
+      resp = await retryOnNetworkError(async (quiet) => {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(TIMED_OUT), timeoutMs);
+        try {
+          return await hookedFetch('/v1/cube/reduced_bin', {
+            method: 'POST', headers: this.headers(true), body: JSON.stringify(req), signal: ctl.signal,
+          }, quiet);
+        } finally {
+          clearTimeout(timer);          // the headers came (or not): the body has no deadline
+        }
+      }, { withinMs: RESEND_WITHIN_MS });
+    } catch (e) {
+      if (e && e.timedOut) {
+        e.message = `the backend gave no reduced cube within ${(timeoutMs / 60000).toFixed(0)} min: load it again`;
+      }
+      throw e;
+    }
     if (!resp.ok) throw await failed(resp, '/v1/cube/reduced_bin');
+    if (resp.status === 202) {
+      // The brick pyramid is not ready (reduced_info waits for it first).
+      throw new Error('the cube\'s brick pyramid is still being built: load it again');
+    }
     const h = (k) => resp.headers.get(k);
     const total = Number(h('Content-Length')) || 0;
     const tHeaders = performance.now();
@@ -357,6 +462,9 @@ export class Backend {
       mode: h('X-Visivo-Bin-Mode') || '',
       reducedThreshold: thr ? Number(thr) : null,
       bunit: h('X-Visivo-Bunit') || '',
+      source: h('X-Visivo-Source') || 'cube',
+      pyramidLevel: h('X-Visivo-Pyramid-Level') ? Number(h('X-Visivo-Pyramid-Level')) : null,
+      fileRevision: h('X-Visivo-File-Revision') || '',
       bytes: buf.byteLength,
       timing: { serverMs: tHeaders - t0, totalMs: performance.now() - t0 },
     };

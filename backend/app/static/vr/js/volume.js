@@ -348,6 +348,36 @@ export function reducedShape(fullShape, factors) {
   return [0, 1, 2].map((i) => Math.ceil(fullShape[i] / factors[i]));
 }
 
+/**
+ * Watches a brick pyramid build through its progress: see(progress, now) is
+ * '' while it moves, 'stalled' when the fraction has not grown for `stallMs`,
+ * 'timeout' past `totalMs` in all. A build of a few hundred GB takes minutes
+ * (about 45 s for 23 GiB on PLEIADI, 14 s for 11 GiB on an M5 Max), so the
+ * defaults (5 min still, 2 h in all) only catch a build that is gone.
+ */
+export function buildWatch(stallMs = 300000, totalMs = 7200000) {
+  let start = null, last = null, best = -1;
+  return {
+    see(progress, now) {
+      if (start === null) { start = now; last = now; }
+      const p = Number.isFinite(progress) ? progress : 0;
+      if (p > best + 1e-6) { best = p; last = now; }
+      if (now - start > totalMs) return 'timeout';
+      if (now - last > stallMs) return 'stalled';
+      return '';
+    },
+    progress() { return Math.max(0, best); },
+  };
+}
+
+/** What the binning label adds for a reduced cube read from a brick pyramid
+ *  level (its voxels cover the same blocks; their values are means of the
+ *  level's means), '' for one reduced from the whole cube. */
+export function sourceNote(cube) {
+  return cube && cube.source === 'pyramid' && Number.isInteger(cube.pyramidLevel)
+    ? `, pyramid level ${cube.pyramidLevel}` : '';
+}
+
 // ── Sampling ────────────────────────────────────────────────────────────────
 
 /**

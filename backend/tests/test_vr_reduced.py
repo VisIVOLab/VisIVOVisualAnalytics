@@ -426,3 +426,128 @@ def test_vr_javascript_unit_tests():
     assert files
     r = subprocess.run([node, "--test", *files], capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stdout[-4000:] + r.stderr[-2000:]
+
+
+@pytest.mark.asyncio
+async def test_the_factors_reduced_info_proposes_are_accepted_by_reduced_bin(
+        client: AsyncClient, auth_headers: dict, tmp_path) -> None:
+    """A field 8193 pixels wide with "Max side" 128: the automatic factor is 65.
+    The page sends info's factors to reduced_bin explicitly, which once capped
+    them at 64 and answered 422 for a small texture (the bound is on what is
+    read, not on the factor)."""
+    data = np.random.default_rng(9).normal(size=(4, 3, 8193)).astype(np.float32)
+    path = tmp_path / "wide.fits"
+    fits.PrimaryHDU(data).writeto(path)
+    opened = await _open(client, auth_headers, path)
+    headers = opened["headers"]
+    req = {"dataset_id": opened["dataset_id"], "max_dim": 128}
+    r = await client.post("/v1/cube/reduced_info", json=req, headers=headers)
+    assert r.status_code == 200, r.text
+    info = r.json()
+    assert info["factors"] == [65, 65, 1] and info["reduced_shape"] == [127, 1, 4]
+    r = await client.post("/v1/cube/reduced_bin",
+                          json={**req, "factor_xy": info["factors"][0], "factor_z": info["factors"][2]},
+                          headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.headers["X-Visivo-Bin-Factors"] == "65,65,1"
+    got = cube_reduce.dequantise(r.content, (4, 1, 127), float(r.headers["X-Visivo-Range-Min"]),
+                                 float(r.headers["X-Visivo-Range-Max"]), "uint8")
+    want = cube_reduce.reduce_block(data, (65, 65, 1), "mean")
+    assert np.max(np.abs(got - want)) <= (np.nanmax(want) - np.nanmin(want)) / 254 / 2 + 1e-6
+
+
+@pytest.mark.asyncio
+async def test_an_identical_reduced_bin_in_flight_is_joined_not_computed_twice(
+        client: AsyncClient, opened_cube: dict, monkeypatch) -> None:
+    """A page that resends reduced_bin (a connection dropped while it waited)
+    must not start a second heavy computation: the second request waits for
+    the first one's result."""
+    import asyncio
+    import app.routers.cube as cube_router
+    from app.compute import worker_cube_reduced
+
+    calls = []
+
+    async def slow(session, fn, *args):
+        calls.append(args)
+        await asyncio.sleep(0.3)
+        return worker_cube_reduced(*args)
+    monkeypatch.setattr(cube_router, "_run_heavy_with_limit", slow)
+    body = {"dataset_id": opened_cube["dataset_id"], "factor_xy": 2, "factor_z": 1}
+    a, b = await asyncio.gather(
+        client.post("/v1/cube/reduced_bin", json=body, headers=opened_cube["headers"]),
+        client.post("/v1/cube/reduced_bin", json=body, headers=opened_cube["headers"]))
+    assert a.status_code == b.status_code == 200 and a.content == b.content
+    assert len(calls) == 1
+    assert not cube_router._REDUCED_IN_FLIGHT          # forgotten once done
+    # Other parameters are another computation.
+    await client.post("/v1/cube/reduced_bin", json={**body, "factor_xy": 4},
+                      headers=opened_cube["headers"])
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_file_written_again_is_not_joined_to_the_old_files_reduction(
+        client: AsyncClient, auth_headers: dict, tmp_path, monkeypatch) -> None:
+    """An Isolate rerun writes the same path again: a reduced_bin for the new
+    file must not join the old file's computation, and the answer names the
+    revision it was read from (reduced_info's file_revision)."""
+    import asyncio
+    import os
+    import app.routers.cube as cube_router
+    from app.compute import worker_cube_reduced
+
+    path = tmp_path / "isolate.fits"
+    fits.PrimaryHDU(np.ones((4, 8, 8), np.float32)).writeto(path)
+    opened = await _open(client, auth_headers, path)
+    calls = []
+
+    async def slow(session, fn, *args):
+        calls.append(args)
+        await asyncio.sleep(0.4)
+        return worker_cube_reduced(*args)
+    monkeypatch.setattr(cube_router, "_run_heavy_with_limit", slow)
+    body = {"dataset_id": opened["dataset_id"], "factor_xy": 2, "factor_z": 1}
+    info = (await client.post("/v1/cube/reduced_info", json=body, headers=opened["headers"])).json()
+
+    async def rewrite_then_ask():
+        await asyncio.sleep(0.1)
+        fits.PrimaryHDU(np.full((4, 8, 8), 2.0, np.float32)).writeto(path, overwrite=True)
+        st = os.stat(path)
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 9))
+        return await client.post("/v1/cube/reduced_bin", json=body, headers=opened["headers"])
+    old, new = await asyncio.gather(
+        client.post("/v1/cube/reduced_bin", json=body, headers=opened["headers"]),
+        rewrite_then_ask())
+    assert old.status_code == new.status_code == 200
+    assert len(calls) == 2, "the rewritten file was joined to the old computation"
+    assert new.headers["X-Visivo-File-Revision"] != info["file_revision"]
+    # The revision is the one each computation read (the old request ran
+    # after the rewrite too, while it waited): never the stale one of a stat
+    # taken before the job was queued.
+    from app.product_cache import file_identity
+    import hashlib
+    now = hashlib.sha256(file_identity(str(path)).encode()).hexdigest()
+    assert old.headers["X-Visivo-File-Revision"] == now == new.headers["X-Visivo-File-Revision"]
+
+
+@pytest.mark.asyncio
+async def test_a_file_written_again_during_its_reduction_is_refused(
+        client: AsyncClient, auth_headers: dict, tmp_path, monkeypatch) -> None:
+    """The worker checks the file's identity after reading: a rewrite while
+    it read answers an error, not voxels of one file under the other's name."""
+    import app.compute.reduced as reduced
+    path = tmp_path / "moving.fits"
+    fits.PrimaryHDU(np.ones((4, 8, 8), np.float32)).writeto(path)
+    opened = await _open(client, auth_headers, path)
+    import app.routers.cube as cube_router
+    seen = iter(["size1|mtime1", "size2|mtime2"])
+    monkeypatch.setattr(reduced, "file_identity", lambda _p: next(seen))
+
+    async def inline(session, fn, *args):
+        return fn(*args)
+    monkeypatch.setattr(cube_router, "_run_heavy_with_limit", inline)
+    r = await client.post("/v1/cube/reduced_bin",
+                          json={"dataset_id": opened["dataset_id"], "factor_xy": 2, "factor_z": 1},
+                          headers=opened["headers"])
+    assert r.status_code == 422 and "changed while it was being reduced" in r.text

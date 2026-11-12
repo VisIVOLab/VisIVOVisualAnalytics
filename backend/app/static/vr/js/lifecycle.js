@@ -229,23 +229,60 @@ export function supersededLoad() {
  * generation is checked: when a load ran meanwhile, its cube is the one on
  * show and the answer is {ok: false, superseded: true}, to be ignored.
  * Otherwise {ok: true, open, info}, or {ok: false, detail} when the file's
- * shape/revision changed or its revision cannot be verified. Errors are thrown.
+ * shape/revision changed or its revision cannot be verified, or {ok: false,
+ * preparing: true, open, detail} while the backend builds the cube's brick
+ * pyramid (to be tried again later with `reuse` = that `open`: the dataset
+ * already opened is asked again, no session made and no file opened anew;
+ * when that dataset or its session is gone meanwhile, the file is opened
+ * afresh in the same call). Errors are thrown.
  */
-export async function reopenCube(snap, io) {
+export async function reopenCube(snap, io, reuse = null) {
   const superseded = { ok: false, superseded: true, detail: 'superseded by a newer load' };
   const stale = () => io.loadGen() !== snap.gen;
-  let open;
-  try {
-    open = await io.open(snap.path);
-  } catch (err) {
-    if (stale()) return superseded;
-    if (io.classify(err) !== 'session-gone') throw err;
-    await io.newSession();
-    if (stale()) return superseded;
-    open = await io.open(snap.path);
+  // Open the file afresh (in a new session when the backend lost this one).
+  const openFresh = async () => {
+    try {
+      return await io.open(snap.path);
+    } catch (err) {
+      if (stale()) return null;
+      if (io.classify(err) !== 'session-gone') throw err;
+      await io.newSession();
+      if (stale()) return null;
+      return io.open(snap.path);
+    }
+  };
+  let open = reuse;
+  if (!open) {
+    open = await openFresh();
+    if (!open) return superseded;
   }
   if (stale()) return superseded;
-  const info = await io.reducedInfo(open);
+  let info;
+  for (;;) {
+    try {
+      info = await io.reducedInfo(open);
+      break;
+    } catch (err) {
+      if (stale()) return superseded;
+      // The backend is building the cube's brick pyramid (it restarted and
+      // lost it, or another one was told to build it): later, not a failure.
+      if (err && err.preparing) {
+        return { ok: false, preparing: true, open,
+          detail: `The backend is preparing the cube's brick pyramid (${(100 * (err.progress || 0)).toFixed(0)} %): the cube is opened again when it is ready.` };
+      }
+      // The dataset kept from an earlier try is gone (the backend restarted
+      // again while its pyramid was built): dropped, and the file opened
+      // afresh in this same call (once).
+      const kind = reuse ? io.classify(err) : '';
+      if (reuse && (kind === 'session-gone' || kind === 'dataset-gone')) {
+        reuse = null;
+        open = await openFresh();
+        if (!open || stale()) return superseded;
+        continue;
+      }
+      throw err;
+    }
+  }
   if (stale()) return superseded;
   if (String(info.full_shape) !== String(snap.fullShape)) {
     return { ok: false, detail: `the file now has shape ${(info.full_shape || []).join('×')}, not ${(snap.fullShape || []).join('×')}: open it again` };
@@ -254,6 +291,26 @@ export async function reopenCube(snap, io) {
     return { ok: false, detail: 'The file changed, or its revision cannot be verified: open it again to reload its voxels and coordinates.' };
   }
   return { ok: true, open, info };
+}
+
+/**
+ * A recovery waiting for the cube's brick pyramid (reopenCube's `preparing`):
+ * its backend handle (whose session the page has adopted), the dataset it
+ * opened and the reason it started for, kept for the next try of the same
+ * cube (same path and load generation) so that each try asks reduced_info
+ * again instead of making a session and opening the file anew (a backend
+ * gives a token at most 32 sessions). take() hands it over once.
+ */
+export class PendingReopen {
+  constructor() { this.kept = null; }
+  keyOf(snap) { return `${snap.gen}|${snap.path}`; }
+  keep(snap, value) { this.kept = { key: this.keyOf(snap), ...value }; }
+  take(snap) {
+    const k = this.kept;
+    this.kept = null;
+    return k && k.key === this.keyOf(snap) ? k : null;
+  }
+  clear() { this.kept = null; }
 }
 
 /**

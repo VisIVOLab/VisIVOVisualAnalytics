@@ -148,6 +148,26 @@ test('matrices: inverse, ray-box, grabs', () => {
   close(x[0], 0, 1e-6); close(x[2], -1, 1e-6);
 });
 
+test('a reduced cube read from a brick pyramid level says so in its binning label', () => {
+  assert.equal(V.sourceNote({ source: 'pyramid', pyramidLevel: 2 }), ', pyramid level 2');
+  assert.equal(V.sourceNote({ source: 'cube', pyramidLevel: null }), '');
+  assert.equal(V.sourceNote({ mode: 'synthetic' }), '');
+  assert.equal(V.sourceNote(null), '');
+});
+
+test('a pyramid build is given up when it stalls or takes too long, not while it moves', () => {
+  const w = V.buildWatch(1000, 10000);
+  assert.equal(w.see(0, 0), '');
+  assert.equal(w.see(0.1, 900), '');
+  assert.equal(w.see(0.1, 1800), '');            // 900 ms without progress
+  assert.equal(w.see(0.1, 2000), 'stalled');     // 1100 ms
+  const t = V.buildWatch(1000, 3000);
+  let now = 0;
+  for (let p = 0; now <= 3000; p += 0.01, now += 500) assert.equal(t.see(p, now), now > 3000 ? 'timeout' : '');
+  assert.equal(t.see(0.99, 3600), 'timeout');
+  assert.equal(V.buildWatch().see(undefined, 0), '');
+});
+
 // ── Longitudes across 0° ──────────────────────────────────────────────────
 
 test('an RA axis crossing 0° is interpolated and ticked through 0, not 180', () => {

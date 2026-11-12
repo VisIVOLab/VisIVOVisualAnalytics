@@ -8,6 +8,42 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR headset: large cubes from the brick pyramid (part of #166).** A cube
+  above the in-core limit gets its headset copy from a level of its brick
+  pyramid instead of a pass over the whole cube: `/v1/cube/reduced_info` and
+  `/v1/cube/reduced_bin` take `source` (`auto`, `pyramid`, `cube`), build the
+  pyramid first when it is missing (202 with the fraction done; the page shows
+  the progress, gives up on a build that stalls, and sends a request that got
+  no answer once more), and fall back to the
+  whole cube with `auto` when no pyramid can be built. The reduced voxels
+  cover exactly the blocks of the factors, so the page's selection mapping is
+  unchanged (tested with odd sizes and partial blocks); their values are the
+  full cube's block means: the level is weighted by pixel count and its voxels
+  next to blank ones are recomputed from level 0, all or none within a
+  1 GiB budget counted before any read (a level's mean of means
+  gave up to 8.6 times the reduced noise along a blank cut). Automatic factors
+  may grow at most 2x on an axis, also beside a given one (a finer level is
+  read, up to 16 GiB); given
+  factors that would read a level over 1 GiB are refused with the nearest
+  ones that fit; max binning reads the whole cube. Every read of a reduction
+  is now bounded by size whatever the factors (a block larger than a piece is
+  accumulated), so the explicit-factor limit of 64 is gone too: the page
+  keeps automatic factors as 0 (the fix for a field 8193 pixels wide with
+  "Max side" 128, factor 65, which gave 422), and factors above 64 given
+  explicitly are now accepted as well. Out-of-core render
+  sessions now give stereo frames and take `set_crop`: the eyes are drawn from
+  one whole pyramid level within the GPU budget and the GPU's 3-D texture
+  side, with the in-core placement, threshold, clipping, velocity slab and
+  depth image (a synthetic sphere drawn both ways matches); the page no longer
+  turns refinement off for such cubes and starts from the full cube's
+  threshold when it refines or reads a pyramid, unless the viewer chose
+  another. In-core `set_crop` planes are now converted as the out-of-core
+  blocks' are, so the faces are drawn where the box has them. On an 11.2 GiB
+  synthetic cube (M5 Max): pyramid built in 10-18 s once, then open to first
+  reduced frame 1.5-1.7 s (10.9 s for a whole-cube pass), pose to frame
+  135 ms median (HCG 44 in core: 88 ms), stop to refined 83 ms. New
+  `validation/vr_large_cube*.py|mjs`; docs in the VR guide (Large cubes) and
+  the cube and render API pages.
 - **VR: keep recovery and asynchronous layers on the correct dataset (#166).**
   Reopening a cube verifies its file revision before reusing its texture and
   coordinates; a changed file requires an explicit reload. Selection sharing

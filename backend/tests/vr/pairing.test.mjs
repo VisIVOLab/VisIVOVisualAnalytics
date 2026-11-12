@@ -81,3 +81,39 @@ test('fallback: dataset used, re-opened in the session, or a new session', () =>
   assert.equal(pairingFallback(new Error('422: This endpoint requires a spectral cube dataset.'), true), 'fail');
   assert.equal(pairingFallback(new Error('network down'), true), 'fail');
 });
+
+test('a read that fails at the network is sent once more; an answer or another error is not', async () => {
+  const { retryOnNetworkError } = await import('../../app/static/vr/js/api.js');
+  let n = 0;
+  assert.equal(await retryOnNetworkError(async () => { if (n++ === 0) throw new TypeError('Failed to fetch'); return 'ok'; }, { waitMs: 1 }), 'ok');
+  assert.equal(n, 2);
+  n = 0;
+  await assert.rejects(retryOnNetworkError(async () => { n++; throw new TypeError('Failed to fetch'); }, { waitMs: 1 }), TypeError);
+  assert.equal(n, 2);                               // once more, not forever
+  n = 0;
+  await assert.rejects(retryOnNetworkError(async () => { n++; throw new Error('500: boom'); }, { waitMs: 1 }), /500/);
+  assert.equal(n, 1);
+});
+
+test('the reduced cube is resent only when its request failed within 2 s of being sent', async () => {
+  const { retryOnNetworkError, RESEND_WITHIN_MS } = await import('../../app/static/vr/js/api.js');
+  assert.equal(RESEND_WITHIN_MS, 2000);
+  let clock = 0, n = 0;
+  const now = () => clock;
+  // Failed at once (before or while sending): sent again.
+  const quick = async () => { n++; if (n === 1) { clock += 50; throw new TypeError('Failed to fetch'); } return 'ok'; };
+  assert.equal(await retryOnNetworkError(quick, { waitMs: 1, withinMs: RESEND_WITHIN_MS, now }), 'ok');
+  assert.equal(n, 2);
+  // The connection lost after 30 s of waiting (the backend still computing): not sent again.
+  n = 0;
+  const late = async () => { n++; clock += 30000; throw new TypeError('Failed to fetch'); };
+  await assert.rejects(retryOnNetworkError(late, { waitMs: 1, withinMs: RESEND_WITHIN_MS, now }), TypeError);
+  assert.equal(n, 1);
+});
+
+test('fallback: a 404 during a pyramid build, or a superseded load, does not reopen the path', () => {
+  const during = Object.assign(new Error("404: Unknown dataset_id 'd'."), { duringBuild: true });
+  assert.equal(pairingFallback(during, true), 'fail');
+  const replaced = Object.assign(new Error('another cube was loaded meanwhile'), { superseded: true });
+  assert.equal(pairingFallback(replaced, true), 'fail');
+});
