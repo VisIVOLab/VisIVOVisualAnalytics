@@ -36,5 +36,16 @@ pre { margin: 0; white-space: pre-wrap; font: 12px/1.35 ui-monospace, Menlo, mon
 #clip label { flex-direction: row; align-items: center; gap: 6px; }
 #clip input { flex: 1; }
 #sel-panel canvas { width: 100%; height: auto; border-radius: 4px; }
+/* Lifecycle notices (#166): the same text the headset shows on its message card. */
+#notice { position: fixed; top: 8px; right: 8px; z-index: 10; width: min(440px, calc(100vw - 16px));
+  background: #2a1d10; color: var(--fg); border: 1px solid #ffd27a; border-radius: 8px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 6px; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5); }
+#notice[hidden] { display: none; }
+#notice.error { background: #2d1416; border-color: #ff8a8a; }
+#notice.info { background: #132235; border-color: var(--accent); }
+#notice-body { white-space: pre-line; color: #d8dce4; }
+#guide-text { white-space: pre-line; }
+#diag-out { max-height: 240px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
+@media (max-width: 760px) { #notice { top: auto; bottom: 8px; } }
 input[type=number] { background: #11151d; color: var(--fg); border: 1px solid var(--line);
   border-radius: 4px; padding: 4px 6px; font: inherit; width: 6em; }

@@ -213,9 +213,12 @@ export function createSelection(ctx) {
     const s = st();
     const reduced = S.reduceMask(r.mask, r.dims, r.origin, s.info.factors, s.info.reduced_shape);
     ctx.renderer.setMask(reduced);
+    // The full-resolution mask is kept (bytes, mask, origin, dims): a tool
+    // that acts on the selection posts this mask, never a regrow.
     sel.lasso = { request: req, count: r.count, origin: r.origin, dims: r.dims, ms: r.ms, trimBox: r.trimBox,
+      bytes: r.bytes, mask: r.mask, fullShape: s.info.full_shape,
       reduced: { count: reduced.count, dims: reduced.dims, origin: reduced.origin },
-      stats, statsMs: performance.now() - t0, bytes: r.bytes };
+      stats, statsMs: performance.now() - t0 };
     const params = Rc.lassoDisplayParams(req);
     params['Selected voxels'] = String(r.count);
     params['Picked in'] = `VR, reduced voxel (${pick.reduced.join(', ')}) of ${s.info.factors.join('×')} binning`;
@@ -224,6 +227,45 @@ export function createSelection(ctx) {
     }
     record({ kind: 'lasso', label: 'Lasso: selection', replay: Rc.lassoReplay(req) }, params,
       { kind: 'probe', voxel: [seeds.seed[2], seeds.seed[1], seeds.seed[0]] });
+    // Shared with the desktop (issue #188), with the record it was made with.
+    if (ctx.onSelection) ctx.onSelection({ kind: 'lasso', bytes: r.bytes, origin: r.origin, dims: r.dims, request: req, parameters: params, trimBox: r.trimBox });
+  }
+
+  /** A selection the desktop made (issue #188), drawn as the page's own lasso
+   *  is, with the statistics the backend measured on the full cube when it
+   *  was shared. Nothing is recorded: the side that made it records it. */
+  function showShared(info, m, own = false) {
+    const s = st();
+    if (!s.info || !s.cube) return false;   // not drawn yet: offered again (share.js)
+    sel.generation++;          // the latest selection wins over one in flight here
+    const reduced = S.reduceMask(m.mask, m.dims, m.origin, s.info.factors, s.info.reduced_shape);
+    ctx.renderer.setMask(reduced);
+    const stats = info.stats && info.stats.valid ? info.stats : null;
+    // Kept as a local grow keeps it (bytes, mask, origin, dims): the tools
+    // that act on the selection apply this received mask itself.
+    // The contract of a received selection (shared with the tools that apply
+    // a selection, #195): the float32 mask over full-cube voxels, and what a
+    // tool records when it applies it (a box, the creator's grow, or the mask
+    // only), as the creator described it.
+    const meta = info.meta || {};
+    sel.lasso = { request: meta.grow || null, count: info.count, origin: m.origin, dims: m.dims,
+      bytes: m.bytes, mask: m.mask, fullShape: info.full_shape || s.info.full_shape,
+      received: true,
+      kind: info.kind === 'box' ? 'box' : 'lasso',
+      source: own ? 'own' : (info.source === 'headset' ? 'headset' : 'desktop'),
+      handEdited: !!meta.hand_edited,
+      // Inclusive [x0, x1, y0, y1, z0, z1]: the box is its origin and dims (the
+      // backend refuses a meta.box that is not).
+      box: info.kind === 'box'
+        ? [0, 1, 2].flatMap((i) => [m.origin[i], m.origin[i] + m.dims[i] - 1]) : null,
+      parameters: meta.parameters || null,
+      ms: 0, trimBox: Number((info.meta && info.meta.trim_box) || 0),
+      reduced: { count: reduced.count, dims: reduced.dims, origin: reduced.origin },
+      stats, statsMs: 0, shared: { source: own ? 'hub (this page\'s)' : info.source, kind: info.kind, seq: info.seq, own } };
+    sel.busy = '';
+    sel.error = stats ? '' : `shared selection: ${(info.stats && info.stats.error) || 'no statistics'}`;
+    changed();
+    return true;
   }
 
   async function runBox(gen, a, b2) {
@@ -254,6 +296,7 @@ export function createSelection(ctx) {
       'Channels from': depth === 'corners' ? 'the two corners' : 'the velocity slab (clipping range)',
       'Measured on': 'every voxel of the box on the full cube',
     }, Rc.boxOrigin(xr, yr, zr));
+    if (ctx.onSelection) ctx.onSelection({ kind: 'box', range, parameters: sel.recipes[sel.recipes.length - 1].parameters });
   }
 
   function fail(err) {
@@ -333,6 +376,7 @@ export function createSelection(ctx) {
   }
 
   function clear() {
+    if (ctx.onClear) ctx.onClear();   // issue #188: what the hub holds is no longer shown
     sel.generation++;
     sel.pick = sel.lasso = sel.spectrum = sel.box = sel.corner = null;
     sel.busy = sel.error = '';
@@ -458,11 +502,13 @@ export function createSelection(ctx) {
     if (sel.busy) line(sel.busy, '#ffd27a');
     if (sel.error) line(sel.error.slice(0, 64), '#ff8a8a');
     if (sel.tool !== 'box') for (const t of pickLines()) line(t);
-    if (sel.tool !== 'lasso' && sel.lasso) line(`green: the lasso selection, ${sel.lasso.count} voxels (Clear removes it)`, '#7dffa0');
+    if (sel.tool !== 'lasso' && sel.lasso) line(`green: the lasso selection${sel.lasso.shared ? ` from the ${sel.lasso.shared.source}` : ''}, ${sel.lasso.count} voxels (Clear removes it)`, '#7dffa0');
     const L = sel.lasso;
     if (sel.tool === 'lasso' && L) {
       const s = L.stats;
-      line(`${L.count} voxels selected (${L.reduced.count} drawn), ${L.ms.toFixed(0)} ms`, '#7dffa0');
+      line(L.shared
+        ? `${L.count} voxels from the ${L.shared.source} (${L.reduced.count} drawn)`
+        : `${L.count} voxels selected (${L.reduced.count} drawn), ${L.ms.toFixed(0)} ms`, '#7dffa0');
       const sd = seedsOf(L.request);
       if (sd && (sd.add.length || sd.sub.length)) {
         line(`seeds: 1 + ${sd.add.length} added, ${sd.sub.length} carved`, '#9aa3b2');
@@ -527,7 +573,7 @@ export function createSelection(ctx) {
     const out = [`tool ${TOOL_NAMES[sel.tool]}${sel.busy ? ` (${sel.busy})` : ''}`];
     const t = [];
     if (sel.pick) t.push(`pick+snap ${sel.pick.snapMs.toFixed(0)} ms`);
-    if (sel.lasso) t.push(`lasso ${sel.lasso.ms.toFixed(0)} ms${sel.lasso.statsMs ? ` + stats ${sel.lasso.statsMs.toFixed(0)} ms` : ''}`);
+    if (sel.lasso && !sel.lasso.shared) t.push(`lasso ${sel.lasso.ms.toFixed(0)} ms${sel.lasso.statsMs ? ` + stats ${sel.lasso.statsMs.toFixed(0)} ms` : ''}`);
     if (sel.spectrum) t.push(`spectrum ${sel.spectrum.ms.toFixed(0)} ms`);
     if (sel.box && sel.box.stats) t.push(`box ${sel.box.ms.toFixed(0)} ms`);
     if (t.length) out.push(t.join('  '));
@@ -540,7 +586,7 @@ export function createSelection(ctx) {
   }
 
   return {
-    sel, act, hover, cycleTool, setTool, clear, segments, panelTexture, refreshDom, hudLines,
+    sel, act, hover, cycleTool, setTool, clear, segments, showShared, panelTexture, refreshDom, hudLines,
     recipesJson, worldRayToBox, modelRayToBox, domCanvas, record, pickBox,
     isDirty: () => panelDirty,
   };

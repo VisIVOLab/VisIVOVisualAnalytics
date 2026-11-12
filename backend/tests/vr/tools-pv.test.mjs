@@ -117,7 +117,16 @@ function pvHarness() {
   const st = { clip: { min: [0, 0, 0], max: [1, 1, 1] }, extent: [1, 1, 1] };
   const tool = TP.createPvTool({ selection: sel, backend: () => backend, datasetId: () => 'ds_1', state: () => st,
     info: () => ({ full_shape: [10, 10, 2], axes: { z: { full_velocity_kms: [100, 200] } } }), onChange: () => {} });
-  const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); await new Promise((r) => setTimeout(r, 5)); };
+  const flush = async () => {
+    // qt-zlib decoding uses asynchronous streams: 5 ms is not enough on a
+    // loaded CI runner. Wait for this answer to finish (or the queued path's
+    // request to start), retaining a deadline so a stuck update still fails.
+    const deadline = Date.now() + 5000;
+    while (tool.state.inFlight && !answers.length && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    assert.ok(!tool.state.inFlight || answers.length, 'PV update did not finish within 5 seconds');
+  };
   return { tool, calls, answers, recipes, sel, flush };
 }
 

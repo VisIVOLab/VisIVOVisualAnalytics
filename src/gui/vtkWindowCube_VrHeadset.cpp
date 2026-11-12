@@ -30,6 +30,11 @@ void vtkWindowCube::openInVrHeadset()
                                                         : BackendClient::sessionIdForUrl(url, token);
     inputs.datasetId = this->remoteDatasetId;
     inputs.path = this->filepath;
+    // Remote as BackendClient decides it (a cluster's backend through a local
+    // tunnel): the dialog says so, the link is the same (issue #187).
+    inputs.remote = !BackendClient::isLocalBackendUrl(url);
     m_vrHeadsetDialog = new VrHeadsetDialog(inputs, this);
     m_vrHeadsetDialog->show();
+    // From now on the headset's selections appear here (issue #188).
+    this->startSelectionShare();
 }

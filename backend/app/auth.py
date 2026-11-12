@@ -112,13 +112,20 @@ def primary_token() -> str:
     return os.environ.get("VISIVO_TOKEN", "").strip() or TOKEN
 
 
+def token_equal(a: str, b: str) -> bool:
+    """Constant-time equality of two tokens. A header arrives decoded as
+    latin-1, and compare_digest raises TypeError on non-ASCII str (a 500 for a
+    request that should get a 401): their UTF-8 bytes are compared instead."""
+    return secrets.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
 def is_admin_token(token: str | None) -> bool:
     """True for the operator. With a single token everyone is the operator (the
     single-user backend has nothing to separate); once per-user tokens exist only
     the PRIMARY one may read server-wide ops data (all sessions, all log lines)."""
     if not multi_user_mode():
         return True
-    return token is not None and secrets.compare_digest(token, primary_token())
+    return token is not None and token_equal(token, primary_token())
 
 
 # Import-time snapshot kept for introspection/back-compat; prefer accepted_tokens().
@@ -139,7 +146,7 @@ async def verify_token(
     matched: str | None = None
     if x_visivo_token is not None:
         for accepted in accepted_tokens():
-            if secrets.compare_digest(x_visivo_token, accepted):
+            if token_equal(x_visivo_token, accepted):
                 matched = accepted   # keep looping: same work whether or not it hit
     if matched is not None:
         return matched

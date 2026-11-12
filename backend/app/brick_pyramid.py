@@ -409,17 +409,13 @@ _W: dict = {}   # in a worker: its source cube and the shared buffers it has att
 
 
 def _worker_init(source: str, hdu: int, max_block_bytes: int) -> None:
-    import multiprocessing  # noqa: PLC0415
-    import threading  # noqa: PLC0415
+    from .exit_with_parent import install as exit_with_parent  # noqa: PLC0415
 
     # A build killed outright (OOM, SIGKILL) would leave its workers waiting for
-    # tasks for ever, holding the shared buffers: they leave with it.
-    parent = multiprocessing.parent_process()
-    if parent is not None:
-        def follow() -> None:
-            parent.join()
-            os._exit(1)
-        threading.Thread(target=follow, daemon=True).start()
+    # tasks for ever, holding the shared buffers: they leave with it (#176).
+    # No Linux parent-death signal: a pool starts its workers from whichever
+    # thread submits.
+    exit_with_parent()
     _W["cube"] = _SourceCube(source, hdu, max_block_bytes)
     _W["buffers"] = {}
 

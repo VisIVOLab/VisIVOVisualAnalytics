@@ -43,6 +43,7 @@ X_FULL_SPEED_MAX = "X-Visivo-Full-Speed-Max"
 X_UNIT = "X-Visivo-Unit"
 X_FRAME = "X-Visivo-Frame"
 X_DOWNSAMPLE_FACTOR = "X-Visivo-Downsample-Factor"
+X_DOWNSAMPLE_FACTORS = "X-Visivo-Downsample-Factors"  # per-axis x,y,z (velocity LOD)
 X_FULL_SHAPE = "X-Visivo-Full-Shape"
 X_FROM_CACHE = "X-Visivo-From-Cache"
 
@@ -56,6 +57,9 @@ X_N_BASINS = "X-Visivo-N-Basins"
 X_BBOX = "X-Visivo-Bbox"
 X_SELECTED_COUNT = "X-Visivo-Selected-Count"
 X_TRIM_BOX = "X-Visivo-Trim-Box"
+# Shared selections (issue #188, routers/share.py).
+X_SELECTION_SEQ = "X-Visivo-Selection-Seq"
+X_SELECTION_KIND = "X-Visivo-Selection-Kind"
 X_ROI_X0 = "X-Visivo-Roi-X0"
 X_ROI_Y0 = "X-Visivo-Roi-Y0"
 X_ROI_Z0 = "X-Visivo-Roi-Z0"

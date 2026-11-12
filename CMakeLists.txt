@@ -432,12 +432,16 @@ set(PROJECT_SOURCES
         src/app/ProductRegistry.cpp
         src/app/ProductRecipe.cpp
         src/app/LassoReplay.cpp
+        src/app/SharedSelection.cpp
+        src/app/SharedSelectionLink.cpp
         src/app/SofiaSuggest.cpp
         src/app/FinderTaskRun.cpp
         src/app/HostMemory.cpp
         src/app/ProductRegistry.h
         src/app/ProductRecipe.h
         src/app/LassoReplay.h
+        src/app/SharedSelection.h
+        src/app/SharedSelectionLink.h
         src/app/SofiaSuggest.h
         src/app/FinderTaskRun.h
         src/app/RenderTaskHandle.h
@@ -519,6 +523,7 @@ set(PROJECT_SOURCES
         src/gui/VrHeadsetDialog.cpp
         src/gui/VrHeadsetDialog.h
         src/app/VrLink.h
+        src/app/VrBackendCheck.h
         src/app/AdbHeadset.h
         src/gui/Catalogue3DTableModel.cpp
         src/gui/Catalogue3DTableModel.h
@@ -622,6 +627,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_Movie.cpp
         src/gui/vtkWindowCube_Link.cpp
         src/gui/vtkWindowCube_VrHeadset.cpp
+        src/gui/vtkWindowCube_VrShare.cpp
         src/gui/vtkWindowCube_Raytrace.cpp
         src/gui/vtkWindowCube_RegionIO.cpp
         src/gui/Pane2DView.cpp

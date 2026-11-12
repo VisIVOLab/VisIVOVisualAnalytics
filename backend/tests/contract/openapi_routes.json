@@ -7,6 +7,7 @@
     "DELETE /v1/particle_render/{task_id}",
     "DELETE /v1/render/queue/{queue_id}",
     "DELETE /v1/render/{session_id}",
+    "DELETE /v1/share/selection",
     "DELETE /v1/tasks/{task_id}",
     "GET /soda/async",
     "GET /soda/async/{job_id}",
@@ -59,11 +60,15 @@
     "GET /v1/sed/defaults",
     "GET /v1/sessions",
     "GET /v1/sessions/{session_id}/datasets",
+    "GET /v1/share/selection",
+    "GET /v1/share/selection/mask",
     "GET /v1/spectral/linewidth/{dataset_id}",
     "GET /v1/stokes/{dataset_id}",
     "GET /v1/stokes/{dataset_id}/binary",
     "GET /v1/tasks/{task_id}",
     "GET /v1/vlkb/tap/presets",
+    "GET /v1/vr/backend_check",
+    "GET /v1/vr/info",
     "POST /soda/async",
     "POST /soda/async/{job_id}/destruction",
     "POST /soda/async/{job_id}/executionduration",
@@ -167,6 +172,7 @@
     "POST /v1/sed/fit",
     "POST /v1/sed/models",
     "POST /v1/sessions/new",
+    "POST /v1/share/selection",
     "POST /v1/simulations/arepo/extract",
     "POST /v1/simulations/arepo/inspect",
     "POST /v1/simulations/arepo/plan",
@@ -204,6 +210,7 @@
     "POST /v1/vlkb/mcutout/submit",
     "POST /v1/vlkb/tap",
     "POST /v1/volume_render/grid",
-    "POST /v1/volume_render/preview"
+    "POST /v1/volume_render/preview",
+    "POST /v1/vr/log"
   ]
 }

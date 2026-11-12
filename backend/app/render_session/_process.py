@@ -206,10 +206,11 @@ class RenderSessionProcess:
         # large cubes, and daemonic processes may not have children. close()
         # and the exit hook end it instead.
         self.gpu_slot = next(_next_slot)
+        from ..exit_with_parent import spawned_from_main_thread  # noqa: PLC0415
         self._process = ctx.Process(
             target=_serve,
             args=(child, self.session_id, self.dataset_path, self._factory, self.gpu_slot,
-                  self.hdu),
+                  self.hdu, spawned_from_main_thread()),
             name=f"visivo-render-{self.session_id[:8]}", daemon=False,
         )
         self._process.start()
@@ -221,40 +222,87 @@ class RenderSessionProcess:
                              daemon=True).start()
         await self._request("init")
 
-    async def close(self) -> None:
+    async def close(self, budget_s: float | None = None) -> None:
+        """Ask the child to close its session (it releases its GPU context),
+        then end it. ``budget_s`` bounds the whole close, for a shutdown: the
+        polite request gets 60 % of it and ending the child the rest, killed
+        if need be. Without it, up to 10 s for the request and 12 s to end the
+        child."""
         if self._released:
             return
+        deadline = None if budget_s is None else time.monotonic() + max(0.0, budget_s)
         try:
             if not self._refusing and self._process is not None and self._process.is_alive():
                 try:
-                    await asyncio.wait_for(self._request("close"), timeout=10)
+                    await asyncio.wait_for(self._request("close"),
+                                           timeout=10 if budget_s is None else 0.6 * budget_s)
                 except Exception:
                     logger.warning("[render-process %s] close did not answer",
                                    self.session_id[:8])
         finally:
             # Released even if this close is cancelled: a stalled child must
-            # not outlive its session.
+            # not outlive its session. The release is waited for whatever
+            # happens to this task, so its own limit is what bounds the close.
             self._refusing = True
-            await asyncio.shield(asyncio.get_running_loop().run_in_executor(None, self._release))
+            left = None if deadline is None else max(0.2, deadline - time.monotonic())
+            await asyncio.shield(self._release_in_thread(left))
 
-    def _release(self) -> None:
-        """End the child (it exits after close, else it is terminated) and free
-        the pipe and the writer. Idempotent; never on the event loop thread
+    def _release_in_thread(self, budget_s: float | None) -> asyncio.Future:
+        """:meth:`_release` on a thread of its own, as a future of the loop.
+        Not the loop's default executor: it is shared with ``to_thread`` and
+        the pool shutdown, and at shutdown with every other session, so a
+        release would queue behind them and no budget would bound it."""
+        loop = asyncio.get_running_loop()
+        done = loop.create_future()
+
+        def finish(error: BaseException | None) -> None:
+            if not done.done():
+                if error is None:
+                    done.set_result(None)
+                else:
+                    done.set_exception(error)
+
+        def run() -> None:
+            error = None
+            try:
+                self._release(budget_s)
+            except BaseException as exc:   # noqa: BLE001 - handed to the waiting close
+                error = exc
+            try:
+                loop.call_soon_threadsafe(finish, error)
+            except RuntimeError:
+                pass   # the loop is closed: nobody is waiting any more
+
+        threading.Thread(target=run, name=f"render-release-{self.session_id[:8]}").start()
+        return done
+
+    def _release(self, budget_s: float | None = None) -> None:
+        """End the child (it exits after close, else it is terminated, and
+        killed if that fails) and free the pipe and the writer, within
+        ``budget_s`` when given. Idempotent; never on the event loop thread
         while the child may still be running."""
         with self._release_lock:
             first = not self._release_started
             self._release_started = True
         if not first:
-            self._release_done.wait(timeout=15)
+            self._release_done.wait(timeout=15 if budget_s is None else budget_s)
             return
+        # Waits for: the child to exit by itself, after SIGTERM, after SIGKILL.
+        waits = (5.0, 5.0, 2.0) if budget_s is None else (
+            0.5 * budget_s, 0.3 * budget_s, 0.2 * budget_s)
         self._refusing = True
         try:
             proc = self._process
             if proc is not None:
-                proc.join(timeout=5)
+                proc.join(timeout=waits[0])
                 if proc.is_alive():
                     proc.terminate()
-                    proc.join(timeout=5)
+                    proc.join(timeout=waits[1])
+                if proc.is_alive():
+                    # Inside a native call that ignores SIGTERM (a driver, a
+                    # long VTK pass): a shutdown must not leave it behind.
+                    proc.kill()
+                    proc.join(timeout=waits[2])
             self._outbox.put(None)   # ends the writer
             try:
                 if self._conn is not None:
@@ -440,8 +488,14 @@ def _refuse_all(conn, message: str) -> None:
 
 
 def _serve(conn, session_id: str, dataset_path: str, factory: str, gpu_slot: int = 0,
-           hdu: int | None = None) -> None:
+           hdu: int | None = None, pdeathsig: bool = False) -> None:
     """Child process: run the session, answering requests in the order received."""
+    # The pipe's end-of-file stops the loop below only between requests; a
+    # child busy rendering, or one whose session never starts, would outlive
+    # a killed backend (issue #176). A thread, not a signal: on a Mac the
+    # main thread runs Cocoa.
+    from ..exit_with_parent import install as exit_with_parent  # noqa: PLC0415
+    exit_with_parent(pdeathsig=pdeathsig)
     # A spawned child starts with logging unconfigured: without this the
     # session's messages (render timings, failures) would be lost.
     logging.basicConfig(level=logging.INFO,

@@ -11,10 +11,6 @@
 #include <QFileInfo>
 #include <QProcessEnvironment>
 
-#ifdef Q_OS_UNIX
-#include <csignal>
-#include <unistd.h>
-#endif
 #include <QStandardPaths>
 #include <QRandomGenerator>
 #include <QUrl>
@@ -22,6 +18,9 @@
 
 #include <optional>
 #include <utility>
+
+// Last: on Windows it brings <windows.h> and its macros.
+#include "BackendProcessTree.h"
 
 using namespace Qt::StringLiterals;
 
@@ -534,9 +533,14 @@ PythonResolution resolvePythonExe(const QString &settingsPython,
 // BackendLauncher
 // ---------------------------------------------------------------------------
 
-BackendLauncher::BackendLauncher(QObject *parent) : QObject(parent)
+BackendLauncher::BackendLauncher(QObject *parent)
+    : QObject(parent),
+      m_tree(std::make_unique<visivo::BackendProcessTree>()),
+      m_retired(std::make_unique<visivo::RetiredProcessTrees>())
 {
     m_pollTimer.setSingleShot(false);
+    m_leftoverTimer.setInterval(kLeftoverPollMs);
+    QObject::connect(&m_leftoverTimer, &QTimer::timeout, this, &BackendLauncher::onRetiredTick);
     m_pollTimer.setInterval(kPollIntervalMs);
 
     QObject::connect(&m_pollTimer, &QTimer::timeout, this, &BackendLauncher::onPollTick);
@@ -552,33 +556,56 @@ BackendLauncher::BackendLauncher(QObject *parent) : QObject(parent)
 
 void BackendLauncher::stopBackendProcess(int graceMs)
 {
-    if (!m_process || m_process->state() != QProcess::Running)
-        return;
-#ifdef Q_OS_UNIX
-    // setsid() in the child made its pid the group id, so one signal reaches
-    // uvicorn AND every worker it spawned. Ask politely first: the backend's
-    // lifespan hook shuts the pool down cleanly when it is not mid-request.
-    const auto pgid = static_cast<pid_t>(m_process->processId());
-    if (pgid > 0)
-        ::killpg(pgid, SIGTERM);
-#endif
-    m_process->terminate();
-    if (m_process->waitForFinished(graceMs))
-        return;
-#ifdef Q_OS_UNIX
-    // Still there: a worker inside a long native call, or a server still
-    // draining. Take the group down rather than leave orphans behind.
-    if (pgid > 0)
-        ::killpg(pgid, SIGKILL);
-#endif
-    m_process->kill();
-    m_process->waitForFinished(1000);
+    // Also when the server itself has already gone: its workers may not have
+    // (#176). The tree is the backend's own process group (Unix) or job
+    // (Windows), so one request reaches uvicorn AND every worker it spawned.
+    // Asked politely first: the backend's lifespan hook shuts the pool down
+    // cleanly when it is not mid-request; whatever is left after the grace
+    // period is killed.
+    m_stopping = true;
+    m_tree->stop(m_process, graceMs);
+    // Earlier servers' trees, still in their grace.
+    m_leftoverTimer.stop();
+    m_retired->quit();
+    m_stopping = false;
 }
 
 BackendLauncher::~BackendLauncher()
 {
     cancel();
-    stopBackendProcess(3000);
+    stopBackendProcess(kTreeGraceMs);
+}
+
+void BackendLauncher::retireCurrentProcess()
+{
+    QProcess *old = std::exchange(m_process, nullptr);
+    std::unique_ptr<visivo::BackendProcessTree> tree =
+            std::exchange(m_tree, std::make_unique<visivo::BackendProcessTree>());
+    if (old && old->state() != QProcess::NotRunning) {
+        // A launch that never answered, replaced by a new one (Retry after
+        // the health wait ran out). Its server must not keep the port, and
+        // its finished() must not be taken for the new server's.
+        old->disconnect(this);
+        QObject::connect(old, &QProcess::finished, old, &QObject::deleteLater);
+        // The retired tree asks it to end (it is in the group, or the job) and
+        // kills it at the deadline. With no tree (Windows: not in a job)
+        // nothing would: end it now. No terminate() of our own: the group
+        // signal already reached it, and one request is all it needs.
+        if (!tree->alive())
+            old->kill();
+    } else if (old) {
+        old->deleteLater();
+    }
+    // The QProcess goes along, so that a quit before it is deleted reaps it.
+    m_retired->retire(std::move(tree), kTreeGraceMs, old);
+    if (!m_retired->isEmpty())
+        m_leftoverTimer.start();
+}
+
+void BackendLauncher::onRetiredTick()
+{
+    if (!m_retired->tick())
+        m_leftoverTimer.stop();
 }
 
 void BackendLauncher::startAsync(const QString &backendUrl,
@@ -906,7 +933,12 @@ void BackendLauncher::launchProcess()
     };
     appendLog(u"[launcher] Command     : %1 %2"_s.arg(pythonExe, args.join(u" "_s)));
 
-    m_process = new QProcess(this);
+    // A launch before this one (a Retry): its server and its tree go first,
+    // so the new tree never takes over its group.
+    if (m_process)
+        retireCurrentProcess();
+    QProcess *const proc = new QProcess(this);
+    m_process = proc;
     m_process->setWorkingDirectory(backendDir);
     // The backend ends with this client (backend/app/parent_watch.py): one left
     // behind by a crash or a force quit kept the port with a broken output pipe,
@@ -914,35 +946,37 @@ void BackendLauncher::launchProcess()
     QProcessEnvironment env = backendEnvironment();
     env.insert(u"VISIVO_EXIT_WITH_PID"_s, QString::number(QCoreApplication::applicationPid()));
     m_process->setProcessEnvironment(env);
-#ifdef Q_OS_UNIX
-    // Give the backend its own process GROUP, so that stopping it can stop the
-    // whole family. The backend runs a ProcessPoolExecutor, and its workers are
-    // separate processes that do not die with their parent: quitting the client
-    // was leaving them behind (317 of them, 16.8 GB, measured after a day's
-    // work). The backend's own shutdown hook cleans them up when it gets to
-    // run — but uvicorn drains in-flight requests BEFORE running it, so a quit
-    // during a long moment map never reaches that code and the client kills the
-    // server first. A group signal does not depend on the server cooperating.
-    m_process->setChildProcessModifier([] { ::setsid(); });
-#endif
+    // Give the backend a process tree of its own (a process group on Unix, a
+    // job on Windows), so that stopping it can stop the whole family. The
+    // backend runs a ProcessPoolExecutor, and its workers are separate
+    // processes that do not die with their parent: quitting the client was
+    // leaving them behind (317 of them, 16.8 GB, measured after a day's work).
+    // The backend's own shutdown hook cleans them up when it gets to run — but
+    // uvicorn drains in-flight requests BEFORE running it, so a quit during a
+    // long moment map never reaches that code and the client kills the server
+    // first. A group signal does not depend on the server cooperating.
+    m_tree->prepare(*m_process);
 
     // Capture stdout + stderr as they arrive.
-    QObject::connect(m_process, &QProcess::readyReadStandardOutput, this, [this]() {
-        const QString text = QString::fromLocal8Bit(m_process->readAllStandardOutput()).trimmed();
+    // Each handler is bound to this process, not to whatever m_process is
+    // when it runs: a replaced launch can still report after the new one has
+    // started (#176).
+    QObject::connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc]() {
+        const QString text = QString::fromLocal8Bit(proc->readAllStandardOutput()).trimmed();
         if (!text.isEmpty())
             appendLog(text);
     });
-    QObject::connect(m_process, &QProcess::readyReadStandardError, this, [this]() {
-        const QString text = QString::fromLocal8Bit(m_process->readAllStandardError()).trimmed();
+    QObject::connect(proc, &QProcess::readyReadStandardError, this, [this, proc]() {
+        const QString text = QString::fromLocal8Bit(proc->readAllStandardError()).trimmed();
         if (!text.isEmpty())
             appendLog(text);
     });
-    QObject::connect(m_process,
-                     &QProcess::errorOccurred,
-                     this, &BackendLauncher::onProcessError);
-    QObject::connect(m_process,
-                     &QProcess::finished,
-                     this, &BackendLauncher::onProcessFinished);
+    QObject::connect(proc, &QProcess::errorOccurred, this,
+                     [this, proc](QProcess::ProcessError error) { onProcessError(proc, error); });
+    QObject::connect(proc, &QProcess::finished, this,
+                     [this, proc](int exitCode, QProcess::ExitStatus status) {
+                         onProcessFinished(proc, exitCode, status);
+                     });
 
     emit messageChanged(u"Starting backend…"_s);
     m_process->start(pythonExe, args);
@@ -953,6 +987,9 @@ void BackendLauncher::launchProcess()
         emit failed(u"Could not start the backend process.\n\n%1"_s.arg(err));
         return;
     }
+    if (!m_tree->adopt(*m_process))
+        appendLog(u"[launcher] Could not put the backend in a process tree of its own; "
+                  u"processes it starts may outlive it"_s);
 
     emit messageChanged(u"Waiting for backend…"_s);
     m_elapsed.start();
@@ -1034,17 +1071,23 @@ void BackendLauncher::onPollHealthDone()
 // QProcess event handlers
 // ---------------------------------------------------------------------------
 
-void BackendLauncher::onProcessError(QProcess::ProcessError error)
+void BackendLauncher::onProcessError(QProcess *process, QProcess::ProcessError error)
 {
-    if (m_cancelled)
+    if (m_cancelled || process != m_process)
         return;
     appendLog(u"[launcher] Process error %1: %2"_s
               .arg(static_cast<int>(error))
-              .arg(m_process ? m_process->errorString() : QString()));
+              .arg(process->errorString()));
 }
 
-void BackendLauncher::onProcessFinished(int exitCode, QProcess::ExitStatus status)
+void BackendLauncher::onProcessFinished(QProcess *process, int exitCode,
+                                        QProcess::ExitStatus status)
 {
+    // A replaced launch: retireCurrentProcess() disconnected it, and its tree
+    // is already retired. Nothing of it may act on the current backend.
+    if (process != m_process)
+        return;
+
     const QString statusStr =
             (status == QProcess::NormalExit) ? u"normal exit"_s : u"crash"_s;
     appendLog(u"[launcher] Process finished: code=%1 status=%2"_s
@@ -1052,11 +1095,20 @@ void BackendLauncher::onProcessFinished(int exitCode, QProcess::ExitStatus statu
               .arg(statusStr));
 
     // Flush any remaining buffered output.
-    if (m_process) {
-        const QString out = QString::fromLocal8Bit(m_process->readAllStandardOutput()).trimmed();
-        const QString err = QString::fromLocal8Bit(m_process->readAllStandardError()).trimmed();
-        if (!out.isEmpty()) appendLog(out);
-        if (!err.isEmpty()) appendLog(err);
+    const QString out = QString::fromLocal8Bit(process->readAllStandardOutput()).trimmed();
+    const QString err = QString::fromLocal8Bit(process->readAllStandardError()).trimmed();
+    if (!out.isEmpty()) appendLog(out);
+    if (!err.isEmpty()) appendLog(err);
+
+    // The server is gone but its workers may not be: they are not its
+    // children in any sense that ends them (#176). Its tree is retired with
+    // its own group id; a later launch gets a fresh one. Not during a stop,
+    // which is already ending the tree and is the one waiting here.
+    if (!m_stopping) {
+        m_retired->retire(std::exchange(m_tree, std::make_unique<visivo::BackendProcessTree>()),
+                          kTreeGraceMs, process);
+        if (!m_retired->isEmpty())
+            m_leftoverTimer.start();
     }
 
     // Only treat as unexpected if the poll loop is still running
