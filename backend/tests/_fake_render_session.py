@@ -29,6 +29,11 @@ class FakeRenderSession:
             raise ValueError("bad command")
         if kind == "busy":
             time.sleep(1.0)                 # a long render, from the pipe's point of view
+        if kind == "ignore_sigterm":
+            import signal
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)   # a driver that will not let go
+        if kind == "hang":
+            time.sleep(3600)                # a render that never returns
         if kind == "lut":
             self.idr = True
 

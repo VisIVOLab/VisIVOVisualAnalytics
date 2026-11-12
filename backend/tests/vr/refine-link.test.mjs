@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 const sockets = [];
 class FakeSocket {
   static OPEN = 1;
-  constructor(url) { this.url = url; this.readyState = 0; this.sent = []; this.l = {}; sockets.push(this); }
+  constructor(url, protocols) { this.url = url; this.protocols = protocols || []; this.readyState = 0; this.sent = []; this.l = {}; sockets.push(this); }
   addEventListener(k, f) { (this.l[k] ||= []).push(f); }
   send(m) { this.sent.push(JSON.parse(m)); }
   close() { this.readyState = 3; for (const f of this.l.close || []) f({ code: 1000 }); }
@@ -62,7 +62,9 @@ async function connected(opts = {}) {
 test('under a path prefix the page talks to the prefixed API', async () => {
   deleted.length = 0;
   const { r, ws } = await connected();
-  assert.equal(ws.url, 'ws://localhost:18900/portal/visivo/v1/render/sP/ws?token=t');
+  // The prefix in the address; the token as a subprotocol, not in the URL (#166).
+  assert.equal(ws.url, 'ws://localhost:18900/portal/visivo/v1/render/sP/ws');
+  assert.deepEqual(ws.protocols, ['visivo.v1', 'visivo-token.t']);
   assert.deepEqual(ws.sent[0], { type: 'stream', window: 2, max_fps: 72 });
   r.setEnabled(false);
   await tick();
@@ -75,7 +77,7 @@ test('over a far link the window widens (and the eye is capped when asked)', asy
   assert.deepEqual(r._eyeSize(eyes), [2064, 2208]);
   const t0 = 1000;
   for (let i = 0; i < 12; i++) {
-    const id = r.book.add({ tSent: t0, version: r.version, eyes: [], model: null, aCentre: null });
+    const id = r.book.add({ tSent: t0, version: r.version, gen: r.gen, datasetId: r.datasetId, sessionId: r.sessionId, eyes: [], model: null, aCentre: null });
     // performance.now() - tSent ~ the measured 122 ms at 512^2 on PLEIADI.
     const realNow = performance.now;
     performance.now = () => t0 + 122;
@@ -96,7 +98,7 @@ test('over a far link the window widens (and the eye is capped when asked)', asy
 test('by default the eye keeps its size over a far link', async () => {
   const { r } = await connected();
   for (let i = 0; i < 12; i++) {
-    const id = r.book.add({ tSent: 1000, version: r.version, eyes: [], model: null, aCentre: null });
+    const id = r.book.add({ tSent: 1000, version: r.version, gen: r.gen, datasetId: r.datasetId, sessionId: r.sessionId, eyes: [], model: null, aCentre: null });
     const realNow = performance.now;
     performance.now = () => 1122;
     try { r._onMessage(vxr1(id, { render: 28, depth: 2.2, encode: 4.5, total: 41 })); } finally { performance.now = realNow; }

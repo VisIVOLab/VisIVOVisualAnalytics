@@ -32,6 +32,176 @@ are preserved here unedited; the branch names they refer to are historical.
   size is not reduced (measured: a 768 px eye scaled up is worse than the
   headset's own picture). The VR guide has a section on cluster backends with
   the PLEIADI numbers and what to measure there.
+- **VR headset: no dead ends, safe upgrades, a first-run guide, diagnostics
+  (part of #166).** The `/vr/` page now loads its code from addresses that
+  change with every version (`/vr/b/<build>/…`, cached for good; the page
+  itself is always revalidated), and checks the backend's page build and page
+  API at start and at every reconnection (`GET /v1/vr/info`, public): an open
+  tab older than the backend says *The backend was updated: reload*, a page
+  outside the backend's API range says *reload* or *update the application*.
+  The page watches the backend every 5 s (1 to 5 s while it does not answer)
+  and says what went wrong on a card in front of the viewer in the headset
+  and in a banner on the page, each with its way out: the backend unreachable
+  (in a headset over USB: the `adb reverse` link lost, *Open on Headset*
+  restores it), the backend restarted (the cube is opened again by its path,
+  the view kept), the cube's dataset gone after the desktop's session ended
+  (opened again), the token refused (re-open from the desktop, or paste it),
+  the render session's socket dropped (the headset's own rendering meanwhile,
+  reconnection with a backoff, the panel says so), a WebGL context lost (every
+  GL object made again from what the page holds; the VR session is ended, and
+  *Enter VR* goes back in), the VR session ended by the headset. The first
+  entry into VR shows a three-page controls guide on the card (kept as seen
+  in the browser's settings; **?** on the panel recalls it). The frame-rate
+  governor, on by default, now also makes the eye buffer smaller (down to
+  0.7×) when the samples per voxel are already at 0.5 and frames are still
+  missed, and the panel says *Quality lowered to hold 90 Hz: …*; a cube over
+  the device's memory budget (256 MiB of texture on a headset with 8 GB) is
+  refused before it is read. A lasting error card moves aside after 6 s and
+  **Hide** folds it into a line on the panel. Page errors and lifecycle events
+  go to the backend log through `POST /v1/vr/log` (token needed, 16 KiB, 25
+  events per request, 60 events a minute per token; tokens, token and session
+  values, render ids, path directories and control characters scrubbed, on
+  the page and again on the backend); `/v1/vr/info` limits token checks per
+  client address; a non-ASCII token gets a 401 instead of a 500 on every
+  route; the page's render WebSocket carries its token as a subprotocol, not
+  in the URL;
+  **Copy diagnostics** gathers versions, GPU limits, settings and the last
+  events. *Open in VR Headset…* gives numbered next steps for each state with
+  the install command for adb on this system, says on macOS when the Quest is
+  on USB but adb lists nothing (*developer mode or USB debugging is off on
+  the headset*), offers **Retry** and **Copy Error**, and selects the headset
+  used last time. CI runs the page's JavaScript tests and a headless-Chrome
+  smoke of the page against a backend (`validation/vr_lifecycle.mjs --smoke`).
+  Fixed on the page at the same time: a load now records the file it was
+  started for (the path field edited during a transfer no longer renames the
+  cube in the recipes), and of two loads the newest is shown even when the
+  older one finishes last; a refined frame of the previous cube decoded after
+  a cube change is dropped instead of fading in over the new one; a late close
+  of the old render socket no longer stops the new stream; a right ascension
+  crossing 0° is interpolated and ticked through 0 (it ran back through 180°).
+- **A single channel is one channel in the HI products and the copilot's
+  moment summary.** `POST /v1/analysis/hi-products` and the copilot tools
+  `hi_products` and `moment_map_summary` read `channel_end <= channel_start`
+  as "no range", so a request for channel 3 alone (3, 3) integrated the whole
+  cube: on an 8-channel cube the flux and HI mass came out 8 times too large.
+  The range is now inclusive with `null` as the only "not given" marker:
+  omitting both ends still integrates the whole cube, `(k, k)` is channel k,
+  and a reversed range is refused (422). An explicit `0, 0` now means channel
+  0. The desktop client does not call this route; the copilot tools are told
+  to omit both ends for the whole cube.
+- **Gaussian line fit without a baseline fits 3 parameters, not 5.**
+  `POST /v1/spectral/linefit` with `with_baseline: false` kept the two
+  baseline terms as free parameters that the model then ignored: 4 samples
+  could not be fitted and with more samples every uncertainty came back
+  unavailable because the covariance was singular. Only the peak, centre and
+  width are fitted now; the response is unchanged in shape, with `baseline`
+  `[0, 0]` (it used to echo the starting guess) and `continuum` 0. Every fit
+  now needs one sample more than its parameters (4 without a baseline, 6
+  with): 5 samples with a baseline used to "fit" with zero degrees of freedom
+  and no uncertainty at all. A fit that lands on a negative width now converts
+  its covariance to `|sigma|`, so the integrated-flux error no longer uses the
+  amplitude-width covariance with the wrong sign (0.97 instead of 0.51 on a
+  test line). The desktop always fits with a baseline: its dialog asked for
+  4 finite channels, the backend in effect needed 5 (4 failed inside the
+  fit), and both now need 6.
+- **Velocity-field display grid: right spacing on thin grids, samples at
+  their block centres.** When one axis was shorter than the block-averaging
+  factor, `grid_bin` (and the basin, density and difference LODs) returned the
+  grid unreduced while multiplying its spacing by the factor, so a
+  (2, 128, 128) grid kept its size but its spacing went from 1 to 4. The
+  factor is now per axis (a short axis is reduced only as far as two samples
+  survive) and the spacing follows each axis's factor; the new header
+  `X-Visivo-Downsample-Factors` gives them as `x,y,z`
+  (`X-Visivo-Downsample-Factor` is still the largest). The origin of the
+  reduced grid is now the centre of the first block,
+  `origin + (f - 1) / 2 · spacing`, instead of the original first sample,
+  which shifted the reduced field by half a block. The desktop viewer now
+  follows this geometry (next entry).
+- **Desktop velocity viewer: reduced grids are drawn where the backend put
+  them.** The viewer rebuilt the display LOD from the full shape times one
+  factor with the full-resolution origin, so glyphs and streamlines sat half a
+  block off a full-resolution ROI and the two slices of a (2, 512, 512) field
+  were drawn four cells apart; the basins and the backend density were
+  stretched end to end over the box, a third placement. Each reduced product
+  is now placed from what its route sends, rescaled to the viewer's box size,
+  with each sample at its block centre (`src/gui/VelocityLodGeometry.h`):
+  glyphs and streamlines from the `grid_bin` factors
+  (`X-Visivo-Downsample-Factors`), origin and spacing; basins from the
+  `basins_bin` factors, origin and spacing; the backend density from the
+  `density_bin` origin and spacing, with factors recomputed from the request
+  (that route sends none). With an older backend that sends no per-axis
+  factors, the viewer works them out from the single factor (`grid_bin`) or
+  from the request and the size that came back (`basins_bin`), and places
+  every sample at its block centre. The viewer now always sends its current
+  box as `box_mpc` (0 for unit cells) with `basins_bin` and `density_bin`, so
+  the backend works in the same cells the viewer draws: the basins follow the
+  flow in cells, box/(n_i - 1) per axis, and the backend ∇·v matches the local
+  fallback (`vtkGradientFilter` on the viewer's spacing). When the box size
+  changes, both follow one rule: on a non-cubic grid, a change to or from
+  "no box" changes the ratio of the cells, so the basins and the backend ∇·v
+  are asked for again; a change between two boxes, and any change on a cubic
+  grid, scales every cell by one factor k, so the cached basin labels are
+  re-placed and the cached ∇·v is rescaled in place (positions by k, values by
+  1/k). The Gaussian line fit's minimum is now one rule: the dialog asked for
+  4; the backend in effect needed 5; both now need 6.
+- **Basins of attraction no longer depend on the flow's speed.** The basin
+  segmentation stepped each streamline by `min(0.5 cell, |v|)`, comparing a
+  speed with a length, and counted a path that stayed in one cell for 5 steps
+  as converged: a slow but regular flow was declared converged everywhere. A
+  one-attractor field gave 1 basin over all 4913 voxels, but the same field
+  times 0.001 gave 8 basins over 64 voxels, and a two-attractor field times
+  0.001 gave none. Streamlines are now integrated with a fixed half-cell step
+  along the flow direction (velocities converted to cells per axis), so the
+  labels are identical at any speed scale. Saddles are no longer basins:
+  every candidate attractor is probed one cell away along each axis and kept
+  only if the probes flow back to it, so the separatrix between two wells
+  (625 voxels on a 25³ double well) stays unassigned instead of forming a
+  third basin, and a pure saddle gives none instead of one. NaN voxels are
+  left out of the interpolation; a path whose sample is mostly missing data
+  is dropped rather than counted as stuck, so a blank region cannot become a
+  false basin, and a sink one or two cells from a small blank patch keeps its
+  basin (it used to keep only 68.7% of the grid at two cells, and nothing at
+  one). On a non-cubic grid the segmentation uses the physical cell size per
+  axis, so it changes with the box size; on a cubic grid it does not.
+  `basins_bin` and `density_bin` take an optional `box_mpc` to compute with
+  the box the viewer shows instead of the one the field was opened with (`0`
+  = unit cells, omitted = the dataset's box, negative = 422), and their
+  `X-Visivo-Spacing`/`X-Visivo-Origin` follow the box actually used;
+  `basins_bin` now also sends them, with `X-Visivo-Downsample-Factors`. A
+  probe that runs into blank voxels while moving away counts as escaped, so a
+  saddle with blank voxels on its unstable axis is not a basin either (a 33³
+  double well with two small blank patches gave its 1089-voxel separatrix as
+  a third basin).
+- **The desktop leaves no local backend process behind (#176, desktop part).**
+  The local backend the client starts runs in a process tree of its own (a
+  process group on macOS and Linux, a job object that kills its processes when
+  the client exits on Windows). At quit, after the render sessions are closed,
+  the client stops the whole tree: `SIGTERM` to the group, up to 3 s for it to
+  empty — the workers, not only the server — then `SIGKILL` for the rest.
+  Workers the backend left running when it exited by itself are ended too.
+  Before, the client waited only for the server process, so pool workers and
+  the resource tracker could outlive it with parent PID 1.
+- **The backend's child processes end with it, even when it is killed
+  (#176, backend half).** Compute-pool workers and the resource tracker were
+  found running nine days after their backend was gone. Every child the
+  backend starts (compute pool, render-session processes, cube readers,
+  pyramid builds and their workers) now runs a small watcher thread that
+  exits the process once its parent is gone: the parent's multiprocessing
+  sentinel (a pipe on POSIX, a process handle on Windows) plus a once-a-second
+  parent-PID check (a change from the PID seen at start, so it also holds
+  under the `forkserver` start method), and on Linux the parent-death signal
+  for children started from the main thread. A pyramid build is asked to stop
+  first and gets 5 s, so its partial file goes too. A child inside a native
+  call that holds the interpreter lock ends when the call returns. Once the
+  children are gone the resource tracker ends and removes leftover shared
+  memory. Measured by hand on a Mac with `kill -9` of a uvicorn backend with
+  three busy pool workers and a render session: all five children, the
+  resource tracker included, gone within 2.2 s. On shutdown the render
+  sessions now close in parallel, each within 2.5 s (1.5 s to close its
+  session, then it is ended and if need be killed). A backend whose desktop
+  client (`VISIVO_EXIT_WITH_PID`) is gone exits outright if uvicorn is still
+  waiting on connections 10 s later, but lets a shutdown already under way
+  finish first (up to 8 s more).
 
 - **VR headset, final version: the desktop's cube in the same session, a
   panel in the headset, settings kept (#172, step 6 of #166).** The `/vr/`

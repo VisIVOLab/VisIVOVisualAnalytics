@@ -58,7 +58,19 @@ clips). The desktop binding is `BackendClient::openVelocityField` /
 
 `/v1/velocity/grid_bin` block-averages the field so its largest dimension is
 `≤ max_dim` (default **128**), preserving the physical extent (spacing grows by
-the same factor). This bounds both the transfer and client memory — a raw 512³
+the same factor, per axis; an axis too short for the factor is reduced less, see
+[`grid_bin`](backend-api/velocity.md#post-v1velocitygrid_bin)). The returned
+origin is the centre of the first block. The viewer places the LOD grid with
+the geometry the backend reports: the per-axis factors of
+`X-Visivo-Downsample-Factors` and the `X-Visivo-Origin`/`X-Visivo-Spacing`
+headers, rescaled to the viewer's own **Box size** (both frames are centred on
+0, so only the cell changes). With an older backend that sends only the single
+`X-Visivo-Downsample-Factor`, it applies that factor to every axis that was
+reduced and still puts each sample at its block centre. The maths is in
+`src/gui/VelocityLodGeometry.h`, unit-tested in
+`tests/test_velocity_lod_geometry.cpp`. So glyphs and streamlines drawn from the
+LOD line up with a full-resolution ROI, and a thin grid such as `(2, 512, 512)`
+keeps its two slices a box apart. This bounds both the transfer and client memory — a raw 512³
 field is ~1.6 GB, its 128³ LOD ~50 MB. The summary line shows `LOD ÷N of M³`
 when downsampling is active.
 
@@ -90,30 +102,80 @@ Algorithm (`app/velocity_basins.py`, computed on a coarse grid — `basin_max_di
 default 64, capped at 96):
 
 1. Integrate every grid voxel's streamline through the field, vectorised over all
-   voxels (`scipy.ndimage.map_coordinates` trilinear sampling), with an adaptive
-   step `min(step, |v|)` along the flow direction.
-2. A streamline **converges** when `|v| ≤ eps`, when its direction reverses
-   (it stepped past a critical point — robust on coarse grids), or when it
-   stagnates in one interior cell. Boundary-pinned, limit-cycle (rotational) and
-   truncated paths stay *unassigned* (label 0).
-3. Converged endpoints pool into **attractor cells** (endpoint density ≥
-   threshold); `scipy.ndimage.label` (26-connectivity) turns connected attractor
-   cells into basins; each voxel inherits its sink's basin label.
+   voxels (`scipy.ndimage.map_coordinates` trilinear sampling), with a fixed
+   step of half a cell along the unit flow direction (velocities converted to
+   cells per axis, so an anisotropic grid keeps the physical direction). A
+   basin is a property of the streamline geometry, which depends only on the
+   direction field: the same field at any overall speed scale gives the same
+   basins. An earlier step `min(step, |v|)` compared a speed with a length, so a
+   slow but regular flow crawled and was declared converged everywhere (a
+   one-attractor field at ×0.001 came out as 8 basins covering 64 of 4913
+   voxels).
+2. A streamline **ends** at a critical point: when `|v| ≤ eps` (relative to
+   the field's median speed), when its direction reverses (it stepped over a
+   critical point, which is usually how a fixed step ends at a sink), or when
+   it stays in one interior cell for 5 steps (with a fixed step, only while
+   circling a critical point). Boundary-pinned, limit-cycle (rotational) and
+   truncated paths stay *unassigned* (label 0). NaN voxels are left out of
+   the trilinear interpolation (field and validity mask interpolated with NaN
+   as 0, velocity renormalised by the valid weight); a sample with less than
+   half its weight on valid voxels is missing data, and its path stays
+   unassigned too.
+3. Endpoints pool into **attractor cells** (endpoint density ≥ threshold);
+   `scipy.ndimage.label` (26-connectivity) groups connected cells into
+   candidate attractors.
+4. Each candidate is kept only if it is a **sink**: six probes started one cell
+   away along ±x, ±y, ±z are traced for 8 more cells and must all end back in
+   the attractor's cells or within 2 cells of its centre. A saddle sheds the
+   probe on its unstable axis, however weak that axis is, so it is rejected:
+   on a double well the separatrix plane between the wells stays unassigned
+   rather than becoming a third basin, and a pure saddle gives no basin. A
+   probe that runs into missing data farther out than it started has escaped
+   (so a saddle with blank voxels on its unstable axis is still rejected); one
+   that stops at or inside its start distance is neutral. Only if an axis has
+   no live probe left is the candidate kept unjudged, so a sink next to a blank
+   patch keeps
+   its basin. Each voxel inherits the label of the sink its path ended at.
+
+**Box size and non-cubic grids.** The direction used is the physical one:
+velocities are divided by the physical cell size per axis. Without a box size
+the cells are unit cubes; with one they are `box / (n - 1)` per axis. On a
+cubic grid that is a common factor and the labels do not depend on the box. On
+a non-cubic grid (for example 64×64×32) the cells are anisotropic once a box is
+given, so the box size changes the segmentation, and the viewer must recompute
+the basins when the box changes rather than only re-placing them. The same
+holds for the ∇·v density. `basins_bin` and `density_bin` take the viewer's
+box as `box_mpc` (`0` = unit cells, omitted = the box the field was opened
+with), and their spacing/origin headers follow it.
 
 `direction = +1` gives basins of attraction (superclusters); `-1` gives basins of
 repulsion (voids / the central repeller) — selectable in the viewer via the
 **Basin type** dropdown (Attraction / Repulsion), which re-segments on change. The
 viewer renders one semi-transparent
 coloured surface per basin (`vtkDiscreteFlyingEdges3D` + a categorical LUT, label
-0 transparent) at 0.35 opacity so the streamlines show through. The labels are
-scale-independent and cached, so changing the box size re-places them without
-recomputing. `basin_max_dim` is clamped server-side so a direct API call can't
+0 transparent) at 0.35 opacity so the streamlines show through. The basin grid
+is the field block-averaged to `basin_max_dim`, so the viewer places it like the
+LOD grid, each label at its block centre and not stretched end to end over the
+box: from the `X-Visivo-Downsample-Factors`, `X-Visivo-Origin` and
+`X-Visivo-Spacing` that `basins_bin` sends, rescaled to the box. With an older
+backend that sends none of them it uses the backend's `lod_factors` for the
+request, checked against the size that came back.
+
+The labels are cached. Changing the box size re-places them without
+recomputing when every cell scales by the same factor: any change on a cubic
+grid, and a change between two boxes on any grid. On a non-cubic grid a change
+to or from "no box" changes the ratio of the cells (unit cells against
+box/(n_i - 1)), and with it the flow direction in cells that the segmentation
+follows, so the viewer asks for the basins again. Every basins request carries
+the viewer's current box as `box_mpc` (0 for unit cells, never left out: an
+omitted box would mean the dataset's own box), so the backend segments in the
+cells the viewer draws. `basin_max_dim` is clamped server-side so a direct API call can't
 force a full-resolution integration sweep.
 
 The status bar reports the basin count, the fraction of volume assigned, and the
 largest basins' share of the assigned volume (which supercluster/void dominates).
 
-This is a coarse **visualization heuristic** (adaptive Euler + reversal/stagnation
+This is a coarse **visualization heuristic** (fixed-step Euler + reversal/stagnation
 convergence on a smoothed, downsampled field), not a publication-grade watershed —
 appropriate for interactive exploration, consistent with how the original
 analyses work on smoothed fields.
@@ -139,8 +201,15 @@ Void can be shown together — an attractor glows orange, a repeller blue.
 For a **downsampled (large) field**, the ≤128³ display LOD is too coarse to
 resolve the ∇·v cores, so the viewer fetches a higher-resolution divergence from
 the backend (`POST /v1/velocity/density_bin` → `BackendClient::fetchVelocityDensity`,
-capped at 256³) and places it at the client box geometry — full-res for fields
-≤256³. A full-resolution display computes ∇·v locally with no round-trip. The
+capped at 256³) and places it at the client box geometry with the same
+block-centre placement as the LOD grid (its reported origin and spacing,
+rescaled to the box) — full-res for fields ≤256³. The request carries the
+viewer's current box as `box_mpc` (0 included), so ∇·v is per the viewer's
+cells, as in the local fallback. On a box change the basins' rule applies: if
+every cell scales by one factor k the cached grid is rescaled in place
+(positions by k, ∇·v by 1/k, so the contours keep their shape); if the ratio of
+the cells changes (a non-cubic grid going to or from "no box") it is fetched
+again. A full-resolution display computes ∇·v locally with no round-trip. The
 backend worker (`velocity_density_worker`) is unit-tested (radial in/outflow →
 ∇·v = ∓3 at unit spacing).
 

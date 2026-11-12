@@ -510,3 +510,79 @@ void TestVrLink::findsAdbOnPathThenInSdk()
                     .contains(u"/home/u/Android/Sdk/platform-tools"_s));
 #endif
 }
+
+// ── Next-step guidance (epic #166) ───────────────────────────────────────────
+
+void TestVrLink::installCommandPerPlatform()
+{
+    using AdbHeadset::Platform;
+    QCOMPARE(AdbHeadset::installCommand(Platform::MacOS), u"brew install android-platform-tools"_s);
+    QCOMPARE(AdbHeadset::installCommand(Platform::Linux), u"sudo apt install adb"_s);
+    QCOMPARE(AdbHeadset::installCommand(Platform::Windows), u"winget install Google.PlatformTools"_s);
+    for (Platform p : { Platform::MacOS, Platform::Linux, Platform::Windows }) {
+        const AdbHeadset::Guidance g = AdbHeadset::adbMissingGuidance(p);
+        QVERIFY(g.problem);
+        QVERIFY(g.steps.first().contains(AdbHeadset::installCommand(p)));
+        QVERIFY(g.steps.join(u' ').contains(u"Retry"_s));
+    }
+}
+
+void TestVrLink::readsQuestOnUsbFromSystemProfiler()
+{
+    using AdbHeadset::UsbQuest;
+    // The shape of `system_profiler -json SPUSBHostDataType` on macOS 26: a
+    // Quest under a hub, next to other devices.
+    const QByteArray withQuest = R"json({"SPUSBHostDataType":[{"_name":"USB 3.1 Bus"},
+        {"_items":[{"_items":[{"_name":"LG Monitor Controls","USBDeviceKeyVendorID":"0x043e"},
+                              {"_name":"Quest 3","USBDeviceKeyVendorID":"0x2833","USBDeviceKeyProductID":"0x0186"}],
+                    "_name":"USB2.1 Hub","USBDeviceKeyVendorID":"0x0bda"}],"_name":"USB 3.1 Bus"}]})json";
+    QCOMPARE(AdbHeadset::usbQuestFromProfiler(withQuest), UsbQuest::Present);
+    const QByteArray without = R"json({"SPUSBHostDataType":[{"_items":[{"_name":"HD Pro Webcam C920","USBDeviceKeyVendorID":"0x046d"}]}]})json";
+    QCOMPARE(AdbHeadset::usbQuestFromProfiler(without), UsbQuest::Absent);
+    // The older SPUSBDataType writes "0x2833  (Oculus VR, Inc.)".
+    const QByteArray older = R"json({"SPUSBDataType":[{"_items":[{"_name":"Quest 2","vendor_id":"0x2833  (Oculus VR, Inc.)"}]}]})json";
+    QCOMPARE(AdbHeadset::usbQuestFromProfiler(older), UsbQuest::Present);
+    QCOMPARE(AdbHeadset::usbQuestFromProfiler("not json"), UsbQuest::Unknown);
+    QCOMPARE(AdbHeadset::usbQuestFromProfiler(R"json({"other":[]})json"), UsbQuest::Unknown);
+    QCOMPARE(AdbHeadset::usbProbeArgs(), QStringList({ u"-json"_s, u"SPUSBHostDataType"_s }));
+}
+
+void TestVrLink::guidanceNamesTheNextStep()
+{
+    using AdbHeadset::Status;
+    using AdbHeadset::UsbQuest;
+    // The case adb cannot explain: on USB, but not listed.
+    const AdbHeadset::Guidance usb = AdbHeadset::guidanceFor(Status::NoDevice, UsbQuest::Present);
+    QVERIFY(usb.headline.contains(u"developer mode or USB debugging is off on the headset"_s));
+    QVERIFY(usb.steps.join(u' ').contains(u"Developer mode"_s));
+    QVERIFY(usb.steps.join(u' ').contains(u"Allow USB debugging"_s));
+    QVERIFY(AdbHeadset::guidanceFor(Status::NoDevice, UsbQuest::Absent).steps.join(u' ').contains(u"data cable"_s));
+    QCOMPARE(AdbHeadset::guidanceFor(Status::NoDevice).headline, u"No headset connected."_s);
+    const AdbHeadset::Guidance unauth = AdbHeadset::guidanceFor(Status::Unauthorized);
+    QVERIFY(unauth.steps.join(u' ').contains(u"Allow USB debugging"_s));
+    QVERIFY(unauth.steps.join(u' ').contains(u"Always allow from this computer"_s));
+    for (Status st : { Status::NoDevice, Status::Unauthorized, Status::NoPermissions, Status::Authorizing,
+                       Status::Offline }) {
+        const AdbHeadset::Guidance g = AdbHeadset::guidanceFor(st);
+        QVERIFY(g.problem);
+        QVERIFY(!g.headline.isEmpty());
+        QVERIFY(!g.steps.isEmpty());
+        QCOMPARE(g.anchor, u"troubleshooting"_s);
+    }
+    QVERIFY(!AdbHeadset::guidanceFor(Status::Ready).problem);
+}
+
+void TestVrLink::prefersTheLastHeadset()
+{
+    const QStringList serials{ u"phone-1"_s, u"2G0YC1ZF8B0123"_s };
+    QCOMPARE(AdbHeadset::preferredIndex(serials, u"2G0YC1ZF8B0123"_s), 1);
+    QCOMPARE(AdbHeadset::preferredIndex(serials, u"gone"_s), 0);
+    QCOMPARE(AdbHeadset::preferredIndex(serials, QString()), 0);
+    QCOMPARE(AdbHeadset::preferredIndex({}, u"x"_s), -1);
+    // Copy Error shortens the home directory to "~".
+    QCOMPARE(AdbHeadset::homeShortened(u"/Users/john/Library/Android/sdk/platform-tools/adb"_s, u"/Users/john"_s),
+             u"~/Library/Android/sdk/platform-tools/adb"_s);
+    QCOMPARE(AdbHeadset::homeShortened(u"/opt/homebrew/bin/adb"_s, u"/Users/john"_s), u"/opt/homebrew/bin/adb"_s);
+    QCOMPARE(AdbHeadset::homeShortened(u"/Users/johnny/adb"_s, u"/Users/john"_s), u"/Users/johnny/adb"_s);
+    QCOMPARE(AdbHeadset::homeShortened(u"C:\\Users\\Ann\\AppData\\adb.exe"_s, u"C:/Users/Ann"_s), u"~/AppData/adb.exe"_s);
+}

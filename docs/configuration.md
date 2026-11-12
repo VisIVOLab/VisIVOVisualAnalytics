@@ -278,7 +278,7 @@ refused. Redirects are checked with the same policy.
 | `SLURM_JOB_ID` | Marks the backend as running in a SLURM job, so the memory grant below is taken into account. |
 | `SLURM_MEM_PER_NODE` | Memory granted to the job, in MiB; counts as a memory limit. `0` (the whole node) sets none. |
 | `SLURM_MEM_PER_CPU`, `SLURM_CPUS_ON_NODE` | Used together as the memory grant when `SLURM_MEM_PER_NODE` is absent. |
-| `VISIVO_EXIT_WITH_PID` | Set by the desktop client on the backend it starts: the backend shuts down once that process is gone. A backend started by hand, without it, is not affected. |
+| `VISIVO_EXIT_WITH_PID` | Set by the desktop client on the backend it starts: the backend shuts down once that process is gone (checked every 2 s). If uvicorn is still waiting for open connections 10 s later, the backend exits outright. A shutdown that is already closing render views and the worker pool by then is given up to 8 s more to finish. A backend started by hand, without it, is not affected. Independently of this variable, the processes the backend starts end on their own however the backend ended. Worker-pool processes, render views and cube readers end within about a second. A pyramid build is first asked to stop and gets up to 5 s to remove its partial file. A process inside a long native call that holds the Python interpreter lock (a VTK render, some numpy work) ends when that call returns, except render views and cube readers on Linux, which the kernel kills. |
 | `ADMIN_SESSION_SECRET` | **Secret.** Fallback for `VISIVO_SNAPSHOT_SECRET`. |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | See [Copilot](#copilot). |
 
@@ -297,3 +297,17 @@ These variables are read by the desktop client, not by the backend.
 | `VISIVO_PACKAGE_DIR` | set by the Linux launcher | The directory of the extracted Linux package; the client looks for the bundled backend runtime in its `python/` directory first. Set by `./VisIVOVisualAnalytics`, not by hand. |
 | `SAMP_HUB` | `~/.samp` | The standard SAMP variable: `std-lockurl:<url>` (a `file:` or `http(s):` URL) names the hub lockfile the client reads; otherwise it reads `~/.samp`. |
 | `VISIVO_SUBVOLUME_PARALLEL` | `4` | Parallel requests a full-resolution cube or sub-cube load (`/v1/cube/subvolume_bin`) is split into, along the spectral axis (1 to 16). |
+
+### The local backend ends with the client
+
+The local backend the client starts (no `--backend` given) runs together with
+everything it starts in turn — its worker pool, render sessions, readers and
+Python's resource tracker — as one unit: on macOS and Linux a process group of
+its own, on Windows a job object. When the client quits, it first closes its
+render sessions, then asks the whole group to end (`SIGTERM`), waits up to
+3 seconds, and kills whatever is left (`SIGKILL`). If the backend stops by
+itself, the client ends the workers it left behind the same way. On Windows the
+job ends every process in it as soon as the client exits, even after a crash.
+After a client crash on macOS or Linux the backend notices that the client is
+gone (`VISIVO_EXIT_WITH_PID`) and shuts down. A backend started by hand, or a
+remote one, is never stopped by the client.
