@@ -566,10 +566,12 @@ class PointRenderSession(PointStereoMixin):
             self._data_range, cmin, cmax = None, 0.0, 1.0
         # The client's log scale (with its own colour function only).
         log = bool(self.view.color_points) and self.view.color_log and cmin > 0
-        # A linear map is built over the range scaled down when it is wider
-        # than the largest double: VTK interpolates over node differences,
-        # which overflow there. (A log range is positive: its span is finite.)
-        ctf_scale = 1.0 if log else _range_scale(cmin, cmax)
+        # A linear map is built over the range scaled down when it, or the
+        # span of the client's nodes, is wider than the largest double: VTK
+        # interpolates over node differences, which overflow there. (On a log
+        # scale VTK interpolates the nodes' log10: finite differences.)
+        xs = [cmin, cmax] + [p[0] for p in (self.view.color_points or [])]
+        ctf_scale = 1.0 if log else _range_scale(min(xs), max(xs))
         if self.view.color_points:
             import vtk
             ctf = vtk.vtkColorTransferFunction()

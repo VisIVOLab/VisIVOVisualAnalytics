@@ -709,6 +709,13 @@ def test_colour_codes_over_a_range_wider_than_the_largest_double(tmp_path):
                                                         [1.7e308, 0.0, 0.0, 1.0]]}))
         assert np.allclose(_mapper_rgb(s, [0, 32768, 65535]),
                            [[1, 0, 0], [0.5, 0, 0.5], [0, 0, 1]], atol=0.01)
+        # A narrower range on that ramp: [-1e308, 0] is a finite span, but the
+        # nodes' is not, so the map is still scaled; 0 is the ramp's middle.
+        run(s.apply_command({"type": "set_color", "field": "C", "min": -1e308, "max": 0.0,
+                             "points": [[-1.7e308, 1.0, 0.0, 0.0],
+                                        [1.7e308, 0.0, 0.0, 1.0]]}))
+        top = _mapper_rgb(s, [65535])[0]
+        assert np.allclose(top, [0.5, 0, 0.5], atol=0.01)
     finally:
         run(s.close())
         loop.close()
