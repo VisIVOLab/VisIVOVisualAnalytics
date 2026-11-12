@@ -7,6 +7,9 @@
 import * as M from './mat4.js';
 import * as F from './refine.js';
 import { RefineDraw } from './refine-gl.js';
+import { apiUrl, wsUrl } from './base-path.js';
+import { showLimits, reprojectionHud, frameReprojection } from './depth-mode.js';
+import { LinkPolicy } from './link-policy.js';
 
 export const REFINE_DEFAULTS = {
   scale: 1,            // remote eye size / the eye buffer (XR) or canvas (desktop)
@@ -15,6 +18,8 @@ export const REFINE_DEFAULTS = {
   sampleDistance: 0.5, // voxels
   maxOutstanding: 2,
   maxEyePx: 2560,
+  adaptLink: true,     // the window (and, if `link` asks, the eye size) from the measured round trip
+  link: {},            // LinkPolicy options (link-policy.js LINK_DEFAULTS)
 };
 
 export class Refiner {
@@ -63,6 +68,10 @@ export class Refiner {
     this.waiters = new Map();  // pose id -> resolve, for one-off frames (measurements)
     this.suspended = '';       // why the page draws no refined frame now (passthrough), or ''
     this._retry = null;
+    // A far backend (issue #187): the window and the eye size follow the
+    // measured round trip.
+    this.link = new LinkPolicy(this.o.link);
+    this.linkState = this.link.decide();
     this.failures = 0;         // connection attempts failed in a row: the retry backs off (#166)
     this.retryAt = 0;          // when the next attempt is due (performance.now()), 0 = none
     this.onLifecycle = null;   // optional hook: (name, detail) for the page's diagnostics
@@ -197,11 +206,10 @@ export class Refiner {
         this.sessionId = sid;
       }
       const b = this.backend();
-      const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
       // The token as a subprotocol ("visivo-token.<token>", the backend answers
       // "visivo.v1"), so it is in no access log; in the address only when it
       // has characters a subprotocol may not carry.
-      const base = `${proto}://${window.location.host}/v1/render/${this.sessionId}/ws`;
+      const base = wsUrl(`/v1/render/${this.sessionId}/ws`);   // with the page's prefix (#187)
       const ws = F.subprotocolSafe(b.token)
         ? new WebSocket(base, ['visivo.v1', `visivo-token.${b.token}`])
         : new WebSocket(`${base}?token=${encodeURIComponent(b.token)}`);
@@ -217,7 +225,7 @@ export class Refiner {
         if (this.failures && this.onLifecycle) this.onLifecycle('refine-reconnected', `after ${this.failures} failed attempt(s)`);
         this.failures = 0;
         this.status = 'waiting';
-        ws.send(JSON.stringify({ type: 'stream', window: 2, max_fps: 72 }));
+        ws.send(JSON.stringify({ type: 'stream', window: this._window(), max_fps: 72 }));
         this.sentKey = null;
         this.lastSentA = null;
         clearInterval(this._keepalive);
@@ -279,6 +287,9 @@ export class Refiner {
     this.book.clear();
     this.draw.forget();
     this.weight = 0;
+    // A new session is measured afresh (it may be another backend's).
+    this.link.reset();
+    this.linkState = this.link.decide();
     // A frame decoded for the session closed here is not shown afterwards.
     if (this.incoming) { if (this.incoming.bitmap) this.incoming.bitmap.close(); this.incoming = null; }
     if (ws) { try { ws.close(); } catch { /* closed */ } }
@@ -296,7 +307,7 @@ export class Refiner {
     const b = this.backend();
     if (!sid || !b) return;
     try {
-      await fetch(`/v1/render/${sid}`, { method: 'DELETE', headers: b.headers(false), keepalive });
+      await fetch(apiUrl(`/v1/render/${sid}`), { method: 'DELETE', headers: b.headers(false), keepalive });
     } catch { /* the idle timeout closes it */ }
   }
 
@@ -348,6 +359,11 @@ export class Refiner {
     this.stats.arrivals.push(tRecv);
     this.stats.network.push(tRecv - rec.tSent);
     this.stats.lastServer = h.timing_ms || null;
+    if (this.o.adaptLink) {
+      this.link.push(tRecv - rec.tSent, h.timing_ms);
+      this.linkState = this.link.decide();
+      if (this.linkState.changed) this._send({ type: 'stream', window: this._window(), max_fps: 72 });
+    }
     this.stats.lastKB = (parsed.color.byteLength + (parsed.depth ? parsed.depth.byteLength : 0)) / 1024;
     this.decoding++;
     this._decode(parsed, rec, tRecv).catch((err) => { this.error = `decode: ${err.message || err}`; })
@@ -435,13 +451,13 @@ export class Refiner {
     // Ask for a frame of this pose: still or slow, the look sent, few in flight.
     if (active && !this.paused && state !== 'moving' && this.sentKey === this.key
         && F.poseChanged(this.lastSentA, ctx.aCentre, 0.2, 0.0015)
-        && this.book.outstanding(t) < this.o.maxOutstanding) {
+        && this.book.outstanding(t) < this._window()) {
       this._sendPose(ctx, t);
     }
 
     const shown = this.draw.shown;
     const usable = !!(shown && this.enabled && shown.rec.version === this.version
-      && F.frameUsable(shown.rec.aCentre, ctx.aCentre, state));
+      && F.frameUsable(shown.rec.aCentre, ctx.aCentre, state, showLimits(shown.header, F.SHOW_DEFAULTS)));
     this.weight = F.fadeStep(this.weight, usable, dt);
     if (!usable && this.weight <= 0 && shown) {
       // Faded out: forgotten, and the next still pose is asked for again even
@@ -468,9 +484,15 @@ export class Refiner {
     else if (this.ws && this.streaming) this.status = this.weight > 0 ? 'refined' : 'waiting';
   }
 
+  /** Poses in flight, and the backend's ack window. */
+  _window() {
+    return this.o.adaptLink ? Math.max(this.o.maxOutstanding, this.linkState.window) : this.o.maxOutstanding;
+  }
+
   _eyeSize(eyes) {
     const w = Math.max(...eyes.map((e) => e.width)), h = Math.max(...eyes.map((e) => e.height));
-    const s = Math.min(this.o.scale, this.o.maxEyePx / w, this.o.maxEyePx / h);
+    const cap = Math.min(this.o.maxEyePx, this.o.adaptLink ? this.linkState.maxEyePx : Infinity);
+    const s = Math.min(this.o.scale, cap / w, cap / h);
     return [Math.max(16, Math.round(w * s)), Math.max(16, Math.round(h * s))];
   }
 
@@ -544,6 +566,8 @@ export class Refiner {
     ];
     const srv = s.lastServer;
     if (srv) lines.push(`  server ${f0(srv.render)} ms render  ${f0(srv.total)} total  ${s.lastKB.toFixed(0)} KB  upload ${s.upload.quantile(0.5).toFixed(1)} ms`);
+    if (this.o.adaptLink) lines.push(this.link.hudLine(this.linkState));
+    if (shown) lines.push(...reprojectionHud(shown.header));
     if (this.error && this.status !== 'refined') lines.push(`  ${this.error}`.slice(0, 60));
     return lines;
   }
@@ -558,6 +582,8 @@ export class Refiner {
       upload: q(s.upload), stopFirst: q(s.stopFirst), stopFull: q(s.stopFull),
       lastServer: s.lastServer, lastKB: s.lastKB, sent: s.sent, received: s.received, dropped: s.dropped,
       skipped: this.book.skipped, error: this.error,
+      reprojection: this.draw.shown ? frameReprojection(this.draw.shown.header) : null,
+      link: { ...this.linkState, maxEyePx: Number.isFinite(this.linkState.maxEyePx) ? this.linkState.maxEyePx : null },
     };
   }
 }

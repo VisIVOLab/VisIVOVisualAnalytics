@@ -10,6 +10,7 @@
 #include <functional>
 
 class QComboBox;
+class QNetworkAccessManager;
 class QLabel;
 class QProcess;
 class QPushButton;
@@ -30,6 +31,12 @@ class QTimer;
  * becomes this computer's, so the page is a secure context for WebXR without a
  * certificate), then `am start` with a VIEW intent for the Quest Browser.
  * "Copy Link" is for doing the same by hand.
+ *
+ * A remote backend (a cluster's) works the same way when this computer
+ * reaches it through a local tunnel: adb reverse forwards the headset's
+ * localhost:P to the tunnel's local port P (issue #187). The dialog says
+ * which backend it pairs with, and asks it (/v1/vr/backend_check) whether it serves
+ * the page and routes this desktop expects.
  *
  * The link holds the token. It is never logged: every log line and every
  * line of adb output shown here goes through VrLink::redact first. It still
@@ -85,6 +92,9 @@ private:
     /// Open is queued and run when the check ends.
     void runAdb(const QStringList &args, int timeoutMs, Done done, bool background = false);
     void setBusy(bool busy);
+    /// Asks the backend what it serves to a headset (GET /v1/vr/backend_check, issue
+    /// #187), so an old cluster overlay shows here, not as a 404 in the headset.
+    void checkBackend();
     void setResult(const QString &text, bool error);
     /// What to tell the user when adb itself did not run to the end.
     static QString adbFailure(Outcome outcome);
@@ -95,6 +105,10 @@ private:
     QStringList m_secrets;   ///< token and session id: redacted from all output
     QString m_adb;
 
+    QString m_token;         ///< for the backend check's header only, never shown
+    QLabel *m_backendLabel{ nullptr };
+    QNetworkAccessManager *m_network{ nullptr };
+    bool m_backendBlocked{ false };   ///< the check said the headset cannot work
     QLabel *m_stateLabel{ nullptr };
     QComboBox *m_deviceCombo{ nullptr };
     QPushButton *m_refreshButton{ nullptr };

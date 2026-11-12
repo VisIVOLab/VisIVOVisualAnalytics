@@ -93,6 +93,22 @@ def test_unacknowledged_frames_are_capped_by_the_window(ws_session):
         assert sess.frames == 2
 
 
+def test_the_window_of_a_running_stream_can_be_widened(ws_session):
+    # The headset's page widens its window over a slow link (issue #187).
+    import time
+    client, sess = ws_session
+    with _connect(client) as ws:
+        ws.send_text(json.dumps({"type": "stream", "window": 1, "max_fps": 60}))
+        ws.receive_text()
+        assert ws.receive_bytes() == b"frame-1"
+        ws.send_text(json.dumps({"type": "rotate", "d_azimuth": 5}))
+        time.sleep(0.2)
+        assert sess.frames == 1                     # window 1, frame-1 not acknowledged
+        ws.send_text(json.dumps({"type": "stream", "window": 3, "max_fps": 90}))
+        assert json.loads(ws.receive_text()) == {"stream": "on", "window": 3, "max_fps": 90.0}
+        assert ws.receive_bytes() == b"frame-2"     # the wider window lets it go, unacknowledged
+
+
 def test_request_frame_still_works_without_a_stream(ws_session):
     client, sess = ws_session
     with _connect(client) as ws:

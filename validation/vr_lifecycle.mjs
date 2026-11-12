@@ -118,6 +118,7 @@ async function stopBackend() {
 
 // ── Chrome over CDP ─────────────────────────────────────────────────────────
 let cdpPort = 0;
+let chrome = null;
 async function launch() {
   const port = 9400 + Math.floor(Math.random() * 400);
   cdpPort = port;
@@ -132,15 +133,26 @@ async function launch() {
     '--disable-backgrounding-occluded-windows', '--disable-features=IntensiveWakeUpThrottling,CalculateNativeWinOcclusion',
     ...(process.platform === 'linux' ? ['--no-sandbox'] : []), '--enable-logging=stderr', '--v=0', 'about:blank'],
   { stdio: ['ignore', 'ignore', openSync(join(OUT, 'chrome.log'), 'w')] });
-  for (let i = 0; i < 150; i++) {
+  chrome = proc; // Also clean up when startup fails before CDP is available.
+  let spawnError = null;
+  proc.once('error', (err) => { spawnError = err; });
+  // A cold CI runner can take more than 15 seconds to start Chrome. Bound
+  // both the overall wait and each HTTP probe, without hiding an early exit.
+  const deadline = Date.now() + 60000;
+  while (Date.now() < deadline) {
+    if (spawnError) throw new Error(`could not start Chrome: ${spawnError.message}`);
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      throw new Error(`Chrome exited (${proc.exitCode ?? proc.signalCode}): see ${join(OUT, 'chrome.log')}`);
+    }
     try {
-      const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+      const list = await (await fetch(`http://127.0.0.1:${port}/json/list`,
+        { signal: AbortSignal.timeout(1000) })).json();
       const page = list.find((t) => t.type === 'page');
       if (page) return { proc, ws: page.webSocketDebuggerUrl };
     } catch { /* not up yet */ }
     await sleep(100);
   }
-  throw new Error('Chrome did not start');
+  throw new Error(`Chrome did not expose CDP within 60 seconds: see ${join(OUT, 'chrome.log')}`);
 }
 
 function cdp(url) {
@@ -243,11 +255,12 @@ const cube = makeCube();
 // A second cube: another shape, and a right ascension crossing 0°.
 const cubeB = SMOKE ? null : makeCube('synthetic_ra0.fits', { shape: [24, 40, 48], ra: 0.0 });
 writeFileSync(backendLog, '');
-await startBackend(tokenA);
-const { proc: chrome, ws } = await launch();
-const c = cdp(ws);
+let c = null;
 let exitCode = 1;
 try {
+  await startBackend(tokenA);
+  const { ws } = await launch();
+  c = cdp(ws);
   await c.send('Page.enable');
   // A focused, active page (see the flags in launch()).
   await c.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
@@ -489,7 +502,7 @@ try {
   results.failed = failed;
   writeFileSync(join(OUT, SMOKE ? 'smoke.json' : 'results.json'), JSON.stringify(results, null, 2));
   try { c.close(); } catch { /* closed */ }
-  chrome.kill();
+  if (chrome) chrome.kill();
   console.log(`${results.checks.length - failed}/${results.checks.length} checks passed${results.cdpReconnects ? ` (DevTools reconnected ${results.cdpReconnects}×)` : ""}`);
   await stopBackend();
   process.exit(failed ? 1 : exitCode);

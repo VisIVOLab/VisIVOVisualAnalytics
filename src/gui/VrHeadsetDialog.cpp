@@ -1,6 +1,7 @@
 #include "VrHeadsetDialog.h"
 
 #include "WindowCloseShortcut.h"
+#include "app/VrBackendCheck.h"
 #include "theme/ToolDialogStyle.h"
 
 #include <QAbstractItemView>
@@ -14,6 +15,9 @@
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QProcess>
 #include <QPushButton>
 #include <QSettings>
@@ -31,6 +35,8 @@ constexpr int kCommandTimeoutMs = 15000;
 // Often enough that accepting the USB-debugging prompt in the headset shows up
 // here without pressing Refresh, rarely enough to cost nothing.
 constexpr int kPollIntervalMs = 3000;
+// The backend check: a tunnel to a cluster answers in well under a second.
+constexpr int kBackendCheckTimeoutMs = 8000;
 
 const QString kGuideBase = u"https://visivo.readthedocs.io/en/latest/user-guide/vr-headset.html"_s;
 const QString kGuideUrl = kGuideBase + u"#open-a-cube-from-the-desktop"_s;
@@ -47,7 +53,8 @@ QString guideLink(const QString &text, const QString &anchor = u"open-a-cube-fro
 }   // namespace
 
 VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
-    : QDialog(parent), m_link(VrLink::build(inputs)), m_secrets{ inputs.token, inputs.sessionId }
+    : QDialog(parent), m_link(VrLink::build(inputs)), m_secrets{ inputs.token, inputs.sessionId },
+      m_token(inputs.token)
 {
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowTitle(u"Open in VR Headset"_s);
@@ -64,6 +71,14 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     intro->setWordWrap(true);
     intro->setOpenExternalLinks(true);
     root->addWidget(intro);
+
+    // Which backend the headset will use: the local one, or a remote one
+    // through this computer's tunnel (issue #187).
+    m_backendLabel = new QLabel(this);
+    m_backendLabel->setTextFormat(Qt::PlainText);
+    m_backendLabel->setWordWrap(true);
+    m_backendLabel->setVisible(m_link.ok);
+    root->addWidget(m_backendLabel);
 
     m_stateLabel = new QLabel(this);
     m_stateLabel->setWordWrap(true);
@@ -146,8 +161,53 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
         return;
     }
     m_copyButton->setEnabled(true);
+    const QString under = m_link.prefix.isEmpty() ? QString() : u" under %1"_s.arg(m_link.prefix);
+    m_backendLabel->setText(
+            m_link.remote
+                    ? u"Backend: remote, through this computer's tunnel at localhost:%1%2. The "
+                      u"headset reaches it through the same port (adb reverse tcp:%1)."_s
+                              .arg(m_link.port)
+                              .arg(under)
+                    : u"Backend: local, at localhost:%1%2."_s.arg(m_link.port).arg(under));
+    checkBackend();
     refreshDevices();
     m_pollTimer->start();
+}
+
+void VrHeadsetDialog::checkBackend()
+{
+    if (!m_network)
+        m_network = new QNetworkAccessManager(this);
+    QNetworkRequest request{ QUrl(m_link.checkUrl) };
+    request.setTransferTimeout(kBackendCheckTimeoutMs);
+    // A portal's sign-in redirect is reported, not followed (the token would
+    // go along to wherever it points).
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::ManualRedirectPolicy);
+    if (!m_token.isEmpty())
+        request.setRawHeader("X-Visivo-Token", m_token.toUtf8());
+    QNetworkReply *reply = m_network->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const VrBackendCheck::Result r = VrBackendCheck::interpret(status, reply->readAll(),
+                                                                    m_link.remote);
+        QString text = m_backendLabel->text();
+        if (!r.build.isEmpty())
+            text += u" Headset page build %1."_s.arg(r.build);
+        if (!r.message.isEmpty())
+            text += u"\n"_s + r.message;
+        m_backendLabel->setText(text);
+        m_backendLabel->setStyleSheet(r.severity == VrBackendCheck::Severity::Ok
+                                              ? QString()
+                                              : u"color: #e5534b;"_s);
+        if (r.severity == VrBackendCheck::Severity::Error) {
+            m_backendBlocked = true;
+            m_openQueued = false;     // an Open clicked meanwhile is dropped
+            m_copyButton->setEnabled(false);
+        }
+        setBusy(m_process && !m_backgroundRun);
+    });
 }
 
 VrHeadsetDialog::~VrHeadsetDialog()
@@ -214,7 +274,7 @@ QString VrHeadsetDialog::selectedSerial() const
 void VrHeadsetDialog::setBusy(bool busy)
 {
     m_refreshButton->setEnabled(!busy && m_link.ok);
-    m_openButton->setEnabled(!busy && m_link.ok && m_deviceReady
+    m_openButton->setEnabled(!busy && m_link.ok && m_deviceReady && !m_backendBlocked
                              && !selectedSerial().isEmpty());
     m_deviceCombo->setEnabled(!busy);
 }
@@ -496,6 +556,12 @@ void VrHeadsetDialog::startOpen(const QString &serial)
     // The device the user chose, or none: if it went away during the check,
     // the list may now select another device (a phone, say), and opening
     // there would be wrong.
+    if (m_backendBlocked) {
+        // The backend check refused this backend after Open was clicked (a
+        // queued Open lands here too).
+        setResult(u"This backend cannot serve the headset: see the backend line above."_s, true);
+        return;
+    }
     if (serial.isEmpty() || !m_deviceReady || !m_readySerials.contains(serial)) {
         setResult(u"The chosen headset is not ready any more: see the state above, then press "
                   u"Open on Headset again."_s,

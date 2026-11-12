@@ -1,4 +1,5 @@
-// The VR page's calls to the backend that serves it (same origin).
+// The VR page's calls to the backend that serves it (same origin, under the
+// page's own path prefix: base-path.js).
 //
 // The token: read once from the URL fragment (#token=...), which a browser
 // never sends to the server, so it is not in any access log; then removed from
@@ -10,6 +11,7 @@
 // takePairing.
 
 import { parsePairing, strippedAddress } from './pairing.js';
+import { apiUrl } from './base-path.js';
 
 const KEY = 'visivo-vr-token';
 
@@ -105,7 +107,8 @@ export const requestHooks = { onFailure: null, onSuccess: null };
 export async function hookedFetch(path, init) {
   let resp;
   try {
-    resp = await fetch(path, init);
+    // Behind a reverse proxy the page's own path prefix goes first (#187).
+    resp = await fetch(apiUrl(path), init);
   } catch (err) {
     const timedOut = init && init.signal && init.signal.aborted && init.signal.reason === TIMED_OUT;
     const e = requestError(0, timedOut ? 'the backend did not answer in time' : 'the backend did not answer');
@@ -217,12 +220,12 @@ export class Backend {
   async log(body) {
     // Not keepalive: a log line is not worth outliving the page, and keepalive
     // requests go through the browser process with a small shared quota.
-    const resp = await fetch('/v1/vr/log', { method: 'POST', headers: this.headers(true), body: JSON.stringify(body) });
+    const resp = await fetch(apiUrl('/v1/vr/log'), { method: 'POST', headers: this.headers(true), body: JSON.stringify(body) });
     return { status: resp.status, retryAfterS: Number(resp.headers.get('Retry-After')) || 0 };
   }
 
   async ping() {
-    const resp = await fetch('/v1/ping');
+    const resp = await fetch(apiUrl('/v1/ping'));
     return resp.ok;
   }
 

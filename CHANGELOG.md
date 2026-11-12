@@ -8,6 +8,30 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR headset with a backend on a cluster (part of #166, #187).** *Open in
+  VR Headset…* names the backend it pairs with (local, or remote through this
+  computer's tunnel, whose port `adb reverse` forwards) and asks it the new
+  authenticated `GET /v1/vr/backend_check` first (redirects not followed): the
+  headset page's build, which of the page's routes it lacks and whether its
+  stereo frames carry depth, so a cluster running an older `--backend-src`
+  overlay shows a warning instead of 404s in the headset; the backend logs
+  the details (code directory and dates) at startup. A backend under a path
+  prefix (a portal's proxy that strips it) now pairs: the page finds the
+  prefix in its own address and sends every request and its render WebSocket
+  under it. Stereo frames check their depth against their own picture; a GL
+  that cannot read depth back (GLES, some Mesa or EGL stacks) gets
+  colour-only frames whose header says `"reprojection": "pose"` and why
+  (`depth_unavailable`), the session stops asking after two structural
+  failures with no good depth in between (tried again on a blend or render mode change), MIP and
+  MinIP frames go without depth (the ray caster writes none), and
+  `VISIVO_XR_DEPTH=0` forces it; the page warps such frames by the pose alone,
+  shows them only within 1 cm of their pose and says so on the numbers panel.
+  Over a far link the page keeps enough poses in flight for the round trip
+  (window 2 to 6, from the measured round trip and the frame's render, depth
+  and JPEG time) and a running push stream accepts a new ack window; the eye
+  size is not reduced (measured: a 768 px eye scaled up is worse than the
+  headset's own picture). The VR guide has a section on cluster backends with
+  the PLEIADI numbers and what to measure there.
 - **VR headset: no dead ends, safe upgrades, a first-run guide, diagnostics
   (part of #166).** The `/vr/` page now loads its code from addresses that
   change with every version (`/vr/b/<build>/…`, cached for good; the page
