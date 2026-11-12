@@ -8,6 +8,21 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Headset pairing by code: the pairing service (#211, part of #210).** A
+  small, self-hostable service (`services/vr-pair/`) pairs a headset's VR
+  page with a backend through a short code and relays their WebRTC offer,
+  answer and ICE candidates, then steps aside: no data passes through it.
+  Pair codes are 6 characters without look-alikes (30 bits), single use, for
+  5 minutes; a connected headset gets a 192-bit resume code for 12 hours.
+  Failed joins are rate limited per address and in all, and so are new codes
+  and TURN credentials per address; pages must come from an allowed origin,
+  hosts may be required to present a key, and connections are pinged and
+  time out. It hands out STUN and TURN servers, TURN with time-limited
+  credentials from a shared secret (coturn's `use-auth-secret`). Offers, answers, candidates and codes
+  are never logged. It ships with a Dockerfile, an Apptainer definition, a
+  compose example with coturn and reverse-proxy notes; no host name is built
+  in.
+
 - **Remote point rendering keeps points far from zero apart (#206, part of
   #166).** The backend's point render session drew float32 positions, so
   1e9, 1e9 + 1 and 1e9 + 2 merged into one point in remote and remote stereo

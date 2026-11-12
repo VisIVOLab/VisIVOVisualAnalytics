@@ -30,9 +30,11 @@ base64 HMAC-SHA1 of the user name under the shared secret).
 Two additions to the host side beyond the contract text, both additive and
 used by the VisIVO backend only: ``join`` names the ``code`` (a backend with
 several pending codes must know which one the headset typed), and
-``new_code`` may carry a ``code`` for a ``resume`` code the host issued
-before (after a reconnection to this service, its headsets' resume codes are
-registered again).
+``new_code`` may carry a ``code`` and its ``owner`` key for a ``resume`` code
+the host issued before (after a reconnection to this service, its headsets'
+resume codes are registered again; the key, given with the code and known
+to the host only, keeps a page that knows the code from taking it over).
+Hosts may be required to present a key (``VR_PAIR_HOST_KEYS``).
 
 A ``pair`` code is 6 characters from a 32-symbol alphabet without 0/O/1/I
 (30 bits), single use, 300 s by default. A ``resume`` code holds 192 random
@@ -54,6 +56,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -63,6 +66,7 @@ import time
 from collections import Counter, OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from urllib.parse import parse_qs
 
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
@@ -147,7 +151,21 @@ class Config:
     codes_per_host_per_min: int = 30
     live_codes_per_host: int = 64
     peers_per_host: int = 16
+    #: Candidates a page may send in one signalling connection.
+    candidates_per_peer: int = 64
+    #: Live codes in all, and codes remembered after they stopped being
+    #: live (only so a page is told why; the oldest are forgotten first).
     max_codes: int = 100_000
+    max_tombstones: int = 100_000
+    #: New codes per host address per minute, whatever its connections.
+    codes_per_ip_per_min: int = 60
+    #: Keys a host must present (``?key=`` or ``Authorization: Bearer``);
+    #: empty: any host may connect.
+    host_keys: tuple[str, ...] = ()
+    #: TURN credentials handed to one address within ``turn_window_s``;
+    #: beyond, that address gets STUN only.
+    turn_per_ip: int = 30
+    turn_window_s: float = 600.0
     join_conns_per_ip: int = 16
     #: Failed joins per address within ``fail_window_s``.
     join_fails_per_ip: int = 20
@@ -167,7 +185,15 @@ class Config:
         if secret_file:
             with open(secret_file, encoding="utf-8") as fh:
                 secret = fh.read().strip()
+        keys = _env_list(env, "VR_PAIR_HOST_KEYS")
+        keys_file = env.get("VR_PAIR_HOST_KEYS_FILE", "").strip()
+        if keys_file:
+            with open(keys_file, encoding="utf-8") as fh:
+                keys += tuple(line.strip() for line in fh if line.strip() and not line.startswith("#"))
         c = cls(
+            host_keys=keys,
+            codes_per_ip_per_min=_env_num(env, "VR_PAIR_CODES_PER_IP_PER_MIN", cls.codes_per_ip_per_min),
+            turn_per_ip=_env_num(env, "VR_PAIR_TURN_PER_IP", cls.turn_per_ip),
             bind=env.get("VR_PAIR_BIND", cls.bind).strip() or cls.bind,
             port=_env_num(env, "VR_PAIR_PORT", cls.port),
             allowed_origins=_env_list(env, "VR_PAIR_ALLOWED_ORIGINS"),
@@ -254,6 +280,9 @@ class Code:
     expires: float                  # service clock
     state: str = "live"             # live | used | expired | revoked | host-gone
     forget_at: float = 0.0          # when a code that is no longer live is dropped
+    #: SHA-256 of a resume code's owner key: only the host holding the key
+    #: may register the code again (the page knows the code, not the key).
+    owner_hash: str = ""
 
 
 @dataclass
@@ -321,6 +350,8 @@ class PairService:
         self.fails = SlidingCount(config.fail_window_s)
         self.global_fails = SlidingCount(60.0, max_keys=1)
         self.code_joins = SlidingCount(60.0)
+        self.ip_codes = SlidingCount(60.0)
+        self.turn_handouts = SlidingCount(config.turn_window_s)
         self.stats: Counter[str] = Counter()
         self._swept = 0.0
 
@@ -337,12 +368,20 @@ class PairService:
             return bool(_LOCAL_ORIGIN.match(origin))
         return "*" in allowed or origin.rstrip("/") in {a.rstrip("/") for a in allowed}
 
-    def ice_servers(self) -> list[dict]:
+    def ice_servers(self, ip: str | None = None) -> list[dict]:
+        """STUN, and TURN unless ``ip`` was handed TURN credentials
+        ``turn_per_ip`` times in the window: TURN relays traffic, and a page
+        gets its credentials before its code is checked (it needs them to
+        make its offer), so their issue is bounded per address."""
         c = self.config
         out: list[dict] = []
         if c.stun_urls:
             out.append({"urls": list(c.stun_urls)})
-        if c.turn_urls:
+        turn = bool(c.turn_urls)
+        if turn and ip is not None and self.turn_handouts.hit(ip, self.clock()) > c.turn_per_ip:
+            self.stats["turn_withheld"] += 1
+            turn = False
+        if turn:
             if c.turn_secret:
                 user, cred = turn_credentials(c.turn_secret, c.turn_ttl, c.turn_user)
                 out.append({"urls": list(c.turn_urls), "username": user, "credential": cred})
@@ -382,9 +421,20 @@ class PairService:
         c.state = state
         c.forget_at = now + self.config.tombstone_s
 
-    def issue(self, host: HostConn, kind: str, ttl, wanted: str | None = None) -> tuple[dict | None, str | None]:
+    def _cap_tombstones(self) -> None:
+        """At most ``max_tombstones`` codes kept after they stopped being
+        live; the ones to be forgotten soonest go first."""
+        dead = [c for c in self.codes.values() if c.state != "live"]
+        if len(dead) > self.config.max_tombstones:
+            dead.sort(key=lambda c: c.forget_at)
+            for c in dead[:len(dead) - self.config.max_tombstones]:
+                del self.codes[c.code]
+
+    def issue(self, host: HostConn, kind: str, ttl, wanted: str | None = None,
+              owner: str | None = None) -> tuple[dict | None, str | None]:
         """A new code for ``host`` (or ``wanted``, a resume code it issued
-        before), or ``(None, reason)``."""
+        before, with the ``owner`` key it was given then), or ``(None,
+        reason)``. A resume code's answer carries its ``owner`` key."""
         cfg = self.config
         now = self.clock()
         self.sweep(now)
@@ -393,23 +443,32 @@ class PairService:
         default, cap = (cfg.pair_ttl, cfg.pair_ttl_max) if kind == "pair" else (cfg.resume_ttl, cfg.resume_ttl_max)
         if ttl is None:
             ttl = default
-        if not isinstance(ttl, (int, float)) or isinstance(ttl, bool) or ttl <= 0:
+        if (not isinstance(ttl, (int, float)) or isinstance(ttl, bool) or not math.isfinite(ttl)
+                or ttl <= 0):
             return None, "bad-request"
-        ttl = int(min(ttl, cap))
+        ttl = max(1, int(min(ttl, cap)))
         while host.issued and now - host.issued[0] >= 60.0:
             host.issued.popleft()
-        if len(host.issued) >= cfg.codes_per_host_per_min:
+        # Per connection and per address: reconnecting starts no new budget.
+        if (len(host.issued) >= cfg.codes_per_host_per_min
+                or self.ip_codes.count(host.ip, now) >= cfg.codes_per_ip_per_min):
             return None, "rate-limited"
-        live = sum(1 for c in self.codes.values() if c.host is host and c.state == "live")
-        if live >= cfg.live_codes_per_host or len(self.codes) >= cfg.max_codes:
+        live_all = [c for c in self.codes.values() if c.state == "live"]
+        if (sum(1 for c in live_all if c.host is host) >= cfg.live_codes_per_host
+                or len(live_all) >= cfg.max_codes):
             return None, "too-many-codes"
+        owner_hash = ""
         if wanted is not None:
             if kind != "resume" or not isinstance(wanted, str) or not RESUME_RE.match(wanted):
                 return None, "bad-request"
             held = self.codes.get(wanted)
+            given = hashlib.sha256(owner.encode()).hexdigest() if isinstance(owner, str) and owner else ""
+            if held is not None and held.owner_hash and not hmac.compare_digest(held.owner_hash, given):
+                return None, "code-taken"
             if held is not None and held.state == "live" and held.host is not host and held.host.alive:
                 return None, "code-taken"
             code = wanted
+            owner_hash = given
         else:
             for _ in range(32):
                 code = ("".join(secrets.choice(PAIR_ALPHABET) for _ in range(PAIR_LEN))
@@ -418,10 +477,20 @@ class PairService:
                     break
             else:
                 return None, "too-many-codes"
+        answer: dict = {"code": code, "kind": kind, "expires_in": ttl}
+        if kind == "resume":
+            if owner_hash:
+                answer["owner"] = owner
+            else:
+                key = secrets.token_urlsafe(24)
+                owner_hash = hashlib.sha256(key.encode()).hexdigest()
+                answer["owner"] = key
         host.issued.append(now)
-        self.codes[code] = Code(code=code, kind=kind, host=host, expires=now + ttl)
+        self.ip_codes.hit(host.ip, now)
+        self.codes[code] = Code(code=code, kind=kind, host=host, expires=now + ttl, owner_hash=owner_hash)
+        self._cap_tombstones()
         self.stats[f"issued_{kind}"] += 1
-        return {"code": code, "kind": kind, "expires_in": ttl}, None
+        return answer, None
 
     def revoke(self, host: HostConn, raw: str) -> bool:
         c = self.codes.get(normalize_code(raw)) if isinstance(raw, str) else None
@@ -482,7 +551,24 @@ class PairService:
         if not self.origin_allowed(origin, required=(path == "/v1/join")):
             self.stats["origin_refused"] += 1
             return conn.respond(403, "Origin not allowed\n")
+        if path == "/v1/host" and self.config.host_keys and not self.host_key_ok(request):
+            self.stats["host_key_refused"] += 1
+            return conn.respond(401, "Host key required\n")
         return None
+
+    def host_key_ok(self, request) -> bool:
+        """A configured host key in ``?key=`` or ``Authorization: Bearer``."""
+        given = ""
+        auth = request.headers.get("Authorization", "")
+        if auth.lower().startswith("bearer "):
+            given = auth[7:].strip()
+        if not given and "?" in request.path:
+            given = (parse_qs(request.path.split("?", 1)[1]).get("key") or [""])[0]
+        ok = False
+        for key in self.config.host_keys:
+            if hmac.compare_digest(key.encode(), given.encode()):
+                ok = True                   # no early exit: the same work for every key
+        return ok
 
     async def handler(self, conn: ServerConnection) -> None:
         path = conn.request.path.split("?", 1)[0]
@@ -511,7 +597,7 @@ class PairService:
         self.stats["hosts"] += 1
         logger.info("host %s connected from %s", host.id, ip)
         try:
-            await host.send({"type": "ice_servers", "ice_servers": self.ice_servers()})
+            await host.send({"type": "ice_servers", "ice_servers": self.ice_servers(ip)})
             async for raw in ws:
                 msg = _parse(raw)
                 if msg is None:
@@ -535,7 +621,8 @@ class PairService:
         req = msg.get("req")
         echo = {"req": req} if isinstance(req, (str, int)) and not isinstance(req, bool) else {}
         if t == "new_code":
-            answer, reason = self.issue(host, msg.get("kind", "pair"), msg.get("ttl"), msg.get("code"))
+            answer, reason = self.issue(host, msg.get("kind", "pair"), msg.get("ttl"), msg.get("code"),
+                                        msg.get("owner"))
             if answer is None:
                 self.stats[f"code_refused_{reason}"] += 1
                 await host.send({"type": "error", "reason": reason, **echo})
@@ -568,7 +655,7 @@ class PairService:
         self.join_conns[ip] += 1
         peer: PeerConn | None = None
         try:
-            await self._send(ws, {"type": "ice_servers", "ice_servers": self.ice_servers()})
+            await self._send(ws, {"type": "ice_servers", "ice_servers": self.ice_servers(ip)})
             try:
                 msg = _parse(await asyncio.wait_for(ws.recv(), cfg.join_wait_s))
             except TimeoutError:
@@ -609,9 +696,13 @@ class PairService:
         """The page's candidates to its host, until the page leaves, the host
         rejects it or goes, or the signalling time is over."""
         async def pump() -> None:
+            left = self.config.candidates_per_peer
             async for raw in ws:
                 msg = _parse(raw)
                 if msg is not None and msg["type"] == "ice" and "candidate" in msg:
+                    if left <= 0:
+                        continue            # a page does not have that many: not relayed
+                    left -= 1
                     if not await peer.host.send({"type": "ice", "peer": peer.id,
                                                  "candidate": msg["candidate"]}):
                         return

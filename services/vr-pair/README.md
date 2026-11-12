@@ -28,14 +28,16 @@ open with pings:
 
 | sends | receives |
 |---|---|
-| `new_code {ttl?, kind:"pair"\|"resume", req?, code?}` | `code {code, kind, expires_in, req?}` or `error {reason, req?}` |
+| `new_code {ttl?, kind:"pair"\|"resume", req?, code?, owner?}` | `code {code, kind, expires_in, owner?, req?}` or `error {reason, req?}` |
 | `revoke {code}` | |
 | `answer {peer, sdp}`, `ice {peer, candidate}`, `reject {peer, reason}` | `join {peer, offer, kind, code}`, `ice {peer, candidate}` |
 
-`req` is echoed so a host can match answers to requests. `code` in
-`new_code` registers again a resume code the host issued before (after a
-reconnection); `join` names the code the page typed, so a host with several
-pending codes knows which one was used.
+`req` is echoed so a host can match answers to requests. A resume code
+comes with an `owner` key, which only the host knows. After a reconnection
+the host sends `new_code` with that `code` and `owner` to register the code
+again; whoever else knows the code (its page does) cannot register it. `join`
+names the code the page typed, so a host with several pending codes knows
+which one was used.
 
 **Page**, `wss://<service>/v1/join`: sends `join {code, offer}` (the offer as
 SDP text or as `{type, sdp}`) and `ice {candidate}`; receives `answer {sdp}`,
@@ -56,10 +58,19 @@ SDP text or as `{type, sdp}`) and `ice {candidate}`; receives `answer {sdp}`,
 addresses (600 a minute); once an address is over its limit even a right
 code answers `rate-limited`, so guessing teaches nothing. Joins per code
 (10 a minute), host connections per address (8), new codes per host
-connection (30 a minute), live codes per host (64), pages in signalling per
+connection (30 a minute) and per address (60 a minute, however often it
+reconnects), live codes per host (64), live codes in all (100 000; codes
+remembered after use are capped apart and never block a new one), pages in
+signalling per
 host (16), signalling connections per address (16). A page must send its join
 within 10 s, and its signalling connection lasts at most 120 s. Messages are
-at most 64 KiB.
+at most 64 KiB, and a page relays at most 64 candidates.
+
+**TURN credentials.** A page needs them before its code is checked (it makes
+its offer with them), so any client that reaches `/v1/join` gets some; one
+address gets them at most 30 times in 10 minutes, then STUN only. They expire
+after `VR_PAIR_TURN_TTL`. With `VR_PAIR_HOST_KEYS` set, only hosts with a key
+may connect at all.
 
 **Logging.** Counts and reasons only: never an offer, an answer, a
 candidate, a code or a TURN credential.
@@ -84,6 +95,9 @@ candidate, a code or a TURN credential.
 | `VR_PAIR_JOIN_SESSION_S` | `120` | Longest signalling connection of a page |
 | `VR_PAIR_HOSTS_PER_IP` | `8` | Host connections per address |
 | `VR_PAIR_CODES_PER_MIN` | `30` | New codes per host connection per minute |
+| `VR_PAIR_CODES_PER_IP_PER_MIN` | `60` | New codes per host address per minute |
+| `VR_PAIR_TURN_PER_IP` | `30` | TURN credentials per address per 10 minutes |
+| `VR_PAIR_HOST_KEYS` / `VR_PAIR_HOST_KEYS_FILE` | *(none: any host)* | Keys a backend must present to connect as a host (comma-separated, or one per line in the file). A backend gives its key in `VISIVO_VR_PAIR_URL` as `?key=…`, or as `Authorization: Bearer …` |
 | `VR_PAIR_JOIN_FAILS_PER_IP` | `20` | Failed joins per address per 10 minutes |
 | `VR_PAIR_GLOBAL_FAILS_PER_MIN` | `600` | Failed joins per minute over all addresses |
 | `VR_PAIR_TLS_CERT`, `VR_PAIR_TLS_KEY` | *(none)* | Serve `wss://` directly, without a proxy |

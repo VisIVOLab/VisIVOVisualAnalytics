@@ -201,6 +201,9 @@ def test_ttls_are_capped_and_bad_requests_answered():
             assert (await new_code(host, kind="resume"))["expires_in"] == 12 * 3600
             assert (await new_code(host, kind="other"))["reason"] == "bad-request"
             assert (await new_code(host, ttl=-1))["reason"] == "bad-request"
+            for bad in ("NaN", "Infinity"):
+                await host.send('{"v":1,"type":"new_code","ttl":%s}' % bad)
+                assert (await recv(host))["reason"] == "bad-request"
             await host.send("not json")
             assert (await recv(host))["reason"] == "bad-request"
             await host.send(json.dumps({"v": 2, "type": "new_code"}))
@@ -248,10 +251,16 @@ def test_a_resume_code_is_reusable_and_registered_again_after_a_reconnection():
             await asyncio.sleep(0.05)
             gone = await page(svc, code["code"])
             assert (await recv(gone))["reason"] == "host-gone"
-            # The backend reconnects and registers it again.
+            # Someone who knows the code (the page does) cannot claim it
+            # while its host is away: the owner key is the host's alone.
+            squatter, _ = await host_conn(svc)
+            assert (await new_code(squatter, kind="resume", code=code["code"]))["reason"] == "code-taken"
+            assert (await new_code(squatter, kind="resume", code=code["code"],
+                                   owner="guess"))["reason"] == "code-taken"
+            # The backend reconnects and registers it again, with its key.
             host2, _ = await host_conn(svc)
-            back = await new_code(host2, kind="resume", code=code["code"])
-            assert back["code"] == code["code"]
+            back = await new_code(host2, kind="resume", code=code["code"], owner=code["owner"])
+            assert back["code"] == code["code"] and back["owner"] == code["owner"]
             p = await page(svc, code["code"])
             assert (await recv(host2))["code"] == code["code"]
             # A live code of another host cannot be taken, nor a pair code chosen.
@@ -259,7 +268,7 @@ def test_a_resume_code_is_reusable_and_registered_again_after_a_reconnection():
             assert (await new_code(thief, kind="resume", code=code["code"]))["reason"] == "code-taken"
             assert (await new_code(thief, kind="pair", code="ABCDEF"))["reason"] == "bad-request"
             assert (await new_code(thief, kind="resume", code="short"))["reason"] == "bad-request"
-            for ws in (*pages, wrong, gone, p, host2, thief):
+            for ws in (*pages, wrong, gone, p, host2, thief, squatter):
                 await ws.close()
     run(go())
 
@@ -421,3 +430,65 @@ def test_no_sdp_candidate_or_code_is_logged(caplog):
     assert "join" in text                      # something was logged
     for secret in ("SECRET-SDP-MARKER", "SECRET-ANSWER", "192.168.1.20", code, "QQQQQQ"):
         assert secret not in text
+
+
+def test_a_page_cannot_flood_its_host_with_candidates():
+    async def go():
+        async with running(candidates_per_peer=5) as svc:
+            host, _ = await host_conn(svc)
+            p = await page(svc, (await new_code(host))["code"])
+            await recv(host)
+            for _ in range(8):
+                await p.send(_msg(type="ice", candidate=CANDIDATE))
+            got = 0
+            with pytest.raises(TimeoutError):
+                while True:
+                    assert (await recv(host, timeout=0.5))["type"] == "ice"
+                    got += 1
+            assert got == 5
+            await p.close()
+            await host.close()
+    run(go())
+
+
+def test_reconnecting_starts_no_new_code_budget_and_tombstones_are_bounded():
+    svc = S.PairService(S.Config(codes_per_host_per_min=100, codes_per_ip_per_min=3, max_codes=10,
+                                 max_tombstones=2), clock=Clock())
+    reasons = []
+    for _ in range(4):
+        h = S.HostConn(ws=None, ip="10.0.0.9")
+        reasons.append(svc.issue(h, "pair", None)[1])
+        svc.host_gone(h)
+    assert reasons == [None, None, None, "rate-limited"]
+    svc.issue(S.HostConn(ws=None, ip="10.0.0.1"), "pair", None)
+    assert sum(1 for c in svc.codes.values() if c.state != "live") == 2    # the newest kept
+    # Tombstones never keep a legitimate host from a code.
+    svc = S.PairService(S.Config(max_codes=2), clock=Clock())
+    for i in range(5):
+        h = S.HostConn(ws=None, ip=f"10.0.1.{i}")
+        assert svc.issue(h, "pair", None)[1] is None
+        svc.host_gone(h)
+
+
+def test_turn_credentials_are_bounded_per_address():
+    svc = S.PairService(S.Config(turn_urls=("turn:t.test",), turn_secret="k", turn_per_ip=2,
+                                 stun_urls=("stun:s.test",)), clock=Clock())
+    assert [len(svc.ice_servers("1.2.3.4")) for _ in range(3)] == [2, 2, 1]   # then STUN only
+    assert len(svc.ice_servers("5.6.7.8")) == 2
+
+
+def test_hosts_may_be_required_to_present_a_key():
+    async def go():
+        async with running(host_keys=("k-1", "k-2")) as svc:
+            for suffix in ("", "?key=wrong"):
+                with pytest.raises(InvalidStatus) as e:
+                    await connect(f"{svc.url}/v1/host{suffix}", proxy=None)
+                assert e.value.response.status_code == 401
+            ws = await connect(f"{svc.url}/v1/host?key=k-2", proxy=None)
+            assert (await recv(ws))["type"] == "ice_servers"
+            ws2 = await connect(f"{svc.url}/v1/host", proxy=None,
+                                additional_headers={"Authorization": "Bearer k-1"})
+            assert (await recv(ws2))["type"] == "ice_servers"
+            for w in (ws, ws2):
+                await w.close()
+    run(go())
