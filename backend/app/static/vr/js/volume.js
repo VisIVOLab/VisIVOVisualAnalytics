@@ -152,6 +152,49 @@ export function worldToTex(world, v) {
   return null;
 }
 
+// ── Longitudes across 0° ────────────────────────────────────────────────────
+// A right ascension (or galactic or ecliptic longitude) axis crossing 0° comes
+// from the backend as it is on the sky, e.g. [359.8, 359.9, 0, 0.1, 0.2].
+// Interpolated or ticked as plain numbers it would run backwards through 180°.
+// It is unwrapped first (each value within 180° of the one before), worked on
+// as a continuous line, and every value given back is wrapped to [0, 360).
+
+/** Is this reduced_info axis a longitude in degrees? */
+export function isLongitudeAxis(axis) {
+  if (!axis) return false;
+  const unit = String(axis.unit || 'deg').toLowerCase();
+  if (unit !== 'deg' && unit !== '') return false;
+  return [axis.name, axis.ctype].some((s) => /^(RA|GLON|ELON)(-|$)/i.test(String(s || '').trim()));
+}
+
+/** The values made continuous: each within 180° of the previous finite one
+ *  (nulls kept as nulls). */
+export function unwrapDegrees(values) {
+  let prev = null;
+  return values.map((v) => {
+    if (v === null || !Number.isFinite(v)) return v;
+    let u = v;
+    if (prev !== null) u -= 360 * Math.round((u - prev) / 360);
+    prev = u;
+    return u;
+  });
+}
+
+/** v in [0, 360). */
+export function wrap360(v) {
+  if (v === null || v === undefined || !Number.isFinite(v)) return v;
+  const w = ((v % 360) + 360) % 360;
+  return Math.abs(w - 360) < 1e-9 || Math.abs(w) < 1e-12 ? 0 : w;
+}
+
+/** The world coordinate of an axis at texture coordinate t: texToWorld, made
+ *  right for a longitude crossing 0°. */
+export function axisTexToWorld(axis, world, t) {
+  if (!isLongitudeAxis(axis) || world !== axis.world) return texToWorld(world, t);
+  const v = texToWorld(unwrapDegrees(world), t);
+  return v !== null && v !== undefined && (v < 0 || v >= 360) ? wrap360(v) : v;
+}
+
 /** World coordinate at texture coordinate t (linear between voxel centres,
  *  clamped to the first and last centre). */
 export function texToWorld(world, t) {
@@ -179,6 +222,9 @@ export function axisTicks(axis, which, n = 5) {
     unit = 'km/s';
     title = 'Velocity';
   }
+  // A longitude crossing 0° is ticked on its unwrapped line and labelled wrapped.
+  const lon = which !== 'z' && isLongitudeAxis(axis);
+  if (lon) world = unwrapDegrees(world);
   const finite = world.filter((v) => v !== null && Number.isFinite(v));
   if (!finite.length) return { title, unit, ticks: [] };
   const lo = Math.min(...finite), hi = Math.max(...finite);
@@ -188,7 +234,9 @@ export function axisTicks(axis, which, n = 5) {
   const ticks = [];
   for (const v of values) {
     const t = worldToTex(world, v);
-    if (t !== null) ticks.push({ t, value: v, label: v.toFixed(dec) });
+    // Only values off [0, 360) are wrapped: the others are left exactly as they were.
+    const shown = lon && (v < 0 || v >= 360) ? wrap360(v) : v;
+    if (t !== null) ticks.push({ t, value: shown, label: shown.toFixed(dec) });
   }
   return { title, unit, ticks };
 }

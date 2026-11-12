@@ -1,6 +1,7 @@
 // Per-viewer conveniences of the VR page (issue #172), kept in this browser's
 // localStorage: colour map, threshold source, refinement settings, the in-VR
-// panel's position and the last selection tool. Nothing here is a result or a
+// panel's position, the last selection tool and whether the controls guide
+// was seen. Nothing here is a result or a
 // secret (the token and the pairing are never stored here). Every access is
 // guarded: storage may be missing, full or refused (private mode, a headset
 // browser's settings), and the page then works with the defaults.
@@ -15,6 +16,7 @@ export const DEFAULT_SETTINGS = {
   refine: { enabled: true, scale: 1, quality: 95, depth: true },
   panel: null,                   // {right, up, fwd, yaw}: offset from the cube's first placement (metres, radians)
   tool: 'probe',
+  guideSeen: false,              // the first-run controls guide was shown (epic #166)
 };
 
 const finite = (v, lo, hi) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
@@ -37,7 +39,7 @@ export function clampPanelOffset(off) {
 export function sanitizeSettings(raw, { colormaps = null, tools = null } = {}) {
   const d = DEFAULT_SETTINGS;
   const s = raw && typeof raw === 'object' ? raw : {};
-  const out = { colormap: d.colormap, thrSource: d.thrSource, refine: { ...d.refine }, panel: null, tool: d.tool };
+  const out = { colormap: d.colormap, thrSource: d.thrSource, refine: { ...d.refine }, panel: null, tool: d.tool, guideSeen: d.guideSeen };
   if (typeof s.colormap === 'string' && (!colormaps || colormaps.includes(s.colormap))) out.colormap = s.colormap;
   if (s.thrSource === 'reduced' || s.thrSource === 'cube') out.thrSource = s.thrSource;
   const r = s.refine && typeof s.refine === 'object' ? s.refine : {};
@@ -52,6 +54,7 @@ export function sanitizeSettings(raw, { colormaps = null, tools = null } = {}) {
     out.panel = { right: p.right, up: p.up, fwd: p.fwd, yaw: p.yaw };
   }
   if (typeof s.tool === 'string' && (!tools || tools.includes(s.tool))) out.tool = s.tool;
+  if (typeof s.guideSeen === 'boolean') out.guideSeen = s.guideSeen;
   return out;
 }
 

@@ -817,6 +817,23 @@ async def test_hi_products_with_a_beam(client: AsyncClient, auth_headers: dict, 
     mass = body["hi_mass_msun"]
     assert mass is not None and np.isfinite(mass) and mass > 0.0
 
+    # Omitted range -> whole cube; (3, 3) -> exactly channel 3, not the whole cube.
+    whole = await client.post(
+        f"/v1/analysis/hi-products/{ds['dataset_id']}",
+        json={"distance_mpc": 10.0}, headers=headers)
+    assert whole.status_code == 200, whole.text
+    assert (whole.json()["channel_start"], whole.json()["channel_end"]) == (0, 15)
+    one = await client.post(
+        f"/v1/analysis/hi-products/{ds['dataset_id']}",
+        json={"channel_start": 3, "channel_end": 3, "distance_mpc": 10.0},
+        headers=headers)
+    assert one.status_code == 200, one.text
+    assert (one.json()["channel_start"], one.json()["channel_end"]) == (3, 3)
+    rev = await client.post(
+        f"/v1/analysis/hi-products/{ds['dataset_id']}",
+        json={"channel_start": 9, "channel_end": 3}, headers=headers)
+    assert rev.status_code == 422, rev.text
+
 
 @pytest.mark.asyncio
 async def test_spectral_baseline_subtracts_a_pedestal(

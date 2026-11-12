@@ -8,6 +8,10 @@ import * as M from './mat4.js';
 import * as F from './refine.js';
 import { RefineDraw } from './refine-gl.js';
 import { RtcStereo } from './refine-webrtc.js';
+import { apiUrl, wsUrl } from './base-path.js';
+import { showLimits, reprojectionHud, frameReprojection } from './depth-mode.js';
+import { LinkPolicy } from './link-policy.js';
+
 
 export const REFINE_DEFAULTS = {
   scale: 1,            // remote eye size / the eye buffer (XR) or canvas (desktop)
@@ -17,6 +21,9 @@ export const REFINE_DEFAULTS = {
   maxOutstanding: 2,
   maxEyePx: 2560,
   transport: 'auto',   // 'auto' | 'webrtc' | 'jpeg': the colour as H.264 video (issue #189)
+  adaptLink: true,     // the window (and, if `link` asks, the eye size) from the measured round trip
+  link: {},            // LinkPolicy options (link-policy.js LINK_DEFAULTS)
+
 };
 
 export class Refiner {
@@ -67,6 +74,19 @@ export class Refiner {
     this.waiters = new Map();  // pose id -> resolve, for one-off frames (measurements)
     this.suspended = '';       // why the page draws no refined frame now (passthrough), or ''
     this._retry = null;
+    // A far backend (issue #187): the window and the eye size follow the
+    // measured round trip.
+    this.link = new LinkPolicy(this.o.link);
+    this.linkState = this.link.decide();
+    this.failures = 0;         // connection attempts failed in a row: the retry backs off (#166)
+    this.retryAt = 0;          // when the next attempt is due (performance.now()), 0 = none
+    this.onLifecycle = null;   // optional hook: (name, detail) for the page's diagnostics
+  }
+
+  /** The wait before the next attempt: 2, 4, 8, 16, 30, 30… s. */
+  _backoffMs() {
+    this.failures++;
+    return Math.min(30000, 2000 * 2 ** (this.failures - 1));
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -129,7 +149,13 @@ export class Refiner {
 
   _retryLater(ms) {
     clearTimeout(this._retry);
-    this._retry = setTimeout(() => { this._retry = null; this._connect(); }, ms);
+    this.retryAt = performance.now() + ms;
+    this._retry = setTimeout(() => { this._retry = null; this.retryAt = 0; this._connect(); }, ms);
+  }
+
+  /** Try now (the backend is back): the wait is cut short, the count kept. */
+  retrySoon() {
+    if (this._retry && this._wanted()) { clearTimeout(this._retry); this._retry = null; this.retryAt = 0; this._connect(); }
   }
 
   /** Gives refinement up for this cube: the session is closed, nothing retried. */
@@ -186,28 +212,38 @@ export class Refiner {
         this.sessionId = sid;
       }
       const b = this.backend();
-      const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const url = `${proto}://${window.location.host}/v1/render/${this.sessionId}/ws?token=${encodeURIComponent(b.token)}`;
-      const ws = new WebSocket(url);
+      // The token as a subprotocol ("visivo-token.<token>", the backend answers
+      // "visivo.v1"), so it is in no access log; in the address only when it
+      // has characters a subprotocol may not carry.
+      const base = wsUrl(`/v1/render/${this.sessionId}/ws`);   // with the page's prefix (#187)
+      const ws = F.subprotocolSafe(b.token)
+        ? new WebSocket(base, ['visivo.v1', `visivo-token.${b.token}`])
+        : new WebSocket(`${base}?token=${encodeURIComponent(b.token)}`);
       ws.binaryType = 'arraybuffer';
       this.ws = ws;
       let opened = false;
+      // Every handler first: a socket that is no longer the refiner's (closed
+      // for a new cube, replaced by a reconnection) must not touch the state
+      // of the one that replaced it, whatever order the events arrive in.
       ws.addEventListener('open', () => {
+        if (ws !== this.ws) return;
         opened = true;
+        if (this.failures && this.onLifecycle) this.onLifecycle('refine-reconnected', `after ${this.failures} failed attempt(s)`);
+        this.failures = 0;
         this.status = 'waiting';
-        ws.send(JSON.stringify({ type: 'stream', window: 2, max_fps: 72 }));
+        ws.send(JSON.stringify({ type: 'stream', window: this._window(), max_fps: 72 }));
         this.rtc.connected();
+
         this.sentKey = null;
         this.lastSentA = null;
         clearInterval(this._keepalive);
         this._keepalive = setInterval(() => this._send({ type: 'keepalive' }), 60000);
       });
-      ws.addEventListener('message', (e) => this._onMessage(e.data));
+      ws.addEventListener('message', (e) => { if (ws === this.ws) this._onMessage(e.data); });
       ws.addEventListener('close', (e) => {
-        if (this.ws === ws) {
-          this.ws = null;
-          clearInterval(this._keepalive);
-        }
+        if (ws !== this.ws) return;
+        this.ws = null;
+        clearInterval(this._keepalive);
         this.streaming = false;
         this.book.clear();
         if (this.ws === null) this.rtc.close();
@@ -215,8 +251,14 @@ export class Refiner {
         // A handshake refused: the session is gone (idle timeout) or not ours.
         if (!opened && gen === this.gen) this.sessionId = null;
         if (gen === this.gen && this._wanted() && this.datasetId === datasetId) {
+          // The frame on show was rendered for a stream that is gone: the
+          // headset's own rendering is shown until a new one arrives.
+          this.draw.forget();
+          this.weight = 0;
           this.status = 'reconnecting';
-          this._retryLater(2000);
+          const ms = this._backoffMs();
+          if (this.onLifecycle) this.onLifecycle('refine-ws-closed', `code ${e.code}${opened ? '' : ' (handshake refused)'}, retry in ${(ms / 1000).toFixed(0)} s`);
+          this._retryLater(ms);
         }
       });
     } catch (err) {
@@ -224,12 +266,14 @@ export class Refiner {
       // nothing about the session on show now.
       if (gen !== this.gen) return;
       this.error = String(err.message || err);
-      if (err.giveUp || /^(404|503): .*not available|^404/.test(this.error)) {
-        // No render sessions on this backend, or none this cube can use.
+      if (err.giveUp || F.renderUnavailable(this.error)) {
+        // No render sessions on this backend, or none this cube can use. (A
+        // dataset the backend no longer holds is not that: the page reopens
+        // it, setDataset() then connects for the new id; until then, retries.)
         this._giveUp(err.giveUp ? this.error : `no render sessions on this backend (${this.error})`);
       } else if (this._wanted() && datasetId === this.datasetId && this.error !== 'cancelled') {
         this.status = 'unavailable';
-        this._retryLater(5000);
+        this._retryLater(this._backoffMs());
       }
     } finally {
       this._connecting = false;
@@ -239,10 +283,11 @@ export class Refiner {
     }
   }
 
-  async _closeSession() {
+  async _closeSession({ unloading = false } = {}) {
     this.gen++;
     clearTimeout(this._retry);
     this._retry = null;
+    this.retryAt = 0;
     clearInterval(this._keepalive);
     const ws = this.ws, sid = this.sessionId;
     this.ws = null;
@@ -252,20 +297,32 @@ export class Refiner {
     this.rtc.close();
     this.draw.forget();
     this.weight = 0;
+    // A new session is measured afresh (it may be another backend's).
+    this.link.reset();
+    this.linkState = this.link.decide();
+    // A frame decoded for the session closed here is not shown afterwards.
+    if (this.incoming) { if (this.incoming.bitmap) this.incoming.bitmap.close(); this.incoming = null; }
     if (ws) { try { ws.close(); } catch { /* closed */ } }
-    await this._deleteSession(sid);
+    await this._deleteSession(sid, { keepalive: unloading });
   }
 
-  async _deleteSession(sid) {
+  /**
+   * Frees the render slot. `keepalive` only when the page is going away (the
+   * request must outlive it): a keepalive request goes through the browser
+   * process, and to a backend that is going down it was seen to stall a
+   * headless page; otherwise a plain request, which the backend's idle
+   * timeout backs up if it fails.
+   */
+  async _deleteSession(sid, { keepalive = false } = {}) {
     const b = this.backend();
     if (!sid || !b) return;
     try {
-      await fetch(`/v1/render/${sid}`, { method: 'DELETE', headers: b.headers(false), keepalive: true });
+      await fetch(apiUrl(`/v1/render/${sid}`), { method: 'DELETE', headers: b.headers(false), keepalive });
     } catch { /* the idle timeout closes it */ }
   }
 
   /** On page unload: the session is closed without waiting. */
-  closeNow() { this._closeSession(); }
+  closeNow() { this._closeSession({ unloading: true }); }
 
   _send(cmd) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -286,7 +343,7 @@ export class Refiner {
       if (m.type === 'xr_error') {
         if (Number.isInteger(m.pose_id)) this.book.take(m.pose_id);
         this.error = m.error || 'stereo frame refused';
-        if (/out of core|point/i.test(this.error)) {
+        if (stereoRefused(m)) {
           // This session can give no stereo frames: its slot is freed.
           this._giveUp(this.error);
         }
@@ -309,8 +366,14 @@ export class Refiner {
     }
     const rec = this.book.take(h.pose_id);
     this.stats.received++;
-    if (!rec || rec.version !== this.version) { this.stats.dropped++; return; }
+    if (!this._sameRequest(rec)) { this.stats.dropped++; return; }
+
     this.stats.lastServer = h.timing_ms || null;
+    if (this.o.adaptLink) {
+      this.link.push(tRecv - rec.tSent, h.timing_ms);
+      this.linkState = this.link.decide();
+      if (this.linkState.changed) this._send({ type: 'stream', window: this._window(), max_fps: 72 });
+    }
     this.stats.lastKB = (parsed.color.byteLength + (parsed.depth ? parsed.depth.byteLength : 0)) / 1024;
     if (h.color && h.color.format === 'h264-webrtc') {
       // The colour comes as video (refine-webrtc.js): this header and its
@@ -339,9 +402,16 @@ export class Refiner {
       .finally(() => { this.decoding--; });
   }
 
+  /** Was `rec` asked for the look, cube and session on show now? */
+  _sameRequest(rec) {
+    return !!rec && rec.version === this.version && rec.gen === this.gen
+      && rec.datasetId === this.datasetId && rec.sessionId === this.sessionId;
+  }
+
   /** The frame's JPEG (or its video frame, `bitmap`, whose top `vScale` is
    *  the eyes) and its depth decoded, then shown. */
   async _decode(parsed, rec, tRecv, bitmap0 = null, vScale = 1) {
+
     const h = parsed.header;
     const [bm, dp] = await Promise.allSettled([
       bitmap0 || createImageBitmap(new Blob([parsed.color], { type: 'image/jpeg' }),
@@ -356,7 +426,9 @@ export class Refiner {
     }
     const bitmap = bm.value, depth = dp.value;
     const tDone = performance.now();
-    if (rec.id < this.newestDecoded || rec.version !== this.version) { bitmap.close(); return; }
+    // Checked again after the decode: the cube, the session or the look may
+    // have changed while it ran.
+    if (rec.id < this.newestDecoded || !this._sameRequest(rec)) { bitmap.close(); this.stats.dropped++; return; }
     this.newestDecoded = rec.id;
     if (this.incoming && this.incoming.bitmap) this.incoming.bitmap.close();
     this.incoming = { bitmap, depth, header: h, rec, tRecv, tDone, vScale };
@@ -371,7 +443,8 @@ export class Refiner {
    * [{eye, view, proj, width, height}] (two; the same twice in a desktop
    * browser), aCentre (view * model of the head), model, zStretch, look:
    * {tf, crop} (session commands from refine.js), lookKey, background (the
-   * colour the page clears to: the backend composites over it)}.
+   * colour the page clears to: the backend composites over it), and for a
+   * point table (issue #190) look.commands and poseExtra (data_to_model)}.
    */
   frame(ctx) {
     if (this.frozen) return;
@@ -400,8 +473,9 @@ export class Refiner {
       if (ctx.look.cropError) {
         this.error = `clipping box not sent: ${ctx.look.cropError}`;
       } else {
-        this._send(ctx.look.tf);
-        this._send(ctx.look.crop);
+        // A cube's look is its transfer function and crop; a point table's
+        // (issue #190) a list of the point session's commands.
+        for (const cmd of ctx.look.commands || [ctx.look.tf, ctx.look.crop]) this._send(cmd);
         this.sentKey = this.key;
         if (this.error.startsWith('clipping box')) this.error = '';
       }
@@ -415,13 +489,13 @@ export class Refiner {
     // Ask for a frame of this pose: still or slow, the look sent, few in flight.
     if (active && !this.paused && state !== 'moving' && this.sentKey === this.key
         && F.poseChanged(this.lastSentA, ctx.aCentre, 0.2, 0.0015)
-        && this.book.outstanding(t) < this.o.maxOutstanding) {
+        && this.book.outstanding(t) < this._window()) {
       this._sendPose(ctx, t);
     }
 
     const shown = this.draw.shown;
     const usable = !!(shown && this.enabled && shown.rec.version === this.version
-      && F.frameUsable(shown.rec.aCentre, ctx.aCentre, state));
+      && F.frameUsable(shown.rec.aCentre, ctx.aCentre, state, showLimits(shown.header, F.SHOW_DEFAULTS)));
     this.weight = F.fadeStep(this.weight, usable, dt);
     if (!usable && this.weight <= 0 && shown) {
       // Faded out: forgotten, and the next still pose is asked for again even
@@ -448,9 +522,15 @@ export class Refiner {
     else if (this.ws && this.streaming) this.status = this.weight > 0 ? 'refined' : 'waiting';
   }
 
+  /** Poses in flight, and the backend's ack window. */
+  _window() {
+    return this.o.adaptLink ? Math.max(this.o.maxOutstanding, this.linkState.window) : this.o.maxOutstanding;
+  }
+
   _eyeSize(eyes) {
     const w = Math.max(...eyes.map((e) => e.width)), h = Math.max(...eyes.map((e) => e.height));
-    const s = Math.min(this.o.scale, this.o.maxEyePx / w, this.o.maxEyePx / h);
+    const cap = Math.min(this.o.maxEyePx, this.o.adaptLink ? this.linkState.maxEyePx : Infinity);
+    const s = Math.min(this.o.scale, cap / w, cap / h);
     return [Math.max(16, Math.round(w * s)), Math.max(16, Math.round(h * s))];
   }
 
@@ -462,6 +542,9 @@ export class Refiner {
     const id = this.book.add({
       tSent: t, version: this.version, eyes, model: Float32Array.from(ctx.model),
       aCentre: Float32Array.from(ctx.aCentre),
+      // Which session asked: a frame decoded after a cube change or a new
+      // session (gen bumped by _closeSession) is never shown.
+      gen: this.gen, datasetId: this.datasetId, sessionId: this.sessionId,
     });
     const ok = this._send({
       type: 'xr_pose', pose_id: id, t_client: Date.now() / 1000,
@@ -469,7 +552,7 @@ export class Refiner {
       views: eyes.map((e) => ({ eye: e.eye, view: Array.from(e.view), projection: Array.from(e.proj), width, height })),
       depth: this.o.depthScale ? { scale: this.o.depthScale } : false,
       quality: this.o.quality, sample_distance: this.o.sampleDistance,
-      background: ctx.background || [0, 0, 0], ...extra,
+      background: ctx.background || [0, 0, 0], ...(ctx.poseExtra || {}), ...extra,
     });
     if (ok) { this.stats.sent++; this.lastSentA = Float32Array.from(ctx.aCentre); }
     else this.book.take(id);
@@ -524,6 +607,9 @@ export class Refiner {
     if (srv) lines.push(`  server ${f0(srv.render)} ms render  ${f0(srv.total)} total  ${s.lastKB.toFixed(0)} KB  upload ${s.upload.quantile(0.5).toFixed(1)} ms`);
     const via = this.rtc.hudLine();
     if (via) lines.push(via);
+    if (this.o.adaptLink) lines.push(this.link.hudLine(this.linkState));
+    if (shown) lines.push(...reprojectionHud(shown.header));
+
     if (this.error && this.status !== 'refined') lines.push(`  ${this.error}`.slice(0, 60));
     return lines;
   }
@@ -538,8 +624,22 @@ export class Refiner {
       upload: q(s.upload), stopFirst: q(s.stopFirst), stopFull: q(s.stopFull),
       lastServer: s.lastServer, lastKB: s.lastKB, sent: s.sent, received: s.received, dropped: s.dropped,
       skipped: this.book.skipped, error: this.error, transport: this.rtc.summary(),
+      reprojection: this.draw.shown ? frameReprojection(this.draw.shown.header) : null,
+      link: { ...this.linkState, maxEyePx: Number.isFinite(this.linkState.maxEyePx) ? this.linkState.maxEyePx : null },
+
     };
   }
+}
+
+/**
+ * Does this xr_error mean the session gives no stereo frames at all (its slot
+ * is then freed)? The backend's code (issue #190): "out_of_core" or
+ * "unsupported"; from a backend without codes, its texts for the same two.
+ */
+export function stereoRefused(m) {
+  if (m && (m.code === 'out_of_core' || m.code === 'unsupported')) return true;
+  if (m && m.code) return false;
+  return /out of core|drawn for cubes only/i.test(String((m && m.error) || ''));
 }
 
 /** The page's eye views for a desktop browser: the mono camera as both eyes. */

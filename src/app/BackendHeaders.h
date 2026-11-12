@@ -18,27 +18,40 @@ inline constexpr const char *MAP_UNIT = "X-Map-Unit";
 inline constexpr const char *REQUEST_ID = "X-Request-ID";
 inline constexpr const char *SODA_APPLIED = "X-Soda-Applied";
 inline constexpr const char *TRUNCATED = "X-Truncated";
+inline constexpr const char *ARROWS = "X-Visivo-Arrows";
+inline constexpr const char *AXES = "X-Visivo-Axes";
 inline constexpr const char *BBOX = "X-Visivo-Bbox";
 inline constexpr const char *BIN_FACTORS = "X-Visivo-Bin-Factors";
 inline constexpr const char *BIN_MODE = "X-Visivo-Bin-Mode";
+inline constexpr const char *BOUNDS = "X-Visivo-Bounds";
+inline constexpr const char *BOX_MPC = "X-Visivo-Box-Mpc";
 inline constexpr const char *BUNIT = "X-Visivo-Bunit";
 inline constexpr const char *BYTEORDER = "X-Visivo-Byte-Order";
 inline constexpr const char *CALIBRATED = "X-Visivo-Calibrated";
+inline constexpr const char *COLOR_FIELD = "X-Visivo-Color-Field";
+inline constexpr const char *COLOR_LOG = "X-Visivo-Color-Log";
+inline constexpr const char *COLOR_RANGE = "X-Visivo-Color-Range";
 inline constexpr const char *COLOUR_RANGE = "X-Visivo-Colour-Range";
 inline constexpr const char *COLOUR_TABLE = "X-Visivo-Colour-Table";
 inline constexpr const char *COMPONENTS = "X-Visivo-Components";
+inline constexpr const char *COUNT = "X-Visivo-Count";
+inline constexpr const char *DATA_RANGE = "X-Visivo-Data-Range";
 inline constexpr const char *DENSITY_FACTOR = "X-Visivo-Density-Factor";
 inline constexpr const char *DEPTH = "X-Visivo-Depth";
 inline constexpr const char *DIV_MAX = "X-Visivo-Div-Max";
 inline constexpr const char *DIV_MIN = "X-Visivo-Div-Min";
 inline constexpr const char *DOWNSAMPLE_FACTOR = "X-Visivo-Downsample-Factor";
+inline constexpr const char *DOWNSAMPLE_FACTORS = "X-Visivo-Downsample-Factors";
 inline constexpr const char *EXPOSURE = "X-Visivo-Exposure";
 inline constexpr const char *FRAME = "X-Visivo-Frame";
 inline constexpr const char *FROM_CACHE = "X-Visivo-From-Cache";
 inline constexpr const char *FULL_SHAPE = "X-Visivo-Full-Shape";
 inline constexpr const char *FULL_SPEED_MAX = "X-Visivo-Full-Speed-Max";
 inline constexpr const char *FULL_SPEED_MIN = "X-Visivo-Full-Speed-Min";
+inline constexpr const char *GLYPH_CELL = "X-Visivo-Glyph-Cell";
 inline constexpr const char *HEIGHT = "X-Visivo-Height";
+inline constexpr const char *LINE_POINTS = "X-Visivo-Line-Points";
+inline constexpr const char *LINES = "X-Visivo-Lines";
 inline constexpr const char *N_BASINS = "X-Visivo-N-Basins";
 inline constexpr const char *ORIGIN = "X-Visivo-Origin";
 inline constexpr const char *PARTICLE_COUNT = "X-Visivo-Particle-Count";
@@ -52,7 +65,11 @@ inline constexpr const char *ROI_X0 = "X-Visivo-Roi-X0";
 inline constexpr const char *ROI_Y0 = "X-Visivo-Roi-Y0";
 inline constexpr const char *ROI_Z0 = "X-Visivo-Roi-Z0";
 inline constexpr const char *SCALAR_TYPE = "X-Visivo-Scalar-Type";
+inline constexpr const char *SEED = "X-Visivo-Seed";
+inline constexpr const char *SEEDS = "X-Visivo-Seeds";
 inline constexpr const char *SELECTED_COUNT = "X-Visivo-Selected-Count";
+inline constexpr const char *SELECTION_KIND = "X-Visivo-Selection-Kind";
+inline constexpr const char *SELECTION_SEQ = "X-Visivo-Selection-Seq";
 inline constexpr const char *SESSION = "X-Visivo-Session";
 inline constexpr const char *SPACING = "X-Visivo-Spacing";
 inline constexpr const char *SPECTRAL_AXIS_TYPE = "X-Visivo-Spectral-Axis-Type";
@@ -60,8 +77,10 @@ inline constexpr const char *SPECTRAL_AXIS_UNIT = "X-Visivo-Spectral-Axis-Unit";
 inline constexpr const char *SPECTRAL_MODE = "X-Visivo-Spectral-Mode";
 inline constexpr const char *SPEED_MAX = "X-Visivo-Speed-Max";
 inline constexpr const char *SPEED_MIN = "X-Visivo-Speed-Min";
+inline constexpr const char *STEP = "X-Visivo-Step";
 inline constexpr const char *THRESHOLD = "X-Visivo-Threshold";
 inline constexpr const char *TOKEN = "X-Visivo-Token";
+inline constexpr const char *TOTAL_ROWS = "X-Visivo-Total-Rows";
 inline constexpr const char *TRIM_BOX = "X-Visivo-Trim-Box";
 inline constexpr const char *UNIT = "X-Visivo-Unit";
 inline constexpr const char *VOLUME_BOX = "X-Visivo-Volume-Box";
@@ -70,34 +89,47 @@ inline constexpr const char *WARNINGS = "X-Visivo-Warnings";
 inline constexpr const char *WIDTH = "X-Visivo-Width";
 
 // Every declared header name, for the contract test to diff against the manifest.
-inline constexpr std::array<const char *, 56> kAll = {
+inline constexpr std::array<const char *, 75> kAll = {
     EW_UNIT,
     FWHM_UNIT,
     MAP_UNIT,
     REQUEST_ID,
     SODA_APPLIED,
     TRUNCATED,
+    ARROWS,
+    AXES,
     BBOX,
     BIN_FACTORS,
     BIN_MODE,
+    BOUNDS,
+    BOX_MPC,
     BUNIT,
     BYTEORDER,
     CALIBRATED,
+    COLOR_FIELD,
+    COLOR_LOG,
+    COLOR_RANGE,
     COLOUR_RANGE,
     COLOUR_TABLE,
     COMPONENTS,
+    COUNT,
+    DATA_RANGE,
     DENSITY_FACTOR,
     DEPTH,
     DIV_MAX,
     DIV_MIN,
     DOWNSAMPLE_FACTOR,
+    DOWNSAMPLE_FACTORS,
     EXPOSURE,
     FRAME,
     FROM_CACHE,
     FULL_SHAPE,
     FULL_SPEED_MAX,
     FULL_SPEED_MIN,
+    GLYPH_CELL,
     HEIGHT,
+    LINE_POINTS,
+    LINES,
     N_BASINS,
     ORIGIN,
     PARTICLE_COUNT,
@@ -111,7 +143,11 @@ inline constexpr std::array<const char *, 56> kAll = {
     ROI_Y0,
     ROI_Z0,
     SCALAR_TYPE,
+    SEED,
+    SEEDS,
     SELECTED_COUNT,
+    SELECTION_KIND,
+    SELECTION_SEQ,
     SESSION,
     SPACING,
     SPECTRAL_AXIS_TYPE,
@@ -119,8 +155,10 @@ inline constexpr std::array<const char *, 56> kAll = {
     SPECTRAL_MODE,
     SPEED_MAX,
     SPEED_MIN,
+    STEP,
     THRESHOLD,
     TOKEN,
+    TOTAL_ROWS,
     TRIM_BOX,
     UNIT,
     VOLUME_BOX,

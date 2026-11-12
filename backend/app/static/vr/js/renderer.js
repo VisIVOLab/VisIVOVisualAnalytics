@@ -215,6 +215,18 @@ const CUBE = new Float32Array([
 export class Renderer {
   constructor(gl) {
     this.gl = gl;
+    this._panels = new Set();      // createPanel() handles, re-made by restore()
+    this._cmap = 'viridis';
+    this._volume = null;           // the last setVolume() input, for restore()
+    this._maskInput = null;
+    this._lineSegs = {};           // target name -> the last segments
+    this._labels = null;
+    this._init();
+  }
+
+  /** The GL objects: made at construction and again after a context loss. */
+  _init() {
+    const gl = this.gl;
     this.vol = compile(gl, VOL_VS, VOL_FS);
     this.line = compile(gl, LINE_VS, LINE_FS);
     this.label = compile(gl, LABEL_VS, TEX_FS);
@@ -274,7 +286,7 @@ export class Renderer {
     gl.bindVertexArray(null);
 
     this.lut = gl.createTexture();
-    this.setColormap('viridis');
+    this.setColormap(this._cmap);
     this.volTex = null;
     this.macroTex = null;
     // The selection overlay: a 1-voxel placeholder until a mask is set, so the
@@ -284,11 +296,32 @@ export class Renderer {
     this._uploadMask(new Uint8Array(1), [1, 1, 1]);
     this.timer = gl.getExtension('EXT_disjoint_timer_query_webgl2');
     this.queries = [];
+    this.activeQuery = null;
     this.gpuMs = -1;
+  }
+
+  /**
+   * After a lost WebGL context is restored (epic #166): every GL object is
+   * made again and what was on show uploaded again from what the page still
+   * holds (the cube's voxels, the mask, the lines, the labels, the panels'
+   * canvases). Throws when the context cannot make them (still lost).
+   */
+  restore() {
+    this.textureBytes = 0;
+    this._init();
+    if (this._volume) this.setVolume(this._volume, this._volume.cell);
+    if (this._maskInput) this.setMask(this._maskInput);
+    for (const [name, segs] of Object.entries(this._lineSegs)) if (this[name]) this.setLines(segs, this[name]);
+    if (this._labels) this.setLabels(this._labels);
+    for (const h of this._panels) {
+      h.tex = this._panelTexture();
+      if (h.canvas) this.updatePanel(h, h.canvas);
+    }
   }
 
   setColormap(name) {
     const gl = this.gl;
+    this._cmap = name;
     gl.bindTexture(gl.TEXTURE_2D, this.lut);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, colormapTable(name));
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -304,6 +337,7 @@ export class Renderer {
     if (Math.max(w, h, d) > this.maxTex3D) {
       throw new Error(`${w} x ${h} x ${d} exceeds this GPU's 3-D texture limit (${this.maxTex3D}): use a larger binning factor.`);
     }
+    this._volume = { data, dims, encoding, cell };
     const t0 = performance.now();
     if (this.volTex) gl.deleteTexture(this.volTex);
     this.volTex = gl.createTexture();
@@ -351,6 +385,7 @@ export class Renderer {
   /** The selection on the drawn grid (selection.reduceMask's answer), or null
    *  to clear it. */
   setMask(reduced) {
+    this._maskInput = reduced && reduced.count ? reduced : null;
     if (!reduced || !reduced.count) {
       this.mask = null;
       return;
@@ -362,6 +397,7 @@ export class Renderer {
   /** Segments: array of {a: [x,y,z], b: [x,y,z], color: [r,g,b,a]} in model space. */
   setLines(segments, target = this.boxLines) {
     const gl = this.gl;
+    for (const name of ['boxLines', 'tmpLines', 'selLines']) if (this[name] === target) this._lineSegs[name] = segments;
     const arr = new Float32Array(segments.length * 14);
     segments.forEach((s, i) => {
       arr.set([...s.a, ...s.color, ...s.b, ...s.color], i * 14);
@@ -377,6 +413,7 @@ export class Renderer {
    */
   setLabels(labels) {
     const gl = this.gl;
+    this._labels = labels;
     const rowH = 40, pad = 6, W = 1024;
     const rows = Math.max(1, labels.length);
     const H = Math.min(4096, 2 ** Math.ceil(Math.log2(rows * rowH)));
@@ -414,8 +451,15 @@ export class Renderer {
     this.labelCount = verts.length / 7;
   }
 
-  /** A texture for a panel (HUD); update with updatePanel. */
+  /** A panel's texture (HUD, panels, message card): an opaque handle for
+   *  updatePanel and drawPanel, kept valid across a context loss. */
   createPanel() {
+    const h = { tex: this._panelTexture(), canvas: null };
+    this._panels.add(h);
+    return h;
+  }
+
+  _panelTexture() {
     const gl = this.gl;
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -426,9 +470,10 @@ export class Renderer {
     return tex;
   }
 
-  updatePanel(tex, canvas) {
+  updatePanel(handle, canvas) {
     const gl = this.gl;
-    gl.bindTexture(gl.TEXTURE_2D, tex);
+    handle.canvas = canvas;
+    gl.bindTexture(gl.TEXTURE_2D, handle.tex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
   }
@@ -557,8 +602,9 @@ export class Renderer {
   }
 
   /** A textured panel of `size` metres, centred on `model`'s origin in its xy plane. */
-  drawPanel(view, model, tex, size) {
+  drawPanel(view, model, handle, size) {
     const gl = this.gl;
+    const tex = handle.tex;
     const { u } = this.quad;
     gl.useProgram(this.quad.p);
     gl.uniformMatrix4fv(u.uMVP, false, M.multiply(view.proj, M.multiply(view.view, model)));

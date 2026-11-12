@@ -23,22 +23,42 @@ open on the desktop continues in the headset in the same backend session, with
 a panel in the headset for the controls
 ([#172](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/172), see
 [Open a cube from the desktop](#open-a-cube-from-the-desktop) and
-[The panel in the headset](#the-panel-in-the-headset)). What is not done yet
-is listed under [Known limits](#known-limits).
+[The panel in the headset](#the-panel-in-the-headset)); point tables,
+catalogues over a cube and velocity fields are shown too
+([#190](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/190), see
+[Point tables, catalogues and velocity fields](#point-tables-catalogues-and-velocity-fields)).
+A selection made in the headset appears in the desktop's cube viewer and a desktop lasso can be sent
+to the headset
+([#188](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/188), see
+[Selections shared with the desktop](#selections-shared-with-the-desktop)).
+What is not done yet is listed under [Known limits](#known-limits).
 
 | | |
 |---|---|
 | **Where** | `http://<backend>/vr/`, served by the backend itself |
 | **Headset** | Meta Quest 3 (Quest Browser, WebXR); any WebXR browser should work |
 | **Without a headset** | the same page in a desktop browser, with the mouse (for development and checks) |
-| **Data** | a FITS cube the backend can open |
+| **Data** | a FITS cube the backend can open; a point table, a catalogue over a cube, a velocity field |
 
-**In short.** Open the cube in the desktop application, connect the Quest
-with a USB-C cable, choose **Tools → Views → Open in VR Headset…** and press
-**Open on Headset**. Put the headset on: the cube is loading in the Quest
-Browser; press **Enter VR**. Point the right controller at the panel to the
-left of the cube to change the colour map, threshold or channels, or at the
-cube and pull the right trigger for a spectrum (left trigger: next tool).
+## Quickstart
+
+1. **Once:** install adb (`brew install android-platform-tools` on a Mac) and
+   turn on **developer mode** for the headset in the Meta Horizon app on your
+   phone (Devices → your headset → Headset settings → Developer mode).
+2. Open the cube in the desktop application and connect the Quest with a
+   USB-C data cable.
+3. **Tools → Views → Open in VR Headset…**. The dialog says what is missing,
+   step by step; the first time, put the headset on and accept **Allow USB
+   debugging** (tick *Always allow from this computer*).
+4. Press **Open on Headset**, put the headset on: the cube loads in the Quest
+   Browser. Press **Enter VR**.
+5. The first time, a short controls guide stands in front of you (*Next*,
+   *Close*; the **?** on the panel shows it again). Grip moves the cube, the
+   right stick sets threshold and opacity, the left stick the velocity slab,
+   the right trigger the tool; the panel to the left of the cube has the rest.
+
+If something goes wrong, the page says so in the headset and offers the way
+out: see [Troubleshooting](#troubleshooting).
 
 ---
 
@@ -115,10 +135,18 @@ sends the desktop's own 3-D view to an OpenXR runtime on this computer (see
 1. Connect the headset with a USB-C cable (or connect adb over Wi-Fi, see
    [below](#on-the-quest-3-over-wi-fi)) and put it on.
 2. In the cube window, **Tools → Views → Open in VR Headset…**. The dialog
-   says what it finds, and checks again every few seconds while no headset
-   is ready:
-   - *adb was not found*: install it (step 1 above);
-   - *No headset connected*: the cable, or developer mode;
+   says what it finds and the next steps, numbered, with a link to this
+   guide; it checks again every few seconds, and **Retry** checks at once:
+   - *adb was not found*: the exact command that installs it on this system
+     (`brew install android-platform-tools`, `sudo apt install adb`,
+     `winget install Google.PlatformTools`);
+   - *The Quest is connected by USB, but adb does not see it: developer mode
+     or USB debugging is off on the headset* (macOS: the dialog also looks at
+     the Mac's USB devices, for Meta's vendor id 0x2833, when adb lists
+     nothing): turn developer mode on, restart the headset, reconnect;
+   - *No headset on USB* (macOS) or *No headset connected*: the cable (a
+     data cable, not a charge-only one), the headset switched on, or
+     developer mode;
    - *The headset has not allowed this computer yet*: in the headset, accept
      **Allow USB debugging** (tick *Always allow from this computer* so it is
      not asked again);
@@ -126,7 +154,10 @@ sends the desktop's own 3-D view to an OpenXR runtime on this computer (see
      connecting; accept the prompt in the headset if it shows one;
    - *The headset is offline*: wake it up, or reconnect the cable;
    - *Ready*: the headset's model. With several devices attached, choose the
-     headset in the list.
+     headset in the list; the one used last time is chosen first.
+
+   When a step fails, **Copy Error** copies the error, the state and the adb
+   found (never the token) for a support request.
 3. Press **Open on Headset**. The application forwards the backend's port to
    the headset (`adb reverse tcp:<port> tcp:<port>`) and opens the page in
    the Quest Browser (`am start` with a view intent; in the headset's default
@@ -182,29 +213,165 @@ and headset.
 
 **Remote and cluster backends.** The headset reaches the backend as
 `localhost:<port>` through adb, so the client's backend address must be
-`localhost`, `127.0.0.1` or `[::1]` with no path after the port (the page
-lives at the backend's root): the local backend, or a remote one reached through a
-local tunnel, as a cluster connection is (for example `localhost:18960`).
-The port forwarded is the tunnel's, and the headset's requests travel
-through the same tunnel. A backend the client reaches at another address (a
-machine on the network at `http://192.168.x.y:8000`) cannot be reached from
-the headset this way, and the dialog says so: connect to it through an ssh
-tunnel (`ssh -L 8000:localhost:8000 host`) and open the cube from there.
+`localhost`, `127.0.0.1` or `[::1]`: the local backend, or a remote one reached
+through a local tunnel, as a cluster connection is. A backend the client
+reaches at another address (a machine on the network at
+`http://192.168.x.y:8000`) cannot be reached from the headset this way, and
+the dialog says so: connect to it through an ssh tunnel
+(`ssh -L 8000:localhost:8000 host`) and open the cube from there. See
+[Headset with a cluster backend](#headset-with-a-cluster-backend).
 
-The page itself is served by whichever backend the link points at, and it
-calls that backend only by relative addresses (`/v1/…`, and its render
-session's WebSocket on the page's own host and port): nothing in it assumes
-port 8000. With a cluster backend, therefore:
+## Headset with a cluster backend
 
-- the backend on the cluster must be a version that serves `/vr/` (this
-  release or later); an older one answers 404 for the page;
-- the reduced cube and every selection cross the tunnel (HCG 44 at the
-  default binning: 8.7 MB once, then a few kB per request);
-- refinement uses a render session **on the cluster** (its GPU, one of its
-  render slots), and its frames cross the tunnel and then adb: expect longer
-  pose-to-frame times than with a local backend, and turn refinement off on
-  the panel if the link is slow (the headset's own rendering never waits for
-  it).
+The same headset session works with the backend on an HPC node (PLEIADI or
+any other site, issue #187): the headset draws its reduced cube itself, so
+motion never waits for the network, and the cluster's GPU renders the refined
+stereo frames for the headset's pose when you hold still. The page stays
+`localhost` on the headset: `adb reverse` forwards the headset's
+`localhost:<port>` to the Mac's `localhost:<port>`, which is the local end of
+the desktop's SSH tunnel to the node.
+
+```
+Quest  localhost:18900 --adb reverse--> Mac localhost:18900 --ssh tunnel--> node:8000 (backend, GPU)
+```
+
+**Steps.**
+
+1. Start the backend on the cluster and its tunnel as usual: *Connect to a
+   cluster…* in the Data Hub, or `scripts/visivo_slurm_tunnel.sh` (local port
+   18900 by default; the Data Hub picks a free one from 18901). Connect the
+   desktop to it (the Data Hub then shows the backend as *remote*).
+2. Open the cube in the desktop from the cluster's file browser.
+3. **Tools → Views → Open in VR Headset…**. The dialog's first line names the
+   backend: *Backend: remote, through this computer's tunnel at
+   localhost:18900*, then the headset page's build the backend serves (a
+   12-character hash). The link carries **the cluster backend's token** and
+   the desktop's session on it, never the local backend's.
+4. *Open on Headset* runs `adb reverse tcp:18900 tcp:18900` and opens the
+   page: from here on as with a local backend.
+
+**The dialog's backend check.** Before pairing, the dialog asks the backend
+`GET /v1/vr/backend_check` (see the [API](../backend-api/meta-files.md)),
+without following a redirect (a portal's sign-in page is reported, and the
+token does not go along). It warns when
+the backend predates that route, lacks a route the page calls, or speaks an
+older headset protocol; on a cluster that almost always means the backend
+runs an **older copy of its code**: the `--backend-src` overlay (a copy of
+`backend/app` bound over the image's) or the image itself is older than the
+desktop. The page and its routes live in that same tree
+(`backend/app/static/vr`, `backend/app/routers`), so refreshing the overlay
+with the desktop's `backend/app` updates both. The backend's job log has one
+line at startup that tells the same:
+`[startup] VR page <build> (<n> files, newest <date>); backend code newest
+<date> in <dir>; VR routes all present; stereo depth auto`. Compare
+`<build>` with what a local backend of the same version logs, and check the
+dates. The dialog refuses to open the page only when the backend says it
+serves no headset page, or refuses the token; an answer it does not
+understand is a warning.
+
+The dialog calls a backend *remote* when it is not the desktop's local backend
+URL (by default `localhost:8000`). A tunnel to a cluster opened on that same
+port (`ssh -L 8000:node:8000`) is therefore labelled *local*: the pairing
+still works, since the link carries the token of the backend the desktop is
+using, but use another local port for a cluster tunnel (18900 and up, as the
+tunnel helpers do) so the two are never mixed.
+
+**A backend under a path prefix.** Some HPC portals publish a node's port
+through a reverse proxy under a path, for example
+`https://portal.example.org/node/r33c1s02/proxy/8000/`, which strips that
+path before passing the request on. Reached through a local tunnel to the
+proxy, the desktop's backend address is then
+`http://localhost:<port>/node/r33c1s02/proxy/8000`; the link opens
+`http://localhost:<port>/node/r33c1s02/proxy/8000/vr/`, and the page finds
+the prefix in its own address and sends every request and its render
+WebSocket under it. The proxy must pass WebSockets. A proxy that does **not**
+strip the prefix is not supported (the backend has no root-path setting).
+A portal's proxy logs the URLs it passes, often on a machine you do not
+control: the page's requests carry the token in a header, never in the URL,
+and its render WebSocket sends it as a WebSocket subprotocol rather than in
+the address once the backend accepts that (the VR hardening release); with an
+older backend the WebSocket address still holds `?token=`, which a portal
+logs.
+Over `https` the headset must trust the certificate for `localhost`, which a
+portal's certificate is not: prefer a plain `http` tunnel.
+
+**Refined frames over the tunnel.** The page measures, frame by frame, the
+round trip of its poses (pose sent to frame received, minus the time the
+backend spent on the frame). Over a far link (round trip above 30 ms) the
+numbers panel says `link far rtt <ms> ms  window <n>`: the page keeps enough
+poses in flight (and asks the backend for a matching ack window) to keep the
+cluster's GPU busy during the round trip, ceil((rtt + work) / work) with
+work = render + depth + JPEG, between 2 and 6. The eye size is **not**
+reduced over a far link: a smaller frame arrives sooner, but scaled up to the
+eye it is worse than the headset's own picture of the reduced cube (HCG 44,
+measured on the Mac with an emulated 80 ms link, against the backend's
+full-size reference: page alone 35.9 dB PSNR / 0.968 SSIM on the emission;
+refined with the eye at 768 px 35.4 dB / 0.947; refined at full size
+43.9 dB / 0.983). Lower *Refined size* on the page by hand if you prefer
+rate to sharpness.
+
+**Frames without depth.** A refined frame normally carries a depth image, so
+the page can warp it to your current pose with parallax. Some GL stacks (GLES
+contexts, some Mesa or EGL builds) give the colour back but not the depth.
+The backend checks every depth against its own picture; when it fails, the
+frame goes without it, the frame header says `"reprojection": "pose"`, and
+after two such frames the backend stops trying for that session. The page
+then warps the frame by the pose alone, through a plane at the cube's centre:
+exact for turning your head, approximate for moving it, so the frame is
+shown only while your eye has moved less than 1 cm since its pose (4 cm with
+depth). Without depth the error of a step grows sharply as the eye nears the
+cube: leaning into it, or with the eye inside it, the near emission is
+misplaced by much more than the few pixels of a step at arm's length. In
+maximum intensity (MIP) the ray caster has no first-hit depth at all, so
+refined MIP frames are always warped this way (the panel says *no first-hit
+depth in MIP*). The numbers panel says `reprojection: pose only (no depth)` and the
+reason on the next line. An operator can force this with `VISIVO_XR_DEPTH=0`
+in the backend's environment (the dialog then says so).
+
+**Measured on PLEIADI (2026-11-11, by hand).** Backend in a SLURM job on a
+V100 node, image `backend-egl.sif` (EGL, VTK 9.3.1) with a `--backend-src`
+overlay of the then current `backend/app`; HCG 44; poses at 72 Hz from the Mac
+through the SSH tunnel with `benchmark/remote_render/stereo_pose_latency.py`
+(two frames in flight, before the window followed the round trip). Colour
+**and** depth read back through the volume mapper on that EGL path: the
+colour-only fallback is a safety net there, not the normal case.
+
+| Eye size | Stereo frames/s | Pose→frame, client p50 / p90 | Server p50 | Render | Depth | JPEG | Frame size |
+|---|---|---|---|---|---|---|---|
+| 1024² | 9.1 | 175 / 196 ms | 115 ms | 80 ms | 7.9 ms | 19 ms | 37 kB |
+| 512² | 16.4 | 122 / 154 ms | 41 ms | 28 ms | 2.2 ms | 4.5 ms | 11 kB |
+
+About 80 ms of each latency is the tunnel's round trip; with two frames in
+flight the rate was capped at about window / round trip. A Quest 3 eye at the
+default *Refined size* (1×) is about 2064 × 2208 px, four times the pixels of
+1024²: expect a render near 300 ms there, so a stop→refined of roughly half a
+second over the tunnel, until measured.
+
+**Measured on the Mac (headless Chrome, HCG 44, the backend behind a
+prefix-stripping proxy on localhost, 2026-11-11).** Paired with the desktop's
+link code under the prefix `/portal/visivo`; cube drawn and *refined* 7.6 to
+11 s after the page opened (cold page and a 0.6 to 0.8 s reduction).
+Measured from the motion detector's stop:
+
+| Link | Depth | Pose→frame p50 / p95 | Stop→refined p50 | Window |
+|---|---|---|---|---|
+| loopback | yes | 77 / 616 ms (n 7) | 83 ms | 2 |
+| loopback | off (`VISIVO_XR_DEPTH=0`) | 53 / 68 ms | 50 ms | 2 |
+| +80 ms on the uplink | yes | 141 / 160 ms | 150 ms | 3 (far) |
+
+**What to measure on PLEIADI.** With the headset paired as above:
+
+1. Note the dialog's first two lines (remote, the tunnel's port, the page
+   build) and any warning.
+2. In VR, hold still on the cube and read the numbers panel: the line
+   `refine refined … remote … fps`, **pose->frame** p50 and p95, **stop->refined**
+   (and *full*), `server … ms render … total`, and `link far rtt … ms
+   window …`. Turn your head slowly and stop five times; note stop->refined
+   each time.
+3. Check that no `reprojection: pose only` line appears (depth works on the
+   V100 EGL path); if it does, note its reason.
+4. Repeat with adb over Wi-Fi.
+5. From the job log, copy the `[startup] VR page …` line.
 
 ## On the Quest 3, over USB (recommended)
 
@@ -283,6 +450,23 @@ API to the network, protected only by the token). Prefer adb over Wi-Fi.
 | Right trigger, pointing at the cube | the selection tool along the right controller's ray (see [Selections](#selections-in-the-headset)) |
 | Left trigger | next selection tool: spectrum probe, Kinematic Lasso, box region |
 
+**With your hands** (hand tracking, no controllers): put the controllers down
+and the page switches to your hands within a frame; pick them up again and it
+switches back. A **pinch** (thumb tip to index tip) is the right trigger: it
+presses the panels' buttons, drags their sliders and fires the selection tool
+along the hand's ray (the headset's own pointing ray; the ray is held still
+while the fingers close, so the pinch does not move what it points at). A
+**closed hand** (middle, ring and little finger curled) is the grip (after
+a grip, and for a hand just seen, a pinch counts only once the fingertips have
+parted, so opening a fist with the thumb still on the index, or a hand that
+appears already pinched, does not press anything): one hand
+carries the cube, both hands move, turn and scale it. The sticks and the
+A/B/X/Y buttons have no hand gesture: their controls are on the panels (the
+panel itself stays shown). A left pinch does not change the tool (it happens
+while grabbing); choose the tool on the panel. The fingertips are drawn as
+small crosses, the pinch as a line that turns yellow when it closes, the palm
+as a cross that grows when the hand grips.
+
 The spatial clipping box, the stretch, the velocity stretch, the binning and
 the eye-buffer settings are set on the page before entering VR; the rest is on
 the panel in the headset too.
@@ -301,15 +485,19 @@ around you), the panel does.
 
 | Row | What it does |
 |---|---|
-| title bar | the cube's file name; pull the trigger on it and move the controller to **move the panel** (it turns to face you); the place is kept for next time |
+| title bar | the cube's file name; pull the trigger on it and move the controller to **move the panel** (it turns to face you); the place is kept for next time. **?** at its right end shows the controls guide again |
 | (two lines) | the cube's shape, the reduced shape, the binning and texture; the session (*the desktop's session*, *own session*, …) |
 | Colour map | ◀ ▶ the previous or next colour map; *emission* or *max intensity* |
 | Threshold | a slider (fine steps near the noise, as on the page) with its value in the cube's unit; *Reset* puts back the default threshold and colour range |
 | from | the default threshold *for this binning* or that of the *full cube* (the desktop's) |
 | Colour max, Opacity | sliders |
 | Channels | the velocity slab: a range with two ends (the nearer end moves); the channel range and its velocities in km/s with their convention below it; *All channels* |
-| Refine | refinement on or off, and its state (*refined (still view)*, *waiting*, *paused in passthrough*, *unavailable: …*) |
+| Refine | refinement on or off, and its state (*refined (still view)*, *waiting*, *paused in passthrough*, *lost: retrying in N s*, *unavailable: …*) |
 | Tool | spectrum, lasso or box; *Clear* removes the selection and the marks |
+
+Under the rows, a line says when the page lowered the quality to hold the
+frame rate (*Quality lowered to hold 90 Hz: 0.50 samples/voxel (of 1), eye
+buffer 0.85× (of 1×)*), or what a selection is doing.
 
 A slider pressed keeps following the controller until the trigger is released,
 even when the ray slips off its row. The results of a selection (numbers and
@@ -330,6 +518,24 @@ GPU, 0.8 ms (1.2 ms). A frame with the panel shown costs 0.03 ms more CPU and
 no measurable GPU time than without it. The Quest 3's own figures are on its
 numbers panel (*panel redraw … ms + upload … ms*).
 
+### The analysis panel
+
+Under the control panel hangs a second panel, moved and hidden with it, used
+the same way (ray and trigger, or pinch):
+
+| Row | What it does |
+|---|---|
+| Lasso seeds | *new*: the next lasso seed starts a new selection; *add*: it adds a source to the selection shown; *carve*: it cuts a region out of it (the desktop's plain, Shift and Alt double-clicks) |
+| Selection | *Isolate* (a new cube with everything outside the selection blanked), *Remove* (the selection blanked), *Show that cube* (load the cube just made in its place) |
+| Moment | *M0*, *M1*, *M2*: the moment map of the selection on a plane in the room; *Hide* |
+| PV path | *Draw*: the trigger adds the path's points; *Undo*, *New*, *w −*/*w +* (the slit width in pixels), *Hide* |
+
+Below the buttons: the slit width and the tools' state (seeds, the last cube
+made, the moment's range, the path being drawn). On the page the same tools
+are under the selection controls (*Lasso seed*, *Isolate*, *Remove*, *Show
+that cube*, *M0 M1 M2*, *Draw PV path*, *Width*), and the moment map and PV
+diagram are shown there as well.
+
 ## Settings kept in this browser
 
 The page keeps a few conveniences in the browser's local storage, for this
@@ -337,7 +543,8 @@ browser only (the headset's browser and the Mac's keep their own): the
 **colour map**, the **threshold source** (*for this binning* or *full cube*),
 the **refinement** settings (on or off, refined size, JPEG quality, reproject
 with depth), the **panel's place** in the headset (relative to where the cube
-first appears), and the **last selection tool**. Nothing else is stored there:
+first appears), the **last selection tool**, and whether the **controls
+guide** was seen (it is shown at the first entry into VR only). Nothing else is stored there:
 not the token (unless *remember on this device* is ticked), not the session,
 not any result. If the browser refuses storage (a private window), the page
 works with the defaults. `?refine=0` or `?refine=1` in the address overrides
@@ -362,9 +569,24 @@ the stored refinement setting for that visit.
   exactly when one of the block's voxels is (the noise rule, read from the
   lower tail, would set too low a cut on block maxima and draw noise).
 - **Samples / voxel**: samples per reduced voxel along each ray (1 by default).
-  With *hold the frame rate* on, the page lowers it when frames are missed and
-  raises it back slowly, never above this value; while you hold the cube it
-  drops to 60 %.
+  With *hold the frame rate* on (the default; right stick press toggles it in
+  the headset), the page lowers it when frames are missed and raises it back
+  slowly, never above this value; while you hold the cube it drops to 60 %.
+  When the governor has already lowered it to 0.5 or less (or to its own
+  floor, 0.25) and more than 10 % of the frames are
+  still missed over 3 s, the page makes the **eye buffer** smaller, one step
+  at a time through the scale factors 1.25, 1, 0.85 and 0.7 (absolute
+  values of *Resolution*, starting below the one chosen; never below 0.7),
+  and does not raise it again in that VR session (each change costs a hitch);
+  the next *Enter VR* starts from the chosen resolution. The panel and the
+  numbers say so.
+- **Memory budget**: before the reduced cube is read, the page checks that it
+  fits: the GPU's 3-D texture side, and the texture's size against what this
+  device gives one cube (a headset: 256 MiB with 8 GB of memory, 128 MiB with
+  4 GB; a computer's browser: 1 GiB). A cube over it is refused with the
+  reason (*… needs 300 MiB of texture (900 MiB while loading); this headset
+  allows 256 MiB for one cube*): choose a larger binning. The headset's limit
+  is a conservative figure, not yet measured on a Quest 3.
 - **Resolution**: the headset's eye-buffer scale (`framebufferScaleFactor`),
   **Foveation**: the Quest's fixed foveated rendering, **Refresh**: the display
   rate asked of the headset (72, 90 or 120 Hz, if it offers it). Set them
@@ -774,6 +996,143 @@ it was measured. *Download recipes (.json)* saves all of them, *Copy last
 recipe* copies the latest. A replay opens the path and posts the same
 requests: the selection is the one the desktop shows for that seed.
 
+### Refining the selection: add, carve, Isolate, Remove
+
+The lasso's seed mode (*new*, *add*, *carve*, on the analysis panel or the
+page) decides what the next lasso trigger does, as the desktop's plain, Shift
+and Alt double-clicks do: *add* grows a second source into the selection
+(union), *carve* removes the region the grow from that seed reaches; the
+primary seed stays. Each press is one grow on the full cube
+(`/v1/cube/kinematic_select_bin` with `add_seeds` and `sub_seeds`, the
+desktop's request), so the selection is always the one its seeds and
+parameters make; the extra seeds are drawn as green (added) and red (carved)
+crosses, and the results panel counts them.
+
+*Isolate* and *Remove* post the mask shown, exactly (not a re-grow), to
+`/v1/cube/mask_apply_bin` with `blank_outside` or `blank_inside`, as the
+desktop's buttons do: the new cube goes to the Workspace Exports with the
+selection's recipe in its FITS HISTORY, and is registered in the session.
+*Show that cube* loads it in the headset in place of the cube shown. Each
+mode makes one cube per selection: pressing *Isolate* or *Remove* again, or
+both at once, reuses the cube already made (or being made), and a moment uses
+the cube *Isolate* made for the selection. The seeds are read from the
+selection's own grow request, so a selection that arrives from elsewhere (a
+shared one) continues with its own seeds. A selection is applied with its own
+mask whenever it has one (even beside a grow request: a shared mask is
+authoritative, and may have been edited by hand); one that arrives with only
+its grow is grown again
+from its request, and applied only if the grow gives back its voxel count,
+box origin and size (else the page refuses and says what differs); one edited
+by hand and arriving without its mask is refused (its grow is not it: apply it
+on the desktop). Isolate, Remove and a moment belong to the cube they started
+on: if another cube is loaded while they run, nothing is applied to it (a
+cube already made from the previous one is deleted if temporary, or kept and
+not recorded), and the panel says so, even after the new cube's reset. A
+shared mask edited by hand is recorded as the desktop records one: *Hand-edited*
+yes, `hand_edited=yes` in the new cube's HISTORY, the apply step's
+hand-edited body and the desktop's caveat (the parameters regrow only its
+geodesic part; the cube itself is the exact record). A selection received from the
+session's selection hub is recorded as the desktop records one it received:
+a box as one `mask_apply_bin` step over the box (its origin and size, the
+only apply step that records its ROI, since the box is the selection); a
+selection that came without its grow request as the mask only, with the
+desktop's caveat that no call regenerates it; one with its creator's grow as
+that grow and the apply. *Made in* says where it was made, and the moment of
+such a selection records the same steps before its own. No recipe ever has a
+grow step without a request.
+
+### The moment of the selection
+
+*M0*, *M1*, *M2* compute the moment map of the selection the desktop's way:
+the selection is isolated (as *Isolate*, reused when it was already made for
+this mask) and the moment is that cube's, through `/v1/products/moment` with
+the fields the desktop sends, over the whole channel range (the desktop
+dialog's default) and with the threshold mask **off**: the desktop dialog
+starts with an automatic ~3σ mask, but on an isolated selection the
+selection is the mask, and a further cut would drop the faint margin the lasso
+grew into. No backend route computes a moment from a mask without writing a
+cube (`kinematic_fit_bin` returns only a noise-cut velocity field, with a
+fit), so an isolated cube is written to the Workspace Exports: the one
+*Isolate* made for this selection, or else a **temporary** one named
+`<cube>_vr-moment-tmp-<tag>.fits` (never the `_lasso-outside` name an Isolate
+gets). The temporary cube is **deleted** when the selection changes (a new
+grow, *Clear*, a new cube), file and session entry, and the analysis panel
+says so (or says why it stays, for example when the token may not delete
+Workspace Exports); the page deletes only files carrying that marker. It is
+named temporary in the moment's recipe too. While it exists it is an ordinary
+dataset of the session: the desktop's lists of the session's datasets show
+it, and a desktop tool opened on it in that time would lose it when the
+headset's selection changes (the backend has no way to mark a dataset as
+hidden). A moment of a selection no longer shown is removed from the room. The map is shown cropped to the selection's
+bounding box (plus a tenth of its size, at least 3 pixels), x and y in pixels
+of the cube, on a plane above the cube's right side with its colour bar and
+unit. Colours as on the desktop: inferno for M0, a diverging cool-warm for
+M1 on the desktop's range (median ± 4 robust sigma, values outside it
+transparent, as the desktop draws a velocity field), viridis for M2. A
+velocity in m/s (also written `m s-1`, `m.s**-1`) is shown in km/s (the numbers
+divided by 1000); the recipe keeps the backend's unit.
+
+### A PV slice along a path
+
+*Draw* arms the PV path: each trigger press (or click on the page) adds a
+point where the ray picks the cube (the first drawn sample, else the middle of
+the ray inside the box), as a fractional pixel of the full cube (pixel
+centres at integers, as the desktop's path). From two points on, the diagram
+is computed on the full cube (`/v1/cube/pv`, the desktop's request:
+`vertices` and `width_pixels`, default 1) and follows the path as it grows, as
+the desktop's editable path does (one request at a time, the newest path next).
+The path is drawn on the cube as orange lines on both faces of the velocity
+slab, with a post at each point and, while drawing, a line to the ray. The
+diagram hangs above the cube's left side: offset along the path in arcsec
+across, the rows in the order of the channels' spectral coordinate, lowest at
+the bottom (the desktop's orientation, so a cube with CDELT3 < 0 is not
+mirrored), labelled with the channels' velocities (the caption says whether
+they increase or decrease upward: on a frequency cube they decrease; the ticks
+are placed between the rows' own velocities, since an optical velocity is not
+linear in frequency), colour bar in the cube's unit. One row per channel: for
+a non-linear spectral axis the desktop resamples onto a finer uniform grid,
+the page does not. Choosing a
+selection tool stops the drawing.
+
+**Recipes** (`visivo-recipe/1`). The seeds, Isolate and Remove are recorded as
+the desktop records them: the grow with its seed lists; an isolated or removed
+cube as the grow and the apply step (the mode only: the mask is the grow's
+answer), with the desktop's Provenance (*Mode*, *Selected voxels*, *File*),
+once per cube. Moments and PV diagrams are **recorded by the page**: the
+desktop registers them with their Provenance but records no replay steps for
+them. A moment is the grow, the isolate and the moment request, whose
+`dataset_id` is the placeholder `{new_dataset_id}` (the isolate's answer), with
+a `replay_caveat` saying that posting the opened dataset's id there would
+measure the whole cube; its parameters use the desktop's *Order*,
+*Channels*, *Mask*, *Scope*, *Unit*. One product per order and selection (M0
+pressed again is recorded again in place); a cube isolated only for a moment
+is not recorded as a product of its own. A PV diagram is its request, with
+*Path*, *Width*, *From*, *To* and the desktop's `pvpath` origin; a path that
+grows is one product, recorded again with its new points.
+
+**The same numbers as the desktop.** `validation/vr_analysis_identity.py`
+places the seeds and the path's points with the page's own pick (node runs
+its modules) on HCG 44 and compares every call with the desktop's
+(`validation/out/vr_analysis_identity.md`; the requests against the keys the
+desktop's C++ sends, read from its source, the PV rows against a port of its
+row ordering and the page's own drawn pixels against those rows): seed on NGC 3187, 13 216 voxels,
+6.061 Jy km/s; add NGC 3190, 23 891 voxels, 9.191 Jy km/s; carve inside
+NGC 3187, 10 675 voxels, 3.131 Jy km/s; each the desktop's displayed and
+replayed selection (Dice 1.000) and the desktop's request. Isolate and Remove
+make the desktop's cubes, voxel for voxel. M0, M1, M2 are the desktop's maps
+bit for bit; the sum of M0 over the map divided by the beam (30.66 pixels) is
+the selection's flux (6.0607 = 6.0607 Jy km/s), and the M0-weighted M1 is its
+spectrum's flux-weighted velocity (1572.44 km/s both). The PV diagram along a
+three-point path across NGC 3187 is the desktop's, its emission at
+1515 km/s, and the same path on a copy of the cube with the spectral axis
+reversed (CDELT3 < 0) gives the same picture row for row.
+
+**Timings** (Apple M5 Max, Chrome, HCG 44, the mouse on the page): a grow with
+seeds 0.6-0.7 s as before, Isolate 0.18 s, Remove 0.12 s, a moment 0.13-0.38 s
+(isolate reused), a PV of 50 samples × 158 channels 0.06 s. Redrawing the
+analysis panel takes 0.4 ms and a product plane 0.15 ms of CPU, only when they
+change; with the panels and both planes shown the page holds 60 fps.
+
 **Identity with the desktop.** `validation/vr_selection_identity.py` runs the
 page's own picking code (under node) on the reduced cube of HCG 44 and the
 requests it builds, and compares them with the desktop's two paths for
@@ -792,6 +1151,103 @@ HCG 44 binned 3 × 3 × 1): pick and seed 40 ms (the ray pick itself takes under
 lasso 570-710 ms plus 40-80 ms of statistics, box over 158 channels 22 ms.
 The green overlay costs GPU time: 0.64 ms without it, 0.84 ms with it, for one
 1600 × 1000 view on that Mac; the headset's own numbers are on its panel.
+
+## Selections shared with the desktop
+
+A Kinematic Lasso or a box made in the headset appears in the desktop's cube
+viewer, and a lasso made on the desktop can be sent to the headset
+([#188](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/188)): one
+person in the headset and others at the screen look at the same object. It
+needs the headset's page to work in the desktop's session, which is what
+*Open in VR Headset…* (or its *Copy Link*) gives it.
+
+**From the headset to the desktop.** Every lasso and box made in the page is
+published to the session's selection hub on the backend
+([Shared selections](../backend-api/share.md)), which measures it on the full
+cube. Once *Open in VR Headset…* has been used in a cube window, that window
+follows the hub (a long poll, nothing to press): the headset's selection is
+shown at once as the Kinematic Lasso's own selection, the mask on the 2-D
+channel map, the isosurface in the 3-D view and the channel profile, with
+its voxel count in the lasso's panel, and a note in the status bar and under
+*Show in VR Headset* in the panel, for example *Kinematic Lasso from the
+headset: 13216 voxels, flux 6.061 Jy km/s, 1240.4 to 1500.9 km/s*. Nothing has
+to be dismissed. A box arrives as a selection of every voxel of the box. The
+desktop's Reach and Velocity coupling sliders act on selections made on the
+desktop: they do not regrow a selection received from the headset, and a
+double-click starts a new one there. *Isolate → new cube* and *Remove → new
+cube* apply a received selection as shown.
+
+**From the desktop to the headset.** With a Kinematic Lasso selection on the
+desktop, press **Show in VR Headset** in the lasso's panel (or *Tools → Views →
+Show Selection in VR Headset*). The page draws it in green as its own lasso, with
+its statistics on the results panel, which says *voxels from the desktop*; the
+status bar says *Shown in the VR headset*. A hand-refined mask is sent as it is
+shown.
+
+**The same numbers.** Both sides show the statistics the backend measured on
+the full cube when the selection was shared, from the same mask: the voxel
+count and the flux in Jy km/s are the same on the page and on the desktop.
+
+**The latest wins.** The hub keeps one selection per cube, the latest,
+whichever side made it, in the order the selections were sent (a selection
+sent earlier but measured later does not replace a later one), and each
+side keeps reading the hub until what it shows is the hub's selection, so both
+end on the same one; a selection
+that arrives while one is being grown on the other side replaces it (the grow
+in flight is dropped when it lands). When a page loads, or a cube window opens
+the headset, the selection already in the hub is not shown: only those made
+from then on are.
+
+**Recorded once.** The side that makes a selection records it: the page
+records its lasso or box in its recipes, the desktop records nothing until a
+selection is applied. The side that receives a selection draws it with the
+creator's record attached and records no step of its own: the page adds no
+recipe for a desktop lasso; on the desktop, *Isolate* or *Remove* of a
+headset lasso records the headset's grow (the request under the API's names,
+its seed and parameters, with *Made in: VR headset* in the Provenance tab and
+`made_in=VR headset` in the FITS `HISTORY`), and of a headset box the box
+itself (`mask_apply_bin` with a mask of ones over it, its pixel and channel
+range in the Provenance tab and the `HISTORY`). A lasso received without the
+request it was grown with is recorded as the mask alone (*Recorded as: the
+mask only*, with a replay caveat: the cube and its `HISTORY` are the exact
+record), never as a request it was not grown with. Applying never records an
+ROI of its own, as before.
+
+**Measured** (backend on an Apple M5 Max, the page in headless Chrome on the
+same Mac, HCG 44, `validation/vr_share_e2e.mjs`): NGC 3187's lasso made in the
+page (13 216 voxels, 6.061 Jy km/s) reaches a client waiting on the hub
+48-98 ms after the page's lasso ended (three runs; the publish with the
+backend's statistics is 45-94 ms of it), with the same voxels, the same flux, the same mask
+(Dice 1.000 with a regrow of the recorded request) and the page's request as
+its record; a desktop lasso of 10 684 voxels is drawn by the page 53 ms after
+the desktop starts sending it, and the page adds no recipe; a 56 × 43 × 158
+box made in the page reaches the desktop with the same 380 464 voxels and
+flux. The desktop's own client (`SharedSelectionLink`) receives a selection
+another client of the session publishes in about 100 ms.
+
+**What to check** (desktop and headset together):
+
+1. On the Mac, open HCG 44, *Tools → Views → Open in VR Headset…*, *Open on
+   Headset*, and enter VR.
+2. In the headset, choose the Kinematic Lasso and select NGC 3187. Note the
+   voxels and the flux on the results panel. On the Mac (ask someone, or look
+   after taking the headset off), the cube window must show the selection
+   within about a second without any click, and the status bar and the
+   lasso's panel must say *Kinematic Lasso from the headset: … voxels, flux …
+   Jy km/s* with the same two numbers.
+3. In the headset, make a box (two corners). The desktop must show it as a
+   selection with the same voxel count as the panel's *voxels … valid / …*.
+4. On the Mac, double-click another galaxy of HCG 44, wait for the selection,
+   press *Show in VR Headset*. In the headset the green mask must move to that
+   galaxy within about a second and the results panel must say *voxels from
+   the desktop*. *Download recipes (.json)* on the page must not have a new
+   entry for it.
+5. Back on the Mac, press *Isolate → new cube* on a headset lasso: a new cube
+   must be made, and its product's Provenance must say *Made in: VR headset*
+   and list the headset's seed; do the same on a headset box: its Provenance
+   gives the box's pixels and channels. Note the numbers panel's **share** line in the headset (sent,
+   received, publish and receive ms), and the times of steps 2 and 4.
+6. Repeat 2 and 4 over Wi-Fi.
 
 ## The numbers on the left controller
 
@@ -930,11 +1386,308 @@ value and whether each step behaves as described.
    must work again (*refined (still view)* when you hold still).
 9. **Wi-Fi.** Repeat 1 and 4 with adb connected over Wi-Fi; note the time to
    load and the refinement's **pose->frame** on the numbers panel.
-10. **A cluster backend** (if you use one): connect the desktop to it, open a
-    cube there and repeat 1, then hold still and note **pose->frame** and
-    **stop->refined**.
+10. **A cluster backend** (if you use one): follow
+    [What to measure on PLEIADI](#headset-with-a-cluster-backend).
+
+## Troubleshooting
+
+The page watches the backend (one small request every 5 s, and every 1 to
+5 s while it does not answer) and says what went wrong where you are: on a
+card in front of you in the headset (point the right ray at its buttons and
+pull the trigger), and in a banner on the 2-D page. Nothing waits on it: the
+cube stays on show and moves with your hands, and the card never stays in
+the way. A card that lasts (the backend not reachable, the token refused, an
+out-of-date page) follows your gaze for 6 s, then moves aside, 40° to the
+left and lower, and stays there. **Hide** folds it into a line on the panel
+(*⚠ Backend not reachable: retrying — "?" shows it*) until its state
+changes; **?** on the panel brings it back. The card is redrawn only when its
+text changes (at most once per check, every 1 to 5 s).
+
+| Message | What happened | The way out |
+|---|---|---|
+| **Backend not reachable**, *the headset cannot reach the backend on the computer* | in the headset over USB: the cable was unplugged, or the headset or adb restarted, so the port forwarding (`adb reverse`) is gone; or the backend is restarting | the page retries by itself (*Trying again by itself every few seconds*); if it does not clear, on the computer press **Open on Headset** again (it restores the forwarding). *Retry now*, *Hide*, *Exit VR* |
+| **Backend not reachable**, *the backend does not answer* | in a desktop browser or over the LAN: the backend stopped or the network is down | start the desktop application (it starts the backend); the page retries by itself |
+| **The backend is not answering behind its proxy** / **answered with an error** | the address answers with an HTTP error (a proxy's 502, a 500) | the page retries by itself; *Retry now*, *Hide* |
+| **The backend restarted** | it came back with its sessions gone | nothing: the page opened the cube again by its path, the view is kept; repeat the last selection if it did not finish |
+| **The cube was opened again** | a request found the cube's dataset gone (the desktop's session ended) | nothing: the page opened it again; repeat the selection |
+| **The cube could not be opened again** | the file moved or changed shape | *Try again*, or open it again from the desktop |
+| **The backend refused the token** | the backend was restarted with a new token, or the token expired | on the computer: **Open in VR Headset… → Open on Headset** (a fresh link); or paste the token on the page, then *Check again*; *Hide* meanwhile |
+| **The backend was updated** | the backend serves a newer version of this page than the one open (a tab kept from before an upgrade) | *Reload page* (the cube from the desktop opens again by itself) |
+| **This page is out of date** / **Update the application** | the page and the backend speak different versions of the page API (or the backend is older than the page: it has no `/v1/vr/info`) | *Reload page*; if that does not help, update VisIVO Visual Analytics on the computer |
+| **The graphics were reset** | the browser took the GPU away (memory pressure, another app) | the page waits for it and uploads the cube again by itself (*Graphics restored*); a VR session cannot outlive it, so press *Enter VR* again |
+| **The graphics did not come back** | not restored after 10 s | *Reload page* |
+| **The VR session ended** (on the 2-D page) | the headset or the browser ended it: the system menu, the headset taken off for a while | *Enter VR*: the cube and the settings are kept |
+| **This cube is too large for this device** | the reduced cube would not fit the [memory budget](#the-settings-on-the-page) | a larger *Spatial bin* or *Spectral bin*, or a smaller *Max side* |
+| Refine: *lost: retrying in N s, the headset's own rendering meanwhile* | the render session's connection dropped | nothing: the headset shows its own rendering, and the page reconnects (2, 4, 8 … 30 s) and refines again; if the backend no longer holds the cube, the page opens it again first |
+
+**Upgrades.** The page's code is served from addresses that change with every
+version (`/vr/b/<build>/…`) and the page itself is always revalidated, so
+after an upgrade a reload always gets the new code. A tab left open across an
+upgrade may run a mix of old and new code until it reloads; it notices the
+upgrade at its next check and says *The backend was updated*.
+
+**Diagnostics for support.** The page sends its errors and the key events
+(page errors, context loss, the end of a VR session, reconnections, the frame
+rate once a minute in VR) to the backend's log, a few at a time (lines
+`[vr <build>] <event>: …`, logger `visivo.vr`). Before it leaves the page, and
+again on the backend, each message is scrubbed: `%`-escapes decoded, tokens
+replaced, the value of any key containing *token* or *session* redacted
+when it looks like a secret, render session ids replaced, paths cut to their
+file name (spaces inside directory names up to a file name with an extension;
+`file://`, URLs with a host, Windows `C:\`, `C:/` and `\\server\` paths), and
+control and format characters (newlines, bidirectional overrides,
+zero-width characters) turned into spaces; the full list is in the
+[backend API](../backend-api/meta-files.md#post-v1vrlog). **Copy diagnostics** on the page puts the versions, the GPU and
+its limits, WebXR, the cube, the frame rate, the quality, the settings and the
+last events on the clipboard (or shows them, when the clipboard is not
+available): paste them into a support request.
+
+**Checked so far** in a desktop Chrome (headless, ANGLE Metal on an M5 Max,
+and SwiftShader) against a local backend, with each failure driven by
+`validation/vr_lifecycle.mjs`: the backend killed (the notice within 0–5 s,
+retries every 1–5 s, the cube opened again about 10 s after the backend is
+back), the token changed under the page, the cube's dataset deleted, the
+render session deleted (the page's own rendering at once, refined again
+about 8 s later), the WebGL context lost and restored with
+`WEBGL_lose_context` (the cube drawn again 0.6 s later), a stale page build
+and API, the guide's buttons pressed through a ray. Not yet on a Quest 3:
+the checks below.
+
+**What to check on the Quest 3** (and the numbers to report):
+
+1. Enter VR for the first time: the controls guide stands in front of you;
+   *Next*, *Back* and *Close* work with the right trigger; enter VR again: it
+   is not shown; **?** on the panel shows it again.
+2. In VR, unplug the USB cable: within 5 s the card says *Backend not
+   reachable* and names *adb reverse* and *Open on Headset*, while the cube
+   still moves with your hands. Plug it back and press *Open on Headset* on
+   the Mac: the card goes by itself (how many seconds?).
+3. Quit and restart the desktop application while in VR: *The backend
+   restarted*, the cube stays, a spectrum works afterwards; refinement comes
+   back (*Refine* row).
+4. Press the Quest's system button and quit the VR session: the 2-D page says
+   *The VR session ended* with *Enter VR*.
+5. Load a large cube (*Max side* 512, 16-bit) and stay still, then move:
+   does the panel say *Quality lowered to hold … Hz*? Read the numbers (Y):
+   FPS, samples/voxel, eye buffer size before and after.
+6. **Copy diagnostics** on the 2-D page: does the clipboard work over
+   `localhost` (paste the text in the report)?
+
+## What to check on the Quest 3: analysis and hands (#191)
+
+1. Load HCG 44 and enter VR. Lasso tool, seed mode *new*: pull the trigger on
+   NGC 3187. The panel says 13 216 voxels and 6.06 Jy km/s.
+2. Seed mode *add* (analysis panel, under the control panel), trigger on
+   NGC 3190 (the source left of NGC 3187 at the same velocity): about 23 900
+   voxels, a green cross at the added seed. *carve*, trigger inside NGC 3187:
+   the count drops, a red cross. Report the counts and the lasso ms on the
+   left controller's numbers.
+3. *Isolate*, then *M0*: a map appears above the cube's right side. Read its
+   title, colour bar and unit (JY/BEAM km/s): are the labels readable from
+   where you stand? *M1*, *M2*. Then *Show that cube*: the isolated cube
+   replaces the cube.
+4. *Draw*, then trigger at three places across NGC 3187: the orange path on
+   the cube and the PV diagram above the cube's left side, velocity up
+   (888 at the bottom, 2183 at the top for HCG 44). *w +* twice, *Undo*.
+5. *Download recipes* afterwards (on the page, out of VR): one record per
+   seed press, Isolate, moment and PV path.
+6. Hands: put the controllers down. Pinch with the right hand while pointing
+   at the analysis panel's buttons: does one pinch press once, and only
+   once? Drag the threshold slider on the control panel with a held pinch.
+   Point at the cube and pinch: does the cross stay where you pointed? Close
+   a hand on the cube and move it; close both hands and pull them apart.
+   Pick a controller up again mid-way: the ray and grip go on without
+   reloading. Report any missed or double press, and the FPS while a hand
+   grabs the cube.
+7. With the two product planes shown, the FPS and GPU ms on the left
+   controller, against the same view without them (*Hide*).
+
+## Point tables, catalogues and velocity fields
+
+The same page shows the other data types the desktop opens
+([#190](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/190)), with
+the same rule: the headset draws, the backend computes.
+
+| Data | What the headset draws | What the backend does | Refined when still |
+|---|---|---|---|
+| **Point table** (VBT `.bin.head`, a 3-D catalogue, a simulation snapshot) | an even sample of its rows within a budget, as points or additive splats, coloured by a column through the page's colour maps | samples the table, and its point render session draws **every row** for the headset's eyes | yes (the point session's stereo frames) |
+| **Catalogue over a cube** (VLKB compact sources or filaments, a cross-match, a catalogue file) | markers, ellipses and contours in the cube's box | places each source in the cube's pixels with the file's full WCS | with the cube |
+| **Velocity field** | its streamlines and arrows as lines, coloured by the speed | traces them on the desktop's display grid with the desktop's own filters | no |
+
+**Opening one.** From the desktop: *Tools → Open in VR Headset…* in a point
+table's or 3-D catalogue's window, or the *Open in VR Headset…* button under
+the velocity viewer's controls; the link then carries `kind=points` or
+`kind=velocity` (and a velocity field's box size, `box=`), and the page opens
+the desktop's dataset in the same session, or its path again when the session
+no longer holds it, as for a cube. On the page: type the path, choose
+**Data kind** (*auto* goes by the name: `.head`, `.bin`, `.csv`, `.xml`… are
+point tables, a FITS whose name says `velocity` or `flow` a velocity field),
+give a velocity field's **Box (Mpc)** if it has one, and press *Open and
+load*. The page's cube controls are hidden meanwhile.
+
+### Point tables
+
+The table is sampled evenly over its rows (the point session's own rule), so a
+snapshot stored region by region is sampled everywhere, and each row costs 8
+bytes: positions and colour quantised to 16 bits over the sample's box and the
+colour range. **Rows drawn** chooses the budget (*quest-low* 0.5 M, *quest*
+1 M, the default, *quest-high* 2 M, *desktop* 5 M, *desktop-high* 10 M, the
+most a request may ask for). **Hold the frame rate** (on by default) draws
+fewer of the sampled rows while a frame would be late, and more again when
+there is room: the rows arrive in a low-discrepancy order (van der Corput), so
+the rows drawn are spread over the whole sample, never a corner of it (no gap
+wider than twice the even spacing). A filter set on the table runs before the
+sample. Choosing another budget or column while a sample is still coming
+cancels it: only the last one asked for is fetched and drawn. The HUD says *points X M drawn of
+Y M sampled, Z M rows*.
+
+*Colour by* a column (the backend puts a positive column spanning more than
+three decades on a log scale the first time, as a mass or a density needs,
+in the same request; untick *log* to undo), *Colour from / to* narrow the map, *Style* is *points* (pixels)
+or *splats* (sized like the desktop's: the mean spacing of the table's rows
+times the size step over 8, larger in proportion when only a sample is drawn).
+The box is the sample's bounding box, its longest side 1 (scaled to 0.6 m in
+the headset), with ticks in the table's units.
+
+When you hold still, the backend's point render session draws every row of the
+table for your eyes and the page blends that frame in, as for a cube: the
+page sends its colours, style and the map from the table to its box
+(`data_to_model`) with each pose, so the frame lands on the page's points.
+
+### Catalogues over a cube
+
+Under **Catalogue over the cube**, choose the sources: a *catalogue file on
+the backend* (CSV, VOTable, FITS table, IPAC: RA/Dec or GLON/GLAT columns),
+*VLKB compact sources* (a band, band-merged by default) or *VLKB filaments*
+over the cube's footprint (with the desktop's margin; across l = 0 too, as
+at the Galactic Centre), or a *cross-match* (SIMBAD, NVSS, FIRST, 2MASS) of
+the cube's field. *Place on the cube* asks the backend to put them in the
+cube's pixels with the file's full WCS, so a Galactic CAR cube (Hi-GAL,
+CHIMPS cutouts) and an equatorial TAN one are both projected correctly, and a
+catalogue in another frame is converted first.
+
+A source with a spectral column (`freq`, `v_rad`, `v_opt`, `v_app`, `vlsr`…,
+in its own unit when the file or the column name says it; SoFiA's `v_app`
+without a unit in the cube axis's unit; a `velocity` of no stated convention
+in the axis's own, with a warning) is a cross at its voxel; a source whose
+channel is outside the cube is left out and counted (a wide-band survey over a
+narrow-band cube keeps the sources it shares). Only when none falls in the
+channels, and the column declares no unit, is a reading a thousand times
+larger or smaller tried (m/s against km/s); when it places most of them it is
+applied and named in a warning. A convention is never changed. Otherwise all
+are placed on the sky only. Every warning is shown under *Place on the cube*
+and, in the headset, on the strip under the panel (the first one, in amber);
+the status line also warns when the
+cube's or the catalogue's spectral frame calls for a frame change, which is
+not applied. A source without a spectral column is
+drawn on the back face of the clipping box with a faint line through every
+channel (*through every channel* turns those lines off). VLKB ellipses are
+built as on the desktop (FWHM in pixels, major axis along +x turned by the
+PA), each band in the desktop's colour; filaments lie on the back face. The
+status line says how many sources were placed, how many fell outside the
+cube, and how they were placed in velocity.
+
+### Velocity fields
+
+The backend traces the streamlines and picks the arrows on the grid the
+desktop's velocity viewer shows (block-averaged to 128 per side), with the
+same filters and settings: 200 seeds in a ball at the centre of 0.3 times the
+longest side, Runge-Kutta 4-5 both ways, 2000 steps at most; at most 50 000
+arrows by uniform spatial sampling, each `3 × cell / speed max` long per unit
+of speed. The seeds are random, as on the desktop, from a fixed sequence:
+*Trace again* (or *new seeds* on the headset) draws another set. The lines are
+coloured by the speed over the full-resolution range through the page's
+colour map. The lines are traced with the box the desktop's viewer shows (its
+*Box size*, carried by the link as `box=`; 0 is grid units), else the one the
+field was opened with; the axes say which (Mpc or grid units), from what the
+backend reports. The page draws lines one pixel wide where the desktop
+draws tubes.
+
+### The strip under the panel
+
+In the headset a strip of buttons sits under the control panel: for a point
+table *points/splats*, *colour:* (next column), *rows* (next budget), *size −*
+and *size +*; for a velocity field *streamlines*, *arrows*, *arrows −/+* and
+*new seeds*; over a cube with a catalogue placed, *catalogue*, *labels* and
+*through velocity*. Point the right controller at it and pull the trigger.
+
+### Measured on the Mac: points, catalogues, flows
+
+Chrome headless with ANGLE Metal on an M5 Max, one view of 1680 × 1673 pixels
+(about one Quest 3 eye at 1×), GPU time from the timer query; synthetic data
+in the scratch area (a VBT of 10 000 000 rows with five columns, a 96³
+velocity field, a GLON-CAR cube), HCG 44 with its SoFiA-2 catalogue.
+
+**Point table, 10⁷ rows**, all sampled rows drawn (*hold the frame rate*
+off), GPU ms for one view (two runs; the second's numbers, the first's within
+0.8 ms):
+
+| Rows drawn | points | splats | sample | request (local) |
+|---|---|---|---|---|
+| 0.5 M | 3.3 | 4.0 | 4 MB | 50 ms |
+| 1 M | 4.0 | 4.2 | 8 MB | 97 ms |
+| 2 M | 4.2 | 4.4 | 16 MB | 160 ms |
+| 5 M | 6.2 | 8.1 | 40 MB | 480 ms |
+| 10 M | 13.6 | 18.5 | 80 MB | 1030 ms |
+
+With *hold the frame rate* on and all 10 M rows sampled, the page settled at
+3.4 to 6.0 M rows drawn, 9.2 to 10.1 ms of GPU per frame (0.6 of a 60 Hz
+frame) and 60.0 FPS with no missed frame. The cost is per point (2 px squares
+cost little more than 1 px ones: 4.4 against 3.7 ms for 2 M rows), not per
+pixel. Refinement: the first refined frame of all 10 M rows came 1.6 s after
+loading (the render session is made then), fully blended at 1.75 s; the
+backend drew both eyes in 141 ms, pose to frame 203 ms.
+
+**Catalogue over a cube.** HCG 44 (`VELO-HEL` read as optical velocity) and
+its SoFiA-2 catalogue (VOTable, `ra`, `dec`, `v_app` in m/s): all 18 sources
+placed, within 0.0022 px in x and y and 10⁻¹³ channel in z of the pixel
+SoFiA itself reports, and drawn on the galaxies' emission. A synthetic
+GLON-CAR cube with 12 Gaussian sources whose catalogue gives `glon`, `glat`
+and `vlsr` (km/s): every source within 3 × 10⁻⁶ px of its true voxel. The
+placement took 23 ms; the overlay costs 0.2 to 0.4 ms of GPU.
+
+**Velocity field**, 96³ with a box of 200 Mpc: 400 streamlines of 407 758
+points and 50 000 arrows, 7.7 MB, traced and sent in 0.24 to 0.29 s, 2.0 to
+3.1 ms of GPU for one view of 1600 × 913. The streamlines are point for point
+those of the desktop's pipeline on the same grid (a test runs the desktop's
+filters, written from its C++, with the same seeds on the grid placed by the
+spacing and origin the grid route reports: identical within 10⁻⁴ Mpc), on the
+full grid and on a block-averaged one. Opened from a pairing link: 0.42 s to
+the lines drawn.
+
+### What to check on the Quest 3: points, catalogues, flows
+
+1. **A point table from the desktop.** Open a large VBT (at least 10⁷ rows,
+   for example the snapshot under DemoData converted to VBT) in the desktop,
+   *Tools → Open in VR Headset…*, put the headset on: the table must load
+   with nothing typed. Enter VR; on the numbers panel note **FPS**, **missed
+   %**, **GPU ms** and the line *points … drawn of … sampled*, at *quest-low*,
+   *quest* and *quest-high* (the *rows* button on the strip), with *hold the
+   frame rate* on and then off (on the page before entering VR). Move your
+   head quickly: the points must never lag.
+2. **Splats.** Press *points/splats*: note the same numbers.
+3. **Refinement of a point table.** Hold still: within about a second the
+   denser image of every row must fade in, on the same place as the headset's
+   points; note **pose->frame** and **stop->refined**.
+4. **A catalogue.** Open HCG 44 from the desktop; on the page (before entering
+   VR) place `sofia_hgc44_cat.xml` (catalogue file); in VR, check that every
+   cross sits on a galaxy's emission at its velocity, and that *labels* and
+   *catalogue* on the strip work. If the VLKB is reachable, open a Hi-GAL or
+   CHIMPS cutout and place *VLKB compact sources*: the ellipses must sit on the
+   compact emission.
+5. **A velocity field.** Open one in the desktop's velocity viewer, *Open in
+   VR Headset…*: compare the streamlines in the headset with the desktop's at
+   the same seeds count (they are drawn from another random set of seeds:
+   compare the flow's structure, the attractors and the speeds' colours). Note
+   FPS and GPU ms with streamlines and arrows on.
 
 ## Known limits
+
+- **Tokens in the access log.** The VR page sends its token in request
+  headers and, on the render WebSocket, as a subprotocol: it is in no URL.
+  The desktop's remote 3-D view still puts it in its WebSocket address
+  (`/v1/render/<id>/ws?token=…`), and uvicorn's access log records that
+  address, so the backend's log can hold the token: keep that log private.
 
 - **Checks on the headset are pending.** Everything above was measured in a
   desktop browser on the Mac (Chrome, the same code path with the mouse); the
@@ -946,12 +1699,23 @@ value and whether each step behaves as described.
   16 bits), for what a headset browser can allocate; the backend refuses a
   larger reduced cube before reading anything, and the page checks its GPU's
   limit before asking. Choose a larger binning.
-- **Tools in the headset**: a spectrum, the Kinematic Lasso (one seed: no add
-  or carve seeds, no hand refinement, no Isolate or Remove, which stay on the
-  desktop) and a box region; no moments, no PV slice. The desktop has no
+- **Tools in the headset**: a spectrum, the Kinematic Lasso with add and
+  carve seeds, Isolate and Remove, the moment maps M0-M2 of the selection, a
+  PV slice along a path, and a box region. No hand refinement of the mask on
+  a channel (the desktop's polygon edit), no kinematic fit; the moment is
+  always over the whole channel range with no threshold mask, the PV path
+  is not edited point by point (*Undo* removes the last point), and the PV
+  path is drawn with points, not a curve. The product planes stay where they
+  are put (above the cube's sides); they cannot be moved. The desktop has no
   recipe import: a VR recipe is replayed by posting its requests, as a desktop
-  recipe is. The selection made in the headset is not shown in the desktop's
-  views (they share the session's datasets, not the selections on screen).
+  recipe is.
+- **Shared selections**: the desktop follows the headset's selections once
+  *Open in VR Headset…* was used in that cube window (or a selection was sent
+  from it), in the desktop's session only; one selection per cube is shared,
+  the latest, of at most 16 Mi voxels in its bounding box (a larger box made
+  in the headset is measured there but not shared, and the page says so). The
+  desktop sends a selection only when asked (*Show in VR Headset*); its
+  sliders do not regrow a selection received from the headset.
 - **Refinement**: needs a cube the backend holds in core: a cube drawn out of
   core from its brick pyramid is not refined (the panel says so). Refined
   frames travel as JPEG over the render session's WebSocket: there is **no
@@ -964,15 +1728,34 @@ value and whether each step behaves as described.
 - **Pairing**: *Open in VR Headset…* needs adb and a headset in developer mode,
   and opens the page through `adb reverse` only (USB or adb over Wi-Fi), not by
   the Mac's network address; a backend at a network address must be reached
-  through a local tunnel. The link carries the token (see the caution above).
+  through a local tunnel. A backend under a path prefix works only behind a
+  proxy that strips the prefix. The link carries the token (see the caution above).
   The settings kept in the browser are per browser: the Mac's and the
   headset's are separate.
 - **The panel in the headset** has the main controls only: the spatial clipping
   box, stretch, velocity stretch, binning, texture, Kinematic Lasso parameters
   and eye-buffer settings are on the page (before entering VR). The panel is
-  used with the right controller; hand tracking is not supported.
+  used with the right controller or the right hand's pinch. **Hand tracking
+  has not been tried on a headset**: the pinch and grip thresholds (pinch
+  closes under 1.2 cm between the fingertips' surfaces, opens over 2.8 cm;
+  grip under 0.72 of the palm's length, opens over 0.95) were set and tested
+  on synthetic hands; see the checks below.
 - The labels follow the central row and column of the field; far from them on
   a wide projected field the true coordinate of a pixel differs a little.
 - The page reads the whole cube once to reduce it (0.6 s for HCG 44, 1.1 s
   with a cold cache); a cube of hundreds of GB takes correspondingly long.
+- **Point tables, catalogues, velocity fields** (#190): a point table is
+  refined in the headset's own colours only (no selections, no filters set on
+  the page; the desktop's filters are not carried over); the ray-traced
+  particle render is not used for refinement (seconds per frame on the CPU,
+  where a stereo frame must come in a few hundred milliseconds). A velocity
+  field is not refined, its streamlines are lines one pixel wide (the
+  desktop's are tubes), a later change of the desktop's *Box size* reaches
+  the headset only with a new link, and
+  basins and the divergence isosurfaces stay on the desktop. A catalogue's
+  spectral column is read in the cube's own reference frame (no barycentric
+  to LSR change); DS9 region files are not placed (the desktop's cube overlay
+  reads them); the page's catalogue choice is not carried by the pairing link.
+  The desktop's cube overlay of a catalogue file still uses its linear
+  approximation of the WCS; the headset's uses the full projection.
 - Comfort: prefer short, seated sessions; passthrough mode helps.

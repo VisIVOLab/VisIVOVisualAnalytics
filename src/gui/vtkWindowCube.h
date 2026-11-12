@@ -8,6 +8,7 @@
 #include "CubeStatRows.h"
 #include "LutScale.h"
 #include "LassoReplay.h"
+#include "SharedSelection.h"
 #include "LinkedWindowRegistry.h"
 #include "ProductRegistry.h"
 #include "PowerSpectrumSlope.h"
@@ -29,6 +30,7 @@ class RaytraceOutput;
 class RaytraceViewport;
 class VolumeRaytracePanel;
 class AngularPowerSettings;
+class SharedSelectionLink;
 class SkeletonSettings;
 
 #include "CubeViewportGeometry.h"
@@ -229,6 +231,9 @@ struct RemoteKinematicSelectResult
     visivo::LassoGrowRequest grow;
     QString noiseWhere;   ///< where grow.sigma came from, when it was supplied
     int trimBox{ 0 };     ///< >0: the domain was cut to a seed-centred box of this half-width
+    /// Made in the VR headset and received through the session (issue #188);
+    /// default: made here.
+    visivo::SharedSelectionOrigin shared;
 };
 
 class vtkWindowCube : public QMainWindow
@@ -855,6 +860,25 @@ private:
     QPointer<QAction> m_actOpenInVrHeadset;
     QPointer<VrHeadsetDialog> m_vrHeadsetDialog;
     void openInVrHeadset();
+
+    // ── Selections shared with the VR headset (issue #188) ───────────────────
+    // vtkWindowCube_VrShare.cpp. The link follows the session's selection hub
+    // once the headset was opened (or a selection sent): a headset selection is
+    // shown here as the lasso's mask and statistics, with its record attached.
+    QPointer<SharedSelectionLink> m_shareLink;
+    QPointer<QAction> m_actShowInHeadset;
+    QPointer<QPushButton> m_lassoShowInHeadsetBtn;
+    QPointer<QLabel> m_lassoShareLabel;
+    visivo::SharedSelectionOrigin m_lassoMaskShared;   ///< where the mask on screen came from
+    void setupShowInHeadsetAction();
+    void startSelectionShare();
+    void showSelectionInHeadset();
+    void onSharedSelectionReceived(const visivo::SharedSelectionInfo &info, const QByteArray &mask,
+                                   qint64 elapsedMs, bool own);
+    /// A selection made (or cleared) here replaced what the hub's link showed.
+    void noteLocalShareSelection();
+    void addLassoShareControls(QWidget *body, QVBoxLayout *outer);
+    void refreshShowInHeadset();
 
     // ── Moment-map texture tools (issue #29) ─────────────────────────────────
     // The image viewer's angular power spectrum and skeleton / void detector,

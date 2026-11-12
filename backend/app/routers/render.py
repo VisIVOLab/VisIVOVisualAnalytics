@@ -576,11 +576,17 @@ def _stereo_conflict(session_id: str, connection: object) -> str | None:
     return None
 
 
+#: Sessions that draw a headset's stereo frames: cubes (issue #169) and point
+#: tables (issue #190, render_session/_stereo_points.py).
+_STEREO_FACTORIES = ("app.render_session:RenderSession",
+                     "app.render_session.points:PointRenderSession")
+
+
 def _supports_stereo(sess) -> bool:
-    """Cube sessions draw the headset's stereo frames; point sessions not yet."""
+    """Whether the session draws the headset's stereo frames."""
     factory = getattr(sess, "_factory", None)
     if factory is not None:     # a session in a render process of its own
-        return factory == "app.render_session:RenderSession"
+        return factory in _STEREO_FACTORIES
     return hasattr(sess, "_render_xr_frame_on_thread")
 
 
@@ -743,6 +749,19 @@ async def _push_frames(websocket: WebSocket, sess, send_lock: asyncio.Lock,
             await asyncio.gather(ahead, return_exceptions=True)
 
 
+WS_SUBPROTOCOL = "visivo.v1"
+_TOKEN_SUBPROTOCOL = "visivo-token."
+
+
+def _token_from_subprotocols(header: str) -> tuple[str, str | None]:
+    """(token, subprotocol to answer) from a Sec-WebSocket-Protocol header:
+    the token of a "visivo-token.<token>" entry, and "visivo.v1" when the
+    client offered it (None otherwise: no subprotocol in the answer)."""
+    offered = [p.strip() for p in header.split(",") if p.strip()]
+    token = next((p[len(_TOKEN_SUBPROTOCOL):] for p in offered if p.startswith(_TOKEN_SUBPROTOCOL)), "")
+    return token, (WS_SUBPROTOCOL if WS_SUBPROTOCOL in offered else None)
+
+
 @router.websocket("/{session_id}/ws")
 async def render_ws(websocket: WebSocket, session_id: str) -> None:
     """Bidirectional channel: client commands in, JPEG frames out.
@@ -756,15 +775,18 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
     # Manual auth — the verify_token Depends() doesn't apply to WS.
     token_qp = websocket.query_params.get("token", "")
     token_hd = websocket.headers.get("x-visivo-token", "")
-    from ..auth import accepted_tokens as _accepted_tokens
-    import secrets as _secrets
-    supplied = token_qp or token_hd
+    # A browser can also send it as a subprotocol, "visivo-token.<token>" next
+    # to "visivo.v1" (the VR page does, so the token is in no access log); the
+    # answer names "visivo.v1" only, never the token.
+    token_sp, subprotocol = _token_from_subprotocols(websocket.headers.get("sec-websocket-protocol", ""))
+    from ..auth import accepted_tokens as _accepted_tokens, token_equal as _token_equal
+    supplied = token_qp or token_hd or token_sp
     matched: str | None = None
     if supplied:
         # Every per-user token is accepted (not just the primary one); the loop
         # does not short-circuit, so a match position isn't timing-observable.
         for _accepted in _accepted_tokens():
-            if _secrets.compare_digest(supplied, _accepted):
+            if _token_equal(supplied, _accepted):
                 matched = _accepted
     if matched is None:
         # Close with policy code 1008 — "policy violation".
@@ -778,7 +800,7 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
         await websocket.close(code=1011, reason="unknown session_id")
         return
 
-    await websocket.accept()
+    await websocket.accept(subprotocol=subprotocol)
     if session_id in _stereo_owners:
         # The session draws a headset's stereo frames: this client would get
         # them instead of its view (1013: try again later). Checked after the
@@ -834,6 +856,16 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
                     sess.changed.set()     # the client gets the current view first
                     push_task = asyncio.create_task(
                         _push_frames(websocket, sess, send_lock, push))
+                else:
+                    # Streaming already: a new ack window or rate cap (the
+                    # headset's page widens its window over a slow link,
+                    # issue #187). A wider window lets a waiting frame go.
+                    push.configure(command)
+                    push.acked.set()
+                    async with send_lock:
+                        await websocket.send_text(json.dumps(
+                            {"stream": "on", "window": push.window, "max_fps": push.max_fps},
+                            separators=(",", ":")))
             elif ctype == "frame_ack":
                 push.ack()
             elif ctype == "xr_pose":
@@ -846,7 +878,8 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
                 conflict = None if stereo else _stereo_conflict(session_id, websocket)
                 if not _supports_stereo(sess):
                     reply = {"type": "xr_error", "pose_id": command.get("pose_id"),
-                             "error": "Stereo frames are drawn for cubes only."}
+                             "error": "Stereo frames are drawn for cubes and point tables only.",
+                             "code": "unsupported"}
                 elif conflict is not None:
                     reply = {"type": "xr_error", "pose_id": command.get("pose_id"),
                              "error": conflict}

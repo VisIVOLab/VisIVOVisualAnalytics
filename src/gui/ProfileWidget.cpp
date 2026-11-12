@@ -936,9 +936,14 @@ void ProfileWidget::requestLineFit()
         const double k = m_lastSpectrumKey.at(i), v = m_lastSpectrumValues.at(i);
         if (std::isfinite(k) && std::isfinite(v)) { key.append(k); values.append(v); }
     }
-    if (key.size() < 4) {
+    // The fit below always has a linear baseline: 5 parameters (amplitude,
+    // centre, width, offset, slope), and the backend wants one channel more
+    // than parameters so the residual has a degree of freedom.
+    constexpr int kMinFitChannels = 6;
+    if (key.size() < kMinFitChannels) {
         QMessageBox::information(this, u"Line Fit"_s,
-                u"Need at least 4 finite spectral channels to fit a Gaussian."_s);
+                u"Need at least %1 finite spectral channels to fit a Gaussian with a baseline."_s
+                        .arg(kMinFitChannels));
         return;
     }
     const QString url = m_backendUrl, token = m_backendToken;

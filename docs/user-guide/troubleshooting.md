@@ -140,6 +140,26 @@ compute can't starve them. If it does:
 - The Python worker pool grows lazily; if your `WORKERS=1` you only have
   one slot and heavy tasks will block.
 
+### Python processes left running after the backend is gone
+
+From this version on, the processes the backend starts end on their own
+when the backend ends, even when it is killed or crashes:
+
+- worker-pool processes, remote render views and cube readers end within
+  about a second;
+- a pyramid build is first asked to stop, and gets up to 5 s to remove its
+  partial file;
+- a process inside a long native computation that holds the Python
+  interpreter lock (a VTK render, some numpy work) ends when that
+  computation returns. On Linux, render views and cube readers are killed
+  by the kernel at once.
+
+The `multiprocessing.resource_tracker` process ends right after them and
+removes any shared memory they left. Processes left by an older
+version are not affected: end them by hand (`pkill -f multiprocessing` on
+macOS and Linux, after checking with `ps` that nothing else of yours uses
+multiprocessing).
+
 ### Volume rendering is choppy
 
 The volume mapper is GPU-bound. Causes:
