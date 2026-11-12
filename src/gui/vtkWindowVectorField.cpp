@@ -710,6 +710,8 @@ void vtkWindowVectorField::applyBoxSize(double boxMpc)
     const std::array<int, 3> full = this->fullShape();
     const bool densOn = this->chkFieldDensity && this->chkFieldDensity->isChecked();
     const bool voidOn = this->chkFieldVoid && this->chkFieldVoid->isChecked();
+    // A backend ∇·v still on its way was asked for the old box: drop its reply.
+    ++m_divGen;
     const bool rescale = this->divergenceGrid && m_divFromBackend
             && !velocitylod::cellRatioChanges(full, m_divBoxMpc, boxMpc);
     if (rescale) {
@@ -1003,10 +1005,11 @@ void vtkWindowVectorField::placeBasins()
                     .arg(top.join(u", "_s)));
 }
 
-bool vtkWindowVectorField::buildFieldDensityFromBackend()
+velocitylod::DensityReply vtkWindowVectorField::buildFieldDensityFromBackend(int gen)
 {
+    using velocitylod::DensityReply;
     if (this->m_datasetId.isEmpty())
-        return false;
+        return DensityReply::ComputeLocally;
     BackendClient client(this->m_backendUrl, this->m_backendToken);
     if (!this->m_sessionId.isEmpty())
         client.setSessionId(this->m_sessionId);
@@ -1017,11 +1020,13 @@ bool vtkWindowVectorField::buildFieldDensityFromBackend()
     const double box = this->m_boxMpc;
     const BackendVelocityDensityResult d =
             client.fetchVelocityDensity(this->m_datasetId, kDensityMaxDim, box);
-    if (!d.valid || d.nx <= 0 || d.ny <= 0 || d.nz <= 0)
-        return false;
+    // The fetch spins an event loop: a box edit may have superseded this request.
     const vtkIdType npts = vtkIdType(d.nx) * d.ny * d.nz;
-    if (d.divergence.size() != npts * qint64(sizeof(float)))
-        return false;
+    const bool usable = d.valid && d.nx > 0 && d.ny > 0 && d.nz > 0
+            && d.divergence.size() == npts * qint64(sizeof(float));
+    const DensityReply action = velocitylod::densityReplyAction(gen, m_divGen, usable);
+    if (action != DensityReply::Install)
+        return action;
 
     // Place the density grid in the CLIENT's frame, which the user scales via
     // Box size: the backend's origin and spacing, rescaled, with the per-axis
@@ -1048,22 +1053,30 @@ bool vtkWindowVectorField::buildFieldDensityFromBackend()
     div->GetRange(r);
     this->m_divMin = r[0];
     this->m_divMax = r[1];
-    return true;
+    return DensityReply::Install;
 }
 
 void vtkWindowVectorField::buildFieldDensity()
 {
     if (!this->imageData)
         return;
+    // Every build is a new request: one still in flight is superseded.
+    const int gen = ++m_divGen;
     // For a downsampled (large) field, the display LOD is too coarse to resolve
     // the ∇·v cores — get a higher-res divergence from the backend. For a
     // full-res display, compute locally (no round-trip).
     if (this->m_grid.downsampleFactor > 1 && !this->m_datasetId.isEmpty()) {
+        using velocitylod::DensityReply;
         // A round trip to the backend: said in the status bar too (#159).
         visivo::BusyStatus busy(this, visivo::taskTexts(u"Computing the divergence on the backend"_s));
         QApplication::setOverrideCursor(Qt::WaitCursor);
-        const bool ok = this->buildFieldDensityFromBackend();
+        const DensityReply action = this->buildFieldDensityFromBackend(gen);
         QApplication::restoreOverrideCursor();
+        // A newer request already put the current box's ∇·v in place and said
+        // so: end this one with no outcome, so its word stays on the bar.
+        if (action == DensityReply::Drop)
+            return;
+        const bool ok = action == DensityReply::Install;
         busy.finish(ok ? visivo::BusyOutcome::Done : visivo::BusyOutcome::Failed,
                     ok ? QString() : u"computed here instead"_s);
         if (ok)

@@ -512,4 +512,15 @@ void TestSharedSelection::sharedCases_agreeWithThePage()
         QVERIFY(visivo::instanceVerdict(k.value(u"known"_s).toString(), k.value(u"seen"_s).toString())
                 == verdicts.value(k.value(u"expect"_s).toString()));
     }
+    const QJsonArray retries = c.value(u"publish_retry"_s).toArray();
+    QVERIFY(retries.size() >= 6);
+    for (const QJsonValue &v : retries) {
+        const QJsonObject k = v.toObject();
+        QVERIFY2(visivo::publishRetryStillWanted(
+                         k.value(u"nonce"_s).toString(), k.value(u"local"_s).toString(),
+                         k.value(u"dataset_then"_s).toString(), k.value(u"dataset_now"_s).toString(),
+                         quint64(k.value(u"gen_then"_s).toInteger()), quint64(k.value(u"gen_now"_s).toInteger()))
+                         == k.value(u"expect"_s).toBool(),
+                 qPrintable(k.value(u"name"_s).toString()));
+    }
 }

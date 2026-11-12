@@ -7,7 +7,7 @@
 // frame at most: cardPointer (the controller's ray on the card first),
 // cardForFrame (the card to draw) and xrFrame (the frame-rate summary).
 
-import { Lifecycle, PAGE_VR_API, classifyFailure, noticeFor, isLoopback, isHeadsetBrowser } from './lifecycle.js';
+import { Lifecycle, PAGE_VR_API, classifyFailure, keepRecoveryPending, noticeFor, isLoopback, isHeadsetBrowser } from './lifecycle.js';
 import { NoticeCenter, cardLayout, drawCard, cardModel, cardNeedsMove, parkedCardModel, renderDom, CARD_PX, CARD_SIZE } from './notice.js';
 import { guideNotice, guideStep, guideText } from './onboarding.js';
 import { DiagLog, LogSender, diagnosticsReport, fpsSummary } from './diagnostics.js';
@@ -27,8 +27,9 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
   let recovering = null;
   let lastRecoverAt = 0;
   let loggedVersion = '';
-  let pendingRecover = false;     // the backend restarted: reopen once it is possible
-  let pendingGen = 0;             // the load generation when it restarted
+  let pendingRecover = false;     // the backend restarted, or a reopen failed for now: reopen once it is possible
+  let pendingGen = 0;             // the load generation when it was set
+  let pendingReason = 'restarted';   // what the pending reopen says when it runs
 
   // ── Sending the log ─────────────────────────────────────────────────────
   const sender = new LogSender({
@@ -92,13 +93,14 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
     if (ev.restarted) log('warning', 'backend-restarted', `instance ${ev.info && ev.info.instance}`);
     // The cube is opened again once the token is accepted (with a refused
     // token the attempt could only fail, and say less than the auth notice).
-    if (ev.restarted) { pendingRecover = true; pendingGen = ctx.loadGen(); }
+    if (ev.restarted) { pendingRecover = true; pendingGen = ctx.loadGen(); pendingReason = 'restarted'; }
     if (pendingRecover && state === 'ok') {
       // Kept until a recovery actually starts: a load under way or the
       // throttle only postpones it to a later check. A load finished since the
-      // restart has replaced the cube: nothing to reopen then.
+      // restart has replaced the cube: nothing to reopen then. A reopen that
+      // fails for now sets it again (keepRecoveryPending).
       if (!ctx.hasBackendCube() || (ctx.loadGen() !== pendingGen && !ctx.loading())) pendingRecover = false;
-      else if (recover('restarted')) pendingRecover = false;
+      else if (recover(pendingReason)) pendingRecover = false;
     }
     render();
   }
@@ -109,23 +111,47 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
     if (recovering) return recovering;
     if (reason !== 'user' && Date.now() - lastRecoverAt < 10000) return null;
     lastRecoverAt = Date.now();
+    // The cube this reopen is for, read before any await.
+    const gen = ctx.loadGen();
     recovering = (async () => {
       let r;
-      try { r = await ctx.recoverDataset(reason); } catch (err) { r = { ok: false, detail: String(err.message || err) }; }
+      let kind = '';   // classifyFailure's, when the reopen threw
+      try { r = await ctx.recoverDataset(reason); } catch (err) {
+        kind = classifyFailure(err);
+        r = { ok: false, detail: String(err.message || err) };
+      }
       recovering = null;
+      // A failure that settles after a load replaced the cube says nothing
+      // about the cube on show now: superseded, like an answer that saw it.
+      if (!r.ok && !r.superseded && ctx.loadGen() !== gen) {
+        r = { ok: false, superseded: true, detail: `superseded by a newer load (${r.detail || ''})` };
+      }
       if (r.superseded) {
         // A load replaced the cube while it was being reopened: that load's
-        // cube is the one on show, nothing to say.
+        // cube is the one on show, nothing to say, nothing left to reopen.
+        pendingRecover = false;
         log('info', 'cube-reopen-superseded', reason);
       } else if (r.ok) {
+        pendingRecover = false;
         notices.clear('reopen-failed');
         log('info', 'cube-reopened', `${reason}: ${r.detail || ''}`);
         notices.show(noticeFor(reason === 'restarted' ? 'restarted' : 'reopened'), { force: true });
       } else {
         log('error', 'cube-reopen-failed', r.detail || '');
+        const auth = kind === 'auth' || /^40[13]:/.test(r.detail || '');
+        // What time mends (a refused token, a timeout, a busy or failing
+        // server) is tried again at a later healthy check, after the
+        // throttle: the cube on show still points at the lost dataset. A file
+        // that changed waits for the user (open it again). This latest
+        // answer decides, whatever an earlier failure left pending.
+        pendingRecover = keepRecoveryPending(r, auth ? 'auth' : kind);
+        if (pendingRecover) {
+          pendingGen = gen;
+          // A retry is never the user's: it keeps to the throttle.
+          pendingReason = reason === 'user' ? 'dataset-gone' : reason;
+        }
         // A refused token is the auth notice's to explain; the reopen waits for it.
-        if (/^40[13]:/.test(r.detail || '')) { pendingRecover = true; pendingGen = ctx.loadGen(); }
-        else notices.show(noticeFor('reopen-failed', { detail: r.detail, inVR: inVR() }), { force: true });
+        if (!auth) notices.show(noticeFor('reopen-failed', { detail: r.detail, inVR: inVR() }), { force: true });
       }
       render();
       return r;

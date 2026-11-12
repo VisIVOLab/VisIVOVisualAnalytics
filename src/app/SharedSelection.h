@@ -138,6 +138,18 @@ PublishOutcome publishOutcomeOf(int status, const QString &detail = QString());
 enum class InstanceVerdict { Adopt, Same, Reset };
 InstanceVerdict instanceVerdict(const QString &known, const QString &seen);
 
+/// Whether the one retry of a publish answered 429 is still wanted when its
+/// delay is over (as the page's retryStillWanted): only while its selection is
+/// still this client's latest own (@p nonce == @p localNonce) and the link
+/// follows the same cube in the same generation. Otherwise a newer selection
+/// was made (or the cube changed) meanwhile, and a late retry would take a
+/// fresh seq and replace the newer entry in the hub: the other clients would
+/// show the old selection while this one, skipping its older own entry, keeps
+/// the newer.
+bool publishRetryStillWanted(const QString &nonce, const QString &localNonce,
+                             const QString &datasetThen, const QString &datasetNow,
+                             quint64 genThen, quint64 genNow);
+
 /// After the mask was fetched: draw only if the entry is still the hub's
 /// latest and nothing local happened meanwhile (no new local selection, no
 /// dismissal).

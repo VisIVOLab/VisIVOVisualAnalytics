@@ -12,4 +12,6 @@ class TestSharedSelectionLink : public QObject
 
 private slots:
     void aPublishedSelectionReachesTheOtherClientWithItsRecord();
+    // Against a fake hub, always run.
+    void theDelayedRetryOfAnOlderSelectionIsDropped();
 };

@@ -18,6 +18,7 @@ private slots:
     void basinsFetchReadsTheGridGeometry();
     void basinsFetchOfAnOlderBackendHasNoGeometry();
     void densityFetchSendsTheViewerBox();
+    void staleDensityReplyIsDroppedAfterTwoBoxChanges();
 };
 
 #endif

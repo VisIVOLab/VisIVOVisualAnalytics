@@ -132,6 +132,29 @@ inline double cellScale(const std::array<int, 3> &fullXyz, double boxBefore, dou
     return fullCell(fullXyz[0], boxAfter) / fullCell(fullXyz[0], boxBefore);
 }
 
+/// What the viewer does with a backend ∇·v reply.
+enum class DensityReply
+{
+    Install,          ///< the latest request's grid: put it on show
+    ComputeLocally,   ///< the latest request failed: fall back to the display grid
+    Drop,             ///< superseded: neither installed nor replaced
+};
+
+/// The fetch of a backend ∇·v runs a nested event loop, so a box edit made
+/// meanwhile can start, and finish, a newer request before an older one
+/// returns. Each request (and each box change) takes a new generation;
+/// `requestGen` is the one of the request that replied and `latestGen` the
+/// current one. A superseded reply was asked for another box: installing it
+/// would put the old box's ∇·v at the new box's placement, and falling back to
+/// the local computation would overwrite what the newer request installed. So
+/// it is dropped either way.
+inline DensityReply densityReplyAction(int requestGen, int latestGen, bool usable)
+{
+    if (requestGen != latestGen)
+        return DensityReply::Drop;
+    return usable ? DensityReply::Install : DensityReply::ComputeLocally;
+}
+
 } // namespace velocitylod
 
 #endif

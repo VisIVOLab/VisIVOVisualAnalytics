@@ -756,7 +756,8 @@ fails, when the backend's encoder fails, when 3 s pass after a frame's header
 arrived with no video frame paired since (however many headers came in
 between), or after 10 video frames in a row whose stripe
 does not read (or 5 that fail to be read at all); it tries again a
-minute later. `?refine_transport=webrtc` in the address uses the video at
+minute later. On falling back, a still view asks for its pose again, now as
+JPEG, so the refined frame does not stay missing. `?refine_transport=webrtc` in the address uses the video at
 once, `?refine_transport=jpeg` never. The video goes over UDP straight
 between the headset and the Mac, so it needs the Mac reachable on the local
 network: through `adb reverse` alone (USB, no Wi-Fi) it cannot connect, and the
@@ -1410,7 +1411,7 @@ text changes (at most once per check, every 1 to 5 s).
 | **The backend is not answering behind its proxy** / **answered with an error** | the address answers with an HTTP error (a proxy's 502, a 500) | the page retries by itself; *Retry now*, *Hide* |
 | **The backend restarted** | it came back with its sessions gone | nothing: the page opened the cube again by its path, the view is kept; repeat the last selection if it did not finish |
 | **The cube was opened again** | a request found the cube's dataset gone (the desktop's session ended) | nothing: the page opened it again; repeat the selection |
-| **The cube could not be opened again** | the file moved, changed, or its revision cannot be verified | use **Open and load**, or open it again from the desktop, to reload its voxels and coordinates; unchanged files recover automatically |
+| **The cube could not be opened again** | the file moved, changed, or its revision cannot be verified; or the backend did not answer in time, was busy or failed | for a file that changed: use **Open and load**, or open it again from the desktop, to reload its voxels and coordinates. A backend that did not answer, was busy or failed is tried again by itself at most every 10 s while it answers its checks; unchanged files recover automatically |
 | **The backend refused the token** | the backend was restarted with a new token, or the token expired | on the computer: **Open in VR Headset… → Open on Headset** (a fresh link); or paste the token on the page, then *Check again*; *Hide* meanwhile |
 | **The backend was updated** | the backend serves a newer version of this page than the one open (a tab kept from before an upgrade) | *Reload page* (the cube from the desktop opens again by itself) |
 | **This page is out of date** / **Update the application** | the page and the backend speak different versions of the page API (or the backend is older than the page: it has no `/v1/vr/info`) | *Reload page*; if that does not help, update VisIVO Visual Analytics on the computer |

@@ -68,6 +68,20 @@ export function classifyFailure(err) {
   return 'other';
 }
 
+/** Whether the automatic reopen of the cube stays pending after a reopen
+ *  settled with `r` ({ok, superseded, detail}); `kind` is classifyFailure's
+ *  answer when the reopen threw, '' when it answered. Pending means a later
+ *  healthy check tries again (after the shell's throttle). Kept for what time
+ *  mends: a refused token (the auth notice's to explain), nothing answering or
+ *  no answer in time, a busy or failing server. Cleared on success and when a
+ *  load replaced the cube. An answer that the file changed (its shape or
+ *  revision) needs the user to open it again, and the other failures would
+ *  only fail again. */
+export function keepRecoveryPending(r, kind = '') {
+  if (!r || r.ok || r.superseded) return false;
+  return kind === 'auth' || kind === 'network' || kind === 'busy' || kind === 'server';
+}
+
 /** Doubling waits between retries, capped: 1, 2, 4, 5, 5… seconds (a check
  *  is one tiny GET, and the user is waiting for the backend to come back). */
 export class Backoff {
