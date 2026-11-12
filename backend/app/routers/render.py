@@ -590,6 +590,15 @@ def _supports_stereo(sess) -> bool:
     return hasattr(sess, "_render_xr_frame_on_thread")
 
 
+def _supports_stereo_video(sess) -> bool:
+    """Stereo JPEGs also work for points; H.264 encoding is cube-only."""
+    factory = getattr(sess, "_factory", None)
+    if factory is not None:
+        return factory == "app.render_session:RenderSession"
+    from ..render_session._stereo_points import PointStereoMixin
+    return _supports_stereo(sess) and not isinstance(sess, PointStereoMixin)
+
+
 def _stereo_message(frame: XRFrame, ready: float | None, rtc) -> bytes | None:
     """A stereo frame's WebSocket message. A frame the render process encoded
     for the connection's video link (issue #189) goes to the video track, and
@@ -989,7 +998,7 @@ async def _xr_rtc_offer(websocket: WebSocket, send_lock: asyncio.Lock, session_i
         recent.popleft()
     sdp = command.get("sdp")
     why = (xr_rtc.rtc_available()
-           or (None if _supports_stereo(sess) else "Stereo frames are drawn for cubes only.")
+           or (None if _supports_stereo_video(sess) else "Stereo WebRTC video is available for cubes only; use JPEG stereo frames for points.")
            or _stereo_conflict(session_id, websocket)
            or (f"Too many offers: at most {_MAX_OFFERS} a minute."
                if len(recent) >= _MAX_OFFERS else None)

@@ -415,6 +415,9 @@ def test_the_link_is_refused_for_a_point_session_or_with_another_client(ws_rtc, 
     sess._factory = "app.render_session.points:PointRenderSession"
     with _connect(client) as ws:
         assert "cubes only" in _offer(ws)["error"]
+        ws.send_text(json.dumps(pose(5, 256)))
+        ws.send_text(json.dumps({"type": "request_frame"}))
+        assert S.parse_frame(ws.receive_bytes())[0]["color"]["format"] == "jpeg"
     del sess._factory
     monkeypatch.setattr(render_router.get_render_manager(), "clients", lambda sid: 2)
     with _connect(client) as ws:

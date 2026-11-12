@@ -240,9 +240,13 @@ test('the refiner sends a video header to the pairing and shows the frame of its
   const { Refiner } = await import('../../app/static/vr/js/refine-client.js');
   const stubDraw = { forget() {}, shown: null, upload() { return 0; }, draw() { return false; } };
   const r = new Refiner(null, () => null, { draw: stubDraw, transport: 'webrtc' });
+  r.datasetId = 'cube-A';
+  r.sessionId = 'session-A';
   r.ws = { readyState: 1, send() {} };
   r.rtc.state = 'video';                           // headers count only while the link is up
-  const ids = [1, 2, 3].map(() => r.book.add({ tSent: performance.now(), version: r.version }));
+  const addPose = () => r.book.add({ tSent: performance.now(), version: r.version,
+    gen: r.gen, datasetId: r.datasetId, sessionId: r.sessionId });
+  const ids = [1, 2, 3].map(addPose);
   const message = (id) => {
     const header = { v: 1, pose_id: id, depth: null, timing_ms: { total: 4 }, video: { id },
       eyes: [], color: { format: 'h264-webrtc', width: 768, height: 256, offset: 0, length: 0,
@@ -273,6 +277,17 @@ test('the refiner sends a video header to the pairing and shows the frame of its
   const before = r.incoming;
   await r.rtc._deliver(r.rtc.pairer.addVideo(ids[2], wrong, performance.now()));
   assert.equal(r.incoming, before);
+  // A video frame already paired when the cube changes must still be dropped,
+  // as a JPEG decoded after a cube change is (product hardening, #197).
+  const lateId = addPose();
+  r._onMessage(message(lateId));
+  const lateFrame = { width: 768, height: 272, closed: false, close() { this.closed = true; } };
+  const latePair = r.rtc.pairer.addVideo(lateId, lateFrame, performance.now());
+  await r.setDataset('cube-B');
+  await r.rtc._deliver(latePair);
+  await new Promise((res) => setTimeout(res, 0));
+  assert.equal(r.incoming, null, 'the video of cube A never appears on cube B');
+  assert.ok(lateFrame.closed, 'the stale video frame is released');
 });
 
 test('the video is given up only when a header waits 3 s with no frame, not after a long still view', () => {
