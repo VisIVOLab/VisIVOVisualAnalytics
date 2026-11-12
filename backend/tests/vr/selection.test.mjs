@@ -259,6 +259,10 @@ test('a lasso superseded while in flight neither draws nor records', async () =>
   assert.equal(h.masks.filter(Boolean).length, 1);
   assert.equal(h.sel.sel.recipes.length, 1);
   assert.equal(h.sel.sel.recipes[0].product.kind, 'lasso');
+  // A local grow keeps its full-resolution mask in the same shape.
+  assert.ok(h.sel.sel.lasso.bytes instanceof ArrayBuffer);
+  assert.deepEqual(h.sel.sel.lasso.origin, [4, 4, 4]);
+  assert.deepEqual(h.sel.sel.lasso.dims, [1, 1, 1]);
 });
 
 test('a box is one request, and Clear drops it', async () => {
@@ -331,7 +335,8 @@ test('a desktop selection is drawn, wins over a grow in flight and is not record
   await h.flush();
   const info = { seq: 3, kind: 'lasso', source: 'desktop', count: 2, meta: { grow: { seed_z: 1 } },
     stats: { valid: true, bbox: [1, 2, 1, 1, 1, 1], flux_jy_kms: 6.061 } };
-  assert.equal(h.sel.showShared(info, { mask: new Float32Array([1, 1]), dims: [2, 1, 1], origin: [1, 1, 1] }), true);
+  const recv = new Float32Array([1, 1]);
+  assert.equal(h.sel.showShared(info, { mask: recv, bytes: recv.buffer, dims: [2, 1, 1], origin: [1, 1, 1] }), true);
   await h.release();
   await p;
   assert.equal(h.masks.filter(Boolean).length, 1, 'only the shared mask is drawn');
@@ -341,6 +346,42 @@ test('a desktop selection is drawn, wins over a grow in flight and is not record
   assert.equal(h.sel.sel.lasso.shared.source, 'desktop');
   assert.deepEqual(h.sel.sel.lasso.request, { seed_z: 1 });
   assert.equal(h.sel.sel.lasso.stats.flux_jy_kms, 6.061);
+  // The received mask itself is kept, as a local grow keeps its own: the
+  // tools apply it, never a regrow.
+  assert.ok(h.sel.sel.lasso.bytes instanceof ArrayBuffer);
+  assert.deepEqual([...new Float32Array(h.sel.sel.lasso.bytes)], [1, 1]);
+  assert.deepEqual(h.sel.sel.lasso.origin, [1, 1, 1]);
+  assert.deepEqual(h.sel.sel.lasso.dims, [2, 1, 1]);
+  assert.deepEqual(h.sel.sel.lasso.fullShape, [8, 8, 8]);
+  assert.equal(h.sel.sel.recipes.length, 0);
+});
+
+test('a received selection has exactly the contract the tools read (#188, #195)', () => {
+  const h = harness();
+  const one = new Float32Array([1, 1, 1, 1]);
+  const m = { mask: one, bytes: one.buffer, dims: [2, 2, 1], origin: [1, 2, 3] };
+  const base = { kind: 'lasso', source: 'desktop', count: 4, full_shape: [8, 8, 8], stats: { valid: true } };
+  const params = { Reach: '8', 'Noise σ': 'robust, whole cube' };
+  const grow = { seed_z: 3, seed_y: 2, seed_x: 1, reach: 8 };
+  const pick = (L) => ({ request: L.request, bytes: L.bytes, origin: L.origin, dims: L.dims, fullShape: L.fullShape,
+    received: L.received, kind: L.kind, source: L.source, handEdited: L.handEdited, box: L.box, parameters: L.parameters });
+  // A lasso with its grow, from the desktop.
+  h.sel.showShared({ ...base, seq: 1, meta: { grow, parameters: params, hand_edited: false } }, m);
+  assert.deepEqual(pick(h.sel.sel.lasso), { request: grow, bytes: one.buffer, origin: [1, 2, 3], dims: [2, 2, 1],
+    fullShape: [8, 8, 8], received: true, kind: 'lasso', source: 'desktop', handEdited: false, box: null, parameters: params });
+  assert.ok(h.sel.sel.lasso.shared, 'the bookkeeping stays');
+  // A mask-only selection (no grow), hand-edited, from the desktop.
+  h.sel.showShared({ ...base, seq: 2, meta: { hand_edited: true } }, m);
+  assert.deepEqual(pick(h.sel.sel.lasso), { request: null, bytes: one.buffer, origin: [1, 2, 3], dims: [2, 2, 1],
+    fullShape: [8, 8, 8], received: true, kind: 'lasso', source: 'desktop', handEdited: true, box: null, parameters: null });
+  // A box, from a headset.
+  h.sel.showShared({ ...base, seq: 3, kind: 'box', source: 'headset', meta: { box: [[1, 2], [2, 3], [3, 3]], parameters: params } }, m);
+  assert.deepEqual(pick(h.sel.sel.lasso), { request: null, bytes: one.buffer, origin: [1, 2, 3], dims: [2, 2, 1],
+    fullShape: [8, 8, 8], received: true, kind: 'box', source: 'headset', handEdited: false, box: [1, 2, 2, 3, 3, 3], parameters: params });
+  // This page's own selection drawn back from the hub.
+  h.sel.showShared({ ...base, seq: 4, source: 'headset', meta: { grow } }, m, true);
+  assert.equal(h.sel.sel.lasso.source, 'own');
+  assert.equal(h.sel.sel.recipes.length, 0);
 });
 
 test('world coordinates of a pixel: the channel velocity from the full axis', () => {

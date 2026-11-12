@@ -127,8 +127,10 @@ ShareViewState noteLocal(ShareViewState s, qint64 seenSeq);
 /// short delay); refused (another 4xx: the hub will never hold it, e.g. over
 /// the voxel cap: it stays local and is no longer this client's latest own);
 /// unknown (5xx, no answer, a timeout: the hub may have kept it).
-enum class PublishOutcome { Kept, Stale, Retry, Refused, Unknown };
-PublishOutcome publishOutcomeOf(int status);
+enum class PublishOutcome { Kept, Stale, Retry, Refused, Unknown, Cleared };
+/// @p detail is the answer's detail: a 409 "cleared: …" (the cube's selection
+/// was cleared after this publish arrived) is Cleared, refused like a 4xx.
+PublishOutcome publishOutcomeOf(int status, const QString &detail = QString());
 
 /// The hub's backend instance against the one this client knows: Reset when
 /// it changed (a restart: seqs began again at 1, so the cursor, the floor and
@@ -148,7 +150,8 @@ bool confirmShareDraw(const SharedSelectionInfo *latestNow, qint64 fetchedSeq,
 /// unknown route), rather than an unknown session or cube, which is retried.
 bool shareRouteUnsupported(int status, const QByteArray &body);
 
-/// Voxels set in a float32 0/1 mask (any non-zero finite value), -1 when the
+/// Voxels set in a float32 0/1 mask (a value > 0.5, as the backend reads a
+/// mask; NaN is not), -1 when the
 /// byte count is not @p voxels floats.
 qint64 sharedMaskCount(const QByteArray &mask, qint64 voxels);
 

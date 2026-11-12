@@ -302,7 +302,7 @@ async def test_a_slow_earlier_publish_does_not_replace_a_later_one(client, auth_
     rb = await _publish(client, hd, ds, small, so, client_id="B")
     ra = await a
     assert rb.status_code == 200, rb.text
-    assert ra.status_code == 409 and "stale" in ra.json()["detail"], ra.text
+    assert ra.status_code == 409 and ra.json()["detail"].startswith("stale:"), ra.text
     info = (await client.get("/v1/share/selection", params={"dataset_id": ds}, headers=hd)).json()
     assert info["client"] == "B" and info["seq"] == rb.json()["seq"] and info["count"] == int(small.sum())
 
@@ -350,6 +350,66 @@ async def test_the_unpacked_mask_goes_with_its_selection(client, auth_headers, t
     assert hub_mod._mask_cache["seq"] == seq2
     await client.delete("/v1/share/selection", params={"dataset_id": ds}, headers=hd)
     assert hub_mod._mask_cache["seq"] is None and hub_mod._mask_cache["raw"] == b""
+
+
+@pytest.mark.asyncio
+async def test_count_statistics_and_mask_follow_one_rule(client, auth_headers, tmp_path):
+    """A mask [1, 0.25] over voxels [10, 100]: one voxel selected (> 0.5),
+    everywhere: the count, the statistics, the mask handed on."""
+    path = tmp_path / "two.fits"
+    data = np.zeros((2, 3, 3), dtype=np.float32)    # 2 channels of 3 x 3
+    data[0, 0, :2] = [10.0, 100.0]
+    h = fits.Header()
+    h.update({"CTYPE1": "RA---SIN", "CTYPE2": "DEC--SIN", "CTYPE3": "VELO-HEL", "CRVAL3": 1.0e6,
+              "CDELT3": 8000.0, "CUNIT3": "m/s", "CRPIX3": 1.0, "BUNIT": "Jy/beam",
+              "CDELT1": -1 / 3600, "CDELT2": 1 / 3600, "CUNIT1": "deg", "CUNIT2": "deg",
+              "BMAJ": 4 / 3600, "BMIN": 4 / 3600, "BPA": 0.0})
+    fits.PrimaryHDU(data, header=h).writeto(path)
+    hd = await _session(client, auth_headers)
+    ds = await _open(client, hd, path)
+    mask = np.array([[[1.0, 0.25]]], dtype=np.float32)
+    r = await _publish(client, hd, ds, mask, (0, 0, 0))
+    assert r.status_code == 200, r.text
+    pub = r.json()
+    assert pub["count"] == 1
+    assert pub["stats"]["selected_voxels"] == 1 and pub["stats"]["sum"] == pytest.approx(10.0)
+    m = await client.get("/v1/share/selection/mask", params={"dataset_id": ds, "seq": pub["seq"]}, headers=hd)
+    got = np.frombuffer(m.content, "<f4")
+    assert got.tolist() == [1.0, 0.0] and m.headers["X-Visivo-Selected-Count"] == "1"
+    # The received mask's statistics are the published ones.
+    again = await client.post("/v1/cube/mask_stats_bin", params={
+        "dataset_id": ds, "origin_x": 0, "origin_y": 0, "origin_z": 0, "width": 2, "height": 1, "depth": 1},
+        content=m.content, headers={**hd, "Content-Type": "application/octet-stream"})
+    assert again.json()["sum"] == pytest.approx(10.0) and again.json()["selected_voxels"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_publish_under_way_cannot_bring_back_a_cleared_selection(client, auth_headers, tmp_path, monkeypatch):
+    """Publish starts (its seq issued), clear, publish completes: refused."""
+    import app.routers.share as share_mod
+    data = _cube(tmp_path / "c.fits")
+    hd = await _session(client, auth_headers)
+    ds = await _open(client, hd, tmp_path / "c.fits")
+    mask, origin = _mask(data)
+    real = share_mod._run_heavy_with_limit
+    started = asyncio.Event()
+
+    async def slow(*a):
+        started.set()
+        await asyncio.sleep(0.4)
+        return await real(*a)
+
+    monkeypatch.setattr(share_mod, "_run_heavy_with_limit", slow)
+    p = asyncio.create_task(_publish(client, hd, ds, mask, origin, client_id="late"))
+    await started.wait()                       # the publish is under way, its seq issued
+    assert (await client.delete("/v1/share/selection", params={"dataset_id": ds}, headers=hd)).status_code == 200
+    r = await p
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"].startswith("cleared:"), r.text     # not "a later selection"
+    assert (await client.get("/v1/share/selection", params={"dataset_id": ds}, headers=hd)).status_code == 204
+    # A publish that arrives after the clear is kept.
+    monkeypatch.setattr(share_mod, "_run_heavy_with_limit", real)
+    assert (await _publish(client, hd, ds, mask, origin)).status_code == 200
 
 
 @pytest.mark.asyncio

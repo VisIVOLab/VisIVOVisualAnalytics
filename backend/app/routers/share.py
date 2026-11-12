@@ -140,7 +140,11 @@ async def share_publish(
         origin=(origin_x, origin_y, origin_z), dims=(width, height, depth),
         full_shape=full, count=count, packed=packed, stats=stats, meta=meta_obj)
     hub = _hub(session)
-    if not hub.publish(sel):
+    refused = hub.publish(sel)
+    if refused == "cleared":
+        # The cube's selection was cleared after this publish arrived.
+        raise HTTPException(409, "cleared: the selection was cleared after this publish arrived")
+    if refused:
         # A publish that arrived later is already the cube's selection.
         latest = hub.get(sel.dataset_key)
         raise HTTPException(409, f"stale: a later selection (seq {latest.seq if latest else '?'}) "

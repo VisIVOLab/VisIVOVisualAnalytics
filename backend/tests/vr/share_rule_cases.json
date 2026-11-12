@@ -44,6 +44,8 @@
   "publish_outcome": [
     {"status": 200, "expect": "kept"},
     {"status": 409, "expect": "stale"},
+    {"status": 409, "detail": "stale: a later selection (seq 12) replaced this one while it was measured", "expect": "stale"},
+    {"status": 409, "detail": "cleared: the selection was cleared after this publish arrived", "expect": "cleared"},
     {"status": 429, "expect": "retry"},
     {"status": 422, "expect": "refused"},
     {"status": 413, "expect": "refused"},

@@ -203,7 +203,10 @@ export function createSelection(ctx) {
     const s = st();
     const reduced = S.reduceMask(r.mask, r.dims, r.origin, s.info.factors, s.info.reduced_shape);
     ctx.renderer.setMask(reduced);
+    // The full-resolution mask is kept (bytes, mask, origin, dims): a tool
+    // that acts on the selection posts this mask, never a regrow.
     sel.lasso = { request: req, count: r.count, origin: r.origin, dims: r.dims, ms: r.ms, trimBox: r.trimBox,
+      bytes: r.bytes, mask: r.mask, fullShape: s.info.full_shape,
       reduced: { count: reduced.count, dims: reduced.dims, origin: reduced.origin },
       stats, statsMs: performance.now() - t0 };
     const params = Rc.lassoDisplayParams(req);
@@ -228,7 +231,24 @@ export function createSelection(ctx) {
     const reduced = S.reduceMask(m.mask, m.dims, m.origin, s.info.factors, s.info.reduced_shape);
     ctx.renderer.setMask(reduced);
     const stats = info.stats && info.stats.valid ? info.stats : null;
-    sel.lasso = { request: (info.meta && info.meta.grow) || null, count: info.count, origin: m.origin, dims: m.dims,
+    // Kept as a local grow keeps it (bytes, mask, origin, dims): the tools
+    // that act on the selection apply this received mask itself.
+    // The contract of a received selection (shared with the tools that apply
+    // a selection, #195): the float32 mask over full-cube voxels, and what a
+    // tool records when it applies it (a box, the creator's grow, or the mask
+    // only), as the creator described it.
+    const meta = info.meta || {};
+    sel.lasso = { request: meta.grow || null, count: info.count, origin: m.origin, dims: m.dims,
+      bytes: m.bytes, mask: m.mask, fullShape: info.full_shape || s.info.full_shape,
+      received: true,
+      kind: info.kind === 'box' ? 'box' : 'lasso',
+      source: own ? 'own' : (info.source === 'headset' ? 'headset' : 'desktop'),
+      handEdited: !!meta.hand_edited,
+      // Inclusive [x0, x1, y0, y1, z0, z1]: the box is its origin and dims (the
+      // backend refuses a meta.box that is not).
+      box: info.kind === 'box'
+        ? [0, 1, 2].flatMap((i) => [m.origin[i], m.origin[i] + m.dims[i] - 1]) : null,
+      parameters: meta.parameters || null,
       ms: 0, trimBox: Number((info.meta && info.meta.trim_box) || 0),
       reduced: { count: reduced.count, dims: reduced.dims, origin: reduced.origin },
       stats, statsMs: 0, shared: { source: own ? 'hub (this page\'s)' : info.source, kind: info.kind, seq: info.seq, own } };

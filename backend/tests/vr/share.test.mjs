@@ -61,7 +61,7 @@ test('the shared cases: the rule, confirm, a local selection, publish outcomes, 
     const out = noteLocal({ shownNonce: c.state.shown, localNonce: c.state.local, floorSeq: c.state.floor }, c.seen);
     assert.deepEqual([out.shownNonce, out.localNonce, out.floorSeq], [c.expect.shown, c.expect.local, c.expect.floor], c.name);
   }
-  for (const c of CASES.publish_outcome) assert.equal(publishOutcomeOf(c.status), c.expect, String(c.status));
+  for (const c of CASES.publish_outcome) assert.equal(publishOutcomeOf(c.status, c.detail), c.expect, `${c.status} ${c.detail || ''}`);
   for (const c of CASES.instance) assert.equal(instanceVerdict(c.known, c.seen), c.expect, `${c.known}->${c.seen}`);
 });
 
@@ -460,5 +460,20 @@ test('a backend restart (another instance) resets the cursor, the floor and the 
   await flush();
   assert.equal(t.share.st.instance, 'i-2');
   assert.deepEqual(t.got, [[1, false]], 'the new instance\'s entry is drawn despite its low seq');
+  t.share.stop();
+});
+
+test('a publish refused because the selection was cleared after it arrived stays local', async () => {
+  const hub = fakeHub();
+  const t = controller(hub);
+  t.share.start('ds_a');
+  await flush();
+  hub.onPost = (entry, opts, resp) => resp(409, { detail: 'cleared: the selection was cleared after this publish arrived' });
+  await lasso(t.share);
+  await flush();
+  assert.equal(t.share.st.publishOutcome, 'cleared');
+  assert.match(t.share.st.note, /cleared after it was sent/);
+  assert.equal(t.share.st.localNonce, '');
+  assert.equal(t.share.st.shownNonce, 'n-page-1', 'still on screen, local');
   t.share.stop();
 });

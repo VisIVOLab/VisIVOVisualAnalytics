@@ -46,7 +46,9 @@ publisher's own id, 1-64 characters, which it uses to ignore its echo);
 object (at most 6000 characters; `NaN` and `Infinity` are refused).
 
 The body of a lasso is its mask as `kinematic_select_bin` returns it: raw
-little-endian `float32` (any non-zero finite value selected), x fastest, over
+little-endian `float32` (a voxel is selected when its value is > 0.5, as
+`mask_stats_bin` and `mask_apply_bin` read a mask; the count, the statistics
+and the mask handed on all use this rule), x fastest, over
 the box, so the grow's response body is posted on with the origin and
 dimensions of its headers. A box has no body: every voxel of the box is
 selected. The declared `Content-Length` is checked before the body is read and
@@ -185,7 +187,11 @@ would end on B.
 
 ## `DELETE /v1/share/selection`
 
-Forgets the cube's selection (`dataset_id`). Response `{"cleared": true}` when
+Forgets the cube's selection (`dataset_id`), and refuses every publish for
+that cube already under way when the clear arrived, with 409 and a detail
+starting `cleared:` (a later selection gives `stale:`): none brings a cleared
+selection back. The clients treat a `cleared:` 409 like a refusal: the
+selection stays on screen, local, with a note. Response `{"cleared": true}` when
 there was one. Waiting polls are not answered by a clear.
 
 ## Timings

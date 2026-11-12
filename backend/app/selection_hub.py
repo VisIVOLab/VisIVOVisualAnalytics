@@ -63,6 +63,7 @@ MAX_META_CHARS = 6000
 
 
 _seq = itertools.count(1)   # global, so a seq never repeats across hubs
+_last_seq = 0               # the last seq issued (next_seq)
 #: This backend process: seqs restart at 1 when it restarts, so a client that
 #: sees another instance resets its cursor and floor (they belong to the old one).
 INSTANCE = uuid.uuid4().hex[:16]
@@ -113,12 +114,14 @@ class SharedSelection:
 
 
 def pack_mask(mask_bytes: bytes, n: int) -> tuple[bytes, int]:
-    """A float32 0/1 mask to bits; any non-zero finite value is selected (as
-    the mask routes read it). Returns (packed, count)."""
+    """A float32 mask to bits, a voxel selected when its value is > 0.5: the
+    rule of mask_stats_bin and mask_apply_bin (and of the clients), so the
+    count, the statistics and the mask handed on describe the same voxels
+    (NaN is not selected). Returns (packed, count)."""
     if len(mask_bytes) != n * 4:
         raise ValueError(f"mask body is {len(mask_bytes)} bytes; expected {n * 4}")
     m = np.frombuffer(mask_bytes, dtype="<f4")
-    sel = np.isfinite(m) & (m != 0)
+    sel = m > 0.5
     return np.packbits(sel).tobytes(), int(np.count_nonzero(sel))
 
 
@@ -129,6 +132,8 @@ class SelectionHub:
         self.entries: dict[str, SharedSelection] = {}
         # The highest seq each cube has taken: kept through clear and prune.
         self.high_water: dict[str, int] = {}
+        # The mark the last clear of each cube set (every seq issued by then).
+        self.cleared_at: dict[str, int] = {}
         self.waiters = 0
         self._changed = asyncio.Event()
 
@@ -140,11 +145,16 @@ class SelectionHub:
     def get(self, dataset_key: str) -> SharedSelection | None:
         return self.entries.get(dataset_key)
 
-    def publish(self, sel: SharedSelection) -> bool:
-        """Keeps ``sel`` unless the cube already holds a later one (a higher
-        seq: a publish that arrived after it). False: stale, not kept."""
-        if sel.seq < self.high_water.get(sel.dataset_key, 0):
-            return False
+    def publish(self, sel: SharedSelection) -> str:
+        """Keeps ``sel`` ('') unless a later publish was kept ('stale') or the
+        cube's selection was cleared after ``sel`` arrived ('cleared')."""
+        # At or below the mark: a later publish was kept, or a clear came after
+        # this one arrived (a seq is issued once, so equal is never this one's own).
+        if sel.seq <= self.high_water.get(sel.dataset_key, 0):
+            current = self.entries.get(sel.dataset_key)
+            if (current is None or current.seq < sel.seq) and sel.seq <= self.cleared_at.get(sel.dataset_key, 0):
+                return "cleared"
+            return "stale"
         self.high_water[sel.dataset_key] = sel.seq
         old = self.entries.pop(sel.dataset_key, None)
         if old is not None:
@@ -154,9 +164,13 @@ class SelectionHub:
             _forget(self.entries.pop(next(iter(self.entries))))
         _enforce_total_bytes()
         self._notify()
-        return True
+        return ""
 
     def clear(self, dataset_key: str) -> bool:
+        # Every publish already under way for this cube (its seq is issued when
+        # it arrives) is older than the clear: none may bring a selection back.
+        self.high_water[dataset_key] = max(self.high_water.get(dataset_key, 0), last_seq())
+        self.cleared_at[dataset_key] = self.high_water[dataset_key]
         old = self.entries.pop(dataset_key, None)
         if old is None:
             return False
@@ -217,7 +231,14 @@ def _enforce_total_bytes() -> None:
 
 
 def next_seq() -> int:
-    return next(_seq)
+    global _last_seq
+    _last_seq = next(_seq)
+    return _last_seq
+
+
+def last_seq() -> int:
+    """Every seq issued so far is at most this (publishes still in flight included)."""
+    return _last_seq
 
 
 # The mask reads: off the event loop, one unpack per selection however many

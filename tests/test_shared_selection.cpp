@@ -196,10 +196,11 @@ void TestSharedSelection::publishQuery_keepsTheRecordIntactOnTheWire()
 
 void TestSharedSelection::maskCount_countsSetVoxelsAndChecksTheSize()
 {
-    const float v[] = { 1.f, 0.f, 1.f, std::numeric_limits<float>::quiet_NaN(), 0.5f };
+    // The backend's rule (> 0.5): 0.5 and 0.25 are not selected, nor is NaN.
+    const float v[] = { 1.f, 0.f, 1.f, std::numeric_limits<float>::quiet_NaN(), 0.5f, 0.25f };
     QByteArray m(reinterpret_cast<const char *>(v), sizeof(v));
-    QCOMPARE(visivo::sharedMaskCount(m, 5), 3);
-    QCOMPARE(visivo::sharedMaskCount(m, 4), -1);
+    QCOMPARE(visivo::sharedMaskCount(m, 6), 2);
+    QCOMPARE(visivo::sharedMaskCount(m, 5), -1);
     QCOMPARE(visivo::sharedMaskCount(QByteArray(), 0), -1);
 }
 
@@ -496,10 +497,10 @@ void TestSharedSelection::sharedCases_agreeWithThePage()
     const QHash<QString, visivo::PublishOutcome> outcomes{
         { u"kept"_s, visivo::PublishOutcome::Kept }, { u"stale"_s, visivo::PublishOutcome::Stale },
         { u"retry"_s, visivo::PublishOutcome::Retry }, { u"refused"_s, visivo::PublishOutcome::Refused },
-        { u"unknown"_s, visivo::PublishOutcome::Unknown } };
+        { u"unknown"_s, visivo::PublishOutcome::Unknown }, { u"cleared"_s, visivo::PublishOutcome::Cleared } };
     for (const QJsonValue &v : c.value(u"publish_outcome"_s).toArray()) {
         const QJsonObject k = v.toObject();
-        QVERIFY2(visivo::publishOutcomeOf(k.value(u"status"_s).toInt())
+        QVERIFY2(visivo::publishOutcomeOf(k.value(u"status"_s).toInt(), k.value(u"detail"_s).toString())
                          == outcomes.value(k.value(u"expect"_s).toString()),
                  qPrintable(QString::number(k.value(u"status"_s).toInt())));
     }

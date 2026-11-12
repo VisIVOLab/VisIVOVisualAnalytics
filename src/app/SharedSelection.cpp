@@ -198,7 +198,7 @@ qint64 sharedMaskCount(const QByteArray &mask, qint64 voxels)
     for (qint64 i = 0; i < voxels; ++i) {
         float v;
         std::memcpy(&v, p + i * 4, 4);   // the wire is little-endian, as is every host we build for
-        if (std::isfinite(v) && v != 0.0f) ++n;
+        if (v > 0.5f) ++n;   // the backend's rule (mask_stats_bin, mask_apply_bin); NaN is not
     }
     return n;
 }
@@ -278,10 +278,11 @@ ShareViewState noteLocal(ShareViewState s, qint64 seenSeq)
     return s;
 }
 
-PublishOutcome publishOutcomeOf(int status)
+PublishOutcome publishOutcomeOf(int status, const QString &detail)
 {
     if (status == 200) return PublishOutcome::Kept;
-    if (status == 409) return PublishOutcome::Stale;
+    if (status == 409)
+        return detail.startsWith("cleared:"_L1) ? PublishOutcome::Cleared : PublishOutcome::Stale;
     if (status == 429) return PublishOutcome::Retry;
     if (status >= 400 && status < 500) return PublishOutcome::Refused;
     return PublishOutcome::Unknown;

@@ -353,7 +353,8 @@ void SharedSelectionLink::post(const QUrl &url, const QByteArray &mask, const QS
         reply->deleteLater();
         const int status = httpStatus(reply);
         const QByteArray body = reply->readAll();
-        const visivo::PublishOutcome outcome = visivo::publishOutcomeOf(status);
+        const QString detail = QJsonDocument::fromJson(body).object().value("detail"_L1).toString();
+        const visivo::PublishOutcome outcome = visivo::publishOutcomeOf(status, detail);
         if (outcome == visivo::PublishOutcome::Retry && !retried && gen == m_generation) {
             // The session's compute slots are busy: once more, shortly.
             QTimer::singleShot(kRetry429Ms, this, [this, url, mask, nonce, t, gen]() {
@@ -373,7 +374,8 @@ void SharedSelectionLink::post(const QUrl &url, const QByteArray &mask, const QS
             QString why = QJsonDocument::fromJson(body).object().value("detail"_L1).toString().left(300);
             if (why.isEmpty()) why = QString::fromUtf8(body.left(300));
             if (why.isEmpty()) why = reply->errorString();
-            if ((outcome == visivo::PublishOutcome::Refused || outcome == visivo::PublishOutcome::Retry)
+            if ((outcome == visivo::PublishOutcome::Refused || outcome == visivo::PublishOutcome::Retry
+                 || outcome == visivo::PublishOutcome::Cleared)
                 && gen == m_generation && m_view.localNonce == nonce) {
                 // The hub will not hold it: it stays on screen, local, and is
                 // no longer this window's latest own selection.

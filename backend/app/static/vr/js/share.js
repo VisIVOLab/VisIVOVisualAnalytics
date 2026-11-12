@@ -145,9 +145,11 @@ export function noteLocal(s, seenSeq) {
  *  a short delay); 'refused' (another 4xx: the hub will never hold it, e.g.
  *  over the voxel cap); 'unknown' (5xx, no answer, a timeout: the hub may
  *  have kept it). */
-export function publishOutcomeOf(status) {
+export function publishOutcomeOf(status, detail = '') {
   if (status === 200) return 'kept';
-  if (status === 409) return 'stale';
+  // A 409 is 'cleared' when the cube's selection was cleared after this
+  // publish arrived: it is then refused like a 4xx (stays local, not own).
+  if (status === 409) return /^cleared:/.test(String(detail || '')) ? 'cleared' : 'stale';
   if (status === 429) return 'retry';
   if (status >= 400 && status < 500) return 'refused';
   return 'unknown';
@@ -308,7 +310,9 @@ export function createShare(ctx) {
         st.publishOutcome = timedOut ? 'timeout' : 'failed';
         return null;
       }
-      const outcome = publishOutcomeOf(resp.status);
+      let detail = text;
+      try { detail = JSON.parse(text).detail || text; } catch { /* plain text */ }
+      const outcome = publishOutcomeOf(resp.status, detail);
       if (outcome === 'retry' && !retried) {
         await new Promise((r) => later(r, RETRY_429_MS));
         return attempt(true);
@@ -326,13 +330,12 @@ export function createShare(ctx) {
       }
       if (outcome === 'stale') {
         st.note = 'not shared: a later selection replaced it';
-      } else if (outcome === 'refused' || outcome === 'retry') {
+      } else if (outcome === 'refused' || outcome === 'retry' || outcome === 'cleared') {
         // The hub will not hold it: it stays on screen, local; it is no
         // longer this page's "latest own", so the hub's own entries are older.
         if (st.localNonce === nonce) st.localNonce = '';
-        let detail = text;
-        try { detail = JSON.parse(text).detail || text; } catch { /* plain text */ }
-        st.note = `not shared: ${String(detail).slice(0, 120)}`;
+        st.note = outcome === 'cleared' ? 'not shared: the selection was cleared after it was sent'
+          : `not shared: ${String(detail).slice(0, 120)}`;
       } else {
         st.note = `not shared with the desktop: ${resp.status} ${String(text).slice(0, 120)}`;
       }
