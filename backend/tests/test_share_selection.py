@@ -32,6 +32,20 @@ def _cube(path: Path) -> np.ndarray:
     return data
 
 
+@pytest.fixture(autouse=True)
+def _drop_the_sessions_made():
+    """Each test opens sessions of its own; they go with it, so the file
+    stays under the per-token session cap (32) whatever ran before."""
+    from app.sessions import REGISTRY
+    before = set(REGISTRY._sessions)
+    yield
+    with REGISTRY._lock:
+        made = [sid for sid in REGISTRY._sessions if sid not in before]
+        dropped = [REGISTRY._sessions.pop(sid) for sid in made]
+    for s in dropped:
+        s.close()
+
+
 async def _session(client: AsyncClient, auth_headers: dict) -> dict:
     r = await client.post("/v1/sessions/new", json={}, headers=auth_headers)
     assert r.status_code == 200, r.text
@@ -458,3 +472,215 @@ async def test_a_box_is_shared_as_a_mask_of_ones(client, auth_headers, tmp_path)
     m = await client.get("/v1/share/selection/mask", params={"dataset_id": ds, "seq": info["seq"]}, headers=hd)
     assert np.all(np.frombuffer(m.content, "<f4") == 1.0) and len(m.content) == 120 * 4
     assert m.headers["X-Visivo-Selection-Kind"] == "box"
+
+
+def _gated_publish_setup(share_mod, monkeypatch, raw_len):
+    """A budget with room for one body, and packing that waits for a gate (in
+    a thread, as the real one: a cancelled request does not stop it)."""
+    import threading
+    budget = hub_mod.ByteBudget(raw_len)
+    monkeypatch.setattr(share_mod, "PUBLISH_BUDGET", budget)
+    gate = threading.Event()
+    packing = []
+
+    async def gated_pack(body, n):
+        def run():
+            packing.append(len(body))
+            gate.wait(30)
+            return hub_mod.pack_mask(body, n)
+        return await asyncio.to_thread(run)
+
+    monkeypatch.setattr(share_mod, "pack_mask_async", gated_pack)
+    return budget, gate, packing
+
+
+def _streamed_post(client, hd, ds, mask, origin, raw, name, read):
+    async def gen():
+        read.append(name)
+        yield raw
+    d, h, w = mask.shape
+    return client.post("/v1/share/selection", params={
+        "dataset_id": ds, "source": "headset", "client": name,
+        "origin_x": origin[0], "origin_y": origin[1], "origin_z": origin[2],
+        "width": w, "height": h, "depth": d},
+        content=gen(), headers={**hd, "Content-Type": "application/octet-stream",
+                                "Content-Length": str(len(raw))})
+
+
+async def _until(cond, tries=200):
+    for _ in range(tries):
+        if cond():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition not met")
+
+
+@pytest.mark.asyncio
+async def test_publishes_beyond_the_budget_do_not_read_their_bodies(client, auth_headers, tmp_path, monkeypatch):
+    """Each publish buffered its whole body (up to 64 MiB) and only then queued
+    for a compute slot, so concurrent publishes held unbounded memory. Now a
+    publish takes its body's bytes from a budget BEFORE reading it: with room
+    for one, the others wait unread while it is held."""
+    import app.routers.share as share_mod
+    data = _cube(tmp_path / "c.fits")
+    hd = await _session(client, auth_headers)
+    ds = await _open(client, hd, tmp_path / "c.fits")
+    mask, origin = _mask(data)
+    raw = mask.astype("<f4").tobytes()
+    budget, gate, packing = _gated_publish_setup(share_mod, monkeypatch, len(raw))
+    read = []
+    a = asyncio.create_task(_streamed_post(client, hd, ds, mask, origin, raw, "A", read))
+    await _until(lambda: packing)
+    others = [asyncio.create_task(_streamed_post(client, hd, ds, mask, origin, raw, n, read))
+              for n in ("B", "C")]
+    await asyncio.sleep(0.3)
+    try:
+        assert read == ["A"]                        # B and C wait unread
+        assert budget.held == len(raw) and budget.waiting == 2
+    finally:
+        gate.set()
+    ra, rb, rc = await asyncio.gather(a, *others)
+    assert sorted(read) == ["A", "B", "C"]
+    assert rc.status_code == 200, rc.text           # the last to arrive wins
+    assert {ra.status_code, rb.status_code} <= {200, 409}
+    assert budget.held == 0 and budget.waiting == 0
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_publish_keeps_its_bytes_until_its_body_is_released(client, auth_headers, tmp_path, monkeypatch):
+    """The packing thread outlives a cancelled request and still holds the
+    body: the bytes go back to the budget when it ends, not when the request
+    does, so the next body stays unread until then."""
+    import app.routers.share as share_mod
+    data = _cube(tmp_path / "c.fits")
+    hd = await _session(client, auth_headers)
+    ds = await _open(client, hd, tmp_path / "c.fits")
+    mask, origin = _mask(data)
+    raw = mask.astype("<f4").tobytes()
+    budget, gate, packing = _gated_publish_setup(share_mod, monkeypatch, len(raw))
+    read = []
+    a = asyncio.create_task(_streamed_post(client, hd, ds, mask, origin, raw, "A", read))
+    await _until(lambda: packing)
+    a.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await a
+    b = asyncio.create_task(_streamed_post(client, hd, ds, mask, origin, raw, "B", read))
+    await asyncio.sleep(0.3)
+    try:
+        assert read == ["A"] and budget.held == len(raw)    # A's body is still held
+    finally:
+        gate.set()
+    rb = await b
+    assert rb.status_code == 200, rb.text
+    assert read == ["A", "B"] and budget.held == 0
+
+
+@pytest.mark.asyncio
+async def test_the_measurement_gets_the_packed_bits_not_the_body(client, auth_headers, tmp_path, monkeypatch):
+    """A measurement outlives a request that times out, holding its arguments:
+    it is handed the n / 8 packed bytes, and gives the body's statistics."""
+    import app.routers.share as share_mod
+    data = _cube(tmp_path / "c.fits")
+    hd = await _session(client, auth_headers)
+    ds = await _open(client, hd, tmp_path / "c.fits")
+    mask, origin = _mask(data)
+    real = share_mod._run_heavy_with_limit
+    sizes = []
+
+    async def spy(session, fn, path, payload, *rest):
+        sizes.append(len(payload))
+        return await real(session, fn, path, payload, *rest)
+
+    monkeypatch.setattr(share_mod, "_run_heavy_with_limit", spy)
+    r = await _publish(client, hd, ds, mask, origin)
+    assert r.status_code == 200, r.text
+    assert sizes == [(mask.size + 7) // 8]
+    direct = await client.post("/v1/cube/mask_stats_bin", params={
+        "dataset_id": ds, "origin_x": origin[0], "origin_y": origin[1], "origin_z": origin[2],
+        "width": mask.shape[2], "height": mask.shape[1], "depth": mask.shape[0]},
+        content=mask.astype("<f4").tobytes(), headers={**hd, "Content-Type": "application/octet-stream"})
+    assert direct.status_code == 200, direct.text
+    got = {k: v for k, v in r.json()["stats"].items() if k not in ("valid", "error")}
+    assert got == {k: v for k, v in direct.json().items() if k not in ("valid", "error")}
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_or_failed_publish_gives_its_bytes_back():
+    budget = hub_mod.ByteBudget(10)
+    assert await budget.acquire(8) == 8
+    waiter = asyncio.create_task(budget.acquire(5))
+    small = asyncio.create_task(budget.acquire(1))   # queued behind: no overtaking
+    await asyncio.sleep(0.01)
+    assert budget.waiting == 2 and budget.held == 8
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert await small == 1 and budget.held == 9      # the head left: the next fits
+    budget.release(1)
+    budget.release(8)
+    assert budget.held == 0
+    assert await budget.acquire(10 ** 9) == 10         # over the capacity: all of it, alone
+    budget.release(10)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("meta", ['{"x": 1e999}', '{"x": [-1e400]}', '{"a": {"b": 1E+999}}'])
+async def test_a_number_out_of_float_range_in_meta_is_refused(client, auth_headers, tmp_path, meta):
+    """json.loads turns 1e999 into inf without calling parse_constant; kept in
+    the record, it made every later GET of the selection fail (allow_nan=False)."""
+    data = _cube(tmp_path / "c.fits")
+    hd = await _session(client, auth_headers)
+    ds = await _open(client, hd, tmp_path / "c.fits")
+    mask, origin = _mask(data)
+    d, h, w = mask.shape
+    r = await client.post("/v1/share/selection", params={
+        "dataset_id": ds, "source": "headset", "client": "p",
+        "origin_x": origin[0], "origin_y": origin[1], "origin_z": origin[2],
+        "width": w, "height": h, "depth": d, "meta": meta},
+        content=mask.astype("<f4").tobytes(), headers={**hd, "Content-Type": "application/octet-stream"})
+    assert r.status_code == 422, r.text
+    g = await client.get("/v1/share/selection", params={"dataset_id": ds}, headers=hd)
+    assert g.status_code == 204, g.text              # nothing kept to poison the reads
+    ok = await _publish(client, hd, ds, mask, origin, meta={"x": 1.5e300, "n": 10 ** 30})
+    assert ok.status_code == 200, ok.text
+    assert (await client.get("/v1/share/selection", params={"dataset_id": ds}, headers=hd)).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_packed_bits_waiting_for_a_compute_slot_stay_counted(client, auth_headers, tmp_path, monkeypatch):
+    """Once packed, a publish gives back its body's bytes but not its packed
+    bits while it waits for a compute slot: waiting publishes cannot pile up
+    beyond the budget."""
+    import app.routers.share as share_mod
+    data = _cube(tmp_path / "c.fits")
+    hd = await _session(client, auth_headers)
+    ds = await _open(client, hd, tmp_path / "c.fits")
+    mask, origin = _mask(data)
+    raw = mask.astype("<f4").tobytes()
+    packed_len = (mask.size + 7) // 8
+    budget = hub_mod.ByteBudget(len(raw))
+    monkeypatch.setattr(share_mod, "PUBLISH_BUDGET", budget)
+    real = share_mod._run_heavy_with_limit
+    slots_free = asyncio.Event()
+    waiting = []
+
+    async def busy_slots(*a):
+        waiting.append(1)
+        await slots_free.wait()                     # every compute slot busy
+        return await real(*a)
+
+    monkeypatch.setattr(share_mod, "_run_heavy_with_limit", busy_slots)
+    read = []
+    a = asyncio.create_task(_streamed_post(client, hd, ds, mask, origin, raw, "A", read))
+    await _until(lambda: waiting)
+    assert budget.held == packed_len                # the body went back, its bits did not
+    b = asyncio.create_task(_streamed_post(client, hd, ds, mask, origin, raw, "B", read))
+    await asyncio.sleep(0.3)
+    try:
+        assert read == ["A"]                        # B's body would not fit beside A's bits
+    finally:
+        slots_free.set()
+    ra, rb = await asyncio.gather(a, b)
+    assert rb.status_code == 200, rb.text
+    assert ra.status_code in (200, 409), ra.text
+    assert budget.held == 0 and budget.waiting == 0

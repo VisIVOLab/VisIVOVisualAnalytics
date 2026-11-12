@@ -716,3 +716,244 @@ def test_samples_wait_in_the_coroutine_and_tables_build_per_dataset():
     assert vr_layers._build_lock(e1) is vr_layers._build_lock(e1)
     assert vr_layers._build_lock(e1) is not vr_layers._build_lock(e2)
     assert not hasattr(vr_layers, "_TABLES_LOCK")
+
+
+# ── PR #198 review ───────────────────────────────────────────────────────────
+
+
+def test_points_far_from_zero_keep_their_separations(tmp_path):
+    """X = 1e9, 1e9 + 1, 1e9 + 2: float32 made them one point (codes 0, 0, 0)."""
+    from app.point_table import open_point_table
+    x = np.array([1e9, 1e9 + 1, 1e9 + 2], dtype="<f8")
+    data = np.stack([x, [0.0, 1.0, 2.0], [5.0, 6.0, 7.0]]).astype("<f8")
+    data.tofile(tmp_path / "far.bin")
+    (tmp_path / "far.bin.head").write_text("double\n3\n3\nlittle\nX\nY\nZ\n")
+    s = ps.sample_points(open_point_table(str(tmp_path / "far.bin.head")), 10)
+    assert s.bounds[:2] == [1e9, 1e9 + 2]
+    order = ps.prefix_order(3)
+    codes = np.empty(3, dtype=np.uint16)
+    codes[order] = s.positions[:, 0]              # back to file order
+    assert codes.tolist() == [0, 32768, 65535]
+
+
+def test_points_with_a_non_finite_axis_are_left_out_of_the_bounds(tmp_path):
+    from app.point_table import open_point_table
+    data = np.array([[0.0, 1.0, 2.0, 1e6], [0.0, 1.0, 2.0, np.nan], [0.0, 0.0, 0.0, 0.0]], dtype="<f4")
+    data.tofile(tmp_path / "nan.bin")
+    (tmp_path / "nan.bin.head").write_text("float\n3\n4\nlittle\nX\nY\nZ\n")
+    s = ps.sample_points(open_point_table(str(tmp_path / "nan.bin.head")), 10)
+    assert len(s.positions) == 3 and s.bounds[:2] == [0.0, 2.0]
+
+
+@pytest.mark.parametrize("unit, scale", [("hourangle", 15.0), ("h", 15.0), ("rad", 180 / math.pi)])
+def test_sky_columns_are_read_in_their_unit(tmp_path, unit, scale):
+    """RA in hours: 1 h is 15 degrees, not 1 (it landed 15 times too near on a CAR cube)."""
+    import pandas as pd
+    h = fits.Header()
+    h["NAXIS"] = 2
+    h["CTYPE1"], h["CRVAL1"], h["CRPIX1"], h["CDELT1"], h["CUNIT1"] = "RA---CAR", 0.0, 1.0, -0.1, "deg"
+    h["CTYPE2"], h["CRVAL2"], h["CRPIX2"], h["CDELT2"], h["CUNIT2"] = "DEC--CAR", 0.0, 1.0, 0.1, "deg"
+    path = tmp_path / "car.fits"
+    fits.PrimaryHDU(np.zeros((40, 400), np.float32), header=h).writeto(path)
+    geo = cc.cube_geometry(str(path))
+    ra_deg = 345.0                                  # x = (360 - 345) / 0.1 = 150
+    df = pd.DataFrame({"ra": [ra_deg / scale], "dec": [0.5 / (scale if unit == "rad" else 1.0)]})
+    df.attrs["units"] = {"ra": unit, "dec": "rad" if unit == "rad" else "deg"}
+    out = cc.place_table(df, {"system": "sky", "ra": "ra", "dec": "dec"}, geo.cel, geo.wcs, geo.shape)
+    assert out.sources[0]["x"] == pytest.approx(150.0, abs=1e-6)
+    assert out.sources[0]["y"] == pytest.approx(5.0, abs=1e-6)
+    assert out.sources[0]["lon"] == pytest.approx(ra_deg)
+
+
+def test_a_sky_column_in_no_angle_unit_is_refused(tmp_path):
+    import pandas as pd
+    path, _ = _car_cube(tmp_path)
+    geo = cc.cube_geometry(path)
+    df = pd.DataFrame({"glon": [30.0], "glat": [0.5]})
+    df.attrs["units"] = {"glon": "km/s"}
+    with pytest.raises(ValueError, match="not an angle"):
+        cc.place_table(df, {"system": "galactic", "glon": "glon", "glat": "glat"}, geo.cel,
+                       geo.wcs, geo.shape)
+    df.attrs["units"] = {"glon": "furlongs"}
+    with pytest.raises(ValueError, match="not an angle unit"):
+        cc.place_table(df, {"system": "galactic", "glon": "glon", "glat": "glat"}, geo.cel,
+                       geo.wcs, geo.shape)
+    # A bracket in a name that is no unit leaves the column in degrees.
+    df = pd.DataFrame({"glon (J2000)": [30.0], "glat": [0.5]})
+    out = cc.place_table(df, {"system": "galactic", "glon": "glon (J2000)", "glat": "glat"},
+                         geo.cel, geo.wcs, geo.shape)
+    assert out.sources and out.sources[0]["lon"] == 30.0
+
+
+@pytest.mark.parametrize("unit, value", [("DEG", 345.0), ("Deg", 345.0), ("RAD", math.radians(345.0)),
+                                         ("HOURS", 23.0), ("H", 23.0), ("ARCSEC", 345.0 * 3600)])
+def test_fits_unit_spellings_are_read_in_any_case(unit, value):
+    assert cc.angle_degrees(np.array([value]), "ra", unit)[0] == pytest.approx(345.0)
+
+
+@pytest.mark.asyncio
+async def test_a_fits_table_in_capital_deg_is_placed(client, auth_headers, tmp_path):
+    """TUNIT = 'DEG' (FITS spelling) was refused with 422."""
+    from astropy.table import Table
+    path, w = _car_cube(tmp_path)
+    lon, lat = w.celestial.all_pix2world([[12.0, 13.0]], 0)[0]
+    from astropy.coordinates import SkyCoord
+    icrs = SkyCoord(lon, lat, unit="deg", frame="galactic").icrs
+    t = Table({"RA": [icrs.ra.deg], "DEC": [icrs.dec.deg]})
+    fp = tmp_path / "cat.fits"
+    t.write(fp)
+    with fits.open(fp, mode="update") as hdul:
+        hdul[1].header["TUNIT1"] = "DEG"
+        hdul[1].header["TUNIT2"] = "DEG"
+    cube = (await client.post("/v1/datasets/open", json={"path": path}, headers=auth_headers)).json()
+    cat = (await client.post("/v1/catalogue/open", json={"path": str(fp), "format": "fits"},
+                             headers=auth_headers)).json()
+    assert cat["valid"], cat
+    r = await client.post("/v1/cube/catalogue_pixels", json={"dataset_id": cube["dataset_id"],
+                          "catalogue_id": cat["dataset_id"]}, headers=auth_headers)
+    assert r.status_code == 200, r.text
+    s = r.json()["sources"][0]
+    assert s["x"] == pytest.approx(12.0, abs=1e-6) and s["y"] == pytest.approx(13.0, abs=1e-6)
+
+
+def test_a_point_tables_sky_positions_take_the_units_too():
+    """The same catalogue drawn as points: RA in hours and in degrees agree."""
+    import pandas as pd
+    from app.catalogue_positions import sky_positions
+    deg = pd.DataFrame({"ra": [345.0, 10.0], "dec": [-20.0, 30.0], "z": [0.01, 0.02]})
+    hours = pd.DataFrame({"ra": [23.0, 10.0 / 15.0], "dec": [-20.0, 30.0], "z": [0.01, 0.02]})
+    hours.attrs["units"] = {"ra": "h", "dec": "deg"}
+    a, b = sky_positions(deg, "ra", "dec"), sky_positions(hours, "ra", "dec")
+    assert np.allclose(a, b, equal_nan=True)
+    assert np.isfinite(a).any()
+
+
+def test_points_far_from_zero_keep_their_separations_when_the_first_row_is_dropped(tmp_path):
+    """The first row (1e9 away from the rest) has no Y: the offsets of the
+    rows kept are not taken from it."""
+    from app.point_table import open_point_table
+    data = np.array([[1e9, 0.0, 1.0, 2.0], [np.nan, 0.0, 1.0, 2.0], [0.0, 0.0, 0.0, 0.0]],
+                    dtype="<f8")                     # X, Y, Z of 4 rows
+    data.tofile(tmp_path / "drop.bin")
+    (tmp_path / "drop.bin.head").write_text("double\n3\n4\nlittle\nX\nY\nZ\n")
+    s = ps.sample_points(open_point_table(str(tmp_path / "drop.bin.head")), 10)
+    assert len(s.positions) == 3 and s.bounds[:2] == [0.0, 2.0]
+    order = ps.prefix_order(3)
+    codes = np.empty(3, dtype=np.uint16)
+    codes[order] = s.positions[:, 0]
+    assert codes.tolist() == [0, 32768, 65535]
+
+
+def test_an_ipac_catalogue_in_hours_is_drawn_as_points_where_degrees_put_it(tmp_path):
+    """A point table of an IPAC catalogue whose RA header unit is 'h' lands
+    where the same catalogue in degrees does."""
+    import json as _json
+    from app.point_table import open_point_table
+    (tmp_path / "h.tbl").write_text(
+        "|   ra    |   dec   |   z    |\n"
+        "| double  | double  | double |\n"
+        "|   h     |   deg   |        |\n"
+        "  23.0      -20.0     0.01\n"
+        "  0.5        30.0     0.02\n")
+    (tmp_path / "d.csv").write_text("ra,dec,z\n345.0,-20.0,0.01\n7.5,30.0,0.02\n")
+    coords = {"system": "sky", "ra": "ra", "dec": "dec"}
+    h = open_point_table(_json.dumps({"paths": [str(tmp_path / "h.tbl")], "format": "ipac",
+                                      "coordinates": coords}))
+    d = open_point_table(_json.dumps({"paths": [str(tmp_path / "d.csv")], "format": "csv",
+                                      "coordinates": coords}))
+    a = np.stack([h.columns[k] for k in ("@x", "@y", "@z")], axis=1)
+    b = np.stack([d.columns[k] for k in ("@x", "@y", "@z")], axis=1)
+    assert np.isfinite(a).all()
+    np.testing.assert_allclose(a, b, rtol=1e-9)
+
+
+@pytest.mark.parametrize("x, y, kept, lo, hi", [
+    ([-3e38, 3e38, 0.0], [0.0, 1.0, 2.0], [-3e38, 3e38, 0.0], -3e38, 3e38),  # offsets past float32
+    ([1e39, 0.0, 1.0, 2.0], [np.nan, 0.0, 1.0, 2.0], [0.0, 1.0, 2.0], 0.0, 2.0),
+    ([1e39, -1e39, 0.0, 4.0], [0.0, 1.0, 2.0, 3.0], [0.0, 4.0], 0.0, 4.0),  # values past float32
+    ([-1.7e308, 1.7e308, 0.0, 4.0], [0.0, 1.0, 2.0, 3.0], [0.0, 4.0], 0.0, 4.0),
+    ([1e9, 1e9 + 1, 1e9 + 2], [0.0, 1.0, 2.0], [1e9, 1e9 + 1, 1e9 + 2], 1e9, 1e9 + 2),
+])
+def test_positions_are_judged_on_their_float64_value(x, y, kept, lo, hi):
+    """A position is kept when its float64 value is finite and within float32's
+    range (3.4e38): beyond it nothing can draw it (the page and the remote
+    point session work in float32), so it is dropped as a NaN is. Within it,
+    an offset that overflows float32 falls back to fractions of the range."""
+    from app.point_table import PointTable
+    cols = {"X": np.array(x, dtype=np.float64), "Y": np.array(y, dtype=np.float64),
+            "Z": np.zeros(len(x))}
+    s = ps.sample_points(PointTable(list(cols), cols, len(x), ("X", "Y", "Z")), 10)
+    n = len(kept)
+    assert len(s.positions) == n
+    assert s.bounds[:2] == [lo, hi]
+    codes = np.empty(n, dtype=np.uint16)
+    codes[ps.prefix_order(n)] = s.positions[:, 0]
+    m = max(abs(lo), abs(hi))
+    expected = [round((v / m - lo / m) / (hi / m - lo / m) * 65535) for v in kept]
+    assert codes.tolist() == expected
+
+
+def test_a_sorted_table_with_a_dropped_first_row_is_read_once(monkeypatch):
+    """X = Y = 0..9 with Z[0] NaN: row 0 is dropped. The reference of each axis
+    is the first row finite on the axes read so far, and a reference just
+    outside the rows kept is no reason to read a column again."""
+    from app.point_table import PointTable
+    calls = []
+    real = ps.read_normalised
+    monkeypatch.setattr(ps, "read_normalised", lambda *a: calls.append(1) or real(*a))
+    z = np.arange(10, dtype=np.float64)
+    z[0] = np.nan
+    cols = {"X": np.arange(10.0), "Y": np.arange(10.0), "Z": z}
+    s = ps.sample_points(PointTable(list(cols), cols, 10, ("X", "Y", "Z")), 100)
+    assert calls == []
+    assert len(s.positions) == 9 and s.bounds == [1.0, 9.0, 1.0, 9.0, 1.0, 9.0]
+    # Still read again when the reference is far from the rows kept.
+    x = np.arange(10.0)
+    x[0] = 1e9
+    cols = {"X": x, "Y": np.arange(10.0), "Z": z}
+    s = ps.sample_points(PointTable(list(cols), cols, 10, ("X", "Y", "Z")), 100)
+    assert len(s.positions) == 9 and s.bounds[:2] == [1.0, 9.0]
+
+
+def test_a_tiny_span_keeps_its_resolution():
+    """Offsets of a span under 1e-30 would be subnormal float32: the axis is
+    read as fractions of its range instead."""
+    from app.point_table import PointTable
+    x = np.array([0.0, 1e-40, 2e-40])
+    cols = {"X": x, "Y": np.arange(3.0), "Z": np.zeros(3)}
+    s = ps.sample_points(PointTable(list(cols), cols, 3, ("X", "Y", "Z")), 10)
+    assert s.bounds[:2] == [0.0, 2e-40]
+    codes = np.empty(3, dtype=np.uint16)
+    codes[ps.prefix_order(3)] = s.positions[:, 0]
+    assert codes.tolist() == [0, 32768, 65535]
+
+
+def test_a_colour_column_far_from_zero_keeps_its_colours():
+    """The colour was read in float32: 1e9, 1e9 + 1, 1e9 + 2 were one colour
+    (an empty data range)."""
+    from app.point_table import PointTable
+    c = np.array([1e9, 1e9 + 1, 1e9 + 2])
+    cols = {"X": np.arange(3.0), "Y": np.arange(3.0), "Z": np.arange(3.0), "C": c}
+    s = ps.sample_points(PointTable(list(cols), cols, 3, ("X", "Y", "Z")), 10, colour_field="C")
+    assert s.data_range == (1e9, 1e9 + 2)
+    codes = np.empty(3, dtype=np.uint16)
+    codes[ps.prefix_order(3)] = s.colour
+    assert codes.tolist() == [0, 32768, 65535]
+    # On a log scale too (forced: the auto rule keeps a range this narrow linear).
+    s = ps.sample_points(PointTable(list(cols), cols, 3, ("X", "Y", "Z")), 10,
+                         colour_field="C", colour_log=True)
+    codes[ps.prefix_order(3)] = s.colour
+    assert codes.tolist()[0] == 0 and codes.tolist()[2] == 65535 and 0 < codes.tolist()[1] < 65535
+
+
+def test_a_colour_range_wider_than_the_largest_double_keeps_its_codes():
+    """-1.7e308 .. 1.7e308: cmax - cmin is infinite in float64, and every code
+    came out 0. The values are scaled by the largest magnitude first."""
+    from app.point_table import PointTable
+    c = np.array([-1.7e308, 0.0, 1.7e308])
+    cols = {"X": np.arange(3.0), "Y": np.arange(3.0), "Z": np.arange(3.0), "C": c}
+    s = ps.sample_points(PointTable(list(cols), cols, 3, ("X", "Y", "Z")), 10, colour_field="C")
+    assert s.data_range == (-1.7e308, 1.7e308)
+    codes = np.empty(3, dtype=np.uint16)
+    codes[ps.prefix_order(3)] = s.colour
+    assert codes.tolist() == [0, 32768, 65535]

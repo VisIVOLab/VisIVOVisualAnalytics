@@ -537,6 +537,8 @@ class _PushState:
         self.in_flight = 0
         self.acked = asyncio.Event()
         self.rtc: xr_rtc.StereoRtcLink | None = None   # this connection's stereo video (#189)
+        # Links taken off ``rtc`` whose close has not finished (_xr_rtc_close).
+        self.rtc_closing: set = set()
         self.offer_times: collections.deque = collections.deque()   # its recent xr_rtc_offers
 
     def configure(self, command: dict) -> None:
@@ -1037,7 +1039,20 @@ async def _xr_rtc_offer(websocket: WebSocket, send_lock: asyncio.Lock, session_i
 
 async def _xr_rtc_close(push: _PushState) -> None:
     """``xr_rtc_stop``, or the connection closing: the link is closed and the
-    stereo frames go as JPEG again."""
+    stereo frames go as JPEG again.
+
+    Also waits for the close of any link another caller took off the
+    connection before (the frame sender after an encoder error, a stop):
+    the caller that finds ``rtc`` already empty must not go on, a replacement
+    offer to turn its encoder on, before that link's encoder off is applied.
+    The link stays in ``rtc_closing`` until its (shared, shielded) close is
+    done, whatever happens to the caller that started it."""
     link, push.rtc = push.rtc, None
     if link is not None:
-        await link.close()
+        push.rtc_closing.add(link)
+
+        def done(_task, link=link) -> None:
+            push.rtc_closing.discard(link)
+        link.close_task().add_done_callback(done)
+    for closing in list(push.rtc_closing):
+        await closing.close()

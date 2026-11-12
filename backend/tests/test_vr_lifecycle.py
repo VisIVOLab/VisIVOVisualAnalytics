@@ -341,3 +341,51 @@ async def test_log_route_scrubs_off_the_event_loop(client: AsyncClient, auth_hea
     r = await client.post("/v1/vr/log", json=_events(2, "xtoken" * 600), headers=auth_headers)
     assert r.status_code == 200
     assert seen and not any(seen)
+
+
+@pytest.mark.asyncio
+async def test_log_scrubs_the_secret_from_every_field(client: AsyncClient, auth_headers, caplog) -> None:
+    """The event's name went to the log as sent: its pattern admits a token."""
+    token = auth_headers["X-Visivo-Token"]
+    body = {"build": token, "user_agent": f"agent {token}",
+            "events": [{"level": "error", "event": token, "message": f"m {token}"},
+                       {"level": "info", "event": f"x:{token}", "message": token}]}
+    with caplog.at_level(logging.DEBUG, logger="visivo.vr"):
+        r = await client.post("/v1/vr/log", json=body, headers=auth_headers)
+    assert r.status_code == 200 and r.json() == {"accepted": 2}
+    lines = [rec.getMessage() for rec in caplog.records if rec.name == "visivo.vr"]
+    assert len(lines) == 3                                # two events and the user agent
+    for line in lines:
+        assert token not in line, line
+    assert any(line.startswith("[vr <token>] <token>: m <token>") for line in lines), lines
+    assert any("x:<token>: <token>" in line for line in lines), lines
+
+
+@pytest.mark.asyncio
+async def test_an_upgrade_is_never_cached_under_the_old_build(client: AsyncClient) -> None:
+    """A file replaced after the build was hashed (here with its size and
+    modification time kept, so the cached build still names it) used to be
+    served under that build as immutable: new bytes cached for a year under the
+    old address. Only the bytes the build was hashed from are immutable."""
+    import os
+    f = vr_routes.STATIC_DIR / "js" / "zz-immutable-test.js"
+    f.write_text("export const a = 1;\n")
+    try:
+        build = _build_of((await client.get("/vr/")).text)
+        r = await client.get(f"/vr/b/{build}/js/zz-immutable-test.js")
+        assert r.status_code == 200 and "immutable" in r.headers["cache-control"]
+        assert r.text == "export const a = 1;\n"
+        st = f.stat()
+        f.write_text("export const a = 2;\n")             # the upgrade: same size
+        os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns))  # and the same mtime
+        r = await client.get(f"/vr/b/{build}/js/zz-immutable-test.js")
+        assert r.status_code == 200
+        assert r.text == "export const a = 2;\n"
+        assert r.headers["cache-control"] == "no-cache"
+        # Back to the bytes the build was hashed from: immutable again.
+        f.write_text("export const a = 1;\n")
+        os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns))
+        r = await client.get(f"/vr/b/{build}/js/zz-immutable-test.js")
+        assert "immutable" in r.headers["cache-control"] and r.headers.get("etag")
+    finally:
+        f.unlink(missing_ok=True)
