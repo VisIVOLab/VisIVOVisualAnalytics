@@ -32,7 +32,8 @@ from ..auth import verify_token
 from ..dependencies import _require_dataset, get_exports_dir
 from ..product_cache import dataset_identity
 from ..response_headers import (X_EXPOSURE, X_PARTICLE_COUNT, X_PARTICLE_FIELDS,
-                                X_PARTICLE_STEP, X_RENDER_MS)
+                                X_PARTICLE_ORIGIN, X_PARTICLE_SCALE, X_PARTICLE_STEP,
+                                X_RENDER_MS)
 from ..schemas import TaskCreateResponse
 from ..sessions import Session, get_session
 from ..tasks import TASKS
@@ -179,6 +180,7 @@ def _colours(columns, rows: np.ndarray, colour: RaytraceColour) -> np.ndarray:
 def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
     """Positions, sizes, colours and light of the particles drawn."""
     from ..particle_raytrace import smoothing_lengths  # noqa: PLC0415
+    from ..point_sample import place_rows  # noqa: PLC0415
     from ..point_table import filter_mask, open_point_table  # noqa: PLC0415
     from .render import point_table_spec  # noqa: PLC0415
     spec = point_table_spec(entry)
@@ -196,7 +198,19 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
     rows = np.arange(table.num_rows, dtype=np.int64)
     if req.filters:
         rows = rows[filter_mask(table.columns, req.filters, rows)]
-    pos = np.stack([np.asarray(table.columns[a][rows], dtype=np.float32) for a in axes], axis=1)
+    # Float32 coordinates local to the rows and their map back to the
+    # table's, in float64 (point_sample.place_rows, as the remote point
+    # session and the VR page read them): a float32 cast of the positions
+    # merged 1e9, 1e9 + 1 and 1e9 + 2 into one particle. Still 12 bytes a
+    # particle; a row without a finite position within float32's range is
+    # left out, as before. One scale on every axis (uniform_scale), so the
+    # kernels stay round: 1 unless an axis's offsets could not keep their
+    # precision (a span beyond float32's range or below 1e-30).
+    from ..render_session.points import uniform_scale  # noqa: PLC0415
+    placed = uniform_scale(place_rows(table.columns, axes, rows))
+    rows, pos = placed.rows, placed.xyz
+    origin, scale = placed.origin.copy(), float(placed.scale[0])
+    del placed
     if req.intensity_field:
         if req.intensity_field not in table.columns:
             raise ValueError(f"Unknown intensity field: {req.intensity_field!r}")
@@ -206,7 +220,7 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
                 light = 10.0 ** (light - np.nanmax(light[np.isfinite(light)], initial=0.0))
     else:
         light = np.ones(len(rows))
-    keep = np.isfinite(pos).all(axis=1) & np.isfinite(light) & (light > 0)
+    keep = np.isfinite(light) & (light > 0)
     rows, pos, light = rows[keep], pos[keep], light[keep]
     if not len(rows):
         raise ValueError("No particle to draw: no row has a position and a positive intensity.")
@@ -222,10 +236,16 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
         if not positive.any():
             raise ValueError(f"The radius field {req.radius_field!r} has no positive value.")
         radius = np.where(positive, radius, radius[positive].min())
+        if scale != 1.0:   # the table's units, into the local frame's
+            radius = radius / np.float32(scale)
     else:
         radius = smoothing_lengths(pos, req.neighbours)
     radius = (radius * req.radius_scale).astype(np.float32)
-    particles = {"positions": pos, "radius": radius, "intensity": light}
+    # Positions and sizes in the local frame; ``frame`` (origin, scale) maps
+    # it to the table's coordinates, table = origin + scale * local, and
+    # _local_camera moves the camera into it.
+    particles = {"positions": pos, "radius": radius, "intensity": light,
+                 "frame": (origin, scale)}
     if req.mode == "light":
         particles["colour"] = _colours(table.columns, rows, req.colour)
     elif req.colour_by == "colour" and req.colour.field:
@@ -295,17 +315,32 @@ def _projected_image(maps: np.ndarray, req: ParticleRenderRequest,
     return (np.clip(rgb, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
 
 
+def _local_camera(camera, particles: dict):
+    """The camera (in the table's coordinates) in the particles' local frame,
+    and that frame's scale: placed in float64, so the frame is drawn from
+    float32 offsets however far from 0 the table lies (``frame``, _prepare).
+    A shift and one scale on every axis: the view is the same picture."""
+    from ..particle_raytrace import Camera  # noqa: PLC0415
+    origin, scale = particles.get("frame", ((0.0, 0.0, 0.0), 1.0))
+    origin = np.asarray(origin, dtype=np.float64)
+    c = camera.model_dump()
+    for key in ("position", "focal_point"):
+        c[key] = tuple(float(v) for v in (np.asarray(c[key], dtype=np.float64) - origin) / scale)
+    c["parallel_scale"] = c["parallel_scale"] / scale
+    return Camera(**c), float(scale)
+
+
 def _frame(particles: dict, req: ParticleRenderRequest, camera, width: int, height: int,
            tone: RaytraceTone, exposure: float | None):
     """One frame: (8-bit picture, the data it was made from, the exposure
     before ``ev``). The data: the light (a 3-D render) or the density and the
     mean quantity (a projected map)."""
-    from ..particle_raytrace import Camera, projected_maps, render, tone_map  # noqa: PLC0415
-    cam = Camera(**camera.model_dump())
+    from ..particle_raytrace import projected_maps, render, tone_map  # noqa: PLC0415
+    cam, scale = _local_camera(camera, particles)
     if req.mode == "projected":
         maps = projected_maps(particles["positions"], particles["radius"],
                               particles["intensity"], particles.get("value"), cam, width, height,
-                              slab=req.slab)
+                              slab=req.slab / scale if req.slab else req.slab)
         return _projected_image(maps, req, tone), maps, 1.0
     light = render(particles["positions"], particles["radius"], particles["colour"],
                    particles["intensity"], cam, width, height,
@@ -418,7 +453,8 @@ def _sampled(particles: dict, limit: int | None) -> dict:
     if not limit or n <= limit:
         return particles
     step = -(-n // limit)
-    out = {k: v[::step] for k, v in particles.items()}
+    # ``frame`` is the particles' coordinate frame, not one value a particle.
+    out = {k: v if k == "frame" else v[::step] for k, v in particles.items()}
     out["intensity"] = out["intensity"] * np.float32(step)
     return out
 
@@ -464,6 +500,12 @@ class ParticleDataRequest(ParticleRenderRequest):
     # More than this many: an even sample, each carrying the light of those
     # it stands for (the step is in X-Visivo-Particle-Step).
     max_particles: int = Field(8_000_000, ge=1000, le=50_000_000)
+    # True: positions and sizes in the particles' local frame, float32
+    # offsets that keep points far from 0 apart, table = origin + scale *
+    # local (X-Visivo-Particle-Origin, X-Visivo-Particle-Scale); the client
+    # moves its camera into that frame. False (a client that predates it):
+    # the table's own coordinates, a float32 cast of them, as before.
+    local_frame: bool = False
 
 
 @router.post("/v1/particle_render/particles")
@@ -481,15 +523,20 @@ async def particle_render_particles(request: ParticleDataRequest, token: str = _
     if point_table_spec(entry) is None:
         raise HTTPException(422, "Ray-traced rendering needs a table of points.")
 
-    def pack() -> tuple[bytes, int, str, int]:
+    def pack() -> tuple[bytes, int, str, int, np.ndarray, float]:
         with _PREVIEW_WORK:
             return packed()
 
-    def packed() -> tuple[bytes, int, str, int]:
+    def packed() -> tuple[bytes, int, str, int, np.ndarray, float]:
         n_all = len(_prepared(entry, request, token)["positions"])
         particles = _sampled(_prepared(entry, request, token), request.max_particles)
         step = -(-n_all // request.max_particles) if n_all > request.max_particles else 1
         pos, radius = particles["positions"], particles["radius"]
+        origin, scale = particles.get("frame", ((0.0, 0.0, 0.0), 1.0))
+        origin, scale = np.asarray(origin, dtype=np.float64), float(scale)
+        if not request.local_frame:
+            pos, radius = _table_coordinates(pos, radius, origin, scale)
+            origin, scale = np.zeros(3), 1.0
         if request.mode == "projected":
             weight = emission_weights(particles["intensity"], radius, "per_particle")
             value = particles.get("value")
@@ -504,16 +551,29 @@ async def particle_render_particles(request: ParticleDataRequest, token: str = _
             columns = [pos, radius[:, None], weight[:, None], particles["colour"]]
             names = "x,y,z,r,e,red,green,blue"
         rows = np.hstack([np.asarray(c, dtype="<f4") for c in columns])
-        return np.ascontiguousarray(rows).tobytes(), len(rows), names, step
+        return np.ascontiguousarray(rows).tobytes(), len(rows), names, step, origin, scale
 
     async with _PREVIEW_LOCK:
         try:
-            body, count, names, step = await asyncio.to_thread(pack)
+            body, count, names, step, origin, scale = await asyncio.to_thread(pack)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
     return Response(body, media_type="application/octet-stream",
                     headers={X_PARTICLE_COUNT: str(count), X_PARTICLE_FIELDS: names,
-                             X_PARTICLE_STEP: str(step)})
+                             X_PARTICLE_STEP: str(step),
+                             X_PARTICLE_ORIGIN: ",".join(repr(float(v)) for v in origin),
+                             X_PARTICLE_SCALE: repr(float(scale))})
+
+
+def _table_coordinates(pos: np.ndarray, radius: np.ndarray, origin: np.ndarray,
+                       scale: float) -> tuple[np.ndarray, np.ndarray]:
+    """Local positions and sizes back in the table's coordinates, as float32
+    (the rows of a client that does not ask for the local frame): an axis at
+    a time, in float64, so the temporaries stay at 8 bytes a particle."""
+    out = np.empty(pos.shape, dtype=np.float32)
+    for i in range(3):
+        out[:, i] = pos[:, i].astype(np.float64) * scale + origin[i]
+    return out, (radius if scale == 1.0 else (radius * np.float64(scale)).astype(np.float32))
 
 
 @router.post("/v1/tasks/particle_render", response_model=TaskCreateResponse)

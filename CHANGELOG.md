@@ -8,6 +8,20 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Ray-traced particles keep particles far from zero apart (#208, part of
+  #166).** Stills, movie frames, the backend preview and the desktop's GPU
+  view read positions as float32. As a result, 1e9, 1e9 + 1 and 1e9 + 2 merged
+  into a single particle, and smoothing lengths estimated from the neighbours
+  were wrong far from 0. Positions are now read through
+  `point_sample.place_rows`, as the remote point session reads them: float32
+  offsets from a float64 origin. The camera is moved into that frame in float64,
+  and the smoothing lengths, splat radii and slab are unchanged, so the three
+  particles land where the point session draws them. Particles still take 12
+  bytes each. `/v1/particle_render/particles` takes an opt-in `local_frame` and
+  returns `X-Visivo-Particle-Origin` and `X-Visivo-Particle-Scale`. The desktop
+  asks for the local frame and shifts its GPU camera and the box overlay in
+  double precision. Older clients and backends keep working as before.
+
 - **Remote point rendering keeps points far from zero apart (#206, part of
   #166).** The backend's point render session drew float32 positions, so
   1e9, 1e9 + 1 and 1e9 + 2 merged into one point in remote and remote stereo

@@ -602,3 +602,45 @@ def test_three_points_far_from_zero_are_drawn_apart(tmp_path, can_render):
     finally:
         run(s.close())
         loop.close()
+
+
+def _centres(lit: np.ndarray) -> list[float]:
+    """The centre (pixels from the left edge) of each run of lit columns,
+    weighted by how many pixels each column lights."""
+    profile = lit.sum(axis=0).astype(float)
+    idx = np.flatnonzero(profile)
+    runs = np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1) if idx.size else []
+    return [float(np.average(r + 0.5, weights=profile[r])) for r in runs]
+
+
+def test_a_ray_traced_still_lands_on_the_sessions_points(tmp_path, can_render):
+    """Issue #208: three particles at 1e9 + [0, 1, 2] (z 3e9 below 0) are
+    three in a ray-traced still made from the session's camera, where the
+    remote point session draws them."""
+    from app.routers import particle_render as router
+    path = _far_table(tmp_path, 1e9 + np.array([0.0, 1.0, 2.0]), y=[0.0, 0.5, 1.0],
+                      z=[-3e9, -3e9, -3e9])
+    s, run, loop = _session(path)
+    try:
+        for cmd in ({"type": "set_show_outline", "visible": False},
+                    {"type": "set_show_axes", "visible": False},
+                    {"type": "set_show_colorbar", "visible": False},
+                    {"type": "set_point_style", "mode": "points", "size": 6}):
+            run(s.apply_command(cmd))
+        drawn = _image(run(s.render_frame()))
+        camera, width, height = s._camera_on_thread(), s.view.width, s.view.height
+    finally:
+        run(s.close())
+        loop.close()
+    assert drawn.shape == (height, width)
+    req = router.ParticleRenderRequest(dataset_id="d", radius_scale=0.02, width=width,
+                                       height=height, cameras=[camera])
+    entry = {"kind": "catalogue", "format": "vbt", "path": path}
+    light = router._frame(router._prepare(entry, req), req, req.cameras[0], width, height,
+                          req.tone, None)[1].sum(axis=-1)
+    traced = light > 0.05 * light.max()
+    points, rays = _centres(drawn), _centres(traced)
+    assert len(points) == len(rays) == 3
+    assert np.abs(np.array(points) - rays).max() <= 1.0
+    # And the rows: y rises with x, the image counts rows from the top.
+    assert np.abs(np.array(_centres(drawn.T)) - _centres(traced.T)).max() <= 1.0

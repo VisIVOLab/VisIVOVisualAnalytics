@@ -404,7 +404,11 @@ def test_the_particles_for_the_gpu_are_those_the_renderer_draws(tmp_path, monkey
         n = int(reply.headers["X-Visivo-Particle-Count"])
         rows = np.frombuffer(reply.body, dtype="<f4").reshape(n, 8)
         prepared = router._prepare(session.datasets["cat_1"], req)
-        assert n == 3000 and np.allclose(rows[:, :3], prepared["positions"])
+        origin, scale = prepared["frame"]
+        # Without local_frame, the table's own coordinates (as before).
+        assert n == 3000 and np.allclose(rows[:, :3], origin + scale * prepared["positions"])
+        assert reply.headers["X-Visivo-Particle-Origin"] == "0.0,0.0,0.0"
+        assert reply.headers["X-Visivo-Particle-Scale"] == "1.0"
         assert np.allclose(rows[:, 4], emission_weights(prepared["intensity"], prepared["radius"],
                                                         "per_particle"), rtol=1e-5)
         # A projected map, sampled: the mass of the rows left adds up the same.
@@ -549,3 +553,190 @@ def test_an_evicted_render_takes_its_frames_with_it(tmp_path, monkeypatch):
             break
         time.sleep(0.02)
     assert not frames.exists()
+
+
+# ── Particles far from zero (issue #208) ─────────────────────────────────
+
+
+def _far(tmp_path, x, y=None, z=None, h=0.1, name="far"):
+    """A float64 VBT: X, Y, Z (zeros when not given) and a smoothing length H."""
+    n = len(x)
+    cols = [np.asarray(x, float), np.zeros(n) if y is None else np.asarray(y, float),
+            np.zeros(n) if z is None else np.asarray(z, float), np.full(n, float(h))]
+    np.stack(cols).astype("<f8").tofile(tmp_path / f"{name}.bin")
+    (tmp_path / f"{name}.bin.head").write_text(f"double\n4\n{n}\nlittle\nX\nY\nZ\nH\n")
+    return {"kind": "catalogue", "format": "vbt", "path": str(tmp_path / f"{name}.bin.head")}
+
+
+def _peaks(profile: np.ndarray, floor: float) -> list[float]:
+    """The centre of each separate run of columns above ``floor``, in pixels
+    from the image's left edge (weighted by the profile: a saturated preview
+    is flat on top)."""
+    lit = np.flatnonzero(profile > floor)
+    runs = np.split(lit, np.flatnonzero(np.diff(lit) > 1) + 1) if lit.size else []
+    return [float(np.average(r + 0.5, weights=profile[r])) for r in runs]
+
+
+_FAR_X = 1e9 + np.array([0.0, 1.0, 2.0])
+_FAR_Z = -3e9
+_FAR_CAM = {"position": (1e9 + 1, 0.0, _FAR_Z + 1), "focal_point": (1e9 + 1, 0.0, _FAR_Z),
+            "view_up": (0, 1, 0)}
+
+
+def _expected_columns(x, width, height):
+    """Where the particles at ``x`` (y 0, z _FAR_Z) fall, projected in float64
+    from the table's own coordinates."""
+    pos = np.stack([np.asarray(x, float), np.zeros(len(x)), np.full(len(x), _FAR_Z)], axis=1)
+    sx, _, _, _ = project(pos, np.ones(len(x)), Camera(**_FAR_CAM), width, height)
+    return sx
+
+
+def test_particles_far_from_zero_are_three_in_a_still_and_the_preview(tmp_path, monkeypatch):
+    """1e9, 1e9 + 1 and 1e9 + 2 were one float32 value, so one particle: they
+    are three, where the table's coordinates put them (the camera in them)."""
+    from PIL import Image
+
+    from app.routers import particle_render as router
+    monkeypatch.setattr(router, "get_exports_dir", lambda: tmp_path / "exports")
+    monkeypatch.setattr(router, "_PREPARED", router.OrderedDict())
+
+    class _S:
+        datasets = {"far": _far(tmp_path, _FAR_X, z=np.full(3, _FAR_Z))}
+    width, height = 400, 80
+    expected = _expected_columns(_FAR_X, width, height)
+    assert np.all(np.diff(expected) > 100)          # a hundred pixels apart
+    still = router.ParticleRenderRequest(dataset_id="far", radius_field="H", width=width,
+                                         height=height, cameras=[_FAR_CAM])
+    task, loop = _run_task(router, still, _S())
+    try:
+        assert task.status == "completed", task.error
+        assert task.result["particles"] == 3
+        light = router._light(task.task_id, "tok").sum(axis=-1)
+        peaks = _peaks(light.sum(axis=0), 1e-3 * light.sum(axis=0).max())
+        assert len(peaks) == 3
+        assert np.abs(np.array(peaks) - expected).max() <= 1.0
+
+        preview = router.ParticlePreviewRequest(dataset_id="far", radius_field="H", width=width,
+                                                height=height, cameras=[_FAR_CAM])
+        jpeg = loop.run_until_complete(router.particle_render_preview(preview, token="tok",
+                                                                      session=_S()))
+        grey = np.asarray(Image.open(io.BytesIO(jpeg.body)).convert("L"), dtype=float)
+        peaks = _peaks(grey.max(axis=0), 40.0)
+        assert len(peaks) == 3
+        assert np.abs(np.array(peaks) - expected).max() <= 1.5
+    finally:
+        loop.close()
+
+
+def test_the_gpu_rows_carry_their_frame_far_from_zero(tmp_path, monkeypatch):
+    """The desktop's GPU preview: asked for the local frame, float32 offsets
+    and their origin rebuild the table's coordinates exactly; a client that
+    does not ask gets the table's coordinates in float32, as before."""
+    from app.routers import particle_render as router
+    monkeypatch.setattr(router, "_PREPARED", router.OrderedDict())
+
+    class _S:
+        datasets = {"far": _far(tmp_path, _FAR_X, z=np.full(3, _FAR_Z))}
+    loop = asyncio.new_event_loop()
+    try:
+        def rows(local):
+            req = router.ParticleDataRequest(dataset_id="far", radius_field="H",
+                                             local_frame=local)
+            reply = loop.run_until_complete(router.particle_render_particles(
+                req, token="tok", session=_S()))
+            origin = [float(v) for v in reply.headers["X-Visivo-Particle-Origin"].split(",")]
+            scale = float(reply.headers["X-Visivo-Particle-Scale"])
+            return np.frombuffer(reply.body, dtype="<f4").reshape(-1, 8), origin, scale
+
+        local, origin, scale = rows(True)
+        table = origin + scale * local[:, :3].astype(float)
+        assert table[:, 0].tolist() == _FAR_X.tolist()
+        assert table[:, 2].tolist() == [_FAR_Z] * 3
+        assert np.allclose(scale * local[:, 3], 0.1)            # the size, in table units
+        old, origin, scale = rows(False)
+        assert origin == [0.0, 0.0, 0.0] and scale == 1.0
+        assert np.array_equal(old[:, :3], (_FAR_X[:, None] * [1, 0, 0]
+                                           + [0, 0, _FAR_Z]).astype(np.float32))
+        assert np.array_equal(old[:, 3:], local[:, 3:])          # the rest unchanged
+    finally:
+        loop.close()
+
+
+def test_smoothing_lengths_do_not_depend_on_where_the_table_lies(tmp_path):
+    """The neighbours' smoothing lengths, and the light weighted by them, are
+    the same 1e9 away from 0 as near it (a float32 cast put the particles on a
+    grid of 64 there)."""
+    from app.routers import particle_render as router
+    rng = np.random.default_rng(3)
+    xyz = rng.normal(0.0, 1.0, (3, 2000))
+    near = _far(tmp_path, xyz[0], xyz[1], xyz[2], name="near")
+    far = _far(tmp_path, xyz[0] + 1e9, xyz[1] - 2e9, xyz[2] + 3e9, name="far")
+    for radius_field in (None, "H"):
+        req = router.ParticleRenderRequest(dataset_id="d", radius_field=radius_field,
+                                           neighbours=16, cameras=[FRONT_JSON])
+        a, b = router._prepare(near, req), router._prepare(far, req)
+        assert np.allclose(a["radius"], b["radius"], rtol=1e-4)
+        assert np.array_equal(a["intensity"], b["intensity"])
+        assert b["frame"][1] == 1.0
+        assert np.allclose(b["positions"] + b["frame"][0] - [1e9, -2e9, 3e9], xyz.T, atol=1e-6)
+
+
+def test_a_projected_slab_far_from_zero_keeps_its_depth(tmp_path):
+    """A projected map's slab is measured from the focal plane in the table's
+    units: 0.2 behind it is in a slab of 1, 5 behind it out, 3e9 from 0."""
+    from app.routers import particle_render as router
+    entry = _far(tmp_path, _FAR_X, z=_FAR_Z + np.array([0.0, -0.2, -5.0]))
+    req = router.ParticleRenderRequest(dataset_id="far", radius_field="H", mode="projected",
+                                       slab=1.0, width=400, height=80, cameras=[_FAR_CAM])
+    _, maps, _ = router._frame(router._prepare(entry, req), req, req.cameras[0], 400, 80,
+                               req.tone, None)
+    column = maps[..., 0].sum(axis=0)
+    peaks = _peaks(column, 1e-3 * column.max())
+    assert len(peaks) == 2
+    # Without perspective: where the table's x puts them, about the centre.
+    px_per_unit = 40 / np.tan(np.radians(15))
+    expected = 200 + (_FAR_X[:2] - (1e9 + 1)) * px_per_unit
+    assert np.abs(np.array(peaks) - expected).max() <= 1.0
+
+
+def test_an_axis_read_as_fractions_draws_the_same_picture(tmp_path, monkeypatch):
+    """The first row (X's reference, 1e7 away) has no Y, so X is read as
+    fractions of its range and one scale (X's span, 2) goes on every axis:
+    the picture, the sizes and the GPU rows are those of the table without
+    that row, whose X keeps scale 1."""
+    from app.routers import particle_render as router
+    monkeypatch.setattr(router, "_PREPARED", router.OrderedDict())
+    x = np.concatenate([[1e9 + 1e7], _FAR_X])
+    y = [np.nan, 0.0, 0.3, -0.3]
+    entries = {"odd": _far(tmp_path, x, y=y, z=np.full(4, _FAR_Z), name="odd"),
+               "plain": _far(tmp_path, x[1:], y=y[1:], z=np.full(3, _FAR_Z), name="plain")}
+    req = router.ParticleRenderRequest(dataset_id="odd", radius_field="H", width=400, height=80,
+                                       cameras=[_FAR_CAM])
+    odd, plain = router._prepare(entries["odd"], req), router._prepare(entries["plain"], req)
+    for mode, slab in (("light", None), ("projected", 1.0)):
+        r = req.model_copy(update={"mode": mode, "slab": slab})
+        a = router._frame(odd, r, r.cameras[0], 400, 80, r.tone, 1.0)[1]
+        b = router._frame(plain, r, r.cameras[0], 400, 80, r.tone, 1.0)[1]
+        column = np.nan_to_num(a[..., 0]).sum(axis=0)
+        assert len(_peaks(column, 1e-3 * column.max())) == 3
+        assert np.allclose(np.nan_to_num(a), np.nan_to_num(b), rtol=1e-3,
+                           atol=1e-6 * np.nanmax(b))
+    assert odd["frame"][1] == pytest.approx(2.0) and plain["frame"][1] == 1.0
+    assert np.allclose(odd["radius"] * 2.0, plain["radius"])
+
+    class _S:
+        datasets = {"odd": entries["odd"]}
+    loop = asyncio.new_event_loop()
+    try:
+        data = router.ParticleDataRequest(dataset_id="odd", radius_field="H", local_frame=True)
+        reply = loop.run_until_complete(router.particle_render_particles(data, token="tok",
+                                                                         session=_S()))
+    finally:
+        loop.close()
+    rows = np.frombuffer(reply.body, dtype="<f4").reshape(-1, 8).astype(float)
+    origin = np.array([float(v) for v in reply.headers["X-Visivo-Particle-Origin"].split(",")])
+    scale = float(reply.headers["X-Visivo-Particle-Scale"])
+    assert scale == pytest.approx(2.0)
+    assert np.allclose(origin + scale * rows[:, :3],
+                       np.stack([_FAR_X, y[1:], np.full(3, _FAR_Z)], axis=1), rtol=0, atol=1e-6)
+    assert np.allclose(scale * rows[:, 3], 0.1)

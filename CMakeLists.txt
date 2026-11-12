@@ -501,6 +501,8 @@ set(PROJECT_SOURCES
         src/gui/RaytraceOverlay.h
         src/gui/OrbitPath.cpp
         src/gui/OrbitPath.h
+        src/gui/ParticleFrame.cpp
+        src/gui/ParticleFrame.h
         src/gui/ParticleGLView.cpp
         src/gui/ParticleGLView.h
         src/gui/RaytraceSettingsPanel.cpp
