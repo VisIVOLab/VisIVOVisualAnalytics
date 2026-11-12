@@ -476,3 +476,129 @@ def test_a_camera_given_whole_is_the_views(tmp_path):
     finally:
         run(s.close())
         loop.close()
+
+
+# ── Points far from zero (issue #206) ───────────────────────────────────────
+
+
+def _far_table(tmp_path, x, y=None, z=None, name="far"):
+    """A float64 VBT: X, Y, Z (zeros when not given)."""
+    n = len(x)
+    cols = [np.asarray(x, float), np.zeros(n) if y is None else np.asarray(y, float),
+            np.zeros(n) if z is None else np.asarray(z, float)]
+    np.stack(cols).astype("<f8").tofile(tmp_path / f"{name}.bin")
+    (tmp_path / f"{name}.bin.head").write_text(f"double\n3\n{n}\nlittle\nX\nY\nZ\n")
+    return str(tmp_path / f"{name}.bin.head")
+
+
+def _table_positions(s, poly=None):
+    """The drawn points in the table's coordinates: their float32 local
+    coordinates through the actor's matrix, in float64."""
+    from vtk.util.numpy_support import vtk_to_numpy
+    poly = poly or s._polydata
+    local = vtk_to_numpy(poly.GetPoints().GetData()).astype(float)
+    m = np.array([[s._actor.GetUserMatrix().GetElement(i, j) for j in range(4)]
+                  for i in range(4)])
+    return local @ m[:3, :3].T + m[:3, 3]
+
+
+def test_points_far_from_zero_keep_their_places(tmp_path):
+    """1e9, 1e9 + 1, 1e9 + 2 were one float32 value, so one point: the
+    session's points, drag sample, bounds, outline, splat basis and camera
+    are in the table's own coordinates, the points still float32."""
+    import vtk
+    x = 1e9 + np.array([0.0, 1.0, 2.0])
+    s, run, loop = _session(_far_table(tmp_path, x, y=[0.0, 0.5, 1.0],
+                                       z=[-3e9, -3e9 - 1, -3e9]))
+    try:
+        assert s._polydata.GetPoints().GetDataType() == vtk.VTK_FLOAT
+        got = _table_positions(s)
+        assert got[:, 0].tolist() == x.tolist()
+        assert got[:, 2].tolist() == [-3e9, -3e9 - 1, -3e9]
+        assert np.array_equal(_table_positions(s, s._lod_polydata), got)
+        bounds = [1e9, 1e9 + 2, 0.0, 1.0, -3e9 - 1, -3e9]
+        assert s._bounds == bounds
+        assert list(s._outline.GetBounds()) == bounds
+        assert list(s._splat_basis[0]) == bounds
+        # The camera (and a ray-traced still made from it) looks at the
+        # table's own centre.
+        assert s._camera_on_thread()["focal_point"] == pytest.approx(
+            [1e9 + 1, 0.5, -3e9 - 0.5], abs=1e-6)
+        # A filter keeps the table's coordinates.
+        run(s.apply_command({"type": "set_filters",
+                             "filters": [{"field": "X", "op": ">", "value": 1e9 + 0.5}]}))
+        assert _table_positions(s)[:, 0].tolist() == [1e9 + 1, 1e9 + 2]
+        assert s._bounds[:2] == [1e9 + 1, 1e9 + 2]
+    finally:
+        run(s.close())
+        loop.close()
+
+
+def test_rows_beyond_float32_are_not_drawn(tmp_path):
+    """Regression guard: as before, and as the VR page's sample does."""
+    s, run, loop = _session(_far_table(tmp_path, [1.0, 1e39, 2.0, -np.inf, 3.0],
+                                       y=[0.0, 0.0, 5e38, 0.0, np.nan]))
+    try:
+        assert s._rows.tolist() == [0]
+        assert s._bounds[:2] == [1.0, 1.0]
+    finally:
+        run(s.close())
+        loop.close()
+
+
+def test_an_axis_read_as_fractions_keeps_round_splats(tmp_path):
+    """The first row (X's reference) has no Y, so X's offsets are 1e6 from
+    the rows kept and X is read as fractions of its range: the map takes one
+    scale on every axis (VTK scales a splat by it) and the splats keep their
+    radius in the table's units."""
+    s, run, loop = _session(_far_table(tmp_path, [1e6, 0.0, 1.0, 2.0],
+                                       y=[np.nan, 0.0, 4.0, 1.0], z=[0.0, 1.0, 0.0, 1.0]))
+    try:
+        assert s._rows.tolist() == [1, 2, 3]
+        assert np.allclose(np.diag(s._local_to_table)[:3], 2.0)   # X's span
+        assert np.allclose(_table_positions(s), [[0, 0, 1], [1, 4, 0], [2, 1, 1]], atol=1e-6)
+        assert s._bounds == [0.0, 2.0, 0.0, 4.0, 0.0, 1.0]
+        run(s.apply_command({"type": "set_point_style", "mode": "gaussian", "size": 3,
+                             "intensity": 35}))
+        radius, _ = gaussian_splat(s._bounds, 3, 3, 35)
+        assert s._mappers[("gaussian", False)].GetScaleFactor() * 2.0 == pytest.approx(radius)
+    finally:
+        run(s.close())
+        loop.close()
+
+
+def test_uniform_scale_divides_the_other_axes_down():
+    from app.point_sample import PlacedRows
+    from app.render_session.points import uniform_scale
+    xyz = np.array([[1.0, 0.5, 2.0], [3.0, 1.0, 4.0]], np.float32)
+    p = PlacedRows(np.arange(2), xyz.copy(), np.array([10.0, 20.0, 30.0]),
+                   np.array([1.0, 8.0, 1.0]), np.array([[1.0, 3.0], [0.5, 1.0], [2.0, 4.0]]),
+                   [11.0, 13.0, 24.0, 28.0, 32.0, 34.0])
+    before = xyz.astype(float) @ np.diag(p.scale) + p.origin
+    q = uniform_scale(p)
+    assert q.scale.tolist() == [8.0, 8.0, 8.0]
+    assert np.allclose(q.xyz.astype(float) @ np.diag(q.scale) + q.origin, before)
+    assert np.allclose(q.local * 8.0, [[1, 3], [4, 8], [2, 4]])
+    assert uniform_scale(q) is q
+
+
+def _runs(lit_columns: np.ndarray) -> int:
+    """Separate runs of lit columns."""
+    idx = np.flatnonzero(lit_columns)
+    return 0 if not idx.size else 1 + int((np.diff(idx) > 1).sum())
+
+
+def test_three_points_far_from_zero_are_drawn_apart(tmp_path, can_render):
+    s, run, loop = _session(_far_table(tmp_path, 1e9 + np.array([0.0, 1.0, 2.0])))
+    try:
+        for cmd in ({"type": "set_show_outline", "visible": False},
+                    {"type": "set_show_axes", "visible": False},
+                    {"type": "set_show_colorbar", "visible": False},
+                    {"type": "set_point_style", "mode": "points", "size": 6}):
+            run(s.apply_command(cmd))
+        assert _runs(_image(run(s.render_frame())).any(axis=0)) == 3
+        run(s.apply_command({"type": "set_interactive", "value": True}))   # the drag's set
+        assert _runs(_image(run(s.render_frame())).any(axis=0)) == 3
+    finally:
+        run(s.close())
+        loop.close()

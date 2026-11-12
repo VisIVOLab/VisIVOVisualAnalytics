@@ -177,7 +177,10 @@ class PointStereoMixin:
         w, h = pose.width, pose.height
         if tuple(win.GetSize()) != (w, h):
             win.SetSize(w, h)
-        bounds = self._polydata.GetBounds()
+        # In the table's coordinates, as the page's data_to_model takes them:
+        # the points are local float32 ones under the actor's matrix
+        # (points.py), and VTK's world is the table's.
+        bounds = self._bounds
         d2m = self._xr_d2m if self._xr_d2m is not None else default_data_to_model(bounds)
         placed = pose.model @ d2m
         cameras = [point_eye(e.view, e.projection, placed, bounds) for e in pose.eyes]

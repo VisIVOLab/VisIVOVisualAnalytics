@@ -59,7 +59,8 @@ the maximum of each axis; bounds and codes are worked from float64 offsets, so
 coordinates far from 0, such as 1e9, 1e9 + 1 and 1e9 + 2, stay distinct;
 the bounds are within float32 rounding of the true extremes; a row whose
 position is not finite or lies beyond float32's range, 3.4e38, on any axis is
-left out, as the remote point session leaves it out), then one colour code per row when a colour column
+left out, as the remote point session leaves it out; the session reads its
+positions the same way, issue #206, so its stereo frames land on these points), then one colour code per row when a colour column
 is given (code 0 also for a non-finite value; the column is read in float64,
 so values far from 0 keep distinct colours). Headers: `X-Visivo-Count`,
 `X-Visivo-Total-Rows`, `X-Visivo-Step` (table rows per sampled row),
