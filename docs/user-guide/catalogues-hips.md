@@ -145,6 +145,11 @@ drawn in a single colour there; numeric filters apply to the backend's view,
 *contains* and the like to the loaded rows. With the **local** backend
 everything is drawn here.
 
+Positions far from 0 keep their separations on the backend: a table in
+metres or at a large offset (1e9, 1e9 + 1, 1e9 + 2) is drawn as three points,
+with the box and the camera in the table's own units, and the headset's
+frames land on the points the headset draws.
+
 ### Filters & paging
 
 For million-row catalogues the backend exposes a paginated query API:

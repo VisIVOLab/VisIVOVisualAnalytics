@@ -145,8 +145,8 @@ def quantise64(values: np.ndarray, lo: float, hi: float) -> np.ndarray:
     return q.astype(np.uint16)
 
 
-def read_offsets(column, rows: np.ndarray,
-                 finite: np.ndarray | None = None) -> tuple[np.ndarray, float]:
+def read_offsets(column, rows: np.ndarray, finite: np.ndarray | None = None,
+                 out: np.ndarray | None = None) -> tuple[np.ndarray, float]:
     """``column[rows]`` as float32 offsets from a reference value of the
     column (read in float64), and that reference. ``finite`` (bool, one per
     row), when given, is cleared where the value read is not finite or beyond
@@ -163,8 +163,11 @@ def read_offsets(column, rows: np.ndarray,
     with the reference among (or near) the rows kept, every offset is a few
     spans of the column at most and float32 keeps it to about 6e-8 of a span
     per span, far below one 16-bit step (1.5e-5 of it): :func:`offsets_hold`
-    checks that. Non-finite values stay non-finite."""
-    out = np.empty(len(rows), dtype=np.float32)
+    checks that. Non-finite values stay non-finite. ``out`` (float32, one per
+    row, a column of an (n, 3) array say) is written in place of a new array,
+    so that no copy of an axis is made on the way."""
+    if out is None:
+        out = np.empty(len(rows), dtype=np.float32)
     ref = None
     for start in range(0, len(rows), _POS_CHUNK):
         # A read by an index array is a copy of its own: worked in place.
@@ -239,6 +242,69 @@ def read_normalised(column, rows: np.ndarray) -> tuple[np.ndarray, float, float]
     return out, lo, hi
 
 
+@dataclass
+class PlacedRows:
+    """Rows with a position, as float32 coordinates local to them, and the
+    map back to the table's own coordinates, per axis and in float64:
+    ``table = origin + scale * local``. The VR page's sample quantises the
+    local coordinates; the remote point session draws them in VTK with that
+    map as its actor's matrix (render_session/points.py), so both place a row
+    where the table does, however far from 0 it is."""
+    rows: np.ndarray         # (n,) int64: the rows kept, in the order given
+    xyz: np.ndarray          # (n, 3) float32: local coordinates
+    origin: np.ndarray       # (3,) float64
+    scale: np.ndarray        # (3,) float64, positive
+    local: np.ndarray        # (3, 2) float64: the range of xyz per axis
+    bounds: list[float]      # xmin, xmax, ymin, ymax, zmin, zmax (table coordinates)
+
+    def matrix(self) -> np.ndarray:
+        """The 4x4 map from local to table coordinates."""
+        out = np.diag(list(self.scale) + [1.0])
+        out[:3, 3] = self.origin
+        return out
+
+
+def place_rows(columns, axes, rows: np.ndarray) -> PlacedRows:
+    """The positions of ``rows`` on the columns ``axes`` (an axis not among
+    ``columns`` is 0), the rows without one left out: a value not finite, or
+    beyond float32's range, on any axis (:func:`read_offsets`).
+
+    Each axis is read once, as float32 offsets from a value of its own
+    (scale 1), written straight into the (n, 3) array: 12 bytes a row, as a
+    float32 cast of the values, without the cast's loss of separations far
+    from 0. An axis whose offsets would not keep their precision
+    (:func:`offsets_hold`, rare) is read again as fractions of its range:
+    origin its minimum, scale its span (1 when the span is 0, so the map
+    stays invertible). The bounds are origin + the extreme local values,
+    within float32 rounding of the true minimum and maximum."""
+    xyz = np.zeros((len(rows), 3), dtype=np.float32)
+    origin, scale = np.zeros(3), np.ones(3)
+    kept = np.ones(len(rows), dtype=bool)          # finite in float64 on every axis
+    for i, name in enumerate(axes):
+        if name in columns:
+            _, origin[i] = read_offsets(columns[name], rows, kept, out=xyz[:, i])
+    if not kept.all():
+        rows, xyz = rows[kept], xyz[kept]
+    local = np.zeros((3, 2))
+    bounds = [0.0] * 6
+    if not len(rows):
+        return PlacedRows(rows, xyz, origin, scale, local, bounds)
+    for i, name in enumerate(axes):
+        with np.errstate(invalid="ignore"):
+            lo_off, hi_off = float(xyz[:, i].min()), float(xyz[:, i].max())
+        if name not in columns or offsets_hold(lo_off, hi_off):
+            local[i] = lo_off, hi_off
+            bounds[2 * i:2 * i + 2] = [float(origin[i] + lo_off), float(origin[i] + hi_off)]
+            continue
+        # The offsets cannot be trusted (see offsets_hold): this axis is read
+        # again as fractions of its range.
+        xyz[:, i], lo, hi = read_normalised(columns[name], rows)
+        origin[i], scale[i] = lo, (hi - lo) if hi > lo else 1.0
+        local[i] = 0.0, 1.0
+        bounds[2 * i:2 * i + 2] = [lo, hi]
+    return PlacedRows(rows, xyz, origin, scale, local, bounds)
+
+
 def _quantise_chunked(values: np.ndarray, lo: float, hi: float) -> np.ndarray:
     """:func:`quantise64` a chunk at a time (one float64 temporary of a chunk)."""
     out = np.empty(len(values), dtype=np.uint16)
@@ -290,33 +356,14 @@ def sample_points(table, limit: int, axes: tuple[str, str, str] | None = None,
     else:
         rows = even_rows(table.num_rows, limit)
     # Positions as float32 offsets from a value of their own axis (see
-    # read_offsets): 10 M rows stay at 120 MB, and a coordinate far from 0
+    # place_rows): 10 M rows stay at 120 MB, and a coordinate far from 0
     # keeps its separations. Bounds and codes are then worked in float64.
-    xyz = np.empty((len(rows), 3), dtype=np.float32)
-    ref = np.zeros(3)
-    placed = np.ones(len(rows), dtype=bool)        # finite in float64 on every axis
-    for i, name in enumerate(axes):
-        xyz[:, i], ref[i] = read_offsets(table.columns[name], rows, placed)
-    if not placed.all():
-        rows, xyz = rows[placed], xyz[placed]
+    placed = place_rows(table.columns, axes, rows)
+    rows, xyz, bounds = placed.rows, placed.xyz, placed.bounds
     if not len(rows):
         raise ValueError("No row has a finite position.")
-    # The bounds are ref + the float32 offsets of the extreme rows: within
-    # float32 rounding of the true minimum and maximum (6e-8 of the span when
-    # the offsets are trusted below), the scale the codes are measured on.
-    bounds = [0.0] * 6
-    lo_off, hi_off = np.zeros(3), np.zeros(3)
-    for i, name in enumerate(axes):
-        with np.errstate(invalid="ignore"):
-            lo_off[i], hi_off[i] = float(xyz[:, i].min()), float(xyz[:, i].max())
-        if offsets_hold(lo_off[i], hi_off[i]):
-            bounds[2 * i:2 * i + 2] = [float(ref[i] + lo_off[i]), float(ref[i] + hi_off[i])]
-            continue
-        # The offsets cannot be trusted (see offsets_hold): this axis is read
-        # again as fractions of its range (rare).
-        xyz[:, i], lo, hi = read_normalised(table.columns[name], rows)
-        lo_off[i], hi_off[i] = 0.0, 1.0
-        bounds[2 * i:2 * i + 2] = [lo, hi]
+    lo_off, hi_off = placed.local[:, 0], placed.local[:, 1]
+    del placed                # its xyz is freed when reordered below
     order = prefix_order(len(rows))
     xyz = xyz[order]          # the columns are read in file order, then reordered
     positions = np.empty((len(rows), 3), dtype=np.uint16)

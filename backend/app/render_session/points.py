@@ -51,8 +51,9 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
+from ..point_sample import place_rows
 from ._common import SessionStats, _build_color_tf, _parse_tf_points, set_camera
-from ._stereo_points import PointStereoMixin
+from ._stereo_points import PointStereoMixin, _vtk_matrix
 from ._window import (RenderThreadError, new_offscreen_window, offscreen_kind,
                       render_executor)
 
@@ -141,6 +142,26 @@ def _filter_mask(columns, filters: list[dict], rows: np.ndarray) -> np.ndarray:
     return keep
 
 
+def uniform_scale(placed):
+    """``placed`` (point_sample.PlacedRows) with one scale on every axis, its
+    largest: VTK scales a splat by its actor's matrix, so a different scale
+    per axis would stretch the splats into ellipsoids. Every axis has scale
+    1 (float32 offsets) unless one could not keep its precision and holds
+    fractions of its range (rare): then the others are divided down to it in
+    place, which keeps their float32 precision (an exponent's shift) unless
+    the spans differ by some 1e38 (a box no view shows but as a plane)."""
+    top = float(placed.scale.max())
+    if np.all(placed.scale == top):
+        return placed
+    for i in range(3):
+        factor = placed.scale[i] / top
+        if factor != 1.0:
+            placed.xyz[:, i] *= np.float32(factor)
+            placed.local[i] *= factor
+    placed.scale[:] = top
+    return placed
+
+
 def gaussian_splat(bounds, npts: int, size: int, intensity: int) -> tuple[float, float]:
     """Splat radius and per-splat opacity, as the desktop viewer derives them
     (vtkWindowCatalogue3D::updateGaussianSplats): radius = mean spacing ×
@@ -186,6 +207,10 @@ class PointRenderSession(PointStereoMixin):
         self._num_rows = 0
         self._rows = np.empty(0, dtype=np.int64)   # rows drawn (sample ∩ filters)
         self._splat_basis = None   # (bounds, count) of the unfiltered points
+        # The drawn points' bounds in the table's coordinates, and the map
+        # from the points' local float32 coordinates to them (the actor's).
+        self._bounds = [0.0] * 6
+        self._local_to_table = np.eye(4)
         self._table = None  # app/point_table.py's PointTable
         self._camera: dict[str, Any] | None = None   # copied on the render thread
         self._sky = None    # (ra, dec) columns of a sky catalogue
@@ -410,16 +435,22 @@ class PointRenderSession(PointStereoMixin):
         rows = self._sample
         if self.view.filters:
             rows = rows[_filter_mask(self._columns, self.view.filters, rows)]
+        # Float32 coordinates local to the rows and their map back to the
+        # table's (point_sample.place_rows, as the VR page's sample reads
+        # them): a float32 cast of the positions merged 1e9, 1e9 + 1 and
+        # 1e9 + 2 into one point. The map is the actor's matrix, so VTK's
+        # world, the camera, the outline and the stereo placement stay in
+        # the table's coordinates; the points still cost 12 bytes. A row
+        # without a position (no RA/Dec, a NaN coordinate, beyond float32's
+        # range) is not drawn, as the desktop skips it when it parses the rows.
+        placed = uniform_scale(place_rows(self._columns,
+                                          (self.view.x, self.view.y, self.view.z), rows))
+        rows, xyz = placed.rows, placed.xyz
         self._rows = rows
-        xyz = np.empty((len(rows), 3), dtype=np.float32)
-        for i, name in enumerate((self.view.x, self.view.y, self.view.z)):
-            xyz[:, i] = self._columns[name][rows] if name in self._columns else 0.0
-        # A row without a position (no RA/Dec, a NaN coordinate) is not drawn,
-        # as the desktop skips it when it parses the rows.
-        placed = np.isfinite(xyz).all(axis=1)
-        if not placed.all():
-            rows, xyz = rows[placed], xyz[placed]
-            self._rows = rows
+        self._local_to_table = placed.matrix()
+        self._actor.SetUserMatrix(_vtk_matrix(self._local_to_table))
+        self._bounds = list(placed.bounds)
+        del placed
         stride = max(1, -(-len(rows) // LOD_POINTS))
         for poly, pts in ((self._polydata, xyz), (self._lod_polydata, xyz[::stride])):
             points = vtk.vtkPoints()
@@ -436,8 +467,8 @@ class PointRenderSession(PointStereoMixin):
         # The splats are sized on the points drawn with no filter: a filter
         # removes points, it does not restyle the others.
         if not self.view.filters or self._splat_basis is None:
-            self._splat_basis = (self._polydata.GetBounds(), self._polydata.GetNumberOfPoints())
-        self._outline.SetBounds(self._polydata.GetBounds())
+            self._splat_basis = (tuple(self._bounds), self._polydata.GetNumberOfPoints())
+        self._outline.SetBounds(self._bounds)
         self._outline.SetVisibility(1 if self.view.show_outline and len(rows) else 0)
         self._recolour_on_thread(field_changed=True)
 
@@ -497,7 +528,10 @@ class PointRenderSession(PointStereoMixin):
             self._gauss_opacity.AddPoint(-1.0e15, opacity)
             self._gauss_opacity.AddPoint(1.0e15, opacity)
             for lod in (False, True):
-                self._mappers[("gaussian", lod)].SetScaleFactor(radius)
+                # The radius is in the table's units; VTK scales a splat by
+                # the actor's matrix (uniform, see uniform_scale).
+                self._mappers[("gaussian", lod)].SetScaleFactor(
+                    radius / float(self._local_to_table[0, 0]))
         else:
             self._actor.GetProperty().SetPointSize(self.view.size)
         self._actor.SetMapper(self._mappers[(self.view.mode, self.view.interactive)])

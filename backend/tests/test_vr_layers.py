@@ -187,6 +187,70 @@ def test_a_point_session_draws_a_stereo_frame_where_the_page_draws_its_points(tm
         loop.close()
 
 
+@pytest.mark.parametrize("page_box", [True, False])
+def test_stereo_points_far_from_zero_land_where_the_page_draws_them(tmp_path, page_box):
+    """Issue #206: X = 1e9, 1e9 + 1, 1e9 + 2 were one float32 point in the
+    session; drawn in stereo they are three, each at the column the page's
+    projection @ view @ model @ data_to_model gives it, with data_to_model
+    from the page's sample (or the session's own rule on the same bounds)."""
+    pytest.importorskip("vtk")
+    import io
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from PIL import Image
+
+    from app.point_table import open_point_table
+    from app.render_session._stereo import parse_frame
+    from app.render_session._stereo_points import default_data_to_model
+    from app.render_session.points import PointRenderSession
+    from tests.test_point_render import _RENDER_PROBE, _far_table, _runs
+    backend = Path(__file__).resolve().parent.parent
+    probe = subprocess.run([sys.executable, "-c", _RENDER_PROBE], capture_output=True,
+                           timeout=60, cwd=backend)
+    if probe.returncode != 0:
+        pytest.skip("no offscreen OpenGL here (no GPU or display)")
+    x = 1e9 + np.array([0.0, 1.0, 2.0])
+    path = _far_table(tmp_path, x)
+    sample = ps.sample_points(open_point_table(path), 10)
+    d2m = default_data_to_model(sample.bounds)
+    s = PointRenderSession("f" * 32, path)
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(s.initialize())
+        loop.run_until_complete(s.apply_command({"type": "set_point_style", "mode": "points",
+                                                 "size": 4}))
+        model = np.eye(4)
+        model[:3, 3] = [0, 0, -1.5]        # the box 1.5 m ahead
+        view = np.eye(4)
+        proj = np.array([[1.0, 0, 0, 0], [0, 1.0, 0, 0], [0, 0, -1.002, -0.2002],
+                         [0, 0, -1, 0]])
+        w = 128
+        pose = {"type": "xr_pose", "pose_id": 3, "model": model.T.ravel().tolist(),
+                "views": [{"eye": e, "view": view.T.ravel().tolist(),
+                           "projection": proj.T.ravel().tolist(), "width": w, "height": 96}
+                          for e in ("left", "right")]}
+        if page_box:
+            pose["data_to_model"] = d2m.T.ravel().tolist()
+        loop.run_until_complete(s.apply_command(pose))
+        header, jpeg, _ = parse_frame(loop.run_until_complete(s.render_frame()).to_bytes())
+        assert header["pose_id"] == 3 and header["points"] == 3
+        left = np.asarray(Image.open(io.BytesIO(jpeg)).convert("L"), dtype=float)[:, :w] > 80
+        lit = left.any(axis=0)
+        assert _runs(lit) == 3
+        cols = np.flatnonzero(lit)
+        centres = [cols[(cols > a) & (cols < b)].mean()
+                   for a, b in ((-1, w / 2 - 10), (w / 2 - 10, w / 2 + 10), (w / 2 + 10, w))]
+        for xi, c in zip(x, centres):
+            clip = proj @ view @ model @ d2m @ np.array([xi, 0.0, 0.0, 1.0])
+            assert abs(c - (clip[0] / clip[3] + 1) / 2 * w) < 2
+        assert list(s._outline.GetBounds()) == sample.bounds
+    finally:
+        loop.run_until_complete(s.close())
+        loop.close()
+
+
 # ── Catalogue sources in a cube ──────────────────────────────────────────────
 
 

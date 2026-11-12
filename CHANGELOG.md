@@ -8,6 +8,16 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Remote point rendering keeps points far from zero apart (#206, part of
+  #166).** The backend's point render session drew float32 positions, so
+  1e9, 1e9 + 1 and 1e9 + 2 merged into one point in remote and remote stereo
+  views. It now reads positions as the VR page's sample does: float32 offsets
+  from a float64 origin per axis, the origin carried as the points' model
+  matrix, so the box, camera, splat size and stereo placement stay in the
+  table's coordinates and the stereo frames land on the page's points. The
+  points still take 12 bytes each; rows beyond float32's range are still left
+  out.
+
 - **VR headset: large cubes from the brick pyramid (part of #166).** A cube
   above the in-core limit gets its headset copy from a level of its brick
   pyramid instead of a pass over the whole cube: `/v1/cube/reduced_info` and
