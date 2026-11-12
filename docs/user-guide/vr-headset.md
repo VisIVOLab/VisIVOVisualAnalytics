@@ -751,7 +751,15 @@ not recorded), and the panel says so, even after the new cube's reset. A
 shared mask edited by hand is recorded as the desktop records one: *Hand-edited*
 yes, `hand_edited=yes` in the new cube's HISTORY, the apply step's
 hand-edited body and the desktop's caveat (the parameters regrow only its
-geodesic part; the cube itself is the exact record).
+geodesic part; the cube itself is the exact record). A selection received from the
+session's selection hub is recorded as the desktop records one it received:
+a box as one `mask_apply_bin` step over the box (its origin and size, the
+only apply step that records its ROI, since the box is the selection); a
+selection that came without its grow request as the mask only, with the
+desktop's caveat that no call regenerates it; one with its creator's grow as
+that grow and the apply. *Made in* says where it was made, and the moment of
+such a selection records the same steps before its own. No recipe ever has a
+grow step without a request.
 
 ### The moment of the selection
 

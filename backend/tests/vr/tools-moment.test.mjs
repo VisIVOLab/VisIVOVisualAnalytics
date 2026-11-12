@@ -351,6 +351,32 @@ test('a shared selection: its own mask when it has one; else its grow, checked; 
   assert.equal(grows(), g0);
 });
 
+test('the moment of a received selection never records a grow it does not have', async () => {
+  const recipes = [];
+  // Exactly the contract fixed with #196 (no count, no stats: the map is not cropped).
+  const box = { request: null, bytes: new ArrayBuffer(4), origin: [1, 1, 1], dims: [1, 1, 1], fullShape: [2, 2, 3],
+    received: true, kind: 'box', source: 'headset', handEdited: false, box: [1, 1, 1, 1, 1, 1], parameters: null, shared: {} };
+  const mask = { ...box, kind: 'lasso' };
+  for (const L of [box, mask]) {
+    recipes.length = 0;
+    const sel = { sel: { lasso: L }, record: (product, params, origin, id) => { recipes.push({ product, params }); return { product: { id: id || 'm1' } }; } };
+    const lassoTools = { apply: async () => ({ id: 'ds_iso', file: 'x_vr-moment-tmp-a.fits', temp: true, trimBox: 0 }) };
+    const map = new Float32Array([1, 2, 3, 4]);
+    const backend = { _json: async () => ({ valid: true, width: 2, height: 2, moment_unit: 'JY/BEAM m/s', bunit: 'JY/BEAM',
+      data_base64: Buffer.from(map.buffer).toString('base64') }) };
+    const tool = TM.createMomentTool({ selection: sel, lassoTools, backend: () => backend, datasetId: () => 'ds_1',
+      info: () => ({ full_shape: [2, 2, 3] }), onChange: () => {} });
+    await tool.compute(0);
+    assert.equal(tool.state.error, '');
+    const r = recipes[0].product;
+    assert.ok(r.replay.every((st) => st.route !== '/v1/cube/kinematic_select_bin'), L.kind);
+    assert.deepEqual(r.replay.map((st) => st.route), ['/v1/cube/mask_apply_bin', '/v1/products/moment']);
+    if (L.kind === 'box') assert.equal(r.replay[0].request.width, 1);
+    else assert.match(r.replay_caveat, /received without the request it was made with/);
+    assert.match(r.replay_caveat, /^The last step measures the cube the step before it registers/);
+  }
+});
+
 test('without a selection: an error and no call', async () => {
   const h = harness();
   await h.moment.compute(1);

@@ -184,7 +184,7 @@ function swapHarness(lasso) {
   const posts = [], grows = [], deletes = [], recipes = [];
   let calls = 0;
   const sel = { lasso, busy: '', recipes: [] };
-  const selection = { sel, record: (product) => sel.recipes.push(product) };
+  const selection = { sel, record: (product, params) => sel.recipes.push({ ...product, parameters: params }) };
   const backend = {
     kinematicSelect: (ds, req) => { grows.push(ds); return later({ bytes: new ArrayBuffer(4), origin: [1, 1, 1], dims: [1, 1, 1], count: 7, trimBox: 0 }); },
     _binary: (url, body) => {
@@ -312,4 +312,155 @@ test('a hand-edited shared mask is recorded as hand-edited, as the desktop recor
   assert.equal(g.sel.recipes[0].replay_caveat, undefined);
   assert.match(g.recipes[0], /hand_edited=no$/);
   assert.equal(g.sel.recipes[0].replay[1].body, TL.applyStep('blank_outside').body);
+});
+
+// ── Received selections (#196): recorded as the desktop's lassoApplyRecord does ──
+
+const noGrowWithoutRequest = (replay) => replay.every((st) => st.route !== '/v1/cube/kinematic_select_bin' || (st.request && st.request.seed_z !== undefined));
+
+/** A received selection exactly as the lead fixed the contract with #196 (no other fields). */
+function received(over = {}) {
+  return {
+    request: null,
+    bytes: new ArrayBuffer(4), origin: [1, 1, 1], dims: [1, 1, 1], fullShape: [700, 700, 158],
+    received: true,
+    kind: 'lasso',
+    source: 'desktop',
+    handEdited: false,
+    box: null,
+    parameters: null,
+    shared: { seq: 3, nonce: 'n' },
+    ...over,
+  };
+}
+
+test('the contract\'s shape has exactly the agreed fields', () => {
+  assert.deepEqual(Object.keys(received()).sort(), ['bytes', 'box', 'dims', 'fullShape', 'handEdited', 'kind', 'origin',
+    'parameters', 'received', 'request', 'shared', 'source'].sort());
+});
+
+test('a received box is recorded as its box step over its `box`, never a grow', async () => {
+  const box = received({ kind: 'box', source: 'headset', bytes: new ArrayBuffer(3 * 2 * 4 * 4), origin: [10, 20, 30], dims: [3, 2, 4],
+    box: [10, 12, 20, 21, 30, 33], parameters: { 'Channels from': 'the two corners' } });
+  const h = swapHarness(box);
+  const p = h.tools.run('isolate');
+  await h.releaseOne();
+  await p;
+  assert.equal(h.tools.state.error, '');
+  const r = h.sel.recipes[0];
+  assert.ok(noGrowWithoutRequest(r.replay));
+  assert.equal(r.replay.length, 1);
+  // SharedSelection.cpp sharedBoxApplyStep: the box's own ROI, and the mode.
+  assert.deepEqual(r.replay[0], { route: '/v1/cube/mask_apply_bin',
+    request: { origin_x: 10, origin_y: 20, origin_z: 30, width: 3, height: 2, depth: 4, mode: 'blank_outside' },
+    body: 'a little-endian float32 mask of ones over the box (width x height x depth values, x fastest): every voxel of the box' });
+  assert.equal(r.replay_caveat, undefined);
+  assert.equal(r.parameters.Region, 'box');
+  assert.equal(r.parameters.Pixels, 'x 10..12, y 20..21');
+  assert.equal(r.parameters.Channels, '30..33');
+  assert.equal(r.parameters['Channels from'], 'the two corners');
+  assert.equal(r.parameters['Made in'], 'another VR headset');
+  assert.equal(r.parameters.Mode, 'isolate (outside blanked)');
+  assert.ok(!('Selected voxels' in r.parameters), 'no count in the contract: none recorded');
+  assert.equal(h.recipes[0], 'selection=box; box_x=10..12; box_y=20..21; box_z=30..33; made_in=another VR headset');
+  // The box is read from `box`, not from the mask's box.
+  assert.deepEqual(TL.applyRecord(received({ kind: 'box', box: [0, 1, 0, 1, 0, 1], origin: [5, 5, 5], dims: [1, 1, 1] }), 'blank_outside').replay[0].request.origin_x, 0);
+  // Edited by hand after the box was made: the desktop's box caveat.
+  const rec = TL.applyRecord({ ...box, handEdited: true }, 'blank_inside');
+  assert.equal(rec.caveat, TL.BOX_EDITED_CAVEAT);
+  assert.equal(rec.replay[0].request.mode, 'blank_inside');
+});
+
+test('a received selection without its grow is recorded as the mask only, with the desktop\'s caveat', async () => {
+  const sel = received({ origin: [1, 2, 3], handEdited: true, parameters: { 'Seed (z, y, x)': '(3, 2, 1)' } });
+  const h = swapHarness(sel);
+  const p = h.tools.run('remove');
+  await h.releaseOne();
+  await p;
+  const r = h.sel.recipes[0];
+  assert.ok(noGrowWithoutRequest(r.replay));
+  assert.equal(r.replay.length, 1);
+  assert.deepEqual(r.replay[0].request, { mode: 'blank_inside' });
+  assert.match(r.replay[0].body, /received through the session's selection hub \(GET \/v1\/share\/selection\/mask\) without the request/);
+  assert.equal(r.replay_caveat, 'The selection was received without the request it was made with: no call '
+    + 'regenerates it. The cube itself, with its HISTORY, is the exact record.');
+  assert.equal(r.parameters['Recorded as'], 'the mask only (received without its grow request)');
+  assert.equal(r.parameters['Made in'], 'the desktop');
+  assert.equal(r.parameters['Hand-edited'], 'yes');
+  assert.equal(r.parameters['Seed (z, y, x)'], '(3, 2, 1)', "the creator's Provenance kept");
+  assert.equal(h.recipes[0], 'selection=mask; made_in=the desktop');
+  assert.deepEqual(h.grows, [], 'no regrow');
+});
+
+test('no request means the mask only, whatever the flags say: a null-request grow is unreachable', () => {
+  for (const over of [{ received: false }, { received: undefined, kind: undefined }, { kind: 'lasso', source: 'own' }]) {
+    const L = { ...received(), ...over };
+    for (const mode of ['blank_outside', 'blank_inside']) {
+      const rec = TL.applyRecord(L, mode);
+      assert.ok(noGrowWithoutRequest(rec.replay), JSON.stringify(over));
+      assert.deepEqual(rec.replay.map((st) => st.route), ['/v1/cube/mask_apply_bin']);
+      assert.equal(rec.caveat, TL.MASK_ONLY_CAVEAT);
+    }
+  }
+});
+
+test('a received grow: the grow, then the apply; the creator\'s noise sigma, never "typed on the VR page"', async () => {
+  const g = Rc.lassoGrowRequest([5, 6, 7], { sigma: 0.000123 });
+  const sel = received({ request: g, handEdited: true, parameters: { 'Noise σ': '0.000123 (noise estimate, noise box (10, 20))' } });
+  const h = swapHarness(sel);
+  const p = h.tools.run('isolate');
+  await h.releaseOne();
+  await p;
+  const r = h.sel.recipes[0];
+  assert.deepEqual(r.replay.map((st) => st.route), ['/v1/cube/kinematic_select_bin', '/v1/cube/mask_apply_bin']);
+  assert.deepEqual(r.replay[0].request, g);
+  assert.match(r.replay[1].body, /^the hand-edited selection/);
+  assert.equal(r.replay_caveat, TL.HAND_EDITED_CAVEAT);
+  assert.equal(r.parameters['Made in'], 'the desktop');
+  assert.equal(r.parameters['Hand-edited'], 'yes');
+  assert.equal(r.parameters['Noise σ'], '0.000123 (noise estimate, noise box (10, 20))', "the creator's label");
+  assert.match(h.recipes[0], /; hand_edited=yes; made_in=the desktop$/);
+  assert.deepEqual(h.grows, [], 'the received mask, not a regrow');
+  // Without the creator's label: attributed to where it was made.
+  const bare = TL.applyRecord(received({ request: g, source: 'headset' }), 'blank_outside');
+  assert.equal(bare.params['Noise σ'], `${Rc.formatG(0.000123, 17)} (noise estimate, set in another VR headset)`);
+  assert.ok(!/typed on the VR page/.test(bare.params['Noise σ']));
+  // This page's own selection echoed back: its own words.
+  const own = TL.applyRecord(received({ request: g, source: 'own' }), 'blank_outside');
+  assert.equal(own.params['Made in'], 'this VR page');
+  assert.match(own.params['Noise σ'], /typed on the VR page/);
+  // Grown here (not received): no made-in.
+  const here = TL.applyRecord({ request: g, bytes: new ArrayBuffer(4), origin: [1, 1, 1], dims: [1, 1, 1] }, 'blank_outside');
+  assert.ok(!('Made in' in here.params));
+  assert.ok(here.history.at(-1).startsWith('hand_edited='));
+});
+
+test('madeIn, from the page\'s point of view', () => {
+  assert.equal(TL.madeIn(received({ source: 'desktop' })), 'the desktop');
+  assert.equal(TL.madeIn(received({ source: 'headset' })), 'another VR headset');
+  assert.equal(TL.madeIn(received({ source: 'own' })), 'this VR page');
+});
+
+test('a received selection with neither its grow nor a complete mask is refused', async () => {
+  const h = swapHarness(received({ origin: null, dims: null }));
+  await h.tools.run('isolate');
+  assert.match(h.tools.state.error, /without its mask or its grow request/);
+  assert.deepEqual(h.posts, []);
+});
+
+test('a received grow without a mask is grown again; no count in the contract, so origin and dims are what is checked', async () => {
+  const g = Rc.lassoGrowRequest([1, 1, 1]);
+  const h = swapHarness(received({ request: g, bytes: null, origin: [1, 1, 1], dims: [1, 1, 1] }));
+  const p = h.tools.run('isolate');
+  await h.releaseOne();       // the grow (count 7: not compared, the contract carries none)
+  await h.releaseOne();       // the apply
+  await p;
+  assert.equal(h.tools.state.error, '');
+  assert.deepEqual(h.grows, ['ds_A']);
+  assert.ok(!('Selected voxels' in h.sel.recipes[0].parameters));
+  const k = swapHarness(received({ request: g, bytes: null, origin: [2, 1, 1], dims: [1, 1, 1] }));
+  const q = k.tools.run('isolate');
+  await k.releaseOne();
+  await q;
+  assert.match(k.tools.state.error, /not its \? voxels in 1×1×1 at \(2, 1, 1\)/);
 });

@@ -8,7 +8,7 @@
 // Pure parts tested by node: backend/tests/vr/tools-moment.test.mjs.
 
 import * as PC from './product-canvas.js';
-import { applyStep, APPLY_MODES, isHandEdited, HAND_EDITED_CAVEAT } from './tools-lasso.js';
+import { applyStep, applyRecord, APPLY_MODES } from './tools-lasso.js';
 
 /** The desktop's labels of the orders (MomentMapController::describeMomentOrder). */
 export const ORDER_NAMES = {
@@ -47,15 +47,17 @@ export function momentParams(req, unit, isolatedFile, temporary = false) {
 /** The placeholder of the moment step's dataset: the isolate's answer. */
 export const ISOLATED_ID = '{new_dataset_id}';
 
-/** The replay: the grow, the isolate, the moment of the cube the isolate
- *  registers. The chaining is in the request itself: dataset_id is the
+/** The replay: the steps that make the isolated cube (the grow and the
+ *  isolate; or, for a received selection, what tools-lasso's applyRecord
+ *  records: `steps` an array), then the moment of the cube they register. The chaining is in the request itself: dataset_id is the
  *  placeholder of the previous answer's field (as the desktop's
  *  momentDatasetSteps write {output_path}), so a replay cannot post the
  *  opened dataset's id there by accident. */
-export function momentReplay(growRequest, req, handEdited = false) {
+export function momentReplay(steps, req, handEdited = false) {
+  const head = Array.isArray(steps) ? steps
+    : [{ route: '/v1/cube/kinematic_select_bin', request: steps }, applyStep(APPLY_MODES.isolate, handEdited)];
   return [
-    { route: '/v1/cube/kinematic_select_bin', request: growRequest },
-    applyStep(APPLY_MODES.isolate, handEdited),
+    ...head,
     { route: '/v1/products/moment', request: { dataset_id: ISOLATED_ID, ...req },
       body: `none (JSON). dataset_id ${ISOLATED_ID}: the new_dataset_id of the previous call's answer, the isolated cube` },
   ];
@@ -63,7 +65,7 @@ export function momentReplay(growRequest, req, handEdited = false) {
 
 /** Said with every moment recipe: what a replay must do, and that this is
  *  the page's own record (the desktop records no replay steps for a moment). */
-export const MOMENT_CAVEAT = 'Step 3 measures the cube step 2 registers: post it with that answer\'s '
+export const MOMENT_CAVEAT = 'The last step measures the cube the step before it registers (mask_apply_bin): post it with that answer\'s '
   + `new_dataset_id in place of ${ISOLATED_ID}. With the opened dataset's id it would measure the whole cube, `
   + 'not the selection. Recorded by the VR page; the desktop records no replay steps for a moment.';
 
@@ -135,10 +137,12 @@ export function createMomentTool(ctx) {
       const range = colourRange(order, cut);
       t.result = { order, req, unit: r.moment_unit, bunit: r.bunit, width: r.width, height: r.height,
         values, box, cut, range, iso, lasso: L, ms: performance.now() - t0, summary: mapSummary(values) };
+      // How the isolated cube is recorded (never a grow step without a request).
+      const isoRec = applyRecord(L, APPLY_MODES.isolate, iso.trimBox || 0);
       // One product per order and selection: pressed again, it is recorded again in place.
       if (t.recipes.lasso !== L) t.recipes = { lasso: L, ids: {} };
-      const rec = ctx.selection.record({ kind: 'moment', label: `Moment ${order}`, replay: momentReplay(L.request, req, isHandEdited(L)),
-        replay_caveat: isHandEdited(L) ? `${MOMENT_CAVEAT} ${HAND_EDITED_CAVEAT}` : MOMENT_CAVEAT }, momentParams(req, r.moment_unit, iso.file, !!iso.temp), null, t.recipes.ids[order] || '');
+      const rec = ctx.selection.record({ kind: 'moment', label: `Moment ${order}`, replay: momentReplay(isoRec.replay, req),
+        replay_caveat: isoRec.caveat ? `${MOMENT_CAVEAT} ${isoRec.caveat}` : MOMENT_CAVEAT }, momentParams(req, r.moment_unit, iso.file, !!iso.temp), null, t.recipes.ids[order] || '');
       t.recipes.ids[order] = rec.product.id;
       t.busy = '';
       t.pending = null;

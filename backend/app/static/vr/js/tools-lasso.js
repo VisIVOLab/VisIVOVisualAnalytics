@@ -65,6 +65,88 @@ export function applyStep(mode, handEdited = false) {
 export const HAND_EDITED_CAVEAT = 'The mask was edited by hand after the grow: the parameters regrow only its '
   + 'geodesic part. The cube itself, with its HISTORY, is the exact record.';
 
+/** Where a received selection was made, as the page says it: the desktop's
+ *  madeIn seen from the headset (deliberately not the desktop's wording),
+ *  'own' being this page's own selection echoed back by the hub. */
+export function madeIn(L) {
+  const src = L && L.source;
+  if (src === 'own') return 'this VR page';
+  if (src === 'headset') return 'another VR headset';
+  return 'the desktop';
+}
+
+/** A received box's [x0, x1, y0, y1, z0, z1] (inclusive): its own, or its mask's box. */
+export function boxOf(L) {
+  if (Array.isArray(L.box) && L.box.length === 6) return L.box.map(Number);
+  const [ox, oy, oz] = L.origin, [w, h, d] = L.dims;
+  return [ox, ox + w - 1, oy, oy + h - 1, oz, oz + d - 1];
+}
+
+/** SharedSelection's sharedBoxApplyStep: the one step that records its ROI,
+ *  since for a box the ROI is the selection. */
+export function boxApplyStep(box, mode) {
+  return {
+    route: '/v1/cube/mask_apply_bin',
+    request: { origin_x: box[0], origin_y: box[2], origin_z: box[4], width: box[1] - box[0] + 1,
+      height: box[3] - box[2] + 1, depth: box[5] - box[4] + 1, mode },
+    body: 'a little-endian float32 mask of ones over the box (width x height x depth values, x fastest): every voxel of the box',
+  };
+}
+
+/** The desktop's caveats of a received selection (SharedSelection.cpp). */
+export const BOX_EDITED_CAVEAT = 'The mask was edited by hand after the box was made: the box gives only its '
+  + 'unedited part. The cube itself, with its HISTORY, is the exact record.';
+export const MASK_ONLY_CAVEAT = 'The selection was received without the request it was made with: no call '
+  + 'regenerates it. The cube itself, with its HISTORY, is the exact record.';
+const MASK_ONLY_BODY = 'the selection as a little-endian float32 mask, received through the session\'s selection hub '
+  + '(GET /v1/share/selection/mask) without the request it was made with, which only the cube itself records '
+  + '(see replay_caveat); posted with origin_x, origin_y, origin_z from that response\'s X-Visivo-Origin header and '
+  + 'width, height, depth from X-Visivo-Width, X-Visivo-Height, X-Visivo-Depth';
+
+/**
+ * How an applied selection is recorded, as the desktop's lassoApplyRecord
+ * (src/app/SharedSelection.cpp) does: {params, history (the HISTORY items),
+ * replay, caveat}. A received box: its box step over the box. A received
+ * selection without its grow: the mask only, with the desktop's caveat. Else
+ * (grown here, or received with its creator's grow): the grow, then the apply
+ * (hand-edited: its body and caveat). Never a grow step without a request.
+ */
+export function applyRecord(L, mode, trimBox = 0) {
+  const hand = isHandEdited(L);
+  const params0 = L.parameters && typeof L.parameters === 'object' ? L.parameters : {};
+  if (L.kind === 'box') {
+    const b = boxOf(L);
+    const params = { Region: 'box', Pixels: `x ${b[0]}..${b[1]}, y ${b[2]}..${b[3]}`, Channels: `${b[4]}..${b[5]}` };
+    if (params0['Channels from'] !== undefined) params['Channels from'] = params0['Channels from'];
+    params['Made in'] = madeIn(L);
+    return { params, history: ['selection=box', `box_x=${b[0]}..${b[1]}`, `box_y=${b[2]}..${b[3]}`, `box_z=${b[4]}..${b[5]}`,
+      `made_in=${madeIn(L)}`], replay: [boxApplyStep(b, mode)], caveat: hand ? BOX_EDITED_CAVEAT : '' };
+  }
+  // Whatever the flags say: without a request there is no grow to record.
+  if (!L.request) {
+    return {
+      params: { ...params0, 'Made in': madeIn(L), 'Recorded as': 'the mask only (received without its grow request)',
+        'Hand-edited': hand ? 'yes' : 'no' },
+      history: ['selection=mask', `made_in=${madeIn(L)}`],
+      replay: [{ route: '/v1/cube/mask_apply_bin', request: { mode }, body: MASK_ONLY_BODY }],
+      caveat: MASK_ONLY_CAVEAT,
+    };
+  }
+  // A received grow's noise sigma was set where it was made: the creator's own
+  // label when it came with one, else attributed to that place.
+  const fromElsewhere = L.received && L.source !== 'own';
+  const params = Rc.lassoDisplayParams(L.request, fromElsewhere ? `set in ${madeIn(L)}` : Rc.VR_NOISE_WHERE);
+  if (L.received && params0['Noise σ'] !== undefined) params['Noise σ'] = params0['Noise σ'];
+  params['Hand-edited'] = hand ? 'yes' : 'no';
+  if (trimBox > 0) {
+    params['Domain trimmed'] = `yes: one or more grows exceeded the graph budget and were cut to a seed-centred box, largest half-width ${trimBox} voxels`;
+  }
+  const history = historyRecipe(L.request, trimBox, hand).split('; ');
+  if (L.received) { params['Made in'] = madeIn(L); history.push(`made_in=${madeIn(L)}`); }
+  return { params, history, replay: [{ route: '/v1/cube/kinematic_select_bin', request: L.request }, applyStep(mode, hand)],
+    caveat: hand ? HAND_EDITED_CAVEAT : '' };
+}
+
 /** Was this selection's mask edited by hand (a shared selection says so)? */
 export function isHandEdited(L) {
   return !!(L && (L.handEdited || L.hand_edited));
@@ -236,7 +318,7 @@ export function createLassoTools(ctx) {
         const r = await ctx.backend().kinematicSelect(slot.dataset, L.request);
         if (!stillOn(slot)) throw cubeChanged(CHANGED);
         const same = (a, b) => !a || (a.length === b.length && a.every((v, i) => v === b[i]));
-        if ((L.count !== undefined && r.count !== L.count) || !same(L.origin, r.origin) || !same(L.dims, r.dims)) {
+        if ((L.count != null && r.count !== L.count) || !same(L.origin, r.origin) || !same(L.dims, r.dims)) {
           throw new Error(`The grow of this selection's request gives ${r.count} voxels in ${r.dims.join('×')} at `
             + `(${r.origin.join(', ')}), not its ${L.count ?? '?'} voxels`
             + `${L.dims ? ` in ${L.dims.join('×')} at (${L.origin.join(', ')})` : ''}: not applied.`);
@@ -258,6 +340,7 @@ export function createLassoTools(ctx) {
     const L = sel().lasso;
     const b = ctx.backend();
     if (!L || !(L.bytes || L.request)) throw new Error('Grow a selection first (Kinematic Lasso).');
+    if (!L.request && !(L.bytes && L.origin && L.dims)) throw new Error('This selection came without its mask or its grow request: it cannot be applied here.');
     if (!b || !ctx.datasetId()) throw new Error('This needs the backend.');
     if (sel().busy) throw new Error('Wait for the selection to finish before applying.');
     const slot = slotFor(L);
@@ -274,7 +357,7 @@ export function createLassoTools(ctx) {
         if (!stillOn(slot)) throw cubeChanged(CHANGED);
         // The dataset the selection was made on, never the one shown now.
         const q = new URLSearchParams(applyQuery(slot.dataset, m.origin, m.dims, mode,
-          historyRecipe(L.request, m.trimBox, isHandEdited(L)), basename));
+          applyRecord(L, mode, m.trimBox).history.join('; '), basename));
         const { buf } = await b._binary(`/v1/cube/mask_apply_bin?${q}`, m.bytes, 'application/octet-stream');
         const r = JSON.parse(new TextDecoder().decode(buf));
         if (!r.valid) throw new Error(r.error || 'Masking failed.');
@@ -299,11 +382,14 @@ export function createLassoTools(ctx) {
       }
       e.recorded = true;
       const removed = mode === APPLY_MODES.remove;
-      const hand = isHandEdited(L);
-      const product = { kind: 'lasso', label: removed ? 'Lasso: removed cube' : 'Lasso: isolated cube',
-        replay: [{ route: '/v1/cube/kinematic_select_bin', request: L.request }, applyStep(mode, hand)] };
-      if (hand) product.replay_caveat = HAND_EDITED_CAVEAT;
-      ctx.selection.record(product, applyParams(L.request, mode, L.count, out.trimBox, out.file, hand), null);
+      const rec = applyRecord(L, mode, out.trimBox);
+      const product = { kind: 'lasso', label: removed ? 'Lasso: removed cube' : 'Lasso: isolated cube', replay: rec.replay };
+      if (rec.caveat) product.replay_caveat = rec.caveat;
+      // As the desktop's applyLassoMask adds them to every record.
+      const params = { ...rec.params, 'Selected voxels': String(L.count ?? ''),
+        Mode: mode === APPLY_MODES.remove ? 'remove (inside blanked)' : 'isolate (outside blanked)', File: out.file };
+      if (L.count == null) delete params['Selected voxels'];
+      ctx.selection.record(product, params, null);
     }
     return out;
   }
