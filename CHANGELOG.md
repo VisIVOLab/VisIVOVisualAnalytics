@@ -8,6 +8,15 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: keep recovery and asynchronous layers on the correct dataset (#166).**
+  Reopening a cube verifies its file revision before reusing its texture and
+  coordinates; a changed file requires an explicit reload. Selection sharing
+  follows the reopened dataset. Late catalogue and flow replies are discarded
+  after a scene change, and newer flow requests cancel older ones. Catalogue
+  buttons sit below the analysis panel instead of overlapping its seed
+  controls. Automatic binning above 64 keeps working during load and recovery.
+  CI exercises these cases against a real backend and headless browser.
+
 - **VR headset: refined frames as H.264 video over WebRTC (part of #166,
   #189).** The `/vr/` page can receive the colour of the backend's refined
   stereo frames as WebRTC video instead of JPEG: the render session's

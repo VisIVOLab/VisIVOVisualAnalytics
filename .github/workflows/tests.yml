@@ -80,7 +80,7 @@ jobs:
       - name: Browser smoke of the VR page
         run: |
           CHROME="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
-          node validation/vr_lifecycle.mjs --smoke --python python --chrome "$CHROME" \
+          node validation/vr_lifecycle.mjs --smoke --regressions --python python --chrome "$CHROME" \
                --gl swiftshader --out "$RUNNER_TEMP/vr_smoke"
 
       - name: Keep the smoke's results

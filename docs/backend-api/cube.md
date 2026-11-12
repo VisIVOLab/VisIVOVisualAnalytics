@@ -167,6 +167,8 @@ refused with 422 before the cube is read.
 
 **`reduced_info`** answers JSON, without reducing the cube: `full_shape` and
 `reduced_shape` (`[width, height, depth]`), `factors` (`[fx, fy, fz]`),
+`file_revision` (an opaque version of the file's stat identity, including the
+header and byte order for a VBT volume; not a content checksum),
 `default_threshold` (the full cube's default 3-D threshold, the rule of
 [the desktop's view](../user-guide/cube-viewer.md#the-default-threshold), from a
 stride sample, `null` when the cube has no finite value), `bunit`,

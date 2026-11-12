@@ -72,6 +72,45 @@ def test_auto_factors_bring_every_axis_under_max_dim():
     assert (w, h, d) == (234, 234, 158)
 
 
+def test_reduced_info_revision_detects_same_shape_replacement_with_preserved_mtime(synthetic_fits_cube, tmp_path):
+    import os
+    from astropy.io import fits
+    from app.compute.reduced import worker_cube_reduced_info
+
+    path = tmp_path / "replaced.fits"
+    data, header = fits.getdata(synthetic_fits_cube, header=True)
+    fits.writeto(path, data, header)
+    before = worker_cube_reduced_info(str(path), 0, 0, 256)
+    assert before["file_revision"] == worker_cube_reduced_info(str(path), 0, 0, 256)["file_revision"]
+    stat = path.stat()
+    header["CRVAL1"] += 1.0
+    replacement = tmp_path / "replacement.fits"
+    fits.writeto(replacement, data, header)
+    os.replace(replacement, path)
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    after = worker_cube_reduced_info(str(path), 0, 0, 256)
+    assert after["full_shape"] == before["full_shape"]
+    assert after["file_revision"] != before["file_revision"]
+    assert after["axes"]["x"]["world"] != before["axes"]["x"]["world"]
+
+
+@pytest.mark.asyncio
+async def test_automatic_factors_above_64_work_for_metadata_and_binary(client, auth_headers, tmp_path):
+    from astropy.io import fits
+
+    path = tmp_path / "wide.fits"
+    fits.writeto(path, np.ones((3, 4, 17000), dtype=np.float32))
+    opened = await client.post("/v1/datasets/open", json={"path": str(path)}, headers=auth_headers)
+    assert opened.status_code == 200, opened.text
+    request = {"dataset_id": opened.json()["dataset_id"], "max_dim": 256, "factor_xy": 0, "factor_z": 0}
+    info = await client.post("/v1/cube/reduced_info", json=request, headers=auth_headers)
+    assert info.status_code == 200, info.text
+    assert info.json()["factors"] == [67, 67, 1]
+    binary = await client.post("/v1/cube/reduced_bin", json=request, headers=auth_headers)
+    assert binary.status_code == 200, binary.text
+    assert binary.headers["X-Visivo-Bin-Factors"] == "67,67,1"
+
+
 def test_check_size_refuses_what_no_headset_texture_holds():
     cube_reduce.check_size((256, 256, 256))
     cube_reduce.check_size((256, 512, 512))                    # 64 Mi voxels, 64 MiB of uint8
