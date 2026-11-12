@@ -1,14 +1,16 @@
 // The pairing link from the desktop (issue #172): "Open in VR Headset…" opens
-// /vr/#token=…&session=…&dataset=…&path=… (src/app/VrLink.h). Every value is
+// /vr/#token=…&session=…&dataset=…&path=… (src/app/VrLink.h); for a dataset
+// that is not a cube (issue #190) also &kind=points|velocity, and a velocity
+// field's &box= (its box size in Mpc, to open its path again). Every value is
 // percent-encoded once, so it is decoded once with decodeURIComponent ('+'
 // stays a plus). Pure functions: unit-tested in backend/tests/vr/pairing.test.mjs.
 
 /** The keys the desktop writes; all of them are removed from the address. */
-export const PAIRING_KEYS = ['token', 'session', 'dataset', 'path'];
+export const PAIRING_KEYS = ['token', 'session', 'dataset', 'path', 'kind', 'box'];
 
 /**
  * Parses a location hash ("#a=1&b=2", or without the "#").
- * Returns {token, session, dataset, path, errors, rest, present}:
+ * Returns {token, session, dataset, path, kind, box, errors, rest, present}:
  * - a key missing, empty or malformed is '' (a malformed %-escape is listed
  *   in `errors` by key name; the value itself is never echoed);
  * - a key given twice keeps its first value;
@@ -17,7 +19,7 @@ export const PAIRING_KEYS = ['token', 'session', 'dataset', 'path'];
  * - `present` is true when any pairing key was in the hash.
  */
 export function parsePairing(hash) {
-  const out = { token: '', session: '', dataset: '', path: '', errors: [], rest: '', present: false };
+  const out = { token: '', session: '', dataset: '', path: '', kind: '', box: '', errors: [], rest: '', present: false };
   const text = String(hash || '').replace(/^#/, '');
   if (!text) return out;
   const keep = [];

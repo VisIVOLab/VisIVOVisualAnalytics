@@ -278,7 +278,7 @@ export class Refiner {
       if (m.type === 'xr_error') {
         if (Number.isInteger(m.pose_id)) this.book.take(m.pose_id);
         this.error = m.error || 'stereo frame refused';
-        if (/out of core|point/i.test(this.error)) {
+        if (stereoRefused(m)) {
           // This session can give no stereo frames: its slot is freed.
           this._giveUp(this.error);
         }
@@ -341,7 +341,8 @@ export class Refiner {
    * [{eye, view, proj, width, height}] (two; the same twice in a desktop
    * browser), aCentre (view * model of the head), model, zStretch, look:
    * {tf, crop} (session commands from refine.js), lookKey, background (the
-   * colour the page clears to: the backend composites over it)}.
+   * colour the page clears to: the backend composites over it), and for a
+   * point table (issue #190) look.commands and poseExtra (data_to_model)}.
    */
   frame(ctx) {
     if (this.frozen) return;
@@ -369,8 +370,9 @@ export class Refiner {
       if (ctx.look.cropError) {
         this.error = `clipping box not sent: ${ctx.look.cropError}`;
       } else {
-        this._send(ctx.look.tf);
-        this._send(ctx.look.crop);
+        // A cube's look is its transfer function and crop; a point table's
+        // (issue #190) a list of the point session's commands.
+        for (const cmd of ctx.look.commands || [ctx.look.tf, ctx.look.crop]) this._send(cmd);
         this.sentKey = this.key;
         if (this.error.startsWith('clipping box')) this.error = '';
       }
@@ -438,7 +440,7 @@ export class Refiner {
       views: eyes.map((e) => ({ eye: e.eye, view: Array.from(e.view), projection: Array.from(e.proj), width, height })),
       depth: this.o.depthScale ? { scale: this.o.depthScale } : false,
       quality: this.o.quality, sample_distance: this.o.sampleDistance,
-      background: ctx.background || [0, 0, 0], ...extra,
+      background: ctx.background || [0, 0, 0], ...(ctx.poseExtra || {}), ...extra,
     });
     if (ok) { this.stats.sent++; this.lastSentA = Float32Array.from(ctx.aCentre); }
     else this.book.take(id);
@@ -506,6 +508,17 @@ export class Refiner {
       skipped: this.book.skipped, error: this.error,
     };
   }
+}
+
+/**
+ * Does this xr_error mean the session gives no stereo frames at all (its slot
+ * is then freed)? The backend's code (issue #190): "out_of_core" or
+ * "unsupported"; from a backend without codes, its texts for the same two.
+ */
+export function stereoRefused(m) {
+  if (m && (m.code === 'out_of_core' || m.code === 'unsupported')) return true;
+  if (m && m.code) return false;
+  return /out of core|drawn for cubes only/i.test(String((m && m.error) || ''));
 }
 
 /** The page's eye views for a desktop browser: the mono camera as both eyes. */

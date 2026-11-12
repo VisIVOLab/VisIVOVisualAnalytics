@@ -85,12 +85,17 @@ def _open_catalogue(spec: dict) -> PointTable:
     fmt = str(spec.get("format", "csv"))
     frames = [_catalogue_load_dataframe(p, fmt) for p in paths]
     frame = frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
+    return table_from_frame(frame, spec.get("coordinates") or {})
+
+
+def table_from_frame(frame: pd.DataFrame, coords: dict) -> PointTable:
+    """A catalogue already read (a session's dataframe) as a table of points:
+    its numeric columns; a sky catalogue's positions in ``@x``, ``@y``, ``@z``."""
     names = [str(c) for c in frame.columns]
     columns = {}
     for name in names:
         if pd.api.types.is_numeric_dtype(frame[name]) and not pd.api.types.is_bool_dtype(frame[name]):
             columns[name] = frame[name].to_numpy(dtype=float, na_value=np.nan)
-    coords = spec.get("coordinates") or {}
     table = PointTable(names, columns, len(frame), default_axes(names), frame=frame)
     if coords.get("system") == "cartesian":
         table.axes = (coords["x"], coords["y"], coords["z"])

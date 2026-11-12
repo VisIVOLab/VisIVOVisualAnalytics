@@ -163,6 +163,22 @@ void TestVrLink::emptyTokenAndSessionAreLeftOut()
     QCOMPARE(link.url, u"http://localhost:8000/vr/#dataset=ds-42"_s);
 }
 
+void TestVrLink::kindAndBoxOpenOtherDataTypes()
+{
+    // Issue #190: a point table or a velocity field opens in its own mode; a
+    // cube's link is unchanged.
+    VrLink::Inputs in = localInputs();
+    QVERIFY(!fragmentOf(VrLink::build(in).url).contains(u"kind"_s));
+    in.kind = u"cube"_s;
+    QVERIFY(!fragmentOf(VrLink::build(in).url).contains(u"kind"_s));
+    in.kind = u"velocity"_s;
+    in.boxMpc = u"1000"_s;
+    const auto f = fragmentOf(VrLink::build(in).url);
+    QCOMPARE(f.value(u"kind"_s), u"velocity"_s);
+    QCOMPARE(f.value(u"box"_s), u"1000"_s);
+    QCOMPARE(f.value(u"dataset"_s), u"ds-42"_s);
+}
+
 void TestVrLink::pageUrlHoldsNoSecret()
 {
     const VrLink::Inputs in = localInputs();

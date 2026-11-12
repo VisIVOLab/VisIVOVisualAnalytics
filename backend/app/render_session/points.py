@@ -31,6 +31,9 @@ Commands (besides the camera / viewport ones the cube session takes):
 ``{"type": "set_sky_positions", "frame": "fk5" | "galactic" | "supergalactic",
    "distance_mode": "comoving" | "redshift_space", "cosmology": str}``
                                          — a sky catalogue's positions
+``{"type": "xr_pose", ..., "data_to_model": [16]}`` / ``{"type": "xr_stop"}``
+                                         — a headset's stereo frames
+                                           (_stereo_points.py, issue #190)
 """
 from __future__ import annotations
 
@@ -49,6 +52,7 @@ import pandas as pd
 from PIL import Image
 
 from ._common import SessionStats, _build_color_tf, _parse_tf_points, set_camera
+from ._stereo_points import PointStereoMixin
 from ._window import (RenderThreadError, new_offscreen_window, offscreen_kind,
                       render_executor)
 
@@ -156,7 +160,7 @@ def gaussian_splat(bounds, npts: int, size: int, intensity: int) -> tuple[float,
     return radius, opacity
 
 
-class PointRenderSession:
+class PointRenderSession(PointStereoMixin):
     """One client × one point table × one render thread (see the module doc)."""
 
     def __init__(self, session_id: str, dataset_path: str, hdu: int | None = None):
@@ -517,6 +521,11 @@ class PointRenderSession:
 
     def _apply_command_on_thread(self, command: dict[str, Any]) -> None:
         ctype = command.get("type", "")
+        if ctype in ("xr_pose", "xr_stop"):
+            self._apply_xr_command_on_thread(command)
+            return
+        if ctype == "set_interactive" and self._xr_pose is not None:
+            return      # a stereo frame always draws every row
         cam = self._renderer.GetActiveCamera() if self._renderer is not None else None
         if ctype == "rotate" and cam is not None:
             cam.Azimuth(float(command.get("d_azimuth", 0.0)))
@@ -670,7 +679,10 @@ class PointRenderSession:
         w, h = self._render_window.GetSize()
         return arr.reshape((h, w, 4)), render_ms
 
-    def _render_frame_on_thread(self) -> bytes:
+    def _render_frame_on_thread(self):
+        if self._xr_active():
+            # Between an xr_pose and an xr_stop: the headset's stereo frame.
+            return self._render_xr_frame_on_thread()
         rgba, render_ms = self._render_rgb_on_thread()
         self._scene_dirty = False
         self._last_rgba, self._last_render_ms = rgba, render_ms

@@ -32,6 +32,7 @@ struct CatalogueOverlayData
 };
 
 class QCheckBox;
+class VrHeadsetDialog;
 class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
@@ -84,6 +85,7 @@ private:
     void resetCamera();
     void toggleRoiWidget(bool on);
     void loadFullResRoi();
+    void openInVrHeadset();   // issue #190: vtkWindowVectorField_VrHeadset.cpp
     void placeFullResRoi(const BackendVelocityGridResult &roi, double fsx, double fsy,
                          double fsz, double ox, double oy, double oz);
     void showBasins(bool on);   // F1 phase-2: gravitational-basin (watershed) regions
@@ -148,6 +150,7 @@ private:
     // a result that a newer request (or unticking Basins) superseded is dropped.
     QPointer<QProgressDialog> m_basinSheet;
     QPointer<QProgressDialog> m_roiSheet;
+    QPointer<VrHeadsetDialog> m_vrHeadsetDialog;
     int m_basinGen = 0;
     int m_roiGen = 0;
 

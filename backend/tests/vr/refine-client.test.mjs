@@ -160,3 +160,13 @@ test('a stale failed attempt does not write the error of the session on show', a
   assert.equal(r.error, '');
   assert.equal(r.unavailable, '');
 });
+
+test('a session that gives no stereo frames is told by its code, not by a word', async () => {
+  const { stereoRefused } = await import('../../app/static/vr/js/refine-client.js');
+  assert.equal(stereoRefused({ code: 'out_of_core', error: 'x' }), true);
+  assert.equal(stereoRefused({ code: 'unsupported', error: 'x' }), true);
+  assert.equal(stereoRefused({ error: 'Nothing to draw: every point is filtered out.' }), false);
+  assert.equal(stereoRefused({ code: 'other', error: 'drawn out of core' }), false);
+  assert.equal(stereoRefused({ error: 'Stereo frames are not available yet for a cube drawn out of core' }), true);
+  assert.equal(stereoRefused({ error: 'Stereo frames are drawn for cubes only.' }), true);
+});

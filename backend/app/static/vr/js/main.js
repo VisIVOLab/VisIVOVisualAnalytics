@@ -13,6 +13,7 @@ import { transferFunction, cropBox, cropError } from './refine.js';
 import { pairingFallback } from './pairing.js';
 import { loadSettings, saveSettings, clampPanelOffset } from './settings.js';
 import * as P from './vr-panel.js';
+import { createLayers, pairedMode } from './layers.js';
 
 const $ = (id) => document.getElementById(id);
 const query = new URLSearchParams(window.location.search);
@@ -85,7 +86,8 @@ function currentLook() {
 
 /** Once per displayed frame: the eyes this frame is drawn for. */
 function refineFrame(t, eyes, centreView, background) {
-  if (!state.cube) return;
+  // A point table (issue #190) is refined by the backend's point session.
+  if (!state.cube) { if (layers) layers.refineFrame(t, eyes, centreView, background); return; }
   const look = currentLook();
   refiner.frame({ t, eyes, aCentre: M.multiply(centreView, state.model), model: state.model,
     zStretch: state.zStretch, look: look.look, lookKey: look.key, background });
@@ -103,10 +105,15 @@ for (const name of COLORMAP_NAMES) {
   $('cmap').appendChild(o);
 }
 
+// Point tables, velocity fields, catalogues over a cube (issue #190): made
+// once the page's controls exist (below).
+let layers = null;
+
 /** The colour map, from the page, the A button or the in-VR panel. */
 function setColormap(name) {
   state.colormap = name;
   R.setColormap(name);
+  if (layers) layers.setColormap(name);
   $('cmap').value = name;
   if (settings.colormap !== name) { settings.colormap = name; persist(); }
 }
@@ -149,7 +156,7 @@ $('browse').addEventListener('click', async () => {
       up.onclick = () => show(r.current_path.replace(/\/[^/]+\/?$/, '') || '/').catch(fail);
       list.appendChild(up);
       for (const e of r.entries) {
-        if (e.type !== 'directory' && !e.is_fits) continue;
+        if (e.type !== 'directory' && !e.is_fits && !(layers && layers.listable(e.name))) continue;
         const li = document.createElement('li');
         li.textContent = e.name;
         li.className = e.type === 'directory' ? 'dir' : '';
@@ -270,6 +277,13 @@ window.addEventListener('pagehide', () => refiner.closeNow());
 // Back from the back-forward cache: pagehide closed the session, open a new one.
 window.addEventListener('pageshow', (e) => { if (e.persisted) refiner.resume(); });
 
+layers = createLayers({
+  gl, R, state, $, refiner, ensureBackend,
+  colormap: () => state.colormap, refineOn: () => refineMode !== 'off',
+  rebuild: () => rebuildDecorations(),
+  targetHz: () => (xr ? xr.targetHz : 60),
+});
+
 // Clipping box sliders (texture coordinates 0..1 per axis).
 const clipInputs = [];
 for (const [i, axis] of ['x', 'y', 'z'].entries()) {
@@ -361,6 +375,13 @@ async function loadFromBackend() {
   if (!path) throw new Error('Give the path of a cube on the backend.');
   const t0 = performance.now();
   setStatus('Opening…');
+  if (!b.session) await b.newSession();
+  // A point table or a velocity field (issue #190), by the page's choice or the name.
+  if (await layers.openPath(b, path)) {
+    state.openPath = path;
+    setStatus(`${path.split('/').pop()}: ${layers.hudLines().join('\n')}\nin ${state.sessionNote || 'own session'}`);
+    return;
+  }
   const open = await b.open(path);
   state.sessionNote = state.sessionNote || 'own session';
   setStatus('Reading the axes…');
@@ -383,6 +404,26 @@ async function loadPaired() {
   const b = ensureBackend();
   const t0 = performance.now();
   if (pairing.session) b.adoptSession(pairing.session);
+  if (pairedMode(pairing.kind) !== 'cube') {
+    // The desktop's point table or velocity field (issue #190): its dataset in
+    // the session, else its path again, as for a cube.
+    if (!pairing.session) await b.newSession();
+    state.sessionNote = 'the desktop\'s session';
+    setStatus('Opening the desktop\'s data…');
+    await layers.openPaired(b, pairing, async (err) => {
+      const next = pairingFallback(err, !!pairing.path);
+      if (next === 'new-session') {
+        await b.newSession();
+        state.sessionNote = 'a new session (the desktop\'s is not available here)';
+      } else if (next === 'open') {
+        state.sessionNote = 'the desktop\'s session (opened again)';
+      }
+      return next;
+    });
+    state.openPath = pairing.path || '';
+    setStatus(`${layers.hudLines().join('\n')}\nin ${state.sessionNote}`);
+    return;
+  }
   let open = null, info = null, err = null;
   if (pairing.dataset && pairing.session) {
     setStatus('Opening the desktop\'s cube…');
@@ -438,6 +479,7 @@ function loadSynthetic(n) {
 }
 
 function installCube(info, cube, open) {
+  layers.onCube();
   const up = R.setVolume(cube);
   state.info = info;
   state.cube = cube;
@@ -528,6 +570,7 @@ function rebuildDecorations() {
     labels.push({ pos: [0, h[1] + 2.2 * L, -h[2]], text: bin, height: H, anchor: 'center', color: '#ffd27a' });
     labels.push({ pos: [0, h[1] + 4.6 * L, -h[2]], text: V.velocityScaleShort(info, state.zStretch), height: H * 0.9, anchor: 'center', color: '#c8ccd6' });
   }
+  labels.push(...layers.cubeLabels());     // a catalogue over the cube (issue #190)
   R.setLines(segs);
   R.setLabels(labels);
 }
@@ -559,6 +602,7 @@ function drawScene(view, override, eye = 0) {
   }
   R.drawLines(view, state.model);
   R.drawLines(view, state.model, R.selLines);
+  layers.drawOverCube(view, state.model);
   R.drawLabels(view, state.model, M.uniformScale(state.model));
 }
 
@@ -596,7 +640,8 @@ function hudLines(targetHz) {
     lines.push(`threshold ${fmt(dataValue(state.thrNorm))} ${c.bunit || ''}  (${$('thr-source').selectedOptions[0].text})`);
   }
   lines.push(...selection.hudLines());
-  if (state.cube) lines.push(...refiner.hudLines());
+  lines.push(...layers.hudLines());
+  if (state.cube || layers.mode === 'points') lines.push(...refiner.hudLines());
   if (vrPanel.draws) {
     lines.push(`panel redraw ${median(vrPanel.drawMs).toFixed(2)} ms + upload ${median(vrPanel.uploadMs).toFixed(2)} ms (${vrPanel.draws} redraws)`);
   }
@@ -732,8 +777,12 @@ function panelPointer(ray, pressed, eye) {
     hit = null;
   }
   vrPanel.hit = hit;
+  // The strip under the panel (issue #190): the ray when the panel has it not.
+  const strip = layers.stripPointer(show && ray && !hit && !vrPanel.pointer.active ? ray : null,
+    pressed && show && !vrPanel.pointer.active, panelWorld());
+  if (strip && !hit) vrPanel.hit = layers.stripHit();
   for (const a of vrPanel.pointer.update(hit, pressed && show)) applyPanel(a, ray, eye);
-  return show && (vrPanel.pointer.takesRay() || vrPanel.pointer.owns);
+  return show && (vrPanel.pointer.takesRay() || vrPanel.pointer.owns || strip);
 }
 
 function applyPanel(a, ray, eye) {
@@ -907,8 +956,10 @@ function desktopFrame(time) {
   refiner.setSuspended('');
   refineFrame(time, desktopEyes(lastDesktopView, w, h), lastDesktopView.view, DESKTOP_BG);
   if (state.cube) drawScene(lastDesktopView, undefined, 0);
+  else if (layers.hasScene()) layers.drawScene(lastDesktopView, 0, h);
   if (vrPanel.visible && vrPanel.desktop) {
     R.drawPanel(lastDesktopView, panelWorld(), panelTexture(time), P.PANEL_SIZE);
+    layers.drawStrip(lastDesktopView, panelWorld());
   }
   R.endFrame();
   const interval = lastDesktop ? time - lastDesktop : 0;
@@ -1206,9 +1257,10 @@ function onXRFrame(time, frame) {
     gl.viewport(vp.x, vp.y, vp.width, vp.height);
     const v = { proj: view.projectionMatrix, view: view.transform.inverse.matrix };
     if (state.cube) drawScene(v, undefined, view.eye === 'right' ? 1 : 0);
+    else if (layers.hasScene()) layers.drawScene(v, view.eye === 'right' ? 1 : 0, vp.height);
     if (hm) R.drawPanel(v, hm, hudTex, [0.16, 0.15]);
     if (sm) R.drawPanel(v, sm, selTex, [0.34, 0.248]);
-    if (cm) R.drawPanel(v, cm, ctlTex, P.PANEL_SIZE);
+    if (cm) { R.drawPanel(v, cm, ctlTex, P.PANEL_SIZE); layers.drawStrip(v, cm); }
     R.drawWorldLines(v);      // the controllers and their rays over the panels
   }
   R.endFrame();
@@ -1408,6 +1460,8 @@ async function desktopBench() {
 // state, and a pick through a page-pixel position as a click makes it. Only
 // with ?debug in the address.
 if (query.has('debug')) {
+  window.__vrLayers = layers;
+  window.__vrStats = (hz = 0) => stats.summary(hz ? 1000 / hz : 0);
   window.__vrSelection = selection;
   window.__vrClick = (x, y) => selection.act(mouseRay({ clientX: x, clientY: y }));
   window.__vrProject = (p) => {      // box coordinate -> page pixel, desktop camera

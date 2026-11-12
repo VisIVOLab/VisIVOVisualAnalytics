@@ -1087,19 +1087,53 @@ def _ipac_rows_complete(path: Path, header_lines: int, ncols: int) -> bool:
     return True
 
 
+def _with_units(table) -> pd.DataFrame:
+    """A table as a DataFrame, its columns' units kept in ``attrs["units"]``
+    (a catalogue's spectral column is read in its own unit, issue #190)."""
+    frame = table.to_pandas()
+    frame.attrs["units"] = {str(n): str(table[n].unit) for n in table.colnames
+                            if getattr(table[n], "unit", None) is not None}
+    # A spectral reference frame the table declares (a FITS table's SPECSYS).
+    meta = getattr(table, "meta", None) or {}
+    specsys = next((meta[k] for k in ("SPECSYS", "specsys", "SSYSOBS") if k in meta), None)
+    if specsys:
+        frame.attrs["specsys"] = str(specsys).strip()
+    return frame
+
+
+def _ipac_units(path: Path) -> dict[str, str]:
+    """The units an IPAC table's header declares (its third ``|`` row)."""
+    rows = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("\\"):
+                    continue
+                if not line.startswith("|"):
+                    break
+                rows.append([c.strip() for c in line.strip().strip("|").split("|")])
+    except OSError:
+        return {}
+    if len(rows) < 3:
+        return {}
+    return {n: u for n, u in zip(rows[0], rows[2]) if n and u and u.lower() not in ("null", "-")}
+
+
 def _catalogue_load_dataframe(path: Path, fmt: str) -> pd.DataFrame:
     fmt_lower = fmt.strip().lower()
     if fmt_lower == "csv":
         # "csv" is any delimited text: comma, tab or semicolon (issue #155).
         return read_delimited_table(path)
     if fmt_lower in {"votable", "vot", "xml"}:
-        return Table.read(path, format="votable").to_pandas()
+        return _with_units(Table.read(path, format="votable"))
     if fmt_lower in {"fits", "fit", "fits-table"}:
-        return Table.read(path, format="fits").to_pandas()
+        return _with_units(Table.read(path, format="fits"))
     if fmt_lower == "speck":
         return _read_speck(path)
     if fmt_lower in {"ipac", "tbl"}:
-        return _read_ipac(path)
+        frame = _read_ipac(path)
+        frame.attrs["units"] = _ipac_units(path)
+        return frame
     if fmt_lower == "vbt":
         return _read_vbt_points(path)
     raise ValueError(f"Unsupported catalogue format: {fmt}")

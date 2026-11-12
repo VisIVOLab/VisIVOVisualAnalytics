@@ -46,6 +46,7 @@ class vtkSphereSource;
 class vtkArrowSource;
 class vtkAppendPolyData;
 class QAction;
+class VrHeadsetDialog;
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
@@ -370,6 +371,8 @@ private:
     void dropCustomCosmologyForServerView(const QString &view);
     /// Tools ▸ Cosmology Calculator, opened on the model the sources use.
     void openCosmologyCalculator();
+    void openInVrHeadset();   // issue #190: vtkWindowCatalogue3D_VrHeadset.cpp
+    QPointer<VrHeadsetDialog> m_vrHeadsetDialog;
     /// The custom model the positions on screen were computed with (valid
     /// when m_appliedCosmologyModel is "Custom").
     visivo::cosmology::Model m_appliedCustomCosmology;

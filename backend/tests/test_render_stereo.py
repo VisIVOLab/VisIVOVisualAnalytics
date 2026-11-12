@@ -381,13 +381,23 @@ def test_a_session_that_refuses_a_frame_sends_the_reason_as_text(ws_stereo):
                                                  "error": "out of core"}
 
 
-def test_a_point_session_refuses_poses(ws_stereo, monkeypatch):
+def test_a_session_of_another_kind_refuses_poses(ws_stereo, monkeypatch):
+    client, sess = ws_stereo
+    sess._factory = "app.render_session.other:OtherSession"
+    with _connect(client) as ws:
+        ws.send_text(json.dumps(pose(2)))
+        assert "cubes and point tables only" in json.loads(ws.receive_text())["error"]
+    assert sess.commands == []                       # nothing sent, no xr_stop either
+
+
+def test_a_point_session_takes_poses(ws_stereo, monkeypatch):
+    """Issue #190: point sessions draw the headset's stereo frames too."""
     client, sess = ws_stereo
     sess._factory = "app.render_session.points:PointRenderSession"
     with _connect(client) as ws:
         ws.send_text(json.dumps(pose(2)))
-        assert "cubes only" in json.loads(ws.receive_text())["error"]
-    assert sess.commands == []                       # nothing sent, no xr_stop either
+        ws.send_text(json.dumps({"type": "request_frame"}))
+        assert S.parse_frame(ws.receive_bytes())[0]["pose_id"] == 2
 
 
 def test_a_mono_client_is_unaffected(ws_stereo):

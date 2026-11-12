@@ -31,7 +31,7 @@ let pairingCache = null;
  * dataset and path are kept in sessionStorage (this tab only: a reload of
  * the tab continues, another tab or a later visit does not). Without a
  * pairing in the address, the one this tab kept. {token, session, dataset,
- * path, fromAddress}.
+ * path, kind, box, fromAddress}.
  */
 export function takePairing() {
   if (pairingCache) return pairingCache;
@@ -48,7 +48,7 @@ export function takePairing() {
     if (p.token) {
       try { store('session')?.setItem(KEY, p.token); } catch { /* private mode */ }
     }
-    const kept = { session: p.session, dataset: p.dataset, path: p.path };
+    const kept = { session: p.session, dataset: p.dataset, path: p.path, kind: p.kind, box: p.box };
     try {
       if (kept.session || kept.dataset || kept.path) store('session')?.setItem(PAIR_KEY, JSON.stringify(kept));
       else store('session')?.removeItem(PAIR_KEY);
@@ -59,14 +59,15 @@ export function takePairing() {
   let kept = {};
   try { kept = JSON.parse(store('session')?.getItem(PAIR_KEY) || '{}') || {}; } catch { kept = {}; }
   const str = (v) => (typeof v === 'string' ? v : '');
-  pairingCache = { token: '', session: str(kept.session), dataset: str(kept.dataset), path: str(kept.path), fromAddress: false };
+  pairingCache = { token: '', session: str(kept.session), dataset: str(kept.dataset), path: str(kept.path),
+    kind: str(kept.kind), box: str(kept.box), fromAddress: false };
   return pairingCache;
 }
 
 /** Forgets the tab's pairing (the user opened another cube by hand). */
 export function forgetPairing() {
   try { store('session')?.removeItem(PAIR_KEY); } catch { /* nothing kept */ }
-  pairingCache = { token: '', session: '', dataset: '', path: '', fromAddress: false };
+  pairingCache = { token: '', session: '', dataset: '', path: '', kind: '', box: '', fromAddress: false };
 }
 
 /** Token from the fragment, else from storage. Clears the pairing keys from the address. */
@@ -144,10 +145,11 @@ export class Backend {
 
   // ── Analysis on the full cube (issue #171) ────────────────────────────────
 
-  async _binary(path, body, contentType = 'application/json') {
+  /** `signal`: an AbortSignal, to cancel a request a newer one replaces. */
+  async _binary(path, body, contentType = 'application/json', signal = undefined) {
     const headers = this.headers(false);
     headers['Content-Type'] = contentType;
-    const resp = await fetch(path, { method: 'POST', headers, body });
+    const resp = await fetch(path, { method: 'POST', headers, body, signal });
     if (!resp.ok) throw new Error(`${resp.status}: ${(await resp.text()).slice(0, 300)}`);
     return { resp, buf: await resp.arrayBuffer() };
   }

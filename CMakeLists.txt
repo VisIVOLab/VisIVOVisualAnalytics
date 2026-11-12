@@ -622,6 +622,8 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_Movie.cpp
         src/gui/vtkWindowCube_Link.cpp
         src/gui/vtkWindowCube_VrHeadset.cpp
+        src/gui/vtkWindowCatalogue3D_VrHeadset.cpp
+        src/gui/vtkWindowVectorField_VrHeadset.cpp
         src/gui/vtkWindowCube_Raytrace.cpp
         src/gui/vtkWindowCube_RegionIO.cpp
         src/gui/Pane2DView.cpp

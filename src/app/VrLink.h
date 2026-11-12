@@ -16,7 +16,8 @@
 // producing a link that would fail on the headset.
 //
 // Everything the page needs rides the fragment (#token=…&session=…&dataset=…
-// &path=…): a browser never sends the fragment to the server, so the token is
+// &path=…, and &kind=points|velocity&box=… for a point table or a velocity
+// field, issue #190): a browser never sends the fragment to the server, so the token is
 // in no access log, and the page removes it from the address bar. Every value
 // is percent-encoded completely, so the link holds no character a shell or
 // the fragment parser would read as syntax ('&', '#', '=', quotes, spaces).
@@ -37,6 +38,11 @@ struct Inputs
     QString sessionId;   ///< X-Visivo-Session the desktop's requests carry
     QString datasetId;   ///< the cube open in the viewer
     QString path;        ///< the cube's path on the backend
+    /// What the dataset is, for the page's mode (issue #190): empty or "cube",
+    /// "points" (a VBT point table or a 3-D catalogue), "velocity" (a field).
+    QString kind;
+    /// A velocity field's box size in Mpc, to open its path again ("" = grid units).
+    QString boxMpc;
 };
 
 struct Link
@@ -126,6 +132,10 @@ inline Link build(const Inputs &in)
     fragment << u"dataset="_s + encodeValue(in.datasetId);
     if (!in.path.isEmpty())
         fragment << u"path="_s + encodeValue(in.path);
+    if (!in.kind.isEmpty() && in.kind != u"cube")
+        fragment << u"kind="_s + encodeValue(in.kind);
+    if (!in.boxMpc.isEmpty())
+        fragment << u"box="_s + encodeValue(in.boxMpc);
     // Appended by hand: QUrl::setFragment would re-encode the '%' of the
     // values (or decode them, depending on the mode) and the page decodes once.
     link.url = link.pageUrl + u'#' + fragment.join(u'&');
