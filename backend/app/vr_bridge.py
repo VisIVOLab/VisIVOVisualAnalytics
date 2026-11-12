@@ -120,6 +120,10 @@ class WsAssembler:
             raise ValueError(f"unknown frame type {kind}")
         if self._kind is not None and kind != self._kind:
             raise ValueError("a message's fragments changed type")
+        if len(frame) == 2 and not flags & LAST:
+            # A sender never needs an empty fragment that is not the last:
+            # refused, so empty frames cannot pile up at no counted cost.
+            raise ValueError("an empty fragment")
         self._kind = kind
         self._parts.append(frame[2:])
         self._size += len(frame) - 2
@@ -374,8 +378,8 @@ class ApiBridge:
     def _on_chunk(self, frame: bytes) -> None:
         req_id, last, payload = parse_api_chunk(frame)
         r = self.requests.get(req_id)
-        if r is None or r.body_done:
-            return
+        if r is None or r.body_done or (not payload and not last):
+            return              # an empty chunk that is not the last carries nothing
         r.body_size += len(payload)
         if r.body_size > MAX_REQUEST_BODY or self.queued + len(payload) > MAX_API_QUEUED:
             self.requests.pop(req_id, None)
@@ -527,8 +531,8 @@ class WsBridge:
         self.task = asyncio.ensure_future(self._run(scope))
 
     def _on_message(self, data) -> None:
-        if isinstance(data, str):
-            return                                   # every ws frame is binary
+        if isinstance(data, str) or self.task is None or self.task.done():
+            return              # every ws frame is binary; a finished socket keeps nothing
         try:
             done = self.assembler.feed(bytes(data))
         except OverflowError:
@@ -627,17 +631,28 @@ class WsBridge:
             if not self.closed_by_app and not self.closed_by_page:
                 self.closed_by_app = True
                 self._fail(1011, "internal error")
-            return
-        if not self.closed_by_app and not self.closed_by_page:
-            # The route returned without closing: closed normally, as a server would.
-            self.closed_by_app = True
-            self._fail(1000 if accepted else 1006, "")
-        elif self.closed_by_page and ch.readyState == "open":
-            close_when_sent(ch)
+        else:
+            if not self.closed_by_app and not self.closed_by_page:
+                # The route returned without closing: closed normally, as a server would.
+                self.closed_by_app = True
+                self._fail(1000 if accepted else 1006, "")
+            elif self.closed_by_page and ch.readyState == "open":
+                close_when_sent(ch)
+        finally:
+            self._release()
+
+    def _release(self) -> None:
+        """Lets go of what the route never read: the socket is over."""
+        self.incoming = asyncio.Queue()
+        self._sizes.clear()
+        self.queued = 0
+        self.assembler = WsAssembler()
+        self.closed_by_page = self.closed_by_app = True
 
     def close(self) -> None:
         if self.task is not None:
             self.task.cancel()
+        self._release()
 
 
 # ── The ``ctl`` channel ──────────────────────────────────────────────────────

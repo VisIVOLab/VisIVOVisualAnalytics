@@ -51,6 +51,9 @@ BACKOFF_MAX_S = 60.0
 #: Resume codes: their lifetime (the service caps it) and how long a headset
 #: whose connection dropped may come back with one.
 RESUME_TTL_S = 12 * 3600
+#: WebSockets one headset connection may have open at once (the page opens
+#: one per render session and a few more).
+MAX_WS_PER_HEADSET = 32
 
 
 def aiortc_missing() -> str | None:
@@ -579,7 +582,14 @@ class PairHost:
         elif label == "api":
             bridges.append(vr_bridge.ApiBridge(channel, h.app, h.owner, self._client(pc)))
         elif label == "ws":
-            bridges.append(vr_bridge.WsBridge(channel, h.app, h.owner, self._client(pc)))
+            # Bounded per connection; a finished socket's bridge is let go.
+            if sum(isinstance(b, vr_bridge.WsBridge) for b in bridges) >= MAX_WS_PER_HEADSET:
+                channel.close()
+                return
+            bridge = vr_bridge.WsBridge(channel, h.app, h.owner, self._client(pc))
+            if bridge.task is not None:
+                bridges.append(bridge)
+                bridge.task.add_done_callback(lambda _t: bridge in bridges and bridges.remove(bridge))
         else:
             channel.close()
 

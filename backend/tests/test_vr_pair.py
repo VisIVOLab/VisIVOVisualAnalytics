@@ -240,6 +240,61 @@ async def test_what_the_page_sends_and_the_route_does_not_read_is_bounded(monkey
     await asyncio.sleep(0.02)
     assert bridge.queued == 0
 
+    # Empty frames cost nothing to send, so they are not kept: an empty API
+    # chunk that is not the last is dropped, an empty WebSocket fragment that
+    # is not the last closes the socket.
+    api = _FakeChannel()
+    bridge = B.ApiBridge(api, never_reads, "tok")
+    api.emit("message", json.dumps({"t": "req", "id": 5, "method": "POST", "path": "/u", "body": True}))
+    for _ in range(1000):
+        api.emit("message", B.api_chunk(5, b"", False))
+    assert bridge.requests[5].body.qsize() == 0
+    bridge.close()
+    ch = _FakeChannel()
+    ch.protocol = json.dumps({"path": "/slow", "protocols": []})
+    ws = B.WsBridge(ch, never_reads, "tok")
+    await asyncio.sleep(0.02)
+    ch.emit("message", bytes([B.WS_BINARY, 0]))
+    closes = [f for f in ch.sent if isinstance(f, bytes) and f[0] == B.WS_CLOSE]
+    assert closes and json.loads(closes[0][2:])["code"] == 1002
+    ws.close()
+    await asyncio.sleep(0.02)
+    assert ws.queued == 0 and ws.incoming.qsize() == 0
+
+
+async def test_a_finished_socket_is_let_go_and_sockets_per_headset_are_bounded(monkeypatch):
+    async def accept_and_end(scope, receive, send):
+        await receive()
+        await send({"type": "websocket.accept"})
+
+    host = H.PairHost("ws://test")
+    h = H.Headset("h", "tok", {}, accept_and_end)
+    bridges: list = []
+
+    def channel():
+        ch = _FakeChannel()
+        ch.label = "ws"
+        ch.protocol = json.dumps({"path": "/x", "protocols": []})
+        return ch
+
+    host._attach(h, None, channel(), bridges)
+    assert len(bridges) == 1
+    await asyncio.sleep(0.05)
+    assert bridges == []                                 # the route returned: let go
+    monkeypatch.setattr(H, "MAX_WS_PER_HEADSET", 2)
+
+    async def hold(scope, receive, send):
+        await receive()
+        await send({"type": "websocket.accept"})
+        await asyncio.Event().wait()
+    h.app = hold
+    extra = [channel() for _ in range(3)]
+    for ch in extra:
+        host._attach(h, None, ch, bridges)
+    assert len(bridges) == 2 and extra[2].readyState == "closed"
+    for b in list(bridges):
+        b.close()
+
 
 class _FakePC:
     def __init__(self, *_a) -> None:
