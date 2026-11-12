@@ -135,6 +135,13 @@ void TestVrLink::aPathPrefixIsKeptInThePageAndInfoUrls_data()
     QTest::newRow("dot segments") << u"http://127.0.0.1:9000/a/./b/../c/"_s << u"/a/c"_s
                                   << u"http://localhost:9000/a/c/vr/"_s
                                   << u"http://127.0.0.1:9000/a/c/v1/vr/backend_check"_s;
+    // Qt versions differ in NormalizePathSegments; the link resolves these itself.
+    QTest::newRow("encoded dots") << u"http://127.0.0.1:9000/a/%2E/b/%2e%2E/c/"_s << u"/a/c"_s
+                                  << u"http://localhost:9000/a/c/vr/"_s
+                                  << u"http://127.0.0.1:9000/a/c/v1/vr/backend_check"_s;
+    QTest::newRow("repeated slashes") << u"http://127.0.0.1:9000/a//b/../c"_s << u"/a/c"_s
+                                      << u"http://localhost:9000/a/c/vr/"_s
+                                      << u"http://127.0.0.1:9000/a/c/v1/vr/backend_check"_s;
     QTest::newRow("encoded") << u"http://127.0.0.1:9000/my%20portal"_s << u"/my%20portal"_s
                              << u"http://localhost:9000/my%20portal/vr/"_s
                              << u"http://127.0.0.1:9000/my%20portal/v1/vr/backend_check"_s;

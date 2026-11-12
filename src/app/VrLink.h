@@ -102,11 +102,23 @@ inline Link build(const Inputs &in)
     }
     // A backend under a path prefix serves the page and the API under it.
     // Kept percent-encoded as written: it goes back into a URL as it is.
-    QString prefix = base.adjusted(QUrl::NormalizePathSegments).path(QUrl::FullyEncoded);
-    while (prefix.endsWith(u'/'))
-        prefix.chop(1);
-    if (!prefix.isEmpty() && !prefix.startsWith(u'/'))
-        prefix.prepend(u'/');
+    // "." and ".." are resolved and empty segments dropped here rather than by
+    // QUrl::NormalizePathSegments, whose result differs between Qt versions
+    // (6.10 turns "/a/./b/../c/" into "/a//c"); the page collapses repeated
+    // slashes the same way (base-path.js).
+    QStringList segments;
+    for (const QString &seg : base.path(QUrl::FullyEncoded).split(u'/', Qt::SkipEmptyParts)) {
+        if (seg == QStringLiteral("."))
+            continue;
+        if (seg == QStringLiteral("..")) {
+            if (!segments.isEmpty())
+                segments.removeLast();
+            continue;
+        }
+        segments << seg;
+    }
+    const QString prefix = segments.isEmpty() ? QString()
+                                              : u'/' + segments.join(u'/');
     if (base.hasQuery() || base.hasFragment()) {
         link.error = QStringLiteral(
                 "The backend address has a query or a fragment: give the headset the "
