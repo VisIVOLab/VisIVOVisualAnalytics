@@ -60,5 +60,13 @@
     {"known": "a1", "seen": "a1", "expect": "same"},
     {"known": "a1", "seen": "b2", "expect": "reset"},
     {"known": "a1", "seen": "", "expect": "same"}
+  ],
+  "publish_retry": [
+    {"name": "still our latest, same cube and link", "nonce": "n-a", "local": "n-a", "dataset_then": "ds_a", "dataset_now": "ds_a", "gen_then": 3, "gen_now": 3, "expect": true},
+    {"name": "a newer own selection meanwhile", "nonce": "n-a", "local": "n-b", "dataset_then": "ds_a", "dataset_now": "ds_a", "gen_then": 3, "gen_now": 3, "expect": false},
+    {"name": "a local unpublished selection or a clear meanwhile", "nonce": "n-a", "local": "", "dataset_then": "ds_a", "dataset_now": "ds_a", "gen_then": 3, "gen_now": 3, "expect": false},
+    {"name": "another cube meanwhile", "nonce": "n-a", "local": "n-a", "dataset_then": "ds_a", "dataset_now": "ds_b", "gen_then": 3, "gen_now": 3, "expect": false},
+    {"name": "the link restarted meanwhile", "nonce": "n-a", "local": "n-a", "dataset_then": "ds_a", "dataset_now": "ds_a", "gen_then": 3, "gen_now": 4, "expect": false},
+    {"name": "no nonce", "nonce": "", "local": "", "dataset_then": "ds_a", "dataset_now": "ds_a", "gen_then": 3, "gen_now": 3, "expect": false}
   ]
 }

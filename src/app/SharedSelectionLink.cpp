@@ -357,8 +357,18 @@ void SharedSelectionLink::post(const QUrl &url, const QByteArray &mask, const QS
         const visivo::PublishOutcome outcome = visivo::publishOutcomeOf(status, detail);
         if (outcome == visivo::PublishOutcome::Retry && !retried && gen == m_generation) {
             // The session's compute slots are busy: once more, shortly.
-            QTimer::singleShot(kRetry429Ms, this, [this, url, mask, nonce, t, gen]() {
-                if (gen == m_generation) post(url, mask, nonce, t, /*retried=*/true);
+            const QString dataset = m_datasetId;
+            QTimer::singleShot(kRetry429Ms, this, [this, url, mask, nonce, t, gen, dataset]() {
+                if (visivo::publishRetryStillWanted(nonce, m_view.localNonce, dataset, m_datasetId,
+                                                    gen, m_generation)) {
+                    post(url, mask, nonce, t, /*retried=*/true);
+                    return;
+                }
+                // Superseded while it waited: a late retry would replace the
+                // newer selection in the hub. Dropped without a word: what
+                // replaced it (a newer publish, a clear, another cube) says
+                // its own, and this must not talk over it.
+                if (gen == m_generation) reconcile();
             });
             return;
         }

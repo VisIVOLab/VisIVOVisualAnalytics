@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   newClientId, publishQuery, boxGeometry, lassoMeta, boxMeta, receivedNote, parseMask, createShare,
   POLL_WAIT_S, BACKOFF_MS, NOT_READY_MS, PUBLISH_TIMEOUT_MS, READ_TIMEOUT_MS, RETRY_429_MS, isUnsupported, reconcileDecision,
-  confirmDraw, nonceOf, newNonce, noteLocal, publishOutcomeOf, instanceVerdict,
+  confirmDraw, nonceOf, newNonce, noteLocal, publishOutcomeOf, instanceVerdict, retryStillWanted,
 } from '../../app/static/vr/js/share.js';
 import { readFileSync } from 'node:fs';
 
@@ -63,6 +63,11 @@ test('the shared cases: the rule, confirm, a local selection, publish outcomes, 
   }
   for (const c of CASES.publish_outcome) assert.equal(publishOutcomeOf(c.status, c.detail), c.expect, `${c.status} ${c.detail || ''}`);
   for (const c of CASES.instance) assert.equal(instanceVerdict(c.known, c.seen), c.expect, `${c.known}->${c.seen}`);
+  assert.ok(CASES.publish_retry.length >= 6);
+  for (const c of CASES.publish_retry) {
+    assert.equal(retryStillWanted({ nonce: c.nonce, localNonce: c.local, datasetThen: c.dataset_then,
+      datasetNow: c.dataset_now, genThen: c.gen_then, genNow: c.gen_now }), c.expect, c.name);
+  }
 });
 
 test('the note says who made it, the voxels and the flux', () => {
@@ -437,6 +442,62 @@ test('a publish answered 429 is retried once', async () => {
   assert.equal(n, 2);
   assert.equal(r.seq, 1);
   assert.equal(t.share.st.publishOutcome, 'kept');
+  t.share.stop();
+});
+
+test('the delayed retry of an older selection never replaces a newer one in the hub', async () => {
+  const hub = fakeHub();
+  const t = controller(hub);
+  t.share.start('ds_a');
+  await flush();
+  // A is answered 429; B, made while A waits, is kept.
+  let n = 0;
+  hub.onPost = (entry, opts, resp) => {
+    if (++n === 1) return resp(429, { detail: 'busy' });
+    const e = hub.store(entry);
+    return resp(200, { valid: true, seq: e.seq, count: 3 });
+  };
+  const pubA = lasso(t.share);
+  await flush();
+  const retry = t.timers.find((x) => x.ms === RETRY_429_MS && x.f);
+  assert.ok(retry, 'A waits before its retry');
+  const b = await lasso(t.share);
+  assert.equal(b.seq, 1);
+  assert.equal(hub.latest.meta.nonce, 'n-page-2');
+  // A's retry is due: it must not be sent, or it would take seq 2 and the
+  // other clients would show A while this page keeps B.
+  retry.f();
+  assert.equal(await pubA, null);
+  await flush();
+  assert.equal(n, 2, 'A is not posted again');
+  assert.equal(hub.latest.meta.nonce, 'n-page-2');
+  assert.equal(t.share.st.localNonce, 'n-page-2');
+  assert.equal(t.share.st.shownNonce, 'n-page-2');
+  // B's outcome is what the page says, not the dropped retry's.
+  assert.equal(t.share.st.publishOutcome, 'kept');
+  assert.match(t.share.st.note, /^shared with the desktop/);
+  t.share.stop();
+});
+
+test('the retry of a publish is dropped when the cube changed while it waited', async () => {
+  const hub = fakeHub();
+  const t = controller(hub);
+  t.share.start('ds_a');
+  await flush();
+  let n = 0;
+  hub.onPost = (entry, opts, resp) => {
+    if (++n === 1) return resp(429, { detail: 'busy' });
+    const e = hub.store(entry);
+    return resp(200, { valid: true, seq: e.seq, count: 3 });
+  };
+  const pub = lasso(t.share);
+  await flush();
+  const retry = t.timers.find((x) => x.ms === RETRY_429_MS && x.f);
+  t.share.start('ds_a');   // the link restarted (a new pairing or cube)
+  retry.f();
+  assert.equal(await pub, null);
+  assert.equal(n, 1);
+  assert.equal(hub.latest, null);
   t.share.stop();
 });
 

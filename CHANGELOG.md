@@ -8,6 +8,18 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Review fixes for #193, #196, #197 and #199.** The velocity viewer drops
+  a backend divergence reply that a newer box change superseded, instead of
+  showing the old box's density at the new box's placement (and does not
+  fall back to the local computation for it). The VR page and the desktop
+  retry a publish answered 429 only while it is still their latest own
+  selection on the same cube and link, so a late retry can no longer replace
+  a newer selection in the hub and split the clients. The VR page keeps the
+  automatic reopen of the cube pending after a timeout, a busy or a failing
+  backend, and tries again at the next healthy check after the 10 s throttle;
+  a file that changed still waits for the user. When the WebRTC video is
+  given up, a still view asks for its pose again as JPEG.
+
 - **VR: keep recovery and asynchronous layers on the correct dataset (#166).**
   Reopening a cube verifies its file revision before reusing its texture and
   coordinates; a changed file requires an explicit reload. Selection sharing

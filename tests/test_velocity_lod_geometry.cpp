@@ -338,3 +338,32 @@ void TestVelocityLodGeometry::densityFetchSendsTheViewerBox()
     QVERIFY(sent.contains(u"box_mpc"));
     QCOMPARE(sent.value(u"box_mpc").toDouble(-1.0), 0.0);
 }
+
+void TestVelocityLodGeometry::staleDensityReplyIsDroppedAfterTwoBoxChanges()
+{
+    using velocitylod::DensityReply;
+    using velocitylod::densityReplyAction;
+    // The viewer's rule: each box change bumps the generation, and so does
+    // each ∇·v request. Box 100 asks (A); while A waits, box 200 asks (B).
+    int latest = 0;
+    ++latest;                       // box change to 100
+    const int a = ++latest;         // request A
+    ++latest;                       // box change to 200
+    const int b = ++latest;         // request B
+
+    // B's reply comes first (its nested event loop sits inside A's) and is
+    // installed; A's delayed reply, good or not, is dropped: no install at
+    // the new box's placement, and no local fallback over B's grid.
+    QCOMPARE(densityReplyAction(b, latest, true), DensityReply::Install);
+    QCOMPARE(densityReplyAction(a, latest, true), DensityReply::Drop);
+    QCOMPARE(densityReplyAction(a, latest, false), DensityReply::Drop);
+
+    // The latest request failing falls back to the local computation.
+    QCOMPARE(densityReplyAction(b, latest, false), DensityReply::ComputeLocally);
+
+    // A box change with the overlays off asks nothing, yet still supersedes
+    // the request in flight: its reply is for the old box.
+    const int c = ++latest;         // request C
+    ++latest;                       // box change, density hidden
+    QCOMPARE(densityReplyAction(c, latest, true), DensityReply::Drop);
+}

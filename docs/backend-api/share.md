@@ -167,7 +167,11 @@ shared:* with the reason, and it is no longer the client's "latest own" (so
 its older own entry in the hub is skipped, not drawn back). Nothing else
 changes: an entry another client publishes later still replaces it. A 429
 (the session's compute slots busy) is retried once after 1 s, then treated
-the same way.
+the same way. The retry is sent only if, after that second, the selection is
+still the client's latest own (its nonce) and the client follows the same cube
+in the same link: otherwise it is dropped, since a late retry would take a new
+seq and replace the newer selection in the hub, leaving the other clients on
+the older one.
 
 **A backend restart.** When an answer names another `instance`, the client
 forgets its cursor, floor and nonces (they counted the old instance's seqs)
