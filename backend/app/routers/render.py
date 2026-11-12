@@ -569,11 +569,17 @@ def _stereo_conflict(session_id: str, connection: object) -> str | None:
     return None
 
 
+#: Sessions that draw a headset's stereo frames: cubes (issue #169) and point
+#: tables (issue #190, render_session/_stereo_points.py).
+_STEREO_FACTORIES = ("app.render_session:RenderSession",
+                     "app.render_session.points:PointRenderSession")
+
+
 def _supports_stereo(sess) -> bool:
-    """Cube sessions draw the headset's stereo frames; point sessions not yet."""
+    """Whether the session draws the headset's stereo frames."""
     factory = getattr(sess, "_factory", None)
     if factory is not None:     # a session in a render process of its own
-        return factory == "app.render_session:RenderSession"
+        return factory in _STEREO_FACTORIES
     return hasattr(sess, "_render_xr_frame_on_thread")
 
 
@@ -836,7 +842,8 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
                 conflict = None if stereo else _stereo_conflict(session_id, websocket)
                 if not _supports_stereo(sess):
                     reply = {"type": "xr_error", "pose_id": command.get("pose_id"),
-                             "error": "Stereo frames are drawn for cubes only."}
+                             "error": "Stereo frames are drawn for cubes and point tables only.",
+                             "code": "unsupported"}
                 elif conflict is not None:
                     reply = {"type": "xr_error", "pose_id": command.get("pose_id"),
                              "error": conflict}

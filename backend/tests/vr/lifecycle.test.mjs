@@ -335,7 +335,7 @@ test('a load that fails does not cancel a recovery, and loads touch the page\'s 
   const lp = body('loadPaired');
   assert.ok(lp.indexOf('loads.begin(') < lp.indexOf('loadHandle()'));
   const ns = lp.indexOf('b.newSession()');
-  assert.ok(ns > 0 && lp.lastIndexOf('stillCurrent(ticket)', ns) > lp.indexOf('pairingFallback('), 'checked before the new session');
+  assert.ok(ns > 0 && lp.lastIndexOf('stillCurrent(ticket)', ns) > lp.indexOf('loads.begin('), 'checked before the new session, including non-cube pairings');
   const lr = body('loadReduced');
   assert.ok(lr.lastIndexOf('stillCurrent(ticket)') < lr.indexOf('commitHandle(b)'), 'committed only after the last check');
   assert.ok(lr.indexOf('commitHandle(b)') < lr.indexOf('installCube('));

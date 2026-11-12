@@ -526,10 +526,16 @@ class XRFrame:
     color: bytes = b""
     depth: bytes | None = None
     error: str | None = None
+    #: Why, for a client to act on without reading the text: "out_of_core",
+    #: "unsupported" (no stereo frames from this session), or None.
+    code: str | None = None
 
     def error_message(self) -> str:
-        return json.dumps({"type": "xr_error", "pose_id": self.header.get("pose_id"),
-                           "error": self.error}, separators=(",", ":"))
+        message = {"type": "xr_error", "pose_id": self.header.get("pose_id"),
+                   "error": self.error}
+        if self.code:
+            message["code"] = self.code
+        return json.dumps(message, separators=(",", ":"))
 
     def to_bytes(self, ready: float | None = None, sent: float | None = None) -> bytes:
         """The wire message: MAGIC, header length, JSON header, then the
@@ -649,7 +655,8 @@ class StereoMixin:
         if self._ooc is not None:
             self._xr_pose = None
             return XRFrame(base, error="Stereo frames are not available yet for a cube "
-                                       "drawn out of core (larger than the in-core limit).")
+                                       "drawn out of core (larger than the in-core limit).",
+                           code="out_of_core")
         t_start = time.time()
         self._poll_cube_chunks()
         self._xr_depth_check_mode()

@@ -374,6 +374,13 @@ void vtkWindowVectorField::setupUi()
     ovLay->addWidget(this->btnBulkFlow);
     sl->addWidget(ovGroup);
 
+    // The same field in a Quest headset, in this backend session (issue #190).
+    auto *btnVr = new QPushButton(u"Open in VR Headset…"_s, side);
+    btnVr->setToolTip(u"Draw this field's streamlines and arrows, traced by the backend "
+                      u"as here, in a Meta Quest connected by USB (WebXR page)."_s);
+    QObject::connect(btnVr, &QPushButton::clicked, this, &vtkWindowVectorField::openInVrHeadset);
+    sl->addWidget(btnVr);
+
     sl->addStretch(1);
     // The grouped panel can be taller than the window — make it scroll.
     auto *sideScroll = new QScrollArea(central);

@@ -56,6 +56,7 @@ from .routers import (
     simulations,
     particle_render,
     volume_render,
+    vr_layers,
     share,
     vr_backend_check,
 )
@@ -442,6 +443,7 @@ app.include_router(sed.router, dependencies=[_auth])
 app.include_router(simulations.router, dependencies=[_auth])
 app.include_router(particle_render.router, dependencies=[_auth])
 app.include_router(volume_render.router, dependencies=[_auth])
+app.include_router(vr_layers.router, dependencies=[_auth])
 # Selections shared between the headset and the desktop (issue #188).
 app.include_router(share.router, dependencies=[_auth])
 app.include_router(vr_backend_check.router, dependencies=[_auth])

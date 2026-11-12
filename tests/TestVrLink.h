@@ -26,6 +26,7 @@ private slots:
     void aBackendNotOnLoopbackHasNoLink();
     void noDatasetNoLink();
     void emptyTokenAndSessionAreLeftOut();
+    void kindAndBoxOpenOtherDataTypes();
     void pageUrlHoldsNoSecret();
     void redactHidesRawAndEncodedSecrets();
 

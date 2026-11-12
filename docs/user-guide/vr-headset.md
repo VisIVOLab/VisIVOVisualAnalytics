@@ -23,8 +23,11 @@ open on the desktop continues in the headset in the same backend session, with
 a panel in the headset for the controls
 ([#172](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/172), see
 [Open a cube from the desktop](#open-a-cube-from-the-desktop) and
-[The panel in the headset](#the-panel-in-the-headset)); a selection made in the
-headset appears in the desktop's cube viewer and a desktop lasso can be sent
+[The panel in the headset](#the-panel-in-the-headset)); point tables,
+catalogues over a cube and velocity fields are shown too
+([#190](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/190), see
+[Point tables, catalogues and velocity fields](#point-tables-catalogues-and-velocity-fields)).
+A selection made in the headset appears in the desktop's cube viewer and a desktop lasso can be sent
 to the headset
 ([#188](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/188), see
 [Selections shared with the desktop](#selections-shared-with-the-desktop)).
@@ -35,7 +38,7 @@ What is not done yet is listed under [Known limits](#known-limits).
 | **Where** | `http://<backend>/vr/`, served by the backend itself |
 | **Headset** | Meta Quest 3 (Quest Browser, WebXR); any WebXR browser should work |
 | **Without a headset** | the same page in a desktop browser, with the mouse (for development and checks) |
-| **Data** | a FITS cube the backend can open |
+| **Data** | a FITS cube the backend can open; a point table, a catalogue over a cube, a velocity field |
 
 ## Quickstart
 
@@ -1406,6 +1409,185 @@ the checks below.
 7. With the two product planes shown, the FPS and GPU ms on the left
    controller, against the same view without them (*Hide*).
 
+## Point tables, catalogues and velocity fields
+
+The same page shows the other data types the desktop opens
+([#190](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/190)), with
+the same rule: the headset draws, the backend computes.
+
+| Data | What the headset draws | What the backend does | Refined when still |
+|---|---|---|---|
+| **Point table** (VBT `.bin.head`, a 3-D catalogue, a simulation snapshot) | an even sample of its rows within a budget, as points or additive splats, coloured by a column through the page's colour maps | samples the table, and its point render session draws **every row** for the headset's eyes | yes (the point session's stereo frames) |
+| **Catalogue over a cube** (VLKB compact sources or filaments, a cross-match, a catalogue file) | markers, ellipses and contours in the cube's box | places each source in the cube's pixels with the file's full WCS | with the cube |
+| **Velocity field** | its streamlines and arrows as lines, coloured by the speed | traces them on the desktop's display grid with the desktop's own filters | no |
+
+**Opening one.** From the desktop: *Tools → Open in VR Headset…* in a point
+table's or 3-D catalogue's window, or the *Open in VR Headset…* button under
+the velocity viewer's controls; the link then carries `kind=points` or
+`kind=velocity` (and a velocity field's box size, `box=`), and the page opens
+the desktop's dataset in the same session, or its path again when the session
+no longer holds it, as for a cube. On the page: type the path, choose
+**Data kind** (*auto* goes by the name: `.head`, `.bin`, `.csv`, `.xml`… are
+point tables, a FITS whose name says `velocity` or `flow` a velocity field),
+give a velocity field's **Box (Mpc)** if it has one, and press *Open and
+load*. The page's cube controls are hidden meanwhile.
+
+### Point tables
+
+The table is sampled evenly over its rows (the point session's own rule), so a
+snapshot stored region by region is sampled everywhere, and each row costs 8
+bytes: positions and colour quantised to 16 bits over the sample's box and the
+colour range. **Rows drawn** chooses the budget (*quest-low* 0.5 M, *quest*
+1 M, the default, *quest-high* 2 M, *desktop* 5 M, *desktop-high* 10 M, the
+most a request may ask for). **Hold the frame rate** (on by default) draws
+fewer of the sampled rows while a frame would be late, and more again when
+there is room: the rows arrive in a low-discrepancy order (van der Corput), so
+the rows drawn are spread over the whole sample, never a corner of it (no gap
+wider than twice the even spacing). A filter set on the table runs before the
+sample. Choosing another budget or column while a sample is still coming
+cancels it: only the last one asked for is fetched and drawn. The HUD says *points X M drawn of
+Y M sampled, Z M rows*.
+
+*Colour by* a column (the backend puts a positive column spanning more than
+three decades on a log scale the first time, as a mass or a density needs,
+in the same request; untick *log* to undo), *Colour from / to* narrow the map, *Style* is *points* (pixels)
+or *splats* (sized like the desktop's: the mean spacing of the table's rows
+times the size step over 8, larger in proportion when only a sample is drawn).
+The box is the sample's bounding box, its longest side 1 (scaled to 0.6 m in
+the headset), with ticks in the table's units.
+
+When you hold still, the backend's point render session draws every row of the
+table for your eyes and the page blends that frame in, as for a cube: the
+page sends its colours, style and the map from the table to its box
+(`data_to_model`) with each pose, so the frame lands on the page's points.
+
+### Catalogues over a cube
+
+Under **Catalogue over the cube**, choose the sources: a *catalogue file on
+the backend* (CSV, VOTable, FITS table, IPAC: RA/Dec or GLON/GLAT columns),
+*VLKB compact sources* (a band, band-merged by default) or *VLKB filaments*
+over the cube's footprint (with the desktop's margin; across l = 0 too, as
+at the Galactic Centre), or a *cross-match* (SIMBAD, NVSS, FIRST, 2MASS) of
+the cube's field. *Place on the cube* asks the backend to put them in the
+cube's pixels with the file's full WCS, so a Galactic CAR cube (Hi-GAL,
+CHIMPS cutouts) and an equatorial TAN one are both projected correctly, and a
+catalogue in another frame is converted first.
+
+A source with a spectral column (`freq`, `v_rad`, `v_opt`, `v_app`, `vlsr`…,
+in its own unit when the file or the column name says it; SoFiA's `v_app`
+without a unit in the cube axis's unit; a `velocity` of no stated convention
+in the axis's own, with a warning) is a cross at its voxel; a source whose
+channel is outside the cube is left out and counted (a wide-band survey over a
+narrow-band cube keeps the sources it shares). Only when none falls in the
+channels, and the column declares no unit, is a reading a thousand times
+larger or smaller tried (m/s against km/s); when it places most of them it is
+applied and named in a warning. A convention is never changed. Otherwise all
+are placed on the sky only. Every warning is shown under *Place on the cube*
+and, in the headset, on the strip under the panel (the first one, in amber);
+the status line also warns when the
+cube's or the catalogue's spectral frame calls for a frame change, which is
+not applied. A source without a spectral column is
+drawn on the back face of the clipping box with a faint line through every
+channel (*through every channel* turns those lines off). VLKB ellipses are
+built as on the desktop (FWHM in pixels, major axis along +x turned by the
+PA), each band in the desktop's colour; filaments lie on the back face. The
+status line says how many sources were placed, how many fell outside the
+cube, and how they were placed in velocity.
+
+### Velocity fields
+
+The backend traces the streamlines and picks the arrows on the grid the
+desktop's velocity viewer shows (block-averaged to 128 per side), with the
+same filters and settings: 200 seeds in a ball at the centre of 0.3 times the
+longest side, Runge-Kutta 4-5 both ways, 2000 steps at most; at most 50 000
+arrows by uniform spatial sampling, each `3 × cell / speed max` long per unit
+of speed. The seeds are random, as on the desktop, from a fixed sequence:
+*Trace again* (or *new seeds* on the headset) draws another set. The lines are
+coloured by the speed over the full-resolution range through the page's
+colour map. The lines are traced with the box the desktop's viewer shows (its
+*Box size*, carried by the link as `box=`; 0 is grid units), else the one the
+field was opened with; the axes say which (Mpc or grid units), from what the
+backend reports. The page draws lines one pixel wide where the desktop
+draws tubes.
+
+### The strip under the panel
+
+In the headset a strip of buttons sits under the control panel: for a point
+table *points/splats*, *colour:* (next column), *rows* (next budget), *size −*
+and *size +*; for a velocity field *streamlines*, *arrows*, *arrows −/+* and
+*new seeds*; over a cube with a catalogue placed, *catalogue*, *labels* and
+*through velocity*. Point the right controller at it and pull the trigger.
+
+### Measured on the Mac: points, catalogues, flows
+
+Chrome headless with ANGLE Metal on an M5 Max, one view of 1680 × 1673 pixels
+(about one Quest 3 eye at 1×), GPU time from the timer query; synthetic data
+in the scratch area (a VBT of 10 000 000 rows with five columns, a 96³
+velocity field, a GLON-CAR cube), HCG 44 with its SoFiA-2 catalogue.
+
+**Point table, 10⁷ rows**, all sampled rows drawn (*hold the frame rate*
+off), GPU ms for one view (two runs; the second's numbers, the first's within
+0.8 ms):
+
+| Rows drawn | points | splats | sample | request (local) |
+|---|---|---|---|---|
+| 0.5 M | 3.3 | 4.0 | 4 MB | 50 ms |
+| 1 M | 4.0 | 4.2 | 8 MB | 97 ms |
+| 2 M | 4.2 | 4.4 | 16 MB | 160 ms |
+| 5 M | 6.2 | 8.1 | 40 MB | 480 ms |
+| 10 M | 13.6 | 18.5 | 80 MB | 1030 ms |
+
+With *hold the frame rate* on and all 10 M rows sampled, the page settled at
+3.4 to 6.0 M rows drawn, 9.2 to 10.1 ms of GPU per frame (0.6 of a 60 Hz
+frame) and 60.0 FPS with no missed frame. The cost is per point (2 px squares
+cost little more than 1 px ones: 4.4 against 3.7 ms for 2 M rows), not per
+pixel. Refinement: the first refined frame of all 10 M rows came 1.6 s after
+loading (the render session is made then), fully blended at 1.75 s; the
+backend drew both eyes in 141 ms, pose to frame 203 ms.
+
+**Catalogue over a cube.** HCG 44 (`VELO-HEL` read as optical velocity) and
+its SoFiA-2 catalogue (VOTable, `ra`, `dec`, `v_app` in m/s): all 18 sources
+placed, within 0.0022 px in x and y and 10⁻¹³ channel in z of the pixel
+SoFiA itself reports, and drawn on the galaxies' emission. A synthetic
+GLON-CAR cube with 12 Gaussian sources whose catalogue gives `glon`, `glat`
+and `vlsr` (km/s): every source within 3 × 10⁻⁶ px of its true voxel. The
+placement took 23 ms; the overlay costs 0.2 to 0.4 ms of GPU.
+
+**Velocity field**, 96³ with a box of 200 Mpc: 400 streamlines of 407 758
+points and 50 000 arrows, 7.7 MB, traced and sent in 0.24 to 0.29 s, 2.0 to
+3.1 ms of GPU for one view of 1600 × 913. The streamlines are point for point
+those of the desktop's pipeline on the same grid (a test runs the desktop's
+filters, written from its C++, with the same seeds on the grid placed by the
+spacing and origin the grid route reports: identical within 10⁻⁴ Mpc), on the
+full grid and on a block-averaged one. Opened from a pairing link: 0.42 s to
+the lines drawn.
+
+### What to check on the Quest 3: points, catalogues, flows
+
+1. **A point table from the desktop.** Open a large VBT (at least 10⁷ rows,
+   for example the snapshot under DemoData converted to VBT) in the desktop,
+   *Tools → Open in VR Headset…*, put the headset on: the table must load
+   with nothing typed. Enter VR; on the numbers panel note **FPS**, **missed
+   %**, **GPU ms** and the line *points … drawn of … sampled*, at *quest-low*,
+   *quest* and *quest-high* (the *rows* button on the strip), with *hold the
+   frame rate* on and then off (on the page before entering VR). Move your
+   head quickly: the points must never lag.
+2. **Splats.** Press *points/splats*: note the same numbers.
+3. **Refinement of a point table.** Hold still: within about a second the
+   denser image of every row must fade in, on the same place as the headset's
+   points; note **pose->frame** and **stop->refined**.
+4. **A catalogue.** Open HCG 44 from the desktop; on the page (before entering
+   VR) place `sofia_hgc44_cat.xml` (catalogue file); in VR, check that every
+   cross sits on a galaxy's emission at its velocity, and that *labels* and
+   *catalogue* on the strip work. If the VLKB is reachable, open a Hi-GAL or
+   CHIMPS cutout and place *VLKB compact sources*: the ellipses must sit on the
+   compact emission.
+5. **A velocity field.** Open one in the desktop's velocity viewer, *Open in
+   VR Headset…*: compare the streamlines in the headset with the desktop's at
+   the same seeds count (they are drawn from another random set of seeds:
+   compare the flow's structure, the attractors and the speeds' colours). Note
+   FPS and GPU ms with streamlines and arrows on.
+
 ## Known limits
 
 - **Tokens in the access log.** The VR page sends its token in request
@@ -1469,4 +1651,18 @@ the checks below.
   a wide projected field the true coordinate of a pixel differs a little.
 - The page reads the whole cube once to reduce it (0.6 s for HCG 44, 1.1 s
   with a cold cache); a cube of hundreds of GB takes correspondingly long.
+- **Point tables, catalogues, velocity fields** (#190): a point table is
+  refined in the headset's own colours only (no selections, no filters set on
+  the page; the desktop's filters are not carried over); the ray-traced
+  particle render is not used for refinement (seconds per frame on the CPU,
+  where a stereo frame must come in a few hundred milliseconds). A velocity
+  field is not refined, its streamlines are lines one pixel wide (the
+  desktop's are tubes), a later change of the desktop's *Box size* reaches
+  the headset only with a new link, and
+  basins and the divergence isosurfaces stay on the desktop. A catalogue's
+  spectral column is read in the cube's own reference frame (no barycentric
+  to LSR change); DS9 region files are not placed (the desktop's cube overlay
+  reads them); the page's catalogue choice is not carried by the pairing link.
+  The desktop's cube overlay of a catalogue file still uses its linear
+  approximation of the WCS; the headset's uses the full projection.
 - Comfort: prefer short, seated sessions; passthrough mode helps.

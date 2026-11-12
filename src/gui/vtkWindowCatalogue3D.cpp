@@ -677,6 +677,12 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                     u"redshift under this window's cosmology, or a custom one."_s);
             QObject::connect(actionCalculator, &QAction::triggered, this,
                              &vtkWindowCatalogue3D::openCosmologyCalculator);
+            // The same table in a Quest headset, in this backend session (issue #190).
+            auto *actionVr = toolsMenu->addAction(u"Open in VR Headset…"_s);
+            actionVr->setToolTip(u"Draw these points in a Meta Quest connected by USB "
+                                 u"(WebXR page), refined by the backend when still."_s);
+            QObject::connect(actionVr, &QAction::triggered, this,
+                             &vtkWindowCatalogue3D::openInVrHeadset);
         }
 
         // ── SAMP menu: this catalogue, a selection of it, a position ─────────

@@ -8,6 +8,25 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR headset: point tables, catalogues over a cube and velocity fields
+  (part of #166, #190).** The `/vr/` page opens a VBT point table or 3-D
+  catalogue (an even sample within a budget, 8 bytes a row, drawn as points or
+  additive splats with the page's colour maps, fewer rows while a frame would
+  be late; refined when still by the point render session, which now draws a
+  headset's stereo frames with every row, `data_to_model` in the pose), places
+  catalogue sources over a cube (a catalogue file, VLKB compact sources and
+  filaments, a cross-match) in the cube's pixels with its full WCS, CAR and
+  TAN alike, at their channel when the catalogue has a spectral column, and
+  draws a velocity field's streamlines and arrows traced by the backend with
+  the desktop viewer's own filters on its display grid. New routes
+  `/v1/points/info`, `/v1/points/sample_bin`, `/v1/cube/catalogue_pixels`,
+  `/v1/velocity/lines_bin` (docs/backend-api/vr-layers.md); the pairing link
+  gains `kind=` and `box=`, and the point and velocity windows an *Open in VR
+  Headset…* entry. A catalogue opened from a VOTable, FITS or IPAC table keeps
+  its columns' units (and a FITS table its `SPECSYS`); the stereo `xr_error`
+  carries a `code` (`out_of_core`, `unsupported`). Measured on an M5 Max: 10⁷
+  rows held at 60 FPS (3.4-6.0 M drawn, about 10 ms GPU); HCG 44's 18 SoFiA-2 sources within 0.003 px of SoFiA's
+  own pixels; streamlines identical to the desktop pipeline's.
 - **VR headset: more of the desktop's analysis, and hand tracking (part of
   #166, #191).** In the `/vr/` page, an analysis panel hangs under the
   control panel: Kinematic Lasso seeds that **add** a source or **carve** a
