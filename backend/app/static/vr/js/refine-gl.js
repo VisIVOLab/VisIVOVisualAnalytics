@@ -53,10 +53,11 @@ in vec2 vUV;
 uniform sampler2D uColor;          // both eyes side by side, rows top first
 uniform int uEye;
 uniform vec2 uHalfTexel;           // keeps the filter inside this eye's half
+uniform float uVScale;             // the eyes' rows over the texture's (a video frame's stripe below)
 out vec4 outColor;
 void main() {
   vec2 uv = vec2(clamp(vUV.x, uHalfTexel.x, 1.0 - uHalfTexel.x) * 0.5 + 0.5 * float(uEye),
-                 clamp(vUV.y, uHalfTexel.y, 1.0 - uHalfTexel.y));
+                 clamp(vUV.y, uHalfTexel.y, 1.0 - uHalfTexel.y) * uVScale);
   outColor = vec4(texture(uColor, uv).rgb, 1.0);
 }`;
 
@@ -149,13 +150,14 @@ export class RefineDraw {
     const t0 = performance.now();
     const i = this.current === 0 ? 1 : 0;
     const s = this.slots[i];
-    const bm = frame.bitmap;
+    const bm = frame.bitmap;          // an ImageBitmap, or a VideoFrame (WebRTC, #189)
+    const bw = bm.displayWidth || bm.width, bh = bm.displayHeight || bm.height;
     gl.bindTexture(gl.TEXTURE_2D, s.color);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    if (s.colorSize[0] !== bm.width || s.colorSize[1] !== bm.height) {
+    if (s.colorSize[0] !== bw || s.colorSize[1] !== bh) {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bm);
-      s.colorSize = [bm.width, bm.height];
+      s.colorSize = [bw, bh];
     } else {
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, bm);
     }
@@ -171,7 +173,7 @@ export class RefineDraw {
       }
     }
     if (bm.close) bm.close();
-    s.frame = { header: frame.header, rec: frame.rec, hasDepth: !!(frame.depth && d) };
+    s.frame = { header: frame.header, rec: frame.rec, hasDepth: !!(frame.depth && d), vScale: frame.vScale || 1 };
     this.current = i;
     return performance.now() - t0;
   }
@@ -190,7 +192,7 @@ export class RefineDraw {
     const s = this.current >= 0 ? this.slots[this.current] : null;
     if (!s || !s.frame || w <= 0) return false;
     const gl = this.gl;
-    const { rec, header, hasDepth } = s.frame;
+    const { rec, header, hasDepth, vScale } = s.frame;
     const ef = rec.eyes[Math.min(eyeIndex, rec.eyes.length - 1)];
     const E = reprojectionMatrix(ef.view, rec.model, view.view, model);
     const invProj = M.invert(ef.proj);
@@ -208,6 +210,7 @@ export class RefineDraw {
     gl.uniform2i(u.uDepthEye, Math.max(1, dw), Math.max(1, dh));
     gl.uniform1f(u.uFallback, centreDistance(ef.view, rec.model));
     gl.uniform2f(u.uHalfTexel, 0.5 / eyeHdr.width, 0.5 / eyeHdr.height);
+    gl.uniform1f(u.uVScale, vScale);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, s.color);
     gl.uniform1i(u.uColor, 0);

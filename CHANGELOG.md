@@ -8,6 +8,30 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR headset: refined frames as H.264 video over WebRTC (part of #166,
+  #189).** The `/vr/` page can receive the colour of the backend's refined
+  stereo frames as WebRTC video instead of JPEG: the render session's
+  WebSocket negotiates a peer of its own (`xr_rtc_offer` / `xr_rtc_answer` /
+  `xr_rtc_stop`; not a mono WebRTC peer, so the one-owner rules of the stereo
+  mode hold), the render process encodes both eyes side by side (libx264, or
+  NVENC on Linux) and the header and depth image stay on the WebSocket. Each
+  video frame carries its pose id in a 48-cell stripe under the eyes (start
+  and end patterns, 32 id bits, CRC-8), read back by the page after decoding,
+  so a frame is shown only with the pose it was rendered for; no mismatch in
+  a synthetic stream of 20 000 poses nor in the browser runs. The page
+  chooses the video by itself when the JPEG frames' network time exceeds
+  40 ms (`?refine_transport=webrtc|jpeg|auto`) and falls back to JPEG when
+  WebRTC is missing, does not connect, the encoder fails, or frames arrive
+  that do not pair. A frame the backend cannot send is never followed by one
+  that refers to it: the next one is a keyframe. Measured on the Mac (HCG 44,
+  Quest-size eyes, headless Chrome): a quarter of the bandwidth (4 against 15
+  Mbit/s), about 3 dB less PSNR on the emission (41.7 against 44.7; the page
+  alone 26), pose->frame 153 against 149 ms on an unthrottled link. With the
+  WebSocket throttled to 15 Mbit/s through the DevTools protocol (which does
+  not slow the WebRTC video, so not a Wi-Fi measurement) 142 against 176 ms;
+  over Wi-Fi on a Quest 3 it is still to be measured. New
+  `validation/vr_refine_webrtc.mjs` measures it.
+
 - **VR headset, final version: the desktop's cube in the same session, a
   panel in the headset, settings kept (#172, step 6 of #166).** The `/vr/`
   page reads the desktop's pairing link (`#token=…&session=…&dataset=…&path=…`,

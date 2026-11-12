@@ -58,7 +58,8 @@ let selectionDirty = true;
 
 // Refinement (issue #170): the backend's full-quality stereo frames, blended in
 // while the view is still or slow. The page's own rendering is always drawn.
-const refiner = new Refiner(gl, () => backend);
+// ?refine_transport=webrtc|jpeg|auto: the refined colour as H.264 video (#189).
+const refiner = new Refiner(gl, () => backend, { transport: query.get('refine_transport') || 'auto' });
 let refineMode = 'auto';      // 'auto' | 'off' (debug: the local picture alone)
 let lookCache = { key: null, look: null };
 

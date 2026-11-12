@@ -47,6 +47,7 @@ a steady stream — no backpressure).
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import time
@@ -64,6 +65,7 @@ from ..render_manager import (
 )
 from ..render_session import server_side_rendering_available
 from ..render_session._stereo import XRFrame, parse_pose
+from ..render_session import _stereo_webrtc as xr_rtc
 from ..sessions import Session as VisivoSession, get_session
 
 router = APIRouter(prefix="/v1/render", tags=["render"])
@@ -522,6 +524,9 @@ _PUSH_POLL_S = 0.25
 # or 120 Hz (the desktop asks for 30 or 60).
 _MAX_PUSH_FPS = 120.0
 
+# WebRTC offers of one connection (issue #189): at most this many in a window.
+_MAX_OFFERS, _OFFER_WINDOW_S = 6, 60.0
+
 
 class _PushState:
     """Flow control of one push stream: frames sent but not yet acknowledged."""
@@ -531,6 +536,8 @@ class _PushState:
         self.max_fps = 30.0
         self.in_flight = 0
         self.acked = asyncio.Event()
+        self.rtc: xr_rtc.StereoRtcLink | None = None   # this connection's stereo video (#189)
+        self.offer_times: collections.deque = collections.deque()   # its recent xr_rtc_offers
 
     def configure(self, command: dict) -> None:
         try:
@@ -577,17 +584,43 @@ def _supports_stereo(sess) -> bool:
     return hasattr(sess, "_render_xr_frame_on_thread")
 
 
+def _stereo_message(frame: XRFrame, ready: float | None, rtc) -> bytes | None:
+    """A stereo frame's WebSocket message. A frame the render process encoded
+    for the connection's video link (issue #189) goes to the video track, and
+    the message carries its header and depth only; None when it is not sent
+    (the link closed, not connected at the moment, or the track keeping its
+    reference chain whole: the link has asked for a keyframe, or told the
+    session to make JPEGs again)."""
+    if frame.header.get("color", {}).get("format") != "h264":
+        return frame.to_bytes(ready=ready, sent=time.time())
+    return rtc.frame_message(frame, ready, time.time()) if rtc is not None else None
+
+
 async def _send_frame(websocket: WebSocket, send_lock: asyncio.Lock, frame,
-                      ready: float | None = None) -> bool:
+                      ready: float | None = None, push: "_PushState | None" = None) -> bool:
     """Send a frame: JPEG bytes as they are, a stereo frame with the time it
     came back from the renderer and the time it is handed to the socket, or a
-    stereo frame's error as text. True when a frame (not an error) went out."""
+    stereo frame's error as text. True when a frame (not an error, nor a
+    video frame not sent) went out. A frame whose H.264 encoding failed comes
+    as a JPEG with the reason: the page is told (``xr_rtc_error``) and the
+    connection's video link closed, before the JPEG goes out."""
+    rtc = push.rtc if push is not None else None
     if isinstance(frame, XRFrame):
+        video_error = frame.header.pop("video_error", None)
+        if video_error and push is not None:
+            async with send_lock:
+                await websocket.send_text(json.dumps(
+                    {"type": "xr_rtc_error", "error": video_error}, separators=(",", ":")))
+            await _xr_rtc_close(push)
+            rtc = None
+        message = None if frame.error is not None else _stereo_message(frame, ready, rtc)
         async with send_lock:
             if frame.error is not None:
                 await websocket.send_text(frame.error_message())
                 return False
-            await websocket.send_bytes(frame.to_bytes(ready=ready, sent=time.time()))
+            if message is None:
+                return False
+            await websocket.send_bytes(message)
         return True
     async with send_lock:
         await websocket.send_bytes(frame)
@@ -687,7 +720,8 @@ async def _push_frames(websocket: WebSocket, sess, send_lock: asyncio.Lock,
             # the frame while send_bytes() is still waiting on the transport,
             # and an ack counted before its frame would be lost for good.
             push.in_flight += 1
-            await _send_frame(websocket, send_lock, jpeg, ready)
+            if not await _send_frame(websocket, send_lock, jpeg, ready, push):
+                push.ack()       # a video frame dropped with its link: nothing to acknowledge
             last_sent = loop.time()
     except asyncio.CancelledError:
         raise
@@ -789,7 +823,7 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
                     sess.changed.set()
                     continue
                 jpeg = await sess.render_frame()
-                await _send_frame(websocket, send_lock, jpeg, time.time())
+                await _send_frame(websocket, send_lock, jpeg, time.time(), push)
             elif ctype == "stream":
                 if push_task is None:
                     push.configure(command)
@@ -807,6 +841,8 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
                 # reaches the renderer; stamped with its arrival, the start
                 # of the frame's server timings.
                 received = time.time()
+                # The backend sets it, below; a client may only ask for a JPEG.
+                as_jpeg = command.pop("frame_color", None) == "jpeg"
                 conflict = None if stereo else _stereo_conflict(session_id, websocket)
                 if not _supports_stereo(sess):
                     reply = {"type": "xr_error", "pose_id": command.get("pose_id"),
@@ -826,15 +862,28 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
                         await websocket.send_text(json.dumps(reply, separators=(",", ":")))
                     continue
                 command["t_received"] = received
+                if not as_jpeg and push.rtc is not None and push.rtc.ready:
+                    # Its eyes go as video, encoded by the render process
+                    # (which falls back to a JPEG for eyes too narrow or odd).
+                    command["frame_color"] = "h264"
                 if not stereo:
                     _stereo_owners[session_id] = websocket
                     stereo = True
                 await sess.apply_command(command)
+            elif ctype == "xr_rtc_offer":
+                await _xr_rtc_offer(websocket, send_lock, session_id, push, command, sess)
+            elif ctype == "xr_rtc_stop":
+                await _xr_rtc_close(push)
             elif ctype == "keepalive":
                 # Touches stats.last_command_at via apply_command's bookkeeping.
                 await sess.apply_command({"type": "keepalive"})
             elif ctype == "close":
                 break
+            elif isinstance(ctype, str) and ctype.startswith("xr_video"):
+                # The backend's own commands to the render process (the video
+                # link's encoder): never a client's.
+                logger.warning("[render-ws] %s: client command %r ignored",
+                               session_id[:8] + "…", ctype[:40])
             else:
                 await sess.apply_command(command)
     except WebSocketDisconnect:
@@ -858,8 +907,11 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
         finally:
             # Even when this handler is cancelled at the wait above.
             try:
-                if stereo:
-                    await _leave_stereo(session_id, sess)
+                try:
+                    await _xr_rtc_close(push)
+                finally:
+                    if stereo:
+                        await _leave_stereo(session_id, sess)
             finally:
                 # Disconnect does NOT evict the session — the user might
                 # reconnect quickly (network blip, page reload, a switch back
@@ -880,3 +932,70 @@ async def _leave_stereo(session_id: str, sess) -> None:
         raise                 # the xr_stop goes on; the handler's cancellation does too
     except Exception:   # noqa: BLE001 - the session may be gone already
         logger.debug("[render-ws] xr_stop on leave failed", exc_info=True)
+
+
+# ── Stereo frames as WebRTC video (issue #189) ───────────────────────────────
+
+
+async def _xr_rtc_offer(websocket: WebSocket, send_lock: asyncio.Lock, session_id: str,
+                        push: _PushState, command: dict, sess) -> None:
+    """``xr_rtc_offer``: the page's SDP offer for a video link of this
+    connection, answered on the WebSocket (``xr_rtc_answer``, or
+    ``xr_rtc_error`` with the reason; the JPEG frames then go on). The link
+    is the connection's own, not one of the session's mono WebRTC peers: it
+    is refused while another client views the session, as a pose is. The
+    session's render process encodes the frames: it is told so first
+    (``xr_video``), in order with the poses that follow."""
+    async def reply(message: dict) -> None:
+        async with send_lock:
+            await websocket.send_text(json.dumps(message, separators=(",", ":")))
+
+    now = time.monotonic()
+    recent = push.offer_times
+    while recent and now - recent[0] > _OFFER_WINDOW_S:
+        recent.popleft()
+    sdp = command.get("sdp")
+    why = (xr_rtc.rtc_available()
+           or (None if _supports_stereo(sess) else "Stereo frames are drawn for cubes only.")
+           or _stereo_conflict(session_id, websocket)
+           or (f"Too many offers: at most {_MAX_OFFERS} a minute."
+               if len(recent) >= _MAX_OFFERS else None)
+           or xr_rtc.check_offer(sdp)[1])
+    if why is not None:
+        await reply({"type": "xr_rtc_error", "error": why})
+        return
+    recent.append(now)
+    # The link before is closed, its "video off" applied by the session,
+    # before the new one's "video on" is sent.
+    await _xr_rtc_close(push)
+
+    def to_session(cmd: dict):
+        task = asyncio.ensure_future(sess.apply_command(cmd))
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())   # never unretrieved
+        return task
+
+    link = xr_rtc.StereoRtcLink.from_offer_command(session_id, command, to_session)
+    # Held by the connection from now on: closed with it, whatever happens below.
+    push.rtc = link
+    try:
+        await sess.apply_command(link.video_command())
+        answer = await link.answer(sdp, "offer")
+    except Exception as exc:   # noqa: BLE001 - told to the page, which keeps JPEG
+        await _xr_rtc_close(push)
+        logger.warning("[render-ws] %s: stereo WebRTC negotiation failed: %s",
+                       session_id[:8] + "…", exc)
+        await reply({"type": "xr_rtc_error",
+                     "error": f"WebRTC negotiation failed: {type(exc).__name__}: {exc}"})
+        return
+    except BaseException:
+        await asyncio.shield(_xr_rtc_close(push))
+        raise
+    await reply({"type": "xr_rtc_answer", **answer, "crf": link.crf, "max_kbps": link.max_kbps})
+
+
+async def _xr_rtc_close(push: _PushState) -> None:
+    """``xr_rtc_stop``, or the connection closing: the link is closed and the
+    stereo frames go as JPEG again."""
+    link, push.rtc = push.rtc, None
+    if link is not None:
+        await link.close()
