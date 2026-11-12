@@ -133,8 +133,11 @@ measured under [Fidelity of the reduced cube](reference.md#fidelity-of-the-reduc
   in the headset is measured there but not shared, and the page says so). The
   desktop sends a selection only when asked (*Show in VR Headset*); its
   sliders do not regrow a selection received from the headset.
-- **Refinement**: needs a cube the backend holds in core: a cube drawn out of
-  core from its brick pyramid is not refined (the menu says so). Refined
+- **Refinement**: a cube drawn out of core is refined from one whole level of
+  its brick pyramid, the finest within the GPU budget
+  (`VISIVO_RENDER_OOC_BUDGET_BYTES`, 2 GiB), not from its full resolution;
+  the view-dependent blocks of the desktop's out-of-core view are not used
+  for the headset (see [Large cubes](reference.md#large-cubes-from-the-brick-pyramid)). Refined
   frames travel as JPEG over the render session's WebSocket, or as H.264 video
   over WebRTC when the link is slow (see
   [Over Wi-Fi: refined frames as video](reference.md#over-wi-fi-refined-frames-as-video-webrtc));
@@ -162,8 +165,18 @@ measured under [Fidelity of the reduced cube](reference.md#fidelity-of-the-reduc
   [checks](reference.md#analysis-and-hands-191).
 - The labels follow the central row and column of the field; far from them on
   a wide projected field the true coordinate of a pixel differs a little.
-- The page reads the whole cube once to reduce it (0.6 s for HCG 44, 1.1 s
-  with a cold cache); a cube of hundreds of GB takes correspondingly long.
+- **Reduction**: a cube below the in-core limit is read whole once to reduce
+  it (0.6 s for HCG 44, 1.1 s with a cold cache). A larger one is reduced
+  from a level of its brick pyramid, by the mean only: **max binning**,
+  *Read from: whole cube*, and a pyramid the backend cannot build read the
+  whole cube (in bounded pieces, slowly: 11 s for 11 GiB). Automatic factors
+  may come out up to twice what was asked on an axis (more only when even a
+  16 GiB level would not keep them); given factors that would need a level
+  over 1 GiB are refused with the nearest ones that fit (see
+  [Large cubes](reference.md#large-cubes-from-the-brick-pyramid)). The first time, the
+  pyramid is built (14 s for an 11 GiB cube on an M5 Max).
+- **Box statistics** (`mask_stats_bin`) are refused above 64 Mi voxels: on a
+  large cube draw a smaller box.
 - **Point tables, catalogues, velocity fields** (#190): a point table is
   refined in the headset's own colours only (no selections, no filters set on
   the page; the desktop's filters are not carried over); the ray-traced

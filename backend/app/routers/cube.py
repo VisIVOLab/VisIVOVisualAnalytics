@@ -187,47 +187,134 @@ async def cube_subvolume_bin(
 # the analysis stays on the full cube. /reduced_info answers the shape, the
 # factors, the default threshold and the world coordinates of the reduced
 # voxels (JSON); /reduced_bin streams the reduced cube as an 8- or 16-bit 3-D
-# texture. The rules are in app/cube_reduce.py.
+# texture. The rules are in app/cube_reduce.py. A large cube's reduced cube
+# comes from a level of its brick pyramid instead of a pass over the whole
+# cube; while the pyramid is built, both routes answer 202 with the fraction
+# done.
+
+
+def _vr_pyramid_bytes() -> int:
+    """Cubes larger than this (as float32) get their reduced cube from their
+    brick pyramid by default: ``VISIVO_VR_PYRAMID_BYTES``, else the render
+    sessions' in-core limit (the cubes they draw from the pyramid too)."""
+    from ..render_session._ooc import OOC_BYTES  # noqa: PLC0415
+    return int(os.environ.get("VISIVO_VR_PYRAMID_BYTES", str(OOC_BYTES)))
+
 
 class CubeReducedRequest(BaseModel):
     dataset_id: str
     #: Integer binning of both spatial axes; 0 picks the smallest factor that
     #: brings both to at most ``max_dim`` reduced voxels.
-    factor_xy: int = Field(default=0, ge=0, le=64)
+    #: No useful upper bound on a factor: the reads are bounded by size
+    #: (app/cube_reduce.py piece_lengths), whatever the factors, and any factor
+    #: reduced_info proposes is accepted here (it is at most an axis' length).
+    factor_xy: int = Field(default=0, ge=0, le=1 << 31)
     #: Integer binning of the spectral axis; 0 picks it the same way.
-    factor_z: int = Field(default=0, ge=0, le=64)
+    factor_z: int = Field(default=0, ge=0, le=1 << 31)
     max_dim: int = Field(default=256, ge=16, le=2048)
     #: ``mean`` (over each block's finite voxels) or ``max`` (largest finite value).
     mode: Literal["mean", "max"] = "mean"
     #: ``uint8`` (0 = blank, 1..255 = the range) or ``float16`` (normalised, < 0 = blank).
     encoding: Literal["uint8", "float16"] = "uint8"
+    #: Where the reduced cube is read from: ``cube`` (a pass over the whole
+    #: cube), ``pyramid`` (a level of the cube's brick pyramid, built first when
+    #: missing; mean binning only), or ``auto``: the pyramid for a cube larger
+    #: than ``VISIVO_VR_PYRAMID_BYTES`` binned by the mean, else the cube.
+    source: Literal["auto", "pyramid", "cube"] = "auto"
 
 
-@router.post("/v1/cube/reduced_info", tags=["cube"])
+def _reduced_source(path: str, request: CubeReducedRequest):
+    """``(pyramid path or None, None, note)`` when the reduced cube can be made
+    now, ``(None, a 202 response, "")`` while the cube's brick pyramid is being
+    built. With ``auto``, a pyramid that cannot be had (a directory that cannot
+    be written, a build that failed) falls back to the whole cube, in bounded
+    pieces, and ``note`` says why. Runs in a thread: it stats files and may
+    start the build's process."""
+    from fastapi.responses import JSONResponse  # noqa: PLC0415
+    from ..brick_pyramid import default_pyramid_path  # noqa: PLC0415
+    from ..pyramid_builds import ensure_pyramid  # noqa: PLC0415
+    from ..volume_source import volume_shape  # noqa: PLC0415
+
+    if request.source == "cube":
+        return None, None, ""
+    try:
+        full, hdu = volume_shape(path, None)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(422, f"The cube could not be read: {exc}") from exc
+    full = [int(n) for n in full]
+    shape = full[-3:]
+    # A pyramid holds the HDU's last three axes: the cube the reduction reads
+    # only when every other axis is one plane and none of these three is.
+    fits = len(shape) == 3 and min(shape) > 1 and all(n == 1 for n in full[:-3])
+    if request.source == "auto":
+        if not fits or request.mode != "mean" or \
+                int(np.prod(shape)) * 4 <= _vr_pyramid_bytes():
+            return None, None, ""
+    elif not fits:
+        raise HTTPException(422, f"A cube of shape {full} has no brick pyramid of its "
+                                 "spectral cube: use source 'cube'.")
+    elif request.mode != "mean":
+        raise HTTPException(422, "A reduced cube from the brick pyramid is binned by the "
+                                 "mean (its levels are means): use source 'cube' for max.")
+    try:
+        built = ensure_pyramid(path, hdu)
+        failure = f"Building the cube's brick pyramid failed: {built.error}" \
+            if built.state == "failed" else ""
+    except Exception as exc:  # noqa: BLE001 - e.g. a pyramid directory that cannot be written
+        built, failure = None, f"The brick pyramid could not be built: {exc}"
+    if failure:
+        if request.source == "auto":
+            logger.warning("[reduced] %s: the whole cube is read instead", failure)
+            return None, None, f"{failure} The whole cube was read instead."
+        raise HTTPException(500, f"{failure} Choose \"Read from: whole cube\" (source 'cube').")
+    if built.state == "ready":
+        return str(default_pyramid_path(path, hdu)), None, ""
+    return None, JSONResponse(status_code=202, content={
+        "valid": False, "preparing": True, "progress": round(built.progress, 3),
+        "error": "Building the cube's brick pyramid for the headset's reduced cube."}), ""
+
+
+_PREPARING = {202: {"description": "The cube's brick pyramid is being built: "
+                                   "``{valid: false, preparing: true, progress: 0..1, "
+                                   "error}``. Ask again in a moment."}}
+
+
+@router.post("/v1/cube/reduced_info", tags=["cube"], responses=_PREPARING)
 async def cube_reduced_info(
     request: CubeReducedRequest,
     _: None = _auth,
     session: Session = Depends(get_session),
-) -> dict[str, Any]:
+) -> Any:
     """Shape, factors, default threshold and world axes of the reduced cube the
-    VR page renders, without reducing it."""
+    VR page renders, without reducing it. ``source`` says where it comes from:
+    ``cube``, or ``pyramid`` with the level in ``pyramid``."""
     from ..compute import worker_cube_reduced_info
     path = _require_cube_path(session, request.dataset_id)
+    pyramid_path, preparing, note = await asyncio.to_thread(_reduced_source, path, request)
+    if preparing is not None:
+        return preparing
     try:
         info = await _run(worker_cube_reduced_info, path, request.factor_xy,
-                          request.factor_z, request.max_dim, request.encoding)
+                          request.factor_z, request.max_dim, request.encoding, True,
+                          pyramid_path)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    # Whether a render session would draw this cube out of core (from its brick
-    # pyramid): the page then asks for no refined frames, which such a session
-    # cannot give yet, and so starts no pyramid build (issue #170).
+    # Whether a render session draws this cube out of core, from its brick
+    # pyramid (render_session/_ooc.py); its stereo frames are then drawn from
+    # one pyramid level.
     from ..render_session._ooc import wants_out_of_core
     nx, ny, nz = info["full_shape"]
     info["render_out_of_core"] = bool(wants_out_of_core(int(nx) * int(ny) * int(nz) * 4))
+    info["source_note"] = note
     return info
 
 
-@router.post("/v1/cube/reduced_bin", tags=["cube"])
+#: reduced_bin requests being computed, by (session, cube, parameters): a second
+#: identical request waits for the first one's result.
+_REDUCED_IN_FLIGHT: dict[tuple, asyncio.Future] = {}
+
+
+@router.post("/v1/cube/reduced_bin", tags=["cube"], responses=_PREPARING)
 async def cube_reduced_bin(
     request: CubeReducedRequest,
     _: None = _auth,
@@ -235,14 +322,33 @@ async def cube_reduced_bin(
 ) -> Response:
     """The reduced cube as raw 8- or 16-bit voxels (x fastest), with its value
     range and its default threshold in headers (mean: the noise rule on the
-    reduced cube; max: the full cube's threshold). Reads the whole cube, so it
-    takes a compute slot."""
+    reduced cube; max: the full cube's threshold). From the cube it reads the
+    whole cube, from the pyramid one level; it takes a compute slot."""
     from ..compute import worker_cube_reduced
     path = _require_cube_path(session, request.dataset_id)
+    pyramid_path, preparing, note = await asyncio.to_thread(_reduced_source, path, request)
+    if preparing is not None:
+        return preparing
     try:
-        result = await _run_with_limit(
-            session, worker_cube_reduced, path, request.factor_xy, request.factor_z,
-            request.max_dim, request.mode, request.encoding)
+        # Heavy: a whole-cube pass, or a level and its border repair, takes
+        # seconds; the interactive pool is left to slices and probes. The same
+        # request already running for this session (a page resending after a
+        # dropped connection) is joined, not computed twice.
+        # The file's identity (size, modification time) in the key: a file
+        # written again at the same path (an Isolate rerun) is computed anew,
+        # not joined to the old file's computation.
+        from ..product_cache import file_identity  # noqa: PLC0415
+        identity = await asyncio.to_thread(file_identity, path)
+        key = (session.session_id, path, identity, request.factor_xy, request.factor_z,
+               request.max_dim, request.mode, request.encoding, pyramid_path)
+        task = _REDUCED_IN_FLIGHT.get(key)
+        if task is None:
+            task = asyncio.ensure_future(_run_heavy_with_limit(
+                session, worker_cube_reduced, path, request.factor_xy, request.factor_z,
+                request.max_dim, request.mode, request.encoding, True, pyramid_path))
+            _REDUCED_IN_FLIGHT[key] = task
+            task.add_done_callback(lambda _t, k=key: _REDUCED_IN_FLIGHT.pop(k, None))
+        result = await asyncio.shield(task)
     except HTTPException:
         raise
     except ValueError as exc:
@@ -254,6 +360,7 @@ async def cube_reduced_bin(
     raw: bytes = result["raw_bytes"]
     fx, fy, fz = result["factors"]
     fw, fh, fd = result["full_shape"]
+    plan = result.get("pyramid") or {}
     headers = {
         "X-Visivo-Width": str(result["width"]),
         "X-Visivo-Height": str(result["height"]),
@@ -268,6 +375,14 @@ async def cube_reduced_bin(
         "X-Visivo-Threshold": ("" if result["threshold"] is None
                                else repr(float(result["threshold"]))),
         "X-Visivo-Bunit": str(result.get("bunit", "")),
+        "X-Visivo-Source": str(result.get("source", "cube")),
+        "X-Visivo-Pyramid-Level": str(plan["level"]) if plan else "",
+        "X-Visivo-Border-Voxels": (f"{plan['border']['border']},{plan['border']['repaired']}"
+                                   if plan and plan.get("border") else ""),
+        # The revision of the file the worker actually read (reduced_info's
+        # file_revision): the page refuses a cube of another revision. A
+        # request that joined this computation gets the same, true, revision.
+        "X-Visivo-File-Revision": str(result.get("file_revision", "")),
         "Content-Length": str(len(raw)),
     }
     return Response(content=raw, media_type="application/octet-stream", headers=headers)

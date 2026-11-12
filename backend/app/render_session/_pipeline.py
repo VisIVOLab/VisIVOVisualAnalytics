@@ -58,20 +58,25 @@ class PipelineMixin:
     """Command-apply, chunk-poll, frame-render and close worker methods."""
 
     def _apply_crop_on_thread(self, planes: tuple[float, ...] | None) -> None:
-        """Crop the in-core volume to ``planes`` (None: the whole cube). A cube
-        drawn out of core crops its blocks itself, and is left alone."""
-        if getattr(self, "_ooc", None) is not None:
-            if planes is not None:
-                logger.warning("[render-session %s] set_crop ignored out of core",
-                               self.session_id)
-            return
+        """Crop the volume to ``planes``, the box's faces in voxel coordinates
+        (None: the whole cube). Out of core, every block is cropped to the box
+        within its own region (``_ooc.BlockVolumes.set_user_crop``)."""
         mapper = self._volume_mapper
+        if getattr(self, "_ooc", None) is not None:
+            if mapper is not None and hasattr(mapper, "set_user_crop"):
+                mapper.set_user_crop(planes)
+            return
         if mapper is None or not hasattr(mapper, "SetCropping"):
             return
         if planes is None:
             mapper.SetCropping(0)
         else:
-            mapper.SetCroppingRegionPlanes(*planes)
+            # The mapper reads a plane on the samples' extent and draws it on
+            # the cells' (see _ooc._vtk_crop_planes): converted, the faces are
+            # drawn where the box has them, as the out-of-core blocks are.
+            from ._ooc import _vtk_crop_planes  # noqa: PLC0415
+            mapper.SetCroppingRegionPlanes(*_vtk_crop_planes(
+                planes, (0.0, 0.0, 0.0), 1.0, (self._nx, self._ny, self._nz)))
             mapper.SetCroppingRegionFlagsToSubVolume()
             mapper.SetCropping(1)
 

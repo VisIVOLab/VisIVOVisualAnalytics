@@ -83,30 +83,37 @@ test('turning refinement off frees the render slot; on again makes a new session
   assert.equal(b.pending.length, 2);
 });
 
-test('a cube drawn out of core asks for no session at all', async () => {
-  const b = slowBackend();
-  const r = new Refiner(null, () => b, { draw: stubDraw });
-  r.setEnabled(true);
-  await r.setDataset('big', { outOfCore: true });
-  await tick();
-  assert.equal(b.pending.length, 0);
-  assert.match(r.hudLines()[0], /out of core/);
-});
-
-test('a backend that starts preparing a pyramid is not followed', async () => {
+test('a cube drawn out of core asks for its session like any other', async () => {
   const b = slowBackend();
   const r = new Refiner(null, () => b, { draw: stubDraw });
   r.setEnabled(true);
   await r.setDataset('big');
   await tick();
-  b.pending[0].resolve({ valid: false, preparing: true, progress: 0 });
-  await tick(); await tick();
-  assert.match(r.unavailable, /out of core/);
-  await new Promise((res) => setTimeout(res, 20));
-  assert.equal(b.pending.length, 1);                // not asked again
+  assert.equal(b.pending.length, 1);
+  assert.equal(r.unavailable, '');
 });
 
-test('an out-of-core refusal on the socket closes the session', async () => {
+test('a backend that prepares the brick pyramid is followed until the session starts', async () => {
+  sockets.length = 0; deleted.length = 0;
+  const b = slowBackend();
+  const r = new Refiner(null, () => b, { draw: stubDraw });
+  r.setEnabled(true);
+  await r.setDataset('big');
+  await tick();
+  b.pending[0].resolve({ valid: false, preparing: true, progress: 0.42, poll_after_seconds: 0.005 });
+  await tick(); await tick();
+  assert.match(r.status, /preparing the cube \(42 %\)/);
+  assert.equal(r.unavailable, '');
+  await new Promise((res) => setTimeout(res, 30));
+  assert.equal(b.pending.length, 2);                // asked again
+  assert.equal(b.pending[1].body.dataset_id, 'big');
+  b.pending[1].resolve({ valid: true, session_id: 'sBig' });
+  await tick(); await tick();
+  assert.equal(sockets.length, 1);
+  assert.match(sockets[0].url, /\/v1\/render\/sBig\/ws/);
+});
+
+test('a cube no pyramid level of which fits is refused by its code, and the session closed', async () => {
   sockets.length = 0; deleted.length = 0;
   const b = slowBackend();
   const r = new Refiner(null, () => b, { draw: stubDraw });
@@ -116,7 +123,7 @@ test('an out-of-core refusal on the socket closes the session', async () => {
   b.pending[0].resolve({ valid: true, session_id: 's9' });
   await tick(); await tick();
   sockets[0].open();
-  r._onMessage(JSON.stringify({ type: 'xr_error', pose_id: 1, error: 'Stereo frames are not available yet for a cube drawn out of core.' }));
+  r._onMessage(JSON.stringify({ type: 'xr_error', pose_id: 1, error: 'No stereo frames for this cube: no level of the cube fits the budget.', code: 'out_of_core' }));
   await tick();
   assert.ok(deleted.includes('/v1/render/s9'));
   assert.equal(sockets[0].readyState, 3);

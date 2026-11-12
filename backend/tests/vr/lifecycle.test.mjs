@@ -350,7 +350,11 @@ test('a load that fails does not cancel a recovery, and loads touch the page\'s 
   assert.ok(lr.lastIndexOf('stillCurrent(ticket)') < lr.indexOf('commitHandle(b)'), 'committed only after the last check');
   assert.ok(lr.indexOf('commitHandle(b)') < lr.indexOf('installCube('));
   const rd = body('recoverDataset');
-  assert.ok(rd.indexOf('if (!r.ok) return r;') < rd.indexOf('commitHandle(b)'), 'a superseded recovery commits nothing');
+  assert.ok(rd.indexOf('if (r.superseded) return r;') < rd.indexOf('commitHandle(b)'), 'a superseded recovery commits nothing');
+  // Only a recovery that reopened the cube, or that waits for its pyramid
+  // (its session kept for the next try), commits its handle.
+  assert.ok(rd.indexOf('if (r.preparing)') < rd.indexOf('commitHandle(b)'));
+  assert.ok(rd.indexOf('if (!r.ok) return r;') < rd.lastIndexOf('commitHandle(b)'));
   // The handle starts from the page's session and copies it back when it wins.
   assert.match(body('loadHandle'), /adoptSession\(ensureBackend\(\)\.session\)/);
   assert.match(body('commitHandle'), /const page = ensureBackend\(\);[\s\S]*page\.adoptSession\(h\.session\)/);
@@ -550,4 +554,83 @@ test('main.js gives the recovery its deadline and passes the signal to the check
   assert.match(main, /publicInfo: \(opts\) => new Backend\(''\)\.info\(opts\)/);
   const shell = readFileSync(new URL('../../app/static/vr/js/shell.js', import.meta.url), 'utf8');
   assert.match(shell, /fetchInfo: \(opts\) => .*\.info\(opts\)/);
+});
+
+test('recovery tries during a pyramid build make one session and open the file once', async () => {
+  // After a restart: the old session is gone, so the first try makes a
+  // session and opens the file; the backend then builds the pyramid (202)
+  // for a few tries. Each later try must ask reduced_info on the dataset it
+  // opened, as main.js recoverDataset does with PendingReopen.
+  const counts = { sessions: 0, opens: 0, infos: 0 };
+  let session = 'old';
+  const preparingTries = 3;
+  const io = {
+    open: async () => {
+      if (session === 'old') { const e = new Error('404: Session not found.'); e.status = 404; throw e; }
+      counts.opens++;
+      return { dataset_id: `ds${counts.opens}` };
+    },
+    newSession: async () => { counts.sessions++; session = `s${counts.sessions}`; },
+    reducedInfo: async (o) => {
+      counts.infos++;
+      if (counts.infos <= preparingTries) {
+        const e = new Error('preparing'); e.preparing = true; e.progress = counts.infos / 10; throw e;
+      }
+      return { full_shape: [8, 8, 4], file_revision: 'rev', dataset: o.dataset_id };
+    },
+    classify: () => 'session-gone',
+    loadGen: () => 7,
+  };
+  const snap = { path: '/big.fits', fullShape: [8, 8, 4], fileRevision: 'rev', gen: 7 };
+  const pending = new L.PendingReopen();
+  let r;
+  for (let i = 0; i < preparingTries + 1; i++) {
+    const kept = pending.take(snap);
+    r = await L.reopenCube(snap, io, kept ? kept.open : null);
+    if (r.preparing) pending.keep(snap, { open: r.open, reason: kept ? kept.reason : 'dataset-gone' });
+  }
+  assert.equal(r.ok, true);
+  assert.equal(r.info.dataset, 'ds1');
+  assert.deepEqual([counts.sessions, counts.opens, counts.infos], [1, 1, preparingTries + 1]);
+  // A newer load (another generation) does not continue the old reopen.
+  pending.keep(snap, { open: { dataset_id: 'ds1' }, reason: 'dataset-gone' });
+  assert.equal(pending.take({ ...snap, gen: 8 }), null);
+  assert.equal(pending.take(snap), null, 'handed over once');
+});
+
+test('a second restart during the pyramid wait reopens the file in the same try', async () => {
+  // Try 1: preparing on ds1. Then the backend restarts again: ds1's session is
+  // gone, so try 2 drops the kept dataset, makes one new session, opens the
+  // file again and completes.
+  const counts = { sessions: 0, opens: 0 };
+  let session = 'live', restarted = false;
+  const gone = () => { const e = new Error('404: Session not found.'); e.status = 404; return e; };
+  const io = {
+    open: async () => {
+      if (session === 'dead') throw gone();
+      counts.opens++;
+      return { dataset_id: `ds${counts.opens}` };
+    },
+    newSession: async () => { counts.sessions++; session = 'live'; },
+    reducedInfo: async (o) => {
+      if (o.dataset_id === 'ds1' && !restarted) {
+        const e = new Error('preparing'); e.preparing = true; e.progress = 0.5; throw e;
+      }
+      if (session === 'dead' || o.dataset_id === 'ds1') throw gone();
+      return { full_shape: [8, 8, 4], file_revision: 'rev' };
+    },
+    classify: (err) => L.classifyFailure(err),
+    loadGen: () => 3,
+  };
+  const snap = { path: '/big.fits', fullShape: [8, 8, 4], fileRevision: 'rev', gen: 3 };
+  const pending = new L.PendingReopen();
+  let r = await L.reopenCube(snap, io, null);
+  assert.equal(r.preparing, true);
+  pending.keep(snap, { open: r.open, reason: 'restarted' });
+  restarted = true; session = 'dead';               // the second restart
+  const kept = pending.take(snap);
+  r = await L.reopenCube(snap, io, kept.open);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.open.dataset_id, 'ds2');
+  assert.deepEqual([counts.sessions, counts.opens], [1, 2], 'exactly one extra session');
 });

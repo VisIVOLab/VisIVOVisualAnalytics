@@ -15,8 +15,15 @@ to run on a Quest 3.
   gets coarse steps near the noise (one peak at 1000 σ makes a code about
   1.3 σ wide): choose 16-bit there, which keeps three significant digits at
   every level.
-- **Threshold from**: *for this binning* (default) or *full cube* (the
-  threshold the desktop's 3-D view starts from). For mean binning *for this
+- **Threshold from**: *for this binning* or *full cube* (the threshold the
+  desktop's 3-D view starts from). Until you choose one (the choice is then
+  kept in this browser), a cube starts from the *full cube*'s threshold when
+  refinement is on, when it is read from a brick pyramid or when the backend
+  draws it out of core, and from the one *for this binning* otherwise (a
+  synthetic cube, or refinement off on a small cube): the refined frames are
+  drawn on the full cube, where the threshold for a coarse binning lets the
+  cube's noise through as fog (see [Large cubes](#large-cubes-from-the-brick-pyramid)).
+  For mean binning *for this
   binning* is the [default-threshold rule](../cube-viewer.md#the-default-threshold)
   applied to the reduced cube, whose noise is lower than the cube's; for max
   binning it is the full cube's threshold, since a block maximum is above it
@@ -91,10 +98,105 @@ How to read it:
 - The 8-bit texture changes the flux kept by about half a percentage point
   against the 16-bit one (56.7 against 57.1 % unbinned on HCG 44).
 
-The defaults (mean, threshold for this binning, 3×3×1 on HCG 44) keep much of
-the faint emission for little noise and blur; max binning is the choice for
-compact sources that mean binning dilutes. A selection made in the headset
-is computed on the full cube, not on what is drawn.
+The defaults (mean binning, 3×3×1 on HCG 44) keep much of the faint emission
+for little noise and blur; max binning is the choice for compact sources that
+mean binning dilutes. These fractions were measured with the threshold *for
+this binning*; with refinement on, the page now starts from the *full cube*'s
+threshold (see *Threshold from* above), the bracketed figures. A selection made
+in the headset is computed on the full cube, not on what is drawn.
+
+## Large cubes: from the brick pyramid
+
+A cube larger than the backend's in-core limit (`VISIVO_RENDER_OUT_OF_CORE_BYTES`,
+6 GiB as 32-bit floats; `VISIVO_VR_PYRAMID_BYTES` sets the page's own limit)
+gets its reduced cube and its refined frames from its
+[brick pyramid](../../brick-pyramid.md), the same file the desktop's out-of-core
+view uses, not from a pass over the whole cube. The whole cube is still read
+in three cases: max binning, *Read from: whole cube*, and a pyramid the
+backend cannot build (a directory it cannot write, a failed build: the status
+line then says so, and the whole cube is read in bounded pieces).
+
+**The first time.** When the cube has no pyramid yet, the backend builds it
+in a process of its own and the page shows *Building the cube's brick pyramid
+on the backend… N %*; every view of the cube shares that build (the
+desktop's too), and it is done once per cube (a changed file gets a new
+one). The status line then says *brick pyramid built in N s*. A build whose
+progress does not move for 5 minutes, or that takes over 2 hours, is given up
+by the page, which says to choose *Read from: whole cube*. To skip the wait,
+build it beforehand (`python -m app.brick_pyramid build cube.fits`, see
+[Building](../../brick-pyramid.md#building)).
+
+**The reduced cube.** Level K of the pyramid is the cube averaged over blocks
+of 2^K pixels on every axis. The page's binning is read from the coarsest
+level that gives it exactly, binned further by integer factors. When that
+level is larger than 1 GiB (`VISIVO_VR_PYRAMID_READ_BYTES`):
+
+- automatic factors are read from the finest level within 1 GiB, rounded up
+  to its blocks, but never more than twice what was asked on any axis: past
+  that, a finer level is read, in pieces of at most 128 MiB, up to 16 GiB
+  (`VISIVO_VR_PYRAMID_MAX_READ_BYTES`). Only when even that level is larger
+  is the coarse level kept, and the spectral axis may then be binned up to
+  2^K times more than asked (`pyramid.asked_factors` in `reduced_info`
+  gives both). A 2400 × 2400 × 520 cube asks 10 × 10 × 3 and gets
+  12 × 12 × 4 from level 2; a 20000 × 20000 × 300 cube asks 79 × 79 × 2 and
+  gets 80 × 80 × 4 from level 2 (7.5 GB read in pieces), not 80 × 80 × 8 from
+  level 3;
+- factors you give are kept exactly, from a level they are multiples of; when
+  that level is larger than 1 GiB they are refused, with the nearest factors
+  that would fit (for example *factor_xy 32* for 33).
+
+The label says where the cube came from: *binned 12×12×4 (mean, pyramid
+level 2)*. What this changes:
+
+- The voxels cover exactly the blocks of the factors shown, as a reduction of
+  the whole cube does, so picking, the lasso seed, the box and the green mask
+  map to the same full-cube pixels and channels (tested on odd sizes and
+  partial last blocks, `backend/tests/test_vr_reduced_pyramid.py`).
+- Their values are the full cube's block means. A level voxel is a mean of
+  means (each of its sub-blocks counts alike, whatever it holds), so the level
+  is weighted by the pixels under each voxel, and every level voxel next to a
+  blank one, which may hold only a few finite pixels, is recomputed from
+  level 0 (its exact sum and count). The repair is all or none: the
+  level-0 reads it needs are counted from the border voxels' positions
+  before any is made, and when they exceed 1 GiB per cube
+  (`VISIVO_VR_PYRAMID_REPAIR_BYTES`) none is repaired (the header
+  `X-Visivo-Border-Voxels` gives the border voxels and how many were
+  repaired: all of them, or 0). On noise cut by a circle of blanks this gives the whole cube's block
+  means to float precision; without it, voxels on the cut were up to 8.6 times
+  the reduced noise, and the noise up to 1.45 times higher. Not recomputed: blank
+  pixels with no blank level voxel next to them (isolated blanks), and the
+  sub-blocks of a partial last level voxel, which keep equal weights; when
+  the repair is over its budget, every border voxel keeps the level's value.
+- Max binning is not available from the pyramid (its levels are means):
+  *auto* then reads the whole cube.
+- The threshold *of the full cube* is the default (see *Threshold from*),
+  taken from a sample of full-resolution bricks, as the desktop's
+  out-of-core view takes it. The threshold *for this binning* sits far inside
+  the full cube's noise with coarse binning, and the refined frames would
+  show that noise as fog.
+
+**Refinement.** The backend draws the headset's eyes from one whole level of
+the pyramid, the finest within its GPU budget (`VISIVO_RENDER_OOC_BUDGET_BYTES`,
+2 GiB) and the GPU's largest 3-D texture side on every axis: level 1
+(1200 × 1200 × 260) of the 2400 × 2400 × 520 cube. It reads it once, when
+the first pose arrives (0.4 to 0.7 s here), and keeps it for every pose, so a
+moving head never makes the backend read other blocks; after the headset's
+session stops, its mono view chooses its own blocks again. The placement,
+threshold, colours, clipping box, velocity slab and depth image are those of
+an in-core cube, and the ray step is in voxels of the level drawn; the HUD's
+*server* line adds *pyramid level 1*. At 1680 pixels per eye a level of about
+1000 voxels across already gives about one voxel per pixel for a cube at
+arm's length; leaning into the cube shows the level's voxels. The desktop's
+out-of-core view, which chooses finer blocks near the camera, is not used for
+the headset: its blocks change with the view, and a stereo frame takes its
+depth from one block.
+
+**Selections** run on the full cube through the same routes. Their memory
+does not grow with the cube: the lasso works in a window of at most 513³
+voxels around the seed by default (`compute/selection.py`), which bounds it
+(about 2.5 GB more resident memory measured below); the statistics of a mask
+or a box read their box one channel at a time, and a box over 64 Mi voxels is
+refused.
 
 ## Refinement: full-quality frames from the backend
 
@@ -189,12 +291,10 @@ loaded, when refinement is turned off (turning it on again opens a new one),
 in passthrough and during the benchmark, and when the page is closed
 or left (it is opened again when the browser brings the page back); otherwise
 the backend's idle timeout closes it. A synthetic cube has no session
-(*refine unavailable: no backend cube*). A cube the backend would draw out of
-core (larger than its in-core limit, `VISIVO_RENDER_OUT_OF_CORE_BYTES`)
-cannot give stereo frames yet: the page learns it from `reduced_info`
-(`render_out_of_core`) and asks for no session at all, so no brick pyramid is
-built for it; the menu says *refine unavailable: the backend draws this cube
-out of core*. A clipping box the backend would refuse is not sent (nor any
+(*refine unavailable: no backend cube*). A cube the backend draws out of core
+(larger than its in-core limit, `VISIVO_RENDER_OUT_OF_CORE_BYTES`) is refined
+too, from one level of its brick pyramid: see [Large cubes](#large-cubes-from-the-brick-pyramid).
+A clipping box the backend would refuse is not sent (nor any
 pose with it), and the menu says why.
 
 **Settings** (on the page, section above *Selection tool*; on or off also on
@@ -627,6 +727,38 @@ times a second, when its text changes. The Quest 3's own figures are on its
 [numbers on the wrist](controls.md#the-numbers-on-the-wrist) (*menu redraw … ms
 + upload … ms* and *readout redraw … ms*).
 
+### Large cube, out of core
+
+A synthetic 2400 × 2400 × 520 cube (11.2 GiB, noise with six rotating discs,
+`validation/vr_large_cube_make.py`), headless Chrome on an M5 Max, a
+1600 × 1000 window, the backend on the same Mac, the threshold of the full
+cube (`validation/vr_large_cube.mjs`; HCG 44 in core in the same run for
+comparison; `validation/vr_large_cube_selection.py` for the selections):
+
+| | Large cube, out of core | HCG 44, in core |
+|---|---|---|
+| Brick pyramid built (first open only) | 9–18 s (15.9 GB file) | none |
+| Open → first reduced frame, with the build (three runs) | 10.8–18.9 s | |
+| Open → first reduced frame, pyramid ready | 1.46–1.77 s | 1.16–1.24 s |
+| of which the reduction | 1.17–1.46 s (level 2, 5.2 MB; 135 MB of level 0 read to recompute 434 400 border voxels) | 0.65–0.78 s (whole cube, 8.7 MB) |
+| The same reduction from the whole cube | 10.9 s | |
+| Open → first refined frame (new render session) | 5.8–6.7 s | 4.8–5.6 s |
+| pose→frame, median / 95th percentile | 135–149 / 178–199 ms | 88–93 / 149–151 ms |
+| backend render of both eyes | 47 ms | 23 ms |
+| stop→refined, first frame / fully faded in (median) | 83 / 200 ms | 83 / 200 ms |
+| Lasso on a disc (375 353 voxels) | 10–15 s, +2.5 GB | 0.6 s |
+| Statistics of that mask / of a 400³ box | 0.17 s / 2.9 s | |
+
+pose→frame here is measured in a desktop browser while the view turns
+slowly (poses stream), so it includes waiting for the frame before; the
+backend draws level 1 (374 M voxels) about twice as long as HCG 44. With the
+threshold *for this binning* (12 × 12 × 4) instead, the refined frames were
+full of the full cube's noise: 405 KB JPEGs, 64 ms to encode, pose→frame
+236 ms. The memory figures are the backend's resident size, which counts the
+pages of the memory-mapped cube. The lasso is slow on a large cube because
+its window (513³ voxels) is larger than all of HCG 44: it is bounded, but not
+yet fast.
+
 ## What to check on the Quest 3
 
 These checks need the headset; the page shows the numbers to read. Note each
@@ -901,6 +1033,26 @@ Desktop and headset together:
    the same seeds count (they are drawn from another random set of seeds:
    compare the flow's structure, the attractors and the speeds' colours). Note
    FPS and GPU ms with streamlines and arrows on.
+
+### Large cube (out of core), with the headset
+
+1. Open a cube above 6 GiB on the desktop (or make one with
+   `validation/vr_large_cube_make.py` in a scratch directory) and *Open on
+   Headset*. Without a pyramid, the page must show *Building the cube's brick
+   pyramid… N %* rising, then the cube; note the build time and the time to
+   the cube drawn. Close and open it again: note the time (no build now).
+2. The status line and the menu's Look tab must say *pyramid level K* in the binning.
+   Note the headset's **FPS** and **missed %** with the reduced cube.
+3. Set the threshold source to *full cube (as on the desktop)*, hold still:
+   the menu must show *refined* and the wrist numbers' *server* line must
+   say *pyramid level 1* (or the level the backend can hold). Note
+   **pose->frame** (p50 and p95) and **stop->refined** over USB and over
+   Wi-Fi, and compare with HCG 44 in the same session.
+4. Move the clipping box and the channel slab: the refined frame must clip
+   where the headset's own picture does. Lean into the cube: the refined
+   image must stay aligned with the reduced one (no shift while you hold still).
+5. Pick a spectrum and run the lasso on a source: the results must arrive
+   (the lasso can take 10-15 s on a large cube); note the times shown.
 
 ### On a cluster backend
 

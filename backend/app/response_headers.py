@@ -84,6 +84,13 @@ X_COLOUR_TABLE = "X-Visivo-Colour-Table"
 X_BIN_FACTORS = "X-Visivo-Bin-Factors"
 X_BIN_MODE = "X-Visivo-Bin-Mode"
 X_THRESHOLD = "X-Visivo-Threshold"
+# Where it was read from: "cube" or "pyramid", and the pyramid level (part of #166).
+X_SOURCE = "X-Visivo-Source"
+X_PYRAMID_LEVEL = "X-Visivo-Pyramid-Level"
+# Level voxels next to blank ones, and how many were recomputed from level 0.
+X_BORDER_VOXELS = "X-Visivo-Border-Voxels"
+# The revision of the file a reduced cube was read from (reduced_info's file_revision).
+X_FILE_REVISION = "X-Visivo-File-Revision"
 
 # ── Line-width / moment map units (out-of-band because body is binary) ──────
 X_FWHM_UNIT = "X-Fwhm-Unit"

@@ -29,7 +29,7 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
   let loggedVersion = '';
   let pendingRecover = false;     // the backend restarted, or a reopen failed for now: reopen once it is possible
   let pendingGen = 0;             // the load generation when it was set
-  let pendingReason = 'restarted';   // what the pending reopen says when it runs
+  let pendingReason = 'restarted';   // why the pending reopen started (its notice says so)
 
   // ── Sending the log ─────────────────────────────────────────────────────
   const sender = new LogSender({
@@ -131,11 +131,18 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
         // cube is the one on show, nothing to say, nothing left to reopen.
         pendingRecover = false;
         log('info', 'cube-reopen-superseded', reason);
+      } else if (r.preparing) {
+        // The cube's brick pyramid is being built: tried again at a later
+        // check (with the reason it started for), not reported as a failure.
+        log('info', 'cube-reopen-waiting', r.detail || '');
+        pendingRecover = true; pendingGen = ctx.loadGen();
+        pendingReason = r.reason || reason;
       } else if (r.ok) {
         pendingRecover = false;
         notices.clear('reopen-failed');
         log('info', 'cube-reopened', `${reason}: ${r.detail || ''}`);
-        notices.show(noticeFor(reason === 'restarted' ? 'restarted' : 'reopened'), { force: true });
+        const why = r.reason || reason;
+        notices.show(noticeFor(why === 'restarted' ? 'restarted' : 'reopened'), { force: true });
       } else {
         log('error', 'cube-reopen-failed', r.detail || '');
         const auth = kind === 'auth' || /^40[13]:/.test(r.detail || '');

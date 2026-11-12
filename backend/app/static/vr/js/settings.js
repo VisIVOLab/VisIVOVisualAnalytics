@@ -14,6 +14,7 @@ export const SETTINGS_VERSION = 1;
 export const DEFAULT_SETTINGS = {
   colormap: 'viridis',
   thrSource: 'reduced',          // 'reduced' (for this binning) | 'cube' (the full cube's, as on the desktop)
+  thrSourceChosen: false,        // true once the viewer chose it; else thresholdSourceFor decides per cube
   refine: { enabled: true, scale: 1, quality: 95, depth: true },
   tool: 'probe',
   guideSeen: false,              // the first-run controls guide was shown (epic #166)
@@ -41,14 +42,34 @@ export function clampPanelOffset(off) {
   return out;
 }
 
+/**
+ * The threshold source for a cube just loaded: the viewer's own choice once
+ * made; otherwise the full cube's threshold ('cube') whenever the backend's
+ * frames are blended in (refinement on) or the cube is large (read from a
+ * brick pyramid, or drawn out of core by the backend). With coarse binning
+ * the threshold for the binning sits deep in the full cube's noise, and the
+ * refined frames, drawn on the full cube, then show that noise as fog (on an
+ * 11 GiB cube binned 12x12x4: 405 KB frames, pose->frame 236 ms instead of
+ * 141). 'reduced' (for this binning) for a synthetic cube or when nothing is
+ * refined from a small cube.
+ */
+export function thresholdSourceFor(settings, { synthetic = false, source = 'cube', outOfCore = false, refine = false } = {}) {
+  if (settings && settings.thrSourceChosen && (settings.thrSource === 'reduced' || settings.thrSource === 'cube')) {
+    return settings.thrSource;
+  }
+  if (synthetic) return 'reduced';
+  return source === 'pyramid' || outOfCore || refine ? 'cube' : 'reduced';
+}
+
 /** A stored object made safe: unknown keys dropped, wrong values replaced by defaults. */
 export function sanitizeSettings(raw, { colormaps = null, tools = null } = {}) {
   const d = DEFAULT_SETTINGS;
   const s = raw && typeof raw === 'object' ? raw : {};
-  const out = { colormap: d.colormap, thrSource: d.thrSource, refine: { ...d.refine }, tool: d.tool, guideSeen: d.guideSeen,
+  const out = { colormap: d.colormap, thrSource: d.thrSource, thrSourceChosen: false, refine: { ...d.refine }, tool: d.tool, guideSeen: d.guideSeen,
     leftHanded: d.leftHanded, labels: d.labels, haptics: d.haptics, windows: {} };
   if (typeof s.colormap === 'string' && (!colormaps || colormaps.includes(s.colormap))) out.colormap = s.colormap;
   if (s.thrSource === 'reduced' || s.thrSource === 'cube') out.thrSource = s.thrSource;
+  out.thrSourceChosen = s.thrSourceChosen === true;
   const r = s.refine && typeof s.refine === 'object' ? s.refine : {};
   if (typeof r.enabled === 'boolean') out.refine.enabled = r.enabled;
   if ([0.4, 0.6, 0.8, 1].includes(r.scale)) out.refine.scale = r.scale;

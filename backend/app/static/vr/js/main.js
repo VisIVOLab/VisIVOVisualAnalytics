@@ -12,7 +12,7 @@ import { createSelection, TOOLS, TOOL_NAMES } from './select-ui.js';
 import { Refiner, desktopEyes } from './refine-client.js';
 import { transferFunction, cropBox, cropError } from './refine.js';
 import { pairingFallback } from './pairing.js';
-import { loadSettings, saveSettings, clampPanelOffset, WINDOW_IDS } from './settings.js';
+import { loadSettings, saveSettings, clampPanelOffset, thresholdSourceFor, WINDOW_IDS } from './settings.js';
 import * as P from './vr-panel.js';
 import { createLayers, pairedMode } from './layers.js';
 import { createAnalysis } from './analysis.js';
@@ -28,7 +28,7 @@ import { RefineDraw } from './refine-gl.js';
 // Lifecycle, notices, guide, diagnostics, quality (epic #166).
 import { createShell } from './shell.js';
 import { CARD_PX, CARD_SIZE } from './notice.js';
-import { pageBuild, PAGE_VR_API, isHeadsetBrowser, reopenCube, LoadTracker, supersededLoad } from './lifecycle.js';
+import { pageBuild, PAGE_VR_API, isHeadsetBrowser, reopenCube, LoadTracker, supersededLoad, PendingReopen } from './lifecycle.js';
 import { shouldShowGuide } from './onboarding.js';
 import { EyeBufferGovernor, qualityNote, cubeBudget, spvAtFloor } from './quality.js';
 
@@ -259,6 +259,7 @@ $('thr').addEventListener('input', () => { state.thrNorm = sliderToNorm(readNumb
 $('cmax').addEventListener('input', () => { state.cmaxNorm = sliderToNorm(readNumber('cmax')); updateLabels(); });
 $('thr-source').addEventListener('change', () => {
   settings.thrSource = $('thr-source').value;
+  settings.thrSourceChosen = true;
   persist();
   resetThreshold();
 });
@@ -339,6 +340,11 @@ function setRefine(on) {
   $('refine').checked = on;
   refiner.setEnabled(on);
   saveRefine();
+  // Not chosen by the viewer: the threshold follows (thresholdSourceFor).
+  if (state.cube && !settings.thrSourceChosen && $('thr-source').value !== currentThresholdSource()) {
+    $('thr-source').value = currentThresholdSource();
+    resetThreshold();
+  }
 }
 refiner.setEnabled($('refine').checked);
 $('refine').addEventListener('change', () => setRefine($('refine').checked));
@@ -442,7 +448,7 @@ function reducedRequest(datasetId) {
   return {
     dataset_id: datasetId,
     factor_xy: readNumber('fxy'), factor_z: readNumber('fz'), max_dim: readNumber('maxdim'),
-    mode: $('mode').value, encoding: $('encoding').value,
+    mode: $('mode').value, encoding: $('encoding').value, source: $('source').value,
   };
 }
 
@@ -495,6 +501,58 @@ function layerLoad(b, ticket) {
   };
 }
 
+/**
+ * reduced_info, waiting while the backend builds the cube's brick pyramid
+ * (202 with the fraction done): a large cube's reduced cube is read from a
+ * pyramid level, not from the whole cube. The status shows the progress; a
+ * newer load ends the wait (stillCurrent), and a build that does not move is
+ * given up (V.buildWatch).
+ */
+async function reducedInfoWhenReady(b, req, ticket) {
+  const t0 = performance.now();
+  const watch = V.buildWatch();
+  let waited = false;
+  for (;;) {
+    let info = null, progress = 0;
+    try {
+      // The first request without a deadline of its own (opening a large
+      // cube can take long); the polls of a build, two minutes each.
+      info = await b.reducedInfo(req, waited ? { timeoutMs: REDUCED_POLL_TIMEOUT_MS } : {});
+    } catch (e) {
+      if (e && e.preparing) {
+        progress = e.progress;              // 202: the pyramid is being built
+      } else if (e && e.timedOut && waited) {
+        progress = watch.progress();        // a poll that did not answer: asked again
+      } else {
+        // Any other error ends the load. One met after the build started is
+        // not the pairing's dataset check (pairingFallback: loadPaired must
+        // not open the path again for it).
+        if (e && waited) e.duringBuild = true;
+        throw e;
+      }
+    }
+    stillCurrent(ticket);
+    if (info) {
+      ticket.pyramidBuildMs = waited ? performance.now() - t0 : undefined;
+      return info;
+    }
+    waited = true;
+    const verdict = watch.see(progress, performance.now());
+    if (verdict) {
+      throw new Error(`the brick pyramid's build ${verdict === 'stalled' ? 'has not moved for 5 minutes' : 'took over 2 hours'}`
+        + ` (at ${(100 * watch.progress()).toFixed(0)} %): choose "Read from: whole cube" and load again`);
+    }
+    const sec = ((performance.now() - t0) / 1000).toFixed(0);
+    setStatus(`Building the cube's brick pyramid on the backend… ${(100 * (progress || 0)).toFixed(0)} % (${sec} s)\n`
+      + 'once for this cube: the headset\'s reduced cube is then read from one of its levels');
+    await new Promise((res) => setTimeout(res, 1000));
+    stillCurrent(ticket);
+  }
+}
+
+/** The deadline of each poll of reduced_info while a brick pyramid builds. */
+const REDUCED_POLL_TIMEOUT_MS = 120000;
+
 async function loadFromBackend() {
   ensureBackend();
   const path = $('path').value.trim();
@@ -518,7 +576,7 @@ async function loadFromBackend() {
   stillCurrent(ticket);
   b.sessionNote = state.sessionNote || 'own session';
   setStatus('Reading the axes…');
-  const info = await b.reducedInfo({ ...ticket.reduction, dataset_id: open.dataset_id });
+  const info = await reducedInfoWhenReady(b, { ...ticket.reduction, dataset_id: open.dataset_id }, ticket);
   stillCurrent(ticket);
   await loadReduced(b, open, info, t0, ticket);
 }
@@ -569,7 +627,7 @@ async function loadPaired() {
   if (pairing.dataset && pairing.session) {
     setStatus('Opening the desktop\'s cube…');
     try {
-      info = await b.reducedInfo({ ...ticket.reduction, dataset_id: pairing.dataset });
+      info = await reducedInfoWhenReady(b, { ...ticket.reduction, dataset_id: pairing.dataset }, ticket);
       open = { dataset_id: pairing.dataset, kind: 'cube', valid: true };
       b.sessionNote = 'the desktop\'s session';
     } catch (e) { err = e; }
@@ -590,7 +648,7 @@ async function loadPaired() {
     setStatus('Opening the desktop\'s cube by its path…');
     open = await b.open(pairing.path);
     stillCurrent(ticket);
-    info = await b.reducedInfo({ ...ticket.reduction, dataset_id: open.dataset_id });
+    info = await reducedInfoWhenReady(b, { ...ticket.reduction, dataset_id: open.dataset_id }, ticket);
   }
   stillCurrent(ticket);
   await loadReduced(b, open, info, t0, ticket);
@@ -605,7 +663,9 @@ async function showDataset(id, path) {
     const t0 = performance.now();
     if (path) $('path').value = path;
     setStatus('Reading the axes…');
-    const info = await b.reducedInfo({ ...ticket.reduction, dataset_id: id });
+    // An Isolate/Remove output of a large cube is read from its own brick
+    // pyramid too: wait for it as a load does.
+    const info = await reducedInfoWhenReady(b, { ...ticket.reduction, dataset_id: id }, ticket);
     stillCurrent(ticket);
     await loadReduced(b, { dataset_id: id, kind: 'cube', valid: true }, info, t0, ticket);
   });
@@ -617,18 +677,41 @@ async function loadReduced(b, open, info, t0, ticket) {
   // The backend caps voxels and bytes; the GPU caps each side and this
   // device its memory. Refuse before reading the cube rather than after.
   checkBudget(info.reduced_shape, req.encoding);
-  setStatus(`Reducing ${info.full_shape.join('×')} by ${info.factors.join('×')} (${req.mode})…`);
-  // Keep automatic factors as 0: metadata can resolve them beyond the API's
-  // explicit-factor limit of 64, and the binary route uses the same rule.
-  const cube = await b.reducedCube(req,
-    (f) => { if (loads.isCurrent(ticket)) setStatus(`Transferring… ${(100 * f).toFixed(0)} %`); });
+  // Keep automatic factors as 0: the binary route plans them with the same
+  // rule as reduced_info (from the cube, or the same pyramid level).
+  const fromPyramid = info.source === 'pyramid';
+  const what = `Reducing ${info.full_shape.join('×')} by ${info.factors.join('×')} (${req.mode})`
+    + `${fromPyramid ? `, from brick pyramid level ${info.pyramid.level}` : ''}`;
+  setStatus(`${what}…`);
+  // Seconds elapsed while the backend reduces (a whole-cube pass of a large
+  // cube takes minutes), until the transfer shows its own progress.
+  const tRed = performance.now();
+  let receiving = false;
+  const ticker = setInterval(() => {
+    if (!receiving && loads.isCurrent(ticket)) setStatus(`${what}… ${((performance.now() - tRed) / 1000).toFixed(0)} s`);
+  }, 1000);
+  let cube;
+  try {
+    cube = await b.reducedCube(req,
+      (f) => { receiving = true; if (loads.isCurrent(ticket)) setStatus(`Transferring… ${(100 * f).toFixed(0)} %`); });
+  } finally {
+    clearInterval(ticker);
+  }
   // A load started meanwhile owns the page: this cube is not shown.
   stillCurrent(ticket);
+  if (cube.factors.join() !== info.factors.join()) {
+    throw new Error(`the reduced cube came binned ${cube.factors.join('×')}, not ${info.factors.join('×')}: load it again`);
+  }
+  if (cube.fileRevision && info.file_revision && cube.fileRevision !== info.file_revision) {
+    // The file was written again between the axes and the voxels (an
+    // Isolate rerun to the same path): the two do not belong together.
+    throw new Error('the file changed while it was being loaded: load it again');
+  }
   // This load won: its session becomes the page's (unless the token changed).
   if (!commitHandle(b)) throw supersededLoad();
   const { dataset_id, ...reduction } = req;
   cube.reduction = reduction;
-  state.load = { openInfoMs: t1 - t0, reduceMs: cube.timing.serverMs, transferMs: cube.timing.totalMs - cube.timing.serverMs, mb: cube.bytes / 1e6 };
+  state.load = { openInfoMs: t1 - t0, reduceMs: cube.timing.serverMs, transferMs: cube.timing.totalMs - cube.timing.serverMs, mb: cube.bytes / 1e6, pyramidBuildMs: ticket.pyramidBuildMs };
   installCube(info, cube, open, ticket.path);
 }
 
@@ -654,6 +737,9 @@ function checkBudget(dims, encoding) {
 /** The deadline of each request of a recovery (opening a large cube can take a while). */
 const RECOVERY_TIMEOUT_MS = 30000;
 
+/** A recovery that met a brick pyramid build, to be continued (lifecycle.js). */
+const pendingReopen = new PendingReopen();
+
 async function recoverDataset(reason) {
   const path = state.openPath;
   if (!path || !state.open || !state.info || !state.cube) return { ok: false, detail: 'no cube from the backend on show' };
@@ -665,15 +751,27 @@ async function recoverDataset(reason) {
   // And a deadline on each of its requests (datasets/open, sessions/new,
   // reduced_info): a hung connection must not stall the recovery; the next
   // check of the lifecycle tries again.
-  const b = loadHandle();
+  // A try after one that met a pyramid build continues it: the same handle
+  // (its session already the page's) and the dataset it opened, asked again.
+  const kept = pendingReopen.take(snap);
+  const b = kept ? kept.handle : loadHandle();
   b.timeoutMs = RECOVERY_TIMEOUT_MS;
+  const why = kept ? kept.reason : reason;
   const r = await reopenCube(snap, {
     open: (p) => b.open(p),
     newSession: () => b.newSession(),
     reducedInfo: (o) => b.reducedInfo({ dataset_id: o.dataset_id, ...req }),
     classify: (err) => shell.classifyFailure(err),
     loadGen: () => state.loadGen,
-  });
+  }, kept ? kept.open : null);
+  if (r.superseded) return r;            // a newer load: nothing of this one is kept
+  if (r.preparing) {
+    // The session it made is the page's now (not left behind for the next
+    // try to make another); the cube is reopened when the pyramid is ready.
+    if (!commitHandle(b)) return { ok: false, superseded: true, detail: 'the token changed during the reopen' };
+    pendingReopen.keep(snap, { handle: b, open: r.open, reason: why });
+    return { ...r, reason: why };
+  }
   if (!r.ok) return r;
   const { open, info } = r;
   if (!commitHandle(b)) return { ok: false, superseded: true, detail: 'the token changed during the reopen' };
@@ -684,9 +782,9 @@ async function recoverDataset(reason) {
   selection.clear();
   analysis.reset();
   share.start(open.dataset_id);
-  state.sessionNote = reason === 'restarted' ? 'a new session (the backend restarted)' : 'a new session (the old one ended)';
-  refiner.setDataset(open.dataset_id, { outOfCore: !!info.render_out_of_core });
-  return { ok: true, detail: `dataset ${open.dataset_id}` };
+  state.sessionNote = why === 'restarted' ? 'a new session (the backend restarted)' : 'a new session (the old one ended)';
+  refiner.setDataset(open.dataset_id);
+  return { ok: true, detail: `dataset ${open.dataset_id}`, reason: why };
 }
 
 function loadSynthetic(n) {
@@ -716,21 +814,33 @@ function installCube(info, cube, open, path = '') {
   selection.clear();
   analysis.reset();
   if (open) share.start(open.dataset_id); else share.stop();
-  refiner.setDataset(open ? open.dataset_id : null, { outOfCore: !!(info && info.render_out_of_core) });
+  refiner.setDataset(open ? open.dataset_id : null);
   state.load = { ...state.load, uploadMs: up.uploadMs, macroMs: up.macroMs, textureMB: up.textureBytes / 1e6 };
   state.clip = { min: [0, 0, 0], max: [1, 1, 1] };
   ui.undo.clear();
   ui.pin = null;
   ui.clipDrag = null;
   applyExtent();
+  $('thr-source').value = currentThresholdSource();
   resetThreshold();
   const l = state.load;
   setStatus([
-    `${cube.dims.join('×')} ${cube.encoding}, binned ${cube.factors.join('×')} (${cube.mode}) from ${cube.fullShape.join('×')}`,
+    ...(info && info.source_note ? [info.source_note] : []),
+    `${cube.dims.join('×')} ${cube.encoding}, binned ${cube.factors.join('×')} (${cube.mode}${V.sourceNote(cube)}) from ${cube.fullShape.join('×')}`,
+    ...(l.pyramidBuildMs !== undefined ? [`brick pyramid built in ${(l.pyramidBuildMs / 1000).toFixed(0)} s`] : []),
     l.reduceMs !== undefined ? `reduce ${l.reduceMs.toFixed(0)} ms, transfer ${l.transferMs.toFixed(0)} ms (${l.mb.toFixed(1)} MB)` : `generated in ${l.generateMs.toFixed(0)} ms`,
     `upload ${l.uploadMs.toFixed(0)} ms, skip grid ${l.macroMs.toFixed(0)} ms`,
     ...(open ? [`in ${state.sessionNote || 'own session'}`] : []),
   ].join('\n'));
+}
+
+/** The threshold source the cube on show starts with (thresholdSourceFor). */
+function currentThresholdSource() {
+  const c = state.cube, info = state.info;
+  return thresholdSourceFor(settings, {
+    synthetic: !c || c.mode === 'synthetic', source: c ? c.source : 'cube',
+    outOfCore: !!(info && info.render_out_of_core), refine: $('refine').checked,
+  });
 }
 
 function applyExtent() {
@@ -907,7 +1017,7 @@ function hudLines(targetHz) {
     const si = V.stepInfo(c.dims, effectiveSpv());
     lines.push(`samples/voxel ${effectiveSpv().toFixed(2)}${state.governorOn ? ' (governor)' : ''}   max steps/ray ${si.maxSteps}`);
     lines.push(`volume ${c.dims.join('×')} ${c.encoding} ${(R.textureBytes / 1e6).toFixed(1)} MB`);
-    lines.push(c.mode === 'synthetic' ? 'synthetic cube' : `binning ${c.factors.join('×')} ${c.mode} of ${c.fullShape.join('×')}`);
+    lines.push(c.mode === 'synthetic' ? 'synthetic cube' : `binning ${c.factors.join('×')} ${c.mode}${V.sourceNote(c)} of ${c.fullShape.join('×')}`);
     lines.push(`threshold ${fmt(dataValue(state.thrNorm))} ${c.bunit || ''}  (${$('thr-source').selectedOptions[0].text})`);
   }
   lines.push(...selection.hudLines());
@@ -1077,7 +1187,7 @@ function lookView() {
   const v = {
     title: `VisIVO VR · ${name}`,
     info: c ? [
-      `${(info.full_shape || c.fullShape).join('×')} → ${c.dims.join('×')}, binned ${c.factors.join('×')} (${c.mode}), ${c.encoding === 'float16' ? '16' : '8'}-bit`,
+      `${(info.full_shape || c.fullShape).join('×')} → ${c.dims.join('×')}, binned ${c.factors.join('×')} (${c.mode}${V.sourceNote(c)}), ${c.encoding === 'float16' ? '16' : '8'}-bit`,
       c.mode === 'synthetic' ? 'no backend: selections need a cube from the backend' : `in ${state.sessionNote || 'own session'}`,
     ] : ['No cube yet: open one from the desktop or on the page.', ''],
     cmap: state.colormap, mode: state.mode, thrSource: $('thr-source').value, tool: selection.sel.tool,
@@ -1390,7 +1500,7 @@ function applyLook(a) {
       resetThreshold();
     } else if (a.widget.group === 'thrsrc') {
       $('thr-source').value = a.widget.value;
-      settings.thrSource = a.widget.value; persist();
+      settings.thrSource = a.widget.value; settings.thrSourceChosen = true; persist();
       resetThreshold();
     } else if (id === 'slab-all') {
       state.clip.min[2] = 0; state.clip.max[2] = 1;

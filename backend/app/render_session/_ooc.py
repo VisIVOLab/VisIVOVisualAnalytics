@@ -55,6 +55,29 @@ def wants_out_of_core(cube_bytes: int) -> bool:
     return cube_bytes > OOC_BYTES
 
 
+def level0_sample(pyramid, voxels: int = 8_000_000) -> np.ndarray:
+    """Finite level-0 values of an opened :class:`~app.brick_pyramid.BrickPyramid`,
+    from whole bricks drawn at random (seeded: the same bricks every time)
+    among those that hold data; empty when none does. What the out-of-core
+    session's default threshold and the VR page's reduced cube from the
+    pyramid (``app.compute.reduced``) take their percentiles from."""
+    brick = pyramid.brick
+    peaks = pyramid.stats(0)[1]
+    cells = np.argwhere(np.isfinite(peaks))
+    if not len(cells):
+        return np.empty(0, dtype=np.float32)
+    count = min(len(cells), max(1, voxels // brick ** 3))
+    rng = np.random.default_rng(0)
+    chosen = cells[rng.choice(len(cells), size=count, replace=False)]
+    data = pyramid._h5["level0/data"]  # noqa: SLF001 - the pyramid's own reader
+    parts = []
+    for bz, by, bx in sorted(map(tuple, chosen)):
+        block = data[bz * brick:(bz + 1) * brick, by * brick:(by + 1) * brick,
+                     bx * brick:(bx + 1) * brick]
+        parts.append(block[np.isfinite(block)].astype(np.float32, copy=False))
+    return np.concatenate(parts) if parts else np.empty(0, dtype=np.float32)
+
+
 @dataclass(frozen=True)
 class WholeLevel:
     """A whole pyramid level as one block (MIP and MinIP)."""
@@ -108,8 +131,13 @@ class BlockVolumes:
         self._blocks: dict = {}                   # key -> (image, mapper, volume)
         self._arrays: dict = {}                   # key -> the array VTK reads, kept alive
         self._order: list = []                    # keys in the order last drawn
+        self._geometry: dict = {}                 # key -> (origin, spacing, dims, own crop)
         self._s = {"auto": 1, "image_sd": 1.0, "sample_d": 1.0, "jitter": 1,
-                   "blend": "composite", "visible": 1}
+                   "blend": "composite", "visible": 1, "user_matrix": None,
+                   "to_image": 0}
+        # The VR page's clipping box (set_crop), level-0 world units
+        # (x0, x1, y0, y1, z0, z1), or None: intersected with each block's own.
+        self._user_crop = None
 
     # -- the mapper's interface ------------------------------------------
     def SetAutoAdjustSampleDistances(self, v):
@@ -149,6 +177,67 @@ class BlockVolumes:
     def GetVisibility(self):
         return self._s["visible"]
 
+    def SetUserMatrix(self, m):
+        # The spectral stretch of a stereo frame (_stereo.py): every block.
+        self._set("user_matrix", m)
+
+    def GetUserMatrix(self):
+        return self._s["user_matrix"]
+
+    # -- render to image (stereo frames, _stereo.py) ----------------------
+    # A stereo frame takes its colour and the depth of the first sample above
+    # the threshold from the mapper's render-to-image buffers. One mapper's
+    # buffers hold only its own block, so stereo frames are drawn from one
+    # block, a whole pyramid level (OutOfCoreCube.update with whole=True).
+    def SetRenderToImage(self, v):
+        self._set("to_image", int(v))
+
+    def GetRenderToImage(self):
+        return self._s["to_image"]
+
+    def SetDepthImageScalarTypeToFloat(self):
+        pass        # set on every block's mapper with its render to image
+
+    def _single_mapper(self):
+        if len(self._blocks) != 1:
+            return None
+        return next(iter(self._blocks.values()))[1]
+
+    def GetColorImage(self, image):
+        mapper = self._single_mapper()
+        if mapper is not None:
+            mapper.GetColorImage(image)
+
+    def GetDepthImage(self, image):
+        mapper = self._single_mapper()
+        if mapper is not None:
+            mapper.GetDepthImage(image)
+
+    # -- the VR page's clipping box (set_crop) ----------------------------
+    def set_user_crop(self, planes) -> None:
+        """Crop every block, present and future, to ``planes`` (x0, x1, y0, y1,
+        z0, z1: the box's faces in level-0 voxel coordinates, voxel i at i, as
+        ``_pipeline.crop_planes`` gives them), or to its own region alone for
+        None. A block wholly outside the box is hidden."""
+        self._user_crop = None if planes is None else tuple(float(p) for p in planes)
+        for key, (_, mapper, volume) in self._blocks.items():
+            self._apply(mapper, volume, key)
+
+    def _crop_of(self, key):
+        """The block's drawn box: its own region, within the user's box. None
+        when the two do not overlap."""
+        own = self._geometry[key][3]
+        if self._user_crop is None:
+            return own
+        out = []
+        for axis in range(3):
+            lo = max(own[2 * axis], self._user_crop[2 * axis])
+            hi = min(own[2 * axis + 1], self._user_crop[2 * axis + 1])
+            if not lo < hi:
+                return None
+            out += [lo, hi]
+        return tuple(out)
+
     # -- blocks -----------------------------------------------------------
     @property
     def blend(self) -> str:
@@ -176,6 +265,7 @@ class BlockVolumes:
             # array alive after the block is gone (seen with VTK 9.6.2).
             image.GetPointData().SetScalars(None)
             self._arrays.pop(key, None)
+            self._geometry.pop(key, None)
             if self._renderer is not None:
                 self._renderer.RemoveVolume(volume)
         for key, (array, origin, spacing, crop) in blocks.items():
@@ -196,16 +286,17 @@ class BlockVolumes:
             image.GetPointData().SetScalars(scalars)
             mapper = vtk.vtkGPUVolumeRayCastMapper()
             mapper.SetInputData(image)
-            # Draw only the region the block owns; the ghost samples outside
-            # it are there for interpolation up to its faces.
+            # Draw only the region the block owns (within the VR page's box,
+            # if any: _apply); the ghost samples outside it are there for
+            # interpolation up to its faces.
+            self._geometry[key] = (tuple(origin), float(spacing), (nx, ny, nz), tuple(crop))
             mapper.SetCropping(1)
-            mapper.SetCroppingRegionPlanes(*_vtk_crop_planes(crop, origin, spacing, (nx, ny, nz)))
             mapper.SetCroppingRegionFlagsToSubVolume()
             volume = vtk.vtkVolume()
             volume.SetMapper(mapper)
             volume.SetProperty(self._prop)
             self._blocks[key] = (image, mapper, volume)
-            self._apply(mapper, volume)
+            self._apply(mapper, volume, key)
             if self._renderer is not None:
                 self._renderer.AddVolume(volume)
 
@@ -229,10 +320,10 @@ class BlockVolumes:
 
     def _set(self, key, value) -> None:
         self._s[key] = value
-        for _, mapper, volume in self._blocks.values():
-            self._apply(mapper, volume)
+        for block, (_, mapper, volume) in self._blocks.items():
+            self._apply(mapper, volume, block)
 
-    def _apply(self, mapper, volume) -> None:
+    def _apply(self, mapper, volume, key) -> None:
         s = self._s
         mapper.SetAutoAdjustSampleDistances(s["auto"])
         if not s["auto"]:
@@ -242,7 +333,18 @@ class BlockVolumes:
         {"max": mapper.SetBlendModeToMaximumIntensity,
          "min": mapper.SetBlendModeToMinimumIntensity,
          "composite": mapper.SetBlendModeToComposite}[s["blend"]]()
-        volume.SetVisibility(s["visible"])
+        if hasattr(mapper, "SetRenderToImage") and bool(mapper.GetRenderToImage()) != bool(s["to_image"]):
+            mapper.SetRenderToImage(s["to_image"])
+            if s["to_image"]:
+                mapper.SetDepthImageScalarTypeToFloat()
+        volume.SetUserMatrix(s["user_matrix"])
+        crop = self._crop_of(key)
+        if crop is not None:
+            origin, spacing, dims, _ = self._geometry[key]
+            planes = _vtk_crop_planes(crop, origin, spacing, dims)
+            if tuple(mapper.GetCroppingRegionPlanes()) != planes:
+                mapper.SetCroppingRegionPlanes(*planes)
+        volume.SetVisibility(s["visible"] if crop is not None else 0)
 
 
 class OutOfCoreCube:
@@ -281,6 +383,7 @@ class OutOfCoreCube:
         self._view_key = None
         self._target: list = []
         self._source = None
+        self._whole_side: int | None = None     # the 3-D texture side of the stereo block
 
     # -- the coarse proxy ---------------------------------------------------
     def proxy(self) -> tuple[np.ndarray, tuple[float, float, float], float]:
@@ -300,21 +403,7 @@ class OutOfCoreCube:
         """Finite level-0 values from whole bricks drawn at random among those
         that hold data, for the percentiles (threshold, slice range): the
         proxy's averages have a narrower spread than the cube's voxels."""
-        brick = self.layout.brick
-        peaks = self.layout.brick_max[0]
-        cells = np.argwhere(np.isfinite(peaks))
-        if not len(cells):
-            return np.array([self.vmin], dtype=np.float32)
-        count = min(len(cells), max(1, voxels // brick ** 3))
-        rng = np.random.default_rng(0)
-        chosen = cells[rng.choice(len(cells), size=count, replace=False)]
-        data = self.pyramid._h5["level0/data"]
-        parts = []
-        for bz, by, bx in sorted(map(tuple, chosen)):
-            block = data[bz * brick:(bz + 1) * brick, by * brick:(by + 1) * brick,
-                         bx * brick:(bx + 1) * brick]
-            parts.append(block[np.isfinite(block)].astype(np.float32, copy=False))
-        out = np.concatenate(parts)
+        out = level0_sample(self.pyramid, voxels)
         return out if out.size else np.array([self.vmin], dtype=np.float32)
 
     # -- the full-resolution plane for the cutting plane ---------------------
@@ -333,15 +422,17 @@ class OutOfCoreCube:
         return plane
 
     # -- choosing and loading blocks ------------------------------------------
-    def update(self, renderer, window_size, threshold, interactive: bool) -> bool:
+    def update(self, renderer, window_size, threshold, interactive: bool,
+               whole: bool = False) -> bool:
         """Choose the blocks for the current view (not while dragging) and read
         some of the missing ones; True when more remain to read, so the caller
         renders again. ``threshold``: blocks whose values all lie below it are
-        left out (Composite only)."""
+        left out (Composite only). ``whole``: one block, the finest level that
+        fits the budget, whatever the view (the headset's stereo frames)."""
         if self.blocks is None:
             return False
         cam = renderer.GetActiveCamera()
-        if interactive:
+        if interactive and not whole:
             # The set stays while dragging; the drawing order follows the eye.
             self._sort(cam.GetPosition())
             return False
@@ -349,7 +440,10 @@ class OutOfCoreCube:
         blend = self.blocks.blend
         # Everything the frustum the blocks are chosen by depends on: a roll
         # (view up) or a new near/far plane shows other blocks.
-        key = (tuple(round(v, 3) for v in cam.GetPosition()),
+        # The stereo block depends on the GPU's 3-D texture side too: a side
+        # read only after the first pose chooses the level again.
+        key = ("whole", self._whole_side) if whole else (
+               tuple(round(v, 3) for v in cam.GetPosition()),
                tuple(round(v, 3) for v in cam.GetFocalPoint()),
                tuple(round(v, 4) for v in cam.GetViewUp()),
                tuple(round(v, 3) for v in cam.GetClippingRange()),
@@ -358,9 +452,9 @@ class OutOfCoreCube:
         if key != self._view_key:
             self._view_key = key
             budget = OOC_BUDGET_BYTES // 4
-            if blend != "composite":
+            if whole or blend != "composite":
                 try:
-                    self._target = [self._whole_level(budget)]
+                    self._target = [self._whole_level(budget, self._whole_side if whole else None)]
                 except ValueError as exc:
                     logger.warning("[render-session %s] %s", self.session_id, exc)
                     return False
@@ -395,13 +489,47 @@ class OutOfCoreCube:
         self._sort(cam.GetPosition())
         return False
 
-    def _whole_level(self, budget_voxels: int) -> WholeLevel:
-        """The finest level that fits the budget as one block, ghosts included."""
+    def show_whole_level(self, renderer, window_size, max_side: int | None = None) -> int:
+        """Show the finest level that fits the budget as one block, reading it
+        now if it is not shown yet, and return it: what a stereo frame is
+        drawn from (its colour and depth come from one mapper's render to
+        image). ``max_side``: the GPU's largest 3-D texture side, which every
+        axis of the block (ghosts included) must fit. ValueError when no level
+        fits (no stereo frames can come from this cube); RuntimeError when the
+        level could not be shown this time (a frame may be asked again)."""
+        level = self._whole_level(OOC_BUDGET_BYTES // 4, max_side).level
+        if self.whole_level != level:
+            t0 = time.perf_counter()
+            self._whole_side = max_side
+            while self.update(renderer, window_size, None, interactive=False, whole=True):
+                pass
+            logger.info("[render-session %s] stereo: level %d of %d shown whole in %.2f s "
+                        "(3-D texture side %s)", self.session_id, level, len(self.layout.shapes),
+                        time.perf_counter() - t0, max_side)
+        if self.whole_level != level:
+            raise RuntimeError(f"pyramid level {level} could not be shown for stereo frames")
+        return level
+
+    @property
+    def whole_level(self) -> int | None:
+        """The level shown as one whole block (MIP, MinIP, stereo frames), or
+        None when blocks of the view are shown."""
+        nodes = self.blocks.nodes if self.blocks is not None else set()
+        if len(nodes) == 1:
+            (key,) = nodes
+            if isinstance(key, WholeLevel):
+                return key.level
+        return None
+
+    def _whole_level(self, budget_voxels: int, max_side: int | None = None) -> WholeLevel:
+        """The finest level that fits the budget as one block, ghosts included,
+        and, with ``max_side``, the GPU's 3-D texture side on every axis."""
         for level, shape in enumerate(self.layout.shapes):
-            if int(np.prod([n + 2 for n in shape])) <= budget_voxels:
+            padded = [n + 2 for n in shape]
+            if int(np.prod(padded)) <= budget_voxels and (max_side is None or max(padded) <= max_side):
                 return WholeLevel(level)
-        raise ValueError(f"no level of the cube fits the budget ({budget_voxels} voxels) "
-                         "as one block")
+        raise ValueError(f"no level of the cube fits the budget ({budget_voxels} voxels"
+                         + (f", {max_side} per side" if max_side else "") + ") as one block")
 
     def _sort(self, eye) -> None:
         """Back to front by an octree traversal: from the top level down, the

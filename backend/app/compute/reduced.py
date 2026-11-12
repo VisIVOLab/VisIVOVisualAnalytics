@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 from typing import Any
 
 import numpy as np
@@ -191,21 +192,116 @@ def binning_threshold(data: np.ndarray, reduced: np.ndarray, mode: str) -> float
     return float(t) if t is not None and math.isfinite(t) else None
 
 
+#: A reduced cube is read from a pyramid level of at most this many voxels
+#: (1 GiB of float32) when it can be (see :func:`app.cube_reduce.pyramid_plan`).
+PYRAMID_READ_VOXELS = int(os.environ.get("VISIVO_VR_PYRAMID_READ_BYTES", str(1024 ** 3))) // 4
+#: ...and never from a larger one than this (16 GiB): a finer level is read,
+#: in bounded pieces, only so that automatic factors are not inflated more
+#: than cube_reduce.MAX_INFLATION.
+PYRAMID_MAX_READ_VOXELS = int(os.environ.get("VISIVO_VR_PYRAMID_MAX_READ_BYTES",
+                                             str(16 * 1024 ** 3))) // 4
+#: Level-0 voxels read to repair the level voxels next to blank ones (1 GiB).
+PYRAMID_REPAIR_VOXELS = int(os.environ.get("VISIVO_VR_PYRAMID_REPAIR_BYTES",
+                                           str(1024 ** 3))) // 4
+#: The memory one piece of a pyramid level takes while it is reduced.
+_PYRAMID_BLOCK_BYTES = 128 * 1024 * 1024
+
+
+class _Pyramid:
+    """The cube's brick pyramid, opened for a reduced cube: checked against the
+    cube's file (a changed file is refused) and against the cube the reduction
+    reads (the same (z, y, x) shape), with the level plan of the request."""
+
+    def __init__(self, pyramid_path: str, source: str, shape_zyx, factor_xy: int,
+                 factor_z: int, max_dim: int) -> None:
+        from ..brick_pyramid import BrickPyramid  # noqa: PLC0415
+        self.pyr = BrickPyramid(pyramid_path, source=source)
+        try:
+            shapes = [self.pyr.shape(k) for k in range(self.pyr.levels)]
+            if tuple(shapes[0]) != tuple(int(n) for n in shape_zyx):
+                raise ValueError(f"The brick pyramid holds a {shapes[0]} cube, not the "
+                                 f"{tuple(shape_zyx)} one opened.")
+            self.shapes = shapes
+            self.level, self.extra, self.factors = cube_reduce.pyramid_plan(
+                shapes, factor_xy, factor_z, max_dim, PYRAMID_READ_VOXELS,
+                PYRAMID_MAX_READ_VOXELS)
+            auto_xy, _, auto_z = cube_reduce.auto_factors(shapes[0], max_dim)
+            self.asked = (int(factor_xy) if factor_xy and factor_xy > 0 else auto_xy,
+                          int(factor_z) if factor_z and factor_z > 0 else auto_z)
+            self.repair: dict[str, int] | None = None
+        except BaseException:
+            self.pyr.close()
+            raise
+
+    def describe(self) -> dict[str, Any]:
+        lz, ly, lx = self.shapes[self.level]
+        out = {"level": self.level, "levels": len(self.shapes),
+               "level_shape": [lx, ly, lz], "extra_factors": list(self.extra),
+               "brick": self.pyr.brick,
+               "asked_factors": [self.asked[0], self.asked[0], self.asked[1]],
+               "reduction": ("block means: the level weighted by pixel count, level "
+                             "voxels next to blank ones repaired from level 0")}
+        if self.repair is not None:
+            out["border"] = dict(self.repair)
+        return out
+
+    def threshold(self, n_voxels: int) -> float | None:
+        """The cube's default threshold from level-0 bricks, as the out-of-core
+        render session takes it (:func:`app.render_session._ooc.level0_sample`)."""
+        from ..render_session._ooc import level0_sample  # noqa: PLC0415
+        sample = level0_sample(self.pyr)
+        if not sample.size:
+            return None
+        t = default_threshold(sample, n_voxels)
+        return float(t) if t is not None and math.isfinite(t) else None
+
+    def reduce(self) -> np.ndarray:
+        h5 = self.pyr._h5  # noqa: SLF001
+        out, self.repair = cube_reduce.pyramid_reduce(
+            h5[f"level{self.level}/data"], h5["level0/data"], self.level, self.shapes[0],
+            self.extra, self.pyr.brick, max_block_bytes=_PYRAMID_BLOCK_BYTES,
+            repair_voxels=PYRAMID_REPAIR_VOXELS)
+        return out
+
+    def close(self) -> None:
+        self.pyr.close()
+
+
+def _check_limit(shape_zyx, factors, encoding: str, limit: bool) -> None:
+    if limit:
+        cube_reduce.check_size(cube_reduce.reduced_shape(shape_zyx, factors), encoding)
+
+
 def worker_cube_reduced_info(path: str, factor_xy: int, factor_z: int,
                              max_dim: int, encoding: str = "uint8",
-                             limit: bool = True) -> dict[str, Any]:
+                             limit: bool = True, pyramid_path: str | None = None,
+                             ) -> dict[str, Any]:
     """Shape, factors, default threshold and world axes of a reduced cube,
-    without reducing it."""
+    without reducing it. With ``pyramid_path`` the reduced cube comes from the
+    cube's brick pyramid (``source`` "pyramid", see :func:`worker_cube_reduced`):
+    the factors are then those of :func:`app.cube_reduce.pyramid_plan` and the
+    threshold comes from level-0 bricks, not from a stride over the cube."""
     # Reuse the cache's stat identity (including VBT headers/byte order),
     # without reading a potentially huge cube for a content hash.
     identity = file_identity(path)
     revision = hashlib.sha256(identity.encode()).hexdigest() if identity else ""
     dataset, hdul, data = _open_cube(path)
+    pyramid = None
     try:
         shape = tuple(int(n) for n in data.shape)
-        factors = _factors(shape, factor_xy, factor_z, max_dim, encoding, limit)
-        threshold = _full_threshold(data)
+        if pyramid_path:
+            pyramid = _Pyramid(pyramid_path, path, shape, factor_xy, factor_z, max_dim)
+            factors = pyramid.factors
+            _check_limit(shape, factors, encoding, limit)
+            threshold = pyramid.threshold(int(np.prod(shape)))
+            plan = pyramid.describe()
+        else:
+            factors = _factors(shape, factor_xy, factor_z, max_dim, encoding, limit)
+            threshold = _full_threshold(data)
+            plan = None
     finally:
+        if pyramid is not None:
+            pyramid.close()
         hdul.close()
     fx, fy, fz = factors
     depth, height, width = shape
@@ -234,28 +330,58 @@ def worker_cube_reduced_info(path: str, factor_xy: int, factor_z: int,
         "bunit": dataset.bunit or "",
         "pixel_scale_arcsec": pixel_arcsec if pixel_arcsec and math.isfinite(pixel_arcsec) else None,
         "axes": axes,
-        "modes": list(cube_reduce.MODES),
+        "modes": ["mean"] if plan else list(cube_reduce.MODES),
         "encodings": list(cube_reduce.ENCODINGS),
+        "source": "pyramid" if plan else "cube",
+        "pyramid": plan,
     }
 
 
 def worker_cube_reduced(path: str, factor_xy: int, factor_z: int, max_dim: int,
-                        mode: str, encoding: str, limit: bool = True) -> dict[str, Any]:
+                        mode: str, encoding: str, limit: bool = True,
+                        pyramid_path: str | None = None) -> dict[str, Any]:
     """The reduced cube as the headset's 3-D texture, plus its value range and
     its default threshold (:func:`binning_threshold`). ``limit=False`` lifts the
-    headset size cap, for measurements on the backend (the validation scripts)."""
+    headset size cap, for measurements on the backend (the validation scripts).
+
+    With ``pyramid_path``, read from the cube's brick pyramid instead of the
+    whole cube: the level :func:`app.cube_reduce.pyramid_plan` picks, binned
+    further by integer factors (mean binning only: the levels are means).
+
+    ``file_revision`` is the revision of the file actually read (as
+    reduced_info gives it): taken before reading and checked after, so a file
+    written again meanwhile is refused rather than answered under the
+    revision of a request made earlier (or queued for a heavy slot)."""
+    identity = file_identity(path)
     dataset, hdul, data = _open_cube(path)
+    pyramid = None
     try:
         shape = tuple(int(n) for n in data.shape)
-        factors = _factors(shape, factor_xy, factor_z, max_dim, encoding, limit)
-        reduced = cube_reduce.reduce_cube(data, factors, mode)
+        if pyramid_path:
+            if mode != "mean":
+                raise ValueError("A reduced cube from the brick pyramid is binned by the mean "
+                                 "(its levels are means): max binning reads the whole cube.")
+            pyramid = _Pyramid(pyramid_path, path, shape, factor_xy, factor_z, max_dim)
+            factors = pyramid.factors
+            _check_limit(shape, factors, encoding, limit)
+            reduced = pyramid.reduce()
+            plan = pyramid.describe()
+        else:
+            factors = _factors(shape, factor_xy, factor_z, max_dim, encoding, limit)
+            reduced = cube_reduce.reduce_cube(data, factors, mode)
+            plan = None
         own = binning_threshold(data, reduced, mode)
     finally:
+        if pyramid is not None:
+            pyramid.close()
         hdul.close()
+    if file_identity(path) != identity:
+        raise ValueError("The cube changed while it was being reduced: load it again.")
     lo, hi = cube_reduce.finite_range(reduced)
     raw = cube_reduce.quantise(reduced, lo, hi, encoding)
     rd, rh, rw = reduced.shape
     return {
+        "file_revision": hashlib.sha256(identity.encode()).hexdigest() if identity else "",
         "width": int(rw), "height": int(rh), "depth": int(rd),
         "full_shape": [shape[2], shape[1], shape[0]],
         "factors": list(factors),
@@ -264,5 +390,7 @@ def worker_cube_reduced(path: str, factor_xy: int, factor_z: int, max_dim: int,
         "range_min": lo, "range_max": hi,
         "threshold": own,
         "bunit": dataset.bunit or "",
+        "source": "pyramid" if plan else "cube",
+        "pyramid": plan,
         "raw_bytes": raw,
     }

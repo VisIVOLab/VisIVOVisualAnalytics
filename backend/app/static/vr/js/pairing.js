@@ -61,6 +61,9 @@ export function strippedAddress(pathname, search, hash) {
  */
 export function pairingFallback(err, hasPath) {
   if (!err) return 'use';
+  // Not the dataset check's answer: a load replaced by another, or an error
+  // after the cube's pyramid build started (the dataset was there).
+  if (err.superseded || err.duringBuild) return 'fail';
   const m = String(err.message || err).match(/^(\d{3}):\s*(.*)$/s);
   const code = m ? Number(m[1]) : 0;
   const detail = m ? m[2] : '';
