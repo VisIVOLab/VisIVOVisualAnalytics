@@ -1,0 +1,5 @@
+tests/
+__pycache__/
+*.pyc
+*.sif
+turn_secret.txt
