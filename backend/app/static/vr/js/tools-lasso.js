@@ -46,19 +46,33 @@ export function growRequest(seeds, params) {
 const ROI_FROM_GROW = 'with origin_x, origin_y, origin_z from its X-Visivo-Origin header and '
   + 'width, height, depth from X-Visivo-Width, X-Visivo-Height, X-Visivo-Depth';
 
-/** The apply step of the recipe, as LassoReplay's lassoApplyStep(mode, false)
- *  writes it: the mode only, the mask from the grow's response. */
-export function applyStep(mode) {
+/** The apply step of the recipe, as LassoReplay's lassoApplyStep(mode,
+ *  handEdited) writes it: the mode only, the mask from the grow's response, or
+ *  (a mask edited by hand) the edited mask, which only the cube records. */
+export function applyStep(mode, handEdited = false) {
   return {
     route: '/v1/cube/mask_apply_bin',
     request: { mode },
-    body: `the previous call's response body, the selection as a little-endian float32 mask, posted back ${ROI_FROM_GROW}`,
+    body: handEdited
+      ? 'the hand-edited selection as a little-endian float32 mask, which only the cube itself records '
+        + `(see replay_caveat); a replay of the grow alone posts the previous call's response body ${ROI_FROM_GROW}`
+      : `the previous call's response body, the selection as a little-endian float32 mask, posted back ${ROI_FROM_GROW}`,
   };
+}
+
+/** The desktop's replay caveat of a cube made from a hand-edited mask
+ *  (vtkWindowCube::applyLassoMask). */
+export const HAND_EDITED_CAVEAT = 'The mask was edited by hand after the grow: the parameters regrow only its '
+  + 'geodesic part. The cube itself, with its HISTORY, is the exact record.';
+
+/** Was this selection's mask edited by hand (a shared selection says so)? */
+export function isHandEdited(L) {
+  return !!(L && (L.handEdited || L.hand_edited));
 }
 
 /** The FITS HISTORY items of the new cube (LassoReplay's lassoHistoryItems),
  *  joined as the desktop sends them in the `recipe` query. */
-export function historyRecipe(g, trimBox = 0) {
+export function historyRecipe(g, trimBox = 0, handEdited = false) {
   const compact = (s) => `(${s[0]},${s[1]},${s[2]})`;
   const items = [
     `seed_zyx=${g.seed_z},${g.seed_y},${g.seed_x}`,
@@ -70,7 +84,7 @@ export function historyRecipe(g, trimBox = 0) {
     `reach_max=${Rc.formatG(g.reach_max, 4)}`,
     `add_seeds=${g.add_seeds ? g.add_seeds.map(compact).join('|') : 'none'}`,
     `sub_seeds=${g.sub_seeds ? g.sub_seeds.map(compact).join('|') : 'none'}`,
-    'hand_edited=no',
+    `hand_edited=${handEdited ? 'yes' : 'no'}`,
   ];
   if (trimBox > 0) items.push(`domain_trimmed=largest box half-width ${trimBox} voxels`);
   return items.join('; ');
@@ -99,8 +113,9 @@ export function tempBasename(path, tag) {
 }
 
 /** The Provenance of the new cube, as the desktop's applyLassoMask labels it. */
-export function applyParams(g, mode, count, trimBox, file) {
+export function applyParams(g, mode, count, trimBox, file, handEdited = false) {
   const p = Rc.lassoDisplayParams(g);
+  p['Hand-edited'] = handEdited ? 'yes' : 'no';
   if (trimBox > 0) {
     p['Domain trimmed'] = `yes: one or more grows exceeded the graph budget and were cut to a seed-centred box, largest half-width ${trimBox} voxels`;
   }
@@ -127,7 +142,13 @@ export function seedsOf(g) {
  * by concurrent presses). A moment uses the cube Isolate made for this mask,
  * or else a temporary one of its own, named <stem>_vr-moment-tmp-<tag>.fits
  * and deleted when the selection changes; a cube asked for with Isolate or
- * Remove is kept. ctx.path() gives the cube's path (the temporary name's stem).
+ * Remove is kept. ctx.path() gives the cube's path (the temporary name's stem),
+ * ctx.cube() the cube shown (its identity: a new load is a new object).
+ *
+ * Every action belongs to the cube it started on: the slot captures the
+ * dataset id and the cube, every call posts that dataset id, and after every
+ * await the action stops if another cube was loaded meanwhile (a mask of cube
+ * A is never applied to cube B).
  */
 export function createLassoTools(ctx) {
   const t = {
@@ -141,15 +162,15 @@ export function createLassoTools(ctx) {
   const msg = (e) => String(e && e.message ? e.message : e);
 
   /** Delete a cube made only for a moment (its session entry, then its file);
-   *  never a file without the temporary marker. */
-  async function discard(out) {
+   *  never a file without the temporary marker. `quiet`: say only a failure. */
+  async function discard(out, quiet = false) {
     const b = ctx.backend();
     if (!b || !out.file.includes(TEMP_MARK)) return;
     try {
       await b._json('DELETE', `/v1/datasets/${encodeURIComponent(out.id)}`);
       const r = await b._json('DELETE', `/v1/exports/${encodeURIComponent(out.file)}`);
       if (!r.valid) throw new Error(r.error || 'not deleted');
-      t.notice = `deleted ${out.file} (made for the moment of the previous selection)`;
+      if (!quiet) t.notice = `deleted ${out.file} (made for the moment of the previous selection)`;
     } catch (e) {
       t.notice = `${out.file} (made for the moment of the previous selection) stays in the Workspace Exports: ${msg(e)}`;
     }
@@ -164,10 +185,24 @@ export function createLassoTools(ctx) {
     }
   }
 
+  const cubeNow = () => (ctx.cube ? ctx.cube() : null);
+  /** Is the cube the slot was made on still the one shown? */
+  const stillOn = (slot) => ctx.datasetId() === slot.dataset && cubeNow() === slot.cube;
+  const CHANGED = 'Another cube was loaded meanwhile: nothing was applied to it.';
+  /** A cube change, said on the panel (t.notice survives the new cube's
+   *  reset, which drops the action's own error), and thrown. */
+  const cubeChanged = (text) => {
+    t.notice = text;
+    changed();
+    const e = new Error(text);
+    e.cubeChanged = true;
+    return e;
+  };
+
   function slotFor(L) {
-    if (!t.slot || t.slot.lasso !== L) {
+    if (!t.slot || t.slot.lasso !== L || !stillOn(t.slot)) {
       retire(t.slot);
-      t.slot = L ? { lasso: L, mask: null, modes: {} } : null;
+      t.slot = L ? { lasso: L, mask: null, modes: {}, dataset: ctx.datasetId(), cube: cubeNow() } : null;
     }
     return t.slot;
   }
@@ -175,11 +210,12 @@ export function createLassoTools(ctx) {
   /** Follow the selection shown (a new grow, Clear, a shared selection). */
   function sync() {
     const L = sel().lasso;
-    if (t.slot && t.slot.lasso !== L) slotFor(L);
+    if (t.slot && (t.slot.lasso !== L || !stillOn(t.slot))) slotFor(L);
   }
 
   /** The mask of the selection: its own bytes, origin and dims whenever it
-   *  has them; else (a selection that came with its grow only, such as a
+   *  has them (authoritative, even with a grow request beside them: it may
+   *  have been edited by hand); else (a selection that came with its grow only, such as a
    *  shared one) the grow of its request, which is the same voxels (the
    *  recipe's replay), checked against its origin, dims and count. A
    *  hand-edited selection without its mask is refused: its grow is not it. */
@@ -193,11 +229,12 @@ export function createLassoTools(ctx) {
           if (got !== n) throw new Error(`this selection's mask has ${got} bytes, its box ${L.dims.join('×')} needs ${n}`);
           return { bytes: L.bytes, origin: L.origin, dims: L.dims, trimBox: L.trimBox || 0 };
         }
-        if (L.handEdited || L.hand_edited) {
+        if (isHandEdited(L)) {
           throw new Error('This selection was edited by hand and came without its mask: apply it on the desktop, where the mask is.');
         }
         if (!L.request) throw new Error('This selection came without its mask or its grow request: it cannot be applied here.');
-        const r = await ctx.backend().kinematicSelect(ctx.datasetId(), L.request);
+        const r = await ctx.backend().kinematicSelect(slot.dataset, L.request);
+        if (!stillOn(slot)) throw cubeChanged(CHANGED);
         const same = (a, b) => !a || (a.length === b.length && a.every((v, i) => v === b[i]));
         if ((L.count !== undefined && r.count !== L.count) || !same(L.origin, r.origin) || !same(L.dims, r.dims)) {
           throw new Error(`The grow of this selection's request gives ${r.count} voxels in ${r.dims.join('×')} at `
@@ -232,24 +269,41 @@ export function createLassoTools(ctx) {
       const basename = e.temp ? tempBasename(ctx.path ? ctx.path() : '', `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`) : '';
       e.promise = (async () => {
         const t0 = performance.now();
-        const m = await maskOf(slot);
-        const q = new URLSearchParams(applyQuery(ctx.datasetId(), m.origin, m.dims, mode, historyRecipe(L.request, m.trimBox), basename));
+        let m;
+        try { m = await maskOf(slot); } catch (err) { if (!stillOn(slot) && !err.cubeChanged) throw cubeChanged(CHANGED); throw err; }
+        if (!stillOn(slot)) throw cubeChanged(CHANGED);
+        // The dataset the selection was made on, never the one shown now.
+        const q = new URLSearchParams(applyQuery(slot.dataset, m.origin, m.dims, mode,
+          historyRecipe(L.request, m.trimBox, isHandEdited(L)), basename));
         const { buf } = await b._binary(`/v1/cube/mask_apply_bin?${q}`, m.bytes, 'application/octet-stream');
         const r = JSON.parse(new TextDecoder().decode(buf));
         if (!r.valid) throw new Error(r.error || 'Masking failed.');
         e.out = { id: r.new_dataset_id, file: r.workspace_filename, path: r.output_path,
           dims: [r.width, r.height, r.depth], mode, ms: performance.now() - t0, trimBox: m.trimBox, temp: e.temp };
+        if (!stillOn(slot)) {
+          // Made correctly, from the previous cube's selection, but that cube is
+          // gone: a temporary cube is deleted, one asked for is kept, not recorded
+          // (the record would name the cube shown now).
+          if (e.temp) discard(e.out, true);
+          throw cubeChanged(`Another cube was loaded meanwhile: ${e.out.file} was made from the previous cube's selection${e.temp ? ' and deleted' : ' and is not recorded'}.`);
+        }
         return e.out;
       })();
       e.promise.catch(() => { if (slot.modes[key] === e) delete slot.modes[key]; });
     }
     const out = await e.promise;
     if (record && !e.temp && !e.recorded) {
+      // Not when another cube is shown now: the record would name it.
+      if (!stillOn(slot)) {
+        throw cubeChanged(`Another cube was loaded meanwhile: ${out.file} was made from the previous cube's selection and is not recorded.`);
+      }
       e.recorded = true;
       const removed = mode === APPLY_MODES.remove;
-      ctx.selection.record({ kind: 'lasso', label: removed ? 'Lasso: removed cube' : 'Lasso: isolated cube',
-        replay: [{ route: '/v1/cube/kinematic_select_bin', request: L.request }, applyStep(mode)] },
-      applyParams(L.request, mode, L.count, out.trimBox, out.file), null);
+      const hand = isHandEdited(L);
+      const product = { kind: 'lasso', label: removed ? 'Lasso: removed cube' : 'Lasso: isolated cube',
+        replay: [{ route: '/v1/cube/kinematic_select_bin', request: L.request }, applyStep(mode, hand)] };
+      if (hand) product.replay_caveat = HAND_EDITED_CAVEAT;
+      ctx.selection.record(product, applyParams(L.request, mode, L.count, out.trimBox, out.file, hand), null);
     }
     return out;
   }

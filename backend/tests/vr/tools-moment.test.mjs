@@ -50,6 +50,8 @@ test('the Provenance uses the desktop\'s labels; the replay isolates, then measu
   assert.match(steps[2].body, /new_dataset_id/);
   assert.match(TM.MOMENT_CAVEAT, /whole cube/);
   assert.match(TM.MOMENT_CAVEAT, /desktop records no replay steps/);
+  // A hand-edited mask: the apply step says so.
+  assert.match(TM.momentReplay(g, req, true)[1].body, /^the hand-edited selection/);
 });
 
 test('the crop is the selection\'s box grown by a margin, within the map', () => {

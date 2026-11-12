@@ -738,11 +738,20 @@ both at once, reuses the cube already made (or being made), and a moment uses
 the cube *Isolate* made for the selection. The seeds are read from the
 selection's own grow request, so a selection that arrives from elsewhere (a
 shared one) continues with its own seeds. A selection is applied with its own
-mask whenever it has one; one that arrives with only its grow is grown again
+mask whenever it has one (even beside a grow request: a shared mask is
+authoritative, and may have been edited by hand); one that arrives with only
+its grow is grown again
 from its request, and applied only if the grow gives back its voxel count,
 box origin and size (else the page refuses and says what differs); one edited
 by hand and arriving without its mask is refused (its grow is not it: apply it
-on the desktop).
+on the desktop). Isolate, Remove and a moment belong to the cube they started
+on: if another cube is loaded while they run, nothing is applied to it (a
+cube already made from the previous one is deleted if temporary, or kept and
+not recorded), and the panel says so, even after the new cube's reset. A
+shared mask edited by hand is recorded as the desktop records one: *Hand-edited*
+yes, `hand_edited=yes` in the new cube's HISTORY, the apply step's
+hand-edited body and the desktop's caveat (the parameters regrow only its
+geodesic part; the cube itself is the exact record).
 
 ### The moment of the selection
 

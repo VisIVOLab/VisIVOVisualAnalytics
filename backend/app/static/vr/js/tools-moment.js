@@ -8,7 +8,7 @@
 // Pure parts tested by node: backend/tests/vr/tools-moment.test.mjs.
 
 import * as PC from './product-canvas.js';
-import { applyStep, APPLY_MODES } from './tools-lasso.js';
+import { applyStep, APPLY_MODES, isHandEdited, HAND_EDITED_CAVEAT } from './tools-lasso.js';
 
 /** The desktop's labels of the orders (MomentMapController::describeMomentOrder). */
 export const ORDER_NAMES = {
@@ -52,10 +52,10 @@ export const ISOLATED_ID = '{new_dataset_id}';
  *  placeholder of the previous answer's field (as the desktop's
  *  momentDatasetSteps write {output_path}), so a replay cannot post the
  *  opened dataset's id there by accident. */
-export function momentReplay(growRequest, req) {
+export function momentReplay(growRequest, req, handEdited = false) {
   return [
     { route: '/v1/cube/kinematic_select_bin', request: growRequest },
-    applyStep(APPLY_MODES.isolate),
+    applyStep(APPLY_MODES.isolate, handEdited),
     { route: '/v1/products/moment', request: { dataset_id: ISOLATED_ID, ...req },
       body: `none (JSON). dataset_id ${ISOLATED_ID}: the new_dataset_id of the previous call's answer, the isolated cube` },
   ];
@@ -137,8 +137,8 @@ export function createMomentTool(ctx) {
         values, box, cut, range, iso, lasso: L, ms: performance.now() - t0, summary: mapSummary(values) };
       // One product per order and selection: pressed again, it is recorded again in place.
       if (t.recipes.lasso !== L) t.recipes = { lasso: L, ids: {} };
-      const rec = ctx.selection.record({ kind: 'moment', label: `Moment ${order}`, replay: momentReplay(L.request, req),
-        replay_caveat: MOMENT_CAVEAT }, momentParams(req, r.moment_unit, iso.file, !!iso.temp), null, t.recipes.ids[order] || '');
+      const rec = ctx.selection.record({ kind: 'moment', label: `Moment ${order}`, replay: momentReplay(L.request, req, isHandEdited(L)),
+        replay_caveat: isHandEdited(L) ? `${MOMENT_CAVEAT} ${HAND_EDITED_CAVEAT}` : MOMENT_CAVEAT }, momentParams(req, r.moment_unit, iso.file, !!iso.temp), null, t.recipes.ids[order] || '');
       t.recipes.ids[order] = rec.product.id;
       t.busy = '';
       t.pending = null;

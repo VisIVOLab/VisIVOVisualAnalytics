@@ -22,7 +22,7 @@ export function createAnalysis(ctx) {
   let dirty = true;
   const changed = () => { dirty = true; ctx.onChange && ctx.onChange(); };
   const base = { selection: ctx.selection, backend: ctx.backend, datasetId, info, onChange: changed };
-  const lasso = createLassoTools({ ...base, showDataset: ctx.showDataset, path: () => st().openPath || '' });
+  const lasso = createLassoTools({ ...base, showDataset: ctx.showDataset, path: () => st().openPath || '', cube: () => st().cube });
   const moment = createMomentTool({ ...base, lassoTools: lasso });
   const pv = createPvTool({ ...base, state: st });
   const show = { moment: true, pv: true };

@@ -174,3 +174,142 @@ test('Isolate without a selection says so and posts nothing', async () => {
   assert.equal(h.posts.length, 0);
   assert.match(h.tools.state.error, /Grow a selection first/);
 });
+
+/** Lasso tools over a page whose cube can be swapped mid-action (A -> B), and a
+ *  backend whose answers the test releases. */
+function swapHarness(lasso) {
+  const page = { ds: 'ds_A', cube: { name: 'A' } };
+  const held = [];
+  const later = (v) => new Promise((r) => held.push(() => r(v)));
+  const posts = [], grows = [], deletes = [], recipes = [];
+  let calls = 0;
+  const sel = { lasso, busy: '', recipes: [] };
+  const selection = { sel, record: (product) => sel.recipes.push(product) };
+  const backend = {
+    kinematicSelect: (ds, req) => { grows.push(ds); return later({ bytes: new ArrayBuffer(4), origin: [1, 1, 1], dims: [1, 1, 1], count: 7, trimBox: 0 }); },
+    _binary: (url, body) => {
+      const q = new URLSearchParams(url.split('?')[1]);
+      posts.push(q.get('dataset_id'));
+      recipes.push(q.get('recipe'));
+      const file = q.get('output_basename') || `c_${q.get('mode')}.fits`;
+      return later({ buf: new TextEncoder().encode(JSON.stringify({ valid: true, new_dataset_id: 'ds_new', workspace_filename: file,
+        output_path: `/x/${file}`, width: 1, height: 1, depth: 1 })).buffer });
+    },
+    _json: async (method, url) => { deletes.push(url); return { valid: true }; },
+  };
+  // datasetId() counts its calls; page.flipAt switches to cube B at that call.
+  const datasetId = () => { calls++; if (page.flipAt && calls >= page.flipAt) { page.ds = 'ds_B'; page.cube = page.cubeB; } return page.ds; };
+  page.cubeB = { name: 'B' };
+  const tools = TL.createLassoTools({ selection, backend: () => backend, datasetId, cube: () => page.cube,
+    path: () => '/data/a.fits', onChange: () => {} });
+  const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
+  const releaseOne = async () => { await flush(); held.shift()(); await flush(); };
+  // As installCube does: the new cube, then the tools' reset.
+  const loadB = () => { page.ds = 'ds_B'; page.cube = page.cubeB; tools.reset(); };
+  return { page, tools, posts, grows, deletes, recipes, sel, releaseOne, flush, loadB, calls: () => calls };
+}
+
+test('a mask of cube A is never applied to cube B loaded meanwhile (while its mask is fetched)', async () => {
+  // A selection of cube A that must be grown again (no bytes): its grow is in flight when B loads.
+  const g = Rc.lassoGrowRequest([1, 1, 1]);
+  const h = swapHarness({ request: g, count: 7, origin: [1, 1, 1], dims: [1, 1, 1] });
+  const p = h.tools.run('isolate');
+  await h.flush();
+  assert.deepEqual(h.grows, ['ds_A'], 'the grow asks cube A');
+  h.loadB();                                     // cube B is loaded
+  await h.releaseOne();                          // A's mask arrives
+  await p;
+  assert.deepEqual(h.posts, [], 'nothing posted, least of all to ds_B');
+  // The reset of the new cube drops the action's own error: the panel says it as a notice.
+  assert.match(h.tools.state.notice, /Another cube was loaded meanwhile: nothing was applied to it/);
+  assert.ok(h.tools.lines().some((l) => /Another cube was loaded meanwhile/.test(l)), 'shown on the panel');
+  assert.equal(h.sel.recipes.length, 0);
+});
+
+test('a cube made from A while B loads: posted to A, then a temporary one deleted, an asked one not recorded', async () => {
+  for (const temp of [false, true]) {
+    const h = swapHarness({ bytes: new ArrayBuffer(4), origin: [1, 1, 1], dims: [1, 1, 1], request: Rc.lassoGrowRequest([1, 1, 1]), count: 1 });
+    const p = h.tools.apply('blank_outside', { record: !temp, temp }).catch((e) => e);
+    await h.flush();
+    assert.deepEqual(h.posts, ['ds_A'], 'posted with the captured dataset');
+    h.loadB();
+    await h.releaseOne();
+    const e = await p;
+    assert.ok(e instanceof Error);
+    assert.match(e.message, temp ? /and deleted/ : /and is not recorded/);
+    assert.equal(h.tools.state.notice, e.message, 'said on the panel after the reset');
+    assert.equal(h.sel.recipes.length, 0);
+    await h.flush();
+    assert.equal(h.deletes.length, temp ? 2 : 0);
+    assert.equal(h.tools.state.notice, e.message, 'a quiet delete does not replace it');
+    // On B, the tools start afresh: the old slot is gone.
+    h.tools.sync();
+    assert.ok(!h.tools.state.slot || h.tools.state.slot.dataset === 'ds_B');
+  }
+});
+
+test('a shared selection with its mask and a grow request (perhaps hand-edited): the mask, no regrow', async () => {
+  const shared = { bytes: new ArrayBuffer(8), origin: [3, 4, 5], dims: [2, 1, 1], request: Rc.lassoGrowRequest([1, 1, 1]),
+    count: 2, handEdited: true };
+  const h = swapHarness(shared);
+  const p = h.tools.run('remove');
+  await h.flush();
+  assert.deepEqual(h.grows, [], 'no regrow');
+  assert.deepEqual(h.posts, ['ds_A']);
+  await h.releaseOne();
+  await p;
+  assert.equal(h.tools.state.error, '');
+  assert.equal(h.sel.recipes.length, 1);
+});
+
+test('a cube shown to change just before the record: the cube is not recorded under the new one', async () => {
+  const mk = () => swapHarness({ bytes: new ArrayBuffer(4), origin: [1, 1, 1], dims: [1, 1, 1], request: Rc.lassoGrowRequest([1, 1, 1]), count: 1 });
+  // A dry run counts the datasetId() calls up to the record.
+  const dry = mk();
+  const p0 = dry.tools.apply('blank_outside');
+  await dry.releaseOne();
+  await p0;
+  assert.equal(dry.sel.recipes.length, 1);
+  const n = dry.calls();
+  // The same run with cube B appearing at the last check (the one before the record).
+  const h = mk();
+  h.page.flipAt = n;
+  const p = h.tools.apply('blank_outside').catch((e) => e);
+  await h.releaseOne();
+  const e = await p;
+  assert.ok(e instanceof Error, 'refused');
+  assert.match(e.message, /is not recorded/);
+  assert.deepEqual(h.posts, ['ds_A']);
+  assert.equal(h.sel.recipes.length, 0);
+});
+
+test('a hand-edited shared mask is recorded as hand-edited, as the desktop records it', async () => {
+  const shared = { bytes: new ArrayBuffer(4), origin: [1, 1, 1], dims: [1, 1, 1], request: Rc.lassoGrowRequest([1, 1, 1]),
+    count: 1, handEdited: true };
+  const h = swapHarness(shared);
+  const p = h.tools.run('isolate');
+  await h.releaseOne();
+  await p;
+  assert.match(h.recipes[0], /; hand_edited=yes$/, 'HISTORY says so');
+  const r = h.sel.recipes[0];
+  assert.equal(r.replay_caveat, TL.HAND_EDITED_CAVEAT);
+  // src/gui/vtkWindowCube_Lasso.cpp applyLassoMask's caveat, word for word.
+  assert.equal(TL.HAND_EDITED_CAVEAT, 'The mask was edited by hand after the grow: the parameters regrow only its '
+    + 'geodesic part. The cube itself, with its HISTORY, is the exact record.');
+  // LassoReplay::lassoApplyStep(mode, true).
+  assert.equal(r.replay[1].body, 'the hand-edited selection as a little-endian float32 mask, which only the cube itself records '
+    + '(see replay_caveat); a replay of the grow alone posts the previous call\'s response body with origin_x, origin_y, '
+    + 'origin_z from its X-Visivo-Origin header and width, height, depth from X-Visivo-Width, X-Visivo-Height, X-Visivo-Depth');
+  // The Provenance is passed with the record (swapHarness keeps the product only): checked on the pure function.
+  assert.equal(TL.applyParams(shared.request, 'blank_outside', 1, 0, 'f.fits', true)['Hand-edited'], 'yes');
+  assert.equal(TL.applyParams(shared.request, 'blank_outside', 1, 0, 'f.fits')['Hand-edited'], 'no');
+  assert.ok(TL.historyRecipe(shared.request).endsWith('hand_edited=no'));
+  // Not edited: no caveat, the plain step.
+  const g = swapHarness({ ...shared, handEdited: false });
+  const q = g.tools.run('isolate');
+  await g.releaseOne();
+  await q;
+  assert.equal(g.sel.recipes[0].replay_caveat, undefined);
+  assert.match(g.recipes[0], /hand_edited=no$/);
+  assert.equal(g.sel.recipes[0].replay[1].body, TL.applyStep('blank_outside').body);
+});
