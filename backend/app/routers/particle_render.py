@@ -237,7 +237,9 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
             raise ValueError(f"The radius field {req.radius_field!r} has no positive value.")
         radius = np.where(positive, radius, radius[positive].min())
         if scale != 1.0:   # the table's units, into the local frame's
-            radius = radius / np.float32(scale)
+            # In float64: a scale above float32's range (a span up to 6.8e38)
+            # would be inf in float32 and turn every radius into 0.
+            radius = (radius.astype(np.float64) / float(scale)).astype(np.float32)
     else:
         radius = smoothing_lengths(pos, req.neighbours)
     radius = (radius * req.radius_scale).astype(np.float32)

@@ -740,3 +740,19 @@ def test_an_axis_read_as_fractions_draws_the_same_picture(tmp_path, monkeypatch)
     assert np.allclose(origin + scale * rows[:, :3],
                        np.stack([_FAR_X, y[1:], np.full(3, _FAR_Z)], axis=1), rtol=0, atol=1e-6)
     assert np.allclose(scale * rows[:, 3], 0.1)
+
+
+def test_radii_survive_a_scale_beyond_float32(tmp_path):
+    """X from -3e38 to 3e38 (both within float32, kept) is read as fractions of
+    a span of 6e38, beyond float32: the radius column is divided by that scale
+    in float64, so radii stay positive instead of becoming 0 (and every
+    particle dropped)."""
+    from app.routers import particle_render as router
+    x = np.array([-3e38, 0.0, 3e38])
+    entry = _far(tmp_path, x, h=1e37, name="huge")
+    req = router.ParticleRenderRequest(dataset_id="huge", radius_field="H", cameras=[FRONT_JSON])
+    p = router._prepare(entry, req)
+    scale = p["frame"][1]
+    assert scale > float(np.finfo(np.float32).max)
+    assert np.all(np.isfinite(p["radius"])) and np.all(p["radius"] > 0)
+    assert np.allclose(p["radius"].astype(float) * scale, 1e37, rtol=1e-5)
