@@ -21,6 +21,21 @@ def _fields(seed=0, shape=(20, 24, 28)) -> list[np.ndarray]:
     return [a, b]
 
 
+def test_vr_file_revision_supports_vbt_field_references_and_header_changes(tmp_path):
+    from app.compute.reduced import worker_cube_reduced_info
+    from app.volume_source import vbt_field_ref, with_order
+
+    path = _write_vbt(tmp_path, _fields())
+    ref = with_order(vbt_field_ref(path, 1), "little")
+    before = worker_cube_reduced_info(ref, 0, 0, 256)
+    assert before["file_revision"]
+    head = Path(str(path) + ".head")
+    head.write_text(head.read_text() + "\n")
+    after = worker_cube_reduced_info(ref, 0, 0, 256)
+    assert after["file_revision"] != before["file_revision"]
+    assert after["full_shape"] == before["full_shape"]
+
+
 def _write_vbt(tmp_path: Path, fields: list[np.ndarray], endian="little", scalar="float",
                spacing=(1.0, 1.0, 1.0), names=None) -> Path:
     """A VBT volume (``v.bin`` + ``v.bin.head``); returns the ``.bin``."""

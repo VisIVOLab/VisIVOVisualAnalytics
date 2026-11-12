@@ -493,6 +493,7 @@ async function loadFromBackend() {
   const path = $('path').value.trim();
   if (!path) throw new Error('Give the path of a cube on the backend.');
   const ticket = loads.begin(path);
+  ticket.reduction = reducedRequest('');
   const b = loadHandle();
   const t0 = performance.now();
   setStatus('Opening…');
@@ -510,7 +511,7 @@ async function loadFromBackend() {
   stillCurrent(ticket);
   b.sessionNote = state.sessionNote || 'own session';
   setStatus('Reading the axes…');
-  const info = await b.reducedInfo(reducedRequest(open.dataset_id));
+  const info = await b.reducedInfo({ ...ticket.reduction, dataset_id: open.dataset_id });
   stillCurrent(ticket);
   await loadReduced(b, open, info, t0, ticket);
 }
@@ -529,6 +530,7 @@ async function loadPaired() {
   }
   ensureBackend();
   const ticket = loads.begin(pairing.path);
+  ticket.reduction = reducedRequest('');
   const b = loadHandle();          // the desktop's session is adopted here, the page's only if this load wins
   const t0 = performance.now();
   if (pairing.session) b.adoptSession(pairing.session);
@@ -560,7 +562,7 @@ async function loadPaired() {
   if (pairing.dataset && pairing.session) {
     setStatus('Opening the desktop\'s cube…');
     try {
-      info = await b.reducedInfo(reducedRequest(pairing.dataset));
+      info = await b.reducedInfo({ ...ticket.reduction, dataset_id: pairing.dataset });
       open = { dataset_id: pairing.dataset, kind: 'cube', valid: true };
       b.sessionNote = 'the desktop\'s session';
     } catch (e) { err = e; }
@@ -581,7 +583,7 @@ async function loadPaired() {
     setStatus('Opening the desktop\'s cube by its path…');
     open = await b.open(pairing.path);
     stillCurrent(ticket);
-    info = await b.reducedInfo(reducedRequest(open.dataset_id));
+    info = await b.reducedInfo({ ...ticket.reduction, dataset_id: open.dataset_id });
   }
   stillCurrent(ticket);
   await loadReduced(b, open, info, t0, ticket);
@@ -591,29 +593,34 @@ async function loadPaired() {
 async function showDataset(id, path) {
   return withLoading(async () => {
     const ticket = loads.begin(path || '');
+    ticket.reduction = reducedRequest('');
     const b = loadHandle();
     const t0 = performance.now();
     if (path) $('path').value = path;
     setStatus('Reading the axes…');
-    const info = await b.reducedInfo(reducedRequest(id));
+    const info = await b.reducedInfo({ ...ticket.reduction, dataset_id: id });
     stillCurrent(ticket);
     await loadReduced(b, { dataset_id: id, kind: 'cube', valid: true }, info, t0, ticket);
   });
 }
 
 async function loadReduced(b, open, info, t0, ticket) {
-  const req = reducedRequest(open.dataset_id);
+  const req = { ...ticket.reduction, dataset_id: open.dataset_id };
   const t1 = performance.now();
   // The backend caps voxels and bytes; the GPU caps each side and this
   // device its memory. Refuse before reading the cube rather than after.
   checkBudget(info.reduced_shape, req.encoding);
   setStatus(`Reducing ${info.full_shape.join('×')} by ${info.factors.join('×')} (${req.mode})…`);
-  const cube = await b.reducedCube({ ...req, factor_xy: info.factors[0], factor_z: info.factors[2] },
+  // Keep automatic factors as 0: metadata can resolve them beyond the API's
+  // explicit-factor limit of 64, and the binary route uses the same rule.
+  const cube = await b.reducedCube(req,
     (f) => { if (loads.isCurrent(ticket)) setStatus(`Transferring… ${(100 * f).toFixed(0)} %`); });
   // A load started meanwhile owns the page: this cube is not shown.
   stillCurrent(ticket);
   // This load won: its session becomes the page's (unless the token changed).
   if (!commitHandle(b)) throw supersededLoad();
+  const { dataset_id, ...reduction } = req;
+  cube.reduction = reduction;
   state.load = { openInfoMs: t1 - t0, reduceMs: cube.timing.serverMs, transferMs: cube.timing.totalMs - cube.timing.serverMs, mb: cube.bytes / 1e6 };
   installCube(info, cube, open, ticket.path);
 }
@@ -645,8 +652,8 @@ async function recoverDataset(reason) {
   if (!path || !state.open || !state.info || !state.cube) return { ok: false, detail: 'no cube from the backend on show' };
   // Everything read from the page before the first await (lifecycle.js reopenCube).
   const c = state.cube;
-  const snap = { path, fullShape: state.info.full_shape, gen: state.loadGen };
-  const req = { factor_xy: c.factors[0], factor_z: c.factors[2], max_dim: readNumber('maxdim'), mode: c.mode, encoding: c.encoding };
+  const snap = { path, fullShape: state.info.full_shape, gen: state.loadGen, fileRevision: state.info.file_revision };
+  const req = c.reduction || { factor_xy: c.factors[0], factor_z: c.factors[2], max_dim: readNumber('maxdim'), mode: c.mode, encoding: c.encoding };
   // Its own handle: a new session it makes becomes the page's only if it wins.
   // And a deadline on each of its requests (datasets/open, sessions/new,
   // reduced_info): a hung connection must not stall the recovery; the next
@@ -664,6 +671,12 @@ async function recoverDataset(reason) {
   const { open, info } = r;
   if (!commitHandle(b)) return { ok: false, superseded: true, detail: 'the token changed during the reopen' };
   state.open = open;
+  state.info = info;
+  // Pending selections belong to the old dataset/session. Resume sharing on
+  // the reopened id and invalidate old mask/tool work before accepting more.
+  selection.clear();
+  analysis.reset();
+  share.start(open.dataset_id);
   state.sessionNote = reason === 'restarted' ? 'a new session (the backend restarted)' : 'a new session (the old one ended)';
   refiner.setDataset(open.dataset_id, { outOfCore: !!info.render_out_of_core });
   return { ok: true, detail: `dataset ${open.dataset_id}` };

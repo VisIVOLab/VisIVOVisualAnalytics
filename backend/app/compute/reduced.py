@@ -3,6 +3,7 @@ reduced cube a headset renders itself (issue #167), and the world coordinates
 of its voxels. The reduction rules are in :mod:`app.cube_reduce`."""
 from __future__ import annotations
 
+import hashlib
 import math
 from typing import Any
 
@@ -10,6 +11,7 @@ import numpy as np
 
 from .. import cube_reduce
 from ..noise_threshold import default_threshold, stride_for
+from ..product_cache import file_identity
 from ._common import ScientificFitsDataset, logger
 
 
@@ -194,6 +196,10 @@ def worker_cube_reduced_info(path: str, factor_xy: int, factor_z: int,
                              limit: bool = True) -> dict[str, Any]:
     """Shape, factors, default threshold and world axes of a reduced cube,
     without reducing it."""
+    # Reuse the cache's stat identity (including VBT headers/byte order),
+    # without reading a potentially huge cube for a content hash.
+    identity = file_identity(path)
+    revision = hashlib.sha256(identity.encode()).hexdigest() if identity else ""
     dataset, hdul, data = _open_cube(path)
     try:
         shape = tuple(int(n) for n in data.shape)
@@ -217,7 +223,10 @@ def worker_cube_reduced_info(path: str, factor_xy: int, factor_z: int,
     except Exception:  # noqa: BLE001
         pixel_arcsec = None
     rd, rh, rw = cube_reduce.reduced_shape(shape, factors)
+    if file_identity(path) != identity:
+        raise ValueError("The cube changed while reading its metadata: open it again.")
     return {
+        "file_revision": revision,
         "full_shape": [width, height, depth],
         "factors": [fx, fy, fz],
         "reduced_shape": [rw, rh, rd],

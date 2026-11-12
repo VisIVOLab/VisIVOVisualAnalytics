@@ -223,13 +223,13 @@ export function supersededLoad() {
 /**
  * Opens the cube on show again after the backend lost its dataset (a restart,
  * the desktop's session ended), without touching the page. `snap` is taken by
- * the caller BEFORE any await: {path, fullShape, gen} (gen: the page's load
+ * the caller BEFORE any await: {path, fullShape, fileRevision, gen} (gen: the page's load
  * generation, bumped by every load). `io`: {open(path), newSession(),
  * reducedInfo(openAnswer), classify(err), loadGen()}. After every await the
  * generation is checked: when a load ran meanwhile, its cube is the one on
  * show and the answer is {ok: false, superseded: true}, to be ignored.
- * Otherwise {ok: true, open, info}, or {ok: false, detail} when the file now
- * describes another cube. Errors of the requests are thrown.
+ * Otherwise {ok: true, open, info}, or {ok: false, detail} when the file's
+ * shape/revision changed or its revision cannot be verified. Errors are thrown.
  */
 export async function reopenCube(snap, io) {
   const superseded = { ok: false, superseded: true, detail: 'superseded by a newer load' };
@@ -249,6 +249,9 @@ export async function reopenCube(snap, io) {
   if (stale()) return superseded;
   if (String(info.full_shape) !== String(snap.fullShape)) {
     return { ok: false, detail: `the file now has shape ${(info.full_shape || []).join('×')}, not ${(snap.fullShape || []).join('×')}: open it again` };
+  }
+  if (!snap.fileRevision || !info.file_revision || snap.fileRevision !== info.file_revision) {
+    return { ok: false, detail: 'The file changed, or its revision cannot be verified: open it again to reload its voxels and coordinates.' };
   }
   return { ok: true, open, info };
 }

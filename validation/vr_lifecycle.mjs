@@ -7,18 +7,21 @@
 // killed and restarted, the token changed under the page, and the
 // diagnostics text and the backend log scrubbed of the token.
 //
-//   node validation/vr_lifecycle.mjs [--smoke] [--python PATH] [--chrome PATH]
+//   node validation/vr_lifecycle.mjs [--smoke] [--regressions] [--python PATH] [--chrome PATH]
 //        [--gl metal|swiftshader] [--port 8791] [--out DIR] [--cube FILE]
 //
 // --smoke is what CI runs (tests.yml): start, load, first frame drawn, no page
 // error, versions agree. Exit code 0 when every check passed. The tokens are
 // random, made here, and never printed.
+// --regressions adds recovery, stale layer replies and large-binning checks
+// to that smoke run. CI runs both; the full lifecycle run remains separate.
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, openSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
+import { runRegressions } from './vr_regressions.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => {
   if (v.startsWith('--')) a.push([v.slice(2), all[i + 1] && !all[i + 1].startsWith('--') ? all[i + 1] : true]);
@@ -26,7 +29,7 @@ const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => {
 }, []));
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..');
-const SMOKE = !!args.smoke;
+const SMOKE = !!args.smoke || !!args.regressions;
 const PY = args.python || process.env.VISIVO_PYTHON || 'python3';
 // `--chrome` given without a value (an empty shell variable) parses as true:
 // that is "not found", said at once rather than as a failed spawn later.
@@ -289,6 +292,8 @@ try {
   const errs = await c.evaluate(`window.__vrShell.diag.items.filter((e) => e.level === 'error'
     && !(e.event === 'request-failed' && e.message.includes('/v1/render/'))).map((e) => e.event + ': ' + e.message)`);
   check('no page error', !errs.length && !c.pageErrors.length, [...errs, ...c.pageErrors].join(' / '));
+
+  if (args.regressions) await runRegressions({ c, check, waitFor, api, python: PY, makeCube, token: tokenA, cube });
 
   if (!SMOKE) {
     // ── Loads: the path a load started with, the newest load wins ─────────

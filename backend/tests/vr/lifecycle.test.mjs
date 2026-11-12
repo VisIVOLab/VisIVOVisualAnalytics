@@ -266,22 +266,32 @@ function reopenIo({ gen, bumpAt = '', sessionGone = false, shape = [64, 64, 40] 
         return { dataset_id: `ds-${opened}` };
       },
       newSession: async () => { calls.push(['newSession']); if (bumpAt === 'newSession') g.v++; },
-      reducedInfo: async (o) => { calls.push(['info', o.dataset_id]); if (bumpAt === 'info') g.v++; return { full_shape: shape }; },
+      reducedInfo: async (o) => { calls.push(['info', o.dataset_id]); if (bumpAt === 'info') g.v++; return { full_shape: shape, file_revision: 'same-file' }; },
     },
   };
 }
 
 test('reopen: the same cube, a new dataset id', async () => {
   const { io, calls } = reopenIo({ gen: 3 });
-  const r = await L.reopenCube({ path: '/d/c.fits', fullShape: [64, 64, 40], gen: 3 }, io);
+  const r = await L.reopenCube({ path: '/d/c.fits', fullShape: [64, 64, 40], fileRevision: 'same-file', gen: 3 }, io);
   assert.equal(r.ok, true);
   assert.equal(r.open.dataset_id, 'ds-1');
   assert.deepEqual(calls, [['open', '/d/c.fits'], ['info', 'ds-1']]);
 });
 
+test('reopen refuses same-shape files with changed or unverifiable revisions', async () => {
+  for (const [oldRevision, newRevision] of [['old', 'new'], ['old', undefined], [undefined, 'new']]) {
+    const { io } = reopenIo({ gen: 3 });
+    io.reducedInfo = async () => ({ full_shape: [64, 64, 40], file_revision: newRevision });
+    const r = await L.reopenCube({ path: '/d/c.fits', fullShape: [64, 64, 40], gen: 3, fileRevision: oldRevision }, io);
+    assert.equal(r.ok, false);
+    assert.match(r.detail, /open it again/);
+  }
+});
+
 test('reopen: a session gone means a new session, then the path', async () => {
   const { io, calls } = reopenIo({ gen: 0, sessionGone: true });
-  const r = await L.reopenCube({ path: 'p', fullShape: [64, 64, 40], gen: 0 }, io);
+  const r = await L.reopenCube({ path: 'p', fullShape: [64, 64, 40], fileRevision: 'same-file', gen: 0 }, io);
   assert.equal(r.ok, true);
   assert.deepEqual(calls.map((c) => c[0]), ['open', 'newSession', 'open', 'info']);
 });
@@ -289,7 +299,7 @@ test('reopen: a session gone means a new session, then the path', async () => {
 test('reopen: a load that finished meanwhile wins, at every step', async () => {
   for (const bumpAt of ['open', 'info', 'newSession']) {
     const { io } = reopenIo({ gen: 7, bumpAt, sessionGone: bumpAt === 'newSession' });
-    const r = await L.reopenCube({ path: 'p', fullShape: [64, 64, 40], gen: 7 }, io);
+    const r = await L.reopenCube({ path: 'p', fullShape: [64, 64, 40], fileRevision: 'same-file', gen: 7 }, io);
     assert.equal(r.superseded, true, bumpAt);
     assert.equal(r.ok, false);
   }
@@ -384,7 +394,7 @@ test('a session handle: a superseded load never moves the shared session', async
 
 test('reopen: another shape is refused, other errors are thrown', async () => {
   const { io } = reopenIo({ gen: 0, shape: [10, 10, 10] });
-  const r = await L.reopenCube({ path: 'p', fullShape: [64, 64, 40], gen: 0 }, io);
+  const r = await L.reopenCube({ path: 'p', fullShape: [64, 64, 40], fileRevision: 'same-file', gen: 0 }, io);
   assert.equal(r.ok, false);
   assert.match(r.detail, /10×10×10/);
   const bad = { ...io, open: async () => { throw requestError(500, 'boom'); } };

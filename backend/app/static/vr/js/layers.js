@@ -12,6 +12,7 @@ import * as CT from './catalogue.js';
 import { colormapTable } from './colormaps.js';
 import { niceTicks } from './volume.js';
 import * as P from './vr-panel.js';
+import { toolsModel, TOOLS_SIZE } from './tools-panel.js';
 
 /** What a path opens as (`choice`: the page's selector, 'auto' by the name). */
 export function kindOfPath(path, choice = 'auto') {
@@ -42,8 +43,15 @@ export function pairedMode(kind) {
   return 'cube';
 }
 
-const STRIP_PX = [1024, 120];
-const STRIP_SIZE = [P.PANEL_SIZE[0], P.PANEL_SIZE[0] * STRIP_PX[1] / STRIP_PX[0]];
+export const STRIP_PX = [1024, 120];
+export const STRIP_SIZE = [P.PANEL_SIZE[0], P.PANEL_SIZE[0] * STRIP_PX[1] / STRIP_PX[0]];
+
+/** Cube catalogues sit below the analysis panel; other modes have no such panel. */
+export function stripModel(panelModel, mode) {
+  const above = mode === 'cube' ? toolsModel(panelModel) : panelModel;
+  const height = mode === 'cube' ? TOOLS_SIZE[1] : P.PANEL_SIZE[1];
+  return M.multiply(above, M.translation(0, -(height / 2 + STRIP_SIZE[1] / 2 + 0.012), 0));
+}
 
 /** The strip's buttons for a mode: [{id, label}], at most five. Pure. */
 export function stripButtons(mode, s) {
@@ -91,6 +99,17 @@ export function createLayers(ctx) {
     box: null, info: null, load: {}, error: '',
   };
   let cloud = null, lines = null;
+  let scene = 0, linesRequest = 0, overlayRequest = 0;
+  let linesAbort = null;
+  function invalidateRequests() {
+    scene++;
+    linesRequest++;
+    overlayRequest++;
+    linesAbort?.abort();
+    linesAbort = null;
+    L.sampleAbort?.abort();
+    L.sampleAbort = null;
+  }
   // The catalogue's lines: a line set of the renderer's own kind (its line
   // program and vertex layout), so neither the box's nor the selection's.
   function makeCatLines() {
@@ -224,7 +243,7 @@ export function createLayers(ctx) {
       if (ac.signal.aborted) return;          // replaced: not an error
       throw err;
     }
-    if (L.sampleAbort !== ac) return;
+    if (L.sampleAbort !== ac || L.mode !== 'points' || L.points !== p) return;
     L.sampleAbort = null;
     const tBody = performance.now();
     const info = PT.sampleInfo((k) => resp.headers.get(k));
@@ -282,13 +301,29 @@ export function createLayers(ctx) {
   // ── Flow ─────────────────────────────────────────────────────────────
   async function fetchLines(b, load = {}) {
     const f = L.flow;
+    if (!f) return;
+    const generation = scene, request = ++linesRequest;
+    const stale = () => scene !== generation || linesRequest !== request || L.flow !== f || L.mode !== 'flow';
+    linesAbort?.abort();
+    const ac = new AbortController();
+    linesAbort = ac;
     const t0 = performance.now();
     // The desktop's box when the link gave one (0: grid units); else the
     // box the field was opened with (box_mpc omitted).
     const body = { dataset_id: f.datasetId, n_seeds: L.s.seeds, max_arrows: L.s.maxArrows, seed: L.s.seed };
     if (f.boxMpc !== null && f.boxMpc !== undefined) body.box_mpc = f.boxMpc;
     const t1 = performance.now();
-    const { resp, buf } = await b._binary('/v1/velocity/lines_bin', JSON.stringify(body));
+    let result;
+    try {
+      result = await b._binary('/v1/velocity/lines_bin', JSON.stringify(body), 'application/json', ac.signal);
+    } catch (err) {
+      if (stale() || ac.signal.aborted) return;
+      throw err;
+    } finally {
+      if (linesAbort === ac) linesAbort = null;
+    }
+    if (stale()) return;
+    const { resp, buf } = result;
     const tBody = performance.now();
     const info = FL.linesInfo((k) => resp.headers.get(k), { boxMpc: f.boxMpc });
     const arr = FL.linesArrays(buf, info);
@@ -335,6 +370,7 @@ export function createLayers(ctx) {
 
   // ── Modes ────────────────────────────────────────────────────────────
   function enter(mode) {
+    invalidateRequests();
     L.mode = mode;
     if (mode !== 'cube') {
       ctx.onNonCube?.();
@@ -366,27 +402,37 @@ export function createLayers(ctx) {
   // ── Catalogue over a cube ────────────────────────────────────────────
   async function loadOverlay(b) {
     if (!state.open) throw new Error('Open a cube from the backend first.');
-    const [src, cat] = srcSel.value.split(':');
-    const choice = { source: src, bands: [bandSel.value], catalogue: cat };
-    if (src === 'catalogue') {
-      const path = catPath.value.trim();
-      if (!path) throw new Error('Give the path of a catalogue on the backend.');
-      const r = await b._json('POST', '/v1/catalogue/open', { path, format: catalogueFormat(path) });
-      if (!r.valid) throw new Error(r.error || 'The catalogue could not be opened.');
-      choice.catalogueId = r.dataset_id;
+    const dataset = state.open.dataset_id, cube = state.cube;
+    const generation = scene, request = ++overlayRequest;
+    const stale = () => scene !== generation || overlayRequest !== request
+      || state.open?.dataset_id !== dataset || state.cube !== cube || L.mode !== 'cube';
+    try {
+      const [src, cat] = srcSel.value.split(':');
+      const choice = { source: src, bands: [bandSel.value], catalogue: cat };
+      if (src === 'catalogue') {
+        const path = catPath.value.trim();
+        if (!path) throw new Error('Give the path of a catalogue on the backend.');
+        const r = await b._json('POST', '/v1/catalogue/open', { path, format: catalogueFormat(path) });
+        if (stale()) return;
+        if (!r.valid) throw new Error(r.error || 'The catalogue could not be opened.');
+        choice.catalogueId = r.dataset_id;
+      }
+      ctStatus.textContent = 'Placing the sources…';
+      const t0 = performance.now();
+      const ov = await b._json('POST', '/v1/cube/catalogue_pixels', CT.overlayRequest(dataset, choice));
+      if (stale()) return;
+      ov.ms = performance.now() - t0;
+      L.overlay = ov;
+      rebuildOverlay();
+      // Every warning the backend gave (a reading changed, sources outside the
+      // channels, a frame not converted) is shown, here and on the strip in VR.
+      const warn = (ov.warnings || []).map((w) => `⚠ ${w}`).join('\n');
+      ctStatus.textContent = `${CT.overlaySummary(ov)} (${ov.ms.toFixed(0)} ms)${warn ? `\n${warn}` : ''}`;
+      strip.key = '';
+      return ov;
+    } catch (err) {
+      if (!stale()) throw err;
     }
-    ctStatus.textContent = 'Placing the sources…';
-    const t0 = performance.now();
-    const ov = await b._json('POST', '/v1/cube/catalogue_pixels', CT.overlayRequest(state.open.dataset_id, choice));
-    ov.ms = performance.now() - t0;
-    L.overlay = ov;
-    rebuildOverlay();
-    // Every warning the backend gave (a reading changed, sources outside the
-    // channels, a frame not converted) is shown, here and on the strip in VR.
-    const warn = (ov.warnings || []).map((w) => `⚠ ${w}`).join('\n');
-    ctStatus.textContent = `${CT.overlaySummary(ov)} (${ov.ms.toFixed(0)} ms)${warn ? `\n${warn}` : ''}`;
-    strip.key = '';
-    return ov;
   }
 
   /** The overlay in the cube's current box (clipping box, depth): its lines
@@ -429,9 +475,6 @@ export function createLayers(ctx) {
 
   // ── The in-VR strip ──────────────────────────────────────────────────
   function stripState() { return { ...L.s }; }
-  function stripModel(panelModel) {
-    return M.multiply(panelModel, M.translation(0, -(P.PANEL_SIZE[1] / 2 + STRIP_SIZE[1] / 2 + 0.008), 0));
-  }
   function applyStrip(id) {
     const b = (() => { try { return ctx.ensureBackend(); } catch { return null; } })();
     const s = L.s;
@@ -568,7 +611,7 @@ export function createLayers(ctx) {
     },
     /** A cube was installed: back to the cube mode, its overlay forgotten. */
     onCube() {
-      if (L.mode !== 'cube') enter('cube');
+      enter('cube');
       L.overlay = null;
       placeOverlay();
       ctStatus.textContent = '';
@@ -642,7 +685,7 @@ export function createLayers(ctx) {
     stripPointer(ray, pressed, panelModel) {
       if (!stripVisible()) { strip.hit = null; return false; }
       stripTexture();
-      const hit = ray ? P.rayPanel(stripModel(panelModel), STRIP_SIZE, ray.o, ray.d, STRIP_PX) : null;
+      const hit = ray ? P.rayPanel(stripModel(panelModel, L.mode), STRIP_SIZE, ray.o, ray.d, STRIP_PX) : null;
       strip.hit = hit;
       for (const a of strip.pointer.update(hit, pressed)) if (a.type === 'press') applyStrip(a.id);
       return strip.pointer.takesRay() || strip.pointer.owns;
@@ -650,7 +693,7 @@ export function createLayers(ctx) {
     stripHit() { return strip.hit; },
     drawStrip(view, panelModel) {
       if (!stripVisible()) return;
-      R.drawPanel(view, stripModel(panelModel), stripTexture(), STRIP_SIZE);
+      R.drawPanel(view, stripModel(panelModel, L.mode), stripTexture(), STRIP_SIZE);
     },
     pressStrip: applyStrip,
     loadOverlay: () => loadOverlay(ctx.ensureBackend()),
