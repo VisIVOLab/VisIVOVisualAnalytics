@@ -129,12 +129,19 @@ serves probes, aperture spectra and any external profile.
   "with_baseline": true }
 ```
 
-At least 4 finite samples are needed; `values` and `axis` of different length,
-or a fit that does not converge, is 422. Response, in the axis units:
+With `with_baseline: true` the model has 5 free parameters and at least 6
+finite samples are needed; with `false` only the 3 Gaussian parameters are
+fitted (the baseline is fixed at zero) and at least 4 are needed. One sample
+more than the parameters keeps a degree of freedom, without which no
+uncertainty can be estimated. A fit that lands on a negative width is
+reported with `|sigma|` and the covariance is converted to match. Fewer
+samples, `values` and `axis` of different length, or a fit that does not
+converge, is 422. Response, in the axis units:
 `peak`, `center`, `sigma`, `fwhm`, `integrated_flux` (amp·σ·√(2π)), each with
 an `_err` companion (`null` when undefined), `continuum` (baseline at the line
-centre), `equivalent_width` (`null` without a baseline or with zero
-continuum), `baseline` (`[a, b]` of `a + b·x`), `rms` of the residuals,
+centre; 0 without a baseline), `equivalent_width` (`null` without a baseline
+or with zero continuum), `baseline` (`[a, b]` of `a + b·x`; `[0, 0]` without a
+baseline, which is not fitted), `rms` of the residuals,
 `n_points`, `spectral_correlation_factor` and `spectral_correlation_note`.
 The errors are inflated by the measured residual autocorrelation factor
 (1.0 for independent channels); the note is non-empty when the factor is

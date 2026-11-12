@@ -4,11 +4,13 @@
 #include "app/VrLink.h"
 
 #include <QDialog>
+#include <QElapsedTimer>
 #include <QPointer>
 
 #include <functional>
 
 class QComboBox;
+class QNetworkAccessManager;
 class QLabel;
 class QProcess;
 class QPushButton;
@@ -29,6 +31,12 @@ class QTimer;
  * becomes this computer's, so the page is a secure context for WebXR without a
  * certificate), then `am start` with a VIEW intent for the Quest Browser.
  * "Copy Link" is for doing the same by hand.
+ *
+ * A remote backend (a cluster's) works the same way when this computer
+ * reaches it through a local tunnel: adb reverse forwards the headset's
+ * localhost:P to the tunnel's local port P (issue #187). The dialog says
+ * which backend it pairs with, and asks it (/v1/vr/backend_check) whether it serves
+ * the page and routes this desktop expects.
  *
  * The link holds the token. It is never logged: every log line and every
  * line of adb output shown here goes through VrLink::redact first. It still
@@ -61,6 +69,14 @@ private:
     /// device list alone unless what adb reports has changed.
     void refreshDevices(bool background = false);
     void showDevices(const QList<AdbHeadset::Device> &devices);
+    /// The state label from @p g: the headline, the numbered steps, the guide link.
+    void setGuidance(const AdbHeadset::Guidance &g, const QString &extraHtml = QString());
+    /// macOS: is the Quest on USB even though adb lists nothing? Run off the
+    /// GUI thread (an asynchronous system_profiler), at most every few seconds;
+    /// the state label is updated when it answers.
+    void probeUsb();
+    /// Copies the last error, the state and the adb found, redacted.
+    void copyError();
     void openOnHeadset();
     /// Open on @p serial, the device chosen when Open was clicked: refused,
     /// never redirected, when that device is no longer ready.
@@ -76,6 +92,9 @@ private:
     /// Open is queued and run when the check ends.
     void runAdb(const QStringList &args, int timeoutMs, Done done, bool background = false);
     void setBusy(bool busy);
+    /// Asks the backend what it serves to a headset (GET /v1/vr/backend_check, issue
+    /// #187), so an old cluster overlay shows here, not as a 404 in the headset.
+    void checkBackend();
     void setResult(const QString &text, bool error);
     /// What to tell the user when adb itself did not run to the end.
     static QString adbFailure(Outcome outcome);
@@ -86,14 +105,27 @@ private:
     QStringList m_secrets;   ///< token and session id: redacted from all output
     QString m_adb;
 
+    QString m_token;         ///< for the backend check's header only, never shown
+    QLabel *m_backendLabel{ nullptr };
+    QNetworkAccessManager *m_network{ nullptr };
+    bool m_backendBlocked{ false };   ///< the check said the headset cannot work
     QLabel *m_stateLabel{ nullptr };
     QComboBox *m_deviceCombo{ nullptr };
     QPushButton *m_refreshButton{ nullptr };
     QPushButton *m_openButton{ nullptr };
     QPushButton *m_copyButton{ nullptr };
+    QPushButton *m_copyErrorButton{ nullptr };
     QLabel *m_resultLabel{ nullptr };
     QTimer *m_pollTimer{ nullptr };
     QPointer<QProcess> m_process;
+    QPointer<QProcess> m_usbProbe;   ///< system_profiler, independent of the adb runs
+    AdbHeadset::UsbQuest m_usbQuest{ AdbHeadset::UsbQuest::Unknown };
+    QElapsedTimer m_usbProbedAt;
+    bool m_noDevice{ false };        ///< the last check listed nothing (the USB probe matters then)
+    QString m_stateText;             ///< the state label as plain text, for Copy Error
+    QString m_errorText;             ///< the last error shown, plain text ('' when none)
+    bool m_stateProblem{ false };    ///< the state label shows a problem (Copy Error offered)
+    QString m_lastOpenSerial;       ///< the device of the open under way (remembered when it works)
     bool m_deviceReady{ false };
     bool m_backgroundRun{ false };   ///< m_process is the periodic device check
     bool m_openQueued{ false };      ///< Open clicked during that check

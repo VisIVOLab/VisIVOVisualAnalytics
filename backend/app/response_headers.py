@@ -43,6 +43,7 @@ X_FULL_SPEED_MAX = "X-Visivo-Full-Speed-Max"
 X_UNIT = "X-Visivo-Unit"
 X_FRAME = "X-Visivo-Frame"
 X_DOWNSAMPLE_FACTOR = "X-Visivo-Downsample-Factor"
+X_DOWNSAMPLE_FACTORS = "X-Visivo-Downsample-Factors"  # per-axis x,y,z (velocity LOD)
 X_FULL_SHAPE = "X-Visivo-Full-Shape"
 X_FROM_CACHE = "X-Visivo-From-Cache"
 

@@ -1025,10 +1025,21 @@ def worker_line_fit(
     y = np.asarray(values, dtype=np.float64)
     good = np.isfinite(x) & np.isfinite(y)
     x, y = x[good], y[good]
-    if x.size < 4:
-        raise ValueError("Need at least 4 finite samples to fit a Gaussian line.")
+    # Without a baseline only the 3 Gaussian parameters are free. Keeping the
+    # two baseline terms in the model while ignoring them (as this used to) left
+    # two zero Jacobian columns: 4 samples could not be fitted at all and any
+    # larger fit had a singular covariance, so no uncertainty was available.
+    n_params = 5 if with_baseline else 3
+    # One more sample than parameters: with zero degrees of freedom the fit
+    # interpolates the data, the residual variance is undefined and every
+    # uncertainty comes back unavailable (5 samples with a baseline did that).
+    min_samples = n_params + 1
+    if x.size < min_samples:
+        raise ValueError(
+            f"Need at least {min_samples} finite samples to fit a Gaussian line"
+            + (" with a linear baseline." if with_baseline else "."))
 
-    base0 = float(np.median(y))
+    base0 = float(np.median(y)) if with_baseline else 0.0
     resid0 = y - base0
     i_peak = int(np.argmax(np.abs(resid0)))
     amp0 = float(resid0[i_peak])
@@ -1036,24 +1047,42 @@ def worker_line_fit(
     span = float(x.max() - x.min()) or 1.0
     sigma0 = span / 6.0
 
-    def model(xx, amp, mu, sigma, a, b):
-        baseline = (a + b * xx) if with_baseline else 0.0
-        return baseline + amp * np.exp(-((xx - mu) ** 2) / (2.0 * sigma * sigma))
+    def gaussian(xx, amp, mu, sigma):
+        return amp * np.exp(-((xx - mu) ** 2) / (2.0 * sigma * sigma))
 
-    p0 = [amp0, mu0, sigma0, base0, 0.0]
+    def model(xx, amp, mu, sigma, a, b):
+        return a + b * xx + gaussian(xx, amp, mu, sigma)
+
+    fit_model = model if with_baseline else gaussian
+    p0 = [amp0, mu0, sigma0, base0, 0.0][:n_params]
     try:
-        popt, pcov = curve_fit(model, x, y, p0=p0, maxfev=20000)
+        popt, pcov = curve_fit(fit_model, x, y, p0=p0, maxfev=20000)
     except Exception as exc:  # noqa: BLE001
         raise ValueError(f"Gaussian line fit did not converge: {exc}") from exc
 
-    amp, mu, sigma, a, b = (float(v) for v in popt)
+    if with_baseline:
+        amp, mu, sigma, a, b = (float(v) for v in popt)
+    else:
+        # The baseline is fixed at zero, not fitted: report it as 0 so the
+        # response shape is unchanged (there is no baseline error field).
+        amp, mu, sigma = (float(v) for v in popt)
+        a, b = 0.0, 0.0
+    if sigma < 0:
+        # The model depends on sigma² only, so the fit may land on -sigma. The
+        # reported width is |sigma|; reparametrise the covariance to match
+        # (J·C·J with J = diag(1, 1, -1, 1, 1)), otherwise every covariance
+        # with sigma, the amplitude-width term of the flux error included, has
+        # the wrong sign.
+        pcov = np.array(pcov, dtype=np.float64, copy=True)
+        pcov[2, :] *= -1.0
+        pcov[:, 2] *= -1.0
     sigma = abs(sigma)
     fwhm_factor = 2.0 * np.sqrt(2.0 * np.log(2.0))
     fwhm = fwhm_factor * sigma
     integrated = amp * sigma * np.sqrt(2.0 * np.pi)
     continuum = (a + b * mu) if with_baseline else 0.0
     ew = float(integrated / continuum) if (with_baseline and continuum) else None
-    resid = y - model(x, *popt)
+    resid = y - fit_model(x, *popt)
     rms = float(np.std(resid))
 
     # R-23: curve_fit's covariance assumes independent channels. Inflate it by the
@@ -1082,11 +1111,11 @@ def worker_line_fit(
     )
 
     # R-08: 1-sigma parameter uncertainties from the fit covariance. Undefined
-    # (inf) for a perfect fit → reported as None. p order: [amp, mu, sigma, a, b].
+    # (inf) for a perfect fit → reported as None. p order: [amp, mu, sigma(, a, b)].
     with np.errstate(invalid="ignore"):
         perr = np.sqrt(np.diag(pcov))
     perr = [float(e) if np.isfinite(e) else None for e in perr]
-    amp_err, mu_err, sigma_err, _a_err, _b_err = perr
+    amp_err, mu_err, sigma_err = perr[:3]
     fwhm_err = (sigma_err * fwhm_factor) if sigma_err is not None else None
     # I = amp·σ·√(2π): full-covariance propagation over params [amp, mu, sigma,
     # a, b]. dI/dA = I/amp, dI/dσ = I/σ. Keeps the amp–σ covariance.

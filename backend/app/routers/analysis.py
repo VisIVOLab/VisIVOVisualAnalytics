@@ -90,8 +90,10 @@ async def cube_stats(
 
 
 class HiProductsRequest(BaseModel):
-    channel_start: int = 0
-    channel_end: int = 0
+    # Inclusive range; omitted (null) → that end of the spectral axis, so an
+    # empty body integrates the whole cube and (k, k) is the single channel k.
+    channel_start: int | None = None
+    channel_end: int | None = None
     distance_mpc: float | None = None
     mask_enabled: bool = False
     threshold_value: float = 0.0

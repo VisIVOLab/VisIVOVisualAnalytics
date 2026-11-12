@@ -5,6 +5,7 @@
 #include "ColormapIcon.h"
 #include "ToolProgressSheet.h"
 #include "BusyStatus.h"
+#include "VelocityLodGeometry.h"
 
 #include <QVTKOpenGLNativeWidget.h>
 #include <vtkActor.h>
@@ -86,15 +87,36 @@ vtkWindowVectorField::vtkWindowVectorField(const QString &path, BackendVelocityG
     this->resetCamera();
 }
 
+// The display grid's factor on each axis (x, y, z). A current backend sends
+// them; an older one sent a single factor, applied to every axis it reduced.
+std::array<int, 3> vtkWindowVectorField::displayFactors() const
+{
+    if (m_grid.hasAxisFactors)
+        return { m_grid.factorX, m_grid.factorY, m_grid.factorZ };
+    const int f = std::max(1, m_grid.downsampleFactor);
+    const std::array<int, 3> full = this->fullShape();
+    return { velocitylod::inferAxisFactor(full[0], m_grid.nx, f),
+             velocitylod::inferAxisFactor(full[1], m_grid.ny, f),
+             velocitylod::inferAxisFactor(full[2], m_grid.nz, f) };
+}
+
+// Full-resolution samples per axis. Without the Full-Shape header the display
+// grid times its factor is the best estimate.
+std::array<int, 3> vtkWindowVectorField::fullShape() const
+{
+    const int f = std::max(1, m_grid.downsampleFactor);
+    return { m_grid.fullNx > 0 ? m_grid.fullNx : m_grid.nx * f,
+             m_grid.fullNy > 0 ? m_grid.fullNy : m_grid.ny * f,
+             m_grid.fullNz > 0 ? m_grid.fullNz : m_grid.nz * f };
+}
+
 // Per-axis full-resolution cell size (point-centred): box>0 → box/(n-1), else 1.
 void vtkWindowVectorField::fullCells(double &sx, double &sy, double &sz) const
 {
-    const int fnx = std::max(2, m_grid.fullNx);
-    const int fny = std::max(2, m_grid.fullNy);
-    const int fnz = std::max(2, m_grid.fullNz);
-    sx = (m_boxMpc > 0.0) ? m_boxMpc / (fnx - 1) : 1.0;
-    sy = (m_boxMpc > 0.0) ? m_boxMpc / (fny - 1) : 1.0;
-    sz = (m_boxMpc > 0.0) ? m_boxMpc / (fnz - 1) : 1.0;
+    const std::array<int, 3> n = this->fullShape();
+    sx = velocitylod::fullCell(n[0], m_boxMpc);
+    sy = velocitylod::fullCell(n[1], m_boxMpc);
+    sz = velocitylod::fullCell(n[2], m_boxMpc);
 }
 
 // Centred origin per axis: -0.5*fullCell*(fullN-1)  (== -box/2 when box set).
@@ -102,9 +124,45 @@ void vtkWindowVectorField::originVec(double &ox, double &oy, double &oz) const
 {
     double sx, sy, sz;
     this->fullCells(sx, sy, sz);
-    ox = -0.5 * sx * (std::max(2, m_grid.fullNx) - 1);
-    oy = -0.5 * sy * (std::max(2, m_grid.fullNy) - 1);
-    oz = -0.5 * sz * (std::max(2, m_grid.fullNz) - 1);
+    const std::array<int, 3> n = this->fullShape();
+    ox = velocitylod::fullOrigin(n[0], sx);
+    oy = velocitylod::fullOrigin(n[1], sy);
+    oz = velocitylod::fullOrigin(n[2], sz);
+}
+
+// A reduced product on this field (`factors` per axis) in the viewer's frame.
+// When the backend reported the product's own origin and spacing, and is recent
+// enough to place a block at its centre, those are used, rescaled to the
+// viewer's box; otherwise the placement follows from the factors.
+void vtkWindowVectorField::reducedGeometry(const std::array<int, 3> &factors,
+                                           const double *reportedOrigin,
+                                           const double *reportedSpacing, bool trustReport,
+                                           double spacing[3], double origin[3]) const
+{
+    double cell[3], first[3];
+    this->fullCells(cell[0], cell[1], cell[2]);
+    this->originVec(first[0], first[1], first[2]);
+    const bool useReport = trustReport && reportedOrigin && reportedSpacing;
+    for (int a = 0; a < 3; ++a) {
+        const velocitylod::Axis ax = useReport
+                ? velocitylod::reducedAxisFromReport(factors[a], reportedOrigin[a],
+                                                     reportedSpacing[a], cell[a], first[a])
+                : velocitylod::reducedAxis(factors[a], cell[a], first[a]);
+        spacing[a] = ax.spacing;
+        origin[a] = ax.origin;
+    }
+}
+
+// Factors of a product the backend reduced to `maxDim` without saying how, as
+// returned with `n` samples per axis (basins, density).
+std::array<int, 3> vtkWindowVectorField::productFactors(const std::array<int, 3> &n,
+                                                        int maxDim) const
+{
+    const std::array<int, 3> full = this->fullShape();
+    const std::array<int, 3> expected = velocitylod::lodFactors(full, maxDim);
+    return { velocitylod::inferAxisFactor(full[0], n[0], expected[0]),
+             velocitylod::inferAxisFactor(full[1], n[1], expected[1]),
+             velocitylod::inferAxisFactor(full[2], n[2], expected[2]) };
 }
 
 void vtkWindowVectorField::setupUi()
@@ -593,12 +651,15 @@ void vtkWindowVectorField::rebuildLodActors()
     if (this->glyphActor) this->renderer->RemoveActor(this->glyphActor);
     if (this->streamActor) this->renderer->RemoveActor(this->streamActor);
 
-    double fsx, fsy, fsz, ox, oy, oz;
-    this->fullCells(fsx, fsy, fsz);
-    this->originVec(ox, oy, oz);
-    const int factor = std::max(1, m_grid.downsampleFactor);
-    const double dsx = fsx * factor, dsy = fsy * factor, dsz = fsz * factor;  // LOD cell
-    this->buildImageData(m_grid, this->imageData, dsx, dsy, dsz, ox, oy, oz);
+    // The LOD grid where the backend put it: per-axis factor (a thin axis is
+    // not reduced) and the first sample at the centre of the first block.
+    const double reportedOrigin[3] = { m_grid.ox, m_grid.oy, m_grid.oz };
+    const double reportedSpacing[3] = { m_grid.sx, m_grid.sy, m_grid.sz };
+    double ds[3], o[3];
+    this->reducedGeometry(this->displayFactors(), reportedOrigin, reportedSpacing,
+                          m_grid.hasAxisFactors, ds, o);
+    const double dsx = ds[0], dsy = ds[1], dsz = ds[2];
+    this->buildImageData(m_grid, this->imageData, dsx, dsy, dsz, o[0], o[1], o[2]);
 
     const double cell = std::min({ dsx, dsy, dsz });   // glyph scale uses smallest cell
     this->glyphActor = this->makeGlyphActor(this->imageData, cell);
@@ -621,17 +682,54 @@ void vtkWindowVectorField::applyBoxSize(double boxMpc)
     ++m_roiGen;
     visivo::closeToolProgressSheet(m_roiSheet);
     this->rebuildLodActors();
-    // Re-place basins at the new scale (labels are scale-independent, cached).
-    if (this->basinActor && m_basins.valid) {
+    // Basins shown or on their way. Their labels survive a box change that
+    // scales every axis's cell alike (always, on a cubic grid), so they are only
+    // re-placed. On a non-cubic grid a change to or from "no box" changes the
+    // cells' ratio, and with it the flow direction the backend segments on:
+    // ask again (showBasins also supersedes a request still in flight).
+    const bool basinsWanted = this->chkBasins && this->chkBasins->isChecked()
+            && (m_basins.valid || m_basinSheet);
+    if (basinsWanted
+        && velocitylod::cellRatioChanges(this->fullShape(), m_basinsBoxMpc, boxMpc)) {
+        this->showBasins(true);
+    } else if (this->basinActor && m_basins.valid) {
         this->placeBasins();
     }
-    // The ∇·v density/void depends on the grid geometry (spacing) — invalidate
-    // and, if either is showing, recompute at the new scale.
-    this->divergenceGrid = nullptr;
+    // The ∇·v density/void depends on the grid geometry (spacing). A backend
+    // ∇·v whose cells all scale alike (the basins' rule) is rescaled in place:
+    // positions by k, ∇·v by 1/k, so its contours keep their shape with no round
+    // trip. Otherwise it is dropped and, if either is showing, recomputed at the
+    // new scale (the local fallback is cheap and always recomputed).
+    const std::array<int, 3> full = this->fullShape();
     const bool densOn = this->chkFieldDensity && this->chkFieldDensity->isChecked();
     const bool voidOn = this->chkFieldVoid && this->chkFieldVoid->isChecked();
+    const bool rescale = this->divergenceGrid && m_divFromBackend
+            && !velocitylod::cellRatioChanges(full, m_divBoxMpc, boxMpc);
+    if (rescale) {
+        const double k = velocitylod::cellScale(full, m_divBoxMpc, boxMpc);
+        double sp[3], og[3];
+        this->divergenceGrid->GetSpacing(sp);
+        this->divergenceGrid->GetOrigin(og);
+        for (int a = 0; a < 3; ++a) { sp[a] *= k; og[a] *= k; }   // frame centred on 0
+        this->divergenceGrid->SetSpacing(sp);
+        this->divergenceGrid->SetOrigin(og);
+        vtkDataArray *div = this->divergenceGrid->GetPointData()->GetScalars();
+        if (div) {
+            const vtkIdType n = div->GetNumberOfTuples();
+            for (vtkIdType i = 0; i < n; ++i)
+                div->SetTuple1(i, div->GetTuple1(i) / k);
+            div->Modified();
+        }
+        this->m_divMin /= k;
+        this->m_divMax /= k;
+        this->m_divBoxMpc = boxMpc;
+        this->divergenceGrid->Modified();
+    } else {
+        this->divergenceGrid = nullptr;
+    }
     if (densOn || voidOn) {
-        this->buildFieldDensity();
+        if (!this->divergenceGrid)
+            this->buildFieldDensity();
         if (densOn)
             this->updateFieldDensityContour();
         if (voidOn)
@@ -776,6 +874,8 @@ void vtkWindowVectorField::showBasins(bool on)
     this->m_basins = BackendVelocityBasinsResult{};
 
     const int gen = m_basinGen;   // bumped at the top of this function
+    const double box = m_boxMpc;
+    m_basinsBoxMpc = box;
     const int direction = (this->comboBasinDir && this->comboBasinDir->currentIndex() == 1) ? -1 : 1;
     m_basinSheet = visivo::showToolProgressSheet(this, u"Computing gravitational basins"_s);
     const QString url = m_backendUrl, token = m_backendToken, session = m_sessionId,
@@ -799,12 +899,12 @@ void vtkWindowVectorField::showBasins(bool on)
         this->m_basins = std::move(result);
         this->placeBasins();
     });
-    watcher->setFuture(QtConcurrent::run([url, token, session, dataset, direction]() {
+    watcher->setFuture(QtConcurrent::run([url, token, session, dataset, direction, box]() {
         // Nothing may escape the worker: result() would rethrow on the GUI thread.
         try {
             BackendClient client(url, token);
             client.setSessionId(session);
-            return client.fetchVelocityBasins(dataset, 64, direction);
+            return client.fetchVelocityBasins(dataset, kBasinMaxDim, direction, box);
         } catch (...) {
             BackendVelocityBasinsResult failed;
             failed.error = QStringLiteral("unexpected error while computing the basins");
@@ -820,18 +920,21 @@ void vtkWindowVectorField::placeBasins()
     }
     const BackendVelocityBasinsResult &b = this->m_basins;
 
-    // Basin grid spans the same physical box as the display; place it per axis.
-    double ox, oy, oz;
-    this->originVec(ox, oy, oz);
-    const double ex = -2.0 * ox, ey = -2.0 * oy, ez = -2.0 * oz;   // per-axis extent
-    const double cx = (b.nx > 1) ? ex / (b.nx - 1) : 1.0;
-    const double cy = (b.ny > 1) ? ey / (b.ny - 1) : 1.0;
-    const double cz = (b.nz > 1) ? ez / (b.nz - 1) : 1.0;
+    // The basin grid is the field block-averaged to kBasinMaxDim, so a basin
+    // sample sits at its block centre like any reduced grid. A current backend
+    // sends the grid's factors, origin and spacing (used as for the LOD grid,
+    // rescaled to the box); with an older one the factors are worked out from
+    // the request and the size that came back.
+    const std::array<int, 3> factors = b.hasGeometry
+            ? std::array<int, 3>{ b.factors[0], b.factors[1], b.factors[2] }
+            : this->productFactors({ b.nx, b.ny, b.nz }, kBasinMaxDim);
+    double spacing[3], origin[3];
+    this->reducedGeometry(factors, b.origin, b.spacing, b.hasGeometry, spacing, origin);
 
     vtkNew<vtkImageData> img;
     img->SetDimensions(b.nx, b.ny, b.nz);
-    img->SetSpacing(cx, cy, cz);
-    img->SetOrigin(ox, oy, oz);
+    img->SetSpacing(spacing);
+    img->SetOrigin(origin);
     const vtkIdType npts = vtkIdType(b.nx) * b.ny * b.nz;
     vtkNew<vtkIntArray> labels;
     labels->SetName("basin");
@@ -902,25 +1005,27 @@ bool vtkWindowVectorField::buildFieldDensityFromBackend()
         client.setSessionId(this->m_sessionId);
     // Density at up to 256³ — always finer than the 128³ display LOD (full-res
     // for fields ≤256³; 256³ for larger), capped to bound the transfer (~64 MB).
-    const BackendVelocityDensityResult d = client.fetchVelocityDensity(this->m_datasetId, 256);
+    // In the viewer's box, so ∇·v is per the cells drawn here, like the local
+    // fallback (vtkGradientFilter on the display spacing) and the basins.
+    const double box = this->m_boxMpc;
+    const BackendVelocityDensityResult d =
+            client.fetchVelocityDensity(this->m_datasetId, kDensityMaxDim, box);
     if (!d.valid || d.nx <= 0 || d.ny <= 0 || d.nz <= 0)
         return false;
     const vtkIdType npts = vtkIdType(d.nx) * d.ny * d.nz;
     if (d.divergence.size() != npts * qint64(sizeof(float)))
         return false;
 
-    // Place the density grid at the CLIENT's box geometry (like placeBasins) — the
-    // backend values are the divergence *structure*; the isosurface must sit in
-    // the display frame, which the user scales client-side via Box size.
-    double ox, oy, oz;
-    this->originVec(ox, oy, oz);
-    const double ex = -2.0 * ox, ey = -2.0 * oy, ez = -2.0 * oz;
+    // Place the density grid in the CLIENT's frame, which the user scales via
+    // Box size: the backend's origin and spacing, rescaled, with the per-axis
+    // factors of a kDensityMaxDim reduction (the same placement as the LOD grid).
+    double spacing[3], origin[3];
+    this->reducedGeometry(this->productFactors({ d.nx, d.ny, d.nz }, kDensityMaxDim),
+                          d.origin, d.spacing, m_grid.hasAxisFactors, spacing, origin);
     vtkNew<vtkImageData> img;
     img->SetDimensions(d.nx, d.ny, d.nz);
-    img->SetSpacing((d.nx > 1) ? ex / (d.nx - 1) : 1.0,
-                    (d.ny > 1) ? ey / (d.ny - 1) : 1.0,
-                    (d.nz > 1) ? ez / (d.nz - 1) : 1.0);
-    img->SetOrigin(ox, oy, oz);
+    img->SetSpacing(spacing);
+    img->SetOrigin(origin);
     vtkNew<vtkFloatArray> div;
     div->SetName("Divergence");
     div->SetNumberOfComponents(1);
@@ -930,6 +1035,8 @@ bool vtkWindowVectorField::buildFieldDensityFromBackend()
     img->GetPointData()->SetScalars(div);
 
     this->divergenceGrid = img;
+    this->m_divFromBackend = true;
+    this->m_divBoxMpc = box;
     double r[2] = { 0.0, 0.0 };
     div->GetRange(r);
     this->m_divMin = r[0];
@@ -976,6 +1083,7 @@ void vtkWindowVectorField::buildFieldDensity()
     }
     out->GetPointData()->SetScalars(div);   // contour on the divergence scalar
     this->divergenceGrid = out;
+    this->m_divFromBackend = false;
     double r[2] = { 0.0, 0.0 };
     div->GetRange(r);
     this->m_divMin = r[0];   // most negative ∇·v = strongest convergence (overdensity)

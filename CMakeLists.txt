@@ -523,6 +523,7 @@ set(PROJECT_SOURCES
         src/gui/VrHeadsetDialog.cpp
         src/gui/VrHeadsetDialog.h
         src/app/VrLink.h
+        src/app/VrBackendCheck.h
         src/app/AdbHeadset.h
         src/gui/Catalogue3DTableModel.cpp
         src/gui/Catalogue3DTableModel.h

@@ -32,6 +32,7 @@ inline constexpr const char *DEPTH = "X-Visivo-Depth";
 inline constexpr const char *DIV_MAX = "X-Visivo-Div-Max";
 inline constexpr const char *DIV_MIN = "X-Visivo-Div-Min";
 inline constexpr const char *DOWNSAMPLE_FACTOR = "X-Visivo-Downsample-Factor";
+inline constexpr const char *DOWNSAMPLE_FACTORS = "X-Visivo-Downsample-Factors";
 inline constexpr const char *EXPOSURE = "X-Visivo-Exposure";
 inline constexpr const char *FRAME = "X-Visivo-Frame";
 inline constexpr const char *FROM_CACHE = "X-Visivo-From-Cache";
@@ -72,7 +73,7 @@ inline constexpr const char *WARNINGS = "X-Visivo-Warnings";
 inline constexpr const char *WIDTH = "X-Visivo-Width";
 
 // Every declared header name, for the contract test to diff against the manifest.
-inline constexpr std::array<const char *, 58> kAll = {
+inline constexpr std::array<const char *, 59> kAll = {
     EW_UNIT,
     FWHM_UNIT,
     MAP_UNIT,
@@ -93,6 +94,7 @@ inline constexpr std::array<const char *, 58> kAll = {
     DIV_MAX,
     DIV_MIN,
     DOWNSAMPLE_FACTOR,
+    DOWNSAMPLE_FACTORS,
     EXPOSURE,
     FRAME,
     FROM_CACHE,

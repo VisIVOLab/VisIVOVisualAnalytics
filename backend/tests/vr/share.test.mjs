@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   newClientId, publishQuery, boxGeometry, lassoMeta, boxMeta, receivedNote, parseMask, createShare,
-  BACKOFF_MS, NOT_READY_MS, PUBLISH_TIMEOUT_MS, READ_TIMEOUT_MS, RETRY_429_MS, isUnsupported, reconcileDecision,
+  POLL_WAIT_S, BACKOFF_MS, NOT_READY_MS, PUBLISH_TIMEOUT_MS, READ_TIMEOUT_MS, RETRY_429_MS, isUnsupported, reconcileDecision,
   confirmDraw, nonceOf, newNonce, noteLocal, publishOutcomeOf, instanceVerdict,
 } from '../../app/static/vr/js/share.js';
 import { readFileSync } from 'node:fs';
@@ -157,6 +157,36 @@ function controller(hub, o = {}) {
   return { share, got, timers };
 }
 const lasso = (share) => share.publish('lasso', { bytes: new ArrayBuffer(16), origin: [3, 4, 5], dims: [2, 2, 1], meta: lassoMeta({ seed_z: 5 }) });
+
+test('sharing under a proxy prefix publishes, polls and reads masks at that prefix', async (t) => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { pathname: '/node/r33/proxy/8000/vr/' } };
+  t.after(() => {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  });
+  const prefix = '/node/r33/proxy/8000';
+  const hub = fakeHub();
+  const fetch = hub.fetch;
+  const calls = [];
+  hub.fetch = (url, opts) => {
+    assert.ok(url.startsWith(`${prefix}/v1/share/selection`), url);
+    calls.push({ url, opts });
+    return fetch(url.slice(prefix.length), opts);
+  };
+  const c = controller(hub);
+  t.after(() => c.share.stop());
+  c.share.start('ds_a');
+  await flush();
+  await lasso(c.share);
+  hub.store({ client: 'desk', meta: { nonce: 'desktop-new' } });
+  hub.release();
+  await flush();
+  assert.deepEqual(c.got, [[2, false]]);
+  assert.ok(calls.some(({ opts }) => opts.method === 'POST'));
+  assert.ok(calls.some(({ url }) => url.includes('/mask?')));
+  assert.ok(calls.some(({ url }) => new URL(url, 'http://x').searchParams.get('wait') === String(POLL_WAIT_S)));
+});
 
 test('an entry already in the hub is not drawn; a later one is; our own echo is not', async () => {
   const hub = fakeHub();

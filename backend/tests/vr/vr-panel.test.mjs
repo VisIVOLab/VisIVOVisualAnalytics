@@ -27,7 +27,7 @@ test('the layout fits the canvas, widgets do not overlap, targets are large', ()
     }
   }
   for (const id of ['cmap-prev', 'cmap-next', 'thr', 'thr-reset', 'thrsrc:reduced', 'thrsrc:cube', 'cmax', 'opacity',
-    'slab', 'slab-all', 'refine', 'tool:probe', 'tool:lasso', 'tool:box', 'sel-clear', 'mode:0', 'mode:1', 'drag']) {
+    'slab', 'slab-all', 'refine', 'tool:probe', 'tool:lasso', 'tool:box', 'sel-clear', 'mode:0', 'mode:1', 'drag', 'guide']) {
     assert.ok(byId(id), id);
   }
 });
@@ -186,6 +186,12 @@ test('pointer: a press released off the panel leaves the next press on it workin
   assert.equal(a[0].id, 'sel-clear');
 });
 
+test('the panel\'s "?" recalls the guide and does not drag', () => {
+  const ptr = new P.PanelPointer(L);
+  const a = ptr.update(centre(byId('guide')), true);
+  assert.deepEqual(a.map((x) => [x.type, x.id]), [['press', 'guide']]);
+});
+
 test('pointer: the title bar drags', () => {
   const ptr = new P.PanelPointer(L);
   const h = centre(byId('drag'));
@@ -225,7 +231,7 @@ test('settings round-trip and fall back to the defaults', () => {
   const st = new MemStore();
   assert.deepEqual(S.loadSettings(st), S.sanitizeSettings(null));
   const s = { colormap: 'magma', thrSource: 'cube', refine: { enabled: false, scale: 0.6, quality: 85, depth: false },
-    panel: { right: -0.4, up: 0.1, fwd: -0.2, yaw: 0.5 }, tool: 'box' };
+    panel: { right: -0.4, up: 0.1, fwd: -0.2, yaw: 0.5 }, tool: 'box', guideSeen: true };
   assert.ok(S.saveSettings(st, s));
   assert.deepEqual(S.loadSettings(st, { colormaps: ['viridis', 'magma'], tools: ['probe', 'lasso', 'box'] }), s);
   // Unknown or broken values: replaced one by one, never thrown.
@@ -237,6 +243,7 @@ test('settings round-trip and fall back to the defaults', () => {
   assert.deepEqual(got.refine, S.DEFAULT_SETTINGS.refine);
   assert.equal(got.panel, null);
   assert.equal(got.tool, 'probe');
+  assert.equal(got.guideSeen, false);           // the guide is shown once more rather than never
   assert.ok(!('token' in got));
   st.setItem(S.SETTINGS_KEY, '{not json');
   assert.deepEqual(S.loadSettings(st), S.sanitizeSettings(null));

@@ -14,6 +14,8 @@
 // exported for node's tests with the queries and notes; createShare(ctx) is
 // the page's controller.
 
+import { apiUrl } from './base-path.js';
+
 /** The longest a poll waits on the backend (seconds); the backend caps it at 25. */
 export const POLL_WAIT_S = 20;
 /** The delays after a failed poll (ms), the last one repeated. */
@@ -258,7 +260,7 @@ export function createShare(ctx) {
     const t = later(() => { expired = true; if (ac) ac.abort(); }, ms);
     if (ac) inFlight.add(ac);
     try {
-      return await doFetch(url, { ...opts, signal: ac ? ac.signal : undefined });
+      return await doFetch(apiUrl(url), { ...opts, signal: ac ? ac.signal : undefined });
     } catch (e) {
       throw expired ? new Error(`no answer in ${Math.round(ms / 1000)} s`) : e;
     } finally {

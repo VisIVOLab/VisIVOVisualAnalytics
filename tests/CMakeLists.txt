@@ -199,6 +199,8 @@ add_executable(VisIVOTests
     test_open_job_merge.cpp
     TestTaskQuitDrain.h
     test_task_quit_drain.cpp
+    TestVelocityLodGeometry.h
+    test_velocity_lod_geometry.cpp
     TestSystemQuitRedirect.h
     test_system_quit_redirect.cpp
     TestSupportedFormats.h
@@ -217,6 +219,8 @@ add_executable(VisIVOTests
     TestSharedSelectionLink.h
     test_shared_selection_link.cpp
     ${VISIVO_ROOT}/src/app/SharedSelectionLink.cpp
+    TestBackendProcessTree.h
+    test_backend_process_tree.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

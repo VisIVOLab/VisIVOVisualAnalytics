@@ -4,10 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VisIVO VR</title>
-<link rel="stylesheet" href="style.css">
+<meta name="visivo-vr-build" content="__VR_BUILD__">
+<link rel="stylesheet" href="b/__VR_BUILD__/style.css">
 </head>
 <body>
 <canvas id="gl"></canvas>
+
+<div id="notice" role="alert" hidden>
+  <strong id="notice-title"></strong>
+  <div id="notice-body"></div>
+  <div id="notice-actions" class="row"></div>
+</div>
 
 <aside id="panel">
   <header>
@@ -156,6 +163,15 @@
     </div>
   </section>
 
+  <section id="help">
+    <div class="row">
+      <button id="show-guide" title="The controls in the headset, shown at the first entry into VR">Controls guide</button>
+      <button id="copy-diag" title="Versions, GPU limits, settings and the last errors, for a support request">Copy diagnostics</button>
+    </div>
+    <div id="guide-text" class="muted" hidden></div>
+    <pre id="diag-out" hidden></pre>
+  </section>
+
   <section id="stats">
     <pre id="hud-text"></pre>
     <div id="scale-text" class="muted"></div>
@@ -164,6 +180,6 @@
   </section>
 </aside>
 
-<script type="module" src="js/main.js"></script>
+<script type="module" src="b/__VR_BUILD__/js/main.js"></script>
 </body>
 </html>

@@ -67,6 +67,8 @@
     "GET /v1/stokes/{dataset_id}/binary",
     "GET /v1/tasks/{task_id}",
     "GET /v1/vlkb/tap/presets",
+    "GET /v1/vr/backend_check",
+    "GET /v1/vr/info",
     "POST /soda/async",
     "POST /soda/async/{job_id}/destruction",
     "POST /soda/async/{job_id}/executionduration",
@@ -208,6 +210,7 @@
     "POST /v1/vlkb/mcutout/submit",
     "POST /v1/vlkb/tap",
     "POST /v1/volume_render/grid",
-    "POST /v1/volume_render/preview"
+    "POST /v1/volume_render/preview",
+    "POST /v1/vr/log"
   ]
 }

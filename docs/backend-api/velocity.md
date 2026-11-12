@@ -70,9 +70,15 @@ The vector grid for display, optionally block-averaged.
 
 Request (`VelocityGridRequest`): `dataset_id`, `max_dim` (default 128). When
 `max_dim > 0` and the largest grid dimension exceeds it, every component is
-block-averaged by the integer factor `ceil(largest / max_dim)` (cropping each
-axis to a multiple of the factor) and the spacing grows by the same factor.
-`0` returns the full resolution.
+block-averaged by the integer factor `F = ceil(largest / max_dim)` per axis
+(cropping each axis to a multiple of its factor). An axis too short for `F`
+gets the largest factor that still leaves two samples (`n // 2`, at least 1),
+so a thin grid such as `(2, 128, 128)` is still reduced along its long axes;
+no axis is reduced below two samples. On each axis the spacing grows by that
+axis's factor `f`, and the origin moves to the centre of the first block,
+`origin + (f - 1) / 2 · spacing`, because the grid is point-centred (the
+origin is the first sample) and a block mean is the value at its block
+centre. `0` returns the full resolution.
 
 Response: interleaved `float32` vectors, `nx × ny × nz × 3` values. Headers:
 
@@ -80,7 +86,8 @@ Response: interleaved `float32` vectors, `nx × ny × nz × 3` values. Headers:
 |---|---|
 | `X-Visivo-Width`, `X-Visivo-Height`, `X-Visivo-Depth` | returned grid size |
 | `X-Visivo-Full-Shape` | `nz,ny,nx` before block-averaging |
-| `X-Visivo-Downsample-Factor` | applied factor (1 when none) |
+| `X-Visivo-Downsample-Factor` | largest applied factor (1 when none) |
+| `X-Visivo-Downsample-Factors` | applied factor per axis, `x,y,z` |
 | `X-Visivo-Components` | `3` |
 | `X-Visivo-Spacing`, `X-Visivo-Origin` | `x,y,z` |
 | `X-Visivo-Speed-Min`, `X-Visivo-Speed-Max` | speed range of the returned grid |
@@ -92,19 +99,43 @@ Response: interleaved `float32` vectors, `nx × ny × nz × 3` values. Headers:
 Gravitational-basin (watershed) segmentation: the streamline from every grid
 point is integrated until it converges, and points are labelled by the
 attractor they reach. `direction: 1` gives basins of attraction
-(superclusters), `-1` basins of repulsion (voids).
+(superclusters), `-1` basins of repulsion (voids). The streamlines are
+integrated with a fixed step of half a cell along the flow direction, so the
+segmentation depends only on the direction of the flow: scaling every velocity
+by a constant gives the same labels. A path ends at any critical point; each
+candidate attractor is then kept only if probes started one cell away from it
+along ±x, ±y and ±z all flow back to it, so a saddle (for example the
+separatrix plane between two wells) is not a basin and the points that ended
+there stay 0. NaN voxels are left out of the interpolation; a path whose
+sample has less than half of its weight on valid voxels has run into missing
+data and stays 0. A probe that runs into missing data farther from the
+candidate than it started has escaped, and the candidate is rejected; one that
+stops at or inside its start distance is neutral. Only when an axis is left
+with no live probe is the candidate kept without that test. Velocities are converted to cells with the field's physical spacing
+per axis. On a non-cubic grid that spacing depends on whether the dataset was
+opened with a box size (`box_mpc / (n - 1)` per axis, otherwise unit cells),
+so the box size changes the segmentation there; on a cubic grid it does not.
 
 Request (`VelocityBasinsRequest`): `dataset_id`, `basin_max_dim` (default 64;
 the field is block-averaged to this largest dimension before segmentation; 0
 or negative means 64, and the value is clamped to the range 8 to 96),
-`direction` (default 1; any value `>= 0` is treated as 1, negative as -1).
+`direction` (default 1; any value `>= 0` is treated as 1, negative as -1),
+`box_mpc` (optional): the box size in Mpc to segment with, in place of the one
+the dataset was opened with. `> 0` sets the cell size `box_mpc / (n - 1)` per
+axis, which on a non-cubic grid changes the basins; `0` asks for unit cells
+explicitly; omitted keeps the dataset's own box (unit cells when it has none);
+negative or non-finite is 422. The returned `X-Visivo-Spacing` and
+`X-Visivo-Origin` follow the box actually used. The desktop sends its box on
+every request, so the basins match the box shown. On a cubic grid any box gives
+the same labels as unit cells.
 
 Response: an `int32` label grid on the coarse basin grid, 0 for unassigned
 points and 1 to N for basins. Headers: `X-Visivo-Width`, `X-Visivo-Height`,
 `X-Visivo-Depth` (basin grid size), `X-Visivo-Components: 1`,
-`X-Visivo-Scalar-Type: int32`, `X-Visivo-N-Basins`. The spacing and origin of
-the basin grid are not sent; they follow from the block-averaging factor and
-the field's geometry.
+`X-Visivo-Scalar-Type: int32`, `X-Visivo-N-Basins`, and the basin grid's
+geometry: `X-Visivo-Spacing` and `X-Visivo-Origin` (`x,y,z`, the
+block-averaged field's sample spacing and first-sample position, computed as
+in `grid_bin`) and `X-Visivo-Downsample-Factors` (`x,y,z`).
 
 ## `POST /v1/velocity/density_bin`
 
@@ -117,7 +148,12 @@ float64. At full resolution, a field whose file size times three exceeds
 the in-memory computation.
 
 Request (`VelocityDensityRequest`): `dataset_id`, `max_dim` (default 0, full
-resolution; `> 0` block-averages first, as in `grid_bin`).
+resolution; `> 0` block-averages first, as in `grid_bin`), `box_mpc`
+(optional, same values as in `basins_bin`: `> 0` that box, `0` unit cells,
+omitted the dataset's box, negative or non-finite 422). ∇·v uses the per-axis
+cell sizes, so on a non-cubic grid its values depend on the box; the spacing,
+origin, unit (`/Mpc` or `/pixel`) and `linear_density_factor` follow the box
+actually used.
 
 Response: one `float32` scalar per grid point. Headers: `X-Visivo-Width`,
 `X-Visivo-Height`, `X-Visivo-Depth`, `X-Visivo-Components: 1`,

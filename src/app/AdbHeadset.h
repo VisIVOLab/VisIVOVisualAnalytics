@@ -9,12 +9,19 @@
 //
 // Widget-free and header-only: unit-tested in tests/test_adb_headset.cpp.
 
+#include <QByteArray>
 #include <QDir>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QList>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+
+#include <functional>
 
 namespace AdbHeadset {
 
@@ -270,6 +277,197 @@ inline bool viewStarted(int exitCode, const QString &output)
             return false;
     }
     return true;
+}
+
+// ── Next-step guidance (epic #166) ──────────────────────────────────────────
+
+/// The command that installs adb on @p platform, to type in a terminal.
+inline QString installCommand(Platform platform)
+{
+    switch (platform) {
+    case Platform::MacOS:
+        return QStringLiteral("brew install android-platform-tools");
+    case Platform::Linux:
+        return QStringLiteral("sudo apt install adb");
+    case Platform::Windows:
+        return QStringLiteral("winget install Google.PlatformTools");
+    }
+    return QString();
+}
+
+/// Is a Quest on this computer's USB at all, whatever adb says? Known only on
+/// macOS (system_profiler); elsewhere Unknown.
+enum class UsbQuest { Unknown, Absent, Present };
+
+/// Meta's (Oculus') USB vendor id.
+inline const QString &questVendorId()
+{
+    static const QString id = QStringLiteral("0x2833");
+    return id;
+}
+
+/// The program and arguments that list this Mac's USB devices as JSON. Cheap
+/// (about 0.1 s) and run asynchronously by the dialog.
+inline QString usbProbeProgram() { return QStringLiteral("/usr/sbin/system_profiler"); }
+inline QStringList usbProbeArgs() { return { QStringLiteral("-json"), QStringLiteral("SPUSBHostDataType") }; }
+
+/// Present when the JSON of `system_profiler -json SPUSBHostDataType` (or the
+/// older SPUSBDataType) lists a device with Meta's vendor id, Absent when it
+/// lists none, Unknown when the output cannot be read.
+inline UsbQuest usbQuestFromProfiler(const QByteArray &json)
+{
+    QJsonParseError err{};
+    const QJsonDocument doc = QJsonDocument::fromJson(json, &err);
+    if (err.error != QJsonParseError::NoError || !doc.isObject())
+        return UsbQuest::Unknown;
+    const QJsonObject root = doc.object();
+    if (!root.contains(QStringLiteral("SPUSBHostDataType")) && !root.contains(QStringLiteral("SPUSBDataType")))
+        return UsbQuest::Unknown;
+    std::function<bool(const QJsonValue &)> walk = [&walk](const QJsonValue &v) -> bool {
+        if (v.isArray()) {
+            for (const QJsonValue &x : v.toArray())
+                if (walk(x))
+                    return true;
+            return false;
+        }
+        if (!v.isObject())
+            return false;
+        const QJsonObject o = v.toObject();
+        for (const char *key : { "USBDeviceKeyVendorID", "vendor_id" }) {
+            const QString id = o.value(QLatin1String(key)).toString().trimmed().toLower();
+            if (id.startsWith(questVendorId()))
+                return true;
+        }
+        return walk(o.value(QStringLiteral("_items")));
+    };
+    for (const QJsonValue &v : root)
+        if (walk(v))
+            return UsbQuest::Present;
+    return UsbQuest::Absent;
+}
+
+/// What the dialog says for a state: a headline, the steps to take (in
+/// order), and the anchor of the user guide's section about it.
+struct Guidance
+{
+    QString headline;
+    QStringList steps;
+    QString anchor;
+    bool problem{ true };   ///< false only when ready
+};
+
+inline QStringList developerModeSteps()
+{
+    return {
+        QStringLiteral("On your phone, open the Meta Horizon app: Menu → Devices → your headset → "
+                       "Headset settings → Developer mode, and turn it on (the first time, Meta asks "
+                       "you to register as a developer)."),
+        QStringLiteral("Restart the headset, connect it with a USB-C data cable (a charge-only cable "
+                       "carries no data), and put it on."),
+        QStringLiteral("In the headset, accept \"Allow USB debugging\" and tick \"Always allow from "
+                       "this computer\"."),
+    };
+}
+
+/// adb is not installed (or not where the application looks for it).
+inline Guidance adbMissingGuidance(Platform platform)
+{
+    Guidance g;
+    g.headline = QStringLiteral("adb was not found.");
+    g.steps << QStringLiteral("Install the Android platform tools: in a terminal, run  %1")
+                       .arg(installCommand(platform));
+    if (platform == Platform::Linux)
+        g.steps << QStringLiteral("(Fedora: sudo dnf install android-tools; Arch: sudo pacman -S android-tools.)");
+    if (platform == Platform::Windows)
+        g.steps << QStringLiteral("(Or download the SDK Platform-Tools from developer.android.com and unpack "
+                                  "them in %LOCALAPPDATA%\\Android\\Sdk\\platform-tools.)");
+    g.steps << QStringLiteral("Then press Retry (this window also checks by itself every few seconds).");
+    g.anchor = QStringLiteral("open-a-cube-from-the-desktop");
+    return g;
+}
+
+/// The guidance for what adb reports (@p status) and, for NoDevice, whether
+/// the Quest is on USB anyway (@p usb: macOS only).
+inline Guidance guidanceFor(Status status, UsbQuest usb = UsbQuest::Unknown)
+{
+    Guidance g;
+    g.anchor = QStringLiteral("troubleshooting");
+    switch (status) {
+    case Status::NoDevice:
+        if (usb == UsbQuest::Present) {
+            // The case adb cannot explain: the cable works, the headset will not talk.
+            g.headline = QStringLiteral("The Quest is connected by USB, but adb does not see it: "
+                                        "developer mode or USB debugging is off on the headset.");
+            g.steps = developerModeSteps();
+            g.steps << QStringLiteral("Still nothing: unplug and reconnect the cable, or run  adb kill-server  "
+                                      "in a terminal, then press Retry.");
+        } else {
+            g.headline = usb == UsbQuest::Absent
+                    ? QStringLiteral("No headset on USB: this computer does not see the Quest at all.")
+                    : QStringLiteral("No headset connected.");
+            if (usb == UsbQuest::Absent)
+                g.steps << QStringLiteral("Check that the headset is on and the cable is a USB-C data "
+                                          "cable, firmly in at both ends (try another port).");
+            g.steps << developerModeSteps();
+            g.steps << QStringLiteral("Over Wi-Fi instead: see the guide (adb connect <headset-ip>:5555).");
+        }
+        break;
+    case Status::Unauthorized:
+        g.headline = QStringLiteral("The headset has not allowed this computer yet.");
+        g.steps << QStringLiteral("Put the headset on: it shows \"Allow USB debugging?\".")
+                << QStringLiteral("Tick \"Always allow from this computer\" and choose Allow.")
+                << QStringLiteral("No prompt in the headset: unplug and reconnect the cable, then look "
+                                  "again (or run  adb kill-server  and press Retry).");
+        break;
+    case Status::NoPermissions:
+        g.headline = QStringLiteral("adb may not open the headset's USB device.");
+        g.steps << QStringLiteral("Install the udev rules for Android devices (Debian/Ubuntu: "
+                                  "sudo apt install android-sdk-platform-tools-common), add yourself "
+                                  "to the plugdev group, log out and in, reconnect the cable.");
+        break;
+    case Status::Authorizing:
+        g.headline = QStringLiteral("Waiting for the headset to authorise this computer…");
+        g.steps << QStringLiteral("If the headset asks, accept \"Allow USB debugging\".");
+        break;
+    case Status::Offline:
+        g.headline = QStringLiteral("The headset is offline.");
+        g.steps << QStringLiteral("Wake it up (put it on), or unplug and reconnect the cable.")
+                << QStringLiteral("Still offline: run  adb kill-server  in a terminal, then press Retry.");
+        break;
+    case Status::Ready:
+        g.headline = QStringLiteral("Ready.");
+        g.steps << QStringLiteral("Press Open on Headset, put the headset on, then press Enter VR on the page.");
+        g.anchor = QStringLiteral("open-a-cube-from-the-desktop");
+        g.problem = false;
+        break;
+    }
+    return g;
+}
+
+/// @p path with the home directory @p home written as "~" (what Copy Error
+/// puts in a support request: the user's name is not needed there).
+inline QString homeShortened(const QString &path, const QString &home)
+{
+    // Either separator, whatever the platform this runs on.
+    const QString h = QString(home).replace(u'\\', u'/');
+    const QString p = QString(path).replace(u'\\', u'/');
+    if (h.isEmpty() || h == QStringLiteral("/"))
+        return path;
+    if (p == h)
+        return QStringLiteral("~");
+    if (p.startsWith(h + u'/'))
+        return QStringLiteral("~") + p.mid(h.size());
+    return path;
+}
+
+/// Which of @p serials to select: the headset used last time when it is
+/// there, else the first. -1 when there is none.
+inline int preferredIndex(const QStringList &serials, const QString &last)
+{
+    if (serials.isEmpty())
+        return -1;
+    const int i = last.isEmpty() ? -1 : serials.indexOf(last);
+    return i >= 0 ? i : 0;
 }
 
 }   // namespace AdbHeadset
