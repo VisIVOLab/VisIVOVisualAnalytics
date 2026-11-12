@@ -762,7 +762,7 @@ Open the current cube in a VR headset and explore the volume in stereo.
 For a Meta Quest connected to a Mac (or any computer with adb), use
 **Tools → Views → Open in VR Headset…** instead: it needs no OpenXR runtime
 and opens the cube in the headset's browser, in the same backend session. See
-[Open a cube from the desktop](vr-headset.md#open-a-cube-from-the-desktop).
+[Open a cube from the desktop](vr/quickstart.md#open-a-cube-from-the-desktop).
 ```
 The same `vtkVolume` actor used by the desktop renderer is shared with
 the OpenXR render window, so the LUT, threshold and opacity transfer

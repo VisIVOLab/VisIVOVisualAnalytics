@@ -306,7 +306,7 @@ Buffer occupancy for monitoring: `{entries, capacity, last_id}`. Any valid token
 
 ## The VR page
 
-The WebXR page of [Cubes in a VR headset](../user-guide/vr-headset.md) and its
+The WebXR page of [Cubes in a VR headset](../user-guide/vr/index.md) and its
 lifecycle routes (`backend/app/routers/vr.py`, epic #166).
 
 ### `GET /vr/` and `GET /vr/b/<build>/…`

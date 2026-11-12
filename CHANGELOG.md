@@ -8,6 +8,37 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: clearer controls and one hand menu (#201, part of #166).** The
+  headset's controls follow fixed roles: the primary hand (right, or left with
+  the new *left-handed* setting, kept in the browser) points and acts with its
+  trigger; the secondary hand holds the menu; either grip grabs and both grips
+  move, turn and scale the cube. Three explicit modes, Explore (stick:
+  threshold and opacity; trigger pins a cursor readout), Select (spectrum,
+  Kinematic Lasso, box region) and Clip (velocity slab, clipping box with a
+  face dragged by the controller), give each stick one meaning; the buttons
+  keep global actions only (A next mode, B undo, hold X the menu, Y reset
+  view). Holding X opens one hand menu by the wrist, with Mode, Look (the
+  former control panel), Analysis (the former analysis panel), Layers (the
+  former strip), Settings and Help tabs; the always-shown panels and strip are
+  gone. Labels above the controllers say what each control does in the
+  current mode (on at first use, can be turned off); a cursor readout follows
+  the ray with RA/Dec, velocity, channel and value with its unit; haptic pulses
+  confirm presses and results and signal errors; spectrum and statistics,
+  moment and PV results stand in windows moved by their title bar and closed
+  with ×, their places kept. Tracked hands keep the roles: pinch acts, a fist
+  grabs, the secondary palm turned up opens the menu. The first-run guide is
+  rebuilt for this scheme and the menu's Help tab shows the control map of
+  each mode. In a desktop browser the same menu and windows are used with the
+  mouse (`?panel3d`), and a click does what the trigger does in the chosen
+  mode. Node tests cover the control map, the left-handed setting, hand
+  tracking (palm up included), the menu, the windows and the readout;
+  `validation/vr_menu.mjs` drives the menu with real mouse events in CI
+  (`vr_lifecycle.mjs --regressions`, or `--menu`). The VR guide is now a
+  section, `docs/user-guide/vr/` (overview, quickstart, controls and the hand
+  menu, analysis, data types, cluster backends, troubleshooting, technical
+  reference with every Quest 3 check list); `vr-headset.md` stays as a short
+  page whose anchors lead there.
+
 - **VR: keep recovery and asynchronous layers on the correct dataset (#166).**
   Reopening a cube verifies its file revision before reusing its texture and
   coordinates; a changed file requires an explicit reload. Selection sharing

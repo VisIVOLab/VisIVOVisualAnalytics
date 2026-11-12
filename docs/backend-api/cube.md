@@ -144,7 +144,7 @@ failures.
 
 ### `POST /v1/cube/reduced_info` and `POST /v1/cube/reduced_bin`
 
-The reduced cube the [VR page](../user-guide/vr-headset.md) renders on the
+The reduced cube the [VR page](../user-guide/vr/index.md) renders on the
 headset ([#167](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/167)):
 the cube binned by an integer factor on each axis and sent as an 8- or 16-bit
 3-D texture. The rules are in `backend/app/cube_reduce.py`; the analysis routes

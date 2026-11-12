@@ -1,6 +1,6 @@
 # Points, catalogues and flows for the headset
 
-These routes give the [VR page](../user-guide/vr-headset.md) the data types
+These routes give the [VR page](../user-guide/vr/index.md) the data types
 other than a cube
 ([#190](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/190)): a
 point table sampled for a headset's GPU, catalogue sources placed in a cube's

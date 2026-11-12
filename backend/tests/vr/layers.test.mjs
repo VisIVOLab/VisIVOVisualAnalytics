@@ -10,24 +10,6 @@ import { parsePairing } from '../../app/static/vr/js/pairing.js';
 import { colormapTable } from '../../app/static/vr/js/colormaps.js';
 import { niceTicks } from '../../app/static/vr/js/volume.js';
 import * as M from '../../app/static/vr/js/mat4.js';
-import * as P from '../../app/static/vr/js/vr-panel.js';
-import * as TP from '../../app/static/vr/js/tools-panel.js';
-
-test('catalogue buttons sit below analysis and each receives its own ray', () => {
-  const control = M.multiply(M.translation(.3, 1.4, -.6), M.rotation([0, 1, 0], .7));
-  const strip = LY.stripModel(control, 'cube');
-  const layout = LY.stripLayout(LY.stripButtons('cube', {}));
-  for (const button of layout) {
-    const [x, y, w, h] = button.rect;
-    const target = M.transformPoint(strip, [((x + w / 2) / LY.STRIP_PX[0] - .5) * LY.STRIP_SIZE[0],
-      (.5 - (y + h / 2) / LY.STRIP_PX[1]) * LY.STRIP_SIZE[1], 0]);
-    const eye = M.transformPoint(strip, [0, 0, 1]);
-    const ray = M.sub(target, eye);
-    assert.equal(P.rayPanel(TP.toolsModel(control), TP.TOOLS_SIZE, eye, ray, TP.TOOLS_PX), null, button.id);
-    const hit = P.rayPanel(strip, LY.STRIP_SIZE, eye, ray, LY.STRIP_PX);
-    assert.deepEqual(new P.PanelPointer(layout).update(hit, true).map((a) => a.id), [button.id]);
-  }
-});
 
 const close = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) <= eps, `${a} != ${b}`);
 const hdr = (o) => (k) => (k in o ? o[k] : null);

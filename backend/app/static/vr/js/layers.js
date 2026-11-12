@@ -2,8 +2,8 @@
 // and catalogue sources over a cube. Kept out of main.js, which calls a few
 // hooks: the open by path or by pairing, the drawing of a frame (the layer's
 // own scene when no cube is shown, the catalogue over a cube), the refinement
-// of a point table, the HUD, the page's controls and a strip of buttons under
-// the in-VR panel.
+// of a point table, the HUD, the page's controls and the buttons of the hand
+// menu's Layers page (issue #201; they were a strip under the in-VR panel).
 
 import * as M from './mat4.js';
 import * as PT from './points.js';
@@ -11,8 +11,6 @@ import * as FL from './flow.js';
 import * as CT from './catalogue.js';
 import { colormapTable } from './colormaps.js';
 import { niceTicks } from './volume.js';
-import * as P from './vr-panel.js';
-import { toolsModel, TOOLS_SIZE } from './tools-panel.js';
 
 /** What a path opens as (`choice`: the page's selector, 'auto' by the name). */
 export function kindOfPath(path, choice = 'auto') {
@@ -44,14 +42,6 @@ export function pairedMode(kind) {
 }
 
 export const STRIP_PX = [1024, 120];
-export const STRIP_SIZE = [P.PANEL_SIZE[0], P.PANEL_SIZE[0] * STRIP_PX[1] / STRIP_PX[0]];
-
-/** Cube catalogues sit below the analysis panel; other modes have no such panel. */
-export function stripModel(panelModel, mode) {
-  const above = mode === 'cube' ? toolsModel(panelModel) : panelModel;
-  const height = mode === 'cube' ? TOOLS_SIZE[1] : P.PANEL_SIZE[1];
-  return M.multiply(above, M.translation(0, -(height / 2 + STRIP_SIZE[1] / 2 + 0.012), 0));
-}
 
 /** The strip's buttons for a mode: [{id, label}], at most five. Pure. */
 export function stripButtons(mode, s) {
@@ -125,10 +115,6 @@ export function createLayers(ctx) {
     return { vao, buf, count: 0 };
   }
   let catLines = makeCatLines();
-  const strip = {
-    canvas: Object.assign(document.createElement('canvas'), { width: STRIP_PX[0], height: STRIP_PX[1] }),
-    tex: null, key: '', layout: [], pointer: null, hit: null,
-  };
 
   function setLut(name) {
     gl.bindTexture(gl.TEXTURE_2D, lut);
@@ -390,7 +376,6 @@ export function createLayers(ctx) {
       });
     }
     showSections();
-    strip.key = '';
   }
 
   function decorate(axes) {
@@ -425,10 +410,9 @@ export function createLayers(ctx) {
       L.overlay = ov;
       rebuildOverlay();
       // Every warning the backend gave (a reading changed, sources outside the
-      // channels, a frame not converted) is shown, here and on the strip in VR.
+      // channels, a frame not converted) is shown, here and on the menu's Layers page in VR.
       const warn = (ov.warnings || []).map((w) => `⚠ ${w}`).join('\n');
       ctStatus.textContent = `${CT.overlaySummary(ov)} (${ov.ms.toFixed(0)} ms)${warn ? `\n${warn}` : ''}`;
-      strip.key = '';
       return ov;
     } catch (err) {
       if (!stale()) throw err;
@@ -473,7 +457,7 @@ export function createLayers(ctx) {
   ctLabels.addEventListener('change', () => { L.s.catLabels = ctLabels.checked; rebuildOverlay(); });
   ctPins.addEventListener('change', () => { L.s.catPins = ctPins.checked; rebuildOverlay(); });
 
-  // ── The in-VR strip ──────────────────────────────────────────────────
+  // ── The menu's Layers page (the former in-VR strip) ─────────────────
   function stripState() { return { ...L.s }; }
   function applyStrip(id) {
     const b = (() => { try { return ctx.ensureBackend(); } catch { return null; } })();
@@ -514,50 +498,8 @@ export function createLayers(ctx) {
     return { warn: false, text: CT.overlaySummary(L.overlay) };
   }
   function stripVisible() { return L.mode !== 'cube' || !!L.overlay; }
-  function stripTexture() {
-    const buttons = stripButtons(L.mode, stripState());
-    const note = stripNote();
-    const key = JSON.stringify([buttons, strip.pointer && strip.pointer.hover, note]);
-    if (!strip.tex) strip.tex = R.createPanel();
-    if (key !== strip.key) {
-      if (JSON.stringify(buttons.map((b) => b.id)) !== JSON.stringify(strip.layout.map((b) => b.id))) {
-        strip.layout = stripLayout(buttons);
-        strip.pointer = new P.PanelPointer(strip.layout);
-      } else {
-        strip.layout = stripLayout(buttons);
-        strip.pointer.layout = strip.layout;
-      }
-      const c = strip.canvas.getContext('2d');
-      c.clearRect(0, 0, STRIP_PX[0], STRIP_PX[1]);
-      c.fillStyle = 'rgba(12, 16, 24, 0.92)';
-      c.fillRect(0, 0, STRIP_PX[0], STRIP_PX[1]);
-      c.fillStyle = '#9aa3b2';
-      c.font = '22px -apple-system, system-ui, sans-serif';
-      c.textBaseline = 'middle';
-      const title = L.mode === 'points' ? 'Point table' : L.mode === 'flow' ? 'Velocity field' : 'Catalogue';
-      c.fillText(title, 14, 20);
-      if (note) {
-        // The overlay's summary, and its first warning in amber.
-        const x0 = 14 + c.measureText(title).width + 16;
-        c.font = '20px -apple-system, system-ui, sans-serif';
-        c.fillStyle = note.warn ? '#ffd27a' : '#9aa3b2';
-        c.fillText(note.text, x0, 20, STRIP_PX[0] - x0 - 14);
-      }
-      for (const w of strip.layout) {
-        const [x, y, ww, hh] = w.rect;
-        c.fillStyle = w.on ? '#2f7fd8' : strip.pointer.hover === w.id ? '#2b3650' : '#1d2433';
-        c.fillRect(x, y, ww, hh);
-        c.fillStyle = '#e6e9ef';
-        c.font = '24px -apple-system, system-ui, sans-serif';
-        c.textAlign = 'center';
-        c.fillText(w.label, x + ww / 2, y + hh / 2, ww - 12);
-        c.textAlign = 'left';
-      }
-      R.updatePanel(strip.tex, strip.canvas);
-      strip.key = key;
-    }
-    return strip.tex;
-  }
+  /** The title of the Layers page for what is shown. */
+  function stripTitle() { return L.mode === 'points' ? 'Point table' : L.mode === 'flow' ? 'Velocity field' : 'Catalogue over the cube'; }
 
   // ── Hooks for main.js ────────────────────────────────────────────────
   const api = {
@@ -681,19 +623,11 @@ export function createLayers(ctx) {
       if (L.error) out.push(`  ${L.error}`.slice(0, 70));
       return out;
     },
-    /** The strip under the in-VR panel: pointer (ray or null), returns whether it takes the ray. */
-    stripPointer(ray, pressed, panelModel) {
-      if (!stripVisible()) { strip.hit = null; return false; }
-      stripTexture();
-      const hit = ray ? P.rayPanel(stripModel(panelModel, L.mode), STRIP_SIZE, ray.o, ray.d, STRIP_PX) : null;
-      strip.hit = hit;
-      for (const a of strip.pointer.update(hit, pressed)) if (a.type === 'press') applyStrip(a.id);
-      return strip.pointer.takesRay() || strip.pointer.owns;
-    },
-    stripHit() { return strip.hit; },
-    drawStrip(view, panelModel) {
-      if (!stripVisible()) return;
-      R.drawPanel(view, stripModel(panelModel, L.mode), stripTexture(), STRIP_SIZE);
+    /** The hand menu's Layers page (issue #201): its buttons (none when
+     *  nothing is shown), title and note. */
+    menuPage() {
+      if (!stripVisible()) return { buttons: [], title: '', note: null };
+      return { buttons: stripButtons(L.mode, stripState()), title: stripTitle(), note: stripNote() };
     },
     pressStrip: applyStrip,
     loadOverlay: () => loadOverlay(ctx.ensureBackend()),
