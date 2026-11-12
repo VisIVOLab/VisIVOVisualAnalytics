@@ -58,6 +58,8 @@ MAX_REQUEST_BODY = 64 * 1024 * 1024
 MAX_WS_MESSAGE = 64 * 1024 * 1024
 MAX_WS_QUEUED = 64 * 1024 * 1024
 MAX_API_QUEUED = 64 * 1024 * 1024
+#: What a waiting message counts for beyond its bytes (its queue entry).
+MESSAGE_COST = 256
 
 WS_TEXT, WS_BINARY, WS_OPEN, WS_CLOSE = 0x01, 0x02, 0x03, 0x04
 LAST = 0x01
@@ -546,7 +548,9 @@ class WsBridge:
         if done is None:
             return
         kind, payload = done
-        if kind in (WS_TEXT, WS_BINARY) and self.queued + len(payload) > MAX_WS_QUEUED:
+        # Every message costs at least MESSAGE_COST, so empty ones count too.
+        cost = len(payload) + MESSAGE_COST
+        if kind in (WS_TEXT, WS_BINARY) and self.queued + cost > MAX_WS_QUEUED:
             # The route reads slower than the page sends: closed rather than
             # held without bound.
             self._page_closed(1009, "too much unread")
@@ -555,8 +559,8 @@ class WsBridge:
                 self._fail(1009, "too much unread")
             return
         if kind in (WS_TEXT, WS_BINARY):
-            self.queued += len(payload)
-            self._sizes.append(len(payload))
+            self.queued += cost
+            self._sizes.append(cost)
         if kind == WS_TEXT:
             try:
                 self.incoming.put_nowait({"type": "websocket.receive", "text": payload.decode("utf-8")})

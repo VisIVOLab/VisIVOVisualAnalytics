@@ -295,6 +295,39 @@ async def test_a_finished_socket_is_let_go_and_sockets_per_headset_are_bounded(m
     for b in list(bridges):
         b.close()
 
+    # One api channel per connection: a second would bring a budget of its own.
+    pc = object()
+    first, second = _FakeChannel(), _FakeChannel()
+    first.label = second.label = "api"
+    host._attach(h, pc, first, bridges)
+    host._attach(h, pc, second, bridges)
+    assert first.readyState == "open" and second.readyState == "closed"
+    first.close()                                         # gone: a new one may come
+    third = _FakeChannel()
+    third.label = "api"
+    host._attach(h, pc, third, bridges)
+    assert third.readyState == "open"
+
+
+async def test_empty_websocket_messages_count_against_the_budget(monkeypatch):
+    monkeypatch.setattr(B, "MAX_WS_QUEUED", 100 * B.MESSAGE_COST)
+
+    async def never_reads(scope, receive, send):
+        await receive()
+        await send({"type": "websocket.accept"})
+        await asyncio.Event().wait()
+
+    ch = _FakeChannel()
+    ch.protocol = json.dumps({"path": "/slow", "protocols": []})
+    ws = B.WsBridge(ch, never_reads, "tok")
+    await asyncio.sleep(0.02)
+    for _ in range(10_000):
+        ch.emit("message", bytes([B.WS_BINARY, B.LAST]))
+    assert ws.incoming.qsize() <= 102
+    closes = [f for f in ch.sent if isinstance(f, bytes) and f[0] == B.WS_CLOSE]
+    assert closes and json.loads(closes[0][2:])["code"] == 1009
+    ws.close()
+
 
 class _FakePC:
     def __init__(self, *_a) -> None:

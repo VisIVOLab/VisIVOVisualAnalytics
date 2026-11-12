@@ -203,6 +203,8 @@ class PairHost:
         self._task: asyncio.Task | None = None
         self._closing = False
         self._tasks: set[asyncio.Task] = set()
+        #: (connection, label) of the ctl and api channels open now.
+        self._singletons: set[tuple[int, str]] = set()
 
     # ── The service connection ──────────────────────────────────────────
 
@@ -575,6 +577,14 @@ class PairHost:
         if h.revoked:
             channel.close()
             return
+        if label in ("ctl", "api"):
+            # One of each per connection: a second would get a budget of its own.
+            key = (id(pc), label)
+            if key in self._singletons:
+                channel.close()
+                return
+            self._singletons.add(key)
+            channel.on("close", lambda: self._singletons.discard(key))
         if label == "ctl":
             # On a resumed headset, the ctl of the connection that replaces
             # the old one: the bye goes where the page now listens.
