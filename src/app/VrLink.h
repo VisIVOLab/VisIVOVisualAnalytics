@@ -15,6 +15,11 @@
 // reachable through `adb reverse` at all, and the builder says so instead of
 // producing a link that would fail on the headset.
 //
+// A path prefix (issue #187): a backend behind a reverse proxy that strips
+// /some/prefix (an HPC portal, reached through a local tunnel) serves the page
+// at <prefix>/vr/ and the API at <prefix>/v1. The link opens the page there,
+// and the page finds the prefix in its own address (static/vr/js/base-path.js).
+//
 // Everything the page needs rides the fragment (#token=…&session=…&dataset=…
 // &path=…, and &kind=points|velocity&box=… for a point table or a velocity
 // field, issue #190): a browser never sends the fragment to the server, so the token is
@@ -43,6 +48,9 @@ struct Inputs
     QString kind;
     /// A velocity field's box size in Mpc, to open its path again ("" = grid units).
     QString boxMpc;
+    /// Not the desktop's local backend (BackendClient::isLocalBackendUrl):
+    /// a cluster's, reached through a local tunnel. Only labels the link.
+    bool remote{ false };
 };
 
 struct Link
@@ -50,6 +58,9 @@ struct Link
     bool ok{ false };
     QString error;      ///< why there is no link, for the user (no secrets in it)
     int port{ 0 };      ///< the port to forward with `adb reverse`
+    QString prefix;     ///< the backend's path prefix ('' at the root, else "/a/b")
+    bool remote{ false };   ///< a remote backend through a local tunnel
+    QString checkUrl;   ///< <backend>/v1/vr/backend_check, as this computer reaches it
     QString url;        ///< the full link: CONTAINS THE TOKEN, never log it
     QString pageUrl;    ///< the page without the fragment: safe to show and log
 };
@@ -95,17 +106,29 @@ inline Link build(const Inputs &in)
                              .arg(base.host());
         return link;
     }
-    // The page is mounted at the backend's root and calls /v1 from there, so
-    // a backend behind a path prefix (a proxy's /visivo) would serve neither.
-    QString prefix = base.path();
-    while (prefix.endsWith(u'/'))
-        prefix.chop(1);
-    if (!prefix.isEmpty()) {
+    // A backend under a path prefix serves the page and the API under it.
+    // Kept percent-encoded as written: it goes back into a URL as it is.
+    // "." and ".." are resolved and empty segments dropped here rather than by
+    // QUrl::NormalizePathSegments, whose result differs between Qt versions
+    // (6.10 turns "/a/./b/../c/" into "/a//c"); the page collapses repeated
+    // slashes the same way (base-path.js).
+    QStringList segments;
+    for (const QString &seg : base.path(QUrl::FullyEncoded).split(u'/', Qt::SkipEmptyParts)) {
+        if (seg == QStringLiteral("."))
+            continue;
+        if (seg == QStringLiteral("..")) {
+            if (!segments.isEmpty())
+                segments.removeLast();
+            continue;
+        }
+        segments << seg;
+    }
+    const QString prefix = segments.isEmpty() ? QString()
+                                              : u'/' + segments.join(u'/');
+    if (base.hasQuery() || base.hasFragment()) {
         link.error = QStringLiteral(
-                "This backend is served under %1, and the headset's page works only with a "
-                "backend at the root of its address. Connect to the backend's own port "
-                "through a local tunnel.")
-                             .arg(prefix);
+                "The backend address has a query or a fragment: give the headset the "
+                "backend's own address (scheme, host, port and path only).");
         return link;
     }
     if (in.datasetId.isEmpty()) {
@@ -121,8 +144,13 @@ inline Link build(const Inputs &in)
     page.setScheme(scheme);
     page.setHost(QStringLiteral("localhost"));
     page.setPort(link.port);
-    page.setPath(QStringLiteral("/vr/"));
+    page.setPath(prefix + QStringLiteral("/vr/"), QUrl::StrictMode);
     link.pageUrl = page.toString(QUrl::FullyEncoded);
+    link.prefix = prefix;
+    link.remote = in.remote;
+    QUrl check = base;
+    check.setPath(prefix + QStringLiteral("/v1/vr/backend_check"), QUrl::StrictMode);
+    link.checkUrl = check.toString(QUrl::FullyEncoded);
 
     QStringList fragment;
     if (!in.token.isEmpty())

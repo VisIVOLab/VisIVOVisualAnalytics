@@ -78,7 +78,7 @@ export function stripLayout(buttons) {
 
 export function createLayers(ctx) {
   const { gl, R, state, $ } = ctx;
-  const lut = gl.createTexture();
+  let lut = gl.createTexture();
   const L = {
     mode: 'cube',
     points: null, flow: null, overlay: null, overlaySegs: null,
@@ -93,7 +93,7 @@ export function createLayers(ctx) {
   let cloud = null, lines = null;
   // The catalogue's lines: a line set of the renderer's own kind (its line
   // program and vertex layout), so neither the box's nor the selection's.
-  const catLines = (() => {
+  function makeCatLines() {
     const vao = gl.createVertexArray(), buf = gl.createBuffer();
     gl.bindVertexArray(vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -104,7 +104,8 @@ export function createLayers(ctx) {
     gl.vertexAttribPointer(lc, 4, gl.FLOAT, false, 28, 12);
     gl.bindVertexArray(null);
     return { vao, buf, count: 0 };
-  })();
+  }
+  let catLines = makeCatLines();
   const strip = {
     canvas: Object.assign(document.createElement('canvas'), { width: STRIP_PX[0], height: STRIP_PX[1] }),
     tex: null, key: '', layout: [], pointer: null, hit: null,
@@ -199,7 +200,7 @@ export function createLayers(ctx) {
   showSections();
 
   // ── Points ───────────────────────────────────────────────────────────
-  async function fetchSample(b) {
+  async function fetchSample(b, load = {}) {
     const p = L.points;
     const t0 = performance.now();
     // A new colour column leaves the scale to the backend (color_log null: a
@@ -228,12 +229,15 @@ export function createLayers(ctx) {
     const tBody = performance.now();
     const info = PT.sampleInfo((k) => resp.headers.get(k));
     const arr = PT.sampleArrays(buf, info);
+    load.check?.();
+    load.commit?.();
     if (!cloud) cloud = new PT.PointCloud(gl, lut);
     const up = cloud.upload(arr.positions, arr.colour);
     L.s.autoLog = false;
     L.s.colourLog = info.colourLog;
     logBox.checked = info.colourLog;
     p.sample = info;
+    p.arr = arr; // Keep the packed sample so a lost WebGL context can be rebuilt.
     p.drawRows = info.count;
     p.governedAt = 0;
     L.box = PT.dataToModel(info.bounds);
@@ -243,7 +247,7 @@ export function createLayers(ctx) {
     ctx.refiner.setDataset(p.datasetId);
   }
 
-  async function openPoints(b, { datasetId, path }) {
+  async function openPoints(b, { datasetId, path }, load = {}) {
     if (!datasetId) {
       const fmt = catalogueFormat(path);
       if (fmt === 'vbt') {
@@ -257,7 +261,9 @@ export function createLayers(ctx) {
         datasetId = r.dataset_id;
       }
     }
+    load.check?.();
     const info = await b._json('POST', '/v1/points/info', { dataset_id: datasetId });
+    load.check?.();
     L.points = { datasetId, path, axes: info.axes, fields: info.fields, rows: info.num_rows };
     fieldSel.innerHTML = '';
     fieldSel.appendChild(el('option', { value: '', textContent: '(none: one colour)' }));
@@ -269,12 +275,12 @@ export function createLayers(ctx) {
     logBox.checked = false;
     fieldSel.value = L.s.colourField || '';
     enter('points');
-    await fetchSample(b);
+    await fetchSample(b, load);
     return { kind: 'points', datasetId };
   }
 
   // ── Flow ─────────────────────────────────────────────────────────────
-  async function fetchLines(b) {
+  async function fetchLines(b, load = {}) {
     const f = L.flow;
     const t0 = performance.now();
     // The desktop's box when the link gave one (0: grid units); else the
@@ -286,6 +292,8 @@ export function createLayers(ctx) {
     const tBody = performance.now();
     const info = FL.linesInfo((k) => resp.headers.get(k), { boxMpc: f.boxMpc });
     const arr = FL.linesArrays(buf, info);
+    load.check?.();
+    load.commit?.();
     if (!lines) lines = new FL.FlowLines(gl, lut);
     const t2 = performance.now();
     lines.setStreamlines(arr.points, arr.speed, arr.offsets);
@@ -308,7 +316,7 @@ export function createLayers(ctx) {
     lines.setArrows(f.arr.arrowPos, f.arr.arrowVec, scale);
   }
 
-  async function openFlow(b, { datasetId, path, boxMpc }) {
+  async function openFlow(b, { datasetId, path, boxMpc }, load = {}) {
     // The box: a number (0: grid units) from the link or the page; '' or
     // missing: the one the dataset was opened with.
     const given = boxMpc === '' || boxMpc === null || boxMpc === undefined || !Number.isFinite(Number(boxMpc))
@@ -318,9 +326,10 @@ export function createLayers(ctx) {
       if (!r.valid) throw new Error(r.error || 'The velocity field could not be opened.');
       datasetId = r.dataset_id;
     }
+    load.check?.();
     L.flow = { datasetId, path, boxMpc: given };
     enter('flow');
-    await fetchLines(b);
+    await fetchLines(b, load);
     return { kind: 'flow', datasetId };
   }
 
@@ -328,6 +337,7 @@ export function createLayers(ctx) {
   function enter(mode) {
     L.mode = mode;
     if (mode !== 'cube') {
+      ctx.onNonCube?.();
       state.cube = null;
       state.info = null;
       state.open = null;
@@ -508,29 +518,51 @@ export function createLayers(ctx) {
 
   // ── Hooks for main.js ────────────────────────────────────────────────
   const api = {
+    // R.restore() rebuilds its own handles; these layer-specific GPU objects
+    // must be rebuilt too. The packed sample and flow arrays stay on the CPU.
+    restore() {
+      lut = gl.createTexture();
+      setLut(ctx.colormap());
+      catLines = makeCatLines();
+      cloud = null;
+      lines = null;
+      if (L.points?.arr) {
+        cloud = new PT.PointCloud(gl, lut);
+        cloud.upload(L.points.arr.positions, L.points.arr.colour);
+      }
+      if (L.flow?.arr) {
+        lines = new FL.FlowLines(gl, lut);
+        const a = L.flow.arr;
+        lines.setStreamlines(a.points, a.speed, a.offsets);
+        setArrowScale();
+      }
+      placeOverlay();
+    },
     get mode() { return L.mode; },
     get state() { return L; },
     kindOf: (path) => kindOfPath(path, kindSel.value),
     /** Opens `path` as a point table or a velocity field; false for a cube. */
-    async openPath(b, path) {
+    async openPath(b, path, load = {}) {
       const kind = kindOfPath(path, kindSel.value);
-      if (kind === 'points') { await openPoints(b, { path }); return true; }
-      if (kind === 'flow') { await openFlow(b, { path, boxMpc: boxIn.value }); return true; }
+      if (kind === 'points') { await openPoints(b, { path }, load); return true; }
+      if (kind === 'flow') { await openFlow(b, { path, boxMpc: boxIn.value }, load); return true; }
       return false;
     },
     /** The desktop's pairing of a point table or a velocity field: its dataset
      *  in the session, or its path again when the session no longer holds it. */
-    async openPaired(b, pairing, onFallback) {
+    async openPaired(b, pairing, onFallback, load = {}) {
       const mode = pairedMode(pairing.kind);
       if (mode === 'cube') return false;
       const open = mode === 'points' ? openPoints : openFlow;
       try {
         if (!pairing.dataset) throw new Error('404: no dataset in the link');
-        await open(b, { datasetId: pairing.dataset, boxMpc: pairing.box });
+        await open(b, { datasetId: pairing.dataset, boxMpc: pairing.box }, load);
       } catch (err) {
+        load.check?.();
         const next = await onFallback(err);
+        load.check?.();
         if (next === 'fail') throw err;
-        await open(b, { path: pairing.path, boxMpc: pairing.box });
+        await open(b, { path: pairing.path, boxMpc: pairing.box }, load);
       }
       return true;
     },

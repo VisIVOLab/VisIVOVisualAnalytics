@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from ..auth import verify_token
 from ..dependencies import _require_dataset, _run, _run_io
 from ..sessions import Session, get_session
+from .velocity import _effective_box
 
 router = APIRouter(tags=["vr"])
 logger = logging.getLogger("visivo.vr_layers")
@@ -282,19 +283,6 @@ async def cube_catalogue_pixels(request: CubeCatalogueRequest, _: None = _auth,
 
 
 # ── Velocity fields ──────────────────────────────────────────────────────────
-
-
-def _effective_box(requested: float | None, entry: dict) -> float | None:
-    """Box size a basins/density request computes with.
-
-    ``None`` (omitted) → the box the dataset was opened with; ``0`` → unit
-    cells explicitly (no box); ``> 0`` → that box. Negative or non-finite values
-    are rejected (422) by the request model.
-    """
-    # The same helper as routers/velocity.py's (PR #193), for the lines.
-    if requested is None:
-        return entry.get("box_mpc")
-    return float(requested) if requested > 0 else None
 
 
 class VelocityLinesRequest(BaseModel):

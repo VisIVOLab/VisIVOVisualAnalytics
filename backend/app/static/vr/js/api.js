@@ -1,4 +1,5 @@
-// The VR page's calls to the backend that serves it (same origin).
+// The VR page's calls to the backend that serves it (same origin, under the
+// page's own path prefix: base-path.js).
 //
 // The token: read once from the URL fragment (#token=...), which a browser
 // never sends to the server, so it is not in any access log; then removed from
@@ -10,6 +11,7 @@
 // takePairing.
 
 import { parsePairing, strippedAddress } from './pairing.js';
+import { apiUrl } from './base-path.js';
 
 const KEY = 'visivo-vr-token';
 
@@ -87,10 +89,104 @@ export function saveToken(token, remember) {
   } catch { /* storage refused: the token lives in memory only */ }
 }
 
+/** An Error for a request: "<status>: <detail>", with `status` and `detail`;
+ *  `network` when nothing answered (the backend down, the link lost). */
+export function requestError(status, detail) {
+  const e = new Error(status ? `${status}: ${detail}` : `network: ${detail}`);
+  e.status = status;
+  e.detail = detail;
+  e.network = !status;
+  return e;
+}
+
+/** Every Backend's failures and successes go to these hooks (lifecycle.js
+ *  watches them): (err, path) and (path). Set by the page. */
+export const requestHooks = { onFailure: null, onSuccess: null };
+
+/** fetch(), with a rejected fetch turned into a `network` requestError and
+ *  both outcomes reported to requestHooks. Non-ok responses are returned. */
+export async function hookedFetch(path, init) {
+  let resp;
+  try {
+    // Behind a reverse proxy the page's own path prefix goes first (#187).
+    resp = await fetch(apiUrl(path), init);
+  } catch (err) {
+    const timedOut = init && init.signal && init.signal.aborted && init.signal.reason === TIMED_OUT;
+    const e = requestError(0, timedOut ? 'the backend did not answer in time' : 'the backend did not answer');
+    e.cause = err;
+    if (init && init.signal && init.signal.aborted && !timedOut) e.aborted = true;   // cancelled by the page
+    if (requestHooks.onFailure && !e.aborted) requestHooks.onFailure(e, path);
+    throw e;
+  }
+  if (resp.ok && requestHooks.onSuccess) requestHooks.onSuccess(path);
+  return resp;
+}
+
+const TIMED_OUT = 'timeout';
+
+/**
+ * A request with a deadline over the whole exchange (headers and body): a
+ * connection that hangs (a link half down, a backend that accepts and never
+ * answers) ends as a `network` requestError after `timeoutMs` instead of
+ * whenever the browser gives up. `signal` (optional) cancels it too (then the
+ * error has `aborted`). `read(resp)` reads the body inside the deadline.
+ */
+export async function boundedRequest(path, init, timeoutMs, signal, read) {
+  if (!(timeoutMs > 0) && !signal) {
+    const resp = await hookedFetch(path, init);
+    return read(resp);
+  }
+  const ctl = new AbortController();
+  const onAbort = () => ctl.abort(signal.reason);
+  if (signal) { if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }); }
+  const timer = timeoutMs > 0 ? setTimeout(() => ctl.abort(TIMED_OUT), timeoutMs) : null;
+  try {
+    const resp = await hookedFetch(path, { ...init, signal: ctl.signal });
+    try {
+      // The deadline holds for the body too, whether or not this fetch
+      // aborts a body read by itself.
+      return await Promise.race([read(resp), new Promise((_, reject) => {
+        if (ctl.signal.aborted) reject(new Error('aborted'));
+        ctl.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      })]);
+    } catch (err) {
+      if (err && err.status !== undefined) throw err;            // an HTTP error, as read() made it
+      // The body did not come: the same as no answer at all.
+      const e = requestError(0, ctl.signal.reason === TIMED_OUT ? 'the backend did not answer in time' : 'the backend did not answer');
+      if (ctl.signal.aborted && ctl.signal.reason !== TIMED_OUT) e.aborted = true;
+      e.cause = err;
+      if (requestHooks.onFailure && !e.aborted) requestHooks.onFailure(e, path);
+      throw e;
+    }
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onAbort);
+  }
+}
+
+/** The deadline of the lifecycle's check (/v1/vr/info), in ms. */
+export const INFO_TIMEOUT_MS = 4000;
+
+async function failed(resp, path) {
+  const text = await resp.text().catch(() => '');
+  let detail = text;
+  try {
+    const data = JSON.parse(text);
+    detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail ?? data);
+  } catch { /* plain text */ }
+  const e = requestError(resp.status, String(detail).slice(0, 300));
+  if (requestHooks.onFailure) requestHooks.onFailure(e, path);
+  return e;
+}
+
 export class Backend {
   constructor(token) {
     this.token = token;
     this.session = '';
+    // A deadline for every JSON request of this handle (0: none). The page's
+    // loads have none (a large cube can take long to open); the recovery's
+    // handle has one, so a hung connection cannot stall it.
+    this.timeoutMs = 0;
   }
 
   headers(json = true) {
@@ -101,22 +197,36 @@ export class Backend {
   }
 
   async _json(method, path, body) {
-    const resp = await fetch(path, {
+    return boundedRequest(path, {
       method, headers: this.headers(body !== undefined),
       body: body === undefined ? undefined : JSON.stringify(body),
+    }, this.timeoutMs, null, async (resp) => {
+      if (!resp.ok) throw await failed(resp, path);
+      const text = await resp.text();
+      try { return JSON.parse(text); } catch { return { detail: text }; }
     });
-    const text = await resp.text();
-    let data;
-    try { data = JSON.parse(text); } catch { data = { detail: text }; }
-    if (!resp.ok) {
-      const detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail ?? data);
-      throw new Error(`${resp.status}: ${detail}`);
-    }
-    return data;
+  }
+
+  /** GET /v1/vr/info (public; with the token, also whether it is accepted),
+   *  within `timeoutMs` (INFO_TIMEOUT_MS), cancelled by `signal`. */
+  async info({ signal = null, timeoutMs = INFO_TIMEOUT_MS } = {}) {
+    return boundedRequest('/v1/vr/info', { headers: this.token ? { 'X-Visivo-Token': this.token } : {}, cache: 'no-store' },
+      timeoutMs, signal, async (resp) => {
+        if (!resp.ok) throw await failed(resp, '/v1/vr/info');
+        return resp.json();
+      });
+  }
+
+  /** POST /v1/vr/log: {status, retryAfterS}, never throws for an HTTP error. */
+  async log(body) {
+    // Not keepalive: a log line is not worth outliving the page, and keepalive
+    // requests go through the browser process with a small shared quota.
+    const resp = await fetch(apiUrl('/v1/vr/log'), { method: 'POST', headers: this.headers(true), body: JSON.stringify(body) });
+    return { status: resp.status, retryAfterS: Number(resp.headers.get('Retry-After')) || 0 };
   }
 
   async ping() {
-    const resp = await fetch('/v1/ping');
+    const resp = await fetch(apiUrl('/v1/ping'));
     return resp.ok;
   }
 
@@ -149,8 +259,8 @@ export class Backend {
   async _binary(path, body, contentType = 'application/json', signal = undefined) {
     const headers = this.headers(false);
     headers['Content-Type'] = contentType;
-    const resp = await fetch(path, { method: 'POST', headers, body, signal });
-    if (!resp.ok) throw new Error(`${resp.status}: ${(await resp.text()).slice(0, 300)}`);
+    const resp = await hookedFetch(path, { method: 'POST', headers, body, signal });
+    if (!resp.ok) throw await failed(resp, path);
     return { resp, buf: await resp.arrayBuffer() };
   }
 
@@ -211,10 +321,10 @@ export class Backend {
   /** The reduced cube: {data: Uint8Array | Uint16Array, dims, lo, hi, ...}. */
   async reducedCube(req, onProgress) {
     const t0 = performance.now();
-    const resp = await fetch('/v1/cube/reduced_bin', {
+    const resp = await hookedFetch('/v1/cube/reduced_bin', {
       method: 'POST', headers: this.headers(true), body: JSON.stringify(req),
     });
-    if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`);
+    if (!resp.ok) throw await failed(resp, '/v1/cube/reduced_bin');
     const h = (k) => resp.headers.get(k);
     const total = Number(h('Content-Length')) || 0;
     const tHeaders = performance.now();

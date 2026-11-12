@@ -20,6 +20,7 @@ void vtkWindowCatalogue3D::openInVrHeadset()
     const QString token = BackendClient::effectiveToken(url, BackendClient(url, this->backendToken).token());
     VrLink::Inputs inputs;
     inputs.baseUrl = url;
+    inputs.remote = !BackendClient::isLocalBackendUrl(url);
     inputs.token = token;
     inputs.sessionId = !this->remoteSessionId.isEmpty() ? this->remoteSessionId
                                                         : BackendClient::sessionIdForUrl(url, token);

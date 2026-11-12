@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 const sockets = [];
 class FakeSocket {
   static OPEN = 1;
-  constructor(url) { this.url = url; this.readyState = 0; this.sent = []; this.l = {}; sockets.push(this); }
+  constructor(url, protocols) { this.url = url; this.protocols = protocols; this.readyState = 0; this.sent = []; this.l = {}; sockets.push(this); }
   addEventListener(k, f) { (this.l[k] ||= []).push(f); }
   send(m) { this.sent.push(JSON.parse(m)); }
   close() { this.readyState = 3; for (const f of this.l.close || []) f({ code: 1000 }); }
@@ -56,7 +56,9 @@ test('a cube change while its session is being created connects the new cube', a
   b.pending[1].resolve({ valid: true, session_id: 'sB' });
   await tick(); await tick();
   assert.equal(sockets.length, 1);
-  assert.match(sockets[0].url, /\/v1\/render\/sB\/ws\?token=t$/);
+  // The token rides as a subprotocol, never in the address (access logs).
+  assert.match(sockets[0].url, /\/v1\/render\/sB\/ws$/);
+  assert.deepEqual(sockets[0].protocols, ["visivo.v1", "visivo-token.t"]);
 });
 
 test('turning refinement off frees the render slot; on again makes a new session', async () => {
@@ -169,4 +171,71 @@ test('a session that gives no stereo frames is told by its code, not by a word',
   assert.equal(stereoRefused({ code: 'other', error: 'drawn out of core' }), false);
   assert.equal(stereoRefused({ error: 'Stereo frames are not available yet for a cube drawn out of core' }), true);
   assert.equal(stereoRefused({ error: 'Stereo frames are drawn for cubes only.' }), true);
+});
+
+test('a frame decoded after a cube change is never shown on the new cube', async () => {
+  sockets.length = 0; deleted.length = 0;
+  const b = slowBackend();
+  const r = new Refiner(null, () => b, { draw: stubDraw });
+  r.setEnabled(true);
+  await r.setDataset('A');
+  await tick();
+  b.pending[0].resolve({ valid: true, session_id: 'sA' });
+  await tick(); await tick();
+  sockets[0].open();
+  // A pose asked of A's session; its frame is being decoded when the cube changes.
+  const id = r.book.add({ tSent: 0, version: r.version, eyes: [], model: new Float32Array(16),
+    aCentre: new Float32Array(16), gen: r.gen, datasetId: r.datasetId, sessionId: r.sessionId });
+  const rec = r.book.take(id);
+  let release;
+  const closed = [];
+  globalThis.createImageBitmap = () => new Promise((res) => { release = () => res({ close() { closed.push(1); } }); });
+  const decoding = r._decode({ header: {}, color: new Uint8Array(4), depth: null }, rec, 0);
+  await tick();
+  r.setDataset('B');                    // same view, same look version: only the cube changed
+  release();
+  await decoding;
+  assert.equal(r.incoming, null, 'not queued for upload on B');
+  assert.equal(closed.length, 1, 'the decoded image is released');
+  // The same frame for the cube still on show is kept.
+  const id2 = r.book.add({ tSent: 0, version: r.version, eyes: [], model: new Float32Array(16),
+    aCentre: new Float32Array(16), gen: r.gen, datasetId: r.datasetId, sessionId: r.sessionId });
+  const rec2 = r.book.take(id2);
+  globalThis.createImageBitmap = async () => ({ close() {} });
+  await r._decode({ header: {}, color: new Uint8Array(4), depth: null }, rec2, 0);
+  assert.ok(r.incoming && r.incoming.rec.id === id2);
+  delete globalThis.createImageBitmap;
+  r.setEnabled(false);                  // no keepalive timer left behind
+});
+
+test('a late close of the old socket does not stop the new stream', async () => {
+  sockets.length = 0; deleted.length = 0;
+  const b = slowBackend();
+  const r = new Refiner(null, () => b, { draw: stubDraw });
+  r.setEnabled(true);
+  await r.setDataset('A');
+  await tick();
+  b.pending[0].resolve({ valid: true, session_id: 'sA' });
+  await tick(); await tick();
+  const old = sockets[0];
+  old.open();
+  // The old socket will report its close only later.
+  old.close = function () { this.readyState = 2; };
+  r.setDataset('B');
+  await tick(); await tick();
+  b.pending[1].resolve({ valid: true, session_id: 'sB' });
+  await tick(); await tick();
+  const fresh = sockets[1];
+  fresh.open();
+  for (const f of fresh.l.message || []) f({ data: JSON.stringify({ stream: 'on' }) });
+  assert.equal(r.streaming, true);
+  r.book.add({ tSent: 1e12, version: r.version, gen: r.gen });
+  // Now the old socket's events arrive: close, and a stray message.
+  for (const f of old.l.message || []) f({ data: JSON.stringify({ stream: 'on' }) });
+  for (const f of old.l.close || []) f({ code: 1006 });
+  assert.equal(r.ws, fresh, 'the new socket is kept');
+  assert.equal(r.streaming, true, 'still streaming');
+  assert.equal(r.book.outstanding(0), 1, 'the new stream\'s poses are kept');
+  assert.notEqual(r.status, 'reconnecting');
+  r.setEnabled(false);                  // no keepalive timer left behind
 });

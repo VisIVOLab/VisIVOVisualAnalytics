@@ -108,7 +108,7 @@ def test_hi_defaults_to_full_depth(tmp_path):
     """Empty channel range → whole spectral axis, effective range reported."""
     path = str(tmp_path / "hi_fd.fits")
     _write_hi_cube(path, nz=24)
-    out = worker_hi_products(path, 0, 0)   # unset range
+    out = worker_hi_products(path, None, None)   # unset range
     assert out["channel_start"] == 0
     assert out["channel_end"] == 23
     assert out["n_channels_in_cube"] == 24
@@ -135,3 +135,48 @@ def test_hi_rejects_per_channel_beam(tmp_path):
     fits.HDUList([primary, beams]).writeto(path, overwrite=True)
     with pytest.raises(ValueError, match="per-channel|common"):
         worker_hi_products(path, 0, 5)
+
+
+def _write_uniform_hi_cube(path, nz=8, n=6):
+    """Every voxel = 1 Jy/beam, 1 km/s channels: one channel's M0 is 1 per pixel."""
+    data = np.ones((nz, n, n), dtype=np.float32)
+    h = fits.Header()
+    h["CTYPE1"] = "RA---SIN"; h["CTYPE2"] = "DEC--SIN"; h["CTYPE3"] = "VRAD"
+    h["CRVAL1"] = 10.0; h["CRVAL2"] = 20.0; h["CRVAL3"] = 0.0
+    h["CRPIX1"] = 3.0; h["CRPIX2"] = 3.0; h["CRPIX3"] = 1.0
+    h["CDELT1"] = -1e-3; h["CDELT2"] = 1e-3; h["CDELT3"] = 1.0
+    h["CUNIT1"] = "deg"; h["CUNIT2"] = "deg"; h["CUNIT3"] = "km/s"
+    h["BUNIT"] = "Jy/beam"; h["BMAJ"] = 3e-3; h["BMIN"] = 2e-3; h["BPA"] = 0.0
+    fits.PrimaryHDU(data, header=h).writeto(path, overwrite=True)
+
+
+def test_hi_single_channel_integrates_only_that_channel(tmp_path):
+    """An explicit (k, k) range is ONE channel, not 'unset' (review bug)."""
+    path = str(tmp_path / "hi_uniform.fits")
+    _write_uniform_hi_cube(path, nz=8)
+    one = worker_hi_products(path, 3, 3, distance_mpc=10.0)
+    full = worker_hi_products(path, None, None, distance_mpc=10.0)
+    assert (one["channel_start"], one["channel_end"]) == (3, 3)
+    assert (full["channel_start"], full["channel_end"]) == (0, 7)
+    assert full["integrated_flux_jy_kms"] == pytest.approx(
+        8.0 * one["integrated_flux_jy_kms"], rel=1e-6)
+    assert full["hi_mass_msun"] == pytest.approx(8.0 * one["hi_mass_msun"], rel=1e-6)
+    zero = worker_hi_products(path, 0, 0, distance_mpc=10.0)
+    assert (zero["channel_start"], zero["channel_end"]) == (0, 0)
+    assert zero["integrated_flux_jy_kms"] == pytest.approx(one["integrated_flux_jy_kms"])
+
+
+def test_hi_half_open_range_defaults_the_missing_end(tmp_path):
+    path = str(tmp_path / "hi_half.fits")
+    _write_uniform_hi_cube(path, nz=8)
+    a = worker_hi_products(path, 5, None)
+    b = worker_hi_products(path, None, 2)
+    assert (a["channel_start"], a["channel_end"]) == (5, 7)
+    assert (b["channel_start"], b["channel_end"]) == (0, 2)
+
+
+def test_hi_reversed_range_is_rejected(tmp_path):
+    path = str(tmp_path / "hi_rev.fits")
+    _write_uniform_hi_cube(path, nz=8)
+    with pytest.raises(ValueError, match="channel"):
+        worker_hi_products(path, 5, 2)

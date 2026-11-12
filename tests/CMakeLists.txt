@@ -51,6 +51,7 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/app/DiagnosticsManager.cpp
     ${VISIVO_ROOT}/src/app/ProductRecipe.cpp
     ${VISIVO_ROOT}/src/app/LassoReplay.cpp
+    ${VISIVO_ROOT}/src/app/SharedSelection.cpp
     ${VISIVO_ROOT}/src/app/SofiaSuggest.cpp
     ${VISIVO_ROOT}/src/app/FinderTaskRun.cpp
     ${VISIVO_ROOT}/src/app/UpdateCheck.cpp
@@ -198,6 +199,8 @@ add_executable(VisIVOTests
     test_open_job_merge.cpp
     TestTaskQuitDrain.h
     test_task_quit_drain.cpp
+    TestVelocityLodGeometry.h
+    test_velocity_lod_geometry.cpp
     TestSystemQuitRedirect.h
     test_system_quit_redirect.cpp
     TestSupportedFormats.h
@@ -211,6 +214,13 @@ add_executable(VisIVOTests
     test_busy_feedback.cpp
     TestVrLink.h
     test_vr_link.cpp
+    TestSharedSelection.h
+    test_shared_selection.cpp
+    TestSharedSelectionLink.h
+    test_shared_selection_link.cpp
+    ${VISIVO_ROOT}/src/app/SharedSelectionLink.cpp
+    TestBackendProcessTree.h
+    test_backend_process_tree.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

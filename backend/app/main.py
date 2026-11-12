@@ -57,6 +57,8 @@ from .routers import (
     particle_render,
     volume_render,
     vr_layers,
+    share,
+    vr_backend_check,
 )
 from .diagnostics_buffer import install_logging_handler
 
@@ -92,7 +94,23 @@ async def _lifespan(_app: "FastAPI"):
     # Started by the desktop client: end with it (app/parent_watch.py).
     from . import parent_watch  # noqa: PLC0415
     parent_watch.start()
+    # What a headset gets from here: a stale cluster overlay shows (#187).
+    try:
+        vr_backend_check.log_startup(_app)
+    except Exception as exc:  # noqa: BLE001 - a log line must not stop the start
+        logging.getLogger("visivo.backend").warning("[startup] VR backend check: %s", exc)
     yield
+    # The client-gone exit waits for this shutdown once it has begun.
+    parent_watch.SHUTDOWN_STARTED.set()
+    try:
+        await _shutdown(push_task)
+    finally:
+        parent_watch.SHUTDOWN_DONE.set()
+
+
+async def _shutdown(push_task) -> None:
+    """The lifespan's shutdown half: every step bounded and none fatal."""
+    import asyncio  # noqa: PLC0415
     if push_task is not None:
         push_task.cancel()
         try:
@@ -103,9 +121,19 @@ async def _lifespan(_app: "FastAPI"):
         # Release all open EGL contexts cleanly on uvicorn shutdown. Without this
         # the EGL display handle is leaked and the next backend start may fail to
         # acquire it on the same GPU.
+        # Bounded: the client kills the backend three seconds after asking it
+        # to stop. Each render child gets 2.5 s, closing at the same time:
+        # 1.5 s to close its session (the GPU context is released in a few
+        # milliseconds), the rest to exit, after which it is killed. The outer
+        # 3 s limit is for in-process sessions; a child the backend could not
+        # reach in time ends by itself once the backend is gone
+        # (exit_with_parent).
         try:
             from .render_manager import get_render_manager  # noqa: PLC0415
-            await get_render_manager().stop()
+            await asyncio.wait_for(get_render_manager().stop(budget_s=2.5), timeout=3.0)
+        except TimeoutError:
+            logging.getLogger("visivo.backend").warning(
+                "[shutdown] render sessions did not close in time; ending them at exit")
         except Exception as exc:  # noqa: BLE001
             logging.getLogger("visivo.backend").warning(
                 "[shutdown] render manager stop failed: %s", exc)
@@ -153,6 +181,13 @@ class _RevalidatedStaticFiles(StaticFiles):
     """Static files the browser must revalidate on every load (ETag), so a
     headset does not keep running yesterday's page after an update."""
 
+    async def get_response(self, path, scope):  # type: ignore[override]
+        # Dotfiles (an editor's or Finder's) are not part of the page.
+        if any(part.startswith(".") for part in Path(path).parts):
+            from starlette.exceptions import HTTPException as _StarletteHTTPException
+            raise _StarletteHTTPException(status_code=404)
+        return await super().get_response(path, scope)
+
     def file_response(self, *args, **kwargs):  # type: ignore[override]
         response = super().file_response(*args, **kwargs)
         response.headers["Cache-Control"] = "no-cache"
@@ -163,6 +198,10 @@ class _RevalidatedStaticFiles(StaticFiles):
 # no token. The page sends the token on its own API requests, read from the
 # URL fragment (never sent to the server, so never in an access log) or typed.
 _vr_static_dir = Path(__file__).resolve().parent / "static" / "vr"
+# Before the mount (routes match in order): /vr/ itself, served with this
+# build's asset addresses, /vr/b/<build>/…, /v1/vr/info and /v1/vr/log (#166).
+from .routers import vr as vr_routes  # noqa: E402
+app.include_router(vr_routes.router)
 if _vr_static_dir.is_dir():
     app.mount("/vr", _RevalidatedStaticFiles(directory=str(_vr_static_dir), html=True),
               name="vr")
@@ -198,6 +237,7 @@ _HISTORY_SKIP_PREFIXES = (
     "/v1/render/",         # WebRTC signalling and per-frame interaction
     "/v1/samp/",           # interoperability messaging
     "/v1/diagnostics",
+    "/v1/vr/",             # the VR page's version polls and log lines (#166)
     "/v1/assistant/config",
     "/v1/assistant/stream",  # a chat stream, not a job (and /query is recorded)
 )
@@ -404,6 +444,9 @@ app.include_router(simulations.router, dependencies=[_auth])
 app.include_router(particle_render.router, dependencies=[_auth])
 app.include_router(volume_render.router, dependencies=[_auth])
 app.include_router(vr_layers.router, dependencies=[_auth])
+# Selections shared between the headset and the desktop (issue #188).
+app.include_router(share.router, dependencies=[_auth])
+app.include_router(vr_backend_check.router, dependencies=[_auth])
 # SAMP: /v1/samp/files/{token} is public (no auth) for VO tool access;
 # all other /v1/samp/* routes use per-route auth declared in the router itself.
 app.include_router(samp.router)

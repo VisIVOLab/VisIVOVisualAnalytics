@@ -105,10 +105,17 @@ estimated from a strided sample).
 Optically thin HI column density and integrated HI mass from the moment-0 map.
 
 ```json
-{ "channel_start": 0, "channel_end": 0, "distance_mpc": 12.3,
+{ "channel_start": null, "channel_end": null, "distance_mpc": 12.3,
   "mask_enabled": true, "threshold_value": 0.0, "threshold_auto": true,
   "rest_freq_hz": null }
 ```
+
+`channel_start` and `channel_end` are inclusive channel indices. Each defaults
+to `null`, meaning that end of the spectral axis, so omitting both integrates
+the whole cube; `channel_start == channel_end` integrates that one channel.
+Indices beyond the cube are clamped; `channel_end < channel_start` is 422.
+(Before this change `channel_end <= channel_start`, including an explicit
+`0, 0`, meant the whole cube.)
 
 The cube must be in a per-beam unit with a known beam (`BMAJ`/`BMIN`), with a
 velocity spectral axis or, for a frequency axis, a `rest_freq_hz`; otherwise

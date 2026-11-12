@@ -239,3 +239,49 @@ def test_the_cuda_mapping_is_read_from_the_devices_that_support_it(monkeypatch):
     keep = _fake_egl(monkeypatch, [(b"EGL_MESA_device_software", None), (nv, 0)])
     assert proc._egl_cuda_ordinals() == [None, 0]              # a software device is skipped
     del keep
+
+
+async def test_a_bounded_close_kills_a_child_that_will_not_stop():
+    """The shutdown's limit is real (#176): a child busy for ever and deaf to
+    SIGTERM is killed within the budget, even with the close cancelled."""
+    import asyncio
+    s = RenderSessionProcess("feedc0de0a", "/data/cube.fits", factory=_FAKE)
+    await s.initialize()
+    await s.apply_command({"type": "ignore_sigterm"})
+    await s.apply_command({"type": "hang"})
+    started = time.monotonic()
+    try:
+        await asyncio.wait_for(s.close(budget_s=1.0), timeout=0.3)
+    except asyncio.TimeoutError:
+        pass
+    # Cancelled at 0.3 s, the close still waits for its release, which its own
+    # budget bounds.
+    elapsed = time.monotonic() - started
+    assert elapsed < 1.6, elapsed
+    assert not s._process.is_alive()
+    assert s._process.exitcode == -9                            # killed, not terminated
+
+
+async def test_the_manager_stops_every_child_within_its_budget():
+    from app.render_manager import RenderManager
+    manager = RenderManager()
+    sessions = []
+    for i in range(3):
+        s = RenderSessionProcess(f"feedc0de1{i}", "/data/cube.fits", factory=_FAKE)
+        await s.initialize()
+        await s.apply_command({"type": "ignore_sigterm"})
+        await s.apply_command({"type": "hang"})
+        manager._sessions[s.session_id] = s
+        sessions.append(s)
+    # The loop's default executor busy (to_thread, the pool shutdown): the
+    # releases must not wait behind it.
+    import asyncio
+    import concurrent.futures
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=1))
+    loop.run_in_executor(None, time.sleep, 2.5)
+    started = time.monotonic()
+    await manager.stop(budget_s=1.0)
+    elapsed = time.monotonic() - started
+    assert elapsed < 1.6, elapsed                               # at the same time, not 3 s
+    assert not any(s._process.is_alive() for s in sessions)

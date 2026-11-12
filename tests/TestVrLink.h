@@ -18,6 +18,10 @@ private slots:
     void valuesAreFullyEncoded();
     void portComesFromTheBackendUrl_data();
     void portComesFromTheBackendUrl();
+    void aPathPrefixIsKeptInThePageAndInfoUrls_data();
+    void aPathPrefixIsKeptInThePageAndInfoUrls();
+    void aTunnelledRemoteBackendIsLabelledRemote();
+    void backendCheckReadsTheAnswer();
     void aBackendNotOnLoopbackHasNoLink_data();
     void aBackendNotOnLoopbackHasNoLink();
     void noDatasetNoLink();
@@ -36,4 +40,10 @@ private slots:
     void packageListedNeedsTheExactName();
     void viewStartedReadsAmOutput();
     void findsAdbOnPathThenInSdk();
+
+    // Next-step guidance (epic #166)
+    void installCommandPerPlatform();
+    void readsQuestOnUsbFromSystemProfiler();
+    void guidanceNamesTheNextStep();
+    void prefersTheLastHeadset();
 };

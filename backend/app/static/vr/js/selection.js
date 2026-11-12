@@ -12,7 +12,7 @@
 // partial), texel i's centre at (i + 0.5) / N_reduced, filtered trilinearly
 // with CLAMP_TO_EDGE, as WebGL samples the 3-D texture.
 
-import { codeToNorm, halfToFloat, boxToTex, texToWorld } from './volume.js';
+import { codeToNorm, halfToFloat, boxToTex, texToWorld, axisTexToWorld } from './volume.js';
 
 /** Ray (origin o, direction d) against the box [lo, hi]: the entry and exit
  *  parameters with t >= 0, or null when it misses. */
@@ -279,7 +279,9 @@ export function boxFromRayCorners(a, b, fullShape, zClip) {
 export function worldOfPixel(info, px) {
   const ax = info.axes, f = info.factors, n = info.full_shape;
   const along = (i, world) => texToWorld(world, boxToTex((px[i] + 0.5) / n[i], n[i], f[i]));
-  const out = { x: along(0, ax.x.world), y: along(1, ax.y.world), xName: ax.x.name, yName: ax.y.name,
+  // RA (a longitude) across 0° is interpolated on its unwrapped line.
+  const sky = (i, axis) => axisTexToWorld(axis, axis.world, boxToTex((px[i] + 0.5) / n[i], n[i], f[i]));
+  const out = { x: sky(0, ax.x), y: sky(1, ax.y), xName: ax.x.name, yName: ax.y.name,
     xUnit: ax.x.unit, yUnit: ax.y.unit, velocity: null, spectral: along(2, ax.z.world), spectralUnit: ax.z.unit };
   const fv = ax.z.full_velocity_kms;
   if (Array.isArray(fv) && fv.length === n[2]) out.velocity = fv[px[2]];

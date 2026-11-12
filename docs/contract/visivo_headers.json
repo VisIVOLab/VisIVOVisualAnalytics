@@ -57,6 +57,8 @@
     "X-Visivo-Seed",
     "X-Visivo-Seeds",
     "X-Visivo-Selected-Count",
+    "X-Visivo-Selection-Kind",
+    "X-Visivo-Selection-Seq",
     "X-Visivo-Session",
     "X-Visivo-Spacing",
     "X-Visivo-Spectral-Axis-Type",

@@ -38,6 +38,8 @@
 #include <QRegularExpression>
 #include <QUrlQuery>
 
+#include <algorithm>
+#include <cmath>
 #include <limits>
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -1939,6 +1941,44 @@ BackendVelocityOpenResult BackendClient::openVelocityField(const QString &path, 
     return result;
 }
 
+namespace {
+
+// "a,b,c" → three finite doubles; false (and `out` untouched) otherwise.
+bool parseVelocityTriple(const QByteArray &value, double out[3])
+{
+    const QStringList p = QString::fromUtf8(value).split(QLatin1Char(','));
+    if (p.size() != 3)
+        return false;
+    double v[3];
+    for (int i = 0; i < 3; ++i) {
+        bool ok = false;
+        v[i] = p[i].trimmed().toDouble(&ok);
+        if (!ok || !std::isfinite(v[i]))
+            return false;
+    }
+    std::copy(v, v + 3, out);
+    return true;
+}
+
+// X-Visivo-Downsample-Factors, "fx,fy,fz": three integers >= 1, else false.
+bool parseVelocityFactors(const QByteArray &value, int out[3])
+{
+    const QStringList p = QString::fromUtf8(value).split(QLatin1Char(','));
+    if (p.size() != 3)
+        return false;
+    int v[3];
+    for (int i = 0; i < 3; ++i) {
+        bool ok = false;
+        v[i] = p[i].trimmed().toInt(&ok);
+        if (!ok || v[i] < 1)
+            return false;
+    }
+    std::copy(v, v + 3, out);
+    return true;
+}
+
+} // namespace
+
 BackendVelocityGridResult BackendClient::fetchVelocityGrid(const QString &datasetId,
                                                            int maxDim) const
 {
@@ -1984,6 +2024,14 @@ BackendVelocityGridResult BackendClient::fetchVelocityGrid(const QString &datase
     {
         const QStringList fs = QString::fromUtf8(hget(VisivoHeaders::FULL_SHAPE)).split(QLatin1Char(','));
         if (fs.size() == 3) { r.fullNz = fs[0].toInt(); r.fullNy = fs[1].toInt(); r.fullNx = fs[2].toInt(); }
+    }
+    {
+        // x,y,z order, unlike Full-Shape.
+        int f[3];
+        if (parseVelocityFactors(hget(VisivoHeaders::DOWNSAMPLE_FACTORS), f)) {
+            r.factorX = f[0]; r.factorY = f[1]; r.factorZ = f[2];
+            r.hasAxisFactors = true;
+        }
     }
     const qint64 expected =
             qint64(r.nx) * qint64(r.ny) * qint64(r.nz) * 3 * qint64(sizeof(float));
@@ -2554,13 +2602,18 @@ BackendVelocityGridResult BackendClient::fetchVelocitySubgrid(const QString &dat
 }
 
 BackendVelocityBasinsResult BackendClient::fetchVelocityBasins(const QString &datasetId,
-                                                               int basinMaxDim, int direction) const
+                                                               int basinMaxDim, int direction,
+                                                               double boxMpc) const
 {
     BackendVelocityBasinsResult r;
-    const QJsonDocument body(QJsonObject{
+    QJsonObject bodyObj{
             { QStringLiteral("dataset_id"), datasetId },
             { QStringLiteral("basin_max_dim"), basinMaxDim },
-            { QStringLiteral("direction"), direction } });
+            { QStringLiteral("direction"), direction },
+            // Always, 0 included: an omitted box means the dataset's own box to
+            // the backend, which may not be the one the viewer draws in.
+            { QStringLiteral("box_mpc"), std::max(0.0, boxMpc) } };
+    const QJsonDocument body(bodyObj);
     QNetworkRequest req = buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/velocity/basins_bin")));
     req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     QNetworkAccessManager *nam = getThreadLocalNam();
@@ -2580,6 +2633,17 @@ BackendVelocityBasinsResult BackendClient::fetchVelocityBasins(const QString &da
     r.ny = hget(VisivoHeaders::HEIGHT).toInt();
     r.nz = hget(VisivoHeaders::DEPTH).toInt();
     r.nBasins = hget(VisivoHeaders::N_BASINS).toInt();
+    // All three or none: half a geometry would place the labels inconsistently.
+    double spacing[3], origin[3];
+    int factors[3];
+    if (parseVelocityTriple(hget(VisivoHeaders::SPACING), spacing)
+        && parseVelocityTriple(hget(VisivoHeaders::ORIGIN), origin)
+        && parseVelocityFactors(hget(VisivoHeaders::DOWNSAMPLE_FACTORS), factors)) {
+        std::copy(spacing, spacing + 3, r.spacing);
+        std::copy(origin, origin + 3, r.origin);
+        std::copy(factors, factors + 3, r.factors);
+        r.hasGeometry = true;
+    }
     const qint64 expected = qint64(r.nx) * qint64(r.ny) * qint64(r.nz) * qint64(sizeof(qint32));
     if (r.nx <= 0 || r.ny <= 0 || r.nz <= 0 || expected != data.size()) {
         r.error = QStringLiteral("bad basins payload: got %1 bytes, expected %2")
@@ -2592,12 +2656,15 @@ BackendVelocityBasinsResult BackendClient::fetchVelocityBasins(const QString &da
 }
 
 BackendVelocityDensityResult BackendClient::fetchVelocityDensity(const QString &datasetId,
-                                                                 int maxDim) const
+                                                                 int maxDim,
+                                                                 double boxMpc) const
 {
     BackendVelocityDensityResult r;
+    // box_mpc always, 0 included (see fetchVelocityBasins).
     const QJsonDocument body(QJsonObject{
             { QStringLiteral("dataset_id"), datasetId },
-            { QStringLiteral("max_dim"), maxDim } });
+            { QStringLiteral("max_dim"), maxDim },
+            { QStringLiteral("box_mpc"), std::max(0.0, boxMpc) } });
     QNetworkRequest req = buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/velocity/density_bin")));
     req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     QNetworkAccessManager *nam = getThreadLocalNam();

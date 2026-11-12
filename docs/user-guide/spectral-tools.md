@@ -161,7 +161,9 @@ fit summary:
   the uncertainties are uncorrected. Either way, do not quote them as if the
   channels were independent.
 - Only finite channels are sent: region spectra contain NaN channels where the
-  region falls outside valid data, and at least 4 finite channels are required.
+  region falls outside valid data, and at least 6 finite channels are required:
+  one more than the five fitted parameters (peak, centre, width and the two
+  baseline terms), so that the uncertainties can be estimated.
 - **Clear Fit** removes the curve and its summary and puts the spectrum's own
   statistics back. A fit still in flight is invalidated too, so a clear is not
   undone a moment later by a late reply.

@@ -147,6 +147,13 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin, StereoMixin):
         # False once the volume mapper could not render to an image (stereo
         # frames then come from the window, without a volume depth).
         self._xr_render_to_image = True
+        # Depth readback (issue #187): why this session's stereo frames carry
+        # no depth any more (None: they do when asked), and how many frames in
+        # a row could not read depth back, both reset when the blend or
+        # render mode they were found in changes.
+        self._xr_depth_failure = None
+        self._xr_depth_strikes = 0
+        self._xr_depth_mode = None
         # Phase 4 Path 1 — background FITS reader. ``None`` on the
         # legacy synchronous path (small cubes < 256 MB); a CubeReader
         # instance for large cubes that fill in progressively.

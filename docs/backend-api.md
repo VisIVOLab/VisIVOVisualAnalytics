@@ -100,7 +100,7 @@ rendering, remote-service allowlists, limits) is documented in the
 
 | Area | Routes | Page |
 |---|---|---|
-| Meta, sessions, files, diagnostics | `/v1/health`, `/v1/sessions*`, `/v1/files/*`, `/v1/diagnostics/*` | [Meta, sessions, files and diagnostics](backend-api/meta-files.md) |
+| Meta, sessions, files, diagnostics, VR page | `/v1/health`, `/v1/sessions*`, `/v1/files/*`, `/v1/diagnostics/*`, `/v1/vr/*`, `/vr/` | [Meta, sessions, files and diagnostics](backend-api/meta-files.md) |
 | <span id="catalogue"></span>Datasets, catalogues, VBT | `/v1/datasets/*`, `/v1/catalogue/*`, `/v1/vbt/*` | [Datasets, catalogues and VBT](backend-api/datasets.md) |
 | <span id="cube"></span>Cube | `/v1/cube/*`, `/v1/moment/result/binary`, `/v1/pv/result/binary` | [Cube](backend-api/cube.md) |
 | <span id="products"></span>Products | `/v1/products/*` | [Products](backend-api/products.md) |
@@ -116,6 +116,7 @@ rendering, remote-service allowlists, limits) is documented in the
 | SED and simulations | `/v1/sed/*`, `/v1/simulations/*` | [SED fitting and simulations](backend-api/sed-simulations.md) |
 | Exports | `/v1/exports/*` | [Exports](backend-api/exports.md) |
 | <span id="samp"></span>SAMP | `/v1/samp/*` | [SAMP](backend-api/samp.md) |
+| Shared selections (VR headset and desktop) | `/v1/share/*` | [Shared selections](backend-api/share.md) |
 | Server-side rendering | `/v1/render/*` | [Server-side rendering](backend-api/render.md) |
 | Ray-traced particles | `/v1/particle_render/*`, `/v1/tasks/particle_render` | [Ray-traced particle rendering](backend-api/particle-render.md) |
 | Ray-traced volumes | `/v1/volume_render/*`, `/v1/tasks/volume_render` | [Ray-traced volume rendering](backend-api/volume-render.md) |
@@ -144,6 +145,7 @@ backend-api/sky-services
 backend-api/sed-simulations
 backend-api/exports
 backend-api/samp
+backend-api/share
 backend-api/render
 backend-api/particle-render
 backend-api/volume-render

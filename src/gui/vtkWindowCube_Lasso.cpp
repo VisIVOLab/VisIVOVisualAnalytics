@@ -607,6 +607,9 @@ void vtkWindowCube::clearPresentedLassoSelection(bool render)
     this->m_lassoMaskGrow = {};
     this->m_lassoMaskNoiseWhere.clear();
     this->m_lassoMaskTrimBox = 0;
+    this->m_lassoMaskShared = {};
+    this->noteLocalShareSelection();   // issue #188: what the hub holds is no longer shown
+    this->refreshShowInHeadset();
     this->refreshKinematicFitAvailability();
     // Leave 2-D refinement properly, not just by greying its button: the mode
     // installs interactor observers, and disabling the toggle would leave them
@@ -845,6 +848,10 @@ void vtkWindowCube::presentLassoSelection(const RemoteKinematicSelectResult &r)
     this->m_lassoMaskGrow = r.grow;
     this->m_lassoMaskNoiseWhere = r.noiseWhere;
     this->m_lassoMaskTrimBox = r.trimBox;   // said by the caller's completion message
+    this->m_lassoMaskShared = r.shared;     // made here, or received from the headset (#188)
+    if (!r.shared.received)
+        this->noteLocalShareSelection();    // a local selection replaced what the hub's link showed
+    this->refreshShowInHeadset();
     this->refreshKinematicFitAvailability();
     this->m_lassoMaskOrigin[0] = r.originX;
     this->m_lassoMaskOrigin[1] = r.originY;
@@ -1098,6 +1105,7 @@ void vtkWindowCube::ensureLassoPanel()
     outer->addWidget(applyRow);
     this->m_lassoIsolateBtn = isolateBtn;
     this->m_lassoRemoveBtn = removeBtn;
+    this->addLassoShareControls(body, outer);   // Show in VR Headset (issue #188)
     // Only meaningful once a selection is on screen; a running grow disables them
     // so Apply can never act on a stale (superseded) isosurface.
     const bool ready = this->m_lassoHasSeed && !this->m_lassoSelectWatcher.isRunning();
@@ -1696,6 +1704,10 @@ void vtkWindowCube::clearKinematicLassoSelection()
     this->m_lassoPendingRegrow = false;
     this->m_lassoLevels = {};   // no selection → no field to scrub
     this->m_lassoMaskHandEdited = false;
+    // Issue #188: whatever the hub holds is no longer shown here (the rule's
+    // noteLocal: only a newer selection from the headset replaces the clear).
+    this->m_lassoMaskShared = {};
+    this->noteLocalShareSelection();
     auto *renderer = ui->vtkCube && ui->vtkCube->renderWindow()
             ? ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer() : nullptr;
     if (renderer) {
@@ -1712,6 +1724,7 @@ void vtkWindowCube::clearKinematicLassoSelection()
     this->m_lassoAddSeeds.clear();
     this->m_lassoSubSeeds.clear();
     this->m_lassoMaskBytes.clear();
+    this->refreshShowInHeadset();   // nothing left to send
     this->refreshKinematicFitAvailability();
     if (this->m_lassoEditActive) this->setLassoEditActive(false);
     if (this->m_lassoEditToggle) {
@@ -1732,7 +1745,11 @@ void vtkWindowCube::clearKinematicLassoSelection()
 
 void vtkWindowCube::applyLassoMask(const QString &mode)
 {
-    if (!this->m_lassoHasSeed) {
+    // A selection received from the VR headset has no seed here (the controls
+    // must not regrow it) and is applied all the same (issue #188).
+    if (visivo::lassoApplyGate(this->m_lassoHasSeed, this->m_lassoMaskBytes.isEmpty(),
+                               this->m_lassoMaskShared)
+        == visivo::LassoApplyGate::NoSeed) {
         this->statusBar()->showMessage(u"Kinematic Lasso: click a source first."_s, 3000);
         return;
     }
@@ -1765,23 +1782,27 @@ void vtkWindowCube::applyLassoMask(const QString &mode)
     // exported as the typed calls that replay it.
     const visivo::LassoGrowRequest grow = this->m_lassoMaskGrow;
     const bool handEdited = this->m_lassoMaskHandEdited;
-    QVariantMap params = visivo::lassoDisplayParams(grow, this->m_lassoMaskNoiseWhere, handEdited,
-                                                    this->m_lassoMaskTrimBox);
+    // Made here: the grow. Received from the VR headset (issue #188): a box as
+    // the box, a lasso as the headset's grow, or as the mask alone when it
+    // came without one (SharedSelection.h, unit-tested).
+    const visivo::LassoApplyRecord record = visivo::lassoApplyRecord(
+            this->m_lassoMaskShared, grow, this->m_lassoMaskNoiseWhere, handEdited,
+            this->m_lassoMaskTrimBox, mode);
+    QVariantMap params = record.params;
     // The selection, whichever side of it the new cube keeps — read now, with the
     // mask: the label may change while the export runs.
     if (this->m_lassoCountLabel)
         params.insert(u"Selected voxels"_s, this->m_lassoCountLabel->text().section(u' ', 0, 0));
     params.insert(u"Mode"_s, mode == u"blank_inside"_s ? u"remove (inside blanked)"_s
                                                        : u"isolate (outside blanked)"_s);
-    const QString recipe =
-            visivo::lassoHistoryItems(grow, handEdited, this->m_lassoMaskTrimBox).join(u"; "_s);
-    const QList<ReplayStep> replay{ visivo::lassoGrowStep(grow),
-                                    visivo::lassoApplyStep(mode, handEdited) };
+    const QString recipe = record.history.join(u"; "_s);
+    const QList<ReplayStep> replay = record.replay;
+    const QString replayCaveat = record.caveat;
 
     auto *watcher = new QFutureWatcher<BackendSaveSubregionResult>(this);
     QPointer<vtkWindowCube> self(this);
     QObject::connect(watcher, &QFutureWatcher<BackendSaveSubregionResult>::finished, this,
-                     [self, watcher, mode, params, handEdited, replay]() {
+                     [self, watcher, mode, params, replay, replayCaveat]() {
                          const auto r = watcher->result();
                          watcher->deleteLater();
                          if (!self) return;
@@ -1809,11 +1830,7 @@ void vtkWindowCube::applyLassoMask(const QString &mode)
                                  // the reach is the same voxels, test_lasso_levels_
                                  // replay_select); the apply makes the cube from it.
                                  replay,
-                                 /*replayCaveat=*/handEdited
-                                         ? u"The mask was edited by hand after the grow: the "
-                                           u"parameters regrow only its geodesic part. The cube "
-                                           u"itself, with its HISTORY, is the exact record."_s
-                                         : QString());
+                                 replayCaveat);
                          QMessageBox::information(self, u"Kinematic Lasso"_s,
                              u"Selection %1 → new masked cube in the Workspace Exports:\n%2 "
                              u"(%3 × %4 × %5).\n\nHow it was made is in its FITS HISTORY and in "

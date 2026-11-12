@@ -388,28 +388,31 @@ class SessionRegistry:
     def _evict_stale(self) -> None:
         while True:
             time.sleep(min(300, self._ttl // 2))
+            self.evict_stale_once()
 
-            # Collect all stale normal sessions and pop them under a single
-            # lock acquisition so the lock is not re-taken per session.
-            stale_sessions: list[Session] = []
-            with self._lock:
-                stale_ids = [
-                    sid
-                    for sid, s in self._sessions.items()
-                    if sid != _ANON_SESSION_ID and s.idle_seconds() > self._ttl
-                    and not s.has_active_tasks()   # don't evict under a running task
-                ]
-                for sid in stale_ids:
-                    stale_sessions.append(self._sessions.pop(sid))
+    def evict_stale_once(self) -> None:
+        """One pass of the eviction thread (also called by tests)."""
+        # Collect all stale normal sessions and pop them under a single
+        # lock acquisition so the lock is not re-taken per session.
+        stale_sessions: list[Session] = []
+        with self._lock:
+            stale_ids = [
+                sid
+                for sid, s in self._sessions.items()
+                if sid != _ANON_SESSION_ID and s.idle_seconds() > self._ttl
+                and not s.has_active_tasks()   # don't evict under a running task
+            ]
+            for sid in stale_ids:
+                stale_sessions.append(self._sessions.pop(sid))
 
-            # Close resources outside the lock.
-            for session in stale_sessions:
-                session.close()
-                logger.info("[sessions] evicted stale session_id=%s", _redact(session.session_id))
+        # Close resources outside the lock.
+        for session in stale_sessions:
+            session.close()
+            logger.info("[sessions] evicted stale session_id=%s", _redact(session.session_id))
 
-            # Anonymous session: flush stale datasets (FD fix — M3).
-            # The session itself stays in the registry.
-            self._flush_anon_datasets()
+        # Anonymous session: flush stale datasets (FD fix — M3).
+        # The session itself stays in the registry.
+        self._flush_anon_datasets()
 
     def _start_eviction_thread(self) -> None:
         t = threading.Thread(target=self._evict_stale, daemon=True, name="visivo-session-eviction")

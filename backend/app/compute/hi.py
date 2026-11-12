@@ -22,7 +22,12 @@ from typing import Any
 import numpy as np
 
 from ..fits_dataset import ScientificFitsDataset
-from ._common import beam_area_pixels, frequency_width_to_kms, is_per_beam_bunit
+from ._common import (
+    beam_area_pixels,
+    frequency_width_to_kms,
+    is_per_beam_bunit,
+    resolve_channel_range,
+)
 
 # N_HI [cm^-2] = _NHI_CONST · I[Jy/beam·km/s] / (θ_maj·θ_min [arcsec²]) for the
 # 21 cm line, optically thin. Collapses N_HI/T_B (1.823e18) × the Jy/beam→K
@@ -34,8 +39,8 @@ _MHI_CONST = 2.356e5
 
 def worker_hi_products(
     path: str,
-    channel_start: int,
-    channel_end: int,
+    channel_start: int | None,
+    channel_end: int | None,
     distance_mpc: float | None = None,
     mask_enabled: bool = False,
     threshold_value: float = 0.0,
@@ -48,7 +53,11 @@ def worker_hi_products(
     every finite pixel in the channel range. With no mask that includes off-
     source noise, residual continuum and any OTHER sources in the field, so the
     integrated ``hi_mass_msun`` is a whole-field number, not a single-galaxy mass
-    — quote it only over a masked/region-restricted map. Enable ``mask_enabled``
+    — quote it only over a masked/region-restricted map.
+
+    ``channel_start``/``channel_end`` are inclusive; ``None`` means that end of
+    the spectral axis (both ``None`` → whole cube) and ``start == end`` is a
+    single channel. Enable ``mask_enabled``
     (with ``threshold_auto`` for a median+3σ MAD cut, or an explicit
     ``threshold_value``) to restrict the integral; the response reports the
     effective mask state, the number of pixels summed, and a warning when off.
@@ -72,16 +81,11 @@ def worker_hi_products(
     if not beam.major or not beam.minor:
         raise ValueError("HI products require a known beam (BMAJ/BMIN).")
 
-    # Resolve the channel range against the cube depth; default/empty → full
-    # spectral depth, and report the EFFECTIVE (clamped) range used.
+    # Resolve the channel range against the cube depth (None → that end of the
+    # spectral axis; start == end is one channel), and report the EFFECTIVE
+    # (clamped) range used.
     nz = int(ds.axis_sizes[ds.cube_numpy_spectral_fits_axis() - 1]) if ds.axis_sizes else 0
-    cs = int(channel_start)
-    ce = int(channel_end)
-    if ce <= cs:
-        cs, ce = 0, max(0, nz - 1)
-    cs = max(0, min(cs, max(0, nz - 1)))
-    ce = max(cs, min(ce, max(0, nz - 1)))
-    channel_start, channel_end = cs, ce
+    channel_start, channel_end = resolve_channel_range(nz, channel_start, channel_end)
     theta_maj_arcsec = float(beam.major) * 3600.0
     theta_min_arcsec = float(beam.minor) * 3600.0
     pix_arcsec = ds.spatial_pixel_scale_arcsec()

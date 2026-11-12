@@ -25,6 +25,18 @@ reduced by ``scale`` keeping the nearest sample of each block (a reprojection
 that errs towards the viewer leaves no holes behind the emission), and
 deflated (zlib). The pure functions here have no VTK; the mixin at the end
 runs on the session's render thread.
+
+Colour-only frames (issue #187). A GL may give the colour back and not the
+depth: a GLES context cannot read a depth buffer with ``glReadPixels``, and a
+driver's render-to-image depth texture may come back empty, cleared or
+unwritten (Mesa, some EGL stacks on clusters). Each depth image is checked
+against its own picture (:func:`volume_depth_problem`,
+:func:`surface_depth_problem`); a frame whose depth fails goes without it,
+and after :data:`DEPTH_STRIKES` such frames in a row the session stops
+reading depth. ``VISIVO_XR_DEPTH=0`` turns depth off on a backend from the
+start. Every frame header says which reprojection its frame allows
+(``"reprojection": "depth"`` or ``"pose"``) and, without depth, why
+(``"depth_unavailable"``); the page then warps the frame by the pose alone.
 """
 from __future__ import annotations
 
@@ -32,6 +44,7 @@ import io
 import json
 import logging
 import math
+import os
 import struct
 import time
 import zlib
@@ -399,6 +412,109 @@ def over_background(rgba: np.ndarray, background) -> np.ndarray:
     return out.view(np.uint8).reshape(rgba.shape)
 
 
+# ── Whether a depth image can be trusted (issue #187) ────────────────────────
+
+#: Structural failures in a row (the GL cannot read depth back at all) before
+#: a session stops reading depth: such a frame goes without depth, and after
+#: this many the depth is not asked for again (until the blend or render mode
+#: changes). A frame whose depth merely looks wrong goes without depth and is
+#: never counted: one odd picture must not cost the session its depth.
+DEPTH_STRIKES = 2
+#: A pixel at least this opaque (of 255) had a sample above zero opacity, so
+#: in composite blending its ray has a first hit: its depth must be nearer
+#: than the far plane.
+_OPAQUE_ALPHA = 16
+#: Share of such pixels allowed without a first hit (rounding at the silhouette).
+_DRAWN_MISS_SHARE = 0.05
+#: How much a window depth may stray outside [0, 1] (float rounding).
+_DEPTH_SLACK = 1e-4
+
+
+class DepthProblem(str):
+    """Why a frame has no depth. ``structural``: the readback itself failed
+    (counted towards :data:`DEPTH_STRIKES`); otherwise only this frame's
+    depth is dropped."""
+
+    structural: bool = False
+
+    def __new__(cls, reason: str, structural: bool = False):
+        obj = super().__new__(cls, reason)
+        obj.structural = structural
+        return obj
+
+
+def depth_off_on_this_backend() -> bool:
+    """``VISIVO_XR_DEPTH=0`` (or off, false, no): stereo frames without depth."""
+    return os.environ.get("VISIVO_XR_DEPTH", "").strip().lower() in ("0", "off", "false", "no")
+
+
+def _depth_range_problem(depth: np.ndarray) -> DepthProblem | None:
+    if depth.size == 0:
+        return DepthProblem("empty depth image", True)
+    if not np.isfinite(depth).all():
+        return DepthProblem("depth image holds NaN or infinite values", True)
+    lo, hi = float(depth.min()), float(depth.max())
+    if lo < -_DEPTH_SLACK or hi > 1.0 + _DEPTH_SLACK:
+        return DepthProblem(f"depth image outside 0..1 ({lo:.3g}..{hi:.3g})", True)
+    return None
+
+
+def volume_depth_problem(depth: np.ndarray, alpha: np.ndarray) -> DepthProblem | None:
+    """Why the volume mapper's first-hit depth image (composite blending only:
+    MIP and MinIP write none) does not belong to its colour image (``alpha``,
+    uint8, same shape), or None when it does.
+
+    Structural (the texture was not written): a wrong size, values that are
+    not depths, or one value over the whole image that contradicts the
+    picture: all 1 (cleared) with opaque pixels, or all one value below 1
+    with transparent pixels. An eye inside the emission (every pixel opaque,
+    every ray hit at once, depth 0 everywhere) passes. Not structural: more
+    than :data:`_DRAWN_MISS_SHARE` of the opaque pixels without a hit; that
+    frame goes without depth and nothing is counted."""
+    depth = np.asarray(depth)
+    alpha = np.asarray(alpha)
+    if depth.shape != alpha.shape:
+        return DepthProblem(f"depth image {depth.shape} for a picture of {alpha.shape}", True)
+    problem = _depth_range_problem(depth)
+    if problem:
+        return problem
+    drawn = alpha >= _OPAQUE_ALPHA
+    lo, hi = float(depth.min()), float(depth.max())
+    if lo == hi:
+        if lo >= 1.0 and drawn.any():
+            return DepthProblem("depth image is 1 everywhere under a drawn picture "
+                                "(not written)", True)
+        if lo < 1.0 and (alpha == 0).any():
+            return DepthProblem(f"depth image is {lo:.3g} everywhere, empty pixels included "
+                                "(not written)", True)
+    n_drawn = int(drawn.sum())
+    if n_drawn:
+        missed = int((depth[drawn] >= 1.0).sum())
+        if missed > _DRAWN_MISS_SHARE * n_drawn:
+            return DepthProblem(f"{100.0 * missed / n_drawn:.0f} % of the drawn pixels "
+                                "have no depth")
+    return None
+
+
+def surface_depth_problem(depth: np.ndarray, status: int | None = 1) -> DepthProblem | None:
+    """Why the window's depth buffer, read back for a surface, cannot be used,
+    or None. ``status``: what ``GetZbufferData`` returned (VTK_OK is 1; a GLES
+    context refuses to read a depth buffer). A buffer that is one value below
+    1 everywhere was not read: a drawn surface is never at one depth across
+    the whole view, and an empty view is all 1. All structural."""
+    if status is not None and status != 1:
+        return DepthProblem(f"the window's depth buffer could not be read (status {status})",
+                            True)
+    depth = np.asarray(depth)
+    problem = _depth_range_problem(depth)
+    if problem:
+        return problem
+    if float(depth.min()) == float(depth.max()) < 1.0:
+        return DepthProblem(f"depth buffer is {float(depth.min()):.3g} everywhere "
+                            "(not read back)", True)
+    return None
+
+
 # ── The frame ────────────────────────────────────────────────────────────────
 
 
@@ -543,8 +659,9 @@ class StereoMixin:
                            code="out_of_core")
         t_start = time.time()
         self._poll_cube_chunks()
+        self._xr_depth_check_mode()
         try:
-            eyes, depth_src, per_eye = self._render_eyes_on_thread(pose)
+            eyes, depth_src, per_eye, from_mapper, depth_problem = self._render_eyes_on_thread(pose)
         except _NoRenderToImage as exc:
             # Kept for the session: the window's own pixels from now on,
             # without a volume's depth.
@@ -552,12 +669,13 @@ class StereoMixin:
                            "frames without volume depth", self.session_id, exc)
             self._xr_render_to_image = False
             self._set_render_to_image(False)
-            eyes, depth_src, per_eye = self._render_eyes_on_thread(pose)
+            eyes, depth_src, per_eye, from_mapper, depth_problem = self._render_eyes_on_thread(pose)
         t_render = time.time()
+        depth_unavailable = self._note_depth(pose, depth_src, depth_problem)
 
         w, h = pose.width, pose.height
         depth_info, depth_payload = None, None
-        if pose.depth_scale is not None and depth_src != "none":
+        if depth_unavailable is None:
             # Reduced first, converted after: the window depth grows with the
             # distance, so the nearest of a block is its smallest value.
             dist = np.concatenate(
@@ -575,7 +693,7 @@ class StereoMixin:
 
         from PIL import Image
         rgba = np.concatenate([c for c, _, _ in eyes], axis=1)
-        if depth_src == "volume-first-hit":
+        if from_mapper:
             rgba = over_background(rgba, pose.background)
         img = Image.frombuffer("RGBX", (2 * w, h), rgba, "raw", "RGBX", 0, -1)
         buf = io.BytesIO()
@@ -590,6 +708,10 @@ class StereoMixin:
                      {"eye": "right", "x": w, "y": 0, "width": w, "height": h}],
             "color": {"format": "jpeg", "width": 2 * w, "height": h},
             "depth": depth_info,
+            # How the page may warp this frame to a later pose (issue #187):
+            # through its depth, or by the pose alone; without depth, why.
+            "reprojection": "depth" if depth_info else "pose",
+            "depth_unavailable": depth_unavailable,
             "timing": {"received": pose.t_received, "render_start": t_start,
                        "render_end": t_render, "depth_end": t_depth, "encode_end": t_encode},
             "eye_ms": per_eye,
@@ -601,11 +723,15 @@ class StereoMixin:
         return XRFrame(header, jpeg, depth_payload)
 
     def _render_eyes_on_thread(self, pose: XRPose):
-        """``([(rgba bottom-up, window depth bottom-up or None, the projection that depth is in) per eye], depth source,
-        per-eye timings)``. The mono camera, the props' placement and the
-        chrome's visibility are put back before returning."""
+        """``(eyes, depth source, per-eye timings, colour from the volume
+        mapper, depth problem)``: per eye ``(rgba bottom-up, window depth
+        bottom-up or None, the projection that depth is in)``; the depth
+        source ``"volume-first-hit"``, ``"surface"`` or ``"none"``; the
+        problem, when depth was wanted and could not be read or failed its
+        check (:func:`volume_depth_problem`), and then no eye has a depth.
+        The mono camera, the props' placement and the chrome's visibility
+        are put back before returning."""
         import vtk
-        from vtk.util.numpy_support import vtk_to_numpy
 
         ren, win = self._renderer, self._render_window
         w, h = pose.width, pose.height
@@ -615,7 +741,14 @@ class StereoMixin:
                       and hasattr(self._volume_mapper, "SetRenderToImage")
                       and self._xr_render_to_image)
         surface = self._iso_actor is not None and bool(self._iso_actor.GetVisibility())
-        want_depth = pose.depth_scale is not None
+        # The ray caster writes a depth at the first sample with some opacity,
+        # in composite blending only: MIP and MinIP fill the colour after the
+        # ray loop, and their depth image is 1 everywhere.
+        blend = int(getattr(getattr(self, "view", None), "blend_mode", 0) or 0)
+        mip = use_volume and blend != 0
+        want_depth = pose.depth_scale is not None and self._xr_depth_failure is None \
+            and not depth_off_on_this_backend() and not mip
+        depth_problem = None
         shape = (self._nx, self._ny, self._nz)
         cameras = [stereo_eye(e.view, e.projection, pose.model, shape, pose.z_stretch)
                    for e in pose.eyes]
@@ -663,22 +796,22 @@ class StereoMixin:
                 t0 = time.perf_counter()
                 win.Render()
                 t1 = time.perf_counter()
+                depth = None
                 if use_volume:
                     rgba = _image_pixels(self._volume_mapper.GetColorImage, (h, w, 4))
-                    depth = (_image_pixels(self._volume_mapper.GetDepthImage, (h, w))
-                             if want_depth else None)
+                    if want_depth and depth_problem is None:
+                        # The colour came back; the depth may not (issue #187).
+                        try:
+                            depth = _image_pixels(self._volume_mapper.GetDepthImage, (h, w))
+                            depth_problem = volume_depth_problem(depth, rgba[..., 3])
+                        except _NoRenderToImage as exc:
+                            depth_problem = DepthProblem(
+                                f"the volume mapper gave no depth image ({exc})", True)
                 else:
-                    grab = vtk.vtkWindowToImageFilter()
-                    grab.SetInput(win)
-                    grab.ReadFrontBufferOff()
-                    grab.SetInputBufferTypeToRGBA()
-                    grab.Update()
-                    rgba = vtk_to_numpy(grab.GetOutput().GetPointData().GetScalars()).reshape(h, w, 4)
-                    depth = None
-                    if want_depth and surface:
-                        z = vtk.vtkFloatArray()
-                        win.GetZbufferData(0, 0, w - 1, h - 1, z)
-                        depth = vtk_to_numpy(z).reshape(h, w)
+                    rgba = self._window_rgba(win, w, h)
+                    if want_depth and surface and depth_problem is None:
+                        status, depth = self._window_depth(win, w, h)
+                        depth_problem = surface_depth_problem(depth, status)
                 t2 = time.perf_counter()
                 out.append((np.array(rgba), None if depth is None else
                             np.array(depth, dtype=np.float32), geometry["depth_projection"]))
@@ -698,4 +831,78 @@ class StereoMixin:
             if axes_drawn is not None:
                 self._axes_renderer.SetDraw(axes_drawn)
         source = "volume-first-hit" if use_volume else ("surface" if surface else "none")
-        return out, source, per_eye
+        if depth_problem is not None:
+            # Both eyes or neither: a frame half with depth would be warped
+            # two ways.
+            out = [(c, None, proj) for c, _, proj in out]
+        elif (mip and pose.depth_scale is not None and self._xr_depth_failure is None
+              and not depth_off_on_this_backend()):
+            depth_problem = DepthProblem(
+                "no first-hit depth in " + ("MIP" if blend == 1 else "MinIP"))
+        elif (want_depth and not use_volume and not surface and self._volume is not None
+              and bool(self._volume.GetVisibility())):
+            depth_problem = DepthProblem("the volume mapper cannot render to an image on this "
+                                         "GL (colour read from the window, no volume depth)")
+        return out, source, per_eye, use_volume, depth_problem
+
+    @staticmethod
+    def _window_rgba(win, w: int, h: int) -> np.ndarray:
+        """The window's back buffer, RGBA rows bottom-up."""
+        import vtk
+        from vtk.util.numpy_support import vtk_to_numpy
+        grab = vtk.vtkWindowToImageFilter()
+        grab.SetInput(win)
+        grab.ReadFrontBufferOff()
+        grab.SetInputBufferTypeToRGBA()
+        grab.Update()
+        return vtk_to_numpy(grab.GetOutput().GetPointData().GetScalars()).reshape(h, w, 4)
+
+    @staticmethod
+    def _window_depth(win, w: int, h: int) -> tuple[int | None, np.ndarray]:
+        """``(GetZbufferData's status, the window's depth buffer, rows bottom-up)``.
+        A GLES context refuses the read (status not VTK_OK); what the array
+        then holds is not a depth, and the check says so."""
+        import vtk
+        from vtk.util.numpy_support import vtk_to_numpy
+        z = vtk.vtkFloatArray()
+        status = win.GetZbufferData(0, 0, w - 1, h - 1, z)
+        values = vtk_to_numpy(z)
+        if values.size != w * h:
+            return status, np.full((h, w), np.nan, np.float32)
+        return (None if status is None else int(status)), values.reshape(h, w)
+
+    def _xr_depth_check_mode(self) -> None:
+        """A depth readback given up in one blend or render mode is tried again
+        in another (a GL may read a surface's depth and not a volume's)."""
+        blend = int(getattr(getattr(self, "view", None), "blend_mode", 0) or 0)
+        surface = self._iso_actor is not None and bool(self._iso_actor.GetVisibility())
+        key = (blend, surface)
+        if getattr(self, "_xr_depth_mode", None) != key:
+            self._xr_depth_mode = key
+            self._xr_depth_failure = None
+            self._xr_depth_strikes = 0
+
+    def _note_depth(self, pose: XRPose, depth_src: str, problem: str | None) -> str | None:
+        """Why this frame goes without depth (None: it has one), and the
+        session's record of depth failures: after :data:`DEPTH_STRIKES` bad
+        frames in a row it reads no depth any more."""
+        if pose.depth_scale is None:
+            return "not requested"
+        if self._xr_depth_failure is not None:
+            return self._xr_depth_failure
+        if depth_off_on_this_backend():
+            return "turned off on this backend (VISIVO_XR_DEPTH=0)"
+        if problem is not None:
+            if not getattr(problem, "structural", False):
+                return str(problem)       # this frame only; nothing counted
+            self._xr_depth_strikes += 1
+            if self._xr_depth_strikes >= DEPTH_STRIKES:
+                self._xr_depth_failure = str(problem)
+                logger.warning("[render-session %s] stereo: depth readback unusable (%s); "
+                               "frames without depth from now on (reprojection by pose)",
+                               self.session_id, problem)
+            return str(problem)
+        self._xr_depth_strikes = 0
+        if depth_src == "none":
+            return "nothing on show gives a depth (neither a volume nor a surface)"
+        return None

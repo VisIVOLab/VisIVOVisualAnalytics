@@ -15,6 +15,7 @@
 #include <QProgressDialog>
 #include <QString>
 
+#include <array>
 #include <vector>
 
 /// Result of the async galaxy-overlay fetch (built off the GUI thread): the
@@ -115,10 +116,24 @@ private:
     void showFieldBulkFlow();                     // the field's own bulk flow vs radius (no catalogue)
 
     // Per-axis full-resolution cell size + centred origin (point-centred model:
-    // box>0 → box/(n-1) and -box/2; else unit spacing, -(n-1)/2). The display
-    // (LOD) cell is fullCell * downsampleFactor.
+    // box>0 → box/(n-1) and -box/2; else unit spacing, -(n-1)/2).
     void fullCells(double &sx, double &sy, double &sz) const;
     void originVec(double &ox, double &oy, double &oz) const;
+    std::array<int, 3> fullShape() const;        // full-resolution (nx, ny, nz)
+    std::array<int, 3> displayFactors() const;   // the LOD grid's factor per axis
+    // Factors of a product reduced to `maxDim` that came back with `n` samples.
+    std::array<int, 3> productFactors(const std::array<int, 3> &n, int maxDim) const;
+    // Spacing and origin of a reduced product in the viewer's frame
+    // (VelocityLodGeometry.h). The reported origin and spacing are used only
+    // when `trustReport` (a backend that places a block at its centre) and both
+    // are given; otherwise the placement follows from the factors.
+    void reducedGeometry(const std::array<int, 3> &factors, const double *reportedOrigin,
+                         const double *reportedSpacing, bool trustReport, double spacing[3],
+                         double origin[3]) const;
+
+    // Largest axis the basin and backend-density grids are reduced to.
+    static constexpr int kBasinMaxDim = 64;
+    static constexpr int kDensityMaxDim = 256;
 
     QString m_path;
     BackendVelocityGridResult m_grid;    // the LOD display grid
@@ -152,6 +167,7 @@ private:
     QPointer<QProgressDialog> m_roiSheet;
     QPointer<VrHeadsetDialog> m_vrHeadsetDialog;
     int m_basinGen = 0;
+    double m_basinsBoxMpc = 0.0;   // box the shown (or in-flight) basins were asked for
     int m_roiGen = 0;
 
     vtkSmartPointer<vtkImageData> divergenceGrid;  // cached ∇·v field (scalars); overdense = ∇·v<0
@@ -159,6 +175,8 @@ private:
     vtkSmartPointer<vtkActor> voidActor;           // void (divergent-core) isosurface
     double m_divMin = 0.0;                          // most-negative ∇·v (peak overdensity)
     double m_divMax = 0.0;                          // most-positive ∇·v (peak void/divergence)
+    bool m_divFromBackend = false;                  // divergenceGrid came from density_bin
+    double m_divBoxMpc = 0.0;                       // box that backend ∇·v was asked for
 
     vtkSmartPointer<vtkActor> catalogueActor;    // overlaid galaxy point cloud
     vtkSmartPointer<vtkPolyData> cataloguePoly;  // the galaxy points + attribute arrays

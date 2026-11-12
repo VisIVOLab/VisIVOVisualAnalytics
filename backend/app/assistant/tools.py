@@ -87,6 +87,7 @@ def _moment_map_summary(path: str | None, params: dict[str, Any]) -> dict[str, A
     if not path:
         raise ValueError("moment_map_summary requires a loaded dataset.")
     from ..compute import worker_moment  # noqa: PLC0415
+    from ..compute._common import resolve_channel_range  # noqa: PLC0415
     order = int(params.get("order", 0))
     if order not in (0, 1, 2):
         raise ValueError("moment_map_summary supports order 0, 1 or 2.")
@@ -95,12 +96,9 @@ def _moment_map_summary(path: str | None, params: dict[str, Any]) -> dict[str, A
     # the EFFECTIVE range actually used (worker_moment silently clamps).
     ds = ScientificFitsDataset(path)
     nz = int(ds.axis_sizes[ds.cube_numpy_spectral_fits_axis() - 1]) if ds.axis_sizes else 0
-    cs = int(params.get("channel_start", 0))
-    ce = int(params.get("channel_end", 0))
-    if ce <= cs:                      # unset / empty → whole spectral axis
-        cs, ce = 0, max(0, nz - 1)
-    cs = max(0, min(cs, max(0, nz - 1)))
-    ce = max(cs, min(ce, max(0, nz - 1)))
+    # Missing end → that end of the axis; (k, k) is the single channel k.
+    cs, ce = resolve_channel_range(
+        nz, _opt_int_param(params, "channel_start"), _opt_int_param(params, "channel_end"))
     mask = bool(params.get("mask_enabled", False))
     thr = float(params.get("threshold_value", 0.0))
     variance = bool(params.get("moment2_variance", False))
@@ -135,8 +133,8 @@ def _hi_products(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
     from ..compute import worker_hi_products  # noqa: PLC0415
     return worker_hi_products(
         path,
-        int(params.get("channel_start", 0)),
-        int(params.get("channel_end", 0)),
+        _opt_int_param(params, "channel_start"),
+        _opt_int_param(params, "channel_end"),
         params.get("distance_mpc"),
         bool(params.get("mask_enabled", False)),
         float(params.get("threshold_value", 0.0)),
@@ -355,6 +353,17 @@ def _int_param(params: dict[str, Any], key: str, default: int | None = None) -> 
     if not isinstance(v, int):
         raise ValueError(f"{key} must be an integer.")
     return v
+
+
+def _opt_int_param(params: dict[str, Any], key: str) -> int | None:
+    """Like :func:`_int_param`, but a missing/null argument stays ``None``.
+
+    For channel ranges, where ``None`` (not 0) is what means "that end of the
+    spectral axis", so an explicit 0 is still channel 0.
+    """
+    if key not in params or params[key] is None:
+        return None
+    return _int_param(params, key)
 
 
 def _finite_rows(rows: list[Any], cap: int) -> list[Any]:
@@ -824,7 +833,8 @@ TOOLS: dict[str, AssistantTool] = {
                 "Compute a moment map over a channel range and return SUMMARY "
                 "facts (unit, value range, mean/median, finite-pixel count), not "
                 "the pixel array. order 0=integrated intensity, 1=velocity field, "
-                "2=velocity dispersion σ (set moment2_variance=true for variance σ²)."
+                "2=velocity dispersion σ (set moment2_variance=true for variance σ²). "
+                "The channel range is inclusive; omit both ends for the whole cube."
             ),
             parameters={
                 "type": "object",
@@ -847,7 +857,8 @@ TOOLS: dict[str, AssistantTool] = {
                 "Optically-thin HI column density (N_HI, cm^-2) map summary and, "
                 "when distance_mpc is given, the integrated HI mass (M_sun) from "
                 "moment-0. Requires a Jy/beam cube with a known beam and a "
-                "velocity axis (or rest_freq_hz for a frequency axis)."
+                "velocity axis (or rest_freq_hz for a frequency axis). The "
+                "channel range is inclusive; omit both ends for the whole cube."
             ),
             parameters={
                 "type": "object",

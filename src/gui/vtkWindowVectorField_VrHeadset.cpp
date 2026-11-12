@@ -22,6 +22,7 @@ void vtkWindowVectorField::openInVrHeadset()
     const QString token = BackendClient::effectiveToken(url, BackendClient(url, this->m_backendToken).token());
     VrLink::Inputs inputs;
     inputs.baseUrl = url;
+    inputs.remote = !BackendClient::isLocalBackendUrl(url);
     inputs.token = token;
     inputs.sessionId = !this->m_sessionId.isEmpty() ? this->m_sessionId
                                                     : BackendClient::sessionIdForUrl(url, token);

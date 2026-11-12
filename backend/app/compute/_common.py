@@ -71,6 +71,30 @@ def _finite_range(array: np.ndarray) -> tuple[float, float]:
     return (float(np.min(array, where=finite, initial=np.inf)),
             float(np.max(array, where=finite, initial=-np.inf)))
 
+
+def resolve_channel_range(
+    nz: int, channel_start: int | None, channel_end: int | None,
+) -> tuple[int, int]:
+    """Inclusive ``(start, end)`` channel range clamped to a cube of depth ``nz``.
+
+    ``None`` is the only "not given" marker: a missing start is channel 0 and a
+    missing end is the last channel, so omitting both means the whole spectral
+    axis. An explicit ``start == end`` is ONE channel. An earlier convention
+    read ``end <= start`` as "unset", which silently turned a single-channel
+    request such as (3, 3) into the whole cube (8x the flux on an 8-channel
+    cube). A reversed explicit range is an error, as in :func:`worker_moment`.
+    """
+    last = max(0, int(nz) - 1)
+    cs = 0 if channel_start is None else int(channel_start)
+    ce = last if channel_end is None else int(channel_end)
+    if ce < cs:
+        raise ValueError(
+            f"Invalid channel range: channel_end ({ce}) < channel_start ({cs}).")
+    cs = max(0, min(cs, last))
+    ce = max(cs, min(ce, last))
+    return cs, ce
+
+
 def beam_area_pixels(
     bmaj_deg: float | None, bmin_deg: float | None, pix_arcsec: float | None,
     pixel_area_arcsec2: float | None = None,
