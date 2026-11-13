@@ -121,12 +121,14 @@ export function textureLimitBytes({ headset = false, deviceMemoryGB } = {}) {
 
 /**
  * Does a cube of `dims` voxels and `encoding` fit, before it is read or
- * allocated? {ok, textureBytes, peakBytes, limitBytes, reason}.
- * The texture is 1 (8-bit) or 2 (16-bit float) bytes a voxel; while it loads
- * the page holds the download, the texture, and the selection mask on the
- * same grid (one byte a voxel), so the peak is about 2× the texture plus the
- * mask; the empty-space grid (1/512 of the voxels, 4 bytes each) is counted
- * too. The GPU's 3-D texture side limit is checked first.
+ * allocated? {ok, textureBytes, gpuBytes, peakBytes, limitBytes, reason}.
+ * On the GPU (gpuBytes, what is checked against the device's share) the cube
+ * keeps its texture, 1 (8-bit) or 2 (16-bit float) bytes a voxel, the
+ * selection mask's storage over the same grid (one byte a voxel, allocated
+ * with the cube so that no 3-D texture is allocated in VR, issue #229) and
+ * the empty-space grid (1/512 of the voxels, 4 bytes each). While it loads
+ * the page also holds the download (peakBytes). The GPU's 3-D texture side
+ * limit is checked first.
  */
 export function cubeBudget({ dims, encoding }, { maxTex3D = 2048, headset = false, deviceMemoryGB } = {}) {
   const [w, h, d] = dims.map(Number);
@@ -134,17 +136,19 @@ export function cubeBudget({ dims, encoding }, { maxTex3D = 2048, headset = fals
   const bpv = encoding === 'float16' ? 2 : 1;
   const textureBytes = nvox * bpv;
   const macro = Math.ceil(w / 8) * Math.ceil(h / 8) * Math.ceil(d / 8) * 4;
-  const peakBytes = 2 * textureBytes + nvox + macro;
+  const gpuBytes = textureBytes + nvox + macro;
+  const peakBytes = textureBytes + gpuBytes;
   const limitBytes = textureLimitBytes({ headset, deviceMemoryGB });
   const mb = (b) => `${(b / MiB).toFixed(0)} MiB`;
   if (Math.max(w, h, d) > maxTex3D) {
-    return { ok: false, textureBytes, peakBytes, limitBytes,
+    return { ok: false, textureBytes, gpuBytes, peakBytes, limitBytes,
       reason: `${w}×${h}×${d} exceeds this GPU's 3-D texture limit (${maxTex3D} per side).` };
   }
-  if (textureBytes > limitBytes) {
-    return { ok: false, textureBytes, peakBytes, limitBytes,
-      reason: `${w}×${h}×${d} ${bpv === 2 ? '16-bit' : '8-bit'} needs ${mb(textureBytes)} of texture (${mb(peakBytes)} while loading); `
+  if (gpuBytes > limitBytes) {
+    return { ok: false, textureBytes, gpuBytes, peakBytes, limitBytes,
+      reason: `${w}×${h}×${d} ${bpv === 2 ? '16-bit' : '8-bit'} needs ${mb(gpuBytes)} of GPU memory (${mb(textureBytes)} of texture, `
+        + `${mb(nvox)} for the selection mask; ${mb(peakBytes)} while loading); `
         + `this ${headset ? 'headset' : 'browser'} allows ${mb(limitBytes)} for one cube.` };
   }
-  return { ok: true, textureBytes, peakBytes, limitBytes, reason: '' };
+  return { ok: true, textureBytes, gpuBytes, peakBytes, limitBytes, reason: '' };
 }

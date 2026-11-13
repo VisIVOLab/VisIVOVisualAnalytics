@@ -8,6 +8,27 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: no 3-D texture is allocated during a VR session, which fixes the
+  Quest 3 context loss at the first lasso (#229, part of #166 and #185).** On
+  the headset (Quest Browser 154, Adreno 740) the GPU process rejects a
+  `texImage3D` issued while a WebXR session runs ("Error: 5 for Command
+  kTexImage3D", then a GPU process restart); the first lasso was the first
+  time the page allocated the selection mask's texture, in VR. Every 3-D
+  texture is now immutable storage (`texStorage3D`) filled with
+  `texSubImage3D` on the 2-D page: the selection mask is allocated and zeroed
+  with the cube over its whole reduced grid (one byte a voxel, now counted in
+  the cube's memory budget) and each selection is a sub-image upload into it;
+  a cube that arrives in VR (*Show that cube* after Isolate or Remove, a load
+  at another binning, a load from the desktop) is kept and put on show when
+  the session ends, with the notice *The new cube is shown when you leave
+  VR*; the headset benchmark prepares its cubes on the page first (*Prepare
+  the headset benchmark*, then *Start*) and only switches between them in VR;
+  a context restored before the session ended is rebuilt after it. A guard on
+  the WebGL context refuses any `texImage3D`/`texStorage3D` during a session
+  before it reaches the GPU and logs `tex3d-in-xr`
+  (docs/user-guide/vr/troubleshooting.md, *GPU context loss at the first
+  lasso on a Quest 3*; validation/vr_tex3d.mjs).
+
 - **VR: debug switches for the Quest 3 context loss at the first lasso, and a
   redraw loop removed (#229, part of #166 and #185).** With `?debug`, the
   address switches `nohover`, `nohud`, `noreadout`, `noselpanel`,

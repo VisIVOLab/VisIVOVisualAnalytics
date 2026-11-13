@@ -9,6 +9,7 @@ import { buildMacrocells } from './volume.js';
 import { labelVertices, LABEL_STRIDE } from './labels.js';
 import { MESH_STRIDE } from './models.js';
 import { mulInto } from './gltf.js';
+import { guardTex3D, tex3dInXRError } from './xr-gl-guard.js';
 
 /** The eye's position from a rigid view matrix (−Rᵀt), into `out`. */
 function eyeOf(v, out) {
@@ -294,27 +295,49 @@ const CUBE = new Float32Array([
   0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, // -y
 ]);
 
+/** Voxels of a 3-D storage of `dims`. */
+function voxels(dims) { return dims[0] * dims[1] * dims[2]; }
+
+/** At most this many bytes of zeros a call when a mask storage is cleared. */
+const ZERO_SLAB_BYTES = 4 * 1024 * 1024;
+
 /**
- * The mask texture's storage for a selection of `dims` reduced voxels: the
- * current capacity grown to hold it, each side rounded up to a multiple of
- * 32 and never past the cube's own grid `grid` (a selection cannot be larger
- * than the cube). Pure: tested in backend/tests/vr/alloc.test.mjs.
+ * Clears the bound TEXTURE_3D's level 0 of `dims` R8 voxels with
+ * texSubImage3D of zeros, a slab of whole planes at a time. A texture made
+ * with texStorage3D is otherwise "uninitialised" for the browser, which
+ * then clears it by itself at its first use, which may be in VR (issue #229).
  */
-export function maskCapacityFor(dims, cap, grid) {
-  return [0, 1, 2].map((i) => {
-    const need = Math.max(dims[i], cap ? cap[i] : 0, 1);
-    const round = Math.ceil(need / 32) * 32;
-    const limit = grid && grid[i] ? Math.max(grid[i], dims[i]) : round;
-    return Math.min(round, limit);
-  });
+function zeroR8(gl, dims) {
+  const plane = dims[0] * dims[1];
+  const planes = Math.max(1, Math.min(dims[2], Math.floor(ZERO_SLAB_BYTES / Math.max(plane, 1))));
+  const zeros = new Uint8Array(plane * planes);
+  for (let z = 0; z < dims[2]; z += planes) {
+    const n = Math.min(planes, dims[2] - z);
+    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, z, dims[0], dims[1], n, gl.RED, gl.UNSIGNED_BYTE,
+      n === planes ? zeros : zeros.subarray(0, plane * n));
+  }
+}
+
+function params3D(gl, filter) {
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, filter);
+  for (const k of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, k, gl.CLAMP_TO_EDGE);
 }
 
 export class Renderer {
   constructor(gl) {
     this.gl = gl;
+    // True while a WebXR session runs (main.js): no 3-D texture is allocated
+    // then (issue #229, xr-gl-guard.js). The guard is on the context itself,
+    // so the layers' and any other code's 3-D allocations are refused too.
+    this.xrActive = false;
+    this.onTex3DInXR = null;       // (call name) => void: the page logs it
+    this.tex3dGuard = guardTex3D(gl, () => this.xrActive, (name) => { if (this.onTex3DInXR) this.onTex3DInXR(name); });
     this._panels = new Set();      // createPanel() handles, re-made by restore()
     this._cmap = 'viridis';
     this._volume = null;           // the last setVolume() input, for restore()
+    this.slot = null;              // the volume on show (prepareVolume), its textures
+    this._slots = new Set();       // every volume prepared and not released
     this._maskInput = null;
     this._lineSegs = {};           // target name -> the last segments
     this._labels = null;
@@ -414,12 +437,17 @@ export class Renderer {
     this.setColormap(this._cmap);
     this.volTex = null;
     this.macroTex = null;
-    // The selection overlay: a 1-voxel placeholder until a mask is set, so the
-    // sampler is never unbound.
-    this.maskTex = gl.createTexture();
+    // The selection overlay of a volume without a mask storage of its own
+    // (none on show, the benchmark's): one zero voxel, so the sampler is
+    // never unbound. Allocated here, never in VR (issue #229).
+    this.emptyMaskTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D, this.emptyMaskTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texStorage3D(gl.TEXTURE_3D, 1, gl.R8, 1, 1, 1);
+    params3D(gl, gl.NEAREST);
+    zeroR8(gl, [1, 1, 1]);
+    this.maskTex = this.emptyMaskTex;
     this.mask = null;
-    this.maskCapacity = null;      // the dims of the mask texture's storage (issue #226)
-    this._uploadMask(new Uint8Array(1), [1, 1, 1]);
     this.timer = gl.getExtension('EXT_disjoint_timer_query_webgl2');
     this.queries = [];
     this.activeQuery = null;
@@ -433,10 +461,19 @@ export class Renderer {
    * canvases). Throws when the context cannot make them (still lost).
    */
   restore() {
+    // Every volume prepared before the loss is gone with its textures; the
+    // one on show is prepared again from its voxels (outside VR: a session
+    // cannot outlive a lost context, and the page restores after it ends).
+    for (const s of this._slots) s.lost = true;
+    this._slots.clear();
+    this.slot = null;
     this.textureBytes = 0;
+    this.dims = null;
+    this.macroDims = null;
+    const maskInput = this._maskInput;     // useVolume() clears it
     this._init();
     if (this._volume) this.setVolume(this._volume, this._volume.cell);
-    if (this._maskInput) this.setMask(this._maskInput);
+    if (maskInput && this.slot) this.setMask(maskInput);
     for (const [name, segs] of Object.entries(this._lineSegs)) if (this[name]) this.setLines(segs, this[name]);
     if (this._labels) this.setLabels(this._labels);
     for (const h of this._panels) {
@@ -453,16 +490,20 @@ export class Renderer {
    */
   gpuStats() {
     const panelBytes = [...this._panels].reduce((a, h) => a + (h.size ? h.size[0] * h.size[1] * 4 : 0), 0);
-    const mc = this.maskCapacity;
-    const maskBytes = mc ? mc[0] * mc[1] * mc[2] : 0;
+    const s = this.slot;
+    const maskBytes = s ? s.maskBytes : 0;
     const labelBytes = this.labelTexSize ? this.labelTexSize[0] * this.labelTexSize[1] * 4 : 0;
-    const vol = this.textureBytes || 0;
-    const macro = this.macroDims ? this.macroDims[0] * this.macroDims[1] * this.macroDims[2] * 4 : 0;
+    const vol = s ? s.textureBytes : 0;
+    const macro = s ? s.macroBytes : 0;
+    // Volumes prepared and kept beside the one on show (the benchmark's).
+    let otherBytes = 0;
+    for (const o of this._slots) if (o !== s) otherBytes += o.textureBytes + o.macroBytes + o.maskBytes;
     let modelBytes = 0;
     for (const h of this._models) modelBytes += h.bytes;
     return { panels: this._panels.size, panelBytes, maskBytes, labelBytes, volumeBytes: vol, macroBytes: macro,
+      otherVolumes: this._slots.size - (s && this._slots.has(s) ? 1 : 0), otherVolumeBytes: otherBytes,
       models: this._models.size, modelBytes,
-      totalBytes: panelBytes + maskBytes + labelBytes + vol + macro + modelBytes + 256 * 4 };
+      totalBytes: panelBytes + maskBytes + labelBytes + vol + macro + otherBytes + modelBytes + 256 * 4 + 1 };
   }
 
   setColormap(name) {
@@ -476,88 +517,123 @@ export class Renderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
-  /** Upload the reduced cube; returns the timings and the texture size. */
-  setVolume({ data, dims, encoding }, cell = 8) {
+  /**
+   * A volume's textures, allocated and filled now: the cube (R8 or R16F),
+   * its empty-space grid (R32F) and, unless `mask` is false, the selection
+   * mask's storage over the whole reduced grid (R8, one byte a voxel, zeroed).
+   * Every one is immutable storage (texStorage3D) filled with texSubImage3D,
+   * so nothing is left for the browser to clear later. Never in VR (issue
+   * #229): throws a `tex3d-in-xr` Error before touching the GPU. Returns the
+   * slot, to be shown with useVolume() and given back with releaseVolume().
+   */
+  prepareVolume({ data, dims, encoding }, cell = 8, { mask = true } = {}) {
+    if (this.xrActive) throw tex3dInXRError('prepareVolume');
     const gl = this.gl;
     const [w, h, d] = dims;
     if (Math.max(w, h, d) > this.maxTex3D) {
       throw new Error(`${w} x ${h} x ${d} exceeds this GPU's 3-D texture limit (${this.maxTex3D}): use a larger binning factor.`);
     }
-    this._volume = { data, dims, encoding, cell };
+    const u8 = encoding === 'uint8';
     const t0 = performance.now();
-    if (this.volTex) gl.deleteTexture(this.volTex);
-    this.volTex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_3D, this.volTex);
+    const volTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D, volTex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    if (encoding === 'uint8') {
-      gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, w, h, d, 0, gl.RED, gl.UNSIGNED_BYTE, data);
-    } else {
-      gl.texImage3D(gl.TEXTURE_3D, 0, gl.R16F, w, h, d, 0, gl.RED, gl.HALF_FLOAT, data);
-    }
-    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
-      [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE]]) {
-      gl.texParameteri(gl.TEXTURE_3D, k, v);
-    }
+    gl.texStorage3D(gl.TEXTURE_3D, 1, u8 ? gl.R8 : gl.R16F, w, h, d);
+    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, w, h, d, gl.RED, u8 ? gl.UNSIGNED_BYTE : gl.HALF_FLOAT, data);
+    params3D(gl, gl.LINEAR);
     const t1 = performance.now();
     const macro = buildMacrocells(data, dims, encoding, cell);
     const t2 = performance.now();
-    if (this.macroTex) gl.deleteTexture(this.macroTex);
-    this.macroTex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_3D, this.macroTex);
-    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R32F, macro.dims[0], macro.dims[1], macro.dims[2], 0,
-      gl.RED, gl.FLOAT, macro.data);
-    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    this.dims = dims;
-    // A mask texture grown for a larger cube is given back (the next
-    // selection grows it again, to this cube's grid at most).
-    const mc = this.maskCapacity;
-    if (mc && (mc[0] > w || mc[1] > h || mc[2] > d) && !this.mask) {
-      this.maskCapacity = null;
-      this._uploadMask(new Uint8Array(1), [1, 1, 1]);
+    const macroTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D, macroTex);
+    gl.texStorage3D(gl.TEXTURE_3D, 1, gl.R32F, macro.dims[0], macro.dims[1], macro.dims[2]);
+    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, macro.dims[0], macro.dims[1], macro.dims[2], gl.RED, gl.FLOAT, macro.data);
+    params3D(gl, gl.NEAREST);
+    let maskTex = null;
+    if (mask) {
+      maskTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_3D, maskTex);
+      gl.texStorage3D(gl.TEXTURE_3D, 1, gl.R8, w, h, d);
+      params3D(gl, gl.NEAREST);
+      zeroR8(gl, dims);
     }
-    this.encoding = encoding;
-    this.cell = cell;
-    this.macroDims = macro.dims;
-    this.textureBytes = w * h * d * (encoding === 'uint8' ? 1 : 2);
-    return { uploadMs: t1 - t0, macroMs: t2 - t1, textureBytes: this.textureBytes };
+    const t3 = performance.now();
+    const slot = {
+      volTex, macroTex, maskTex, dims: [w, h, d], encoding, cell, macroDims: macro.dims,
+      textureBytes: voxels(dims) * (u8 ? 1 : 2), macroBytes: voxels(macro.dims) * 4, maskBytes: mask ? voxels(dims) : 0,
+      uploadMs: t1 - t0, macroMs: t2 - t1, maskMs: t3 - t2, lost: false, released: false,
+    };
+    this._slots.add(slot);
+    return slot;
   }
 
   /**
-   * The selection mask into its texture. Its storage is kept and only grown
-   * (to maskCapacityFor's rounded size, never past the cube's own grid):
-   * each new selection is a sub-image upload into it, not a new allocation
-   * (issue #226: fast repeated selections re-specified it every time). The
-   * shader reads only [origin, origin + dims), so what lies beyond is never seen.
+   * Shows a prepared volume: no GPU allocation, so it may be called in VR.
+   * The selection shown on the previous volume is cleared.
    */
-  _uploadMask(data, dims) {
+  useVolume(slot) {
+    if (!slot || slot.lost || slot.released) throw new Error('that volume is no longer on the GPU');
+    if (slot !== this.slot) { this.mask = null; this._maskInput = null; }
+    this.slot = slot;
+    this.volTex = slot.volTex;
+    this.macroTex = slot.macroTex;
+    this.maskTex = slot.maskTex || this.emptyMaskTex;
+    this.dims = slot.dims;
+    this.encoding = slot.encoding;
+    this.cell = slot.cell;
+    this.macroDims = slot.macroDims;
+    this.textureBytes = slot.textureBytes;
+    return slot;
+  }
+
+  /** Gives a prepared volume's textures back (not the one on show). */
+  releaseVolume(slot) {
+    if (!slot || slot.released || slot === this.slot) return;
+    slot.released = true;
+    this._slots.delete(slot);
+    if (slot.lost) return;
     const gl = this.gl;
-    gl.bindTexture(gl.TEXTURE_3D, this.maskTex);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    const cap = this.maskCapacity;
-    if (!cap || dims[0] > cap[0] || dims[1] > cap[1] || dims[2] > cap[2]) {
-      const want = maskCapacityFor(dims, cap, this.dims);
-      gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, want[0], want[1], want[2], 0, gl.RED, gl.UNSIGNED_BYTE, null);
-      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      for (const k of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) {
-        gl.texParameteri(gl.TEXTURE_3D, k, gl.CLAMP_TO_EDGE);
-      }
-      this.maskCapacity = want;
-    }
-    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, dims[0], dims[1], dims[2], gl.RED, gl.UNSIGNED_BYTE, data);
+    for (const t of [slot.volTex, slot.macroTex, slot.maskTex]) if (t) gl.deleteTexture(t);
+  }
+
+  /**
+   * Upload the reduced cube and show it (prepareVolume, then useVolume; the
+   * volume shown before is released). Not in VR (issue #229): the page keeps
+   * a cube that arrives in VR until the session ends (main.js installCube).
+   * Returns the timings and the texture size.
+   */
+  setVolume({ data, dims, encoding }, cell = 8) {
+    const slot = this.prepareVolume({ data, dims, encoding }, cell);
+    const old = this.slot;
+    this._volume = { data, dims, encoding, cell };
+    this.useVolume(slot);
+    if (old) this.releaseVolume(old);
+    return { uploadMs: slot.uploadMs, macroMs: slot.macroMs, maskMs: slot.maskMs, textureBytes: slot.textureBytes };
   }
 
   /** The selection on the drawn grid (selection.reduceMask's answer), or null
-   *  to clear it. */
+   *  to clear it. A sub-image upload into the volume's own mask storage
+   *  (prepareVolume: the whole reduced grid, allocated with the cube), never
+   *  an allocation, so it is safe in VR (issue #229). The shader reads only
+   *  [origin, origin + dims), so what lies beyond in the storage is never seen. */
   setMask(reduced) {
-    this._maskInput = reduced && reduced.count ? reduced : null;
     if (!reduced || !reduced.count) {
+      this._maskInput = null;
       this.mask = null;
       return;
     }
-    this._uploadMask(reduced.data, reduced.dims);
-    this.mask = { origin: reduced.origin, dims: reduced.dims, bytes: reduced.data.length };
+    const s = this.slot;
+    const dims = reduced.dims;
+    if (!s || !s.maskTex) throw new Error('no volume with a selection mask on show');
+    if (dims[0] > s.dims[0] || dims[1] > s.dims[1] || dims[2] > s.dims[2]) {
+      throw new Error(`a selection of ${dims.join('×')} reduced voxels does not fit the cube's grid ${s.dims.join('×')}`);
+    }
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_3D, s.maskTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, dims[0], dims[1], dims[2], gl.RED, gl.UNSIGNED_BYTE, reduced.data);
+    this._maskInput = reduced;
+    this.mask = { origin: reduced.origin, dims, bytes: reduced.data.length };
   }
 
   /** Segments: array of {a: [x,y,z], b: [x,y,z], color: [r,g,b,a]} in model space. */
