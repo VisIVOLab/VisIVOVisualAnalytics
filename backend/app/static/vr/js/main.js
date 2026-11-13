@@ -36,6 +36,8 @@ import { EyeBufferGovernor, qualityNote, cubeBudget, spvAtFloor, qualityPolicy }
 // text, solid controllers and hands, one active page.
 import { QuadLayers, layersAvailable } from './xr-layers.js';
 import { controllerMesh, handMesh } from './models.js';
+// The real controller models (WebXR Input Profiles), the page's own as the fallback.
+import { ControllerModels } from './controller-models.js';
 import { SinglePage, CHANNEL_NAME, STOOD_DOWN } from './single-page.js';
 // Measurement records and the guided measurement run (issue #224).
 import { createMeasure, recordMessage } from './measure-run.js';
@@ -53,6 +55,7 @@ if (!gl) {
   throw new Error('no WebGL2');
 }
 const R = new Renderer(gl);
+const controllerModels = new ControllerModels(R, { log: (level, event, detail) => shell.log(level === 'warn' ? 'warning' : level, event, detail) });
 
 // ── State ───────────────────────────────────────────────────────────────────
 const state = {
@@ -2238,7 +2241,7 @@ function handleInput(frame, dtS) {
     const gp = frame.getPose(src.gripSpace, xr.ref);
     if (!gp) continue;
     const m = gp.transform.matrix;
-    const hand = { m: new Float32Array(m), pos: [m[12], m[13], m[14]], g: src.gamepad, ray: null };
+    const hand = { m: new Float32Array(m), pos: [m[12], m[13], m[14]], g: src.gamepad, ray: null, src };
     const rp = src.targetRaySpace && frame.getPose(src.targetRaySpace, xr.ref);
     if (rp) {
       const r = rp.transform.matrix;
@@ -2387,15 +2390,25 @@ function controllerSegments() {
 }
 
 /** The controllers and tracked hands as solid models (issue #226): one
- *  world-space triangle list for this frame. Primary orange, secondary blue. */
+ *  world-space triangle list for this frame. Primary orange, secondary blue.
+ *  A controller whose real model is ready (controller-models.js) is left to
+ *  that model, posed here into modelDraws for R.drawModels. */
 const meshScratch = [];
+const modelDraws = [];
+let modelDrawCount = 0;
 function inputMesh() {
   meshScratch.length = 0;
+  modelDrawCount = 0;
   const primary = C.roles(settings.leftHanded).primary;
   for (const [hand, h] of Object.entries(xr.hands)) {
     const col = hand === primary ? [1, 0.62, 0.25, 1] : [0.35, 0.68, 1, 1];
     if (h.isHand) handMesh(meshScratch, h.joints, col, { pinch: !!h.gesture.pinch, grip: !!h.gesture.grip });
-    else {
+    else if (h.src && (h.model = controllerModels.pose(h.src, h.m, h.g))) {
+      const e = h.model;
+      if (modelDraws.length <= modelDrawCount) modelDraws.push({ handle: null, rig: null });
+      const d = modelDraws[modelDrawCount++];
+      d.handle = e.handle; d.rig = e.rig;
+    } else {
       const b = (k) => { const x = h.g.buttons[C.BUTTON_INDEX[k]]; return !!(x && x.pressed); };
       controllerMesh(meshScratch, h.m, col, { pressed: { trigger: b('trigger'), grip: b('grip') }, handedness: hand });
     }
@@ -2515,7 +2528,8 @@ function onXRFrame(time, frame) {
     if (state.cube) drawScene(v, undefined, view.eye === 'right' ? 1 : 0);
     else if (layers.hasScene()) layers.drawScene(v, view.eye === 'right' ? 1 : 0, vp.height);
     if (!asLayers) for (const o of overlays) R.drawPanel(v, o.model, o.handle, o.size);
-    R.drawMesh(v);            // the controllers and hands (models.js)
+    R.drawModels(v, modelDraws, modelDrawCount);   // the real controller models
+    R.drawMesh(v);            // the page's own controllers and the hands (models.js)
     R.drawWorldLines(v);      // and their rays, over the panels drawn in the scene
   }
   R.endFrame();
@@ -2760,7 +2774,18 @@ if (query.has('debug')) {
   // textures, the one-page state.
   window.__vrXR = () => (xr ? { overlaysAsLayers: !!xr.overlaysAsLayers, layersNote: xr.layersNote, fbScale: xr.fbScale,
     targetHz: xr.targetHz, quads: xr.quads ? { active: xr.quads.active, shown: xr.quads.shown, pool: xr.quads.pool.size, copies: xr.quads.copies } : null,
-    meshCount: R.meshCount, labelCount: R.labelCount } : null);
+    meshCount: R.meshCount, labelCount: R.labelCount, modelDraws: R.modelDraws,
+    controllerModels: Object.fromEntries(Object.entries(controllerModels.status)
+      .map(([k, e]) => [k, { status: e.status, profileId: e.profileId, error: e.error }])) } : null);
+  // A real controller model's node (its world position now), for the checks.
+  window.__vrControllerNode = (hand, name) => {
+    const e = controllerModels.status[hand];
+    if (!e || !e.rig) return null;
+    const i = e.rig.model.nodes.findIndex((n) => n.name === name);
+    if (i < 0) return null;
+    const w = e.rig.world[i];
+    return { p: [w[12], w[13], w[14]], m: Array.from(w), drawn: !!e.rig.drawn[i] };
+  };
   window.__vrGpu = () => R.gpuStats();
   window.__vrSingle = single;
   window.__vrSetEyeScale = (s) => { if (xr) setEyeBufferScale(s); };

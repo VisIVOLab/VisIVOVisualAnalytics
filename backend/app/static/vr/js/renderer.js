@@ -8,6 +8,13 @@ import { colormapTable } from './colormaps.js';
 import { buildMacrocells } from './volume.js';
 import { labelVertices, LABEL_STRIDE } from './labels.js';
 import { MESH_STRIDE } from './models.js';
+import { mulInto } from './gltf.js';
+
+/** The eye's position from a rigid view matrix (−Rᵀt), into `out`. */
+function eyeOf(v, out) {
+  for (let i = 0; i < 3; i++) out[i] = -(v[4 * i] * v[12] + v[4 * i + 1] * v[13] + v[4 * i + 2] * v[14]);
+  return out;
+}
 
 const MAX_LOOP = 4096;
 
@@ -211,6 +218,49 @@ in vec4 vColor;
 out vec4 outColor;
 void main() { outColor = vec4(vColor.rgb * vColor.a, vColor.a); }`;
 
+// The real controller models (WebXR Input Profiles, gltf.js): indexed,
+// textured triangles in a node's frame (uModel: grip pose × node chain), lit
+// per pixel as the meshes above. Opaque: the alpha written is 1.
+const MODEL_VS = `#version 300 es
+precision highp float;
+in vec3 aPos;
+in vec3 aNormal;
+in vec2 aUV;
+uniform mat4 uVP;
+uniform mat4 uModel;
+out vec3 vPos;
+out vec3 vNormal;
+out vec2 vUV;
+void main() {
+  vec4 w = uModel * vec4(aPos, 1.0);
+  vPos = w.xyz;
+  vNormal = mat3(uModel) * aNormal;
+  vUV = aUV;
+  gl_Position = uVP * w;
+}`;
+
+const MODEL_FS = `#version 300 es
+precision mediump float;
+in vec3 vPos;
+in vec3 vNormal;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform vec4 uColor;
+uniform vec3 uEye;
+out vec4 outColor;
+void main() {
+  vec3 n = normalize(vNormal);
+  vec3 toEye = normalize(uEye - vPos);
+  float l = 0.4 + 0.45 * abs(dot(n, toEye)) + 0.3 * max(dot(n, vec3(0.0, 1.0, 0.0)), 0.0);
+  vec3 c = texture(uTex, vUV).rgb * uColor.rgb;
+  outColor = vec4(min(c * l, vec3(1.0)), 1.0);
+}`;
+
+/** Floats per vertex of an uploaded controller model: position 3, normal 3, uv 2. */
+const MODEL_STRIDE = 8;
+/** The largest side of a controller model's texture on the GPU (the Touch Plus ships 2048²). */
+export const MODEL_TEXTURE_MAX = 1024;
+
 function compile(gl, vs, fs) {
   const p = gl.createProgram();
   for (const [type, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]]) {
@@ -268,6 +318,9 @@ export class Renderer {
     this._lineSegs = {};           // target name -> the last segments
     this._labels = null;
     this._labelCanvas = null;      // one canvas for the label atlas, reused (issue #226)
+    this._models = new Set();      // uploadModel() handles, uploaded again by restore()
+    this._vp = new Float32Array(16);
+    this._eye = new Float32Array(3);
     this._init();
   }
 
@@ -279,6 +332,7 @@ export class Renderer {
     this.label = compile(gl, LABEL_VS, TEX_FS);
     this.quad = compile(gl, QUAD_VS, TEX_FS);
     this.meshProg = compile(gl, MESH_VS, MESH_FS);
+    this.modelProg = compile(gl, MODEL_VS, MODEL_FS);
     this.maxTex3D = gl.getParameter(gl.MAX_3D_TEXTURE_SIZE);
 
     this.cubeVao = gl.createVertexArray();
@@ -336,6 +390,11 @@ export class Renderer {
     }
     this.meshCount = 0;
     this.meshCapacity = 0;
+    // A white texel for the controller-model materials without a texture.
+    this.whiteTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.whiteTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
+    this.modelDraws = 0;           // controller-model draw calls in the last drawModels()
 
     this.quadVao = gl.createVertexArray();
     gl.bindVertexArray(this.quadVao);
@@ -384,6 +443,7 @@ export class Renderer {
       h.size = null;
       if (h.canvas) this.updatePanel(h, h.canvas);
     }
+    for (const h of this._models) this._uploadModel(h);
   }
 
   /**
@@ -397,8 +457,11 @@ export class Renderer {
     const labelBytes = this.labelTexSize ? this.labelTexSize[0] * this.labelTexSize[1] * 4 : 0;
     const vol = this.textureBytes || 0;
     const macro = this.macroDims ? this.macroDims[0] * this.macroDims[1] * this.macroDims[2] * 4 : 0;
+    let modelBytes = 0;
+    for (const h of this._models) modelBytes += h.bytes;
     return { panels: this._panels.size, panelBytes, maskBytes, labelBytes, volumeBytes: vol, macroBytes: macro,
-      totalBytes: panelBytes + maskBytes + labelBytes + vol + macro + 256 * 4 };
+      models: this._models.size, modelBytes,
+      totalBytes: panelBytes + maskBytes + labelBytes + vol + macro + modelBytes + 256 * 4 };
   }
 
   setColormap(name) {
@@ -543,6 +606,131 @@ export class Renderer {
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.bindVertexArray(this.meshVao);
     gl.drawArrays(gl.TRIANGLES, 0, this.meshCount);
+    gl.disable(gl.DEPTH_TEST);
+  }
+
+  /**
+   * A controller model (gltf.js readGLTF output) on the GPU, once: one
+   * vertex buffer and one index buffer for all its primitives, one texture
+   * per base-colour image (`bitmaps[imageIndex]`, an ImageBitmap or canvas
+   * already at most MODEL_TEXTURE_MAX a side; null leaves the factor alone).
+   * The handle is kept and uploaded again after a lost context.
+   */
+  uploadModel(model, bitmaps = []) {
+    const h = { model, bitmaps, vao: null, vbo: null, ibo: null, textures: [], meshes: [], bytes: 0 };
+    this._uploadModel(h);
+    this._models.add(h);
+    return h;
+  }
+
+  _uploadModel(h) {
+    const gl = this.gl;
+    const { model, bitmaps } = h;
+    const prims = model.meshes.flat();
+    const nVerts = prims.reduce((a, p) => a + p.positions.length / 3, 0);
+    const nIdx = prims.reduce((a, p) => a + p.indices.length, 0);
+    const wide = nVerts > 65536;
+    const verts = new Float32Array(nVerts * MODEL_STRIDE);
+    const idx = wide ? new Uint32Array(nIdx) : new Uint16Array(nIdx);
+    const type = wide ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
+    let v0 = 0, i0 = 0;
+    const placed = new Map();
+    for (const p of prims) {
+      const n = p.positions.length / 3;
+      for (let i = 0; i < n; i++) {
+        const o = (v0 + i) * MODEL_STRIDE;
+        verts[o] = p.positions[3 * i]; verts[o + 1] = p.positions[3 * i + 1]; verts[o + 2] = p.positions[3 * i + 2];
+        if (p.normals) { verts[o + 3] = p.normals[3 * i]; verts[o + 4] = p.normals[3 * i + 1]; verts[o + 5] = p.normals[3 * i + 2]; } else verts[o + 4] = 1;
+        if (p.uvs) { verts[o + 6] = p.uvs[2 * i]; verts[o + 7] = p.uvs[2 * i + 1]; }
+      }
+      for (let k = 0; k < p.indices.length; k++) idx[i0 + k] = p.indices[k] + v0;
+      placed.set(p, { offset: i0 * idx.BYTES_PER_ELEMENT, count: p.indices.length });
+      v0 += n; i0 += p.indices.length;
+    }
+    h.vao = gl.createVertexArray();
+    gl.bindVertexArray(h.vao);
+    h.vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, h.vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+    const S = MODEL_STRIDE * 4;
+    for (const [name, k, off] of [['aPos', 3, 0], ['aNormal', 3, 3], ['aUV', 2, 6]]) {
+      const loc = gl.getAttribLocation(this.modelProg.p, name);
+      if (loc < 0) continue;
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, k, gl.FLOAT, false, S, off * 4);
+    }
+    h.ibo = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, h.ibo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+    h.bytes = verts.byteLength + idx.byteLength;
+    // The base-colour textures, mipmapped (they are seen small).
+    const flip = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL), pre = gl.getParameter(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);       // glTF's UV origin is the image's top-left, as WebGL's upload
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    h.textures = model.images.map((im, i) => {
+      const bm = bitmaps[i];
+      if (!bm) return null;
+      const t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bm);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      h.bytes += Math.round(bm.width * bm.height * 4 * 4 / 3);
+      return t;
+    });
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flip);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, pre);
+    h.meshes = model.meshes.map((prs) => prs.map((p) => {
+      const mat = model.materials[p.material] || { baseColor: [1, 1, 1, 1], texture: -1 };
+      const at = placed.get(p);
+      return { offset: at.offset, count: at.count, type, color: Float32Array.from(mat.baseColor),
+        tex: (mat.texture >= 0 && h.textures[mat.texture]) || this.whiteTex };
+    }));
+  }
+
+  /**
+   * The controller models of this frame for one eye: `list[0..count)` of
+   * {handle, rig} (controller-profiles.js), each node's world matrix in
+   * rig.world, hidden nodes (rig.drawn 0) left out. Depth-tested among
+   * themselves and with the hands' mesh. Allocates nothing.
+   */
+  drawModels(view, list, count = list.length) {
+    const gl = this.gl;
+    this.modelDraws = 0;
+    if (!count) return;
+    const { u } = this.modelProg;
+    gl.useProgram(this.modelProg.p);
+    mulInto(this._vp, view.proj, view.view);
+    gl.uniformMatrix4fv(u.uVP, false, this._vp);
+    gl.uniform3fv(u.uEye, eyeOf(view.view, this._eye));
+    gl.uniform1i(u.uTex, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
+    for (let k = 0; k < count; k++) {
+      const { handle: h, rig } = list[k];
+      gl.bindVertexArray(h.vao);
+      const nodes = rig.model.nodes;
+      for (const i of rig.order) {
+        const mi = nodes[i].mesh;
+        if (mi < 0 || !rig.drawn[i]) continue;
+        gl.uniformMatrix4fv(u.uModel, false, rig.world[i]);
+        for (const p of h.meshes[mi]) {
+          gl.uniform4fv(u.uColor, p.color);
+          gl.bindTexture(gl.TEXTURE_2D, p.tex);
+          gl.drawElements(gl.TRIANGLES, p.count, p.type, p.offset);
+          this.modelDraws++;
+        }
+      }
+    }
+    gl.bindVertexArray(null);
+    gl.enable(gl.BLEND);
     gl.disable(gl.DEPTH_TEST);
   }
 

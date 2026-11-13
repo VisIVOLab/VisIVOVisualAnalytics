@@ -8,6 +8,23 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: the real controller models (#226, part of #166).** Each controller is
+  drawn with its model from the WebXR Input Profiles project (MIT licence):
+  the page takes the first of the controller's profile names it has an asset
+  for, as the project's registry does, so a Quest 3 shows its Touch Plus
+  controllers; the Touch Pro, the Quest 2's Touch (`oculus-touch-v3`) and
+  `generic-trigger-squeeze-thumbstick` are the fallbacks. The trigger, grip,
+  stick, face buttons and thumb rest move with the gamepad's values as each
+  profile's visual responses describe. The models (5.2 MB of `.glb` and
+  profile files) are vendored under `backend/app/static/vr/models/` with their
+  licence and served with the page; nothing is fetched from a CDN. The page
+  reads them with its own small glTF 2.0 reader (`gltf.js`), uploads each model
+  once (textures at most 1024 px a side) and allocates nothing per frame to
+  pose them. A controller no profile fits, or whose model has not loaded or
+  fails to load, keeps the page's own model; tracked hands are drawn as before.
+  `validation/vr_lifecycle.mjs --xrfake` checks that the stand-in's
+  `meta-quest-touch-plus` controllers get the real model and that its trigger
+  moves with the trigger's value.
 - **VR: the first Quest 3 session's findings fixed (#226, part of #166 and
   #185).** The page asks for 72 Hz by default; the frame-rate governor gives
   up samples per voxel first, all the way to its floor, and lowers the eye
