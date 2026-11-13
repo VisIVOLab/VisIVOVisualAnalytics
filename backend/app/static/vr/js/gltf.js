@@ -3,8 +3,10 @@
 // page has no third-party library, so this reads what those assets use and
 // nothing more: one JSON chunk and one BIN chunk, meshes of indexed
 // triangles (POSITION, NORMAL, TEXCOORD_0 as floats), a node tree with
-// translation/rotation/scale or a matrix, and a material's base colour
-// (factor and an embedded PNG or JPEG texture). A file that needs an
+// translation/rotation/scale or a matrix, and a material's metallic-roughness
+// parameters (base colour, metallic, roughness, emissive: factors and embedded
+// PNG or JPEG textures read through TEXCOORD_0; alpha mode and cutoff).
+// Normal and occlusion maps are not read. A file that needs an
 // extension (Draco or meshopt compression among them), points outside the
 // file, or draws anything but triangles is refused with the reason, and the
 // page falls back to its own model.
@@ -94,7 +96,10 @@ function readAccessor(json, bin, index, { indices = false } = {}) {
  * nodes[i] = {name, mesh (index or -1), children, parent, t, r, s, matrix
  * (a 16-float local matrix or null)}; meshes[i] = [{positions, normals, uvs,
  * indices (Uint16Array or Uint32Array), material}]; materials[i] =
- * {baseColor [r,g,b,a], texture (image index or -1), doubleSided};
+ * {baseColor [r,g,b,a], texture (base-colour image index or -1), metallic,
+ * roughness, mrTexture, emissive [r,g,b], emissiveTexture, alphaMode
+ * ('OPAQUE'|'MASK'|'BLEND'), alphaCutoff, doubleSided}; a texture read
+ * through another texture coordinate set than TEXCOORD_0 is left out (-1);
  * images[i] = {mime, bytes}. Throws, with the reason, on what it cannot draw.
  */
 export function readGLTF({ json, bin }) {
@@ -111,10 +116,24 @@ export function readGLTF({ json, bin }) {
     if ((ti.texCoord || 0) !== 0) return -1;
     return tex.source;
   };
+  const num = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
   const materials = (json.materials || []).map((m) => {
     const pbr = m.pbrMetallicRoughness || {};
     const f = pbr.baseColorFactor || [1, 1, 1, 1];
-    return { baseColor: [f[0], f[1], f[2], f[3]], texture: texImage(pbr.baseColorTexture), doubleSided: !!m.doubleSided };
+    const e = m.emissiveFactor || [0, 0, 0];
+    const mode = m.alphaMode === 'MASK' || m.alphaMode === 'BLEND' ? m.alphaMode : 'OPAQUE';
+    return {
+      baseColor: [num(f[0], 1), num(f[1], 1), num(f[2], 1), num(f[3], 1)],
+      texture: texImage(pbr.baseColorTexture),                  // sRGB
+      metallic: Math.min(1, Math.max(0, num(pbr.metallicFactor, 1))),
+      roughness: Math.min(1, Math.max(0, num(pbr.roughnessFactor, 1))),
+      mrTexture: texImage(pbr.metallicRoughnessTexture),        // linear: G roughness, B metallic
+      emissive: [num(e[0], 0), num(e[1], 0), num(e[2], 0)],
+      emissiveTexture: texImage(m.emissiveTexture),             // sRGB
+      alphaMode: mode,
+      alphaCutoff: num(m.alphaCutoff, 0.5),
+      doubleSided: !!m.doubleSided,
+    };
   });
   const meshes = (json.meshes || []).map((mesh) => mesh.primitives.map((p) => {
     if ((p.mode === undefined ? 4 : p.mode) !== 4) throw new Error(`glb: primitive mode ${p.mode} (only triangles)`);
@@ -160,6 +179,27 @@ export function readGLTF({ json, bin }) {
   const scene = json.scenes && json.scenes[json.scene || 0];
   const roots = scene && scene.nodes ? scene.nodes.slice() : nodes.map((n, i) => i).filter((i) => nodes[i].parent === -1);
   return { nodes, roots, meshes, materials, images };
+}
+
+/**
+ * The images the materials draw with and how each is sampled: a Map of image
+ * index → {srgb, linear} (true when some material uses it as colour, base or
+ * emissive, resp. as data, metallic-roughness). Images no material uses are
+ * left out (they are never decoded).
+ */
+export function imageUses(model) {
+  const uses = new Map();
+  const mark = (i, kind) => {
+    if (i < 0) return;
+    if (!uses.has(i)) uses.set(i, { srgb: false, linear: false });
+    uses.get(i)[kind] = true;
+  };
+  for (const m of model.materials) {
+    mark(m.texture, 'srgb');
+    mark(m.emissiveTexture === undefined ? -1 : m.emissiveTexture, 'srgb');
+    mark(m.mrTexture === undefined ? -1 : m.mrTexture, 'linear');
+  }
+  return uses;
 }
 
 /** The nodes in an order where every parent comes before its children (the scene's only). */

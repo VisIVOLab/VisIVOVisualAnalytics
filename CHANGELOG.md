@@ -8,6 +8,31 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: the controller models shaded correctly on the Quest 3 (part of #166
+  and #185).** On the headset the Touch Plus models looked grainy and their
+  dark plastic turned white in patches that followed the view. The model
+  shaders ran in `mediump`, which the Quest's GPU executes in half precision:
+  the models' nodes are scaled by 0.01, so the world-space normal had a
+  length of 0.01, its squared length flushed to zero, and `normalize()` gave
+  Inf/NaN, saturating the pixel to white (reproduced on the Mac by emulating
+  half precision in the old shader). The shaders now run in `highp`, the
+  normal is made unit length in the vertex shader with the inverse transpose,
+  and the fragment shader approximates glTF metallic-roughness: base colour
+  and emissive textures uploaded as sRGB, metallic and roughness factors and
+  map, a GGX highlight, sRGB output, the alpha modes (OPAQUE writes alpha 1
+  with blending off; MASK; BLEND in a second, premultiplied pass), double-sided
+  materials lit on the side seen and single-sided ones culled (clockwise
+  under a mirroring node). Textures get 4× anisotropic filtering where the
+  browser has it; they stay at 1024 px (10.7 MB for a pair of Touch Plus
+  controllers; 2048 px would be 42.7 MB while the context loss of #229 is
+  open). Blending, depth test, culling and the front face are restored after
+  the models are drawn. `validation/vr_controller_shading.mjs` (part of
+  `vr_lifecycle.mjs --regressions`, also runnable alone with PNGs) draws the
+  vendored models offscreen from eight directions with the page's pipeline
+  and checks that dark plastic stays dark, light plastic is lit but not
+  clipped, the output is opaque, the culled side is the back, and the GL
+  state is left as found.
+
 - **VR: debug switches for the Quest 3 context loss at the first lasso, and a
   redraw loop removed (#229, part of #166 and #185).** With `?debug`, the
   address switches `nohover`, `nohud`, `noreadout`, `noselpanel`,

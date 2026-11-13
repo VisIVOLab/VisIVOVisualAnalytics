@@ -8,7 +8,7 @@ import { colormapTable } from './colormaps.js';
 import { buildMacrocells } from './volume.js';
 import { labelVertices, LABEL_STRIDE } from './labels.js';
 import { MESH_STRIDE } from './models.js';
-import { mulInto } from './gltf.js';
+import { mulInto, imageUses } from './gltf.js';
 
 /** The eye's position from a rigid view matrix (−Rᵀt), into `out`. */
 function eyeOf(v, out) {
@@ -219,9 +219,18 @@ out vec4 outColor;
 void main() { outColor = vec4(vColor.rgb * vColor.a, vColor.a); }`;
 
 // The real controller models (WebXR Input Profiles, gltf.js): indexed,
-// textured triangles in a node's frame (uModel: grip pose × node chain), lit
-// per pixel as the meshes above. Opaque: the alpha written is 1.
-const MODEL_VS = `#version 300 es
+// textured triangles in a node's frame (uModel: grip pose × node chain).
+//
+// All in highp. On the Quest's GPU mediump is half precision (fp16): the
+// models' nodes are scaled by 0.01 (centimetres to metres), so mat3(uModel)
+// × normal is a vector of length 0.01, whose squared length (1e-4, less
+// between vertices) is at the edge of fp16's normal range and flushes to 0;
+// normalize() then gives Inf/NaN and the pixel saturates to white, where the
+// normals bend, so it follows the view. The normal is made unit length here,
+// in the vertex shader, with the inverse transpose (non-uniform and negative
+// scales too), and the UVs keep full precision (fp16 is about half a texel at
+// 1024 px).
+export const MODEL_VS = `#version 300 es
 precision highp float;
 in vec3 aPos;
 in vec3 aNormal;
@@ -234,33 +243,104 @@ out vec2 vUV;
 void main() {
   vec4 w = uModel * vec4(aPos, 1.0);
   vPos = w.xyz;
-  vNormal = mat3(uModel) * aNormal;
+  vec3 n = transpose(inverse(mat3(uModel))) * aNormal;
+  float l2 = dot(n, n);
+  vNormal = l2 > 0.0 ? n * inversesqrt(l2) : vec3(0.0, 1.0, 0.0);
   vUV = aUV;
   gl_Position = uVP * w;
 }`;
 
-const MODEL_FS = `#version 300 es
-precision mediump float;
-in highp vec3 vPos;          // world metres: mediump loses millimetres a few metres out
+// glTF metallic-roughness, approximated for a small hand-held object: the
+// base colour and emissive textures are sRGB (decoded by the sampler, the
+// textures being SRGB8_ALPHA8), lit in linear light by a sky/ground ambient,
+// a key light from above and a light at the eye, with a GGX highlight whose
+// size follows the roughness and whose strength the Fresnel term at normal
+// incidence sets (4 % for a dielectric, the base colour for a metal: dark
+// plastic stays dark, with a soft sheen); then encoded to sRGB, as the rest
+// of the page writes its colours. Alpha modes: OPAQUE writes alpha 1 (the
+// texture's alpha ignored, as glTF says), MASK discards below the cutoff and
+// writes 1, BLEND writes premultiplied colour (drawn after, blended).
+// Back-facing triangles of a double-sided material use the reversed normal
+// (glTF); drawModels sets the front face per node (clockwise under a
+// mirroring node), so gl_FrontFacing is the triangle's own side. Single-sided
+// materials are culled.
+export const MODEL_FS = `#version 300 es
+precision highp float;
+in vec3 vPos;
 in vec3 vNormal;
 in vec2 vUV;
-uniform sampler2D uTex;
-uniform vec4 uColor;
-uniform highp vec3 uEye;
+uniform sampler2D uTex;        // base colour (sRGB)
+uniform sampler2D uMRTex;      // G roughness, B metallic (linear)
+uniform sampler2D uEmTex;      // emissive (sRGB)
+uniform vec4 uColor;           // base colour factor
+uniform vec2 uMR;              // metallic, roughness factors
+uniform vec3 uEmissive;
+uniform int uAlphaMode;        // 0 opaque, 1 mask, 2 blend
+uniform float uCutoff;
+uniform vec3 uEye;
 out vec4 outColor;
+const float PI = 3.14159265;
+const vec3 KEY = vec3(0.32, 0.88, 0.35);      // normalized below
+vec3 toSrgb(vec3 c) {
+  c = clamp(c, 0.0, 1.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+float ggx(float nh, float a2) { float d = nh * nh * (a2 - 1.0) + 1.0; return a2 / (PI * d * d); }
+float vis(float nl, float nv, float a) { float k = a * 0.5; return 0.25 / ((nl * (1.0 - k) + k) * (nv * (1.0 - k) + k)); }
+vec3 specular(vec3 n, vec3 v, vec3 l, vec3 f0, float a) {
+  float nl = max(dot(n, l), 0.0);
+  if (nl <= 0.0) return vec3(0.0);
+  vec3 h = normalize(l + v);
+  float nv = max(dot(n, v), 1e-3), nh = max(dot(n, h), 0.0), vh = max(dot(v, h), 0.0);
+  vec3 f = f0 + (1.0 - f0) * pow(1.0 - vh, 5.0);
+  return f * (ggx(nh, a * a) * vis(nl, nv, a) * nl);
+}
 void main() {
+  vec4 base = texture(uTex, vUV) * uColor;
+  if (uAlphaMode == 1 && base.a < uCutoff) discard;
+  vec4 mr = texture(uMRTex, vUV);
+  float metal = clamp(uMR.x * mr.b, 0.0, 1.0);
+  float rough = clamp(uMR.y * mr.g, 0.04, 1.0);
   vec3 n = normalize(vNormal);
-  highp vec3 d = uEye - vPos;
-  vec3 toEye = normalize(d);
-  float l = 0.4 + 0.45 * abs(dot(n, toEye)) + 0.3 * max(dot(n, vec3(0.0, 1.0, 0.0)), 0.0);
-  vec3 c = texture(uTex, vUV).rgb * uColor.rgb;
-  outColor = vec4(min(c * l, vec3(1.0)), 1.0);
+  vec3 v = normalize(uEye - vPos);
+  if (!gl_FrontFacing) n = -n;
+  vec3 key = normalize(KEY);
+  vec3 diffuse = base.rgb * (1.0 - metal);
+  vec3 f0 = mix(vec3(0.04), base.rgb, metal);
+  float a = rough * rough;
+  float amb = mix(0.12, 0.3, 0.5 + 0.5 * n.y);
+  vec3 c = diffuse * (amb + 0.6 * max(dot(n, key), 0.0) + 0.3 * max(dot(n, v), 0.0));
+  c += specular(n, v, key, f0, a) * 0.6 + specular(n, v, v, f0, a) * 0.3;
+  // Metals have no diffuse: a little of their colour as ambient reflection.
+  c += f0 * amb * metal;
+  c += uEmissive * texture(uEmTex, vUV).rgb;
+  vec3 srgb = toSrgb(c);
+  outColor = uAlphaMode == 2 ? vec4(srgb * base.a, base.a) : vec4(srgb, 1.0);
 }`;
 
 /** Floats per vertex of an uploaded controller model: position 3, normal 3, uv 2. */
 const MODEL_STRIDE = 8;
-/** The largest side of a controller model's texture on the GPU (the Touch Plus ships 2048²). */
+/**
+ * The largest side of a controller model's texture on the GPU (the Touch
+ * Plus ships 2048²). Kept at 1024 while the Quest's context loss (#229) is
+ * open: a 2048² map with its mipmaps is 21.3 MB, 1024² is 5.3 MB, and each
+ * hand has its own map (10.7 MB for the pair instead of 42.7 MB). The
+ * controller is at most a few hundred pixels tall on the eye buffer, so 1024
+ * with mipmaps and anisotropic filtering loses little.
+ */
 export const MODEL_TEXTURE_MAX = 1024;
+/** The anisotropy of the controller-model textures (when the extension exists; 4 is cheap on a tiler). */
+export const MODEL_ANISOTROPY = 4;
+const MODEL_ALPHA_MODES = { OPAQUE: 0, MASK: 1, BLEND: 2 };
+// glTF's defaults, for a primitive without a material.
+const MODEL_DEFAULT_MATERIAL = { baseColor: [1, 1, 1, 1], texture: -1, metallic: 1, roughness: 1, mrTexture: -1,
+  emissive: [0, 0, 0], emissiveTexture: -1, alphaMode: 'OPAQUE', alphaCutoff: 0.5, doubleSided: false };
+
+/** The sign of the determinant of a 4×4's upper 3×3 (column-major): negative when it mirrors. */
+export function mirrors(m) {
+  const det = m[0] * (m[5] * m[10] - m[9] * m[6]) - m[4] * (m[1] * m[10] - m[9] * m[2]) + m[8] * (m[1] * m[6] - m[5] * m[2]);
+  return det < 0;
+}
 
 function compile(gl, vs, fs) {
   const p = gl.createProgram();
@@ -396,6 +476,9 @@ export class Renderer {
     gl.bindTexture(gl.TEXTURE_2D, this.whiteTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
     this.modelDraws = 0;           // controller-model draw calls in the last drawModels()
+    this._faceState = { saved: false, cull: false, mode: 0, front: 0 };   // drawModels' culling state, kept to restore
+    this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+    this.modelAniso = this.aniso ? Math.min(MODEL_ANISOTROPY, gl.getParameter(this.aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT)) : 1;
 
     this.quadVao = gl.createVertexArray();
     gl.bindVertexArray(this.quadVao);
@@ -641,25 +724,38 @@ export class Renderer {
     }).catch(() => { /* the model stays white: still drawn */ });
   }
 
-  /** The base-colour textures, mipmapped (they are seen small); the bitmaps closed after. */
+  /**
+   * The material textures, mipmapped and anisotropically filtered (they are
+   * seen small and at a slant: without, the maps shimmer); base colour and
+   * emissive as SRGB8_ALPHA8 (the sampler decodes to linear, the mipmaps are
+   * averaged in linear light), metallic-roughness as RGBA8. An image used
+   * both ways gets both. The bitmaps are closed after.
+   */
   _setModelTextures(h, bitmaps) {
     const gl = this.gl;
     const flip = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL), pre = gl.getParameter(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);       // glTF's UV origin is the image's top-left, as WebGL's upload
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    const uses = imageUses(h.model);
     let bytes = 0;
-    h.textures = h.model.images.map((im, i) => {
-      const bm = bitmaps[i];
-      if (!bm) return null;
+    const make = (bm, internal) => {
       const t = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, t);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bm);
+      gl.texImage2D(gl.TEXTURE_2D, 0, internal, gl.RGBA, gl.UNSIGNED_BYTE, bm);
       gl.generateMipmap(gl.TEXTURE_2D);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      if (this.aniso) gl.texParameterf(gl.TEXTURE_2D, this.aniso.TEXTURE_MAX_ANISOTROPY_EXT, this.modelAniso);
       bytes += Math.round(bm.width * bm.height * 4 * 4 / 3);
+      return t;
+    };
+    h.textures = h.model.images.map((im, i) => {
+      const bm = bitmaps[i];
+      if (!bm) return null;
+      const use = uses.get(i) || { srgb: true, linear: false };
+      const t = { srgb: use.srgb ? make(bm, gl.SRGB8_ALPHA8) : null, linear: use.linear ? make(bm, gl.RGBA8) : null };
       if (bm.close) bm.close();
       return t;
     });
@@ -711,52 +807,117 @@ export class Renderer {
     h.geomBytes = verts.byteLength + idx.byteLength;
     h.bytes = h.geomBytes;
     h.meshes = model.meshes.map((prs) => prs.map((p) => {
-      const mat = model.materials[p.material] || { baseColor: [1, 1, 1, 1], texture: -1 };
+      const mat = { ...MODEL_DEFAULT_MATERIAL, ...(model.materials[p.material] || {}) };
       const at = placed.get(p);
-      return { offset: at.offset, count: at.count, type, color: Float32Array.from(mat.baseColor), texture: mat.texture };
+      return { offset: at.offset, count: at.count, type, color: Float32Array.from(mat.baseColor), texture: mat.texture,
+        mr: new Float32Array([mat.metallic, mat.roughness]), mrTexture: mat.mrTexture,
+        emissive: Float32Array.from(mat.emissive), emissiveTexture: mat.emissiveTexture,
+        alphaMode: MODEL_ALPHA_MODES[mat.alphaMode] || 0, cutoff: mat.alphaCutoff, doubleSided: !!mat.doubleSided };
     }));
+    h.blended = h.meshes.some((prs) => prs.some((p) => p.alphaMode === 2));
+    h.singleSided = h.meshes.some((prs) => prs.some((p) => !p.doubleSided));
   }
 
   /**
    * The controller models of this frame for one eye: `list[0..count)` of
    * {handle, rig} (controller-profiles.js), each node's world matrix in
    * rig.world, hidden nodes (rig.drawn 0) left out. Depth-tested among
-   * themselves and with the hands' mesh. Allocates nothing.
+   * themselves and with the hands' mesh. Opaque and masked primitives first,
+   * with blending off (they write alpha 1: the XR layer has an alpha
+   * channel), then blended ones (premultiplied, no depth writes). Single-sided
+   * materials are culled, as glTF says (front faces clockwise under a
+   * mirroring node). Blending and depth test are left as they were found (the
+   * page draws with ONE, ONE_MINUS_SRC_ALPHA, which the blended pass sets),
+   * culling and the front face; the cull mode is set, and then restored,
+   * only when a model has single-sided materials (the Touch Plus has none).
+   * Allocates nothing.
    */
   drawModels(view, list, count = list.length) {
     const gl = this.gl;
     this.modelDraws = 0;
     if (!count) return;
+    const blend = gl.isEnabled(gl.BLEND), depth = gl.isEnabled(gl.DEPTH_TEST);
+    // Culling and the front face, restored after: one state query an eye (the
+    // front face, which gl_FrontFacing depends on), one more when a model has
+    // single-sided materials (the cull mode; the Touch Plus has none).
+    const face = this._faceState;
+    face.cull = gl.isEnabled(gl.CULL_FACE);
+    face.front = gl.getParameter(gl.FRONT_FACE);
+    face.saved = false;
+    for (let k = 0; k < count && !face.saved; k++) {
+      if (!list[k].handle.singleSided) continue;
+      face.saved = true;
+      face.mode = gl.getParameter(gl.CULL_FACE_MODE);
+      gl.cullFace(gl.BACK);
+    }
     const { u } = this.modelProg;
     gl.useProgram(this.modelProg.p);
     mulInto(this._vp, view.proj, view.view);
     gl.uniformMatrix4fv(u.uVP, false, this._vp);
     gl.uniform3fv(u.uEye, eyeOf(view.view, this._eye));
     gl.uniform1i(u.uTex, 0);
-    gl.activeTexture(gl.TEXTURE0);
+    gl.uniform1i(u.uMRTex, 1);
+    gl.uniform1i(u.uEmTex, 2);
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
     gl.depthMask(true);
     gl.disable(gl.BLEND);
-    for (let k = 0; k < count; k++) {
-      const { handle: h, rig } = list[k];
-      gl.bindVertexArray(h.vao);
-      const nodes = rig.model.nodes;
-      for (const i of rig.order) {
-        const mi = nodes[i].mesh;
-        if (mi < 0 || !rig.drawn[i]) continue;
-        gl.uniformMatrix4fv(u.uModel, false, rig.world[i]);
-        for (const p of h.meshes[mi]) {
-          gl.uniform4fv(u.uColor, p.color);
-          gl.bindTexture(gl.TEXTURE_2D, (p.texture >= 0 && h.textures[p.texture]) || this.whiteTex);
-          gl.drawElements(gl.TRIANGLES, p.count, p.type, p.offset);
-          this.modelDraws++;
-        }
-      }
+    let blended = false;
+    for (let k = 0; k < count; k++) blended = this._drawModel(list[k], false) || blended;
+    if (blended) {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.depthMask(false);
+      for (let k = 0; k < count; k++) this._drawModel(list[k], true);
+      gl.depthMask(true);
     }
     gl.bindVertexArray(null);
-    gl.enable(gl.BLEND);
-    gl.disable(gl.DEPTH_TEST);
+    gl.activeTexture(gl.TEXTURE0);
+    if (blend) gl.enable(gl.BLEND); else gl.disable(gl.BLEND);
+    if (depth) gl.enable(gl.DEPTH_TEST); else gl.disable(gl.DEPTH_TEST);
+    if (face.cull) gl.enable(gl.CULL_FACE); else gl.disable(gl.CULL_FACE);
+    gl.frontFace(face.front);
+    if (face.saved) gl.cullFace(face.mode);
+  }
+
+  /** A model's texture of image `i` sampled as `kind` ('srgb' or 'linear'), else white. */
+  _modelTex(h, i, kind) {
+    return (i >= 0 && h.textures[i] && h.textures[i][kind]) || this.whiteTex;
+  }
+
+  /** One model's primitives of one pass (blended or not); true when it has blended ones. */
+  _drawModel({ handle: h, rig }, blendPass) {
+    const gl = this.gl;
+    const { u } = this.modelProg;
+    if (blendPass && !h.blended) return false;
+    gl.bindVertexArray(h.vao);
+    const nodes = rig.model.nodes;
+    for (const i of rig.order) {
+      const mi = nodes[i].mesh;
+      if (mi < 0 || !rig.drawn[i]) continue;
+      const world = rig.world[i];
+      let set = false;
+      for (const p of h.meshes[mi]) {
+        if ((p.alphaMode === 2) !== blendPass) continue;
+        if (!set) {
+          gl.uniformMatrix4fv(u.uModel, false, world);
+          gl.frontFace(mirrors(world) ? gl.CW : gl.CCW);
+          set = true;
+        }
+        if (p.doubleSided) gl.disable(gl.CULL_FACE); else gl.enable(gl.CULL_FACE);
+        gl.uniform4fv(u.uColor, p.color);
+        gl.uniform2fv(u.uMR, p.mr);
+        gl.uniform3fv(u.uEmissive, p.emissive);
+        gl.uniform1i(u.uAlphaMode, p.alphaMode);
+        gl.uniform1f(u.uCutoff, p.cutoff);
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this._modelTex(h, p.texture, 'srgb'));
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this._modelTex(h, p.mrTexture, 'linear'));
+        gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this._modelTex(h, p.emissiveTexture, 'srgb'));
+        gl.drawElements(gl.TRIANGLES, p.count, p.type, p.offset);
+        this.modelDraws++;
+      }
+    }
+    return h.blended;
   }
 
   /**

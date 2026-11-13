@@ -14,7 +14,8 @@
 // error, versions agree. Exit code 0 when every check passed. The tokens are
 // random, made here, and never printed.
 // --regressions adds recovery, stale layer replies and large-binning checks
-// to that smoke run, with the hand menu driven by the mouse (vr_menu.mjs,
+// to that smoke run (with the controller models' shading, vr_controller_shading.mjs),
+// with the hand menu driven by the mouse (vr_menu.mjs,
 // issue #201; --menu runs that alone on the smoke run). CI runs both; the full
 // lifecycle run remains separate.
 // --measure (issue #224) adds the measurement record's checks to the smoke
@@ -46,6 +47,7 @@ import { runMeasureChecks } from './vr_measure.mjs';
 import { runAllocChecks, GL_PROBE } from './vr_alloc.mjs';
 import { XR_FAKE, runXRFakeChecks, runSinglePageChecks, runDelayedTakeoverCheck, runReloadCheck } from './vr_xr_fake.mjs';
 import { runCutChecks } from './vr_cuts.mjs';
+import { runControllerShadingChecks } from './vr_controller_shading.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => {
   if (v.startsWith('--')) a.push([v.slice(2), all[i + 1] && !all[i + 1].startsWith('--') ? all[i + 1] : true]);
@@ -603,6 +605,8 @@ try {
   if (args.regressions || args.menu) await runMenuChecks({ c, check, waitFor, results });
   if (ALLOC) await runAllocChecks({ c, check, waitFor, results, chromePid: chrome ? chrome.pid : 0, assert: !args['alloc-no-assert'] });
   if (args.regressions) await runRegressions({ c, check, waitFor, api, python: PY, makeCube, token: tokenA, cube });
+  // The real controller models drawn offscreen with the page's pipeline: dark plastic dark from every side, opaque.
+  if (args.regressions) await runControllerShadingChecks({ c, check });
   // Before the paired checks, which end the pairing.
   if (MEASURE) await runMeasureChecks({ c, check, waitFor, results, out: OUT, python: PY, secrets: [tokenA, tokenB], paired: PAIRED });
   if (PAIRED) await pairedChecks();
