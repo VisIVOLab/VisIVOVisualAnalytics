@@ -1,0 +1,3 @@
+# The pairing service needs only the WebSocket library (its asyncio server,
+# with process_request, is the API of websockets 13 and later).
+websockets>=13

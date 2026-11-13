@@ -9,6 +9,7 @@
     "DELETE /v1/render/{session_id}",
     "DELETE /v1/share/selection",
     "DELETE /v1/tasks/{task_id}",
+    "DELETE /v1/vr/pair/{code_or_id}",
     "GET /soda/async",
     "GET /soda/async/{job_id}",
     "GET /soda/async/{job_id}/destruction",
@@ -69,6 +70,7 @@
     "GET /v1/vlkb/tap/presets",
     "GET /v1/vr/backend_check",
     "GET /v1/vr/info",
+    "GET /v1/vr/pair",
     "POST /soda/async",
     "POST /soda/async/{job_id}/destruction",
     "POST /soda/async/{job_id}/executionduration",
@@ -215,6 +217,7 @@
     "POST /v1/vlkb/tap",
     "POST /v1/volume_render/grid",
     "POST /v1/volume_render/preview",
-    "POST /v1/vr/log"
+    "POST /v1/vr/log",
+    "POST /v1/vr/pair"
   ]
 }

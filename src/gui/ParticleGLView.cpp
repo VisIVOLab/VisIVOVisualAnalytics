@@ -293,12 +293,16 @@ ParticleGLView::~ParticleGLView()
     doneCurrent();
 }
 
-void ParticleGLView::setParticles(const QByteArray &rows, int count, Mode mode)
+void ParticleGLView::setParticles(const QByteArray &rows, int count, Mode mode,
+                                  const visivo::ParticleFrame &frame)
 {
     m_rows = rows;
     m_count = count;
     m_mode = mode;
-    // The box the particles fill (the first three fields of every row).
+    m_frame = frame;
+    // The box the particles fill (the first three fields of every row), in
+    // the table's coordinates: the overlay labels it and draws it with the
+    // camera, which is in them too.
     const int fields = mode == Mode::Projected ? 6 : 8;
     const float *f = reinterpret_cast<const float *>(rows.constData());
     m_hasBounds = count > 0;
@@ -307,8 +311,9 @@ void ParticleGLView::setParticles(const QByteArray &rows, int count, Mode mode)
         for (int a = 0; a < 3; ++a) {
             if (!std::isfinite(f[a]))
                 continue;
-            m_bounds[2 * a] = std::min(m_bounds[2 * a], double(f[a]));
-            m_bounds[2 * a + 1] = std::max(m_bounds[2 * a + 1], double(f[a]));
+            const double v = frame.origin[size_t(a)] + frame.scale * double(f[a]);
+            m_bounds[2 * a] = std::min(m_bounds[2 * a], v);
+            m_bounds[2 * a + 1] = std::max(m_bounds[2 * a + 1], v);
         }
     m_upload = true;
     m_stats = false;
@@ -321,6 +326,7 @@ void ParticleGLView::setGrid(Grid grid, Mode mode)
     m_mode = mode;
     m_count = 0;
     m_rows.clear();
+    m_frame = {};   // a grid's box is in the table's coordinates
     m_hasGrid = m_grid.nx > 0 && m_grid.ny > 0 && m_grid.nz > 0;
     m_hasBounds = m_hasGrid;
     m_bounds = m_grid.box;
@@ -513,14 +519,18 @@ void ParticleGLView::accumulate(const QSize &size)
     }
 
     // The camera, as the backend projects (particle_raytrace.project): a
-    // projected map always without perspective (parallel_camera).
-    const QVector3D pos = vec(m_camera, u"position"_s), fp = vec(m_camera, u"focal_point"_s);
-    const QVector3D up = vec(m_camera, u"view_up"_s);
-    const double angle = m_camera.value(u"view_angle"_s).toDouble(30.0);
+    // projected map always without perspective (parallel_camera). Moved into
+    // the particles' frame in double first (the backend's _local_camera): a
+    // float camera 1e9 from 0 would not tell 1e9 from 1e9 + 1, nor see how
+    // far it is from its focal point.
+    const QJsonObject cam = m_frame.localCamera(m_camera);
+    const QVector3D pos = vec(cam, u"position"_s), fp = vec(cam, u"focal_point"_s);
+    const QVector3D up = vec(cam, u"view_up"_s);
+    const double angle = cam.value(u"view_angle"_s).toDouble(30.0);
     const double dist = std::max(1e-30, double((fp - pos).length()));
-    const bool parallel = m_mode == Mode::Projected || m_camera.value(u"parallel"_s).toBool();
-    const double half = m_camera.value(u"parallel"_s).toBool()
-            ? m_camera.value(u"parallel_scale"_s).toDouble(1.0)
+    const bool parallel = m_mode == Mode::Projected || cam.value(u"parallel"_s).toBool();
+    const double half = cam.value(u"parallel"_s).toBool()
+            ? cam.value(u"parallel_scale"_s).toDouble(1.0)
             : dist * std::tan(angle * M_PI / 360.0);
     QMatrix4x4 view;
     view.lookAt(pos, fp, up);
@@ -551,7 +561,10 @@ void ParticleGLView::accumulate(const QSize &size)
     m_splat->setUniformValue("u_parallel", parallel ? 1 : 0);
     m_splat->setUniformValue("u_pxPerUnit", float(pxPerUnit));
     m_splat->setUniformValue("u_projected", m_mode == Mode::Projected ? 1 : 0);
-    m_splat->setUniformValue("u_slab", float(m_mode == Mode::Projected ? m_tone.slab / 2.0 : 0.0));
+    // The slab is in the table's units, the particles in the frame's.
+    m_splat->setUniformValue("u_slab", float(m_mode == Mode::Projected
+                                                     ? m_tone.slab / (2.0 * m_frame.scale)
+                                                     : 0.0));
     m_splat->setUniformValue("u_focal", float(dist));
     m_vao->bind();
     glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, m_count);

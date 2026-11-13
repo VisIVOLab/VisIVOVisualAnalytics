@@ -19,6 +19,7 @@
 // back from the buffer when the view settles, and kept while it turns, as the
 // backend's drafts keep the last sharp frame's exposure.
 
+#include "ParticleFrame.h"
 #include "RaytraceOverlay.h"
 
 #include <QJsonObject>
@@ -77,8 +78,11 @@ public:
     ~ParticleGLView() override;
 
     /// Rows of little-endian float32: x y z r e red green blue (Light) or
-    /// x y z r w v (Projected), as the backend sends them.
-    void setParticles(const QByteArray &rows, int count, Mode mode);
+    /// x y z r w v (Projected), as the backend sends them: positions and
+    /// sizes in ``frame`` (the table's coordinates are origin + scale × row),
+    /// which the camera is moved into before it is drawn in float.
+    void setParticles(const QByteArray &rows, int count, Mode mode,
+                      const visivo::ParticleFrame &frame = {});
 
     /// A grid, as the backend sends it: the emissivity as float32 and the
     /// colour index as float16, nz·ny·nx each, x fastest; the world box its
@@ -136,6 +140,7 @@ private:
     Mode m_mode{ Mode::Light };
     int m_count{ 0 };
     QByteArray m_rows;
+    visivo::ParticleFrame m_frame;   ///< the particles' frame (identity for a grid)
     bool m_upload{ false };
     QJsonObject m_camera;
     Tone m_tone;

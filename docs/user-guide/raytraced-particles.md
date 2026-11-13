@@ -83,6 +83,12 @@ The card shows the essentials; **More settings** opens the rest.
 | **Slab**, **Range** | A map's thickness around the focal plane (the Millennium images use a 15 Mpc/h slab), and the decades of density its brightness spans. |
 | **Curve**, **Stretch**, **Gamma**, **Saturation** | The tone curve of a 3-D render: *Asinh* and *Logarithmic* lift the faint light (more with a higher stretch), *Exponential* compresses the bright, *Linear* does neither. |
 
+Positions far from 0 keep their separations. For example, a snapshot in
+metres, or one at a large offset (1e9, 1e9 + 1, 1e9 + 2), is drawn as three
+particles in the GPU view, the backend's preview, stills and movies. They land
+where the remote point view draws them, with the same sizes. The camera, the
+box and the slab stay in the table's own units.
+
 ---
 
 ## Box and colour bar

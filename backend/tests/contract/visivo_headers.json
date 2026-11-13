@@ -47,6 +47,8 @@
     "X-Visivo-Origin",
     "X-Visivo-Particle-Count",
     "X-Visivo-Particle-Fields",
+    "X-Visivo-Particle-Origin",
+    "X-Visivo-Particle-Scale",
     "X-Visivo-Particle-Step",
     "X-Visivo-Peak",
     "X-Visivo-Pyramid-Level",

@@ -121,6 +121,7 @@ rendering, remote-service allowlists, limits) is documented in the
 | Ray-traced particles | `/v1/particle_render/*`, `/v1/tasks/particle_render` | [Ray-traced particle rendering](backend-api/particle-render.md) |
 | Ray-traced volumes | `/v1/volume_render/*`, `/v1/tasks/volume_render` | [Ray-traced volume rendering](backend-api/volume-render.md) |
 | VR headset layers | `/v1/points/*`, `/v1/cube/catalogue_pixels`, `/v1/velocity/lines_bin` | [Points, catalogues and flows for the headset](backend-api/vr-layers.md) |
+| Headset pairing | `/v1/vr/pair` | [Headset pairing by code](backend-api/vr-pair.md) |
 | SRC node and SODA | `/v1/ping`, `/v1/node/status`, `/v1/metrics`, `/soda/*` | [SRC node and SODA](backend-api/node-soda.md) |
 | Assistant | `/v1/assistant/*` | [Assistant](backend-api/assistant.md) |
 | Reproducibility | `/v1/reproducibility/*` | [Reproducibility](backend-api/reproducibility.md) |
@@ -150,6 +151,7 @@ backend-api/render
 backend-api/particle-render
 backend-api/volume-render
 backend-api/vr-layers
+backend-api/vr-pair
 backend-api/node-soda
 backend-api/assistant
 backend-api/reproducibility

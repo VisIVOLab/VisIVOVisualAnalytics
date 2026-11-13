@@ -1,0 +1,9 @@
+# WebRTC for a desktop's own backend: headset pairing by code (#212) and the
+# headset's stereo video (#189). Installed by the release bundles and by CI.
+# Kept out of requirements.txt on purpose: the cluster images install that
+# file, and PyAV has no wheel for every cluster architecture (ppc64le); the
+# EGL image adds its own aiortc build (apptainer/backend-egl-h265-overlay.def).
+# Without these packages pairing answers "not-configured" and nothing else
+# changes.
+aiortc>=1.9
+websockets>=12
