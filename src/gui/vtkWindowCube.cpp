@@ -2725,6 +2725,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                      &vtkWindowCube::openInVrHeadset);
     ui->menuTools->addAction(this->m_actOpenInVrHeadset);
     this->setupShowInHeadsetAction();   // issue #188, vtkWindowCube_VrShare.cpp
+    this->setupHeadsetHub();            // issue #238, vtkWindowCube_VrActivity.cpp
 
     // ANALYSIS: Estimate Noise goes at the head of the group (before Compute
     // Moment), to match the sidebar's "Estimate Noise → Moment Map" order.
@@ -6916,6 +6917,9 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     this->refreshRegionPreviewAfterDisplaySwap();
     // …and so was the 3-D pick marker.
     this->refreshPick3dMarkerAfterDisplaySwap();
+    // …and so was a clip box followed from the headset (issue #238).
+    if (this->m_headsetCropping)
+        this->applyHeadsetClip();
     this->remoteIsosurfaceReady = false;
     this->setCubeRenderModeLocally(false);
     if (result.momentImageData) {
@@ -7834,6 +7838,8 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Views"_s, self->m_actOpenInVR);
     add(u"Views"_s, self->m_actOpenInVrHeadset);
     add(u"Views"_s, self->m_actShowInHeadset);
+    add(u"Views"_s, self->m_actShowCubeOnHeadset);
+    add(u"Views"_s, self->m_actHeadsetActivity);
     return t;
 }
 

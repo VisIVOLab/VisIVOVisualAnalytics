@@ -634,6 +634,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_Movie.cpp
         src/gui/vtkWindowCube_Link.cpp
         src/gui/vtkWindowCube_VrHeadset.cpp
+        src/gui/vtkWindowCube_VrActivity.cpp
         src/gui/vtkWindowCatalogue3D_VrHeadset.cpp
         src/gui/vtkWindowVectorField_VrHeadset.cpp
         src/gui/vtkWindowCube_VrShare.cpp

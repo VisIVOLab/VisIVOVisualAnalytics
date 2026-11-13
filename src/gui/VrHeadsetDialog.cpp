@@ -82,8 +82,47 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     auto *root = new QVBoxLayout(this);
     root->addWidget(ToolDialogStyle::makeBreadcrumb(this, u"Open in VR Headset"_s));
 
+    // ── A headset page already open in this session (issue #238) ──────────
+    m_hubPanel = new QWidget(this);
+    auto *hub = new QVBoxLayout(m_hubPanel);
+    hub->setContentsMargins(0, 0, 0, 0);
+    m_hubLabel = new QLabel(m_hubPanel);
+    m_hubLabel->setTextFormat(Qt::PlainText);
+    m_hubLabel->setWordWrap(true);
+    m_hubLabel->setText(u"Looking for a headset already connected to this session…"_s);
+    hub->addWidget(m_hubLabel);
+    auto *hubButtons = new QHBoxLayout;
+    m_showButton = new QPushButton(u"Show on Headset"_s, m_hubPanel);
+    m_showButton->setToolTip(u"Show this cube on the headset that is connected: no code, no "
+                             u"cable, no new browser window. In VR it stays in VR."_s);
+    m_showButton->setVisible(false);
+    m_pairAnotherToggle = new QToolButton(m_hubPanel);
+    m_pairAnotherToggle->setText(u"Pair Another Headset"_s);
+    m_pairAnotherToggle->setToolTip(u"Pair a second headset by code, or open it with a USB "
+                                    u"cable."_s);
+    m_pairAnotherToggle->setAutoRaise(true);
+    m_pairAnotherToggle->setVisible(false);
+    hubButtons->addWidget(m_showButton);
+    hubButtons->addStretch();
+    hubButtons->addWidget(m_pairAnotherToggle);
+    hub->addLayout(hubButtons);
+    m_hubResult = new QLabel(m_hubPanel);
+    m_hubResult->setTextFormat(Qt::PlainText);
+    m_hubResult->setWordWrap(true);
+    m_hubResult->setVisible(false);
+    hub->addWidget(m_hubResult);
+    root->addWidget(m_hubPanel);
+
+    // Pairing and the USB way, hidden while the headset already connected is
+    // the one used (Pair Another Headset brings them back).
+    m_pairSection = new QWidget(this);
+    auto *pairSection = new QVBoxLayout(m_pairSection);
+    pairSection->setContentsMargins(0, 0, 0, 0);
+    root->addWidget(m_pairSection);
+    m_pairSection->setVisible(false);
+
     // ── Pairing by code: the default (issue #214) ──────────────────────────
-    m_pairPanel = new QWidget(this);
+    m_pairPanel = new QWidget(m_pairSection);
     auto *pair = new QVBoxLayout(m_pairPanel);
     pair->setContentsMargins(0, 0, 0, 0);
     auto *pairIntro = new QLabel(
@@ -134,21 +173,21 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     m_qrLabel->setVisible(false);
     codeRow->addWidget(m_qrLabel);
     pair->addLayout(codeRow);
-    root->addWidget(m_pairPanel);
+    pairSection->addWidget(m_pairPanel);
 
     // ── Advanced (USB cable): the adb way of issue #172 ────────────────────
-    m_advancedToggle = new QToolButton(this);
+    m_advancedToggle = new QToolButton(m_pairSection);
     m_advancedToggle->setText(u"Advanced (USB cable)"_s);
     m_advancedToggle->setCheckable(true);
     m_advancedToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_advancedToggle->setArrowType(Qt::RightArrow);
     m_advancedToggle->setAutoRaise(true);
-    root->addWidget(m_advancedToggle);
+    pairSection->addWidget(m_advancedToggle);
 
-    m_advancedPanel = new QWidget(this);
+    m_advancedPanel = new QWidget(m_pairSection);
     auto *adv = new QVBoxLayout(m_advancedPanel);
     adv->setContentsMargins(0, 0, 0, 0);
-    root->addWidget(m_advancedPanel);
+    pairSection->addWidget(m_advancedPanel);
 
     // Why the USB way is shown by itself (pairing is not available here).
     m_advancedReason = new QLabel(m_advancedPanel);
@@ -243,6 +282,8 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     connect(m_disconnectButton, &QPushButton::clicked, this, &VrHeadsetDialog::disconnectHeadsets);
     connect(m_advancedToggle, &QToolButton::toggled, this,
             [this](bool open) { setAdvancedOpen(open); });
+    connect(m_showButton, &QPushButton::clicked, this, &VrHeadsetDialog::showOnHeadset);
+    connect(m_pairAnotherToggle, &QToolButton::clicked, this, &VrHeadsetDialog::startPairing);
 
     m_pollTimer = new QTimer(this);
     m_pollTimer->setInterval(kPollIntervalMs);
@@ -283,8 +324,124 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
                         : u"Backend: local, at localhost:%1%2."_s.arg(m_link.port).arg(under));
     }
 
-    newCode();
+    // A headset already connected first; pairing only when there is none.
+    checkHeadsets();
     resize(560, sizeHint().height());
+}
+
+// ── A headset already connected (issue #238) ────────────────────────────────
+
+void VrHeadsetDialog::checkHeadsets(bool quiet)
+{
+    if (m_closed)
+        return;
+    runPairRequest(
+            [](const BackendClient &c) {
+                // Carried in the pairing reply type, which runPairRequest
+                // knows: only the status and the body are read.
+                const BackendVrHubReply hub = c.vrHeadsets();
+                BackendVrPairReply reply;
+                reply.httpStatus = hub.httpStatus;
+                reply.error = hub.error;
+                reply.body = hub.body;
+                return reply;
+            },
+            [this, quiet](const BackendVrPairReply &reply) {
+                const VrHub::Presence p =
+                        VrHub::parsePresence(reply.httpStatus, reply.body, reply.error);
+                if (p.ok)
+                    m_headsets = p.headsets;
+                else if (p.unsupported)
+                    m_headsets.clear();
+                if (!m_headsets.isEmpty()) {
+                    showHeadsets();
+                    return;
+                }
+                if (quiet && m_pairingStarted)
+                    return;
+                // No page here (or a backend without the hub): pairing, as
+                // before the hub existed.
+                m_hubPanel->setVisible(false);
+                startPairing();
+            });
+}
+
+void VrHeadsetDialog::showHeadsets()
+{
+    if (m_headsets.isEmpty())
+        return;
+    const VrHub::Headset &h = m_headsets.first();
+    QString text = u"Connected to this session: %1."_s.arg(VrHub::headsetLine(h));
+    if (m_headsets.size() > 1)
+        text += u" %1 more headsets are connected; the newest is used."_s.arg(m_headsets.size() - 1);
+    if (VrHub::showsCube(h, m_inputs.datasetId, m_inputs.path))
+        text += u" It shows this cube."_s;
+    m_hubLabel->setText(text);
+    m_hubPanel->setVisible(true);
+    m_showButton->setVisible(true);
+    m_showButton->setEnabled(!m_showing && !m_inputs.datasetId.isEmpty());
+    m_showButton->setDefault(true);
+    m_pairAnotherToggle->setVisible(!m_pairSection->isVisible());
+    adjustSize();
+}
+
+void VrHeadsetDialog::showOnHeadset()
+{
+    if (m_headsets.isEmpty() || m_showing)
+        return;
+    m_showing = true;
+    m_showButton->setEnabled(false);
+    m_hubResult->setVisible(true);
+    m_hubResult->setStyleSheet(QString());
+    m_hubResult->setText(u"Sending the cube to the headset…"_s);
+    const QJsonObject body = VrHub::showCommandBody(m_inputs, m_headsets.first().client);
+    runPairRequest(
+            [body](const BackendClient &c) {
+                const BackendVrHubReply hub = c.sendVrHeadsetCommand(body);
+                BackendVrPairReply reply;
+                reply.httpStatus = hub.httpStatus;
+                reply.error = hub.error;
+                reply.body = hub.body;
+                return reply;
+            },
+            [this](const BackendVrPairReply &reply) {
+                m_showing = false;
+                const VrHub::CommandResult r =
+                        VrHub::interpretCommand(reply.httpStatus, reply.body, reply.error);
+                using O = VrHub::CommandResult::Outcome;
+                if (r.outcome == O::Sent) {
+                    m_hubResult->setText(u"Sent: the headset loads this cube now."_s);
+                    // What it shows, once it has had a moment to switch.
+                    QTimer::singleShot(2500, this, [this]() { checkHeadsets(/*quiet=*/true); });
+                } else {
+                    m_hubResult->setStyleSheet(
+                            u"color: %1;"_s.arg(QString::fromLatin1(VisivoTheme::kError())));
+                    m_hubResult->setText(r.message);
+                    if (r.outcome == O::NoHeadset || r.outcome == O::Unsupported) {
+                        // Gone (or never reachable this way): the usual way.
+                        m_headsets.clear();
+                        m_showButton->setVisible(false);
+                        startPairing();
+                    }
+                }
+                if (!m_headsets.isEmpty())
+                    m_showButton->setEnabled(true);
+            });
+}
+
+void VrHeadsetDialog::startPairing()
+{
+    m_pairSection->setVisible(true);
+    m_pairAnotherToggle->setVisible(false);
+    if (!m_pairingStarted) {
+        m_pairingStarted = true;
+        // newCode drops the answers still out, a show among them.
+        m_showing = false;
+        if (!m_headsets.isEmpty())
+            m_showButton->setEnabled(!m_inputs.datasetId.isEmpty());
+        newCode();
+    }
+    adjustSize();
 }
 
 void VrHeadsetDialog::startUsb()
@@ -616,6 +773,8 @@ void VrHeadsetDialog::stopAll()
     // held up by one that will never be answered here.
     ++m_pairSerial;
     m_pollGate.reset();
+    // A show still out is dropped with the rest: the button comes back.
+    m_showing = false;
 }
 
 void VrHeadsetDialog::closeEvent(QCloseEvent *event)
@@ -646,8 +805,11 @@ void VrHeadsetDialog::showEvent(QShowEvent *event)
             m_pollTimer->start();
         }
         // The code shown before was revoked on hide: a connected headset is
-        // followed again, anything else gets a fresh code.
-        if (m_pair.state() == VrPair::State::Connected) {
+        // followed again, anything else gets a fresh code. Not paired yet
+        // here: a page already connected is looked for first (issue #238).
+        if (!m_pairingStarted) {
+            checkHeadsets();
+        } else if (m_pair.state() == VrPair::State::Connected) {
             m_lastPollMs = 0;
             m_pairTimer->start();
         } else {

@@ -9,6 +9,7 @@
 #include "LutScale.h"
 #include "LassoReplay.h"
 #include "SharedSelection.h"
+#include "VrHeadsetHub.h"
 #include "LinkedWindowRegistry.h"
 #include "ProductRegistry.h"
 #include "PowerSpectrumSlope.h"
@@ -31,6 +32,9 @@ class RaytraceViewport;
 class VolumeRaytracePanel;
 class AngularPowerSettings;
 class SharedSelectionLink;
+class HeadsetHubLink;
+class QCheckBox;
+class QListWidget;
 class SkeletonSettings;
 
 #include "CubeViewportGeometry.h"
@@ -860,6 +864,8 @@ private:
     QPointer<QAction> m_actOpenInVrHeadset;
     QPointer<VrHeadsetDialog> m_vrHeadsetDialog;
     void openInVrHeadset();
+    /// This window's cube, session and token as the headset is given them.
+    VrLink::Inputs vrHeadsetInputs() const;
 
     // ── Selections shared with the VR headset (issue #188) ───────────────────
     // vtkWindowCube_VrShare.cpp. The link follows the session's selection hub
@@ -867,6 +873,45 @@ private:
     // shown here as the lasso's mask and statistics, with its record attached.
     QPointer<SharedSelectionLink> m_shareLink;
     QPointer<QAction> m_actShowInHeadset;
+
+    // ── The headset of this session (issue #238) ─────────────────────────────
+    // vtkWindowCube_VrActivity.cpp. The session's HeadsetHubLink (shared with
+    // the other windows of the session) says which headset pages are open and
+    // what they did: Tools ▸ Views ▸ Show on Headset sends this cube to the
+    // newest page, Headset Activity lists what was done there (Inspector ›
+    // Parameters, the tool-settings stack), each product opening in the
+    // desktop's own viewer, and the headset's state is in the status bar.
+    QPointer<HeadsetHubLink> m_headsetHub;
+    QPointer<QAction> m_actShowCubeOnHeadset;
+    QPointer<QAction> m_actHeadsetActivity;
+    QPointer<QWidget> m_headsetActivitySettings;
+    QPointer<QLabel> m_headsetActivityState;
+    QPointer<QListWidget> m_headsetActivityList;
+    QPointer<QCheckBox> m_headsetFollowLook;
+    QPointer<QLabel> m_headsetStatusLabel;
+    bool m_headsetShowing{ false };
+    /// The clip box the headset last set on this cube, applied while Follow is
+    /// on (re-placed when the cube on screen is swapped).
+    VrHub::Clip m_headsetClip;
+    /// The (epoch, seq) of the look and clip already applied here.
+    QPair<int, qint64> m_headsetLookApplied{ -1, 0 };
+    QPair<int, qint64> m_headsetClipApplied{ -1, 0 };
+    bool m_headsetCropping{ false };   ///< the volume is cropped to the headset's clip
+    void setupHeadsetHub();
+    void refreshHeadsetPresence();
+    void refreshHeadsetActivity();
+    void ensureHeadsetActivityPanel();
+    void showCubeOnHeadset();
+    void openHeadsetProduct(const VrHub::Event &event);
+    void openHeadsetSpectrum(const VrHub::Event &event, const VrHub::Product &product);
+    /// Record a product of the headset once in Provenance (stable id).
+    void recordHeadsetProduct(const VrHub::Event &event, const VrHub::Product &product,
+                              const QString &renderer = QString());
+    /// Follow the headset's look: its latest look and clip of this cube.
+    void followHeadsetLook();
+    void applyHeadsetLook(const VrHub::Look &look);
+    /// The clip box on the 3-D volume (none: the whole cube).
+    void applyHeadsetClip();
     QPointer<QPushButton> m_lassoShowInHeadsetBtn;
     QPointer<QLabel> m_lassoShareLabel;
     visivo::SharedSelectionOrigin m_lassoMaskShared;   ///< where the mask on screen came from
