@@ -59,6 +59,8 @@ void Settings::resetDefaults()
     this->settings->setValue(Settings::CopilotKey.first, Settings::CopilotKey.second);
     this->settings->setValue(Settings::CopilotUrl.first, Settings::CopilotUrl.second);
     this->settings->setValue(Settings::CopilotModel.first, Settings::CopilotModel.second);
+    this->settings->setValue(Settings::VrPairUrl.first, Settings::VrPairUrl.second);
+    this->settings->setValue(Settings::VrPageUrl.first, Settings::VrPageUrl.second);
 
     emit this->updated();
 }
@@ -443,6 +445,33 @@ QString Settings::getCopilotModel() const
 void Settings::setCopilotModel(const QString &model)
 {
     this->settings->setValue(Settings::CopilotModel.first, model);
+}
+
+//----------------------------------------------------------------------------
+// Headset pairing
+//----------------------------------------------------------------------------
+const std::pair<QString, QVariant> Settings::VrPairUrl = { u"VrPairing/serviceUrl"_s, u""_s };
+const std::pair<QString, QVariant> Settings::VrPageUrl = { u"VrPairing/pageUrl"_s, u""_s };
+
+QString Settings::getVrPairUrl() const
+{
+    return this->settings->value(Settings::VrPairUrl.first, Settings::VrPairUrl.second)
+            .toString()
+            .trimmed();
+}
+void Settings::setVrPairUrl(const QString &url)
+{
+    this->settings->setValue(Settings::VrPairUrl.first, url.trimmed());
+}
+QString Settings::getVrPageUrl() const
+{
+    return this->settings->value(Settings::VrPageUrl.first, Settings::VrPageUrl.second)
+            .toString()
+            .trimmed();
+}
+void Settings::setVrPageUrl(const QString &url)
+{
+    this->settings->setValue(Settings::VrPageUrl.first, url.trimmed());
 }
 
 QString Settings::getSkavaUrl() const

@@ -280,6 +280,22 @@ struct BackendSofiaSuggestResult
     QJsonObject body;
 };
 
+/// One answer of the headset pairing routes (/v1/vr/pair, issue #214), raw:
+/// app/VrPair.h reads it, so the meaning of each status is unit-tested there.
+struct BackendVrPairReply
+{
+    int httpStatus{ 0 };      ///< 0 = no answer
+    QString error;            ///< Qt's words when there was no answer
+    QByteArray body;
+    QString date;             ///< the reply's Date header, to place expires_at on our clock
+    /// The token the client ended up sending (a 401 retry may adopt the local
+    /// token file's): for the caller to keep. Never shown or logged.
+    QString token;
+    /// Filled by the pairing dialog, not by BackendClient: the GET /v1/vr/pair
+    /// body read just before the code was asked for (empty if it failed).
+    QByteArray statusBefore;
+};
+
 /// A source finder the backend can run (GET /v1/finders): SoFiA-2 for cubes,
 /// photutils for images; ``parameters`` names what a caller may set.
 struct BackendFinderInfo
@@ -2571,6 +2587,19 @@ public:
      *  busy session (429) and from a backend without the route (404). */
     BackendSofiaSuggestResult suggestSofia2Parameters(const QString &datasetId,
                                                       const QJsonObject &request) const;
+    // ── Headset pairing (issue #214, contract visivo-pair/1 of #210) ─────────
+    /** POST /v1/vr/pair — a pairing code for the headset, for @p body
+     *  (VrPair::requestBody: session, dataset, path, and kind/box when the link
+     *  would carry them). 409 {reason: not-configured | unreachable} says
+     *  pairing cannot be used here. Blocking: call it from a worker. */
+    BackendVrPairReply createVrPairCode(const QJsonObject &body) const;
+    /** GET /v1/vr/pair — the pending codes and connected headsets of this
+     *  session. Polled by the dialog, so it is quiet in Diagnostics. */
+    BackendVrPairReply vrPairStatus() const;
+    /** DELETE /v1/vr/pair/{code_or_id} — revoke a code, or disconnect a
+     *  headset. The path holds the code: it is never logged. */
+    bool revokeVrPair(const QString &codeOrId, QString &error, int timeoutMs = 5000) const;
+
     /** DELETE /v1/tasks/{id} — ask the backend to cancel a running or pending
      *  task. True when it accepted; ``error`` says why not (404: no such
      *  task, 409: already finished). Best-effort: the task may still complete.
@@ -3095,8 +3124,10 @@ private:
 
     /// @p abort, when given, is watched while the reply is out: set, the
     /// request is dropped at once with an error (no 401 retry).
+    /// @p statusOut, when given, gets the HTTP status (0 = no answer).
     QByteArray performGet(const QUrl &url, QString &error,
-                          const std::atomic_bool *abort = nullptr) const;
+                          const std::atomic_bool *abort = nullptr,
+                          int *statusOut = nullptr) const;
     /// performPost, retrying while the backend answers 429 (5 attempts, 4 sleeps
     /// of 0.5 / 1 / 2 / 4 s — about 7.5 s of backoff on top of the server's own
     /// bounded wait for a compute slot).

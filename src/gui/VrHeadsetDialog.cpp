@@ -2,7 +2,9 @@
 
 #include "WindowCloseShortcut.h"
 #include "app/VrBackendCheck.h"
+#include "app/VrPairQr.h"
 #include "theme/ToolDialogStyle.h"
+#include "theme/VisivoTheme.h"
 
 #include <QAbstractItemView>
 #include <QClipboard>
@@ -10,8 +12,17 @@
 #include <QHideEvent>
 #include <QShowEvent>
 #include <QComboBox>
+#include <QDateTime>
 #include <QDebug>
 #include <QDir>
+#include <QFontDatabase>
+#include <QFutureWatcher>
+#include <QImage>
+#include <QPainter>
+#include <QPixmap>
+#include <QSignalBlocker>
+#include <QToolButton>
+#include <QtConcurrentRun>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -24,6 +35,8 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <algorithm>
+
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -35,6 +48,9 @@ constexpr int kCommandTimeoutMs = 15000;
 // Often enough that accepting the USB-debugging prompt in the headset shows up
 // here without pressing Refresh, rarely enough to cost nothing.
 constexpr int kPollIntervalMs = 3000;
+// The pairing state: often enough that "Headset connected" follows the
+// headset within a moment, and one small GET is all it costs.
+constexpr qint64 kPairPollIntervalMs = 2000;
 // The backend check: a tunnel to a cluster answers in well under a second.
 constexpr int kBackendCheckTimeoutMs = 8000;
 
@@ -54,92 +70,179 @@ QString guideLink(const QString &text, const QString &anchor = u"open-a-cube-fro
 
 VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     : QDialog(parent), m_link(VrLink::build(inputs)), m_secrets{ inputs.token, inputs.sessionId },
-      m_token(inputs.token)
+      m_token(inputs.token), m_inputs(inputs), m_pairClient(inputs.baseUrl, inputs.token),
+      m_pair(inputs.datasetId)
 {
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowTitle(u"Open in VR Headset"_s);
     visivo::installCloseWindowShortcut(this);
+    // The desktop's own session, so the headset lands where its datasets are.
+    m_pairClient.setSessionId(inputs.sessionId);
 
     auto *root = new QVBoxLayout(this);
     root->addWidget(ToolDialogStyle::makeBreadcrumb(this, u"Open in VR Headset"_s));
+
+    // ── Pairing by code: the default (issue #214) ──────────────────────────
+    m_pairPanel = new QWidget(this);
+    auto *pair = new QVBoxLayout(m_pairPanel);
+    pair->setContentsMargins(0, 0, 0, 0);
+    auto *pairIntro = new QLabel(
+            u"Pair a Meta Quest with this window by code: no cable, and nothing to type but "
+            u"the code. %1"_s.arg(guideLink(u"How it works"_s, u"pair-by-code"_s)),
+            m_pairPanel);
+    pairIntro->setWordWrap(true);
+    pairIntro->setOpenExternalLinks(true);
+    pair->addWidget(pairIntro);
+
+    auto *codeRow = new QHBoxLayout;
+    auto *codeColumn = new QVBoxLayout;
+    m_codeLabel = new QLabel(m_pairPanel);
+    QFont codeFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    codeFont.setPointSizeF(codeFont.pointSizeF() * 2.6);
+    codeFont.setBold(true);
+    codeFont.setLetterSpacing(QFont::PercentageSpacing, 112);
+    m_codeLabel->setFont(codeFont);
+    m_codeLabel->setTextFormat(Qt::PlainText);
+    m_codeLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_codeLabel->setAccessibleName(u"Pairing code"_s);
+    codeColumn->addWidget(m_codeLabel);
+    m_pairHint = new QLabel(
+            u"On the Quest, open <i>VisIVO VR</i> and type this code. Or scan the QR code, "
+            u"which opens the page with the code already filled in."_s,
+            m_pairPanel);
+    m_pairHint->setWordWrap(true);
+    codeColumn->addWidget(m_pairHint);
+    m_pairStatus = new QLabel(m_pairPanel);
+    m_pairStatus->setTextFormat(Qt::PlainText);
+    m_pairStatus->setWordWrap(true);
+    m_pairStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    codeColumn->addWidget(m_pairStatus);
+    auto *pairButtons = new QHBoxLayout;
+    m_newCodeButton = new QPushButton(u"New Code"_s, m_pairPanel);
+    m_newCodeButton->setToolTip(u"Ask for another code (the current one stops working)."_s);
+    m_disconnectButton = new QPushButton(u"Disconnect"_s, m_pairPanel);
+    m_disconnectButton->setToolTip(u"Disconnect the headset from this backend."_s);
+    pairButtons->addWidget(m_newCodeButton);
+    pairButtons->addWidget(m_disconnectButton);
+    pairButtons->addStretch();
+    codeColumn->addLayout(pairButtons);
+    codeColumn->addStretch();
+    codeRow->addLayout(codeColumn, 1);
+    m_qrLabel = new QLabel(m_pairPanel);
+    m_qrLabel->setAccessibleName(u"QR code of the pairing page"_s);
+    m_qrLabel->setAlignment(Qt::AlignTop | Qt::AlignRight);
+    m_qrLabel->setVisible(false);
+    codeRow->addWidget(m_qrLabel);
+    pair->addLayout(codeRow);
+    root->addWidget(m_pairPanel);
+
+    // ── Advanced (USB cable): the adb way of issue #172 ────────────────────
+    m_advancedToggle = new QToolButton(this);
+    m_advancedToggle->setText(u"Advanced (USB cable)"_s);
+    m_advancedToggle->setCheckable(true);
+    m_advancedToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_advancedToggle->setArrowType(Qt::RightArrow);
+    m_advancedToggle->setAutoRaise(true);
+    root->addWidget(m_advancedToggle);
+
+    m_advancedPanel = new QWidget(this);
+    auto *adv = new QVBoxLayout(m_advancedPanel);
+    adv->setContentsMargins(0, 0, 0, 0);
+    root->addWidget(m_advancedPanel);
+
+    // Why the USB way is shown by itself (pairing is not available here).
+    m_advancedReason = new QLabel(m_advancedPanel);
+    m_advancedReason->setTextFormat(Qt::PlainText);
+    m_advancedReason->setWordWrap(true);
+    m_advancedReason->setVisible(false);
+    adv->addWidget(m_advancedReason);
 
     auto *intro = new QLabel(
             u"Opens this cube in the browser of a Meta Quest connected to this computer "
             u"with adb (USB cable, or adb over Wi-Fi), in the same backend session. "
             u"Then press <i>Enter VR</i> on the page. %1"_s.arg(guideLink(u"How to set it up"_s)),
-            this);
+            m_advancedPanel);
     intro->setWordWrap(true);
     intro->setOpenExternalLinks(true);
-    root->addWidget(intro);
+    adv->addWidget(intro);
 
     // Which backend the headset will use: the local one, or a remote one
     // through this computer's tunnel (issue #187).
-    m_backendLabel = new QLabel(this);
+    m_backendLabel = new QLabel(m_advancedPanel);
     m_backendLabel->setTextFormat(Qt::PlainText);
     m_backendLabel->setWordWrap(true);
     m_backendLabel->setVisible(m_link.ok);
-    root->addWidget(m_backendLabel);
+    adv->addWidget(m_backendLabel);
 
-    m_stateLabel = new QLabel(this);
+    m_stateLabel = new QLabel(m_advancedPanel);
     m_stateLabel->setWordWrap(true);
     m_stateLabel->setOpenExternalLinks(true);
     m_stateLabel->setTextInteractionFlags(Qt::TextBrowserInteraction);
-    root->addWidget(m_stateLabel);
+    adv->addWidget(m_stateLabel);
 
     auto *deviceRow = new QHBoxLayout;
-    m_deviceCombo = new QComboBox(this);
+    m_deviceCombo = new QComboBox(m_advancedPanel);
     m_deviceCombo->setToolTip(u"More than one device is connected: choose the headset."_s);
     m_deviceCombo->setVisible(false);
     deviceRow->addWidget(m_deviceCombo, 1);
-    m_refreshButton = new QPushButton(u"Retry"_s, this);
+    m_refreshButton = new QPushButton(u"Retry"_s, m_advancedPanel);
     m_refreshButton->setToolTip(u"Look for adb and the connected headsets again (this window also "
                                 u"checks by itself every few seconds)."_s);
     deviceRow->addStretch();
     deviceRow->addWidget(m_refreshButton);
-    root->addLayout(deviceRow);
+    adv->addLayout(deviceRow);
 
-    m_resultLabel = new QLabel(this);
+    m_resultLabel = new QLabel(m_advancedPanel);
     // Plain text: it shows adb's own output, which must not be read as markup.
     m_resultLabel->setTextFormat(Qt::PlainText);
     m_resultLabel->setWordWrap(true);
     m_resultLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    root->addWidget(m_resultLabel);
-    m_copyErrorButton = new QPushButton(u"Copy Error"_s, this);
+    adv->addWidget(m_resultLabel);
+    m_copyErrorButton = new QPushButton(u"Copy Error"_s, m_advancedPanel);
     m_copyErrorButton->setToolTip(u"Copy the error and the state, without the token, for a support "
                                   u"request."_s);
     m_copyErrorButton->setVisible(false);
     auto *errorRow = new QHBoxLayout;
     errorRow->addStretch();
     errorRow->addWidget(m_copyErrorButton);
-    root->addLayout(errorRow);
+    adv->addLayout(errorRow);
 
     auto *warning = new QLabel(
             u"The link carries this backend's access token: anyone who has it can use the "
             u"backend as you. Open or paste it only on your own headset."_s,
-            this);
+            m_advancedPanel);
     warning->setWordWrap(true);
     warning->setStyleSheet(ToolDialogStyle::helperCss());
-    root->addWidget(warning);
+    adv->addWidget(warning);
 
-    auto *buttons = new QHBoxLayout;
-    m_copyButton = new QPushButton(u"Copy Link"_s, this);
+    auto *usbButtons = new QHBoxLayout;
+    m_copyButton = new QPushButton(u"Copy Link"_s, m_advancedPanel);
     m_copyButton->setToolTip(u"Copy the link, token included, to open it by hand: forward the "
                              u"port with adb reverse first."_s);
-    m_openButton = new QPushButton(u"Open on Headset"_s, this);
-    m_openButton->setDefault(true);
+    m_openButton = new QPushButton(u"Open on Headset"_s, m_advancedPanel);
+    usbButtons->addWidget(m_copyButton);
+    usbButtons->addStretch();
+    usbButtons->addWidget(m_openButton);
+    adv->addLayout(usbButtons);
+    m_advancedPanel->setVisible(false);
+
+    auto *buttons = new QHBoxLayout;
     auto *close = new QPushButton(u"Close"_s, this);
-    buttons->addWidget(m_copyButton);
+    close->setAutoDefault(false);
     buttons->addStretch();
     buttons->addWidget(close);
-    buttons->addWidget(m_openButton);
     root->addLayout(buttons);
 
-    connect(m_refreshButton, &QPushButton::clicked, this, &VrHeadsetDialog::refreshDevices);
+    connect(m_refreshButton, &QPushButton::clicked, this, [this]() { refreshDevices(); });
     connect(m_openButton, &QPushButton::clicked, this, &VrHeadsetDialog::openOnHeadset);
     connect(m_copyButton, &QPushButton::clicked, this, &VrHeadsetDialog::copyLink);
     connect(m_copyErrorButton, &QPushButton::clicked, this, &VrHeadsetDialog::copyError);
     connect(close, &QPushButton::clicked, this, &QDialog::close);
     connect(m_deviceCombo, &QComboBox::currentIndexChanged, this, [this]() { setBusy(false); });
+    connect(m_newCodeButton, &QPushButton::clicked, this, &VrHeadsetDialog::newCode);
+    connect(m_disconnectButton, &QPushButton::clicked, this, &VrHeadsetDialog::disconnectHeadsets);
+    connect(m_advancedToggle, &QToolButton::toggled, this,
+            [this](bool open) { setAdvancedOpen(open); });
 
     m_pollTimer = new QTimer(this);
     m_pollTimer->setInterval(kPollIntervalMs);
@@ -150,28 +253,295 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
             refreshDevices(/*background=*/true);
     });
 
-    resize(520, sizeHint().height());
+    // Once a second: the countdown; every few seconds, the backend's state.
+    m_pairTimer = new QTimer(this);
+    m_pairTimer->setInterval(1000);
+    connect(m_pairTimer, &QTimer::timeout, this, [this]() {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        m_pair.tick(now);
+        if (m_pair.polling(now) && now - m_lastPollMs >= kPairPollIntervalMs)
+            pollPairing();
+        showPairing();
+    });
 
+    // The USB section's state when the headset could not reach this backend
+    // through adb at all: shown, with the reason, if the section is opened.
     if (!m_link.ok) {
-        // Nothing here can help: the headset could not reach this backend.
         m_stateLabel->setText(m_link.error.toHtmlEscaped());
         m_refreshButton->setEnabled(false);
         m_openButton->setEnabled(false);
         m_copyButton->setEnabled(false);
-        return;
+    } else {
+        const QString under =
+                m_link.prefix.isEmpty() ? QString() : u" under %1"_s.arg(m_link.prefix);
+        m_backendLabel->setText(
+                m_link.remote
+                        ? u"Backend: remote, through this computer's tunnel at localhost:%1%2. "
+                          u"The headset reaches it through the same port (adb reverse tcp:%1)."_s
+                                  .arg(m_link.port)
+                                  .arg(under)
+                        : u"Backend: local, at localhost:%1%2."_s.arg(m_link.port).arg(under));
     }
+
+    newCode();
+    resize(560, sizeHint().height());
+}
+
+void VrHeadsetDialog::startUsb()
+{
+    if (m_usbStarted || !m_link.ok || m_closed)
+        return;
+    m_usbStarted = true;
     m_copyButton->setEnabled(true);
-    const QString under = m_link.prefix.isEmpty() ? QString() : u" under %1"_s.arg(m_link.prefix);
-    m_backendLabel->setText(
-            m_link.remote
-                    ? u"Backend: remote, through this computer's tunnel at localhost:%1%2. The "
-                      u"headset reaches it through the same port (adb reverse tcp:%1)."_s
-                              .arg(m_link.port)
-                              .arg(under)
-                    : u"Backend: local, at localhost:%1%2."_s.arg(m_link.port).arg(under));
     checkBackend();
     refreshDevices();
     m_pollTimer->start();
+}
+
+void VrHeadsetDialog::setAdvancedOpen(bool open, const QString &reason)
+{
+    if (!reason.isEmpty()) {
+        m_advancedReason->setText(reason);
+        m_advancedReason->setVisible(true);
+    }
+    {
+        const QSignalBlocker block(m_advancedToggle);
+        m_advancedToggle->setChecked(open);
+    }
+    m_advancedToggle->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
+    m_advancedPanel->setVisible(open);
+    // Return presses the button of the way that is open.
+    m_openButton->setDefault(open);
+    if (open)
+        startUsb();
+    adjustSize();
+}
+
+// ── Pairing by code ─────────────────────────────────────────────────────────
+
+namespace {
+
+/// DELETE each of @p ids on a worker, whatever becomes of the dialog.
+void revokeDetached(const BackendClient &client, const QStringList &ids)
+{
+    if (ids.isEmpty())
+        return;
+    (void)QtConcurrent::run([client, ids]() {
+        for (const QString &id : ids) {
+            QString error;
+            // Neither the id (it may be the code) nor the error (Qt's words
+            // can hold the URL, code included) is logged.
+            if (!client.revokeVrPair(id, error))
+                qWarning().noquote() << "VR headset: a pairing code or headset could not be "
+                                        "revoked; it ends by itself when it expires.";
+        }
+    });
+}
+
+}   // namespace
+
+void VrHeadsetDialog::runPairRequest(std::function<BackendVrPairReply(const BackendClient &)> work,
+                                     std::function<void(const BackendVrPairReply &)> done,
+                                     std::function<void(const BackendVrPairReply &,
+                                                        const BackendClient &)> obsolete)
+{
+    // Its own copy of the client for each request: a poll and a revoke may
+    // run at once, and a client adopting a refreshed token is not shared.
+    const BackendClient client = m_pairClient;
+    const QString startToken = client.token();
+    const int serial = m_pairSerial;
+    QPointer<VrHeadsetDialog> self(this);
+    // Not parented to the dialog: an answer that arrives after the dialog is
+    // gone must still reach @p obsolete (a code issued meanwhile is revoked).
+    auto *watcher = new QFutureWatcher<BackendVrPairReply>;
+    QObject::connect(watcher, &QFutureWatcher<BackendVrPairReply>::finished, watcher,
+                     [self, watcher, serial, done, obsolete, client, startToken]() {
+                         const BackendVrPairReply reply = watcher->result();
+                         watcher->deleteLater();
+                         // A token the request really refreshed (the local
+                         // backend restarted with a new one) is kept, so the
+                         // next requests skip the 401. Only over the token
+                         // it started from: an older request finishing late
+                         // must not put back a token already replaced.
+                         const bool refreshed =
+                                 !reply.token.isEmpty() && reply.token != startToken;
+                         if (self) {
+                             const QString keep = VrPair::tokenToKeep(
+                                     self->m_pairClient.token(), startToken, reply.token);
+                             if (!keep.isEmpty()) {
+                                 self->m_pairClient.setToken(keep);
+                                 self->m_secrets.append(keep);
+                             }
+                         }
+                         if (!self || self->m_closed || serial != self->m_pairSerial) {
+                             if (obsolete) {
+                                 // Cleaned up with the token that worked.
+                                 BackendClient cleanup = client;
+                                 if (refreshed)
+                                     cleanup.setToken(reply.token);
+                                 obsolete(reply, cleanup);
+                             }
+                             return;
+                         }
+                         done(reply);
+                     });
+    watcher->setFuture(QtConcurrent::run([client, work]() {
+        BackendVrPairReply reply = work(client);
+        reply.token = client.token();   // as the request ended up using it
+        return reply;
+    }));
+}
+
+void VrHeadsetDialog::revoke(const QStringList &ids)
+{
+    // Not tied to the dialog: it is sent on close too, and must still go.
+    revokeDetached(m_pairClient, ids);
+}
+
+void VrHeadsetDialog::newCode()
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (m_pair.codeOutstanding(now))
+        revoke({ m_pair.code().code });
+    ++m_pairSerial;
+    m_pollGate.reset();
+    m_pair.requesting();
+    showPairing();
+    if (m_inputs.datasetId.isEmpty()) {
+        // The dataset id was taken when the dialog opened; asking again here
+        // would not change it.
+        VrPair::CreateResult r;
+        r.message = u"The cube has no backend dataset yet: close this window and open it "
+                    u"again once the cube has loaded."_s;
+        m_pair.created(r, now);
+        showPairing();
+        return;
+    }
+    const QJsonObject body = VrPair::requestBody(m_inputs);
+    runPairRequest([body](const BackendClient &c) {
+                       // The headsets connected before the code exists, so
+                       // that none of them is taken for the one using it.
+                       const BackendVrPairReply before = c.vrPairStatus();
+                       BackendVrPairReply reply = c.createVrPairCode(body);
+                       if (before.httpStatus == 200)
+                           reply.statusBefore = before.body;
+                       return reply;
+                   },
+                   [this](const BackendVrPairReply &reply) {
+                       const qint64 at = QDateTime::currentMSecsSinceEpoch();
+                       m_pair.created(VrPair::interpretCreate(reply.httpStatus, reply.body,
+                                                              reply.error, reply.date, at),
+                                      at, VrPair::parseStatus(200, reply.statusBefore));
+                       m_lastPollMs = at;
+                       if (m_pair.state() == VrPair::State::Unavailable)
+                           setAdvancedOpen(true, m_pair.message());
+                       showPairing();
+                       if (m_pair.polling(at))
+                           m_pairTimer->start();
+                   },
+                   [](const BackendVrPairReply &reply, const BackendClient &client) {
+                       // The dialog closed, or New Code was pressed, while the
+                       // code was being issued: nobody will see it, so it goes.
+                       if (reply.httpStatus < 200 || reply.httpStatus >= 300)
+                           return;
+                       const QString code = QJsonDocument::fromJson(reply.body)
+                                                    .object()
+                                                    .value(u"code"_s)
+                                                    .toString()
+                                                    .trimmed();
+                       if (!code.isEmpty())
+                           revokeDetached(client, { code });
+                   });
+}
+
+void VrHeadsetDialog::pollPairing()
+{
+    if (m_closed)
+        return;
+    const int ticket = m_pollGate.start();
+    if (ticket == 0)
+        return;   // the previous poll is still out
+    m_lastPollMs = QDateTime::currentMSecsSinceEpoch();
+    runPairRequest([](const BackendClient &c) { return c.vrPairStatus(); },
+                   [this, ticket](const BackendVrPairReply &reply) {
+                       if (!m_pollGate.finish(ticket))
+                           return;
+                       const VrPair::State was = m_pair.state();
+                       m_pair.polled(VrPair::parseStatus(reply.httpStatus, reply.body),
+                                     QDateTime::currentMSecsSinceEpoch());
+                       if (was != VrPair::State::Unavailable
+                           && m_pair.state() == VrPair::State::Unavailable)
+                           setAdvancedOpen(true, m_pair.message());
+                       showPairing();
+                   });
+}
+
+void VrHeadsetDialog::disconnectHeadsets()
+{
+    QStringList ids;
+    for (const VrPair::Connection &c : m_pair.connections())
+        ids << c.id;
+    m_pair.disconnecting();
+    showPairing();
+    revoke(ids);
+}
+
+void VrHeadsetDialog::showQr(const QString &payload)
+{
+    if (payload == m_qrPayload)
+        return;
+    m_qrPayload = payload;
+    const VrPairQr::Matrix qr = VrPairQr::encode(payload);
+    if (qr.size == 0) {
+        m_qrLabel->clear();
+        m_qrLabel->setVisible(false);
+        return;
+    }
+    // Dark on white whatever the theme, with the four-module quiet zone a
+    // reader needs; whole pixels per module, so it stays sharp.
+    constexpr int kQuiet = 4;
+    const int modules = qr.size + 2 * kQuiet;
+    const int scale = std::max(3, 180 / modules);
+    QImage image(modules * scale, modules * scale, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    QPainter painter(&image);
+    for (int y = 0; y < qr.size; ++y)
+        for (int x = 0; x < qr.size; ++x)
+            if (qr.at(x, y))
+                painter.fillRect((x + kQuiet) * scale, (y + kQuiet) * scale, scale, scale,
+                                 Qt::black);
+    painter.end();
+    m_qrLabel->setPixmap(QPixmap::fromImage(image));
+    m_qrLabel->setVisible(true);
+}
+
+void VrHeadsetDialog::showPairing()
+{
+    using VrPair::State;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const State state = m_pair.state();
+    const bool codeShown = state == State::Waiting && m_pair.msLeft(now) > 0;
+    m_codeLabel->setText(codeShown ? VrPair::displayCode(m_pair.code().code) : QString());
+    m_codeLabel->setVisible(codeShown);
+    m_pairHint->setVisible(codeShown);
+    showQr(codeShown ? VrPair::qrPayload(m_pair.code()) : QString());
+    m_pairStatus->setText(VrPair::statusText(m_pair, now));
+    const bool problem = state == State::Failed || state == State::Lost
+            || state == State::Unavailable || m_pair.silent(now);
+    m_pairStatus->setStyleSheet(
+            problem ? u"color: %1;"_s.arg(QString::fromLatin1(VisivoTheme::kError())) : QString());
+    // Also while waiting, for a headset paired before that is still there.
+    m_disconnectButton->setVisible(!m_pair.connections().isEmpty()
+                                   && (state == State::Connected || state == State::Waiting));
+    // No Try Again without a dataset: the id was taken when the dialog opened.
+    m_newCodeButton->setVisible(state != State::Requesting && state != State::Connected
+                                && state != State::Connecting && !m_inputs.datasetId.isEmpty());
+    m_newCodeButton->setText(state == State::Failed || state == State::Unavailable
+                                     ? u"Try Again"_s
+                                     : u"New Code"_s);
+    // Nothing changes by itself any more: the countdown and the polls stop.
+    if (!m_pair.polling(now))
+        m_pairTimer->stop();
 }
 
 void VrHeadsetDialog::checkBackend()
@@ -212,6 +582,10 @@ void VrHeadsetDialog::checkBackend()
 
 VrHeadsetDialog::~VrHeadsetDialog()
 {
+    // Deleted with its cube window, without a close: the unused code is
+    // still revoked (the request outlives the dialog).
+    if (!m_closed)
+        stopAll();
     // A command still running dies with the dialog; its finished() must not
     // reach the half-destroyed dialog's callbacks.
     if (m_process) {
@@ -228,9 +602,20 @@ VrHeadsetDialog::~VrHeadsetDialog()
 
 void VrHeadsetDialog::stopAll()
 {
+    // A code nobody used stops working with the window that shows it.
+    if (!m_closed && m_pair.codeOutstanding(QDateTime::currentMSecsSinceEpoch())) {
+        revoke({ m_pair.code().code });
+        m_pair.requesting();   // no code any more: shown again, it asks for one
+    }
     m_closed = true;
     m_openQueued = false;
     m_pollTimer->stop();
+    m_pairTimer->stop();
+    // Answers still out belong to the window as it was: dropped (a code
+    // issued meanwhile is revoked), and the next poll after a re-show is not
+    // held up by one that will never be answered here.
+    ++m_pairSerial;
+    m_pollGate.reset();
 }
 
 void VrHeadsetDialog::closeEvent(QCloseEvent *event)
@@ -253,11 +638,21 @@ void VrHeadsetDialog::showEvent(QShowEvent *event)
     QDialog::showEvent(event);
     // Shown again after a hide that did not delete it (raised by the cube
     // window): start checking again instead of staying inert.
-    if (m_closed && m_link.ok && !event->spontaneous()) {
+    if (m_closed && !event->spontaneous()) {
         m_closed = false;
-        if (!m_process)
-            refreshDevices();
-        m_pollTimer->start();
+        if (m_usbStarted && m_link.ok) {
+            if (!m_process)
+                refreshDevices();
+            m_pollTimer->start();
+        }
+        // The code shown before was revoked on hide: a connected headset is
+        // followed again, anything else gets a fresh code.
+        if (m_pair.state() == VrPair::State::Connected) {
+            m_lastPollMs = 0;
+            m_pairTimer->start();
+        } else {
+            newCode();
+        }
     }
 }
 

@@ -43,6 +43,8 @@ find_package(Qt6 REQUIRED COMPONENTS Test Core Network Concurrent)
 add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/app/BackendClient.cpp
     ${VISIVO_ROOT}/src/app/BackendClient_Tasks.cpp
+    ${VISIVO_ROOT}/src/app/BackendClient_VrPair.cpp
+    ${VISIVO_ROOT}/src/thirdparty/qrcodegen/qrcodegen.cpp
     ${VISIVO_ROOT}/src/app/BackendUrl.cpp
     ${VISIVO_ROOT}/src/app/LaunchOptions.cpp
     ${VISIVO_ROOT}/src/app/RecentDatasetsManager.cpp
@@ -217,6 +219,8 @@ add_executable(VisIVOTests
     test_busy_feedback.cpp
     TestVrLink.h
     test_vr_link.cpp
+    TestVrPair.h
+    test_vr_pair.cpp
     TestSharedSelection.h
     test_shared_selection.cpp
     TestSharedSelectionLink.h

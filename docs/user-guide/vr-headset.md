@@ -15,6 +15,11 @@ This guide is now a section of its own: [Cubes in a VR headset](vr/index.md).
 - [Troubleshooting](vr/troubleshooting.md)
 - [Technical reference](vr/reference.md)
 
+## Pair by code
+
+Pairing a Quest with the desktop by code is now in
+[Pair by code](vr/quickstart.md#pair-by-code).
+
 ## Open a cube from the desktop
 
 Opening a cube on a Quest from the desktop's *Open in VR Headset…* is now in

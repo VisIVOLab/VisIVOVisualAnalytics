@@ -35,7 +35,58 @@ out: see [Troubleshooting](troubleshooting.md).
 checking the page and measuring frame rates. The hand menu can be shown in the
 page's 3-D view and used with the mouse (see [The hand menu](controls.md#the-hand-menu)).
 
+## Pair by code
+
+With a cube open in the desktop application, **Tools → Views → Open in VR
+Headset…** opens on a pairing code: no cable, no adb and no address to type
+on the headset.
+
+- The dialog shows a large code (such as `K7Q-4MX`) with the time it has left
+  (five minutes by default), and a QR code of the public headset page with the
+  code already in it.
+- On the Quest, open *VisIVO VR* and type the code, or scan the QR code.
+- The dialog follows the pairing by itself: *Waiting for the headset*, then
+  *The code was entered: the headset is connecting*, then **Headset
+  connected** with a **Disconnect** button. A code that runs out says *The
+  code expired*; **New Code** asks for another one. A code that was used but
+  brought no headset within 45 seconds says so, with **New Code** as well.
+  A headset paired earlier that is still connected is named under the new
+  code, with **Disconnect**.
+  If the backend stops answering for more than 15 seconds, the dialog says
+  so and keeps trying.
+- The headset joins the desktop's backend session, on the same dataset and
+  path (and, for a point table, a catalogue or a velocity field, the same kind
+  and box), as the USB link does.
+- The backend's token never leaves the backend: it is not in the code, the QR
+  code or the page address. The code is shown on purpose but is not written to
+  the application's log. Closing the dialog revokes a code nobody used.
+
+Pairing works with the local backend and with a remote one alike: the
+backend, not the desktop, talks to the pairing service. The backend needs to
+know that service and the public page. For the backend the desktop starts,
+set them in **Settings ▸ Backends ▸ Headset Pairing**:
+
+| Field | Passed to the backend as | What it is |
+|---|---|---|
+| *Pairing service* | `VISIVO_VR_PAIR_URL` | the pairing service, `wss://…` |
+| *Headset page* | `VISIVO_VR_PAGE_URL` | the public page the headset opens, `https://…` |
+
+Both are empty by default, and nothing is built in: moving the service to
+another server means changing these two fields. They are read when the
+backend starts, so restart the application after changing them. The same
+variables set in the environment the application starts from take
+precedence over the fields. A remote backend (a cluster's) uses its own
+configuration.
+
+When the backend has no pairing service (`not-configured`), cannot reach it
+(`unreachable`), or is older than the desktop, the dialog opens
+**Advanced (USB cable)** by itself and says why: the way below then works as
+before. It can also be opened by hand at any time; adb is only run once it
+is open.
+
 ## Open a cube from the desktop
+
+The USB way is under **Advanced (USB cable)** in *Open in VR Headset…*.
 
 With a cube open in the desktop application, **Tools → Views → Open in VR
 Headset…** (or the same entry in Inspector ▸ Analysis) opens it on a Quest
