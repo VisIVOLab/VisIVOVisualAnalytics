@@ -80,8 +80,10 @@ export const XR_FAKE = `(() => {
   const listeners = {};
   let activeLayers = [], pendingLayers = null;
   const gamepad = (hand) => ({ buttons: S.buttons[hand], axes: [0, 0, 0, 0] });
+  // As a Quest 3's Touch Plus controllers report themselves (most specific first).
+  S.profiles = ['meta-quest-touch-plus', 'generic-trigger-squeeze-thumbstick'];
   const sources = ['left', 'right'].map((hand) => ({ handedness: hand, gripSpace: { hand, kind: 'grip' },
-    targetRaySpace: { hand, kind: 'ray' }, gamepad: gamepad(hand), profiles: [] }));
+    targetRaySpace: { hand, kind: 'ray' }, gamepad: gamepad(hand), get profiles() { return S.profiles; } }));
   let enabled = [];
   const session = {
     get enabledFeatures() { return enabled; },
@@ -136,6 +138,14 @@ export const XR_FAKE = `(() => {
 /** The XR checks on the page `c` (opened with ?xrfake or ?xrfake=nolayers). */
 export async function runXRFakeChecks({ c, check, waitFor, label = 'layers', expectLayers = true }) {
   const say = (m) => console.log(`     xrfake ${label}: ${m}`);
+  // A page after a session that had the real models: they load on the 2-D page, before Enter VR.
+  const remembered = await c.evaluate(`localStorage.getItem('visivo.vr.controllerProfiles')`);
+  if (remembered) {
+    const pre = await waitFor(c, 'window.__vrControllerModels.preloaded.length === 2', 10000);
+    const list = await c.evaluate('window.__vrControllerModels.preloaded');
+    check(`xrfake ${label}: the controller models used last time load before Enter VR`, pre.value
+      && list.includes('meta-quest-touch-plus/left') && list.includes('meta-quest-touch-plus/right'), `${pre.ms} ms ${JSON.stringify(list)}`);
+  }
   const enter = await c.evaluate(`(async () => {
     const b = document.getElementById('enter-vr');
     for (let i = 0; i < 50 && b.disabled; i++) await new Promise((r) => setTimeout(r, 50));
@@ -159,7 +169,7 @@ export async function runXRFakeChecks({ c, check, waitFor, label = 'layers', exp
     check(`xrfake ${label}: without layers, the base layer and the overlays in the scene`,
       !st.overlaysAsLayers && !st.quads && rs.some((s) => s.base) && !rs.some((s) => s.layers), st.layersNote);
   }
-  check(`xrfake ${label}: controllers drawn as models`, st.meshCount > 300, `${st.meshCount} vertices`);
+  await runControllerModelChecks({ c, check, waitFor, label });
   // The menu: the secondary (left) hand's lower button held.
   await c.evaluate('window.__xrfake.buttons.left[4].pressed = true');
   await sleep(400);
@@ -204,6 +214,40 @@ export async function runXRFakeChecks({ c, check, waitFor, label = 'layers', exp
   if (expectLayers) check(`xrfake ${label}: leaving VR destroys the quads`, fake.quadsLive === 0 && fake.quadsMade > 0, `${fake.quadsMade} made, ${fake.copies} copies`);
   const errs = await c.evaluate(`window.__vrShell.diag.items.filter((e) => e.level === 'error').map((e) => e.event + ': ' + e.message)`);
   check(`xrfake ${label}: no page error in VR`, !errs.length && !c.pageErrors.length, [...errs, ...c.pageErrors].join(' / '));
+}
+
+/**
+ * The real controller models (WebXR Input Profiles): both controllers of the
+ * stand-in report meta-quest-touch-plus, so both get that vendored model,
+ * drawn by R.drawModels (not the page's own mesh); its trigger moves when
+ * the trigger's value changes. The value is set with `pressed` false (a
+ * touched trigger), so the page acts on nothing (no pick, no selection).
+ */
+async function runControllerModelChecks({ c, check, waitFor, label }) {
+  const ready = await waitFor(c, `(() => { const m = (window.__vrXR() || {}).controllerModels || {};
+    return ['left', 'right'].every((h) => m[h] && m[h].status === 'ready'); })()`, 15000);
+  const st = await c.evaluate('window.__vrXR()');
+  check(`xrfake ${label}: the meta-quest-touch-plus models are loaded for both hands`,
+    ready.value && ['left', 'right'].every((h) => st.controllerModels[h].profileId === 'meta-quest-touch-plus'),
+    `${ready.ms} ms ${JSON.stringify(st.controllerModels)}`);
+  await sleep(200);
+  const drawn = await c.evaluate('window.__vrXR()');
+  check(`xrfake ${label}: the real models are drawn, the page's own controllers are not`,
+    drawn.modelDraws >= 12 && drawn.meshCount === 0, `${drawn.modelDraws} draw calls an eye, ${drawn.meshCount} mesh vertices`);
+  const node = `window.__vrControllerNode('right', 'xr_standard_trigger_pressed_value')`;
+  const before = await c.evaluate(node);
+  await c.evaluate('(() => { const b = window.__xrfake.buttons.right[0]; b.value = 1; b.touched = true; b.pressed = false; })()');
+  await sleep(300);
+  const after = await c.evaluate(node);
+  await c.evaluate('(() => { const b = window.__xrfake.buttons.right[0]; b.value = 0; b.touched = false; })()');
+  await sleep(300);
+  const back = await c.evaluate(node);
+  // The node's world matrix: its rotation changes as the trigger is pulled.
+  const diff = (a, b) => (a && b ? Math.max(...a.m.map((v, i) => Math.abs(v - b.m[i]))) : 0);
+  const moved = diff(before, after), rest = diff(before, back);
+  check(`xrfake ${label}: the trigger of the model moves with the trigger's value, and comes back`,
+    before && before.drawn && moved > 0.05 && rest < 1e-4, `max matrix change ${moved.toFixed(3)} pulled, ${rest.toExponential(1)} released`);
+  return { moved };
 }
 
 /**

@@ -53,14 +53,16 @@ test('a tracked hand: a sphere at every joint and a bar along every bone', () =>
   assert.notDeepEqual(MD.handMesh([], joints, [0.4, 0.7, 1, 1], { pinch: true }), out);
 });
 
-test('nothing is loaded from a CDN: the models are made in the page', () => {
-  for (const f of ['models.js', 'main.js', 'renderer.js']) {
+test('nothing is loaded from a CDN: the real models are served with the page, the fallback made in it', () => {
+  for (const f of ['models.js', 'main.js', 'renderer.js', 'gltf.js', 'controller-profiles.js', 'controller-models.js']) {
     const src = readFileSync(new URL(`../../app/static/vr/js/${f}`, import.meta.url), 'utf8');
-    assert.ok(!/https?:\/\/(cdn|unpkg|jsdelivr|cdnjs)/i.test(src), f);
-    assert.ok(!/\.glb|\.gltf|profiles\.json/i.test(src), `${f} loads no model files`);
+    assert.ok(!/https?:\/\//i.test(src.replace(/\/\/ .*$|^\s*\*.*$/gm, '')), `${f} names no remote address in its code`);
   }
+  const loader = readFileSync(new URL('../../app/static/vr/js/controller-models.js', import.meta.url), 'utf8');
+  assert.match(loader, /new URL\('\.\.\/models\/', import\.meta\.url\)/, 'the models beside the page');
   const main = readFileSync(new URL('../../app/static/vr/js/main.js', import.meta.url), 'utf8');
   assert.match(main, /R\.setMesh\(inputMesh\(\)\)/);
+  assert.match(main, /R\.drawModels\(v, modelDraws, modelDrawCount\)/);
   assert.match(main, /R\.drawMesh\(v\)/);
 });
 
