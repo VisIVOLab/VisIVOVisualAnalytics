@@ -18,11 +18,13 @@ This guide is now a section of its own: [Cubes in a VR headset](vr/index.md).
 ## Pair by code
 
 Pairing a Quest with the desktop by code is now in
-[Pair by code](vr/quickstart.md#pair-by-code).
+[Pair by code](vr/quickstart.md#pair-by-code); its problems are under
+[Pairing by code](vr/troubleshooting.md#pairing-by-code) in Troubleshooting.
 
 ## Open a cube from the desktop
 
-Opening a cube on a Quest from the desktop's *Open in VR Headset…* is now in
+Opening a cube on a Quest over a USB cable, from *Open in VR Headset… ▸
+Advanced (USB cable)*, is now in
 [Open a cube from the desktop](vr/quickstart.md#open-a-cube-from-the-desktop).
 
 ## Troubleshooting

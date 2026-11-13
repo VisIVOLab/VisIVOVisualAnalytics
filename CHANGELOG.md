@@ -8,6 +8,21 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Headset pairing documented (#215, part of #210).** Pairing by code is now
+  the first way into the headset in the VR quickstart (open the cube, *Open in
+  VR Headset…*, type the code or scan the QR code on the Quest, install the
+  page as an app); the USB cable moves to an *Advanced: USB cable* section for
+  offline use and demos. Troubleshooting gains a pairing table (codes expired,
+  used or unknown; `not-configured`, including macOS 13 on Apple Silicon;
+  `unreachable`; devices isolated on the network and TURN; the macOS firewall
+  prompt; no internet; a dropped and resumed link as *Copy diagnostics* shows
+  it; a disconnected headset and a closed application). A new deployment page,
+  *Hosting headset pairing*, covers running the pairing service (Docker,
+  compose with coturn, Apptainer, an nginx or Apache proxy with TLS), hosting
+  the loader, configuring backends and the desktop, moving to another server
+  value by value, and the security of codes, resume codes, host keys and the
+  token. The technical reference lists the pairing checks to run on a Quest 3.
+
 - **Open in VR Headset pairs by code (#214, part of #210).** The dialog now
   opens on a pairing code: a large code with its countdown, a QR code of the
   public headset page that carries it, and the live state polled from the

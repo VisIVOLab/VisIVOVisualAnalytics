@@ -1,15 +1,136 @@
 # Quickstart and pairing
 
-## Quickstart
+There are two ways to bring a cube from the desktop application into a Meta
+Quest:
+
+- **[Pair by code](#pair-by-code)**, the usual way: a short code shown on the
+  computer, typed on the headset (or a QR code scanned). No cable, no adb, no
+  developer mode. It needs an internet connection and a pairing server that
+  your institute hosts.
+- **[Advanced: USB cable](#advanced-usb-cable)**: adb and a cable (or adb over
+  Wi-Fi). It works offline, so it is the way for a computer without internet,
+  for demos on a network you do not control, and when no pairing server is
+  configured.
+
+Both open the cube in the same backend session as the desktop, and the page in
+the headset is the same.
+
+## Pair by code
+
+1. **Open the cube** in the desktop application.
+2. Choose **Tools → Views → Open in VR Headset…** (or the same entry in
+   Inspector ▸ Analysis). The dialog shows a large code, such as `K7Q-4MX`, the
+   time it has left (five minutes), and a QR code.
+3. **On the Quest**, open the *VisIVO VR* page in the Quest Browser (the
+   address your institute gives you), or its icon once installed (step 4).
+   Type the code and press **Connect**. Or scan the QR code with the headset
+   (where the Quest's software offers QR scanning): it opens the page with the
+   code already in it. The cube loads in the page: press **Enter VR**.
+4. **Once:** install the page as an app, from the Quest Browser's menu
+   (*Install app*). It then has an icon in the headset's app library, opens
+   without the browser's address bar, and starts on the code form.
+
+The first time in VR, a short controls guide stands in front of you (*Next*,
+*Close*; the hand menu's Help tab shows it again). The grips move the cube,
+and the hand menu has the rest: see [Controls and the hand menu](controls.md).
+
+```{note}
+**Before the first time**, the desktop application needs to know your
+institute's pairing server: two addresses, typed once in **Settings ▸ Backends
+▸ Headset Pairing** (see [below](#the-pairing-settings)). Until then, the dialog
+opens its USB section and says that pairing is not configured.
+```
+
+### What the dialog shows
+
+The dialog follows the pairing by itself:
+
+- *Waiting for the headset. The code expires in 4:52.*
+- *The code was entered: the headset is connecting…*
+- **Headset connected**, with a **Disconnect** button.
+- *The code expired*: **New Code** asks for another one. *The code was used,
+  but no headset connected* (nothing arrived within 45 seconds of the code
+  being entered) also offers **New Code**.
+- A headset paired earlier that is still connected is named under a new code,
+  with **Disconnect**.
+- If the backend stops answering for more than 15 seconds, the dialog says so
+  and keeps trying.
+
+The headset joins the desktop's backend session, on the same dataset and path
+(and, for a point table, a catalogue or a velocity field, the same kind and
+box). Closing the dialog revokes a code nobody used; a connected headset stays
+connected until **Disconnect**, or until the application closes.
+
+The backend's token never leaves the computer: it is not in the code, the QR
+code or the page's address, and the page has no token field. The code is shown
+on purpose but is not written to the application's log.
+
+### On the headset
+
+- The page shows the cube with the status *in the desktop's session*, as over
+  the cable.
+- The headset and the computer talk to each other directly, over the local
+  network, once paired: keep both on the same network for the best speed. On a
+  network that keeps devices apart, the link goes through a relay server, if
+  your institute runs one, more slowly (see
+  [Troubleshooting](troubleshooting.md#pairing-by-code)).
+- If the link drops (Wi-Fi, the computer asleep), the page says *Backend not
+  reachable* and reconnects by itself for up to three minutes, without a new
+  code and without reloading; the cube stays on show. If it cannot, it says
+  *The pairing with the computer ended* with **Enter a new code**: ask the
+  dialog for a new code (**New Code**) and type it there.
+- *Copy diagnostics* on the page names the link (the `transport:` line):
+  see [The transport line](public-loader.md#the-transport-line).
+
+How the page works behind the code is in
+[How the public loader works](public-loader.md).
+
+### The pairing settings
+
+Pairing works with the local backend and with a remote one alike: the backend,
+not the desktop, talks to the pairing service, and it needs to know two
+addresses. For the backend the desktop starts, they are set in **Settings ▸
+Backends ▸ Headset Pairing**:
+
+| Field | Passed to the backend as | What it is |
+|---|---|---|
+| *Pairing service* | `VISIVO_VR_PAIR_URL` | the pairing service, `wss://…` |
+| *Headset page* | `VISIVO_VR_PAGE_URL` | the *VisIVO VR* page the headset opens, `https://…/` |
+
+Your institute gives you both values. Both fields are empty after
+installation, and no server is built in. They are read when the backend
+starts, so restart the application after changing them. The same variables set
+in the environment the application starts from take precedence over the
+fields. A remote backend (a cluster's) uses its own configuration. Running the
+server is described in [Hosting headset pairing](../../deployment/vr-pairing.md).
+
+### When pairing is not available
+
+When the backend has no pairing service (*This backend has no pairing service
+configured*), cannot reach it (*The backend cannot reach its pairing service
+right now*), or is older than the desktop, the dialog opens **Advanced (USB
+cable)** by itself and says why: the [USB way](#advanced-usb-cable) then works
+as before. It can also be opened by hand at any time; adb is only run once it
+is open. See [Troubleshooting](troubleshooting.md#pairing-by-code).
+
+## Advanced: USB cable
+
+The USB way needs adb on the computer and the headset in developer mode, but
+no internet and no pairing server: use it offline, for demos on a network you
+do not control, or where pairing is not configured. In the *Open in VR
+Headset…* dialog it is under **Advanced (USB cable)**.
+
+### Quickstart over USB
 
 1. **Once:** install adb (`brew install android-platform-tools` on a Mac) and
    turn on **developer mode** for the headset in the Meta Horizon app on your
    phone (Devices → your headset → Headset settings → Developer mode).
 2. Open the cube in the desktop application and connect the Quest with a
    USB-C data cable.
-3. **Tools → Views → Open in VR Headset…**. The dialog says what is missing,
-   step by step; the first time, put the headset on and accept **Allow USB
-   debugging** (tick *Always allow from this computer*).
+3. **Tools → Views → Open in VR Headset…**, then open **Advanced (USB
+   cable)**. The dialog says what is missing, step by step; the first time,
+   put the headset on and accept **Allow USB debugging** (tick *Always allow
+   from this computer*).
 4. Press **Open on Headset**, put the headset on: the cube loads in the Quest
    Browser. Press **Enter VR**.
 5. The first time, a short controls guide stands in front of you (*Next*,
@@ -19,78 +140,12 @@
 If something goes wrong, the page says so in the headset and offers the way
 out: see [Troubleshooting](troubleshooting.md).
 
-## Opening it on the Mac (no headset)
-
-1. Start the backend as usual (the desktop application starts one on
-   `http://127.0.0.1:8000`; or by hand, see [Getting started](../getting-started.md)).
-2. Open `http://127.0.0.1:8000/vr/` in Chrome, Edge or Safari and paste the
-   backend token (the contents of `~/.visivo_token`) into the *Backend token*
-   field. Opening `http://127.0.0.1:8000/vr/#token=<token>` works too: the
-   page reads the token from the part after `#`, which a browser never sends
-   to the server (so it is in no log), and removes it from the address bar.
-3. Type the path of a cube on the backend (or *Browse…*), choose the binning,
-   and press *Open and load*. Drag to turn the cube, scroll to zoom.
-
-*Synthetic* draws a generated cube of the chosen size without any backend, for
-checking the page and measuring frame rates. The hand menu can be shown in the
-page's 3-D view and used with the mouse (see [The hand menu](controls.md#the-hand-menu)).
-
-## Pair by code
+### Open a cube from the desktop
 
 With a cube open in the desktop application, **Tools → Views → Open in VR
-Headset…** opens on a pairing code: no cable, no adb and no address to type
-on the headset.
-
-- The dialog shows a large code (such as `K7Q-4MX`) with the time it has left
-  (five minutes by default), and a QR code of the public headset page with the
-  code already in it.
-- On the Quest, open *VisIVO VR* and type the code, or scan the QR code.
-- The dialog follows the pairing by itself: *Waiting for the headset*, then
-  *The code was entered: the headset is connecting*, then **Headset
-  connected** with a **Disconnect** button. A code that runs out says *The
-  code expired*; **New Code** asks for another one. A code that was used but
-  brought no headset within 45 seconds says so, with **New Code** as well.
-  A headset paired earlier that is still connected is named under the new
-  code, with **Disconnect**.
-  If the backend stops answering for more than 15 seconds, the dialog says
-  so and keeps trying.
-- The headset joins the desktop's backend session, on the same dataset and
-  path (and, for a point table, a catalogue or a velocity field, the same kind
-  and box), as the USB link does.
-- The backend's token never leaves the backend: it is not in the code, the QR
-  code or the page address. The code is shown on purpose but is not written to
-  the application's log. Closing the dialog revokes a code nobody used.
-
-Pairing works with the local backend and with a remote one alike: the
-backend, not the desktop, talks to the pairing service. The backend needs to
-know that service and the public page. For the backend the desktop starts,
-set them in **Settings ▸ Backends ▸ Headset Pairing**:
-
-| Field | Passed to the backend as | What it is |
-|---|---|---|
-| *Pairing service* | `VISIVO_VR_PAIR_URL` | the pairing service, `wss://…` |
-| *Headset page* | `VISIVO_VR_PAGE_URL` | the public page the headset opens, `https://…` |
-
-Both are empty by default, and nothing is built in: moving the service to
-another server means changing these two fields. They are read when the
-backend starts, so restart the application after changing them. The same
-variables set in the environment the application starts from take
-precedence over the fields. A remote backend (a cluster's) uses its own
-configuration.
-
-When the backend has no pairing service (`not-configured`), cannot reach it
-(`unreachable`), or is older than the desktop, the dialog opens
-**Advanced (USB cable)** by itself and says why: the way below then works as
-before. It can also be opened by hand at any time; adb is only run once it
-is open.
-
-## Open a cube from the desktop
-
-The USB way is under **Advanced (USB cable)** in *Open in VR Headset…*.
-
-With a cube open in the desktop application, **Tools → Views → Open in VR
-Headset…** (or the same entry in Inspector ▸ Analysis) opens it on a Quest
-connected to the Mac, in the same backend session: the headset's page
+Headset…** (or the same entry in Inspector ▸ Analysis), under **Advanced (USB
+cable)**, opens it on a Quest connected to the Mac, in the same backend
+session: the headset's page
 receives the token, the session, the dataset and the cube's path, so there is
 nothing to paste or type on the headset. This is not *Open in VR*, which
 sends the desktop's own 3-D view to an OpenXR runtime on this computer (see
@@ -206,7 +261,7 @@ the dialog says so: connect to it through an ssh tunnel
 Point tables, 3-D catalogues and velocity fields open from their own windows
 the same way: see [Opening one](data-types.md#opening-one).
 
-## On the Quest 3, over USB (recommended)
+### On the Quest 3, over USB, by hand
 
 WebXR needs a **secure context**: an `https` page, or `http://localhost`.
 Forwarding the backend's port to the headset over USB makes the page
@@ -246,7 +301,7 @@ application (or to do by hand what *Open on Headset* does):
 `adb reverse` has to be repeated after the cable is unplugged or the headset
 restarts.
 
-## On the Quest 3, over Wi-Fi
+### On the Quest 3, over Wi-Fi
 
 The same forwarding works over Wi-Fi once adb is connected wirelessly, and the
 page is still `localhost`:
@@ -262,7 +317,24 @@ Opening the backend directly by the Mac's address
 Browser then offers no WebXR. That route needs the backend on `https` (uvicorn's
 `--ssl-keyfile`/`--ssl-certfile` with a certificate the headset trusts) and the
 backend listening on the network (`--host 0.0.0.0`, which exposes the whole
-API to the network, protected only by the token). Prefer adb over Wi-Fi.
+API to the network, protected only by the token). Prefer
+[pairing by code](#pair-by-code), or adb over Wi-Fi.
 
 Over Wi-Fi the refined frames can travel as video: see
 [Over Wi-Fi: refined frames as video](reference.md#over-wi-fi-refined-frames-as-video-webrtc).
+
+## Opening it on the Mac (no headset)
+
+1. Start the backend as usual (the desktop application starts one on
+   `http://127.0.0.1:8000`; or by hand, see [Getting started](../getting-started.md)).
+2. Open `http://127.0.0.1:8000/vr/` in Chrome, Edge or Safari and paste the
+   backend token (the contents of `~/.visivo_token`) into the *Backend token*
+   field. Opening `http://127.0.0.1:8000/vr/#token=<token>` works too: the
+   page reads the token from the part after `#`, which a browser never sends
+   to the server (so it is in no log), and removes it from the address bar.
+3. Type the path of a cube on the backend (or *Browse…*), choose the binning,
+   and press *Open and load*. Drag to turn the cube, scroll to zoom.
+
+*Synthetic* draws a generated cube of the chosen size without any backend, for
+checking the page and measuring frame rates. The hand menu can be shown in the
+page's 3-D view and used with the mouse (see [The hand menu](controls.md#the-hand-menu)).
