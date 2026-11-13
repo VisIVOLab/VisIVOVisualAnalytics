@@ -350,19 +350,19 @@ export class Backend {
   }
 
   /** Full-resolution voxels x0..x1, y0..y1, z0..z1 (inclusive), float32. */
-  async subvolume(datasetId, x0, x1, y0, y1, z0, z1) {
+  async subvolume(datasetId, x0, x1, y0, y1, z0, z1, signal = undefined) {
     const { resp, buf } = await this._binary('/v1/cube/subvolume_bin',
-      JSON.stringify({ dataset_id: datasetId, x0, x1, y0, y1, z0, z1 }));
+      JSON.stringify({ dataset_id: datasetId, x0, x1, y0, y1, z0, z1 }), 'application/json', signal);
     const h = (k) => Number(resp.headers.get(k));
     return { values: new Float32Array(buf), dims: [h('X-Visivo-Width'), h('X-Visivo-Height'), h('X-Visivo-Depth')], origin: [x0, y0, z0] };
   }
 
   /** The Kinematic Lasso (the desktop's kinematic_select_bin): the mask over
    *  the selection's bounding box, its origin and the voxel count. */
-  async kinematicSelect(datasetId, growRequest) {
+  async kinematicSelect(datasetId, growRequest, signal = undefined) {
     const t0 = performance.now();
     const { resp, buf } = await this._binary('/v1/cube/kinematic_select_bin',
-      JSON.stringify({ dataset_id: datasetId, ...growRequest }));
+      JSON.stringify({ dataset_id: datasetId, ...growRequest }), 'application/json', signal);
     const h = (k) => resp.headers.get(k);
     const dims = [Number(h('X-Visivo-Width')), Number(h('X-Visivo-Height')), Number(h('X-Visivo-Depth'))];
     const origin = (h('X-Visivo-Origin') || '0,0,0').split(',').map(Number);
@@ -375,12 +375,12 @@ export class Backend {
   }
 
   /** Statistics of an explicit mask on the full cube (mask_stats_bin). */
-  maskStats(datasetId, maskBytes, origin, dims) {
+  maskStats(datasetId, maskBytes, origin, dims, signal = undefined) {
     const q = new URLSearchParams({
       dataset_id: datasetId, origin_x: origin[0], origin_y: origin[1], origin_z: origin[2],
       width: dims[0], height: dims[1], depth: dims[2],
     });
-    return this._binary(`/v1/cube/mask_stats_bin?${q}`, maskBytes, 'application/octet-stream')
+    return this._binary(`/v1/cube/mask_stats_bin?${q}`, maskBytes, 'application/octet-stream', signal)
       .then(({ buf }) => JSON.parse(new TextDecoder().decode(buf)));
   }
 

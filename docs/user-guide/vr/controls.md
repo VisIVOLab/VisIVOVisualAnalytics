@@ -14,10 +14,16 @@ The headset's controls follow a few fixed rules
 - **Labels** next to the controllers say what each control does now. They
   are on the first time and can be turned off.
 
-The first time you enter VR a short guide stands in front of you (four pages:
-*Your two hands*, *The menu*, *Three modes*, *Hands without controllers*; *Next*,
-*Back*, *Close* or *Skip*). It is shown at the first entry only; the menu's
-**Help → Guide** (or *Controls guide* on the page) shows it again.
+The first time you open the page, a short controls guide is shown on the
+2-D page, before you enter VR (four parts: *Your two hands*, *The menu*,
+*Three modes*, *Hands without controllers*); **Got it** hides it for good, and
+*Controls guide* on the page shows it again. In VR the menu's **Help → Guide**
+shows it on a card (*Next*, *Back*, *Close* or *Skip*) that stands beside the
+cube on your primary hand's side, so it never covers the cube, the menu or the
+labels; the menu and the labels are drawn over it when a hand brings them in
+front of it ([#226](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/226)).
+Until #226 the guide stood in front of you at the first entry into VR, over
+the menu and the labels.
 
 ## Your hands
 
@@ -28,6 +34,12 @@ The first time you enter VR a short guide stands in front of you (four pages:
 | Lower face button | **A**: next mode (Explore → Select → Clip) | hold **X**: the menu |
 | Upper face button | **B**: undo the last change of the look | **Y**: reset the view |
 | Stick | the mode's continuous control (below) | ←/→: the mode's next tool (the colour map in Explore) |
+
+The controllers are drawn as small solid models in the hand's colour
+(orange the primary, blue the secondary): the handle, the head with its ring,
+the stick and a face button, the trigger lit while pulled and the grip button
+while squeezed; they are made by the page, nothing is downloaded (#226).
+Until #226 only the rays could be seen.
 
 With the *left-handed* setting the roles swap: the left hand points (its
 **X** is next mode, **Y** undo) and the right holds the menu (hold **A**,
@@ -45,6 +57,13 @@ page (*left-handed*), and is kept in the browser.
 - **Grabbing**: put the cube down by letting go: it stays where you leave it.
   The box, its ticks and labels are in world coordinates: R.A., Dec. and
   velocity (km/s).
+- **The labels belong to the cube** (#226): the tick labels and axis titles
+  are fixed to the box and turn only when you turn the cube, never towards
+  your head. R.A. and Dec. are written on the front face (the one facing you
+  when the cube first appears), the velocity labels along the right-hand
+  bottom edge at 45° between the front and the right face, so both read from
+  the start position. Seen from behind, a label reads the right way round
+  (its text is mirrored back), at the same place.
 
 ## Modes
 
@@ -186,8 +205,14 @@ with its convention and the channel number, and the value drawn there in the
 cube's unit (marked *binned* when the cube is reduced; *blank* for a blank
 voxel). The position is the full-resolution pixel the point falls in,
 interpolated from the axis labels as the ticks are; the exact ICRS position of
-a pick comes with a selection. The card is redrawn at most 15 times a second,
-only when its text changes; its text costs about 4 µs. On the page the same
+a pick comes with a selection. Its text is sized for the headset (#226):
+the body lines are at least 0.9° high at the eye at any distance from 30 cm to
+4 m (the card grows with distance; about 22 cm wide at 75 cm), bold white on a
+near-opaque dark card with a light edge (contrast over 15:1), and it is a
+composition layer where the browser has them, so it stays sharp at any
+eye-buffer scale. (Until #226 the text was under half a degree high.) The card
+is redrawn at most 15 times a second, only when its text changes; its text
+costs about 4 µs. On the page the same
 lines follow the mouse, in a line above the numbers at the bottom of the
 page's controls.
 
@@ -226,9 +251,11 @@ that appears already pinched, does not press anything. The palm counts as up
 within about 45° of vertical and stops at about 63°; a closed hand never opens
 the menu, and the primary hand's palm does nothing. The sticks and face buttons
 have no gesture: their actions (modes, undo, reset view, threshold, opacity,
-slab) are on the menu. The fingertips are drawn as small crosses, the pinch as
-a line that turns yellow when it closes, the palm as a cross that grows when
-the hand grips.
+slab) are on the menu. Each tracked hand is drawn whole (#226): a small
+sphere at each of its 25 joints and a bar along each bone, in the hand's
+colour (orange primary, blue secondary); the thumb and index tips turn yellow
+while pinching, the bones while gripping, and a line joins the two tips as
+they close.
 
 The pinch closes under 1.2 cm between the fingertips' surfaces and opens over
 2.8 cm; the grip under 0.72 of the palm's length, opening over 0.95. These
@@ -242,7 +269,7 @@ browser only (the headset's browser and the Mac's keep their own): the
 **colour map**, the **threshold source** (*for this binning* or *full cube*),
 the **refinement** settings (on or off, refined size, JPEG quality, reproject
 with depth), the **last selection tool**, whether the **controls guide** was
-seen (it is shown at the first entry into VR only), **left-handed**, the
+seen (it is shown on the 2-D page until *Got it*), **left-handed**, the
 **labels** and **haptics** settings, and where each **result window** was
 left (relative to where the cube first appears).
 
@@ -267,6 +294,12 @@ are hidden while the menu is open:
 - **samples/voxel** in use and the **max steps/ray** it allows;
 - the **volume**, its texture size, the **binning**, the **threshold**;
 - the **eye buffer** size, the resolution scale and the foveation level;
+- **text**: *quad layers* (the menu, labels, readout, windows and these
+  numbers as composition layers, sharp at any eye-buffer scale) or *in the
+  scene* with the reason (#226);
+- **GPU textures**: the page's own textures in MB (the cube and its
+  empty-space grid, the panels, the selection mask); repeated selections must
+  not make it grow (#226);
 - the **selection tool** in use and the time of the last pick, lasso,
   statistics, spectrum and box requests;
 - **menu redraw**: the time to redraw the menu and to upload it as a texture

@@ -88,6 +88,43 @@ export function parkedCardModel(head, yaw = 0.7, dist = 0.75, drop = 0.32) {
   return cardModel(M.multiply(head, M.rotation([0, 1, 0], yaw)), dist, drop);
 }
 
+/**
+ * The controls guide's card in the headset (issue #226, point 6): it must
+ * never cover the menu, the controller labels or the cube. It stands to the
+ * side of the primary hand (`side` +1: the viewer's right, -1: left; the menu
+ * is held by the other hand), 1 m away, a little below the eyes, turned
+ * outward from the cube by the cube's angular radius plus its own half width
+ * plus a margin, so the two never overlap from the head. Where the composition
+ * layers draw it, it is the lowest of them: the menu and the labels are drawn
+ * over it wherever a hand brings them in front of it.
+ * `cube`: {centre: [x, y, z], radius} in world space, or null (then the
+ * card is 40° to the side of the gaze's heading).
+ */
+export function guideCardModel(head, { cube = null, side = 1, dist = 1.0, drop = 0.18, marginDeg = 8 } = {}) {
+  const pos = [head[12], head[13], head[14]];
+  let bearing;          // yaw of the reference direction (0: -z, positive: to the left)
+  let half = 0;         // the cube's angular radius from the head
+  if (cube && cube.centre) {
+    const to = M.sub(cube.centre, pos);
+    const flat = Math.hypot(to[0], to[2]);
+    if (flat > 1e-6) {
+      bearing = Math.atan2(-to[0], -to[2]);
+      half = Math.asin(Math.min(1, (cube.radius || 0) / Math.max(1e-6, Math.hypot(...to))));
+    }
+  }
+  if (bearing === undefined) {
+    let fwd = [-head[8], 0, -head[10]];
+    if (Math.hypot(fwd[0], fwd[2]) < 1e-6) fwd = [0, 0, -1];
+    bearing = Math.atan2(-fwd[0], -fwd[2]);
+  }
+  const cardHalf = Math.atan(CARD_SIZE[0] / 2 / dist);
+  const off = cube ? half + cardHalf + (marginDeg * Math.PI) / 180 : (40 * Math.PI) / 180;
+  const yaw = bearing - side * off;          // yaw grows to the left: the right is -
+  const dir = [-Math.sin(yaw), 0, -Math.cos(yaw)];
+  const p = M.add(pos, M.add(M.scale3(dir, dist), [0, -drop, 0]));
+  return M.multiply(M.translation(...p), M.rotation([0, 1, 0], yaw));
+}
+
 /** Should the card be put in front of the viewer again? When it is more
  *  than `maxDeg` from the gaze's heading, or farther than `maxDist`. */
 export function cardNeedsMove(cardM, head, maxDeg = 35, maxDist = 1.6) {

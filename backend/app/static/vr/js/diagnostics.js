@@ -241,6 +241,9 @@ export function diagnosticsReport(d) {
   kv('cube', d.cube);
   kv('frame rate', d.fps);
   kv('quality', d.quality);
+  // Issue #226: how the text is drawn in the headset and the page's GPU textures.
+  if (d.text !== undefined) kv('text in the headset', d.text);
+  if (d.memory !== undefined) kv('GPU memory', d.memory);
   kv('refinement', d.refine);
   kv('settings', d.settings ? JSON.stringify(d.settings) : '');
   lines.push('last events:');

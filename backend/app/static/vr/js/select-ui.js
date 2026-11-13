@@ -106,11 +106,11 @@ export function createSelection(ctx) {
     if (voxels > S.SMOOTH_SNAP_ABOVE) {
       const x0 = Math.max(0, blk[0][0] - 1), x1 = Math.min(n[0] - 1, blk[0][1] + 1);
       const y0 = Math.max(0, blk[1][0] - 1), y1 = Math.min(n[1] - 1, blk[1][1] + 1);
-      const sub = await b.subvolume(datasetId(), x0, x1, y0, y1, blk[2][0], blk[2][1]);
+      const sub = await b.subvolume(datasetId(), x0, x1, y0, y1, blk[2][0], blk[2][1], signalOf(sel.generation));
       const best = S.brightestSmoothed(sub.values, sub.dims, sub.origin, blk);
       return { seed: best || px, reduced: r, snapped: best ? 'smoothed' : '', block: blk };
     }
-    const sub = await b.subvolume(datasetId(), blk[0][0], blk[0][1], blk[1][0], blk[1][1], blk[2][0], blk[2][1]);
+    const sub = await b.subvolume(datasetId(), blk[0][0], blk[0][1], blk[1][0], blk[1][1], blk[2][0], blk[2][1], signalOf(sel.generation));
     const best = S.brightestInBlock(sub.values, sub.dims, sub.origin);
     return { seed: best || px, reduced: r, snapped: best ? 'voxel' : '', block: blk };
   }
@@ -122,6 +122,17 @@ export function createSelection(ctx) {
   }
 
   function stale(gen) { return gen !== sel.generation; }
+
+  // The requests of the action in flight (issue #226): a newer action, a
+  // change of tool or Clear cancels them, so fast repeated picks never pile
+  // up masks and downloads the page will throw away.
+  let inflight = null;
+  function newAction() {
+    if (inflight) { try { inflight.abort(); } catch { /* done */ } }
+    inflight = typeof AbortController === 'function' ? new AbortController() : null;
+    return inflight ? inflight.signal : undefined;
+  }
+  function signalOf(gen) { return gen === sel.generation && inflight ? inflight.signal : undefined; }
 
   async function describePick(gen, hit) {
     const s = st();
@@ -206,10 +217,10 @@ export function createSelection(ctx) {
     const seeds = nextSeeds(sel.lasso ? seedsOf(sel.lasso.request) : null, sel.seedMode, [z, y, x]);
     const req = Rc.lassoGrowRequest(seeds.seed, sel.params, seeds.add, seeds.sub);
     const b = ctx.backend();
-    const r = await b.kinematicSelect(datasetId(), req);
+    const r = await b.kinematicSelect(datasetId(), req, signalOf(gen));
     if (stale(gen)) return;
     const t0 = performance.now();
-    const stats = await b.maskStats(datasetId(), r.bytes, r.origin, r.dims);
+    const stats = await b.maskStats(datasetId(), r.bytes, r.origin, r.dims, signalOf(gen));
     // Drawn and recorded only together, and only while still the latest action:
     // a superseded grow neither replaces the overlay nor leaves a record.
     if (stale(gen)) return;
@@ -313,6 +324,7 @@ export function createSelection(ctx) {
   async function act(ray, tip = null) {
     if (!st().cube) return;
     const gen = ++sel.generation;
+    newAction();
     sel.error = '';
     const tool = sel.tool;
     if (tool === 'box') {
@@ -372,6 +384,7 @@ export function createSelection(ctx) {
     // A request in flight for the previous tool is dropped: it must not draw
     // or record under the new one.
     sel.generation++;
+    newAction();
     sel.tool = t;
     sel.corner = null;
     sel.busy = '';
@@ -381,6 +394,7 @@ export function createSelection(ctx) {
   function clear() {
     if (ctx.onClear) ctx.onClear();   // issue #188: what the hub holds is no longer shown
     sel.generation++;
+    newAction();
     sel.pick = sel.lasso = sel.spectrum = sel.box = sel.corner = null;
     sel.busy = sel.error = '';
     ctx.renderer.setMask(null);

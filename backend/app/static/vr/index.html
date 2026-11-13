@@ -154,13 +154,17 @@
   </section>
 
   <section id="xr">
+    <div id="stood-down" class="row stood-down" hidden>
+      <span><b>Open in another window.</b> This page is paused: the VR page in use is a newer one.</span>
+      <button id="take-over" title="Make this window the VR page in use (the other one pauses)">Use this window</button>
+    </div>
     <div class="row">
       <label>Resolution <select id="fbscale">
         <option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option></select></label>
       <label>Foveation <select id="foveation">
         <option value="0">off</option><option value="0.5">low</option><option value="1" selected>high</option></select></label>
       <label>Refresh <select id="rate">
-        <option>72</option><option selected>90</option><option>120</option></select></label>
+        <option selected>72</option><option>90</option><option>120</option></select></label>
     </div>
     <div class="row">
       <label class="inline" title="The menu and the result windows the headset shows, in this view, used with the mouse (?panel3d)"><input id="panel3d" type="checkbox"> show the headset's menu here</label>
@@ -182,6 +186,7 @@
       <button id="copy-diag" title="Versions, GPU limits, settings and the last errors, for a support request">Copy diagnostics</button>
     </div>
     <div id="guide-text" class="muted" hidden></div>
+    <button id="guide-ok" hidden title="The guide is not shown again (the menu's Help → Guide shows it in the headset)">Got it</button>
     <pre id="diag-out" hidden></pre>
     <div class="row">
       <label class="inline" title="One sample a second (frame rate, missed frames, pose→frame, the link) and the session's events, stored by the backend as one file per record (?record in the address starts it)"><input id="record" type="checkbox"> record measurements</label>

@@ -18,13 +18,12 @@ test('eye buffer: lowered only with samples at the floor and frames missed, one 
   // At the floor: one step after one window (40 frames of 25 ms), then the next.
   for (let i = 0; i < 40; i++) g.update(25, target, true);
   assert.equal(g.scale, 0.85);
-  for (let i = 0; i < 40; i++) g.update(25, target, true);
-  assert.equal(g.scale, 0.7);
   for (let i = 0; i < 400; i++) g.update(25, target, true);
   assert.equal(g.scale, Q.EYE_SCALE_FLOOR, 'never below the floor');
+  assert.equal(Q.EYE_SCALE_FLOOR, 0.85, 'issue #226: never below 0.85×');
   // Good frames never raise it again within the session.
   for (let i = 0; i < 2000; i++) g.update(target, target, true);
-  assert.equal(g.scale, 0.7);
+  assert.equal(g.scale, 0.85);
   g.reset(1.25);
   assert.equal(g.scale, 1.25);
   for (let i = 0; i < 40; i++) g.update(25, target, true);
@@ -182,10 +181,12 @@ test('the diagnostics text holds versions, limits, settings and errors, no secre
 });
 
 test('the eye-buffer stage: at the real floor of the governor, and enabled again each session', () => {
+  // Issue #226: samples per voxel are given up first, all the way down.
   assert.ok(!Q.spvAtFloor({ value: 0.5, min: 0.25, max: 0.5 }), 'chosen 0.5, not lowered yet');
-  assert.ok(Q.spvAtFloor({ value: 0.42, min: 0.25, max: 0.5 }));
-  assert.ok(Q.spvAtFloor({ value: 0.5, min: 0.25, max: 1 }));
-  assert.ok(!Q.spvAtFloor({ value: 0.6, min: 0.25, max: 1 }));
+  assert.ok(!Q.spvAtFloor({ value: 0.42, min: 0.25, max: 0.5 }), 'lowered, not at the floor yet');
+  assert.ok(!Q.spvAtFloor({ value: 0.5, min: 0.25, max: 1 }));
+  assert.ok(!Q.spvAtFloor({ value: 0.3, min: 0.25, max: 1 }));
+  assert.ok(Q.spvAtFloor({ value: 0.25, min: 0.25, max: 1 }), 'at the floor');
   assert.ok(Q.spvAtFloor({ value: 0.25, min: 0.25, max: 0.25 }), 'at its own floor');
   const g = new Q.EyeBufferGovernor({ start: 1, holdMs: 1000 });
   g.disabled = true;
@@ -194,6 +195,29 @@ test('the eye-buffer stage: at the real floor of the governor, and enabled again
   g.reset(1);
   for (let i = 0; i < 40; i++) g.update(25, 1000 / 90, true);
   assert.equal(g.scale, 0.85);
+});
+
+test('issue #226: 72 Hz by default, and the policy is said in the diagnostics', async () => {
+  assert.equal(Q.DEFAULT_RATE_HZ, 72);
+  const { readFileSync } = await import('node:fs');
+  const html = readFileSync(new URL('../../app/static/vr/index.html', import.meta.url), 'utf8');
+  assert.match(html, /<option selected>72<\/option>/);
+  const p = Q.qualityPolicy({ targetHz: 72, spvMin: 0.25, spvChosen: 1, eyeChosen: 1 });
+  assert.match(p, /^72 Hz; samples\/voxel first \(1 down to 0\.25\), then the eye buffer as a last resort \(1× down to 0\.85× at most\)$/);
+  // A smaller eye buffer chosen on the page is never lowered further.
+  assert.match(Q.qualityPolicy({ targetHz: 90, eyeChosen: 0.75 }), /0\.75× down to 0\.75×/);
+  // The governors together: samples per voxel go all the way down before the eye buffer moves.
+  const spv = new Governor({ start: 1, max: 1 });
+  const eye = new Q.EyeBufferGovernor({ start: 1, holdMs: 1000 });
+  const target = 1000 / 72;
+  let firstEyeDropAt = null;
+  for (let i = 0; i < 2000; i++) {
+    spv.update(30, target);
+    const s = eye.update(30, target, Q.spvAtFloor(spv));
+    if (s < 1 && firstEyeDropAt === null) firstEyeDropAt = spv.value;
+  }
+  assert.ok(firstEyeDropAt !== null && firstEyeDropAt <= 0.25 * 1.02, `eye buffer lowered at ${firstEyeDropAt} samples/voxel`);
+  assert.equal(eye.scale, 0.85);
 });
 
 test('the diagnostics text keeps one line per item, all of it, scrubbed line by line', () => {

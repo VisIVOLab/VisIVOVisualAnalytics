@@ -30,8 +30,9 @@ the headset is the same.
    (*Install app*). It then has an icon in the headset's app library, opens
    without the browser's address bar, and starts on the code form.
 
-The first time in VR, a short controls guide stands in front of you (*Next*,
-*Close*; the hand menu's Help tab shows it again). The grips move the cube,
+The first time you open the page, a short controls guide is on the 2-D page,
+before you enter VR (*Got it* hides it; in VR the hand menu's Help → Guide
+shows it beside the cube). The grips move the cube,
 and the hand menu has the rest: see [Controls and the hand menu](controls.md).
 
 ```{note}
@@ -133,8 +134,9 @@ Headset…* dialog it is under **Advanced (USB cable)**.
    from this computer*).
 4. Press **Open on Headset**, put the headset on: the cube loads in the Quest
    Browser. Press **Enter VR**.
-5. The first time, a short controls guide stands in front of you (*Next*,
-   *Close*; the hand menu's Help tab shows it again). The grips move the cube,
+5. The first time, a short controls guide is on the 2-D page before you enter
+   VR (*Got it* hides it; in VR the hand menu's Help → Guide shows it beside
+   the cube). The grips move the cube,
    and the hand menu has the rest: see [Controls and the hand menu](controls.md).
 
 If something goes wrong, the page says so in the headset and offers the way

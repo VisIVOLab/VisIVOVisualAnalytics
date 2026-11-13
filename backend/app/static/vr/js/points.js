@@ -160,12 +160,12 @@ export function boxDecorations(d, axes, niceTicks) {
       const q = i === 0 ? [m, -h[1] - L, h[2]] : i === 1 ? [-h[0] - L, m, h[2]] : [h[0] + L, -h[1], m];
       segs.push({ a: p, b: q, color: tick });
       const lp = i === 0 ? [m, -h[1] - 2.2 * L, h[2]] : i === 1 ? [-h[0] - 1.6 * L, m, h[2]] : [h[0] + 1.6 * L, -h[1], m];
-      labels.push({ pos: lp, text: fmt(v), height: H, anchor: i === 1 ? 'right' : i === 2 ? 'left' : 'center' });
+      labels.push({ pos: lp, text: fmt(v), height: H, anchor: i === 1 ? 'right' : i === 2 ? 'left' : 'center', ...(i === 2 ? { face: 'side' } : {}) });
     }
   }
   const title = [[0, -h[1] - 4.5 * L, h[2]], [-h[0], h[1] + 2.2 * L, h[2]], [h[0] + 1.6 * L, -h[1] - 3 * L, 0]];
   axes.forEach((name, i) => labels.push({ pos: title[i], text: name, height: H * 1.1,
-    anchor: i === 0 ? 'center' : 'left', color: '#9fd0ff' }));
+    anchor: i === 0 ? 'center' : 'left', color: '#9fd0ff', ...(i === 2 ? { face: 'side' } : {}) }));
   return { segs, labels };
 }
 

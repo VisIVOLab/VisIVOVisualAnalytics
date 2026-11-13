@@ -23,7 +23,7 @@ import * as C from './controls.js';
 import * as HM from './hand-menu.js';
 import * as W from './windows.js';
 import * as RO from './readout.js';
-import { HandTracker, handSegments } from './hands.js';
+import { HandTracker } from './hands.js';
 import { createShare, boxGeometry, lassoMeta, boxMeta } from './share.js';
 import { RefineDraw } from './refine-gl.js';
 // Lifecycle, notices, guide, diagnostics, quality (epic #166).
@@ -31,7 +31,12 @@ import { createShell } from './shell.js';
 import { CARD_PX, CARD_SIZE } from './notice.js';
 import { pageBuild, PAGE_VR_API, isHeadsetBrowser, reopenCube, LoadTracker, supersededLoad, PendingReopen } from './lifecycle.js';
 import { shouldShowGuide } from './onboarding.js';
-import { EyeBufferGovernor, qualityNote, cubeBudget, spvAtFloor } from './quality.js';
+import { EyeBufferGovernor, qualityNote, cubeBudget, spvAtFloor, qualityPolicy } from './quality.js';
+// The first Quest 3 session's fixes (issue #226): composition layers for the
+// text, solid controllers and hands, one active page.
+import { QuadLayers, layersAvailable } from './xr-layers.js';
+import { controllerMesh, handMesh } from './models.js';
+import { SinglePage, CHANNEL_NAME, STOOD_DOWN } from './single-page.js';
 // Measurement records and the guided measurement run (issue #224).
 import { createMeasure, recordMessage } from './measure-run.js';
 
@@ -175,9 +180,40 @@ const shell = createShell({
     paired: () => isPaired(),
     newCode: () => requestNewCode(),
     transport: () => transportInfo(),
-    onAction: (id) => { if (id === 'measure-cancel') measure.cancel('cancelled by the viewer'); },
+    onAction: (id) => {
+      if (id === 'measure-cancel') measure.cancel('cancelled by the viewer');
+      else if (id === 'take-over') takeOver();
+    },
+    guidePlacement: () => guidePlacement(),
+    beforeReload: () => keepForReload(),
   },
 });
+
+// ── Reload after a lost graphics context (issue #226) ───────────────────────
+// When the browser does not give the GPU back, the notice's Reload reopens
+// the cube on show by its path (a cube from the desktop's link opens again
+// from the link anyway). Kept in this tab's session storage for 5 minutes.
+const RELOAD_KEY = 'visivo-vr-reopen';
+function keepForReload() {
+  // Paired (#213) the loader opens the app again; else the cube on show by its
+  // path (taken first at the next start, over the link the page came from).
+  if (!state.openPath || isPaired()) return;
+  try {
+    window.sessionStorage.setItem(RELOAD_KEY, JSON.stringify({ path: state.openPath, t: Date.now() }));
+    // The token from the link's fragment is gone from the address: this tab's
+    // session storage keeps it across the reload (as typing it does).
+    const t = tokenField.value.trim();
+    if (t) saveToken(t, $('remember').checked);
+  } catch { /* no storage: the path is typed again */ }
+}
+function takeReloadPath() {
+  try {
+    const raw = window.sessionStorage.getItem(RELOAD_KEY);
+    window.sessionStorage.removeItem(RELOAD_KEY);
+    const v = raw ? JSON.parse(raw) : null;
+    return v && typeof v.path === 'string' && Date.now() - v.t < 300000 ? v.path : '';
+  } catch { return ''; }
+}
 requestHooks.onFailure = (err, path) => shell.requestFailed(err, path);
 refiner.onLifecycle = (name, detail) => shell.log('warning', name, detail);
 // Paired through the public loader (#213): the link's own states. A drop is
@@ -946,9 +982,9 @@ function rebuildDecorations() {
   for (const tk of az.ticks) {
     const p = [h[0], -h[1], (tk.t - 0.5) * e[2]];
     segs.push({ a: p, b: [p[0] + L, p[1], p[2]], color: tickColor });
-    labels.push({ pos: [p[0] + 1.6 * L, p[1], p[2]], text: tk.label, height: H, anchor: 'left' });
+    labels.push({ pos: [p[0] + 1.6 * L, p[1], p[2]], text: tk.label, height: H, anchor: 'left', face: 'side' });
   }
-  labels.push({ pos: [h[0] + 1.6 * L, -h[1] - 3 * L, 0], text: V.axisTitle(az), height: H * 1.1, anchor: 'left', color: '#9fd0ff' });
+  labels.push({ pos: [h[0] + 1.6 * L, -h[1] - 3 * L, 0], text: V.axisTitle(az), height: H * 1.1, anchor: 'left', color: '#9fd0ff', face: 'side' });
   const c = state.cube;
   if (c) {
     const bin = c.mode === 'synthetic' ? 'synthetic cube, not binned'
@@ -1031,10 +1067,19 @@ function diagnosticsSummary() {
       : `not in VR; ${$('xr-status').textContent}`,
     cube: c ? `${c.dims.join('×')} ${c.encoding}, binned ${c.factors.join('×')} (${c.mode}) of ${c.fullShape.join('×')}, texture ${(R.textureBytes / 1e6).toFixed(1)} MB, ${state.open ? `dataset ${state.open.dataset_id}` : 'no backend dataset'}` : 'none',
     fps: `${s.fps.toFixed(1)} fps, frame ${s.interval ? s.interval.mean.toFixed(2) : 'n/a'} ms mean, missed ${(100 * s.missedFraction).toFixed(1)} %, CPU ${s.cpu ? s.cpu.mean.toFixed(2) : 'n/a'} ms, GPU ${s.gpu ? s.gpu.mean.toFixed(2) : 'n/a'} ms`,
-    quality: `${currentQualityNote() || 'as chosen'}; samples/voxel ${governor.value.toFixed(2)} of ${state.spv}, governor ${state.governorOn ? 'on' : 'off'}`,
+    quality: `${currentQualityNote() || 'as chosen'}; samples/voxel ${governor.value.toFixed(2)} of ${state.spv}, governor ${state.governorOn ? 'on' : 'off'}; policy: ${qualityPolicy({ targetHz: xr ? xr.targetHz : readNumber('rate'), spvMin: governor.min, spvChosen: state.spv, eyeChosen: xr ? xr.fbChosen : readNumber('fbscale') })}`,
+    text: xr ? (xr.quads ? xr.quads.describe() : xr.layersNote) : 'not in VR',
+    memory: gpuMemoryLine(),
     refine: refineShort(),
     settings,
   };
+}
+
+/** The page's own GPU textures (renderer.gpuStats, issue #226), one line. */
+function gpuMemoryLine() {
+  const g = R.gpuStats();
+  return `GPU textures ${(g.totalBytes / 1e6).toFixed(1)} MB: cube ${((g.volumeBytes + g.macroBytes) / 1e6).toFixed(1)}, `
+    + `${g.panels} panels ${(g.panelBytes / 1e6).toFixed(1)}, mask ${(g.maskBytes / 1e6).toFixed(2)}`;
 }
 
 /** Leaves VR on purpose (the card's Exit VR, the benchmark's end): no "ended" notice. */
@@ -1077,10 +1122,12 @@ function hudLines(targetHz) {
   if (xr) {
     const L = xr.layer;
     lines.push(`eye buffer ${L.framebufferWidth}×${L.framebufferHeight}  scale ${xr.fbScale}  foveation ${'fixedFoveation' in L ? L.fixedFoveation : 'n/a'}`);
+    lines.push(`text ${xr.quads ? xr.quads.describe() : xr.layersNote}`.slice(0, 60));
     if (xr.bench) lines.push(xr.bench.status || '');
   } else {
     lines.push(`canvas ${canvas.width}×${canvas.height}`);
   }
+  lines.push(gpuMemoryLine());
   return lines;
 }
 
@@ -1650,19 +1697,20 @@ function handCards(now) {
     const m = RO.labelModel(ph.m, eye, settings.labels ? 0 : -0.024);
     // Only the title row of the texture when the labels are off: a quad over
     // its top fifth (the texture is drawn whole, so it is a card of its own).
-    out.push({ model: m, tex: settings.labels ? labelTexture('primary', modeText(), rows) : modeTagTexture(), size });
+    out.push({ id: settings.labels ? 'label-primary' : 'mode-tag', model: m,
+      tex: settings.labels ? labelTexture('primary', modeText(), rows) : modeTagTexture(), size });
   }
   if (sh && settings.labels && !ui.menu.open) {
-    out.push({ model: RO.labelModel(sh.m, eye, 0), tex: labelTexture('secondary', '', C.labelLines(map, 'secondary')), size: RO.LABEL_SIZE });
+    out.push({ id: 'label-secondary', model: RO.labelModel(sh.m, eye, 0), tex: labelTexture('secondary', '', C.labelLines(map, 'secondary')), size: RO.LABEL_SIZE });
   }
   // The live readout where the primary ray meets the emission, and the pinned one.
   const hv = selection.sel.hover;
   if (state.cube && hv && !ui.hit) {
-    out.push({ model: RO.readoutModel(boxToWorld(hv.p), eye), tex: readoutTexture(readout.live, readoutCached(readout.live, hv.p), false, now),
+    out.push({ id: 'readout-live', model: RO.readoutModel(boxToWorld(hv.p), eye), tex: readoutTexture(readout.live, readoutCached(readout.live, hv.p), false, now),
       size: RO.READOUT_SIZE });
   }
   if (state.cube && ui.pin) {
-    out.push({ model: RO.readoutModel(boxToWorld(ui.pin.p), eye), tex: readoutTexture(readout.pin, readoutCached(readout.pin, ui.pin.p), true, now),
+    out.push({ id: 'readout-pin', model: RO.readoutModel(boxToWorld(ui.pin.p), eye), tex: readoutTexture(readout.pin, readoutCached(readout.pin, ui.pin.p), true, now),
       size: RO.READOUT_SIZE });
   }
   return out;
@@ -1884,7 +1932,7 @@ let lastDesktop = 0;
 let lastDesktopView = null;
 let desktopRunning = false;
 function desktopFrame(time) {
-  if (xr) { desktopRunning = false; return; }
+  if (xr || !single.active) { desktopRunning = false; return; }
   requestAnimationFrame(desktopFrame);
   if (gl.isContextLost()) return;      // until it is restored (epic #166)
   const t0 = performance.now();
@@ -1989,11 +2037,50 @@ async function checkXR() {
   }
   const vr = await navigator.xr.isSessionSupported('immersive-vr').catch(() => false);
   const ar = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
+  xrSupport = { vr, ar };
   $('xr-status').textContent = vr ? `WebXR ready${ar ? ' (VR and passthrough)' : ''}` : 'WebXR present, no headset';
-  $('enter-vr').disabled = !vr;
-  $('bench-xr').disabled = !vr;
-  $('enter-ar').disabled = !ar;
+  updateXRButtons();
 }
+let xrSupport = { vr: false, ar: false };
+/** Enter VR and the others: on with a headset, off on a page that stood down (issue #226). */
+function updateXRButtons() {
+  const on = single.active;
+  $('enter-vr').disabled = !xrSupport.vr || !on;
+  $('bench-xr').disabled = !xrSupport.vr || !on;
+  $('enter-ar').disabled = !xrSupport.ar || !on;
+}
+
+// ── One active page (issue #226) ────────────────────────────────────────────
+// A newer page of this origin (another Open on Headset, another adb open, a
+// second loader window) makes this one stand down: VR off, nothing drawn,
+// refinement closed, a notice "Open in another window" with "Use this window".
+const single = new SinglePage({
+  channel: typeof BroadcastChannel === 'function' ? new BroadcastChannel(CHANNEL_NAME) : null,
+  onChange: (active, info) => onSingleChange(active, info),
+});
+/** Bumped when the page stands down: a session being made then is ended (enterXR). */
+let xrStartGen = 0;
+function onSingleChange(active) {
+  if (!active) xrStartGen++;
+  updateXRButtons();
+  $('stood-down').hidden = active;
+  if (!active) {
+    shell.log('info', 'page-stood-down', 'a newer VR page of this origin was opened');
+    if (xr) endXR('a newer page');
+    refiner.setSuspended('in another window');
+    shell.notices.show({ id: 'stood-down', level: 'warning', sticky: true, title: STOOD_DOWN.title,
+      lines: STOOD_DOWN.lines, actions: [{ id: 'take-over', label: 'Use this window' }] }, { force: true });
+  } else {
+    shell.log('info', 'page-took-over', 'this window is the VR page in use again');
+    shell.clearNotice('stood-down');
+    refiner.setSuspended('');
+    startDesktop();
+  }
+  shell.render();
+}
+function takeOver() { single.claim(); }
+$('take-over').addEventListener('click', () => takeOver());
+window.addEventListener('pageshow', (e) => { if (e.persisted) single.claim(); });
 
 $('enter-vr').addEventListener('click', () => enterXR('immersive-vr', false).catch((e) => setStatus(`XR: ${e.message}`)));
 $('enter-ar').addEventListener('click', () => enterXR('immersive-ar', false).catch((e) => setStatus(`XR: ${e.message}`)));
@@ -2009,14 +2096,42 @@ function makeXRLayer(session, scale) {
 }
 
 async function enterXR(mode, bench) {
-  const session = await navigator.xr.requestSession(mode, { optionalFeatures: ['local-floor', 'hand-tracking'] });
+  if (!single.active) throw new Error('this page is paused: the page in use is in another window');
+  const startGen = xrStartGen;
+  // Composition layers for the text (issue #226), unless ?nolayers.
+  const wantLayers = !query.has('nolayers');
+  const session = await navigator.xr.requestSession(mode,
+    { optionalFeatures: ['local-floor', 'hand-tracking', ...(wantLayers ? ['layers'] : [])] });
   await gl.makeXRCompatible();
   const fbScale = readNumber('fbscale');
   const layer = makeXRLayer(session, fbScale);
   if ('fixedFoveation' in layer) layer.fixedFoveation = readNumber('foveation');
-  session.updateRenderState({ baseLayer: layer, depthNear: 0.05, depthFar: 50 });
+  session.updateRenderState({ depthNear: 0.05, depthFar: 50 });
   let ref;
   try { ref = await session.requestReferenceSpace('local-floor'); } catch { ref = await session.requestReferenceSpace('local'); }
+  // With layers, the projection layer is the first of the session's `layers`
+  // (a session with layers has no baseLayer); without, the base layer as before.
+  let quads = null, layersNote = 'in the scene (?nolayers)';
+  if (wantLayers && layersAvailable(session)) {
+    try {
+      session.updateRenderState({ layers: [layer] });
+      quads = new QuadLayers({
+        binding: new XRWebGLBinding(session, gl), session, gl, space: ref,
+        makeTransform: (p, q) => new XRRigidTransform({ x: p[0], y: p[1], z: p[2] }, { x: q[0], y: q[1], z: q[2], w: q[3] }),
+        flipY: query.get('layerflip') !== '0',
+        onFail: (why) => { shell.log('warning', 'xr-layers-off', `drawn in the scene from now on: ${why}`); measure.event('xr-layers', { on: false, why: String(why).slice(0, 160) }); },
+      });
+      quads.setBase(layer);
+      layersNote = 'quad layers';
+    } catch (err) {
+      quads = null;
+      layersNote = `in the scene (layers refused: ${err.message || err})`;
+      session.updateRenderState({ baseLayer: layer });
+    }
+  } else {
+    if (wantLayers) layersNote = 'in the scene (no composition layers in this browser)';
+    session.updateRenderState({ baseLayer: layer });
+  }
   let targetHz = 0;
   if (session.supportedFrameRates && session.updateTargetFrameRate) {
     const want = readNumber('rate');
@@ -2030,8 +2145,13 @@ async function enterXR(mode, bench) {
     } catch { /* keep the default */ }
   }
   targetHz = session.frameRate || readNumber('rate');
+  // A newer page took over while the session was being made: it is not used.
+  if (!single.active || startGen !== xrStartGen) {
+    session.end().catch(() => {});
+    throw new Error('a newer VR page was opened meanwhile: this one is paused');
+  }
   xr = { session, ref, layer, mode, fbScale, fbChosen: fbScale, targetHz, placed: false, last: 0, hands: {}, grab: null,
-    buttons: {}, bench: bench ? makeBench() : null, place: null, endedBy: '' };
+    buttons: {}, bench: bench ? makeBench() : null, place: null, endedBy: '', quads, layersNote };
   Object.assign(ui.menu, { open: false, pinned: false, armed: false, wasHeld: false });
   ui.menuModel = null;
   stats.buf.length = stats.cpu.length = stats.gpu.length = 0;
@@ -2039,14 +2159,18 @@ async function enterXR(mode, bench) {
   eyeGovernor.reset(fbScale);
   shell.xrStarted();
   shell.clearNotice('xr-ended');
-  shell.log('info', 'xr-start', `${mode}${bench ? ' (benchmark)' : ''}, ${targetHz} Hz, eye buffer ${layer.framebufferWidth}×${layer.framebufferHeight}`);
+  const policy = qualityPolicy({ targetHz, spvMin: governor.min, spvChosen: state.spv, eyeChosen: fbScale });
+  shell.log('info', 'xr-start', `${mode}${bench ? ' (benchmark)' : ''}, ${targetHz} Hz, eye buffer ${layer.framebufferWidth}×${layer.framebufferHeight}; text ${layersNote}`);
+  shell.log('info', 'quality-policy', `${policy}; governor ${state.governorOn ? 'on' : 'off'}`);
   measure.event('xr-start', { mode: mode === 'immersive-ar' ? 'ar' : 'vr', bench: !!bench, display_hz: targetHz,
     eye: [layer.framebufferWidth, layer.framebufferHeight], scale: fbScale,
-    foveation: 'fixedFoveation' in layer ? layer.fixedFoveation : null, rates: session.supportedFrameRates ? Array.from(session.supportedFrameRates) : null });
+    foveation: 'fixedFoveation' in layer ? layer.fixedFoveation : null, rates: session.supportedFrameRates ? Array.from(session.supportedFrameRates) : null,
+    policy, layers: layersNote });
   measure.xrStarted();
-  // The controls guide, the first time in VR (kept in the settings).
-  if (shouldShowGuide(settings, { bench })) shell.showGuide(0);
+  // The controls guide is shown on the 2-D page before entering VR (issue
+  // #226); in VR only when asked for (Help → Guide), beside the cube.
   session.addEventListener('end', () => {
+    if (xr && xr.quads) xr.quads.destroy();
     const b = xr && xr.bench;
     const endedBy = xr ? xr.endedBy : '';
     const summary = `${fpsLine()}; ${currentQualityNote() || 'quality as chosen'}`;
@@ -2228,12 +2352,15 @@ function controllerSegments() {
     const m = h.m;
     const p = (x, y, z) => M.transformPoint(m, [x, y, z]);
     const col = hand === primary ? [1, 0.75, 0.4, 1] : [0.5, 0.8, 1, 1];
+    // The controllers and hands themselves are solid models (inputMesh, issue
+    // #226); a tracked hand keeps its pinch line, the thumb tip to the index tip.
     if (h.isHand) {
-      segs.push(...handSegments(h, col));
+      const j = h.joints;
+      if (j['thumb-tip'] && j['index-finger-tip'] && h.gesture.pinchDist < 0.05) {
+        segs.push({ a: j['thumb-tip'].p, b: j['index-finger-tip'].p, color: h.gesture.pinch ? [1, 0.85, 0.3, 1] : col });
+      }
     } else {
-      segs.push({ a: p(0, 0, 0), b: p(0, 0, -0.08), color: col });
-      segs.push({ a: p(-0.015, 0, 0), b: p(0.015, 0, 0), color: col });
-      segs.push({ a: p(0, -0.015, 0), b: p(0, 0.015, 0), color: col });
+      segs.push({ a: p(0, 0, -0.06), b: p(0, 0, -0.1), color: col });     // the barrel's direction
     }
     if (hand !== primary || !h.ray) continue;
     if (shell.cardHit) {
@@ -2259,6 +2386,26 @@ function controllerSegments() {
   return segs;
 }
 
+/** The controllers and tracked hands as solid models (issue #226): one
+ *  world-space triangle list for this frame. Primary orange, secondary blue. */
+const meshScratch = [];
+function inputMesh() {
+  meshScratch.length = 0;
+  const primary = C.roles(settings.leftHanded).primary;
+  for (const [hand, h] of Object.entries(xr.hands)) {
+    const col = hand === primary ? [1, 0.62, 0.25, 1] : [0.35, 0.68, 1, 1];
+    if (h.isHand) handMesh(meshScratch, h.joints, col, { pinch: !!h.gesture.pinch, grip: !!h.gesture.grip });
+    else {
+      const b = (k) => { const x = h.g.buttons[C.BUTTON_INDEX[k]]; return !!(x && x.pressed); };
+      controllerMesh(meshScratch, h.m, col, { pressed: { trigger: b('trigger'), grip: b('grip') }, handedness: hand });
+    }
+  }
+  if (meshArray.length < meshScratch.length) meshArray = new Float32Array(Math.max(meshScratch.length, 2 * meshArray.length));
+  meshArray.set(meshScratch);
+  return meshArray.subarray(0, meshScratch.length);
+}
+let meshArray = new Float32Array(65536);
+
 /** The numbers (frame rate, latency) above the secondary hand, over its labels;
  *  next to the cube without a hand. */
 function hudModel() {
@@ -2273,6 +2420,22 @@ function hudModel() {
   const right = [Math.cos(pl.yaw), 0, -Math.sin(pl.yaw)];
   const p = M.add(pl.p, M.add(M.scale3(right, -0.5), [0, 0.0, 0]));
   return M.multiply(M.translation(...p), M.rotation([0, 1, 0], pl.yaw + 0.5));
+}
+
+/** The flat surfaces of this frame, back to front: [{id, model, handle, size}]. */
+function overlayList(card, winList, hm, cards, menuM, menuTex) {
+  const out = [];
+  const guide = card && card.level === 'guide';
+  if (guide) out.push({ id: 'card', model: card.model, handle: card.tex, size: card.size });
+  for (const w of winList) {
+    out.push({ id: 'win-' + w.id, model: w.model, handle: w.tex, size: w.size });
+    out.push({ id: 'bar-' + w.id, model: W.barModel(w.model, w.size), handle: barTexture(w), size: W.barSize(w.size[0]) });
+  }
+  if (hm) out.push({ id: 'hud', model: hm, handle: hudTex, size: [0.16, 0.15] });
+  for (const k of cards) out.push({ id: k.id, model: k.model, handle: k.tex, size: k.size });
+  if (menuM) out.push({ id: 'menu', model: menuM, handle: menuTex, size: HM.MENU_SIZE });
+  if (card && !guide) out.push({ id: 'card', model: card.model, handle: card.tex, size: card.size });
+  return out;
 }
 
 function onXRFrame(time, frame) {
@@ -2300,9 +2463,11 @@ function onXRFrame(time, frame) {
   const layer = xr.layer;
   gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
   gl.clearColor(0, 0, 0, xr.mode === 'immersive-ar' ? 0 : 1);
+  gl.depthMask(true);         // a draw may have left depth writes off: the clear needs them
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   R.beginFrame();
   R.setLines(controllerSegments(), R.tmpLines);
+  R.setMesh(inputMesh());
   if (state.hud && time - hudLast > 250) {
     hudLast = time;
     const lines = hudLines(xr.targetHz);
@@ -2320,6 +2485,14 @@ function onXRFrame(time, frame) {
   const menuM = menuTex ? menuWorld() : null;
   const cards = handCards(time);
   const card = xr.bench ? null : shell.cardForFrame(pose.transform.matrix);
+  // Every flat surface with text, back to front (issue #226): the guide
+  // lowest (never in front of the menu), the windows, the numbers, the
+  // readout, the labels, the menu, a message card on top. As composition
+  // layers where the browser has them (sharp at any eye-buffer scale), else
+  // drawn in the scene below in the same order.
+  const overlays = overlayList(card, winList, hm, cards, menuM, menuTex);
+  const asLayers = !!(xr.quads && xr.quads.frame(frame, overlays));
+  xr.overlaysAsLayers = asLayers;
   // No refinement during the benchmark, nor in passthrough: the backend's frame
   // has no alpha (it is composited over black), so over the room it would
   // either darken it where the headset draws emission the full cube has not,
@@ -2341,12 +2514,9 @@ function onXRFrame(time, frame) {
     const v = { proj: view.projectionMatrix, view: view.transform.inverse.matrix };
     if (state.cube) drawScene(v, undefined, view.eye === 'right' ? 1 : 0);
     else if (layers.hasScene()) layers.drawScene(v, view.eye === 'right' ? 1 : 0, vp.height);
-    if (hm) R.drawPanel(v, hm, hudTex, [0.16, 0.15]);
-    drawWindows(v, winList);
-    for (const k of cards) R.drawPanel(v, k.model, k.tex, k.size);
-    if (menuM) R.drawPanel(v, menuM, menuTex, HM.MENU_SIZE);
-    if (card) R.drawPanel(v, card.model, card.tex, card.size);
-    R.drawWorldLines(v);      // the controllers and their rays over the panels
+    if (!asLayers) for (const o of overlays) R.drawPanel(v, o.model, o.handle, o.size);
+    R.drawMesh(v);            // the controllers and hands (models.js)
+    R.drawWorldLines(v);      // and their rays, over the panels drawn in the scene
   }
   R.endFrame();
   const cpu = performance.now() - t0;
@@ -2370,7 +2540,10 @@ function setEyeBufferScale(scale) {
   try {
     const layer = makeXRLayer(xr.session, scale);
     if ('fixedFoveation' in layer) layer.fixedFoveation = 'fixedFoveation' in old ? old.fixedFoveation : readNumber('foveation');
-    xr.session.updateRenderState({ baseLayer: layer });
+    // With layers the projection layer is replaced in the `layers` array (the
+    // quads kept), else as the base layer.
+    if (xr.quads) xr.quads.setBase(layer);
+    else xr.session.updateRenderState({ baseLayer: layer });
     xr.layer = layer;
     xr.fbScale = scale;
     shell.log('info', 'quality-eye-buffer', `scale ${scale} (${layer.framebufferWidth}×${layer.framebufferHeight}) at ${governor.value.toFixed(2)} samples/voxel, ${fpsLine()}`);
@@ -2583,6 +2756,14 @@ if (query.has('debug')) {
   window.__vrLink = linkState;
   window.__vrState = state;
   window.__vrGL = gl;
+  // Issue #226: the XR session's state (fake-XR checks), the renderer's GPU
+  // textures, the one-page state.
+  window.__vrXR = () => (xr ? { overlaysAsLayers: !!xr.overlaysAsLayers, layersNote: xr.layersNote, fbScale: xr.fbScale,
+    targetHz: xr.targetHz, quads: xr.quads ? { active: xr.quads.active, shown: xr.quads.shown, pool: xr.quads.pool.size, copies: xr.quads.copies } : null,
+    meshCount: R.meshCount, labelCount: R.labelCount } : null);
+  window.__vrGpu = () => R.gpuStats();
+  window.__vrSingle = single;
+  window.__vrSetEyeScale = (s) => { if (xr) setEyeBufferScale(s); };
   // The message card (in the desktop view with ?panel3d): press one of its
   // buttons through a ray from the camera, as a controller would.
   window.__vrCard = {
@@ -2831,6 +3012,28 @@ $('show-guide').addEventListener('click', () => {
   box.textContent = shell.guideText();
   box.hidden = !box.hidden;
 });
+// The first-run guide is on this page, before entering VR (issue #226): in
+// the headset it covered the menu and the labels. Got it: not shown again.
+$('guide-ok').addEventListener('click', () => {
+  $('guide-text').hidden = true;
+  $('guide-ok').hidden = true;
+  if (!settings.guideSeen) { settings.guideSeen = true; persist(); }
+});
+function showGuideOnPage() {
+  if (!shouldShowGuide(settings, { bench: query.has('bench') })) return;
+  $('guide-text').textContent = shell.guideText();
+  $('guide-text').hidden = false;
+  $('guide-ok').hidden = false;
+}
+
+/** Where the guide's card goes in the headset (notice.js guideCardModel):
+ *  beside the cube, on the primary hand's side (the menu is in the other). */
+function guidePlacement() {
+  const side = C.roles(settings.leftHanded).primary === 'right' ? 1 : -1;
+  if (!state.info) return { side };
+  const half = state.extent.map((v) => v / 2);
+  return { side, cube: { centre: M.transformPoint(state.model, [0, 0, 0]), radius: Math.hypot(...half) * M.uniformScale(state.model) } };
+}
 $('copy-diag').addEventListener('click', async () => {
   const text = shell.diagnostics();
   $('diag-out').hidden = false;
@@ -2841,16 +3044,23 @@ $('copy-diag').addEventListener('click', async () => {
 
 // ── Start ───────────────────────────────────────────────────────────────────
 shell.start();
+single.claim();         // older VR pages of this origin stand down (issue #226)
 checkXR();
 updateLabels();
+showGuideOnPage();
 if (query.has('record')) measure.startRecord('address');
 updateMeasureDom();
 if (query.has('bench')) {
   desktopBench().catch((e) => { document.title = `BENCH FAILED ${e.message}`; console.error(e); });
 } else {
   startDesktop();
+  const again = query.has('synthetic') ? '' : takeReloadPath();
   if (query.has('synthetic')) loadSynthetic(Number(query.get('synthetic')) || 256);
-  else if (pairing.dataset || pairing.path) {
+  else if (again && tokenField.value.trim()) {
+    // Reloaded after a lost graphics context: the cube that was on show.
+    $('path').value = again;
+    withLoading(loadFromBackend).catch((err) => { if (!err.superseded) setStatus(`Failed: ${err.message || err}`); });
+  } else if (pairing.dataset || pairing.path) {
     withLoading(loadPaired).catch((err) => {
       if (!err.superseded) setStatus(`The desktop's cube could not be opened: ${err.message || err}`);
     });
