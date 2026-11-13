@@ -434,6 +434,7 @@ set(PROJECT_SOURCES
         src/app/LassoReplay.cpp
         src/app/SharedSelection.cpp
         src/app/SharedSelectionLink.cpp
+        src/app/HeadsetHubLink.cpp
         src/app/SofiaSuggest.cpp
         src/app/FinderTaskRun.cpp
         src/app/HostMemory.cpp
@@ -442,6 +443,8 @@ set(PROJECT_SOURCES
         src/app/LassoReplay.h
         src/app/SharedSelection.h
         src/app/SharedSelectionLink.h
+        src/app/HeadsetHubLink.h
+        src/app/VrHeadsetHub.h
         src/app/SofiaSuggest.h
         src/app/FinderTaskRun.h
         src/app/RenderTaskHandle.h
