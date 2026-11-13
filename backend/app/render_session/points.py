@@ -51,7 +51,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from ..point_sample import place_rows
+from ..point_sample import _Q, _STAT_CHUNK, _colour_stats, place_rows, quantise64
 from ._common import SessionStats, _build_color_tf, _parse_tf_points, set_camera
 from ._stereo_points import PointStereoMixin, _vtk_matrix
 from ._window import (RenderThreadError, new_offscreen_window, offscreen_kind,
@@ -104,11 +104,19 @@ class PointViewState:
     filters: list[dict] = field(default_factory=list)
 
 
-def _sampled_lut(ctf, cmin: float, cmax: float, log: bool):
+def _range_scale(cmin: float, cmax: float) -> float:
+    """1, or the largest magnitude of a range wider than the largest double
+    (cmax - cmin overflows): what point_sample.quantise64 divides by."""
+    return 1.0 if math.isfinite(cmax - cmin) else max(abs(cmin), abs(cmax))
+
+
+def _sampled_lut(ctf, cmin: float, cmax: float, log: bool, ctf_scale: float = 1.0):
     """``ctf`` as a 1024-entry vtkLookupTable over [cmin, cmax], as the desktop
     colours its points. A mapper colours every point through its table, and a
     colour transfer function of 256 nodes on a log scale took seconds per
-    mapper for 3 M points on a POWER9 node; a table takes milliseconds."""
+    mapper for 3 M points on a POWER9 node; a table takes milliseconds.
+    ``ctf`` is evaluated at x / ``ctf_scale`` (a map built over a range
+    scaled down by :func:`_range_scale`)."""
     import vtk
     n = 1024
     lut = vtk.vtkLookupTable()
@@ -117,12 +125,70 @@ def _sampled_lut(ctf, cmin: float, cmax: float, log: bool):
     centres = (np.arange(n) + 0.5) / n
     if log:
         lut.SetScaleToLog10()
-        xs = cmin * (cmax / cmin) ** centres
+        # Worked in log10 (cmax / cmin overflows for a range over 308 decades).
+        xs = 10.0 ** (math.log10(cmin) + (math.log10(cmax) - math.log10(cmin)) * centres)
     else:
-        xs = cmin + (cmax - cmin) * centres
+        # Worked on the range scaled down when cmax - cmin overflows.
+        s = _range_scale(cmin, cmax)
+        xs = s * (cmin / s + (cmax / s - cmin / s) * centres)
     for i, x in enumerate(xs):
-        lut.SetTableValue(i, *ctf.GetColor(float(x)), 1.0)
+        lut.SetTableValue(i, *ctf.GetColor(float(x) / ctf_scale), 1.0)
     return lut
+
+
+def _code_lut(lut):
+    """``lut``'s colours over the 16-bit codes (0.._Q, linear): the mapper's
+    table. The codes already carry the range and the scale (:func:`colour_codes`),
+    so the table that labels the colour bar keeps the column's own units."""
+    import vtk
+    out = vtk.vtkLookupTable()
+    n = lut.GetNumberOfTableValues()
+    out.SetNumberOfTableValues(n)
+    out.SetRange(0.0, float(_Q))
+    for i in range(n):
+        out.SetTableValue(i, *lut.GetTableValue(i))
+    return out
+
+
+def column_stats(column, rows: np.ndarray) -> tuple[float, float, float] | None:
+    """(min, max) of the finite values of ``column[rows]`` and the smallest
+    positive one (inf when none), read in float64 a chunk at a time
+    (point_sample._colour_stats per chunk); None when no value is finite."""
+    lo, hi, pos = math.inf, -math.inf, math.inf
+    for start in range(0, len(rows), _STAT_CHUNK):
+        v = np.asarray(column[rows[start:start + _STAT_CHUNK]], dtype=np.float64)
+        if np.isfinite(v).any():
+            c_lo, c_hi, c_pos = _colour_stats(v)
+            lo, hi, pos = min(lo, c_lo), max(hi, c_hi), min(pos, c_pos)
+    return (lo, hi, pos) if math.isfinite(lo) else None
+
+
+def colour_codes(column, rows: np.ndarray, cmin: float, cmax: float,
+                 log: bool) -> np.ndarray:
+    """``column[rows]`` as 16-bit codes over [cmin, cmax] (log: over their
+    log10, values below cmin at code 0), the VR page's colour codes
+    (point_sample.sample_points): read in float64 a chunk at a time and
+    quantised in float64 (point_sample.quantise64, which also scales a range
+    wider than the largest double). A float32 copy of the column merged
+    1e9, 1e9 + 1 and 1e9 + 2 into one colour. NaN and -inf get code 0 (the
+    map's lowest colour) and +inf the highest, as on the VR page."""
+    lo, hi = (math.log10(cmin), math.log10(cmax)) if log else (cmin, cmax)
+    out = np.empty(len(rows), dtype=np.uint16)
+    for start in range(0, len(rows), _STAT_CHUNK):
+        v = np.asarray(column[rows[start:start + _STAT_CHUNK]], dtype=np.float64)
+        if log:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                np.maximum(v, cmin, out=v)
+                np.log10(v, out=v)
+        out[start:start + _STAT_CHUNK] = quantise64(v, lo, hi)
+    return out
+
+
+def _widened(lo: float) -> float:
+    """An upper end for a column of one value ``lo``: lo + 1 (lo + a millionth
+    of lo when 1 is below its float64 resolution)."""
+    hi = lo + max(1.0, abs(lo) * 1e-6)
+    return hi if math.isfinite(hi) else lo
 
 
 def _filter_mask(columns, filters: list[dict], rows: np.ndarray) -> np.ndarray:
@@ -473,14 +539,21 @@ class PointRenderSession(PointStereoMixin):
         self._recolour_on_thread(field_changed=True)
 
     def _recolour_on_thread(self, field_changed: bool = False) -> None:
+        """Colour codes of the drawn rows and the tables that colour them.
+
+        The column is read and its range, log scale and codes worked out in
+        float64 (:func:`colour_codes`, as the VR page's sample does); VTK gets
+        the 16-bit codes, 2 bytes a point where the float32 values took 4, and
+        a table over the codes. The colour bar keeps a table over the
+        column's own range, so its labels (and ``levels``) stay in the
+        table's units."""
         from vtk.util.numpy_support import numpy_to_vtk
         name = self.view.color_field
         if name and name in self._columns and len(self._rows):
-            values = np.asarray(self._columns[name][self._rows], dtype=np.float32)
-            finite = values[np.isfinite(values)]
-            lo, hi = (float(finite.min()), float(finite.max())) if finite.size else (0.0, 1.0)
+            stats = column_stats(self._columns[name], self._rows)
+            lo, hi = (stats[0], stats[1]) if stats else (0.0, 1.0)
             if not hi > lo:
-                hi = lo + 1.0
+                hi = _widened(lo)
             self._data_range = (lo, hi)
             if field_changed or self.view.color_min is None or self.view.color_max is None:
                 cmin = self.view.color_min if self.view.color_min is not None else lo
@@ -490,29 +563,40 @@ class PointRenderSession(PointStereoMixin):
             if not cmax > cmin:
                 cmin, cmax = lo, hi
         else:
-            values = np.zeros(len(self._rows), dtype=np.float32)
             self._data_range, cmin, cmax = None, 0.0, 1.0
-        for poly, vals in ((self._polydata, values), (self._lod_polydata,
-                                                       values[::self._lod_stride])):
-            scalars = numpy_to_vtk(np.ascontiguousarray(vals), deep=True)
-            scalars.SetName("VbtScalar")
-            poly.GetPointData().SetScalars(scalars)
-        log = False
+        # The client's log scale (with its own colour function only).
+        log = bool(self.view.color_points) and self.view.color_log and cmin > 0
+        # A linear map is built over the range scaled down when it, or the
+        # span of the client's nodes, is wider than the largest double: VTK
+        # interpolates over node differences, which overflow there. (On a log
+        # scale VTK interpolates the nodes' log10: finite differences.)
+        xs = [cmin, cmax] + [p[0] for p in (self.view.color_points or [])]
+        ctf_scale = 1.0 if log else _range_scale(min(xs), max(xs))
         if self.view.color_points:
             import vtk
             ctf = vtk.vtkColorTransferFunction()
             for x, r, g, b in self.view.color_points:
-                ctf.AddRGBPoint(x, r, g, b)
-            log = self.view.color_log and cmin > 0   # the client's log scale
+                ctf.AddRGBPoint(x / ctf_scale, r, g, b)
             if log:
                 ctf.SetScale(1)   # VTK_CTF_LOG10: interpolated as the client does
         else:
-            ctf = _build_color_tf(self.view.lut, cmin, cmax)
-        lut = _sampled_lut(ctf, cmin, cmax, log)
+            ctf = _build_color_tf(self.view.lut, cmin / ctf_scale, cmax / ctf_scale)
+        if self._data_range is not None and cmax > cmin:
+            codes = colour_codes(self._columns[name], self._rows, cmin, cmax, log)
+        else:
+            codes = np.zeros(len(self._rows), dtype=np.uint16)
+        for poly, vals in ((self._polydata, codes), (self._lod_polydata,
+                                                      codes[::self._lod_stride])):
+            scalars = numpy_to_vtk(np.ascontiguousarray(vals), deep=True)
+            scalars.SetName("VbtScalar")
+            poly.GetPointData().SetScalars(scalars)
+        del codes
+        lut = _sampled_lut(ctf, cmin, cmax, log, ctf_scale)
+        code_lut = _code_lut(lut)
         coloured = self._data_range is not None
         for mapper in self._mappers.values():
-            mapper.SetLookupTable(lut)
-            mapper.SetScalarRange(cmin, cmax)
+            mapper.SetLookupTable(code_lut)
+            mapper.SetScalarRange(0.0, float(_Q))
             mapper.SetScalarVisibility(1 if coloured else 0)
         self._actor.GetProperty().SetColor(*_SOLID)
         self._colorbar.SetLookupTable(lut)

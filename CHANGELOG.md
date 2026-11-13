@@ -21,6 +21,30 @@ are preserved here unedited; the branch names they refer to are historical.
   returns `X-Visivo-Particle-Origin` and `X-Visivo-Particle-Scale`. The desktop
   asks for the local frame and shifts its GPU camera and the box overlay in
   double precision. Older clients and backends keep working as before.
+- **Headset pairing by code: the pairing service (#211, part of #210).** A
+  small, self-hostable service (`services/vr-pair/`) pairs a headset's VR
+  page with a backend through a short code and relays their WebRTC offer,
+  answer and ICE candidates, then steps aside: no data passes through it.
+  Pair codes are 6 characters without look-alikes (30 bits), single use, for
+  5 minutes; a connected headset gets a 192-bit resume code for 12 hours.
+  Failed joins are rate limited per address and in all, and so are new codes
+  and TURN credentials per address; pages must come from an allowed origin,
+  hosts may be required to present a key, and connections are pinged and
+  time out. It hands out STUN and TURN servers, TURN with time-limited
+  credentials from a shared secret (coturn's `use-auth-secret`). Offers, answers, candidates and codes
+  are never logged. It ships with a Dockerfile, an Apptainer definition, a
+  compose example with coturn and reverse-proxy notes; no host name is built
+  in.
+- **Remote point rendering keeps colours far from zero apart (#209, part of
+  #166).** The point render session coloured points from a float32 copy of the
+  colour column, so 1e9, 1e9 + 1 and 1e9 + 2 got one colour. It now reads the
+  column in float64 a chunk at a time, works out the range, the log scale and
+  each row's colour in float64 as the VR page's sample does, and hands the GPU
+  16-bit codes over that range: the same codes as the VR page for the same
+  table on a linear and a log scale, 2 bytes a point instead of 4, and a
+  colour step of 25 MB instead of 90 MB at its peak for 10 M rows. The colour
+  bar and the reported data range stay in the table's units. NaN and -inf now
+  take the map's lowest colour and +inf its highest, as on the VR page.
 
 - **Remote point rendering keeps points far from zero apart (#206, part of
   #166).** The backend's point render session drew float32 positions, so
