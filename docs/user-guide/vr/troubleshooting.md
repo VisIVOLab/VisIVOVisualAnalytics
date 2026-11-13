@@ -98,14 +98,63 @@ What has been checked so far, and what to check on a Quest 3, are under
 [Recovery from failures](reference.md#recovery-from-failures) and
 [Recovery and diagnostics, with the headset](reference.md#recovery-and-diagnostics-with-the-headset).
 
+## GPU context loss at the first lasso on a Quest 3
+
+On a Quest 3 (Quest Browser 154, Adreno 740) the page lost its WebGL context
+at the first Kinematic Lasso, and the browser's GPU process restarted
+([#229](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/229)).
+The cause, found on the headset: the browser's GPU process rejects a
+`texImage3D` (the call that allocates a 3-D texture) issued while a WebXR
+session is running. A trace of the browser showed the command decoder's parse
+error on the GPU thread right before the process was terminated, and
+`chrome://gpu` logged *Error: 5 for Command kTexImage3D*, then *Restarting GPU
+process due to unrecoverable error. Context was lost.* The first lasso was the
+first time the page allocated a texture for the selection mask, in VR. With
+the mask's storage allocated on the page beforehand and only written into in
+VR, eight lassos in a row in VR lost nothing.
+
+Since then the page allocates every 3-D texture outside VR:
+
+- **The selection mask**: one byte per voxel of the cube on show, allocated
+  and zeroed together with the cube (so the cube's memory budget counts it);
+  in VR each selection is only written into it.
+- **A cube that arrives in VR** (*Show that cube* after *Isolate* or
+  *Remove*, a load at another binning, a load started from the desktop) is
+  read at once and kept; the cube on show stays, and a notice says *The new
+  cube is shown when you leave VR*. Leaving VR puts it on show; enter VR
+  again to see it in the headset. A newer one replaces one already waiting.
+- **The headset benchmark** makes its cubes on the page first (*Prepare the
+  headset benchmark*), then enters VR (*Start the headset benchmark*).
+- **A context restored before the VR session ended** is rebuilt when the
+  session ends.
+
+Any other 3-D allocation attempted in VR is refused before it reaches the GPU
+and logged as `tex3d-in-xr` in the diagnostics: if you ever see that line,
+report it with **Copy diagnostics**.
+
+What to check on the Quest 3:
+
+1. Restart Quest Browser, open the page (`http://localhost:<port>/vr/`, with
+   the `#token=…` part as usual), load the cube, **Enter VR**.
+2. Make ten Kinematic Lassos in a row (new seeds, then *add* and *carve*),
+   moving the controller and your head over the selection for about ten
+   seconds after each. The picture must not go black, and the page must not
+   show *The graphics were reset* afterwards.
+3. In VR: *Isolate*, then *Show that cube*. The notice *The new cube is shown
+   when you leave VR* appears and the cube on show stays. Exit VR: the
+   isolated cube is on the page. Enter VR again: it is in the headset.
+4. On the page, **Copy diagnostics**: there must be no `webgl-context-lost`
+   and no `tex3d-in-xr` line; note the `GPU textures … MB` line (the mask is
+   the `mask` figure: one byte per voxel of the reduced cube).
+5. **Prepare the headset benchmark**, wait for *Benchmark ready*, then **Start
+   the headset benchmark** and keep still until it ends; copy the table.
+
 ## Diagnosing a GPU context loss
 
-This section is for debugging only. On a Quest 3 the page has lost its WebGL
-context at the first Kinematic Lasso
-([#229](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/229)):
-the browser's GPU process restarts, and the browser then refuses WebGL to the
-page until it is restarted. To find the cause, the address can leave out one
-per-frame path at a time. Each switch works only together with `?debug`:
+This section is for debugging only. To find the cause of the context loss
+above, the address could leave out one per-frame path at a time; the
+switches remain for any later loss. Each switch works only together with
+`?debug`:
 
 | Address switch | What the page leaves out |
 |---|---|

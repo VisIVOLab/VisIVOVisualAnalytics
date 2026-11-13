@@ -55,7 +55,7 @@ test('loopback and headset detection', () => {
 
 test('every notice offers a way out and says what to do', () => {
   const kinds = ['unreachable', 'http-error', 'restarted', 'reopened', 'reopen-failed', 'auth', 'reload', 'update-app',
-    'context-lost', 'context-failed', 'context-restored', 'xr-ended', 'budget'];
+    'context-lost', 'context-failed', 'context-restored', 'xr-ended', 'budget', 'cube-waiting'];
   for (const k of kinds) {
     for (const inVR of [false, true]) {
       const n = L.noticeFor(k, { inVR, loopback: true, headset: true, retryInS: 4, attempts: 2, detail: 'd', why: 'w' });

@@ -213,6 +213,12 @@ export function noticeFor(kind, ctx = {}) {
         lines: ['The headset or the browser ended it (the system menu, the headset taken off, or the browser stopping it).',
           'The cube and the settings are kept: press Enter VR to go back in.'],
         actions: [{ id: 'enter-vr', label: 'Enter VR' }, { id: 'dismiss', label: 'OK' }], autoHideMs: 30000 };
+    case 'cube-waiting':
+      // Issue #229: a new cube's textures are not allocated during a VR session.
+      return { id: 'cube-waiting', level: 'info', title: 'The new cube is shown when you leave VR',
+        lines: [`It is loaded${ctx.detail ? `: ${ctx.detail}` : ''}. This headset's browser cannot take a new cube's textures during a VR session without resetting its graphics.`,
+          'The cube on show stays until then: Exit VR to see the new one, then Enter VR again.'],
+        actions: [...exit, { id: 'dismiss', label: 'OK' }], autoHideMs: 20000 };
     case 'budget':
       return { id: 'budget', level: 'error', title: 'This cube is too large for this device',
         lines: [ctx.detail || 'It would not fit in the memory this device gives a web page.',

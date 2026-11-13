@@ -62,15 +62,23 @@ test('the budget refuses a cube before anything is allocated', () => {
   const ok = Q.cubeBudget({ dims: [256, 256, 158], encoding: 'uint8' }, { headset: true, deviceMemoryGB: 8 });
   assert.ok(ok.ok);
   assert.equal(ok.textureBytes, 256 * 256 * 158);
-  // 640^3 8-bit = 250 MiB: fits a headset with 8 GB, not one with 4.
-  assert.ok(Q.cubeBudget({ dims: [640, 640, 640], encoding: 'uint8' }, { headset: true, deviceMemoryGB: 8 }).ok);
-  const small = Q.cubeBudget({ dims: [640, 640, 640], encoding: 'uint8' }, { headset: true, deviceMemoryGB: 4 });
+  // The selection mask's storage (one byte a voxel) is allocated with the
+  // cube (issue #229) and counted: 8-bit 640x640x200 = 78 MiB of texture,
+  // 157 MiB on the GPU: fits a headset with 8 GB, not one with 4.
+  const mid = Q.cubeBudget({ dims: [640, 640, 200], encoding: 'uint8' }, { headset: true, deviceMemoryGB: 8 });
+  assert.ok(mid.ok);
+  assert.equal(mid.gpuBytes, 2 * 640 * 640 * 200 + 80 * 80 * 25 * 4);
+  const small = Q.cubeBudget({ dims: [640, 640, 200], encoding: 'uint8' }, { headset: true, deviceMemoryGB: 4 });
   assert.ok(!small.ok);
   assert.match(small.reason, /headset allows 128 MiB/);
-  // 16-bit doubles the texture.
-  const f16 = Q.cubeBudget({ dims: [640, 640, 640], encoding: 'float16' }, { headset: true, deviceMemoryGB: 8 });
+  assert.match(small.reason, /for the selection mask/);
+  // 512^3 8-bit: 128 MiB of texture, but 257 MiB with its mask.
+  assert.ok(!Q.cubeBudget({ dims: [512, 512, 512], encoding: 'uint8' }, { headset: true, deviceMemoryGB: 8 }).ok);
+  // 16-bit doubles the texture, not the mask.
+  const f16 = Q.cubeBudget({ dims: [640, 640, 300], encoding: 'float16' }, { headset: true, deviceMemoryGB: 8 });
   assert.ok(!f16.ok);
-  assert.equal(f16.textureBytes, 2 * 640 ** 3);
+  assert.equal(f16.textureBytes, 2 * 640 * 640 * 300);
+  assert.equal(f16.gpuBytes, 3 * 640 * 640 * 300 + 80 * 80 * 38 * 4);
   // A computer's browser allows more.
   assert.ok(Q.cubeBudget({ dims: [640, 640, 640], encoding: 'float16' }, { headset: false, deviceMemoryGB: 8 }).ok);
   // The 3-D texture side is checked first.

@@ -49,12 +49,19 @@ to run on a Quest 3.
   buffer went down to 0.7× from 0.5 samples per voxel on: on the first Quest 3
   session that made the text and the cube blurry for about 89 fps at 90 Hz.
 - **Memory budget**: before the reduced cube is read, the page checks that it
-  fits: the GPU's 3-D texture side, and the texture's size against what this
-  device gives one cube (a headset: 256 MiB with 8 GB of memory, 128 MiB with
-  4 GB; a computer's browser: 1 GiB). A cube over it is refused with the
-  reason (*… needs 300 MiB of texture (900 MiB while loading); this headset
-  allows 256 MiB for one cube*): choose a larger binning. The headset's limit
-  is a conservative figure, not yet measured on a Quest 3.
+  fits: the GPU's 3-D texture side, and what the cube holds on the GPU
+  against what this device gives one cube (a headset: 256 MiB with 8 GB of
+  memory, 128 MiB with 4 GB; a computer's browser: 1 GiB). On the GPU a cube
+  holds its texture (1 byte a voxel at 8 bits, 2 at 16 bits), the selection
+  mask's storage over the same grid (1 byte a voxel, allocated with the cube:
+  see [GPU context loss](troubleshooting.md#gpu-context-loss-at-the-first-lasso-on-a-quest-3))
+  and the empty-space grid (4 bytes per 512 voxels). A cube over it is
+  refused with the reason (*… needs 300 MiB of GPU memory (200 MiB of
+  texture, 100 MiB for the selection mask; 500 MiB while loading); this
+  headset allows 256 MiB for one cube*): choose a larger binning. The
+  headset's limit is a conservative figure, not yet measured on a Quest 3.
+  The backend's own caps (64 Mi voxels, 64 MiB of texture) keep any cube it
+  serves under 129 MiB on the GPU.
 - **Resolution**: the headset's eye-buffer scale (`framebufferScaleFactor`),
   **Foveation**: the Quest's fixed foveated rendering, **Refresh**: the display
   rate asked of the headset (**72 Hz by default**, or 90 or 120 Hz, if it
@@ -431,8 +438,14 @@ it, and those it shares, are:
 
 ## Measuring the headset: the benchmark
 
-**Run the headset benchmark** enters VR and draws generated cubes of 128³,
-256³, 384³ and 512³ voxels, each at 0.5, 1 and 2 samples per voxel (and the
+**Prepare the headset benchmark** makes generated cubes of 128³, 256³, 384³
+and 512³ voxels and puts them on the GPU on the page (about 210 MB of
+texture; a size that would take the four over this device's
+[memory budget](#the-settings-on-the-page) is left out, and the page says
+so); the same button, now **Start the headset benchmark**, enters VR. No
+cube is made in VR: see
+[GPU context loss](troubleshooting.md#gpu-context-loss-at-the-first-lasso-on-a-quest-3).
+It draws each cube at 0.5, 1 and 2 samples per voxel (and the
 loaded cube, if there is one), turning slowly 0.75 m in front of you,
 0.75 s to settle and 3 s measured each, with the governor off. It ends by
 itself (about a minute) and leaves VR; the page then shows a table (FPS, frame
@@ -928,9 +941,9 @@ churn: every redraw of a panel (the menu up to 30 times a second, the readout
 15, the result window at each state of a pick) and every new selection mask
 gave its texture new storage, about 45 MB a second here, which a driver may
 hold until the frames in flight are done. Now a panel's storage is allocated
-once per canvas size and each redraw writes into it; the mask texture grows
-to a rounded capacity (never past the cube's grid) and each selection is
-written into it; the label atlas reuses one canvas and one storage; the
+once per canvas size and each redraw writes into it; the mask texture is
+allocated once with the cube, over its whole grid (issue #229: no 3-D
+texture is allocated in VR), and each selection is written into it; the label atlas reuses one canvas and one storage; the
 controllers' lines reuse their buffer; and a newer pick, a change of tool or
 Clear cancels the requests of the one before (the lasso's mask, its
 statistics, the seed's sub-volume), so fast picks do not pile up downloads.

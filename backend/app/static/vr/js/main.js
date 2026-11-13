@@ -31,7 +31,7 @@ import { createShell } from './shell.js';
 import { CARD_PX, CARD_SIZE } from './notice.js';
 import { pageBuild, PAGE_VR_API, isHeadsetBrowser, reopenCube, LoadTracker, supersededLoad, PendingReopen } from './lifecycle.js';
 import { shouldShowGuide } from './onboarding.js';
-import { EyeBufferGovernor, qualityNote, cubeBudget, spvAtFloor, qualityPolicy } from './quality.js';
+import { EyeBufferGovernor, qualityNote, cubeBudget, spvAtFloor, qualityPolicy, textureLimitBytes } from './quality.js';
 // The first Quest 3 session's fixes (issue #226): composition layers for the
 // text, solid controllers and hands, one active page.
 import { QuadLayers, layersAvailable } from './xr-layers.js';
@@ -64,6 +64,10 @@ if (!gl) {
   throw new Error('no WebGL2');
 }
 const R = new Renderer(gl);
+// Issue #229: no 3-D texture is allocated during a VR session (on a Quest 3
+// a texImage3D then resets the browser's GPU process). R.xrActive is set
+// while a session runs; any 3-D allocation then is refused and logged here.
+R.onTex3DInXR = (name) => shell.log('error', 'tex3d-in-xr', `${name} refused during the VR session`);
 const controllerModels = new ControllerModels(R, { log: (level, event, detail) => shell.log(level === 'warn' ? 'warning' : level, event, detail) });
 // In a headset's browser (or the desktop's WebXR stand-in), the controller
 // models used last time load now, on the 2-D page, not at session start.
@@ -506,16 +510,24 @@ function updateLabels() {
 function resetThreshold() {
   const c = state.cube;
   if (!c) return;
-  const src = $('thr-source').value;
-  const thr = src === 'cube' ? state.info.default_threshold : c.reducedThreshold;
-  const fallback = state.info.default_threshold ?? c.reducedThreshold;
+  // The benchmark's cubes keep no voxels on the page: their values were
+  // worked out when they were prepared (prepareBench).
+  const n = c.norms || thresholdNorms(c, state.info, $('thr-source').value);
+  state.thrNorm = n.thrNorm;
+  state.cmaxNorm = n.cmaxNorm;
+  updateLabels();
+}
+
+/** The threshold and the top of the colour range (0..1) of cube `c` for threshold source `src`. */
+function thresholdNorms(c, info, src) {
+  const thr = src === 'cube' ? info.default_threshold : c.reducedThreshold;
+  const fallback = info.default_threshold ?? c.reducedThreshold;
   const t = thr ?? fallback;
-  state.thrNorm = t === null || t === undefined ? 0.1 : Math.max(0, V.dataToNorm(t, c.lo, c.hi));
+  const thrNorm = t === null || t === undefined ? 0.1 : Math.max(0, V.dataToNorm(t, c.lo, c.hi));
   // Colour range: from the threshold to the 99th percentile of what is above it
   // (emission is sparse: a percentile of the whole cube is still noise).
-  state.cmaxNorm = Math.max(state.thrNorm + 0.01,
-    V.normQuantile(c.data, c.encoding, 0.99, 4_000_000, state.thrNorm));
-  updateLabels();
+  const cmaxNorm = Math.max(thrNorm + 0.01, V.normQuantile(c.data, c.encoding, 0.99, 4_000_000, thrNorm));
+  return { thrNorm, cmaxNorm };
 }
 
 // ── Loading ─────────────────────────────────────────────────────────────────
@@ -896,14 +908,70 @@ function loadSynthetic(n) {
   }, null, '');
 }
 
-/** `path`: the file the load was started for (never the path field now). */
-function installCube(info, cube, open, path = '') {
+/**
+ * A cube that arrived during a VR session (an Isolate or Remove shown, a
+ * load the desktop started): kept here and put on show when the session
+ * ends (issue #229: its textures cannot be allocated in VR on a Quest 3).
+ * The newest one wins. {info, cube, open, path, load}.
+ */
+let stagedCube = null;
+
+function stageCube(info, cube, open, path) {
+  const replaced = !!stagedCube;
+  // The newest load's ticket now: the load being staged (installCube runs at its end).
+  stagedCube = { info, cube, open, path, load: state.load, ticket: { id: loads.latest } };
+  const what = `${cube.dims.join('×')} ${cube.encoding}${path ? ` (${path.split('/').pop()})` : ''}`;
+  shell.log('info', 'cube-waits-for-exit', `${what}${replaced ? ', replacing one already waiting' : ''}`);
+  measure.event('cube-staged', { dims: cube.dims, encoding: cube.encoding });
+  shell.notify('cube-waiting', { detail: what });
+  setStatus(`The new cube (${what}) is ready: it is shown when you leave VR.`);
+}
+
+/** After a VR session: what had to wait for its end (issue #229). */
+function afterXREnd(wasBench = false) {
+  if (R.xrActive) return;             // a new session started meanwhile
+  if (restoreAfterXR) { restoreAfterXR = false; rebuildGraphics(); }
+  if (wasBench) releaseBench();
+  installStaged();
+}
+
+/** The cube that waited for the end of a VR session, put on show now:
+ *  outside VR, with a working context, and unless a newer load began since. */
+function installStaged() {
+  if (!stagedCube || R.xrActive || gl.isContextLost()) return;
+  const s = stagedCube;
+  stagedCube = null;
+  shell.clearNotice('cube-waiting');
+  if (!loads.isCurrent(s.ticket)) {
+    shell.log('info', 'cube-waits-dropped', 'a newer load began after it');
+    return;
+  }
+  {
+    state.load = s.load;
+    try {
+      installCube(s.info, s.cube, s.open, s.path);
+    } catch (err) {
+      setStatus(`Failed: ${err.message || err}`);
+      shell.log('error', 'cube-install-failed', String(err.message || err));
+    }
+  }
+}
+
+/** `path`: the file the load was started for (never the path field now).
+ *  `slot`: a volume already on the GPU (the benchmark's, prepared before VR). */
+function installCube(info, cube, open, path = '', slot = null) {
+  if (R.xrActive && !slot) { stageCube(info, cube, open, path); return; }
+  // Another cube on the GPU: the benchmark's preparation was sized beside the old one.
+  if (!slot && benchPrep) {
+    if (!benchPrep.busy) releaseBench(true);
+    else { benchPrep.cancelled = true; for (const e of benchPrep.cubes.splice(0)) R.releaseVolume(e.slot); }
+  }
   // Every cube put on show (from the backend, synthetic, the benchmark's)
   // supersedes a recovery under way for the previous one (reopenCube).
   state.loadGen++;
   layers.onCube();
   measure.cubeChanged();
-  const up = R.setVolume(cube);
+  const up = slot ? R.useVolume(slot) : R.setVolume(cube);
   state.info = info;
   state.cube = cube;
   state.open = open;
@@ -2111,7 +2179,14 @@ window.addEventListener('pageshow', (e) => { if (e.persisted) single.claim(); })
 
 $('enter-vr').addEventListener('click', () => enterXR('immersive-vr', false).catch((e) => setStatus(`XR: ${e.message}`)));
 $('enter-ar').addEventListener('click', () => enterXR('immersive-ar', false).catch((e) => setStatus(`XR: ${e.message}`)));
-$('bench-xr').addEventListener('click', () => enterXR('immersive-vr', true).catch((e) => setStatus(`XR: ${e.message}`)));
+// The headset benchmark: its cubes are prepared on the 2-D page first (one
+// press), then the second press enters VR (issue #229: no 3-D texture can be
+// allocated during the session).
+$('bench-xr').addEventListener('click', () => {
+  if (!benchPrep || (!benchPrep.busy && !benchReady())) { releaseBench(true); prepareBench().catch((e) => setStatus(`Benchmark: ${e.message || e}`)); return; }
+  if (benchPrep.busy) return;
+  enterXR('immersive-vr', true).catch((e) => setStatus(`XR: ${e.message}`));
+});
 
 /** The session's WebGL layer. Always with an alpha channel: Quest Browser 154
  *  gives an opaque layer (alpha: false) an incomplete framebuffer, so every
@@ -2127,8 +2202,29 @@ async function enterXR(mode, bench) {
   const startGen = xrStartGen;
   // Composition layers for the text (issue #226), unless ?nolayers.
   const wantLayers = !query.has('nolayers');
+  if (bench && !benchReady()) throw new Error('the benchmark\'s cubes are not prepared: press Prepare the headset benchmark first');
+  if (R.xrActive) throw new Error('a VR session is already running');
   const session = await navigator.xr.requestSession(mode,
     { optionalFeatures: ['local-floor', 'hand-tracking', ...(wantLayers ? ['layers'] : [])] });
+  // From here until the session ends no 3-D texture is allocated (issue
+  // #229): loads wait for the end (installCube), the benchmark's cubes were
+  // prepared before. Registered first, so it is cleared before any other
+  // 'end' listener runs; what waited is done after them.
+  R.xrActive = true;
+  session.addEventListener('end', () => { R.xrActive = false; setTimeout(() => afterXREnd(!!bench), 0); });
+  try {
+    await startSession(session, mode, bench, startGen, wantLayers);
+  } catch (err) {
+    // A session the page could not set up is ended, not left running unowned
+    // (it would keep R.xrActive set, and every load waiting, for good).
+    // The flag stays set until the session's end event clears it (a load landing meanwhile still waits).
+    if (!xr) session.end().catch(() => {});
+    throw err;
+  }
+}
+
+/** The rest of enterXR, once the session exists. */
+async function startSession(session, mode, bench, startGen, wantLayers) {
   await gl.makeXRCompatible();
   const fbScale = readNumber('fbscale');
   const layer = makeXRLayer(session, fbScale);
@@ -2199,6 +2295,8 @@ async function enterXR(mode, bench) {
   session.addEventListener('end', () => {
     if (xr && xr.quads) xr.quads.destroy();
     const b = xr && xr.bench;
+    // A benchmark left before its end: its settings and the cube shown before it come back.
+    if (b && !b.finished) finishBench(b);
     const endedBy = xr ? xr.endedBy : '';
     const summary = `${fpsLine()}; ${currentQualityNote() || 'quality as chosen'}`;
     const dragged = Object.values(wins).filter((w) => w.drag);
@@ -2498,7 +2596,10 @@ function onXRFrame(time, frame) {
   xr.headPos = [hp.x, hp.y, hp.z];
   { const hm = pose.transform.matrix; xr.headRight = M.normalize([hm[0], 0, hm[2]]); }
   handleInput(frame, dtS);
-  if (xr.bench) benchStep(xr.bench, time, interval);
+  if (xr.bench) {
+    benchStep(xr.bench, time, interval);
+    if (!xr) return;                  // the benchmark ended the session (its end may be synchronous)
+  }
 
   const layer = xr.layer;
   gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
@@ -2606,18 +2707,123 @@ function fpsLine() {
 // In the headset: synthetic cubes of four sizes at three sampling rates (and
 // the loaded cube, if any), 0.75 s to settle then 3 s measured each, with the
 // cube turning slowly in front of the viewer. Results on the HUD and, after
-// leaving VR, on the page.
-function benchPlan(includeLoaded) {
+// leaving VR, on the page. The cubes are made and put on the GPU on the 2-D
+// page before the session (prepareBench), never in VR (issue #229); in VR the
+// benchmark only switches between them (R.useVolume).
+const BENCH_SIZES = [128, 256, 384, 512];
+// ?debug&benchms=N: N ms measured a configuration (the checks' short run).
+const BENCH_MEASURE_MS = query.has('debug') && Number(query.get('benchms')) > 0 ? Number(query.get('benchms')) : 3000;
+const BENCH_SETTLE_MS = Math.min(750, BENCH_MEASURE_MS / 4);
+
+/** The benchmark's cubes on the GPU: {busy, cubes: [{n, slot, cube, info}], bytes, skipped}, or null. */
+let benchPrep = null;
+
+function benchReady() {
+  return !!(benchPrep && !benchPrep.busy && benchPrep.cubes.length && benchPrep.cubes.every((e) => !e.slot.lost && !e.slot.released));
+}
+
+function setBenchButton() {
+  const b = $('bench-xr');
+  b.textContent = benchReady() ? 'Start the headset benchmark' : benchPrep && benchPrep.busy ? 'Preparing the benchmark…' : 'Prepare the headset benchmark';
+}
+
+/**
+ * Makes the benchmark's synthetic cubes and puts each on the GPU now, on the
+ * 2-D page: as many of BENCH_SIZES as fit this device's texture share
+ * together (quality.textureLimitBytes; 210 MB for all four, which an 8 GB
+ * headset's 256 MiB holds). Their voxels are not kept on the page, only the
+ * threshold and colour range each starts with.
+ */
+async function prepareBench() {
+  if (benchPrep) return;
+  if (R.xrActive) throw new Error('leave VR first');
+  // The device's share, less what the cube on show keeps on the GPU beside them.
+  const g = R.gpuStats();
+  const limit = textureLimitBytes({ headset: isHeadsetBrowser(navigator.userAgent), deviceMemoryGB: navigator.deviceMemory })
+    - (g.volumeBytes + g.maskBytes + g.macroBytes);
+  const sizes = [];
+  let bytes = 0;
+  for (const n of BENCH_SIZES) {
+    const need = n ** 3 + Math.ceil(n / 8) ** 3 * 4;
+    if (n > R.maxTex3D || bytes + need > limit) continue;
+    sizes.push(n);
+    bytes += need;
+  }
+  const skipped = BENCH_SIZES.filter((n) => !sizes.includes(n));
+  benchPrep = { busy: true, cubes: [], bytes, skipped };
+  setBenchButton();
+  const t0 = performance.now();
+  try {
+    for (const n of sizes) {
+      setStatus(`Preparing the benchmark's cubes: ${n}³…`);
+      await new Promise((r) => setTimeout(r, 0));          // the status is drawn
+      if (R.xrActive || benchPrep.cancelled) throw new Error(R.xrActive ? 'a VR session started while the benchmark was being prepared' : 'another cube was loaded while the benchmark was being prepared: prepare it again');
+      const g0 = performance.now();
+      const data = V.syntheticCube(n);
+      const info = V.syntheticInfo(n);
+      const cube = { data, dims: [n, n, n], encoding: 'uint8', lo: 0, hi: 1, factors: [1, 1, 1], mode: 'synthetic',
+        reducedThreshold: 0.25, bunit: '', fullShape: [n, n, n] };
+      const generateMs = performance.now() - g0;
+      const src = thresholdSourceFor(settings, { synthetic: true, source: 'cube', outOfCore: false, refine: $('refine').checked });
+      cube.norms = thresholdNorms(cube, info, src);
+      const slot = R.prepareVolume(cube, 8, { mask: false });
+      cube.data = null;                                     // on the GPU now; not kept on the page
+      benchPrep.cubes.push({ n, slot, cube, info, generateMs });
+    }
+    if (benchPrep.cancelled) throw new Error('another cube was loaded while the benchmark was being prepared: prepare it again');
+  } catch (err) {
+    benchPrep.busy = false;
+    releaseBench(true);
+    throw err;
+  }
+  benchPrep.busy = false;
+  setBenchButton();
+  setStatus(`Benchmark ready: ${sizes.map((n) => `${n}³`).join(', ')} on the GPU (${(bytes / 1e6).toFixed(0)} MB, `
+    + `${((performance.now() - t0) / 1000).toFixed(1)} s)${skipped.length ? `; ${skipped.map((n) => `${n}³`).join(', ')} left out: over this device's texture share` : ''}.\n`
+    + 'Press Start the headset benchmark to enter VR.');
+}
+
+/**
+ * The benchmark's cubes given back (after its session, or a failed
+ * preparation). When one of them is still on show (no cube was loaded
+ * before the benchmark), an ordinary synthetic cube is made in its place,
+ * with its voxels, so the page can pick and read it: the same size, or the
+ * largest smaller one that fits this device with its selection mask (a 512³
+ * does not on a headset). The others are given back first.
+ */
+function releaseBench(quiet = false) {
+  if (!benchPrep || benchPrep.busy) return;
+  const prep = benchPrep;
+  benchPrep = null;                  // first: the replacement below installs a cube (installCube)
+  const shown = prep.cubes.find((e) => e.slot === R.slot || e.cube === state.cube);
+  for (const e of prep.cubes) if (e !== shown) R.releaseVolume(e.slot);
+  if (shown && !R.xrActive) {
+    // The replacement is allocated while the shown slot is still held (setVolume
+    // releases it after): both must fit the device's share together.
+    const held = R.slot === shown.slot ? shown.slot.textureBytes + shown.slot.macroBytes : 0;
+    const fits = (n) => {
+      const b = cubeBudget({ dims: [n, n, n], encoding: 'uint8' }, { maxTex3D: R.maxTex3D,
+        headset: isHeadsetBrowser(navigator.userAgent), deviceMemoryGB: navigator.deviceMemory });
+      return b.ok && b.gpuBytes + held <= b.limitBytes;
+    };
+    const n = BENCH_SIZES.filter((s) => s <= shown.n && fits(s)).pop() || BENCH_SIZES[0];
+    try { loadSynthetic(n); } catch (err) { if (!quiet) setStatus(`Failed: ${err.message || err}`); }
+  }
+  for (const e of prep.cubes) R.releaseVolume(e.slot);
+  setBenchButton();
+}
+
+function benchPlan(includeLoaded, sizes = BENCH_SIZES) {
   const plan = [];
-  for (const n of [128, 256, 384, 512]) for (const spv of [0.5, 1, 2]) plan.push({ n, spv });
+  for (const n of sizes) for (const spv of [0.5, 1, 2]) plan.push({ n, spv });
   if (includeLoaded) for (const spv of [0.5, 1, 2]) plan.push({ n: 0, spv });
   return plan;
 }
 
 function makeBench() {
-  const saved = state.cube ? { info: state.info, cube: state.cube, open: state.open, openPath: state.openPath } : null;
+  const saved = state.cube && R.slot ? { info: state.info, cube: state.cube, open: state.open, openPath: state.openPath, slot: R.slot } : null;
   const b = {
-    plan: benchPlan(!!saved), i: -1, t0: 0, saved, results: [], status: 'benchmark starting',
+    plan: benchPlan(!!saved, benchPrep.cubes.map((e) => e.n)), i: -1, t0: 0, saved, results: [], status: 'benchmark starting',
     intervals: [], gpu: [], cpu: [], currentN: -1,
     savedParams: { spv: state.spv, governorOn: state.governorOn, mode: state.mode, skip: state.skip },
     record(interval, cpu, gpu) {
@@ -2633,13 +2839,20 @@ function makeBench() {
   return b;
 }
 
+/** One of the prepared cubes on show, in VR: no allocation. */
+function showBenchCube(n) {
+  const e = benchPrep.cubes.find((x) => x.n === n);
+  loads.begin('');              // a newer load than any backend load under way
+  state.load = { generateMs: e.generateMs, mb: n ** 3 / 1e6 };
+  installCube(e.info, e.cube, null, '', e.slot);
+}
+
 function benchStep(b, time) {
   const cfg = b.plan[b.i];
-  // A new configuration starts on the frame AFTER its cube was made, so the
-  // seconds spent generating a 512^3 cube are not counted as a frame.
+  // A new configuration starts on the frame AFTER its cube was put on show.
   if (b.t0 === null) b.t0 = time;
   const elapsed = time - b.t0;
-  if (b.i < 0 || elapsed > 3750) {
+  if (b.i < 0 || elapsed > BENCH_SETTLE_MS + BENCH_MEASURE_MS) {
     if (b.i >= 0) {
       const iv = V.FrameStats.stats(b.intervals);
       const target = 1000 / xr.targetHz;
@@ -2662,26 +2875,30 @@ function benchStep(b, time) {
       return;
     }
     const next = b.plan[b.i];
-    if (next.n && next.n !== b.currentN) { loadSynthetic(next.n); b.currentN = next.n; }
-    if (!next.n && b.saved) { R.setVolume(b.saved.cube); state.cube = b.saved.cube; state.info = b.saved.info; applyExtent(); resetThreshold(); b.currentN = 0; }
+    if (next.n && next.n !== b.currentN) { showBenchCube(next.n); b.currentN = next.n; }
+    if (!next.n && b.saved) {
+      R.useVolume(b.saved.slot);
+      state.cube = b.saved.cube; state.info = b.saved.info; applyExtent(); resetThreshold(); b.currentN = 0;
+    }
     state.spv = next.spv;
     b.t0 = null; b.intervals = []; b.gpu = []; b.cpu = []; b.measuring = false;
     b.status = `benchmark ${b.i + 1}/${b.plan.length}: preparing`;
     return;
   }
-  b.measuring = (time - b.t0) > 750;
+  b.measuring = (time - b.t0) > BENCH_SETTLE_MS;
   const c = b.plan[b.i];
   b.status = `benchmark ${b.i + 1}/${b.plan.length}: ${c.n ? `${c.n}^3` : 'loaded cube'} at ${c.spv} samples/voxel`;
   state.model = placedModel(xr.place, (time / 1000) * 0.35);
 }
 
 function finishBench(b) {
+  b.finished = true;
   state.spv = b.savedParams.spv;
   state.governorOn = b.savedParams.governorOn;
   state.mode = b.savedParams.mode;
   state.skip = b.savedParams.skip;
-  if (b.saved) {
-    R.setVolume(b.saved.cube);
+  if (b.saved && !b.saved.slot.lost) {
+    R.useVolume(b.saved.slot);
     state.cube = b.saved.cube; state.info = b.saved.info; state.open = b.saved.open; state.openPath = b.saved.openPath;
     applyExtent(); resetThreshold();
     if (b.saved.open) share.start(b.saved.open.dataset_id);   // the synthetic cubes stopped it
@@ -2817,6 +3034,11 @@ if (query.has('debug')) {
     return { p: [w[12], w[13], w[14]], m: Array.from(w), drawn: !!e.rig.drawn[i] };
   };
   window.__vrGpu = () => R.gpuStats();
+  // Issue #229: the 3-D allocation guard (calls, refusals), the session flag,
+  // a cube waiting for the session's end, the benchmark's preparation.
+  window.__vrTex3D = () => ({ calls: { ...R.tex3dGuard.calls }, refused: R.tex3dGuard.refused, xrActive: R.xrActive,
+    staged: stagedCube ? { dims: stagedCube.cube.dims, factors: stagedCube.cube.factors } : null,
+    bench: benchPrep ? { busy: benchPrep.busy, ready: benchReady(), sizes: benchPrep.cubes.map((e) => e.n), bytes: benchPrep.bytes } : null });
   window.__vrSingle = single;
   window.__vrCuts = () => ({ active: activeCuts.slice(), counts: { ...cutCounts } });
   window.__vrSetEyeScale = (s) => { if (xr) setEyeBufferScale(s); };
@@ -3035,11 +3257,24 @@ canvas.addEventListener('webglcontextlost', (e) => {
     }
   }, 10000);
 });
+// Restored while the session that lost it has not ended yet: the rebuild
+// (which allocates the cube's 3-D textures) waits for its end (issue #229).
+let restoreAfterXR = false;
 canvas.addEventListener('webglcontextrestored', () => {
   clearTimeout(contextTimer);
+  if (R.xrActive) {
+    restoreAfterXR = true;
+    shell.log('info', 'webgl-context-restored', 'rebuilt when the VR session ends');
+    return;
+  }
+  rebuildGraphics();
+});
+
+function rebuildGraphics() {
   const t0 = performance.now();
   try {
     R.restore();
+    releaseBench(true);              // the benchmark's cubes were on the lost context
     layers.restore();
     refiner.draw = new RefineDraw(gl);
     refiner.weight = 0;
@@ -3053,6 +3288,7 @@ canvas.addEventListener('webglcontextrestored', () => {
     shell.clearNotice('context-failed');
     shell.notify('context-restored', { wasInVR: contextLostInVR });
     shell.log('info', 'webgl-context-restored', `rebuilt in ${(performance.now() - t0).toFixed(0)} ms`);
+    installStaged();                 // a cube that waited for a session ended by the loss
   } catch (err) {
     shell.clearNotice('context-lost');
     shell.notify('context-failed', { detail: String(err.message || err) });
@@ -3060,7 +3296,7 @@ canvas.addEventListener('webglcontextrestored', () => {
   }
   contextLostInVR = false;
   startDesktop();
-});
+}
 
 // ── Guide and diagnostics on the page (epic #166) ───────────────────────────
 $('show-guide').addEventListener('click', () => {

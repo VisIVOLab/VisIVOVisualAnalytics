@@ -173,7 +173,9 @@ def test_n_plus_two_clients_wait_their_turn_and_leave_nothing_behind(backend):
     # and with them their processes.
     _wait(lambda: _snapshot(client, headers)["active_sessions"] == 0, timeout=30)
     _wait(lambda: not any(p.is_alive() for p in processes), timeout=10)
-    assert not [p for p in _LIVE if p.session_id in (sid3, sid4)]
+    # The child exits a moment before its release thread drops the proxy
+    # from _LIVE (after closing the pipe): wait for that too.
+    _wait(lambda: not [p for p in _LIVE if p.session_id in (sid3, sid4)], timeout=10)
     assert manager._attached == {} and manager._detached_at == {}
     assert manager._tickets == {}
 

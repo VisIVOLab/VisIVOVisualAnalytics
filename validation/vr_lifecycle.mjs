@@ -47,6 +47,7 @@ import { runMeasureChecks } from './vr_measure.mjs';
 import { runAllocChecks, GL_PROBE } from './vr_alloc.mjs';
 import { XR_FAKE, runXRFakeChecks, runSinglePageChecks, runDelayedTakeoverCheck, runReloadCheck } from './vr_xr_fake.mjs';
 import { runCutChecks } from './vr_cuts.mjs';
+import { runTex3DChecks, TEX3D_PROBE } from './vr_tex3d.mjs';
 import { runControllerShadingChecks } from './vr_controller_shading.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => {
@@ -60,7 +61,7 @@ const MEASURE = !!args.measure;
 // --alloc (issue #226): the repeated-selection allocation run alone (also part of --regressions).
 const ALLOC = !!args.alloc || !!args.regressions;
 // --xrfake (issue #226): the headset path through a WebXR stand-in, and one active page (also part of --regressions),
-// with the debug cuts of issue #229 (vr_cuts.mjs).
+// with the debug cuts of issue #229 (vr_cuts.mjs) and no 3-D texture allocated in VR (vr_tex3d.mjs).
 const XRFAKE = (!!args.xrfake || !!args.regressions) && !args.paired;
 const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake;
 const PY = args.python || process.env.VISIVO_PYTHON || 'python3';
@@ -559,6 +560,8 @@ try {
   if (ALLOC) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: GL_PROBE });
   // A WebXR stand-in, active only on an address with ?xrfake.
   if (XRFAKE) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: XR_FAKE });
+  // Texture calls split by the VR session (issue #229), before the page's scripts.
+  if (XRFAKE) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: TEX3D_PROBE });
   // A Quest's browser, so the page words its messages for the headset over USB.
   if (!SMOKE) await c.send('Emulation.setUserAgentOverride', { userAgent: QUEST_UA });
   if (PAIRED) {
@@ -626,6 +629,8 @@ try {
     await runReloadCheck({ c, check, waitFor, path: cube });
     // The debug cuts of issue #229, each loaded and a lasso made in VR with it.
     await runCutChecks({ c, check, waitFor, base: BASE, token: tokenA, cube });
+    // Issue #229: lassos, an Isolate and a binning change in one VR session, then the benchmark: no 3-D allocation in VR.
+    await runTex3DChecks({ c, check, waitFor, base: BASE, token: tokenA, cube });
     await runSinglePageChecks({ c, check, waitFor, cdpPort, connect: cdp,
       url: `${BASE}/vr/?debug&refine=0#token=${encodeURIComponent(tokenA)}` });
   }
