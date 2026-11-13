@@ -52,6 +52,15 @@ colour (orange the primary, blue the secondary). The short line from the
 controller's front stays in the hand's colour, so you can still tell which
 hand is the primary. Until #226 only the rays could be seen.
 
+The models are shaded from their glTF materials: base colour (an sRGB
+texture), metallic and roughness, emissive, and the alpha mode, lit by a soft
+light from above and one at your eye. They look as the asset paints them:
+the `meta-quest-touch-plus` model has a light grey grip with a dark
+face plate and buttons; the `meta-quest-touch-plus-v2` model is
+dark all over, with green accents. Their textures are kept at 1024 px a side
+(about 5.3 MB of GPU memory each, one per hand), mipmapped and filtered
+anisotropically so they do not shimmer.
+
 With the *left-handed* setting the roles swap: the left hand points (its
 **X** is next mode, **Y** undo) and the right holds the menu (hold **A**,
 **B** resets the view). The setting is on the menu's Settings tab and on the

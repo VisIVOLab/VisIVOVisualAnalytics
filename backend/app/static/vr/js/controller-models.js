@@ -2,7 +2,7 @@
 // vendored under backend/app/static/vr/models/ and served with the page;
 // nothing is fetched from a CDN). For each controller (an XRInputSource
 // without a hand) the first of its `profiles` the page has an asset for is
-// loaded once (profile JSON, .glb, base-colour textures), uploaded once to
+// loaded once (profile JSON, .glb, material textures), uploaded once to
 // the GPU (renderer.uploadModel) and shared by every input source with the
 // same asset; each source gets its own rig (controller-profiles.js) so its
 // buttons move its own model. Until the model is ready, or when no profile
@@ -17,7 +17,7 @@
 // the 2-D page, before Enter VR; a first session loads them when the
 // controllers appear. A failed load is tried once more after 10 s.
 
-import { parseGLB, readGLTF, imageSize, fitSize } from './gltf.js';
+import { parseGLB, readGLTF, imageSize, fitSize, imageUses } from './gltf.js';
 import { selectProfileId, layoutFor, makeRig, applyResponses, updateWorld } from './controller-profiles.js';
 import { MODEL_TEXTURE_MAX } from './renderer.js';
 
@@ -39,9 +39,12 @@ async function decodeImage(im, max) {
   return createImageBitmap(blob, { ...DECODE_OPTS, resizeWidth: fit.width, resizeHeight: fit.height, resizeQuality: 'high' });
 }
 
-/** The base-colour images of a model, one at a time; all closed if one fails. */
-export async function decodeBaseColours(model) {
-  const used = new Set(model.materials.map((m) => m.texture).filter((t) => t >= 0));
+/**
+ * The images a model's materials use (base colour, metallic-roughness,
+ * emissive: gltf.js imageUses), one at a time; all closed if one fails.
+ */
+export async function decodeModelImages(model) {
+  const used = imageUses(model);
   const out = model.images.map(() => null);
   try {
     for (let i = 0; i < model.images.length; i++) {
@@ -120,8 +123,8 @@ export class ControllerModels {
         const r = await this.fetch(url);
         if (!r.ok) throw new Error(`${layout.assetPath}: HTTP ${r.status}`);
         const model = readGLTF(parseGLB(await r.arrayBuffer()));
-        const bitmaps = await decodeBaseColours(model);
-        return { model, handle: this.R.uploadModel(model, bitmaps, { redecode: () => decodeBaseColours(model) }) };
+        const bitmaps = await decodeModelImages(model);
+        return { model, handle: this.R.uploadModel(model, bitmaps, { redecode: () => decodeModelImages(model) }) };
       });
       this.queue = run.catch(() => {});
       return run;
