@@ -198,12 +198,14 @@ A catalogue is read again in the session's process (its files and format, severa
 
 `threshold` is null; `data_min` / `data_max` are the colour column's range over the rows drawn (null in solid colour), also from `GET /v1/render/{session_id}/levels` after a colour change.
 
+The colour column is read in float64, a chunk of 262 144 rows at a time, and its range and the colour of each row are worked out in float64, as the VR page's sample does (`point_sample.quantise64`, issue #209): each row gets a 16-bit code over `[min, max]` (on a log scale, over their log10, a value at or below `min` taking the lowest colour), and the GPU gets those codes, 2 bytes a point where the float32 values took 4, through a 1024-entry table over the codes. So values far from 0 keep their colours (1e9, 1e9 + 1 and 1e9 + 2 are three colours, where a float32 cast made them one), a range wider than the largest double is scaled first (codes and colour map), and the codes are those of the VR page's sample for the same table and range (tested). NaN and -inf take the lowest colour and +inf the highest, as on the VR page. The colour bar is labelled in the column's own units, and `data_min` / `data_max` keep their meaning.
+
 The camera, viewport and encoding commands are those of a cube (`rotate`, `zoom`, `pan`, `reset`, `set_interactive`, `resize`, `jpeg_quality`); `pan` moves the camera in the view plane. The point commands:
 
 | `type` | Fields | Effect |
 |---|---|---|
 | `set_point_fields` | `x`, `y`, `z` (column names; any subset) | The columns used as coordinates. Rebuilds the points. Default: `X`/`Y`/`Z` when the table has them, else its first three columns. |
-| `set_color` | `field` (column, or null for solid colour), `lut` (colour map name), `min`, `max` (null: the column's range) | Colouring. |
+| `set_color` | `field` (column, or null for solid colour), `lut` (colour map name), `min`, `max` (null: the column's range), `points` (optional: the client's own colour function, `[[x, r, g, b], ...]` with `x` in the column's units, instead of `lut`), `log` (bool: with `points`, a log10 scale when `min` > 0) | Colouring (see below). |
 | `set_point_style` | `mode` (`"points"` or `"gaussian"`), `size` (points: pixels of the frame, 1 to 64; splats: 0.25 to 12), `intensity` (1 to 100) | Point size in the frame's pixels (a high-DPI client scales it), or the splats' radius (mean spacing × size / 8, the spacing ∛(volume / N) of the box the points fill) and opacity (min(0.9, 20 / D) × intensity / 100, within 0.05 to 0.9, D = longest side / spacing, the splats along the longest sightline), as on the desktop: a filter that cuts a slab changes neither. |
 | `set_filters` | `filters`: list of `{field, op, value}`, `op` one of `=`, `!=`, `>`, `>=`, `<`, `<=` | The rows drawn: those passing every filter. |
 | `set_background` | `name` (`"Dark"`, `"Dark gray"`, `"White"`; anything else is dark) | Background, and the colour of the box and of the colour bar's text. |
