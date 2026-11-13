@@ -19,24 +19,15 @@ service is in `app/vr_pair_host.py` and the data-channel bridge in
 
 ## Configuration
 
-| Variable | Effect |
-|---|---|
-| `VISIVO_VR_PAIR_URL` | The pairing service, `wss://…` (`ws://` for a service on this machine). The backend connects to its `/v1/host`. Unset: pairing is off. |
-| `VISIVO_VR_PAGE_URL` | The public loader page. `page_url` is this address with `#pair=<code>`. |
-
-Both variables are read when pairing is first used. To move the service to
-another server, change them and restart the backend.
-
-Pairing needs `aiortc` and PyAV (`backend/requirements-webrtc.txt`). The
-release bundles include them. A backend without them answers 409
-`not-configured`, and every other route works as before. They are not in
-`requirements.txt`, because the cluster images install that file and PyAV
-has no wheel for every cluster architecture.
-
-On a Mac with Apple Silicon, pairing needs macOS 14 or newer: the PyAV
-wheel for that platform is built for macOS 14. On macOS 13 the backend
-cannot load it and answers `not-configured`, and the desktop's *Open on
-Headset* dialog falls back to its USB section.
+The backend pairs headsets when `VISIVO_VR_PAIR_URL` names a pairing service
+and `VISIVO_VR_PAGE_URL` the public loader; both, and what pairing needs
+(aiortc and PyAV from `backend/requirements-webrtc.txt`, macOS 14 or newer on
+Apple Silicon), are in
+[Configuration: VR headset pairing](../configuration.md#vr-headset-pairing).
+Running the service and the loader is in
+[Hosting headset pairing](../deployment/vr-pairing.md). A backend without
+pairing answers 409 `not-configured` on these routes, and every other route
+works as before.
 
 ## `POST /v1/vr/pair`
 

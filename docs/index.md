@@ -243,6 +243,7 @@ user-guide/troubleshooting
 
 deployment/hpc-slurm
 deployment/src-node
+deployment/vr-pairing
 multi-user-backend
 user-guide/copilot-self-hosted
 configuration

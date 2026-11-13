@@ -9,7 +9,7 @@ Lasso, spectra) still runs on the full cube on the backend.
 
 | | |
 |---|---|
-| **Where** | `http://<backend>/vr/`, served by the backend itself |
+| **Where** | the *VisIVO VR* page your institute hosts, paired with the backend by a code; or `http://<backend>/vr/`, served by the backend itself (USB cable, a cluster's portal) |
 | **Headset** | Meta Quest 3 (Quest Browser, WebXR); any WebXR browser should work |
 | **Without a headset** | the same page in a desktop browser, with the mouse (for development and checks) |
 | **Data** | a FITS cube the backend can open; a point table, a catalogue over a cube, a velocity field |
@@ -28,9 +28,8 @@ troubleshooting
 reference
 ```
 
-- [Quickstart and pairing](quickstart.md): the first session, opening a cube
-  from the desktop, the headset over USB or Wi-Fi, the page on the Mac without
-  a headset.
+- [Quickstart and pairing](quickstart.md): pairing the headset by code, the
+  USB cable for offline use, the page on the Mac without a headset.
 - [Controls and the hand menu](controls.md): hands, modes, the hand menu and
   its tabs, hand tracking.
 - [Analysis in the headset](analysis.md): spectra, the Kinematic Lasso, box
@@ -38,8 +37,9 @@ reference
   desktop.
 - [Point tables, catalogues and velocity fields](data-types.md).
 - [Headset with a cluster backend](cluster.md).
-- [The public loader (for administrators)](public-loader.md): the headset
-  paired over the internet, without a cable or adb.
+- [How the public loader works](public-loader.md): the page a paired headset
+  opens, its link and the `transport:` line. Hosting it is in
+  [Hosting headset pairing](../../deployment/vr-pairing.md).
 - [Troubleshooting](troubleshooting.md).
 - [Technical reference](reference.md): the page's settings, the reduced cube's
   fidelity, refinement, the routes, the benchmark, the measurements and the
@@ -66,7 +66,10 @@ session, with its controls in the headset
 [the hand menu](controls.md#the-hand-menu)); point tables, catalogues over a
 cube and velocity fields are shown too
 ([#190](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/190), see
-[Point tables, catalogues and velocity fields](data-types.md)). A selection
+[Point tables, catalogues and velocity fields](data-types.md)). The headset
+pairs with the desktop by a code, without a cable or adb
+([#210](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/210), see
+[Pair by code](quickstart.md#pair-by-code)). A selection
 made in the headset appears in the desktop's cube viewer and a desktop lasso
 can be sent to the headset
 ([#188](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/188), see
@@ -150,11 +153,17 @@ measured under [Fidelity of the reduced cube](reference.md#fidelity-of-the-reduc
   headset's by path length, which is **approximate**: with coarse binning the
   refined image can look a little denser or fainter than the reduced one. Not
   cropped in isosurface mode (the page does not use it).
-- **Pairing**: *Open in VR Headset…* needs adb and a headset in developer mode,
-  and opens the page through `adb reverse` only (USB or adb over Wi-Fi), not by
-  the Mac's network address; a backend at a network address must be reached
-  through a local tunnel. A backend under a path prefix works only behind a
-  proxy that strips the prefix. The link carries the token (see the
+- **Pairing by code** needs an internet connection on both sides, a pairing
+  service and loader hosted by your institute (no server is built in), and,
+  on a Mac with Apple Silicon, macOS 14 or newer. The headset and the computer
+  must reach each other on the local network, or go through a TURN relay,
+  more slowly. It has not yet been checked on a Quest 3 (see
+  [the checks](reference.md#pairing-by-code-with-the-headset-210)).
+- **The USB way**: *Advanced (USB cable)* needs adb and a headset in developer
+  mode, and opens the page through `adb reverse` only (USB or adb over Wi-Fi),
+  not by the Mac's network address; a backend at a network address must be
+  reached through a local tunnel. A backend under a path prefix works only
+  behind a proxy that strips the prefix. The link carries the token (see the
   [caution](quickstart.md#open-a-cube-from-the-desktop)). The settings kept in
   the browser are per browser: the Mac's and the headset's are separate.
 - **The hand menu** has the main controls only: the stretch, velocity stretch,

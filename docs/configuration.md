@@ -147,20 +147,25 @@ backend, each in a process of its own.
 A headset's page can reach this backend through a pairing code instead of a
 direct HTTP address ([Headset pairing by code](backend-api/vr-pair.md)). The
 pairing service is configured with its own `VR_PAIR_*` variables
-(`services/vr-pair/README.md`).
+(`services/vr-pair/README.md`); running it and the public loader, and moving
+them to another server, is in [Hosting headset pairing](deployment/vr-pairing.md).
+The desktop application passes both variables to the backend it starts from
+**Settings ▸ Backends ▸ Headset Pairing** (the environment takes precedence).
 
 | Variable | Default | Effect |
 |---|---|---|
-| `VISIVO_VR_PAIR_URL` | unset (off) | The pairing service, `wss://…`. The backend connects out to its `/v1/host` when a code is first asked for, and reconnects with backoff. Read once: a change takes effect when the backend restarts. |
-| `VISIVO_VR_PAGE_URL` | unset | The public loader page; the desktop is given it with `#pair=<code>`. |
+| `VISIVO_VR_PAIR_URL` | unset (off) | The pairing service, `wss://…` (`ws://` for a service on this machine; a host key as `?key=…`). The backend connects out to its `/v1/host` when a code is first asked for, and reconnects with backoff. Read once: a change takes effect when the backend restarts. |
+| `VISIVO_VR_PAGE_URL` | unset | The public loader page (`https://vr.example.org/visivo/`; a missing trailing `/` is added); the desktop is given it with `#pair=<code>` for its QR code. |
 
 Pairing needs `aiortc` and PyAV (`backend/requirements-webrtc.txt`, part of
 the release bundles); without them the routes answer 409 `not-configured`.
+They are not in `requirements.txt`, because the cluster images install that
+file and PyAV has no wheel for every cluster architecture.
 
 On a Mac with Apple Silicon, pairing needs macOS 14 or newer: the PyAV
 wheel for that platform is built for macOS 14. On macOS 13 the backend
-cannot load it and answers `not-configured`, and the desktop's *Open on
-Headset* dialog falls back to its USB section.
+cannot load it and answers `not-configured`, and the desktop's *Open in VR
+Headset…* dialog falls back to its USB section.
 
 Bundling aiortc does not change the remote 3-D view: a backend advertises
 the H.264 stream (`h264-webrtc` in `/v1/render/diagnostics`) only where it

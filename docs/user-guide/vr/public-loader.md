@@ -1,90 +1,19 @@
-# The public loader (for administrators)
+# How the public loader works
 
-The public loader lets a headset open the VR page from a **public HTTPS
-address**, with no USB cable, no `adb` and no certificate on the user's
-computer (issue #213, part of #210). The headset pairs with the user's
-backend through a **pairing service**, and the two talk over a WebRTC data
-channel. The loader is a small static directory, `web/vr-loader/` in the
-repository, that an institute hosts once for all its users.
+When a headset is [paired by code](quickstart.md#pair-by-code), it does not
+open the backend's own address: it opens the **public loader**, a small static
+page that an institute hosts once for all its users (`web/vr-loader/` in the
+repository, issue
+[#213](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/213)). This page
+explains what the loader does. Hosting it, with the pairing service it talks
+to, is described in [Hosting headset pairing](../../deployment/vr-pairing.md).
 
-What the loader does **not** do: it holds no data and no page code of its
-own. The VR page's files (`static/vr/**`) come from the user's own backend
-over the data channel, so the page always matches the backend it talks to.
+The loader holds no data and no page code of its own. The VR page's files
+(`static/vr/**`) come from the user's own backend over the WebRTC link, so the
+page always matches the backend it talks to, whatever version the loader's
+server has.
 
-```{note}
-The headset side (this loader, and the page's data-channel transport) is in
-place. The pairing service (#211), the backend's bridge (#212) and the
-desktop's pairing dialog (#214) are separate steps. Until they land, the
-loader is checked against an in-repository fake of the backend's side
-(`validation/vr_pair_fake.py`, below).
-```
-
-## Deploying it
-
-1. Copy the directory `web/vr-loader/` to any web server that serves static
-   files over **HTTPS** (nginx, Apache, …), under any path, for example
-   `https://vr.example.org/visivo/`. Everything in it uses relative
-   addresses, and the service worker's scope is the directory itself.
-2. Edit `config.json` in that directory:
-
-   ```json
-   { "pair_service": "wss://pair.example.org/visivo-pair" }
-   ```
-
-   `pair_service` is the pairing service's base address (the loader adds
-   `/v1/join`). It may also be relative to `config.json`, for a service on
-   the same host behind the same proxy, for example `"../pair"`. An `https://`
-   address is read as `wss://`. Plain `ws://` is refused unless the loader
-   itself runs on `localhost`.
-3. Done. Moving to another server means copying the directory again and
-   editing `config.json` there: there is no build step.
-
-Serve `config.json` without long caching (the loader asks for it with
-`no-store`, and its service worker never caches it). The other files can be
-cached normally. The service worker revalidates them over the network first.
-
-On the backends, `VISIVO_VR_PAGE_URL` names the loader's address (here
-`https://vr.example.org/visivo/`), and `VISIVO_VR_PAIR_URL` the pairing
-service. The desktop's pairing link is that address with `#pair=<code>`.
-
-## What the user sees
-
-- The loader asks for the code the desktop shows, or reads it from
-  `#pair=CODE` in its address. It then removes the code from the address bar
-  and the history.
-- Once paired, the VR page fills the window. Its panel has no token field
-  (the backend's bridge authenticates; the token never reaches the headset).
-- *Copy diagnostics* names the transport, for example: `transport: WebRTC
-  data channel via the pairing service pair.example.org; link up; ICE
-  srflx/host udp; round trip 14 ms; 46 requests, 10.3 MB in`. With
-  `relay` in the ICE line the link goes through a TURN server, which is slower.
-- The loader can be installed as an app (Quest Browser's menu: *Install
-  app*). The app starts at the code page.
-
-### A dropped link
-
-When the link drops (Wi-Fi, the computer asleep), the page shows *Backend not
-reachable* and the loader reconnects by itself with the **resume code** the
-backend gave at pairing, retrying for up to three minutes. No new code is
-needed, the page is not reloaded, and the cube stays on show. Reloading the
-loader's tab resumes as well (the resume code is kept for that tab only).
-Requests that were under way when the link dropped and that change nothing
-(`GET` and `HEAD`, such as the page's files, and the requests that load the
-cube's reduced copy) are sent again once the link is back. A download that had begun continues where it stopped only when the
-backend marks it as the same file (the same strong ETag and length, as the
-page's own files are); otherwise it ends with a network error. The others
-(a selection, a moment map) end with *Backend not reachable*, as they would
-over HTTP.
-
-When the resume fails (the code expired, or the backend restarted and forgot
-it), or when the backend gave no resume code at pairing (the pairing service
-did not answer in time), the page shows *The pairing with the computer
-ended* with **Enter a new code**, which opens the loader's code form. The
-same notice says *The computer disconnected this headset* when the desktop
-disconnected it, and *VisIVO Visual Analytics on the computer was closed*
-when the backend stopped: neither is resumed.
-
-## How it works
+## The parts
 
 ```
 Quest Browser, https://vr.example.org/visivo/
@@ -108,12 +37,69 @@ Quest Browser, https://vr.example.org/visivo/
 - **The page's transport.** In the iframe the page sends its requests and
   WebSockets over the data channels instead of HTTP (`transport.js`;
   HTTP-over-channel framing in `pair-wire.js` and `pair-transport.js`, the
-  same files shipped in the loader). Served directly by the backend
-  (`localhost` through adb, a cluster's HTTPS portal), the page works exactly
-  as before.
-- `?pair_service=wss://…` overrides `config.json`, for development, and only
-  when the loader runs on `localhost`, so a link cannot point a public loader
-  at another service.
+  same files shipped in the loader). The wire format is in
+  [Headset pairing by code](../../backend-api/vr-pair.md#what-a-paired-page-gets).
+  Served directly by the backend (`localhost` through adb, a cluster's HTTPS
+  portal), the page works exactly as before.
+- **The code.** The loader reads it from `#pair=CODE` in its address (the QR
+  code's link) or from its form, then removes it from the address bar and the
+  history.
+- **The pairing service** is the one named in the loader's `config.json`.
+  `?pair_service=wss://…` overrides it, for development, and only when the
+  loader runs on `localhost`, so a link cannot point a public loader at
+  another service.
+
+## The transport line
+
+*Copy diagnostics* on the page names the transport, for example:
+
+```
+transport: WebRTC data channel via the pairing service vr.example.org; link up; ICE srflx/host udp; round trip 14 ms; 46 requests, 10.3 MB in, 0.1 MB out, 0 cancelled
+```
+
+- **via the pairing service** names the service's host, from `config.json`.
+- **link** is `up`, `down (why)` while the loader resumes, or `lost (why)`
+  once it gave up.
+- **ICE** gives the candidate types of the pair in use, the headset's then the
+  computer's, and the protocol. `host` is an address on the local network,
+  `srflx` an address seen through NAT (STUN), `relay` a TURN server (the line
+  then adds `via udp relay` or `via tcp relay`): the link goes through that
+  server, which is slower. `host` or `srflx` on both sides is a direct link.
+- **round trip** is the link's current round-trip time; the line is refreshed
+  every 5 s.
+- **resumed N×** appears after the link came back from a drop.
+- The request counts and bytes are those of the page's API traffic over the
+  link.
+
+Served directly (no loader), the line reads `transport: direct HTTP (…)`.
+
+The page's event log, also in the diagnostics, records the link's changes:
+`pair-link-down` (with the reason) when it drops, `pair-link-up` when it is back,
+`pair-link-lost` when it cannot be resumed.
+
+## A dropped link
+
+When the link drops (Wi-Fi, the computer asleep), the page shows *Backend not
+reachable* and the loader reconnects by itself with the **resume code** the
+backend gave at pairing, retrying for up to three minutes. No new code is
+needed, the page is not reloaded, and the cube stays on show. Reloading the
+loader's tab resumes as well (the resume code is kept for that tab only).
+
+Requests that were under way when the link dropped and that change nothing
+(`GET` and `HEAD`, such as the page's files, and the requests that load the
+cube's reduced copy) are sent again once the link is back. A download that had
+begun continues where it stopped only when the backend marks it as the same
+file (the same strong ETag and length, as the page's own files are); otherwise
+it ends with a network error. The others (a selection, a moment map) end with
+*Backend not reachable*, as they would over HTTP.
+
+When the resume fails (the code expired, or the backend restarted and forgot
+it), or when the backend gave no resume code at pairing (the pairing service
+did not answer in time), the page shows *The pairing with the computer
+ended* with **Enter a new code**, which opens the loader's code form. The
+same notice says *The computer disconnected this headset* when the desktop
+disconnected it, and *VisIVO Visual Analytics on the computer was closed*
+when the backend stopped: neither is resumed.
 
 ## Checking it without a headset
 
@@ -127,3 +113,10 @@ minimal pairing service and bridge implementing the contract, with aiortc).
 It then runs the smoke and regression checks in the loader's iframe, a
 dropped link that resumes, a forgotten pairing that asks for a new code, and
 the transport's overhead against direct HTTP.
+
+To try the real pieces on one computer, run the pairing service locally
+(`ws://127.0.0.1:8765`, see the
+[service's README](https://github.com/VisIVOLab/VisIVOVisualAnalytics/blob/main/services/vr-pair/README.md#on-a-development-machine-next-to-the-backend)),
+serve `web/vr-loader/` on `localhost` (a secure context, so no certificate),
+and start the backend with `VISIVO_VR_PAIR_URL` and `VISIVO_VR_PAGE_URL`
+pointing at them.

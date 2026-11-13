@@ -931,6 +931,71 @@ settings left at their defaults the first time.
 10. **A cluster backend** (if you use one): follow
     [On a cluster backend](#on-a-cluster-backend).
 
+### Pairing by code, with the headset (#210)
+
+Pairing by code has been checked only in Chrome on the Mac, against a local
+pairing service and the in-repository fake
+([Checking it without a headset](public-loader.md#checking-it-without-a-headset)).
+On the Quest 3, with the pairing service and the loader hosted as in
+[Hosting headset pairing](../../deployment/vr-pairing.md), and the desktop's
+**Settings ▸ Backends ▸ Headset Pairing** filled in, check the following. After
+each step that connects, copy the page's diagnostics (*Copy diagnostics*) and
+keep the `transport:` line.
+
+1. **Pair by typing the code.** Open HCG 44 on the desktop, then *Open in VR
+   Headset…*. On the Quest, open the loader's address in the Quest Browser,
+   type the code and press *Connect*. The dialog must go from *Waiting for the
+   headset* to *The code was entered* to **Headset connected**, and the cube
+   must load with *in the desktop's session*. Note the time from *Connect* to
+   the cube drawn, and whether the headset's keyboard made the code easy to
+   type.
+2. **Pair by QR code.** *New Code* in the dialog, then scan its QR code with
+   the headset. Note whether the Quest offers to scan it, whether it opens the
+   Quest Browser on the loader with the code filled in, and whether the
+   pairing then starts without typing anything. The address bar must not keep
+   `#pair=` after the page has read it.
+3. **Enter VR inside the loader's frame (the main risk).** Press **Enter VR**
+   on the paired page: the immersive session must start, from inside the
+   loader's iframe, with both controllers and the hand menu working. Note
+   anything the Quest Browser asks or refuses. Try *Enter passthrough* as
+   well.
+4. **The link on Wi-Fi.** From the `transport:` line, note the ICE types (for
+   example `host/host udp`, `srflx/host udp`) and the round trip, with the
+   headset and the Mac on the same Wi-Fi. `relay` must not appear on a network
+   that lets devices talk.
+5. **Frame rate and refinement over the pairing.** In VR, read the wrist
+   numbers: **FPS** and **missed %** with the menu closed and open; hold still
+   and note **pose->frame** (p50 and p95), **stop->refined** and the *via* line
+   (*via WebRTC* or *via JPEG*). Compare with the same cube over the USB cable
+   in the same session.
+6. **Wi-Fi off and on.** In VR, turn the headset's Wi-Fi off for about 20 s,
+   then on (or move out of the access point's range and back). The card must
+   say *Backend not reachable*, then clear by itself without a new code and
+   without reloading; note how many seconds. The `transport:` line must then
+   read `link up` with `resumed 1×`, and the events list `pair-link-down` then
+   `pair-link-up`. A spectrum must work afterwards.
+7. **Large transfers.** Load a large cube (*Max side* 512, 16-bit) over the
+   pairing, and a large point table if you have one. Note whether the Quest
+   Browser drops the link during the download (Chrome on the Mac sometimes
+   does): if it does, the `transport:` line shows a resume and the cube must
+   still finish loading. Note the load time against the USB cable.
+8. **Install as an app.** From the Quest Browser's menu, install the loader as
+   an app. Close the browser, start *VisIVO VR* from the app library: it must
+   open on the code form without the address bar. Pair with a new code, enter
+   VR, leave it, quit the app and start it again: it must ask for a code again
+   (or resume, if the same tab is restored), and pair again.
+9. **A network that isolates devices.** On a guest Wi-Fi or a hotspot with
+   client isolation (the headset on it, the Mac on another network or isolated
+   too): without TURN on the service, pairing must fail with *No network path
+   to the computer was found* or *The computer did not answer in time*, and
+   the dialog say *The code was used, but no headset connected*. With TURN
+   configured, it must connect, the `transport:` line read `relay`, and the
+   cube load; note its load time, **FPS** and **stop->refined**.
+10. **Disconnect and close.** Press **Disconnect** in the dialog: the headset
+    must show *The computer disconnected this headset* with *Enter a new code*.
+    Pair again, then quit the desktop application: *VisIVO Visual Analytics on
+    the computer was closed*.
+
 ### Recovery and diagnostics, with the headset
 
 1. Enter VR for the first time: the controls guide stands in front of you;
