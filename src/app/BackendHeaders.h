@@ -58,6 +58,8 @@ inline constexpr const char *N_BASINS = "X-Visivo-N-Basins";
 inline constexpr const char *ORIGIN = "X-Visivo-Origin";
 inline constexpr const char *PARTICLE_COUNT = "X-Visivo-Particle-Count";
 inline constexpr const char *PARTICLE_FIELDS = "X-Visivo-Particle-Fields";
+inline constexpr const char *PARTICLE_ORIGIN = "X-Visivo-Particle-Origin";
+inline constexpr const char *PARTICLE_SCALE = "X-Visivo-Particle-Scale";
 inline constexpr const char *PARTICLE_STEP = "X-Visivo-Particle-Step";
 inline constexpr const char *PEAK = "X-Visivo-Peak";
 inline constexpr const char *PYRAMID_LEVEL = "X-Visivo-Pyramid-Level";
@@ -93,7 +95,7 @@ inline constexpr const char *WARNINGS = "X-Visivo-Warnings";
 inline constexpr const char *WIDTH = "X-Visivo-Width";
 
 // Every declared header name, for the contract test to diff against the manifest.
-inline constexpr std::array<const char *, 79> kAll = {
+inline constexpr std::array<const char *, 81> kAll = {
     EW_UNIT,
     FWHM_UNIT,
     MAP_UNIT,
@@ -140,6 +142,8 @@ inline constexpr std::array<const char *, 79> kAll = {
     ORIGIN,
     PARTICLE_COUNT,
     PARTICLE_FIELDS,
+    PARTICLE_ORIGIN,
+    PARTICLE_SCALE,
     PARTICLE_STEP,
     PEAK,
     PYRAMID_LEVEL,

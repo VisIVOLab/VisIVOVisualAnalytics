@@ -75,6 +75,32 @@ peak and the quantity its hue averages), their number in
 `X-Visivo-Particle-Count`. Above `max_particles` (default 8 000 000) an even
 sample, the step in `X-Visivo-Particle-Step`.
 
+`local_frame` (default `false`) chooses the frame of `x,y,z` and `r`. With
+`true`, they are float32 coordinates local to the particles, and the table's
+coordinates are `origin + scale × row`, with `origin` from
+`X-Visivo-Particle-Origin` (`x,y,z`, float64) and `scale` from
+`X-Visivo-Particle-Scale`. These offsets keep particles far from 0 apart, where
+1e9, 1e9 + 1 and 1e9 + 2 are a single float32 value. The client moves its
+camera into that frame in double precision before drawing: position and focal
+point `(v − origin) / scale`, `parallel_scale / scale`, and a map's slab
+`/ scale`. With `false` (a client that predates the field), the rows are a
+float32 cast of the table's coordinates, as before, and the headers are
+`0.0,0.0,0.0` and `1.0`. The scale is 1 unless an axis's offsets cannot keep
+their precision (a span beyond float32's range or below 1e-30). It is then
+the same on every axis, so the kernels stay round.
+
+### Positions far from 0
+
+Every route reads positions as the remote point session does
+(`point_sample.place_rows`, issue #208): float32 offsets from a float64 origin
+per axis, at 12 bytes a particle as before. Smoothing lengths, the slab and
+the camera are applied in that frame, and the camera is shifted in float64.
+Particles at 1e9 + [0, 1, 2] are therefore three in a still, a movie frame and
+the preview, at the places where the point session draws them. Cameras, `slab`,
+`radius_field` and the box stay in the table's own coordinates. A row whose
+position is not finite or lies beyond float32's range (3.4e38) is left out, as
+before.
+
 ### Camera of a point session
 
 `GET /v1/render/{session_id}/camera` (see [Render](render.md)) returns the camera
