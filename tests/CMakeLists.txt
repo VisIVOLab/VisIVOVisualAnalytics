@@ -68,6 +68,7 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/vtk/ImageLod.cpp
     ${VISIVO_ROOT}/src/gui/PvPathGeometry.cpp
     ${VISIVO_ROOT}/src/gui/OrbitPath.cpp
+    ${VISIVO_ROOT}/src/gui/ParticleFrame.cpp
     ${VISIVO_ROOT}/src/gui/CopilotStatus.cpp
 )
 set_target_properties(visivo_test_support PROPERTIES AUTOMOC ON)
@@ -172,6 +173,8 @@ add_executable(VisIVOTests
     test_pv_path_geometry.cpp
     TestOrbitPath.h
     test_orbit_path.cpp
+    TestParticleFrame.h
+    test_particle_frame.cpp
     TestProductRecipe.h
     test_product_recipe.cpp
     TestLassoReplay.h

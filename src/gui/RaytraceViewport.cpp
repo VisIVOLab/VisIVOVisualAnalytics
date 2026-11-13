@@ -260,7 +260,13 @@ void RaytraceViewport::fetch(const QString &key, const QJsonObject &request)
     // floor packs a hundredfold: more than Qt lets through by default, which
     // guards against unknown servers, not this one.
     req.setDecompressedSafetyCheckThreshold(-1);
-    QNetworkReply *reply = m_nam->post(req, QJsonDocument(request).toJson(QJsonDocument::Compact));
+    QJsonObject body = request;
+    // Particles as float32 offsets from an origin (X-Visivo-Particle-Origin),
+    // so a table far from 0 keeps them apart (issue #208); a backend that
+    // predates it ignores the field and sends the table's coordinates.
+    if (!m_source.grid)
+        body.insert(u"local_frame"_s, true);
+    QNetworkReply *reply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
     m_reply = reply;
     emit message(m_source.grid ? u"Ray-traced view: preparing the cube…"_s
                                : u"Ray-traced view: preparing the particles…"_s);
@@ -297,8 +303,11 @@ void RaytraceViewport::fetch(const QString &key, const QJsonObject &request)
         const int step = std::max(1, reply->rawHeader(VisivoHeaders::PARTICLE_STEP).toInt());
         if (count <= 0 || rows.size() != qsizetype(count) * (map ? 6 : 8) * 4)
             return;
-        m_gl->setParticles(rows, count, map ? ParticleGLView::Mode::Projected
-                                             : ParticleGLView::Mode::Light);
+        m_gl->setParticles(rows, count,
+                           map ? ParticleGLView::Mode::Projected : ParticleGLView::Mode::Light,
+                           visivo::ParticleFrame::fromHeaders(
+                                   reply->rawHeader(VisivoHeaders::PARTICLE_ORIGIN),
+                                   reply->rawHeader(VisivoHeaders::PARTICLE_SCALE)));
         m_key = key;
         if (!m_showingStill)
             m_pages->setCurrentWidget(m_gl);

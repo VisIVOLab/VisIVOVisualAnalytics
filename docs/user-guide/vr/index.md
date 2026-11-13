@@ -23,6 +23,7 @@ controls
 analysis
 data-types
 cluster
+public-loader
 troubleshooting
 reference
 ```
@@ -37,6 +38,8 @@ reference
   desktop.
 - [Point tables, catalogues and velocity fields](data-types.md).
 - [Headset with a cluster backend](cluster.md).
+- [The public loader (for administrators)](public-loader.md): the headset
+  paired over the internet, without a cable or adb.
 - [Troubleshooting](troubleshooting.md).
 - [Technical reference](reference.md): the page's settings, the reduced cube's
   fidelity, refinement, the routes, the benchmark, the measurements and the

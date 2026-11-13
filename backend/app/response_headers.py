@@ -73,6 +73,9 @@ X_RENDER_MS = "X-Visivo-Render-Ms"
 X_PARTICLE_COUNT = "X-Visivo-Particle-Count"
 X_PARTICLE_FIELDS = "X-Visivo-Particle-Fields"
 X_PARTICLE_STEP = "X-Visivo-Particle-Step"
+# The rows' frame: table = origin + scale * row position (issue #208).
+X_PARTICLE_ORIGIN = "X-Visivo-Particle-Origin"
+X_PARTICLE_SCALE = "X-Visivo-Particle-Scale"
 
 # ── Ray-traced volume grid (issue #106) ─────────────────────────────────────
 X_VOLUME_SHAPE = "X-Visivo-Volume-Shape"

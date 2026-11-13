@@ -9,6 +9,7 @@ import * as F from './refine.js';
 import { RefineDraw } from './refine-gl.js';
 import { RtcStereo } from './refine-webrtc.js';
 import { apiUrl, wsUrl } from './base-path.js';
+import { pageFetch, openSocket } from './transport.js';
 import { showLimits, reprojectionHud, frameReprojection } from './depth-mode.js';
 import { LinkPolicy } from './link-policy.js';
 
@@ -214,8 +215,8 @@ export class Refiner {
       // has characters a subprotocol may not carry.
       const base = wsUrl(`/v1/render/${this.sessionId}/ws`);   // with the page's prefix (#187)
       const ws = F.subprotocolSafe(b.token)
-        ? new WebSocket(base, ['visivo.v1', `visivo-token.${b.token}`])
-        : new WebSocket(`${base}?token=${encodeURIComponent(b.token)}`);
+        ? openSocket(base, ['visivo.v1', `visivo-token.${b.token}`])
+        : openSocket(`${base}?token=${encodeURIComponent(b.token)}`);
       ws.binaryType = 'arraybuffer';
       this.ws = ws;
       let opened = false;
@@ -314,7 +315,7 @@ export class Refiner {
     const b = this.backend();
     if (!sid || !b) return;
     try {
-      await fetch(apiUrl(`/v1/render/${sid}`), { method: 'DELETE', headers: b.headers(false), keepalive });
+      await pageFetch(apiUrl(`/v1/render/${sid}`), { method: 'DELETE', headers: b.headers(false), keepalive });
     } catch { /* the idle timeout closes it */ }
   }
 

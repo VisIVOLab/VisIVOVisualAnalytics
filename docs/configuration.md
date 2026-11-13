@@ -133,6 +133,7 @@ backend, each in a process of its own.
 | `VISIVO_RENDER_QUEUE_TIMEOUT_SECONDS` | `600` | Longest wait in the queue; then HTTP 503. |
 | `VISIVO_RENDER_QUEUE_STALE_SECONDS` | `15` | A waiting view whose client stops asking for this long loses its place. |
 | `VISIVO_RENDER_DISCONNECT_GRACE_SECONDS` | `30` | While views wait, a view with no client connected for this long is closed to free its slot. |
+| `VISIVO_WEBRTC_H264` | unset | `1` advertises and accepts the remote view's H.264 WebRTC stream where aiortc has no encoder to patch for NVENC (aiortc 1.10 and later, as in the release bundles): encoded in software. Without it such a backend offers JPEG only, as before aiortc was bundled. |
 | `VISIVO_RENDER_IN_PROCESS` | unset | `1` renders inside the backend's own process instead of a child process (slower: rendering then competes with the process that serves the clients). |
 | `VISIVO_RENDER_OUT_OF_CORE_BYTES` | 6 GiB | A cube larger than this (as float32) is not loaded: the view draws it from its brick pyramid, block by block ([Brick pyramid](brick-pyramid.md#rendering-from-the-pyramid)). |
 | `VISIVO_RENDER_OOC_BUDGET_BYTES` | 2 GiB | Out of core: GPU data of the blocks drawn at once. |
@@ -140,6 +141,31 @@ backend, each in a process of its own.
 | `VISIVO_RENDER_OOC_NODE` | `256` | Out of core: voxels per side of a block. |
 | `VISIVO_POINT_RENDER_MAX_POINTS` | `100000000` | Points a remote point or catalogue view draws at most; a larger table is drawn from an even sample of its rows. |
 | `VISIVO_POINT_RENDER_LOD_POINTS` | `1000000` | Points a remote point or catalogue view draws while it is being dragged. |
+
+## VR headset pairing
+
+A headset's page can reach this backend through a pairing code instead of a
+direct HTTP address ([Headset pairing by code](backend-api/vr-pair.md)). The
+pairing service is configured with its own `VR_PAIR_*` variables
+(`services/vr-pair/README.md`).
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_VR_PAIR_URL` | unset (off) | The pairing service, `wss://…`. The backend connects out to its `/v1/host` when a code is first asked for, and reconnects with backoff. Read once: a change takes effect when the backend restarts. |
+| `VISIVO_VR_PAGE_URL` | unset | The public loader page; the desktop is given it with `#pair=<code>`. |
+
+Pairing needs `aiortc` and PyAV (`backend/requirements-webrtc.txt`, part of
+the release bundles); without them the routes answer 409 `not-configured`.
+
+On a Mac with Apple Silicon, pairing needs macOS 14 or newer: the PyAV
+wheel for that platform is built for macOS 14. On macOS 13 the backend
+cannot load it and answers `not-configured`, and the desktop's *Open on
+Headset* dialog falls back to its USB section.
+
+Bundling aiortc does not change the remote 3-D view: a backend advertises
+the H.264 stream (`h264-webrtc` in `/v1/render/diagnostics`) only where it
+did before, with aiortc's encoder patched for NVENC (the cluster image), or
+when `VISIVO_WEBRTC_H264=1` asks for it (then encoded in software).
 
 ## SRC node
 

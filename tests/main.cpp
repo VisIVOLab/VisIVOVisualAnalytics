@@ -57,6 +57,7 @@
 #include "TestSkavaClient.h"
 #include "TestPvPathGeometry.h"
 #include "TestOrbitPath.h"
+#include "TestParticleFrame.h"
 #include "TestProductRecipe.h"
 #include "TestLassoReplay.h"
 #include "TestSharedSelection.h"
@@ -131,6 +132,7 @@ int main(int argc, char *argv[])
     { TestSkavaClient      t; status |= QTest::qExec(&t, argc, argv); }
     { TestPvPathGeometry   t; status |= QTest::qExec(&t, argc, argv); }
     { TestOrbitPath        t; status |= QTest::qExec(&t, argc, argv); }
+    { TestParticleFrame    t; status |= QTest::qExec(&t, argc, argv); }
     { TestProductRecipe    t; status |= QTest::qExec(&t, argc, argv); }
     { TestLassoReplay      t; status |= QTest::qExec(&t, argc, argv); }
     { TestSharedSelection  t; status |= QTest::qExec(&t, argc, argv); }

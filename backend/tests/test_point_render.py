@@ -87,6 +87,12 @@ def _session(path):
     return s, run, loop
 
 
+def _codes(s, poly=None) -> np.ndarray:
+    """The colour codes the session hands VTK, one per drawn row."""
+    from vtk.util.numpy_support import vtk_to_numpy
+    return vtk_to_numpy((poly or s._polydata).GetPointData().GetScalars()).copy()
+
+
 def _image(jpeg: bytes) -> np.ndarray:
     """The pixels lit by a point (the background is a dark grey)."""
     return np.asarray(Image.open(io.BytesIO(jpeg)).convert("L"), dtype=float) > 80
@@ -123,10 +129,14 @@ def test_colour_by_a_column_reports_its_range(tmp_path):
         lv = s.levels()
         assert (lv["data_min"], lv["data_max"]) == (1.0, 100.0)
         assert s._mappers[("points", False)].GetScalarVisibility() == 1
-        assert s._mappers[("points", False)].GetScalarRange() == (1.0, 100.0)
+        # The colour bar is labelled in the column's units; the mapper draws
+        # 16-bit codes over that range (see test_colour_codes_*).
+        assert s._colorbar.GetLookupTable().GetRange() == (1.0, 100.0)
+        assert s._mappers[("points", False)].GetScalarRange() == (0.0, 65535.0)
         run(s.apply_command({"type": "set_color", "field": "Mass", "lut": "Viridis",
                              "min": 10.0, "max": 50.0}))
-        assert s._mappers[("points", False)].GetScalarRange() == (10.0, 50.0)
+        assert s._colorbar.GetLookupTable().GetRange() == (10.0, 50.0)
+        assert set(_codes(s).tolist()) == {0, 65535}   # 1 below 10, 100 above 50
         with pytest.raises(ValueError):
             s._apply_command_on_thread({"type": "set_color", "field": "Nope"})
         assert s.view.color_field == "Mass"
@@ -380,8 +390,9 @@ def test_the_clients_own_colours_are_drawn(tmp_path):
         points = [[1.0, 0.0, 0.0, 1.0], [100.0, 1.0, 0.0, 0.0]]
         run(s.apply_command({"type": "set_color", "field": "Mass", "points": points,
                              "log": True, "min": 1.0, "max": 100.0}))
-        # Sampled into a table, as the desktop colours: a log one here.
-        lut = s._mappers[("points", False)].GetLookupTable()
+        # Sampled into a table, as the desktop colours: a log one here (the
+        # colour bar's, in the column's units).
+        lut = s._colorbar.GetLookupTable()
         assert lut.GetNumberOfTableValues() == 1024 and lut.GetScale() == 1
         def colour(value):
             rgb = [0.0, 0.0, 0.0]
@@ -599,6 +610,222 @@ def test_three_points_far_from_zero_are_drawn_apart(tmp_path, can_render):
         assert _runs(_image(run(s.render_frame())).any(axis=0)) == 3
         run(s.apply_command({"type": "set_interactive", "value": True}))   # the drag's set
         assert _runs(_image(run(s.render_frame())).any(axis=0)) == 3
+    finally:
+        run(s.close())
+        loop.close()
+
+
+def _centres(lit: np.ndarray) -> list[float]:
+    """The centre (pixels from the left edge) of each run of lit columns,
+    weighted by how many pixels each column lights."""
+    profile = lit.sum(axis=0).astype(float)
+    idx = np.flatnonzero(profile)
+    runs = np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1) if idx.size else []
+    return [float(np.average(r + 0.5, weights=profile[r])) for r in runs]
+
+
+def test_a_ray_traced_still_lands_on_the_sessions_points(tmp_path, can_render):
+    """Issue #208: three particles at 1e9 + [0, 1, 2] (z 3e9 below 0) are
+    three in a ray-traced still made from the session's camera, where the
+    remote point session draws them."""
+    from app.routers import particle_render as router
+    path = _far_table(tmp_path, 1e9 + np.array([0.0, 1.0, 2.0]), y=[0.0, 0.5, 1.0],
+                      z=[-3e9, -3e9, -3e9])
+    s, run, loop = _session(path)
+    try:
+        for cmd in ({"type": "set_show_outline", "visible": False},
+                    {"type": "set_show_axes", "visible": False},
+                    {"type": "set_show_colorbar", "visible": False},
+                    {"type": "set_point_style", "mode": "points", "size": 6}):
+            run(s.apply_command(cmd))
+        drawn = _image(run(s.render_frame()))
+        camera, width, height = s._camera_on_thread(), s.view.width, s.view.height
+    finally:
+        run(s.close())
+        loop.close()
+    assert drawn.shape == (height, width)
+    req = router.ParticleRenderRequest(dataset_id="d", radius_scale=0.02, width=width,
+                                       height=height, cameras=[camera])
+    entry = {"kind": "catalogue", "format": "vbt", "path": path}
+    light = router._frame(router._prepare(entry, req), req, req.cameras[0], width, height,
+                          req.tone, None)[1].sum(axis=-1)
+    traced = light > 0.05 * light.max()
+    points, rays = _centres(drawn), _centres(traced)
+    assert len(points) == len(rays) == 3
+    assert np.abs(np.array(points) - rays).max() <= 1.0
+    # And the rows: y rises with x, the image counts rows from the top.
+    assert np.abs(np.array(_centres(drawn.T)) - _centres(traced.T)).max() <= 1.0
+
+
+def _coloured_table(tmp_path, colour, name="col"):
+    """A float64 VBT: X = 0, 1, 2... (Y = Z = 0) and a colour column C."""
+    n = len(colour)
+    data = np.stack([np.arange(n, dtype=float), np.zeros(n), np.zeros(n),
+                     np.asarray(colour, float)])
+    data.astype("<f8").tofile(tmp_path / f"{name}.bin")
+    (tmp_path / f"{name}.bin.head").write_text(f"double\n4\n{n}\nlittle\nX\nY\nZ\nC\n")
+    return str(tmp_path / f"{name}.bin.head")
+
+
+def _mapper_rgb(s, codes) -> np.ndarray:
+    """The colours the points mapper gives ``codes``."""
+    lut = s._mappers[("points", False)].GetLookupTable()
+    out = []
+    for c in codes:
+        rgb = [0.0, 0.0, 0.0]
+        lut.GetColor(float(c), rgb)
+        out.append(rgb)
+    return np.array(out)
+
+
+def test_colour_codes_far_from_zero_stay_apart(tmp_path):
+    """1e9, 1e9 + 1 and 1e9 + 2 were one float32 value, so one colour: the
+    column is read and coded in float64 (issue #209), the colour bar and the
+    levels stay in the column's units, the drag's set has the same codes."""
+    s, run, loop = _session(_coloured_table(tmp_path, 1e9 + np.array([0.0, 1.0, 2.0])))
+    try:
+        run(s.apply_command({"type": "set_color", "field": "C", "lut": "Viridis"}))
+        assert _codes(s).tolist() == [0, 32768, 65535]
+        assert np.array_equal(_codes(s, s._lod_polydata), _codes(s))
+        rgb = _mapper_rgb(s, _codes(s))
+        assert len({tuple(np.round(c, 3)) for c in rgb}) == 3
+        lv = s.levels()
+        assert (lv["data_min"], lv["data_max"]) == (1e9, 1e9 + 2)
+        assert s._colorbar.GetLookupTable().GetRange() == (1e9, 1e9 + 2)
+        # The client's own colours over a range of its own, as the desktop sends.
+        run(s.apply_command({"type": "set_color", "field": "C", "min": 1e9 + 1, "max": 1e9 + 2,
+                             "points": [[1e9 + 1, 1.0, 0.0, 0.0], [1e9 + 2, 0.0, 0.0, 1.0]]}))
+        assert _codes(s).tolist() == [0, 0, 65535]
+        assert np.allclose(_mapper_rgb(s, [0, 65535]), [[1, 0, 0], [0, 0, 1]], atol=0.01)
+    finally:
+        run(s.close())
+        loop.close()
+
+
+def test_colour_codes_match_the_vr_pages_sample(tmp_path):
+    """The session's codes are the VR page's (point_sample.sample_points) for
+    the same table and range, on a linear and on a log scale."""
+    from app import point_sample as ps
+    from app.point_table import open_point_table
+    rng = np.random.default_rng(5)
+    c = 1e12 * np.exp(rng.normal(0, 3, 3000))   # far from 0, many decades
+    c[[3, 11]] = np.nan, 0.0
+    path = _coloured_table(tmp_path, c)
+    s, run, loop = _session(path)
+    try:
+        assert len(s._rows) == 3000
+        for log in (False, True):
+            sample = ps.sample_points(open_point_table(path), 3000, colour_field="C",
+                                      colour_log=log)
+            vr = np.empty(3000, np.uint16)
+            vr[ps.prefix_order(3000)] = sample.colour   # back to the table's order
+            cmin, cmax = sample.colour_range
+            # The page's own command (static/vr/js/points.js colourCommand).
+            run(s.apply_command({"type": "set_color", "field": "C", "min": cmin, "max": cmax,
+                                 "points": [[cmin, 0, 0, 0], [cmax, 1, 1, 1]], "log": log}))
+            assert np.array_equal(_codes(s), vr)
+            assert _codes(s)[3] == 0 and _codes(s)[11] == 0   # NaN, and 0 on a log scale
+        assert len(np.unique(_codes(s))) > 2000   # the log scale spreads them
+    finally:
+        run(s.close())
+        loop.close()
+
+
+def test_colour_codes_over_a_range_wider_than_the_largest_double(tmp_path):
+    """-1.7e308 to 1.7e308: hi - lo is infinite in float64, so the values are
+    scaled first (point_sample.quantise64); no code is lost to an overflow."""
+    s, run, loop = _session(_coloured_table(tmp_path, [-1.7e308, 0.0, 1.7e308, np.inf]))
+    try:
+        run(s.apply_command({"type": "set_color", "field": "C", "lut": "Viridis"}))
+        # +inf at the top, as the VR page's sample codes it.
+        assert _codes(s).tolist() == [0, 32768, 65535, 65535]
+        assert s.levels()["data_max"] == 1.7e308
+        # The map is built over the range scaled down: its colours are the
+        # map's, not 1024 blacks (cmax - cmin is inf).
+        rgb = _mapper_rgb(s, [0, 32768, 65535])
+        assert len({tuple(np.round(c, 3)) for c in rgb}) == 3
+        assert rgb[2].sum() > 1.5   # Viridis ends in yellow
+        # The client's own ramp, likewise: red to blue, purple half way.
+        run(s.apply_command({"type": "set_color", "field": "C", "min": -1.7e308,
+                             "max": 1.7e308, "points": [[-1.7e308, 1.0, 0.0, 0.0],
+                                                        [1.7e308, 0.0, 0.0, 1.0]]}))
+        assert np.allclose(_mapper_rgb(s, [0, 32768, 65535]),
+                           [[1, 0, 0], [0.5, 0, 0.5], [0, 0, 1]], atol=0.01)
+        # A narrower range on that ramp: [-1e308, 0] is a finite span, but the
+        # nodes' is not, so the map is still scaled; 0 is the ramp's middle.
+        run(s.apply_command({"type": "set_color", "field": "C", "min": -1e308, "max": 0.0,
+                             "points": [[-1.7e308, 1.0, 0.0, 0.0],
+                                        [1.7e308, 0.0, 0.0, 1.0]]}))
+        top = _mapper_rgb(s, [65535])[0]
+        assert np.allclose(top, [0.5, 0, 0.5], atol=0.01)
+    finally:
+        run(s.close())
+        loop.close()
+
+
+def test_colour_codes_take_two_bytes_a_point(tmp_path):
+    """Memory per point: 16-bit codes, where the float32 values took 4 bytes."""
+    import vtk
+    s, run, loop = _session(_table(tmp_path))
+    try:
+        run(s.apply_command({"type": "set_color", "field": "Mass", "lut": "Viridis"}))
+        scalars = s._polydata.GetPointData().GetScalars()
+        assert scalars.GetDataType() == vtk.VTK_UNSIGNED_SHORT
+        assert scalars.GetNumberOfTuples() == 4000
+    finally:
+        run(s.close())
+        loop.close()
+
+
+def _rgb(jpeg: bytes) -> np.ndarray:
+    return np.asarray(Image.open(io.BytesIO(jpeg)).convert("RGB"), dtype=float)
+
+
+def test_three_colours_far_from_zero_are_drawn(tmp_path, can_render):
+    """1e9 + [0, 1, 2]: three points of three colours on screen."""
+    s, run, loop = _session(_coloured_table(tmp_path, 1e9 + np.array([0.0, 1.0, 2.0])))
+    try:
+        for cmd in ({"type": "set_show_outline", "visible": False},
+                    {"type": "set_show_axes", "visible": False},
+                    {"type": "set_show_colorbar", "visible": False},
+                    {"type": "set_point_style", "mode": "points", "size": 8},
+                    {"type": "set_color", "field": "C", "min": 1e9, "max": 1e9 + 2,
+                     "points": [[1e9, 1.0, 1.0, 0.0], [1e9 + 2, 0.0, 1.0, 1.0]]}):
+            run(s.apply_command(cmd))
+        rgb = _rgb(run(s.render_frame()))
+        lit = rgb[..., 1] > 120           # every colour of the ramp is green
+        cols = np.flatnonzero(lit.any(axis=0))
+        runs = np.split(cols, np.flatnonzero(np.diff(cols) > 1) + 1)
+        assert len(runs) == 3
+        # Red falls from left to right: yellow, its mix with cyan, cyan.
+        red = [rgb[..., 0][:, r][lit[:, r]].mean() for r in runs]
+        assert red[0] > red[1] + 40 and red[1] > red[2] + 40, red
+    finally:
+        run(s.close())
+        loop.close()
+
+
+def test_splats_are_coloured_by_their_codes(tmp_path, can_render):
+    """Regression guard: the Gaussian mapper takes the 16-bit codes (as
+    colours and as its opacity array) as it took the float32 values: the
+    cluster of mass 1 is drawn red, that of 100 blue."""
+    s, run, loop = _session(_table(tmp_path))
+    try:
+        for cmd in ({"type": "set_show_outline", "visible": False},
+                    {"type": "set_show_axes", "visible": False},
+                    {"type": "set_show_colorbar", "visible": False},
+                    {"type": "set_point_style", "mode": "gaussian", "size": 3,
+                     "intensity": 100},
+                    {"type": "set_color", "field": "Mass", "min": 1.0, "max": 100.0,
+                     "points": [[1.0, 1.0, 0.0, 0.0], [100.0, 0.0, 0.0, 1.0]]}):
+            run(s.apply_command(cmd))
+        rgb = _rgb(run(s.render_frame()))
+        rgb = np.clip(rgb - rgb[0, 0], 0, None)    # the background's light taken out
+        assert rgb.sum() > 0
+        w = rgb.shape[1]
+        left, right = rgb[:, : w // 2], rgb[:, w // 2:]
+        assert left[..., 0].sum() > 5 * left[..., 2].sum()
+        assert right[..., 2].sum() > 5 * right[..., 0].sum()
     finally:
         run(s.close())
         loop.close()

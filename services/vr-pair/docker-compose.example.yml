@@ -1,0 +1,55 @@
+# Example deployment of the VisIVO VR pairing service, with an optional
+# coturn TURN server. Copy it, set the values marked CHANGE, then:
+#
+#   openssl rand -hex 32 > turn_secret.txt
+#   openssl rand -hex 32 > pair_secret.txt
+#   docker compose -f docker-compose.example.yml up -d                  # the service only
+#   docker compose -f docker-compose.example.yml --profile turn up -d   # with TURN
+#
+# The service listens on 127.0.0.1:8765, for a reverse proxy that terminates
+# TLS in front of it (README.md, "Behind a reverse proxy"). No host name is
+# built into the service, the backend or the loader: moving the service to
+# another server means changing VISIVO_VR_PAIR_URL on each backend and
+# pair_service in the public loader's config.json.
+services:
+  vr-pair:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      VR_PAIR_ALLOWED_ORIGINS: "https://vr.example.org"     # CHANGE: the public loader's origin
+      VR_PAIR_TRUST_PROXY: "1"                              # behind the proxy: client address from X-Forwarded-For
+      VR_PAIR_STUN_URLS: "stun:turn.example.org:3478"       # CHANGE, or remove
+      VR_PAIR_TURN_URLS: "turn:turn.example.org:3478?transport=udp,turn:turn.example.org:3478?transport=tcp"  # CHANGE, or remove
+      VR_PAIR_TURN_SECRET_FILE: /run/secrets/turn_secret
+      VR_PAIR_SECRET_FILE: /run/secrets/pair_secret       # resume codes survive a restart
+    secrets:
+      - turn_secret
+      - pair_secret
+
+  # Optional TURN relay, for networks that keep devices from reaching each
+  # other. Its static-auth-secret is the service's TURN secret.
+  coturn:
+    image: coturn/coturn:4.6
+    profiles: ["turn"]
+    restart: unless-stopped
+    network_mode: host            # TURN relays UDP over a port range: host networking is simplest
+    secrets:
+      - turn_secret
+    entrypoint: ["sh", "-c"]
+    command:
+      - >
+        exec turnserver -n --log-file=stdout
+        --use-auth-secret --static-auth-secret="$$(cat /run/secrets/turn_secret)"
+        --realm=turn.example.org
+        --listening-port=3478 --min-port=49160 --max-port=49200
+        --fingerprint --no-cli --no-multicast-peers
+        --denied-peer-ip=0.0.0.0-0.255.255.255
+        --denied-peer-ip=127.0.0.0-127.255.255.255
+
+secrets:
+  turn_secret:
+    file: ./turn_secret.txt
+  pair_secret:
+    file: ./pair_secret.txt

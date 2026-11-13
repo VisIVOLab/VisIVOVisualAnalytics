@@ -117,6 +117,13 @@ async def _shutdown(push_task) -> None:
             await push_task
         except (asyncio.CancelledError, Exception):  # noqa: BLE001 - the loop is ending anyway
             pass
+    # Paired headsets are told the backend is going, and the pairing
+    # service connection is closed (nothing to do when pairing was not used).
+    try:
+        from . import vr_pair_host  # noqa: PLC0415
+        await asyncio.wait_for(vr_pair_host.shutdown(), timeout=1.5)
+    except Exception as exc:  # noqa: BLE001 - never blocks the shutdown
+        logging.getLogger("visivo.backend").warning("[shutdown] VR pairing: %s", type(exc).__name__)
     if _render_mounted:
         # Release all open EGL contexts cleanly on uvicorn shutdown. Without this
         # the EGL display handle is leaked and the next backend start may fail to
@@ -447,6 +454,9 @@ app.include_router(vr_layers.router, dependencies=[_auth])
 # Selections shared between the headset and the desktop (issue #188).
 app.include_router(share.router, dependencies=[_auth])
 app.include_router(vr_backend_check.router, dependencies=[_auth])
+# Headset pairing by code over WebRTC (issue #212).
+from .routers import vr_pair as vr_pair_routes  # noqa: E402
+app.include_router(vr_pair_routes.router, dependencies=[_auth])
 # SAMP: /v1/samp/files/{token} is public (no auth) for VO tool access;
 # all other /v1/samp/* routes use per-route auth declared in the router itself.
 app.include_router(samp.router)

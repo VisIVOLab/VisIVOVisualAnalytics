@@ -44,6 +44,14 @@ jobs:
         working-directory: backend
         run: python -m pytest -q -p no:cacheprovider
 
+      # The VR pairing service (#211) is its own small program with its own
+      # tests (loopback only); websockets is already installed above.
+      - name: Pairing service tests
+        working-directory: services/vr-pair
+        run: |
+          pip install -r requirements-dev.txt
+          python -m pytest -q -p no:cacheprovider
+
   # The VR page (epic #166): its JavaScript unit tests with node, then a
   # headless-Chrome smoke of the page against a backend started here (a small
   # synthetic cube must load and its first frame draw, with no page error and

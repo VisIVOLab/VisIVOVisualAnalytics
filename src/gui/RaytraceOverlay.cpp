@@ -1,6 +1,7 @@
 #include "RaytraceOverlay.h"
 
 #include "ColourBarTicks.h"
+#include "ParticleFrame.h"
 #include "VolumeColorbar.h"
 
 #include <QFont>
@@ -29,9 +30,13 @@ QVector3D vec(const QJsonObject &o, const QString &key)
 
 /// The box's twelve edges, projected as the renderer projects (its camera:
 /// particle_raytrace.project, ParticleGLView).
-void paintBox(QPainter &p, const QRectF &target, const QJsonObject &camera,
+void paintBox(QPainter &p, const QRectF &target, const QJsonObject &table,
               const RaytraceOverlay &o)
 {
+    // Box and camera about the box's centre, shifted in double: in float a
+    // box 1e9 from 0 and 2 wide is a point (issue #208).
+    const ParticleFrame centred = ParticleFrame::centredOn(o.bounds);
+    const QJsonObject camera = centred.localCamera(table);
     const QVector3D pos = vec(camera, u"position"_s), fp = vec(camera, u"focal_point"_s);
     const double angle = camera.value(u"view_angle"_s).toDouble(30.0);
     const double dist = std::max(1e-30, double((fp - pos).length()));
@@ -49,7 +54,7 @@ void paintBox(QPainter &p, const QRectF &target, const QJsonObject &camera,
     else
         proj.perspective(float(angle), float(aspect), float(1e-4 * dist), float(1e6 * dist));
     const QMatrix4x4 m = proj * view;
-    const auto &b = o.bounds;
+    const std::array<double, 6> b = centred.toLocal(o.bounds);
     std::array<QVector4D, 8> corners;
     for (int i = 0; i < 8; ++i)
         corners[i] = m * QVector4D(float(b[(i & 1) ? 1 : 0]), float(b[(i & 2) ? 3 : 2]),
