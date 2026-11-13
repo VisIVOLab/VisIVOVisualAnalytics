@@ -185,9 +185,15 @@ export async function runXRFakeChecks({ c, check, waitFor, label = 'layers', exp
   const last = after.rs[after.rs.length - 1];
   check(`xrfake ${label}: a smaller eye buffer keeps drawing`, after.xr && after.xr.fbScale === 0.85 && after.rs.length > before
     && (expectLayers ? last.layers && last.layers[0] === 'projection' && after.xr.quads.active : last.base), JSON.stringify(last));
+  // Frames keep coming: a count, not a rate. Under software GL (CI's
+  // SwiftShader) a stereo frame takes about 100 ms, so wait up to 5 s for 5.
   const frames0 = await c.evaluate('window.__xrfake.frames');
-  await sleep(500);
-  check(`xrfake ${label}: frames keep coming`, (await c.evaluate('window.__xrfake.frames')) > frames0 + 10);
+  let frames1 = frames0;
+  for (const t0 = Date.now(); Date.now() - t0 < 5000 && frames1 < frames0 + 5;) {
+    await sleep(250);
+    frames1 = await c.evaluate('window.__xrfake.frames');
+  }
+  check(`xrfake ${label}: frames keep coming`, frames1 >= frames0 + 5, `${frames1 - frames0} frames`);
   // The page's own cost of a stereo frame on this Mac (CPU; GPU where the timer query exists).
   const cost = await c.evaluate(`(() => { const s = window.__vrStats(72); return { n: s.n, cpu: s.cpu && s.cpu.mean, cpuP95: s.cpu && s.cpu.p95, gpu: s.gpu && s.gpu.mean, fps: s.fps }; })()`);
   say(`frame cost: CPU ${cost.cpu ? cost.cpu.toFixed(2) : 'n/a'} ms mean (p95 ${cost.cpuP95 ? cost.cpuP95.toFixed(2) : 'n/a'}), GPU ${cost.gpu ? cost.gpu.toFixed(2) : 'n/a'} ms, ${cost.n} frames`);
