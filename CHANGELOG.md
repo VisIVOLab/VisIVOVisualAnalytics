@@ -45,9 +45,12 @@ are preserved here unedited; the branch names they refer to are historical.
   of any size are fragmented, and the stereo video's signalling works over
   the bridged render socket. aiortc and PyAV come from
   `backend/requirements-webrtc.txt`, installed in the release bundles and in
-  CI; without them pairing answers 409 `not-configured`. aiortc 1.10 and
-  later have no encoder factory for the NVENC patch: the server-side
-  render's H.264 then uses aiortc's software encoder.
+  CI; without them pairing answers 409 `not-configured`. On Apple Silicon
+  pairing needs macOS 14 or newer (the PyAV wheel's minimum). Bundling
+  aiortc does not change the remote 3-D view: aiortc 1.10 and later have no
+  encoder factory for the NVENC patch, so such a backend keeps advertising
+  JPEG only, as before, unless `VISIVO_WEBRTC_H264=1` asks for the H.264
+  stream (then encoded in software).
 
 - **Remote point rendering keeps points far from zero apart (#206, part of
   #166).** The backend's point render session drew float32 positions, so

@@ -33,6 +33,11 @@ release bundles include them. A backend without them answers 409
 `requirements.txt`, because the cluster images install that file and PyAV
 has no wheel for every cluster architecture.
 
+On a Mac with Apple Silicon, pairing needs macOS 14 or newer: the PyAV
+wheel for that platform is built for macOS 14. On macOS 13 the backend
+cannot load it and answers `not-configured`, and the desktop's *Open on
+Headset* dialog falls back to its USB section.
+
 ## `POST /v1/vr/pair`
 
 ```json

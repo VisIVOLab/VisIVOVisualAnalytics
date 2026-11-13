@@ -394,6 +394,54 @@ async def test_a_disconnected_headset_cannot_come_back_and_resumes_replace_each_
     await host.close()
 
 
+# ── Bundling aiortc changes nothing for the desktop ───────────────────────────
+
+
+@pytest.mark.skipif(H.aiortc_missing() is not None, reason="needs aiortc importable")
+async def test_a_local_backend_with_aiortc_still_advertises_jpeg_only(monkeypatch):
+    """The release bundles carry aiortc (>= 1.10) for pairing. Before, a
+    desktop's local backend had none and advertised JPEG only, so the remote
+    view stayed on JPEG; it must still, unless the H.264 stream is asked for
+    or aiortc's encoder factory was patched for NVENC (the cluster image)."""
+    import app.main as main_module
+    if not main_module._render_mounted:
+        pytest.skip("server-side rendering is not mounted here")
+    from app import webrtc_session as W
+    from app.render_session import _stereo_webrtc as SW
+
+    from aiortc.codecs import h264 as aiortc_h264
+
+    monkeypatch.delenv(W.H264_OPT_IN_ENV, raising=False)
+    # aiortc as the bundles carry it: no encoder factory to patch, and the
+    # installer not run yet in this process.
+    monkeypatch.delattr(aiortc_h264, "create_encoder_context", raising=False)
+    monkeypatch.setattr(W, "_NVENC_INSTALLED", False)
+    monkeypatch.setattr(W, "_ENCODER_FACTORY_PATCHED", False)
+    jpeg_only = ["jpeg-ws", "jpeg-ws-push"]
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
+        async def transports():
+            r = await http.get("/v1/render/diagnostics", headers=AUTH)
+            assert r.status_code == 200
+            return r.json()["transports"]
+
+        assert await transports() == jpeg_only
+        # Offers for the H.264 stream are refused as before (503).
+        r = await http.post("/v1/render/any/sdp/offer", json={"sdp": "v=0", "type": "offer"}, headers=AUTH)
+        assert r.status_code == 503
+        monkeypatch.setenv(W.H264_OPT_IN_ENV, "1")
+        assert await transports() == jpeg_only + ["h264-webrtc", "h265-webrtc"]
+        monkeypatch.delenv(W.H264_OPT_IN_ENV)
+        assert await transports() == jpeg_only
+        # aiortc < 1.10, as the cluster image: the factory is there, the
+        # installer patches it for NVENC, and the stream is advertised.
+        monkeypatch.setattr(aiortc_h264, "create_encoder_context", lambda *a: None, raising=False)
+        monkeypatch.setattr(W, "_NVENC_INSTALLED", False)
+        assert await transports() == jpeg_only + ["h264-webrtc", "h265-webrtc"]
+        assert W._ENCODER_FACTORY_PATCHED
+    # The headset's stereo video (#189) has its own link: available with aiortc.
+    assert SW.rtc_available() is None
+
+
 # ── Routes without a pairing service ──────────────────────────────────────────
 
 

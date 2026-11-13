@@ -42,6 +42,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from fractions import Fraction
 from typing import Any
@@ -80,6 +81,12 @@ def get_active_webrtc_session(session_id: str) -> "WebRTCSession | None":
 
 
 _NVENC_INSTALLED = False
+#: True once aiortc's encoder factory was replaced by the NVENC one: the
+#: aiortc < 1.10 of the EGL cluster image (apptainer/backend-egl-h265-overlay.def).
+_ENCODER_FACTORY_PATCHED = False
+#: Opt-in for the H.264 stream where aiortc has no encoder factory to patch
+#: (aiortc 1.10 and later, as the release bundles carry for headset pairing).
+H264_OPT_IN_ENV = "VISIVO_WEBRTC_H264"
 
 
 def _install_nvenc_encoder() -> bool:
@@ -89,7 +96,7 @@ def _install_nvenc_encoder() -> bool:
     isn't available (in which case aiortc keeps using its libx264
     default — the WebRTC transport still works, just with CPU encode).
     """
-    global _NVENC_INSTALLED
+    global _NVENC_INSTALLED, _ENCODER_FACTORY_PATCHED
     if _NVENC_INSTALLED:
         return True
     try:
@@ -247,13 +254,27 @@ def _install_nvenc_encoder() -> bool:
 
     h264_mod.create_encoder_context = create_encoder_context_nvenc
     _NVENC_INSTALLED = True
+    _ENCODER_FACTORY_PATCHED = True
     logger.info("[webrtc] aiortc H.264 encoder patched to use h264_nvenc.")
     return True
 
 
 def webrtc_available() -> bool:
-    """Backend feature probe — used by the router to advertise capabilities."""
-    return _install_nvenc_encoder()
+    """Backend feature probe, used by the router to advertise the H.264
+    stream (``h264-webrtc``) and to accept its offers.
+
+    Advertised where it always was: with aiortc's encoder factory patched for
+    NVENC (the cluster image, aiortc < 1.10). The release bundles now carry
+    aiortc 1.10 or later for headset pairing (#212); there it has no factory
+    to patch and would encode in software, so a desktop's local backend keeps
+    advertising JPEG only, as before, unless ``VISIVO_WEBRTC_H264=1`` asks
+    for the stream. The headset's stereo video (#189) does not depend on
+    this: it has its own encoder and link (render_session/_stereo_webrtc.py)."""
+    if not _install_nvenc_encoder():
+        return False
+    if _ENCODER_FACTORY_PATCHED:
+        return True
+    return os.environ.get(H264_OPT_IN_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
 def _force_h264_on(pc: RTCPeerConnection) -> None:
