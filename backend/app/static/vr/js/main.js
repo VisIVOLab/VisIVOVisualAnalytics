@@ -6,6 +6,7 @@
 import * as M from './mat4.js';
 import { Renderer } from './renderer.js';
 import { Backend, takeToken, saveToken, tokenError, takePairing, forgetPairing, requestHooks } from './api.js';
+import { isPaired, PAIRED_TOKEN, onLinkChange, requestNewCode, transportInfo, linkState } from './transport.js';
 import * as V from './volume.js';
 import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
 import { createSelection, TOOLS, TOOL_NAMES } from './select-ui.js';
@@ -169,10 +170,21 @@ const shell = createShell({
     onRetry: () => refiner.retrySoon(),
     publicInfo: (opts) => new Backend('').info(opts),
     summary: () => diagnosticsSummary(),
+    paired: () => isPaired(),
+    newCode: () => requestNewCode(),
+    transport: () => transportInfo(),
   },
 });
 requestHooks.onFailure = (err, path) => shell.requestFailed(err, path);
 refiner.onLifecycle = (name, detail) => shell.log('warning', name, detail);
+// Paired through the public loader (#213): the link's own states. A drop is
+// the lifecycle's "not reachable" (the loader resumes by itself); a pairing
+// that cannot be resumed asks for a new code.
+onLinkChange((state, reason) => {
+  shell.log(state === 'up' ? 'info' : 'warning', `pair-link-${state}`, reason);
+  if (state === 'lost') shell.notify('pair-lost', { detail: reason });
+  else if (state === 'up') { shell.clearNotice('pair-lost'); shell.life.retryNow(); refiner.retrySoon(); }
+});
 
 // ── Panel wiring ────────────────────────────────────────────────────────────
 for (const name of COLORMAP_NAMES) {
@@ -202,6 +214,11 @@ const pairing = takePairing();
 if (pairing.path) $('path').value = pairing.path;
 const tokenField = $('token');
 tokenField.value = takeToken();
+if (isPaired()) {
+  // The bridge authenticates for the page: no token to paste (#213).
+  tokenField.value = PAIRED_TOKEN;
+  $('connect').hidden = true;
+}
 if (tokenError()) setTimeout(() => setStatus(tokenError()), 0);
 tokenField.addEventListener('change', () => saveToken(tokenField.value.trim(), $('remember').checked));
 $('remember').addEventListener('change', () => saveToken(tokenField.value.trim(), $('remember').checked));
@@ -2456,6 +2473,7 @@ if (query.has('debug')) {
   window.__vrLayers = layers;
   window.__vrStats = (hz = 0) => stats.summary(hz ? 1000 / hz : 0);
   window.__vrShell = shell;
+  window.__vrLink = linkState;
   window.__vrState = state;
   window.__vrGL = gl;
   // The message card (in the desktop view with ?panel3d): press one of its

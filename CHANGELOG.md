@@ -8,6 +8,24 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR headset: the page over a WebRTC data channel, from a public loader
+  (#213, part of #210).** A small static loader (`web/vr-loader/`, any web
+  server, any path; the pairing service named in its `config.json`) pairs the
+  headset with the user's backend with a code (`#pair=CODE` or typed), holds
+  the WebRTC link, and runs the VR page in a same-origin iframe
+  (`allow="xr-spatial-tracking"`). The page's files come from the backend over
+  the `api` channel through a service worker that keeps each page build in its
+  own Cache Storage, so the page always matches its backend. The page's
+  requests and WebSockets go over the data channels (HTTP-over-channel with
+  16 KiB chunks, fragmented `ws` frames, a 1 MiB send pause, cancel on abort);
+  the token never reaches the headset. A dropped link resumes with the
+  backend's resume code, without a new code and without a reload; only a
+  failed resume asks for a new code, through the page's notices. The
+  diagnostics name the transport (ICE candidate types, round trip). The loader
+  installs as an app. Served directly by the backend (adb `localhost`, a
+  cluster's HTTPS portal), the page is unchanged. Checked with
+  `node validation/vr_lifecycle.mjs --paired [--regressions]` against an
+  in-repo fake of the pairing service and bridge.
 - **Ray-traced particles keep particles far from zero apart (#208, part of
   #166).** Stills, movie frames, the backend preview and the desktop's GPU
   view read positions as float32. As a result, 1e9, 1e9 + 1 and 1e9 + 2 merged

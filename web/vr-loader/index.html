@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VisIVO VR</title>
+<meta name="theme-color" content="#101418">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="home">
+  <h1>VisIVO VR</h1>
+  <p class="muted">Pairs this headset with VisIVO Visual Analytics on your computer.
+    On the computer: <em>Tools → Views → Open in VR Headset…</em> shows a code.</p>
+  <form id="pair-form" autocomplete="off">
+    <label for="code">Code</label>
+    <input id="code" name="code" inputmode="text" autocapitalize="characters" spellcheck="false" maxlength="64"
+      placeholder="ABC123">
+    <div class="row">
+      <button id="connect" type="submit" class="primary">Connect</button>
+      <button id="close-form" type="button">Back to the page</button>
+    </div>
+  </form>
+  <p id="status" role="status"></p>
+  <p class="muted small">Pairing service: <span id="service">…</span> · link: <span id="link-state">none</span></p>
+</main>
+<iframe id="app" title="VisIVO VR" hidden allow="xr-spatial-tracking; fullscreen; clipboard-write"></iframe>
+<script type="module" src="js/loader.js"></script>
+</body>
+</html>

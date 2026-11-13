@@ -231,6 +231,7 @@ export function diagnosticsReport(d) {
   const b = d.backend;
   kv('backend', b ? `version ${b.backend_version}, page build ${b.build}, API ${b.vr_api_min}–${b.vr_api}, instance ${b.instance}` : 'not reached');
   kv('connection', d.lifecycle);
+  kv('transport', d.transport);
   kv('address', d.address);
   kv('browser', d.userAgent);
   const g = d.gpu || {};

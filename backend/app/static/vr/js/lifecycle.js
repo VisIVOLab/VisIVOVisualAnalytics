@@ -109,10 +109,11 @@ export function isHeadsetBrowser(ua) {
 /**
  * The notice for a lifecycle state: {id, level, title, lines, actions,
  * sticky, badge}. `actions` are {id, label} the page wires: 'retry',
- * 'reload', 'exit-vr', 'dismiss', 'hide', 'reopen', 'enter-vr'. A sticky
+ * 'reload', 'exit-vr', 'dismiss', 'hide', 'reopen', 'enter-vr', 'new-code'
+ * (paired through the public loader, #213: pair again). A sticky
  * notice stays while its condition lasts; 'hide' folds it into `badge`, a
  * short line on the hand menu, until the condition changes. `ctx`: {loopback,
- * headset, inVR, attempts, why, detail, status}.
+ * headset, paired, inVR, attempts, why, detail, status}.
  */
 export function noticeFor(kind, ctx = {}) {
   const exit = ctx.inVR ? [{ id: 'exit-vr', label: 'Exit VR' }] : [];
@@ -121,7 +122,10 @@ export function noticeFor(kind, ctx = {}) {
   switch (kind) {
     case 'unreachable': {
       const tries = ctx.attempts > 1 ? ` (attempt ${ctx.attempts})` : '';
-      const lines = ctx.loopback && ctx.headset ? [
+      const lines = ctx.paired ? [
+        'The link to the computer dropped (the Wi-Fi, the network, or the computer asleep or restarting).',
+        'The page reconnects by itself with this pairing: no new code is needed while it is valid.',
+      ] : ctx.loopback && ctx.headset ? [
         'The headset cannot reach the backend on the computer.',
         'If the USB cable was unplugged, or the headset or adb restarted, the link (adb reverse) is gone:',
         desktopReopen,
@@ -135,6 +139,13 @@ export function noticeFor(kind, ctx = {}) {
         actions: [{ id: 'retry', label: 'Retry now' }, hide, ...exit], sticky: true,
         badge: 'Backend not reachable: retrying' };
     }
+    case 'pair-lost':
+      return { id: 'pair-lost', level: 'error', title: 'The pairing with the computer ended',
+        lines: [ctx.detail ? `${ctx.detail}.` : 'The page could not reconnect with this pairing.',
+          'On the computer: Tools → Views → Open in VR Headset… gives a new code; enter it here.',
+          'The cube stays on show and moves meanwhile.'],
+        actions: [{ id: 'new-code', label: 'Enter a new code' }, hide, ...exit], sticky: true,
+        badge: 'Pairing ended: enter a new code' };
     case 'http-error': {
       const proxy = ctx.status >= 502 && ctx.status <= 504;
       return { id: 'http-error', level: 'error', title: proxy ? 'The backend is not answering behind its proxy' : 'The backend answered with an error',

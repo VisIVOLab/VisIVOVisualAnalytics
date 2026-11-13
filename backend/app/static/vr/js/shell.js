@@ -17,12 +17,14 @@ import { PanelPointer, rayPanel } from './vr-panel.js';
  * `opts`: {page: {build, api}, renderer: () => Renderer, backend: () =>
  * Backend | null (null: no token yet), token: () => string, ctx: {inVR(),
  * exitVR(), enterVR(), recoverDataset(reason) → Promise<{ok, detail}>,
- * hasBackendCube(), loading(), loadGen(), onGuideSeen(), summary() → object, onRetry()}}.
+ * hasBackendCube(), loading(), loadGen(), onGuideSeen(), summary() → object, onRetry(),
+ * and, for the public loader (#213), paired(), newCode(), transport() → string}}.
  */
 export function createShell({ page, renderer, backend, token, ctx, doc = document, win = window }) {
   const notices = new NoticeCenter();
   const diag = new DiagLog({ secrets: () => [token(), backend() ? backend().session : ''] });
-  const where = { loopback: isLoopback(win.location.hostname), headset: isHeadsetBrowser(win.navigator.userAgent) };
+  const where = { loopback: isLoopback(win.location.hostname), headset: isHeadsetBrowser(win.navigator.userAgent),
+    paired: !!(ctx.paired && ctx.paired()) };
   let downSince = 0;
   let recovering = null;
   let lastRecoverAt = 0;
@@ -213,6 +215,7 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
     if (id === 'exit-vr') { ctx.exitVR(); return; }
     if (id === 'enter-vr') { if (cur) notices.dismiss(cur.id); ctx.enterVR(); render(); return; }
     if (id === 'reopen') { lastRecoverAt = 0; recover('user'); }
+    if (id === 'new-code') { if (ctx.exitVR && inVR()) ctx.exitVR(); if (ctx.newCode) ctx.newCode(); }
   }
 
   // ── The 2-D banner ──────────────────────────────────────────────────────
@@ -296,7 +299,7 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
     return diagnosticsReport({
       time: new Date().toISOString(), page, backend: life.info, lifecycle: life.state,
       address: `${win.location.protocol}//${win.location.host}${win.location.pathname}`,
-      userAgent: win.navigator.userAgent, ...s, errors: diag.items, secrets: [token(), backend() ? backend().session : ''],
+      userAgent: win.navigator.userAgent, transport: ctx.transport ? ctx.transport() : 'direct HTTP', ...s, errors: diag.items, secrets: [token(), backend() ? backend().session : ''],
     });
   }
 

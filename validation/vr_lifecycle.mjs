@@ -17,7 +17,15 @@
 // to that smoke run, with the hand menu driven by the mouse (vr_menu.mjs,
 // issue #201; --menu runs that alone on the smoke run). CI runs both; the full
 // lifecycle run remains separate.
+// --paired (issue #213) runs the smoke (and --regressions) checks with the
+// page in the public loader (web/vr-loader/, served here on --loader-port),
+// paired over WebRTC data channels through validation/vr_pair_fake.py (a
+// minimal fake of the pairing service and the backend's bridge, on
+// --pair-port); then a dropped link resumed without a new code, an unknown
+// resume code asking for a new one, and the transport's overhead against
+// direct HTTP. The checks run in the page's iframe.
 import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, openSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
@@ -32,7 +40,8 @@ const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => {
 }, []));
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..');
-const SMOKE = !!args.smoke || !!args.regressions || !!args.menu;
+const PAIRED = !!args.paired;
+const SMOKE = PAIRED || !!args.smoke || !!args.regressions || !!args.menu;
 const PY = args.python || process.env.VISIVO_PYTHON || 'python3';
 // `--chrome` given without a value (an empty shell variable) parses as true:
 // that is "not found", said at once rather than as a failed spawn later.
@@ -49,6 +58,9 @@ if (CHROME.includes('/') && !existsSync(CHROME)) {
 }
 const GL = args.gl || (process.platform === 'darwin' ? 'metal' : 'swiftshader');
 const PORT = Number(args.port || 8791);
+const LOADER_PORT = Number(args['loader-port'] || PORT + 1);
+const PAIR_PORT = Number(args['pair-port'] || PORT + 2);
+const PAIR_CODE = 'K7Q2ZP';
 const OUT = args.out || join(HERE, 'out', 'vr_lifecycle');
 mkdirSync(OUT, { recursive: true });
 const BASE = `http://localhost:${PORT}`;
@@ -58,7 +70,7 @@ const W = 1280, H = 800;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const tokenA = randomBytes(24).toString('base64url');
 const tokenB = randomBytes(24).toString('base64url');
-const results = { smoke: SMOKE, gl: GL, checks: [], timings: {} };
+const results = { smoke: SMOKE, paired: PAIRED, gl: GL, checks: [], timings: {} };
 let failed = 0;
 function check(name, ok, detail = '') {
   results.checks.push({ name, ok: !!ok, detail: String(detail).slice(0, 300) });
@@ -122,6 +134,38 @@ async function stopBackend() {
   }
 }
 
+// ── Paired mode: the public loader and the fake pairing (issue #213) ───────
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
+  '.webmanifest': 'application/manifest+json', '.png': 'image/png' };
+let loaderServer = null;
+/** The loader directory as any static web server would serve it. */
+function startLoader() {
+  const root = join(REPO, 'web', 'vr-loader');
+  loaderServer = createServer((req, res) => {
+    let rel;
+    try { rel = decodeURIComponent(new URL(req.url, 'http://x').pathname).replace(/^\/+/, ''); } catch { rel = ''; }
+    if (!rel || rel.endsWith('/')) rel += 'index.html';
+    const file = resolve(root, rel);
+    if (!file.startsWith(`${root}/`) || !existsSync(file)) { res.writeHead(404); res.end('not found'); return; }
+    const ext = file.slice(file.lastIndexOf('.'));
+    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+    res.end(readFileSync(file));
+  });
+  return new Promise((r) => loaderServer.listen(LOADER_PORT, 'localhost', r));
+}
+let pairFake = null;
+async function startPairFake(token) {
+  const fd = openSync(join(OUT, 'pair_fake.log'), 'a');
+  pairFake = spawn(PY, [join(HERE, 'vr_pair_fake.py'), '--port', String(PAIR_PORT), '--backend', BASE, '--code', PAIR_CODE],
+    { env: { ...process.env, VISIVO_TOKEN: token }, stdio: ['ignore', fd, fd] });
+  for (let i = 0; i < 300; i++) {
+    if (readFileSync(join(OUT, 'pair_fake.log'), 'utf8').includes(`ws://localhost:${PAIR_PORT}/v1/join`)) return;
+    if (pairFake.exitCode !== null) throw new Error(`the pairing fake exited: see ${join(OUT, 'pair_fake.log')}`);
+    await sleep(100);
+  }
+  throw new Error('the pairing fake did not start');
+}
+
 // ── Chrome over CDP ─────────────────────────────────────────────────────────
 let cdpPort = 0;
 let chrome = null;
@@ -173,8 +217,17 @@ function cdp(url) {
   const waiting = new Map();
   const pageErrors = [];
   const paused = [];
+  const contexts = new Map();     // frameId -> default execution context id
   const onMessage = (e) => {
     const m = JSON.parse(e.data);
+    if (m.method === 'Runtime.executionContextCreated') {
+      const ctx = m.params.context;
+      if (ctx.auxData && ctx.auxData.isDefault) contexts.set(ctx.auxData.frameId, ctx.id);
+    }
+    if (m.method === 'Runtime.executionContextDestroyed') {
+      for (const [f, id] of contexts) if (id === m.params.executionContextId) contexts.delete(f);
+    }
+    if (m.method === 'Runtime.executionContextsCleared') contexts.clear();
     if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
     if (m.method === 'Runtime.exceptionThrown') pageErrors.push(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text);
     if (m.method === 'Fetch.requestPaused') paused.push(m.params);
@@ -210,8 +263,18 @@ function cdp(url) {
     await send('Runtime.enable');
     results.cdpReconnects = (results.cdpReconnects || 0) + 1;
   };
-  const evaluate = async (expr, ms = 30000) => {
-    const ask = () => send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
+  // Paired (#213): the page runs in the loader's iframe; expressions go to it.
+  const target = { frameId: null };
+  const evaluate = async (expr, ms = 30000, { top = false } = {}) => {
+    const ask = () => {
+      const params = { expression: expr, awaitPromise: true, returnByValue: true };
+      if (target.frameId && !top) {
+        const id = contexts.get(target.frameId);
+        if (!id) return Promise.reject(new Error('page: the app frame has no context yet'));
+        params.contextId = id;
+      }
+      return send('Runtime.evaluate', params);
+    };
     let r;
     try {
       r = await timed(ask(), ms, `evaluate ${expr.slice(0, 60)}`);
@@ -225,7 +288,7 @@ function cdp(url) {
     if (r.exceptionDetails) throw new Error(`page: ${r.exceptionDetails.exception?.description || r.exceptionDetails.text}`);
     return r.result.value;
   };
-  return { send, evaluate, pageErrors, paused, close: () => ws.close() };
+  return { send, evaluate, pageErrors, paused, target, close: () => ws.close() };
 }
 
 async function waitFor(c, expr, ms = 30000, every = 100) {
@@ -250,6 +313,85 @@ async function api(method, path, token, { session, body } = {}) {
   return { status: r.status, body: await r.text() };
 }
 
+// ── Paired: transport, resume, a new code, overhead (issue #213) ───────────
+async function pairedChecks() {
+  await c.evaluate(`document.getElementById('copy-diag').click()`);
+  await sleep(300);
+  const diag = await c.evaluate(`document.getElementById('diag-out').textContent`);
+  const tline = diag.split('\n').find((l) => l.startsWith('transport:')) || '';
+  results.transport = tline;
+  check('paired: the diagnostics name the transport', /WebRTC data channel/.test(tline) && !diag.includes(tokenA), tline);
+  check('paired: no token field, no token in the page',
+    await c.evaluate(`document.getElementById('connect').hidden && !document.documentElement.outerHTML.includes(${JSON.stringify(tokenA)})`));
+  // Overhead: the same reduced cube and the same check, over the pairing (the
+  // page's own Backend) and over direct HTTP (from this script, same machine).
+  // A cube of 256×256×128 (8.4 MB at 8 bits, unbinned), loaded by the page.
+  const big = makeCube('synthetic_pair_big.fits', { shape: [128, 256, 256] });
+  await c.evaluate(`(() => { const $ = (id) => document.getElementById(id); $('path').value = ${JSON.stringify(big)}; $('load').click(); })()`);
+  await sleep(300);
+  const bigLoaded = await waitFor(c, `window.__vrState.loading === 0 && window.__vrState.openPath === ${JSON.stringify(big)}`, 120000);
+  if (!bigLoaded.value) throw new Error('the 256×256×128 cube did not load over the pairing');
+  const req = await c.evaluate(`JSON.stringify({ dataset_id: window.__vrState.open.dataset_id, factor_xy: 1, factor_z: 1, max_dim: 256, encoding: 'uint8', mode: 'mean' })`);
+  const session = await c.evaluate('window.__vrRefine.refiner.backend().session');
+  const pairedT = [], infoP = [], direct = [], infoD = [];
+  for (let i = 0; i < 7; i++) {
+    pairedT.push(await c.evaluate(`(async () => { const b = window.__vrRefine.refiner.backend(); const t0 = performance.now();
+      const r = await b.reducedCube(JSON.parse(${JSON.stringify(req)})); return { ms: performance.now() - t0, bytes: r.bytes }; })()`));
+    infoP.push(await c.evaluate(`(async () => { const t0 = performance.now(); await window.__vrRefine.refiner.backend().info(); return { ms: performance.now() - t0 }; })()`));
+    let t0 = performance.now();
+    const r = await fetch(`${BASE}/v1/cube/reduced_bin`, { method: 'POST',
+      headers: { 'X-Visivo-Token': tokenA, 'X-Visivo-Session': session, 'Content-Type': 'application/json' }, body: req });
+    direct.push({ ms: performance.now() - t0, bytes: (await r.arrayBuffer()).byteLength });
+    t0 = performance.now();
+    await (await fetch(`${BASE}/v1/vr/info`, { headers: { 'X-Visivo-Token': tokenA } })).json();
+    infoD.push({ ms: performance.now() - t0 });
+  }
+  const med = (a) => a.map((x) => x.ms).sort((x, y) => x - y)[Math.floor(a.length / 2)];
+  const o = { reducedBytes: pairedT[0].bytes, pairedMs: med(pairedT), directMs: med(direct), infoPairedMs: med(infoP), infoDirectMs: med(infoD) };
+  o.pairedMBps = o.reducedBytes / 1e6 / (o.pairedMs / 1000);
+  o.directMBps = o.reducedBytes / 1e6 / (o.directMs / 1000);
+  results.timings.overhead = o;
+  check('paired: the reduced cube comes over the pairing, as many bytes as direct', o.reducedBytes > 0 && o.reducedBytes === direct[0].bytes,
+    JSON.stringify(o, (k, v) => (typeof v === 'number' ? Number(v.toFixed(2)) : v)));
+  // A dropped link: resumed with the resume code, the page not reloaded.
+  await c.evaluate('window.__pairMarker = 42');
+  const t0 = Date.now();
+  pairFake.kill('SIGUSR1');
+  const down = await waitFor(c, `window.__vrLink().state === 'down'`, 15000, 20);
+  const up = await waitFor(c, `window.__vrLink().state === 'up' && window.__pairMarker === 42`, 30000, 50);
+  results.timings.resumeMs = Date.now() - t0;
+  check('paired: a dropped link is resumed without a new code, the page kept', !!(down.value && up.value),
+    `down after ${down.ms} ms, up again ${Date.now() - t0} ms after the drop`);
+  const back = await waitFor(c, `window.__vrShell.life.state === 'ok'`, 15000);
+  const after = await c.evaluate(`(async () => { try { await window.__vrRefine.refiner.backend().reducedInfo({ dataset_id: window.__vrState.open.dataset_id, factor_xy: 0, factor_z: 0, max_dim: 256 }); return true; } catch (e) { return e.message; } })()`);
+  check('paired: requests work again after the resume', !!back.value && after === true, String(after));
+  // The page reloads itself (its "Reload page"): the link stays, the new
+  // document works, and the build's files come from Cache Storage.
+  const before = await c.evaluate(`(async () => ({ joins: window.__vrLoader.state.resumes,
+    caches: (await caches.keys()).filter((k) => k.startsWith('visivo-vr-')) }))()`, 5000, { top: true });
+  await c.evaluate('setTimeout(() => location.reload(), 50), 1');
+  const t1 = Date.now();
+  await sleep(300);
+  const reloaded = await waitFor(c, `window.__pairMarker === undefined && !!window.__vrShell && window.__vrShell.life.state === 'ok' && window.__vrLink().state === 'up'`, 30000, 50);
+  const afterReload = await c.evaluate(`(async () => ({ joins: window.__vrLoader.state.resumes,
+    caches: (await caches.keys()).filter((k) => k.startsWith('visivo-vr-')) }))()`, 5000, { top: true });
+  check('paired: the page reloads inside the loader, the link kept, the build cached',
+    !!reloaded.value && afterReload.joins === before.joins && afterReload.caches.length === 1 && afterReload.caches[0] === `visivo-vr-${results.versions.page.build}`,
+    `${Date.now() - t1} ms; ${JSON.stringify(afterReload)}`);
+  // A pairing the backend forgot: the resume fails, the page asks for a new code.
+  pairFake.kill('SIGUSR2');
+  await sleep(200);
+  pairFake.kill('SIGUSR1');
+  const lost = await waitFor(c, `window.__vrLink().state === 'lost' && !!window.__vrShell.notices.current() && window.__vrShell.notices.current().id === 'pair-lost'`, 30000, 50);
+  check('paired: an unknown resume code asks for a new code (notice)', !!lost.value, `${lost.ms} ms`);
+  await c.evaluate(`window.__vrShell.act('new-code')`);
+  await sleep(300);
+  const form = await c.evaluate(`!document.getElementById('pair-form').hidden && !document.getElementById('home').hidden`, 5000, { top: true });
+  check('paired: the notice\'s action opens the loader\'s code form', form);
+  const errs = c.pageErrors.filter((e) => !/abort|link to the computer|pairing/i.test(e));
+  check('paired: no uncaught page exception', !errs.length, errs.join(' / '));
+}
+
 // ── The run ─────────────────────────────────────────────────────────────────
 // The whole run is bounded: a hang is a failure, not a stuck CI job.
 setTimeout(() => {
@@ -265,6 +407,7 @@ let c = null;
 let exitCode = 1;
 try {
   await startBackend(tokenA);
+  if (PAIRED) { writeFileSync(join(OUT, 'pair_fake.log'), ''); await startLoader(); await startPairFake(tokenA); }
   const { ws } = await launch();
   c = cdp(ws);
   await c.send('Page.enable');
@@ -274,7 +417,26 @@ try {
   await c.send('Runtime.enable');
   // A Quest's browser, so the page words its messages for the headset over USB.
   if (!SMOKE) await c.send('Emulation.setUserAgentOverride', { userAgent: QUEST_UA });
-  await c.send('Page.navigate', { url: `${BASE}/vr/?debug&panel3d${SMOKE ? '&refine=0' : ''}#token=${encodeURIComponent(tokenA)}` });
+  if (PAIRED) {
+    // The loader on its own origin (localhost:<loader port>), the service
+    // from ?pair_service= (honoured on a loopback loader), the code from #pair=.
+    const t0 = Date.now();
+    await c.send('Page.navigate', { url: `http://localhost:${LOADER_PORT}/?debug&panel3d&refine=0&pair_service=${encodeURIComponent(`ws://localhost:${PAIR_PORT}`)}#pair=${PAIR_CODE}` });
+    let frameId = null;
+    for (let i = 0; i < 300 && !frameId; i++) {
+      const tree = await c.send('Page.getFrameTree');
+      const child = (tree.frameTree.childFrames || [])[0];
+      if (child && /\/app\/[a-z0-9]+\/vr\//.test(child.frame.url)) frameId = child.frame.id;
+      else await sleep(100);
+    }
+    const addr = await c.evaluate('location.href', 5000, { top: true });
+    check('paired: the loader paired and opened the page in its iframe', !!frameId, `${Date.now() - t0} ms`);
+    check('paired: the code left the loader\'s address bar', !addr.includes(PAIR_CODE));
+    c.target.frameId = frameId;
+    results.timings.pairMs = Date.now() - t0;
+  } else {
+    await c.send('Page.navigate', { url: `${BASE}/vr/?debug&panel3d${SMOKE ? '&refine=0' : ''}#token=${encodeURIComponent(tokenA)}` });
+  }
   const up = await waitFor(c, `!!window.__vrShell && window.__vrShell.life.state === 'ok'`, 30000);
   check('page up, backend reachable, token accepted', up.value, `${up.ms} ms`);
   const ver = await c.evaluate(`({ page: window.__vrShell.life.page, info: window.__vrShell.life.info })`);
@@ -298,6 +460,7 @@ try {
 
   if (args.regressions || args.menu) await runMenuChecks({ c, check, waitFor, results });
   if (args.regressions) await runRegressions({ c, check, waitFor, api, python: PY, makeCube, token: tokenA, cube });
+  if (PAIRED) await pairedChecks();
 
   if (!SMOKE) {
     // ── Loads: the path a load started with, the newest load wins ─────────
@@ -513,6 +676,8 @@ try {
   try { c.close(); } catch { /* closed */ }
   if (chrome) chrome.kill();
   console.log(`${results.checks.length - failed}/${results.checks.length} checks passed${results.cdpReconnects ? ` (DevTools reconnected ${results.cdpReconnects}×)` : ""}`);
+  if (pairFake) pairFake.kill('SIGTERM');
+  if (loaderServer) loaderServer.close();
   await stopBackend();
   process.exit(failed ? 1 : exitCode);
 }
