@@ -6,6 +6,8 @@
 import * as M from './mat4.js';
 import { colormapTable } from './colormaps.js';
 import { buildMacrocells } from './volume.js';
+import { labelVertices, LABEL_STRIDE } from './labels.js';
+import { MESH_STRIDE } from './models.js';
 
 const MAX_LOOP = 4096;
 
@@ -148,20 +150,25 @@ in vec4 vColor;
 out vec4 outColor;
 void main() { outColor = vec4(vColor.rgb * vColor.a, vColor.a); }`;
 
-// Billboarded text: the centre is placed in view space, the corner offset in
-// metres is added there, so labels always face the eye.
+// Text fixed to the cube (issue #226): each label is a quad in its own face
+// of the cube's model space (labels.js), not a billboard turned to the eye.
+// Seen from behind its face, its texture is mirrored so it still reads.
 const LABEL_VS = `#version 300 es
 precision highp float;
 in vec3 aCenter;
 in vec2 aOffset;
 in vec2 aUV;
-uniform mat4 uMV, uP;
-uniform float uScale;
+in vec3 aRight;
+in vec3 aUp;
+in vec2 aURange;
+uniform mat4 uMVP;
+uniform vec3 uEye;       // the eye in model space
 out vec2 vUV;
 void main() {
-  vec4 c = uMV * vec4(aCenter, 1.0);
-  vUV = aUV;
-  gl_Position = uP * (c + vec4(aOffset * uScale, 0.0, 0.0));
+  vec3 n = cross(aRight, aUp);
+  bool back = dot(uEye - aCenter, n) < 0.0;
+  vUV = vec2(back ? aURange.x + aURange.y - aUV.x : aUV.x, aUV.y);
+  gl_Position = uMVP * vec4(aCenter + aRight * aOffset.x + aUp * aOffset.y, 1.0);
 }`;
 
 const TEX_FS = `#version 300 es
@@ -179,6 +186,30 @@ uniform mat4 uMVP;
 uniform vec2 uSize;
 out vec2 vUV;
 void main() { vUV = aUV; gl_Position = uMVP * vec4(aPos * uSize, 0.0, 1.0); }`;
+
+// Controllers and tracked hands (issue #226): solid triangles in world space,
+// lit from above and from the eye, with depth among themselves.
+const MESH_VS = `#version 300 es
+precision highp float;
+in vec3 aPos;
+in vec3 aNormal;
+in vec4 aColor;
+uniform mat4 uVP;
+uniform vec3 uEye;
+out vec4 vColor;
+void main() {
+  vec3 n = normalize(aNormal);
+  vec3 toEye = normalize(uEye - aPos);
+  float l = 0.35 + 0.4 * abs(dot(n, toEye)) + 0.25 * max(dot(n, vec3(0.0, 1.0, 0.0)), 0.0);
+  vColor = vec4(aColor.rgb * l, aColor.a);
+  gl_Position = uVP * vec4(aPos, 1.0);
+}`;
+
+const MESH_FS = `#version 300 es
+precision mediump float;
+in vec4 vColor;
+out vec4 outColor;
+void main() { outColor = vec4(vColor.rgb * vColor.a, vColor.a); }`;
 
 function compile(gl, vs, fs) {
   const p = gl.createProgram();
@@ -212,6 +243,21 @@ const CUBE = new Float32Array([
   0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, // -y
 ]);
 
+/**
+ * The mask texture's storage for a selection of `dims` reduced voxels: the
+ * current capacity grown to hold it, each side rounded up to a multiple of
+ * 32 and never past the cube's own grid `grid` (a selection cannot be larger
+ * than the cube). Pure: tested in backend/tests/vr/alloc.test.mjs.
+ */
+export function maskCapacityFor(dims, cap, grid) {
+  return [0, 1, 2].map((i) => {
+    const need = Math.max(dims[i], cap ? cap[i] : 0, 1);
+    const round = Math.ceil(need / 32) * 32;
+    const limit = grid && grid[i] ? Math.max(grid[i], dims[i]) : round;
+    return Math.min(round, limit);
+  });
+}
+
 export class Renderer {
   constructor(gl) {
     this.gl = gl;
@@ -221,6 +267,7 @@ export class Renderer {
     this._maskInput = null;
     this._lineSegs = {};           // target name -> the last segments
     this._labels = null;
+    this._labelCanvas = null;      // one canvas for the label atlas, reused (issue #226)
     this._init();
   }
 
@@ -231,6 +278,7 @@ export class Renderer {
     this.line = compile(gl, LINE_VS, LINE_FS);
     this.label = compile(gl, LABEL_VS, TEX_FS);
     this.quad = compile(gl, QUAD_VS, TEX_FS);
+    this.meshProg = compile(gl, MESH_VS, MESH_FS);
     this.maxTex3D = gl.getParameter(gl.MAX_3D_TEXTURE_SIZE);
 
     this.cubeVao = gl.createVertexArray();
@@ -253,7 +301,7 @@ export class Renderer {
       gl.vertexAttribPointer(lp, 3, gl.FLOAT, false, 28, 0);
       gl.enableVertexAttribArray(lc);
       gl.vertexAttribPointer(lc, 4, gl.FLOAT, false, 28, 12);
-      return { vao, buf, count: 0 };
+      return { vao, buf, count: 0, capacity: 0 };
     };
     this.boxLines = lineVao();     // box, ticks: rebuilt when the clip box changes
     this.tmpLines = lineVao();     // controllers: rebuilt every frame
@@ -263,14 +311,31 @@ export class Renderer {
     this.labelBuf = gl.createBuffer();
     gl.bindVertexArray(this.labelVao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.labelBuf);
-    const a0 = gl.getAttribLocation(this.label.p, 'aCenter');
-    const a1 = gl.getAttribLocation(this.label.p, 'aOffset');
-    const a2 = gl.getAttribLocation(this.label.p, 'aUV');
-    gl.enableVertexAttribArray(a0); gl.vertexAttribPointer(a0, 3, gl.FLOAT, false, 28, 0);
-    gl.enableVertexAttribArray(a1); gl.vertexAttribPointer(a1, 2, gl.FLOAT, false, 28, 12);
-    gl.enableVertexAttribArray(a2); gl.vertexAttribPointer(a2, 2, gl.FLOAT, false, 28, 20);
+    const LS = LABEL_STRIDE * 4;
+    for (const [name, n, off] of [['aCenter', 3, 0], ['aOffset', 2, 3], ['aUV', 2, 5], ['aRight', 3, 7], ['aUp', 3, 10], ['aURange', 2, 13]]) {
+      const loc2 = gl.getAttribLocation(this.label.p, name);
+      if (loc2 < 0) continue;
+      gl.enableVertexAttribArray(loc2);
+      gl.vertexAttribPointer(loc2, n, gl.FLOAT, false, LS, off * 4);
+    }
     this.labelCount = 0;
     this.labelTex = gl.createTexture();
+    this.labelTexSize = null;      // [w, h] of its storage: re-specified only when it changes
+
+    // Controllers and hands (issue #226): one world-space triangle list a frame.
+    this.meshVao = gl.createVertexArray();
+    this.meshBuf = gl.createBuffer();
+    gl.bindVertexArray(this.meshVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.meshBuf);
+    const MS = MESH_STRIDE * 4;
+    for (const [name, n, off] of [['aPos', 3, 0], ['aNormal', 3, 3], ['aColor', 4, 6]]) {
+      const loc3 = gl.getAttribLocation(this.meshProg.p, name);
+      if (loc3 < 0) continue;
+      gl.enableVertexAttribArray(loc3);
+      gl.vertexAttribPointer(loc3, n, gl.FLOAT, false, MS, off * 4);
+    }
+    this.meshCount = 0;
+    this.meshCapacity = 0;
 
     this.quadVao = gl.createVertexArray();
     gl.bindVertexArray(this.quadVao);
@@ -293,6 +358,7 @@ export class Renderer {
     // sampler is never unbound.
     this.maskTex = gl.createTexture();
     this.mask = null;
+    this.maskCapacity = null;      // the dims of the mask texture's storage (issue #226)
     this._uploadMask(new Uint8Array(1), [1, 1, 1]);
     this.timer = gl.getExtension('EXT_disjoint_timer_query_webgl2');
     this.queries = [];
@@ -315,8 +381,24 @@ export class Renderer {
     if (this._labels) this.setLabels(this._labels);
     for (const h of this._panels) {
       h.tex = this._panelTexture();
+      h.size = null;
       if (h.canvas) this.updatePanel(h, h.canvas);
     }
+  }
+
+  /**
+   * What the renderer holds on the GPU now (issue #226): textures and their
+   * bytes by kind, as allocated (not as the driver may pad them).
+   */
+  gpuStats() {
+    const panelBytes = [...this._panels].reduce((a, h) => a + (h.size ? h.size[0] * h.size[1] * 4 : 0), 0);
+    const mc = this.maskCapacity;
+    const maskBytes = mc ? mc[0] * mc[1] * mc[2] : 0;
+    const labelBytes = this.labelTexSize ? this.labelTexSize[0] * this.labelTexSize[1] * 4 : 0;
+    const vol = this.textureBytes || 0;
+    const macro = this.macroDims ? this.macroDims[0] * this.macroDims[1] * this.macroDims[2] * 4 : 0;
+    return { panels: this._panels.size, panelBytes, maskBytes, labelBytes, volumeBytes: vol, macroBytes: macro,
+      totalBytes: panelBytes + maskBytes + labelBytes + vol + macro + 256 * 4 };
   }
 
   setColormap(name) {
@@ -363,6 +445,13 @@ export class Renderer {
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     this.dims = dims;
+    // A mask texture grown for a larger cube is given back (the next
+    // selection grows it again, to this cube's grid at most).
+    const mc = this.maskCapacity;
+    if (mc && (mc[0] > w || mc[1] > h || mc[2] > d) && !this.mask) {
+      this.maskCapacity = null;
+      this._uploadMask(new Uint8Array(1), [1, 1, 1]);
+    }
     this.encoding = encoding;
     this.cell = cell;
     this.macroDims = macro.dims;
@@ -370,16 +459,29 @@ export class Renderer {
     return { uploadMs: t1 - t0, macroMs: t2 - t1, textureBytes: this.textureBytes };
   }
 
+  /**
+   * The selection mask into its texture. Its storage is kept and only grown
+   * (to maskCapacityFor's rounded size, never past the cube's own grid):
+   * each new selection is a sub-image upload into it, not a new allocation
+   * (issue #226: fast repeated selections re-specified it every time). The
+   * shader reads only [origin, origin + dims), so what lies beyond is never seen.
+   */
   _uploadMask(data, dims) {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_3D, this.maskTex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, dims[0], dims[1], dims[2], 0, gl.RED, gl.UNSIGNED_BYTE, data);
-    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    for (const k of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) {
-      gl.texParameteri(gl.TEXTURE_3D, k, gl.CLAMP_TO_EDGE);
+    const cap = this.maskCapacity;
+    if (!cap || dims[0] > cap[0] || dims[1] > cap[1] || dims[2] > cap[2]) {
+      const want = maskCapacityFor(dims, cap, this.dims);
+      gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, want[0], want[1], want[2], 0, gl.RED, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      for (const k of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) {
+        gl.texParameteri(gl.TEXTURE_3D, k, gl.CLAMP_TO_EDGE);
+      }
+      this.maskCapacity = want;
     }
+    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, dims[0], dims[1], dims[2], gl.RED, gl.UNSIGNED_BYTE, data);
   }
 
   /** The selection on the drawn grid (selection.reduceMask's answer), or null
@@ -403,8 +505,45 @@ export class Renderer {
       arr.set([...s.a, ...s.color, ...s.b, ...s.color], i * 14);
     });
     gl.bindBuffer(gl.ARRAY_BUFFER, target.buf);
-    gl.bufferData(gl.ARRAY_BUFFER, arr, gl.DYNAMIC_DRAW);
+    // The buffer's storage is kept while it is large enough (the controllers'
+    // lines are rebuilt every frame).
+    if (arr.byteLength > (target.capacity || 0)) {
+      target.capacity = Math.max(arr.byteLength, 2 * (target.capacity || 0), 4096);
+      gl.bufferData(gl.ARRAY_BUFFER, target.capacity, gl.DYNAMIC_DRAW);
+    }
+    if (arr.byteLength) gl.bufferSubData(gl.ARRAY_BUFFER, 0, arr);
     target.count = segments.length * 2;
+  }
+
+  /** The controllers and hands of this frame (models.js meshes, world space). */
+  setMesh(arr) {
+    const gl = this.gl;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.meshBuf);
+    const data = arr instanceof Float32Array ? arr : new Float32Array(arr);
+    if (data.byteLength > this.meshCapacity) {
+      this.meshCapacity = Math.max(data.byteLength, 2 * this.meshCapacity, 65536);
+      gl.bufferData(gl.ARRAY_BUFFER, this.meshCapacity, gl.DYNAMIC_DRAW);
+    }
+    if (data.byteLength) gl.bufferSubData(gl.ARRAY_BUFFER, 0, data);
+    this.meshCount = Math.floor(data.length / MESH_STRIDE);
+  }
+
+  /** The mesh of this frame for one eye, with depth among its own triangles. */
+  drawMesh(view) {
+    const gl = this.gl;
+    if (!this.meshCount) return;
+    const { u } = this.meshProg;
+    gl.useProgram(this.meshProg.p);
+    gl.uniformMatrix4fv(u.uVP, false, M.multiply(view.proj, view.view));
+    gl.uniform3fv(u.uEye, M.transformPoint(M.invert(view.view), [0, 0, 0]));
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.depthMask(true);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.bindVertexArray(this.meshVao);
+    gl.drawArrays(gl.TRIANGLES, 0, this.meshCount);
+    gl.disable(gl.DEPTH_TEST);
   }
 
   /**
@@ -417,13 +556,18 @@ export class Renderer {
     const rowH = 40, pad = 6, W = 1024;
     const rows = Math.max(1, labels.length);
     const H = Math.min(4096, 2 ** Math.ceil(Math.log2(rows * rowH)));
-    const canvas = (typeof OffscreenCanvas !== 'undefined') ? new OffscreenCanvas(W, H)
-      : Object.assign(document.createElement('canvas'), { width: W, height: H });
+    // One canvas, kept (and resized only when the atlas needs more rows).
+    let canvas = this._labelCanvas;
+    if (!canvas || canvas.width !== W || canvas.height !== H) {
+      canvas = (typeof OffscreenCanvas !== 'undefined') ? new OffscreenCanvas(W, H)
+        : Object.assign(document.createElement('canvas'), { width: W, height: H });
+      this._labelCanvas = canvas;
+    }
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, W, H);
     ctx.font = `${rowH - 2 * pad}px -apple-system, system-ui, sans-serif`;
     ctx.textBaseline = 'middle';
-    const verts = [];
+    const cells = [];
     labels.forEach((l, i) => {
       const y0 = i * rowH;
       if (y0 + rowH > H) return;
@@ -432,31 +576,43 @@ export class Renderer {
       ctx.shadowColor = 'rgba(0,0,0,0.9)';
       ctx.shadowBlur = 4;
       ctx.fillText(l.text, pad, y0 + rowH / 2);
-      const u0 = 0, u1 = (wpx + 2 * pad) / W, v0 = y0 / H, v1 = (y0 + rowH) / H;
-      const hgt = l.height || 0.025, wid = hgt * (wpx + 2 * pad) / rowH;
-      const ax = l.anchor === 'right' ? -wid : l.anchor === 'center' ? -wid / 2 : 0;
-      const corners = [[ax, -hgt / 2, u0, v1], [ax + wid, -hgt / 2, u1, v1], [ax + wid, hgt / 2, u1, v0],
-        [ax, -hgt / 2, u0, v1], [ax + wid, hgt / 2, u1, v0], [ax, hgt / 2, u0, v0]];
-      for (const [ox, oy, u, v] of corners) verts.push(...l.pos, ox, oy, u, v);
+      cells[i] = { u0: 0, u1: (wpx + 2 * pad) / W, v0: y0 / H, v1: (y0 + rowH) / H, widthPx: wpx + 2 * pad, rowPx: rowH };
     });
     gl.bindTexture(gl.TEXTURE_2D, this.labelTex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    if (!this.labelTexSize || this.labelTexSize[0] !== W || this.labelTexSize[1] !== H) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      this.labelTexSize = [W, H];
+    } else {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+    }
+    const verts = labelVertices(labels, cells);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.labelBuf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.DYNAMIC_DRAW);
-    this.labelCount = verts.length / 7;
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+    this.labelCount = verts.length / LABEL_STRIDE;
   }
 
   /** A panel's texture (HUD, panels, message card): an opaque handle for
-   *  updatePanel and drawPanel, kept valid across a context loss. */
+   *  updatePanel and drawPanel, kept valid across a context loss. Its
+   *  `version` counts the canvases uploaded (the composition layers copy a
+   *  canvas only when it changed). */
   createPanel() {
-    const h = { tex: this._panelTexture(), canvas: null };
+    const h = { tex: this._panelTexture(), canvas: null, size: null, version: 0 };
     this._panels.add(h);
     return h;
+  }
+
+  /** A panel no longer used: its texture goes (issue #226). */
+  releasePanel(h) {
+    if (!h || !this._panels.has(h)) return;
+    this._panels.delete(h);
+    try { this.gl.deleteTexture(h.tex); } catch { /* lost */ }
+    h.tex = null;
+    h.size = null;
   }
 
   _panelTexture() {
@@ -470,12 +626,25 @@ export class Renderer {
     return tex;
   }
 
+  /**
+   * The canvas into the panel's texture. Its storage is allocated once per
+   * canvas size and then written in place (issue #226: re-specifying it at
+   * every redraw, up to 30 times a second for the menu, made the driver
+   * allocate new storage for each redraw).
+   */
   updatePanel(handle, canvas) {
     const gl = this.gl;
     handle.canvas = canvas;
+    handle.version = (handle.version || 0) + 1;
     gl.bindTexture(gl.TEXTURE_2D, handle.tex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+    const w = canvas.width, h = canvas.height;
+    if (!handle.size || handle.size[0] !== w || handle.size[1] !== h) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+      handle.size = [w, h];
+    } else {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+    }
   }
 
   beginFrame() {
@@ -583,14 +752,16 @@ export class Renderer {
     this.drawLines(view, M.identity(), this.tmpLines);
   }
 
-  drawLabels(view, model, scale) {
+  /** The cube's labels for one eye, fixed to the cube (labels.js). `scale`
+   *  is no longer used: the model matrix scales them. */
+  drawLabels(view, model) {
     const gl = this.gl;
     if (!this.labelCount) return;
     const { u } = this.label;
     gl.useProgram(this.label.p);
-    gl.uniformMatrix4fv(u.uMV, false, M.multiply(view.view, model));
-    gl.uniformMatrix4fv(u.uP, false, view.proj);
-    gl.uniform1f(u.uScale, scale);
+    const mv = M.multiply(view.view, model);
+    gl.uniformMatrix4fv(u.uMVP, false, M.multiply(view.proj, mv));
+    gl.uniform3fv(u.uEye, M.transformPoint(M.invert(mv), [0, 0, 0]));
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.labelTex);
     gl.uniform1i(u.uTex, 0);

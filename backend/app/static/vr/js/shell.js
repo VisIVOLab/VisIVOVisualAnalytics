@@ -8,7 +8,7 @@
 // cardForFrame (the card to draw) and xrFrame (the frame-rate summary).
 
 import { Lifecycle, PAGE_VR_API, classifyFailure, keepRecoveryPending, noticeFor, isLoopback, isHeadsetBrowser } from './lifecycle.js';
-import { NoticeCenter, cardLayout, drawCard, cardModel, cardNeedsMove, parkedCardModel, renderDom, CARD_PX, CARD_SIZE } from './notice.js';
+import { NoticeCenter, cardLayout, drawCard, cardModel, cardNeedsMove, parkedCardModel, guideCardModel, renderDom, CARD_PX, CARD_SIZE } from './notice.js';
 import { guideNotice, guideStep, guideText } from './onboarding.js';
 import { DiagLog, LogSender, diagnosticsReport, fpsSummary } from './diagnostics.js';
 import { PanelPointer, rayPanel } from './vr-panel.js';
@@ -211,13 +211,15 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
     // (the menu's Help → Guide brings it back).
     if (id === 'hide') { if (cur) { notices.hide(cur.id); log('debug', 'notice-hidden', cur.id); } render(); return; }
     if (id === 'retry') { life.retryNow(); ctx.onRetry(); return; }
-    if (id === 'reload') { win.location.reload(); return; }
+    if (id === 'reload') { if (ctx.beforeReload) ctx.beforeReload(); win.location.reload(); return; }
     if (id === 'exit-vr') { ctx.exitVR(); return; }
     if (id === 'enter-vr') { if (cur) notices.dismiss(cur.id); ctx.enterVR(); render(); return; }
     if (id === 'reopen') { lastRecoverAt = 0; recover('user'); }
     if (id === 'new-code') { if (ctx.exitVR && inVR()) ctx.exitVR(); if (ctx.newCode) ctx.newCode(); }
     // The measurement run's card (issue #224).
     if (id.startsWith('measure-') && ctx.onAction) ctx.onAction(id);
+    // One active page (issue #226): this window takes over again.
+    if (id === 'take-over' && ctx.onAction) ctx.onAction(id);
   }
 
   // ── The 2-D banner ──────────────────────────────────────────────────────
@@ -256,7 +258,12 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
       card.pointer.layout = card.layout;
       if (moveIt) { card.model = null; card.since = performance.now(); card.parked = false; }
     }
-    if (n.sticky && !card.parked && performance.now() - card.since > (Number.isFinite(n.parkAfterMs) ? n.parkAfterMs : PARK_AFTER_MS)) {
+    if (n.level === 'guide') {
+      // The guide (issue #226): beside the cube on the primary hand's side,
+      // never in front of the menu, the labels or the cube.
+      const place = ctx.guidePlacement ? ctx.guidePlacement() : {};
+      if (place.cube || !card.model || cardNeedsMove(card.model, head, 100, 2.5)) card.model = guideCardModel(head, place);
+    } else if (n.sticky && !card.parked && performance.now() - card.since > (Number.isFinite(n.parkAfterMs) ? n.parkAfterMs : PARK_AFTER_MS)) {
       // Aside: 40° to the left and lower, where it stays (it is still there to
       // read and press, the cube is free).
       card.parked = true;
@@ -271,7 +278,7 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
       renderer().updatePanel(card.tex, card.canvas);
       card.key = key;
     }
-    return { model: card.model, tex: card.tex, size: CARD_SIZE };
+    return { model: card.model, tex: card.tex, size: CARD_SIZE, level: n.level, id: n.id };
   }
 
   /** The right ray on the card (world space), the trigger; true when the card takes it. */

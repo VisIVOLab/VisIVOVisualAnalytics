@@ -49,3 +49,6 @@ pre { margin: 0; white-space: pre-wrap; font: 12px/1.35 ui-monospace, Menlo, mon
 @media (max-width: 760px) { #notice { top: auto; bottom: 8px; } }
 input[type=number] { background: #11151d; color: var(--fg); border: 1px solid var(--line);
   border-radius: 4px; padding: 4px 6px; font: inherit; width: 6em; }
+/* One active page (#226): the paused page says so next to Enter VR. */
+.stood-down { background: #2a1d10; border: 1px solid #ffd27a; border-radius: 6px; padding: 6px 8px; align-items: center; }
+.stood-down[hidden] { display: none; }

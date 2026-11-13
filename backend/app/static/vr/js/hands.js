@@ -13,6 +13,7 @@
 // thin WebXR layer.
 
 import * as M from './mat4.js';
+import { HAND_JOINTS } from './models.js';
 
 /** The joints the gestures read (WebXR Hand Input names). */
 export const JOINTS = [
@@ -169,7 +170,9 @@ export class RayStabilizer {
  *  when the hand is not tracked this frame. */
 export function readJoints(frame, hand, ref) {
   const out = {};
-  for (const name of JOINTS) {
+  // Every joint the browser tracks (issue #226: the hand is drawn whole,
+  // models.js handMesh); the gestures read the JOINTS among them.
+  for (const name of HAND_JOINTS) {
     const space = hand.get(name);
     if (!space) continue;
     const pose = frame.getJointPose(space, ref);

@@ -34,14 +34,20 @@ to run on a Quest 3.
   headset too, see [Controls](controls.md)), the page lowers it when frames
   are missed and raises it back
   slowly, never above this value; while you hold the cube it drops to 60 %.
-  When the governor has already lowered it to 0.5 or less (or to its own
-  floor, 0.25) and more than 10 % of the frames are
-  still missed over 3 s, the page makes the **eye buffer** smaller, one step
-  at a time through the scale factors 1.25, 1, 0.85 and 0.7 (absolute
-  values of *Resolution*, starting below the one chosen; never below 0.7),
-  and does not raise it again in that VR session (each change costs a hitch);
-  the next *Enter VR* starts from the chosen resolution. The menu and the
-  [numbers on the wrist](controls.md#the-numbers-on-the-wrist) say so.
+  Samples per voxel are given up first, all the way to the governor's floor
+  (0.25). Only when they are at that floor and more than 10 % of the frames are
+  still missed over 3 s does the page make the **eye buffer** smaller, as a
+  last resort: one step at a time through the scale factors 1.25, 1 and 0.85
+  (absolute values of *Resolution*, starting below the one chosen; **never
+  below 0.85**), and it does not raise it again in that VR session (each
+  change costs a hitch); the next *Enter VR* starts from the chosen
+  resolution. The menu and the
+  [numbers on the wrist](controls.md#the-numbers-on-the-wrist) say so, and the
+  diagnostics' *quality* line and the measurement record's *xr-start* event
+  name the policy (*72 Hz; samples/voxel first (1 down to 0.25), then the eye
+  buffer as a last resort (1× down to 0.85× at most)*). Until #226 the eye
+  buffer went down to 0.7× from 0.5 samples per voxel on: on the first Quest 3
+  session that made the text and the cube blurry for about 89 fps at 90 Hz.
 - **Memory budget**: before the reduced cube is read, the page checks that it
   fits: the GPU's 3-D texture side, and the texture's size against what this
   device gives one cube (a headset: 256 MiB with 8 GB of memory, 128 MiB with
@@ -51,8 +57,26 @@ to run on a Quest 3.
   is a conservative figure, not yet measured on a Quest 3.
 - **Resolution**: the headset's eye-buffer scale (`framebufferScaleFactor`),
   **Foveation**: the Quest's fixed foveated rendering, **Refresh**: the display
-  rate asked of the headset (72, 90 or 120 Hz, if it offers it). Set them
-  before entering VR.
+  rate asked of the headset (**72 Hz by default**, or 90 or 120 Hz, if it
+  offers it: 72 Hz leaves 13.9 ms a frame, so the cube keeps more samples per
+  voxel). Set them before entering VR.
+- **Text in the headset**: the hand menu, the controller labels, the cursor
+  readout, the result windows, the numbers on the wrist and the message card
+  are WebXR composition layers (quad layers) where the browser has them (Quest
+  Browser does): the headset's compositor draws them at the display's own
+  resolution, so they stay sharp whatever eye-buffer scale the governor
+  chose. Each is the same canvas, at the same place and size, as the panel the
+  page would draw itself, so pointing at them works the same way. Where the
+  browser has no layers, or a layer fails, the page draws them in the scene as
+  before (the diagnostics' *text in the headset* line says which);
+  `?nolayers` in the address forces that, `?layerflip=0` draws the layers'
+  text without flipping it (should a browser show it upside down). Layers are
+  drawn over the scene: where a hand or a ray passes in front of a panel, the
+  panel stays on top. A layer's pixels are copied only when its canvas
+  changed; its place every frame. On the Mac, with a WebXR stand-in
+  (`validation/vr_lifecycle.mjs --xrfake`), the page's CPU time for a stereo
+  frame is about the same with layers and without (0.77–0.87 and 0.65–0.82
+  ms mean over three runs).
 
 The refinement's own settings are under
 [Refinement](#refinement-full-quality-frames-from-the-backend); which settings
@@ -880,6 +904,43 @@ about 8 s later), the WebGL context lost and restored with
 and API, the guide's buttons pressed through a ray. Not yet on a Quest 3: see
 [Recovery and diagnostics, with the headset](#recovery-and-diagnostics-with-the-headset).
 
+### Repeated selections and GPU memory (#226)
+
+On the Quest 3 the WebGL context was lost after about ten Kinematic Lasso
+picks and spectra in about five seconds and a mask statistics request, and
+was not given back. The same pattern on the Mac (headless Chrome, ANGLE Metal,
+M5 Max; `validation/vr_lifecycle.mjs --alloc`, a 350 × 350 × 158 synthetic
+cube binned 2 × 2 × 1; four bursts of 20 alternating lasso picks and spectra in
+5 s, each ending with a lasso and its statistics; WebGL counted by a wrapper
+installed before the page's scripts):
+
+| | before #226 | after |
+|---|---|---|
+| live textures after each burst | 14, 14, 14, 14 | 14, 14, 14, 14 |
+| texture bytes held | 15.2 MB, constant | 15.6 MB, constant |
+| texture storage re-specified (`texImage2D/3D`) during bursts 2–4 | 244 times, 661 MB | 0 |
+| GPU process footprint (macOS `footprint`, noisy) | 316–532 MB | 335–386 MB |
+
+No texture or buffer was made per action and not freed: the selection mask,
+the result window, the readout and label cards, the menu and the product
+planes each have one texture. What did grow with the pace of actions was the
+churn: every redraw of a panel (the menu up to 30 times a second, the readout
+15, the result window at each state of a pick) and every new selection mask
+gave its texture new storage, about 45 MB a second here, which a driver may
+hold until the frames in flight are done. Now a panel's storage is allocated
+once per canvas size and each redraw writes into it; the mask texture grows
+to a rounded capacity (never past the cube's grid) and each selection is
+written into it; the label atlas reuses one canvas and one storage; the
+controllers' lines reuse their buffer; and a newer pick, a change of tool or
+Clear cancels the requests of the one before (the lasso's mask, its
+statistics, the seed's sub-volume), so fast picks do not pile up downloads.
+The check that later bursts re-specify (almost) no storage, and add no live
+WebGL object, runs with `--regressions`. Whether this was the Quest's cause
+can only be told on the headset ([the check](#the-first-quest-3-session-226)).
+When the browser does not give the context back within 10 s, the card says
+*The graphics did not come back* with *Reload page*, which now reopens the
+cube on show by its path.
+
 ### Menu and panel drawing cost
 
 These were measured on the earlier panel in the headset, whose drawing code
@@ -943,6 +1004,56 @@ yet fast.
 These checks need the headset; the page shows the numbers to read. Note each
 value and whether each step behaves as described. How to work the hand menu,
 the modes and the tools is in [Controls and the hand menu](controls.md).
+
+### The first Quest 3 session (#226)
+
+The first session on a Quest 3 (Quest Browser 154, Adreno 740, HCG 44 binned
+3 × 3 × 1, over USB) found eight things to fix. Check each again, with
+*record measurements* on (Settings → *Record measurements*) so the numbers
+come back with the record.
+
+1. **Frame rate and quality.** Enter VR with HCG 44 at the default settings.
+   The numbers on the wrist must read *display 72 Hz*; the eye buffer
+   *3360×1760 scale 1* (or, after a long struggle, *2856×1496 scale 0.85*,
+   never smaller); note FPS, *missed %* and *samples/voxel* while still and
+   while turning the cube. Does the volume look less grainy than at 90 Hz?
+   **Copy diagnostics**: the *quality* line names the policy (*72 Hz;
+   samples/voxel first … then the eye buffer as a last resort*).
+2. **Sharp text.** The diagnostics' *text in the headset* line must say
+   *quad layers*. Open the menu, point at the cube for the readout, take a
+   spectrum: menu, labels, readout, numbers and the result window must be
+   crisp (compare with `?nolayers` in the address, which draws them in the
+   scene as before). All text must be upright and not mirrored (if it is
+   upside down, report it and try `?layerflip=0`). The ray must still press
+   the menu's buttons and move a window by its title bar.
+3. **Labels fixed to the cube.** Walk around the cube and turn your head: the
+   tick labels and axis titles must not turn towards you; they move only when
+   you turn the cube (grip). From the start position the RA and Dec labels
+   read on the front face, the velocity labels at 45° on the right-hand edge.
+   From behind, the labels read the right way round, not mirrored.
+4. **The readout.** Point at the source at arm's length and at 2 m: can you
+   read every line of the card without leaning in? (Its body text is at least
+   0.9° high from 30 cm to 4 m, white on near-black.)
+5. **One window.** With the page open in the Quest Browser, press *Open on
+   Headset* on the Mac again (or open the page a second time): the older
+   window must show *Open in another window*, its *Enter VR* greyed out; the
+   new one works. *Use this window* in the old one gives it back (and the
+   other one stands down). The same with two windows of the public loader.
+6. **The guide.** Clear the page's data (or a fresh browser profile) and open
+   the page: the guide is on the 2-D page with *Got it*, and Enter VR does not
+   show it. In VR, Help → Guide: the card stands beside the cube on the
+   primary hand's side, never in front of the cube, the menu or the labels
+   (open the menu next to it: the menu is drawn over it).
+7. **Controllers and hands.** With controllers: two solid controllers
+   (orange primary, blue secondary) with a ring, a stick and a trigger that
+   lights while pulled. Put them down: both hands drawn as joints and bones,
+   the thumb and index tips yellow while pinching.
+8. **No lost context.** Lasso tool: ten picks and spectra as fast as you can
+   (about 5 s), then a lasso and its statistics; repeat three times. The
+   graphics must not reset. The wrist's *GPU textures* line must stay the same
+   after the first burst (note its MB). If the graphics do reset: wait 10 s;
+   the card says *The graphics did not come back* with *Reload page*; after
+   *Reload page* the cube must open again by itself.
 
 ### Recording measurements, with the headset (#224)
 
@@ -1214,9 +1325,10 @@ keep the `transport:` line.
 
 ### Recovery and diagnostics, with the headset
 
-1. Enter VR for the first time: the controls guide stands in front of you;
-   *Next*, *Back* and *Close* work with the primary trigger; enter VR again:
-   it is not shown; the hand menu's Help tab shows it again.
+1. Open the page for the first time: the controls guide is on the 2-D page
+   with *Got it*; Enter VR does not show it. In VR, the hand menu's Help →
+   Guide shows it beside the cube (see [#226](#the-first-quest-3-session-226));
+   *Next*, *Back* and *Close* work with the primary trigger.
 2. In VR, unplug the USB cable: within 5 s the card says *Backend not
    reachable* and names *adb reverse* and *Open on Headset*, while the cube
    still moves with your hands. Plug it back and press *Open on Headset* on

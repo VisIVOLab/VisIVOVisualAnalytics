@@ -4,7 +4,8 @@
 //
 // The first stage is volume.js Governor (samples per voxel, every frame).
 // When that is already at its floor and frames are still missed, the eye
-// buffer is made smaller, one step at a time, at most every few seconds; it
+// buffer is made smaller, one step at a time (never below 0.85×, issue #226),
+// at most every few seconds; it
 // is never raised again within the session (a layer swap costs a hitch, and
 // an up-and-down oscillation would cost one every few seconds); the next
 // entry into VR starts again from the chosen resolution.
@@ -13,9 +14,22 @@
 
 /** The eye-buffer scale factors (framebufferScaleFactor, absolute: 1 is the
  *  headset's recommended resolution) the governor steps down through, from
- *  the one chosen on the page. */
-export const EYE_SCALE_STEPS = [1.25, 1, 0.85, 0.7];
-export const EYE_SCALE_FLOOR = 0.7;
+ *  the one chosen on the page. Issue #226: the first Quest 3 session showed
+ *  0.7× made the text and the cube blurry for a few frames per second gained;
+ *  the eye buffer is now the last resort and never goes below 0.85×. */
+export const EYE_SCALE_STEPS = [1.25, 1, 0.85];
+export const EYE_SCALE_FLOOR = 0.85;
+
+/** The display rate the page asks for by default (issue #226): 72 Hz leaves
+ *  13.9 ms a frame, so the cube keeps more samples per voxel than at 90 Hz. */
+export const DEFAULT_RATE_HZ = 72;
+
+/** The order the governor gives quality up in, for the diagnostics and the
+ *  measurement records (issue #226). */
+export function qualityPolicy({ targetHz, spvMin = 0.25, spvChosen = 1, eyeChosen = 1 } = {}) {
+  return `${targetHz ? `${Math.round(targetHz)} Hz` : 'display rate'}; samples/voxel first (${spvChosen} down to ${spvMin}), `
+    + `then the eye buffer as a last resort (${eyeChosen}× down to ${Math.min(eyeChosen, EYE_SCALE_FLOOR)}× at most)`;
+}
 
 export class EyeBufferGovernor {
   constructor({ start = 1, holdMs = 3000, missLimit = 0.1, steps = EYE_SCALE_STEPS } = {}) {
@@ -67,14 +81,13 @@ export class EyeBufferGovernor {
 }
 
 /**
- * Has the samples-per-voxel governor (volume.js Governor) gone as low as the
- * eye-buffer stage waits for? At its own floor, or lowered below what was
- * chosen and to 0.5 or less. A chosen value already at 0.5 or less is not
- * "at the floor" until the governor actually lowers it.
+ * Has the samples-per-voxel governor (volume.js Governor) gone as low as it
+ * can? Only then may the eye-buffer stage act (issue #226: samples per voxel
+ * are given up first, all the way to their floor; until #226 the eye buffer
+ * was lowered from 0.5 samples per voxel on).
  */
-export function spvAtFloor({ value, min, max }) {
-  if (value <= min * 1.02) return true;
-  return value <= 0.5 + 1e-6 && value < max - 1e-6;
+export function spvAtFloor({ value, min }) {
+  return value <= min * 1.02;
 }
 
 /**

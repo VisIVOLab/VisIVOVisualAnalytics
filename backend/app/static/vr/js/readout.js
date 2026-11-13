@@ -45,18 +45,55 @@ export function readoutLines(modeText, p, { info, cube, texScale } = {}) {
   return out;
 }
 
-export const READOUT_PX = [640, 168];
-export const READOUT_SIZE = [0.16, 0.042];
+// The readout card (issue #226, point 4): on the Quest its 30-pixel text on a
+// 4-cm card was under half a degree high, a blur at arm's length. It is now
+// sized by the angle its text makes at the eye: the body text's em is at
+// least READOUT_MIN_DEG high at every distance from READOUT_NEAR to
+// READOUT_FAR (the card grows with distance), bright on a near-opaque dark
+// card with a light edge (contrast over 15:1), and drawn as a composition
+// layer where the browser has them (xr-layers.js), so the compositor shows it
+// at the display's own resolution.
+export const READOUT_PX = [720, 236];
+/** The card's size in metres at 1 m (scaled by readoutScale with distance). */
+export const READOUT_SIZE = [0.288, 0.0944];
+/** Text sizes on the card's canvas (pixels): the mode line and the body lines. */
+export const READOUT_FONT = { title: 34, body: 40, pitch: 52, top: 30 };
+export const READOUT_MIN_DEG = 0.9;
+export const READOUT_NEAR = 0.3;
+export const READOUT_FAR = 4;
+export const READOUT_COLORS = { bg: [6, 8, 12], bgPinned: [34, 26, 8], text: [255, 255, 255], title: [255, 210, 122], edge: [159, 208, 255] };
 export const LABEL_PX = [512, 256];
 export const LABEL_SIZE = [0.12, 0.06];
 
+/** The card's scale at `dist` metres from the eye: the same angle from near to far. */
+export function readoutScale(dist) {
+  return Math.min(READOUT_FAR, Math.max(READOUT_NEAR, dist));
+}
+
+/** The angle (degrees) at the eye of a font of `fontPx` canvas pixels on a
+ *  card of `cardPx` pixels and `cardM` metres high, scaled by `scale`, at `dist`. */
+export function textAngleDeg(fontPx, cardPx, cardM, scale, dist) {
+  const h = (fontPx / cardPx) * cardM * scale;
+  return (2 * Math.atan(h / 2 / Math.max(1e-6, dist)) * 180) / Math.PI;
+}
+
+/** WCAG contrast ratio of two sRGB colours [r, g, b] (0..255). */
+export function contrastRatio(a, b) {
+  const lum = (c) => {
+    const [r, g, bb] = c.map((v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bb;
+  };
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 /**
  * The readout card's pose: just above the point `at` (world), facing the eye,
- * scaled with distance so it reads the same (about 0.16 m wide at 1 m).
+ * scaled with distance so its text keeps its angular size (readoutScale).
  */
 export function readoutModel(at, eye) {
-  const dist = Math.max(0.25, Math.hypot(at[0] - eye[0], at[1] - eye[1], at[2] - eye[2]));
-  const s = Math.min(2.5, dist);
+  const dist = Math.hypot(at[0] - eye[0], at[1] - eye[1], at[2] - eye[2]);
+  const s = readoutScale(dist);
   const p = [at[0], at[1] + (READOUT_SIZE[1] * s) / 2 + 0.012 * s, at[2]];
   return M.multiply(faceEye(p, eye), M.scaling(s));
 }
@@ -83,14 +120,19 @@ export function labelModel(grip, eye, lift = 0) {
 /** The readout card. */
 export function drawReadout(c, lines, pinned = false) {
   const [W, H] = READOUT_PX;
+  const rgb = (v, a = 1) => `rgba(${v[0]}, ${v[1]}, ${v[2]}, ${a})`;
+  const F = READOUT_FONT;
   c.clearRect(0, 0, W, H);
-  c.fillStyle = pinned ? 'rgba(40, 32, 12, 0.88)' : 'rgba(10, 14, 22, 0.82)';
+  c.fillStyle = rgb(pinned ? READOUT_COLORS.bgPinned : READOUT_COLORS.bg, 0.95);
   c.fillRect(0, 0, W, H);
+  c.strokeStyle = rgb(pinned ? READOUT_COLORS.title : READOUT_COLORS.edge, 0.9);
+  c.lineWidth = 4;
+  c.strokeRect(2, 2, W - 4, H - 4);
   c.textBaseline = 'middle';
   lines.slice(0, 4).forEach((l, i) => {
-    c.fillStyle = i === 0 ? '#ffd27a' : '#e6e9ef';
-    c.font = i === 0 ? 'bold 28px -apple-system, system-ui, sans-serif' : '30px ui-monospace, Menlo, monospace';
-    c.fillText(l, 14, 24 + i * 40);
+    c.fillStyle = rgb(i === 0 ? READOUT_COLORS.title : READOUT_COLORS.text);
+    c.font = i === 0 ? `bold ${F.title}px -apple-system, system-ui, sans-serif` : `600 ${F.body}px ui-monospace, Menlo, monospace`;
+    c.fillText(l, 16, F.top + i * F.pitch, W - 32);
   });
 }
 

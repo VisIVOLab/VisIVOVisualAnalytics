@@ -8,7 +8,7 @@
 // diagnostics text and the backend log scrubbed of the token.
 //
 //   node validation/vr_lifecycle.mjs [--smoke] [--regressions] [--menu] [--measure] [--python PATH] [--chrome PATH]
-//        [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--out DIR] [--cube FILE]
+//        [--alloc] [--xrfake] [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--out DIR] [--cube FILE]
 //
 // --smoke is what CI runs (tests.yml): start, load, first frame drawn, no page
 // error, versions agree. Exit code 0 when every check passed. The tokens are
@@ -43,6 +43,8 @@ import { randomBytes } from 'node:crypto';
 import { runRegressions } from './vr_regressions.mjs';
 import { runMenuChecks } from './vr_menu.mjs';
 import { runMeasureChecks } from './vr_measure.mjs';
+import { runAllocChecks, GL_PROBE } from './vr_alloc.mjs';
+import { XR_FAKE, runXRFakeChecks, runSinglePageChecks, runDelayedTakeoverCheck, runReloadCheck } from './vr_xr_fake.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => {
   if (v.startsWith('--')) a.push([v.slice(2), all[i + 1] && !all[i + 1].startsWith('--') ? all[i + 1] : true]);
@@ -52,7 +54,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..');
 const PAIRED = !!args.paired;
 const MEASURE = !!args.measure;
-const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu;
+// --alloc (issue #226): the repeated-selection allocation run alone (also part of --regressions).
+const ALLOC = !!args.alloc || !!args.regressions;
+// --xrfake (issue #226): the headset path through a WebXR stand-in, and one active page (also part of --regressions).
+const XRFAKE = (!!args.xrfake || !!args.regressions) && !args.paired;
+const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake;
 const PY = args.python || process.env.VISIVO_PYTHON || 'python3';
 // `--chrome` given without a value (an empty shell variable) parses as true:
 // that is "not found", said at once rather than as a failed spawn later.
@@ -545,6 +551,10 @@ try {
   await c.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
   await c.send('Page.setWebLifecycleState', { state: 'active' }).catch(() => {});
   await c.send('Runtime.enable');
+  // WebGL objects and their bytes, counted from before the page's scripts run.
+  if (ALLOC) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: GL_PROBE });
+  // A WebXR stand-in, active only on an address with ?xrfake.
+  if (XRFAKE) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: XR_FAKE });
   // A Quest's browser, so the page words its messages for the headset over USB.
   if (!SMOKE) await c.send('Emulation.setUserAgentOverride', { userAgent: QUEST_UA });
   if (PAIRED) {
@@ -589,10 +599,28 @@ try {
   check('no page error', !errs.length && !c.pageErrors.length, [...errs, ...c.pageErrors].join(' / '));
 
   if (args.regressions || args.menu) await runMenuChecks({ c, check, waitFor, results });
+  if (ALLOC) await runAllocChecks({ c, check, waitFor, results, chromePid: chrome ? chrome.pid : 0, assert: !args['alloc-no-assert'] });
   if (args.regressions) await runRegressions({ c, check, waitFor, api, python: PY, makeCube, token: tokenA, cube });
   // Before the paired checks, which end the pairing.
   if (MEASURE) await runMeasureChecks({ c, check, waitFor, results, out: OUT, python: PY, secrets: [tokenA, tokenB], paired: PAIRED });
   if (PAIRED) await pairedChecks();
+  if (XRFAKE) {
+    // The headset path with composition layers, then without (the fallback),
+    // each on a fresh page with the cube loaded again; then two tabs.
+    for (const [variant, expectLayers] of [['xrfake', true], ['xrfake=nolayers', false]]) {
+      const url = `${BASE}/vr/?debug&refine=0&${variant}#token=${encodeURIComponent(tokenA)}`;
+      await c.send('Page.navigate', { url });
+      await waitFor(c, `!!window.__vrShell && window.__vrShell.life.state === 'ok'`, 30000);
+      await c.evaluate(`(() => { const $ = (id) => document.getElementById(id); $('path').value = ${JSON.stringify(cube)}; $('load').click(); })()`);
+      const ok = await waitFor(c, `!!(window.__vrState.open && window.__vrState.cube && /upload/.test(document.getElementById('load-status').textContent))`, 60000);
+      if (!ok.value) { check(`xrfake ${variant}: cube loaded`, false); continue; }
+      await runXRFakeChecks({ c, check, waitFor, label: expectLayers ? 'layers' : 'no layers', expectLayers });
+      if (expectLayers) await runDelayedTakeoverCheck({ c, check, waitFor });
+    }
+    await runReloadCheck({ c, check, waitFor, path: cube });
+    await runSinglePageChecks({ c, check, waitFor, cdpPort, connect: cdp,
+      url: `${BASE}/vr/?debug&refine=0#token=${encodeURIComponent(tokenA)}` });
+  }
 
   if (!SMOKE) {
     // ── Loads: the path a load started with, the newest load wins ─────────

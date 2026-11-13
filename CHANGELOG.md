@@ -8,6 +8,35 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: the first Quest 3 session's findings fixed (#226, part of #166 and
+  #185).** The page asks for 72 Hz by default; the frame-rate governor gives
+  up samples per voxel first, all the way to its floor, and lowers the eye
+  buffer only as a last resort and never below 0.85× (it went to 0.7× before),
+  and the diagnostics and the measurement record name that policy. The hand
+  menu, the controller labels, the cursor readout, the result windows, the
+  numbers on the wrist and the message card are WebXR composition layers (quad
+  layers through `XRWebGLBinding`, the `layers` feature asked for as optional)
+  where the browser has them, so the compositor shows them sharp at any
+  eye-buffer scale; the ray uses the same planes, and without layers they are
+  drawn in the scene as before (`?nolayers` forces that). The tick labels and
+  axis titles are fixed to the cube (no longer turned towards the head), on
+  faces that read from the start position. The cursor readout's text is at
+  least 0.9° high from 30 cm to 4 m, white on a near-opaque card. A newly
+  opened VR page tells older pages of its origin (a `BroadcastChannel`, the
+  public loader's iframe included) to stand down: they say *Open in another
+  window*, disable Enter VR, stop drawing and close their refinement, and
+  *Use this window* takes over again. The controls guide is shown on the 2-D
+  page before entering VR; in VR (Help → Guide) it stands beside the cube on
+  the primary hand's side, under the menu and the labels. Controllers are
+  drawn as small solid models made by the page and tracked hands as joints
+  and bones. Repeated selections no longer give the panels' and the selection
+  mask's textures new storage at every redraw (244 re-specifications, 661 MB,
+  over three bursts of fast picks on the Mac before; none after), superseded
+  selection requests are cancelled, and *Reload page* after a lost graphics
+  context reopens the cube. `validation/vr_lifecycle.mjs --alloc` and
+  `--xrfake` (both part of `--regressions`) check the allocation bound, the
+  headset path through a WebXR stand-in with and without layers, and the one
+  active page across two tabs.
 - **VR measurement records and a guided measurement run (#224, part of #166).**
   The VR page records a session: *record measurements* on the page, the hand
   menu's Settings → *Record measurements*, or `?record` in the address. One
