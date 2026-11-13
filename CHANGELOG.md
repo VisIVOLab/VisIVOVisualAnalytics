@@ -45,6 +45,25 @@ are preserved here unedited; the branch names they refer to are historical.
   colour step of 25 MB instead of 90 MB at its peak for 10 M rows. The colour
   bar and the reported data range stay in the table's units. NaN and -inf now
   take the map's lowest colour and +inf its highest, as on the VR page.
+- **Headset pairing by code: the backend side (#212, part of #210).**
+  `POST /v1/vr/pair` gives the desktop a code and the page address that opens
+  it, `GET /v1/vr/pair` lists pending codes and connected headsets, and
+  `DELETE /v1/vr/pair/{code_or_id}` revokes a code or disconnects a headset.
+  With `VISIVO_VR_PAIR_URL` set, the backend connects out to the pairing
+  service and answers a headset's WebRTC offer itself; the page's API
+  requests and WebSockets then reach the backend's own routes over data
+  channels, in-process, with the token added by the backend (the page never
+  has it). Responses stream with backpressure (100 MiB in 6 s with 2 MiB of
+  memory in a loopback test), requests can be cancelled, WebSocket messages
+  of any size are fragmented, and the stereo video's signalling works over
+  the bridged render socket. aiortc and PyAV come from
+  `backend/requirements-webrtc.txt`, installed in the release bundles and in
+  CI; without them pairing answers 409 `not-configured`. On Apple Silicon
+  pairing needs macOS 14 or newer (the PyAV wheel's minimum). Bundling
+  aiortc does not change the remote 3-D view: aiortc 1.10 and later have no
+  encoder factory for the NVENC patch, so such a backend keeps advertising
+  JPEG only, as before, unless `VISIVO_WEBRTC_H264=1` asks for the H.264
+  stream (then encoded in software).
 
 - **Remote point rendering keeps points far from zero apart (#206, part of
   #166).** The backend's point render session drew float32 positions, so

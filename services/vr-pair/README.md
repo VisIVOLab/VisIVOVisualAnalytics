@@ -209,7 +209,10 @@ Nothing names the server in code. To move it:
 - on each backend, change `VISIVO_VR_PAIR_URL` (and `VISIVO_VR_PAGE_URL`
   if the loader moves too, then add its origin to `VR_PAIR_ALLOWED_ORIGINS`)
   and restart the backend. A running backend keeps the address it started
-  with.
+  with;
+- in the public loader's `config.json` (`web/vr-loader/`), change
+  `pair_service` to the new address: the headset's page connects to the
+  service too.
 
 ## Tests
 
