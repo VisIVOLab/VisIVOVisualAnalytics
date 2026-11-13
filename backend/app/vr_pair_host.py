@@ -81,7 +81,17 @@ def page_url(base: str, code: str) -> str | None:
     any, replaced: the code is the only thing the page needs)."""
     if not base:
         return None
-    return f"{base.split('#', 1)[0]}#pair={code}"
+    from urllib.parse import unquote, urlsplit, urlunsplit
+    # The loader finds config.json and its scripts relative to its own
+    # address: a directory given without its trailing slash gets one (a path
+    # whose last segment names a file, such as index.html or index%2Ehtml,
+    # is kept). The base's own fragment gives way to the code.
+    parts = urlsplit(base)
+    path = parts.path
+    last = unquote(path.rsplit('/', 1)[-1])
+    if not path.endswith('/') and '.' not in last:
+        path += '/'
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, f"pair={code}"))
 
 
 def host_endpoint(url: str) -> str:

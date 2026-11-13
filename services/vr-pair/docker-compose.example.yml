@@ -8,8 +8,9 @@
 #
 # The service listens on 127.0.0.1:8765, for a reverse proxy that terminates
 # TLS in front of it (README.md, "Behind a reverse proxy"). No host name is
-# built into the service or the backend: moving the service to another server
-# means changing VISIVO_VR_PAIR_URL on each backend, and nothing else.
+# built into the service, the backend or the loader: moving the service to
+# another server means changing VISIVO_VR_PAIR_URL on each backend and
+# pair_service in the public loader's config.json.
 services:
   vr-pair:
     build: .

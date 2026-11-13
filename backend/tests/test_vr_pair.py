@@ -1004,3 +1004,19 @@ async def test_a_page_resumes_after_its_connection_dropped(paired):
     third = Page(env)
     assert await third.join(welcome["resume_code"]) is None
     assert (await third.hello(resume=welcome["resume_code"]))["session"] == "S1"
+
+
+def test_the_page_url_keeps_the_loader_a_directory():
+    """The loader resolves its files against its own address: a directory
+    without its trailing slash gets one; a file name, a query and a slash
+    already there are kept; the base's own fragment gives way to the code."""
+    from app.vr_pair_host import page_url
+    assert page_url("", "K7Q4MX") is None
+    assert page_url("https://h.example/vr", "K7Q4MX") == "https://h.example/vr/#pair=K7Q4MX"
+    assert page_url("https://h.example/vr/", "K7Q4MX") == "https://h.example/vr/#pair=K7Q4MX"
+    assert page_url("https://h.example", "K7Q4MX") == "https://h.example/#pair=K7Q4MX"
+    assert page_url("https://h.example/a/vr?x=1#old", "AB") == "https://h.example/a/vr/?x=1#pair=AB"
+    assert page_url("https://h.example/vr/index.html", "AB") == "https://h.example/vr/index.html#pair=AB"
+    assert page_url("http://localhost:8080/pair", "AB") == "http://localhost:8080/pair/#pair=AB"
+    assert page_url("https://h.example/index%2Ehtml", "AB") == "https://h.example/index%2Ehtml#pair=AB"
+    assert page_url("https://[::1]:8443/vr?x=1#old", "AB") == "https://[::1]:8443/vr/?x=1#pair=AB"
