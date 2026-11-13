@@ -1999,11 +1999,20 @@ $('enter-vr').addEventListener('click', () => enterXR('immersive-vr', false).cat
 $('enter-ar').addEventListener('click', () => enterXR('immersive-ar', false).catch((e) => setStatus(`XR: ${e.message}`)));
 $('bench-xr').addEventListener('click', () => enterXR('immersive-vr', true).catch((e) => setStatus(`XR: ${e.message}`)));
 
+/** The session's WebGL layer. Always with an alpha channel: Quest Browser 154
+ *  gives an opaque layer (alpha: false) an incomplete framebuffer, so every
+ *  draw fails and the headset shows black. In VR the page clears to opaque
+ *  black, so the alpha channel changes nothing on screen; in passthrough it
+ *  is what lets the room show through. */
+function makeXRLayer(session, scale) {
+  return new XRWebGLLayer(session, gl, { framebufferScaleFactor: scale, antialias: false, alpha: true });
+}
+
 async function enterXR(mode, bench) {
   const session = await navigator.xr.requestSession(mode, { optionalFeatures: ['local-floor', 'hand-tracking'] });
   await gl.makeXRCompatible();
   const fbScale = readNumber('fbscale');
-  const layer = new XRWebGLLayer(session, gl, { framebufferScaleFactor: fbScale, antialias: false, alpha: mode === 'immersive-ar' });
+  const layer = makeXRLayer(session, fbScale);
   if ('fixedFoveation' in layer) layer.fixedFoveation = readNumber('foveation');
   session.updateRenderState({ baseLayer: layer, depthNear: 0.05, depthFar: 50 });
   let ref;
@@ -2013,7 +2022,12 @@ async function enterXR(mode, bench) {
     const want = readNumber('rate');
     const rates = Array.from(session.supportedFrameRates);
     const pick = rates.reduce((a, b) => (Math.abs(b - want) < Math.abs(a - want) ? b : a), rates[0]);
-    try { await session.updateTargetFrameRate(pick); } catch { /* keep the default */ }
+    // Bounded: a browser that never settles the request must not keep the
+    // session from drawing its first frame (the headset would stay black).
+    try {
+      await Promise.race([session.updateTargetFrameRate(pick),
+        new Promise((resolve) => setTimeout(resolve, 1500))]);
+    } catch { /* keep the default */ }
   }
   targetHz = session.frameRate || readNumber('rate');
   xr = { session, ref, layer, mode, fbScale, fbChosen: fbScale, targetHz, placed: false, last: 0, hands: {}, grab: null,
@@ -2354,7 +2368,7 @@ function onXRFrame(time, frame) {
 function setEyeBufferScale(scale) {
   const old = xr.layer;
   try {
-    const layer = new XRWebGLLayer(xr.session, gl, { framebufferScaleFactor: scale, antialias: false, alpha: xr.mode === 'immersive-ar' });
+    const layer = makeXRLayer(xr.session, scale);
     if ('fixedFoveation' in layer) layer.fixedFoveation = 'fixedFoveation' in old ? old.fixedFoveation : readNumber('foveation');
     xr.session.updateRenderState({ baseLayer: layer });
     xr.layer = layer;
