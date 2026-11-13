@@ -3,7 +3,8 @@
 //
 // Profile choice: as the WebXR Input Profiles registry does it, the first id
 // of the XRInputSource's `profiles` list (most specific first) that the page
-// has an asset for. A Quest 3 reports meta-quest-touch-plus; the Touch Pro,
+// has an asset for. A Quest 3 reports meta-quest-touch-plus (newer units
+// meta-quest-touch-plus-v2 first, also vendored); the Touch Pro,
 // the Quest 2's oculus-touch-v3 and generic-trigger-squeeze-thumbstick are
 // the fallbacks vendored. Nothing matches: the page's own model (models.js).
 //
@@ -21,7 +22,7 @@
 import { nodeOrder, composeTRS, mulInto, slerpInto, lerpInto } from './gltf.js';
 
 /** The profiles whose assets are vendored, as the registry's profilesList.json names them. */
-export const VENDORED_PROFILES = ['meta-quest-touch-plus', 'meta-quest-touch-pro', 'oculus-touch-v3', 'generic-trigger-squeeze-thumbstick'];
+export const VENDORED_PROFILES = ['meta-quest-touch-plus-v2', 'meta-quest-touch-plus', 'meta-quest-touch-pro', 'oculus-touch-v3', 'generic-trigger-squeeze-thumbstick'];
 
 /** As @webxr-input-profiles/motion-controllers. */
 export const BUTTON_TOUCH_THRESHOLD = 0.05;

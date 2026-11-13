@@ -175,6 +175,40 @@ export function nodeOrder(model) {
   return order;
 }
 
+/**
+ * The width and height of an embedded PNG or JPEG from its header, without
+ * decoding it ({width, height} or null), so the page can decode it straight
+ * to the size it will upload.
+ */
+export function imageSize(bytes) {
+  const b = bytes;
+  if (b.length >= 24 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
+    const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    return { width: dv.getUint32(16), height: dv.getUint32(20) };
+  }
+  if (b.length >= 4 && b[0] === 0xff && b[1] === 0xd8) {
+    let k = 2;
+    while (k + 9 < b.length) {
+      if (b[k] !== 0xff) { k++; continue; }
+      const mk = b[k + 1];
+      if (mk === 0xff) { k++; continue; }                       // fill byte
+      if (mk === 0xd8 || mk === 0x01 || (mk >= 0xd0 && mk <= 0xd7)) { k += 2; continue; }   // no length
+      // A start of frame (baseline, progressive, ...; not DHT C4, JPG C8, DAC CC).
+      if (mk >= 0xc0 && mk <= 0xcf && mk !== 0xc4 && mk !== 0xc8 && mk !== 0xcc) {
+        return { width: (b[k + 7] << 8) | b[k + 8], height: (b[k + 5] << 8) | b[k + 6] };
+      }
+      k += 2 + ((b[k + 2] << 8) | b[k + 3]);
+    }
+  }
+  return null;
+}
+
+/** The size to decode an image of `size` to, at most `max` a side, aspect kept. */
+export function fitSize(size, max) {
+  const s = Math.min(1, max / Math.max(size.width, size.height));
+  return { width: Math.max(1, Math.round(size.width * s)), height: Math.max(1, Math.round(size.height * s)) };
+}
+
 /** out = the matrix of translation t, rotation quaternion q (x,y,z,w), scale s (column-major). */
 export function composeTRS(out, t, q, s) {
   const [x, y, z, w] = q;

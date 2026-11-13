@@ -8,13 +8,14 @@ is fetched from a CDN.
 
 | Profile | Files | Used for |
 |---|---|---|
+| `meta-quest-touch-plus-v2` | `left.glb`, `right.glb`, `profile.json` | newer Quest 3 Touch Plus controllers that report this id first |
 | `meta-quest-touch-plus` | `left.glb`, `right.glb`, `profile.json` | Quest 3 and 3S |
 | `meta-quest-touch-pro` | `left.glb`, `right.glb`, `profile.json` | Quest Pro, Touch Pro on a Quest 3 |
 | `oculus-touch-v3` | `left.glb`, `right.glb`, `profile.json` | Quest 2 |
 | `generic-trigger-squeeze-thumbstick` | `left.glb`, `right.glb`, `profile.json` | any controller with those three inputs |
 
 The `.glb` and `profile.json` files are copied unchanged from the package.
-`profilesList.json` is the package's list cut down to these four profiles.
+`profilesList.json` is the package's list cut down to these five profiles.
 The generic profile's `none.glb` (a controller without handedness) is left
 out; such a controller gets the page's own model.
 
@@ -27,7 +28,7 @@ promote products derived from this software without specific prior written
 permission.
 
 To update: download the package (`npm pack @webxr-input-profiles/assets`),
-copy the four profile directories from `dist/profiles/` (without
+copy the five profile directories from `dist/profiles/` (without
 `generic-trigger-squeeze-thumbstick/none.glb`), check the licence is still
 MIT, and run `node --test backend/tests/vr/gltf.test.mjs
 backend/tests/vr/controller-profiles.test.mjs`.

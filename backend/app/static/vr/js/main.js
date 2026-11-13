@@ -56,6 +56,9 @@ if (!gl) {
 }
 const R = new Renderer(gl);
 const controllerModels = new ControllerModels(R, { log: (level, event, detail) => shell.log(level === 'warn' ? 'warning' : level, event, detail) });
+// In a headset's browser (or the desktop's WebXR stand-in), the controller
+// models used last time load now, on the 2-D page, not at session start.
+if (isHeadsetBrowser(navigator.userAgent) || query.has('xrfake')) setTimeout(() => controllerModels.preload(), 0);
 
 // ── State ───────────────────────────────────────────────────────────────────
 const state = {
@@ -2777,6 +2780,7 @@ if (query.has('debug')) {
     meshCount: R.meshCount, labelCount: R.labelCount, modelDraws: R.modelDraws,
     controllerModels: Object.fromEntries(Object.entries(controllerModels.status)
       .map(([k, e]) => [k, { status: e.status, profileId: e.profileId, error: e.error }])) } : null);
+  window.__vrControllerModels = controllerModels;
   // A real controller model's node (its world position now), for the checks.
   window.__vrControllerNode = (hand, name) => {
     const e = controllerModels.status[hand];

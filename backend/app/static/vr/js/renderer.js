@@ -241,16 +241,17 @@ void main() {
 
 const MODEL_FS = `#version 300 es
 precision mediump float;
-in vec3 vPos;
+in highp vec3 vPos;          // world metres: mediump loses millimetres a few metres out
 in vec3 vNormal;
 in vec2 vUV;
 uniform sampler2D uTex;
 uniform vec4 uColor;
-uniform vec3 uEye;
+uniform highp vec3 uEye;
 out vec4 outColor;
 void main() {
   vec3 n = normalize(vNormal);
-  vec3 toEye = normalize(uEye - vPos);
+  highp vec3 d = uEye - vPos;
+  vec3 toEye = normalize(d);
   float l = 0.4 + 0.45 * abs(dot(n, toEye)) + 0.3 * max(dot(n, vec3(0.0, 1.0, 0.0)), 0.0);
   vec3 c = texture(uTex, vUV).rgb * uColor.rgb;
   outColor = vec4(min(c * l, vec3(1.0)), 1.0);
@@ -443,7 +444,7 @@ export class Renderer {
       h.size = null;
       if (h.canvas) this.updatePanel(h, h.canvas);
     }
-    for (const h of this._models) this._uploadModel(h);
+    for (const h of this._models) this._restoreModel(h);
   }
 
   /**
@@ -612,20 +613,64 @@ export class Renderer {
   /**
    * A controller model (gltf.js readGLTF output) on the GPU, once: one
    * vertex buffer and one index buffer for all its primitives, one texture
-   * per base-colour image (`bitmaps[imageIndex]`, an ImageBitmap or canvas
-   * already at most MODEL_TEXTURE_MAX a side; null leaves the factor alone).
-   * The handle is kept and uploaded again after a lost context.
+   * per base-colour image (`bitmaps[imageIndex]`, an ImageBitmap already at
+   * most MODEL_TEXTURE_MAX a side; null leaves the factor alone). The
+   * bitmaps are closed once uploaded: after a lost context the geometry is
+   * uploaded again from the model and the textures from `redecode()` (a
+   * promise of new bitmaps, decoded again from the file's bytes), white
+   * until then.
    */
-  uploadModel(model, bitmaps = []) {
-    const h = { model, bitmaps, vao: null, vbo: null, ibo: null, textures: [], meshes: [], bytes: 0 };
+  uploadModel(model, bitmaps = [], { redecode = null } = {}) {
+    const h = { model, redecode, gen: 0, vao: null, vbo: null, ibo: null, textures: [], meshes: [], geomBytes: 0, bytes: 0 };
     this._uploadModel(h);
+    this._setModelTextures(h, bitmaps);
     this._models.add(h);
     return h;
   }
 
+  /** After a lost context: the geometry now, the textures when decoded again. */
+  _restoreModel(h) {
+    this._uploadModel(h);
+    h.textures = [];
+    h.bytes = h.geomBytes;
+    const gen = ++h.gen;
+    if (!h.redecode) return;
+    h.redecode().then((bitmaps) => {
+      if (gen !== h.gen || this.gl.isContextLost()) { for (const b of bitmaps) if (b && b.close) b.close(); return; }
+      this._setModelTextures(h, bitmaps);
+    }).catch(() => { /* the model stays white: still drawn */ });
+  }
+
+  /** The base-colour textures, mipmapped (they are seen small); the bitmaps closed after. */
+  _setModelTextures(h, bitmaps) {
+    const gl = this.gl;
+    const flip = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL), pre = gl.getParameter(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);       // glTF's UV origin is the image's top-left, as WebGL's upload
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    let bytes = 0;
+    h.textures = h.model.images.map((im, i) => {
+      const bm = bitmaps[i];
+      if (!bm) return null;
+      const t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bm);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      bytes += Math.round(bm.width * bm.height * 4 * 4 / 3);
+      if (bm.close) bm.close();
+      return t;
+    });
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flip);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, pre);
+    h.bytes = h.geomBytes + bytes;
+  }
+
   _uploadModel(h) {
     const gl = this.gl;
-    const { model, bitmaps } = h;
+    const { model } = h;
     const prims = model.meshes.flat();
     const nVerts = prims.reduce((a, p) => a + p.positions.length / 3, 0);
     const nIdx = prims.reduce((a, p) => a + p.indices.length, 0);
@@ -663,32 +708,12 @@ export class Renderer {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, h.ibo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
     gl.bindVertexArray(null);
-    h.bytes = verts.byteLength + idx.byteLength;
-    // The base-colour textures, mipmapped (they are seen small).
-    const flip = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL), pre = gl.getParameter(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);       // glTF's UV origin is the image's top-left, as WebGL's upload
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    h.textures = model.images.map((im, i) => {
-      const bm = bitmaps[i];
-      if (!bm) return null;
-      const t = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, t);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bm);
-      gl.generateMipmap(gl.TEXTURE_2D);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
-      h.bytes += Math.round(bm.width * bm.height * 4 * 4 / 3);
-      return t;
-    });
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flip);
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, pre);
+    h.geomBytes = verts.byteLength + idx.byteLength;
+    h.bytes = h.geomBytes;
     h.meshes = model.meshes.map((prs) => prs.map((p) => {
       const mat = model.materials[p.material] || { baseColor: [1, 1, 1, 1], texture: -1 };
       const at = placed.get(p);
-      return { offset: at.offset, count: at.count, type, color: Float32Array.from(mat.baseColor),
-        tex: (mat.texture >= 0 && h.textures[mat.texture]) || this.whiteTex };
+      return { offset: at.offset, count: at.count, type, color: Float32Array.from(mat.baseColor), texture: mat.texture };
     }));
   }
 
@@ -723,7 +748,7 @@ export class Renderer {
         gl.uniformMatrix4fv(u.uModel, false, rig.world[i]);
         for (const p of h.meshes[mi]) {
           gl.uniform4fv(u.uColor, p.color);
-          gl.bindTexture(gl.TEXTURE_2D, p.tex);
+          gl.bindTexture(gl.TEXTURE_2D, (p.texture >= 0 && h.textures[p.texture]) || this.whiteTex);
           gl.drawElements(gl.TRIANGLES, p.count, p.type, p.offset);
           this.modelDraws++;
         }

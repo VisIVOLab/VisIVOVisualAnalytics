@@ -138,6 +138,14 @@ export const XR_FAKE = `(() => {
 /** The XR checks on the page `c` (opened with ?xrfake or ?xrfake=nolayers). */
 export async function runXRFakeChecks({ c, check, waitFor, label = 'layers', expectLayers = true }) {
   const say = (m) => console.log(`     xrfake ${label}: ${m}`);
+  // A page after a session that had the real models: they load on the 2-D page, before Enter VR.
+  const remembered = await c.evaluate(`localStorage.getItem('visivo.vr.controllerProfiles')`);
+  if (remembered) {
+    const pre = await waitFor(c, 'window.__vrControllerModels.preloaded.length === 2', 10000);
+    const list = await c.evaluate('window.__vrControllerModels.preloaded');
+    check(`xrfake ${label}: the controller models used last time load before Enter VR`, pre.value
+      && list.includes('meta-quest-touch-plus/left') && list.includes('meta-quest-touch-plus/right'), `${pre.ms} ms ${JSON.stringify(list)}`);
+  }
   const enter = await c.evaluate(`(async () => {
     const b = document.getElementById('enter-vr');
     for (let i = 0; i < 50 && b.disabled; i++) await new Promise((r) => setTimeout(r, 50));

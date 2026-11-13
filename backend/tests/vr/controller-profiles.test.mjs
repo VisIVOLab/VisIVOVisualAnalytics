@@ -38,14 +38,16 @@ test('the vendored profiles: listed, with their files, their licence, and a boun
   for (const id of P.VENDORED_PROFILES) {
     for (const f of readdirSync(new URL(`${id}/`, MODELS))) assert.ok(['left.glb', 'right.glb', 'profile.json'].includes(f), `${id}/${f}`);
   }
-  assert.ok(bytes < 6e6, `${(bytes / 1e6).toFixed(2)} MB of models`);
+  assert.ok(bytes < 7.5e6, `${(bytes / 1e6).toFixed(2)} MB of models`);
 });
 
 test('profile choice: the first of the source\'s profiles that is vendored, as the registry does', () => {
   // A Quest 3 (Touch Plus).
   assert.equal(P.selectProfileId(['meta-quest-touch-plus', 'generic-trigger-squeeze-thumbstick'], LIST), 'meta-quest-touch-plus');
+  // A newer Quest 3 unit names the v2 model first: it gets it.
+  assert.equal(P.selectProfileId(['meta-quest-touch-plus-v2', 'meta-quest-touch-plus', 'oculus-touch-v3'], LIST), 'meta-quest-touch-plus-v2');
   // A profile the page lacks first: the next one in the source's own order.
-  assert.equal(P.selectProfileId(['meta-quest-touch-plus-v2', 'meta-quest-touch-plus', 'oculus-touch-v3'], LIST), 'meta-quest-touch-plus');
+  assert.equal(P.selectProfileId(['meta-quest-touch-plus-v3', 'meta-quest-touch-plus', 'oculus-touch-v3'], LIST), 'meta-quest-touch-plus');
   assert.equal(P.selectProfileId(['meta-quest-touch-pro', 'meta-quest-touch-plus'], LIST), 'meta-quest-touch-pro');
   assert.equal(P.selectProfileId(['oculus-touch-v3', 'oculus-touch'], LIST), 'oculus-touch-v3');
   assert.equal(P.selectProfileId(['htc-vive', 'generic-trigger-squeeze-thumbstick'], LIST), 'generic-trigger-squeeze-thumbstick');

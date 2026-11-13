@@ -37,7 +37,7 @@ test('the Touch Plus model reads: six meshes of indexed, textured triangles in a
 });
 
 test('every vendored asset reads, and is the size of a controller', () => {
-  for (const id of ['meta-quest-touch-plus', 'meta-quest-touch-pro', 'oculus-touch-v3', 'generic-trigger-squeeze-thumbstick']) {
+  for (const id of ['meta-quest-touch-plus-v2', 'meta-quest-touch-plus', 'meta-quest-touch-pro', 'oculus-touch-v3', 'generic-trigger-squeeze-thumbstick']) {
     for (const h of ['left', 'right']) {
       const m = G.readGLTF(G.parseGLB(read(`${id}/${h}.glb`)));
       const worlds = [];
@@ -106,6 +106,17 @@ test('what the page cannot draw is refused with the reason', () => {
   // A truncated file.
   const t = tinyGLB();
   assert.throws(() => G.parseGLB(t.subarray(0, t.length - 20)), /past the end|too short/);
+});
+
+test('image sizes from the headers, without decoding; the size to decode to', () => {
+  const plus = G.readGLTF(G.parseGLB(read('meta-quest-touch-plus/right.glb')));
+  assert.deepEqual(G.imageSize(plus.images[0].bytes), { width: 2048, height: 2048 });
+  const generic = G.readGLTF(G.parseGLB(read('generic-trigger-squeeze-thumbstick/left.glb')));
+  for (const im of generic.images) assert.deepEqual(G.imageSize(im.bytes), { width: 1024, height: 1024 }, im.mime);
+  assert.equal(G.imageSize(new Uint8Array([1, 2, 3, 4])), null);
+  assert.deepEqual(G.fitSize({ width: 2048, height: 2048 }, 1024), { width: 1024, height: 1024 });
+  assert.deepEqual(G.fitSize({ width: 2048, height: 512 }, 1024), { width: 1024, height: 256 });
+  assert.deepEqual(G.fitSize({ width: 512, height: 512 }, 1024), { width: 512, height: 512 });
 });
 
 test('node transforms: TRS composition, multiplication, slerp and lerp in place', () => {

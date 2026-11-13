@@ -41,10 +41,13 @@ face buttons move as you press or tilt them, by the amount you press them. The
 models are those of the WebXR Input Profiles project (MIT licence), served by
 the backend with the page; nothing is fetched from the internet. The page picks
 the model from the names the browser gives the controller, most specific first:
+`meta-quest-touch-plus-v2` (newer Quest 3 controllers),
 `meta-quest-touch-plus` (Quest 3 and 3S), `meta-quest-touch-pro`,
-`oculus-touch-v3` (Quest 2), then `generic-trigger-squeeze-thumbstick`. A
-controller none of these fits, or while its model is still loading (a fraction
-of a second), is drawn as a small solid model made by the page, in the hand's
+`oculus-touch-v3` (Quest 2), then `generic-trigger-squeeze-thumbstick`. The
+headset's browser remembers which models its controllers used and loads them
+on the 2-D page, before you enter VR; the first time, they load when the
+controllers appear. A controller none of these fits, or while its model is
+still loading (a fraction of a second), is drawn as a small solid model made by the page, in the hand's
 colour (orange the primary, blue the secondary). The short line from the
 controller's front stays in the hand's colour, so you can still tell which
 hand is the primary. Until #226 only the rays could be seen.

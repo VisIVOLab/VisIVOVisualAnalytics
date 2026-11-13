@@ -55,8 +55,9 @@ QCustomPlot-GPL-3.0.txt next to this file.
 WebXR Input Profiles - Assets (@webxr-input-profiles/assets), version 1.0.20
 ---------------------------------------------------------------------------
 The controller models of the VR page, served by the backend with the page
-(backend/app/static/vr/models: meta-quest-touch-plus, meta-quest-touch-pro,
-oculus-touch-v3 and generic-trigger-squeeze-thumbstick, unchanged).
+(backend/app/static/vr/models: meta-quest-touch-plus-v2, meta-quest-touch-plus,
+meta-quest-touch-pro, oculus-touch-v3 and generic-trigger-squeeze-thumbstick,
+unchanged).
 https://github.com/immersive-web/webxr-input-profiles/tree/main/packages/assets
 
 Copyright (c) 2019 Amazon (MIT License)
