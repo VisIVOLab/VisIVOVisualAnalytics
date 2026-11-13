@@ -133,3 +133,53 @@ test('node transforms: TRS composition, multiplication, slerp and lerp in place'
   assert.ok(Math.abs(Math.abs(q2[2]) - Math.sin(Math.PI / 8)) < 1e-6);
   assert.deepEqual(G.lerpInto([0, 0, 0], [0, 0, 0], [2, 4, 6], 0.25), [0.5, 1, 1.5]);
 });
+
+test('materials: the Touch Plus is dielectric plastic, opaque; the v2 has a metallic-roughness map', () => {
+  // v1: base colour only (light body, dark face plate), metallic 0, roughness 0.55.
+  const v1 = G.readGLTF(G.parseGLB(read('meta-quest-touch-plus/left.glb')));
+  const m1 = v1.materials[0];
+  assert.equal(m1.texture, 0);
+  assert.equal(m1.metallic, 0);
+  assert.ok(Math.abs(m1.roughness - 0.5528) < 1e-3);
+  assert.equal(m1.mrTexture, -1);
+  assert.equal(m1.alphaMode, 'OPAQUE');
+  assert.deepEqual(m1.emissive, [0, 0, 0]);
+  assert.ok(m1.doubleSided);
+  assert.deepEqual([...G.imageUses(v1)], [[0, { srgb: true, linear: false }]]);
+  // v2: roughness from the map's green channel (factor 1 by default), metallic factor 0.
+  const v2 = G.readGLTF(G.parseGLB(read('meta-quest-touch-plus-v2/left.glb')));
+  const m2 = v2.materials[0];
+  assert.equal(m2.metallic, 0);
+  assert.equal(m2.roughness, 1);
+  assert.equal(m2.mrTexture, 1);
+  assert.equal(m2.alphaMode, 'OPAQUE', 'its base-colour image has alpha, which OPAQUE ignores');
+  assert.deepEqual([...G.imageUses(v2)], [[0, { srgb: true, linear: false }], [1, { srgb: false, linear: true }]]);
+});
+
+test('materials: glTF defaults, alpha modes, emissive, and a texture on another UV set left out', () => {
+  const img = { images: [{ bufferView: 0, mimeType: 'image/png' }], textures: [{ source: 0 }] };
+  const m = G.readGLTF(G.parseGLB(tinyGLB({
+    ...img,
+    materials: [
+      {},
+      { alphaMode: 'MASK', alphaCutoff: 0.3, emissiveFactor: [1, 0.5, 0], emissiveTexture: { index: 0 },
+        pbrMetallicRoughness: { metallicFactor: 2, roughnessFactor: -1, baseColorTexture: { index: 0, texCoord: 1 },
+          metallicRoughnessTexture: { index: 0 } } },
+      { alphaMode: 'BLEND' },
+      { alphaMode: 'bogus' },
+    ],
+  }))).materials;
+  assert.deepEqual(m[0], { baseColor: [1, 1, 1, 1], texture: -1, metallic: 1, roughness: 1, mrTexture: -1,
+    emissive: [0, 0, 0], emissiveTexture: -1, alphaMode: 'OPAQUE', alphaCutoff: 0.5, doubleSided: false });
+  assert.equal(m[1].alphaMode, 'MASK');
+  assert.equal(m[1].alphaCutoff, 0.3);
+  assert.deepEqual(m[1].emissive, [1, 0.5, 0]);
+  assert.equal(m[1].emissiveTexture, 0);
+  assert.equal(m[1].metallic, 1, 'clamped to 0..1');
+  assert.equal(m[1].roughness, 0);
+  assert.equal(m[1].texture, -1, 'TEXCOORD_1 is not read: the base colour falls back to its factor');
+  assert.equal(m[2].alphaMode, 'BLEND');
+  assert.equal(m[3].alphaMode, 'OPAQUE');
+  // One image as colour (emissive) and as data (metallic-roughness): both uploads.
+  assert.deepEqual([...G.imageUses({ materials: [m[1]] })], [[0, { srgb: true, linear: true }]]);
+});

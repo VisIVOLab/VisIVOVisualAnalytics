@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { ControllerModels, RETRY_MS, decodeBaseColours } from '../../app/static/vr/js/controller-models.js';
+import { ControllerModels, RETRY_MS, decodeModelImages } from '../../app/static/vr/js/controller-models.js';
 
 const MODELS = new URL('../../app/static/vr/models/', import.meta.url);
 const flush = async () => { for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r)); };
@@ -98,7 +98,7 @@ test('decoding: one image at a time, and the decoded ones closed when one fails'
   const png = readFileSync(new URL('meta-quest-touch-plus/right.glb', MODELS));   // any bytes: the size comes from the header or not at all
   const model = { materials: [{ texture: 0 }, { texture: 1 }], images: [{ mime: 'image/png', bytes: new Uint8Array(png) }, { mime: 'image/png', bytes: new Uint8Array(png) }] };
   const B = fakeBitmaps({ failOn: 2 });
-  await assert.rejects(decodeBaseColours(model), /decode failed/);
+  await assert.rejects(decodeModelImages(model), /decode failed/);
   assert.equal(B.closed, 1);
 });
 
