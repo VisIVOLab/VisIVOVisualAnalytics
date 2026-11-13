@@ -245,6 +245,8 @@ export function diagnosticsReport(d) {
   if (d.text !== undefined) kv('text in the headset', d.text);
   if (d.memory !== undefined) kv('GPU memory', d.memory);
   kv('refinement', d.refine);
+  // Issue #229: the debug cuts of the address (?debug&nohud...), when any.
+  if (d.cuts) kv('debug cuts', d.cuts);
   kv('settings', d.settings ? JSON.stringify(d.settings) : '');
   lines.push('last events:');
   const evs = (d.errors || []).slice(-25);

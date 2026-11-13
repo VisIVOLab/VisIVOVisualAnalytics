@@ -8,6 +8,19 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: debug switches for the Quest 3 context loss at the first lasso, and a
+  redraw loop removed (#229, part of #166 and #185).** With `?debug`, the
+  address switches `nohover`, `nohud`, `noreadout`, `noselpanel`,
+  `noseloutline` and `novolume` each leave one per-frame path out, without
+  touching the selection; the diagnostics and the wrist numbers name the
+  active ones (docs/user-guide/vr/troubleshooting.md, *Diagnosing a GPU
+  context loss*). The results panel kept one "changed" flag that only the
+  headset's texture cleared: while the Selection window took no texture, the
+  page repainted both 768×560 canvases at every hover update, about 36 times a
+  second in a 72 Hz session, for as long as a selection was shown. The paint
+  and the upload are now tracked apart, and a hover that did not move no
+  longer rebuilds the selection's lines.
+
 - **VR: the first Quest 3 session's findings fixed (#226, part of #166 and
   #185).** The page asks for 72 Hz by default; the frame-rate governor gives
   up samples per voxel first, all the way to its floor, and lowers the eye
