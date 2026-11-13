@@ -131,8 +131,17 @@ export function reasonText(reason) {
     'service-unreachable': 'The pairing service cannot be reached',
     'not-configured': 'This loader has no pairing service configured (config.json)',
     bye: 'The computer ended the pairing',
+    'no-resume': 'The computer gave this headset no resume code, so the link cannot be resumed: enter a new code',
     'resume-expired': 'The pairing could not be resumed in time',
   }[reason] || `The pairing failed (${reason || 'unknown reason'})`;
+}
+
+/** The user's words for a `bye` from the backend (its reason). */
+export function byeText(reason) {
+  return {
+    disconnected: 'The computer disconnected this headset',
+    'backend-stopping': 'VisIVO Visual Analytics on the computer was closed',
+  }[reason] || `The computer ended the pairing${reason ? ` (${reason})` : ''}`;
 }
 
 /** A resume code kept for this tab: {code, expiresAt}, or null when absent or stale. */

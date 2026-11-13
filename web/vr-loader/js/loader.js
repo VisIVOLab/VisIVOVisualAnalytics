@@ -27,12 +27,14 @@ import { ApiClient } from './pair-transport.js';
 import { PacedSender, frameId } from './pair-wire.js';
 import {
   serviceUrl, serviceHost, normaliseCode, pairFromHash, appAddress, failureKind, resumeDelayMs,
-  RESUME_BUDGET_MS, reasonText, keptResume, linkFigures, AppIdMap,
+  RESUME_BUDGET_MS, reasonText, byeText, keptResume, linkFigures, AppIdMap,
 } from './loader-core.js';
 
 const $ = (id) => document.getElementById(id);
 const RESUME_KEY = 'visivo-vr-loader-resume';
 const JOIN_TIMEOUT_MS = 20000;
+/** How long one of the page's files may take, resumes included (sw.js waits 30 s). */
+const ASSET_BUDGET_MS = 25000;
 
 const state = {
   service: '',
@@ -60,7 +62,9 @@ function setStatus(text, level = '') {
 function store() { try { return window.sessionStorage; } catch { return null; } }
 
 function keepResume(welcome) {
-  if (!welcome || !welcome.resume_code) return;
+  // No resume code (the service gave none in time): a drop then asks for a
+  // new code at once; an older code is not reused for this pairing.
+  if (!welcome || !welcome.resume_code || !(Number(welcome.resume_expires_in) > 0)) { dropResume(); return; }
   const expiresAt = Date.now() + 1000 * (Number(welcome.resume_expires_in) || 0);
   state.resume = { code: String(welcome.resume_code), expiresAt };
   try { store()?.setItem(RESUME_KEY, JSON.stringify(state.resume)); } catch { /* this load only */ }
@@ -99,7 +103,7 @@ class Link {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        this.close();
+        this.close(`join failed: ${reason}`);
         const e = new Error(detail || reasonText(reason));
         e.reason = reason;
         reject(e);
@@ -169,9 +173,14 @@ class Link {
       if (m.t === 'welcome' && !this.welcome) { this.welcome = m; onWelcome(m); }
       else if (m.t === 'bye') this._drop(m.reason || 'the computer ended the pairing', true);
     };
-    const gone = () => { if (this.welcome) this._drop('a data channel closed'); };
-    ctl.onclose = gone;
-    api.onclose = gone;
+    // Which channel, in what state of the connection: what tells a channel
+    // the bridge refused from a link that went.
+    const gone = (label) => () => {
+      // Closed by this loader (closedBy), or by the other side / the network.
+      if (this.welcome) this._drop(`the ${label} channel closed (connection ${pc.connectionState}${this.closedBy ? `, closed here: ${this.closedBy}` : ', not closed here'})`);
+    };
+    ctl.onclose = gone('ctl');
+    api.onclose = gone('api');
     api.onmessage = (e) => this._route(e.data);
   }
 
@@ -248,11 +257,12 @@ class Link {
   _drop(why, bye = false) {
     if (this.dropped) return;
     this.dropped = true;
-    this.close();
+    this.close(`dropped: ${why}`);
     if (this.onDrop) this.onDrop(why, bye);
   }
 
-  close() {
+  close(why = 'replaced') {
+    if (!this.closedBy) this.closedBy = why;
     clearTimeout(this._disc);
     for (const r of [...this.relays]) r.end();
     this.ids.clear();
@@ -279,6 +289,8 @@ function linkInfo() {
 }
 
 function setLinkState(s, reason = '') {
+  // For a debugging session (DevTools, or a CDP-driven check): the link's story.
+  console.info(`[vr-loader] ${new Date().toISOString()} link ${s}${reason ? `: ${reason}` : ''}`);
   state.linkState = s;
   state.reason = reason;
   tellApp();
@@ -288,7 +300,7 @@ function setLinkState(s, reason = '') {
 /** Pairs with a code typed or from #pair=: a new app in the iframe. */
 async function pair(code) {
   if (!state.service) { showForm(reasonText('not-configured'), 'error'); return; }
-  if (state.link) { state.link.onDrop = null; state.link.close(); state.link = null; }
+  if (state.link) { state.link.onDrop = null; state.link.close('a new pairing'); state.link = null; }
   state.resuming = false;
   state.resumeGen++;
   setLinkState('connecting');
@@ -317,7 +329,7 @@ function onDrop(why, bye) {
   state.link = null;
   if (bye) {
     dropResume();
-    setLinkState('lost', `${reasonText('bye')}: ${why}`);
+    setLinkState('lost', byeText(why));
     return;
   }
   setLinkState('down', why);
@@ -334,14 +346,15 @@ async function resumeLoop() {
   let reason = '';
   while (mine()) {
     const r = state.resume;
-    if (!r || r.expiresAt <= Date.now()) { reason = 'expired'; break; }
+    if (!r) { reason = 'no-resume'; break; }
+    if (r.expiresAt <= Date.now()) { reason = 'expired'; break; }
     n++;
     await new Promise((res) => setTimeout(res, n === 1 ? 300 : resumeDelayMs(n - 1, reason)));
     if (!mine()) return;
     const link = new Link(state.service, onDrop);
     try {
       const welcome = await link.connect(r.code, r.code);
-      if (!mine()) { link.onDrop = null; link.close(); return; }
+      if (!mine()) { link.onDrop = null; link.close('a new pairing took over the resume'); return; }
       state.link = link;
       state.resuming = false;
       state.welcome = welcome;
@@ -437,16 +450,34 @@ async function onWorkerMessage(e) {
   const reply = e.ports && e.ports[0];
   if (m.t !== 'get' || !reply) return;
   if (m.tag !== state.tag) { reply.postMessage({ notMine: true }); return; }
-  // While the link is resuming, the file waits a little for it.
-  for (let i = 0; i < 100 && !(state.link && state.linkState === 'up'); i++) await new Promise((r) => setTimeout(r, 100));
-  if (!state.link) { reply.postMessage({ status: 503, headers: [['content-type', 'text/plain']], body: new TextEncoder().encode('no link to the computer').buffer }); return; }
+  const text = (status, msg) => reply.postMessage({ status, headers: [['content-type', 'text/plain']],
+    body: new TextEncoder().encode(msg).buffer });
+  // A GET of the page's files: sent again when the link drops under it and
+  // comes back (a resume). The whole of it (waits, requests, reads) within
+  // ASSET_BUDGET_MS, under the worker's own 30 s, so the worker always gets
+  // this answer rather than its timeout.
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ASSET_BUDGET_MS);
+  let last = 'no link to the computer';
   try {
-    const resp = await state.link.client.fetch(m.path, { method: 'GET' });
-    const body = await resp.arrayBuffer();
-    reply.postMessage({ status: resp.status, headers: [...resp.headers], body }, [body]);
-  } catch (err) {
-    reply.postMessage({ status: 502, headers: [['content-type', 'text/plain']], body: new TextEncoder().encode(String(err.message || err)).buffer });
+    while (!ac.signal.aborted && state.linkState !== 'lost' && state.linkState !== 'none') {
+      if (!(state.link && state.linkState === 'up')) { await new Promise((r) => setTimeout(r, 100)); continue; }
+      try {
+        const resp = await state.link.client.fetch(m.path, { method: 'GET', signal: ac.signal });
+        const body = await resp.arrayBuffer();
+        if (ac.signal.aborted) break;
+        reply.postMessage({ status: resp.status, headers: [...resp.headers], body }, [body]);
+        return;
+      } catch (err) {
+        last = String(err.message || err);
+        if (!(err instanceof TypeError)) break;          // an abort (the budget) or a bad answer
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+  } finally {
+    clearTimeout(timer);
   }
+  text(ac.signal.aborted ? 504 : state.link ? 502 : 503, ac.signal.aborted ? 'the computer did not send the file in time' : last);
 }
 
 // ── The page ───────────────────────────────────────────────────────────────
@@ -501,6 +532,20 @@ async function start() {
     return;
   }
   showForm('', '');
+}
+
+// The page's own lifecycle: a browser that freezes or hides the page (Quest
+// Browser sent to the background, a headless browser under load) can close
+// its peer connections; the link's story then says why.
+state.lifecycle = [];
+for (const type of ['freeze', 'resume', 'visibilitychange', 'pagehide', 'pageshow']) {
+  const target = type === 'pagehide' || type === 'pageshow' ? window : document;
+  target.addEventListener(type, () => {
+    const what = type === 'visibilitychange' ? `visibility ${document.visibilityState}` : type;
+    state.lifecycle.push({ t: Date.now(), what });
+    if (state.lifecycle.length > 20) state.lifecycle.shift();
+    console.info(`[vr-loader] ${new Date().toISOString()} page ${what}`);
+  });
 }
 
 window.__vrLoader = { state, pair };

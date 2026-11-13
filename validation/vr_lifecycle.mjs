@@ -23,7 +23,13 @@
 // minimal fake of the pairing service and the backend's bridge, on
 // --pair-port); then a dropped link resumed without a new code, an unknown
 // resume code asking for a new one, and the transport's overhead against
-// direct HTTP. The checks run in the page's iframe.
+// direct HTTP. The checks run in the page's iframe. --pair-fake PATH runs
+// another script with the fake's command line instead (the real service and
+// bridge); --paired-backend URL names the backend that script's bridge
+// serves, for the direct comparisons. --pair-stress N adds N transfers of an
+// 8.4 MB cube, one DevTools call each (--pair-stress-in-page: one loop in the
+// page; --pair-stress-detached: the same with DevTools detached while it
+// runs); VR_CHROME_ARGS passes more flags to Chrome (e.g. --vmodule logging).
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, openSync, existsSync } from 'node:fs';
@@ -64,6 +70,10 @@ const PAIR_CODE = 'K7Q2ZP';
 const OUT = args.out || join(HERE, 'out', 'vr_lifecycle');
 mkdirSync(OUT, { recursive: true });
 const BASE = `http://localhost:${PORT}`;
+// Paired: the backend the bridge serves (another process when --pair-fake
+// runs a real bridge with its own backend); the direct checks go there.
+const API_BASE = typeof args['paired-backend'] === 'string' ? args['paired-backend'].replace(/\/+$/, '') : BASE;
+const PAIR_FAKE = typeof args['pair-fake'] === 'string' ? resolve(args['pair-fake']) : null;
 const QUEST_UA = 'Mozilla/5.0 (X11; Linux x86_64; Quest 3) AppleWebKit/537.36 (KHTML, like Gecko) OculusBrowser/40.0 Chrome/132.0 VR Safari/537.36';
 const W = 1280, H = 800;
 
@@ -156,7 +166,7 @@ function startLoader() {
 let pairFake = null;
 async function startPairFake(token) {
   const fd = openSync(join(OUT, 'pair_fake.log'), 'a');
-  pairFake = spawn(PY, [join(HERE, 'vr_pair_fake.py'), '--port', String(PAIR_PORT), '--backend', BASE, '--code', PAIR_CODE],
+  pairFake = spawn(PY, [PAIR_FAKE || join(HERE, 'vr_pair_fake.py'), '--port', String(PAIR_PORT), '--backend', BASE, '--code', PAIR_CODE],
     { env: { ...process.env, VISIVO_TOKEN: token }, stdio: ['ignore', fd, fd] });
   for (let i = 0; i < 300; i++) {
     if (readFileSync(join(OUT, 'pair_fake.log'), 'utf8').includes(`ws://localhost:${PAIR_PORT}/v1/join`)) return;
@@ -181,7 +191,9 @@ async function launch() {
     // looks like a hung page. Keep it a foreground page.
     '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows', '--disable-features=IntensiveWakeUpThrottling,CalculateNativeWinOcclusion',
-    ...(process.platform === 'linux' ? ['--no-sandbox'] : []), '--enable-logging=stderr', '--v=0', 'about:blank'],
+    ...(process.platform === 'linux' ? ['--no-sandbox'] : []), '--enable-logging=stderr', '--v=0',
+    // Debugging only: more Chrome flags (e.g. WebRTC logging with --vmodule).
+    ...(process.env.VR_CHROME_ARGS ? process.env.VR_CHROME_ARGS.split(' ').filter(Boolean) : []), 'about:blank'],
   { stdio: ['ignore', 'ignore', openSync(join(OUT, 'chrome.log'), 'w')] });
   chrome = proc; // Also clean up when startup fails before CDP is available.
   let spawnError = null;
@@ -309,12 +321,25 @@ async function api(method, path, token, { session, body } = {}) {
   const headers = { 'X-Visivo-Token': token };
   if (session) headers['X-Visivo-Session'] = session;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
-  const r = await fetch(`${BASE}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const r = await fetch(`${API_BASE}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   return { status: r.status, body: await r.text() };
 }
 
 // ── Paired: transport, resume, a new code, overhead (issue #213) ───────────
 async function pairedChecks() {
+  // Garbage collections must not end the link: the loader's objects that
+  // hold it must stay reachable (a link dropped by a collection ends every
+  // request in flight).
+  // Only what happens from here on counts (an earlier drop is the early-drop
+  // check's to judge, below).
+  const gcFrom = await c.evaluate('({ state: window.__vrLink().state, t: Date.now() })');
+  const linkBefore = gcFrom.state;
+  for (let i = 0; i < 3; i++) { await c.send('HeapProfiler.collectGarbage'); await sleep(300); }
+  await sleep(500);
+  const afterGc = await c.evaluate(`({ state: window.__vrLink().state,
+    events: window.__vrShell.diag.items.filter((e) => /^pair-link-(down|lost)/.test(e.event) && e.t >= ${gcFrom.t}).map((e) => e.message) })`);
+  check('paired: garbage collections leave the link up', linkBefore === 'up' && afterGc.state === 'up' && !afterGc.events.length,
+    JSON.stringify(afterGc));
   await c.evaluate(`document.getElementById('copy-diag').click()`);
   await sleep(300);
   const diag = await c.evaluate(`document.getElementById('diag-out').textContent`);
@@ -327,23 +352,43 @@ async function pairedChecks() {
   // page's own Backend) and over direct HTTP (from this script, same machine).
   // A cube of 256×256×128 (8.4 MB at 8 bits, unbinned), loaded by the page.
   const big = makeCube('synthetic_pair_big.fits', { shape: [128, 256, 256] });
-  await c.evaluate(`(() => { const $ = (id) => document.getElementById(id); $('path').value = ${JSON.stringify(big)}; $('load').click(); })()`);
-  await sleep(300);
-  const bigLoaded = await waitFor(c, `window.__vrState.loading === 0 && window.__vrState.openPath === ${JSON.stringify(big)}`, 120000);
-  if (!bigLoaded.value) throw new Error('the 256×256×128 cube did not load over the pairing');
+  // Started and awaited in the page (one DevTools call, no polling during
+  // the transfer: see the overhead measurement below).
+  const bigLoaded = await c.evaluate(`(async () => { const $ = (id) => document.getElementById(id);
+    $('path').value = ${JSON.stringify(big)}; $('load').click();
+    const t0 = Date.now();
+    await new Promise((r) => setTimeout(r, 300));
+    while (Date.now() - t0 < 120000) {
+      if (window.__vrState.loading === 0 && window.__vrState.openPath === ${JSON.stringify(big)}) return true;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return false; })()`, 130000);
+  if (!bigLoaded) throw new Error('the 256×256×128 cube did not load over the pairing');
   const req = await c.evaluate(`JSON.stringify({ dataset_id: window.__vrState.open.dataset_id, factor_xy: 1, factor_z: 1, max_dim: 256, encoding: 'uint8', mode: 'mean' })`);
   const session = await c.evaluate('window.__vrRefine.refiner.backend().session');
   const pairedT = [], infoP = [], direct = [], infoD = [];
+  // The paired side in one DevTools call, looped in the page: a DevTools call
+  // sent into the page's iframe while it receives at full speed was seen, on
+  // this Mac's headless Chrome, to stall for 30-40 s (the run then waits on
+  // the debugger, not on the page).
+  const pairedRuns = await c.evaluate(`(async () => { const b = window.__vrRefine.refiner.backend(); const out = [];
+    for (let i = 0; i < 7; i++) {
+      let t0 = performance.now();
+      const r = await b.reducedCube(JSON.parse(${JSON.stringify(req)}));
+      const cube = { ms: performance.now() - t0, bytes: r.bytes };
+      t0 = performance.now();
+      await b.info();
+      out.push({ cube, info: { ms: performance.now() - t0 } });
+    }
+    return out; })()`, 120000);
+  for (const p of pairedRuns) { pairedT.push(p.cube); infoP.push(p.info); }
   for (let i = 0; i < 7; i++) {
-    pairedT.push(await c.evaluate(`(async () => { const b = window.__vrRefine.refiner.backend(); const t0 = performance.now();
-      const r = await b.reducedCube(JSON.parse(${JSON.stringify(req)})); return { ms: performance.now() - t0, bytes: r.bytes }; })()`));
-    infoP.push(await c.evaluate(`(async () => { const t0 = performance.now(); await window.__vrRefine.refiner.backend().info(); return { ms: performance.now() - t0 }; })()`));
     let t0 = performance.now();
-    const r = await fetch(`${BASE}/v1/cube/reduced_bin`, { method: 'POST',
+    const r = await fetch(`${API_BASE}/v1/cube/reduced_bin`, { method: 'POST',
       headers: { 'X-Visivo-Token': tokenA, 'X-Visivo-Session': session, 'Content-Type': 'application/json' }, body: req });
     direct.push({ ms: performance.now() - t0, bytes: (await r.arrayBuffer()).byteLength });
     t0 = performance.now();
-    await (await fetch(`${BASE}/v1/vr/info`, { headers: { 'X-Visivo-Token': tokenA } })).json();
+    await (await fetch(`${API_BASE}/v1/vr/info`, { headers: { 'X-Visivo-Token': tokenA } })).json();
     infoD.push({ ms: performance.now() - t0 });
   }
   const med = (a) => a.map((x) => x.ms).sort((x, y) => x - y)[Math.floor(a.length / 2)];
@@ -353,6 +398,81 @@ async function pairedChecks() {
   results.timings.overhead = o;
   check('paired: the reduced cube comes over the pairing, as many bytes as direct', o.reducedBytes > 0 && o.reducedBytes === direct[0].bytes,
     JSON.stringify(o, (k, v) => (typeof v === 'number' ? Number(v.toFixed(2)) : v)));
+  // --pair-stress N: N more transfers of the 8.4 MB cube, each bounded, to
+  // see whether heavy traffic drops the link (each one's time is kept).
+  const stress = Number(args['pair-stress']) || 0;
+  if (stress > 0) {
+    // Through the page's own boundedRequest (the same module instance as the
+    // page's): its 20 s deadline aborts the request and its body (a cancel on
+    // the channel), so a stalled transfer never runs on behind the next ones.
+    const one = `(async () => { const b = window.__vrRefine.refiner.backend(); const t0 = performance.now();
+        const at = new Date().toISOString();
+        const api = await import(new URL('api.js', document.querySelector('script[type=module]').src));
+        try {
+          const bytes = await api.boundedRequest('/v1/cube/reduced_bin',
+            { method: 'POST', headers: b.headers(true), body: ${JSON.stringify(req)} }, 20000, null,
+            async (resp) => { if (!resp.ok) throw new Error('HTTP ' + resp.status); return (await resp.arrayBuffer()).byteLength; });
+          return { ms: performance.now() - t0, bytes, at };
+        } catch (e) { return { ms: performance.now() - t0, error: e.message, at }; } })()`;
+    let times = [];
+    if (args['pair-stress-detached']) {
+      // The loop started in the page, then DevTools detached while it runs:
+      // no debugger session at all during the transfers. Attached again
+      // afterwards to read the results.
+      await c.evaluate(`(window.__stress = { done: false, out: [] }, (async () => {
+        for (let i = 0; i < ${stress}; i++) window.__stress.out.push(await ${one});
+        window.__stress.done = true; })(), 1)`);
+      // Exceptions while detached are kept by the page itself (both frames),
+      // and those seen before go over to the new connection.
+      const keepErrors = `(() => { window.__detachedErrors = [];
+        addEventListener('error', (e) => window.__detachedErrors.push(String(e.message || e.error)));
+        addEventListener('unhandledrejection', (e) => window.__detachedErrors.push(String(e.reason && (e.reason.stack || e.reason.message) || e.reason)));
+        return 1; })()`;
+      await c.evaluate(keepErrors);
+      await c.evaluate(keepErrors, 5000, { top: true });
+      const frameId = c.target.frameId;
+      const earlierErrors = c.pageErrors.slice();
+      c.close();
+      await sleep(stress * 1200 + 5000);
+      c = cdp(cdpUrl);
+      await c.send('Runtime.enable');
+      c.target.frameId = frameId;
+      c.pageErrors.push(...earlierErrors);
+      for (const top of [false, true]) {
+        c.pageErrors.push(...await c.evaluate('window.__detachedErrors || []', 10000, { top }));
+      }
+      const done = await waitFor(c, 'window.__stress && window.__stress.done', stress * 20000);
+      times = done.value ? await c.evaluate('window.__stress.out') : [{ error: 'the detached loop did not finish', ms: 0, at: '' }];
+    } else if (args['pair-stress-in-page']) {
+      // All in the page, one DevTools call: the debugger stays quiet while
+      // the transfers run (see the overhead measurement above for why).
+      times = await c.evaluate(`(async () => { const out = []; for (let i = 0; i < ${stress}; i++) out.push(await ${one}); return out; })()`,
+        stress * 25000);
+    } else {
+      for (let i = 0; i < stress; i++) times.push(await c.evaluate(one, 40000));
+    }
+    let failures = 0;
+    times.forEach((r, i) => { if (r.error) { failures++; console.log(`stress ${i}: ${r.at} failed after ${r.ms.toFixed(0)} ms: ${r.error}`); } });
+    results.stress = times;
+    const ok = times.filter((t) => !t.error).map((t) => t.ms).sort((a, b) => a - b);
+    check(`paired: ${stress} more transfers of 8.4 MB`, failures === 0,
+      `${failures} failed; median ${ok.length ? ok[Math.floor(ok.length / 2)].toFixed(0) : 'n/a'} ms`);
+  }
+  // Nothing dropped the link so far: no pair-link event before the drop made below.
+  const early = await c.evaluate(`window.__vrShell.diag.items.filter((e) => /^pair-link-(down|lost)/.test(e.event)).map((e) => e.event + ': ' + e.message)`);
+  results.earlyLinkEvents = early;
+  // A connection the browser closed by itself ("connection closed, not
+  // closed here"): Chrome's renderer closing the peer connection with no
+  // close() of the page's (checked with a probe on close()), no transport
+  // error and no garbage collection involved, as a large transfer begins; seen
+  // with DevTools attached or detached, against the real bridge (#213). The
+  // page resumes it, so it is recorded and said, not failed. Anything else (a
+  // channel the bridge closed, a close of the page's own) fails the check.
+  const browserClosed = early.filter((e) => /connection closed, not closed here/.test(e));
+  const otherDrops = early.filter((e) => !browserClosed.includes(e));
+  results.browserClosedDrops = browserClosed.length;
+  if (browserClosed.length) console.log(`note paired: ${browserClosed.length} drop(s) with the connection closed by the browser itself (resumed): ${browserClosed.join(' / ')}`);
+  check('paired: the link stayed up until the deliberate drop (browser-side closes aside)', !otherDrops.length, otherDrops.join(' / '));
   // A dropped link: resumed with the resume code, the page not reloaded.
   await c.evaluate('window.__pairMarker = 42');
   const t0 = Date.now();
@@ -396,7 +516,9 @@ async function pairedChecks() {
 // The whole run is bounded: a hang is a failure, not a stuck CI job.
 setTimeout(() => {
   console.log('FAIL run — timed out after 10 minutes');
-  try { if (backend) backend.kill('SIGKILL'); } catch { /* gone */ }
+  // Everything this run started goes with it, or the next run finds its ports taken.
+  for (const p of [backend, pairFake, chrome]) { try { if (p) p.kill('SIGKILL'); } catch { /* gone */ } }
+  try { if (loaderServer) loaderServer.close(); } catch { /* closed */ }
   process.exit(2);
 }, 600000).unref();
 const cube = makeCube();
@@ -404,11 +526,13 @@ const cube = makeCube();
 const cubeB = SMOKE ? null : makeCube('synthetic_ra0.fits', { shape: [24, 40, 48], ra: 0.0 });
 writeFileSync(backendLog, '');
 let c = null;
+let cdpUrl = '';   // the page's DevTools address (to attach again after a detached stress)
 let exitCode = 1;
 try {
   await startBackend(tokenA);
   if (PAIRED) { writeFileSync(join(OUT, 'pair_fake.log'), ''); await startLoader(); await startPairFake(tokenA); }
   const { ws } = await launch();
+  cdpUrl = ws;
   c = cdp(ws);
   await c.send('Page.enable');
   // A focused, active page (see the flags in launch()).

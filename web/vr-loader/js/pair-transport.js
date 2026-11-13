@@ -53,6 +53,11 @@ function abortError(signal) {
 
 const NULL_BODY = new Set([101, 103, 204, 205, 304]);
 
+/** Methods a dropped link may send again after a resume (they change
+ *  nothing). A request of another method may say it changes nothing too,
+ *  with `idempotent: true` in its init (a field fetch() itself ignores). */
+const IDEMPOTENT = new Set(['GET', 'HEAD']);
+
 /**
  * fetch() over an `api` channel. `send(frame)` puts a frame on the channel
  * (a PacedSender, or a relay to one); frames that arrive go to receive().
@@ -62,6 +67,15 @@ const NULL_BODY = new Set([101, 103, 204, 205, 304]);
  * share one channel (the loader's own asset requests take the even ids, the
  * page's the odd ones). `isOpen()` false: requests fail at once, as a fetch
  * to a backend that is down.
+ *
+ * A dropped link that may come back (the loader resumes it): hold() keeps
+ * the GET and HEAD requests in flight (and those marked `idempotent`) and
+ * fails the others; resend() sends
+ * the kept ones again once the link is back, and their callers see one
+ * answer. A body that had begun goes on where it stopped only when both
+ * answers carry the same strong ETag and Content-Length (the same bytes);
+ * otherwise, and when the second body ends short, the body fails (a network
+ * error the caller can retry). failAll() fails everything, kept or not.
  */
 export class ApiClient {
   constructor(send, { idStart = 1, idStep = 1, isOpen = () => true, sender = null } = {}) {
@@ -70,8 +84,9 @@ export class ApiClient {
     this.nextId = idStart;
     this.idStep = idStep;
     this.isOpen = isOpen;
-    this.pending = new Map();   // id -> {resolve, reject, controller, status, signal, onAbort}
-    this.stats = { requests: 0, bytesIn: 0, bytesOut: 0, cancels: 0 };
+    this.pending = new Map();   // id -> request state (see fetch)
+    this.held = [];             // requests kept over a drop, to send again
+    this.stats = { requests: 0, bytesIn: 0, bytesOut: 0, cancels: 0, resent: 0 };
   }
 
   _id() {
@@ -91,47 +106,60 @@ export class ApiClient {
     try {
       if (init.body !== undefined && init.body !== null) bytes = toBytes(init.body);
     } catch (err) { return Promise.reject(err); }
-    const id = this._id();
     this.stats.requests++;
     return new Promise((resolve, reject) => {
-      const p = { resolve, reject, controller: null, status: 0, signal, onAbort: null, done: false };
-      this.pending.set(id, p);
+      const p = {
+        id: 0, resolve, reject, controller: null, status: 0, length: null, etag: null, signal, onAbort: null,
+        method, path: String(path), headers: requestHeaders(init.headers), bytes,
+        idempotent: IDEMPOTENT.has(method) || init.idempotent === true,
+        gotRes: false, delivered: 0, skip: 0,
+      };
       if (signal) {
-        p.onAbort = () => this._abort(id, abortError(signal));
+        p.onAbort = () => this._abort(p, abortError(signal));
         signal.addEventListener('abort', p.onAbort, { once: true });
       }
-      this._send(JSON.stringify({ t: 'req', id, method, path: String(path), headers: requestHeaders(init.headers), body: !!bytes }));
-      if (bytes) {
-        for (const f of bodyChunks(id, bytes)) this._send(f);
-        this.stats.bytesOut += bytes.byteLength;
-      }
+      this._start(p);
     });
   }
 
-  _finish(id) {
-    const p = this.pending.get(id);
-    if (!p) return null;
-    this.pending.delete(id);
-    p.done = true;
-    if (p.signal && p.onAbort) p.signal.removeEventListener('abort', p.onAbort);
-    return p;
+  /** Sends request `p` under a new id. */
+  _start(p) {
+    p.id = this._id();
+    p.gotRes = false;
+    this.pending.set(p.id, p);
+    this._send(JSON.stringify({ t: 'req', id: p.id, method: p.method, path: p.path, headers: p.headers, body: !!p.bytes }));
+    if (p.bytes) {
+      for (const f of bodyChunks(p.id, p.bytes)) this._send(f);
+      this.stats.bytesOut += p.bytes.byteLength;
+    }
   }
 
-  _fail(id, err) {
-    const p = this._finish(id);
-    if (!p) return;
+  _finish(p) {
+    if (this.pending.get(p.id) === p) this.pending.delete(p.id);
+    const i = this.held.indexOf(p);
+    if (i >= 0) this.held.splice(i, 1);
+    if (p.signal && p.onAbort) p.signal.removeEventListener('abort', p.onAbort);
+    p.onAbort = null;
+  }
+
+  _fail(p, err) {
+    this._finish(p);
     if (p.controller) { try { p.controller.error(err); } catch { /* closed */ } } else p.reject(err);
   }
 
-  _abort(id, err) {
-    if (!this.pending.has(id)) return;
+  _abort(p, err) {
+    const live = this.pending.get(p.id) === p;
+    if (!live && !this.held.includes(p)) return;
     this.stats.cancels++;
-    const cancel = JSON.stringify({ t: 'cancel', id });
-    if (this.sender) {
-      this.sender.unqueue(id);
-      this.sender.urgent(cancel);
-    } else this._send(cancel);
-    this._fail(id, err);
+    if (live) {
+      // A held request is not on the wire: nothing to cancel there.
+      const cancel = JSON.stringify({ t: 'cancel', id: p.id });
+      if (this.sender) {
+        this.sender.unqueue(p.id);
+        this.sender.urgent(cancel);
+      } else this._send(cancel);
+    }
+    this._fail(p, err);
   }
 
   /** A frame from the channel (text or ArrayBuffer). */
@@ -142,47 +170,105 @@ export class ApiClient {
       if (!m || !Number.isInteger(m.id)) return;
       const p = this.pending.get(m.id);
       if (!p) return;
-      if (m.t === 'res' && !p.controller) this._respond(m.id, p, m);
-      else if (m.t === 'err') this._fail(m.id, new TypeError(String(m.message || 'the bridge could not reach the backend')));
-      else if (m.t === 'cancel') this._fail(m.id, new TypeError('the backend cancelled the request'));
+      if (m.t === 'res' && !p.gotRes) this._respond(p, m);
+      else if (m.t === 'err') this._fail(p, new TypeError(String(m.message || 'the bridge could not reach the backend')));
+      else if (m.t === 'cancel') this._fail(p, new TypeError('the backend cancelled the request'));
       return;
     }
     const c = decodeChunk(data);
     if (!c) return;
     const p = this.pending.get(c.id);
-    if (!p || !p.controller) return;     // a chunk after a cancel, or before its res: dropped
+    if (!p || !p.gotRes) return;     // a chunk after a cancel, or before its res: dropped
     this.stats.bytesIn += c.payload.byteLength;
-    if (!p.nullBody && c.payload.byteLength) {
-      try { p.controller.enqueue(c.payload.slice()); } catch { /* cancelled by the reader */ }
+    let payload = c.payload;
+    if (p.skip) {
+      // Sent again after a drop: what the caller already has is not repeated.
+      const n = Math.min(p.skip, payload.byteLength);
+      p.skip -= n;
+      payload = payload.subarray(n);
+    }
+    if (!p.nullBody && payload.byteLength) {
+      p.delivered += payload.byteLength;
+      try { p.controller.enqueue(payload.slice()); } catch { /* cancelled by the reader */ }
     }
     if (c.last) {
-      this._finish(c.id);
+      if (p.resent && !p.nullBody && (p.skip > 0 || (p.length !== null && p.delivered !== Number(p.length)))) {
+        // The answer sent again ended before the caller had all of it.
+        this._fail(p, new TypeError('the answer ended short after the link to the computer came back'));
+        return;
+      }
+      this._finish(p);
       try { p.controller.close(); } catch { /* cancelled */ }
     }
   }
 
-  _respond(id, p, m) {
+  _respond(p, m) {
     const status = Number(m.status) || 0;
+    const headers = headerPairs(m.headers);
+    const header = (name) => { const h = headers.find(([k]) => k.toLowerCase() === name); return h ? h[1].trim() : null; };
+    const length = header('content-length');
+    const etag = header('etag');
+    if (p.controller) {
+      // The answer to a request sent again after a drop, whose caller has the
+      // first answer already: it must be the same answer, and when part of
+      // its body was delivered, provably the same bytes.
+      const strong = (t) => !!t && !/^W\//.test(t);
+      const same = status === p.status && length === p.length
+        && (p.delivered === 0 || (strong(etag) && etag === p.etag && length !== null));
+      if (!same) {
+        this._abort(p, new TypeError('the answer changed while the link to the computer was down'));
+        return;
+      }
+      p.gotRes = true;
+      return;
+    }
     const client = this;
     const stream = new ReadableStream({
       start(controller) { p.controller = controller; },
-      cancel() { client._abort(id, new TypeError('body cancelled')); },
+      cancel() { client._abort(p, new TypeError('body cancelled')); },
     });
-    p.nullBody = NULL_BODY.has(status);
+    // A HEAD answer may name a length but never has a body.
+    p.nullBody = NULL_BODY.has(status) || p.method === 'HEAD';
     let resp;
     try {
-      resp = new Response(p.nullBody ? null : stream, { status: status >= 200 && status <= 599 ? status : 502, headers: headerPairs(m.headers) });
+      resp = new Response(p.nullBody ? null : stream, { status: status >= 200 && status <= 599 ? status : 502, headers });
     } catch (err) {
-      this._abort(id, err);
+      p.controller = null;
+      this._abort(p, err);
       return;
     }
+    p.gotRes = true;
     p.status = status;
+    p.length = length;
+    p.etag = etag;
     p.resolve(resp);
   }
 
-  /** The link is gone: every request in flight fails as a fetch to a vanished server. */
+  /** The link dropped and may come back: GET and HEAD requests in flight are
+   *  kept for resend(), the others fail as a fetch to a vanished server. */
+  hold(why = 'the link to the computer dropped') {
+    for (const p of [...this.pending.values()]) {
+      this.pending.delete(p.id);
+      if (p.idempotent) this.held.push(p);
+      else this._fail(p, new TypeError(why));
+    }
+  }
+
+  /** The link is back: the kept requests go again (new ids). */
+  resend() {
+    const again = this.held.splice(0);
+    for (const p of again) {
+      p.skip = p.delivered;
+      p.resent = true;
+      this.stats.resent++;
+      this._start(p);
+    }
+  }
+
+  /** The link is gone for good: every request fails, kept ones too. */
   failAll(why = 'the link to the computer dropped') {
-    for (const id of [...this.pending.keys()]) this._fail(id, new TypeError(why));
+    for (const p of [...this.pending.values(), ...this.held]) this._fail(p, new TypeError(why));
+    this.held = [];
   }
 }
 
