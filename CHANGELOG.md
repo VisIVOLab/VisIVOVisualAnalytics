@@ -8,6 +8,14 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR headset: no more black world on Quest Browser 154.** The page
+  created its WebGL layer without an alpha channel. Quest Browser 154 gives
+  such a layer an incomplete framebuffer, so every draw failed: the headset
+  showed black, with no cube and no controllers. The layer now always has an
+  alpha channel; the page still clears to opaque black in VR, so nothing
+  changes on screen. The request for the display rate is also bounded to
+  1.5 s, so a browser that never answers it cannot delay the first frame.
+  Found and checked on a Quest 3.
 - **Headset pairing documented (#215, part of #210).** Pairing by code is now
   the first way into the headset in the VR quickstart (open the cube, *Open in
   VR Headset…*, type the code or scan the QR code on the Quest, install the
