@@ -166,7 +166,7 @@ inline qint64 parseHttpDate(const QString &date)
 {
     QString text = date.trimmed();
     if (text.endsWith(u" GMT") || text.endsWith(u" UTC"))
-        text = text.left(text.size() - 3) + u"+0000";
+        text = text.left(text.size() - 3) + QStringLiteral("+0000");
     const QDateTime t = QDateTime::fromString(text, Qt::RFC2822Date);
     return t.isValid() ? t.toMSecsSinceEpoch() : -1;
 }
