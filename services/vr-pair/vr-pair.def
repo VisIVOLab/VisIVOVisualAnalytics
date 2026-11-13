@@ -1,0 +1,30 @@
+Bootstrap: docker
+From: python:3.12-slim
+
+%labels
+    Description VisIVO VR pairing service (visivo-pair/1)
+
+%help
+    The VisIVO VR pairing service, for hosts without Docker.
+    Build (in services/vr-pair/):  apptainer build vr-pair.sif vr-pair.def
+    Run:  VR_PAIR_BIND=127.0.0.1 VR_PAIR_PORT=8765 \
+          VR_PAIR_ALLOWED_ORIGINS=https://vr.example.org \
+          apptainer run vr-pair.sif
+    Configuration through the VR_PAIR_* variables: see README.md.
+
+%files
+    requirements.txt /app/requirements.txt
+    vr_pair_service.py /app/vr_pair_service.py
+
+%post
+    pip install --no-cache-dir -r /app/requirements.txt
+
+%environment
+    export PYTHONDONTWRITEBYTECODE=1
+    export PYTHONUNBUFFERED=1
+
+%runscript
+    exec python /app/vr_pair_service.py "$@"
+
+%startscript
+    exec python /app/vr_pair_service.py
