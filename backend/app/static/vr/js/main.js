@@ -32,6 +32,8 @@ import { CARD_PX, CARD_SIZE } from './notice.js';
 import { pageBuild, PAGE_VR_API, isHeadsetBrowser, reopenCube, LoadTracker, supersededLoad, PendingReopen } from './lifecycle.js';
 import { shouldShowGuide } from './onboarding.js';
 import { EyeBufferGovernor, qualityNote, cubeBudget, spvAtFloor } from './quality.js';
+// Measurement records and the guided measurement run (issue #224).
+import { createMeasure, recordMessage } from './measure-run.js';
 
 const $ = (id) => document.getElementById(id);
 const query = new URLSearchParams(window.location.search);
@@ -173,6 +175,7 @@ const shell = createShell({
     paired: () => isPaired(),
     newCode: () => requestNewCode(),
     transport: () => transportInfo(),
+    onAction: (id) => { if (id === 'measure-cancel') measure.cancel('cancelled by the viewer'); },
   },
 });
 requestHooks.onFailure = (err, path) => shell.requestFailed(err, path);
@@ -182,6 +185,7 @@ refiner.onLifecycle = (name, detail) => shell.log('warning', name, detail);
 // that cannot be resumed asks for a new code.
 onLinkChange((state, reason) => {
   shell.log(state === 'up' ? 'info' : 'warning', `pair-link-${state}`, reason);
+  measure.event('link', { state, reason: String(reason || '').slice(0, 160) });
   if (state === 'lost') shell.notify('pair-lost', { detail: reason });
   else if (state === 'up') { shell.clearNotice('pair-lost'); shell.life.retryNow(); refiner.retrySoon(); }
 });
@@ -476,7 +480,28 @@ async function withLoading(fn) {
   // installed nothing, and a recovery started after it is still valid.
   state.loading++;
   state.loadGen++;
-  try { return await fn(); } finally { state.loading--; }
+  try { return await measuredLoad(fn); } finally { state.loading--; }
+}
+
+/** A load's start and end in the measurement record (issue #224), with the
+ *  figures of the cube it put on show (installCube's state.load). */
+async function measuredLoad(fn) {
+  const t0 = performance.now();
+  const n = state.loadGen;
+  measure.event('load-start', { gen: n });
+  let ok = false;
+  try {
+    const r = await fn();
+    ok = true;
+    return r;
+  } finally {
+    const l = state.load || {};
+    const c = state.cube;
+    measure.event('load-end', { gen: n, ok, ms: Math.round(performance.now() - t0),
+      ...(ok && c ? { mb: l.mb ?? null, reduce_ms: l.reduceMs ?? null, transfer_ms: l.transferMs ?? null,
+        upload_ms: l.uploadMs ?? null, open_ms: l.openInfoMs ?? null, pyramid_build_ms: l.pyramidBuildMs ?? null,
+        dims: c.dims, factors: c.factors, encoding: c.encoding } : {}) });
+  }
 }
 
 /**
@@ -823,6 +848,7 @@ function installCube(info, cube, open, path = '') {
   // supersedes a recovery under way for the previous one (reopenCube).
   state.loadGen++;
   layers.onCube();
+  measure.cubeChanged();
   const up = R.setVolume(cube);
   state.info = info;
   state.cube = cube;
@@ -1274,7 +1300,8 @@ function menuView() {
       status: look.status, statusError: look.statusError },
     layers: { title: lp.title, note: lp.note, buttons: ui.page === 'layers' ? lp.buttons : null },
     settings: { leftHanded: settings.leftHanded, labels: settings.labels, haptics: settings.haptics, hud: state.hud,
-      governor: state.governorOn, refine: refiner.enabled, refineDepth: refiner.useDepth, refineScaleText: `${refiner.o.scale}×` },
+      governor: state.governorOn, refine: refiner.enabled, refineDepth: refiner.useDepth, refineScaleText: `${refiner.o.scale}×`,
+      record: measure.recording, measureRunText: measure.running ? 'Cancel run' : 'Run protocol' },
     help: ui.page === 'help' ? { helpMode: hm, helpLines: helpPage(hm) } : null,
   };
 }
@@ -1489,6 +1516,8 @@ function applyMenu(a) {
     else if (k === 'hud') state.hud = !state.hud;
     else if (k === 'governor') { state.governorOn = !state.governorOn; $('governor').checked = state.governorOn; governor.value = state.spv; }
     else if (k === 'refine') setRefine(!refiner.enabled);
+    else if (k === 'record') { measure.toggleRecord(); updateMeasureDom(); }
+    else if (k === 'measureRun') startOrCancelRun();
     else if (k === 'refineDepth') { $('refine-depth').checked = !refiner.useDepth; refiner.useDepth = $('refine-depth').checked; saveRefine(); }
     else if (k === 'refineScale') {
       const steps = [0.4, 0.6, 0.8, 1];
@@ -1867,6 +1896,8 @@ function desktopFrame(time) {
   gl.clearColor(...DESKTOP_BG, 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   state.model = M.identity();
+  // The measurement run's desktop motion (?debug, or its auto option): the camera turns.
+  if (measure.running) cam.yaw += measure.autoYaw(lastDesktop ? time - lastDesktop : 0);
   syncSelection();
   R.beginFrame();
   lastDesktopView = desktopView();
@@ -1886,7 +1917,9 @@ function desktopFrame(time) {
   R.endFrame();
   const interval = lastDesktop ? time - lastDesktop : 0;
   lastDesktop = time;
-  stats.push(interval, performance.now() - t0, R.gpuMs);
+  const cpuMs = performance.now() - t0;
+  stats.push(interval, cpuMs, R.gpuMs);
+  measure.frame(interval, cpuMs, R.gpuMs);
   if (state.governorOn) governor.update(interval, 1000 / 60);
   if (time - hudLast > 250) { hudLast = time; $('hud-text').textContent = hudLines(0).join('\n'); }
 }
@@ -1896,6 +1929,58 @@ function startDesktop() {
 
 // ── WebXR ───────────────────────────────────────────────────────────────────
 let xr = null;
+
+// ── Measurement records and the guided run (issue #224) ─────────────────────
+const measure = createMeasure({
+  backend: () => { try { return tokenField.value.trim() ? ensureBackend() : null; } catch { return null; } },
+  page: PAGE,
+  backendInfo: () => shell.life.info,
+  gpu: () => gpuInfo(),
+  xr: () => xr,
+  canvas,
+  wrist: (hz) => stats.summary(hz ? 1000 / hz : 0),
+  refiner,
+  governorState: () => state.governorOn,
+  setGovernor: (on) => { state.governorOn = on; $('governor').checked = on; governor.value = state.spv; },
+  effectiveSpv: () => effectiveSpv(),
+  state,
+  cubeInfo: () => state.info,
+  lookKey: () => currentLook().key,
+  mode: () => ({ mode: ui.mode, tool: ui.mode === 'select' ? selection.sel.tool : ui.mode === 'clip' ? ui.clipTool : null }),
+  uiFlags: () => ({ menu: !!ui.menu.open, card: !!shell.cardOnShow, hud: !!state.hud }),
+  notices: { show: (n) => { shell.notices.show(n, { force: true }); shell.render(); }, clear: (id) => shell.clearNotice(id) },
+  buzz: (kind) => { buzz('primary', kind); buzz('secondary', kind); },
+  log: (level, event, message) => shell.log(level, event, message),
+  paired: () => isPaired(),
+  hostname: window.location.hostname,
+  headset: isHeadsetBrowser(navigator.userAgent),
+  onChange: () => updateMeasureDom(),
+});
+// What the record keeps besides the samples: the refinement's stop→refined
+// times and the page's own log events (scrubbed: no token, no path).
+refiner.observers.push((name, d) => measure.event(name, d));
+shell.diag.onAdd((e) => { if (e.level !== 'debug' && !/^measure-/.test(e.event)) measure.event('log', { level: e.level, event: e.event, message: recordMessage(e.message) }); });
+
+function updateMeasureDom() {
+  $('record').checked = measure.recording;
+  $('measure-run').textContent = measure.running ? 'Cancel the measurement run' : 'Run measurement protocol';
+  $('measure-status').textContent = measure.statusText();
+}
+$('record').addEventListener('change', () => {
+  if ($('record').checked !== measure.recording) measure.toggleRecord();
+  updateMeasureDom();
+});
+$('measure-run').addEventListener('click', () => startOrCancelRun());
+function startOrCancelRun(opts = {}) {
+  if (measure.running) { measure.cancel('cancelled by the viewer'); return; }
+  const r = measure.runProtocol({ second: $('measure-second').checked || query.has('measure_second'),
+    auto: query.has('measure_auto'), ...opts });
+  if (!r.ok) shell.notices.show({ id: 'measure-msg', level: 'info', autoHideMs: 5000, title: 'Measurement run',
+    lines: [`Not started: ${r.why}.`], actions: [{ id: 'dismiss', label: 'OK' }] }, { force: true });
+  shell.render();
+  updateMeasureDom();
+}
+setInterval(updateMeasureDom, 1000);
 
 async function checkXR() {
   if (!navigator.xr) {
@@ -1955,6 +2040,10 @@ async function enterXR(mode, bench) {
   shell.xrStarted();
   shell.clearNotice('xr-ended');
   shell.log('info', 'xr-start', `${mode}${bench ? ' (benchmark)' : ''}, ${targetHz} Hz, eye buffer ${layer.framebufferWidth}×${layer.framebufferHeight}`);
+  measure.event('xr-start', { mode: mode === 'immersive-ar' ? 'ar' : 'vr', bench: !!bench, display_hz: targetHz,
+    eye: [layer.framebufferWidth, layer.framebufferHeight], scale: fbScale,
+    foveation: 'fixedFoveation' in layer ? layer.fixedFoveation : null, rates: session.supportedFrameRates ? Array.from(session.supportedFrameRates) : null });
+  measure.xrStarted();
   // The controls guide, the first time in VR (kept in the settings).
   if (shouldShowGuide(settings, { bench })) shell.showGuide(0);
   session.addEventListener('end', () => {
@@ -1967,6 +2056,8 @@ async function enterXR(mode, bench) {
       persist();
     }
     xr = null;
+    measure.event('xr-end', { by: endedBy || 'the system' });
+    measure.xrEnded();
     if (endedBy) {
       shell.log('info', 'xr-end', `by ${endedBy}; ${summary}`);
     } else {
@@ -2261,6 +2352,7 @@ function onXRFrame(time, frame) {
   const cpu = performance.now() - t0;
   stats.push(interval, cpu, R.gpuMs);
   if (xr.bench) xr.bench.record(interval, cpu, R.gpuMs);
+  else measure.frame(interval, cpu, R.gpuMs);
   if (state.governorOn && !xr.bench) {
     governor.update(interval, 1000 / xr.targetHz);
     // Second stage (epic #166): samples per voxel at 0.5 or less and frames
@@ -2487,6 +2579,7 @@ if (query.has('debug')) {
   window.__vrLayers = layers;
   window.__vrStats = (hz = 0) => stats.summary(hz ? 1000 / hz : 0);
   window.__vrShell = shell;
+  window.__vrMeasure = { measure, start: (opts) => startOrCancelRun(opts) };
   window.__vrLink = linkState;
   window.__vrState = state;
   window.__vrGL = gl;
@@ -2750,6 +2843,8 @@ $('copy-diag').addEventListener('click', async () => {
 shell.start();
 checkXR();
 updateLabels();
+if (query.has('record')) measure.startRecord('address');
+updateMeasureDom();
 if (query.has('bench')) {
   desktopBench().catch((e) => { document.title = `BENCH FAILED ${e.message}`; console.error(e); });
 } else {

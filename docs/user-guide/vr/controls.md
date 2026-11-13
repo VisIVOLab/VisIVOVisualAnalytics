@@ -153,7 +153,8 @@ The tabs:
 - **Settings**: *Left-handed*, *Labels by the buttons*, *Haptics*, *Numbers on
   the wrist*, *Hold the frame rate*, *Refine with the full cube*, *Reproject
   refined frames with depth*, *Refined frame size* (0.4× to 1×, one step per
-  press).
+  press), *Record measurements* with, on the same row, *Run protocol* (*Cancel
+  run* while one runs); see [Recording measurements](reference.md#recording-measurements).
 - **Help**: the controls of a mode (the current one; *Explore*, *Select*,
   *Clip* show the others), for each of its tools, and *Guide*, which brings
   back a notice folded on the menu first, else the first-run guide.

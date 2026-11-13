@@ -8,6 +8,33 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR measurement records and a guided measurement run (#224, part of #166).**
+  The VR page records a session: *record measurements* on the page, the hand
+  menu's Settings → *Record measurements*, or `?record` in the address. One
+  sample a second (FPS, frame mean, p50 and p95, missed %, CPU and GPU time,
+  the frame intervals themselves, the wrist's numbers, eye buffer and display
+  rate, refinement on/off, its transport, size and quality, pose→frame and the
+  last stop→refined, the WebRTC video's and the pairing channel's link figures,
+  the cube's dataset id, binning and pyramid level) and events with their own
+  times (loads, enter/leave VR, link down/up, stop→refined, changes of
+  transport, quality or binning), after a header with the device, the setup,
+  the units and the definitions. Every figure is the page's own counter
+  (FrameStats, the refiner's quantiles), not a second definition. A new
+  authenticated route, `POST /v1/vr/measurements`, writes one JSON-lines file
+  per record in `VISIVO_VR_MEASURE_DIR` (default `~/.visivo/vr-measurements`),
+  over a direct link or the pairing bridge; sizes are bounded, strings are
+  scrubbed of tokens and paths, a resent batch is written once, and a record
+  that cannot be stored answers 507 without disturbing the session. *Run
+  measurement protocol* (page, or Settings → *Run protocol*) takes the loaded
+  cube through the reduced cube alone, refinement over JPEG and over WebRTC
+  video (optionally both at 0.6× refined size), each through timed phases
+  (hold still, turn slowly, turn and stop) with prompts on the message card
+  and pulses on the controllers, the governor held off, cancellable from the
+  card. `validation/vr_measure_report.py` turns records into Markdown and CSV
+  tables per condition and phase and a frame-time plot;
+  `validation/vr_lifecycle.mjs --measure` checks it end to end and measures
+  recording's cost (none measurable on the Mac's desktop page).
+
 - **VR headset: no more black world on Quest Browser 154.** The page
   created its WebGL layer without an alpha channel. Quest Browser 154 gives
   such a layer an incomplete framebuffer, so every draw failed: the headset

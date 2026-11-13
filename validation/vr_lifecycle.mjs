@@ -7,7 +7,7 @@
 // killed and restarted, the token changed under the page, and the
 // diagnostics text and the backend log scrubbed of the token.
 //
-//   node validation/vr_lifecycle.mjs [--smoke] [--regressions] [--menu] [--python PATH] [--chrome PATH]
+//   node validation/vr_lifecycle.mjs [--smoke] [--regressions] [--menu] [--measure] [--python PATH] [--chrome PATH]
 //        [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--out DIR] [--cube FILE]
 //
 // --smoke is what CI runs (tests.yml): start, load, first frame drawn, no page
@@ -17,6 +17,9 @@
 // to that smoke run, with the hand menu driven by the mouse (vr_menu.mjs,
 // issue #201; --menu runs that alone on the smoke run). CI runs both; the full
 // lifecycle run remains separate.
+// --measure (issue #224) adds the measurement record's checks to the smoke
+// run (validation/vr_measure.mjs): recording on vs off, a guided run through
+// every condition, the record read back and the report script run on it.
 // --paired (issue #213) runs the smoke (and --regressions) checks with the
 // page in the public loader (web/vr-loader/, served here on --loader-port),
 // paired over WebRTC data channels through validation/vr_pair_fake.py (a
@@ -39,6 +42,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { runRegressions } from './vr_regressions.mjs';
 import { runMenuChecks } from './vr_menu.mjs';
+import { runMeasureChecks } from './vr_measure.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => {
   if (v.startsWith('--')) a.push([v.slice(2), all[i + 1] && !all[i + 1].startsWith('--') ? all[i + 1] : true]);
@@ -47,7 +51,8 @@ const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..');
 const PAIRED = !!args.paired;
-const SMOKE = PAIRED || !!args.smoke || !!args.regressions || !!args.menu;
+const MEASURE = !!args.measure;
+const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu;
 const PY = args.python || process.env.VISIVO_PYTHON || 'python3';
 // `--chrome` given without a value (an empty shell variable) parses as true:
 // that is "not found", said at once rather than as a failed spawn later.
@@ -120,7 +125,8 @@ let backend = null;
 let backendLog = join(OUT, 'backend.log');
 async function startBackend(token) {
   const fd = openSync(backendLog, 'a');
-  const env = { ...process.env, VISIVO_TOKEN: token, PYTHONUNBUFFERED: '1' };
+  // Measurement records (issue #224) go to this run's own directory.
+  const env = { ...process.env, VISIVO_TOKEN: token, PYTHONUNBUFFERED: '1', VISIVO_VR_MEASURE_DIR: join(OUT, 'measurements') };
   const proc = spawn(PY, ['-m', 'uvicorn', 'app.main:app', '--host', 'localhost', '--port', String(PORT), '--log-level', 'info'],
     { cwd: join(REPO, 'backend'), env, stdio: ['ignore', fd, fd] });
   for (let i = 0; i < 600; i++) {
@@ -584,6 +590,8 @@ try {
 
   if (args.regressions || args.menu) await runMenuChecks({ c, check, waitFor, results });
   if (args.regressions) await runRegressions({ c, check, waitFor, api, python: PY, makeCube, token: tokenA, cube });
+  // Before the paired checks, which end the pairing.
+  if (MEASURE) await runMeasureChecks({ c, check, waitFor, results, out: OUT, python: PY, secrets: [tokenA, tokenB], paired: PAIRED });
   if (PAIRED) await pairedChecks();
 
   if (!SMOKE) {

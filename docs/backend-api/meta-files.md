@@ -413,6 +413,57 @@ The page applies the same rules before sending (`diagnostics.js`
 `scrubText`); both are tested against the same cases
 (`backend/tests/vr/scrub_cases.json`). Answer: `{"accepted": <n>}`.
 
+### `POST /v1/vr/measurements`
+A batch of a measurement record of the VR page (issue #224): the samples and
+events it records, appended to one JSON-lines file per record in
+`VISIVO_VR_MEASURE_DIR` (default `~/.visivo/vr-measurements/`), named
+`vr-measure-<record>.jsonl`. Needs the token; the page sends it directly or
+through the pairing bridge like any other request. What a record holds is
+described under
+[Recording measurements](../user-guide/vr/reference.md#recording-measurements).
+
+```json
+{ "record": "20261113-142233-a1b2c3d4", "seq": 3,
+  "lines": [ {"k": "s", "t": 4003.2, "dur": 1000.1, "frames": {"n": 72, "fps": 71.9}, "iv": [13.9, 14.0]},
+             {"k": "e", "t": 4100.5, "name": "refined-first", "data": {"ms": 150}} ] }
+```
+
+`record` is `YYYYMMDD-HHMMSS-` and 8 hex digits (the record's start, UTC);
+`seq` is the batch's number, from 0. Each line is written as sent, compact,
+with `"q": <seq>` added, and the batch's last line also `"qn": <its number
+of lines>`, which marks the batch as written whole (`q` and `qn` sent by the
+page are replaced by these). A batch whose number is
+not above the last one written whole is acknowledged and not written again
+(`"duplicate": true`), also after a backend restart (read back from the
+file's last `qn` line), so a batch resent after a lost answer is never
+written twice. A batch only partly written (a full disk in the middle of the
+append, or a crash) is cut off the file again, at once or when the record is
+next written, so it goes in whole when it is sent again.
+
+Answer: `{"accepted": <lines written>, "file": "vr-measure-<record>.jsonl",
+"bytes": <file size>}`: the file's name, never its directory.
+
+| Limit | Value | Beyond it |
+|---|---|---|
+| Body | 256 KiB | 413 |
+| Lines per request | 1–120 | 422 |
+| A line | an object with `"k"` one of `h` (header), `s` (sample), `e` (event); at most 32 KiB as sent | 422 |
+| Keys | 1–64 of `A–Z a–z 0–9 _ . , * -` and space | 422 |
+| Nesting, lists, strings | 6 levels; 512 items or keys; 2000 characters | 422 |
+| Numbers | finite (`NaN`, `Infinity` are written as `null`) | |
+| Per token, per sliding minute | 40 requests, 4000 lines | 429 with `Retry-After` |
+| A record | 64 MiB | 507 |
+| The directory | no new record once its `.jsonl` files hold 2 GiB | 507 |
+
+Every string is scrubbed with the rules of [`POST /v1/vr/log`](#post-v1vrlog)
+(tokens, render-session ids, directory paths) before it is written. Scrubbing
+and writing run in a worker thread. When the record cannot be written (a full
+disk, a directory that cannot be created or written, a record or directory
+over its size) the answer is **507** with the reason and no path (`cannot
+write the record (No space left on device)`); the page then stops sending
+that record and its session carries on. The backend log names the record's
+directory once, when the record starts.
+
 ### The render WebSocket's token (the VR page)
 The page opens `/v1/render/<id>/ws` with the subprotocols `visivo.v1` and
 `visivo-token.<token>`; the backend takes the token from there and answers

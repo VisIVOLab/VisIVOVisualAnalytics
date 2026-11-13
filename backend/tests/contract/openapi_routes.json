@@ -218,6 +218,7 @@
     "POST /v1/volume_render/grid",
     "POST /v1/volume_render/preview",
     "POST /v1/vr/log",
+    "POST /v1/vr/measurements",
     "POST /v1/vr/pair"
   ]
 }

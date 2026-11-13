@@ -387,6 +387,7 @@ it, and those it shares, are:
 - the page, its builds and its lifecycle: [The VR page](../../backend-api/meta-files.md#the-vr-page)
   ([`GET /v1/vr/info`](../../backend-api/meta-files.md#get-v1vrinfo),
   [`POST /v1/vr/log`](../../backend-api/meta-files.md#post-v1vrlog),
+  [`POST /v1/vr/measurements`](../../backend-api/meta-files.md#post-v1vrmeasurements),
   [the render WebSocket's token](../../backend-api/meta-files.md#the-render-websockets-token-the-vr-page)),
   and the desktop dialog's [`GET /v1/vr/backend_check`](../../backend-api/meta-files.md#get-v1vrbackend_check);
 - refinement: [`POST /v1/render/create_session`](../../backend-api/render.md#post-v1rendercreate_session),
@@ -429,6 +430,184 @@ For reference, the same page on a Mac (Apple M5 Max, Chrome, two
 
 A Quest 3 is several times slower than this GPU; its own numbers come from the
 benchmark above. (`?bench` on the page URL reruns this desktop measurement.)
+
+## Recording measurements
+
+The benchmark measures the GPU on generated cubes; a **record** keeps a real
+session: one sample a second and the session's events, each with its time,
+stored by the backend as one file per record (issue
+[#224](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/224)). Two
+records made with the same cube and settings can be compared line by line,
+and `validation/vr_measure_report.py` turns them into tables and a plot.
+
+**Starting and stopping.** Any of:
+
+- on the page: tick *record measurements* (under *Controls guide* and *Copy
+  diagnostics*); untick to stop;
+- in the headset: the hand menu's **Settings** tab, *Record measurements*;
+- `?record` in the page's address starts a record as soon as the page opens.
+
+The line under the switch says what is recorded (*Recording
+20261113-142233-a1b2c3d4: 95 samples, 31 events, 120 lines stored*) and the
+file's name once the backend has written it. Recording works over USB, over
+the network and paired through the public loader alike (its batches go
+through the same link as every other request).
+
+**Where the files land.** On the computer that runs the backend, in
+`VISIVO_VR_MEASURE_DIR` (set it in the backend's environment), by default
+`~/.visivo/vr-measurements/`, as `vr-measure-<record>.jsonl`: one JSON object
+per line. A record holds at most 64 MiB (about 18 hours) and no new record is
+started once the directory holds 2 GiB. When the backend cannot write (a full
+disk, a directory it may not write, a record over its size), the line under
+the switch says *not stored: …* and the session goes on unchanged.
+
+**What a record holds.** Three kinds of line (`"k"`), each with `"q"`, the
+number of the batch it came in (the batch's last line also has `"qn"`, its
+number of lines):
+
+- the **header** (`"k": "h"`), first: the format (`visivo-vr-measure/1`), the
+  record's id and start time (UTC), the page build and API, the backend's
+  version, the device (user agent, GPU name, its 3-D texture limit, timer
+  query, device memory), the link by kind only (`direct` over `loopback`,
+  `lan` or `remote`, or `paired`), VR's display rate, eye buffer, scale and
+  foveation when the record starts in VR, the settings, the cube (dataset id,
+  dimensions, encoding, binning, full shape, brick-pyramid level), and the
+  **units and definitions** of every field below;
+- a **sample** (`"k": "s"`) a second: `t` (ms since the record started) and
+  `dur` (ms its window covers); `frames`: `n`, `fps`, `mean`, `p50`, `p95`
+  (frame interval, ms), `missed_pct`, `cpu_mean`, `gpu_mean` (with `cpu_n`,
+`gpu_n`, how many values each is over), `target_hz`; `iv`:
+  the window's frame intervals themselves; `wrist`: the numbers on the wrist at
+  that moment; `display` (display rate, eye buffer, scale, foveation);
+  `render` (samples per voxel used and chosen, governor, steps per ray);
+  `refine` (on, status, motion, weight, `via` `jpeg` or `webrtc`, the
+  transport asked for, refined size, JPEG quality, depth, remote fps,
+  `pose_frame` n/p50/p95 as on the wrist, `pf`: the pose→frame times of the
+  frames that arrived in the window, the last stop→refined first and full,
+  server time and frame size); `video` (the WebRTC video's kbit/s, decode and
+  jitter ms, round trip and ICE candidate types); `pair` (the pairing data
+  channel's state, ICE, round trip, resumes, bytes in and out); `cube`; `look`
+  (a short hash of the transfer function and crop: equal hashes, equal look);
+  `ui` (menu open, card on show, numbers on the wrist); `proto` during a run;
+  `rec_ms` (the time the page took to build the previous sample);
+- an **event** (`"k": "e"`) with its own `t`, `name` and `data`: `record-start`,
+  `record-stop`, `xr-start` (mode, display rate, eye buffer, foveation, the
+  rates offered), `xr-end`, `load-start` and `load-end` (ms, MB, reduction,
+  transfer and upload ms, dimensions, binning), `refined-first` and
+  `refined-full` (stop→refined, ms), `change` (transport, refinement on or
+  off, refined size, JPEG quality, binning, eye buffer or display rate:
+  `from`, `to`), `link` (the pairing's link down, up, lost), `log` (the
+  page's own diagnostic events: backend unreachable and back, render socket
+  closed and reconnected, eye buffer lowered…), and the run's `protocol-start`,
+  `condition`, `phase`, `cue`, `condition-degraded`, `condition-skipped` and
+  `protocol-end`.
+
+```json
+{"k":"h","format":"visivo-vr-measure/1","record":"20261113-142233-a1b2c3d4","started":"2026-11-13T14:22:33.120Z","sample_ms":1000,"page":{"build":"53b7389ff5d5","api":1},"backend":{"version":"1.0.12","build":"53b7389ff5d5","vr_api":1},"device":{"user_agent":"Mozilla/5.0 (X11; Linux x86_64; Quest 3) … OculusBrowser/40.0 …","gpu":"Adreno (TM) 740","max_tex3d":2048,"timer_query":true,"device_memory_gb":8,"headset":true},"link":{"kind":"direct","host":"loopback"},"xr":{"mode":"vr","display_hz":72,"eye":[3360,1760],"scale":1,"chosen_scale":1,"foveation":1},"cube":{"dataset":"…","dims":[234,234,158],"encoding":"uint8","factors":[3,3,1],"binning":"mean"},"units":{…},"definitions":{…},"q":0}
+{"k":"s","t":12003.4,"dur":1000.2,"proto":{"condition":"jpeg","phase":"still","part":"measure"},"xr":"vr","mode":"explore","frames":{"n":72,"fps":71.95,"mean":13.9,"p50":13.89,"p95":14.2,"missed_pct":0,"cpu_mean":2.1,"gpu_mean":6.4,"target_hz":72},"iv":[13.89,13.9,…],"refine":{"on":true,"status":"refined","motion":"still","via":"jpeg","pose_frame":{"n":120,"p50":96,"p95":141},"pf":[95.2,101.7],…},"look":"9f2c41d0","rec_ms":0.3,"q":2}
+{"k":"e","t":12210.5,"name":"refined-first","data":{"ms":150},"proto":{"condition":"jpeg","phase":"stops","part":"measure"},"q":3}
+```
+
+Every figure is computed by the code that computes what the page shows, not
+by a second definition: the frame figures are volume.js `FrameStats` (the
+wrist's FPS, frame mean and 95th percentile, missed %, CPU and GPU time) over
+the sample's own one-second window instead of the wrist's last 240 frames;
+FPS is 1000 / the mean frame interval; a frame is **missed** when its interval
+is above 1.5 × the display's frame time (none is counted in a desktop
+browser, which has no display rate: `missed_pct` is `null` there);
+`p50`, `p95` of frame intervals are `sorted[floor(q (n − 1))]`. pose→frame
+(from the pose sent to the refined frame decoded and ready to show) and
+stop→refined (from the end of a motion to the first refined frame shown, and
+to the frame at full weight) are the refiner's own, as on the wrist; their
+quantiles are `sorted[min(n − 1, floor(q n))]`. GPU time is the GL timer
+query's latest result at each frame, so it may repeat a value while the next
+query is pending.
+
+The record holds **no token, no path and no personal data**: the cube is
+named by its dataset id, never its file; the link by its kind, never its
+address; the page's log events lose their paths; and the backend scrubs
+every string again with the [log's rules](../../backend-api/meta-files.md#post-v1vrlog)
+before writing.
+
+**What recording costs.** Measured in a desktop browser on the Mac
+(validation/vr_lifecycle.mjs `--measure`, 3 × 5 s off and 3 × 5 s on,
+alternated): frame interval 16.666 ms with recording off and on, CPU per frame
+0.21 ms off and on (within ±0.01 ms between runs), and 0.3 ms (at most
+0.4 ms) to build a sample once a second, outside the frame's own timing. On
+the Quest 3 each sample's `rec_ms` says the same for the headset.
+
+### The guided measurement run
+
+*Run measurement protocol* (on the page next to the switch, or the hand
+menu's **Settings** → *Run protocol*, on the *Record measurements* row) takes
+the loaded cube through fixed **conditions**, each through the same timed
+**phases**; a record is started for the run if none is on (and stopped at
+its end). Tick *also at 0.6× refined size* on the page (or add
+`?measure_second`) for the two optional conditions.
+
+| Condition | What it is |
+|---|---|
+| `local` | the reduced cube on the headset only, refinement off |
+| `jpeg` | refinement over JPEG frames on the WebSocket |
+| `webrtc` | refinement over WebRTC (H.264) video |
+| `jpeg-small`, `webrtc-small` (optional) | the same two with refined frames at 0.6× |
+
+| Phase | Lead-in (prompt in front) | Measured | Asked of you |
+|---|---|---|---|
+| settle | 5 s | none | the condition is set up; hold still and look at the cube |
+| still | 3 s | 15 s | keep your head still, looking at the cube |
+| turn | 3 s | 15 s | turn your head slowly left and right, keeping the cube in view |
+| stops | 3 s | 20 s | at each long pulse turn, at each short pulse stop (2 s each, five times) |
+
+A condition takes 64 s, the three of them 3 min 12 s (5 min 20 s with the
+optional two), plus the time a refined condition needs to connect: its
+settle phase starts once the refined frames come over the condition's
+transport, and a condition not ready within 20 s (WebRTC blocked by a
+firewall, no render sessions for a synthetic cube) is skipped with its
+reason in the record. A refined condition that stops holding during its steps
+(WebRTC given up for JPEG, the render session gone for good) is skipped from
+there, so nothing is measured under its name over the other transport; a
+moment's gap (a socket reconnecting) is recorded once per step as
+`condition-degraded`.
+
+Each step's prompt appears on the message card in front of you during its
+lead-in, then moves aside (left and lower) for the measured part, and a
+pulse on both controllers marks the start of each measured part. Every
+sample and event carries `proto` (condition, phase, and `part`: `lead` or
+`measure`), so only the measured parts are compared. **Cancel** on the card
+stops the run at once (leaving VR, or loading another cube, cancels it too);
+what was measured stays in the record.
+
+Within a run nothing changes but the condition: the transfer function, the
+crop, the binning and the threshold are left as they are; the **governor is
+held off** for the whole run (it would lower the samples per voxel or the eye
+buffer under one condition and keep them lowered for the next); each refined
+condition starts from a new render session; and the prompt's text changes
+only when a step starts. When it ends, refinement, its transport and refined
+size, and the governor are set back as they were. The report says, for each
+condition and phase, whether the look, binning, eye buffer, display rate and
+samples per voxel were held equal and, for a refined condition, whether
+every sample came over its transport.
+
+### The report
+
+```sh
+python validation/vr_measure_report.py ~/.visivo/vr-measurements/vr-measure-<record>.jsonl [more records] --out DIR
+```
+
+writes `report.md` (per record: device, link, cube; per condition and phase:
+seconds, frames, FPS, frame mean, p50 and p95, missed %, display rate, CPU
+and GPU ms, pose→frame p50/p95 and count, stop→refined first and full p50/p95
+and count, the share of samples via JPEG and via WebRTC, whether the
+conditions were held equal (look, binning, eye buffer, display rate,
+samples per voxel, and the transport for a refined condition); then loads, link drops and resumes, render socket
+reconnections and skipped conditions), `per_phase.csv` (the same rows) and
+`frame_time.png` (every frame interval over time, one colour per condition,
+with the display's frame time and the missed-frame limit). It pools the raw
+values of a phase's measured samples with the same definitions as the page
+(CPU and GPU means weighted by `cpu_n`, `gpu_n`).
+Samples recorded outside a run are grouped as `session:local`,
+`session:refine-jpeg` or `session:refine-webrtc`.
 
 ## Measurements
 
@@ -764,6 +943,43 @@ yet fast.
 These checks need the headset; the page shows the numbers to read. Note each
 value and whether each step behaves as described. How to work the hand menu,
 the modes and the tools is in [Controls and the hand menu](controls.md).
+
+### Recording measurements, with the headset (#224)
+
+A record replaces copying numbers by hand for the checks below; it is what
+the [report](#the-report) is made from.
+
+1. Start the backend (or the desktop application) on the Mac; to choose where
+   the records go, set `VISIVO_VR_MEASURE_DIR` before starting it (else
+   `~/.visivo/vr-measurements/`). Connect the headset over USB (`adb reverse
+   tcp:8000 tcp:8000`) and open the page with `?record` added to its address
+   (or tick *record measurements*), load HCG 44 with auto binning, leave
+   *Refresh* at 72 Hz, *Resolution* 1 and *Foveation* as it is, and note them.
+2. Enter VR. Open the hand menu's **Settings**: *Record measurements* is on.
+   Press **Run protocol** on the same row. Follow the card: hold still, turn
+   slowly, turn and stop at the pulses; read each prompt during its 3 s
+   lead-in (the card then moves aside). The run takes about 3 min 12 s plus
+   the refined conditions' connection; don't open the menu during it. If a
+   condition is skipped, the record says why; note it.
+3. At the end the card says *Measurement run complete* with the record's
+   file. Leave VR; the line under *record measurements* gives the record's id,
+   its samples and the lines stored (*0 dropped* expected). Untick it.
+4. Repeat 1–3 over Wi-Fi (`adb connect`, or the page opened by the Mac's
+   address), and once paired by code through the public loader, each giving
+   a record of its own.
+5. On the Mac:
+   `python validation/vr_measure_report.py ~/.visivo/vr-measurements/vr-measure-*.jsonl --out report`,
+   and send `report/report.md`, `report/per_phase.csv`, `report/frame_time.png`
+   and the `.jsonl` files. Check in the report that every row says *held
+   equal: yes*, that the `webrtc` rows are 100 % *via WebRTC* and the `jpeg`
+   rows 100 % *via JPEG*, and read FPS, missed % and frame p95 for `local` vs
+   `jpeg` vs `webrtc` in the *turn* phase (they must be the same within the
+   noise: refinement never holds a frame back), pose→frame p50/p95 in *still*
+   and stop→refined in *stops*.
+6. The cost of recording itself: each sample's `rec_ms` (time to build the
+   previous sample, once a second) should stay under 1 ms on the Quest; the
+   report's FPS and missed % with a record running should equal what the
+   wrist shows without one.
 
 ### Controls and the hand menu (#201)
 

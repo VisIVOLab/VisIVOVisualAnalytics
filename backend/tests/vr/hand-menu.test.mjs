@@ -66,7 +66,7 @@ test('every former control has a place: on the menu, or on a stick or button of 
   for (const id of ['clip-all', 'clip-reset', 'sub:select:probe', 'sub:select:lasso', 'sub:select:box', 'sub:clip:slab',
     'sub:clip:box', 'mode:explore', 'mode:select', 'mode:clip', 'undo', 'reset-view', 'sel-clear']) assert.ok(mode.includes(id), id);
   assert.ok(look.includes('mode:0') && look.includes('mode:1'), 'emission / maximum intensity');
-  for (const id of ['set:hud', 'set:governor', 'set:leftHanded', 'set:labels', 'set:haptics', 'set:refine']) assert.ok(settings.includes(id), id);
+  for (const id of ['set:hud', 'set:governor', 'set:leftHanded', 'set:labels', 'set:haptics', 'set:refine', 'set:record', 'set:measureRun']) assert.ok(settings.includes(id), id);
 });
 
 test('the menu stands by the secondary hand, toward the middle, facing the eye', () => {

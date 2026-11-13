@@ -230,5 +230,15 @@ export function transportInfo() {
   return parts.join('; ');
 }
 
+/** The link's figures for the measurement record (issue #224): no address,
+ *  no host name; on a direct link only {paired: false}. */
+export function linkFigures() {
+  if (!paired) return { paired: false };
+  const s = link.stats || {};
+  const c = link.client ? link.client.stats : {};
+  return { paired: true, state: link.state, candidates: s.candidates || '', rttMs: s.rttMs, resumes: s.resumes ?? 0,
+    bytesIn: c.bytesIn ?? 0, bytesOut: c.bytesOut ?? 0, requests: c.requests ?? 0 };
+}
+
 /** For the tests and the debug hooks. */
 export function linkState() { return { paired, state: link.state, reason: link.reason, info: link.info, stats: link.stats }; }

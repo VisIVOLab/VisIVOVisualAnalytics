@@ -216,6 +216,8 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
     if (id === 'enter-vr') { if (cur) notices.dismiss(cur.id); ctx.enterVR(); render(); return; }
     if (id === 'reopen') { lastRecoverAt = 0; recover('user'); }
     if (id === 'new-code') { if (ctx.exitVR && inVR()) ctx.exitVR(); if (ctx.newCode) ctx.newCode(); }
+    // The measurement run's card (issue #224).
+    if (id.startsWith('measure-') && ctx.onAction) ctx.onAction(id);
   }
 
   // ── The 2-D banner ──────────────────────────────────────────────────────
@@ -254,7 +256,7 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
       card.pointer.layout = card.layout;
       if (moveIt) { card.model = null; card.since = performance.now(); card.parked = false; }
     }
-    if (n.sticky && !card.parked && performance.now() - card.since > PARK_AFTER_MS) {
+    if (n.sticky && !card.parked && performance.now() - card.since > (Number.isFinite(n.parkAfterMs) ? n.parkAfterMs : PARK_AFTER_MS)) {
       // Aside: 40° to the left and lower, where it stays (it is still there to
       // read and press, the cube is free).
       card.parked = true;

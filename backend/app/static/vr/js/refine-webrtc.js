@@ -278,7 +278,7 @@ export class RtcStereo {
     this.gen = 0;
     this.lastVideoAt = 0;
     this.firstHeaderAt = 0;
-    this.bitrate = { kbps: NaN, bytes: 0, t: 0, framesDecoded: 0, framesDropped: 0, decodeMs: NaN, jitterMs: NaN };
+    this.bitrate = { kbps: NaN, bytes: 0, t: 0, framesDecoded: 0, framesDropped: 0, decodeMs: NaN, jitterMs: NaN, rttMs: NaN, ice: '' };
     this.stripeMs = [];          // reading a frame's stripe (ms)
     this.badInARow = 0;          // frames unreadable or of the wrong size, in a row
     this.errors = 0;             // frames that threw while read or shown
@@ -555,6 +555,19 @@ export class RtcStereo {
             b.codec = s.decoderImplementation || '';
           }
         });
+        // The selected candidate pair: its round trip and the candidates'
+        // types (host, srflx, relay), for the measurement record (#224).
+        report.forEach((s) => {
+          if (s.type === 'transport' && s.selectedCandidatePairId) this.bitrate.pairId = s.selectedCandidatePairId;
+        });
+        let pair = this.bitrate.pairId ? report.get(this.bitrate.pairId) : null;
+        if (!pair) report.forEach((s) => { if (s.type === 'candidate-pair' && s.state === 'succeeded' && (s.nominated || s.selected)) pair = s; });
+        if (pair) {
+          const b = this.bitrate;
+          b.rttMs = Number.isFinite(pair.currentRoundTripTime) ? 1000 * pair.currentRoundTripTime : NaN;
+          const lc = report.get(pair.localCandidateId), rc = report.get(pair.remoteCandidateId);
+          b.ice = lc && rc ? `${lc.candidateType}/${rc.candidateType}` : '';
+        }
       }).catch(() => {}).finally(() => { this._stats = null; });
     }
   }

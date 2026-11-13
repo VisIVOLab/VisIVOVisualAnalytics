@@ -183,6 +183,12 @@
     </div>
     <div id="guide-text" class="muted" hidden></div>
     <pre id="diag-out" hidden></pre>
+    <div class="row">
+      <label class="inline" title="One sample a second (frame rate, missed frames, pose→frame, the link) and the session's events, stored by the backend as one file per record (?record in the address starts it)"><input id="record" type="checkbox"> record measurements</label>
+      <button id="measure-run" title="The loaded cube through fixed conditions (reduced cube only, refinement over JPEG, over WebRTC video), each with timed phases and prompts">Run measurement protocol</button>
+      <label class="inline" title="The two refined conditions again with refined frames at 0.6×"><input id="measure-second" type="checkbox"> also at 0.6× refined size</label>
+    </div>
+    <div id="measure-status" class="muted"></div>
   </section>
 
   <section id="stats">
