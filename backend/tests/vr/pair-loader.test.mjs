@@ -5,8 +5,16 @@ import assert from 'node:assert/strict';
 
 import {
   serviceUrl, serviceHost, normaliseCode, pairFromHash, appQuery, appFragment, appAddress, failureKind,
-  resumeDelayMs, keptResume, linkFigures, isLoopbackHost, AppIdMap,
+  resumeDelayMs, keptResume, linkFigures, isLoopbackHost, AppIdMap, byeText, reasonText,
 } from '../../../web/vr-loader/js/loader-core.js';
+
+test('the bridge\'s bye reasons and a missing resume code in the user\'s words', () => {
+  assert.equal(byeText('disconnected'), 'The computer disconnected this headset');
+  assert.equal(byeText('backend-stopping'), 'VisIVO Visual Analytics on the computer was closed');
+  assert.equal(byeText('other'), 'The computer ended the pairing (other)');
+  assert.equal(byeText(''), 'The computer ended the pairing');
+  assert.match(reasonText('no-resume'), /no resume code/);
+});
 import { encodeChunk, decodeChunk } from '../../../web/vr-loader/js/pair-wire.js';
 
 test('page ids: a reloaded page reusing id 1 never gets the old document\'s answer', () => {

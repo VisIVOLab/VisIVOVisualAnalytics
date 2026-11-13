@@ -124,7 +124,14 @@ function setLink(state, reason = '', info = null) {
   link.state = state;
   link.reason = reason;
   if (info) link.info = info;
-  if (state !== 'up' && link.client) link.client.failAll(state === 'lost' ? 'the pairing with the computer is lost' : 'the link to the computer dropped');
+  if (link.client) {
+    // A drop the loader resumes: GET and HEAD requests in flight are kept and
+    // sent again once the link is back; the others fail (as a fetch to a
+    // vanished server). A pairing lost for good fails them all.
+    if (state === 'up') link.client.resend();
+    else if (state === 'lost') link.client.failAll('the pairing with the computer is lost');
+    else link.client.hold('the link to the computer dropped');
+  }
   if (changed) for (const fn of link.listeners) { try { fn(state, reason); } catch { /* a listener's own error */ } }
 }
 

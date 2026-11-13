@@ -389,7 +389,9 @@ export class Backend {
   reducedInfo(req, opts = {}) {
     const timeoutMs = opts.timeoutMs > 0 ? opts.timeoutMs : this.timeoutMs;
     return retryOnNetworkError((quiet) => boundedRequest('/v1/cube/reduced_info', {
-      method: 'POST', headers: this.headers(true), body: JSON.stringify(req),
+      // It changes nothing on the backend: over the pairing it is sent
+      // again after a resumed link (pair-transport.js), as a GET would be.
+      method: 'POST', headers: this.headers(true), body: JSON.stringify(req), idempotent: true,
     }, timeoutMs, null, async (resp) => {
       if (!resp.ok) throw await failed(resp, '/v1/cube/reduced_info');
       const text = await resp.text();
@@ -416,7 +418,7 @@ export class Backend {
         const timer = setTimeout(() => ctl.abort(TIMED_OUT), timeoutMs);
         try {
           return await hookedFetch('/v1/cube/reduced_bin', {
-            method: 'POST', headers: this.headers(true), body: JSON.stringify(req), signal: ctl.signal,
+            method: 'POST', headers: this.headers(true), body: JSON.stringify(req), signal: ctl.signal, idempotent: true,
           }, quiet);
         } finally {
           clearTimeout(timer);          // the headers came (or not): the body has no deadline

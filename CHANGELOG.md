@@ -19,8 +19,12 @@ are preserved here unedited; the branch names they refer to are historical.
   requests and WebSockets go over the data channels (HTTP-over-channel with
   16 KiB chunks, fragmented `ws` frames, a 1 MiB send pause, cancel on abort);
   the token never reaches the headset. A dropped link resumes with the
-  backend's resume code, without a new code and without a reload; only a
-  failed resume asks for a new code, through the page's notices. The
+  backend's resume code, without a new code and without a reload, and the
+  `GET`/`HEAD` requests it interrupted, and the cube's reduced-copy requests
+  (read-only POSTs), are sent again (a body that had begun
+  goes on where it stopped when both answers have the same strong ETag and
+  length); only a failed resume, or a pairing without a
+  resume code, asks for a new code, through the page's notices. The
   diagnostics name the transport (ICE candidate types, round trip). The loader
   installs as an app. Served directly by the backend (adb `localhost`, a
   cluster's HTTPS portal), the page is unchanged. Checked with

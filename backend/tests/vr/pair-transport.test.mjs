@@ -320,6 +320,139 @@ test('err, a cancel from the backend and a dropped link reject as a fetch with n
   await assert.rejects(client.fetch('/v1/e'), TypeError);
 });
 
+test('a drop then a resume: GET and HEAD in flight are sent again, a POST fails as network', async () => {
+  const ch = new FakeChannel();
+  const client = new ApiClient((f) => ch.send(f), { idStart: 1, idStep: 2 });
+  const get = client.fetch('/vr/b/abc123/js/main.js');                       // id 1, no answer yet
+  const post = client.fetch('/v1/cube/reduced_bin', { method: 'POST', body: '{}' });   // id 3
+  const head = client.fetch('/v1/ping', { method: 'HEAD' });                 // id 5
+  client.hold();
+  await assert.rejects(post, (e) => e instanceof TypeError);
+  assert.equal(client.held.length, 2);
+  assert.equal(client.pending.size, 0);
+  // Frames for the old ids (a late answer of the old link) are ignored.
+  client.receive(JSON.stringify({ t: 'res', id: 1, status: 200, headers: {} }));
+  const n = ch.sent.length;
+  client.resend();
+  const again = ch.sent.slice(n).map(json);
+  assert.deepEqual(again.map((m) => [m.t, m.method, m.path, m.body]),
+    [['req', 'GET', '/vr/b/abc123/js/main.js', false], ['req', 'HEAD', '/v1/ping', false]]);
+  assert.ok(again.every((m) => m.id > 5), 'new ids');
+  client.receive(JSON.stringify({ t: 'res', id: again[0].id, status: 200, headers: { 'content-type': 'text/javascript' } }));
+  client.receive(encodeChunk(again[0].id, true, new TextEncoder().encode('export {};')));
+  assert.equal(await (await get).text(), 'export {};');
+  client.receive(JSON.stringify({ t: 'res', id: again[1].id, status: 200, headers: {} }));
+  client.receive(encodeChunk(again[1].id, true, null));
+  assert.equal((await head).status, 200);
+  assert.equal(client.stats.resent, 2);
+});
+
+test('a POST marked idempotent (the reduced cube) is held and sent again, body and all', async () => {
+  const ch = new FakeChannel();
+  const client = new ApiClient((f) => ch.send(f));
+  const p = client.fetch('/v1/cube/reduced_bin', { method: 'POST', body: '{"dataset_id":"d"}', idempotent: true });
+  const q = client.fetch('/v1/cube/mask_stats_bin', { method: 'POST', body: 'x' });
+  client.hold();
+  await assert.rejects(q, TypeError);
+  assert.equal(client.held.length, 1);
+  const n = ch.sent.length;
+  client.resend();
+  const req = json(ch.sent[n]);
+  assert.deepEqual([req.method, req.path, req.body], ['POST', '/v1/cube/reduced_bin', true]);
+  assert.equal(new TextDecoder().decode(decodeChunk(ch.sent[n + 1]).payload), '{"dataset_id":"d"}');
+  client.receive(JSON.stringify({ t: 'res', id: req.id, status: 200, headers: {} }));
+  client.receive(encodeChunk(req.id, true, Uint8Array.of(5)));
+  assert.deepEqual([...new Uint8Array(await (await p).arrayBuffer())], [5]);
+});
+
+test('a GET whose body had begun goes on where it stopped after the resume', async () => {
+  const ch = new FakeChannel();
+  const client = new ApiClient((f) => ch.send(f));
+  const payload = bytes(50000, 9);
+  const p = client.fetch('/v1/big');
+  client.receive(JSON.stringify({ t: 'res', id: 1, status: 200, headers: { 'content-length': '50000', etag: '"v1"' } }));
+  const resp = await p;
+  client.receive(encodeChunk(1, false, payload.subarray(0, CHUNK_BYTES)));
+  client.receive(encodeChunk(1, false, payload.subarray(CHUNK_BYTES, 2 * CHUNK_BYTES)));
+  client.hold();
+  client.resend();
+  const id = json(ch.sent.at(-1)).id;
+  client.receive(JSON.stringify({ t: 'res', id, status: 200, headers: { 'content-length': '50000', etag: '"v1"' } }));
+  for (const f of bodyChunks(id, payload)) client.receive(f);     // the whole body again
+  assert.deepEqual(new Uint8Array(await resp.arrayBuffer()), payload);
+});
+
+test('a resent HEAD with a length and no body is whole', async () => {
+  const ch = new FakeChannel();
+  const client = new ApiClient((f) => ch.send(f));
+  const p = client.fetch('/file', { method: 'HEAD' });
+  client.hold();
+  client.resend();
+  const id = json(ch.sent.at(-1)).id;
+  client.receive(JSON.stringify({ t: 'res', id, status: 200, headers: { 'content-length': '100', etag: '"a"' } }));
+  const r = await p;
+  client.receive(encodeChunk(id, true, null));
+  assert.equal(r.headers.get('content-length'), '100');
+  assert.equal(await r.text(), '');
+  assert.equal(client.pending.size, 0);
+});
+
+test('a body that had begun is never spliced from another answer, nor ends short', async () => {
+  const run = async (first, second, firstBytes, secondBody) => {
+    const ch = new FakeChannel();
+    const client = new ApiClient((f) => ch.send(f));
+    const p = client.fetch('/download');
+    client.receive(JSON.stringify({ t: 'res', id: 1, status: 200, headers: first }));
+    const resp = await p;
+    client.receive(encodeChunk(1, false, Uint8Array.from(firstBytes)));
+    client.hold();
+    client.resend();
+    const id = json(ch.sent.at(-1)).id;
+    client.receive(JSON.stringify({ t: 'res', id, status: 200, headers: second }));
+    client.receive(encodeChunk(id, true, Uint8Array.from(secondBody)));
+    try { return [...new Uint8Array(await resp.arrayBuffer())]; } catch (e) { return e.message; }
+  };
+  // Another ETag, same length: not continued.
+  assert.match(await run({ 'content-length': '4', etag: '"a"' }, { 'content-length': '4', etag: '"b"' }, [1, 2], [8, 9, 10, 11]), /changed/);
+  // No ETag, or a weak one: not continued.
+  assert.match(await run({ 'content-length': '4' }, { 'content-length': '4' }, [1, 2], [1, 2, 3, 4]), /changed/);
+  assert.match(await run({ 'content-length': '4', etag: 'W/"a"' }, { 'content-length': '4', etag: 'W/"a"' }, [1, 2], [1, 2, 3, 4]), /changed/);
+  // The length gone: not continued.
+  assert.match(await run({ 'content-length': '4', etag: '"a"' }, { etag: '"a"' }, [1, 2, 3], [8]), /changed/);
+  // Same ETag and length, but the second body ends short: an error, not a short success.
+  assert.match(await run({ 'content-length': '4', etag: '"a"' }, { 'content-length': '4', etag: '"a"' }, [1, 2, 3], [1, 2]), /ended short/);
+  // Same ETag and length, whole: continued.
+  assert.deepEqual(await run({ 'content-length': '4', etag: '"a"' }, { 'content-length': '4', etag: '"a"' }, [1, 2], [1, 2, 3, 4]), [1, 2, 3, 4]);
+});
+
+test('a resent GET whose answer changed fails; a lost pairing fails what was held; abort while held', async () => {
+  const ch = new FakeChannel();
+  const client = new ApiClient((f) => ch.send(f));
+  const p = client.fetch('/v1/x');
+  client.receive(JSON.stringify({ t: 'res', id: 1, status: 200, headers: { 'content-length': '10' } }));
+  const resp = await p;
+  client.hold();
+  client.resend();
+  const id = json(ch.sent.at(-1)).id;
+  client.receive(JSON.stringify({ t: 'res', id, status: 404, headers: {} }));
+  await assert.rejects(resp.arrayBuffer(), /answer changed/);
+  assert.deepEqual(json(ch.sent.at(-1)), { t: 'cancel', id });
+  const q = client.fetch('/v1/y');
+  client.hold();
+  client.failAll('the pairing with the computer is lost');
+  await assert.rejects(q, /pairing with the computer is lost/);
+  assert.equal(client.held.length, 0);
+  const ac = new AbortController();
+  const r = client.fetch('/v1/z', { signal: ac.signal });
+  client.hold();
+  const sent = ch.sent.length;
+  ac.abort();
+  await assert.rejects(r, (e) => e.name === 'AbortError');
+  assert.equal(ch.sent.length, sent, 'no cancel for a request that is not on the wire');
+  client.resend();
+  assert.equal(ch.sent.length, sent, 'nothing sent again');
+});
+
 test('hookedFetch keeps its error shapes over the pairing: network, aborted, timedOut', async () => {
   const realFetch = globalThis.fetch;
   const ch = new FakeChannel();

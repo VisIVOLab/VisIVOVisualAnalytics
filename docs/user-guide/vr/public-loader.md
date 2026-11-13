@@ -68,10 +68,21 @@ reachable* and the loader reconnects by itself with the **resume code** the
 backend gave at pairing, retrying for up to three minutes. No new code is
 needed, the page is not reloaded, and the cube stays on show. Reloading the
 loader's tab resumes as well (the resume code is kept for that tab only).
-When the resume fails (the backend ended the pairing, the code expired, or
-the backend restarted and forgot it), the page shows *The pairing with the
-computer ended* with **Enter a new code**, which opens the loader's code
-form.
+Requests that were under way when the link dropped and that change nothing
+(`GET` and `HEAD`, such as the page's files, and the requests that load the
+cube's reduced copy) are sent again once the link is back. A download that had begun continues where it stopped only when the
+backend marks it as the same file (the same strong ETag and length, as the
+page's own files are); otherwise it ends with a network error. The others
+(a selection, a moment map) end with *Backend not reachable*, as they would
+over HTTP.
+
+When the resume fails (the code expired, or the backend restarted and forgot
+it), or when the backend gave no resume code at pairing (the pairing service
+did not answer in time), the page shows *The pairing with the computer
+ended* with **Enter a new code**, which opens the loader's code form. The
+same notice says *The computer disconnected this headset* when the desktop
+disconnected it, and *VisIVO Visual Analytics on the computer was closed*
+when the backend stopped: neither is resumed.
 
 ## How it works
 
