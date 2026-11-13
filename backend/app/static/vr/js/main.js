@@ -9,7 +9,7 @@ import { Backend, takeToken, saveToken, tokenError, takePairing, forgetPairing, 
 import { isPaired, PAIRED_TOKEN, onLinkChange, requestNewCode, transportInfo, linkState } from './transport.js';
 import * as V from './volume.js';
 import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
-import { createSelection, TOOLS, TOOL_NAMES } from './select-ui.js';
+import { createSelection, createSelectionSync, TOOLS, TOOL_NAMES } from './select-ui.js';
 import { Refiner, desktopEyes } from './refine-client.js';
 import { transferFunction, cropBox, cropError } from './refine.js';
 import { pairingFallback } from './pairing.js';
@@ -44,6 +44,15 @@ import { createMeasure, recordMessage } from './measure-run.js';
 
 const $ = (id) => document.getElementById(id);
 const query = new URLSearchParams(window.location.search);
+// Debug-only cuts (issue #229): with ?debug, ?nohover, ?nohud, ... each leave
+// one per-frame path out, to find on the headset which one loses the WebGL
+// context. None of them clears or changes a selection.
+const cut = (name) => query.has('debug') && query.has(name);
+const DEBUG_CUTS = ['nohover', 'nohud', 'noreadout', 'noselpanel', 'noseloutline', 'novolume'];
+const CUT = Object.fromEntries(DEBUG_CUTS.map((n) => [n, cut(n)]));
+const activeCuts = DEBUG_CUTS.filter((n) => CUT[n]);
+// What the cuts leave out, counted (read by validation/vr_cuts.mjs with ?debug).
+const cutCounts = { volumeDraws: 0, selLineDraws: 0, selLineSegments: 0, hudUploads: 0, hudQuads: 0, readoutCards: 0, hoverPicks: 0 };
 
 const canvas = $('gl');
 const gl = canvas.getContext('webgl2', {
@@ -86,18 +95,21 @@ const selection = createSelection({
   state, renderer: R,
   backend: () => (state.open ? backend : null),
   path: () => state.openPath || '',
-  onChange: () => { selectionDirty = true; },
+  onChange: () => selSync.mark(),
   onSelection: (s) => publishSelection(s),
   onClear: () => share.dismiss(),   // only called after the share controller exists
+  noPanel: CUT.noselpanel,
 });
-let selectionDirty = true;
+// The selection's lines and the page's panel are rebuilt after a change or a
+// hover that moved, not at every hover update (issue #229).
+const selSync = createSelectionSync(() => syncSelectionNow());
 
 // More analysis in the headset (issue #191): lasso seeds, Isolate/Remove, the
 // moment of the selection, the PV path; their page is the menu's Analysis tab.
 const analysis = createAnalysis({
   state, selection, renderer: R,
   backend: () => (state.open ? backend : null),
-  onChange: () => { selectionDirty = true; },
+  onChange: () => selSync.mark(),
   showDataset: (id, path) => showDataset(id, path),
   mount: $('selection'),
 });
@@ -110,7 +122,7 @@ const share = createShare({
   datasetId: () => (state.open ? state.open.dataset_id : ''),
   fullShape: () => (state.info ? state.info.full_shape : null),
   onReceive: (info, m, own) => selection.showShared(info, m, own),   // false: the cube is not drawn yet
-  onChange: () => { selectionDirty = true; },
+  onChange: () => selSync.mark(),
 });
 function publishSelection(s) {
   if (s.kind === 'lasso') {
@@ -948,6 +960,9 @@ function boxEdges(lo, hi, color, out) {
 function rebuildDecorations() {
   const info = state.info;
   if (!info) return;
+  // The selection's and the analysis' lines are in model space too (extent,
+  // clipping box): rebuilt with the box, not only after a hover (issue #229).
+  selSync.mark();
   const e = state.extent, h = e.map((v) => v / 2);
   const segs = [];
   boxEdges([-h[0], -h[1], -h[2]], h, [0.55, 0.6, 0.7, 0.45], segs);
@@ -1023,22 +1038,24 @@ function drawScene(view, override, eye = 0) {
   // left out of the headset's own volume and drawn once, over the refined
   // frame (the backend's frame has none); then the box, ticks and labels.
   const refined = refineMode !== 'off' && refiner.showing;
-  R.drawVolume(view, state.model, volParams(refined ? { ...override, showMask: false } : override));
+  if (!CUT.novolume) { R.drawVolume(view, state.model, volParams(refined ? { ...override, showMask: false } : override)); cutCounts.volumeDraws++; }
   if (refined) {
     refiner.composite(view, state.model, eye);
-    if (R.mask) R.drawVolume(view, state.model, volParams({ ...override, mode: 0, maskOnly: true }));
+    if (R.mask && !CUT.novolume) { R.drawVolume(view, state.model, volParams({ ...override, mode: 0, maskOnly: true })); cutCounts.volumeDraws++; }
   }
   R.drawLines(view, state.model);
-  R.drawLines(view, state.model, R.selLines);
+  if (!CUT.noseloutline) { R.drawLines(view, state.model, R.selLines); cutCounts.selLineDraws++; }
   layers.drawOverCube(view, state.model);
   R.drawLabels(view, state.model, M.uniformScale(state.model));
 }
 
+/** Rebuild what changes with the selections, when it changed (selSync). */
+function syncSelection() { selSync.sync(); }
 /** Rebuild what changes with the selections: their lines, the page's panel. */
-function syncSelection() {
-  if (!selectionDirty) return;
-  selectionDirty = false;
-  R.setLines([...selection.segments(), ...analysis.segments()], R.selLines);
+function syncSelectionNow() {
+  const own = CUT.noseloutline ? [] : selection.segments();
+  cutCounts.selLineSegments += own.length;
+  R.setLines([...own, ...analysis.segments()], R.selLines);
   selection.refreshDom();
   analysis.refreshDom();
   const s = selection.sel;
@@ -1077,6 +1094,7 @@ function diagnosticsSummary() {
     text: xr ? (xr.quads ? xr.quads.describe() : xr.layersNote) : 'not in VR',
     memory: gpuMemoryLine(),
     refine: refineShort(),
+    cuts: activeCuts.length ? activeCuts.join(' ') : '',
     settings,
   };
 }
@@ -1104,6 +1122,7 @@ function hudLines(targetHz) {
   const s = stats.summary(targetHz ? 1000 / targetHz : 0);
   const c = state.cube;
   const lines = [];
+  if (activeCuts.length) lines.push(`debug cuts: ${activeCuts.join(' ')}`);
   lines.push(`FPS ${s.fps.toFixed(1)}${targetHz ? `  (display ${targetHz} Hz)` : ''}   missed ${(100 * s.missedFraction).toFixed(1)} %`);
   if (s.interval) lines.push(`frame ${s.interval.mean.toFixed(2)} ms mean, ${s.interval.p95.toFixed(2)} p95`);
   lines.push(`CPU ${s.cpu ? s.cpu.mean.toFixed(2) : 'n/a'} ms   GPU ${s.gpu ? `${s.gpu.mean.toFixed(2)} ms` : 'n/a (no timer query)'}`);
@@ -1421,6 +1440,7 @@ const wins = Object.fromEntries(WINDOW_IDS.map((id) => [id, {
 function windowContent(w) {
   if (!state.cube || (xr && xr.bench)) return null;
   if (w.id === 'result') {
+    if (CUT.noselpanel) return null;      // debug (issue #229): no panel painted nor uploaded
     const s = selection.sel;
     const has = s.pick || s.lasso || s.spectrum || s.box || s.busy || s.error || s.corner;
     if (!has && ui.mode !== 'select') return null;
@@ -1711,11 +1731,13 @@ function handCards(now) {
   }
   // The live readout where the primary ray meets the emission, and the pinned one.
   const hv = selection.sel.hover;
-  if (state.cube && hv && !ui.hit) {
+  if (!CUT.noreadout && state.cube && hv && !ui.hit) {
+    cutCounts.readoutCards++;
     out.push({ id: 'readout-live', model: RO.readoutModel(boxToWorld(hv.p), eye), tex: readoutTexture(readout.live, readoutCached(readout.live, hv.p), false, now),
       size: RO.READOUT_SIZE });
   }
-  if (state.cube && ui.pin) {
+  if (!CUT.noreadout && state.cube && ui.pin) {
+    cutCounts.readoutCards++;
     out.push({ id: 'readout-pin', model: RO.readoutModel(boxToWorld(ui.pin.p), eye), tex: readoutTexture(readout.pin, readoutCached(readout.pin, ui.pin.p), true, now),
       size: RO.READOUT_SIZE });
   }
@@ -1851,8 +1873,7 @@ canvas.addEventListener('pointermove', (e) => {
   if (!xr && (mouseOnPanel || !dragging)) {
     const onPanel = uiPointer(mouseWorldRay(e), mouseOnPanel, camEye());
     if (mouseOnPanel) return;
-    if (state.cube) selection.hover(onPanel ? null : mouseRay(e));   // where a click would land
-    selectionDirty = true;
+    if (state.cube) selSync.hover(selection, onPanel ? null : mouseRay(e));   // where a click would land
     showReadout();
     return;
   }
@@ -2284,10 +2305,13 @@ function handleInput(frame, dtS) {
   const onCard = shell.cardPointer(pRay, pTrig);
   const onUi = onCard ? (uiPointer(null, pTrig, xr.headPos), true) : uiPointer(pRay, pTrig, xr.headPos);
   const boxRay = pRay && state.cube && !onUi ? selection.worldRayToBox(state.model, pRay.o, pRay.d) : null;
-  if (onUi && selection.sel.hover) { selection.hover(null); selectionDirty = true; }
-  if (boxRay && (xr.hoverFrame = (xr.hoverFrame || 0) + 1) % 2 === 0) {
-    selection.hover(boxRay);
-    selectionDirty = true;
+  if (CUT.nohover) {
+    // Debug (issue #229): no hover picks; one left over is cleared once. A
+    // click still picks, snaps and selects below.
+    if (selection.sel.hover) selSync.hover(selection, null);
+  } else {
+    if (onUi && selection.sel.hover) selSync.hover(selection, null);
+    if (boxRay && (xr.hoverFrame = (xr.hoverFrame || 0) + 1) % 2 === 0) { selSync.hover(selection, boxRay); cutCounts.hoverPicks++; }
   }
   // The trigger on the cube, by the mode. The pick runs on the reduced cube in
   // this frame; what it asks of the backend never holds a frame back.
@@ -2484,17 +2508,19 @@ function onXRFrame(time, frame) {
   R.beginFrame();
   R.setLines(controllerSegments(), R.tmpLines);
   R.setMesh(inputMesh());
-  if (state.hud && time - hudLast > 250) {
+  if (state.hud && !CUT.nohud && time - hudLast > 250) {
     hudLast = time;
     const lines = hudLines(xr.targetHz);
     drawHudCanvas(lines);
     R.updatePanel(hudTex, hudCanvas);
+    cutCounts.hudUploads++;
     $('hud-text').textContent = lines.join('\n');
   }
   // The page's labels (DOM) four times a second at most, HUD shown or not.
   if (xr.labelsDirty && time - (xr.labelsAt || 0) > 250) { xr.labelsAt = time; updateLabels(); xr.labelsDirty = false; }
   // The numbers sit where the menu opens: hidden while it is open.
-  const hm = state.hud && !ui.menu.open ? hudModel() : null;
+  const hm = state.hud && !CUT.nohud && !ui.menu.open ? hudModel() : null;
+  if (hm) cutCounts.hudQuads++;
   syncSelection();
   const winList = xr.bench ? [] : shownWindows();
   const menuTex = menuShown() ? menuTexture(time) : null;
@@ -2792,6 +2818,7 @@ if (query.has('debug')) {
   };
   window.__vrGpu = () => R.gpuStats();
   window.__vrSingle = single;
+  window.__vrCuts = () => ({ active: activeCuts.slice(), counts: { ...cutCounts } });
   window.__vrSetEyeScale = (s) => { if (xr) setEyeBufferScale(s); };
   // The message card (in the desktop view with ?panel3d): press one of its
   // buttons through a ray from the camera, as a controller would.
@@ -3020,7 +3047,7 @@ canvas.addEventListener('webglcontextrestored', () => {
     for (const w of Object.values(wins)) w.barKey = '';
     for (const k of [readout.live, readout.pin, labelCards.primary, labelCards.secondary, modeTag]) k.key = '';
     hudLast = 0;
-    selectionDirty = true;
+    selSync.mark();
     rebuildDecorations();
     shell.clearNotice('context-lost');
     shell.clearNotice('context-failed');

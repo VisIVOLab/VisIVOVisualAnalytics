@@ -229,3 +229,10 @@ test('the diagnostics text keeps one line per item, all of it, scrubbed line by 
   assert.ok(!txt.includes('alice'));
   assert.ok(lines.every((l) => l.length <= 1200));
 });
+
+test('the diagnostics name the debug cuts of the address, only when there are some (issue #229)', () => {
+  const base = { time: 't', page: { build: 'b', api: 1 }, gpu: {}, settings: {}, errors: [], secrets: [] };
+  assert.ok(D.diagnosticsReport({ ...base, cuts: 'nohover nohud' }).split('\n').includes('debug cuts: nohover nohud'));
+  assert.ok(!D.diagnosticsReport({ ...base, cuts: '' }).includes('debug cuts'));
+  assert.ok(!D.diagnosticsReport(base).includes('debug cuts'));
+});

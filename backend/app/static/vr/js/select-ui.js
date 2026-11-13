@@ -20,8 +20,10 @@ function fmt(v, digits = 4) {
 }
 
 /**
- * ctx: {state, renderer, backend() -> Backend|null, onChange(), status(text)}.
- * state is the page's: info, cube, open, clip, extent, texScale, thrNorm, mode.
+ * ctx: {state, renderer, backend() -> Backend|null, onChange(), status(text),
+ * noPanel, panelCanvas (tests)}. state is the page's: info, cube, open, clip, extent, texScale,
+ * thrNorm, mode. noPanel (the page's ?debug&noselpanel, issue #229): the
+ * results panel is never painted, in the page nor in the headset.
  */
 export function createSelection(ctx) {
   const sel = {
@@ -41,13 +43,19 @@ export function createSelection(ctx) {
     error: '',
     generation: 0,     // a newer action makes an older answer stale
   };
-  const panel = (typeof OffscreenCanvas !== 'undefined')
+  const panel = ctx.panelCanvas || ((typeof OffscreenCanvas !== 'undefined')
     ? new OffscreenCanvas(768, 560)
-    : (typeof document !== 'undefined' ? Object.assign(document.createElement('canvas'), { width: 768, height: 560 }) : null);   // null: node tests
+    : (typeof document !== 'undefined' ? Object.assign(document.createElement('canvas'), { width: 768, height: 560 }) : null));   // null: node tests (or theirs)
   const domCanvas = typeof document !== 'undefined' ? document.createElement('canvas') : null;
   if (domCanvas) { domCanvas.width = 768; domCanvas.height = 560; domCanvas.className = 'sel-canvas'; }
   let panelTex = null;
-  let panelDirty = true;
+  // The panel's content changes (version), what was painted into the two
+  // canvases (painted) and what was uploaded to the headset's texture
+  // (uploaded), apart (issue #229): the page's copy painted while the
+  // headset's window takes no texture must not leave it to be painted again
+  // at every selection sync.
+  let version = 1, painted = 0, uploaded = 0;
+  const counts = { paints: 0, uploads: 0 };
 
   const st = () => ctx.state;
   const vol = () => {
@@ -55,7 +63,7 @@ export function createSelection(ctx) {
     return c ? { data: c.data, dims: c.dims, encoding: c.encoding, texScale: st().texScale } : null;
   };
   const datasetId = () => (st().open ? st().open.dataset_id : '');
-  const changed = () => { panelDirty = true; ctx.onChange && ctx.onChange(); };
+  const changed = () => { version++; ctx.onChange && ctx.onChange(); };
 
   /** A model-space ray to box coordinates (0..1 over the cube's pixels). */
   function modelRayToBox(o, d) {
@@ -83,10 +91,17 @@ export function createSelection(ctx) {
     });
   }
 
-  /** Where the trigger would land now (drawn as a marker), cheap enough per frame. */
+  /** Where the trigger would land now (drawn as a marker), cheap enough per
+   *  frame. True when it moved (or appeared, or went): only then is there
+   *  anything to draw again (issue #229). An unchanged hover keeps its object. */
   function hover(ray) {
     const r = ray ? pickBox(ray, 0.6) : null;
-    sel.hover = r ? { p: r.hit.p } : null;
+    const was = sel.hover;
+    if (!r) { sel.hover = null; return !!was; }
+    const p = r.hit.p;
+    if (was && was.p.length === p.length && was.p.every((v, i) => v === p[i])) return false;
+    sel.hover = { p };
+    return true;
   }
 
   async function snapSeed(px) {
@@ -503,7 +518,8 @@ export function createSelection(ctx) {
   }
 
   function renderPanel() {
-    if (!panel) return;
+    if (!panel || ctx.noPanel) return;
+    counts.paints++;
     const c = panel.getContext('2d');
     const W = panel.width, H = panel.height;
     c.clearRect(0, 0, W, H);
@@ -570,21 +586,26 @@ export function createSelection(ctx) {
     }
   }
 
+  /** Paints both canvases when the content changed since the last paint. */
+  function paint() {
+    if (painted === version) return;
+    renderPanel();
+    painted = version;
+  }
+
   /** The panel as a texture for the headset, redrawn only when it changed. */
   function panelTexture() {
     if (!panelTex) panelTex = ctx.renderer.createPanel();
-    if (panelDirty) {
-      renderPanel();
-      ctx.renderer.updatePanel(panelTex, panel);
-      panelDirty = false;
+    if (uploaded !== version) {
+      paint();
+      if (panel && !ctx.noPanel) { ctx.renderer.updatePanel(panelTex, panel); counts.uploads++; }
+      uploaded = version;
     }
     return panelTex;
   }
 
   /** Redraw the page's copy (desktop mode, no XR frame loop to pull it). */
-  function refreshDom() {
-    if (panelDirty) { renderPanel(); }
-  }
+  function refreshDom() { paint(); }
 
   function hudLines() {
     const out = [`tool ${TOOL_NAMES[sel.tool]}${sel.busy ? ` (${sel.busy})` : ''}`];
@@ -605,6 +626,30 @@ export function createSelection(ctx) {
   return {
     sel, act, hover, cycleTool, setTool, clear, segments, showShared, panelTexture, refreshDom, hudLines,
     recipesJson, worldRayToBox, modelRayToBox, domCanvas, record, pickBox,
-    isDirty: () => panelDirty,
+    isDirty: () => uploaded !== version,
+    /** Panel paints and texture uploads so far (checks, issue #229). */
+    panelCounts: () => ({ ...counts }),
+  };
+}
+
+/**
+ * When the page rebuilds what changes with the selections (their lines, the
+ * page's panel): after a change, and after a hover that moved, not at every
+ * hover update (issue #229). `rebuild` does the work; sync() runs it at most
+ * once per change and says whether it ran.
+ */
+export function createSelectionSync(rebuild) {
+  let dirty = true;
+  return {
+    mark() { dirty = true; },
+    /** selection.hover(ray), marking only a hover that moved. */
+    hover(selection, ray) { if (selection.hover(ray)) dirty = true; },
+    sync() {
+      if (!dirty) return false;
+      dirty = false;
+      rebuild();
+      return true;
+    },
+    get dirty() { return dirty; },
   };
 }

@@ -9,7 +9,7 @@ import path from 'node:path';
 import * as S from '../../app/static/vr/js/selection.js';
 import * as Rc from '../../app/static/vr/js/recipe.js';
 import * as V from '../../app/static/vr/js/volume.js';
-import { createSelection } from '../../app/static/vr/js/select-ui.js';
+import { createSelection, createSelectionSync } from '../../app/static/vr/js/select-ui.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '../../..');
@@ -225,7 +225,8 @@ function harness(extra = {}) {
     subvolume: async () => ({ values: new Float32Array([1]), dims: [1, 1, 1], origin: [4, 4, 4] }),
     pixelToSky: async () => ({ valid: false }),
     kinematicSelect: (ds, req) => { calls.push('select'); return later({ mask: new Float32Array([1]), bytes: new ArrayBuffer(4), dims: [1, 1, 1], origin: [4, 4, 4], count: 1, trimBox: 0, ms: 1 }); },
-    maskStats: () => { calls.push('stats'); return later({ bbox: [4, 4, 4, 4, 4, 4], flux_jy_kms: 1 }); },
+    maskStats: () => { calls.push('stats'); return later({ bbox: [4, 4, 4, 4, 4, 4], flux_jy_kms: 1, sum: 1, bunit: 'Jy/beam',
+      velocity_min_kms: null, channel_min: 4, channel_max: 4, max: 1, peak_voxel: [4, 4, 4] }); },
     boxStats: (ds, req) => { calls.push('box'); return later({ selected_voxels: 8, valid_voxels: 8, blank_voxels: 0 }); },
     spectralProbe: () => { calls.push('probe'); return later({ values: [1, 2], spectral_axis: [0, 1] }); },
   };
@@ -469,4 +470,102 @@ test('a VR recipe has the desktop record\'s shape', () => {
   assert.deepEqual(Rc.probeOrigin([3, 4, 5]), { kind: 'probe', voxel: [3, 4, 5] });
   assert.deepEqual(Rc.boxOrigin([1, 3], [2, 2], [7, 9]),
     { kind: 'region', shape: 'box', anchor: [1, 2], current: [3, 2], channels: [7, 9] });
+});
+
+/** A 2-D canvas stand-in for node: every call a no-op, text 0 px wide. */
+function fakeCanvas() {
+  const ctx2 = new Proxy({}, {
+    get(t, k) {
+      if (k in t) return t[k];
+      if (k === 'measureText') return () => ({ width: 0 });
+      return () => ctx2;
+    },
+  });
+  return { width: 768, height: 560, getContext: () => ctx2 };
+}
+
+/** The page's frame loop around one selection (issue #229): a hover update
+ *  every frame, then the selection sync, as main.js's handleInput and frame. */
+async function stationaryHoverRun(extra = {}) {
+  let lines = 0;
+  const box = {};
+  const h = harness({ panelCanvas: fakeCanvas(), onChange: () => box.sync.mark(), ...extra });
+  box.sync = createSelectionSync(() => { lines++; h.sel.segments(); h.sel.refreshDom(); });
+  h.sel.setTool('lasso');
+  const p = h.sel.act(h.ray);
+  await h.release();
+  await p;
+  return { h, sync: box.sync, lines: () => lines };
+}
+
+test('a stationary hover with a lasso shown neither repaints the panel nor re-uploads the lines', async () => {
+  const { h, sync, lines } = await stationaryHoverRun();
+  assert.ok(h.sel.sel.lasso, 'the lasso completed');
+  sync.hover(h.sel, h.ray);
+  sync.sync();
+  const lines0 = lines(), paints0 = h.sel.panelCounts().paints;
+  assert.ok(paints0 >= 1, 'the selection was painted once');
+  // 200 frames with the controller still, and the result window not taking
+  // the panel's texture (closed, or the page in a desktop browser).
+  for (let i = 0; i < 200; i++) { sync.hover(h.sel, h.ray); sync.sync(); }
+  assert.equal(lines() - lines0, 0, 'no line upload for an unchanged hover');
+  assert.equal(h.sel.panelCounts().paints - paints0, 0, 'no panel repaint for an unchanged hover');
+  // A hover that moves rebuilds the lines (the marker), not the panel.
+  sync.hover(h.sel, { o: [0.3, 0.6, 1.5], d: [0, 0, -1] });
+  sync.sync();
+  assert.equal(lines() - lines0, 1);
+  assert.equal(h.sel.panelCounts().paints - paints0, 0);
+  // The headset's window takes the texture: uploaded once, then not again.
+  h.sel.panelTexture();
+  h.sel.panelTexture();
+  const c = h.sel.panelCounts();
+  assert.equal(c.uploads, 1);
+  assert.equal(c.paints - paints0, 0, 'already painted for the page: uploaded without painting again');
+  // The hover leaves: one rebuild, then none.
+  sync.hover(h.sel, null); sync.sync();
+  sync.hover(h.sel, null); sync.sync();
+  assert.equal(lines() - lines0, 2);
+});
+
+test('a new extent (the page marks the sync) rebuilds the lines with the hover unchanged', async () => {
+  let cached = null;
+  const box = {};
+  const h = harness({ onChange: () => box.sync.mark() });
+  box.sync = createSelectionSync(() => { cached = h.sel.segments(); });
+  h.sel.setTool('lasso');
+  const p = h.sel.act(h.ray);
+  await h.release();
+  await p;
+  box.sync.hover(h.sel, h.ray); box.sync.sync();
+  const before = JSON.stringify(cached);
+  harnessState.state.extent = [1, 1, 2];        // the velocity stretch (main.js applyExtent → rebuildDecorations → mark)
+  box.sync.hover(h.sel, h.ray);
+  assert.equal(box.sync.sync(), false, 'an unchanged hover alone does not rebuild');
+  box.sync.mark();
+  assert.equal(box.sync.sync(), true);
+  assert.notEqual(JSON.stringify(cached), before, 'the lines follow the new extent');
+  assert.deepEqual(JSON.stringify(cached), JSON.stringify(h.sel.segments()));
+});
+
+test('a changed selection is painted once, for the page and for the headset', async () => {
+  const { h, sync } = await stationaryHoverRun();
+  sync.sync();
+  h.sel.panelTexture();
+  const c0 = h.sel.panelCounts();
+  h.sel.setTool('probe');          // a change: the panel's content is new
+  for (let i = 0; i < 10; i++) { sync.sync(); h.sel.refreshDom(); }
+  h.sel.panelTexture(); h.sel.panelTexture();
+  const c1 = h.sel.panelCounts();
+  assert.equal(c1.paints - c0.paints, 1);
+  assert.equal(c1.uploads - c0.uploads, 1);
+});
+
+test('the debug noPanel cut paints nothing and keeps the lasso whole', async () => {
+  const { h, sync } = await stationaryHoverRun({ noPanel: true });
+  for (let i = 0; i < 20; i++) { sync.hover(h.sel, h.ray); sync.sync(); }
+  assert.deepEqual(h.sel.panelCounts(), { paints: 0, uploads: 0 });
+  assert.ok(h.sel.sel.lasso);
+  assert.equal(h.masks.filter(Boolean).length, 1, 'the mask was uploaded');
+  assert.equal(h.sel.sel.recipes.length, 1, 'the recipe recorded');
+  assert.deepEqual(h.calls, ['select', 'stats']);
 });

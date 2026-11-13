@@ -97,3 +97,34 @@ available): paste them into a support request.
 What has been checked so far, and what to check on a Quest 3, are under
 [Recovery from failures](reference.md#recovery-from-failures) and
 [Recovery and diagnostics, with the headset](reference.md#recovery-and-diagnostics-with-the-headset).
+
+## Diagnosing a GPU context loss
+
+This section is for debugging only. On a Quest 3 the page has lost its WebGL
+context at the first Kinematic Lasso
+([#229](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/229)):
+the browser's GPU process restarts, and the browser then refuses WebGL to the
+page until it is restarted. To find the cause, the address can leave out one
+per-frame path at a time. Each switch works only together with `?debug`:
+
+| Address switch | What the page leaves out |
+|---|---|
+| `nohover` | The hover pick under the primary ray in VR, its marker and the live readout. A click still picks, snaps and selects. |
+| `nohud` | The numbers on the wrist: no redraw, no upload, no quad. |
+| `noreadout` | The live and the pinned readout cards. The controller labels stay. |
+| `noselpanel` | The results panel: neither the Selection window in the headset nor the panel on the page is painted. |
+| `noseloutline` | The selection's own lines (pick marker, box, bounding box). The analysis lines are still uploaded but not drawn. |
+| `novolume` | The cube's volume rendering, mask included. Lines, panels, input and the XR frames stay. |
+
+No switch clears or changes a selection: the mask upload, the statistics, the
+recipe and the share with the desktop go on as usual. The active switches are
+named in **Copy diagnostics** (`debug cuts: …`) and, when the HUD is shown, on
+the first line of the numbers on the wrist.
+
+Each run on the headset is: restart Quest Browser, open the address, load
+the cube, enter VR, make one lasso, then move the controller and your head
+over the selection for about ten seconds. For example
+`http://localhost:<port>/vr/?debug&nohover&nohud&noreadout&noselpanel&noseloutline`
+(add the `#token=…` part as usual). If the page survives, put the switches
+back one at a time; if it still loses the context, try `?debug&novolume`.
+Note which address lost the context and which did not.
