@@ -62,6 +62,10 @@ table for your eyes and the page blends that frame in, as for a cube (see
 [Refinement](reference.md#refinement-full-quality-frames-from-the-backend)): the
 page sends its colours, style and the map from the table to its box
 (`data_to_model`) with each pose, so the frame lands on the page's points.
+Both read the colour column in full precision and give each row the same
+colour, on a linear or a log scale, so the refined frame does not change the
+colours; values far from zero keep their own colours there too (1e9, 1e9 + 1
+and 1e9 + 2 are three colours).
 
 ## Catalogues over a cube
 
