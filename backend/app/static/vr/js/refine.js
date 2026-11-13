@@ -350,8 +350,9 @@ export function cropError(clip) {
 
 /** Rolling window of samples (times or values) for the HUD. */
 export class Rolling {
-  constructor(n = 120) { this.n = n; this.v = []; }
-  push(x) { this.v.push(x); if (this.v.length > this.n) this.v.shift(); }
+  constructor(n = 120) { this.n = n; this.v = []; this.total = 0; }
+  /** `total` counts every push (a recorder takes the values new since it last looked). */
+  push(x) { this.v.push(x); this.total++; if (this.v.length > this.n) this.v.shift(); }
   get length() { return this.v.length; }
   quantile(q) {
     if (!this.v.length) return NaN;

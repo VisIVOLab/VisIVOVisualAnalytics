@@ -290,6 +290,26 @@ export class Backend {
     return { status: resp.status, retryAfterS: Number(resp.headers.get('Retry-After')) || 0 };
   }
 
+  /** POST /v1/vr/measurements (issue #224): one batch of a record, `lines`
+   *  already JSON text. {status, retryAfterS, body}; never throws for an HTTP
+   *  error (a network failure rejects, and the sender keeps the batch). */
+  async measurements(record, seq, lines, timeoutMs = 15000) {
+    const body = `{"record":${JSON.stringify(record)},"seq":${Number(seq)},"lines":${lines}}`;
+    // A deadline over the answer and its body: a request that hangs must not
+    // hold the sender (it keeps the batch and sends it again).
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const resp = await pageFetch(apiUrl('/v1/vr/measurements'), { method: 'POST', headers: this.headers(true), body, signal: ctl.signal });
+      let answer = null;
+      try { answer = await resp.json(); } catch { answer = null; }
+      if (ctl.signal.aborted) throw new Error('the backend did not answer in time');
+      return { status: resp.status, retryAfterS: Number(resp.headers.get('Retry-After')) || 0, body: answer };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async ping() {
     const resp = await pageFetch(apiUrl('/v1/ping'));
     return resp.ok;

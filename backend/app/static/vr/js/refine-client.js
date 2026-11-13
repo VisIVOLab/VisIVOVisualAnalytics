@@ -70,6 +70,7 @@ export class Refiner {
     this._keepalive = null;
     this.gen = 0;              // bumped when the session is closed: late events of the old one are ignored
     this.onEvent = null;       // optional hook: (name, data) for measurements
+    this.observers = [];       // more such hooks: the measurement record (issue #224)
     this.paused = false;       // measurements: no automatic requests
     this.frozen = false;       // measurements: the frame on show kept as it is (no fade, no forgetting)
     this.waiters = new Map();  // pose id -> resolve, for one-off frames (measurements)
@@ -120,6 +121,31 @@ export class Refiner {
       this._connect();
     } else {
       this._closeSession();
+    }
+  }
+
+  _emit(name, data) {
+    if (this.onEvent) this.onEvent(name, data);
+    for (const f of this.observers) { try { f(name, data); } catch { /* an observer's own error */ } }
+  }
+
+  /**
+   * The refined colour's transport from now on: 'jpeg', 'webrtc' or 'auto'
+   * (the measurement run, issue #224). An open session is closed and a new
+   * one made, so the transport starts as it would for a new cube.
+   */
+  async setTransport(mode) {
+    const m = ['auto', 'webrtc', 'jpeg'].includes(mode) ? mode : 'auto';
+    this.o.transport = m;
+    this.rtc.chooser.mode = m;
+    this.rtc.chooser.failedAt = -Infinity;
+    this.rtc.chooser.reason = '';
+    this.rtc.chooser.network = [];
+    if (this.rtc.state === 'failed') this.rtc.state = 'off';
+    if (this.enabled) {
+      await this._closeSession();
+      this.lastSentA = null;
+      this._connect();
     }
   }
 
@@ -520,13 +546,13 @@ export class Refiner {
         this.stop.first = true;
         this.stats.lastStopFirst = t - this.stop.at;
         this.stats.stopFirst.push(this.stats.lastStopFirst);
-        if (this.onEvent) this.onEvent('refined-first', { ms: this.stats.lastStopFirst });
+        this._emit('refined-first', { ms: this.stats.lastStopFirst });
       }
       if (this.weight >= 1 && !this.stop.full) {
         this.stop.full = true;
         this.stats.lastStopFull = t - this.stop.at;
         this.stats.stopFull.push(this.stats.lastStopFull);
-        if (this.onEvent) this.onEvent('refined-full', { ms: this.stats.lastStopFull });
+        this._emit('refined-full', { ms: this.stats.lastStopFull });
       }
     }
     if (!this.enabled) this.status = 'off';

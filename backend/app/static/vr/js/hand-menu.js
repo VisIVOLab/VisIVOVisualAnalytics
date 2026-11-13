@@ -67,13 +67,21 @@ export const SETTINGS_ROWS = [
   ['refine', 'Refine with the full cube'],
   ['refineDepth', 'Reproject refined frames with depth'],
   ['refineScale', 'Refined frame size'],
+  ['record', 'Record measurements'],
 ];
+
+/** The Record row's second control: the guided measurement run (issue #224). */
+export const MEASURE_RUN_RECT = [470, 0, 290, WH];
 
 /** The Settings page: one toggle (or a stepping button) per row. */
 export function settingsLayout() {
-  return SETTINGS_ROWS.map(([key], i) => ({
+  const w = SETTINGS_ROWS.map(([key], i) => ({
     id: `set:${key}`, kind: key === 'refineScale' ? 'button' : 'toggle', rect: [784, 20 + i * 84, 200, WH], key,
   }));
+  const i = SETTINGS_ROWS.findIndex(([key]) => key === 'record');
+  const [x, , ww, hh] = MEASURE_RUN_RECT;
+  w.push({ id: 'set:measureRun', kind: 'button', rect: [x, 20 + i * 84, ww, hh], key: 'measureRun' });
+  return w;
 }
 
 /** The Help page: the guide and the control maps of the other modes. */
@@ -245,10 +253,11 @@ function drawLayersPage(c, layout, v, ui) {
 
 function drawSettingsPage(c, layout, v, ui) {
   SETTINGS_ROWS.forEach(([key, label], i) => {
-    lines(c, [[label, C.fg]], 20, 20 + i * 84 + WH / 2, 740, 32, '28px -apple-system, system-ui, sans-serif');
+    lines(c, [[label, C.fg]], 20, 20 + i * 84 + WH / 2, key === 'record' ? MEASURE_RUN_RECT[0] - 30 : 740, 32, '28px -apple-system, system-ui, sans-serif');
   });
   for (const w of layout) {
     if (w.kind === 'toggle') toggle(c, w, !!v[w.key], ui.hover === w.id);
+    else if (w.key === 'measureRun') button(c, w, { hover: ui.hover === w.id, on: v.measureRunText === 'Cancel run', label: v.measureRunText || 'Run protocol' });
     else button(c, w, { hover: ui.hover === w.id, label: v.refineScaleText || '' });
   }
 }
