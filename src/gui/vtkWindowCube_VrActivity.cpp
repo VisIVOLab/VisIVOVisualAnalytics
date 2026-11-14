@@ -15,6 +15,7 @@
 
 #include "ui_vtkWindowCube.h"
 #include "ColorMaps.h"
+#include "HeadsetActivityList.h"
 #include "WorkspaceChrome.h"
 #include "app/BackendClient.h"
 #include "app/HeadsetHubLink.h"
@@ -32,13 +33,10 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFutureWatcher>
-#include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
 #include <QStatusBar>
 #include <QTemporaryDir>
-#include <QToolButton>
 #include <QVBoxLayout>
 #include <QtConcurrentRun>
 
@@ -218,9 +216,10 @@ void vtkWindowCube::ensureHeadsetActivityPanel()
         }
     });
     layout->addWidget(this->m_headsetFollowLook);
-    this->m_headsetActivityList = new QListWidget(panel);
-    this->m_headsetActivityList->setSelectionMode(QAbstractItemView::NoSelection);
+    this->m_headsetActivityList = new HeadsetActivityList(panel);
     this->m_headsetActivityList->setMinimumHeight(220);
+    QObject::connect(this->m_headsetActivityList, &HeadsetActivityList::openRequested, this,
+                     &vtkWindowCube::openHeadsetProduct);
     layout->addWidget(this->m_headsetActivityList, 1);
     auto *hint = new QLabel(u"Newest first. Open shows a product in the desktop's own viewer and "
                             u"records it once in Provenance."_s,
@@ -238,40 +237,9 @@ void vtkWindowCube::refreshHeadsetActivity()
     if (!this->m_headsetActivityList || !this->m_actHeadsetActivity
         || !this->m_actHeadsetActivity->isChecked())
         return;   // rebuilt when the tool is opened
-    QListWidget *list = this->m_headsetActivityList;
-    list->clear();
     const QList<VrHub::Event> none;
-    const QList<VrHub::Event> &events =
-            this->m_headsetHub ? this->m_headsetHub->activity().events() : none;
-    if (events.isEmpty()) {
-        list->addItem(u"Nothing done in the headset yet."_s);
-        return;
-    }
-    for (const VrHub::Event &e : events) {
-        auto *item = new QListWidgetItem(list);
-        auto *row = new QWidget(list);
-        auto *h = new QHBoxLayout(row);
-        h->setContentsMargins(4, 2, 4, 2);
-        auto *text = new QLabel(VrHub::eventRowText(e), row);
-        text->setTextFormat(Qt::PlainText);
-        text->setToolTip(e.cubePath.isEmpty() ? QString() : u"Cube: %1"_s.arg(e.cubePath));
-        h->addWidget(text, 1);
-        if (e.kind == u"product"_s) {
-            const VrHub::Product p = VrHub::parseProduct(e);
-            auto *open = new QToolButton(row);
-            open->setText(u"Open"_s);
-            const VrHub::OpenIn where = VrHub::openIn(p);
-            open->setEnabled(where != VrHub::OpenIn::Nothing);
-            open->setToolTip(where == VrHub::OpenIn::Nothing
-                                     ? u"The headset sent no file for it."_s
-                                     : u"Open it here."_s);
-            QObject::connect(open, &QToolButton::clicked, this,
-                             [this, e]() { this->openHeadsetProduct(e); });
-            h->addWidget(open);
-        }
-        item->setSizeHint(row->sizeHint());
-        list->setItemWidget(item, row);
-    }
+    this->m_headsetActivityList->setEvents(this->m_headsetHub ? this->m_headsetHub->activity().events()
+                                                              : none);
 }
 
 void vtkWindowCube::recordHeadsetProduct(const VrHub::Event &event, const VrHub::Product &product,
@@ -285,17 +253,54 @@ void vtkWindowCube::recordHeadsetProduct(const VrHub::Event &event, const VrHub:
         return;
     if (!ProductRegistry::instance().product(VrHub::productId(event, product)).productId.isEmpty())
         return;
-    QVariantMap params = product.parameters;
-    params.insert(u"Made in"_s, u"the VR headset"_s);
-    if (!product.path.isEmpty())
-        params.insert(u"File"_s, product.workspaceFilename.isEmpty() ? product.path
-                                                                      : product.workspaceFilename);
+    const QVariantMap params = VrHub::provenanceParams(product);
     const QString kind = product.recipeKind.isEmpty() ? product.kind : product.recipeKind;
     // The same id however often it is opened: one row in Provenance.
     this->registerAnalysisProduct(kind, product.label.isEmpty() ? kind : product.label, params,
                                   /*window=*/nullptr, VrHub::productId(event, product), renderer,
                                   /*revealProvenance=*/false, product.origin,
                                   /*selectInSession=*/false, product.replay, product.caveat);
+}
+
+void vtkWindowCube::adoptHeadsetPv(const std::vector<std::array<double, 2>> &vertices, int width,
+                                   QVariantMap &params, QList<ReplayStep> &replay, QString &caveat)
+{
+    const auto sameCut = [&vertices, width](const std::optional<HeadsetPv> &pv) {
+        return pv && pv->vertices == vertices && pv->width == width;
+    };
+    std::optional<HeadsetPv> carried;
+    if (sameCut(this->m_headsetPvAsked))
+        carried = std::move(this->m_headsetPvAsked);
+    else if (sameCut(this->m_headsetPvShown))
+        carried = this->m_headsetPvShown;   // the same cut, recomputed
+    this->m_headsetPvAsked.reset();
+    // The row moves on to another cut (a path drawn here, the headset's path
+    // edited, another headset PV): the record it carried gets a row of its
+    // own, as a product opened from a file does.
+    if (this->m_headsetPvShown
+        && (!carried
+            || VrHub::productId(carried->event, carried->product)
+                    != VrHub::productId(this->m_headsetPvShown->event, this->m_headsetPvShown->product))) {
+        const HeadsetPv previous = *this->m_headsetPvShown;
+        this->m_headsetPvShown.reset();
+        this->recordHeadsetProduct(previous.event, previous.product);
+    }
+    this->m_headsetPvShown = carried;
+    if (!carried)
+        return;
+    // Its own row from an earlier opening, if any: the view's row is it now.
+    const QString carriedId = VrHub::productId(carried->event, carried->product);
+    const AnalysisProduct held = ProductRegistry::instance().product(carriedId);
+    if (!held.productId.isEmpty() && held.ownerId == this->m_windowScope && !held.window)
+        ProductRegistry::instance().removeProduct(carriedId);
+    // The view's own description of the cut stays; the headset's parameters
+    // complete it, with where it was made and its file.
+    const QVariantMap headset = VrHub::provenanceParams(carried->product);
+    for (auto it = headset.cbegin(); it != headset.cend(); ++it)
+        if (!params.contains(it.key()))
+            params.insert(it.key(), it.value());
+    replay = carried->product.replay;
+    caveat = carried->product.caveat;
 }
 
 void vtkWindowCube::openHeadsetProduct(const VrHub::Event &event)
@@ -316,10 +321,18 @@ void vtkWindowCube::openHeadsetProduct(const VrHub::Event &event)
         const auto vertices = VrHub::pvVertices(p);
         if (thisCube && vertices.size() >= 2 && this->pvController && !this->pvController->isBusy()
             && !this->remoteDatasetId.isEmpty()) {
-            // This cube's PV view, along the headset's path. The view's row is
-            // this window's live PV diagram (replaced by the next PV here); the
-            // headset's product keeps its own row, with its record.
-            this->recordHeadsetProduct(event, p);
+            // This cube's PV view, along the headset's path. The view's row
+            // (this window's live PV diagram) takes the headset's record when
+            // the result comes: one row, not two (issue #249). Not when the
+            // record is not this window's to make (another cube's, or recorded
+            // already by another window of this cube). A row of its own this
+            // window made (opened before, then the view moved on) is taken
+            // back into the view's row.
+            this->m_headsetPvAsked.reset();
+            const AnalysisProduct held = ProductRegistry::instance().product(VrHub::productId(event, p));
+            if (VrHub::aboutCube(event, this->filepath, this->remoteDatasetId)
+                && (held.productId.isEmpty() || (held.ownerId == this->m_windowScope && !held.window)))
+                this->m_headsetPvAsked = HeadsetPv{ event, p, vertices, VrHub::pvWidth(p) };
             this->pvPolylineVertices = vertices;
             this->pvWidthPixels = VrHub::pvWidth(p);
             this->pvValid = true;
@@ -401,8 +414,7 @@ void vtkWindowCube::openHeadsetSpectrum(const VrHub::Event &event, const VrHub::
             for (int i = 0; i < key.size(); ++i)
                 key[i] = i;
         }
-        QVariantMap params = product.parameters;
-        params.insert(u"Made in"_s, u"the VR headset"_s);
+        const QVariantMap params = VrHub::provenanceParams(product);
         const QString label = product.label.isEmpty() ? u"Headset spectrum"_s : product.label;
         const QString id = this->addSpectrumProduct(
                 u"spectrum"_s, VrHub::productId(event, product), label, key, values,

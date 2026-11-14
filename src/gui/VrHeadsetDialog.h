@@ -17,6 +17,7 @@ class QNetworkAccessManager;
 class QLabel;
 class QProcess;
 class QPushButton;
+class QScrollArea;
 class QCloseEvent;
 class QHideEvent;
 class QShowEvent;
@@ -45,8 +46,9 @@ class QWidget;
  * Another Headset) for a second headset. No page, or a backend without the
  * hub: the dialog is what it was, pairing by code.
  *
- * Under "Advanced (USB cable)" is the adb way below, opened by itself (with
- * the reason) when the backend has no pairing service or cannot reach it.
+ * Under "Advanced (USB cable)" is the adb way below, opened by itself when
+ * the backend has no pairing service or cannot reach it (the pairing status
+ * above it says why).
  * adb is only run once that section is open.
  *
  * The USB way opens the backend's WebXR page (/vr/) on a Meta Quest attached to this
@@ -85,6 +87,9 @@ public:
 protected:
     /// After every relayout, growToFit(): a label's new text may need more lines.
     bool event(QEvent *event) override;
+    /// The same for a relayout of the scrolled content, which the dialog's
+    /// own layout does not see.
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
     void hideEvent(QHideEvent *event) override;
     void showEvent(QShowEvent *event) override;
@@ -134,11 +139,24 @@ private:
     void showOnHeadset();
     /// Open the pairing and USB sections; the first time, ask for a code.
     void startPairing();
+    /// A page connected while pairing was shown (issue #249): back to the
+    /// connected-headset view, an unused code revoked. Not when the user
+    /// asked to pair another headset.
+    void leavePairing();
     /// Keep the width, fit the height to the wrapped text.
     void fitHeight();
     /// Taller when the wrapped text at the current width needs it; never
     /// shorter or narrower (a size the user chose stays).
     void growToFit();
+    /// Fit the height to the content at the current width, within the
+    /// screen's available height (the content scrolls beyond it), and move
+    /// the dialog up when its bottom would leave the screen (issue #249).
+    void fitToContent(bool mayShrink);
+    /// Move the dialog, @p height tall, back inside the available geometry.
+    void keepOnScreen(int height);
+    /// growToFit() once the events queued now are handled: a burst of label
+    /// changes is one fit.
+    void queueGrowToFit();
     // ── Pairing by code (issue #214) ──────────────────────────────────────
     /// Ask for a code; a previous one still pending is revoked first.
     void newCode();
@@ -159,12 +177,18 @@ private:
     void showPairing();
     void showQr(const QString &payload);
     /// Open or close the USB section; the first opening starts adb.
-    void setAdvancedOpen(bool open, const QString &reason = QString());
+    void setAdvancedOpen(bool open);
     void startUsb();
     /// What to tell the user when adb itself did not run to the end.
     static QString adbFailure(Outcome outcome);
     QString redacted(const QString &text) const;
     QString selectedSerial() const;
+
+    // Everything but the breadcrumb and Close: it scrolls when the screen is
+    // too short for it, so Close and the section's buttons stay reachable.
+    QScrollArea *m_scroll{ nullptr };
+    QWidget *m_content{ nullptr };
+    bool m_growQueued{ false };
 
     // A headset already connected
     QWidget *m_hubPanel{ nullptr };
@@ -176,6 +200,10 @@ private:
     QList<VrHub::Headset> m_headsets;
     bool m_pairingStarted{ false };      ///< a code was asked for (newCode ran)
     bool m_showing{ false };             ///< a show command is out
+    bool m_pairAnotherAsked{ false };    ///< the user pressed Pair Another Headset
+    QTimer *m_hubTimer{ nullptr };       ///< asks the hub again: a page may connect later
+    bool m_hubCheckOut{ false };         ///< one hub check at a time
+    bool m_codeWasShown{ false };        ///< the code area's visibility, as last fitted
 
     // Pairing by code
     VrLink::Inputs m_inputs;          ///< for the POST body (the token is not sent in it)
@@ -195,7 +223,6 @@ private:
     QString m_qrPayload;              ///< what the QR shows now ('' none)
     QToolButton *m_advancedToggle{ nullptr };
     QWidget *m_advancedPanel{ nullptr };
-    QLabel *m_advancedReason{ nullptr };
     bool m_usbStarted{ false };
 
     VrLink::Link m_link;

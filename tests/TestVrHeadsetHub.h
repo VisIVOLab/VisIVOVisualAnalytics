@@ -24,6 +24,7 @@ private slots:
     void productsOpenWhereTheyBelong();
     void productRecipeBecomesProvenance();
     void productIdIsStableAcrossOpens();
+    void aMomentOfASelectionNamesItsMask();
     void spectrumFileIsRead();
     void spectrumFitsTableIsReadLikeTheCsv();
     void apertureFitsTableIsAMean();

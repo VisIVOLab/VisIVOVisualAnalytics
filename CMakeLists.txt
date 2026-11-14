@@ -527,6 +527,8 @@ set(PROJECT_SOURCES
         src/gui/CubeVRController.h
         src/gui/VrHeadsetDialog.cpp
         src/gui/VrHeadsetDialog.h
+        src/gui/HeadsetActivityList.cpp
+        src/gui/HeadsetActivityList.h
         src/app/VrLink.h
         src/app/VrPair.h
         src/app/VrPairQr.h

@@ -409,6 +409,50 @@ void TestVrHeadsetHub::productIdIsStableAcrossOpens()
     QCOMPARE(VrHub::productId(bare, VrHub::parseProduct(bare)), u"headset-page-1-e0-7"_s);
 }
 
+void TestVrHeadsetHub::aMomentOfASelectionNamesItsMask()
+{
+    // The page's moment of a lasso selection: grow, isolate, moment, with
+    // "Mask: none" (no threshold) in its parameters (issue #249).
+    const VrHub::Product sel = VrHub::parseProduct(productEvent(R"({"product":"moment",
+        "path":"/w/c_vr_m0.fits","file":"c_vr_m0.fits",
+        "recipe":{"product":{"id":"vr-m0","kind":"moment","replay":[
+          {"route":"/v1/cube/kinematic_select_bin","request":{"seeds":[[1,2,3]]}},
+          {"route":"/v1/cube/mask_apply_bin","request":{"mode":"blank_outside"}},
+          {"route":"/v1/products/moment","request":{"dataset_id":"{new_dataset_id}"}}]},
+          "parameters":{"Order":"Moment 0","Mask":"none"}}})"));
+    QCOMPARE(VrHub::selectionMeasured(sel), u"the Kinematic Lasso selection"_s);
+    const QVariantMap params = VrHub::provenanceParams(sel);
+    QCOMPARE(params.value(u"Mask"_s).toString(),
+             u"the Kinematic Lasso selection (outside blanked); no threshold"_s);
+    QCOMPARE(params.value(u"Made in"_s).toString(), u"the VR headset"_s);
+    QCOMPARE(params.value(u"File"_s).toString(), u"c_vr_m0.fits"_s);
+    QCOMPARE(params.value(u"Order"_s).toString(), u"Moment 0"_s);
+
+    // A selection received as a mask only: still a selection, not a lasso grow.
+    const VrHub::Product maskOnly = VrHub::parseProduct(productEvent(R"({"product":"moment",
+        "recipe":{"product":{"replay":[{"route":"/v1/cube/mask_apply_bin","request":{"mode":"blank_outside"}},
+          {"route":"/v1/products/moment","request":{}}]},"parameters":{"Mask":"none"}}})"));
+    QCOMPARE(VrHub::provenanceParams(maskOnly).value(u"Mask"_s).toString(),
+             u"the selection (outside blanked); no threshold"_s);
+
+    // The whole cube, or a removed selection: the record's own words stay.
+    const VrHub::Product whole = VrHub::parseProduct(productEvent(R"({"product":"moment",
+        "recipe":{"product":{"replay":[{"route":"/v1/products/moment","request":{}}]},
+          "parameters":{"Mask":"none"}}})"));
+    QVERIFY(VrHub::selectionMeasured(whole).isEmpty());
+    QCOMPARE(VrHub::provenanceParams(whole).value(u"Mask"_s).toString(), u"none"_s);
+    QVERIFY(!VrHub::provenanceParams(whole).contains(u"File"_s));
+    const VrHub::Product removed = VrHub::parseProduct(productEvent(R"({"product":"moment",
+        "recipe":{"product":{"replay":[{"route":"/v1/cube/mask_apply_bin","request":{"mode":"blank_inside"}},
+          {"route":"/v1/products/moment","request":{}}]},"parameters":{"Mask":"none"}}})"));
+    QCOMPARE(VrHub::provenanceParams(removed).value(u"Mask"_s).toString(), u"none"_s);
+    // A threshold the page did set is not overwritten.
+    const VrHub::Product thresholded = VrHub::parseProduct(productEvent(R"({"product":"moment",
+        "recipe":{"product":{"replay":[{"route":"/v1/cube/mask_apply_bin","request":{"mode":"blank_outside"}}]},
+          "parameters":{"Mask":">= 0.5"}}})"));
+    QCOMPARE(VrHub::provenanceParams(thresholded).value(u"Mask"_s).toString(), u">= 0.5"_s);
+}
+
 void TestVrHeadsetHub::spectrumFileIsRead()
 {
     QVector<double> x, y;
