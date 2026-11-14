@@ -445,6 +445,7 @@ set(PROJECT_SOURCES
         src/app/SharedSelectionLink.h
         src/app/HeadsetHubLink.h
         src/app/VrHeadsetHub.h
+        src/app/VrHeadsetFollow.h
         src/app/SofiaSuggest.h
         src/app/FinderTaskRun.h
         src/app/RenderTaskHandle.h

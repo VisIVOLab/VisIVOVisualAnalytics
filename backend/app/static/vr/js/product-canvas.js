@@ -4,6 +4,7 @@
 // units, base64 decoding) are tested by node (backend/tests/vr/tools-moment.test.mjs).
 
 import { niceTicks } from './volume.js';
+import { wrapText, fitText } from './text-fit.js';
 
 // The desktop's maps by kind (vtkWindowCube::applyMomentMapResult): inferno
 // for an intensity, a diverging cool-warm for a velocity, viridis for a width.
@@ -167,6 +168,22 @@ export function ticks(a, b, n = 4) {
 export const PLANE_PX = [768, 576];
 export const PLANE_SIZE = [PLANE_PX[0] / 1600, PLANE_PX[1] / 1600];
 
+/** Rows above a product's frame (its top at y = 112): three of 22 px from y = 56. */
+export const PRODUCT_ROWS = 3;
+
+/**
+ * A product's lines as the rows drawn under its title (issue #267): each
+ * line wrapped to `maxWidth`, the rows capped at PRODUCT_ROWS, the last cut
+ * with an ellipsis when text was left out.
+ */
+export function productLines(measure, lines, maxWidth) {
+  const all = (lines || []).flatMap((l) => wrapText(measure, l, maxWidth));
+  if (all.length <= PRODUCT_ROWS) return all;
+  const rows = all.slice(0, PRODUCT_ROWS);
+  rows[PRODUCT_ROWS - 1] = fitText(measure, `${rows[PRODUCT_ROWS - 1]}…`, maxWidth);
+  return rows;
+}
+
 function makeCanvas(w, h) {
   if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(w, h);
   if (typeof document !== 'undefined') return Object.assign(document.createElement('canvas'), { width: w, height: h });
@@ -190,10 +207,11 @@ export function drawProduct(cv, p) {
   c.textBaseline = 'alphabetic';
   c.fillStyle = '#9fd0ff';
   c.font = 'bold 26px -apple-system, system-ui, sans-serif';
-  c.fillText(p.title || '', 16, 32);
+  const measure = (t) => c.measureText(t).width;
+  c.fillText(fitText(measure, p.title || '', W - 32), 16, 32);
   c.font = '19px ui-monospace, Menlo, monospace';
   c.fillStyle = '#e6e9ef';
-  (p.lines || []).slice(0, 2).forEach((l, i) => c.fillText(l, 16, 58 + i * 24));
+  productLines(measure, p.lines, W - 32).forEach((l, i) => c.fillText(l, 16, 56 + i * 22));
   if (!p.rgba) return;
   // The frame: left margin for y labels, right for the colour bar.
   const fx0 = 92, fy0 = 112, fx1 = W - 150, fy1 = H - 64;
