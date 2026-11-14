@@ -227,7 +227,7 @@ test('the primary card: the legend of the tool in use, for either hand, controll
     assert.deepEqual(lasso[0], ['Trigger', 'lasso seed']);
     assert.ok(!lasso.some(([, t]) => t === 'grab'), 'the grab is the same everywhere: not in the legend');
     assert.ok(lasso.some(([n, t]) => n === P.lower && t === 'tools'), 'A opens the tool palette (#257)');
-    assert.ok(lasso.some(([n, t]) => n === `Hold ${S.lower}` && t === 'menu'));
+    assert.ok(lasso.some(([n, t]) => n === S.lower && t === 'menu: open, close'), 'X toggles the menu (#276)');
     assert.ok(lasso.some(([n, t]) => n === `${r.secondary === 'right' ? 'R' : 'L'} stick ↔` && t === 'next tool'));
     const L = r.secondary === 'right' ? 'R' : 'L';
     // Every mode and tool: every control that does something now is in the
@@ -249,7 +249,7 @@ test('the primary card: the legend of the tool in use, for either hand, controll
     assert.ok(slab.some(([n, t]) => n === `${L} stick ↔` && t === 'next tool'));
   }
   const hands = WR.legendRows(C.controlMap({ mode: 'explore', input: { primary: 'hand', secondary: 'hand' } }));
-  assert.deepEqual(hands, [['Pinch', 'pin the readout'], ['Palm up', 'menu']]);
+  assert.deepEqual(hands, [['Pinch', 'pin the readout'], ['Palm up', 'menu: open, close']]);
 });
 
 test('toasts: the short notices that opt in, one after the other, each about 2 s', () => {

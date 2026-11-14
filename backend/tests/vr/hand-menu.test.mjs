@@ -1,7 +1,7 @@
 // The hand menu (issues #201, #257) and the result windows: the layout of
 // every tab for every data kind, the greying with its reason, the hit tests,
 // each main task at most two presses from opening, the menu standing about a
-// metre in front and moved by its title bar, held or kept open; the windows'
+// metre away and moved by its title bar, X toggling it (#276); the windows'
 // bars and which surface takes the ray (node --test).
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -24,7 +24,7 @@ function ctxOf(kind, extra = {}) {
   }
   if (extra.sel) c.sel = { ...c.sel, ...extra.sel };
   if (extra.meas) c.meas = { ...c.meas, ...extra.meas };
-  for (const k of ['debug', 'cat', 'canUndo', 'keep', 'clipTool']) if (k in extra) c[k] = extra[k];
+  for (const k of ['debug', 'cat', 'canUndo', 'clipTool']) if (k in extra) c[k] = extra[k];
   return c;
 }
 const CONTEXTS = {
@@ -84,8 +84,9 @@ test('every page of every kind fits, its widgets do not overlap and each is hit 
       }
       const ids = L.map((w) => w.id);
       assert.equal(new Set(ids).size, ids.length, `${name} ${page}: unique ids`);
-      // The footer: always there.
-      for (const id of ['undo', 'reset-view', 'menu-pin', 'menu-drag']) assert.ok(ids.includes(id), `${name} ${page} ${id}`);
+      // The footer and the title bar (its × closes the menu, #276): always there; Keep open is gone.
+      for (const id of ['undo', 'reset-view', 'menu-close', 'menu-drag']) assert.ok(ids.includes(id), `${name} ${page} ${id}`);
+      assert.ok(!ids.includes('menu-pin'), `${name} ${page}: no Keep open`);
     }
   }
 });
@@ -226,7 +227,10 @@ test('a point table: column chips (paged), and a velocity field\'s controls', ()
 });
 
 test('the renames: the desktop\'s words on the menu', () => {
+  // The desktop's words, on the button or, where a short label fits better
+  // (#276), at the start of its tooltip.
   const label = (page, ctx, id) => HM.widgetById(HM.menuLayout(page, ctx), id).label;
+  const tip = (page, ctx, id) => String(HM.widgetById(HM.menuLayout(page, ctx), id).tip).split(':')[0];
   const cube = CONTEXTS.cubeLasso;
   assert.equal(label('range', cube, 'slab-all'), 'Full band');
   assert.equal(label('range', cube, 'sub:clip:box'), 'Spatial crop');
@@ -237,8 +241,10 @@ test('the renames: the desktop\'s words on the menu', () => {
   assert.deepEqual(['seed:new', 'seed:add', 'seed:carve'].map((id) => label('select', cube, id)), ['New', 'Add', 'Subtract']);
   assert.deepEqual(['render:0', 'render:1'].map((id) => label('display', cube, id)), ['Emission', 'MIP']);
   assert.deepEqual(['pv-narrow', 'pv-wide'].map((id) => label('measure', cube, id)), ['PV width −', 'PV width +']);
-  assert.deepEqual([0, 1, 2].map((o) => label('measure', cube, `moment:${o}`)), ['Intensity (M0)', 'Velocity (M1)', 'Dispersion (M2)']);
-  assert.equal(label('display', CONTEXTS.points, 'pt-style:splats'), 'Smooth (splats)');
+  assert.deepEqual([0, 1, 2].map((o) => tip('measure', cube, `moment:${o}`)), ['Intensity (M0)', 'Velocity (M1)', 'Dispersion (M2)']);
+  assert.deepEqual([0, 1, 2].map((o) => label('measure', cube, `moment:${o}`)), ['M0', 'M1', 'M2'], 'short labels');
+  assert.equal(tip('display', CONTEXTS.points, 'pt-style:splats'), 'Smooth (splats)');
+  assert.equal(label('display', CONTEXTS.points, 'pt-style:splats'), 'Splats');
   assert.equal(label('display', CONTEXTS.flow, 'fl-retrace'), 'Reseed streamlines');
   const rows = (page, ctx) => HM.pageSpec(page, ctx).rows.map((r) => r[1]);
   assert.ok(rows('measure', cube).includes('PV slice'));
@@ -315,22 +321,73 @@ test('a ray from the eye to a tab presses it, through the same ray code as the w
   }
 });
 
-test('the menu: open while held, kept open on request until the next press; the frame it opens is told', () => {
-  let st = { pinned: false, armed: false, wasHeld: false, open: false };
-  const step = (held) => { st = HM.menuOpenState(st, held); return st.open; };
-  assert.deepEqual([false, true, true, false].map(step), [false, true, true, false]);
-  st = HM.menuOpenState({ open: false }, true);
-  assert.equal(st.opened, true);
-  assert.equal(HM.menuOpenState(st, true).opened, false, 'only on the first frame');
-  step(true);
-  st.pinned = true; st.armed = false;            // "Keep open" pressed while held
+test('the menu: X toggles it (#276): a press opens, the next closes; holding changes nothing; the frames it opens and closes are told', () => {
+  let st = { wasHeld: false, open: false };
+  const log = [];
+  const step = (held) => { st = HM.menuToggle(st, held); log.push([st.opened, st.closed]); return st.open; };
+  assert.deepEqual([false, true, true, true, false, false].map(step), [false, true, true, true, true, true], 'open from the press on, held or let go');
+  assert.deepEqual(log[1], [true, false], 'opened on the press\'s frame');
+  assert.ok(log.slice(2).every(([o, c]) => !o && !c), 'and only then');
+  assert.deepEqual([true, true, false].map(step), [false, false, false], 'the next press closes it, holding does not open it again');
+  assert.deepEqual(log[6], [false, true], 'closed on that press\'s frame');
+  assert.equal(step(true), true, 'and the one after opens it again');
+  // Closed by its × (main.js sets open = false): the next press opens it.
+  st = { ...st, open: false };
+  assert.equal(step(false), false);
   assert.equal(step(true), true);
-  assert.equal(step(false), true, 'the release after Keep open does not close it');
-  assert.equal(step(false), true);
-  assert.equal(st.opened, false, 'a kept menu does not open again (its place stays)');
-  assert.equal(step(true), true, 'the next press: open while held');
-  assert.equal(st.pinned, false);
-  assert.equal(step(false), false, 'and closed when let go');
+});
+
+test('the palm up toggles the same way, steadied: noise at the edge of the gesture neither flickers nor fires twice', () => {
+  const s = new HM.Steady(HM.PALM_STEADY);
+  let st = { wasHeld: false, open: false };
+  let toggles = 0;
+  const feed = (raw, t) => { const r = HM.menuToggle(st, s.update(raw, t)); if (r.opened || r.closed) toggles++; st = r; };
+  // Up for 100 ms only, then down: not a press.
+  [0, 30, 60, 90].forEach((t) => feed(true, t));
+  for (let t = 100; t <= 450; t += 50) feed(false, t);
+  assert.equal(toggles, 0, 'a palm up shorter than onMs is not a press');
+  // Up and held, with tracking dropouts of 1-2 frames (under offMs): one press.
+  let t = 500;
+  for (let i = 0; i < 60; i++, t += 11) feed(!(i % 9 === 4 || i % 9 === 5), t);
+  assert.equal(toggles, 1, 'one press for a palm held up, dropouts and all');
+  assert.equal(st.open, true);
+  // Down long enough, then up again: the second press closes it.
+  for (let i = 0; i < 30; i++, t += 11) feed(false, t);
+  for (let i = 0; i < 30; i++, t += 11) feed(true, t);
+  assert.equal(toggles, 2);
+  assert.equal(st.open, false);
+  // A controller's X passes through.
+  const x = new HM.Steady();
+  assert.equal(x.update(true, 0), true);
+  assert.equal(x.update(false, 0), false);
+});
+
+test('the menu opens just above and beyond the hand that opened it, at the same distance, turned to the eyes (#276)', () => {
+  const head = M.identity();
+  head[13] = 1.6;                                         // eyes 1.6 m up, looking along -z
+  const hand = [-0.25, 1.15, -0.35];                      // the left controller, held out low
+  const m = HM.menuAbove(hand, head);
+  const p = M.position(m), eye = [0, 1.6, 0];
+  close(Math.hypot(p[0] - eye[0], p[2] - eye[2]), HM.MENU_DIST, 1e-5);
+  // Beyond the hand: on the line from the eyes through it (in the floor plane).
+  close(Math.atan2(p[0], -p[2]), Math.atan2(hand[0], -hand[2]), 1e-5);
+  // Its lower edge just above the hand.
+  close(p[1] - HM.MENU_SIZE[1] / 2, hand[1] + HM.MENU_GAP, 1e-5);
+  // Facing the eyes, upright.
+  // Facing the eyes, with no roll (its x axis level).
+  const z = [m[8], m[9], m[10]], toEye = M.normalize(M.sub(eye, p));
+  close(M.dot(z, toEye), 1, 1e-5);
+  close(m[1], 0, 1e-6);
+  // A hand raised high: the menu's centre no higher than MENU_RISE above the eyes.
+  close(M.position(HM.menuAbove([-0.2, 1.9, -0.4], head))[1], 1.6 + HM.MENU_RISE, 1e-5);
+  // A hand far to the side (behind the shoulder): at most MENU_TURN from the gaze.
+  const side = M.position(HM.menuAbove([-0.6, 1.2, 0.1], head));
+  close(Math.atan2(side[0], -side[2]), -HM.MENU_TURN, 1e-5);
+  // A hand under the head: along the gaze; no hand: in front, as before.
+  const under = M.position(HM.menuAbove([0.02, 1.0, -0.05], head));
+  close(under[0], 0, 1e-6);
+  assert.ok(under[2] < -0.9);
+  assert.deepEqual([...HM.menuAbove(null, head)], [...HM.menuFront(head)]);
 });
 
 test('drawMenu draws every page of every kind on a 2-D context stand-in', () => {

@@ -24,6 +24,7 @@
 // drawToast need only a 2-D context.
 
 import * as M from './mat4.js';
+import { drawFit, wrapFit, measureWith } from './text-fit.js';
 
 // ── The watch gesture ───────────────────────────────────────────────────────
 
@@ -342,12 +343,6 @@ function roundRect(c, x, y, w, h, r) {
   c.closePath();
 }
 
-function fit(c, text, maxW) {
-  if (c.measureText(text).width <= maxW) return text;
-  let t = text;
-  while (t.length > 1 && c.measureText(`${t}…`).width > maxW) t = t.slice(0, -1);
-  return `${t}…`;
-}
 
 /**
  * A wrist card: `title` (bold, amber), then `rows`, each a string or [name,
@@ -365,26 +360,24 @@ export function drawWristCard(c, title, rows, px = WRIST_PX) {
   c.stroke();
   c.textBaseline = 'middle';
   c.fillStyle = '#ffd27a';
-  c.font = 'bold 32px -apple-system, system-ui, sans-serif';
-  c.fillText(fit(c, title || '', W - 40), 20, TITLE_Y);
+  drawFit(c, title || '', 20, TITLE_Y, W - 40, 'bold 32px -apple-system, system-ui, sans-serif');
   let y = FIRST_ROW_Y;
   for (const r of rows.slice(0, rowsFor(px))) {
+    // Every text shrinks a little before it is cut (text-fit.js, #276).
     if (Array.isArray(r)) {
-      c.font = '600 28px -apple-system, system-ui, sans-serif';
       c.fillStyle = '#9fd0ff';
-      const name = fit(c, r[0], 150);
-      c.fillText(name, 20, y);
+      drawFit(c, r[0], 20, y, LEGEND_NAME_W, '600 28px -apple-system, system-ui, sans-serif');
       c.fillStyle = '#ffffff';
-      c.font = '28px -apple-system, system-ui, sans-serif';
-      c.fillText(fit(c, r[1], W - 190), 176, y);
+      drawFit(c, r[1], 20 + LEGEND_NAME_W + 10, y, W - 40 - LEGEND_NAME_W - 10, '28px -apple-system, system-ui, sans-serif');
     } else {
       c.fillStyle = '#ffffff';
-      c.font = '28px -apple-system, system-ui, sans-serif';
-      c.fillText(fit(c, r, W - 40), 20, y);
+      drawFit(c, r, 20, y, W - 40, '28px -apple-system, system-ui, sans-serif');
     }
     y += ROW_PITCH;
   }
 }
+/** The legend's name column (pixels). */
+const LEGEND_NAME_W = 146;
 
 /** At most `n` lines of at most `maxW` (as `measure` says), the last cut with … */
 export function toastLines(text, maxW, measure, n = 2) {
@@ -410,12 +403,13 @@ export function drawToast(c, text) {
   roundRect(c, 0, 0, W, H, 48);
   c.fill();
   c.fillStyle = '#ffffff';
-  c.font = '600 40px -apple-system, system-ui, sans-serif';
   c.textAlign = 'center';
   c.textBaseline = 'middle';
+  // Two lines at most, shrunk a little before the last is cut (#276).
   const maxW = W - 72;
-  const lines = toastLines(text, maxW, (t) => c.measureText(t).width);
-  lines.forEach((l, i) => c.fillText(fit(c, l, maxW), W / 2, H / 2 + 1 + (i - (lines.length - 1) / 2) * 50));
+  const r = wrapFit(measureWith(c), '600 40px -apple-system, system-ui, sans-serif', text, maxW, 2);
+  c.font = r.font;
+  r.lines.forEach((l, i) => c.fillText(l, W / 2, H / 2 + 1 + (i - (r.lines.length - 1) / 2) * 50));
   c.textAlign = 'left';
 }
 

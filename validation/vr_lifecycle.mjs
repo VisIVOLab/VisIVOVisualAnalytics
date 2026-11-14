@@ -16,8 +16,9 @@
 // --regressions adds recovery, stale layer replies and large-binning checks
 // to that smoke run (with the controller models' shading, vr_controller_shading.mjs),
 // with the hand menu driven by the mouse (vr_menu.mjs,
-// issue #201; --menu runs that alone on the smoke run). CI runs both; the full
-// lifecycle run remains separate.
+// issue #201; --menu runs that alone on the smoke run) and every canvas's
+// text fitting its box (vr_text_fit.mjs, issue #276; --text-fit alone). CI
+// runs both; the full lifecycle run remains separate.
 // --measure (issue #224) adds the measurement record's checks to the smoke
 // run (validation/vr_measure.mjs): recording on vs off, a guided run through
 // every condition, the record read back and the report script run on it.
@@ -43,6 +44,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { runRegressions } from './vr_regressions.mjs';
 import { runMenuChecks } from './vr_menu.mjs';
+import { runTextFitChecks } from './vr_text_fit.mjs';
 import { runMeasureChecks } from './vr_measure.mjs';
 import { runAllocChecks, GL_PROBE } from './vr_alloc.mjs';
 import { XR_FAKE, runXRFakeChecks, runSinglePageChecks, runDelayedTakeoverCheck, runReloadCheck } from './vr_xr_fake.mjs';
@@ -64,7 +66,7 @@ const ALLOC = !!args.alloc || !!args.regressions;
 // --xrfake (issue #226): the headset path through a WebXR stand-in, and one active page (also part of --regressions),
 // with the debug cuts of issue #229 (vr_cuts.mjs) and no 3-D texture allocated in VR (vr_tex3d.mjs).
 const XRFAKE = (!!args.xrfake || !!args.regressions) && !args.paired;
-const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake;
+const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake || !!args['text-fit'];
 const PY = args.python || process.env.VISIVO_PYTHON || 'python3';
 // `--chrome` given without a value (an empty shell variable) parses as true:
 // that is "not found", said at once rather than as a failed spawn later.
@@ -619,6 +621,8 @@ try {
   check('no page error', !errs.length && !c.pageErrors.length, [...errs, ...c.pageErrors].join(' / '));
 
   if (args.regressions || args.menu) await runMenuChecks({ c, check, waitFor, results });
+  // Issue #276: every canvas's text inside its box, with this page's fonts and values (vr_text_fit.mjs).
+  if (args.regressions || args['text-fit']) await runTextFitChecks({ c, check, results });
   if (ALLOC) await runAllocChecks({ c, check, waitFor, results, chromePid: chrome ? chrome.pid : 0, assert: !args['alloc-no-assert'] });
   if (args.regressions) await runRegressions({ c, check, waitFor, api, python: PY, makeCube, token: tokenA, cube });
   // The real controller models drawn offscreen with the page's pipeline: dark plastic dark from every side, opaque.
