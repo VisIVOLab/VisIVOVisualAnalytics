@@ -37,7 +37,7 @@ import { shouldShowGuide } from './onboarding.js';
 import { EyeBufferGovernor, qualityNote, cubeBudget, spvAtFloor, qualityPolicy, textureLimitBytes, planCapacity, sameCapacity } from './quality.js';
 // The first Quest 3 session's fixes (issue #226): composition layers for the
 // text, solid controllers and hands, one active page.
-import { QuadLayers, layersAvailable } from './xr-layers.js';
+import { QuadLayers, layersAvailable, quadExtentFactor } from './xr-layers.js';
 import { controllerMesh, handMesh } from './models.js';
 // The real controller models (WebXR Input Profiles), the page's own as the fallback.
 import { ControllerModels } from './controller-models.js';
@@ -1827,9 +1827,12 @@ function shownWindows() {
 function barTexture(w) {
   if (!w.barTex) w.barTex = R.createPanel();
   const uiState = { hover: w.pointer.bar.hover, active: w.pointer.bar.active ? w.pointer.bar.active.id : null };
-  const key = JSON.stringify([w.def.title, uiState]);
+  // The bar names what the window shows (issue #267).
+  const mr = analysis.moment.state.result;
+  const title = W.windowTitle(w.id, { tool: selection.sel.tool, momentOrder: mr ? mr.order : null });
+  const key = JSON.stringify([title, uiState]);
   if (key !== w.barKey) {
-    W.drawBar(w.bar.getContext('2d'), w.def.title, uiState);
+    W.drawBar(w.bar.getContext('2d'), title, uiState);
     R.updatePanel(w.barTex, w.bar);
     w.barKey = key;
   }
@@ -2837,6 +2840,7 @@ async function startSession(session, mode, bench, startGen, wantLayers) {
         binding: new XRWebGLBinding(session, gl), session, gl, space: ref,
         makeTransform: (p, q) => new XRRigidTransform({ x: p[0], y: p[1], z: p[2] }, { x: q[0], y: q[1], z: q[2], w: q[3] }),
         flipY: query.get('layerflip') !== '0',
+        extent: quadExtentFactor(navigator.userAgent, query.get('layerhalf')),     // issue #267
         onFail: (why) => { shell.log('warning', 'xr-layers-off', `drawn in the scene from now on: ${why}`); measure.event('xr-layers', { on: false, why: String(why).slice(0, 160) }); },
       });
       quads.setBase(layer);

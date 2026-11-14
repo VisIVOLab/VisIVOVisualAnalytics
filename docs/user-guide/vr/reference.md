@@ -79,7 +79,15 @@ to run on a Quest 3.
   Browser does): the headset's compositor draws them at the display's own
   resolution, so they stay sharp whatever eye-buffer scale the governor
   chose. Each is the same canvas, at the same place and size, as the panel the
-  page would draw itself, so pointing at them works the same way. Where the
+  page would draw itself, so pointing at them works the same way. The Quest
+  Browser draws a quad layer from minus to plus its `width` and `height`
+  about its centre, so there the page gives it half the panel's size (the
+  diagnostics line ends in *±width*); elsewhere it gives the full size, as
+  the specification words it. Until #267 the Quest got the full size too and
+  every overlay showed at twice its size, a window's title bar inside its
+  content. `?layerhalf=1` or `?layerhalf=0` forces half or full size, should
+  a browser read them the other way (a panel then looks twice or half the
+  size of where the ray presses). Where the
   browser has no layers, or a layer fails, the page draws them in the scene as
   before (the diagnostics' *text in the headset* line says which);
   `?nolayers` in the address forces that, `?layerflip=0` draws the layers'
@@ -1179,7 +1187,13 @@ settings left at their defaults the first time.
    velocity must agree to the binning's precision. Does the frame rate change
    while the readout follows the ray (FPS, missed %)?
 8. **Result windows.** Take a spectrum, then (Analysis tab) *M0* and a PV
-   path: three windows. Point at a window's title bar, hold the trigger and
+   path: three windows. Each title bar is above its window, never over the
+   text, and names it (*Spectrum probe*, *Moment 0*, *PV diagram*); the
+   velocity line wraps inside the window
+   ([#267](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/267)).
+   Point the ray at the far edge of a menu button or window: the cursor dot
+   must sit on the drawn edge (panel and layer the same size). Point at a
+   window's title bar, hold the trigger and
    move: it follows and turns to face you. × closes it; a new result opens it
    again. Leave VR and enter again: the windows are where you left them.
 9. **Haptics.** A short pulse on every press (menu, trigger on the cube),

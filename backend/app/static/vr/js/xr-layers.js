@@ -11,7 +11,9 @@
 //   session with layers has no baseLayer), the quads follow, back to front.
 // - Each overlay is the same canvas, pose (a 4×4 model) and size in metres
 //   as the in-scene panel, so the ray code (vr-panel.js rayPanel) hits the
-//   same plane: menus and windows are used exactly as before.
+//   same plane: menus and windows are used exactly as before. On the Quest
+//   Browser a quad layer takes half the size (it spans ±width, ±height:
+//   quadExtentFactor, quadLayerSize).
 // - A quad's pixels are copied only when its canvas changed (the renderer's
 //   panel version) or the compositor asks (needsRedraw); its pose and size
 //   every frame. The array changes only when the set of overlays on show
@@ -62,6 +64,36 @@ export function rigidFromModel(m) {
   return { position: [m[12], m[13], m[14]], orientation: q, scale: [sx, sy] };
 }
 
+/**
+ * How this browser reads a quad layer's `width` and `height` (issue #267):
+ * 0.5 where the quad spans -width..+width and -height..+height about its
+ * transform, 1 where they are its full width and height.
+ * - The Quest Browser spans ±width: the [-1, 1] quad of the layers
+ *   polyfill's quad renderer and of three.js's webxr_vr_layers example, both
+ *   written for it, and the Quest 3 picture of #267 (given the full size,
+ *   every overlay showed twice as wide and twice as tall as the panel the
+ *   ray hits, a window's title bar inside its content).
+ * - The spec calls them the layer's width and height, and Chromium's OpenXR
+ *   path passes them unchanged as XrCompositionLayerQuad.size (full extent):
+ *   1 elsewhere.
+ * `override`: the page's ?layerhalf ('1' half, '0' full), for a browser
+ * that turns out to read them the other way.
+ */
+export function quadExtentFactor(userAgent, override = null) {
+  if (override === '1') return 0.5;
+  if (override === '0') return 1;
+  return /OculusBrowser/.test(String(userAgent || '')) ? 0.5 : 1;
+}
+
+/**
+ * What a quad layer's `width` and `height` take for a panel of `size` metres
+ * (full width and height) whose model scales its axes by `scale`, in a
+ * browser whose quad extent factor is `factor` (quadExtentFactor).
+ */
+export function quadLayerSize(size, scale = [1, 1], factor = 1) {
+  return [size[0] * scale[0] * factor, size[1] * scale[1] * factor];
+}
+
 /** Did the ordered list of overlay ids change? */
 export function orderChanged(prev, next) {
   if (!prev || prev.length !== next.length) return true;
@@ -85,11 +117,13 @@ export function layersAvailable(session, scope = globalThis) {
  * - makeTransform(position, orientation): an XRRigidTransform;
  * - flipY: canvas rows top-down into the GL texture (true: the compositor
  *   reads a GL texture bottom-up, as everywhere in WebGL);
- * - onFail(message): told once when the layers are turned off.
+ * - onFail(message): told once when the layers are turned off;
+ * - extent: the browser's quad extent factor (quadExtentFactor: 0.5 on the
+ *   Quest Browser, 1 by default).
  */
 export class QuadLayers {
-  constructor({ binding, session, gl, space, makeTransform, flipY = true, onFail = () => {} }) {
-    Object.assign(this, { binding, session, gl, space, makeTransform, flipY, onFail });
+  constructor({ binding, session, gl, space, makeTransform, flipY = true, onFail = () => {}, extent = 1 }) {
+    Object.assign(this, { binding, session, gl, space, makeTransform, flipY, onFail, extent });
     this.pool = new Map();        // id -> {layer, w, h, version, fresh}
     this.shown = null;            // the ids in the array now
     this.submitted = new Set();   // the quads of the last render state set (active from the next frame)
@@ -136,9 +170,10 @@ export class QuadLayers {
       rec = null;
     }
     if (!rec) {
+      const [qw, qh] = quadLayerSize(item.size, [1, 1], this.extent);
       const layer = this.binding.createQuadLayer({
         space: this.space, viewPixelWidth: w, viewPixelHeight: h, layout: 'mono',
-        width: item.size[0], height: item.size[1],
+        width: qw, height: qh,
       });
       rec = { layer, w, h, version: -1, fresh: true };
       this.pool.set(item.id, rec);
@@ -165,8 +200,7 @@ export class QuadLayers {
         if (!rec) continue;
         const { position, orientation, scale } = rigidFromModel(it.model);
         rec.layer.transform = this.makeTransform(position, orientation);
-        rec.layer.width = it.size[0] * scale[0];
-        rec.layer.height = it.size[1] * scale[1];
+        [rec.layer.width, rec.layer.height] = quadLayerSize(it.size, scale, this.extent);
         const v = it.handle.version || 0;
         if (live.has(rec.layer) && (rec.fresh || rec.version !== v || rec.layer.needsRedraw)) this._copy(xrFrame, rec, it.handle.canvas, v);
         recs.push([it.id, rec]);
@@ -228,6 +262,6 @@ export class QuadLayers {
   /** For the HUD and the diagnostics. */
   describe() {
     if (!this.active) return `in the scene (layers off: ${this.why || 'not available'})`;
-    return `quad layers: ${this.shown ? this.shown.length : 0} on show, ${this.pool.size} made, ${this.copies} copies`;
+    return `quad layers: ${this.shown ? this.shown.length : 0} on show, ${this.pool.size} made, ${this.copies} copies${this.extent !== 1 ? ', ±width' : ''}`;
   }
 }
