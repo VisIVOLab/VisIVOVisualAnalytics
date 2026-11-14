@@ -435,6 +435,7 @@ set(PROJECT_SOURCES
         src/app/SharedSelection.cpp
         src/app/SharedSelectionLink.cpp
         src/app/HeadsetHubLink.cpp
+        src/app/VrAppLauncher.cpp
         src/app/SofiaSuggest.cpp
         src/app/FinderTaskRun.cpp
         src/app/HostMemory.cpp
@@ -535,6 +536,8 @@ set(PROJECT_SOURCES
         src/app/VrPairQr.h
         src/app/VrBackendCheck.h
         src/app/AdbHeadset.h
+        src/app/VrHeadsetApp.h
+        src/app/VrAppLauncher.h
         src/gui/Catalogue3DTableModel.cpp
         src/gui/Catalogue3DTableModel.h
         src/gui/DecompressBeforeOpen.cpp

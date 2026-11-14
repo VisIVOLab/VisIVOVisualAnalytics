@@ -6,7 +6,8 @@
 // command that sends them a cube, and the activity they report back.
 //
 //   GET  /v1/vr/headset            → {headsets: [{client, transport, label,
-//                                     since, last_seen, in_vr, cube, staged_cube}]}
+//                                     since, last_seen, in_vr, cube, staged_cube,
+//                                     launch}]} (launch: the app launch, #255)
 //                                     newest first, pages seen in the last 45 s
 //   POST /v1/vr/headset/command    {client?, type: "show", dataset_id, path, kind?, box?}
 //                                   (box: inclusive voxel ranges [[x0, x1], [y0, y1], [z0, z1]])
@@ -114,6 +115,9 @@ struct Headset
     bool inVr{ false };
     Cube cube;           ///< on show
     Cube staged;         ///< loading, not on show yet
+    /// The headset app's launch (#255) whose ticket this page traded, '' for
+    /// a page opened otherwise (browser, pairing).
+    QString launch;
 };
 
 struct Presence
@@ -154,6 +158,7 @@ inline Presence parsePresence(int httpStatus, const QByteArray &body, const QStr
         h.inVr = o.value(u"in_vr").toBool();
         h.cube = parseCube(o.value(u"cube"));
         h.staged = parseCube(o.value(u"staged_cube"));
+        h.launch = o.value(u"launch").toString();
         p.headsets.append(h);
     }
     return p;

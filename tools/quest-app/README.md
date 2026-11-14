@@ -122,4 +122,13 @@ it. When updating Bubblewrap, bump it in `package.json`, run
 ## How the desktop uses it
 
 The contract (install, launch, ticket, timeouts) is on issue #255 and in
-[docs/backend-api/vr-launch.md](../../docs/backend-api/vr-launch.md).
+[docs/backend-api/vr-launch.md](../../docs/backend-api/vr-launch.md). The
+desktop's side is `src/app/VrAppLauncher` and `src/app/VrHeadsetApp.h`.
+
+The desktop looks for the APK (with its `.json` beside it) in
+`$VISIVO_QUEST_APK`, then in its own resources (`quest-app/visivo-vr.apk`:
+`Contents/Resources` of the macOS app, beside the executable elsewhere),
+then in `tools/quest-app/out/` of the source tree its build directory is in
+(`visivo-vr-dev.apk` first). So for development, `build.sh` then a desktop
+started from `build/` is enough. Bundling `visivo-vr.apk` in the release
+packages is still a `release.yml` change to make.

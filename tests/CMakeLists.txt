@@ -229,6 +229,9 @@ add_executable(VisIVOTests
     TestVrHeadsetHub.h
     test_vr_headset_hub.cpp
     ${VISIVO_ROOT}/src/app/HeadsetHubLink.cpp
+    TestVrHeadsetApp.h
+    test_vr_headset_app.cpp
+    ${VISIVO_ROOT}/src/app/VrAppLauncher.cpp
     TestBackendProcessTree.h
     test_backend_process_tree.cpp
 )
