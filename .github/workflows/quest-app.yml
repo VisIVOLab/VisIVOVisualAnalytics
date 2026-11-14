@@ -34,9 +34,11 @@ on:
 
 concurrency:
   # Called, github.workflow is the caller's name: a release run and a manual
-  # run on the same ref never cancel each other.
+  # run on the same ref never cancel each other. Runs queue instead of
+  # cancelling: two release runs on one ref (one platform each) must both get
+  # the app, and a cancelled called workflow can cancel its caller.
   group: quest-app-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
