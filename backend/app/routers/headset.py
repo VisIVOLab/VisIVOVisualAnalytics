@@ -38,6 +38,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import AfterValidator, BaseModel, Field, ValidationError
 
 from .. import headset_hub as H
+from .. import headset_spectator
 from ..auth import accepted_tokens, verify_token
 from ..dependencies import get_exports_dir, resolve_workspace_path
 from ..sessions import Session, get_session
@@ -281,7 +282,10 @@ async def headset_hello(
     kept across a reconnect under the same ``client``."""
     body = await _read_body(request, HeadsetHelloRequest)
     _refuse_token(body.client, body.label, body.launch)
-    H.hub_for(session).hello(body.client, body.transport, body.label, body.launch)
+    hub = H.hub_for(session)
+    hub.hello(body.client, body.transport, body.label, body.launch)
+    # Watched from the desktop (#281): a reloaded page is told to capture again.
+    headset_spectator.on_hello(hub, body.client)
     return HeadsetHelloResponse(client=body.client, server_time=time.time(), instance=H.INSTANCE)
 
 

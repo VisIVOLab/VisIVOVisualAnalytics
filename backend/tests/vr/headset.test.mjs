@@ -366,6 +366,34 @@ test('commands: a show is applied once, acknowledged by the next poll; a backend
   hub.stop();
 });
 
+test('commands: a watch goes to the spectator view (#281), never to the cube loader, and is acknowledged', async () => {
+  const t = clock(), fh = fakeHub();
+  const watches = [];
+  const { hub, commands, logs } = makeHub(t, fh);
+  // makeHub's context, with the spectator's hook (createHub reads ctx.onWatch at each command).
+  const hub2 = H.createHub({
+    client: 'vr-test', transport: 'adb', auth: () => ({ token: 'tok', session: 'sess-1' }),
+    onCommand: (c) => { commands.push(c); }, onWatch: (c) => { watches.push(c); },
+    log: (level, event, message) => logs.push([level, event, message]),
+    fetch: fh.fetch, setTimeout: t.setTimeout, clearTimeout: t.clearTimeout,
+  });
+  fh.s.commands = [{ seq: 7, type: 'watch', on: true, fps: 15, width: 512 },
+    { seq: 8, type: 'show', dataset_id: 'd2', path: '/data/b.fits' }, { seq: 9, type: 'watch', on: 'yes' }];
+  hub2.start();
+  await t.advance(10);
+  assert.deepEqual(watches.map((c) => [c.seq, c.on]), [[7, true]]);
+  assert.deepEqual(commands.map((c) => c.seq), [8]);
+  assert.ok(logs.some(([, ev, msg]) => ev === 'hub-command-ignored' && /#9 watch/.test(msg)), 'a malformed watch is ignored');
+  assert.equal(hub2.st.after, 9);
+  hub2.stop();
+  // A page without the hook (an older main.js) ignores a watch like any unknown command.
+  fh.s.commands = [{ seq: 10, type: 'watch', on: true }];
+  hub.start();
+  await t.advance(10);
+  assert.equal(commands.length, 1);
+  hub.stop();
+});
+
 test('a 404 for this page says hello again; a backend without a hub stops it for good', async () => {
   const t = clock(), fh = fakeHub();
   const { hub, logs } = makeHub(t, fh);

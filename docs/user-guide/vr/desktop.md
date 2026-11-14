@@ -115,6 +115,32 @@ colours and threshold stay, now the window's own. The choice is remembered
 for the cube windows opened afterwards; tick it again to follow the headset
 from what it shows now.
 
+## Watch the Headset
+
+For teaching, demos and recording, the desktop can show what the person in
+the headset sees, live. In **Headset Activity**, press **Watch the Headset**.
+A window opens with the headset's view: the left eye, cropped to the middle
+of the view, with the cube, the controllers and their rays, the menu, the
+wrist cards and the result windows. The window's line gives the frame rate
+seen here, the frame's size, how old the frame was when it came, and what
+capturing it costs the headset per frame.
+
+- It is off until you press Watch, and it stops when the window closes.
+  While it is watched, the headset shows a small **Desktop watching** badge
+  at the upper left of the view. A desktop browser page shows a line at the
+  top instead.
+- **Snapshot** saves the current view as a PNG in the Workspace Exports
+  (`headset_<headset>_<date-time>.png`). The status bar names the file.
+- The view comes at about 15 frames a second, 512 pixels wide. A slow
+  network skips frames; it never falls behind.
+- Closed without a word (the computer slept, the network dropped), the
+  watch ends by itself after 10 seconds and the badge goes. The window
+  starts it again when it can.
+- The menu, the wrist cards and the windows are drawn by the headset's
+  compositor on top of the 3-D view. The page draws them into the copy at
+  the same place, so the copy shows them as the headset does. Passthrough
+  (the room) is not in the copy: it shows black there.
+
 ## Notes
 
 - The headsets and the activity belong to the backend session, so every cube

@@ -5,7 +5,8 @@
 //   then tells the hub what it shows (in VR or not, the cube on show, the
 //   cube staged for the end of the session) whenever that changes.
 // - Commands: one long poll at a time for the page's commands, acknowledged
-//   with `after` once applied; a `show` loads that cube into this page.
+//   with `after` once applied; a `show` loads that cube into this page, a
+//   `watch` turns the spectator view on or off (spectator.js, #281).
 // - Activity: look and clip (debounced, the latest of each per cube), each
 //   product made here (saved first in the Workspace Exports, so the desktop
 //   can open it), and the cube when it switches.
@@ -281,6 +282,7 @@ export function commandUsable(cmd) {
  *   auth() -> {token, session} | null (no session yet: nothing is sent),
  *   transport ('adb' | 'pair' | 'lan'), label, client,
  *   onCommand(cmd) -> void|Promise (started, not finished: the load runs on),
+ *   onWatch?(cmd) (a `watch` command {on, fps, width}: the spectator view, #281),
  *   log(level, event, message) (the diagnostics), onClient(id) (a new client id to keep),
  *   launch() -> the headset app's launch id (#255) or '' (named in the hello),
  *   fetch?, setTimeout?, clearTimeout? (tests) }.
@@ -641,6 +643,11 @@ export function createHub(ctx) {
       next = Math.max(next, cmd.seq);
       if (cmd.seq <= st.after || applied.has(cmd.seq)) continue;
       applied.add(cmd.seq);
+      if (cmd.type === 'watch' && typeof cmd.on === 'boolean' && ctx.onWatch) {
+        // The desktop watches this page, or stops (the spectator view, #281): at once.
+        try { ctx.onWatch(cmd); } catch (e) { noteError('watch', e && e.message ? e.message : String(e)); }
+        continue;
+      }
       if (!commandUsable(cmd)) { log('warning', 'hub-command-ignored', `#${cmd.seq} ${String(cmd.type)}`); continue; }
       st.commands++;
       try { await ctx.onCommand(cmd); } catch (e) { noteError('command', e && e.message ? e.message : String(e)); }

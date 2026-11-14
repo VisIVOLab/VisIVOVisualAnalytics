@@ -46,12 +46,19 @@ inline constexpr const char *DOWNSAMPLE_FACTORS = "X-Visivo-Downsample-Factors";
 inline constexpr const char *EXPOSURE = "X-Visivo-Exposure";
 inline constexpr const char *FILE_REVISION = "X-Visivo-File-Revision";
 inline constexpr const char *FRAME = "X-Visivo-Frame";
+inline constexpr const char *FRAME_AGE_MS = "X-Visivo-Frame-Age-Ms";
+inline constexpr const char *FRAME_COST_MS = "X-Visivo-Frame-Cost-Ms";
+inline constexpr const char *FRAME_EYE = "X-Visivo-Frame-Eye";
+inline constexpr const char *FRAME_HEIGHT = "X-Visivo-Frame-Height";
+inline constexpr const char *FRAME_SEQ = "X-Visivo-Frame-Seq";
+inline constexpr const char *FRAME_WIDTH = "X-Visivo-Frame-Width";
 inline constexpr const char *FROM_CACHE = "X-Visivo-From-Cache";
 inline constexpr const char *FULL_SHAPE = "X-Visivo-Full-Shape";
 inline constexpr const char *FULL_SPEED_MAX = "X-Visivo-Full-Speed-Max";
 inline constexpr const char *FULL_SPEED_MIN = "X-Visivo-Full-Speed-Min";
 inline constexpr const char *GLYPH_CELL = "X-Visivo-Glyph-Cell";
 inline constexpr const char *HEIGHT = "X-Visivo-Height";
+inline constexpr const char *INSTANCE = "X-Visivo-Instance";
 inline constexpr const char *LINE_POINTS = "X-Visivo-Line-Points";
 inline constexpr const char *LINES = "X-Visivo-Lines";
 inline constexpr const char *N_BASINS = "X-Visivo-N-Basins";
@@ -95,7 +102,7 @@ inline constexpr const char *WARNINGS = "X-Visivo-Warnings";
 inline constexpr const char *WIDTH = "X-Visivo-Width";
 
 // Every declared header name, for the contract test to diff against the manifest.
-inline constexpr std::array<const char *, 81> kAll = {
+inline constexpr std::array<const char *, 88> kAll = {
     EW_UNIT,
     FWHM_UNIT,
     MAP_UNIT,
@@ -130,12 +137,19 @@ inline constexpr std::array<const char *, 81> kAll = {
     EXPOSURE,
     FILE_REVISION,
     FRAME,
+    FRAME_AGE_MS,
+    FRAME_COST_MS,
+    FRAME_EYE,
+    FRAME_HEIGHT,
+    FRAME_SEQ,
+    FRAME_WIDTH,
     FROM_CACHE,
     FULL_SHAPE,
     FULL_SPEED_MAX,
     FULL_SPEED_MIN,
     GLYPH_CELL,
     HEIGHT,
+    INSTANCE,
     LINE_POINTS,
     LINES,
     N_BASINS,

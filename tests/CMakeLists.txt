@@ -229,6 +229,9 @@ add_executable(VisIVOTests
     TestVrHeadsetHub.h
     test_vr_headset_hub.cpp
     ${VISIVO_ROOT}/src/app/HeadsetHubLink.cpp
+    TestVrSpectator.h
+    test_vr_spectator.cpp
+    ${VISIVO_ROOT}/src/app/VrSpectatorFeed.cpp
     TestVrHeadsetApp.h
     test_vr_headset_app.cpp
     ${VISIVO_ROOT}/src/app/VrAppLauncher.cpp
