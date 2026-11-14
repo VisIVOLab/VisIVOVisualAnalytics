@@ -106,11 +106,11 @@ on the page, post the mask shown, exactly (not a re-grow), to
 `/v1/cube/mask_apply_bin` with `blank_outside` or `blank_inside`, as the
 desktop's buttons do: the new cube goes to the Workspace Exports with the
 selection's recipe in its FITS HISTORY, and is registered in the session.
-*Show that cube* loads it in the headset in place of the cube shown; in VR
-the new cube is read at once but shown only when you leave VR (a notice says
-*The new cube is shown when you leave VR*; the cube on show stays until
-then), because the headset's browser cannot take a new cube's textures
-during a VR session (see
+*Show that cube* loads it in the headset in place of the cube shown, in VR
+too: it is written into the room the page keeps for cubes before you enter
+VR. Only a cube larger than that room waits until you leave VR (a notice
+says *The new cube is shown when you leave VR* and why), because the
+headset's browser cannot take a new cube's textures during a VR session (see
 [GPU context loss](troubleshooting.md#gpu-context-loss-at-the-first-lasso-on-a-quest-3)).
 The same holds for any cube loaded while you are in VR. Each
 mode makes one cube per selection: pressing *Isolate* or *Remove* again, or

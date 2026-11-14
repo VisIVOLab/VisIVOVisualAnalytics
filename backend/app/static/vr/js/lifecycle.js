@@ -214,9 +214,10 @@ export function noticeFor(kind, ctx = {}) {
           'The cube and the settings are kept: press Enter VR to go back in.'],
         actions: [{ id: 'enter-vr', label: 'Enter VR' }, { id: 'dismiss', label: 'OK' }], autoHideMs: 30000 };
     case 'cube-waiting':
-      // Issue #229: a new cube's textures are not allocated during a VR session.
+      // Issue #229: a new cube's textures are not allocated during a VR session;
+      // since #235 only a cube that does not fit the room kept for it waits.
       return { id: 'cube-waiting', level: 'info', title: 'The new cube is shown when you leave VR',
-        lines: [`It is loaded${ctx.detail ? `: ${ctx.detail}` : ''}. This headset's browser cannot take a new cube's textures during a VR session without resetting its graphics.`,
+        lines: [`It is loaded${ctx.detail ? `: ${ctx.detail}` : ''}${ctx.why ? `, but ${ctx.why}` : ''}. This headset's browser cannot make room for a new cube during a VR session without resetting its graphics.`,
           'The cube on show stays until then: Exit VR to see the new one, then Enter VR again.'],
         actions: [...exit, { id: 'dismiss', label: 'OK' }], autoHideMs: 20000 };
     case 'budget':

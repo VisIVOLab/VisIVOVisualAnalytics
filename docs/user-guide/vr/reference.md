@@ -60,6 +60,11 @@ to run on a Quest 3.
   texture, 100 MiB for the selection mask; 500 MiB while loading); this
   headset allows 256 MiB for one cube*): choose a larger binning. The
   headset's limit is a conservative figure, not yet measured on a Quest 3.
+  The same share holds the room kept for cubes in VR (issue #235): two
+  cubes of *Max side* voxels per axis and one mask, allocated before VR, into
+  which a cube that fits is written (it then needs no memory of its own); a
+  larger cube is held in storage of its own beside it, or, when both would
+  not fit, alone (and then waits for the end of a VR session).
   The backend's own caps (64 Mi voxels, 64 MiB of texture) keep any cube it
   serves under 129 MiB on the GPU.
 - **Resolution**: the headset's eye-buffer scale (`framebufferScaleFactor`),

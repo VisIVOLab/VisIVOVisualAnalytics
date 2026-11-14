@@ -128,9 +128,13 @@ export function textureLimitBytes({ headset = false, deviceMemoryGB } = {}) {
  * with the cube so that no 3-D texture is allocated in VR, issue #229) and
  * the empty-space grid (1/512 of the voxels, 4 bytes each). While it loads
  * the page also holds the download (peakBytes). The GPU's 3-D texture side
- * limit is checked first.
+ * limit is checked first. With `capacity` (the renderer's fixed capacity,
+ * issue #235) it also says whether the cube goes into it (`inCapacity`: no
+ * new GPU memory, shown at once in VR) and what the capacity holds
+ * (`capacityBytes`); a cube that does not is still checked alone, since the
+ * page gives the capacity back when both would not fit.
  */
-export function cubeBudget({ dims, encoding }, { maxTex3D = 2048, headset = false, deviceMemoryGB } = {}) {
+export function cubeBudget({ dims, encoding }, { maxTex3D = 2048, headset = false, deviceMemoryGB, capacity = null } = {}) {
   const [w, h, d] = dims.map(Number);
   const nvox = w * h * d;
   const bpv = encoding === 'float16' ? 2 : 1;
@@ -139,16 +143,73 @@ export function cubeBudget({ dims, encoding }, { maxTex3D = 2048, headset = fals
   const gpuBytes = textureBytes + nvox + macro;
   const peakBytes = textureBytes + gpuBytes;
   const limitBytes = textureLimitBytes({ headset, deviceMemoryGB });
+  // Issue #235: a cube that fits the page's fixed capacity is written into it
+  // (no new GPU memory, and it can be shown in VR); one that does not is
+  // held in storage of its own (gpuBytes) and waits for the end of a session.
+  const inCapacity = !!capacity && capacity.encoding === encoding && (capacity.cell ?? 8) === 8
+    && [w, h, d].every((v, i) => v <= capacity.dims[i]);
+  const capacityBytes = capacity ? capacity.totalBytes : 0;
   const mb = (b) => `${(b / MiB).toFixed(0)} MiB`;
   if (Math.max(w, h, d) > maxTex3D) {
-    return { ok: false, textureBytes, gpuBytes, peakBytes, limitBytes,
+    return { ok: false, textureBytes, gpuBytes, peakBytes, limitBytes, inCapacity, capacityBytes,
       reason: `${w}×${h}×${d} exceeds this GPU's 3-D texture limit (${maxTex3D} per side).` };
   }
   if (gpuBytes > limitBytes) {
-    return { ok: false, textureBytes, gpuBytes, peakBytes, limitBytes,
+    return { ok: false, textureBytes, gpuBytes, peakBytes, limitBytes, inCapacity, capacityBytes,
       reason: `${w}×${h}×${d} ${bpv === 2 ? '16-bit' : '8-bit'} needs ${mb(gpuBytes)} of GPU memory (${mb(textureBytes)} of texture, `
         + `${mb(nvox)} for the selection mask; ${mb(peakBytes)} while loading); `
         + `this ${headset ? 'headset' : 'browser'} allows ${mb(limitBytes)} for one cube.` };
   }
-  return { ok: true, textureBytes, gpuBytes, peakBytes, limitBytes, reason: '' };
+  return { ok: true, textureBytes, gpuBytes, peakBytes, limitBytes, inCapacity, capacityBytes, reason: '' };
+}
+
+/**
+ * GPU bytes of a fixed capacity of `dims` voxels (issue #235): two banks
+ * (the cube on show and the next one), each a texture of `encoding` and an
+ * empty-space grid (R32F, one cell per `cell`^3 voxels), and one selection
+ * mask (R8) shared by them. {volumeBytes, macroBytes, maskBytes, totalBytes},
+ * the first two for one bank.
+ */
+export function capacityBytes(dims, encoding, cell = 8) {
+  const nvox = dims[0] * dims[1] * dims[2];
+  const volumeBytes = nvox * (encoding === 'float16' ? 2 : 1);
+  const macroBytes = dims.reduce((a, v) => a * Math.ceil(v / cell), 1) * 4;
+  return { volumeBytes, macroBytes, maskBytes: nvox, totalBytes: 2 * (volumeBytes + macroBytes) + nvox };
+}
+
+/** The smallest capacity side considered: below it, no capacity (every cube in VR waits). */
+export const CAPACITY_MIN_SIDE = 32;
+
+/**
+ * The fixed capacity the page allocates before any VR session (issue #235),
+ * so that a cube that arrives in VR is written into storage that already
+ * exists (on a Quest 3 a 3-D allocation during a session resets the GPU
+ * process, #229). Per axis the page's cube budget: `side` (the Max side
+ * the page asks the backend for, which automatic binning keeps every axis
+ * under) up to the GPU's 3-D texture limit, widened to `atLeast` (the cube
+ * about to be shown, when it is larger) when the two banks of that still fit
+ * this device's share (`limitBytes`); else the plain side; else the largest
+ * side, a multiple of 8, whose two banks fit; null below CAPACITY_MIN_SIDE.
+ * {dims, encoding, cell, grown, shrunk, ...capacityBytes}.
+ */
+export function planCapacity({ side, encoding = 'uint8', atLeast = null, maxTex3D = 2048, limitBytes, cell = 8 }) {
+  const s0 = Math.max(1, Math.min(Math.floor(Number(side) || 256), maxTex3D));
+  const base = [s0, s0, s0];
+  const plan = (dims, extra) => ({ dims, encoding, cell, grown: false, shrunk: false, ...extra, ...capacityBytes(dims, encoding, cell) });
+  const fits = (dims) => capacityBytes(dims, encoding, cell).totalBytes <= limitBytes;
+  if (atLeast) {
+    const grown = base.map((v, i) => Math.min(maxTex3D, Math.max(v, Number(atLeast[i]) || 0)));
+    if (grown.some((v, i) => v !== base[i]) && fits(grown)) return plan(grown, { grown: true });
+  }
+  if (fits(base)) return plan(base);
+  for (let s = Math.floor((s0 - 1) / 8) * 8; s >= CAPACITY_MIN_SIDE; s -= 8) {
+    if (fits([s, s, s])) return plan([s, s, s], { shrunk: true });
+  }
+  return null;
+}
+
+/** Is `a` the same capacity as `b` (dims, encoding, cell)? */
+export function sameCapacity(a, b) {
+  if (!a || !b) return !a && !b;
+  return a.encoding === b.encoding && (a.cell ?? 8) === (b.cell ?? 8) && a.dims.every((v, i) => v === b.dims[i]);
 }

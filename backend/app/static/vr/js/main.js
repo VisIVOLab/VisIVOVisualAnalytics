@@ -31,7 +31,7 @@ import { createShell } from './shell.js';
 import { CARD_PX, CARD_SIZE } from './notice.js';
 import { pageBuild, PAGE_VR_API, isHeadsetBrowser, reopenCube, LoadTracker, supersededLoad, PendingReopen } from './lifecycle.js';
 import { shouldShowGuide } from './onboarding.js';
-import { EyeBufferGovernor, qualityNote, cubeBudget, spvAtFloor, qualityPolicy, textureLimitBytes } from './quality.js';
+import { EyeBufferGovernor, qualityNote, cubeBudget, spvAtFloor, qualityPolicy, textureLimitBytes, planCapacity, sameCapacity } from './quality.js';
 // The first Quest 3 session's fixes (issue #226): composition layers for the
 // text, solid controllers and hands, one active page.
 import { QuadLayers, layersAvailable } from './xr-layers.js';
@@ -331,6 +331,9 @@ $('load').addEventListener('click', () => {
   withLoading(loadFromBackend).catch((err) => { if (!err.superseded) setStatus(`Failed: ${err.message || err}`); });
 });
 $('synthetic').addEventListener('click', () => loadSynthetic(Number($('synthetic-size').value)));
+// The capacity follows the Max side and Texture chosen (issue #235): outside
+// VR at once, else at the next Enter VR.
+for (const id of ['maxdim', 'encoding']) $(id).addEventListener('change', () => { if (!R.xrActive) ensureCapacity(state.cube, { page: true }); });
 
 function readNumber(id) { return Number($(id).value); }
 
@@ -826,13 +829,94 @@ async function loadReduced(b, open, info, t0, ticket) {
 /** Throws (and says so on the card) when a cube of `dims` would not fit this device. */
 function checkBudget(dims, encoding) {
   const b = cubeBudget({ dims, encoding }, { maxTex3D: R.maxTex3D, headset: isHeadsetBrowser(navigator.userAgent),
-    deviceMemoryGB: navigator.deviceMemory });
+    deviceMemoryGB: navigator.deviceMemory, capacity: R.cap });
   if (!b.ok) {
     shell.notify('budget', { detail: b.reason });
     shell.log('warning', 'cube-refused', b.reason);
     throw new Error(`${b.reason} Choose a larger binning.`);
   }
   return b;
+}
+
+/** This device's share of GPU memory for the cubes (quality.textureLimitBytes). */
+function cubeLimitBytes() {
+  return textureLimitBytes({ headset: isHeadsetBrowser(navigator.userAgent), deviceMemoryGB: navigator.deviceMemory });
+}
+
+/**
+ * Outside VR: the fixed capacity (issue #235) the cubes are written into,
+ * so that one arriving in a VR session is shown at once (no 3-D allocation
+ * in VR, #229). Planned from the page's Max side and Texture, widened to
+ * `cube` (the cube about to be shown, else the one on show) when two banks
+ * of it still fit this device's share (quality.planCapacity), and
+ * (re)allocated only when that plan changes. A cube that fits no capacity
+ * is held in storage of its own; the capacity is then kept only when both
+ * fit the share together. `reshow`: the cube on show is put back into the
+ * new capacity (false when another cube is shown right after). `page`: the
+ * texture is the page's Texture choice (Enter VR, a change of the choices),
+ * not `cube`'s. Returns whether `cube` fits the capacity.
+ */
+let capacitySide = 0;   // the Max side the capacity on the GPU was planned for
+
+function ensureCapacity(cube, { reshow = true, page = false } = {}) {
+  if (R.xrActive || gl.isContextLost()) return !!cube && R.fitsCapacity(cube);
+  // The share less what other storages of their own hold (the benchmark's
+  // cubes, a cube shown from them): the cube shown from its voxels is given
+  // back or moved into the capacity, so it is not counted.
+  const g = R.gpuStats();
+  let held = g.cubeBytes - g.capacityBytes;
+  const s = R.slot;
+  if (s && !s.cap && s.volume && s.volume === R._volume) held -= s.textureBytes + s.macroBytes + s.maskBytes;
+  const limitBytes = cubeLimitBytes() - held;
+  const side = Math.min(readNumber('maxdim'), R.maxTex3D);
+  const encoding = cube && !page ? cube.encoding : $('encoding').value;
+  // The capacity held is kept while it still serves (no reallocation back and
+  // forth between a larger cube and smaller ones): same Max side and texture,
+  // the cube fits it, and it fits the share.
+  if (R.cap && capacitySide === side && R.cap.encoding === encoding && R.cap.totalBytes <= limitBytes
+      && (!cube || R.fitsCapacity(cube))) return moveIntoCapacity(cube, reshow);
+  let plan = planCapacity({ side, encoding,
+    atLeast: cube && cube.encoding === encoding ? cube.dims : null, maxTex3D: R.maxTex3D, limitBytes });
+  if (plan && cube && !(cube.encoding === plan.encoding && V.fitsStore(cube.dims, plan.dims))) {
+    const own = cubeBudget(cube, { maxTex3D: R.maxTex3D, headset: isHeadsetBrowser(navigator.userAgent), deviceMemoryGB: navigator.deviceMemory });
+    if (plan.totalBytes + own.gpuBytes > limitBytes) plan = null;
+  }
+  capacitySide = side;
+  if (!sameCapacity(plan, R.cap)) {
+    const mask = R._maskInput;      // the selection shown, kept through a failure below
+    try {
+      R.reallocCapacity(plan, { reshow });
+    } catch (err) {
+      // Not enough GPU memory, or a lost context: no capacity (cubes in VR wait for its end).
+      try { R.releaseCapacity(); } catch { /* the context is lost */ }
+      shell.log('warning', 'capacity-failed', String(err.message || err));
+      // The cube on show was in the old capacity: back in storage of its own.
+      if (reshow && !R.slot && R._volume && R._volume.data) {
+        try {
+          R.setVolume(R._volume, R._volume.cell);
+          if (mask) R.setMask(mask);
+        } catch { /* reported by the next load */ }
+      }
+    }
+    const c = R.cap;
+    shell.log('info', 'capacity', c ? `${c.dims.join('×')} ${c.encoding}, two banks and a mask, ${(c.totalBytes / 1e6).toFixed(1)} MB, ${c.allocMs.toFixed(0)} ms`
+      : 'none: cubes that arrive in VR wait for its end');
+  }
+  return moveIntoCapacity(cube, reshow);
+}
+
+/** The cube on show, held in storage of its own though the capacity holds
+ *  it (shown before the capacity grew), moved into it with its selection.
+ *  Returns whether `cube` fits the capacity. */
+function moveIntoCapacity(cube, reshow) {
+  if (!cube || !R.fitsCapacity(cube)) return false;
+  const s = R.slot, v = R._volume;
+  if (reshow && cube === state.cube && s && !s.cap && s.volume && s.volume === v && v.data) {
+    const mask = R._maskInput;
+    R.showVolume(v, v.cell);
+    if (mask) R.setMask(mask);
+  }
+  return true;
 }
 
 /**
@@ -923,7 +1007,13 @@ function stageCube(info, cube, open, path) {
   const what = `${cube.dims.join('×')} ${cube.encoding}${path ? ` (${path.split('/').pop()})` : ''}`;
   shell.log('info', 'cube-waits-for-exit', `${what}${replaced ? ', replacing one already waiting' : ''}`);
   measure.event('cube-staged', { dims: cube.dims, encoding: cube.encoding });
-  shell.notify('cube-waiting', { detail: what });
+  // Why it waits (issue #235): larger than the capacity, another texture, or the benchmark running.
+  const c = R.cap;
+  const why = xr && xr.bench ? 'the headset benchmark is running'
+    : !c ? 'no room was kept for cubes in VR on this device'
+      : c.encoding !== cube.encoding ? `the room kept for cubes in VR is ${c.encoding === 'float16' ? '16-bit' : '8-bit'}, this cube ${cube.encoding === 'float16' ? '16-bit' : '8-bit'}`
+        : `it is larger than the room kept for cubes in VR (${c.dims.join('×')})`;
+  shell.notify('cube-waiting', { detail: what, why });
   setStatus(`The new cube (${what}) is ready: it is shown when you leave VR.`);
 }
 
@@ -960,7 +1050,13 @@ function installStaged() {
 /** `path`: the file the load was started for (never the path field now).
  *  `slot`: a volume already on the GPU (the benchmark's, prepared before VR). */
 function installCube(info, cube, open, path = '', slot = null) {
-  if (R.xrActive && !slot) { stageCube(info, cube, open, path); return; }
+  // Issue #235: in VR a cube that fits the fixed capacity is written into it
+  // and shown at once (texSubImage3D only); a larger one, or any cube during
+  // the headset benchmark (its cubes and the one it returns to stay as
+  // prepared), waits for the end of the session (#229).
+  if (R.xrActive && !slot && ((xr && xr.bench) || !R.fitsCapacity(cube))) { stageCube(info, cube, open, path); return; }
+  // Outside VR the capacity follows the page's Max side and this cube.
+  if (!slot && !R.xrActive) ensureCapacity(cube, { reshow: false });
   // Another cube on the GPU: the benchmark's preparation was sized beside the old one.
   if (!slot && benchPrep) {
     if (!benchPrep.busy) releaseBench(true);
@@ -971,7 +1067,19 @@ function installCube(info, cube, open, path = '', slot = null) {
   state.loadGen++;
   layers.onCube();
   measure.cubeChanged();
-  const up = slot ? R.useVolume(slot) : R.setVolume(cube);
+  const inXR = R.xrActive;
+  const up = slot ? R.useVolume(slot) : R.showVolume(cube);
+  // A cube waiting for the end of the session is older than this one: dropped
+  // now, with its notice (installStaged clears it before it gets here).
+  if (stagedCube && !slot) {
+    stagedCube = null;
+    shell.clearNotice('cube-waiting');
+    shell.log('info', 'cube-waits-dropped', 'a newer cube was shown');
+  }
+  if (inXR && !slot) {
+    shell.log('info', 'cube-switched-in-vr', `${cube.dims.join('×')} ${cube.encoding}, written into the capacity in ${(up.uploadMs + up.macroMs).toFixed(0)} ms`);
+    measure.event('cube-switched-in-vr', { dims: cube.dims, encoding: cube.encoding, ms: Math.round(up.uploadMs + up.macroMs) });
+  }
   state.info = info;
   state.cube = cube;
   state.open = open;
@@ -994,7 +1102,7 @@ function installCube(info, cube, open, path = '', slot = null) {
     `${cube.dims.join('×')} ${cube.encoding}, binned ${cube.factors.join('×')} (${cube.mode}${V.sourceNote(cube)}) from ${cube.fullShape.join('×')}`,
     ...(l.pyramidBuildMs !== undefined ? [`brick pyramid built in ${(l.pyramidBuildMs / 1000).toFixed(0)} s`] : []),
     l.reduceMs !== undefined ? `reduce ${l.reduceMs.toFixed(0)} ms, transfer ${l.transferMs.toFixed(0)} ms (${l.mb.toFixed(1)} MB)` : `generated in ${l.generateMs.toFixed(0)} ms`,
-    `upload ${l.uploadMs.toFixed(0)} ms, skip grid ${l.macroMs.toFixed(0)} ms`,
+    `upload ${l.uploadMs.toFixed(0)} ms, skip grid ${l.macroMs.toFixed(0)} ms${up.capacity ? `, into the ${R.cap.dims.join('×')} capacity (can change in VR)` : !slot ? ', own storage (larger than the capacity: in VR it waits for the end of the session)' : ''}`,
     ...(open ? [`in ${state.sessionNote || 'own session'}`] : []),
   ].join('\n'));
 }
@@ -1170,8 +1278,12 @@ function diagnosticsSummary() {
 /** The page's own GPU textures (renderer.gpuStats, issue #226), one line. */
 function gpuMemoryLine() {
   const g = R.gpuStats();
+  const c = g.capacity;
   return `GPU textures ${(g.totalBytes / 1e6).toFixed(1)} MB: cube ${((g.volumeBytes + g.macroBytes) / 1e6).toFixed(1)}, `
-    + `${g.panels} panels ${(g.panelBytes / 1e6).toFixed(1)}, mask ${(g.maskBytes / 1e6).toFixed(2)}`;
+    + `${g.panels} panels ${(g.panelBytes / 1e6).toFixed(1)}, mask ${(g.maskBytes / 1e6).toFixed(2)}; `
+    + (c ? `VR capacity ${c.dims.join('×')} ${c.encoding === 'float16' ? '16-bit' : '8-bit'} × ${c.banks} banks + mask ${(c.totalBytes / 1e6).toFixed(1)} MB`
+      + ` (${c.onShow ? 'cube in it' : 'cube in its own storage'}, spare ${(c.spareBytes / 1e6).toFixed(1)} MB)` : 'no VR capacity: cubes arriving in VR wait for its end')
+    + ` of ${(cubeLimitBytes() / 1048576).toFixed(0)} MiB for cubes`;
 }
 
 /** Leaves VR on purpose (the card's Exit VR, the benchmark's end): no "ended" notice. */
@@ -2204,6 +2316,9 @@ async function enterXR(mode, bench) {
   const wantLayers = !query.has('nolayers');
   if (bench && !benchReady()) throw new Error('the benchmark\'s cubes are not prepared: press Prepare the headset benchmark first');
   if (R.xrActive) throw new Error('a VR session is already running');
+  // The capacity the cubes are written into in VR (issue #235): set now, on
+  // the 2-D page, for the Max side and Texture chosen (no 3-D allocation in VR).
+  ensureCapacity(state.cube, { page: true });
   const session = await navigator.xr.requestSession(mode,
     { optionalFeatures: ['local-floor', 'hand-tracking', ...(wantLayers ? ['layers'] : [])] });
   // From here until the session ends no 3-D texture is allocated (issue
@@ -2738,9 +2853,9 @@ async function prepareBench() {
   if (benchPrep) return;
   if (R.xrActive) throw new Error('leave VR first');
   // The device's share, less what the cube on show keeps on the GPU beside them.
+  // (The capacity of issue #235 and any volume of its own: g.cubeBytes.)
   const g = R.gpuStats();
-  const limit = textureLimitBytes({ headset: isHeadsetBrowser(navigator.userAgent), deviceMemoryGB: navigator.deviceMemory })
-    - (g.volumeBytes + g.maskBytes + g.macroBytes);
+  const limit = cubeLimitBytes() - g.cubeBytes;
   const sizes = [];
   let bytes = 0;
   for (const n of BENCH_SIZES) {
@@ -2800,11 +2915,12 @@ function releaseBench(quiet = false) {
   if (shown && !R.xrActive) {
     // The replacement is allocated while the shown slot is still held (setVolume
     // releases it after): both must fit the device's share together.
+    // A replacement that fits the capacity (issue #235) needs no new storage.
     const held = R.slot === shown.slot ? shown.slot.textureBytes + shown.slot.macroBytes : 0;
     const fits = (n) => {
       const b = cubeBudget({ dims: [n, n, n], encoding: 'uint8' }, { maxTex3D: R.maxTex3D,
-        headset: isHeadsetBrowser(navigator.userAgent), deviceMemoryGB: navigator.deviceMemory });
-      return b.ok && b.gpuBytes + held <= b.limitBytes;
+        headset: isHeadsetBrowser(navigator.userAgent), deviceMemoryGB: navigator.deviceMemory, capacity: R.cap });
+      return b.ok && (b.inCapacity || b.gpuBytes + held + b.capacityBytes <= b.limitBytes);
     };
     const n = BENCH_SIZES.filter((s) => s <= shown.n && fits(s)).pop() || BENCH_SIZES[0];
     try { loadSynthetic(n); } catch (err) { if (!quiet) setStatus(`Failed: ${err.message || err}`); }
@@ -2897,7 +3013,7 @@ function finishBench(b) {
   state.governorOn = b.savedParams.governorOn;
   state.mode = b.savedParams.mode;
   state.skip = b.savedParams.skip;
-  if (b.saved && !b.saved.slot.lost) {
+  if (b.saved && !b.saved.slot.lost && !b.saved.slot.released) {
     R.useVolume(b.saved.slot);
     state.cube = b.saved.cube; state.info = b.saved.info; state.open = b.saved.open; state.openPath = b.saved.openPath;
     applyExtent(); resetThreshold();
@@ -3038,6 +3154,7 @@ if (query.has('debug')) {
   // a cube waiting for the session's end, the benchmark's preparation.
   window.__vrTex3D = () => ({ calls: { ...R.tex3dGuard.calls }, refused: R.tex3dGuard.refused, xrActive: R.xrActive,
     staged: stagedCube ? { dims: stagedCube.cube.dims, factors: stagedCube.cube.factors } : null,
+    capacity: R.cap ? { dims: R.cap.dims.slice(), encoding: R.cap.encoding, bytes: R.cap.totalBytes, onShow: !!(R.slot && R.slot.cap === R.cap), bank: R.slot ? R.slot.bank ?? null : null } : null,
     bench: benchPrep ? { busy: benchPrep.busy, ready: benchReady(), sizes: benchPrep.cubes.map((e) => e.n), bytes: benchPrep.bytes } : null });
   window.__vrSingle = single;
   window.__vrCuts = () => ({ active: activeCuts.slice(), counts: { ...cutCounts } });
@@ -3075,6 +3192,57 @@ if (query.has('debug')) {
       if (Math.abs(px[i] - bg[0]) + Math.abs(px[i + 1] - bg[1]) + Math.abs(px[i + 2] - bg[2]) > 12) n++;
     }
     return { fraction: n / (w * h), w, h, lost: gl.isContextLost() };
+  };
+  /**
+   * Issue #235: the cube on show drawn from a corner of the capacity, with a
+   * brighter, larger cube's voxels left beyond it in the bank, against the
+   * same cube in storage of its own size; composite and maximum intensity,
+   * the whole box and a clipping box at one face. Outside VR. Returns the
+   * largest channel difference, the pixels that differ by more than 2 and
+   * the pixels drawn; the cube is put back into the capacity after.
+   */
+  window.__vrCapacityCompare = () => {
+    const c = state.cube;
+    if (!c || !c.data || R.xrActive || !R.fitsCapacity(c)) return { skipped: 'no cube with voxels in the capacity, or in VR' };
+    const big = R.cap.dims.map((v, i) => Math.min(v, c.dims[i] + 24));
+    const bright = c.encoding === 'uint8' ? new Uint8Array(big[0] * big[1] * big[2]).fill(255)
+      : new Uint16Array(big[0] * big[1] * big[2]).fill(0x3c00);        // 1.0 as float16
+    const w = canvas.width, h = canvas.height;
+    const views = [
+      { p: {} }, { p: { mode: 1 } },
+      { p: { boxMin: [0, 0, 0], boxMax: [1, 1, 0.5] } }, { p: { boxMin: [0.5, 0, 0], boxMax: [1, 1, 1], mode: 1 } },
+    ];
+    const shoot = () => views.map(({ p }) => {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, w, h);
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      const model = M.multiply(M.translation(0, 0, -1.4), M.multiply(M.rotation([0.3, 1, 0.2], 0.7), M.scaling(1)));
+      R.drawVolume({ proj: M.perspective(60 * Math.PI / 180, w / h, 0.05, 50), view: M.identity() }, model, volParams({ spv: 1, maxSteps: 4096, ...p }));
+      const px = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      return px;
+    });
+    // Both banks hold the bright cube; the cube on show is then written over one of them.
+    R.showVolume({ data: bright, dims: big, encoding: c.encoding });
+    R.showVolume({ data: bright, dims: big, encoding: c.encoding });
+    R.showVolume(c);
+    const inCap = R.slot.cap === R.cap;
+    const a = shoot();
+    R.setVolume(c);                            // storage of its own size
+    const own = R.slot.cap === null;
+    const b = shoot();
+    R.showVolume(c);                           // back into the capacity
+    let maxDiff = 0, differ = 0, drawn = 0;
+    for (let k = 0; k < a.length; k++) {
+      for (let i = 0; i < a[k].length; i += 4) {
+        const d = Math.max(Math.abs(a[k][i] - b[k][i]), Math.abs(a[k][i + 1] - b[k][i + 1]), Math.abs(a[k][i + 2] - b[k][i + 2]));
+        if (d > maxDiff) maxDiff = d;
+        if (d > 2) differ++;
+        if (b[k][i] + b[k][i + 1] + b[k][i + 2] > 6) drawn++;
+      }
+    }
+    return { inCap, own, maxDiff, differ, drawn, pixels: views.length * w * h, cube: c.dims, capacity: R.cap.dims, bright: big, lost: gl.isContextLost() };
   };
   window.__vrSelection = selection;
   window.__vrAnalysis = analysis;
@@ -3274,6 +3442,7 @@ function rebuildGraphics() {
   const t0 = performance.now();
   try {
     R.restore();
+    if (R.capacityError) shell.log('warning', 'capacity-failed', `after the context was restored: ${R.capacityError}`);
     releaseBench(true);              // the benchmark's cubes were on the lost context
     layers.restore();
     refiner.draw = new RefineDraw(gl);
@@ -3336,6 +3505,7 @@ $('copy-diag').addEventListener('click', async () => {
 
 // ── Start ───────────────────────────────────────────────────────────────────
 shell.start();
+ensureCapacity(null);   // before any VR session (issue #235)
 single.claim();         // older VR pages of this origin stand down (issue #226)
 checkXR();
 updateLabels();
