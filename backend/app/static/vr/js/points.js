@@ -138,6 +138,27 @@ export function pointLook(p) {
   ];
 }
 
+/**
+ * What a refined frame's pose adds for a point table (`eyes`: the page's
+ * eyes, {width, height}): the page's box (data_to_model), and for splats the
+ * sample's rows and the eye's size in page pixels, which the session's
+ * splats take (app/point_splat.py, issue #262) so the refined frame has the
+ * preview's size and brightness. While the governor draws only part of the
+ * sample the preview is dimmer (fewer rows, each larger by less than their
+ * light), so the refined frame is then brighter than it, not darker.
+ */
+export function refinePoseExtra(box, style, sampleRows, eyes) {
+  const out = { data_to_model: Array.from(box.matrix) };
+  if (style === 'splats') {
+    if (sampleRows > 0) out.sample_rows = Math.round(sampleRows);
+    const w = Math.round(Math.max(0, ...eyes.map((e) => e.width || 0)));
+    const h = Math.round(Math.max(0, ...eyes.map((e) => e.height || 0)));
+    // The session draws at most 4096 pixels a side (render_session/_stereo_points.py).
+    if (w >= 16 && h >= 16 && w <= 4096 && h <= 4096) out.viewport_size = [w, h];
+  }
+  return out;
+}
+
 /** Box edges and ticks in data units ({segs, labels}) for a box `d` (dataToModel). */
 export function boxDecorations(d, axes, niceTicks) {
   const e = d.extent, h = e.map((v) => v / 2);

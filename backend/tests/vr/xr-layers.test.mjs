@@ -117,6 +117,12 @@ test('quads: made once per overlay, copied only when the canvas changed, array s
   // Sizes follow the model's scale.
   frame([{ id: 'hud', model: M.multiply(at, M.scaling(2)), size: [0.16, 0.15], handle: hud }]);
   assert.ok(Math.abs(q.pool.get('hud').layer.width - 0.32) < 1e-9);
+  // A browser whose quad spans ±width (the Quest Browser, issue #267): half of it.
+  q.extent = 0.5;
+  frame([{ id: 'hud', model: M.multiply(at, M.scaling(2)), size: [0.16, 0.15], handle: hud }]);
+  assert.ok(Math.abs(q.pool.get('hud').layer.width - 0.16) < 1e-9 && Math.abs(q.pool.get('hud').layer.height - 0.15) < 1e-9);
+  assert.match(q.describe(), /±width/);
+  q.extent = 1;
   // A smaller eye buffer: the projection layer replaced at once, the quads kept.
   q.setBase({ base: true, second: true });
   assert.deepEqual(session.states.at(-1), ['base', 1]);

@@ -38,6 +38,58 @@ are preserved here unedited; the branch names they refer to are historical.
   band, Spatial crop, Show result cube, …). A unit test proves each task of
   the issue's Done list is at most two presses from opening the menu.
 
+- **VR: the refined frame of a point table drawn as splats is no longer almost
+  black (#262, part of #261).** Holding still with *splats* replaced the
+  page's picture by a frame close to the background (mean 14.3 against 13,
+  where the preview is 21.4, on a 3.9 M-row snapshot). The cause was the
+  backend's VTK Gaussian mapper under the stereo camera: from VTK 9.4 it
+  projects each splat with the view-to-clip matrix over the view-space depth,
+  and the stereo camera's view is in table units with the metre scale in the
+  projection, so every splat was smaller by that scale (1/50 for a box 50
+  units wide) and almost nothing was drawn. The point session now draws
+  stereo splats on the CPU by the page's own rule (`app/point_splat.py`): the
+  sprite size, near/far-only clipping and the sub-pixel floor of the page's
+  shaders, the splat radius and opacity the page uses for its sample, each
+  row weighted by sampled rows / rows held, drawn at the page's eye size and
+  reduced to the refined frame's. The page sends `sample_rows` and
+  `viewport_size` with each pose. Measured on the same snapshot: refined
+  frame 21.8 (page with it blended in 22.1) against the preview's 21.4, lit
+  fraction 0.182 against 0.176; about 50 ms per 1600 × 1000 eye (0.3 s for
+  a session's first frame). The desktop's own point view is not affected
+  (its camera has no such scale; splats there are as bright as before).
+- **Desktop: the cube window follows the headset's look by default (#268,
+  part of #253).** A colour map, threshold or clip box (a slab included)
+  changed in VR now shows in the cube window's 3-D view while a headset
+  shows that cube, without opening Headset Activity first: the following no
+  longer depends on that panel being built. Each change taken from the
+  headset is said briefly in the status bar (*Colour map and threshold from
+  the headset*). **Follow the headset's look** is still in Headset Activity
+  and can be unticked; the choice is remembered in the app's settings. Only
+  what the headset shows now is applied, once: a look from before the page
+  switched to another cube is not, and the desktop sends no look back, so
+  nothing loops (src/app/VrHeadsetFollow.h, docs/user-guide/vr/desktop.md).
+
+- **VR: result window title bars above their content, named after the
+  window, long lines wrapped (#267, part of #253).** On the Quest 3 the
+  Spectrum probe window's title bar ("Selection", the move hint and ×) was
+  drawn across the middle of the window, over the position and velocity
+  lines. The cause was the composition layers: the Quest Browser draws a
+  WebXR quad layer from minus to plus its `width` and `height` about its
+  centre, and the page gave it the panel's full size, so every quad layer
+  (windows, menu, wrist cards, readout) was drawn twice as wide and twice as
+  tall as the panel the ray hits; the bar, placed just above the true
+  content edge, landed a fifth of the way down the doubled content. On the
+  Quest Browser the layers now take half the size (`xr-layers.js`
+  `quadExtentFactor`, `quadLayerSize`), so what is drawn and what the ray
+  hits agree again; other browsers keep the full size, as the specification
+  words it and Chromium's OpenXR path reads it, and `?layerhalf=1|0` forces
+  either. The bar names what the window shows (*Spectrum probe*,
+  *Kinematic Lasso*, *Box region*, *Moment 0/1/2*, *PV diagram*), drops its
+  move hint when a long title needs the room and cuts a title wider than the
+  bar with …; the selection window wraps long lines (the velocity line with
+  its convention, errors, the flux note) instead of running past the right
+  edge, and the moment and PV windows wrap their lines into three rows above
+  the image. Pure layout tests in `backend/tests/vr/windows.test.mjs`.
 - **VR: the numbers and the button help on the wrists, shown only when looked
   at (#256, part of #253).** The headset no longer keeps cards in view: the
   frame-rate and technical numbers are shown only with `?debug` (and during
