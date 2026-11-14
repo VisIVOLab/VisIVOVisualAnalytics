@@ -60,6 +60,10 @@ are preserved here unedited; the branch names they refer to are historical.
   cards, the guide, window bars, products, the selection panel, the
   readout) and fails on a text wider than its box, a text over a widget, two
   texts or widgets overlapping, a cut button label or a text past the edge.
+  After review: a secondary hand lost for a frame no longer toggles the menu
+  (the gap counts as let go through the palm's steadying); a recentre places
+  the open menu again above the hand; a hand behind or beside the user opens
+  the menu along the gaze; `--font` checks the font is really installed.
 
 - **Desktop: Open on Headset installs and starts the VisIVO VR app (#255).**
   In **Open in VR Headset… → Advanced (USB cable)** the desktop says whether
