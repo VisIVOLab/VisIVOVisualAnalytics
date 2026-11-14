@@ -86,6 +86,18 @@ def parse_meta(meta: str) -> dict[str, Any]:
     return meta_obj
 
 
+def meta_sigma(meta_obj: dict[str, Any]) -> float:
+    """The noise sigma the creator's grow used (``meta.grow.sigma``, the
+    session's noise estimate when it had one): the selection's flux
+    uncertainty and S/N then use it too, on both sides. 0 when absent, so the
+    statistics measure the noise around the selection."""
+    grow = meta_obj.get("grow")
+    value = grow.get("sigma") if isinstance(grow, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value) if math.isfinite(value) and value > 0 else 0.0
+
+
 def _release_after(work: asyncio.Future | None, permit: int) -> None:
     """Give ``permit`` back to the publish budget now, or once ``work`` (the
     packing thread, which holds the body) is done, whatever became of the
@@ -190,7 +202,7 @@ async def share_publish(
             raise HTTPException(422, "The selection is empty.")
         stats = await _run_heavy_with_limit(
             session, worker_cube_packed_mask_stats, entry["path"], packed,
-            origin_x, origin_y, origin_z, width, height, depth)
+            origin_x, origin_y, origin_z, width, height, depth, meta_sigma(meta_obj))
         stats = {"valid": True, "error": "", **stats}
     except HTTPException:
         raise

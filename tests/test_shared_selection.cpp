@@ -209,6 +209,21 @@ void TestSharedSelection::note_saysWhoVoxelsAndFlux()
     const auto i = visivo::parseSharedSelectionInfo(hubAnswer());
     QCOMPARE(visivo::sharedSelectionNote(i),
              u"Kinematic Lasso from the headset: 13216 voxels, flux 6.061 Jy km/s, 1240.4 to 1500.9 km/s"_s);
+
+    // With the backend's HI measurements (#280): the uncertainty, peak S/N,
+    // systemic velocity and widths, as the headset shows them.
+    QJsonObject o = QJsonDocument::fromJson(hubAnswer()).object();
+    QJsonObject stats = o.value(u"stats"_s).toObject();
+    stats.insert(u"hi"_s, QJsonObject{ { u"flux_err_jy_kms"_s, 0.0512 }, { u"peak_snr"_s, 42.83 },
+                                      { u"vsys_kms"_s, 1370.14 }, { u"w20_kms"_s, 230.06 },
+                                      { u"w50_kms"_s, 210.31 } });
+    o.insert(u"stats"_s, stats);
+    const auto h = visivo::parseSharedSelectionInfo(QJsonDocument(o).toJson(QJsonDocument::Compact));
+    QVERIFY(h.hasFluxError && h.hasVsys && h.hasPeakSnr);
+    QCOMPARE(h.hi.value(u"w50_kms"_s).toDouble(), 210.31);
+    QCOMPARE(visivo::sharedSelectionNote(h),
+             u"Kinematic Lasso from the headset: 13216 voxels, flux 6.061 ± 0.051 Jy km/s, peak S/N 42.8, "
+             "1240.4 to 1500.9 km/s, Vsys 1370.1 km/s, W20 230.1, W50 210.3 km/s"_s);
 }
 
 void TestSharedSelection::boxRecord_isTheBoxsOwnCall()

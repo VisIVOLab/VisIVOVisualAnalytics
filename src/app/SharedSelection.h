@@ -58,6 +58,14 @@ struct SharedSelectionInfo
     int channelMin{ -1 }, channelMax{ -1 };
     double velocityMin{ 0.0 }, velocityMax{ 0.0 };
     bool hasVelocity{ false };
+    // The HI measurements (stats.hi, issue #280), when the backend gives them.
+    bool hasFluxError{ false };
+    double fluxError{ 0.0 };          ///< Jy km/s, from the noise
+    bool hasVsys{ false };
+    double vsys{ 0.0 }, w20{ 0.0 }, w50{ 0.0 };   ///< km/s
+    bool hasPeakSnr{ false };
+    double peakSnr{ 0.0 };
+    QJsonObject hi;                   ///< every measurement, with its conventions
     QJsonObject meta;
     QString nonce;                   ///< meta.nonce: the publish's own id, '' when it sent none
     QString instance;                ///< the backend instance (seqs restart with it)

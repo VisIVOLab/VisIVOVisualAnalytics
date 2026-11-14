@@ -8,6 +8,28 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: standard HI measurements of a selection (#280).**
+  `/v1/cube/mask_stats_bin` answers, under `hi`, what an HI catalogue quotes
+  for a lasso or box selection: the integrated flux in Jy km/s with its
+  uncertainty from the noise, the peak and peak S/N, W20 and W50 from the
+  integrated spectrum, the systemic velocity (W20 midpoint) with the velocity
+  convention and frame named, the flux-weighted centroid (pixels, ICRS RA/Dec,
+  velocity) and the size (semi-axes and PA of the moment-0 footprint). The
+  definitions are SoFiA-2's (`app/compute/hi_measures.py`). New query
+  parameter `sigma`: the session's noise; without it the noise is measured
+  around the selection with SoFiA-2's local rule. The VR page shows the
+  numbers in the selection window, the flux ± error, Vsys and W50 on the
+  secondary wrist card, and records them in the selection's Provenance; the
+  page and the shared-selection publish pass the grow's σ, and the replay
+  records it. The desktop's note for a shared selection adds the uncertainty,
+  peak S/N, Vsys, W20 and W50. Validated against SoFiA-2 2.7.0 on HCG 44
+  (18 sources) and WALLABY (12): the same mask gives the catalogue's values
+  (local noise within 7 %, see `backend/tests/test_hi_measurements.py`). The
+  kinematic fit's w20/w50 now use the same interpolated definition (up to two
+  channels wider than before). The pixel-to-sky conversion moved to
+  `fits_dataset.pixel_to_icrs`, shared by `/v1/datasets/pixel_to_sky` and the
+  centroid.
+
 - **Desktop: Open on Headset installs and starts the VisIVO VR app (#255).**
   In **Open in VR Headset… → Advanced (USB cable)** the desktop says whether
   the headset app is installed and current (`pm list packages

@@ -579,6 +579,46 @@ flux. On HCG 44 the selection grown at
 NGC 3187's peak (13 216 voxels) gives 6.061 Jy km/s, the paper's F_Lasso for
 that source, in 30 ms.
 
+Query parameter `sigma` (default 0.0, `>= 0`, finite): the noise per voxel in
+`BUNIT`, the session's noise estimate (the VR page sends the lasso's typed σ,
+the shared-selection publish the grow's `sigma`). With 0 the noise is measured
+around the selection.
+
+**HI measurements** ([#280](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/280)),
+under `hi`, every number with its unit in its name and `null` when it cannot be
+measured (`notes` says why). The definitions are SoFiA-2's parameterisation
+(`app/compute/hi_measures.py`), so the same mask gives SoFiA-2's catalogue
+values (validated below). With S_k the selected sum of channel k (Jy/beam),
+n_k its valid selected voxels, Ω_k its beam area in pixels and Δv_k its width
+in km/s:
+
+| Field | Definition |
+|---|---|
+| `flux_jy_kms` | F = Σ_k (S_k / Ω_k) Δv_k (as `flux_jy_kms` above) |
+| `flux_err_jy_kms` | σ_F = σ √(Σ_k n_k Δv_k² / Ω_k): noise independent between beams and between channels (SoFiA-2's `err_f_sum`); correlated channels make it a lower bound |
+| `noise_sigma`, `noise_unit`, `noise_source`, `noise_voxels` | σ: the `sigma` given, else 1.4826 × median \|value\| (about zero) of the unselected voxels in the selection's bounding box widened by ⌈3 BMAJ / pixel⌉ pixels (10 without a beam) and 5 channels (SoFiA-2's local rms) |
+| `peak`, `peak_unit`, `peak_snr` | the largest selected value (as `max`) and peak / σ. Not SoFiA-2's `snr_max` (a summed optimum) |
+| `w20_kms`, `w50_kms` | from the integrated spectrum S_k/Ω_k (blank channels as zero): from each end, moving inwards, the first channel at or above 20 % (50 %) of the peak; the crossing linearly interpolated with the channel outside it; the width is the velocity difference of the two crossings, velocities interpolated between channel centres |
+| `vsys_kms`, `vsys_definition` | the mean of the two W20 crossing velocities |
+| `velocity_convention`, `velocity_frame` | the convention named (optical from a frequency axis; for a velocity axis by its CTYPE: VRAD radio, VOPT/FELO optical, AIPS VELO-xxx optical unless VELREF > 256) and `SPECSYS` |
+| `centroid_x`, `centroid_y`, `centroid_z` | Σ v·(x, y, z) / Σ v over the selected voxels with value v > 0 (0-based full-cube pixels) |
+| `centroid_ra_deg`, `centroid_dec_deg`, `centroid_frame` | that position through the file's full WCS, in ICRS (as `/v1/datasets/pixel_to_sky`) |
+| `centroid_velocity_kms` | Σ v·v_k / Σ v over the same voxels |
+| `major_axis_px`, `minor_axis_px`, `major_axis_arcsec`, `minor_axis_arcsec`, `pa_deg`, `size_definition` | the moment-0 map M(x, y) = Σ_k v Δv_k over the selection; the second moments of its positive pixels, weighted by M, about the centroid; the axes are 2 √λ (λ the eigenvalues): the semi-axes of the uniform ellipse with those moments (SoFiA-2's `ell_maj`/`ell_min`), not deconvolved from the beam. PA in [0, 180) from +y towards −x on the pixel grid |
+| `beam_major_arcsec`, `beam_minor_arcsec` | the header's beam, to compare the size with |
+
+Validation (`backend/tests/test_hi_measurements.py`, skipped without the
+data): each SoFiA-2 2.7.0 source's own mask (18 on HCG 44, 12 on WALLABY
+NGC 3137's cubelet) through this route gives its catalogue row: voxel count,
+sum and peak to 1e-5, flux to 1e-4 after SoFiA-2's physical conversion, W20,
+W50 and systemic velocity to 0.01 km/s, the centroid to 1e-4 pixel and its
+velocity to 0.01 km/s, the ellipse to 1e-4 and its PA to 0.05°. The local noise
+is within 6.2 % (HCG 44) and 7.0 % (WALLABY) of SoFiA-2's `rms`: SoFiA-2 leaves
+out every catalogued source's voxels from the frame, the route only the
+selection's; given SoFiA-2's `rms` as `sigma`, the flux uncertainty and peak S/N
+equal SoFiA-2's to 1e-4. Positions differ by at most 0.03 arcsec, the FK5 to
+ICRS rotation (SoFiA-2 reports the cube's own frame).
+
 Errors: 422 for a body whose length is not `width × height × depth × 4` bytes,
 an empty selection, a box outside the cube or too large, or a dataset that is
 not a cube; 404 for an unknown dataset; 401 without the token.
