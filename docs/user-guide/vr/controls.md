@@ -297,11 +297,16 @@ off. Tracked hands have none.
 
 ## Result windows
 
-The results stand in windows: **Selection** (the picked position, the
-spectrum, the lasso's or the box's statistics; right of the cube; since #256 it
-opens only with a result, work under way or an error, not as soon as Select
-mode is on), **Moment**
-(above the cube's right side) and **PV diagram** (above its left side). Point
+The results stand in windows: the **selection** window (the picked position,
+the spectrum, the lasso's or the box's statistics; right of the cube; since
+#256 it opens only with a result, work under way or an error, not as soon as
+Select mode is on), **Moment** (above the cube's right side) and **PV
+diagram** (above its left side). Each window's title bar sits above its
+content and names what it shows: *Spectrum probe*, *Kinematic Lasso* or *Box
+region* (the tool whose result it holds), *Moment 0*, *1* or *2*, *PV
+diagram*. A line too long for a window wraps onto the next row (a product
+window keeps three rows under its title and ends the last with … when more
+would not fit). Point
 the ray at a window's title bar and hold the trigger to move it: it follows the
 ray and turns to face you; **×** closes it. A new result opens it again. Where
 a window was left is kept for the next sessions (relative to where the cube
