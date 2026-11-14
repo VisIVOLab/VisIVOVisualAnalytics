@@ -34,10 +34,10 @@ export function guidePages({ leftHanded = false } = {}) {
     {
       title: 'What the trigger does',
       lines: [
-        `A tab sets it, or ${P.lower}: next mode (Explore, Select, Range). It is on your wrists and next to the cursor.`,
+        `${P.lower}: tools, a palette of icons by task (Explore, Lasso, Probe, Box, Velocity, Crop, Moment, PV slice); the trigger picks one.`,
         'Display: stick ↕ threshold, ↔ opacity. Select: the trigger takes a spectrum, a lasso seed or a box corner.',
         'Range: the stick moves and widens the velocity range; with Spatial crop, hold the trigger to drag a face.',
-        `${r.secondary} stick ←/→: the next tool of the mode.   ${P.upper}: undo.   ${S.upper}: reset the view.`,
+        `${r.secondary} stick ←/→: the next tool, in the palette's order.   ${P.upper}: undo.   ${S.upper}: reset the view.`,
       ],
     },
     {

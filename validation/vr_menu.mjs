@@ -171,6 +171,28 @@ export async function runMenuChecks({ c, check, waitFor, results = {} }) {
     mom.value && m.whole && m.req && m.req.mask_enabled && m.req.threshold_auto && m.win, JSON.stringify(m));
   await press('moment-hide');
 
+  // The tool palette (#257): opened, a tool picked by mouse closes it with that tool; × closes it unchanged.
+  await c.evaluate('window.__vrPalette.open()');
+  await sleep(100);
+  const pal = await c.evaluate(`window.__vrPalette.layout().filter((w) => w.id.startsWith('tool:')).map((w) => w.id + (w.disabled ? '-' : ''))`);
+  check('palette: eight tools by task, none greyed on a cube', pal.join(',') === 'tool:explore,tool:lasso,tool:probe,tool:box,tool:slab,tool:crop,tool:moment,tool:pv', pal.join(','));
+  const pc = await c.evaluate(`window.__vrPalette.pagePixel('tool:crop')`);
+  await clickAt(pc[0], pc[1]);
+  check('palette: Spatial crop picked by the trigger (a click), the palette closed',
+    await c.evaluate(`window.__vrMenu.ui.mode === 'clip' && window.__vrMenu.ui.clipTool === 'box' && !window.__vrPalette.state.open`));
+  await c.evaluate('window.__vrPalette.open()');
+  await sleep(100);
+  const lit = await c.evaluate(`window.__vrPalette.layout().filter((w) => w.on).map((w) => w.id)`);
+  check('palette: the tool in use is lit', lit.join() === 'tool:crop', lit.join());
+  const pl = await c.evaluate(`window.__vrPalette.pagePixel('tool:lasso')`);
+  await clickAt(pl[0], pl[1]);
+  check('palette: Kinematic Lasso picked', await c.evaluate(`window.__vrMenu.ui.mode === 'select' && window.__vrSelection.sel.tool === 'lasso' && !window.__vrPalette.state.open`));
+  await c.evaluate('window.__vrPalette.open()');
+  await sleep(100);
+  const px = await c.evaluate(`window.__vrPalette.pagePixel('palette-close')`);
+  await clickAt(px[0], px[1]);
+  check('palette: × closes it without a change', await c.evaluate(`!window.__vrPalette.state.open && window.__vrSelection.sel.tool === 'lasso'`));
+
   // Costs: the menu's redraw (each page) and the readout's text.
   const bench = {};
   for (const page of ['display', 'range', 'select', 'measure', 'more']) {

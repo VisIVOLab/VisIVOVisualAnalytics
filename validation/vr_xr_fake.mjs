@@ -204,6 +204,19 @@ export async function runXRFakeChecks({ c, check, waitFor, label = 'layers', exp
   else check(`xrfake ${label}: the menu opens (in the scene)`, await c.evaluate('window.__vrMenu.ui.menu.open'));
   await c.evaluate('window.__xrfake.buttons.left[4].pressed = false');
   await sleep(300);
+  // The tool palette (#257): A (the right hand's lower button) opens it in front of that hand; A again closes it.
+  await c.evaluate('window.__xrfake.buttons.right[4].pressed = true');
+  await sleep(200);
+  await c.evaluate('window.__xrfake.buttons.right[4].pressed = false');
+  await sleep(300);
+  const withPalette = await c.evaluate('({ x: window.__vrXR(), open: window.__vrPalette.state.open })');
+  if (expectLayers) check(`xrfake ${label}: A opens the tool palette as a quad`, withPalette.open && (withPalette.x.quads.shown || []).includes('palette'), JSON.stringify(withPalette.x.quads.shown));
+  else check(`xrfake ${label}: A opens the tool palette (in the scene)`, withPalette.open);
+  await c.evaluate('window.__xrfake.buttons.right[4].pressed = true');
+  await sleep(200);
+  await c.evaluate('window.__xrfake.buttons.right[4].pressed = false');
+  await sleep(300);
+  check(`xrfake ${label}: A again closes it`, !(await c.evaluate('window.__vrPalette.state.open')));
   // The readout: the primary ray on the cube's emission.
   const hover = await waitFor(c, '!!window.__vrSelection.sel.hover', 4000);
   const ro = await c.evaluate('window.__vrXR()');

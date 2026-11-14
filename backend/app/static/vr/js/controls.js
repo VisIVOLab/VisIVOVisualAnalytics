@@ -4,7 +4,7 @@
 // the menu; both grab. The same control map drives the input handler in
 // main.js, the legend on the primary wrist and the first-run guide, so what a
 // label says is what the control does. Since #257 the menu's tabs set the
-// mode, and A steps to the next mode.
+// mode, and A opens the tool palette (tool-palette.js).
 //
 // Pure: unit-tested by node (backend/tests/vr/controls.test.mjs).
 
@@ -84,15 +84,16 @@ export function controlMap({ mode = 'explore', sub = null, leftHanded = false, p
     { control: 'grip', name: 'Grip', action: 'grab', label: 'grab' },
     { control: 'stickY', name: 'Stick ↕', action: stickY[0], label: stickY[1] },
     { control: 'stickX', name: 'Stick ↔', action: stickX[0], label: stickX[1] },
-    { control: 'lower', name: P.lower, action: 'next-mode', label: 'next mode' },
+    // The tool palette (tool-palette.js, #257): the tools as icons, grouped by task.
+    { control: 'lower', name: P.lower, action: 'palette', label: 'tools' },
     { control: 'upper', name: P.upper, action: 'undo', label: 'undo' },
   ];
   const secondary = [
     { control: 'lower', name: `Hold ${S.lower}`, action: 'menu', label: 'menu' },
     { control: 'upper', name: S.upper, action: 'reset-view', label: 'reset view' },
     { control: 'grip', name: 'Grip', action: 'grab', label: 'grab (both: turn, scale)' },
-    { control: 'stickX', name: 'Stick ↔', action: mode === 'explore' ? 'colormap' : 'next-tool',
-      label: mode === 'explore' ? 'colour map' : 'tool' },
+    // The palette's tools in its order, one per flick (the colour map is on the menu's Display tab).
+    { control: 'stickX', name: 'Stick ↔', action: 'next-tool', label: 'next tool' },
     { control: 'stickY', name: 'Stick ↕', action: mode === 'explore' ? 'cmax' : null, label: mode === 'explore' ? 'colour max' : '' },
   ];
   const forHand = (list, kind, role) => {

@@ -22,7 +22,7 @@ test('one meaning per control in each mode', () => {
   assert.equal(act(ex, 'primary', 'trigger'), 'pin-readout');
   assert.equal(act(ex, 'primary', 'stickY'), 'threshold');
   assert.equal(act(ex, 'primary', 'stickX'), 'opacity');
-  assert.equal(act(ex, 'secondary', 'stickX'), 'colormap');
+  assert.equal(act(ex, 'secondary', 'stickX'), 'next-tool', 'the palette\'s next tool in every mode (#257)');
   assert.equal(act(ex, 'secondary', 'stickY'), 'cmax');
   for (const [sub, label] of [['probe', 'spectrum probe here'], ['lasso', 'lasso seed'], ['box', 'box corner']]) {
     const m = C.controlMap({ mode: 'select', sub });
@@ -47,7 +47,7 @@ test('one meaning per control in each mode', () => {
   // The buttons keep global actions only, the same in every mode.
   for (const opts of [{ mode: 'explore' }, { mode: 'select', sub: 'box' }, { mode: 'clip', sub: 'slab' }]) {
     const m = C.controlMap(opts);
-    assert.equal(act(m, 'primary', 'lower'), 'next-mode');
+    assert.equal(act(m, 'primary', 'lower'), 'palette');
     assert.equal(act(m, 'primary', 'upper'), 'undo');
     assert.equal(act(m, 'secondary', 'lower'), 'menu');
     assert.equal(act(m, 'secondary', 'upper'), 'reset-view');
@@ -68,8 +68,8 @@ test('left-handed: the same map on the other hands, with their buttons\' names',
   assert.deepEqual(left.roles, { primary: 'left', secondary: 'right' });
   assert.deepEqual(left.primary.map((c) => c.action), right.primary.map((c) => c.action));
   assert.deepEqual(left.secondary.map((c) => c.action), right.secondary.map((c) => c.action));
-  assert.deepEqual(C.labelLines(right, 'primary').filter(([n]) => n.length === 1), [['A', 'next mode'], ['B', 'undo']]);
-  assert.deepEqual(C.labelLines(left, 'primary').filter(([n]) => n.length === 1), [['X', 'next mode'], ['Y', 'undo']]);
+  assert.deepEqual(C.labelLines(right, 'primary').filter(([n]) => n.length === 1), [['A', 'tools'], ['B', 'undo']]);
+  assert.deepEqual(C.labelLines(left, 'primary').filter(([n]) => n.length === 1), [['X', 'tools'], ['Y', 'undo']]);
   assert.deepEqual(C.labelLines(left, 'secondary').slice(0, 2), [['Hold A', 'menu'], ['B', 'reset view']]);
   assert.deepEqual(C.labelLines(right, 'secondary').slice(0, 2), [['Hold X', 'menu'], ['Y', 'reset view']]);
 });
