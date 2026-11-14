@@ -139,13 +139,37 @@ export const DEAD_ZONE = 0.15;
 export const dead = (v) => (Math.abs(v) < DEAD_ZONE ? 0 : v);
 
 /** A stick pushed sideways as a step (colour map, tool): fires once past
- *  `on`, again only after it came back under `off`. */
+ *  `on`, again only after it came back under `off`.
+ *
+ *  A step that changes the tool must not come from a thumb that only rests
+ *  on the stick or slides along it (on the Quest the tool changed to Probe
+ *  while the cube was being moved): with `opts`, a push counts only when it
+ *  is mostly sideways (|v| ≥ `ratio`·|cross|), held for `holdMs`, and not
+ *  `blocked` (the same hand holding the grip). A push that was blocked or
+ *  diagonal at any moment fires nothing until the stick is back at rest. */
 export class Flick {
-  constructor(on = 0.7, off = 0.3) { this.on = on; this.off = off; this.armed = true; }
-  update(v) {
-    if (this.armed && Math.abs(v) >= this.on) { this.armed = false; return Math.sign(v); }
-    if (!this.armed && Math.abs(v) < this.off) this.armed = true;
-    return 0;
+  constructor(on = 0.7, off = 0.3) {
+    this.on = on; this.off = off; this.armed = true; this.heldMs = 0; this.dir = 0; this.spoiled = false;
+  }
+  /** `v` and `cross` are the raw axes (no dead zone): rest is measured on them. */
+  update(v, { cross = 0, dtMs = 0, holdMs = 0, ratio = 0, blocked = false } = {}) {
+    const a = Math.abs(v), r = Math.hypot(v, cross);
+    if (r < this.off) {                        // back at rest: ready again
+      this.armed = true; this.heldMs = 0; this.dir = 0; this.spoiled = false;
+      return 0;
+    }
+    if (!this.armed) return 0;
+    // Grip held, or clearly diagonal once well off centre: this push is spoilt.
+    if (blocked || (ratio > 0 && r >= (this.on + this.off) / 2 && a < ratio * Math.abs(cross))) {
+      this.spoiled = true;
+    }
+    if (this.spoiled || a < this.on) { this.heldMs = 0; this.dir = 0; return 0; }
+    const dir = Math.sign(v);
+    if (dir !== this.dir) { this.dir = dir; this.heldMs = 0; }   // a reversal starts the hold again
+    this.heldMs += dtMs;
+    if (this.heldMs < holdMs) return 0;
+    this.armed = false; this.heldMs = 0; this.dir = 0;
+    return dir;
   }
 }
 

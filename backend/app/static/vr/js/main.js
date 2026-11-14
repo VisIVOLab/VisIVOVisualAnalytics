@@ -2020,6 +2020,11 @@ function stickAction(action, v, dtS) {
   return true;
 }
 
+/** How long a sideways push must be held to change the tool (ms), and how
+ *  much more sideways than up/down it must be (any step). */
+const FLICK_TOOL_HOLD_MS = 180;
+const FLICK_SIDEWAYS_RATIO = 2;
+
 /** A stick pushed sideways as a step: the colour map, or the mode's next tool. */
 function stickStep(action, step) {
   if (!step || !action) return;
@@ -2829,7 +2834,16 @@ function handleInput(frame, dtS) {
   xr.stickMoving = continuous.length > 0;
   for (const [a, v] of continuous) stickAction(a, v, dtS);
   if (!xr.flick) xr.flick = new C.Flick();
-  stickStep(act('secondary', 'stickX'), xr.flick.update(sx));
+  // A tool step wants a deliberate sideways push, held briefly, never while
+  // that hand holds the grip (moving the cube) or a selection is busy.
+  const stepAction = act('secondary', 'stickX');
+  const toolStep = stepAction === 'next-tool';
+  const [rsx, rsy] = Sh ? stick(Sh.g) : [0, 0];   // raw: rest is judged without the dead zone
+  stickStep(stepAction, xr.flick.update(rsx, {
+    cross: rsy, dtMs: dtS * 1000,
+    holdMs: toolStep ? FLICK_TOOL_HOLD_MS : 0, ratio: FLICK_SIDEWAYS_RATIO,
+    blocked: btn(Sh, 'grip') || (toolStep && !!toolsBusy().busy),
+  }));
 
   if (pressedEdge('pLower', btn(Ph, 'lower')) && act('primary', 'lower') === 'next-mode') {
     setMode(C.nextMode(ui.mode));

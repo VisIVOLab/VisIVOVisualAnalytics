@@ -121,6 +121,42 @@ test('a flick steps once per push, and re-arms only near the centre', () => {
   assert.equal(C.dead(-0.5), -0.5);
 });
 
+test('a tool step needs a held, sideways push, and never comes while the grip is held', () => {
+  const o = { dtMs: 50, holdMs: 180, ratio: 2 };
+  // Held sideways: fires after the hold, once.
+  let f = new C.Flick();
+  const held = [0.9, 0.9, 0.9, 0.9, 0.9, 0.9].map((v) => f.update(v, o));
+  assert.deepEqual(held, [0, 0, 0, 1, 0, 0]);
+  // A quick brush past the threshold does nothing.
+  f = new C.Flick();
+  assert.deepEqual([0.9, 0.9, 0.1].map((v) => f.update(v, o)), [0, 0, 0]);
+  // A diagonal push (thumb sliding) never fires, even when it ends sideways.
+  f = new C.Flick();
+  const diag = [[0.8, 0.7], [0.9, 0.2], [0.9, 0.1], [0.9, 0], [0.9, 0], [0.9, 0]].map(([v, c]) => f.update(v, { ...o, cross: c }));
+  assert.deepEqual(diag, [0, 0, 0, 0, 0, 0]);
+  assert.equal(f.update(0, o), 0);          // back at rest: armed again
+  assert.deepEqual([0.9, 0.9, 0.9, 0.9].map((v) => f.update(v, o)), [0, 0, 0, 1]);
+  // While the grip is held nothing fires, and not after letting go mid-push either.
+  f = new C.Flick();
+  const grip = [true, true, false, false, false, false].map((b) => f.update(0.95, { ...o, blocked: b }));
+  assert.deepEqual(grip, [0, 0, 0, 0, 0, 0]);
+  // Diagonal below the firing threshold, then sideways: still spoilt until rest.
+  f = new C.Flick();
+  assert.deepEqual([[0.5, 0.6], [0.9, 0], [0.9, 0], [0.9, 0], [0.9, 0], [0.9, 0]]
+    .map(([v, c]) => f.update(v, { ...o, cross: c })), [0, 0, 0, 0, 0, 0]);
+  // A reversal starts the hold again.
+  f = new C.Flick();
+  assert.deepEqual([0.9, 0.9, -0.9, -0.9, -0.9, -0.9].map((v) => f.update(v, o)), [0, 0, 0, 0, 0, -1]);
+  // Rest is judged on the raw radius: (0.28, 0.14) is not rest.
+  f = new C.Flick();
+  assert.equal(f.update(0.9, { ratio: 2 }), 1);
+  assert.equal(f.update(0.28, { ratio: 2, cross: 0.14 }), 0);
+  assert.equal(f.update(0.9, { ratio: 2 }), 0);
+  // Without options it is the plain flick (colour map steps).
+  f = new C.Flick();
+  assert.equal(f.update(0.8, { ratio: 2, cross: 0.1 }), 1);
+});
+
 test('undo: snapshots pushed before changes, a repeat not twice, bounded', () => {
   const u = new C.UndoStack(3);
   assert.ok(u.push({ a: 1 }));

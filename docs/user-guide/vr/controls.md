@@ -112,8 +112,11 @@ mode on the Analysis tab switches to Select with the Kinematic Lasso.
 The tools: **spectrum** (the spectrum of the full cube at the pixel the ray
 picks), **Kinematic Lasso** (a selection grown on the full cube from the
 picked seed) and **box region** (two corners, statistics of every voxel in
-the box). The secondary stick flicked ←/→ steps through them; the Mode tab
-chooses one. What they compute is described in [Analysis](analysis.md).
+the box). The secondary stick pushed ←/→ and held for a moment (about a fifth of
+a second) steps through them; the Mode tab chooses one. A push that is not
+mostly sideways, one made while that hand holds the grip (moving the cube),
+or one made while a tool is still working changes nothing until the stick is
+back at rest, so a thumb resting on the stick does not change the tool. What they compute is described in [Analysis](analysis.md).
 
 | Control | Does |
 |---|---|
