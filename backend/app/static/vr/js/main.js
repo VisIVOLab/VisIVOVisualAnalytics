@@ -3291,6 +3291,19 @@ async function startSession(session, mode, bench, startGen, wantLayers) {
   session.updateRenderState({ depthNear: 0.05, depthFar: 50 });
   let ref;
   try { ref = await session.requestReferenceSpace('local-floor'); } catch { ref = await session.requestReferenceSpace('local'); }
+  // The headset recentred (#276): what stands world-locked may now be behind
+  // the user. The open menu is placed again above the hand (updateMenuPose),
+  // an open palette closes.
+  if (ref && typeof ref.addEventListener === 'function') {
+    ref.addEventListener('reset', () => {
+      if (!xr || xr.ref !== ref) return;
+      ui.menuModel = null;
+      ui.menuDrag = null;
+      palette.open = false;
+      palette.model = null;
+      shell.log('info', 'xr-recentred', ui.menu.open ? 'the menu placed again' : '');
+    });
+  }
   // With layers, the projection layer is the first of the session's `layers`
   // (a session with layers has no baseLayer); without, the base layer as before.
   let quads = null, layersNote = 'in the scene (?nolayers)';
@@ -3457,7 +3470,7 @@ function handleInput(frame, dtS) {
     ui.crop.drag = null;
     // Nor is a menu button held at the swap a press of the new one.
     ui.menu.wasHeld = btn(Sh, 'lower');
-    ui.menuPalm.reset(btn(Sh, 'lower'));
+    ui.menuPalm.reset(btn(Sh, 'lower'), performance.now());
   }
   const L = btn(hands.left, 'grip'), Rr = btn(hands.right, 'grip');
   if (xr.bench) { xr.grab = null; state.moving = false; ui.hit = null; return; }
@@ -3469,7 +3482,7 @@ function handleInput(frame, dtS) {
   // closes it; a tracked hand's palm turned up does the same, steadied so
   // that tracking noise at the edge of the gesture does not flicker it.
   const rawMenu = act('secondary', 'lower') === 'menu' && btn(Sh, 'lower');
-  const menuHeld = Sh && Sh.isHand ? ui.menuPalm.update(rawMenu, performance.now()) : (ui.menuPalm.reset(rawMenu), rawMenu);
+  const menuHeld = HM.menuHeld(ui.menuPalm, Sh, rawMenu, performance.now());
   const { opened, closed, ...open } = HM.menuToggle(ui.menu, menuHeld);
   Object.assign(ui.menu, open);
   if (opened || closed) buzz('secondary', 'press');
