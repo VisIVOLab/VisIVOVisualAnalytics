@@ -409,6 +409,13 @@ export function createLayers(ctx) {
       ov.ms = performance.now() - t0;
       L.overlay = ov;
       rebuildOverlay();
+      // A catalogue file over the cube is reported to the desktop (issue #237).
+      if (src === 'catalogue' && ctx.onLayer) {
+        try {
+          ctx.onLayer({ product: 'catalogue', path: catPath.value.trim(), dataset_id: choice.catalogueId,
+            request: CT.overlayRequest(dataset, choice), label: CT.overlaySummary(ov) });
+        } catch { /* the report never stops the overlay */ }
+      }
       // Every warning the backend gave (a reading changed, sources outside the
       // channels, a frame not converted) is shown, here and on the menu's Layers page in VR.
       const warn = (ov.warnings || []).map((w) => `⚠ ${w}`).join('\n');

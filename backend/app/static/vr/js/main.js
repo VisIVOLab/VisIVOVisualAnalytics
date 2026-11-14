@@ -5,7 +5,7 @@
 
 import * as M from './mat4.js';
 import { Renderer } from './renderer.js';
-import { Backend, takeToken, saveToken, tokenError, takePairing, forgetPairing, requestHooks } from './api.js';
+import { Backend, takeToken, saveToken, tokenError, takePairing, forgetPairing, keepPairing, requestHooks } from './api.js';
 import { isPaired, PAIRED_TOKEN, onLinkChange, requestNewCode, transportInfo, linkState } from './transport.js';
 import * as V from './volume.js';
 import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
@@ -38,7 +38,9 @@ import { QuadLayers, layersAvailable } from './xr-layers.js';
 import { controllerMesh, handMesh } from './models.js';
 // The real controller models (WebXR Input Profiles), the page's own as the fallback.
 import { ControllerModels } from './controller-models.js';
-import { SinglePage, CHANNEL_NAME, STOOD_DOWN } from './single-page.js';
+import { SinglePage, CHANNEL_NAME, stoodDownText } from './single-page.js';
+import * as HUB from './headset.js';
+import * as XE from './xr-entry.js';
 // Measurement records and the guided measurement run (issue #224).
 import { createMeasure, recordMessage } from './measure-run.js';
 
@@ -102,6 +104,7 @@ const selection = createSelection({
   onChange: () => selSync.mark(),
   onSelection: (s) => publishSelection(s),
   onClear: () => share.dismiss(),   // only called after the share controller exists
+  onRecord: (r, detail) => reportProduct(r, detail),   // issue #237: the product goes to the desktop
   noPanel: CUT.noselpanel,
 });
 // The selection's lines and the page's panel are rebuilt after a change or a
@@ -447,6 +450,7 @@ layers = createLayers({
   colormap: () => state.colormap, refineOn: () => refineMode !== 'off',
   rebuild: () => rebuildDecorations(),
   targetHz: () => (xr ? xr.targetHz : 60),
+  onLayer: (detail) => reportProduct(null, detail),   // issue #237: a catalogue over the cube
 });
 
 // Clipping box sliders (texture coordinates 0..1 per axis).
@@ -681,6 +685,11 @@ async function loadFromBackend() {
     stillCurrent(ticket);
     state.openPath = path;
     setStatus(`${path.split('/').pop()}: ${layers.hudLines().join('\n')}\nin ${state.sessionNote || 'own session'}`);
+    // Opened here (not sent by the desktop): its file is reported, so the
+    // desktop can open it too (issue #237).
+    const Ls = layers.state;
+    if (Ls.points) reportProduct(null, { product: 'catalogue', path, dataset_id: Ls.points.datasetId, request: { path } });
+    else if (Ls.flow) reportProduct(null, { product: 'flow', path, dataset_id: Ls.flow.datasetId, request: { path, box_mpc: Ls.flow.boxMpc } });
     return;
   }
   const open = await b.open(path);
@@ -698,29 +707,33 @@ async function loadFromBackend() {
  * it, else its path opened again (in that session, or in a new one when the
  * session is not available here). Without a token, the page says so.
  */
-async function loadPaired() {
-  if (!pairing.dataset && !pairing.path) return;
+async function loadPaired() { return loadLinked(pairing); }
+
+/** The same for a link {session, dataset, path, kind, box}: the pairing's,
+ *  or a cube the desktop sent to this page (its `show` command, issue #237). */
+async function loadLinked(link) {
+  if (!link.dataset && !link.path) return;
   if (!tokenField.value.trim()) {
     setStatus('The link from the desktop has no token: paste it, then press "Open and load".');
     return;
   }
   ensureBackend();
-  const ticket = loads.begin(pairing.path);
+  const ticket = loads.begin(link.path);
   ticket.reduction = reducedRequest('');
   const b = loadHandle();          // the desktop's session is adopted here, the page's only if this load wins
   const t0 = performance.now();
-  if (pairing.session) b.adoptSession(pairing.session);
-  if (pairedMode(pairing.kind) !== 'cube') {
+  if (link.session) b.adoptSession(link.session);
+  if (pairedMode(link.kind) !== 'cube') {
     // The desktop's point table or velocity field (issue #190): its dataset in
     // the session, else its path again, as for a cube.
     stillCurrent(ticket);
-    if (!pairing.session) await b.newSession();
+    if (!link.session) await b.newSession();
     stillCurrent(ticket);
     b.sessionNote = 'the desktop\'s session';
     setStatus('Opening the desktop\'s data…');
-    await layers.openPaired(b, pairing, async (err) => {
+    await layers.openPaired(b, link, async (err) => {
       stillCurrent(ticket);
-      const next = pairingFallback(err, !!pairing.path);
+      const next = pairingFallback(err, !!link.path);
       if (next === 'new-session') {
         await b.newSession();
         b.sessionNote = 'a new session (the desktop\'s is not available here)';
@@ -730,23 +743,23 @@ async function loadPaired() {
       return next;
     }, layerLoad(b, ticket));
     stillCurrent(ticket);
-    state.openPath = pairing.path || '';
+    state.openPath = link.path || '';
     setStatus(`${layers.hudLines().join('\n')}\nin ${state.sessionNote}`);
     return;
   }
   let open = null, info = null, err = null;
-  if (pairing.dataset && pairing.session) {
+  if (link.dataset && link.session) {
     setStatus('Opening the desktop\'s cube…');
     try {
-      info = await reducedInfoWhenReady(b, { ...ticket.reduction, dataset_id: pairing.dataset }, ticket);
-      open = { dataset_id: pairing.dataset, kind: 'cube', valid: true };
+      info = await reducedInfoWhenReady(b, { ...ticket.reduction, dataset_id: link.dataset }, ticket);
+      open = { dataset_id: link.dataset, kind: 'cube', valid: true };
       b.sessionNote = 'the desktop\'s session';
     } catch (e) { err = e; }
   } else {
-    err = new Error(pairing.session ? '404: no dataset in the link' : '404: Session not found.');
+    err = new Error(link.session ? '404: no dataset in the link' : '404: Session not found.');
   }
   if (!open) {
-    const next = pairingFallback(err, !!pairing.path);
+    const next = pairingFallback(err, !!link.path);
     if (next === 'fail') throw err;
     stillCurrent(ticket);
     if (next === 'new-session') {
@@ -757,7 +770,7 @@ async function loadPaired() {
       b.sessionNote = 'the desktop\'s session (cube opened again)';
     }
     setStatus('Opening the desktop\'s cube by its path…');
-    open = await b.open(pairing.path);
+    open = await b.open(link.path);
     stillCurrent(ticket);
     info = await reducedInfoWhenReady(b, { ...ticket.reduction, dataset_id: open.dataset_id }, ticket);
   }
@@ -1040,6 +1053,10 @@ function installStaged() {
     state.load = s.load;
     try {
       installCube(s.info, s.cube, s.open, s.path);
+      // The desktop's box for it, kept while it waited (issue #237).
+      const pb = pendingBox;
+      pendingBox = null;
+      if (pb && pb.path === s.path) applyCommandBox(pb.cmd);
     } catch (err) {
       setStatus(`Failed: ${err.message || err}`);
       shell.log('error', 'cube-install-failed', String(err.message || err));
@@ -1270,6 +1287,8 @@ function diagnosticsSummary() {
     text: xr ? (xr.quads ? xr.quads.describe() : xr.layersNote) : 'not in VR',
     memory: gpuMemoryLine(),
     refine: refineShort(),
+    hub: `${hub.hudLines().join('; ') || 'not linked'}; client ${hub.st.client}`,
+    entry: entryLine(),
     cuts: activeCuts.length ? activeCuts.join(' ') : '',
     settings,
   };
@@ -1317,6 +1336,7 @@ function hudLines(targetHz) {
   lines.push(...layers.hudLines());
   lines.push(...analysis.hudLines());
   lines.push(...share.hudLines());
+  lines.push(...hub.hudLines());
   const qn = currentQualityNote();
   if (qn) lines.push(qn.slice(0, 60));
   if (state.cube || layers.mode === 'points') lines.push(...refiner.hudLines());
@@ -2267,27 +2287,246 @@ const single = new SinglePage({
 });
 /** Bumped when the page stands down: a session being made then is ended (enterXR). */
 let xrStartGen = 0;
-function onSingleChange(active) {
+function onSingleChange(active, info = {}) {
   if (!active) xrStartGen++;
   updateXRButtons();
   $('stood-down').hidden = active;
   if (!active) {
-    shell.log('info', 'page-stood-down', 'a newer VR page of this origin was opened');
+    // Issue #237: a page with nothing on show stands down for the one with a
+    // cube, and says which; the hub forgets it, so the desktop's commands go
+    // to the page in use.
+    const text = stoodDownText(info);
+    shell.log('info', 'page-stood-down', info.reason === 'content'
+      ? `another VR page of this origin shows ${info.cube || 'a cube'} and this one nothing` : 'a newer VR page of this origin was opened');
     if (xr) endXR('a newer page');
     refiner.setSuspended('in another window');
-    shell.notices.show({ id: 'stood-down', level: 'warning', sticky: true, title: STOOD_DOWN.title,
-      lines: STOOD_DOWN.lines, actions: [{ id: 'take-over', label: 'Use this window' }] }, { force: true });
+    hub.stop();
+    $('stood-down-text').textContent = `${text.title}: ${text.lines[0]}`;
+    shell.notices.show({ id: 'stood-down', level: 'warning', sticky: true, title: text.title,
+      lines: text.lines, actions: [{ id: 'take-over', label: 'Use this window' }] }, { force: true });
   } else {
     shell.log('info', 'page-took-over', 'this window is the VR page in use again');
     shell.clearNotice('stood-down');
     refiner.setSuspended('');
+    hub.start();
     startDesktop();
   }
   shell.render();
 }
-function takeOver() { single.claim(); }
+function takeOver() { single.claim({ force: true }); }   // the user's choice: whatever the others show
 $('take-over').addEventListener('click', () => takeOver());
-window.addEventListener('pageshow', (e) => { if (e.persisted) single.claim(); });
+window.addEventListener('pageshow', (e) => { if (e.persisted) { single.claim(); if (single.active) hub.start(); } });
+// The hub forgets a page that closes (best effort, not a long poll).
+window.addEventListener('pagehide', () => hub.stop({ unloading: true }));
+
+// ── The headset hub: one page that the desktop drives (issue #237) ─────────
+// The page announces itself to the backend session's hub, tells it what it
+// shows, takes the desktop's `show` commands (the cube loads here, in VR when
+// in VR) and reports back what is made and chosen here. All of it from
+// timers (hubTick, the hub's own), never inside a frame.
+const hubStore = (() => { try { return window.sessionStorage; } catch { return null; } })();
+function hubAuth() {
+  const token = tokenField.value.trim();
+  const session = (backend && backend.session) || pairing.session || '';
+  return token && session ? { token, session } : null;
+}
+const hub = HUB.createHub({
+  client: HUB.hubClientId(hubStore),
+  transport: HUB.transportOf(window.location, isPaired()),
+  label: HUB.headsetLabel(navigator.userAgent),
+  auth: hubAuth,
+  onCommand: (cmd) => showFromDesktop(cmd),
+  log: (level, event, message) => shell.log(level, event, message),
+  onClient: (id) => { try { if (hubStore) hubStore.setItem(HUB.CLIENT_KEY, id); } catch { /* this load only */ } },
+});
+
+/** The dataset on show (a cube, a point table or a velocity field), '' none. */
+function shownDatasetId() {
+  if (state.open) return state.open.dataset_id;
+  const L = layers.state;
+  return (L.points && L.points.datasetId) || (L.flow && L.flow.datasetId) || '';
+}
+/** What it is, under the desktop's kinds. */
+function shownKind() {
+  if (state.cube) return 'cube';
+  return layers.mode === 'points' ? 'points' : layers.mode === 'flow' ? 'velocity' : 'cube';
+}
+/** Does the page show something, or is it about to (a load under way)? The one-page claim's content. */
+function pageHasContent() {
+  return !!(state.cube || state.loading > 0 || layers.hasScene() || stagedCube);
+}
+function shownName() {
+  if (state.openPath) return HUB.fileName(state.openPath);
+  if (state.cube) return state.cube.mode === 'synthetic' ? 'the synthetic cube' : 'a cube';
+  return '';
+}
+/** The look as the desktop reads it (data values of the cube), or null without a cube from the backend. */
+function hubLook(id) {
+  const c = state.cube;
+  if (!c || !state.open) return null;
+  return HUB.lookPayload({ colormap: state.colormap, threshold: dataValue(state.thrNorm), colourMax: dataValue(state.cmaxNorm),
+    opacity: state.opacity, gamma: state.gamma, mode: state.mode, zStretch: state.zStretch, datasetId: id });
+}
+function hubClip(id) {
+  if (!state.cube || !state.open || !state.info || !state.info.full_shape) return null;
+  return HUB.clipPayload(HUB.voxelBox(state.clip, state.info.full_shape), id);
+}
+
+let hubShownKey = '';
+function hubTick() {
+  single.setContent(pageHasContent(), shownName());
+  if (!single.active) return;
+  const id = shownDatasetId();
+  const path = state.openPath || '';
+  const staged = stagedCube && stagedCube.open ? HUB.cubeRecord(stagedCube.open.dataset_id, stagedCube.path) : null;
+  hub.noteState({ in_vr: !!xr, cube: HUB.cubeRecord(id, path, shownKind()), staged_cube: staged });
+  // The page moved to another session (a load made one): hello there now.
+  const a = hubAuth();
+  if (a && hub.st.running && hub.st.helloSession && hub.st.helloSession !== a.session) hub.resync();
+  maybeOffer();
+  maybeAutoEnter();
+  if (!id || !path) { hubShownKey = ''; return; }
+  const look = hubLook(id), clip = hubClip(id);
+  const key = JSON.stringify([id, path, shownKind(), state.cube ? state.cube.factors : null]);
+  if (key !== hubShownKey) {
+    // Switched: the desktop is told, and the new cube's look and clip as the
+    // page starts them are its baseline (only later changes are sent).
+    hubShownKey = key;
+    hub.cube(path, { path, dataset_id: id, kind: shownKind(), binning: state.cube ? state.cube.factors.slice() : null },
+      `Switched to ${HUB.fileName(path)}`);
+    if (look) hub.rebase('look', path, look);
+    if (clip) hub.rebase('clip', path, clip);
+    return;
+  }
+  if (look) hub.look(path, look, `Look: ${state.colormap}, threshold ${fmt(look.threshold)}${state.cube.bunit ? ` ${state.cube.bunit}` : ''}`);
+  if (clip) hub.clip(path, clip);
+}
+setInterval(hubTick, 250);
+
+/** A product made here (or a catalogue over the cube): saved for the desktop and reported. */
+function reportProduct(recipe, detail) {
+  if (!detail || !single.active) return;
+  const path = state.openPath || '';
+  const key = recipe ? `recipe:${recipe.product.id}:${path}` : `${detail.product}:${detail.path || detail.file || ''}:${performance.now()}`;
+  hub.product(detail, recipe, { cubePath: path, cubeName: HUB.fileName(path), stem: HUB.stemOf(path) }, key);
+}
+
+/** The desktop's `show`: that cube in this page (in VR when in VR, #235). */
+function showFromDesktop(cmd) {
+  const name = HUB.fileName(cmd.path) || cmd.dataset_id;
+  const kind = cmd.kind || 'cube';
+  const session = (backend && backend.session) || pairing.session || '';
+  shell.log('info', 'hub-show', `${name} (${kind}), command ${cmd.seq}${xr ? ', in VR' : ''}`);
+  measure.event('hub-show', { kind, in_vr: !!xr });
+  // A reload of this tab opens it, as one after the desktop's link does.
+  keepPairing({ session, dataset: cmd.dataset_id, path: cmd.path, kind, box: '' });
+  pendingBox = null;
+  if (shownDatasetId() === cmd.dataset_id && state.openPath === cmd.path) {
+    // The cube on show: this command is the newest, so a load under way and a
+    // cube waiting for the end of the session (older commands) are dropped.
+    loads.begin(cmd.path);
+    if (stagedCube) {
+      stagedCube = null;
+      shell.clearNotice('cube-waiting');
+      shell.log('info', 'cube-waits-dropped', 'the desktop sent the cube on show again');
+    }
+    applyCommandBox(cmd);
+    shell.notify('cube-from-desktop', { detail: name, done: true });
+    return;
+  }
+  shell.notify('cube-from-desktop', { detail: name });
+  $('path').value = cmd.path;
+  withLoading(() => loadLinked({ session, dataset: cmd.dataset_id, path: cmd.path, kind, box: '' }))
+    .then(() => {
+      // Waiting for the end of the VR session (larger than the room kept for
+      // cubes in VR): its box is applied when it is shown (installStaged).
+      if (stagedCube && stagedCube.path === cmd.path) { pendingBox = cmd.box ? { path: cmd.path, cmd } : null; shell.clearNotice('cube-from-desktop'); return; }
+      if (state.openPath !== cmd.path) { shell.clearNotice('cube-from-desktop'); return; }
+      applyCommandBox(cmd);
+      shell.notify('cube-from-desktop', { detail: name, done: true });
+    })
+    .catch((err) => {
+      shell.clearNotice('cube-from-desktop');
+      if (err.superseded) return;
+      setStatus(`The cube sent from the desktop could not be opened: ${err.message || err}`);
+      shell.log('warning', 'hub-show-failed', `${name}: ${err.message || err}`);
+    });
+}
+
+/** A commanded box for a cube that waits for the end of the VR session: {path, cmd} or null. */
+let pendingBox = null;
+
+/** A `show` with a voxel box: the cube's clipping box (not reported back). */
+function applyCommandBox(cmd) {
+  if (!cmd.box || !state.cube || !state.info || !state.open) return;
+  const clip = HUB.clipOfBox(cmd.box, state.info.full_shape);
+  if (!clip) { shell.log('warning', 'hub-box-ignored', `not a box of ${state.info.full_shape.join('×')}`); return; }
+  pushUndo();
+  state.clip = clip;
+  decorationsChanged();
+  labelsChanged();
+  hub.rebase('clip', state.openPath, hubClip(state.open.dataset_id));
+}
+
+// ── Fewer Enter VR presses (issue #237) ─────────────────────────────────────
+// Launched as an installed app, the page enters VR by itself once its first
+// cube is on show (the browser may refuse without a press: the button stays);
+// where the browser offers sessions, its own Enter VR is always at hand.
+const entry = {
+  launched: XE.launchedAsApp(window.location.search, typeof window.matchMedia === 'function' ? (q) => window.matchMedia(q) : null),
+  tried: false, outcome: '', offered: false, offerStopped: false, offerOutcome: '', offers: 0,
+};
+function entryLine() {
+  const parts = [entry.launched ? `launched as an app: ${entry.tried ? `tried by itself, ${entry.outcome || 'waiting for the browser'}` : 'tries by itself once a cube is on show'}`
+    : 'opened as a page: Enter VR is pressed once (the desktop then sends cubes into the session)'];
+  parts.push(XE.canOffer(navigator.xr) ? `offerSession: ${entry.offerStopped ? `stopped (${entry.offerOutcome})` : entry.offered ? 'offered (the browser shows its Enter VR)' : entry.offerOutcome || 'not offered yet'}`
+    : 'offerSession: not in this browser');
+  return parts.join('; ');
+}
+function maybeAutoEnter() {
+  if (!XE.shouldAutoEnter({ launched: entry.launched, tried: entry.tried, vrSupported: xrSupport.vr, active: single.active,
+    inXR: !!xr || R.xrActive, cubeReady: !!state.cube || layers.hasScene(), busy: entering || !!(benchPrep && benchPrep.busy) })) return;
+  entry.tried = true;
+  shell.log('info', 'auto-enter', 'launched as an app: entering VR without a press');
+  measure.event('auto-enter', { try: true });
+  enterXR('immersive-vr', false).then(() => { entry.outcome = 'entered'; }).catch((err) => {
+    const refused = XE.isActivationRefusal(err);
+    entry.outcome = refused ? 'refused without a press: Enter VR is the way' : `failed: ${String(err.message || err).slice(0, 80)}`;
+    shell.log('info', 'auto-enter-refused', `${err.name || 'Error'}: ${String(err.message || err).slice(0, 120)}`);
+    $('xr-status').textContent = `${$('xr-status').textContent.replace(/ · press Enter VR$/, '')} · press Enter VR`;
+  });
+}
+function maybeOffer() {
+  if (entry.offerStopped || !XE.shouldOffer({ offerable: XE.canOffer(navigator.xr), vrSupported: xrSupport.vr, active: single.active,
+    inXR: !!xr || R.xrActive || entering, offered: entry.offered })) return;
+  // The capacity the cubes are written into in VR, now, on the 2-D page
+  // (issue #229/#235): the offered session may start at any time.
+  ensureCapacity(state.cube, { page: true });
+  let offer;
+  try { offer = navigator.xr.offerSession('immersive-vr', xrSessionInit(!query.has('nolayers'))); } catch (err) {
+    entry.offerStopped = true;
+    entry.offerOutcome = `${err.name || 'Error'}: ${String(err.message || err).slice(0, 60)}`;
+    shell.log('info', 'xr-offer-refused', entry.offerOutcome);
+    return;
+  }
+  entry.offered = true;
+  entry.offers++;
+  entry.offerOutcome = 'offered';
+  shell.log('info', 'xr-offer', 'the browser\'s own Enter VR is offered');
+  Promise.resolve(offer).then((session) => {
+    entry.offered = false;
+    entry.offerOutcome = 'accepted';
+    shell.log('info', 'xr-offer-accepted', 'entered with the browser\'s Enter VR');
+    return enterXR('immersive-vr', false, session).catch((e) => setStatus(`XR: ${e.message}`));
+  }, (err) => {
+    entry.offered = false;
+    entry.offerOutcome = `${err && err.name ? err.name : 'ended'}`;
+    // Withdrawn because the page entered by itself: offered again after that
+    // session; any other refusal stops the offers (no loop of offers).
+    if (!(xr || R.xrActive || entering)) entry.offerStopped = true;
+    shell.log('info', 'xr-offer-ended', `${entry.offerOutcome}: ${String(err && err.message ? err.message : err).slice(0, 100)}`);
+  });
+}
 
 $('enter-vr').addEventListener('click', () => enterXR('immersive-vr', false).catch((e) => setStatus(`XR: ${e.message}`)));
 $('enter-ar').addEventListener('click', () => enterXR('immersive-ar', false).catch((e) => setStatus(`XR: ${e.message}`)));
@@ -2309,18 +2548,43 @@ function makeXRLayer(session, scale) {
   return new XRWebGLLayer(session, gl, { framebufferScaleFactor: scale, antialias: false, alpha: true });
 }
 
-async function enterXR(mode, bench) {
-  if (!single.active) throw new Error('this page is paused: the page in use is in another window');
+/** The session's features: the floor, hands, composition layers (#226). */
+function xrSessionInit(wantLayers) {
+  return { optionalFeatures: ['local-floor', 'hand-tracking', ...(wantLayers ? ['layers'] : [])] };
+}
+
+/** A session being requested (requestSession not answered yet). */
+let entering = false;
+
+/** `given`: a session the browser already made (offerSession, #237). */
+async function enterXR(mode, bench, given = null) {
+  const refuse = (msg) => {
+    if (given) {
+      // A session the browser made that this page cannot use: ended, and no
+      // 3-D texture is allocated until it has (issue #229).
+      if (!R.xrActive) {
+        R.xrActive = true;
+        given.addEventListener('end', () => { R.xrActive = false; setTimeout(() => afterXREnd(false), 0); });
+      }
+      given.end().catch(() => {});
+    }
+    throw new Error(msg);
+  };
+  if (!single.active) refuse('this page is paused: the page in use is in another window');
   const startGen = xrStartGen;
   // Composition layers for the text (issue #226), unless ?nolayers.
   const wantLayers = !query.has('nolayers');
-  if (bench && !benchReady()) throw new Error('the benchmark\'s cubes are not prepared: press Prepare the headset benchmark first');
-  if (R.xrActive) throw new Error('a VR session is already running');
+  if (bench && !benchReady()) refuse('the benchmark\'s cubes are not prepared: press Prepare the headset benchmark first');
+  if (R.xrActive || entering) refuse('a VR session is already running');
   // The capacity the cubes are written into in VR (issue #235): set now, on
-  // the 2-D page, for the Max side and Texture chosen (no 3-D allocation in VR).
-  ensureCapacity(state.cube, { page: true });
-  const session = await navigator.xr.requestSession(mode,
-    { optionalFeatures: ['local-floor', 'hand-tracking', ...(wantLayers ? ['layers'] : [])] });
+  // the 2-D page, for the Max side and Texture chosen (no 3-D allocation in
+  // VR). An offered session's was set when it was offered.
+  if (!given) ensureCapacity(state.cube, { page: true });
+  let session = given;
+  if (!session) {
+    entering = true;
+    try { session = await navigator.xr.requestSession(mode, xrSessionInit(wantLayers)); } finally { entering = false; }
+  }
   // From here until the session ends no 3-D texture is allocated (issue
   // #229): loads wait for the end (installCube), the benchmark's cubes were
   // prepared before. Registered first, so it is cleared before any other
@@ -3157,6 +3421,9 @@ if (query.has('debug')) {
     capacity: R.cap ? { dims: R.cap.dims.slice(), encoding: R.cap.encoding, bytes: R.cap.totalBytes, onShow: !!(R.slot && R.slot.cap === R.cap), bank: R.slot ? R.slot.bank ?? null : null } : null,
     bench: benchPrep ? { busy: benchPrep.busy, ready: benchReady(), sizes: benchPrep.cubes.map((e) => e.n), bytes: benchPrep.bytes } : null });
   window.__vrSingle = single;
+  // Issue #237: the headset hub's controller and how Enter VR is reached.
+  window.__vrHub = hub;
+  window.__vrEntry = () => ({ ...entry, line: entryLine() });
   window.__vrCuts = () => ({ active: activeCuts.slice(), counts: { ...cutCounts } });
   window.__vrSetEyeScale = (s) => { if (xr) setEyeBufferScale(s); };
   // The message card (in the desktop view with ?panel3d): press one of its
@@ -3506,7 +3773,14 @@ $('copy-diag').addEventListener('click', async () => {
 // ── Start ───────────────────────────────────────────────────────────────────
 shell.start();
 ensureCapacity(null);   // before any VR session (issue #235)
+// What this page is about to show (issue #237): a page opened with a cube
+// to load claims as one with content, so an older page with a cube gives
+// way to it; an empty page (a tab restored, an empty loader) never makes it.
+const again = query.has('synthetic') || query.has('bench') ? '' : takeReloadPath();
+single.content = !!(query.has('synthetic') || (again && tokenField.value.trim()) || pairing.dataset || pairing.path);
+single.cube = HUB.fileName(again || pairing.path || '');
 single.claim();         // older VR pages of this origin stand down (issue #226)
+if (single.active) hub.start();   // the headset hub: hello, state, the desktop's commands (#237)
 checkXR();
 updateLabels();
 showGuideOnPage();
@@ -3516,7 +3790,6 @@ if (query.has('bench')) {
   desktopBench().catch((e) => { document.title = `BENCH FAILED ${e.message}`; console.error(e); });
 } else {
   startDesktop();
-  const again = query.has('synthetic') ? '' : takeReloadPath();
   if (query.has('synthetic')) loadSynthetic(Number(query.get('synthetic')) || 256);
   else if (again && tokenField.value.trim()) {
     // Reloaded after a lost graphics context: the cube that was on show.

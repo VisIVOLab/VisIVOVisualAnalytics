@@ -30,6 +30,25 @@ Quest Browser, https://vr.example.org/visivo/
   same-origin iframe. WebXR is allowed there by the permissions policy
   (`allow="xr-spatial-tracking"`), and *Enter VR* is pressed inside the
   frame, which is the user activation WebXR needs.
+- **Launched from the app's icon.** When the loader runs as the installed
+  app (its manifest's `display: standalone`), it adds `launch=app` to the
+  page's address in the iframe
+  ([#237](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/237)), and
+  the page tries to enter VR by itself once its first cube is on show. A
+  browser counts a user activation per frame: a press in the loader is not
+  one in the iframe, and whether the Quest Browser lets the iframe use the
+  launch from the icon is its own decision. The page therefore treats a
+  refusal as the normal fallback: *Enter VR* stays, and is pressed once per
+  headset session, since the desktop then sends further cubes into the same
+  page and session. Where the browser has `navigator.xr.offerSession`, the page
+  offers the session, so the browser's own *Enter VR* is at hand as well.
+- **One page.** Two loader windows share the loader's origin, so their pages
+  meet on one channel: the one with a cube stays in use, an empty one pauses
+  and names the cube in the other (see
+  [One page for the whole session](quickstart.md#one-page-for-the-whole-session)).
+  A page served by the backend over the cable and one in the loader are
+  different origins and do not see each other; both then say hello to the
+  backend's hub, and the desktop sends a cube to the newest one.
 - **Why a service worker.** The page's files are ES modules that import each
   other by relative address. The worker answers them from what the loader
   fetched from the backend, and keeps the versioned files (`vr/b/<build>/…`)

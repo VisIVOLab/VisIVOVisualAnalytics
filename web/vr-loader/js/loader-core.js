@@ -58,13 +58,26 @@ export function pairFromHash(hash) {
   return { code: normaliseCode(code), rest: keep.join('&') };
 }
 
-/** The loader's query passed on to the app (its own pair_service left out). */
-export function appQuery(search) {
+/** The loader's query passed on to the app (its own pair_service left out).
+ *  `launch` 'app': the loader runs as the installed app (issue #237), so the
+ *  page may try to enter VR by itself once its cube is on show. */
+export function appQuery(search, launch = '') {
   const p = new URLSearchParams(String(search || ''));
   p.delete('pair_service');
   p.delete('transport');
+  p.delete('launch');
+  if (launch === 'app') p.set('launch', 'app');
   const rest = p.toString().replace(/=(?=&|$)/g, '');
   return `?transport=pair${rest ? `&${rest}` : ''}`;
+}
+
+/** 'app' when the loader is shown as an installed app (its manifest's
+ *  display: standalone, or fullscreen), else ''. `matchMedia`: window.matchMedia. */
+export function launchMode(matchMedia) {
+  if (typeof matchMedia !== 'function') return '';
+  try {
+    return ['standalone', 'fullscreen'].some((m) => matchMedia(`(display-mode: ${m})`).matches) ? 'app' : '';
+  } catch { return ''; }
 }
 
 /**
@@ -88,9 +101,9 @@ export function appFragment(welcome) {
 }
 
 /** The app's address in the iframe, relative to the loader's directory. */
-export function appAddress(tag, search, welcome) {
+export function appAddress(tag, search, welcome, launch = '') {
   const frag = appFragment(welcome);
-  return `app/${tag}/vr/${appQuery(search)}${frag ? `#${frag}` : ''}`;
+  return `app/${tag}/vr/${appQuery(search, launch)}${frag ? `#${frag}` : ''}`;
 }
 
 /**

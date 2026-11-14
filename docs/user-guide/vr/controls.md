@@ -328,4 +328,32 @@ are hidden while the menu is open:
 - the *refine* line (see [Refinement](reference.md#refinement-full-quality-frames-from-the-backend)),
   the link and reprojection lines on a cluster (see [Cluster backends](cluster.md)),
   the *share* line (sent, received, publish and receive ms), and for a point
-  table *points X M drawn of Y M sampled, Z M rows*.
+  table *points X M drawn of Y M sampled, Z M rows*;
+- the *hub* line ([#237](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/237)):
+  whether the page is linked to the desktop's headset hub and how it reaches
+  it (`adb`, `pair` or `lan`), the cubes the desktop sent (*commands*), what
+  the page reported (*look*, *clip*, *products*, *cubes*) and the time of the
+  last report and of the last product saved for the desktop.
+
+## What the desktop sees
+
+The page tells the desktop what you choose and make in the headset
+([#237](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/237)), in
+the desktop's headset activity list:
+
+| In the headset | Reported | When |
+|---|---|---|
+| Colour map, threshold, colour maximum, opacity, render mode (Look page, sticks) | the look; the threshold and colour maximum as data values of the cube | 0.5 s after the last change (a slider dragged is one report) |
+| The clipping box (Clip mode, Look page) | the box in voxels of the full cube (`[[x0, x1], [y0, y1], [z0, z1]]`, ends included), or none | 0.5 s after the last change |
+| A spectrum (Select ▸ probe) | its CSV in the Workspace Exports (`<cube>_spectrum_x<x>_y<y>.csv`), computed again from the full cube | when it is shown |
+| A moment of the selection (Analysis ▸ M0, M1, M2) | its FITS (`<cube>_vr_m<order>.fits`), the same map | when it is shown |
+| A PV slice (Analysis ▸ Draw PV path) | its FITS (`<cube>_vr_pv.fits`) and the path's vertices | 1.5 s after the last point |
+| *Isolate*, *Remove* | the cube the backend wrote | when it is made |
+| A catalogue over the cube, or a point table or velocity field opened on the page | its file on the backend | when it is shown |
+| Another cube on show | its path and binning | when it is shown |
+
+Each product comes with its recipe record (the requests that made it), as in
+*Download recipes*. Nothing of this waits on the network: the tools answer as
+before, and the reports go after them, from the page's timers, never during a
+frame. A report that fails is in *Copy diagnostics* (`hub-failed`), never in
+your way. A page that stood down for another window reports nothing.

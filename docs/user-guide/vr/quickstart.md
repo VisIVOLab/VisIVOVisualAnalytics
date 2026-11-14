@@ -51,6 +51,44 @@ institute's pairing server: two addresses, typed once in **Settings ▸ Backends
 opens its USB section and says that pairing is not configured.
 ```
 
+### One page for the whole session
+
+Once a headset page is open, it is the one the desktop uses
+([#237](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/237)):
+
+- **Further cubes go into it.** *Open in VR Headset…* from another cube window
+  sends that cube to the page already open (paired by code or over the cable),
+  with no new code and no new browser window. The page loads it and shows it,
+  in VR if you are in VR: a short card says *Opening ngc3137.fits from the
+  computer…*, then *Showing ngc3137.fits from the computer*. A cube larger
+  than the room the page keeps for cubes in VR waits for the end of the
+  session, as a cube loaded on the page does (*The new cube is shown when you
+  leave VR*).
+- **Enter VR once.** The page stays in VR across the cubes the desktop sends,
+  so *Enter VR* is pressed once per headset session, not once per cube. When
+  the page was **launched from the installed app's icon** (step 4), it tries
+  to enter VR by itself as soon as its first cube is on show; if the browser
+  wants a press for it, the page says *press Enter VR* next to the WebXR
+  status and the button works as usual. Where the browser can offer the
+  session itself (the Quest Browser's own *Enter VR*, in its address bar or
+  system bar), the page offers it, so that button is always at hand. Which of
+  these the Quest Browser allows inside the installed loader is the browser's
+  call: *Copy diagnostics* says what happened (the `entering VR:` line).
+- **What you do in the headset reaches the desktop.** The colour map and
+  threshold you choose, the clipping box, and every product (a spectrum, a
+  moment map, a PV slice, an isolated or removed cube, a catalogue or a
+  velocity field opened on the page) are reported to the desktop, about half
+  a second after the last change of a slider. Each product is first saved in
+  the Workspace Exports (`<cube>_vr_m0.fits`, `<cube>_vr_pv.fits`,
+  `<cube>_spectrum_x<x>_y<y>.csv`; an isolated cube is already there), with
+  the requests that made it, so the desktop can open it, save it and record
+  it.
+- **A second window stands down by itself.** A page that shows nothing (a tab
+  the browser restored, a loader opened again) never takes over from the page
+  with a cube: it pauses and says which cube is open in the other window
+  (*ngc3137.fits is open in another window*). *Use this window* still makes
+  it the page in use, if that is what you want.
+
 ### What the dialog shows
 
 The dialog follows the pairing by itself:
