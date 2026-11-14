@@ -755,3 +755,34 @@ def test_radii_survive_a_scale_beyond_float32(tmp_path):
     assert scale > float(np.finfo(np.float32).max)
     assert np.all(np.isfinite(p["radius"])) and np.all(p["radius"] > 0)
     assert np.allclose(p["radius"].astype(float) * scale, 1e37, rtol=1e-5)
+
+
+@pytest.mark.parametrize("cutoff", [2.5, 3.0 / np.sqrt(2.0)])
+def test_the_composite_is_the_per_pixel_rule_on_the_cutoffs_edge(cutoff):
+    """Issue #264 rewrote the composite (rows clipped to the cutoff circle in
+    closed form, the Gaussian per row and per column): it must still be the
+    per-pixel rule, a pixel lit when its centre is within cutoff × r of the
+    particle. Centres on pixel corners and half-pixels with radii that put
+    pixel centres exactly on the circle are where a rounding flips a pixel."""
+    from app.particle_raytrace import composite
+    w, h = 40, 36
+    rng = np.random.default_rng(264)
+    pts = []
+    for r in (0.5, 1.0, 2.0, 4.0):
+        for _ in range(6):
+            pts.append((rng.integers(4, w - 4) + rng.choice([0.0, 0.5]),
+                        rng.integers(4, h - 4) + rng.choice([0.0, 0.5]), r))
+    sx = np.array([p[0] for p in pts], np.float32)
+    sy = np.array([p[1] for p in pts], np.float32)
+    sr = np.array([p[2] for p in pts], np.float32)
+    weight = rng.uniform(0.5, 2.0, len(pts)).astype(np.float32)
+    emission = rng.uniform(0.1, 1.0, (len(pts), 3)).astype(np.float32)
+    got, _ = composite(sx, sy, sr, weight, emission, None, np.arange(len(pts)), w, h,
+                       cutoff=cutoff)
+    ref = np.zeros((h, w, 3))
+    yy, xx = np.mgrid[0:h, 0:w] + 0.5
+    for i in range(len(pts)):
+        d2 = ((xx - float(sx[i])) ** 2 + (yy - float(sy[i])) ** 2) / float(sr[i]) ** 2
+        s = np.where(d2 <= cutoff * cutoff + 1e-9, float(weight[i]) * np.exp(-d2), 0.0)
+        ref += s[..., None] * emission[i].astype(np.float64)
+    assert np.abs(got - ref).max() <= 1e-6 * ref.max()
