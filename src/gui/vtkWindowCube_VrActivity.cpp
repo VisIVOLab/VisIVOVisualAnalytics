@@ -8,8 +8,10 @@
 // What the headset does is the session's (HeadsetHubLink, one per session);
 // a product opened here is recorded once in Provenance under an id made from
 // the headset's own record, with the requests it was made by. Follow the
-// Headset's Look (off by default) applies the headset's colour map,
-// threshold and clip box to this window when they are about this cube.
+// Headset's Look (on by default, issue #268; the choice is kept in the app's
+// settings) applies the headset's colour map, threshold and clip box to this
+// window when they are about this cube and it is on show there, whether or
+// not Headset Activity was ever opened (VrHeadsetFollow.h says which events).
 
 #include "vtkWindowCube.h"
 
@@ -21,6 +23,7 @@
 #include "app/HeadsetHubLink.h"
 #include "app/VrLink.h"
 #include "PvController.h"
+#include "RemoteLevels.h"
 
 #include <vtkGPUVolumeRayCastMapper.h>
 #include <vtkGenericOpenGLRenderWindow.h>
@@ -36,6 +39,7 @@
 #include <QFutureWatcher>
 #include <QLabel>
 #include <QLineEdit>
+#include <QSettings>
 #include <QStatusBar>
 #include <QTemporaryDir>
 #include <QVBoxLayout>
@@ -96,6 +100,11 @@ void vtkWindowCube::setupHeadsetHub()
     this->m_headsetStatusLabel->setMaximumWidth(kHeadsetStatusMaxWidth);
     this->statusBar()->addPermanentWidget(this->m_headsetStatusLabel);
 
+    {
+        const QSettings settings;
+        this->m_headsetFollow = VrHub::followLookEnabled(settings);
+    }
+
     // After the constructor: the window's backend identity is settled then.
     QTimer::singleShot(0, this, [this]() {
         if (this->remoteBackendUrl.isEmpty() || this->remoteDatasetId.isEmpty())
@@ -147,6 +156,9 @@ void vtkWindowCube::refreshHeadsetPresence()
         // would widen the whole Parameters page past the Inspector.
         this->m_headsetActivityState->setText(HeadsetActivityList::wrappable(state));
     }
+    // A look that came before the headset was listed as showing this cube
+    // (presence is polled every few seconds) is applied now.
+    this->followHeadsetLook();
 }
 
 VrLink::Inputs vtkWindowCube::vrHeadsetInputs() const
@@ -215,12 +227,18 @@ void vtkWindowCube::ensureHeadsetActivityPanel()
     this->m_headsetFollowLook = new QCheckBox(u"Follow the headset's look"_s, panel);
     this->m_headsetFollowLook->setToolTip(
             u"Apply the colour map, threshold and clip box set in the headset to this cube's "
-            u"3-D view, as they change. Off: this window keeps its own."_s);
-    this->m_headsetFollowLook->setChecked(false);
+            u"3-D view, as they change, while the headset shows this cube. Off: this window "
+            u"keeps its own. The choice is remembered."_s);
+    this->m_headsetFollowLook->setChecked(this->m_headsetFollow);
     QObject::connect(this->m_headsetFollowLook, &QCheckBox::toggled, this, [this](bool on) {
+        this->m_headsetFollow = on;
+        {
+            QSettings settings;
+            VrHub::setFollowLookEnabled(settings, on);
+        }
         if (on) {
-            this->m_headsetLookApplied = { -1, 0 };
-            this->m_headsetClipApplied = { -1, 0 };
+            // What the headset shows now, even if it was seen before.
+            this->m_headsetFollowMarks = {};
             this->followHeadsetLook();
         } else {
             // The clip box is the headset's: the whole cube comes back. The
@@ -246,8 +264,7 @@ void vtkWindowCube::ensureHeadsetActivityPanel()
 
 void vtkWindowCube::refreshHeadsetActivity()
 {
-    if (this->m_headsetFollowLook && this->m_headsetFollowLook->isChecked())
-        this->followHeadsetLook();
+    this->followHeadsetLook();
     if (!this->m_headsetActivityList || !this->m_actHeadsetActivity
         || !this->m_actHeadsetActivity->isChecked())
         return;   // rebuilt when the tool is opened
@@ -490,58 +507,70 @@ void vtkWindowCube::openHeadsetSpectrum(const VrHub::Event &event, const VrHub::
 
 void vtkWindowCube::followHeadsetLook()
 {
-    if (!this->m_headsetHub || !this->m_headsetFollowLook || !this->m_headsetFollowLook->isChecked())
+    if (!this->m_headsetHub || !this->m_headsetFollow)
         return;
-    // The latest look and clip of this cube (the list is newest first),
-    // each applied once.
-    const VrHub::Event *look = nullptr;
-    const VrHub::Event *clip = nullptr;
-    for (const VrHub::Event &e : this->m_headsetHub->activity().events()) {
-        if (!VrHub::aboutCube(e, this->filepath, this->remoteDatasetId))
-            continue;
-        if (!look && e.kind == u"look"_s)
-            look = &e;
-        else if (!clip && e.kind == u"clip"_s)
-            clip = &e;
-    }
-    if (look && QPair<int, qint64>{ look->epoch, look->seq } != this->m_headsetLookApplied) {
-        this->m_headsetLookApplied = { look->epoch, look->seq };
-        this->applyHeadsetLook(VrHub::parseLook(look->payload));
-    }
-    if (clip && QPair<int, qint64>{ clip->epoch, clip->seq } != this->m_headsetClipApplied) {
-        this->m_headsetClipApplied = { clip->epoch, clip->seq };
-        this->m_headsetClip = VrHub::parseClip(clip->payload);
+    // Not before the cube's first threshold is set and its bounds come from
+    // the data: the first load would overwrite the headset's threshold with
+    // its default, or the 0..1 placeholder would clamp it, and the look would
+    // count as applied. Asked again when both are (applyRemotePreviewResult,
+    // adoptRemoteLevels).
+    if (!this->m_initialThresholdApplied || !this->m_boundsFromData)
+        return;
+    // The latest look and clip of this cube, each applied once, and only
+    // while the headset that set them shows this cube.
+    const VrHub::FollowStep step =
+            VrHub::nextToFollow(this->m_headsetHub->activity().events(), this->m_headsetHub->headsets(),
+                                this->filepath, this->remoteDatasetId, this->m_headsetFollowMarks);
+    if (!step.any())
+        return;
+    HeadsetLookApplied applied;
+    if (step.look)
+        applied = this->applyHeadsetLook(VrHub::parseLook(step.look->payload));
+    if (step.clip) {
+        this->m_headsetClip = VrHub::parseClip(step.clip->payload);
         this->applyHeadsetClip();
     }
+    // Said, so a change made in VR is not a surprise here.
+    const QString text = VrHub::followedText(applied.colormap, applied.threshold, step.clip.has_value(),
+                                             applied.unmatchedColormap);
+    if (!text.isEmpty())
+        this->statusBar()->showMessage(text + u'.', 4000);
 }
 
-void vtkWindowCube::applyHeadsetLook(const VrHub::Look &look)
+vtkWindowCube::HeadsetLookApplied vtkWindowCube::applyHeadsetLook(const VrHub::Look &look)
 {
+    HeadsetLookApplied applied;
     QStringList names;
     for (const std::string &n : ColorMaps::GetColorMapNames())
         names << QString::fromStdString(n);
     const QString colormap = VrHub::desktopColormap(look.colormap, names);
-    if (!colormap.isEmpty() && colormap != this->m_activeColorMapName)
+    if (!colormap.isEmpty() && colormap != this->m_activeColorMapName) {
         this->applyColorMapByName(colormap);
-    if (look.threshold) {
-        // As if typed in the threshold field: the 3-D view (and a remote one)
-        // follow it, and it counts as chosen, not as the backend's default.
-        ui->lineThreshold->setText(QString::number(*look.threshold, 'g', 6));
-        ui->lineThreshold->setModified(true);
-        this->thresholdLineChanged();
+        applied.colormap = true;
     }
-    QStringList said;
     if (!look.colormap.isEmpty() && colormap.isEmpty())
-        said << u"colour map %1 has no counterpart here"_s.arg(look.colormap);
-    this->statusBar()->showMessage(said.isEmpty() ? u"Following the headset's look."_s
-                                                  : u"Following the headset's look (%1)."_s.arg(said.join(u"; "_s)),
-                                   4000);
+        applied.unmatchedColormap = look.colormap;
+    if (look.threshold) {
+        // Compared as the field will show it (clamped, its own format): the
+        // same threshold again is not a change to announce or re-render.
+        const auto [lo, hi] = this->thresholdSpan();
+        const float wanted = static_cast<float>(*look.threshold);
+        if (visivo::thresholdText(std::clamp(wanted, lo, hi)) != ui->lineThreshold->text()) {
+            // As if typed in the threshold field: the 3-D view (and a remote
+            // one) follow it, and it counts as chosen, not as the backend's
+            // default.
+            ui->lineThreshold->setText(QString::number(*look.threshold, 'g', 6));
+            ui->lineThreshold->setModified(true);
+            this->thresholdLineChanged();
+            applied.threshold = true;
+        }
+    }
+    return applied;
 }
 
 void vtkWindowCube::applyHeadsetClip()
 {
-    const bool wanted = this->m_headsetClip.set && this->m_headsetFollowLook
-            && this->m_headsetFollowLook->isChecked();
+    const bool wanted = this->m_headsetClip.set && this->m_headsetFollow;
     // A view the backend renders is cropped there (its set_crop, as the
     // headset's refined frames are); dropped by itself when there is none.
     if (wanted || this->m_headsetCropping) {
