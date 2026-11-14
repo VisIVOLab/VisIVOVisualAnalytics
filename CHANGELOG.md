@@ -8,6 +8,15 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: the secondary stick no longer changes the tool by accident (part of
+  #185).** On the Quest the tool changed to the spectrum probe while the cube
+  was being moved: the thumb slid on the stick past the flick threshold. A
+  tool step now needs a mostly sideways push (twice as far sideways as up or
+  down) held for 180 ms, never while that hand holds the grip or a tool is
+  busy; a push spoilt that way, or reversed, starts again only from rest, and
+  rest is judged on the raw axes. Colour-map steps in Explore stay immediate
+  but also need a sideways push.
+
 - **VR: one headset page, driven by the desktop and reporting back to it
   (#237, part of #234).** The VR page says hello to the session's headset hub
   (#236) with its transport (`adb` on localhost, `pair` in the public loader,
