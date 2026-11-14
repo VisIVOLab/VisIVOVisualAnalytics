@@ -32,6 +32,7 @@
 #include <QDockWidget>
 #include <QFile>
 #include <QFileInfo>
+#include <QFontMetrics>
 #include <QFutureWatcher>
 #include <QLabel>
 #include <QLineEdit>
@@ -41,6 +42,11 @@
 #include <QtConcurrentRun>
 
 #include <algorithm>
+
+namespace {
+// Points: about a third of a laptop-wide cube window.
+constexpr int kHeadsetStatusMaxWidth = 320;
+}
 
 using namespace Qt::StringLiterals;
 
@@ -85,6 +91,9 @@ void vtkWindowCube::setupHeadsetHub()
 
     this->m_headsetStatusLabel = new QLabel(this);
     this->m_headsetStatusLabel->setVisible(false);
+    // The hard limit; the elided text keeps it readable (a font change
+    // between refreshes then clips the end instead of moving the bar).
+    this->m_headsetStatusLabel->setMaximumWidth(kHeadsetStatusMaxWidth);
     this->statusBar()->addPermanentWidget(this->m_headsetStatusLabel);
 
     // After the constructor: the window's backend identity is settled then.
@@ -113,7 +122,10 @@ void vtkWindowCube::refreshHeadsetPresence()
     const QList<VrHub::Headset> &headsets = this->m_headsetHub ? this->m_headsetHub->headsets() : none;
     const QString text = VrHub::statusText(headsets);
     if (this->m_headsetStatusLabel) {
-        this->m_headsetStatusLabel->setText(text);
+        // A long cube name must not push the status bar's other labels away:
+        // the middle goes, the whole line stays in the tooltip.
+        const QFontMetrics fm(this->m_headsetStatusLabel->font());
+        this->m_headsetStatusLabel->setText(fm.elidedText(text, Qt::ElideMiddle, kHeadsetStatusMaxWidth));
         this->m_headsetStatusLabel->setToolTip(
                 headsets.isEmpty() ? QString() : VrHub::headsetLine(headsets.first()));
         this->m_headsetStatusLabel->setVisible(!text.isEmpty());
@@ -131,7 +143,9 @@ void vtkWindowCube::refreshHeadsetPresence()
                                            : VrHub::headsetLine(headsets.first()) + u'.';
         if (this->m_headsetHub && !this->m_headsetHub->supported())
             state = u"This backend has no headset hub (it is older than this client)."_s;
-        this->m_headsetActivityState->setText(state);
+        // A cube name has no spaces: without break points its minimum width
+        // would widen the whole Parameters page past the Inspector.
+        this->m_headsetActivityState->setText(HeadsetActivityList::wrappable(state));
     }
 }
 

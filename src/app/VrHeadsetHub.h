@@ -196,6 +196,33 @@ inline QString headsetLine(const Headset &h)
     return text;
 }
 
+/// @p text with a break allowed (an undrawn zero-width space) after the
+/// separators of file names and paths, and inside any long unbroken run, so a
+/// word-wrapped label never grows wider than its panel.
+inline QString wrappable(const QString &text)
+{
+    // A zero-width space after each separator: a break opportunity that is
+    // not drawn (InspectorPanel's Provenance values do the same).
+    // A run of kRun characters with no break at all (a long stem with no
+    // separators) gets one too, so no word is wider than the panel.
+    constexpr int kRun = 16;
+    const QChar zwsp(0x200B);
+    QString out;
+    out.reserve(text.size() + text.size() / 4);
+    int run = 0;
+    for (const QChar c : text) {
+        out += c;
+        if (c.isSpace()) {
+            run = 0;
+        } else if (c == QLatin1Char('_') || c == QLatin1Char('/') || c == QLatin1Char('.') || c == QLatin1Char(',')
+                   || (!c.isHighSurrogate() && ++run >= kRun)) {
+            out += zwsp;
+            run = 0;
+        }
+    }
+    return out;
+}
+
 /// The status bar's word on the headsets: "" when none is connected.
 inline QString statusText(const QList<Headset> &headsets)
 {

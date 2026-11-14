@@ -23,12 +23,7 @@ HeadsetActivityList::HeadsetActivityList(QWidget *parent) : QScrollArea(parent)
 
 QString HeadsetActivityList::wrappable(const QString &text)
 {
-    // A zero-width space after each separator: a break opportunity that is
-    // not drawn (InspectorPanel's Provenance values do the same).
-    QString out = text;
-    for (const QString &sep : { u"_"_s, u"/"_s, u"."_s, u","_s })
-        out.replace(sep, sep + QChar(0x200B));
-    return out;
+    return VrHub::wrappable(text);
 }
 
 void HeadsetActivityList::setEvents(const QList<VrHub::Event> &events)
