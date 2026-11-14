@@ -6,12 +6,16 @@
 // the GPU process's command decoder fail (kTexImage3D, OnParseError): the
 // context is lost and the GPU process restarts. The page now allocates every
 // 3-D texture on the 2-D page. This drives, in one VR session, three Kinematic
-// Lassos, an Isolate shown in the headset and a load at another binning, and
-// counts, at WebGL2RenderingContext.prototype (installed before the page's
-// scripts: independent of the page's own guard), every 3-D allocation that
-// reached the GPU while the session ran: there must be none. The cubes that
-// arrived in VR are put on show after the session ends. Then the headset
-// benchmark: prepared on the 2-D page, run in VR with no allocation either.
+// Lassos, an Isolate shown in the headset, a cube of another dataset, a load
+// at another binning and ten more switches, and counts, at
+// WebGL2RenderingContext.prototype (installed before the page's scripts:
+// independent of the page's own guard), every 3-D allocation that reached the
+// GPU while the session ran: there must be none. Since issue #235 those cubes
+// are shown at once, written into the fixed capacity allocated before the
+// session; only a cube larger than it waits for the session's end. The image
+// of a cube in a corner of the capacity is compared with the same cube in
+// storage of its own size. Then the headset benchmark: prepared on the 2-D
+// page, run in VR with no allocation either.
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -36,22 +40,26 @@ export const TEX3D_PROBE = `(() => {
 
 const allocsIn = (p) => (p.inXR.texImage3D || 0) + (p.inXR.texStorage3D || 0);
 
-export async function runTex3DChecks({ c, check, waitFor, base, token, cube }) {
+export async function runTex3DChecks({ c, check, waitFor, base, token, cube, other }) {
   const say = (m) => console.log(`     tex3d: ${m}`);
   const have = await c.evaluate('typeof window.__tex3dProbe === "function"');
   if (!have) { check('tex3d: the probe is installed', false); return; }
   const url = `${base}/vr/?debug&refine=0&xrfake&benchms=200#token=${encodeURIComponent(token)}`;
+  // 8-bit textures throughout (the capacity's texture follows the page's choice and the cubes').
   await c.send('Page.navigate', { url });
   const up = await waitFor(c, `!!window.__vrShell && window.__vrShell.life.state === 'ok' && typeof window.__tex3dProbe === 'function'`, 30000);
   if (!up.value) { check('tex3d: page up', false); return; }
   const errs0 = c.pageErrors.length;
-  await c.evaluate(`(() => { const $ = (id) => document.getElementById(id); $('fxy').value = '1'; $('path').value = ${JSON.stringify(cube)}; $('load').click(); })()`);
+  await c.evaluate(`(() => { const $ = (id) => document.getElementById(id); $('encoding').value = 'uint8'; $('fxy').value = '1'; $('path').value = ${JSON.stringify(cube)}; $('load').click(); })()`);
   const ok = await waitFor(c, `!!(window.__vrState.open && window.__vrState.cube && /upload/.test(document.getElementById('load-status').textContent))`, 60000);
   if (!ok.value) { check('tex3d: cube loaded', false); return; }
   const factors0 = await c.evaluate('window.__vrState.cube.factors.join()');
   const p0 = await c.evaluate('window.__tex3dProbe()');
-  check('tex3d: the cube\'s textures are immutable storage, no texImage3D at all', !(p0.outXR.texImage3D) && (p0.outXR.texStorage3D || 0) >= 4,
-    JSON.stringify(p0.outXR));
+  // The placeholder mask and the capacity (two banks of cube and skip grid, one mask): the cube went into it.
+  const capIn = await c.evaluate('window.__vrTex3D().capacity');
+  check('tex3d: the cube\'s textures are immutable storage, no texImage3D at all; the cube is in the capacity',
+    !(p0.outXR.texImage3D) && p0.outXR.texStorage3D === 6 && !!capIn && capIn.onShow,
+    JSON.stringify({ calls: p0.outXR, capacity: capIn }));
 
   // ── One VR session: lassos, an Isolate shown, a load at another binning ──
   await c.evaluate(`(async () => { const b = document.getElementById('enter-vr');
@@ -75,20 +83,64 @@ export async function runTex3DChecks({ c, check, waitFor, base, token, cube }) {
     await sleep(300);
   }
   check('tex3d: three lassos in VR complete', lassos === 3, `${lassos} of 3`);
-  // Isolate, then show its cube in the headset: it waits for the end of the session.
+  // Issue #235: every cube that fits the capacity is shown at once in VR,
+  // written into the bank not on show with texSubImage3D only.
+  const cap0 = await c.evaluate('window.__vrTex3D().capacity');
+  check('tex3d: the capacity is allocated before the session', !!cap0 && cap0.onShow && cap0.dims.every((v) => v >= 64),
+    JSON.stringify(cap0));
+  const switched = [];
+  const shownNow = async (label, expr) => {
+    const t0 = Date.now();
+    const ok = await waitFor(c, expr, 60000);
+    const r = await c.evaluate(`({ t: window.__vrTex3D(), notice: (window.__vrShell.notices.current() || {}).id, dims: window.__vrState.cube.dims.join('x'),
+      factors: window.__vrState.cube.factors.join(), path: window.__vrState.openPath, frames: window.__xrfake.frames })`);
+    const f1 = r.frames;
+    await sleep(400);
+    const f2 = await c.evaluate('window.__xrfake.frames');
+    switched.push(`${label} ${r.dims} in ${Date.now() - t0} ms`);
+    return { ok: ok.value && !r.t.staged && r.notice !== 'cube-waiting' && r.t.xrActive && f2 > f1, r };
+  };
+  // Isolate, then show its cube in the headset: at once.
   await c.evaluate(`window.__vrAnalysis.press('isolate')`);
   const iso = await waitFor(c, `!!window.__vrAnalysis.lasso.state.applied && !window.__vrAnalysis.lasso.state.busy`, 60000);
   await c.evaluate(`window.__vrAnalysis.press('show-applied')`);
-  const staged = await waitFor(c, `!!window.__vrTex3D().staged`, 60000);
-  const st1 = await c.evaluate(`({ t: window.__vrTex3D(), notice: (window.__vrShell.notices.current() || {}).id, cube: window.__vrState.cube.dims.join('x') })`);
-  check('tex3d: an Isolate shown in VR waits for the end of the session, with a notice', iso.value && staged.value && st1.notice === 'cube-waiting',
-    JSON.stringify({ staged: st1.t.staged, notice: st1.notice, onShow: st1.cube }));
-  // A load at another binning (the page's fields, as from the desktop): it waits too, and replaces the Isolate's.
+  const s1 = await shownNow('isolate', `window.__vrState.loading === 0 && window.__vrState.openPath !== ${JSON.stringify(cube)} && !!window.__vrState.openPath`);
+  check('tex3d: Show that cube after an Isolate in VR shows it at once (no waiting notice)', iso.value && s1.ok, JSON.stringify({ path: s1.r.path.split('/').pop(), dims: s1.r.dims, staged: s1.r.t.staged, notice: s1.r.notice }));
+  // A cube from another dataset (another file), loaded from the page's fields as from the desktop.
+  await c.evaluate(`(() => { const $ = (id) => document.getElementById(id); $('fxy').value = '1'; $('path').value = ${JSON.stringify(other)}; $('load').click(); })()`);
+  const s2 = await shownNow('other dataset', `window.__vrState.loading === 0 && window.__vrState.openPath === ${JSON.stringify(other)}`);
+  check('tex3d: a cube from another dataset loaded in VR is shown at once', s2.ok, JSON.stringify({ dims: s2.r.dims, bank: s2.r.t.capacity && s2.r.t.capacity.bank }));
+  // A cube larger than the capacity still waits for the end of the session, with its notice.
+  const bigSide = cap0.dims[0] < 384 ? 384 : null;
+  if (bigSide) {
+    await c.evaluate(`(() => { document.getElementById('synthetic-size').value = '${bigSide}'; document.getElementById('synthetic').click(); })()`);
+    const staged = await waitFor(c, `!!window.__vrTex3D().staged`, 30000);
+    const st = await c.evaluate(`({ t: window.__vrTex3D(), notice: (window.__vrShell.notices.current() || {}).id, path: window.__vrState.openPath,
+      lines: ((window.__vrShell.notices.current() || {}).lines || []).join(' ') })`);
+    check('tex3d: a cube larger than the capacity waits for the end of the session, with a notice saying why',
+      staged.value && st.notice === 'cube-waiting' && st.path === other && /larger than the room kept/.test(st.lines),
+      JSON.stringify({ staged: st.t.staged, notice: st.notice, why: st.lines.slice(0, 120) }));
+  }
+  // A load at another binning: at once too (and newer than the waiting cube, which is dropped).
   await c.evaluate(`(() => { const $ = (id) => document.getElementById(id); $('fxy').value = '2'; $('path').value = ${JSON.stringify(cube)}; $('load').click(); })()`);
-  const rebinned = await waitFor(c, `!!window.__vrTex3D().staged && window.__vrTex3D().staged.factors[0] === 2 && window.__vrState.loading === 0`, 60000);
-  check('tex3d: a load at another binning in VR waits for the end of the session (the newest wins)', rebinned.value,
-    JSON.stringify((await c.evaluate('window.__vrTex3D()')).staged));
-  // The controller sweeps over the selection; frames keep coming, the context is kept.
+  const s3 = await shownNow('binning 2', `window.__vrState.loading === 0 && window.__vrState.cube.factors[0] === 2 && window.__vrState.openPath === ${JSON.stringify(cube)}`);
+  check('tex3d: a load at another binning in VR is shown at once', s3.ok, JSON.stringify({ factors: s3.r.factors, dims: s3.r.dims, staged: s3.r.t.staged }));
+  // Ten more switches in the same session (the Quest check of #185, here on the fake).
+  let tenOk = 0;
+  for (let i = 0; i < 10; i++) {
+    const f = i % 2 ? '1' : '2';
+    await c.evaluate(`(() => { const $ = (id) => document.getElementById(id); $('fxy').value = '${f}'; $('path').value = ${JSON.stringify(i % 3 === 2 ? other : cube)}; $('load').click(); })()`);
+    const s = await shownNow(`switch ${i + 1}`, `window.__vrState.loading === 0 && window.__vrState.cube.factors[0] === ${f} && window.__vrState.openPath === ${JSON.stringify(i % 3 === 2 ? other : cube)}`);
+    if (s.ok) tenOk++;
+  }
+  check('tex3d: ten more cube switches in one session, each shown at once', tenOk === 10, `${tenOk} of 10`);
+  // Back to the first cube at binning 2 (what the checks below expect).
+  await c.evaluate(`(() => { const $ = (id) => document.getElementById(id); $('fxy').value = '2'; $('path').value = ${JSON.stringify(cube)}; $('load').click(); })()`);
+  await shownNow('binning 2 again', `window.__vrState.loading === 0 && window.__vrState.cube.factors[0] === 2 && window.__vrState.openPath === ${JSON.stringify(cube)}`);
+  say(`switches in VR (as polled): ${switched.join('; ')}`);
+  const written = await c.evaluate(`window.__vrShell.diag.items.filter((e) => e.event === 'cube-switched-in-vr').map((e) => e.message)`);
+  say(`written into the capacity in VR: ${written.join('; ')}`);
+  // The controller sweeps over the cube; frames keep coming, the context is kept.
   const m0 = await c.evaluate(`(() => { const S = window.__xrfake; const a0 = [...S.aimRight]; let k = 0;
     window.__t3sweep = setInterval(() => { k++; S.aimRight = [a0[0] + 0.06 * Math.sin(k / 3), a0[1] + 0.04 * Math.cos(k / 4), a0[2]]; }, 16);
     return S.frames; })()`);
@@ -99,16 +151,52 @@ export async function runTex3DChecks({ c, check, waitFor, base, token, cube }) {
   say(`in the session: ${JSON.stringify(inVR.p.inXR)}; guard ${JSON.stringify(inVR.t.calls)} refused ${inVR.t.refused}`);
   check('tex3d: no texImage3D or texStorage3D reached the GPU during the session', allocsIn(inVR.p) === 0 && inVR.t.refused === 0,
     `texImage3D ${inVR.p.inXR.texImage3D || 0}, texStorage3D ${inVR.p.inXR.texStorage3D || 0}, refused by the guard ${inVR.t.refused}`);
-  check('tex3d: the masks went in as sub-images during the session', (inVR.p.inXR.texSubImage3D || 0) >= 3, `${inVR.p.inXR.texSubImage3D || 0} texSubImage3D`);
-  check('tex3d: frames kept coming, the context kept, the old cube still on show', m1 >= m0 + 10 && !inVR.lost && inVR.factors === factors0,
+  check('tex3d: the masks and the cubes went in as sub-images during the session', (inVR.p.inXR.texSubImage3D || 0) >= 3 + 2 * 13, `${inVR.p.inXR.texSubImage3D || 0} texSubImage3D`);
+  check('tex3d: frames kept coming, the context kept, the last cube on show', m1 >= m0 + 10 && !inVR.lost && inVR.factors.startsWith('2,2'),
     `${m1 - m0} frames, context ${inVR.lost ? 'LOST' : 'kept'}, factors ${inVR.factors}`);
-  // Leave VR: the cube that waited goes on show, allocated now.
+  // Leave VR: nothing waits any more (the oversized cube was superseded by a newer load).
   await c.evaluate('window.__vrShell.act("exit-vr")');
-  const shown = await waitFor(c, `!window.__vrXR() && !window.__vrTex3D().xrActive && !window.__vrTex3D().staged && window.__vrState.cube.factors[0] === 2`, 15000);
-  const after = await c.evaluate(`({ p: window.__tex3dProbe(), notice: (window.__vrShell.notices.current() || {}).id, cube: window.__vrState.cube.dims.join('x') })`);
-  check('tex3d: after the session the waiting cube is shown, allocated on the 2-D page',
-    shown.value && (after.p.outXR.texStorage3D || 0) > (p0.outXR.texStorage3D || 0) && after.notice !== 'cube-waiting' && allocsIn(after.p) === 0,
-    `cube ${after.cube}; texStorage3D outside VR ${p0.outXR.texStorage3D || 0} -> ${after.p.outXR.texStorage3D || 0}`);
+  const out = await waitFor(c, `!window.__vrXR() && !window.__vrTex3D().xrActive && !window.__vrTex3D().staged && window.__vrState.cube.factors[0] === 2`, 15000);
+  const after = await c.evaluate(`({ p: window.__tex3dProbe(), notice: (window.__vrShell.notices.current() || {}).id })`);
+  check('tex3d: after the session the cube shown in VR stays, no notice left', out.value && after.notice !== 'cube-waiting' && allocsIn(after.p) === 0,
+    JSON.stringify({ notice: after.notice }));
+  // The oversized cube once more, in a short session: shown when it ends, allocated on the 2-D page.
+  if (bigSide) {
+    await c.evaluate(`(async () => { const b = document.getElementById('enter-vr');
+      for (let i = 0; i < 50 && b.disabled; i++) await new Promise((r) => setTimeout(r, 50)); b.click(); })()`);
+    const inSession = await waitFor(c, 'window.__xrfake.frames > 5 && window.__vrTex3D().xrActive', 15000);
+    const pS = await c.evaluate('window.__tex3dProbe()');
+    const before = await c.evaluate('window.__vrState.cube.dims.join("x")');
+    await c.evaluate(`document.getElementById('synthetic').click()`);
+    const waits = await waitFor(c, `!!window.__vrTex3D().staged`, 30000);
+    const kept = await c.evaluate(`({ dims: window.__vrState.cube.dims.join('x'), xr: window.__vrTex3D().xrActive })`);
+    check('tex3d: in a new session the cube larger than the capacity waits, the cube on show stays',
+      inSession.value && waits.value && kept.xr && kept.dims === before, JSON.stringify({ inSession: inSession.value, staged: waits.value, before, kept }));
+    if (inSession.value && waits.value) {
+      await c.evaluate('window.__vrShell.act("exit-vr")');
+      const shown = await waitFor(c, `!window.__vrTex3D().xrActive && !window.__vrTex3D().staged && window.__vrState.cube.dims[0] === ${bigSide}`, 30000);
+      const pA = await c.evaluate(`({ p: window.__tex3dProbe(), cap: window.__vrTex3D().capacity })`);
+      check('tex3d: the cube larger than the capacity is shown when the session ends, allocated on the 2-D page',
+        shown.value && (pA.p.outXR.texStorage3D || 0) > (pS.outXR.texStorage3D || 0) && allocsIn(pA.p) === allocsIn(pS),
+        `capacity after: ${pA.cap ? pA.cap.dims.join('x') : 'none'}; texStorage3D outside VR ${pS.outXR.texStorage3D || 0} -> ${pA.p.outXR.texStorage3D || 0}`);
+    } else {
+      await c.evaluate('window.__vrShell.act("exit-vr")');
+      await waitFor(c, '!window.__vrTex3D().xrActive', 15000);
+    }
+    await c.evaluate(`(() => { const $ = (id) => document.getElementById(id); $('fxy').value = '2'; $('path').value = ${JSON.stringify(cube)}; $('load').click(); })()`);
+    await waitFor(c, `window.__vrState.loading === 0 && window.__vrState.cube.factors[0] === 2 && window.__vrState.openPath === ${JSON.stringify(cube)}`, 60000);
+  }
+  // The image of a cube in a corner of the capacity (a brighter cube's voxels
+  // beyond it) against the same cube in storage of its own size.
+  await c.evaluate(`(() => { const $ = (id) => document.getElementById(id); $('fxy').value = '1'; $('path').value = ${JSON.stringify(other)}; $('load').click(); })()`);
+  await waitFor(c, `window.__vrState.loading === 0 && window.__vrState.openPath === ${JSON.stringify(other)} && window.__vrState.cube.factors[0] === 1`, 60000);
+  const cmp = await c.evaluate('window.__vrCapacityCompare()');
+  say(`image comparison: ${JSON.stringify(cmp)}`);
+  check('tex3d: a cube smaller than the capacity draws as with storage of its own size (no seams, no stale voxels)',
+    cmp.inCap && cmp.own && cmp.drawn > 2000 && cmp.differ === 0 && cmp.maxDiff <= 2 && !cmp.lost,
+    `max channel difference ${cmp.maxDiff}, ${cmp.differ} pixels over 2 of ${cmp.drawn} drawn; cube ${cmp.cube} in ${cmp.capacity}, bright ${cmp.bright}`);
+  await c.evaluate(`(() => { const $ = (id) => document.getElementById(id); $('fxy').value = '2'; $('path').value = ${JSON.stringify(cube)}; $('load').click(); })()`);
+  await waitFor(c, `window.__vrState.loading === 0 && window.__vrState.cube.factors[0] === 2 && window.__vrState.openPath === ${JSON.stringify(cube)}`, 60000);
 
   // ── The headset benchmark: prepared on the page, run in VR ───────────────
   const pB = await c.evaluate('window.__tex3dProbe()');

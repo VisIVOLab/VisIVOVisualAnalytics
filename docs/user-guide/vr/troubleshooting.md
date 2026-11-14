@@ -115,14 +115,30 @@ VR, eight lassos in a row in VR lost nothing.
 
 Since then the page allocates every 3-D texture outside VR:
 
-- **The selection mask**: one byte per voxel of the cube on show, allocated
-  and zeroed together with the cube (so the cube's memory budget counts it);
-  in VR each selection is only written into it.
+- **Room for the cubes (issue #235)**: when the page starts, and again
+  before each **Enter VR** if *Max side* or *Texture* changed, the page keeps
+  room on the GPU for a cube of *Max side* voxels on every axis, twice (the
+  cube on show and the next one), with one selection mask over it. On a
+  headset with 8 GB, at the default 256 and 8-bit, that is 48 MiB
+  (256³ × 2 for the two cubes, 256³ for the mask, and their empty-space
+  grids); at 16-bit 80 MiB. When it does not fit this device's share the
+  side is reduced to what fits. A cube shown outside VR that is larger
+  widens the room when twice it still fits. The diagnostics' memory line
+  says it: *VR capacity 256×256×256 8-bit × 2 banks + mask 50.6 MB (cube in
+  it, spare 16.9 MB) of 256 MiB for cubes*.
 - **A cube that arrives in VR** (*Show that cube* after *Isolate* or
-  *Remove*, a load at another binning, a load started from the desktop) is
-  read at once and kept; the cube on show stays, and a notice says *The new
-  cube is shown when you leave VR*. Leaving VR puts it on show; enter VR
-  again to see it in the headset. A newer one replaces one already waiting.
+  *Remove*, a load at another binning, a cube of another dataset, a load
+  started from the desktop) is written into that room and **shown at once**,
+  with no texture allocated. Only a cube **larger than the room** on one axis
+  (or of the other texture, 16-bit into an 8-bit room) still waits: it is read
+  at once and kept, the cube on show stays, and the notice *The new cube is
+  shown when you leave VR* says why (*it is larger than the room kept for
+  cubes in VR (256×256×256)*). Leaving VR puts it on show; enter VR again to
+  see it in the headset. A newer cube, shown or waiting, replaces one already
+  waiting. To avoid the wait, choose a larger binning, or a larger *Max side*
+  before entering VR (it costs the memory above).
+- **The selection mask** is the room's own (one byte per voxel); in VR each
+  selection is only written into it.
 - **The headset benchmark** makes its cubes on the page first (*Prepare the
   headset benchmark*), then enters VR (*Start the headset benchmark*).
 - **A context restored before the VR session ended** is rebuilt when the
@@ -140,12 +156,15 @@ What to check on the Quest 3:
    moving the controller and your head over the selection for about ten
    seconds after each. The picture must not go black, and the page must not
    show *The graphics were reset* afterwards.
-3. In VR: *Isolate*, then *Show that cube*. The notice *The new cube is shown
-   when you leave VR* appears and the cube on show stays. Exit VR: the
-   isolated cube is on the page. Enter VR again: it is in the headset.
+3. In VR: *Isolate*, then *Show that cube*: the isolated cube replaces the
+   one on show at once, without leaving VR and without a notice. Then switch
+   cubes ten times in VR (*Show that cube*, a load from the desktop, the
+   other binning): each is shown at once, the picture never goes black, and
+   no *The graphics were reset* appears.
 4. On the page, **Copy diagnostics**: there must be no `webgl-context-lost`
-   and no `tex3d-in-xr` line; note the `GPU textures … MB` line (the mask is
-   the `mask` figure: one byte per voxel of the reduced cube).
+   and no `tex3d-in-xr` line; each switch is a `cube-switched-in-vr` line with
+   its time in ms; note the `GPU textures … MB` line with its *VR capacity*
+   part.
 5. **Prepare the headset benchmark**, wait for *Benchmark ready*, then **Start
    the headset benchmark** and keep still until it ends; copy the table.
 

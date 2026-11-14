@@ -8,6 +8,31 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: cubes change inside a VR session (#235, part of #234).** The page
+  now keeps fixed-capacity 3-D textures, allocated and zeroed on the 2-D page
+  before any session: two banks (the cube on show and the next one) of *Max
+  side* voxels per axis in the page's texture, with their empty-space grids,
+  and one selection mask (48 MiB at the default 256 and 8-bit, 80 MiB at
+  16-bit; reduced to fit this device's share, widened outside VR to a larger
+  cube when twice it still fits). Each cube is written into the bank not on
+  show with `texSubImage3D` at its corner, with a one-voxel apron, and the
+  shader scales the texture coordinate by the cube's size over the storage's
+  and clamps it half a voxel inside the cube; the skip grid and the mask are
+  read only over the cube's own cells and voxels. *Show that cube* after
+  *Isolate* or *Remove*, a load at another binning and a cube of another
+  dataset are therefore shown at once in VR, with no 3-D allocation; only a
+  cube larger than the capacity (or of the other texture) still waits for
+  the end of the session, with *The new cube is shown when you leave VR*
+  and the reason. The capacity is counted in the memory budget and in the
+  diagnostics' memory line; the `tex3d-in-xr` guard stays. The image of a
+  cube in a corner of the capacity, with a brighter cube's voxels beyond it,
+  matches the same cube in storage of its own size (largest channel
+  difference 0–1 of 255 over four views, Metal; validation/vr_tex3d.mjs).
+  Costs measured on an M5 Max: a 256³ 8-bit cube is written in 3 ms plus
+  59 ms of CPU for its empty-space grid, once per switch; a draw costs one
+  clamp more per sample (40 ms against 37.5 ms per 1280×800 frame on
+  SwiftShader; on the Quest's GPU it is still to be measured). `vr_lifecycle.mjs` takes
+  `--timeout-min` (default 10) for slow software-GL runs.
 - **VR: no 3-D texture is allocated during a VR session, which fixes the
   Quest 3 context loss at the first lasso (#229, part of #166 and #185).** On
   the headset (Quest Browser 154, Adreno 740) the GPU process rejects a

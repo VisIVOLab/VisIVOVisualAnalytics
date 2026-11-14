@@ -5,7 +5,7 @@
 
 import * as M from './mat4.js';
 import { colormapTable } from './colormaps.js';
-import { buildMacrocells } from './volume.js';
+import { buildMacrocells, apronBlocks, fitsStore } from './volume.js';
 import { labelVertices, LABEL_STRIDE } from './labels.js';
 import { MESH_STRIDE } from './models.js';
 import { mulInto, imageUses } from './gltf.js';
@@ -41,6 +41,13 @@ uniform sampler3D uVol;
 uniform sampler3D uMacro;
 uniform sampler2D uLut;
 uniform vec3 uCamTex, uBoxMin, uBoxMax, uVoxDims, uCellDims, uTexScale;
+// The cube may sit in a corner of a larger storage (issue #235): its texture
+// box coordinate times uSampleScale (uTexScale times cube voxels / storage
+// voxels, one product made on the CPU) is the storage's texture coordinate,
+// clamped to [uStoreLo, uStoreHi] (half a voxel inside the cube's own box), so
+// linear filtering never reads past the cube's last voxel. For a storage of
+// the cube's own size this is what CLAMP_TO_EDGE does.
+uniform vec3 uSampleScale, uStoreLo, uStoreHi;
 uniform float uCell, uThr, uCmin, uCmax, uGamma, uOpacity, uSpv;
 uniform int uEnc, uMaxSteps, uMode, uSkip;
 // A selection on the drawn grid (issue #171): 255 where a reduced voxel holds a
@@ -68,7 +75,7 @@ bool cellMeetsMask(vec3 cf) {
 // texture covers whole blocks, so a partial last block makes the texture a
 // little longer than the box: uTexScale = full pixels / (blocks * factor).
 float normAt(vec3 p) {
-  float s = texture(uVol, p * uTexScale).r;
+  float s = texture(uVol, clamp(p * uSampleScale, uStoreLo, uStoreHi)).r;
   return uEnc == 0 ? (s * 255.0 - 1.0) / 254.0 : s;
 }
 
@@ -378,25 +385,35 @@ const CUBE = new Float32Array([
 /** Voxels of a 3-D storage of `dims`. */
 function voxels(dims) { return dims[0] * dims[1] * dims[2]; }
 
-/** At most this many bytes of zeros a call when a mask storage is cleared. */
+/** At most this many bytes of zeros a call when a storage is cleared. */
 const ZERO_SLAB_BYTES = 4 * 1024 * 1024;
 
+/** The 3-D storage formats the renderer uses: internal format, upload format and type, bytes a voxel. */
+function fmt3D(gl, kind) {
+  if (kind === 'float16') return { internal: gl.R16F, type: gl.HALF_FLOAT, bpv: 2, Arr: Uint16Array };
+  if (kind === 'float32') return { internal: gl.R32F, type: gl.FLOAT, bpv: 4, Arr: Float32Array };
+  return { internal: gl.R8, type: gl.UNSIGNED_BYTE, bpv: 1, Arr: Uint8Array };
+}
+
 /**
- * Clears the bound TEXTURE_3D's level 0 of `dims` R8 voxels with
- * texSubImage3D of zeros, a slab of whole planes at a time. A texture made
- * with texStorage3D is otherwise "uninitialised" for the browser, which
- * then clears it by itself at its first use, which may be in VR (issue #229).
+ * Clears the bound TEXTURE_3D's level 0 of `dims` voxels of `kind` ('uint8',
+ * 'float16', 'float32') with texSubImage3D of zeros, a slab of whole planes
+ * at a time. A texture made with texStorage3D is otherwise "uninitialised"
+ * for the browser, which then clears it by itself at its first use, which
+ * may be in VR (issue #229).
  */
-function zeroR8(gl, dims) {
+function zero3D(gl, dims, kind = 'uint8') {
+  const f = fmt3D(gl, kind);
   const plane = dims[0] * dims[1];
-  const planes = Math.max(1, Math.min(dims[2], Math.floor(ZERO_SLAB_BYTES / Math.max(plane, 1))));
-  const zeros = new Uint8Array(plane * planes);
+  const planes = Math.max(1, Math.min(dims[2], Math.floor(ZERO_SLAB_BYTES / Math.max(plane * f.bpv, 1))));
+  const zeros = new f.Arr(plane * planes);
   for (let z = 0; z < dims[2]; z += planes) {
     const n = Math.min(planes, dims[2] - z);
-    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, z, dims[0], dims[1], n, gl.RED, gl.UNSIGNED_BYTE,
+    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, z, dims[0], dims[1], n, gl.RED, f.type,
       n === planes ? zeros : zeros.subarray(0, plane * n));
   }
 }
+const zeroR8 = (gl, dims) => zero3D(gl, dims, 'uint8');
 
 function params3D(gl, filter) {
   gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, filter);
@@ -418,6 +435,11 @@ export class Renderer {
     this._volume = null;           // the last setVolume() input, for restore()
     this.slot = null;              // the volume on show (prepareVolume), its textures
     this._slots = new Set();       // every volume prepared and not released
+    // The fixed-capacity storage (issue #235): two banks (the cube on show and
+    // the next one) and one selection mask, allocated outside VR; a cube that
+    // fits is written into the bank not on show, in VR too. null when none.
+    this.cap = null;
+    this._capPlan = null;          // {dims, encoding, cell} of this.cap, for restore()
     this._maskInput = null;
     this._lineSegs = {};           // target name -> the last segments
     this._labels = null;
@@ -550,12 +572,21 @@ export class Renderer {
     for (const s of this._slots) s.lost = true;
     this._slots.clear();
     this.slot = null;
+    this.cap = null;               // its textures went with the context
     this.textureBytes = 0;
     this.dims = null;
+    this.store = null;
     this.macroDims = null;
     const maskInput = this._maskInput;     // useVolume() clears it
     this._init();
-    if (this._volume) this.setVolume(this._volume, this._volume.cell);
+    const plan = this._capPlan;
+    this.capacityError = '';
+    if (plan) {
+      // A capacity the restored context cannot hold: none (the cube in storage
+      // of its own, cubes in VR wait), and the rest restored all the same.
+      try { this.allocCapacity(plan.dims, plan.encoding, plan.cell); } catch (e) { this.capacityError = String(e.message || e); }
+    }
+    if (this._volume) this.showVolume(this._volume, this._volume.cell);
     if (maskInput && this.slot) this.setMask(maskInput);
     for (const [name, segs] of Object.entries(this._lineSegs)) if (this[name]) this.setLines(segs, this[name]);
     if (this._labels) this.setLabels(this._labels);
@@ -574,19 +605,37 @@ export class Renderer {
   gpuStats() {
     const panelBytes = [...this._panels].reduce((a, h) => a + (h.size ? h.size[0] * h.size[1] * 4 : 0), 0);
     const s = this.slot;
-    const maskBytes = s ? s.maskBytes : 0;
+    const cap = this.cap;
+    const inCap = !!(s && cap && s.cap === cap);
     const labelBytes = this.labelTexSize ? this.labelTexSize[0] * this.labelTexSize[1] * 4 : 0;
-    const vol = s ? s.textureBytes : 0;
-    const macro = s ? s.macroBytes : 0;
-    // Volumes prepared and kept beside the one on show (the benchmark's).
-    let otherBytes = 0;
-    for (const o of this._slots) if (o !== s) otherBytes += o.textureBytes + o.macroBytes + o.maskBytes;
+    // The volume on show: its storage (a capacity bank's whole storage when
+    // it sits in one), its skip grid and the mask storage it draws with.
+    const vol = !s ? 0 : inCap ? cap.volBytes : s.textureBytes;
+    const macro = !s ? 0 : inCap ? cap.macroBytes : s.macroBytes;
+    const maskBytes = !s ? 0 : inCap ? cap.maskBytes : s.maskBytes;
+    // Volumes prepared with storages of their own beside the one on show (the benchmark's).
+    let otherBytes = 0, others = 0, ownBytes = 0;
+    for (const o of this._slots) {
+      if (o.cap) continue;
+      const b = o.textureBytes + o.macroBytes + o.maskBytes;
+      ownBytes += b;
+      if (o !== s) { otherBytes += b; others++; }
+    }
+    const capacityBytes = cap ? cap.totalBytes : 0;
     let modelBytes = 0;
     for (const h of this._models) modelBytes += h.bytes;
+    // The capacity's other bank, not on show (or all of it, with a volume of its own on show).
+    const spareBytes = !cap ? 0 : inCap ? cap.totalBytes - vol - macro - maskBytes : cap.totalBytes;
     return { panels: this._panels.size, panelBytes, maskBytes, labelBytes, volumeBytes: vol, macroBytes: macro,
-      otherVolumes: this._slots.size - (s && this._slots.has(s) ? 1 : 0), otherVolumeBytes: otherBytes,
+      otherVolumes: others, otherVolumeBytes: otherBytes,
+      capacity: cap ? { dims: cap.dims.slice(), encoding: cap.encoding, cell: cap.cell, banks: cap.banks.length,
+        volumeBytes: cap.volBytes, macroBytes: cap.macroBytes, maskBytes: cap.maskBytes, totalBytes: cap.totalBytes,
+        spareBytes, onShow: inCap } : null,
+      capacityBytes,
+      // Everything the cubes hold on the GPU: the capacity and the storages of their own.
+      cubeBytes: capacityBytes + ownBytes,
       models: this._models.size, modelBytes,
-      totalBytes: panelBytes + maskBytes + labelBytes + vol + macro + otherBytes + modelBytes + 256 * 4 + 1 };
+      totalBytes: panelBytes + labelBytes + capacityBytes + ownBytes + modelBytes + 256 * 4 + 1 };
   }
 
   setColormap(name) {
@@ -642,7 +691,7 @@ export class Renderer {
     }
     const t3 = performance.now();
     const slot = {
-      volTex, macroTex, maskTex, dims: [w, h, d], encoding, cell, macroDims: macro.dims,
+      volTex, macroTex, maskTex, dims: [w, h, d], store: [w, h, d], encoding, cell, macroDims: macro.dims, cap: null,
       textureBytes: voxels(dims) * (u8 ? 1 : 2), macroBytes: voxels(macro.dims) * 4, maskBytes: mask ? voxels(dims) : 0,
       uploadMs: t1 - t0, macroMs: t2 - t1, maskMs: t3 - t2, lost: false, released: false,
     };
@@ -662,6 +711,7 @@ export class Renderer {
     this.macroTex = slot.macroTex;
     this.maskTex = slot.maskTex || this.emptyMaskTex;
     this.dims = slot.dims;
+    this.store = slot.store;
     this.encoding = slot.encoding;
     this.cell = slot.cell;
     this.macroDims = slot.macroDims;
@@ -674,7 +724,8 @@ export class Renderer {
     if (!slot || slot.released || slot === this.slot) return;
     slot.released = true;
     this._slots.delete(slot);
-    if (slot.lost) return;
+    if (slot.cap && slot.cap.banks[slot.bank].slot === slot) slot.cap.banks[slot.bank].slot = null;
+    if (slot.lost || slot.cap) return;     // a capacity bank's textures stay with the capacity
     const gl = this.gl;
     for (const t of [slot.volTex, slot.macroTex, slot.maskTex]) if (t) gl.deleteTexture(t);
   }
@@ -689,9 +740,181 @@ export class Renderer {
     const slot = this.prepareVolume({ data, dims, encoding }, cell);
     const old = this.slot;
     this._volume = { data, dims, encoding, cell };
+    slot.volume = this._volume;
     this.useVolume(slot);
     if (old) this.releaseVolume(old);
     return { uploadMs: slot.uploadMs, macroMs: slot.macroMs, maskMs: slot.maskMs, textureBytes: slot.textureBytes };
+  }
+
+  /**
+   * The fixed-capacity storage (issue #235), allocated now, outside VR:
+   * two banks of `dims` voxels of `encoding` with their skip grids, and one
+   * selection mask of `dims`, every one immutable storage zeroed with
+   * texSubImage3D (nothing left for the browser to clear in VR). A capacity
+   * held before is given back first; a cube on show in it must be shown
+   * again (showVolume) by the caller. Throws `tex3d-in-xr` in VR.
+   */
+  allocCapacity(dims, encoding, cell = 8) {
+    if (this.xrActive) throw tex3dInXRError('allocCapacity');
+    if (Math.max(...dims) > this.maxTex3D) throw new Error(`a capacity of ${dims.join(' x ')} exceeds this GPU's 3-D texture limit (${this.maxTex3D})`);
+    this.releaseCapacity();
+    const gl = this.gl;
+    const f = fmt3D(gl, encoding);
+    const macroDims = dims.map((v) => Math.ceil(v / cell));
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    const t0 = performance.now();
+    // WebGL reports a failed allocation (out of memory) as a GL error, not an
+    // exception: the errors pending before are cleared, those after checked,
+    // and on any failure every texture made here is deleted and it throws.
+    for (let i = 0; i < 16 && gl.getError(); i++) { /* clear earlier errors */ }
+    const made = [];
+    const make = (d, kind, filter) => {
+      const t = gl.createTexture();
+      made.push(t);
+      gl.bindTexture(gl.TEXTURE_3D, t);
+      gl.texStorage3D(gl.TEXTURE_3D, 1, fmt3D(gl, kind).internal, d[0], d[1], d[2]);
+      params3D(gl, filter);
+      zero3D(gl, d, kind);
+      return t;
+    };
+    let banks, maskTex;
+    try {
+      banks = [0, 1].map(() => ({ volTex: make(dims, encoding, gl.LINEAR), macroTex: make(macroDims, 'float32', gl.NEAREST), slot: null }));
+      maskTex = make(dims, 'uint8', gl.NEAREST);
+      const err = gl.getError();
+      if (err && err !== gl.NO_ERROR) throw new Error(`the capacity ${dims.join(' x ')} could not be allocated (GL error ${err})`);
+    } catch (e) {
+      for (const t of made) gl.deleteTexture(t);
+      throw e;
+    }
+    const volBytes = voxels(dims) * f.bpv, macroBytes = voxels(macroDims) * 4, maskBytes = voxels(dims);
+    this.cap = { dims: dims.slice(), encoding, cell, macroDims, banks, maskTex, volBytes, macroBytes, maskBytes,
+      totalBytes: 2 * (volBytes + macroBytes) + maskBytes, allocMs: performance.now() - t0 };
+    this._capPlan = { dims: dims.slice(), encoding, cell };
+    return this.cap;
+  }
+
+  /**
+   * Outside VR: the capacity replaced by `plan` ({dims, encoding, cell}, or
+   * null for none). The old one is given back first (never both at once on
+   * the GPU). With `reshow`, a cube on show in the old capacity is shown
+   * again from its voxels (in the new capacity, or in storage of its own
+   * when it no longer fits) with its selection, and so is a cube in storage
+   * of its own that the new capacity holds (its storage given back). Without
+   * `reshow` the caller shows another cube right after: the cube on show,
+   * if it is the last one shown with its voxels, is given back first, so the
+   * GPU never holds it beside the new capacity.
+   */
+  reallocCapacity(plan, { reshow = true } = {}) {
+    if (this.xrActive) throw tex3dInXRError('reallocCapacity');
+    const s = this.slot;
+    const inCap = !!(s && this.cap && s.cap === this.cap);
+    const ownShown = !!(s && !s.cap && s.volume && s.volume === this._volume);   // setVolume's, not the benchmark's
+    const vol = this._volume, mask = this._maskInput;
+    // Given back before the new capacity is allocated (never both on the GPU);
+    // shown again from its voxels after, when asked.
+    if (ownShown && (!reshow || (vol && vol.data))) this._dropShown();
+    this.releaseCapacity();
+    if (plan) this.allocCapacity(plan.dims, plan.encoding, plan.cell ?? 8);
+    if (reshow && vol && vol.data && (inCap || ownShown)) {
+      this.showVolume(vol, vol.cell);
+      if (mask) this.setMask(mask);
+    }
+  }
+
+  /** The volume of its own on show given back, nothing drawn until the next one. */
+  _dropShown() {
+    const s = this.slot;
+    if (!s || s.cap) return;
+    this.slot = null;
+    this.volTex = null; this.macroTex = null; this.maskTex = this.emptyMaskTex;
+    this.mask = null; this._maskInput = null;
+    this.dims = null; this.store = null; this.macroDims = null;
+    this.releaseVolume(s);
+  }
+
+  /** Gives the capacity back (outside VR). A cube on show in it is no longer drawn. */
+  releaseCapacity() {
+    const cap = this.cap;
+    this._capPlan = null;
+    if (!cap) return;
+    this.cap = null;
+    for (const b of cap.banks) {
+      if (b.slot) { b.slot.released = true; this._slots.delete(b.slot); b.slot = null; }
+    }
+    if (this.slot && this.slot.cap === cap) {
+      this.slot = null;
+      this.volTex = null; this.macroTex = null; this.maskTex = this.emptyMaskTex;
+      this.mask = null; this._maskInput = null;
+      this.dims = null; this.store = null; this.macroDims = null;
+    }
+    const gl = this.gl;
+    for (const b of cap.banks) { gl.deleteTexture(b.volTex); gl.deleteTexture(b.macroTex); }
+    gl.deleteTexture(cap.maskTex);
+  }
+
+  /** Does a cube of `dims` and `encoding` fit the capacity (written into it, in VR too)? */
+  fitsCapacity({ dims, encoding }, cell = 8) {
+    const c = this.cap;
+    return !!c && c.encoding === encoding && c.cell === cell && fitsStore(dims, c.dims);
+  }
+
+  /**
+   * Writes a cube into the capacity's bank not on show (texSubImage3D only:
+   * allowed in VR) and returns its slot, to be shown with useVolume(). The
+   * cube fills the bank's corner [0, dims), with a one-voxel apron
+   * (apronBlocks) and its skip grid in the corner of the bank's grid; what
+   * lies beyond, from an earlier cube, is never read. A slot written into
+   * the same bank before is given back.
+   */
+  writeVolume({ data, dims, encoding }, cell = 8) {
+    const cap = this.cap;
+    if (!this.fitsCapacity({ dims, encoding }, cell)) throw new Error(`${dims.join(' x ')} ${encoding} does not fit the capacity`);
+    const gl = this.gl;
+    const f = fmt3D(gl, encoding);
+    const shown = this.slot && this.slot.cap === cap ? this.slot.bank : -1;
+    const bi = shown === 0 ? 1 : 0;
+    const bank = cap.banks[bi];
+    if (bank.slot) { bank.slot.released = true; this._slots.delete(bank.slot); bank.slot = null; }
+    const [w, h, d] = dims;
+    const t0 = performance.now();
+    gl.bindTexture(gl.TEXTURE_3D, bank.volTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, w, h, d, gl.RED, f.type, data);
+    for (const a of apronBlocks(data, dims, cap.dims)) {
+      gl.texSubImage3D(gl.TEXTURE_3D, 0, a.offset[0], a.offset[1], a.offset[2], a.size[0], a.size[1], a.size[2], gl.RED, f.type, a.data);
+    }
+    const t1 = performance.now();
+    const macro = buildMacrocells(data, dims, encoding, cell);
+    const t2 = performance.now();
+    gl.bindTexture(gl.TEXTURE_3D, bank.macroTex);
+    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, macro.dims[0], macro.dims[1], macro.dims[2], gl.RED, gl.FLOAT, macro.data);
+    const t3 = performance.now();
+    const slot = {
+      volTex: bank.volTex, macroTex: bank.macroTex, maskTex: cap.maskTex, dims: [w, h, d], store: cap.dims.slice(), encoding, cell,
+      macroDims: macro.dims, cap, bank: bi,
+      textureBytes: voxels(dims) * f.bpv, macroBytes: voxels(macro.dims) * 4, maskBytes: 0,
+      uploadMs: (t1 - t0) + (t3 - t2), macroMs: t2 - t1, maskMs: 0, lost: false, released: false,
+    };
+    bank.slot = slot;
+    this._slots.add(slot);
+    return slot;
+  }
+
+  /**
+   * Shows a cube: written into the capacity when it fits (in VR too), else
+   * uploaded into storage of its own (setVolume; refused in VR with a
+   * `tex3d-in-xr` error, before anything changes). A volume of its own shown
+   * before is given back. Returns the timings and the texture size.
+   */
+  showVolume({ data, dims, encoding }, cell = 8) {
+    if (!this.fitsCapacity({ dims, encoding }, cell)) return this.setVolume({ data, dims, encoding }, cell);
+    const slot = this.writeVolume({ data, dims, encoding }, cell);
+    const old = this.slot;
+    this._volume = { data, dims, encoding, cell };
+    this.useVolume(slot);
+    if (old && !old.cap) this.releaseVolume(old);
+    return { uploadMs: slot.uploadMs, macroMs: slot.macroMs, maskMs: 0, textureBytes: slot.textureBytes, capacity: true };
   }
 
   /** The selection on the drawn grid (selection.reduceMask's answer), or null
@@ -1147,7 +1370,12 @@ export class Renderer {
     gl.uniform3fv(u.uBoxMax, p.boxMax);
     gl.uniform3fv(u.uCamTex, camTex);
     gl.uniform3fv(u.uVoxDims, this.dims);
-    gl.uniform3fv(u.uTexScale, p.texScale || [1, 1, 1]);
+    const ts = p.texScale || [1, 1, 1];
+    gl.uniform3fv(u.uTexScale, ts);
+    const st = this.store || this.dims;
+    gl.uniform3fv(u.uSampleScale, [0, 1, 2].map((i) => ts[i] * this.dims[i] / st[i]));
+    gl.uniform3fv(u.uStoreLo, [0, 1, 2].map((i) => 0.5 / st[i]));
+    gl.uniform3fv(u.uStoreHi, [0, 1, 2].map((i) => (this.dims[i] - 0.5) / st[i]));
     gl.uniform3fv(u.uCellDims, this.macroDims);
     gl.uniform1f(u.uCell, this.cell);
     gl.uniform1f(u.uThr, p.thr);

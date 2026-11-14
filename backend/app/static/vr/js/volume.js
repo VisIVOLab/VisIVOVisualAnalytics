@@ -37,6 +37,53 @@ export function voxelNorm(data, encoding, i) {
 export function normToData(n, lo, hi) { return lo + n * (hi - lo); }
 export function dataToNorm(v, lo, hi) { return hi > lo ? (v - lo) / (hi - lo) : 0; }
 
+// ── Fixed-capacity storage (issue #235) ─────────────────────────────────────
+// The page allocates its 3-D textures once, at a capacity, before any VR
+// session, and writes each cube into a corner of them (texSubImage3D only:
+// on a Quest 3 a 3-D allocation during a session resets the GPU process).
+
+/** Does a cube of `dims` fit a storage of `store` voxels on every axis? */
+export function fitsStore(dims, store) {
+  return !!store && dims.length === 3 && dims.every((v, i) => v >= 1 && v <= store[i]);
+}
+
+/**
+ * The one-voxel apron written beside a cube that sits in a corner of a
+ * larger storage: on each axis where the cube is shorter than the storage,
+ * the plane just past its last voxel holds a copy of that last voxel (edges
+ * and corner included, through the later faces). The shader clamps its
+ * coordinate half a voxel inside the cube, which gives the voxel past the
+ * edge a weight of zero; the apron makes that exact whatever the GPU's
+ * filtering precision, and a previous cube's voxels (or a NaN among them)
+ * are never mixed in. Returns [{offset: [x, y, z], size: [w, h, d], data}],
+ * `data` of the same array type as the cube's, x fastest.
+ */
+export function apronBlocks(data, dims, store) {
+  const [w, h, d] = dims;
+  const ex = w < store[0] ? 1 : 0, ey = h < store[1] ? 1 : 0, ez = d < store[2] ? 1 : 0;
+  const Arr = data.constructor;
+  const at = (x, y, z) => data[(Math.min(z, d - 1) * h + Math.min(y, h - 1)) * w + Math.min(x, w - 1)];
+  const out = [];
+  if (ex) {
+    const a = new Arr(h * d);
+    for (let z = 0; z < d; z++) for (let y = 0; y < h; y++) a[z * h + y] = at(w - 1, y, z);
+    out.push({ offset: [w, 0, 0], size: [1, h, d], data: a });
+  }
+  if (ey) {
+    const W = w + ex;
+    const a = new Arr(W * d);
+    for (let z = 0; z < d; z++) for (let x = 0; x < W; x++) a[z * W + x] = at(x, h - 1, z);
+    out.push({ offset: [0, h, 0], size: [W, 1, d], data: a });
+  }
+  if (ez) {
+    const W = w + ex, H = h + ey;
+    const a = new Arr(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) a[y * W + x] = at(x, y, d - 1);
+    out.push({ offset: [0, 0, d], size: [W, H, 1], data: a });
+  }
+  return out;
+}
+
 /**
  * Empty-space-skipping grid: the largest normalised value in each cell of
  * `cell`^3 voxels, widened by one voxel on every side because trilinear

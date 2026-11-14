@@ -8,7 +8,7 @@
 // diagnostics text and the backend log scrubbed of the token.
 //
 //   node validation/vr_lifecycle.mjs [--smoke] [--regressions] [--menu] [--measure] [--python PATH] [--chrome PATH]
-//        [--alloc] [--xrfake] [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--out DIR] [--cube FILE]
+//        [--alloc] [--xrfake] [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--timeout-min 10] [--out DIR] [--cube FILE]
 //
 // --smoke is what CI runs (tests.yml): start, load, first frame drawn, no page
 // error, versions agree. Exit code 0 when every check passed. The tokens are
@@ -531,13 +531,16 @@ async function pairedChecks() {
 
 // ── The run ─────────────────────────────────────────────────────────────────
 // The whole run is bounded: a hang is a failure, not a stuck CI job.
+// --timeout-min N (default 10): a software GL (SwiftShader) on a laptop
+// needs longer for --regressions than CI's runners.
+const RUN_MIN = Number(args['timeout-min']) > 0 ? Number(args['timeout-min']) : 10;
 setTimeout(() => {
-  console.log('FAIL run — timed out after 10 minutes');
+  console.log(`FAIL run — timed out after ${RUN_MIN} minutes`);
   // Everything this run started goes with it, or the next run finds its ports taken.
   for (const p of [backend, pairFake, chrome]) { try { if (p) p.kill('SIGKILL'); } catch { /* gone */ } }
   try { if (loaderServer) loaderServer.close(); } catch { /* closed */ }
   process.exit(2);
-}, 600000).unref();
+}, RUN_MIN * 60000).unref();
 const cube = makeCube();
 // A second cube: another shape, and a right ascension crossing 0°.
 const cubeB = SMOKE ? null : makeCube('synthetic_ra0.fits', { shape: [24, 40, 48], ra: 0.0 });
@@ -629,8 +632,9 @@ try {
     await runReloadCheck({ c, check, waitFor, path: cube });
     // The debug cuts of issue #229, each loaded and a lasso made in VR with it.
     await runCutChecks({ c, check, waitFor, base: BASE, token: tokenA, cube });
-    // Issue #229: lassos, an Isolate and a binning change in one VR session, then the benchmark: no 3-D allocation in VR.
-    await runTex3DChecks({ c, check, waitFor, base: BASE, token: tokenA, cube });
+    // Issues #229/#235: lassos, cube switches in one VR session (shown at once), then the benchmark: no 3-D allocation in VR.
+    await runTex3DChecks({ c, check, waitFor, base: BASE, token: tokenA, cube,
+      other: makeCube('synthetic_tex3d_other.fits', { shape: [30, 50, 70], ra: 152 }) });
     await runSinglePageChecks({ c, check, waitFor, cdpPort, connect: cdp,
       url: `${BASE}/vr/?debug&refine=0#token=${encodeURIComponent(tokenA)}` });
   }
