@@ -2,6 +2,7 @@
 #include "WindowCloseShortcut.h"
 
 #include "ColormapIcon.h"
+#include "SolidSplats.h"
 #include "app/DiagnosticsManager.h"
 #include "app/ThemeManager.h"
 #include "DiagnosticsWindow.h"
@@ -1269,10 +1270,7 @@ void vtkWindowVbt::setupRenderer()
     // The solid colour as a table: without a colour column the splats keep
     // mapped scalars, else the mapper skips the opacity function below and
     // every intensity draws the same picture (issue #263).
-    this->solidSplatLut->SetNumberOfTableValues(2);
-    this->solidSplatLut->SetTableRange(-1.0e15, 1.0e15);
-    for (vtkIdType i = 0; i < 2; ++i)
-        this->solidSplatLut->SetTableValue(i, 0.8, 0.85, 1.0, 1.0);
+    SolidSplats::configureTable(this->solidSplatLut.Get());
     //
     // Per-splat opacity is controlled via the documented VTK API:
     //   SetOpacityArray("VbtScalar") → use the scalar array as the lookup key
@@ -1605,10 +1603,11 @@ void vtkWindowVbt::updateColorMapping()
 
 void vtkWindowVbt::useSolidSplats()
 {
-    // The scalars must be on the polydata for the mapper to map them (a table
-    // opened with no colour column has the zeros of buildPointCloud).
-    if (this->polyData->GetPointData()->GetScalars() == nullptr)
-        this->polyData->GetPointData()->SetScalars(this->pointScalars.Get());
+    // The scalars must be on the polydata for the mapper to map them, all 0:
+    // a column coloured before may have left NaN, which the opacity function
+    // maps to no defined opacity (updateColorMapping fills them again).
+    SolidSplats::clearScalars(this->pointScalars.Get());
+    this->polyData->GetPointData()->SetScalars(this->pointScalars.Get());
     this->gaussianMapper->SetLookupTable(this->solidSplatLut.Get());
     this->gaussianMapper->SetScalarRange(-1.0e15, 1.0e15);
     this->gaussianMapper->ScalarVisibilityOn();

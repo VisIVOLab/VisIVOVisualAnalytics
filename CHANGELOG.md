@@ -24,10 +24,16 @@ are preserved here unedited; the branch names they refer to are historical.
     column that is not a position, velocity, sky coordinate or identifier.
   - A sky catalogue's box is labelled *x (Mpc)* instead of `@x`.
 
-  The backend's refined frames follow the page: `set_point_style` takes
-  `tone_map` (`"none"` | `"exposure"`), the splat cap is 256 px, and the
-  opacity is over size², for both the page-rule splats and the ray-traced
-  ones. Refined frame against preview, light over the background: 1.039 at
+  The backend's refined frames follow the page: `set_point_style` takes the
+  page's `splat_rule` (`v1`, sent by none, the look before; `v2-8bit`, no
+  float target, the desktop's opacity, since over size² a size-12 splat
+  would add less than half an 8-bit step and vanish; `v2-f16`, opacity over
+  size² at least 1/512, tone-mapped; `v2-f32`, over size², tone-mapped), the
+  splat cap is 256 px, for both the page-rule splats and the ray-traced
+  ones. Each stereo frame says the rule it was drawn by and the page shows
+  only frames of its own: with a backend from before #263 its splat frames
+  are not shown (the panel says why) instead of popping in at another
+  brightness; an older cached page sends no rule and gets the old look. Refined frame against preview, light over the background: 1.039 at
   size 1 and 1.031 at size 4. In half floats the size-4 figure was 1.175,
   hence float32 where it can be blended; with the old 8-bit preview it was
   1.089 at size 1. GPU time on the Mac for 1 M rows (headless Chrome, ANGLE
@@ -41,7 +47,12 @@ are preserved here unedited; the branch names they refer to are historical.
   vtkPointGaussianMapper applies its opacity function only to mapped scalars,
   so with scalar visibility off every intensity drew the same picture (mean
   51.8 at 1, 35 and 100; now 35.5, 44.5 and 50.2, as with a colour column).
-  They keep their scalars now, mapped through a one-colour table.
+  They keep their scalars now, mapped through a one-colour table whose NaN
+  colour is that colour too, and are set to 0 when going solid (a column
+  with NaN left them behind, drawn dark red at an undefined opacity;
+  `src/gui/SolidSplats.h`). Solid splats are therefore dimmer than before at
+  the default intensity, as coloured ones are, and no longer match the 3-D
+  catalogue viewer's (vtkWindowCatalogue3D, deliberately left alone).
 
 - **VR: ray-traced still views of particles (#264, part of #261).** A point
   table has a third style on the menu's Display tab, *Ray-traced*: the page

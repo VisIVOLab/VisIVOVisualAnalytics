@@ -57,8 +57,23 @@ from .numba_parallel import LOCK as PARALLEL
 #: The page's widest splat (points.js MAX_SPLAT_PX, page pixels; 64, the
 #: point sprites' cap, before issue #263).
 MAX_PX = 256.0
-#: The tone curves of the page's splats (set_point_style ``tone_map``).
+#: The tone curves of the page's splats (:func:`rule_tone`).
 TONE_MAPS = ("none", "exposure")
+#: The page's splat rules (set_point_style ``splat_rule``, issue #263), by
+#: what its splats are added into:
+#: - ``v1``: the rule before #263 (8-bit target, the desktop's opacity, the
+#:   light clamped): what an older page, which sends none, draws;
+#: - ``v2-8bit``: a page without a float target: the same numbers as v1
+#:   (opacity over size² would put a size-12 splat at 0.05/144, below half
+#:   an 8-bit step: the preview would go black);
+#: - ``v2-f16``: half floats: opacity over size², at least F16_OPACITY_FLOOR,
+#:   tone-mapped;
+#: - ``v2-f32``: float32: opacity over size², tone-mapped.
+SPLAT_RULES = ("v1", "v2-8bit", "v2-f16", "v2-f32")
+#: The faintest splat in a half-float target: at a pixel's light of about 1 a
+#: half float's step is 2^-10, and additions below half of it are dropped;
+#: 1/512 keeps a splat's core above that up to a light of about 4.
+F16_OPACITY_FLOOR = 1.0 / 512.0
 #: Rec. 709 luminance (points.js LUMA).
 _LUMA = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 #: The page's floor on a sub-pixel splat's light (points.js FS, max(vSplat, 0.25)).
@@ -69,25 +84,44 @@ _MAX_CHUNKS = 8
 _ROWS_PER_CHUNK = 65536
 
 
+def rule_tone(rule: str) -> str:
+    """The tone curve of a splat rule (SPLAT_RULES)."""
+    return "exposure" if rule in ("v2-f16", "v2-f32") else "none"
+
+
+def rule_opacity(opacity: float, size: float, rule: str) -> float:
+    """The desktop's splat opacity as a splat rule (SPLAT_RULES) draws it:
+    over size² in a float target (the size step changes the size, not the
+    brightness; floored in half floats), as it is in an 8-bit one."""
+    if rule not in SPLAT_RULES:
+        raise ValueError(f"splat_rule must be one of {SPLAT_RULES}.")
+    if rule == "v2-f32":
+        return opacity / (float(size) * float(size))
+    if rule == "v2-f16":
+        return max(opacity / (float(size) * float(size)), F16_OPACITY_FLOOR)
+    return opacity
+
+
 def splat_style(bounds, total_rows: int, sample_rows: int, size: float,
-                intensity: float) -> tuple[float, float, float]:
+                intensity: float, rule: str = "v1") -> tuple[float, float, float]:
     """``(radius, opacity, sample_radius)`` in table units, as the VR page's
     ``splatStyle`` (static/vr/js/points.js) works them out: spacing ∛(volume /
     total rows) of the box the points fill (a flat axis counted as a
     thousandth of the longest), radius = spacing × size / 8, opacity =
     min(0.9, 20 / D) × intensity / 100 in [0.05, 0.9] with D the longest side
-    over the spacing, over size² (issue #263: the size step changes the size,
-    not the brightness), and the sample's radius larger by ∛(total / sample
-    rows). It is :func:`app.render_session.points.gaussian_splat` (the
-    desktop's rule) plus the sample's growth, and the same at size 1."""
+    over the spacing, as the splat ``rule`` draws it (:func:`rule_opacity`:
+    over size² in a float target, issue #263), and the sample's radius larger
+    by ∛(total / sample rows). It is
+    :func:`app.render_session.points.gaussian_splat` (the desktop's rule)
+    plus the sample's growth, and the same at size 1 or in an 8-bit target."""
     dims = [bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4]]
     longest = max(max(dims), 1.0e-6)
     volume = math.prod(max(d, longest * 1.0e-3) for d in dims)
     spacing = math.cbrt(volume / max(1, int(total_rows)))
     radius = spacing * float(size) / 8.0
     depth = max(longest / spacing, 1.0)
-    opacity = (min(max(min(0.9, 20.0 / depth) * float(intensity) / 100.0, 0.05), 0.9)
-               / (float(size) * float(size)))
+    opacity = rule_opacity(min(max(min(0.9, 20.0 / depth) * float(intensity) / 100.0, 0.05),
+                               0.9), size, rule)
     grow = math.cbrt(max(1.0, total_rows / max(1, int(sample_rows))))
     return radius, opacity, radius * grow
 

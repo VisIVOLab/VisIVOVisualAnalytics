@@ -75,7 +75,8 @@ The splats' look ([#263](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issu
 - **Close splats.** Splats near your head keep growing up to 256 pixels instead of stopping at 64 when you fly inside the box.
 - **Default colour.** A table opens coloured by a density-like column (`*dens*`, `*rho*`, `LogD`) when it has one. Otherwise it uses the first column that is not a position, velocity, sky coordinate or identifier (a catalogue's redshift rather than its RA).
 - **Axis units.** A sky catalogue's box is labelled in Mpc (*x (Mpc)* instead of `@x`).
-- **Older headsets.** On a headset that cannot render into a float target, the HUD's points line says *8-bit* and splats are added as before.
+- **Older headsets.** On a headset that cannot render into a float target, the HUD's points line says *8-bit* and splats are added as before, with the brightness growing with the size (divided by the size, large faint splats would round away to nothing in 8 bits).
+- **Page and backend versions.** The backend draws refined frames by the page's own splat rule and says so in each frame. A backend older than the page draws the old look: its splat frames are not shown (the panel says *backend draws splats by an older rule*), so nothing pops in at another brightness; update the backend.
 The box is the sample's bounding box, its longest side 1 (scaled to 0.6 m in
 the headset), with ticks in the table's units.
 

@@ -108,24 +108,53 @@ export function colourCommand(field, range, log, lut, c0 = 0, c1 = 1, n = 32) {
 }
 
 /**
+ * How the page draws its splats (issue #263), by what they are added into;
+ * the point session draws its refined frames by the same rule
+ * (app/point_splat.py SPLAT_RULES), and says which in each frame:
+ * - 'v2-f32': float32, opacity over size², tone-mapped;
+ * - 'v2-f16': half floats, the same with the opacity at least
+ *   F16_OPACITY_FLOOR (fainter additions are dropped there);
+ * - 'v2-8bit': no float target: the desktop's opacity, clamped (over size²
+ *   a size-12 splat would add less than half an 8-bit step: none at all).
+ * 'v1' is the rule of a page from before #263 (as 'v2-8bit').
+ */
+export const SPLAT_RULES = ['v1', 'v2-8bit', 'v2-f16', 'v2-f32'];
+export const F16_OPACITY_FLOOR = 1 / 512;
+
+/** The desktop's opacity as `rule` draws it (point_splat.rule_opacity). */
+export function ruleOpacity(opacity, size, rule) {
+  if (rule === 'v2-f32') return opacity / (size * size);
+  if (rule === 'v2-f16') return Math.max(opacity / (size * size), F16_OPACITY_FLOOR);
+  return opacity;
+}
+
+/** True when a refined frame was drawn by the page's own splat rule (its
+ *  header's splat_rule): a backend from before #263 says none and draws
+ *  the old look, so its frames are not shown over tone-mapped splats. */
+export function acceptFrame(header, style, rule) {
+  return !isSplats(style) || (!!header && header.splat_rule === rule);
+}
+
+/**
  * Splat radius (data units) and opacity, as the desktop and the point session
  * size them (render_session/points.py gaussian_splat): spacing ∛(volume / N)
  * of the box the points fill, radius = spacing × size / 8; opacity
- * min(0.9, 20 / D) × intensity / 100, D = longest side / spacing, then over
- * size² (issue #263): a splat's light grows with its area, so the size step
- * changes the size, not the brightness (the desktop's rule at size 1, the
- * default). N is the table's rows: a sample of fewer rows is drawn with
- * splats larger by ∛(rows per sample row), so it covers the same volume.
+ * min(0.9, 20 / D) × intensity / 100, D = longest side / spacing, as the
+ * splat `rule` draws it (ruleOpacity: over size² in a float target, issue
+ * #263, so the size step changes the size, not the brightness; the
+ * desktop's at size 1, the default). N is the table's rows: a sample of
+ * fewer rows is drawn with splats larger by ∛(rows per sample row), so it
+ * covers the same volume.
  */
-export function splatStyle(bounds, totalRows, sampleRows, size, intensity) {
+export function splatStyle(bounds, totalRows, sampleRows, size, intensity, rule = 'v1') {
   const dims = [bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4]];
   const longest = Math.max(...dims, 1e-6);
   const volume = dims.reduce((p, d) => p * Math.max(d, longest * 1e-3), 1);
   const spacing = Math.cbrt(volume / Math.max(1, totalRows));
   const radius = (spacing * size) / 8;
   const depth = Math.max(longest / spacing, 1);
-  const opacity = Math.min(Math.max(Math.min(0.9, 20 / depth) * intensity / 100, 0.05), 0.9)
-    / (size * size);
+  const opacity = ruleOpacity(Math.min(Math.max(Math.min(0.9, 20 / depth) * intensity / 100, 0.05), 0.9),
+    size, rule);
   const grow = Math.cbrt(Math.max(1, totalRows / Math.max(1, sampleRows)));
   return { radius, opacity, sampleRadius: radius * grow };
 }
@@ -169,7 +198,7 @@ export function axisTitles(axes) {
 }
 
 /** The commands that give the backend's point session the page's look
- *  (`toneMapped`: the page's splats are tone-mapped, PointCloud.toneMapped). */
+ *  (`splatRule`: how the page draws its splats, PointCloud.splatRule). */
 export function pointLook(p) {
   const splats = isSplats(p.style);
   return [
@@ -178,7 +207,7 @@ export function pointLook(p) {
     { type: 'set_point_style', mode: splats ? 'gaussian' : 'points',
       size: splats ? p.splatSize : Math.max(1, Math.round(p.pointPx)), intensity: p.intensity,
       stereo_renderer: p.style === 'raytraced' ? 'raytrace' : 'splat',
-      tone_map: splats && p.toneMapped ? 'exposure' : 'none' },
+      splat_rule: p.splatRule || 'v1' },
     { type: 'set_show_outline', visible: false },
   ];
 }
@@ -438,9 +467,12 @@ export class PointCloud {
     this.float32 = !!(cbf && gl.getExtension('EXT_float_blend'));
   }
 
-  /** True while splats are tone-mapped (a renderable float target);
-   *  the backend's refined frames follow it (set_point_style tone_map). */
+  /** True while splats are tone-mapped (a renderable float target). */
   get toneMapped() { return this.hdr; }
+
+  /** The splat rule the page draws by now (SPLAT_RULES); the backend's
+   *  refined frames follow it (set_point_style splat_rule). */
+  get splatRule() { return this.hdr ? (this.float32 ? 'v2-f32' : 'v2-f16') : 'v2-8bit'; }
 
   /** Uploads a sample; returns the milliseconds it took (CPU side). */
   upload(positions, colour) {

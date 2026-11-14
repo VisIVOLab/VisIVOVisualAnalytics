@@ -195,6 +195,8 @@ class PointStereoMixin:
             "eye_ms": per_eye,
             "points": int(self._polydata.GetNumberOfPoints()),
             "renderer": ("vtk" if self.view.mode != "gaussian" else self.view.stereo_renderer),
+            # The splat rule drawn by (the page checks it is its own).
+            "splat_rule": self.view.splat_rule,
         })
         self.stats.frames_rendered += 1
         self.stats.last_render_ms = 1000.0 * (t_render - t_start)
@@ -291,7 +293,7 @@ class PointStereoMixin:
         renderer, with the depth it comes from."""
         from vtk.util.numpy_support import vtk_to_numpy
 
-        from ..point_splat import raytrace_eye, splat_eye, splat_style
+        from ..point_splat import raytrace_eye, rule_tone, splat_eye, splat_style
         w, h = pose.width, pose.height
         xyz = vtk_to_numpy(self._polydata.GetPoints().GetData())
         codes = (vtk_to_numpy(self._polydata.GetPointData().GetScalars())
@@ -301,8 +303,10 @@ class PointStereoMixin:
         bounds, held = self._splat_basis
         sample_rows, page_size = self._xr_splat_view
         drawn = sample_rows or held
+        rule = self.view.splat_rule
+        tone = rule_tone(rule)
         _, opacity, radius = splat_style(bounds, max(self._num_rows, held), drawn,
-                                         self.view.size, self.view.intensity)
+                                         self.view.size, self.view.intensity, rule)
         amp = opacity * drawn / max(1, held)
         # The radius in metres: the table-to-world scale of the page's box.
         metres = float(np.cbrt(np.linalg.det(placed[:3, :3])))
@@ -314,11 +318,11 @@ class PointStereoMixin:
             if raytrace:
                 rgba, depth = raytrace_eye(xyz, codes, self._splat_lut, to_eye, eye.projection,
                                            w, h, radius * metres, amp, pose.background,
-                                           page_size, pose.depth_scale, self.view.tone_map)
+                                           page_size, pose.depth_scale, tone)
             else:
                 rgba, depth = splat_eye(xyz, codes, self._splat_lut, to_eye, eye.projection,
                                         w, h, radius * metres, amp, pose.background,
-                                        page_size, self.view.tone_map), None
+                                        page_size, tone), None
             t1 = time.perf_counter()
             out.append((rgba, depth, g["depth_projection"]))
             per_eye.append({"eye": eye.eye, "render": round(1000 * (t1 - t0), 3),

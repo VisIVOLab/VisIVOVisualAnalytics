@@ -698,7 +698,8 @@ export function createLayers(ctx) {
         }
         // Sized for the rows drawn now (the governor's), so fewer cover as much.
         const drawn = L.s.govern ? pt.drawRows : pt.sample.count;
-        const st = PT.splatStyle(pt.sample.bounds, pt.sample.totalRows, drawn, L.s.splatSize, L.s.intensity);
+        const st = PT.splatStyle(pt.sample.bounds, pt.sample.totalRows, drawn, L.s.splatSize, L.s.intensity,
+          cloud.splatRule);
         cloud.draw(view, model, { box: L.box, style: L.s.style, pointPx: L.s.pointPx, radius: st.sampleRadius,
           opacity: st.opacity, c0: L.s.c0, c1: L.s.c1, viewportH, count: L.s.govern ? pt.drawRows : pt.sample.count,
           clip: state.clip });
@@ -721,13 +722,16 @@ export function createLayers(ctx) {
       const sm = L.points.sample;
       const commands = PT.pointLook({ axes: L.points.axes, colourField: sm.colourField, colourRange: sm.colourRange,
         colourLog: sm.colourLog, lut: colormapTable(ctx.colormap()), c0: L.s.c0, c1: L.s.c1, style: L.s.style,
-        splatSize: L.s.splatSize, pointPx: L.s.pointPx, intensity: L.s.intensity, toneMapped: !!cloud && cloud.toneMapped });
+        splatSize: L.s.splatSize, pointPx: L.s.pointPx, intensity: L.s.intensity, splatRule: cloud ? cloud.splatRule : 'v2-8bit' });
       // The splats are refined for the whole sample (not the governor's part
       // of it, which changes four times a second and would make every refined
       // frame stale): never darker than the preview, the same when it is drawn whole.
       const key = JSON.stringify([commands, sm.bounds, sm.count]);
       ctx.refiner.frame({ t, eyes, aCentre: M.multiply(centreView, state.model), model: state.model, zStretch: 1,
         look: { commands, cropError: '' }, lookKey: key, background,
+        // A backend drawing by another splat rule (one from before #263): its
+        // frames are not shown (refine-client.js accept).
+        accept: (h) => PT.acceptFrame(h, L.s.style, commands.find((c) => c.type === 'set_point_style').splat_rule),
         poseExtra: PT.refinePoseExtra(L.box, L.s.style, sm.count, eyes) });
     },
     hudLines() {

@@ -28,8 +28,8 @@ from app.render_session.points import gaussian_splat   # noqa: E402
 PAGE_SOLID = (0.8, 0.85, 1.0)        # points.js FS: the colour without a column
 
 
-def page_style(bounds, total_rows, sample_rows, size, intensity):
-    """points.js splatStyle, line for line."""
+def page_style(bounds, total_rows, sample_rows, size, intensity, rule="v1"):
+    """points.js splatStyle and ruleOpacity, line for line."""
     dims = [bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4]]
     longest = max(*dims, 1e-6)
     volume = 1.0
@@ -38,24 +38,30 @@ def page_style(bounds, total_rows, sample_rows, size, intensity):
     spacing = (volume / max(1, total_rows)) ** (1 / 3)
     radius = spacing * size / 8
     depth = max(longest / spacing, 1)
-    opacity = min(max(min(0.9, 20 / depth) * intensity / 100, 0.05), 0.9) / (size * size)
+    opacity = min(max(min(0.9, 20 / depth) * intensity / 100, 0.05), 0.9)
+    if rule == "v2-f32":
+        opacity /= size * size
+    elif rule == "v2-f16":
+        opacity = max(opacity / (size * size), 1 / 512)
     grow = max(1, total_rows / max(1, sample_rows)) ** (1 / 3)
     return radius, opacity, radius * grow
 
 
 def page_preview(xyz, bounds, total_rows, size, intensity, model, d2m, view, proj,
-                 width, height, background, max_px=256.0, depth=None, tone=False):
+                 width, height, background, max_px=256.0, depth=None, rule="v1"):
     """The page's splats of the sample ``xyz`` (table coordinates): the
     vertex shader (sprite clamp(px, 1, maxPx), vSplat = clamp(px, 0, 1)), the
     fragment shader (exp(-d²/2) × opacity × max(vSplat, 0.25), d = 6 ×
     (gl_PointCoord - 0.5)) and additive blending over the clear colour,
     clamped. Points are clipped by the near and far planes only (OpenGL ES
-    3.0 §2.17). With ``tone``, the light accumulated in floating point and
-    tone-mapped (points.js toneMap, written out here) before the clear colour
-    is added. Rows bottom-up, 0..1, before the 8-bit store. ``depth``, a
+    3.0 §2.17). The splat ``rule`` (points.js SPLAT_RULES) sets the
+    opacity and, in a float target (v2-f16, v2-f32), the light accumulated in
+    floating point and tone-mapped (points.js toneMap, written out here)
+    before the clear colour is added. Rows bottom-up, 0..1, before the 8-bit store. ``depth``, a
     dict: given its ``zsum`` and ``lsum``, each pixel's light (summed over
     the channels) times the splat's eye distance, and that light."""
-    _, opacity, radius = page_style(bounds, total_rows, len(xyz), size, intensity)
+    _, opacity, radius = page_style(bounds, total_rows, len(xyz), size, intensity, rule)
+    tone = rule in ("v2-f16", "v2-f32")
     placed = model @ d2m
     scale = np.cbrt(np.linalg.det(placed[:3, :3]))
     u_radius = 6 * radius * scale * proj[1, 1] * height * 0.5
@@ -153,12 +159,13 @@ def _blocks(img, b=8):
     return img[:h, :w].reshape(h // b, b, w // b, b).mean(axis=(1, 3))
 
 
-@pytest.mark.parametrize("renderer, tone", [("splat", "none"), ("raytrace", "none"),
-                                            ("splat", "exposure"), ("raytrace", "exposure")])
+@pytest.mark.parametrize("renderer, rule", [("splat", "v1"), ("raytrace", "v1"),
+                                            ("splat", "v2-f32"), ("raytrace", "v2-f32"),
+                                            ("raytrace", "v2-f16"), ("splat", "v2-8bit")])
 @pytest.mark.parametrize("frame_scale, held", [(1.0, None), (0.5, None), (0.6, None),
                                                (1.0, 60_000)])
 def test_refined_splats_match_the_pages_preview(tmp_path, monkeypatch, frame_scale, held,
-                                                renderer, tone):
+                                                renderer, rule):
     """A table 50 units wide (the snapshot of the issue is ~50 Mpc): the
     page draws a quarter of its rows at its sample's splat size; the session's
     frame (every row) has the preview's mean light within 10 % and lights the
@@ -168,7 +175,9 @@ def test_refined_splats_match_the_pages_preview(tmp_path, monkeypatch, frame_sca
     ``held`` the session holds an even half of the table
     (VISIVO_POINT_RENDER_MAX_POINTS): the page's style still comes from the
     table's rows. Ray-traced (issue #264): the same light, and a depth
-    within the box's distances from the eye."""
+    within the box's distances from the eye. Each splat rule of the page
+    (issue #263; size 2 for the float targets, where it divides the
+    opacity) is the session's, and the frame says which it drew by."""
     from tests.test_point_render import _RENDER_PROBE
     import subprocess
     import sys
@@ -184,7 +193,8 @@ def test_refined_splats_match_the_pages_preview(tmp_path, monkeypatch, frame_sca
     if held:
         monkeypatch.setattr(points, "MAX_POINTS", held)
 
-    n, side, size, intensity = 120_000, 50.0, 1, 35
+    n, side, intensity = 120_000, 50.0, 35
+    size = 2 if rule in ("v2-f16", "v2-f32") else 1
     path, xyz = _uniform_table(tmp_path, n, side)
     sample = xyz[::4]                                 # the page's even sample
     bounds = [0.0, side] * 3
@@ -198,7 +208,7 @@ def test_refined_splats_match_the_pages_preview(tmp_path, monkeypatch, frame_sca
     bg = (0.05, 0.05, 0.08)
     page_depth = {}
     preview = page_preview(sample, bounds, n, size, intensity, model, d2m, view, proj,
-                           page_w, page_h, bg, depth=page_depth, tone=tone == "exposure")
+                           page_w, page_h, bg, depth=page_depth, rule=rule)
     w, h = round(page_w * frame_scale), round(page_h * frame_scale)
     s = PointRenderSession("s" * 32, path)
     loop = asyncio.new_event_loop()
@@ -207,7 +217,7 @@ def test_refined_splats_match_the_pages_preview(tmp_path, monkeypatch, frame_sca
         loop.run_until_complete(s.apply_command({"type": "set_point_style", "mode": "gaussian",
                                                  "size": size, "intensity": intensity,
                                                  "stereo_renderer": renderer,
-                                                 "tone_map": tone}))
+                                                 "splat_rule": rule}))
         loop.run_until_complete(s.apply_command({"type": "set_show_outline", "visible": False}))
         loop.run_until_complete(s.apply_command(
             _pose(model, d2m, view, proj, w, h, bg, sample_rows=len(sample),
@@ -217,6 +227,7 @@ def test_refined_splats_match_the_pages_preview(tmp_path, monkeypatch, frame_sca
         loop.run_until_complete(s.close())
         loop.close()
     assert header["points"] == (held or n) and header["renderer"] == renderer
+    assert header["splat_rule"] == rule
     if renderer == "splat":
         assert depth is None and header["depth"] is None
     else:
@@ -266,10 +277,12 @@ def test_the_pages_splat_style_is_the_desktops_plus_the_samples_growth():
     same at size 1, the default)."""
     bounds = (0, 100, 0, 50, 0, 10)
     for total, sample in ((1000, 1000), (3_931_546, 1_000_000), (10, 1)):
-        assert splat_style(bounds, total, sample, 3, 35) == pytest.approx(
-            page_style(bounds, total, sample, 3, 35))
+        for rule in ("v1", "v2-8bit", "v2-f16", "v2-f32"):
+            assert splat_style(bounds, total, sample, 3, 35, rule) == pytest.approx(
+                page_style(bounds, total, sample, 3, 35, rule))
     r, op = gaussian_splat(bounds, 1000, 3, 35)
-    assert splat_style(bounds, 1000, 1000, 3, 35) == pytest.approx((r, op / 9, r))
+    assert splat_style(bounds, 1000, 1000, 3, 35) == pytest.approx((r, op, r))
+    assert splat_style(bounds, 1000, 1000, 3, 35, "v2-f32") == pytest.approx((r, op / 9, r))
     r, op = gaussian_splat(bounds, 1000, 1, 35)
     assert splat_style(bounds, 1000, 1000, 1, 35) == pytest.approx((r, op, r))
     # The sample's radius is the radius for the sampled rows alone.
@@ -518,7 +531,7 @@ def test_the_size_step_changes_the_size_not_the_brightness():
     bounds = (-0.3, 0.3, -0.3, 0.3, -0.3, 0.3)
     totals = []
     for size in (1, 2, 4):
-        radius, opacity, _ = point_splat.splat_style(bounds, 2000, 2000, size, 35)
+        radius, opacity, _ = point_splat.splat_style(bounds, 2000, 2000, size, 35, "v2-f32")
         totals.append(point_splat.splat_light(xyz, None, lut, to_eye, proj, 640, 480,
                                               radius, opacity).sum())
     assert totals[1] == pytest.approx(totals[0], rel=0.03)
@@ -567,6 +580,44 @@ def test_splats_take_their_opacity_without_a_colour_column(tmp_path):
             jpeg = loop.run_until_complete(s.render_frame())
             means.append(np.asarray(Image.open(io.BytesIO(jpeg)).convert("L"), dtype=float).mean())
         assert means[1] > means[0] + 3, means
+    finally:
+        loop.run_until_complete(s.close())
+        loop.close()
+
+
+def test_large_splats_do_not_vanish_without_a_float_target():
+    """Review of #263: over size² a size-12 splat has opacity 0.05 / 144,
+    under half an 8-bit step (1/510): a page without a float target drew
+    nothing while the backend's float sum showed it. Without one the rule
+    keeps the desktop's opacity; in half floats it stops at 1/512; only
+    float32 divides freely. The session refuses an unknown rule whole."""
+    from app.point_splat import F16_OPACITY_FLOOR, rule_opacity, rule_tone
+    assert rule_opacity(0.05, 12, "v2-f32") == pytest.approx(0.05 / 144)
+    # Above half a half float's step at a light of 1 (2^-11).
+    assert rule_opacity(0.05, 12, "v2-f16") == F16_OPACITY_FLOOR > 2.0 ** -11
+    for rule in ("v1", "v2-8bit"):
+        assert rule_opacity(0.05, 12, rule) == 0.05
+        assert rule_tone(rule) == "none"
+    assert rule_tone("v2-f16") == rule_tone("v2-f32") == "exposure"
+    with pytest.raises(ValueError, match="splat_rule"):
+        rule_opacity(0.05, 1, "v3")
+
+
+def test_an_unknown_splat_rule_is_refused_whole(tmp_path):
+    """An older page sends no rule (v1, the look before #263); a rule the
+    session does not know changes nothing."""
+    from app.render_session.points import PointRenderSession
+    from tests.test_point_render import _coloured_table
+    s = PointRenderSession("u" * 32, _coloured_table(tmp_path, np.linspace(0.0, 1.0, 50)))
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(s.initialize())
+        assert s.view.splat_rule == "v1"
+        loop.run_until_complete(s.apply_command({"type": "set_point_style", "mode": "gaussian",
+                                                 "size": 2, "splat_rule": "v2-f32"}))
+        loop.run_until_complete(s.apply_command({"type": "set_point_style", "mode": "points",
+                                                 "size": 5, "splat_rule": "v9"}))
+        assert (s.view.mode, s.view.size, s.view.splat_rule) == ("gaussian", 2, "v2-f32")
     finally:
         loop.run_until_complete(s.close())
         loop.close()
