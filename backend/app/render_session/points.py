@@ -31,9 +31,14 @@ Commands (besides the camera / viewport ones the cube session takes):
 ``{"type": "set_sky_positions", "frame": "fk5" | "galactic" | "supergalactic",
    "distance_mode": "comoving" | "redshift_space", "cosmology": str}``
                                          — a sky catalogue's positions
-``{"type": "xr_pose", ..., "data_to_model": [16]}`` / ``{"type": "xr_stop"}``
+``{"type": "xr_pose", ..., "data_to_model": [16], "sample_rows": int,
+   "viewport_size": [w, h]}`` / ``{"type": "xr_stop"}``
                                          — a headset's stereo frames
-                                           (_stereo_points.py, issue #190)
+                                           (_stereo_points.py, issue #190;
+                                           splats sized as the page's sample
+                                           of ``sample_rows``, drawn at its
+                                           eye size ``viewport_size``,
+                                           app/point_splat.py, issue #262)
 """
 from __future__ import annotations
 
@@ -273,6 +278,7 @@ class PointRenderSession(PointStereoMixin):
         self._num_rows = 0
         self._rows = np.empty(0, dtype=np.int64)   # rows drawn (sample ∩ filters)
         self._splat_basis = None   # (bounds, count) of the unfiltered points
+        self._splat_lut = np.array([_SOLID], dtype=np.float32)   # stereo splats' colours
         # The drawn points' bounds in the table's coordinates, and the map
         # from the points' local float32 coordinates to them (the actor's).
         self._bounds = [0.0] * 6
@@ -599,6 +605,11 @@ class PointRenderSession(PointStereoMixin):
             mapper.SetScalarRange(0.0, float(_Q))
             mapper.SetScalarVisibility(1 if coloured else 0)
         self._actor.GetProperty().SetColor(*_SOLID)
+        # The same colours for the stereo splats drawn on the CPU (point_splat.py).
+        self._splat_lut = (np.array([lut.GetTableValue(i)[:3]
+                                     for i in range(lut.GetNumberOfTableValues())],
+                                    dtype=np.float32)
+                           if coloured else np.array([_SOLID], dtype=np.float32))
         self._colorbar.SetLookupTable(lut)
         self._colorbar.SetTitle(name if coloured else "")
         self._colorbar.SetVisibility(1 if coloured and self.view.show_colorbar else 0)

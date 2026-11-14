@@ -33,6 +33,10 @@ from ._stereo import (XRFrame, _matrix, clip_range, encode_depth, eye_distance,
 
 logger = logging.getLogger("visivo.render")
 
+#: The largest page eye side taken (a headset's eye buffer, supersampled):
+#: the splats are drawn at that size before the frame is reduced from it.
+MAX_VIEWPORT_PX = 4096
+
 
 def default_data_to_model(bounds) -> np.ndarray:
     """The VR page's box for these bounds (xmin, xmax, ymin, ymax, zmin, zmax):
@@ -57,6 +61,26 @@ def parse_data_to_model(value: Any) -> np.ndarray:
     if not np.allclose((r / s) @ (r / s).T, np.eye(3), atol=1e-6):
         raise ValueError("data_to_model must be a uniform scale and a translation.")
     return m
+
+
+def parse_splat_view(command: dict) -> tuple[int | None, tuple[int, int] | None]:
+    """``(sample_rows, viewport_size)`` of a pose, checked: the rows of the
+    VR page's sample, which its splats are sized for, and its eye size in
+    pixels (width, height), which the stereo splats are drawn at
+    (app/point_splat.py) so the refined frame looks like the preview even
+    when it is smaller (refinement at 0.6×, an eye capped by the link).
+    None: the rows the session holds; the frame's own size."""
+    rows, size = command.get("sample_rows"), command.get("viewport_size")
+    if rows is not None and (isinstance(rows, bool) or not isinstance(rows, int) or rows < 1):
+        raise ValueError("sample_rows must be a positive whole number of rows.")
+    if size is not None:
+        if not isinstance(size, (list, tuple)) or len(size) != 2 or any(
+                isinstance(v, bool) or not isinstance(v, int) or not 16 <= v <= MAX_VIEWPORT_PX
+                for v in size):
+            raise ValueError(f"viewport_size must be [width, height], whole pixels in "
+                             f"16..{MAX_VIEWPORT_PX}.")
+        size = (int(size[0]), int(size[1]))
+    return rows, size
 
 
 def point_eye(view: np.ndarray, projection: np.ndarray, placed: np.ndarray, bounds) -> dict:
@@ -95,6 +119,7 @@ class PointStereoMixin:
     _xr_pose = None
     _xr_error = None
     _xr_d2m = None
+    _xr_splat_view = (None, None)   # parse_splat_view
     _xr_camera = None
 
     def _apply_xr_command_on_thread(self, command: dict[str, Any]) -> None:
@@ -103,11 +128,14 @@ class PointStereoMixin:
                 pose = parse_pose(command)
                 d2m = (parse_data_to_model(command["data_to_model"])
                        if command.get("data_to_model") is not None else None)
+                splat_view = parse_splat_view(command)
                 self._xr_pose, self._xr_d2m, self._xr_error = pose, d2m, None
+                self._xr_splat_view = splat_view
             except ValueError as exc:
                 self._xr_error = (command.get("pose_id"), str(exc))
         elif command.get("type") == "xr_stop":
             self._xr_pose = self._xr_d2m = self._xr_error = None
+            self._xr_splat_view = (None, None)
             if self._render_window is not None:
                 self._render_window.SetSize(self.view.width, self.view.height)
 
@@ -185,6 +213,8 @@ class PointStereoMixin:
         placed = pose.model @ d2m
         cameras = [point_eye(e.view, e.projection, placed, bounds) for e in pose.eyes]
         points_mode = self.view.mode != "gaussian"
+        if not points_mode:
+            return self._splat_eyes_on_thread(pose, placed, cameras)
         want_depth = pose.depth_scale is not None and points_mode
         # Every row (not the drag's sample), without the mono view's chrome.
         mapper = self._actor.GetMapper()
@@ -241,3 +271,41 @@ class PointStereoMixin:
             if axes_drawn is not None:
                 self._axes_renderer.SetDraw(axes_drawn)
         return out, per_eye, ("surface" if want_depth else "none")
+
+    def _splat_eyes_on_thread(self, pose, placed, cameras):
+        """Splats by the VR page's rule (app/point_splat.py), on the CPU:
+        VTK's Gaussian mapper sized them by the table-to-metre scale squared
+        under the stereo camera (an almost black frame for a table tens of
+        units wide). Every row the session holds, at the page's splat radius
+        for its sample (the pose's ``sample_rows``), each row weighted by
+        those rows / rows held, so the frame shows the preview's brightness;
+        drawn at the page's eye size (``viewport_size``) and reduced to the
+        frame's."""
+        from vtk.util.numpy_support import vtk_to_numpy
+
+        from ..point_splat import splat_eye, splat_style
+        w, h = pose.width, pose.height
+        xyz = vtk_to_numpy(self._polydata.GetPoints().GetData())
+        codes = (vtk_to_numpy(self._polydata.GetPointData().GetScalars())
+                 if self._data_range is not None else None)
+        # As the page: its style from the table's rows and its sample's (by
+        # default the rows held), each held row standing for sample / held.
+        bounds, held = self._splat_basis
+        sample_rows, page_size = self._xr_splat_view
+        drawn = sample_rows or held
+        _, opacity, radius = splat_style(bounds, max(self._num_rows, held), drawn,
+                                         self.view.size, self.view.intensity)
+        amp = opacity * drawn / max(1, held)
+        # The radius in metres: the table-to-world scale of the page's box.
+        metres = float(np.cbrt(np.linalg.det(placed[:3, :3])))
+        out, per_eye = [], []
+        for eye, g in zip(pose.eyes, cameras):
+            t0 = time.perf_counter()
+            rgba = splat_eye(xyz, codes, self._splat_lut,
+                             eye.view @ placed @ self._local_to_table, eye.projection,
+                             w, h, radius * metres, amp, pose.background, page_size)
+            t1 = time.perf_counter()
+            out.append((rgba, None, g["depth_projection"]))
+            per_eye.append({"eye": eye.eye, "render": round(1000 * (t1 - t0), 3),
+                            "readback": 0.0})
+        return out, per_eye, "none"

@@ -8,6 +8,26 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: the refined frame of a point table drawn as splats is no longer almost
+  black (#262, part of #261).** Holding still with *splats* replaced the
+  page's picture by a frame close to the background (mean 14.3 against 13,
+  where the preview is 21.4, on a 3.9 M-row snapshot). The cause was the
+  backend's VTK Gaussian mapper under the stereo camera: from VTK 9.4 it
+  projects each splat with the view-to-clip matrix over the view-space depth,
+  and the stereo camera's view is in table units with the metre scale in the
+  projection, so every splat was smaller by that scale (1/50 for a box 50
+  units wide) and almost nothing was drawn. The point session now draws
+  stereo splats on the CPU by the page's own rule (`app/point_splat.py`): the
+  sprite size, near/far-only clipping and the sub-pixel floor of the page's
+  shaders, the splat radius and opacity the page uses for its sample, each
+  row weighted by sampled rows / rows held, drawn at the page's eye size and
+  reduced to the refined frame's. The page sends `sample_rows` and
+  `viewport_size` with each pose. Measured on the same snapshot: refined
+  frame 21.8 (page with it blended in 22.1) against the preview's 21.4, lit
+  fraction 0.182 against 0.176; about 50 ms per 1600 × 1000 eye (0.3 s for
+  a session's first frame). The desktop's own point view is not affected
+  (its camera has no such scale; splats there are as bright as before).
+
 - **Headset Activity: a long cube name no longer widens the Inspector (#251,
   part of #234).** The line saying what the headset shows breaks inside the
   file name like the activity rows do, so a name of 80 characters wraps

@@ -76,6 +76,20 @@ test('point look commands and box decorations', () => {
   assert.ok(segs.length >= 12 && labels.some((l) => l.text === '10'));
 });
 
+test('a refined pose carries the rows the splats are sized for and the eye height (#262)', () => {
+  const box = PT.dataToModel([0, 10, 0, 5, 0, 1]);
+  const eyes = [{ eye: 'left', width: 1600, height: 1000 }, { eye: 'right', width: 1600, height: 1000 }];
+  const splats = PT.refinePoseExtra(box, 'splats', 999999.6, eyes);
+  assert.deepEqual(splats.data_to_model, Array.from(box.matrix));
+  assert.equal(splats.sample_rows, 1000000);
+  assert.deepEqual(splats.viewport_size, [1600, 1000]);
+  // An eye larger than the session draws: no size (the frame's own is used).
+  assert.ok(!('viewport_size' in PT.refinePoseExtra(box, 'splats', 1e6, [{ width: 5000, height: 5000 }])));
+  // Points: the box alone (their size is in pixels).
+  assert.deepEqual(Object.keys(PT.refinePoseExtra(box, 'points', 1e6, eyes)), ['data_to_model']);
+  assert.ok(!('sample_rows' in PT.refinePoseExtra(box, 'splats', 0, [])));
+});
+
 test('flow lines: headers, body, indices and arrows', () => {
   const info = FL.linesInfo(hdr({ 'X-Visivo-Line-Points': '3', 'X-Visivo-Lines': '1', 'X-Visivo-Arrows': '1',
     'X-Visivo-Width': '4', 'X-Visivo-Height': '4', 'X-Visivo-Depth': '4', 'X-Visivo-Spacing': '2,2,2',

@@ -608,10 +608,13 @@ export function createLayers(ctx) {
       const commands = PT.pointLook({ axes: L.points.axes, colourField: sm.colourField, colourRange: sm.colourRange,
         colourLog: sm.colourLog, lut: colormapTable(ctx.colormap()), c0: L.s.c0, c1: L.s.c1, style: L.s.style,
         splatSize: L.s.splatSize, pointPx: L.s.pointPx, intensity: L.s.intensity });
-      const key = JSON.stringify([commands, sm.bounds]);
+      // The splats are refined for the whole sample (not the governor's part
+      // of it, which changes four times a second and would make every refined
+      // frame stale): never darker than the preview, the same when it is drawn whole.
+      const key = JSON.stringify([commands, sm.bounds, sm.count]);
       ctx.refiner.frame({ t, eyes, aCentre: M.multiply(centreView, state.model), model: state.model, zStretch: 1,
         look: { commands, cropError: '' }, lookKey: key, background,
-        poseExtra: { data_to_model: Array.from(L.box.matrix) } });
+        poseExtra: PT.refinePoseExtra(L.box, L.s.style, sm.count, eyes) });
     },
     hudLines() {
       const out = [];

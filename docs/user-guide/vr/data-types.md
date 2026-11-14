@@ -65,7 +65,15 @@ page sends its colours, style and the map from the table to its box
 Both read the colour column in full precision and give each row the same
 colour, on a linear or a log scale, so the refined frame does not change the
 colours; values far from zero keep their own colours there too (1e9, 1e9 + 1
-and 1e9 + 2 are three colours).
+and 1e9 + 2 are three colours). With *splats* the backend draws them by the
+page's own rule: the splat size the page uses for its sample, each row's light
+weighted so the whole table shows the sample's brightness, and the same floor
+that keeps splats smaller than a pixel visible. The refined frame then looks
+like the page's picture with the sample's graininess gone, at any refined
+frame size (it is drawn at the page's own eye size and then reduced). While
+the frame-time governor draws only part of the sample (the HUD's *drawn of
+... sampled*), the page's own picture is dimmer than the sample's and the
+refined frame brightens it slightly.
 
 ## Catalogues over a cube
 
