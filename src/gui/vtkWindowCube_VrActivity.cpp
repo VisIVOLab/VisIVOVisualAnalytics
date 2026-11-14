@@ -362,6 +362,15 @@ void vtkWindowCube::openHeadsetSpectrum(const VrHub::Event &event, const VrHub::
     // still, it is not made (and recorded) a second time. The row of a window
     // since closed gives way to this one. Asked again right before it is
     // made, since a download may have let another window in meanwhile.
+    if (!VrHub::aboutCube(event, this->filepath, this->remoteDatasetId)) {
+        // A spectrum is a product of its cube: made here it would be recorded
+        // (and replayed) against this one.
+        this->statusBar()->showMessage(
+                u"This spectrum was taken from %1: open it from that cube's window."_s.arg(
+                        event.cubePath.isEmpty() ? u"another cube"_s : QFileInfo(event.cubePath).fileName()),
+                8000);
+        return;
+    }
     const QString headsetId = VrHub::productId(event, product);
     const auto heldElsewhere = [this, headsetId]() {
         bool held = false;
@@ -540,6 +549,9 @@ void vtkWindowCube::applyHeadsetClip()
     // full-cube voxels; a preview is scaled by (displayDim-1)/(fullDim-1).
     int ddim[3];
     display->GetDimensions(ddim);
+    double dorigin[3], dspacing[3];
+    display->GetOrigin(dorigin);
+    display->GetSpacing(dspacing);
     const int full[3] = { std::max(1, this->remoteDatasetWidth), std::max(1, this->remoteDatasetHeight),
                           std::max(1, this->remoteDatasetDepth) };
     double planes[6];
@@ -547,9 +559,13 @@ void vtkWindowCube::applyHeadsetClip()
         const double s = (!this->usingHighResCube && full[i] > 1 && ddim[i] > 1)
                 ? double(ddim[i] - 1) / double(full[i] - 1)
                 : 1.0;
-        // Half a voxel out on each side: both end voxels stay inside.
-        planes[2 * i] = (this->m_headsetClip.min[i] - 0.5) * s;
-        planes[2 * i + 1] = (this->m_headsetClip.max[i] + 0.5) * s;
+        // Faces at the outer edges of the end voxels (both stay inside), as
+        // the render session draws them, then as the mapper must be told
+        // them to draw them there.
+        planes[2 * i] = VrHub::gpuCropPlane((this->m_headsetClip.min[i] - 0.5) * s, dorigin[i],
+                                            dspacing[i], ddim[i]);
+        planes[2 * i + 1] = VrHub::gpuCropPlane((this->m_headsetClip.max[i] + 0.5) * s, dorigin[i],
+                                                dspacing[i], ddim[i]);
     }
     this->volumeMapper->SetCroppingRegionPlanes(planes);
     this->volumeMapper->SetCroppingRegionFlagsToSubVolume();

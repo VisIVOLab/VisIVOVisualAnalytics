@@ -463,6 +463,15 @@ void TestVrHeadsetHub::lookAndClipAreRead()
     QCOMPARE(crop.value(u"max"_s).toList().at(2).toDouble(), 1.0);
     QVERIFY(VrHub::cropCommandBox(clipOf(R"({"box":[[0,9],[0,9],[0,19]]})"), { 10, 10, 20 }).isNull());
     QVERIFY(VrHub::cropCommandBox(VrHub::Clip{}, { 10, 10, 20 }).isNull());
+    // The mapper's plane for a face drawn at d: the render session's inverse
+    // (d = o - s/2 + (p - o) n / (n - 1)), so drawing it gives d back.
+    for (const double d : { -0.5, 1.5, 4.5, 9.5 }) {
+        const double p = VrHub::gpuCropPlane(d, 0.0, 1.0, 10);
+        QVERIFY(qAbs((0.0 - 0.5 + (p - 0.0) * 10.0 / 9.0) - d) < 1e-12);
+    }
+    QCOMPARE(VrHub::gpuCropPlane(-0.5, 0.0, 1.0, 10), 0.0);
+    QCOMPARE(VrHub::gpuCropPlane(9.5, 0.0, 1.0, 10), 9.0);
+    QCOMPARE(VrHub::gpuCropPlane(3.0, 2.0, 1.0, 1), 2.0);
 
     VrHub::Event e = hubEvent(1, u"look"_s, u"/d/m33.fits"_s);
     QVERIFY(VrHub::aboutCube(e, u"/d/m33.fits"_s, u"x"_s));

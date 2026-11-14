@@ -735,6 +735,18 @@ inline QVariant cropCommandBox(const Clip &clip, const std::array<int, 3> &full)
     return QVariantMap{ { QStringLiteral("min"), lo }, { QStringLiteral("max"), hi } };
 }
 
+/// The cropping plane to give vtkGPUVolumeRayCastMapper so that it DRAWS a
+/// face at world @p drawn, on an axis of @p n samples from @p origin with
+/// @p spacing. The mapper reads a plane p as a fraction of the samples'
+/// extent, (p - o) / ((n - 1) s), but draws it on the cells' extent, one
+/// sample longer and half a sample earlier: d = o - s/2 + (p - o) n / (n - 1)
+/// (measured on VTK 9.3.1 and 9.6.2; the render session inverts it the same
+/// way, render_session/_ooc.py _vtk_crop_planes).
+inline double gpuCropPlane(double drawn, double origin, double spacing, int n)
+{
+    return n > 1 ? origin + (drawn - origin + spacing / 2.0) * (n - 1) / n : origin;
+}
+
 /// Is the event about the cube at @p path (or with @p datasetId)?
 inline bool aboutCube(const Event &e, const QString &path, const QString &datasetId)
 {
