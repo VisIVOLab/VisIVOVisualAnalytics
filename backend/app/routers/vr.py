@@ -348,7 +348,7 @@ RATE = _RateLimiter()
 # What is removed from a message before it is written:
 #   1. %-escapes are decoded first (a pairing link writes path=%2FUsers%2F…);
 #   2. every known token, and the caller's, becomes <token>;
-#   3. the value of any key containing "token" or "session" (session_id,
+#   3. the value of any key containing "token", "session" or "ticket" (session_id,
 #      sessionId, access_token, X-Visivo-Token, JSON "token": "…"), quoted or
 #      not, before = or :, becomes <redacted> when it looks like a secret
 #      (_looks_secret: 6+ characters with a digit, 8+ hex, or 16+ of any
@@ -373,9 +373,9 @@ _ESCAPES = re.compile(r"(?:%[0-9A-Fa-f]{2})+")
 # such keys match at all, so an ordinary "host:port/…" cannot swallow a
 # ?token= that follows it.
 _KEY_VALUE = re.compile(
-    r"""(?i)(["']?)(?<![\w-])(?=[\w-]{0,60}?(?:token|session))([\w-]{1,64})(?![\w-])\1(\s*[=:]\s*)"""
+    r"""(?i)(["']?)(?<![\w-])(?=[\w-]{0,60}?(?:token|session|ticket))([\w-]{1,64})(?![\w-])\1(\s*[=:]\s*)"""
     r"""("[^"]*"|'[^']*'|[^\s&#,;'"}\]]+)""")
-_SECRET_KEY = re.compile(r"(?i)token|session")
+_SECRET_KEY = re.compile(r"(?i)token|session|ticket")
 #: What the regex rules see at most (they run after the known secrets are
 #: replaced, before the final cut to MAX_MESSAGE).
 _SCRUB_WINDOW = 2 * 600

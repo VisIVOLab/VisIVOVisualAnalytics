@@ -359,6 +359,16 @@
       "name": "a Windows home directory alone",
       "input": "C:\\Users\\bob",
       "expected": "…\\<user>"
+    },
+    {
+      "name": "launch ticket in a fragment (#255)",
+      "input": "load failed at /vr/?launch=immersive#ticket=Qx7v3sQ1-a_bZ9kLmN0pRsTuVwXyZ012345678abcd",
+      "absent": [
+        "Qx7v3sQ1-a_bZ9kLmN0pRsTuVwXyZ012345678abcd"
+      ],
+      "present": [
+        "ticket=<redacted>"
+      ]
     }
   ],
   "adversarial": {

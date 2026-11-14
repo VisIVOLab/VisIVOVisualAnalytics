@@ -74,6 +74,7 @@
     "GET /v1/vr/headset",
     "GET /v1/vr/headset/commands",
     "GET /v1/vr/info",
+    "GET /v1/vr/launch/{launch}",
     "GET /v1/vr/pair",
     "POST /soda/async",
     "POST /soda/async/{job_id}/destruction",
@@ -226,6 +227,7 @@
     "POST /v1/vr/headset/command",
     "POST /v1/vr/headset/hello",
     "POST /v1/vr/headset/state",
+    "POST /v1/vr/launch",
     "POST /v1/vr/log",
     "POST /v1/vr/measurements",
     "POST /v1/vr/pair"

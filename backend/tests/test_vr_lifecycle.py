@@ -389,3 +389,4 @@ async def test_an_upgrade_is_never_cached_under_the_old_build(client: AsyncClien
         assert "immutable" in r.headers["cache-control"] and r.headers.get("etag")
     finally:
         f.unlink(missing_ok=True)
+

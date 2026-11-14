@@ -220,6 +220,9 @@ from .routers import vr_measure as vr_measure_routes  # noqa: E402
 app.include_router(vr_routes.router)
 # The page's measurement records (issue #224): POST /v1/vr/measurements.
 app.include_router(vr_measure_routes.router)
+# The headset app's launch (issue #255): assetlinks, one-time tickets.
+from .routers import vr_launch as vr_launch_routes  # noqa: E402
+app.include_router(vr_launch_routes.router)
 if _vr_static_dir.is_dir():
     app.mount("/vr", _RevalidatedStaticFiles(directory=str(_vr_static_dir), html=True),
               name="vr")

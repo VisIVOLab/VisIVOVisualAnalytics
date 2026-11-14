@@ -27,12 +27,13 @@
 // backend/tests/vr/diagnostics.test.mjs and quality.test.mjs.
 
 const ESCAPES = /(?:%[0-9A-Fa-f]{2})+/g;
-// A key: a whole word of at most 64 characters naming a token or a session,
+// A key: a whole word of at most 64 characters naming a token, a session or a
+// launch ticket (#255),
 // found by a bounded lookahead (linear: an unbounded [\w-]*token[\w-]* took
 // seconds on a long "xtoken…" run). Only such keys match, so "host:port/…"
 // cannot swallow a ?token= behind it.
-const KEY_VALUE = /(["']?)(?<![\w-])(?=[\w-]{0,60}?(?:token|session))([\w-]{1,64})(?![\w-])\1(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s&#,;'"}\]]+)/gi;
-const SECRET_KEY = /token|session/i;
+const KEY_VALUE = /(["']?)(?<![\w-])(?=[\w-]{0,60}?(?:token|session|ticket))([\w-]{1,64})(?![\w-])\1(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s&#,;'"}\]]+)/gi;
+const SECRET_KEY = /token|session|ticket/i;
 /** What the pattern rules see at most (after the known secrets are replaced). */
 const SCRUB_WINDOW = 1200;
 const RENDER_ID = /(\/v1\/render\/(?:queue\/)?)([0-9A-Fa-f-]{8,})/g;

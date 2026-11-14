@@ -6,7 +6,7 @@
 import * as M from './mat4.js';
 import { Renderer } from './renderer.js';
 import { Backend, takeToken, saveToken, tokenError, takePairing, forgetPairing, keepPairing, requestHooks } from './api.js';
-import { isPaired, PAIRED_TOKEN, onLinkChange, requestNewCode, transportInfo, linkState } from './transport.js';
+import { isPaired, PAIRED_TOKEN, onLinkChange, requestNewCode, transportInfo, linkState, pageFetch } from './transport.js';
 import * as V from './volume.js';
 import { CubePrep, Newest, prepareCube, CMAX_QUANTILE, CMAX_SAMPLE } from './cube-prep.js';
 import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
@@ -43,9 +43,11 @@ import { QuadLayers, layersAvailable, quadExtentFactor } from './xr-layers.js';
 import { controllerMesh, handMesh } from './models.js';
 // The real controller models (WebXR Input Profiles), the page's own as the fallback.
 import { ControllerModels } from './controller-models.js';
-import { SinglePage, CHANNEL_NAME, stoodDownText } from './single-page.js';
+import { SinglePage, CHANNEL_NAME, stoodDownText, PINNED_ENTERING, PINNED_IN_VR } from './single-page.js';
 import * as HUB from './headset.js';
 import * as XE from './xr-entry.js';
+import * as APP from './app-launch.js';
+import { apiUrl } from './base-path.js';
 // Measurement records and the guided measurement run (issue #224).
 import { createMeasure, recordMessage } from './measure-run.js';
 
@@ -190,6 +192,8 @@ const settings = loadSettings(settingsStore, { colormaps: COLORMAP_NAMES, tools:
 function persist() { saveSettings(settingsStore, settings); }
 
 // ── The shell: lifecycle, notices, guide, diagnostics (epic #166) ──────────
+/** Started as the immersive headset app (#255): leaving VR quits it. */
+const APP_IMMERSIVE = APP.launchedImmersive(window.location.search);
 const PAGE = { build: pageBuild(import.meta.url), api: PAGE_VR_API };
 const eyeGovernor = new EyeBufferGovernor();
 const shell = createShell({
@@ -199,6 +203,7 @@ const shell = createShell({
   token: () => tokenField.value.trim(),
   ctx: {
     inVR: () => !!xr,
+    immersiveApp: () => APP_IMMERSIVE,
     exitVR: () => endXR('the user'),
     enterVR: () => { if (!$('enter-vr').disabled) enterXR('immersive-vr', false).catch((e) => setStatus(`XR: ${e.message}`)); },
     recoverDataset: (reason) => recoverDataset(reason),
@@ -292,6 +297,16 @@ if (isPaired()) {
   tokenField.value = PAIRED_TOKEN;
   $('connect').hidden = true;
 }
+// The headset app's launch (#255): its one-time ticket, out of the address
+// with the pairing keys, is traded for the token at start (exchangeLaunch).
+const appLaunch = {
+  ticket: pairing.ticket || '', id: '', exchanging: false, settled: !pairing.ticket,
+  error: null, lastGrant: null, forwarded: false, roomKey: '', exchangeMs: null,
+  claimedAt: Infinity,   // when this page claimed: the app enters VR only after the others answered
+};
+/** The other pages' answers to the claim (BroadcastChannel, milliseconds) arrive
+ *  well within this: the app asks for its session only after it (#255). */
+const ARBITRATION_MS = 200;
 if (tokenError()) setTimeout(() => setStatus(tokenError()), 0);
 tokenField.addEventListener('change', () => saveToken(tokenField.value.trim(), $('remember').checked));
 $('remember').addEventListener('change', () => saveToken(tokenField.value.trim(), $('remember').checked));
@@ -2707,6 +2722,7 @@ function updateXRButtons() {
 const single = new SinglePage({
   channel: typeof BroadcastChannel === 'function' ? new BroadcastChannel(CHANNEL_NAME) : null,
   onChange: (active, info) => onSingleChange(active, info),
+  onMessage: (m) => onPageMessage(m),
 });
 /** Bumped when the page stands down: a session being made then is ended (enterXR). */
 let xrStartGen = 0;
@@ -2720,8 +2736,10 @@ function onSingleChange(active, info = {}) {
     // to the page in use.
     const text = stoodDownText(info);
     shell.log('info', 'page-stood-down', info.reason === 'content'
-      ? `another VR page of this origin shows ${info.cube || 'a cube'} and this one nothing` : 'a newer VR page of this origin was opened');
+      ? `another VR page of this origin shows ${info.cube || 'a cube'} and this one nothing` : info.reason === 'vr' ? 'the headset app is in VR in another page' : 'a newer VR page of this origin was opened');
     if (xr) endXR('a newer page');
+    // The headset app in VR stays (#255): this page's launch goes to it.
+    if (info.reason === 'vr') forwardGrant();
     refiner.setSuspended('in another window');
     hub.stop();
     $('stood-down-text').textContent = `${text.title}: ${text.lines[0]}`;
@@ -2759,6 +2777,7 @@ const hub = HUB.createHub({
   label: HUB.headsetLabel(navigator.userAgent),
   auth: hubAuth,
   onCommand: (cmd) => showFromDesktop(cmd),
+  launch: () => appLaunch.id,
   log: (level, event, message) => shell.log(level, event, message),
   onClient: (id) => { try { if (hubStore) hubStore.setItem(HUB.CLIENT_KEY, id); } catch { /* this load only */ } },
 });
@@ -2776,7 +2795,9 @@ function shownKind() {
 }
 /** Does the page show something, or is it about to (a load under way)? The one-page claim's content. */
 function pageHasContent() {
-  return !!(state.cube || state.loading > 0 || layers.hasScene() || stagedCube);
+  // The headset app (#255) counts as content from its start: it never gives
+  // way to a page in a browser tab (it would stand down and never enter VR).
+  return !!(APP_IMMERSIVE || state.cube || state.loading > 0 || layers.hasScene() || stagedCube);
 }
 function shownName() {
   if (state.openPath) return HUB.fileName(state.openPath);
@@ -2798,6 +2819,7 @@ function hubClip(id) {
 let hubShownKey = '';
 function hubTick() {
   single.setContent(pageHasContent(), shownName());
+  appTick();
   if (!single.active) return;
   const id = shownDatasetId();
   const path = state.openPath || '';
@@ -2896,11 +2918,14 @@ function applyCommandBox(cmd) {
 // cube is on show (the browser may refuse without a press: the button stays);
 // where the browser offers sessions, its own Enter VR is always at hand.
 const entry = {
+  immersive: APP_IMMERSIVE,
   launched: XE.launchedAsApp(window.location.search, typeof window.matchMedia === 'function' ? (q) => window.matchMedia(q) : null),
   tried: false, outcome: '', offered: false, offerStopped: false, offerOutcome: '', offers: 0,
 };
 function entryLine() {
-  const parts = [entry.launched ? `launched as an app: ${entry.tried ? `tried by itself, ${entry.outcome || 'waiting for the browser'}` : 'tries by itself once a cube is on show'}`
+  const parts = [entry.immersive ? `the headset app (#255): ${entry.tried ? `entered by itself, ${entry.outcome || 'waiting for the browser'}` : 'enters VR at load'}`
+    + `${appLaunch.exchangeMs !== null ? `; ticket exchanged in ${appLaunch.exchangeMs.toFixed(0)} ms` : ''}${appLaunch.error ? `; launch: ${appLaunch.error.message}` : ''}`
+    : entry.launched ? `launched as an app: ${entry.tried ? `tried by itself, ${entry.outcome || 'waiting for the browser'}` : 'tries by itself once a cube is on show'}`
     : 'opened as a page: Enter VR is pressed once (the desktop then sends cubes into the session)'];
   parts.push(XE.canOffer(navigator.xr) ? `offerSession: ${entry.offerStopped ? `stopped (${entry.offerOutcome})` : entry.offered ? 'offered (the browser shows its Enter VR)' : entry.offerOutcome || 'not offered yet'}`
     : 'offerSession: not in this browser');
@@ -2908,8 +2933,13 @@ function entryLine() {
 }
 function maybeAutoEnter() {
   if (!XE.shouldAutoEnter({ launched: entry.launched, tried: entry.tried, vrSupported: xrSupport.vr, active: single.active,
-    inXR: !!xr || R.xrActive, cubeReady: !!state.cube || layers.hasScene(), busy: entering || !!(benchPrep && benchPrep.busy) })) return;
+    inXR: !!xr || R.xrActive, cubeReady: !!state.cube || layers.hasScene(), busy: entering || !!(benchPrep && benchPrep.busy),
+    immersive: entry.immersive, settled: appLaunch.settled && performance.now() - appLaunch.claimedAt > ARBITRATION_MS })) return;
   entry.tried = true;
+  // The headset app (#255) enters before its cube: enterXR sets the capacity
+  // the cube is written into first (#229), and from now on this page never
+  // stands down for another (single-page.js, pinned).
+  if (entry.immersive) single.setPinned(PINNED_ENTERING);
   shell.log('info', 'auto-enter', 'launched as an app: entering VR without a press');
   measure.event('auto-enter', { try: true });
   enterXR('immersive-vr', false).then(() => { entry.outcome = 'entered'; }).catch((err) => {
@@ -2920,6 +2950,8 @@ function maybeAutoEnter() {
   });
 }
 function maybeOffer() {
+  // The headset app enters by itself (#255): an offer could only race it.
+  if (entry.immersive) return;
   if (entry.offerStopped || !XE.shouldOffer({ offerable: XE.canOffer(navigator.xr), vrSupported: xrSupport.vr, active: single.active,
     inXR: !!xr || R.xrActive || entering, offered: entry.offered })) return;
   // The capacity the cubes are written into in VR, now, on the 2-D page
@@ -2949,6 +2981,125 @@ function maybeOffer() {
     if (!(xr || R.xrActive || entering)) entry.offerStopped = true;
     shell.log('info', 'xr-offer-ended', `${entry.offerOutcome}: ${String(err && err.message ? err.message : err).slice(0, 100)}`);
   });
+}
+
+// ── The headset app (issue #255) ────────────────────────────────────────────
+// Started by the desktop with a one-time ticket: traded here for the token,
+// the desktop's session and the cube (never kept, used once). While the page
+// waits for its cube, and when it has none, the room in VR says why
+// (app-launch.js roomState, lifecycle.js 'app-…' notices).
+async function exchangeLaunch() {
+  const ticket = APP.cleanTicket(appLaunch.ticket);
+  appLaunch.ticket = '';
+  pairing.ticket = '';      // used once
+  appLaunch.exchanging = true;
+  const t0 = performance.now();
+  try {
+    if (!ticket) throw Object.assign(new Error('the launch ticket is malformed'), { kind: 'expired' });
+    const grant = await APP.exchangeTicket(ticket, { fetch: (u, init) => pageFetch(u, init), url: apiUrl('/v1/vr/launch/exchange') });
+    appLaunch.exchangeMs = performance.now() - t0;
+    shell.log('info', 'app-launch', `ticket exchanged in ${appLaunch.exchangeMs.toFixed(0)} ms, ${grant.cube ? HUB.fileName(grant.cube.path) : 'no cube'}`);
+    measure.event('app-launch', { exchange_ms: Math.round(appLaunch.exchangeMs), cube: !!grant.cube });
+    adoptGrant(grant, false);
+  } catch (err) {
+    appLaunch.error = { kind: err.kind || 'failed', message: String(err.message || err) };
+    shell.log('warning', 'app-launch-failed', appLaunch.error.message);
+  } finally {
+    appLaunch.exchanging = false;
+    appLaunch.settled = true;
+  }
+}
+
+/** A launch's grant: this page's own, or (`handed`) one a second launch's
+ *  page handed to this page in VR. Its token and session become the page's,
+ *  its cube is shown. A page that stood down hands it on instead. */
+function adoptGrant(grant, handed) {
+  appLaunch.lastGrant = grant;
+  if (!single.active) { forwardGrant(); return; }
+  // Another session than the page's (a handed grant): loads under way in the
+  // old one are superseded before it changes, never committed after it.
+  const before = (backend && backend.session) || pairing.session || '';
+  if (handed && before && before !== grant.session) loads.begin('');
+  appLaunch.id = grant.launch;
+  appLaunch.error = null;
+  tokenField.value = grant.token;
+  saveToken(grant.token, false);
+  ensureBackend().adoptSession(grant.session);
+  const c = grant.cube;
+  Object.assign(pairing, { session: grant.session, dataset: c ? c.dataset_id : '', path: c ? c.path : '', kind: c ? c.kind : '', box: '' });
+  hub.start();
+  hub.rehello();      // the hello names this launch: the desktop finds its page
+  if (!c) {
+    // No cube in the launch. What is on show from another session (a cube, a
+    // point table, a velocity field with its box size) follows the page into
+    // this one: opened again there by its path.
+    if (handed && before !== grant.session && state.openPath && (state.cube || layers.hasScene())) {
+      const kind = shownKind();
+      if (kind === 'cube') {
+        showFromDesktop({ seq: 0, type: 'show', dataset_id: '', path: state.openPath, kind, box: null });
+      } else {
+        // The box size the field is drawn with: the one given, else the one the
+        // backend read from the dataset (zero included).
+        const flow = layers.state.flow;
+        const eff = flow ? (flow.boxMpc != null ? flow.boxMpc : flow.info ? flow.info.boxMpc : null) : null;
+        const box = kind === 'velocity' && eff != null && Number.isFinite(Number(eff)) ? String(eff) : '';
+        const path = state.openPath;
+        keepPairing({ session: grant.session, dataset: '', path, kind, box });   // a reload opens it in the new session
+        withLoading(() => loadLinked({ session: grant.session, dataset: '', path, kind, box }))
+          .catch((err) => { if (!err.superseded) setStatus(`${HUB.fileName(path)} could not be opened again: ${err.message || err}`); });
+      }
+    } else if (!state.openPath && !state.cube && !layers.hasScene()) {
+      // Nothing on show: a reload of this tab stays in the granted session.
+      keepPairing({ session: grant.session });
+    }
+    return;
+  }
+  const cmd = { seq: 0, type: 'show', dataset_id: c.dataset_id, path: c.path, kind: c.kind, box: c.box };
+  if (handed) { showFromDesktop(cmd); return; }
+  keepPairing({ session: grant.session, dataset: c.dataset_id, path: c.path, kind: c.kind, box: '' });
+  $('path').value = c.path;
+  withLoading(() => loadLinked({ session: grant.session, dataset: c.dataset_id, path: c.path, kind: c.kind, box: '' }))
+    .then(() => { if (state.openPath === c.path) applyCommandBox(cmd); })
+    .catch((err) => {
+      if (err.superseded) return;
+      appLaunch.error = { kind: 'failed', message: `${HUB.fileName(c.path)}: ${err.message || err}` };
+      setStatus(`The desktop's cube could not be opened: ${err.message || err}`);
+    });
+}
+
+/** Stood down for the headset app in VR: this launch's grant goes to it.
+ *  This page's window stays open: closing it ends the session of the page in
+ *  VR (measured on a Quest 3, #255). */
+function forwardGrant() {
+  const g = appLaunch.lastGrant, by = single.by;
+  if (!g || appLaunch.forwarded || single.active || !by || !by.pinned) return;
+  appLaunch.forwarded = true;
+  single.send(by.id, APP.grantMessage(by.id, g));
+  shell.log('info', 'app-launch-handed', 'the app was started again while in VR: this launch goes to the page in VR');
+}
+
+/** A message from another page of this origin, addressed to this one. */
+function onPageMessage(m) {
+  const grant = APP.grantFromMessage(m, single.id);
+  if (!grant || !single.active) return;
+  shell.log('info', 'app-launch-received', `a second launch of the app, ${grant.cube ? HUB.fileName(grant.cube.path) : 'no cube'}: shown here`);
+  adoptGrant(grant, true);
+}
+
+/** The headset app's pin and room, from the page's timers. */
+function appTick() {
+  if (!APP_IMMERSIVE) return;
+  // Pinned while a session is being made or runs: never stands down then.
+  single.setPinned(xr ? PINNED_IN_VR : R.xrActive || entering ? PINNED_ENTERING : 0);
+  if (!single.active) return;
+  const r = APP.roomState({ immersive: true, exchanging: appLaunch.exchanging || !appLaunch.settled, error: appLaunch.error,
+    connected: !!(tokenField.value.trim() && hubAuth()), loading: state.loading > 0, shown: !!state.cube || layers.hasScene(),
+    name: HUB.fileName(pairing.path || ''), origin: APP.originLabel(window.location) });
+  // Said again on entering VR: the way out (Quit) is offered only in VR.
+  const key = r ? JSON.stringify([r, !!xr]) : '';
+  if (key === appLaunch.roomKey) return;
+  appLaunch.roomKey = key;
+  if (r) shell.notify(r.kind, r.ctx); else shell.clearNotice('app-room');
 }
 
 $('enter-vr').addEventListener('click', () => enterXR('immersive-vr', false).catch((e) => setStatus(`XR: ${e.message}`)));
@@ -3130,6 +3281,12 @@ async function startSession(session, mode, bench, startGen, wantLayers) {
     if (b) showBench(b);
     startDesktop();
   });
+  // Shown, blurred (a system overlay) or hidden: in the diagnostics (#255).
+  session.addEventListener('visibilitychange', () => shell.log('info', 'xr-visibility', String(session.visibilityState)));
+  // The headset app quits with its session (#255): the browser closes it,
+  // except where a second launch left another window above this one; then
+  // this page closes its own, never staying behind outside VR.
+  if (APP_IMMERSIVE) session.addEventListener('end', () => setTimeout(() => { try { window.close(); } catch { /* the browser's call */ } }, 1000));
   session.requestAnimationFrame(onXRFrame);
 }
 
@@ -3847,7 +4004,7 @@ if (query.has('debug')) {
   window.__vrGL = gl;
   // Issue #226: the XR session's state (fake-XR checks), the renderer's GPU
   // textures, the one-page state.
-  window.__vrXR = () => (xr ? { overlaysAsLayers: !!xr.overlaysAsLayers, layersNote: xr.layersNote, fbScale: xr.fbScale,
+  window.__vrXR = () => (xr ? { visibility: xr.session.visibilityState, overlaysAsLayers: !!xr.overlaysAsLayers, layersNote: xr.layersNote, fbScale: xr.fbScale,
     targetHz: xr.targetHz, quads: xr.quads ? { active: xr.quads.active, shown: xr.quads.shown, pool: xr.quads.pool.size, copies: xr.quads.copies } : null,
     meshCount: R.meshCount, labelCount: R.labelCount, modelDraws: R.modelDraws,
     controllerModels: Object.fromEntries(Object.entries(controllerModels.status)
@@ -4247,9 +4404,10 @@ ensureCapacity(null);   // before any VR session (issue #235)
 // to load claims as one with content, so an older page with a cube gives
 // way to it; an empty page (a tab restored, an empty loader) never makes it.
 const again = query.has('synthetic') || query.has('bench') ? '' : takeReloadPath();
-single.content = !!(query.has('synthetic') || (again && tokenField.value.trim()) || pairing.dataset || pairing.path);
+single.content = !!(query.has('synthetic') || (again && tokenField.value.trim()) || pairing.dataset || pairing.path || APP_IMMERSIVE);
 single.cube = HUB.fileName(again || pairing.path || '');
 single.claim();         // older VR pages of this origin stand down (issue #226)
+appLaunch.claimedAt = performance.now();
 if (single.active) hub.start();   // the headset hub: hello, state, the desktop's commands (#237)
 checkXR();
 updateLabels();
@@ -4261,6 +4419,7 @@ if (query.has('bench')) {
 } else {
   startDesktop();
   if (query.has('synthetic')) loadSyntheticSaying(Number(query.get('synthetic')) || 256);
+  else if (pairing.ticket) exchangeLaunch();      // the headset app's launch (#255)
   else if (again && tokenField.value.trim()) {
     // Reloaded after a lost graphics context: the cube that was on show.
     $('path').value = again;

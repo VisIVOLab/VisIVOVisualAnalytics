@@ -1,0 +1,7 @@
+{
+  "packages": {
+    "release": "it.inaf.oact.visivo.vr",
+    "development": "it.inaf.oact.visivo.vr.dev"
+  },
+  "release_sha256": []
+}

@@ -54,6 +54,8 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
   });
 
   function inVR() { return !!ctx.inVR(); }
+  /** The immersive headset app (#255): leaving VR quits it, the notices say so. */
+  function isApp() { return !!(ctx.immersiveApp && ctx.immersiveApp()); }
 
   function onLife(ev) {
     const { state, prev } = ev;
@@ -64,10 +66,10 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
       // (every 1 to 5 s), never more often.
       if (ev.status) {
         notices.clear('unreachable');
-        notices.show(noticeFor('http-error', { status: ev.status, inVR: inVR() }), { force: true });
+        notices.show(noticeFor('http-error', { status: ev.status, inVR: inVR(), app: isApp() }), { force: true });
       } else {
         notices.clear('http-error');
-        notices.show(noticeFor('unreachable', { ...where, inVR: inVR(), attempts: ev.attempts }), { force: true });
+        notices.show(noticeFor('unreachable', { ...where, inVR: inVR(), app: isApp(), attempts: ev.attempts }), { force: true });
       }
     } else {
       if (prev === 'down') {
@@ -80,7 +82,7 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
     }
     if (state === 'auth') {
       if (prev !== 'auth') log('warning', 'token-refused', '');
-      notices.show(noticeFor('auth', { inVR: inVR() }), { force: true });
+      notices.show(noticeFor('auth', { inVR: inVR(), app: isApp() }), { force: true });
     } else if (prev === 'auth') {
       notices.clear('auth');
       sender.resume();
@@ -89,7 +91,7 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
     const v = ev.version;
     if (v && !v.ok) {
       if (loggedVersion !== v.why) { loggedVersion = v.why; log('warning', 'version-mismatch', v.why || v.kind); }
-      notices.show(noticeFor(v.kind, { why: v.why, soft: !!v.soft, inVR: inVR() }));
+      notices.show(noticeFor(v.kind, { why: v.why, soft: !!v.soft, inVR: inVR(), app: isApp() }));
     } else if (v && v.ok) {
       notices.clear('reload'); notices.clear('update-app');
     }
@@ -161,7 +163,7 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
           pendingReason = reason === 'user' ? 'dataset-gone' : reason;
         }
         // A refused token is the auth notice's to explain; the reopen waits for it.
-        if (!auth) notices.show(noticeFor('reopen-failed', { detail: r.detail, inVR: inVR() }), { force: true });
+        if (!auth) notices.show(noticeFor('reopen-failed', { detail: r.detail, inVR: inVR(), app: isApp() }), { force: true });
       }
       render();
       return r;
@@ -342,7 +344,7 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
     help() { if (notices.unhideAll()) render(); else showGuide(0); },
     start() { life.start(); },
     /** Messages the page shows for its own events (context loss, XR end, budget). */
-    notify(kind, c = {}, { force = true } = {}) { notices.show(noticeFor(kind, { ...c, inVR: inVR() }), { force }); render(); },
+    notify(kind, c = {}, { force = true } = {}) { notices.show(noticeFor(kind, { ...c, inVR: inVR(), app: isApp() }), { force }); render(); },
     clearNotice(id) { notices.clear(id); render(); },
     classifyFailure,
     PAGE_VR_API,

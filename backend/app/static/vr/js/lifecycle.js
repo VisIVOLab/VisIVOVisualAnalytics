@@ -11,6 +11,8 @@
 // Pure, with the network and the clock passed in: unit-tested in
 // backend/tests/vr/lifecycle.test.mjs.
 
+import { exitLabel } from './app-launch.js';
+
 /** The page API this page speaks (backend/app/routers/vr.py VR_API). */
 export const PAGE_VR_API = 1;
 
@@ -113,10 +115,11 @@ export function isHeadsetBrowser(ua) {
  * (paired through the public loader, #213: pair again). A sticky
  * notice stays while its condition lasts; 'hide' folds it into `badge`, a
  * short line on the hand menu, until the condition changes. `ctx`: {loopback,
- * headset, paired, inVR, attempts, why, detail, status}.
+ * headset, paired, inVR, app, attempts, why, detail, status}. `app`: the page
+ * runs as the immersive headset app (#255), where leaving VR quits it.
  */
 export function noticeFor(kind, ctx = {}) {
-  const exit = ctx.inVR ? [{ id: 'exit-vr', label: 'Exit VR' }] : [];
+  const exit = ctx.inVR ? [{ id: 'exit-vr', label: exitLabel(!!ctx.app) }] : [];
   const hide = { id: 'hide', label: 'Hide' };
   const desktopReopen = 'On the computer: Tools → Views → Open in VR Headset… → Open on Headset.';
   switch (kind) {
@@ -218,10 +221,32 @@ export function noticeFor(kind, ctx = {}) {
     case 'cube-waiting':
       // Issue #229: a new cube's textures are not allocated during a VR session;
       // since #235 only a cube that does not fit the room kept for it waits.
-      return { id: 'cube-waiting', level: 'info', title: 'The new cube is shown when you leave VR',
+      // In the headset app (#255) leaving VR quits it: the cube cannot wait for that.
+      return { id: 'cube-waiting', level: 'info', title: ctx.app ? 'This cube cannot be shown in this session' : 'The new cube is shown when you leave VR',
         lines: [`It is loaded${ctx.detail ? `: ${ctx.detail}` : ''}${ctx.why ? `, but ${ctx.why}` : ''}. This headset's browser cannot make room for a new cube during a VR session without resetting its graphics.`,
-          'The cube on show stays until then: Exit VR to see the new one, then Enter VR again.'],
+          ctx.app ? 'The cube on show stays. To see the new one, quit VisIVO VR and open the cube again from the computer.'
+            : 'The cube on show stays until then: Exit VR to see the new one, then Enter VR again.'],
         actions: [...exit, { id: 'dismiss', label: 'OK' }], autoHideMs: 20000 };
+    case 'app-loading':
+      // The headset app (#255): in VR from the start, the cube on its way.
+      return { id: 'app-room', level: 'info', title: ctx.name ? `Opening ${ctx.name}…` : 'Connecting to the computer…',
+        lines: [ctx.name ? 'Sent from VisIVO Visual Analytics on the computer: it appears here as soon as it is loaded.'
+          : `VisIVO VR is reaching VisIVO Visual Analytics on the computer (${ctx.origin || 'localhost'}).`],
+        actions: [...exit] };
+    case 'app-empty':
+      return { id: 'app-room', level: 'info', title: ctx.connected ? 'Connected to the computer' : 'No cube yet',
+        lines: ctx.connected
+          ? ['Open a cube in VisIVO Visual Analytics on the computer, then Tools → Views → Open in VR Headset… → Show on Headset: it appears here.']
+          : [`This app shows the cubes of VisIVO Visual Analytics on the computer it reaches at ${ctx.origin || 'localhost'} (the USB cable).`,
+            'On the computer: open a cube, then Tools → Views → Open in VR Headset… → Open on Headset.'],
+        actions: [...exit] };
+    case 'app-failed':
+      return { id: 'app-room', level: ctx.why === 'expired' ? 'warning' : 'error',
+        title: ctx.why === 'expired' ? 'This launch has expired' : 'The cube from the computer could not be opened',
+        lines: [ctx.why === 'expired' ? 'Each launch from the computer can be used once, within a minute.'
+          : (ctx.detail || 'The computer did not answer.'),
+        'On the computer: Tools → Views → Open in VR Headset… → Open on Headset again.'],
+        actions: [...exit] };
     case 'cube-from-desktop':
       // Issue #237: the desktop sent a cube to this page (its `show` command).
       return { id: 'cube-from-desktop', level: 'info',

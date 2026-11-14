@@ -148,6 +148,7 @@ class Page:
     in_vr: bool = False
     cube: dict[str, Any] | None = None
     staged_cube: dict[str, Any] | None = None
+    launch: str = ""                  # the app launch (#255) its hello named, '' none
     commands: list[Command] = field(default_factory=list)
     poll_gen: int = 0                 # the latest command poll's number
     polling: int = 0                  # command polls waiting now
@@ -162,7 +163,7 @@ class Page:
     def info(self) -> dict[str, Any]:
         return {"client": self.client, "transport": self.transport, "label": self.label,
                 "since": self.since, "last_seen": self.last_seen_wall, "in_vr": self.in_vr,
-                "cube": self.cube, "staged_cube": self.staged_cube}
+                "cube": self.cube, "staged_cube": self.staged_cube, "launch": self.launch or None}
 
 
 @dataclass
@@ -212,13 +213,13 @@ class HeadsetHub:
         self._forget_silent()
         return self.pages.get(client)
 
-    def hello(self, client: str, transport: str, label: str) -> Page:
+    def hello(self, client: str, transport: str, label: str, launch: str = "") -> Page:
         self._forget_silent()
         now, wall = time.monotonic(), time.time()
         p = self.pages.get(client)
         if p is None:
             p = Page(client=client, transport=transport, label=label, since=wall,
-                     hello_at=now, last_seen=now, last_seen_wall=wall)
+                     hello_at=now, last_seen=now, last_seen_wall=wall, launch=launch)
             self.pages[client] = p
             while len(self.pages) > MAX_PAGES_PER_SESSION:
                 oldest = min((q for q in self.pages.values() if q is not p),
@@ -226,9 +227,21 @@ class HeadsetHub:
                 self._drop_page(oldest.client)
         else:
             p.transport, p.label, p.hello_at = transport, label, now
+            # A reconnect's hello keeps the launch an earlier one named.
+            p.launch = launch or p.launch
             p.seen()
         self.notify()
         return p
+
+    def launch_client(self, launch: str) -> str | None:
+        """The connected page whose hello named the app launch ``launch``
+        (issue #255), the newest first; None when there is none."""
+        self._forget_silent()
+        now = time.monotonic()
+        for p in sorted(self.pages.values(), key=lambda q: q.since, reverse=True):
+            if launch and p.launch == launch and p.present(now):
+                return p.client
+        return None
 
     def _drop_page(self, client: str) -> bool:
         p = self.pages.pop(client, None)

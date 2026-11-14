@@ -1,0 +1,9 @@
+{
+  "name": "visivo-quest-app",
+  "private": true,
+  "description": "Pins Meta's Bubblewrap CLI for building the VisIVO VR headset app (issue #255): run tools/quest-app/build.sh.",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@meta-quest/bubblewrap-cli": "1.24.1"
+  }
+}
