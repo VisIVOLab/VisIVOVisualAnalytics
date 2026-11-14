@@ -1003,6 +1003,77 @@ def worker_spectral_aperture(path: str, x: float, y: float, radius: float) -> di
         hdul.close()
 
 
+def _table_label(text: str) -> str:
+    """A column label or comment value on one line, without the CSV separator."""
+    return re.sub(r"[\x00-\x1f\x7f]+", " ", str(text)).replace(",", ";").strip()
+
+
+def worker_spectrum_table(path: str, output_path: str, x: float, y: float,
+                          radius: float = 0.0, fmt: str = "csv") -> dict[str, Any]:
+    """The spectrum the headset shows, saved where the desktop can open it
+    (issue #236): the one ``/v1/spectral/probe`` answers at pixel (x, y)
+    (``radius`` 0), or ``/v1/spectral/aperture``'s mean over a circle of
+    ``radius`` pixels, computed again here from the cube rather than taken
+    from the page (as moment_fits and pv_fits do), so the file holds the
+    backend's numbers.
+
+    ``csv``: the desktop's own spectrum CSV (ProfileWidget::saveSpectrumCsv):
+    a ``#`` preamble (dataset, pixel, samples), then ``<spectral label>,
+    <intensity label>`` and one row per channel, blank channels as ``nan``.
+    ``fits``: a binary table (CHANNEL, SPECTRAL, VALUE, with TUNITs) and the
+    pixel, aperture and spectral type in its header. ``output_path`` is the
+    route's reserved name (an empty placeholder file it made atomically),
+    which this writes over."""
+    from astropy.io import fits  # noqa: PLC0415
+
+    if radius > 0:
+        spec = worker_spectral_aperture(path, x, y, radius)
+    else:
+        spec = worker_spectral_probe(path, x, y)
+    axis = np.asarray(spec["spectral_axis"], dtype=np.float64)
+    values = np.asarray([np.nan if v is None else v for v in spec["values"]], dtype=np.float64)
+    unit, ctype = str(spec.get("spectral_unit", "")), str(spec.get("spectral_type", ""))
+    bunit = ScientificFitsDataset(path).bunit
+    name = Path(path).name
+    xs, ys = spec["x"], spec["y"]
+    n_pix = int(spec.get("n_pix", 1))
+    if fmt == "csv":
+        x_label = _table_label(f"{ctype} ({unit})" if ctype and unit else (ctype or unit or "Channel"))
+        y_name = "Mean intensity" if radius > 0 else "Intensity"
+        y_label = _table_label(f"{y_name} ({bunit})" if bunit else y_name)
+        lines = ["# VisIVO spectrum export", f"# dataset: {_table_label(name)}",
+                 f"# pixel:   ({xs}, {ys})"]
+        if radius > 0:
+            lines.append(f"# aperture: radius {float(radius):g} px, {n_pix} pixels (mean)")
+        lines += [f"# samples: {len(values)}", f"{x_label},{y_label}"]
+        lines += [f"{a:.12g},{v:.12g}" for a, v in zip(axis, values)]
+        with open(output_path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("\n".join(lines) + "\n")
+    elif fmt == "fits":
+        cols = [fits.Column(name="CHANNEL", format="J", array=np.arange(len(values), dtype=np.int32)),
+                fits.Column(name="SPECTRAL", format="D", unit=unit or None, array=axis),
+                fits.Column(name="VALUE", format="D", unit=bunit or None, array=values)]
+        hdu = fits.BinTableHDU.from_columns(cols, name="SPECTRUM")
+        hdr = hdu.header
+        hdr["SPECTYPE"] = (ctype[:68], "spectral axis type of the cube")
+        hdr["XPIX"] = (float(xs), "0-based pixel x of the spectrum")
+        hdr["YPIX"] = (float(ys), "0-based pixel y of the spectrum")
+        hdr["RADIUS"] = (float(radius), "aperture radius (pixels); 0 = one pixel")
+        hdr["NPIX"] = (n_pix, "pixels averaged")
+        hdr["HISTORY"] = f"VisIVO spectrum of {name}"[:72]
+        fits.HDUList([fits.PrimaryHDU(), hdu]).writeto(output_path, overwrite=True)
+    else:
+        raise ValueError(f"unknown table format {fmt!r}")
+    finite = values[np.isfinite(values)]
+    return {
+        "output_path": output_path, "n_channels": int(len(values)),
+        "spectral_unit": unit, "spectral_type": ctype, "bunit": bunit,
+        "x": float(xs), "y": float(ys), "radius": float(radius), "n_pix": n_pix,
+        "range_min": float(finite.min()) if finite.size else 0.0,
+        "range_max": float(finite.max()) if finite.size else 0.0,
+    }
+
+
 def worker_line_fit(
     values: list[float],
     axis: list[float],

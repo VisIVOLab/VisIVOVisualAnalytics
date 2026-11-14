@@ -56,6 +56,29 @@ An empty `output_basename` becomes `<cube stem>_pv.fits`; an existing file is ne
 `valid`, `error`, `output_path`, `workspace_filename`, `width` (samples),
 `height` (channels), `range_min`, `range_max`, `bunit`.
 
+### `POST /v1/products/spectrum_table`
+Extract a spectrum and save it in the Workspace Exports as a small table, so a
+spectrum made in the headset can be opened on the desktop
+([Headset hub](headset-hub.md#saving-what-the-headset-makes)).
+```json
+{ "dataset_id": "...", "x": 120, "y": 88, "radius": 0, "format": "csv",
+  "output_basename": "" }
+```
+`radius` 0 is the spectrum of pixel (x, y), as `/v1/spectral/probe` answers
+it; `radius` > 0 (at most 4096) the mean over a circle of that many pixels,
+as `/v1/spectral/aperture`. Computed again from the cube, not taken from the
+client. `format` `csv` writes the desktop's own spectrum CSV (a `#` preamble
+with the dataset, pixel, aperture and samples, then `<spectral type> (<unit>),
+Intensity (<BUNIT>)` and one row per channel, blank channels as `nan`);
+`fits` a binary table `SPECTRUM` (columns `CHANNEL`, `SPECTRAL`, `VALUE` with
+their `TUNIT`s; `SPECTYPE`, `XPIX`, `YPIX`, `RADIUS`, `NPIX` in its header).
+The file's suffix follows `format`; an empty `output_basename` becomes
+`<cube stem>_spectrum_x<x>_y<y>`; an existing file is never overwritten.
+A non-cube dataset or a non-finite pixel is 422; a pixel outside the cube is
+`valid: false`. Response: `valid`, `error`, `output_path`,
+`workspace_filename`, `n_channels`, `spectral_unit`, `spectral_type`,
+`bunit`, `x`, `y`, `radius`, `n_pix`, `range_min`, `range_max`.
+
 ### `POST /v1/products/isosurface`
 ```json
 { "dataset_id": "...", "threshold": 0.05 }

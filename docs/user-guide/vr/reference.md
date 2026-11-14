@@ -433,6 +433,20 @@ it, and those it shares, are:
   [`POST /v1/cube/pv`](../../backend-api/cube.md#post-v1cubepv),
   [`POST /v1/datasets/pixel_to_sky`](../../backend-api/datasets.md#post-v1datasetspixel_to_sky);
 - selections shared with the desktop: [Shared selections](../../backend-api/share.md);
+- the page's presence, the desktop's commands to it and its activity for the
+  desktop: [Headset hub](../../backend-api/headset-hub.md)
+  ([`POST /v1/vr/headset/hello`](../../backend-api/headset-hub.md#post-v1vrheadsethello),
+  [`POST /v1/vr/headset/state`](../../backend-api/headset-hub.md#post-v1vrheadsetstate),
+  [`GET /v1/vr/headset`](../../backend-api/headset-hub.md#get-v1vrheadset),
+  [`DELETE /v1/vr/headset`](../../backend-api/headset-hub.md#delete-v1vrheadsetclient),
+  [`POST /v1/vr/headset/command`](../../backend-api/headset-hub.md#post-v1vrheadsetcommand),
+  [`GET /v1/vr/headset/commands`](../../backend-api/headset-hub.md#get-v1vrheadsetcommandsclientafterwait),
+  [`POST /v1/vr/activity`](../../backend-api/headset-hub.md#post-v1vractivity),
+  [`GET /v1/vr/activity`](../../backend-api/headset-hub.md#get-v1vractivityafterwait)),
+  and the products it saves for the desktop:
+  [`POST /v1/products/moment_fits`](../../backend-api/products.md#post-v1productsmoment_fits),
+  [`POST /v1/products/pv_fits`](../../backend-api/products.md#post-v1productspv_fits),
+  [`POST /v1/products/spectrum_table`](../../backend-api/products.md#post-v1productsspectrum_table);
 - point tables, catalogues and velocity fields:
   [Points, catalogues and flows for the headset](../../backend-api/vr-layers.md).
 
