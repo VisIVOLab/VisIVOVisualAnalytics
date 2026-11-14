@@ -38,6 +38,7 @@ private slots:
     void entryDist_fromDistanceField();
     void entryDist_fromRedshiftField();
     void entryDist_noDistance_isUnplaced();
+    void entryDist_positionsOnly_onTheSkySphere();
     void entryDist_measuredDistance_beatsModelOverride();
     void entryDist_modelOverride_placesRedshiftOnlySources();
     void entryDist_negativeDistanceField_fallsBackToRedshift();
@@ -49,6 +50,7 @@ private slots:
     // ── issue #265: unplaced rows, the status line, the pick readout ──────────
     void parse_unplacedRowsAreKeptApart();
     void parse_onlyUnplacedRows_isValidButSaysWhy();
+    void parse_positionsOnly_allOnTheSkySphere();
     void placement_statusLineCounts();
     void placement_pickLinesNameTheOrigin();
     void placement_unplacedRows();

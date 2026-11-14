@@ -18,6 +18,9 @@ The rules are those of ``Catalogue3DParser::detail::entryDistance`` and
      apart (issue #265). A redshift of 0 means "not measured" in catalogues,
      and a negative one (a Local Group galaxy's peculiar velocity) gives no
      distance either; a default shell would invent one.
+  A catalogue with no redshift column and no distance column at all
+  (positions only) keeps a view instead: every source on the celestial
+  sphere of radius SKY_SPHERE_RADIUS_MPC, which is not a distance.
 - the direction: RA/Dec, or galactic or supergalactic longitude and latitude;
 - the position: d (cos b cos l, cos b sin l, sin b).
 
@@ -117,7 +120,11 @@ CUSTOM_COSMOLOGY = "Custom"
 UNCERTAIN_CZ_KMS = 1000.0
 
 #: Where a source's distance came from (``Placement.origin``).
-FROM_NOTHING, FROM_REDSHIFT_SPACE, FROM_COLUMN, FROM_REDSHIFT = 0, 1, 2, 3
+FROM_NOTHING, FROM_REDSHIFT_SPACE, FROM_COLUMN, FROM_REDSHIFT, FROM_SKY_SPHERE = 0, 1, 2, 3, 4
+#: The radius of the celestial sphere a catalogue with no redshift and no
+#: distance column is shown on (the desktop's kSkySphereRadiusMpc). Not a
+#: distance: it keeps a catalogue of positions viewable in 3-D.
+SKY_SPHERE_RADIUS_MPC = 300.0
 #: Why a source has no distance (``Placement.reason``), in the desktop's words.
 REASONS = {1: "z ≤ 0", 2: "z = 0 (not measured)", 3: "no redshift"}
 
@@ -154,12 +161,16 @@ class Placement:
     reason: np.ndarray       # int8, a REASONS key where not placed, else 0
     uncertain: np.ndarray    # bool: placed from a redshift with 0 < cz < UNCERTAIN_CZ_KMS
 
+    sky_sphere: bool = False  # no redshift and no distance column: all on the sphere
+
     def counts(self) -> dict:
         """Placed, unplaced and uncertain sources, for a status line (an
-        origin of -1, a row with no direction, is in none of them)."""
+        origin of -1, a row with no direction, is in none of them), and
+        whether they are on the celestial sphere (positions only)."""
         return {"placed": int(np.count_nonzero(self.origin > FROM_NOTHING)),
                 "unplaced": int(np.count_nonzero(self.origin == FROM_NOTHING)),
-                "uncertain": int(np.count_nonzero(self.uncertain))}
+                "uncertain": int(np.count_nonzero(self.uncertain)),
+                "sky_sphere": bool(self.sky_sphere)}
 
 
 def placement(frame: pd.DataFrame, distance_mode: str = "comoving",
@@ -170,7 +181,15 @@ def placement(frame: pd.DataFrame, distance_mode: str = "comoving",
     # Refused before anything is computed, whether or not a row needs the model.
     h0 = hubble_constant(cosmology)
     n = len(frame)
-    z = _numeric(frame, _first(frame, _REDSHIFT_ALIASES))
+    z_column, column = _first(frame, _REDSHIFT_ALIASES), _first(frame, _DISTANCE_ALIASES)
+    if not z_column and not column:
+        # A catalogue of positions only: every source on the celestial sphere,
+        # so it keeps a view. A row is unplaced only when the catalogue HAS a
+        # redshift or distance column and the row's value is unusable (#265).
+        return Placement(np.full(n, SKY_SPHERE_RADIUS_MPC),
+                         np.full(n, FROM_SKY_SPHERE, dtype=np.int8),
+                         np.zeros(n, dtype=np.int8), np.zeros(n, dtype=bool), sky_sphere=True)
+    z = _numeric(frame, z_column)
     with np.errstate(invalid="ignore"):
         has_z = np.isfinite(z) & (z > 0)
     d = np.full(n, np.nan)
@@ -183,7 +202,6 @@ def placement(frame: pd.DataFrame, distance_mode: str = "comoving",
 
     if distance_mode == "redshift_space":
         take(has_z, _C_KMS * z / h0, FROM_REDSHIFT_SPACE)
-    column = _first(frame, _DISTANCE_ALIASES)
     if column:
         dist = _numeric(frame, column)
         kind = _normalize(column)

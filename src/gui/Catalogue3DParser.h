@@ -382,7 +382,13 @@ enum class DistanceOrigin
     Column,          // the catalogue's distance column
     Redshift,        // the comoving distance of the redshift
     Cartesian,       // the catalogue's own X/Y/Z
+    SkySphere,       // no redshift and no distance COLUMN at all: the celestial sphere
 };
+
+// The radius of the celestial sphere a catalogue with no redshift and no
+// distance column is shown on (positions only). Not a distance: it only keeps
+// such a catalogue viewable in 3-D, at the radius the old default used.
+inline constexpr double kSkySphereRadiusMpc = 300.0;
 
 // Why a source has no distance. Every reason implies no usable distance column.
 enum class UnplacedReason
@@ -434,6 +440,15 @@ inline EntryDistance entryDistance(const Catalogue3DEntry &entry, const Catalogu
         out.mpc = std::sqrt(entry.sceneX * entry.sceneX + entry.sceneY * entry.sceneY
                             + entry.sceneZ * entry.sceneZ);
         out.origin = DistanceOrigin::Cartesian;
+        return out;
+    }
+    // A catalogue of positions only (no redshift column, no distance column):
+    // every source on the celestial sphere, so the catalogue keeps a view.
+    // A row is unplaced only when the catalogue HAS such a column and the
+    // row's value is unusable (issue #265).
+    if (fields.redshift.isEmpty() && fields.distance.isEmpty()) {
+        out.mpc = kSkySphereRadiusMpc;
+        out.origin = DistanceOrigin::SkySphere;
         return out;
     }
     // Redshift (used for the redshift-space mode, the distance-TYPE conversion, and

@@ -2043,7 +2043,8 @@ Key capabilities:
   1. catalogue `distance` / `dist` / `dMpc` field (wins under every model, #265)
   2. the redshift (`z`, `REDSHIFT`, `Zspec`, …) > 0: the cosmology selector's
      distance (`entry.distanceMpc`) or the local Planck18 integral
-  3. otherwise no distance: the row is kept apart (`unplaced`), not drawn
+  3. otherwise no distance: the row is kept apart (`unplaced`), not drawn;
+     a catalogue with no z and no distance column is on the celestial sphere
 - **Cosmology model selector**: Planck18 (local integration), Planck15/13/WMAP9 (async batch via `/v1/cosmology/distance/batch`)
 - **Geometry modes**: Ellipsoid, Sphere, Point, Cross (vtkGlyph3D)
 - **Size modes**: Fixed, Major axis, LLS, Flux

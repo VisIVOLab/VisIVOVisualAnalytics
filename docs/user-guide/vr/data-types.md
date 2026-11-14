@@ -28,10 +28,12 @@ supergalactic), distance mode (comoving or redshift space) and named
 cosmology, and the backend computes the positions with them. A **Custom**
 cosmology is not sent: the backend knows Planck18, Planck15, Planck13 and
 WMAP9 only, so opening the headset puts the window back on Planck18 and says
-so, as the ray-traced view does. Sources with no distance (no distance column
-and a redshift ≤ 0 or missing) are left out, as on the desktop. The page's
-status line names the placement and counts them, for example
-*supergalactic · comoving · Planck18 · 26 unplaced*. Changing the placement
+so, as the ray-traced view does. Sources with no distance (no usable
+distance value and a redshift ≤ 0 or missing) are left out, as on the
+desktop. The page's status line names the placement and counts them, for
+example *supergalactic · comoving · Planck18 · 26 unplaced*. A catalogue with
+no redshift and no distance column (positions only) is drawn on the
+celestial sphere, and the line reads *fk5 · celestial sphere (no distances)*. Changing the placement
 in the headset comes later.
 On the page: type the path, choose
 **Data kind** (*auto* goes by the name: `.head`, `.bin`, `.csv`, `.xml`… are

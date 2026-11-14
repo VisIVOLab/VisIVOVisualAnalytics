@@ -24,6 +24,8 @@ struct Counts
     qsizetype placed{ 0 };
     qsizetype unplaced{ 0 };
     qsizetype uncertain{ 0 };
+    /// No redshift and no distance column: every source on the celestial sphere.
+    bool skySphere{ false };
 };
 
 /// The counts of a window's rows: @p entries placed, @p unplaced kept apart.
@@ -39,6 +41,9 @@ inline Counts count(const std::vector<Catalogue3DEntry> &entries,
     if (schema.isCartesian())
         return c;
     const Catalogue3DParser::detail::DistanceFields fields(schema);
+    c.skySphere = fields.redshift.isEmpty() && fields.distance.isEmpty();
+    if (c.skySphere)
+        return c;
     for (const auto &e : entries)
         if (Catalogue3DParser::detail::entryDistance(e, schema, fields).uncertain())
             ++c.uncertain;
@@ -46,9 +51,14 @@ inline Counts count(const std::vector<Catalogue3DEntry> &entries,
 }
 
 /// "N placed · M unplaced (no distance) · K with cz < 1000 km/s (distance
-/// uncertain: peculiar velocities)".
+/// uncertain: peculiar velocities)"; for a catalogue of positions only, that
+/// its sources are on the celestial sphere.
 inline QString statusText(const Counts &c)
 {
+    if (c.skySphere)
+        return QStringLiteral("No distances in this catalogue: sources shown on the celestial "
+                              "sphere (radius %1 Mpc, not a distance)")
+                .arg(Catalogue3DParser::detail::kSkySphereRadiusMpc, 0, 'f', 0);
     return QStringLiteral("%L1 placed · %L2 unplaced (no distance) · %L3 with cz < 1000 km/s "
                           "(distance uncertain: peculiar velocities)")
             .arg(c.placed)
@@ -72,6 +82,8 @@ inline QString originText(const Catalogue3DParser::detail::EntryDistance &d,
     case DistanceOrigin::Redshift:
         return QStringLiteral("from z (comoving, %1)")
                 .arg(d.fromModel && !model.isEmpty() ? model : QStringLiteral("Planck18"));
+    case DistanceOrigin::SkySphere:
+        return QStringLiteral("on the sky sphere, no distance");
     case DistanceOrigin::Cartesian:
         return QStringLiteral("from the catalogue's X/Y/Z");
     case DistanceOrigin::None:
@@ -89,6 +101,11 @@ inline QStringList pickLines(const Catalogue3DParser::detail::EntryDistance &d,
     if (!d.placed()) {
         out << QStringLiteral("No distance (%1)")
                         .arg(Catalogue3DParser::detail::unplacedReasonText(d.reason));
+        return out;
+    }
+    // The sphere's radius is not a distance: no number is shown for it.
+    if (d.origin == Catalogue3DParser::detail::DistanceOrigin::SkySphere) {
+        out << QStringLiteral("On the sky sphere, no distance");
         return out;
     }
     out << QStringLiteral("Distance %1 Mpc, %2")

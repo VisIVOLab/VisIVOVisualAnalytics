@@ -25,10 +25,12 @@ comoving, Planck18). Redshift space is c z / H₀ with the model's H₀. A custo
 cosmology (`"Custom"`) or an unknown name answers 422. The rules are those of
 the desktop (`app/catalogue_positions.py`): a distance column > 0 wins under
 every model, then the model's comoving distance for a redshift > 0; a source
-with neither has no position (issue #265) and is in no sample. For a sky
-catalogue the answer adds `sky_settings`: `frame`, `distance_mode`,
-`cosmology`, and the counts `placed`, `unplaced` (no distance) and
-`uncertain` (placed from 0 < cz < 1000 km/s).
+with neither has no position (issue #265) and is in no sample. A catalogue
+with no redshift column and no distance column at all is placed on the
+celestial sphere (radius 300 Mpc, not a distance). For a sky catalogue the
+answer adds `sky_settings`: `frame`, `distance_mode`, `cosmology`, the counts
+`placed`, `unplaced` (no distance) and `uncertain` (placed from
+0 < cz < 1000 km/s), and `sky_sphere` (true for positions only).
 
 RA/Dec (and GLON/GLAT in `catalogue_pixels`) are read in the unit the table
 declares: a VOTable or FITS column unit, an IPAC header unit, or a unit in the

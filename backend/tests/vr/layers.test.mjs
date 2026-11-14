@@ -86,6 +86,7 @@ test('a sky catalogue\'s placement goes to the point session and the status line
   assert.equal(PT.skyLabel({ frame: 'fk5', distance_mode: 'redshift_space', cosmology: 'WMAP9', unplaced: 0 }),
     'fk5 · redshift space · WMAP9');
   assert.equal(PT.skyLabel(null), '');
+  assert.equal(PT.skyLabel({ ...sky, unplaced: 0, sky_sphere: true }), 'supergalactic · celestial sphere (no distances)');
 });
 
 test('a refined pose carries the rows the splats are sized for and the eye height (#262)', () => {

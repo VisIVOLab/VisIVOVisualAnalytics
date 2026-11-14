@@ -188,16 +188,35 @@ void TestCatalogueParser::entryDist_fromRedshiftField()
 
 void TestCatalogueParser::entryDist_noDistance_isUnplaced()
 {
-    // No usable distance or redshift: no distance at all (issue #265), where
-    // there used to be a 300 Mpc default.
+    // A redshift column whose value is empty, and no distance: no distance at
+    // all (issue #265), where there used to be a 300 Mpc default.
     using namespace Catalogue3DParser::detail;
     const auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"),
-                                  QStringLiteral("flux") });
+                                  QStringLiteral("flux"), QStringLiteral("z") });
     auto e = makeEntry(s);
     QVERIFY(std::isnan(entryDistanceMpc(e, s)));
     const EntryDistance d = entryDistance(e, s);
     QVERIFY(!d.placed());
     QVERIFY(d.reason == UnplacedReason::NoRedshift);
+}
+
+void TestCatalogueParser::entryDist_positionsOnly_onTheSkySphere()
+{
+    // No redshift column and no distance column at all: a catalogue of
+    // positions keeps a view, every source on the celestial sphere, in every
+    // mode and whatever the selector's override says.
+    using namespace Catalogue3DParser::detail;
+    auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"), QStringLiteral("flux") });
+    auto e = makeEntry(s);
+    e.distanceMpc = 750.0;
+    for (const auto mode : { CatalogueDistanceMode::Comoving, CatalogueDistanceMode::RedshiftSpace }) {
+        s.distanceMode = mode;
+        const EntryDistance d = entryDistance(e, s);
+        QVERIFY(d.placed());
+        QVERIFY(d.origin == DistanceOrigin::SkySphere);
+        QCOMPARE(d.mpc, kSkySphereRadiusMpc);
+        QVERIFY(!d.uncertain());
+    }
 }
 
 void TestCatalogueParser::entryDist_measuredDistance_beatsModelOverride()
@@ -370,6 +389,34 @@ void TestCatalogueParser::parse_onlyUnplacedRows_isValidButSaysWhy()
     QVERIFY(parsed.entries.empty());
     QCOMPARE(parsed.unplaced.size(), std::size_t(2));
     QVERIFY(parsed.errorMessage.contains(u"None of the 2 sources has a distance"_s));
+}
+
+void TestCatalogueParser::parse_positionsOnly_allOnTheSkySphere()
+{
+    // RA/Dec only: every row placed on the sphere, none unplaced; the status
+    // line and the pick say it is not a distance.
+    auto s = makeSchema({ QStringLiteral("NAME"), QStringLiteral("RA"), QStringLiteral("DEC") });
+    s.raFieldName = QStringLiteral("RA");
+    s.decFieldName = QStringLiteral("DEC");
+    const QList<QVariantMap> rows{
+        { { u"NAME"_s, u"a"_s }, { u"RA"_s, 10.0 }, { u"DEC"_s, 5.0 } },
+        { { u"NAME"_s, u"b"_s }, { u"RA"_s, 200.0 }, { u"DEC"_s, -30.0 } } };
+    const auto parsed = Catalogue3DParser::parseBackendSubset(s, rows);
+    QVERIFY(parsed.valid && parsed.errorMessage.isEmpty());
+    QCOMPARE(parsed.entries.size(), std::size_t(2));
+    QVERIFY(parsed.unplaced.empty());
+    for (const auto &e : parsed.entries) {
+        const double r = std::sqrt(e.sceneX * e.sceneX + e.sceneY * e.sceneY + e.sceneZ * e.sceneZ);
+        QVERIFY(qAbs(r - Catalogue3DParser::detail::kSkySphereRadiusMpc) < 1e-9);
+    }
+    const auto c = CataloguePlacement::count(parsed.entries, parsed.unplaced, s);
+    QVERIFY(c.skySphere);
+    QCOMPARE(CataloguePlacement::statusText(c),
+             QStringLiteral("No distances in this catalogue: sources shown on the celestial sphere "
+                            "(radius 300 Mpc, not a distance)"));
+    const auto lines = CataloguePlacement::pickLines(
+            Catalogue3DParser::detail::entryDistance(parsed.entries[0], s), u"Planck18"_s, 67.66);
+    QCOMPARE(lines, QStringList{ QStringLiteral("On the sky sphere, no distance") });
 }
 
 void TestCatalogueParser::placement_statusLineCounts()

@@ -215,6 +215,14 @@ distance, where it came from, and why there is none) applies in order:
 2. Redshift field (`z`, `REDSHIFT`, `ZSPEC`, `ZMEAN`, `ZPHOT`, …) > 0 → `entry.distanceMpc` when finite (the cosmology-selector distance set by `onCosmologyFinished()`), else `comovingDistanceMpc(z)` — z > 0, since a redshift column holding 0 means "not measured"
 3. Otherwise **no distance** (NaN, `DistanceOrigin::None`, with an `UnplacedReason`)
 
+Before all of these: a catalogue with no redshift column and no distance column
+at all (positions only) puts every source on the celestial sphere
+(`DistanceOrigin::SkySphere`, radius `kSkySphereRadiusMpc` = 300, not a
+distance), so it keeps a view. A row is unplaced only when the catalogue has
+such a column and the row's value is unusable. The backend
+(`catalogue_positions.placement`, `FROM_SKY_SPHERE`, `sky_settings.sky_sphere`)
+does the same.
+
 `parseBackendSubset()` puts a row with no distance in `result.unplaced`, never
 in `entries`, so nothing that draws, bounds, picks or labels the scene sees a
 NaN; which rows these are does not depend on the frame, the mode or the model.

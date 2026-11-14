@@ -145,10 +145,13 @@ export function pointLook(p) {
 /**
  * A sky catalogue's placement for a status line, from /v1/points/info's
  * `sky_settings`: "supergalactic · comoving · Planck18 · 26 unplaced"
- * (the unplaced part only when there are any); '' for none.
+ * (the unplaced part only when there are any), or "fk5 · celestial sphere
+ * (no distances)" for a catalogue of positions only; '' for none.
  */
 export function skyLabel(st) {
   if (!st || !st.frame) return '';
+  // Positions only (no redshift or distance column): the celestial sphere.
+  if (st.sky_sphere) return `${st.frame} · celestial sphere (no distances)`;
   const parts = [st.frame, st.distance_mode === 'redshift_space' ? 'redshift space' : 'comoving', st.cosmology];
   if (st.unplaced > 0) parts.push(`${st.unplaced} unplaced`);
   return parts.join(' · ');

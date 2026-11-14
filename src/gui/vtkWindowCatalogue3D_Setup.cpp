@@ -1063,6 +1063,14 @@ void vtkWindowCatalogue3D::refreshViewerChrome()
     // selected model's distance for the redshift → no distance (not placed).
     // Saying anything simpler would be saying something false for some rows.
     const QString distanceField = Catalogue3DParser::detail::detectedDistanceField(this->schema);
+    if (distanceField.isEmpty()
+        && Catalogue3DParser::detail::detectedRedshiftField(this->schema).isEmpty()) {
+        // Positions only: the celestial sphere, which no model or mode changes.
+        this->m_cosmologyStatus->setText(
+                u"No redshift or distance column · %1 sources on the celestial sphere · the "
+                u"model and the distance mode are not used"_s.arg(count));
+        return;
+    }
     // The model the rows were PLACED with, not the one the selector shows: while
     // a request is out the two differ, and the line describes the scene.
     const QString model =

@@ -383,7 +383,8 @@ All tests use `QJsonObject` literals — no network calls. Covers the static
 |------|-------|---------|
 | `entryDist_fromDistanceField` | `distance=500` | 500.0 |
 | `entryDist_fromRedshiftField` | `z=0.1` | 400–460 Mpc |
-| `entryDist_noDistance_isUnplaced` | no distance/z field | NaN, reason "no redshift" (#265) |
+| `entryDist_noDistance_isUnplaced` | a z column with no value, no distance | NaN, reason "no redshift" (#265) |
+| `entryDist_positionsOnly_onTheSkySphere` | no z and no distance column | 300, `SkySphere` (not a distance) |
 | `entryDist_measuredDistance_beatsModelOverride` | `distance=500`, `z=0.1`, `entry.distanceMpc=750` | 500.0 (a measured distance wins, #265) |
 | `entryDist_modelOverride_placesRedshiftOnlySources` | `z=0.1`, `entry.distanceMpc=750` | 750.0 |
 | `entryDist_negativeDistanceField_fallsBackToRedshift` | `distance=-100`, `z=0.05` | 150–280 Mpc |

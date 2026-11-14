@@ -9,10 +9,14 @@ are preserved here unedited; the branch names they refer to are historical.
 ## Unreleased
 
 - **3-D sky catalogues: sources without a distance are no longer put on a
-  300 Mpc shell (#265).** A row with no distance column and a redshift that
-  is ≤ 0, zero or missing has no position: it is left out of the scene (and
-  of the server-side, ray-traced and headset views) and counted, in every
-  distance mode. The 3-D catalogue window shows "N placed · M unplaced (no
+  300 Mpc shell (#265).** In a catalogue that has a redshift or a distance
+  column, a row with no usable distance and a redshift that is ≤ 0, zero or
+  missing has no position: it is left out of the scene (and of the
+  server-side, ray-traced and headset views) and counted, in every distance
+  mode. A catalogue with no redshift and no distance column at all (positions
+  only) keeps a view: its sources are shown on the celestial sphere (radius
+  300 Mpc, not a distance), which the status line, the pick and the headset's
+  status line say. The 3-D catalogue window shows "N placed · M unplaced (no
   distance) · K with cz < 1000 km/s (distance uncertain: peculiar
   velocities)", an **Unplaced Sources…** table (Name, RA, Dec, cz, Reason),
   and the selected source's readout names where its distance came from

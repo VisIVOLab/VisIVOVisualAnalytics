@@ -40,6 +40,21 @@ def test_a_source_with_no_distance_is_not_placed_and_is_counted():
     assert p.counts()["uncertain"] == 1
 
 
+@pytest.mark.parametrize("mode", cp.DISTANCE_MODES)
+def test_a_catalogue_of_positions_only_is_on_the_celestial_sphere(mode):
+    # No redshift column and no distance column at all: every row on the
+    # sphere (not a distance), none unplaced; a z column changes that.
+    f = pd.DataFrame({"RA": [10.0, 200.0, 300.0], "DEC": [5.0, -30.0, 60.0], "MAG": [9, 10, 11]})
+    p = cp.placement(f, distance_mode=mode, cosmology="WMAP9")
+    assert p.sky_sphere and (p.distances == cp.SKY_SPHERE_RADIUS_MPC).all()
+    assert p.counts() == {"placed": 3, "unplaced": 0, "uncertain": 0, "sky_sphere": True}
+    xyz = cp.sky_positions(f, "RA", "DEC", frame_name="galactic", distance_mode=mode)
+    assert np.allclose(np.linalg.norm(xyz, axis=1), cp.SKY_SPHERE_RADIUS_MPC)
+    with_z = f.assign(Z=[0.01, -0.001, np.nan])
+    q = cp.placement(with_z, distance_mode=mode)
+    assert not q.sky_sphere and q.counts()["unplaced"] == 2
+
+
 def test_a_negative_redshift_with_a_distance_column_is_placed():
     f = pd.DataFrame({"Z": [-0.001], "DIST": [0.78]})
     assert cp.distances_mpc(f, cosmology="WMAP9")[0] == pytest.approx(0.78)
@@ -133,6 +148,23 @@ async def test_the_vr_sample_gives_the_desktops_positions_with_its_settings(
                           json={"dataset_id": did, "sky": {**sky, "cosmology": "Custom"}},
                           headers=auth_headers)
     assert r.status_code == 422 and "custom cosmology" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_the_vr_routes_put_a_catalogue_of_positions_on_the_sphere(client, auth_headers, tmp_path):
+    path = tmp_path / "positions.csv"
+    pd.DataFrame({"RA": [10.0, 200.0, 300.0], "DEC": [5.0, -30.0, 60.0],
+                  "MAG": [9.0, 10.0, 11.0]}).to_csv(path, index=False)
+    did = (await client.post("/v1/catalogue/open", json={"path": str(path), "format": "csv"},
+                             headers=auth_headers)).json()["dataset_id"]
+    sky = {"frame": "supergalactic"}
+    info = (await client.post("/v1/points/info", json={"dataset_id": did, "sky": sky},
+                              headers=auth_headers)).json()
+    st = info["sky_settings"]
+    assert st["sky_sphere"] is True and st["placed"] == 3 and st["unplaced"] == 0
+    r = await client.post("/v1/points/sample_bin", json={"dataset_id": did, "sky": sky},
+                          headers=auth_headers)
+    assert r.status_code == 200 and r.headers["x-visivo-count"] == "3"
 
 
 @pytest.mark.asyncio

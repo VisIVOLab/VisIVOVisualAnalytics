@@ -589,17 +589,16 @@ void TestSamp::stagedFileName_addsTheExtensionTheMTypeImplies()
 void TestSamp::parser_keepsSourceRowsWhenRowsAreSkipped()
 {
     Catalogue3DSchema schema;
-    for (const QString &name : { u"name"_s, u"ra"_s, u"dec"_s, u"z"_s }) {
+    for (const QString &name : { u"name"_s, u"ra"_s, u"dec"_s }) {
         schema.fields.push_back({ name, u"double"_s });
         schema.headers.append(name);
     }
     schema.raFieldName = u"ra"_s;
     schema.decFieldName = u"dec"_s;
-    // A redshift each: a row with no distance is kept apart (issue #265).
     const QList<QVariantMap> rows = {
-        { { u"name"_s, u"a"_s }, { u"ra"_s, 10.0 }, { u"dec"_s, 1.0 }, { u"z"_s, 0.01 } },
-        { { u"name"_s, u"b"_s }, { u"ra"_s, QVariant() }, { u"dec"_s, 2.0 }, { u"z"_s, 0.02 } },   // skipped
-        { { u"name"_s, u"c"_s }, { u"ra"_s, 30.0 }, { u"dec"_s, 3.0 }, { u"z"_s, 0.03 } },
+        { { u"name"_s, u"a"_s }, { u"ra"_s, 10.0 }, { u"dec"_s, 1.0 } },
+        { { u"name"_s, u"b"_s }, { u"ra"_s, QVariant() }, { u"dec"_s, 2.0 } },   // skipped
+        { { u"name"_s, u"c"_s }, { u"ra"_s, 30.0 }, { u"dec"_s, 3.0 } },
     };
     const auto parsed = Catalogue3DParser::parseBackendSubset(schema, rows, { 70, 12, 5 });
     QVERIFY(parsed.valid);
@@ -651,15 +650,15 @@ void TestSamp::catalogueLoadMType_followsTheBackendsChoice()
 void TestSamp::parser_namesUnnamedSourcesByTheirTableRow()
 {
     Catalogue3DSchema schema;
-    for (const QString &name : { u"ra"_s, u"dec"_s, u"z"_s }) {
+    for (const QString &name : { u"ra"_s, u"dec"_s }) {
         schema.fields.push_back({ name, u"double"_s });
         schema.headers.append(name);
     }
     schema.raFieldName = u"ra"_s;
     schema.decFieldName = u"dec"_s;
     const QList<QVariantMap> rows = {
-        { { u"ra"_s, 10.0 }, { u"dec"_s, 1.0 }, { u"z"_s, 0.01 } },
-        { { u"ra"_s, 20.0 }, { u"dec"_s, 2.0 }, { u"z"_s, 0.02 } },
+        { { u"ra"_s, 10.0 }, { u"dec"_s, 1.0 } },
+        { { u"ra"_s, 20.0 }, { u"dec"_s, 2.0 } },
     };
     // A second page (Load more): ids restart at 0, the rows do not.
     const auto page = Catalogue3DParser::parseBackendSubset(schema, rows, { 149997, 149998 });

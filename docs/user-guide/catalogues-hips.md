@@ -55,6 +55,9 @@ The viewer needs both a sky frame and a distance for each entry:
     2. A redshift field (`z`, `REDSHIFT`, `ZSPEC`, `ZMEAN`, `ZPHOT`) > 0,
        turned into a comoving distance by the chosen cosmology
     3. Otherwise no distance: the source is **not placed**
+
+    A catalogue with no redshift column and no distance column at all is
+    shown on the celestial sphere (see below).
 ```
 
 The **Cosmology** card in the left column says which of these produced the
@@ -63,7 +66,8 @@ with the model's H₀.
 
 ### Sources without a distance
 
-A source with no distance column and a redshift that is ≤ 0, zero or missing
+In a catalogue that has a redshift or a distance column, a source whose
+distance value is missing (or ≤ 0) and whose redshift is ≤ 0, zero or missing
 has no distance. It is left out of the 3-D scene and counted, in every
 distance mode: a zero redshift means "not measured" in catalogues, a negative
 one (M31, M81, M33: a peculiar velocity larger than the Hubble flow) gives no
@@ -74,8 +78,15 @@ Under the Cosmology card a line counts them, for example
 *43,507 placed · 26 unplaced (no distance) · 112 with cz < 1000 km/s (distance
 uncertain: peculiar velocities)*. **Unplaced Sources…** (also in the **Tools**
 menu) lists them with Name, RA, Dec, cz [km/s] and the reason: *z ≤ 0*,
-*z = 0 (not measured)* or *no redshift*. A catalogue in which no source has a
-distance (positions only) opens with an empty scene and says so.
+*z = 0 (not measured)* or *no redshift*.
+
+A catalogue with **no redshift column and no distance column** at all
+(positions only) keeps a view: every source is shown on the celestial sphere,
+at a radius of 300 Mpc that is not a distance. The status line says *No
+distances in this catalogue: sources shown on the celestial sphere (radius
+300 Mpc, not a distance)*, a selected source reads *On the sky sphere, no
+distance*, the table's Distance column is empty, and the model and the
+distance mode change nothing. The headset shows it the same way.
 
 Sources with 0 < cz < 1000 km/s are placed from their redshift but flagged:
 typical peculiar velocities are about 300 km/s (Strauss & Willick 1995,
