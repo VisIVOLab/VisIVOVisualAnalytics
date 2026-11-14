@@ -191,13 +191,13 @@ function harness() {
     backend: () => backend, path: () => '/data/cube.fits', onChange: () => {} });
   const base = { selection: sel, backend: () => backend, datasetId: () => 'ds_1', info: () => state.info, onChange: () => {} };
   const lasso = TL.createLassoTools({ ...base, path: () => '/data/hcg44.fits' });
-  const moment = TM.createMomentTool({ ...base, lassoTools: lasso });
+  const moment = TM.createMomentTool({ ...base, lassoTools: lasso, clipZ: () => [state.clip.min[2], state.clip.max[2]] });
   const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
   const release = async () => { await flush(); while (held.length) { held.shift()(); await flush(); } };
   const grow = async () => { sel.setTool('lasso'); await sel.act({ o: [0.5, 0.5, 1.5], d: [0, 0, -1] }); };
   const applies = () => log.filter((e) => e[0] === 'apply');
   const kinds = () => sel.sel.recipes.map((r) => r.product.label);
-  return { sel, lasso, moment, log, flush, release, grow, applies, kinds, setHold: (h) => { hold = h; } };
+  return { sel, lasso, moment, log, flush, release, grow, applies, kinds, state, setHold: (h) => { hold = h; } };
 }
 
 test('the moment isolates the selection into a temporary cube, not recorded, then measures it', async () => {
@@ -377,9 +377,46 @@ test('the moment of a received selection never records a grow it does not have',
   }
 });
 
-test('without a selection: an error and no call', async () => {
+test('without a selection: the whole field over the velocity range, with the desktop dialog\'s mask (#257)', async () => {
   const h = harness();
+  h.state.clip.min[2] = 0.25; h.state.clip.max[2] = 0.75;     // channels 1-2 of 4
   await h.moment.compute(1);
-  assert.match(h.moment.state.error, /grow a Kinematic Lasso selection first/);
-  assert.equal(h.log.length, 0);
+  assert.equal(h.moment.state.error, '');
+  assert.equal(h.applies().length, 0, 'nothing isolated');
+  const post = h.log.find((e) => e[1] === '/v1/products/moment');
+  assert.deepEqual(post[2], { dataset_id: 'ds_1', moment_order: 1, channel_start: 1, channel_end: 2,
+    mask_enabled: true, threshold_value: 0, threshold_auto: true });
+  const fields = schemaFields('MomentProductRequest');
+  for (const k of Object.keys(TM.wholeFieldRequest(0, [0, 3]))) assert.ok(fields.has(k), k);
+  const r = h.moment.state.result;
+  assert.ok(r.whole);
+  assert.deepEqual(r.box, [0, 2, 0, 2], 'the whole map, not cropped');
+  // Recorded, with its own replay (one step on the opened dataset) and Provenance.
+  assert.deepEqual(h.kinds(), ['Moment 1']);
+  const rec = h.sel.sel.recipes[0];
+  assert.deepEqual(rec.product.replay.map((s) => s.route), ['/v1/products/moment']);
+  assert.equal(rec.product.replay[0].request.dataset_id, 'ds_1');
+  assert.match(JSON.stringify(rec), /whole field/);
+  // A lasso grown afterwards does not drop it; a moment then is of the lasso object.
+  await h.grow();
+  h.moment.sync();
+  assert.ok(h.moment.state.result && h.moment.state.result.whole);
+  await h.moment.compute(0);
+  assert.ok(!h.moment.state.result.whole);
+  assert.equal(h.applies().length, 1, 'the lasso object is isolated for it');
+});
+
+test('a spectrum pinned stays through Clear, is drawn with the next one, and a second press unpins it (#257)', () => {
+  const h = harness();
+  assert.equal(h.sel.pinSpectrum(), false, 'nothing to pin');
+  h.sel.sel.spectrum = { x: 1, y: 1, channel: 0, values: [1, 2, 3, 4], axis: [1, 2, 3, 4], axisLabel: 'velocity (km/s)', unit: 'Jy/beam', ms: 1 };
+  assert.equal(h.sel.pinSpectrum(), true);
+  assert.ok(h.sel.hasPin());
+  h.sel.clear();
+  assert.ok(h.sel.hasPin(), 'Clear keeps the pinned spectrum');
+  h.state.open = { dataset_id: 'ds_other' };
+  assert.ok(!h.sel.hasPin(), 'another cube: not shown');
+  h.state.open = { dataset_id: 'ds_1' };
+  assert.equal(h.sel.pinSpectrum(), true);
+  assert.ok(!h.sel.hasPin(), 'unpinned');
 });

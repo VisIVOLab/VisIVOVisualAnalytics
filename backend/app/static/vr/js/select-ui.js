@@ -37,6 +37,7 @@ export function createSelection(ctx) {
     lasso: null,       // {request, count, origin, dims, ms, stats, statsMs, reduced, trimBox, bytes}
     seedMode: 'new',   // the next lasso seed (issue #191): 'new', 'add' (a source joins), 'carve'
     spectrum: null,    // {x, y, values, axis, axisLabel, unit, ms, channel}
+    pinned: null,      // a spectrum kept for comparison (#257): {...spectrum, dataset}; Clear keeps it
     box: null,         // {range, stats, ms}
     recipes: [],
     busy: '',
@@ -486,23 +487,36 @@ export function createSelection(ctx) {
     return lines;
   }
 
-  function drawSpectrum(ctx2, x0, y0, w, h, axis, values, marker, color, yLabel, xLabel) {
-    const pts = [];
-    for (let i = 0; i < values.length; i++) {
-      const a = axis[i], v = values[i];
-      if (a !== null && v !== null && Number.isFinite(a) && Number.isFinite(v)) pts.push([a, v]);
-    }
+  function drawSpectrum(ctx2, x0, y0, w, h, axis, values, marker, color, yLabel, xLabel, ref = null) {
+    const finitePts = (ax, vs) => {
+      const out = [];
+      for (let i = 0; i < vs.length; i++) {
+        const a = ax[i], v = vs[i];
+        if (a !== null && v !== null && Number.isFinite(a) && Number.isFinite(v)) out.push([a, v]);
+      }
+      return out;
+    };
+    const pts = finitePts(axis, values);
+    // A pinned spectrum (#257), drawn under on the same scales.
+    const refPts = ref ? finitePts(ref.axis, ref.values) : [];
     ctx2.strokeStyle = '#3a4357';
     ctx2.strokeRect(x0, y0, w, h);
     if (pts.length < 2) return;
     let ax0 = Infinity, ax1 = -Infinity, v0 = Infinity, v1 = -Infinity;
-    for (const [a, v] of pts) { ax0 = Math.min(ax0, a); ax1 = Math.max(ax1, a); v0 = Math.min(v0, v); v1 = Math.max(v1, v); }
+    for (const [a, v] of [...pts, ...refPts]) { ax0 = Math.min(ax0, a); ax1 = Math.max(ax1, a); v0 = Math.min(v0, v); v1 = Math.max(v1, v); }
     if (v1 <= v0) v1 = v0 + 1;
     const X = (a) => x0 + ((a - ax0) / (ax1 - ax0 || 1)) * w;
     const Y = (v) => y0 + h - ((v - v0) / (v1 - v0)) * h;
     if (v0 < 0 && v1 > 0) {
       ctx2.strokeStyle = '#59627a';
       ctx2.beginPath(); ctx2.moveTo(x0, Y(0)); ctx2.lineTo(x0 + w, Y(0)); ctx2.stroke();
+    }
+    if (refPts.length > 1) {
+      ctx2.strokeStyle = '#c9a86a';
+      ctx2.lineWidth = 2;
+      ctx2.beginPath();
+      refPts.forEach(([a, v], i) => (i ? ctx2.lineTo(X(a), Y(v)) : ctx2.moveTo(X(a), Y(v))));
+      ctx2.stroke();
     }
     ctx2.strokeStyle = color;
     ctx2.lineWidth = 2;
@@ -550,7 +564,7 @@ export function createSelection(ctx) {
         : `${L.count} voxels selected (${L.reduced.count} drawn), ${L.ms.toFixed(0)} ms`, '#7dffa0');
       const sd = seedsOf(L.request);
       if (sd && (sd.add.length || sd.sub.length)) {
-        line(`seeds: 1 + ${sd.add.length} added, ${sd.sub.length} carved`, '#9aa3b2');
+        line(`Lasso: 1 + ${sd.add.length} added, ${sd.sub.length} subtracted`, '#9aa3b2');
       }
       if (s) {
         line(`flux ${fmt(s.flux_jy_kms)} Jy km/s   sum ${fmt(s.sum)} ${s.bunit}`);
@@ -579,11 +593,13 @@ export function createSelection(ctx) {
     } else if (sel.tool === 'probe' && sel.spectrum) {
       const sp = sel.spectrum;
       line(`spectrum at (${sp.x}, ${sp.y}), ${sp.values.length} channels, ${sp.ms.toFixed(0)} ms`, '#9fd0ff');
+      const pin = pinnedFor(sp);
+      if (pin) line(`gold: pinned spectrum at (${pin.x}, ${pin.y})`, '#c9a86a');
       const marker = sp.axis[sp.channel];
-      drawSpectrum(c, 60, y + 4, W - 90, H - y - 40, sp.axis, sp.values, marker, '#4fa3ff', sp.unit, sp.axisLabel);
+      drawSpectrum(c, 60, y + 4, W - 90, H - y - 40, sp.axis, sp.values, marker, '#4fa3ff', sp.unit, sp.axisLabel, pin);
     } else if (!sel.pick) {
       line('Select mode, trigger (or click): ' + (sel.tool === 'box' ? 'two corners of a box' : 'point at the emission'), '#9aa3b2');
-      line('Secondary stick ←/→ (or the menu\'s Mode tab): next tool', '#9aa3b2');
+      line('Secondary stick ←/→ (or the menu\'s Select tab): next tool', '#9aa3b2');
     }
     if (domCanvas) {
       const d = domCanvas.getContext('2d');
@@ -624,13 +640,31 @@ export function createSelection(ctx) {
     return out;
   }
 
+  /** The pinned spectrum to draw with `sp`: of the same cube, on the same axis. */
+  function pinnedFor(sp) {
+    const p = sel.pinned;
+    if (!p || p.dataset !== datasetId() || p === sp || p.axisLabel !== sp.axisLabel || p.values.length !== sp.values.length) return null;
+    return p.x === sp.x && p.y === sp.y ? null : p;
+  }
+
+  /** Pin the spectrum shown, to compare the next ones with it (#257); again: unpin. */
+  function pinSpectrum() {
+    if (sel.pinned && sel.pinned.dataset === datasetId()) sel.pinned = null;
+    else if (sel.spectrum) sel.pinned = { ...sel.spectrum, dataset: datasetId() };
+    else return false;
+    changed();
+    return true;
+  }
+
   function recipesJson(which = 'all') {
     const list = which === 'last' ? sel.recipes.slice(-1) : sel.recipes;
     return JSON.stringify(which === 'last' ? list[0] || null : list, null, 2);
   }
 
   return {
-    sel, act, hover, cycleTool, setTool, clear, segments, showShared, panelTexture, refreshDom, hudLines,
+    sel, act, hover, cycleTool, setTool, clear, segments, showShared, panelTexture, refreshDom, hudLines, pinSpectrum,
+    /** A pinned spectrum of the cube shown. */
+    hasPin: () => !!(sel.pinned && sel.pinned.dataset === datasetId()),
     recipesJson, worldRayToBox, modelRayToBox, domCanvas, record, pickBox,
     isDirty: () => uploaded !== version,
     /** Panel paints and texture uploads so far (checks, issue #229). */

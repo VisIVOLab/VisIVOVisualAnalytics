@@ -137,7 +137,20 @@ test('what a path opens as, and the pairing of other data types', () => {
   assert.equal(p.kind, 'velocity');
   assert.equal(p.box, '200');
   assert.equal(p.rest, '');
-  assert.equal(LY.stripLayout(LY.stripButtons('points', { style: 'points', budgetRows: 1e6 })).length, 5);
+});
+
+test('the menu\'s helpers for point tables and fields (#257): crop, columns, seeds', () => {
+  assert.equal(LY.isCropped({ min: [0, 0, 0], max: [1, 1, 1] }), false);
+  assert.equal(LY.isCropped({ min: [0, 0.2, 0], max: [1, 1, 1] }), true);
+  assert.equal(LY.isCropped(null), false);
+  assert.deepEqual(LY.colourFields({ axes: ['X', 'Y', 'Z'], fields: ['X', 'Y', 'Z', 'VX', '@index', 'Rho'] }), ['VX', 'Rho']);
+  assert.deepEqual(LY.colourFields(null), []);
+  assert.equal(LY.stepSeeds(200, 1), 283);
+  assert.equal(LY.stepSeeds(LY.stepSeeds(200, 1), 1), 400, 'two presses double');
+  assert.equal(LY.stepSeeds(200, -1), 141);
+  assert.equal(LY.stepSeeds(10, -1), 10, 'the backend\'s floor');
+  assert.equal(LY.stepSeeds(4900, 1), 5000, 'and ceiling');
+  assert.equal(LY.stepSeeds(11, -1), 10);
 });
 
 test('the lines say the box they were traced with', () => {

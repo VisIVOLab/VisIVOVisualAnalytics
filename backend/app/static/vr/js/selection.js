@@ -289,6 +289,21 @@ export function worldOfPixel(info, px) {
   return out;
 }
 
+/** The sky size of a full-resolution pixel in arcsec, from the second sky
+ *  axis (a latitude: no cos δ) between pixels 10 apart around the centre, or
+ *  null when that axis is not in degrees (#257: the PV width in arcsec). */
+export function pixelArcsec(info) {
+  const ax = info && info.axes && info.axes.y;
+  if (!ax || !/^deg/i.test(ax.unit || '') || !info.full_shape) return null;
+  const [nx, ny] = info.full_shape;
+  const cx = Math.floor(nx / 2), cy = Math.floor(ny / 2);
+  const a = Math.max(0, cy - 5), b = Math.min(ny - 1, cy + 5);
+  if (b <= a) return null;
+  const ya = worldOfPixel(info, [cx, a, 0]).y, yb = worldOfPixel(info, [cx, b, 0]).y;
+  const v = Math.abs(yb - ya) / (b - a) * 3600;
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
 /** Velocity (km/s) of full channel z, or null. */
 export function channelVelocity(info, z) {
   const fv = info && info.axes && info.axes.z.full_velocity_kms;

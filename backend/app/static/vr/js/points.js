@@ -184,9 +184,17 @@ uniform float uRadius; // splats: world radius (metres) * projection scale
 uniform float uMaxPx;
 uniform float uC0;
 uniform float uC1;
+uniform vec3 uClipMin; // the spatial crop (#257), box fractions: aPos itself
+uniform vec3 uClipMax;
 out float vT;
 out float vSplat;
 void main() {
+  if (any(lessThan(aPos, uClipMin)) || any(greaterThan(aPos, uClipMax))) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);   // outside the view volume: culled
+    gl_PointSize = 1.0;
+    vT = 0.0; vSplat = 0.0;
+    return;
+  }
   vec4 eye = uMV * vec4(uLo + aPos * uSpan, 1.0);
   gl_Position = uP * eye;
   float px = uPx > 0.0 ? uPx : uRadius / max(1e-4, -eye.z);
@@ -272,7 +280,8 @@ export class PointCloud {
 
   /**
    * One eye. `p`: {box (dataToModel), bounds, style 'points' | 'splats', pointPx,
-   * radius (data units), opacity, c0, c1, viewportH, count (rows to draw)}.
+   * radius (data units), opacity, c0, c1, viewportH, count (rows to draw),
+   * clip ({min, max} box fractions over the sample's bounds: the crop; none = all)}.
    */
   draw(view, model, p) {
     const gl = this.gl;
@@ -296,6 +305,8 @@ export class PointCloud {
     gl.uniform1f(u.uMaxPx, this.maxPx);
     gl.uniform1f(u.uC0, p.c0);
     gl.uniform1f(u.uC1, p.c1);
+    gl.uniform3fv(u.uClipMin, p.clip ? p.clip.min : [0, 0, 0]);
+    gl.uniform3fv(u.uClipMax, p.clip ? p.clip.max : [1, 1, 1]);
     gl.uniform1f(u.uSolid, this.hasColour ? 0 : 1);
     gl.uniform1f(u.uOpacity, p.opacity);
     gl.uniform1i(u.uMode, splats ? 1 : 0);
