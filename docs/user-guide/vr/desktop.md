@@ -68,6 +68,9 @@ window's own.
 
 - The headsets and the activity belong to the backend session, so every cube
   window of the session shows the same list.
+- **Show on Headset** sends the dataset, its path and its kind (cube, point
+  table, velocity field). A velocity field's box in Mpc is not part of the
+  command: to see a field with its box, pair it from its window as before.
 - The token is never in what the desktop sends or reads here: it travels in
   the request headers only.
 - The routes are `GET /v1/vr/headset`, `POST /v1/vr/headset/command` and
