@@ -3,6 +3,7 @@
 #include "app/AdbHeadset.h"
 #include "app/BackendClient.h"
 #include "app/VrLink.h"
+#include "app/VrHeadsetHub.h"
 #include "app/VrPair.h"
 
 #include <QDialog>
@@ -34,6 +35,15 @@ class QWidget;
  * GET /v1/vr/pair for the state (waiting, connected, expired) and offers
  * Disconnect and New Code. The token never leaves the backend; the code is
  * not logged. Closing the dialog revokes a code nobody used.
+ *
+ * A headset page already open in this backend session (issue #238) comes
+ * first: the dialog asks the backend's headset hub (GET /v1/vr/headset)
+ * before anything else, and when a page is there it shows it (how it is
+ * connected, whether it is in VR, the cube on show) with Show on Headset,
+ * which sends this window's cube to that page: no code, no adb, no new
+ * browser window. Pairing and the USB cable stay one click away (Pair
+ * Another Headset) for a second headset. No page, or a backend without the
+ * hub: the dialog is what it was, pairing by code.
  *
  * Under "Advanced (USB cable)" is the adb way below, opened by itself (with
  * the reason) when the backend has no pairing service or cannot reach it.
@@ -113,6 +123,17 @@ private:
     /// #187), so an old cluster overlay shows here, not as a 404 in the headset.
     void checkBackend();
     void setResult(const QString &text, bool error);
+    // ── A headset already connected (issue #238) ───────────────────────────
+    /// Ask the hub which pages are open; none (or no hub): pair as before.
+    /// @p quiet: a refresh of what is shown, which never falls back to pairing.
+    void checkHeadsets(bool quiet = false);
+    void showHeadsets();
+    /// Send this window's cube to the newest page (Show on Headset).
+    void showOnHeadset();
+    /// Open the pairing and USB sections; the first time, ask for a code.
+    void startPairing();
+    /// Keep the width, fit the height to the wrapped text.
+    void fitHeight();
     // ── Pairing by code (issue #214) ──────────────────────────────────────
     /// Ask for a code; a previous one still pending is revoked first.
     void newCode();
@@ -139,6 +160,17 @@ private:
     static QString adbFailure(Outcome outcome);
     QString redacted(const QString &text) const;
     QString selectedSerial() const;
+
+    // A headset already connected
+    QWidget *m_hubPanel{ nullptr };
+    QLabel *m_hubLabel{ nullptr };
+    QLabel *m_hubResult{ nullptr };
+    QPushButton *m_showButton{ nullptr };
+    QToolButton *m_pairAnotherToggle{ nullptr };
+    QWidget *m_pairSection{ nullptr };   ///< pairing + USB, hidden while a page is used
+    QList<VrHub::Headset> m_headsets;
+    bool m_pairingStarted{ false };      ///< a code was asked for (newCode ran)
+    bool m_showing{ false };             ///< a show command is out
 
     // Pairing by code
     VrLink::Inputs m_inputs;          ///< for the POST body (the token is not sent in it)

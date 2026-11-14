@@ -1,5 +1,5 @@
 // BackendClient_VrPair.cpp
-// Headset pairing transport (issue #214, contract visivo-pair/1 of #210):
+// Headset pairing and the headset hub. Pairing transport (issue #214, contract visivo-pair/1 of #210):
 // the three /v1/vr/pair routes "Open in VR Headset…" uses to pair a headset
 // by code. The replies are returned raw; app/VrPair.h says what they mean.
 //
@@ -10,6 +10,9 @@
 
 #include <QJsonDocument>
 #include <QUrl>
+#include <QUrlQuery>
+
+#include <algorithm>
 
 BackendVrPairReply BackendClient::createVrPairCode(const QJsonObject &body) const
 {
@@ -44,4 +47,35 @@ bool BackendClient::revokeVrPair(const QString &codeOrId, QString &error, int ti
     const QString safeSeg = QString::fromUtf8(QUrl::toPercentEncoding(codeOrId));
     QByteArray raw;
     return sendBoundedDelete(QStringLiteral("/v1/vr/pair/") + safeSeg, timeoutMs, raw, error);
+}
+
+// ── The headset hub (issue #238, backend #236) ────────────────────────────────
+// The bodies carry no token: it goes in the headers, as on every request.
+
+BackendVrHubReply BackendClient::vrHeadsets() const
+{
+    BackendVrHubReply reply;
+    reply.body = performGet(QUrl(m_baseUrl + QStringLiteral("/v1/vr/headset")), reply.error,
+                            nullptr, &reply.httpStatus);
+    return reply;
+}
+
+BackendVrHubReply BackendClient::sendVrHeadsetCommand(const QJsonObject &body) const
+{
+    BackendVrHubReply reply;
+    reply.body = performPost(QUrl(m_baseUrl + QStringLiteral("/v1/vr/headset/command")),
+                             QJsonDocument(body), reply.error, nullptr, &reply.httpStatus);
+    return reply;
+}
+
+BackendVrHubReply BackendClient::vrActivity(qint64 after, int waitS) const
+{
+    QUrl url(m_baseUrl + QStringLiteral("/v1/vr/activity"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("after"), QString::number(std::max<qint64>(0, after)));
+    q.addQueryItem(QStringLiteral("wait"), QString::number(std::max(0, waitS)));
+    url.setQuery(q);
+    BackendVrHubReply reply;
+    reply.body = performGet(url, reply.error, nullptr, &reply.httpStatus);
+    return reply;
 }

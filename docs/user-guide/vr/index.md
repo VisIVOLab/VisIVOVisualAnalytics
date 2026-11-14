@@ -19,6 +19,7 @@ Lasso, spectra) still runs on the full cube on the backend.
 :maxdepth: 2
 
 quickstart
+desktop
 controls
 analysis
 data-types
@@ -30,6 +31,9 @@ reference
 
 - [Quickstart and pairing](quickstart.md): pairing the headset by code, the
   USB cable for offline use, the page on the Mac without a headset.
+- [The headset from the desktop](desktop.md): Show on Headset for a headset
+  already connected, the Headset Activity list and its products, following
+  the headset's look.
 - [Controls and the hand menu](controls.md): hands, modes, the hand menu and
   its tabs, hand tracking.
 - [Analysis in the headset](analysis.md): spectra, the Kinematic Lasso, box

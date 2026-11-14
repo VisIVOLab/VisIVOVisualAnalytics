@@ -48,6 +48,7 @@
 #include "TestMissingRoute.h"
 #include "TestVrLink.h"
 #include "TestVrPair.h"
+#include "TestVrHeadsetHub.h"
 #include "TestBackendProcessTree.h"
 #include "TestBusyFeedback.h"
 #include "TestThresholdShare.h"
@@ -124,6 +125,7 @@ int main(int argc, char *argv[])
     { TestMissingRoute     t; status |= QTest::qExec(&t, argc, argv); }
     { TestVrLink           t; status |= QTest::qExec(&t, argc, argv); }
     { TestVrPair           t; status |= QTest::qExec(&t, argc, argv); }
+    { TestVrHeadsetHub     t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendProcessTree t; status |= QTest::qExec(&t, argc, argv); }
     { TestBusyFeedback     t; status |= QTest::qExec(&t, argc, argv); }
     { TestLayerCardGeometry t; status |= QTest::qExec(&t, argc, argv); }
