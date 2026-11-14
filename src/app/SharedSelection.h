@@ -65,6 +65,9 @@ struct SharedSelectionInfo
     double vsys{ 0.0 }, w20{ 0.0 }, w50{ 0.0 };   ///< km/s
     bool hasPeakSnr{ false };
     double peakSnr{ 0.0 };
+    QString velocityConvention;       ///< hi.velocity_convention_name: optical, radio, relativistic
+    QString velocityFrame;            ///< hi.velocity_frame, readable: barycentric, LSRK, ...
+    QString channelCorrelation;       ///< hi.channel_correlation: how the flux error treats channels
     QJsonObject hi;                   ///< every measurement, with its conventions
     QJsonObject meta;
     QString nonce;                   ///< meta.nonce: the publish's own id, '' when it sent none

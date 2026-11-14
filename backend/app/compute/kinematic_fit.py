@@ -97,18 +97,25 @@ def cube_velocity_axis(dataset, depth: int) -> dict[str, Any]:
         raise ValueError(
             "The spectral axis cannot be expressed in km/s (a frequency axis needs RESTFRQ).")
     edges, _, _ = velocity_axis_kms(channel_edges(coords), unit, atype, restfreq)
-    if _is_frequency(unit):
-        name, convention = "optical", "optical (cz), from frequency"
-    else:
-        # Named, not "as in the cube": an AIPS VELO-HEL without VELREF is
-        # optical, VELREF > 256 radio (sofia_suggest.velocity_convention, as
-        # wcslib reads it).
-        from .sofia_suggest import velocity_convention  # noqa: PLC0415
-        name, why = velocity_convention(atype or "", dataset.header.get("VELREF"))
-        convention = f"{name} ({why})"
-    frame = str(dataset.header.get("SPECSYS", "") or "").strip()
+    name, convention = velocity_convention_label(unit, atype, dataset.header)
+    from .hi_measures import spectral_frame  # noqa: PLC0415
+    frame, frame_source = spectral_frame(dataset.header.get("SPECSYS"), atype)
     return {"vel": vel, "dvk": np.abs(np.diff(edges)), "unit": vunit, "convention": convention,
-            "convention_name": name, "frame": frame}
+            "convention_name": name, "frame": frame, "frame_source": frame_source}
+
+
+def velocity_convention_label(unit: str, ctype: str, header) -> tuple[str, str]:
+    """(name, label) of the velocity convention of a spectral axis expressed in
+    km/s: ``optical (cz), from frequency and RESTFRQ`` for a frequency axis;
+    for a velocity axis the convention its CTYPE names (an AIPS VELO-HEL
+    without VELREF is optical, VELREF > 256 radio, as wcslib reads it;
+    ``sofia_suggest.velocity_convention``). One label for the reduced axis,
+    the kinematic fit and the selection statistics."""
+    if _is_frequency(unit):
+        return "optical", "optical (cz), from frequency and RESTFRQ"
+    from .sofia_suggest import velocity_convention  # noqa: PLC0415
+    name, why = velocity_convention(ctype or "", header.get("VELREF") if header is not None else None)
+    return name, f"{name} ({why})"
 
 
 def _is_frequency(unit: str) -> bool:

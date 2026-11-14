@@ -36,8 +36,9 @@ import numpy as np
 
 from ..fits_dataset import pixel_to_icrs
 from ._common import ScientificFitsDataset, beam_area_pixels, is_per_beam_bunit
-from .hi_measures import (NOISE_PAD_CHANNELS, finite_or_none, flux_uncertainty, line_widths,
-                          m0_ellipse, mad_about_zero, noise_padding)
+from .hi_measures import (NOISE_PAD_CHANNELS, RHO_LAGS, channel_rho, correlation_factor,
+                          finite_or_none, flux_uncertainty, line_widths, m0_ellipse,
+                          mad_about_zero, noise_padding, sky_position_angle)
 
 #: The largest box measured (voxels): 64 Mi float32 is 256 MB of mask body. A
 #: selection that large is a cube, not a source. The route checks it before
@@ -81,43 +82,76 @@ def worker_cube_packed_mask_stats(path: str, packed: bytes | None,
                                   origin_z, roi_width, roi_height, roi_depth, sigma)
 
 
+def noise_frame_plan(frame_shape: tuple[int, int, int],
+                     budget: int = NOISE_SAMPLE_VOXELS) -> tuple[int, list[int]]:
+    """How the noise frame (planes, rows, columns) is sampled within
+    ``budget`` voxels: a spatial stride s (every s-th row and column) and the
+    frame-relative planes read. Every plane while that fits; otherwise runs
+    of RHO_LAGS + 1 consecutive planes spread over the frame, so the channel
+    correlation still has its lag pairs."""
+    nzf, nyf, nxf = (int(v) for v in frame_shape)
+    s = max(1, math.ceil(math.sqrt(nzf * nyf * nxf / budget)))
+    per_plane = (-(-nyf // s)) * (-(-nxf // s))
+    if per_plane * nzf <= budget:
+        return s, list(range(nzf))
+    run = RHO_LAGS + 1
+    runs = max(1, budget // (per_plane * run))
+    starts = np.unique(np.linspace(0, max(0, nzf - run), runs).round().astype(int))
+    planes = sorted({int(z) for st in starts for z in range(st, min(nzf, st + run))})
+    return s, planes
+
+
 def _local_noise(data, mask, bbox: list[int], box: tuple[int, int, int, int, int, int],
-                 pad_xy: int) -> tuple[float | None, int]:
+                 pad_xy: int) -> tuple[float | None, int, list[float | None]]:
     """SoFiA-2's local noise of a selection: 1.4826 x median |value| of the
     voxels that are NOT selected in the selection's tight box ``bbox`` [x0, x1,
     y0, y1, z0, z1] widened by ``pad_xy`` pixels and 5 channels (clipped to the
-    cube). ``mask`` (z, y, x) covers the box ``box`` = (ox, oy, oz, w, h, d);
-    None means every voxel of that box is selected. Read one plane at a time.
-    Returns (sigma or None, the number of unselected voxels it stands for)."""
+    cube), and the noise correlation between channels 1..RHO_LAGS apart from
+    the same voxels (``hi_measures.channel_rho``). ``mask`` (z, y, x) covers
+    the box ``box`` = (ox, oy, oz, w, h, d); None means every voxel of that
+    box is selected. The frame is read already thinned (``noise_frame_plan``:
+    strided rows and columns, at most NOISE_SAMPLE_VOXELS voxels), one plane
+    at a time. Returns (sigma or None, voxels sampled, [rho_1, ...])."""
     nz, ny, nx = data.shape
     x0, x1 = max(0, bbox[0] - pad_xy), min(nx - 1, bbox[1] + pad_xy)
     y0, y1 = max(0, bbox[2] - pad_xy), min(ny - 1, bbox[3] + pad_xy)
     z0, z1 = max(0, bbox[4] - NOISE_PAD_CHANNELS), min(nz - 1, bbox[5] + NOISE_PAD_CHANNELS)
     ox, oy, oz, rw, rh, rd = box
-    total = (x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1)
-    stride = max(1, -(-total // NOISE_SAMPLE_VOXELS))
-    # The selection's box inside the frame.
-    bx0, bx1 = max(ox, x0), min(ox + rw - 1, x1)
-    by0, by1 = max(oy, y0), min(oy + rh - 1, y1)
+    s, planes = noise_frame_plan((z1 - z0 + 1, y1 - y0 + 1, x1 - x0 + 1))
+    ys = np.arange(y0, y1 + 1, s)
+    xs = np.arange(x0, x1 + 1, s)
+    ry = (ys >= oy) & (ys < oy + rh)          # sampled rows and columns inside the box
+    rx = (xs >= ox) & (xs < ox + rw)
+    in_box = bool(ry.any() and rx.any())
     parts: list[np.ndarray] = []
-    used = 0
-    for z in range(z0, z1 + 1):
-        plane = np.asarray(data[z, y0:y1 + 1, x0:x1 + 1], dtype=np.float64)
-        keep = np.isfinite(plane)
+    lag_diffs: list[list[np.ndarray]] = [[] for _ in range(RHO_LAGS)]
+    recent: dict[int, np.ndarray] = {}        # the last planes read, NaN where not noise
+    for zr in planes:
+        z = z0 + zr
+        plane = np.array(data[z, y0:y1 + 1:s, x0:x1 + 1:s], dtype=np.float64)   # the sample only
         k = z - oz
-        if 0 <= k < rd and bx0 <= bx1 and by0 <= by1:
-            sub = keep[by0 - y0:by1 - y0 + 1, bx0 - x0:bx1 - x0 + 1]   # a view: edits keep
-            if mask is None:
-                sub[:] = False
-            else:
-                sub &= ~(mask[k, by0 - oy:by1 - oy + 1, bx0 - ox:bx1 - ox + 1] > 0.5)
-        vals = plane[keep]
-        used += vals.size
-        if vals.size:
-            parts.append(vals[::stride])
+        if in_box and 0 <= k < rd:
+            excl = np.zeros(plane.shape, dtype=bool)
+            excl[np.ix_(ry, rx)] = True if mask is None else (
+                mask[k][np.ix_(ys[ry] - oy, xs[rx] - ox)] > 0.5)
+            plane[excl] = np.nan
+        good = np.isfinite(plane)
+        if good.any():
+            parts.append(plane[good])
+        for j in range(1, RHO_LAGS + 1):
+            prev = recent.get(z - j)
+            if prev is not None:
+                d = plane - prev
+                lag_diffs[j - 1].append(d[np.isfinite(d)])
+        recent[z] = plane
+        recent.pop(z - RHO_LAGS, None)
     if not parts:
-        return None, 0
-    return mad_about_zero(np.concatenate(parts)), int(used)
+        return None, 0, [None] * RHO_LAGS
+    sample = np.concatenate(parts)
+    sigma = mad_about_zero(sample)
+    rho = channel_rho(sigma, [np.concatenate(d) if d else np.empty(0) for d in lag_diffs]) \
+        if sigma else [None] * RHO_LAGS
+    return sigma, int(sample.size), rho
 
 
 def worker_cube_mask_stats(path: str, mask_bytes: bytes | None,
@@ -157,7 +191,7 @@ def worker_cube_mask_stats(path: str, mask_bytes: bytes | None,
 
         # The velocity axis first: the moment-0 map weights each channel by its
         # own width.
-        vel = dvk = None
+        vel = dvk = axis = None
         velocity_convention = velocity_frame = flux_note = ""
         try:
             from .kinematic_fit import cube_velocity_axis  # noqa: PLC0415
@@ -178,10 +212,12 @@ def worker_cube_mask_stats(path: str, mask_bytes: bytes | None,
         rows_any = np.zeros(rh, dtype=bool)
         cols_any = np.zeros(rw, dtype=bool)
         m0 = np.zeros((rh, rw))                 # sum_k value x dv_k over the selection
+        footprint = np.zeros((rh, rw), dtype=bool)   # pixels with a valid selected voxel
         pos_x = np.zeros(rw)                    # positive selected values per column, per row
         pos_y = np.zeros(rh)
         for k in range(rd):
-            plane = np.asarray(data[oz + k, oy:oy + rh, ox:ox + rw], dtype=np.float64)
+            # A copy always (np.array), never a view of the file: it is scaled in place.
+            plane = np.array(data[oz + k, oy:oy + rh, ox:ox + rw], dtype=np.float64)
             sel = (mask[k] > 0.5) if mask is not None else None
             n_sel = int(sel.sum()) if sel is not None else plane.size
             if not n_sel:
@@ -206,18 +242,24 @@ def worker_cube_mask_stats(path: str, mask_bytes: bytes | None,
             total += s
             per_chan[k] = s
             n_chan[k] = n
-            sel_vals = np.where(ok, plane, 0.0)
-            m0 += sel_vals * (float(dvk[oz + k]) if dvk is not None else 1.0)
-            positive = np.where(sel_vals > 0.0, sel_vals, 0.0)
-            pos_chan[k] = float(positive.sum())
-            pos_x += positive.sum(axis=0)
-            pos_y += positive.sum(axis=1)
+            # In place, no plane-sized temporaries: the plane is this loop's own
+            # float64 copy (scaled by the channel width where selected), and
+            # the positive values are taken from the selected ones.
+            if dvk is not None:
+                np.multiply(plane, float(dvk[oz + k]), out=plane, where=ok)
+            np.add(m0, plane, out=m0, where=ok)
+            footprint |= ok
+            rows, cols = np.nonzero(ok)                  # the order of plane[ok]
+            pos = vals > 0.0
+            pos_chan[k] = float(vals[pos].sum())
+            pos_x += np.bincount(cols[pos], weights=vals[pos], minlength=rw)
+            pos_y += np.bincount(rows[pos], weights=vals[pos], minlength=rh)
             lo, hi = float(vals.min()), float(vals.max())
             vmin = min(vmin, lo)
             if hi > vmax:
                 vmax = hi
-                j = int(np.argmax(np.where(ok, plane, -np.inf)))
-                peak = [ox + j % rw, oy + j // rw, oz + k]          # x, y, z
+                j = int(np.argmax(vals))                     # the first maximum, in C order
+                peak = [ox + int(cols[j]), oy + int(rows[j]), oz + k]          # x, y, z
         if not selected:
             raise ValueError("The selection is empty.")
         if mask is None:
@@ -230,14 +272,18 @@ def worker_cube_mask_stats(path: str, mask_bytes: bytes | None,
                 int(oz + zs[0]), int(oz + zs[-1])]
 
         # The noise: the session's when supplied, else around the selection.
-        noise, noise_voxels = supplied, 0
+        noise, noise_voxels, rho = supplied, 0, None
         if noise is None and valid:
             bmaj = dataset.beam.major
             if not bmaj and dataset.has_per_channel_beam:
                 bmaj = max((dataset.beam_for_channel(int(c)).major or 0.0)
                            for c in range(bbox[4], bbox[5] + 1))
             pad = noise_padding(bmaj, dataset.spatial_pixel_scale_arcsec() / 3600.0)
-            noise, noise_voxels = _local_noise(data, mask, bbox, (ox, oy, oz, rw, rh, rd), pad)
+            noise, noise_voxels, rho = _local_noise(data, mask, bbox, (ox, oy, oz, rw, rh, rd), pad)
+        # The mean number of channels summed per pixel of the footprint: N of
+        # the correlated-channel correction.
+        n_footprint = int(footprint.sum())
+        n_per_pixel = valid / n_footprint if n_footprint else 0.0
     finally:
         hdul.close()
 
@@ -298,40 +344,56 @@ def worker_cube_mask_stats(path: str, mask_bytes: bytes | None,
     out["hi"] = _hi_measures(
         dataset, out, shape, vel, dvk, chans, beam_px, n_chan[zs[0]:zs[-1] + 1],
         pos_chan, pos_x, pos_y, m0, (ox, oy, oz), noise, supplied is not None, noise_voxels,
-        velocity_frame)
+        axis, rho, n_per_pixel)
     return out
+
+
+#: What the size and its position angle are, for the answer.
+SIZE_DEFINITION = ("semi-axes of the uniform ellipse with the moment-0 map's second moments "
+                   "(2 sqrt(eigenvalue), positive pixels, about the centroid), not deconvolved "
+                   "from the beam; pa_deg east of north (ICRS, from the WCS at the centroid), "
+                   "pa_grid_deg from +y towards -x on the pixel grid")
 
 
 def _hi_measures(dataset, out: dict[str, Any], spectrum: np.ndarray, vel, dvk, chans: np.ndarray,
                  beam_px, n_chan: np.ndarray, pos_chan: np.ndarray, pos_x: np.ndarray,
                  pos_y: np.ndarray, m0: np.ndarray, origin: tuple[int, int, int],
                  noise: float | None, noise_supplied: bool, noise_voxels: int,
-                 velocity_frame: str) -> dict[str, Any]:
+                 axis: dict[str, Any] | None, rho: list[float | None] | None,
+                 n_per_pixel: float) -> dict[str, Any]:
     """The standard HI measurements (``hi_measures``) from the sums the worker
     accumulated: every number with its unit in its name, None where it cannot
-    be measured, and ``notes`` saying why."""
+    be measured, and ``notes`` saying why. ``rho``: the channel correlation
+    measured in the noise frame (None when the noise was supplied)."""
     ox, oy, oz = origin
     notes: list[str] = []
     bunit = dataset.bunit or ""
+    axis = axis or {}
     hi: dict[str, Any] = {
         "flux_jy_kms": out["flux_jy_kms"], "flux_err_jy_kms": None,
+        "flux_err_indep_jy_kms": None, "flux_err_factor": None,
+        "channel_rho": None, "channel_correlation": "", "snr_integrated": None,
         "noise_sigma": finite_or_none(noise), "noise_unit": bunit,
         "noise_source": "", "noise_voxels": int(noise_voxels),
         "peak": out["max"], "peak_unit": bunit, "peak_snr": None,
         "w20_kms": None, "w50_kms": None, "vsys_kms": None,
         "vsys_definition": "midpoint of the two W20 crossings of the integrated spectrum",
-        "velocity_convention": out["velocity_convention"], "velocity_frame": velocity_frame,
+        "velocity_convention": out["velocity_convention"],
+        "velocity_convention_name": axis.get("convention_name", ""),
+        "velocity_frame": axis.get("frame", ""), "velocity_frame_source": axis.get("frame_source", ""),
         "centroid_x": None, "centroid_y": None, "centroid_z": None,
         "centroid_ra_deg": None, "centroid_dec_deg": None, "centroid_frame": "",
         "centroid_velocity_kms": None,
-        "major_axis_arcsec": None, "minor_axis_arcsec": None, "pa_deg": None,
+        "major_axis_arcsec": None, "minor_axis_arcsec": None, "pa_deg": None, "pa_grid_deg": None,
         "major_axis_px": None, "minor_axis_px": None,
-        "size_definition": ("semi-axes of the uniform ellipse with the moment-0 map's second "
-                            "moments (2 sqrt(eigenvalue), positive pixels, about the centroid), "
-                            "not deconvolved from the beam; PA from +y towards -x on the pixel grid"),
+        "size_definition": SIZE_DEFINITION,
         "beam_major_arcsec": None, "beam_minor_arcsec": None,
         "notes": notes,
     }
+    if vel is not None and not hi["velocity_frame"]:
+        notes.append("the cube names no spectral frame (no SPECSYS, no CTYPE suffix)")
+    elif hi["velocity_frame"] == "topocentric":
+        notes.append("topocentric velocities: not corrected for the Earth's motion")
     if noise is not None:
         hi["noise_source"] = ("supplied (the session's noise estimate)" if noise_supplied
                               else "local: 1.4826 x median |value| of the unselected voxels within "
@@ -339,7 +401,26 @@ def _hi_measures(dataset, out: dict[str, Any], spectrum: np.ndarray, vel, dvk, c
         if out["max"] is not None:
             hi["peak_snr"] = finite_or_none(out["max"] / noise)
         if beam_px is not None and dvk is not None and out["flux_jy_kms"] is not None:
-            hi["flux_err_jy_kms"] = finite_or_none(flux_uncertainty(noise, n_chan, dvk[chans], beam_px))
+            indep = flux_uncertainty(noise, n_chan, dvk[chans], beam_px)
+            hi["flux_err_indep_jy_kms"] = finite_or_none(indep)
+            if rho is None:
+                # A supplied sigma: the frame is not read, so no correlation.
+                hi["flux_err_jy_kms"] = hi["flux_err_indep_jy_kms"]
+                hi["channel_correlation"] = "channel correlation not measured"
+            else:
+                factor = correlation_factor(rho, n_per_pixel)
+                hi["channel_rho"] = [finite_or_none(r) for r in rho]
+                hi["flux_err_factor"] = factor
+                hi["flux_err_jy_kms"] = finite_or_none(indep * factor)
+                r1 = rho[0]
+                if r1 is None:
+                    hi["channel_correlation"] = "channel correlation not measured (too few noise pairs)"
+                else:
+                    hi["channel_correlation"] = (
+                        f"channels correlated (ρ1 {r1:.2f}): error corrected ×{factor:.1f}"
+                        if factor > 1.05 else f"channels independent (ρ1 {r1:.2f})")
+            if hi["flux_err_jy_kms"]:
+                hi["snr_integrated"] = finite_or_none(out["flux_jy_kms"] / hi["flux_err_jy_kms"])
     else:
         notes.append("no noise measured around the selection: no flux uncertainty or S/N")
     b = dataset.beam
@@ -351,6 +432,8 @@ def _hi_measures(dataset, out: dict[str, Any], spectrum: np.ndarray, vel, dvk, c
         hi["w20_kms"], hi["w50_kms"], hi["vsys_kms"] = (finite_or_none(w[k]) for k in ("w20", "w50", "vsys"))
         if hi["w20_kms"] is None:
             notes.append("the integrated spectrum has no positive peak: no line widths")
+        elif w["edge20"] or w["edge50"]:
+            notes.append("width is a lower limit: the line reaches the selection's edge")
     else:
         notes.append("no velocity axis: no line widths, systemic or centroid velocity")
 
@@ -365,21 +448,30 @@ def _hi_measures(dataset, out: dict[str, Any], spectrum: np.ndarray, vel, dvk, c
     if vel is not None:
         hi["centroid_velocity_kms"] = finite_or_none(
             float((pos_chan * vel[oz:oz + pos_chan.size]).sum() / spos))
-    try:
-        sky = pixel_to_icrs(dataset.wcs, dataset.client_axis_to_fits_axis, cx, cy, cz)
-    except Exception:  # noqa: BLE001 - a WCS that cannot convert gives no sky position
-        sky = None
+    def to_sky(x: float, y: float):
+        try:
+            s = pixel_to_icrs(dataset.wcs, dataset.client_axis_to_fits_axis, x, y, cz)
+        except Exception:  # noqa: BLE001 - a WCS that cannot convert gives no sky position
+            return None
+        return (s["ra_deg"], s["dec_deg"]) if s is not None else None
+
+    sky = to_sky(cx, cy)
     if sky is not None:
-        hi["centroid_ra_deg"], hi["centroid_dec_deg"] = sky["ra_deg"], sky["dec_deg"]
+        hi["centroid_ra_deg"], hi["centroid_dec_deg"] = sky
         hi["centroid_frame"] = "ICRS"
     else:
         notes.append("no sky coordinates for the centroid")
     ell = m0_ellipse(m0, (cx - ox, cy - oy))
     if ell is not None:
+        if ell["note"]:
+            notes.append(ell["note"])
         pix_arcsec = dataset.spatial_pixel_scale_arcsec()
         hi["major_axis_px"], hi["minor_axis_px"] = ell["major_px"], ell["minor_px"]
-        hi["pa_deg"] = ell["pa_deg"]
-        if pix_arcsec and pix_arcsec > 0:
+        hi["pa_grid_deg"] = ell["pa_grid_deg"]
+        if ell["theta"] is not None and sky is not None:
+            # East of north, from the WCS at the centroid: the grid's north may be tilted.
+            hi["pa_deg"] = sky_position_angle(to_sky, cx, cy, ell["theta"])
+        if ell["major_px"] is not None and pix_arcsec and pix_arcsec > 0:
             hi["major_axis_arcsec"] = ell["major_px"] * pix_arcsec
             hi["minor_axis_arcsec"] = ell["minor_px"] * pix_arcsec
     return hi

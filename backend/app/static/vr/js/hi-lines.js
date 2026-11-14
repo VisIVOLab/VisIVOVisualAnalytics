@@ -42,12 +42,25 @@ export function fluxText(stats) {
   return `flux ${fmt(f)}${Number.isFinite(err) ? ` ± ${fmt(err, 2)}` : ''} Jy km/s`;
 }
 
-/** The selection window's lines after the flux: peak and S/N, widths and
- *  systemic velocity with the convention, centroid, size, the noise used. */
+/** 'PA 44° E of N' (east of north, from the WCS), else the pixel grid's
+ *  angle named as such, else '' (a round or unresolved footprint). */
+export function paText(hi) {
+  if (Number.isFinite(hi.pa_deg)) return `PA ${fixed(hi.pa_deg, 0)}° E of N`;
+  if (Number.isFinite(hi.pa_grid_deg)) return `PA ${fixed(hi.pa_grid_deg, 0)}° on the pixel grid`;
+  return '';
+}
+
+/** The selection window's lines after the flux: the channel correlation of
+ *  its error, peak S/N and integrated S/N, widths and systemic velocity with
+ *  the convention, centroid, size, the noise used, and the backend's notes. */
 export function panelLines(stats) {
   const hi = hiOf(stats);
   if (!hi) return [];
-  const out = [`peak ${fmt(hi.peak)} ${hi.peak_unit || ''}${Number.isFinite(hi.peak_snr) ? `, S/N ${fixed(hi.peak_snr)}` : ''}`];
+  const out = [];
+  if (hi.channel_correlation) out.push(hi.channel_correlation);
+  out.push(`peak ${fmt(hi.peak)} ${hi.peak_unit || ''}`
+    + `${Number.isFinite(hi.peak_snr) ? `, peak S/N ${fixed(hi.peak_snr)}` : ''}`
+    + `${Number.isFinite(hi.snr_integrated) ? `, integrated S/N ${fixed(hi.snr_integrated)}` : ''}`);
   if (Number.isFinite(hi.w20_kms)) {
     out.push(`W20 ${fixed(hi.w20_kms)}  W50 ${fixed(hi.w50_kms)}  Vsys ${fixed(hi.vsys_kms)} km/s`);
     out.push(`velocity: ${hi.velocity_convention || 'convention unknown'}${hi.velocity_frame ? `, ${hi.velocity_frame}` : ''}`);
@@ -57,11 +70,13 @@ export function panelLines(stats) {
       + `${Number.isFinite(hi.centroid_velocity_kms) ? `, ${fixed(hi.centroid_velocity_kms)} km/s` : ''}`);
   }
   if (Number.isFinite(hi.major_axis_arcsec)) {
-    out.push(`size ${fixed(hi.major_axis_arcsec)}" × ${fixed(hi.minor_axis_arcsec)}" (semi-axes), PA ${fixed(hi.pa_deg, 0)}°`);
+    const pa = paText(hi);
+    out.push(`size ${fixed(hi.major_axis_arcsec)}" × ${fixed(hi.minor_axis_arcsec)}" (semi-axes)${pa ? `, ${pa}` : ''}`);
   }
   if (Number.isFinite(hi.noise_sigma)) {
     out.push(`σ ${fmt(hi.noise_sigma)} ${hi.noise_unit || ''} (${String(hi.noise_source || '').split(':')[0].split(' (')[0]})`);
   }
+  for (const n of hi.notes || []) out.push(n);
   return out;
 }
 
@@ -82,19 +97,26 @@ export function recordParams(stats) {
   const p = {};
   p['Flux (Jy km/s)'] = Number.isFinite(hi.flux_err_jy_kms)
     ? `${fmt(hi.flux_jy_kms, 4)} ± ${fmt(hi.flux_err_jy_kms, 2)}` : fmt(hi.flux_jy_kms, 4);
+  if (Number.isFinite(hi.flux_err_indep_jy_kms)) {
+    p['Flux error'] = `${hi.channel_correlation}; independent channels ± ${fmt(hi.flux_err_indep_jy_kms, 2)}`;
+  }
   if (Number.isFinite(hi.noise_sigma)) p['Noise σ'] = `${fmt(hi.noise_sigma, 4)} ${hi.noise_unit || ''} (${hi.noise_source})`;
   p.Peak = `${fmt(hi.peak, 4)} ${hi.peak_unit || ''}`.trim();
   if (Number.isFinite(hi.peak_snr)) p['Peak S/N'] = fixed(hi.peak_snr);
+  if (Number.isFinite(hi.snr_integrated)) p['Integrated S/N'] = fixed(hi.snr_integrated);
   if (Number.isFinite(hi.w20_kms)) {
     p['W20 / W50 (km/s)'] = `${fixed(hi.w20_kms, 2)} / ${fixed(hi.w50_kms, 2)}`;
     p['Systemic velocity (km/s)'] = `${fixed(hi.vsys_kms, 2)} (${hi.vsys_definition}; ${hi.velocity_convention}${hi.velocity_frame ? `, ${hi.velocity_frame}` : ''})`;
   }
+  if (hi.notes && hi.notes.length) p['Measurement notes'] = hi.notes.join('; ');
   if (Number.isFinite(hi.centroid_ra_deg)) {
     p['Centroid (RA, Dec)'] = `${sexagesimal(hi.centroid_ra_deg, true)}, ${sexagesimal(hi.centroid_dec_deg)} (${hi.centroid_frame}; ${fixed(hi.centroid_ra_deg, 6)}°, ${fixed(hi.centroid_dec_deg, 6)}°)`;
   }
   if (Number.isFinite(hi.centroid_velocity_kms)) p['Centroid velocity (km/s)'] = fixed(hi.centroid_velocity_kms, 2);
   if (Number.isFinite(hi.major_axis_arcsec)) {
-    p['Size (arcsec)'] = `${fixed(hi.major_axis_arcsec, 2)} × ${fixed(hi.minor_axis_arcsec, 2)}, PA ${fixed(hi.pa_deg, 1)}° (${hi.size_definition})`;
+    const pa = Number.isFinite(hi.pa_deg) ? `, PA ${fixed(hi.pa_deg, 1)}° east of north`
+      : (Number.isFinite(hi.pa_grid_deg) ? `, PA ${fixed(hi.pa_grid_deg, 1)}° on the pixel grid` : '');
+    p['Size (arcsec)'] = `${fixed(hi.major_axis_arcsec, 2)} × ${fixed(hi.minor_axis_arcsec, 2)}${pa} (${hi.size_definition})`;
   }
   return p;
 }

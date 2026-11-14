@@ -95,7 +95,11 @@ def meta_sigma(meta_obj: dict[str, Any]) -> float:
     value = grow.get("sigma") if isinstance(grow, dict) else None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0.0
-    return float(value) if math.isfinite(value) and value > 0 else 0.0
+    try:
+        f = float(value)          # an int beyond float's range raises OverflowError
+    except OverflowError:
+        return 0.0
+    return f if math.isfinite(f) and f > 0 else 0.0
 
 
 def _release_after(work: asyncio.Future | None, permit: int) -> None:

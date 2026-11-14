@@ -11,22 +11,32 @@ are preserved here unedited; the branch names they refer to are historical.
 - **VR: standard HI measurements of a selection (#280).**
   `/v1/cube/mask_stats_bin` answers, under `hi`, what an HI catalogue quotes
   for a lasso or box selection: the integrated flux in Jy km/s with its
-  uncertainty from the noise, the peak and peak S/N, W20 and W50 from the
-  integrated spectrum, the systemic velocity (W20 midpoint) with the velocity
-  convention and frame named, the flux-weighted centroid (pixels, ICRS RA/Dec,
-  velocity) and the size (semi-axes and PA of the moment-0 footprint). The
+  uncertainty from the noise (corrected for the channel correlation measured
+  around the selection, lags 1-3: ×1.5-1.8 on HCG 44; the independent value
+  and ρ1 are returned too), the peak, peak S/N and integrated S/N, W20 and W50
+  from the integrated spectrum (flagged as lower limits when the line reaches
+  the selection's edge), the systemic velocity (W20 midpoint) with the
+  velocity convention and a readable frame named (SPECSYS, else the AIPS CTYPE
+  suffix; topocentric cubes are flagged), the flux-weighted centroid (pixels,
+  ICRS RA/Dec, velocity) and the size (semi-axes of the moment-0 footprint,
+  not deconvolved, and its PA east of north from the WCS). The
   definitions are SoFiA-2's (`app/compute/hi_measures.py`). New query
   parameter `sigma`: the session's noise; without it the noise is measured
-  around the selection with SoFiA-2's local rule. The VR page shows the
+  around the selection with SoFiA-2's local rule, from a frame read thinned
+  to at most 4 M voxels. The velocity-convention label is now one for
+  `reduced_info`, the kinematic fit and the statistics (a bare `VELOCITY`
+  CTYPE says *convention not stated*). The VR page shows the
   numbers in the selection window, the flux ± error, Vsys and W50 on the
   secondary wrist card, and records them in the selection's Provenance; the
   page and the shared-selection publish pass the grow's σ, and the replay
-  records it. The desktop's note for a shared selection adds the uncertainty,
-  peak S/N, Vsys, W20 and W50. Validated against SoFiA-2 2.7.0 on HCG 44
+  records it. The desktop's note for a shared selection adds the uncertainty
+  with its correlation label, peak S/N, Vsys with its convention and frame,
+  W20 and W50. Validated against SoFiA-2 2.7.0 on HCG 44
   (18 sources) and WALLABY (12): the same mask gives the catalogue's values
-  (local noise within 7 %, see `backend/tests/test_hi_measurements.py`). The
-  kinematic fit's w20/w50 now use the same interpolated definition (up to two
-  channels wider than before). The pixel-to-sky conversion moved to
+  (local noise within 7 %, see `backend/tests/test_hi_measurements.py`).
+  **Definition change:** the kinematic comparator's w20/w50 now use the same
+  interpolated definition, so they change by up to two channels (wider) from
+  before. The pixel-to-sky conversion moved to
   `fits_dataset.pixel_to_icrs`, shared by `/v1/datasets/pixel_to_sky` and the
   centroid.
 
