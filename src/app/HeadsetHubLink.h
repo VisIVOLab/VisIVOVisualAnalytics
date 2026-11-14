@@ -98,6 +98,7 @@ private:
     VrHub::ActivityLog m_log;
     qint64 m_after{ 0 };
     int m_epoch{ 0 };
+    QString m_instance;   ///< the backend process the seqs belong to
     int m_fails{ 0 };
     QPointer<QNetworkReply> m_activityReply;
     QTimer m_activityRetry;

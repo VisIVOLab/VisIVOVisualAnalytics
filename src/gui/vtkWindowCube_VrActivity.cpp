@@ -350,18 +350,34 @@ void vtkWindowCube::openHeadsetProduct(const VrHub::Event &event)
 
 void vtkWindowCube::openHeadsetSpectrum(const VrHub::Event &event, const VrHub::Product &product)
 {
-    // A spectrum is drawn by the window that holds it: opened in another
-    // window already, it is not made (and recorded) a second time.
+    // A spectrum is drawn by the window that holds it: open in another window
+    // still, it is not made (and recorded) a second time. The row of a window
+    // since closed gives way to this one. Asked again right before it is
+    // made, since a download may have let another window in meanwhile.
     const QString headsetId = VrHub::productId(event, product);
-    for (const AnalysisProduct &ap : ProductRegistry::instance().all()) {
-        if (ap.productId.startsWith(headsetId + u'@') && ap.ownerId != this->m_windowScope) {
+    const auto heldElsewhere = [this, headsetId]() {
+        bool held = false;
+        for (const AnalysisProduct &ap : ProductRegistry::instance().all()) {
+            if (!ap.productId.startsWith(headsetId + u'@') || ap.ownerId == this->m_windowScope)
+                continue;
+            if (ap.window)
+                held = true;
+            else
+                ProductRegistry::instance().removeProduct(ap.productId);
+        }
+        if (held)
             this->statusBar()->showMessage(
                     u"This spectrum is already open in another window: see its Session Data."_s, 6000);
+        return held;
+    };
+    if (heldElsewhere())
+        return;
+    const auto show = [this, event, product, heldElsewhere](const QVector<double> &axis,
+                                                            const QVector<double> &values,
+                                                            const QString &xLabel,
+                                                            const QString &yLabel) {
+        if (heldElsewhere())
             return;
-        }
-    }
-    const auto show = [this, event, product](const QVector<double> &axis, const QVector<double> &values,
-                                             const QString &xLabel, const QString &yLabel) {
         QVector<double> key = axis;
         if (key.size() != values.size()) {
             key.resize(values.size());

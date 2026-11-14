@@ -9,10 +9,14 @@
 //                                     since, last_seen, in_vr, cube, staged_cube}]}
 //                                     newest first, pages seen in the last 45 s
 //   POST /v1/vr/headset/command    {client?, type: "show", dataset_id, path, kind?, box?}
+//                                   (box: inclusive voxel ranges [[x0, x1], [y0, y1], [z0, z1]])
 //                                   → {seq, client}; 404 with a detail of its
 //                                     own when no page is connected
 //   GET  /v1/vr/activity?after=&wait= → {events: [{seq, client, time, kind,
-//                                     cube_path?, summary, payload}], next}
+//                                     cube_path?, summary, payload}], next, lost, instance}
+//
+// A product's payload: {product, file (a Workspace Exports filename), output_path
+// (its path, added by the backend), dataset_id?, request?, recipe?}.
 //
 // An older backend answers all three with FastAPI's bare 404 "Not Found":
 // that is "no hub here", never "no headset" (visivo::isMissingRouteReply).
@@ -80,7 +84,7 @@ struct Cube
     QString datasetId;
     QString path;
     QString kind;   ///< "" or "cube", "points", "velocity"
-    QString box;    ///< a velocity field's box in Mpc, as the pairing body has it
+    QString box;    ///< its voxel box [[x0, x1], [y0, y1], [z0, z1]] as JSON text ('' none)
     bool isSet() const { return !datasetId.isEmpty() || !path.isEmpty(); }
 };
 
@@ -92,10 +96,8 @@ inline Cube parseCube(const QJsonValue &value)
     c.path = o.value(u"path").toString();
     c.kind = o.value(u"kind").toString();
     const QJsonValue box = o.value(u"box");
-    if (box.isDouble())
-        c.box = QString::number(box.toDouble(), 'g', 12);
-    else if (box.isString())
-        c.box = box.toString();
+    if (box.isArray())
+        c.box = QString::fromUtf8(QJsonDocument(box.toArray()).toJson(QJsonDocument::Compact));
     return c;
 }
 
@@ -219,6 +221,8 @@ inline bool showsCube(const Headset &h, const QString &datasetId, const QString 
 
 /// POST /v1/vr/headset/command for a `show` of the window's cube. No @p client:
 /// the newest page. The token is not in it (the link's values except that).
+/// No `box`: the hub's is a voxel box of the cube, which a whole-cube show
+/// leaves out, and a velocity field's box in Mpc is not one.
 inline QJsonObject showCommandBody(const VrLink::Inputs &in, const QString &client = {})
 {
     QJsonObject body{ { QStringLiteral("type"), QStringLiteral("show") },
@@ -228,8 +232,6 @@ inline QJsonObject showCommandBody(const VrLink::Inputs &in, const QString &clie
         body.insert(QStringLiteral("client"), client);
     if (!in.kind.isEmpty() && in.kind != u"cube")
         body.insert(QStringLiteral("kind"), in.kind);
-    if (!in.boxMpc.isEmpty())
-        body.insert(QStringLiteral("box"), in.boxMpc);
     return body;
 }
 
@@ -309,6 +311,8 @@ struct ActivityPage
     bool unsupported{ false };
     QList<Event> events;
     qint64 next{ 0 };
+    bool lost{ false };   ///< events were dropped by the ring before they were read
+    QString instance;     ///< the backend process (its seqs restart when it does)
     QString error;
 };
 
@@ -330,6 +334,8 @@ inline ActivityPage parseActivity(int httpStatus, const QByteArray &body, const 
     }
     page.ok = true;
     page.next = static_cast<qint64>(o.value(u"next").toDouble());
+    page.lost = o.value(u"lost").toBool();
+    page.instance = o.value(u"instance").toString();
     for (const QJsonValue v : o.value(u"events").toArray()) {
         const QJsonObject e = v.toObject();
         Event ev;
@@ -477,10 +483,13 @@ inline Product parseProduct(const Event &e)
     out.kind = p.value(u"product").toString();
     if (out.kind.isEmpty())
         out.kind = p.value(u"type").toString();
-    out.path = p.value(u"path").toString();
+    // The backend adds output_path for the file the page names.
+    out.path = p.value(u"output_path").toString();
     if (out.path.isEmpty())
-        out.path = p.value(u"output_path").toString();
-    out.workspaceFilename = p.value(u"workspace_filename").toString();
+        out.path = p.value(u"path").toString();
+    out.workspaceFilename = p.value(u"file").toString();
+    if (out.workspaceFilename.isEmpty())
+        out.workspaceFilename = p.value(u"workspace_filename").toString();
     if (out.workspaceFilename.isEmpty() && !out.path.isEmpty())
         out.workspaceFilename = QFileInfo(out.path).fileName();
     out.datasetId = p.value(u"dataset_id").toString();

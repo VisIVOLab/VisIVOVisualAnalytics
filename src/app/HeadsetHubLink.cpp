@@ -234,7 +234,11 @@ void HeadsetHubLink::onActivity(QNetworkReply *reply)
         return;
     }
     m_fails = 0;
-    if (page.next < m_after) {
+    const bool newInstance = !m_instance.isEmpty() && !page.instance.isEmpty()
+            && page.instance != m_instance;
+    if (!page.instance.isEmpty())
+        m_instance = page.instance;
+    if (newInstance || page.next < m_after) {
         // The backend restarted: its seqs began again. What was listed stays,
         // as an older epoch; the new ring is read from its start.
         ++m_epoch;

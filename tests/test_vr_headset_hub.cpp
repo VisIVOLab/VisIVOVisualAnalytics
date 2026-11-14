@@ -73,7 +73,8 @@ public:
                         code = 200;
                         const bool first = line.contains("after=0&");
                         payload = first ? activity
-                                        : QByteArray(R"({"events":[],"next":)") + activityNext + "}";
+                                        : QByteArray(R"({"events":[],"next":)") + activityNext
+                                        + R"(,"instance":")" + instance + "\"}";
                     }
                     s->write("HTTP/1.1 " + QByteArray::number(code) + " X\r\n"
                              + "Content-Type: application/json\r\nContent-Length: "
@@ -103,6 +104,7 @@ public:
     QByteArray commandBody = R"({"seq":1,"client":"page-1"})";
     QByteArray activity = R"({"events":[],"next":0})";
     QByteArray activityNext = "0";
+    QByteArray instance = "inst-1";
 };
 
 VrHub::Event hubEvent(qint64 seq, const QString &kind, const QString &cube, int epoch = 0)
@@ -187,6 +189,9 @@ void TestVrHeadsetHub::presenceIsParsedNewestFirst()
     QCOMPARE(h.sinceMs, qint64(1763110000) * 1000);
     QCOMPARE(h.lastSeenMs, QDateTime(QDate(2026, 11, 14), QTime(10, 0, 5), QTimeZone::UTC).toMSecsSinceEpoch());
     QVERIFY(!p.headsets.at(1).cube.isSet());
+    const VrHub::Presence boxed = VrHub::parsePresence(200, R"({"headsets":[{"client":"p","cube":
+        {"dataset_id":"d","path":"/c.fits","kind":"cube","box":[[0,9],[0,9],[2,5]]}}]})");
+    QCOMPARE(boxed.headsets.first().cube.box, u"[[0,9],[0,9],[2,5]]"_s);
     QVERIFY(VrHub::showsCube(h, u"ds1"_s, QString()));
     QVERIFY(VrHub::showsCube(h, u"other"_s, u"/d/m33.fits"_s));
     QVERIFY(!VrHub::showsCube(p.headsets.at(1), u"ds1"_s, u"/d/m33.fits"_s));
@@ -239,7 +244,8 @@ void TestVrHeadsetHub::showBodyCarriesTheCubeButNoToken()
     body = VrHub::showCommandBody(in, u"page-1"_s);
     QCOMPARE(body.value(u"client"_s).toString(), u"page-1"_s);
     QCOMPARE(body.value(u"kind"_s).toString(), u"velocity"_s);
-    QCOMPARE(body.value(u"box"_s).toString(), u"150"_s);
+    // The hub's box is a voxel box: a velocity field's box in Mpc is not sent.
+    QVERIFY(!body.contains(u"box"_s));
     in.kind = u"cube"_s;
     QVERIFY(!VrHub::showCommandBody(in).contains(u"kind"_s));
 }
@@ -268,10 +274,12 @@ void TestVrHeadsetHub::activityIsParsed()
          "summary":"Moment 0","payload":{"product":"moment","path":"/w/m33_m0.fits"}},
         {"seq":0,"kind":"look"},
         {"seq":2,"client":"p","time":"2026-11-14T10:00:00Z","kind":"look","payload":{"colormap":"magma"}}],
-        "next":3})";
+        "next":3,"lost":true,"instance":"abc"})";
     const VrHub::ActivityPage page = VrHub::parseActivity(200, body);
     QVERIFY(page.ok);
     QCOMPARE(page.next, qint64(3));
+    QVERIFY(page.lost);
+    QCOMPARE(page.instance, u"abc"_s);
     QCOMPARE(page.events.size(), 2);   // seq 0 is not an event
     QCOMPARE(page.events.first().timeMs, qint64(1763110000500));
     QCOMPARE(page.events.first().payload.value(u"product"_s).toString(), u"moment"_s);
@@ -364,6 +372,12 @@ void TestVrHeadsetHub::productsOpenWhereTheyBelong()
     QCOMPARE(VrHub::pvWidth(pv), 3);
     QCOMPARE(VrHub::parseProduct(productEvent(R"({"product":"moment","path":"/w/x/m0.fits"})")).workspaceFilename,
              u"m0.fits"_s);
+    // As the hub sends it: the page's file name, and the path the backend added.
+    const VrHub::Product saved = VrHub::parseProduct(
+            productEvent(R"({"product":"moment","file":"m33_m0.fits","output_path":"/srv/exports/m33_m0.fits"})"));
+    QCOMPARE(saved.path, u"/srv/exports/m33_m0.fits"_s);
+    QCOMPARE(saved.workspaceFilename, u"m33_m0.fits"_s);
+    QCOMPARE(VrHub::openIn(saved), OpenIn::ImageViewer);
 }
 
 void TestVrHeadsetHub::productRecipeBecomesProvenance()
@@ -505,7 +519,7 @@ void TestVrHeadsetHub::linkFollowsPresenceAndActivity()
     fake.activity = R"({"events":[{"seq":1,"client":"p1","kind":"product","summary":"Moment 0",
                        "payload":{"product":"moment","path":"/w/m0.fits"}},
                       {"seq":2,"client":"p1","kind":"look","cube_path":"/d/c.fits","payload":{"colormap":"magma"}}],
-                      "next":2})";
+                      "next":2,"instance":"inst-1"})";
     fake.activityNext = "2";
     QObject userA, userB;
     HeadsetHubLink *link = HeadsetHubLink::forSession(fake.url(), u"tok"_s, u"sess-1"_s);
@@ -522,6 +536,15 @@ void TestVrHeadsetHub::linkFollowsPresenceAndActivity()
     QCOMPARE(presence.count(), 1);
     QVERIFY(activity.count() >= 1);
     QCOMPARE(link->activity().events().first().seq, qint64(2));
+    // The backend restarts (another instance): its ring is read again from
+    // the start, as a newer epoch, and listed above the old events.
+    fake.activity = R"({"events":[{"seq":1,"client":"p1","kind":"cube","summary":"Switched"}],
+                       "next":1,"instance":"inst-2"})";
+    fake.activityNext = "1";
+    fake.instance = "inst-2";
+    QTRY_COMPARE(link->activity().events().size(), 3);
+    QCOMPARE(link->activity().events().first().epoch, 1);
+    QCOMPARE(link->activity().events().first().kind, u"cube"_s);
     // Repeated presence answers that change nothing are not announced again.
     link->refreshPresence();
     QTest::qWait(200);
