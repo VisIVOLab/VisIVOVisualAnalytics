@@ -1604,10 +1604,10 @@ function setMode(m) {
   if (!C.MODES.includes(m) || m === ui.mode) return;
   ui.mode = m;
   $('ui-mode').value = m;
-  ui.crop.drag = null;
+  finishCropDrag();
   ui.pin = null;
 }
-function setClipTool(t) { ui.clipTool = t; ui.crop.drag = null; }
+function setClipTool(t) { ui.clipTool = t; finishCropDrag(); }
 
 /** Haptics on the hand in `role` (issue #201): 'press', 'done' or 'error'. */
 function buzz(role, kind) {
@@ -2451,23 +2451,35 @@ function cropPointer(worldRay, pressed, edge, tipWorld = null) {
   const f = cropFrame();
   if (!f) { c.hover = null; c.drag = null; return false; }
   const ray = worldRay ? CG.modelRay(state.model, worldRay) : null;
+  const tip = tipWorld ? M.transformPoint(M.invert(state.model), tipWorld) : null;
   if (c.drag) {
     if (pressed) {
-      if (ray) { state.clip = CG.dragCrop(c.drag, ray, f); decorationsChanged(); }
+      if (ray) { state.clip = CG.dragCrop(c.drag, ray, f, tip); decorationsChanged(); }
       return true;
     }
-    state.clip = CG.endDrag(c.drag, state.clip);
-    c.drag = null;
-    decorationsChanged();
-    labelsChanged();
+    finishCropDrag();
   }
-  const tip = tipWorld && ray ? M.transformPoint(M.invert(state.model), tipWorld) : null;
   c.hover = ray ? CG.hitCrop(f, state.clip, ray, { scale: M.uniformScale(state.model), tip }) : null;
   if (edge && ray && c.hover) {
-    const d = CG.startDrag(c.hover, state.clip, ray, f);
-    if (d) { pushUndo(); c.drag = d; buzz('primary', 'press'); } else buzz('primary', 'error');
+    const d = CG.startDrag(c.hover, state.clip, ray, f, tip);
+    // The look before the drag, kept: an undo step only if the drag changes the crop.
+    if (d) { d.undo = lookKind() ? lookSnapshot() : null; c.drag = d; buzz('primary', 'press'); } else buzz('primary', 'error');
   }
   return !!c.drag;
+}
+/** A crop drag ends (the trigger let go, or the tool, mode or data changed
+ *  under it, #277 review): a new crop too small is dropped, and the drag is
+ *  one undo step only when it changed the crop. */
+function finishCropDrag() {
+  const d = ui.crop.drag;
+  if (!d) return;
+  ui.crop.drag = null;
+  const f = cropFrame();
+  const end = CG.endDrag(d, state.clip, f);
+  if (d.undo && CG.clipChanged(d.clip0, end)) ui.undo.push(d.undo);
+  state.clip = end;
+  decorationsChanged();
+  labelsChanged();
 }
 
 /** The crop's look: a faint fill (brighter while its inside is pointed at), the dots. */
@@ -2500,6 +2512,7 @@ function drawCropGizmo(v, eye) {
   // The lines only when the box or what is pointed at changed.
   const key = JSON.stringify([state.clip, hover && (hover.id || hover.kind), f]);
   if (key !== ui.crop.key) {
+    // (A planar table's flat axis has no dots: gizmo() leaves them out.)
     R.setLines(ui.crop.drag && ui.crop.drag.kind === 'new' ? CG.previewEdges(f, state.clip) : g.edges, R.cropLines);
     ui.crop.key = key;
   }
@@ -3396,7 +3409,7 @@ async function startSession(session, mode, bench, startGen, wantLayers) {
     palette.pointer.update(null, false); palette.pointer.update(null, false);
     palette.open = false;
     for (const w of Object.values(wins)) { w.pointer.update({ bar: null, content: null }, false); w.drag = null; }
-    ui.hit = null; ui.crop.drag = null; ui.crop.hover = null; ui.sliding = null;
+    ui.hit = null; finishCropDrag(); ui.crop.hover = null; ui.sliding = null;
     Object.assign(ui.menu, { open: false, wasHeld: false });
     ui.menuPalm.reset();
     if (b) showBench(b);
@@ -3467,7 +3480,7 @@ function handleInput(frame, dtS) {
     // What the hands hold at the swap is not a new press in their new roles.
     xr.buttons = { pTrig: btn(Ph, 'trigger'), pLower: btn(Ph, 'lower'), pUpper: btn(Ph, 'upper'), sUpper: btn(Sh, 'upper') };
     xr.roles = roles;
-    ui.crop.drag = null;
+    finishCropDrag();
     // Nor is a menu button held at the swap a press of the new one.
     ui.menu.wasHeld = btn(Sh, 'lower');
     ui.menuPalm.reset(btn(Sh, 'lower'), performance.now());
@@ -3512,7 +3525,7 @@ function handleInput(frame, dtS) {
     cropPointer(ui.crop.drag || !onUi ? pRay : null, pTrig, trigEdge && !onUi, Ph ? Ph.pos : null);
   } else {
     ui.crop.hover = null;
-    ui.crop.drag = null;
+    finishCropDrag();
     if (trigEdge && boxRay) primaryAct(act('primary', 'trigger'), boxRay);
   }
 

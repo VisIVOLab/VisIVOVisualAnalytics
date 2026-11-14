@@ -63,6 +63,7 @@ export function createAnalysis(ctx) {
 
   function productTexture(which) {
     const tool = which === 'moment' ? moment : pv;
+    if (which === 'moment') moment.recut();        // the crop changed since: the map cut again (#277)
     if (!tool.state.result || !show[which] || !tool.state.canvas) return null;
     const R = ctx.renderer;
     if (!tex[which]) tex[which] = R.createPanel();

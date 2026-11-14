@@ -186,3 +186,71 @@ test('the drawing: twelve edges on the crop, six faces sized to it, six dots, th
   assert.equal(CG.gizmo(f, clip, { kind: 'inside' }).fillHot, true);
   assert.equal(CG.gizmo(f, clip, { kind: 'move' }).fillHot, true, 'while the crop is moved');
 });
+
+test('review: a ray nearly along a face\'s axis does not send the face away (sin² under MIN_SIN2)', () => {
+  const p = [0.3, 0, 0];
+  const at = (deg) => { const r = (deg * Math.PI) / 180; return { o: [2, -0.5, 0], d: [-Math.cos(r), Math.sin(r), 0] }; };   // crossing the x axis ahead
+  assert.equal(CG.axisParam(at(10), p, 0), null, '10° from the x axis: sin² 0.03');
+  assert.notEqual(CG.axisParam(at(20), p, 0), null, '20°: sin² 0.12');
+  const f = CG.cubeFrame([1, 1, 1]);
+  const clip = { min: [0.2, 0.2, 0.2], max: [0.8, 0.8, 0.8] };
+  const r0 = { o: [0.3, 0, 2], d: [0, 0, -1] };
+  const d = CG.startDrag(CG.hitCrop(f, clip, { o: [0.3, 0.01, 2], d: [0, 0, -1] }), clip, r0, f);
+  const c1 = CG.dragCrop(d, { o: [0.4, 0, 2], d: [0, 0, -1] }, f);
+  close(c1.max[0], 0.9);
+  const c2 = CG.dragCrop(d, at(5), f);
+  assert.deepEqual(c2, c1, 'nearly along the axis: the last place stays');
+});
+
+test('review: a face taken by the controller\'s tip follows the tip along its axis', () => {
+  const f = CG.cubeFrame([2, 1, 1]);
+  const clip = { min: [0.2, 0.2, 0.2], max: [0.8, 0.8, 0.8] };
+  const tip = [0.62, 0.01, 0.02];                               // near the x-max dot (model (0.6, 0, 0))
+  const away = { o: tip, d: [0, 1, 0] };                        // the ray points up, at nothing
+  const hit = CG.hitCrop(f, clip, away, { tip });
+  assert.equal(hit.id, 'x-max');
+  assert.equal(hit.byTip, true);
+  const d = CG.startDrag(hit, clip, away, f, tip);
+  // The tip moves 0.2 model units along x (0.1 of the box, which is 2 long); the ray's swing does not count.
+  const c = CG.dragCrop(d, { o: [0.82, 0.01, 0.02], d: [0.3, 1, 0.2] }, f, [0.82, 0.01, 0.02]);
+  close(c.max[0], 0.9);
+  // A face taken by the ray ignores the tip.
+  const r0 = { o: [0.6, 0, 3], d: [0, 0, -1] };
+  const d2 = CG.startDrag(CG.hitCrop(f, clip, r0), clip, r0, f, [5, 5, 5]);
+  assert.equal(d2.byTip, false);
+});
+
+test('review: a flat axis (a planar table) has no dots, is never cropped, and gives no NaN', () => {
+  const f = CG.sceneFrame({ lo: [0, 0, 5], hi: [10, 20, 5], centre: [5, 10, 5], side: 20 });
+  assert.ok(CG.isFlat(f, 2) && !CG.isFlat(f, 0));
+  const clip = { min: [0, 0, 0], max: [1, 1, 1] };
+  assert.deepEqual(CG.handlePoints(clip, f).map((h) => h.id), ['x-min', 'x-max', 'y-min', 'y-max']);
+  assert.equal(CG.gizmo(f, clip).handles.length, 4);
+  assert.ok(CG.toFrac(f, [0.1, 0.2, 0.3]).every(Number.isFinite));
+  // A new crop seen from above (along the flat z): x and y drawn, z kept whole.
+  const o = [0, 0, 2];
+  const r0 = { o, d: M.normalize(M.sub([-0.2, -0.3, 0], o)) };
+  const d = CG.startDrag(CG.hitCrop(f, clip, r0), clip, r0, f);
+  let c = CG.dragCrop(d, { o, d: M.normalize(M.sub([0.1, 0.2, 0], o)) }, f);
+  c = CG.endDrag(d, c, f);
+  assert.ok([...c.min, ...c.max].every(Number.isFinite), JSON.stringify(c));
+  assert.deepEqual([c.min[2], c.max[2]], [0, 1]);
+  assert.ok(c.max[0] - c.min[0] > 0.2 && c.max[1] - c.min[1] > 0.2, JSON.stringify(c));
+  // Seen edge-on (along x): the only other axis, y, is drawn; the flat z stays whole.
+  const side = { o: [2, 0.1, 0], d: [-1, 0, 0] };
+  const d2 = CG.startDrag(CG.hitCrop(f, clip, side), clip, side, f);
+  const c2 = CG.endDrag(d2, CG.dragCrop(d2, { o: [2, 0.1, 0], d: M.normalize([-2, -0.2, 0]) }, f), f);
+  assert.deepEqual([c2.min[2], c2.max[2]], [0, 1]);
+  assert.ok([...c2.min, ...c2.max].every(Number.isFinite));
+});
+
+test('review: a drag is an undo step only when it changed the crop', () => {
+  const a = { min: [0, 0, 0], max: [1, 1, 1] };
+  assert.equal(CG.clipChanged(a, { min: [0, 0, 0], max: [1, 1, 1] }), false);
+  assert.equal(CG.clipChanged(a, { min: [0, 0.1, 0], max: [1, 1, 1] }), true);
+  // A click on empty space: endDrag gives back the crop as it was, so no step.
+  const f = CG.cubeFrame([1, 1, 1]);
+  const r0 = { o: [0, 0, 2], d: [0, 0, -1] };
+  const d = CG.startDrag(CG.hitCrop(f, a, r0), a, r0, f);
+  assert.equal(CG.clipChanged(d.clip0, CG.endDrag(d, CG.dragCrop(d, r0, f), f)), false);
+});

@@ -434,3 +434,49 @@ test('the moment of the cropped field: the crop\'s pixels of the full cube, as t
   // A crop thinner than a pixel still keeps one.
   assert.deepEqual(cropPixels({ min: [0.5, 0.5, 0], max: [0.501, 0.501, 1] }, shape).slice(0, 2), [98, 98]);
 });
+
+test('review: a whole-field map is cut with the crop it was asked with, and cut again when the crop changes', async () => {
+  const { cutWhole } = await import('../../app/static/vr/js/tools-moment.js');
+  const W = 8, H = 6, shape = [W, H, 4];
+  const values = Float32Array.from({ length: W * H }, (_, i) => i);
+  const asked = { min: [0.25, 0, 0], max: [0.75, 0.5, 1] };
+  const a = cutWhole(0, values, W, H, asked, shape);
+  assert.deepEqual(a.box, [2, 5, 0, 2]);
+  assert.equal(a.cut.length, 4 * 3);
+  assert.equal(a.cut[0], 2);
+  assert.equal(a.cropped, true);
+  // The crop changed after the request: a different cut, with its own key.
+  const b = cutWhole(0, values, W, H, { min: [0, 0.5, 0], max: [0.5, 1, 1] }, shape);
+  assert.deepEqual(b.box, [0, 3, 3, 5]);
+  assert.notEqual(a.cropKey, b.cropKey);
+  // No crop: the whole map, not cut.
+  const c = cutWhole(0, values, W, H, { min: [0, 0, 0.2], max: [1, 1, 0.8] }, shape);
+  assert.equal(c.cut, values);
+  assert.equal(c.cropped, false);
+  // A map not of the full cube's pixels is never cut.
+  assert.equal(cutWhole(0, values, W, H, asked, [16, 12, 4]).cropped, false);
+});
+
+test('review: the moment tool keeps the crop of its request and cuts again on recut()', async () => {
+  const { createMomentTool } = await import('../../app/static/vr/js/tools-moment.js');
+  const W = 8, H = 6;
+  let clip = { min: [0.25, 0, 0], max: [0.75, 0.5, 1] };
+  let release;
+  const answer = { valid: true, width: W, height: H, moment_unit: 'Jy/beam km/s', bunit: 'Jy/beam',
+    data_base64: Buffer.from(Float32Array.from({ length: W * H }, (_, i) => i).buffer).toString('base64') };
+  const backend = { _json: () => new Promise((r) => { release = () => r(answer); }) };
+  const t = createMomentTool({
+    selection: { sel: { lasso: null }, record: () => ({ product: { id: 'p' } }) },
+    backend: () => backend, datasetId: () => 'd', info: () => ({ full_shape: [W, H, 4] }), onChange() {},
+    clipZ: () => [0, 1], clip: () => clip,
+  });
+  const done = t.compute(0);
+  clip = { min: [0, 0, 0], max: [1, 1, 1] };          // changed while the request runs
+  release();
+  await done;
+  assert.equal(t.state.error, '');
+  assert.deepEqual(t.state.result.box, [2, 5, 0, 2], 'cut with the crop it was asked with');
+  assert.equal(t.recut(), true, 'the crop changed since: cut again');
+  assert.equal(t.state.result.cropped, false);
+  assert.equal(t.recut(), false, 'nothing changed: nothing done');
+});

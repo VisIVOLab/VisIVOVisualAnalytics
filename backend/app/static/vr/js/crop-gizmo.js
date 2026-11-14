@@ -43,7 +43,11 @@ export function sceneFrame(box) {
   return { a: [0, 1, 2].map((i) => (box.lo[i] - box.centre[i]) / box.side), b: [0, 1, 2].map((i) => (box.hi[i] - box.lo[i]) / box.side) };
 }
 export const toModel = (f, t) => t.map((v, i) => f.a[i] + v * f.b[i]);
-export const toFrac = (f, p) => p.map((v, i) => (f.b[i] ? (v - f.a[i]) / f.b[i] : 0));
+/** Is axis i of the frame flat (a planar point table or field: no extent)? Its crop is never touched. */
+export const isFlat = (f, i) => !(Math.abs(f.b[i]) > 1e-9);
+export const toFrac = (f, p) => p.map((v, i) => (isFlat(f, i) ? 0 : (v - f.a[i]) / f.b[i]));
+/** Rays this close to a face's own axis (sin² of the angle) cannot say where along it: the face stays. */
+export const MIN_SIN2 = 0.05;
 
 const copy = (clip) => ({ min: [...clip.min], max: [...clip.max] });
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
@@ -53,9 +57,10 @@ export function isCropped(clip) {
   return !!clip && [0, 1, 2].some((i) => clip.min[i] > 0 || clip.max[i] < 1);
 }
 
-/** The handles: each face's centre (fractions), with its face and id. */
-export function handlePoints(clip) {
-  return FACES.map((face) => {
+/** The handles: each face's centre (fractions), with its face and id; none
+ *  on a flat axis of `frame` (given). */
+export function handlePoints(clip, frame = null) {
+  return FACES.filter((face) => !frame || !isFlat(frame, face.axis)).map((face) => {
     const p = [0, 1, 2].map((i) => (clip.min[i] + clip.max[i]) / 2);
     p[face.axis] = clip[face.end][face.axis];
     return { face, id: faceId(face), p };
@@ -104,7 +109,7 @@ export function hitCrop(frame, clip, ray, { scale = 1, tip = null } = {}) {
   const r = HIT_M / scale;
   let best = null;
   if (dd > 0) {
-    for (const h of handlePoints(clip)) {
+    for (const h of handlePoints(clip, frame)) {
       const c = toModel(frame, h.p);
       const s = M.dot(M.sub(c, o), d) / dd;
       if (s < 0) continue;
@@ -114,15 +119,16 @@ export function hitCrop(frame, clip, ray, { scale = 1, tip = null } = {}) {
   }
   if (!best && tip) {
     let near = TIP_M / scale;
-    for (const h of handlePoints(clip)) {
+    for (const h of handlePoints(clip, frame)) {
       const c = toModel(frame, h.p);
       const dist = M.length(M.sub(tip, c));
-      if (dist <= near) { near = dist; best = { kind: 'face', face: h.face, id: h.id, t: dd > 0 ? Math.max(0, M.dot(M.sub(c, o), d) / dd) : 0, point: c }; }
+      // Taken by the controller's tip: the face then follows the tip, not the ray.
+      if (dist <= near) { near = dist; best = { kind: 'face', face: h.face, id: h.id, t: dd > 0 ? Math.max(0, M.dot(M.sub(c, o), d) / dd) : 0, point: c, byTip: true }; }
     }
   }
   if (best) return best;
   const k = dd > 0 ? depthAxis(d) : 0;
-  const across = [0, 1, 2].some((i) => i !== k && (clip.min[i] > 0 || clip.max[i] < 1));
+  const across = [0, 1, 2].some((i) => i !== k && !isFlat(frame, i) && (clip.min[i] > 0 || clip.max[i] < 1));
   if (dd > 0 && across) {
     const span = rayAabb(o, d, toModel(frame, clip.min), toModel(frame, clip.max));
     if (span && span[1] >= 0) {
@@ -134,7 +140,8 @@ export function hitCrop(frame, clip, ray, { scale = 1, tip = null } = {}) {
 }
 
 /** The parameter u along the line p + u·e_axis (model space) closest to the
- *  ray, or null when the ray runs along the line or the point is behind it. */
+ *  ray, or null when the ray runs (nearly) along the line (sin² of the angle
+ *  under MIN_SIN2: the closest point would race away) or the point is behind it. */
 export function axisParam(ray, p, axis) {
   const { o, d } = ray;
   const e = [0, 0, 0];
@@ -142,7 +149,7 @@ export function axisParam(ray, p, axis) {
   const w = M.sub(o, p);
   const a = M.dot(d, d), b = M.dot(d, e), dw = M.dot(d, w), ew = M.dot(e, w);
   const den = a - b * b;
-  if (!(den > 1e-9 * a)) return null;
+  if (!(a > 0) || !(den / a > MIN_SIN2)) return null;
   const s = (b * ew - dw) / den;
   if (s < 0) return null;
   return (a * ew - b * dw) / den;
@@ -164,11 +171,11 @@ export function planePoint(frame, ray, k, at) {
 }
 
 /** A crop from two opposite corners (fractions) across the axes other than
- *  k; axis k as in `clip0`. */
-export function clipFromCorners(clip0, k, A, B) {
+ *  k (and not flat in `frame`); those as in `clip0`. */
+export function clipFromCorners(clip0, k, A, B, frame = null) {
   const out = copy(clip0);
   for (let i = 0; i < 3; i++) {
-    if (i === k) continue;
+    if (i === k || (frame && isFlat(frame, i))) continue;
     out.min[i] = clamp01(Math.min(A[i], B[i]));
     out.max[i] = clamp01(Math.max(A[i], B[i]));
   }
@@ -179,11 +186,14 @@ export function clipFromCorners(clip0, k, A, B) {
  * A drag begun at `hit` (hitCrop) with the ray `ray` (model space): what the
  * next frames need, or null when nothing can be dragged there.
  */
-export function startDrag(hit, clip, ray, frame) {
+export function startDrag(hit, clip, ray, frame, tip = null) {
   const clip0 = copy(clip);
   if (hit.kind === 'face') {
-    const u0 = axisParam(ray, hit.point, hit.face.axis);
-    return { kind: 'face', face: hit.face, id: hit.id, clip0, point: hit.point, u0, v0: clip[hit.face.end][hit.face.axis] };
+    if (isFlat(frame, hit.face.axis)) return null;
+    // Taken by the tip, the face follows the tip along its axis; else the ray.
+    const byTip = !!(hit.byTip && tip);
+    const u0 = byTip ? tip[hit.face.axis] - hit.point[hit.face.axis] : axisParam(ray, hit.point, hit.face.axis);
+    return { kind: 'face', face: hit.face, id: hit.id, clip0, point: hit.point, u0, v0: clip[hit.face.end][hit.face.axis], byTip };
   }
   if (hit.kind === 'inside') return { kind: 'move', clip0, t: hit.t, p0: toFrac(frame, hit.point) };
   const k = depthAxis(ray.d);
@@ -192,10 +202,10 @@ export function startDrag(hit, clip, ray, frame) {
   return A ? { kind: 'new', clip0, k, at, A, B: A } : null;
 }
 
-/** The crop while the drag goes on, the ray now (model space). */
-export function dragCrop(drag, ray, frame) {
+/** The crop while the drag goes on, the ray now and the controller's tip (model space). */
+export function dragCrop(drag, ray, frame, tip = null) {
   if (drag.kind === 'face') {
-    const u = axisParam(ray, drag.point, drag.face.axis);
+    const u = drag.byTip ? (tip ? tip[drag.face.axis] - drag.point[drag.face.axis] : null) : axisParam(ray, drag.point, drag.face.axis);
     // Along the face's own axis the ray cannot say where: it stays.
     if (u === null || drag.u0 === null) return copy(drag.last || drag.clip0);
     const out = moveFace(drag.clip0, drag.face, drag.v0 + (u - drag.u0) / frame.b[drag.face.axis], GAP);
@@ -215,15 +225,24 @@ export function dragCrop(drag, ray, frame) {
   }
   const B = planePoint(frame, ray, drag.k, drag.at);
   if (B) drag.B = B;
-  return clipFromCorners(drag.clip0, drag.k, drag.A, drag.B);
+  return clipFromCorners(drag.clip0, drag.k, drag.A, drag.B, frame);
 }
 
 /** The crop when the trigger is let go: a new crop too thin on a drawn axis
- *  (a click, not a drag) leaves the crop as it was. */
-export function endDrag(drag, clip) {
+ *  (a click, not a drag) leaves the crop as it was. `frame` (given) tells
+ *  the flat axes, which are never drawn. */
+export function endDrag(drag, clip, frame = null) {
   if (drag.kind !== 'new') return copy(clip);
-  for (let i = 0; i < 3; i++) if (i !== drag.k && clip.max[i] - clip.min[i] < MIN_NEW) return copy(drag.clip0);
+  for (let i = 0; i < 3; i++) {
+    if (i === drag.k || (frame && isFlat(frame, i))) continue;
+    if (clip.max[i] - clip.min[i] < MIN_NEW) return copy(drag.clip0);
+  }
   return copy(clip);
+}
+
+/** Did the drag change the crop? (Only then is it an undo step.) */
+export function clipChanged(a, b) {
+  return [0, 1, 2].some((i) => Math.abs(a.min[i] - b.min[i]) > 1e-9 || Math.abs(a.max[i] - b.max[i]) > 1e-9);
 }
 
 // ── What is drawn ───────────────────────────────────────────────────────────
@@ -265,7 +284,7 @@ export function gizmo(frame, clip, hover = null) {
     ex[u] = 1; ey[v] = 1; ez[f.axis] = 1;
     return { id: faceId(f), m: new Float32Array([...ex, 0, ...ey, 0, ...ez, 0, ...c, 1]), size: [Math.abs(hi[u] - lo[u]), Math.abs(hi[v] - lo[v])] };
   });
-  const handles = handlePoints(clip).map((h) => ({ id: h.id, point: toModel(frame, h.p), hot: h.id === hotId }));
+  const handles = handlePoints(clip, frame).map((h) => ({ id: h.id, point: toModel(frame, h.p), hot: h.id === hotId }));
   return { edges, faces, handles, fillHot: !!moving };
 }
 

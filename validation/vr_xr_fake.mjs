@@ -28,6 +28,16 @@ async function runCropChecks({ c, check, label }) {
   await sleep(200);
   const s0 = await get();
   check(`xrfake ${label}: crop: the Spatial crop tool draws the crop box`, s0.on && s0.lines >= 24, JSON.stringify(s0));
+  // A pull without a drag on the box (nothing cropped: a new crop) changes
+  // nothing and leaves no undo step (#277 review).
+  const undoSize = () => c.evaluate('window.__vrMenu.ui.undo.size');
+  const undo0 = await undoSize();
+  await aim(await world([0.3, 0.3, 0.5]));
+  await trigger(true);
+  await trigger(false);
+  const sc = await get();
+  check(`xrfake ${label}: crop: a pull without a drag changes nothing and leaves no undo step`,
+    (await undoSize()) === undo0 && sc.clip.min.every((v) => v === 0) && sc.clip.max.every((v) => v === 1), JSON.stringify({ undo0, now: await undoSize(), clip: sc.clip }));
   // Resize: the dot on the x-max face, then the ray swung towards the box's centre along x.
   await aim(await world([1, 0.5, 0.5]));
   const hov = await get();
@@ -38,6 +48,7 @@ async function runCropChecks({ c, check, label }) {
   const s1 = await get();
   check(`xrfake ${label}: crop: dragging the x-max dot moves that face only`,
     Math.abs(s1.clip.max[0] - 0.7) < 0.03 && s1.clip.min[0] === 0 && s1.clip.max[1] === 1 && s1.clip.min[1] === 0, JSON.stringify(s1.clip));
+  check(`xrfake ${label}: crop: that drag is one undo step`, (await undoSize()) === undo0 + 1, `${undo0} → ${await undoSize()}`);
   // Move: the inside (off the dots), dragged towards -x.
   const inside = [0.25, 0.3, 0.55];
   await aim(await world(inside));
