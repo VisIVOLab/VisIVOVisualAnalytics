@@ -45,19 +45,46 @@ The viewer needs both a sky frame and a distance for each entry:
 * - Distance mode
   - **Real-space (comoving)**, the default, or **redshift-space (cz/H₀)**,
     which places every source at the naive Hubble distance from its redshift
-    alone. Against a source that also has an independent real-space distance,
-    the difference between the two is its line-of-sight peculiar velocity.
+    alone, with the H₀ of the chosen model (Planck18 67.66, WMAP9 69.32, a
+    custom model's own). Against a source that also has an independent
+    real-space distance, the difference between the two is its line-of-sight
+    peculiar velocity.
 * - Distance source (priority, in real-space mode)
-  - 1. `entry.distanceMpc` override (set by the cosmology selector)
-    2. The catalogue's `distance` / `dist` / `dMpc` field
-    3. A redshift field (`z`, `REDSHIFT`, `ZSPEC`, `ZMEAN`, `ZPHOT`)
-       integrated through a chosen cosmology
-    4. Hard-coded 300 Mpc fallback
+  - 1. The catalogue's `distance` / `dist` / `dMpc` field, when it is > 0.
+       A measured distance wins under every cosmology.
+    2. A redshift field (`z`, `REDSHIFT`, `ZSPEC`, `ZMEAN`, `ZPHOT`) > 0,
+       turned into a comoving distance by the chosen cosmology
+    3. Otherwise no distance: the source is **not placed**
 ```
 
 The **Cosmology** card in the left column says which of these produced the
-positions on screen — the model, or the catalogue's own distance column, or
-cz/H₀ with the model unused.
+positions on screen: the model, the catalogue's own distance column, or cz/H₀
+with the model's H₀.
+
+### Sources without a distance
+
+A source with no distance column and a redshift that is ≤ 0, zero or missing
+has no distance. It is left out of the 3-D scene and counted, in every
+distance mode: a zero redshift means "not measured" in catalogues, a negative
+one (M31, M81, M33: a peculiar velocity larger than the Hubble flow) gives no
+distance in redshift space either, and a default distance would invent a
+position. (Before, such sources were put on a shell at 300 Mpc.)
+
+Under the Cosmology card a line counts them, for example
+*43,507 placed · 26 unplaced (no distance) · 112 with cz < 1000 km/s (distance
+uncertain: peculiar velocities)*. **Unplaced Sources…** (also in the **Tools**
+menu) lists them with Name, RA, Dec, cz [km/s] and the reason: *z ≤ 0*,
+*z = 0 (not measured)* or *no redshift*. A catalogue in which no source has a
+distance (positions only) opens with an empty scene and says so.
+
+Sources with 0 < cz < 1000 km/s are placed from their redshift but flagged:
+typical peculiar velocities are about 300 km/s (Strauss & Willick 1995,
+Phys. Rep. 261, 271), so the distance is uncertain by 30 % or more. A measured
+distance is not flagged.
+
+Selecting a source says where its distance came from, for example
+*Distance 12.3 Mpc, from z (comoving, Planck18)* or *Distance 3.6 Mpc, from
+column DIST*, followed by *cz < 1000 km/s: uncertain* when that applies.
 
 ### Cosmology models
 

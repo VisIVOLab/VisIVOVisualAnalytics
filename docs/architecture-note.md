@@ -2040,10 +2040,10 @@ Renders a remote CSV catalogue as a 3-D point cloud in Cartesian (RA/Dec/distanc
 Key capabilities:
 - **Coordinate frame**: FK5 J2000 (default) or Galactic (l, b) via `applyFrameToEntries()`; uses `wcscon()` from libwcs
 - **Distance resolution** (per entry, priority order):
-  1. `entry.distanceMpc` override (set by cosmology selector)
-  2. catalogue `distance` / `dist` / `dMpc` field
-  3. cosmological integration from redshift (`z`, `REDSHIFT`, `Zspec`, …)
-  4. hardcoded fallback 300 Mpc
+  1. catalogue `distance` / `dist` / `dMpc` field (wins under every model, #265)
+  2. the redshift (`z`, `REDSHIFT`, `Zspec`, …) > 0: the cosmology selector's
+     distance (`entry.distanceMpc`) or the local Planck18 integral
+  3. otherwise no distance: the row is kept apart (`unplaced`), not drawn
 - **Cosmology model selector**: Planck18 (local integration), Planck15/13/WMAP9 (async batch via `/v1/cosmology/distance/batch`)
 - **Geometry modes**: Ellipsoid, Sphere, Point, Cross (vtkGlyph3D)
 - **Size modes**: Fixed, Major axis, LLS, Flux

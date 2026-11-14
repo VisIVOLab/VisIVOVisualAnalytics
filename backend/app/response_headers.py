@@ -110,6 +110,11 @@ X_COLOR_FIELD = "X-Visivo-Color-Field"
 X_COLOR_RANGE = "X-Visivo-Color-Range"
 X_COLOR_LOG = "X-Visivo-Color-Log"
 X_DATA_RANGE = "X-Visivo-Data-Range"
+# A sky catalogue's placement (issues #260, #265): "frame,distance_mode,cosmology",
+# and the sources left out for want of a distance, or placed from cz < 1000 km/s.
+X_SKY = "X-Visivo-Sky"
+X_UNPLACED = "X-Visivo-Unplaced"
+X_UNCERTAIN = "X-Visivo-Uncertain"
 X_LINE_POINTS = "X-Visivo-Line-Points"
 X_LINES = "X-Visivo-Lines"
 X_ARROWS = "X-Visivo-Arrows"

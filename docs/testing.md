@@ -383,10 +383,16 @@ All tests use `QJsonObject` literals — no network calls. Covers the static
 |------|-------|---------|
 | `entryDist_fromDistanceField` | `distance=500` | 500.0 |
 | `entryDist_fromRedshiftField` | `z=0.1` | 400–460 Mpc |
-| `entryDist_fallback300Mpc` | no distance/z field | 300.0 |
-| `entryDist_distanceMpcOverride_takesPriority` | `distance=500`, `entry.distanceMpc=750` | 750.0 |
+| `entryDist_noDistance_isUnplaced` | no distance/z field | NaN, reason "no redshift" (#265) |
+| `entryDist_measuredDistance_beatsModelOverride` | `distance=500`, `z=0.1`, `entry.distanceMpc=750` | 500.0 (a measured distance wins, #265) |
+| `entryDist_modelOverride_placesRedshiftOnlySources` | `z=0.1`, `entry.distanceMpc=750` | 750.0 |
 | `entryDist_negativeDistanceField_fallsBackToRedshift` | `distance=-100`, `z=0.05` | 150–280 Mpc |
-| `entryDist_zeroRedshift_fallsBackTo300` | `z=0.0` | 300.0 (z=0 → Dc=0 → fallback) |
+| `entryDist_zeroRedshift_isUnplaced` | `z=0.0` | NaN, "z = 0 (not measured)", both modes |
+| `entryDist_negativeRedshift_isUnplaced` | `z<0` (M31) | NaN, "z ≤ 0", both modes |
+| `entryDist_negativeRedshift_withDistanceColumn_isPlaced` | `z<0`, `DIST=0.78` | 0.78 |
+| `entryDist_lowCz_isFlaggedUncertain` | cz = 500 / 1500 km/s | flagged / not; a measured distance is not |
+| `parse_unplacedRowsAreKeptApart` and the `placement_*` tests | | unplaced rows out of `entries`; status line, pick lines, table rows (#265) |
+| `redshiftSpaceMode_usesTheModelsH0` | `H0 = 69.32` | cz/69.32 (#260) |
 
 ---
 

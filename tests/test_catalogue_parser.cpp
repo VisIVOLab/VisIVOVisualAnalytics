@@ -2,8 +2,14 @@
 
 #include "TestCatalogueParser.h"
 #include "gui/Catalogue3DParser.h"
+#include "gui/CataloguePlacement.h"
+#include "app/CosmologyModel.h"
 
 #include <QTest>
+
+#include <cmath>
+
+using namespace Qt::StringLiterals;
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -180,24 +186,46 @@ void TestCatalogueParser::entryDist_fromRedshiftField()
              qPrintable(QStringLiteral("via z=0.1 got %1 Mpc; expected 400–460").arg(d)));
 }
 
-void TestCatalogueParser::entryDist_fallback300Mpc()
+void TestCatalogueParser::entryDist_noDistance_isUnplaced()
 {
-    // No usable distance or redshift → hardcoded 300 Mpc default.
+    // No usable distance or redshift: no distance at all (issue #265), where
+    // there used to be a 300 Mpc default.
+    using namespace Catalogue3DParser::detail;
     const auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"),
                                   QStringLiteral("flux") });
     auto e = makeEntry(s);
-    QCOMPARE(Catalogue3DParser::detail::entryDistanceMpc(e, s), 300.0);
+    QVERIFY(std::isnan(entryDistanceMpc(e, s)));
+    const EntryDistance d = entryDistance(e, s);
+    QVERIFY(!d.placed());
+    QVERIFY(d.reason == UnplacedReason::NoRedshift);
 }
 
-void TestCatalogueParser::entryDist_distanceMpcOverride_takesPriority()
+void TestCatalogueParser::entryDist_measuredDistance_beatsModelOverride()
 {
-    // entry.distanceMpc > 0 is the cosmology-selector override and beats
-    // any catalogue field value.
+    // entry.distanceMpc is the cosmology selector's distance for the redshift;
+    // a measured distance wins under every model (issue #265). It used to be
+    // the other way round, so WMAP9 replaced a catalogue's DIST.
+    using namespace Catalogue3DParser::detail;
     const auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"),
-                                  QStringLiteral("distance") });
-    auto e = makeEntry(s, { { QStringLiteral("distance"), QVariant(500.0) } });
+                                  QStringLiteral("distance"), QStringLiteral("z") });
+    auto e = makeEntry(s, { { QStringLiteral("distance"), QVariant(500.0) },
+                            { QStringLiteral("z"), QVariant(0.1) } });
     e.distanceMpc = 750.0;
-    QCOMPARE(Catalogue3DParser::detail::entryDistanceMpc(e, s), 750.0);
+    const EntryDistance d = entryDistance(e, s);
+    QCOMPARE(d.mpc, 500.0);
+    QVERIFY(d.origin == DistanceOrigin::Column);
+    QCOMPARE(d.column, QStringLiteral("distance"));
+}
+
+void TestCatalogueParser::entryDist_modelOverride_placesRedshiftOnlySources()
+{
+    using namespace Catalogue3DParser::detail;
+    const auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"), QStringLiteral("z") });
+    auto e = makeEntry(s, { { QStringLiteral("z"), QVariant(0.1) } });
+    e.distanceMpc = 750.0;
+    const EntryDistance d = entryDistance(e, s);
+    QCOMPARE(d.mpc, 750.0);
+    QVERIFY(d.origin == DistanceOrigin::Redshift && d.fromModel);
 }
 
 void TestCatalogueParser::entryDist_negativeDistanceField_fallsBackToRedshift()
@@ -214,13 +242,202 @@ void TestCatalogueParser::entryDist_negativeDistanceField_fallsBackToRedshift()
              qPrintable(QStringLiteral("negative dist + z=0.05 gave %1 Mpc; expected 150–280").arg(d)));
 }
 
-void TestCatalogueParser::entryDist_zeroRedshift_fallsBackTo300()
+void TestCatalogueParser::entryDist_zeroRedshift_isUnplaced()
 {
-    // z == 0 is treated as "not provided" → comovingDistanceMpc(0) == 0,
-    // so the parser should fall through to the 300 Mpc default.
-    const auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"), QStringLiteral("z") });
+    // z == 0 means "not measured" in a catalogue: no distance, in every mode
+    // (issue #265; this test pinned the 300 Mpc default before).
+    using namespace Catalogue3DParser::detail;
+    auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"), QStringLiteral("z") });
     auto e = makeEntry(s, { { QStringLiteral("z"), QVariant(0.0) } });
-    QCOMPARE(Catalogue3DParser::detail::entryDistanceMpc(e, s), 300.0);
+    for (const auto mode : { CatalogueDistanceMode::Comoving, CatalogueDistanceMode::RedshiftSpace }) {
+        s.distanceMode = mode;
+        const EntryDistance d = entryDistance(e, s);
+        QVERIFY(std::isnan(d.mpc));
+        QVERIFY(d.reason == UnplacedReason::ZeroRedshift);
+    }
+    QCOMPARE(unplacedReasonText(UnplacedReason::ZeroRedshift), QStringLiteral("z = 0 (not measured)"));
+}
+
+void TestCatalogueParser::entryDist_negativeRedshift_isUnplaced()
+{
+    // M31: cz = −300 km/s. cz/H0 < 0 has no meaning in redshift space either.
+    using namespace Catalogue3DParser::detail;
+    auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"), QStringLiteral("z") });
+    auto e = makeEntry(s, { { QStringLiteral("z"), QVariant(-0.001001) } });
+    e.distanceMpc = 750.0;   // no override places it either
+    for (const auto mode : { CatalogueDistanceMode::Comoving, CatalogueDistanceMode::RedshiftSpace }) {
+        s.distanceMode = mode;
+        const EntryDistance d = entryDistance(e, s);
+        QVERIFY(!d.placed());
+        QVERIFY(d.reason == UnplacedReason::NegativeRedshift);
+    }
+    QCOMPARE(unplacedReasonText(UnplacedReason::NegativeRedshift), QStringLiteral("z ≤ 0"));
+}
+
+void TestCatalogueParser::entryDist_negativeRedshift_withDistanceColumn_isPlaced()
+{
+    // A distance column > 0 places the source whatever its redshift.
+    using namespace Catalogue3DParser::detail;
+    auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"), QStringLiteral("z"),
+                          QStringLiteral("DIST") });
+    auto e = makeEntry(s, { { QStringLiteral("z"), QVariant(-0.001001) },
+                            { QStringLiteral("DIST"), QVariant(0.78) } });
+    s.distanceMode = CatalogueDistanceMode::RedshiftSpace;
+    const EntryDistance d = entryDistance(e, s);
+    QCOMPARE(d.mpc, 0.78);
+    QVERIFY(d.origin == DistanceOrigin::Column);
+    QVERIFY(!d.uncertain());
+}
+
+void TestCatalogueParser::entryDist_lowCz_isFlaggedUncertain()
+{
+    // 0 < cz < 1000 km/s from the redshift: placed, and flagged (peculiar
+    // velocities of about 300 km/s). A measured distance is not flagged.
+    using namespace Catalogue3DParser::detail;
+    auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"), QStringLiteral("z"),
+                          QStringLiteral("DIST") });
+    const double z500 = 500.0 / kSpeedOfLightKms;
+    auto low = makeEntry(s, { { QStringLiteral("z"), QVariant(z500) } });
+    auto high = makeEntry(s, { { QStringLiteral("z"), QVariant(1500.0 / kSpeedOfLightKms) } });
+    auto measured = makeEntry(s, { { QStringLiteral("z"), QVariant(z500) },
+                                   { QStringLiteral("DIST"), QVariant(7.0) } });
+    for (const auto mode : { CatalogueDistanceMode::Comoving, CatalogueDistanceMode::RedshiftSpace }) {
+        s.distanceMode = mode;
+        QVERIFY(entryDistance(low, s).placed());
+        QVERIFY(entryDistance(low, s).uncertain());
+        QVERIFY(!entryDistance(high, s).uncertain());
+    }
+    s.distanceMode = CatalogueDistanceMode::Comoving;
+    QVERIFY(!entryDistance(measured, s).uncertain());
+    // Redshift space places from z even with a column: then it is uncertain.
+    s.distanceMode = CatalogueDistanceMode::RedshiftSpace;
+    QVERIFY(entryDistance(measured, s).uncertain());
+}
+
+// ── issue #265: unplaced rows, the status line, the pick readout ──────────────
+
+namespace {
+
+Catalogue3DSchema skySchema()
+{
+    auto s = makeSchema({ QStringLiteral("NAME"), QStringLiteral("RA"), QStringLiteral("DEC"),
+                          QStringLiteral("Z") });
+    s.raFieldName = QStringLiteral("RA");
+    s.decFieldName = QStringLiteral("DEC");
+    return s;
+}
+
+QVariantMap skyRow(const QString &name, double ra, double dec, const QVariant &z)
+{
+    return { { QStringLiteral("NAME"), name }, { QStringLiteral("RA"), ra },
+             { QStringLiteral("DEC"), dec }, { QStringLiteral("Z"), z } };
+}
+
+}   // namespace
+
+void TestCatalogueParser::parse_unplacedRowsAreKeptApart()
+{
+    const auto s = skySchema();
+    const QList<QVariantMap> rows{ skyRow(u"NGC 1"_s, 10.0, 5.0, 0.02),
+                                   skyRow(u"M31"_s, 10.68, 41.27, -0.001001),
+                                   skyRow(u"blank"_s, 20.0, 0.0, QString()),
+                                   skyRow(u"zero"_s, 30.0, 0.0, 0.0),
+                                   skyRow(u"NGC 2"_s, 40.0, -5.0, 0.03) };
+    const auto parsed = Catalogue3DParser::parseBackendSubset(s, rows, { 0, 1, 2, 3, 4 });
+    QVERIFY(parsed.valid);
+    QVERIFY(parsed.errorMessage.isEmpty());
+    QCOMPARE(parsed.entries.size(), std::size_t(2));
+    QCOMPARE(parsed.unplaced.size(), std::size_t(3));
+    // Every placed entry has a finite position, and the ids stay its index.
+    for (std::size_t i = 0; i < parsed.entries.size(); ++i) {
+        const auto &e = parsed.entries[i];
+        QVERIFY(std::isfinite(e.sceneX) && std::isfinite(e.sceneY) && std::isfinite(e.sceneZ));
+        QCOMPARE(e.id, int(i));
+    }
+    // The unplaced keep their rows in the table, for the list and SAMP.
+    QCOMPARE(parsed.unplaced[0].sourceRow, qint64(1));
+    QCOMPARE(parsed.unplaced[1].sourceRow, qint64(2));
+    QCOMPARE(parsed.unplaced[2].sourceRow, qint64(3));
+    QCOMPARE(parsed.skippedEntries, 0);
+}
+
+void TestCatalogueParser::parse_onlyUnplacedRows_isValidButSaysWhy()
+{
+    const auto s = skySchema();
+    const auto parsed = Catalogue3DParser::parseBackendSubset(
+            s, { skyRow(u"M31"_s, 10.68, 41.27, -0.001001), skyRow(u"M33"_s, 23.46, 30.66, -0.0006) });
+    QVERIFY(parsed.valid);   // a page or a filter may hold only these
+    QVERIFY(parsed.entries.empty());
+    QCOMPARE(parsed.unplaced.size(), std::size_t(2));
+    QVERIFY(parsed.errorMessage.contains(u"None of the 2 sources has a distance"_s));
+}
+
+void TestCatalogueParser::placement_statusLineCounts()
+{
+    const auto s = skySchema();
+    const QList<QVariantMap> rows{ skyRow(u"near"_s, 10.0, 5.0, 300.0 / 299792.458),
+                                   skyRow(u"far"_s, 20.0, 5.0, 0.05),
+                                   skyRow(u"M31"_s, 10.68, 41.27, -0.001001) };
+    const auto parsed = Catalogue3DParser::parseBackendSubset(s, rows);
+    const auto c = CataloguePlacement::count(parsed.entries, parsed.unplaced, s);
+    QCOMPARE(c.placed, qsizetype(2));
+    QCOMPARE(c.unplaced, qsizetype(1));
+    QCOMPARE(c.uncertain, qsizetype(1));
+    QCOMPARE(CataloguePlacement::statusText(c),
+             QStringLiteral("2 placed · 1 unplaced (no distance) · 1 with cz < 1000 km/s "
+                            "(distance uncertain: peculiar velocities)"));
+}
+
+void TestCatalogueParser::placement_pickLinesNameTheOrigin()
+{
+    using namespace Catalogue3DParser::detail;
+    auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"), QStringLiteral("z"),
+                          QStringLiteral("DIST") });
+    auto fromZ = makeEntry(s, { { QStringLiteral("z"), QVariant(0.05) } });
+    QStringList lines = CataloguePlacement::pickLines(entryDistance(fromZ, s), u"WMAP9"_s, 69.32);
+    // Integrated locally (no override): Planck18, whatever model is selected.
+    QVERIFY2(lines.value(0).startsWith(u"Distance "_s)
+                     && lines.value(0).endsWith(u" Mpc, from z (comoving, Planck18)"_s),
+             qPrintable(lines.value(0)));
+    QCOMPARE(lines.size(), 1);
+    fromZ.distanceMpc = 212.3;
+    lines = CataloguePlacement::pickLines(entryDistance(fromZ, s), u"WMAP9"_s, 69.32);
+    QCOMPARE(lines.value(0), QStringLiteral("Distance 212.3 Mpc, from z (comoving, WMAP9)"));
+
+    auto measured = makeEntry(s, { { QStringLiteral("z"), QVariant(0.05) },
+                                   { QStringLiteral("DIST"), QVariant(12.34) } });
+    lines = CataloguePlacement::pickLines(entryDistance(measured, s), u"Planck18"_s, 67.66);
+    QCOMPARE(lines.value(0), QStringLiteral("Distance 12.3 Mpc, from column DIST"));
+
+    auto near = makeEntry(s, { { QStringLiteral("z"), QVariant(500.0 / kSpeedOfLightKms) } });
+    lines = CataloguePlacement::pickLines(entryDistance(near, s), u"Planck18"_s, 67.66);
+    QCOMPARE(lines.size(), 2);
+    QCOMPARE(lines.value(1), QStringLiteral("cz < 1000 km/s: uncertain"));
+
+    s.distanceMode = CatalogueDistanceMode::RedshiftSpace;
+    s.hubbleH0 = 69.32;
+    lines = CataloguePlacement::pickLines(entryDistance(fromZ, s), u"WMAP9"_s, s.hubbleH0);
+    QVERIFY2(lines.value(0).endsWith(u"from z (redshift space, cz/H0 with H0 = 69.32)"_s),
+             qPrintable(lines.value(0)));
+}
+
+void TestCatalogueParser::placement_unplacedRows()
+{
+    const auto s = skySchema();
+    const auto parsed = Catalogue3DParser::parseBackendSubset(
+            s, { skyRow(u"M31"_s, 10.68, 41.27, -0.001001), skyRow(u"blank"_s, 20.0, 0.0, QString()),
+                 skyRow(u"zero"_s, 30.0, 1.0, 0.0) });
+    const auto rows = CataloguePlacement::unplacedRows(parsed.unplaced, s);
+    QCOMPARE(rows.size(), std::size_t(3));
+    QCOMPARE(rows[0].name, QStringLiteral("M31"));
+    QCOMPARE(rows[0].raDeg, 10.68);
+    QCOMPARE(rows[0].decDeg, 41.27);
+    QVERIFY(qAbs(rows[0].czKms - (-300.0)) < 1.0);
+    QCOMPARE(rows[0].reason, QStringLiteral("z ≤ 0"));
+    QVERIFY(std::isnan(rows[1].czKms));
+    QCOMPARE(rows[1].reason, QStringLiteral("no redshift"));
+    QCOMPARE(rows[2].czKms, 0.0);
+    QCOMPARE(rows[2].reason, QStringLiteral("z = 0 (not measured)"));
 }
 
 // ── distance-type (comoving / luminosity / angular-diameter) ──────────────────
@@ -322,4 +539,23 @@ void TestCatalogueParser::redshiftSpaceMode_noRedshift_fallsBackToRealSpace()
     s.distanceMode = CatalogueDistanceMode::RedshiftSpace;
     auto e = makeEntry(s, { { QStringLiteral("distance"), QVariant(500.0) } });
     QCOMPARE(Catalogue3DParser::detail::entryDistanceMpc(e, s), 500.0);
+}
+
+void TestCatalogueParser::redshiftSpaceMode_usesTheModelsH0()
+{
+    // Issue #260: cz/H0 with the applied model's H0 (WMAP9: 69.32), where it
+    // was Planck18's 67.66 under every model.
+    auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"), QStringLiteral("z") });
+    s.distanceMode = CatalogueDistanceMode::RedshiftSpace;
+    s.hubbleH0 = 69.32;
+    auto e = makeEntry(s, { { QStringLiteral("z"), QVariant(0.02) } });
+    const double d = Catalogue3DParser::detail::entryDistanceMpc(e, s);
+    QVERIFY2(qAbs(d - 299792.458 * 0.02 / 69.32) < 1e-9, qPrintable(QString::number(d)));
+    // The presets' H0 as astropy has them (backend app/catalogue_positions.py
+    // hubble_constant reads astropy's own).
+    QCOMPARE(visivo::cosmology::presetH0(u"Planck18"_s), 67.66);
+    QCOMPARE(visivo::cosmology::presetH0(u"Planck15"_s), 67.74);
+    QCOMPARE(visivo::cosmology::presetH0(u"Planck13"_s), 67.77);
+    QCOMPARE(visivo::cosmology::presetH0(u"WMAP9"_s), 69.32);
+    QVERIFY(std::isnan(visivo::cosmology::presetH0(u"Custom"_s)));
 }

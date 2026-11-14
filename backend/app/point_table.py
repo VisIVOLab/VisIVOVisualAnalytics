@@ -30,17 +30,28 @@ class PointTable:
     def set_sky_positions(self, frame_name: str = "fk5", distance_mode: str = "comoving",
                           cosmology: str = "Planck18") -> None:
         """A sky catalogue's scene positions, as the desktop computes them
-        (app/catalogue_positions.py), in the columns ``@x``, ``@y``, ``@z``."""
-        from .catalogue_positions import sky_positions   # noqa: PLC0415
+        (app/catalogue_positions.py), in the columns ``@x``, ``@y``, ``@z``.
+        A source without a distance is NaN there, so every reader of the
+        positions (point_sample.place_rows) leaves it out; ``sky_settings``
+        counts the placed, unplaced and uncertain ones (issue #265)."""
+        from .catalogue_positions import sky_placement   # noqa: PLC0415
         if self.sky is None:
             raise ValueError("Not a sky catalogue: its positions are columns.")
         ra, dec = self.sky
-        xyz = sky_positions(self.frame, ra, dec, frame_name=frame_name,
-                            distance_mode=distance_mode, cosmology=cosmology)
+        xyz, placed = sky_placement(self.frame, ra, dec, frame_name=frame_name,
+                                    distance_mode=distance_mode, cosmology=cosmology)
         for i, axis in enumerate(("@x", "@y", "@z")):
             self.columns[axis] = xyz[:, i]
         self.sky_settings = {"frame": frame_name, "distance_mode": distance_mode,
-                             "cosmology": cosmology}
+                             "cosmology": cosmology, **placed.counts()}
+
+
+def sky_arguments(sky: dict | None) -> tuple[str, str, str]:
+    """(frame, distance mode, cosmology) of a request's ``sky``, the defaults
+    for what it leaves out: the arguments of :meth:`PointTable.set_sky_positions`."""
+    sky = sky or {}
+    return (str(sky.get("frame") or "fk5"), str(sky.get("distance_mode") or "comoving"),
+            str(sky.get("cosmology") or "Planck18"))
 
 
 def default_axes(names: list[str]) -> tuple[str, str, str]:
@@ -88,9 +99,11 @@ def _open_catalogue(spec: dict) -> PointTable:
     return table_from_frame(frame, spec.get("coordinates") or {})
 
 
-def table_from_frame(frame: pd.DataFrame, coords: dict) -> PointTable:
+def table_from_frame(frame: pd.DataFrame, coords: dict, sky: dict | None = None) -> PointTable:
     """A catalogue already read (a session's dataframe) as a table of points:
-    its numeric columns; a sky catalogue's positions in ``@x``, ``@y``, ``@z``."""
+    its numeric columns; a sky catalogue's positions in ``@x``, ``@y``, ``@z``,
+    placed with ``sky`` ({frame, distance_mode, cosmology}, the desktop
+    window's, issue #260) or the defaults."""
     names = [str(c) for c in frame.columns]
     columns = {}
     for name in names:
@@ -101,7 +114,7 @@ def table_from_frame(frame: pd.DataFrame, coords: dict) -> PointTable:
         table.axes = (coords["x"], coords["y"], coords["z"])
     else:
         table.sky = (str(coords.get("ra", "")), str(coords.get("dec", "")))
-        table.set_sky_positions()
+        table.set_sky_positions(*sky_arguments(sky))
         table.axes = ("@x", "@y", "@z")
     return table
 

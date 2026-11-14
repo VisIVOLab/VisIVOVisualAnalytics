@@ -17,6 +17,19 @@ sky or Cartesian positions (`/v1/catalogue/open`). Answers `valid`,
 `sky` (positions computed from RA/Dec, `@x`, `@y`, `@z`). 422 for a dataset
 that is not a table of points.
 
+`sky` in the request (optional, issue #260) places a sky catalogue as the
+desktop window does: `{"frame": "fk5" | "galactic" | "supergalactic",
+"distance_mode": "comoving" | "redshift_space", "cosmology": "Planck18" |
+"Planck15" | "Planck13" | "WMAP9"}`; what it leaves out is the default (fk5,
+comoving, Planck18). Redshift space is c z / H₀ with the model's H₀. A custom
+cosmology (`"Custom"`) or an unknown name answers 422. The rules are those of
+the desktop (`app/catalogue_positions.py`): a distance column > 0 wins under
+every model, then the model's comoving distance for a redshift > 0; a source
+with neither has no position (issue #265) and is in no sample. For a sky
+catalogue the answer adds `sky_settings`: `frame`, `distance_mode`,
+`cosmology`, and the counts `placed`, `unplaced` (no distance) and
+`uncertain` (placed from 0 < cz < 1000 km/s).
+
 RA/Dec (and GLON/GLAT in `catalogue_pixels`) are read in the unit the table
 declares: a VOTable or FITS column unit, an IPAC header unit, or a unit in the
 column name (`RA (h)`). Hours of angle, radians, arcseconds and so on are
@@ -37,6 +50,7 @@ An even sample of the table within a budget.
 | `color_min`, `color_max` | the sample's range | the values codes 0 and 65535 stand for |
 | `max_points` | 2 000 000 | rows sent at most (1 to 10 000 000) |
 | `filters` | `[]` | numeric filters `{field, op, value}`, as the point session's |
+| `sky` | none | a sky catalogue's placement, as for `/v1/points/info` |
 
 The filters run over the whole table first; the rows are then those the
 point render session draws when it samples (evenly spaced over the rows that
@@ -67,7 +81,14 @@ so values far from 0 keep distinct colours). Headers: `X-Visivo-Count`,
 `X-Visivo-Bounds` (`xmin,xmax,ymin,ymax,zmin,zmax`), `X-Visivo-Axes`,
 `X-Visivo-Scalar-Type: uint16`, and with a colour column
 `X-Visivo-Color-Field`, `X-Visivo-Color-Range`, `X-Visivo-Color-Log` (`0`/`1`)
-and `X-Visivo-Data-Range` (the column's range over the sample).
+and `X-Visivo-Data-Range` (the column's range over the sample). A sky
+catalogue adds `X-Visivo-Sky` (`frame,distance_mode,cosmology`),
+`X-Visivo-Unplaced` and `X-Visivo-Uncertain` (the counts of `sky_settings`).
+
+The headset hub's `show` command and the app launch's `cube`
+(`/v1/vr/headset/command`, `/v1/vr/launch`) take the same placement as
+`sky`; the desktop's link and a pairing code carry it as `sky_frame`,
+`distance_mode` and `cosmology`.
 
 ## `POST /v1/cube/catalogue_pixels`
 

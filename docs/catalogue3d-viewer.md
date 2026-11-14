@@ -207,13 +207,21 @@ a velocity field (see the velocity-field viewer).
 
 ## Distance resolution priority
 
-For each entry, `Catalogue3DParser::detail::entryDistanceMpc(entry, schema)` applies in order:
+For each entry, `Catalogue3DParser::detail::entryDistance(entry, schema)` (the
+distance, where it came from, and why there is none) applies in order:
 
-0. **Redshift-space mode** (`CatalogueDistanceMode::RedshiftSpace`) — `hubbleDistanceMpc(z)` for any source with a usable z > 0, deliberately ignoring the override and the distance column; anything without one falls through to the list below
-1. `entry.distanceMpc` finite — cosmology-selector override (set by `onCosmologyFinished()`)
-2. Catalogue `distance` / `dist` / `dMpc` field — positive values only, converted to a comoving radius when the column is a luminosity or angular-diameter distance
-3. Redshift field (`z`, `REDSHIFT`, `ZSPEC`, `ZMEAN`, `ZPHOT`, …) → `comovingDistanceMpc(z)` — z > 0, since a redshift column holding 0 means "not measured"
-4. Hardcoded 300 Mpc fallback
+0. **Redshift-space mode** (`CatalogueDistanceMode::RedshiftSpace`) — `hubbleDistanceMpc(z, schema.hubbleH0)` for any source with a usable z > 0, deliberately ignoring the override and the distance column; `hubbleH0` is the applied model's H₀ (`applyHubbleConstant()`, issue #260); anything without one falls through to the list below
+1. Catalogue `distance` / `dist` / `dMpc` field — positive values only, converted to a comoving radius when the column is a luminosity or angular-diameter distance. A measured distance wins under every cosmology (issue #265)
+2. Redshift field (`z`, `REDSHIFT`, `ZSPEC`, `ZMEAN`, `ZPHOT`, …) > 0 → `entry.distanceMpc` when finite (the cosmology-selector distance set by `onCosmologyFinished()`), else `comovingDistanceMpc(z)` — z > 0, since a redshift column holding 0 means "not measured"
+3. Otherwise **no distance** (NaN, `DistanceOrigin::None`, with an `UnplacedReason`)
+
+`parseBackendSubset()` puts a row with no distance in `result.unplaced`, never
+in `entries`, so nothing that draws, bounds, picks or labels the scene sees a
+NaN; which rows these are does not depend on the frame, the mode or the model.
+The window keeps them in `unplacedEntries` for the *Unplaced Sources* table, and
+`CataloguePlacement.h` (widget-free) builds the status line, the table's rows
+and the pick readout's "Distance …, from …" lines. A source placed from a
+redshift with 0 < cz < 1000 km/s is flagged `uncertain()`.
 
 `comovingDistanceMpc(z)` is a 1000-step trapezoid over a flat **Planck 2018**
 model (H₀ = 67.66, Ωm = 0.3111, ΩΛ = 1 − Ωm, no radiation term). It returns 0

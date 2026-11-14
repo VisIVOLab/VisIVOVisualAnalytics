@@ -6,6 +6,7 @@
 #include "app/BackendClient.h"
 #include "app/SampProtocol.h"
 #include "app/CosmologyModel.h"
+#include "app/VrLink.h"
 
 #include <vtkNew.h>
 #include <vtkSmartPointer.h>
@@ -49,6 +50,7 @@ class QAction;
 class VrHeadsetDialog;
 class QCheckBox;
 class QComboBox;
+class QDialog;
 class QDoubleSpinBox;
 class QListWidget;
 class QPushButton;
@@ -87,6 +89,7 @@ struct Catalogue3DFilterTaskResult
     bool valid{ false };
     QString error;
     std::vector<Catalogue3DEntry> entries;
+    std::vector<Catalogue3DEntry> unplaced;   ///< rows with no distance (issue #265)
     QString statusMsg;
     int totalRows{ 0 };
     /// Rows the backend returned, before invalid ones were skipped: what a
@@ -279,6 +282,19 @@ private:
     /// Under the cosmology controls: which model the positions on screen were
     /// computed with, and how many sources it moved.
     QPointer<QLabel> m_cosmologyStatus;
+    /// Under it (issue #265): how many sources are placed, unplaced for want of
+    /// a distance, and placed from cz < 1000 km/s; and the button that lists
+    /// the unplaced ones (hidden when there are none).
+    QPointer<QLabel> m_placementStatus;
+    QPointer<QPushButton> m_unplacedButton;
+    QPointer<QAction> m_actionUnplaced;
+    void refreshPlacementStatus();
+    /// The "Unplaced sources" table: Name, RA, Dec, cz [km/s], Reason.
+    void showUnplacedSources();
+    QPointer<QDialog> m_unplacedDialog;
+    /// H0 of the applied cosmology into the schema, for the redshift-space
+    /// distance (issue #260). Called wherever m_appliedCosmologyModel changes.
+    void applyHubbleConstant();
 
     // ── Scientific copilot ────────────────────────────────────────────────────
     AssistantPanel *m_copilot{ nullptr };
@@ -335,6 +351,9 @@ private:
 
     // ── UI helpers ──────────────────────────────────────────────────────────
     void updateInfoPanel();
+    /// "Distance 12.3 Mpc, from z (comoving, Planck18)", and "cz < 1000 km/s:
+    /// uncertain" when that applies (issue #265): the pick readout's lines.
+    QStringList pickDistanceLines(const Catalogue3DEntry &e) const;
     // Reposition and resize a highlight sphere to sit on source[idx].
     /// The marker's radius from the data alone: the glyph it wraps, or a
     /// fraction of the particles' mean spacing (highlightRadius then keeps it
@@ -373,6 +392,11 @@ private:
     void openCosmologyCalculator();
     void openInVrHeadset();   // issue #190: vtkWindowCatalogue3D_VrHeadset.cpp
     QPointer<VrHeadsetDialog> m_vrHeadsetDialog;
+    /// The applied frame, distance mode and cosmology the headset places a
+    /// sky catalogue with (issue #260); empty for a Cartesian table or a VBT.
+    VrLink::Sky vrSky() const;
+    /// An open headset dialog follows a change of them (its next show).
+    void pushSkyToVrDialog();
     /// The custom model the positions on screen were computed with (valid
     /// when m_appliedCosmologyModel is "Custom").
     visivo::cosmology::Model m_appliedCustomCosmology;
@@ -392,6 +416,8 @@ private:
     qint64 m_byteOrderPromptMs{ 0 };
     QString remoteSessionId;
     std::vector<Catalogue3DEntry> entries;
+    /// Rows with no distance (issue #265), never in entries: not drawn.
+    std::vector<Catalogue3DEntry> unplacedEntries;
     Catalogue3DSchema schema;
     QStringList rawHeaders;
     std::vector<int> numericRawFieldIndices;

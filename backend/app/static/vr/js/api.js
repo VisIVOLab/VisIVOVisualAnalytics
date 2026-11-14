@@ -53,7 +53,9 @@ export function takePairing() {
     if (p.token) {
       try { store('session')?.setItem(KEY, p.token); } catch { /* private mode */ }
     }
-    const kept = { session: p.session, dataset: p.dataset, path: p.path, kind: p.kind, box: p.box };
+    // A sky catalogue's placement (issue #260) is kept with it: a reload places it alike.
+    const kept = { session: p.session, dataset: p.dataset, path: p.path, kind: p.kind, box: p.box,
+      sky_frame: p.sky_frame, distance_mode: p.distance_mode, cosmology: p.cosmology };
     try {
       if (kept.session || kept.dataset || kept.path) store('session')?.setItem(PAIR_KEY, JSON.stringify(kept));
       else store('session')?.removeItem(PAIR_KEY);
@@ -65,15 +67,18 @@ export function takePairing() {
   try { kept = JSON.parse(store('session')?.getItem(PAIR_KEY) || '{}') || {}; } catch { kept = {}; }
   const str = (v) => (typeof v === 'string' ? v : '');
   pairingCache = { token: '', session: str(kept.session), dataset: str(kept.dataset), path: str(kept.path),
-    kind: str(kept.kind), box: str(kept.box), ticket: '', fromAddress: false };
+    kind: str(kept.kind), box: str(kept.box), sky_frame: str(kept.sky_frame),
+    distance_mode: str(kept.distance_mode), cosmology: str(kept.cosmology), ticket: '', fromAddress: false };
   return pairingCache;
 }
 
 /** The tab's pairing is now this cube (the desktop sent it, issue #237): a
  *  reload of the tab opens it, as a reload after the link would. No token
  *  here (the tab keeps its own). */
-export function keepPairing({ session = '', dataset = '', path = '', kind = '', box = '' } = {}) {
-  const kept = { session: String(session), dataset: String(dataset), path: String(path), kind: String(kind), box: String(box) };
+export function keepPairing({ session = '', dataset = '', path = '', kind = '', box = '',
+  sky_frame = '', distance_mode = '', cosmology = '' } = {}) {
+  const kept = { session: String(session), dataset: String(dataset), path: String(path), kind: String(kind), box: String(box),
+    sky_frame: String(sky_frame), distance_mode: String(distance_mode), cosmology: String(cosmology) };
   try { store('session')?.setItem(PAIR_KEY, JSON.stringify(kept)); } catch { /* this load only */ }
   pairingCache = { token: '', ...kept, ticket: '', fromAddress: false };
 }
@@ -81,7 +86,8 @@ export function keepPairing({ session = '', dataset = '', path = '', kind = '', 
 /** Forgets the tab's pairing (the user opened another cube by hand). */
 export function forgetPairing() {
   try { store('session')?.removeItem(PAIR_KEY); } catch { /* nothing kept */ }
-  pairingCache = { token: '', session: '', dataset: '', path: '', kind: '', box: '', ticket: '', fromAddress: false };
+  pairingCache = { token: '', session: '', dataset: '', path: '', kind: '', box: '',
+    sky_frame: '', distance_mode: '', cosmology: '', ticket: '', fromAddress: false };
 }
 
 /** Token from the fragment, else from storage. Clears the pairing keys from the address. */

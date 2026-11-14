@@ -76,6 +76,18 @@ test('point look commands and box decorations', () => {
   assert.ok(segs.length >= 12 && labels.some((l) => l.text === '10'));
 });
 
+test('a sky catalogue\'s placement goes to the point session and the status line (#260, #265)', () => {
+  const sky = { frame: 'supergalactic', distance_mode: 'comoving', cosmology: 'Planck18' };
+  const cmds = PT.pointLook({ axes: ['@x', '@y', '@z'], colourField: null, colourRange: null, colourLog: false,
+    lut: colormapTable('grey'), c0: 0, c1: 1, style: 'points', splatSize: 2, pointPx: 3, intensity: 40, sky });
+  assert.deepEqual(cmds[0], { type: 'set_sky_positions', ...sky });
+  assert.equal(cmds[1].type, 'set_point_fields');
+  assert.equal(PT.skyLabel({ ...sky, unplaced: 26 }), 'supergalactic · comoving · Planck18 · 26 unplaced');
+  assert.equal(PT.skyLabel({ frame: 'fk5', distance_mode: 'redshift_space', cosmology: 'WMAP9', unplaced: 0 }),
+    'fk5 · redshift space · WMAP9');
+  assert.equal(PT.skyLabel(null), '');
+});
+
 test('a refined pose carries the rows the splats are sized for and the eye height (#262)', () => {
   const box = PT.dataToModel([0, 10, 0, 5, 0, 1]);
   const eyes = [{ eye: 'left', width: 1600, height: 1000 }, { eye: 'right', width: 1600, height: 1000 }];

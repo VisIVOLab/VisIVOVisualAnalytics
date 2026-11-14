@@ -134,6 +134,14 @@ inline QJsonObject requestBody(const VrLink::Inputs &in)
         body.insert(u"kind"_s, in.kind);
     if (!in.boxMpc.isEmpty())
         body.insert(u"box"_s, in.boxMpc);
+    // Flat, under the fragment's names: a pairing's extra parameters are
+    // strings (routers/vr_pair.py PairRequest).
+    if (!in.sky.frame.isEmpty())
+        body.insert(u"sky_frame"_s, in.sky.frame);
+    if (!in.sky.distanceMode.isEmpty())
+        body.insert(u"distance_mode"_s, in.sky.distanceMode);
+    if (!in.sky.cosmology.isEmpty())
+        body.insert(u"cosmology"_s, in.sky.cosmology);
     return body;
 }
 
