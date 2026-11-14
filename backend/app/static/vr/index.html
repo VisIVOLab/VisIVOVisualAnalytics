@@ -73,8 +73,8 @@
       <input id="thr" type="range" min="0" max="1000" value="100"></label>
     <div class="row">
       <label>from <select id="thr-source">
-        <option value="reduced" selected>for this binning</option>
-        <option value="cube">full cube (as on the desktop)</option></select></label>
+        <option value="reduced">for this binning</option>
+        <option value="cube" selected>full cube (as on the desktop)</option></select></label>
       <button id="thr-reset">Reset</button>
     </div>
     <label>Colour max <span id="cmax-value" class="value"></span>
@@ -87,7 +87,7 @@
     <label>Opacity <input id="opacity" type="range" min="1" max="200" value="40"></label>
     <div class="row">
       <label>Render <select id="rmode">
-        <option value="0" selected>emission</option><option value="1">max intensity</option></select></label>
+        <option value="0" selected>Emission</option><option value="1">MIP</option></select></label>
       <label>Samples / voxel <select id="spv">
         <option>0.5</option><option selected>1</option><option>1.5</option><option>2</option></select></label>
     </div>
@@ -98,7 +98,7 @@
     <label>Velocity stretch <span id="zs-value" class="value"></span>
       <input id="zstretch" type="range" min="10" max="400" value="100"></label>
     <details>
-      <summary>Clipping box</summary>
+      <summary>Spatial crop</summary>
       <div id="clip"></div>
     </details>
   </section>
@@ -118,11 +118,11 @@
 
   <section id="selection">
     <div class="row">
-      <label title="What a click (or the headset's trigger) does: Explore pins the readout, Select runs the tool, Clip moves the velocity slab">Mode <select id="ui-mode">
-        <option value="explore" selected>Explore</option><option value="select">Select</option><option value="clip">Clip</option></select></label>
+      <label title="What a click (or the headset's trigger) does, as the menu's tabs set it: Explore pins the readout, Select runs the tool, Range moves the velocity range">Mode <select id="ui-mode">
+        <option value="explore" selected>Explore</option><option value="select">Select</option><option value="clip">Range</option></select></label>
       <label>Selection tool <select id="sel-tool">
-        <option value="probe" selected>spectrum probe</option><option value="lasso">Kinematic Lasso</option>
-        <option value="box">box region</option></select></label>
+        <option value="probe" selected>Spectrum probe</option><option value="lasso">Kinematic Lasso</option>
+        <option value="box">Box region</option></select></label>
       <button id="sel-clear" title="Remove the selection and the marks">Clear</button>
     </div>
     <div class="row">
@@ -171,7 +171,7 @@
     </div>
     <div class="row">
       <label class="inline" title="The left hand points and acts, the right hand holds the menu (kept in this browser)"><input id="left-handed" type="checkbox"> left-handed</label>
-      <label class="inline" title="What each button does now, on the pointing hand's wrist: turn it towards your eyes to read it (kept in this browser)"><input id="labels" type="checkbox" checked> button legend on the wrist</label>
+      <label class="inline" title="What each button does now, on the pointing hand's wrist: turn it towards your eyes to read it (kept in this browser)"><input id="labels" type="checkbox" checked> button labels (on the wrist)</label>
     </div>
     <div class="row">
       <button id="enter-vr" class="primary" disabled>Enter VR</button>

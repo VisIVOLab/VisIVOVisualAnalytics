@@ -1,6 +1,6 @@
 // The first-run controls guide (epic #166, rebuilt for issue #201): shown on
 // the headset's message card (notice.js) at the first entry into VR,
-// dismissed with Close, recalled from the menu's Help → Guide or the page's
+// dismissed with Close, recalled from the menu's More → Guide or the page's
 // "Controls guide" button. Whether it was seen is kept in the page's settings
 // (settings.js, guideSeen). It names the buttons of the hands as they are
 // set (left-handed or not), from the same control map (controls.js) the
@@ -20,23 +20,23 @@ export function guidePages({ leftHanded = false } = {}) {
       lines: [
         `Your ${r.primary} hand points and acts: its trigger uses what its ray points at.`,
         `Your ${r.secondary} hand holds the menu. Either grip grabs the cube; both grips move, turn and scale it.`,
-        `Turn a wrist towards your eyes, as to read a watch: the ${r.primary} one says what the buttons do now, the ${r.secondary} one shows the cube and the selection's numbers. Left-handed? Menu → Settings.`,
+        `Turn a wrist towards your eyes, as to read a watch: the ${r.primary} one says what the buttons do now, the ${r.secondary} one shows the cube and the selection's numbers. Left-handed? Menu → More.`,
       ],
     },
     {
       title: 'The menu',
       lines: [
-        `Hold ${S.lower} (${r.secondary} hand): the menu opens by your wrist. Let go: it closes.`,
-        `Point at it with the ${r.primary} ray and pull the trigger. Tabs: Mode, Look, Analysis, Layers, Settings, Help.`,
-        'Look has the colour map, threshold, opacity and channels; Help shows the controls of the mode you are in.',
+        `Hold ${S.lower} (${r.secondary} hand): the menu opens in front of you and stays there. Let go: it closes.`,
+        `Point at it with the ${r.primary} ray and pull the trigger. Tabs: Display, Range, Select, Measure, More; its title bar moves it.`,
+        'Display: colour map, threshold, opacity. Range: velocity range and crop. Select: probe, lasso, box. Measure: moment, PV slice.',
       ],
     },
     {
-      title: 'Three modes',
+      title: 'What the trigger does',
       lines: [
-        `${P.lower}: next mode. The mode is on your wrists and next to the cursor; a change is told low in the view.`,
-        'Explore: stick ↕ threshold, ↔ opacity. Select: the trigger takes a spectrum, a lasso seed or a box corner.',
-        'Clip: the stick moves and widens the velocity slab; in the box tool, hold the trigger to drag a face.',
+        `A tab sets it, or ${P.lower}: next mode (Explore, Select, Range). It is on your wrists and next to the cursor.`,
+        'Display: stick ↕ threshold, ↔ opacity. Select: the trigger takes a spectrum, a lasso seed or a box corner.',
+        'Range: the stick moves and widens the velocity range; with Spatial crop, hold the trigger to drag a face.',
         `${r.secondary} stick ←/→: the next tool of the mode.   ${P.upper}: undo.   ${S.upper}: reset the view.`,
       ],
     },
@@ -66,7 +66,7 @@ export function guideNotice(i, opts = {}) {
   actions.push({ id: 'guide-close', label: k < n - 1 ? 'Skip' : 'Close' });
   return {
     id: 'guide', level: 'guide', title: `${p.title}  (${k + 1}/${n})`, lines: p.lines, actions,
-    footer: 'Controls guide: the menu\'s Help → Guide shows it again.', page: k,
+    footer: 'Controls guide: the menu\'s More → Guide shows it again.', page: k,
   };
 }
 

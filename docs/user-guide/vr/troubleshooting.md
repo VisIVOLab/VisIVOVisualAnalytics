@@ -8,8 +8,8 @@ on it: the cube stays on show and moves with your hands, and the card never
 stays in the way. A card that lasts (the backend not reachable, the token
 refused, an out-of-date page) follows your gaze for 6 s, then moves aside, 40°
 to the left and lower, and stays there. **Hide** folds it into a line on the
-hand menu (*⚠ Backend not reachable: retrying — Help → Guide shows it*) until
-its state changes; the menu's **Help → Guide** brings it back (see
+hand menu (*⚠ Backend not reachable: retrying — More → Guide shows it*) until
+its state changes; the menu's **More → Guide** brings it back (see
 [The hand menu](controls.md#the-hand-menu)).
 The card is redrawn only when its text changes (at most once per check, every
 1 to 5 s).
@@ -146,7 +146,7 @@ Since then the page allocates every 3-D texture outside VR:
   widens the room when twice it still fits. The diagnostics' memory line
   says it: *VR capacity 256×256×256 8-bit × 2 banks + mask 50.6 MB (cube in
   it, spare 16.9 MB) of 256 MiB for cubes*.
-- **A cube that arrives in VR** (*Show that cube* after *Isolate* or
+- **A cube that arrives in VR** (*Show result cube* after *Isolate* or
   *Remove*, a load at another binning, a cube of another dataset, a load
   started from the desktop) is written into that room and **shown at once**,
   with no texture allocated. Only a cube **larger than the room** on one axis
@@ -181,13 +181,13 @@ What to check on the Quest 3:
 
 1. Restart Quest Browser, open the page (`http://localhost:<port>/vr/`, with
    the `#token=…` part as usual), load the cube, **Enter VR**.
-2. Make ten Kinematic Lassos in a row (new seeds, then *add* and *carve*),
+2. Make ten Kinematic Lassos in a row (new seeds, then *Add* and *Subtract*),
    moving the controller and your head over the selection for about ten
    seconds after each. The picture must not go black, and the page must not
    show *The graphics were reset* afterwards.
-3. In VR: *Isolate*, then *Show that cube*: the isolated cube replaces the
+3. In VR: *Isolate*, then *Show result cube*: the isolated cube replaces the
    one on show at once, without leaving VR and without a notice. Then switch
-   cubes ten times in VR (*Show that cube*, a load from the desktop, the
+   cubes ten times in VR (*Show result cube*, a load from the desktop, the
    other binning): each is shown at once, the picture never goes black, and
    no *The graphics were reset* appears.
 4. On the page, **Copy diagnostics**: there must be no `webgl-context-lost`

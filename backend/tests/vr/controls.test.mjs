@@ -24,7 +24,7 @@ test('one meaning per control in each mode', () => {
   assert.equal(act(ex, 'primary', 'stickX'), 'opacity');
   assert.equal(act(ex, 'secondary', 'stickX'), 'colormap');
   assert.equal(act(ex, 'secondary', 'stickY'), 'cmax');
-  for (const [sub, label] of [['probe', 'spectrum here'], ['lasso', 'lasso seed'], ['box', 'box corner']]) {
+  for (const [sub, label] of [['probe', 'spectrum probe here'], ['lasso', 'lasso seed'], ['box', 'box corner']]) {
     const m = C.controlMap({ mode: 'select', sub });
     assert.equal(act(m, 'primary', 'trigger'), 'select');
     assert.equal(m.primary.find((c) => c.control === 'trigger').label, label);
@@ -99,17 +99,17 @@ test('modes and tools step around; the mode line names both', () => {
   assert.equal(C.nextMode('explore'), 'select');
   assert.equal(C.nextMode('clip'), 'explore');
   assert.equal(C.nextMode('explore', -1), 'clip');
-  assert.equal(C.nextSub('select', 'box'), 'probe');
-  assert.equal(C.nextSub('select', 'probe', -1), 'box');
+  assert.equal(C.nextSub('select', 'box'), 'lasso', 'the stick step: the lasso first too');
+  assert.equal(C.nextSub('select', 'lasso', -1), 'box');
   assert.equal(C.nextSub('clip', 'slab'), 'box');
   assert.equal(C.nextSub('explore', null), null);
   assert.equal(C.modeLine('select', 'lasso'), 'SELECT · Kinematic Lasso');
-  assert.equal(C.modeLine('select', 'lasso', { pvArmed: true }), 'SELECT · PV path');
-  assert.equal(C.modeLine('clip', 'box'), 'CLIP · clipping box');
+  assert.equal(C.modeLine('select', 'lasso', { pvArmed: true }), 'SELECT · PV slice');
+  assert.equal(C.modeLine('clip', 'box'), 'RANGE · Spatial crop');
   assert.equal(C.modeLine('explore', null), 'EXPLORE');
   const h = C.helpLines({ mode: 'clip', sub: 'slab' });
-  assert.equal(h[0], 'CLIP · velocity slab');
-  assert.match(h[1], /Primary hand \(right\).*Stick ↕: slab position/);
+  assert.equal(h[0], 'RANGE · Velocity range');
+  assert.match(h[1], /Primary hand \(right\).*Stick ↕: range position/);
   assert.match(h[2], /Secondary hand \(left\).*Hold X: menu/);
 });
 

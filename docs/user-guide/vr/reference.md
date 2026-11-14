@@ -16,13 +16,17 @@ to run on a Quest 3.
   1.3 σ wide): choose 16-bit there, which keeps three significant digits at
   every level.
 - **Threshold from**: *for this binning* or *full cube* (the threshold the
-  desktop's 3-D view starts from). Until you choose one (the choice is then
-  kept in this browser), a cube starts from the *full cube*'s threshold when
-  refinement is on, when it is read from a brick pyramid or when the backend
-  draws it out of core, and from the one *for this binning* otherwise (a
-  synthetic cube, or refinement off on a small cube): the refined frames are
-  drawn on the full cube, where the threshold for a coarse binning lets the
-  cube's noise through as fog (see [Large cubes](#large-cubes-from-the-brick-pyramid)).
+  desktop's 3-D view starts from). Every cube from the backend starts from the
+  *full cube*'s threshold, as the desktop does
+  ([#257](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/257)); a
+  synthetic cube, which has no full cube, from its own. A choice made here
+  applies to the cube on show; it is kept in this browser but used for the
+  next cubes only with `?debug` in the address, where the hand menu shows the
+  setting too (More → *Technical settings*). Until #257 a cube started from
+  the threshold *for this binning* when refinement was off on a small cube.
+  The refined frames are drawn on the full cube, where the threshold for a
+  coarse binning lets the cube's noise through as fog (see
+  [Large cubes](#large-cubes-from-the-brick-pyramid)).
   For mean binning *for this
   binning* is the [default-threshold rule](../cube-viewer.md#the-default-threshold)
   applied to the reduced cube, whose noise is lower than the cube's; for max
@@ -342,8 +346,8 @@ too, from one level of its brick pyramid: see [Large cubes](#large-cubes-from-th
 A clipping box the backend would refuse is not sent (nor any
 pose with it), and the menu says why.
 
-**Settings** (on the page, section above *Selection tool*; on or off also on
-the hand menu's Look tab; all kept in this browser):
+**Settings** (on the page, section above *Selection tool*; with `?debug` also
+on the hand menu's More → *Technical settings*; all kept in this browser):
 
 - **refine with the backend's full cube**: on by default (`?refine=0` in the
   address turns it off for that visit; `?refine=0` or `?refine=1` overrides
@@ -1050,7 +1054,8 @@ the modes and the tools is in [Controls and the hand menu](controls.md).
 
 The first session on a Quest 3 (Quest Browser 154, Adreno 740, HCG 44 binned
 3 × 3 × 1, over USB) found eight things to fix. Check each again, with
-*record measurements* on (Settings → *Record measurements*) so the numbers
+*record measurements* on (with `?debug`: More → *Technical settings* →
+*Record measurements*) so the numbers
 come back with the record.
 
 1. **Frame rate and quality.** Enter VR with HCG 44 at the default settings.
@@ -1082,7 +1087,7 @@ come back with the record.
    other one stands down). The same with two windows of the public loader.
 6. **The guide.** Clear the page's data (or a fresh browser profile) and open
    the page: the guide is on the 2-D page with *Got it*, and Enter VR does not
-   show it. In VR, Help → Guide: the card stands beside the cube on the
+   show it. In VR, More → Guide: the card stands beside the cube on the
    primary hand's side, never in front of the cube, the menu or the labels
    (open the menu next to it: the menu is drawn over it).
 7. **Controllers and hands.** With controllers: two solid controllers
@@ -1133,7 +1138,61 @@ the [report](#the-report) is made from.
    report's FPS and missed % with a record running should equal what the
    wrist shows without one.
 
+### The menu in front of you, organised by task (#257)
+
+Over USB (`adb reverse`) or Wi-Fi, with the HCG 44 cube and then a simulation
+snapshot (a VBT point table), the page opened **without** `?debug`, then with
+it for the last step. Count the presses from opening the menu (the hold of X
+does not count). The menu asks for 0.77 × 0.72 m at 0.95 m (about 44° wide);
+the work on [#267](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/267)
+suspects the Quest Browser draws composition layers twice as large as asked,
+so note in step 1 how wide the menu looks (about half the view's width is as
+asked; wider than the view means doubled) and whether #267's fix is in.
+
+1. **Where it opens.** Look at the cube and hold X. The menu must stand about
+   a metre in front of you, a little below your eyes, facing you, with its
+   text as easy to read as the old menu by the wrist (about 1° high). Turn
+   your head and move your left hand while holding X: the menu must not move.
+   Report whether the distance is comfortable for the ray (too far, too near).
+2. **Moving it.** Point at the title bar (top strip), hold the trigger and
+   swing the ray: the menu follows at the same distance, turned to you. Let
+   go: it stays.
+3. **Keep open.** Footer → *Keep open*, let go of X: the menu stays; your left
+   hand is free. The next press of X closes it.
+4. **The tabs.** Display, Range, Select, Measure, More, and the footer (Undo,
+   Reset view, Keep open) under every tab. No Help tab, no Mode page, no
+   refinement, governor, recording or threshold-source row anywhere.
+5. **The Done list, HCG 44** (each at most two presses): faint emission
+   (Display → a colour map swatch; Display → drag Threshold, its value in
+   Jy/beam under it); lasso a galaxy (Select → *Kinematic Lasso*, trigger on
+   the galaxy) and *Isolate* it (Select → *Isolate*, shown only now that
+   something is selected); the moment of the selection (Measure →
+   *Intensity (M0)*); a PV slice (Measure → *Draw*, then trigger points); a
+   velocity range (Range → drag *Velocity range*: km/s, convention and
+   channels under it). Note any task that took more presses or a search.
+6. **The Done list, simulation**: colour by velocity (Display → the *VX*
+   chip, or *more ▸* first if the column is on the next page) and crop
+   (Range → drag *Crop x*): the points outside disappear at once.
+7. **Greyed controls.** With the snapshot: Select and Measure greyed, each
+   with its reason under it; Range → *Velocity range* greyed. Nothing moves
+   when you switch between the cube and the snapshot.
+8. **Whole-field moment.** Clear the selection, Measure → *Intensity (M0)*:
+   the moment of the whole field over the velocity range, in its window.
+   Compare it with the desktop's moment dialog at its defaults over the same
+   channels.
+9. **Pin spectrum.** Select → *Spectrum probe*, take a spectrum, Measure →
+   *Pin spectrum*, take another one elsewhere: both in the Selection window,
+   the pinned one in gold.
+10. **Threshold.** The initial threshold must be the desktop's for the same
+    cube (compare the value under Threshold with the desktop's 3-D view).
+11. **Costs.** With `?debug`, read FPS and missed % with the menu closed and
+    open (and while dragging a slider): the menu must not cost frames. More
+    → *Technical settings ▸* must be there, and only with `?debug`.
+
 ### Controls and the hand menu (#201)
+
+The menu's names here are those before #257 (see the table in
+[The hand menu](controls.md#the-hand-menu)).
 
 Over USB (`adb reverse`), the cube of your choice (HCG 44 if you have it), the
 settings left at their defaults the first time.

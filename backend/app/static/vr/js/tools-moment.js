@@ -9,6 +9,7 @@
 
 import * as PC from './product-canvas.js';
 import { applyStep, applyRecord, APPLY_MODES } from './tools-lasso.js';
+import { channelsOfClip } from './selection.js';
 
 /** The desktop's labels of the orders (MomentMapController::describeMomentOrder). */
 export const ORDER_NAMES = {
@@ -28,6 +29,27 @@ export const ORDER_LUT = { 0: 'inferno', 1: 'coolwarm', 2: 'viridis' };
 export function momentRequest(order, depth) {
   return { moment_order: order, channel_start: 0, channel_end: Math.max(0, depth - 1),
     mask_enabled: false, threshold_value: 0, threshold_auto: false };
+}
+
+/** The body of a moment of the whole field (#257: no selection needed), over
+ *  the channels [a, b] the velocity range shows, with the desktop moment
+ *  dialog's defaults (MomentMapController::Config: the threshold mask on,
+ *  its automatic threshold), as the desktop's remote moment sends them. */
+export function wholeFieldRequest(order, [a, b]) {
+  return { moment_order: order, channel_start: a, channel_end: Math.max(a, b),
+    mask_enabled: true, threshold_value: 0, threshold_auto: true };
+}
+
+/** The Provenance of a whole-field moment, under the desktop's labels. */
+export function wholeFieldParams(req, unit) {
+  return {
+    Order: ORDER_NAMES[req.moment_order] || `Moment ${req.moment_order}`,
+    Channels: `${req.channel_start + 1}–${req.channel_end + 1}`,
+    Mask: 'automatic threshold (the desktop dialog\'s default)',
+    Scope: 'Remote full dataset',
+    Unit: unit || '-',
+    'Measured on': 'the whole field over the velocity range shown',
+  };
 }
 
 /** The Provenance of the map, under the desktop's labels (vtkWindowCube's
@@ -103,12 +125,52 @@ export function createMomentTool(ctx) {
     recipes: { lasso: null, ids: {} } };   // the recipe id of each order, for the selection they measure
   const changed = () => { t.dirty = true; ctx.onChange && ctx.onChange(); };
 
+  /** The moment of the whole field over the velocity range shown (#257). */
+  async function computeWhole(order, gen) {
+    const info = ctx.info();
+    const id = ctx.datasetId();
+    const b = ctx.backend();
+    if (!b || !id || !info) { t.error = 'A moment needs a cube from the backend.'; changed(); return; }
+    const req = wholeFieldRequest(order, channelsOfClip(ctx.clipZ ? ctx.clipZ() : [0, 1], info.full_shape[2]));
+    t.busy = `moment ${order} of the whole field…`;
+    t.pending = 'whole';
+    changed();
+    try {
+      const t0 = performance.now();
+      const r = await b._json('POST', '/v1/products/moment', { dataset_id: id, ...req });
+      if (gen !== t.gen) return;
+      if (!r.valid) throw new Error(r.error || 'The moment failed.');
+      const values = PC.f32FromBase64(r.data_base64);
+      if (values.length !== r.width * r.height) throw new Error('bad moment payload');
+      const box = [0, r.width - 1, 0, r.height - 1];
+      const range = colourRange(order, values);
+      t.result = { order, req, unit: r.moment_unit, bunit: r.bunit, width: r.width, height: r.height,
+        values, box, cut: values, range, iso: null, lasso: null, whole: true, ms: performance.now() - t0, summary: mapSummary(values) };
+      if (t.recipes.lasso !== 'whole') t.recipes = { lasso: 'whole', ids: {} };
+      const rec = ctx.selection.record({ kind: 'moment', label: `Moment ${order}`,
+        replay: [{ route: '/v1/products/moment', request: { dataset_id: id, ...req } }] },
+      wholeFieldParams(req, r.moment_unit), null, t.recipes.ids[order] || '',
+      { product: 'moment', dataset_id: id, request: req });
+      t.recipes.ids[order] = rec.product.id;
+      t.busy = '';
+      t.pending = null;
+      draw();
+    } catch (e) {
+      if (gen !== t.gen) return;
+      t.busy = '';
+      t.pending = null;
+      t.error = String(e && e.message ? e.message : e);
+    }
+    changed();
+  }
+
   async function compute(order) {
     const sel = ctx.selection.sel;
     const L = sel.lasso;
     const gen = ++t.gen;
     t.error = '';
-    if (!L || !(L.bytes || L.request)) { t.error = 'A moment of the selection: grow a Kinematic Lasso selection first.'; changed(); return; }
+    // On a lasso object, its mask; with no selection, the whole field (#257).
+    if (!L || !(L.bytes || L.request)) { await computeWhole(order, gen); return; }
     t.busy = `moment ${order} of the selection…`;
     t.pending = L;
     changed();
@@ -169,10 +231,11 @@ export function createMomentTool(ctx) {
     // Square sky pixels: |CDELT1| = |CDELT2| on the cubes the page shows; the
     // axes give pixels, the cube's own ticks give the sky.
     PC.drawProduct(t.canvas, {
-      title: `Moment ${R.order} of the selection`,
+      title: R.whole ? `Moment ${R.order} of the whole field` : `Moment ${R.order} of the selection`,
       lines: [
         `${ORDER_NAMES[R.order].replace(/^Moment \d /, '')}, channels ${R.req.channel_start + 1}–${R.req.channel_end + 1}`,
-        `${R.summary.pixels} pixels, ${R.ms.toFixed(0)} ms · ${R.iso.file}`,
+        R.whole ? `${R.summary.pixels} pixels, ${R.ms.toFixed(0)} ms · automatic threshold mask`
+          : `${R.summary.pixels} pixels, ${R.ms.toFixed(0)} ms · ${R.iso.file}`,
       ],
       // A velocity field: outside its robust range transparent, as the desktop
       // draws it (clampOutliers); the other orders clamp to the table's ends.
@@ -185,10 +248,11 @@ export function createMomentTool(ctx) {
 
   function clear() { t.gen++; t.result = null; t.busy = t.error = ''; t.pending = null; t.recipes = { lasso: null, ids: {} }; changed(); }
 
-  /** A moment of a selection no longer shown (a new grow, Clear) goes. */
+  /** A moment of a selection no longer shown (a new grow, Clear) goes; a
+   *  moment of the whole field stays. */
   function sync() {
     const L = ctx.selection.sel.lasso;
-    if ((t.result && t.result.lasso !== L) || (t.pending && t.pending !== L)) clear();
+    if ((t.result && !t.result.whole && t.result.lasso !== L) || (t.pending && t.pending !== 'whole' && t.pending !== L)) clear();
   }
 
   function lines() {

@@ -245,7 +245,7 @@ test('the primary card: the legend of the tool in use, for either hand, controll
     assert.ok(explore.some(([n, t]) => n === `${L} stick ↔` && t === 'colour map'));
     assert.ok(explore.some(([n, t]) => n === `${L} stick ↕` && t === 'colour max'));
     const slab = WR.legendRows(C.controlMap({ mode: 'clip', sub: 'slab', leftHanded }));
-    assert.deepEqual(slab.slice(0, 3), [['Trigger', 'slab to this channel'], ['Stick ↕', 'slab position'], ['Stick ↔', 'slab width']]);
+    assert.deepEqual(slab.slice(0, 3), [['Trigger', 'range to this channel'], ['Stick ↕', 'range position'], ['Stick ↔', 'range width']]);
     assert.ok(slab.some(([n, t]) => n === `${L} stick ↔` && t === 'tool'));
   }
   const hands = WR.legendRows(C.controlMap({ mode: 'explore', input: { primary: 'hand', secondary: 'hand' } }));

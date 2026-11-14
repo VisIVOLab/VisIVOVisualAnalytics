@@ -128,10 +128,10 @@ measured under [Fidelity of the reduced cube](reference.md#fidelity-of-the-reduc
   16 bits), for what a headset browser can allocate; the backend refuses a
   larger reduced cube before reading anything, and the page checks its GPU's
   limit before asking. Choose a larger binning.
-- **Tools in the headset**: a spectrum, the Kinematic Lasso with add and
-  carve seeds, Isolate and Remove, the moment maps M0-M2 of the selection, a
+- **Tools in the headset**: a spectrum, the Kinematic Lasso with Add and
+  Subtract seeds, Isolate and Remove, the moment maps M0-M2 of the selection or of the whole field, a
   PV slice along a path, and a box region. No hand refinement of the mask on
-  a channel (the desktop's polygon edit), no kinematic fit; the moment is
+  a channel (the desktop's polygon edit), no kinematic fit; the moment of a selection is
   always over the whole channel range with no threshold mask, the PV path
   is not edited point by point (*Undo* removes the last point), and the PV
   path is drawn with points, not a curve. The desktop has no recipe import: a

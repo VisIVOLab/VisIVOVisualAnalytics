@@ -3,8 +3,11 @@
 Everything on this page is computed by the backend on the full cube, through
 the routes the desktop uses; the headset only draws. The tools are chosen and
 used as described in [Controls and the hand menu](controls.md): the selection
-tools in the Select mode (see [Modes](controls.md#modes)), the rest on the
-menu's Analysis tab (see [The hand menu](controls.md#the-hand-menu)).
+tools on the menu's Select tab (it sets the Select mode, see
+[Modes](controls.md#modes)), the measurements on its Measure tab (see
+[The hand menu](controls.md#the-hand-menu); until
+[#257](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/257) both
+were on an Analysis tab).
 
 ## Selections in the headset
 
@@ -87,12 +90,12 @@ it was measured. *Download recipes (.json)* saves all of them, *Copy last
 recipe* copies the latest. A replay opens the path and posts the same
 requests: the selection is the one the desktop shows for that seed.
 
-### Refining the selection: add, carve, Isolate, Remove
+### Refining the selection: Add, Subtract, Isolate, Remove
 
-The lasso's seed mode (*new*, *add*, *carve*: the menu's Analysis tab → *Lasso
-seeds*, or the page's *Lasso seed*) decides what the next lasso trigger does,
-as the desktop's plain, Shift and Alt double-clicks do: *new* starts a new
-selection, *add* grows a second source into the selection (union), *carve*
+The lasso's seed mode (*Lasso: New*, *Add*, *Subtract*: the menu's Select tab,
+or the page's *Lasso seed*) decides what the next lasso trigger does,
+as the desktop's plain, Shift and Alt double-clicks do: *New* starts a new
+selection, *Add* grows a second source into the selection (union), *Subtract*
 removes the region the grow from that seed reaches; the primary seed stays.
 Each press is one grow on the full cube
 (`/v1/cube/kinematic_select_bin` with `add_seeds` and `sub_seeds`, the
@@ -101,12 +104,12 @@ parameters make; the extra seeds are drawn as green (added) and red (carved)
 crosses, and the results window counts them.
 
 *Isolate* (a new cube with everything outside the selection blanked) and
-*Remove* (the selection blanked), on the menu's Analysis tab → *Selection* or
-on the page, post the mask shown, exactly (not a re-grow), to
+*Remove* (the selection blanked), on the menu's Select tab → *Result* (shown
+only while something is selected) or on the page, post the mask shown, exactly (not a re-grow), to
 `/v1/cube/mask_apply_bin` with `blank_outside` or `blank_inside`, as the
 desktop's buttons do: the new cube goes to the Workspace Exports with the
 selection's recipe in its FITS HISTORY, and is registered in the session.
-*Show that cube* loads it in the headset in place of the cube shown, in VR
+*Show result cube* loads it in the headset in place of the cube shown, in VR
 too: it is written into the room the page keeps for cubes before you enter
 VR. Only a cube larger than that room waits until you leave VR (a notice
 says *The new cube is shown when you leave VR* and why), because the
@@ -127,7 +130,7 @@ by hand and arriving without its mask is refused (its grow is not it: apply it
 on the desktop). Isolate, Remove and a moment belong to the cube they started
 on: if another cube is loaded while they run, nothing is applied to it (a
 cube already made from the previous one is deleted if temporary, or kept and
-not recorded), and the menu's Analysis tab says so, even after the new cube's
+not recorded), and the menu's Select tab says so, even after the new cube's
 reset. A shared mask edited by hand is recorded as the desktop records one:
 *Hand-edited* yes, `hand_edited=yes` in the new cube's HISTORY, the apply
 step's hand-edited body and the desktop's caveat (the parameters regrow only
@@ -141,16 +144,31 @@ grow as that grow and the apply. *Made in* says where it was made, and the
 moment of such a selection records the same steps before its own. No recipe
 ever has a grow step without a request.
 
-The Analysis tab also shows the tools' state: the seeds, the last cube made,
-the moment's range, the path being drawn and the slit width. On the page the
+The Select tab also shows the seeds and the last cube made; the Measure tab
+the moment's range, the path being drawn and the PV width. On the page the
 same tools are under the selection controls (*Lasso seed*, *Isolate*,
-*Remove*, *Show that cube*, *M0 M1 M2*, *Draw PV path*, *Width*), and the
-moment map and PV diagram are shown there as well.
+*Remove*, *Show result cube*, *Intensity (M0)*, *Velocity (M1)*, *Dispersion
+(M2)*, *Draw PV slice*, *PV width*), and the moment map and PV diagram are
+shown there as well.
 
-### The moment of the selection
+### The moment of the selection, or of the whole field
 
-*M0*, *M1*, *M2* (the menu's Analysis tab → *Moment*, or the page) compute the
-moment map of the selection the desktop's way:
+*Intensity (M0)*, *Velocity (M1)*, *Dispersion (M2)* (the menu's Measure tab
+→ *Moment*, or the page) compute the moment map of the Kinematic Lasso
+selection when there is one, and of the whole field otherwise
+([#257](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/257)).
+
+**With no selection**, the moment is that of the opened cube, through
+`/v1/products/moment` with the desktop moment dialog's defaults: the channels
+of the velocity range shown (those whose centres lie inside it; the whole
+band after *Full band*) and the threshold mask **on** with its automatic
+threshold (`mask_enabled` and `threshold_auto` true, as the desktop's remote
+moment sends them). The map is shown whole, recorded with a one-step recipe on
+the opened dataset (*Measured on: the whole field over the velocity range
+shown*) and reported to the desktop like the others. A lasso grown afterwards
+does not remove it; the next moment pressed is then of the lasso object.
+
+**With a lasso selection**, the moment is computed the desktop's way:
 the selection is isolated (as *Isolate*, reused when it was already made for
 this mask) and the moment is that cube's, through `/v1/products/moment` with
 the fields the desktop sends, over the whole channel range (the desktop
@@ -163,7 +181,7 @@ fit), so an isolated cube is written to the Workspace Exports: the one
 *Isolate* made for this selection, or else a **temporary** one named
 `<cube>_vr-moment-tmp-<tag>.fits` (never the `_lasso-outside` name an Isolate
 gets). The temporary cube is **deleted** when the selection changes (a new
-grow, *Clear*, a new cube), file and session entry, and the Analysis tab
+grow, *Clear*, a new cube), file and session entry, and the Measure tab
 says so (or says why it stays, for example when the token may not delete
 Workspace Exports); the page deletes only files carrying that marker. It is
 named temporary in the moment's recipe too. While it exists it is an ordinary
@@ -175,7 +193,7 @@ hidden). A moment of a selection no longer shown is removed from the room.
 The map is shown cropped to the selection's bounding box (plus a tenth of its
 size, at least 3 pixels), x and y in pixels of the cube, in a window above the
 cube's right side with its colour bar and unit (the window can be grabbed by
-its title bar, moved and closed; *Hide* on the Analysis tab hides it). Colours
+its title bar, moved and closed; *Hide* on the Measure tab hides it). Colours
 as on the desktop: inferno for M0, a diverging cool-warm for M1 on the
 desktop's range (median ± 4 robust sigma, values outside it transparent, as
 the desktop draws a velocity field), viridis for M2. A velocity in m/s (also
@@ -184,12 +202,13 @@ the recipe keeps the backend's unit.
 
 ### A PV slice along a path
 
-*Draw* (the menu's Analysis tab → *PV path*, or *Draw PV path* on the page)
+*Draw* (the menu's Measure tab → *PV slice*, or *Draw PV slice* on the page)
 arms the PV path: each trigger press (or click on the page) adds a
 point where the ray picks the cube (the first drawn sample, else the middle of
 the ray inside the box), as a fractional pixel of the full cube (pixel
 centres at integers, as the desktop's path). *Undo* removes the last point,
-*New* starts another path, *w −*/*w +* set the slit width in pixels, *Hide*
+*New* starts another path, *PV width −*/*PV width +* set the slit width in
+pixels (the menu gives it in arcsec too, from the cube's pixel size), *Hide*
 hides the diagram. From two points on, the diagram
 is computed on the full cube (`/v1/cube/pv`, the desktop's request:
 `vertices` and `width_pixels`, default 1) and follows the path as it grows, as

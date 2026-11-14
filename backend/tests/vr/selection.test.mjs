@@ -403,6 +403,18 @@ test('world coordinates of a pixel: the channel velocity from the full axis', ()
   assert.equal(S.channelVelocity(info, 9), null);
 });
 
+test('the sky size of a pixel, for the PV width in arcsec (#257)', () => {
+  // 20 pixels, CDELT2 = 4 arcsec (block centres every 2 pixels, binned by 2).
+  const d = 4 / 3600;
+  const info = { full_shape: [20, 20, 3], factors: [2, 2, 1], reduced_shape: [10, 10, 3],
+    axes: { x: { name: 'RA', unit: 'deg', world: Array.from({ length: 10 }, (_, i) => 150 - (2 * i + 0.5) * d) },
+      y: { name: 'DEC', unit: 'deg', world: Array.from({ length: 10 }, (_, i) => -10 + (2 * i + 0.5) * d) },
+      z: { name: 'VELO', unit: 'm/s', world: [1, 2, 3] } } };
+  close(S.pixelArcsec(info), 4, 1e-6);
+  assert.equal(S.pixelArcsec({ ...info, axes: { ...info.axes, y: { ...info.axes.y, unit: 'pixel' } } }), null);
+  assert.equal(S.pixelArcsec(null), null);
+});
+
 test('sexagesimal coordinates', () => {
   assert.equal(S.formatRA(154.452375), '10:17:48.57');
   assert.equal(S.formatRA(-15), '23:00:00.00');

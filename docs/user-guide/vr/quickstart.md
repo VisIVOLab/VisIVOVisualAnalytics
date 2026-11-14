@@ -40,7 +40,7 @@ does the same in one click. Pairing stays under **Pair Another Headset**. See
    without the browser's address bar, and starts on the code form.
 
 The first time you open the page, a short controls guide is on the 2-D page,
-before you enter VR (*Got it* hides it; in VR the hand menu's Help → Guide
+before you enter VR (*Got it* hides it; in VR the hand menu's More → Guide
 shows it beside the cube). The grips move the cube,
 and the hand menu has the rest: see [Controls and the hand menu](controls.md).
 
@@ -182,7 +182,7 @@ Headset…* dialog it is under **Advanced (USB cable)**.
 4. Press **Open on Headset**, put the headset on: the cube loads in the Quest
    Browser. Press **Enter VR**.
 5. The first time, a short controls guide is on the 2-D page before you enter
-   VR (*Got it* hides it; in VR the hand menu's Help → Guide shows it beside
+   VR (*Got it* hides it; in VR the hand menu's More → Guide shows it beside
    the cube). The grips move the cube,
    and the hand menu has the rest: see [Controls and the hand menu](controls.md).
 
