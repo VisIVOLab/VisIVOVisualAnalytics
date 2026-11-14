@@ -30,7 +30,7 @@ are preserved here unedited; the branch names they refer to are historical.
   eye (splats 44 ms), camera stop to refined frame shown 385 ms (splats
   335 ms); 11.5 M rows 535 ms. The ray tracer itself got faster for the
   desktop too: tiles binned in parallel and the Gaussian evaluated per row
-  and column of a footprint give the same image (to 1e-6) 1.5 times faster
+  and column of a footprint give the same image (within 3e-6 of the peak) 1.5 times faster
   (448 → 274 ms for a 3.9 M-particle 1280 × 720 still), and the page's
   frame conversion (`page_frame`) went from 34 to 11 ms per eye.
 

@@ -45,6 +45,7 @@ _CUTOFF = 2.5           # the kernel is drawn out to 2.5 h (exp(-6.25) = 0.2 %)
 _MIN_RADIUS_PX = 1.0    # smaller particles are widened, their light conserved: a
                         # Gaussian 1 px wide sums to its integral on the pixel grid
 _TILE = 32              # pixels per tile side
+_EDGE = 1.0e-4          # pixels: the cutoff circle's edge is in (see _composite)
 
 QUANTITIES = ("density", "per_particle")
 _NO_DEPTH = np.zeros(0, dtype=np.float32)
@@ -210,10 +211,12 @@ if njit is not None:
                 for py in range(py0, py1):
                     dy = py + 0.5 - cy
                     dy2 = dy * dy * inv_r2
-                    if dy2 > cut2:
+                    if dy2 > cut2 + _EDGE:
                         continue
-                    # The row's pixels within the cutoff circle: |dx| <= xr.
-                    xr = math.sqrt(cut2 - dy2) * r
+                    # The row's pixels within the cutoff circle: |dx| <= xr,
+                    # widened by _EDGE so a centre exactly on the circle is in
+                    # whatever the rounding of the square root (fastmath).
+                    xr = math.sqrt(max(cut2 - dy2, 0.0)) * r + _EDGE
                     qx0 = max(px0, int(math.ceil(cx - 0.5 - xr)))
                     qx1 = min(px1, int(math.floor(cx - 0.5 + xr)) + 1)
                     wy = w * math.exp(-dy2)
