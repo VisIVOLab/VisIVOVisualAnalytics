@@ -1138,6 +1138,35 @@ the [report](#the-report) is made from.
    report's FPS and missed % with a record running should equal what the
    wrist shows without one.
 
+### Threshold in σ, info line, Levels (#258)
+
+Over USB, HCG 44 (then a VBT density volume or any cube without noise for
+step 6). Run the desktop's *Estimate Noise* on the same cube with the dialog's
+default region (the whole cube) and note σ.
+
+1. **σ is the desktop's.** Menu → Display: the threshold's line reads
+   *… Jy/beam = n σ (σ …)*. That σ must equal the desktop's to 3 significant
+   figures (HCG 44 is read whole, so it is the same number).
+2. **3σ and 5σ.** Press *3σ*: the threshold's value is 3 × σ and the line says
+   *= 3.0 σ*; the noise fog thins. *5σ*: thinner. *Undo* goes back one press.
+3. **Info line.** Under the Display rows: *HI rest 1420.406 MHz · channel
+   … km/s · beam …″ × …″, PA …°*. Compare with the header (RESTFRQ, BMAJ/BMIN
+   in arcsec, BPA) and the desktop's channel width.
+4. **Levels.** *Levels ▸*: the histogram has a peak (the noise) left of the
+   3σ line, yellow lines at 1/3/5/10 σ, white lines at the threshold and the
+   colour max. Drag on it: the threshold follows the ray, as its slider does.
+5. **Stretches.** Press *Linear*, *Log*, *Sqrt*, *Square*, *Power* in turn: the
+   faint emission is brightest with Log, dimmest with Square; with Power,
+   *γ −* lifts it. Stand still: the refined frame (the Mac's) matches the
+   headset's own picture at each stretch (no jump in brightness when it
+   fades in).
+6. **Percentiles.** On a cube with no measurable noise the σ buttons are
+   greyed with *No noise σ: …*; *99%* puts the threshold where 1 % of the
+   values are above it (the line under Percentile says so).
+7. **Cost.** With `?debug`, FPS and GPU ms with *Linear* and with *Log*
+   (the log adds one logarithm a sample): they must not differ by more than
+   a frame's noise. Report both numbers.
+
 ### A spatial crop you can see and grab (#277)
 
 Over USB, HCG 44 or WALLABY, then a VBT snapshot and a velocity field.

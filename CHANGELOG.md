@@ -8,6 +8,24 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: the threshold in multiples of the noise, the cube's spectral
+  information, stretches and a histogram (#258).** The headset now knows the
+  full cube's noise σ, measured exactly as the desktop's *Estimate Noise*
+  measures it over its default region (the median over channels of 1.4826 ×
+  MAD about each channel's median; one helper, `noise_threshold.plane_mad`,
+  now serves both `/v1/cube/noise` and `/v1/cube/reduced_info`, which gains
+  `noise_sigma`, `noise_sigma_method`, `rest_frequency_hz`, `rest_line` and
+  `beam`). The menu's threshold line reads *= 3.2 σ*, with *3σ* and *5σ* next
+  to the slider; an info line under the Display rows gives the rest frequency,
+  the channel width in km/s and the restoring beam. A new *Levels* page
+  (*Levels ▸*) holds a histogram of the drawn cube's values on the threshold
+  slider's scale (σ lines, drag to set the threshold), σ presets, percentile
+  presets for data with no noise to measure, and the desktop's stretches
+  (Linear, Log, Sqrt, Square, Power with γ), applied in the headset's shader
+  and in the refined frames' transfer function alike (`levels.js`, pure and
+  unit-tested). The look sent to the desktop carries the stretch's name. The
+  integrated flux of a selection is #280's.
+
 - **VR: a spatial crop you can see and grab (#277).** While the *Spatial
   crop* tool is on, the crop box is drawn (edges, a faint fill) with a dot on
   each of its six faces; the dot under the ray, or near the controller,
