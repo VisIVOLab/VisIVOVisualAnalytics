@@ -209,7 +209,7 @@ switches remain for any later loss. Each switch works only together with
 |---|---|
 | `nohover` | The hover pick under the primary ray in VR, its marker and the live readout. A click still picks, snaps and selects. |
 | `nohud` | The numbers on the wrist: no redraw, no upload, no quad. |
-| `noreadout` | The live and the pinned readout cards. The controller labels stay. |
+| `noreadout` | The live and the pinned readout cards. The wrist cards stay. |
 | `noselpanel` | The results panel: neither the Selection window in the headset nor the panel on the page is painted. |
 | `noseloutline` | The selection's own lines (pick marker, box, bounding box). The analysis lines are still uploaded but not drawn. |
 | `novolume` | The cube's volume rendering, mask included. Lines, panels, input and the XR frames stay. |

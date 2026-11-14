@@ -8,22 +8,26 @@ The headset's controls follow a few fixed rules
   its ray points at, its grip grabs. The **secondary** hand holds the menu and
   grabs too; with both grips you move, turn and scale the cube.
 - **One menu**, held open by the secondary hand and drawn next to its wrist.
-- **Three modes**, Explore, Select and Clip, always shown above the primary
-  controller and in the cursor readout. In each mode each stick has one
-  meaning; the buttons keep the same global actions in every mode.
-- **Labels** next to the controllers say what each control does now. They
-  are on the first time and can be turned off.
+- **Three modes**, Explore, Select and Clip, shown on the wrist cards, in a
+  toast when the mode changes, and in the cursor readout. In each mode each
+  stick has one meaning; the buttons keep the same global actions in every
+  mode.
+- **Wrist cards**, shown only while you look at a wrist
+  ([#256](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/256)):
+  the primary wrist says what each control does now, the secondary wrist
+  shows the cube, the mode and the selection's numbers. The rest of the time
+  nothing stands in view but the cube and what you opened.
 
 The first time you open the page, a short controls guide is shown on the
 2-D page, before you enter VR (four parts: *Your two hands*, *The menu*,
 *Three modes*, *Hands without controllers*); **Got it** hides it for good, and
 *Controls guide* on the page shows it again. In VR the menu's **Help → Guide**
 shows it on a card (*Next*, *Back*, *Close* or *Skip*) that stands beside the
-cube on your primary hand's side, so it never covers the cube, the menu or the
-labels; the menu and the labels are drawn over it when a hand brings them in
-front of it ([#226](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/226)).
+cube on your primary hand's side, so it never covers the cube or the menu; the
+menu and the wrist cards are drawn over it when a hand brings them in front of
+it ([#226](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/226)).
 Until #226 the guide stood in front of you at the first entry into VR, over
-the menu and the labels.
+the menu.
 
 ## Your hands
 
@@ -87,8 +91,9 @@ page (*left-handed*), and is kept in the browser.
 
 ## Modes
 
-The mode is shown above the primary controller (*EXPLORE*, *SELECT · Kinematic
-Lasso*, *CLIP · velocity slab*, …) and at the top of the cursor readout. **A**
+The mode is shown on both wrist cards (*EXPLORE*, *SELECT · Kinematic
+Lasso*, *CLIP · velocity slab*, …), in a toast low in the view when it
+changes, and at the top of the cursor readout. **A**
 steps to the next mode; the Mode tab of the menu chooses one directly. The
 page (desktop browser) has the same choice (*Mode*), and a click there does
 what the trigger does.
@@ -152,8 +157,8 @@ tab) leaves the menu where it is when you let go, so both hands are free; the
 next press of X closes it.
 
 The menu is 0.37 × 0.33 m; its text is 0.8 to 1.1 cm high, about 1° to 1.4°
-at the 0.45 m a menu by the wrist is seen from. The numbers on the wrist are
-hidden while it is open (they sit where it opens). In a desktop browser the
+at the 0.45 m a menu by the wrist is seen from. The secondary wrist's card is
+hidden while the menu is open. In a desktop browser the
 same menu stands in the page's 3-D view with *show the headset's menu here*
 (or `?panel3d` in the address) and is used with the mouse through the same ray
 code: a click presses, a drag moves a slider.
@@ -192,8 +197,8 @@ The tabs:
   *arrows −/+*, *new seeds*; a cube with a catalogue placed: *catalogue*,
   *labels*, *through velocity*, with the catalogue's summary or its first
   warning (in amber). See [Data types](data-types.md).
-- **Settings**: *Left-handed*, *Labels by the buttons*, *Haptics*, *Numbers on
-  the wrist*, *Hold the frame rate*, *Refine with the full cube*, *Reproject
+- **Settings**: *Left-handed*, *Button legend on the wrist*, *Haptics*, *Cube
+  card on the wrist*, *Hold the frame rate*, *Refine with the full cube*, *Reproject
   refined frames with depth*, *Refined frame size* (0.4× to 1×, one step per
   press), *Record measurements* with, on the same row, *Run protocol* (*Cancel
   run* while one runs); see [Recording measurements](reference.md#recording-measurements).
@@ -210,16 +215,61 @@ The stretch, the velocity stretch, the binning, the texture, the Kinematic
 Lasso parameters and the eye-buffer settings are set on the page before
 entering VR (see [The settings on the page](reference.md#the-settings-on-the-page)).
 
-## Labels, readout and haptics
+## Wrist cards, toasts, readout and haptics
 
-**Labels.** A small card above each controller lists its controls as they
-are now: above the primary one the mode, then *Trigger*, *Grip*, *Stick ↕*,
-*Stick ↔*, *A*, *B*; above the secondary one *Hold X*, *Y*, *Grip*, *Stick ↔*,
-*Stick ↕* (only the controls that do something in this mode). They change with
-the mode, the tool and the left-handed setting, from the same table the
-controls use, so a label always says what the control does. Settings → *Labels
-by the buttons* turns them off (the mode stays above the primary controller);
-they are on the first time.
+**The watch gesture.** Turn a wrist so that its back, where a watch face would
+be, faces your eyes, as to read a watch, and keep it in front of you: a small
+card, 8 cm wide, fades in on that wrist within a fifth of a second. Turn the
+wrist away, lower it or look elsewhere, and it fades out
+([#256](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/256)).
+The card shows when the back of the wrist is within about 44° of the direction
+to your eyes, within about 32° of the middle of your view and within 60 cm of
+your eyes, held for 0.12 s; it goes when the back is more than about 63° away,
+the card more than 45° off the middle of the view or farther than 70 cm, for
+0.2 s. The gap between the two keeps it from flickering at the edge. The card
+lies on the wrist, turned halfway towards your eyes, its text upright.
+
+The gesture is the opposite of the menu's: with the palm up (the menu, with
+tracked hands) the back of the hand faces the floor, and a hand whose palm is
+up never shows a card. The secondary wrist's card also gives way to the menu
+while it is open. Pointing at the cube with the arm out does not show a card
+(the wrist is too far and its back does not face you).
+
+- **Primary wrist (right, or left when left-handed): the button legend**
+  (8 × 7.3 cm, up to eight rows) of
+  the tool in use, under the mode and tool (*SELECT · Kinematic Lasso*): the
+  primary hand's controls but the grip (*Trigger*, *Stick ↕*, *Stick ↔*, *A*,
+  *B*, only those that do something now), then the secondary hand's that
+  change with the mode (*Hold X* the menu, *L stick ↔* the tool or the colour
+  map, *L stick ↕* the colour max). With tracked hands: *Pinch* and *Palm up*.
+  It changes with the mode, the tool and the left-handed setting, from the
+  same table the controls use. Settings → *Button legend on the wrist* turns
+  it off.
+- **Secondary wrist: the cube card**: the cube's name, its full size (and the
+  binning on show), the mode and tool, and the selection's numbers: for a
+  lasso its voxels, flux (Jy km/s) and velocity range; for a box its valid
+  voxels, mean and rms, flux; for a spectrum its position, the value at the
+  channel picked and the peak; what is under way or the last error. Settings
+  → *Cube card on the wrist* turns it off.
+
+Each card is redrawn only when its text changes, and uploaded (a 2-D texture)
+only then or at one of four opacity steps while it fades.
+
+Until #256 a label card stood above each controller all the time, the
+frame-rate numbers above the secondary hand, and the Selection window as soon
+as Select mode was on.
+
+**Toasts.** A short message is a small strip low in your view (20° below
+where you look, 32 cm wide at 70 cm, one or two lines) that fades after about
+2 s: a cube shown from the computer, the backend restarted or the cube opened
+again (*Repeat an unfinished selection*), a selection done (its first numbers,
+*Lasso 12,345 voxels · flux 3.21 Jy km/s*), a moment or PV diagram done, an
+error of the tools (*⚠ …*), and the mode or tool when it changes. Messages
+that come together are told one after the other (at most three wait; a new
+mode or result replaces the one of its kind still waiting). Notices that ask
+for a choice (*Exit VR*, *Retry*, *Reload*), stay until their condition ends,
+or say more than a line (the measurement run's) are still the message card in
+front of you.
 
 **Cursor readout.** Where the primary ray meets the drawn emission, a card
 above that point shows the mode, the sky position (*RA hh:mm:ss.ss Dec
@@ -248,7 +298,9 @@ off. Tracked hands have none.
 ## Result windows
 
 The results stand in windows: **Selection** (the picked position, the
-spectrum, the lasso's or the box's statistics; right of the cube), **Moment**
+spectrum, the lasso's or the box's statistics; right of the cube; since #256 it
+opens only with a result, work under way or an error, not as soon as Select
+mode is on), **Moment**
 (above the cube's right side) and **PV diagram** (above its left side). Point
 the ray at a window's title bar and hold the trigger to move it: it follows the
 ray and turns to face you; **×** closes it. A new result opens it again. Where
@@ -267,6 +319,7 @@ pick them up again and it switches back. The roles stay:
 | **Pinch** (thumb tip to index tip), primary hand | the trigger: presses the menu's items, drags its sliders, moves windows, and acts on the cube along the hand's ray (the headset's own pointing ray; the ray is held still while the fingers close, so the pinch does not move what it points at) |
 | **Fist** (middle, ring and little finger curled), either hand | the grip: one hand carries the cube, both move, turn and scale it |
 | **Palm up**, secondary hand | the menu, open while the palm stays up |
+| **Back of the wrist to the eyes** (as to read a watch), either hand | that wrist's card ([#256](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/256)); never with the palm up |
 
 After a grip, and for a hand just seen, a pinch counts only once the fingertips
 have parted, so opening a fist with the thumb still on the index, or a hand
@@ -293,7 +346,7 @@ browser only (the headset's browser and the Mac's keep their own): the
 the **refinement** settings (on or off, refined size, JPEG quality, reproject
 with depth), the **last selection tool**, whether the **controls guide** was
 seen (it is shown on the 2-D page until *Got it*), **left-handed**, the
-**labels** and **haptics** settings, and where each **result window** was
+**button legend** and **haptics** settings, and where each **result window** was
 left (relative to where the cube first appears).
 
 Nothing else is stored there: not the token (unless *remember on this device*
@@ -304,10 +357,12 @@ mode is not kept: the page starts in Explore.
 
 ## The numbers on the wrist
 
-Above the secondary controller (over its labels), or next to the cube without
-controllers, the page shows its numbers, updated four times a second (the
-page shows them too); Settings → *Numbers on the wrist* hides them, and they
-are hidden while the menu is open:
+With `?debug` in the address (and during the headset benchmark, whose results
+they show), the page shows its numbers above the secondary controller, or next
+to the cube without controllers, updated four times a second (the 2-D page
+shows them too); they are hidden while the menu is open, and `?debug&nohud`
+leaves them out. Without `?debug` the headset shows no frame-rate or technical
+numbers ([#256](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/256)):
 
 - **FPS** and the **frame** interval (mean and 95th percentile), from the
   headset's frame callbacks, and the share of **missed** frames (an interval
@@ -317,7 +372,7 @@ are hidden while the menu is open:
 - **samples/voxel** in use and the **max steps/ray** it allows;
 - the **volume**, its texture size, the **binning**, the **threshold**;
 - the **eye buffer** size, the resolution scale and the foveation level;
-- **text**: *quad layers* (the menu, labels, readout, windows and these
+- **text**: *quad layers* (the menu, wrist cards, readout, windows and these
   numbers as composition layers, sharp at any eye-buffer scale) or *in the
   scene* with the reason (#226);
 - **GPU textures**: the page's own textures in MB (the cube and its

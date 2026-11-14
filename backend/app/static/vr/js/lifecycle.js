@@ -159,12 +159,14 @@ export function noticeFor(kind, ctx = {}) {
       return { id: 'restarted', level: 'info', title: 'The backend restarted',
         lines: ['Its sessions ended, so the cube was opened again by its path.',
           'The view is as you left it; repeat the last selection if it did not finish.'],
-        actions: [{ id: 'dismiss', label: 'OK' }], autoHideMs: 8000 };
+        actions: [{ id: 'dismiss', label: 'OK' }], autoHideMs: 8000,
+        toast: 'The backend restarted: the cube was opened again. Repeat an unfinished selection.' };
     case 'reopened':
       return { id: 'reopened', level: 'info', title: 'The cube was opened again',
         lines: ['The backend no longer held this cube (the desktop\'s session ended, or it was cleared), so it was opened again by its path.',
           'Repeat the last selection if it did not finish.'],
-        actions: [{ id: 'dismiss', label: 'OK' }], autoHideMs: 8000 };
+        actions: [{ id: 'dismiss', label: 'OK' }], autoHideMs: 8000,
+        toast: 'The cube was opened again. Repeat an unfinished selection.' };
     case 'reopen-failed':
       return { id: 'reopen-failed', level: 'error', title: 'The cube could not be opened again',
         lines: [`The backend answered: ${ctx.detail || 'an error'}.`,
@@ -225,7 +227,9 @@ export function noticeFor(kind, ctx = {}) {
       return { id: 'cube-from-desktop', level: 'info',
         title: ctx.done ? `Showing ${ctx.detail || 'the cube'} from the computer` : `Opening ${ctx.detail || 'a cube'} from the computer…`,
         lines: [ctx.done ? 'Sent from VisIVO Visual Analytics on the computer.' : 'Sent from VisIVO Visual Analytics on the computer: it is shown here as soon as it is loaded.'],
-        actions: [{ id: 'dismiss', label: 'OK' }], autoHideMs: ctx.done ? 4000 : 15000 };
+        actions: [{ id: 'dismiss', label: 'OK' }], autoHideMs: ctx.done ? 4000 : 15000,
+        // In the headset a toast (issue #256): the title says it all.
+        toast: ctx.done ? `Showing ${ctx.detail || 'the cube'} from the computer` : `Opening ${ctx.detail || 'a cube'} from the computer…` };
     case 'budget':
       return { id: 'budget', level: 'error', title: 'This cube is too large for this device',
         lines: [ctx.detail || 'It would not fit in the memory this device gives a web page.',

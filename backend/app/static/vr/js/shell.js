@@ -12,6 +12,7 @@ import { NoticeCenter, cardLayout, drawCard, cardModel, cardNeedsMove, parkedCar
 import { guideNotice, guideStep, guideText } from './onboarding.js';
 import { DiagLog, LogSender, diagnosticsReport, fpsSummary } from './diagnostics.js';
 import { PanelPointer, rayPanel } from './vr-panel.js';
+import { isToastNotice } from './wrist.js';
 
 /**
  * `opts`: {page: {build, api}, renderer: () => Renderer, backend: () =>
@@ -246,9 +247,24 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
   const PARK_AFTER_MS = 6000;
   card.pointer = new PanelPointer([]);
 
-  /** The card to draw this frame for a viewer at `head` (4×4), or null. */
-  function cardForFrame(head) {
-    const n = notices.current();
+  /** The card to draw this frame for a viewer at `head` (4×4), or null.
+   *  `onToast(text)`: in the headset a short message (wrist.js isToastNotice)
+   *  goes there, as a toast, and leaves the notices (issue #256). */
+  function cardForFrame(head, { onToast = null } = {}) {
+    let n = notices.current();
+    const short = [];
+    if (onToast) {
+      // Told oldest first (by when each was shown, then by the order the
+      // notices were made), each under its notice's id.
+      const ids = [...notices.items.keys()];
+      while (n && isToastNotice(n)) {
+        short.push({ n, at: notices.items.get(n.id).at, k: ids.indexOf(n.id) });
+        notices.clear(n.id);
+        n = notices.current();
+      }
+      short.sort((a, b) => a.at - b.at || a.k - b.k);
+    }
+    for (const t of short) onToast(t.n.toast, t.n.id);
     if (!n) { card.notice = null; card.model = null; card.hit = null; return null; }
     if (!card.tex) card.tex = renderer().createPanel();
     if (n !== card.notice) {

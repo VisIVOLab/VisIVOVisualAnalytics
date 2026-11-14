@@ -24,6 +24,8 @@ import * as C from './controls.js';
 import * as HM from './hand-menu.js';
 import * as W from './windows.js';
 import * as RO from './readout.js';
+// The wrist cards and the toasts (issue #256).
+import * as WR from './wrist.js';
 import { HandTracker } from './hands.js';
 import { createShare, boxGeometry, lassoMeta, boxMeta } from './share.js';
 import { RefineDraw } from './refine-gl.js';
@@ -54,6 +56,9 @@ const cut = (name) => query.has('debug') && query.has(name);
 const DEBUG_CUTS = ['nohover', 'nohud', 'noreadout', 'noselpanel', 'noseloutline', 'novolume'];
 const CUT = Object.fromEntries(DEBUG_CUTS.map((n) => [n, cut(n)]));
 const activeCuts = DEBUG_CUTS.filter((n) => CUT[n]);
+// The frame-rate and technical numbers in the headset only with ?debug (issue
+// #256), and during the headset benchmark, whose results they show.
+const DEBUG_HUD = query.has('debug');
 // What the cuts leave out, counted (read by validation/vr_cuts.mjs with ?debug).
 const cutCounts = { volumeDraws: 0, selLineDraws: 0, selLineSegments: 0, hudUploads: 0, hudQuads: 0, readoutCards: 0, hoverPicks: 0 };
 
@@ -88,7 +93,7 @@ const state = {
   texScale: [1, 1, 1],   // box coordinate -> texture coordinate (partial last blocks)
   model: M.identity(),
   moving: false,
-  hud: true,
+  hud: true,           // the cube card on the secondary wrist (issue #256; the menu's Settings)
   load: {},            // load timings
   loading: 0,          // loads under way (a 404 then is the load's own business)
   loadGen: 0,          // bumped by every load: a recovery started before it is superseded
@@ -1699,6 +1704,7 @@ function helpPage(m) {
   }
   const r = C.roles(settings.leftHanded);
   out.push(`Hands without controllers: pinch = trigger, fist = grip, ${r.secondary} palm up = the menu.`);
+  out.push(`Turn a wrist towards your eyes, as to read a watch: the ${r.primary} one shows these buttons, the ${r.secondary} one the cube and the selection.`);
   out.push('Result windows: point at the title bar and hold the trigger to move one; × closes it.');
   return out;
 }
@@ -1785,7 +1791,9 @@ function windowContent(w) {
     if (CUT.noselpanel) return null;      // debug (issue #229): no panel painted nor uploaded
     const s = selection.sel;
     const has = s.pick || s.lasso || s.spectrum || s.box || s.busy || s.error || s.corner;
-    if (!has && ui.mode !== 'select') return null;
+    // Only with something to show (issue #256): Select mode alone no longer
+    // opens it (the legend on the primary wrist says what the trigger does).
+    if (!has) return null;
     const k = resultKey();
     if (w.closedKey && k.every((v, i) => v === w.closedKey[i])) return null;
     return { tex: selection.panelTexture(), size: w.def.size };
@@ -2004,11 +2012,6 @@ const readout = {
   pin: { canvas: Object.assign(document.createElement('canvas'), { width: RO.READOUT_PX[0], height: RO.READOUT_PX[1] }), tex: null, key: '', at: 0 },
   ms: [],
 };
-const labelCards = {
-  primary: { canvas: Object.assign(document.createElement('canvas'), { width: RO.LABEL_PX[0], height: RO.LABEL_PX[1] }), tex: null, key: '' },
-  secondary: { canvas: Object.assign(document.createElement('canvas'), { width: RO.LABEL_PX[0], height: RO.LABEL_PX[1] }), tex: null, key: '' },
-};
-
 /** The readout's lines at box point p (or the mode alone). */
 function readoutAt(p) {
   return RO.readoutLines(modeText(), p, { info: state.info, cube: state.cube, texScale: state.texScale });
@@ -2038,40 +2041,122 @@ function readoutTexture(card, lines, pinned, now) {
 }
 const boxToWorld = (p) => M.transformPoint(state.model, p.map((t, i) => (t - 0.5) * state.extent[i]));
 
-function labelTexture(role, title, rows) {
-  const card = labelCards[role];
+// ── The wrist cards and the toast (issue #256) ─────────────────────────────
+// The cube card on the secondary wrist, the button legend on the primary
+// wrist, each shown while its wrist is turned towards the eyes (wrist.js, the
+// watch gesture); a short message as a toast low in the view. Each card's
+// text is drawn on its own canvas when it changes; the canvas uploaded is that
+// text at one of a few opacities while it fades (2-D textures only, issue #229).
+const makeCanvas = (wh) => Object.assign(document.createElement('canvas'), { width: wh[0], height: wh[1] });
+const wristCards = Object.fromEntries([['secondary', WR.WRIST_PX], ['primary', WR.LEGEND_PX]].map(([role, px]) => [role, {
+  role, px, size: [px[0] / WR.WRIST_PPM, px[1] / WR.WRIST_PPM], gesture: new WR.WatchGesture(), alpha: 0,
+  text: makeCanvas(px), shown: makeCanvas(px), tex: null, key: '', level: -1, model: null,
+}]));
+const toasts = new WR.Toasts(() => performance.now());
+const toastCard = { text: makeCanvas(WR.TOAST_PX), shown: makeCanvas(WR.TOAST_PX), tex: null, id: -1, level: -1 };
+let toastMode = '';     // the mode line last told by a toast (a change of mode is told)
+let wristSession = null;  // the session the gestures' state belongs to
+
+/** A new session: no card, gesture or waiting message carried over from the
+ *  last one, the mode not told again. */
+function syncWristSession() {
+  if (wristSession === xr) return;
+  wristSession = xr;
+  for (const card of Object.values(wristCards)) { card.gesture = new WR.WatchGesture(); card.alpha = 0; }
+  toasts.clear();
+  toastMode = xr ? modeText() : '';
+}
+
+/** A short message in the headset (issue #256); one with the `key` of one
+ *  waiting or on show replaces it. */
+function toast(text, key = '') {
+  if (!xr || xr.bench) return;
+  syncWristSession();
+  toasts.push(text, key);
+}
+
+/** The cube on show, for the secondary wrist: {name, shape} or null. */
+function wristCube() {
+  const c = state.cube;
+  if (!c) return null;
+  const name = state.openPath ? state.openPath.split('/').pop() : c.mode === 'synthetic' ? 'synthetic cube' : `dataset ${state.open ? state.open.dataset_id : ''}`;
+  const full = (state.info && state.info.full_shape) || c.fullShape || c.dims;
+  const bin = c.factors && c.factors.some((f) => f > 1) ? `, bin ${c.factors.join('×')}` : '';
+  return { name, shape: `${full.join('×')}${bin}` };
+}
+
+/** The selection's numbers (wrist.js selectionLines) for the cube's unit. */
+function selectionSummary() {
+  return WR.selectionLines(selection.sel, { bunit: (state.info && state.info.bunit) || (state.cube && state.cube.bunit) || '' });
+}
+
+/** The text of a wrist card: [title, rows]. */
+function wristContent(role) {
+  if (role === 'secondary') {
+    const lines = WR.infoLines({ cube: wristCube(), modeLine: modeText(), selection: selectionSummary() });
+    return [lines[0], lines.slice(1)];
+  }
+  return [modeText(), WR.legendRows(C.controlMap(mapOpts()))];
+}
+
+/** The card's texture at its opacity level now: the text redrawn when it
+ *  changed, the canvas uploaded when the text or the level changed. */
+function wristTexture(card, level) {
   if (!card.tex) card.tex = R.createPanel();
+  const [title, rows] = wristContent(card.role);
   const key = JSON.stringify([title, rows]);
-  if (key !== card.key) {
-    RO.drawLabels(card.canvas.getContext('2d'), title, rows);
-    R.updatePanel(card.tex, card.canvas);
-    card.key = key;
+  if (key !== card.key) { WR.drawWristCard(card.text.getContext('2d'), title, rows, card.px); card.key = key; card.level = -1; }
+  if (level !== card.level) {
+    WR.drawFaded(card.shown, card.text, level);
+    R.updatePanel(card.tex, card.shown);
+    card.level = level;
   }
   return card.tex;
 }
 
-/** What to draw by the hands this frame: [{model, tex, size}]. */
-function handCards(now) {
+/** The wrist cards and the toast this frame: [{id, model, tex, size}]. */
+function wristOverlays(now, dtS) {
+  const out = [];
+  if (!xr || xr.bench || !xr.pose) return out;
+  const head = xr.pose.transform.matrix;
+  const r = C.roles(settings.leftHanded);
+  syncWristSession();
+  const ml = modeText();
+  // A change of mode or tool, told (the label above the controller is gone).
+  if (ml !== toastMode) { toast(ml, 'mode'); toastMode = ml; }
+  for (const card of Object.values(wristCards)) {
+    const handedness = r[card.role];
+    const h = xr.hands[handedness];
+    const enabled = card.role === 'secondary' ? state.hud : settings.labels;
+    const wf = enabled ? WR.wristFrame(h, handedness) : null;
+    // The palm up is the menu's gesture; the secondary card makes way for the menu.
+    const blocked = !!(h && h.palmUp) || (card.role === 'secondary' && ui.menu.open);
+    const on = card.gesture.update(wf ? WR.watchMeasure(wf, head) : null, now, blocked);
+    card.alpha = WR.fadeStep(card.alpha, on ? 1 : 0, dtS);
+    const level = WR.alphaLevel(card.alpha);
+    if (!wf || level <= 0) { card.model = null; continue; }
+    card.model = WR.wristCardModel(wf, xr.headPos, xr.headRight || [1, 0, 0]);
+    out.push({ id: `wrist-${card.role}`, model: card.model, tex: wristTexture(card, level), size: card.size });
+  }
+  const t = toasts.current();
+  if (t) {
+    if (!toastCard.tex) toastCard.tex = R.createPanel();
+    if (toastCard.id !== t.id) { WR.drawToast(toastCard.text.getContext('2d'), t.text); toastCard.id = t.id; toastCard.level = -1; }
+    const level = WR.alphaLevel(t.alpha);
+    if (level !== toastCard.level) { WR.drawFaded(toastCard.shown, toastCard.text, level); R.updatePanel(toastCard.tex, toastCard.shown); toastCard.level = level; }
+    out.push({ id: 'toast', model: WR.toastModel(head), tex: toastCard.tex, size: WR.TOAST_SIZE });
+  }
+  return out;
+}
+
+/** What to draw by the hands this frame: [{model, tex, size}]. The cursor
+ *  readout where the primary ray meets the emission, the pinned one, and
+ *  the wrist cards and the toast (issue #256: no card stands above the
+ *  controllers any more). */
+function handCards(now, dtS = 0) {
   const out = [];
   if (!xr || xr.bench) return out;
-  const r = C.roles(settings.leftHanded);
-  const map = C.controlMap(mapOpts());
   const eye = xr.headPos;
-  const ph = xr.hands[r.primary], sh = xr.hands[r.secondary];
-  // The mode is always shown by the primary hand; the labels when they are on.
-  if (ph) {
-    const rows = settings.labels ? C.labelLines(map, 'primary') : [];
-    const size = settings.labels ? RO.LABEL_SIZE : [RO.LABEL_SIZE[0], RO.LABEL_SIZE[1] * 0.2];
-    const m = RO.labelModel(ph.m, eye, settings.labels ? 0 : -0.024);
-    // Only the title row of the texture when the labels are off: a quad over
-    // its top fifth (the texture is drawn whole, so it is a card of its own).
-    out.push({ id: settings.labels ? 'label-primary' : 'mode-tag', model: m,
-      tex: settings.labels ? labelTexture('primary', modeText(), rows) : modeTagTexture(), size });
-  }
-  if (sh && settings.labels && !ui.menu.open) {
-    out.push({ id: 'label-secondary', model: RO.labelModel(sh.m, eye, 0), tex: labelTexture('secondary', '', C.labelLines(map, 'secondary')), size: RO.LABEL_SIZE });
-  }
-  // The live readout where the primary ray meets the emission, and the pinned one.
   const hv = selection.sel.hover;
   if (!CUT.noreadout && state.cube && hv && !ui.hit) {
     cutCounts.readoutCards++;
@@ -2083,25 +2168,8 @@ function handCards(now) {
     out.push({ id: 'readout-pin', model: RO.readoutModel(boxToWorld(ui.pin.p), eye), tex: readoutTexture(readout.pin, readoutCached(readout.pin, ui.pin.p), true, now),
       size: RO.READOUT_SIZE });
   }
+  out.push(...wristOverlays(now, dtS));
   return out;
-}
-const modeTag = { canvas: Object.assign(document.createElement('canvas'), { width: RO.LABEL_PX[0], height: Math.round(RO.LABEL_PX[1] * 0.2) }), tex: null, key: '' };
-function modeTagTexture() {
-  if (!modeTag.tex) modeTag.tex = R.createPanel();
-  const t = modeText();
-  if (t !== modeTag.key) {
-    const c = modeTag.canvas.getContext('2d');
-    c.clearRect(0, 0, modeTag.canvas.width, modeTag.canvas.height);
-    c.fillStyle = 'rgba(10, 14, 22, 0.78)';
-    c.fillRect(0, 0, modeTag.canvas.width, modeTag.canvas.height);
-    c.fillStyle = '#ffd27a';
-    c.font = 'bold 30px -apple-system, system-ui, sans-serif';
-    c.textBaseline = 'middle';
-    c.fillText(t, 12, modeTag.canvas.height / 2);
-    R.updatePanel(modeTag.tex, modeTag.canvas);
-    modeTag.key = t;
-  }
-  return modeTag.tex;
 }
 
 /** The primary trigger (or a click on the page) on the cube, by the mode. */
@@ -2188,6 +2256,7 @@ function toolsBusy() {
   const s = selection.sel, a = analysis;
   return {
     busy: s.busy || a.lasso.state.busy || a.moment.state.busy || a.pv.state.busy || '',
+    selBusy: !!s.busy,
     error: s.error || a.lasso.state.error || a.moment.state.error || a.pv.state.error || '',
   };
 }
@@ -3002,6 +3071,8 @@ function handleInput(frame, dtS) {
   const now = toolsBusy();
   const kind = C.selectionPulse(ui.busy, now);
   if (kind) buzz('primary', kind);
+  // And a toast (issue #256): the selection's numbers, or what ended.
+  if (kind) toast(WR.resultToast(kind, ui.busy.selBusy ? selectionSummary() : null, now.error, ui.busy.busy), 'result');
   ui.busy = now;
   if (xr.slabDirty && (performance.now() - (xr.slabBuilt || 0) > 100)) {
     rebuildDecorations(); xr.slabDirty = false; xr.slabBuilt = performance.now();
@@ -3079,13 +3150,13 @@ function inputMesh() {
 }
 let meshArray = new Float32Array(65536);
 
-/** The numbers (frame rate, latency) above the secondary hand, over its labels;
- *  next to the cube without a hand. */
+/** The numbers (frame rate, latency; with ?debug or in the benchmark, issue
+ *  #256) above the secondary hand; next to the cube without a hand. */
 function hudModel() {
   const r = C.roles(settings.leftHanded);
   const h = xr.hands[r.secondary];
   if (h) {
-    let m = M.translation(0, 0.085 + (settings.labels ? 0.075 : 0), 0.01);
+    let m = M.translation(0, 0.085, 0.01);
     m = M.multiply(m, M.rotation([1, 0, 0], -0.6));
     return M.multiply(h.m, m);
   }
@@ -3144,25 +3215,31 @@ function onXRFrame(time, frame) {
   R.beginFrame();
   R.setLines(controllerSegments(), R.tmpLines);
   R.setMesh(inputMesh());
-  if (state.hud && !CUT.nohud && time - hudLast > 250) {
+  // The numbers four times a second: on the 2-D page always, in the headset
+  // only with ?debug or in the benchmark (issue #256): no canvas drawn nor
+  // uploaded otherwise.
+  const hudOn = (DEBUG_HUD || !!xr.bench) && !CUT.nohud;
+  if (!CUT.nohud && time - hudLast > 250) {
     hudLast = time;
     const lines = hudLines(xr.targetHz);
-    drawHudCanvas(lines);
-    R.updatePanel(hudTex, hudCanvas);
-    cutCounts.hudUploads++;
+    if (hudOn) {
+      drawHudCanvas(lines);
+      R.updatePanel(hudTex, hudCanvas);
+      cutCounts.hudUploads++;
+    }
     $('hud-text').textContent = lines.join('\n');
   }
   // The page's labels (DOM) four times a second at most, HUD shown or not.
   if (xr.labelsDirty && time - (xr.labelsAt || 0) > 250) { xr.labelsAt = time; updateLabels(); xr.labelsDirty = false; }
   // The numbers sit where the menu opens: hidden while it is open.
-  const hm = state.hud && !CUT.nohud && !ui.menu.open ? hudModel() : null;
+  const hm = hudOn && !ui.menu.open ? hudModel() : null;
   if (hm) cutCounts.hudQuads++;
   syncSelection();
   const winList = xr.bench ? [] : shownWindows();
   const menuTex = menuShown() ? menuTexture(time) : null;
   const menuM = menuTex ? menuWorld() : null;
-  const cards = handCards(time);
-  const card = xr.bench ? null : shell.cardForFrame(pose.transform.matrix);
+  const card = xr.bench ? null : shell.cardForFrame(pose.transform.matrix, { onToast: toast });
+  const cards = handCards(time, dtS);
   // Every flat surface with text, back to front (issue #226): the guide
   // lowest (never in front of the menu), the windows, the numbers, the
   // readout, the labels, the menu, a message card on top. As composition
@@ -3561,6 +3638,9 @@ if (query.has('debug')) {
     controllerModels: Object.fromEntries(Object.entries(controllerModels.status)
       .map(([k, e]) => [k, { status: e.status, profileId: e.profileId, error: e.error }])) } : null);
   window.__vrControllerModels = controllerModels;
+  // Issue #256: the wrist cards' opacity and gesture, the toast on show.
+  window.__vrWrist = () => ({ secondary: { alpha: wristCards.secondary.alpha, on: wristCards.secondary.gesture.on },
+    primary: { alpha: wristCards.primary.alpha, on: wristCards.primary.gesture.on }, toast: toasts.current() });
   // A real controller model's node (its world position now), for the checks.
   window.__vrControllerNode = (hand, name) => {
     const e = controllerModels.status[hand];
@@ -3875,7 +3955,9 @@ function rebuildGraphics() {
     refiner.weight = 0;
     menu.key = '';
     for (const w of Object.values(wins)) w.barKey = '';
-    for (const k of [readout.live, readout.pin, labelCards.primary, labelCards.secondary, modeTag]) k.key = '';
+    for (const k of [readout.live, readout.pin]) k.key = '';
+    for (const k of Object.values(wristCards)) { k.key = ''; k.level = -1; }
+    toastCard.id = -1;
     hudLast = 0;
     selSync.mark();
     rebuildDecorations();

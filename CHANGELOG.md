@@ -8,6 +8,25 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: the numbers and the button help on the wrists, shown only when looked
+  at (#256, part of #253).** The headset no longer keeps cards in view: the
+  frame-rate and technical numbers are shown only with `?debug` (and during
+  the headset benchmark), the label cards above the controllers are gone, and
+  the Selection window opens only with a result instead of as soon as Select
+  mode is on. Turning a wrist towards the eyes, as to read a watch, fades in
+  a small 8 cm card on it: on the secondary wrist the cube, the mode and tool
+  and the selection's numbers (lasso voxels, flux and velocity range; box
+  statistics; the spectrum's value and peak), on the primary wrist the button
+  legend of the tool in use. The cards fade out when the wrist turns away;
+  the gesture has hysteresis and a short hold, so they do not flicker. It is
+  the opposite of the hand menu's palm-up gesture (a hand with its palm up
+  never shows a card, and the secondary card gives way to the open menu).
+  Short messages (a cube shown from the computer, a selection done, the mode
+  changed, a tool's error) are a small toast low in the view that fades
+  after about 2 s; notices that ask for a choice stay on the message card.
+  The sides follow the left-handed setting. Settings: *Button legend on the
+  wrist* and *Cube card on the wrist*.
+
 - **Headset Activity: a long cube name no longer widens the Inspector (#251,
   part of #234).** The line saying what the headset shows breaks inside the
   file name like the activity rows do, so a name of 80 characters wraps
