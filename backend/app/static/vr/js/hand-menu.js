@@ -60,9 +60,9 @@ export function modeLayout() {
 
 export const SETTINGS_ROWS = [
   ['leftHanded', 'Left-handed (left hand points)'],
-  ['labels', 'Labels by the buttons'],
+  ['labels', 'Button legend on the wrist'],
   ['haptics', 'Haptics (pulses)'],
-  ['hud', 'Numbers on the wrist'],
+  ['hud', 'Cube card on the wrist'],
   ['governor', 'Hold the frame rate'],
   ['refine', 'Refine with the full cube'],
   ['refineDepth', 'Reproject refined frames with depth'],

@@ -114,6 +114,8 @@ export const XR_FAKE = `(() => {
         views: [viewFor('left'), viewFor('right')] };
     },
     getPose(space) {
+      // Issue #256: a grip pose set by the checks (the watch gesture).
+      if (space.kind === 'grip' && S.gripPose && S.gripPose[space.hand]) return { transform: { matrix: S.gripPose[space.hand] } };
       const p = space.hand === 'left' ? [-0.2, 1.3, -0.35] : [0.18, 1.35, -0.3];
       const q = space.hand === 'left' ? [-0.2, 1.3, -1.2] : S.aimRight;
       return { transform: { matrix: lookAt(p, q) } };
@@ -211,6 +213,30 @@ export async function runXRFakeChecks({ c, check, waitFor, label = 'layers', exp
   } else {
     check(`xrfake ${label}: the primary ray finds the emission`, hover.value);
   }
+  // Issue #256: no card stands in view by itself; the left wrist turned to the
+  // eyes (the back of a left hand is the grip's -x) shows its card, turned away it goes.
+  const idle = await c.evaluate('window.__vrWrist()');
+  check(`xrfake ${label}: no wrist card without the watch gesture`, idle.secondary.alpha === 0 && idle.primary.alpha === 0, JSON.stringify(idle));
+  await c.evaluate(`(() => {
+    const p = [0.03, 1.45, -0.35], eye = [0, 1.6, 0];
+    const n = (v) => { const l = Math.hypot(...v); return v.map((x) => x / l); };
+    const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const back = n(eye.map((v, i) => v - p[i]));
+    const x = back.map((v) => -v);                       // left hand: its back is -x
+    // +y along the arm (WebXR gripSpace): the left forearm across the chest, the elbow to the left.
+    let y = [-1, 0, 0];
+    const d = y[0] * x[0] + y[1] * x[1] + y[2] * x[2];
+    y = n(y.map((v, i) => v - d * x[i]));
+    const z = cross(x, y);
+    window.__xrfake.gripPose = { left: new Float32Array([...x, 0, ...y, 0, ...z, 0, ...p, 1]) };
+  })()`);
+  const shown = await waitFor(c, 'window.__vrWrist().secondary.alpha === 1', 3000);
+  const ws = await c.evaluate('({ w: window.__vrWrist(), x: window.__vrXR() })');
+  check(`xrfake ${label}: the left wrist to the eyes shows the cube card`, shown.value
+    && (!expectLayers || (ws.x.quads.shown || []).includes('wrist-secondary')), JSON.stringify({ w: ws.w, shown: ws.x.quads && ws.x.quads.shown }));
+  await c.evaluate('window.__xrfake.gripPose = null');
+  const gone = await waitFor(c, 'window.__vrWrist().secondary.alpha === 0', 3000);
+  check(`xrfake ${label}: turned away, the card fades out`, gone.value, JSON.stringify(await c.evaluate('window.__vrWrist()')));
   // A smaller eye buffer during the session: the projection layer replaced, quads kept.
   const before = (await c.evaluate('window.__xrfake.renderStates')).length;
   await c.evaluate('window.__vrSetEyeScale(0.85)');

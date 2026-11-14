@@ -9,6 +9,7 @@
 #include "LutScale.h"
 #include "LassoReplay.h"
 #include "SharedSelection.h"
+#include "VrHeadsetFollow.h"
 #include "VrHeadsetHub.h"
 #include "LinkedWindowRegistry.h"
 #include "ProductRegistry.h"
@@ -891,12 +892,15 @@ private:
     QPointer<QCheckBox> m_headsetFollowLook;
     QPointer<QLabel> m_headsetStatusLabel;
     bool m_headsetShowing{ false };
+    /// Follow the headset's look (issue #268): on unless the user unticked
+    /// it, read from the app's settings when the window is made. Not the
+    /// checkbox's state: the panel may never be built.
+    bool m_headsetFollow{ true };
     /// The clip box the headset last set on this cube, applied while Follow is
     /// on (re-placed when the cube on screen is swapped).
     VrHub::Clip m_headsetClip;
-    /// The (epoch, seq) of the look and clip already applied here.
-    QPair<int, qint64> m_headsetLookApplied{ -1, 0 };
-    QPair<int, qint64> m_headsetClipApplied{ -1, 0 };
+    /// The look and clip already applied here (or found stale).
+    VrHub::FollowMarks m_headsetFollowMarks;
     bool m_headsetCropping{ false };   ///< the volume is cropped to the headset's clip
     void setupHeadsetHub();
     void refreshHeadsetPresence();
@@ -925,9 +929,17 @@ private:
     /// Record a product of the headset once in Provenance (stable id).
     void recordHeadsetProduct(const VrHub::Event &event, const VrHub::Product &product,
                               const QString &renderer = QString());
-    /// Follow the headset's look: its latest look and clip of this cube.
+    /// Follow the headset's look: its latest look and clip of this cube, while
+    /// the headset shows it (VrHub::nextToFollow), with a word in the status bar.
     void followHeadsetLook();
-    void applyHeadsetLook(const VrHub::Look &look);
+    /// What a look from the headset changed here, for the status bar.
+    struct HeadsetLookApplied
+    {
+        bool colormap{ false };
+        bool threshold{ false };
+        QString unmatchedColormap;   ///< the headset's, with no counterpart here
+    };
+    HeadsetLookApplied applyHeadsetLook(const VrHub::Look &look);
     /// The clip box on the 3-D volume (none: the whole cube).
     void applyHeadsetClip();
     QPointer<QPushButton> m_lassoShowInHeadsetBtn;

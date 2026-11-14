@@ -32,6 +32,10 @@ private slots:
     void brokenFitsTablesAreRefused();
     void lookAndClipAreRead();
     void colormapsMapToTheDesktops();
+    void followingTheLookIsOnUntilUnticked();
+    void theLookIsFollowedWhileTheCubeIsOnShow();
+    void aFollowedLookIsNeverAppliedTwice();
+    void followedChangesAreSaid();
     void clientCallsTheHubRoutes();
     void linkFollowsPresenceAndActivity();
     void linkStopsQuietlyOnAnOldBackend();

@@ -27,6 +27,57 @@ are preserved here unedited; the branch names they refer to are historical.
   fraction 0.182 against 0.176; about 50 ms per 1600 × 1000 eye (0.3 s for
   a session's first frame). The desktop's own point view is not affected
   (its camera has no such scale; splats there are as bright as before).
+- **Desktop: the cube window follows the headset's look by default (#268,
+  part of #253).** A colour map, threshold or clip box (a slab included)
+  changed in VR now shows in the cube window's 3-D view while a headset
+  shows that cube, without opening Headset Activity first: the following no
+  longer depends on that panel being built. Each change taken from the
+  headset is said briefly in the status bar (*Colour map and threshold from
+  the headset*). **Follow the headset's look** is still in Headset Activity
+  and can be unticked; the choice is remembered in the app's settings. Only
+  what the headset shows now is applied, once: a look from before the page
+  switched to another cube is not, and the desktop sends no look back, so
+  nothing loops (src/app/VrHeadsetFollow.h, docs/user-guide/vr/desktop.md).
+
+- **VR: result window title bars above their content, named after the
+  window, long lines wrapped (#267, part of #253).** On the Quest 3 the
+  Spectrum probe window's title bar ("Selection", the move hint and ×) was
+  drawn across the middle of the window, over the position and velocity
+  lines. The cause was the composition layers: the Quest Browser draws a
+  WebXR quad layer from minus to plus its `width` and `height` about its
+  centre, and the page gave it the panel's full size, so every quad layer
+  (windows, menu, wrist cards, readout) was drawn twice as wide and twice as
+  tall as the panel the ray hits; the bar, placed just above the true
+  content edge, landed a fifth of the way down the doubled content. On the
+  Quest Browser the layers now take half the size (`xr-layers.js`
+  `quadExtentFactor`, `quadLayerSize`), so what is drawn and what the ray
+  hits agree again; other browsers keep the full size, as the specification
+  words it and Chromium's OpenXR path reads it, and `?layerhalf=1|0` forces
+  either. The bar names what the window shows (*Spectrum probe*,
+  *Kinematic Lasso*, *Box region*, *Moment 0/1/2*, *PV diagram*), drops its
+  move hint when a long title needs the room and cuts a title wider than the
+  bar with …; the selection window wraps long lines (the velocity line with
+  its convention, errors, the flux note) instead of running past the right
+  edge, and the moment and PV windows wrap their lines into three rows above
+  the image. Pure layout tests in `backend/tests/vr/windows.test.mjs`.
+- **VR: the numbers and the button help on the wrists, shown only when looked
+  at (#256, part of #253).** The headset no longer keeps cards in view: the
+  frame-rate and technical numbers are shown only with `?debug` (and during
+  the headset benchmark), the label cards above the controllers are gone, and
+  the Selection window opens only with a result instead of as soon as Select
+  mode is on. Turning a wrist towards the eyes, as to read a watch, fades in
+  a small 8 cm card on it: on the secondary wrist the cube, the mode and tool
+  and the selection's numbers (lasso voxels, flux and velocity range; box
+  statistics; the spectrum's value and peak), on the primary wrist the button
+  legend of the tool in use. The cards fade out when the wrist turns away;
+  the gesture has hysteresis and a short hold, so they do not flicker. It is
+  the opposite of the hand menu's palm-up gesture (a hand with its palm up
+  never shows a card, and the secondary card gives way to the open menu).
+  Short messages (a cube shown from the computer, a selection done, the mode
+  changed, a tool's error) are a small toast low in the view that fades
+  after about 2 s; notices that ask for a choice stay on the message card.
+  The sides follow the left-handed setting. Settings: *Button legend on the
+  wrist* and *Cube card on the wrist*.
 
 - **Headset Activity: a long cube name no longer widens the Inspector (#251,
   part of #234).** The line saying what the headset shows breaks inside the

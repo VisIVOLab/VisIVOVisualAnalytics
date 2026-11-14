@@ -72,13 +72,22 @@ to run on a Quest 3.
   rate asked of the headset (**72 Hz by default**, or 90 or 120 Hz, if it
   offers it: 72 Hz leaves 13.9 ms a frame, so the cube keeps more samples per
   voxel). Set them before entering VR.
-- **Text in the headset**: the hand menu, the controller labels, the cursor
-  readout, the result windows, the numbers on the wrist and the message card
+- **Text in the headset**: the hand menu, the wrist cards and the toast, the
+  cursor readout, the result windows, the numbers on the wrist (`?debug`) and
+  the message card
   are WebXR composition layers (quad layers) where the browser has them (Quest
   Browser does): the headset's compositor draws them at the display's own
   resolution, so they stay sharp whatever eye-buffer scale the governor
   chose. Each is the same canvas, at the same place and size, as the panel the
-  page would draw itself, so pointing at them works the same way. Where the
+  page would draw itself, so pointing at them works the same way. The Quest
+  Browser draws a quad layer from minus to plus its `width` and `height`
+  about its centre, so there the page gives it half the panel's size (the
+  diagnostics line ends in *±width*); elsewhere it gives the full size, as
+  the specification words it. Until #267 the Quest got the full size too and
+  every overlay showed at twice its size, a window's title bar inside its
+  content. `?layerhalf=1` or `?layerhalf=0` forces half or full size, should
+  a browser read them the other way (a panel then looks twice or half the
+  size of where the ray presses). Where the
   browser has no layers, or a layer fails, the page draws them in the scene as
   before (the diagnostics' *text in the headset* line says which);
   `?nolayers` in the address forces that, `?layerflip=0` draws the layers'
@@ -1178,18 +1187,38 @@ settings left at their defaults the first time.
    velocity must agree to the binning's precision. Does the frame rate change
    while the readout follows the ray (FPS, missed %)?
 8. **Result windows.** Take a spectrum, then (Analysis tab) *M0* and a PV
-   path: three windows. Point at a window's title bar, hold the trigger and
+   path: three windows. Each title bar is above its window, never over the
+   text, and names it (*Spectrum probe*, *Moment 0*, *PV diagram*); the
+   velocity line wraps inside the window
+   ([#267](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/267)).
+   Point the ray at the far edge of a menu button or window: the cursor dot
+   must sit on the drawn edge (panel and layer the same size). Point at a
+   window's title bar, hold the trigger and
    move: it follows and turns to face you. × closes it; a new result opens it
    again. Leave VR and enter again: the windows are where you left them.
 9. **Haptics.** A short pulse on every press (menu, trigger on the cube),
    a stronger one when a spectrum, lasso or box result arrives, two pulses on
    an error (for example a trigger in Select mode pointing at empty space).
-10. **Left-handed.** Settings tab → *Left-handed*: the roles swap at once, the
-    labels now say *Hold A: menu* on the right controller and *X: next mode*,
-    *Y: undo* on the left; the left ray acts. Reload the page and enter
-    again: still left-handed. Turn it back.
-11. **Labels off.** Settings → *Labels by the buttons* off: the labels go,
-    the mode stays above the primary controller. On again.
+10. **Left-handed.** Settings tab → *Left-handed*: the roles swap at once:
+    the button legend is now on the left wrist (*X: next mode*, *Y: undo*,
+    *Hold A: menu*), the cube card on the right wrist; the left ray acts.
+    Reload the page and enter again: still left-handed. Turn it back.
+11. **Wrist cards ([#256](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/256)).**
+    Without `?debug`, nothing stands in view but the cube (no numbers, no
+    card above the controllers, no Selection window in Select mode before a
+    result). Raise the left forearm in front of the chest, the back of the
+    wrist towards your eyes, as to read a watch: the cube card fades in on the
+    wrist (cube, size, mode, the selection's numbers) and is readable. Turn
+    the wrist away: it fades out. Do the same with the right wrist: the
+    button legend of the tool in use; change the tool (left stick) and the
+    legend follows. Hold the wrist at the edge of the gesture and turn it
+    slowly: does the card flicker (report how often)? Point at the cube with
+    the arm out and grab it: does a card appear by accident? With tracked
+    hands, turn the left palm up: the menu opens and no card shows. Settings
+    → *Button legend on the wrist* and *Cube card on the wrist* off: the
+    cards no longer show. Take a spectrum: a toast low in the view says its
+    numbers and goes after about 2 s; press **A**: a toast says the new
+    mode.
 12. **Hands.** Put the controllers down. Pinch with the right hand on the
     cube in Select mode: a spectrum. Turn the left palm up: the menu opens by
     the left hand; pinch with the right on a tab; turn the palm down: it
@@ -1199,14 +1228,14 @@ settings left at their defaults the first time.
 13. **Nothing lost.** From the menu alone, check that you can reach:
     emission or maximum intensity, threshold source and *Reset*, all
     channels, the clipping box reset, refinement on and off, *Hold the frame
-    rate*, *Numbers on the wrist*, the guide, the Layers tab's buttons with a
+    rate*, *Cube card on the wrist*, the guide, the Layers tab's buttons with a
     point table and with a catalogue over a cube.
 
 ### Refinement, with the headset
 
 1. Start the backend on the Mac and connect the headset over USB
-   (`adb reverse tcp:8000 tcp:8000`), open `http://localhost:8000/vr/` with
-   the token, load HCG 44 (auto binning) and check that *refine with the
+   (`adb reverse tcp:8000 tcp:8000`), open `http://localhost:8000/vr/?debug`
+   (the numbers on the wrist need `?debug` since #256) with the token, load HCG 44 (auto binning) and check that *refine with the
    backend's full cube* is ticked. Enter VR.
 2. Hold your head still for a second: the numbers on the wrist must go from
    *waiting* to *refined 100 %*. Read **stop->refined** (both values),

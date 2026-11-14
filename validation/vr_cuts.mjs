@@ -95,7 +95,7 @@ export async function runCutChecks({ c, check, waitFor, base, token, cube }) {
     const pe = c.pageErrors.slice(errs0);
     check(`cuts ${label}: no page error`, !errs.length && !pe.length, [...errs, ...pe].join(' / '));
   }
-  // The switches without ?debug do nothing: the wrist numbers are drawn and
+  // The switches without ?debug do nothing: the page's numbers are written and
   // name no cut (no debug hooks on such a page: read from the page itself).
   const url = `${base}/vr/?refine=0&xrfake${CUTS.map((n) => `&${n}`).join('')}#token=${encodeURIComponent(token)}`;
   await c.send('Page.navigate', { url });
@@ -106,7 +106,7 @@ export async function runCutChecks({ c, check, waitFor, base, token, cube }) {
     for (let i = 0; i < 100 && b.disabled; i++) await new Promise((r) => setTimeout(r, 50)); b.click(); })()`);
   const hud = await waitFor(c, `window.__xrfake.frames > 20 && /^FPS /.test(document.getElementById('hud-text').textContent)`, 15000);
   const first = await c.evaluate(`document.getElementById('hud-text').textContent.split('\\n')[0]`);
-  check('cuts without ?debug: the switches do nothing (the wrist numbers drawn, no cut named)',
+  check('cuts without ?debug: the switches do nothing (the page numbers written, no cut named)',
     up.value && loaded.value && hud.value && /^FPS /.test(first), first);
   // Back to the page the checks after these expect (the one before them): ?debug
   // for the hooks, the WebXR stand-in for Enter VR, the cube loaded.

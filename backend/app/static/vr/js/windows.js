@@ -1,6 +1,7 @@
 // Result windows in the headset (issue #201): the selection's results
 // (spectrum, statistics), the moment and the PV diagram, each a quad with a
-// title bar above it. The primary ray and trigger on the bar move the window
+// title bar above it (windowRects), named after what it shows (windowTitle,
+// issue #267). The primary ray and trigger on the bar move the window
 // (drag) or close it (×); a new result opens it again. Where each one was
 // left is kept for the next sessions (settings.js `windows`).
 //
@@ -9,6 +10,8 @@
 
 import * as M from './mat4.js';
 import { PanelPointer, rayPanel, panelModel } from './vr-panel.js';
+import { TOOL_NAMES } from './select-ui.js';
+import { fitText } from './text-fit.js';
 
 export const BAR_PX = [768, 64];
 export const BAR_GAP = 0.004;
@@ -25,6 +28,29 @@ export const WINDOWS = {
     place: { right: -0.42, up: 0.48, fwd: -0.05, yaw: 0.35 }, desktop: { right: -1.12, up: -0.22, fwd: 0.1, yaw: 0.55 } },
 };
 
+/**
+ * The name on a window's bar (issue #267): what it shows, not a generic
+ * "Selection". `state`: {tool} (the selection's tool, whose result the
+ * Selection window draws), {momentOrder} (the moment on show, or null).
+ */
+export function windowTitle(id, state = {}) {
+  if (id === 'result') return TOOL_NAMES[state.tool] || WINDOWS.result.title;
+  if (id === 'moment' && Number.isInteger(state.momentOrder)) return `Moment ${state.momentOrder}`;
+  return WINDOWS[id] ? WINDOWS[id].title : String(id);
+}
+
+/**
+ * A window's parts in its own plane (metres, y up, origin at the content's
+ * centre), as [x0, y0, x1, y1]: the content of `size`, the bar of the same
+ * width above it, BAR_GAP apart. The bar never covers the content.
+ */
+export function windowRects(size) {
+  const [w, h] = size;
+  const bh = barSize(w)[1];
+  const top = h / 2 + BAR_GAP;
+  return { content: [-w / 2, -h / 2, w / 2, h / 2], bar: [-w / 2, top, w / 2, top + bh] };
+}
+
 /** The bar's widgets: drag (most of it) and close (×, at its right end). */
 export function barLayout() {
   const [W, H] = BAR_PX;
@@ -39,8 +65,8 @@ export function barSize(width) { return [width, width * BAR_PX[1] / BAR_PX[0]]; 
 
 /** The bar's pose: above the content quad `model` of size `size`. */
 export function barModel(model, size) {
-  const bs = barSize(size[0]);
-  return M.multiply(model, M.translation(0, size[1] / 2 + BAR_GAP + bs[1] / 2, 0));
+  const b = windowRects(size).bar;
+  return M.multiply(model, M.translation(0, (b[1] + b[3]) / 2, 0));
 }
 
 /** The content's pose from the offset `off` from `anchor` ({p, yaw}). */
@@ -99,6 +125,28 @@ function roundRect(c, x, y, w, h, r) {
   c.closePath();
 }
 
+const BAR_TITLE_FONT = 'bold 30px -apple-system, system-ui, sans-serif';
+const BAR_HINT_FONT = '22px -apple-system, system-ui, sans-serif';
+export const BAR_HINT = '⠿ trigger here to move';
+
+/**
+ * The bar's text: the title from x = 18, the drag hint right-aligned at
+ * W - 100 (left of the close button). `measureTitle` / `measureHint` give
+ * widths in the two fonts. The hint is left out when the title needs its
+ * room; a title wider than the whole drag area is cut with an ellipsis.
+ * Returns {title, hint (the text or ''), titleMax, hintRight}.
+ */
+export function barText(title, measureTitle, measureHint) {
+  const [W] = BAR_PX;
+  const left = 18, hintRight = W - 100, gap = 24;
+  const hintLeft = hintRight - measureHint(BAR_HINT);
+  if (left + measureTitle(String(title ?? '')) + gap <= hintLeft) {
+    return { title: String(title ?? ''), hint: BAR_HINT, titleMax: hintLeft - gap - left, hintRight };
+  }
+  const titleMax = hintRight - left;
+  return { title: fitText(measureTitle, title, titleMax), hint: '', titleMax, hintRight };
+}
+
 /** The title bar: `title`, a drag hint, the close button; ui: {hover}. */
 export function drawBar(c, title, ui = {}) {
   const [W, H] = BAR_PX;
@@ -107,13 +155,18 @@ export function drawBar(c, title, ui = {}) {
   roundRect(c, 0, 0, W, H, 12);
   c.fill();
   c.textBaseline = 'middle';
+  const width = (font) => (s) => { c.font = font; return c.measureText(s).width; };
+  const t = barText(title, width(BAR_TITLE_FONT), width(BAR_HINT_FONT));
   c.fillStyle = '#e6e9ef';
-  c.font = 'bold 30px -apple-system, system-ui, sans-serif';
-  c.fillText(title, 18, H / 2 + 1);
-  c.font = '22px -apple-system, system-ui, sans-serif';
-  c.fillStyle = '#9aa3b2';
-  c.textAlign = 'right';
-  c.fillText('⠿ trigger here to move', W - 100, H / 2 + 1);
+  c.font = BAR_TITLE_FONT;
+  c.textAlign = 'left';
+  c.fillText(t.title, 18, H / 2 + 1);
+  if (t.hint) {
+    c.font = BAR_HINT_FONT;
+    c.fillStyle = '#9aa3b2';
+    c.textAlign = 'right';
+    c.fillText(t.hint, t.hintRight, H / 2 + 1);
+  }
   const [x, y, w, h] = barLayout()[1].rect;
   c.fillStyle = ui.hover === 'close' ? '#8a3a3a' : '#3a2a30';
   roundRect(c, x, y, w, h, 10);

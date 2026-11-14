@@ -960,6 +960,11 @@ void vtkWindowCube::adoptRemoteLevels(const QJsonObject &answer)
         ui->lineThreshold->setText(visivo::thresholdText(value));
         this->m_initialThresholdApplied = true;
         qDebug().noquote() << "[remote-render] threshold from the backend:" << value;
+    } else if (this->m_userSetThreshold) {
+        // The user's threshold, typed before the backend answered, is the
+        // first one: no default replaces it later, and the headset's look
+        // can be followed from now on (issue #268).
+        this->m_initialThresholdApplied = true;
     }
     this->widenThresholdBoundsToRemoteRange();
     // A view drawn only on the backend learns the data's range here.
@@ -969,6 +974,8 @@ void vtkWindowCube::adoptRemoteLevels(const QJsonObject &answer)
     // ("threshold N") would keep the backend's first value.
     if (levels.threshold)
         this->refreshVolumeColorbar();
+    // A look the headset set before the first threshold was known (#268).
+    this->followHeadsetLook();
 }
 
 void vtkWindowCube::widenThresholdBoundsToRemoteRange()
