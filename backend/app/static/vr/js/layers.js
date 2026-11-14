@@ -2,8 +2,9 @@
 // and catalogue sources over a cube. Kept out of main.js, which calls a few
 // hooks: the open by path or by pairing, the drawing of a frame (the layer's
 // own scene when no cube is shown, the catalogue over a cube), the refinement
-// of a point table, the HUD, the page's controls and the buttons of the hand
-// menu's Layers page (issue #201; they were a strip under the in-VR panel).
+// of a point table, the HUD, the page's controls and, for the hand menu's
+// Display tab (issue #257; a strip under the in-VR panel before #201, then
+// the Layers page), what they show and their presses.
 
 import * as M from './mat4.js';
 import * as PT from './points.js';
@@ -41,37 +42,29 @@ export function pairedMode(kind) {
   return 'cube';
 }
 
-export const STRIP_PX = [1024, 120];
-
-/** The strip's buttons for a mode: [{id, label}], at most five. Pure. */
-export function stripButtons(mode, s) {
-  if (mode === 'points') {
-    return [
-      { id: 'pt-style', label: s.style === 'splats' ? 'splats' : 'points' },
-      { id: 'pt-colour', label: `colour: ${s.colourField || 'none'}` },
-      { id: 'pt-budget', label: `${(s.budgetRows / 1e6).toFixed(1)} M rows` },
-      { id: 'pt-smaller', label: 'size −' }, { id: 'pt-larger', label: 'size +' },
-    ];
-  }
-  if (mode === 'flow') {
-    return [
-      { id: 'fl-stream', label: `streamlines ${s.stream ? 'on' : 'off'}`, on: s.stream },
-      { id: 'fl-arrows', label: `arrows ${s.arrows ? 'on' : 'off'}`, on: s.arrows },
-      { id: 'fl-shorter', label: 'arrows −' }, { id: 'fl-longer', label: 'arrows +' },
-      { id: 'fl-retrace', label: 'new seeds' },
-    ];
-  }
-  return [
-    { id: 'ct-show', label: `catalogue ${s.catShow ? 'on' : 'off'}`, on: s.catShow },
-    { id: 'ct-labels', label: `labels ${s.catLabels ? 'on' : 'off'}`, on: s.catLabels },
-    { id: 'ct-pins', label: `through velocity ${s.catPins ? 'on' : 'off'}`, on: s.catPins },
-  ];
+/** Is the spatial crop `clip` ({min, max}, box fractions) less than the whole box? */
+export function isCropped(clip) {
+  return !!clip && [0, 1, 2].some((i) => clip.min[i] > 0 || clip.max[i] < 1);
 }
 
-export function stripLayout(buttons) {
-  const n = Math.max(1, buttons.length), gap = 8, x0 = 12;
-  const w = (STRIP_PX[0] - 2 * x0 - gap * (n - 1)) / n;
-  return buttons.map((b, i) => ({ ...b, kind: 'button', rect: [x0 + i * (w + gap), 40, w, 68] }));
+/** The columns a point table can be coloured by: not its axes, nor the
+ *  backend's own (@...). */
+export function colourFields(points) {
+  return points ? points.fields.filter((f) => !points.axes.includes(f) && !f.startsWith('@')) : [];
+}
+
+/** Streamline seeds after a press of Fewer (-1) or More (+1): about a factor
+ *  of 1.4 (two presses double), within the backend's 10..5000. */
+export function stepSeeds(seeds, dir) {
+  const v = Math.round(seeds * (dir > 0 ? Math.SQRT2 : Math.SQRT1_2));
+  return Math.max(10, Math.min(5000, v === seeds ? seeds + dir : v));
+}
+
+/** A value for the menu: four significant digits, exponent outside 1e-2..1e5. */
+function fmt(v) {
+  if (!Number.isFinite(v)) return 'n/a';
+  const a = Math.abs(v);
+  return a !== 0 && (a < 1e-2 || a >= 1e5) ? v.toExponential(2) : String(+v.toPrecision(4));
 }
 
 export function createLayers(ctx) {
@@ -85,6 +78,9 @@ export function createLayers(ctx) {
       colourField: null, colourLog: false, budget: 'quest', budgetRows: PT.BUDGETS.quest,
       stream: true, arrows: true, arrowScale: 1, seeds: 200, maxArrows: 50000, seed: 1,
       catShow: true, catLabels: true, catPins: true, govern: true,
+      // The menu (#257): the box and its ticks shown, the velocity field's
+      // colour range (fractions of its speed range), the page of column chips.
+      box: true, flC0: 0, flC1: 1, fieldPage: 0,
     },
     box: null, info: null, load: {}, error: '',
   };
@@ -464,50 +460,155 @@ export function createLayers(ctx) {
   ctLabels.addEventListener('change', () => { L.s.catLabels = ctLabels.checked; rebuildOverlay(); });
   ctPins.addEventListener('change', () => { L.s.catPins = ctPins.checked; rebuildOverlay(); });
 
-  // ── The menu's Layers page (the former in-VR strip) ─────────────────
-  function stripState() { return { ...L.s }; }
-  function applyStrip(id) {
-    const b = (() => { try { return ctx.ensureBackend(); } catch { return null; } })();
+  // ── The hand menu's Display tab (#257; the former Layers page) ──────
+  const tryBackend = () => { try { return ctx.ensureBackend(); } catch { return null; } };
+  /** A press on the menu: true when it was one of the layers' controls. */
+  function press(id, w = {}) {
+    const b = tryBackend();
     const s = L.s;
-    if (id === 'pt-style') { s.style = s.style === 'splats' ? 'points' : 'splats'; styleSel.value = s.style; }
-    else if (id === 'pt-colour' && L.points && b) {
-      const opts = [null, ...L.points.fields.filter((f) => !L.points.axes.includes(f))];
-      s.colourField = opts[(opts.indexOf(s.colourField) + 1) % opts.length];
+    if (w.group === 'pt-field') {
+      if (!L.points || !b) return true;
+      s.colourField = w.value || null;
+      s.autoLog = true;
+      s.colourLog = false;
+      logBox.checked = false;
       fieldSel.value = s.colourField || '';
       fetchSample(b).catch(fail);
+    } else if (id === 'pt-field-more') s.fieldPage += 1;
+    else if (id === 'pt-log' && L.points && b) { s.autoLog = false; s.colourLog = !s.colourLog; logBox.checked = s.colourLog; fetchSample(b).catch(fail); }
+    else if (w.group === 'pt-style') {
+      s.style = w.value === 'splats' ? 'splats' : 'points';
+      styleSel.value = s.style;
+      sizeIn.value = s.style === 'splats' ? s.splatSize : s.pointPx;
     } else if (id === 'pt-budget' && L.points && b) {
       const keys = ['quest-low', 'quest', 'quest-high', 'desktop', 'desktop-high'];
       s.budget = keys[(keys.indexOf(s.budget) + 1) % keys.length];
       s.budgetRows = PT.BUDGETS[s.budget];
       budgetSel.value = s.budget;
       fetchSample(b).catch(fail);
-    } else if (id === 'pt-smaller' || id === 'pt-larger') {
+    } else if (id === 'pt-reload' && L.points && b) fetchSample(b).catch(fail);
+    else if (id === 'pt-smaller' || id === 'pt-larger') {
       const f = id === 'pt-larger' ? 1.25 : 0.8;
       if (s.style === 'splats') s.splatSize = Math.max(0.25, Math.min(12, s.splatSize * f));
       else s.pointPx = Math.max(1, Math.min(12, s.pointPx * f));
-    } else if (id === 'fl-stream') { s.stream = !s.stream; streamBox.checked = s.stream; }
+      sizeIn.value = s.style === 'splats' ? s.splatSize : s.pointPx;
+    } else if (id === 'pt-box' || id === 'fl-box') s.box = !s.box;
+    else if (id === 'fl-stream') { s.stream = !s.stream; streamBox.checked = s.stream; }
     else if (id === 'fl-arrows') { s.arrows = !s.arrows; arrowBox.checked = s.arrows; }
     else if (id === 'fl-shorter' || id === 'fl-longer') {
       s.arrowScale = Math.max(0.05, Math.min(10, s.arrowScale * (id === 'fl-longer' ? 1.25 : 0.8)));
       scaleIn.value = Math.round(100 * s.arrowScale);
       setArrowScale();
+    } else if ((id === 'fl-fewer' || id === 'fl-more') && L.flow && b) {
+      s.seeds = stepSeeds(s.seeds, id === 'fl-more' ? 1 : -1);
+      seedsIn.value = s.seeds;
+      fetchLines(b).catch(fail);
     } else if (id === 'fl-retrace' && L.flow && b) { s.seed += 1; fetchLines(b).catch(fail); }
     else if (id === 'ct-show') { s.catShow = !s.catShow; ctShow.checked = s.catShow; }
     else if (id === 'ct-labels') { s.catLabels = !s.catLabels; ctLabels.checked = s.catLabels; rebuildOverlay(); }
     else if (id === 'ct-pins') { s.catPins = !s.catPins; ctPins.checked = s.catPins; rebuildOverlay(); }
+    else return /^(pt|fl|ct)-/.test(id);
+    return true;
   }
-  /** The line the strip shows over its buttons: a catalogue's summary, or
-   *  its first warning (and how many there are). */
-  function stripNote() {
-    if (L.mode !== 'cube' || !L.overlay) return null;
-    const w = L.overlay.warnings || [];
-    if (w.length) return { warn: true, text: `⚠ ${w[0]}${w.length > 1 ? ` (+${w.length - 1} more on the page)` : ''}` };
-    return { warn: false, text: CT.overlaySummary(L.overlay) };
+  /** A range dragged on the menu: the point table's colour window, or the
+   *  velocity field's (fractions of its speed range). */
+  function setRange(id, [lo, hi]) {
+    if (id === 'pt-range') {
+      L.s.c0 = Math.max(0, Math.min(lo, hi - 0.001)); L.s.c1 = Math.min(1, Math.max(hi, L.s.c0 + 0.001));
+      c0In.value = Math.round(1000 * L.s.c0); c1In.value = Math.round(1000 * L.s.c1);
+      return true;
+    }
+    if (id === 'fl-range') {
+      L.s.flC0 = Math.max(0, Math.min(lo, hi - 0.001)); L.s.flC1 = Math.min(1, Math.max(hi, L.s.flC0 + 0.001));
+      return true;
+    }
+    return false;
   }
-  function stripVisible() { return L.mode !== 'cube' || !!L.overlay; }
-  /** The title of the Layers page for what is shown. */
-  function stripTitle() { return L.mode === 'points' ? 'Point table' : L.mode === 'flow' ? 'Velocity field' : 'Catalogue over the cube'; }
+  function slide(id, f) {
+    if (id !== 'pt-intensity') return false;
+    L.s.intensity = Math.max(1, Math.min(100, Math.round(f * 100)));
+    intIn.value = L.s.intensity;
+    return true;
+  }
+  /** The look of a point table or field an undo step keeps: what changes the
+   *  drawing only (a new column, budget or seeds asks the backend again). */
+  const UNDO_KEYS = ['c0', 'c1', 'flC0', 'flC1', 'intensity', 'style', 'pointPx', 'splatSize', 'arrowScale', 'box',
+    'stream', 'arrows', 'catShow', 'catLabels', 'catPins'];
+  function undoState() { return Object.fromEntries(UNDO_KEYS.map((k) => [k, L.s[k]])); }
+  function restoreUndo(o) {
+    if (!o) return;
+    for (const k of UNDO_KEYS) if (k in o) L.s[k] = o[k];
+    const s = L.s;
+    styleSel.value = s.style;
+    sizeIn.value = s.style === 'splats' ? s.splatSize : s.pointPx;
+    c0In.value = Math.round(1000 * s.c0); c1In.value = Math.round(1000 * s.c1);
+    intIn.value = s.intensity;
+    streamBox.checked = s.stream; arrowBox.checked = s.arrows;
+    scaleIn.value = Math.round(100 * s.arrowScale);
+    ctShow.checked = s.catShow; ctLabels.checked = s.catLabels; ctPins.checked = s.catPins;
+    setArrowScale();
+    rebuildOverlay();
+  }
+  /** Does a press change only the drawing (one undo step before it)? */
+  function undoable(id, w = {}) {
+    return w.group === 'pt-style' || ['pt-smaller', 'pt-larger', 'pt-box', 'fl-box', 'fl-stream', 'fl-arrows', 'fl-shorter',
+      'fl-longer', 'ct-show', 'ct-labels', 'ct-pins'].includes(id);
+  }
 
+  /** The velocity field's colour range in its speed unit. */
+  function flowSpeedRange() {
+    const i = L.flow && L.flow.info;
+    if (!i) return [0, 1];
+    const d = i.speedMax - i.speedMin;
+    return [i.speedMin + L.s.flC0 * d, i.speedMin + L.s.flC1 * d];
+  }
+  /** What the menu needs to lay out the Display tab (hand-menu.js context). */
+  function menuContext() {
+    const s = L.s;
+    const kind = L.mode === 'points' ? (L.points && L.points.sample ? 'points' : 'none')
+      : L.mode === 'flow' ? (L.flow && L.flow.info ? 'flow' : 'none') : 'cube';
+    return {
+      kind,
+      cat: { loaded: !!L.overlay, show: s.catShow, labels: s.catLabels, pins: s.catPins },
+      pts: { fields: colourFields(L.points), field: s.colourField, log: s.colourLog, style: s.style,
+        budget: `${(s.budgetRows / 1e6).toFixed(1)} M`, box: s.box, fieldPage: s.fieldPage },
+      flow: { stream: s.stream, arrows: s.arrows, box: s.box },
+    };
+  }
+  /** The values on the menu's rows ({rowKey: text}), its sliders and ranges, and status lines. */
+  function menuView() {
+    const s = L.s, notes = {}, values = {}, status = [];
+    if (L.mode === 'points' && L.points && L.points.sample) {
+      const sm = L.points.sample;
+      values['pt-range'] = [s.c0, s.c1];
+      values['pt-intensity'] = s.intensity / 100;
+      if (sm.colourField && sm.colourRange) {
+        const at = (f) => PT.codeValue(f * 65535, sm.colourRange, sm.colourLog);
+        notes.field = `${sm.colourField}${sm.colourLog ? ' (log scale)' : ''}`;
+        notes.scale = `${fmt(at(s.c0))} to ${fmt(at(s.c1))}`;
+      } else {
+        notes.field = 'one colour';
+      }
+      notes.style = s.style === 'splats' ? `splat size ${fmt(s.splatSize)}` : `${fmt(s.pointPx)} px`;
+      notes.intensity = s.style === 'splats' ? `${s.intensity} %` : '';
+      const drawn = s.govern ? L.points.drawRows : sm.count;
+      notes.shown = `${(drawn / 1e6).toFixed(2)} M drawn of ${(sm.count / 1e6).toFixed(2)} M sampled, ${(sm.totalRows / 1e6).toFixed(2)} M rows`;
+    } else if (L.mode === 'flow' && L.flow && L.flow.info) {
+      const i = L.flow.info;
+      values['fl-range'] = [s.flC0, s.flC1];
+      const [a, b] = flowSpeedRange();
+      notes.speed = `${fmt(a)} to ${fmt(b)}${i.unit ? ` ${i.unit}` : ''}`;
+      notes.arrows = `× ${fmt(s.arrowScale)}`;
+      notes.seeds = `${s.seeds} seeds asked, ${i.lines} streamlines`;
+      notes.box = i.boxMpc > 0 ? `box ${fmt(i.boxMpc)} Mpc (read-only)` : 'grid units (no box given)';
+      notes.lines = `${i.lines} streamlines, ${i.arrows} arrows, grid ${i.shape.join('×')}`;
+    } else if (L.mode === 'cube' && L.overlay) {
+      const w = L.overlay.warnings || [];
+      notes.cat = w.length ? `⚠ ${w[0]}${w.length > 1 ? ` (+${w.length - 1} more on the page)` : ''}` : CT.overlaySummary(L.overlay);
+    }
+    if (L.error) status.push([L.error, '#ff8a8a']);
+    return { notes, values, status };
+  }
   // ── Hooks for main.js ────────────────────────────────────────────────
   const api = {
     // R.restore() rebuilds its own handles; these layer-specific GPU objects
@@ -591,19 +692,24 @@ export function createLayers(ctx) {
         const drawn = L.s.govern ? pt.drawRows : pt.sample.count;
         const st = PT.splatStyle(pt.sample.bounds, pt.sample.totalRows, drawn, L.s.splatSize, L.s.intensity);
         cloud.draw(view, model, { box: L.box, style: L.s.style, pointPx: L.s.pointPx, radius: st.sampleRadius,
-          opacity: st.opacity, c0: L.s.c0, c1: L.s.c1, viewportH, count: L.s.govern ? pt.drawRows : pt.sample.count });
+          opacity: st.opacity, c0: L.s.c0, c1: L.s.c1, viewportH, count: L.s.govern ? pt.drawRows : pt.sample.count,
+          clip: state.clip });
       } else if (L.mode === 'flow' && lines && L.flow && L.flow.info) {
-        lines.draw(view, model, { box: L.box, speedMin: L.flow.info.speedMin, speedMax: L.flow.info.speedMax,
-          stream: L.s.stream, arrows: L.s.arrows });
+        const [s0, s1] = flowSpeedRange();
+        lines.draw(view, model, { box: L.box, speedMin: s0, speedMax: s1,
+          stream: L.s.stream, arrows: L.s.arrows, clip: state.clip });
       }
-      if (L.mode === 'points' && ctx.refineOn() && ctx.refiner.showing) ctx.refiner.composite(view, model, eye);
-      R.drawLines(view, model);
-      R.drawLabels(view, model, M.uniformScale(model));
+      // The backend's point session draws the whole table: no refined frame over a crop.
+      if (L.mode === 'points' && ctx.refineOn() && ctx.refiner.showing && !isCropped(state.clip)) ctx.refiner.composite(view, model, eye);
+      if (L.s.box) {
+        R.drawLines(view, model);
+        R.drawLabels(view, model, M.uniformScale(model));
+      }
     },
     hasScene() { return L.mode !== 'cube' && !!L.box; },
     /** Refinement of a point table (none for a velocity field). */
     refineFrame(t, eyes, centreView, background) {
-      if (L.mode !== 'points' || !L.points || !L.points.sample) return;
+      if (L.mode !== 'points' || !L.points || !L.points.sample || isCropped(state.clip)) return;
       const sm = L.points.sample;
       const commands = PT.pointLook({ axes: L.points.axes, colourField: sm.colourField, colourRange: sm.colourRange,
         colourLog: sm.colourLog, lut: colormapTable(ctx.colormap()), c0: L.s.c0, c1: L.s.c1, style: L.s.style,
@@ -630,13 +736,8 @@ export function createLayers(ctx) {
       if (L.error) out.push(`  ${L.error}`.slice(0, 70));
       return out;
     },
-    /** The hand menu's Layers page (issue #201): its buttons (none when
-     *  nothing is shown), title and note. */
-    menuPage() {
-      if (!stripVisible()) return { buttons: [], title: '', note: null };
-      return { buttons: stripButtons(L.mode, stripState()), title: stripTitle(), note: stripNote() };
-    },
-    pressStrip: applyStrip,
+    // The hand menu's Display tab (#257): its context, values, presses and drags.
+    menuContext, menuView, press, setRange, slide, undoState, restoreUndo, undoable,
     loadOverlay: () => loadOverlay(ctx.ensureBackend()),
     listable: (name) => /\.(head|csv|tsv|xml|vot|tbl|ipac|speck)$/i.test(name),
     gpuBytes() { return (cloud ? cloud.bytes : 0) + (lines ? lines.bytesOnGpu : 0); },

@@ -116,7 +116,7 @@ export function panelBehindCube(hitT, cubeModel, extent, o, d, boxMin = [0, 0, 0
 /**
  * The pointer on the panel: hover, press, drag with capture. `update(hit,
  * pressed)` once per frame (hit: rayPanel's answer or null), returns the
- * actions to apply: {type: 'press', id, widget} for a button or toggle;
+ * actions to apply: {type: 'press', id, widget} for a button, toggle or swatch;
  * {type: 'slide', id, value} for a slider (0..1); {type: 'range', id, value:
  * [lo, hi]} for the channel range; {type: 'drag-start' | 'drag' | 'drag-end',
  * hit}. A press that starts on the panel belongs to it until released, even
@@ -147,7 +147,7 @@ export class PanelPointer {
       this.owns = !!hit;
       this.active = null;
       if (w) {
-        if (w.kind === 'button' || w.kind === 'toggle') {
+        if (w.kind === 'button' || w.kind === 'toggle' || w.kind === 'swatch') {
           out.push({ type: 'press', id: w.id, widget: w });
         } else if (w.kind === 'slider') {
           this.active = w;

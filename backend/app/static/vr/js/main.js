@@ -11,6 +11,7 @@ import * as V from './volume.js';
 import { CubePrep, Newest, prepareCube, CMAX_QUANTILE, CMAX_SAMPLE } from './cube-prep.js';
 import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
 import { createSelection, createSelectionSync, TOOLS, TOOL_NAMES } from './select-ui.js';
+import { channelsOfClip, pixelArcsec } from './selection.js';
 import { Refiner, desktopEyes } from './refine-client.js';
 import { transferFunction, cropBox, cropError } from './refine.js';
 import { pairingFallback } from './pairing.js';
@@ -93,7 +94,7 @@ const state = {
   texScale: [1, 1, 1],   // box coordinate -> texture coordinate (partial last blocks)
   model: M.identity(),
   moving: false,
-  hud: true,           // the cube card on the secondary wrist (issue #256; the menu's Settings)
+  hud: true,           // the cube card on the secondary wrist (issue #256; the menu's More → Wrist readout)
   load: {},            // load timings
   loading: 0,          // loads under way (a 404 then is the load's own business)
   loadGen: 0,          // bumped by every load: a recovery started before it is superseded
@@ -452,7 +453,7 @@ window.addEventListener('pageshow', (e) => { if (e.persisted) refiner.resume(); 
 
 layers = createLayers({
   gl, R, state, $, refiner, ensureBackend,
-  onNonCube: () => { selection.clear(); analysis.reset(); share.stop(); },
+  onNonCube: () => { selection.clear(); analysis.reset(); share.stop(); ui.undo.clear(); },
   colormap: () => state.colormap, refineOn: () => refineMode !== 'off',
   rebuild: () => rebuildDecorations(),
   targetHz: () => (xr ? xr.targetHz : 60),
@@ -1274,10 +1275,7 @@ function showInstalled(info, cube, open, path, slot, up, load, clock) {
 /** The threshold source the cube on show starts with (thresholdSourceFor). */
 function currentThresholdSource() {
   const c = state.cube, info = state.info;
-  return thresholdSourceFor(settings, {
-    synthetic: !c || c.mode === 'synthetic', source: c ? c.source : 'cube',
-    outOfCore: !!(info && info.render_out_of_core), refine: $('refine').checked,
-  });
+  return thresholdSourceFor(settings, { synthetic: !c || c.mode === 'synthetic' || !info, debug: DEBUG_HUD });
 }
 
 function applyExtent() {
@@ -1514,32 +1512,45 @@ function drawHudCanvas(lines) {
   lines.forEach((l, i) => ctx.fillText(l, 14, 12 + i * 31));
 }
 
-// ── The hand menu, result windows, labels and readout (issue #201) ──────────
+// ── The hand menu, result windows, labels and readout (issues #201, #257) ───
 // One menu, held open by the secondary hand's lower button (or its palm turned
-// up) next to that wrist, used with the primary ray and trigger: modes and
-// tools, the look (the former panel), analysis (the former analysis panel),
-// layers (the former strip), settings and help. The results stand in windows
-// that the ray moves by their title bar and closes with ×. In a desktop
-// browser the menu and the windows are drawn in the 3-D view with ?panel3d (or
-// the box on the page) and used with the mouse, through the same ray code.
+// up), standing about a metre in front of the user from the moment it opens
+// until it closes (world-locked; its title bar moves it), used with the
+// primary ray and trigger. Its tabs follow the work: Display, Range, Select,
+// Measure, More (hand-menu.js); choosing one sets the mode. The results stand
+// in windows that the ray moves by their title bar and closes with ×. In a
+// desktop browser the menu and the windows are drawn in the 3-D view with
+// ?panel3d (or the box on the page) and used with the mouse, through the same
+// ray code.
 const DESKTOP_ANCHOR = { p: [0, 0, 0], yaw: 0 };
 const DESKTOP_MENU = { right: 0.95, up: 0, fwd: -0.3, yaw: -0.45 };   // right: the page's panel is on the left
+/** In the desktop view the menu is drawn at half its headset size (seen from 2 m, not 1). */
+const DESKTOP_MENU_SCALE = 0.5;
 const ui = {
-  mode: 'explore', clipTool: 'slab', page: 'mode', helpMode: null,
+  mode: 'explore', clipTool: 'slab', page: 'display',
   menu: { pinned: false, armed: false, wasHeld: false, open: false },
-  menuModel: null,     // the menu's pose when it was last shown (a kept menu stays there)
+  menuModel: null,     // the menu's pose, taken when it opens (world-locked until it closes)
+  menuDrag: null,      // its title bar held: {t, rel} (hand-menu.js dragMenu)
   desktop: query.has('panel3d'),
   undo: new C.UndoStack(),
   pin: null,           // the pinned readout: {p} (box coordinates)
   sliding: null,       // the menu slider held: one undo step per drag
-  clipDrag: null,      // a face of the clipping box dragged (Clip, box tool)
+  clipDrag: null,      // a face of the clipping box dragged (Range, Spatial crop tool)
   hit: null,           // where the primary ray meets the menu or a window: {point, model}
   busy: { busy: '', error: '' },   // the tools' state last frame, for the haptics
 };
+/** The [lo, hi] a range widget of the menu shows now. */
+function menuRangeValue(id) {
+  if (id === 'slab') return [state.clip.min[2], state.clip.max[2]];
+  const crop = /^crop:(\d)$/.exec(id);
+  if (crop) return [state.clip.min[+crop[1]], state.clip.max[+crop[1]]];
+  const v = layers ? layers.menuView().values[id] : null;
+  return Array.isArray(v) ? v : [0, 1];
+}
 const menu = {
   canvas: Object.assign(document.createElement('canvas'), { width: HM.MENU_PX[0], height: HM.MENU_PX[1] }),
-  tex: null, key: '', drawnAt: 0, draws: 0, drawMs: [], uploadMs: [], pageLayout: [],
-  pointer: new P.PanelPointer([], { rangeValue: () => [state.clip.min[2], state.clip.max[2]] }),
+  tex: null, key: '', drawnAt: 0, draws: 0, drawMs: [], uploadMs: [], spec: null, ctx: null,
+  pointer: new P.PanelPointer([], { rangeValue: menuRangeValue }),
 };
 $('panel3d').checked = ui.desktop;
 $('panel3d').addEventListener('change', () => { ui.desktop = $('panel3d').checked; });
@@ -1593,16 +1604,29 @@ function buzz(role, kind) {
 }
 
 // ── Undo: the look before each change ──────────────────────────────────────
+/** What is shown: 'cube', or a point table's or velocity field's mode (#257: they have an undo too). */
+function lookKind() { return state.cube ? 'cube' : layers.hasScene() ? layers.mode : ''; }
 function lookSnapshot() {
-  return { thrNorm: state.thrNorm, cmaxNorm: state.cmaxNorm, opacity: state.opacity, colormap: state.colormap,
-    mode: state.mode, gamma: state.gamma, thrSource: $('thr-source').value,
-    clip: { min: [...state.clip.min], max: [...state.clip.max] } };
+  const kind = lookKind();
+  const clip = { min: [...state.clip.min], max: [...state.clip.max] };
+  if (kind !== 'cube') return { kind, colormap: state.colormap, clip, layer: layers.undoState() };
+  return { kind, thrNorm: state.thrNorm, cmaxNorm: state.cmaxNorm, opacity: state.opacity, colormap: state.colormap,
+    mode: state.mode, gamma: state.gamma, thrSource: $('thr-source').value, clip, layer: layers.undoState() };   // the catalogue's toggles too
 }
-function pushUndo() { if (state.cube) ui.undo.push(lookSnapshot()); }
+function pushUndo() { if (lookKind()) ui.undo.push(lookSnapshot()); }
 function undo() {
   const s = ui.undo.pop();
   if (!s) { buzz('primary', 'error'); return false; }
+  // A step of other data (a history left from before a switch) is not applied.
+  if ((s.kind || 'cube') !== lookKind()) { ui.undo.clear(); buzz('primary', 'error'); return false; }
   ui.clipDrag = null;
+  if ((s.kind || 'cube') !== 'cube') {
+    state.clip = { min: [...s.clip.min], max: [...s.clip.max] };
+    setColormap(s.colormap);
+    layers.restoreUndo(s.layer);
+    decorationsChanged();
+    return true;
+  }
   if (s.thrSource && s.thrSource !== $('thr-source').value) {
     $('thr-source').value = s.thrSource;
     settings.thrSource = s.thrSource; persist();
@@ -1610,6 +1634,7 @@ function undo() {
   Object.assign(state, { thrNorm: s.thrNorm, cmaxNorm: s.cmaxNorm, opacity: s.opacity, mode: s.mode, gamma: s.gamma,
     clip: { min: [...s.clip.min], max: [...s.clip.max] } });
   setColormap(s.colormap);
+  if (s.layer) layers.restoreUndo(s.layer);
   $('rmode').value = String(state.mode);
   $('opacity').value = Math.round(state.opacity * 100);
   $('gamma').value = String(state.gamma);
@@ -1638,49 +1663,22 @@ function setSlab(s) {
   decorationsChanged();
 }
 
-// ── The Look page: what it shows (the former panel's view) ─────────────────
-/** What the Look page shows, as plain values. */
-function lookView() {
-  const c = state.cube, info = state.info;
-  const unit = c && c.bunit ? ` ${c.bunit}` : '';
-  const name = state.openPath ? state.openPath.split('/').pop()
+// ── What the menu shows (issue #257) ───────────────────────────────────────
+function cubeName() {
+  const c = state.cube;
+  return state.openPath ? state.openPath.split('/').pop()
     : c ? (c.mode === 'synthetic' ? 'synthetic cube' : `dataset ${state.open ? state.open.dataset_id : ''}`) : 'no cube';
-  const r = C.roles(settings.leftHanded), S = C.buttonNames(r.secondary), Pb = C.buttonNames(r.primary);
-  const v = {
-    title: `VisIVO VR · ${name}`,
-    info: c ? [
-      `${(info.full_shape || c.fullShape).join('×')} → ${c.dims.join('×')}, binned ${c.factors.join('×')} (${c.mode}${V.sourceNote(c)}), ${c.encoding === 'float16' ? '16' : '8'}-bit`,
-      c.mode === 'synthetic' ? 'no backend: selections need a cube from the backend' : `in ${state.sessionNote || 'own session'}`,
-    ] : ['No cube yet: open one from the desktop or on the page.', ''],
-    cmap: state.colormap, mode: state.mode, thrSource: $('thr-source').value, tool: selection.sel.tool,
-    thr: { f: normToSlider(state.thrNorm) / 1000, text: c ? `${fmt(dataValue(state.thrNorm))}${unit}` : '' },
-    cmax: { f: normToSlider(state.cmaxNorm) / 1000, text: c ? `${fmt(dataValue(state.cmaxNorm))}${unit}` : '' },
-    opacity: { f: state.opacity / 2, text: state.opacity.toFixed(2) },
-    slab: { lo: state.clip.min[2], hi: state.clip.max[2], text: '', world: '' },
+}
+
+/** The refinement and the status line, for the lifecycle checks (window.__vrPanel). */
+function panelView() {
+  return {
     refine: { on: refiner.enabled, text: refineShort(), warn: !!(refiner.unavailable || refiner.suspended) },
     // A hidden lifecycle notice first: it is the state of the backend now,
     // a selection's error may be older than it.
     status: shell.badge() || selection.sel.busy || selection.sel.error || currentQualityNote(),
     statusError: !!shell.badge() || (!selection.sel.busy && !!selection.sel.error),
-    hint: `Hold ${S.lower}: menu   ${Pb.lower}: next mode   ${Pb.upper}: undo   ${S.upper}: reset view`,
   };
-  if (info && info.full_shape) {
-    const nz = info.full_shape[2];
-    const a = Math.min(nz - 1, Math.round(state.clip.min[2] * nz));
-    const b = Math.max(a, Math.round(state.clip.max[2] * nz) - 1);
-    v.slab.text = `ch ${a}–${b} of ${nz}`;
-    const axis = info.axes && info.axes.z;
-    if (axis) {
-      const arr = axis.velocity_kms || axis.world;
-      const at = (t) => V.texToWorld(arr, V.boxToTex(t, nz, info.factors[2]));
-      const lo = at(state.clip.min[2]), hi = at(state.clip.max[2]);
-      const u = axis.velocity_kms ? 'km/s' : axis.unit || '';
-      if (lo !== null && lo !== undefined && hi !== null && hi !== undefined) {
-        v.slab.world = `${fmt(lo)} to ${fmt(hi)} ${u}${axis.velocity_kms && axis.velocity_convention ? `, ${axis.velocity_convention}` : ''}`;
-      }
-    }
-  }
-  return v;
 }
 
 function refineShort() {
@@ -1694,43 +1692,129 @@ function refineShort() {
   return refiner.status === 'refined' ? 'refined (still view)' : refiner.status;
 }
 
-/** The Help page's lines for mode `m`: its controls, its tools, the hands. */
-function helpPage(m) {
-  const subs = C.SUBTOOLS[m];
-  const out = [];
-  for (const sub of subs.length ? subs : [null]) {
-    const lines = C.helpLines(mapOpts(m, sub));
-    out.push([lines[0], '#9fd0ff'], ...lines.slice(1).map((l) => [l, '#e6e9ef']));
-  }
-  const r = C.roles(settings.leftHanded);
-  out.push(`Hands without controllers: pinch = trigger, fist = grip, ${r.secondary} palm up = the menu.`);
-  out.push(`Turn a wrist towards your eyes, as to read a watch: the ${r.primary} one shows these buttons, the ${r.secondary} one the cube and the selection.`);
-  out.push('Result windows: point at the title bar and hold the trigger to move one; × closes it.');
-  return out;
+/** The range of the spectral axis, named as the desktop names it. */
+function spectralName() {
+  const z = state.info && state.info.axes && state.info.axes.z;
+  return z && (z.velocity_kms || z.full_velocity_kms) ? 'Velocity range' : 'Spectral range';
 }
 
-function menuView() {
-  const lp = layers.menuPage();
-  const hm = ui.helpMode || ui.mode;
-  const look = lookView();
+/** The velocity (or spectral) range shown: its world values with the
+ *  convention, and its channels. */
+function slabNote() {
+  const info = state.info;
+  if (!info || !info.full_shape) return '';
+  const nz = info.full_shape[2];
+  const [a, b] = channelsOfClip([state.clip.min[2], state.clip.max[2]], nz);
+  const ch = `ch ${a}–${b} of ${nz}`;
+  const axis = info.axes && info.axes.z;
+  if (!axis) return ch;
+  const arr = axis.velocity_kms || axis.world;
+  const at = (t) => V.texToWorld(arr, V.boxToTex(t, nz, info.factors[2]));
+  const lo = at(state.clip.min[2]), hi = at(state.clip.max[2]);
+  const u = axis.velocity_kms ? 'km/s' : axis.unit || '';
+  if (lo === null || lo === undefined || hi === null || hi === undefined) return ch;
+  return `${fmt(lo)} to ${fmt(hi)} ${u}${axis.velocity_kms && axis.velocity_convention ? ` (${axis.velocity_convention})` : ''} · ${ch}`;
+}
+
+/** What the crop keeps on axis i: full pixels of a cube, data units of a point table or field. */
+function cropNote(i) {
+  const lo = state.clip.min[i], hi = state.clip.max[i];
+  if (state.cube && state.info && state.info.full_shape) {
+    const n = state.info.full_shape[i];
+    const a = Math.max(0, Math.min(n - 1, Math.round(lo * n))), b = Math.max(a, Math.min(n - 1, Math.round(hi * n) - 1));
+    return `${'xyz'[i]} ${a}–${b} of ${n} px`;
+  }
+  const box = layers.state.box;
+  if (!box) return '';
+  const at = (t) => box.lo[i] + t * (box.hi[i] - box.lo[i]);
+  return `${fmt(at(lo))} to ${fmt(at(hi))}`;
+}
+
+let pixelScale = { info: null, arcsec: null };
+function pvWidthNote() {
+  const w = analysis.pv.state.width || 1;
+  if (pixelScale.info !== state.info) pixelScale = { info: state.info, arcsec: state.info ? pixelArcsec(state.info) : null };
+  return pixelScale.arcsec ? `${w} px = ${(w * pixelScale.arcsec).toFixed(1)}″` : `${w} px`;
+}
+
+/** The context the menu's layout is a function of (hand-menu.js). */
+function menuContext() {
+  const lc = layers.menuContext();
+  const s = selection.sel, a = analysis;
+  const kind = state.cube ? 'cube' : lc.kind === 'cube' ? 'none' : lc.kind;
+  const lasso = !!(s.lasso && (s.lasso.bytes || s.lasso.request));
+  const av = a.view();
   return {
-    look, analysis: analysis.view(),
-    mode: { mode: ui.mode, selectTool: selection.sel.tool, clipTool: ui.clipTool, pinned: ui.menu.pinned, canUndo: ui.undo.size > 0,
-      modeLine: modeText(), map: ui.page === 'mode' ? C.helpLines(mapOpts()).slice(1) : null,
-      status: look.status, statusError: look.statusError },
-    layers: { title: lp.title, note: lp.note, buttons: ui.page === 'layers' ? lp.buttons : null },
-    settings: { leftHanded: settings.leftHanded, labels: settings.labels, haptics: settings.haptics, hud: state.hud,
-      governor: state.governorOn, refine: refiner.enabled, refineDepth: refiner.useDepth, refineScaleText: `${refiner.o.scale}×`,
-      record: measure.recording, measureRunText: measure.running ? 'Cancel run' : 'Run protocol' },
-    help: ui.page === 'help' ? { helpMode: hm, helpLines: helpPage(hm) } : null,
+    ...HM.defaultContext(),
+    kind, debug: DEBUG_HUD, colormap: state.colormap, render: state.mode, spectralName: spectralName(),
+    cat: lc.cat, clipTool: ui.clipTool,
+    sel: { tool: s.tool, seedMode: s.seedMode || 'new', lasso, box: !!s.box, applied: !!a.lasso.state.applied },
+    meas: { lasso, moment: av.moment, pvArmed: av.pvArmed, spectrum: !!s.spectrum, pinned: selection.hasPin() },
+    pts: lc.pts, flow: lc.flow,
+    more: { leftHanded: settings.leftHanded, labels: settings.labels, haptics: settings.haptics, hud: state.hud },
+    dbg: { governor: state.governorOn, refine: refiner.enabled, refineDepth: refiner.useDepth, refineScale: `${refiner.o.scale}×`,
+      record: measure.recording, run: measure.running ? 'Cancel run' : 'Run protocol', thrSource: $('thr-source').value },
+    keep: ui.menu.pinned, canUndo: ui.undo.size > 0,
   };
 }
 
-/** The menu's widgets for the page on show (the Layers page's depend on what is shown). */
+/** What the menu shows besides its layout: the title, the rows' values and
+ *  notes, the sliders' and ranges' positions, the status lines. */
+function menuView(ctx = menuContext()) {
+  const c = state.cube;
+  const lv = layers.menuView();
+  const notes = { ...lv.notes }, values = { ...lv.values };
+  const status = [];
+  const pv = panelView();
+  if (pv.status) status.push([pv.status, pv.statusError ? '#ff8a8a' : '#ffd27a']);
+  status.push(...lv.status);
+  for (const i of [0, 1, 2]) {
+    values[`crop:${i}`] = [state.clip.min[i], state.clip.max[i]];
+    notes[`crop${i}`] = ctx.kind === 'none' ? '' : cropNote(i);
+  }
+  const page = ui.page;
+  if (c) {
+    const unit = c.bunit ? ` ${c.bunit}` : '';
+    values.thr = normToSlider(state.thrNorm) / 1000;
+    values.cmax = normToSlider(state.cmaxNorm) / 1000;
+    values.opacity = state.opacity / 2;
+    values.slab = [state.clip.min[2], state.clip.max[2]];
+    notes.cmap = state.colormap;
+    const src = $('thr-source').value === 'cube' ? 'the full cube\'s noise, as on the desktop' : 'this binning\'s noise';
+    notes.thr = `${fmt(dataValue(state.thrNorm))}${unit} (starts from ${src})`;
+    notes.cmax = `${fmt(dataValue(state.cmaxNorm))}${unit}`;
+    notes.opacity = state.opacity.toFixed(2);
+    notes.render = state.mode === 1 ? 'MIP: the brightest value along each ray' : 'Emission: the voxels add up along each ray';
+    notes.slab = slabNote();
+    notes.trigger = ui.clipTool === 'box' ? 'Trigger held near a face of the crop: drag it.' : 'Trigger: the range centred on the emission it meets.';
+    notes.crop = 'Reset crop keeps the range.';
+    notes.tool = TOOL_NAMES[selection.sel.tool] ? `Trigger: ${TOOL_NAMES[selection.sel.tool]}` : '';
+    const sum = selectionSummary();
+    notes.selection = sum && sum.length ? sum[0] : '';
+    notes.moment = ctx.meas.lasso ? 'Of the lasso object (its mask).'
+      : 'Whole field over the velocity range, the desktop\'s automatic threshold mask.';
+    notes.pv = analysis.pv.state.armed ? 'Trigger: the next point of the slice.' : '';
+    notes.pvw = pvWidthNote();
+    const info = (t) => [t, '#b9c2d0'];
+    if (page === 'select') status.push(...[...(sum || []).slice(1), ...analysis.lasso.lines()].map(info));
+    if (page === 'measure') {
+      const av = analysis.view();
+      if (av.error) status.push([av.error, '#ff8a8a']);
+      status.push(...[...analysis.moment.lines(), ...analysis.pv.lines()].filter((l) => l !== av.error).map(info));
+    }
+  }
+  if (page === 'debug') status.push(`Refinement: ${refineShort()}`);
+  return { title: `VisIVO VR · ${ctx.kind === 'points' || ctx.kind === 'flow' ? (state.openPath || '').split('/').pop() || ctx.kind : cubeName()}`,
+    notes, values, status };
+}
+
+/** The menu's widgets for the page on show; the page and the context kept for the drawing. */
 function menuLayout() {
-  const lp = ui.page === 'layers' ? layers.menuPage() : { buttons: [] };
-  menu.pageLayout = HM.pageLayout(ui.page, { layerButtons: lp.buttons });
-  menu.pointer.layout = HM.menuLayout(ui.page, { layerButtons: lp.buttons });
+  const ctx = menuContext();
+  if (ui.page === 'debug' && !ctx.debug) ui.page = 'more';
+  menu.ctx = ctx;
+  menu.spec = HM.pageSpec(ui.page, ctx);
+  menu.pointer.layout = HM.menuLayout(ui.page, ctx);
   return menu.pointer.layout;
 }
 
@@ -1738,12 +1822,12 @@ function menuLayout() {
 function menuTexture(now) {
   if (!menu.tex) menu.tex = R.createPanel();
   menuLayout();      // the page may have changed since the pointer's update
-  const view = menuView();
+  const view = menuView(menu.ctx);
   const uiState = { hover: menu.pointer.hover, active: menu.pointer.active ? menu.pointer.active.id : null };
-  const key = JSON.stringify([ui.page, view, uiState]);
+  const key = JSON.stringify([ui.page, menu.pointer.layout, view, uiState]);
   if (key !== menu.key && (now - menu.drawnAt >= 33 || !menu.draws)) {
     const t0 = performance.now();
-    HM.drawMenu(menu.canvas.getContext('2d'), ui.page, menu.pageLayout, view, uiState);
+    HM.drawMenu(menu.canvas.getContext('2d'), ui.page, menu.spec, view, uiState, menu.ctx);
     const t1 = performance.now();
     R.updatePanel(menu.tex, menu.canvas);
     const t2 = performance.now();
@@ -1758,25 +1842,22 @@ const median = (a) => { if (!a.length) return NaN; const s = [...a].sort((x, y) 
 
 /** Is the menu on show (held in the headset, or in the desktop's 3-D view)? */
 function menuShown() { return xr ? (!xr.bench && ui.menu.open && !!ui.menuModel) : ui.desktop; }
-/** The menu's pose: by the secondary hand while held, where it was when kept open. */
+/** The menu's size in metres: in the headset, its angular size at MENU_DIST. */
+function menuSize() { return xr ? HM.MENU_SIZE : HM.MENU_SIZE.map((v) => v * DESKTOP_MENU_SCALE); }
+/** The menu's pose: where it opened (or was moved to) in the headset. */
 function menuWorld() {
   if (!xr) return P.panelModel(DESKTOP_ANCHOR, DESKTOP_MENU);
   return ui.menuModel;
 }
-function updateMenuPose() {
-  if (!xr || !ui.menu.open || ui.menu.pinned && ui.menuModel) return;
-  const r = C.roles(settings.leftHanded);
-  const h = xr.hands[r.secondary];
-  if (h && xr.headPos) {
-    ui.menuModel = HM.menuModel(h.pos, xr.headPos, xr.headRight || [1, 0, 0], r.secondary === 'left' ? 1 : -1);
-  } else if (!ui.menuModel && xr.pose) {
-    // No secondary hand tracked: in front of the head, a little low.
-    const m = xr.pose.transform.matrix;
-    const p = M.transformPoint(m, [0, -0.15, -0.5]);
-    ui.menuModel = RO.faceEye(p, xr.headPos);
+/** The menu opening: in front of the eyes, on the tab of the mode, world-locked until it closes. */
+function updateMenuPose(opened) {
+  if (!xr || !ui.menu.open) { ui.menuDrag = null; return; }
+  if (opened) {
+    ui.page = HM.pageOnOpen(ui.page, ui.mode);
+    layers.state.s.fieldPage = 0;      // the first page of columns, with the velocity ones (hand-menu.js fieldChips)
   }
+  if ((opened || !ui.menuModel) && xr.pose) ui.menuModel = HM.menuFront(xr.pose.transform.matrix);
 }
-
 // ── The result windows ──────────────────────────────────────────────────────
 const wins = Object.fromEntries(WINDOW_IDS.map((id) => [id, {
   id, def: W.WINDOWS[id], pointer: new W.WindowPointer(), drag: null, closedKey: null, model: null, size: null,
@@ -1873,7 +1954,7 @@ function uiPointer(ray, pressed, eye) {
   if (menuShown()) {
     menuLayout();
     const m = menuWorld();
-    surfaces.push({ kind: 'menu', model: m, hit: ray ? P.rayPanel(m, HM.MENU_SIZE, ray.o, ray.d, HM.MENU_PX) : null,
+    surfaces.push({ kind: 'menu', model: m, hit: ray ? P.rayPanel(m, menuSize(), ray.o, ray.d, HM.MENU_PX) : null,
       captured: !!menu.pointer.active });
   }
   const list = shownWindows();
@@ -1892,7 +1973,7 @@ function uiPointer(ray, pressed, eye) {
   surfaces.forEach((s, i) => {
     const mine = i === win;
     if (s.kind === 'menu') {
-      for (const a of menu.pointer.update(mine ? s.hit : null, pressed)) applyMenu(a);
+      for (const a of menu.pointer.update(mine ? s.hit : null, pressed)) applyMenu(a, ray, eye);
       if (mine && s.hit) ui.hit = { point: s.hit.point, model: s.model };
       takes = takes || menu.pointer.takesRay() || menu.pointer.owns;
     } else {
@@ -1909,92 +1990,118 @@ function uiPointer(ray, pressed, eye) {
   return takes;
 }
 
-/** A press, slide or range on the menu. */
-function applyMenu(a) {
-  if (a.type === 'drag-start' || a.type === 'drag' || a.type === 'drag-end') return;
-  if (a.type === 'press') buzz('primary', 'press');
-  const id = a.id, w = a.widget || {};
-  if (a.type === 'press' && w.group === 'tab') { ui.page = w.value; ui.helpMode = null; return; }
-  const page = ui.page;
-  if (page === 'look') applyLook(a);
-  else if (page === 'analysis' && a.type === 'press') {
-    // A seed mode is for the lasso: Select with the Kinematic Lasso.
-    if (w.group === 'seed') { setMode('select'); if (selection.sel.tool !== 'lasso') selection.setTool('lasso'); }
-    analysis.press(id, w);
+/** A tab chosen: its page, and the mode it sets (Display and Measure:
+ *  explore; Range: clip; Select: select). */
+function setPage(page) {
+  ui.page = page;
+  const m = HM.TAB_MODE[page];
+  if (m) setMode(m);
+}
+
+/** The menu moved by its title bar (headset only: the desktop view keeps it beside the cube). */
+function moveMenu(a, ray, eye) {
+  if (!xr) return;
+  if (a.type === 'drag-start' && a.hit && ui.menuModel) {
+    ui.menuDrag = { t: a.hit.t, rel: M.sub(M.position(ui.menuModel), a.hit.point) };
+    buzz('primary', 'press');
+  } else if ((a.type === 'drag' || a.type === 'drag-end') && ui.menuDrag && ray && eye) {
+    ui.menuModel = HM.dragMenu(ui.menuDrag, ray, eye);
   }
-  else if (page === 'layers' && a.type === 'press') layers.pressStrip(id);
-  else if (page === 'mode' && a.type === 'press') {
-    if (w.group === 'mode') setMode(w.value);
-    else if (w.group === 'sub-select') { setMode('select'); selection.setTool(w.value); }
-    else if (w.group === 'sub-clip') { setMode('clip'); setClipTool(w.value); }
-    else if (id === 'sel-clear') { selection.clear(); analysis.sync(); }
-    else if (id === 'clip-all') { pushUndo(); state.clip.min[2] = 0; state.clip.max[2] = 1; decorationsChanged(); }
-    else if (id === 'clip-reset') { pushUndo(); state.clip = { min: [0, 0, 0], max: [1, 1, 1] }; decorationsChanged(); }
-    else if (id === 'undo') undo();
-    else if (id === 'reset-view') resetView();
-    else if (id === 'menu-pin') { ui.menu.pinned = !ui.menu.pinned; ui.menu.armed = false; }
-  } else if (page === 'settings' && a.type === 'press') {
-    const k = w.key;
-    if (k === 'leftHanded' || k === 'labels' || k === 'haptics') setSetting(k, !settings[k]);
-    else if (k === 'hud') state.hud = !state.hud;
-    else if (k === 'governor') { state.governorOn = !state.governorOn; $('governor').checked = state.governorOn; governor.value = state.spv; }
-    else if (k === 'refine') setRefine(!refiner.enabled);
-    else if (k === 'record') { measure.toggleRecord(); updateMeasureDom(); }
-    else if (k === 'measureRun') startOrCancelRun();
-    else if (k === 'refineDepth') { $('refine-depth').checked = !refiner.useDepth; refiner.useDepth = $('refine-depth').checked; saveRefine(); }
-    else if (k === 'refineScale') {
-      const steps = [0.4, 0.6, 0.8, 1];
-      const next = steps[(steps.indexOf(refiner.o.scale) + 1) % steps.length];
-      $('refine-scale').value = String(next); refiner.o.scale = next; saveRefine();
-    }
-  } else if (page === 'help' && a.type === 'press') {
-    if (w.group === 'help-mode') ui.helpMode = w.value;
-    else if (id === 'help-guide') shell.help();
+  if (a.type === 'drag-end') ui.menuDrag = null;
+}
+
+/** A press, slide, range or drag on the menu. A greyed control does nothing
+ *  but an error pulse (its reason is written under it). */
+function applyMenu(a, ray = null, eye = null) {
+  if (a.type === 'drag-start' || a.type === 'drag' || a.type === 'drag-end') { moveMenu(a, ray, eye); return; }
+  const id = a.id;
+  const w = a.widget || HM.widgetById(menu.pointer.layout, id) || {};
+  if (w.disabled) { if (a.type === 'press') buzz('primary', 'error'); return; }
+  if (a.type === 'slide' || a.type === 'range') { menuSlide(a); return; }
+  if (a.type !== 'press') return;
+  buzz('primary', 'press');
+  if (w.group === 'tab') { setPage(w.value); return; }
+  // The footer.
+  if (id === 'undo') { undo(); return; }
+  if (id === 'reset-view') { resetView(); return; }
+  if (id === 'menu-pin') { ui.menu.pinned = !ui.menu.pinned; ui.menu.armed = false; return; }
+  // Display: the cube's look (one undo step each); a point table's, a field's, the catalogue's.
+  if (w.group === 'cmap') { pushUndo(); setColormap(w.value); return; }
+  if (w.group === 'render') { pushUndo(); state.mode = w.value; $('rmode').value = String(state.mode); return; }
+  if (id === 'thr-reset') { pushUndo(); resetThreshold(); return; }
+  // A point table's or a field's look (not a new sample or new lines): one undo step.
+  if (layers.undoable(id, w)) pushUndo();
+  if (layers.press(id, w)) return;
+  // Range.
+  if (id === 'slab-all') { pushUndo(); state.clip.min[2] = 0; state.clip.max[2] = 1; decorationsChanged(); return; }
+  if (w.group === 'sub-clip') { setMode('clip'); setClipTool(w.value); return; }
+  if (id === 'crop-reset') {
+    pushUndo();
+    // On a cube the third axis is the velocity range: Full band resets it.
+    for (const i of state.cube ? [0, 1] : [0, 1, 2]) { state.clip.min[i] = 0; state.clip.max[i] = 1; }
+    decorationsChanged();
+    return;
+  }
+  // Select.
+  if (w.group === 'tool') { setMode('select'); selection.setTool(w.value); return; }
+  if (w.group === 'seed') {
+    // A seed mode is for the lasso: Select with the Kinematic Lasso.
+    setMode('select');
+    if (selection.sel.tool !== 'lasso') selection.setTool('lasso');
+    analysis.press(id, w);
+    return;
+  }
+  if (id === 'sel-clear') { selection.clear(); analysis.sync(); return; }
+  if (id === 'isolate' || id === 'remove' || id === 'show-applied') { analysis.press(id, w); return; }
+  // Measure.
+  if (w.group === 'moment' || id === 'moment-hide' || id.startsWith('pv-')) { analysis.press(id, w); return; }
+  if (id === 'spec-pin') { selection.pinSpectrum(); return; }
+  // More.
+  if (w.group === 'hand') { setSetting('leftHanded', w.value); return; }
+  if (id === 'guide') { shell.help(); return; }
+  if (id === 'debug-page') { ui.page = 'debug'; return; }
+  if (id === 'debug-back') { ui.page = 'more'; return; }
+  // The technical settings (?debug).
+  if (w.group === 'thrsrc') {
+    pushUndo();
+    $('thr-source').value = w.value;
+    settings.thrSource = w.value; settings.thrSourceChosen = true; persist();
+    resetThreshold();
+    return;
+  }
+  const k = w.key;
+  if (k === 'labels' || k === 'haptics') setSetting(k, !settings[k]);
+  else if (k === 'hud') state.hud = !state.hud;
+  else if (k === 'governor') { state.governorOn = !state.governorOn; $('governor').checked = state.governorOn; governor.value = state.spv; }
+  else if (k === 'refine') setRefine(!refiner.enabled);
+  else if (k === 'record') { measure.toggleRecord(); updateMeasureDom(); }
+  else if (k === 'measureRun') startOrCancelRun();
+  else if (k === 'refineDepth') { $('refine-depth').checked = !refiner.useDepth; refiner.useDepth = $('refine-depth').checked; saveRefine(); }
+  else if (k === 'refineScale') {
+    const steps = [0.4, 0.6, 0.8, 1];
+    const next = steps[(steps.indexOf(refiner.o.scale) + 1) % steps.length];
+    $('refine-scale').value = String(next); refiner.o.scale = next; saveRefine();
   }
 }
 
-/** The Look page: the former panel's widgets, one undo step per change. */
-function applyLook(a) {
-  if (a.type === 'press') {
-    const id = a.id;
-    const changesLook = id === 'cmap-prev' || id === 'cmap-next' || a.widget.group === 'mode' || id === 'thr-reset'
-      || a.widget.group === 'thrsrc' || id === 'slab-all';
-    if (changesLook) pushUndo();
-    if (id === 'cmap-prev' || id === 'cmap-next') {
-      const n = COLORMAP_NAMES.length, i = COLORMAP_NAMES.indexOf(state.colormap);
-      setColormap(COLORMAP_NAMES[(i + (id === 'cmap-next' ? 1 : n - 1)) % n]);
-    } else if (a.widget.group === 'mode') {
-      state.mode = a.widget.value; $('rmode').value = String(state.mode);
-    } else if (id === 'thr-reset') {
-      resetThreshold();
-    } else if (a.widget.group === 'thrsrc') {
-      $('thr-source').value = a.widget.value;
-      settings.thrSource = a.widget.value; settings.thrSourceChosen = true; persist();
-      resetThreshold();
-    } else if (id === 'slab-all') {
-      state.clip.min[2] = 0; state.clip.max[2] = 1;
-      decorationsChanged();
-    } else if (id === 'refine') {
-      setRefine(!refiner.enabled);
-    } else if (a.widget.group === 'tool') {
-      setMode('select');
-      selection.setTool(a.widget.value);
-    } else if (id === 'sel-clear') {
-      selection.clear();
-      analysis.sync();      // the moment and the implicit cube of the cleared selection go
-    }
-    return;
-  }
-  // A slider or the channel range held: one undo step for the whole drag.
+/** A slider or a range held on the menu: one undo step for the whole drag. */
+function menuSlide(a) {
   if (ui.sliding !== a.id) { pushUndo(); ui.sliding = a.id; }
   if (a.type === 'slide') {
     if (a.id === 'thr') state.thrNorm = Math.min(state.cmaxNorm - 1e-3, sliderToNorm(a.value * 1000));
     else if (a.id === 'cmax') state.cmaxNorm = Math.max(state.thrNorm + 1e-3, sliderToNorm(a.value * 1000));
     else if (a.id === 'opacity') { state.opacity = Math.max(0.01, a.value * 2); $('opacity').value = Math.round(state.opacity * 100); }
+    else layers.slide(a.id, a.value);
     labelsChanged();
-  } else if (a.type === 'range') {
-    [state.clip.min[2], state.clip.max[2]] = a.value;
+    return;
+  }
+  const crop = /^crop:(\d)$/.exec(a.id);
+  if (a.id === 'slab' || crop) {
+    const i = crop ? +crop[1] : 2;
+    [state.clip.min[i], state.clip.max[i]] = a.value;
     decorationsChanged();
+  } else {
+    layers.setRange(a.id, a.value);
   }
 }
 
@@ -2399,7 +2506,7 @@ function desktopFrame(time) {
   if (ui.desktop) {
     // The headset's menu and result windows (issue #201), used with the mouse.
     menuLayout();
-    R.drawPanel(lastDesktopView, menuWorld(), menuTexture(time), HM.MENU_SIZE);
+    R.drawPanel(lastDesktopView, menuWorld(), menuTexture(time), menuSize());
     drawWindows(lastDesktopView, shownWindows());
   }
   // The headset's message card, in front of the desktop camera (?panel3d).
@@ -2872,6 +2979,7 @@ async function startSession(session, mode, bench, startGen, wantLayers) {
     buttons: {}, bench: bench ? makeBench() : null, place: null, endedBy: '', quads, layersNote };
   Object.assign(ui.menu, { open: false, pinned: false, armed: false, wasHeld: false });
   ui.menuModel = null;
+  ui.menuDrag = null;
   stats.buf.length = stats.cpu.length = stats.gpu.length = 0;
   governor.max = state.spv; governor.value = state.spv;
   eyeGovernor.reset(fbScale);
@@ -2886,7 +2994,7 @@ async function startSession(session, mode, bench, startGen, wantLayers) {
     policy, layers: layersNote });
   measure.xrStarted();
   // The controls guide is shown on the 2-D page before entering VR (issue
-  // #226); in VR only when asked for (Help → Guide), beside the cube.
+  // #226); in VR only when asked for (More → Guide), beside the cube.
   session.addEventListener('end', () => {
     if (xr && xr.quads) xr.quads.destroy();
     const b = xr && xr.bench;
@@ -2987,9 +3095,10 @@ function handleInput(frame, dtS) {
   const act = (role, control) => C.actionFor(map, role, control);
   // The menu: held open by the secondary hand's lower button (or its palm up).
   const was = ui.menu.open;
-  Object.assign(ui.menu, HM.menuOpenState(ui.menu, act('secondary', 'lower') === 'menu' && btn(Sh, 'lower')));
+  const { opened, ...open } = HM.menuOpenState(ui.menu, act('secondary', 'lower') === 'menu' && btn(Sh, 'lower'));
+  Object.assign(ui.menu, open);
   if (ui.menu.open && !was) buzz('secondary', 'press');
-  updateMenuPose();
+  updateMenuPose(opened);
 
   // The message card first (epic #166), then the menu and the windows: a ray
   // on them, or a press that began on them, is theirs, not the cube's.
@@ -3376,7 +3485,7 @@ async function prepareBench() {
       const cube = { data, dims: [n, n, n], encoding: 'uint8', lo: 0, hi: 1, factors: [1, 1, 1], mode: 'synthetic',
         reducedThreshold: 0.25, bunit: '', fullShape: [n, n, n] };
       const generateMs = performance.now() - g0;
-      const src = thresholdSourceFor(settings, { synthetic: true, source: 'cube', outOfCore: false, refine: $('refine').checked });
+      const src = thresholdSourceFor(settings, { synthetic: true, debug: DEBUG_HUD });
       cube.norms = thresholdNorms(cube, info, src);
       const slot = R.prepareVolume(cube, 8, { mask: false });
       cube.data = null;                                     // on the GPU now; not kept on the page
@@ -3786,12 +3895,14 @@ if (query.has('debug')) {
   };
   window.__vrMenu = {
     ui, menu, wins, settings: () => JSON.parse(JSON.stringify(settings)), view: menuView,
-    layout: () => menuLayout().map((w) => ({ id: w.id, kind: w.kind, rect: w.rect })),
+    layout: () => menuLayout().map((w) => ({ id: w.id, kind: w.kind, rect: w.rect, disabled: w.disabled || '' })),
+    /** A pointer action applied as the menu would ({type, id, value}): for checks. */
+    act: (a) => { menuLayout(); applyMenu({ ...a, widget: HM.widgetById(menu.pointer.layout, a.id) }); ui.sliding = null; },
     controlMap: () => C.controlMap(mapOpts()),
     /** The page pixel of widget `id`'s centre (or of canvas pixel [x, y]) in the desktop view. */
     pagePixel(id, at = null) {
       const c = at || widgetCentre(id);
-      return c ? quadPagePixel(menuWorld(), HM.MENU_SIZE, HM.MENU_PX, c[0], c[1]) : null;
+      return c ? quadPagePixel(menuWorld(), menuSize(), HM.MENU_PX, c[0], c[1]) : null;
     },
     /** The page pixel of a window's bar widget ('drag' or 'close'), or null when it is not shown. */
     windowPixel(id, widget = 'close') {
@@ -3808,15 +3919,15 @@ if (query.has('debug')) {
       if (!menu.tex) menu.tex = R.createPanel();
       menuLayout();
       for (let i = 0; i < n; i++) {
-        const view = menuView();
-        view.look.thr = { ...view.look.thr, f: (i % 50) / 50 };      // a slider moving: a real change each time
+        const view = menuView(menu.ctx);
+        view.values = { ...view.values, thr: (i % 50) / 50 };      // a slider moving: a real change each time
         gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
         const t0 = performance.now();
-        HM.drawMenu(ctx2, ui.page, menu.pageLayout, view, { hover: 'thr', active: 'thr' });
+        HM.drawMenu(ctx2, ui.page, menu.spec, view, { hover: 'thr', active: 'thr' }, menu.ctx);
         const t1 = performance.now();
         R.updatePanel(menu.tex, menu.canvas);
         const t2 = performance.now();
-        R.drawPanel(lastDesktopView || desktopView(), menuWorld(), menu.tex, HM.MENU_SIZE);
+        R.drawPanel(lastDesktopView || desktopView(), menuWorld(), menu.tex, menuSize());
         gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
         const t3 = performance.now();
         draw.push(t1 - t0); upload.push(t2 - t1); synced.push(t3 - t0);
@@ -3835,7 +3946,7 @@ if (query.has('debug')) {
     },
   };
   // Kept for the lifecycle run: the settings and the Look page's values.
-  window.__vrPanel = { settings: () => JSON.parse(JSON.stringify(settings)), view: lookView };
+  window.__vrPanel = { settings: () => JSON.parse(JSON.stringify(settings)), view: panelView };
   window.__vrRefine = {
     refiner,
     setMode: (m) => { refineMode = m; },

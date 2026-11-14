@@ -16,7 +16,8 @@
 import * as Rc from './recipe.js';
 
 export const SEED_MODES = ['new', 'add', 'carve'];
-export const SEED_MODE_NAMES = { new: 'new selection', add: 'add a source', carve: 'carve out' };
+/** The lasso's seed modes, as the menu names them (#257): Lasso: New / Add / Subtract. */
+export const SEED_MODE_NAMES = { new: 'New', add: 'Add', carve: 'Subtract' };
 
 /** The desktop's two apply modes, by the names of its buttons. */
 export const APPLY_MODES = { isolate: 'blank_outside', remove: 'blank_inside' };
@@ -445,7 +446,7 @@ export function createLassoTools(ctx) {
     const out = [];
     if (t.error) out.push(t.error);
     const seeds = seedsOf(s.lasso && s.lasso.request);
-    out.push(`seeds: ${SEED_MODE_NAMES[s.seedMode || 'new']}${seeds ? ` (1 + ${seeds.add.length} added, ${seeds.sub.length} carved)` : ''}`);
+    out.push(`Lasso: ${SEED_MODE_NAMES[s.seedMode || 'new']}${seeds ? ` (1 + ${seeds.add.length} added, ${seeds.sub.length} subtracted)` : ''}`);
     if (t.busy) out.push(t.busy);
     if (t.applied) {
       out.push(`${t.applied.mode === APPLY_MODES.remove ? 'removed' : 'isolated'}: ${t.applied.file} (${t.applied.dims.join('×')}), ${t.applied.ms.toFixed(0)} ms`);

@@ -13,10 +13,10 @@ export const SETTINGS_VERSION = 1;
 
 export const DEFAULT_SETTINGS = {
   colormap: 'viridis',
-  thrSource: 'reduced',          // 'reduced' (for this binning) | 'cube' (the full cube's, as on the desktop)
-  thrSourceChosen: false,        // true once the viewer chose it; else thresholdSourceFor decides per cube
+  thrSource: 'cube',             // 'cube' (the full cube's, as on the desktop) | 'reduced' (for this binning)
+  thrSourceChosen: false,        // true once chosen (page or ?debug menu); honoured with ?debug only (#257)
   refine: { enabled: true, scale: 1, quality: 95, depth: true },
-  tool: 'probe',
+  tool: 'lasso',                 // the Kinematic Lasso first (#257: lasso a galaxy, then Isolate, in two presses)
   guideSeen: false,              // the first-run controls guide was shown (epic #166)
   leftHanded: false,             // the left hand points and acts, the right holds the menu (#201)
   labels: true,                  // the button legend (#201), on the primary wrist since #256
@@ -43,22 +43,22 @@ export function clampPanelOffset(off) {
 }
 
 /**
- * The threshold source for a cube just loaded: the viewer's own choice once
- * made; otherwise the full cube's threshold ('cube') whenever the backend's
- * frames are blended in (refinement on) or the cube is large (read from a
- * brick pyramid, or drawn out of core by the backend). With coarse binning
- * the threshold for the binning sits deep in the full cube's noise, and the
- * refined frames, drawn on the full cube, then show that noise as fog (on an
- * 11 GiB cube binned 12x12x4: 405 KB frames, pose->frame 236 ms instead of
- * 141). 'reduced' (for this binning) for a synthetic cube or when nothing is
- * refined from a small cube.
+ * The threshold source for a cube just loaded: what the desktop uses, the
+ * full cube's threshold ('cube': reduced_info's default_threshold, the value
+ * the desktop's cube window starts from, vtkWindowCube's initial threshold),
+ * so the headset shows the emission the desktop shows, in the same BUNIT.
+ * (With coarse binning the threshold for the binning also sits deep in the
+ * full cube's noise, which the refined frames then show as fog: on an 11 GiB
+ * cube binned 12x12x4, 405 KB frames and pose->frame 236 ms instead of 141.)
+ * 'reduced' (for this binning) only for a synthetic cube, which has no full
+ * cube. A stored choice counts only with ?debug (`debug`), where the menu
+ * shows the setting (#257): a hidden setting never changes the view.
  */
-export function thresholdSourceFor(settings, { synthetic = false, source = 'cube', outOfCore = false, refine = false } = {}) {
-  if (settings && settings.thrSourceChosen && (settings.thrSource === 'reduced' || settings.thrSource === 'cube')) {
+export function thresholdSourceFor(settings, { synthetic = false, debug = false } = {}) {
+  if (debug && settings && settings.thrSourceChosen && (settings.thrSource === 'reduced' || settings.thrSource === 'cube')) {
     return settings.thrSource;
   }
-  if (synthetic) return 'reduced';
-  return source === 'pyramid' || outOfCore || refine ? 'cube' : 'reduced';
+  return synthetic ? 'reduced' : 'cube';
 }
 
 /** A stored object made safe: unknown keys dropped, wrong values replaced by defaults. */
@@ -85,6 +85,7 @@ export function sanitizeSettings(raw, { colormaps = null, tools = null } = {}) {
   }
   for (const k of ['leftHanded', 'labels', 'haptics']) if (typeof s[k] === 'boolean') out[k] = s[k];
   if (typeof s.tool === 'string' && (!tools || tools.includes(s.tool))) out.tool = s.tool;
+  else if (tools && tools.length && !tools.includes(out.tool)) out.tool = tools[0];
   if (typeof s.guideSeen === 'boolean') out.guideSeen = s.guideSeen;
   return out;
 }

@@ -8,6 +8,36 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: the hand menu in front of you, organised the way an astronomer works
+  (#257, part of #253).** The menu no longer stands by the left wrist: opened
+  by the secondary hand (X held, or the palm up) it stands about 0.95 m in
+  front, 12 cm below the eyes, turned to them, at the same angular text size
+  as before, and stays there until it closes (world-locked; its title bar
+  moves it; *Keep open* stays). Its tabs follow the work and are the same on
+  every dataset: **Display** (colour map swatches, threshold first with its
+  value in BUNIT, colour max, opacity, Emission / MIP, the catalogue overlay;
+  for a point table colour by column with log and range, Points / Smooth
+  (splats), size, intensity, Particles shown, Sample again, box and ticks; for
+  a velocity field streamlines, arrows and length, seed density and Reseed
+  streamlines, colour by speed and range, box size), **Range** (Velocity
+  range with km/s, convention and channels, Full band, Spatial crop per axis,
+  now also for point tables and velocity fields), **Select** (Spectrum probe,
+  Box region, Kinematic Lasso, Lasso: New / Add / Subtract, Clear, and
+  Isolate / Remove / Show result cube only while something is selected),
+  **Measure** (Intensity / Velocity / Dispersion (M0/M1/M2), PV slice and PV
+  width in pixels and arcsec, Pin spectrum) and **More** (handedness, button
+  labels, haptics, wrist readout, guide). A footer holds Undo, Reset view and
+  Keep open. Choosing a tab sets the mode (the Mode page and the Help tab are
+  gone); a control that does not apply to the data shown is greyed with a
+  one-line reason. A moment with no selection is now that of the whole field
+  over the velocity range, with the desktop dialog's automatic mask. The
+  technical settings (frame-rate governor, refinement, depth reprojection,
+  refined frame size, measurement recording and runs, threshold source) are
+  reachable only with `?debug`; the threshold always starts from the full
+  cube's, as on the desktop. Names follow the desktop's (Velocity range, Full
+  band, Spatial crop, Show result cube, …). A unit test proves each task of
+  the issue's Done list is at most two presses from opening the menu.
+
 - **VR: the numbers and the button help on the wrists, shown only when looked
   at (#256, part of #253).** The headset no longer keeps cards in view: the
   frame-rate and technical numbers are shown only with `?debug` (and during

@@ -127,21 +127,34 @@ in vec4 aV;            // x, y, z (field units), speed
 uniform mat4 uMVP;
 uniform vec3 uCentre;
 uniform float uInvSide;
-uniform float uS0;
-uniform float uS1;
-out float vT;
+uniform vec3 uLo;      // the box's lower corner and sides (field units): box fractions for the crop
+uniform vec3 uSpan;
+out float vS;          // the speed, interpolated unclamped: the colour window is applied per fragment
+out vec3 vB;
 void main() {
   gl_Position = uMVP * vec4((aV.xyz - uCentre) * uInvSide, 1.0);
-  vT = clamp((aV.w - uS0) / max(1e-12, uS1 - uS0), 0.0, 1.0);
+  vS = aV.w;
+  vB = (aV.xyz - uLo) / max(uSpan, vec3(1e-30));
 }`;
 
 const FS = `#version 300 es
 precision mediump float;
-in float vT;
+in highp float vS;
+in highp vec3 vB;
+uniform highp float uS0;  // the colour window over the speed (#257: narrower than the speed range)
+uniform highp float uS1;
 uniform sampler2D uLut;
 uniform float uAlpha;
+uniform int uClipOn;
+uniform highp vec3 uClipMin;  // the spatial crop (#257), box fractions
+uniform highp vec3 uClipMax;
 out vec4 outColor;
-void main() { vec3 c = texture(uLut, vec2(vT, 0.5)).rgb; outColor = vec4(c * uAlpha, uAlpha); }`;
+void main() {
+  if (uClipOn == 1 && (any(lessThan(vB, uClipMin)) || any(greaterThan(vB, uClipMax)))) discard;
+  float t = clamp((vS - uS0) / max(1e-12, uS1 - uS0), 0.0, 1.0);
+  vec3 c = texture(uLut, vec2(t, 0.5)).rgb;
+  outColor = vec4(c * uAlpha, uAlpha);
+}`;
 
 function compile(gl) {
   const p = gl.createProgram();
@@ -203,7 +216,8 @@ export class FlowLines {
 
   get bytesOnGpu() { return (this.streamBytes || 0) + (this.arrowBytes || 0); }
 
-  /** One eye: `p` {box (centre, side), speedMin, speedMax, stream, arrows (booleans)}. */
+  /** One eye: `p` {box (dataToModel: centre, side, lo, hi), speedMin, speedMax (the
+   *  colour range), stream, arrows (booleans), clip ({min, max} box fractions, or none)}. */
   draw(view, model, p) {
     const gl = this.gl;
     const { u } = this.prog;
@@ -213,6 +227,14 @@ export class FlowLines {
     gl.uniform1f(u.uInvSide, 1 / p.box.side);
     gl.uniform1f(u.uS0, p.speedMin);
     gl.uniform1f(u.uS1, p.speedMax);
+    const lo = p.box.lo || [0, 0, 0], hi = p.box.hi || [1, 1, 1];
+    gl.uniform3fv(u.uLo, lo);
+    gl.uniform3fv(u.uSpan, [0, 1, 2].map((i) => hi[i] - lo[i]));
+    const cl = p.clip;
+    const cropped = !!cl && [0, 1, 2].some((i) => cl.min[i] > 0 || cl.max[i] < 1);
+    gl.uniform1i(u.uClipOn, cropped ? 1 : 0);
+    gl.uniform3fv(u.uClipMin, cropped ? cl.min : [0, 0, 0]);
+    gl.uniform3fv(u.uClipMax, cropped ? cl.max : [1, 1, 1]);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.lut);
     gl.uniform1i(u.uLut, 0);

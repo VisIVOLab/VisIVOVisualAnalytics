@@ -241,7 +241,7 @@ test('settings round-trip and fall back to the defaults', () => {
     leftHanded: 'yes', labels: 1, tool: 'wand', token: 'secret' } }));
   const got = S.loadSettings(st, { colormaps: ['viridis'], tools: ['probe'] });
   assert.equal(got.colormap, 'viridis');
-  assert.equal(got.thrSource, 'reduced');
+  assert.equal(got.thrSource, 'cube', 'the desktop\'s threshold by default (#257)');
   assert.deepEqual(got.refine, S.DEFAULT_SETTINGS.refine);
   assert.deepEqual(got.windows, {});
   assert.equal(got.leftHanded, false);
@@ -276,16 +276,15 @@ test('settings: a storage that throws or is missing is not an error', () => {
   assert.equal(S.saveSettings(null, S.DEFAULT_SETTINGS), false);
 });
 
-test('the threshold starts from the full cube for large or refined cubes, unless chosen', () => {
+test('the threshold starts from the full cube, as on the desktop; a stored choice counts only with ?debug', () => {
   const unchosen = S.sanitizeSettings({ thrSource: 'reduced' });     // saved before #186
   assert.equal(unchosen.thrSourceChosen, false);
-  assert.equal(S.thresholdSourceFor(unchosen, { source: 'pyramid' }), 'cube');
-  assert.equal(S.thresholdSourceFor(unchosen, { outOfCore: true }), 'cube');
-  assert.equal(S.thresholdSourceFor(unchosen, { refine: true }), 'cube');
-  assert.equal(S.thresholdSourceFor(unchosen, { source: 'cube', refine: false }), 'reduced');
-  assert.equal(S.thresholdSourceFor(unchosen, { synthetic: true, refine: true }), 'reduced');
+  assert.equal(S.thresholdSourceFor(unchosen, {}), 'cube');
+  assert.equal(S.thresholdSourceFor(unchosen, { debug: true }), 'cube');
+  assert.equal(S.thresholdSourceFor(unchosen, { synthetic: true }), 'reduced', 'a synthetic cube has no full cube');
   const chosen = S.sanitizeSettings({ thrSource: 'reduced', thrSourceChosen: true });
-  assert.equal(S.thresholdSourceFor(chosen, { source: 'pyramid', refine: true }), 'reduced');
+  assert.equal(S.thresholdSourceFor(chosen, {}), 'cube', 'a hidden setting does not change the view (#257)');
+  assert.equal(S.thresholdSourceFor(chosen, { debug: true }), 'reduced');
   // Kept across a save and a load.
   const store = new Map();
   const st = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) };

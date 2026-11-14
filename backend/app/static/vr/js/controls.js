@@ -2,18 +2,20 @@
 // one meaning per stick and button in each mode. The primary hand (right, or
 // left with the left-handed setting) points and acts; the secondary hand holds
 // the menu; both grab. The same control map drives the input handler in
-// main.js, the labels by the controllers, the menu's Help page and the
-// first-run guide, so what a label says is what the control does.
+// main.js, the legend on the primary wrist and the first-run guide, so what a
+// label says is what the control does. Since #257 the menu's tabs set the
+// mode, and A steps to the next mode.
 //
 // Pure: unit-tested by node (backend/tests/vr/controls.test.mjs).
 
 export const MODES = ['explore', 'select', 'clip'];
-export const MODE_NAMES = { explore: 'Explore', select: 'Select', clip: 'Clip' };
-/** The tools of each mode (the secondary stick's left/right steps through them). */
-export const SUBTOOLS = { explore: [], select: ['probe', 'lasso', 'box'], clip: ['slab', 'box'] };
+/** The modes: Explore (set by the menu's Display and Measure tabs), Select, and Range (the clip mode). */
+export const MODE_NAMES = { explore: 'Explore', select: 'Select', clip: 'Range' };
+/** The tools of each mode (the secondary stick's left/right steps through them), the lasso first. */
+export const SUBTOOLS = { explore: [], select: ['lasso', 'probe', 'box'], clip: ['slab', 'box'] };
 export const SUB_NAMES = {
-  select: { probe: 'spectrum', lasso: 'Kinematic Lasso', box: 'box region' },
-  clip: { slab: 'velocity slab', box: 'clipping box' },
+  select: { probe: 'Spectrum probe', lasso: 'Kinematic Lasso', box: 'Box region' },
+  clip: { slab: 'Velocity range', box: 'Spatial crop' },
 };
 
 /** Which hand does what. */
@@ -48,7 +50,7 @@ export function nextSub(mode, sub, step = 1) {
 /** The mode and tool as one short line: "SELECT · Kinematic Lasso". */
 export function modeLine(mode, sub, { pvArmed = false } = {}) {
   const name = (MODE_NAMES[mode] || mode).toUpperCase();
-  if (pvArmed) return `${name} · PV path`;
+  if (pvArmed) return `${name} · PV slice`;
   const s = SUB_NAMES[mode] && SUB_NAMES[mode][sub];
   return s ? `${name} · ${s}` : name;
 }
@@ -65,16 +67,16 @@ export function controlMap({ mode = 'explore', sub = null, leftHanded = false, p
   input = { primary: 'controller', secondary: 'controller' } } = {}) {
   if (!MODES.includes(mode)) mode = 'explore';
   const r = roles(leftHanded);
-  // A PV path being drawn (the menu's Analysis tab → Draw) takes the trigger in any mode.
-  const trig = pvArmed ? ['pv-point', 'PV path point'] : {
+  // A PV slice being drawn (the menu's Measure tab → Draw) takes the trigger in any mode.
+  const trig = pvArmed ? ['pv-point', 'PV slice point'] : {
     explore: ['pin-readout', 'pin the readout'],
-    select: sub === 'lasso' ? ['select', 'lasso seed'] : sub === 'box' ? ['select', 'box corner'] : ['select', 'spectrum here'],
-    clip: sub === 'box' ? ['clip-drag', 'hold: drag a face'] : ['slab-at', 'slab to this channel'],
+    select: sub === 'lasso' ? ['select', 'lasso seed'] : sub === 'box' ? ['select', 'box corner'] : ['select', 'spectrum probe here'],
+    clip: sub === 'box' ? ['clip-drag', 'hold: drag a crop face'] : ['slab-at', 'range to this channel'],
   }[mode];
   const stickY = { explore: ['threshold', 'threshold'], select: ['threshold', 'threshold'],
-    clip: sub === 'box' ? ['clip-size', 'box size'] : ['slab-move', 'slab position'] }[mode];
+    clip: sub === 'box' ? ['clip-size', 'crop size'] : ['slab-move', 'range position'] }[mode];
   const stickX = { explore: ['opacity', 'opacity'], select: [null, ''],
-    clip: sub === 'box' ? [null, ''] : ['slab-width', 'slab width'] }[mode];
+    clip: sub === 'box' ? [null, ''] : ['slab-width', 'range width'] }[mode];
   const p = r.primary, s = r.secondary;
   const P = buttonNames(p), S = buttonNames(s);
   const primary = [
@@ -123,7 +125,7 @@ export function labelLines(map, role) {
   return (map[role] || []).map((c) => [c.name, c.label]);
 }
 
-/** The control map as text, for the menu's Help page and the 2-D page. */
+/** The control map as text, for the 2-D page. */
 export function helpLines(opts = {}) {
   const map = controlMap(opts);
   const side = (h) => (h === 'right' ? 'right' : 'left');

@@ -209,7 +209,7 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
     if (id === 'guide-close') { notices.clear('guide'); ctx.onGuideSeen(); render(); return; }
     if (id === 'dismiss') { if (cur) notices.dismiss(cur.id); render(); return; }
     // A sticky notice folded into a line on the menu until its state changes
-    // (the menu's Help → Guide brings it back).
+    // (the menu's More → Guide brings it back).
     if (id === 'hide') { if (cur) { notices.hide(cur.id); log('debug', 'notice-hidden', cur.id); } render(); return; }
     if (id === 'retry') { life.retryNow(); ctx.onRetry(); return; }
     if (id === 'reload') { if (ctx.beforeReload) ctx.beforeReload(); win.location.reload(); return; }
@@ -338,7 +338,7 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
     get cardOnShow() { return !!card.model; },
     /** The line the panel shows for a hidden sticky notice, or ''. */
     badge() { return notices.badge(); },
-    /** The menu's Help → Guide: a hidden notice first, else the guide. */
+    /** The menu's More → Guide: a hidden notice first, else the guide. */
     help() { if (notices.unhideAll()) render(); else showGuide(0); },
     start() { life.start(); },
     /** Messages the page shows for its own events (context loss, XR end, budget). */

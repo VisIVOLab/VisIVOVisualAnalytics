@@ -24,7 +24,7 @@ export function createAnalysis(ctx) {
   const changed = () => { dirty = true; ctx.onChange && ctx.onChange(); };
   const base = { selection: ctx.selection, backend: ctx.backend, datasetId, info, onChange: changed };
   const lasso = createLassoTools({ ...base, showDataset: ctx.showDataset, path: () => st().openPath || '', cube: () => st().cube });
-  const moment = createMomentTool({ ...base, lassoTools: lasso });
+  const moment = createMomentTool({ ...base, lassoTools: lasso, clipZ: () => [st().clip.min[2], st().clip.max[2]] });
   const pv = createPvTool({ ...base, state: st });
   const show = { moment: true, pv: true };
 
@@ -115,16 +115,16 @@ export function createAnalysis(ctx) {
           <option value="carve">${SEED_MODE_NAMES.carve}</option></select></label>
         <button id="an-isolate" title="A new cube with everything outside the selection blanked (the desktop's Isolate)">Isolate</button>
         <button id="an-remove" title="A new cube with the selection blanked (the desktop's Remove)">Remove</button>
-        <button id="an-show" disabled title="Load the cube just made in this view">Show that cube</button>
+        <button id="an-show" disabled title="Load the cube just made in this view">Show result cube</button>
       </div>
       <div class="row">
-        <span>Moment of the selection</span>
-        <button id="an-m0">M0</button><button id="an-m1">M1</button><button id="an-m2">M2</button>
+        <span title="Of the Kinematic Lasso selection (its mask); with no selection, of the whole field over the velocity range">Moment</span>
+        <button id="an-m0">Intensity (M0)</button><button id="an-m1">Velocity (M1)</button><button id="an-m2">Dispersion (M2)</button>
       </div>
       <div class="row">
-        <button id="an-pv" title="Clicks (or the trigger) add the path's points">Draw PV path</button>
+        <button id="an-pv" title="Clicks (or the trigger) add the path's points">Draw PV slice</button>
         <button id="an-pv-undo">Undo</button><button id="an-pv-new">New path</button>
-        <label>Width (px) <input id="an-pv-width" type="number" min="1" max="25" step="1" value="1"></label>
+        <label>PV width (px) <input id="an-pv-width" type="number" min="1" max="25" step="1" value="1"></label>
       </div>
       <div id="an-status" class="muted"></div>
       <div id="an-products"></div>`;
@@ -164,7 +164,7 @@ export function createAnalysis(ctx) {
     dom.status.textContent = v.status.join('\n');
     dom.seed.value = v.seedMode;
     dom.show.disabled = !v.canShow;
-    dom.pvBtn.textContent = v.pvArmed ? 'Drawing: click to add points' : 'Draw PV path';
+    dom.pvBtn.textContent = v.pvArmed ? 'Drawing: click to add points' : 'Draw PV slice';
     dom.pvBtn.classList.toggle('primary', v.pvArmed);
     dom.width.value = String(pv.state.width);
     for (const which of ['moment', 'pv']) {
