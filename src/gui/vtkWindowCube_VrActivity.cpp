@@ -277,6 +277,14 @@ void vtkWindowCube::refreshHeadsetActivity()
 void vtkWindowCube::recordHeadsetProduct(const VrHub::Event &event, const VrHub::Product &product,
                                          const QString &renderer)
 {
+    // Recorded as a product of the cube it was made from, so only by that
+    // cube's window; opened from another cube's window it is shown, and
+    // recorded when it is opened from its own. Recorded already (by a window
+    // of the same cube): that row, and its owner, stay.
+    if (!VrHub::aboutCube(event, this->filepath, this->remoteDatasetId))
+        return;
+    if (!ProductRegistry::instance().product(VrHub::productId(event, product)).productId.isEmpty())
+        return;
     QVariantMap params = product.parameters;
     params.insert(u"Made in"_s, u"the VR headset"_s);
     if (!product.path.isEmpty())
@@ -497,19 +505,33 @@ void vtkWindowCube::applyHeadsetLook(const VrHub::Look &look)
 
 void vtkWindowCube::applyHeadsetClip()
 {
-    if (!this->volumeMapper)
-        return;
     const bool wanted = this->m_headsetClip.set && this->m_headsetFollowLook
             && this->m_headsetFollowLook->isChecked();
+    // A view the backend renders is cropped there (its set_crop, as the
+    // headset's refined frames are); dropped by itself when there is none.
+    if (wanted || this->m_headsetCropping) {
+        QVariantMap cmd;
+        cmd[u"type"_s] = u"set_crop"_s;
+        cmd[u"box"_s] = wanted ? VrHub::cropCommandBox(this->m_headsetClip,
+                                                       { this->remoteDatasetWidth, this->remoteDatasetHeight,
+                                                         this->remoteDatasetDepth })
+                               : QVariant();
+        this->sendRemoteRenderStateCommand(cmd);
+    }
     if (!wanted) {
-        if (this->m_headsetCropping) {
+        if (this->m_headsetCropping && this->volumeMapper) {
             this->volumeMapper->CroppingOff();
-            this->m_headsetCropping = false;
             if (auto *rw = ui->vtkCube->renderWindow())
                 rw->Render();
         }
+        this->m_headsetCropping = false;
         return;
     }
+    // Followed from now on, here and in a remote view's bootstrap, whether or
+    // not the local volume exists yet.
+    this->m_headsetCropping = true;
+    if (!this->volumeMapper)
+        return;
     auto *display = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
     if (!display)
         return;
@@ -532,7 +554,6 @@ void vtkWindowCube::applyHeadsetClip()
     this->volumeMapper->SetCroppingRegionPlanes(planes);
     this->volumeMapper->SetCroppingRegionFlagsToSubVolume();
     this->volumeMapper->CroppingOn();
-    this->m_headsetCropping = true;
     if (auto *rw = ui->vtkCube->renderWindow())
         rw->Render();
 }

@@ -454,6 +454,16 @@ void TestVrHeadsetHub::lookAndClipAreRead()
     QVERIFY(!clipOf(R"({"box":[1,2,3]})").set);
     QVERIFY(!clipOf(R"({"box":{"min":[1,2],"max":[1,2,3]}})").set);
 
+    // The render session's set_crop box: fractions with the faces at the
+    // outer pixel edges, null for no clip or the whole cube.
+    const VrHub::Clip half = clipOf(R"({"box":[[0,4],[5,9],[0,19]]})");
+    const QVariantMap crop = VrHub::cropCommandBox(half, { 10, 10, 20 }).toMap();
+    QCOMPARE(crop.value(u"min"_s).toList().at(1).toDouble(), 0.5);
+    QCOMPARE(crop.value(u"max"_s).toList().at(0).toDouble(), 0.5);
+    QCOMPARE(crop.value(u"max"_s).toList().at(2).toDouble(), 1.0);
+    QVERIFY(VrHub::cropCommandBox(clipOf(R"({"box":[[0,9],[0,9],[0,19]]})"), { 10, 10, 20 }).isNull());
+    QVERIFY(VrHub::cropCommandBox(VrHub::Clip{}, { 10, 10, 20 }).isNull());
+
     VrHub::Event e = hubEvent(1, u"look"_s, u"/d/m33.fits"_s);
     QVERIFY(VrHub::aboutCube(e, u"/d/m33.fits"_s, u"x"_s));
     QVERIFY(!VrHub::aboutCube(e, u"/d/other.fits"_s, u"x"_s));

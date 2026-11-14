@@ -1133,6 +1133,9 @@ void vtkWindowCube::pushRenderStateToRemote()
         m[u"visible"_s] = m_show3dRendering;
         this->sendRemoteRenderStateCommand(m);
     }
+    // The headset's clip box, when this window follows it (issue #238).
+    if (this->m_headsetCropping)
+        this->applyHeadsetClip();
     // Last: on a non-linear volume scale the session draws with this window's
     // own functions, which the LUT and threshold above would otherwise replace.
     this->pushVolumeTransferFunctionsToRemote();

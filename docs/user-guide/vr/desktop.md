@@ -46,9 +46,11 @@ viewer:
 
 A product opened here is recorded in Session Data ▸ Provenance with the
 headset's own record: its parameters, the requests that made it (under the
-API's names) and its replay caveat, if any. Opening it again does not add a
-second row. A PV slice opened in this cube's PV view is recorded as that
-view's PV diagram, with its path.
+API's names) and its replay caveat, if any. It is recorded as a product of the
+cube it was made from, so by that cube's window: opened from another cube's
+window it is shown but not recorded there. Opening it again does not add a
+second row. A PV slice opened in this cube's PV view keeps its own row; the
+view's PV diagram row is the window's live one, replaced by its next PV.
 
 ### Follow the headset's look
 
@@ -59,7 +61,8 @@ view whenever they change in the headset for this cube:
 - the colour map when the desktop has one of the same name (*grey* is *Gray*;
   the headset's *hot* has no counterpart, and the status bar says so);
 - the threshold, in the cube's units, as if typed in the threshold field;
-- the clip box crops the 3-D volume (the slice views are not clipped).
+- the clip box crops the 3-D volume, also when the backend renders the view
+  (the slice views are not clipped).
 
 Off again, the clip box is removed; the colours and threshold stay, now the
 window's own.

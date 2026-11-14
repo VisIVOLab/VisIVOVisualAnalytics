@@ -41,6 +41,8 @@
 #include <QString>
 #include <QStringList>
 #include <QTimeZone>
+#include <QVariant>
+#include <QVariantList>
 #include <QVariantMap>
 #include <QVector>
 
@@ -706,6 +708,31 @@ inline Clip parseClip(const QJsonObject &payload)
         c.set = true;
     }
     return c;
+}
+
+/// The `box` of the render session's `set_crop` command for @p clip on a cube
+/// of @p full voxels: {min: [x, y, z], max: [x, y, z]} as fractions 0..1, the
+/// faces at the outer pixel edges (voxel i spans i/n .. (i+1)/n). Null (a
+/// QVariant()) for no clip, or one that keeps the whole cube.
+inline QVariant cropCommandBox(const Clip &clip, const std::array<int, 3> &full)
+{
+    if (!clip.set)
+        return {};
+    QVariantList lo, hi;
+    bool whole = true;
+    for (int i = 0; i < 3; ++i) {
+        const double n = std::max(1, full[i]);
+        const double a = std::clamp(clip.min[i] / n, 0.0, 1.0);
+        const double b = std::clamp((clip.max[i] + 1.0) / n, 0.0, 1.0);
+        if (!(a < b))
+            return {};   // empty on an axis: nothing sensible to crop to
+        whole = whole && a <= 0.0 && b >= 1.0;
+        lo << a;
+        hi << b;
+    }
+    if (whole)
+        return {};
+    return QVariantMap{ { QStringLiteral("min"), lo }, { QStringLiteral("max"), hi } };
 }
 
 /// Is the event about the cube at @p path (or with @p datasetId)?
