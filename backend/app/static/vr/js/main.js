@@ -8,6 +8,7 @@ import { Renderer } from './renderer.js';
 import { Backend, takeToken, saveToken, tokenError, takePairing, forgetPairing, keepPairing, requestHooks } from './api.js';
 import { isPaired, PAIRED_TOKEN, onLinkChange, requestNewCode, transportInfo, linkState } from './transport.js';
 import * as V from './volume.js';
+import { CubePrep, Newest, prepareCube, CMAX_QUANTILE, CMAX_SAMPLE } from './cube-prep.js';
 import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
 import { createSelection, createSelectionSync, TOOLS, TOOL_NAMES } from './select-ui.js';
 import { Refiner, desktopEyes } from './refine-client.js';
@@ -333,7 +334,7 @@ $('load').addEventListener('click', () => {
   forgetPairing();      // a reload of this tab now opens nothing by itself
   withLoading(loadFromBackend).catch((err) => { if (!err.superseded) setStatus(`Failed: ${err.message || err}`); });
 });
-$('synthetic').addEventListener('click', () => loadSynthetic(Number($('synthetic-size').value)));
+$('synthetic').addEventListener('click', () => loadSyntheticSaying(Number($('synthetic-size').value)));
 // The capacity follows the Max side and Texture chosen (issue #235): outside
 // VR at once, else at the next Enter VR.
 for (const id of ['maxdim', 'encoding']) $(id).addEventListener('change', () => { if (!R.xrActive) ensureCapacity(state.cube, { page: true }); });
@@ -527,14 +528,23 @@ function resetThreshold() {
 
 /** The threshold and the top of the colour range (0..1) of cube `c` for threshold source `src`. */
 function thresholdNorms(c, info, src) {
+  const thrNorm = thresholdNorm(c, info, src);
+  // Colour range: from the threshold to the 99th percentile of what is above it
+  // (emission is sparse: a percentile of the whole cube is still noise). Worked
+  // out with the cube's skip grid, off the main thread (issue #246), for each
+  // threshold source; computed here for another threshold.
+  const known = c.prep && c.prep.quantiles.find(([a]) => a === thrNorm);
+  const q = known ? known[1] : V.normQuantile(c.data, c.encoding, CMAX_QUANTILE, CMAX_SAMPLE, thrNorm);
+  const cmaxNorm = Math.max(thrNorm + 0.01, q);
+  return { thrNorm, cmaxNorm };
+}
+
+/** The threshold (0..1) of cube `c` for threshold source `src`. */
+function thresholdNorm(c, info, src) {
   const thr = src === 'cube' ? info.default_threshold : c.reducedThreshold;
   const fallback = info.default_threshold ?? c.reducedThreshold;
   const t = thr ?? fallback;
-  const thrNorm = t === null || t === undefined ? 0.1 : Math.max(0, V.dataToNorm(t, c.lo, c.hi));
-  // Colour range: from the threshold to the 99th percentile of what is above it
-  // (emission is sparse: a percentile of the whole cube is still noise).
-  const cmaxNorm = Math.max(thrNorm + 0.01, V.normQuantile(c.data, c.encoding, 0.99, 4_000_000, thrNorm));
-  return { thrNorm, cmaxNorm };
+  return t === null || t === undefined ? 0.1 : Math.max(0, V.dataToNorm(t, c.lo, c.hi));
 }
 
 // ── Loading ─────────────────────────────────────────────────────────────────
@@ -836,7 +846,7 @@ async function loadReduced(b, open, info, t0, ticket) {
   const { dataset_id, ...reduction } = req;
   cube.reduction = reduction;
   state.load = { openInfoMs: t1 - t0, reduceMs: cube.timing.serverMs, transferMs: cube.timing.totalMs - cube.timing.serverMs, mb: cube.bytes / 1e6, pyramidBuildMs: ticket.pyramidBuildMs };
-  installCube(info, cube, open, ticket.path);
+  if (await installCube(info, cube, open, ticket.path) === 'superseded') throw supersededLoad();
 }
 
 /** Throws (and says so on the card) when a cube of `dims` would not fit this device. */
@@ -992,17 +1002,27 @@ async function recoverDataset(reason) {
   return { ok: true, detail: `dataset ${open.dataset_id}`, reason: why };
 }
 
-function loadSynthetic(n) {
+/** A synthetic cube of side `n` put on show (installCube's promise; `sync`: at once). */
+function loadSynthetic(n, { sync = false } = {}) {
   loads.begin('');              // a newer load than any backend load under way
   const t0 = performance.now();
   checkBudget([n, n, n], 'uint8');
   const data = V.syntheticCube(n);
   const info = V.syntheticInfo(n);
   state.load = { generateMs: performance.now() - t0, mb: data.length / 1e6 };
-  installCube(info, {
+  return installCube(info, {
     data, dims: [n, n, n], encoding: 'uint8', lo: 0, hi: 1, factors: [1, 1, 1], mode: 'synthetic',
     reducedThreshold: 0.25, bunit: '', fullShape: [n, n, n],
-  }, null, '');
+  }, null, '', null, { sync });
+}
+
+/** loadSynthetic from a button or the address: a failure said on the card. */
+function loadSyntheticSaying(n) {
+  try {
+    loadSynthetic(n).catch((err) => setStatus(`Failed: ${err.message || err}`));
+  } catch (err) {
+    setStatus(`Failed: ${err.message || err}`);
+  }
 }
 
 /**
@@ -1040,7 +1060,7 @@ function afterXREnd(wasBench = false) {
 
 /** The cube that waited for the end of a VR session, put on show now:
  *  outside VR, with a working context, and unless a newer load began since. */
-function installStaged() {
+async function installStaged() {
   if (!stagedCube || R.xrActive || gl.isContextLost()) return;
   const s = stagedCube;
   stagedCube = null;
@@ -1049,53 +1069,167 @@ function installStaged() {
     shell.log('info', 'cube-waits-dropped', 'a newer load began after it');
     return;
   }
-  {
-    state.load = s.load;
-    try {
-      installCube(s.info, s.cube, s.open, s.path);
-      // The desktop's box for it, kept while it waited (issue #237).
-      const pb = pendingBox;
-      pendingBox = null;
-      if (pb && pb.path === s.path) applyCommandBox(pb.cmd);
-    } catch (err) {
-      setStatus(`Failed: ${err.message || err}`);
-      shell.log('error', 'cube-install-failed', String(err.message || err));
-    }
+  state.load = s.load;
+  try {
+    if (await installCube(s.info, s.cube, s.open, s.path) !== 'shown') return;
+    // The desktop's box for it, kept while it waited (issue #237).
+    const pb = pendingBox;
+    pendingBox = null;
+    if (pb && pb.path === s.path) applyCommandBox(pb.cmd);
+  } catch (err) {
+    setStatus(`Failed: ${err.message || err}`);
+    shell.log('error', 'cube-install-failed', String(err.message || err));
   }
 }
 
-/** `path`: the file the load was started for (never the path field now).
- *  `slot`: a volume already on the GPU (the benchmark's, prepared before VR). */
-function installCube(info, cube, open, path = '', slot = null) {
+// Issue #246: a cube's passes over all its voxels (skip grid, colour range,
+// apron) run in a module worker, so a switch in VR never stops the frames.
+// ?noworker: the synchronous path, as where no worker can be made.
+const cubePrep = new CubePrep(typeof Worker === 'function' && !query.has('noworker')
+  ? () => new Worker(new URL('./cube-prep-worker.js', import.meta.url), { type: 'module' }) : null);
+/** The newest cube put on show wins over one still being prepared. */
+const installs = new Newest();
+/** The time a step of a write into the capacity may take in VR before the
+ *  frame loop runs again (the rest in the next tasks). */
+const WRITE_STEP_MS = 4;
+const nextTask = () => new Promise((r) => setTimeout(r, 0));
+
+/** The main-thread time of an install, in slices between its waits: the longest is what a frame may wait. */
+function blockClock() {
+  let t = performance.now(), max = 0, total = 0;
+  return {
+    pause() { const d = performance.now() - t; max = Math.max(max, d); total += d; },
+    resume() { t = performance.now(); },
+    end() { this.pause(); return { blockMs: max, mainMs: total }; },
+  };
+}
+
+/** Would a cube shown now in VR have to wait for the session's end? */
+function mustWait(cube) {
+  return R.xrActive && ((xr && xr.bench) || !R.fitsCapacity(cube));
+}
+
+/** Another cube on the GPU: the benchmark's preparation was sized beside the old one. */
+function dropBenchPrep() {
+  if (!benchPrep) return;
+  if (!benchPrep.busy) releaseBench(true);
+  else { benchPrep.cancelled = true; for (const e of benchPrep.cubes.splice(0)) R.releaseVolume(e.slot); }
+}
+
+/**
+ * Puts a cube on show. `path`: the file the load was started for (never the
+ * path field now). `slot`: a volume already on the GPU (the benchmark's,
+ * prepared before VR), shown at once. Otherwise the cube's skip grid and
+ * colour range are worked out off the main thread first (issue #246), then,
+ * in VR, it is written into the capacity in steps between frames. Returns a
+ * promise of 'shown', 'staged' (it waits for the end of the session) or
+ * 'superseded' (a newer cube was put on show, or a newer load began, while
+ * it was prepared or written: the newest wins). `sync`: everything now, on
+ * this thread (the desktop benchmark).
+ */
+function installCube(info, cube, open, path = '', slot = null, { sync = false } = {}) {
+  const load = state.load;
+  // Fenced by both: a newer install and a newer load (including a desktop
+  // command for the cube already on show) make this one stale.
+  const ticket = { install: installs.begin(), load: loads.latest };
+  if (slot || sync) {
+    if (!slot && mustWait(cube)) { stageCube(info, cube, open, path); return Promise.resolve('staged'); }
+    if (!slot) dropBenchPrep();
+    const clock = blockClock();
+    if (!slot && !R.xrActive) ensureCapacity(cube, { reshow: false });
+    const up = slot ? R.useVolume(slot) : R.showVolume(cube);
+    showInstalled(info, cube, open, path, slot, up, load, clock);
+    return Promise.resolve('shown');
+  }
+  return installPrepared(info, cube, open, path, load, ticket);
+}
+
+/** Is an install (installCube's ticket) still the newest, and no load begun since? */
+function installCurrent(ticket) {
+  return installs.isCurrent(ticket.install) && loads.latest === ticket.load;
+}
+
+async function installPrepared(info, cube, open, path, load, ticket) {
+  const clock = blockClock();
   // Issue #235: in VR a cube that fits the fixed capacity is written into it
   // and shown at once (texSubImage3D only); a larger one, or any cube during
   // the headset benchmark (its cubes and the one it returns to stay as
   // prepared), waits for the end of the session (#229).
-  if (R.xrActive && !slot && ((xr && xr.bench) || !R.fitsCapacity(cube))) { stageCube(info, cube, open, path); return; }
-  // Outside VR the capacity follows the page's Max side and this cube.
-  if (!slot && !R.xrActive) ensureCapacity(cube, { reshow: false });
-  // Another cube on the GPU: the benchmark's preparation was sized beside the old one.
-  if (!slot && benchPrep) {
-    if (!benchPrep.busy) releaseBench(true);
-    else { benchPrep.cancelled = true; for (const e of benchPrep.cubes.splice(0)) R.releaseVolume(e.slot); }
+  if (mustWait(cube)) { stageCube(info, cube, open, path); return 'staged'; }
+  dropBenchPrep();
+  const cell = 8;
+  if (!cube.prep || cube.prep.cell !== cell) {
+    const aboves = ['cube', 'reduced'].map((src) => thresholdNorm(cube, info, src));
+    const opts = { cell, aboves, store: R.cap ? R.cap.dims.slice() : null };
+    // The cube's voxels go to the worker and come back (cube.data): this cube
+    // is no one else's yet. The one on show is never sent (it is drawn from).
+    // Without a worker the work is done in this call and the wait below yields
+    // to no frame: one blocking slice with the write that follows.
+    const sent = cubePrep.stats.worker;
+    const pending = cube === state.cube || (R._volume && R._volume.data === cube.data)
+      ? Promise.resolve(prepNow(cube, opts)) : cubePrep.prepare(cube, opts);
+    const offThread = cubePrep.stats.worker > sent;
+    if (offThread) clock.pause();
+    const prep = await pending;
+    if (offThread) clock.resume();
+    cube.prep = prep;
+    if (!installCurrent(ticket)) return 'superseded';
   }
+  // A session that began meanwhile.
+  if (mustWait(cube)) { stageCube(info, cube, open, path); return 'staged'; }
+  let up;
+  if (!R.xrActive) {
+    // Outside VR: the capacity follows the page's Max side and this cube, and
+    // the cube is written at once (the capacity may just have changed).
+    ensureCapacity(cube, { reshow: false });
+    up = R.showVolume(cube, cell, cube.prep);
+  } else {
+    // In VR (it fits the capacity): written into the bank not on show, a few
+    // milliseconds at a time, the frames drawn in between from the other bank.
+    const job = R.beginWrite(cube, cell, cube.prep);
+    try {
+      while (!job.step(WRITE_STEP_MS)) {
+        clock.pause();
+        await nextTask();
+        clock.resume();
+        if (!installCurrent(ticket)) { job.cancelled = true; return 'superseded'; }
+      }
+      up = R.showWritten(job.slot, cube);
+    } catch (err) {
+      if (err.code !== 'write-cancelled' || gl.isContextLost()) throw err;
+      // The capacity changed under the write (the session ended and the
+      // capacity was planned again): the newest cube decides.
+      if (!installCurrent(ticket)) return 'superseded';
+      if (mustWait(cube)) { stageCube(info, cube, open, path); return 'staged'; }
+      if (!R.xrActive) ensureCapacity(cube, { reshow: false });
+      up = R.showVolume(cube, cell, cube.prep);
+    }
+    up.writeSteps = job.steps;
+    up.writeStepMs = job.maxStepMs;
+  }
+  showInstalled(info, cube, open, path, null, up, load, clock);
+  return 'shown';
+}
+
+/** The cube's values here, on this thread (cube-prep.js prepareCube). */
+function prepNow(cube, opts) {
+  return prepareCube(cube.data, cube.dims, cube.encoding, opts);
+}
+
+/** The page's state after a cube went on show (`up`: its timings). */
+function showInstalled(info, cube, open, path, slot, up, load, clock) {
   // Every cube put on show (from the backend, synthetic, the benchmark's)
   // supersedes a recovery under way for the previous one (reopenCube).
   state.loadGen++;
   layers.onCube();
   measure.cubeChanged();
   const inXR = R.xrActive;
-  const up = slot ? R.useVolume(slot) : R.showVolume(cube);
   // A cube waiting for the end of the session is older than this one: dropped
   // now, with its notice (installStaged clears it before it gets here).
   if (stagedCube && !slot) {
     stagedCube = null;
     shell.clearNotice('cube-waiting');
     shell.log('info', 'cube-waits-dropped', 'a newer cube was shown');
-  }
-  if (inXR && !slot) {
-    shell.log('info', 'cube-switched-in-vr', `${cube.dims.join('×')} ${cube.encoding}, written into the capacity in ${(up.uploadMs + up.macroMs).toFixed(0)} ms`);
-    measure.event('cube-switched-in-vr', { dims: cube.dims, encoding: cube.encoding, ms: Math.round(up.uploadMs + up.macroMs) });
   }
   state.info = info;
   state.cube = cube;
@@ -1105,7 +1239,6 @@ function installCube(info, cube, open, path = '', slot = null) {
   analysis.reset();
   if (open) share.start(open.dataset_id); else share.stop();
   refiner.setDataset(open ? open.dataset_id : null);
-  state.load = { ...state.load, uploadMs: up.uploadMs, macroMs: up.macroMs, textureMB: up.textureBytes / 1e6 };
   state.clip = { min: [0, 0, 0], max: [1, 1, 1] };
   ui.undo.clear();
   ui.pin = null;
@@ -1113,13 +1246,22 @@ function installCube(info, cube, open, path = '', slot = null) {
   applyExtent();
   $('thr-source').value = currentThresholdSource();
   resetThreshold();
+  const { blockMs, mainMs } = clock.end();
+  const offMain = !!(cube.prep && cube.prep.offMain && !slot);
+  state.load = { ...load, uploadMs: up.uploadMs, macroMs: up.macroMs, textureMB: up.textureBytes / 1e6, blockMs, mainMs, offMain,
+    writeSteps: up.writeSteps, writeStepMs: up.writeStepMs };
+  if (inXR && !slot) {
+    const grid = offMain ? `skip grid ${up.macroMs.toFixed(0)} ms off the main thread` : `skip grid ${up.macroMs.toFixed(0)} ms`;
+    shell.log('info', 'cube-switched-in-vr', `${cube.dims.join('×')} ${cube.encoding}, written into the capacity in ${up.uploadMs.toFixed(0)} ms (${grid}); main thread ${mainMs.toFixed(0)} ms, longest slice ${blockMs.toFixed(0)} ms`);
+    measure.event('cube-switched-in-vr', { dims: cube.dims, encoding: cube.encoding, ms: Math.round(up.uploadMs + (offMain ? 0 : up.macroMs)), blockMs: Math.round(blockMs) });
+  }
   const l = state.load;
   setStatus([
     ...(info && info.source_note ? [info.source_note] : []),
     `${cube.dims.join('×')} ${cube.encoding}, binned ${cube.factors.join('×')} (${cube.mode}${V.sourceNote(cube)}) from ${cube.fullShape.join('×')}`,
     ...(l.pyramidBuildMs !== undefined ? [`brick pyramid built in ${(l.pyramidBuildMs / 1000).toFixed(0)} s`] : []),
     l.reduceMs !== undefined ? `reduce ${l.reduceMs.toFixed(0)} ms, transfer ${l.transferMs.toFixed(0)} ms (${l.mb.toFixed(1)} MB)` : `generated in ${l.generateMs.toFixed(0)} ms`,
-    `upload ${l.uploadMs.toFixed(0)} ms, skip grid ${l.macroMs.toFixed(0)} ms${up.capacity ? `, into the ${R.cap.dims.join('×')} capacity (can change in VR)` : !slot ? ', own storage (larger than the capacity: in VR it waits for the end of the session)' : ''}`,
+    `upload ${l.uploadMs.toFixed(0)} ms, skip grid ${l.macroMs.toFixed(0)} ms${offMain ? ' (in a worker)' : ''}, page blocked ${blockMs.toFixed(0)} ms at most${up.capacity ? `, into the ${R.cap.dims.join('×')} capacity (can change in VR)` : !slot ? ', own storage (larger than the capacity: in VR it waits for the end of the session)' : ''}`,
     ...(open ? [`in ${state.sessionNote || 'own session'}`] : []),
   ].join('\n'));
 }
@@ -3201,7 +3343,8 @@ function releaseBench(quiet = false) {
       return b.ok && (b.inCapacity || b.gpuBytes + held + b.capacityBytes <= b.limitBytes);
     };
     const n = BENCH_SIZES.filter((s) => s <= shown.n && fits(s)).pop() || BENCH_SIZES[0];
-    try { loadSynthetic(n); } catch (err) { if (!quiet) setStatus(`Failed: ${err.message || err}`); }
+    const said = (err) => { if (!quiet) setStatus(`Failed: ${err.message || err}`); };
+    try { loadSynthetic(n).catch(said); } catch (err) { said(err); }
   }
   for (const e of prep.cubes) R.releaseVolume(e.slot);
   setBenchButton();
@@ -3345,7 +3488,7 @@ async function desktopBench() {
   const proj = M.perspective(90 * Math.PI / 180, eyeW / eyeH, 0.02, 50);
   const ipd = 0.063;
   for (const n of sizes) {
-    loadSynthetic(n);
+    loadSynthetic(n, { sync: true });
     for (const spv of spvs) {
       for (const skip of [true, false]) {
         const times = [];
@@ -3428,6 +3571,8 @@ if (query.has('debug')) {
     return { p: [w[12], w[13], w[14]], m: Array.from(w), drawn: !!e.rig.drawn[i] };
   };
   window.__vrGpu = () => R.gpuStats();
+  // Issue #246: a cube put on show as a load puts it (the switch timing, validation/vr_switch_block.mjs).
+  window.__vrInstall = (info, cube) => installCube(info, cube, null, '');
   // Issue #229: the 3-D allocation guard (calls, refusals), the session flag,
   // a cube waiting for the session's end, the benchmark's preparation.
   window.__vrTex3D = () => ({ calls: { ...R.tex3dGuard.calls }, refused: R.tex3dGuard.refused, xrActive: R.xrActive,
@@ -3804,7 +3949,7 @@ if (query.has('bench')) {
   desktopBench().catch((e) => { document.title = `BENCH FAILED ${e.message}`; console.error(e); });
 } else {
   startDesktop();
-  if (query.has('synthetic')) loadSynthetic(Number(query.get('synthetic')) || 256);
+  if (query.has('synthetic')) loadSyntheticSaying(Number(query.get('synthetic')) || 256);
   else if (again && tokenField.value.trim()) {
     // Reloaded after a lost graphics context: the cube that was on show.
     $('path').value = again;

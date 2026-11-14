@@ -8,6 +8,18 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: a cube switch in VR no longer stops the frames (#246, part of #234).**
+  The new cube's empty-space grid, the top of its colour range and the apron
+  of the capacity's corner are computed in a module Web Worker
+  (`cube-prep-worker.js`), the voxels transferred there and back, never
+  copied; the write into the capacity's spare bank goes in slabs of at most
+  4 MB, about 4 ms at a time, between frames. A newer cube, or a newer load,
+  wins over a stale result. Without module workers (and with `?noworker`)
+  the same is computed on the page. On an M5 Max (headless Chrome, 256³), the
+  longest frame gap during a switch fell from 87 ms to 18.5 ms with Metal
+  (idle: 16.8 ms), 120 ms to 18.7 ms at 16-bit, and from 82 ms to 32 ms with
+  SwiftShader (idle up to 33 ms); `validation/vr_switch_block.mjs` measures it.
+
 - **VR: the secondary stick no longer changes the tool by accident (part of
   #185).** On the Quest the tool changed to the spectrum probe while the cube
   was being moved: the thumb slid on the stick past the flick threshold. A

@@ -385,6 +385,17 @@ const CUBE = new Float32Array([
 /** Voxels of a 3-D storage of `dims`. */
 function voxels(dims) { return dims[0] * dims[1] * dims[2]; }
 
+/** The largest slab of z-planes one step of a write into the capacity uploads
+ *  (beginWrite, issue #246): a 256³ 8-bit cube in four steps. */
+export const WRITE_SLAB_BYTES = 4 << 20;
+
+/** A prepared cube's skip grid (cube-prep.js), when it was built for this cube and cell size. */
+function prepMacro(prep, dims, cell) {
+  if (!prep || !prep.macro || prep.cell !== cell) return null;
+  const want = dims.map((v) => Math.ceil(v / cell));
+  return prep.macro.dims.every((v, i) => v === want[i]) ? prep.macro : null;
+}
+
 /** At most this many bytes of zeros a call when a storage is cleared. */
 const ZERO_SLAB_BYTES = 4 * 1024 * 1024;
 
@@ -657,8 +668,9 @@ export class Renderer {
    * so nothing is left for the browser to clear later. Never in VR (issue
    * #229): throws a `tex3d-in-xr` Error before touching the GPU. Returns the
    * slot, to be shown with useVolume() and given back with releaseVolume().
+   * `prep`: the cube's skip grid already built (cube-prep.js, issue #246).
    */
-  prepareVolume({ data, dims, encoding }, cell = 8, { mask = true } = {}) {
+  prepareVolume({ data, dims, encoding }, cell = 8, { mask = true, prep = null } = {}) {
     if (this.xrActive) throw tex3dInXRError('prepareVolume');
     const gl = this.gl;
     const [w, h, d] = dims;
@@ -674,7 +686,8 @@ export class Renderer {
     gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, w, h, d, gl.RED, u8 ? gl.UNSIGNED_BYTE : gl.HALF_FLOAT, data);
     params3D(gl, gl.LINEAR);
     const t1 = performance.now();
-    const macro = buildMacrocells(data, dims, encoding, cell);
+    const ready = prepMacro(prep, dims, cell);
+    const macro = ready || buildMacrocells(data, dims, encoding, cell);
     const t2 = performance.now();
     const macroTex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_3D, macroTex);
@@ -693,7 +706,7 @@ export class Renderer {
     const slot = {
       volTex, macroTex, maskTex, dims: [w, h, d], store: [w, h, d], encoding, cell, macroDims: macro.dims, cap: null,
       textureBytes: voxels(dims) * (u8 ? 1 : 2), macroBytes: voxels(macro.dims) * 4, maskBytes: mask ? voxels(dims) : 0,
-      uploadMs: t1 - t0, macroMs: t2 - t1, maskMs: t3 - t2, lost: false, released: false,
+      uploadMs: t1 - t0, macroMs: ready ? prep.ms : t2 - t1, maskMs: t3 - t2, lost: false, released: false,
     };
     this._slots.add(slot);
     return slot;
@@ -736,8 +749,8 @@ export class Renderer {
    * a cube that arrives in VR until the session ends (main.js installCube).
    * Returns the timings and the texture size.
    */
-  setVolume({ data, dims, encoding }, cell = 8) {
-    const slot = this.prepareVolume({ data, dims, encoding }, cell);
+  setVolume({ data, dims, encoding }, cell = 8, prep = null) {
+    const slot = this.prepareVolume({ data, dims, encoding }, cell, { prep });
     const old = this.slot;
     this._volume = { data, dims, encoding, cell };
     slot.volume = this._volume;
@@ -867,7 +880,23 @@ export class Renderer {
    * lies beyond, from an earlier cube, is never read. A slot written into
    * the same bank before is given back.
    */
-  writeVolume({ data, dims, encoding }, cell = 8) {
+  writeVolume(cube, cell = 8, prep = null) {
+    const job = this.beginWrite(cube, cell, prep);
+    while (!job.step(Infinity)) { /* all at once */ }
+    return job.slot;
+  }
+
+  /**
+   * The same write in steps (issue #246), so that a long one can be spread
+   * over several frames: each step(budgetMs) writes at least one slab of
+   * whole z-planes (at most WRITE_SLAB_BYTES), then more while the budget
+   * lasts, then the apron, then the skip grid (built here unless `prep`
+   * holds it), and returns true once all is written (`job.slot` then set).
+   * The bank written is never the one on show, so the cube drawn meanwhile
+   * is untouched. Another write, the capacity given back or a lost context
+   * cancels it: step() then throws an Error with code `write-cancelled`.
+   */
+  beginWrite({ data, dims, encoding }, cell = 8, prep = null) {
     const cap = this.cap;
     if (!this.fitsCapacity({ dims, encoding }, cell)) throw new Error(`${dims.join(' x ')} ${encoding} does not fit the capacity`);
     const gl = this.gl;
@@ -875,43 +904,95 @@ export class Renderer {
     const shown = this.slot && this.slot.cap === cap ? this.slot.bank : -1;
     const bi = shown === 0 ? 1 : 0;
     const bank = cap.banks[bi];
+    if (bank.job) bank.job.cancelled = true;
     if (bank.slot) { bank.slot.released = true; this._slots.delete(bank.slot); bank.slot = null; }
     const [w, h, d] = dims;
-    const t0 = performance.now();
-    gl.bindTexture(gl.TEXTURE_3D, bank.volTex);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, w, h, d, gl.RED, f.type, data);
-    for (const a of apronBlocks(data, dims, cap.dims)) {
-      gl.texSubImage3D(gl.TEXTURE_3D, 0, a.offset[0], a.offset[1], a.offset[2], a.size[0], a.size[1], a.size[2], gl.RED, f.type, a.data);
-    }
-    const t1 = performance.now();
-    const macro = buildMacrocells(data, dims, encoding, cell);
-    const t2 = performance.now();
-    gl.bindTexture(gl.TEXTURE_3D, bank.macroTex);
-    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, macro.dims[0], macro.dims[1], macro.dims[2], gl.RED, gl.FLOAT, macro.data);
-    const t3 = performance.now();
-    const slot = {
-      volTex: bank.volTex, macroTex: bank.macroTex, maskTex: cap.maskTex, dims: [w, h, d], store: cap.dims.slice(), encoding, cell,
-      macroDims: macro.dims, cap, bank: bi,
-      textureBytes: voxels(dims) * f.bpv, macroBytes: voxels(macro.dims) * 4, maskBytes: 0,
-      uploadMs: (t1 - t0) + (t3 - t2), macroMs: t2 - t1, maskMs: 0, lost: false, released: false,
+    const slab = Math.max(1, Math.min(d, Math.floor(WRITE_SLAB_BYTES / (w * h * f.bpv))));
+    const renderer = this;
+    let z = 0, stage = 0, uploadMs = 0, macroMs = 0, macro = null;
+    const job = {
+      cancelled: false, slot: null, slabs: Math.ceil(d / slab), steps: 0, maxStepMs: 0,
+      step(budgetMs = Infinity) {
+        if (job.slot) return true;
+        if (job.cancelled || renderer.cap !== cap || bank.job !== job || gl.isContextLost()) {
+          job.cancelled = true;
+          if (bank.job === job) bank.job = null;
+          const e = new Error('the write into the capacity was cancelled');
+          e.code = 'write-cancelled';
+          throw e;
+        }
+        const t0 = performance.now();
+        let build = 0;
+        do {
+          if (stage === 0) {
+            const n = Math.min(slab, d - z);
+            // Whole z-planes: a view of the cube's voxels, not a copy.
+            const part = n === d ? data : data.subarray(z * w * h, (z + n) * w * h);
+            gl.bindTexture(gl.TEXTURE_3D, bank.volTex);
+            gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+            gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, z, w, h, n, gl.RED, f.type, part);
+            z += n;
+            if (z >= d) stage = 1;
+          } else if (stage === 1) {
+            const sameStore = prep && prep.apron && prep.store && prep.store.every((v, i) => v === cap.dims[i]);
+            gl.bindTexture(gl.TEXTURE_3D, bank.volTex);
+            gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+            for (const a of sameStore ? prep.apron : apronBlocks(data, dims, cap.dims)) {
+              gl.texSubImage3D(gl.TEXTURE_3D, 0, a.offset[0], a.offset[1], a.offset[2], a.size[0], a.size[1], a.size[2], gl.RED, f.type, a.data);
+            }
+            stage = 2;
+          } else {
+            macro = prepMacro(prep, dims, cell);
+            if (macro) macroMs = prep.ms;
+            else {
+              const tb = performance.now();
+              macro = buildMacrocells(data, dims, encoding, cell);
+              build = macroMs = performance.now() - tb;
+            }
+            gl.bindTexture(gl.TEXTURE_3D, bank.macroTex);
+            gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, macro.dims[0], macro.dims[1], macro.dims[2], gl.RED, gl.FLOAT, macro.data);
+            stage = 3;
+          }
+        } while (stage < 3 && performance.now() - t0 < budgetMs);
+        const ms = performance.now() - t0;
+        uploadMs += ms - build;
+        job.steps++;
+        job.maxStepMs = Math.max(job.maxStepMs, ms);
+        if (stage < 3) return false;
+        const slot = {
+          volTex: bank.volTex, macroTex: bank.macroTex, maskTex: cap.maskTex, dims: [w, h, d], store: cap.dims.slice(), encoding, cell,
+          macroDims: macro.dims, cap, bank: bi,
+          textureBytes: voxels(dims) * f.bpv, macroBytes: voxels(macro.dims) * 4, maskBytes: 0,
+          uploadMs, macroMs, maskMs: 0, lost: false, released: false,
+        };
+        bank.slot = slot;
+        bank.job = null;
+        renderer._slots.add(slot);
+        job.slot = slot;
+        return true;
+      },
     };
-    bank.slot = slot;
-    this._slots.add(slot);
-    return slot;
+    bank.job = job;
+    return job;
   }
 
   /**
    * Shows a cube: written into the capacity when it fits (in VR too), else
    * uploaded into storage of its own (setVolume; refused in VR with a
    * `tex3d-in-xr` error, before anything changes). A volume of its own shown
-   * before is given back. Returns the timings and the texture size.
+   * before is given back. Returns the timings and the texture size. `prep`:
+   * the cube's skip grid and apron already computed (cube-prep.js).
    */
-  showVolume({ data, dims, encoding }, cell = 8) {
-    if (!this.fitsCapacity({ dims, encoding }, cell)) return this.setVolume({ data, dims, encoding }, cell);
-    const slot = this.writeVolume({ data, dims, encoding }, cell);
+  showVolume({ data, dims, encoding }, cell = 8, prep = null) {
+    if (!this.fitsCapacity({ dims, encoding }, cell)) return this.setVolume({ data, dims, encoding }, cell, prep);
+    return this.showWritten(this.writeVolume({ data, dims, encoding }, cell, prep), { data, dims, encoding });
+  }
+
+  /** A cube written into the capacity (writeVolume, beginWrite) put on show;
+   *  a volume of its own shown before is given back. */
+  showWritten(slot, { data, dims, encoding }) {
     const old = this.slot;
-    this._volume = { data, dims, encoding, cell };
+    this._volume = { data, dims, encoding, cell: slot.cell };
     this.useVolume(slot);
     if (old && !old.cap) this.releaseVolume(old);
     return { uploadMs: slot.uploadMs, macroMs: slot.macroMs, maskMs: 0, textureBytes: slot.textureBytes, capacity: true };

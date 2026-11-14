@@ -157,6 +157,15 @@ Since then the page allocates every 3-D texture outside VR:
   see it in the headset. A newer cube, shown or waiting, replaces one already
   waiting. To avoid the wait, choose a larger binning, or a larger *Max side*
   before entering VR (it costs the memory above).
+- **A switch does not stop the frames** (#246). The passes over every voxel of
+  the new cube (its empty-space grid, the top of its colour range, the apron
+  at the edge of the room) run in a background worker of the page; the cube
+  is then written into the room in slabs of at most 4 MB, about 4 ms of the
+  page's time at a time, while the headset keeps drawing the cube on show.
+  If a newer cube arrives meanwhile, the newer one wins. The page's status
+  says *page blocked … ms at most*; a browser without module workers (or the
+  address switch `noworker`) computes the same on the page, with the old
+  pause.
 - **The selection mask** is the room's own (one byte per voxel); in VR each
   selection is only written into it.
 - **The headset benchmark** makes its cubes on the page first (*Prepare the
@@ -183,8 +192,9 @@ What to check on the Quest 3:
    no *The graphics were reset* appears.
 4. On the page, **Copy diagnostics**: there must be no `webgl-context-lost`
    and no `tex3d-in-xr` line; each switch is a `cube-switched-in-vr` line with
-   its time in ms; note the `GPU textures … MB` line with its *VR capacity*
-   part.
+   its write time, the skip grid's time *off the main thread*, and *main
+   thread … ms, longest slice … ms* (the longest the frames waited); note the
+   `GPU textures … MB` line with its *VR capacity* part.
 5. **Prepare the headset benchmark**, wait for *Benchmark ready*, then **Start
    the headset benchmark** and keep still until it ends; copy the table.
 
