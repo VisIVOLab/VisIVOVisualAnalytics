@@ -31,6 +31,7 @@
 #include <QNetworkRequest>
 #include <QProcess>
 #include <QPushButton>
+#include <QScreen>
 #include <QSettings>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -449,6 +450,32 @@ void VrHeadsetDialog::fitHeight()
     if (layout())
         layout()->activate();
     adjustSize();
+}
+
+void VrHeadsetDialog::growToFit()
+{
+    QLayout *l = layout();
+    if (!l || !l->hasHeightForWidth())
+        return;
+    // A top-level window's minimum size ignores height-for-width, so new text
+    // that wraps onto more lines (the backend check, adb's state) does not
+    // make the window taller: the layout squeezes the labels instead and
+    // their lines run into each other.
+    int needed = l->totalHeightForWidth(width());
+    if (const QScreen *s = screen())
+        needed = std::min(needed, s->availableGeometry().height());
+    if (needed > height())
+        resize(width(), needed);
+}
+
+bool VrHeadsetDialog::event(QEvent *event)
+{
+    const bool handled = QDialog::event(event);
+    // Posted whenever a label's text or a widget's visibility changes, once
+    // the layout has taken it in.
+    if (event->type() == QEvent::LayoutRequest)
+        growToFit();
+    return handled;
 }
 
 void VrHeadsetDialog::startUsb()

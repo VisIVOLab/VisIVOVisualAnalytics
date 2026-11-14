@@ -45,6 +45,14 @@ are preserved here unedited; the branch names they refer to are historical.
   follows the hub (presence every 5 s, a long poll of the activity); an older
   backend is detected and left alone (docs/user-guide/vr/desktop.md).
 
+- **Desktop: Headset Activity follow-ups (#245, part of #234).** A spectrum
+  the headset saved as a FITS table (`POST /v1/products/spectrum_table` with
+  `format=fits`) now opens as the same spectrum product as its CSV, with the
+  same axis labels and blank channels; the file is told apart by its first
+  bytes. *Open in VR Headset…* grows when new text in the USB section (the
+  backend check, adb's state) wraps onto more lines, instead of squeezing the
+  labels into each other.
+
 - **VR: no 3-D texture is allocated during a VR session, which fixes the
   Quest 3 context loss at the first lasso (#229, part of #166 and #185).** On
   the headset (Quest Browser 154, Adreno 740) the GPU process rejects a

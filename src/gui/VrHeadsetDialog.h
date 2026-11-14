@@ -83,6 +83,8 @@ public:
     ~VrHeadsetDialog() override;
 
 protected:
+    /// After every relayout, growToFit(): a label's new text may need more lines.
+    bool event(QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
     void hideEvent(QHideEvent *event) override;
     void showEvent(QShowEvent *event) override;
@@ -134,6 +136,9 @@ private:
     void startPairing();
     /// Keep the width, fit the height to the wrapped text.
     void fitHeight();
+    /// Taller when the wrapped text at the current width needs it; never
+    /// shorter or narrower (a size the user chose stays).
+    void growToFit();
     // ── Pairing by code (issue #214) ──────────────────────────────────────
     /// Ask for a code; a previous one still pending is revoked first.
     void newCode();

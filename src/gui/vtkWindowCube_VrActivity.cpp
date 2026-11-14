@@ -447,7 +447,8 @@ void vtkWindowCube::openHeadsetSpectrum(const VrHub::Event &event, const VrHub::
         }
         BackendClient client(in.baseUrl, in.token);
         client.setSessionId(in.sessionId);
-        const QString local = dir.filePath(u"spectrum.csv"_s);
+        // CSV or FITS table, as the headset asked for: read by what it holds.
+        const QString local = dir.filePath(u"spectrum"_s);
         if (!client.downloadExport(filename, local, r.error))
             return r;
         QFile f(local);
@@ -455,9 +456,8 @@ void vtkWindowCube::openHeadsetSpectrum(const VrHub::Event &event, const VrHub::
             r.error = f.errorString();
             return r;
         }
-        r.ok = VrHub::parseSpectrumCsv(f.readAll(), r.axis, r.values, &r.xLabel, &r.yLabel);
-        if (!r.ok)
-            r.error = u"the file holds no spectrum"_s;
+        r.ok = VrHub::parseSpectrumFile(f.readAll(), r.axis, r.values, &r.xLabel, &r.yLabel,
+                                        &r.error);
         return r;
     }));
 }

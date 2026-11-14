@@ -25,6 +25,9 @@ private slots:
     void productRecipeBecomesProvenance();
     void productIdIsStableAcrossOpens();
     void spectrumFileIsRead();
+    void spectrumFitsTableIsReadLikeTheCsv();
+    void apertureFitsTableIsAMean();
+    void brokenFitsTablesAreRefused();
     void lookAndClipAreRead();
     void colormapsMapToTheDesktops();
     void clientCallsTheHubRoutes();
