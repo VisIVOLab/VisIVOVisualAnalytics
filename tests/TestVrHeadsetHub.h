@@ -15,6 +15,7 @@ private slots:
     void presenceIsParsedNewestFirst();
     void anOldBackendIsNotAMissingHeadset();
     void statusTextSaysWhatIsOnShow();
+    void longNamesGetBreakPoints();
     void showBodyCarriesTheCubeButNoToken();
     void commandAnswersAreUnderstood();
     void activityIsParsed();

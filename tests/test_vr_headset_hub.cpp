@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "TestVrHeadsetHub.h"
 
 #include "BackendClient.h"
@@ -226,6 +227,33 @@ void TestVrHeadsetHub::statusTextSaysWhatIsOnShow()
     h.label = u"Quest 3"_s;
     h.transport = u"adb"_s;
     QCOMPARE(VrHub::headsetLine(h), u"Quest 3 (USB cable), not in VR, loading n.fits"_s);
+}
+
+void TestVrHeadsetHub::longNamesGetBreakPoints()
+{
+    const QChar zwsp(0x200B);
+    // After each separator; the text reads the same once the breaks go.
+    const QString name = u"WALLABY_J100903-290239_Hydra_TR2.fits"_s;
+    const QString w = VrHub::wrappable(name);
+    QCOMPARE(QString(w).remove(zwsp), name);
+    QVERIFY(w.contains(u"WALLABY_"_s + zwsp));
+    QVERIFY(w.contains(u"TR2."_s + zwsp));
+    // A stem with no separators still breaks: no run of 16 unbroken characters.
+    const QString stem = QString(150, u'a') + u".fits"_s;
+    const QString ws = VrHub::wrappable(stem);
+    QCOMPARE(QString(ws).remove(zwsp), stem);
+    int run = 0, longest = 0;
+    for (const QChar c : ws) {
+        run = (c == zwsp || c.isSpace()) ? 0 : run + 1;
+        longest = std::max(longest, run);
+    }
+    QVERIFY2(longest <= 16, qPrintable(QString::number(longest)));
+    // Ordinary words are left alone; a surrogate pair is never split.
+    QCOMPARE(VrHub::wrappable(u"No headset is connected"_s), u"No headset is connected"_s);
+    const QString emoji = QString(15, u'b') + QString::fromUtf8("\xF0\x9F\x94\xAD") + u"cc"_s;
+    const QString we = VrHub::wrappable(emoji);
+    for (qsizetype k = 0; k + 1 < we.size(); ++k)
+        QVERIFY(!(we[k].isHighSurrogate() && we[k + 1] == zwsp));
 }
 
 void TestVrHeadsetHub::showBodyCarriesTheCubeButNoToken()

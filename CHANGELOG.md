@@ -8,6 +8,15 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Headset Activity: a long cube name no longer widens the Inspector (#251,
+  part of #234).** The line saying what the headset shows breaks inside the
+  file name like the activity rows do, so a name of 80 characters wraps
+  instead of pushing the whole Parameters page, and its Open buttons, past
+  the Inspector's right edge. Names with no separators at all also break, at
+  least every 16 characters. The status bar's headset label is elided in the
+  middle (the whole line stays in its tooltip) and no longer pushes the other
+  status bar labels away.
+
 - **Headset Activity and the headset dialog: defects found in the real app
   (#249, part of #234).** The activity rows wrap to the panel's width: the
   look, clip and cube rows showed no text and the Open buttons sat behind a
