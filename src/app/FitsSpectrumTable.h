@@ -23,6 +23,7 @@
 #include <QVector>
 #include <QtEndian>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -68,33 +69,44 @@ inline qint64 intCard(const QHash<QString, QString> &cards, const QString &key, 
     return good ? v : fallback;
 }
 
+/// @p a times @p b, or -1 when it is negative or more than @p limit. Every
+/// size is checked against the file's own before it is used, so no product
+/// or sum of a header's numbers can overflow.
+inline qint64 productWithin(qint64 a, qint64 b, qint64 limit)
+{
+    if (a < 0 || b < 0)
+        return -1;
+    if (a == 0 || b == 0)
+        return 0;
+    return a > limit / b ? -1 : a * b;
+}
+
 /// The bytes of an HDU's data (before the padding to a whole block), or -1
-/// when the header does not say.
-inline qint64 dataBytes(const QHash<QString, QString> &cards)
+/// when the header does not say or they cannot fit in @p limit bytes.
+inline qint64 dataBytes(const QHash<QString, QString> &cards, qint64 limit)
 {
     bool ok = false;
     const qint64 bitpix = intCard(cards, QStringLiteral("BITPIX"), 0, &ok);
-    const qint64 naxis = intCard(cards, QStringLiteral("NAXIS"), 0);
-    if (!ok || naxis < 0 || naxis > 999)
+    if (!ok || !(bitpix == 8 || bitpix == 16 || bitpix == 32 || bitpix == 64 || bitpix == -32
+                 || bitpix == -64))
+        return -1;
+    const qint64 naxis = intCard(cards, QStringLiteral("NAXIS"), -1);
+    if (naxis < 0 || naxis > 999)
         return -1;
     if (naxis == 0)
         return 0;
     qint64 count = 1;
     for (qint64 i = 1; i <= naxis; ++i) {
-        const qint64 n = intCard(cards, QStringLiteral("NAXIS%1").arg(i), -1);
-        if (n < 0 || (n > 0 && count > std::numeric_limits<qint64>::max() / 16 / n))
+        count = productWithin(count, intCard(cards, QStringLiteral("NAXIS%1").arg(i), -1), limit);
+        if (count < 0)
             return -1;
-        count *= n;
     }
     const qint64 pcount = intCard(cards, QStringLiteral("PCOUNT"), 0);
     const qint64 gcount = intCard(cards, QStringLiteral("GCOUNT"), 1);
-    if (pcount < 0 || gcount < 0 || pcount > std::numeric_limits<qint32>::max()
-        || gcount > std::numeric_limits<qint32>::max())
+    if (pcount < 0 || pcount > limit)
         return -1;
-    const qint64 total = (count + pcount) * gcount;
-    if (gcount > 0 && total / gcount != count + pcount)
-        return -1;
-    return std::abs(bitpix) / 8 * total;
+    const qint64 total = productWithin(count + pcount, gcount, limit);
+    return total < 0 ? -1 : productWithin(std::abs(bitpix) / 8, total, limit);
 }
 
 struct Column
@@ -209,21 +221,26 @@ inline bool readFitsSpectrumTable(const QByteArray &file, QVector<double> &axis,
         qint64 dataAt = 0;
         if (!readHeader(file, at, cards, dataAt))
             return fail(QStringLiteral("a FITS header has no END"));
-        const qint64 bytes = dataBytes(cards);
+        // What is left of the file: no HDU's data can be larger.
+        const qint64 left = std::max<qint64>(0, file.size() - dataAt);
+        const qint64 bytes = dataBytes(cards, left);
         if (bytes < 0)
-            return fail(QStringLiteral("a FITS header has no valid data size"));
+            return fail(QStringLiteral("a FITS header has no valid data size, or the file is "
+                                       "cut short"));
         const qint64 next = dataAt + roundUpToBlock(bytes);
         if (cards.value(QStringLiteral("XTENSION")) != QStringLiteral("BINTABLE")) {
             at = next;
             continue;
         }
 
+        // dataBytes() has checked NAXIS1 * NAXIS2 against what is left.
         const qint64 rowBytes = intCard(cards, QStringLiteral("NAXIS1"), -1);
         const qint64 rows = intCard(cards, QStringLiteral("NAXIS2"), -1);
         const qint64 fields = intCard(cards, QStringLiteral("TFIELDS"), -1);
-        if (rowBytes <= 0 || rows < 0 || fields <= 0 || fields > 999
-            || dataAt + rowBytes * rows > file.size())
-            return fail(QStringLiteral("the FITS table is cut short"));
+        if (intCard(cards, QStringLiteral("NAXIS"), -1) != 2
+            || intCard(cards, QStringLiteral("BITPIX"), 0) != 8 || rowBytes <= 0 || rows < 0
+            || rows > left / rowBytes || fields <= 0 || fields > 999)
+            return fail(QStringLiteral("the FITS table is malformed or cut short"));
 
         QVector<Column> columns;
         qint64 offset = 0;
@@ -241,10 +258,12 @@ inline bool readFitsSpectrumTable(const QByteArray &file, QVector<double> &axis,
                 layoutOk = false;
                 break;
             }
-            c.repeat = digits > 0 ? form.left(digits).toLongLong() : 1;
+            bool repeatOk = true;
+            c.repeat = digits > 0 ? form.left(digits).toLongLong(&repeatOk) : 1;
             c.type = form.at(digits).toLatin1();
-            const qint64 width = cellBytes(c.type, c.repeat);
-            if (width < 0) {
+            // No wider than the row, so cellBytes() cannot overflow either.
+            const qint64 width = repeatOk && c.repeat <= rowBytes ? cellBytes(c.type, c.repeat) : -1;
+            if (width < 0 || width > rowBytes - offset) {
                 layoutOk = false;
                 break;
             }
@@ -260,7 +279,7 @@ inline bool readFitsSpectrumTable(const QByteArray &file, QVector<double> &axis,
             c.null = intCard(cards, QStringLiteral("TNULL") + n, 0, &c.hasNull);
             columns.append(c);
         }
-        if (!layoutOk || offset > rowBytes) {
+        if (!layoutOk) {
             at = next;
             continue;
         }

@@ -511,6 +511,26 @@ void TestVrHeadsetHub::brokenFitsTablesAreRefused()
     QVERIFY(at3 > 0);
     text.replace(at3, 20, "TFORM3  = '8A      '");
     QVERIFY(!VrHub::parseSpectrumFile(text, x, y));
+
+    // Sizes a header makes up are refused before they are used: none of them
+    // may overflow into a read outside the file.
+    const auto withCard = [](QByteArray f, int from, const char *key, const QByteArray &value) {
+        for (int p = from; p + 80 <= f.size(); p += 80)
+            if (f.mid(p, 8).trimmed() == key) {
+                f.replace(p, 80, (QByteArray(key).leftJustified(8, ' ') + "= " + value).leftJustified(80, ' '));
+                break;
+            }
+        return f;
+    };
+    QVERIFY(!VrHub::parseSpectrumFile(withCard(fits, 0, "BITPIX", "9223372036854775807"), x, y));
+    QVERIFY(!VrHub::parseSpectrumFile(withCard(fits, 2880, "TFORM1", "'9223372036854775807A'"), x, y));
+    QVERIFY(!VrHub::parseSpectrumFile(withCard(fits, 2880, "TFORM1", "'99999999999999999999A'"), x, y));
+    QByteArray huge = withCard(fits, 2880, "NAXIS", "0");
+    huge = withCard(huge, 2880, "NAXIS1", "4611686018427387904");
+    huge = withCard(huge, 2880, "NAXIS2", "4");
+    QVERIFY(!VrHub::parseSpectrumFile(huge, x, y));
+    QVERIFY(!VrHub::parseSpectrumFile(withCard(fits, 2880, "NAXIS2", "4611686018427387904"), x, y));
+    QVERIFY(y.isEmpty());
 }
 
 void TestVrHeadsetHub::lookAndClipAreRead()
