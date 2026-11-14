@@ -372,9 +372,9 @@ void TestVrHeadsetApp::apkIsFoundInOrder()
     QVERIFY(missing.error.contains(u"VISIVO_QUEST_APK"_s));
 
     // Elsewhere the resources are beside the executable.
-    const QStringList linux = VrHeadsetApp::apkCandidates(Platform::Linux, u"/opt/visivo/bin"_s, none);
-    QCOMPARE(linux.first(), u"/opt/visivo/bin/quest-app/visivo-vr.apk"_s);
-    QVERIFY(!linux.join(u'\n').contains(u"Resources"_s));
+    const QStringList onLinux = VrHeadsetApp::apkCandidates(Platform::Linux, u"/opt/visivo/bin"_s, none);
+    QCOMPARE(onLinux.first(), u"/opt/visivo/bin/quest-app/visivo-vr.apk"_s);
+    QVERIFY(!onLinux.join(u'\n').contains(u"Resources"_s));
 }
 
 void TestVrHeadsetApp::installedVersionNeedsTheExactPackage()
