@@ -15,6 +15,15 @@ Quest:
 Both open the cube in the same backend session as the desktop, and the page in
 the headset is the same.
 
+```{tip}
+**A headset already connected?** *Open in VR Headset…* looks for a headset
+page open in this session first. When there is one, the dialog offers **Show
+on Headset**, which switches that headset to this cube with no new code and
+no new browser window; the cube window's **Tools → Views → Show on Headset**
+does the same in one click. Pairing stays under **Pair Another Headset**. See
+[The headset from the desktop](desktop.md).
+```
+
 ## Pair by code
 
 1. **Open the cube** in the desktop application.

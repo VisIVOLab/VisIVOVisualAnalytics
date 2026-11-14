@@ -296,6 +296,15 @@ struct BackendVrPairReply
     QByteArray statusBefore;
 };
 
+/// One answer of the headset hub (/v1/vr/headset, /v1/vr/activity, issue
+/// #238), raw: app/VrHeadsetHub.h reads it, so its meaning is unit-tested there.
+struct BackendVrHubReply
+{
+    int httpStatus{ 0 };      ///< 0 = no answer
+    QString error;            ///< Qt's words when there was no answer
+    QByteArray body;
+};
+
 /// A source finder the backend can run (GET /v1/finders): SoFiA-2 for cubes,
 /// photutils for images; ``parameters`` names what a caller may set.
 struct BackendFinderInfo
@@ -2599,6 +2608,18 @@ public:
     /** DELETE /v1/vr/pair/{code_or_id} — revoke a code, or disconnect a
      *  headset. The path holds the code: it is never logged. */
     bool revokeVrPair(const QString &codeOrId, QString &error, int timeoutMs = 5000) const;
+    // ── Headset hub (issue #238, backend #236) ────────────────────────────────
+    /** GET /v1/vr/headset — the headset pages open in this session, newest
+     *  first (VrHub::parsePresence). Blocking: call it from a worker. */
+    BackendVrHubReply vrHeadsets() const;
+    /** POST /v1/vr/headset/command — @p body is VrHub::showCommandBody: the
+     *  page shows that cube. 404 with a detail of its own: no page connected. */
+    BackendVrHubReply sendVrHeadsetCommand(const QJsonObject &body) const;
+    /** GET /v1/vr/activity?after=&wait= — what the headset did since @p after
+     *  (VrHub::parseActivity). @p waitS = 0 answers at once. The cube windows
+     *  follow it with their own long poll (HeadsetHubLink); this is the
+     *  one-shot read. */
+    BackendVrHubReply vrActivity(qint64 after, int waitS = 0) const;
 
     /** DELETE /v1/tasks/{id} — ask the backend to cancel a running or pending
      *  task. True when it accepted; ``error`` says why not (404: no such
