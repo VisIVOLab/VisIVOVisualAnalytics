@@ -33,6 +33,25 @@ are preserved here unedited; the branch names they refer to are historical.
   clamp more per sample (40 ms against 37.5 ms per 1280×800 frame on
   SwiftShader; on the Quest's GPU it is still to be measured). `vr_lifecycle.mjs` takes
   `--timeout-min` (default 10) for slow software-GL runs.
+- **Backend: a headset hub per session, and spectra saved as tables (#236,
+  part of #234).** The backend now knows which headset pages are open in a
+  session and carries the conversation between them and the desktop:
+  presence (`POST /v1/vr/headset/hello` and `/state`, `GET` and
+  `DELETE /v1/vr/headset`: the pages seen in the last 45 s, what each shows,
+  whether it is in VR), commands from the desktop to a page
+  (`POST /v1/vr/headset/command`, `show` a cube; the page's long poll
+  `GET /v1/vr/headset/commands`, acknowledged by `after`, a newer `show`
+  replacing an unacknowledged one) and the page's activity for the desktop
+  (`POST`/`GET /v1/vr/activity`: look, clip box, products, cube switches, a
+  ring of 256 per session, the latest look and clip per cube). Bounded like
+  the selection hub (pages, commands, events, payload size, waiting polls),
+  no token in any body, the long polls end as soon as the backend begins to
+  exit, and the routes work over HTTP and through the pairing bridge. A
+  spectrum is saved in the Workspace Exports by
+  `POST /v1/products/spectrum_table` (the desktop's spectrum CSV, or a FITS
+  table), next to `moment_fits` and `pv_fits`, so what the headset makes can
+  be opened on the desktop (docs/backend-api/headset-hub.md).
+
 - **VR: no 3-D texture is allocated during a VR session, which fixes the
   Quest 3 context loss at the first lasso (#229, part of #166 and #185).** On
   the headset (Quest Browser 154, Adreno 740) the GPU process rejects a

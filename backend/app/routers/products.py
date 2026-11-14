@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
-from typing import Any
+from pydantic import BaseModel, Field
+from typing import Any, Literal
+import math
 import uuid
 import logging
 import os
@@ -197,6 +198,105 @@ async def pv_save_fits(
     return PvSaveFitsResponse(
         valid=True, workspace_filename=Path(result["output_path"]).name,
         **{k: result[k] for k in ("output_path", "width", "height", "range_min", "range_max", "bunit")})
+
+# ── Persist a spectrum to a small table ────────────────────────────────────
+# The spectrum of /v1/spectral/probe (radius 0) or /v1/spectral/aperture
+# (radius > 0), as a CSV or FITS table in Workspace Exports, so a spectrum
+# made in the headset can be opened on the desktop (issue #236).
+
+class SpectrumTableRequest(BaseModel):
+    dataset_id: str
+    x: float
+    y: float
+    radius: float = Field(0.0, ge=0.0, le=4096.0)
+    format: Literal["csv", "fits"] = "csv"
+    output_basename: str = ""
+
+
+class SpectrumTableResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    output_path: str = ""
+    workspace_filename: str = ""
+    n_channels: int = 0
+    spectral_unit: str = ""
+    spectral_type: str = ""
+    bunit: str = ""
+    x: float = 0.0
+    y: float = 0.0
+    radius: float = 0.0
+    n_pix: int = 0
+    range_min: float = 0.0
+    range_max: float = 0.0
+
+
+_TABLE_SUFFIX = {"csv": ".csv", "fits": ".fits"}
+
+
+@router.post("/v1/products/spectrum_table", response_model=SpectrumTableResponse, tags=["products"])
+async def spectrum_save_table(
+    request: SpectrumTableRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> SpectrumTableResponse:
+    """Extract the spectrum at pixel (x, y) (``radius`` 0, as
+    /v1/spectral/probe) or the mean over a circular aperture (as
+    /v1/spectral/aperture), and save it in the **Workspace Exports** dir as a
+    ``csv`` (the desktop's spectrum CSV) or ``fits`` (binary table). The
+    file's suffix follows ``format``; collisions get a numeric suffix."""
+    from ..compute import worker_spectrum_table  # noqa: PLC0415
+    from ..dependencies import _run, _run_heavy  # noqa: PLC0415
+    if not (math.isfinite(request.x) and math.isfinite(request.y)):
+        raise HTTPException(422, "x and y must be finite pixel coordinates.")
+    entry = _require_dataset(session, request.dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "A spectrum table requires a spectral cube dataset.")
+    suffix = _TABLE_SUFFIX[request.format]
+    stem = Path(request.output_basename.strip()).stem if request.output_basename.strip() else (
+        f"{Path(entry['path']).stem}_spectrum_x{int(round(request.x))}_y{int(round(request.y))}")
+    try:
+        # Reserved (an empty file made atomically), so two saves of the same
+        # name at once get two names; the worker writes over its placeholder.
+        output_path = make_workspace_path(stem + suffix, reserve=True)
+    except Exception as exc:
+        return SpectrumTableResponse(valid=False, error=str(exc))
+    # Who removes the placeholder on a failure: this request while the work
+    # was never handed to the pool; once it was, the work itself, when the
+    # worker fails. _run_heavy shields the work from this request's
+    # cancellation and 504, so the name stays reserved while a worker may
+    # still write it.
+    dispatched = False
+
+    async def _written(fn, *args):
+        try:
+            return await _run(fn, *args)
+        except BaseException:
+            output_path.unlink(missing_ok=True)
+            raise
+
+    def _dispatch(fn, *args):
+        nonlocal dispatched
+        dispatched = True              # synchronously, as the work is created
+        return _written(fn, *args)
+
+    try:
+        if not await acquire_task_slot(session):
+            raise task_slot_busy_error()
+        try:
+            result = await _run_heavy(
+                worker_spectrum_table, entry["path"], str(output_path),
+                float(request.x), float(request.y), float(request.radius), request.format,
+                dispatch=_dispatch)
+        finally:
+            session.release_task_slot()
+    except BaseException as exc:
+        if not dispatched:
+            output_path.unlink(missing_ok=True)
+        if isinstance(exc, HTTPException) or not isinstance(exc, Exception):
+            raise
+        logger.warning("[spectrum_table] failed dataset_id=%s error=%s", request.dataset_id, exc)
+        return SpectrumTableResponse(valid=False, error=str(exc))
+    return SpectrumTableResponse(valid=True, workspace_filename=Path(result["output_path"]).name, **result)
 
 
 @router.post("/v1/products/isosurface", response_model=IsosurfaceProductResponse, tags=["products"])
