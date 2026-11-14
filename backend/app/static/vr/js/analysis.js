@@ -24,7 +24,7 @@ export function createAnalysis(ctx) {
   const changed = () => { dirty = true; ctx.onChange && ctx.onChange(); };
   const base = { selection: ctx.selection, backend: ctx.backend, datasetId, info, onChange: changed };
   const lasso = createLassoTools({ ...base, showDataset: ctx.showDataset, path: () => st().openPath || '', cube: () => st().cube });
-  const moment = createMomentTool({ ...base, lassoTools: lasso, clipZ: () => [st().clip.min[2], st().clip.max[2]] });
+  const moment = createMomentTool({ ...base, lassoTools: lasso, clipZ: () => [st().clip.min[2], st().clip.max[2]], clip: () => st().clip });
   const pv = createPvTool({ ...base, state: st });
   const show = { moment: true, pv: true };
 

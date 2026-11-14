@@ -92,7 +92,6 @@ export const WHY = {
   none: 'Open a cube, a point table or a velocity field first.',
   cubeOnly: 'Cubes only: a point table or a velocity field has no channels.',
   noSpectral: 'A point table or a velocity field has no spectral axis.',
-  cropSliders: 'On a point table or a velocity field, crop with the sliders below.',
   cubeZ: 'On a cube the third axis is the range above.',
   particlesSelect: 'Selections on particles and fields come later (#259).',
   boxApply: 'Isolate and Remove need a Kinematic Lasso selection.',
@@ -216,10 +215,11 @@ function rangePage(ctx) {
   const w = [
     { id: 'slab', kind: 'range', rect: [X0, rowY(0), 560, WH], disabled: notCube },
     btn('slab-all', [X0 + 570, rowY(0), RIGHT - X0 - 570, WH], 'Full band', { disabled: notCube }),
-    btn('sub:clip:slab', span(1, 2, 0), ctx.spectralName, { group: 'sub-clip', value: 'slab', icon: 'slab', on: cube && ctx.clipTool === 'slab', disabled: cube ? '' : WHY.cropSliders,
+    btn('sub:clip:slab', span(1, 2, 0), ctx.spectralName, { group: 'sub-clip', value: 'slab', icon: 'slab', on: cube && ctx.clipTool === 'slab', disabled: notCube,
       tip: 'The trigger centres the range on the emission' }),
-    btn('sub:clip:box', span(1, 2, 1), 'Spatial crop', { group: 'sub-clip', value: 'box', icon: 'crop', on: cube && ctx.clipTool === 'box', disabled: cube ? '' : WHY.cropSliders,
-      tip: 'The trigger drags a face of the crop' }),
+    // The crop is drawn and grabbed on every kind of data (#277).
+    btn('sub:clip:box', span(1, 2, 1), 'Spatial crop', { group: 'sub-clip', value: 'box', icon: 'crop', on: ctx.kind !== 'none' && ctx.clipTool === 'box',
+      tip: 'Drag a dot, the inside, or elsewhere for a new box' }),
   ];
   for (const a of [0, 1, 2]) {
     w.push({ id: `crop:${a}`, kind: 'range', rect: [X0, rowY(2 + a), RIGHT - X0, WH], axis: a, disabled: cube && a === 2 ? WHY.cubeZ : '' });

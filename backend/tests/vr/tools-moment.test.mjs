@@ -420,3 +420,17 @@ test('a spectrum pinned stays through Clear, is drawn with the next one, and a s
   assert.equal(h.sel.pinSpectrum(), true);
   assert.ok(!h.sel.hasPin(), 'unpinned');
 });
+
+test('the moment of the cropped field: the crop\'s pixels of the full cube, as the desktop is told the box (#277)', async () => {
+  const { cropPixels } = await import('../../app/static/vr/js/tools-moment.js');
+  const { voxelBox } = await import('../../app/static/vr/js/headset.js');
+  const shape = [196, 280, 109];
+  assert.equal(cropPixels({ min: [0, 0, 0.2], max: [1, 1, 0.8] }, shape), null, 'only a velocity range: the whole field');
+  const clip = { min: [0.25, 0.1, 0], max: [0.75, 0.5, 1] };
+  const px = cropPixels(clip, shape);
+  const box = voxelBox(clip, shape);
+  assert.deepEqual(px, [box[0][0], box[0][1], box[1][0], box[1][1]]);
+  assert.deepEqual(px, [49, 146, 28, 139]);
+  // A crop thinner than a pixel still keeps one.
+  assert.deepEqual(cropPixels({ min: [0.5, 0.5, 0], max: [0.501, 0.501, 1] }, shape).slice(0, 2), [98, 98]);
+});

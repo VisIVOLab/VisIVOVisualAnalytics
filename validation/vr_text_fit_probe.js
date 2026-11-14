@@ -112,8 +112,9 @@
     FORCE_FONT = opts.font || '';
     if (FORCE_FONT && document.fonts && !document.fonts.check(`20px "${FORCE_FONT}"`)) throw new Error(`no font ${FORCE_FONT} here`);
     const imp = (m) => import(`${base}${m}`);
-    const [HM, TP, WR, NT, ON, LC, WN, PC, RO, CO, SU] = await Promise.all(['hand-menu.js', 'tool-palette.js', 'wrist.js',
-      'notice.js', 'onboarding.js', 'lifecycle.js', 'windows.js', 'product-canvas.js', 'readout.js', 'controls.js', 'select-ui.js'].map(imp));
+    const [HM, TP, WR, NT, ON, LC, WN, PC, RO, CO, SU, CG] = await Promise.all(['hand-menu.js', 'tool-palette.js', 'wrist.js',
+      'notice.js', 'onboarding.js', 'lifecycle.js', 'windows.js', 'product-canvas.js', 'readout.js', 'controls.js', 'select-ui.js',
+      'crop-gizmo.js'].map(imp));
     const report = { cases: 0, texts: 0, problems: [], ellipses: [], perCanvas: {}, snaps: [] };
     const snap = opts.snap ? new RegExp(opts.snap) : null;
     const run = (canvas, name, size, draw, widgets = []) => {
@@ -245,6 +246,7 @@
       WR.resultToast('done', null, '', 'moment of the selection…'), WR.resultToast('error', null, 'The backend answered: 503 Service Unavailable while computing the spectrum'),
       ...['restarted', 'reopened'].map((k) => LC.noticeFor(k).toast),
       LC.noticeFor('cube-from-desktop', { detail: LONG_FILE }).toast, LC.noticeFor('cube-from-desktop', { detail: LONG_FILE, done: true }).toast,
+      CG.CROP_TOAST,
       ...(opts.extraToasts || []),
     ].filter(Boolean);
     for (const t of toasts) run('toast', t.slice(0, 40), WR.TOAST_PX, (c) => WR.drawToast(c, t));

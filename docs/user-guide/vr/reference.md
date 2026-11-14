@@ -1138,6 +1138,38 @@ the [report](#the-report) is made from.
    report's FPS and missed % with a record running should equal what the
    wrist shows without one.
 
+### A spatial crop you can see and grab (#277)
+
+Over USB, HCG 44 or WALLABY, then a VBT snapshot and a velocity field.
+
+1. **The box.** Menu → Range → *Spatial crop* (or A → *Crop*). A toast says
+   *Crop: drag a dot to move a face, …*. The crop box must be drawn: blue
+   edges, a faint fill, six dots, one on each face.
+2. **The dot lights up.** Point the right ray at a dot without pulling the
+   trigger: it turns yellow and grows. Bring the right controller near a dot
+   (within a hand's width): it lights up too.
+3. **A face.** Pull the trigger on the right dot and swing the ray outwards
+   and inwards: only that face moves, smoothly, and the emission outside
+   disappears at once. It never passes the opposite face.
+4. **The whole crop.** Point inside the crop (away from the dots): the edges
+   turn yellow. Pull and drag: the crop moves, keeping its size; it stops at
+   the cube's edge.
+5. **A new crop.** Point at the part cropped away, pull, drag diagonally,
+   let go: a new crop with those two corners, the depth along your view kept
+   (the velocity range when you look along it). A pull without a drag does
+   nothing.
+6. **The tools see it.** Clear any selection, Measure → *M0*: the window says
+   *Moment 0 of the cropped field* with its x and y range, and shows only
+   that part. A probe or a lasso seed on emission outside the crop does
+   nothing.
+7. **The desktop.** With the cube from the desktop and *Follow the headset's
+   look* on, the desktop's 3-D view crops to the same box half a second after
+   you let go.
+8. **Snapshot and field.** The same dots and drags on a VBT point table and a
+   velocity field: the points and lines outside disappear.
+9. **Cost.** With `?debug`, FPS and missed % with the tool on and while
+   dragging: the box must not cost frames.
+
 ### X toggles the menu, and every text fits (#276)
 
 Over USB (`adb reverse`), HCG 44 or WALLABY, then a VBT snapshot for step 5.

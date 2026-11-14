@@ -35,6 +35,26 @@ export function momentRequest(order, depth) {
  *  the channels [a, b] the velocity range shows, with the desktop moment
  *  dialog's defaults (MomentMapController::Config: the threshold mask on,
  *  its automatic threshold), as the desktop's remote moment sends them. */
+/**
+ * The spatial crop's pixels of the full cube, [x0, x1, y0, y1] (inclusive),
+ * or null when x and y are not cropped (#277). `clip` the page's {min, max}
+ * (box fractions); voxel i spans i/n..(i+1)/n, as the clip box the desktop
+ * is told (headset.js voxelBox). A moment is a map of each pixel's own
+ * spectrum, so the map of the cropped field is the whole field's map cut to
+ * these pixels (the automatic mask's threshold stays the whole cube's).
+ */
+export function cropPixels(clip, fullShape) {
+  if (!clip || !fullShape) return null;
+  const r = [0, 1].map((i) => {
+    const n = Math.max(1, Math.round(fullShape[i]));
+    const lo = Math.min(n - 1, Math.max(0, Math.round(clip.min[i] * n)));
+    const hi = Math.min(n - 1, Math.max(lo, Math.round(clip.max[i] * n) - 1));
+    return [lo, hi, n];
+  });
+  if (r.every(([lo, hi, n]) => lo === 0 && hi === n - 1)) return null;
+  return [r[0][0], r[0][1], r[1][0], r[1][1]];
+}
+
 export function wholeFieldRequest(order, [a, b]) {
   return { moment_order: order, channel_start: a, channel_end: Math.max(a, b),
     mask_enabled: true, threshold_value: 0, threshold_auto: true };
@@ -142,10 +162,15 @@ export function createMomentTool(ctx) {
       if (!r.valid) throw new Error(r.error || 'The moment failed.');
       const values = PC.f32FromBase64(r.data_base64);
       if (values.length !== r.width * r.height) throw new Error('bad moment payload');
-      const box = [0, r.width - 1, 0, r.height - 1];
-      const range = colourRange(order, values);
+      // A spatial crop (#277): the map shows, and its numbers count, the
+      // cropped field only; the product saved for the desktop is the request's.
+      const crop = r.width === info.full_shape[0] && r.height === info.full_shape[1]
+        ? cropPixels(ctx.clip ? ctx.clip() : null, info.full_shape) : null;
+      const box = crop || [0, r.width - 1, 0, r.height - 1];
+      const cut = crop ? PC.crop(values, r.width, box[0], box[1], box[2], box[3]) : values;
+      const range = colourRange(order, cut);
       t.result = { order, req, unit: r.moment_unit, bunit: r.bunit, width: r.width, height: r.height,
-        values, box, cut: values, range, iso: null, lasso: null, whole: true, ms: performance.now() - t0, summary: mapSummary(values) };
+        values, box, cut, range, iso: null, lasso: null, whole: true, cropped: !!crop, ms: performance.now() - t0, summary: mapSummary(cut) };
       if (t.recipes.lasso !== 'whole') t.recipes = { lasso: 'whole', ids: {} };
       const rec = ctx.selection.record({ kind: 'moment', label: `Moment ${order}`,
         replay: [{ route: '/v1/products/moment', request: { dataset_id: id, ...req } }] },
@@ -231,10 +256,10 @@ export function createMomentTool(ctx) {
     // Square sky pixels: |CDELT1| = |CDELT2| on the cubes the page shows; the
     // axes give pixels, the cube's own ticks give the sky.
     PC.drawProduct(t.canvas, {
-      title: R.whole ? `Moment ${R.order} of the whole field` : `Moment ${R.order} of the selection`,
+      title: R.whole ? `Moment ${R.order} of the ${R.cropped ? 'cropped' : 'whole'} field` : `Moment ${R.order} of the selection`,
       lines: [
         `${ORDER_NAMES[R.order].replace(/^Moment \d /, '')}, channels ${R.req.channel_start + 1}–${R.req.channel_end + 1}`,
-        R.whole ? `${R.summary.pixels} pixels, ${R.ms.toFixed(0)} ms · automatic threshold mask`
+        R.whole ? `${R.summary.pixels} pixels${R.cropped ? ` in x ${R.box[0]}–${R.box[1]}, y ${R.box[2]}–${R.box[3]}` : ''}, ${R.ms.toFixed(0)} ms · automatic threshold mask`
           : `${R.summary.pixels} pixels, ${R.ms.toFixed(0)} ms · ${R.iso.file}`,
       ],
       // A velocity field: outside its robust range transparent, as the desktop

@@ -74,6 +74,29 @@ fits.writeto(sys.argv[1],np.stack([-x+.5*y,-y-.5*x,-.3*z]).astype(np.float32)*10
   })()`);
   check('menu on a velocity field: Display controls, crop and colour window, undone (#257)', fm.disp && fm.slabGreyed && fm.cropOn
     && fm.cropped === 0.3 && Math.abs(fm.win - 0.2) < 1e-9 && fm.steps === 2 && fm.back[0] === 0 && fm.back[1] === 0, JSON.stringify(fm));
+  // The crop seen and grabbed on a velocity field (#277): Range is the crop
+  // tool here; a face's dot dragged with the mouse moves that face, one undo step.
+  await c.evaluate(`window.__vrMenu.act({ type: 'press', id: 'tab:range' })`);
+  await new Promise((r) => setTimeout(r, 300));
+  const fc = await c.evaluate('window.__vrCrop.get()');
+  const mouse = (type, x, y, buttons = 0) => c.send('Input.dispatchMouseEvent', { type, x, y, button: type === 'mouseMoved' && !buttons ? 'none' : 'left', buttons, clickCount: type === 'mouseMoved' ? 0 : 1 });
+  let grabbed = null;
+  for (const [id, t] of [['y-max', [0.5, 1, 0.5]], ['y-min', [0.5, 0, 0.5]], ['z-max', [0.5, 0.5, 1]], ['x-max', [1, 0.5, 0.5]]]) {
+    const a = await c.evaluate(`window.__vrCrop.screen(${JSON.stringify(t)})`), mid = await c.evaluate('window.__vrCrop.screen([0.5, 0.5, 0.5])');
+    await mouse('mouseMoved', a[0], a[1]);
+    await mouse('mousePressed', a[0], a[1], 1);
+    const st = await c.evaluate('window.__vrCrop.get()');
+    if (st.drag !== 'face') { await mouse('mouseReleased', a[0], a[1]); continue; }
+    for (let k = 1; k <= 4; k++) await mouse('mouseMoved', a[0] + (mid[0] - a[0]) * 0.1 * k, a[1] + (mid[1] - a[1]) * 0.1 * k, 1);
+    await mouse('mouseReleased', a[0] + (mid[0] - a[0]) * 0.4, a[1] + (mid[1] - a[1]) * 0.4);
+    grabbed = { id, ...(await c.evaluate('window.__vrCrop.get()')), undo: await c.evaluate('window.__vrMenu.ui.undo.size') };
+    break;
+  }
+  const axis = grabbed ? 'xyz'.indexOf(grabbed.id[0]) : -1;
+  const moved = grabbed ? (grabbed.id.endsWith('max') ? grabbed.clip.max[axis] < 0.95 : grabbed.clip.min[axis] > 0.05) : false;
+  check('crop on a velocity field: Range is the crop tool, its box drawn, a dot dragged moves that face (#277)',
+    fc.on && fc.lines >= 24 && moved, JSON.stringify({ on: fc.on, lines: fc.lines, grabbed }));
+  await c.evaluate(`window.__vrMenu.act({ type: 'press', id: 'undo' }); window.__vrMenu.ui.page = 'display'; window.__vrMenu.act({ type: 'press', id: 'tab:display' })`);
   await c.evaluate(`(() => {
     const b = ${backend}; const original = b._binary.bind(b);
     window.__restoreBinary = () => { b._binary = original; };
