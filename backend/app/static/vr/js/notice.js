@@ -202,7 +202,7 @@ export class NoticeCenter {
     const ids = [...this.hidden].filter((id) => this.items.has(id));
     if (!ids.length) return '';
     const ns = ids.map((id) => this.items.get(id).notice).sort((a, b) => (PRIORITY[a.level] ?? 2) - (PRIORITY[b.level] ?? 2));
-    return `⚠ ${ns[0].badge || ns[0].title} — Help → Guide shows it`;
+    return `⚠ ${ns[0].badge || ns[0].title} — More → Guide shows it`;
   }
 
   /** The notice on show, or null (expired ones are dropped first). */

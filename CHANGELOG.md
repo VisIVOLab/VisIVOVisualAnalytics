@@ -34,6 +34,50 @@ are preserved here unedited; the branch names they refer to are historical.
   1.3–1.6 s (`xr-start: immersive-vr, 90 Hz`), Open again → `show` in 2 ms
   with no adb command, an asleep headset refused before any launch.
 
+- **VR: a graphical tool palette (#257, part of #253).** A on the primary
+  hand opens a small panel of its own, about 0.8 m in front of that hand,
+  with one large icon per tool (our own vector drawings) grouped by task:
+  Look (Explore), Select (Kinematic Lasso, Spectrum probe, Box region), Range
+  (Velocity range, Spatial crop), Measure (Moment, PV slice). Pointing at an
+  icon shows the tool's name and a one-line description; the trigger picks it
+  and closes the palette; A again or × closes it unchanged. The tool in use is
+  lit, tools that do not apply to the data shown are greyed, and the palette,
+  drawn over the menu, takes the ray first. The secondary stick ←/→ steps
+  through the same list in the same order (the colour map is on the menu's
+  Display tab). The menu's tool buttons carry the same icons. A
+  no longer steps through the modes (feedback from the Quest: the lasso was
+  looked for on A).
+
+- **VR: the hand menu in front of you, organised the way an astronomer works
+  (#257, part of #253).** The menu no longer stands by the left wrist: opened
+  by the secondary hand (X held, or the palm up) it stands about 0.95 m in
+  front, 12 cm below the eyes, turned to them, at the same angular text size
+  as before, and stays there until it closes (world-locked; its title bar
+  moves it; *Keep open* stays). Its tabs follow the work and are the same on
+  every dataset: **Display** (colour map swatches, threshold first with its
+  value in BUNIT, colour max, opacity, Emission / MIP, the catalogue overlay;
+  for a point table colour by column with log and range, Points / Smooth
+  (splats), size, intensity, Particles shown, Sample again, box and ticks; for
+  a velocity field streamlines, arrows and length, seed density and Reseed
+  streamlines, colour by speed and range, box size), **Range** (Velocity
+  range with km/s, convention and channels, Full band, Spatial crop per axis,
+  now also for point tables and velocity fields), **Select** (Spectrum probe,
+  Box region, Kinematic Lasso, Lasso: New / Add / Subtract, Clear, and
+  Isolate / Remove / Show result cube only while something is selected),
+  **Measure** (Intensity / Velocity / Dispersion (M0/M1/M2), PV slice and PV
+  width in pixels and arcsec, Pin spectrum) and **More** (handedness, button
+  labels, haptics, wrist readout, guide). A footer holds Undo, Reset view and
+  Keep open. Choosing a tab sets the mode (the Mode page and the Help tab are
+  gone); a control that does not apply to the data shown is greyed with a
+  one-line reason. A moment with no selection is now that of the whole field
+  over the velocity range, with the desktop dialog's automatic mask. The
+  technical settings (frame-rate governor, refinement, depth reprojection,
+  refined frame size, measurement recording and runs, threshold source) are
+  reachable only with `?debug`; the threshold always starts from the full
+  cube's, as on the desktop. Names follow the desktop's (Velocity range, Full
+  band, Spatial crop, Show result cube, …). A unit test proves each task of
+  the issue's Done list is at most two presses from opening the menu.
+
 - **VR: the refined frame of a point table drawn as splats is no longer almost
   black (#262, part of #261).** Holding still with *splats* replaced the
   page's picture by a frame close to the background (mean 14.3 against 13,

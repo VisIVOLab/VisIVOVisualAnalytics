@@ -26,12 +26,21 @@ point tables, a FITS whose name says `velocity` or `flow` a velocity field),
 give a velocity field's **Box (Mpc)** if it has one, and press *Open and
 load*. The page's cube controls are hidden meanwhile.
 
-In the headset, the buttons for these layers are on the menu's Layers tab (see
-[The hand menu](controls.md#the-hand-menu)): for a point table
-*points/splats*, *colour:* (next column), *rows* (next budget), *size −* and
-*size +*; for a velocity field *streamlines*, *arrows*, *arrows −/+* and *new
-seeds*; over a cube with a catalogue placed, *catalogue*, *labels* and
-*through velocity*.
+In the headset a point table or a velocity field replaces the cube, so its
+controls are on the same tabs of the menu as a cube's
+([#257](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/257); see
+[The hand menu](controls.md#the-hand-menu)). On **Display**, for a point
+table: *Colour by* (a chip per column), *Log* and the colour window, the
+colour map, *Points* or *Smooth (splats)*, *Size −/+*, *Intensity*,
+*Particles shown* (the next budget of rows), *Sample again*, *Box and ticks*;
+for a velocity field: *Streamlines*, *Arrows*, the arrow length, the seed
+density (*Fewer*, *More*) and *Reseed streamlines*, the colour window over the
+speed, the colour map, *Box and ticks* and the box size (read-only). On
+**Range**, both have the spatial crop (*Crop x/y/z*, *Reset crop*): the points
+and lines outside it are not drawn. A catalogue over a cube is a toggle on
+Display (*Overlay*, *Labels*, *Through velocity*). Select and Measure are
+greyed on point tables and velocity fields, with the reason under each
+control.
 
 ## Point tables
 
@@ -97,7 +106,8 @@ channels, and the column declares no unit, is a reading a thousand times
 larger or smaller tried (m/s against km/s); when it places most of them it is
 applied and named in a warning. A convention is never changed. Otherwise all
 are placed on the sky only. Every warning is shown under *Place on the cube*
-and, in the headset, on the menu's Layers tab (the first one, in amber);
+and, in the headset, on the menu's Display tab under *Catalogue* (the first
+one, in amber);
 the status line also warns when the
 cube's or the catalogue's spectral frame calls for a frame change, which is
 not applied. A source without a spectral column is
@@ -116,7 +126,7 @@ same filters and settings: 200 seeds in a ball at the centre of 0.3 times the
 longest side, Runge-Kutta 4-5 both ways, 2000 steps at most; at most 50 000
 arrows by uniform spatial sampling, each `3 × cell / speed max` long per unit
 of speed. The seeds are random, as on the desktop, from a fixed sequence:
-*Trace again* (or the menu's Layers tab → *new seeds* in the headset) draws
+*Trace again* (or the menu's Display tab → *Reseed streamlines* in the headset) draws
 another set. The lines are
 coloured by the speed over the full-resolution range through the page's
 colour map. The lines are traced with the box the desktop's viewer shows (its

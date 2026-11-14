@@ -138,17 +138,17 @@ test('the guide names the buttons of the control map, for either hand', async ()
     const text = G.guidePages({ leftHanded }).flatMap((p) => p.lines).join('\n');
     const map = C.controlMap({ mode: 'explore', leftHanded });
     const r = C.roles(leftHanded), P = C.buttonNames(r.primary), S = C.buttonNames(r.secondary);
-    // The menu button, next mode, undo and reset view: as the map binds them.
+    // The menu button, the tool palette, undo and reset view: as the map binds them.
     assert.equal(C.actionFor(map, 'secondary', 'lower'), 'menu');
     assert.match(text, new RegExp(`Hold ${S.lower} \\(${r.secondary} hand\\)`));
-    assert.match(text, new RegExp(`${P.lower}: next mode`));
+    assert.match(text, new RegExp(`${P.lower}: tools`));
     assert.match(text, new RegExp(`${P.upper}: undo`));
     assert.match(text, new RegExp(`${S.upper}: reset the view`));
     assert.match(text, new RegExp(`Your ${r.primary} hand points and acts`));
-    for (const w of [/threshold/, /opacity/, /slab/, /pinch/, /fist/, /palm up/, /Settings/, /Help/]) assert.match(text, w);
+    for (const w of [/threshold/, /opacity/, /velocity range/, /pinch/, /fist/, /palm up/, /Menu → More/, /Display, Range, Select, Measure, More/, /title bar/]) assert.match(text, w);
   }
   // main.js dispatches through the map, not through fixed buttons.
-  for (const code of ["act('secondary', 'lower') === 'menu'", "act('primary', 'lower') === 'next-mode'",
+  for (const code of ["act('secondary', 'lower') === 'menu'", "act('primary', 'lower') === 'palette'",
     "act('primary', 'upper') === 'undo'", "act('secondary', 'upper') === 'reset-view'", "primaryAct(act('primary', 'trigger')",
     'grabTwo', 'grabOne']) {
     assert.ok(main.includes(code), `main.js no longer has ${code}: update the guide`);

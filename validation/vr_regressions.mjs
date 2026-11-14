@@ -53,6 +53,27 @@ fits.writeto(sys.argv[1],np.stack([-x+.5*y,-y-.5*x,-.3*z]).astype(np.float32)*10
   if (made.status !== 0) throw new Error(`could not make flow fixture: ${made.stderr}`);
   await load(flow);
   check('velocity field fixture loads', await c.evaluate(`${layers}.mode === 'flow' && !!${layers}.state.flow?.info`));
+  // The menu on a velocity field (#257): its Display controls, Range greyed but
+  // for the crop; a crop and a colour window dragged, drawn, and undone.
+  const fm = await c.evaluate(`(async () => {
+    const m = window.__vrMenu, s = ${state};
+    m.ui.page = 'display';
+    const disp = m.layout().map((w) => w.id);
+    m.ui.page = 'range';
+    const range = m.layout();
+    m.act({ type: 'range', id: 'crop:0', value: [0.3, 1] });
+    m.act({ type: 'range', id: 'fl-range', value: [0.2, 0.8] });
+    await new Promise((r) => setTimeout(r, 400));          // frames drawn with the crop and the window
+    const cropped = s.clip.min[0], win = ${layers}.state.s.flC0, steps = m.ui.undo.size;
+    m.act({ type: 'press', id: 'undo' });
+    m.act({ type: 'press', id: 'undo' });
+    m.ui.page = 'display';
+    return { disp: ['fl-range', 'fl-retrace', 'fl-box'].every((id) => disp.includes(id)),
+      slabGreyed: !!range.find((w) => w.id === 'slab').disabled, cropOn: !range.find((w) => w.id === 'crop:2').disabled,
+      cropped, win, steps, back: [s.clip.min[0], ${layers}.state.s.flC0] };
+  })()`);
+  check('menu on a velocity field: Display controls, crop and colour window, undone (#257)', fm.disp && fm.slabGreyed && fm.cropOn
+    && fm.cropped === 0.3 && Math.abs(fm.win - 0.2) < 1e-9 && fm.steps === 2 && fm.back[0] === 0 && fm.back[1] === 0, JSON.stringify(fm));
   await c.evaluate(`(() => {
     const b = ${backend}; const original = b._binary.bind(b);
     window.__restoreBinary = () => { b._binary = original; };
