@@ -16,8 +16,11 @@ The session draws every row it holds (render_session/points.py: all of them,
 or an even sample of ``VISIVO_POINT_RENDER_MAX_POINTS``), never the drag's
 sample, with the colours, style and filters the page sent as ordinary
 commands. Depth: points write the depth buffer, so their nearest point per
-block is sent, as a surface's; additive splats (``gaussian``) write none, and
-the frame is sent without depth (the page reprojects it as a plane).
+block is sent, as a surface's; additive splats (``gaussian``) drawn by the
+page's rule write none, and the frame is sent without depth (the page
+reprojects it as a plane); ray-traced splats (``stereo_renderer``
+``"raytrace"``, issue #264) send the depth their light comes from, each
+block's light-weighted mean (``"source": "medium"``).
 """
 from __future__ import annotations
 
@@ -163,7 +166,9 @@ class PointStereoMixin:
         w, h = pose.width, pose.height
         depth_info = depth_payload = None
         if pose.depth_scale is not None and depth_src != "none":
-            dist = np.concatenate([eye_distance(nearest_per_block(d, pose.depth_scale), proj)
+            # A medium's depth comes in metres per block already.
+            dist = np.concatenate([d if depth_src == "medium" else
+                                   eye_distance(nearest_per_block(d, pose.depth_scale), proj)
                                    for _, d, proj in eyes], axis=1)
             depth_payload, z0, z1 = encode_depth(dist[::-1])
             depth_info = {"format": "u16-zlib", "width": int(dist.shape[1]),
@@ -189,6 +194,7 @@ class PointStereoMixin:
                        "render_end": t_render, "depth_end": t_depth, "encode_end": t_encode},
             "eye_ms": per_eye,
             "points": int(self._polydata.GetNumberOfPoints()),
+            "renderer": ("vtk" if self.view.mode != "gaussian" else self.view.stereo_renderer),
         })
         self.stats.frames_rendered += 1
         self.stats.last_render_ms = 1000.0 * (t_render - t_start)
@@ -280,10 +286,12 @@ class PointStereoMixin:
         for its sample (the pose's ``sample_rows``), each row weighted by
         those rows / rows held, so the frame shows the preview's brightness;
         drawn at the page's eye size (``viewport_size``) and reduced to the
-        frame's."""
+        frame's. Ray-traced (``stereo_renderer`` ``"raytrace"``, issue
+        #264): the same light composited by the ray-traced particle
+        renderer, with the depth it comes from."""
         from vtk.util.numpy_support import vtk_to_numpy
 
-        from ..point_splat import splat_eye, splat_style
+        from ..point_splat import raytrace_eye, splat_eye, splat_style
         w, h = pose.width, pose.height
         xyz = vtk_to_numpy(self._polydata.GetPoints().GetData())
         codes = (vtk_to_numpy(self._polydata.GetPointData().GetScalars())
@@ -298,14 +306,21 @@ class PointStereoMixin:
         amp = opacity * drawn / max(1, held)
         # The radius in metres: the table-to-world scale of the page's box.
         metres = float(np.cbrt(np.linalg.det(placed[:3, :3])))
+        raytrace = self.view.stereo_renderer == "raytrace"
         out, per_eye = [], []
         for eye, g in zip(pose.eyes, cameras):
             t0 = time.perf_counter()
-            rgba = splat_eye(xyz, codes, self._splat_lut,
-                             eye.view @ placed @ self._local_to_table, eye.projection,
-                             w, h, radius * metres, amp, pose.background, page_size)
+            to_eye = eye.view @ placed @ self._local_to_table
+            if raytrace:
+                rgba, depth = raytrace_eye(xyz, codes, self._splat_lut, to_eye, eye.projection,
+                                           w, h, radius * metres, amp, pose.background,
+                                           page_size, pose.depth_scale)
+            else:
+                rgba, depth = splat_eye(xyz, codes, self._splat_lut, to_eye, eye.projection,
+                                        w, h, radius * metres, amp, pose.background,
+                                        page_size), None
             t1 = time.perf_counter()
-            out.append((rgba, None, g["depth_projection"]))
+            out.append((rgba, depth, g["depth_projection"]))
             per_eye.append({"eye": eye.eye, "render": round(1000 * (t1 - t0), 3),
                             "readback": 0.0})
-        return out, per_eye, "none"
+        return out, per_eye, ("medium" if raytrace and pose.depth_scale is not None else "none")

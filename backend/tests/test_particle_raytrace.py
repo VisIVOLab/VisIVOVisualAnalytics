@@ -93,7 +93,7 @@ def test_absorption_dims_what_lies_behind_only():
 
 
 def test_many_faint_absorbers_dim_what_lies_behind_them():
-    from app.particle_raytrace import _bin, _composite
+    from app.particle_raytrace import composite
     # One emitter, then 200 000 absorbers in front of it, each with an optical
     # depth of 5e-7: 0.1 together, whatever their number.
     n = 200_001
@@ -106,8 +106,7 @@ def test_many_faint_absorbers_dim_what_lies_behind_them():
     absorb = np.full((n, 3), 5e-7, np.float32)
     absorb[0] = 0.0
     order = np.arange(n, dtype=np.int64)   # back to front: the emitter first
-    counts, items = _bin(sx, sy, sr, order, 1, 1, 1, 1)
-    image = _composite(sx, sy, sr, weight, emission, absorb, counts, items, 1, 1, 1, 1)
+    image, _ = composite(sx, sy, sr, weight, emission, absorb, order, 1, 1)
     assert image[0, 0, 0] == pytest.approx(np.exp(-0.1), rel=2e-3)
 
 def test_the_tone_curve_keeps_the_hue_and_the_order():

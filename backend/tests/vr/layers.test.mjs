@@ -88,6 +88,26 @@ test('a refined pose carries the rows the splats are sized for and the eye heigh
   // Points: the box alone (their size is in pixels).
   assert.deepEqual(Object.keys(PT.refinePoseExtra(box, 'points', 1e6, eyes)), ['data_to_model']);
   assert.ok(!('sample_rows' in PT.refinePoseExtra(box, 'splats', 0, [])));
+  // Ray-traced splats (#264) are refined for the same sample and eye size.
+  assert.deepEqual(PT.refinePoseExtra(box, 'raytraced', 999999.6, eyes), splats);
+});
+
+test('ray-traced style (#264): drawn as splats, refined by the backend ray tracer', () => {
+  assert.deepEqual(PT.STYLES, ['points', 'splats', 'raytraced']);
+  assert.ok(PT.isSplats('splats') && PT.isSplats('raytraced') && !PT.isSplats('points'));
+  // A simulation's particles open ray-traced; a catalogue's objects as points.
+  assert.equal(PT.defaultStyle('vbt'), 'raytraced');
+  assert.equal(PT.defaultStyle('catalogue'), 'points');
+  assert.equal(PT.defaultStyle(undefined), 'points', 'an older backend without format');
+  const look = (style) => PT.pointLook({ axes: ['x', 'y', 'z'], colourField: null, style, splatSize: 2,
+    pointPx: 3, intensity: 40 }).find((c) => c.type === 'set_point_style');
+  assert.deepEqual(look('raytraced'), { type: 'set_point_style', mode: 'gaussian', size: 2, intensity: 40,
+    stereo_renderer: 'raytrace' });
+  assert.deepEqual(look('splats'), { type: 'set_point_style', mode: 'gaussian', size: 2, intensity: 40,
+    stereo_renderer: 'splat' });
+  assert.equal(look('points').mode, 'points');
+  // The look key changes with the renderer: a swap re-renders the still frame.
+  assert.notDeepEqual(look('raytraced'), look('splats'));
 });
 
 test('flow lines: headers, body, indices and arrows', () => {

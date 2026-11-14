@@ -13,9 +13,11 @@ described in [Server-side rendering](render.md) (`xr_pose`).
 
 `{"dataset_id"}`: a VBT point table (`/v1/vbt/open`) or a catalogue with
 sky or Cartesian positions (`/v1/catalogue/open`). Answers `valid`,
-`num_rows`, `fields` (the numeric columns), `axes` (the default X, Y, Z) and
-`sky` (positions computed from RA/Dec, `@x`, `@y`, `@z`). 422 for a dataset
-that is not a table of points.
+`num_rows`, `fields` (the numeric columns), `axes` (the default X, Y, Z),
+`sky` (positions computed from RA/Dec, `@x`, `@y`, `@z`) and `format`:
+`vbt` for a VBT point table (a simulation's particles, which the VR page opens
+in its ray-traced style, issue #264) or `catalogue`. 422 for a dataset that is
+not a table of points.
 
 RA/Dec (and GLON/GLAT in `catalogue_pixels`) are read in the unit the table
 declares: a VOTable or FITS column unit, an IPAC header unit, or a unit in the

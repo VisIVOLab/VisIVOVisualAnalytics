@@ -31,7 +31,7 @@ controls are on the same tabs of the menu as a cube's
 ([#257](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/257); see
 [The hand menu](controls.md#the-hand-menu)). On **Display**, for a point
 table: *Colour by* (a chip per column), *Log* and the colour window, the
-colour map, *Points* or *Smooth (splats)*, *Size −/+*, *Intensity*,
+colour map, *Points*, *Smooth (splats)* or *Ray-traced*, *Size −/+*, *Intensity*,
 *Particles shown* (the next budget of rows), *Sample again*, *Box and ticks*;
 for a velocity field: *Streamlines*, *Arrows*, the arrow length, the seed
 density (*Fewer*, *More*) and *Reseed streamlines*, the colour window over the
@@ -60,9 +60,13 @@ Y M sampled, Z M rows*.
 
 *Colour by* a column (the backend puts a positive column spanning more than
 three decades on a log scale the first time, as a mass or a density needs,
-in the same request; untick *log* to undo), *Colour from / to* narrow the map, *Style* is *points* (pixels)
-or *splats* (sized like the desktop's: the mean spacing of the table's rows
-times the size step over 8, larger in proportion when only a sample is drawn).
+in the same request; untick *log* to undo), *Colour from / to* narrow the map, *Style* is *points* (pixels),
+*splats* (sized like the desktop's: the mean spacing of the table's rows
+times the size step over 8, larger in proportion when only a sample is drawn)
+or *ray-traced* (the same splats on the page; the still view ray-traced by the
+backend, see below). A VBT point table (a simulation's particles) opens
+*ray-traced*, a catalogue as *points* (its rows are objects, not a medium),
+until you choose a style yourself.
 The box is the sample's bounding box, its longest side 1 (scaled to 0.6 m in
 the headset), with ticks in the table's units.
 
@@ -83,6 +87,24 @@ frame size (it is drawn at the page's own eye size and then reduced). While
 the frame-time governor draws only part of the sample (the HUD's *drawn of
 ... sampled*), the page's own picture is dimmer than the sample's and the
 refined frame brightens it slightly.
+
+With *ray-traced* the still frame comes from the backend's ray-traced particle
+renderer (the one behind the desktop's *Ray-traced* shape, see
+[Ray-traced particles](../raytraced-particles.md)) over every row the session
+holds, [#264](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/264).
+Each splat becomes a smooth Gaussian kernel carrying the light the page's splat
+carries, so the swap from the preview to the refined frame keeps the
+brightness and the colours (measured on a 3.9 M-row snapshot: the refined frame
+adds the same light over the background as the *splats* frame, within 0.1 %).
+The renderer also sends the depth the light of each block of pixels comes from
+(its light-weighted mean distance), so the frame is reprojected through that
+depth like a cube's, instead of as a plane: it stays on show while the head
+moves up to the full refinement limit rather than 1 cm, and a frame warped to a
+pose 1 to 4 degrees around the box is 2.7 to 3.7 dB closer to that pose's own
+frame than the plane gives. On an M-series Mac it costs about 40 ms more per
+refined frame than *splats* (about 60 ms per 1600 × 1000 eye for 3.9 M rows;
+from the camera stopping to the refined frame shown, about 385 ms against
+335 ms; 535 ms for 11.5 M rows).
 
 ## Catalogues over a cube
 

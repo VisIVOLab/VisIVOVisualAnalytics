@@ -132,7 +132,13 @@ each time it stops moving.
 
 On a laptop (Apple M-series) a 3.7-million-particle frame takes about a second
 at 1920 × 1080, and a 21-million-particle one about seven seconds at
-3840 × 2160.
+3840 × 2160. Since issue #264 the renderer bins the particles into tiles in
+parallel and evaluates each kernel's Gaussian once per row and column of its
+footprint: the same image (to 1e-6) about 1.5 times faster (a 3.9-million-particle
+1280 × 720 frame: 448 → 274 ms without absorption, 867 → 589 ms with it).
+
+The same renderer draws the still view of a point table in the headset when
+its style is *Ray-traced* (see [Data types in VR](vr/data-types.md#point-tables)).
 
 ---
 

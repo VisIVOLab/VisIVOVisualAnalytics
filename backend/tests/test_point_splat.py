@@ -44,13 +44,15 @@ def page_style(bounds, total_rows, sample_rows, size, intensity):
 
 
 def page_preview(xyz, bounds, total_rows, size, intensity, model, d2m, view, proj,
-                 width, height, background, max_px=64.0):
+                 width, height, background, max_px=64.0, depth=None):
     """The page's splats of the sample ``xyz`` (table coordinates): the
     vertex shader (sprite clamp(px, 1, maxPx), vSplat = clamp(px, 0, 1)), the
     fragment shader (exp(-d²/2) × opacity × max(vSplat, 0.25), d = 6 ×
     (gl_PointCoord - 0.5)) and additive blending over the clear colour,
     clamped. Points are clipped by the near and far planes only (OpenGL ES
-    3.0 §2.17). Rows bottom-up, 0..1, before the 8-bit store."""
+    3.0 §2.17). Rows bottom-up, 0..1, before the 8-bit store. ``depth``, a
+    dict: given its ``zsum`` and ``lsum``, each pixel's light (summed over
+    the channels) times the splat's eye distance, and that light."""
     _, opacity, radius = page_style(bounds, total_rows, len(xyz), size, intensity)
     placed = model @ d2m
     scale = np.cbrt(np.linalg.det(placed[:3, :3]))
@@ -67,6 +69,8 @@ def page_preview(xyz, bounds, total_rows, size, intensity, model, d2m, view, pro
     wx = (clip[:, 0] / w + 1) * 0.5 * width
     wy = (clip[:, 1] / w + 1) * 0.5 * height
     out = np.zeros((height, width, 3))
+    zsum, lsum = np.zeros((height, width)), np.zeros((height, width))
+    dist = -eye[:, 2]
     reach = int(math.ceil(sprite.max() / 2)) + 1
     base_i, base_j = np.floor(wx).astype(int), np.floor(wy).astype(int)
     for dj in range(-reach, reach + 1):
@@ -82,6 +86,12 @@ def page_preview(xyz, bounds, total_rows, size, intensity, model, d2m, view, pro
             g = np.exp(-0.5 * (s * s + t * t)) * amp
             for c in range(3):
                 np.add.at(out[:, :, c], (j[inside], i[inside]), g[inside] * PAGE_SOLID[c])
+            if depth is not None:
+                gl = g[inside] * sum(PAGE_SOLID)
+                np.add.at(lsum, (j[inside], i[inside]), gl)
+                np.add.at(zsum, (j[inside], i[inside]), gl * dist[inside])
+    if depth is not None:
+        depth.update(zsum=zsum, lsum=lsum)
     return np.clip(out + np.asarray(background), 0, 1)
 
 
@@ -134,9 +144,11 @@ def _blocks(img, b=8):
     return img[:h, :w].reshape(h // b, b, w // b, b).mean(axis=(1, 3))
 
 
+@pytest.mark.parametrize("renderer", ["splat", "raytrace"])
 @pytest.mark.parametrize("frame_scale, held", [(1.0, None), (0.5, None), (0.6, None),
                                                (1.0, 60_000)])
-def test_refined_splats_match_the_pages_preview(tmp_path, monkeypatch, frame_scale, held):
+def test_refined_splats_match_the_pages_preview(tmp_path, monkeypatch, frame_scale, held,
+                                                renderer):
     """A table 50 units wide (the snapshot of the issue is ~50 Mpc): the
     page draws a quarter of its rows at its sample's splat size; the session's
     frame (every row) has the preview's mean light within 10 % and lights the
@@ -145,7 +157,8 @@ def test_refined_splats_match_the_pages_preview(tmp_path, monkeypatch, frame_sca
     over the page pixels each frame pixel covers. With
     ``held`` the session holds an even half of the table
     (VISIVO_POINT_RENDER_MAX_POINTS): the page's style still comes from the
-    table's rows."""
+    table's rows. Ray-traced (issue #264): the same light, and a depth
+    within the box's distances from the eye."""
     from tests.test_point_render import _RENDER_PROBE
     import subprocess
     import sys
@@ -173,15 +186,17 @@ def test_refined_splats_match_the_pages_preview(tmp_path, monkeypatch, frame_sca
     proj = np.array([[1.2, 0, 0, 0], [0, 1.6, 0, 0], [0, 0, -1.002, -0.2002], [0, 0, -1, 0]])
     page_w, page_h = 256, 192
     bg = (0.05, 0.05, 0.08)
+    page_depth = {}
     preview = page_preview(sample, bounds, n, size, intensity, model, d2m, view, proj,
-                           page_w, page_h, bg)
+                           page_w, page_h, bg, depth=page_depth)
     w, h = round(page_w * frame_scale), round(page_h * frame_scale)
     s = PointRenderSession("s" * 32, path)
     loop = asyncio.new_event_loop()
     try:
         loop.run_until_complete(s.initialize())
         loop.run_until_complete(s.apply_command({"type": "set_point_style", "mode": "gaussian",
-                                                 "size": size, "intensity": intensity}))
+                                                 "size": size, "intensity": intensity,
+                                                 "stereo_renderer": renderer}))
         loop.run_until_complete(s.apply_command({"type": "set_show_outline", "visible": False}))
         loop.run_until_complete(s.apply_command(
             _pose(model, d2m, view, proj, w, h, bg, sample_rows=len(sample),
@@ -190,7 +205,31 @@ def test_refined_splats_match_the_pages_preview(tmp_path, monkeypatch, frame_sca
     finally:
         loop.run_until_complete(s.close())
         loop.close()
-    assert header["points"] == (held or n) and depth is None
+    assert header["points"] == (held or n) and header["renderer"] == renderer
+    if renderer == "splat":
+        assert depth is None and header["depth"] is None
+    else:
+        from app.render_session._stereo import decode_depth
+        d = header["depth"]
+        assert d["source"] == "medium" and d["width"] == 2 * -(-w // 4)
+        dist = decode_depth(depth, d["width"], d["height"], d["z_near"], d["z_far"])
+        # The box's corners lie between these distances from the eye.
+        corners = np.array([[x, y, z, 1.0] for x in (0, side) for y in (0, side)
+                            for z in (0, side)])
+        ahead = -(view @ model @ d2m @ corners.T)[2]
+        lit = dist[np.isfinite(dist)]
+        assert lit.size > 0.3 * dist.size
+        assert ahead.min() - 0.01 <= lit.min() and lit.max() <= ahead.max() + 0.01
+        if frame_scale == 1.0:
+            # Each block's light-weighted mean distance of the page's splats
+            # (a quarter of the rows: its noise is the spread, ~2 cm) where they
+            # light it well: unbiased.
+            zb, lb = _blocks(page_depth["zsum"], 4), _blocks(page_depth["lsum"], 4)
+            ours = dist[:, :w // 4][::-1]               # left eye, bottom row first
+            well = lb > 0.05 * lb.max()
+            assert well.mean() > 0.3 and np.isfinite(ours[well]).all()
+            diff = ours[well] - zb[well] / lb[well]
+            assert abs(np.median(diff)) < 0.005 and np.abs(diff).mean() < 0.04
     frame = np.asarray(Image.open(io.BytesIO(jpeg)).convert("RGB"), dtype=float)[::-1, :w] / 255
     ref = preview
     if frame_scale == 0.5:
@@ -325,6 +364,128 @@ def test_stereo_splats_take_the_mappers_colours(tmp_path):
             codes = np.array([0, 1000, 20000, 32768, 65535])
             lut = s._splat_lut
             assert np.allclose(lut[(codes * len(lut)) >> 16], _mapper_rgb(s, codes), atol=1e-6)
+    finally:
+        loop.run_until_complete(s.close())
+        loop.close()
+
+
+# ── Ray-traced splats (issue #264) ───────────────────────────────────────────
+
+@pytest.mark.parametrize("radius", [0.0002, 0.001, 0.003, 0.02, 0.2])
+def test_ray_traced_splats_carry_the_pages_light(radius):
+    """The ray tracer's kernels carry each splat's light as the page's sprite
+    does in expectation: sub-pixel (the 0.25 floor), a few pixels, wide, and
+    capped at 64 px (0.2: the sprite would be wider). Spread over random
+    positions the totals agree within 1.5 %, and where the light lies too."""
+    from app import point_splat
+    rng = np.random.default_rng(int(radius * 1e5))
+    n = 40_000    # a sub-pixel sprite lights one pixel by where it falls: ~140 % spread each
+    xyz = np.column_stack([rng.uniform(-0.4, 0.4, n), rng.uniform(-0.3, 0.3, n),
+                           rng.uniform(-0.3, 0.3, n)]).astype(np.float32)
+    codes = rng.integers(0, 65536, len(xyz)).astype(np.uint16)
+    lut = rng.uniform(0.1, 1, (256, 3)).astype(np.float32)
+    to_eye = np.eye(4)
+    to_eye[2, 3] = -1.5
+    proj = np.array([[1.0, 0, 0, 0], [0, 1.0, 0, 0], [0, 0, -1.002, -0.2002], [0, 0, -1, 0]])
+    page = point_splat.splat_light(xyz, codes, lut, to_eye, proj, 320, 240, radius, 0.001)
+    light, zsum = point_splat.raytrace_light(xyz, codes, lut, to_eye, proj, 320, 240, radius, 0.001)
+    assert light.shape == page.shape and zsum.shape == page.shape[:2]
+    for c in range(3):
+        assert light[..., c].sum() == pytest.approx(page[..., c].sum(), rel=0.015)
+    lb, pb = _blocks(light.sum(axis=2), 16), _blocks(page.sum(axis=2), 16)
+    assert np.corrcoef(lb.ravel(), pb.ravel())[0, 1] > 0.98
+    # Each pixel's depth lies within the rows' distances.
+    lit = light.sum(axis=2) > 1e-6
+    d = zsum[lit] / light.sum(axis=2)[lit]
+    assert d.min() >= 1.5 - 0.3 - 1e-3 and d.max() <= 1.5 + 0.3 + 1e-3
+
+
+def test_ray_traced_solid_colour_and_nothing_in_view():
+    """Without a colour column every row takes lut[0]; rows behind the eye
+    or past the far plane give no light and no depth."""
+    from app import point_splat
+    to_eye = np.eye(4)
+    proj = np.array([[1.0, 0, 0, 0], [0, 1.0, 0, 0], [0, 0, -1.002, -0.2002], [0, 0, -1, 0]])
+    lut = np.array([[1.0, 0.5, 0.25]], dtype=np.float32)
+    xyz = np.array([[0.0, 0.0, -1.0]], dtype=np.float32)
+    light, _ = point_splat.raytrace_light(xyz, None, lut, to_eye, proj, 64, 48, 0.01, 0.4)
+    assert light.sum() > 0
+    assert np.allclose(light[..., 1].sum() / light[..., 0].sum(), 0.5, rtol=1e-4)
+    for gone in ([[0.0, 0.0, 1.0]], [[0.0, 0.0, -2000.0]]):
+        light, zsum = point_splat.raytrace_light(np.array(gone, dtype=np.float32), None, lut,
+                                                 to_eye, proj, 64, 48, 0.01, 0.4)
+        assert light.sum() == 0 and zsum.sum() == 0
+
+
+def test_block_depth_is_the_light_weighted_mean():
+    """Two lights in a block: the mean of their depths weighted by their
+    light; a block without light has no depth (+inf); a page larger than the
+    frame is first averaged to the frame's size, which keeps the mean."""
+    from app.point_splat import block_depth
+    lsum = np.zeros((8, 8))
+    zsum = np.zeros((8, 8))
+    lsum[0, 0], zsum[0, 0] = 3.0, 3.0 * 1.0            # 3 units of light at 1 m
+    lsum[1, 1], zsum[1, 1] = 1.0, 1.0 * 2.0            # 1 unit at 2 m
+    out = block_depth(zsum, lsum, 8, 8, 4)
+    assert out.shape == (2, 2)
+    assert out[0, 0] == pytest.approx(1.25)
+    assert np.isinf(out[0, 1]) and np.isinf(out[1, 0]) and np.isinf(out[1, 1])
+    # Frame 6 × 6 of a page 12 × 12 (2 × 2 page pixels each), blocks of 4:
+    # 2 × 2 blocks, the last one partial.
+    page_l, page_z = np.zeros((12, 12)), np.zeros((12, 12))
+    page_l[:, :], page_z[:, :] = 1.0, 1.5
+    page_l[11, 11], page_z[11, 11] = 3.0, 3.0 * 3.0
+    out = block_depth(page_z, page_l, 6, 6, 4)
+    assert out.shape == (2, 2)
+    assert out[0, 0] == pytest.approx(1.5)
+    assert out[1, 1] == pytest.approx((15 * 1.5 + 3 * 3.0) / 18)
+
+
+def test_parallel_binning_keeps_the_order():
+    """The particles of each tile in the order given, whatever the chunks:
+    the back-to-front order an absorbing render needs."""
+    from app.particle_raytrace import _CUTOFF, _bin
+    rng = np.random.default_rng(5)
+    n = 300_000
+    sx = rng.uniform(-10, 330, n).astype(np.float32)
+    sy = rng.uniform(-10, 250, n).astype(np.float32)
+    sr = rng.uniform(0.5, 20, n).astype(np.float32)
+    order = rng.permutation(n).astype(np.int64)
+    counts, items = _bin(sx, sy, sr, order, _CUTOFF, 320, 240, 10, 8)
+    rank = np.empty(n, dtype=np.int64)
+    rank[order] = np.arange(n)
+    total = 0
+    for t in range(80):
+        run = items[counts[t]:counts[t + 1]]
+        assert (np.diff(rank[run]) > 0).all()
+        tx, ty = t % 10, t // 10
+        reach = _CUTOFF * sr[run]
+        assert ((sx[run] + reach) // 32 >= tx).all() and ((sx[run] - reach) // 32 <= tx).all()
+        assert ((sy[run] + reach) // 32 >= ty).all() and ((sy[run] - reach) // 32 <= ty).all()
+        total += len(run)
+    assert total == counts[-1] == len(items)
+
+
+def test_an_unknown_stereo_renderer_is_refused_whole(tmp_path):
+    """A style with an unknown stereo renderer changes nothing (the size and
+    mode of the same command are not taken either)."""
+    from app.render_session.points import PointRenderSession
+    from tests.test_point_render import _coloured_table
+    s = PointRenderSession("r" * 32, _coloured_table(tmp_path, np.linspace(0.0, 1.0, 50)))
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(s.initialize())
+        assert s.view.stereo_renderer == "splat"          # the default (#262's)
+        loop.run_until_complete(s.apply_command({"type": "set_point_style", "mode": "gaussian",
+                                                 "size": 2, "stereo_renderer": "raytrace"}))
+        assert (s.view.mode, s.view.size, s.view.stereo_renderer) == ("gaussian", 2, "raytrace")
+        loop.run_until_complete(s.apply_command({"type": "set_point_style", "mode": "points",
+                                                 "size": 5, "stereo_renderer": "pathtrace"}))
+        assert (s.view.mode, s.view.size, s.view.stereo_renderer) == ("gaussian", 2, "raytrace")
+        # Omitted: kept.
+        loop.run_until_complete(s.apply_command({"type": "set_point_style", "mode": "gaussian",
+                                                 "size": 3}))
+        assert s.view.stereo_renderer == "raytrace"
     finally:
         loop.run_until_complete(s.close())
         loop.close()

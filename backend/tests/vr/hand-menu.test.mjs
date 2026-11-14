@@ -109,6 +109,10 @@ test('a control that does not apply is greyed with a one-line reason, and the la
   assert.equal(why('display', CONTEXTS.cubeApplied, 'ct-show'), '');
   assert.equal(why('display', CONTEXTS.none, 'thr'), HM.WHY.none);
   assert.equal(why('display', CONTEXTS.points, 'pt-intensity'), HM.WHY.splatsOnly);
+  for (const style of ['splats', 'raytraced']) {
+    const ctx = { ...CONTEXTS.points, pts: { ...CONTEXTS.points.pts, style } };
+    assert.equal(why('display', ctx, 'pt-intensity'), '', style);
+  }
   // Every reason is one line: short enough for the row (about 760 px of 22 px text).
   for (const r of Object.values(HM.WHY)) assert.ok(r.length <= 66, r);
 });
@@ -216,7 +220,7 @@ test('a point table: column chips (paged), and a velocity field\'s controls', ()
   for (const f of ['VX', 'vy', 'v_z', 'vel', 'Velocity', 'speed', '|v|', 'V']) assert.ok(HM.isVelocityField(f), f);
   for (const f of ['Vmax', 'Mvir', 'Rho', 'vol', 'X']) assert.ok(!HM.isVelocityField(f), f);
   const p = HM.menuLayout('display', CONTEXTS.points).map((w) => w.id);
-  for (const id of ['pt-field:', 'pt-field:VX', 'pt-field-more', 'pt-log', 'pt-range', 'pt-style:points', 'pt-style:splats',
+  for (const id of ['pt-field:', 'pt-field:VX', 'pt-field-more', 'pt-log', 'pt-range', 'pt-style:points', 'pt-style:splats', 'pt-style:raytraced',
     'pt-smaller', 'pt-larger', 'pt-intensity', 'pt-budget', 'pt-reload', 'pt-box', `cmap:${COLORMAP_NAMES[0]}`]) assert.ok(p.includes(id), id);
   const f = HM.menuLayout('display', CONTEXTS.flow).map((w) => w.id);
   for (const id of ['fl-stream', 'fl-arrows', 'fl-shorter', 'fl-longer', 'fl-fewer', 'fl-more', 'fl-retrace', 'fl-range', 'fl-box']) assert.ok(f.includes(id), id);
@@ -239,6 +243,7 @@ test('the renames: the desktop\'s words on the menu', () => {
   assert.deepEqual(['pv-narrow', 'pv-wide'].map((id) => label('measure', cube, id)), ['PV width −', 'PV width +']);
   assert.deepEqual([0, 1, 2].map((o) => label('measure', cube, `moment:${o}`)), ['Intensity (M0)', 'Velocity (M1)', 'Dispersion (M2)']);
   assert.equal(label('display', CONTEXTS.points, 'pt-style:splats'), 'Smooth (splats)');
+  assert.equal(label('display', CONTEXTS.points, 'pt-style:raytraced'), 'Ray-traced');
   assert.equal(label('display', CONTEXTS.flow, 'fl-retrace'), 'Reseed streamlines');
   const rows = (page, ctx) => HM.pageSpec(page, ctx).rows.map((r) => r[1]);
   assert.ok(rows('measure', cube).includes('PV slice'));
