@@ -77,8 +77,11 @@ export function windowModel(anchor, off) { return panelModel(anchor, off); }
  * the index of a surface holding a press (it keeps the ray), or -1. Returns
  * the index of the nearest hit (or the captured one), -1 for none.
  */
-export function pickSurface(hits, captured = -1) {
+export function pickSurface(hits, captured = -1, onTop = -1) {
   if (captured >= 0) return captured;
+  // A surface drawn over the others (the tool palette, #257) takes the ray
+  // wherever it is hit, as the eye sees it in front.
+  if (onTop >= 0 && hits[onTop]) return onTop;
   let best = -1;
   hits.forEach((h, i) => { if (h && (best < 0 || h.t < hits[best].t)) best = i; });
   return best;

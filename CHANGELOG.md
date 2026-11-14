@@ -8,6 +8,20 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: a graphical tool palette (#257, part of #253).** A on the primary
+  hand opens a small panel of its own, about 0.8 m in front of that hand,
+  with one large icon per tool (our own vector drawings) grouped by task:
+  Look (Explore), Select (Kinematic Lasso, Spectrum probe, Box region), Range
+  (Velocity range, Spatial crop), Measure (Moment, PV slice). Pointing at an
+  icon shows the tool's name and a one-line description; the trigger picks it
+  and closes the palette; A again or × closes it unchanged. The tool in use is
+  lit, tools that do not apply to the data shown are greyed, and the palette,
+  drawn over the menu, takes the ray first. The secondary stick ←/→ steps
+  through the same list in the same order (the colour map is on the menu's
+  Display tab). The menu's tool buttons carry the same icons. A
+  no longer steps through the modes (feedback from the Quest: the lasso was
+  looked for on A).
+
 - **VR: the hand menu in front of you, organised the way an astronomer works
   (#257, part of #253).** The menu no longer stands by the left wrist: opened
   by the secondary hand (X held, or the palm up) it stands about 0.95 m in

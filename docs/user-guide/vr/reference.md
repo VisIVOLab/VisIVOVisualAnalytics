@@ -1188,6 +1188,18 @@ asked; wider than the view means doubled) and whether #267's fix is in.
 11. **Costs.** With `?debug`, read FPS and missed % with the menu closed and
     open (and while dragging a slider): the menu must not cost frames. More
     → *Technical settings ▸* must be there, and only with `?debug`.
+12. **The tool palette.** Press A: the palette must stand about 0.8 m in
+    front of the right hand, a little above it, facing you, its icons easy to
+    tell apart (about 3.5° each). Point at each icon: the line under them
+    names it and says what it does; the tool in use is lit. Pick *Kinematic
+    Lasso* with the trigger: the palette closes, a toast and the right wrist
+    say *SELECT · Kinematic Lasso*, and the next trigger on a galaxy grows a
+    lasso. Press A twice: it opens and closes without a change; × does the
+    same. With the snapshot loaded, all but Explore are greyed, with the
+    reason under the icons. Push the left stick ←/→ (held a moment): the tool
+    steps Explore → Lasso → Probe → Box → Velocity → Crop → Moment (computed) → PV slice. Report whether the
+    distance from the hand is comfortable to point at, and FPS with the
+    palette open (`?debug`).
 
 ### Controls and the hand menu (#201)
 

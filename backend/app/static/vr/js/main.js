@@ -23,6 +23,7 @@ import { PLANE_SIZE } from './product-canvas.js';
 // The controls of issue #201: roles and modes, the hand menu, result windows, readout.
 import * as C from './controls.js';
 import * as HM from './hand-menu.js';
+import * as TP from './tool-palette.js';
 import * as W from './windows.js';
 import * as RO from './readout.js';
 // The wrist cards and the toasts (issue #256).
@@ -1741,7 +1742,7 @@ function pvWidthNote() {
 function menuContext() {
   const lc = layers.menuContext();
   const s = selection.sel, a = analysis;
-  const kind = state.cube ? 'cube' : lc.kind === 'cube' ? 'none' : lc.kind;
+  const kind = dataKind(lc);
   const lasso = !!(s.lasso && (s.lasso.bytes || s.lasso.request));
   const av = a.view();
   return {
@@ -1849,6 +1850,86 @@ function menuWorld() {
   if (!xr) return P.panelModel(DESKTOP_ANCHOR, DESKTOP_MENU);
   return ui.menuModel;
 }
+/** The data shown, as the menu and the palette name it: cube, points, flow or none. */
+function dataKind(lc = layers.menuContext()) { return state.cube ? 'cube' : lc.kind === 'cube' ? 'none' : lc.kind; }
+
+// ── The tool palette (issue #257) ───────────────────────────────────────────
+// A on the primary hand opens it about 0.8 m in front of that hand: the tools
+// as icons grouped by task (tool-palette.js). The trigger picks one and closes
+// it; A again or × closes it unchanged. In the desktop view (?panel3d) it
+// stands 1 m in front of the camera while open (the page's panel covers the
+// left of the view, the menu its right).
+const palette = {
+  open: false, model: null, ctx: null,
+  canvas: Object.assign(document.createElement('canvas'), { width: TP.PALETTE_PX[0], height: TP.PALETTE_PX[1] }),
+  tex: null, key: '', drawnAt: 0, draws: 0,
+  pointer: new P.PanelPointer([]),
+};
+function paletteContext() { return { kind: dataKind(), active: TP.activeTool(ui.mode, currentSub(), analysis.pv.state.armed) }; }
+function paletteShown() { return palette.open && (xr ? !xr.bench && !!palette.model : true); }
+function paletteSize() { return xr ? TP.PALETTE_SIZE : TP.PALETTE_SIZE.map((v) => v * DESKTOP_MENU_SCALE); }
+function paletteWorld() {
+  if (xr) return palette.model;
+  const camM = M.invert((lastDesktopView || desktopView()).view);
+  return RO.faceEye(M.transformPoint(camM, [0, -0.1, -1.0]), M.position(camM));
+}
+function paletteLayoutNow() {
+  palette.ctx = paletteContext();
+  palette.pointer.layout = TP.paletteLayout(palette.ctx);
+  return palette.pointer.layout;
+}
+/** The palette's texture, redrawn only when what it shows changed (#229: a 2-D canvas). */
+function paletteTexture(now) {
+  if (!palette.tex) palette.tex = R.createPanel();
+  const layout = paletteLayoutNow();
+  const uiState = { hover: palette.pointer.hover };
+  const key = JSON.stringify([palette.ctx, uiState]);
+  if (key !== palette.key && (now - palette.drawnAt >= 33 || !palette.draws)) {
+    TP.drawPalette(palette.canvas.getContext('2d'), layout, palette.ctx, uiState);
+    R.updatePanel(palette.tex, palette.canvas);
+    palette.key = key; palette.drawnAt = now; palette.draws++;
+  }
+  return palette.tex;
+}
+/** Opens the palette (in front of the primary hand, world-locked) or closes it. */
+function setPalette(on) {
+  palette.open = !!on;
+  if (!on || !xr || !xr.pose) return;
+  const h = xr.hands[C.roles(settings.leftHanded).primary];
+  const head = xr.pose.transform.matrix;
+  const hand = h ? h.pos : [head[12], head[13] - 0.35, head[14]];
+  palette.model = TP.paletteModel(hand, head);
+}
+/** A tool picked (the palette, or the secondary stick's step): its mode and tool, or its measurement. */
+function pickTool(id) {
+  const p = TP.pickOf(id);
+  if (!p) return false;
+  // A slice being drawn ends with any other pick, Moment included.
+  if (p.disarmPv && analysis.pv.state.armed) analysis.pv.arm(false);
+  ui.lastPick = { id: p.tool, active: TP.activeTool(ui.mode, currentSub(), analysis.pv.state.armed) };
+  if (p.measure === 'pv') {
+    setMode('explore');
+    if (!analysis.pv.state.armed) analysis.press('pv-draw', {});
+    return true;
+  }
+  if (p.measure === 'moment') {
+    analysis.press('moment:0', { group: 'moment', value: 0 });
+    return true;
+  }
+  setMode(p.mode);
+  if (p.mode === 'select') selection.setTool(p.sub);
+  else if (p.mode === 'clip') setClipTool(p.sub);
+  return true;
+}
+/** A press on the palette: a tool picked closes it, × closes it unchanged, a greyed tool does nothing. */
+function applyPalette(a) {
+  if (a.type !== 'press') return;
+  const w = a.widget || {};
+  if (a.id === 'palette-close') { buzz('primary', 'press'); setPalette(false); return; }
+  if (w.disabled) { buzz('primary', 'error'); return; }
+  if (pickTool(a.id)) { buzz('primary', 'press'); setPalette(false); }
+}
+
 /** The menu opening: in front of the eyes, on the tab of the mode, world-locked until it closes. */
 function updateMenuPose(opened) {
   if (!xr || !ui.menu.open) { ui.menuDrag = null; return; }
@@ -1960,6 +2041,12 @@ function uiPointer(ray, pressed, eye) {
     surfaces.push({ kind: 'menu', model: m, hit: ray ? P.rayPanel(m, menuSize(), ray.o, ray.d, HM.MENU_PX) : null,
       captured: !!menu.pointer.active });
   }
+  if (paletteShown()) {
+    paletteLayoutNow();
+    const m = paletteWorld();
+    surfaces.push({ kind: 'palette', model: m, hit: ray ? P.rayPanel(m, paletteSize(), ray.o, ray.d, TP.PALETTE_PX) : null,
+      captured: !!palette.pointer.active });
+  }
   const list = shownWindows();
   for (const w of list) {
     const h = W.windowHits(w.model, w.size, ray);
@@ -1970,7 +2057,8 @@ function uiPointer(ray, pressed, eye) {
     surfaces.push({ kind: 'window', w, hits: hit ? h : { bar: null, content: null }, hit, captured: w.pointer.captured });
   }
   const cap = surfaces.findIndex((s) => s.captured);
-  const win = W.pickSurface(surfaces.map((s) => s.hit), cap);
+  // The palette is drawn over the menu and the windows: it takes the ray first.
+  const win = W.pickSurface(surfaces.map((s) => s.hit), cap, surfaces.findIndex((s) => s.kind === 'palette'));
   ui.hit = null;
   let takes = false;
   surfaces.forEach((s, i) => {
@@ -1979,6 +2067,10 @@ function uiPointer(ray, pressed, eye) {
       for (const a of menu.pointer.update(mine ? s.hit : null, pressed)) applyMenu(a, ray, eye);
       if (mine && s.hit) ui.hit = { point: s.hit.point, model: s.model };
       takes = takes || menu.pointer.takesRay() || menu.pointer.owns;
+    } else if (s.kind === 'palette') {
+      for (const a of palette.pointer.update(mine ? s.hit : null, pressed)) applyPalette(a);
+      if (mine && s.hit) ui.hit = { point: s.hit.point, model: s.model };
+      takes = takes || palette.pointer.takesRay() || palette.pointer.owns;
     } else {
       for (const a of s.w.pointer.update(mine ? s.hits : { bar: null, content: null }, pressed)) applyWindow(s.w, a, ray, eye);
       if (mine && s.hit) ui.hit = { point: s.hit.point, model: s.w.model };
@@ -1988,6 +2080,7 @@ function uiPointer(ray, pressed, eye) {
   // Surfaces not on show follow the trigger, so one shown again under a held
   // trigger does not take that press as a new one.
   if (!menuShown()) menu.pointer.update(null, pressed);
+  if (!paletteShown()) palette.pointer.update(null, pressed);
   for (const w of Object.values(wins)) if (!list.includes(w)) { w.pointer.update({ bar: null, content: null }, pressed); w.drag = null; }
   if (!menu.pointer.active) ui.sliding = null;
   return takes;
@@ -2345,7 +2438,7 @@ function stickAction(action, v, dtS) {
 const FLICK_TOOL_HOLD_MS = 180;
 const FLICK_SIDEWAYS_RATIO = 2;
 
-/** A stick pushed sideways as a step: the colour map, or the mode's next tool. */
+/** A stick pushed sideways as a step: the palette's next tool (its trigger tools, #257), or the colour map. */
 function stickStep(action, step) {
   if (!step || !action) return;
   if (action === 'colormap') {
@@ -2353,8 +2446,10 @@ function stickStep(action, step) {
     const n = COLORMAP_NAMES.length, i = COLORMAP_NAMES.indexOf(state.colormap);
     setColormap(COLORMAP_NAMES[(i + step + n) % n]);
   } else if (action === 'next-tool') {
-    const next = C.nextSub(ui.mode, currentSub(), step);
-    if (ui.mode === 'select') selection.setTool(next); else if (ui.mode === 'clip') setClipTool(next);
+    const active = TP.activeTool(ui.mode, currentSub(), analysis.pv.state.armed);
+    const next = TP.stepTool(TP.stepFrom(active, ui.lastPick), dataKind(), step);
+    if (!next) return;
+    pickTool(next);
   } else {
     return;
   }
@@ -2511,6 +2606,8 @@ function desktopFrame(time) {
     menuLayout();
     R.drawPanel(lastDesktopView, menuWorld(), menuTexture(time), menuSize());
     drawWindows(lastDesktopView, shownWindows());
+    // The palette last, over the menu and the windows, as it takes the ray first.
+    if (paletteShown()) R.drawPanel(lastDesktopView, paletteWorld(), paletteTexture(time), paletteSize());
   }
   // The headset's message card, in front of the desktop camera (?panel3d).
   const card = ui.desktop ? shell.cardForFrame(M.invert(lastDesktopView.view)) : null;
@@ -2984,6 +3081,7 @@ async function startSession(session, mode, bench, startGen, wantLayers) {
   Object.assign(ui.menu, { open: false, pinned: false, armed: false, wasHeld: false });
   ui.menuModel = null;
   ui.menuDrag = null;
+  palette.open = false; palette.model = null;
   stats.buf.length = stats.cpu.length = stats.gpu.length = 0;
   governor.max = state.spv; governor.value = state.spv;
   eyeGovernor.reset(fbScale);
@@ -3024,6 +3122,8 @@ async function startSession(session, mode, bench, startGen, wantLayers) {
     }
     // A press held on the menu or a window when the session ended is released.
     menu.pointer.update(null, false); menu.pointer.update(null, false);
+    palette.pointer.update(null, false); palette.pointer.update(null, false);
+    palette.open = false;
     for (const w of Object.values(wins)) { w.pointer.update({ bar: null, content: null }, false); w.drag = null; }
     ui.hit = null; ui.clipDrag = null; ui.sliding = null;
     Object.assign(ui.menu, { open: false, pinned: false, armed: false, wasHeld: false });
@@ -3169,8 +3269,9 @@ function handleInput(frame, dtS) {
     blocked: btn(Sh, 'grip') || (toolStep && !!toolsBusy().busy),
   }));
 
-  if (pressedEdge('pLower', btn(Ph, 'lower')) && act('primary', 'lower') === 'next-mode') {
-    setMode(C.nextMode(ui.mode));
+  if (pressedEdge('pLower', btn(Ph, 'lower')) && act('primary', 'lower') === 'palette') {
+    // The tool palette (#257): opened in front of the primary hand; A again closes it.
+    setPalette(!palette.open);
     buzz('primary', 'press');
   }
   if (pressedEdge('pUpper', btn(Ph, 'upper')) && act('primary', 'upper') === 'undo') {
@@ -3291,6 +3392,7 @@ function overlayList(card, winList, hm, cards, menuM, menuTex) {
   if (hm) out.push({ id: 'hud', model: hm, handle: hudTex, size: [0.16, 0.15] });
   for (const k of cards) out.push({ id: k.id, model: k.model, handle: k.tex, size: k.size });
   if (menuM) out.push({ id: 'menu', model: menuM, handle: menuTex, size: HM.MENU_SIZE });
+  if (paletteShown()) out.push({ id: 'palette', model: paletteWorld(), handle: paletteTexture(performance.now()), size: TP.PALETTE_SIZE });
   if (card && !guide) out.push({ id: 'card', model: card.model, handle: card.tex, size: card.size });
   return out;
 }
@@ -3896,6 +3998,18 @@ if (query.has('debug')) {
   const widgetCentre = (id) => {
     const w = menuLayout().find((x) => x.id === id);
     return w ? [w.rect[0] + w.rect[2] / 2, w.rect[1] + w.rect[3] / 2] : null;
+  };
+  // The tool palette (#257), for the checks: opened, closed, its widgets and their page pixels.
+  window.__vrPalette = {
+    state: palette,
+    open: () => setPalette(true),
+    close: () => setPalette(false),
+    layout: () => paletteLayoutNow().map((w) => ({ id: w.id, rect: w.rect, on: !!w.on, disabled: w.disabled || '' })),
+    context: () => paletteContext(),
+    pagePixel(id) {
+      const w = paletteLayoutNow().find((x) => x.id === id);
+      return w ? quadPagePixel(paletteWorld(), paletteSize(), TP.PALETTE_PX, w.rect[0] + w.rect[2] / 2, w.rect[1] + w.rect[3] / 2) : null;
+    },
   };
   window.__vrMenu = {
     ui, menu, wins, settings: () => JSON.parse(JSON.stringify(settings)), view: menuView,

@@ -21,6 +21,7 @@
 
 import * as M from './mat4.js';
 import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
+import { drawIcon } from './tool-icons.js';
 
 export const TITLE_H = 64;
 export const TAB_H = 88;
@@ -201,8 +202,8 @@ function rangePage(ctx) {
   const w = [
     { id: 'slab', kind: 'range', rect: [X0, rowY(0), 560, WH], disabled: notCube },
     btn('slab-all', [X0 + 570, rowY(0), RIGHT - X0 - 570, WH], 'Full band', { disabled: notCube }),
-    btn('sub:clip:slab', span(1, 2, 0), ctx.spectralName, { group: 'sub-clip', value: 'slab', on: cube && ctx.clipTool === 'slab', disabled: cube ? '' : WHY.cropSliders }),
-    btn('sub:clip:box', span(1, 2, 1), 'Spatial crop', { group: 'sub-clip', value: 'box', on: cube && ctx.clipTool === 'box', disabled: cube ? '' : WHY.cropSliders }),
+    btn('sub:clip:slab', span(1, 2, 0), ctx.spectralName, { group: 'sub-clip', value: 'slab', icon: 'slab', on: cube && ctx.clipTool === 'slab', disabled: cube ? '' : WHY.cropSliders }),
+    btn('sub:clip:box', span(1, 2, 1), 'Spatial crop', { group: 'sub-clip', value: 'box', icon: 'crop', on: cube && ctx.clipTool === 'box', disabled: cube ? '' : WHY.cropSliders }),
   ];
   for (const a of [0, 1, 2]) {
     w.push({ id: `crop:${a}`, kind: 'range', rect: [X0, rowY(2 + a), RIGHT - X0, WH], axis: a, disabled: cube && a === 2 ? WHY.cubeZ : '' });
@@ -217,9 +218,10 @@ function selectPage(ctx) {
   const rows = [['tool', 'Tool'], ['lasso', 'Lasso'], ['selection', 'Selection'], ['result', 'Result']];
   const notCube = cube ? '' : WHY.particlesSelect;
   const w = [
-    btn('tool:probe', span(0, 3, 0), cube ? 'Spectrum probe' : 'Probe', { group: 'tool', value: 'probe', on: cube && s.tool === 'probe', disabled: notCube }),
-    btn('tool:box', span(0, 3, 1), 'Box region', { group: 'tool', value: 'box', on: cube && s.tool === 'box', disabled: notCube }),
-    btn('tool:lasso', span(0, 3, 2), 'Kinematic Lasso', { group: 'tool', value: 'lasso', on: cube && s.tool === 'lasso', disabled: notCube }),
+    // The tool palette's order and icons (tool-palette.js), so both places look alike.
+    btn('tool:lasso', span(0, 3, 0), 'Kinematic Lasso', { group: 'tool', value: 'lasso', icon: 'lasso', on: cube && s.tool === 'lasso', disabled: notCube }),
+    btn('tool:probe', span(0, 3, 1), cube ? 'Spectrum probe' : 'Probe', { group: 'tool', value: 'probe', icon: 'probe', on: cube && s.tool === 'probe', disabled: notCube }),
+    btn('tool:box', span(0, 3, 2), 'Box region', { group: 'tool', value: 'box', icon: 'box', on: cube && s.tool === 'box', disabled: notCube }),
   ];
   [['new', 'New'], ['add', 'Add'], ['carve', 'Subtract']].forEach(([v, label], k) => {
     w.push(btn(`seed:${v}`, span(1, 3, k), label, { group: 'seed', value: v, on: cube && s.tool === 'lasso' && s.seedMode === v, disabled: notCube }));
@@ -238,7 +240,7 @@ function selectPage(ctx) {
 function measurePage(ctx) {
   const cube = ctx.kind === 'cube';
   const m = ctx.meas;
-  const rows = [['moment', 'Moment'], ['pv', 'PV slice'], ['pvw', 'PV width'], ['spectrum', 'Spectrum']];
+  const rows = [['moment', 'Moment', 'moment'], ['pv', 'PV slice', 'pv'], ['pvw', 'PV width'], ['spectrum', 'Spectrum']];
   const notCube = cube ? '' : WHY.measureCube;
   const w = [
     btn('moment:0', span(0, 4, 0), 'Intensity (M0)', { group: 'moment', value: 0, on: m.moment === 0, disabled: notCube }),
@@ -468,7 +470,10 @@ function drawButton(c, w, hover) {
   c.font = `26px ${FONT}`;
   c.textAlign = 'center';
   c.textBaseline = 'middle';
-  c.fillText(fit(c, w.label || '', ww - 14), x + ww / 2, y + hh / 2 + 1);
+  // A tool's button carries the palette's icon on its left (#257).
+  const is = w.icon ? hh - 16 : 0;
+  if (is) drawIcon(c, w.icon, x + 8, y + 8, is, off ? C.off : w.on || w.armed ? C.onFg : C.fg);
+  c.fillText(fit(c, w.label || '', ww - 14 - (is ? is + 6 : 0)), x + (is ? is + 8 : 0) + (ww - (is ? is + 8 : 0)) / 2, y + hh / 2 + 1);
   c.textAlign = 'left';
 }
 
@@ -561,9 +566,11 @@ function wrap(c, s, maxW) {
 function drawPage(c, spec, view, ui) {
   const labelW = spec.wide ? RX - 300 - 30 : X0 - 30;
   const notes = view.notes || {};
-  spec.rows.forEach(([key, label], i) => {
+  spec.rows.forEach(([key, label, icon], i) => {
     const y = rowY(i);
-    text(c, label, 20, y + WH / 2, labelW, { color: C.fg, font: `28px ${FONT}` });
+    // A measurement's row carries the palette's icon before its name (#257).
+    const ix = icon && drawIcon(c, icon, 16, y + 10, WH - 20, C.fg) ? WH - 12 : 0;
+    text(c, label, 20 + ix, y + WH / 2, labelW - ix, { color: C.fg, font: `28px ${FONT}` });
     const inRow = spec.widgets.filter((w) => w.row === i);
     const why = (inRow.find((w) => w.disabled) || {}).disabled;
     const ph = spec.placeholder && spec.placeholder[key] && !inRow.length ? spec.placeholder[key] : '';

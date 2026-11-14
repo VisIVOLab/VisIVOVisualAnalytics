@@ -226,9 +226,9 @@ test('the primary card: the legend of the tool in use, for either hand, controll
     const lasso = WR.legendRows(C.controlMap({ mode: 'select', sub: 'lasso', leftHanded }));
     assert.deepEqual(lasso[0], ['Trigger', 'lasso seed']);
     assert.ok(!lasso.some(([, t]) => t === 'grab'), 'the grab is the same everywhere: not in the legend');
-    assert.ok(lasso.some(([n, t]) => n === P.lower && t === 'next mode'));
+    assert.ok(lasso.some(([n, t]) => n === P.lower && t === 'tools'), 'A opens the tool palette (#257)');
     assert.ok(lasso.some(([n, t]) => n === `Hold ${S.lower}` && t === 'menu'));
-    assert.ok(lasso.some(([n, t]) => n === `${r.secondary === 'right' ? 'R' : 'L'} stick ↔` && t === 'tool'));
+    assert.ok(lasso.some(([n, t]) => n === `${r.secondary === 'right' ? 'R' : 'L'} stick ↔` && t === 'next tool'));
     const L = r.secondary === 'right' ? 'R' : 'L';
     // Every mode and tool: every control that does something now is in the
     // legend (none cut away), but the grab, and the secondary's upper button
@@ -242,11 +242,11 @@ test('the primary card: the legend of the tool in use, for either hand, controll
       assert.equal(rows.length, want, `${mode} ${sub}: ${JSON.stringify(rows)}`);
     }
     const explore = WR.legendRows(C.controlMap({ mode: 'explore', leftHanded }));
-    assert.ok(explore.some(([n, t]) => n === `${L} stick ↔` && t === 'colour map'));
+    assert.ok(explore.some(([n, t]) => n === `${L} stick ↔` && t === 'next tool'), 'the colour map is on the menu now');
     assert.ok(explore.some(([n, t]) => n === `${L} stick ↕` && t === 'colour max'));
     const slab = WR.legendRows(C.controlMap({ mode: 'clip', sub: 'slab', leftHanded }));
     assert.deepEqual(slab.slice(0, 3), [['Trigger', 'range to this channel'], ['Stick ↕', 'range position'], ['Stick ↔', 'range width']]);
-    assert.ok(slab.some(([n, t]) => n === `${L} stick ↔` && t === 'tool'));
+    assert.ok(slab.some(([n, t]) => n === `${L} stick ↔` && t === 'next tool'));
   }
   const hands = WR.legendRows(C.controlMap({ mode: 'explore', input: { primary: 'hand', secondary: 'hand' } }));
   assert.deepEqual(hands, [['Pinch', 'pin the readout'], ['Palm up', 'menu']]);

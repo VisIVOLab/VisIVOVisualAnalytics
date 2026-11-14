@@ -12,8 +12,10 @@ The headset's controls follow a few fixed rules
   of you and stays there until it closes, so both hands are free. Its tabs
   follow the way you work: **Display**, **Range**, **Select**, **Measure**,
   **More**.
-- **The tab sets what the trigger does.** Display (and Measure) look around,
-  Select selects, Range moves the velocity range or the crop. The mode is
+- **A opens the tool palette**: the tools as large icons grouped by task;
+  the trigger picks one. The menu's tabs set the trigger's tool too: Display
+  (and Measure) look around, Select selects, Range moves the velocity range
+  or the crop. The mode is
   shown on the wrist cards, in a toast when it changes, and in the cursor
   readout. In each mode each stick has one meaning; the buttons keep the same
   global actions in every mode.
@@ -41,9 +43,9 @@ the menu.
 |---|---|---|
 | Trigger | acts on what the ray points at (by mode, below) | — |
 | Grip | grabs the cube: it follows the hand | grabs the cube; both grips move, turn and scale it between your hands |
-| Lower face button | **A**: next mode (Explore → Select → Range) | hold **X**: the menu |
+| Lower face button | **A**: the tool palette (A again closes it) | hold **X**: the menu |
 | Upper face button | **B**: undo the last change of the look | **Y**: reset the view |
-| Stick | the mode's continuous control (below) | ←/→: the mode's next tool (the colour map in Explore) |
+| Stick | the mode's continuous control (below) | ←/→: the next tool, in the palette's order |
 
 The controllers are drawn with their real models: on a Quest 3 the Touch Plus
 controllers, as they look in the hand. The trigger, the grip, the stick and the
@@ -72,7 +74,7 @@ dark all over, with green accents. Their textures are kept at 1024 px a side
 anisotropically so they do not shimmer.
 
 With the *left-handed* setting the roles swap: the left hand points (its
-**X** is next mode, **Y** undo) and the right opens the menu (hold **A**,
+**X** opens the tool palette, **Y** undo) and the right opens the menu (hold **A**,
 **B** resets the view). The setting is on the menu's More tab (*Handedness*)
 and on the page (*left-handed*), and is kept in the browser.
 
@@ -103,10 +105,11 @@ There are three modes: **Explore** (set by the Display and Measure tabs),
 **Select** and **Range** (the Range tab; called Clip until #257). The mode is
 shown on both wrist cards (*EXPLORE*, *SELECT · Kinematic Lasso*, *RANGE ·
 Velocity range*, …), in a toast low in the view when it changes, and at the
-top of the cursor readout. Choosing a tab sets its mode; **A** steps to the
-next mode without the menu, and the menu then opens on that mode's tab. The
-page (desktop browser) has the same choice (*Mode*), and a click there does
-what the trigger does. Until #257 the menu had a Mode tab to choose them.
+top of the cursor readout. A tool picked on the [tool palette](#the-tool-palette)
+(**A**), a step of the secondary stick, or a menu tab sets the mode; the menu
+then opens on that mode's tab. The page (desktop browser) has the same choice
+(*Mode*), and a click there does what the trigger does. Until #257 A stepped
+through the modes and the menu had a Mode tab to choose them.
 
 While a PV slice is being drawn (Measure → PV slice → *Draw*), the trigger
 adds the slice's points in any mode (the mode line says *PV slice*). Choosing
@@ -120,7 +123,7 @@ the Kinematic Lasso.
 | Primary stick ↕ | threshold |
 | Primary stick ↔ | opacity |
 | Primary trigger | pins the readout at the point it shows (an amber card that stays; another pull moves it, a pull on empty space removes it) |
-| Secondary stick ←/→ | previous / next colour map (one step per flick) |
+| Secondary stick ←/→ | the next tool, in the palette's order (the colour map is on the menu's Display tab) |
 | Secondary stick ↕ | colour max |
 
 ### Select
@@ -129,7 +132,12 @@ The tools: **Spectrum probe** (the spectrum of the full cube at the pixel the
 ray picks), **Kinematic Lasso** (a selection grown on the full cube from the
 picked seed) and **Box region** (two corners, statistics of every voxel in
 the box). The secondary stick pushed ←/→ and held for a moment (about a fifth
-of a second) steps through them; the Select tab chooses one. A push that is
+of a second) steps to the next tool of the palette, in its order (Explore,
+Kinematic Lasso, Spectrum probe, Box region, Velocity range, Spatial crop,
+Moment, PV slice, then Explore again; those that do not apply to the data are
+skipped). Stepping on Moment computes the intensity map, as picking it does,
+and the next step goes on to PV slice; any step ends a PV slice being drawn.
+The palette and the Select tab choose one directly. A push that is
 not mostly sideways, one made while that hand holds the grip (moving the
 cube), or one made while a tool is still working changes nothing until the
 stick is back at rest, so a thumb resting on the stick does not change the
@@ -156,6 +164,38 @@ spectral axis; *Spectral range* on a cube without a velocity axis) or the
 
 *Full band*, *Reset crop*, the range's two ends and the crop's are on the
 Range tab.
+
+## The tool palette
+
+**A** (the primary hand's lower button) opens the **tool palette**, a small
+panel of its own, apart from the menu, about 0.8 m in front of the primary
+hand (a little above it), turned to face you; it stays where it opened until
+it closes ([#257](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/257)).
+It shows one large icon per tool (our own drawings), grouped by task:
+
+| Look | Select | Range | Measure |
+|---|---|---|---|
+| Explore | Kinematic Lasso, Spectrum probe, Box region | Velocity range, Spatial crop | Moment, PV slice |
+
+Point at an icon: under the icons a line gives the tool's name and what it
+does (*Kinematic Lasso: Select a connected object by pointing at it.*). The
+trigger picks the tool and closes the palette; **A** again, or ×, closes it
+without a change. The tool in use is lit. A tool that does not apply to the
+data shown is greyed (on a point table or a velocity field only Explore
+applies), and pointing at it gives the reason. *Moment* computes the
+Intensity (M0) map (of the lasso selection, or of the whole field; the
+Measure tab has M1 and M2) and leaves the tool in use as it was, *PV slice*
+starts drawing a slice. A trigger tool or PV slice picked is named by the
+toast and the primary wrist's legend; a Moment opens its window when the map
+arrives. The same icons stand on the
+menu's tool buttons (Select's tools, Range's trigger tools, Measure's rows),
+so the two places look alike.
+
+The palette is 0.62 × 0.23 m (1024 × 380 px at 1650 px/m), each icon
+6.8 cm across, about 3.5° at the 1.1 m it is seen from; its 26-30 px text is
+0.8-0.9° high. It is a 2-D canvas redrawn only when what it shows changes.
+In the desktop view (`?panel3d`) it stands 1 m in front of the camera while
+open, at half that size.
 
 ## The hand menu
 
@@ -233,7 +273,7 @@ opens on the tab of the current mode, or on the last tab used.
     backend while it is cropped).
 - **Select** (a cube; greyed on point tables and velocity fields, whose
   selections come with [#259](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/259))
-  - **Tool**: *Spectrum probe*, *Box region*, *Kinematic Lasso* (the tool on a
+  - **Tool**: *Kinematic Lasso*, *Spectrum probe*, *Box region*, with the palette's icons (the lasso is the tool on a
     first visit, so a galaxy is lassoed and isolated in two presses: Select,
     the trigger on it, *Isolate*; afterwards the last tool used, kept in the
     browser).
