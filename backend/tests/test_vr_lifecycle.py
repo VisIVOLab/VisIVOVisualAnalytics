@@ -389,3 +389,42 @@ async def test_an_upgrade_is_never_cached_under_the_old_build(client: AsyncClien
         assert "immutable" in r.headers["cache-control"] and r.headers.get("etag")
     finally:
         f.unlink(missing_ok=True)
+
+
+# ── Digital Asset Links for a packaged headset app (spike, issue #254) ─────
+
+@pytest.mark.asyncio
+async def test_assetlinks_absent_without_the_setting(client: AsyncClient, monkeypatch) -> None:
+    monkeypatch.delenv(vr_routes.ASSETLINKS_ENV, raising=False)
+    r = await client.get("/.well-known/assetlinks.json")
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_assetlinks_served_without_token(client: AsyncClient, monkeypatch, tmp_path: Path) -> None:
+    statements = [{
+        "relation": ["delegate_permission/common.handle_all_urls"],
+        "target": {"namespace": "android_app", "package_name": "it.inaf.visivo.vr",
+                   "sha256_cert_fingerprints": ["AA:BB"]},
+    }]
+    f = tmp_path / "assetlinks.json"
+    f.write_text(json.dumps(statements), encoding="utf-8")
+    monkeypatch.setenv(vr_routes.ASSETLINKS_ENV, str(f))
+    r = await client.get("/.well-known/assetlinks.json")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+    assert r.json() == statements
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ['{"not": "a list"}', "[1, 2]", "not json", "",
+                                     '[{"v": NaN}]', '[{"v": Infinity}]', '[{"v": 1e999}]',
+                                     '[{"v": ' + "[" * 5000 + "0" + "]" * 5000 + "}]"])
+async def test_assetlinks_refuses_what_is_not_statements(client: AsyncClient, monkeypatch, tmp_path: Path,
+                                                         content: str) -> None:
+    f = tmp_path / "assetlinks.json"
+    f.write_text(content, encoding="utf-8")
+    monkeypatch.setenv(vr_routes.ASSETLINKS_ENV, str(f))
+    assert (await client.get("/.well-known/assetlinks.json")).status_code == 404
+    monkeypatch.setenv(vr_routes.ASSETLINKS_ENV, str(tmp_path / "missing.json"))
+    assert (await client.get("/.well-known/assetlinks.json")).status_code == 404
