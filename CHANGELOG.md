@@ -8,6 +8,27 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: result window title bars above their content, named after the
+  window, long lines wrapped (#267, part of #253).** On the Quest 3 the
+  Spectrum probe window's title bar ("Selection", the move hint and ×) was
+  drawn across the middle of the window, over the position and velocity
+  lines. The cause was the composition layers: the Quest Browser draws a
+  WebXR quad layer from minus to plus its `width` and `height` about its
+  centre, and the page gave it the panel's full size, so every quad layer
+  (windows, menu, wrist cards, readout) was drawn twice as wide and twice as
+  tall as the panel the ray hits; the bar, placed just above the true
+  content edge, landed a fifth of the way down the doubled content. On the
+  Quest Browser the layers now take half the size (`xr-layers.js`
+  `quadExtentFactor`, `quadLayerSize`), so what is drawn and what the ray
+  hits agree again; other browsers keep the full size, as the specification
+  words it and Chromium's OpenXR path reads it, and `?layerhalf=1|0` forces
+  either. The bar names what the window shows (*Spectrum probe*,
+  *Kinematic Lasso*, *Box region*, *Moment 0/1/2*, *PV diagram*), drops its
+  move hint when a long title needs the room and cuts a title wider than the
+  bar with …; the selection window wraps long lines (the velocity line with
+  its convention, errors, the flux note) instead of running past the right
+  edge, and the moment and PV windows wrap their lines into three rows above
+  the image. Pure layout tests in `backend/tests/vr/windows.test.mjs`.
 - **VR: the numbers and the button help on the wrists, shown only when looked
   at (#256, part of #253).** The headset no longer keeps cards in view: the
   frame-rate and technical numbers are shown only with `?debug` (and during
