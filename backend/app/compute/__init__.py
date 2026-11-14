@@ -74,6 +74,7 @@ from .spectral import (  # noqa: F401
     _json_safe,
     worker_spectral_probe,
     worker_spectral_aperture,
+    worker_spectrum_table,
     worker_line_fit,
 )
 from .photometry import (  # noqa: F401
@@ -166,6 +167,7 @@ __all__ = [
     "_json_safe",
     "worker_spectral_probe",
     "worker_spectral_aperture",
+    "worker_spectrum_table",
     "worker_line_fit",
     "worker_aperture_photometry",
     "_gaussian_2d",

@@ -33,6 +33,43 @@ are preserved here unedited; the branch names they refer to are historical.
   clamp more per sample (40 ms against 37.5 ms per 1280×800 frame on
   SwiftShader; on the Quest's GPU it is still to be measured). `vr_lifecycle.mjs` takes
   `--timeout-min` (default 10) for slow software-GL runs.
+- **Backend: a headset hub per session, and spectra saved as tables (#236,
+  part of #234).** The backend now knows which headset pages are open in a
+  session and carries the conversation between them and the desktop:
+  presence (`POST /v1/vr/headset/hello` and `/state`, `GET` and
+  `DELETE /v1/vr/headset`: the pages seen in the last 45 s, what each shows,
+  whether it is in VR), commands from the desktop to a page
+  (`POST /v1/vr/headset/command`, `show` a cube; the page's long poll
+  `GET /v1/vr/headset/commands`, acknowledged by `after`, a newer `show`
+  replacing an unacknowledged one) and the page's activity for the desktop
+  (`POST`/`GET /v1/vr/activity`: look, clip box, products, cube switches, a
+  ring of 256 per session, the latest look and clip per cube). Bounded like
+  the selection hub (pages, commands, events, payload size, waiting polls),
+  no token in any body, the long polls end as soon as the backend begins to
+  exit, and the routes work over HTTP and through the pairing bridge. A
+  spectrum is saved in the Workspace Exports by
+  `POST /v1/products/spectrum_table` (the desktop's spectrum CSV, or a FITS
+  table), next to `moment_fits` and `pv_fits`, so what the headset makes can
+  be opened on the desktop (docs/backend-api/headset-hub.md).
+
+- **Desktop: Show on Headset, and the headset's activity on the desktop
+  (#238, part of #234; needs the backend's headset hub, #236).** *Open in VR
+  Headset…* asks the backend first whether a headset page is open in this
+  session; when one is, it names it (transport, in VR, the cube on show) and
+  **Show on Headset** sends this window's cube to it, with no new code, no adb
+  and no new browser window (pairing and the USB cable stay under **Pair
+  Another Headset**). The cube window gets **Tools → Views → Show on Headset**
+  while a headset is connected, the headset's state in its status bar, and
+  **Headset Activity** (Inspector ▸ Parameters): what was done in the
+  headset, newest first, with each product opening in the desktop's own
+  viewer (a moment map in the image viewer, a PV slice in the cube's PV view,
+  a spectrum as a spectrum product, an isolated or removed cube in a cube
+  window) and recorded once in Provenance with the headset's record.
+  **Follow the headset's look** (off by default) applies its colour map,
+  threshold and clip box to the 3-D view. One link per backend session
+  follows the hub (presence every 5 s, a long poll of the activity); an older
+  backend is detected and left alone (docs/user-guide/vr/desktop.md).
+
 - **VR: no 3-D texture is allocated during a VR session, which fixes the
   Quest 3 context loss at the first lasso (#229, part of #166 and #185).** On
   the headset (Quest Browser 154, Adreno 740) the GPU process rejects a

@@ -226,6 +226,9 @@ add_executable(VisIVOTests
     TestSharedSelectionLink.h
     test_shared_selection_link.cpp
     ${VISIVO_ROOT}/src/app/SharedSelectionLink.cpp
+    TestVrHeadsetHub.h
+    test_vr_headset_hub.cpp
+    ${VISIVO_ROOT}/src/app/HeadsetHubLink.cpp
     TestBackendProcessTree.h
     test_backend_process_tree.cpp
 )
