@@ -8,18 +8,34 @@ name: quest-app
 #   QUEST_APP_KEYSTORE_PASS  its password (the key's password must be the same)
 #   QUEST_APP_KEY_ALIAS      the key's alias (optional, default visivo-vr)
 #
-# Without them the job says so and ends successfully: nothing is built. On a
-# tag the APK and its description are added to that tag's GitHub release
-# (made as a draft by release.yml); otherwise they are a workflow artifact.
-# Separate from release.yml on purpose: a failure here never holds a release.
+# Without them the job says so and ends successfully: nothing is built.
+#
+# Two ways in:
+#   - release.yml calls it (workflow_call) once per release run, before the
+#     desktop packages are built: they bundle the APK from this run's
+#     visivo-vr-apk artifact. On a tag it also adds the APK and its
+#     description to the release drafted by release.yml. It has no tag
+#     trigger of its own, so a tag builds and uploads it once.
+#   - workflow_dispatch: a build on its own, to check the signing; the APK is
+#     a workflow artifact (and, run on a tag, replaces that release's asset).
+#
+# The certificate built must be one backend/app/vr_app.json names: otherwise
+# the job fails, so no package bundles an app its backend does not list. A
+# failure here never holds a release: release.yml then builds the packages
+# without the app, with a warning.
 
 on:
-  push:
-    tags: ['v*', '[0-9]*']
   workflow_dispatch:
+  workflow_call:
+    outputs:
+      built:
+        description: "'true' when the signed APK was built and is in the visivo-vr-apk artifact"
+        value: ${{ jobs.build.outputs.built }}
 
 concurrency:
-  group: quest-app-${{ github.ref }}
+  # Called, github.workflow is the caller's name: a release run and a manual
+  # run on the same ref never cancel each other.
+  group: quest-app-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -30,6 +46,8 @@ jobs:
     name: headset app (APK)
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    outputs:
+      built: ${{ steps.done.outputs.built || 'false' }}
     steps:
       - name: Signing key present?
         id: key
@@ -46,6 +64,9 @@ jobs:
 
       - uses: actions/checkout@v4
         if: steps.key.outputs.present == 'true'
+        with:
+          # Nothing here pushes; the release upload uses GH_TOKEN.
+          persist-credentials: false
 
       - uses: actions/setup-java@v4
         if: steps.key.outputs.present == 'true'
@@ -85,8 +106,31 @@ jobs:
             echo '```json'
             cat "$RUNNER_TEMP/quest-app/visivo-vr.json"
             echo '```'
-            echo "The release certificate's SHA-256 must be in backend/app/vr_app.json (release_sha256)."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The desktop starts this APK only when the backend lists its
+      # certificate (/.well-known/assetlinks.json, from vr_app.json): a key
+      # changed without updating vr_app.json would ship an app that never
+      # opens.
+      - name: Certificate listed in backend/app/vr_app.json?
+        if: steps.key.outputs.present == 'true'
+        run: |
+          python3 -I - "$RUNNER_TEMP/quest-app/visivo-vr.json" backend/app/vr_app.json <<'PY'
+          import json, sys
+          info = json.load(open(sys.argv[1], encoding="utf-8"))
+          cfg = json.load(open(sys.argv[2], encoding="utf-8"))
+          def norm(f):
+              return str(f).replace(":", "").upper()
+          release = cfg.get("packages", {}).get("release")
+          if info.get("package") != release:
+              print(f"::error::visivo-vr.json names {info.get('package')}, vr_app.json {release}")
+              sys.exit(1)
+          if norm(info.get("cert_sha256", "")) not in {norm(f) for f in cfg.get("release_sha256", [])}:
+              print(f"::error::The APK's certificate {info.get('cert_sha256')} is not in "
+                    "backend/app/vr_app.json (release_sha256): add it, or no backend lists the app")
+              sys.exit(1)
+          print(f"{release} {info['version_name']} ({info['version_code']}): certificate listed")
+          PY
 
       - name: Keep the APK
         if: steps.key.outputs.present == 'true'
@@ -97,7 +141,15 @@ jobs:
             ${{ runner.temp }}/quest-app/visivo-vr.apk
             ${{ runner.temp }}/quest-app/visivo-vr.json
             ${{ runner.temp }}/quest-app/assetlinks.json
+          if-no-files-found: error
           retention-days: 30
+
+      # Set as soon as the artifact holds the APK: the packages can bundle it
+      # even if attaching it to the release below fails.
+      - name: Built
+        id: done
+        if: steps.key.outputs.present == 'true'
+        run: echo "built=true" >> "$GITHUB_OUTPUT"
 
       - name: Add it to the tag's release
         if: steps.key.outputs.present == 'true' && startsWith(github.ref, 'refs/tags/')
@@ -107,7 +159,8 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # release.yml makes the draft release at its start; wait for it.
+          # Called from release.yml the draft exists already; run by hand on a
+          # tag, wait for it a while.
           for _ in $(seq 1 30); do
             if gh release view "$TAG" > /dev/null 2>&1; then
               gh release upload "$TAG" "$RUNNER_TEMP/quest-app/visivo-vr.apk" "$RUNNER_TEMP/quest-app/visivo-vr.json" --clobber
