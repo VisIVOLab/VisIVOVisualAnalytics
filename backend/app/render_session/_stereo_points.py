@@ -314,11 +314,11 @@ class PointStereoMixin:
             if raytrace:
                 rgba, depth = raytrace_eye(xyz, codes, self._splat_lut, to_eye, eye.projection,
                                            w, h, radius * metres, amp, pose.background,
-                                           page_size, pose.depth_scale)
+                                           page_size, pose.depth_scale, self.view.tone_map)
             else:
                 rgba, depth = splat_eye(xyz, codes, self._splat_lut, to_eye, eye.projection,
                                         w, h, radius * metres, amp, pose.background,
-                                        page_size), None
+                                        page_size, self.view.tone_map), None
             t1 = time.perf_counter()
             out.append((rgba, depth, g["depth_projection"]))
             per_eye.append({"eye": eye.eye, "render": round(1000 * (t1 - t0), 3),

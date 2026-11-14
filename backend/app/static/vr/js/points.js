@@ -111,9 +111,11 @@ export function colourCommand(field, range, log, lut, c0 = 0, c1 = 1, n = 32) {
  * Splat radius (data units) and opacity, as the desktop and the point session
  * size them (render_session/points.py gaussian_splat): spacing ∛(volume / N)
  * of the box the points fill, radius = spacing × size / 8; opacity
- * min(0.9, 20 / D) × intensity / 100, D = longest side / spacing. N is the
- * table's rows: a sample of fewer rows is drawn with splats larger by
- * ∛(rows per sample row), so it covers the same volume.
+ * min(0.9, 20 / D) × intensity / 100, D = longest side / spacing, then over
+ * size² (issue #263): a splat's light grows with its area, so the size step
+ * changes the size, not the brightness (the desktop's rule at size 1, the
+ * default). N is the table's rows: a sample of fewer rows is drawn with
+ * splats larger by ∛(rows per sample row), so it covers the same volume.
  */
 export function splatStyle(bounds, totalRows, sampleRows, size, intensity) {
   const dims = [bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4]];
@@ -122,7 +124,8 @@ export function splatStyle(bounds, totalRows, sampleRows, size, intensity) {
   const spacing = Math.cbrt(volume / Math.max(1, totalRows));
   const radius = (spacing * size) / 8;
   const depth = Math.max(longest / spacing, 1);
-  const opacity = Math.min(Math.max(Math.min(0.9, 20 / depth) * intensity / 100, 0.05), 0.9);
+  const opacity = Math.min(Math.max(Math.min(0.9, 20 / depth) * intensity / 100, 0.05), 0.9)
+    / (size * size);
   const grow = Math.cbrt(Math.max(1, totalRows / Math.max(1, sampleRows)));
   return { radius, opacity, sampleRadius: radius * grow };
 }
@@ -143,7 +146,30 @@ export function isSplats(style) { return style === 'splats' || style === 'raytra
  *  medium. */
 export function defaultStyle(format) { return format === 'vbt' ? 'raytraced' : 'points'; }
 
-/** The commands that give the backend's point session the page's look. */
+/**
+ * The column a table is coloured by when it opens (issue #263): a density
+ * (`*dens*`, `*rho*`, `LogD`, ...) where there is one, as a snapshot's
+ * structure reads best by it; else the first column that is neither a
+ * position, a velocity, a sky coordinate nor an identifier (a catalogue's
+ * redshift or magnitude rather than its RA); else none.
+ */
+export function defaultColourField(fields, axes = []) {
+  const usable = fields.filter((f) => !axes.includes(f) && !f.startsWith('@'));
+  const dens = usable.find((f) => /dens|rho|^log_?d$|^ld$/i.test(f));
+  if (dens) return dens;
+  const skip = /^(v_?[xyz]|vel_?[xyz]|ra|dec|ra_?deg|dec_?deg|ra_?j2000|de_?j2000|dej2000|raj2000|glon|glat|l|b|elon|elat|lon|lat|id|.*_id|name|index|row|[xyz])$/i;
+  return usable.find((f) => !skip.test(f)) || null;
+}
+
+/** The box's axis titles: a sky catalogue's computed positions (`@x`, `@y`,
+ *  `@z`, comoving distances, app/catalogue_positions.py) say their unit,
+ *  Mpc; a table's own columns keep their names. */
+export function axisTitles(axes) {
+  return axes.map((a) => (/^@[xyz]$/i.test(a) ? `${a.slice(1)} (Mpc)` : a));
+}
+
+/** The commands that give the backend's point session the page's look
+ *  (`toneMapped`: the page's splats are tone-mapped, PointCloud.toneMapped). */
 export function pointLook(p) {
   const splats = isSplats(p.style);
   return [
@@ -151,7 +177,8 @@ export function pointLook(p) {
     colourCommand(p.colourField, p.colourRange, p.colourLog, p.lut, p.c0, p.c1),
     { type: 'set_point_style', mode: splats ? 'gaussian' : 'points',
       size: splats ? p.splatSize : Math.max(1, Math.round(p.pointPx)), intensity: p.intensity,
-      stereo_renderer: p.style === 'raytraced' ? 'raytrace' : 'splat' },
+      stereo_renderer: p.style === 'raytraced' ? 'raytrace' : 'splat',
+      tone_map: splats && p.toneMapped ? 'exposure' : 'none' },
     { type: 'set_show_outline', visible: false },
   ];
 }
@@ -209,6 +236,37 @@ export function boxDecorations(d, axes, niceTicks) {
 }
 
 // ── GL ─────────────────────────────────────────────────────────────────────
+//
+// Points are point sprites with the depth test. Splats (issue #263) are
+// instanced quads, so a splat near the head keeps growing up to MAX_SPLAT_PX
+// (point sprites stopped at 64 px), added into a float target (float32 where
+// it can be blended, else half floats) and then
+// tone-mapped onto the frame (toneMap): dense halos keep their colour instead
+// of burning out at the 8-bit target's 1, and faint splats are no longer
+// rounded away one addition at a time. Without a renderable float target
+// the splats are added onto the frame directly, clamped, as before.
+
+/** The widest splat, page pixels (the backend's point_splat.MAX_PX). */
+export const MAX_SPLAT_PX = 256;
+
+/** Rec. 709 luminance weights, as the tone curve and the backend use them. */
+export const LUMA = [0.2126, 0.7152, 0.0722];
+
+/**
+ * The tone curve of the splats' light (RGB, any size): the luminance Y goes
+ * to 1 - exp(-Y), the three channels follow it (the hue is kept), and a
+ * channel still above 1 scales the three down. Linear for faint light (the
+ * picture of a sparse region is as before), never above 1. Mirrored by the
+ * resolve shader and by the backend (app/point_splat.py tone_map).
+ */
+export function toneMap(rgb) {
+  const y = LUMA[0] * rgb[0] + LUMA[1] * rgb[1] + LUMA[2] * rgb[2];
+  if (!(y > 0)) return [0, 0, 0];
+  const f = -Math.expm1(-y) / y;
+  const out = rgb.map((c) => c * f);
+  const m = Math.max(...out);
+  return m > 1 ? out.map((c) => c / m) : out;
+}
 
 const VS = `#version 300 es
 precision highp float;
@@ -218,53 +276,120 @@ uniform mat4 uMV;
 uniform mat4 uP;
 uniform vec3 uLo;      // model space of code 0 and the span to code 1
 uniform vec3 uSpan;
-uniform float uPx;     // points: pixels; splats: 0
-uniform float uRadius; // splats: world radius (metres) * projection scale
-uniform float uMaxPx;
+uniform float uPx;     // pixels
 uniform float uC0;
 uniform float uC1;
 uniform vec3 uClipMin; // the spatial crop (#257), box fractions: aPos itself
 uniform vec3 uClipMax;
 out float vT;
-out float vSplat;
 void main() {
   if (any(lessThan(aPos, uClipMin)) || any(greaterThan(aPos, uClipMax))) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);   // outside the view volume: culled
     gl_PointSize = 1.0;
-    vT = 0.0; vSplat = 0.0;
+    vT = 0.0;
     return;
   }
-  vec4 eye = uMV * vec4(uLo + aPos * uSpan, 1.0);
-  gl_Position = uP * eye;
-  float px = uPx > 0.0 ? uPx : uRadius / max(1e-4, -eye.z);
-  gl_PointSize = clamp(px, 1.0, uMaxPx);
-  vSplat = uPx > 0.0 ? 0.0 : clamp(px, 0.0, 1.0);   // sub-pixel splats: their light, not a pixel's
+  gl_Position = uP * (uMV * vec4(uLo + aPos * uSpan, 1.0));
+  gl_PointSize = uPx;
   vT = clamp((aVal - uC0) / max(1e-6, uC1 - uC0), 0.0, 1.0);
 }`;
 
 const FS = `#version 300 es
 precision mediump float;
 in float vT;
-in float vSplat;
 uniform sampler2D uLut;
 uniform float uSolid;
-uniform float uOpacity;
-uniform int uMode;     // 0 points, 1 splats
 uniform int uRound;    // round points (a discard, which costs the early depth test)
 out vec4 outColor;
 void main() {
   vec3 c = uSolid > 0.5 ? vec3(0.8, 0.85, 1.0) : texture(uLut, vec2(vT, 0.5)).rgb;
-  if (uMode == 0) {
-    if (uRound == 1) { vec2 d = gl_PointCoord - 0.5; if (dot(d, d) > 0.25) discard; }
-    outColor = vec4(c, 1.0);
-  } else {
-    vec2 d = (gl_PointCoord - 0.5) * 6.0;      // out to 3 sigma, as the backend's splats
-    float g = exp(-0.5 * dot(d, d)) * uOpacity * max(vSplat, 0.25);
-    outColor = vec4(c * g, g);
-  }
+  if (uRound == 1) { vec2 d = gl_PointCoord - 0.5; if (dot(d, d) > 0.25) discard; }
+  outColor = vec4(c, 1.0);
 }`;
 
-function compile(gl, vs, fs) {
+// A splat: a quad clamp(px, 1, uMaxPx) pixels wide around its centre, in
+// clip space so it is clipped by the near and far planes as a whole, as a
+// point is (OpenGL ES 3.0 §2.17) and as the backend draws it.
+const SPLAT_VS = `#version 300 es
+precision highp float;
+in vec2 aCorner;       // -1..1, the quad's corners
+in vec3 aPos;          // per splat: 0..1 over the bounds (normalised uint16)
+in float aVal;         // per splat: 0..1 colour code
+uniform mat4 uMV;
+uniform mat4 uP;
+uniform vec3 uLo;
+uniform vec3 uSpan;
+uniform float uRadius; // world radius (metres) * projection scale: px at 1 m
+uniform float uMaxPx;
+uniform vec2 uViewport;
+uniform float uC0;
+uniform float uC1;
+uniform vec3 uClipMin;
+uniform vec3 uClipMax;
+out float vT;
+out float vSplat;
+out vec2 vD;
+void main() {
+  if (any(lessThan(aPos, uClipMin)) || any(greaterThan(aPos, uClipMax))) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    vT = 0.0; vSplat = 0.0; vD = vec2(0.0);
+    return;
+  }
+  vec4 eye = uMV * vec4(uLo + aPos * uSpan, 1.0);
+  vec4 c = uP * eye;
+  float px = uRadius / max(1e-4, -eye.z);
+  float sprite = clamp(px, 1.0, uMaxPx);
+  // Half the width each side: sprite / 2 pixels = sprite / viewport in NDC.
+  c.xy += aCorner * (sprite / uViewport) * c.w;
+  gl_Position = c;
+  vD = aCorner * 3.0;                          // out to 3 sigma, as the backend's splats
+  vSplat = clamp(px, 0.0, 1.0);               // sub-pixel splats: their light, not a pixel's
+  vT = clamp((aVal - uC0) / max(1e-6, uC1 - uC0), 0.0, 1.0);
+}`;
+
+const SPLAT_FS = `#version 300 es
+precision highp float;
+in float vT;
+in float vSplat;
+in vec2 vD;
+uniform sampler2D uLut;
+uniform float uSolid;
+uniform float uOpacity;
+out vec4 outColor;
+void main() {
+  vec3 c = uSolid > 0.5 ? vec3(0.8, 0.85, 1.0) : texture(uLut, vec2(vT, 0.5)).rgb;
+  float g = exp(-0.5 * dot(vD, vD)) * uOpacity * max(vSplat, 0.25);
+  outColor = vec4(c * g, g);
+}`;
+
+// The accumulated light onto the frame, tone-mapped (toneMap), added over
+// what is there (the clear colour). highp: the light reaches tens, and the
+// luminance of a faint pixel is far below fp16's resolution near 1.
+const RESOLVE_VS = `#version 300 es
+precision highp float;
+void main() {
+  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);   // one triangle over the viewport
+}`;
+
+const RESOLVE_FS = `#version 300 es
+precision highp float;
+precision highp int;
+uniform highp sampler2D uAcc;
+uniform ivec2 uOrigin;   // the viewport's corner in the frame
+out vec4 outColor;
+void main() {
+  vec4 a = texelFetch(uAcc, ivec2(gl_FragCoord.xy) - uOrigin, 0);
+  float y = dot(a.rgb, vec3(0.2126, 0.7152, 0.0722));
+  // (1 - exp(-y)) / y, by its series where the subtraction would cancel.
+  float f = y < 1e-3 ? 1.0 - 0.5 * y + y * y / 6.0 : (1.0 - exp(-y)) / y;
+  vec3 rgb = y > 0.0 ? a.rgb * f : vec3(0.0);
+  float m = max(rgb.r, max(rgb.g, rgb.b));
+  if (m > 1.0) rgb /= m;
+  outColor = vec4(rgb, 1.0 - exp(-max(a.a, 0.0)));
+}`;
+
+function compile(gl, vs, fs, attribs) {
   const p = gl.createProgram();
   for (const [type, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]]) {
     const s = gl.createShader(type);
@@ -273,8 +398,7 @@ function compile(gl, vs, fs) {
     if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(`points shader: ${gl.getShaderInfoLog(s)}`);
     gl.attachShader(p, s);
   }
-  gl.bindAttribLocation(p, 0, 'aPos');
-  gl.bindAttribLocation(p, 1, 'aVal');
+  attribs.forEach((name, i) => gl.bindAttribLocation(p, i, name));
   gl.linkProgram(p);
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(`points link: ${gl.getProgramInfoLog(p)}`);
   const u = {};
@@ -288,28 +412,60 @@ export class PointCloud {
   constructor(gl, lutTexture) {
     this.gl = gl;
     this.lut = lutTexture;
-    this.prog = compile(gl, VS, FS);
-    this.vao = gl.createVertexArray();
+    this.prog = compile(gl, VS, FS, ['aPos', 'aVal']);
+    this.splatProg = compile(gl, SPLAT_VS, SPLAT_FS, ['aPos', 'aVal', 'aCorner']);
+    this.resolveProg = compile(gl, RESOLVE_VS, RESOLVE_FS, []);
+    this.vao = gl.createVertexArray();          // points: one vertex a row
+    this.splatVao = gl.createVertexArray();     // splats: a quad a row (instanced)
     this.posBuf = gl.createBuffer();
     this.valBuf = gl.createBuffer();
+    this.cornerBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.cornerBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    this.emptyVao = gl.createVertexArray();     // the resolve's triangle (gl_VertexID)
     this.count = 0;
     this.hasColour = false;
-    this.maxPx = Math.min(64, gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1] || 64);
+    this.maxPx = MAX_SPLAT_PX;
     this.bytes = 0;
+    // The splats. float target (made on first use, at the viewport.s size).
+    this.acc = null;
+    const cbf = gl.getExtension('EXT_color_buffer_float');
+    this.hdr = !!(cbf || gl.getExtension('EXT_color_buffer_half_float'));
+    // Float32 where it can be blended: a half float's 11 bits drop the
+    // additions below half its step (at 1, under 0.0005), and large faint
+    // splats (opacity over size²) are made of such additions: at size 4 the
+    // preview was 15 % darker than the refined frame in half floats.
+    this.float32 = !!(cbf && gl.getExtension('EXT_float_blend'));
   }
+
+  /** True while splats are tone-mapped (a renderable float target);
+   *  the backend's refined frames follow it (set_point_style tone_map). */
+  get toneMapped() { return this.hdr; }
 
   /** Uploads a sample; returns the milliseconds it took (CPU side). */
   upload(positions, colour) {
     const gl = this.gl, t0 = performance.now();
-    gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuf);
     gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 3, gl.UNSIGNED_SHORT, true, 6, 0);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.valBuf);
     gl.bufferData(gl.ARRAY_BUFFER, colour || new Uint16Array(positions.length / 3), gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(1);
-    gl.vertexAttribPointer(1, 1, gl.UNSIGNED_SHORT, true, 2, 0);
+    for (const [vao, divisor] of [[this.vao, 0], [this.splatVao, 1]]) {
+      gl.bindVertexArray(vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuf);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 3, gl.UNSIGNED_SHORT, true, 6, 0);
+      gl.vertexAttribDivisor(0, divisor);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.valBuf);
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 1, gl.UNSIGNED_SHORT, true, 2, 0);
+      gl.vertexAttribDivisor(1, divisor);
+      if (divisor) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.cornerBuf);
+        gl.enableVertexAttribArray(2);
+        gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 8, 0);
+        gl.vertexAttribDivisor(2, 0);
+      }
+    }
     gl.bindVertexArray(null);
     this.count = positions.length / 3;
     this.hasColour = !!colour;
@@ -317,58 +473,132 @@ export class PointCloud {
     return performance.now() - t0;
   }
 
-  /**
-   * One eye. `p`: {box (dataToModel), bounds, style (STYLES), pointPx,
-   * radius (data units), opacity, c0, c1, viewportH, count (rows to draw),
-   * clip ({min, max} box fractions over the sample's bounds: the crop; none = all)}.
-   */
-  draw(view, model, p) {
+  /** The float target at w x h (a 2-D texture: allowed in a VR session,
+   *  issue #229 is about 3-D ones); false when it cannot be rendered to. */
+  _target(w, h) {
     const gl = this.gl;
-    if (!this.count) return;
-    const { u } = this.prog;
-    gl.useProgram(this.prog.p);
+    if (this.acc && this.acc.w === w && this.acc.h === h) return true;
+    if (!this.acc) this.acc = { tex: gl.createTexture(), fb: gl.createFramebuffer(), w: 0, h: 0 };
+    const a = this.acc;
+    gl.bindTexture(gl.TEXTURE_2D, a.tex);
+    if (this.float32) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, null);
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, a.fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, a.tex, 0);
+    let ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    if (!ok && this.float32) {
+      // Float32 not renderable after all: half floats.
+      this.float32 = false;
+      gl.bindTexture(gl.TEXTURE_2D, a.tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+      ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    }
+    a.w = w; a.h = h;
+    if (!ok) {
+      // Not renderable here: splats are added onto the frame (the old look).
+      gl.deleteFramebuffer(a.fb); gl.deleteTexture(a.tex);
+      this.acc = null;
+      this.hdr = false;
+    }
+    return ok;
+  }
+
+  /** Frees the GPU objects (a new cloud replaces this one). */
+  dispose() {
+    const gl = this.gl;
+    for (const b of [this.posBuf, this.valBuf, this.cornerBuf]) gl.deleteBuffer(b);
+    for (const v of [this.vao, this.splatVao, this.emptyVao]) gl.deleteVertexArray(v);
+    if (this.acc) { gl.deleteFramebuffer(this.acc.fb); gl.deleteTexture(this.acc.tex); this.acc = null; }
+  }
+
+  _common(u, view, model, p) {
+    const gl = this.gl;
     gl.uniformMatrix4fv(u.uMV, false, M.multiply(view.view, model));
     gl.uniformMatrix4fv(u.uP, false, view.proj);
     const b = p.box;
-    const lo = [0, 1, 2].map((i) => (b.lo[i] - b.centre[i]) / b.side);
-    const span = [0, 1, 2].map((i) => (b.hi[i] - b.lo[i]) / b.side);
-    gl.uniform3fv(u.uLo, lo);
-    gl.uniform3fv(u.uSpan, span);
-    const splats = isSplats(p.style);
-    // A splat's diameter in pixels: 2 r (model) x model scale x P11 x H / 2,
-    // over the eye distance; drawn out to 3 sigma, as the session's (r = sigma).
-    const scale = M.uniformScale(model);
-    const projScale = view.proj[5] * p.viewportH * 0.5;
-    gl.uniform1f(u.uPx, splats ? 0 : p.pointPx);
-    gl.uniform1f(u.uRadius, splats ? 6 * (p.radius / b.side) * scale * projScale : 0);
-    gl.uniform1f(u.uMaxPx, this.maxPx);
+    gl.uniform3fv(u.uLo, [0, 1, 2].map((i) => (b.lo[i] - b.centre[i]) / b.side));
+    gl.uniform3fv(u.uSpan, [0, 1, 2].map((i) => (b.hi[i] - b.lo[i]) / b.side));
     gl.uniform1f(u.uC0, p.c0);
     gl.uniform1f(u.uC1, p.c1);
     gl.uniform3fv(u.uClipMin, p.clip ? p.clip.min : [0, 0, 0]);
     gl.uniform3fv(u.uClipMax, p.clip ? p.clip.max : [1, 1, 1]);
     gl.uniform1f(u.uSolid, this.hasColour ? 0 : 1);
-    gl.uniform1f(u.uOpacity, p.opacity);
-    gl.uniform1i(u.uMode, splats ? 1 : 0);
-    // Squares up to 3 px (no discard: the early depth test stays on); discs above.
-    gl.uniform1i(u.uRound, !splats && p.pointPx > 3 ? 1 : 0);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.lut);
     gl.uniform1i(u.uLut, 0);
-    if (splats) {
-      gl.enable(gl.BLEND);
-      gl.blendFunc(gl.ONE, gl.ONE);
-      gl.disable(gl.DEPTH_TEST);
-      gl.depthMask(false);
-    } else {
+  }
+
+  /**
+   * One eye, into the current framebuffer and viewport. `p`: {box
+   * (dataToModel), bounds, style (STYLES), pointPx, radius (data units),
+   * opacity, c0, c1, viewportH, count (rows to draw), clip ({min, max} box
+   * fractions over the sample's bounds: the crop; none = all)}.
+   */
+  draw(view, model, p) {
+    const gl = this.gl;
+    if (!this.count) return;
+    const n = Math.min(this.count, p.count ?? this.count);
+    if (!isSplats(p.style)) {
+      const { u } = this.prog;
+      gl.useProgram(this.prog.p);
+      this._common(u, view, model, p);
+      gl.uniform1f(u.uPx, p.pointPx);
+      // Squares up to 3 px (no discard: the early depth test stays on); discs above.
+      gl.uniform1i(u.uRound, p.pointPx > 3 ? 1 : 0);
       gl.disable(gl.BLEND);
       gl.enable(gl.DEPTH_TEST);
       gl.depthFunc(gl.LESS);
       gl.depthMask(true);
+      gl.bindVertexArray(this.vao);
+      gl.drawArrays(gl.POINTS, 0, n);
+      gl.bindVertexArray(null);
+      gl.disable(gl.DEPTH_TEST);
+      return;
     }
-    gl.bindVertexArray(this.vao);
-    gl.drawArrays(gl.POINTS, 0, Math.min(this.count, p.count ?? this.count));
+    const vp = gl.getParameter(gl.VIEWPORT);
+    const [vx, vy, vw, vh] = vp;
+    const frame = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+    const tried = this.hdr;
+    const hdr = tried && this._target(vw, vh);
+    if (hdr) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.acc.fb);
+      gl.viewport(0, 0, vw, vh);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    } else if (tried) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, frame);   // the failed target was bound
+    }
+    const { u } = this.splatProg;
+    gl.useProgram(this.splatProg.p);
+    this._common(u, view, model, p);
+    // A splat's diameter in pixels: 2 r (model) x model scale x P11 x H / 2,
+    // over the eye distance; drawn out to 3 sigma, as the session's (r = sigma).
+    const scale = M.uniformScale(model);
+    const projScale = view.proj[5] * p.viewportH * 0.5;
+    gl.uniform1f(u.uRadius, 6 * (p.radius / p.box.side) * scale * projScale);
+    gl.uniform1f(u.uMaxPx, this.maxPx);
+    gl.uniform2f(u.uViewport, vw, vh);
+    gl.uniform1f(u.uOpacity, p.opacity);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+    gl.bindVertexArray(this.splatVao);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, n);
+    if (hdr) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, frame);
+      gl.viewport(vx, vy, vw, vh);
+      gl.useProgram(this.resolveProg.p);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.acc.tex);
+      gl.uniform1i(this.resolveProg.u.uAcc, 0);
+      gl.uniform2i(this.resolveProg.u.uOrigin, vx, vy);
+      gl.bindVertexArray(this.emptyVao);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
     gl.bindVertexArray(null);
     gl.depthMask(true);
-    gl.disable(gl.DEPTH_TEST);
   }
 }

@@ -38,19 +38,21 @@ def page_style(bounds, total_rows, sample_rows, size, intensity):
     spacing = (volume / max(1, total_rows)) ** (1 / 3)
     radius = spacing * size / 8
     depth = max(longest / spacing, 1)
-    opacity = min(max(min(0.9, 20 / depth) * intensity / 100, 0.05), 0.9)
+    opacity = min(max(min(0.9, 20 / depth) * intensity / 100, 0.05), 0.9) / (size * size)
     grow = max(1, total_rows / max(1, sample_rows)) ** (1 / 3)
     return radius, opacity, radius * grow
 
 
 def page_preview(xyz, bounds, total_rows, size, intensity, model, d2m, view, proj,
-                 width, height, background, max_px=64.0, depth=None):
+                 width, height, background, max_px=256.0, depth=None, tone=False):
     """The page's splats of the sample ``xyz`` (table coordinates): the
     vertex shader (sprite clamp(px, 1, maxPx), vSplat = clamp(px, 0, 1)), the
     fragment shader (exp(-d²/2) × opacity × max(vSplat, 0.25), d = 6 ×
     (gl_PointCoord - 0.5)) and additive blending over the clear colour,
     clamped. Points are clipped by the near and far planes only (OpenGL ES
-    3.0 §2.17). Rows bottom-up, 0..1, before the 8-bit store. ``depth``, a
+    3.0 §2.17). With ``tone``, the light accumulated in floating point and
+    tone-mapped (points.js toneMap, written out here) before the clear colour
+    is added. Rows bottom-up, 0..1, before the 8-bit store. ``depth``, a
     dict: given its ``zsum`` and ``lsum``, each pixel's light (summed over
     the channels) times the splat's eye distance, and that light."""
     _, opacity, radius = page_style(bounds, total_rows, len(xyz), size, intensity)
@@ -92,6 +94,13 @@ def page_preview(xyz, bounds, total_rows, size, intensity, model, d2m, view, pro
                 np.add.at(zsum, (j[inside], i[inside]), gl * dist[inside])
     if depth is not None:
         depth.update(zsum=zsum, lsum=lsum)
+    if tone:
+        y = out @ np.array([0.2126, 0.7152, 0.0722])
+        f = np.ones_like(y)
+        lit = y > 0
+        f[lit] = (1 - np.exp(-y[lit])) / y[lit]
+        out = out * f[..., None]
+        out /= np.maximum(out.max(axis=-1, keepdims=True), 1.0)
     return np.clip(out + np.asarray(background), 0, 1)
 
 
@@ -144,11 +153,12 @@ def _blocks(img, b=8):
     return img[:h, :w].reshape(h // b, b, w // b, b).mean(axis=(1, 3))
 
 
-@pytest.mark.parametrize("renderer", ["splat", "raytrace"])
+@pytest.mark.parametrize("renderer, tone", [("splat", "none"), ("raytrace", "none"),
+                                            ("splat", "exposure"), ("raytrace", "exposure")])
 @pytest.mark.parametrize("frame_scale, held", [(1.0, None), (0.5, None), (0.6, None),
                                                (1.0, 60_000)])
 def test_refined_splats_match_the_pages_preview(tmp_path, monkeypatch, frame_scale, held,
-                                                renderer):
+                                                renderer, tone):
     """A table 50 units wide (the snapshot of the issue is ~50 Mpc): the
     page draws a quarter of its rows at its sample's splat size; the session's
     frame (every row) has the preview's mean light within 10 % and lights the
@@ -188,7 +198,7 @@ def test_refined_splats_match_the_pages_preview(tmp_path, monkeypatch, frame_sca
     bg = (0.05, 0.05, 0.08)
     page_depth = {}
     preview = page_preview(sample, bounds, n, size, intensity, model, d2m, view, proj,
-                           page_w, page_h, bg, depth=page_depth)
+                           page_w, page_h, bg, depth=page_depth, tone=tone == "exposure")
     w, h = round(page_w * frame_scale), round(page_h * frame_scale)
     s = PointRenderSession("s" * 32, path)
     loop = asyncio.new_event_loop()
@@ -196,7 +206,8 @@ def test_refined_splats_match_the_pages_preview(tmp_path, monkeypatch, frame_sca
         loop.run_until_complete(s.initialize())
         loop.run_until_complete(s.apply_command({"type": "set_point_style", "mode": "gaussian",
                                                  "size": size, "intensity": intensity,
-                                                 "stereo_renderer": renderer}))
+                                                 "stereo_renderer": renderer,
+                                                 "tone_map": tone}))
         loop.run_until_complete(s.apply_command({"type": "set_show_outline", "visible": False}))
         loop.run_until_complete(s.apply_command(
             _pose(model, d2m, view, proj, w, h, bg, sample_rows=len(sample),
@@ -251,13 +262,16 @@ def test_refined_splats_match_the_pages_preview(tmp_path, monkeypatch, frame_sca
 
 def test_the_pages_splat_style_is_the_desktops_plus_the_samples_growth():
     """splat_style mirrors points.js splatStyle; with every row sampled it is
-    the desktop's gaussian_splat."""
+    the desktop's gaussian_splat, its opacity over size² (issue #263: the
+    same at size 1, the default)."""
     bounds = (0, 100, 0, 50, 0, 10)
     for total, sample in ((1000, 1000), (3_931_546, 1_000_000), (10, 1)):
         assert splat_style(bounds, total, sample, 3, 35) == pytest.approx(
             page_style(bounds, total, sample, 3, 35))
     r, op = gaussian_splat(bounds, 1000, 3, 35)
-    assert splat_style(bounds, 1000, 1000, 3, 35) == pytest.approx((r, op, r))
+    assert splat_style(bounds, 1000, 1000, 3, 35) == pytest.approx((r, op / 9, r))
+    r, op = gaussian_splat(bounds, 1000, 1, 35)
+    assert splat_style(bounds, 1000, 1000, 1, 35) == pytest.approx((r, op, r))
     # The sample's radius is the radius for the sampled rows alone.
     assert splat_style(bounds, 8000, 1000, 2, 35)[2] == pytest.approx(
         gaussian_splat(bounds, 1000, 2, 35)[0])
@@ -486,6 +500,73 @@ def test_an_unknown_stereo_renderer_is_refused_whole(tmp_path):
         loop.run_until_complete(s.apply_command({"type": "set_point_style", "mode": "gaussian",
                                                  "size": 3}))
         assert s.view.stereo_renderer == "raytrace"
+    finally:
+        loop.run_until_complete(s.close())
+        loop.close()
+
+
+def test_the_size_step_changes_the_size_not_the_brightness():
+    """Issue #263: splats a few pixels wide and up carry the same light at
+    sizes 1, 2 and 4 (it grew as size² before)."""
+    from app import point_splat
+    rng = np.random.default_rng(263)
+    xyz = rng.uniform(-0.3, 0.3, (3000, 3)).astype(np.float32)
+    to_eye = np.eye(4)
+    to_eye[2, 3] = -1.5
+    proj = np.array([[1.0, 0, 0, 0], [0, 1.0, 0, 0], [0, 0, -1.002, -0.2002], [0, 0, -1, 0]])
+    lut = np.array([[1.0, 1.0, 1.0]], dtype=np.float32)
+    bounds = (-0.3, 0.3, -0.3, 0.3, -0.3, 0.3)
+    totals = []
+    for size in (1, 2, 4):
+        radius, opacity, _ = point_splat.splat_style(bounds, 2000, 2000, size, 35)
+        totals.append(point_splat.splat_light(xyz, None, lut, to_eye, proj, 640, 480,
+                                              radius, opacity).sum())
+    assert totals[1] == pytest.approx(totals[0], rel=0.03)
+    assert totals[2] == pytest.approx(totals[0], rel=0.03)
+
+
+def test_the_tone_curve_is_the_pages():
+    """tone_map: linear for faint light, the hue kept, never above 1; the
+    numbers of points.js toneMap (tests/vr/layers.test.mjs checks the same)."""
+    from app.point_splat import page_frame, tone_map
+    light = np.array([[[1e-4, 2e-4, 3e-4], [0.5, 0.25, 0.1], [40.0, 20.0, 8.0], [0, 0, 0]]],
+                     dtype=np.float32)
+    out = tone_map(light)
+    assert np.allclose(out[0, 0], light[0, 0], rtol=1e-3)            # faint: as is
+    y = 0.2126 * 0.5 + 0.7152 * 0.25 + 0.0722 * 0.1
+    assert np.allclose(out[0, 1], light[0, 1] * (1 - np.exp(-y)) / y, rtol=1e-5)
+    assert out[0, 2].max() == pytest.approx(1.0) and np.allclose(out[0, 2] / out[0, 2, 0],
+                                                                 [1.0, 0.5, 0.2])
+    assert (out[0, 3] == 0).all()
+    with pytest.raises(ValueError, match="tone"):
+        page_frame(light, (0, 0, 0), 4, 1, "filmic")
+
+
+def test_splats_take_their_opacity_without_a_colour_column(tmp_path):
+    """Issue #263: the point session's VTK splats without a colour column
+    follow the intensity (they kept the same picture at every intensity:
+    vtkPointGaussianMapper applies its opacity function only to mapped
+    scalars, which were off)."""
+    from tests.test_point_render import _RENDER_PROBE, _table
+    import subprocess
+    import sys
+    from pathlib import Path
+    from app.render_session.points import PointRenderSession
+    if subprocess.run([sys.executable, "-c", _RENDER_PROBE], capture_output=True, timeout=60,
+                      cwd=Path(__file__).resolve().parent.parent).returncode != 0:
+        pytest.skip("no offscreen OpenGL here (no GPU or display)")
+    s = PointRenderSession("o" * 32, _table(tmp_path, n=20000))
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(s.initialize())
+        loop.run_until_complete(s.apply_command({"type": "set_color", "field": None}))
+        means = []
+        for intensity in (1, 100):
+            loop.run_until_complete(s.apply_command({"type": "set_point_style", "mode": "gaussian",
+                                                     "size": 3, "intensity": intensity}))
+            jpeg = loop.run_until_complete(s.render_frame())
+            means.append(np.asarray(Image.open(io.BytesIO(jpeg)).convert("L"), dtype=float).mean())
+        assert means[1] > means[0] + 3, means
     finally:
         loop.run_until_complete(s.close())
         loop.close()

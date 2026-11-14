@@ -246,7 +246,7 @@ export function createLayers(ctx) {
     L.box = PT.dataToModel(info.bounds);
     L.load = { requestMs: tBody - t1, uploadMs: up, mb: buf.byteLength / 1e6, totalMs: performance.now() - t0 };
     state.extent = L.box.extent;
-    decorate(p.axes);
+    decorate(PT.axisTitles(p.axes));
     ctx.refiner.setDataset(p.datasetId);
   }
 
@@ -276,8 +276,7 @@ export function createLayers(ctx) {
     fieldSel.innerHTML = '';
     fieldSel.appendChild(el('option', { value: '', textContent: '(none: one colour)' }));
     for (const f of info.fields) fieldSel.appendChild(el('option', { value: f, textContent: f }));
-    const others = info.fields.filter((f) => !info.axes.includes(f) && !f.startsWith('@'));
-    L.s.colourField = others.length ? others[0] : null;
+    L.s.colourField = PT.defaultColourField(info.fields, info.axes);
     L.s.autoLog = true;
     L.s.colourLog = false;
     logBox.checked = false;
@@ -722,7 +721,7 @@ export function createLayers(ctx) {
       const sm = L.points.sample;
       const commands = PT.pointLook({ axes: L.points.axes, colourField: sm.colourField, colourRange: sm.colourRange,
         colourLog: sm.colourLog, lut: colormapTable(ctx.colormap()), c0: L.s.c0, c1: L.s.c1, style: L.s.style,
-        splatSize: L.s.splatSize, pointPx: L.s.pointPx, intensity: L.s.intensity });
+        splatSize: L.s.splatSize, pointPx: L.s.pointPx, intensity: L.s.intensity, toneMapped: !!cloud && cloud.toneMapped });
       // The splats are refined for the whole sample (not the governor's part
       // of it, which changes four times a second and would make every refined
       // frame stale): never darker than the preview, the same when it is drawn whole.
@@ -736,7 +735,7 @@ export function createLayers(ctx) {
       if (L.mode === 'points' && L.points && L.points.sample) {
         const s = L.points.sample;
         const d = L.s.govern ? L.points.drawRows : s.count;
-        out.push(`points ${(d / 1e6).toFixed(2)} M drawn of ${(s.count / 1e6).toFixed(2)} M sampled, ${(s.totalRows / 1e6).toFixed(2)} M rows, ${L.s.style}`);
+        out.push(`points ${(d / 1e6).toFixed(2)} M drawn of ${(s.count / 1e6).toFixed(2)} M sampled, ${(s.totalRows / 1e6).toFixed(2)} M rows, ${L.s.style}${PT.isSplats(L.s.style) && cloud ? ` (${cloud.hdr ? (cloud.float32 ? 'f32' : 'f16') + ' tone-mapped' : '8-bit'})` : ''}`);
         out.push(`  sample ${L.load.mb.toFixed(1)} MB: request ${L.load.requestMs.toFixed(0)} ms, upload ${L.load.uploadMs.toFixed(1)} ms`);
       } else if (L.mode === 'flow' && L.flow && L.flow.info) {
         const i = L.flow.info;

@@ -8,6 +8,41 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: the splats' look (#263, part of #261).** The page adds its splats
+  into a float target (float32 where it can be blended, else half floats)
+  and tone-maps it onto the view: luminance Y → 1 − exp(−Y), hue kept, never
+  above 1. Dense halos no longer burn out to white (size 4 on the 3.9 M-row
+  snapshot: 17.9 % of the view saturated before, 0.04 % now), and faint
+  splats are no longer rounded away at each 8-bit addition. Also:
+  - Splat opacity is divided by the size step squared, so *Size −/+* changes
+    the size and not the brightness (view mean 19.4 at size 1 and 19.7 at
+    size 4; before, 21.4 and 60.1).
+  - Splats are instanced quads instead of point sprites, so near splats grow
+    up to 256 px instead of stopping at 64.
+  - A table opens coloured by a density-like column (`LogD`, `*dens*`,
+    `*rho*`) where it has one, instead of `vx`; a catalogue by its first
+    column that is not a position, velocity, sky coordinate or identifier.
+  - A sky catalogue's box is labelled *x (Mpc)* instead of `@x`.
+
+  The backend's refined frames follow the page: `set_point_style` takes
+  `tone_map` (`"none"` | `"exposure"`), the splat cap is 256 px, and the
+  opacity is over size², for both the page-rule splats and the ray-traced
+  ones. Refined frame against preview, light over the background: 1.039 at
+  size 1 and 1.031 at size 4. In half floats the size-4 figure was 1.175,
+  hence float32 where it can be blended; with the old 8-bit preview it was
+  1.089 at size 1. GPU time on the Mac for 1 M rows (headless Chrome, ANGLE
+  Metal, whole frame, noisy: an unchanged points frame read 3.2 then 3.9 ms):
+  splats size 1, 4.0 → 4.5 ms; size 4, 5.3 → 5.2 ms; inside the box,
+  3.8 → 4.0 ms. A headset without float render targets keeps the old
+  additive look and says *8-bit* in the HUD.
+  
+  The desktop too: in the VBT viewer and the point session's VTK view,
+  Gaussian splats without a colour column now follow the intensity.
+  vtkPointGaussianMapper applies its opacity function only to mapped scalars,
+  so with scalar visibility off every intensity drew the same picture (mean
+  51.8 at 1, 35 and 100; now 35.5, 44.5 and 50.2, as with a colour column).
+  They keep their scalars now, mapped through a one-colour table.
+
 - **VR: ray-traced still views of particles (#264, part of #261).** A point
   table has a third style on the menu's Display tab, *Ray-traced*: the page
   draws the same splats while the view moves, and when it holds still the

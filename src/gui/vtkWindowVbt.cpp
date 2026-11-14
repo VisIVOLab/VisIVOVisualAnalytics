@@ -1266,6 +1266,13 @@ void vtkWindowVbt::setupRenderer()
     // artefact when splats are isolated in sparse regions.
     this->gaussianMapper->SetBoundScale(3.0f);
     this->gaussianMapper->SetLookupTable(this->scalarLut.Get());
+    // The solid colour as a table: without a colour column the splats keep
+    // mapped scalars, else the mapper skips the opacity function below and
+    // every intensity draws the same picture (issue #263).
+    this->solidSplatLut->SetNumberOfTableValues(2);
+    this->solidSplatLut->SetTableRange(-1.0e15, 1.0e15);
+    for (vtkIdType i = 0; i < 2; ++i)
+        this->solidSplatLut->SetTableValue(i, 0.8, 0.85, 1.0, 1.0);
     //
     // Per-splat opacity is controlled via the documented VTK API:
     //   SetOpacityArray("VbtScalar") → use the scalar array as the lookup key
@@ -1519,10 +1526,11 @@ void vtkWindowVbt::updateColorMapping()
 
     const QVariant data = this->comboColorField->currentData();
     if (!data.isValid() || data.toString().isEmpty()) {
-        // Solid-color mode: scalar visibility off but ensure gaussian functions
-        // produce a visible constant output so ray-casting mode still renders.
+        // Solid-color mode: points take the actor's colour; splats one colour
+        // through solidSplatLut, with their scalars mapped so the opacity
+        // function (the intensity) still applies (issue #263).
         this->mapper->ScalarVisibilityOff();
-        this->gaussianMapper->ScalarVisibilityOff();
+        this->useSolidSplats();
         this->actor->GetProperty()->SetColor(0.8, 0.85, 1.0);
         qDebug() << "[VBT] updateColorMapping: solid color mode";
         this->m_lastColorField.clear();
@@ -1539,7 +1547,7 @@ void vtkWindowVbt::updateColorMapping()
         // Field missing (e.g. after a filter that dropped the column) —
         // fall back to solid-color gaussian functions so ray-casting still renders.
         this->mapper->ScalarVisibilityOff();
-        this->gaussianMapper->ScalarVisibilityOff();
+        this->useSolidSplats();
         qDebug() << "[VBT] updateColorMapping: field" << fieldName << "not found in subset columns";
         this->m_lastColorField.clear();
         this->updateScalarBar();
@@ -1593,6 +1601,17 @@ void vtkWindowVbt::updateColorMapping()
     this->updateRenderMode();
     this->renderWindow->Render();
     this->updateSummary();
+}
+
+void vtkWindowVbt::useSolidSplats()
+{
+    // The scalars must be on the polydata for the mapper to map them (a table
+    // opened with no colour column has the zeros of buildPointCloud).
+    if (this->polyData->GetPointData()->GetScalars() == nullptr)
+        this->polyData->GetPointData()->SetScalars(this->pointScalars.Get());
+    this->gaussianMapper->SetLookupTable(this->solidSplatLut.Get());
+    this->gaussianMapper->SetScalarRange(-1.0e15, 1.0e15);
+    this->gaussianMapper->ScalarVisibilityOn();
 }
 
 void vtkWindowVbt::updateScalarBar()

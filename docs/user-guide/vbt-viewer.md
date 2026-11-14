@@ -70,7 +70,9 @@ and there is no sky frame, cosmology or redshift shells.
   more (a density) opens in Log. A colour bar shows the column's colours.
 - **Shape** opens as *Point*, or as *Gaussian splats* above a million rows:
   emissive, so dense regions add up to bright and sparse filaments stay faint
-  but visible. The *Scale* slider sets the point or splat size. The
+  but visible. The *Scale* slider sets the point or splat size. The splats'
+  intensity applies with or without a colour column (with *none*, every
+  intensity used to draw the same, fully opaque picture, issue #263). The
   **Ray-traced light** check under it draws every row as a continuous medium
   on this machine's GPU, for figures and movies: see
   [Ray-traced particles](raytraced-particles). (The glyph
