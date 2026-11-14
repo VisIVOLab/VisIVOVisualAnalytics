@@ -58,6 +58,7 @@ from .routers import (
     volume_render,
     vr_layers,
     share,
+    headset,
     vr_backend_check,
 )
 from .diagnostics_buffer import install_logging_handler
@@ -99,6 +100,9 @@ async def _lifespan(_app: "FastAPI"):
         vr_backend_check.log_startup(_app)
     except Exception as exc:  # noqa: BLE001 - a log line must not stop the start
         logging.getLogger("visivo.backend").warning("[startup] VR backend check: %s", exc)
+    # The headset hub's long polls wait again (after a shutdown in the tests).
+    from . import headset_hub  # noqa: PLC0415
+    headset_hub.reopen()
     yield
     # The client-gone exit waits for this shutdown once it has begun.
     parent_watch.SHUTDOWN_STARTED.set()
@@ -111,6 +115,10 @@ async def _lifespan(_app: "FastAPI"):
 async def _shutdown(push_task) -> None:
     """The lifespan's shutdown half: every step bounded and none fatal."""
     import asyncio  # noqa: PLC0415
+    # The headset hub's long polls (a page's commands, the desktop's
+    # activity) end now, with what they have.
+    from . import headset_hub  # noqa: PLC0415
+    headset_hub.shutdown()
     if push_task is not None:
         push_task.cancel()
         try:
@@ -456,6 +464,8 @@ app.include_router(volume_render.router, dependencies=[_auth])
 app.include_router(vr_layers.router, dependencies=[_auth])
 # Selections shared between the headset and the desktop (issue #188).
 app.include_router(share.router, dependencies=[_auth])
+# The headset pages of a session: presence, commands and activity (issue #236).
+app.include_router(headset.router, dependencies=[_auth])
 app.include_router(vr_backend_check.router, dependencies=[_auth])
 # Headset pairing by code over WebRTC (issue #212).
 from .routers import vr_pair as vr_pair_routes  # noqa: E402
