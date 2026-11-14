@@ -3689,7 +3689,9 @@ static bool _isDiagnosticsQuietPath(const QString &path)
         || path.endsWith(QStringLiteral("/v1/vr/pair"))
         // The headset hub: presence polled, activity read after each long poll.
         || path.endsWith(QStringLiteral("/v1/vr/headset"))
-        || path.endsWith(QStringLiteral("/v1/vr/activity"));
+        || path.endsWith(QStringLiteral("/v1/vr/activity"))
+        // A headset app launch, followed every few hundred ms (issue #255).
+        || path.contains(QStringLiteral("/v1/vr/launch/"));
 }
 
 // A route polled every few seconds by a window left open (the headset pairing
@@ -3700,7 +3702,8 @@ static bool _isOncePerOutagePath(const QString &path)
 {
     return path.endsWith(QStringLiteral("/v1/vr/pair"))
         || path.endsWith(QStringLiteral("/v1/vr/headset"))
-        || path.endsWith(QStringLiteral("/v1/vr/activity"));
+        || path.endsWith(QStringLiteral("/v1/vr/activity"))
+        || path.contains(QStringLiteral("/v1/vr/launch/"));
 }
 
 static QMutex s_outageMutex;

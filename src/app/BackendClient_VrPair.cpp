@@ -79,3 +79,24 @@ BackendVrHubReply BackendClient::vrActivity(qint64 after, int waitS) const
     reply.body = performGet(url, reply.error, nullptr, &reply.httpStatus);
     return reply;
 }
+
+// ── The headset app's launch (issue #255) ─────────────────────────────────────
+// The ticket is in the POST's reply body only; performPost never logs a
+// successful body, and the dialog redacts it from everything it shows.
+
+BackendVrHubReply BackendClient::createVrLaunch(const QJsonObject &body) const
+{
+    BackendVrHubReply reply;
+    reply.body = performPost(QUrl(m_baseUrl + QStringLiteral("/v1/vr/launch")), QJsonDocument(body),
+                             reply.error, nullptr, &reply.httpStatus);
+    return reply;
+}
+
+BackendVrHubReply BackendClient::vrLaunchStatus(const QString &launch) const
+{
+    BackendVrHubReply reply;
+    const QString safeSeg = QString::fromUtf8(QUrl::toPercentEncoding(launch));
+    reply.body = performGet(QUrl(m_baseUrl + QStringLiteral("/v1/vr/launch/") + safeSeg), reply.error,
+                            nullptr, &reply.httpStatus);
+    return reply;
+}

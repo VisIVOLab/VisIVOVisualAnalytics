@@ -2,6 +2,8 @@
 
 #include "app/AdbHeadset.h"
 #include "app/BackendClient.h"
+#include "app/VrAppLauncher.h"
+#include "app/VrHeadsetApp.h"
 #include "app/VrLink.h"
 #include "app/VrHeadsetHub.h"
 #include "app/VrPair.h"
@@ -56,7 +58,17 @@ class QWidget;
  * backend session, dataset id and cube path in the link's fragment, so the
  * headset continues on the same cube in the same session.
  *
- * "Open on Headset" runs `adb reverse tcp:P tcp:P` (the headset's localhost:P
+ * With the VisIVO VR headset app (issue #255, VrAppLauncher), "Open on
+ * Headset" installs or updates the app when needed, checks that the backend
+ * lists it, forwards the port, checks that the headset is awake, asks the
+ * backend for a one-time ticket and starts the app with ONE `am start`; the
+ * user is in VR with no browser window and no Enter VR. A page already
+ * connected takes the cube with the hub's `show` instead: never a second
+ * launch. The section says whether the app is installed and current, and
+ * offers Install / Update. Without the app (no APK with this build) the
+ * browser way below stays, and "Open in Browser" keeps it reachable.
+ *
+ * The browser way: "Open on Headset" runs `adb reverse tcp:P tcp:P` (the headset's localhost:P
  * becomes this computer's, so the page is a secure context for WebXR without a
  * certificate), then `am start` with a VIEW intent for the Quest Browser.
  * "Copy Link" is for doing the same by hand.
@@ -119,6 +131,21 @@ private:
     /// WA_DeleteOnClose deletes the dialog only later.
     void stopAll();
     void openPage(const QString &serial, const QString &package);
+    /// The browser way (#172) on @p serial: adb reverse, then the Quest Browser.
+    void openInBrowser(const QString &serial);
+    // ── The VisIVO VR app (issue #255) ─────────────────────────────────────
+    /// What the launcher needs for @p serial.
+    VrAppLauncher::Target appTarget(const QString &serial) const;
+    /// Ask the headset which version of the app it has (once per device).
+    void checkApp();
+    /// The app's line and the Install / Update button, from m_app and m_appState.
+    void showApp();
+    void installApp();
+    /// The launcher ended an install or an open.
+    void appFinished(VrAppLauncher::Outcome outcome, const QString &message, const QString &client);
+    /// Send the cube to a page already connected, from the USB section
+    /// (without the app: the app's page or a USB page, VrHeadsetApp::decideOpen).
+    void showFromUsb(const QString &client);
     void copyLink();
     /// Run adb with @p args; @p done gets how it ended, its exit code and its
     /// merged output. One at a time: the buttons are off meanwhile, except for
@@ -224,6 +251,17 @@ private:
     QToolButton *m_advancedToggle{ nullptr };
     QWidget *m_advancedPanel{ nullptr };
     bool m_usbStarted{ false };
+
+    // The VisIVO VR app (issue #255)
+    VrAppLauncher *m_launcher{ nullptr };
+    VrHeadsetApp::AppInfo m_app;           ///< the APK at hand ('ok' false: none)
+    VrHeadsetApp::Installed m_appState{ VrHeadsetApp::Installed::Unknown };
+    qint64 m_appInstalledVersion{ -1 };
+    QString m_appCheckedSerial;            ///< the device m_appState is about
+    QLabel *m_appLabel{ nullptr };
+    QPushButton *m_installButton{ nullptr };
+    QPushButton *m_browserButton{ nullptr };
+    bool m_usbShowing{ false };            ///< a show from the USB section is out
 
     VrLink::Link m_link;
     QStringList m_secrets;   ///< token and session id: redacted from all output

@@ -32,6 +32,29 @@ The status bar of a cube window says when a headset is connected: *Headset:
 in VR · m33.fits*, or *Headset: connected* when it is not in VR (hover it for
 the details).
 
+## Open on Headset with the VisIVO VR app
+
+Under **Advanced (USB cable)**, when this build of the desktop comes with the
+headset app ([The headset app](headset-app.md)), the section says whether
+VisIVO VR is installed and current on the headset and offers **Install** or
+**Update**. **Open on Headset** then installs it when needed and starts it
+straight in VR: *Starting on the headset…*, then *In VR*. Without the app,
+**Open on Headset** opens the page in the Quest Browser, as before.
+
+The app is started once per Open, and never while a page of it (or any page
+of this session) is connected: **Open on Headset** then sends the cube with
+the hub's `show`, like **Show on Headset**. The desktop looks at the hub both
+before it does anything and again right before the launch. An asleep headset
+is told apart before the launch (*Put the headset on, then press Open
+again.*); a launch the headset never takes up within 8 s says the same, and
+an app that starts but does not connect within 10 s more says *VisIVO VR
+started but could not connect to this computer*.
+
+The launch carries a one-time ticket, never the token; neither the ticket
+nor the token appears in the desktop's log, its messages or **Copy Error**.
+The routes are in the backend API's
+[headset app launch](../../backend-api/vr-launch.md).
+
 ## Headset Activity
 
 **Tools → Views → Headset Activity** opens a list in Inspector ▸ Parameters

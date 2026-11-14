@@ -8,6 +8,32 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Desktop: Open on Headset installs and starts the VisIVO VR app (#255).**
+  In **Open in VR Headset… → Advanced (USB cable)** the desktop says whether
+  the headset app is installed and current (`pm list packages
+  --show-versioncode` against the `version_code` of the `visivo-vr.json`
+  beside the APK) and offers **Install** / **Update**. **Open on Headset**
+  installs it when needed (asking before it uninstalls a build signed by
+  another key), checks that the backend lists the app at its origin's
+  `/.well-known/assetlinks.json`, forwards the port, checks that the headset
+  is awake (`dumpsys power`), asks for a one-time ticket and sends ONE
+  `am start`; then it follows `GET /v1/vr/launch/{launch}`: *Starting on the
+  headset…*, *In VR*, or after 8 s *Put the headset on, then press Open
+  again* and after 10 s more *VisIVO VR started but could not connect to
+  this computer*. A page already connected in the session gets the hub's
+  `show` instead of a launch, checked before anything and again right before
+  the launch. The ticket is never logged (redacted from every adb line and
+  message) and the token is never in the intent. The APK is found in
+  `$VISIVO_QUEST_APK`, the desktop's resources (`quest-app/`), or the source
+  tree's `tools/quest-app/out/` for development; without one the Quest
+  Browser page stays (also as **Open in Browser**). Widget-free:
+  `src/app/VrHeadsetApp.h` (commands, parsing, the launch tracker, the
+  one-launch rule) and `src/app/VrAppLauncher` (the chain), tested against a
+  fake adb and a fake backend (`tests/test_vr_headset_app.cpp`). Measured on
+  a Quest 3 over USB with a development build: install 3 s, Open → *In VR*
+  1.3–1.6 s (`xr-start: immersive-vr, 90 Hz`), Open again → `show` in 2 ms
+  with no adb command, an asleep headset refused before any launch.
+
 - **VR: the refined frame of a point table drawn as splats is no longer almost
   black (#262, part of #261).** Holding still with *splats* replaced the
   page's picture by a frame close to the background (mean 14.3 against 13,

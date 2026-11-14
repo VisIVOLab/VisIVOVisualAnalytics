@@ -12,7 +12,9 @@
 #include <QHideEvent>
 #include <QShowEvent>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDateTime>
+#include <QMessageBox>
 #include <QDebug>
 #include <QDir>
 #include <QFontDatabase>
@@ -212,10 +214,17 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     adv->setContentsMargins(0, 0, 0, 0);
     pairSection->addWidget(m_advancedPanel);
 
+    // The APK this build can install (bundled, $VISIVO_QUEST_APK, or a
+    // development build in the source tree); none: the browser way only.
+    m_app = VrHeadsetApp::findApp(AdbHeadset::currentPlatform(), QCoreApplication::applicationDirPath(),
+                                  QProcessEnvironment::systemEnvironment());
     auto *intro = new QLabel(
-            u"Opens this cube in the browser of a Meta Quest connected to this computer "
-            u"with adb (USB cable, or adb over Wi-Fi), in the same backend session. "
-            u"Then press <i>Enter VR</i> on the page. %1"_s.arg(guideLink(u"How to set it up"_s)),
+            m_app.ok ? u"Opens this cube on a Meta Quest connected to this computer with adb (USB "
+                       u"cable, or adb over Wi-Fi), in the same backend session: the VisIVO VR app "
+                       u"starts straight in VR. %1"_s.arg(guideLink(u"How to set it up"_s))
+                     : u"Opens this cube in the browser of a Meta Quest connected to this computer "
+                       u"with adb (USB cable, or adb over Wi-Fi), in the same backend session. "
+                       u"Then press <i>Enter VR</i> on the page. %1"_s.arg(guideLink(u"How to set it up"_s)),
             m_advancedPanel);
     intro->setWordWrap(true);
     intro->setOpenExternalLinks(true);
@@ -228,6 +237,19 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     m_backendLabel->setWordWrap(true);
     m_backendLabel->setVisible(m_link.ok);
     adv->addWidget(m_backendLabel);
+
+    // The VisIVO VR app on the headset: installed and current, or not.
+    auto *appRow = new QHBoxLayout;
+    m_appLabel = new QLabel(m_advancedPanel);
+    m_appLabel->setTextFormat(Qt::PlainText);
+    m_appLabel->setWordWrap(true);
+    appRow->addWidget(m_appLabel, 1);
+    m_installButton = new QPushButton(u"Install"_s, m_advancedPanel);
+    m_installButton->setToolTip(u"Install the VisIVO VR app on the headset (Open on Headset also "
+                                u"does it when needed)."_s);
+    m_installButton->setVisible(false);
+    appRow->addWidget(m_installButton, 0, Qt::AlignTop);
+    adv->addLayout(appRow);
 
     m_stateLabel = new QLabel(m_advancedPanel);
     m_stateLabel->setWordWrap(true);
@@ -274,9 +296,20 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     m_copyButton = new QPushButton(u"Copy Link"_s, m_advancedPanel);
     m_copyButton->setToolTip(u"Copy the link, token included, to open it by hand: forward the "
                              u"port with adb reverse first."_s);
+    // With the app, the browser page stays one click away (a headset where
+    // the app cannot be installed, or to compare).
+    m_browserButton = new QPushButton(u"Open in Browser"_s, m_advancedPanel);
+    m_browserButton->setToolTip(u"Open the page in the Quest Browser instead of the VisIVO VR app; "
+                                u"then press Enter VR on the page."_s);
+    m_browserButton->setVisible(m_app.ok);
     m_openButton = new QPushButton(u"Open on Headset"_s, m_advancedPanel);
+    if (m_app.ok)
+        m_openButton->setToolTip(u"Start the VisIVO VR app in VR on the headset (installed or "
+                                 u"updated first when needed). A headset already showing a cube "
+                                 u"gets this one instead."_s);
     usbButtons->addWidget(m_copyButton);
     usbButtons->addStretch();
+    usbButtons->addWidget(m_browserButton);
     usbButtons->addWidget(m_openButton);
     adv->addLayout(usbButtons);
     m_advancedPanel->setVisible(false);
@@ -293,7 +326,51 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     connect(m_copyButton, &QPushButton::clicked, this, &VrHeadsetDialog::copyLink);
     connect(m_copyErrorButton, &QPushButton::clicked, this, &VrHeadsetDialog::copyError);
     connect(close, &QPushButton::clicked, this, &QDialog::close);
-    connect(m_deviceCombo, &QComboBox::currentIndexChanged, this, [this]() { setBusy(false); });
+    connect(m_deviceCombo, &QComboBox::currentIndexChanged, this, [this]() {
+        setBusy(false);
+        checkApp();   // another headset: another install state
+    });
+    connect(m_browserButton, &QPushButton::clicked, this, [this]() {
+        if (m_process || m_launcher->busy())
+            return;
+        const QString serial = selectedSerial();
+        if (m_backendBlocked || serial.isEmpty() || !m_deviceReady || !m_readySerials.contains(serial)) {
+            setResult(u"The chosen headset is not ready: see the state above."_s, true);
+            return;
+        }
+        openInBrowser(serial);
+    });
+    connect(m_installButton, &QPushButton::clicked, this, &VrHeadsetDialog::installApp);
+
+    m_launcher = new VrAppLauncher(this);
+    connect(m_launcher, &VrAppLauncher::progress, this, [this](const QString &text) { setResult(text, false); });
+    connect(m_launcher, &VrAppLauncher::checked, this,
+            [this](VrHeadsetApp::Installed state, qint64 installed, const QString &error) {
+                m_appState = state;
+                m_appInstalledVersion = installed;
+                if (state == VrHeadsetApp::Installed::Unknown)
+                    m_appCheckedSerial.clear();   // asked again with the next device check
+                if (!error.isEmpty())
+                    qInfo().noquote() << "VR headset app: version check:" << redacted(error);
+                showApp();
+                setBusy(m_process && !m_backgroundRun);
+            });
+    connect(m_launcher, &VrAppLauncher::uninstallRequested, this, [this](const QString &package) {
+        // Not exec(): the dialog may close while the question is open, and a
+        // nested event loop would then return into a deleted dialog.
+        auto *box = new QMessageBox(
+                QMessageBox::Question, u"Another VisIVO VR Is Installed"_s,
+                u"The headset has another build of VisIVO VR (%1), signed by another key: this one "
+                u"cannot be installed over it.\n\nUninstall it from the headset and install this "
+                u"one?"_s.arg(package),
+                QMessageBox::Yes | QMessageBox::No, this);
+        box->setDefaultButton(QMessageBox::No);
+        box->setAttribute(Qt::WA_DeleteOnClose);
+        connect(box, &QMessageBox::finished, m_launcher,
+                [launcher = m_launcher](int result) { launcher->answerUninstall(result == QMessageBox::Yes); });
+        box->open();
+    });
+    connect(m_launcher, &VrAppLauncher::finished, this, &VrHeadsetDialog::appFinished);
     connect(m_newCodeButton, &QPushButton::clicked, this, &VrHeadsetDialog::newCode);
     connect(m_disconnectButton, &QPushButton::clicked, this, &VrHeadsetDialog::disconnectHeadsets);
     connect(m_advancedToggle, &QToolButton::toggled, this,
@@ -309,7 +386,8 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     connect(m_pollTimer, &QTimer::timeout, this, [this]() {
         // Also once a headset is ready: unplugged, it must stop saying Ready.
         // Never over a command still running (an open in progress included).
-        if (!m_process && isVisible())
+        // Nor over the app's install or launch: its adb steps come first.
+        if (!m_process && !m_launcher->busy() && isVisible())
             refreshDevices(/*background=*/true);
     });
 
@@ -331,9 +409,12 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
         m_refreshButton->setEnabled(false);
         m_openButton->setEnabled(false);
         m_copyButton->setEnabled(false);
+        m_browserButton->setEnabled(false);
+        m_appLabel->setVisible(false);
     } else {
         const QString under =
                 m_link.prefix.isEmpty() ? QString() : u" under %1"_s.arg(m_link.prefix);
+        showApp();
         m_backendLabel->setText(
                 m_link.remote
                         ? u"Backend: remote, through this computer's tunnel at localhost:%1%2. "
@@ -945,6 +1026,13 @@ void VrHeadsetDialog::stopAll()
     m_pollGate.reset();
     // A show still out is dropped with the rest: the button comes back.
     m_showing = false;
+    m_usbShowing = false;
+    // An install or launch under way: its command is killed, its answers
+    // dropped. A launch already sent stays on the headset; the next Open
+    // finds its page in the hub and shows the cube there.
+    if (m_launcher)
+        m_launcher->cancel();
+    m_appCheckedSerial.clear();
 }
 
 void VrHeadsetDialog::closeEvent(QCloseEvent *event)
@@ -991,7 +1079,10 @@ void VrHeadsetDialog::showEvent(QShowEvent *event)
 
 QString VrHeadsetDialog::redacted(const QString &text) const
 {
-    return VrLink::redact(text, m_secrets);
+    // The launcher knows the tickets of its launches; any other `ticket=`
+    // value goes too.
+    const QString out = VrLink::redact(text, m_secrets);
+    return m_launcher ? m_launcher->redact(out) : VrHeadsetApp::redactTicket(out);
 }
 
 QString VrHeadsetDialog::selectedSerial() const
@@ -1001,9 +1092,14 @@ QString VrHeadsetDialog::selectedSerial() const
 
 void VrHeadsetDialog::setBusy(bool busy)
 {
+    // The app's install or launch keeps everything that would start another
+    // one disabled until it ends (one launch at a time, issue #255).
+    busy = busy || (m_launcher && m_launcher->busy()) || m_usbShowing;
     m_refreshButton->setEnabled(!busy && m_link.ok);
-    m_openButton->setEnabled(!busy && m_link.ok && m_deviceReady && !m_backendBlocked
-                             && !selectedSerial().isEmpty());
+    const bool canOpen = !busy && m_link.ok && m_deviceReady && !m_backendBlocked && !selectedSerial().isEmpty();
+    m_openButton->setEnabled(canOpen);
+    m_browserButton->setEnabled(canOpen);
+    m_installButton->setEnabled(canOpen);
     m_deviceCombo->setEnabled(!busy);
 }
 
@@ -1257,12 +1353,21 @@ void VrHeadsetDialog::showDevices(const QList<AdbHeadset::Device> &devices)
         AdbHeadset::Guidance g = AdbHeadset::guidanceFor(Status::Ready);
         g.headline = ready.size() > 1 ? u"%1 devices ready: choose the headset."_s.arg(ready.size())
                                       : u"Ready: %1"_s.arg(d.model.isEmpty() ? d.serial : d.model);
+        if (m_app.ok)
+            g.steps = QStringList{ u"Put the headset on and press Open on Headset: VisIVO VR starts "
+                                   u"straight in VR (installed first when needed)."_s };
         setGuidance(g);
     } else {
         setGuidance(AdbHeadset::guidanceFor(
                 status, m_noDevice ? m_usbQuest : AdbHeadset::UsbQuest::Unknown));
+        if (m_appState != VrHeadsetApp::Installed::Unknown || !m_appCheckedSerial.isEmpty()) {
+            m_appState = VrHeadsetApp::Installed::Unknown;
+            m_appCheckedSerial.clear();
+            showApp();
+        }
     }
     setBusy(false);
+    checkApp();
 }
 
 void VrHeadsetDialog::openOnHeadset()
@@ -1296,6 +1401,28 @@ void VrHeadsetDialog::startOpen(const QString &serial)
                   true);
         return;
     }
+    if (m_launcher->busy())
+        return;   // an install or launch is under way: one at a time
+    if (m_app.ok) {
+        // The app (issue #255): the launcher shows the cube on a page already
+        // connected, or installs, checks and starts the app with one launch.
+        m_lastOpenSerial = serial;
+        m_launcher->open(appTarget(serial));
+        setBusy(true);
+        return;
+    }
+    // No app: a page of the app or a USB page already connected still takes
+    // the cube, so this headset does not end up with a second page.
+    const VrHeadsetApp::OpenDecision d = VrHeadsetApp::decideOpen(false, false, m_headsets);
+    if (d.action == VrHeadsetApp::OpenAction::Show) {
+        showFromUsb(d.client);
+        return;
+    }
+    openInBrowser(serial);
+}
+
+void VrHeadsetDialog::openInBrowser(const QString &serial)
+{
     m_lastOpenSerial = serial;
     setResult(u"Forwarding port %1 to the headset…"_s.arg(m_link.port), false);
     runAdb(AdbHeadset::reverseArgs(serial, m_link.port), kCommandTimeoutMs,
@@ -1361,4 +1488,168 @@ void VrHeadsetDialog::copyLink()
               u"adb reverse tcp:%1 tcp:%1; paste it only into your own headset's browser."_s
                       .arg(m_link.port),
               false);
+}
+
+// ── The VisIVO VR app (issue #255) ──────────────────────────────────────────
+
+VrAppLauncher::Target VrHeadsetDialog::appTarget(const QString &serial) const
+{
+    VrAppLauncher::Target t;
+    t.adb = m_adb;
+    t.serial = serial;
+    t.app = m_app;
+    t.inputs = m_inputs;
+    // The token the pairing client ended up with (a local backend restarted
+    // with a new one): the launch's requests then skip the 401.
+    if (!m_pairClient.token().isEmpty())
+        t.inputs.token = m_pairClient.token();
+    t.link = m_link;
+    return t;
+}
+
+void VrHeadsetDialog::checkApp()
+{
+    // Not when an Open is queued behind the device check: the Open runs next
+    // and checks the version itself; a check started now would keep the
+    // launcher busy and the Open would be dropped.
+    if (!m_app.ok || !m_link.ok || m_closed || !m_usbStarted || m_adb.isEmpty() || m_launcher->busy()
+        || m_openQueued)
+        return;
+    const QString serial = selectedSerial();
+    if (serial.isEmpty() || !m_deviceReady || !m_readySerials.contains(serial) || serial == m_appCheckedSerial)
+        return;
+    m_appCheckedSerial = serial;
+    m_appState = VrHeadsetApp::Installed::Unknown;
+    showApp();
+    m_launcher->check(appTarget(serial));
+    // A fraction of a second: Open waits for it rather than racing it.
+    setBusy(true);
+}
+
+void VrHeadsetDialog::showApp()
+{
+    if (!m_link.ok)
+        return;
+    m_appLabel->setVisible(true);
+    m_installButton->setVisible(false);
+    if (!m_app.ok) {
+        // An APK the user named but cannot be used is worth saying; a build
+        // without one is the ordinary case.
+        const bool named = !QProcessEnvironment::systemEnvironment().value(u"VISIVO_QUEST_APK"_s).isEmpty();
+        m_appLabel->setText(named ? m_app.error + u" Open on Headset opens the page in the Quest Browser."_s
+                                  : u"The VisIVO VR app does not come with this build: Open on Headset "
+                                    u"opens the page in the Quest Browser."_s);
+        return;
+    }
+    const QString build = m_app.development ? u" (development build)"_s : QString();
+    using VrHeadsetApp::Installed;
+    switch (m_appState) {
+    case Installed::Unknown:
+        m_appLabel->setText(m_deviceReady && !m_appCheckedSerial.isEmpty()
+                                    ? u"VisIVO VR %1%2: checking the headset…"_s.arg(m_app.versionName, build)
+                                    : u"VisIVO VR %1%2 can be installed on the headset."_s.arg(m_app.versionName,
+                                                                                              build));
+        break;
+    case Installed::Absent:
+        m_appLabel->setText(u"VisIVO VR %1%2 is not installed on the headset: Open on Headset installs "
+                            u"it, then starts it."_s.arg(m_app.versionName, build));
+        m_installButton->setText(u"Install"_s);
+        m_installButton->setVisible(true);
+        break;
+    case Installed::Older:
+        m_appLabel->setText(u"The headset has an older VisIVO VR (version code %1; this computer has %2, "
+                            u"code %3%4): Open on Headset updates it."_s.arg(m_appInstalledVersion)
+                                    .arg(m_app.versionName)
+                                    .arg(m_app.versionCode)
+                                    .arg(build));
+        m_installButton->setText(u"Update"_s);
+        m_installButton->setVisible(true);
+        break;
+    case Installed::Current:
+        m_appLabel->setText(u"VisIVO VR%1 is installed and current on the headset: Open on Headset puts "
+                            u"you straight in VR."_s.arg(build));
+        break;
+    }
+}
+
+void VrHeadsetDialog::installApp()
+{
+    if (m_process || m_launcher->busy() || !m_app.ok)
+        return;
+    const QString serial = selectedSerial();
+    if (serial.isEmpty() || !m_deviceReady || !m_readySerials.contains(serial)) {
+        setResult(u"The chosen headset is not ready: see the state above."_s, true);
+        return;
+    }
+    m_launcher->install(appTarget(serial));
+    setBusy(true);
+}
+
+void VrHeadsetDialog::appFinished(VrAppLauncher::Outcome outcome, const QString &message,
+                                  const QString &client)
+{
+    Q_UNUSED(client)
+    using O = VrAppLauncher::Outcome;
+    if (outcome == O::Cancelled) {
+        setBusy(m_process && !m_backgroundRun);
+        return;
+    }
+    const bool ok = outcome == O::InVr || outcome == O::Shown || outcome == O::Installed;
+    // The launcher's messages hold no ticket; redacted all the same, as
+    // everything shown here.
+    const QString text = redacted(message);
+    setResult(text, !ok);
+    if (outcome == O::InVr || outcome == O::Shown) {
+        QSettings().setValue(kLastSerialKey, m_lastOpenSerial);
+        // The page in the hub now: the connected-headset view follows.
+        checkHeadsets(/*quiet=*/true);
+    }
+    // The USB section may be hidden behind that view already (the page's
+    // hello came before the launch status said so): said there too.
+    if (m_pairSection->isHidden() && (outcome == O::InVr || outcome == O::Shown)) {
+        m_hubResult->setVisible(true);
+        m_hubResult->setStyleSheet(QString());
+        m_hubResult->setText(text);
+    }
+    showApp();
+    setBusy(m_process && !m_backgroundRun);
+}
+
+void VrHeadsetDialog::showFromUsb(const QString &client)
+{
+    if (m_usbShowing || client.isEmpty())
+        return;
+    m_usbShowing = true;
+    setBusy(true);
+    setResult(u"A headset page is already connected: sending the cube to it…"_s, false);
+    const QJsonObject body = VrHub::showCommandBody(m_inputs, client);
+    QPointer<VrHeadsetDialog> self(this);
+    runPairRequest(
+            [body](const BackendClient &c) {
+                const BackendVrHubReply hub = c.sendVrHeadsetCommand(body);
+                BackendVrPairReply reply;
+                reply.httpStatus = hub.httpStatus;
+                reply.error = hub.error;
+                reply.body = hub.body;
+                return reply;
+            },
+            [this](const BackendVrPairReply &reply) {
+                m_usbShowing = false;
+                const VrHub::CommandResult r = VrHub::interpretCommand(reply.httpStatus, reply.body, reply.error);
+                if (r.outcome == VrHub::CommandResult::Outcome::Sent) {
+                    setResult(u"Sent: the headset shows this cube now."_s, false);
+                    checkHeadsets(/*quiet=*/true);
+                } else {
+                    if (r.outcome == VrHub::CommandResult::Outcome::NoHeadset)
+                        m_headsets.clear();   // the next Open opens the page instead
+                    setResult(r.message + u" Press Open on Headset again."_s, true);
+                }
+                setBusy(m_process && !m_backgroundRun);
+            },
+            [self](const BackendVrPairReply &, const BackendClient &) {
+                if (self) {
+                    self->m_usbShowing = false;
+                    self->setBusy(self->m_process && !self->m_backgroundRun);
+                }
+            });
 }

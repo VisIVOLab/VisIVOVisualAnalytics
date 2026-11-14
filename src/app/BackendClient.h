@@ -2620,6 +2620,16 @@ public:
      *  follow it with their own long poll (HeadsetHubLink); this is the
      *  one-shot read. */
     BackendVrHubReply vrActivity(qint64 after, int waitS = 0) const;
+    // ── Headset app launch (issue #255) ─────────────────────────────────────
+    /** POST /v1/vr/launch — a one-time ticket for ONE launch of the headset
+     *  app, with the cube it opens (VrHeadsetApp::launchRequestBody). The
+     *  reply body holds the ticket: VrHeadsetApp::parseTicket reads it and
+     *  nothing logs it. Blocking: call it from a worker. */
+    BackendVrHubReply createVrLaunch(const QJsonObject &body) const;
+    /** GET /v1/vr/launch/{launch} — pending, exchanged or expired, and the
+     *  hub page whose hello named the launch (VrHeadsetApp::parseLaunchStatus).
+     *  Polled while a launch is followed, so it is quiet in Diagnostics. */
+    BackendVrHubReply vrLaunchStatus(const QString &launch) const;
 
     /** DELETE /v1/tasks/{id} — ask the backend to cancel a running or pending
      *  task. True when it accepted; ``error`` says why not (404: no such
