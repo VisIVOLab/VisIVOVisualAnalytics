@@ -20,7 +20,7 @@ export function guidePages({ leftHanded = false } = {}) {
       lines: [
         `Your ${r.primary} hand points and acts: its trigger uses what its ray points at.`,
         `Your ${r.secondary} hand holds the menu. Either grip grabs the cube; both grips move, turn and scale it.`,
-        'Labels by the buttons say what each one does now (Settings turns them off). Left-handed? Menu → Settings.',
+        `Turn a wrist towards your eyes, as to read a watch: the ${r.primary} one says what the buttons do now, the ${r.secondary} one shows the cube and the selection's numbers. Left-handed? Menu → Settings.`,
       ],
     },
     {
@@ -34,7 +34,7 @@ export function guidePages({ leftHanded = false } = {}) {
     {
       title: 'Three modes',
       lines: [
-        `${P.lower}: next mode. The mode is shown above the ${r.primary} controller and next to the cursor.`,
+        `${P.lower}: next mode. The mode is on your wrists and next to the cursor; a change is told low in the view.`,
         'Explore: stick ↕ threshold, ↔ opacity. Select: the trigger takes a spectrum, a lasso seed or a box corner.',
         'Clip: the stick moves and widens the velocity slab; in the box tool, hold the trigger to drag a face.',
         `${r.secondary} stick ←/→: the next tool of the mode.   ${P.upper}: undo.   ${S.upper}: reset the view.`,

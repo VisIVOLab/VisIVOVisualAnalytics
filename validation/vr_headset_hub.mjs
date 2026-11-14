@@ -71,8 +71,10 @@ export async function runHeadsetHubChecks({ c, check, waitFor, api, base, token,
   const f0 = await c.evaluate('window.__xrfake.frames');
   const t0 = Date.now();
   const sent = await json('POST', '/v1/vr/headset/command', session, { type: 'show', dataset_id: otherId, path: other });
-  // The notice naming the cube, caught while it is up.
-  const notice = await waitFor(c, `(() => { const n = window.__vrShell.notices.current(); return n && n.id === 'cube-from-desktop' ? n.title : ''; })()`, 15000, 50);
+  // The notice naming the cube, caught while it is up: in VR a toast low in
+  // the view (issue #256), not the card.
+  const notice = await waitFor(c, `(() => { const n = window.__vrShell.notices.current(); if (n && n.id === 'cube-from-desktop') return n.title;
+    const t = window.__vrWrist && window.__vrWrist().toast; return t && /from the computer/.test(t.text) ? t.text : ''; })()`, 15000, 50);
   const shown = await waitFor(c, `window.__vrState.loading === 0 && window.__vrState.openPath === ${JSON.stringify(other)} && !window.__vrTex3D().staged`, 60000, 50);
   const showMs = Date.now() - t0;
   await sleep(400);
@@ -85,7 +87,7 @@ export async function runHeadsetHubChecks({ c, check, waitFor, api, base, token,
     sent.status === 200 && shown.value && after.xr && after.active && after.frames > f0 && tabs1 === tabs0 && allocsIn(p1) === allocsIn(p0),
     JSON.stringify({ status: sent.status, ms: showMs, tabs: [tabs0, tabs1], allocsInVR: [allocsIn(p0), allocsIn(p1)], dims: after.dims }));
   const otherName = other.split('/').pop();
-  check('hub: a short notice names the cube sent from the desktop', String(notice.value || '').includes(otherName) && /from the computer/.test(notice.value || ''),
+  check('hub: a short notice (in VR a toast) names the cube sent from the desktop', String(notice.value || '').includes(otherName) && /from the computer/.test(notice.value || ''),
     `${notice.value || '(none)'} / then ${after.title}`);
   for (let i = 0; i < 40; i++) { listed = (await pages(session)).find((p) => p.client === client); if (listed && listed.cube && listed.cube.path === other) break; await sleep(100); }
   check('hub: the state follows (the new cube on show, still in VR)', !!listed && listed.in_vr && listed.cube && listed.cube.path === other && listed.cube.dataset_id === otherId);

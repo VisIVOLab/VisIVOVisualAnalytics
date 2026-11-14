@@ -19,7 +19,7 @@ export const DEFAULT_SETTINGS = {
   tool: 'probe',
   guideSeen: false,              // the first-run controls guide was shown (epic #166)
   leftHanded: false,             // the left hand points and acts, the right holds the menu (#201)
-  labels: true,                  // the labels by the controllers' buttons, on at first use (#201)
+  labels: true,                  // the button legend (#201), on the primary wrist since #256
   haptics: true,                 // pulses on a press, a result, an error (#201)
   windows: {},                   // {result|moment|pv: {right, up, fwd, yaw}}: offsets from the cube's first placement
 };
