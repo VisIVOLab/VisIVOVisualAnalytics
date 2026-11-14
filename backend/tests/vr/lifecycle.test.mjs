@@ -313,8 +313,11 @@ test('every way a cube is installed bumps the load generation (main.js)', async 
     assert.ok(i >= 0, name);
     return main.slice(i, main.indexOf('\n}\n', i));
   };
-  // installCube is where a cube goes on show: synthetic, benchmark and backend loads alike.
-  assert.match(body('installCube'), /state\.loadGen\+\+/);
+  // installCube is where a cube goes on show: synthetic, benchmark and backend
+  // loads alike, every one through showInstalled (issue #246: after the skip grid).
+  assert.match(body('showInstalled'), /state\.loadGen\+\+/);
+  assert.match(body('installCube'), /showInstalled\(/);
+  assert.match(body('installPrepared'), /showInstalled\(/);
   assert.match(body('loadSynthetic'), /installCube\(/);
   assert.match(body('loadReduced'), /installCube\(/);
   // The recovery reads the generation before its first await.
@@ -447,10 +450,12 @@ test('loads: a slower older load never replaces the newer one, and keeps its own
 test('main.js passes the started path to installCube, never the field', async () => {
   const { readFileSync } = await import('node:fs');
   const main = readFileSync(new URL('../../app/static/vr/js/main.js', import.meta.url), 'utf8');
-  const i = main.indexOf('function installCube(');
-  const body = main.slice(i, main.indexOf('\n}\n', i));
-  assert.doesNotMatch(body, /\$\('path'\)/, 'installCube must not read the path field');
-  assert.match(body, /state\.openPath = open \? path : ''/);
+  const fn = (name) => { const i = main.indexOf(`function ${name}(`); return main.slice(i, main.indexOf('\n}\n', i)); };
+  // installCube, the install after the worker, and where the page's state is set (issue #246).
+  for (const name of ['installCube', 'installPrepared', 'showInstalled']) {
+    assert.doesNotMatch(fn(name), /\$\('path'\)/, `${name} must not read the path field`);
+  }
+  assert.match(fn('showInstalled'), /state\.openPath = open \? path : ''/);
   assert.match(main, /installCube\(info, cube, open, ticket\.path\)/);
   // Every backend load checks it is still the newest after its transfer.
   const lr = main.slice(main.indexOf('async function loadReduced('));
