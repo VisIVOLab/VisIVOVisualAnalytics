@@ -468,6 +468,23 @@ void TestCatalogueParser::placement_pickLinesNameTheOrigin()
              qPrintable(lines.value(0)));
 }
 
+void TestCatalogueParser::placement_headsetSkyRefusesCustom()
+{
+    // Issue #260: the headset gets the applied frame, mode and named model;
+    // Custom is flagged for the window to go back to Planck18 (and say so),
+    // never passed on, nor turned into Planck18 in silence.
+    auto h = CataloguePlacement::headsetSky(u"supergalactic"_s, true, u"WMAP9"_s);
+    QCOMPARE(h.sky.frame, u"supergalactic"_s);
+    QCOMPARE(h.sky.distanceMode, u"redshift_space"_s);
+    QCOMPARE(h.sky.cosmology, u"WMAP9"_s);
+    QVERIFY(!h.refuseCustom);
+    h = CataloguePlacement::headsetSky(u"fk5"_s, false, u"Custom"_s);
+    QVERIFY(h.refuseCustom);
+    QCOMPARE(h.sky.cosmology, u"Planck18"_s);
+    QCOMPARE(h.sky.distanceMode, u"comoving"_s);
+    QCOMPARE(CataloguePlacement::headsetSky(u"fk5"_s, false, QString()).sky.cosmology, u"Planck18"_s);
+}
+
 void TestCatalogueParser::placement_unplacedRows()
 {
     const auto s = skySchema();

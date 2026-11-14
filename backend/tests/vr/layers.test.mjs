@@ -29,6 +29,12 @@ test('a sample is read back from its headers and body', () => {
     'X-Visivo-Color-Range': '1,100', 'X-Visivo-Color-Log': '1', 'X-Visivo-Data-Range': '0.5,100' }));
   assert.equal(info.count, 2);
   assert.ok(info.colourLog);
+  // No X-Visivo-Placed-Rows (an older backend): every row counts.
+  assert.equal(info.placedRows, 10);
+  // A sky catalogue's unplaced rows are not counted for the splat size (#265).
+  const sky = PT.sampleInfo(hdr({ 'X-Visivo-Count': '2', 'X-Visivo-Total-Rows': '10', 'X-Visivo-Placed-Rows': '7' }));
+  assert.equal(sky.totalRows, 10);
+  assert.equal(sky.placedRows, 7);
   const buf = new Uint16Array([0, 0, 0, 65535, 65535, 65535, 0, 65535]).buffer;
   const a = PT.sampleArrays(buf, info);
   assert.deepEqual(PT.rowPosition(a.positions, 1, info.bounds), [10, 1, 2]);

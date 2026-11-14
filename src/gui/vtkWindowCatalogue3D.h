@@ -2,6 +2,7 @@
 #define vtkWindowCatalogue3D_h
 
 #include "Catalogue3DParser.h"
+#include "CataloguePlacement.h"
 
 #include "app/BackendClient.h"
 #include "app/SampProtocol.h"
@@ -292,6 +293,9 @@ private:
     /// The "Unplaced sources" table: Name, RA, Dec, cz [km/s], Reason.
     void showUnplacedSources();
     QPointer<QDialog> m_unplacedDialog;
+    /// The rows the open table lists, to rebuild it when they change.
+    std::vector<qint64> m_unplacedDialogKey;
+    std::vector<qint64> unplacedRowKey() const;
     /// H0 of the applied cosmology into the schema, for the redshift-space
     /// distance (issue #260). Called wherever m_appliedCosmologyModel changes.
     void applyHubbleConstant();
@@ -395,6 +399,8 @@ private:
     /// The applied frame, distance mode and cosmology the headset places a
     /// sky catalogue with (issue #260); empty for a Cartesian table or a VBT.
     VrLink::Sky vrSky() const;
+    /// The same, and whether the applied model is Custom (refused).
+    CataloguePlacement::HeadsetSky headsetSky() const;
     /// An open headset dialog follows a change of them (its next show).
     void pushSkyToVrDialog();
     /// The custom model the positions on screen were computed with (valid

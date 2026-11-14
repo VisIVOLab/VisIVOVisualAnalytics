@@ -418,8 +418,10 @@ void vtkWindowCatalogue3D::buildControlPages()
         this->m_placementStatus->setWordWrap(true);
         this->m_placementStatus->setStyleSheet(VisivoTheme::infoKeyStyleSheet());
         this->m_placementStatus->setToolTip(
-                u"A source with no distance column and a redshift that is ≤ 0, zero (not "
+                u"A source with no usable distance value and a redshift that is ≤ 0, zero (not "
                 u"measured) or missing has no distance: it is left out of the scene.\n"
+                u"A catalogue with no redshift and no distance column at all is shown on the "
+                u"celestial sphere instead.\n"
                 u"Below cz = 1000 km/s a distance from the redshift is uncertain by 30 % "
                 u"or more: peculiar velocities are about 300 km/s."_s);
         cosmoLayout->addWidget(this->m_placementStatus);
@@ -1113,13 +1115,34 @@ void vtkWindowCatalogue3D::refreshPlacementStatus()
     }
     if (this->m_actionUnplaced)
         this->m_actionUnplaced->setEnabled(any);
+    // An open table follows a filter or another page: closed when there is
+    // nothing left to list, rebuilt when the rows changed.
+    if (this->m_unplacedDialog) {
+        if (!any)
+            this->m_unplacedDialog->close();
+        else if (this->unplacedRowKey() != this->m_unplacedDialogKey)
+            this->showUnplacedSources();
+    }
+}
+
+std::vector<qint64> vtkWindowCatalogue3D::unplacedRowKey() const
+{
+    // Which rows the table lists (their rows in the file, else their ids).
+    std::vector<qint64> key;
+    key.reserve(this->unplacedEntries.size());
+    for (const auto &e : this->unplacedEntries)
+        key.push_back(e.sourceRow >= 0 ? e.sourceRow : -1 - e.id);
+    return key;
 }
 
 void vtkWindowCatalogue3D::showUnplacedSources()
 {
+    QPoint where;
     if (this->m_unplacedDialog) {
-        this->m_unplacedDialog->close();   // rebuilt on the rows loaded now
+        where = this->m_unplacedDialog->pos();   // a rebuilt table stays where it was
+        this->m_unplacedDialog->close();         // rebuilt on the rows loaded now
     }
+    this->m_unplacedDialogKey = this->unplacedRowKey();
     const auto rows = CataloguePlacement::unplacedRows(this->unplacedEntries, this->schema);
     auto *dlg = new QDialog(this);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
@@ -1127,8 +1150,8 @@ void vtkWindowCatalogue3D::showUnplacedSources()
     dlg->setWindowTitle(u"Unplaced Sources"_s);
     auto *layout = new QVBoxLayout(dlg);
     auto *intro = new QLabel(
-            u"%L1 sources have no distance and are left out of the 3-D scene: no distance "
-            u"column, and a redshift that is ≤ 0, zero (not measured) or missing. A default "
+            u"%L1 sources have no distance and are left out of the 3-D scene: no usable "
+            u"distance value, and a redshift that is ≤ 0, zero (not measured) or missing. A default "
             u"distance would invent a position."_s.arg(rows.size()),
             dlg);
     intro->setWordWrap(true);
@@ -1163,6 +1186,8 @@ void vtkWindowCatalogue3D::showUnplacedSources()
     QObject::connect(buttons, &QDialogButtonBox::rejected, dlg, &QDialog::close);
     layout->addWidget(buttons);
     dlg->resize(620, 420);
+    if (!where.isNull())
+        dlg->move(where);
     this->m_unplacedDialog = dlg;
     dlg->show();
 }

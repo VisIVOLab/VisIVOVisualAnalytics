@@ -709,8 +709,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             // The sources with no distance, left out of the scene (issue #265).
             this->m_actionUnplaced = toolsMenu->addAction(u"Unplaced Sources…"_s);
             this->m_actionUnplaced->setToolTip(
-                    u"The sources left out of the scene for want of a distance: no distance "
-                    u"column, and a redshift that is ≤ 0, zero or missing."_s);
+                    u"The sources left out of the scene for want of a distance: no usable "
+                    u"distance value, and a redshift that is ≤ 0, zero or missing."_s);
             this->m_actionUnplaced->setEnabled(!this->unplacedEntries.empty());
             QObject::connect(this->m_actionUnplaced, &QAction::triggered, this,
                              &vtkWindowCatalogue3D::showUnplacedSources);
@@ -805,8 +805,12 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     QObject::connect(this->comboCosmology, &QComboBox::currentIndexChanged, this,
                      [this](int) {
                          const QString chosen = this->comboCosmology->currentText();
+                         // The headset window open on a sky catalogue counts as
+                         // a server view too: its points come from the backend.
+                         const bool headset = this->m_vrHeadsetDialog && !this->m_pointTable
+                                 && !this->schema.isCartesian();
                          if (chosen == visivo::cosmology::customName()
-                             && this->serverDrawsPositions()) {
+                             && (this->serverDrawsPositions() || headset)) {
                              // The backend places these sources itself and has
                              // no custom model: refuse rather than draw one
                              // universe here and another there.
@@ -814,7 +818,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                              this->comboCosmology->setCurrentText(this->m_appliedCosmologyModel);
                              this->statusBar()->showMessage(
                                      u"The custom cosmology is not available while the backend "
-                                     u"draws the points (ray-traced or server-side view): it "
+                                     u"draws the points (ray-traced, server-side or headset view): it "
                                      u"knows Planck18, Planck15, Planck13 and WMAP9 only."_s,
                                      8000);
                              return;

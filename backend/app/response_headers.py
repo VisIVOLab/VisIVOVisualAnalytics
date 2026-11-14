@@ -115,6 +115,9 @@ X_DATA_RANGE = "X-Visivo-Data-Range"
 X_SKY = "X-Visivo-Sky"
 X_UNPLACED = "X-Visivo-Unplaced"
 X_UNCERTAIN = "X-Visivo-Uncertain"
+# The rows a point sample was drawn from (the unplaced ones left out): the
+# sample's step and the page's splat size count these, not X-Visivo-Total-Rows.
+X_PLACED_ROWS = "X-Visivo-Placed-Rows"
 X_LINE_POINTS = "X-Visivo-Line-Points"
 X_LINES = "X-Visivo-Lines"
 X_ARROWS = "X-Visivo-Arrows"

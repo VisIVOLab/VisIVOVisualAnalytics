@@ -86,6 +86,11 @@ so values far from 0 keep distinct colours). Headers: `X-Visivo-Count`,
 and `X-Visivo-Data-Range` (the column's range over the sample). A sky
 catalogue adds `X-Visivo-Sky` (`frame,distance_mode,cosmology`),
 `X-Visivo-Unplaced` and `X-Visivo-Uncertain` (the counts of `sky_settings`).
+`X-Visivo-Placed-Rows` is the number of rows the sample was drawn from: a sky
+catalogue's rows without a position are never sampled, so the budget goes to
+rows that can be drawn, and `X-Visivo-Step` and the page's splat size count
+these (the point session's own sample and splats do the same);
+`X-Visivo-Total-Rows` is still every row of the table.
 
 The headset hub's `show` command and the app launch's `cube`
 (`/v1/vr/headset/command`, `/v1/vr/launch`) take the same placement as

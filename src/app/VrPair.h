@@ -543,6 +543,16 @@ private:
     bool m_everConnected{ false };
 };
 
+/// A code carries the sky placement it was asked with (issue #260) in its
+/// parameters: when the window's placement changes while the code is still
+/// unused, the dialog asks for a new one, or the headset that types it would
+/// place the catalogue the old way. A used or connected code is left alone.
+inline bool renewCodeForNewSky(const Tracker &t, qint64 nowMs, const VrLink::Sky &before,
+                               const VrLink::Sky &after)
+{
+    return before != after && t.codeOutstanding(nowMs);
+}
+
 /// One status poll at a time. Each poll gets a ticket; an answer counts only
 /// with the ticket of the poll out now. reset() (the dialog hidden, a new
 /// code) forgets the poll out, so the next one can start whatever becomes of

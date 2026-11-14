@@ -54,8 +54,12 @@ export function sampleInfo(get) {
   const num = (k, d = 0) => { const v = get(k); return v === null || v === undefined || v === '' ? d : Number(v); };
   const list = (k) => (get(k) || '').split(',').filter((v) => v !== '').map(Number);
   const field = get('X-Visivo-Color-Field') || null;
+  const totalRows = num('X-Visivo-Total-Rows');
   return {
-    count: num('X-Visivo-Count'), totalRows: num('X-Visivo-Total-Rows'), step: num('X-Visivo-Step', 1),
+    count: num('X-Visivo-Count'), totalRows, step: num('X-Visivo-Step', 1),
+    // The rows the sample was drawn from (a sky catalogue's unplaced ones
+    // left out, #265): the splat size counts these. An older backend: all.
+    placedRows: num('X-Visivo-Placed-Rows', totalRows),
     bounds: list('X-Visivo-Bounds'), axes: (get('X-Visivo-Axes') || 'X,Y,Z').split(','),
     colourField: field, colourRange: field ? list('X-Visivo-Color-Range') : null,
     colourLog: get('X-Visivo-Color-Log') === '1', dataRange: field ? list('X-Visivo-Data-Range') : null,

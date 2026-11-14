@@ -212,6 +212,17 @@ void TestVrPair::skyPlacementRidesEveryWayToTheHeadset()
     QVERIFY(!QJsonDocument(VrHub::showCommandBody(in)).toJson().contains("secret-token"));
     QVERIFY(!QJsonDocument(VrHeadsetApp::launchRequestBody(in)).toJson().contains("secret-token"));
 
+    // A code shown but unused carries the old placement: a change renews it;
+    // the same sky, an expired code or a used one does not.
+    VrLink::Sky galactic = in.sky;
+    galactic.frame = u"galactic"_s;
+    const VrPair::Tracker waiting = waitingTracker();
+    QVERIFY(VrPair::renewCodeForNewSky(waiting, kNow + 1000, in.sky, galactic));
+    QVERIFY(!VrPair::renewCodeForNewSky(waiting, kNow + 1000, in.sky, in.sky));
+    QVERIFY(!VrPair::renewCodeForNewSky(waiting, kNow + 10'000'000, in.sky, galactic));
+    VrPair::Tracker idle(u"cat_1"_s);
+    QVERIFY(!VrPair::renewCodeForNewSky(idle, kNow, in.sky, galactic));
+
     // The backend's models take what is sent (routers/headset.py).
     QFile h(QString::fromUtf8(VISIVO_REPO_ROOT) + u"/backend/app/routers/headset.py"_s);
     if (!h.open(QIODevice::ReadOnly))

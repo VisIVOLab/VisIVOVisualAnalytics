@@ -10,6 +10,7 @@
 // Widget-free and header-only: unit-tested in tests/test_catalogue_parser.cpp.
 
 #include "Catalogue3DParser.h"
+#include "app/VrLink.h"
 
 #include <QString>
 #include <QStringList>
@@ -144,6 +145,30 @@ inline std::vector<UnplacedRow> unplacedRows(const std::vector<Catalogue3DEntry>
         rows.push_back(r);
     }
     return rows;
+}
+
+/// What the headset is told about a sky catalogue's placement (issue #260),
+/// and whether the window's applied model is one the backend refuses.
+struct HeadsetSky
+{
+    VrLink::Sky sky;
+    /// The applied model is Custom: the window must go back to Planck18 (and
+    /// say so, as for the ray-traced view) before the headset is told
+    /// anything, or the headset would show another universe in silence.
+    bool refuseCustom{ false };
+};
+
+/// @p frame "fk5", "galactic" or "supergalactic"; @p appliedModel the model
+/// the rows on screen were placed with ("" is Planck18).
+inline HeadsetSky headsetSky(const QString &frame, bool redshiftSpace, const QString &appliedModel)
+{
+    HeadsetSky out;
+    out.sky.frame = frame;
+    out.sky.distanceMode = redshiftSpace ? QStringLiteral("redshift_space") : QStringLiteral("comoving");
+    out.refuseCustom = appliedModel == QStringLiteral("Custom");
+    out.sky.cosmology = appliedModel.isEmpty() || out.refuseCustom ? QStringLiteral("Planck18")
+                                                                    : appliedModel;
+    return out;
 }
 
 }   // namespace CataloguePlacement

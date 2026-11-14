@@ -48,6 +48,11 @@ struct Sky
     QString distanceMode;
     QString cosmology;
     bool isSet() const { return !frame.isEmpty() || !distanceMode.isEmpty() || !cosmology.isEmpty(); }
+    bool operator==(const Sky &o) const
+    {
+        return frame == o.frame && distanceMode == o.distanceMode && cosmology == o.cosmology;
+    }
+    bool operator!=(const Sky &o) const { return !(*this == o); }
 };
 
 struct Inputs

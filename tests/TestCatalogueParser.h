@@ -54,6 +54,7 @@ private slots:
     void placement_statusLineCounts();
     void placement_pickLinesNameTheOrigin();
     void placement_unplacedRows();
+    void placement_headsetSkyRefusesCustom();
 
     // ── distance-type (comoving / luminosity / angular-diameter) ──────────────
     void distanceKind_DL_isLuminosity();

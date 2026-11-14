@@ -30,8 +30,12 @@ are preserved here unedited; the branch names they refer to are historical.
   the hub's `show` carry the window's applied settings; `/v1/points/info` and
   `/v1/points/sample_bin` take them as `sky` and apply them as the ray-traced
   view does, and answer the counts (`sky_settings`, `X-Visivo-Sky`,
-  `X-Visivo-Unplaced`). A custom cosmology is refused as for the ray-traced
-  view (the window goes back to Planck18 and says so). The page's status line
+  `X-Visivo-Unplaced`). Samples skip the rows with no position, so the
+  budget, `X-Visivo-Step` and the splat size count the placed rows
+  (`X-Visivo-Placed-Rows`). A custom cosmology is refused as for the
+  ray-traced view (the window goes back to Planck18 and says so), also when
+  it is chosen while the headset window is open; a pairing code still unused
+  is renewed when the placement changes. The page's status line
   shows the placement and the unplaced count. Redshift-space mode now uses
   the chosen model's H₀ (WMAP9: 69.32) instead of a fixed 67.66, on the
   desktop and on the backend.

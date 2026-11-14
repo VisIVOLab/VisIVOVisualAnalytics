@@ -26,6 +26,23 @@ class PointTable:
     frame: pd.DataFrame | None = None   # a catalogue's table, for its positions
     sky: tuple[str, str] | None = None  # (ra, dec) columns of a sky catalogue
     sky_settings: dict = field(default_factory=dict)
+    # A sky catalogue's rows that have a position (sorted indices), so a
+    # sample spends its budget on rows it can draw (issue #265); None: every row.
+    placed: np.ndarray | None = None
+
+    def drawable(self, axes) -> np.ndarray | None:
+        """The rows a drawing on ``axes`` can place, when that is known to be
+        fewer than all: a sky catalogue's placed rows while a computed
+        position (``@x``, ``@y``, ``@z``) is among the axes, else None (all)."""
+        if self.placed is None or not any(a in ("@x", "@y", "@z") for a in axes):
+            return None
+        return self.placed
+
+    def drawable_count(self, axes) -> int:
+        """How many rows :meth:`drawable` gives: what a sample's step and a
+        splat's size count, the unplaced rows left out."""
+        rows = self.drawable(axes)
+        return int(self.num_rows if rows is None else len(rows))
 
     def set_sky_positions(self, frame_name: str = "fk5", distance_mode: str = "comoving",
                           cosmology: str = "Planck18") -> None:
@@ -42,6 +59,7 @@ class PointTable:
                                     distance_mode=distance_mode, cosmology=cosmology)
         for i, axis in enumerate(("@x", "@y", "@z")):
             self.columns[axis] = xyz[:, i]
+        self.placed = np.flatnonzero(np.isfinite(xyz).all(axis=1)).astype(np.int64)
         self.sky_settings = {"frame": frame_name, "distance_mode": distance_mode,
                              "cosmology": cosmology, **placed.counts()}
 

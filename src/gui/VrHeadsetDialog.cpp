@@ -78,9 +78,13 @@ QString guideLink(const QString &text, const QString &anchor = u"open-a-cube-fro
 
 void VrHeadsetDialog::setSky(const VrLink::Sky &sky)
 {
+    const VrLink::Sky before = m_inputs.sky;
     m_inputs.sky = sky;
     // The address only: whether there is a link does not depend on the sky.
     m_link = VrLink::build(m_inputs);
+    // A code shown but not used yet carries the old placement: replaced.
+    if (VrPair::renewCodeForNewSky(m_pair, QDateTime::currentMSecsSinceEpoch(), before, sky))
+        newCode();
 }
 
 VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)

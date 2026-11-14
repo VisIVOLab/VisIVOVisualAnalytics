@@ -11,6 +11,8 @@
 #include "app/BackendClient.h"
 #include "app/VrLink.h"
 
+#include <QTimer>
+
 using namespace Qt::StringLiterals;
 
 VrLink::Sky vtkWindowCatalogue3D::vrSky() const
@@ -18,27 +20,38 @@ VrLink::Sky vtkWindowCatalogue3D::vrSky() const
     // A VBT and a Cartesian catalogue carry their own positions.
     if (this->m_pointTable || this->schema.isCartesian())
         return {};
-    VrLink::Sky sky;
-    sky.frame = this->activeFrame == CoordFrame::Galactic ? u"galactic"_s
-            : this->activeFrame == CoordFrame::Supergalactic ? u"supergalactic"_s
-                                                             : u"fk5"_s;
-    sky.distanceMode = this->schema.distanceMode == CatalogueDistanceMode::RedshiftSpace
-            ? u"redshift_space"_s
-            : u"comoving"_s;
+    return this->headsetSky().sky;
+}
+
+CataloguePlacement::HeadsetSky vtkWindowCatalogue3D::headsetSky() const
+{
     // The model the rows on screen were placed with, not the selector while a
     // request is out. Custom never goes: the headset's points come from the
-    // backend, which knows the presets only (openInVrHeadset drops it first).
-    sky.cosmology = this->m_appliedCosmologyModel.isEmpty()
-                    || this->m_appliedCosmologyModel == visivo::cosmology::customName()
-            ? u"Planck18"_s
-            : this->m_appliedCosmologyModel;
-    return sky;
+    // backend, which knows the presets only.
+    const QString frame = this->activeFrame == CoordFrame::Galactic ? u"galactic"_s
+            : this->activeFrame == CoordFrame::Supergalactic ? u"supergalactic"_s
+                                                             : u"fk5"_s;
+    return CataloguePlacement::headsetSky(
+            frame, this->schema.distanceMode == CatalogueDistanceMode::RedshiftSpace,
+            this->m_appliedCosmologyModel);
 }
 
 void vtkWindowCatalogue3D::pushSkyToVrDialog()
 {
-    if (m_vrHeadsetDialog)
-        m_vrHeadsetDialog->setSky(this->vrSky());
+    if (!m_vrHeadsetDialog || this->m_pointTable || this->schema.isCartesian())
+        return;
+    if (this->headsetSky().refuseCustom) {
+        // Custom chosen while the headset window is open: the window goes back
+        // to Planck18 and says why, as for the ray-traced view, rather than
+        // the headset showing Planck18 in silence. Queued: this runs at the
+        // end of a scene rebuild, which the revert rebuilds again. The dialog
+        // keeps the placement it had until then.
+        QTimer::singleShot(0, this, [this]() {
+            this->dropCustomCosmologyForServerView(u"The headset view"_s);
+        });
+        return;
+    }
+    m_vrHeadsetDialog->setSky(this->vrSky());
 }
 
 void vtkWindowCatalogue3D::openInVrHeadset()

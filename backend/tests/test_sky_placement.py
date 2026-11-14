@@ -94,6 +94,55 @@ def test_unplaced_rows_never_reach_a_sample():
     assert all(np.isfinite(s.bounds))
 
 
+def test_the_sample_budget_and_step_count_placed_rows_only():
+    # Half the rows have no distance: a budget of 10 gives 10 placed rows,
+    # the step counts the placed rows, and the total says how many there are.
+    from app.point_sample import headers, sample_points
+    from app.point_table import table_from_frame
+    n = 40
+    f = pd.DataFrame({"RA": np.linspace(0, 350, n), "DEC": np.zeros(n),
+                      "Z": np.where(np.arange(n) % 2 == 0, 0.02, -0.001),
+                      "M": np.arange(n, dtype=float)})
+    t = table_from_frame(f, {"system": "sky", "ra": "RA", "dec": "DEC"})
+    assert t.drawable_count(t.axes) == 20 and t.num_rows == 40
+    s = sample_points(t, 10)
+    assert len(s.positions) == 10
+    assert s.total_rows == 40 and s.placed_rows == 20 and s.step == pytest.approx(2.0)
+    h = headers(s)
+    assert h["X-Visivo-Total-Rows"] == "40" and h["X-Visivo-Placed-Rows"] == "20"
+    # With a filter too, only placed rows are candidates.
+    s = sample_points(t, 100, filters=[{"field": "M", "op": ">=", "value": 10}])
+    assert len(s.positions) == 15
+    # Other axes than the computed positions: every row is drawable.
+    assert t.drawable(("M", "M", "M")) is None
+    assert len(sample_points(t, 100, axes=("M", "M", "M")).positions) == 40
+
+
+def test_the_point_session_samples_placed_rows_and_sizes_splats_by_them(tmp_path, monkeypatch):
+    pytest.importorskip("vtk")
+    import asyncio
+    import json
+
+    from app.render_session import points as rp
+    path = tmp_path / "half.csv"
+    n = 40
+    pd.DataFrame({"RA": np.linspace(0, 350, n), "DEC": np.zeros(n),
+                  "Z": np.where(np.arange(n) % 2 == 0, 0.02, -0.001)}).to_csv(path, index=False)
+    spec = json.dumps({"paths": [str(path)], "format": "csv",
+                       "coordinates": {"system": "sky", "ra": "RA", "dec": "DEC"}})
+    monkeypatch.setattr(rp, "MAX_POINTS", 8)
+    s = rp.PointRenderSession("p" * 32, spec)
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(s.initialize())
+        assert s._placed_rows == 20
+        assert len(s._sample) == 8 and len(s._rows) == 8     # all eight placed
+        assert (s._sample % 2 == 0).all()
+    finally:
+        loop.run_until_complete(s.close())
+        loop.close()
+
+
 def _sky_csv(tmp_path):
     rng = np.random.default_rng(11)
     n = 400
