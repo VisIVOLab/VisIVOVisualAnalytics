@@ -67,6 +67,15 @@ export function takePairing() {
   return pairingCache;
 }
 
+/** The tab's pairing is now this cube (the desktop sent it, issue #237): a
+ *  reload of the tab opens it, as a reload after the link would. No token
+ *  here (the tab keeps its own). */
+export function keepPairing({ session = '', dataset = '', path = '', kind = '', box = '' } = {}) {
+  const kept = { session: String(session), dataset: String(dataset), path: String(path), kind: String(kind), box: String(box) };
+  try { store('session')?.setItem(PAIR_KEY, JSON.stringify(kept)); } catch { /* this load only */ }
+  pairingCache = { token: '', ...kept, fromAddress: false };
+}
+
 /** Forgets the tab's pairing (the user opened another cube by hand). */
 export function forgetPairing() {
   try { store('session')?.removeItem(PAIR_KEY); } catch { /* nothing kept */ }

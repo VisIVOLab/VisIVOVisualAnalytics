@@ -142,7 +142,9 @@ export function createMomentTool(ctx) {
       // One product per order and selection: pressed again, it is recorded again in place.
       if (t.recipes.lasso !== L) t.recipes = { lasso: L, ids: {} };
       const rec = ctx.selection.record({ kind: 'moment', label: `Moment ${order}`, replay: momentReplay(isoRec.replay, req),
-        replay_caveat: isoRec.caveat ? `${MOMENT_CAVEAT} ${isoRec.caveat}` : MOMENT_CAVEAT }, momentParams(req, r.moment_unit, iso.file, !!iso.temp), null, t.recipes.ids[order] || '');
+        replay_caveat: isoRec.caveat ? `${MOMENT_CAVEAT} ${isoRec.caveat}` : MOMENT_CAVEAT }, momentParams(req, r.moment_unit, iso.file, !!iso.temp), null, t.recipes.ids[order] || '',
+        // Saved for the desktop from the isolated cube it was measured on.
+        { product: 'moment', dataset_id: iso.id, request: req });
       t.recipes.ids[order] = rec.product.id;
       t.busy = '';
       t.pending = null;

@@ -193,7 +193,8 @@ export function createPvTool(ctx) {
         t.result = { ...d, order, velocities: rowVelocities(order, fv), req, vertices: verts, ms: performance.now() - t0,
           range: PC.finiteRange(d.values) || [0, 1] };
         const rec = ctx.selection.record({ kind: 'pv', label: 'PV diagram', replay: [{ route: '/v1/cube/pv', request: req }] },
-          pvParams(verts, req.width_pixels), pvOrigin(verts, req.width_pixels), t.recipeId);
+          pvParams(verts, req.width_pixels), pvOrigin(verts, req.width_pixels), t.recipeId,
+          { product: 'pv', dataset_id: ctx.datasetId(), request: req });
         t.recipeId = rec.product.id;
         t.busy = '';
         draw();

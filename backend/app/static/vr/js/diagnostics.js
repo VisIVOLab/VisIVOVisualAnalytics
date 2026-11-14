@@ -245,6 +245,10 @@ export function diagnosticsReport(d) {
   if (d.text !== undefined) kv('text in the headset', d.text);
   if (d.memory !== undefined) kv('GPU memory', d.memory);
   kv('refinement', d.refine);
+  // Issue #237: the headset hub (commands from the desktop, activity sent back)
+  // and how Enter VR is reached on this page.
+  if (d.hub !== undefined) kv('headset hub', d.hub);
+  if (d.entry !== undefined) kv('entering VR', d.entry);
   // Issue #229: the debug cuts of the address (?debug&nohud...), when any.
   if (d.cuts) kv('debug cuts', d.cuts);
   kv('settings', d.settings ? JSON.stringify(d.settings) : '');

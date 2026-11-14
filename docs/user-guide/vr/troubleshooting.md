@@ -28,6 +28,10 @@ The card is redrawn only when its text changes (at most once per check, every
 | **The graphics were reset** | the browser took the GPU away (memory pressure, another app) | the page waits for it and uploads the cube again by itself (*Graphics restored*); a VR session cannot outlive it, so press *Enter VR* again |
 | **The graphics did not come back** | not restored after 10 s | *Reload page* |
 | **The VR session ended** (on the 2-D page) | the headset or the browser ended it: the system menu, the headset taken off for a while | *Enter VR*: the cube and the settings are kept |
+| **ngc3137.fits is open in another window** (a page that shows nothing) | another VisIVO VR window or tab of the same address shows a cube; a page with nothing on show never takes over from it (#237) | switch to that window in the browser's window list; close this one; or *Use this window* to make this one the page in use |
+| **Open in another window** (a page that showed a cube) | a newer page with a cube was opened (another *Open on Headset*, a second loader window) | use the newer one; or *Use this window* here |
+| **Opening ngc3137.fits from the computer…** | the desktop sent that cube to this page (#237) | nothing: it is shown when loaded (in VR if you are in VR) |
+| *press Enter VR* beside the WebXR status, after a launch from the app's icon | the page tried to enter VR by itself and the browser wanted a press (#237) | press **Enter VR** once; the cubes the desktop sends then come into the same session |
 | **This cube is too large for this device** | the reduced cube would not fit the [memory budget](reference.md#the-settings-on-the-page) | a larger *Spatial bin* or *Spectral bin*, or a smaller *Max side* |
 | Refine: *lost: retrying in N s, the headset's own rendering meanwhile* | the render session's connection dropped | nothing: the headset shows its own rendering, and the page reconnects (2, 4, 8 … 30 s) and refines again; if the backend no longer holds the cube, the page opens it again first |
 
@@ -93,6 +97,22 @@ zero-width characters) turned into spaces; the full list is in the
 its limits, WebXR, the cube, the frame rate, the quality, the settings and the
 last events on the clipboard (or shows them, when the clipboard is not
 available): paste them into a support request.
+
+Two lines of the diagnostics are about the desktop driving the page
+([#237](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/237)):
+
+- `headset hub:` the page's link to the desktop's hub (as the *hub* line on
+  the wrist) and its client id. *this backend has none*: the backend is older
+  than the page; the page works as before, but the desktop cannot send cubes
+  to it nor see what it makes. The events `hub-show` (a cube the desktop
+  sent), `hub-failed` (a report that did not reach the desktop, with the
+  reason: for a product, *not saved for the desktop*) and `hub-hello` are in
+  the last events.
+- `entering VR:` how *Enter VR* is reached on this page: *launched as an app*
+  (from the installed app's icon) with what happened when it tried to enter by
+  itself (*entered*, or *refused without a press*), and *offerSession*:
+  *offered* (the browser shows its own Enter VR), *not in this browser*, or
+  *stopped* with the browser's reason.
 
 What has been checked so far, and what to check on a Quest 3, are under
 [Recovery from failures](reference.md#recovery-from-failures) and

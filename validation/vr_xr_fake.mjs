@@ -120,16 +120,40 @@ export const XR_FAKE = `(() => {
     },
     getJointPose() { return null; },
   };
+  // Issue #237: ?xrgesture refuses a session asked for without a user
+  // gesture (as a browser does, NotAllowedError); ?xroffer adds
+  // offerSession, whose session comes when S.acceptOffer() is called (the
+  // browser's own Enter VR pressed).
+  const gestureOnly = /[?&]xrgesture/.test(location.search);
+  S.offers = 0; S.offerPending = null; S.requests = 0; S.refused = 0;
+  const start = (opts) => {
+    session.ended = false;
+    enabled = ['local-floor', ...((opts && opts.optionalFeatures) || []).filter((f) => f !== 'layers' || !noLayers)];
+    return session;
+  };
   const xr = {
     async isSessionSupported(mode) { return mode === 'immersive-vr' || mode === 'immersive-ar'; },
     async requestSession(mode, opts) {
+      S.requests++;
+      if (gestureOnly && !(navigator.userActivation && navigator.userActivation.isActive)) {
+        S.refused++;
+        throw new DOMException('requestSession needs a user gesture', 'NotAllowedError');
+      }
       // A slow headset: the session answers after S.delayMs (a takeover check).
       if (S.delayMs) await new Promise((r) => setTimeout(r, S.delayMs));
-      session.ended = false;
-      enabled = ['local-floor', ...((opts && opts.optionalFeatures) || []).filter((f) => f !== 'layers' || !noLayers)];
-      return session;
+      // A session asked for withdraws the offer (as Chromium does).
+      if (S.offerPending) { const o = S.offerPending; S.offerPending = null; o.reject(new DOMException('a session was requested', 'AbortError')); }
+      return start(opts);
     },
   };
+  if (/[?&]xroffer/.test(location.search)) {
+    xr.offerSession = (mode, opts) => {
+      if (S.offerPending) return Promise.reject(new DOMException('an offer is pending', 'InvalidStateError'));
+      S.offers++;
+      return new Promise((resolve, reject) => { S.offerPending = { resolve: () => resolve(start(opts)), reject }; });
+    };
+    S.acceptOffer = () => { const o = S.offerPending; if (!o) return false; S.offerPending = null; o.resolve(); return true; };
+  }
   Object.defineProperty(navigator, 'xr', { value: xr, configurable: true });
   // The native one waits for a real XR device.
   WebGL2RenderingContext.prototype.makeXRCompatible = async function () {};
@@ -260,9 +284,10 @@ export async function runDelayedTakeoverCheck({ c, check, waitFor }) {
     const S = window.__xrfake; S.delayMs = 800; const ended0 = S.ended;
     document.getElementById('enter-vr').click();
     await new Promise((res) => setTimeout(res, 200));
-    // Another page of this origin announces itself (a channel of its own).
+    // Another page of this origin announces itself (a channel of its own),
+    // with a cube of its own (#237: an empty one would stand down instead).
     const ch = new BroadcastChannel('visivo-vr-page');
-    ch.postMessage({ type: 'claim', id: 'zz-other-page', t: Date.now() + 1 });
+    ch.postMessage({ type: 'claim', id: 'zz-other-page', t: Date.now() + 1, content: true, cube: 'other.fits' });
     ch.close();
     await new Promise((res) => setTimeout(res, 1500));
     S.delayMs = 0;
@@ -282,19 +307,62 @@ export async function runReloadCheck({ c, check, waitFor, path }) {
 }
 
 /**
- * One active page: a second tab on the same address makes the first stand
- * down (Enter VR off, the notice), Use this window takes over again.
+ * One active page, by content (#226, #237). The page `c` shows a cube. A
+ * second tab with nothing on show (a tab the browser restored, an empty
+ * loader) stands down itself and names the cube, and `c` stays in use; its
+ * "Use this window" still takes over. Then a newer tab with a cube makes
+ * `c` stand down (Enter VR off, the notice), and Use this window takes over
+ * again. `hubPages()`: the hub's connected pages of this session (the
+ * stood-down page leaves it).
  */
-export async function runSinglePageChecks({ c, check, waitFor, cdpPort, url, connect }) {
-  const t = await (await fetch(`http://127.0.0.1:${cdpPort}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' })).json();
-  const c2 = connect(t.webSocketDebuggerUrl);
+export async function runSinglePageChecks({ c, check, waitFor, cdpPort, url, connect, hubPages = null }) {
+  const open = async (u) => (await fetch(`http://127.0.0.1:${cdpPort}/json/new?${encodeURIComponent(u)}`, { method: 'PUT' })).json();
+  const close = async (t, cx) => {
+    try { cx.close(); } catch { /* closed */ }
+    await fetch(`http://127.0.0.1:${cdpPort}/json/close/${t.id}`).catch(() => {});
+  };
+  const name = await c.evaluate(`(window.__vrState.openPath || '').split('/').pop()`);
+  // 1. An empty tab: it stands down, this one stays.
+  let t = await open(url);
+  let c2 = connect(t.webSocketDebuggerUrl);
   try {
     await c2.send('Runtime.enable');
-    const up = await waitFor(c2, '!!window.__vrSingle && window.__vrSingle.active', 20000);
+    const down = await waitFor(c2, '!!window.__vrSingle && !window.__vrSingle.active', 20000);
+    await sleep(500);
+    const st = await c2.evaluate(`({ vr: document.getElementById('enter-vr').disabled, banner: !document.getElementById('stood-down').hidden,
+      text: document.getElementById('stood-down-text').textContent, notice: (window.__vrShell.notices.current() || {}).title || '' })`);
+    const kept = await c.evaluate('window.__vrSingle.active');
+    check('one page: an empty newer tab stands down itself, naming the window with the cube; the page with the cube stays in use',
+      down.value && kept && st.vr && st.banner && !!name && st.notice.includes(name) && /shows nothing/.test(st.text),
+      JSON.stringify({ kept, notice: st.notice, text: st.text.slice(0, 120) }));
+    if (hubPages) {
+      let pages = null;
+      for (let i = 0; i < 30; i++) { pages = await hubPages(); if (pages && pages.length === 1) break; await sleep(200); }
+      const mine = await c.evaluate('window.__vrHub.st.client');
+      check('one page: the hub lists only the page in use (the empty one left it)', !!pages && pages.length === 1 && pages[0].client === mine,
+        JSON.stringify((pages || []).map((p) => [p.client, p.cube && p.cube.path ? p.cube.path.split('/').pop() : null])));
+    }
+    // The user's "Use this window" on the empty tab wins all the same.
+    await c2.evaluate(`document.getElementById('take-over').click()`);
+    const took = await waitFor(c2, 'window.__vrSingle.active', 5000);
+    const yielded = await waitFor(c, '!window.__vrSingle.active', 5000);
+    check('one page: "Use this window" on the empty tab is the user\'s choice and takes over', took.value && yielded.value);
+    await c.evaluate(`document.getElementById('take-over').click()`);
+    await waitFor(c, 'window.__vrSingle.active', 5000);
+    await waitFor(c2, '!window.__vrSingle.active', 5000);
+  } finally {
+    await close(t, c2);
+  }
+  // 2. A newer tab with a cube (a synthetic one here): this one stands down.
+  t = await open(`${url.replace(/#.*$/, '')}&synthetic=48${url.includes('#') ? url.slice(url.indexOf('#')) : ''}`);
+  c2 = connect(t.webSocketDebuggerUrl);
+  try {
+    await c2.send('Runtime.enable');
+    const up = await waitFor(c2, '!!window.__vrSingle && window.__vrSingle.active && !!window.__vrState.cube', 20000);
     const first = await waitFor(c, '!window.__vrSingle.active', 5000);
     const st = await c.evaluate(`({ vr: document.getElementById('enter-vr').disabled, banner: !document.getElementById('stood-down').hidden,
       notice: (window.__vrShell.notices.current() || {}).id })`);
-    check('one page: a newer tab makes this one stand down (Enter VR off, "Open in another window")', up.value && first.value
+    check('one page: a newer tab with a cube makes this one stand down (Enter VR off, "Open in another window")', up.value && first.value
       && st.vr && st.banner && st.notice === 'stood-down', JSON.stringify(st));
     await c.evaluate(`document.getElementById('take-over').click()`);
     const back = await waitFor(c, 'window.__vrSingle.active', 5000);
@@ -302,7 +370,6 @@ export async function runSinglePageChecks({ c, check, waitFor, cdpPort, url, con
     const st2 = await c.evaluate(`({ vr: document.getElementById('enter-vr').disabled, banner: !document.getElementById('stood-down').hidden })`);
     check('one page: Use this window takes over, the other tab stands down', back.value && other.value && !st2.vr && !st2.banner, JSON.stringify(st2));
   } finally {
-    try { c2.close(); } catch { /* closed */ }
-    await fetch(`http://127.0.0.1:${cdpPort}/json/close/${t.id}`).catch(() => {});
+    await close(t, c2);
   }
 }

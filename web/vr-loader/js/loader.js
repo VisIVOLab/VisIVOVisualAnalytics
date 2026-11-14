@@ -27,7 +27,7 @@ import { ApiClient } from './pair-transport.js';
 import { PacedSender, frameId } from './pair-wire.js';
 import {
   serviceUrl, serviceHost, normaliseCode, pairFromHash, appAddress, failureKind, resumeDelayMs,
-  RESUME_BUDGET_MS, reasonText, byeText, keptResume, linkFigures, AppIdMap,
+  RESUME_BUDGET_MS, reasonText, byeText, keptResume, linkFigures, AppIdMap, launchMode,
 } from './loader-core.js';
 
 const $ = (id) => document.getElementById(id);
@@ -386,7 +386,10 @@ async function resumeLoop() {
 
 function openApp(welcome) {
   const frame = $('app');
-  frame.src = appAddress(state.tag, window.location.search, welcome);
+  // Launched from the installed app's icon: the page is told (?launch=app), so
+  // it tries to enter VR by itself once its cube is on show (issue #237).
+  frame.src = appAddress(state.tag, window.location.search, welcome,
+    launchMode(typeof window.matchMedia === 'function' ? (q) => window.matchMedia(q) : null));
   frame.hidden = false;
   $('home').hidden = true;
   state.appWindow = frame.contentWindow;

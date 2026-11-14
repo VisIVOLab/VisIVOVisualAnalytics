@@ -8,6 +8,36 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: one headset page, driven by the desktop and reporting back to it
+  (#237, part of #234).** The VR page says hello to the session's headset hub
+  (#236) with its transport (`adb` on localhost, `pair` in the public loader,
+  `lan` otherwise), keeps it told whether it is in VR and which cube it shows
+  or holds for the end of the session, and takes the desktop's `show`
+  commands with one long poll at a time (acknowledged by `after`; a backend
+  restart resets the cursor; a 404 says hello again; no `keepalive`). A `show`
+  loads that cube into the page, in VR when in VR (the capacity of #235), with
+  a card naming it; its voxel box becomes the clipping box. The page reports
+  back: the look and the clipping box (0.5 s after the last change, the
+  latest per cube), each product with its recipe record (a moment saved by
+  `moment_fits`, a PV slice by `pv_fits` after its path settles 1.5 s, a
+  spectrum by `spectrum_table` as CSV, an isolated or removed cube as
+  `mask_apply_bin` wrote it, a catalogue, point table or velocity field by its
+  file) and each cube switch; from timers, never in a frame, failures only in
+  the diagnostics. The one-page claim goes by content: a page with nothing on
+  show never makes the page with a cube stand down, it stands down itself and
+  names the cube; a page keeps its rank while in use, so the pages settle on
+  exactly one whatever order their messages arrive in; *Use this window*
+  still wins; the page that stands down leaves the hub. Fewer *Enter VR*
+  presses: launched from the installed loader's icon (`launch=app`, or
+  display-mode standalone) the page tries to enter VR once its first cube is
+  on show and falls back to the button when the browser refuses;
+  `navigator.xr.offerSession` is used where it exists; the page stays in VR
+  across the cubes the desktop sends. Browser checks (`vr_headset_hub.mjs`,
+  fake WebXR, Metal): a `show` in a running session switched the cube in
+  108 ms with no new tab and no 3-D allocation; one hub event per action
+  (cube, look, clip, spectrum, moment, PV, Isolate), each product's file
+  present and readable by the desktop's parser rules.
+
 - **VR: cubes change inside a VR session (#235, part of #234).** The page
   now keeps fixed-capacity 3-D textures, allocated and zeroed on the 2-D page
   before any session: two banks (the cube on show and the next one) of *Max
@@ -33,6 +63,7 @@ are preserved here unedited; the branch names they refer to are historical.
   clamp more per sample (40 ms against 37.5 ms per 1280×800 frame on
   SwiftShader; on the Quest's GPU it is still to be measured). `vr_lifecycle.mjs` takes
   `--timeout-min` (default 10) for slow software-GL runs.
+
 - **Backend: a headset hub per session, and spectra saved as tables (#236,
   part of #234).** The backend now knows which headset pages are open in a
   session and carries the conversation between them and the desktop:

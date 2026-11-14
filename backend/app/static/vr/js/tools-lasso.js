@@ -389,7 +389,8 @@ export function createLassoTools(ctx) {
       const params = { ...rec.params, 'Selected voxels': String(L.count ?? ''),
         Mode: mode === APPLY_MODES.remove ? 'remove (inside blanked)' : 'isolate (outside blanked)', File: out.file };
       if (L.count == null) delete params['Selected voxels'];
-      ctx.selection.record(product, params, null);
+      ctx.selection.record(product, params, null, '',
+        { product: removed ? 'remove' : 'isolate', file: out.file, dataset_id: out.id });
     }
     return out;
   }

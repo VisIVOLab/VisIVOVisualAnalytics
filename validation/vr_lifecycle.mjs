@@ -49,6 +49,7 @@ import { XR_FAKE, runXRFakeChecks, runSinglePageChecks, runDelayedTakeoverCheck,
 import { runCutChecks } from './vr_cuts.mjs';
 import { runTex3DChecks, TEX3D_PROBE } from './vr_tex3d.mjs';
 import { runControllerShadingChecks } from './vr_controller_shading.mjs';
+import { runHeadsetHubChecks, runEntryChecks } from './vr_headset_hub.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => {
   if (v.startsWith('--')) a.push([v.slice(2), all[i + 1] && !all[i + 1].startsWith('--') ? all[i + 1] : true]);
@@ -363,6 +364,15 @@ async function pairedChecks() {
   const tline = diag.split('\n').find((l) => l.startsWith('transport:')) || '';
   results.transport = tline;
   check('paired: the diagnostics name the transport', /WebRTC data channel/.test(tline) && !diag.includes(tokenA), tline);
+  // Issue #237: the page in the loader says hello to the headset hub over the pairing.
+  const hubSt = await c.evaluate('({ session: window.__vrHub.st.helloSession, client: window.__vrHub.st.client, state: window.__vrHub.st.sent.state })');
+  let hubSeen = null;
+  if (hubSt.session) {
+    const r = await api('GET', '/v1/vr/headset', tokenA, { session: hubSt.session });
+    try { hubSeen = JSON.parse(r.body).headsets.find((h) => h.client === hubSt.client) || null; } catch { hubSeen = null; }
+  }
+  check('paired: the page is in the headset hub over the pairing (transport pair, its cube listed)',
+    !!hubSeen && hubSeen.transport === 'pair' && !!hubSeen.cube, JSON.stringify(hubSeen && { transport: hubSeen.transport, cube: hubSeen.cube && hubSeen.cube.path.split('/').pop() }));
   check('paired: no token field, no token in the page',
     await c.evaluate(`document.getElementById('connect').hidden && !document.documentElement.outerHTML.includes(${JSON.stringify(tokenA)})`));
   // Overhead: the same reduced cube and the same check, over the pairing (the
@@ -635,7 +645,17 @@ try {
     // Issues #229/#235: lassos, cube switches in one VR session (shown at once), then the benchmark: no 3-D allocation in VR.
     await runTex3DChecks({ c, check, waitFor, base: BASE, token: tokenA, cube,
       other: makeCube('synthetic_tex3d_other.fits', { shape: [30, 50, 70], ra: 152 }) });
-    await runSinglePageChecks({ c, check, waitFor, cdpPort, connect: cdp,
+    // Issue #237: the headset hub (a show in VR, one event per action), fewer Enter VR presses.
+    const hubOut = await runHeadsetHubChecks({ c, check, waitFor, api, base: BASE, token: tokenA, cube, cdpPort,
+      other: makeCube('synthetic_hub_other.fits', { shape: [30, 50, 70], ra: 151 }) });
+    results.hub = hubOut;
+    await runEntryChecks({ c, check, waitFor, base: BASE, token: tokenA, cube });
+    const hubPages = async () => {
+      const s = await c.evaluate('window.__vrRefine.refiner.backend().session');
+      const r = await api('GET', '/v1/vr/headset', tokenA, { session: s });
+      try { return JSON.parse(r.body).headsets; } catch { return null; }
+    };
+    await runSinglePageChecks({ c, check, waitFor, cdpPort, connect: cdp, hubPages,
       url: `${BASE}/vr/?debug&refine=0#token=${encodeURIComponent(tokenA)}` });
   }
 

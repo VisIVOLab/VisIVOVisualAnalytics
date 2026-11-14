@@ -180,8 +180,11 @@ export function createSelection(ctx) {
 
   /** A product's recipe; with `replaceId` the record of that product is
    *  replaced (a product the desktop re-registers under the same id, such as a
-   *  PV diagram whose path was extended). */
-  function record(product, parameters, origin, replaceId = '') {
+   *  PV diagram whose path was extended). `detail` (issue #237): what the
+   *  desktop needs to open the product ({product, dataset_id, request, file?,
+   *  path?}), handed with the record to ctx.onRecord, which reports it to the
+   *  desktop; none for a record that is not a product the desktop opens. */
+  function record(product, parameters, origin, replaceId = '', detail = null) {
     const at = replaceId ? sel.recipes.findIndex((x) => x.product.id === replaceId) : -1;
     const r = Rc.makeRecipe({
       application: APPLICATION, exported: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
@@ -189,6 +192,9 @@ export function createSelection(ctx) {
       dataset: datasetRecord(), parameters, origin,
     });
     if (at >= 0) sel.recipes[at] = r; else sel.recipes.push(r);
+    if (detail && ctx.onRecord) {
+      try { ctx.onRecord(r, detail); } catch { /* the report never stops a tool */ }
+    }
     return r;
   }
 
@@ -220,7 +226,7 @@ export function createSelection(ctx) {
       Channels: String(values.length),
       'Measured on': `probe at voxel (${x}, ${y}, ${z})`,
       'Picked in': `VR, reduced voxel (${pick.reduced.join(', ')}) of ${st().info.factors.join('×')} binning`,
-    }, Rc.probeOrigin(pick.seed));
+    }, Rc.probeOrigin(pick.seed), '', { product: 'spectrum', dataset_id: datasetId(), request: req });
   }
 
   async function runLasso(gen, pick) {

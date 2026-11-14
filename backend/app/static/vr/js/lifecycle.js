@@ -220,6 +220,12 @@ export function noticeFor(kind, ctx = {}) {
         lines: [`It is loaded${ctx.detail ? `: ${ctx.detail}` : ''}${ctx.why ? `, but ${ctx.why}` : ''}. This headset's browser cannot make room for a new cube during a VR session without resetting its graphics.`,
           'The cube on show stays until then: Exit VR to see the new one, then Enter VR again.'],
         actions: [...exit, { id: 'dismiss', label: 'OK' }], autoHideMs: 20000 };
+    case 'cube-from-desktop':
+      // Issue #237: the desktop sent a cube to this page (its `show` command).
+      return { id: 'cube-from-desktop', level: 'info',
+        title: ctx.done ? `Showing ${ctx.detail || 'the cube'} from the computer` : `Opening ${ctx.detail || 'a cube'} from the computer…`,
+        lines: [ctx.done ? 'Sent from VisIVO Visual Analytics on the computer.' : 'Sent from VisIVO Visual Analytics on the computer: it is shown here as soon as it is loaded.'],
+        actions: [{ id: 'dismiss', label: 'OK' }], autoHideMs: ctx.done ? 4000 : 15000 };
     case 'budget':
       return { id: 'budget', level: 'error', title: 'This cube is too large for this device',
         lines: [ctx.detail || 'It would not fit in the memory this device gives a web page.',
