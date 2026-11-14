@@ -67,18 +67,30 @@ records it as *Mask: none*, the desktop's word for "no threshold mask".
 
 ### Follow the headset's look
 
-**Follow the headset's look**, in the same panel, is off by default. On, the
-window applies the headset's colour map, threshold and clip box to its 3-D
-view whenever they change in the headset for this cube:
+**Follow the headset's look**, in the same panel, is on by default. While a
+headset shows this cube, the window applies the headset's colour map,
+threshold and clip box to its 3-D view whenever they change in the headset,
+whether or not Headset Activity is open:
 
 - the colour map when the desktop has one of the same name (*grey* is *Gray*;
   the headset's *hot* has no counterpart, and the status bar says so);
 - the threshold, in the cube's units, as if typed in the threshold field;
 - the clip box crops the 3-D volume, also when the backend renders the view
-  (the slice views are not clipped).
+  (the slice views are not clipped). A slab set in the headset's Clip mode is
+  a clip box along the spectral axis, so it follows too.
 
-Off again, the clip box is removed; the colours and threshold stay, now the
-window's own.
+Each change taken from the headset is said briefly in the status bar, for
+example *Colour map and threshold from the headset*.
+
+Only what the headset shows now is applied: a look it had before switching
+to another cube is not, and a change is applied once. Nothing the desktop
+does is sent back to the headset as a look, so a change made here never
+returns to undo itself.
+
+Untick the box to keep the window's own look: the clip box is removed, the
+colours and threshold stay, now the window's own. The choice is remembered
+for the cube windows opened afterwards; tick it again to follow the headset
+from what it shows now.
 
 ## Notes
 

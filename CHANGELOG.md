@@ -8,6 +8,18 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Desktop: the cube window follows the headset's look by default (#268,
+  part of #253).** A colour map, threshold or clip box (a slab included)
+  changed in VR now shows in the cube window's 3-D view while a headset
+  shows that cube, without opening Headset Activity first: the following no
+  longer depends on that panel being built. Each change taken from the
+  headset is said briefly in the status bar (*Colour map and threshold from
+  the headset*). **Follow the headset's look** is still in Headset Activity
+  and can be unticked; the choice is remembered in the app's settings. Only
+  what the headset shows now is applied, once: a look from before the page
+  switched to another cube is not, and the desktop sends no look back, so
+  nothing loops (src/app/VrHeadsetFollow.h, docs/user-guide/vr/desktop.md).
+
 - **VR: the numbers and the button help on the wrists, shown only when looked
   at (#256, part of #253).** The headset no longer keeps cards in view: the
   frame-rate and technical numbers are shown only with `?debug` (and during

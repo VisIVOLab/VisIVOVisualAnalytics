@@ -3931,6 +3931,10 @@ void vtkWindowCube::applyRemotePreviewResult(const RemoteCubePreviewResult &resu
 
     this->setRemoteCubeDisplayState(RemoteCubeDisplayState::Preview);
     qDebug().noquote() << QStringLiteral("[remote-plane] preview valid");
+    // A look the headset set before the cube's bounds were known (issue
+    // #268): after the default scale chosen above, whichever threshold the
+    // field started from.
+    QTimer::singleShot(0, this, [this]() { this->followHeadsetLook(); });
     // Pattern B: skip the automatic full-resolution
     // local fetch when EITHER:
     //   (a) backend recommended ``preview_only`` (it

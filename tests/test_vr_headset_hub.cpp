@@ -3,6 +3,7 @@
 
 #include "BackendClient.h"
 #include "HeadsetHubLink.h"
+#include "VrHeadsetFollow.h"
 #include "VrHeadsetHub.h"
 
 #include <QDir>
@@ -14,9 +15,11 @@
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QSet>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTemporaryDir>
 #include <QTest>
 
 using namespace Qt::StringLiterals;
@@ -669,6 +672,150 @@ void TestVrHeadsetHub::colormapsMapToTheDesktops()
     QCOMPARE(VrHub::desktopColormap(u"grey"_s, desktop), u"Gray"_s);
     QVERIFY(VrHub::desktopColormap(u"hot"_s, desktop).isEmpty());
     QVERIFY(VrHub::desktopColormap(QString(), desktop).isEmpty());
+}
+
+namespace {
+/// A connected page showing the cube at @p path.
+VrHub::Headset headsetShowing(const QString &client, const QString &path)
+{
+    VrHub::Headset h;
+    h.client = client;
+    h.cube.path = path;
+    return h;
+}
+} // namespace
+
+void TestVrHeadsetHub::followingTheLookIsOnUntilUnticked()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString ini = dir.filePath(u"follow.ini"_s);
+    {
+        // Never chosen: on, so a colour map picked in VR shows on the desktop.
+        const QSettings fresh(ini, QSettings::IniFormat);
+        QVERIFY(VrHub::followLookEnabled(fresh));
+    }
+    {
+        QSettings s(ini, QSettings::IniFormat);
+        VrHub::setFollowLookEnabled(s, false);
+    }
+    {
+        // Unticked once: off for the windows opened afterwards.
+        const QSettings later(ini, QSettings::IniFormat);
+        QVERIFY(!VrHub::followLookEnabled(later));
+    }
+    {
+        QSettings s(ini, QSettings::IniFormat);
+        VrHub::setFollowLookEnabled(s, true);
+    }
+    const QSettings again(ini, QSettings::IniFormat);
+    QVERIFY(VrHub::followLookEnabled(again));
+}
+
+void TestVrHeadsetHub::theLookIsFollowedWhileTheCubeIsOnShow()
+{
+    const QString cube = u"/d/m33.fits"_s;
+    VrHub::ActivityLog log;
+    log.add({ hubEvent(1, u"cube"_s, cube), hubEvent(2, u"look"_s, cube), hubEvent(3, u"clip"_s, cube),
+              hubEvent(4, u"look"_s, u"/d/other.fits"_s) });
+
+    // Presence a poll behind: nothing yet, and nothing is consumed either.
+    VrHub::FollowMarks marks;
+    QVERIFY(!VrHub::nextToFollow(log.events(), {}, cube, QString(), marks).any());
+    QVERIFY(!VrHub::nextToFollow(log.events(), { headsetShowing(u"page-1"_s, u"/d/other.fits"_s) },
+                                 cube, QString(), marks)
+                     .any());
+    // Another page showing this cube does not make page-1's look current.
+    QVERIFY(!VrHub::nextToFollow(log.events(), { headsetShowing(u"page-2"_s, cube) }, cube, QString(),
+                                 marks)
+                     .any());
+    QCOMPARE(marks.look.second, qint64(0));
+
+    // Listed as showing it: the latest look and clip of this cube, not the
+    // other cube's look.
+    const QList<VrHub::Headset> onShow{ headsetShowing(u"page-1"_s, cube) };
+    VrHub::FollowStep step = VrHub::nextToFollow(log.events(), onShow, cube, QString(), marks);
+    QVERIFY(step.look && step.clip);
+    QCOMPARE(step.look->seq, qint64(2));
+    QCOMPARE(step.clip->seq, qint64(3));
+
+    // The page then moved to another cube and came back: the look it had
+    // before is re-based there, not what it shows, so it is never applied,
+    // even once the page shows this cube again.
+    VrHub::ActivityLog moved;
+    moved.add({ hubEvent(1, u"cube"_s, cube), hubEvent(2, u"look"_s, cube),
+                hubEvent(3, u"cube"_s, u"/d/other.fits"_s), hubEvent(4, u"cube"_s, cube) });
+    VrHub::FollowMarks fresh;
+    QVERIFY(!VrHub::nextToFollow(moved.events(), onShow, cube, QString(), fresh).any());
+    QCOMPARE(fresh.look.second, qint64(2));   // stale for good
+    // A look set after coming back is followed.
+    moved.add({ hubEvent(5, u"look"_s, cube) });
+    step = VrHub::nextToFollow(moved.events(), onShow, cube, QString(), fresh);
+    QVERIFY(step.look);
+    QCOMPARE(step.look->seq, qint64(5));
+
+    // A page closed since (not listed any more) is not followed.
+    VrHub::ActivityLog gone;
+    gone.add({ hubEvent(2, u"look"_s, cube) });
+    VrHub::FollowMarks none;
+    QVERIFY(!VrHub::nextToFollow(gone.events(), { headsetShowing(u"page-9"_s, cube) }, cube, QString(),
+                                 none)
+                     .any());
+
+    // A cube named by its dataset id only.
+    VrHub::Event byId = hubEvent(6, u"look"_s, QString());
+    byId.payload.insert(u"dataset_id"_s, u"ds1"_s);
+    VrHub::Headset showsId;
+    showsId.client = u"page-1"_s;
+    showsId.cube.datasetId = u"ds1"_s;
+    VrHub::FollowMarks idMarks;
+    QVERIFY(VrHub::nextToFollow({ byId }, { showsId }, u"/elsewhere.fits"_s, u"ds1"_s, idMarks).look);
+}
+
+void TestVrHeadsetHub::aFollowedLookIsNeverAppliedTwice()
+{
+    // The desktop never posts looks or clips, so nothing it applies comes
+    // back as a new event; what does come again (each activity poll, each
+    // presence change) must not be applied again.
+    const QString cube = u"/d/m33.fits"_s;
+    const QList<VrHub::Headset> onShow{ headsetShowing(u"page-1"_s, cube) };
+    VrHub::ActivityLog log;
+    log.add({ hubEvent(1, u"cube"_s, cube), hubEvent(2, u"look"_s, cube), hubEvent(3, u"clip"_s, cube) });
+    VrHub::FollowMarks marks;
+    QVERIFY(VrHub::nextToFollow(log.events(), onShow, cube, QString(), marks).any());
+    for (int i = 0; i < 3; ++i)
+        QVERIFY(!VrHub::nextToFollow(log.events(), onShow, cube, QString(), marks).any());
+    // An unrelated event (a product) brings nothing back either.
+    log.add({ hubEvent(4, u"product"_s, cube) });
+    QVERIFY(!VrHub::nextToFollow(log.events(), onShow, cube, QString(), marks).any());
+    // Only a newer look of the headset's is applied, and only it.
+    log.add({ hubEvent(5, u"look"_s, cube) });
+    const VrHub::FollowStep step = VrHub::nextToFollow(log.events(), onShow, cube, QString(), marks);
+    QVERIFY(step.look && !step.clip);
+    QCOMPARE(step.look->seq, qint64(5));
+    QVERIFY(!VrHub::nextToFollow(log.events(), onShow, cube, QString(), marks).any());
+    // A restarted backend numbers again from 1, in a newer epoch: a new look.
+    log.add({ hubEvent(1, u"look"_s, cube, 1) });
+    QVERIFY(VrHub::nextToFollow(log.events(), onShow, cube, QString(), marks).look);
+    // Ticked again: the marks are cleared and what is on show is applied once.
+    marks = {};
+    QVERIFY(VrHub::nextToFollow(log.events(), onShow, cube, QString(), marks).any());
+    QVERIFY(!VrHub::nextToFollow(log.events(), onShow, cube, QString(), marks).any());
+}
+
+void TestVrHeadsetHub::followedChangesAreSaid()
+{
+    QCOMPARE(VrHub::followedText(true, true, false), u"Colour map and threshold from the headset"_s);
+    QCOMPARE(VrHub::followedText(true, false, false), u"Colour map from the headset"_s);
+    QCOMPARE(VrHub::followedText(false, true, true), u"Threshold and clip box from the headset"_s);
+    QCOMPARE(VrHub::followedText(true, true, true),
+             u"Colour map, threshold and clip box from the headset"_s);
+    QCOMPARE(VrHub::followedText(false, false, true, u"hot"_s),
+             u"Clip box from the headset (the headset's colour map hot has no counterpart here)"_s);
+    QCOMPARE(VrHub::followedText(false, false, false, u"hot"_s),
+             u"The headset's colour map hot has no counterpart here"_s);
+    // Nothing changed (the same look again): nothing to say.
+    QVERIFY(VrHub::followedText(false, false, false).isEmpty());
 }
 
 void TestVrHeadsetHub::clientCallsTheHubRoutes()
