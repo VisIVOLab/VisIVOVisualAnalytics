@@ -7,6 +7,7 @@ import * as S from './selection.js';
 import * as Rc from './recipe.js';
 import * as M from './mat4.js';
 import { nextSeeds, seedsOf } from './tools-lasso.js';
+import { wrapText, fitText } from './text-fit.js';
 
 export const TOOLS = ['probe', 'lasso', 'box'];
 export const TOOL_NAMES = { probe: 'Spectrum probe', lasso: 'Kinematic Lasso', box: 'Box region' };
@@ -534,12 +535,18 @@ export function createSelection(ctx) {
     c.textBaseline = 'alphabetic';
     c.fillStyle = '#9fd0ff';
     c.font = 'bold 24px -apple-system, system-ui, sans-serif';
-    c.fillText(`${TOOL_NAMES[sel.tool]}${sel.tool === 'box' && sel.corner ? ' (second corner)' : ''}`, 16, 32);
+    const textW = W - 32;
+    const measure = (t) => c.measureText(t).width;
+    c.fillText(fitText(measure, `${TOOL_NAMES[sel.tool]}${sel.tool === 'box' && sel.corner ? ' (second corner)' : ''}`, textW), 16, 32);
     c.font = '20px ui-monospace, Menlo, monospace';
     let y = 62;
-    const line = (t, color = '#e6e9ef') => { c.fillStyle = color; c.fillText(t, 16, y); y += 26; };
+    // A long line wraps inside the panel (issue #267), at most `rows` rows.
+    const line = (t, color = '#e6e9ef', rows = 3) => {
+      c.fillStyle = color;
+      for (const r of wrapText(measure, t, textW, rows)) { c.fillText(r, 16, y); y += 26; }
+    };
     if (sel.busy) line(sel.busy, '#ffd27a');
-    if (sel.error) line(sel.error.slice(0, 64), '#ff8a8a');
+    if (sel.error) line(sel.error, '#ff8a8a');
     if (sel.tool !== 'box') for (const t of pickLines()) line(t);
     if (sel.tool !== 'lasso' && sel.lasso) line(`green: the lasso selection${sel.lasso.shared ? ` from the ${sel.lasso.shared.source}` : ''}, ${sel.lasso.count} voxels (Clear removes it)`, '#7dffa0');
     const L = sel.lasso;
@@ -558,7 +565,7 @@ export function createSelection(ctx) {
           ? `velocity ${s.velocity_min_kms.toFixed(1)} to ${s.velocity_max_kms.toFixed(1)} km/s (ch ${s.channel_min}-${s.channel_max})`
           : `channels ${s.channel_min}-${s.channel_max}`);
         line(`peak ${fmt(s.max)} at (${(s.peak_voxel || []).join(', ')})`);
-        if (s.flux_note) line(s.flux_note.slice(0, 64), '#9aa3b2');
+        if (s.flux_note) line(s.flux_note, '#9aa3b2', 2);
         if (s.spectrum && s.spectrum.length > 1) {
           const ax = s.spectrum_velocity_kms && s.spectrum_velocity_kms.length === s.spectrum.length
             ? s.spectrum_velocity_kms : s.spectrum_channels;
