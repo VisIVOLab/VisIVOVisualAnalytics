@@ -299,6 +299,22 @@ void TestVrHeadsetHub::lookAndClipAreCoalescedPerCube()
     QVERIFY(log.add({ hubEvent(6, u"product"_s, u"/a"_s) }));
     QCOMPARE(log.events().first().seq, qint64(6));
     QVERIFY(!log.latest(u"look"_s, u"/c"_s));
+
+    // Without a cube_path, the payload's dataset id names the cube; a look
+    // naming no cube at all is never coalesced away.
+    VrHub::ActivityLog byId;
+    VrHub::Event a = hubEvent(1, u"look"_s, QString());
+    a.payload.insert(u"dataset_id"_s, u"ds1"_s);
+    VrHub::Event b = hubEvent(2, u"look"_s, QString());
+    b.payload.insert(u"dataset_id"_s, u"ds2"_s);
+    VrHub::Event c = hubEvent(3, u"look"_s, QString());
+    c.payload.insert(u"dataset_id"_s, u"ds1"_s);
+    QVERIFY(byId.add({ a, b, hubEvent(4, u"look"_s, QString()), hubEvent(5, u"look"_s, QString()) }));
+    QCOMPARE(byId.events().size(), 4);
+    QVERIFY(byId.add({ c }));
+    QCOMPARE(byId.events().size(), 4);   // ds1's older look went, ds2's stayed
+    QCOMPARE(byId.latest(u"look"_s, u"dataset:ds1"_s)->seq, qint64(3));
+    QCOMPARE(byId.latest(u"look"_s, u"dataset:ds2"_s)->seq, qint64(2));
 }
 
 void TestVrHeadsetHub::theListIsCappedNewestFirst()

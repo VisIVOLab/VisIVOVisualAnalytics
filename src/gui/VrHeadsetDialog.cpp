@@ -382,7 +382,7 @@ void VrHeadsetDialog::showHeadsets()
     m_showButton->setEnabled(!m_showing && !m_inputs.datasetId.isEmpty());
     m_showButton->setDefault(true);
     m_pairAnotherToggle->setVisible(!m_pairSection->isVisible());
-    adjustSize();
+    fitHeight();
 }
 
 void VrHeadsetDialog::showOnHeadset()
@@ -435,12 +435,19 @@ void VrHeadsetDialog::startPairing()
     m_pairAnotherToggle->setVisible(false);
     if (!m_pairingStarted) {
         m_pairingStarted = true;
-        // newCode drops the answers still out, a show among them.
-        m_showing = false;
-        if (!m_headsets.isEmpty())
-            m_showButton->setEnabled(!m_inputs.datasetId.isEmpty());
         newCode();
     }
+    fitHeight();
+}
+
+void VrHeadsetDialog::fitHeight()
+{
+    // Word-wrapped labels: never narrower than the dialog's first width, so
+    // adjustSize() fits the height to the wrapped text instead of narrowing
+    // the dialog to the unwrapped hint and clipping the lines.
+    setMinimumWidth(std::max(minimumWidth(), 560));
+    if (layout())
+        layout()->activate();
     adjustSize();
 }
 
@@ -557,6 +564,15 @@ void VrHeadsetDialog::revoke(const QStringList &ids)
 
 void VrHeadsetDialog::newCode()
 {
+    // The serial bumped below drops every answer still out, a Show among
+    // them: its button comes back, and the user is told the answer is lost.
+    if (m_showing) {
+        m_showing = false;
+        if (!m_headsets.isEmpty())
+            m_showButton->setEnabled(!m_inputs.datasetId.isEmpty());
+        m_hubResult->setText(u"The headset's answer was not waited for: if it did not switch, "
+                             u"press Show on Headset again."_s);
+    }
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     if (m_pair.codeOutstanding(now))
         revoke({ m_pair.code().code });

@@ -132,6 +132,8 @@ private:
     void showOnHeadset();
     /// Open the pairing and USB sections; the first time, ask for a code.
     void startPairing();
+    /// Keep the width, fit the height to the wrapped text.
+    void fitHeight();
     // ── Pairing by code (issue #214) ──────────────────────────────────────
     /// Ask for a code; a previous one still pending is revoked first.
     void newCode();

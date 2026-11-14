@@ -288,6 +288,16 @@ struct Event
     QJsonObject payload;
 };
 
+/// The cube an event is about, for coalescing: its path, else the payload's
+/// dataset id; '' when it names none.
+inline QString cubeKey(const Event &e)
+{
+    if (!e.cubePath.isEmpty())
+        return e.cubePath;
+    const QString id = e.payload.value(u"dataset_id").toString();
+    return id.isEmpty() ? QString() : QStringLiteral("dataset:") + id;
+}
+
 inline bool newerThan(const Event &a, const Event &b)
 {
     return a.epoch != b.epoch ? a.epoch > b.epoch : a.seq > b.seq;
@@ -354,12 +364,14 @@ public:
             });
             if (known)
                 continue;
-            if (coalesced(e.kind)) {
-                // Only the latest look (or clip) of a cube is kept.
+            const QString key = cubeKey(e);
+            if (coalesced(e.kind) && !key.isEmpty()) {
+                // Only the latest look (or clip) of a cube is kept; one whose
+                // cube is not named is kept as it is.
                 bool superseded = false;
                 for (qsizetype i = m_events.size() - 1; i >= 0; --i) {
                     const Event &x = m_events.at(i);
-                    if (x.kind != e.kind || x.cubePath != e.cubePath)
+                    if (x.kind != e.kind || cubeKey(x) != key)
                         continue;
                     if (newerThan(x, e))
                         superseded = true;
@@ -380,11 +392,11 @@ public:
         return true;
     }
     const QList<Event> &events() const { return m_events; }
-    /// The latest @p kind of the cube at @p cubePath, if any.
-    std::optional<Event> latest(const QString &kind, const QString &cubePath) const
+    /// The latest @p kind of the cube with key @p key (cubeKey), if any.
+    std::optional<Event> latest(const QString &kind, const QString &key) const
     {
         for (const Event &e : m_events)   // newest first
-            if (e.kind == kind && e.cubePath == cubePath)
+            if (e.kind == kind && cubeKey(e) == key)
                 return e;
         return std::nullopt;
     }

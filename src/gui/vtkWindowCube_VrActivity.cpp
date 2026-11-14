@@ -308,9 +308,10 @@ void vtkWindowCube::openHeadsetProduct(const VrHub::Event &event)
         const auto vertices = VrHub::pvVertices(p);
         if (thisCube && vertices.size() >= 2 && this->pvController && !this->pvController->isBusy()
             && !this->remoteDatasetId.isEmpty()) {
-            // This cube's PV view, along the headset's path: the PV records
-            // itself as this window's PV diagram (with its path), so it is not
-            // recorded a second time here.
+            // This cube's PV view, along the headset's path. The view's row is
+            // this window's live PV diagram (replaced by the next PV here); the
+            // headset's product keeps its own row, with its record.
+            this->recordHeadsetProduct(event, p);
             this->pvPolylineVertices = vertices;
             this->pvWidthPixels = VrHub::pvWidth(p);
             this->pvValid = true;
@@ -349,6 +350,16 @@ void vtkWindowCube::openHeadsetProduct(const VrHub::Event &event)
 
 void vtkWindowCube::openHeadsetSpectrum(const VrHub::Event &event, const VrHub::Product &product)
 {
+    // A spectrum is drawn by the window that holds it: opened in another
+    // window already, it is not made (and recorded) a second time.
+    const QString headsetId = VrHub::productId(event, product);
+    for (const AnalysisProduct &ap : ProductRegistry::instance().all()) {
+        if (ap.productId.startsWith(headsetId + u'@') && ap.ownerId != this->m_windowScope) {
+            this->statusBar()->showMessage(
+                    u"This spectrum is already open in another window: see its Session Data."_s, 6000);
+            return;
+        }
+    }
     const auto show = [this, event, product](const QVector<double> &axis, const QVector<double> &values,
                                              const QString &xLabel, const QString &yLabel) {
         QVector<double> key = axis;
