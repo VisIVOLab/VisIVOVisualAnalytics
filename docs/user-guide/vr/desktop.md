@@ -40,7 +40,7 @@ viewer:
 |---|---|
 | Moment map | the image viewer (its FITS file) |
 | PV slice | this cube's PV view, along the headset's path; from another cube, its FITS file |
-| Spectrum | a spectrum product of its cube's window (pane and Session Data) |
+| Spectrum | a spectrum product of its cube's window (pane and Session Data), from its CSV or FITS table |
 | Isolate or Remove | a new cube window (the masked cube's FITS file) |
 | Catalogue or flow layer | its file, when it is a FITS file; otherwise it is named, to open from the Data Hub's Workspace Exports |
 

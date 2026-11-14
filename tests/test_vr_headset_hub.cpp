@@ -424,6 +424,115 @@ void TestVrHeadsetHub::spectrumFileIsRead()
     QVERIFY(!VrHub::parseSpectrumCsv("only,a,header\n", x, y));
 }
 
+namespace {
+
+// Written by the backend's own worker_spectrum_table (format=fits) on a
+// 6-channel VRAD cube (CRVAL3 1000 m/s, CDELT3 5000 m/s, BUNIT Jy/beam) at
+// pixel (1, 2), whose channel 3 is blank there: radius 0 and radius 1.5.
+QByteArray spectrumFixture(const char *name)
+{
+    QFile f(QStringLiteral(VISIVO_TEST_DATA_DIR "/vr/") + QString::fromLatin1(name));
+    if (!f.open(QIODevice::ReadOnly))
+        return {};
+    return f.readAll();
+}
+
+}   // namespace
+
+void TestVrHeadsetHub::spectrumFitsTableIsReadLikeTheCsv()
+{
+    const QByteArray fits = spectrumFixture("spectrum_table_pixel.fits");
+    QVERIFY(!fits.isEmpty());
+    QVector<double> x, y;
+    QString xl, yl, error;
+    QVERIFY2(VrHub::parseSpectrumFile(fits, x, y, &xl, &yl, &error), qPrintable(error));
+    QCOMPARE(x, (QVector<double>{ 1000, 6000, 11000, 16000, 21000, 26000 }));
+    QCOMPARE(y.size(), 6);
+    QVERIFY(std::isnan(y.at(3)));
+    QCOMPARE(y.at(0), 5.5);
+    QCOMPARE(y.at(5), 55.5);
+
+    // The same spectrum in the CSV form the same worker writes: one product.
+    const QByteArray csv = "# VisIVO spectrum export\n# dataset: tiny_cube.fits\n# pixel:   (1, 2)\n"
+                           "# samples: 6\nVRAD (m / s),Intensity (Jy/beam)\n1000,5.5\n6000,15.5\n"
+                           "11000,25.5\n16000,nan\n21000,45.5\n26000,55.5\n";
+    QVector<double> cx, cy;
+    QString cxl, cyl;
+    QVERIFY(VrHub::parseSpectrumFile(csv, cx, cy, &cxl, &cyl));
+    QCOMPARE(xl, cxl);
+    QCOMPARE(yl, cyl);
+    QCOMPARE(x, cx);
+    QCOMPARE(y.size(), cy.size());
+    for (int i = 0; i < y.size(); ++i)
+        QVERIFY(std::isnan(y.at(i)) ? std::isnan(cy.at(i)) : y.at(i) == cy.at(i));
+}
+
+void TestVrHeadsetHub::apertureFitsTableIsAMean()
+{
+    QVector<double> x, y;
+    QString xl, yl;
+    QVERIFY(VrHub::parseSpectrumFile(spectrumFixture("spectrum_table_aperture.fits"), x, y, &xl, &yl));
+    QCOMPARE(xl, u"VRAD (m / s)"_s);
+    QCOMPARE(yl, u"Mean intensity (Jy/beam)"_s);
+    QCOMPARE(y.size(), 6);
+    QCOMPARE(y.at(3), 35.5);   // the blank pixel is left out of the mean
+}
+
+void TestVrHeadsetHub::brokenFitsTablesAreRefused()
+{
+    const QByteArray fits = spectrumFixture("spectrum_table_pixel.fits");
+    QVERIFY(!fits.isEmpty());
+    QVector<double> x, y;
+    QString error;
+    // Cut inside the table's data.
+    QVERIFY(!VrHub::parseSpectrumFile(fits.left(2 * 2880 + 40), x, y, nullptr, nullptr, &error));
+    QVERIFY(y.isEmpty());
+    QVERIFY(!error.isEmpty());
+    // The primary header alone: no table.
+    error.clear();
+    QVERIFY(!VrHub::parseSpectrumFile(fits.left(2880), x, y, nullptr, nullptr, &error));
+    QVERIFY(!error.isEmpty());
+    // No END card anywhere.
+    QVERIFY(!VrHub::parseSpectrumFile(QByteArray("SIMPLE  =                    T").leftJustified(2880, ' '),
+                                      x, y));
+    // A text column is never read as numbers: without SPECTRAL the table is
+    // read by its first two numeric columns, and labelled by their names.
+    QByteArray text = fits;
+    const int at = text.indexOf("TFORM2  = 'D       '");
+    QVERIFY(at > 0);
+    text.replace(at, 20, "TFORM2  = '8A      '");
+    QString xl, yl;
+    QVERIFY(VrHub::parseSpectrumFile(text, x, y, &xl, &yl));
+    QCOMPARE(x, (QVector<double>{ 0, 1, 2, 3, 4, 5 }));
+    QCOMPARE(xl, u"CHANNEL"_s);
+    QCOMPARE(yl, u"VALUE (Jy/beam)"_s);
+    // With VALUE a text column too, nothing is left to plot.
+    const int at3 = text.indexOf("TFORM3  = 'D       '");
+    QVERIFY(at3 > 0);
+    text.replace(at3, 20, "TFORM3  = '8A      '");
+    QVERIFY(!VrHub::parseSpectrumFile(text, x, y));
+
+    // Sizes a header makes up are refused before they are used: none of them
+    // may overflow into a read outside the file.
+    const auto withCard = [](QByteArray f, int from, const char *key, const QByteArray &value) {
+        for (int p = from; p + 80 <= f.size(); p += 80)
+            if (f.mid(p, 8).trimmed() == key) {
+                f.replace(p, 80, (QByteArray(key).leftJustified(8, ' ') + "= " + value).leftJustified(80, ' '));
+                break;
+            }
+        return f;
+    };
+    QVERIFY(!VrHub::parseSpectrumFile(withCard(fits, 0, "BITPIX", "9223372036854775807"), x, y));
+    QVERIFY(!VrHub::parseSpectrumFile(withCard(fits, 2880, "TFORM1", "'9223372036854775807A'"), x, y));
+    QVERIFY(!VrHub::parseSpectrumFile(withCard(fits, 2880, "TFORM1", "'99999999999999999999A'"), x, y));
+    QByteArray huge = withCard(fits, 2880, "NAXIS", "0");
+    huge = withCard(huge, 2880, "NAXIS1", "4611686018427387904");
+    huge = withCard(huge, 2880, "NAXIS2", "4");
+    QVERIFY(!VrHub::parseSpectrumFile(huge, x, y));
+    QVERIFY(!VrHub::parseSpectrumFile(withCard(fits, 2880, "NAXIS2", "4611686018427387904"), x, y));
+    QVERIFY(y.isEmpty());
+}
+
 void TestVrHeadsetHub::lookAndClipAreRead()
 {
     const VrHub::Look l = VrHub::parseLook(QJsonDocument::fromJson(

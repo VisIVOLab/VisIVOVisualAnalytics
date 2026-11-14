@@ -26,6 +26,7 @@
 //
 // Widget-free and header-only: unit-tested in tests/test_vr_headset_hub.cpp.
 
+#include "FitsSpectrumTable.h"
 #include "MissingRoute.h"
 #include "ProductRegistry.h"
 #include "VrLink.h"
@@ -606,6 +607,22 @@ inline bool parseSpectrumCsv(const QByteArray &text, QVector<double> &axis, QVec
         values.append(y);
     }
     return values.size() >= 2;
+}
+
+/// A spectrum file the backend wrote under the exports, CSV or FITS table
+/// (POST /v1/products/spectrum_table, format csv or fits): told apart by its
+/// first bytes, not by its name. False, with @p error, when it holds no spectrum.
+inline bool parseSpectrumFile(const QByteArray &bytes, QVector<double> &axis,
+                              QVector<double> &values, QString *xLabel = nullptr,
+                              QString *yLabel = nullptr, QString *error = nullptr)
+{
+    if (visivo::looksLikeFits(bytes))
+        return visivo::readFitsSpectrumTable(bytes, axis, values, xLabel, yLabel, error);
+    if (parseSpectrumCsv(bytes, axis, values, xLabel, yLabel))
+        return true;
+    if (error)
+        *error = QStringLiteral("the file holds no spectrum");
+    return false;
 }
 
 // ── The headset's look ──────────────────────────────────────────────────────
