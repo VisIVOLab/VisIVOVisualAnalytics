@@ -139,7 +139,8 @@ export async function runMenuChecks({ c, check, waitFor, results = {} }) {
   await press('tool:probe');
   await clickAt(centre[0], centre[1]);
   const spec = await waitFor(c, `!!window.__vrSelection.sel.spectrum || !!window.__vrSelection.sel.error`, 30000);
-  await sleep(100);
+  // Its window is placed by the next frame (shownWindows), not with the result.
+  await waitFor(c, `!!${menu}.wins.result.model`, 5000, 50);
   const shown = await c.evaluate(`({ spectrum: !!window.__vrSelection.sel.spectrum, err: window.__vrSelection.sel.error, win: !!${menu}.wins.result.model })`);
   check('menu: in Select a click takes the spectrum, in a result window', spec.value && shown.spectrum && shown.win, JSON.stringify(shown));
   const x = await c.evaluate(`${menu}.windowPixel('result', 'close')`);
@@ -160,6 +161,10 @@ export async function runMenuChecks({ c, check, waitFor, results = {} }) {
   await press('spec-pin');
   await press('moment:0');
   const mom = await waitFor(c, `!!(window.__vrAnalysis.moment.state.result || window.__vrAnalysis.moment.state.error)`, 60000);
+  // The window's pose is set by the next frame that lays out the windows
+  // (shownWindows in the draw loop), not when the result arrives: wait for
+  // that frame (about 100 ms a frame under CI's software GL), then read it.
+  if (mom.value && !(await c.evaluate('window.__vrAnalysis.moment.state.error'))) await waitFor(c, `!!${menu}.wins.moment.model`, 5000, 50);
   const m = await c.evaluate(`(() => { const s = window.__vrAnalysis.moment.state; return { whole: !!(s.result && s.result.whole), err: s.error,
     req: s.result && s.result.req, win: !!${menu}.wins.moment.model }; })()`);
   check('menu: Intensity (M0) with no selection: the whole field over the velocity range, automatic mask, in its window',
