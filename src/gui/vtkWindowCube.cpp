@@ -2231,10 +2231,16 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 // first result only — mid-drag they would pull the pane, the dock and
                 // the Inspector away from the path being edited.
                 const bool refreshInPlace = pvTarget >= 0;
+                // The headset's PV opened here: this row carries its record
+                // (one row, not two).
+                QList<ReplayStep> pvReplay;
+                QString pvCaveat;
+                this->adoptHeadsetPv(pvVerts, pvWidth, pvParams, pvReplay, pvCaveat);
                 this->registerAnalysisProduct(u"pv"_s, u"PV diagram"_s, pvParams,
                                               this->pvDiagramWidget, this->m_pvProductId,
                                               u"pvdiagram"_s, /*revealProvenance=*/!refreshInPlace,
-                                              pvOrigin, /*selectInSession=*/!refreshInPlace);
+                                              pvOrigin, /*selectInSession=*/!refreshInPlace,
+                                              pvReplay, pvCaveat);
                 // A first result goes where it can be SEEN, like a region spectrum: a
                 // free pane, else the layout grows (1→2→4); never borrowed. With every
                 // pane taken it used to be parked out of sight.

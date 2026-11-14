@@ -32,6 +32,8 @@
 #include <QProcess>
 #include <QPushButton>
 #include <QScreen>
+#include <QScrollArea>
+#include <QStyle>
 #include <QSettings>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -54,6 +56,9 @@ constexpr int kPollIntervalMs = 3000;
 constexpr qint64 kPairPollIntervalMs = 2000;
 // The backend check: a tunnel to a cluster answers in well under a second.
 constexpr int kBackendCheckTimeoutMs = 8000;
+// The hub, asked again while the dialog is open: a page that connects after
+// the dialog opened (paired by code, or opened over USB) shows up within this.
+constexpr int kHubPollIntervalMs = 3000;
 
 const QString kGuideBase = u"https://visivo.readthedocs.io/en/latest/user-guide/vr-headset.html"_s;
 const QString kGuideUrl = kGuideBase + u"#open-a-cube-from-the-desktop"_s;
@@ -83,8 +88,23 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     auto *root = new QVBoxLayout(this);
     root->addWidget(ToolDialogStyle::makeBreadcrumb(this, u"Open in VR Headset"_s));
 
+    // The sections scroll; Close stays at the bottom. With pairing and the
+    // USB section open the dialog is taller than a laptop screen, and grown
+    // past the screen's bottom its buttons could not be reached (issue #249).
+    m_scroll = new QScrollArea(this);
+    m_scroll->setWidgetResizable(true);
+    m_scroll->setFrameShape(QFrame::NoFrame);
+    m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_content = new QWidget(m_scroll);
+    auto *content = new QVBoxLayout(m_content);
+    content->setContentsMargins(0, 0, 0, 0);
+    m_scroll->setWidget(m_content);
+    root->addWidget(m_scroll, 1);
+    // A label's new text relayouts the content, not the dialog.
+    m_content->installEventFilter(this);
+
     // ── A headset page already open in this session (issue #238) ──────────
-    m_hubPanel = new QWidget(this);
+    m_hubPanel = new QWidget(m_content);
     auto *hub = new QVBoxLayout(m_hubPanel);
     hub->setContentsMargins(0, 0, 0, 0);
     m_hubLabel = new QLabel(m_hubPanel);
@@ -112,15 +132,17 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     m_hubResult->setWordWrap(true);
     m_hubResult->setVisible(false);
     hub->addWidget(m_hubResult);
-    root->addWidget(m_hubPanel);
+    content->addWidget(m_hubPanel);
 
     // Pairing and the USB way, hidden while the headset already connected is
     // the one used (Pair Another Headset brings them back).
-    m_pairSection = new QWidget(this);
+    m_pairSection = new QWidget(m_content);
     auto *pairSection = new QVBoxLayout(m_pairSection);
     pairSection->setContentsMargins(0, 0, 0, 0);
-    root->addWidget(m_pairSection);
+    content->addWidget(m_pairSection);
     m_pairSection->setVisible(false);
+    // Any height left over stays below the sections, not between their rows.
+    content->addStretch(1);
 
     // ── Pairing by code: the default (issue #214) ──────────────────────────
     m_pairPanel = new QWidget(m_pairSection);
@@ -189,13 +211,6 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     auto *adv = new QVBoxLayout(m_advancedPanel);
     adv->setContentsMargins(0, 0, 0, 0);
     pairSection->addWidget(m_advancedPanel);
-
-    // Why the USB way is shown by itself (pairing is not available here).
-    m_advancedReason = new QLabel(m_advancedPanel);
-    m_advancedReason->setTextFormat(Qt::PlainText);
-    m_advancedReason->setWordWrap(true);
-    m_advancedReason->setVisible(false);
-    adv->addWidget(m_advancedReason);
 
     auto *intro = new QLabel(
             u"Opens this cube in the browser of a Meta Quest connected to this computer "
@@ -284,7 +299,10 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     connect(m_advancedToggle, &QToolButton::toggled, this,
             [this](bool open) { setAdvancedOpen(open); });
     connect(m_showButton, &QPushButton::clicked, this, &VrHeadsetDialog::showOnHeadset);
-    connect(m_pairAnotherToggle, &QToolButton::clicked, this, &VrHeadsetDialog::startPairing);
+    connect(m_pairAnotherToggle, &QToolButton::clicked, this, [this]() {
+        m_pairAnotherAsked = true;
+        startPairing();
+    });
 
     m_pollTimer = new QTimer(this);
     m_pollTimer->setInterval(kPollIntervalMs);
@@ -325,17 +343,28 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
                         : u"Backend: local, at localhost:%1%2."_s.arg(m_link.port).arg(under));
     }
 
+    m_hubTimer = new QTimer(this);
+    m_hubTimer->setInterval(kHubPollIntervalMs);
+    connect(m_hubTimer, &QTimer::timeout, this, [this]() {
+        if (isVisible())
+            checkHeadsets(/*quiet=*/true);
+    });
+
     // A headset already connected first; pairing only when there is none.
     checkHeadsets();
-    resize(560, sizeHint().height());
+    m_hubTimer->start();
+    resize(560, height());
+    fitHeight();
 }
 
 // ── A headset already connected (issue #238) ────────────────────────────────
 
 void VrHeadsetDialog::checkHeadsets(bool quiet)
 {
-    if (m_closed)
+    if (m_closed || m_hubCheckOut)
         return;
+    m_hubCheckOut = true;
+    QPointer<VrHeadsetDialog> self(this);
     runPairRequest(
             [](const BackendClient &c) {
                 // Carried in the pairing reply type, which runPairRequest
@@ -348,22 +377,38 @@ void VrHeadsetDialog::checkHeadsets(bool quiet)
                 return reply;
             },
             [this, quiet](const BackendVrPairReply &reply) {
+                m_hubCheckOut = false;
                 const VrHub::Presence p =
                         VrHub::parsePresence(reply.httpStatus, reply.body, reply.error);
+                const bool hadHeadsets = !m_headsets.isEmpty();
                 if (p.ok)
                     m_headsets = p.headsets;
                 else if (p.unsupported)
                     m_headsets.clear();
+                if (p.unsupported)
+                    m_hubTimer->stop();   // an older backend: no page will ever show up
                 if (!m_headsets.isEmpty()) {
+                    // A page that connected while pairing was shown: the
+                    // connected-headset view, as a dialog opened now shows.
+                    if (!hadHeadsets && !m_pairAnotherAsked && !m_pairSection->isHidden())
+                        leavePairing();
                     showHeadsets();
                     return;
                 }
-                if (quiet && m_pairingStarted)
+                // Pairing on show stays as it is; hidden behind a page that
+                // has gone, it comes back (the page's view would be stale).
+                if (quiet && m_pairingStarted && !m_pairSection->isHidden())
                     return;
                 // No page here (or a backend without the hub): pairing, as
                 // before the hub existed.
                 m_hubPanel->setVisible(false);
                 startPairing();
+            },
+            [self](const BackendVrPairReply &, const BackendClient &) {
+                // Dropped (closed, or a new code asked for meanwhile): the
+                // next check may go.
+                if (self)
+                    self->m_hubCheckOut = false;
             });
 }
 
@@ -382,7 +427,7 @@ void VrHeadsetDialog::showHeadsets()
     m_showButton->setVisible(true);
     m_showButton->setEnabled(!m_showing && !m_inputs.datasetId.isEmpty());
     m_showButton->setDefault(true);
-    m_pairAnotherToggle->setVisible(!m_pairSection->isVisible());
+    m_pairAnotherToggle->setVisible(m_pairSection->isHidden());
     fitHeight();
 }
 
@@ -441,31 +486,102 @@ void VrHeadsetDialog::startPairing()
     fitHeight();
 }
 
+void VrHeadsetDialog::leavePairing()
+{
+    m_pairSection->setVisible(false);
+    using VrPair::State;
+    const State state = m_pair.state();
+    // A headset paired here stays paired (Pair Another Headset shows it);
+    // anything else is dropped: an unused code stops working, an answer still
+    // out is not waited for, and Pair Another Headset asks for a fresh code.
+    if (m_pairingStarted && state != State::Connected && state != State::Connecting) {
+        if (m_pair.codeOutstanding(QDateTime::currentMSecsSinceEpoch()))
+            revoke({ m_pair.code().code });
+        ++m_pairSerial;
+        m_pollGate.reset();
+        m_pair.requesting();
+        m_pairTimer->stop();
+        m_pairingStarted = false;
+        showPairing();
+    }
+}
+
 void VrHeadsetDialog::fitHeight()
 {
     // Word-wrapped labels: never narrower than the dialog's first width, so
-    // adjustSize() fits the height to the wrapped text instead of narrowing
-    // the dialog to the unwrapped hint and clipping the lines.
+    // the height is fitted to the wrapped text instead of narrowing the
+    // dialog to the unwrapped hint and clipping the lines.
     setMinimumWidth(std::max(minimumWidth(), 560));
-    if (layout())
-        layout()->activate();
-    adjustSize();
+    if (width() < minimumWidth())
+        resize(minimumWidth(), height());
+    fitToContent(/*mayShrink=*/true);
 }
 
 void VrHeadsetDialog::growToFit()
 {
-    QLayout *l = layout();
-    if (!l || !l->hasHeightForWidth())
-        return;
     // A top-level window's minimum size ignores height-for-width, so new text
     // that wraps onto more lines (the backend check, adb's state) does not
-    // make the window taller: the layout squeezes the labels instead and
-    // their lines run into each other.
-    int needed = l->totalHeightForWidth(width());
-    if (const QScreen *s = screen())
-        needed = std::min(needed, s->availableGeometry().height());
-    if (needed > height())
-        resize(width(), needed);
+    // make the window taller by itself: the content would scroll instead.
+    fitToContent(/*mayShrink=*/false);
+}
+
+void VrHeadsetDialog::fitToContent(bool mayShrink)
+{
+    QLayout *l = layout();
+    QLayout *content = m_content ? m_content->layout() : nullptr;
+    if (!l || !content)
+        return;
+    l->activate();
+    // What the content needs at the width it has without a scroll bar, and
+    // what is around it (breadcrumb, Close, margins) as laid out now.
+    const int around = height() - m_scroll->height();
+    int needed = around + content->totalHeightForWidth(m_scroll->width());
+    if (const QScreen *s = screen()) {
+        // The title bar too: the whole frame must fit. Before the first show
+        // there is no frame yet, so the style's guess stands in for it.
+        const int titleBar = isVisible() ? frameGeometry().height() - height()
+                                         : style()->pixelMetric(QStyle::PM_TitleBarHeight);
+        needed = std::min(needed, s->availableGeometry().height() - std::max(0, titleBar));
+    }
+    needed = std::max(needed, minimumHeight());
+    const int h = mayShrink ? needed : std::max(needed, height());
+    if (h != height())
+        resize(width(), h);
+    keepOnScreen(h);
+}
+
+void VrHeadsetDialog::keepOnScreen(int h)
+{
+    const QScreen *s = screen();
+    if (!s || !isVisible())
+        return;
+    const QRect avail = s->availableGeometry();
+    const QRect frame = frameGeometry();
+    // The frame as it is about to be: the window's new height may not have
+    // been applied yet, the title bar and borders around it are the same.
+    const int frameHeight = frame.height() - height() + h;
+    int top = frame.top();
+    if (top + frameHeight > avail.y() + avail.height())
+        top = avail.y() + avail.height() - frameHeight;
+    top = std::max(top, avail.y());
+    int left = frame.left();
+    if (left + frame.width() > avail.x() + avail.width())
+        left = avail.x() + avail.width() - frame.width();
+    left = std::max(left, avail.x());
+    // A top-level window's pos() is its frame's.
+    if (top != frame.top() || left != frame.left())
+        move(left, top);
+}
+
+void VrHeadsetDialog::queueGrowToFit()
+{
+    if (m_growQueued)
+        return;
+    m_growQueued = true;
+    QTimer::singleShot(0, this, [this]() {
+        m_growQueued = false;
+        growToFit();
+    });
 }
 
 bool VrHeadsetDialog::event(QEvent *event)
@@ -476,6 +592,14 @@ bool VrHeadsetDialog::event(QEvent *event)
     if (event->type() == QEvent::LayoutRequest)
         growToFit();
     return handled;
+}
+
+bool VrHeadsetDialog::eventFilter(QObject *watched, QEvent *event)
+{
+    // Seen before the content's layout has handled it: fitted once it has.
+    if (watched == m_content && event->type() == QEvent::LayoutRequest)
+        queueGrowToFit();
+    return QDialog::eventFilter(watched, event);
 }
 
 void VrHeadsetDialog::startUsb()
@@ -489,12 +613,8 @@ void VrHeadsetDialog::startUsb()
     m_pollTimer->start();
 }
 
-void VrHeadsetDialog::setAdvancedOpen(bool open, const QString &reason)
+void VrHeadsetDialog::setAdvancedOpen(bool open)
 {
-    if (!reason.isEmpty()) {
-        m_advancedReason->setText(reason);
-        m_advancedReason->setVisible(true);
-    }
     {
         const QSignalBlocker block(m_advancedToggle);
         m_advancedToggle->setChecked(open);
@@ -505,7 +625,7 @@ void VrHeadsetDialog::setAdvancedOpen(bool open, const QString &reason)
     m_openButton->setDefault(open);
     if (open)
         startUsb();
-    adjustSize();
+    fitHeight();
 }
 
 // ── Pairing by code ─────────────────────────────────────────────────────────
@@ -633,8 +753,9 @@ void VrHeadsetDialog::newCode()
                                                               reply.error, reply.date, at),
                                       at, VrPair::parseStatus(200, reply.statusBefore));
                        m_lastPollMs = at;
+                       // Why is said once, by the pairing status above it.
                        if (m_pair.state() == VrPair::State::Unavailable)
-                           setAdvancedOpen(true, m_pair.message());
+                           setAdvancedOpen(true);
                        showPairing();
                        if (m_pair.polling(at))
                            m_pairTimer->start();
@@ -671,7 +792,7 @@ void VrHeadsetDialog::pollPairing()
                                      QDateTime::currentMSecsSinceEpoch());
                        if (was != VrPair::State::Unavailable
                            && m_pair.state() == VrPair::State::Unavailable)
-                           setAdvancedOpen(true, m_pair.message());
+                           setAdvancedOpen(true);
                        showPairing();
                    });
 }
@@ -724,6 +845,9 @@ void VrHeadsetDialog::showPairing()
     m_codeLabel->setText(codeShown ? VrPair::displayCode(m_pair.code().code) : QString());
     m_codeLabel->setVisible(codeShown);
     m_pairHint->setVisible(codeShown);
+    // The code and its QR gone (connected, expired): no blank where they were.
+    const bool refit = codeShown != m_codeWasShown;
+    m_codeWasShown = codeShown;
     showQr(codeShown ? VrPair::qrPayload(m_pair.code()) : QString());
     m_pairStatus->setText(VrPair::statusText(m_pair, now));
     const bool problem = state == State::Failed || state == State::Lost
@@ -742,6 +866,8 @@ void VrHeadsetDialog::showPairing()
     // Nothing changes by itself any more: the countdown and the polls stop.
     if (!m_pair.polling(now))
         m_pairTimer->stop();
+    if (refit && !m_pairSection->isHidden())
+        fitHeight();
 }
 
 void VrHeadsetDialog::checkBackend()
@@ -811,6 +937,7 @@ void VrHeadsetDialog::stopAll()
     m_openQueued = false;
     m_pollTimer->stop();
     m_pairTimer->stop();
+    m_hubTimer->stop();
     // Answers still out belong to the window as it was: dropped (a code
     // issued meanwhile is revoked), and the next poll after a re-show is not
     // held up by one that will never be answered here.
@@ -850,6 +977,7 @@ void VrHeadsetDialog::showEvent(QShowEvent *event)
         // The code shown before was revoked on hide: a connected headset is
         // followed again, anything else gets a fresh code. Not paired yet
         // here: a page already connected is looked for first (issue #238).
+        m_hubTimer->start();
         if (!m_pairingStarted) {
             checkHeadsets();
         } else if (m_pair.state() == VrPair::State::Connected) {

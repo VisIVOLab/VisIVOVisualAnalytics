@@ -8,6 +8,20 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Headset Activity and the headset dialog: defects found in the real app
+  (#249, part of #234).** The activity rows wrap to the panel's width: the
+  look, clip and cube rows showed no text and the Open buttons sat behind a
+  horizontal scroll bar, cut in half (the theme's list-item padding squeezed
+  the item widgets; the rows are now a scroll area of their own,
+  `HeadsetActivityList`). A PV opened from the headset in the cube's PV view
+  is recorded once: the view's row carries the headset's record instead of a
+  second row without it. The Open in VR Headset dialog stays within the
+  screen's available geometry when it grows (it moves up; on a short screen
+  its sections scroll and Close stays reachable), says why pairing is off
+  once instead of twice, and switches to the connected-headset view when a
+  page connects after it was opened, without leaving a blank gap. A moment
+  the headset measured on a selection names that selection under *Mask*.
+
 - **VR: a cube switch in VR no longer stops the frames (#246, part of #234).**
   The new cube's empty-space grid, the top of its colour range and the apron
   of the capacity's corner are computed in a module Web Worker

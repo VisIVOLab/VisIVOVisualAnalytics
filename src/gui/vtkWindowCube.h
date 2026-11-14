@@ -33,6 +33,7 @@ class VolumeRaytracePanel;
 class AngularPowerSettings;
 class SharedSelectionLink;
 class HeadsetHubLink;
+class HeadsetActivityList;
 class QCheckBox;
 class QListWidget;
 class SkeletonSettings;
@@ -886,7 +887,7 @@ private:
     QPointer<QAction> m_actHeadsetActivity;
     QPointer<QWidget> m_headsetActivitySettings;
     QPointer<QLabel> m_headsetActivityState;
-    QPointer<QListWidget> m_headsetActivityList;
+    QPointer<HeadsetActivityList> m_headsetActivityList;
     QPointer<QCheckBox> m_headsetFollowLook;
     QPointer<QLabel> m_headsetStatusLabel;
     bool m_headsetShowing{ false };
@@ -904,6 +905,23 @@ private:
     void showCubeOnHeadset();
     void openHeadsetProduct(const VrHub::Event &event);
     void openHeadsetSpectrum(const VrHub::Event &event, const VrHub::Product &product);
+    /// A PV made in the headset, opened in this cube's PV view (issue #249):
+    /// the view's row carries the headset's record instead of a second row.
+    struct HeadsetPv
+    {
+        VrHub::Event event;
+        VrHub::Product product;
+        std::vector<std::array<double, 2>> vertices;
+        int width{ 1 };
+    };
+    std::optional<HeadsetPv> m_headsetPvAsked;   ///< sent to the PV view, not shown yet
+    std::optional<HeadsetPv> m_headsetPvShown;   ///< the PV row carries its record
+    /// Called with every PV result before its row is registered: the cut the
+    /// headset asked for (or the same one recomputed) gets the headset's
+    /// parameters, replay and caveat; any other cut gives the headset's
+    /// record back its own row.
+    void adoptHeadsetPv(const std::vector<std::array<double, 2>> &vertices, int width,
+                        QVariantMap &params, QList<ReplayStep> &replay, QString &caveat);
     /// Record a product of the headset once in Provenance (stable id).
     void recordHeadsetProduct(const VrHub::Event &event, const VrHub::Product &product,
                               const QString &renderer = QString());

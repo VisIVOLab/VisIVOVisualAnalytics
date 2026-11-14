@@ -552,6 +552,43 @@ inline QString productId(const Event &e, const Product &p)
     return QStringLiteral("headset-%1-%2").arg(e.client, local);
 }
 
+/// The selection a product was measured on, from its replay: a selection the
+/// page isolated (mask_apply_bin blank_outside) before the product's own step.
+/// '' when it was measured on the whole cube.
+inline QString selectionMeasured(const Product &p)
+{
+    bool lasso = false;
+    bool isolated = false;
+    for (const ReplayStep &s : p.replay) {
+        if (s.route == u"/v1/cube/kinematic_select_bin")
+            lasso = true;
+        else if (s.route == u"/v1/cube/mask_apply_bin"
+                 && s.request.value(QStringLiteral("mode")).toString() == u"blank_outside")
+            isolated = true;
+    }
+    if (!isolated)
+        return QString();
+    return lasso ? QStringLiteral("the Kinematic Lasso selection") : QStringLiteral("the selection");
+}
+
+/// A product of the headset as Provenance shows it: its own parameters, where
+/// it was made and its file. The page records a moment of a selection with
+/// "Mask: none", the desktop's word for "no threshold mask"; next to the
+/// selection it was measured on, that reads as "not masked", so the
+/// selection is named there (issue #249).
+inline QVariantMap provenanceParams(const Product &p)
+{
+    QVariantMap params = p.parameters;
+    params.insert(QStringLiteral("Made in"), QStringLiteral("the VR headset"));
+    if (!p.path.isEmpty())
+        params.insert(QStringLiteral("File"), p.workspaceFilename.isEmpty() ? p.path : p.workspaceFilename);
+    const QString selection = selectionMeasured(p);
+    if (!selection.isEmpty() && params.value(QStringLiteral("Mask")).toString() == u"none")
+        params.insert(QStringLiteral("Mask"),
+                      QStringLiteral("%1 (outside blanked); no threshold").arg(selection));
+    return params;
+}
+
 /// The PV request's path, as the desktop's PV takes it (pixels of the cube).
 inline std::vector<std::array<double, 2>> pvVertices(const Product &p)
 {
