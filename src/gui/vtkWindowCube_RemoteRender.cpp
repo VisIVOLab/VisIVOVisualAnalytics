@@ -1133,9 +1133,19 @@ void vtkWindowCube::pushRenderStateToRemote()
         m[u"visible"_s] = m_show3dRendering;
         this->sendRemoteRenderStateCommand(m);
     }
-    // The headset's clip box, when this window follows it (issue #238).
-    if (this->m_headsetCropping)
-        this->applyHeadsetClip();
+    {
+        // The headset's clip box when this window follows one (issue #238),
+        // else none: a session kept from before may still hold a crop that
+        // was cleared while this view was local.
+        QVariantMap m;
+        m[u"type"_s] = u"set_crop"_s;
+        const bool following = this->m_headsetCropping && this->m_headsetClip.set;
+        m[u"box"_s] = following ? VrHub::cropCommandBox(this->m_headsetClip,
+                                                        { this->remoteDatasetWidth, this->remoteDatasetHeight,
+                                                          this->remoteDatasetDepth })
+                                : QVariant();
+        this->sendRemoteRenderStateCommand(m);
+    }
     // Last: on a non-linear volume scale the session draws with this window's
     // own functions, which the LUT and threshold above would otherwise replace.
     this->pushVolumeTransferFunctionsToRemote();
