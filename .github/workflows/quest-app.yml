@@ -1,0 +1,118 @@
+name: quest-app
+
+# Builds the VisIVO VR headset app (tools/quest-app, issue #255): the backend's
+# VR page packaged as an immersive Horizon OS app, signed with the project's
+# release key. The key lives only in the repository's secrets:
+#
+#   QUEST_APP_KEYSTORE_B64   the keystore (PKCS12 or JKS), base64-encoded
+#   QUEST_APP_KEYSTORE_PASS  its password (the key's password must be the same)
+#   QUEST_APP_KEY_ALIAS      the key's alias (optional, default visivo-vr)
+#
+# Without them the job says so and ends successfully: nothing is built. On a
+# tag the APK and its description are added to that tag's GitHub release
+# (made as a draft by release.yml); otherwise they are a workflow artifact.
+# Separate from release.yml on purpose: a failure here never holds a release.
+
+on:
+  push:
+    tags: ['v*', '[0-9]*']
+  workflow_dispatch:
+
+concurrency:
+  group: quest-app-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: headset app (APK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Signing key present?
+        id: key
+        env:
+          KEYSTORE_B64: ${{ secrets.QUEST_APP_KEYSTORE_B64 }}
+          KEYSTORE_PASS: ${{ secrets.QUEST_APP_KEYSTORE_PASS }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$KEYSTORE_PASS" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::The headset app is not built: QUEST_APP_KEYSTORE_B64 and QUEST_APP_KEYSTORE_PASS are not set (tools/quest-app/README.md)."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.present == 'true'
+
+      - uses: actions/setup-java@v4
+        if: steps.key.outputs.present == 'true'
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@v4
+        if: steps.key.outputs.present == 'true'
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: tools/quest-app/package-lock.json
+
+      - uses: android-actions/setup-android@v3
+        if: steps.key.outputs.present == 'true'
+
+      - name: Build and sign
+        if: steps.key.outputs.present == 'true'
+        env:
+          KEYSTORE_B64: ${{ secrets.QUEST_APP_KEYSTORE_B64 }}
+          KEYSTORE_PASS: ${{ secrets.QUEST_APP_KEYSTORE_PASS }}
+          QUEST_APP_KEY_ALIAS: ${{ secrets.QUEST_APP_KEY_ALIAS || 'visivo-vr' }}
+        run: |
+          set -euo pipefail
+          umask 077
+          KEYDIR="$RUNNER_TEMP/quest-key"
+          mkdir -p "$KEYDIR"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$KEYDIR/release.keystore"
+          printf '%s' "$KEYSTORE_PASS" > "$KEYDIR/release.pass"
+          trap 'rm -rf "$KEYDIR"' EXIT
+          QUEST_APP_KEYSTORE="$KEYDIR/release.keystore" QUEST_APP_KEYSTORE_PASS_FILE="$KEYDIR/release.pass" \
+            tools/quest-app/build.sh --release --out "$RUNNER_TEMP/quest-app"
+          cat "$RUNNER_TEMP/quest-app/visivo-vr.json"
+          {
+            echo "### VisIVO VR headset app"
+            echo '```json'
+            cat "$RUNNER_TEMP/quest-app/visivo-vr.json"
+            echo '```'
+            echo "The release certificate's SHA-256 must be in backend/app/vr_app.json (release_sha256)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the APK
+        if: steps.key.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: visivo-vr-apk
+          path: |
+            ${{ runner.temp }}/quest-app/visivo-vr.apk
+            ${{ runner.temp }}/quest-app/visivo-vr.json
+            ${{ runner.temp }}/quest-app/assetlinks.json
+          retention-days: 30
+
+      - name: Add it to the tag's release
+        if: steps.key.outputs.present == 'true' && startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # release.yml makes the draft release at its start; wait for it.
+          for _ in $(seq 1 30); do
+            if gh release view "$TAG" > /dev/null 2>&1; then
+              gh release upload "$TAG" "$RUNNER_TEMP/quest-app/visivo-vr.apk" "$RUNNER_TEMP/quest-app/visivo-vr.json" --clobber
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "::warning::No release for $TAG after 15 minutes: the APK is only in the workflow artifact."

@@ -19,6 +19,7 @@ Lasso, spectra) still runs on the full cube on the backend.
 :maxdepth: 2
 
 quickstart
+headset-app
 desktop
 controls
 analysis
@@ -31,6 +32,8 @@ reference
 
 - [Quickstart and pairing](quickstart.md): pairing the headset by code, the
   USB cable for offline use, the page on the Mac without a headset.
+- [The headset app](headset-app.md): VisIVO VR installed on the Quest, started
+  from the desktop straight into VR (no browser window, no Enter VR).
 - [The headset from the desktop](desktop.md): Show on Headset for a headset
   already connected, the Headset Activity list and its products, following
   the headset's look.

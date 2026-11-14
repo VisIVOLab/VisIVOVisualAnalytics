@@ -1,0 +1,18 @@
+{
+  "about": "The VisIVO VR headset app (issue #255): the backend's VR page packaged as an immersive Horizon OS app. Read by build.sh / make-twa.py; the packages must match backend/app/vr_app.json. Bump versionCode whenever the wrapper changes (a new Bubblewrap, a new patch, a new icon): the desktop reinstalls an app whose versionCode is lower than the one it ships.",
+  "packages": {
+    "release": "it.inaf.oact.visivo.vr",
+    "development": "it.inaf.oact.visivo.vr.dev"
+  },
+  "names": {
+    "release": "VisIVO VR",
+    "development": "VisIVO VR (dev)"
+  },
+  "versionCode": 1,
+  "versionName": "1.0.0",
+  "defaultOrigin": "http://localhost:8000",
+  "startPath": "/vr/?launch=immersive",
+  "scopePath": "/vr/",
+  "themeColor": "#101418",
+  "icon": "web/vr-loader/icon-512.png"
+}

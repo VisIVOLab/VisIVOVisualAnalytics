@@ -60,6 +60,27 @@ are preserved here unedited; the branch names they refer to are historical.
   its convention, errors, the flux note) instead of running past the right
   edge, and the moment and PV windows wrap their lines into three rows above
   the image. Pure layout tests in `backend/tests/vr/windows.test.mjs`.
+
+- **VR: the headset app, started straight into VR (#255, backend, page and
+  build; the desktop side follows).** The VR page can be installed on the
+  Quest as **VisIVO VR**, an immersive Horizon OS app built from
+  `tools/quest-app/` (Meta's Bubblewrap pinned at 1.24.1, four patches, a
+  development key made on the computer at the first build, the release key a
+  CI secret; `.github/workflows/quest-app.yml` builds it on tags when the
+  secret exists and skips otherwise). The desktop starts it with one launch
+  carrying a one-time ticket (`POST /v1/vr/launch`), never the token: the page
+  trades it once (`POST /v1/vr/launch/exchange`, 60 s, single use, only hashes
+  kept), enters VR at load before the cube with *Opening …* shown in VR, or an
+  empty room that says what to press on the computer, and names the launch in
+  its hub hello so the desktop can follow it (`GET /v1/vr/launch/{launch}`).
+  Leaving VR quits the app, so the way out says **Quit VisIVO VR**; a page in
+  the app's VR session never stands down for another page, and a second
+  launch hands its cube to it (measured on a Quest 3: the user stays in VR).
+  `/.well-known/assetlinks.json` lists the release and development apps. The
+  port is the backend's own, passed in the launch: verified on the device.
+  Measured on a Quest 3 over USB: ticket exchanged 1.4 s after the launch,
+  first immersive frame at 3.5 s with the cube already in it.
+
 - **VR: the numbers and the button help on the wrists, shown only when looked
   at (#256, part of #253).** The headset no longer keeps cards in view: the
   frame-rate and technical numbers are shown only with `?debug` (and during

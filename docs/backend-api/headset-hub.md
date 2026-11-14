@@ -50,7 +50,10 @@ Its queued commands are kept across a reconnect under the same `client`.
 ```
 `client` matches `^[A-Za-z0-9_.:-]{1,64}$` (the page's own id, kept in its
 storage); `transport` is `adb`, `pair` or `lan`; `label` (optional, at most 80
-characters). Response (`HeadsetHelloResponse`):
+characters); `launch` (optional, `^[A-Za-z0-9_-]{8,32}$`): the
+[headset app launch](vr-launch.md) the page came from, which
+`GET /v1/vr/launch/{launch}` reports as its `client`; a later hello without
+it keeps it. Response (`HeadsetHelloResponse`):
 ```json
 { "client": "q3-7f2a", "server_time": 1794700000.25, "instance": "9c1e…" }
 ```
@@ -74,7 +77,7 @@ For the desktop: the connected pages, the newest hello first.
 ```json
 { "headsets": [ { "client": "q3-7f2a", "transport": "pair", "label": "Quest 3",
                   "since": 1794699000.0, "last_seen": 1794700000.2,
-                  "in_vr": true, "cube": { … }, "staged_cube": null } ],
+                  "in_vr": true, "cube": { … }, "staged_cube": null, "launch": null } ],
   "server_time": 1794700001.0, "instance": "9c1e…" }
 ```
 `since` (first hello) and `last_seen` are Unix seconds of the backend's

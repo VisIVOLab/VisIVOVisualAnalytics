@@ -81,6 +81,7 @@ class HeadsetHelloRequest(BaseModel):
     client: str = Field(..., pattern=_CLIENT_PATTERN)
     transport: Literal["adb", "pair", "lan"]
     label: str = Field("", max_length=80)
+    launch: str = Field("", pattern=r"^([A-Za-z0-9_-]{8,32})?$")
 
 
 class HeadsetHelloResponse(BaseModel):
@@ -105,6 +106,7 @@ class HeadsetInfo(BaseModel):
     in_vr: bool
     cube: HeadsetCube | None = None
     staged_cube: HeadsetCube | None = None
+    launch: str | None = None
 
 
 class HeadsetListResponse(BaseModel):
@@ -278,8 +280,8 @@ async def headset_hello(
     whenever a hub route answers 404 for its client). Its queued commands are
     kept across a reconnect under the same ``client``."""
     body = await _read_body(request, HeadsetHelloRequest)
-    _refuse_token(body.client, body.label)
-    H.hub_for(session).hello(body.client, body.transport, body.label)
+    _refuse_token(body.client, body.label, body.launch)
+    H.hub_for(session).hello(body.client, body.transport, body.label, body.launch)
     return HeadsetHelloResponse(client=body.client, server_time=time.time(), instance=H.INSTANCE)
 
 

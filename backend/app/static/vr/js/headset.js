@@ -282,6 +282,7 @@ export function commandUsable(cmd) {
  *   transport ('adb' | 'pair' | 'lan'), label, client,
  *   onCommand(cmd) -> void|Promise (started, not finished: the load runs on),
  *   log(level, event, message) (the diagnostics), onClient(id) (a new client id to keep),
+ *   launch() -> the headset app's launch id (#255) or '' (named in the hello),
  *   fetch?, setTimeout?, clearTimeout? (tests) }.
  * The poll runs while started (an active page with a session); stop() (the
  * page stood down, or is closing) says goodbye to the hub.
@@ -403,7 +404,11 @@ export function createHub(ctx) {
   }
 
   async function hello(a, gen) {
-    const req = call('POST', '/v1/vr/headset/hello', { client: st.client, transport: ctx.transport, label: String(ctx.label || '').slice(0, 80) }, a);
+    const body = { client: st.client, transport: ctx.transport, label: String(ctx.label || '').slice(0, 80) };
+    // The headset app's launch (#255) this page came from: the desktop finds its page by it.
+    const launch = ctx.launch ? String(ctx.launch() || '') : '';
+    if (/^[A-Za-z0-9_-]{8,32}$/.test(launch)) body.launch = launch;
+    const req = call('POST', '/v1/vr/headset/hello', body, a);
     // A stop while it is on its way takes back what it may register, after it
     // settles; the next hello waits for that (stop() sets the goodbye now).
     const mine = { a, done: req.then(() => {}, () => {}) };
@@ -706,6 +711,15 @@ export function createHub(ctx) {
     if (parts.length) goodbye = Promise.all(parts);
   }
 
+  /** Say hello again now (the launch it names changed, #255), in the same session. */
+  function rehello() {
+    if (!st.running) return;
+    // In another session, ensureHello says goodbye in the old one first.
+    const a = authNow();
+    if (a && st.helloSession === a.session) st.helloSession = '';
+    resync();
+  }
+
   /** The page's session changed: the poll in flight (in the old session)
    *  ends now and a new one starts with a hello in the new session (the old
    *  one forgets the page: ensureHello). */
@@ -729,7 +743,7 @@ export function createHub(ctx) {
     return out;
   }
 
-  return { st, start, stop, resync, noteState, look, clip, rebase, cube, product, hudLines,
+  return { st, start, stop, resync, rehello, noteState, look, clip, rebase, cube, product, hudLines,
     /** For the tests: waits for every send queued so far. */
     idle: () => chain };
 }

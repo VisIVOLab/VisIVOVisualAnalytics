@@ -34,7 +34,9 @@ let pairingCache = null;
  * dataset and path are kept in sessionStorage (this tab only: a reload of
  * the tab continues, another tab or a later visit does not). Without a
  * pairing in the address, the one this tab kept. {token, session, dataset,
- * path, kind, box, fromAddress}.
+ * path, kind, box, ticket, fromAddress}. `ticket`: the headset app's one-time
+ * launch ticket (#255), taken out of the address with the rest and kept in
+ * this load only (never in storage: it is used once, at once).
  */
 export function takePairing() {
   if (pairingCache) return pairingCache;
@@ -56,14 +58,14 @@ export function takePairing() {
       if (kept.session || kept.dataset || kept.path) store('session')?.setItem(PAIR_KEY, JSON.stringify(kept));
       else store('session')?.removeItem(PAIR_KEY);
     } catch { /* storage refused: this load only */ }
-    pairingCache = { token: p.token, ...kept, fromAddress: true };
+    pairingCache = { token: p.token, ...kept, ticket: p.ticket, fromAddress: true };
     return pairingCache;
   }
   let kept = {};
   try { kept = JSON.parse(store('session')?.getItem(PAIR_KEY) || '{}') || {}; } catch { kept = {}; }
   const str = (v) => (typeof v === 'string' ? v : '');
   pairingCache = { token: '', session: str(kept.session), dataset: str(kept.dataset), path: str(kept.path),
-    kind: str(kept.kind), box: str(kept.box), fromAddress: false };
+    kind: str(kept.kind), box: str(kept.box), ticket: '', fromAddress: false };
   return pairingCache;
 }
 
@@ -73,13 +75,13 @@ export function takePairing() {
 export function keepPairing({ session = '', dataset = '', path = '', kind = '', box = '' } = {}) {
   const kept = { session: String(session), dataset: String(dataset), path: String(path), kind: String(kind), box: String(box) };
   try { store('session')?.setItem(PAIR_KEY, JSON.stringify(kept)); } catch { /* this load only */ }
-  pairingCache = { token: '', ...kept, fromAddress: false };
+  pairingCache = { token: '', ...kept, ticket: '', fromAddress: false };
 }
 
 /** Forgets the tab's pairing (the user opened another cube by hand). */
 export function forgetPairing() {
   try { store('session')?.removeItem(PAIR_KEY); } catch { /* nothing kept */ }
-  pairingCache = { token: '', session: '', dataset: '', path: '', kind: '', box: '', fromAddress: false };
+  pairingCache = { token: '', session: '', dataset: '', path: '', kind: '', box: '', ticket: '', fromAddress: false };
 }
 
 /** Token from the fragment, else from storage. Clears the pairing keys from the address. */

@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import unicodedata
 from collections import OrderedDict, deque
 from urllib.parse import unquote
@@ -234,53 +233,6 @@ async def vr_info(request: Request) -> JSONResponse:
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
-# ── Digital Asset Links for a packaged headset app (spike, issue #254) ──────
-
-#: A file with the statements that link an Android package (a Horizon OS app
-#: packaged from the VR page) to this backend's origin, as the packaging tool
-#: writes it. Unset: no statements, 404.
-ASSETLINKS_ENV = "VISIVO_VR_ASSETLINKS_FILE"
-#: Statements larger than this are not served (a file named by mistake).
-MAX_ASSETLINKS = 64 * 1024
-
-
-def _no_constant(name: str):
-    raise ValueError(f"{name} is not JSON")
-
-
-def _read_assetlinks(path: str) -> bytes | None:
-    """The statements in the file named by ``path`` (a JSON array of
-    objects), re-encoded as strict JSON; None when the file cannot be read, is
-    too large, is not such an array, or holds what strict JSON cannot carry
-    (NaN, an infinite number) or nests too deeply to parse."""
-    try:
-        p = Path(path)
-        if not p.is_file() or p.stat().st_size > MAX_ASSETLINKS:
-            return None
-        data = json.loads(p.read_text(encoding="utf-8"), parse_constant=_no_constant)
-        if not isinstance(data, list) or not all(isinstance(s, dict) for s in data):
-            return None
-        return json.dumps(data, allow_nan=False, ensure_ascii=False).encode("utf-8")
-    except (OSError, ValueError, RecursionError):
-        return None
-
-
-@router.get("/.well-known/assetlinks.json", include_in_schema=False)
-async def vr_assetlinks() -> Response:
-    """The Digital Asset Links statements of the headset app packaged from
-    the VR page, from the file in ``VISIVO_VR_ASSETLINKS_FILE``. Public, as
-    the headset's browser fetches it with no token: it names a package and a
-    signing certificate's fingerprint, nothing about users or data."""
-    path = os.environ.get(ASSETLINKS_ENV, "").strip()
-    if not path:
-        raise HTTPException(status_code=404, detail="Not found")
-    body = await asyncio.to_thread(_read_assetlinks, path)
-    if body is None:
-        logger.warning("[vr] %s does not name a readable JSON array of statements", ASSETLINKS_ENV)
-        raise HTTPException(status_code=404, detail="Not found")
-    return Response(content=body, media_type="application/json", headers={"Cache-Control": "no-cache"})
-
-
 # ── The page, with versioned asset addresses ────────────────────────────────
 
 async def _index_html() -> str:
@@ -396,7 +348,7 @@ RATE = _RateLimiter()
 # What is removed from a message before it is written:
 #   1. %-escapes are decoded first (a pairing link writes path=%2FUsers%2F…);
 #   2. every known token, and the caller's, becomes <token>;
-#   3. the value of any key containing "token" or "session" (session_id,
+#   3. the value of any key containing "token", "session" or "ticket" (session_id,
 #      sessionId, access_token, X-Visivo-Token, JSON "token": "…"), quoted or
 #      not, before = or :, becomes <redacted> when it looks like a secret
 #      (_looks_secret: 6+ characters with a digit, 8+ hex, or 16+ of any
@@ -421,9 +373,9 @@ _ESCAPES = re.compile(r"(?:%[0-9A-Fa-f]{2})+")
 # such keys match at all, so an ordinary "host:port/…" cannot swallow a
 # ?token= that follows it.
 _KEY_VALUE = re.compile(
-    r"""(?i)(["']?)(?<![\w-])(?=[\w-]{0,60}?(?:token|session))([\w-]{1,64})(?![\w-])\1(\s*[=:]\s*)"""
+    r"""(?i)(["']?)(?<![\w-])(?=[\w-]{0,60}?(?:token|session|ticket))([\w-]{1,64})(?![\w-])\1(\s*[=:]\s*)"""
     r"""("[^"]*"|'[^']*'|[^\s&#,;'"}\]]+)""")
-_SECRET_KEY = re.compile(r"(?i)token|session")
+_SECRET_KEY = re.compile(r"(?i)token|session|ticket")
 #: What the regex rules see at most (they run after the known secrets are
 #: replaced, before the final cut to MAX_MESSAGE).
 _SCRUB_WINDOW = 2 * 600
