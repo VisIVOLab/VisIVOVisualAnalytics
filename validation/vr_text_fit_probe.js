@@ -110,7 +110,13 @@
   window.__vrTextFit = async function (opts = {}) {
     const base = opts.base;
     FORCE_FONT = opts.font || '';
-    if (FORCE_FONT && document.fonts && !document.fonts.check(`20px "${FORCE_FONT}"`)) throw new Error(`no font ${FORCE_FONT} here`);
+    // document.fonts.check() says true for a font that is not installed: the
+    // font must change the width of a text drawn with monospace as the fallback.
+    if (FORCE_FONT) {
+      const c = document.createElement('canvas').getContext('2d');
+      const w = (font) => { c.font = font; return c.measureText('Wide glyphs: mMwW iIl1 0Oo .,;'.repeat(2)).width; };
+      if (w(`40px "${FORCE_FONT}", monospace`) === w('40px monospace')) throw new Error(`no font ${FORCE_FONT} here`);
+    }
     const imp = (m) => import(`${base}${m}`);
     const [HM, TP, WR, NT, ON, LC, WN, PC, RO, CO, SU, CG] = await Promise.all(['hand-menu.js', 'tool-palette.js', 'wrist.js',
       'notice.js', 'onboarding.js', 'lifecycle.js', 'windows.js', 'product-canvas.js', 'readout.js', 'controls.js', 'select-ui.js',

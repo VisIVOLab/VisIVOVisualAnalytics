@@ -362,6 +362,34 @@ test('the palm up toggles the same way, steadied: noise at the edge of the gestu
   assert.equal(x.update(false, 0), false);
 });
 
+test('the menu\'s held signal: a lost hand for a frame neither toggles nor wipes the palm\'s history (#276 review)', () => {
+  const steady = new HM.Steady(HM.PALM_STEADY);
+  const hand = { isHand: true }, ctl = { isHand: false };
+  let st = { wasHeld: false, open: false }, toggles = 0;
+  const feed = (h, raw, t) => { const r = HM.menuToggle(st, HM.menuHeld(steady, h, raw, t)); if (r.opened || r.closed) toggles++; st = r; };
+  let t = 0;
+  for (let i = 0; i < 30; i++, t += 11) feed(hand, true, t);           // palm up: opens
+  assert.equal(toggles, 1);
+  // Tracking lost for one and for three frames (Sh undefined), the palm still up.
+  feed(undefined, false, t); t += 11;
+  for (let i = 0; i < 10; i++, t += 11) feed(hand, true, t);
+  for (let i = 0; i < 3; i++, t += 11) feed(undefined, false, t);
+  for (let i = 0; i < 10; i++, t += 11) feed(hand, true, t);
+  assert.equal(toggles, 1, 'blinks shorter than offMs: no toggle');
+  assert.equal(st.open, true);
+  // Lost for longer than offMs: let go; the palm up again then closes it.
+  for (let i = 0; i < 30; i++, t += 11) feed(undefined, false, t);
+  for (let i = 0; i < 30; i++, t += 11) feed(hand, true, t);
+  assert.equal(toggles, 2);
+  // A controller: X passes through, and a held X taken over by hands is let go offMs later, not never.
+  const s2 = new HM.Steady(HM.PALM_STEADY);
+  assert.equal(HM.menuHeld(s2, ctl, true, 0), true);
+  assert.equal(HM.menuHeld(s2, ctl, false, 10), false);
+  assert.equal(HM.menuHeld(s2, ctl, true, 20), true);
+  assert.equal(HM.menuHeld(s2, undefined, false, 100), true, 'within offMs of the last press');
+  assert.equal(HM.menuHeld(s2, undefined, false, 300), false, 'then let go');
+});
+
 test('the menu opens just above and beyond the hand that opened it, at the same distance, turned to the eyes (#276)', () => {
   const head = M.identity();
   head[13] = 1.6;                                         // eyes 1.6 m up, looking along -z
@@ -380,9 +408,15 @@ test('the menu opens just above and beyond the hand that opened it, at the same 
   close(m[1], 0, 1e-6);
   // A hand raised high: the menu's centre no higher than MENU_RISE above the eyes.
   close(M.position(HM.menuAbove([-0.2, 1.9, -0.4], head))[1], 1.6 + HM.MENU_RISE, 1e-5);
-  // A hand far to the side (behind the shoulder): at most MENU_TURN from the gaze.
-  const side = M.position(HM.menuAbove([-0.6, 1.2, 0.1], head));
+  // A hand far to the side (63° from the gaze): at most MENU_TURN from it.
+  const side = M.position(HM.menuAbove([-0.6, 1.2, -0.3], head));
   close(Math.atan2(side[0], -side[2]), -HM.MENU_TURN, 1e-5);
+  // Behind or beside the user (over 90° from the gaze): along the gaze.
+  for (const h of [[-0.6, 1.2, 0.1], [0.5, 1.2, 0.3], [0, 1.2, 0.4]]) {
+    const b = M.position(HM.menuAbove(h, head));
+    close(b[0], 0, 1e-6);
+    assert.ok(b[2] < -0.9, `hand ${h}: in front`);
+  }
   // A hand under the head: along the gaze; no hand: in front, as before.
   const under = M.position(HM.menuAbove([0.02, 1.0, -0.05], head));
   close(under[0], 0, 1e-6);

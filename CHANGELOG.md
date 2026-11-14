@@ -44,7 +44,12 @@ are preserved here unedited; the branch names they refer to are historical.
   shows and counts only the cropped pixels (*Moment N of the cropped field*;
   it was the whole field whatever the crop). A lasso still grows over the
   whole cube, as on the desktop. An xrfake check lights a dot, resizes, moves
-  and draws a crop with the controller.
+  and draws a crop with the controller. After review: a ray nearly along a
+  face's axis leaves the face in place; a face taken with the controller's
+  tip follows the tip; a flat axis of a planar table gets no dots and no
+  NaN; a drag is an undo step only when it changes the crop, and a tool or
+  mode change mid-drag ends it properly; the moment map is cut with the crop
+  of its request and cut again when the crop changes.
 
 - **VR: X toggles the menu above the controller, and no text is clipped or
   overlapping (#276).** X (the secondary controller's lower button) now
@@ -73,6 +78,10 @@ are preserved here unedited; the branch names they refer to are historical.
   cards, the guide, window bars, products, the selection panel, the
   readout) and fails on a text wider than its box, a text over a widget, two
   texts or widgets overlapping, a cut button label or a text past the edge.
+  After review: a secondary hand lost for a frame no longer toggles the menu
+  (the gap counts as let go through the palm's steadying); a recentre places
+  the open menu again above the hand; a hand behind or beside the user opens
+  the menu along the gaze; `--font` checks the font is really installed.
 
 - **Desktop: Open on Headset installs and starts the VisIVO VR app (#255).**
   In **Open in VR Headset… → Advanced (USB cable)** the desktop says whether
