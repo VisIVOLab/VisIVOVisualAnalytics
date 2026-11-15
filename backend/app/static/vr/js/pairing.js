@@ -1,18 +1,45 @@
 // The pairing link from the desktop (issue #172): "Open in VR Headset…" opens
 // /vr/#token=…&session=…&dataset=…&path=… (src/app/VrLink.h); for a dataset
 // that is not a cube (issue #190) also &kind=points|velocity, and a velocity
-// field's &box= (its box size in Mpc, to open its path again). The headset
+// field's &box= (its box size in Mpc, to open its path again); a sky
+// catalogue's &sky_frame=, &distance_mode= and &cosmology= (issue #260: the
+// desktop window's placement, which the page passes to the backend). The headset
 // app (issue #255) is launched with #ticket=… alone: a one-time ticket the
 // page trades for the token (app-launch.js), never kept. Every value is
 // percent-encoded once, so it is decoded once with decodeURIComponent ('+'
 // stays a plus). Pure functions: unit-tested in backend/tests/vr/pairing.test.mjs.
 
 /** The keys the desktop writes; all of them are removed from the address. */
-export const PAIRING_KEYS = ['token', 'session', 'dataset', 'path', 'kind', 'box', 'ticket'];
+export const PAIRING_KEYS = ['token', 'session', 'dataset', 'path', 'kind', 'box', 'ticket',
+  'sky_frame', 'distance_mode', 'cosmology'];
+
+/** The keys of a sky catalogue's placement, as a link carries them (flat). */
+export const SKY_KEYS = ['sky_frame', 'distance_mode', 'cosmology'];
+
+/**
+ * A link's placement as the backend's requests take it ({frame,
+ * distance_mode, cosmology}, only what is set), or null when it has none.
+ */
+export function skyOf(link) {
+  if (!link) return null;
+  const out = {};
+  if (link.sky_frame) out.frame = String(link.sky_frame);
+  if (link.distance_mode) out.distance_mode = String(link.distance_mode);
+  if (link.cosmology) out.cosmology = String(link.cosmology);
+  return Object.keys(out).length ? out : null;
+}
+
+/** The other way: a `show` command's or a launch's `sky` object as a link's flat keys. */
+export function skyFields(sky) {
+  const s = sky && typeof sky === 'object' ? sky : {};
+  const str = (v) => (typeof v === 'string' && v.length <= 32 ? v : '');
+  return { sky_frame: str(s.frame), distance_mode: str(s.distance_mode), cosmology: str(s.cosmology) };
+}
 
 /**
  * Parses a location hash ("#a=1&b=2", or without the "#").
- * Returns {token, session, dataset, path, kind, box, ticket, errors, rest, present}:
+ * Returns {token, session, dataset, path, kind, box, ticket, sky_frame,
+ * distance_mode, cosmology, errors, rest, present}:
  * - a key missing, empty or malformed is '' (a malformed %-escape is listed
  *   in `errors` by key name; the value itself is never echoed);
  * - a key given twice keeps its first value;
@@ -21,7 +48,8 @@ export const PAIRING_KEYS = ['token', 'session', 'dataset', 'path', 'kind', 'box
  * - `present` is true when any pairing key was in the hash.
  */
 export function parsePairing(hash) {
-  const out = { token: '', session: '', dataset: '', path: '', kind: '', box: '', ticket: '', errors: [], rest: '', present: false };
+  const out = { token: '', session: '', dataset: '', path: '', kind: '', box: '', ticket: '',
+    sky_frame: '', distance_mode: '', cosmology: '', errors: [], rest: '', present: false };
   const text = String(hash || '').replace(/^#/, '');
   if (!text) return out;
   const keep = [];

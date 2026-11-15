@@ -142,7 +142,9 @@ CatalogueOverlayData fetchCatalogueOverlay(QString backendUrl, QString backendTo
         qreq.datasetId = opened.datasetId;   // limit defaults to 100k — plenty for context
         const auto subset = client.queryTabularCatalogue(qreq);
         const auto parsed = Catalogue3DParser::parseBackendSubset(schema, subset.rows);
-        if (!subset.valid || !parsed.valid) {
+        // No row with a distance (issue #265): nothing to overlay, and the
+        // parser's message says why, rather than an overlay of 0 galaxies.
+        if (!subset.valid || !parsed.valid || parsed.entries.empty()) {
             out.error = !subset.valid ? subset.error : parsed.errorMessage;
             return out;
         }
@@ -152,6 +154,7 @@ CatalogueOverlayData fetchCatalogueOverlay(QString backendUrl, QString backendTo
         out.cartesian = schema.isCartesian();
         out.schema = schema;
         out.entries = parsed.entries;
+        out.unplaced = static_cast<int>(parsed.unplaced.size());
     } catch (const std::exception &e) {
         out.ok = false;
         out.error = QString::fromUtf8(e.what());
@@ -494,11 +497,14 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
         this->renderer->ResetCamera();
     this->renderWindow->Render();
 
-    const bool capped = data.totalRows > this->m_catalogueCount;
+    // The rows read count the unplaced ones too: they are not a cap.
+    const bool capped = data.totalRows > this->m_catalogueCount + data.unplaced;
     QString msg = u"Overlaid %1 galaxies from %2"_s.arg(this->m_catalogueCount)
                           .arg(this->m_catalogueName);
     if (capped)
         msg += u" (of %1; capped)"_s.arg(data.totalRows);
+    if (data.unplaced > 0)
+        msg += u" · %1 without a distance not shown"_s.arg(data.unplaced);
     if (!data.cartesian)
         msg += u" - note: not a Cartesian catalogue, positions may not match the field frame"_s;
     if (haveAgreement)

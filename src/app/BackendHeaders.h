@@ -62,6 +62,7 @@ inline constexpr const char *PARTICLE_ORIGIN = "X-Visivo-Particle-Origin";
 inline constexpr const char *PARTICLE_SCALE = "X-Visivo-Particle-Scale";
 inline constexpr const char *PARTICLE_STEP = "X-Visivo-Particle-Step";
 inline constexpr const char *PEAK = "X-Visivo-Peak";
+inline constexpr const char *PLACED_ROWS = "X-Visivo-Placed-Rows";
 inline constexpr const char *PYRAMID_LEVEL = "X-Visivo-Pyramid-Level";
 inline constexpr const char *RANGE_MAX = "X-Visivo-Range-Max";
 inline constexpr const char *RANGE_MIN = "X-Visivo-Range-Min";
@@ -76,6 +77,7 @@ inline constexpr const char *SELECTED_COUNT = "X-Visivo-Selected-Count";
 inline constexpr const char *SELECTION_KIND = "X-Visivo-Selection-Kind";
 inline constexpr const char *SELECTION_SEQ = "X-Visivo-Selection-Seq";
 inline constexpr const char *SESSION = "X-Visivo-Session";
+inline constexpr const char *SKY = "X-Visivo-Sky";
 inline constexpr const char *SOURCE = "X-Visivo-Source";
 inline constexpr const char *SPACING = "X-Visivo-Spacing";
 inline constexpr const char *SPECTRAL_AXIS_TYPE = "X-Visivo-Spectral-Axis-Type";
@@ -88,14 +90,16 @@ inline constexpr const char *THRESHOLD = "X-Visivo-Threshold";
 inline constexpr const char *TOKEN = "X-Visivo-Token";
 inline constexpr const char *TOTAL_ROWS = "X-Visivo-Total-Rows";
 inline constexpr const char *TRIM_BOX = "X-Visivo-Trim-Box";
+inline constexpr const char *UNCERTAIN = "X-Visivo-Uncertain";
 inline constexpr const char *UNIT = "X-Visivo-Unit";
+inline constexpr const char *UNPLACED = "X-Visivo-Unplaced";
 inline constexpr const char *VOLUME_BOX = "X-Visivo-Volume-Box";
 inline constexpr const char *VOLUME_SHAPE = "X-Visivo-Volume-Shape";
 inline constexpr const char *WARNINGS = "X-Visivo-Warnings";
 inline constexpr const char *WIDTH = "X-Visivo-Width";
 
 // Every declared header name, for the contract test to diff against the manifest.
-inline constexpr std::array<const char *, 81> kAll = {
+inline constexpr std::array<const char *, 85> kAll = {
     EW_UNIT,
     FWHM_UNIT,
     MAP_UNIT,
@@ -146,6 +150,7 @@ inline constexpr std::array<const char *, 81> kAll = {
     PARTICLE_SCALE,
     PARTICLE_STEP,
     PEAK,
+    PLACED_ROWS,
     PYRAMID_LEVEL,
     RANGE_MAX,
     RANGE_MIN,
@@ -160,6 +165,7 @@ inline constexpr std::array<const char *, 81> kAll = {
     SELECTION_KIND,
     SELECTION_SEQ,
     SESSION,
+    SKY,
     SOURCE,
     SPACING,
     SPECTRAL_AXIS_TYPE,
@@ -172,7 +178,9 @@ inline constexpr std::array<const char *, 81> kAll = {
     TOKEN,
     TOTAL_ROWS,
     TRIM_BOX,
+    UNCERTAIN,
     UNIT,
+    UNPLACED,
     VOLUME_BOX,
     VOLUME_SHAPE,
     WARNINGS,

@@ -241,6 +241,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          }
 
                          this->entries = result.entries;
+                         this->unplacedEntries = result.unplaced;
                          // Update pagination state
                          // By rows consumed: rows skipped for bad coordinates
                          // must not be fetched again by the next page.
@@ -339,6 +340,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                 // Append new entries
                 this->entries.insert(this->entries.end(),
                                      result.entries.begin(), result.entries.end());
+                this->unplacedEntries.insert(this->unplacedEntries.end(),
+                                             result.unplaced.begin(), result.unplaced.end());
                 this->m_currentOffset += result.returnedRows;   // rows consumed, skipped ones too
                 if (this->m_sampleStep > 1)
                     ++this->m_samplePhase;   // the next disjoint sample
@@ -362,7 +365,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                 }
                 const QString statusMsg =
                         QStringLiteral("Loaded %1 of %2 sources.")
-                                .arg(this->entries.size())
+                                .arg(this->entries.size() + this->unplacedEntries.size())
                                 .arg(this->m_totalCount);
                 ui->labelStatus->setText(statusMsg);
                 if (this->filterStatusLabel) {
@@ -520,6 +523,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             ui->labelStatus->setText(u"Load error: "_s + error);
         } else {
             this->entries = parsed.entries;
+            // Rows with no distance are listed, not drawn (issue #265); a table
+            // of them only still opens, to show which they are and why.
+            this->unplacedEntries = parsed.unplaced;
             // The first page is a page like any other: what the backend holds
             // beyond it is what Load more brings, and what a row message for
             // a row not loaded yet is told about. Without the total the window
@@ -531,9 +537,17 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             // Apply the active coordinate frame (FK5_J2000 is the parser default;
             // this is a no-op on startup since comboFrame defaults to FK5_J2000).
             this->applyFrameToEntries();
-            const QString loaded = this->m_totalCount > static_cast<int>(entries.size())
-                    ? QStringLiteral("Loaded %1 of %2 sources").arg(entries.size()).arg(this->m_totalCount)
-                    : QStringLiteral("Loaded %1 sources").arg(entries.size());
+            // The rows loaded count the unplaced ones too, or a table loaded
+            // whole would read "43507 of 43533" as if a page were missing.
+            const int loadedRows = static_cast<int>(entries.size() + unplacedEntries.size());
+            QString loaded = this->m_totalCount > loadedRows
+                    ? QStringLiteral("Loaded %1 of %2 sources").arg(loadedRows).arg(this->m_totalCount)
+                    : QStringLiteral("Loaded %1 sources").arg(loadedRows);
+            if (!unplacedEntries.empty())
+                loaded += QStringLiteral(", %1 unplaced (no distance)").arg(unplacedEntries.size());
+            // A positional catalogue with no redshift at all: say why the scene is empty.
+            if (entries.empty() && !parsed.errorMessage.isEmpty())
+                loaded = QStringLiteral("%1 (%2)").arg(parsed.errorMessage.chopped(1), loaded);
             if (parsed.skippedEntries > 0) {
                 ui->labelStatus->setText(QStringLiteral("%1 (%2 rows skipped).")
                                                  .arg(loaded)
@@ -692,6 +706,14 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                  u"(WebXR page), refined by the backend when still."_s);
             QObject::connect(actionVr, &QAction::triggered, this,
                              &vtkWindowCatalogue3D::openInVrHeadset);
+            // The sources with no distance, left out of the scene (issue #265).
+            this->m_actionUnplaced = toolsMenu->addAction(u"Unplaced Sources…"_s);
+            this->m_actionUnplaced->setToolTip(
+                    u"The sources left out of the scene for want of a distance: no usable "
+                    u"distance value, and a redshift that is ≤ 0, zero or missing."_s);
+            this->m_actionUnplaced->setEnabled(!this->unplacedEntries.empty());
+            QObject::connect(this->m_actionUnplaced, &QAction::triggered, this,
+                             &vtkWindowCatalogue3D::showUnplacedSources);
         }
 
         // ── SAMP menu: this catalogue, a selection of it, a position ─────────
@@ -777,13 +799,18 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             this->buildScene();
             this->buildLabels();
         }
+        this->pushSkyToVrDialog();
         this->renderWindow->Render();
     });
     QObject::connect(this->comboCosmology, &QComboBox::currentIndexChanged, this,
                      [this](int) {
                          const QString chosen = this->comboCosmology->currentText();
+                         // The headset window open on a sky catalogue counts as
+                         // a server view too: its points come from the backend.
+                         const bool headset = this->m_vrHeadsetDialog && !this->m_pointTable
+                                 && !this->schema.isCartesian();
                          if (chosen == visivo::cosmology::customName()
-                             && this->serverDrawsPositions()) {
+                             && (this->serverDrawsPositions() || headset)) {
                              // The backend places these sources itself and has
                              // no custom model: refuse rather than draw one
                              // universe here and another there.
@@ -791,7 +818,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                              this->comboCosmology->setCurrentText(this->m_appliedCosmologyModel);
                              this->statusBar()->showMessage(
                                      u"The custom cosmology is not available while the backend "
-                                     u"draws the points (ray-traced or server-side view): it "
+                                     u"draws the points (ray-traced, server-side or headset view): it "
                                      u"knows Planck18, Planck15, Planck13 and WMAP9 only."_s,
                                      8000);
                              return;

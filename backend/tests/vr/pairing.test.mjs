@@ -1,7 +1,7 @@
 // The desktop's pairing link (issue #172): node --test backend/tests/vr/pairing.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parsePairing, strippedAddress, pairingFallback, PAIRING_KEYS } from '../../app/static/vr/js/pairing.js';
+import { parsePairing, strippedAddress, pairingFallback, PAIRING_KEYS, skyOf, skyFields } from '../../app/static/vr/js/pairing.js';
 
 // What VrLink::encodeValue writes: every byte but RFC 3986's unreserved ones.
 const enc = (s) => encodeURIComponent(s).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
@@ -62,6 +62,20 @@ test('extra keys are kept for the address; pairing keys are removed', () => {
   assert.equal(strippedAddress('/vr/', '', '#token=t&session=s&dataset=d&path=p'), '/vr/');
   assert.equal(strippedAddress('/vr/', '', ''), '/vr/');
   for (const k of PAIRING_KEYS) assert.ok(!strippedAddress('/vr/', '', `#${k}=v&a=1`).includes(k));
+});
+
+test('a sky catalogue\'s placement rides the link and the show command (issue #260)', () => {
+  const p = parsePairing('#token=t&dataset=cat_1&kind=points&sky_frame=supergalactic&distance_mode=redshift_space&cosmology=WMAP9');
+  assert.deepEqual([p.sky_frame, p.distance_mode, p.cosmology], ['supergalactic', 'redshift_space', 'WMAP9']);
+  assert.deepEqual(skyOf(p), { frame: 'supergalactic', distance_mode: 'redshift_space', cosmology: 'WMAP9' });
+  // None given: no sky, the backend's defaults apply.
+  assert.equal(skyOf(parsePairing('#token=t&dataset=d')), null);
+  assert.equal(skyOf(null), null);
+  // A command's object as the link's keys, and back; anything else is dropped.
+  const sky = { frame: 'galactic', distance_mode: 'comoving', cosmology: 'Planck18' };
+  assert.deepEqual(skyOf(skyFields(sky)), sky);
+  assert.deepEqual(skyFields(undefined), { sky_frame: '', distance_mode: '', cosmology: '' });
+  assert.deepEqual(skyFields({ frame: 3, cosmology: 'x'.repeat(40) }), { sky_frame: '', distance_mode: '', cosmology: '' });
 });
 
 test('a key given twice keeps its first value; empty parts are ignored', () => {
