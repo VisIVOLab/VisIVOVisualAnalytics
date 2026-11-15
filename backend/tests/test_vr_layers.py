@@ -78,6 +78,7 @@ async def test_points_routes(client, auth_headers, tmp_path, opened_cube):
     did = r.json()["dataset_id"]
     info = (await client.post("/v1/points/info", json={"dataset_id": did}, headers=auth_headers)).json()
     assert info["num_rows"] == 5000 and info["axes"] == ["X", "Y", "Z"] and "Mass" in info["fields"]
+    assert info["format"] == "vbt"        # a simulation's particles: opened ray-traced (#264)
     r = await client.post("/v1/points/sample_bin", json={"dataset_id": did, "max_points": 2000,
                                                           "color_field": "Mass"}, headers=auth_headers)
     assert r.status_code == 200 and len(r.content) == 2000 * 8
@@ -613,6 +614,8 @@ async def test_a_catalogues_point_table_goes_with_its_dataset(client, auth_heade
     r = await client.post("/v1/points/sample_bin", json={"dataset_id": did, "max_points": 100},
                           headers=auth_headers)
     assert r.status_code == 200
+    info = (await client.post("/v1/points/info", json={"dataset_id": did}, headers=auth_headers)).json()
+    assert info["format"] == "catalogue"  # objects, not a medium: opened as points (#264)
     from app.sessions import REGISTRY
     entry = next(s.datasets[did] for s in list(REGISTRY._sessions.values()) if did in s.datasets)
     spec, table = entry["_point_table"]

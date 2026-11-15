@@ -131,17 +131,35 @@ export function splatStyle(bounds, totalRows, sampleRows, size, intensity) {
   return { radius, opacity, sampleRadius: radius * grow };
 }
 
+/**
+ * The styles of a point table: points, additive splats, and ray-traced
+ * splats (issue #264), which the page draws as splats while the view moves
+ * and the backend's ray-traced particle renderer refines when it is still,
+ * with the depth the light comes from.
+ */
+export const STYLES = ['points', 'splats', 'raytraced'];
+
+/** True for the styles the page draws as additive splats. */
+export function isSplats(style) { return style === 'splats' || style === 'raytraced'; }
+
+/** The style a table opens with: ray-traced for a simulation's particles (a
+ *  VBT point table), points for a catalogue, whose rows are objects, not a
+ *  medium. */
+export function defaultStyle(format) { return format === 'vbt' ? 'raytraced' : 'points'; }
+
 /** The commands that give the backend's point session the page's look. A sky
  *  catalogue's placement (`p.sky`, the desktop window's, issue #260) goes
  *  first, so the refined frame places the sources as the sample does. */
 export function pointLook(p) {
+  const splats = isSplats(p.style);
   const sky = p.sky ? [{ type: 'set_sky_positions', ...p.sky }] : [];
   return [
     ...sky,
     { type: 'set_point_fields', x: p.axes[0], y: p.axes[1], z: p.axes[2] },
     colourCommand(p.colourField, p.colourRange, p.colourLog, p.lut, p.c0, p.c1),
-    { type: 'set_point_style', mode: p.style === 'splats' ? 'gaussian' : 'points',
-      size: p.style === 'splats' ? p.splatSize : Math.max(1, Math.round(p.pointPx)), intensity: p.intensity },
+    { type: 'set_point_style', mode: splats ? 'gaussian' : 'points',
+      size: splats ? p.splatSize : Math.max(1, Math.round(p.pointPx)), intensity: p.intensity,
+      stereo_renderer: p.style === 'raytraced' ? 'raytrace' : 'splat' },
     { type: 'set_show_outline', visible: false },
   ];
 }
@@ -172,7 +190,7 @@ export function skyLabel(st) {
  */
 export function refinePoseExtra(box, style, sampleRows, eyes) {
   const out = { data_to_model: Array.from(box.matrix) };
-  if (style === 'splats') {
+  if (isSplats(style)) {
     if (sampleRows > 0) out.sample_rows = Math.round(sampleRows);
     const w = Math.round(Math.max(0, ...eyes.map((e) => e.width || 0)));
     const h = Math.round(Math.max(0, ...eyes.map((e) => e.height || 0)));
@@ -323,7 +341,7 @@ export class PointCloud {
   }
 
   /**
-   * One eye. `p`: {box (dataToModel), bounds, style 'points' | 'splats', pointPx,
+   * One eye. `p`: {box (dataToModel), bounds, style (STYLES), pointPx,
    * radius (data units), opacity, c0, c1, viewportH, count (rows to draw),
    * clip ({min, max} box fractions over the sample's bounds: the crop; none = all)}.
    */
@@ -339,7 +357,7 @@ export class PointCloud {
     const span = [0, 1, 2].map((i) => (b.hi[i] - b.lo[i]) / b.side);
     gl.uniform3fv(u.uLo, lo);
     gl.uniform3fv(u.uSpan, span);
-    const splats = p.style === 'splats';
+    const splats = isSplats(p.style);
     // A splat's diameter in pixels: 2 r (model) x model scale x P11 x H / 2,
     // over the eye distance; drawn out to 3 sigma, as the session's (r = sigma).
     const scale = M.uniformScale(model);

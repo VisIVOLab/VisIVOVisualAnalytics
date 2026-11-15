@@ -24,7 +24,13 @@ Commands (besides the camera / viewport ones the cube session takes):
    ``points``, the client's own colour function (instead of ``lut``), ``log``
    its scale
 ``{"type": "set_point_style", "mode": "points" | "gaussian",
-   "size": int 1..12, "intensity": int 1..100}``
+   "size": int 1..12, "intensity": int 1..100,
+   "stereo_renderer": "splat" | "raytrace"}``
+                                         — ``stereo_renderer``: how a headset's
+                                           stereo splats are drawn (the page's
+                                           rule, or ray-traced with depth,
+                                           app/point_splat.py, issues #262
+                                           and #264); kept when omitted
 ``{"type": "set_filters", "filters": [{"field", "op", "value"}, ...]}``
 ``{"type": "set_background", "name": "Dark" | "Dark gray" | "White"}``
 ``{"type": "set_show_outline" | "set_show_axes" | "set_show_colorbar", "visible": bool}``
@@ -75,6 +81,8 @@ _LOD_JPEG_QUALITY = 60
 _BACKGROUNDS = {"White": (0.98, 0.98, 0.98), "Dark gray": (0.16, 0.17, 0.19),
                 "Dark": (0.06, 0.06, 0.1)}
 _SOLID = (0.8, 0.85, 1.0)
+#: How a headset's stereo splats are drawn (_stereo_points.py).
+STEREO_RENDERERS = ("splat", "raytrace")
 _NUMERIC_OPS = {"=", "!=", ">", ">=", "<", "<="}
 
 
@@ -97,6 +105,7 @@ class PointViewState:
     color_log: bool = False
     mode: str = "points"
     size: float = 3   # points: pixels; splats: the size step (0.25..12)
+    stereo_renderer: str = "splat"   # a headset's splats: "splat" | "raytrace"
     intensity: int = 35
     background: str = "Dark"
     show_outline: bool = True
@@ -756,6 +765,9 @@ class PointRenderSession(PointStereoMixin):
             self._recolour_on_thread(field_changed=changed)
             self.request_idr()
         elif ctype == "set_point_style":
+            renderer = command.get("stereo_renderer", self.view.stereo_renderer)
+            if renderer not in STEREO_RENDERERS:   # refused whole (apply_command)
+                raise ValueError(f"stereo_renderer must be one of {STEREO_RENDERERS}.")
             mode = str(command.get("mode", self.view.mode))
             self.view.mode = mode if mode in ("points", "gaussian") else "points"
             # Points: pixels, physical (a Retina client sends twice its own);
@@ -765,6 +777,7 @@ class PointRenderSession(PointStereoMixin):
                               else int(round(min(max(size, 1.0), 64.0))))
             self.view.intensity = max(1, min(100, int(command.get("intensity",
                                                                   self.view.intensity))))
+            self.view.stereo_renderer = renderer
             self._apply_style_on_thread()
             self.request_idr()
         elif ctype == "set_filters":

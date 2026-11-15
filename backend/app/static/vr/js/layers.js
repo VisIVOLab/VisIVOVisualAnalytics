@@ -75,7 +75,8 @@ export function createLayers(ctx) {
     mode: 'cube',
     points: null, flow: null, overlay: null, overlaySegs: null,
     s: {
-      style: 'points', pointPx: 2, splatSize: 1, intensity: 35, c0: 0, c1: 1,
+      // The style: each table's default (PT.defaultStyle) until one is chosen.
+      style: 'points', styleChosen: false, pointPx: 2, splatSize: 1, intensity: 35, c0: 0, c1: 1,
       colourField: null, colourLog: false, budget: 'quest', budgetRows: PT.BUDGETS.quest,
       stream: true, arrows: true, arrowScale: 1, seeds: 200, maxArrows: 50000, seed: 1,
       catShow: true, catLabels: true, catPins: true, govern: true,
@@ -143,7 +144,8 @@ export function createLayers(ctx) {
   const ptSec = el('div', { id: 'ly-points', hidden: true });
   const fieldSel = sel('pt-field', []);
   const budgetSel = sel('pt-budget', Object.entries(PT.BUDGETS).map(([k, v]) => [k, `${k}: ${(v / 1e6).toFixed(1)} M rows`]), 'quest');
-  const styleSel = sel('pt-style', [['points', 'points'], ['splats', 'splats (additive)']], 'points');
+  const styleSel = sel('pt-style', [['points', 'points'], ['splats', 'splats (additive)'],
+    ['raytraced', 'ray-traced (splats; the still view ray-traced by the backend)']], 'points');
   const logBox = el('input', { id: 'pt-log', type: 'checkbox' });
   const sizeIn = el('input', { id: 'pt-size', type: 'range', min: 1, max: 12, step: 0.5, value: 2 });
   const c0In = el('input', { id: 'pt-c0', type: 'range', min: 0, max: 1000, value: 0 });
@@ -275,6 +277,11 @@ export function createLayers(ctx) {
     load.check?.();
     L.points = { datasetId, path, axes: info.axes, fields: info.fields, rows: info.num_rows,
       sky, skySettings: info.sky_settings || null };
+    if (!L.s.styleChosen) {
+      L.s.style = PT.defaultStyle(info.format);
+      styleSel.value = L.s.style;
+      sizeIn.value = PT.isSplats(L.s.style) ? L.s.splatSize : L.s.pointPx;
+    }
     fieldSel.innerHTML = '';
     fieldSel.appendChild(el('option', { value: '', textContent: '(none: one colour)' }));
     for (const f of info.fields) fieldSel.appendChild(el('option', { value: f, textContent: f }));
@@ -449,8 +456,8 @@ export function createLayers(ctx) {
   logBox.addEventListener('change', withBackend((b) => { L.s.colourLog = logBox.checked; return L.points && fetchSample(b); }));
   budgetSel.addEventListener('change', withBackend((b) => { L.s.budget = budgetSel.value; L.s.budgetRows = PT.BUDGETS[budgetSel.value]; return L.points && fetchSample(b); }));
   ptReload.addEventListener('click', withBackend((b) => L.points && fetchSample(b)));
-  styleSel.addEventListener('change', () => { L.s.style = styleSel.value; sizeIn.value = L.s.style === 'splats' ? L.s.splatSize : L.s.pointPx; });
-  sizeIn.addEventListener('input', () => { if (L.s.style === 'splats') L.s.splatSize = Number(sizeIn.value); else L.s.pointPx = Number(sizeIn.value); });
+  styleSel.addEventListener('change', () => { L.s.style = styleSel.value; L.s.styleChosen = true; sizeIn.value = PT.isSplats(L.s.style) ? L.s.splatSize : L.s.pointPx; });
+  sizeIn.addEventListener('input', () => { if (PT.isSplats(L.s.style)) L.s.splatSize = Number(sizeIn.value); else L.s.pointPx = Number(sizeIn.value); });
   c0In.addEventListener('input', () => { L.s.c0 = Math.min(Number(c0In.value) / 1000, L.s.c1 - 0.001); });
   c1In.addEventListener('input', () => { L.s.c1 = Math.max(Number(c1In.value) / 1000, L.s.c0 + 0.001); });
   intIn.addEventListener('input', () => { L.s.intensity = Number(intIn.value); });
@@ -486,9 +493,10 @@ export function createLayers(ctx) {
     } else if (id === 'pt-field-more') s.fieldPage += 1;
     else if (id === 'pt-log' && L.points && b) { s.autoLog = false; s.colourLog = !s.colourLog; logBox.checked = s.colourLog; fetchSample(b).catch(fail); }
     else if (w.group === 'pt-style') {
-      s.style = w.value === 'splats' ? 'splats' : 'points';
+      s.style = PT.STYLES.includes(w.value) ? w.value : 'points';
+      s.styleChosen = true;
       styleSel.value = s.style;
-      sizeIn.value = s.style === 'splats' ? s.splatSize : s.pointPx;
+      sizeIn.value = PT.isSplats(s.style) ? s.splatSize : s.pointPx;
     } else if (id === 'pt-budget' && L.points && b) {
       const keys = ['quest-low', 'quest', 'quest-high', 'desktop', 'desktop-high'];
       s.budget = keys[(keys.indexOf(s.budget) + 1) % keys.length];
@@ -498,9 +506,9 @@ export function createLayers(ctx) {
     } else if (id === 'pt-reload' && L.points && b) fetchSample(b).catch(fail);
     else if (id === 'pt-smaller' || id === 'pt-larger') {
       const f = id === 'pt-larger' ? 1.25 : 0.8;
-      if (s.style === 'splats') s.splatSize = Math.max(0.25, Math.min(12, s.splatSize * f));
+      if (PT.isSplats(s.style)) s.splatSize = Math.max(0.25, Math.min(12, s.splatSize * f));
       else s.pointPx = Math.max(1, Math.min(12, s.pointPx * f));
-      sizeIn.value = s.style === 'splats' ? s.splatSize : s.pointPx;
+      sizeIn.value = PT.isSplats(s.style) ? s.splatSize : s.pointPx;
     } else if (id === 'pt-box' || id === 'fl-box') s.box = !s.box;
     else if (id === 'fl-stream') { s.stream = !s.stream; streamBox.checked = s.stream; }
     else if (id === 'fl-arrows') { s.arrows = !s.arrows; arrowBox.checked = s.arrows; }
@@ -549,7 +557,7 @@ export function createLayers(ctx) {
     for (const k of UNDO_KEYS) if (k in o) L.s[k] = o[k];
     const s = L.s;
     styleSel.value = s.style;
-    sizeIn.value = s.style === 'splats' ? s.splatSize : s.pointPx;
+    sizeIn.value = PT.isSplats(s.style) ? s.splatSize : s.pointPx;
     c0In.value = Math.round(1000 * s.c0); c1In.value = Math.round(1000 * s.c1);
     intIn.value = s.intensity;
     streamBox.checked = s.stream; arrowBox.checked = s.arrows;
@@ -598,8 +606,9 @@ export function createLayers(ctx) {
       } else {
         notes.field = 'one colour';
       }
-      notes.style = s.style === 'splats' ? `splat size ${fmt(s.splatSize)}` : `${fmt(s.pointPx)} px`;
-      notes.intensity = s.style === 'splats' ? `${s.intensity} %` : '';
+      notes.style = PT.isSplats(s.style) ? `${s.style === 'raytraced' ? 'ray-traced, ' : ''}splat size ${fmt(s.splatSize)}`
+        : `${fmt(s.pointPx)} px`;
+      notes.intensity = PT.isSplats(s.style) ? `${s.intensity} %` : '';
       const drawn = s.govern ? L.points.drawRows : sm.count;
       notes.shown = `${(drawn / 1e6).toFixed(2)} M drawn of ${(sm.count / 1e6).toFixed(2)} M sampled, ${(sm.totalRows / 1e6).toFixed(2)} M rows`;
     } else if (L.mode === 'flow' && L.flow && L.flow.info) {

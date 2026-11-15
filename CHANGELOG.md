@@ -8,6 +8,32 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: ray-traced still views of particles (#264, part of #261).** A point
+  table has a third style on the menu's Display tab, *Ray-traced*: the page
+  draws the same splats while the view moves, and when it holds still the
+  refined frame comes from the backend's ray-traced particle renderer (the
+  desktop's *Ray-traced* shape, `app/particle_raytrace.py`) over every row
+  the session holds. Each splat becomes a smooth Gaussian kernel carrying the
+  light the page's splat carries in expectation (`app/point_splat.py`
+  `raytrace_eye`), so the swap keeps brightness and colours: on a 3.9 M-row
+  snapshot the refined frame adds the same light over the background as the
+  *splats* frame, within 0.1 % (both 9 % above the preview, whose 8-bit
+  additions round faint light away). The frame also carries the depth its
+  light comes from (the light-weighted mean distance per block, `"source":
+  "medium"`), so it is reprojected like a cube's instead of as a plane: 2.7 to
+  3.7 dB closer to the true view after a 1-4° orbit, and kept on show beyond
+  1 cm of head motion. A VBT point table opens *ray-traced*, a catalogue as
+  points, until a style is chosen (`/v1/points/info` now says `format`). The
+  point session takes `stereo_renderer` (`"splat"` | `"raytrace"`) in
+  `set_point_style` and names the renderer in each stereo frame's header.
+  Measured on an M-series Mac, 1600 × 1000 eyes: 3.9 M rows about 63 ms per
+  eye (splats 44 ms), camera stop to refined frame shown 385 ms (splats
+  335 ms); 11.5 M rows 535 ms. The ray tracer itself got faster for the
+  desktop too: tiles binned in parallel and the Gaussian evaluated per row
+  and column of a footprint give the same image (within 3e-6 of the peak) 1.5 times faster
+  (448 → 274 ms for a 3.9 M-particle 1280 × 720 still), and the page's
+  frame conversion (`page_frame`) went from 34 to 11 ms per eye.
+
 - **3-D sky catalogues: sources without a distance are no longer put on a
   300 Mpc shell (#265).** In a catalogue that has a redshift or a distance
   column, a row with no usable distance and a redshift that is ≤ 0, zero or
