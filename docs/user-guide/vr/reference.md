@@ -1144,6 +1144,41 @@ the [report](#the-report) is made from.
    report's FPS and missed % with a record running should equal what the
    wrist shows without one.
 
+### X toggles the menu, and every text fits (#276)
+
+Over USB (`adb reverse`), HCG 44 or WALLABY, then a VBT snapshot for step 5.
+
+1. **X opens it above the left controller.** Hold the left controller at the
+   chest, a little to the left, and press X once (let go at once). The menu
+   must open just above and beyond the controller, about a metre from your
+   eyes, facing you, with a pulse in the left controller. Let go of
+   everything: it stays. Turn your head, move the left hand: it does not
+   move. Report whether the place is comfortable (too high, too far to the
+   left).
+2. **X again, and ×.** Press X: the menu closes (a pulse). Press X: it opens
+   again where the controller is now. Point the right ray at the × at the
+   right of its title bar and pull the trigger: it closes. The title bar
+   still moves it (hold the trigger on *⠿ drag to move*).
+3. **Palm up.** Put the controllers down. Turn the left palm up: the menu
+   opens after a short moment (0.15 s); keep the palm up for 5 s: it must not
+   flicker or close. Turn the palm down, then up again: it closes.
+4. **Texts.** On the first-run guide (More → *Show the guide*): the hint line
+   *Controls guide: …* stands on its own row above *Back*, *Next*, *Skip*,
+   never over them; no line runs past the card's edge. Measure tab: the
+   moment buttons read *M0*, *M1*, *M2*; point at each: *Intensity (M0)*,
+   *Velocity (M1)*, *Dispersion (M2)* in blue under the row. No text on any
+   tab, the palette (A), a wrist card, a toast or a result window is cut in
+   the middle of a word, runs past its box or overlaps another.
+5. **Snapshot.** Display tab: the column chips, *Splats* (pointed at:
+   *Smooth (splats)…*), *Size −*, *Size +*: all inside their buttons.
+6. **The wrist legend** (right wrist turned to the eyes): *X* *menu: open,
+   close* (with hands: *Palm up* *menu: open, close*).
+
+Headless, the same is checked for every canvas, tab, data kind and state by
+`node validation/vr_text_fit.mjs` (a few seconds; also part of the CI smoke);
+`--font Roboto` tries another installed font, `--snap REGEX` writes the
+matching canvases as PNG files.
+
 ### The menu in front of you, organised by task (#257)
 
 Over USB (`adb reverse`) or Wi-Fi, with the HCG 44 cube and then a simulation
@@ -1164,7 +1199,8 @@ asked; wider than the view means doubled) and whether #267's fix is in.
    swing the ray: the menu follows at the same distance, turned to you. Let
    go: it stays.
 3. **Keep open.** Footer → *Keep open*, let go of X: the menu stays; your left
-   hand is free. The next press of X closes it.
+   hand is free. The next press of X closes it. (Gone since #276: X now opens
+   and closes the menu, see above.)
 4. **The tabs.** Display, Range, Select, Measure, More, and the footer (Undo,
    Reset view, Keep open) under every tab. No Help tab, no Mode page, no
    refinement, governor, recording or threshold-source row anywhere.

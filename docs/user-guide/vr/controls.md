@@ -199,15 +199,20 @@ open, at half that size.
 
 ## The hand menu
 
-**Hold X** (the secondary controller's lower button) and the menu opens in
-front of you: about 0.95 m away along the direction you look (horizontally),
-12 cm below your eyes, turned to face you. **Let go and it closes.** While it
-is open it stays where it opened (world-locked): the hand that opened it is
-free, and turning your head does not move it. To put it somewhere else, point
-at its **title bar** (the top strip, *⠿ drag to move*), hold the trigger and
-move the ray: the menu follows at the same distance, turned to face you.
-*Keep open* (in the footer) leaves it open when you let go of X; the next
-press of X closes it. With tracked hands, the palm turned up opens it.
+**Press X** (the secondary controller's lower button) and the menu opens just
+above and beyond that controller: about 0.95 m from your eyes, along the line
+from your eyes through the controller (at most 50° to the side of where you
+look), its lower edge 5 cm above the controller (its centre never more than
+8 cm above your eyes nor 30 cm below them), turned to face you. **It stays
+open** where it opened (world-locked): the hand that opened it is free, and
+turning your head does not move it. **Press X again, or the × at the right of
+its title bar, to close it** ([#276](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/276)).
+To put it somewhere else, point at its **title bar** (the top strip, *⠿ drag
+to move*), hold the trigger and move the ray: the menu follows at the same
+distance, turned to face you. With tracked hands, the palm turned up does the
+same as X: up once opens it, down and up again closes it. The palm must stay
+up for 0.15 s to count, and a dropout of the tracking shorter than 0.25 s does
+not end it, so holding the palm up neither flickers the menu nor closes it.
 
 Point the primary ray at it and pull the trigger: the ray ends on the menu with
 a small yellow cross, the item under it lights up, and the trigger presses it.
@@ -238,6 +243,18 @@ is greyed, with a one-line reason under it (*Cubes only*, *A point table or a
 velocity field has no spectral axis*, *Take a spectrum with the Probe
 (Select) first*, …); it never disappears, so nothing moves around. The menu
 opens on the tab of the current mode, or on the last tab used.
+
+**Every text fits its place** ([#276](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/276)).
+A text too long for its box wraps, or shrinks a little (to 85 % of its size at
+most), and only then is cut with an ellipsis. A button whose full name does
+not fit carries a short label and the full name as its **tooltip**, written
+under its row in blue while the ray is on it: the moments are *M0*, *M1*, *M2*
+(*Intensity (M0)*, *Velocity (M1)*, *Dispersion (M2)*), the particles' style
+*Splats* (*Smooth (splats)*). A greyed control's reason takes that place
+when the ray is on it. A point table's column names are cut when long; the
+tooltip has them whole. The same holds for the palette, the wrist cards, the
+toasts, the windows and the notices: a notice's hint line (*Controls guide:
+…*) has a row of its own above the buttons.
 
 - **Display** (the tab the menu starts on)
   - *A cube*: **Colour map** as swatches (the name of the one in use below);
@@ -301,7 +318,8 @@ opens on the tab of the current mode, or on the last tab used.
   card on the secondary wrist), **Guide** (brings back a notice folded on the
   menu first, else the first-run guide).
 
-**The footer**, under every tab: *Undo*, *Reset view*, *Keep open*.
+**The footer**, under every tab: *Undo*, *Reset view*. (*Keep open* is gone
+since X toggles the menu: it stays open until X or its × closes it.)
 
 Under each tab the status lines say when the page lowered the quality to hold
 the frame rate (*Quality lowered to hold 90 Hz: 0.50 samples/voxel (of 1),
@@ -380,7 +398,7 @@ while it is open. Pointing at the cube with the arm out does not show a card
   the tool in use, under the mode and tool (*SELECT · Kinematic Lasso*): the
   primary hand's controls but the grip (*Trigger*, *Stick ↕*, *Stick ↔*, *A*,
   *B*, only those that do something now), then the secondary hand's that
-  change with the mode (*Hold X* the menu, *L stick ↔* the tool or the colour
+  change with the mode (*X* the menu, open and close, *L stick ↔* the tool or the colour
   map, *L stick ↕* the colour max). With tracked hands: *Pinch* and *Palm up*.
   It changes with the mode, the tool and the left-handed setting, from the
   same table the controls use. More → *Button labels* turns it off.
@@ -462,7 +480,7 @@ pick them up again and it switches back. The roles stay:
 |---|---|
 | **Pinch** (thumb tip to index tip), primary hand | the trigger: presses the menu's items, drags its sliders, moves windows, and acts on the cube along the hand's ray (the headset's own pointing ray; the ray is held still while the fingers close, so the pinch does not move what it points at) |
 | **Fist** (middle, ring and little finger curled), either hand | the grip: one hand carries the cube, both move, turn and scale it |
-| **Palm up**, secondary hand | the menu, open while the palm stays up |
+| **Palm up**, secondary hand | the menu: up opens it, down and up again closes it (as X) |
 | **Back of the wrist to the eyes** (as to read a watch), either hand | that wrist's card ([#256](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/256)); never with the palm up |
 
 After a grip, and for a hand just seen, a pinch counts only once the fingertips

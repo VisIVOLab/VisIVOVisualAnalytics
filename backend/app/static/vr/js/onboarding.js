@@ -26,7 +26,7 @@ export function guidePages({ leftHanded = false } = {}) {
     {
       title: 'The menu',
       lines: [
-        `Hold ${S.lower} (${r.secondary} hand): the menu opens in front of you and stays there. Let go: it closes.`,
+        `Press ${S.lower} (${r.secondary} hand): the menu opens above that hand and stays there. ${S.lower} again, or its ×, closes it.`,
         `Point at it with the ${r.primary} ray and pull the trigger. Tabs: Display, Range, Select, Measure, More; its title bar moves it.`,
         'Display: colour map, threshold, opacity. Range: velocity range and crop. Select: probe, lasso, box. Measure: moment, PV slice.',
       ],
@@ -44,7 +44,7 @@ export function guidePages({ leftHanded = false } = {}) {
       title: 'Hands without controllers',
       lines: [
         'Put the controllers down: a pinch is the trigger, a fist is the grip.',
-        `Turn your ${r.secondary} palm up to open the menu; pinch with the other hand to press.`,
+        `Turn your ${r.secondary} palm up to open the menu, up again to close it; pinch with the other hand to press.`,
         'Results open in windows: point at a title bar and hold the trigger to move one, × closes it.',
       ],
     },

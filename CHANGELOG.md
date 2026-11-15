@@ -8,6 +8,38 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: X toggles the menu above the controller, and no text is clipped or
+  overlapping (#276).** X (the secondary controller's lower button) now
+  opens the menu and, pressed again, closes it; the × at the right of its
+  title bar closes it too. It opens just above and beyond that controller,
+  0.95 m from the eyes along the line through the controller (at most 50°
+  from the gaze, its centre within 8 cm above and 30 cm below the eyes),
+  facing the head, world-locked and still moved by its title bar
+  (`hand-menu.js` `menuToggle`, `menuAbove`). With tracked hands the palm
+  turned up toggles the same way, steadied (`Steady`: up for 0.15 s to count,
+  tracking dropouts under 0.25 s ignored) so a palm held up neither flickers
+  nor closes the menu. *Keep open* is removed (the menu stays open until
+  closed); the footer is *Undo* and *Reset view*. The guide, the wrist legend
+  (*X: menu: open, close*) and the docs say so. Every canvas's text goes
+  through `text-fit.js` (`fitLine`, `wrapFit`, `drawFit`): wrapped, shrunk to
+  85 % at most, cut with an ellipsis last. Buttons whose full name does not
+  fit carry a short label and the full name as a tooltip written under their
+  row while pointed at (*M0*/*M1*/*M2* for *Intensity (M0)*, *Velocity (M1)*,
+  *Dispersion (M2)*; *Splats* for *Smooth (splats)*); a notice's hint line
+  has its own row above the buttons (it was drawn over *Back*/*Next*); the
+  readout shrinks rather than squeezing its lines. A new headless check,
+  `validation/vr_text_fit.mjs` (about 0.6 s, part of the CI smoke through
+  `vr_lifecycle.mjs --regressions`), draws every canvas for every page, tab,
+  data kind and state with the browser's fonts (menu tabs with each widget
+  pointed at, palette and tooltips, wrist cards, toasts, notices and room
+  cards, the guide, window bars, products, the selection panel, the
+  readout) and fails on a text wider than its box, a text over a widget, two
+  texts or widgets overlapping, a cut button label or a text past the edge.
+  After review: a secondary hand lost for a frame no longer toggles the menu
+  (the gap counts as let go through the palm's steadying); a recentre places
+  the open menu again above the hand; a hand behind or beside the user opens
+  the menu along the gaze; `--font` checks the font is really installed.
+
 - **VR: particle splats hold the frame rate on the Quest 3 (#295, part of
   #261).** On the Quest 3 splats and ray-traced styles ran at 12–26 fps at
   every budget: they are fill-rate bound, and the row governor never acted,

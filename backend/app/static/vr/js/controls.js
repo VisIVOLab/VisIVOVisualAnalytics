@@ -89,7 +89,8 @@ export function controlMap({ mode = 'explore', sub = null, leftHanded = false, p
     { control: 'upper', name: P.upper, action: 'undo', label: 'undo' },
   ];
   const secondary = [
-    { control: 'lower', name: `Hold ${S.lower}`, action: 'menu', label: 'menu' },
+    // X opens the menu and, pressed again, closes it (#276).
+    { control: 'lower', name: S.lower, action: 'menu', label: 'menu: open, close' },
     { control: 'upper', name: S.upper, action: 'reset-view', label: 'reset view' },
     { control: 'grip', name: 'Grip', action: 'grab', label: 'grab (both: turn, scale)' },
     // The palette's tools in its order, one per flick (the colour map is on the menu's Display tab).

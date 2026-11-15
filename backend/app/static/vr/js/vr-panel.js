@@ -7,6 +7,7 @@
 // (backend/tests/vr/vr-panel.test.mjs); drawPanel needs only a 2-D context.
 
 import * as M from './mat4.js';
+import { fitText } from './text-fit.js';
 
 export const PANEL_PX = [1024, 832];
 /** Metres: 2133 px/m, so the 22-32 px text is 1.0-1.5 cm high (about 0.8-1.1° at 0.75 m). */
@@ -242,12 +243,8 @@ function roundRect(c, x, y, w, h, r) {
   c.closePath();
 }
 
-function fit(c, text, maxW) {
-  if (c.measureText(text).width <= maxW) return text;
-  let t = text;
-  while (t.length > 1 && c.measureText(`${t}…`).width > maxW) t = t.slice(0, -1);
-  return `${t}…`;
-}
+/** `text` cut to maxW in the context's font (text-fit.js, #276). */
+const fit = (c, text, maxW) => fitText((t) => c.measureText(t).width, text, maxW);
 
 /**
  * Draws the panel. `view`: {title, info: [lines], cmap, mode, thr: {f, text},

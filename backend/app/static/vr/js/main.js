@@ -1538,10 +1538,11 @@ function drawHudCanvas(lines) {
 }
 
 // ── The hand menu, result windows, labels and readout (issues #201, #257) ───
-// One menu, held open by the secondary hand's lower button (or its palm turned
-// up), standing about a metre in front of the user from the moment it opens
-// until it closes (world-locked; its title bar moves it), used with the
-// primary ray and trigger. Its tabs follow the work: Display, Range, Select,
+// One menu, opened and closed by the secondary hand's lower button X (or its
+// palm turned up; #276), standing just above and beyond that hand, about a
+// metre from the eyes, from the moment it opens until X or its × closes it
+// (world-locked; its title bar moves it), used with the primary ray and
+// trigger. Its tabs follow the work: Display, Range, Select,
 // Measure, More (hand-menu.js); choosing one sets the mode. The results stand
 // in windows that the ray moves by their title bar and closes with ×. In a
 // desktop browser the menu and the windows are drawn in the 3-D view with
@@ -1553,7 +1554,8 @@ const DESKTOP_MENU = { right: 0.95, up: 0, fwd: -0.3, yaw: -0.45 };   // right: 
 const DESKTOP_MENU_SCALE = 0.5;
 const ui = {
   mode: 'explore', clipTool: 'slab', page: 'display',
-  menu: { pinned: false, armed: false, wasHeld: false, open: false },
+  menu: { wasHeld: false, open: false },     // X toggles it (hand-menu.js menuToggle)
+  menuPalm: new HM.Steady(HM.PALM_STEADY),   // the palm up, steadied (a tracked hand)
   menuModel: null,     // the menu's pose, taken when it opens (world-locked until it closes)
   menuDrag: null,      // its title bar held: {t, rel} (hand-menu.js dragMenu)
   desktop: query.has('panel3d'),
@@ -1588,12 +1590,7 @@ $('ui-mode').addEventListener('change', () => setMode($('ui-mode').value));
 function setSetting(key, value) {
   settings[key] = value;
   persist();
-  if (key === 'leftHanded') {
-    $('left-handed').checked = value;
-    // Pressed on the menu, which the old secondary hand holds open: kept open
-    // (the next press of the new menu button closes it).
-    if (xr && ui.menu.open) Object.assign(ui.menu, { pinned: true, armed: false });
-  }
+  if (key === 'leftHanded') $('left-handed').checked = value;   // an open menu stays open (#276: X toggles it)
   if (key === 'labels') $('labels').checked = value;
 }
 
@@ -1779,7 +1776,7 @@ function menuContext() {
     more: { leftHanded: settings.leftHanded, labels: settings.labels, haptics: settings.haptics, hud: state.hud },
     dbg: { governor: state.governorOn, refine: refiner.enabled, refineDepth: refiner.useDepth, refineScale: `${refiner.o.scale}×`,
       record: measure.recording, run: measure.running ? 'Cancel run' : 'Run protocol', thrSource: $('thr-source').value },
-    keep: ui.menu.pinned, canUndo: ui.undo.size > 0,
+    canUndo: ui.undo.size > 0,
   };
 }
 
@@ -1954,14 +1951,20 @@ function applyPalette(a) {
   if (pickTool(a.id)) { buzz('primary', 'press'); setPalette(false); }
 }
 
-/** The menu opening: in front of the eyes, on the tab of the mode, world-locked until it closes. */
-function updateMenuPose(opened) {
+/** The menu opening: just above and beyond the hand that opened it (#276), on
+ *  the tab of the mode, world-locked until it closes. */
+function updateMenuPose(opened, hand) {
   if (!xr || !ui.menu.open) { ui.menuDrag = null; return; }
   if (opened) {
     ui.page = HM.pageOnOpen(ui.page, ui.mode);
     layers.state.s.fieldPage = 0;      // the first page of columns, with the velocity ones (hand-menu.js fieldChips)
   }
-  if ((opened || !ui.menuModel) && xr.pose) ui.menuModel = HM.menuFront(xr.pose.transform.matrix);
+  if ((opened || !ui.menuModel) && xr.pose) ui.menuModel = HM.menuAbove(hand ? hand.pos : null, xr.pose.transform.matrix);
+}
+/** The menu closed (X again, its ×, or the session's end). */
+function closeMenu() {
+  ui.menu.open = false;
+  ui.menuDrag = null;
 }
 // ── The result windows ──────────────────────────────────────────────────────
 const wins = Object.fromEntries(WINDOW_IDS.map((id) => [id, {
@@ -2144,7 +2147,11 @@ function applyMenu(a, ray = null, eye = null) {
   // The footer.
   if (id === 'undo') { undo(); return; }
   if (id === 'reset-view') { resetView(); return; }
-  if (id === 'menu-pin') { ui.menu.pinned = !ui.menu.pinned; ui.menu.armed = false; return; }
+  if (id === 'menu-close') {
+    // In the desktop view the menu is part of the 3-D view (?panel3d): × hides that view.
+    if (xr) closeMenu(); else { ui.desktop = false; $('panel3d').checked = false; }
+    return;
+  }
   // Display: the cube's look (one undo step each); a point table's, a field's, the catalogue's.
   if (w.group === 'cmap') { pushUndo(); setColormap(w.value); return; }
   if (w.group === 'render') { pushUndo(); state.mode = w.value; $('rmode').value = String(state.mode); return; }
@@ -3203,6 +3210,19 @@ async function startSession(session, mode, bench, startGen, wantLayers) {
   session.updateRenderState({ depthNear: 0.05, depthFar: 50 });
   let ref;
   try { ref = await session.requestReferenceSpace('local-floor'); } catch { ref = await session.requestReferenceSpace('local'); }
+  // The headset recentred (#276): what stands world-locked may now be behind
+  // the user. The open menu is placed again above the hand (updateMenuPose),
+  // an open palette closes.
+  if (ref && typeof ref.addEventListener === 'function') {
+    ref.addEventListener('reset', () => {
+      if (!xr || xr.ref !== ref) return;
+      ui.menuModel = null;
+      ui.menuDrag = null;
+      palette.open = false;
+      palette.model = null;
+      shell.log('info', 'xr-recentred', ui.menu.open ? 'the menu placed again' : '');
+    });
+  }
   // With layers, the projection layer is the first of the session's `layers`
   // (a session with layers has no baseLayer); without, the base layer as before.
   let quads = null, layersNote = 'in the scene (?nolayers)';
@@ -3247,7 +3267,8 @@ async function startSession(session, mode, bench, startGen, wantLayers) {
   }
   xr = { session, ref, layer, mode, fbScale, fbChosen: fbScale, targetHz, placed: false, last: 0, hands: {}, grab: null,
     buttons: {}, bench: bench ? makeBench() : null, place: null, endedBy: '', quads, layersNote };
-  Object.assign(ui.menu, { open: false, pinned: false, armed: false, wasHeld: false });
+  Object.assign(ui.menu, { open: false, wasHeld: false });
+  ui.menuPalm.reset();
   ui.menuModel = null;
   ui.menuDrag = null;
   palette.open = false; palette.model = null;
@@ -3298,7 +3319,8 @@ async function startSession(session, mode, bench, startGen, wantLayers) {
     palette.open = false;
     for (const w of Object.values(wins)) { w.pointer.update({ bar: null, content: null }, false); w.drag = null; }
     ui.hit = null; ui.clipDrag = null; ui.sliding = null;
-    Object.assign(ui.menu, { open: false, pinned: false, armed: false, wasHeld: false });
+    Object.assign(ui.menu, { open: false, wasHeld: false });
+    ui.menuPalm.reset();
     if (b) showBench(b);
     startDesktop();
   });
@@ -3368,6 +3390,9 @@ function handleInput(frame, dtS) {
     xr.buttons = { pTrig: btn(Ph, 'trigger'), pLower: btn(Ph, 'lower'), pUpper: btn(Ph, 'upper'), sUpper: btn(Sh, 'upper') };
     xr.roles = roles;
     ui.clipDrag = null;
+    // Nor is a menu button held at the swap a press of the new one.
+    ui.menu.wasHeld = btn(Sh, 'lower');
+    ui.menuPalm.reset(btn(Sh, 'lower'), performance.now());
   }
   const L = btn(hands.left, 'grip'), Rr = btn(hands.right, 'grip');
   if (xr.bench) { xr.grab = null; state.moving = false; ui.hit = null; return; }
@@ -3375,12 +3400,16 @@ function handleInput(frame, dtS) {
   // One meaning per control in this mode (controls.js): the same map draws the labels.
   const map = C.controlMap(mapOpts());
   const act = (role, control) => C.actionFor(map, role, control);
-  // The menu: held open by the secondary hand's lower button (or its palm up).
-  const was = ui.menu.open;
-  const { opened, ...open } = HM.menuOpenState(ui.menu, act('secondary', 'lower') === 'menu' && btn(Sh, 'lower'));
+  // The menu (#276): X on the secondary hand opens it and, pressed again,
+  // closes it; a tracked hand's palm turned up does the same, steadied so
+  // that tracking noise at the edge of the gesture does not flicker it.
+  const rawMenu = act('secondary', 'lower') === 'menu' && btn(Sh, 'lower');
+  const menuHeld = HM.menuHeld(ui.menuPalm, Sh, rawMenu, performance.now());
+  const { opened, closed, ...open } = HM.menuToggle(ui.menu, menuHeld);
   Object.assign(ui.menu, open);
-  if (ui.menu.open && !was) buzz('secondary', 'press');
-  updateMenuPose(opened);
+  if (opened || closed) buzz('secondary', 'press');
+  if (closed) closeMenu();
+  updateMenuPose(opened, Sh);
 
   // The message card first (epic #166), then the menu and the windows: a ray
   // on them, or a press that began on them, is theirs, not the cube's.

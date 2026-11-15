@@ -97,7 +97,13 @@ export const XR_FAKE = `(() => {
       // Applied at the next frame, as in a browser.
       pendingLayers = s.layers || (s.baseLayer ? [s.baseLayer] : pendingLayers);
     },
-    async requestReferenceSpace() { return { kind: 'ref' }; },
+    // A reference space that can be recentred (S.recentre(): its 'reset' event, #276).
+    async requestReferenceSpace() {
+      const ls = [];
+      const ref = { kind: 'ref', addEventListener(type, fn) { if (type === 'reset') ls.push(fn); } };
+      S.recentre = () => ls.forEach((fn) => fn({ type: 'reset' }));
+      return ref;
+    },
     requestAnimationFrame(cb) { return requestAnimationFrame((t) => { if (!this.ended) { if (pendingLayers) { activeLayers = pendingLayers; pendingLayers = null; } S.frames++; cb(t, frame); } }); },
     async end() { if (this.ended) return; this.ended = true; S.ended++; (listeners.end || []).forEach((f) => f({})); },
     addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
@@ -196,14 +202,44 @@ export async function runXRFakeChecks({ c, check, waitFor, label = 'layers', exp
       !st.overlaysAsLayers && !st.quads && rs.some((s) => s.base) && !rs.some((s) => s.layers), st.layersNote);
   }
   await runControllerModelChecks({ c, check, waitFor, label });
-  // The menu: the secondary (left) hand's lower button held.
-  await c.evaluate('window.__xrfake.buttons.left[4].pressed = true');
-  await sleep(400);
+  // The menu (#276): X (the secondary, left, hand's lower button) pressed
+  // and let go opens it just above and beyond that hand; it stays open; X
+  // again closes it; its × too.
+  const pressX = async () => {
+    await c.evaluate('window.__xrfake.buttons.left[4].pressed = true');
+    await sleep(200);
+    await c.evaluate('window.__xrfake.buttons.left[4].pressed = false');
+    await sleep(300);
+  };
+  await pressX();
   const withMenu = await c.evaluate('window.__vrXR()');
-  if (expectLayers) check(`xrfake ${label}: the menu opens as a quad`, (withMenu.quads.shown || []).includes('menu'), JSON.stringify(withMenu.quads.shown));
-  else check(`xrfake ${label}: the menu opens (in the scene)`, await c.evaluate('window.__vrMenu.ui.menu.open'));
-  await c.evaluate('window.__xrfake.buttons.left[4].pressed = false');
-  await sleep(300);
+  if (expectLayers) check(`xrfake ${label}: X opens the menu as a quad, and it stays open once X is let go`, (withMenu.quads.shown || []).includes('menu'), JSON.stringify(withMenu.quads.shown));
+  else check(`xrfake ${label}: X opens the menu (in the scene), and it stays open once X is let go`, await c.evaluate('window.__vrMenu.ui.menu.open'));
+  // The left grip is at (-0.2, 1.3, -0.35), the eyes at the fake's head.
+  const place = await c.evaluate(`(() => { const m = window.__vrMenu.ui.menuModel, h = window.__xrfake.head || [0, 1.6, 0];
+    return { p: [m[12], m[13], m[14]], head: h }; })()`);
+  const hand = [-0.2, 1.3, -0.35];
+  const dirOf = (v) => Math.atan2(v[0] - place.head[0], -(v[2] - place.head[2]));
+  const dist = Math.hypot(place.p[0] - place.head[0], place.p[2] - place.head[2]);
+  check(`xrfake ${label}: the menu opens above and beyond the left controller, 0.95 m from the eyes`,
+    Math.abs(dist - 0.95) < 0.01 && Math.abs(dirOf(place.p) - dirOf(hand)) < 0.01 && place.p[1] > hand[1] + 0.3,
+    JSON.stringify({ menu: place.p.map((v) => +v.toFixed(3)), dist: +dist.toFixed(3) }));
+  await pressX();
+  // A recentre (#276 review): the open menu, left behind by it, is placed again above the hand.
+  await pressX();
+  const placed = await c.evaluate('Array.from(window.__vrMenu.ui.menuModel.slice(12, 15))');
+  await c.evaluate('window.__vrMenu.ui.menuModel[12] += 3; window.__vrMenu.ui.menuModel[14] += 3');
+  await c.evaluate('window.__xrfake.recentre()');
+  await sleep(200);
+  const again = await c.evaluate('({ open: window.__vrMenu.ui.menu.open, p: Array.from(window.__vrMenu.ui.menuModel.slice(12, 15)) })');
+  check(`xrfake ${label}: a recentre places the open menu again above the hand`,
+    again.open && again.p.every((v, i) => Math.abs(v - placed[i]) < 1e-3), JSON.stringify({ placed, again }));
+  await pressX();
+  check(`xrfake ${label}: X again closes the menu`, !(await c.evaluate('window.__vrMenu.ui.menu.open')));
+  await pressX();
+  await c.evaluate(`window.__vrMenu.act({ type: 'press', id: 'menu-close' })`);
+  await sleep(200);
+  check(`xrfake ${label}: the menu's × closes it`, !(await c.evaluate('window.__vrMenu.ui.menu.open')));
   // The tool palette (#257): A (the right hand's lower button) opens it in front of that hand; A again closes it.
   await c.evaluate('window.__xrfake.buttons.right[4].pressed = true');
   await sleep(200);
