@@ -39,6 +39,23 @@ are preserved here unedited; the branch names they refer to are historical.
   before. The pixel-to-sky conversion moved to
   `fits_dataset.pixel_to_icrs`, shared by `/v1/datasets/pixel_to_sky` and the
   centroid.
+- **The release packages carry the VisIVO VR headset app (#255).** The
+  project's release key now signs the app: its certificate
+  (`A1:54:C4:5B:…:43:04:D8:D4`) is in `backend/app/vr_app.json`, so every
+  backend, local or on a cluster, lists `it.inaf.oact.visivo.vr` at
+  `/.well-known/assetlinks.json` and the desktop's precheck passes for the
+  release app. `release.yml` calls `quest-app.yml` once per run and bundles
+  `visivo-vr.apk` + `visivo-vr.json` where the desktop looks: macOS
+  `Contents/Resources/quest-app/` (before the bundle is signed), Linux
+  `app/usr/bin/quest-app/`, Windows `bin\quest-app\`; the packaged smoke test
+  checks they are there. On a tag the APK is also attached to the release
+  once (`quest-app.yml` lost its own tag trigger). Without the signing
+  secrets (a fork) the packages are built without the app, with a notice; a
+  failed app build gives a warning and never holds the release. The app
+  build fails when its certificate is not in `vr_app.json`. The app's icon is
+  now the VisIVO logo (plain and maskable launcher icons on white, made by
+  `tools/quest-app/make-icons.py`); `versionCode` 2 (1.0.1), so the desktop
+  offers **Update** on headsets with the first build.
 
 - **Desktop: Open on Headset installs and starts the VisIVO VR app (#255).**
   In **Open in VR Headset… → Advanced (USB cable)** the desktop says whether
