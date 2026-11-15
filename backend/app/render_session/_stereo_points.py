@@ -293,7 +293,7 @@ class PointStereoMixin:
         renderer, with the depth it comes from."""
         from vtk.util.numpy_support import vtk_to_numpy
 
-        from ..point_splat import raytrace_eye, rule_tone, splat_eye, splat_style
+        from ..point_splat import raytrace_eye, rule_max_px, rule_tone, splat_eye, splat_style
         w, h = pose.width, pose.height
         xyz = vtk_to_numpy(self._polydata.GetPoints().GetData())
         codes = (vtk_to_numpy(self._polydata.GetPointData().GetScalars())
@@ -304,7 +304,7 @@ class PointStereoMixin:
         sample_rows, page_size = self._xr_splat_view
         drawn = sample_rows or held
         rule = self.view.splat_rule
-        tone = rule_tone(rule)
+        tone, max_px = rule_tone(rule), rule_max_px(rule)
         _, opacity, radius = splat_style(bounds, max(self._num_rows, held), drawn,
                                          self.view.size, self.view.intensity, rule)
         amp = opacity * drawn / max(1, held)
@@ -318,11 +318,11 @@ class PointStereoMixin:
             if raytrace:
                 rgba, depth = raytrace_eye(xyz, codes, self._splat_lut, to_eye, eye.projection,
                                            w, h, radius * metres, amp, pose.background,
-                                           page_size, pose.depth_scale, tone)
+                                           page_size, pose.depth_scale, tone, max_px)
             else:
                 rgba, depth = splat_eye(xyz, codes, self._splat_lut, to_eye, eye.projection,
                                         w, h, radius * metres, amp, pose.background,
-                                        page_size, tone), None
+                                        page_size, tone, max_px), None
             t1 = time.perf_counter()
             out.append((rgba, depth, g["depth_projection"]))
             per_eye.append({"eye": eye.eye, "render": round(1000 * (t1 - t0), 3),
