@@ -491,7 +491,7 @@ sources = createSources({
   onVisit: (row, src) => visitSource(row, src),
   onChange: () => decorationsChanged(),
   // False when no hub runs for this page (no session, or it stood down): nothing is sent.
-  report: (detail) => { if (!single.active || !hub.st.running) return false; reportProduct(null, detail); return true; },
+  report: (detail) => reportProduct(null, detail),
 });
 // The flags and notes offered, set on the page (kept in this browser; the defaults when empty).
 {
@@ -3068,10 +3068,11 @@ setInterval(hubTick, 250);
 
 /** A product made here (or a catalogue over the cube): saved for the desktop and reported. */
 function reportProduct(recipe, detail) {
-  if (!detail || !single.active) return;
+  if (!detail || !single.active) return null;
   const path = state.openPath || '';
   const key = recipe ? `recipe:${recipe.product.id}:${path}` : `${detail.product}:${detail.path || detail.file || ''}:${performance.now()}`;
-  hub.product(detail, recipe, { cubePath: path, cubeName: HUB.fileName(path), stem: HUB.stemOf(path) }, key);
+  // A promise of its send ({file} once posted), or null when nothing was queued.
+  return hub.product(detail, recipe, { cubePath: path, cubeName: HUB.fileName(path), stem: HUB.stemOf(path) }, key);
 }
 
 /** The desktop's `show`: that cube in this page (in VR when in VR, #235). */

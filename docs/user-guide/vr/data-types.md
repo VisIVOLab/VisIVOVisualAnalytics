@@ -155,8 +155,13 @@ and pull the trigger to sort by it (again: the other way); *◂ Page* and
   `vr_note`, `vr_origin`, the pixel and the velocity, the found sources
   appended) and reports it to the desktop as headset activity (see
   [The headset from the desktop](desktop.md#headset-activity)). Each Send
-  writes a new file (`<catalogue>_vr_classified.xml`, then `_1`, `_2`…); the
-  window's line says *changed since sent* when there is more to send.
+  writes a new file (`<catalogue>_vr_classified.xml`, then `_1`, `_2`…). The
+  window's line says *sending* until the file is written and the desktop
+  told, then *sent* with the file's name (or why it was not, in red), and
+  *changed since sent* when there is more to send. A VOTable keeps the
+  catalogue's units (an RA in hours stays in hours, found sources written in
+  it). For an overlay with no catalogue file behind it (VLKB sources, a
+  cross-match) every source goes, flagged or not.
 
 The flags, notes and found sources are kept in this browser per cube (its
 full path) and catalogue (its sources: their number, names and positions), so

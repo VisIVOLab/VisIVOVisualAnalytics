@@ -61,6 +61,24 @@ def test_a_found_source_given_in_icrs_over_a_galactic_catalogue():
     assert bool(t["glon"].mask[1]) and t["glon"][2] == pytest.approx(30.2)
 
 
+def test_units_are_kept_and_found_positions_written_in_them():
+    """An RA column in hours (a VOTable's unit, kept by the reader in
+    frame.attrs) stays in hours, with its unit, and a found source at
+    150.15 degrees is written as 10.01 hours; an integer Dec column becomes
+    a float one so the found source's fraction is kept."""
+    df = pd.DataFrame({"name": ["A"], "ra": [10.0], "dec": [2]})
+    df.attrs["units"] = {"ra": "h", "dec": "deg"}
+    sources = [{"origin": "user", "label": "VR-1", "lon": 150.15, "lat": 2.25, "frame": "icrs"}]
+    t = ccl.classified_table(sources, "vr_flag", df, {"system": "sky", "ra": "ra", "dec": "dec"}, "name", "icrs")
+    assert str(t["ra"].unit) == "h" and str(t["dec"].unit) == "deg"
+    assert t["ra"][0] == pytest.approx(10.0) and t["ra"][1] == pytest.approx(150.15 / 15.0)
+    assert t["dec"].dtype.kind == "f" and t["dec"][1] == pytest.approx(2.25)
+    # A unit given only by the column's name ("RA (h)") is honoured too.
+    df2 = pd.DataFrame({"name": ["A"], "RA (h)": [10.0], "Dec": [2.0]})
+    t2 = ccl.classified_table(sources, "vr_flag", df2, {"system": "sky", "ra": "RA (h)", "dec": "Dec"}, "name", "icrs")
+    assert t2["RA (h)"][1] == pytest.approx(10.01)
+
+
 def test_an_overlay_without_a_table_writes_its_sources():
     sources = [{"origin": "overlay", "label": "G030.1+0.5", "lon": 30.1, "lat": 0.5, "flag": "real", "note": ""},
                {"origin": "user", "label": "VR-1", "lon": 30.2, "lat": 0.4, "flag": "", "note": ""}]

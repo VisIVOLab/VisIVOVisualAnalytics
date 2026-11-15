@@ -33,6 +33,16 @@ EXTRA_COLUMNS = ("vr_note", "vr_origin", "vr_x", "vr_y", "vr_z", "vr_velocity_km
 OVERLAY_COLUMNS = ("name", "ra", "dec", "glon", "glat")
 
 
+def _angle_unit(column: str, declared: str | None):
+    """The angle unit a sky column is in: the one the table declares (a
+    VOTable's, FITS or IPAC unit, kept in frame.attrs["units"]) or its name
+    gives ("RA (h)"), as app/cube_catalogue.py angle_degrees reads it; None
+    for degrees (no unit, or one that is not an angle)."""
+    from .cube_catalogue import name_and_unit, parse_angle_unit   # noqa: PLC0415
+    q = parse_angle_unit(declared or name_and_unit(column)[1] or "")
+    return q if q is not None and q.physical_type == "angle" else None
+
+
 def _num(v: Any) -> float:
     try:
         f = float(v)
@@ -75,6 +85,8 @@ def classified_table(sources: list[dict], flag_column: str = "vr_flag", frame=No
                              "give another flag column name.")
         base = Table.from_pandas(frame)
         n0 = len(base)
+        # Table.from_pandas drops the units the reader kept (frame.attrs): put back.
+        declared = {str(k): str(v) for k, v in ((getattr(frame, "attrs", {}) or {}).get("units") or {}).items() if v}
         system = (coordinates or {}).get("system")
         lon_col = (coordinates or {}).get("ra" if system == "sky" else "glon")
         lat_col = (coordinates or {}).get("dec" if system == "sky" else "glat")
@@ -85,12 +97,20 @@ def classified_table(sources: list[dict], flag_column: str = "vr_flag", frame=No
             c = base[name]
             data = list(c) + [None] * len(rest)
             mask = list(np.ma.getmaskarray(c)) + [True] * len(rest)
-            if name in (lon_col, lat_col):
+            unit = c.info.unit if c.info.unit is not None else declared.get(name)
+            sky = name in (lon_col, lat_col)
+            if sky:
+                # A found source's position (degrees) in the column's own unit
+                # (hours of RA, radians...), as the catalogue's rows are.
+                import astropy.units as u   # noqa: PLC0415
+                q = _angle_unit(name, declared.get(name))
                 for k, s in enumerate(rest):
                     if not same_frame[k]:
                         continue
                     v = _num(s.get("lon" if name == lon_col else "lat"))
                     if math.isfinite(v):
+                        if q is not None:
+                            v = float((v * u.deg).to_value(q))
                         data[n0 + k], mask[n0 + k] = v, False
             elif label_field and name == label_field:
                 for k, s in enumerate(rest):
@@ -98,8 +118,10 @@ def classified_table(sources: list[dict], flag_column: str = "vr_flag", frame=No
             filled = [d if not m else (c.info.dtype.type(0) if c.info.dtype.kind in "iufb"
                                        else "") for d, m in zip(data, mask)]
             dtype = c.info.dtype if c.info.dtype.kind in "iufb" else str
+            if sky and c.info.dtype.kind in "iub":
+                dtype = np.float64            # a whole-degree column takes a found source's fraction
             cols.append(MaskedColumn(np.array(filled, dtype=dtype), name=name, mask=mask,
-                                     unit=c.info.unit, description=c.info.description))
+                                     unit=unit, description=c.info.description))
         out = Table(cols, masked=True)
         rows = [by_row.get(i) for i in range(n0)] + rest
         origins = ["catalogue"] * n0 + [str(s.get("origin") or "user") for s in rest]
