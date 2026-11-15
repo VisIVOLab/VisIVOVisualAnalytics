@@ -14,11 +14,12 @@ were on an Analysis tab).
 The primary controller casts a ray (a thin white line); a small white cross
 shows where the trigger would land. On the Mac the same tools work with the
 mouse: a click (press and release without dragging) is the trigger, a drag
-still turns the cube. The tool is chosen in the Select mode (spectrum, lasso,
-box; see [Modes](controls.md#modes)) or on the page (*Selection tool*).
+still turns the cube. The tool is chosen on the tool palette (A), on the
+menu's Select tab (Kinematic Lasso, Spectrum probe, Box region; see
+[Modes](controls.md#modes)) or on the page (*Selection tool*).
 
 **Where a pick lands.** The ray is marched through the reduced cube the
-headset draws, with the same values, threshold and clipping box as the
+headset draws, with the same values, threshold and spatial crop as the
 renderer: in *emission* mode the pick is the first sample the renderer draws
 (the first at or above the threshold); in *maximum intensity* mode it is the
 brightest sample of the ray, which is what that mode shows. From there the
@@ -104,8 +105,9 @@ the cube (reach into it): two such corners make a 3-D box. A corner placed by
 pointing from outside the cube, or with the mouse, takes the right ascension
 and declination of the point the ray picks (the first drawn sample, or the
 middle of the ray inside the box when nothing is drawn) and no depth; the box
-then spans the channels of the velocity slab (the clipping range on the
-spectral axis, set with the Clip mode's slab, see [Modes](controls.md#modes)).
+then spans the channels of the velocity range (the crop along the spectral
+axis, set on the Range tab or with the Range mode's trigger, see
+[Modes](controls.md#modes)).
 The sky rectangle is therefore exactly the one you
 pointed at only when you look down the spectral axis; from an oblique view the
 two picked points may lie at other depths than you meant. The box measured is

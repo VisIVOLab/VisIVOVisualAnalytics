@@ -43,7 +43,7 @@ the menu.
 |---|---|---|
 | Trigger | acts on what the ray points at (by mode, below) | — |
 | Grip | grabs the cube: it follows the hand | grabs the cube; both grips move, turn and scale it between your hands |
-| Lower face button | **A**: the tool palette (A again closes it) | hold **X**: the menu |
+| Lower face button | **A**: the tool palette (A again closes it) | **X**: opens the menu, X again closes it |
 | Upper face button | **B**: undo the last change of the look | **Y**: reset the view |
 | Stick | the mode's continuous control (below) | ←/→: the next tool, in the palette's order |
 
@@ -74,8 +74,8 @@ dark all over, with green accents. Their textures are kept at 1024 px a side
 anisotropically so they do not shimmer.
 
 With the *left-handed* setting the roles swap: the left hand points (its
-**X** opens the tool palette, **Y** undo) and the right opens the menu (hold **A**,
-**B** resets the view). The setting is on the menu's More tab (*Handedness*)
+**X** opens the tool palette, **Y** undo) and the right opens and closes the menu
+(**A**; **B** resets the view). The setting is on the menu's More tab (*Handedness*)
 and on the page (*left-handed*), and is kept in the browser.
 
 - **Undo** (B, or *Undo* in the menu's footer) takes back one change of the
@@ -509,8 +509,8 @@ while it is open. Pointing at the cube with the arm out does not show a card
   the tool in use, under the mode and tool (*SELECT · Kinematic Lasso*): the
   primary hand's controls but the grip (*Trigger*, *Stick ↕*, *Stick ↔*, *A*,
   *B*, only those that do something now), then the secondary hand's that
-  change with the mode (*X* the menu, open and close, *L stick ↔* the tool or the colour
-  map, *L stick ↕* the colour max). With tracked hands: *Pinch* and *Palm up*.
+  change with the mode (*X* the menu, open and close, *L stick ↔* the next
+  tool, *L stick ↕* the colour max). With tracked hands: *Pinch* and *Palm up*.
   It changes with the mode, the tool and the left-handed setting, from the
   same table the controls use. More → *Button labels* turns it off.
 - **Secondary wrist: the cube card**: the cube's name, its full size (and the
