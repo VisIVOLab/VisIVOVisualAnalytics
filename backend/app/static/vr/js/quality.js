@@ -5,10 +5,13 @@
 // The first stage is volume.js Governor (samples per voxel, every frame).
 // When that is already at its floor and frames are still missed, the eye
 // buffer is made smaller, one step at a time (never below 0.85×, issue #226),
-// at most every few seconds; it
-// is never raised again within the session (a layer swap costs a hitch, and
-// an up-and-down oscillation would cost one every few seconds); the next
-// entry into VR starts again from the chosen resolution.
+// at most every few seconds. It comes back up, one step at a time and never
+// above the chosen scale, after a sustained run of clean frames (issue #295:
+// lowered by heavy splats, it stayed lowered for a cube that holds the rate
+// at 1.0×); a layer swap costs a hitch, so a step up that is soon taken back
+// doubles the clean time the next one needs, and a change of what is shown
+// (relax) forgets that. The next entry into VR starts again from the chosen
+// resolution.
 //
 // Pure: unit-tested in backend/tests/vr/quality.test.mjs.
 
@@ -32,12 +35,16 @@ export function qualityPolicy({ targetHz, spvMin = 0.25, spvChosen = 1, eyeChose
 }
 
 export class EyeBufferGovernor {
-  constructor({ start = 1, holdMs = 3000, missLimit = 0.1, steps = EYE_SCALE_STEPS } = {}) {
+  constructor({ start = 1, holdMs = 3000, missLimit = 0.1, steps = EYE_SCALE_STEPS,
+    upAfterMs = 9000, cleanLimit = 0.03, maxUpAfterMs = 120000 } = {}) {
     this.start = start;
     this.scale = start;
     this.holdMs = holdMs;
     this.missLimit = missLimit;
     this.steps = steps;
+    this.baseUpAfterMs = upAfterMs;
+    this.cleanLimit = cleanLimit;
+    this.maxUpAfterMs = maxUpAfterMs;
     this.reset(start);
   }
 
@@ -51,6 +58,22 @@ export class EyeBufferGovernor {
     this.missed = 0;
     this.frames = 0;
     this.lowered = 0;
+    this.raised = 0;
+    this.relax();
+  }
+
+  /** What is shown changed (another cube, points, a style): a step up may be
+   *  tried again after the base clean time. */
+  relax() {
+    this.upAfterMs = this.baseUpAfterMs;
+    this.cleanMs = 0;
+    this.sinceUp = Infinity;
+  }
+
+  /** The next larger step above `s`, up to the start, or s when there is none. */
+  nextUp(s) {
+    const above = this.steps.filter((v) => v > s + 1e-6 && v <= this.start + 1e-6);
+    return above.length ? Math.min(...above) : s;
   }
 
   /** The next smaller step under `s`, or s when there is none. */
@@ -71,10 +94,32 @@ export class EyeBufferGovernor {
     if (intervalMs > targetMs * 1.5) this.missed++;
     if (this.windowMs < this.holdMs) return this.scale;
     const missedFraction = this.missed / this.frames;
+    const windowMs = this.windowMs;
     this.windowMs = 0; this.missed = 0; this.frames = 0;
-    if (spvAtFloor && missedFraction > this.missLimit && !this.disabled) {
+    this.sinceUp += windowMs;
+    if (this.disabled) return this.scale;
+    if (spvAtFloor && missedFraction > this.missLimit) {
       const next = this.nextDown(this.scale);
-      if (next < this.scale) { this.scale = next; this.lowered++; }
+      if (next < this.scale) {
+        // Taken back within two windows of a step up: wait twice as long next time.
+        if (this.sinceUp <= 2 * this.holdMs) this.upAfterMs = Math.min(this.maxUpAfterMs, 2 * this.upAfterMs);
+        this.scale = next;
+        this.lowered++;
+      }
+      this.cleanMs = 0;
+    } else if (missedFraction <= this.cleanLimit) {
+      const next = this.nextUp(this.scale);
+      // Clean time counts only below the chosen scale: banked at the top, it
+      // would raise a scale lowered later at once.
+      this.cleanMs = next > this.scale ? this.cleanMs + windowMs : 0;
+      if (next > this.scale && this.cleanMs >= this.upAfterMs) {
+        this.scale = next;
+        this.raised++;
+        this.cleanMs = 0;
+        this.sinceUp = 0;
+      }
+    } else {
+      this.cleanMs = 0;
     }
     return this.scale;
   }

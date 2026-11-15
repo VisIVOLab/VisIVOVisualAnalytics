@@ -8,6 +8,39 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: particle splats hold the frame rate on the Quest 3 (#295, part of
+  #261).** On the Quest 3 splats and ray-traced styles ran at 12–26 fps at
+  every budget: they are fill-rate bound, and the row governor never acted,
+  because it needed a GPU timer the Quest Browser does not have.
+  - **Governor without a GPU timer.** The governor now falls back to the frame
+    intervals (`FrameRowGovernor` in `points.js`). More than 15 % missed
+    frames, or a median interval above 1.12 periods, cuts the rows by the
+    period over the interval. Sustained sparse misses or slow frames cut them
+    by 8 %. Clean frames add 12 % a quarter second, up to just under the count
+    that missed. Pauses over 250 ms are not frames, and a cut soon after a
+    probe upward doubles the wait for the next one.
+  - **Half-octave steps.** The rows drawn move in half-octave steps, and
+    refined frames are drawn for those rows, so the governor rarely makes a
+    refined frame stale and its brightness matches the preview.
+  - **Headset defaults.** Splats go into half floats (about half the fill
+    cost of float32; the f16 splat rule keeps its 1/512 floor) and start at
+    200 k rows of the sample. `?splattarget=f32|f16|8bit` overrides the
+    target.
+  - **Still views.** The splats under a fully shown refined frame of a still
+    view are not drawn.
+  - **Eye buffer.** It comes back up after 9 s of clean frames. A step taken
+    back soon doubles the wait, and showing something else resets it.
+  - **Logs.** The display rate and the quality policy are logged once the
+    session's rate has settled (`xr-rate`; it said 90 Hz for 72).
+  - **Measured on the Quest 3** (3.93 M rows, quest budget of a 1 M sample,
+    f16, eye buffer 1.0×):
+    - Moving (refinement off): splats 71.6 fps with 0.14 % missed, ray-traced
+      71.7 fps with 0.09 % missed, both at 185 k rows. Before: 18.5 and
+      17.8 fps at 1 M rows.
+    - Still, with the refined frame shown: 72.0 fps, 0 % missed.
+    - Points: 72.0 fps, 0 % missed.
+    - An eye buffer set to 0.85× came back to 1.0× after 19 s.
+
 - **VR: the splats' look (#263, part of #261).** The page adds its splats
   into a float target (float32 where it can be blended, else half floats)
   and tone-maps it onto the view: luminance Y → 1 − exp(−Y), hue kept, never

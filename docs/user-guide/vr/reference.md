@@ -43,13 +43,19 @@ to run on a Quest 3.
   still missed over 3 s does the page make the **eye buffer** smaller, as a
   last resort: one step at a time through the scale factors 1.25, 1 and 0.85
   (absolute values of *Resolution*, starting below the one chosen; **never
-  below 0.85**), and it does not raise it again in that VR session (each
-  change costs a hitch); the next *Enter VR* starts from the chosen
-  resolution. The menu and the
+  below 0.85**). It raises it again one step at a time, never above the
+  chosen scale, after 9 s of clean frames (at most 3 % missed in each 3 s
+  window), issue #295: lowered by heavy splats, it used to stay lowered for a
+  cube that holds the rate at 1×. Each change costs a hitch, so a step up
+  taken back within two windows doubles the clean time the next one needs (up
+  to 2 min), and showing something else (another cube, points, a style)
+  resets that wait. The next *Enter VR* starts from the chosen resolution. The menu and the
   [numbers on the wrist](controls.md#the-numbers-on-the-wrist) say so, and the
   diagnostics' *quality* line and the measurement record's *xr-start* event
   name the policy (*72 Hz; samples/voxel first (1 down to 0.25), then the eye
-  buffer as a last resort (1× down to 0.85× at most)*). Until #226 the eye
+  buffer as a last resort (1× down to 0.85× at most)*); the page's log writes
+  *xr-rate* and *quality-policy* once the session's display rate has settled
+  (issue #295: logged at the start it said 90 Hz for a session running at 72). Until #226 the eye
   buffer went down to 0.7× from 0.5 samples per voxel on: on the first Quest 3
   session that made the text and the cube blurry for about 89 fps at 90 Hz.
 - **Memory budget**: before the reduced cube is read, the page checks that it
