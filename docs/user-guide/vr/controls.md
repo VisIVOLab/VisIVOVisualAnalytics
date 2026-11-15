@@ -194,7 +194,7 @@ the velocity range's ends. In a desktop browser the mouse drags a dot or the
 inside; with Shift held a drag elsewhere draws a new crop (any other drag
 turns the view). A drag that changes the crop is one undo step; a pull that
 changes nothing leaves none. Changing the tool or the mode in the middle of a
-drag ends it where it is. A flat point table (all its points in one plane)
+drag ends it where it is; B (undo) in the middle of a drag undoes that drag. A flat point table (all its points in one plane)
 has no dots on its flat axis, which is never cropped.
 
 **What the crop changes.** What is drawn: the cube (the headset's own
@@ -206,7 +206,9 @@ drawn inside the crop; the moment of the whole field shows, and counts, only
 the cropped pixels (*Moment 0 of the cropped field*, its x and y range under
 the title; the product saved for the desktop is the whole-field map of the
 same request). It is cut with the crop as it was when Moment was pressed, and
-cut again at once when the crop changes afterwards, with no new request. Box
+cut again when the crop changes afterwards and stays still for a quarter of a
+second, with no new request (only while its window is shown; the colour
+range of that re-cut comes from a sample of 65 536 pixels). Box
 region and the PV slice take the velocity range. A lasso
 grows from its seed over the whole cube as on the desktop (its object is not
 cut at the crop), and a spectrum is the full band at its pixel. The crop of a
