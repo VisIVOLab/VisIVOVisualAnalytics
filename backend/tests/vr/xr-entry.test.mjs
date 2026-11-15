@@ -73,6 +73,9 @@ test('Enter VR refused while the browser holds an offer (#291): said, with what 
   assert.equal(c.kind, 'offer-conflict');
   assert.match(c.text, /press the browser's Enter VR/);
   assert.match(c.text, /reload the page/);
+  // The heuristic cannot tell the offer from another open session: both said.
+  assert.match(c.text, /or another VR session is open/);
+  assert.match(c.text, /leave the other VR session/);
   // The browser's Enter VR answered while the page's request was under way.
   const raced = XE.enterFailure(quest, { offerPending: false, offerRaced: true });
   assert.equal(raced.kind, 'offer-raced');
@@ -86,6 +89,7 @@ test('Enter VR refused while the browser holds an offer (#291): said, with what 
     [{ name: 'NotSupportedError', message: 'immersive-vr' }, {}, 'unsupported', /open the page/],
     [new Error('this page is paused: the page in use is in another window'), {}, 'paused', /Use this window/],
     [new Error('a VR session is already running'), {}, 'busy', /leave VR first/],
+    [new Error('a session the browser started for this page has not closed yet'), {}, 'stuck', /reload the page/],
     [new Error('the benchmark\'s cubes are not prepared: press Prepare the headset benchmark first'), {}, 'failed', /press Prepare/],
     [{ name: 'OperationError', message: 'XR runtime gone' }, {}, 'failed', /reload the page and press Enter VR/],
   ];
@@ -150,4 +154,16 @@ test('the page wires them: ?offer only, the offered session goes through enterXR
   // Every Enter VR failure says what to do (#291).
   for (const id of ['enter-vr', 'enter-ar']) assert.match(main, new RegExp(`\\$\\('${id}'\\)\\.addEventListener\\('click', \\(\\) => enterXR\\([^)]*\\)\\.catch\\(enterFailed\\)\\)`));
   assert.doesNotMatch(main, /setStatus\(`XR: /);
+  // Nothing waiting for a session's end runs while the page's own request is
+  // under way; a failed request runs it then (#305).
+  const after = main.slice(main.indexOf('function afterXREnd('), main.indexOf('const afterXR = {'));
+  assert.match(after, /if \(R\.xrActive \|\| entering\) \{ afterXR\.deferred\+\+; return; \}/);
+  assert.ok(after.indexOf('if (wasBench) afterXR.benchEnded = true') < after.indexOf('if (R.xrActive || entering)'), 'a benchmark end is noted even when deferred');
+  const request = main.slice(main.indexOf('session = await navigator.xr.requestSession('), main.indexOf('finally { entering = false; }'));
+  assert.match(request, /catch \(err\) \{[\s\S]*setTimeout\(\(\) => afterXREnd\(false\), 0\);[\s\S]*throw err;/);
+  // Auto-enter: quiet for a refusal for want of a press, said otherwise.
+  const auto = main.slice(main.indexOf('function maybeAutoEnter()'), main.indexOf('function maybeOffer()'));
+  assert.match(auto, /if \(refused\)[^\n]*press Enter VR`;\n\s*else enterFailed\(err\);/);
+  // A refused session that never ends: said (reload), never released by a timer.
+  assert.match(main, /if \(R\.xrActive && !R\.xrSession && !entering\) refuse\('a session the browser started for this page has not closed yet'\)/);
 });

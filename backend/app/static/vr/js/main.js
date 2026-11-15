@@ -1227,11 +1227,20 @@ function stageCube(info, cube, open, path) {
 
 /** After a VR session: what had to wait for its end (issue #229). */
 function afterXREnd(wasBench = false) {
-  if (R.xrActive) return;             // a new session started meanwhile
+  // A benchmark session ended: its cubes are released at the first run that
+  // goes through, even when a refused session still held the flag then (#305).
+  if (wasBench) afterXR.benchEnded = true;
+  // A session still holds the flag (a new one, or a refused one not ended),
+  // or the page's own is being requested (#305: the browser may be entering
+  // immersive mode; enterXR runs this again if the request fails).
+  if (R.xrActive || entering) { afterXR.deferred++; return; }
+  afterXR.ran++;
   if (restoreAfterXR) { restoreAfterXR = false; rebuildGraphics(); }
-  if (wasBench) releaseBench();
+  if (afterXR.benchEnded) { afterXR.benchEnded = false; releaseBench(); }
   installStaged();
 }
+/** afterXREnd's state: a benchmark's end not yet acted on; runs (debug: __vrTex3D). */
+const afterXR = { benchEnded: false, ran: 0, deferred: 0 };
 
 /** The cube that waited for the end of a VR session, put on show now:
  *  outside VR, with a working context, and unless a newer load began since. */
@@ -3553,7 +3562,10 @@ function maybeAutoEnter() {
     const refused = XE.isActivationRefusal(err);
     entry.outcome = refused ? 'refused without a press: Enter VR is the way' : `failed: ${String(err.message || err).slice(0, 80)}`;
     shell.log('info', 'auto-enter-refused', `${err.name || 'Error'}: ${String(err.message || err).slice(0, 120)}`);
-    $('xr-status').textContent = `${$('xr-status').textContent.replace(/ · press Enter VR$/, '')} · press Enter VR`;
+    // A refusal for want of a press is the expected fallback: quiet. Any
+    // other failure says what to do, as a press of Enter VR would (#291).
+    if (refused) $('xr-status').textContent = `${$('xr-status').textContent.split(' · ')[0]} · press Enter VR`;
+    else enterFailed(err);
   });
 }
 function maybeOffer() {
@@ -3800,6 +3812,10 @@ async function enterXR(mode, bench, given = null) {
   // Composition layers for the text (issue #226), unless ?nolayers.
   const wantLayers = !query.has('nolayers');
   if (bench && !benchReady()) refuse('the benchmark\'s cubes are not prepared: press Prepare the headset benchmark first');
+  // The flag up with no session of the page's own: a session the browser
+  // started and the page refused has not ended (#305). It is never released
+  // by a timeout; a reload is the way out if it stays.
+  if (R.xrActive && !R.xrSession && !entering) refuse('a session the browser started for this page has not closed yet');
   if (R.xrActive || entering) refuse('a VR session is already running');
   // The capacity the cubes are written into in VR (issue #235): set now, on
   // the 2-D page, for the Max side and Texture chosen (no 3-D allocation in
@@ -3808,7 +3824,14 @@ async function enterXR(mode, bench, given = null) {
   let session = given;
   if (!session) {
     entering = true;
-    try { session = await navigator.xr.requestSession(mode, xrSessionInit(wantLayers)); } finally { entering = false; }
+    try {
+      session = await navigator.xr.requestSession(mode, xrSessionInit(wantLayers));
+    } catch (err) {
+      // What waited for the end of a session while this request was under
+      // way (afterXREnd deferred it, #305) is done now, outside VR.
+      setTimeout(() => afterXREnd(false), 0);
+      throw err;
+    } finally { entering = false; }
   }
   // From here until the session ends no 3-D texture is allocated (issue
   // #229): loads wait for the end (installCube), the benchmark's cubes were
@@ -4751,6 +4774,7 @@ if (query.has('debug')) {
   window.__vrTex3D = () => ({ calls: { ...R.tex3dGuard.calls }, refused: R.tex3dGuard.refused, xrActive: R.xrActive,
     // Issue #305: who holds the flag (the page's own session, and refused ones not ended yet).
     owner: R.xrSession ? (R.xrSession === (xr && xr.session) ? 'shown' : 'starting') : null, refusedHeld: xrFlag.refused.size,
+    afterXR: { ...afterXR }, entering,
     staged: stagedCube ? { dims: stagedCube.cube.dims, factors: stagedCube.cube.factors } : null,
     capacity: R.cap ? { dims: R.cap.dims.slice(), encoding: R.cap.encoding, bytes: R.cap.totalBytes, onShow: !!(R.slot && R.slot.cap === R.cap), bank: R.slot ? R.slot.bank ?? null : null } : null,
     bench: benchPrep ? { busy: benchPrep.busy, ready: benchReady(), sizes: benchPrep.cubes.map((e) => e.n), bytes: benchPrep.bytes } : null });

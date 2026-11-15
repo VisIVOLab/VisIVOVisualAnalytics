@@ -96,13 +96,16 @@ export function isOfferConflict(err, { offerPending, inXR }) {
 
 /** What the page says when Enter VR fails: what happened and what to do
  *  instead, never a bare error (issue #291). `kind`: offer-conflict,
- *  offer-raced, activation, permission, unsupported, busy, paused, failed. */
+ *  offer-raced, activation, permission, unsupported, busy, stuck, paused,
+ *  failed. */
 export function enterFailure(err, { offerPending = false, inXR = false, offerRaced = false } = {}) {
   const name = String((err && err.name) || '');
   const msg = String((err && err.message) || err || 'unknown error').slice(0, 160);
   if (isOfferConflict(err, { offerPending, inXR })) {
-    return { kind: 'offer-conflict', text: 'The browser keeps its own Enter VR for this page and refused the page\'s button: '
-      + 'press the browser\'s Enter VR (the headset button in its address bar), or reload the page without ?offer and press Enter VR.' };
+    // Any InvalidStateError while an offer is pending is taken for the
+    // offer's; another VR session open in the browser looks the same.
+    return { kind: 'offer-conflict', text: 'The browser keeps its own Enter VR for this page, or another VR session is open, and it refused the page\'s button: '
+      + 'press the browser\'s Enter VR (the headset button in its address bar), or leave the other VR session, or reload the page without ?offer and press Enter VR.' };
   }
   // The browser's Enter VR answered while the page's request was under way:
   // the page closed that session (never two), and the browser refused its own.
@@ -112,6 +115,11 @@ export function enterFailure(err, { offerPending = false, inXR = false, offerRac
   // The page's own refusals (enterXR) already say what to do.
   if (!name || name === 'Error') {
     if (/this page is paused/.test(msg)) return { kind: 'paused', text: `${msg}: press Use this window, then Enter VR.` };
+    // A refused session that has not ended holds the flag (#305): never
+    // released by a timeout, so the way out is a reload.
+    if (/has not closed/.test(msg)) {
+      return { kind: 'stuck', text: 'A VR session the browser started for this page has not closed yet: wait a moment and press Enter VR again; if this message stays, reload the page.' };
+    }
     if (/already running/.test(msg)) return { kind: 'busy', text: 'A VR session of this page is already running or starting: wait for it, or leave VR first.' };
   }
   if (name === 'InvalidStateError') {

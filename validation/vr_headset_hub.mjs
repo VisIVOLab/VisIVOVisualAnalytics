@@ -219,6 +219,15 @@ export async function runEntryChecks({ c, check, waitFor, base, token, cube }) {
     check('entry: refused without a press, it falls back to the Enter VR button (no error, no notice)',
       tried.value && !r.xr && !r.btn && r.refused === 1 && /refused/.test(r.e.outcome) && r.notice !== 'error' && !r.errors, JSON.stringify({ ...r, e: r.e.line }));
   } else check('entry: cube loaded (launch=app&xrgesture)', false);
+  // Any other refusal of the auto-entry says what to do, as a press would (#291 review).
+  if (await load('launch=app&xrfail=NotSupportedError')) {
+    const said = await waitFor(c, '/last Enter VR failure/.test(window.__vrEntry().line)', 10000);
+    const r = await c.evaluate(`({ xrStatus: document.getElementById('xr-status').textContent, status: document.getElementById('load-status').textContent,
+      line: window.__vrEntry().line, xr: !!window.__vrXR() })`);
+    check('entry: an auto-entry refused for another reason than a press says what to do (not the quiet fallback)',
+      said.value && !r.xr && /cannot start a VR session/.test(r.xrStatus) && /cannot start a VR session/.test(r.status) && /unsupported/.test(r.line),
+      JSON.stringify(r));
+  } else check('entry: cube loaded (launch=app&xrfail)', false);
   // offerSession where it exists and the address asks for it (?offer, #291): the browser's own Enter VR.
   if (await load('xroffer&offer&case=accept')) {
     const offered = await waitFor(c, 'window.__xrfake.offers >= 1 && window.__vrEntry().offered', 10000);
@@ -230,7 +239,13 @@ export async function runEntryChecks({ c, check, waitFor, base, token, cube }) {
     check('entry: with offerSession, the session is offered, entered through the browser\'s button, and offered again after',
       offered.value && inVR.value && again.value, (await c.evaluate('window.__vrEntry().line')));
   } else check('entry: cube loaded (xroffer)', false);
-  await runOfferPendingChecks({ c, check, waitFor, load });
+  // The page alone, with no cube: entering VR needs none, and every cube
+  // load opens a backend session (32 live ones per token at most).
+  const openPage = async (query) => {
+    await c.send('Page.navigate', { url: `${base}/vr/?debug&refine=0&xrfake&${query}#token=${encodeURIComponent(token)}` });
+    return (await waitFor(c, `!!window.__vrShell && window.__vrShell.life.state === 'ok' && !document.getElementById('enter-vr').disabled`, 30000)).value;
+  };
+  await runOfferPendingChecks({ c, check, waitFor, load: openPage });
 
   // Without it (most browsers): never called, never assumed.
   if (await load('')) {
@@ -242,7 +257,7 @@ export async function runEntryChecks({ c, check, waitFor, base, token, cube }) {
 
 /** Issue #291: the page's Enter VR with the browser's offer pending, and
  *  #305: the late end of a refused offered session. `load(query)` opens the
- *  page with the WebXR stand-in and the cube loaded (runEntryChecks). */
+ *  page with the WebXR stand-in (runEntryChecks: no cube, no backend session). */
 export async function runOfferPendingChecks({ c, check, waitFor, load }) {
   const press = () => c.evaluate("document.getElementById('enter-vr').click()");
   const leave = async () => {
@@ -320,6 +335,59 @@ export async function runOfferPendingChecks({ c, check, waitFor, load }) {
     check('#305: leaving VR lets go of the flag (late end)', await leave());
   } else check('#305: cube loaded (late end)', false);
 
+  // #305 review: the refused session's end comes while the page's own
+  // request is still under way. Nothing that waited for a session's end runs
+  // then (the browser may be entering immersive mode); it runs once that
+  // request fails, or after the page's session.
+  if (await load('xroffer&offer&case=end-while-entering')) {
+    await waitFor(c, 'window.__vrEntry().offered && !!window.__xrfake.offerPending', 10000);
+    const r = await c.evaluate(`(async () => {
+      const S = window.__xrfake, wait = (ms) => new Promise((res) => setTimeout(res, ms));
+      const pick = () => { const t = window.__vrTex3D(); return { xrActive: t.xrActive, entering: t.entering, ran: t.afterXR.ran, deferred: t.afterXR.deferred,
+        calls: t.calls.texImage3D + t.calls.texStorage3D, xr: !!window.__vrXR() }; };
+      const before = pick();
+      S.delayMs = 1500;
+      document.getElementById('enter-vr').click();
+      await wait(100);
+      S.endDelayMs = 300;
+      S.acceptOffer();
+      S.endDelayMs = 0;
+      await wait(600);
+      const whileEntering = pick();
+      await wait(1400);
+      const inVR = pick();
+      S.delayMs = 0;
+      return { before, whileEntering, inVR };
+    })()`);
+    const { before: b0, whileEntering: w, inVR: v } = r;
+    check('#305: a refused session ending while the page\'s request is under way runs nothing that waited (no 3-D call, deferred)',
+      w.entering && !w.xrActive && w.ran === b0.ran && w.deferred > b0.deferred && w.calls === b0.calls, JSON.stringify(r));
+    check('#305: then the page\'s session starts and owns the flag', v.xr && v.xrActive && v.ran === b0.ran, JSON.stringify(v));
+    const ran0 = v.ran;
+    await leave();
+    const ran1 = await c.evaluate('window.__vrTex3D().afterXR.ran');
+    check('#305: what waited runs once the page\'s session ends', ran1 > ran0, `${ran0} → ${ran1}`);
+  } else check('#305: cube loaded (end while entering)', false);
+
+  // A refused session whose end never comes: the flag stays up (never
+  // released by a timer) and Enter VR says to reload instead of "busy".
+  if (await load('xroffer&offer&case=never-ends')) {
+    await waitFor(c, 'window.__vrEntry().offered && !!window.__xrfake.offerPending', 10000);
+    await press();
+    await waitFor(c, '!!window.__vrXR() && window.__xrfake.frames > 10', 10000);
+    await c.evaluate('(() => { const S = window.__xrfake; S.endNever = true; S.acceptOffer(); S.endNever = false; })()');
+    await sleep(300);
+    await c.evaluate('window.__vrShell.act("exit-vr")');
+    await waitFor(c, '!window.__vrXR()', 10000);
+    await sleep(500);
+    await press();
+    await sleep(500);
+    const r = await c.evaluate(`({ t: (({ xrActive, owner, refusedHeld }) => ({ xrActive, owner, refusedHeld }))(window.__vrTex3D()), xr: !!window.__vrXR(),
+      status: document.getElementById('load-status').textContent, line: window.__vrEntry().line })`);
+    check('#305: a refused session that never ends keeps the flag up, and Enter VR says to reload the page',
+      r.t.xrActive && r.t.owner === null && r.t.refusedHeld === 1 && !r.xr && /reload the page/.test(r.status) && /stuck/.test(r.line), JSON.stringify(r));
+  } else check('#305: cube loaded (never ends)', false);
+
   // Both Enter VR buttons at once, with a browser that then refuses the
   // page's request: the browser's session is closed, the page says to press
   // again, and the next press enters (one session at a time throughout).
@@ -327,6 +395,7 @@ export async function runOfferPendingChecks({ c, check, waitFor, load }) {
     await waitFor(c, 'window.__vrEntry().offered && !!window.__xrfake.offerPending', 10000);
     const r = await c.evaluate(`(async () => {
       const S = window.__xrfake, wait = (ms) => new Promise((res) => setTimeout(res, ms));
+      const ran0 = window.__vrTex3D().afterXR.ran;
       S.delayMs = 500; S.raceRefuse = true;
       document.getElementById('enter-vr').click();
       await wait(120);
@@ -334,10 +403,10 @@ export async function runOfferPendingChecks({ c, check, waitFor, load }) {
       await wait(900);
       S.delayMs = 0; S.raceRefuse = false;
       return { xr: !!window.__vrXR(), live: S.live(), status: document.getElementById('load-status').textContent,
-        flag: window.__vrTex3D().xrActive, held: window.__vrTex3D().refusedHeld };
+        flag: window.__vrTex3D().xrActive, held: window.__vrTex3D().refusedHeld, ranAfterFailure: window.__vrTex3D().afterXR.ran - ran0 };
     })()`);
     check('#291: both Enter VR buttons at once: the browser\'s session closed, the page says to press again, the flag let go',
-      !r.xr && r.live === 0 && /press Enter VR again/.test(r.status) && !r.flag && r.held === 0, JSON.stringify(r));
+      !r.xr && r.live === 0 && /press Enter VR again/.test(r.status) && !r.flag && r.held === 0 && r.ranAfterFailure >= 1, JSON.stringify(r));
     await press();
     const inVR = await waitFor(c, '!!window.__vrXR() && window.__xrfake.frames > 10', 10000);
     const after = await c.evaluate(`({ xrStatus: document.getElementById('xr-status').textContent, live: window.__xrfake.live() })`);

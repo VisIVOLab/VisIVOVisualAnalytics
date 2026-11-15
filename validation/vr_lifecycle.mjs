@@ -283,7 +283,15 @@ function cdp(url) {
     ws = sock;
   };
   connect();
+  // What a DevTools session sets up for itself (the page scripts injected on
+  // every navigation: the WebXR stand-in, the probes; emulation), replayed on
+  // a new connection: without it a page loaded after a reconnection had no
+  // window.__xrfake (seen on --regressions under load).
+  const STICKY = new Set(['Page.enable', 'Page.addScriptToEvaluateOnNewDocument', 'Emulation.setFocusEmulationEnabled', 'Emulation.setUserAgentOverride']);
+  const sticky = [];
+  let replaying = false;
   const send = async (method, params = {}) => {
+    if (STICKY.has(method) && !replaying) sticky.push([method, params]);
     await ready;
     const i = ++id;
     ws.send(JSON.stringify({ id: i, method, params }));
@@ -302,6 +310,10 @@ function cdp(url) {
     connect();
     await timed(ready, 5000, 'reconnect');
     await send('Runtime.enable');
+    replaying = true;
+    try {
+      for (const [method, params] of sticky) await timed(send(method, params), 5000, `replay ${method}`).catch(() => {});
+    } finally { replaying = false; }
     results.cdpReconnects = (results.cdpReconnects || 0) + 1;
   };
   // Paired (#213): the page runs in the loader's iframe; expressions go to it.

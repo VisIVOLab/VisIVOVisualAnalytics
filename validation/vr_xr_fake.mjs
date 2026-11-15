@@ -204,6 +204,8 @@ export const XR_FAKE = `(() => {
         S.ended++;
         live.delete(this);
         const fire = () => (listeners.end || []).forEach((f) => f({ session: this }));
+        // S.endNever: a session whose end never comes nor settles (#305: the flag stays up, the page says reload).
+        if (this.endNever) return new Promise(() => {});
         if (this.endDelayMs) await new Promise((r) => setTimeout(() => { fire(); r(); }, this.endDelayMs));
         else fire();
       },
@@ -236,6 +238,8 @@ export const XR_FAKE = `(() => {
   // as reported on #291 ("already an active, immersive XRSession").
   const gestureOnly = /[?&]xrgesture/.test(location.search);
   const offerConflict = /[?&]xroffer=conflict/.test(location.search);
+  // ?xrfail=<DOMException name>: every request refused with it (auto-enter's failures, #291).
+  const failWith = (location.search.match(/[?&]xrfail=([A-Za-z]+)/) || [])[1] || '';
   S.offers = 0; S.offerPending = null; S.requests = 0; S.refused = 0; S.sessions = 0; S.endDelayMs = 0;
   // The sessions made and not ended yet (S.live() counts them).
   const live = new Set();
@@ -244,6 +248,7 @@ export const XR_FAKE = `(() => {
     const enabled = ['local-floor', ...((opts && opts.optionalFeatures) || []).filter((f) => f !== 'layers' || !noLayers)];
     const session = makeSession(enabled);
     session.endDelayMs = S.endDelayMs;
+    session.endNever = !!S.endNever;
     live.add(session);
     return session;
   };
@@ -255,6 +260,7 @@ export const XR_FAKE = `(() => {
         S.refused++;
         throw new DOMException('requestSession needs a user gesture', 'NotAllowedError');
       }
+      if (failWith) { S.refused++; throw new DOMException('the XR runtime refused the session (xrfail)', failWith); }
       if (offerConflict && S.offerPending) {
         S.refused++;
         throw new DOMException("Failed to execute 'requestSession' on 'XRSystem': There is already an active, immersive XRSession.", 'InvalidStateError');

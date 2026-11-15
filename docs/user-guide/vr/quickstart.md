@@ -85,8 +85,11 @@ Once a headset page is open, it is the one the desktop uses
   WebXR status name the reason and the way out: another VR session open in
   the browser (leave it first), VR not allowed for the site (allow it in the
   site's settings), the browser's own offer holding the session (press the
-  browser's *Enter VR*, or reload the page without `?offer`), or a page that
-  is paused (*Use this window*).
+  browser's *Enter VR*, or reload the page without `?offer`), a session the
+  browser started that has not closed (reload the page if it stays), or a
+  page that is paused (*Use this window*). An entry by itself after a launch
+  from the app's icon says the same, except a refusal for want of a press,
+  which only adds *press Enter VR*.
 - **What you do in the headset reaches the desktop.** The colour map and
   threshold you choose, the clipping box, and every product (a spectrum, a
   moment map, a PV slice, an isolated or removed cube, a catalogue or a
