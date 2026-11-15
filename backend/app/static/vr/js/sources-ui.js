@@ -34,6 +34,7 @@ export function createSources(ctx) {
     nextUser: 1,
     cls: null,
     overlay: null,              // the overlay the rows were made of
+    cubeId: '',                 // the cube they were made over (path and dataset)
     rows: [], sorted: [], rowsKey: '',
     status: ['', ''],
     sent: { version: -1, file: '' },
@@ -73,14 +74,17 @@ export function createSources(ctx) {
   function refresh() {
     const ov = ctx.overlay();
     const info = ctx.state.info;
-    if (ov !== S.overlay) {
-      // Another catalogue (or none): its own work, read back from this browser.
+    // The work belongs to a cube and a catalogue: another of either (or none) has its own.
+    const cube = `${ctx.state.openPath || ''}|${ctx.state.open ? ctx.state.open.dataset_id : ''}`;
+    if (ov !== S.overlay || cube !== S.cubeId) {
       S.overlay = ov;
+      S.cubeId = cube;
       const s = sets();
       S.cls = new SL.Classification(s.flags, s.notes);
       S.user = []; S.nextUser = 1; S.current = null; S.page = 0; S.sent = { version: -1, file: '' };
       S.status = ['', ''];
-      const n = ov ? restore() : 0;
+      // Read back with or without a catalogue (found sources alone are work too).
+      const n = ctx.state.openPath ? restore() : 0;
       if (n) S.status = [`${n} classifications of this catalogue read back from this browser`, '#b9c2d0'];
       S.version++;
     }
@@ -105,13 +109,14 @@ export function createSources(ctx) {
     const title = ov ? `${ov.name || ov.source}: ${(ov.sources || []).length} sources` : 'Sources you found';
     const flagged = c.flagged ? `${c.flagged} flagged (${S.cls.flagSet.map((f) => `${c.byFlag[f] || 0} ${f}`).join(', ')})` : 'none flagged yet';
     const found = S.user.length ? `, ${S.user.length} found by eye` : '';
-    const sentNote = S.sent.file ? (S.sent.version === S.cls.version + S.user.length * 1e6 ? ', sent' : ', changed since sent') : '';
+    const sentNote = S.sent.file === 'pending' ? ', sending' : S.sent.file
+      ? (S.sent.version === S.cls.version + S.user.length * 1e6 ? ', sent' : ', changed since sent') : '';
     return {
       title, info: `${flagged}${found}${sentNote}`,
       page: S.page, pages: SL.pageCount(S.sorted.length, per), total: S.sorted.length,
       rows: S.sorted.slice(S.page * per, S.page * per + per), current: S.current, currentRow: cur,
       sort: S.sort, flagSet: S.cls.flagSet, noteSet: S.cls.noteSet, mark: cur ? S.cls.get(cur.key) : null,
-      frame, canSend: !S.busy && (c.flagged > 0 || S.user.length > 0 || [...S.cls.marks.values()].some((m) => m.note)),
+      frame, canSend: !S.busy && S.sent.file !== 'pending' && (c.flagged > 0 || S.user.length > 0 || [...S.cls.marks.values()].some((m) => m.note)),
       marks: (k) => S.cls.get(k), status: S.status,
       empty: 'No catalogue over the cube: place one on the page, or add sources you find (Select tab).',
     };
@@ -201,17 +206,35 @@ export function createSources(ctx) {
     const id = ctx.state.open && ctx.state.open.dataset_id;
     if (!id || !ctx.backend()) throw new Error('Sending needs the backend: open the cube from it.');
     const ov = S.overlay;
+    if (S.sent.file === 'pending') throw new Error('A send is under way.');
     const request = SL.votableRequest({ datasetId: id, catalogueId: ov ? ov.catalogueId || '' : '',
       sourceFrame: ov ? (ov.source_frame || 'icrs') : 'icrs', rows: S.rows, cls: S.cls });
     const classification = SL.hubClassification({ rows: S.rows, cls: S.cls,
       catalogue: { name: ov ? (ov.cataloguePath || '').split('/').pop() || ov.name || '' : '', path: ov ? ov.cataloguePath || '' : '',
         dataset_id: ov ? ov.catalogueId || '' : '' } });
     const label = SL.classificationSummary(classification);
-    const queued = ctx.report({ product: 'classification', dataset_id: id, request, classification, label });
-    if (!queued) throw new Error('No desktop session hub for this page: nothing was sent.');
-    S.sent = { version: S.cls.version + S.user.length * 1e6, file: 'pending' };
-    S.status = ['Sent to the desktop: the VOTable is written in the Workspace Exports.', '#b9c2d0'];
+    const done = ctx.report({ product: 'classification', dataset_id: id, request, classification, label });
+    if (!done) throw new Error('No desktop session hub for this page: nothing was sent.');
+    const version = S.cls.version + S.user.length * 1e6, overlay = S.overlay, cubeAt = S.cubeId;
+    const same = () => S.overlay === overlay && S.cubeId === cubeAt;     // the answer is for the work on show
+    S.sent = { version: -1, file: 'pending' };
+    S.status = ['Sending: writing the VOTable…', '#ffd27a'];
     changed();
+    // Marked sent only once saved and posted; a failure says why.
+    Promise.resolve(done).then((r) => {
+      if (!same()) return;
+      S.sent = { version, file: (r && r.file) || 'sent' };
+      S.status = [`Sent to the desktop: ${(r && r.file) || 'the VOTable'}`, '#b9c2d0'];
+      texKey = '';
+      changed();
+    }, (e) => {
+      if (!same()) return;
+      S.sent = { version: -1, file: '' };
+      S.status = [`Not sent: ${e && e.stale ? 'the page stood down or sent again' : (e && e.message) || e}`, '#ff8a8a'];
+      texKey = '';
+      changed();
+    });
+    return done;
   }
 
   /** A press on the window's content (its widget id). Returns true when handled. */
@@ -262,9 +285,6 @@ export function createSources(ctx) {
     pointer, layout, texture, view, press, choose, step, addFound, removeFound, send, decor, refresh,
     /** The window opened (true) or closed. */
     setShown(on) { S.shown = !!on; },
-    /** The product was saved and posted (headset.js): its file named in the status. */
-    sentFile(file) { S.sent.file = file || S.sent.file; S.status = [`Sent to the desktop: ${file}`, '#b9c2d0']; texKey = ''; },
-    sendFailed(msg) { S.sent = { version: -1, file: '' }; S.status = [`Not sent: ${msg}`, '#ff8a8a']; texKey = ''; },
     setStatus(text, colour = '#b9c2d0') { S.status = [text, colour]; texKey = ''; },
     /** GPU objects gone (a lost context): made again on the next texture(). */
     restore() { tex = null; texKey = ''; },

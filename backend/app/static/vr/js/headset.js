@@ -520,6 +520,7 @@ export function createHub(ctx) {
     const r = await post('/v1/vr/activity', { client: st.client, kind, cube_path: cubePath || null,
       summary: String(summary || '').slice(0, 300), payload: fit.payload });
     if (r) st.sent[kind]++;
+    return r;
   }
 
   /** One activity event, queued after the sends before it. */
@@ -583,18 +584,29 @@ export function createHub(ctx) {
    * path to settle.
    */
   function product(detail, recipe, where = {}, key = '') {
-    if (!detail || !PRODUCT_KINDS.includes(detail.product)) return;
+    if (!detail || !PRODUCT_KINDS.includes(detail.product)) return null;
     const k = key || `${detail.product}-${Date.now()}-${Math.random()}`;
     const old = products.get(k);
-    if (old) cancel(old.timer);
+    if (old) { cancel(old.timer); products.delete(k); old.settle(staleRun()); }
     // Fenced to this run of the hub and to the session it was made in: a
     // product of a page that stood down, or of another session, is not sent.
     const a = authNow();
-    if (!st.running || !a) return;
-    const entry = { detail, recipe, where, gen: runGen, session: a.session };
-    entry.timer = later(() => { products.delete(k); enqueue('product', () => sendProduct(entry)); },
-      detail.product === 'pv' ? PV_SETTLE_MS : 0);
+    if (!st.running || !a) return null;
+    // The caller may wait for it (the source list's Send, #279): resolves with
+    // {file} once posted, rejects with why it was not (a newer one with the
+    // same key, the hub stopped: an Error with `stale`).
+    let resolve, reject;
+    const done = new Promise((res, rej) => { resolve = res; reject = rej; });
+    done.catch(() => {});      // a caller that does not wait leaves no unhandled rejection
+    const entry = { detail, recipe, where, gen: runGen, session: a.session,
+      settle: (err, value) => (err ? reject(err) : resolve(value)) };
+    entry.timer = later(() => {
+      products.delete(k);
+      enqueue('product', () => sendProduct(entry).then((v) => entry.settle(v ? null : staleRun(), v),
+        (e) => { entry.settle(e); throw e; }));
+    }, detail.product === 'pv' ? PV_SETTLE_MS : 0);
     products.set(k, entry);
+    return done;
   }
 
   async function sendProduct({ detail, recipe, where, gen, session }) {
@@ -602,7 +614,7 @@ export function createHub(ctx) {
       const a = authNow();
       return gen === runGen && st.running && a && a.session === session ? a : null;
     };
-    if (!current()) return;
+    if (!current()) return null;
     let file = detail.file || '';
     const plan = file ? null : savePlan(detail, where.stem || 'cube');
     if (plan) {
@@ -610,12 +622,12 @@ export function createHub(ctx) {
       let r = null;
       for (let i = 0; ; i++) {
         const a = current();
-        if (!a) return;                   // stopped, or another session, meanwhile
+        if (!a) return null;              // stopped, or another session, meanwhile
         r = await call('POST', plan.route, plan.body, a, SAVE_TIMEOUT_MS);
         if (r.status !== 429 || i >= SAVE_RETRY_MS.length) break;
         await new Promise((res) => later(res, SAVE_RETRY_MS[i]));     // the heavy slots are busy: later
       }
-      if (!current()) return;
+      if (!current()) return null;
       if (r.status !== 200 || !r.body || !r.body.valid) {
         st.saveFailures++;
         const why = r.body && (r.body.error || r.body.detail) ? JSON.stringify(r.body.error || r.body.detail) : r.status;
@@ -626,7 +638,8 @@ export function createHub(ctx) {
     }
     const payload = productPayload(detail, file, recipe);
     // Posted here, inside this send (activity() would queue it behind itself).
-    await postActivity('product', where.cubePath || '', productSummary(detail, where.cubeName, file), payload);
+    const posted = await postActivity('product', where.cubePath || '', productSummary(detail, where.cubeName, file), payload);
+    return posted ? { file } : null;
   }
 
   // ── Commands ────────────────────────────────────────────────────────────
@@ -706,7 +719,7 @@ export function createHub(ctx) {
     if (wake) { wake(); wake = null; }
     if (stateTimer !== null) { cancel(stateTimer); stateTimer = null; }
     // What was waiting to be sent belongs to the run that ends.
-    for (const e of products.values()) cancel(e.timer);
+    for (const e of products.values()) { cancel(e.timer); e.settle(staleRun()); }
     products.clear();
     for (const k of ['look', 'clip']) if (pending[k]) { cancel(pending[k].timer); pending[k] = null; }
     st.helloSession = '';

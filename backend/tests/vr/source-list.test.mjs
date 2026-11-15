@@ -19,7 +19,7 @@ import { parseProduct, openIn, parseClassification } from './desktop_hub_parser.
 const close = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) <= eps, `${a} != ${b}`);
 const info = { full_shape: [64, 64, 40], axes: { z: { full_velocity_kms: Array.from({ length: 40 }, (_, i) => 1000 + 5 * i) } } };
 const ov = {
-  valid: true, name: 'cat.csv', source: 'catalogue', frame: 'icrs', source_frame: 'icrs',
+  valid: true, name: 'cat.csv', source: 'catalogue', catalogueId: 'cat1', frame: 'icrs', source_frame: 'icrs',
   sources: [
     { x: 10, y: 12, z: 5.5, label: 'SoFiA J2', lon: 150.01, lat: 2.01, row: 1 },
     { x: 40, y: 30, z: null, label: 'SoFiA J10', lon: 149.95, lat: 2.05, row: 0 },
@@ -146,7 +146,7 @@ test('the desktop\'s fixture (classification_event.json) is what the page sends 
 });
 
 test('a large classification is cut to the hub budget and says so', () => {
-  const many = { valid: true, source_frame: 'icrs', sources: Array.from({ length: 2000 }, (_, i) => ({ x: i % 64, y: 1, z: 2, label: `Source number ${i}`, lon: 150, lat: 2, row: i })) };
+  const many = { valid: true, source: 'catalogue', catalogueId: 'c', source_frame: 'icrs', sources: Array.from({ length: 2000 }, (_, i) => ({ x: i % 64, y: 1, z: 2, label: `Source number ${i}`, lon: 150, lat: 2, row: i })) };
   const rows = SL.sourceRows(many, info);
   const c = new SL.Classification();
   for (const r of rows) c.toggleFlag(r.key, 'real');
@@ -295,4 +295,75 @@ test('the work kept in the browser belongs to this cube and this catalogue only'
   src.refresh();
   assert.equal(src.state.cls.marks.size, 0);
   assert.equal(src.state.user.length, 0);
+});
+
+test('a cross-match\'s rows are overlay rows, and without a catalogue every row goes to the VOTable', () => {
+  const xm = { valid: true, source: 'crossmatch', source_frame: 'icrs', sources: ov.sources.map((x) => ({ ...x })) };
+  const rows = SL.sourceRows(xm, info);
+  assert.deepEqual(rows.map((r) => [r.key, r.origin, r.row]), [['o:0', 'overlay', null], ['o:1', 'overlay', null], ['o:2', 'overlay', null]]);
+  const c = new SL.Classification();
+  c.toggleFlag('o:1', 'real');
+  const req = SL.votableRequest({ datasetId: 'cube1', catalogueId: '', rows, cls: c });
+  assert.equal(req.sources.length, 3, 'unflagged ones too');
+  assert.ok(req.sources.every((x) => x.origin === 'overlay' && x.row === undefined));
+  // A catalogue file placed without its id (it never is, but): its rows are not taken for rows of a session table.
+  assert.ok(SL.sourceRows({ ...ov, catalogueId: '' }, info).every((r) => r.origin === 'overlay'));
+});
+
+function fakeSources({ overlay, path = '/data/a/cube.fits', dataset = 'd1', report = () => null } = {}) {
+  const store = new Map();
+  const state = { info, openPath: path, open: { dataset_id: dataset }, clip: { min: [0, 0, 0], max: [1, 1, 1] }, extent: [1, 1, 0.625] };
+  let ovNow = overlay;
+  const backend = { pixelToSky: async () => ({ valid: true, ra_deg: 150, dec_deg: 2 }) };
+  const sel = { lasso: null, spectrum: { x: 5, y: 6, channel: 7 }, pick: null };
+  const src = createSources({ renderer: { createPanel: () => ({}), updatePanel() {} }, state, overlay: () => ovNow, backend: () => backend,
+    selection: { sel }, settings: () => ({}), storage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) },
+    onVisit() {}, onChange() {}, report: (d) => report(d) });
+  return { src, state, store, setOverlay: (o) => { ovNow = o; } };
+}
+
+test('found sources belong to their cube: none leak into another, and they come back after a reload without a catalogue', async () => {
+  const a = fakeSources({ overlay: null });
+  await a.src.addFound();
+  assert.equal(a.src.state.user.length, 1);
+  // Another cube, still no catalogue: its own (empty) list.
+  a.state.openPath = '/data/b/other.fits';
+  a.state.open = { dataset_id: 'd2' };
+  a.src.refresh();
+  assert.equal(a.src.state.user.length, 0);
+  // Back to the first cube (a reload: a new page with the same storage): the found source is read back.
+  const b = fakeSources({ overlay: null });
+  for (const [k, v] of a.store) b.store.set(k, v);
+  b.src.refresh();
+  assert.deepEqual(b.src.state.user.map((u) => u.label), ['VR-1']);
+});
+
+test('Send says sending, then sent only once the product is posted, or why it was not', async () => {
+  let settle;
+  const f = fakeSources({ overlay: ov, report: () => new Promise((res, rej) => { settle = { res, rej }; }) });
+  f.src.refresh();
+  f.src.choose('c:1', false);
+  f.src.press('flag:real');
+  f.src.press('send');
+  assert.equal(f.src.view().canSend, false, 'not twice while one is under way');
+  assert.match(f.src.view().info, /sending/);
+  assert.throws(() => f.src.send(), /under way/);
+  settle.res({ file: 'cat_vr_classified.xml' });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.match(f.src.view().info, /, sent$/);
+  assert.match(f.src.state.status[0], /cat_vr_classified\.xml/);
+  // A failure: not marked sent, the reason shown, and Send offered again.
+  f.src.press('flag:doubtful');
+  f.src.press('send');
+  settle.rej(new Error('503 the backend is busy'));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.match(f.src.state.status[0], /Not sent: 503/);
+  assert.ok(!/sent/.test(f.src.view().info));
+  assert.equal(f.src.view().canSend, true);
+  // No hub for the page: said at once.
+  const g = fakeSources({ overlay: ov, report: () => null });
+  g.src.refresh();
+  g.src.choose('c:1', false);
+  g.src.press('flag:real');
+  assert.throws(() => g.src.press('send'), /No desktop session hub/);
 });

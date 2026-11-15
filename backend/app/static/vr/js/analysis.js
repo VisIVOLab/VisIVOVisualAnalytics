@@ -63,7 +63,6 @@ export function createAnalysis(ctx) {
 
   function productTexture(which) {
     const tool = which === 'moment' ? moment : pv;
-    if (which === 'moment') moment.recut();        // the crop changed since: the map cut again (#277)
     if (!tool.state.result || !show[which] || !tool.state.canvas) return null;
     const R = ctx.renderer;
     if (!tex[which]) tex[which] = R.createPanel();
@@ -190,6 +189,11 @@ export function createAnalysis(ctx) {
     return out.length ? [out.join('  ')] : [];
   }
 
-  return { lasso, moment, pv, sync, act, segments, press, view, productTexture, setShown,
+  /** Every frame, headset and desktop alike (main.js syncSelection): the
+   *  moment map cut again when the crop changed and stayed still (#277). Its
+   *  change marks the page's refresh, which redraws the page's copy too. */
+  function tick(now) { return moment.tick(now, !!show.moment); }
+
+  return { lasso, moment, pv, sync, act, segments, press, view, productTexture, setShown, tick,
     shown: (which) => !!show[which], reset, refreshDom, hudLines, layout, isDirty: () => dirty };
 }

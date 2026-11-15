@@ -8,7 +8,7 @@ import * as HUB from '../../app/static/vr/js/headset.js';
 
 export function classificationFixture() {
   const info = { full_shape: [64, 64, 40], axes: { z: { full_velocity_kms: Array.from({ length: 40 }, (_, i) => 1000 + 5 * i) } } };
-  const ov = { valid: true, name: 'cat.csv', source_frame: 'galactic', sources: [
+  const ov = { valid: true, name: 'cat.csv', source: 'catalogue', catalogueId: 'cat1', source_frame: 'galactic', sources: [
     { x: 10, y: 12, z: 5.5, label: 'G030.1+0.5', lon: 30.1, lat: 0.5, row: 1 },
     { x: 40, y: 30, z: null, label: 'G030.2-0.1', lon: 30.2, lat: -0.1, row: 0 },
     { x: 32, y: 30, z: 20, label: 'G030.0+0.0', lon: 30.0, lat: 0.0, row: 2 },

@@ -60,7 +60,8 @@ export function velocityAt(info, z) {
   return fv[i] + f * (fv[i + 1] - fv[i]);
 }
 
-/** A source's key: its catalogue row ('c:12'), else its place in the overlay ('o:3'). */
+/** A source's key: its catalogue row ('c:12'), else its place in the overlay ('o:3')
+ *  (sourceRows decides which: only a catalogue of the session has rows). */
 export function sourceKey(s, i) {
   return Number.isInteger(s.row) ? `c:${s.row}` : `o:${i}`;
 }
@@ -75,12 +76,17 @@ export function sourceRows(ov, info, user = []) {
   const rows = [];
   if (ov && ov.valid) {
     const frame = ov.source_frame || ov.frame || 'icrs';
+    // A row of a catalogue of the session only when the overlay is one: a
+    // cross-match's sources carry the row of a table the session does not
+    // hold, so they are written like any overlay's.
+    const fromCatalogue = (ov.source || 'catalogue') === 'catalogue' && !!ov.catalogueId;
     (ov.sources || []).forEach((s, i) => {
       const z = s.z === null || s.z === undefined ? null : s.z;
-      rows.push({ key: sourceKey(s, i), index: i, label: String(s.label || `#${i}`), x: s.x, y: s.y, z,
+      const isRow = fromCatalogue && Number.isInteger(s.row);
+      rows.push({ key: isRow ? `c:${s.row}` : `o:${i}`, index: i, label: String(s.label || `#${i}`), x: s.x, y: s.y, z,
         lon: Number.isFinite(s.lon) ? s.lon : null, lat: Number.isFinite(s.lat) ? s.lat : null, frame,
-        velocity: velocityAt(info, z), origin: Number.isInteger(s.row) ? 'catalogue' : 'overlay',
-        row: Number.isInteger(s.row) ? s.row : null, band: s.band || '' });
+        velocity: velocityAt(info, z), origin: isRow ? 'catalogue' : 'overlay',
+        row: isRow ? s.row : null, band: s.band || '' });
     });
   }
   for (const u of user) rows.push({ ...u, index: -1, origin: 'user', row: null, band: '' });
@@ -259,7 +265,8 @@ export function votableRequest({ datasetId, catalogueId = '', sourceFrame = 'icr
   const sources = [];
   for (const r of rows) {
     const m = cls.get(r.key);
-    const keep = r.origin === 'user' || (r.origin === 'overlay' && !catalogueId) || m.flag || m.note;
+    // Without a catalogue of the session the table is made of the rows sent: every one goes.
+    const keep = r.origin === 'user' || !catalogueId || m.flag || m.note;
     if (keep) sources.push(classifiedSource(r, m));
   }
   return { dataset_id: datasetId, catalogue_id: catalogueId, source_frame: sourceFrame === 'galactic' ? 'galactic' : 'icrs',
