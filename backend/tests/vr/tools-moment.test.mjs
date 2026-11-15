@@ -516,53 +516,62 @@ test('review: a crop change re-cuts the map once it stays still, only while the 
   assert.equal(t.state.result.cropped, false);
 });
 
-test('review: a re-cut takes its colour range from a strided sample: close to the exact one, a few ms', async () => {
+// The robust range as it was before #302, every finite value sorted (the
+// desktop's robustSymmetricMomentRange): the reference the sample is held to.
+function sortedRobust(values) {
+  const v = [];
+  for (let i = 0; i < values.length; i++) if (Number.isFinite(values[i])) v.push(values[i]);
+  if (v.length < 8) return null;
+  const median = (a) => { a.sort((p, q) => p - q); const m = a.length; return m % 2 ? a[m >> 1] : 0.5 * (a[m / 2 - 1] + a[m / 2]); };
+  const med = median(v);
+  const sigma = 1.4826 * median(v.map((x) => Math.abs(x - med)));
+  return sigma > 0 ? [med - 4 * sigma, med + 4 * sigma] : null;
+}
+const lcg = (seed) => { let s = seed; return () => { s = (s * 16807) % 2147483647; return s / 2147483647; }; };
+/** A dense velocity-like map: a gradient plus noise, no NaN. */
+function denseMap(W, H, seed = 1) {
+  const rnd = lcg(seed);
+  return Float32Array.from({ length: W * H }, (_, i) => 200 * ((i % W) / W - 0.5) + 30 * (rnd() + rnd() + rnd() - 1.5));
+}
+/** A 2048 x 2048 NaN-masked map with a 13 x 10 source (values 5..17), the #300 case. */
+function sparseMap(W = 2048, H = 2048) {
+  const values = new Float32Array(W * H).fill(NaN);
+  for (let y = 1000; y < 1010; y++) for (let x = 1000; x < 1013; x++) values[y * W + x] = 5 + (x - 1000);
+  return values;
+}
+
+test('review: the colour range of a dense map comes from a strided sample, close to the sorted one', async () => {
   const TMm = await import('../../app/static/vr/js/tools-moment.js');
   const W = 1024, H = 1024;
-  let s = 1;
-  const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647; };
-  const values = Float32Array.from({ length: W * H }, () => 100 * (rnd() + rnd() + rnd() - 1.5));
+  const values = denseMap(W, H);
   const clip = { min: [0.1, 0.1, 0], max: [0.95, 0.95, 1] };
-  const t0 = performance.now();
-  const exact = TMm.cutWhole(1, values, W, H, clip, [W, H, 4]);
-  const exactMs = performance.now() - t0;
-  const t1 = performance.now();
-  const fast = TMm.cutWhole(1, values, W, H, clip, [W, H, 4], { sample: TMm.RECUT_SAMPLE });
-  const ms = performance.now() - t1;
-  const span = exact.range[1] - exact.range[0];
-  assert.ok(Math.abs(fast.range[0] - exact.range[0]) < 0.02 * span && Math.abs(fast.range[1] - exact.range[1]) < 0.02 * span,
-    `${fast.range} vs ${exact.range}`);
-  assert.deepEqual(fast.box, exact.box);
-  assert.equal(fast.summary.pixels, exact.summary.pixels, 'the numbers count every pixel');
-  // Relative, not absolute: a CI runner is slower than this Mac (100.2 ms there once).
-  assert.ok(ms < exactMs / 2, `sampled ${ms.toFixed(1)} ms, exact ${exactMs.toFixed(1)} ms`);
+  const c = TMm.cutWhole(1, values, W, H, clip, [W, H, 4]);
+  const want = sortedRobust(c.cut);
+  const span = want[1] - want[0];
+  assert.ok(Math.abs(c.range[0] - want[0]) < 0.02 * span && Math.abs(c.range[1] - want[1]) < 0.02 * span, `${c.range} vs ${want}`);
+  assert.deepEqual(c.box, [102, 972, 102, 972]);
+  assert.equal(c.summary.pixels, c.cut.length, 'the numbers count every pixel');
   assert.equal(TMm.finiteSample(new Float32Array(10), 64).length, 10);
   assert.equal(TMm.finiteSample(new Float32Array(1000), 64).length, 64);
 });
 
-test('#300: a sparse NaN-masked map keeps its exact colour range when re-cut, for every order', async () => {
+test('#300: a sparse NaN-masked map keeps its exact colour range when cut, for every order', async () => {
   const TMm = await import('../../app/static/vr/js/tools-moment.js');
-  // 2048 x 2048, NaN but for a 13 x 10 source with values 5..17 (the issue's case):
-  // a strided sample of the whole map missed the source's ends, or all of it.
+  // A strided sample of the whole map missed the source's ends, or all of it.
   const W = 2048, H = 2048, shape = [W, H, 4];
-  const values = new Float32Array(W * H).fill(NaN);
-  for (let y = 1000; y < 1010; y++) for (let x = 1000; x < 1013; x++) values[y * W + x] = 5 + (x - 1000);
+  const values = sparseMap(W, H);
   const clip = { min: [0.01, 0.01, 0], max: [0.99, 0.99, 1] };
-  const want = { 0: [5, 17], 1: null, 2: [5, 17] };
-  for (const order of [0, 1, 2]) {
-    const exact = TMm.cutWhole(order, values, W, H, clip, shape);
-    const fast = TMm.cutWhole(order, values, W, H, clip, shape, { sample: TMm.RECUT_SAMPLE });
-    assert.deepEqual(fast.range, exact.range, `order ${order}`);
-    if (want[order]) assert.deepEqual(exact.range, want[order]);
-  }
-  // The velocity field's robust range: median 11, MAD 4, so 11 ± 4 x 1.4826 x 4.
-  const r1 = TMm.cutWhole(1, values, W, H, clip, shape, { sample: TMm.RECUT_SAMPLE }).range;
-  assert.ok(Math.abs(r1[0] + 6.7912) < 1e-4 && Math.abs(r1[1] - 28.7912) < 1e-4, `${r1}`);
+  for (const order of [0, 2]) assert.deepEqual(TMm.cutWhole(order, values, W, H, clip, shape).range, [5, 17], `order ${order}`);
+  // The velocity field's robust range: median 11, MAD 4, so 11 ± 4 x 1.4826 x 4,
+  // all 130 finite values sampled: the sorted reference itself.
+  const c1 = TMm.cutWhole(1, values, W, H, clip, shape);
+  assert.deepEqual(c1.range, sortedRobust(c1.cut));
+  assert.ok(Math.abs(c1.range[0] + 6.7912) < 1e-4 && Math.abs(c1.range[1] - 28.7912) < 1e-4, `${c1.range}`);
   // The source alone in the crop's corner, everything else NaN: no [0, 1] fallback.
   const one = new Float32Array(W * H).fill(NaN);
   one[(H - 30) * W + (W - 30)] = 42;
   for (const order of [0, 1, 2]) {
-    assert.deepEqual(TMm.cutWhole(order, one, W, H, clip, shape, { sample: TMm.RECUT_SAMPLE }).range, [42, 42], `order ${order}`);
+    assert.deepEqual(TMm.cutWhole(order, one, W, H, clip, shape).range, [42, 42], `order ${order}`);
   }
 });
 
@@ -571,21 +580,18 @@ test('#300: the robust range\'s sample holds finite values only, strided among t
   // 2 % of a 1024 x 1024 map finite (about 21 k values, fewer than the sample): all of them.
   const W = 1024, H = 1024, n = W * H;
   const values = new Float32Array(n).fill(NaN);
-  let s = 7;
-  const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647; };
+  const rnd = lcg(7);
   for (let i = 0; i < n; i++) if (rnd() < 0.02) values[i] = 50 * (rnd() - 0.5);
   values[12345] = 1e4;   // one outlier, the exact range's top
   const finite = values.reduce((k, v) => k + Number.isFinite(v), 0);
-  assert.ok(finite > 15000 && finite < TMm.RECUT_SAMPLE, `${finite}`);
-  const fs = TMm.finiteSample(values, TMm.RECUT_SAMPLE);
+  assert.ok(finite > 15000 && finite < TMm.RANGE_SAMPLE, `${finite}`);
+  const fs = TMm.finiteSample(values, TMm.RANGE_SAMPLE);
   assert.equal(fs.length, finite);
   assert.ok(fs.every(Number.isFinite));
   const clip = { min: [0, 0, 0], max: [1, 1, 1] };
   const shape = [W, H, 4];
-  for (const order of [0, 1, 2]) {
-    assert.deepEqual(TMm.cutWhole(order, values, W, H, clip, shape, { sample: TMm.RECUT_SAMPLE }).range,
-      TMm.cutWhole(order, values, W, H, clip, shape).range, `order ${order}: all the finite values sampled`);
-  }
+  assert.deepEqual(TMm.cutWhole(1, values, W, H, clip, shape).range, sortedRobust(values), 'all the finite values sampled');
+  for (const order of [0, 2]) assert.deepEqual(TMm.cutWhole(order, values, W, H, clip, shape).range, PC.finiteRange(values), `order ${order}`);
   // More finite values than the sample: exactly that many, finite, strided in order.
   const dense = Float32Array.from({ length: 10000 }, (_, i) => (i % 3 === 0 ? NaN : i));
   const d = TMm.finiteSample(dense, 1000);
@@ -598,8 +604,106 @@ test('#300: the robust range\'s sample holds finite values only, strided among t
   // Orders 0 and 2 never sample: the peak of a dense map is exact.
   const peak = Float32Array.from({ length: 2048 * 2048 }, (_, i) => i % 7);
   peak[2048 * 2048 - 3] = 99;
-  assert.deepEqual(TMm.colourRange(0, peak, TMm.RECUT_SAMPLE), [0, 99]);
-  assert.deepEqual(TMm.colourRange(2, peak, TMm.RECUT_SAMPLE), [0, 99]);
+  assert.deepEqual(TMm.colourRange(0, peak), [0, 99]);
+  assert.deepEqual(TMm.colourRange(2, peak), [0, 99]);
+  assert.deepEqual(TMm.colourRange(2, peak, TMm.mapStats(peak)), [0, 99]);
+});
+
+test('#302: the first range of a whole-field map is the re-cut\'s, on a dense and on a sparse NaN-masked map', async () => {
+  const TMm = await import('../../app/static/vr/js/tools-moment.js');
+  const maps = { dense: [1024, 1024, denseMap(1024, 1024, 3)], sparse: [2048, 2048, sparseMap()] };
+  for (const [name, [W, H, values]] of Object.entries(maps)) {
+    let clip = { min: [0.1, 0.1, 0], max: [0.9, 0.9, 1] };
+    const answer = { valid: true, width: W, height: H, moment_unit: 'm/s', bunit: 'Jy/beam',
+      data_base64: Buffer.from(values.buffer).toString('base64') };
+    const t = TMm.createMomentTool({
+      selection: { sel: { lasso: null }, record: () => ({ product: { id: 'p' } }) },
+      backend: () => ({ _json: async () => answer }), datasetId: () => 'd', info: () => ({ full_shape: [W, H, 4] }), onChange() {},
+      clipZ: () => [0, 1], clip: () => clip,
+    });
+    await t.compute(1);
+    const first = t.state.result.range;
+    const cut = t.state.result.cut;
+    // Re-cut to the whole field, then back to the first crop: the same range, to the bit.
+    clip = { min: [0, 0, 0], max: [1, 1, 1] };
+    t.tick(0, true);
+    assert.equal(t.tick(TMm.RECUT_MS, true), true, name);
+    assert.equal(t.state.result.cropped, false, name);
+    clip = { min: [0.1, 0.1, 0], max: [0.9, 0.9, 1] };
+    t.tick(1000, true);
+    assert.equal(t.tick(1000 + TMm.RECUT_MS, true), true, name);
+    assert.deepEqual(t.state.result.range, first, `${name}: first cut and re-cut agree`);
+    assert.deepEqual(first, TMm.cutWhole(1, values, W, H, clip, [W, H, 4]).range, name);
+    const want = sortedRobust(cut);
+    if (name === 'sparse') assert.deepEqual(first, want, 'fewer finite values than the sample: the sorted range itself');
+    else {
+      const span = want[1] - want[0];
+      assert.ok(Math.abs(first[0] - want[0]) < 0.02 * span && Math.abs(first[1] - want[1]) < 0.02 * span, `${first} vs ${want}`);
+    }
+  }
+});
+
+test('#302: the first order-1 range of a dense map takes a fraction of a full sort\'s time', async () => {
+  const TMm = await import('../../app/static/vr/js/tools-moment.js');
+  const W = 1024, H = 1024, shape = [W, H, 4];
+  const values = denseMap(W, H, 5);
+  TMm.cutWhole(1, values.subarray(0, 64 * 64), 64, 64, null, [64, 64, 4]);   // warm
+  sortedRobust(values.subarray(0, 64 * 64));
+  // Both timed in this run: a CI runner is slower than this Mac, but by the same factor.
+  const t0 = performance.now();
+  const want = sortedRobust(values);
+  const refMs = performance.now() - t0;
+  const t1 = performance.now();
+  const got = TMm.cutWhole(1, values, W, H, null, shape);
+  const ms = performance.now() - t1;
+  const span = want[1] - want[0];
+  assert.ok(Math.abs(got.range[0] - want[0]) < 0.02 * span && Math.abs(got.range[1] - want[1]) < 0.02 * span, `${got.range} vs ${want}`);
+  assert.ok(ms < refMs / 4, `first cut ${ms.toFixed(1)} ms, sorted reference ${refMs.toFixed(1)} ms`);
+});
+
+test('#302: a selection\'s moment takes its colour range the same way (no sort of the whole cut)', async () => {
+  const TMm = await import('../../app/static/vr/js/tools-moment.js');
+  const values = denseMap(512, 512, 9);
+  const st = TMm.mapStats(values);
+  assert.deepEqual(TMm.colourRange(1, values), TMm.colourRange(1, values, st));
+  assert.deepEqual(TMm.colourRange(1, values), PC.robustSymmetricRange(values));
+  const v = PC.finiteSample(values, PC.RANGE_SAMPLE);
+  assert.equal(v.length, PC.RANGE_SAMPLE, 'at most RANGE_SAMPLE values sorted');
+  // A map with every value finite is sampled without the walk: the same picks
+  // as the walk over the same values with a NaN in front.
+  const nanFirst = new Float32Array(values.length + 1);
+  nanFirst[0] = NaN;
+  nanFirst.set(values, 1);
+  const walked = PC.finiteSample(nanFirst, PC.RANGE_SAMPLE);
+  assert.deepEqual(v, walked);
+  assert.deepEqual(PC.finiteSample(values, PC.RANGE_SAMPLE, values.length), walked);
+  assert.deepEqual(PC.finiteSample([3, 1, 2], 8), Float64Array.of(3, 1, 2));
+});
+
+test('#302: the sample takes one value in each stratum, never the same few columns of every row', () => {
+  // A 2048 x 2048 map of its column index: a stride of 64 (4 M / 65 536) took
+  // 32 columns only, and a gradient along x (a rotating disc) moved its median.
+  const W = 2048, H = 2048;
+  const cols = Float32Array.from({ length: W * H }, (_, i) => i % W);
+  const fs = PC.finiteSample(cols, PC.RANGE_SAMPLE);
+  assert.equal(fs.length, PC.RANGE_SAMPLE);
+  assert.ok(new Set(fs).size > 1900, `${new Set(fs).size} distinct columns`);
+  const mean = fs.reduce((a, b) => a + b, 0) / fs.length;
+  assert.ok(Math.abs(mean - (W - 1) / 2) < 0.01 * W, `mean column ${mean}`);
+  // Strata narrower than two values (count / n = 1.5): every slot filled, in
+  // order, each pick inside its own stratum.
+  for (const [count, n] of [[1500, 1000], [1001, 1000], [3, 2], [65537, 65536]]) {
+    const idx = Float64Array.from({ length: count }, (_, i) => i);
+    for (const a of [idx, Float64Array.of(NaN, ...idx.subarray(0, Math.min(count, 4000)))]) {
+      const c = a[0] !== a[0] ? Math.min(count, 4000) : count;
+      if (c <= n) continue;
+      const got = PC.finiteSample(a, n);
+      assert.equal(got.length, n, `${count}/${n}`);
+      for (let j = 1; j < n; j++) assert.ok(got[j] > got[j - 1], `${count}/${n} at ${j}`);
+      assert.ok(got[n - 1] <= c - 1);
+      for (let j = 0; j < n; j++) assert.ok(got[j] >= Math.floor(j * c / n) && got[j] < (j + 1) * c / n, `${count}/${n}: pick ${j} = ${got[j]}`);
+    }
+  }
 });
 
 test('#300: tick() follows a clip edited in place (its key cached on the six clip numbers)', async () => {

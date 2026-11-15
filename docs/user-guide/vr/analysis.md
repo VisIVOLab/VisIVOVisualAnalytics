@@ -236,7 +236,14 @@ cube's right side with its colour bar and unit (the window can be grabbed by
 its title bar, moved and closed; *Hide* on the Measure tab hides it). Colours
 as on the desktop: inferno for M0, a diverging cool-warm for M1 on the
 desktop's range (median ± 4 robust sigma, values outside it transparent, as
-the desktop draws a velocity field), viridis for M2. A velocity in m/s (also
+the desktop draws a velocity field), viridis for M2. The headset measures the
+M1 median and sigma on up to 65 536 of the map's finite pixels, one in each
+equal share of them, and on every pixel when there are fewer, so the range
+takes milliseconds when the map is first shown and when its crop changes
+([#302](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/302)). On
+a synthetic dense 2048² velocity map (a gradient along x plus noise) the
+range differed from the desktop's (every pixel sorted) by 0.1 % of its width. The M0 and M2 ranges are the exact
+minimum and maximum. A velocity in m/s (also
 written `m s-1`, `m.s**-1`) is shown in km/s (the numbers divided by 1000);
 the recipe keeps the backend's unit.
 
