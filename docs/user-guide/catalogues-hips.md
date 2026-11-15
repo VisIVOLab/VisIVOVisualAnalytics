@@ -100,8 +100,10 @@ rounds a hair low. The same rule applies to the server-side and headset views.
 Selecting a source says where its distance came from, for example
 *Distance 12.3 Mpc, from z (comoving, Planck18)* or *Distance 3.6 Mpc, from
 column DIST*, followed by *cz < 1000 km/s: uncertain* when that applies. The
-panel and the details follow a change of model or distance mode, and the
-source stays selected.
+panel and the details follow a change of model, distance mode or frame, and
+the source stays selected. After a filter or **Load more** it stays selected
+when it is still among the loaded rows; when the filter left it out, nothing is
+selected and the panel says so.
 
 ### Cosmology models
 
