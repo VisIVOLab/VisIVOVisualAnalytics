@@ -526,7 +526,7 @@ function dataValue(norm) {
 function updateLabels() {
   const c = state.cube;
   const unit = c && c.bunit ? ` ${c.bunit}` : '';
-  const sig = c ? LV.sigmaText(dataValue(state.thrNorm), LV.sigmaOf(state.info)) : '';
+  const sig = c ? sigmaLine(c, true) : '';
   $('thr-value').textContent = `${fmt(dataValue(state.thrNorm))}${unit}${sig ? ` ${sig}` : ''}`;
   $('cube-info').textContent = c ? LV.infoLine(state.info) : '';
   for (const b of document.querySelectorAll('button.sig')) b.disabled = !(c && LV.sigmaOf(state.info));
@@ -570,8 +570,8 @@ function setThresholdNorm(n) {
   if (!c || !Number.isFinite(n)) return;
   state.thrNorm = Math.max(0, Math.min(1, n));
   if (state.cmaxNorm <= state.thrNorm + 1e-3) {
-    const h = c.prep && c.prep.hist;
-    const q = h ? LV.histQuantile(h, CMAX_QUANTILE, state.thrNorm) : null;
+    const s = c.prep && c.prep.sorted;
+    const q = s ? LV.sampleQuantile(s, CMAX_QUANTILE, state.thrNorm) : null;
     state.cmaxNorm = Math.min(1, Math.max(state.thrNorm + 0.01, q ?? 1));
   }
   labelsChanged();
@@ -590,10 +590,20 @@ function setSigmaThreshold(k) {
 /** The threshold at percentile p of the drawn cube's values (#258); false without a histogram. */
 function setPercentileThreshold(p) {
   const c = state.cube;
-  const n = c && c.prep && c.prep.hist ? LV.percentileThreshold(c.prep.hist, p) : null;
+  const n = c && c.prep && c.prep.sorted ? LV.percentileThreshold(c.prep.sorted, p) : null;
   if (n === null) return false;
   setThresholdNorm(n);
   return true;
+}
+
+/** The threshold in σ (#258): '= 3.2 σ full-resolution (≈17σ drawn)', with
+ *  σ itself unless `short`; '' without σ. */
+function sigmaLine(c, short = false) {
+  const sigma = LV.sigmaOf(state.info);
+  if (!c || !sigma) return '';
+  const thr = dataValue(state.thrNorm);
+  const drawn = LV.drawnSigmaText(LV.sigmaMultiple(thr, sigma), c.factors, c.mode, true);
+  return `${LV.sigmaText(thr, sigma)} full-resolution${drawn ? ` (${drawn})` : ''}${short ? '' : `; σ ${fmt(sigma)}${c.bunit ? ` ${c.bunit}` : ''}`}`;
 }
 
 /** The histogram's columns of the cube on show, worked out once a cube. */
@@ -1867,7 +1877,8 @@ function menuView(ctx = menuContext()) {
     const sigma = LV.sigmaOf(state.info);
     const thrData = dataValue(state.thrNorm);
     // The threshold in σ of the full cube's noise (#258), else where it started from.
-    notes.thr = sigma ? `${fmt(thrData)}${unit} ${LV.sigmaText(thrData, sigma)} (σ ${fmt(sigma)}${unit})`
+    // Display: the multiples (σ itself is on Levels and in the 2-D page's line).
+    notes.thr = sigma ? `${fmt(thrData)}${unit} ${sigmaLine(c, true)}`
       : `${fmt(thrData)}${unit} (starts from ${src})`;
     notes.cmax = `${fmt(dataValue(state.cmaxNorm))}${unit}`;
     notes.opacity = state.opacity.toFixed(2);
@@ -1909,8 +1920,8 @@ function levelsView(c, notes, status, info) {
   const sigma = LV.sigmaOf(state.info);
   const h = c.prep && c.prep.hist;
   notes.histx = h ? 'Drag: the threshold. Yellow: σ multiples; white: threshold, colour max.' : '';
-  notes.sigma = sigma ? `${fmt(dataValue(state.thrNorm))}${unit} ${LV.sigmaText(dataValue(state.thrNorm), sigma)}; σ ${fmt(sigma)}${unit}` : '';
-  const above = h ? LV.fractionAbove(h, state.thrNorm) : null;
+  notes.sigma = sigma ? `${fmt(dataValue(state.thrNorm))}${unit} ${sigmaLine(c)}` : '';
+  const above = c.prep && c.prep.sorted ? LV.fractionAbove(c.prep.sorted, state.thrNorm) : null;
   notes.pct = above === null ? '' : `Of the drawn cube's values: ${(100 * above).toPrecision(2)}% are above the threshold now.`;
   const ratio = dataValue(state.cmaxNorm) / dataValue(state.thrNorm);
   notes.stretch = state.stretch === 'log'

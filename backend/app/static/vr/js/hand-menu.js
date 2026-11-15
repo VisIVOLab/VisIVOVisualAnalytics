@@ -160,8 +160,8 @@ function displayCube(ctx) {
   const w = [
     ...swatches(0, ctx),
     { id: 'thr', kind: 'slider', rect: [X0, rowY(1), sl, WH] },
-    btn('sig:3', [X0 + sl + gap, rowY(1), bw, WH], '3σ', { group: 'sig', value: 3, disabled: noSigma, tip: 'Threshold at 3 σ of the noise' }),
-    btn('sig:5', [X0 + sl + gap + (bw + gap), rowY(1), bw, WH], '5σ', { group: 'sig', value: 5, disabled: noSigma, tip: 'Threshold at 5 σ of the noise' }),
+    btn('sig:3', [X0 + sl + gap, rowY(1), bw, WH], '3σ', { group: 'sig', value: 3, disabled: noSigma, tip: 'Threshold at 3 σ of the full-resolution noise' }),
+    btn('sig:5', [X0 + sl + gap + (bw + gap), rowY(1), bw, WH], '5σ', { group: 'sig', value: 5, disabled: noSigma, tip: 'Threshold at 5 σ of the full-resolution noise' }),
     btn('thr-reset', [X0 + sl + gap + 2 * (bw + gap), rowY(1), bw, WH], 'Reset', { tip: 'Reset: the threshold the cube opened with' }),
     { id: 'cmax', kind: 'slider', rect: [X0, rowY(2), 560, WH] },
     btn('levels-page', [X0 + 570, rowY(2), RIGHT - X0 - 570, WH], 'Levels ▸', { tip: 'Levels: histogram, σ, percentiles, stretch' }),
@@ -250,7 +250,7 @@ function levelsPage(ctx) {
   // The histogram spans two rows: the track of a slider (the drag sets the threshold).
   const w = [{ id: 'hist', kind: 'slider', hist: true, rect: [X0, rowY(0), RIGHT - X0, rowY(1) + WH - rowY(0)], disabled: noHist }];
   SIGMA_PRESETS.forEach((k, i) => w.push(btn(`sig:${k}`, span(2, SIGMA_PRESETS.length, i), `${k}σ`,
-    { group: 'sig', value: k, disabled: noSigma, tip: `Threshold at ${k} σ of the noise` })));
+    { group: 'sig', value: k, disabled: noSigma, tip: `Threshold at ${k} σ of the full-resolution noise` })));
   PERCENTILE_PRESETS.forEach((q, i) => w.push(btn(`pct:${q}`, span(3, PERCENTILE_PRESETS.length, i), `${q}%`,
     { group: 'pct', value: q, disabled: noHist, tip: `Threshold at the ${q}th percentile: ${(100 - q).toPrecision(2)}% of the values above it` })));
   STRETCHES.forEach((st, i) => w.push(btn(`stretch:${st}`, span(4, STRETCHES.length, i), STRETCH_LABELS[st],

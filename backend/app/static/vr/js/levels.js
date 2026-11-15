@@ -106,11 +106,31 @@ export function sigmaMultiple(thrData, sigma) {
   return sigma && Number.isFinite(thrData) ? thrData / sigma : null;
 }
 
-/** '= 3.2 σ' (one decimal under 10, none above), '' without σ. */
+const kText = (n) => (Math.abs(n) < 10 ? n.toFixed(1) : n.toFixed(0));
+
+/** '= 3.2 σ' (one decimal under 10, none above), '' without σ. σ is the
+ *  full-resolution cube's noise. */
 export function sigmaText(thrData, sigma) {
   const n = sigmaMultiple(thrData, sigma);
   if (n === null) return '';
-  return `= ${Math.abs(n) < 10 ? n.toFixed(1) : n.toFixed(0)} σ`;
+  return `= ${kText(n)} σ`;
+}
+
+/**
+ * The same threshold in the drawn cube's noise (review of #258): σ is the
+ * full-resolution noise, but the threshold is compared with the drawn,
+ * binned cube. Mean binning of N = fx·fy·fz voxels lowers independent noise
+ * to σ/√N, so k σ is about k√N of the drawn cube's noise (fewer where the
+ * beam correlates neighbouring pixels: an upper estimate). Max binning
+ * draws block maxima, whose noise is not σ scaled: said so. '' at full
+ * resolution or without a multiple. `short`: the Display line's wording.
+ */
+export function drawnSigmaText(k, factors, mode, short = false) {
+  if (!Number.isFinite(k)) return '';
+  const n = (factors || [1, 1, 1]).reduce((a, b) => a * (b > 0 ? b : 1), 1);
+  if (!(n > 1)) return '';
+  if (mode === 'max') return short ? 'max binning: not σ-scaled' : 'max binning: drawn noise not σ scaled';
+  return `≈${kText(k * Math.sqrt(n))}σ ${short ? 'drawn' : 'of the drawn cube'}`;
 }
 
 /**
@@ -188,17 +208,56 @@ export function histQuantile(h, q, above = 0) {
   return edges[counts.length];
 }
 
-/** The fraction (0..1) of the histogram's values above `norm`; null when empty. */
-export function fractionAbove(h, norm) {
-  if (!h || !h.n) return null;
-  const { counts, edges } = h;
-  let above = 0;
-  for (let k = 0; k < counts.length; k++) {
-    const a = edges[k], b = edges[k + 1];
-    if (a >= norm) above += counts[k];
-    else if (b > norm && b > a) above += counts[k] * (b - norm) / (b - a);
+// ── Percentiles from a sorted sample ────────────────────────────────────────
+// The histogram's linear bins are for the picture only: on data spanning many
+// decades (a simulation's density) the 90, 99 and 99.9 % points all fall in
+// its first bins (review of #258). The percentiles come from a sorted stride
+// sample of the values instead, exact on the sample at any dynamic range.
+
+/** Values in the sorted sample: enough for the 99.99th percentile to stand
+ *  on about a hundred values (4 MB, sorted once in the prep worker). */
+export const SORTED_SAMPLE = 1 << 20;
+
+/** The non-blank normalised values of a stride sample of about `target`
+ *  voxels, sorted (Float32Array). */
+export function sortedSample(data, encoding, target = SORTED_SAMPLE) {
+  const len = data ? data.length : 0;
+  const step = Math.max(1, Math.floor(len / Math.max(1, target)));
+  const out = new Float32Array(Math.ceil(len / step));
+  let n = 0;
+  for (let i = 0; i < len; i += step) {
+    const v = voxelNorm(data, encoding, i);
+    if (v >= 0) out[n++] = Math.min(v, 1);
   }
-  return above / h.n;
+  return out.subarray(0, n).sort();
+}
+
+/** The first index of the sorted `s` whose value is >= v (or > v with `strict`). */
+function lowerBound(s, v, strict = false) {
+  let lo = 0, hi = s.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (strict ? s[mid] <= v : s[mid] < v) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+/** The q quantile (0..1) of the sorted sample's values at or above `above`,
+ *  interpolated between neighbours; null when there are none. */
+export function sampleQuantile(s, q, above = 0) {
+  if (!s || !s.length) return null;
+  const i0 = lowerBound(s, above);
+  const m = s.length - i0;
+  if (m <= 0) return null;
+  const pos = i0 + Math.max(0, Math.min(1, q)) * (m - 1);
+  const a = Math.floor(pos), t = pos - a;
+  return a + 1 < s.length ? s[a] + t * (s[a + 1] - s[a]) : s[a];
+}
+
+/** The fraction (0..1) of the sorted sample's values above `norm`; null when empty. */
+export function fractionAbove(s, norm) {
+  if (!s || !s.length) return null;
+  return (s.length - lowerBound(s, norm, true)) / s.length;
 }
 
 /**
@@ -220,8 +279,9 @@ export function sigmaMarks(sigma, lo, hi, ks = [3, 5, 1, 10], minGap = 0.06) {
   return out.sort((a, b) => a.at - b.at);
 }
 
-/** The normalised threshold at percentile p (0..100) of the drawn cube's values. */
-export const percentileThreshold = (h, p) => histQuantile(h, p / 100, 0);
+/** The normalised threshold at percentile p (0..100) of the drawn cube's
+ *  values, from the sorted sample (sortedSample). */
+export const percentileThreshold = (s, p) => sampleQuantile(s, p / 100, 0);
 
 /**
  * The histogram drawn along the slider's scale (normToSlider): `n` columns
