@@ -281,9 +281,15 @@ class _Pyramid:
 
     def noise(self, n_voxels: int) -> tuple[float | None, float | None]:
         """(:meth:`threshold`, σ) from one level-0 sample. The sample has no
-        channel structure, so σ is 1.4826 x MAD over all its channels together
-        (``noise_threshold.flat_noise_sigma``), not the desktop's median of
-        per-channel σ: the same for noise uniform along the band."""
+        channel structure, so σ is 1.4826 x MAD about ONE median over all its
+        channels together (``noise_threshold.flat_noise_sigma``), not the
+        desktop's median of per-channel σ, each about its own channel's
+        median. The two agree only for a flat baseline (every channel's
+        median the same, the noise the same along the band). Where channel
+        medians vary (continuum left in, a baseline ripple, a frequency-
+        dependent noise) the spread of the medians adds to this σ, and it is
+        larger than the desktop's; ``noise_sigma_method`` says which rule was
+        used."""
         from ..render_session._ooc import level0_sample  # noqa: PLC0415
         sample = level0_sample(self.pyr)
         if not sample.size:
@@ -332,7 +338,9 @@ def worker_cube_reduced_info(path: str, factor_xy: int, factor_z: int,
             _check_limit(shape, factors, encoding, limit)
             threshold, sigma = pyramid.noise(int(np.prod(shape)))
             sigma_method = ("1.4826 x MAD about the median of a sample of level-0 bricks "
-                            "of the brick pyramid, all channels together")
+                            "of the brick pyramid, all channels together: the desktop's "
+                            "per-channel rule only for a flat baseline, larger where "
+                            "channel medians vary")
             plan = pyramid.describe()
         else:
             factors = _factors(shape, factor_xy, factor_z, max_dim, encoding, limit)

@@ -4,6 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as LV from '../../app/static/vr/js/levels.js';
+import * as V from '../../app/static/vr/js/volume.js';
 import { transferFunction } from '../../app/static/vr/js/refine.js';
 import { colormapTable } from '../../app/static/vr/js/colormaps.js';
 
@@ -97,9 +98,12 @@ test('the histogram: uint8 codes are bins of their own; percentiles and the frac
   assert.equal(h.counts[100], 0);
   // The median of codes 1..100 (values 0..99/254) is about 49.5/254.
   close(LV.histQuantile(h, 0.5), 49.5 / 254, 0.6 / 254);
-  close(LV.percentileThreshold(h, 99), 98.5 / 254, 1 / 254);
-  close(LV.fractionAbove(h, 49.5 / 254), 0.5, 0.01);
-  assert.equal(LV.fractionAbove(h, 1), 0);
+  const sorted = LV.sortedSample(data, 'uint8', 1e9);
+  assert.equal(sorted.length, 9000);
+  close(LV.percentileThreshold(sorted, 99), 98 / 254, 1 / 254);
+  close(LV.fractionAbove(sorted, 49.5 / 254), 0.5, 0.01);
+  assert.equal(LV.fractionAbove(sorted, 1), 0);
+  assert.equal(LV.sampleQuantile(new Float32Array(0), 0.5), null);
   // The 99th percentile of what is above a threshold (the colour max rule).
   const q = LV.histQuantile(h, 0.99, 80 / 254);
   assert.ok(q > 98 / 254 && q <= 100 / 254, String(q));
@@ -109,6 +113,55 @@ test('the histogram: uint8 codes are bins of their own; percentiles and the frac
   assert.equal(hf.n, 3);
   close(LV.histQuantile(hf, 0.5), 0.5, 1 / LV.FLOAT_BINS);
   assert.equal(LV.histQuantile({ n: 0 }, 0.5), null);
+});
+
+/** A float as IEEE half bits (round toward zero; enough for a test). */
+function toHalf(v) {
+  const u = new Uint32Array(new Float32Array([v]).buffer)[0];
+  const sign = (u >>> 16) & 0x8000;
+  const e = ((u >>> 23) & 0xff) - 127 + 15;
+  const m = u & 0x7fffff;
+  if (e <= 0) return e < -10 ? sign : sign | (((m | 0x800000) >> (1 - e)) >> 13);
+  if (e >= 31) return sign | 0x7c00;
+  return sign | (e << 10) | (m >> 13);
+}
+
+test('percentiles on heavy-tailed, noise-free data come from the sorted sample, not the picture\'s bins', () => {
+  // A density-like column: log-normal with 1.5 decades of spread, so about
+  // seven decades over 200 000 values, normalised to its maximum as the
+  // reduced cube is: nearly every value is a tiny fraction of 1.
+  let seed = 7;
+  const rand = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const gauss = () => Math.sqrt(-2 * Math.log(rand())) * Math.cos(2 * Math.PI * rand());
+  const n = 200000;
+  const raw = Float64Array.from({ length: n }, () => 10 ** (1.5 * gauss()));
+  const max = raw.reduce((a, b) => Math.max(a, b), 0);
+  const data = Uint16Array.from(raw, (v) => toHalf(v / max));
+  const truth = Float64Array.from(data, (b) => V.halfToFloat(b)).sort();
+  const sorted = LV.sortedSample(data, 'float16', 1e9);
+  const h = LV.normHistogram(data, 'float16', 1e9);
+  for (const p of LV.PERCENTILE_PRESETS) {
+    const want = truth[Math.floor((p / 100) * (n - 1))];
+    const got = LV.percentileThreshold(sorted, p);
+    assert.ok(Math.abs(got - want) <= 0.02 * want + 1e-7, `${p}%: ${got} vs ${want}`);
+    // The share above it is what the menu says.
+    close(LV.fractionAbove(sorted, got), 1 - p / 100, 2 / n + 1e-4);
+  }
+  // The picture's linear bins could not tell these apart: the 90 and 99 % points
+  // fall in its first two bins, and the 90 % estimated there is many times too high.
+  const t90 = truth[Math.floor(0.9 * (n - 1))];
+  assert.ok(LV.histQuantile(h, 0.99) <= 2 / LV.FLOAT_BINS, String(LV.histQuantile(h, 0.99)));
+  assert.ok(LV.histQuantile(h, 0.9) > 5 * t90, `${LV.histQuantile(h, 0.9)} vs ${t90}`);
+  assert.ok(LV.percentileThreshold(sorted, 99) > 4 * LV.percentileThreshold(sorted, 90), 'the sample separates them');
+});
+
+test('σ presets name the full-resolution noise and its multiple of the drawn cube\'s', () => {
+  assert.equal(LV.drawnSigmaText(3, [2, 2, 2], 'mean'), '≈8.5σ of the drawn cube');
+  assert.equal(LV.drawnSigmaText(3, [4, 4, 2], 'mean'), '≈17σ of the drawn cube');
+  assert.equal(LV.drawnSigmaText(3, [1, 1, 1], 'mean'), '');
+  assert.match(LV.drawnSigmaText(3, [2, 2, 1], 'max'), /not σ scaled/);
+  assert.equal(LV.drawnSigmaText(null, [2, 2, 2], 'mean'), '');
+  assert.equal(LV.drawnSigmaText(3, [4, 4, 2], 'mean', true), '≈17σ drawn');
 });
 
 test('the histogram along the slider: area kept, a bin wider than a column spread over its columns', () => {

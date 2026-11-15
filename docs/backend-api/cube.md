@@ -233,8 +233,11 @@ over channels of 1.4826 × the median absolute deviation about each channel's
 median, exact zeros left out of a channel where they are more than half of it;
 measured on the same stride sample as the threshold, so equal to
 `/v1/cube/noise` over the whole cube when the cube is small enough to be read
-whole; from the pyramid, 1.4826 × MAD of the level-0 brick sample, all channels
-together; `null` when it cannot be measured, for example on constant data),
+whole; from the pyramid, 1.4826 × MAD of the level-0 brick sample about one
+median over all channels together, which equals the desktop's per-channel rule
+only for a flat baseline and is larger where channel medians vary, continuum
+left in or a baseline ripple; `null` when it cannot be measured, for example on
+constant data),
 `noise_sigma_method` (how, in words; empty with no σ), `rest_frequency_hz`
 (RESTFRQ or RESTFREQ, `null` without one), `rest_line` (`"HI"` within 1 MHz of
 the HI line, else empty), `beam` (`null`, or `major_arcsec`, `minor_arcsec`,

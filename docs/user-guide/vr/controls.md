@@ -339,9 +339,17 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
     unchanged dialog; a σ measured on the desktop over a chosen emission-free
     region is not sent to the headset yet. n σ means the value n × σ (about
     zero, as the desktop's 3σ moment mask). The threshold applies to the drawn
-    cube, which is binned: with mean binning its noise is lower than σ, so a
-    3σ threshold hides more of the faint emission than the desktop's 3σ on the
-    full cube; the refined frames (the full cube) show what the desktop shows.
+    cube, which is binned: with mean binning of N = fx·fy·fz voxels its noise
+    is about σ/√N, so a 3σ threshold hides more of the faint emission than the
+    desktop's 3σ on the full cube; the menu says both, *= 3.0 σ full-resolution
+    (≈17σ drawn)* (an upper estimate where the beam correlates
+    neighbouring pixels). With max binning the drawn noise is not σ scaled,
+    and the menu says so. The refined frames (the full cube) show what the
+    desktop shows. A cube read from its brick pyramid takes σ from level-0
+    bricks about one median over all channels: the desktop's number only for
+    a flat baseline. The percentile presets come from a sorted sample of a
+    million of the drawn cube's values, so they are right on data spanning
+    many decades too (the histogram's bins are only its picture).
   - *A point table*: **Colour by** (one chip per column, *none* first, then the
     velocity columns such as *VX*, *VY*, *VZ*, then the others; *more ▸* when
     there are more than fit, and the menu opens on the first page); **Scale, range**: *Log* and the colour

@@ -157,9 +157,9 @@
     };
     const viewFor = (kind, page) => {
       const notes = {
-        cmap: 'inferno', thr: '2.345e-03 Jy/beam = 12.3 σ (σ 1.906e-04 Jy/beam)', cmax: '1.234e-01 Jy/beam',
+        cmap: 'inferno', thr: '2.345e-03 Jy/beam = 12.3 σ full-resolution (max binning: not σ-scaled)', cmax: '1.234e-01 Jy/beam',
         histx: 'Drag: the threshold. Yellow: σ multiples; white: threshold, colour max.',
-        sigma: '2.345e-03 Jy/beam = 12.3 σ; σ 1.906e-04 Jy/beam', pct: 'Of the drawn cube\'s values: 0.012% are above the threshold now.',
+        sigma: '2.345e-03 Jy/beam = 12.3 σ full-resolution (≈35σ drawn); σ 1.906e-04 Jy/beam', pct: 'Of the drawn cube\'s values: 0.012% are above the threshold now.',
         stretch: 'Log over threshold to colour max (×52.6), as the desktop\'s.', gamma: 'γ 10.00',
         opacity: '1.00', render: 'Emission: the voxels add up along each ray', slab: 'channels 12–108 of 109, 1180.4 to 1561.2 km/s',
         trigger: 'Trigger held near a face of the crop: drag it.', crop: 'Reset crop keeps the range.',

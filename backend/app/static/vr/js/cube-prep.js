@@ -7,7 +7,7 @@
 // start) the same function runs here. No DOM, no GL: node runs the tests.
 
 import { buildMacrocells, normQuantile, apronBlocks } from './volume.js';
-import { normHistogram } from './levels.js';
+import { normHistogram, sortedSample } from './levels.js';
 
 /** The colour range's top: this quantile of the values above the threshold,
  *  from a stride sample of about this many voxels (main.js thresholdNorms). */
@@ -18,7 +18,9 @@ export const CMAX_SAMPLE = 4_000_000;
  * Everything a cube needs computed from its voxels: `macro` ({data, dims}),
  * `quantiles` ([[above, q], ...] for each of `aboves`), `apron` (apronBlocks
  * for the storage `store`, or null without one), `hist` (the values'
- * histogram, levels.js normHistogram: issue #258) and `ms`, the time it took.
+ * histogram, levels.js normHistogram, for the picture: issue #258), `sorted`
+ * (a sorted sample of the values, for the percentiles: levels.js
+ * sortedSample) and `ms`, the time it took.
  */
 export function prepareCube(data, dims, encoding, { cell = 8, aboves = [], store = null } = {}) {
   const t0 = Date.now();
@@ -27,13 +29,14 @@ export function prepareCube(data, dims, encoding, { cell = 8, aboves = [], store
   for (const a of new Set(aboves)) quantiles.push([a, normQuantile(data, encoding, CMAX_QUANTILE, CMAX_SAMPLE, a)]);
   const apron = store ? apronBlocks(data, dims, store) : null;
   const hist = normHistogram(data, encoding, CMAX_SAMPLE);
-  return { macro, quantiles, apron, hist, store: store ? store.slice() : null, cell, ms: Date.now() - t0 };
+  const sorted = sortedSample(data, encoding);
+  return { macro, quantiles, apron, hist, sorted, store: store ? store.slice() : null, cell, ms: Date.now() - t0 };
 }
 
 /** The buffers of a prepared cube, to be transferred with it. */
 export function preparedBuffers(p) {
   return [p.macro.data.buffer, ...(p.apron || []).map((a) => a.data.buffer),
-    ...(p.hist ? [p.hist.counts.buffer, p.hist.edges.buffer] : [])];
+    ...(p.hist ? [p.hist.counts.buffer, p.hist.edges.buffer] : []), ...(p.sorted ? [p.sorted.buffer] : [])];
 }
 
 /** Can `data`'s buffer be handed to a worker and back (the view owns it whole)? */
