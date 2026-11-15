@@ -99,6 +99,12 @@ public:
     /// next link, pairing, launch and `show` carry the new one. What a headset
     /// already shows is not changed.
     void setSky(const VrLink::Sky &sky);
+    /// The window reopened its dataset in a new backend session (a catalogue
+    /// whose session expired, issue #305): the link, the pairing client and
+    /// the redaction list are rebuilt for @p inputs, answers still out are
+    /// dropped, an unused code is revoked and a new one asked for, and the
+    /// hub of the new session is asked again. The backend is the same.
+    void setInputs(const VrLink::Inputs &inputs);
 
 protected:
     /// After every relayout, growToFit(): a label's new text may need more lines.

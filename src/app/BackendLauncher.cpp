@@ -1,17 +1,20 @@
 #include "BackendLauncher.h"
 
 #include "BackendUrl.h"
+#include "BackendWebrtcEnv.h"
 #include "VrPair.h"
 
 #include "BackendClient.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QProcessEnvironment>
 
+#include <QSettings>
 #include <QStandardPaths>
 #include <QRandomGenerator>
 #include <QUrl>
@@ -238,12 +241,12 @@ QProcessEnvironment backendEnvironment()
     return env;
 }
 
-/** True when @p exe can actually import what the backend needs to boot. */
-bool hasBackendDeps(const QString &exe)
+/** True when @p exe runs @p code (an import line) without an error. */
+bool pythonRuns(const QString &exe, const QString &code)
 {
     QProcess p;
     p.setProcessEnvironment(pythonInvocationEnvironment());
-    p.start(exe, { u"-c"_s, u"import fastapi, uvicorn, astropy, numpy"_s });
+    p.start(exe, { u"-c"_s, code });
     // Pumped, like runCapture: importing astropy and numpy is seconds, not
     // milliseconds, and this also runs on the GUI thread.
     if (!waitForProcessPumpingEvents(p, 20000)) {
@@ -252,6 +255,12 @@ bool hasBackendDeps(const QString &exe)
         return false;
     }
     return p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0;
+}
+
+/** True when @p exe can actually import what the backend needs to boot. */
+bool hasBackendDeps(const QString &exe)
+{
+    return pythonRuns(exe, u"import fastapi, uvicorn, astropy, numpy"_s);
 }
 
 /**
@@ -807,6 +816,33 @@ bool BackendLauncher::bootstrapEnvironment(const QString &backendDir, const QStr
     // ── 2. the dependencies ──────────────────────────────────────────────────
     emit messageChanged(u"Installing backend dependencies - this takes a few "
                         u"minutes the first time…"_s);
+    if (!pipInstall(venvPython, backendDir, requirements)) {
+        emit failed(u"Installing the backend dependencies failed.\n\n"
+                    u"The Diagnostics log has pip's output. A common cause is no "
+                    u"network access; you can also prepare the environment by hand:\n\n"
+                    u"  %1 -m venv %2\n  %3 -m pip install -r %4"_s
+                            .arg(pythonExe, venvDir, venvPython, requirements));
+        return false;
+    }
+    // Headset pairing and stereo video: wanted, but not needed to start, so
+    // a failure here is logged and the backend starts without them.
+    const QString webrtc = visivo::webrtcenv::requirementsPath(backendDir);
+    if (QFileInfo::exists(webrtc)) {
+        if (!pipInstall(venvPython, backendDir, webrtc)) {
+            appendLog(u"[launcher] The WebRTC packages could not be installed: headset "
+                      u"pairing and stereo video stay off. Tried again at a later start."_s);
+            rememberWebrtcAttempt(venvDir);
+        }
+    }
+
+    emit messageChanged(u"Backend environment ready."_s);
+    appendLog(u"[launcher] Bootstrap complete"_s);
+    return true;
+}
+
+bool BackendLauncher::pipInstall(const QString &venvPython, const QString &backendDir,
+                                 const QString &requirements)
+{
     appendLog(u"[launcher] pip install -r %1"_s.arg(requirements));
 
     QProcess pip;
@@ -832,21 +868,67 @@ bool BackendLauncher::bootstrapEnvironment(const QString &backendDir, const QStr
     // wait — this runs on the GUI thread (launchProcess() is reached from a
     // QFutureWatcher::finished handler), so a plain waitForFinished() would
     // freeze the startup dialog for the whole install and none of the progress
-    // messages below would ever be painted.
+    // messages would ever be painted.
     waitForProcessPumpingEvents(pip, -1);
+    return pip.exitStatus() == QProcess::NormalExit && pip.exitCode() == 0;
+}
 
-    if (pip.exitStatus() != QProcess::NormalExit || pip.exitCode() != 0) {
-        emit failed(u"Installing the backend dependencies failed.\n\n"
-                    u"The Diagnostics log has pip's output. A common cause is no "
-                    u"network access; you can also prepare the environment by hand:\n\n"
-                    u"  %1 -m venv %2\n  %3 -m pip install -r %4"_s
-                            .arg(pythonExe, venvDir, venvPython, requirements));
-        return false;
+namespace {
+const QString kWebrtcTriedVersionKey = u"backend/webrtcUpdateVersion"_s;
+const QString kWebrtcTriedVenvKey = u"backend/webrtcUpdateVenv"_s;
+const QString kWebrtcTriedAtKey = u"backend/webrtcUpdateAtMs"_s;
+} // namespace
+
+void BackendLauncher::rememberWebrtcAttempt(const QString &venvDir)
+{
+    QSettings settings;
+    settings.setValue(kWebrtcTriedVersionKey, QCoreApplication::applicationVersion());
+    settings.setValue(kWebrtcTriedVenvKey, venvDir);
+    settings.setValue(kWebrtcTriedAtKey, QDateTime::currentMSecsSinceEpoch());
+}
+
+void BackendLauncher::addWebrtcIfMissing(const QString &pythonExe, const QString &backendDir)
+{
+    namespace W = visivo::webrtcenv;
+    const QString venvDir = userDataVenvDir();
+    const QString venvExe = venvPythonPath(venvDir);
+    const bool userDataVenv = !venvExe.isEmpty()
+            && QFileInfo(pythonExe).absoluteFilePath() == QFileInfo(venvExe).absoluteFilePath();
+    if (!userDataVenv)
+        return;   // an interpreter the user chose is his to change
+    const QString requirements = W::requirementsPath(backendDir);
+    const bool found = QFileInfo::exists(requirements);
+    // The import costs a second or two: only asked when an update could follow.
+    if (!found)
+        return;
+    const QSettings settings;
+    const W::Attempt last{ settings.value(kWebrtcTriedVersionKey).toString(),
+                           settings.value(kWebrtcTriedVenvKey).toString(),
+                           settings.value(kWebrtcTriedAtKey).toLongLong() };
+    const bool has = pythonRuns(pythonExe, W::importCheck());
+    if (!W::shouldUpdate(userDataVenv, found, has, last, QCoreApplication::applicationVersion(),
+                         venvDir, QDateTime::currentMSecsSinceEpoch())) {
+        if (!has)
+            appendLog(u"[launcher] The user-data venv has no WebRTC packages (headset pairing "
+                      u"and stereo video stay off); the last update failed and is not tried "
+                      u"again yet. To add them: %1 -m pip install -r %2"_s
+                              .arg(pythonExe, requirements));
+        return;
     }
-
-    emit messageChanged(u"Backend environment ready."_s);
-    appendLog(u"[launcher] Bootstrap complete"_s);
-    return true;
+    // A venv made before 1.1.0 (setup_backend, or the first-run bootstrap)
+    // from requirements.txt alone: preferred over the bundled runtime, which
+    // has the packages, so pairing would be off after the upgrade.
+    appendLog(u"[launcher] The user-data venv has no WebRTC packages: adding them"_s);
+    emit messageChanged(u"Adding headset pairing to the backend environment…"_s);
+    if (pipInstall(pythonExe, backendDir, requirements) && pythonRuns(pythonExe, W::importCheck())) {
+        appendLog(u"[launcher] WebRTC packages added"_s);
+        return;
+    }
+    appendLog(u"[launcher] The WebRTC packages could not be added: headset pairing and stereo "
+              u"video stay off, the backend starts without them. Tried again with the next "
+              u"version or in a week; by hand: %1 -m pip install -r %2"_s
+                      .arg(pythonExe, requirements));
+    rememberWebrtcAttempt(venvDir);
 }
 
 // ---------------------------------------------------------------------------
@@ -917,6 +999,9 @@ void BackendLauncher::launchProcess()
         pythonSource = u"user-data venv (just bootstrapped)"_s;
         appendLog(u"[launcher] Using Python: %1  (%2)"_s.arg(pythonExe, pythonSource));
     }
+    // A user-data venv older than requirements-webrtc.txt: updated, or the
+    // bundled runtime's headset pairing would be lost to it (issue #305).
+    addWebrtcIfMissing(pythonExe, backendDir);
 
     // ── Extract host and port from the backend URL ────────────────────────────
     // The host comes from the same parse the locality gate used, so the address

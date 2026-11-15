@@ -118,6 +118,16 @@ private:
     /// false after emitting failed(). Only called when a supported interpreter
     /// was found but cannot import the backend's dependencies.
     bool bootstrapEnvironment(const QString &backendDir, const QString &pythonExe);
+    /// `pip install --upgrade -r @p requirements` with @p venvPython, its
+    /// output in the log and its package lines in messageChanged().
+    bool pipInstall(const QString &venvPython, const QString &backendDir,
+                    const QString &requirements);
+    /// The user-data venv the backend is about to run with has no WebRTC
+    /// packages (made before they existed): installs requirements-webrtc.txt
+    /// into it. Never fatal (BackendWebrtcEnv.h).
+    void addWebrtcIfMissing(const QString &pythonExe, const QString &backendDir);
+    /// A failed WebRTC install on @p venvDir, so it is not retried at every start.
+    void rememberWebrtcAttempt(const QString &venvDir);
 
     void doInitialHealthCheck();
     void onInitialHealthDone();

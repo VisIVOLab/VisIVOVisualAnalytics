@@ -46,4 +46,5 @@ private slots:
     void readsQuestOnUsbFromSystemProfiler();
     void guidanceNamesTheNextStep();
     void prefersTheLastHeadset();
+    void aReopenedSessionIsAnotherTarget();
 };

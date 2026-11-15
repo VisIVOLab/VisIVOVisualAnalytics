@@ -374,6 +374,7 @@ set(PROJECT_SOURCES
         src/auth/VisIVOUrlSchemeHandler.h
         src/app/BackendLauncher.cpp
         src/app/BackendLauncher.h
+        src/app/BackendWebrtcEnv.h
         src/app/BackendUrl.cpp
         src/app/BackendUrl.h
         src/app/LaunchOptions.cpp
@@ -1106,10 +1107,14 @@ if (WIN32)
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                     "${CMAKE_CURRENT_SOURCE_DIR}/backend/app"
                     "$<TARGET_FILE_DIR:${PROJECT_NAME}>/backend/app"
-            # The first-run bootstrap installs from <backend>/requirements.txt.
+            # The first-run bootstrap installs from <backend>/requirements.txt,
+            # then requirements-webrtc.txt (headset pairing, stereo video).
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${CMAKE_CURRENT_SOURCE_DIR}/backend/requirements.txt"
                     "$<TARGET_FILE_DIR:${PROJECT_NAME}>/backend/requirements.txt"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/backend/requirements-webrtc.txt"
+                    "$<TARGET_FILE_DIR:${PROJECT_NAME}>/backend/requirements-webrtc.txt"
             COMMENT "Copying backend next to the executable")
 else()
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD

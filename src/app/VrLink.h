@@ -74,6 +74,16 @@ struct Inputs
     bool remote{ false };
 };
 
+/// The same backend identity and dataset: only the sky placement may differ.
+/// A window that reopened its dataset in a new session (or got a refreshed
+/// token) is not the same target, and its headset dialog is rebuilt.
+inline bool sameTarget(const Inputs &a, const Inputs &b)
+{
+    return a.baseUrl == b.baseUrl && a.token == b.token && a.sessionId == b.sessionId
+            && a.datasetId == b.datasetId && a.path == b.path && a.kind == b.kind
+            && a.boxMpc == b.boxMpc && a.remote == b.remote;
+}
+
 struct Link
 {
     bool ok{ false };
