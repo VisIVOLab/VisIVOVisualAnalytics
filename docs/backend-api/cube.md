@@ -152,6 +152,105 @@ Errors: 404, 422 (not a cube, or a box that is empty after clamping:
 `Invalid subvolume ROI.` as `text/plain`), 500 (`text/plain`) for other
 failures.
 
+### `POST /v1/cube/region_level_bin`
+
+One box of one level of detail of the cube, for the desktop's progressive
+view of a large cube (issue #321): the coarse preview everywhere, finer blocks
+where the camera looks. Level 0 is the cube itself, and level `l` is the cube
+halved `l` times along every axis (rounded up), like the levels of its
+[brick pyramid](../brick-pyramid.md#levels-of-detail-for-the-desktop).
+
+Request (`CubeRegionLevelRequest`):
+
+```json
+{ "dataset_id": "ds_1a2b3c4d5e6f", "level": 2, "x0": 128, "x1": 255, "y0": 0, "y1": 127,
+  "z0": 64, "z1": 191, "ghost": 1, "source": "auto" }
+```
+
+- `level` is at least 0. The box is inclusive and given in voxels **of the
+  level**. It must lie inside the level, since it is not clamped.
+- `ghost` (0 or 1) adds that many samples of the neighbours on every side.
+  Where the ghost falls outside the cube, the edge sample is repeated.
+- `source` says where a level of 1 or more comes from:
+  - `auto` (the default): the cube's brick pyramid when one is complete and
+    current, otherwise a strided read. It never starts a build.
+  - `pyramid`: the pyramid only.
+  - `strided`: every `2^l`-th voxel of the cube, even when a pyramid exists.
+
+  Level 0 is always read from the cube's file, as `subvolume_bin` reads it. It
+  needs no pyramid and works for FITS cubes, VBT volume fields and PLUTO
+  variables alike.
+
+Response: the box with its ghosts as little-endian `float32` (z, y, x), with
+blank voxels as NaN. Headers:
+
+- `X-Visivo-Width`, `X-Visivo-Height` and `X-Visivo-Depth`: the box plus
+  `2 * ghost`.
+- `X-Visivo-Scalar-Type: float32` and `X-Visivo-Byte-Order: little`.
+- `X-Visivo-Range-Min` and `X-Visivo-Range-Max`: the finite range of the
+  samples sent.
+- `X-Visivo-Level`: the level of the box.
+- `X-Visivo-Source`: `cube` (level 0), `pyramid` or `strided`.
+- `X-Visivo-Level-Origin`: `x,y,z`, the level index of sample 0 with the ghost
+  included. It is `-1` at the cube's low border, where that sample repeats the
+  edge.
+- `X-Visivo-Voxel-Offset`: the distance, in cube voxels, from the first cube
+  voxel of a level voxel to the point the voxel stands for. Level voxel `i`
+  stands for cube voxel `i * 2^l + offset`.
+  - `pyramid`: `(2^l - 1) / 2`, the centre of the block it averages. The last
+    block of an odd-length axis is partial, so its centre is nearer.
+  - `cube` and `strided`: `0`.
+
+A strided level is a sample, not a block mean, so thin or noisy structure
+aliases. That is why the pyramid is preferred whenever it exists. The levels
+offered are those of the ready pyramid, or else those a default build would
+have (see `pyramid_status`).
+
+Like `subvolume_bin`, this route takes no per-session compute slot, so a client
+can request several blocks at once.
+
+Errors:
+
+- 409 (`text/plain`): `source: "pyramid"` was asked and the cube has no
+  complete and current pyramid.
+- 413 (`text/plain`): the box with its ghosts is larger than
+  `VISIVO_REGION_LEVEL_MAX_BYTES` (512 MiB by default).
+- 422 (`text/plain`): the level is not one of the cube's, the box is not
+  inside the level, or the cube dataset does not reduce to three axes.
+- 422 (JSON, the usual validation answer): the dataset is not a cube dataset,
+  or `level` or `ghost` is out of range.
+- 500 (`text/plain`): any other failure.
+
+### `POST /v1/cube/pyramid_status`
+
+The state of the cube's brick pyramid and the shapes of its levels, so the
+desktop can choose which levels to ask `region_level_bin` for. Request:
+`{"dataset_id": "...", "build": false}`. A build starts only with
+`build: true`, and only if the pyramid is missing, stale, or failed more than
+a minute ago.
+
+Response (`PyramidStatusResponse`):
+
+- `state`, one of:
+  - `ready`;
+  - `building`, with `progress` from 0 to 1 (the build may be on this backend
+    or on another one sharing the pyramid directory);
+  - `missing`;
+  - `failed`, with `error`;
+  - `unsupported`: no pyramid can hold this cube, because its last three axes
+    are not the cube the desktop reads (for example, an axis of one plane
+    among them).
+- `levels`, `brick` and `shapes`: the pyramid's own when it is ready,
+  otherwise those a default build would have. These are also the levels a
+  strided read offers. `shapes` lists `[z, y, x]` per level, level 0 first.
+- `bytes_estimate`: the pyramid file's size when it is ready, otherwise about
+  what a build writes (float32 levels plus brick statistics).
+- `preparing`: `true` while `building`.
+
+While a build is running, the answer is HTTP 202 with the same body, following
+the convention of the other routes that wait for a pyramid. Every other state
+returns 200.
+
 ### `POST /v1/cube/reduced_info` and `POST /v1/cube/reduced_bin`
 
 The reduced cube the [VR page](../user-guide/vr/index.md) renders on the

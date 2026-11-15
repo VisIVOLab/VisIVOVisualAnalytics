@@ -48,6 +48,8 @@
     "X-Visivo-Glyph-Cell",
     "X-Visivo-Height",
     "X-Visivo-Instance",
+    "X-Visivo-Level",
+    "X-Visivo-Level-Origin",
     "X-Visivo-Line-Points",
     "X-Visivo-Lines",
     "X-Visivo-Log-Range",
@@ -97,6 +99,7 @@
     "X-Visivo-Unplaced",
     "X-Visivo-Volume-Box",
     "X-Visivo-Volume-Shape",
+    "X-Visivo-Voxel-Offset",
     "X-Visivo-Warnings",
     "X-Visivo-Width"
   ]
