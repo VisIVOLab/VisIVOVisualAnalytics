@@ -110,6 +110,10 @@ X_COLOR_FIELD = "X-Visivo-Color-Field"
 X_COLOR_RANGE = "X-Visivo-Color-Range"
 X_COLOR_LOG = "X-Visivo-Color-Log"
 X_DATA_RANGE = "X-Visivo-Data-Range"
+# Each sampled row's size (issue #259: a smoothing length), its column and range.
+X_SIZE_FIELD = "X-Visivo-Size-Field"
+X_SIZE_RANGE = "X-Visivo-Size-Range"
+X_SIZE_NOTE = "X-Visivo-Size-Note"
 # A sky catalogue's placement (issues #260, #265): "frame,distance_mode,cosmology",
 # and the sources left out for want of a distance, or placed from cz < 1000 km/s.
 X_SKY = "X-Visivo-Sky"

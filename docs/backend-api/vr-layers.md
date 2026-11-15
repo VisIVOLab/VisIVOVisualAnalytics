@@ -14,10 +14,26 @@ described in [Server-side rendering](render.md) (`xr_pose`).
 `{"dataset_id"}`: a VBT point table (`/v1/vbt/open`) or a catalogue with
 sky or Cartesian positions (`/v1/catalogue/open`). Answers `valid`,
 `num_rows`, `fields` (the numeric columns), `axes` (the default X, Y, Z),
-`sky` (positions computed from RA/Dec, `@x`, `@y`, `@z`) and `format`:
+`sky` (positions computed from RA/Dec, `@x`, `@y`, `@z`), `format`:
 `vbt` for a VBT point table (a simulation's particles, which the VR page opens
-in its ray-traced style, issue #264) or `catalogue`. 422 for a dataset that is
-not a table of points.
+in its ray-traced style, issue #264) or `catalogue`, and `units` (issue #259:
+`{column: unit}` as a catalogue's file declares them, VOTable, FITS or IPAC;
+`{}` for a VBT, whose header carries none). 422 for a dataset that is not a
+table of points.
+
+## `POST /v1/points/series`
+
+`{"dataset_id"}` of a table of points (issue #259): the snapshots beside its
+file, the files in its folder whose names differ from it only in their number
+(the last run of digits in the name up to its first dot: `snap_010.bin.head`
+steps through `snap_002`, `snap_010`, `snap_1000`, and an extension's digits
+never count). Answers `valid`, `paths` (absolute, by number), `numbers`,
+`index` (of this file) and `count`; a series of one when the name has no
+number or the folder cannot be listed. Of a longer series, the 10 000 members
+nearest this one by number. A member the backend's data roots refuse (a
+symbolic link resolving outside them, a hidden name) is left out. Only names
+are read (`app/snapshot_series.py`); there is no time-series data model: each
+snapshot is opened as any table (`/v1/vbt/open`, `/v1/catalogue/open`).
 
 `sky` in the request (optional, issue #260) places a sky catalogue as the
 desktop window does: `{"frame": "fk5" | "galactic" | "supergalactic",
@@ -53,7 +69,8 @@ An even sample of the table within a budget.
 | `color_log` | false | code the colour column as log10 (it starts at the smallest positive value); `null`: the backend chooses (log for a positive column over more than three decades), and says which in `X-Visivo-Color-Log` |
 | `color_min`, `color_max` | the sample's range | the values codes 0 and 65535 stand for |
 | `max_points` | 2 000 000 | rows sent at most (1 to 10 000 000) |
-| `filters` | `[]` | numeric filters `{field, op, value}`, as the point session's |
+| `filters` | `[]` | numeric filters `{field, op, value}`, as the point session's; or a box `{box: {fields: [x, y, z], min: [...], max: [...]}, op: "inside" \| "outside"}` (issue #259: the rows inside it, bounds included, or all but those; the point session's `set_filters` takes the same) |
+| `size_field` | none | a column of sizes (a smoothing length, data units): one more code per row after the colours, the log10 of the size over `X-Visivo-Size-Range` (issue #259) |
 | `sky` | none | a sky catalogue's placement, as for `/v1/points/info` |
 
 The filters run over the whole table first; the rows are then those the
@@ -93,11 +110,16 @@ catalogue's rows without a position are never sampled, so the budget goes to
 rows that can be drawn, and `X-Visivo-Step` and the page's splat size count
 these (the point session's own sample and splats do the same);
 `X-Visivo-Total-Rows` is still every row of the table.
-
 The headset hub's `show` command and the app launch's `cube`
 (`/v1/vr/headset/command`, `/v1/vr/launch`) take the same placement as
 `sky`; the desktop's link and a pairing code carry it as `sky_frame`,
-`distance_mode` and `cosmology`.
+`distance_mode` and `cosmology`. With a size
+column, one more `uint16` per row after the colours: code c is the size
+10^(log10 lo + c / 65535 (log10 hi − log10 lo)) over `X-Visivo-Size-Range`
+(`lo,hi`, the smallest and largest positive finite size; a size that is not
+positive and finite gets the median, so no row is dropped for its size), and
+`X-Visivo-Size-Field`. A size column with no positive value sends no sizes
+(uniform splats) and says why in `X-Visivo-Size-Note`, instead of failing.
 
 ## `POST /v1/cube/catalogue_pixels`
 

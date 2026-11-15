@@ -254,3 +254,30 @@ test('review: a drag is an undo step only when it changed the crop', () => {
   const d = CG.startDrag(CG.hitCrop(f, a, r0), a, r0, f);
   assert.equal(CG.clipChanged(d.clip0, CG.endDrag(d, CG.dragCrop(d, r0, f), f)), false);
 });
+
+test('review (#259): a crop carried empty from another snapshot is not drawn or grabbed as the whole table', () => {
+  const box = { lo: [-10, 0, 5], hi: [30, 20, 15], centre: [10, 10, 10], side: 40 };
+  const f = CG.sceneFrame(box);
+  // state.clip is the whole box only as the empty crop's placeholder.
+  const g = CG.gizmo(f, WHOLE, { kind: 'face', id: 'x-max' }, { empty: true });
+  assert.equal(g.empty, true);
+  assert.equal(g.handles.length, 0, 'no dots: nothing to drag');
+  assert.equal(g.faces.length, 0, 'no fill: nothing inside it');
+  assert.equal(g.fillHot, false);
+  assert.equal(g.edges.length, 12, 'the table\'s outline, marked');
+  const normal = CG.gizmo(f, WHOLE);
+  assert.equal(normal.empty, false);
+  assert.notDeepEqual(g.edges[0].color, normal.edges[0].color, 'drawn in another colour than a crop');
+  // Pointed at a dot or the inside, it gives a new crop only.
+  const at = CG.handlePoints(WHOLE, f).find((h) => h.id === 'z-max');
+  const c = CG.toModel(f, at.p);
+  const r = ray([c[0], c[1], c[2] + 1], c);
+  assert.equal(CG.hitCrop(f, WHOLE, r).kind, 'face');
+  assert.equal(CG.hitCrop(f, WHOLE, r, { empty: true }).kind, 'new');
+  const cropped = { min: [0.2, 0.2, 0.2], max: [0.8, 0.8, 0.8] };
+  assert.equal(CG.hitCrop(f, cropped, ray([0.15, 0.08, 2], [0.15, 0.08, 0])).kind, 'inside');
+  assert.equal(CG.hitCrop(f, cropped, ray([0.15, 0.08, 2], [0.15, 0.08, 0]), { empty: true }).kind, 'new');
+  // A click there draws nothing: the crop as it was (the page keeps it empty).
+  const d = CG.startDrag({ kind: 'new' }, WHOLE, r, f);
+  assert.equal(CG.clipChanged(d.clip0, CG.endDrag(d, CG.dragCrop(d, r, f), f)), false);
+});

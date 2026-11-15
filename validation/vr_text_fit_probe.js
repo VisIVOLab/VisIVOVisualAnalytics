@@ -121,6 +121,7 @@
     const [HM, TP, WR, NT, ON, LC, WN, PC, RO, CO, SU, CG] = await Promise.all(['hand-menu.js', 'tool-palette.js', 'wrist.js',
       'notice.js', 'onboarding.js', 'lifecycle.js', 'windows.js', 'product-canvas.js', 'readout.js', 'controls.js', 'select-ui.js',
       'crop-gizmo.js'].map(imp));
+    const [CB, CM] = await Promise.all(['colour-bar.js', 'colormaps.js'].map(imp));
     const report = { cases: 0, texts: 0, problems: [], ellipses: [], perCanvas: {}, snaps: [] };
     const snap = opts.snap ? new RegExp(opts.snap) : null;
     const run = (canvas, name, size, draw, widgets = []) => {
@@ -157,6 +158,8 @@
         Object.assign(ctx, {
           cat: { loaded: true, show: true, labels: true, pins: true }, clipTool: 'box',
           lv: { sigma: true, hist: true, stretch: 'power' },
+          sim: { axes: ['velocity_x_with_a_long_name', 'y', 'stellar_mass_msun'], series: 120, seriesIndex: 57, sizeOn: true,
+            sizeField: 'SmoothingLength', style: 'splats', sel: { box: true, mode: 'outside' } },
           sel: { tool: 'lasso', seedMode: 'carve', lasso: true, box: true, applied: true },
           meas: { lasso: true, moment: 2, pvArmed: true, spectrum: true, pinned: true },
           pts: { fields, field: 'velocity_z', log: true, style: 'splats', budget: '12.0 M', box: true, fieldPage: 1 },
@@ -181,7 +184,10 @@
         pv: 'Trigger: the next point of the slice.', pvw: '3 px = 18.0″',
         cat: '⚠ 12 sources outside the cube (+2 more on the page)',
       };
-      if (kind === 'points') Object.assign(notes, { field: 'velocity_z (log scale)', scale: '-1.234e+03 to 2.345e+03', style: 'splat size 0.0123',
+      if (kind === 'points') Object.assign(notes, {
+        snapshot: 'snapshot_057_of_a_long_simulation_run.bin (58 of 120)', x: 'X = velocity_x_with_a_long_name [km/s]', y: 'Y = y [Mpc/h]',
+        z: 'Z = stellar_mass_msun [Msun]', size: 'σ = SmoothingLength / √2 × size, 1.234e-03 to 4.567e+01',
+        selection: 'Inside hidden: velocity_x_with_a_long_name -1234 to 2345, y 12.3 to 45.6, stellar_mass_msun 1e+08 to 1e+12', field: 'velocity_z (log scale)', scale: '-1.234e+03 to 2.345e+03', style: 'splat size 0.0123',
         intensity: '100 %', shown: '1.23 M drawn of 4.00 M sampled, 11.52 M rows', crop0: '-12.34 to 45.67', crop1: '-12.34 to 45.67', crop2: '-12.34 to 45.67' });
       if (kind === 'flow') Object.assign(notes, { speed: '12.34 to 1234 km/s', arrows: '× 1.41', seeds: '5000 seeds asked, 4821 streamlines',
         box: 'box 1234 Mpc (read-only)', lines: '4821 streamlines, 32768 arrows, grid 64×64×64' });
@@ -345,6 +351,12 @@
         s.panelTexture();
       });
     }
+
+    // ── The colour bar of a point table or a field (#259) ──
+    for (const bar of [
+      { lo: 1e8, hi: 1e12, log: true, title: 'log stellar_mass_msun_with_a_long_name [1e10 Msun/h]', ticks: [1e8, 1e9, 1e10, 1e11, 1e12] },
+      { lo: -1234.5, hi: 2345.6, log: false, title: 'velocity_z (no unit in the file)', ticks: [-1000, 0, 1000, 2000] },
+    ]) run('colour bar', bar.title, CB.BAR_PX, (c) => CB.drawColourBar(c, { ...bar, lut: CM.colormapTable('viridis') }));
 
     // ── The readout card ──
     for (const lines of [

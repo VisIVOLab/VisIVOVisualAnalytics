@@ -63,13 +63,13 @@ export const MENU_BEHIND = (90 * Math.PI) / 180;
 export const TABS = [
   ['display', 'Display'], ['range', 'Range'], ['select', 'Select'], ['measure', 'Measure'], ['more', 'More'],
 ];
-/** Every page: the tabs', the cube's Levels (under Display) and the
- *  technical settings (?debug only, under More). */
-export const PAGES = [...TABS.map((t) => t[0]), 'levels', 'debug'];
+/** Every page: the tabs', the cube's Levels and a point table's Data (under
+ *  Display) and the technical settings (?debug only, under More). */
+export const PAGES = [...TABS.map((t) => t[0]), 'levels', 'data', 'debug'];
 /** The sub-pages and the tab each belongs to. */
-export const SUB_PAGES = { levels: 'display', debug: 'more' };
+export const SUB_PAGES = { levels: 'display', data: 'display', debug: 'more' };
 /** The mode a tab sets (null: the mode stays). */
-export const TAB_MODE = { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, levels: 'explore', debug: null };
+export const TAB_MODE = { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, levels: 'explore', data: 'explore', debug: null };
 /** The tab of a mode, for the page shown when the menu opens. */
 export const MODE_TAB = { explore: 'display', clip: 'range', select: 'select' };
 export const KINDS = ['cube', 'points', 'flow', 'none'];
@@ -107,7 +107,12 @@ export const WHY = {
   cubeOnly: 'Cubes only: a point table or a velocity field has no channels.',
   noSpectral: 'A point table or a velocity field has no spectral axis.',
   cubeZ: 'On a cube the third axis is the range above.',
-  particlesSelect: 'Selections on particles and fields come later (#259).',
+  particlesSelect: 'A point table has the Box select; a field none yet.',
+  cubeTool: 'Cubes only: a point table has the Box select.',
+  noSeries: 'One file: no numbered snapshots beside it.',
+  noSizeField: 'No size column chosen: ▸ picks one.',
+  boxFirst: 'Draw a box with the trigger first.',
+  pointsOnly: 'Point tables only.',
   boxApply: 'Isolate and Remove need a Kinematic Lasso selection.',
   applyFirst: 'Isolate or Remove first.',
   measureCube: 'Measure works on a cube.',
@@ -129,6 +134,9 @@ export function defaultContext() {
     sel: { tool: 'lasso', seedMode: 'new', lasso: false, box: false, applied: false },
     meas: { lasso: false, moment: null, pvArmed: false, spectrum: false, pinned: false },
     lv: { sigma: false, hist: false, stretch: 'sqrt' },
+    // A point table's simulation controls (#259): {axes, series, seriesIndex,
+    // sizeOn, sizeField, style, sel: {box, mode}}, or null.
+    sim: null,
     pts: { fields: [], field: null, log: false, style: 'points', budget: '', box: true, fieldPage: 0 },
     flow: { stream: true, arrows: true, box: true },
     more: { leftHanded: false, labels: true, haptics: true, hud: true },
@@ -210,9 +218,11 @@ function displayPoints(ctx) {
   w.push(btn('pt-smaller', cell(3), 'Size −', { tip: 'Smaller points or splats' }));
   w.push(btn('pt-larger', cell(4), 'Size +', { tip: 'Larger points or splats' }));
   w.push({ id: 'pt-intensity', kind: 'slider', rect: [X0, rowY(4), RIGHT - X0, WH], disabled: splats ? '' : WHY.splatsOnly });
-  w.push(btn('pt-budget', span(5, 3, 0), `${p.budget || '?'} ▸`, { tip: 'Particles sampled: the next budget' }));
-  w.push(btn('pt-reload', span(5, 3, 1), 'Sample again', { tip: 'Sample the table again' }));
-  w.push(btn('pt-box', span(5, 3, 2), 'Box and ticks', { on: !!p.box, tip: 'The box and its ticks' }));
+  w.push(btn('pt-budget', span(5, 4, 0), `${p.budget || '?'} ▸`, { tip: 'Particles sampled: the next budget' }));
+  w.push(btn('pt-reload', span(5, 4, 1), 'Again', { tip: 'Sample again: the table sampled anew' }));
+  w.push(btn('pt-box', span(5, 4, 2), 'Box', { on: !!p.box, tip: 'The box and its ticks' }));
+  // Snapshots, X/Y/Z columns, splat sizes (#259).
+  w.push(btn('pt-data', span(5, 4, 3), 'Data ▸', { tip: 'Data: snapshots, X/Y/Z columns, splat sizes' }));
   return { rows, widgets: w, status: 6 };
 }
 
@@ -261,6 +271,36 @@ function levelsPage(ctx) {
   return { rows, widgets: w, status: 6 };
 }
 
+/** A point table's Data page (#259): the snapshot beside it, the X/Y/Z
+ *  columns, the splats sized by a column (a smoothing length). */
+function dataPage(ctx) {
+  const sim = ctx.sim;
+  const notPts = ctx.kind === 'points' && sim ? '' : WHY.pointsOnly;
+  const rows = [['snapshot', 'Snapshot'], ['x', 'X'], ['y', 'Y'], ['z', 'Z'], ['size', 'Splat size'], ['back', '']];
+  // While the series is still asked for, a press waits for it (layers.js).
+  const pending = !notPts && !!sim.seriesPending;
+  const one = notPts || (pending || sim.series > 1 ? '' : WHY.noSeries);
+  const w = [
+    btn('snap-prev', span(0, 2, 0), '◂ Previous', { disabled: one || (pending || sim.seriesIndex > 0 ? '' : 'The first snapshot.'), tip: 'The snapshot before this one' }),
+    btn('snap-next', span(0, 2, 1), 'Next ▸', { disabled: one || (pending || sim.seriesIndex < sim.series - 1 ? '' : 'The last snapshot.'), tip: 'The snapshot after this one' }),
+  ];
+  ['x', 'y', 'z'].forEach((a, i) => {
+    const name = sim && sim.axes ? sim.axes[i] : '';
+    w.push(btn(`axis:${i}:prev`, [X0, rowY(1 + i), 110, WH], '◂', { disabled: notPts, tip: `${a.toUpperCase()}: the column before` }));
+    w.push(btn(`axis:${i}`, [X0 + 120, rowY(1 + i), RIGHT - X0 - 240, WH], name || '—', { disabled: notPts, free: true, tip: `${a.toUpperCase()}: ${name}` }));
+    w.push(btn(`axis:${i}:next`, [RIGHT - 110, rowY(1 + i), 110, WH], '▸', { disabled: notPts, tip: `${a.toUpperCase()}: the column after` }));
+  });
+  const splats = !!sim && sim.style !== 'points';
+  const noSplats = notPts || (splats ? '' : WHY.splatsOnly);
+  w.push(btn('size:uniform', span(4, 3, 0), 'Uniform', { group: 'size', on: !!sim && !sim.sizeOn, disabled: noSplats, tip: 'Uniform: one size from the mean spacing' }));
+  w.push(btn('size:field', span(4, 3, 1), sim && sim.sizeField ? `By ${sim.sizeField}` : 'By column', { group: 'size', on: !!sim && sim.sizeOn, free: true,
+    disabled: noSplats || (sim.sizeField ? '' : WHY.noSizeField), tip: 'By a column: each splat as wide as its smoothing length' }));
+  w.push(btn('size-next', span(4, 3, 2), 'Column ▸', { disabled: notPts, tip: 'The size column: the next one' }));
+  w.push(btn('axes-default', [X0, rowY(5), 300, WH], 'Default axes', { disabled: notPts, tip: 'The table\'s own X/Y/Z' }));
+  w.push(btn('data-back', [RIGHT - 250, rowY(5), 250, WH], '◂ Display'));
+  return { rows, widgets: w, status: 6 };
+}
+
 function rangePage(ctx) {
   const cube = ctx.kind === 'cube';
   const rows = [['slab', ctx.spectralName], ['trigger', 'Trigger'], ['crop0', 'Crop x'], ['crop1', 'Crop y'], ['crop2', 'Crop z'],
@@ -286,17 +326,28 @@ function selectPage(ctx) {
   const cube = ctx.kind === 'cube';
   const s = ctx.sel;
   const rows = [['tool', 'Tool'], ['lasso', 'Lasso'], ['selection', 'Selection'], ['result', 'Result']];
-  const notCube = cube ? '' : WHY.particlesSelect;
+  // A point table has the Box select (#259): a box drawn with the trigger, then
+  // only its inside shown, or all but it.
+  const pts = ctx.kind === 'points';
+  const notCube = cube ? '' : pts ? WHY.cubeTool : WHY.particlesSelect;
   const w = [
     // The tool palette's order and icons (tool-palette.js), so both places look alike.
     btn('tool:lasso', span(0, 3, 0), 'Kinematic Lasso', { group: 'tool', value: 'lasso', icon: 'lasso', on: cube && s.tool === 'lasso', disabled: notCube, tip: 'Kinematic Lasso: a connected object' }),
     btn('tool:probe', span(0, 3, 1), cube ? 'Spectrum probe' : 'Probe', { group: 'tool', value: 'probe', icon: 'probe', on: cube && s.tool === 'probe', disabled: notCube, tip: 'Spectrum probe: the spectrum where you point' }),
-    btn('tool:box', span(0, 3, 2), 'Box region', { group: 'tool', value: 'box', icon: 'box', on: cube && s.tool === 'box', disabled: notCube, tip: 'Box region: statistics between two corners' }),
+    btn('tool:box', span(0, 3, 2), pts ? 'Box select' : 'Box region', { group: 'tool', value: 'box', icon: 'box', on: (cube && s.tool === 'box') || pts,
+      disabled: pts ? '' : notCube, tip: pts ? 'Box select: drag with the trigger across the particles' : 'Box region: statistics between two corners' }),
   ];
   [['new', 'New'], ['add', 'Add'], ['carve', 'Subtract']].forEach(([v, label], k) => {
     w.push(btn(`seed:${v}`, span(1, 3, k), label, { group: 'seed', value: v, on: cube && s.tool === 'lasso' && s.seedMode === v, disabled: notCube }));
   });
-  w.push(btn('sel-clear', [X0, rowY(2), 240, WH], 'Clear', { disabled: notCube }));
+  w.push(btn('sel-clear', [X0, rowY(2), 240, WH], 'Clear', { disabled: pts ? '' : notCube }));
+  const sim = ctx.sim;
+  if (pts && sim && sim.sel && sim.sel.box) {
+    const m = sim.sel.mode;
+    w.push(btn('psel-inside', span(3, 3, 0), 'Show inside', { group: 'psel', on: m === 'inside', tip: 'Only the particles inside the box' }));
+    w.push(btn('psel-outside', span(3, 3, 1), 'Hide inside', { group: 'psel', on: m === 'outside', tip: 'Every particle but those inside the box' }));
+    w.push(btn('psel-all', span(3, 3, 2), 'Show all', { group: 'psel', on: m === 'all', tip: 'Every particle, the box kept' }));
+  }
   // The selection's actions, only while there is one (#257).
   if (cube && (s.lasso || s.box)) {
     const why = s.lasso ? '' : WHY.boxApply;
@@ -304,7 +355,8 @@ function selectPage(ctx) {
     w.push(btn('remove', span(3, 3, 1), 'Remove', { disabled: why }));
     w.push(btn('show-applied', span(3, 3, 2), 'Show result cube', { disabled: why || (s.applied ? '' : WHY.applyFirst), tip: 'Show result cube: the isolated or remaining cube' }));
   }
-  return { rows, widgets: w, status: 4, placeholder: { result: 'Isolate, Remove and Show result cube appear once something is selected.' } };
+  return { rows, widgets: w, status: 4, placeholder: { result: pts ? 'Show inside, Hide inside and Show all appear once a box is drawn.'
+    : 'Isolate, Remove and Show result cube appear once something is selected.' } };
 }
 
 function measurePage(ctx) {
@@ -380,6 +432,7 @@ export function pageSpec(page, ctx = defaultContext()) {
   let s;
   if (page === 'display') s = ctx.kind === 'points' ? displayPoints(ctx) : ctx.kind === 'flow' ? displayFlow(ctx) : displayCube(ctx);
   else if (page === 'levels') s = levelsPage(ctx);
+  else if (page === 'data') s = dataPage(ctx);
   else if (page === 'range') s = rangePage(ctx);
   else if (page === 'select') s = selectPage(ctx);
   else if (page === 'measure') s = measurePage(ctx);
@@ -453,7 +506,7 @@ export function pressesTo(id, start, ctx) {
   if (usable(start)) return 1;
   if (TABS.some(([t]) => usable(t))) return 2;
   // A sub-page is one press from its tab's page: two when the menu opens there.
-  if (usable('levels')) return start === 'display' ? 2 : 3;
+  for (const sub of ['levels', 'data']) if (usable(sub)) return start === SUB_PAGES[sub] ? 2 : 3;
   if (ctx.debug && usable('debug')) return 3;
   return Infinity;
 }
