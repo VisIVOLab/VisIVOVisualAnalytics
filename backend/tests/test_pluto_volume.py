@@ -458,7 +458,11 @@ async def test_the_reduced_cube_of_a_variable(client, auth_headers, tmp_path, mo
     fields = _fields()
     first = write_pluto(tmp_path, fields, precision="flt", endian="big")
     opened = await _open(client, auth_headers, ps.pluto_ref(first, "prs"))
-    body = {"dataset_id": opened["dataset_id"], "factor_xy": 2, "factor_z": 2}
+    # Linear on purpose: a PLUTO field is a simulation volume, so under the
+    # default ``auto`` a positive field spanning > 3 decades comes back as log10
+    # codes (#317); that case is checked at the end.
+    body = {"dataset_id": opened["dataset_id"], "factor_xy": 2, "factor_z": 2,
+            "scale": "linear"}
     for _ in range(480):
         r = await client.post("/v1/cube/reduced_bin", json=body, headers=opened["headers"])
         if r.status_code != 202:
@@ -477,3 +481,19 @@ async def test_the_reduced_cube_of_a_variable(client, auth_headers, tmp_path, mo
     r = await client.post("/v1/cube/reduced_bin", json={**body, "source": "cube"},
                           headers=opened["headers"])
     assert r.status_code == 200 and r.headers["X-Visivo-Source"] == "cube"
+    # Under the default scale the simulation field is coded as log10 when its
+    # positive values span more than three decades; decoded, it is the same
+    # block mean within half a code of the log range.
+    auto = {k: v for k, v in body.items() if k != "scale"}
+    r = await client.post("/v1/cube/reduced_bin", json=auto, headers=opened["headers"])
+    assert r.status_code == 200, r.text
+    scale = r.headers["X-Visivo-Scale"]
+    if scale == "log":
+        llo, lhi = (float(v) for v in r.headers["X-Visivo-Log-Range"].split(","))
+        got = cube_reduce.dequantise(r.content, (d, h, w), llo, lhi, "uint8", scale="log")
+        ok = np.isfinite(got) & (want > 0)
+        assert ok.any()
+        err = np.max(np.abs(np.log10(got[ok]) - np.log10(want[ok])))
+        assert err <= (lhi - llo) / 254 / 2 + 1e-5
+    else:
+        assert scale == "linear"
