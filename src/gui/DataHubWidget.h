@@ -5,6 +5,7 @@
 #include "OpenJobMerge.h"
 
 #include <QWidget>
+#include <QByteArray>
 #include <QPointer>
 
 class QFrame;
@@ -175,6 +176,12 @@ QFrame *makeActionCard(const QString &iconKind, const QString &title,
     QPointer<QVBoxLayout> m_exportsItemsLayout;
     QPointer<QLabel>      m_exportsCountLabel;
     QPointer<QLabel>      m_exportsEmptyLabel;
+    // The listing the rows show (WorkspaceExportsView.h): a refresh whose
+    // listing is unchanged leaves the rows alone (#312). One listing request
+    // at a time; a refresh asked meanwhile runs once it is answered.
+    QByteArray m_exportsSignature;
+    bool       m_exportsRefreshing = false;
+    bool       m_exportsRefreshAgain = false;
 };
 
 #endif // DataHubWidget_h

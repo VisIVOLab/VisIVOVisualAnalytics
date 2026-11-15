@@ -541,6 +541,7 @@ set(PROJECT_SOURCES
         src/gui/SelectionMarkerSize.h
         src/app/FilePreview.h
         src/app/MissingRoute.h
+        src/app/WorkspaceExportsView.h
         src/gui/CubeVRController.cpp
         src/gui/CubeVRController.h
         src/gui/VrHeadsetDialog.cpp

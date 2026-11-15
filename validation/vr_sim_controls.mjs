@@ -57,7 +57,7 @@ let failed = 0;
 const check = (name, ok, detail = '') => { if (!ok) failed++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`); };
 
 const backend = spawn(PY, ['-m', 'uvicorn', 'app.main:app', '--host', 'localhost', '--port', String(PORT), '--log-level', 'warning'],
-  { cwd: join(REPO, 'backend'), env: { ...process.env, VISIVO_TOKEN: TOKEN, PYTHONUNBUFFERED: '1' },
+  { cwd: join(REPO, 'backend'), env: { ...process.env, VISIVO_TOKEN: TOKEN, PYTHONUNBUFFERED: '1', VISIVO_EXPORTS_DIR: join(OUT, 'exports') },
     stdio: ['ignore', openSync(join(OUT, 'backend.log'), 'w'), openSync(join(OUT, 'backend.log'), 'a')] });
 const gl = GL === 'metal' ? ['--use-angle=metal'] : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--use-gl=angle'];
 let chrome = null;

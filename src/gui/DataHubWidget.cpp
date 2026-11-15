@@ -884,8 +884,10 @@ void DataHubWidget::setBackendUrl(const QString &url, const QString &token)
 {
     // The client's record of its opens is matched to the backend's jobs by
     // time: another backend's jobs are not its opens.
-    if (url != this->backendUrl || token != this->backendToken)
+    if (url != this->backendUrl || token != this->backendToken) {
         this->m_clientOpens.clear();
+        this->m_exportsSignature.clear();   // another backend's exports: rebuild
+    }
     this->backendUrl   = url;
     this->backendToken = token;
 

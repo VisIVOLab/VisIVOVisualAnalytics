@@ -37,7 +37,7 @@
 // runs); VR_CHROME_ARGS passes more flags to Chrome (e.g. --vmodule logging).
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, openSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, openSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -146,10 +146,16 @@ fits.writeto(sys.argv[1], d.astype(np.float32), h, overwrite=True)
 // ── The backend ─────────────────────────────────────────────────────────────
 let backend = null;
 let backendLog = join(OUT, 'backend.log');
+// The products the page saves (spectra, moments, masks, classified tables) go
+// to this run's own workspace, never the user's ~/.visivo/exports (#312). Kept
+// across the backend restarts of one run, emptied when the next run starts.
+const EXPORTS = join(OUT, 'vr_lifecycle_exports');   // a name of its own: an --out may hold anything
+rmSync(EXPORTS, { recursive: true, force: true });
+mkdirSync(EXPORTS, { recursive: true });
 async function startBackend(token) {
   const fd = openSync(backendLog, 'a');
   // Measurement records (issue #224) go to this run's own directory.
-  const env = { ...process.env, VISIVO_TOKEN: token, PYTHONUNBUFFERED: '1', VISIVO_VR_MEASURE_DIR: join(OUT, 'measurements') };
+  const env = { ...process.env, VISIVO_TOKEN: token, PYTHONUNBUFFERED: '1', VISIVO_VR_MEASURE_DIR: join(OUT, 'measurements'), VISIVO_EXPORTS_DIR: EXPORTS };
   const proc = spawn(PY, ['-m', 'uvicorn', 'app.main:app', '--host', 'localhost', '--port', String(PORT), '--log-level', 'info'],
     { cwd: join(REPO, 'backend'), env, stdio: ['ignore', fd, fd] });
   for (let i = 0; i < 600; i++) {
