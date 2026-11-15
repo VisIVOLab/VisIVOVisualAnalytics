@@ -46,15 +46,16 @@ const ROI_FROM_GROW = 'with origin_x, origin_y, origin_z from its X-Visivo-Origi
   + 'width, height, depth from X-Visivo-Width, X-Visivo-Height, X-Visivo-Depth';
 
 /** The replay of a lasso selection made in the headset: the grow, then the
- *  statistics of the mask it returns (the headset makes no new cube). */
+ *  statistics of the mask it returns (the headset makes no new cube). The
+ *  statistics take the grow's noise sigma when it has one (issue #280: the
+ *  flux uncertainty and S/N), else measure the noise around the selection. */
 export function lassoReplay(growRequest) {
-  return [
-    { route: '/v1/cube/kinematic_select_bin', request: growRequest },
-    {
-      route: '/v1/cube/mask_stats_bin',
-      body: `the previous call's response body, the selection as a little-endian float32 mask, posted back ${ROI_FROM_GROW}`,
-    },
-  ];
+  const stats = {
+    route: '/v1/cube/mask_stats_bin',
+    body: `the previous call's response body, the selection as a little-endian float32 mask, posted back ${ROI_FROM_GROW}`,
+  };
+  if (growRequest.sigma > 0) stats.request = { sigma: growRequest.sigma };
+  return [{ route: '/v1/cube/kinematic_select_bin', request: growRequest }, stats];
 }
 
 /** A number as Qt's QString::arg(v, 0, 'g', precision) writes it: %g with
@@ -108,16 +109,19 @@ export function probeOrigin(px) {
 }
 
 /** The query of POST /v1/cube/mask_stats_bin for every voxel of the box
- *  [[x0, x1], [y0, y1], [z0, z1]] (inclusive), with no body (box=true). */
-export function boxStatsRequest(range) {
+ *  [[x0, x1], [y0, y1], [z0, z1]] (inclusive), with no body (box=true);
+ *  `sigma` > 0 the session's noise for the flux uncertainty and S/N. */
+export function boxStatsRequest(range, sigma = 0) {
   const [[x0, x1], [y0, y1], [z0, z1]] = range;
-  return { origin_x: x0, origin_y: y0, origin_z: z0,
+  const req = { origin_x: x0, origin_y: y0, origin_z: z0,
     width: x1 - x0 + 1, height: y1 - y0 + 1, depth: z1 - z0 + 1, box: true };
+  if (sigma > 0) req.sigma = Number(sigma);
+  return req;
 }
 
 /** The replay of a box: one call, no body. */
-export function boxReplay(range) {
-  return [{ route: '/v1/cube/mask_stats_bin', request: boxStatsRequest(range),
+export function boxReplay(range, sigma = 0) {
+  return [{ route: '/v1/cube/mask_stats_bin', request: boxStatsRequest(range, sigma),
     body: 'none: box=true measures every voxel of the box' }];
 }
 

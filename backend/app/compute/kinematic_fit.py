@@ -31,6 +31,8 @@ from typing import Any
 
 import numpy as np
 
+from .hi_measures import line_widths, second_moments
+
 C_KMS = 299792.458
 
 # A ring is fitted only where it has enough pixels to constrain two parameters
@@ -95,9 +97,25 @@ def cube_velocity_axis(dataset, depth: int) -> dict[str, Any]:
         raise ValueError(
             "The spectral axis cannot be expressed in km/s (a frequency axis needs RESTFRQ).")
     edges, _, _ = velocity_axis_kms(channel_edges(coords), unit, atype, restfreq)
-    convention = ("optical (cz), from frequency" if _is_frequency(unit)
-                  else f"as in the cube ({atype or unit})")
-    return {"vel": vel, "dvk": np.abs(np.diff(edges)), "unit": vunit, "convention": convention}
+    name, convention = velocity_convention_label(unit, atype, dataset.header)
+    from .hi_measures import spectral_frame  # noqa: PLC0415
+    frame, frame_source = spectral_frame(dataset.header.get("SPECSYS"), atype)
+    return {"vel": vel, "dvk": np.abs(np.diff(edges)), "unit": vunit, "convention": convention,
+            "convention_name": name, "frame": frame, "frame_source": frame_source}
+
+
+def velocity_convention_label(unit: str, ctype: str, header) -> tuple[str, str]:
+    """(name, label) of the velocity convention of a spectral axis expressed in
+    km/s: ``optical (cz), from frequency and RESTFRQ`` for a frequency axis;
+    for a velocity axis the convention its CTYPE names (an AIPS VELO-HEL
+    without VELREF is optical, VELREF > 256 radio, as wcslib reads it;
+    ``sofia_suggest.velocity_convention``). One label for the reduced axis,
+    the kinematic fit and the selection statistics."""
+    if _is_frequency(unit):
+        return "optical", "optical (cz), from frequency and RESTFRQ"
+    from .sofia_suggest import velocity_convention  # noqa: PLC0415
+    name, why = velocity_convention(ctype or "", header.get("VELREF") if header is not None else None)
+    return name, f"{name} ({why})"
 
 
 def _is_frequency(unit: str) -> bool:
@@ -140,17 +158,10 @@ def source_measures(data: np.ndarray, mask: np.ndarray, vel: np.ndarray, dvk: np
 
     spectrum = np.nansum(d, axis=(1, 2)) / beam                   # Jy per channel
     flux = float(np.nansum(spectrum * dvk))                       # Jy km/s
-    peak = float(np.nanmax(spectrum)) if spectrum.size else float("nan")
-
-    def width_at(frac: float) -> tuple[float, float]:
-        sel = spectrum > frac * peak
-        if not np.any(sel):
-            return float("nan"), float("nan")
-        lo, hi = float(vel[sel].min()), float(vel[sel].max())
-        return hi - lo, 0.5 * (lo + hi)
-
-    w20, mid20 = width_at(0.2)
-    w50, _ = width_at(0.5)
+    # SoFiA-2's widths, interpolated between channels (hi_measures.line_widths):
+    # the one definition the headset's selection measurements use too.
+    widths = line_widths(spectrum, vel)
+    w20, mid20, w50 = widths["w20"], widths["vsys"], widths["w50"]
     return {"m0": m0, "m1": m1, "spectrum": spectrum, "flux": flux,
             "flux_is_jy": beam_px is not None and beam_px > 0,
             "w20": w20, "w50": w50, "vsys_w20": mid20,
@@ -158,21 +169,6 @@ def source_measures(data: np.ndarray, mask: np.ndarray, vel: np.ndarray, dvk: np
 
 
 # ── geometry ───────────────────────────────────────────────────────────────────
-
-def _second_moments(weights: np.ndarray, xx: np.ndarray, yy: np.ndarray):
-    tot = float(weights.sum())
-    cx = float((weights * xx).sum() / tot)
-    cy = float((weights * yy).sum() / tot)
-    dx, dy = xx - cx, yy - cy
-    mxx = float((weights * dx * dx).sum() / tot)
-    myy = float((weights * dy * dy).sum() / tot)
-    mxy = float((weights * dx * dy).sum() / tot)
-    common, diff = mxx + myy, math.hypot(mxx - myy, 2 * mxy)
-    a = math.sqrt(max(0.5 * (common + diff), 1e-9))
-    b = math.sqrt(max(0.5 * (common - diff), 1e-9))
-    theta = 0.5 * math.atan2(2 * mxy, mxx - myy)
-    return cx, cy, a, b, theta
-
 
 def geometry_from_m0(m0: np.ndarray) -> dict[str, float]:
     """Centre, morphological PA, axis ratio, inclination (cos i = b/a) and disc
@@ -182,7 +178,7 @@ def geometry_from_m0(m0: np.ndarray) -> dict[str, float]:
     if not np.any(good):
         raise ValueError("The selection has no positive moment-0 pixels.")
     yy, xx = np.mgrid[0:ny, 0:nx]
-    cx, cy, a, b, theta = _second_moments(np.where(good, m0, 0.0), xx, yy)
+    cx, cy, a, b, theta = second_moments(np.where(good, m0, 0.0), xx, yy)
     ratio = b / a
     return {"x0": cx, "y0": cy, "pa_morph": float((math.degrees(theta) + 90.0) % 180.0),
             "axis_ratio": float(ratio),
@@ -202,7 +198,7 @@ def isophotal_inclinations(m0: np.ndarray, min_pix: int = 60) -> tuple[np.ndarra
         sel = good & (m0 >= lev)
         if int(sel.sum()) < min_pix:
             continue
-        _, _, a, b, _ = _second_moments(np.where(sel, m0, 0.0), xx, yy)
+        _, _, a, b, _ = second_moments(np.where(sel, m0, 0.0), xx, yy)
         radii.append(2.0 * a)
         incls.append(float(math.degrees(math.acos(min(max(b / a, 0.0), 1.0)))))
     r, i = np.asarray(radii), np.asarray(incls)

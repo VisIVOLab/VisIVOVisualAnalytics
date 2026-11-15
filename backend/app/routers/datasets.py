@@ -11,7 +11,6 @@ from datetime import datetime, timezone
 import base64
 import urllib.error as _urllib_error
 import urllib.request as _urllib_request
-import numpy as np
 import pandas as pd
 from astropy.io import fits
 from ..schemas import *
@@ -224,31 +223,15 @@ def _celestial_wcs_for(path: str, mtime_ns: int):
 
 
 def _pixel_to_sky(path: str, x: float, y: float, z: float) -> PixelToSkyResponse:
-    from astropy.coordinates import SkyCoord  # noqa: PLC0415
-    from astropy.wcs.utils import wcs_to_celestial_frame  # noqa: PLC0415
-    import astropy.units as u  # noqa: PLC0415
+    from ..fits_dataset import pixel_to_icrs  # noqa: PLC0415
 
     wcs, axis_map = _celestial_wcs_for(path, Path(path).stat().st_mtime_ns)
     if wcs is None or not wcs.has_celestial:
         return PixelToSkyResponse(valid=False, error="The dataset has no sky coordinates.")
-    # Every FITS axis gets a pixel: the viewer's x, y, z where they map, 0 on
-    # a degenerate axis. The full WCS is used (SIP and other distortions,
-    # rotation, CD/PC), not its celestial axes alone, so a cube whose sky
-    # axes depend on the channel is handled too.
-    pixel = [0.0] * wcs.pixel_n_dim
-    for client_axis, value in ((1, x), (2, y), (3, z)):
-        fits_axis = axis_map.get(client_axis)
-        if fits_axis is not None and fits_axis - 1 < len(pixel):
-            pixel[fits_axis - 1] = float(value)
-    world = wcs.all_pix2world(np.array([pixel], dtype=np.float64), 0)[0]
-    lon = float(world[wcs.wcs.lng])
-    lat = float(world[wcs.wcs.lat])
-    if not (np.isfinite(lon) and np.isfinite(lat)):
+    sky = pixel_to_icrs(wcs, axis_map, x, y, z)
+    if sky is None:
         return PixelToSkyResponse(valid=False, error="That pixel is off the projection.")
-    frame = wcs_to_celestial_frame(wcs.celestial)
-    sky = SkyCoord(lon * u.deg, lat * u.deg, frame=frame).icrs
-    return PixelToSkyResponse(valid=True, ra_deg=float(sky.ra.deg), dec_deg=float(sky.dec.deg),
-                              frame=frame.name, lon_deg=lon % 360.0, lat_deg=lat)
+    return PixelToSkyResponse(valid=True, **sky)
 
 
 @router.post("/v1/datasets/pixel_to_sky", response_model=PixelToSkyResponse, tags=["datasets"])

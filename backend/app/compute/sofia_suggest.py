@@ -248,7 +248,7 @@ def velocity_convention(ctype: str, velref: Any = None) -> tuple[str, str]:
         return "radio", "VRAD"
     if ctype.startswith(("VOPT", "ZOPT", "FELO")):
         return "optical", ctype[:4]
-    if ctype.startswith("VELO"):
+    if ctype == "VELO" or ctype.startswith("VELO-"):
         suffix = ctype[5:] if len(ctype) > 5 else ""
         if not suffix or any(ch.isdigit() for ch in suffix):
             return "relativistic", "VELO, FITS Paper III"
@@ -259,7 +259,8 @@ def velocity_convention(ctype: str, velref: Any = None) -> tuple[str, str]:
         if ref is not None and ref > 256:
             return "radio", f"AIPS {ctype}, VELREF={ref}"
         return "optical", f"AIPS {ctype}" + (f", VELREF={ref}" if ref is not None else ", no VELREF")
-    return "optical", f"{ctype or 'velocity'} taken as optical"
+    # A non-standard CTYPE (VELOCITY, VEL): no convention stated.
+    return "optical", f"{ctype or 'velocity'}, convention not stated: taken as optical"
 
 
 def channel_width_kms(coords: np.ndarray, unit: str, ctype: str,
