@@ -621,3 +621,57 @@ def test_an_unknown_splat_rule_is_refused_whole(tmp_path):
     finally:
         loop.run_until_complete(s.close())
         loop.close()
+
+
+@pytest.mark.parametrize("rule, cap", [(None, 64.0), ("v2-8bit", 256.0)])
+def test_a_legacy_page_keeps_its_64_px_cap(tmp_path, rule, cap):
+    """Review of #289: a page from before #263 (no splat_rule: v1) drew point
+    sprites capped at 64 px; its refined splats must be capped there too, or
+    near splats come out larger and brighter than its preview. A v2 page's
+    quads go to 256 px. Splats here project to well over 64 px."""
+    from tests.test_point_render import _RENDER_PROBE
+    import subprocess
+    import sys
+    from pathlib import Path
+    if subprocess.run([sys.executable, "-c", _RENDER_PROBE], capture_output=True, timeout=60,
+                      cwd=Path(__file__).resolve().parent.parent).returncode != 0:
+        pytest.skip("no offscreen OpenGL here (no GPU or display)")
+    from app.render_session._stereo import parse_frame
+    from app.render_session._stereo_points import default_data_to_model
+    from app.render_session.points import PointRenderSession
+    n, side, size, intensity = 4000, 50.0, 12, 35
+    path, xyz = _uniform_table(tmp_path, n, side)
+    bounds = [0.0, side] * 3
+    d2m = default_data_to_model(bounds)
+    model = np.eye(4)
+    model[:3, 3] = [0.0, 0.0, -1.2]
+    view = np.eye(4)
+    proj = np.array([[1.2, 0, 0, 0], [0, 1.6, 0, 0], [0, 0, -1.002, -0.2002], [0, 0, -1, 0]])
+    page_w, page_h = 320, 240
+    bg = (0.05, 0.05, 0.08)
+    radius = page_style(bounds, n, n, size, intensity)[2]
+    nearest_px = 6 * radius / side * proj[1, 1] * page_h * 0.5 / (1.2 - 0.5)
+    assert nearest_px > 2 * 64, nearest_px              # the cap matters here
+    refs = {c: page_preview(xyz, bounds, n, size, intensity, model, d2m, view, proj,
+                            page_w, page_h, bg, max_px=c) for c in (64.0, 256.0)}
+    s = PointRenderSession("l" * 32, path)
+    loop = asyncio.new_event_loop()
+    style = {"type": "set_point_style", "mode": "gaussian", "size": size, "intensity": intensity}
+    if rule:
+        style["splat_rule"] = rule
+    try:
+        loop.run_until_complete(s.initialize())
+        loop.run_until_complete(s.apply_command(style))
+        loop.run_until_complete(s.apply_command(
+            _pose(model, d2m, view, proj, page_w, page_h, bg, sample_rows=n,
+                  viewport_size=[page_w, page_h])))
+        header, jpeg, _ = parse_frame(loop.run_until_complete(s.render_frame()).to_bytes())
+    finally:
+        loop.run_until_complete(s.close())
+        loop.close()
+    assert header["splat_rule"] == (rule or "v1")
+    frame = np.asarray(Image.open(io.BytesIO(jpeg)).convert("RGB"), dtype=float)[::-1, :page_w] / 255
+    light = (frame - np.asarray(bg)).mean()
+    mine, other = refs[cap], refs[256.0 if cap == 64.0 else 64.0]
+    assert light == pytest.approx((mine - np.asarray(bg)).mean(), rel=0.08)
+    assert abs(light - (other - np.asarray(bg)).mean()) > 0.15 * light

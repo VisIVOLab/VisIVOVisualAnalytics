@@ -54,9 +54,10 @@ except ImportError:   # pragma: no cover
 
 from .numba_parallel import LOCK as PARALLEL
 
-#: The page's widest splat (points.js MAX_SPLAT_PX, page pixels; 64, the
-#: point sprites' cap, before issue #263).
+#: The page's widest splat (points.js MAX_SPLAT_PX, page pixels: instanced
+#: quads, issue #263) and a page's from before (v1: point sprites, 64 px).
 MAX_PX = 256.0
+LEGACY_MAX_PX = 64.0
 #: The tone curves of the page's splats (:func:`rule_tone`).
 TONE_MAPS = ("none", "exposure")
 #: The page's splat rules (set_point_style ``splat_rule``, issue #263), by
@@ -82,6 +83,13 @@ SUBPIXEL_FLOOR = 0.25
 _CHUNK_BYTES = 256 << 20
 _MAX_CHUNKS = 8
 _ROWS_PER_CHUNK = 65536
+
+
+def rule_max_px(rule: str) -> float:
+    """The widest splat of a splat rule (SPLAT_RULES): a page from before
+    #263 (v1, no rule sent) capped its point sprites at 64 px, a v2 page's
+    quads at 256."""
+    return LEGACY_MAX_PX if rule == "v1" else MAX_PX
 
 
 def rule_tone(rule: str) -> str:
@@ -197,9 +205,10 @@ if njit is not None:
 
 def splat_light(xyz: np.ndarray, codes: np.ndarray | None, lut: np.ndarray,
                 local_to_eye: np.ndarray, projection: np.ndarray, width: int, height: int,
-                radius_m: float, amp: float) -> np.ndarray:
+                radius_m: float, amp: float, max_px: float = MAX_PX) -> np.ndarray:
     """One eye's splats at ``width × height`` (the page's eye size), float32
-    light ``height × width × 3``, bottom row first, before the background.
+    light ``height × width × 3``, bottom row first, before the background;
+    each splat at most ``max_px`` page pixels wide (:func:`rule_max_px`).
 
     ``xyz``: the rows' local float32 coordinates; ``local_to_eye``: them to the
     eye's view space in metres (view @ model @ data_to_model @ local_to_table);
@@ -224,7 +233,7 @@ def splat_light(xyz: np.ndarray, codes: np.ndarray | None, lut: np.ndarray,
     out = np.zeros((chunks, height, width, 3), dtype=np.float32)
     with PARALLEL:   # one parallel kernel at a time (app/numba_parallel.py)
         _splat(np.ascontiguousarray(xyz, dtype=np.float32), np.ascontiguousarray(codes),
-               lut, solid, clip, eye_z, float(diameter), float(amp), MAX_PX, out)
+               lut, solid, clip, eye_z, float(diameter), float(amp), float(max_px), out)
     return out[0] if chunks == 1 else out.sum(axis=0, dtype=np.float32)
 
 
@@ -291,15 +300,17 @@ def page_frame(light: np.ndarray, background, width: int, height: int,
 
 def splat_eye(xyz, codes, lut, local_to_eye, projection, width: int, height: int,
               radius_m: float, amp: float, background,
-              page_size: tuple[int, int] | None = None, tone: str = "none") -> np.ndarray:
+              page_size: tuple[int, int] | None = None, tone: str = "none",
+              max_px: float = MAX_PX) -> np.ndarray:
     """One eye's frame (RGBX uint8, bottom row first): the splats drawn at the
     page's eye size ``page_size`` (width, height; default, or when not larger,
-    the frame's) by :func:`splat_light`, then :func:`page_frame` (``tone``)."""
+    the frame's) by :func:`splat_light` (``max_px``), then :func:`page_frame`
+    (``tone``)."""
     pw, ph = page_size if page_size else (width, height)
     pw, ph = int(round(pw)), int(round(ph))
     if pw < width or ph < height:      # never drawn below the frame's size
         pw, ph = width, height
-    light = splat_light(xyz, codes, lut, local_to_eye, projection, pw, ph, radius_m, amp)
+    light = splat_light(xyz, codes, lut, local_to_eye, projection, pw, ph, radius_m, amp, max_px)
     return page_frame(light, background, width, height, tone)
 
 
@@ -378,7 +389,7 @@ if njit is not None:
 
 def raytrace_light(xyz: np.ndarray, codes: np.ndarray | None, lut: np.ndarray,
                    local_to_eye: np.ndarray, projection: np.ndarray, width: int, height: int,
-                   radius_m: float, amp: float) -> tuple[np.ndarray, np.ndarray]:
+                   radius_m: float, amp: float, max_px: float = MAX_PX) -> tuple[np.ndarray, np.ndarray]:
     """One eye's splats ray-traced at ``width × height`` (the page's eye
     size): ``(light, zsum)``, float32 ``height × width × 3`` and
     ``height × width``, bottom row first, before the background; ``zsum`` /
@@ -401,7 +412,7 @@ def raytrace_light(xyz: np.ndarray, codes: np.ndarray | None, lut: np.ndarray,
     keep = np.empty(n, dtype=np.bool_)
     with PARALLEL:   # one parallel kernel at a time (app/numba_parallel.py)
         _project_kernels(np.ascontiguousarray(xyz, dtype=np.float32), clip, eye_z,
-                         float(diameter), MAX_PX, float(RT_MIN_RADIUS_PX), width, height,
+                         float(diameter), float(max_px), float(RT_MIN_RADIUS_PX), width, height,
                          sx, sy, radius, weight, dist, keep)
     order = np.flatnonzero(keep).astype(np.int64)
     # The colours × opacity × row weight: a palette over the codes, or one.
@@ -442,7 +453,7 @@ def raytrace_eye(xyz, codes, lut, local_to_eye, projection, width: int, height: 
                  radius_m: float, amp: float, background,
                  page_size: tuple[int, int] | None = None,
                  depth_scale: int | None = None,
-                 tone: str = "none") -> tuple[np.ndarray, np.ndarray | None]:
+                 tone: str = "none", max_px: float = MAX_PX) -> tuple[np.ndarray, np.ndarray | None]:
     """One eye's ray-traced frame: ``(rgba, depth)``, the frame as
     :func:`splat_eye` gives it (the light at the page's eye size, over the
     background, clamped, reduced to the frame's) and, for a ``depth_scale``,
@@ -452,7 +463,7 @@ def raytrace_eye(xyz, codes, lut, local_to_eye, projection, width: int, height: 
     if pw < width or ph < height:
         pw, ph = width, height
     light, zsum = raytrace_light(xyz, codes, lut, local_to_eye, projection, pw, ph,
-                                 radius_m, amp)
+                                 radius_m, amp, max_px)
     depth = (block_depth(zsum, light.sum(axis=2), width, height, int(depth_scale))
              if depth_scale else None)
     return page_frame(light, background, width, height, tone), depth

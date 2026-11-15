@@ -29,7 +29,7 @@ are preserved here unedited; the branch names they refer to are historical.
   float target, the desktop's opacity, since over size² a size-12 splat
   would add less than half an 8-bit step and vanish; `v2-f16`, opacity over
   size² at least 1/512, tone-mapped; `v2-f32`, over size², tone-mapped), the
-  splat cap is 256 px, for both the page-rule splats and the ray-traced
+  splat cap is 256 px (64 px for v1, as an older page drew), for both the page-rule splats and the ray-traced
   ones. Each stereo frame says the rule it was drawn by and the page shows
   only frames of its own: with a backend from before #263 its splat frames
   are not shown (the panel says why) instead of popping in at another
