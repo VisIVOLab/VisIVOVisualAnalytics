@@ -225,11 +225,34 @@ def _widened(lo: float) -> float:
     return hi if math.isfinite(hi) else lo
 
 
+def _box_mask(columns, f: dict, rows: np.ndarray) -> np.ndarray:
+    """A box filter (issue #259, the headset's box selection):
+    ``{"box": {"fields": [x, y, z], "min": [...], "max": [...]}, "op":
+    "inside" | "outside"}``: the rows inside the box (bounds included), or
+    those outside it."""
+    box = f.get("box") or {}
+    fields, lo, hi = box.get("fields") or [], box.get("min") or [], box.get("max") or []
+    op = str(f.get("op", "inside"))
+    if not (len(fields) == len(lo) == len(hi)) or not fields or op not in ("inside", "outside"):
+        raise ValueError("A box filter is {box: {fields, min, max}, op: inside | outside}.")
+    inside = np.ones(len(rows), dtype=bool)
+    for name, a, b in zip(fields, lo, hi):
+        if name not in columns:
+            raise ValueError(f"Unknown field: {name!r}")
+        col = np.asarray(columns[name][rows])
+        inside &= (col >= float(a)) & (col <= float(b))
+    return inside if op == "inside" else ~inside
+
+
 def _filter_mask(columns, filters: list[dict], rows: np.ndarray) -> np.ndarray:
     """The rows (of ``rows``) passing every filter. Numeric operators only: a
-    VBT holds numbers. Unknown fields or operators raise ValueError."""
+    VBT holds numbers; or a box (:func:`_box_mask`). Unknown fields or
+    operators raise ValueError."""
     keep = np.ones(len(rows), dtype=bool)
     for f in filters:
+        if "box" in f:
+            keep &= _box_mask(columns, f, rows)
+            continue
         name, op = str(f.get("field", "")), str(f.get("op", ""))
         if name not in columns:
             raise ValueError(f"Unknown field: {name!r}")
