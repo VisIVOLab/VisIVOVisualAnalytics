@@ -243,6 +243,17 @@ inline constexpr double kSpeedOfLightKms = 2.99792458e5;
 // peculiar velocities are about 300 km/s (Strauss & Willick 1995, Phys. Rep.
 // 261, 271), 30 % of it or more. Such a source is placed, and flagged.
 inline constexpr double kUncertainCzKms = 1000.0;
+// The precision c·z is compared at when the catalogue has no cz column (issue
+// #298): z = cz/c computed from a file's cz = 1000.0 comes back as 999.99999999
+// km/s, which the flag counted as below 1000. Far finer than any measured cz.
+inline constexpr double kCzPrecisionKms = 1.0e-6;
+
+// The recession velocity c·z in km/s, rounded to kCzPrecisionKms (half up, as
+// app/catalogue_positions.py rounds it, so both count the same rows).
+inline double recessionVelocityKms(double z)
+{
+    return std::floor(kSpeedOfLightKms * z / kCzPrecisionKms + 0.5) * kCzPrecisionKms;
+}
 
 inline QString detectedNameField(const Catalogue3DSchema &schema)
 {
@@ -291,6 +302,23 @@ inline QString detectedDistanceField(const Catalogue3DSchema &schema)
                                 "DISTANCE", "DIST", "DMPC", "DISTMPC",
                                 "DL", "DLMPC", "LUMINOSITYDISTANCE",
                                 "DA", "DAMPC", "ANGULARDIAMETERDISTANCE" });
+}
+
+// A recession-velocity (cz) column in km/s, used for the cz < 1000 km/s flag
+// in place of c·z when a row has one (issue #298): it is the value the file
+// shows. Not used to place a source: the redshift does that. A bare VELOCITY
+// or V is left out on purpose (a peculiar velocity, a V magnitude).
+inline QString detectedVelocityField(const Catalogue3DSchema &schema)
+{
+    if (schema.isCartesian())
+        return {};
+    QMap<QString, QString> normalizedToActual;
+    for (const auto &field : schema.fields) {
+        normalizedToActual[normalizeColName(field.name)] = field.name;
+    }
+    return firstExistingField(normalizedToActual,
+                              { "CZ", "CZKMS", "CZHEL", "CZHELIO", "CZCMB", "VHEL", "VHELIO",
+                                "VCMB", "VRAD", "RADIALVELOCITY" });
 }
 
 // The KIND of a detected distance column, so a luminosity/angular-diameter
@@ -407,14 +435,18 @@ struct EntryDistance
     QString column;               // the distance column, when origin is Column
     bool fromModel{ false };      // Redshift: the selector's backend distance, not Planck18 local
     double redshift{ std::numeric_limits<double>::quiet_NaN() };   // NaN: none read
+    // cz in km/s: the row's cz column when it has one, else c·z rounded to
+    // kCzPrecisionKms (issue #298). NaN: neither read.
+    double czKms{ std::numeric_limits<double>::quiet_NaN() };
 
     bool placed() const { return origin != DistanceOrigin::None; }
     // Placed from a redshift with 0 < cz < kUncertainCzKms: peculiar velocities
     // make the distance 30 % uncertain or worse. A measured distance is not.
+    // Placed from z means z > 0; the cz compared is the one the file shows.
     bool uncertain() const
     {
         return (origin == DistanceOrigin::RedshiftSpace || origin == DistanceOrigin::Redshift)
-                && redshift > 0.0 && kSpeedOfLightKms * redshift < kUncertainCzKms;
+                && redshift > 0.0 && czKms < kUncertainCzKms;
     }
 };
 
@@ -424,8 +456,10 @@ struct DistanceFields
 {
     QString redshift;
     QString distance;
+    QString velocity;   // a cz column (km/s), for the uncertain flag only
     explicit DistanceFields(const Catalogue3DSchema &schema)
-        : redshift(detectedRedshiftField(schema)), distance(detectedDistanceField(schema))
+        : redshift(detectedRedshiftField(schema)), distance(detectedDistanceField(schema)),
+          velocity(detectedVelocityField(schema))
     {
     }
 };
@@ -457,6 +491,14 @@ inline EntryDistance entryDistance(const Catalogue3DEntry &entry, const Catalogu
     const double redshift = fieldDouble(entry, schema, fields.redshift, &okRedshift);
     if (okRedshift)
         out.redshift = redshift;
+    // The cz the uncertain flag and the Unplaced table use: the file's own
+    // where the row has one, else c·z rounded past floating-point noise.
+    bool okVelocity = false;
+    const double velocity = fieldDouble(entry, schema, fields.velocity, &okVelocity);
+    if (okVelocity && std::isfinite(velocity))
+        out.czKms = velocity;
+    else if (okRedshift)
+        out.czKms = recessionVelocityKms(redshift);
     // z > 0, deliberately: a redshift column holding 0.0 means "not measured" in
     // essentially every real catalogue, and a source genuinely AT z = 0 would sit
     // at the observer's own position, which no catalogue entry does. A negative

@@ -3,6 +3,7 @@
 #include "TestCatalogueParser.h"
 #include "gui/Catalogue3DParser.h"
 #include "gui/CataloguePlacement.h"
+#include "gui/CatalogueSelectionKey.h"
 #include "app/CosmologyModel.h"
 
 #include <QTest>
@@ -333,6 +334,58 @@ void TestCatalogueParser::entryDist_lowCz_isFlaggedUncertain()
     QVERIFY(entryDistance(measured, s).uncertain());
 }
 
+void TestCatalogueParser::entryDist_czBoundary_comparesTheCzTheFileShows()
+{
+    // Issue #298: a file's cz = 1000.0 becomes z = cz/c, and c·z comes back a
+    // hair under 1000. The flag compares the file's cz when there is a cz
+    // column, else c·z rounded to kCzPrecisionKms: 1000.0 is not below 1000.
+    using namespace Catalogue3DParser::detail;
+    double zAt1000 = 1000.0 / kSpeedOfLightKms;
+    while (kSpeedOfLightKms * zAt1000 >= kUncertainCzKms)
+        zAt1000 = std::nextafter(zAt1000, 0.0);
+    QVERIFY(kSpeedOfLightKms * zAt1000 < kUncertainCzKms);   // the raw product would flag it
+    QCOMPARE(recessionVelocityKms(zAt1000), 1000.0);
+
+    // No cz column: the rounded c·z.
+    auto zOnly = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"), QStringLiteral("z") });
+    const auto boundary = makeEntry(zOnly, { { QStringLiteral("z"), QVariant(zAt1000) } });
+    const auto below = makeEntry(zOnly, { { QStringLiteral("z"), QVariant(999.99 / kSpeedOfLightKms) } });
+    for (const auto mode : { CatalogueDistanceMode::Comoving, CatalogueDistanceMode::RedshiftSpace }) {
+        zOnly.distanceMode = mode;
+        QVERIFY(entryDistance(boundary, zOnly).placed());
+        QVERIFY(!entryDistance(boundary, zOnly).uncertain());
+        QVERIFY(entryDistance(below, zOnly).uncertain());
+    }
+
+    // A cz column: the file's value, whatever c·z says; a row without one
+    // falls back to the rounded c·z.
+    auto withCz = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"), QStringLiteral("z"),
+                               QStringLiteral("cz") });
+    QCOMPARE(detectedVelocityField(withCz), QStringLiteral("cz"));
+    const auto fileSays1000 = makeEntry(withCz, { { QStringLiteral("z"), QVariant(990.0 / kSpeedOfLightKms) },
+                                                  { QStringLiteral("cz"), QVariant(1000.0) } });
+    const auto fileSays999 = makeEntry(withCz, { { QStringLiteral("z"), QVariant(1001.0 / kSpeedOfLightKms) },
+                                                 { QStringLiteral("cz"), QVariant(999.0) } });
+    const auto blankCz = makeEntry(withCz, { { QStringLiteral("z"), QVariant(zAt1000) },
+                                             { QStringLiteral("cz"), QVariant(QString()) } });
+    QVERIFY(!entryDistance(fileSays1000, withCz).uncertain());
+    QCOMPARE(entryDistance(fileSays1000, withCz).czKms, 1000.0);
+    QVERIFY(entryDistance(fileSays999, withCz).uncertain());
+    QVERIFY(!entryDistance(blankCz, withCz).uncertain());
+    QCOMPARE(entryDistance(blankCz, withCz).czKms, 1000.0);
+
+    // The status line counts by the same rule.
+    const std::vector<Catalogue3DEntry> rows{ fileSays1000, fileSays999, blankCz };
+    QCOMPARE(CataloguePlacement::count(rows, {}, withCz).uncertain, qsizetype(1));
+
+    // A bare VELOCITY (a peculiar velocity?) or V (a magnitude?) is not a cz.
+    QVERIFY(detectedVelocityField(makeSchema({ QStringLiteral("z"), QStringLiteral("VELOCITY"),
+                                               QStringLiteral("V") }))
+                    .isEmpty());
+    QCOMPARE(detectedVelocityField(makeSchema({ QStringLiteral("z"), QStringLiteral("V_helio") })),
+             QStringLiteral("V_helio"));
+}
+
 // ── issue #265: unplaced rows, the status line, the pick readout ──────────────
 
 namespace {
@@ -622,4 +675,55 @@ void TestCatalogueParser::redshiftSpaceMode_usesTheModelsH0()
     QCOMPARE(visivo::cosmology::presetH0(u"Planck13"_s), 67.77);
     QCOMPARE(visivo::cosmology::presetH0(u"WMAP9"_s), 69.32);
     QVERIFY(std::isnan(visivo::cosmology::presetH0(u"Custom"_s)));
+}
+
+// ── issue #298: the selection across a filter or another page ─────────────────
+
+void TestCatalogueParser::selection_followsTheSourceAcrossAFilter()
+{
+    // The window selects by index; a filter replaces the rows, so the source
+    // is found again by its row in the table, or deselected when filtered out.
+    const auto s = skySchema();
+    const QList<QVariantMap> all{ skyRow(u"NGC 1"_s, 10.0, 5.0, 0.02),
+                                  skyRow(u"NGC 2"_s, 20.0, 0.0, 0.03),
+                                  skyRow(u"NGC 3"_s, 30.0, 0.0, 0.04) };
+    const auto before = Catalogue3DParser::parseBackendSubset(s, all, { 0, 1, 2 });
+    const auto key = CatalogueSelection::keyOf(before.entries, s, 2);   // NGC 3, row 2
+    QVERIFY(key.valid());
+    QCOMPARE(key.sourceRow, qint64(2));
+
+    // Filtered: NGC 1 is gone, NGC 3 moves from index 2 to index 1.
+    const auto filtered = Catalogue3DParser::parseBackendSubset(s, { all[1], all[2] }, { 1, 2 });
+    QCOMPARE(CatalogueSelection::indexOf(filtered.entries, s, key), 1);
+    // Filtered out: no selection, not whatever took its index.
+    const auto without = Catalogue3DParser::parseBackendSubset(s, { all[0], all[1] }, { 0, 1 });
+    QCOMPARE(CatalogueSelection::indexOf(without.entries, s, key), -1);
+
+    // Nothing selected, or an index past the rows: no key, no selection.
+    QVERIFY(!CatalogueSelection::keyOf(before.entries, s, -1).valid());
+    QVERIFY(!CatalogueSelection::keyOf(before.entries, s, 3).valid());
+    QCOMPARE(CatalogueSelection::indexOf(before.entries, s, CatalogueSelection::Key{}), -1);
+}
+
+void TestCatalogueParser::selection_byNameWithoutRows()
+{
+    // A backend that does not report rows: the catalogue's name, when it is
+    // one source's alone. Two of the same name cannot be told apart.
+    const auto s = skySchema();
+    const auto parsed = Catalogue3DParser::parseBackendSubset(
+            s, { skyRow(u"NGC 1"_s, 10.0, 5.0, 0.02), skyRow(u"NGC 2"_s, 20.0, 0.0, 0.03) });
+    QCOMPARE(parsed.entries[1].sourceRow, qint64(-1));
+    const auto key = CatalogueSelection::keyOf(parsed.entries, s, 1);
+    QCOMPARE(key.name, QStringLiteral("NGC 2"));
+    const auto later = Catalogue3DParser::parseBackendSubset(
+            s, { skyRow(u"NGC 2"_s, 20.0, 0.0, 0.03), skyRow(u"NGC 9"_s, 50.0, 1.0, 0.05) });
+    QCOMPARE(CatalogueSelection::indexOf(later.entries, s, key), 0);
+    const auto twice = Catalogue3DParser::parseBackendSubset(
+            s, { skyRow(u"NGC 2"_s, 20.0, 0.0, 0.03), skyRow(u"NGC 2"_s, 21.0, 0.0, 0.03) });
+    QCOMPARE(CatalogueSelection::indexOf(twice.entries, s, key), -1);
+
+    // An unnamed source without a row has no key ("Row N" is not a name).
+    const auto unnamed = Catalogue3DParser::parseBackendSubset(
+            s, { skyRow(QString(), 10.0, 5.0, 0.02) });
+    QVERIFY(!CatalogueSelection::keyOf(unnamed.entries, s, 0).valid());
 }

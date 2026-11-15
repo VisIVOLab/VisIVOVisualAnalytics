@@ -15,6 +15,7 @@
 #include "DiagnosticsWindow.h"
 #include "Catalogue3DTableModel.h"
 #include "Catalogue3DParser.h"
+#include "CatalogueSelectionKey.h"
 #include "AssistantPanel.h"
 #include "CopilotActionRouter.h"
 #include "theme/VisivoTheme.h"
@@ -240,6 +241,10 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                              return;
                          }
 
+                         // The selected source by a key that outlives its
+                         // index: the filter replaces every row (issue #298).
+                         const CatalogueSelection::Key selected = CatalogueSelection::keyOf(
+                                 this->entries, this->schema, this->selectedIndex);
                          this->entries = result.entries;
                          this->unplacedEntries = result.unplaced;
                          // Update pagination state
@@ -295,7 +300,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          this->shellActors.clear();
                          this->mappedPositions.clear();
                          this->hoveredIndex = -1;
-                         this->selectedIndex = -1;
+                         // Still selected when the filter kept it, else none.
+                         this->selectedIndex = CatalogueSelection::indexOf(
+                                 this->entries, this->schema, selected);
                          if (!this->entries.empty()) {
                              this->buildScene();
                              this->buildLabels();
@@ -305,6 +312,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          // follow a filter: it used to keep claiming the number
                          // the window opened with.
                          this->refreshViewerChrome();
+                         this->refreshSelectionAfterReplacement();
                          this->renderWindow->Render();
                          if (this->m_loadIndicator)
                              this->m_loadIndicator->hide();
@@ -337,6 +345,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                     return;
                 }
 
+                // Appending keeps the indices, but the key says so for sure.
+                const CatalogueSelection::Key selected = CatalogueSelection::keyOf(
+                        this->entries, this->schema, this->selectedIndex);
                 // Append new entries
                 this->entries.insert(this->entries.end(),
                                      result.entries.begin(), result.entries.end());
@@ -380,13 +391,15 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                 this->shellActors.clear();
                 this->mappedPositions.clear();
                 this->hoveredIndex  = -1;
-                this->selectedIndex = -1;
+                this->selectedIndex = CatalogueSelection::indexOf(
+                        this->entries, this->schema, selected);
                 if (!this->entries.empty()) {
                     this->buildScene();
                     this->buildLabels();
                 }
                 this->refreshCatalogueTable();
                 this->refreshViewerChrome();   // another page of sources changes the count
+                this->refreshSelectionAfterReplacement();
                 this->renderWindow->Render();
             });
 
@@ -794,11 +807,12 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         this->shellActors.clear();
         this->mappedPositions.clear();
         this->hoveredIndex  = -1;
-        this->selectedIndex = -1;
+        // Same rows, only turned: the selected source stays selected (#298).
         if (!this->entries.empty()) {
             this->buildScene();
             this->buildLabels();
         }
+        this->refreshSelectionAfterReplacement();
         this->pushSkyToVrDialog();
         this->renderWindow->Render();
     });

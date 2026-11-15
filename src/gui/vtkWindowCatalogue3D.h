@@ -358,6 +358,9 @@ private:
     /// "Distance 12.3 Mpc, from z (comoving, Planck18)", and "cz < 1000 km/s:
     /// uncertain" when that applies (issue #265): the pick readout's lines.
     QStringList pickDistanceLines(const Catalogue3DEntry &e) const;
+    /// After the rows were placed again (model, distance mode): the selected
+    /// source's marker, panel and table row follow it (issue #298).
+    void refreshSelectionAfterReplacement();
     // Reposition and resize a highlight sphere to sit on source[idx].
     /// The marker's radius from the data alone: the glyph it wraps, or a
     /// fraction of the particles' mean spacing (highlightRadius then keeps it
