@@ -482,10 +482,13 @@ void TestVrHeadsetHub::aClassificationBecomesTableEntries()
 
 void TestVrHeadsetHub::aLabelMaskGoesAsAMaskLayer()
 {
+    // The Workspace's collision numbers too: a second save is x_vr_mask_1.fits.
     for (const QString &p : { u"/data/hgc44-run5_mask.fits"_s, u"C:\\x\\sofia_out_mask.fits"_s, u"/w/M33_MASK.FITS"_s,
-                              u"/w/cube-mask.fits.gz"_s, u"/w/mask.fits"_s })
+                              u"/w/cube-mask.fits.gz"_s, u"/w/mask.fits"_s, u"/w/hgc44-run5_vr_mask_1.fits"_s,
+                              u"/w/hgc44-run5_vr_mask_12.fits"_s, u"/w/m-mask-2.fits"_s })
         QVERIFY2(VrHub::isLabelMaskPath(p), qPrintable(p));
-    for (const QString &p : { u"/data/hgc44.fits"_s, u"/data/masked_cube.fits"_s, u"/data/maskfile.fits"_s, u"/data/mask/cube.fits"_s })
+    for (const QString &p : { u"/data/hgc44.fits"_s, u"/data/masked_cube.fits"_s, u"/data/maskfile.fits"_s, u"/data/mask/cube.fits"_s,
+                              u"/data/unmask.fits"_s, u"/data/x_mask_v2.fits"_s, u"/data/x_mask_1a.fits"_s })
         QVERIFY2(!VrHub::isLabelMaskPath(p), qPrintable(p));
     VrLink::Inputs in;
     in.datasetId = u"ds-mask"_s;

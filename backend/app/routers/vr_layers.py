@@ -395,8 +395,12 @@ def _mask_source(session: Session, mask_dataset_id: str, mask_path: str) -> str:
     if not mask_path.strip():
         raise HTTPException(422, "Give mask_dataset_id or mask_path.")
     path = _normalize_path(mask_path.strip())
-    if not path.exists() or not path.is_file():
-        raise HTTPException(404, f"Mask file not found: {path}")
+    try:
+        found = path.is_file()
+    except OSError:               # PermissionError on a directory on the way, a bad name
+        found = False
+    if not found:
+        raise HTTPException(404, f"Mask file not found or not readable: {path}")
     return str(path)
 
 
@@ -417,6 +421,8 @@ async def cube_mask_layer_bin(request: MaskLayerRequest, _: None = _auth,
         layer = await asyncio.to_thread(ml.read_layer, str(entry["path"]), mask_path)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    except OSError as exc:        # PermissionError, a file gone meanwhile
+        raise HTTPException(404, f"The mask cannot be read: {exc}") from exc
     body = ml.pack_layer(layer, {"mask_path": mask_path, "mask_name": Path(mask_path).name})
     return Response(body, media_type="application/octet-stream")
 
@@ -464,7 +470,7 @@ async def cube_mask_layer_save(request: Request, _: None = _auth,
     if entry.get("kind") != "cube":
         raise HTTPException(422, "A mask layer goes over a cube.")
     mask_path = _mask_source(session, str(head.get("mask_dataset_id", "")), str(head.get("mask_path", "")))
-    removed = [int(i) for i in head.get("removed", []) if int(i) > 0]
+    removed = head["removed"]                 # checked by parse_edits: at most MAX_SOURCES IDs
     if not edits and not removed:
         raise HTTPException(422, "Nothing to save: no source was edited.")
     base = Path(mask_path).stem
@@ -487,6 +493,9 @@ async def cube_mask_layer_save(request: Request, _: None = _auth,
     except ValueError as exc:
         out.unlink(missing_ok=True)
         raise HTTPException(422, str(exc)) from exc
+    except OSError as exc:        # PermissionError on the mask
+        out.unlink(missing_ok=True)
+        raise HTTPException(404, f"The mask cannot be read: {exc}") from exc
     except Exception as exc:   # noqa: BLE001 - the placeholder goes, the page is told
         out.unlink(missing_ok=True)
         logger.warning("[mask_layer_save] failed: %s", exc)

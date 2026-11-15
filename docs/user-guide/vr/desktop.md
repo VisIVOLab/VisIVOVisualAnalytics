@@ -25,10 +25,12 @@ bottom would go past the screen's, and on a short screen its sections scroll
 while **Close** stays at the bottom.
 
 The cube window's **Tools → Views → Show on Headset** does the same in one
-click. In the window of a label mask (a file whose name ends in `mask`, such
-as SoFiA-2's `*_mask.fits`) it sends the mask as a layer over the headset's
-cube instead ([Mask layers](analysis.md#mask-layers-show-compare-refine-and-save-a-mask)):
-the headset draws it when its cube is on the mask's grid. It is enabled while a headset is connected to the session; its tooltip
+click. In the window of a file whose name ends in `mask` (SoFiA-2's
+`*_mask.fits`, the headset's refined `*_vr_mask.fits` and `*_vr_mask_1.fits`)
+it asks first: **Mask Layer** sends it as a layer over the headset's cube
+([Mask layers](analysis.md#mask-layers-show-compare-refine-and-save-a-mask)),
+drawn when that cube is on the mask's grid; **Show as Cube** shows it as a
+cube, as for any other file. It is enabled while a headset is connected to the session; its tooltip
 names the headset. With several pages open, the newest one is used.
 
 The status bar of a cube window says when a headset is connected: *Headset:

@@ -169,8 +169,8 @@ the backend). The mask must be on the cube's grid: the same size on each of
 the viewer's axes and the same `CTYPE`, `CRVAL`, `CDELT`, `CRPIX` on the axes
 they share (a degenerate axis of either is ignored); otherwise 422 naming
 what differs. An integer mask, or a float one holding whole numbers; a
-negative value or a fraction is 422. At most 16 Mi voxels in sources and
-65 535 sources.
+negative value, a fraction or an ID above 2³¹ − 1 is 422. At most 16 Mi
+voxels in sources and 65 535 sources. A mask file that cannot be read is 404.
 
 Answer (`application/octet-stream`): a uint32 little-endian length, that many
 bytes of JSON (padded with spaces to a multiple of 4), then the voxels as
@@ -188,12 +188,17 @@ The headset's refined mask written as FITS in the Workspace Exports. Body
 that many bytes of JSON, padding to a multiple of 4, then each edited source's
 sorted voxel indices (uint32) in the order of `edits`. The JSON:
 `dataset_id`, `mask_dataset_id` or `mask_path`, `edits` (`[{id, count, new}]`:
-each source's whole new voxel list), `removed` (IDs emptied), `history`
+each source's whole new voxel list), `removed` (IDs emptied, at most 65 535,
+each 1..2³¹ − 1; anything else is 422), `history`
 (lines for the header, at most 20), `output_basename` (default
 `<mask without _mask>_vr_mask`).
 
-The original mask is copied; each edited and removed source's voxels are
-cleared, then each edited source is set to its list. A voxel of another
+The original mask is read one slab of channels at a time and written out
+sequentially, each edited and removed source's voxels cleared in the same pass
+(one pass whatever the number of IDs); then each edited source is set to its
+list through a memory map of the output. The file is built beside its
+reserved name and moved over it in one step. HCG 44's mask (700 × 700 × 158)
+saves in 0.2 s, with about 350 MB of the original's pages mapped. A voxel of another
 source claimed by an edit, or an index outside the grid, is 422 (the headset
 never takes one: Add and Replace claim free voxels). The file keeps the
 original header (`BITPIX` 32), adds HISTORY cards (`source N edited`, `added`,

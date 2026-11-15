@@ -98,8 +98,8 @@ poll ends. `{"removed": true|false}`.
 `show` (show this cube: `dataset_id` of this session; the page opens `path`
 again when it does not hold that id) or `mask` (#282: a label mask on the
 cube's grid, `dataset_id` the mask's in this session and `path` its file,
-drawn over the cube the page shows; the page waits for a cube load under
-way first); `kind` and `box` are optional and
+drawn over the cube the page shows; one that arrives while the page loads a
+cube waits for that cube to be shown, and the command poll is never held); `kind` and `box` are optional and
 passed on only when given. **404** when that page is not connected (the
 desktop then opens one the usual way). A `show` replaces an older `show` the
 page has not acknowledged, a `mask` an older `mask`. Response: `{"seq": 41, "client": "q3-7f2a"}`.

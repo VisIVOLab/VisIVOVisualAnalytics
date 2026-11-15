@@ -30,7 +30,9 @@ export function createMasks(ctx) {
   const pointer = { hover: null };
   const info = () => ctx.state.info;
   const datasetId = () => (ctx.state.open ? ctx.state.open.dataset_id : '');
-  const say = (text, colour = '#b9c2d0') => { S.status = [[text, colour]]; texKey = ''; };
+  let stamp = 0;                  // bumped by every change the view shows that the layer's version does not
+  const touch = () => { stamp++; texKey = ''; };
+  const say = (text, colour = '#b9c2d0') => { S.status = [[text, colour]]; touch(); };
 
   /** The layer drawn again: its encoding on the reduced grid, into the mask storage. */
   function redraw() {
@@ -50,7 +52,7 @@ export function createMasks(ctx) {
     const id = datasetId();
     if (!b || !id) throw new Error('A mask needs the cube from the backend: open it first.');
     S.busy = 'loading the mask…';
-    texKey = '';
+    touch();
     const t0 = performance.now();
     try {
       const buf = await b.maskLayer(id, mask);
@@ -67,18 +69,20 @@ export function createMasks(ctx) {
       return S.layer;
     } finally {
       S.busy = '';
+      touch();
     }
   }
 
   function forget() {
     S.layer = null; S.mask = null; S.cube = null; S.selected = 0; S.picking = false; S.newSource = false; S.steps = [];
     try { ctx.renderer.setMaskLayer(null); } catch { /* no volume */ }
-    texKey = '';
+    touch();
   }
 
   function select(id) {
     S.selected = id || 0;
     S.newSource = false;
+    touch();
     redraw();
     const s = S.layer && S.selected ? S.layer.get(S.selected) : null;
     if (s) say(`Source ${s.id}: ${s.count.toLocaleString('en')} voxels, channels ${s.bbox[4]}–${s.bbox[5]}`);
@@ -88,8 +92,9 @@ export function createMasks(ctx) {
   function pickRay(ray) {
     if (!S.picking || !S.layer) return false;
     S.picking = false;
+    touch();
     const r = ML.pickSource(S.layer, ray.o, ray.d, ctx.state.clip);
-    if (!r) { say('No source of the mask along that ray.', '#ffd27a'); ctx.buzz('error'); texKey = ''; return true; }
+    if (!r) { say('No source of the mask along that ray.', '#ffd27a'); ctx.buzz('error'); return true; }
     select(r.id);
     ctx.buzz('press');
     return true;
@@ -104,7 +109,7 @@ export function createMasks(ctx) {
     const [x, y, z] = pick.seed;
     const req = Rc.lassoGrowRequest([z, y, x], params || {}, [], []);
     S.busy = 'growing on the full cube…';
-    texKey = '';
+    touch();
     try {
       const r = await b.kinematicSelect(id, req, signal);
       if (stale()) return;
@@ -121,7 +126,7 @@ export function createMasks(ctx) {
       say(`Source ${out.id} ${verb}: ${s.count.toLocaleString('en')} voxels (grow of ${grow.length.toLocaleString('en')})`);
     } finally {
       S.busy = '';
-      texKey = '';
+      touch();
     }
   }
 
@@ -146,11 +151,12 @@ export function createMasks(ctx) {
       mask_dataset_id: S.mask.datasetId || '', output_basename: `${stem}_vr_mask`, history });
     if (!edits && !removed) throw new Error('Nothing edited yet.');
     S.busy = 'saving the mask…';
-    texKey = '';
+    touch();
     try {
       const r = await b.maskLayerSave(body);
       if (!r.valid) throw new Error(r.error || 'not saved');
       S.saved = r;
+      touch();
       const replay = [{ route: '/v1/cube/mask_layer_bin', request: { dataset_id: id, mask_path: S.mask.path } },
         ...S.steps.map((s) => ({ route: '/v1/cube/kinematic_select_bin', request: s.request, body: `then ${s.op} on source ${s.id}` })),
         { route: '/v1/cube/mask_layer_save', request: { dataset_id: id, mask_path: S.mask.path, output_basename: `${stem}_vr_mask` },
@@ -168,11 +174,24 @@ export function createMasks(ctx) {
       return r;
     } finally {
       S.busy = '';
-      texKey = '';
+      touch();
     }
   }
 
+  /** What the view is made of, as a short key: the view is made again only when it changes. */
+  const viewKeyNow = () => {
+    const L = S.layer;
+    return `${L ? L.version : -1}|${stamp}|${S.mode}|${S.labels}|${S.selected}|${S.picking}|${S.newSource}|${ctx.seedMode()}|${S.busy}`;
+  };
+  let viewKey = '', viewCache = null;
   function view() {
+    const k = viewKeyNow();
+    if (k === viewKey && viewCache) return viewCache;
+    viewKey = k;
+    viewCache = makeView();
+    return viewCache;
+  }
+  function makeView() {
     const L = S.layer;
     const s = L && S.selected ? L.get(S.selected) : null;
     const notes = {
@@ -183,21 +202,23 @@ export function createMasks(ctx) {
       save: S.saved ? `Last saved: ${S.saved.workspace_filename}` : '',
     };
     const status = S.busy ? [[S.busy, '#ffd27a']] : S.status;
+    const ch = L ? L.changes() : null;
+    const n = L ? L.ids().length : 0;
     return {
       loaded: !!L, mode: S.mode, labels: S.labels, selected: s ? s.id : 0, picking: S.picking, newSource: S.newSource,
-      seedMode: ctx.seedMode(), canUndo: !!L && L.canUndo(), canSave: !!L && L.changes().edits.length + L.changes().removed.length > 0,
-      nSources: L ? L.ids().length : 0,
+      seedMode: ctx.seedMode(), canUndo: !!L && L.canUndo(), canSave: !!ch && ch.edits.length + ch.removed.length > 0,
+      nSources: n,
       title: L ? `Mask: ${S.mask.name || 'mask'}` : 'Mask', notes, status,
-      info: L ? `${L.ids().length} sources, highest ID ${L.maxId}${L.maxId > L.origMaxId ? ` (new from ${L.origMaxId + 1})` : ''}` : 'No mask over the cube.',
+      info: L ? `${n} sources, highest ID ${L.maxId}${L.maxId > L.origMaxId ? ` (new from ${L.origMaxId + 1})` : ''}` : 'No mask over the cube.',
     };
   }
   function layout() { return MW.maskLayout(view()); }
   function texture() {
     const v = view();
-    const lay = MW.maskLayout(v);
-    const key = JSON.stringify([v, pointer.hover, S.layer ? S.layer.version : -1]);
+    const key = `${viewKey}|${pointer.hover}`;
     if (!tex) tex = ctx.renderer.createPanel();
     if (key !== texKey && canvas) {
+      const lay = MW.maskLayout(v);
       MW.drawMask(canvas.getContext('2d'), lay, v, { hover: pointer.hover });
       ctx.renderer.updatePanel(tex, canvas);
       texKey = key;
@@ -221,13 +242,13 @@ export function createMasks(ctx) {
 
   /** A press on the window's content, or on the Select tab's Mask row. */
   function press(id) {
-    if (id.startsWith('mode:')) { S.mode = id.slice(5); redraw(); texKey = ''; return true; }
-    if (id === 'labels') { S.labels = !S.labels; ctx.onChange(); texKey = ''; return true; }
-    if (id === 'pick') { S.picking = !S.picking; texKey = ''; return true; }
+    if (id.startsWith('mode:')) { S.mode = id.slice(5); redraw(); touch(); return true; }
+    if (id === 'labels') { S.labels = !S.labels; ctx.onChange(); touch(); return true; }
+    if (id === 'pick') { S.picking = !S.picking; touch(); return true; }
     if (id === 'src-prev' || id === 'src-next') return step(id === 'src-next' ? 1 : -1);
     if (id === 'visit') return visit();
-    if (id === 'new-source') { S.newSource = !S.newSource; if (S.newSource) S.selected = 0; redraw(); texKey = ''; return true; }
-    if (id.startsWith('seed:')) { ctx.setSeedMode(id.slice(5)); texKey = ''; return true; }
+    if (id === 'new-source') { S.newSource = !S.newSource; if (S.newSource) S.selected = 0; redraw(); touch(); return true; }
+    if (id.startsWith('seed:')) { ctx.setSeedMode(id.slice(5)); touch(); return true; }
     if (id === 'undo-edit') return undo();
     if (id === 'deselect') { select(0); return true; }
     if (id === 'save') { save().catch((e) => { say(`Not saved: ${e.message || e}`, '#ff8a8a'); ctx.buzz('error'); }); return true; }
@@ -248,5 +269,7 @@ export function createMasks(ctx) {
     /** The cube changed: a layer of another cube goes. */
     onCube() { if (S.layer && S.cube !== datasetId()) { forget(); say(''); S.status = []; } },
     restore() { tex = null; texKey = ''; },
+    /** For the checks: how often the view was made (it is cached between changes). */
+    get viewKey() { return viewKey; },
   };
 }

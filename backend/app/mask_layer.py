@@ -31,8 +31,9 @@ import numpy as np
 
 #: The most voxels a layer may carry to the headset (64 MiB of indices).
 MAX_LAYER_VOXELS = 16 * 1024 * 1024
-#: The most sources (IDs) a layer may have.
+#: The most sources (IDs) a layer may have, and the largest ID (int32).
 MAX_SOURCES = 65535
+MAX_ID = 2 ** 31 - 1
 #: Header keys compared between the cube and the mask, per axis.
 _AXIS_KEYS = ("CTYPE", "CRVAL", "CDELT", "CRPIX")
 
@@ -121,6 +122,8 @@ def read_layer(cube_path: str, mask_path: str, max_voxels: int = MAX_LAYER_VOXEL
             ids = plane.reshape(-1)[flat].astype(np.int64)
             if ids.min() < 0:
                 raise ValueError("The mask holds negative values: it is not a label mask.")
+            if ids.max() > MAX_ID:
+                raise ValueError(f"The mask holds an ID above {MAX_ID}: IDs are 32-bit signed integers.")
             idx_parts.append(flat.astype(np.uint64) + np.uint64(z * ny * nx))
             id_parts.append(ids)
     finally:
@@ -175,7 +178,7 @@ def parse_edits(body: bytes) -> tuple[dict[str, Any], dict[int, np.ndarray]]:
     k = 0
     for e in head.get("edits", []):
         sid, count = int(e["id"]), int(e["count"])
-        if sid <= 0 or sid > 2 ** 31 - 1 or count < 0:
+        if sid <= 0 or sid > MAX_ID or count < 0:
             raise ValueError(f"Bad edit {e!r}.")
         if sid in edits:
             raise ValueError(f"Source {sid} is edited twice.")
@@ -185,45 +188,110 @@ def parse_edits(body: bytes) -> tuple[dict[str, Any], dict[int, np.ndarray]]:
         k += count
     if k != data.size:
         raise ValueError("The body holds more indices than the edits say.")
+    if len(edits) > MAX_SOURCES:
+        raise ValueError(f"More than {MAX_SOURCES} sources edited.")
+    removed = head.get("removed", [])
+    if not isinstance(removed, list) or len(removed) > MAX_SOURCES:
+        raise ValueError(f"'removed' must be a list of at most {MAX_SOURCES} IDs.")
+    head["removed"] = [int(i) for i in removed]
+    if any(i <= 0 or i > MAX_ID for i in head["removed"]):
+        raise ValueError(f"'removed' holds an ID outside 1..{MAX_ID}.")
     return head, edits
 
 
+def _allocate(path: str, header, shape: tuple[int, ...]) -> int:
+    """An int32 FITS file of ``shape`` at ``path``, its data zero, written
+    without holding the data in memory: the header, then the file extended to
+    the padded data size (astropy's recipe for large files). Returns where
+    the data starts (the header's length)."""
+    from astropy.io import fits   # noqa: PLC0415
+    header = header.copy()
+    # The structural keys are the HDU's own (in their FITS order), then sized to `shape`.
+    for key in ["BITPIX", "NAXIS"] + [f"NAXIS{i}" for i in range(1, 10)]:
+        header.remove(key, ignore_missing=True)
+    hdu = fits.PrimaryHDU(data=np.zeros((1,) * len(shape), dtype=np.int32), header=header)
+    h = hdu.header
+    for i, n in enumerate(reversed(shape), start=1):
+        h[f"NAXIS{i}"] = int(n)
+    h.tofile(path, overwrite=True)
+    nbytes = int(np.prod(shape)) * 4
+    start = len(h.tostring())
+    with open(path, "rb+") as f:
+        f.seek(start + ((nbytes + 2879) // 2880) * 2880 - 1)
+        f.write(b"\0")
+    return start
+
+
 def write_layer(cube_path: str, mask_path: str, out_path: str, edits: dict[int, np.ndarray],
-                removed: list[int], history: list[str]) -> dict[str, Any]:
-    """The edited mask written to ``out_path`` (see the module's docstring).
-    Indices outside the grid are refused; a voxel of another source claimed by
-    an edit is refused too (the page never steals: Add takes free voxels)."""
+                removed: list[int], history: list[str], slab_bytes: int = 16 * 1024 * 1024) -> dict[str, Any]:
+    """The edited mask written to ``out_path`` (see the module's docstring),
+    the name reserved for it: built in a hidden temporary file beside it and
+    moved over the reservation in one step. The original is read one slab of
+    channels at a time and written out sequentially (big-endian int32, the
+    FITS order), the edited and removed sources cleared in the same pass
+    (np.isin); then each edited source is set to its voxels through a
+    memory map of the output, which touches only their pages. Indices outside
+    the grid are refused; a voxel of another source claimed by an edit is
+    refused too (the page never steals: Add takes free voxels)."""
+    import os   # noqa: PLC0415
+    import uuid   # noqa: PLC0415
+    from pathlib import Path   # noqa: PLC0415
     from astropy.io import fits   # noqa: PLC0415
     problem = grid_problem(cube_path, mask_path)
     if problem:
         raise ValueError(f"The mask is not on the cube's grid: {problem}.")
+    target = Path(out_path)
+    tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
     hdul, data, ds = _labels(mask_path)
     try:
         nz, ny, nx = data.shape
-        out = np.nan_to_num(np.asarray(data)).astype(np.int32)   # a copy: the original stays as it is
+        nvox = nx * ny * nz
+        for sid, idx in edits.items():
+            if idx.size and (idx.min() < 0 or idx.max() >= nvox):
+                raise ValueError(f"Source {sid} has voxels outside the cube.")
         hdu = hdul[ds.hdu_index]
-        orig_shape, header = hdu.data.shape, hdu.header.copy()
+        orig_shape, header = tuple(hdu.data.shape), hdu.header.copy()
+        # Written as the primary HDU of its own file, in plain int32.
+        for key in ("BSCALE", "BZERO", "BLANK", "XTENSION", "PCOUNT", "GCOUNT", "EXTNAME", "SIMPLE", "EXTEND"):
+            header.remove(key, ignore_missing=True)
+        for line in history:
+            header.add_history(line[:70])
+        if int(np.prod(orig_shape)) != nvox:
+            raise ValueError(f"The mask's data {orig_shape} is not {(nz, ny, nx)} voxels.")
+        start = _allocate(str(tmp), header, orig_shape)
+        clear = np.array(sorted(set(edits) | set(removed)), dtype=np.int64)
+        step = max(1, slab_bytes // max(1, ny * nx * 8))
+        ids: set[int] = set()
+        n_voxels = 0
+        with open(tmp, "rb+") as f:
+            f.seek(start)
+            for z0 in range(0, nz, step):
+                slab = np.asarray(data[z0:z0 + step])
+                if not np.issubdtype(slab.dtype, np.integer):
+                    slab = np.nan_to_num(slab, nan=0.0)
+                slab = slab.astype(np.int64, copy=False)
+                if clear.size:
+                    slab = np.where(np.isin(slab, clear), 0, slab)
+                kept = slab[slab > 0]
+                n_voxels += int(kept.size)
+                ids.update(np.unique(kept).tolist())
+                f.write(slab.astype(">i4").tobytes())
+        if any(idx.size for idx in edits.values()):
+            out = np.memmap(tmp, dtype=">i4", mode="r+", offset=start, shape=(nvox,))
+            try:
+                for sid, idx in edits.items():
+                    if not idx.size:
+                        continue
+                    if np.any(out[idx] != 0):
+                        raise ValueError(f"Source {sid} claims voxels of other sources.")
+                    out[idx] = sid
+                    n_voxels += int(np.unique(idx).size)
+                    ids.add(int(sid))
+                out.flush()
+            finally:
+                del out
+        os.replace(tmp, target)
     finally:
         hdul.close()
-    nvox = nx * ny * nz
-    flat = out.reshape(-1)
-    for sid in list(edits) + list(removed):
-        flat[flat == sid] = 0
-    for sid, idx in edits.items():
-        if idx.size and (idx.min() < 0 or idx.max() >= nvox):
-            raise ValueError(f"Source {sid} has voxels outside the cube.")
-        taken = flat[idx]
-        if np.any(taken != 0):
-            raise ValueError(f"Source {sid} claims voxels of other sources.")
-        flat[idx] = sid
-    # Written as the primary HDU of its own file, in plain int32.
-    for key in ("BSCALE", "BZERO", "BLANK", "XTENSION", "PCOUNT", "GCOUNT", "EXTNAME"):
-        header.remove(key, ignore_missing=True)
-    header["BITPIX"] = 32
-    for line in history:
-        header.add_history(line[:70])
-    arr = out.reshape(orig_shape) if int(np.prod(orig_shape)) == out.size else out
-    fits.PrimaryHDU(arr, header=header).writeto(out_path, overwrite=True)
-    ids = np.unique(flat[flat > 0])
-    return {"output_path": out_path, "n_sources": int(ids.size), "max_id": int(ids.max()) if ids.size else 0,
-            "n_voxels": int(np.count_nonzero(flat))}
+        tmp.unlink(missing_ok=True)
+    return {"output_path": out_path, "n_sources": len(ids), "max_id": max(ids) if ids else 0, "n_voxels": n_voxels}

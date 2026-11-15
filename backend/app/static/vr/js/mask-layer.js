@@ -98,6 +98,17 @@ export function union(a, b) {
   while (j < b.length) out[k++] = b[j++];
   return out.slice(0, k);
 }
+/** `a[0..n)` without the elements of the sorted `b`, compacted in place;
+ *  returns the new length. */
+export function minusInto(a, n, b) {
+  let i = 0, j = 0, k = 0;
+  while (i < n) {
+    while (j < b.length && b[j] < a[i]) j++;
+    if (j < b.length && b[j] === a[i]) { i++; continue; }
+    a[k++] = a[i++];
+  }
+  return k;
+}
 export function minus(a, b) {
   const out = new Uint32Array(a.length);
   let i = 0, j = 0, k = 0;
@@ -141,16 +152,24 @@ export class MaskLayer {
     }
     return 0;
   }
-  /** `grow` without the voxels of every source but `except`. */
+  /**
+   * `grow` without the voxels of every source but `except`: only the sources
+   * whose box meets the grow's are looked at, and they are taken out of one
+   * copy of the grow, in place (a mask of thousands of sources stays cheap).
+   */
   free(grow, except = 0) {
-    let out = grow;
+    if (!grow.length) return grow;
+    const g = bboxOf(grow, this.shape).bbox;
+    let out = null, n = grow.length;
     for (const s of this.byId.values()) {
       if (s.id === except || !s.count) continue;
       const b = s.bbox;
-      out = minus(out, s.idx);
-      void b;
+      if (b[1] < g[0] || b[0] > g[1] || b[3] < g[2] || b[2] > g[3] || b[5] < g[4] || b[4] > g[5]) continue;
+      if (!out) out = Uint32Array.from(grow);
+      n = minusInto(out, n, s.idx);
+      if (!n) break;
     }
-    return out;
+    return out ? out.subarray(0, n) : grow;
   }
   _set(s, idx) {
     s.idx = idx;

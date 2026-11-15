@@ -257,10 +257,14 @@ differs. Only its sources' voxels travel to the headset (HCG 44's SoFiA-2
 mask: 42 171 voxels of 77 million, loaded in about 0.1 s).
 
 **Load it.** On the desktop, open the mask as a cube and press **Show on
-Headset** in its window: a file whose name ends in `mask` (`*_mask.fits`,
-`sofia_out_mask.fits`) goes as a mask layer over the cube the headset shows,
-not as a cube of its own. Send the cube first. On the page, *Mask over the
-cube* under *Catalogue over the cube* takes a path on the backend.
+Headset** in its window. For a file whose name ends in `mask`
+(`*_mask.fits`, `sofia_out_mask.fits`, the headset's `*_vr_mask_1.fits`) the
+desktop asks: **Mask Layer** sends it as a layer over the cube the headset
+shows, **Show as Cube** shows it as a cube of its own (a data cube may be
+named so). Send the cube first: a mask that arrives while the headset is
+still loading a cube waits for that cube. On the page, *Mask over the cube*
+under *Catalogue over the cube* takes a path on the backend. A mask with an
+ID above 2 147 483 647 (a 32-bit signed integer) is refused.
 
 **Show it.** **Select ▸ Mask ▸ Mask** opens the *Mask* window:
 

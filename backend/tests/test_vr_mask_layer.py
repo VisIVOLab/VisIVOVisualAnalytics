@@ -105,6 +105,48 @@ def _save_body(head, arrays):
     return struct.pack("<I", len(text)) + text + b" " * pad + b"".join(np.asarray(a, "<u4").tobytes() for a in arrays)
 
 
+def test_ids_above_int32_are_refused(tmp_path):
+    c, _, _ = _files(tmp_path)
+    big = tmp_path / "big_mask.fits"
+    m = np.zeros((6, 8, 10), np.int64)
+    m[1, 1, 1] = 2 ** 31
+    fits.PrimaryHDU(m, header=_header()).writeto(big)
+    with pytest.raises(ValueError, match="32-bit"):
+        ml.read_layer(c, str(big))
+
+
+def test_a_save_with_thousands_of_ids_is_one_pass_and_bounded(tmp_path):
+    """Every voxel its own source (4800 IDs): 3000 removed and two edited in
+    one save, in slabs of a few channels; the result checked against numpy."""
+    import time
+    nz, ny, nx = 6, 8, 100
+    labels = np.arange(1, nz * ny * nx + 1, dtype=np.int32).reshape(nz, ny, nx)
+    h = _header(nz, ny, nx)
+    cube, mask = tmp_path / "cube.fits", tmp_path / "many_mask.fits"
+    fits.PrimaryHDU(np.zeros((nz, ny, nx), np.float32), header=h).writeto(cube)
+    fits.PrimaryHDU(labels, header=h).writeto(mask)
+    removed = list(range(1, 3001))
+    # Source 4000 takes the (freed) voxels of sources 1 and 2; 4001 keeps one of its own.
+    edits = {4000: np.array([0, 1, 3999]), 4001: np.array([4000])}
+    out = tmp_path / "out.fits"
+    out.touch()                                    # reserved, as make_workspace_path does
+    t0 = time.perf_counter()
+    r = ml.write_layer(str(cube), str(mask), str(out), edits, removed, [], slab_bytes=2 * ny * nx * 8)
+    dt = time.perf_counter() - t0
+    with fits.open(out) as hd:
+        hd.verify("exception")                     # a valid FITS file, int32
+        assert hd[0].header["BITPIX"] == 32
+        got = hd[0].data.copy()
+    want = labels.copy().reshape(-1)
+    want[np.isin(want, removed + [4000, 4001])] = 0
+    want[[0, 1, 3999]] = 4000
+    want[4000] = 4001
+    assert np.array_equal(got.reshape(-1), want)
+    assert r["n_sources"] == np.unique(want[want > 0]).size and r["max_id"] == int(want.max())
+    assert dt < 5.0, dt
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["cube.fits", "many_mask.fits", "out.fits"], "no temporary left"
+
+
 def test_the_save_body_is_read_strictly():
     head, edits = ml.parse_edits(_save_body({"edits": [{"id": 3, "count": 2}, {"id": 9, "count": 1}]}, [[1, 2], [7]]))
     assert list(edits[3]) == [1, 2] and list(edits[9]) == [7]
@@ -114,6 +156,12 @@ def test_the_save_body_is_read_strictly():
         ml.parse_edits(_save_body({"edits": [{"id": 3, "count": 1}]}, [[1, 2]]))
     with pytest.raises(ValueError):
         ml.parse_edits(_save_body({"edits": [{"id": 0, "count": 0}]}, []))
+    with pytest.raises(ValueError):
+        ml.parse_edits(_save_body({"edits": [], "removed": list(range(1, ml.MAX_SOURCES + 2))}, []))
+    with pytest.raises((ValueError, TypeError)):
+        ml.parse_edits(_save_body({"edits": [], "removed": ["x"]}, []))
+    with pytest.raises(ValueError):
+        ml.parse_edits(_save_body({"edits": [], "removed": [2 ** 31]}, []))
 
 
 async def test_the_routes(client, auth_headers, tmp_path):
@@ -144,6 +192,13 @@ async def test_the_routes(client, auth_headers, tmp_path):
     r = await client.post("/v1/cube/mask_layer_bin", json={"dataset_id": cube["dataset_id"], "mask_path": str(bad)},
                           headers=auth_headers)
     assert r.status_code == 422 and "grid" in r.json()["detail"]
+    # A bad 'removed': 422, not 500; a mask path that cannot be read: 404.
+    r = await client.post("/v1/cube/mask_layer_save", content=_save_body(
+        {"dataset_id": cube["dataset_id"], "mask_path": m, "edits": [], "removed": ["x"]}, []), headers=auth_headers)
+    assert r.status_code == 422
+    r = await client.post("/v1/cube/mask_layer_bin", json={"dataset_id": cube["dataset_id"], "mask_path": str(tmp_path / "nope" / "m.fits")},
+                          headers=auth_headers)
+    assert r.status_code == 404
     # Nothing edited: 422.
     r = await client.post("/v1/cube/mask_layer_save", content=_save_body(
         {"dataset_id": cube["dataset_id"], "mask_path": m, "edits": [], "removed": []}, []), headers=auth_headers)

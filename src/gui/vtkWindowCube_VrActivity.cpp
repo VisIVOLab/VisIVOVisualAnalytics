@@ -43,6 +43,7 @@
 #include <QFutureWatcher>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QSettings>
 #include <QStatusBar>
 #include <QTemporaryDir>
@@ -188,8 +189,25 @@ void vtkWindowCube::showCubeOnHeadset()
     if (!this->m_headsetHub || this->m_headsetHub->headsets().isEmpty() || this->m_headsetShowing)
         return;
     const VrLink::Inputs in = this->vrHeadsetInputs();
-    // A label mask goes as a layer over the headset's cube (issue #282).
-    const bool mask = VrHub::isLabelMaskPath(this->filepath);
+    // A label mask goes as a layer over the headset's cube (issue #282) when
+    // the user says so: the name only suggests it (a cube may be named so).
+    bool mask = false;
+    if (VrHub::isLabelMaskPath(this->filepath)) {
+        QMessageBox box(this);
+        box.setWindowTitle(u"Show on Headset"_s);
+        box.setText(u"This file's name says it is a label mask."_s);
+        box.setInformativeText(u"Show it as a mask layer over the cube the headset shows (on the same grid), "
+                               u"or as a cube of its own?"_s);
+        QPushButton *asMask = box.addButton(u"Mask Layer"_s, QMessageBox::AcceptRole);
+        QPushButton *asCube = box.addButton(u"Show as Cube"_s, QMessageBox::ActionRole);
+        box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(asMask);
+        box.exec();
+        if (box.clickedButton() == asMask)
+            mask = true;
+        else if (box.clickedButton() != asCube)
+            return;
+    }
     const QString client = this->m_headsetHub->headsets().first().client;
     const QJsonObject body = mask ? VrHub::maskCommandBody(in, client) : VrHub::showCommandBody(in, client);
     this->m_headsetShowing = true;

@@ -175,6 +175,18 @@ export async function runMaskChecks({ c, check, waitFor, api, base, token, cube,
       && back.counts['2'] === mask.n2 && !back.counts['3'] && /source 1 edited/.test(back.history) && !!ev && ev.payload.output_path === r.output_path
       && ev.payload.recipe && ev.payload.recipe.product.kind === 'mask',
     r ? `${Date.now() - t0} ms; ${r.workspace_filename}: ${JSON.stringify(back && back.counts)}` : 'not saved');
+  // The desktop sends a cube, then its mask at once: the mask goes over that cube, never over
+  // the one shown before (and the command poll is not held while the cube loads).
+  await c.evaluate('window.__vrMasks.forget()');
+  const again = await json('POST', '/v1/datasets/open', session, { path: cube });
+  const newId = again.body && again.body.dataset_id;
+  const s1 = await json('POST', '/v1/vr/headset/command', session, { type: 'show', dataset_id: newId, path: cube });
+  const s2 = await json('POST', '/v1/vr/headset/command', session, { type: 'mask', dataset_id: maskId, path: mask.path });
+  const queued = await waitFor(c, `!!(window.__vrMasks.state.layer && window.__vrMasks.state.cube === ${JSON.stringify(newId || '')}
+    && window.__vrState.open.dataset_id === ${JSON.stringify(newId || '')})`, 60000);
+  const waited = await c.evaluate(`window.__vrShell.diag.items.some((e) => e.event === 'hub-mask-waits')`);
+  check(`${L}: a mask sent right after its cube goes over that cube`, s1.status === 200 && s2.status === 200 && queued.value,
+    `${queued.ms} ms; ${waited ? 'waited for the cube being loaded' : 'the cube was shown before the mask arrived'}`);
   const p1 = await c.evaluate('window.__tex3dProbe()');
   check(`${L}: no 3-D texture allocated in VR by the mask layer`, allocsIn(p1) === allocsIn(p0), `${allocsIn(p0)} -> ${allocsIn(p1)}`);
   const bench = await c.evaluate(`(() => { const m = window.__vrMasks, t = [];

@@ -287,6 +287,8 @@ for (const name of COLORMAP_NAMES) {
 let layers = null;
 let sources = null;
 let masks = null;
+/** A mask the desktop sent while a cube was loading (issue #282): loaded once that cube is shown. */
+let pendingMask = null;
 
 /** The colour map, from the page, the secondary stick or the menu. */
 function setColormap(name) {
@@ -1326,8 +1328,10 @@ function showInstalled(info, cube, open, path, slot, up, load, clock) {
   state.open = open;
   state.openPath = open ? path : '';
   selection.clear();
-  // A mask layer belongs to its cube (issue #282): another cube's goes.
+  // A mask layer belongs to its cube (issue #282): another cube's goes, and
+  // a mask the desktop sent while this cube loaded goes over it now.
   if (masks) masks.onCube();
+  if (pendingMask) { const m = pendingMask; pendingMask = null; loadMaskCommand(m); }
   analysis.reset();
   if (open) share.start(open.dataset_id); else share.stop();
   refiner.setDataset(open ? open.dataset_id : null);
@@ -3128,14 +3132,25 @@ function reportProduct(recipe, detail) {
   hub.product(detail, recipe, { cubePath: path, cubeName: HUB.fileName(path), stem: HUB.stemOf(path) }, key);
 }
 
-/** The desktop's `show`: that cube in this page (in VR when in VR, #235). */
-/** The desktop's `mask` (issue #282): a label mask over the cube on show. */
-async function maskFromDesktop(cmd) {
+/**
+ * The desktop's `mask` (issue #282): a label mask over the cube on show.
+ * Never awaited by the command poll. While a cube is loading (the desktop
+ * sends the cube, then its mask) the mask waits for that cube to be shown
+ * (showInstalled), so it is not loaded over the old cube and then dropped.
+ */
+function maskFromDesktop(cmd) {
+  const name = HUB.fileName(cmd.path) || cmd.dataset_id;
+  if (state.loading > 0) {
+    pendingMask = cmd;
+    shell.log('info', 'hub-mask-waits', `${name}, command ${cmd.seq}: after the cube being loaded`);
+    return;
+  }
+  loadMaskCommand(cmd);
+}
+function loadMaskCommand(cmd) {
   const name = HUB.fileName(cmd.path) || cmd.dataset_id;
   shell.log('info', 'hub-mask', `${name}, command ${cmd.seq}`);
-  // A cube the desktop sent just before is loaded first: the mask goes over it.
-  for (let i = 0; i < 600 && state.loading > 0; i++) await new Promise((r) => setTimeout(r, 200));
-  return masks.load({ maskDatasetId: cmd.dataset_id, maskPath: cmd.path })
+  masks.load({ maskDatasetId: cmd.dataset_id, maskPath: cmd.path })
     .then((L) => { if (L) { masks.setShown(true); setStatus(`Mask ${name} over the cube: ${masks.view().info}`); } })
     .catch((err) => {
       shell.log('warning', 'hub-mask-failed', `${name}: ${err.message || err}`);
@@ -3143,6 +3158,7 @@ async function maskFromDesktop(cmd) {
     });
 }
 
+/** The desktop's `show`: that cube in this page (in VR when in VR, #235). */
 function showFromDesktop(cmd) {
   const name = HUB.fileName(cmd.path) || cmd.dataset_id;
   const kind = cmd.kind || 'cube';

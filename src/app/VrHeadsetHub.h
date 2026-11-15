@@ -39,6 +39,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QRegularExpression>
 #include <QList>
 #include <QString>
 #include <QStringList>
@@ -270,10 +271,12 @@ inline QJsonObject showCommandBody(const VrLink::Inputs &in, const QString &clie
     return body;
 }
 
-/// Is @p path a label mask (a SoFiA-2 mask, the desktop's or the headset's
-/// refined one: a name ending in "mask" before .fits, or the backend's SoFiA
-/// run's sofia_out_mask.fits)? Show on Headset sends it as a mask layer over
-/// the headset's cube (issue #282), not as a cube of its own.
+/// Does @p path name a label mask (a SoFiA-2 mask, the desktop's, the
+/// headset's refined one: "mask" at the end of the name before .fits, after
+/// a separator, with the Workspace's collision number allowed after it,
+/// "x_vr_mask_1.fits"; or the backend SoFiA run's sofia_out_mask.fits)? Show
+/// on Headset then offers to send it as a mask layer over the headset's cube
+/// (issue #282); the name alone never decides it (a cube may be named so).
 inline bool isLabelMaskPath(const QString &path)
 {
     const qsizetype cut = std::max(path.lastIndexOf(u'/'), path.lastIndexOf(u'\\'));
@@ -284,7 +287,8 @@ inline bool isLabelMaskPath(const QString &path)
             break;
         }
     }
-    return name == u"mask" || name.endsWith(u"_mask") || name.endsWith(u"-mask") || name.endsWith(u".mask");
+    static const QRegularExpression rule(QStringLiteral("(^|[_.-])mask([_-][0-9]+)?$"));
+    return rule.match(name).hasMatch();
 }
 
 /// POST /v1/vr/headset/command for a label mask over the headset's cube

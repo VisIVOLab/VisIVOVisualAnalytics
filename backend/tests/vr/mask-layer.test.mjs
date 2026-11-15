@@ -258,3 +258,62 @@ test('the controller: load, pick, a lasso press edits the source, undo, save bod
   m.onCube();
   assert.equal(m.state.layer, null);
 });
+
+test('free voxels among thousands of sources: only the ones near the grow are looked at, the same answer', () => {
+  // 4096 sources of 8 voxels (2 x 2 x 2 blocks) filling a 128 x 128 x 4 grid.
+  const sh = [128, 128, 4];
+  const L2 = (x, y, z) => (z * sh[1] + y) * sh[0] + x;
+  const sources = [];
+  let id = 1;
+  for (let bz = 0; bz < 2; bz++) for (let by = 0; by < 64; by++) for (let bx = 0; bx < 32; bx++) {
+    const idx = [];
+    for (let z = 0; z < 2; z++) for (let y = 0; y < 2; y++) for (let x = 0; x < 2; x++) idx.push(L2(bx * 4 + x, by * 2 + y, bz * 2 + z));
+    idx.sort((a, b) => a - b);
+    sources.push({ id, count: 8, bbox: [bx * 4, bx * 4 + 1, by * 2, by * 2 + 1, bz * 2, bz * 2 + 1], centroid: [0, 0, 0], idx: Uint32Array.from(idx) });
+    id++;
+  }
+  const L = new ML.MaskLayer({ shape: sh, maxId: id - 1, meta: {}, sources });
+  // A grow over a 20 x 20 x 4 corner: half its voxels are free (the odd columns of each block of 4).
+  const g = [];
+  for (let z = 0; z < 4; z++) for (let y = 0; y < 20; y++) for (let x = 0; x < 20; x++) g.push(L2(x, y, z));
+  const grow = Uint32Array.from(g.sort((a, b) => a - b));
+  const t0 = performance.now();
+  const free = L.free(grow, 0);
+  const ms = performance.now() - t0;
+  let naive = grow;
+  for (const src of sources) naive = ML.minus(naive, src.idx);
+  assert.deepEqual([...free], [...naive]);
+  assert.equal(free.length, 800);
+  assert.ok(ms < 50, `${ms.toFixed(1)} ms for 4096 sources`);
+  assert.deepEqual([...grow.subarray(0, 3)], [0, 1, 2], 'the grow itself is untouched');
+  // An apply then a save still see exact voxels (the views into the shared buffer).
+  const r = L.apply(null, grow, 'new');
+  assert.equal(L.get(r.id).count, 800);
+  const { body } = L.saveBody({});
+  const n = new DataView(body.buffer).getUint32(0, true);
+  const pos = 4 + n + ((4 - ((4 + n) % 4)) % 4);
+  assert.deepEqual([...new Uint32Array(body.buffer.slice(pos))], [...naive]);
+  // In place: minusInto keeps the order and returns the new length.
+  const a = Uint32Array.from([1, 2, 3, 4, 5]);
+  assert.equal(ML.minusInto(a, 5, Uint32Array.from([2, 4, 9])), 3);
+  assert.deepEqual([...a.subarray(0, 3)], [1, 3, 5]);
+});
+
+test('the Mask window\'s view is made again only when something it shows changed', async () => {
+  const backend = { maskLayer: async () => wire({ 5: box(3, 5, 2, 3, 1, 2) }) };
+  const state = { info: { factors: [1, 1, 1], reduced_shape: shape, full_shape: shape }, open: { dataset_id: 'c1' }, clip: { min: [0, 0, 0], max: [1, 1, 1] },
+    extent: [1, 0.8, 0.6], openPath: '/d/cube.fits' };
+  const m = createMasks({ renderer: { setMaskLayer() {}, createPanel: () => ({}), updatePanel() {} }, state, backend: () => backend,
+    seedMode: () => 'new', setSeedMode() {}, onVisit() {}, onChange() {}, report: () => true, buzz() {} });
+  await m.load({ maskPath: '/d/m.fits' });
+  const v1 = m.view();
+  assert.equal(m.view(), v1, 'the same object while nothing changed');
+  m.press('labels');
+  const v2 = m.view();
+  assert.notEqual(v2, v1);
+  assert.equal(v2.labels, false);
+  m.select(5);
+  assert.equal(m.view().selected, 5);
+  m.say('hello');
+  assert.deepEqual(m.view().status, [['hello', '#b9c2d0']]);
+});
