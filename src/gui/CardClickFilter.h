@@ -14,7 +14,7 @@ namespace datahub {
 
 // ---------------------------------------------------------------------------
 // CardClickFilter
-// Installed on a QFrame to emit a signal when the user left-clicks the card.
+// Installed on a QFrame to run a callback when the user left-clicks the card.
 // Uses a lambda to avoid a separate MOC-registered class.
 //
 // The callback is queued, never run inside the release's delivery: it may open
@@ -23,7 +23,8 @@ namespace datahub {
 // changed()). The deferred deletion of the card, and of this filter with it,
 // would then run while Qt is still delivering the event through them (#310).
 // A queued call made on this filter is dropped if the card is gone by then.
-// The release that ends a double-click is ignored, so a double-click acts once.
+// A release counts only after a press on the same card, and the release that
+// ends a double-click is ignored, so a double-click acts once.
 // ---------------------------------------------------------------------------
 class CardClickFilter : public QObject
 {
@@ -34,17 +35,21 @@ public:
     {}
     bool eventFilter(QObject *obj, QEvent *event) override
     {
-        if (event->type() == QEvent::MouseButtonDblClick) {
+        if (event->type() == QEvent::MouseButtonPress) {
             if (static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton) {
-                m_skipRelease = true;
+                m_pressed = true;
+            }
+        } else if (event->type() == QEvent::MouseButtonDblClick) {
+            if (static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton) {
+                m_pressed = false;   // the release ending a double-click
             }
         } else if (event->type() == QEvent::MouseButtonRelease) {
             auto *me = static_cast<QMouseEvent *>(event);
             if (me->button() == Qt::LeftButton) {
-                if (m_skipRelease) {
-                    m_skipRelease = false;
+                if (!m_pressed) {
                     return false;
                 }
+                m_pressed = false;
                 if (auto *w = qobject_cast<QWidget *>(obj)) {
                     if (w->rect().contains(me->position().toPoint()) && onClicked) {
                         QMetaObject::invokeMethod(
@@ -57,7 +62,7 @@ public:
     }
 
 private:
-    bool m_skipRelease = false;
+    bool m_pressed = false;   // a left press on this card, not yet released
 };
 
 }  // namespace datahub
