@@ -190,6 +190,109 @@ async def cube_subvolume_bin(
     )
 
 
+# ── Levels of detail of a large cube (issue #321) ───────────────────────────
+# The desktop draws a coarse preview of the whole cube and, where the camera
+# looks, finer blocks of one level, each a box with a one-sample ghost. The
+# rules (pyramid, strided, cube) are in app/region_level.py.
+
+
+@router.post("/v1/cube/region_level_bin", tags=["cube"],
+             responses={409: {"description": "source 'pyramid' and the cube has no "
+                                             "complete and current brick pyramid."},
+                        413: {"description": "The box, ghosts included, is larger than "
+                                             "VISIVO_REGION_LEVEL_MAX_BYTES."}})
+async def cube_region_level_bin(
+    request: CubeRegionLevelRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """A box of one level of the cube with ``ghost`` samples on every side, as
+    raw little-endian float32 (z, y, x), the edge repeated outside the cube and
+    blanks NaN. ``X-Visivo-Source`` says where it came from (``cube`` for
+    level 0, ``pyramid``, ``strided``), ``X-Visivo-Level-Origin`` the level
+    index (x, y, z) of sample 0, and ``X-Visivo-Voxel-Offset`` the cube voxels
+    from a level voxel's first cube voxel to its centre. Never starts a
+    pyramid build; like subvolume_bin it takes no task slot (the desktop asks
+    for several blocks at once)."""
+    from ..compute import worker_cube_region_level_raw
+    from ..preview_pyramid import ready_pyramid
+    from ..region_level import NoPyramid, box_bytes, max_bytes
+    path = _require_cube_path(session, request.dataset_id)
+    box = (request.x0, request.x1, request.y0, request.y1, request.z0, request.z1)
+    size, limit = box_bytes(box, request.ghost), max_bytes()
+    if size > limit:
+        return Response(content=(f"The box is {size / 1024 ** 2:.0f} MiB with its ghosts, more "
+                                 f"than the {limit / 1024 ** 2:.0f} MiB one request may take: "
+                                 "ask for it in smaller boxes.").encode("utf-8"),
+                        media_type="text/plain", status_code=413)
+    # Looked for here, where the pyramid directory is this backend's own (not
+    # in a pool or Dask worker); never built.
+    pyramid_path = None
+    if request.level > 0 and request.source != "strided":
+        pyramid_path = await asyncio.to_thread(ready_pyramid, path)
+        if pyramid_path is None and request.source == "pyramid":
+            return Response(content=b"The cube has no complete and current brick pyramid: "
+                                    b"ask /v1/cube/pyramid_status with build true, or use "
+                                    b"source 'auto'.",
+                            media_type="text/plain", status_code=409)
+    try:
+        result = await _run(worker_cube_region_level_raw, path, request.level, *box,
+                            request.ghost, pyramid_path, request.source)
+    except NoPyramid as exc:
+        return Response(content=str(exc).encode("utf-8"), media_type="text/plain",
+                        status_code=409)
+    except ValueError as exc:
+        return Response(content=str(exc).encode("utf-8"), media_type="text/plain",
+                        status_code=422)
+    except Exception as exc:  # noqa: BLE001 - the binary routes answer text/plain
+        return Response(content=str(exc).encode("utf-8"), media_type="text/plain",
+                        status_code=500)
+    raw_bytes: bytes = result["raw_bytes"]
+    ox, oy, oz = result["level_origin"]
+    headers = {
+        "X-Visivo-Width": str(result["width"]),
+        "X-Visivo-Height": str(result["height"]),
+        "X-Visivo-Depth": str(result["depth"]),
+        "X-Visivo-Scalar-Type": "float32",
+        "X-Visivo-Range-Min": repr(float(result["range_min"])),
+        "X-Visivo-Range-Max": repr(float(result["range_max"])),
+        "X-Visivo-Byte-Order": "little",
+        "X-Visivo-Level": str(result["level"]),
+        "X-Visivo-Source": str(result["source"]),
+        "X-Visivo-Level-Origin": f"{ox},{oy},{oz}",
+        "X-Visivo-Voxel-Offset": repr(float(result["voxel_offset"])),
+        "Content-Length": str(len(raw_bytes)),
+    }
+    return Response(content=raw_bytes, media_type="application/octet-stream", headers=headers)
+
+
+@router.post("/v1/cube/pyramid_status", response_model=PyramidStatusResponse, tags=["cube"],
+             responses={202: {"model": PyramidStatusResponse,
+                              "description": "The pyramid is being built (state "
+                                             "``building``, ``preparing`` true): ask again "
+                                             "in a moment."}})
+async def cube_pyramid_status(
+    request: PyramidStatusRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Any:
+    """The state of the cube's brick pyramid and its levels' shapes, for the
+    desktop's levels of detail. Starts a build only with ``build`` true;
+    answers 202 while one is running."""
+    from fastapi.responses import JSONResponse  # noqa: PLC0415
+    from ..region_level import pyramid_status
+    path = _require_cube_path(session, request.dataset_id)
+    try:
+        status = await asyncio.to_thread(pyramid_status, path, request.build)
+    except Exception as exc:  # noqa: BLE001 - e.g. a pyramid directory that cannot be written
+        raise HTTPException(status_code=500,
+                            detail=f"The brick pyramid's state could not be read: {exc}") from exc
+    answer = PyramidStatusResponse(preparing=status["state"] == "building", **status)
+    if answer.preparing:
+        return JSONResponse(status_code=202, content=answer.model_dump())
+    return answer
+
+
 # ── Reduced cube for a headset (issue #167) ─────────────────────────────────
 # The WebXR page (app/static/vr) renders a reduced copy of the cube on the
 # headset's own GPU, so head and controller motion never wait for the network;

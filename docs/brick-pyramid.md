@@ -245,6 +245,46 @@ here) and combines it in three passes, which costs about a second more than a
 cached strided read; a cold strided read of a file that is not in memory pays
 the full sparse pass over the file instead.
 
+## Levels of detail for the desktop
+
+The desktop's progressive view of a large cube (issue #321) draws the coarse
+preview everywhere and finer blocks where the camera looks. Two routes serve
+it ([Cube API](backend-api/cube.md#post-v1cuberegion_level_bin)):
+
+- `/v1/cube/region_level_bin` returns one box of one level with a one-sample
+  ghost, repeating the edge sample at the cube's border
+  (`backend/app/region_level.py`).
+  - Level 0 is read from the cube's file and needs no pyramid.
+  - A higher level comes from the pyramid
+    (`BrickPyramid.read_region`, which the server's out-of-core renderer also
+    uses for its blocks). When there is no current pyramid, it is a strided
+    read of the cube: every `2^l`-th voxel, a sample rather than a block mean.
+  - It never starts a build.
+- `/v1/cube/pyramid_status` reports the pyramid's state and the shapes of its
+  levels. It starts a build only when asked.
+
+A pyramid level voxel `i` stands for cube voxel `i * 2^l + (2^l - 1) / 2`, the
+centre of its block. A strided one stands for `i * 2^l`. The answer's
+`X-Visivo-Voxel-Offset` header carries that offset.
+
+Measured on an Apple M5 Max laptop (64 GB) on the PLUTO density 2048³ float32,
+with the worker called in-process, for a 256³ box at the centre of the level
+plus a one-sample ghost (258³, 66 MiB). Cold is the first read, warm is the
+same box again.
+
+| Level | Source | Cold | Warm |
+|---|---|---|---|
+| 0 | cube | 0.60 s | 0.05 s |
+| 1 | pyramid | 0.07 s | 0.03 s |
+| 1 | strided | 0.81 s | 0.07 s |
+| 2 | pyramid | 0.06 s | 0.03 s |
+| 2 | strided | 2.41 s | 0.07 s |
+
+`pyramid_status` took 0.17 s on the first call (opening the 39 GB pyramid and
+checking it against the source) and 1 ms afterwards. Each request opens
+the pyramid again (the warm times above include it), so no handle is kept
+between requests.
+
 ## Measurements
 
 `benchmark/brick_pyramid/pyramid_bench.py` builds the pyramid of a cube and

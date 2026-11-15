@@ -100,6 +100,14 @@ X_SCALE = "X-Visivo-Scale"
 X_LOG_RANGE = "X-Visivo-Log-Range"
 X_NONPOSITIVE_VOXELS = "X-Visivo-Nonpositive-Voxels"
 
+# ── Levels of detail of a large cube (issue #321) ──────────────────────────
+# The level a box is of; the level index (x,y,z) of its sample 0, ghost
+# included; the cube voxels from a level voxel's first cube voxel to its
+# centre ((2^l - 1) / 2 for a pyramid level, 0 for the cube or a strided read).
+X_LEVEL = "X-Visivo-Level"
+X_LEVEL_ORIGIN = "X-Visivo-Level-Origin"
+X_VOXEL_OFFSET = "X-Visivo-Voxel-Offset"
+
 # ── Line-width / moment map units (out-of-band because body is binary) ──────
 X_FWHM_UNIT = "X-Fwhm-Unit"
 X_EW_UNIT = "X-Ew-Unit"

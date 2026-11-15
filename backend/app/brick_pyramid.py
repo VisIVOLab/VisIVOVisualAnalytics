@@ -98,7 +98,11 @@ class SourceSignature:
                 side = os.stat(sidecar)
                 size, mtime = size + int(side.st_size), max(mtime, int(side.st_mtime_ns))
         layout = raw.layout if raw is not None and raw.kind == "pluto" else ""
-        return cls(str(Path(path).resolve()), int(hdu), size, mtime, order, layout)
+        # Keyed on the stored name: on a case-insensitive file system the
+        # same file named in another case is the same pyramid (#325).
+        from .canonical_path import canonical_path  # noqa: PLC0415
+
+        return cls(str(canonical_path(path)), int(hdu), size, mtime, order, layout)
 
 
 def default_brick(shape: tuple[int, int, int]) -> int:
@@ -871,6 +875,59 @@ class BrickPyramid:
         dst = [slice(s.start - l, s.stop - l) for s, l in zip(src, lo)]
         out[tuple(dst)] = data[tuple(src)]
         return out
+
+    def read_region(self, level: int, region: tuple[slice, slice, slice], ghost: int = 1,
+                    edge: str = "repeat") -> np.ndarray:
+        """The box ``region`` (z, y, x half-open slices inside ``level``) with
+        ``ghost`` samples of its neighbours on every side: ``stop - start + 2 *
+        ghost`` samples per axis. Where the ghost falls outside the level (the
+        cube's border) the edge sample is repeated (``edge="repeat"``, as
+        ``np.pad(mode="edge")`` does, so interpolation at the border sees no
+        step) or left NaN (``edge="nan"``, as :meth:`read_brick`). Blank voxels
+        stay NaN.
+
+        The level is read straight into the padded block, so a whole level
+        costs one copy of it in memory (the out-of-core renderer reads whole
+        coarse levels this way)."""
+        if not 0 <= level < self.levels:
+            raise IndexError(f"level {level} outside 0..{self.levels - 1}")
+        if edge not in ("repeat", "nan"):
+            raise ValueError(f"edge must be 'repeat' or 'nan', not {edge!r}")
+        g = int(ghost)
+        if g < 0:
+            raise ValueError("ghost must be at least 0")
+        dset = self._h5[f"level{level}/data"]
+        dims = dset.shape
+        regions = tuple(slice(int(r.start), int(r.stop)) for r in region)
+        for r, n in zip(regions, dims):
+            if not 0 <= r.start < r.stop <= n:
+                raise IndexError(f"region {regions} outside the level-{level} shape {tuple(dims)}")
+        lo = [max(0, r.start - g) for r in regions]
+        hi = [min(n, r.stop + g) for r, n in zip(regions, dims)]
+        out = np.full([r.stop - r.start + 2 * g for r in regions], np.nan, dtype=np.float32)
+        inner = tuple(slice(a - (r.start - g), b - (r.start - g))
+                      for r, a, b in zip(regions, lo, hi))
+        dset.read_direct(out, np.s_[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]], inner)
+        if edge == "repeat":
+            repeat_edges(out, [a - (r.start - g) for r, a in zip(regions, lo)],
+                         [(r.stop + g) - b for r, b in zip(regions, hi)])
+        return out
+
+
+def repeat_edges(block: np.ndarray, before, after) -> None:
+    """In place: the first ``before[axis]`` and last ``after[axis]`` samples of
+    each axis of ``block`` (those with no data to read: outside the cube) take
+    the nearest sample that has some. Axis by axis, so the corners take the
+    edge too, as ``np.pad(mode="edge")`` does."""
+    for axis, (b, a) in enumerate(zip(before, after)):
+        view = np.moveaxis(block, axis, 0)
+        n = view.shape[0]
+        if b + a >= n:
+            raise ValueError("No sample left to repeat along an axis.")
+        if b:
+            view[:b] = view[b]
+        if a:
+            view[n - a:] = view[n - a - 1]
 
 
 def main(argv: list[str] | None = None) -> int:
