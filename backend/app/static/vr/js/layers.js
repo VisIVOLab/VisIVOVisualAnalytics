@@ -8,6 +8,7 @@
 
 import * as M from './mat4.js';
 import * as PT from './points.js';
+import * as RF from './refine.js';
 import * as FL from './flow.js';
 import * as CT from './catalogue.js';
 import { colormapTable } from './colormaps.js';
@@ -68,6 +69,10 @@ function fmt(v) {
   return a !== 0 && (a < 1e-2 || a >= 1e5) ? v.toExponential(2) : String(+v.toPrecision(4));
 }
 
+/** The margin splat frames are asked for with (#297): 6 % of the field of
+ *  view on every side (about 3° on a Quest 3 eye), 12 % more pixels. */
+export const REFINE_OVERSCAN = 0.06;
+
 export function createLayers(ctx) {
   const { gl, R, state, $ } = ctx;
   let lut = gl.createTexture();
@@ -75,7 +80,8 @@ export function createLayers(ctx) {
     mode: 'cube',
     points: null, flow: null, overlay: null, overlaySegs: null,
     s: {
-      style: 'points', pointPx: 2, splatSize: 1, intensity: 35, c0: 0, c1: 1,
+      // The style: each table's default (PT.defaultStyle) until one is chosen.
+      style: 'points', styleChosen: false, pointPx: 2, splatSize: 1, intensity: 35, c0: 0, c1: 1,
       colourField: null, colourLog: false, budget: 'quest', budgetRows: PT.BUDGETS.quest,
       stream: true, arrows: true, arrowScale: 1, seeds: 200, maxArrows: 50000, seed: 1,
       catShow: true, catLabels: true, catPins: true, govern: true,
@@ -143,7 +149,8 @@ export function createLayers(ctx) {
   const ptSec = el('div', { id: 'ly-points', hidden: true });
   const fieldSel = sel('pt-field', []);
   const budgetSel = sel('pt-budget', Object.entries(PT.BUDGETS).map(([k, v]) => [k, `${k}: ${(v / 1e6).toFixed(1)} M rows`]), 'quest');
-  const styleSel = sel('pt-style', [['points', 'points'], ['splats', 'splats (additive)']], 'points');
+  const styleSel = sel('pt-style', [['points', 'points'], ['splats', 'splats (additive)'],
+    ['raytraced', 'ray-traced (splats; the still view ray-traced by the backend)']], 'points');
   const logBox = el('input', { id: 'pt-log', type: 'checkbox' });
   const sizeIn = el('input', { id: 'pt-size', type: 'range', min: 1, max: 12, step: 0.5, value: 2 });
   const c0In = el('input', { id: 'pt-c0', type: 'range', min: 0, max: 1000, value: 0 });
@@ -235,7 +242,7 @@ export function createLayers(ctx) {
     const arr = PT.sampleArrays(buf, info);
     load.check?.();
     load.commit?.();
-    if (!cloud) cloud = new PT.PointCloud(gl, lut);
+    if (!cloud) cloud = new PT.PointCloud(gl, lut, { target: ctx.splatTarget || 'auto' });
     const up = cloud.upload(arr.positions, arr.colour);
     L.s.autoLog = false;
     L.s.colourLog = info.colourLog;
@@ -244,10 +251,15 @@ export function createLayers(ctx) {
     p.arr = arr; // Keep the packed sample so a lost WebGL context can be rebuilt.
     p.drawRows = info.count;
     p.governedAt = 0;
+    // The row governor's own count (drawRows is it in half-octave steps), by
+    // GPU time where there is a timer, else by the frame intervals (#295).
+    p.govRows = info.count;
+    p.govSplats = null;           // set on the first frame (the style's start)
+    p.frameGov = new PT.FrameRowGovernor();
     L.box = PT.dataToModel(info.bounds);
     L.load = { requestMs: tBody - t1, uploadMs: up, mb: buf.byteLength / 1e6, totalMs: performance.now() - t0 };
     state.extent = L.box.extent;
-    decorate(p.axes);
+    decorate(PT.axisTitles(p.axes));
     ctx.refiner.setDataset(p.datasetId);
   }
 
@@ -275,11 +287,15 @@ export function createLayers(ctx) {
     load.check?.();
     L.points = { datasetId, path, axes: info.axes, fields: info.fields, rows: info.num_rows,
       sky, skySettings: info.sky_settings || null };
+    if (!L.s.styleChosen) {
+      L.s.style = PT.defaultStyle(info.format);
+      styleSel.value = L.s.style;
+      sizeIn.value = PT.isSplats(L.s.style) ? L.s.splatSize : L.s.pointPx;
+    }
     fieldSel.innerHTML = '';
     fieldSel.appendChild(el('option', { value: '', textContent: '(none: one colour)' }));
     for (const f of info.fields) fieldSel.appendChild(el('option', { value: f, textContent: f }));
-    const others = info.fields.filter((f) => !info.axes.includes(f) && !f.startsWith('@'));
-    L.s.colourField = others.length ? others[0] : null;
+    L.s.colourField = PT.defaultColourField(info.fields, info.axes);
     L.s.autoLog = true;
     L.s.colourLog = false;
     logBox.checked = false;
@@ -457,8 +473,8 @@ export function createLayers(ctx) {
   logBox.addEventListener('change', withBackend((b) => { L.s.colourLog = logBox.checked; return L.points && fetchSample(b); }));
   budgetSel.addEventListener('change', withBackend((b) => { L.s.budget = budgetSel.value; L.s.budgetRows = PT.BUDGETS[budgetSel.value]; return L.points && fetchSample(b); }));
   ptReload.addEventListener('click', withBackend((b) => L.points && fetchSample(b)));
-  styleSel.addEventListener('change', () => { L.s.style = styleSel.value; sizeIn.value = L.s.style === 'splats' ? L.s.splatSize : L.s.pointPx; });
-  sizeIn.addEventListener('input', () => { if (L.s.style === 'splats') L.s.splatSize = Number(sizeIn.value); else L.s.pointPx = Number(sizeIn.value); });
+  styleSel.addEventListener('change', () => { L.s.style = styleSel.value; L.s.styleChosen = true; sizeIn.value = PT.isSplats(L.s.style) ? L.s.splatSize : L.s.pointPx; });
+  sizeIn.addEventListener('input', () => { if (PT.isSplats(L.s.style)) L.s.splatSize = Number(sizeIn.value); else L.s.pointPx = Number(sizeIn.value); });
   c0In.addEventListener('input', () => { L.s.c0 = Math.min(Number(c0In.value) / 1000, L.s.c1 - 0.001); });
   c1In.addEventListener('input', () => { L.s.c1 = Math.max(Number(c1In.value) / 1000, L.s.c0 + 0.001); });
   intIn.addEventListener('input', () => { L.s.intensity = Number(intIn.value); });
@@ -494,9 +510,10 @@ export function createLayers(ctx) {
     } else if (id === 'pt-field-more') s.fieldPage += 1;
     else if (id === 'pt-log' && L.points && b) { s.autoLog = false; s.colourLog = !s.colourLog; logBox.checked = s.colourLog; fetchSample(b).catch(fail); }
     else if (w.group === 'pt-style') {
-      s.style = w.value === 'splats' ? 'splats' : 'points';
+      s.style = PT.STYLES.includes(w.value) ? w.value : 'points';
+      s.styleChosen = true;
       styleSel.value = s.style;
-      sizeIn.value = s.style === 'splats' ? s.splatSize : s.pointPx;
+      sizeIn.value = PT.isSplats(s.style) ? s.splatSize : s.pointPx;
     } else if (id === 'pt-budget' && L.points && b) {
       const keys = ['quest-low', 'quest', 'quest-high', 'desktop', 'desktop-high'];
       s.budget = keys[(keys.indexOf(s.budget) + 1) % keys.length];
@@ -506,9 +523,9 @@ export function createLayers(ctx) {
     } else if (id === 'pt-reload' && L.points && b) fetchSample(b).catch(fail);
     else if (id === 'pt-smaller' || id === 'pt-larger') {
       const f = id === 'pt-larger' ? 1.25 : 0.8;
-      if (s.style === 'splats') s.splatSize = Math.max(0.25, Math.min(12, s.splatSize * f));
+      if (PT.isSplats(s.style)) s.splatSize = Math.max(0.25, Math.min(12, s.splatSize * f));
       else s.pointPx = Math.max(1, Math.min(12, s.pointPx * f));
-      sizeIn.value = s.style === 'splats' ? s.splatSize : s.pointPx;
+      sizeIn.value = PT.isSplats(s.style) ? s.splatSize : s.pointPx;
     } else if (id === 'pt-box' || id === 'fl-box') s.box = !s.box;
     else if (id === 'fl-stream') { s.stream = !s.stream; streamBox.checked = s.stream; }
     else if (id === 'fl-arrows') { s.arrows = !s.arrows; arrowBox.checked = s.arrows; }
@@ -557,7 +574,7 @@ export function createLayers(ctx) {
     for (const k of UNDO_KEYS) if (k in o) L.s[k] = o[k];
     const s = L.s;
     styleSel.value = s.style;
-    sizeIn.value = s.style === 'splats' ? s.splatSize : s.pointPx;
+    sizeIn.value = PT.isSplats(s.style) ? s.splatSize : s.pointPx;
     c0In.value = Math.round(1000 * s.c0); c1In.value = Math.round(1000 * s.c1);
     intIn.value = s.intensity;
     streamBox.checked = s.stream; arrowBox.checked = s.arrows;
@@ -606,8 +623,9 @@ export function createLayers(ctx) {
       } else {
         notes.field = 'one colour';
       }
-      notes.style = s.style === 'splats' ? `splat size ${fmt(s.splatSize)}` : `${fmt(s.pointPx)} px`;
-      notes.intensity = s.style === 'splats' ? `${s.intensity} %` : '';
+      notes.style = PT.isSplats(s.style) ? `${s.style === 'raytraced' ? 'ray-traced, ' : ''}splat size ${fmt(s.splatSize)}`
+        : `${fmt(s.pointPx)} px`;
+      notes.intensity = PT.isSplats(s.style) ? `${s.intensity} %` : '';
       const drawn = s.govern ? L.points.drawRows : sm.count;
       notes.shown = `${(drawn / 1e6).toFixed(2)} M drawn of ${(sm.count / 1e6).toFixed(2)} M sampled, ${(sm.totalRows / 1e6).toFixed(2)} M rows`;
     } else if (L.mode === 'flow' && L.flow && L.flow.info) {
@@ -626,6 +644,17 @@ export function createLayers(ctx) {
     if (L.error) status.push([L.error, '#ff8a8a']);
     return { notes, values, status };
   }
+  /** Whether the refined frame on show, warped to this eye, covers its whole
+   *  viewport (RF.coversViewport at the depths the warp uses). */
+  function refinedCovers(view, model, eye) {
+    const f = ctx.refiner.draw && ctx.refiner.draw.shown;
+    if (!f || !f.rec || !f.rec.eyes || !f.rec.eyes.length) return false;
+    const fe = f.rec.eyes[Math.min(eye, f.rec.eyes.length - 1)];
+    const centre = RF.centreDistance(fe.view, f.rec.model);
+    const d = f.hasDepth && f.header.depth ? [f.header.depth.z_near, f.header.depth.z_far, centre] : [centre];
+    return RF.coversViewport(fe, f.rec.model, view, model, d);
+  }
+
   // ── Hooks for main.js ────────────────────────────────────────────────
   const api = {
     // R.restore() rebuilds its own handles; these layer-specific GPU objects
@@ -637,7 +666,7 @@ export function createLayers(ctx) {
       cloud = null;
       lines = null;
       if (L.points?.arr) {
-        cloud = new PT.PointCloud(gl, lut);
+        cloud = new PT.PointCloud(gl, lut, { target: ctx.splatTarget || 'auto' });
         cloud.upload(L.points.arr.positions, L.points.arr.colour);
       }
       if (L.flow?.arr) {
@@ -700,18 +729,52 @@ export function createLayers(ctx) {
     drawScene(view, eye, viewportH) {
       const model = state.model;
       if (L.mode === 'points' && cloud && L.points && L.points.sample) {
-        const pt = L.points, now = performance.now();
-        if (eye === 0 && L.s.govern && now - (pt.governedAt || 0) > 250) {
-          // The rows drawn follow the frame time (four times a second).
+        const pt = L.points, now = performance.now(), count = pt.sample.count;
+        const splats = PT.isSplats(L.s.style);
+        if (pt.govSplats !== splats) {
+          // Splats on a headset start at what it holds at 72 Hz (#295),
+          // points (and splats elsewhere) at the whole sample.
+          pt.govSplats = splats;
+          pt.govRows = splats && ctx.headset ? Math.min(count, PT.HEADSET_SPLAT_ROWS) : count;
+          pt.frameGov.reset();
+          pt.drawRows = PT.quantizeRows(pt.govRows, count);
+        }
+        // A refined frame fully shown over a still view replaces the page's
+        // whole picture: the splats under it are not drawn (#295), and the
+        // governor waits (those frames say nothing about the splats' cost).
+        const covered = splats && ctx.refineOn() && !isCropped(state.clip) && ctx.refiner.showing
+          && ctx.refiner.weight >= 1 && refinedCovers(view, model, eye);
+        if (eye === 0) {
+          if (pt.wasCovered && !covered) pt.frameGov.interrupted(now);   // the time under it was not earned
+          pt.wasCovered = covered;
+        }
+        if (eye === 0 && L.s.govern && !covered && now - (pt.governedAt || 0) > 250) {
+          // The rows drawn follow the frame time (four times a second): GPU
+          // time where there is a timer, else the frame intervals in a VR
+          // session whose display rate has settled (PT.rowGovernorKind).
           pt.governedAt = now;
-          pt.drawRows = PT.governRows(pt.drawRows, pt.sample.count, R.gpuMs, ctx.targetHz());
+          const hz = ctx.targetHz();
+          if (hz !== pt.govHz) { pt.govHz = hz; pt.frameGov.reset(); }   // a new display rate: start over
+          const kind = PT.rowGovernorKind({ gpuMs: R.gpuMs, inXR: !!(ctx.inXR && ctx.inXR()),
+            rateSettled: !!(ctx.rateSettled && ctx.rateSettled()) });
+          let next = pt.govRows;
+          if (kind === 'gpu') next = PT.governRows(pt.govRows, count, R.gpuMs, hz);
+          else if (kind === 'frames') next = pt.frameGov.update(pt.govRows, count, PT.recentFrames(ctx.frames ? ctx.frames() : [], hz), hz, now);
+          // Still and waiting for a refined frame: no growth (a new step would
+          // make the frame asked for stale before it arrives).
+          const waiting = splats && ctx.refineOn() && ctx.refiner.motion.state === 'still'
+            && (ctx.refiner.status === 'waiting' || ctx.refiner.status === 'refined');
+          pt.govRows = waiting ? Math.min(next, pt.govRows) : next;
+          pt.drawRows = PT.quantizeRows(pt.govRows, count, pt.drawRows);
         }
         // Sized for the rows drawn now (the governor's), so fewer cover as much.
         const drawn = L.s.govern ? pt.drawRows : pt.sample.count;
-        const st = PT.splatStyle(pt.sample.bounds, pt.sample.placedRows, drawn, L.s.splatSize, L.s.intensity);
-        cloud.draw(view, model, { box: L.box, style: L.s.style, pointPx: L.s.pointPx, radius: st.sampleRadius,
-          opacity: st.opacity, c0: L.s.c0, c1: L.s.c1, viewportH, count: L.s.govern ? pt.drawRows : pt.sample.count,
-          clip: state.clip });
+        const st = PT.splatStyle(pt.sample.bounds, pt.sample.placedRows, drawn, L.s.splatSize, L.s.intensity,
+          cloud.splatRule);
+        if (!covered) {
+          cloud.draw(view, model, { box: L.box, style: L.s.style, pointPx: L.s.pointPx, radius: st.sampleRadius,
+            opacity: st.opacity, c0: L.s.c0, c1: L.s.c1, viewportH, count: drawn, clip: state.clip });
+        }
       } else if (L.mode === 'flow' && lines && L.flow && L.flow.info) {
         const [s0, s1] = flowSpeedRange();
         lines.draw(view, model, { box: L.box, speedMin: s0, speedMax: s1,
@@ -725,27 +788,41 @@ export function createLayers(ctx) {
       }
     },
     hasScene() { return L.mode !== 'cube' && !!L.box; },
+    /** True while a refined frame covers the splats (they are not drawn): the
+     *  frame-rate governors earn no clean time from those frames (#295). */
+    get covered() { return L.mode === 'points' && !!(L.points && L.points.wasCovered); },
     /** Refinement of a point table (none for a velocity field). */
-    refineFrame(t, eyes, centreView, background) {
+    refineFrame(t, eyes0, centreView, background) {
       if (L.mode !== 'points' || !L.points || !L.points.sample || isCropped(state.clip)) return;
+      // Splat frames are asked for with a margin, so a turn warps them
+      // without uncovering the view (refinedCovers: the splats under a
+      // covering frame are not drawn).
+      const eyes = PT.isSplats(L.s.style) ? eyes0.map((e) => RF.overscanEye(e, REFINE_OVERSCAN)) : eyes0;
       const sm = L.points.sample;
       const commands = PT.pointLook({ axes: L.points.axes, colourField: sm.colourField, colourRange: sm.colourRange,
         colourLog: sm.colourLog, lut: colormapTable(ctx.colormap()), c0: L.s.c0, c1: L.s.c1, style: L.s.style,
-        splatSize: L.s.splatSize, pointPx: L.s.pointPx, intensity: L.s.intensity, sky: L.points.sky });
+        splatSize: L.s.splatSize, pointPx: L.s.pointPx, intensity: L.s.intensity, sky: L.points.sky,
+        splatRule: cloud ? cloud.splatRule : 'v2-8bit' });
       // The splats are refined for the whole sample (not the governor's part
       // of it, which changes four times a second and would make every refined
       // frame stale): never darker than the preview, the same when it is drawn whole.
-      const key = JSON.stringify([commands, sm.bounds, sm.count]);
+      // Refined for the rows the page draws (in half-octave steps, so the
+      // governor rarely makes a frame stale): the same splat size and light.
+      const drawn = L.s.govern ? L.points.drawRows : sm.count;
+      const key = JSON.stringify([commands, sm.bounds, sm.count, drawn]);
       ctx.refiner.frame({ t, eyes, aCentre: M.multiply(centreView, state.model), model: state.model, zStretch: 1,
         look: { commands, cropError: '' }, lookKey: key, background,
-        poseExtra: PT.refinePoseExtra(L.box, L.s.style, sm.count, eyes) });
+        // A backend drawing by another splat rule (one from before #263): its
+        // frames are not shown (refine-client.js accept).
+        accept: (h) => PT.acceptFrame(h, L.s.style, commands.find((c) => c.type === 'set_point_style').splat_rule),
+        poseExtra: PT.refinePoseExtra(L.box, L.s.style, drawn, eyes) });
     },
     hudLines() {
       const out = [];
       if (L.mode === 'points' && L.points && L.points.sample) {
         const s = L.points.sample;
         const d = L.s.govern ? L.points.drawRows : s.count;
-        out.push(`points ${(d / 1e6).toFixed(2)} M drawn of ${(s.count / 1e6).toFixed(2)} M sampled, ${(s.totalRows / 1e6).toFixed(2)} M rows, ${L.s.style}`);
+        out.push(`points ${(d / 1e6).toFixed(2)} M drawn of ${(s.count / 1e6).toFixed(2)} M sampled, ${(s.totalRows / 1e6).toFixed(2)} M rows, ${L.s.style}${PT.isSplats(L.s.style) && cloud ? ` (${cloud.hdr ? (cloud.float32 ? 'f32' : 'f16') + ' tone-mapped' : '8-bit'})` : ''}`);
         out.push(`  sample ${L.load.mb.toFixed(1)} MB: request ${L.load.requestMs.toFixed(0)} ms, upload ${L.load.uploadMs.toFixed(1)} ms`);
         // A sky catalogue: how it is placed, and the sources with no distance (#260, #265).
         const sky = PT.skyLabel(L.points.skySettings);

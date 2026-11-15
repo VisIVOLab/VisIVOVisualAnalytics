@@ -122,8 +122,10 @@ class PointInfoRequest(BaseModel):
 @router.post("/v1/points/info", tags=["vr"])
 async def points_info(request: PointInfoRequest, _: None = _auth,
                       session: Session = Depends(get_session)) -> dict:
-    """The table's numeric columns, its default X/Y/Z and its row count; for
-    a sky catalogue, how it is placed and how many sources have no distance."""
+    """The table's numeric columns, its default X/Y/Z, its row count and
+    its format: ``vbt`` (a simulation's particles, which the page opens
+    ray-traced, issue #264) or ``catalogue``; for a sky catalogue, how it is
+    placed and how many sources have no distance."""
     entry = _require_dataset(session, request.dataset_id)
     spec = _point_spec(entry)
     try:
@@ -131,7 +133,9 @@ async def points_info(request: PointInfoRequest, _: None = _auth,
     except _BAD_TABLE as exc:
         raise HTTPException(422, f"The table could not be read: {exc}") from exc
     out = {"valid": True, "num_rows": int(table.num_rows), "fields": list(table.columns),
-           "axes": list(table.axes), "sky": table.sky is not None}
+           "axes": list(table.axes), "sky": table.sky is not None,
+           # point_table_spec: a VBT's header path, a catalogue's JSON spec.
+           "format": "catalogue" if spec.lstrip().startswith("{") else "vbt"}
     if table.sky is not None:
         # Its frame, distance mode and cosmology, and the sources placed, left
         # out for want of a distance, and placed from cz < 1000 km/s (#265).

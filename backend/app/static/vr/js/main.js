@@ -478,6 +478,15 @@ layers = createLayers({
   colormap: () => state.colormap, refineOn: () => refineMode !== 'off',
   rebuild: () => rebuildDecorations(),
   targetHz: () => (xr ? xr.targetHz : 60),
+  // The frame intervals (the row governor without a GPU timer, #295), whether
+  // this is a headset and the splats' float target: half floats on a headset
+  // (#295), ?splattarget=f32|f16|8bit to measure another.
+  frames: () => stats.buf,
+  inXR: () => !!xr,
+  rateSettled: () => !!(xr && xr.rateLog && xr.rateLog.done),
+  headset: isHeadsetBrowser(navigator.userAgent),
+  splatTarget: ['f32', 'f16', '8bit'].includes(query.get('splattarget')) ? query.get('splattarget')
+    : (isHeadsetBrowser(navigator.userAgent) ? 'f16' : 'auto'),
   onLayer: (detail) => reportProduct(null, detail),   // issue #237: a catalogue over the cube
   sourceDecor: () => (sources ? sources.decor() : null),   // issue #279: flags, culling, the current source
 });
@@ -3482,8 +3491,11 @@ async function startSession(session, mode, bench, startGen, wantLayers) {
   shell.xrStarted();
   shell.clearNotice('xr-ended');
   const policy = qualityPolicy({ targetHz, spvMin: governor.min, spvChosen: state.spv, eyeChosen: fbScale });
-  shell.log('info', 'xr-start', `${mode}${bench ? ' (benchmark)' : ''}, ${targetHz} Hz, eye buffer ${layer.framebufferWidth}×${layer.framebufferHeight}; text ${layersNote}`);
-  shell.log('info', 'quality-policy', `${policy}; governor ${state.governorOn ? 'on' : 'off'}`);
+  // The display rate is logged once it has settled (xrRateSettled): the
+  // session's frameRate changes after the first frames (#295: logged 90 Hz
+  // for a session running at 72).
+  xr.rateLog = { t0: performance.now(), rate: session.frameRate || 0, since: performance.now(), done: false };
+  shell.log('info', 'xr-start', `${mode}${bench ? ' (benchmark)' : ''}, eye buffer ${layer.framebufferWidth}×${layer.framebufferHeight}; text ${layersNote}; display rate logged when settled`);
   measure.event('xr-start', { mode: mode === 'immersive-ar' ? 'ar' : 'vr', bench: !!bench, display_hz: targetHz,
     eye: [layer.framebufferWidth, layer.framebufferHeight], scale: fbScale,
     foveation: 'fixedFoveation' in layer ? layer.fixedFoveation : null, rates: session.supportedFrameRates ? Array.from(session.supportedFrameRates) : null,
@@ -3901,17 +3913,42 @@ function onXRFrame(time, frame) {
   if (xr.bench) xr.bench.record(interval, cpu, R.gpuMs);
   else measure.frame(interval, cpu, R.gpuMs);
   if (state.governorOn && !xr.bench) {
-    governor.update(interval, 1000 / xr.targetHz);
+    // Under a refined frame the splats are not drawn: no clean time is
+    // earned from those frames, by either governor (#295).
+    const idle = layers.covered;
+    governor.update(interval, 1000 / xr.targetHz, idle);
     // Second stage (epic #166): samples per voxel at 0.5 or less and frames
     // still missed: a smaller eye buffer, one step at a time.
-    const scale = eyeGovernor.update(interval, 1000 / xr.targetHz, spvAtFloor(governor));
-    if (scale < xr.fbScale - 1e-6) setEyeBufferScale(scale);
+    // What is shown changed: the eye buffer may come back up sooner (#295).
+    const shownCube = state.cube ? (state.open ? state.open.dataset_id : '') : null;
+    if (shownCube !== xr.shownCube || layers.mode !== xr.shownMode || layers.state.s.style !== xr.shownStyle) {
+      xr.shownCube = shownCube; xr.shownMode = layers.mode; xr.shownStyle = layers.state.s.style;
+      eyeGovernor.relax();
+    }
+    // Applied when the governor moves (a scale set from elsewhere is kept).
+    const prevScale = eyeGovernor.scale;
+    const scale = eyeGovernor.update(interval, 1000 / xr.targetHz, spvAtFloor(governor), idle);
+    if (Math.abs(scale - prevScale) > 1e-6 && Math.abs(scale - xr.fbScale) > 1e-6) setEyeBufferScale(scale);
   }
   if (session.frameRate) xr.targetHz = session.frameRate;
+  if (xr.rateLog && !xr.rateLog.done) xrRateSettled(session, performance.now());
   if (!xr.bench) shell.xrFrame(time, stats.buf, xr.targetHz, currentQualityNote());
 }
 
-/** The eye buffer made smaller in the running session (a new base layer). */
+/** Logs the display rate and the quality policy once the session's frame
+ *  rate has held for 0.5 s, at least 1.5 s into the session (#295). */
+function xrRateSettled(session, now) {
+  const r = xr.rateLog;
+  const rate = session.frameRate || 0;
+  if (rate !== r.rate) { r.rate = rate; r.since = now; }
+  if (now - r.since < 500 || now - r.t0 < 1500) return;
+  r.done = true;
+  const hz = rate || xr.targetHz;
+  shell.log('info', 'xr-rate', `${hz} Hz (settled after ${Math.round(now - r.t0)} ms), ${fpsLine()}`);
+  shell.log('info', 'quality-policy', `${qualityPolicy({ targetHz: hz, spvMin: governor.min, spvChosen: state.spv, eyeChosen: xr.fbChosen })}; governor ${state.governorOn ? 'on' : 'off'}`);
+}
+
+/** The eye buffer made smaller, or back up (#295), in the running session (a new base layer). */
 function setEyeBufferScale(scale) {
   const old = xr.layer;
   try {
@@ -4287,7 +4324,7 @@ if (query.has('debug')) {
   window.__vrHub = hub;
   window.__vrEntry = () => ({ ...entry, line: entryLine() });
   window.__vrCuts = () => ({ active: activeCuts.slice(), counts: { ...cutCounts } });
-  window.__vrSetEyeScale = (s) => { if (xr) setEyeBufferScale(s); };
+  window.__vrSetEyeScale = (s) => { if (xr) { setEyeBufferScale(s); eyeGovernor.scale = xr.fbScale; } };
   // The message card (in the desktop view with ?panel3d): press one of its
   // buttons through a ray from the camera, as a controller would.
   window.__vrCard = {
