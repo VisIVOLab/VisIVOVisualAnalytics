@@ -855,20 +855,34 @@ def _image_tile_from_pyramid(pyramid: str, level: int, tile_x: int, tile_y: int,
                               tile_size, averaged=level > 0)
 
 
-def worker_cube_preview(path: str, downsample: int) -> dict[str, Any]:
+def worker_cube_preview(path: str, downsample: int,
+                        pyramid_path: str | None = None) -> dict[str, Any]:
+    """The cube seen every ``downsample`` voxels along each axis, for the
+    desktop's first view of a large cube.
+
+    With ``pyramid_path`` (the cube's brick pyramid, complete and current:
+    ``app.preview_pyramid.ready_pyramid``) each voxel is the mean of its cell,
+    read from one pyramid level without touching the cube's file (issue #320);
+    otherwise, or when that pyramid turns out stale or unreadable, every
+    ``downsample``-th voxel of the cube. Both have the same shape; ``source``
+    says which was used."""
+    stride = max(1, int(downsample))
+    if pyramid_path and stride > 1:
+        try:
+            return _cube_preview_from_pyramid(path, stride, pyramid_path)
+        except Exception as exc:  # noqa: BLE001 - e.g. the file changed since the check
+            logger.warning("[preview] the brick pyramid of %s was not used: %s", path, exc)
     dataset = ScientificFitsDataset(path)
     hdul, raw = dataset.open_memmap()
     try:
         data = dataset.squeeze_to_3d(raw)
         if data.ndim != 3:
             raise ValueError("Cube preview requires a 3D cube.")
-        stride = max(1, int(downsample))
         preview = np.asarray(data[::stride, ::stride, ::stride], dtype=np.float32)
         n_voxels = int(np.prod(data.shape))
     finally:
         hdul.close()
 
-    range_min, range_max = _finite_range(preview)
     # The preview samples the cube with a stride, so its noise is the cube's:
     # the default threshold of the whole cube, from it (issue #93), by the rule
     # a remote view of this cube starts from (on another sample: within a few
@@ -877,6 +891,39 @@ def worker_cube_preview(path: str, downsample: int) -> dict[str, Any]:
     st = stride_for(preview.size)
     sample = preview[::st, ::st, ::st]
     threshold = default_threshold(sample, n_voxels) if np.isfinite(sample).any() else None
+    return _preview_answer(preview, threshold, {
+        "source": "strided", "level": None, "levels": None, "level_factors": None,
+        "factors": [stride] * 3, "voxel_offset": 0.0})
+
+
+def _cube_preview_from_pyramid(path: str, stride: int, pyramid_path: str) -> dict[str, Any]:
+    """:func:`worker_cube_preview` from the cube's brick pyramid: refused
+    (StalePyramid) when the cube's file changed since it was built."""
+    from ..brick_pyramid import BrickPyramid  # noqa: PLC0415
+    from ..noise_threshold import default_threshold  # noqa: PLC0415
+    from ..preview_pyramid import choose_level, describe, pyramid_preview  # noqa: PLC0415
+    from ..render_session._ooc import level0_sample  # noqa: PLC0415
+    from ..volume_source import volume_shape  # noqa: PLC0415
+
+    full, _ = volume_shape(path, None)
+    shape0 = tuple(int(n) for n in full[-3:])
+    with BrickPyramid(pyramid_path, source=path) as pyr:
+        shapes = [pyr.shape(k) for k in range(pyr.levels)]
+        if tuple(shapes[0]) != shape0:
+            raise ValueError(f"The brick pyramid holds a {shapes[0]} cube, not {shape0}.")
+        level = choose_level(shapes, stride)
+        preview = pyramid_preview(pyr._h5[f"level{level}/data"], shape0, level, stride)  # noqa: SLF001
+        # The cube's threshold, from level-0 bricks, as its out-of-core view
+        # and its headset view take it: block means have less noise than the
+        # cube, so the preview itself would set it too low.
+        sample = level0_sample(pyr)
+        threshold = default_threshold(sample, int(np.prod(shape0))) if sample.size else None
+        info = describe(level, stride, pyr.levels)
+    return _preview_answer(preview, threshold, info)
+
+
+def _preview_answer(preview: np.ndarray, threshold, info: dict[str, Any]) -> dict[str, Any]:
+    range_min, range_max = _finite_range(preview)
     # zlib level 1 — same speed-vs-ratio rationale as worker_cube_subvolume.
     # For a 10 GB cube + downsample 4 the preview is ~170 MB; compression
     # brings it to ~70-90 MB on the wire and shaves seconds off the tunnel
@@ -892,8 +939,8 @@ def worker_cube_preview(path: str, downsample: int) -> dict[str, Any]:
         "default_threshold": threshold,
         "compression": compression,
         "data_base64": data_b64,
+        **info,
     }
-
 
 
 #: A FITS header may hold only printable ASCII. Astronomy text is full of what

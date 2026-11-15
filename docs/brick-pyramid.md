@@ -196,6 +196,55 @@ keep the paths they had.
 | `VISIVO_RENDER_OOC_MAX_BLOCKS` | `12` | Blocks drawn at once. |
 | `VISIVO_RENDER_OOC_NODE` | `256` | Voxels per side of a block; a multiple of the pyramid's brick. |
 
+## The desktop preview from the pyramid
+
+The desktop opens a large cube as a preview, `/v1/cube/preview`, every `s`
+voxels along each axis. When the cube's pyramid already exists, complete and
+built from the file as it is now, the preview is read from it
+(`backend/app/preview_pyramid.py`): each preview voxel is the mean of the
+`s x s x s` cell of the cube it stands for, so a thin or noisy structure does
+not alias, and the cube's file is not read. Without such a pyramid the preview
+stays every `s`-th voxel; previewing never starts a build, so the pyramid comes
+from an earlier remote 3-D view or headset session, or from the command above.
+
+- **Level.** The coarsest level whose block, `2^k` voxels, is at most `s`. For
+  `s = 2^k` the preview is that level itself. For any other `s` each cell is
+  the mean of the level voxels it overlaps, each weighted by the cube voxels it
+  shares with the cell, over the finite ones. That is the cube's block mean
+  where the cell's edges fall on level voxels, the block holds no blank voxel
+  and no level voxel is the partial last one of an odd-length axis (the level
+  averages it with its full neighbour as an equal); otherwise a level voxel
+  cut by a cell's edge gives its own mean.
+- **Shape.** `ceil(n / s)` per axis, as the strided preview, so the desktop
+  sizes and places it as before. Voxel `i` is the cell starting at cube voxel
+  `i * s`; the answer's `voxel_offset`, `(s - 1) / 2`, is its centre.
+- **Blanks.** Level voxels are means of their finite voxels, level after
+  level; next to blank regions they are not corrected from level 0 as the
+  headset's reduced cube is.
+- **Threshold.** The default threshold comes from a sample of level-0 bricks,
+  as for the out-of-core view (block means have less noise than the cube).
+
+The answer's `source` says which preview it is (`pyramid` or `strided`), with
+the `level` read; `"source": "strided"` in the request asks for the strided
+one whatever exists ([Cube API](backend-api/cube.md#post-v1cubepreview)).
+
+Measured on an Apple M5 Max laptop (64 GB, files in the page cache after the
+first read), the time of `worker_cube_preview` and the RMS difference from the
+cube's exact block mean, over the block mean's standard deviation:
+
+| Cube | `s` | Pyramid | Strided | Pyramid vs block mean | Strided vs block mean |
+|---|---|---|---|---|---|
+| PLUTO density 2048³ float32 (32 GiB) | 8 | 1.0 s (level 3) | 1.5 s (4.1 s cold) | 0 | 0.88 |
+| same | 7 | 2.8 s (level 2) | 1.9 s | 0.11 | 0.83 |
+| Radio cube 1586² x 793 (8 GB, noise) | 4 | 2.6 s (level 2) | 2.6 s | 0 | 4.1 |
+| same | 5 | 1.6 s (level 2) | 1.7 s | 0.31 | 4.4 |
+
+`s = 7` is what the desktop asks for the 2048³ cube with its default 100 MB
+preview. A stride that is no power of two reads the finer level (512³ voxels
+here) and combines it in three passes, which costs about a second more than a
+cached strided read; a cold strided read of a file that is not in memory pays
+the full sparse pass over the file instead.
+
 ## Measurements
 
 `benchmark/brick_pyramid/pyramid_bench.py` builds the pyramid of a cube and

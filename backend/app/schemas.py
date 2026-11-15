@@ -183,6 +183,11 @@ class MomentProductResponse(BaseModel):
 class CubePreviewRequest(BaseModel):
     dataset_id: str
     downsample: int = 1
+    #: ``auto``: block means from the cube's brick pyramid when one is complete
+    #: and current (issue #320; opening a cube never starts a build), else
+    #: every ``downsample``-th voxel. ``strided``: every ``downsample``-th
+    #: voxel whatever exists.
+    source: Literal["auto", "strided"] = "auto"
 
 
 class CubePreviewResponse(BaseModel):
@@ -205,6 +210,19 @@ class CubePreviewResponse(BaseModel):
     #              decodes zlib bytes as raw float32 → grey slice.
     compression: str = ""
     data_base64: str = ""
+    # Where the preview came from (issue #320): "strided" (every
+    # factors-th voxel of the cube) or "pyramid" (each voxel the mean of its
+    # factors-sized cell, from brick-pyramid level ``level`` of ``levels``,
+    # whose voxels are level_factors cube voxels per axis). Either way the
+    # shape is ceil(n / factor) per axis; voxel i stands for cube voxel
+    # i * factor + voxel_offset (for "pyramid" the centre of a whole cell;
+    # the last cell of an axis may be shorter).
+    source: str = ""
+    level: int | None = None
+    levels: int | None = None
+    level_factors: list[int] | None = None
+    factors: list[int] | None = None
+    voxel_offset: float = 0.0
 
 
 class CubeSliceRequest(BaseModel):

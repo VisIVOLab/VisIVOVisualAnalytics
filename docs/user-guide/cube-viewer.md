@@ -31,6 +31,14 @@ second. In the background it then prepares the **full-resolution** cube and
 swaps it in. The transition is asynchronous: you can rotate the camera and
 scrub through slices while the upgrade is in flight.
 
+A preview is normally every N-th voxel along each axis. When the cube already
+has a [brick pyramid](../brick-pyramid.md#the-desktop-preview-from-the-pyramid)
+(built once for a remote 3-D view or a headset), the preview is read from it
+instead: each voxel is the mean of the N x N x N block it stands for, so thin
+or noisy structures no longer flicker or vanish between preview sizes, and the
+cube's file is not read. Opening a cube never builds a pyramid just for the
+preview.
+
 You can constrain the full-resolution fetch to the **viewport ROI** of the
 3-D camera (toggle *Camera → Use Camera ROI*). This is useful for very large
 cubes when you only want detail in the region you're inspecting.
