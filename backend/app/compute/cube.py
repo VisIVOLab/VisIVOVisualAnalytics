@@ -946,18 +946,34 @@ def worker_cube_region_level_raw(path: str, level: int, x0: int, x1: int, y0: in
     used = "cube" if level == 0 else "strided"
     if level > 0 and source != "strided":
         if pyramid_path:
-            from ..brick_pyramid import BrickPyramid, StalePyramid  # noqa: PLC0415
+            from ..brick_pyramid import BrickPyramid  # noqa: PLC0415
             try:
-                with BrickPyramid(pyramid_path, source=path) as pyr:
-                    shapes = [pyr.shape(k) for k in range(pyr.levels)]
-                    region = level_region(box, check_level(level, shapes))
-                    block = pyr.read_region(level, region, ghost=ghost, edge="repeat")
-                    used = "pyramid"
-            except (StalePyramid, OSError) as exc:
+                # Stale since it was looked for, replaced by another format
+                # version, unreadable: none, as when there was none.
+                pyr = BrickPyramid(pyramid_path, source=path)
+            except (RuntimeError, ValueError, OSError) as exc:
                 if source == "pyramid":
                     raise NoPyramid(f"The cube's brick pyramid cannot be read: {exc}") from exc
                 logger.warning("[region-level] the brick pyramid of %s was not used: %s",
                                path, exc)
+                pyr = None
+            if pyr is not None:
+                with pyr:
+                    shapes = [pyr.shape(k) for k in range(pyr.levels)]
+                    if level < len(shapes) or source == "pyramid":
+                        region = level_region(box, check_level(level, shapes))
+                        try:
+                            block = pyr.read_region(level, region, ghost=ghost, edge="repeat")
+                            used = "pyramid"
+                        except OSError as exc:   # a level truncated or replaced under us
+                            if source == "pyramid":
+                                raise NoPyramid("The cube's brick pyramid cannot be read: "
+                                                f"{exc}") from exc
+                            logger.warning("[region-level] the brick pyramid of %s was not "
+                                           "used: %s", path, exc)
+                    # else: a pyramid built by hand with a larger brick has
+                    # fewer levels than a default one; the strided read below
+                    # offers the default levels.
         elif source == "pyramid":
             raise NoPyramid("The cube has no complete and current brick pyramid.")
     if block is None:

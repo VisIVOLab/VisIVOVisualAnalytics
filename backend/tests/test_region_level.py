@@ -267,6 +267,43 @@ def test_a_stale_pyramid_falls_back_to_the_strided_read(tmp_path, small_brick):
         worker_cube_region_level_raw(str(path), 1, 0, 3, 0, 3, 0, 3, 1, None, "pyramid")
 
 
+def test_an_unreadable_pyramid_or_one_with_fewer_levels_falls_back(tmp_path, small_brick):
+    data = _cube()
+    path = _fits(tmp_path, data)
+    box = (0, 1, 0, 1, 0, 1)
+    # A pyramid of another format version since it was looked for.
+    other = tmp_path / "other.pyr.h5"
+    import h5py
+    with h5py.File(other, "w") as h5:
+        h5.attrs["format"] = "visivo-brick-pyramid"
+        h5.attrs["version"] = 99
+    answer = worker_cube_region_level_raw(str(path), 1, *box, 1, str(other))
+    assert answer["source"] == "strided"
+    with pytest.raises(region_level.NoPyramid):
+        worker_cube_region_level_raw(str(path), 1, *box, 1, str(other), "pyramid")
+    # Built by hand with a larger brick: fewer levels than a default build.
+    coarse = build_pyramid(path, default_pyramid_path(path, 0), brick=16)
+    with BrickPyramid(coarse) as pyr:
+        assert pyr.levels == 3 < len(region_level.default_level_shapes(SHAPE))
+    answer = worker_cube_region_level_raw(str(path), 3, *box, 1, str(coarse))
+    assert answer["source"] == "strided"
+    np.testing.assert_array_equal(_decode(answer), _expected(data[::8, ::8, ::8], box, 1))
+    answer = worker_cube_region_level_raw(str(path), 2, *box, 1, str(coarse))
+    assert answer["source"] == "pyramid"
+    with pytest.raises(ValueError):
+        worker_cube_region_level_raw(str(path), 3, *box, 1, str(coarse), "pyramid")
+
+
+def test_peeking_at_the_pyramid_writes_nothing(tmp_path, no_build):
+    path = _fits(tmp_path, _cube())
+    out = default_pyramid_path(path, 0)
+    assert pyramid_builds.peek_pyramid(str(path), 0).state == "missing"
+    assert not out.parent.exists()
+    out.parent.mkdir(parents=True)
+    assert pyramid_builds.peek_pyramid(str(path), 0).state == "missing"
+    assert list(out.parent.iterdir()) == []
+
+
 @pytest.mark.parametrize("level, box", [
     (6, (0, 0, 0, 0, 0, 0)),               # past the cube's levels (8³ bricks: 0..2)
     (0, (0, 40, 0, 0, 0, 0)),              # x past the cube

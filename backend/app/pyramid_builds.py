@@ -152,6 +152,8 @@ def peek_pyramid(dataset_path: str, hdu: int) -> BuildStatus:
         elsewhere = False
     if elsewhere:
         return BuildStatus("building", _read_progress(progress_file))
+    if exitcode == 0 and pyramid_ready(dataset_path, hdu):
+        return BuildStatus("ready", 1.0)   # published since the first check
     if exitcode not in (None, 0, _BUILT_ELSEWHERE) or progress_file.exists():
         error = _read_error(progress_file, exitcode)
         if error:

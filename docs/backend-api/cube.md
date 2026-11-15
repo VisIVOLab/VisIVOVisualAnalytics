@@ -209,15 +209,17 @@ have (see `pyramid_status`).
 Like `subvolume_bin`, this route takes no per-session compute slot, so a client
 can request several blocks at once.
 
-Errors (`text/plain`):
+Errors:
 
-- 409: `source: "pyramid"` was asked and the cube has no complete and current
-  pyramid.
-- 413: the box with its ghosts is larger than `VISIVO_REGION_LEVEL_MAX_BYTES`
-  (512 MiB by default).
-- 422: the dataset is not a cube, the level is not one of the cube's, the box
-  is not inside the level, or `level` or `ghost` is out of range.
-- 500: any other failure.
+- 409 (`text/plain`): `source: "pyramid"` was asked and the cube has no
+  complete and current pyramid.
+- 413 (`text/plain`): the box with its ghosts is larger than
+  `VISIVO_REGION_LEVEL_MAX_BYTES` (512 MiB by default).
+- 422 (`text/plain`): the level is not one of the cube's, the box is not
+  inside the level, or the cube dataset does not reduce to three axes.
+- 422 (JSON, the usual validation answer): the dataset is not a cube dataset,
+  or `level` or `ghost` is out of range.
+- 500 (`text/plain`): any other failure.
 
 ### `POST /v1/cube/pyramid_status`
 
