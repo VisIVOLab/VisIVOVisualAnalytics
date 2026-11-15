@@ -1708,6 +1708,7 @@ function pushUndo() { if (lookKind()) ui.undo.push(lookSnapshot()); }
 function undo() {
   // A crop drag under way ends first (#277 review): its step is the one undone.
   finishCropDrag();
+  finishSelBoxDrag();             // and a box selection's drag (#259), likewise
   const s = ui.undo.pop();
   if (!s) { buzz('primary', 'error'); return false; }
   // A step of other data (a history left from before a switch) is not applied.
