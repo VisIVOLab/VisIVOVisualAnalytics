@@ -240,6 +240,7 @@ private:
     bool m_pairAnotherAsked{ false };    ///< the user pressed Pair Another Headset
     QTimer *m_hubTimer{ nullptr };       ///< asks the hub again: a page may connect later
     bool m_hubCheckOut{ false };         ///< one hub check at a time
+    int m_hubCheckSerial{ -1 };          ///< the m_pairSerial of the check out
     bool m_codeWasShown{ false };        ///< the code area's visibility, as last fitted
 
     // Pairing by code

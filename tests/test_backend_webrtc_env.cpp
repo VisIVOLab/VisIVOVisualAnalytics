@@ -55,3 +55,51 @@ void TestBackendWebrtcEnv::theRequirementsSitNextToTheBackends()
     const QString file = W::requirementsPath(backend);
     QVERIFY2(QFileInfo::exists(file), qPrintable(file));
 }
+
+void TestBackendWebrtcEnv::aVenvSeenWithAiortcIsNotCheckedAgain()
+{
+    // The import costs seconds: once seen working, not paid at every start.
+    QVERIFY(W::needsCheck({}, u"1.1.0"_s, kVenv));
+    const W::Known seen{ u"1.1.0"_s, kVenv };
+    QVERIFY(!W::needsCheck(seen, u"1.1.0"_s, kVenv));
+    // A new client, or another venv: checked again.
+    QVERIFY(W::needsCheck(seen, u"1.1.1"_s, kVenv));
+    QVERIFY(W::needsCheck(seen, u"1.1.0"_s, u"/other/.venv"_s));
+}
+
+void TestBackendWebrtcEnv::theUpdatePinsWhatIsInstalled()
+{
+    // Everything installed is pinned, so adding aiortc cannot move numpy past
+    // numba's bounds (or websockets and uvicorn past the backend's).
+    const QString freeze = u"numpy==1.26.4\n"
+                           u"numba==0.60.0\r\n"
+                           u"uvicorn[standard]==0.30.1\n"
+                           u"websockets==11.0.3\n"
+                           u"-e git+https://example.org/x.git@abc#egg=x\n"
+                           u"mypkg @ file:///home/u/mypkg\n"
+                           u"# a comment\n"
+                           u"\n"
+                           u"zope.interface==6.4.post2\n"_s;
+    QCOMPARE(W::constraintsFromFreeze(freeze),
+             u"numpy==1.26.4\nnumba==0.60.0\nuvicorn==0.30.1\nwebsockets==11.0.3\n"
+             u"zope.interface==6.4.post2\n"_s);
+    QVERIFY(W::constraintsFromFreeze(u"\n-e .\n"_s).isEmpty());
+}
+
+void TestBackendWebrtcEnv::pipNeverPromptsAndOnlyTheBootstrapUpgrades()
+{
+    const QStringList add = W::pipInstallArgs(u"/b/requirements-webrtc.txt"_s, false, u"/t/c.txt"_s);
+    QCOMPARE(add, QStringList({ u"-m"_s, u"pip"_s, u"install"_s, u"--no-input"_s,
+                                u"--disable-pip-version-check"_s, u"--timeout"_s, u"15"_s,
+                                u"-c"_s, u"/t/c.txt"_s, u"-r"_s, u"/b/requirements-webrtc.txt"_s }));
+    QVERIFY(!add.contains(u"--upgrade"_s));
+    const QStringList bootstrap = W::pipInstallArgs(u"/b/requirements.txt"_s, true);
+    QVERIFY(bootstrap.contains(u"--upgrade"_s));
+    QVERIFY(bootstrap.contains(u"--no-input"_s));
+    QVERIFY(!bootstrap.contains(u"-c"_s));
+    QCOMPARE(bootstrap.last(), u"/b/requirements.txt"_s);
+    QCOMPARE(W::pipFreezeArgs(), QStringList({ u"-m"_s, u"pip"_s, u"freeze"_s,
+                                               u"--disable-pip-version-check"_s }));
+    // The whole update ends: the backend starts without WebRTC past it.
+    QVERIFY(W::kUpdateTimeoutMs > 0 && W::kUpdateTimeoutMs <= 15 * 60 * 1000);
+}

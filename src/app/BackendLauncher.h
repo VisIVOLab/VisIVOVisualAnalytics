@@ -8,7 +8,9 @@
 
 #include "BackendUrl.h"
 #include <QObject>
+#include <QPointer>
 #include <QProcess>
+#include <QStringList>
 #include <QTimer>
 
 #include <memory>
@@ -118,16 +120,30 @@ private:
     /// false after emitting failed(). Only called when a supported interpreter
     /// was found but cannot import the backend's dependencies.
     bool bootstrapEnvironment(const QString &backendDir, const QString &pythonExe);
-    /// `pip install --upgrade -r @p requirements` with @p venvPython, its
-    /// output in the log and its package lines in messageChanged().
+    /// Run pip with @p python and @p args, stdin closed, for at most
+    /// @p timeoutMs (< 0: no limit); cancel() kills it. Without @p output its
+    /// lines go to the log and its package lines to messageChanged(); with
+    /// it, its stdout is collected there. True when it ended with exit 0.
+    bool runPip(const QString &python, const QString &backendDir, const QStringList &args,
+                int timeoutMs, QString *output = nullptr);
+    /// The bootstrap's `pip install --upgrade -r @p requirements`, no time limit.
     bool pipInstall(const QString &venvPython, const QString &backendDir,
                     const QString &requirements);
+    enum class WebrtcInstall { Added, Failed, Cancelled, BrokeBackend };
+    /// Adds requirements-webrtc.txt to the venv of @p python, pinning every
+    /// package it has (BackendWebrtcEnv.h), within kUpdateTimeoutMs. Failed
+    /// is not fatal; BrokeBackend (the backend's imports worked before and
+    /// not after) has emitted failed().
+    WebrtcInstall installWebrtc(const QString &python, const QString &backendDir,
+                                const QString &venvDir);
     /// The user-data venv the backend is about to run with has no WebRTC
-    /// packages (made before they existed): installs requirements-webrtc.txt
-    /// into it. Never fatal (BackendWebrtcEnv.h).
-    void addWebrtcIfMissing(const QString &pythonExe, const QString &backendDir);
+    /// packages (made before they existed): adds them. False when the start
+    /// must stop (cancelled, or failed() emitted); a failed install is not.
+    bool addWebrtcIfMissing(const QString &pythonExe, const QString &backendDir);
     /// A failed WebRTC install on @p venvDir, so it is not retried at every start.
     void rememberWebrtcAttempt(const QString &venvDir);
+    /// @p venvDir imports aiortc for this client version: not checked again.
+    void rememberWebrtcKnown(const QString &venvDir);
 
     void doInitialHealthCheck();
     void onInitialHealthDone();
@@ -159,6 +175,8 @@ private:
     bool m_processFinishedUnexpectedly{ false };
 
     QProcess *m_process{ nullptr };
+    /// A pip run or import check of the start-up, while it runs (cancel kills it).
+    QPointer<QProcess> m_child;
     /// The backend and everything it starts (#176): stopped as one. Held by
     /// pointer so that <windows.h>, which the Windows job needs, stays out of
     /// every file that includes this one.

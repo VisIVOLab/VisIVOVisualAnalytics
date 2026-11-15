@@ -9,7 +9,10 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEventLoop>
+#include <QPointer>
+#include <QTemporaryFile>
 #include <QFile>
 #include <QFileInfo>
 #include <QProcessEnvironment>
@@ -241,15 +244,32 @@ QProcessEnvironment backendEnvironment()
     return env;
 }
 
-/** True when @p exe runs @p code (an import line) without an error. */
-bool pythonRuns(const QString &exe, const QString &code)
+/**
+ * True when @p exe runs @p code (an import line) without an error within
+ * @p timeoutMs. @p running, when given, points at the process while it runs,
+ * so that a cancel can kill it. @p timedOut, when given, says whether the
+ * answer is false only because the time ran out (an import that may still
+ * have worked).
+ */
+bool pythonRuns(const QString &exe, const QString &code, int timeoutMs = 20000,
+                QPointer<QProcess> *running = nullptr, bool *timedOut = nullptr)
 {
     QProcess p;
     p.setProcessEnvironment(pythonInvocationEnvironment());
+    p.setStandardInputFile(QProcess::nullDevice());
+    QElapsedTimer clock;
+    clock.start();
     p.start(exe, { u"-c"_s, code });
+    if (running)
+        *running = &p;
     // Pumped, like runCapture: importing astropy and numpy is seconds, not
     // milliseconds, and this also runs on the GUI thread.
-    if (!waitForProcessPumpingEvents(p, 20000)) {
+    const bool finished = waitForProcessPumpingEvents(p, timeoutMs);
+    if (running)
+        *running = nullptr;
+    if (timedOut)
+        *timedOut = !finished && clock.elapsed() >= timeoutMs;
+    if (!finished) {
         p.kill();
         p.waitForFinished(1000);
         return false;
@@ -262,6 +282,9 @@ bool hasBackendDeps(const QString &exe)
 {
     return pythonRuns(exe, u"import fastapi, uvicorn, astropy, numpy"_s);
 }
+
+/** The same with numba, whose bounds on numpy an update must not break. */
+const QString kDepsWithNumba = u"import fastapi, uvicorn, astropy, numpy, numba"_s;
 
 /**
  * The user-data virtual environment — the one the setup_backend scripts create
@@ -646,6 +669,9 @@ void BackendLauncher::cancel()
 {
     m_cancelled = true;
     m_pollTimer.stop();
+    // A pip run or an import check of the start-up: its wait ends with it.
+    if (QProcess *child = m_child.data())
+        child->kill();
 }
 
 QString BackendLauncher::capturedLogs() const
@@ -817,6 +843,8 @@ bool BackendLauncher::bootstrapEnvironment(const QString &backendDir, const QStr
     emit messageChanged(u"Installing backend dependencies - this takes a few "
                         u"minutes the first time…"_s);
     if (!pipInstall(venvPython, backendDir, requirements)) {
+        if (m_cancelled)
+            return false;
         emit failed(u"Installing the backend dependencies failed.\n\n"
                     u"The Diagnostics log has pip's output. A common cause is no "
                     u"network access; you can also prepare the environment by hand:\n\n"
@@ -824,15 +852,16 @@ bool BackendLauncher::bootstrapEnvironment(const QString &backendDir, const QStr
                             .arg(pythonExe, venvDir, venvPython, requirements));
         return false;
     }
+    if (m_cancelled)
+        return false;
     // Headset pairing and stereo video: wanted, but not needed to start, so
     // a failure here is logged and the backend starts without them.
     const QString webrtc = visivo::webrtcenv::requirementsPath(backendDir);
     if (QFileInfo::exists(webrtc)) {
-        if (!pipInstall(venvPython, backendDir, webrtc)) {
-            appendLog(u"[launcher] The WebRTC packages could not be installed: headset "
-                      u"pairing and stereo video stay off. Tried again at a later start."_s);
-            rememberWebrtcAttempt(venvDir);
-        }
+        emit messageChanged(u"Adding headset pairing to the backend environment…"_s);
+        const WebrtcInstall r = installWebrtc(venvPython, backendDir, venvDir);
+        if (r == WebrtcInstall::Cancelled || r == WebrtcInstall::BrokeBackend)
+            return false;
     }
 
     emit messageChanged(u"Backend environment ready."_s);
@@ -840,43 +869,74 @@ bool BackendLauncher::bootstrapEnvironment(const QString &backendDir, const QStr
     return true;
 }
 
+bool BackendLauncher::runPip(const QString &python, const QString &backendDir,
+                             const QStringList &args, int timeoutMs, QString *output)
+{
+    QProcess pip;
+    pip.setWorkingDirectory(backendDir);
+    // Never a prompt (a proxy's password): pip fails instead of waiting for
+    // an answer nobody can type.
+    pip.setStandardInputFile(QProcess::nullDevice());
+    if (output) {
+        // Read in full (pip freeze): the log gets errors only.
+        QObject::connect(&pip, &QProcess::readyReadStandardOutput, this, [&pip, output]() {
+            *output += QString::fromLocal8Bit(pip.readAllStandardOutput());
+        });
+        QObject::connect(&pip, &QProcess::readyReadStandardError, this, [this, &pip]() {
+            const QString text = QString::fromLocal8Bit(pip.readAllStandardError()).trimmed();
+            if (!text.isEmpty())
+                appendLog(text);
+        });
+    } else {
+        pip.setProcessChannelMode(QProcess::MergedChannels);
+        QObject::connect(&pip, &QProcess::readyReadStandardOutput, this, [this, &pip]() {
+            const QString chunk = QString::fromLocal8Bit(pip.readAllStandardOutput());
+            for (const QString &line : chunk.split(u'\n', Qt::SkipEmptyParts)) {
+                const QString t = line.trimmed();
+                appendLog(t);
+                // Surface only the package-level lines; pip's per-file chatter
+                // would flicker the dialog without telling anyone anything.
+                if (t.startsWith(u"Collecting "_s) || t.startsWith(u"Installing collected"_s))
+                    emit messageChanged(t);
+            }
+        });
+    }
+    pip.setProcessEnvironment(pythonInvocationEnvironment());
+    pip.start(python, args);
+    m_child = &pip;   // cancel() kills it
+    // Events are pumped while we wait — this runs on the GUI thread
+    // (launchProcess() is reached from a QFutureWatcher::finished handler),
+    // so a plain waitForFinished() would freeze the startup dialog and none
+    // of the progress messages would ever be painted.
+    const bool finished = waitForProcessPumpingEvents(pip, timeoutMs);
+    m_child = nullptr;
+    if (!finished && !m_cancelled && timeoutMs >= 0)
+        appendLog(u"[launcher] pip did not finish within %1 s: stopped"_s.arg(timeoutMs / 1000));
+    if (output)
+        *output += QString::fromLocal8Bit(pip.readAllStandardOutput());
+    // A process that never started also ends "normally" with code 0.
+    return finished && !m_cancelled && pip.error() != QProcess::FailedToStart
+            && pip.exitStatus() == QProcess::NormalExit && pip.exitCode() == 0;
+}
+
 bool BackendLauncher::pipInstall(const QString &venvPython, const QString &backendDir,
                                  const QString &requirements)
 {
     appendLog(u"[launcher] pip install -r %1"_s.arg(requirements));
-
-    QProcess pip;
-    pip.setProcessChannelMode(QProcess::MergedChannels);
-    pip.setWorkingDirectory(backendDir);
-    QObject::connect(&pip, &QProcess::readyReadStandardOutput, this, [this, &pip]() {
-        const QString chunk = QString::fromLocal8Bit(pip.readAllStandardOutput());
-        for (const QString &line : chunk.split(u'\n', Qt::SkipEmptyParts)) {
-            const QString t = line.trimmed();
-            appendLog(t);
-            // Surface only the package-level lines; pip's per-file chatter would
-            // flicker the dialog without telling anyone anything.
-            if (t.startsWith(u"Collecting "_s) || t.startsWith(u"Installing collected"_s))
-                emit messageChanged(t);
-        }
-    });
-    pip.setProcessEnvironment(pythonInvocationEnvironment());
-    pip.start(venvPython, { u"-m"_s, u"pip"_s, u"install"_s, u"--upgrade"_s,
-                            u"-r"_s, requirements });
     // No timeout: a cold install of this dependency set over a slow link
     // legitimately runs for many minutes, and killing it half-way leaves an
-    // environment that looks present and is not. Events are pumped while we
-    // wait — this runs on the GUI thread (launchProcess() is reached from a
-    // QFutureWatcher::finished handler), so a plain waitForFinished() would
-    // freeze the startup dialog for the whole install and none of the progress
-    // messages would ever be painted.
-    waitForProcessPumpingEvents(pip, -1);
-    return pip.exitStatus() == QProcess::NormalExit && pip.exitCode() == 0;
+    // environment that looks present and is not. pip's own network timeout
+    // still ends a dead connection, and cancel() still stops it.
+    return runPip(venvPython, backendDir,
+                  visivo::webrtcenv::pipInstallArgs(requirements, /*upgrade=*/true), -1);
 }
 
 namespace {
 const QString kWebrtcTriedVersionKey = u"backend/webrtcUpdateVersion"_s;
 const QString kWebrtcTriedVenvKey = u"backend/webrtcUpdateVenv"_s;
 const QString kWebrtcTriedAtKey = u"backend/webrtcUpdateAtMs"_s;
+const QString kWebrtcKnownVersionKey = u"backend/webrtcKnownVersion"_s;
+const QString kWebrtcKnownVenvKey = u"backend/webrtcKnownVenv"_s;
 } // namespace
 
 void BackendLauncher::rememberWebrtcAttempt(const QString &venvDir)
@@ -887,7 +947,83 @@ void BackendLauncher::rememberWebrtcAttempt(const QString &venvDir)
     settings.setValue(kWebrtcTriedAtKey, QDateTime::currentMSecsSinceEpoch());
 }
 
-void BackendLauncher::addWebrtcIfMissing(const QString &pythonExe, const QString &backendDir)
+void BackendLauncher::rememberWebrtcKnown(const QString &venvDir)
+{
+    QSettings settings;
+    settings.setValue(kWebrtcKnownVersionKey, QCoreApplication::applicationVersion());
+    settings.setValue(kWebrtcKnownVenvKey, venvDir);
+}
+
+BackendLauncher::WebrtcInstall BackendLauncher::installWebrtc(const QString &python,
+                                                              const QString &backendDir,
+                                                              const QString &venvDir)
+{
+    namespace W = visivo::webrtcenv;
+    const QString requirements = W::requirementsPath(backendDir);
+    QElapsedTimer clock;
+    clock.start();
+    // What the backend imports at boot, numba included, before and after: an
+    // update that broke it is said as such, not as a backend that will not start.
+    const bool depsBefore = pythonRuns(python, kDepsWithNumba, W::kImportCheckTimeoutMs, &m_child);
+    if (m_cancelled)
+        return WebrtcInstall::Cancelled;
+
+    // Every package already there stays at its version: the update only adds.
+    QString freeze;
+    if (!runPip(python, backendDir, W::pipFreezeArgs(), W::kFreezeTimeoutMs, &freeze)) {
+        if (m_cancelled)
+            return WebrtcInstall::Cancelled;
+        appendLog(u"[launcher] pip freeze failed: the WebRTC packages are not added"_s);
+        rememberWebrtcAttempt(venvDir);
+        return WebrtcInstall::Failed;
+    }
+    QTemporaryFile constraints(QDir::tempPath() + u"/visivo-constraints-XXXXXX.txt"_s);
+    const QString pins = W::constraintsFromFreeze(freeze);
+    if (!pins.isEmpty()) {
+        if (!constraints.open() || constraints.write(pins.toUtf8()) < 0 || !constraints.flush()) {
+            appendLog(u"[launcher] Could not write the constraints file: the WebRTC packages "
+                      u"are not added"_s);
+            rememberWebrtcAttempt(venvDir);
+            return WebrtcInstall::Failed;
+        }
+        constraints.close();
+    }
+
+    appendLog(u"[launcher] pip install -r %1 (adding only; installed packages pinned)"_s
+                      .arg(requirements));
+    const int left = std::max(1000, W::kUpdateTimeoutMs - int(clock.elapsed()));
+    const bool installed = runPip(
+            python, backendDir,
+            W::pipInstallArgs(requirements, /*upgrade=*/false,
+                              pins.isEmpty() ? QString() : constraints.fileName()),
+            left);
+    if (m_cancelled)
+        return WebrtcInstall::Cancelled;
+    if (depsBefore && !pythonRuns(python, kDepsWithNumba, W::kImportCheckTimeoutMs, &m_child)) {
+        if (m_cancelled)
+            return WebrtcInstall::Cancelled;
+        emit failed(u"Adding the headset-pairing packages to the backend environment at %1 "
+                    u"broke an import the backend needs (the Diagnostics log has pip's "
+                    u"output). Recreate it: delete that folder and start VisIVO again."_s
+                            .arg(venvDir));
+        return WebrtcInstall::BrokeBackend;
+    }
+    if (installed && pythonRuns(python, W::importCheck(), W::kImportCheckTimeoutMs, &m_child)) {
+        appendLog(u"[launcher] WebRTC packages added"_s);
+        rememberWebrtcKnown(venvDir);
+        return WebrtcInstall::Added;
+    }
+    if (m_cancelled)
+        return WebrtcInstall::Cancelled;
+    appendLog(u"[launcher] The WebRTC packages could not be added: headset pairing and stereo "
+              u"video stay off, the backend starts without them. Tried again with the next "
+              u"version or in a week; by hand: %1 -m pip install -r %2"_s
+                      .arg(python, requirements));
+    rememberWebrtcAttempt(venvDir);
+    return WebrtcInstall::Failed;
+}
+
+bool BackendLauncher::addWebrtcIfMissing(const QString &pythonExe, const QString &backendDir)
 {
     namespace W = visivo::webrtcenv;
     const QString venvDir = userDataVenvDir();
@@ -895,40 +1031,52 @@ void BackendLauncher::addWebrtcIfMissing(const QString &pythonExe, const QString
     const bool userDataVenv = !venvExe.isEmpty()
             && QFileInfo(pythonExe).absoluteFilePath() == QFileInfo(venvExe).absoluteFilePath();
     if (!userDataVenv)
-        return;   // an interpreter the user chose is his to change
+        return true;   // an interpreter the user chose is his to change
     const QString requirements = W::requirementsPath(backendDir);
     const bool found = QFileInfo::exists(requirements);
-    // The import costs a second or two: only asked when an update could follow.
     if (!found)
-        return;
+        return true;
+    const QString version = QCoreApplication::applicationVersion();
     const QSettings settings;
+    // Seen importing before by this client: the import is not paid again.
+    const W::Known known{ settings.value(kWebrtcKnownVersionKey).toString(),
+                          settings.value(kWebrtcKnownVenvKey).toString() };
+    if (!W::needsCheck(known, version, venvDir))
+        return true;
     const W::Attempt last{ settings.value(kWebrtcTriedVersionKey).toString(),
                            settings.value(kWebrtcTriedVenvKey).toString(),
                            settings.value(kWebrtcTriedAtKey).toLongLong() };
-    const bool has = pythonRuns(pythonExe, W::importCheck());
-    if (!W::shouldUpdate(userDataVenv, found, has, last, QCoreApplication::applicationVersion(),
-                         venvDir, QDateTime::currentMSecsSinceEpoch())) {
-        if (!has)
-            appendLog(u"[launcher] The user-data venv has no WebRTC packages (headset pairing "
-                      u"and stereo video stay off); the last update failed and is not tried "
-                      u"again yet. To add them: %1 -m pip install -r %2"_s
-                              .arg(pythonExe, requirements));
-        return;
+    // A cold first import of aiortc and PyAV can take long: a generous wait,
+    // and a wait that runs out is "do not know", never "missing".
+    bool timedOut = false;
+    const bool has = pythonRuns(pythonExe, W::importCheck(), W::kImportCheckTimeoutMs, &m_child,
+                                &timedOut);
+    if (m_cancelled)
+        return false;
+    if (has) {
+        rememberWebrtcKnown(venvDir);
+        return true;
+    }
+    if (timedOut) {
+        appendLog(u"[launcher] Checking the WebRTC packages took too long: asked again at the "
+                  u"next start"_s);
+        return true;
+    }
+    if (!W::shouldUpdate(userDataVenv, found, has, last, version, venvDir,
+                         QDateTime::currentMSecsSinceEpoch())) {
+        appendLog(u"[launcher] The user-data venv has no WebRTC packages (headset pairing "
+                  u"and stereo video stay off); the last update failed and is not tried "
+                  u"again yet. To add them: %1 -m pip install -r %2"_s
+                          .arg(pythonExe, requirements));
+        return true;
     }
     // A venv made before 1.1.0 (setup_backend, or the first-run bootstrap)
     // from requirements.txt alone: preferred over the bundled runtime, which
     // has the packages, so pairing would be off after the upgrade.
     appendLog(u"[launcher] The user-data venv has no WebRTC packages: adding them"_s);
     emit messageChanged(u"Adding headset pairing to the backend environment…"_s);
-    if (pipInstall(pythonExe, backendDir, requirements) && pythonRuns(pythonExe, W::importCheck())) {
-        appendLog(u"[launcher] WebRTC packages added"_s);
-        return;
-    }
-    appendLog(u"[launcher] The WebRTC packages could not be added: headset pairing and stereo "
-              u"video stay off, the backend starts without them. Tried again with the next "
-              u"version or in a week; by hand: %1 -m pip install -r %2"_s
-                      .arg(pythonExe, requirements));
-    rememberWebrtcAttempt(venvDir);
+    const WebrtcInstall r = installWebrtc(pythonExe, backendDir, venvDir);
+    return r != WebrtcInstall::Cancelled && r != WebrtcInstall::BrokeBackend;
 }
 
 // ---------------------------------------------------------------------------
@@ -1001,7 +1149,8 @@ void BackendLauncher::launchProcess()
     }
     // A user-data venv older than requirements-webrtc.txt: updated, or the
     // bundled runtime's headset pairing would be lost to it (issue #305).
-    addWebrtcIfMissing(pythonExe, backendDir);
+    if (!addWebrtcIfMissing(pythonExe, backendDir) || m_cancelled)
+        return;   // cancelled, or failed() already said why
 
     // ── Extract host and port from the backend URL ────────────────────────────
     // The host comes from the same parse the locality gate used, so the address

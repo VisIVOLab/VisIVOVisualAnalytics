@@ -148,8 +148,10 @@ void VrHeadsetDialog::setInputs(const VrLink::Inputs &inputs)
         m_hubLabel->setText(u"Looking for a headset already connected to this session…"_s);
         m_hubPanel->setVisible(true);
     }
-    // A check of the old session still out is dropped by the serial; this
-    // one then waits for the hub timer's next tick.
+    // A check of the old session still out is dropped by the serial and does
+    // not hold this one up. The hub timer runs again (an old 404 may have
+    // stopped it): a page that connects to the new session shows up.
+    m_hubTimer->start();
     checkHeadsets(/*quiet=*/pairingOnShow);
     fitHeight();
 }
@@ -520,9 +522,13 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
 
 void VrHeadsetDialog::checkHeadsets(bool quiet)
 {
-    if (m_closed || m_hubCheckOut)
+    // One check at a time, but a check out under an older serial (a new code,
+    // a renewed session) is already dropped and holds nothing up.
+    if (m_closed || (m_hubCheckOut && m_hubCheckSerial == m_pairSerial))
         return;
     m_hubCheckOut = true;
+    m_hubCheckSerial = m_pairSerial;
+    const int serial = m_pairSerial;
     QPointer<VrHeadsetDialog> self(this);
     runPairRequest(
             [](const BackendClient &c) {
@@ -544,8 +550,10 @@ void VrHeadsetDialog::checkHeadsets(bool quiet)
                     m_headsets = p.headsets;
                 else if (p.unsupported)
                     m_headsets.clear();
-                if (p.unsupported)
-                    m_hubTimer->stop();   // an older backend: no page will ever show up
+                // An older backend (FastAPI's own 404): no page will ever
+                // show up. A proxy's 404 may pass: asked again at the next tick.
+                if (p.unsupportedForGood)
+                    m_hubTimer->stop();
                 if (!m_headsets.isEmpty()) {
                     // A page that connected while pairing was shown: the
                     // connected-headset view, as a dialog opened now shows.
@@ -563,10 +571,10 @@ void VrHeadsetDialog::checkHeadsets(bool quiet)
                 m_hubPanel->setVisible(false);
                 startPairing();
             },
-            [self](const BackendVrPairReply &, const BackendClient &) {
+            [self, serial](const BackendVrPairReply &, const BackendClient &) {
                 // Dropped (closed, or a new code asked for meanwhile): the
-                // next check may go.
-                if (self)
+                // next check may go, unless a newer one is out already.
+                if (self && self->m_hubCheckSerial == serial)
                     self->m_hubCheckOut = false;
             });
 }

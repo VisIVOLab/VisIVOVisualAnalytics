@@ -55,7 +55,9 @@ Afterwards it is instant, because the environment is reused.
 The environment also gets the packages of `backend/requirements-webrtc.txt`,
 which headset pairing by code and the headset's stereo video need. An
 environment made by an earlier version (or by the `setup_backend` script)
-without them is updated at the next start. If that fails, for example with no
+without them is updated at the next start. The update only adds packages:
+everything already installed keeps its version, pip never asks for input, and
+the update gives up after ten minutes. If it fails, for example with no
 network, the backend starts all the same, without pairing and stereo video;
 the startup log says how to add them by hand, and the client tries again with
 its next version or a week later.

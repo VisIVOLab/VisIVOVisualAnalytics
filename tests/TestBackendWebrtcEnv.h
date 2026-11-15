@@ -13,4 +13,7 @@ private slots:
     void onlyTheUserDataVenvWithoutAiortcIsUpdated();
     void aFailedUpdateWaitsForANewVersionOrAWeek();
     void theRequirementsSitNextToTheBackends();
+    void aVenvSeenWithAiortcIsNotCheckedAgain();
+    void theUpdatePinsWhatIsInstalled();
+    void pipNeverPromptsAndOnlyTheBootstrapUpgrades();
 };
