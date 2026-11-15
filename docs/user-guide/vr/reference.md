@@ -504,7 +504,17 @@ For reference, the same page on a Mac (Apple M5 Max, Chrome, two
 | 512³ | 2 | 1.3 ms | 8.8 ms | 63 / 524 |
 
 A Quest 3 is several times slower than this GPU; its own numbers come from the
-benchmark above. (`?bench` on the page URL reruns this desktop measurement.)
+benchmark above. (`?bench` on the page URL reruns this desktop measurement;
+`&stretch=linear|log|sqrt|square|power` measures it with that colour stretch,
+and `?stretch=` alone starts the page with it.)
+
+Colour stretches (#258), M5 Max, ANGLE Metal, two 1680×1760 eyes, 1
+sample/voxel, stereo frame ms, the worst case without empty-space skipping
+(all samples shaded): 256³ linear 2.85–2.96, log 2.93–2.95, sqrt 2.90, square
+3.07, power 2.95; 512³ linear 6.13–6.14, log 5.98–6.13, sqrt 6.17, square
+6.46, power 6.42. The stretch costs nothing measurable here (run-to-run
+spread about 5 %); the Quest's number is still to be measured (the check list
+below).
 
 ## Recording measurements
 
@@ -1050,6 +1060,51 @@ pages of the memory-mapped cube. The lasso is slow on a large cube because
 its window (513³ voxels) is larger than all of HCG 44: it is bounded, but not
 yet fast.
 
+### The headset's view on the desktop (#281)
+
+Measured on 2026-11-14 on a Quest 3 over USB (`adb reverse`), in the
+immersive development app (`it.inaf.oact.visivo.vr.dev`, a real WebXR
+session at 72 Hz, eye buffer at scale 1, quad layers on). The cube was
+HCG 44, reduced 3×3×1 to 234×234×158. The headset lay on a table, so the
+view was still. "Frame CPU" is the page's JavaScript time per XR frame,
+averaged over 12–15 s (FrameStats, 180-frame window).
+
+| | not watched | watched, 15 fps, 512 px | not watched again |
+|---|---|---|---|
+| Frame CPU, mean / p95 | 1.36 / 2.20 ms | 1.26 / 2.17 ms | 1.22 / 2.12 ms |
+| Missed frames | 0.07 % | 0 % | 0 % |
+
+- **Capture, in the frame that captures:** blit, panels, `readPixels`
+  into a PBO and a fence: 0.19 ms mean, 0.3 ms max. The frame rate never
+  changed (72.0 fps).
+- **Read back, after that frame:** 1.8 ms mean, 2.6 ms max, for
+  512×536 px (1.1 MB). This is a task of its own between two XR frames, and
+  the next frame does not wait for it. Read inside the frame instead, the
+  same copy cost 2.5 ms of the frame (frame CPU 1.42 → 1.74 ms mean, p95
+  2.36 → 3.82 ms). Read in 64 KB pieces it still cost about 2.1 ms a
+  piece, because each copy first waits for the GPU process to work through
+  the frame's own commands. Read at the start of the next frame (before it
+  draws), the frame CPU rose by 0.3 ms. Hence the default: right after the
+  frame (`?debug&specread=idle|start|frame` picks another, for
+  measurements).
+- **Encode in a worker:** 9–12 ms per JPEG of 5.6 KB, off the page's
+  thread.
+- **Post:** 4.3 ms mean.
+- **Delivered:** 14.3–14.4 frames a second, against 15 asked, to the
+  backend and to a reader that polls as the desktop does. None was dropped
+  by the rate cap.
+- **At 30 fps and 960 px asked:** 960×1006 px, 14 KB per frame,
+  17.8 frames a second delivered (read 5.5 ms, encode 20 ms, post 8 ms, one
+  capture at a time). Frame CPU 1.29 → 1.25 ms, 0.07 % missed.
+- The menu (a quad layer) shows in the frames, drawn into the copy. No
+  3-D texture was allocated in VR. The snapshot PNG was written.
+- Headless Chrome on the Mac (M5 Max, ANGLE Metal, WebXR stand-in):
+  issue 0.23 ms mean, read 0.30 ms, encode 1.6 ms, 15.0 fps; frame CPU
+  0.75 → 0.76 ms.
+- Not measured: GPU time (the Quest Browser has no timer query), and
+  pose-to-photon latency of the copy. The copy is for watching, not for
+  interaction.
+
 ## What to check on the Quest 3
 
 These checks need the headset; the page shows the numbers to read. Note each
@@ -1143,6 +1198,35 @@ the [report](#the-report) is made from.
    previous sample, once a second) should stay under 1 ms on the Quest; the
    report's FPS and missed % with a record running should equal what the
    wrist shows without one.
+
+### Threshold in σ, info line, Levels (#258)
+
+Over USB, HCG 44 (then a VBT density volume or any cube without noise for
+step 6). Run the desktop's *Estimate Noise* on the same cube with the dialog's
+default region (the whole cube) and note σ.
+
+1. **σ is the desktop's.** Menu → Display: the threshold's line reads
+   *… Jy/beam = n σ (σ …)*. That σ must equal the desktop's to 3 significant
+   figures (HCG 44 is read whole, so it is the same number).
+2. **3σ and 5σ.** Press *3σ*: the threshold's value is 3 × σ and the line says
+   *= 3.0 σ*; the noise fog thins. *5σ*: thinner. *Undo* goes back one press.
+3. **Info line.** Under the Display rows: *HI rest 1420.406 MHz · channel
+   … km/s · beam …″ × …″, PA …°*. Compare with the header (RESTFRQ, BMAJ/BMIN
+   in arcsec, BPA) and the desktop's channel width.
+4. **Levels.** *Levels ▸*: the histogram has a peak (the noise) left of the
+   3σ line, yellow lines at 1/3/5/10 σ, white lines at the threshold and the
+   colour max. Drag on it: the threshold follows the ray, as its slider does.
+5. **Stretches.** Press *Linear*, *Log*, *Sqrt*, *Square*, *Power* in turn: the
+   faint emission is brightest with Log, dimmest with Square; with Power,
+   *γ −* lifts it. Stand still: the refined frame (the Mac's) matches the
+   headset's own picture at each stretch (no jump in brightness when it
+   fades in).
+6. **Percentiles.** On a cube with no measurable noise the σ buttons are
+   greyed with *No noise σ: …*; *99%* puts the threshold where 1 % of the
+   values are above it (the line under Percentile says so).
+7. **Cost.** With `?debug`, FPS and GPU ms with *Linear* and with *Log*
+   (the log adds one logarithm a sample): they must not differ by more than
+   a frame's noise. Report both numbers.
 
 ### A spatial crop you can see and grab (#277)
 
@@ -1652,6 +1736,35 @@ Desktop and headset together:
    image must stay aligned with the reduced one (no shift while you hold still).
 5. Pick a spectrum and run the lasso on a source: the results must arrive
    (the lasso can take 10-15 s on a large cube); note the times shown.
+
+### The headset's view on the desktop, with the headset (#281)
+
+The frame cost was measured on the Quest without wearing it (see
+[the measurements](#the-headsets-view-on-the-desktop-281)). These checks
+need a person in the headset and the desktop application:
+
+1. Open a cube on the desktop, send it to the headset, enter VR. In the cube
+   window open **Tools → Views → Headset Activity** and press **Watch the
+   Headset**. A window must open and show your view within 2 s. In the
+   headset, a small **Desktop watching** badge must appear at the upper left.
+2. Turn your head and move a controller: the window must follow at about
+   15 frames a second, a fraction of a second late. Its status line gives
+   the rate seen, the size, the age and the headset's capture cost. Note
+   the numbers.
+3. Open the hand menu, raise the wrist card, open a result window (a
+   spectrum): each must appear in the window where you see it, with the ray
+   and its cursor.
+4. With the debug numbers on (`?debug` in the page's address), note **FPS**
+   and **missed %**, then the same with the window closed: they should be
+   the same. The numbers show a `spectator` line while you are watched.
+5. Press **Snapshot**: the status bar must name a
+   `headset_quest_3_<date-time>.png`, and the Data Hub's Workspace Exports
+   must list it. Open it: it must be the view in the window.
+6. Close the window: within a second the badge must go.
+7. Start watching again, then unplug the USB cable for about 15 s and plug it
+   back in (or turn Wi-Fi off and on). The window must resume by itself,
+   with no new press. The page pauses for 5 s after five failed frames, and
+   the desktop sends the watch again after 10 s without a frame.
 
 ### On a cluster backend
 

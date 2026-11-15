@@ -156,6 +156,7 @@
       if (busy) {
         Object.assign(ctx, {
           cat: { loaded: true, show: true, labels: true, pins: true }, clipTool: 'box',
+          lv: { sigma: true, hist: true, stretch: 'power' },
           sel: { tool: 'lasso', seedMode: 'carve', lasso: true, box: true, applied: true },
           src: { total: 1234, shown: true, canAdd: true },
           meas: { lasso: true, moment: 2, pvArmed: true, spectrum: true, pinned: true },
@@ -169,7 +170,10 @@
     };
     const viewFor = (kind, page) => {
       const notes = {
-        cmap: 'inferno', thr: '2.345e-03 Jy/beam (starts from the full cube\'s noise, as on the desktop)', cmax: '1.234e-01 Jy/beam',
+        cmap: 'inferno', thr: '2.345e-03 Jy/beam = 12.3 σ full-resolution (max binning: not σ-scaled)', cmax: '1.234e-01 Jy/beam',
+        histx: 'Drag: the threshold. Yellow: σ multiples; white: threshold, colour max.',
+        sigma: '2.345e-03 Jy/beam = 12.3 σ full-resolution (≈35σ drawn); σ 1.906e-04 Jy/beam', pct: 'Of the drawn cube\'s values: 0.012% are above the threshold now.',
+        stretch: 'Log over threshold to colour max (×52.6), as the desktop\'s.', gamma: 'γ 10.00',
         opacity: '1.00', render: 'Emission: the voxels add up along each ray', slab: 'channels 12–108 of 109, 1180.4 to 1561.2 km/s',
         trigger: 'Trigger held near a face of the crop: drag it.', crop: 'Reset crop keeps the range.',
         crop0: 'x 12–187 of 196 px', crop1: 'y 0–279 of 280 px', crop2: 'z 3–106 of 109 px',
@@ -187,8 +191,14 @@
       if (page === 'select') status.push(['Lasso: 1 + 3 added, 2 subtracted, grow 0.62 s', '#b9c2d0'], ['Isolated cube: lasso_isolate_NGC3137_2026-11-14T19-30-05.fits saved on the computer', '#b9c2d0']);
       if (page === 'measure') status.push(['moment 2: 0 to 198.8 km/s', '#b9c2d0'], ['PV along 4 points, 3 px wide: 128 samples × 109 channels', '#b9c2d0']);
       if (page === 'debug') status.push('Refinement: on, 1× q95, depth reprojection, last frame 72 ms after the stop');
+      if (page === 'levels') status.unshift(['HI rest 1420.406 MHz · channel 5.15 km/s (drawn ×3: 15.5) · beam 63.2″ × 51.8″, PA 112° (central channel)', '#b9c2d0']);
+      if (page === 'levels') status.push(['velocity optical (cz), from frequency and RESTFRQ, BARYCENT', '#b9c2d0'],
+        ['σ from level-0 bricks of the brick pyramid, all channels together.', '#b9c2d0']);
+      if (page === 'display') status.push(['HI rest 1420.406 MHz · channel 5.15 km/s (drawn ×3: 15.5) · beam 63.2″ × 51.8″, PA 112° (central channel)', '#b9c2d0']);
       status.push(['The backend answered: 503 Service Unavailable while computing the moment of the selection, try again', '#ff8a8a']);
-      return { title: `VisIVO VR · ${LONG_FILE}`, notes, values: { thr: 0.4, cmax: 0.8, opacity: 0.5, slab: [0.1, 0.9] }, status };
+      const hist = { density: Array.from({ length: 160 }, (_, k) => Math.round(1e5 * Math.exp(-k / 12))), thr: 0.3, cmax: 0.8,
+        marks: [{ at: 0.1, label: '1σ' }, { at: 0.2, label: '3σ' }, { at: 0.27, label: '5σ' }, { at: 0.38, label: '10σ' }] };
+      return { title: `VisIVO VR · ${LONG_FILE}`, notes, values: { thr: 0.4, cmax: 0.8, opacity: 0.5, slab: [0.1, 0.9] }, status, hist };
     };
     const drawMenuCase = (label, page, ctx, view, hover = null) => {
       const spec = HM.pageSpec(page, ctx);

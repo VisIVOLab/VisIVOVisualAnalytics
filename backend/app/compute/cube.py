@@ -15,6 +15,7 @@ from typing import Any  # noqa: F401
 import numpy as np
 
 from ..fits_dataset import ScientificFitsDataset  # noqa: F401
+from ..noise_threshold import plane_mad
 from ._common import (  # noqa: F401
     logger,
     _qt_zlib_compress,
@@ -604,29 +605,19 @@ def worker_noise_estimate(
         total_finite += int(finite.size)
         if finite.size:
             total_zero += int(np.count_nonzero(finite == 0))
-        if finite.size < 2:
-            mad_values.append(float("nan"))
-            sigma_values.append(float("nan"))
-            continue
-        # Zero-as-blank heuristic: a lot of radio/IR cubes use exactly 0.0 for
-        # off-source pixels instead of NaN. If you compute MAD over a region
-        # that mostly overlaps that blanked area, the median of the finite
-        # pixels is 0 and |finite - 0| also has median 0 — you get a flat
-        # zero noise that hides the actual data noise. When more than half
-        # the finite pixels in this channel are exactly 0, treat them as
-        # blanks and use only the non-zero pixels for the MAD. We keep zeros
-        # in when they are a minority because some cubes (post-baseline
-        # subtraction, calibrated brightness temperatures) legitimately have
-        # noise centred on zero.
-        nonzero = finite[finite != 0]
-        if nonzero.size >= 2 and nonzero.size < finite.size / 2:
-            sample = nonzero
-        else:
-            sample = finite
-        median = float(np.median(sample))
-        mad = float(np.median(np.abs(sample - median)))
+        # Zero-as-blank heuristic (plane_mad): a lot of radio/IR cubes use
+        # exactly 0.0 for off-source pixels instead of NaN. If you compute MAD
+        # over a region that mostly overlaps that blanked area, the median of
+        # the finite pixels is 0 and |finite - 0| also has median 0 — you get
+        # a flat zero noise that hides the actual data noise. When more than
+        # half the finite pixels in this channel are exactly 0, they are
+        # blanks and only the non-zero pixels count. Zeros stay when they are
+        # a minority because some cubes (post-baseline subtraction, calibrated
+        # brightness temperatures) legitimately have noise centred on zero.
+        # The same rule gives the headset's σ (issue #258: noise_threshold).
+        mad = plane_mad(finite)
         mad_values.append(mad)
-        sigma_values.append(mad * 1.4826)  # MAD → σ for Gaussian noise
+        sigma_values.append(mad * 1.4826)  # MAD → σ for Gaussian noise (NaN stays NaN)
 
     # Surface what fraction of finite pixels in the whole selection are
     # exactly zero — the dialog uses this to warn the user when the result

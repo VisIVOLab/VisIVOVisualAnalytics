@@ -21,6 +21,8 @@ APERTIF cube with heavy-tailed noise: ``validation/threshold_from_noise.py``.
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from scipy.stats import norm
 
@@ -123,3 +125,52 @@ def stride_for(n_voxels: int, target: int = 5_000_000) -> int:
     """The stride along each axis that samples about ``target`` voxels
     (between a third and three times as many: the tails need the voxels)."""
     return max(1, round((n_voxels / target) ** (1.0 / 3.0)))
+
+
+# ── The desktop's Noise σ (issue #258) ───────────────────────────────────────
+# The desktop's Estimate Noise tool (NoiseController, /v1/cube/noise) measures
+# σ per channel as 1.4826 x the median absolute deviation about the channel's
+# median, over a region (by default the whole field and every channel), and
+# reports the median of those σ. The headset's threshold in multiples of σ
+# uses the same σ: one definition for both (compute.cube's noise worker and
+# the reduced cube's info).
+
+
+def plane_mad(plane: np.ndarray) -> float:
+    """The median absolute deviation about the median of one channel's finite
+    values (NaN with fewer than two). Exact zeros are blanks when they are more
+    than half of the finite values (cubes that blank with 0.0 instead of NaN);
+    otherwise they stay (noise centred on zero is legitimate)."""
+    p = np.asarray(plane).ravel()
+    finite = p[np.isfinite(p)]
+    if finite.size < 2:
+        return float("nan")
+    nonzero = finite[finite != 0]
+    sample = nonzero if 2 <= nonzero.size < finite.size / 2 else finite
+    median = float(np.median(sample))
+    return float(np.median(np.abs(sample - median)))
+
+
+def channel_noise_sigma(sample_zyx: np.ndarray) -> float | None:
+    """The desktop's Noise σ of ``sample_zyx`` (channels first): the median,
+    over the channels with a measure, of 1.4826 x :func:`plane_mad`. A stride
+    sample of the cube gives the whole-field estimate without reading the
+    whole cube. None when no channel can be measured or σ is not positive."""
+    s = np.asarray(sample_zyx)
+    if s.ndim != 3 or not s.size:
+        return None
+    sig = np.array([_MAD_TO_SIGMA * plane_mad(s[k]) for k in range(s.shape[0])], dtype=np.float64)
+    sig = sig[np.isfinite(sig)]
+    if not sig.size:
+        return None
+    out = float(np.median(sig))
+    return out if out > 0.0 and math.isfinite(out) else None
+
+
+def flat_noise_sigma(sample: np.ndarray) -> float | None:
+    """σ = 1.4826 x MAD about the median of a sample with no channel
+    structure (the brick pyramid's level-0 sample, all channels together), with
+    :func:`plane_mad`'s zero rule. None when it cannot be measured."""
+    m = plane_mad(sample)
+    out = _MAD_TO_SIGMA * m
+    return out if math.isfinite(out) and out > 0.0 else None
