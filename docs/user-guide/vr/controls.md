@@ -409,7 +409,8 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
     by eye; greyed with no lasso or probe result). See
     [Catalogues over a cube](data-types.md#the-source-list-browse-visit-classify).
   - **Mask** (#282): *Mask* (opens or closes the *Mask* window), *Pick* (the
-    next trigger on the cube picks the mask's source under the ray), *Undo*
+    next trigger on the cube picks the mask's source under the ray, in any
+    mode: Pick switches to Select), *Undo*
     (the last edit of the mask), *Save* (to the desktop). Greyed until a mask
     is over the cube. See
     [Mask layers](analysis.md#mask-layers-show-compare-refine-and-save-a-mask).

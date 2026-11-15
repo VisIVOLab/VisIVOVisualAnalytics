@@ -14,8 +14,10 @@ const APPLICATION = 'VisIVO Visual Analytics VR page';
 /**
  * ctx: {renderer (createPanel, updatePanel, setMaskLayer), state (the page's:
  * info, open, clip, extent, openPath), backend() -> backend or null,
- * seedMode() / setSeedMode(m) (the lasso's), onVisit(row, src), onChange()
- * (labels and the volume changed), report(recipe, detail) -> bool, buzz(kind)}
+ * seedMode() / setSeedMode(m) (the lasso's), armPick() (Pick armed: the
+ * trigger on the cube is Select's), onVisit(row, src), onChange() (labels
+ * and the volume changed), report(recipe, detail) -> the hub's promise of
+ * its send ({file, posted}) or null when no hub runs, buzz(kind)}
  */
 export function createMasks(ctx) {
   const canvas = typeof document !== 'undefined'
@@ -76,6 +78,7 @@ export function createMasks(ctx) {
 
   function forget() {
     S.layer = null; S.mask = null; S.cube = null; S.selected = 0; S.picking = false; S.newSource = false; S.steps = [];
+    S.saved = null; S.status = [];
     try { ctx.renderer.setMaskLayer(null); } catch { /* no volume */ }
     touch();
   }
@@ -155,7 +158,10 @@ export function createMasks(ctx) {
     // hgc44-run5_mask.fits -> hgc44-run5_vr_mask.fits: still a mask by its name (the desktop's rule).
     const stem = (S.mask.name || 'mask').replace(/\.fits?(\.gz)?$/i, '').replace(/[_-]mask$/i, '') || 'cube';
     const history = S.steps.slice(-20).map((s) => `lasso ${s.op} on source ${s.id}`);
-    const { body, edits, removed } = S.layer.saveBody({ dataset_id: id, mask_path: S.mask.datasetId ? '' : S.mask.path,
+    // The path always, with the dataset id (#305): a mask opened by its id in
+    // a session that has gone since (a backend restart, the desktop's session
+    // ended) is still found by its file.
+    const { body, edits, removed } = S.layer.saveBody({ dataset_id: id, mask_path: S.mask.path || '',
       mask_dataset_id: S.mask.datasetId || '', output_basename: `${stem}_vr_mask`, history });
     if (!edits && !removed) throw new Error('Nothing edited yet.');
     S.busy = 'saving the mask…';
@@ -176,14 +182,34 @@ export function createMasks(ctx) {
           backend_session_id: b.session || '' },
         parameters: { 'Mask': S.mask.name, 'Sources edited': r.edited.join(', ') || 'none', 'Sources removed': r.removed.join(', ') || 'none',
           'Sources': String(r.n_sources), 'Voxels': String(r.n_voxels), 'Made in': 'the VR headset' } });
-      const sent = ctx.report(recipe, { product: 'mask', file: r.workspace_filename, dataset_id: id,
+      const done = ctx.report(recipe, { product: 'mask', file: r.workspace_filename, dataset_id: id,
         label: `Refined mask ${r.workspace_filename}: ${r.edited.length} sources edited, ${r.removed.length} removed` });
-      say(`Saved ${r.workspace_filename}${sent ? ', sent to the desktop' : ' (no desktop session: not reported)'}`);
+      tellDesktop(done, r);
       return r;
     } finally {
       S.busy = '';
       touch();
     }
+  }
+
+  /** The desktop told of a saved mask (#305): said sent only once posted, as
+   *  the source list's Send does. `done`: ctx.report's promise of the hub's
+   *  send ({file, posted}), or null/false when no hub runs for this page. A
+   *  newer save or another mask meanwhile keeps its own status. */
+  function tellDesktop(done, r) {
+    const file = r.workspace_filename;
+    if (!done) { say(`Saved ${file} (no desktop session: not reported)`, '#ffd27a'); return; }
+    say(`Saved ${file}, telling the desktop…`);
+    const mine = () => S.saved === r;
+    Promise.resolve(done).then((v) => {
+      if (!mine()) return;
+      if (v && v.posted === false) say(`Saved ${file}, desktop not told${v.why ? `: ${v.why}` : ''}`, '#ffd27a');
+      else say(`Saved ${file}, sent to the desktop`);
+    }, (e) => {
+      if (!mine()) return;
+      say(`Saved ${file}, desktop not told: ${e && e.stale ? 'the page stood down or moved to another session' : (e && e.message) || e}`, '#ff8a8a');
+      ctx.buzz('error');
+    });
   }
 
   /** What the view is made of, as a short key: the view is made again only when it changes. */
@@ -252,7 +278,14 @@ export function createMasks(ctx) {
   function press(id) {
     if (id.startsWith('mode:')) { S.mode = id.slice(5); redraw(); touch(); return true; }
     if (id === 'labels') { S.labels = !S.labels; ctx.onChange(); touch(); return true; }
-    if (id === 'pick') { S.picking = !S.picking; touch(); return true; }
+    if (id === 'pick') {
+      S.picking = !S.picking && !!S.layer;
+      // The trigger on the cube picks in Select (#305): in Explore it would pin
+      // the readout, in Clip move the slab.
+      if (S.picking && ctx.armPick) ctx.armPick();
+      touch();
+      return true;
+    }
     if (id === 'src-prev' || id === 'src-next') return step(id === 'src-next' ? 1 : -1);
     if (id === 'visit') return visit();
     if (id === 'new-source') { S.newSource = !S.newSource; if (S.newSource) S.selected = 0; redraw(); touch(); return true; }
@@ -276,7 +309,10 @@ export function createMasks(ctx) {
     say,
     /** The cube changed: a layer of another cube goes. */
     onCube() { if (S.layer && S.cube !== datasetId()) { forget(); say(''); S.status = []; } },
-    restore() { tex = null; texKey = ''; },
+    /** A restored context: R.restore() made the panel's texture again in the
+     *  same handle (#305: a new handle each time leaked the old one); drawn
+     *  again on the next texture(). */
+    restore() { texKey = ''; },
     /** For the checks: how often the view was made (it is cached between changes). */
     get viewKey() { return viewKey; },
   };

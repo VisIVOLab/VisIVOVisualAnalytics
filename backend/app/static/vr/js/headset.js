@@ -327,6 +327,7 @@ export function createHub(ctx) {
   let waitTimer = null;
   let wake = null;                 // resolves the loop's backoff wait early (start, a new session)
   const inFlight = new Set();      // AbortControllers (stop() aborts them)
+  let pollAc = null;               // the command poll's: the only one resync() aborts (#305)
   let chain = Promise.resolve();   // the sends, one after the other (order kept)
   let stateWanted = null, stateKeySent = '', stateTimer = null;
   const pending = { look: null, clip: null };   // {key, cubePath, summary, payload, timer}
@@ -371,12 +372,14 @@ export function createHub(ctx) {
     return h;
   }
 
-  /** A request with its own deadline; stop() aborts it. {status, body (parsed or text)}. */
-  async function call(method, path, body, a, ms = REQUEST_TIMEOUT_MS) {
+  /** A request with its own deadline; stop() aborts it, resync() only the
+   *  command poll (`poll`). {status, body (parsed or text)}. */
+  async function call(method, path, body, a, ms = REQUEST_TIMEOUT_MS, poll = false) {
     const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
     let expired = false;
     const t = later(() => { expired = true; if (ac) ac.abort(); }, ms);
     if (ac) inFlight.add(ac);
+    if (ac && poll) pollAc = ac;
     try {
       const resp = await doFetch(apiUrl(path), { method, headers: headers(a, body !== undefined),
         body: body === undefined ? undefined : JSON.stringify(body), signal: ac ? ac.signal : undefined });
@@ -389,6 +392,7 @@ export function createHub(ctx) {
     } finally {
       cancel(t);
       if (ac) inFlight.delete(ac);
+      if (ac && pollAc === ac) pollAc = null;
     }
   }
 
@@ -442,6 +446,13 @@ export function createHub(ctx) {
     if (r.status === 404 || r.status === 405) { on404(r); throw new Error(`hello: ${r.status}`); }
     if (r.status !== 200) throw new Error(`hello: ${r.status} ${String(r.text).slice(0, 80)}`);
     noteInstance(r.body && r.body.instance);
+    const now = authNow();
+    if (!now || now.session !== a.session) {
+      // The page moved to another session while this hello was on its way
+      // (resync() lets it finish, #305): that session forgets the page again.
+      call('DELETE', `/v1/vr/headset?client=${encodeURIComponent(st.client)}`, undefined, a).catch(() => {});
+      throw staleRun();
+    }
     st.helloSession = a.session;
     stateKeySent = '';           // the state goes again in the new session
     log('info', 'hub-hello', `${ctx.transport}, client ${st.client}`);
@@ -672,7 +683,7 @@ export function createHub(ctx) {
     // The state goes before the first poll of a session (it may have changed meanwhile).
     flushState();
     const q = commandsQuery(st.client, st.after);
-    const r = await call('GET', `/v1/vr/headset/commands?${q}`, undefined, a, (POLL_WAIT_S + 15) * 1000);
+    const r = await call('GET', `/v1/vr/headset/commands?${q}`, undefined, a, (POLL_WAIT_S + 15) * 1000, true);
     if (id !== loopId) return 'stop';
     if (r.status === 404 || r.status === 405) return on404(r) === 'unsupported' ? 'stop' : 'again';
     if (r.status === 429) throw new Error('the hub\'s waiting polls are all taken');
@@ -741,6 +752,7 @@ export function createHub(ctx) {
     st.running = false;
     for (const ac of inFlight) { try { ac.abort(); } catch { /* done */ } }
     inFlight.clear();
+    pollAc = null;
     if (waitTimer !== null) { cancel(waitTimer); waitTimer = null; }
     if (wake) { wake(); wake = null; }
     if (stateTimer !== null) { cancel(stateTimer); stateTimer = null; }
@@ -771,12 +783,12 @@ export function createHub(ctx) {
 
   /** The page's session changed: the poll in flight (in the old session)
    *  ends now and a new one starts with a hello in the new session (the old
-   *  one forgets the page: ensureHello). */
+   *  one forgets the page: ensureHello). Only the poll: a product save or a
+   *  post on its way finishes (each checks its own session), #305. */
   function resync() {
     if (!st.running) return;
     loopId++;
-    for (const ac of inFlight) { try { ac.abort(); } catch { /* done */ } }
-    inFlight.clear();
+    if (pollAc) { const ac = pollAc; pollAc = null; inFlight.delete(ac); try { ac.abort(); } catch { /* done */ } }
     if (waitTimer !== null) { cancel(waitTimer); waitTimer = null; }
     if (wake) { wake(); wake = null; }
     loop(++loopId);

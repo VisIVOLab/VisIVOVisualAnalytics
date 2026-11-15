@@ -273,11 +273,31 @@ export function noticeFor(kind, ctx = {}) {
  * the file that is actually shown.
  */
 export class LoadTracker {
-  constructor() { this.latest = 0; }
+  constructor() { this.latest = 0; this.path = ''; }
   /** A new load of `path` ('' for a cube that is not a backend file). */
-  begin(path) { this.latest++; return { id: this.latest, path: String(path || '') }; }
+  begin(path) { this.latest++; this.path = String(path || ''); return { id: this.latest, path: this.path }; }
   /** Is `ticket` still the newest load? */
   isCurrent(ticket) { return !!ticket && ticket.id === this.latest; }
+}
+
+/**
+ * A desktop mask waiting for the cube being loaded (#282), `pending` {path}:
+ * the path of the newest load when it came (#305). `now`: {shown} the path
+ * of a cube just put on show (null when nothing was), {loading} the loads
+ * still under way, {staged} the path of a cube waiting for the end of the VR
+ * session ('' when none), {current} the path of the cube on show. 'apply'
+ * over its own cube (just shown, or on show once no load is left: the
+ * desktop sent the cube on show again); 'wait' while a load is under way or
+ * its cube is staged; 'drop' otherwise (its cube failed, or was superseded
+ * and never shown): never over another cube.
+ */
+export function pendingMaskVerdict(pending, { shown = null, loading = 0, staged = '', current = '' } = {}) {
+  if (!pending) return 'drop';
+  const path = String(pending.path || '');
+  if (!path) return loading > 0 ? 'wait' : 'drop';
+  if (shown !== null && shown === path) return 'apply';
+  if (loading > 0 || staged === path) return 'wait';
+  return current === path ? 'apply' : 'drop';
 }
 
 /** The Error a superseded load ends with (the page says nothing about it). */

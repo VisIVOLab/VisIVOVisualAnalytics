@@ -129,6 +129,18 @@ export async function runMaskChecks({ c, check, waitFor, api, base, token, cube,
   await c.evaluate(`(() => { window.__vrMenu.act({ type: 'press', id: 'reset-view' }); window.__vrMenu.act({ type: 'press', id: 'tab:select' });
     window.__vrSelection.setTool('lasso'); window.__xrfake.aimRight = ${JSON.stringify(aim0)}; })()`);
   await sleep(300);
+  // From Explore (#305): Pick takes Select, so the trigger picks, never pins the readout.
+  await c.evaluate(`(() => { const s = document.getElementById('ui-mode'); s.value = 'explore'; s.dispatchEvent(new Event('change')); })()`);
+  const modeBefore = await c.evaluate('window.__vrMenu.ui.mode');
+  await c.evaluate(`window.__vrMenu.act({ type: 'press', id: 'mask-pick' })`);
+  const modeArmed = await c.evaluate('window.__vrMenu.ui.mode');
+  await pull();
+  const pickedExplore = await waitFor(c, 'window.__vrMasks.state.selected === 1', 5000);
+  const pinned = await c.evaluate('!!window.__vrMenu.ui.pin');
+  check(`${L}: Pick pressed in Explore: Select is taken and the trigger picks the source, no readout pinned`,
+    modeBefore === 'explore' && modeArmed === 'select' && pickedExplore.value && !pinned,
+    `mode ${modeBefore} -> ${modeArmed}, selected ${await c.evaluate('window.__vrMasks.state.selected')}, pinned ${pinned}`);
+  await c.evaluate('window.__vrMasks.select(0)');
   await c.evaluate(`window.__vrMenu.act({ type: 'press', id: 'mask-pick' })`);
   await pull();
   const picked = await waitFor(c, 'window.__vrMasks.state.selected === 1', 5000);
@@ -167,6 +179,10 @@ export async function runMaskChecks({ c, check, waitFor, api, base, token, cube,
     const page = (await json('GET', `/v1/vr/activity?after=${cursor}&wait=1`, session)).body || { events: [] };
     ev = page.events.find((e) => e.kind === 'product' && e.payload && e.payload.product === 'mask') || null;
   }
+  // Said sent only once the hub posted it (#305).
+  const told = await waitFor(c, `/sent to the desktop$/.test((window.__vrMasks.state.status[0] || [''])[0])`, 10000);
+  check(`${L}: the Mask window says sent to the desktop once the product is posted`, told.value,
+    await c.evaluate(`(window.__vrMasks.state.status[0] || [''])[0]`));
   const r = saved.value ? await c.evaluate('window.__vrMasks.state.saved') : null;
   const back = r ? readMask(python, r.output_path) : null;
   const orig = readMask(python, mask.path);
@@ -195,6 +211,29 @@ export async function runMaskChecks({ c, check, waitFor, api, base, token, cube,
   check(`${L}: the layer is encoded and written in under 30 ms here`, bench.p50 < 30, `p50 ${bench.p50.toFixed(2)} ms, max ${bench.max.toFixed(2)} ms`);
   await c.evaluate(`window.__xrfake.aimRight = ${JSON.stringify(aim0)}`);
   out.bench = bench;
+
+  // A mask whose cube never comes (#305): the desktop sends a cube that cannot
+  // be opened (held back 2.5 s, so the mask arrives while it loads), then its
+  // mask; the load fails and the mask is dropped, not loaded over the next
+  // cube shown (here the page's own load of the cube).
+  await c.evaluate('window.__vrMasks.forget()');
+  await c.evaluate(`(() => { const f = window.fetch; window.__fetchOrig = f;
+    window.fetch = (u, init) => ((String(u).includes('vrmissing') || (init && typeof init.body === 'string' && /vrmissing|vr_missing_cube/.test(init.body)))
+      ? new Promise((r) => setTimeout(r, 2500)).then(() => f(u, init)) : f(u, init)); })()`);
+  const missing = join(tmpdir(), 'vr_missing_cube.fits');
+  const f1 = await json('POST', '/v1/vr/headset/command', session, { type: 'show', dataset_id: 'vrmissing0001', path: missing });
+  const f2 = await json('POST', '/v1/vr/headset/command', session, { type: 'mask', dataset_id: maskId, path: mask.path });
+  const waitedFor = await waitFor(c, `window.__vrShell.diag.items.some((e) => e.event === 'hub-mask-waits' && /command ${f2.body && f2.body.seq}/.test(e.message || ''))`, 20000);
+  const dropped = await waitFor(c, `window.__vrShell.diag.items.some((e) => e.event === 'hub-mask-dropped')`, 30000);
+  await c.evaluate('window.fetch = window.__fetchOrig');
+  const before = await c.evaluate('window.__vrState.open && window.__vrState.open.dataset_id');
+  await c.evaluate(`(() => { const $ = (id) => document.getElementById(id); $('path').value = ${JSON.stringify(cube)}; $('load').click(); })()`);
+  const reshown = await waitFor(c, `!!(window.__vrState.open && window.__vrState.open.dataset_id !== ${JSON.stringify(before || '')} && window.__vrState.loading === 0)`, 60000);
+  await sleep(1500);
+  const after = await c.evaluate('({ layer: !!window.__vrMasks.state.layer, status: (window.__vrMasks.state.status[0] || [""])[0] })');
+  check(`${L}: a mask whose cube fails to load is dropped, never loaded over the next cube`,
+    f1.status === 200 && f2.status === 200 && waitedFor.value && dropped.value && reshown.value && !after.layer,
+    `waited ${waitedFor.value}, dropped ${dropped.value}, next cube shown ${reshown.value}, layer ${after.layer}; ${after.status}`);
 
   // ── HCG 44 with its SoFiA-2 mask (DemoData, when present) ──
   if (existsSync(HCG44.cube) && existsSync(HCG44.mask)) {

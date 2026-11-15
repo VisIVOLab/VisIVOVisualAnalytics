@@ -198,6 +198,11 @@ function fakeHub({ instance = 'inst-1' } = {}) {
       return resp(200, { commands: cmds, next: Math.max(...cmds.map((c) => c.seq)), instance: s.instance });
     }
     if (u.pathname.startsWith('/v1/products/') || u.pathname === '/v1/catalogue/classified_votable') {
+      if (s.holdSave) {
+        // A long save: answers when released, fails when aborted.
+        await new Promise((res) => { if (init.signal) init.signal.addEventListener('abort', res); s.releaseSave = res; });
+        if (init.signal && init.signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      }
       const st = s.saveStatus.length ? s.saveStatus.shift() : 200;
       if (st !== 200) return resp(st, { detail: 'busy' });
       s.files++;
@@ -456,6 +461,62 @@ test('a new session (a load made one): the poll moves there with a hello, the ol
   assert.deepEqual(hellos.map((c) => c.headers['X-Visivo-Session']), ['sess-1', 'sess-2']);
   const del = fh.calls.find((c) => c.method === 'DELETE');
   assert.equal(del.headers['X-Visivo-Session'], 'sess-1');
+  hub.stop();
+});
+
+test('review (#305): resync and rehello abort only the command poll, a product save on its way finishes and is posted', async () => {
+  const t = clock(), fh = fakeHub();
+  const { hub, logs } = makeHub(t, fh);
+  hub.start();
+  await t.advance(10);
+  fh.s.holdSave = true;
+  const done = hub.product({ product: 'moment', dataset_id: 'iso', request: { moment_order: 0 } }, null, { cubePath: '/c.fits', stem: 'c' }, 'm');
+  let got = null, err = null;
+  done.then((v) => { got = v; }, (e) => { err = e; });
+  await t.advance(10);
+  assert.equal(fh.posts('/v1/products/moment_fits').length, 1, 'the save is on its way');
+  const pollsBefore = fh.s.polls.length;
+  hub.rehello();                     // the desktop launched the app again, same session
+  await t.advance(10);
+  assert.equal(fh.posts('/v1/vr/headset/hello').length, 2, 'said hello again');
+  assert.ok(fh.s.polls.length > pollsBefore, 'a new poll started (the old one was aborted)');
+  fh.s.holdSave = false;
+  fh.s.releaseSave();
+  await t.advance(50);
+  assert.equal(err, null, 'the save was not aborted');
+  assert.equal(got && got.posted, true);
+  assert.ok(got.file);
+  assert.equal(fh.posts('/v1/vr/activity').length, 1, 'the desktop is told');
+  assert.ok(!logs.some(([, , msg]) => /not saved/.test(msg)));
+  hub.stop();
+});
+
+test('review (#305): a hello that answers after the page moved to another session is not kept as its registration', async () => {
+  const t = clock(), fh = fakeHub();
+  let session = 'sess-1';
+  let holdHello = true, releaseHello = null;
+  const inner = fh.fetch;
+  const wrapped = {
+    ...fh,
+    fetch: async (url, init = {}) => {
+      if (holdHello && String(url).includes('/v1/vr/headset/hello')) {
+        holdHello = false;
+        await new Promise((res) => { releaseHello = res; });
+      }
+      return inner(url, init);
+    },
+  };
+  const { hub } = makeHub(t, wrapped, { session: () => session });
+  hub.start();
+  await t.advance(10);
+  session = 'sess-2';
+  hub.resync();
+  await t.advance(10);
+  assert.equal(hub.st.helloSession, 'sess-2');
+  releaseHello();                    // the first hello (sess-1) answers late
+  await t.advance(10);
+  assert.equal(hub.st.helloSession, 'sess-2', 'still registered in the new session');
+  assert.ok(fh.calls.some((c) => c.method === 'DELETE' && c.headers['X-Visivo-Session'] === 'sess-1'), 'the old session forgets the page');
   hub.stop();
 });
 

@@ -48,6 +48,8 @@ for k in (1, 2, 3):
     open(f"{out}/run_{k:03d}.bin.head", "w").write(f"float\\n7\\n{n}\\nlittle\\nx\\ny\\nz\\nvx\\nhsml\\nrho\\nzero\\n")
 from astropy.io import fits
 fits.PrimaryHDU(np.random.default_rng(9).normal(0, 1, (16, 24, 24)).astype('<f4')).writeto(f"{out}/cube.fits")
+m = np.zeros((16, 24, 24), np.int32); m[4:8, 4:8, 4:8] = 1
+fits.PrimaryHDU(m).writeto(f"{out}/cube_mask.fits")
 `, OUT], { encoding: 'utf8' });
 if (made.status !== 0) { console.log(`FAIL could not write the snapshots: ${made.stderr}`); process.exit(1); }
 
@@ -150,6 +152,39 @@ try {
     await ev(`${L}.points.path + ' #' + ${L}.points.series.index`));
   const closed = await waitFor(`window.__vrBackend()._json('POST', '/v1/points/info', { dataset_id: ${JSON.stringify(firstId)} }).then(() => false, () => true)`, 10000);
   check('the snapshot left behind is closed on the backend (DELETE)', closed);
+  // A burst where the first step's table is on show when the second overtakes
+  // it (#305): its sample arrives first (0.5 s), the second step's open waits
+  // 2 s. The first step's table stays open while on show, then both it and
+  // the table on show when the burst began are closed; the newest stays.
+  {
+    const shownId = await ev(`${L}.points.datasetId`);
+    await ev(`(() => { const b = window.__vrBackend(); window.__burstOrig = { json: b._json, binary: b._binary };
+      const j = b._json.bind(b), bin = b._binary.bind(b);
+      window.__burst = { sample: 1, open: 0 };
+      b._binary = (p, ...r) => (p === '/v1/points/sample_bin' && window.__burst.sample-- > 0
+        ? new Promise((res) => setTimeout(res, 500)).then(() => bin(p, ...r)) : bin(p, ...r));
+      b._json = (m, p, body) => (p === '/v1/vbt/open' && window.__burst.open-- > 0
+        ? new Promise((res) => setTimeout(res, 2000)).then(() => j(m, p, body)) : j(m, p, body)); })()`);
+    await act({ type: 'press', id: 'snap-next' });
+    const onFirst = await waitFor(`/run_003/.test(${L}.points.path || '') && ${L}.points.datasetId !== ${JSON.stringify(shownId)}`, 20000);
+    const firstStepId = await ev(`${L}.points.datasetId`);
+    await ev('window.__burst.open = 1');
+    await act({ type: 'press', id: 'snap-prev' });
+    // The first step's sample is in, the step overtaken: its table is still the one on show.
+    await waitFor(`!!(${L}.points.sample && ${L}.points.datasetId === ${JSON.stringify(firstStepId)})`, 5000);
+    await sleep(300);
+    const info = (id) => ev(`window.__vrBackend()._json('POST', '/v1/points/info', { dataset_id: ${JSON.stringify(id)} }).then(() => true, () => false)`);
+    const keptWhileShown = (await ev(`${L}.points.datasetId`)) !== firstStepId || await info(firstStepId);
+    const ended = await waitFor(`${L}.stepTarget === null && ${L}.points.series.index === 1 && /run_002/.test(${L}.points.path || '')
+      && !!${L}.points.sample && ${L}.points.datasetId !== ${JSON.stringify(firstStepId)}`, 60000);
+    const finalId = await ev(`${L}.points.datasetId`);
+    await sleep(800);
+    const [origOpen, firstOpen, finalOpen] = [await info(shownId), await info(firstStepId), await info(finalId)];
+    await ev(`(() => { const b = window.__vrBackend(); b._json = window.__burstOrig.json; b._binary = window.__burstOrig.binary; })()`);
+    check('a burst whose first step is on show when overtaken: that table is not closed while on show', onFirst && keptWhileShown);
+    check('… when the newest step is installed, the table shown before the burst and the first step\'s are closed, the newest kept',
+      ended && !origOpen && !firstOpen && finalOpen, `before ${origOpen ? 'OPEN' : 'closed'}, first step ${firstOpen ? 'OPEN' : 'closed'}, newest ${finalOpen ? 'open' : 'CLOSED'}`);
+  }
   // The next snapshot (larger: other bounds) keeps the columns, the colour, the sizes, and the crop in table units.
   const cropData = { lo: 0.25, hi: 0.75 };
   await ev(`window.__vrState.clip = { min: [${cropData.lo}, 0, 0], max: [${cropData.hi}, 1, 1] }`);
@@ -246,6 +281,14 @@ try {
   await sleep(6000);
   check('a cube opened during a step stays on show', await ev(`!!window.__vrState.cube && window.__vrLayers.mode === 'cube' && !${L}.points`),
     await ev(`window.__vrLayers.mode + ' ' + !!window.__vrState.cube`));
+  // A mask layer belongs to its cube (#305): a point table shown instead takes it away.
+  await ev(`(() => { document.getElementById('mask-path').value = ${JSON.stringify(join(OUT, 'cube_mask.fits'))}; document.getElementById('mask-load').click(); })()`);
+  const maskOn = await waitFor('!!window.__vrMasks.state.layer', 20000);
+  await ev(`(() => { const $ = (id) => document.getElementById(id); $('path').value = ${JSON.stringify(join(OUT, 'run_001.bin.head'))}; $('load').click(); })()`);
+  const maskGone = await waitFor(`!!(${L}.points && ${L}.points.sample) && !window.__vrMasks.state.layer && !window.__vrMasks.view().loaded
+    && !window.__vrMasks.state.status.length`, 60000);
+  check('a mask layer goes with its cube when a point table is shown', maskOn && maskGone,
+    `mask loaded ${maskOn}; then ${JSON.stringify(await ev(`({ points: !!${L}.points, layer: !!window.__vrMasks.state.layer, status: window.__vrMasks.state.status })`))}`);
   check('no page error', !pageErrors.length, pageErrors.join(' / '));
   sock.close();
 } catch (err) {

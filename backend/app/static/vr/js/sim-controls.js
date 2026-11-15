@@ -8,6 +8,21 @@ const Q = 65535;
 
 // ── Snapshots ───────────────────────────────────────────────────────────────
 
+/** The datasets a burst of snapshot steps leaves behind, to close (#305): the
+ *  table on show when the burst began (`carry.from`, unless `withFrom` is
+ *  false) and the steps' own tables dropped while on show (`carry.left`).
+ *  Only tables the page opened itself (`own`), each id once, and never the
+ *  table on show now (`shown`) nor one with its id. */
+export function burstLeftovers(carry, shown, withFrom = true) {
+  if (!carry) return [];
+  const ids = [];
+  for (const t of [withFrom ? carry.from : null, ...(carry.left || [])]) {
+    if (!t || !t.own || !t.datasetId || t === shown || (shown && t.datasetId === shown.datasetId)) continue;
+    if (!ids.includes(t.datasetId)) ids.push(t.datasetId);
+  }
+  return ids;
+}
+
 /** The file `dir` steps (-1 back, +1 on) from a series {paths, index, count},
  *  or null at either end or without a series. */
 export function seriesStep(series, dir) {

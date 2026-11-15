@@ -639,3 +639,29 @@ test('a second restart during the pyramid wait reopens the file in the same try'
   assert.equal(r.open.dataset_id, 'ds2');
   assert.deepEqual([counts.sessions, counts.opens], [1, 2], 'exactly one extra session');
 });
+
+test('review (#305): a desktop mask waiting for its cube goes over that cube only, and is dropped when it never comes', () => {
+  const loads = new L.LoadTracker();
+  loads.begin('/d/a.fits');
+  const pending = { cmd: { type: 'mask', path: '/d/a_mask.fits' }, path: loads.path };
+  assert.equal(pending.path, '/d/a.fits', 'the newest load\'s path');
+  // Its cube on show: applied.
+  assert.equal(L.pendingMaskVerdict(pending, { shown: '/d/a.fits', loading: 1 }), 'apply');
+  // Another cube on show while a load is under way (a recovery, a load begun before): it waits.
+  assert.equal(L.pendingMaskVerdict(pending, { shown: '/d/b.fits', loading: 1 }), 'wait');
+  // Its load failed or was superseded: no load left, nothing staged -> dropped.
+  assert.equal(L.pendingMaskVerdict(pending, { shown: null, loading: 0 }), 'drop');
+  // The user then opens B: never loaded over B.
+  assert.equal(L.pendingMaskVerdict(pending, { shown: '/d/b.fits', loading: 0 }), 'drop');
+  // Its cube staged for the end of the VR session: it waits, and goes over it when it is shown.
+  assert.equal(L.pendingMaskVerdict(pending, { shown: null, loading: 0, staged: '/d/a.fits' }), 'wait');
+  assert.equal(L.pendingMaskVerdict(pending, { shown: '/d/a.fits', loading: 0 }), 'apply');
+  // A load of no file: never matched.
+  assert.equal(L.pendingMaskVerdict({ cmd: {}, path: '' }, { shown: '', loading: 1 }), 'wait');
+  assert.equal(L.pendingMaskVerdict({ cmd: {}, path: '' }, { shown: '', loading: 0 }), 'drop');
+  assert.equal(L.pendingMaskVerdict(null, { shown: '/d/a.fits' }), 'drop');
+  // Its cube is the one on show (the desktop sent it again, the load under way was superseded): applied once no load is left.
+  assert.equal(L.pendingMaskVerdict(pending, { shown: null, loading: 1, current: '/d/a.fits' }), 'wait');
+  assert.equal(L.pendingMaskVerdict(pending, { shown: null, loading: 0, current: '/d/a.fits' }), 'apply');
+  assert.equal(L.pendingMaskVerdict(pending, { shown: null, loading: 0, current: '/d/b.fits' }), 'drop');
+});
