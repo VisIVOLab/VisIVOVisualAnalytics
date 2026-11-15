@@ -293,7 +293,7 @@ class PointStereoMixin:
         bounds, held = self._splat_basis
         sample_rows, page_size = self._xr_splat_view
         drawn = sample_rows or held
-        _, opacity, radius = splat_style(bounds, max(self._num_rows, held), drawn,
+        _, opacity, radius = splat_style(bounds, max(self._placed_rows, held), drawn,
                                          self.view.size, self.view.intensity)
         amp = opacity * drawn / max(1, held)
         # The radius in metres: the table-to-world scale of the page's box.

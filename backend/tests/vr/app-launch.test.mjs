@@ -183,7 +183,7 @@ test('main.js: a used ticket is gone; the grant becomes the page\'s; the hello n
   // a cube on show opened again there when the launch has none.
   assert.ok(adopt.indexOf("if (handed && before && before !== grant.session) loads.begin('');") < adopt.indexOf('ensureBackend().adoptSession(grant.session)'));
   assert.match(adopt, /showFromDesktop\(\{ seq: 0, type: 'show', dataset_id: '', path: state\.openPath/);
-  assert.match(adopt, /loadLinked\(\{ session: grant\.session, dataset: '', path, kind, box \}\)/, 'a point table or a velocity field follows too');
+  assert.match(adopt, /loadLinked\(\{ session: grant\.session, dataset: '', path, kind, box, \.\.\.sky \}\)/, 'a point table or a velocity field follows too');
   assert.match(adopt, /if \(!single\.active\) \{ forwardGrant\(\); return; \}/);
   assert.match(adopt, /saveToken\(grant\.token, false\)/);
   assert.match(adopt, /hub\.rehello\(\)/);

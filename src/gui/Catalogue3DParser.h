@@ -48,6 +48,10 @@ struct Catalogue3DSchema
     // Carried on the schema (not a call-site param) so every entryDistanceMpc()
     // consumer — scene, hover readout, table, shells — stays mutually consistent.
     CatalogueDistanceMode distanceMode{ CatalogueDistanceMode::Comoving };
+    // H0 (km/s/Mpc) of the cosmology the window applied, for the redshift-space
+    // distance cz/H0 (issue #260). It used to be Planck18's 67.66 whatever the
+    // model, so WMAP9 (69.32) placed redshift-space sources 2.5 % too far.
+    double hubbleH0{ 67.66 };
 
     bool isCartesian() const
     {
@@ -113,6 +117,12 @@ struct Catalogue3DParseResult
     int skippedEntries{ 0 };
     Catalogue3DSchema schema;
     std::vector<Catalogue3DEntry> entries;
+    // Rows with a direction but no distance (issue #265): no distance column,
+    // and a redshift that is ≤ 0, NaN or missing. They are not in `entries`,
+    // so nothing that draws, bounds or picks the scene ever sees them; the
+    // window lists them in its "Unplaced sources" table. Which rows these are
+    // does not depend on the frame, the distance mode or the cosmology.
+    std::vector<Catalogue3DEntry> unplaced;
 };
 
 namespace Catalogue3DParser {
@@ -219,14 +229,20 @@ inline double comovingDistanceMpc(double z)
 // real-space distance by the line-of-sight peculiar velocity; from the comoving
 // integral comovingDistanceMpc(z) it differs only by cz/H0 − D_C(z) (the low-z
 // linear approximation vs the exact integral), which is not a peculiar velocity.
-inline double hubbleDistanceMpc(double z)
+// H0 is the applied cosmology's (Catalogue3DSchema::hubbleH0); Planck18's by default.
+inline double hubbleDistanceMpc(double z, double h0 = 67.66)
 {
-    if (z <= 0.0)
+    if (z <= 0.0 || !(h0 > 0.0))
         return 0.0;
-    constexpr double H0   = 67.66;         // must match comovingDistanceMpc (Planck18)
     constexpr double cKms = 2.99792458e5;
-    return cKms * z / H0;
+    return cKms * z / h0;
 }
+
+inline constexpr double kSpeedOfLightKms = 2.99792458e5;
+// Below this recession velocity a distance from the redshift is uncertain:
+// peculiar velocities are about 300 km/s (Strauss & Willick 1995, Phys. Rep.
+// 261, 271), 30 % of it or more. Such a source is placed, and flagged.
+inline constexpr double kUncertainCzKms = 1000.0;
 
 inline QString detectedNameField(const Catalogue3DSchema &schema)
 {
@@ -357,59 +373,167 @@ inline void parseSizePair(const QString &raw, double &minorValue, double &majorV
     }
 }
 
-inline double entryDistanceMpc(const Catalogue3DEntry &entry, const Catalogue3DSchema &schema)
+// Where a source's radial distance came from (issue #265): what the pick
+// readout says, and what decides whether the source is placed at all.
+enum class DistanceOrigin
 {
+    None,            // no distance: the source is not placed
+    RedshiftSpace,   // cz/H0 (redshift-space mode)
+    Column,          // the catalogue's distance column
+    Redshift,        // the comoving distance of the redshift
+    Cartesian,       // the catalogue's own X/Y/Z
+    SkySphere,       // no redshift and no distance COLUMN at all: the celestial sphere
+};
+
+// The radius of the celestial sphere a catalogue with no redshift and no
+// distance column is shown on (positions only). Not a distance: it only keeps
+// such a catalogue viewable in 3-D, at the radius the old default used.
+inline constexpr double kSkySphereRadiusMpc = 300.0;
+
+// Why a source has no distance. Every reason implies no usable distance column.
+enum class UnplacedReason
+{
+    None,
+    NegativeRedshift,   // z < 0: a peculiar velocity larger than the Hubble flow
+    ZeroRedshift,       // z = 0, which in catalogues means "not measured"
+    NoRedshift,         // no redshift column, or an empty or non-numeric value
+};
+
+struct EntryDistance
+{
+    double mpc{ std::numeric_limits<double>::quiet_NaN() };
+    DistanceOrigin origin{ DistanceOrigin::None };
+    UnplacedReason reason{ UnplacedReason::None };
+    QString column;               // the distance column, when origin is Column
+    bool fromModel{ false };      // Redshift: the selector's backend distance, not Planck18 local
+    double redshift{ std::numeric_limits<double>::quiet_NaN() };   // NaN: none read
+
+    bool placed() const { return origin != DistanceOrigin::None; }
+    // Placed from a redshift with 0 < cz < kUncertainCzKms: peculiar velocities
+    // make the distance 30 % uncertain or worse. A measured distance is not.
+    bool uncertain() const
+    {
+        return (origin == DistanceOrigin::RedshiftSpace || origin == DistanceOrigin::Redshift)
+                && redshift > 0.0 && kSpeedOfLightKms * redshift < kUncertainCzKms;
+    }
+};
+
+// The redshift and distance columns of a schema, resolved once for a loop over
+// many rows (each detection builds a map of the headers).
+struct DistanceFields
+{
+    QString redshift;
+    QString distance;
+    explicit DistanceFields(const Catalogue3DSchema &schema)
+        : redshift(detectedRedshiftField(schema)), distance(detectedDistanceField(schema))
+    {
+    }
+};
+
+inline EntryDistance entryDistance(const Catalogue3DEntry &entry, const Catalogue3DSchema &schema,
+                                   const DistanceFields &fields)
+{
+    EntryDistance out;
     // Cartesian catalogues: distance = radial distance of the explicit position
     // from the origin (observer). No redshift/cosmology involved.
     if (schema.isCartesian()) {
-        return std::sqrt(entry.sceneX * entry.sceneX + entry.sceneY * entry.sceneY
-                         + entry.sceneZ * entry.sceneZ);
+        out.mpc = std::sqrt(entry.sceneX * entry.sceneX + entry.sceneY * entry.sceneY
+                            + entry.sceneZ * entry.sceneZ);
+        out.origin = DistanceOrigin::Cartesian;
+        return out;
+    }
+    // A catalogue of positions only (no redshift column, no distance column):
+    // every source on the celestial sphere, so the catalogue keeps a view.
+    // A row is unplaced only when the catalogue HAS such a column and the
+    // row's value is unusable (issue #265).
+    if (fields.redshift.isEmpty() && fields.distance.isEmpty()) {
+        out.mpc = kSkySphereRadiusMpc;
+        out.origin = DistanceOrigin::SkySphere;
+        return out;
     }
     // Redshift (used for the redshift-space mode, the distance-TYPE conversion, and
     // as a fallback).
-    const QString redshiftField = detectedRedshiftField(schema);
     bool okRedshift = false;
-    const double redshift = fieldDouble(entry, schema, redshiftField, &okRedshift);
+    const double redshift = fieldDouble(entry, schema, fields.redshift, &okRedshift);
+    if (okRedshift)
+        out.redshift = redshift;
+    // z > 0, deliberately: a redshift column holding 0.0 means "not measured" in
+    // essentially every real catalogue, and a source genuinely AT z = 0 would sit
+    // at the observer's own position, which no catalogue entry does. A negative
+    // z (M31, M81: a peculiar velocity) gives no distance either.
+    const bool hasRedshift = okRedshift && redshift > 0.0;
     // Redshift-space mode (R-14): place the source at the naive Hubble distance
     // cz/H0 from its redshift alone — deliberately ignoring measured/model
     // (real-space) distances and any cosmology-selector override. Against a source
     // that also has an independent real-space distance, the mode toggle exposes its
     // line-of-sight peculiar-velocity displacement. Falls through to the real-space
     // logic when the source has no usable redshift.
-    // z > 0, deliberately: a redshift column holding 0.0 means "not measured" in
-    // essentially every real catalogue, and a source genuinely AT z = 0 would sit
-    // at the observer's own position, which no catalogue entry does. So zero
-    // falls through to the distance column and then to the default, and
-    // TestCatalogueParser::entryDist_zeroRedshift_fallsBackTo300 pins that.
-    // (Reviewed and briefly "fixed" to >= 0 on the reasoning that zero is a
-    // measurement; it is not, for this column.)
-    if (schema.distanceMode == CatalogueDistanceMode::RedshiftSpace
-            && okRedshift && redshift > 0.0)
-        return hubbleDistanceMpc(redshift);
-    // Prefer the cosmology-selector override if it has been set.
-    if (std::isfinite(entry.distanceMpc))
-        return entry.distanceMpc;
-    const QString distanceField = detectedDistanceField(schema);
+    if (schema.distanceMode == CatalogueDistanceMode::RedshiftSpace && hasRedshift) {
+        out.mpc = hubbleDistanceMpc(redshift, schema.hubbleH0);
+        out.origin = DistanceOrigin::RedshiftSpace;
+        return out;
+    }
+    // A measured distance wins under every cosmology (issue #265): the
+    // selector's override is a distance from the redshift, which a measurement
+    // beats. It used to be checked first, so WMAP9 replaced a catalogue's DIST.
     bool okDistance = false;
-    const double distance = fieldDouble(entry, schema, distanceField, &okDistance);
+    const double distance = fieldDouble(entry, schema, fields.distance, &okDistance);
     if (okDistance && distance > 0.0) {
         // Convert a luminosity/angular-diameter distance to the COMOVING radial
         // coordinate the scene places sources at (D_L = (1+z)·D_C ⇒ D_C = D_L/(1+z);
         // D_A = D_C/(1+z) ⇒ D_C = D_A·(1+z)). Without a redshift we can't convert,
         // so the value is used as-is (the best available). A bare DISTANCE column
         // is assumed comoving.
-        const DistanceKind kind = distanceFieldKind(distanceField);
-        if (kind != DistanceKind::Comoving && okRedshift && redshift > 0.0) {
-            if (kind == DistanceKind::Luminosity)
-                return distance / (1.0 + redshift);
-            return distance * (1.0 + redshift);   // AngularDiameter → comoving
-        }
-        return distance;
+        const DistanceKind kind = distanceFieldKind(fields.distance);
+        out.mpc = distance;
+        if (kind != DistanceKind::Comoving && hasRedshift)
+            out.mpc = kind == DistanceKind::Luminosity ? distance / (1.0 + redshift)
+                                                       : distance * (1.0 + redshift);
+        out.origin = DistanceOrigin::Column;
+        out.column = fields.distance;
+        return out;
     }
-    if (okRedshift && redshift > 0.0) {      // 0.0 = "not measured"; see above
-        return comovingDistanceMpc(redshift);
+    if (hasRedshift) {
+        // The cosmology selector's distance for this redshift when it gave one,
+        // else the local Planck18 integral.
+        out.fromModel = std::isfinite(entry.distanceMpc);
+        out.mpc = out.fromModel ? entry.distanceMpc : comovingDistanceMpc(redshift);
+        out.origin = DistanceOrigin::Redshift;
+        return out;
     }
-    return 300.0;
+    // No distance at all: not placed (NaN), and counted. A default distance
+    // (it was 300 Mpc) put M31 on a shell around the survey.
+    out.reason = !okRedshift          ? UnplacedReason::NoRedshift
+                 : redshift < 0.0     ? UnplacedReason::NegativeRedshift
+                                      : UnplacedReason::ZeroRedshift;
+    return out;
+}
+
+inline EntryDistance entryDistance(const Catalogue3DEntry &entry, const Catalogue3DSchema &schema)
+{
+    return entryDistance(entry, schema, DistanceFields(schema));
+}
+
+// The radial distance in Mpc; NaN for a source that has none (see entryDistance).
+inline double entryDistanceMpc(const Catalogue3DEntry &entry, const Catalogue3DSchema &schema)
+{
+    return entryDistance(entry, schema).mpc;
+}
+
+// The Reason column of the "Unplaced sources" table.
+inline QString unplacedReasonText(UnplacedReason reason)
+{
+    switch (reason) {
+    case UnplacedReason::NegativeRedshift:
+        return QStringLiteral("z ≤ 0");
+    case UnplacedReason::ZeroRedshift:
+        return QStringLiteral("z = 0 (not measured)");
+    case UnplacedReason::NoRedshift:
+        return QStringLiteral("no redshift");
+    case UnplacedReason::None:
+        break;
+    }
+    return {};
 }
 
 inline QString entryDisplayName(const Catalogue3DEntry &entry, const Catalogue3DSchema &schema)
@@ -466,15 +590,21 @@ inline double entryLlsMinorKpc(const Catalogue3DEntry &entry, const Catalogue3DS
     return minor;
 }
 
-inline void fillCartesian(Catalogue3DEntry &e, const Catalogue3DSchema &schema)
+// FK5 scene position at radial distance @p d (NaN for an unplaced source, which
+// is never in a window's entries).
+inline void fillCartesian(Catalogue3DEntry &e, double d)
 {
-    const double d = entryDistanceMpc(e, schema);
     constexpr double pi = 3.14159265358979323846;
     const double ra  = e.raDeg * pi / 180.0;
     const double dec = e.decDeg * pi / 180.0;
     e.sceneX = d * std::cos(dec) * std::cos(ra);
     e.sceneY = d * std::cos(dec) * std::sin(ra);
     e.sceneZ = d * std::sin(dec);
+}
+
+inline void fillCartesian(Catalogue3DEntry &e, const Catalogue3DSchema &schema)
+{
+    fillCartesian(e, entryDistanceMpc(e, schema));
 }
 
 } // namespace detail
@@ -495,7 +625,9 @@ inline Catalogue3DParseResult parseBackendSubset(const Catalogue3DSchema &schema
         return result;
     }
 
+    const detail::DistanceFields distanceFields(schema);
     int entryId = 0;
+    int unplacedId = 0;
     for (qsizetype rowPos = 0; rowPos < rows.size(); ++rowPos) {
         const QVariantMap &row = rows.at(rowPos);
         Catalogue3DEntry entry;
@@ -527,7 +659,6 @@ inline Catalogue3DParseResult parseBackendSubset(const Catalogue3DSchema &schema
             entry.decDeg = decDeg;
         }
 
-        entry.id = entryId++;
         // Store the row once, in schema.headers order (index access; name
         // access via schema.indexOf()). QVariant keeps full numeric precision.
         entry.fields.reserve(schema.headers.size());
@@ -535,16 +666,32 @@ inline Catalogue3DParseResult parseBackendSubset(const Catalogue3DSchema &schema
             entry.fields.append(row.value(header));
         }
         if (!cartesian) {
-            detail::fillCartesian(entry, schema);
+            const detail::EntryDistance d = detail::entryDistance(entry, schema, distanceFields);
+            if (!d.placed()) {
+                // Kept apart, with ids of their own: entries' ids stay their
+                // index in the scene.
+                entry.id = unplacedId++;
+                result.unplaced.push_back(std::move(entry));
+                continue;
+            }
+            detail::fillCartesian(entry, d.mpc);
         }
+        entry.id = entryId++;
         result.entries.push_back(std::move(entry));
     }
 
-    if (result.entries.empty()) {
+    if (result.entries.empty() && result.unplaced.empty()) {
         result.errorMessage = cartesian
                 ? QStringLiteral("No valid X/Y/Z entries were returned by the backend subset.")
                 : QStringLiteral("No valid RA/Dec entries were returned by the backend subset.");
         return result;
+    }
+    if (result.entries.empty()) {
+        // Valid (a page of a larger table, or a filter, may hold only these),
+        // but a window opened on it would show nothing: it says why.
+        result.errorMessage = QStringLiteral(
+                "None of the %1 sources has a distance: there is no distance column, and "
+                "their redshifts are ≤ 0 or missing.").arg(result.unplaced.size());
     }
 
     result.valid = true;

@@ -469,6 +469,37 @@ void TestVrHeadsetApp::assetlinksMustListPackageAndCertificate()
     QVERIFY(VrHeadsetApp::notListedMessage(dev).contains(u"vr_app.json"_s));
 }
 
+void TestVrHeadsetApp::releaseAppIsListedByTheShippedConfig()
+{
+    // The APK the release packages bundle is signed by the project's key,
+    // whose certificate backend/app/vr_app.json names: a backend from the
+    // same tree must list it, so the precheck lets Open on Headset go on.
+    QFile f(QStringLiteral(VISIVO_REPO_ROOT "/backend/app/vr_app.json"));
+    QVERIFY2(f.open(QIODevice::ReadOnly), qPrintable(f.fileName()));
+    const QJsonObject cfg = QJsonDocument::fromJson(f.readAll()).object();
+    const QString package = cfg.value(u"packages").toObject().value(u"release").toString();
+    QCOMPARE(package, u"it.inaf.oact.visivo.vr"_s);
+    const QJsonArray certs = cfg.value(u"release_sha256").toArray();
+    QVERIFY(!certs.isEmpty());
+    const QString releaseCert =
+            u"A1:54:C4:5B:54:20:5F:B9:6B:B9:80:28:6D:86:F3:A6:78:17:E1:32:2E:4F:68:AB:44:40:30:C0:43:04:D8:D4"_s;
+    QVERIFY(certs.contains(QJsonValue(releaseCert)));
+
+    // visivo-vr.json as build.sh --release writes it, beside visivo-vr.apk.
+    const VrHeadsetApp::AppInfo app = VrHeadsetApp::parseAppInfo(appJson(package, 2, releaseCert),
+                                                                 u"/x/quest-app/visivo-vr.apk"_s);
+    QVERIFY2(app.ok, qPrintable(app.error));
+    QVERIFY(!app.development);
+    // The backend's statement for the release package (app/vr_launch.py).
+    QCOMPARE(VrHeadsetApp::parseAssetlinks(200, assetlinks(package, certs.first().toString()), app.package,
+                                           app.certSha256),
+             VrHeadsetApp::Listing::Listed);
+    // The development package with that certificate is another app.
+    QCOMPARE(VrHeadsetApp::parseAssetlinks(200, assetlinks(kDevPackage, releaseCert), app.package,
+                                           app.certSha256),
+             VrHeadsetApp::Listing::NotListed);
+}
+
 void TestVrHeadsetApp::assetlinksAreAskedAtTheOrigin()
 {
     // Digital Asset Links are per origin: a path prefix is not part of it.

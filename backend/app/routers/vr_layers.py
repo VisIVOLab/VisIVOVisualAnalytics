@@ -65,26 +65,45 @@ def _build_lock(entry: dict) -> threading.Lock:
         return lock
 
 
-def _point_table(entry: dict, spec: str):
+def _point_table(entry: dict, spec: str, sky: dict | None = None):
     """The table of points of a dataset. A catalogue's is built once from the
     dataframe the session already holds (not read again) and kept in its
     dataset entry, so it goes when the dataset is closed (or its session
-    expires); a VBT is a memory map, opened each time at no cost."""
-    from ..point_table import open_point_table, table_from_frame   # noqa: PLC0415
+    expires); a VBT is a memory map, opened each time at no cost.
+
+    ``sky`` places a sky catalogue as the desktop window does (issue #260):
+    its frame, distance mode and cosmology. The table kept is the last one
+    asked for: another placement builds it again."""
+    from ..point_table import open_point_table, sky_arguments, table_from_frame   # noqa: PLC0415
     frame = entry.get("dataframe")
     if not spec.startswith("{") or frame is None:
-        return open_point_table(spec)
+        table = open_point_table(spec)
+        if sky and table.sky is not None:
+            table.set_sky_positions(*sky_arguments(sky))
+        return table
+    key = (spec, sky_arguments(sky))
     with _build_lock(entry):
         kept = entry.get("_point_table")
-        if kept is not None and kept[0] == spec:
+        if kept is not None and kept[0] == key:
             return kept[1]
         import json   # noqa: PLC0415
-        table = table_from_frame(frame, json.loads(spec).get("coordinates") or {})
+        table = table_from_frame(frame, json.loads(spec).get("coordinates") or {}, sky)
         # Its derived columns are built: the frame is the entry's own, not
         # held a second time.
         table.frame = None
-        entry["_point_table"] = (spec, table)
+        entry["_point_table"] = (key, table)
         return table
+
+
+def _sky_headers(table) -> dict[str, str]:
+    """A sky catalogue's placement in a sample's headers: what the page shows
+    in its status line (docs/backend-api/vr-layers.md)."""
+    if table.sky is None or not table.sky_settings:
+        return {}
+    st = table.sky_settings
+    return {"X-Visivo-Sky": f"{st['frame']},{st['distance_mode']},{st['cosmology']}",
+            "X-Visivo-Unplaced": str(st.get("unplaced", 0)),
+            "X-Visivo-Uncertain": str(st.get("uncertain", 0))}
 
 
 #: What a table that cannot be read, or a malformed request, raises: a 422.
@@ -93,20 +112,30 @@ _BAD_TABLE = (ValueError, TypeError, KeyError, OSError)
 
 class PointInfoRequest(BaseModel):
     dataset_id: str
+    # A sky catalogue's placement, the desktop window's (issue #260):
+    # {"frame": fk5 | galactic | supergalactic, "distance_mode": comoving |
+    # redshift_space, "cosmology": a named model}; null: fk5, comoving, Planck18.
+    sky: dict | None = None
 
 
 @router.post("/v1/points/info", tags=["vr"])
 async def points_info(request: PointInfoRequest, _: None = _auth,
                       session: Session = Depends(get_session)) -> dict:
-    """The table's numeric columns, its default X/Y/Z and its row count."""
+    """The table's numeric columns, its default X/Y/Z and its row count; for
+    a sky catalogue, how it is placed and how many sources have no distance."""
     entry = _require_dataset(session, request.dataset_id)
     spec = _point_spec(entry)
     try:
-        table = await asyncio.to_thread(_point_table, entry, spec)
+        table = await asyncio.to_thread(_point_table, entry, spec, request.sky)
     except _BAD_TABLE as exc:
         raise HTTPException(422, f"The table could not be read: {exc}") from exc
-    return {"valid": True, "num_rows": int(table.num_rows), "fields": list(table.columns),
-            "axes": list(table.axes), "sky": table.sky is not None}
+    out = {"valid": True, "num_rows": int(table.num_rows), "fields": list(table.columns),
+           "axes": list(table.axes), "sky": table.sky is not None}
+    if table.sky is not None:
+        # Its frame, distance mode and cosmology, and the sources placed, left
+        # out for want of a distance, and placed from cz < 1000 km/s (#265).
+        out["sky_settings"] = dict(table.sky_settings)
+    return out
 
 
 class PointSampleRequest(BaseModel):
@@ -120,6 +149,7 @@ class PointSampleRequest(BaseModel):
     color_max: float | None = None
     max_points: int = Field(2_000_000, ge=1, le=10_000_000)
     filters: list[dict] = []
+    sky: dict | None = None            # as PointInfoRequest.sky
 
 
 @router.post("/v1/points/sample_bin", tags=["vr"])
@@ -135,12 +165,12 @@ async def points_sample_bin(request: PointSampleRequest, _: None = _auth,
         axes = (request.x, request.y, request.z)
 
     def work():
-        table = _point_table(entry, spec)
+        table = _point_table(entry, spec, request.sky)
         chosen = tuple(a or d for a, d in zip(axes, table.axes)) if axes else None
         s = sample_points(table, request.max_points, chosen, request.color_field,
                           request.color_log, request.color_min, request.color_max,
                           request.filters)
-        return s.encode(), headers(s)
+        return s.encode(), {**headers(s), **_sky_headers(table)}
 
     try:
         async with _sample_slots():     # at most SAMPLE_CONCURRENCY at a time

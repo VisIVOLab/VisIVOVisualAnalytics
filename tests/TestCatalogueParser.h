@@ -37,10 +37,24 @@ private slots:
     // ── entryDistanceMpc ──────────────────────────────────────────────────────
     void entryDist_fromDistanceField();
     void entryDist_fromRedshiftField();
-    void entryDist_fallback300Mpc();
-    void entryDist_distanceMpcOverride_takesPriority();
+    void entryDist_noDistance_isUnplaced();
+    void entryDist_positionsOnly_onTheSkySphere();
+    void entryDist_measuredDistance_beatsModelOverride();
+    void entryDist_modelOverride_placesRedshiftOnlySources();
     void entryDist_negativeDistanceField_fallsBackToRedshift();
-    void entryDist_zeroRedshift_fallsBackTo300();
+    void entryDist_zeroRedshift_isUnplaced();
+    void entryDist_negativeRedshift_isUnplaced();
+    void entryDist_negativeRedshift_withDistanceColumn_isPlaced();
+    void entryDist_lowCz_isFlaggedUncertain();
+
+    // ── issue #265: unplaced rows, the status line, the pick readout ──────────
+    void parse_unplacedRowsAreKeptApart();
+    void parse_onlyUnplacedRows_isValidButSaysWhy();
+    void parse_positionsOnly_allOnTheSkySphere();
+    void placement_statusLineCounts();
+    void placement_pickLinesNameTheOrigin();
+    void placement_unplacedRows();
+    void placement_headsetSkyRefusesCustom();
 
     // ── distance-type (comoving / luminosity / angular-diameter) ──────────────
     void distanceKind_DL_isLuminosity();
@@ -54,4 +68,5 @@ private slots:
     void redshiftSpaceMode_usesHubbleDistance();
     void redshiftSpaceMode_bypassesDistanceOverride();
     void redshiftSpaceMode_noRedshift_fallsBackToRealSpace();
+    void redshiftSpaceMode_usesTheModelsH0();
 };
