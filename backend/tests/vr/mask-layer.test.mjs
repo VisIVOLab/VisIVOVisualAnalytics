@@ -299,6 +299,42 @@ test('free voxels among thousands of sources: only the ones near the grow are lo
   assert.deepEqual([...a.subarray(0, 3)], [1, 3, 5]);
 });
 
+test('a grow that comes back after the source changed is dropped; an empty mask keeps its layer', async () => {
+  let answer;
+  const backend = {
+    maskLayer: async () => wire({ 5: box(3, 5, 2, 3, 1, 2), 2: [lin(8, 6, 4)] }),
+    kinematicSelect: () => new Promise((res) => { answer = res; }),
+  };
+  const drawn = [];
+  const state = { info: { factors: [1, 1, 1], reduced_shape: shape, full_shape: shape }, open: { dataset_id: 'c1' }, clip: { min: [0, 0, 0], max: [1, 1, 1] },
+    extent: [1, 0.8, 0.6], openPath: '/d/cube.fits' };
+  const m = createMasks({ renderer: { setMaskLayer: (e) => drawn.push(e), createPanel: () => ({}), updatePanel() {} }, state, backend: () => backend,
+    seedMode: () => 'add', setSeedMode() {}, onVisit() {}, onChange() {}, report: () => true, buzz() {} });
+  await m.load({ maskPath: '/d/m.fits' });
+  m.select(5);
+  const going = m.lasso({ seed: [6, 2, 1] }, 'add', {}, undefined, () => false);
+  m.select(2);                                   // another source picked while the grow runs
+  answer({ mask: new Float32Array([1, 1]), dims: [2, 1, 1], origin: [6, 2, 1] });
+  await going;
+  assert.equal(m.state.layer.get(5).count, 12, 'source 5 untouched');
+  assert.equal(m.state.layer.get(2).count, 1, 'source 2 untouched');
+  assert.match(m.state.status[0][0], /changed during the grow/);
+  // Every source removed: still a layer for the renderer (one empty voxel), Mask only keeps its mode.
+  m.select(5);
+  const g2 = m.lasso({ seed: [3, 2, 1] }, 'carve', {}, undefined, () => false);
+  answer({ mask: new Float32Array(12).fill(1), dims: [3, 2, 2], origin: [3, 2, 1] });
+  await g2;
+  m.select(2);
+  const g3 = m.lasso({ seed: [8, 6, 4] }, 'carve', {}, undefined, () => false);
+  answer({ mask: new Float32Array([1]), dims: [1, 1, 1], origin: [8, 6, 4] });
+  await g3;
+  assert.equal(m.state.layer.ids().length, 0);
+  m.press('mode:only');
+  assert.deepEqual(drawn.at(-1) && drawn.at(-1).dims, [1, 1, 1]);
+  assert.equal(drawn.at(-1).data[0], 0);
+  assert.equal(m.modeCode(), ML.MODE_CODE.only);
+});
+
 test('the Mask window\'s view is made again only when something it shows changed', async () => {
   const backend = { maskLayer: async () => wire({ 5: box(3, 5, 2, 3, 1, 2) }) };
   const state = { info: { factors: [1, 1, 1], reduced_shape: shape, full_shape: shape }, open: { dataset_id: 'c1' }, clip: { min: [0, 0, 0], max: [1, 1, 1] },

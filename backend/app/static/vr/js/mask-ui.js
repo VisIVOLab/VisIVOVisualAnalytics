@@ -40,7 +40,8 @@ export function createMasks(ctx) {
     if (!S.layer || !i) { try { ctx.renderer.setMaskLayer(null); } catch { /* no volume */ } return; }
     if (S.mode === 'off') { ctx.renderer.setMaskLayer(null); ctx.onChange(); return; }
     const t0 = performance.now();
-    const enc = ML.encodeLayer(S.layer, i.factors, i.reduced_shape, S.selected);
+    // An empty mask (every source removed) is still a layer: Mask only then draws nothing.
+    const enc = ML.encodeLayer(S.layer, i.factors, i.reduced_shape, S.selected) || ML.emptyEncoding();
     ctx.renderer.setMaskLayer(enc);
     S.encodeMs = performance.now() - t0;
     ctx.onChange();
@@ -106,6 +107,9 @@ export function createMasks(ctx) {
   /** A lasso press while refining: a grow from this seed alone, applied to the source. */
   async function lasso(pick, seedMode, params, signal, stale) {
     const b = ctx.backend(), id = datasetId();
+    // What the grow is for, fixed now: a result that comes back after the
+    // layer, the source picked or the layer's edits changed is dropped.
+    const layer = S.layer, target = S.selected, wasNew = S.newSource, version = layer ? layer.version : -1;
     const [x, y, z] = pick.seed;
     const req = Rc.lassoGrowRequest([z, y, x], params || {}, [], []);
     S.busy = 'growing on the full cube…';
@@ -113,6 +117,10 @@ export function createMasks(ctx) {
     try {
       const r = await b.kinematicSelect(id, req, signal);
       if (stale()) return;
+      if (S.layer !== layer || S.selected !== target || S.newSource !== wasNew || !layer || layer.version !== version) {
+        say('The mask or the source changed during the grow: not applied.', '#ffd27a');
+        return;
+      }
       const grow = ML.growIndices(r.mask, r.dims, r.origin, S.layer.shape);
       const before = S.selected;
       const out = S.layer.apply(S.selected || null, grow, seedMode);

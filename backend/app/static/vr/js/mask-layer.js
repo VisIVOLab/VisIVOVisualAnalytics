@@ -311,6 +311,12 @@ export function encodeLayer(layer, factors, reduced, selected = 0) {
   return { data, origin: lo, dims };
 }
 
+/** The layer of a mask with no voxel left: one empty voxel, so the renderer
+ *  keeps the layer (and its mode: Mask only draws nothing) rather than none. */
+export function emptyEncoding() {
+  return { data: new Uint8Array(1), origin: [0, 0, 0], dims: [1, 1, 1] };
+}
+
 /** The skip grid's cells (`macroDims`, `cell` reduced voxels a side) holding
  *  any of an encoded box: 1 there (never skipped), 0 elsewhere. */
 export function layerCells(enc, macroDims, cell) {

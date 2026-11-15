@@ -165,11 +165,14 @@ the same classification columns. Answer: `valid`, `output_path`,
 A label mask over a cube for the headset's mask layers (issue #282,
 `app/mask_layer.py`). Body (JSON): `dataset_id` (the cube), and
 `mask_dataset_id` (a mask opened in this session) or `mask_path` (a file on
-the backend). The mask must be on the cube's grid: the same size on each of
-the viewer's axes and the same `CTYPE`, `CRVAL`, `CDELT`, `CRPIX` on the axes
-they share (a degenerate axis of either is ignored); otherwise 422 naming
-what differs. An integer mask, or a float one holding whole numbers; a
-negative value, a fraction or an ID above 2³¹ − 1 is 422. At most 16 Mi
+the backend). The mask must be on the cube's grid: the same size and axis
+type on each of the viewer's axes, and the same pixel-to-world transform
+(sample pixels of the mask taken to the world and back through the cube's WCS
+land within 0.001 pixel: CRPIX, CRVAL, CDELT, a CD or PC matrix and units,
+which WCSLIB normalises, are all compared; a degenerate axis of either is
+ignored); otherwise 422 naming what differs. An integer mask, or a float one
+holding whole numbers (every plane is checked); a negative value, a fraction
+or an ID above 2³¹ − 1 is 422. At most 16 Mi
 voxels in sources and 65 535 sources. A mask file that cannot be read is 404.
 
 Answer (`application/octet-stream`): a uint32 little-endian length, that many

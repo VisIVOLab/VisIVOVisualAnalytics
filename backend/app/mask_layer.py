@@ -43,34 +43,88 @@ def _open(path: str):
     return ScientificFitsDataset(path)
 
 
+def _check_whole(values: np.ndarray) -> None:
+    """A float mask's values must be whole numbers (a desktop mask saved as
+    floats); a fraction anywhere refuses it (it would be truncated to an ID)."""
+    finite = values[np.isfinite(values)]
+    if finite.size and not np.all(finite == np.round(finite)):
+        raise ValueError("The mask holds fractional values: it is not a label mask.")
+
+
+def _grid_points(sizes: list[int]) -> np.ndarray:
+    """Pixels (viewer axes x, y, z) to compare two WCS at: the corners, the
+    centre and the middle of each face, 0-based."""
+    picks = [sorted({0, (n - 1) / 2.0, n - 1}) for n in sizes]
+    return np.array([[x, y, z] for x in picks[0] for y in picks[1] for z in picks[2]], dtype=float)
+
+
 def grid_problem(cube_path: str, mask_path: str) -> str:
-    """'' when the mask is on the cube's grid, else what differs."""
+    """'' when the mask is on the cube's grid, else what differs: the size of
+    each viewer axis, the axis types, and the whole pixel-to-world transform
+    (CRPIX, CRVAL, CDELT, a CD or PC matrix, the units, which WCSLIB
+    normalises): each sample pixel of the mask taken to the world and back
+    through the cube's WCS lands within a thousandth of a pixel of itself."""
     cube, mask = _open(cube_path), _open(mask_path)
-    ch, cr = cube.header, cube.client_axis_to_fits_axis
-    mh, mr = mask.header, mask.client_axis_to_fits_axis
+    cr, mr = cube.client_axis_to_fits_axis, mask.client_axis_to_fits_axis
+    sizes = []
     for axis in (1, 2, 3):
         fc, fm = cr.get(axis), mr.get(axis)
         if (fc is None) != (fm is None):
             return f"the cube and the mask do not have the same axes (viewer axis {axis})"
         if fc is None:
+            sizes.append(1)
             continue
         nc, nm = int(cube.axis_sizes[fc - 1]), int(mask.axis_sizes[fm - 1])
         if nc != nm:
             return f"axis {axis} has {nc} pixels in the cube and {nm} in the mask"
-        for key in _AXIS_KEYS:
-            a, b = ch.get(f"{key}{fc}"), mh.get(f"{key}{fm}")
-            if a is None and b is None:
-                continue
-            if key == "CTYPE":
-                if str(a or "").strip().upper() != str(b or "").strip().upper():
-                    return f"{key}{fc} is {a!r} in the cube and {key}{fm} {b!r} in the mask"
-                continue
-            try:
-                fa, fb = float(a), float(b)
-            except (TypeError, ValueError):
-                return f"{key}{fc} cannot be compared ({a!r} / {b!r})"
-            if not math.isclose(fa, fb, rel_tol=1e-9, abs_tol=1e-12 * max(1.0, abs(fa))):
-                return f"{key}{fc} is {fa!r} in the cube and {key}{fm} {fb!r} in the mask"
+        sizes.append(nc)
+    wc, wm = cube.wcs, mask.wcs
+    if wc is None and wm is None:
+        return ""
+    if wc is None or wm is None:
+        return "only one of the cube and the mask has a WCS"
+    for axis in (1, 2, 3):
+        fc, fm = cr.get(axis), mr.get(axis)
+        if fc is None:
+            continue
+        a, b = str(wc.wcs.ctype[fc - 1]).strip().upper(), str(wm.wcs.ctype[fm - 1]).strip().upper()
+        if a != b:
+            return f"axis {axis} is {a!r} in the cube and {b!r} in the mask"
+    pts = _grid_points(sizes)
+
+    def full(w, amap):
+        out = np.zeros((len(pts), w.pixel_n_dim))
+        for axis in (1, 2, 3):
+            f = amap.get(axis)
+            if f is not None and f - 1 < w.pixel_n_dim:
+                out[:, f - 1] = pts[:, axis - 1]
+        return out
+
+    try:
+        world = wm.all_pix2world(full(wm, mr), 0)
+        # The mask's world in the cube's axis order (the same types, checked above).
+        wworld = np.zeros((len(pts), wc.world_n_dim))
+        for axis in (1, 2, 3):
+            fc, fm = cr.get(axis), mr.get(axis)
+            if fc is not None:
+                wworld[:, fc - 1] = world[:, fm - 1]
+        # Degenerate axes of the cube: their own reference world value.
+        ref = wc.all_pix2world(np.zeros((1, wc.pixel_n_dim)), 0)[0]
+        mapped = {cr[a] - 1 for a in (1, 2, 3) if cr.get(a) is not None}
+        for i in range(wc.world_n_dim):
+            if i not in mapped:
+                wworld[:, i] = ref[i]
+        back = wc.all_world2pix(wworld, 0)
+    except Exception as exc:   # noqa: BLE001 - a transform that does not invert
+        return f"the WCS cannot be compared ({exc})"
+    for axis in (1, 2, 3):
+        fc = cr.get(axis)
+        if fc is None:
+            continue
+        err = float(np.nanmax(np.abs(back[:, fc - 1] - pts[:, axis - 1])))
+        if not np.isfinite(err) or err > 1e-3:
+            return (f"the mask's pixels sit {err:.3g} pixels away from the cube's along axis {axis} "
+                    "(another CRPIX, CRVAL, CDELT, CD/PC matrix or unit)")
     return ""
 
 
@@ -82,14 +136,8 @@ def _labels(path: str):
     if data.ndim != 3:
         hdul.close()
         raise ValueError("The mask is not a cube.")
-    if not np.issubdtype(data.dtype, np.integer):
-        # A float mask (a desktop mask saved as 0/1 floats): read as integers,
-        # refused when it holds fractions.
-        probe = np.asarray(data[:: max(1, data.shape[0] // 8)])
-        finite = probe[np.isfinite(probe)]
-        if finite.size and not np.all(finite == np.round(finite)):
-            hdul.close()
-            raise ValueError("The mask holds fractional values: it is not a label mask.")
+    # A float mask (a desktop mask saved as 0/1 floats) is read as integers;
+    # every plane is checked for fractions where it is read (_check_whole).
     return hdul, data, ds
 
 
@@ -111,6 +159,7 @@ def read_layer(cube_path: str, mask_path: str, max_voxels: int = MAX_LAYER_VOXEL
         for z in range(nz):
             plane = np.asarray(data[z])
             if not np.issubdtype(plane.dtype, np.integer):
+                _check_whole(plane)
                 plane = np.nan_to_num(plane, nan=0.0).astype(np.int64)
             flat = np.flatnonzero(plane)
             if not flat.size:
@@ -268,6 +317,7 @@ def write_layer(cube_path: str, mask_path: str, out_path: str, edits: dict[int, 
             for z0 in range(0, nz, step):
                 slab = np.asarray(data[z0:z0 + step])
                 if not np.issubdtype(slab.dtype, np.integer):
+                    _check_whole(slab)
                     slab = np.nan_to_num(slab, nan=0.0)
                 slab = slab.astype(np.int64, copy=False)
                 if clear.size:

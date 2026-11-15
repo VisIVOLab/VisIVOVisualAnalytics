@@ -60,7 +60,7 @@ def test_the_layer_lists_each_source_sorted_on_the_full_grid(tmp_path):
 
 def test_a_mask_on_another_grid_is_refused(tmp_path):
     c, m, _ = _files(tmp_path, cdelt3=8000.0)
-    assert "CDELT3" in ml.grid_problem(c, m)
+    assert "axis 3" in ml.grid_problem(c, m)
     with pytest.raises(ValueError, match="not on the cube's grid"):
         ml.read_layer(c, m)
     other = tmp_path / "small.fits"
@@ -74,6 +74,46 @@ def test_a_fractional_mask_is_refused(tmp_path):
     fits.PrimaryHDU(np.full((6, 8, 10), 0.5, np.float32), header=_header()).writeto(frac)
     with pytest.raises(ValueError, match="fractional"):
         ml.read_layer(c, str(frac))
+    # One fraction on one channel, the others whole: refused too (every plane is read).
+    late = np.zeros((6, 8, 10), np.float32)
+    late[0, 1, 1] = 2.0
+    late[5, 7, 9] = 1.5
+    path = tmp_path / "late.fits"
+    fits.PrimaryHDU(late, header=_header()).writeto(path)
+    with pytest.raises(ValueError, match="fractional"):
+        ml.read_layer(c, str(path))
+    with pytest.raises(ValueError, match="fractional"):
+        ml.write_layer(c, str(path), str(tmp_path / "o.fits"), {}, [2], [])
+    # Whole floats are a label mask.
+    late[5, 7, 9] = 3.0
+    fits.PrimaryHDU(late, header=_header()).writeto(path, overwrite=True)
+    assert [s["id"] for s in ml.read_layer(c, str(path))["sources"]] == [2, 3]
+
+
+def test_the_grid_check_compares_the_whole_transform(tmp_path):
+    c, m, labels = _files(tmp_path, four_d_cube=False)
+    # The same grid written with a CD matrix and the spectral axis in km/s: the same grid.
+    h = _header()
+    for k in ("CDELT1", "CDELT2"):
+        del h[k]
+    h["CD1_1"], h["CD1_2"], h["CD2_1"], h["CD2_2"] = -0.002, 0.0, 0.0, 0.002
+    # With a CD matrix every axis needs its CDi_i (CDELT is then ignored).
+    del h["CDELT3"]
+    h["CD3_3"], h["CRVAL3"], h["CUNIT3"] = 5.0, 1000.0, "km/s"
+    same = tmp_path / "same_mask.fits"
+    fits.PrimaryHDU(labels, header=h).writeto(same)
+    assert ml.grid_problem(c, str(same)) == ""
+    # A rotated CD matrix (same CDELT on the diagonal's scale): another grid.
+    h["CD1_2"], h["CD2_1"] = 0.0005, 0.0005
+    rot = tmp_path / "rot_mask.fits"
+    fits.PrimaryHDU(labels, header=h).writeto(rot)
+    assert "pixels away" in ml.grid_problem(c, str(rot))
+    # The spectral unit wrong by a thousand (5 m/s written as km/s): another grid.
+    h2 = _header()
+    h2["CUNIT3"] = "km/s"
+    bad = tmp_path / "unit_mask.fits"
+    fits.PrimaryHDU(labels, header=h2).writeto(bad)
+    assert "axis 3" in ml.grid_problem(c, str(bad))
 
 
 def test_the_saved_mask_keeps_the_grid_and_the_ids(tmp_path):
