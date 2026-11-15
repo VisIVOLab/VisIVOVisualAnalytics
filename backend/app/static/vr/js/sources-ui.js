@@ -32,6 +32,7 @@ export function createSources(ctx) {
     current: null,              // the current source's key
     user: [],                   // the sources found by eye
     nextUser: 1,
+    edits: 0,                   // found sources added or removed (with cls.version: what was sent)
     cls: null,
     overlay: null,              // the overlay the rows were made of
     cubeId: '',                 // the cube they were made over (path and dataset)
@@ -81,7 +82,7 @@ export function createSources(ctx) {
       S.cubeId = cube;
       const s = sets();
       S.cls = new SL.Classification(s.flags, s.notes);
-      S.user = []; S.nextUser = 1; S.current = null; S.page = 0; S.sent = { version: -1, file: '' };
+      S.user = []; S.nextUser = 1; S.edits = 0; S.current = null; S.page = 0; S.sent = { version: -1, file: '' };
       S.status = ['', ''];
       // Read back with or without a catalogue (found sources alone are work too).
       const n = ctx.state.openPath ? restore() : 0;
@@ -109,7 +110,7 @@ export function createSources(ctx) {
     const title = ov ? `${ov.name || ov.source}: ${(ov.sources || []).length} sources` : 'Sources you found';
     const flagged = c.flagged ? `${c.flagged} flagged (${S.cls.flagSet.map((f) => `${c.byFlag[f] || 0} ${f}`).join(', ')})` : 'none flagged yet';
     const found = S.user.length ? `, ${S.user.length} found by eye` : '';
-    const unchanged = S.sent.version === S.cls.version + S.user.length * 1e6;
+    const unchanged = S.sent.version === workVersion();
     const sentNote = S.sent.file === 'pending' ? ', sending' : S.sent.file
       ? (!unchanged ? ', changed since sent' : S.sent.posted === false ? ', saved, desktop not told' : ', sent') : '';
     return {
@@ -183,16 +184,21 @@ export function createSources(ctx) {
     const n = S.nextUser++;
     const u = SL.foundSource(n, px, info, sky, how, extra);
     S.user.push(u);
+    S.edits += 1;
     S.status = [`${u.label} added: voxel (${px.join(', ')}) by the ${how === 'lasso' ? 'Kinematic Lasso' : 'Spectrum probe'}`, '#b9c2d0'];
     save();
     changed();
     choose(u.key, false);
     return u;
   }
+  /** What the sent VOTable was made from: the marks and every add or remove
+   *  of a found source (a remove then an add keeps the count, not this). */
+  function workVersion() { return `${S.cls.version}:${S.edits}`; }
   function removeFound(key) {
     const i = S.user.findIndex((u) => u.key === key);
     if (i < 0) return false;
     S.user.splice(i, 1);
+    S.edits += 1;
     S.cls.forget(key);
     if (S.current === key) S.current = null;
     save();
@@ -214,7 +220,7 @@ export function createSources(ctx) {
       catalogue: { name: ov ? (ov.cataloguePath || '').split('/').pop() || ov.name || '' : '', path: ov ? ov.cataloguePath || '' : '',
         dataset_id: ov ? ov.catalogueId || '' : '' } });
     const label = SL.classificationSummary(classification);
-    const version = S.cls.version + S.user.length * 1e6, overlay = S.overlay, cubeAt = S.cubeId;
+    const version = workVersion(), overlay = S.overlay, cubeAt = S.cubeId;
     // Saved before but the desktop not told, nothing changed since: that file
     // is told again, not written a second time (#279 review).
     const file = S.sent.posted === false && S.sent.version === version && S.sent.file ? S.sent.file : '';

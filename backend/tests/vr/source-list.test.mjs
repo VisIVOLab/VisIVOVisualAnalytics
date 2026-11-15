@@ -400,3 +400,21 @@ test('review (#279): saved but the desktop not told: said with the file, and Sen
   f.src.press('send');
   assert.equal(details[3].file, undefined);
 });
+
+test('review (#279): a found source removed then another added since the save: Send writes a new VOTable', async () => {
+  let settle;
+  const details = [];
+  const f = fakeSources({ overlay: ov, report: (d) => { details.push(d); return new Promise((res) => { settle = res; }); } });
+  f.src.refresh();
+  const u = await f.src.addFound();
+  f.src.choose('c:1', false);
+  f.src.press('flag:real');
+  f.src.press('send');
+  settle({ file: 'cube_vr_classified.xml', posted: false, why: 'no hub' });
+  await new Promise((r) => setTimeout(r, 0));
+  // Same count of found sources and the same marks, but not the same sources.
+  assert.ok(f.src.removeFound(u.key));
+  await f.src.addFound();
+  f.src.press('send');
+  assert.equal(details[1].file, undefined, 'the changed work is written, not the old file told again');
+});
