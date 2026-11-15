@@ -69,20 +69,28 @@ export async function runSpectatorChecks({ c, check, waitFor, base, token, cube 
     JSON.stringify({ status: f1.status, size: [f1.w, f1.h], bytes: f1.buf && f1.buf.length, lit: img1 && +img1.lit.toFixed(4), cost: f1.cost }));
   // The menu (a quad layer) opened: it must show in the frames.
   await c.evaluate('window.__xrfake.buttons.left[4].pressed = true');
-  await waitFor(c, '((window.__vrXR().quads || {}).shown || []).includes("menu")', 5000);
-  await sleep(400);
-  const f2 = await read(f1.seq);
-  const f3 = await read(f2.seq);       // one captured with the menu surely drawn
-  await c.evaluate('window.__xrfake.buttons.left[4].pressed = false');
-  const img3 = f3.buf ? await decode(f3.buf) : null;
-  let diff = 0, changed = 0;
-  if (img1 && img3 && img1.lum.length === img3.lum.length) {
-    for (let i = 0; i < img1.lum.length; i++) { const d = Math.abs(img1.lum[i] - img3.lum[i]); diff += d; if (d > 40) changed++; }
+  // On a CI runner (SwiftShader, ~90 ms frames) the menu takes a few frames
+  // to open and a capture under way when it opened was taken without it: the
+  // frames are read until one shows it (at most 12 frames or 15 s).
+  const menuUp = await waitFor(c, '((window.__vrXR().quads || {}).shown || []).includes("menu")', 15000);
+  let diff = 0, changed = 0, seq = f1.seq, reads = 0;
+  const tEnd = Date.now() + 15000;
+  while (menuUp.value && reads < 12 && Date.now() < tEnd && changed <= 0.05) {
+    const f = await read(seq);
+    reads++;
+    if (!f.buf) continue;
+    seq = f.seq;
+    const img = await decode(f.buf);
+    if (!img1 || img.lum.length !== img1.lum.length) continue;
+    diff = 0; changed = 0;
+    for (let i = 0; i < img1.lum.length; i++) { const d = Math.abs(img1.lum[i] - img.lum[i]); diff += d; if (d > 40) changed++; }
     diff /= img1.lum.length;
     changed /= img1.lum.length;
   }
+  await c.evaluate('window.__xrfake.buttons.left[4].pressed = false');
   check('spectator: the menu, a composition layer, is drawn into the frames (a large part of the view changes)',
-    changed > 0.05, JSON.stringify({ meanAbsDiff: +diff.toFixed(2), changedFraction: +changed.toFixed(3), seqs: [f1.seq, f3.seq] }));
+    !!menuUp.value && changed > 0.05, JSON.stringify({ menuShownMs: menuUp.ms, meanAbsDiff: +diff.toFixed(2),
+      changedFraction: +changed.toFixed(3), seqs: [f1.seq, seq], reads }));
   await sleep(2000);
   const s2 = await c.evaluate('window.__vrSpectator.stats()');
   const during = await c.evaluate('window.__vrStats(window.__vrXR().targetHz || 72)');
