@@ -215,19 +215,20 @@ export function createSources(ctx) {
     const label = SL.classificationSummary(classification);
     const done = ctx.report({ product: 'classification', dataset_id: id, request, classification, label });
     if (!done) throw new Error('No desktop session hub for this page: nothing was sent.');
-    const version = S.cls.version + S.user.length * 1e6, overlay = S.overlay;
+    const version = S.cls.version + S.user.length * 1e6, overlay = S.overlay, cubeAt = S.cubeId;
+    const same = () => S.overlay === overlay && S.cubeId === cubeAt;     // the answer is for the work on show
     S.sent = { version: -1, file: 'pending' };
     S.status = ['Sending: writing the VOTable…', '#ffd27a'];
     changed();
     // Marked sent only once saved and posted; a failure says why.
     Promise.resolve(done).then((r) => {
-      if (S.overlay !== overlay) return;
+      if (!same()) return;
       S.sent = { version, file: (r && r.file) || 'sent' };
       S.status = [`Sent to the desktop: ${(r && r.file) || 'the VOTable'}`, '#b9c2d0'];
       texKey = '';
       changed();
     }, (e) => {
-      if (S.overlay !== overlay) return;
+      if (!same()) return;
       S.sent = { version: -1, file: '' };
       S.status = [`Not sent: ${e && e.stale ? 'the page stood down or sent again' : (e && e.message) || e}`, '#ff8a8a'];
       texKey = '';
