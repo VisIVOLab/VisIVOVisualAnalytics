@@ -1290,7 +1290,7 @@ function blockClock() {
 
 /** Would a cube shown now in VR have to wait for the session's end? */
 function mustWait(cube) {
-  return R.xrActive && ((xr && xr.bench) || !R.fitsCapacity(cube));
+  return (R.xrActive || entering) && ((xr && xr.bench) || !R.fitsCapacity(cube));
 }
 
 /** Another cube on the GPU: the benchmark's preparation was sized beside the old one. */
@@ -5105,7 +5105,7 @@ canvas.addEventListener('webglcontextlost', (e) => {
 let restoreAfterXR = false;
 canvas.addEventListener('webglcontextrestored', () => {
   clearTimeout(contextTimer);
-  if (R.xrActive) {
+  if (R.xrActive || entering) {
     restoreAfterXR = true;
     shell.log('info', 'webgl-context-restored', 'rebuilt when the VR session ends');
     return;
