@@ -202,6 +202,16 @@ try {
   const empty = await ev('window.__vrDrawnFraction()');
   const notes = await ev(`window.__vrLayers.menuView().status.map((x) => x[0]).join(' | ')`);
   check('… the picture is empty and the menu says why', empty.fraction === 0 && /outside this snapshot/.test(notes), `${(100 * empty.fraction).toFixed(2)} %; ${notes}`);
+  // The crop gizmo marks it empty (no dots, no fill), not as the whole table;
+  // Reset crop then Undo gives the empty crop back, not the whole box.
+  const gz = await ev('window.__vrCrop.gizmo()');
+  check('… the crop gizmo marks it empty, not the whole table', !!gz && gz.empty && gz.handles === 0 && gz.faces === 0, JSON.stringify(gz));
+  await act({ type: 'press', id: 'crop-reset' });
+  const reset = await ev(`${L}.cropEmpty`);
+  await act({ type: 'press', id: 'undo' });
+  const undone = await ev(`({ crop: ${L}.cropEmpty, gz: window.__vrCrop.gizmo() })`);
+  check('… Reset crop shows it all; Undo brings the empty crop back', reset === null && !!undone.crop && undone.gz.empty,
+    `after reset ${JSON.stringify(reset)}, after undo ${JSON.stringify(undone)}`);
   await act({ type: 'press', id: 'snap-next' });
   await waitFor(`${L}.points.series.index === 2 && ${L}.stepTarget === null && !!${L}.points.sample`, 60000);
   const back = xRange(await ev(`${L}.points.sample.bounds`), await ev('window.__vrState.clip'));

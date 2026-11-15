@@ -1709,7 +1709,9 @@ function lookKind() { return state.cube ? 'cube' : layers.hasScene() ? layers.mo
 function lookSnapshot() {
   const kind = lookKind();
   const clip = { min: [...state.clip.min], max: [...state.clip.max] };
-  if (kind !== 'cube') return { kind, colormap: state.colormap, clip, layer: layers.undoState() };
+  // An empty crop carried from another snapshot (#259) is kept with the step:
+  // the whole box in `clip` is only its placeholder.
+  if (kind !== 'cube') return { kind, colormap: state.colormap, clip, layer: layers.undoState(), cropEmpty: layers.cropEmpty };
   return { kind, thrNorm: state.thrNorm, cmaxNorm: state.cmaxNorm, opacity: state.opacity, colormap: state.colormap,
     mode: state.mode, stretch: state.stretch, gamma: state.gamma, thrSource: $('thr-source').value, clip, layer: layers.undoState() };   // the catalogue's toggles too
 }
@@ -1727,6 +1729,7 @@ function undo() {
     setColormap(s.colormap);
     layers.restoreUndo(s.layer);
     decorationsChanged();
+    layers.keepCropEmpty(s.cropEmpty);
     return true;
   }
   if (s.thrSource && s.thrSource !== $('thr-source').value) {
@@ -2604,11 +2607,14 @@ function cropPointer(worldRay, pressed, edge, tipWorld = null) {
     }
     finishCropDrag();
   }
-  c.hover = ray ? CG.hitCrop(f, state.clip, ray, { scale: M.uniformScale(state.model), tip }) : null;
+  // A crop carried empty from another snapshot (#259) has no dots and no
+  // inside: anything draws a new one.
+  const empty = layers.cropEmpty;
+  c.hover = ray ? CG.hitCrop(f, state.clip, ray, { scale: M.uniformScale(state.model), tip, empty: !!empty }) : null;
   if (edge && ray && c.hover) {
     const d = CG.startDrag(c.hover, state.clip, ray, f, tip);
     // The look before the drag, kept: an undo step only if the drag changes the crop.
-    if (d) { d.undo = lookKind() ? lookSnapshot() : null; c.drag = d; buzz('primary', 'press'); } else buzz('primary', 'error');
+    if (d) { d.undo = lookKind() ? lookSnapshot() : null; d.empty = empty; c.drag = d; buzz('primary', 'press'); } else buzz('primary', 'error');
   }
   return !!c.drag;
 }
@@ -2724,6 +2730,9 @@ function finishCropDrag() {
   if (d.undo && CG.clipChanged(d.clip0, end)) ui.undo.push(d.undo);
   state.clip = end;
   decorationsChanged();
+  // A click that drew no crop leaves an empty carried crop as it was (the
+  // drag's first frames cleared it), never the whole table (#259 review).
+  if (d.empty && !CG.clipChanged(d.clip0, end)) layers.keepCropEmpty(d.empty);
   labelsChanged();
 }
 
@@ -2753,9 +2762,11 @@ function drawCropGizmo(v, eye) {
   if (!cropToolOn()) return;
   const f = cropFrame();
   const hover = ui.crop.drag || ui.crop.hover;
-  const g = CG.gizmo(f, state.clip, hover);
+  // An empty carried crop (#259): the table's outline in red, no dots, no fill.
+  const empty = !!layers.cropEmpty;
+  const g = CG.gizmo(f, state.clip, hover, { empty });
   // The lines only when the box or what is pointed at changed.
-  const key = JSON.stringify([state.clip, hover && (hover.id || hover.kind), f]);
+  const key = JSON.stringify([state.clip, hover && (hover.id || hover.kind), f, empty]);
   if (key !== ui.crop.key) {
     // (A planar table's flat axis has no dots: gizmo() leaves them out.)
     R.setLines(ui.crop.drag && ui.crop.drag.kind === 'new' ? CG.previewEdges(f, state.clip) : g.edges, R.cropLines);
@@ -2854,7 +2865,8 @@ canvas.addEventListener('pointerdown', (e) => {
     // The crop (#277) with the mouse: a dot or the inside is dragged; with
     // Shift held a drag elsewhere draws a new crop; any other drag turns the view.
     const f = cropFrame(), ray = CG.modelRay(state.model, mouseWorldRay(e));
-    const hit = CG.hitCrop(f, state.clip, ray, { scale: M.uniformScale(state.model) });
+    // (An empty crop carried from another snapshot has no dots: #259.)
+    const hit = CG.hitCrop(f, state.clip, ray, { scale: M.uniformScale(state.model), empty: !!layers.cropEmpty });
     if (hit.kind !== 'new' || e.shiftKey) {
       mouseOnCrop = true;
       cropPointer(mouseWorldRay(e), true, true);
@@ -3193,7 +3205,9 @@ function hubLook(id) {
     opacity: state.opacity, gamma: state.gamma, stretch: state.stretch, mode: state.mode, zStretch: state.zStretch, datasetId: id });
 }
 function hubClip(id) {
-  if (!state.cube || !state.open || !state.info || !state.info.full_shape) return null;
+  // Only a cube's clip is reported (a point table has no state.cube); an empty
+  // crop carried from another snapshot (#259) is never sent as the whole box.
+  if (!state.cube || !state.open || !state.info || !state.info.full_shape || layers.cropEmpty) return null;
   return HUB.clipPayload(HUB.voxelBox(state.clip, state.info.full_shape), id);
 }
 
@@ -4611,6 +4625,13 @@ if (query.has('debug')) {
     get: () => ({ on: cropToolOn(), clip: JSON.parse(JSON.stringify(state.clip)), hover: ui.crop.hover ? ui.crop.hover.id || ui.crop.hover.kind : null,
       drag: ui.crop.drag ? ui.crop.drag.kind : null, lines: R.cropLines.count, sentClip: hub.st && hub.st.sent ? hub.st.sent.clip || 0 : 0 }),
     world: (t) => { const f = cropFrame(); return f ? Array.from(M.transformPoint(state.model, CG.toModel(f, t))) : null; },
+    /** What the gizmo draws now (#259 review: an empty carried crop is not the whole table). */
+    gizmo: () => {
+      const f = cropFrame();
+      if (!f) return null;
+      const g = CG.gizmo(f, state.clip, null, { empty: !!layers.cropEmpty });
+      return { empty: g.empty, handles: g.handles.length, faces: g.faces.length, edges: g.edges.length, edgeColour: g.edges[0] && g.edges[0].color };
+    },
     /** A box fraction as a page pixel in the desktop view. */
     screen: (t) => {
       const f = cropFrame();

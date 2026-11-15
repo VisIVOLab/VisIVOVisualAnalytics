@@ -1014,6 +1014,14 @@ export function createLayers(ctx) {
     /** The crop changed on the page or the menu: an empty crop carried from
      *  another snapshot is gone (#259). */
     clipChanged() { L.cropEmpty = null; },
+    /** A crop carried from another snapshot that lies wholly outside this
+     *  table (table units), or null. While it is set state.clip is the whole
+     *  box only as a placeholder: the crop gizmo and the clip report must not
+     *  show it as the whole table (#259 review). */
+    get cropEmpty() { return L.mode === 'points' ? L.cropEmpty : null; },
+    /** The empty crop again, after a change that put it back (an undo, a
+     *  click that drew no crop). */
+    keepCropEmpty(c) { if (L.mode === 'points' && c) L.cropEmpty = c; },
     /** True while a refined frame covers the splats (they are not drawn): the
      *  frame-rate governors earn no clean time from those frames (#295). */
     get covered() { return L.mode === 'points' && !!(L.points && L.points.wasCovered); },

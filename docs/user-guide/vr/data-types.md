@@ -69,7 +69,9 @@ fields, and Select on velocity fields, with the reason under each control.
   stays where it is. The crop and the box keep their place in the table's
   units (the same region of space), not their fraction of a box whose bounds
   changed. A crop wholly outside the new snapshot's box draws nothing and the
-  menu says so (*Reset crop* shows it all); a box wholly outside it shows
+  menu says so (*Reset crop* shows it all); with the *Spatial crop* tool its
+  box is the table's outline in red, with no dots, and a drag draws a new
+  crop; a box wholly outside it shows
   nothing with *Show inside* and everything with *Hide inside*, also said;
   neither is replaced by the whole table, and both come back on a snapshot
   that holds them. *None* (one colour) stays one colour. Quick presses take
