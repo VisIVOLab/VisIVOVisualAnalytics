@@ -124,6 +124,22 @@ test('the room says what the app waits for, and nothing once a cube is on show',
   assert.equal(APP.originLabel({ host: 'localhost:18900' }), 'localhost:18900');
 });
 
+test('the room shows a brick pyramid build\'s progress while the cube waits for it (#329)', () => {
+  const base = { immersive: true, exchanging: false, error: null, connected: true, loading: true, shown: false, name: 'rho.0000.flt', origin: 'localhost:18900' };
+  const prep = { progress: 0.42, ms: 35400, silentMs: 0 };
+  const r = APP.roomState({ ...base, prep });
+  assert.deepEqual(r, { kind: 'app-loading', ctx: { name: 'rho.0000.flt', origin: 'localhost:18900', prep } });
+  const n = noticeFor(r.kind, { ...r.ctx, inVR: true, app: true });
+  assert.equal(n.id, 'app-room');
+  assert.equal(n.title, 'Preparing the cube… 42 %');
+  assert.match(n.lines.join(' '), /rho.0000.flt: the computer builds its brick pyramid, once for this cube \(35 s so far\)/);
+  assert.deepEqual(n.actions.map((a) => a.id), ['exit-vr']);
+  // Not while the ticket is exchanged, nor after a failure, nor with no prep.
+  assert.equal(APP.roomState({ ...base, exchanging: true, prep }).ctx.prep, undefined);
+  assert.equal(APP.roomState({ ...base, error: { kind: 'failed', message: 'm' }, prep }).kind, 'app-failed');
+  assert.equal(noticeFor('app-loading', { name: 'a.fits' }).title, 'Opening a.fits…');
+});
+
 test('the room\'s notices: in front, one card, the way out labelled as quitting', () => {
   const ctx = { inVR: true, app: true, origin: 'localhost:18900' };
   for (const kind of ['app-loading', 'app-empty', 'app-failed']) {

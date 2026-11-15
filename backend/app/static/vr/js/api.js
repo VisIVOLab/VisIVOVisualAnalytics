@@ -153,6 +153,19 @@ export async function hookedFetch(path, init, quiet = false) {
 const TIMED_OUT = 'timeout';
 
 /**
+ * Whether `err`, thrown while a response's body was read inside a deadline,
+ * means the body did not come: the deadline or a cancellation ended it, or
+ * the stream broke (the browser's TypeError or AbortError). An error that
+ * read() made itself (with an HTTP `status`, `preparing`, or any other) is
+ * the backend's answer, never "no answer".
+ */
+export function bodyMissing(err, signal) {
+  if (err && (err.status !== undefined || err.preparing)) return false;
+  if (signal && signal.aborted) return true;
+  return err instanceof TypeError || (!!err && err.name === 'AbortError');
+}
+
+/**
  * A request with a deadline over the whole exchange (headers and body): a
  * connection that hangs (a link half down, a backend that accepts and never
  * answers) ends as a `network` requestError after `timeoutMs` instead of
@@ -178,7 +191,11 @@ export async function boundedRequest(path, init, timeoutMs, signal, read, quiet 
         ctl.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
       })]);
     } catch (err) {
-      if (err && err.status !== undefined) throw err;            // an HTTP error, as read() made it
+      // What read() threw on purpose is the answer, passed on as it is: an
+      // HTTP error, a 202's `preparing` (issue #329: a brick pyramid's build
+      // polled with a deadline ended at its second poll as "the backend did
+      // not answer"), a body that is not what was asked.
+      if (!bodyMissing(err, ctl.signal)) throw err;
       // The body did not come: the same as no answer at all.
       const e = requestError(0, ctl.signal.reason === TIMED_OUT ? 'the backend did not answer in time' : 'the backend did not answer');
       e.timedOut = ctl.signal.reason === TIMED_OUT;
@@ -454,8 +471,6 @@ export class Backend {
     return this._json('POST', '/v1/datasets/pixel_to_sky', { dataset_id: datasetId, x, y, z });
   }
 
-  /** reduced_info; while a pyramid builds the page asks again every second,
-   *  so one request is given at most 2 minutes. */
   /** reduced_info. While the cube's brick pyramid is built the backend
    *  answers 202: that throws preparingError (`preparing`, `progress`), never
    *  returned as the cube's description. The deadline is the handle's

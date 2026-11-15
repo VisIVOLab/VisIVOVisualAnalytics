@@ -8,6 +8,20 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: a cube sent to the headset during its first brick pyramid build
+  waits for it (#329).** A large cube opened on the headset while the backend
+  was building its brick pyramid for the first time (a 2048³ PLUTO density,
+  for example) failed at the page's second progress check with "the backend
+  did not answer", although the backend had answered: the page took the 202
+  "still building" answer to a request with a deadline for no answer. The
+  page now shows *Preparing the cube… N %* for the whole build, in the
+  headset app's room in VR too, and loads the cube when the build ends. A
+  progress check that gets no answer is sent again. The page gives up only
+  after 3 minutes without any answer, and a backend that cannot be reached
+  at all is still reported at once. Measured on a synthetic 2048³ PLUTO
+  output (32 GiB, 49 s build): every route the page uses kept answering in
+  under 80 ms during the build.
+
 - **Desktop: the preview of a large cube from its brick pyramid (#320).**
   When a cube's brick pyramid is already built (for the headset or remote
   rendering), the desktop's preview of a large cube is made of block means

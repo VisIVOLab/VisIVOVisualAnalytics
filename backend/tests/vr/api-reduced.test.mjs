@@ -39,6 +39,40 @@ test('a pyramid being built (202) is a `preparing` error, not the cube\'s descri
   assert.deepEqual((await b.reducedInfo({ dataset_id: 'd' })).full_shape, [8, 8, 4]);
 });
 
+test('a 202 polled with a deadline is still `preparing`, never "the backend did not answer" (#329)', async () => {
+  // The page polls a build with REDUCED_POLL_TIMEOUT_MS: its second poll of
+  // every build used to end the load as a network error.
+  failures.length = 0;
+  let n = 0;
+  globalThis.fetch = async () => { n++; return respond(202, { valid: false, preparing: true, progress: 0.35 }); };
+  const b = new api.Backend('t');
+  await assert.rejects(b.reducedInfo({ dataset_id: 'd' }, { timeoutMs: 5000 }),
+    (e) => e.preparing === true && e.progress === 0.35 && !e.network);
+  assert.equal(n, 1, 'not resent');
+  assert.equal(failures.length, 0, 'a build under way is not a failure for the lifecycle');
+  // The recovery's handle has a deadline of its own: the same.
+  b.timeoutMs = 3000;
+  await assert.rejects(b.reducedInfo({ dataset_id: 'd' }), (e) => e.preparing === true && !e.network);
+  // An HTTP error under a deadline stays one (its status, reported).
+  globalThis.fetch = async () => respond(404, { detail: 'Session not found.' });
+  await assert.rejects(b.reducedInfo({ dataset_id: 'd' }, { timeoutMs: 5000 }), (e) => e.status === 404 && !e.network);
+  assert.equal(failures.length, 1);
+  // A body that breaks on its way is no answer.
+  globalThis.fetch = async () => ({ ok: true, status: 200, headers: { get: () => null }, text: async () => { throw new TypeError('network error'); } });
+  await assert.rejects(b.reducedInfo({ dataset_id: 'd' }, { timeoutMs: 5000 }), (e) => e.network === true && !e.timedOut);
+});
+
+test('bodyMissing: only the deadline, a cancellation or a broken stream is "no answer"', () => {
+  const live = { aborted: false }, gone = { aborted: true };
+  assert.equal(api.bodyMissing(api.preparingError(0.5), gone), false);
+  assert.equal(api.bodyMissing(api.requestError(500, 'x'), gone), false);
+  assert.equal(api.bodyMissing(new Error('aborted'), gone), true);
+  assert.equal(api.bodyMissing(new TypeError('network error'), live), true);
+  assert.equal(api.bodyMissing(new DOMException('x', 'AbortError'), live), true);
+  assert.equal(api.bodyMissing(new SyntaxError('Unexpected token'), live), false);
+  assert.equal(api.bodyMissing(new Error('the reduced cube is on a log scale without its X-Visivo-Log-Range'), live), false);
+});
+
 test('a reduced_info that never answers ends at its deadline as `timedOut`, sent once', async () => {
   const calls = [];
   globalThis.fetch = hangingFetch(calls);
