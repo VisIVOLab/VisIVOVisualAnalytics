@@ -38,6 +38,20 @@ async function runCropChecks({ c, check, label }) {
   const sc = await get();
   check(`xrfake ${label}: crop: a pull without a drag changes nothing and leaves no undo step`,
     (await undoSize()) === undo0 && sc.clip.min.every((v) => v === 0) && sc.clip.max.every((v) => v === 1), JSON.stringify({ undo0, now: await undoSize(), clip: sc.clip }));
+  // B (undo) during a drag undoes that drag, not the step before it (#277 review).
+  await aim(await world([1, 0.5, 0.5]));
+  await trigger(true);
+  for (const f of [0.9, 0.8]) await aim(await world([f, 0.5, 0.5]));
+  const during = await get();
+  await c.evaluate('window.__xrfake.buttons.right[5].pressed = true');
+  await sleep(150);
+  await c.evaluate('window.__xrfake.buttons.right[5].pressed = false');
+  await sleep(150);
+  await trigger(false);
+  const su = await get();
+  check(`xrfake ${label}: crop: B during a drag undoes that drag, nothing before it`,
+    during.drag === 'face' && during.clip.max[0] < 0.9 && (await undoSize()) === undo0 && su.clip.max[0] === 1 && su.drag === null,
+    JSON.stringify({ during: during.clip.max[0], undo0, now: await undoSize(), after: su.clip.max[0], drag: su.drag }));
   // Resize: the dot on the x-max face, then the ray swung towards the box's centre along x.
   await aim(await world([1, 0.5, 0.5]));
   const hov = await get();

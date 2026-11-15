@@ -51,8 +51,10 @@ are preserved here unedited; the branch names they refer to are historical.
   face's axis leaves the face in place; a face taken with the controller's
   tip follows the tip; a flat axis of a planar table gets no dots and no
   NaN; a drag is an undo step only when it changes the crop, and a tool or
-  mode change mid-drag ends it properly; the moment map is cut with the crop
-  of its request and cut again when the crop changes.
+  mode change mid-drag ends it properly, and B mid-drag undoes that drag; the
+  moment map is cut with the crop of its request and cut again when the crop
+  changes and stays still for 0.25 s (only while shown, its colour range from
+  a sample, in the headset and the desktop view alike).
 
 - **VR: X toggles the menu above the controller, and no text is clipped or
   overlapping (#276).** X (the secondary controller's lower button) now
